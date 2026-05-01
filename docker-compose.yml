@@ -1,0 +1,21 @@
+# Optional: create a second empty DB for integration tests, e.g.
+#   docker exec -it mini-erp-mysql mysql -u root -proot -e "CREATE DATABASE mini_erp_integration; GRANT ALL ON mini_erp_integration.* TO 'erp'@'%'; FLUSH PRIVILEGES;"
+# Then set INTEGRATION_DATABASE_URL and run backend: npm run test:integration:prepare
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: mini-erp-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: mini_erp
+      MYSQL_USER: erp
+      MYSQL_PASSWORD: 1234
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+
+volumes:
+  mysql_data:
+

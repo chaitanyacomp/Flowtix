@@ -1,0 +1,31 @@
+const express = require("express");
+const { requireAuth, requireRole } = require("../middleware/auth");
+const { getPlanningDashboard } = require("../services/planningDashboardService");
+const { getProductionPlanningDashboard } = require("../services/productionPlanningDashboardService");
+
+const planningDashboardRouter = express.Router();
+
+const PLANNING_DASHBOARD_ACCESS_DENIED =
+  "Access denied. Only administrators and production staff can view the planning dashboard.";
+const planningDashboardRoles = requireRole(["ADMIN", "PRODUCTION", "STORE", "SALES"], PLANNING_DASHBOARD_ACCESS_DENIED);
+
+planningDashboardRouter.get("/", requireAuth, planningDashboardRoles, async (req, res, next) => {
+  try {
+    const data = await getPlanningDashboard();
+    return res.json(data);
+  } catch (e) {
+    return next(e);
+  }
+});
+
+planningDashboardRouter.get("/production", requireAuth, planningDashboardRoles, async (req, res, next) => {
+  try {
+    const data = await getProductionPlanningDashboard();
+    return res.json(data);
+  } catch (e) {
+    return next(e);
+  }
+});
+
+module.exports = { planningDashboardRouter };
+

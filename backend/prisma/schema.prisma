@@ -1,0 +1,1421 @@
+// Mini ERP — multi-line manufacturing model
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  ADMIN
+  SALES
+  STORE
+  PRODUCTION
+  QC
+  SUPERVISOR
+}
+
+/// Phase 1 audit trail — see services/auditLog.js
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+  APPROVE
+  REJECT
+  CANCEL
+  REVERSE
+  LOGIN
+  LOGOUT
+  LOGIN_FAILED
+  BLOCKED_DELETE
+}
+
+enum AuditEntityType {
+  ITEM
+  CUSTOMER
+  SUPPLIER
+  BOM
+  SALES_ORDER
+  WORK_ORDER
+  PRODUCTION_ENTRY
+  QC_ENTRY
+  DISPATCH
+  STOCK_ADJUSTMENT
+  CUSTOMER_RETURN
+  USER
+  SETTINGS
+  USER_SESSION
+}
+
+/// Canonical document types for ERP numbering (docNo).
+enum DocType {
+  SALES_ORDER
+  WORK_ORDER
+  PRODUCTION_ENTRY
+  QC_ENTRY
+  DISPATCH
+  SALES_BILL
+  REQUIREMENT_SHEET
+}
+
+enum SimpleStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  REJECTED
+}
+
+/// No Qty SO internal workflow cycles (reopen creates a new active cycle; history is locked per cycle).
+enum SalesOrderCycleStatus {
+  ACTIVE
+  CLOSED
+}
+
+/// Raw material purchase order lifecycle (GRN-driven).
+enum RmPoStatus {
+  PENDING
+  PARTIAL
+  COMPLETED
+  CANCELLED
+}
+
+/// GRN purchase-billing lifecycle (Tally-facing supplier invoice; no stock impact).
+enum GrnBillingStatus {
+  PENDING
+  BILLED
+}
+
+enum PurchaseBillStatus {
+  DRAFT
+  FINALIZED
+  CANCELLED
+}
+
+enum SalesBillStatus {
+  DRAFT
+  FINALIZED
+  CANCELLED
+}
+
+enum EnquiryStatus {
+  DRAFT
+  OPEN
+  PENDING
+  FEASIBLE
+  NOT_FEASIBLE
+  QUOTED
+  PO_RECEIVED
+  CLOSED
+}
+
+enum QuotationWorkflowStatus {
+  DRAFT
+  SENT
+  APPROVED
+  REJECTED
+}
+
+enum SalesOrderInternalStatus {
+  DRAFT
+  OPEN
+  APPROVED
+  IN_PROCESS
+  COMPLETED
+  CLOSED
+}
+
+enum SalesOrderType {
+  NORMAL
+  REPLACEMENT
+  NO_QTY
+}
+
+enum ItemType {
+  RM
+  FG
+}
+
+enum StockTxnType {
+  /// One-time system initialization: opening stock posted after explicit approval.
+  OPENING
+  /// Offset for OPENING (qtyOut from same bucket; reversalOfId → forward OPENING stock row).
+  OPENING_REVERSAL
+  GRN
+  ISSUE
+  PRODUCTION
+  QC
+  DISPATCH
+  SCRAP
+  ADJUSTMENT
+  /// Internal stock bucket movement (e.g. QC_HOLD→REWORK, REWORK→QC_PENDING, bucket transfers). Not a user "adjustment".
+  BUCKET_TRANSFER
+  DISPATCH_REVERSAL
+  QC_REVERSAL
+  CUSTOMER_RETURN
+}
+
+enum OpeningStockStatus {
+  DRAFT
+  APPROVED
+}
+
+enum StockBucket {
+  USABLE
+  QC_HOLD
+  /// Awaiting QC re-check after internal rework (Stock → Send to QC). Not “Hold for Checking”.
+  QC_PENDING
+  REWORK
+  /// Non-dispatchable loss bucket (QC rejects directed to scrap).
+  SCRAP
+}
+
+/// Operator intent for rejected quantity on a QC posting (stock bucket may match QC_HOLD for both Rework and Hold).
+enum QcRejectedRoute {
+  REWORK
+  HOLD
+  SCRAP
+  USABLE
+}
+
+enum QcRejectedDispositionStatus {
+  REWORK_PENDING_SUPERVISOR
+  /// Supervisor approved rework, but rework is not yet executed. Not QC-ready.
+  REWORK_APPROVED_PENDING_EXECUTION
+  REWORK_READY_FOR_QC
+  HOLD
+  SCRAP
+  CLOSED
+}
+
+enum QcRejectedPhase {
+  FIRST_QC
+  RECHECK
+}
+
+/// One-time closure for pre–new-flow production QC rejects (does not edit QcEntry accepted/rejected fields).
+enum QcLegacyRejectedAction {
+  APPROVE_TO_USABLE
+  MOVE_TO_HOLD
+  SCRAP
+}
+
+/// Production batch lifecycle: DRAFT (editable, no RM issue, not QC-eligible) → APPROVED (locked, RM issued, QC-eligible).
+enum ProductionEntryWorkflowStatus {
+  DRAFT
+  APPROVED
+}
+
+model User {
+  id           Int      @id @default(autoincrement())
+  email        String   @unique
+  name         String
+  passwordHash String
+  role         UserRole
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  idempotencyRecords                       IdempotencyRecord[]
+  stockTxnsCreated                         StockTransaction[]               @relation("StockTxnCreatedBy")
+  stockTxnsReversed                        StockTransaction[]               @relation("StockTxnReversedBy")
+  stockTxnsApproved                        StockTransaction[]               @relation("StockTxnApprovedBy")
+  openingStockEntriesCreated               OpeningStockEntry[]              @relation("OpeningStockCreatedBy")
+  openingStockEntriesApproved              OpeningStockEntry[]              @relation("OpeningStockApprovedBy")
+  workOrdersFgStockOverride                WorkOrder[]                      @relation("WoFgStockOverrideBy")
+  reopenedSalesOrderCycles                 SalesOrderCycle[]                @relation("SalesOrderCycleReopenedBy")
+  quotationsApprovalCancelled              Quotation[]                      @relation("QuotationApprovalCancelledBy")
+  purchaseBillsExportReset                 PurchaseBill[]                   @relation("PurchaseBillExportResetBy")
+  purchaseBillsCancelled                   PurchaseBill[]                   @relation("PurchaseBillCancelledBy")
+  salesBillsFinalized                      SalesBill[]                      @relation("SalesBillFinalizedBy")
+  salesBillsCancelled                      SalesBill[]                      @relation("SalesBillCancelledBy")
+  salesBillsExportReset                    SalesBill[]                      @relation("SalesBillExportResetBy")
+  salesBillsExported                       SalesBill[]                      @relation("SalesBillExportedBy")
+  auditLogs                                AuditLog[]                       @relation("AuditLogActor")
+  activityLogs                             ActivityLog[]                    @relation("ActivityLogActor")
+  qcRejectedDispositionsCreated            QcRejectedDisposition[]          @relation("QcRejDispCreatedBy")
+  qcRejectedDispositionsSupervisorApproved QcRejectedDisposition[]          @relation("QcRejDispSupervisorApproved")
+  qcLegacyRejectedClassifications          QcLegacyRejectedClassification[]
+}
+
+/// Cached successful responses for Idempotency-Key on critical POST routes (dispatch, etc.).
+model IdempotencyRecord {
+  id              Int      @id @default(autoincrement())
+  userId          Int
+  routeKey        String   @db.VarChar(64)
+  idempotencyKey  String   @db.VarChar(255)
+  requestBodyHash String   @db.VarChar(64)
+  responseStatus  Int?
+  responseBody    String?  @db.Text
+  createdAt       DateTime @default(now())
+  expiresAt       DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, routeKey, idempotencyKey])
+  @@index([expiresAt])
+}
+
+model Supplier {
+  id        Int      @id @default(autoincrement())
+  name      String
+  contact   String?
+  email     String?
+  address   String?
+  /// Supplier GSTIN (Tally-compatible); same column, UI label GSTIN.
+  gst       String?
+  /// State / UT name or code — free text for now; used later for GST place-of-supply logic.
+  state     String?  @db.VarChar(128)
+  /// New (static master validated) supplier state name for GST split. Nullable for existing suppliers.
+  stateName String?  @db.VarChar(128)
+  /// New (static master validated) supplier GST state code (2-digit). Nullable for existing suppliers.
+  stateCode String?  @db.VarChar(2)
+  /// Structured state reference (GST code mapping). Nullable for backward compatibility.
+  stateId   Int?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  stateRef State? @relation(fields: [stateId], references: [id], onDelete: SetNull)
+
+  rmPurchaseOrders RmPurchaseOrder[]
+  customerPOs      CustomerPO[]
+  purchaseBills    PurchaseBill[]
+
+  @@index([stateId])
+  @@index([stateCode])
+}
+
+model Customer {
+  id        Int      @id @default(autoincrement())
+  name      String
+  contact   String?
+  email     String?
+  address   String?
+  /// Customer GSTIN (Tally-compatible); same column, UI label GSTIN.
+  gst       String?
+  /// State / UT — free text for now; used later for sales GST / place of supply.
+  state     String?  @db.VarChar(128)
+  /// Structured state reference (GST code mapping). Nullable for backward compatibility.
+  stateId   Int?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  stateRef State? @relation(fields: [stateId], references: [id], onDelete: SetNull)
+
+  enquiries       Enquiry[]
+  pos             CustomerPO[]
+  salesOrders     SalesOrder[]
+  customerReturns CustomerReturn[]
+  salesBills      SalesBill[]
+
+  @@index([stateId])
+}
+
+model Item {
+  id                                Int      @id @default(autoincrement())
+  itemName                          String
+  itemType                          ItemType
+  /// Legacy unit text (kept for backward compatibility during Unit master rollout).
+  unit                              String
+  /// Structured unit reference (nullable for backward compatibility).
+  unitId                            Int?
+  minStockLevel                     Decimal  @default(0) @db.Decimal(18, 3)
+  /// HSN / SAC code (optional until masters are complete).
+  hsnCode                           String?  @db.VarChar(32)
+  /// GST rate percentage (e.g. 18). No IGST/CGST/SGST split stored here.
+  gstRate                           Decimal? @db.Decimal(5, 2)
+  /// Legacy planning gap thresholds (gap% = shortage / requirement × 100). Used for order-wise / requirement sheets.
+  /// Misnamed: `planningGapGreenThresholdPercent` is the **red** boundary (min gap% for red); yellow is min gap% for yellow.
+  /// If null, services use defaults (50% / 30%). See `planningThresholds.js`.
+  planningGapGreenThresholdPercent  Decimal? @db.Decimal(5, 2)
+  planningGapYellowThresholdPercent Decimal? @db.Decimal(5, 2)
+  /// Product-wise planning thresholds (gap% based). If null, fall back to legacy thresholds or defaults.
+  redThresholdPercent               Decimal? @db.Decimal(5, 2)
+  yellowThresholdPercent            Decimal? @db.Decimal(5, 2)
+  /// Optional buffer applied on requirement when suggesting WO (percentage).
+  planningBufferPercent             Decimal? @db.Decimal(5, 2)
+  /// Optional minimum stock to maintain (absolute qty). Used as a floor for requirement in product-wise planning.
+  minimumStockQty                   Decimal? @db.Decimal(18, 3)
+  /// Optional reorder quantity (future use).
+  reorderQty                        Decimal? @db.Decimal(18, 3)
+  createdAt                         DateTime @default(now())
+  updatedAt                         DateTime @updatedAt
+
+  unitRef Unit? @relation(fields: [unitId], references: [id], onDelete: SetNull)
+
+  bomsAsFg                        Bom[]                            @relation("BomFgItem")
+  bomLinesAsRm                    BomLine[]                        @relation("BomLineRmItem")
+  enquiryLines                    EnquiryLine[]
+  quotationLines                  QuotationLine[]
+  poLines                         CustomerPOLine[]
+  soLines                         SalesOrderLine[]
+  rmPoLines                       RmPurchaseOrderLine[]
+  workOrderLines                  WorkOrderLine[]                  @relation("WoLineFg")
+  salesBillLines                  SalesBillLine[]
+  requirementSheetLines           RequirementSheetLine[]
+  scrapRecords                    ScrapRecord[]                    @relation("ScrapFgItem")
+  dispatches                      Dispatch[]
+  stockTxns                       StockTransaction[]
+  stockAdjustmentQcEntries        StockAdjustmentQcEntry[]
+  customerReturns                 CustomerReturn[]
+  purchaseBillLines               PurchaseBillLine[]
+  qcRejectedDispositions          QcRejectedDisposition[]
+  qcLegacyRejectedClassifications QcLegacyRejectedClassification[]
+  openingStockEntries             OpeningStockEntry[]
+
+  @@index([itemType])
+  @@index([unitId])
+}
+
+model Unit {
+  id        Int      @id @default(autoincrement())
+  unitName  String   @db.VarChar(64)
+  /// Optional short code for Tally / exports (kept simple).
+  unitCode  String?  @db.VarChar(16)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  items Item[]
+
+  @@unique([unitName])
+  @@unique([unitCode])
+  @@index([isActive])
+}
+
+model Bom {
+  id        Int      @id @default(autoincrement())
+  fgItemId  Int
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  fgItem Item      @relation("BomFgItem", fields: [fgItemId], references: [id], onDelete: Cascade)
+  lines  BomLine[]
+
+  @@unique([fgItemId])
+}
+
+model BomLine {
+  id             Int     @id @default(autoincrement())
+  bomId          Int
+  rmItemId       Int
+  /// Per unit of FG, before wastage
+  baseQty        Decimal @db.Decimal(18, 3)
+  wastagePercent Decimal @default(0) @db.Decimal(18, 3)
+
+  bom    Bom  @relation(fields: [bomId], references: [id], onDelete: Cascade)
+  rmItem Item @relation("BomLineRmItem", fields: [rmItemId], references: [id], onDelete: Restrict)
+
+  @@unique([bomId, rmItemId])
+  @@index([rmItemId])
+}
+
+model Enquiry {
+  id         Int           @id @default(autoincrement())
+  customerId Int
+  status     EnquiryStatus @default(PENDING)
+  remarks    String?
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+
+  customer    Customer      @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  lines       EnquiryLine[]
+  feasibility Feasibility?
+  quotation   Quotation?
+
+  @@index([customerId])
+  @@index([status])
+}
+
+model EnquiryLine {
+  id        Int     @id @default(autoincrement())
+  enquiryId Int
+  itemId    Int
+  qty       Decimal @db.Decimal(18, 3)
+
+  enquiry Enquiry @relation(fields: [enquiryId], references: [id], onDelete: Cascade)
+  item    Item    @relation(fields: [itemId], references: [id], onDelete: Restrict)
+
+  @@index([enquiryId])
+}
+
+model Feasibility {
+  id        Int          @id @default(autoincrement())
+  enquiryId Int          @unique
+  status    SimpleStatus
+  remarks   String?
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  enquiry Enquiry @relation(fields: [enquiryId], references: [id], onDelete: Cascade)
+}
+
+model Quotation {
+  id                        Int                     @id @default(autoincrement())
+  enquiryId                 Int                     @unique
+  quotationNo               String?                 @unique
+  workflowStatus            QuotationWorkflowStatus @default(DRAFT)
+  status                    SimpleStatus            @default(PENDING)
+  subtotal                  Decimal                 @default(0) @db.Decimal(18, 2)
+  gstTotal                  Decimal                 @default(0) @db.Decimal(18, 2)
+  totalAmount               Decimal                 @default(0) @db.Decimal(18, 2)
+  terms                     String?
+  /// Admin-only: when approval is cancelled, store reason + audit timestamp.
+  approvalCancelReason      String?
+  approvalCancelledAt       DateTime?
+  approvalCancelledByUserId Int?
+  createdAt                 DateTime                @default(now())
+  updatedAt                 DateTime                @updatedAt
+
+  enquiry             Enquiry         @relation(fields: [enquiryId], references: [id], onDelete: Cascade)
+  lines               QuotationLine[]
+  salesOrder          SalesOrder?
+  approvalCancelledBy User?           @relation("QuotationApprovalCancelledBy", fields: [approvalCancelledByUserId], references: [id], onDelete: SetNull)
+
+  @@index([workflowStatus])
+  @@index([approvalCancelledByUserId])
+}
+
+model QuotationLine {
+  id          Int     @id @default(autoincrement())
+  quotationId Int
+  itemId      Int
+  qty         Decimal @db.Decimal(18, 3)
+  rate        Decimal @db.Decimal(18, 2)
+  discountPct Decimal @default(0) @db.Decimal(18, 2)
+  gstPct      Decimal @default(18) @db.Decimal(18, 2)
+  lineTotal   Decimal @db.Decimal(18, 2)
+  /// When true, rate is stored as 0 and the line is treated as intentionally free (not a pricing error).
+  isFree      Boolean @default(false)
+
+  quotation       Quotation        @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+  item            Item             @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  salesOrderLines SalesOrderLine[]
+
+  @@index([quotationId])
+}
+
+model CustomerPO {
+  id           Int          @id @default(autoincrement())
+  customerId   Int
+  supplierId   Int?
+  /// Customer-provided purchase order number (primary identifier in UI).
+  poNumber     String       @db.VarChar(64)
+  /// Customer PO date.
+  poDate       DateTime
+  /// Customer-requested delivery/required date (optional).
+  requiredDate DateTime?
+  status       SimpleStatus @default(PENDING)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  customer   Customer         @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  supplier   Supplier?        @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  lines      CustomerPOLine[]
+  salesOrder SalesOrder?
+
+  @@index([customerId])
+  @@index([status])
+  @@index([poNumber])
+}
+
+model CustomerPOLine {
+  id          Int     @id @default(autoincrement())
+  poId        Int
+  itemId      Int
+  qty         Decimal @db.Decimal(18, 3)
+  rate        Decimal @db.Decimal(18, 2)
+  discountPct Decimal @default(0) @db.Decimal(18, 2)
+  gstPct      Decimal @default(18) @db.Decimal(18, 2)
+  lineTotal   Decimal @db.Decimal(18, 2)
+
+  po   CustomerPO @relation(fields: [poId], references: [id], onDelete: Cascade)
+  item Item       @relation(fields: [itemId], references: [id], onDelete: Restrict)
+
+  @@index([poId])
+}
+
+/// Singleton app configuration (id = 1)
+model AppSetting {
+  id                                Int     @id @default(1)
+  /// Max allowed rejection buffer % on NORMAL sales order lines (0–100). Admin-configurable.
+  maxRegularSoBufferPercent         Decimal @default(10) @db.Decimal(18, 2)
+  strictInventoryControl            Boolean @default(false)
+  /// ADMIN_ONLY | ADMIN_AND_STORE — who may reverse stock adjustments
+  stockAdjustmentReverseRoles       String  @default("ADMIN_ONLY")
+  /// SAME_DAY | HOURS | DAYS | NO_LIMIT
+  stockAdjustmentReverseWindowType  String  @default("HOURS")
+  stockAdjustmentReverseWindowValue Int     @default(24)
+  /// ADMIN_ONLY | ADMIN_AND_STORE — who may create stock adjustments
+  stockAdjustmentCreateRoles        String  @default("ADMIN_AND_STORE")
+  /// Registered company state (free text); for future CGST+SGST vs IGST. No calculation yet.
+  companyState                      String? @db.VarChar(128)
+  /// Structured company state reference (GST code mapping). Nullable for backward compatibility.
+  companyStateId                    Int?
+  /// Company GSTIN (nullable; no strict validation in demo mode).
+  companyGstin                      String? @db.VarChar(15)
+
+  companyStateRef State? @relation(fields: [companyStateId], references: [id], onDelete: SetNull)
+}
+
+model State {
+  id        Int      @id @default(autoincrement())
+  stateName String   @db.VarChar(128)
+  /// GST state code (2-digit string): e.g. "27" Maharashtra, "07" Delhi.
+  stateCode String   @db.VarChar(2)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  suppliers   Supplier[]
+  customers   Customer[]
+  appSettings AppSetting[]
+
+  @@unique([stateName])
+  @@unique([stateCode])
+  @@index([isActive])
+}
+
+model SalesOrder {
+  id                   Int                      @id @default(autoincrement())
+  /// Display document number (e.g. SO-24-0001). Auto-generated on create.
+  docNo                String?                  @unique @db.VarChar(32)
+  poId                 Int?                     @unique
+  customerId           Int?
+  quotationId          Int?                     @unique
+  customerPoReference  String?
+  remarks              String?
+  orderType            SalesOrderType           @default(NORMAL)
+  /// For replacement orders created from an approved customer return (phase 1: one SO per return).
+  customerReturnId     Int?                     @unique
+  originalSalesOrderId Int?
+  originalDispatchId   Int?
+  internalStatus       SalesOrderInternalStatus @default(DRAFT)
+  createdAt            DateTime                 @default(now())
+  updatedAt            DateTime                 @updatedAt
+
+  /// NO_QTY: current active workflow cycle (null for legacy rows created before cycles).
+  currentCycleId Int? @unique
+
+  customer                 Customer?                @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  quotation                Quotation?               @relation(fields: [quotationId], references: [id], onDelete: SetNull)
+  po                       CustomerPO?              @relation(fields: [poId], references: [id], onDelete: Cascade)
+  replacementForReturn     CustomerReturn?          @relation("ReplacementForReturn", fields: [customerReturnId], references: [id], onDelete: SetNull)
+  lines                    SalesOrderLine[]
+  dispatch                 Dispatch[]
+  workOrders               WorkOrder[]
+  requirementSheets        RequirementSheet[]
+  stockAdjustmentQcEntries StockAdjustmentQcEntry[]
+  customerReturns          CustomerReturn[]
+
+  cycles       SalesOrderCycle[]
+  currentCycle SalesOrderCycle?  @relation("SalesOrderCurrentCycle", fields: [currentCycleId], references: [id], onDelete: SetNull)
+
+  @@index([customerId])
+  @@index([orderType])
+  @@index([customerReturnId])
+  @@index([internalStatus])
+  @@index([currentCycleId])
+}
+
+model SalesOrderLine {
+  id              Int     @id @default(autoincrement())
+  soId            Int
+  itemId          Int
+  /// Customer / legal dispatch & billing cap (NORMAL). Backfilled from legacy qty.
+  customerPoQty   Decimal @default(0) @db.Decimal(18, 3)
+  /// Rejection planning buffer % (NORMAL only; 0 = off). Planned qty = customerPoQty + ceil(customerPoQty * buffer / 100).
+  bufferPercent   Decimal @default(0) @db.Decimal(18, 2)
+  /// Planned production qty (WO / RM check). For NORMAL: derived from customerPoQty + bufferPercent.
+  qty             Decimal @db.Decimal(18, 3)
+  /// Manual NO_QTY SO: capture rate for downstream billing; quotation-based flow uses quotation line rate.
+  rate            Decimal @default(0) @db.Decimal(18, 4)
+  /// When SO is created from a quotation, links to that quotation line (source of truth for pricing/free intent).
+  quotationLineId Int?
+  /// Commercial snapshot from QuotationLine.isFree at SO creation (read-only downstream). Not used for RM/WO/QC/dispatch math.
+  isFree          Boolean @default(false)
+
+  so            SalesOrder     @relation(fields: [soId], references: [id], onDelete: Cascade)
+  item          Item           @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  quotationLine QuotationLine? @relation(fields: [quotationLineId], references: [id], onDelete: SetNull)
+
+  @@index([soId])
+  @@index([quotationLineId])
+}
+
+enum DispatchWorkflowStatus {
+  /// Draft: no stock/SO finalization until locked.
+  UNLOCKED
+  /// Confirmed: stock out posted; not editable; reversible only via reversal rows.
+  LOCKED
+}
+
+enum RequirementSheetStatus {
+  DRAFT
+  LOCKED
+}
+
+enum RequirementSheetColorZone {
+  GREEN
+  YELLOW
+  RED
+  EXCESS
+}
+
+/// One row per dispatch event; partial dispatch per sales order (aggregated qty for SO).
+/// Reversals: dispatchedQty negative, reversalOfId points at original forward dispatch row.
+model Dispatch {
+  id             Int                    @id @default(autoincrement())
+  /// Display document number (e.g. D-24-0001). Auto-generated on create.
+  docNo          String?                @unique @db.VarChar(32)
+  soId           Int
+  itemId         Int
+  /// NO_QTY: workflow cycle isolation (null for legacy / non-NO_QTY flows).
+  cycleId        Int?
+  dispatchedQty  Decimal                @db.Decimal(18, 3)
+  reversalOfId   Int?
+  reversalReason String?
+  /// Forward rows: UNLOCKED until confirmed; reversal rows always LOCKED.
+  workflowStatus DispatchWorkflowStatus @default(LOCKED)
+  date           DateTime               @default(now())
+
+  salesOrder      SalesOrder       @relation(fields: [soId], references: [id], onDelete: Cascade)
+  cycle           SalesOrderCycle? @relation(fields: [cycleId], references: [id], onDelete: SetNull)
+  item            Item             @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  reversalOf      Dispatch?        @relation("DispatchReversal", fields: [reversalOfId], references: [id], onDelete: Restrict)
+  reversals       Dispatch[]       @relation("DispatchReversal")
+  customerReturns CustomerReturn[]
+  salesBills      SalesBill[]
+
+  @@index([soId])
+  @@index([cycleId])
+  @@index([date])
+  @@index([reversalOfId])
+}
+
+/// Requirement planning sheet for NO_QTY sales orders (versioned per period).
+model RequirementSheet {
+  id             Int                    @id @default(autoincrement())
+  /// Display document number (e.g. RS-24-0001). Auto-generated on create.
+  docNo          String?                @unique @db.VarChar(32)
+  salesOrderId   Int
+  /// NO_QTY: workflow cycle isolation (null for legacy rows created before cycles).
+  cycleId        Int?
+  periodKey      String                 @db.VarChar(16) // e.g. "2026-04"
+  version        Int                    @default(1)
+  status         RequirementSheetStatus @default(DRAFT)
+  remarks        String?
+  recalculatedAt DateTime?
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+
+  salesOrder SalesOrder             @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
+  cycle      SalesOrderCycle?       @relation(fields: [cycleId], references: [id], onDelete: SetNull)
+  lines      RequirementSheetLine[]
+  workOrders WorkOrder[]
+
+  @@unique([salesOrderId, cycleId, periodKey, version])
+  @@index([salesOrderId])
+  @@index([cycleId])
+  @@index([periodKey])
+  @@index([status])
+}
+
+model RequirementSheetLine {
+  id                        Int                        @id @default(autoincrement())
+  sheetId                   Int
+  itemId                    Int
+  requirementQty            Decimal                    @db.Decimal(18, 3)
+  /// NO_QTY: gross carry-forward shortfall from previous cycles (planned − confirmed dispatch). Snapshot on lock.
+  shortfallQtySnapshot      Decimal?                   @db.Decimal(18, 3)
+  availableStockQtySnapshot Decimal?                   @db.Decimal(18, 3)
+  gapPercentSnapshot        Decimal?                   @db.Decimal(18, 2)
+  suggestedWoQtySnapshot    Decimal?                   @db.Decimal(18, 3)
+  colorZoneSnapshot         RequirementSheetColorZone?
+  createdAt                 DateTime                   @default(now())
+  updatedAt                 DateTime                   @updatedAt
+
+  sheet RequirementSheet @relation(fields: [sheetId], references: [id], onDelete: Cascade)
+  item  Item             @relation(fields: [itemId], references: [id], onDelete: Restrict)
+
+  @@unique([sheetId, itemId])
+  @@index([sheetId])
+  @@index([itemId])
+}
+
+/// Customer sales invoice against one confirmed dispatch row (phase 1: 1 dispatch = 1 sales bill).
+model SalesBill {
+  id         Int             @id @default(autoincrement())
+  /// Display document number (e.g. SB-24-0001). Auto-generated on create.
+  docNo      String?         @unique @db.VarChar(32)
+  billNo     String?         @db.VarChar(128)
+  billDate   DateTime        @db.Date
+  customerId Int
+  dispatchId Int
+  /// NO_QTY: workflow cycle isolation (copied from Dispatch.cycleId at creation; null for legacy / non-NO_QTY).
+  cycleId    Int?
+  remarks    String?         @db.Text
+  status     SalesBillStatus @default(DRAFT)
+
+  /// Snapshots / traceability
+  customerNameSnapshot      String    @default("") @db.VarChar(256)
+  customerStateNameSnapshot String    @default("") @db.VarChar(128)
+  customerStateCodeSnapshot String    @default("") @db.VarChar(2)
+  dispatchNoSnapshot        String    @default("") @db.VarChar(64)
+  dispatchDateSnapshot      DateTime?
+  soIdSnapshot              Int?
+
+  /// Export lock (mirrors PurchaseBill)
+  isExported        Boolean   @default(false)
+  exportedAt        DateTime?
+  exportedFileName  String?   @db.VarChar(255)
+  exportedById      Int?
+  exportResetAt     DateTime?
+  exportResetReason String?   @db.Text
+  exportResetById   Int?
+
+  /// Finalize/cancel audit
+  finalizedAt   DateTime?
+  finalizedById Int?
+  cancelledAt   DateTime?
+  cancelledById Int?
+  cancelReason  String?   @db.Text
+
+  totalBasic Decimal @default(0) @db.Decimal(18, 2)
+  totalCgst  Decimal @default(0) @db.Decimal(18, 2)
+  totalSgst  Decimal @default(0) @db.Decimal(18, 2)
+  totalIgst  Decimal @default(0) @db.Decimal(18, 2)
+  totalTax   Decimal @default(0) @db.Decimal(18, 2)
+  netAmount  Decimal @default(0) @db.Decimal(18, 2)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  customer Customer         @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  dispatch Dispatch         @relation(fields: [dispatchId], references: [id], onDelete: Restrict)
+  cycle    SalesOrderCycle? @relation(fields: [cycleId], references: [id], onDelete: SetNull)
+  lines    SalesBillLine[]
+
+  exportResetBy User? @relation("SalesBillExportResetBy", fields: [exportResetById], references: [id], onDelete: SetNull)
+  exportedBy    User? @relation("SalesBillExportedBy", fields: [exportedById], references: [id], onDelete: SetNull)
+  finalizedBy   User? @relation("SalesBillFinalizedBy", fields: [finalizedById], references: [id], onDelete: SetNull)
+  cancelledBy   User? @relation("SalesBillCancelledBy", fields: [cancelledById], references: [id], onDelete: SetNull)
+
+  @@index([billDate])
+  @@index([status])
+  @@index([customerId])
+  @@index([dispatchId])
+  @@index([cycleId])
+  @@index([isExported])
+  @@index([exportedById])
+  @@index([exportResetById])
+  @@index([finalizedById])
+  @@index([cancelledById])
+}
+
+model SalesBillLine {
+  id          Int  @id @default(autoincrement())
+  salesBillId Int
+  dispatchId  Int?
+  soId        Int?
+  itemId      Int
+
+  itemNameSnapshot String  @default("") @db.VarChar(256)
+  hsnCodeSnapshot  String  @default("") @db.VarChar(32)
+  unitSnapshot     String  @default("") @db.VarChar(64)
+  qty              Decimal @db.Decimal(18, 3)
+  rate             Decimal @db.Decimal(18, 4)
+  basicAmount      Decimal @db.Decimal(18, 2)
+  gstRate          Decimal @db.Decimal(5, 2)
+  cgstAmount       Decimal @db.Decimal(18, 2)
+  sgstAmount       Decimal @db.Decimal(18, 2)
+  igstAmount       Decimal @db.Decimal(18, 2)
+  lineTotal        Decimal @db.Decimal(18, 2)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  salesBill SalesBill @relation(fields: [salesBillId], references: [id], onDelete: Cascade)
+  item      Item      @relation(fields: [itemId], references: [id], onDelete: Restrict)
+
+  @@index([salesBillId])
+  @@index([itemId])
+  @@index([dispatchId])
+  @@index([soId])
+}
+
+model RmPurchaseOrder {
+  id                        Int        @id @default(autoincrement())
+  supplierId                Int
+  status                    RmPoStatus @default(PENDING)
+  remarks                   String?    @db.Text
+  /// Supplier state snapshot at PO time (GST / Tally); optional for legacy rows.
+  supplierStateSnapshot     String?    @db.VarChar(128)
+  /// Supplier GST state code snapshot (2-digit); optional for legacy rows.
+  supplierStateCodeSnapshot String?    @db.VarChar(2)
+  createdAt                 DateTime   @default(now())
+  updatedAt                 DateTime   @updatedAt
+
+  supplier Supplier              @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  lines    RmPurchaseOrderLine[]
+  grns     Grn[]
+
+  @@index([supplierId])
+  @@index([status])
+}
+
+model RmPurchaseOrderLine {
+  id      Int      @id @default(autoincrement())
+  rmPoId  Int
+  itemId  Int
+  qty     Decimal  @db.Decimal(18, 3)
+  rate    Decimal  @default(0) @db.Decimal(18, 2)
+  /// Unit text snapshot from item master at PO time.
+  unit    String?  @db.VarChar(64)
+  /// HSN snapshot from item master at PO time.
+  hsn     String?  @db.VarChar(32)
+  /// GST % snapshot from item master at PO time.
+  gstRate Decimal? @db.Decimal(5, 2)
+  /// qty × rate, persisted for exports / bills.
+  amount  Decimal? @db.Decimal(18, 2)
+
+  rmPo     RmPurchaseOrder @relation(fields: [rmPoId], references: [id], onDelete: Cascade)
+  item     Item            @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  grnLines GrnLine[]
+
+  @@index([rmPoId])
+}
+
+model Grn {
+  id             Int              @id @default(autoincrement())
+  rmPoId         Int
+  date           DateTime         @default(now())
+  reversedAt     DateTime?
+  reversalReason String?          @db.Text
+  billingStatus  GrnBillingStatus @default(PENDING)
+
+  rmPo          RmPurchaseOrder @relation(fields: [rmPoId], references: [id], onDelete: Cascade)
+  lines         GrnLine[]
+  /// Purchase bills created from this GRN (may be multiple with partial billing).
+  purchaseBills PurchaseBill[]
+
+  @@index([rmPoId])
+  @@index([date])
+  @@index([reversedAt])
+  @@index([billingStatus])
+}
+
+model GrnLine {
+  id           Int     @id @default(autoincrement())
+  grnId        Int
+  rmPoLineId   Int
+  receivedQty  Decimal @db.Decimal(18, 3)
+  /// Snapshot: agreed purchase rate copied from RM PO line at receipt time.
+  rateSnapshot Decimal @default(0) @db.Decimal(18, 4)
+
+  grn               Grn                 @relation(fields: [grnId], references: [id], onDelete: Cascade)
+  rmPoLine          RmPurchaseOrderLine @relation(fields: [rmPoLineId], references: [id], onDelete: Cascade)
+  purchaseBillLines PurchaseBillLine[]
+
+  @@index([grnId])
+  @@index([rmPoLineId])
+}
+
+/// Supplier purchase invoice against one GRN (no stock movement).
+model PurchaseBill {
+  id                        Int                @id @default(autoincrement())
+  /// Supplier invoice / bill number (required to finalize).
+  billNo                    String?            @db.VarChar(128)
+  billDate                  DateTime           @db.Date
+  dueDate                   DateTime?          @db.Date
+  supplierId                Int
+  /// Optional: this bill may be created against multiple GRNs (flow: GRN lines selection).
+  /// For backward compatibility, existing bills still store a primary GRN reference.
+  grnId                     Int?
+  remarks                   String?            @db.Text
+  status                    PurchaseBillStatus @default(DRAFT)
+  /// True once Tally XML export is performed (locks export/delete until admin reset).
+  isExported                Boolean            @default(false)
+  exportedAt                DateTime?
+  exportedFileName          String?            @db.VarChar(255)
+  exportResetAt             DateTime?
+  exportResetReason         String?            @db.Text
+  exportResetById           Int?
+  totalBasic                Decimal            @default(0) @db.Decimal(18, 2)
+  totalCgst                 Decimal            @default(0) @db.Decimal(18, 2)
+  totalSgst                 Decimal            @default(0) @db.Decimal(18, 2)
+  totalIgst                 Decimal            @default(0) @db.Decimal(18, 2)
+  totalTax                  Decimal            @default(0) @db.Decimal(18, 2)
+  netAmount                 Decimal            @default(0) @db.Decimal(18, 2)
+  finalizedAt               DateTime?
+  cancelledAt               DateTime?
+  cancelReason              String?            @db.Text
+  cancelledById             Int?
+  /// Supplier state snapshots (optional; used for GST/tally stability in testing mode).
+  supplierStateSnapshot     String?            @db.VarChar(128)
+  supplierStateCodeSnapshot String?            @db.VarChar(2)
+  /// True when bill used relaxed fallback values (testing mode) at any point.
+  hasTemporaryTaxData       Boolean            @default(false)
+  createdAt                 DateTime           @default(now())
+  updatedAt                 DateTime           @updatedAt
+
+  supplier      Supplier           @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  grn           Grn?               @relation(fields: [grnId], references: [id], onDelete: SetNull)
+  lines         PurchaseBillLine[]
+  exportResetBy User?              @relation("PurchaseBillExportResetBy", fields: [exportResetById], references: [id], onDelete: SetNull)
+  cancelledBy   User?              @relation("PurchaseBillCancelledBy", fields: [cancelledById], references: [id], onDelete: SetNull)
+
+  @@index([supplierId])
+  @@index([grnId])
+  @@index([billDate])
+  @@index([status])
+  @@index([isExported])
+  @@index([exportResetById])
+  @@index([cancelledById])
+}
+
+model PurchaseBillLine {
+  id               Int     @id @default(autoincrement())
+  purchaseBillId   Int
+  itemId           Int
+  /// Source references (traceability + eligibility enforcement).
+  grnId            Int?
+  grnLineId        Int?
+  rmPoId           Int?
+  rmPoLineId       Int?
+  /// Snapshot: item name at billing time (for stable exports).
+  itemNameSnapshot String  @default("") @db.VarChar(256)
+  qty              Decimal @db.Decimal(18, 3)
+  unitSnapshot     String  @db.VarChar(64)
+  /// Snapshot: HSN/SAC at billing time (for stable exports).
+  hsnCodeSnapshot  String  @default("") @db.VarChar(32)
+  rate             Decimal @db.Decimal(18, 4)
+  basicAmount      Decimal @db.Decimal(18, 2)
+  gstRate          Decimal @db.Decimal(5, 2)
+  cgstAmount       Decimal @db.Decimal(18, 2)
+  sgstAmount       Decimal @db.Decimal(18, 2)
+  igstAmount       Decimal @db.Decimal(18, 2)
+  lineTotal        Decimal @db.Decimal(18, 2)
+
+  purchaseBill PurchaseBill @relation(fields: [purchaseBillId], references: [id], onDelete: Cascade)
+  item         Item         @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  grnLine      GrnLine?     @relation(fields: [grnLineId], references: [id], onDelete: SetNull)
+
+  @@index([purchaseBillId])
+  @@index([itemId])
+  @@index([grnLineId])
+  @@index([grnId])
+  @@index([rmPoId])
+}
+
+model WorkOrder {
+  id                      Int          @id @default(autoincrement())
+  /// Display document number (e.g. WO-24-0001). Auto-generated on create.
+  docNo                   String?      @unique @db.VarChar(32)
+  /// Every work order must belong to a sales order (DB NOT NULL; see cleanup + migration if upgrading legacy DBs).
+  salesOrderId            Int
+  /// NO_QTY: workflow cycle isolation (null for legacy / regular flows).
+  cycleId                 Int?
+  /// NO_QTY flow: when created from a locked requirement sheet version, link to prevent duplicates.
+  requirementSheetId      Int?         @unique
+  status                  SimpleStatus @default(PENDING)
+  /// Admin-only override reason when WO is created despite sufficient usable FG stock.
+  fgStockOverrideReason   String?      @db.Text
+  fgStockOverrideAt       DateTime?
+  fgStockOverrideByUserId Int?
+  createdAt               DateTime     @default(now())
+  updatedAt               DateTime     @updatedAt
+
+  salesOrder                      SalesOrder                       @relation(fields: [salesOrderId], references: [id], onDelete: Restrict)
+  cycle                           SalesOrderCycle?                 @relation(fields: [cycleId], references: [id], onDelete: SetNull)
+  lines                           WorkOrderLine[]
+  scrapLoss                       ScrapRecord[]
+  requirementSheet                RequirementSheet?                @relation(fields: [requirementSheetId], references: [id], onDelete: SetNull)
+  fgStockOverrideBy               User?                            @relation("WoFgStockOverrideBy", fields: [fgStockOverrideByUserId], references: [id], onDelete: SetNull)
+  qcRejectedDispositions          QcRejectedDisposition[]
+  qcLegacyRejectedClassifications QcLegacyRejectedClassification[]
+
+  @@index([status])
+  @@index([salesOrderId])
+  @@index([cycleId])
+  @@index([fgStockOverrideByUserId])
+}
+
+model SalesOrderCycle {
+  id           Int                   @id @default(autoincrement())
+  salesOrderId Int
+  cycleNo      Int
+  status       SalesOrderCycleStatus @default(ACTIVE)
+  createdAt    DateTime              @default(now())
+  closedAt     DateTime?
+
+  /// Captured when a new cycle is created due to reopen (cycleNo >= 2). Null for cycle 1.
+  reopenReason     String? @db.Text
+  reopenedByUserId Int?
+
+  salesOrder           SalesOrder  @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
+  reopenedBy           User?       @relation("SalesOrderCycleReopenedBy", fields: [reopenedByUserId], references: [id], onDelete: SetNull)
+  currentForSalesOrder SalesOrder? @relation("SalesOrderCurrentCycle")
+
+  dispatchRows      Dispatch[]
+  requirementSheets RequirementSheet[]
+  workOrders        WorkOrder[]
+  salesBills        SalesBill[]
+
+  @@unique([salesOrderId, cycleNo])
+  @@index([salesOrderId])
+  @@index([status])
+}
+
+model WorkOrderLine {
+  id          Int     @id @default(autoincrement())
+  workOrderId Int
+  fgItemId    Int
+  /// Required FG quantity committed against the sales order (dispatch and SO validation use this).
+  qty         Decimal @db.Decimal(18, 3)
+  /// Production target for this line; may exceed `qty` for QC/reject buffer. Production is capped here.
+  plannedQty  Decimal @db.Decimal(18, 3)
+
+  workOrder   WorkOrder         @relation(fields: [workOrderId], references: [id], onDelete: Cascade)
+  fgItem      Item              @relation("WoLineFg", fields: [fgItemId], references: [id], onDelete: Restrict)
+  productions ProductionEntry[]
+
+  @@index([workOrderId])
+  @@index([fgItemId])
+}
+
+model ProductionEntry {
+  id              Int                           @id @default(autoincrement())
+  /// Display document number (e.g. PE-24-0001). Auto-generated on create.
+  docNo           String?                       @unique @db.VarChar(32)
+  workOrderLineId Int
+  producedQty     Decimal                       @db.Decimal(18, 3)
+  date            DateTime                      @default(now())
+  /// DRAFT: editable; no RM stock issue; excluded from QC queue. APPROVED: locked; RM issued; eligible for QC.
+  workflowStatus  ProductionEntryWorkflowStatus @default(DRAFT)
+
+  workOrderLine WorkOrderLine @relation(fields: [workOrderLineId], references: [id], onDelete: Cascade)
+  qcEntries     QcEntry[]
+
+  @@index([workOrderLineId])
+  @@index([date])
+  @@index([workflowStatus])
+}
+
+model QcEntry {
+  id                  Int              @id @default(autoincrement())
+  /// Display document number (e.g. QC-24-0001). Auto-generated on create.
+  docNo               String?          @unique @db.VarChar(32)
+  productionId        Int
+  acceptedQty         Decimal          @db.Decimal(18, 3)
+  rejectedQty         Decimal          @db.Decimal(18, 3)
+  /// When rejectedQty is positive, ledger posts rejected units into this bucket (USABLE = re-approved immediately).
+  /// Rows with null bucket before migration 20260410150000 were backfilled to QC_HOLD (Hold for Checking); see QcEntry.reason prefix `[legacy QC_HOLD]`.
+  rejectedStockBucket StockBucket?
+  /// Operator routing for rejected qty (Rework vs Hold vs Scrap vs immediate Usable). Null on legacy rows.
+  rejectedRoute       QcRejectedRoute?
+  reason              String?
+  scrapReusable       Boolean          @default(false)
+  lossQty             Decimal          @db.Decimal(18, 3)
+  date                DateTime         @default(now())
+  /// When set, this QC is voided; a new QC may be posted for the same production.
+  reversedAt          DateTime?
+  reversalReason      String?
+
+  production                   ProductionEntry                 @relation(fields: [productionId], references: [id], onDelete: Cascade)
+  reversal                     QcReversal?
+  scrapRecords                 ScrapRecord[]
+  rejectedDispositions         QcRejectedDisposition[]         @relation("RejectedDispositionSourceQc")
+  legacyRejectedClassification QcLegacyRejectedClassification?
+
+  @@index([productionId])
+  @@index([date])
+}
+
+/// Traceable lot for rejected QC quantity: rework approval, hold, scrap, and QC recheck branching.
+model QcRejectedDisposition {
+  id                         Int                         @id @default(autoincrement())
+  sourceQcEntryId            Int
+  workOrderId                Int
+  itemId                     Int
+  qty                        Decimal                     @db.Decimal(18, 3)
+  remainingQty               Decimal                     @db.Decimal(18, 3)
+  phase                      QcRejectedPhase             @default(FIRST_QC)
+  status                     QcRejectedDispositionStatus
+  remarks                    String?                     @db.Text
+  createdByUserId            Int?
+  supervisorApprovedByUserId Int?
+  supervisorApprovedAt       DateTime?
+  supervisorDeniedAt         DateTime?
+  closedAt                   DateTime?
+  voidedAt                   DateTime?
+  parentDispositionId        Int?
+  createdAt                  DateTime                    @default(now())
+  updatedAt                  DateTime                    @updatedAt
+
+  sourceQcEntry        QcEntry                 @relation("RejectedDispositionSourceQc", fields: [sourceQcEntryId], references: [id], onDelete: Cascade)
+  workOrder            WorkOrder               @relation(fields: [workOrderId], references: [id], onDelete: Restrict)
+  item                 Item                    @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  createdBy            User?                   @relation("QcRejDispCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  supervisorApprovedBy User?                   @relation("QcRejDispSupervisorApproved", fields: [supervisorApprovedByUserId], references: [id], onDelete: SetNull)
+  parentDisposition    QcRejectedDisposition?  @relation("DispositionSplit", fields: [parentDispositionId], references: [id], onDelete: SetNull)
+  childDispositions    QcRejectedDisposition[] @relation("DispositionSplit")
+  stockTransactions    StockTransaction[]
+
+  @@index([sourceQcEntryId])
+  @@index([workOrderId])
+  @@index([itemId])
+  @@index([status])
+  @@index([voidedAt])
+}
+
+/// Classifies legacy (pre–rejectedRoute) production QC rejected qty once: moves stock between buckets without editing QcEntry.
+model QcLegacyRejectedClassification {
+  id              Int                    @id @default(autoincrement())
+  sourceQcEntryId Int                    @unique
+  workOrderId     Int?
+  itemId          Int
+  qty             Decimal                @db.Decimal(18, 3)
+  action          QcLegacyRejectedAction
+  /// Snapshot of bucket the original QC reject posting used (null treated as QC_HOLD for stock resolution).
+  fromStockBucket StockBucket?
+  /// Bucket after classification (matches action intent).
+  toStockBucket   StockBucket?
+  remarks         String?                @db.Text
+  createdByUserId Int
+  createdAt       DateTime               @default(now())
+  voidedAt        DateTime?
+
+  sourceQcEntry QcEntry    @relation(fields: [sourceQcEntryId], references: [id], onDelete: Restrict)
+  workOrder     WorkOrder? @relation(fields: [workOrderId], references: [id], onDelete: SetNull)
+  item          Item       @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  createdBy     User       @relation(fields: [createdByUserId], references: [id], onDelete: Restrict)
+
+  @@index([itemId])
+  @@index([createdAt])
+}
+
+/// One full reversal per QC entry; stock QC_REVERSAL rows use refId = this id.
+model QcReversal {
+  id        Int      @id @default(autoincrement())
+  qcEntryId Int      @unique
+  reason    String?
+  createdAt DateTime @default(now())
+
+  qcEntry QcEntry @relation(fields: [qcEntryId], references: [id], onDelete: Cascade)
+
+  @@index([qcEntryId])
+}
+
+/// Scrap/Loss tracking only (NOT stock). Auto-created from QC when rejectedQty > 0.
+model ScrapRecord {
+  id          Int       @id @default(autoincrement())
+  fgItemId    Int
+  workOrderId Int
+  rejectedQty Decimal   @db.Decimal(18, 3)
+  reason      String?
+  date        DateTime  @default(now())
+  voidedAt    DateTime?
+  qcEntryId   Int?
+
+  fgItem    Item      @relation("ScrapFgItem", fields: [fgItemId], references: [id], onDelete: Restrict)
+  workOrder WorkOrder @relation(fields: [workOrderId], references: [id], onDelete: Cascade)
+  qcEntry   QcEntry?  @relation(fields: [qcEntryId], references: [id], onDelete: SetNull)
+
+  @@index([fgItemId, date])
+  @@index([workOrderId])
+  @@index([qcEntryId])
+}
+
+model StockTransaction {
+  id                      Int          @id @default(autoincrement())
+  itemId                  Int
+  transactionType         StockTxnType
+  refId                   Int
+  /// Optional linkage for disposition-owned rework QC (prevents pooled consumption across WOs).
+  qcRejectedDispositionId Int?
+  /// Inventory bucket classification (do not mix QC_HOLD/REWORK into usable stock).
+  stockBucket             StockBucket  @default(USABLE)
+  qtyIn                   Decimal      @default(0) @db.Decimal(18, 3)
+  qtyOut                  Decimal      @default(0) @db.Decimal(18, 3)
+  /// Free-text reason for ADJUSTMENT rows (required on new API posts; null for legacy rows).
+  reason                  String?      @db.Text
+  date                    DateTime     @default(now())
+
+  createdByUserId  Int?
+  approvedByUserId Int?
+  reversalOfId     Int?
+  reversedAt       DateTime?
+  reversedByUserId Int?
+
+  item                     Item                     @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  qcRejectedDisposition    QcRejectedDisposition?   @relation(fields: [qcRejectedDispositionId], references: [id], onDelete: SetNull)
+  createdBy                User?                    @relation("StockTxnCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  approvedBy               User?                    @relation("StockTxnApprovedBy", fields: [approvedByUserId], references: [id], onDelete: SetNull)
+  reversedBy               User?                    @relation("StockTxnReversedBy", fields: [reversedByUserId], references: [id], onDelete: SetNull)
+  reversalParent           StockTransaction?        @relation("AdjustmentReversal", fields: [reversalOfId], references: [id], onDelete: Restrict)
+  reversalChildren         StockTransaction[]       @relation("AdjustmentReversal")
+  stockAdjustmentQcEntries StockAdjustmentQcEntry[]
+
+  @@index([itemId, date])
+  @@index([transactionType, refId])
+  @@index([stockBucket, itemId])
+  @@index([qcRejectedDispositionId, stockBucket, itemId])
+  @@index([reversalOfId])
+  @@index([approvedByUserId])
+}
+
+/// Masters → Opening Stock: draft rows that become StockTransaction.OPENING only on approval.
+model OpeningStockEntry {
+  id          Int                @id @default(autoincrement())
+  itemId      Int
+  stockBucket StockBucket        @default(USABLE)
+  openingQty  Decimal            @db.Decimal(18, 3)
+  status      OpeningStockStatus @default(DRAFT)
+  remarks     String?            @db.Text
+
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  approvedAt DateTime?
+
+  createdByUserId  Int?
+  approvedByUserId Int?
+
+  item       Item  @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  createdBy  User? @relation("OpeningStockCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  approvedBy User? @relation("OpeningStockApprovedBy", fields: [approvedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([itemId])
+  @@index([status, createdAt])
+  @@index([approvedAt])
+}
+
+enum CustomerReturnDisposition {
+  QC_HOLD
+  REWORK
+  TO_STOCK
+}
+
+enum CustomerReturnStatus {
+  IN_REWORK
+  IN_QC_HOLD
+  APPROVED_TO_STOCK
+  SCRAPPED
+  REVERSED
+}
+
+model CustomerReturn {
+  id            Int                       @id @default(autoincrement())
+  customerId    Int
+  dispatchId    Int
+  salesOrderId  Int
+  itemId        Int
+  returnedQty   Decimal                   @db.Decimal(18, 3)
+  reason        String                    @db.Text
+  returnDate    DateTime                  @default(now())
+  disposition   CustomerReturnDisposition
+  currentBucket StockBucket
+  status        CustomerReturnStatus      @default(IN_QC_HOLD)
+  closedAt      DateTime?
+  remarks       String?                   @db.Text
+  createdAt     DateTime                  @default(now())
+  reversedAt    DateTime?
+
+  customer              Customer    @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  dispatch              Dispatch    @relation(fields: [dispatchId], references: [id], onDelete: Restrict)
+  salesOrder            SalesOrder  @relation(fields: [salesOrderId], references: [id], onDelete: Restrict)
+  item                  Item        @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  replacementSalesOrder SalesOrder? @relation("ReplacementForReturn")
+
+  @@index([customerId, returnDate])
+  @@index([dispatchId])
+  @@index([salesOrderId, itemId])
+  @@index([reversedAt])
+}
+
+/// QC postings for FG stock that entered via stock adjustment / legacy correction.
+/// These QC rows contribute to the dispatch QC pool (SO + item), even without a production batch.
+model StockAdjustmentQcEntry {
+  id                 Int       @id @default(autoincrement())
+  /// FK to the stock transaction that increased FG stock (typically ADJUSTMENT qtyIn > 0).
+  stockTransactionId Int
+  /// Which sales order this QC-cleared stock is allocated to for dispatch QC pooling.
+  salesOrderId       Int
+  itemId             Int
+  acceptedQty        Decimal   @db.Decimal(18, 3)
+  rejectedQty        Decimal   @db.Decimal(18, 3)
+  reason             String?
+  date               DateTime  @default(now())
+  /// When set, this QC posting is voided; a new QC may be posted for the same stock txn.
+  reversedAt         DateTime?
+  reversalReason     String?
+
+  stockTransaction StockTransaction @relation(fields: [stockTransactionId], references: [id], onDelete: Cascade)
+  salesOrder       SalesOrder       @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
+  item             Item             @relation(fields: [itemId], references: [id], onDelete: Restrict)
+
+  @@index([stockTransactionId])
+  @@index([salesOrderId, itemId])
+  @@index([date])
+}
+
+model AuditLog {
+  id          Int             @id @default(autoincrement())
+  createdAt   DateTime        @default(now())
+  action      AuditAction
+  entityType  AuditEntityType
+  /// Set for all business rows; omit only for USER_SESSION (login/logout/failed login).
+  entityId    String?         @db.VarChar(64)
+  actorUserId Int?
+  actorRole   String?         @db.VarChar(32)
+  summary     String          @db.VarChar(512)
+  payload     Json?
+  reason      String?         @db.VarChar(512)
+  ipAddress   String?         @db.VarChar(45)
+  userAgent   String?         @db.VarChar(256)
+
+  actor User? @relation("AuditLogActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([entityType, entityId, createdAt])
+  @@index([actorUserId, createdAt])
+  @@index([createdAt])
+}
+
+/// Phase 1 business-facing activity trail (human messages; separate from AuditLog).
+model ActivityLog {
+  id               Int      @id @default(autoincrement())
+  createdAt        DateTime @default(now())
+  userId           Int?
+  userNameSnapshot String?  @db.VarChar(256)
+  module           String   @db.VarChar(64)
+  entityType       String   @db.VarChar(64)
+  entityId         Int?
+  docNo            String?  @db.VarChar(64)
+  action           String   @db.VarChar(64)
+  subAction        String?  @db.VarChar(64)
+  message          String   @db.VarChar(512)
+  reason           String?  @db.Text
+  metadataJson     Json?
+  createdByRole    String?  @db.VarChar(32)
+
+  user User? @relation("ActivityLogActor", fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([module, createdAt])
+  @@index([entityType, entityId])
+  @@index([docNo])
+  @@index([userId, createdAt])
+}
+
+/// Per-(DocType, year2) running sequence for docNo generation.
+/// nextNumber is the next number to allocate (1-based).
+model DocSequence {
+  id         Int     @id @default(autoincrement())
+  docType    DocType
+  year2      Int
+  nextNumber Int
+
+  @@unique([docType, year2])
+  @@index([docType, year2])
+}

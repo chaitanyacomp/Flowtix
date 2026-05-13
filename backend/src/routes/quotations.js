@@ -4,6 +4,7 @@ const { prisma } = require("../utils/prisma");
 const { requireAuth, requireRole } = require("../middleware/auth");
 const auditLog = require("../services/auditLog");
 const { buildQuotationPdf } = require("../services/quotationPdf");
+const { getCompanyProfileForDocuments } = require("../services/companyProfile");
 const { resolveSalesIntraState } = require("../services/salesStateCompare");
 
 const quotationRouter = express.Router();
@@ -16,7 +17,9 @@ function round2(n) {
 
 const quoteLineSchema = z.object({
   itemId: z.number().int(),
-  qty: z.number().positive(),
+  // NO_QTY: qty is commercially not committed at quotation stage; allow omit/null/0.
+  // REGULAR: enforced separately in route validation.
+  qty: z.number().nonnegative().nullable().optional(),
   rate: z.number().nonnegative(),
   discountPct: z.number().nonnegative().default(0),
   /** Optional: when omitted, server may use item.gstRate as default. */
@@ -124,6 +127,9 @@ const includeQuotation = {
   salesOrder: true,
 };
 
+const MSG_NO_QTY_RATE_CONTRACT_MISSING =
+  "No approved rate contract found for selected customer/item as of quotation date.";
+
 async function getCompanyState(prismaOrTx) {
   const row = await prismaOrTx.appSetting.findUnique({
     where: { id: 1 },
@@ -153,7 +159,8 @@ async function lineRowsFromPayload(tx, lines) {
         : itemRate.get(l.itemId) != null
           ? Number(itemRate.get(l.itemId))
           : 0;
-    const { base, gst, lineTotal } = computeLineParts(l.qty, rate, l.discountPct, gstPct);
+    const qty = Number(l.qty ?? 0);
+    const { base, gst, lineTotal } = computeLineParts(qty, rate, l.discountPct, gstPct);
     if (!Number.isFinite(base) || !Number.isFinite(gst) || !Number.isFinite(lineTotal)) {
       const err = new Error(
         "Invalid amounts computed for a quotation line. Check quantity, rate, discount %, and GST % are valid numbers.",
@@ -165,7 +172,7 @@ async function lineRowsFromPayload(tx, lines) {
     gstTotal += gst;
     return {
       itemId: l.itemId,
-      qty: String(l.qty),
+      qty: String(qty),
       rate: String(rate),
       discountPct: String(l.discountPct),
       gstPct: String(gstPct),
@@ -240,7 +247,12 @@ quotationRouter.get("/:id/pdf", requireAuth, requireRole(["ADMIN", "SALES"]), as
       err.statusCode = 403;
       throw err;
     }
-    const buf = await buildQuotationPdf(q);
+    // UI-only company branding (does not affect any calculation or workflow).
+    // Pulled from the centralized Company Profile (AppSetting + uploaded
+    // logo/signature). Missing fields fall back to COMPANY_* env vars inside
+    // the PDF service.
+    const companyProfile = await getCompanyProfileForDocuments();
+    const buf = await buildQuotationPdf(q, { company: companyProfile });
     const name = `Quotation-${q.quotationNo || q.id}.pdf`;
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `attachment; filename="${name}"`);
@@ -279,7 +291,6 @@ quotationRouter.post("/", requireAuth, requireRole(["ADMIN", "SALES"]), async (r
       terms: z.string().optional(),
     });
     const body = schema.parse(req.body);
-    assertQuotationLinePricing(body.lines);
 
     const result = await prisma.$transaction(async (tx) => {
       const enquiry = await tx.enquiry.findUnique({
@@ -302,13 +313,64 @@ quotationRouter.post("/", requireAuth, requireRole(["ADMIN", "SALES"]), async (r
         throw err;
       }
 
-      const { rows, subtotal, gstTotal, totalAmount } = await lineRowsFromPayload(tx, body.lines);
+      const flowTypeSnapshot = enquiry.flowType ?? "REGULAR";
+      if (flowTypeSnapshot === "REGULAR") {
+        for (const l of body.lines) {
+          if (!Number.isFinite(Number(l.qty ?? 0)) || Number(l.qty ?? 0) <= 0) {
+            const err = new Error("Qty must be greater than zero for each quotation line (Regular flow).");
+            err.statusCode = 400;
+            throw err;
+          }
+        }
+        assertQuotationLinePricing(body.lines);
+      }
+
+      const quotationAsOf = new Date();
+      const { findApplicableRateContractLine } = require("../services/rateContractService");
+
+      let rows = [];
+      let subtotal = "0.00";
+      let gstTotal = "0.00";
+      let totalAmount = "0.00";
+      if (flowTypeSnapshot === "NO_QTY") {
+        // NO_QTY: commercial rate agreement; qty is not committed at quotation stage.
+        for (const l of body.lines) {
+          const rc = await findApplicableRateContractLine(tx, {
+            customerId: enquiry.customerId,
+            itemId: l.itemId,
+            asOf: quotationAsOf,
+          });
+          if (!rc) {
+            const err = new Error(MSG_NO_QTY_RATE_CONTRACT_MISSING);
+            err.statusCode = 400;
+            throw err;
+          }
+          rows.push({
+            itemId: l.itemId,
+            qty: String(0),
+            rate: String(Number(rc.rate)),
+            discountPct: String(0),
+            gstPct: String(Number(rc.gstRate)),
+            lineTotal: String("0.00"),
+            isFree: false,
+            rateContractLineIdSnapshot: rc.id,
+            rateEffectiveFromSnapshot: rc.effectiveFrom,
+          });
+        }
+      } else {
+        const computed = await lineRowsFromPayload(tx, body.lines);
+        rows = computed.rows;
+        subtotal = computed.subtotal;
+        gstTotal = computed.gstTotal;
+        totalAmount = computed.totalAmount;
+      }
 
       /** Use createMany for lines (same as PUT) — avoids nested batch edge cases on MySQL. */
       const created = await tx.quotation.create({
         data: {
           enquiryId: enquiry.id,
           quotationNo: `tmp-${Date.now()}`,
+          flowTypeSnapshot: enquiry.flowType ?? "REGULAR",
           workflowStatus: "DRAFT",
           status: "PENDING",
           subtotal,
@@ -551,10 +613,9 @@ quotationRouter.put("/:id", requireAuth, requireRole(["ADMIN", "SALES"]), async 
       workflowStatus: z.enum(["DRAFT", "SENT", "APPROVED", "REJECTED"]).optional(),
     });
     const body = schema.parse(req.body);
-    assertQuotationLinePricing(body.lines);
 
     const result = await prisma.$transaction(async (tx) => {
-      const existing = await tx.quotation.findUnique({ where: { id } });
+      const existing = await tx.quotation.findUnique({ where: { id }, include: { lines: true, enquiry: true } });
       if (!existing) {
         const err = new Error("Quotation not found");
         err.statusCode = 404;
@@ -582,7 +643,71 @@ quotationRouter.put("/:id", requireAuth, requireRole(["ADMIN", "SALES"]), async 
         throw err;
       }
 
-      const { rows, subtotal, gstTotal, totalAmount } = await lineRowsFromPayload(tx, body.lines);
+      const flowTypeSnapshot = existing.flowTypeSnapshot ?? "REGULAR";
+      const quotationAsOf = existing.createdAt ?? new Date();
+      const { findApplicableRateContractLine } = require("../services/rateContractService");
+
+      let rows = [];
+      let subtotal = "0.00";
+      let gstTotal = "0.00";
+      let totalAmount = "0.00";
+      if (flowTypeSnapshot === "NO_QTY") {
+        // Preserve historical snapshot: reuse existing contract snapshot for unchanged items.
+        const existingByItem = new Map((existing.lines || []).map((ln) => [ln.itemId, ln]));
+        for (const l of body.lines) {
+          const prev = existingByItem.get(l.itemId);
+          if (prev) {
+            rows.push({
+              itemId: l.itemId,
+              qty: String(0),
+              rate: String(Number(prev.rate)),
+              discountPct: String(0),
+              gstPct: String(Number(prev.gstPct)),
+              lineTotal: String("0.00"),
+              isFree: false,
+              rateContractLineIdSnapshot: prev.rateContractLineIdSnapshot ?? null,
+              rateEffectiveFromSnapshot: prev.rateEffectiveFromSnapshot ?? null,
+            });
+            continue;
+          }
+          const customerId = existing.enquiry?.customerId;
+          const rc = await findApplicableRateContractLine(tx, {
+            customerId,
+            itemId: l.itemId,
+            asOf: quotationAsOf,
+          });
+          if (!rc) {
+            const err = new Error(MSG_NO_QTY_RATE_CONTRACT_MISSING);
+            err.statusCode = 400;
+            throw err;
+          }
+          rows.push({
+            itemId: l.itemId,
+            qty: String(0),
+            rate: String(Number(rc.rate)),
+            discountPct: String(0),
+            gstPct: String(Number(rc.gstRate)),
+            lineTotal: String("0.00"),
+            isFree: false,
+            rateContractLineIdSnapshot: rc.id,
+            rateEffectiveFromSnapshot: rc.effectiveFrom,
+          });
+        }
+      } else {
+        for (const l of body.lines) {
+          if (!Number.isFinite(Number(l.qty ?? 0)) || Number(l.qty ?? 0) <= 0) {
+            const err = new Error("Qty must be greater than zero for each quotation line (Regular flow).");
+            err.statusCode = 400;
+            throw err;
+          }
+        }
+        assertQuotationLinePricing(body.lines);
+        const computed = await lineRowsFromPayload(tx, body.lines);
+        rows = computed.rows;
+        subtotal = computed.subtotal;
+        gstTotal = computed.gstTotal;
+        totalAmount = computed.totalAmount;
+      }
 
       await tx.quotationLine.deleteMany({ where: { quotationId: id } });
       await tx.quotationLine.createMany({

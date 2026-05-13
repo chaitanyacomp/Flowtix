@@ -7,7 +7,7 @@
  * Usage (from backend/):  node prisma/cleanup-workorders-null-sales-order.js
  */
 require("dotenv").config();
-const { PrismaClient } = require("@prisma/client");
+const { PrismaClient } = require("./generated/client");
 
 const prisma = new PrismaClient();
 

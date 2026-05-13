@@ -1,11 +1,22 @@
 import * as React from "react";
-import { Link, useLocation } from "react-router-dom";
+import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { apiFetch, ApiRequestError } from "../services/api";
 import { PageContainer, PageSmartBackLink, StickyWorkspaceHead } from "../components/PageHeader";
+import { cn } from "../lib/utils";
 import { withReportsReturnContextIfPresent } from "../lib/drillDownRoutes";
+import { useAuth } from "../hooks/useAuth";
+import { commercialPaymentStatusLabel, isBillAmountOverdue } from "../lib/commercialBillPaymentLabels";
+import { formatCommercialDueDateCell } from "../lib/commercialDueDateDisplay";
+import { NativeSelect } from "../components/ui/native-select";
+import {
+  commercialFilterCardClass,
+  CommercialFilterActions,
+  CommercialFilterField,
+  CommercialFilterGrid,
+} from "../components/erp/CommercialFilterLayout";
 
 type Supplier = { id: number; name: string };
 
@@ -13,12 +24,15 @@ type BillRow = {
   id: number;
   billNo: string | null;
   billDate: string;
-  totalBasic: string | number;
-  totalTax: string | number;
   netAmount: string | number;
   status: string;
   isExported?: boolean;
   exportedAt?: string | null;
+  dueDate?: string | null;
+  paidAmount?: string | number | null;
+  pendingAmount?: string | number | null;
+  paymentStatus?: string | null;
+  cancelledAt?: string | null;
   supplier: { id: number; name: string };
   grn?: { id: number } | null;
 };
@@ -39,8 +53,26 @@ function formatDate(iso: string): string {
   return d.toLocaleDateString();
 }
 
+function parsePaymentParam(v: string | null): "" | "pending" | "overdue" | "partial" | "paid" {
+  if (v === "pending" || v === "overdue" || v === "partial" || v === "paid") return v;
+  return "";
+}
+
+function parseExportParam(sp: URLSearchParams): "" | "exported" | "not_exported" {
+  const raw = sp.get("exportFilter") ?? sp.get("export") ?? "";
+  if (raw === "exported") return "exported";
+  if (raw === "not_exported" || raw === "pending") return "not_exported";
+  return "";
+}
+
 export function PurchaseBillsListPage() {
   const location = useLocation();
+  const navigate = useNavigate();
+  const [sp] = useSearchParams();
+  const auth = useAuth();
+  const role = auth.user?.role ?? "";
+  const hideNewBill = role === "ACCOUNTS";
+
   const [rows, setRows] = React.useState<BillRow[]>([]);
   const [suppliers, setSuppliers] = React.useState<Supplier[]>([]);
   const [loadError, setLoadError] = React.useState<string | null>(null);
@@ -49,7 +81,21 @@ export function PurchaseBillsListPage() {
   const [supplierId, setSupplierId] = React.useState<string>("");
   const [status, setStatus] = React.useState<string>("ALL");
   const [search, setSearch] = React.useState("");
+  const [paymentFilter, setPaymentFilter] = React.useState<"" | "pending" | "overdue" | "partial" | "paid">("");
+  const [exportBillFilter, setExportBillFilter] = React.useState<"" | "exported" | "not_exported">("");
   const [loading, setLoading] = React.useState(false);
+
+  React.useEffect(() => {
+    const q = new URLSearchParams(location.search);
+    setPaymentFilter(parsePaymentParam(q.get("payment")));
+    setExportBillFilter(parseExportParam(q));
+    setSupplierId(q.get("supplierId") ?? "");
+    setFromDate(q.get("fromDate") ?? "");
+    setToDate(q.get("toDate") ?? "");
+    setSearch(q.get("search") ?? "");
+    const st = q.get("status");
+    setStatus(st && ["DRAFT", "FINALIZED", "CANCELLED"].includes(st) ? st : "ALL");
+  }, [location.search]);
 
   React.useEffect(() => {
     apiFetch<Supplier[]>("/api/suppliers").then(setSuppliers).catch(() => {});
@@ -59,16 +105,28 @@ export function PurchaseBillsListPage() {
     setLoadError(null);
     setLoading(true);
     try {
-      const q = new URLSearchParams();
-      if (fromDate) q.set("fromDate", fromDate);
-      if (toDate) q.set("toDate", toDate);
-      if (supplierId) q.set("supplierId", supplierId);
-      if (status && status !== "ALL") q.set("status", status);
-      if (search.trim()) q.set("search", search.trim());
-      const qs = q.toString();
+      const q = new URLSearchParams(location.search);
+      const api = new URLSearchParams();
+      const fd = q.get("fromDate");
+      if (fd) api.set("fromDate", fd);
+      const td = q.get("toDate");
+      if (td) api.set("toDate", td);
+      const sid = q.get("supplierId");
+      if (sid) api.set("supplierId", sid);
+      const st = q.get("status");
+      if (st && ["DRAFT", "FINALIZED", "CANCELLED"].includes(st)) api.set("status", st);
+      const sr = q.get("search");
+      if (sr?.trim()) api.set("search", sr.trim());
+      const pay = q.get("payment");
+      if (pay && ["pending", "overdue", "partial", "paid"].includes(pay)) api.set("payment", pay);
+      const efRaw = q.get("exportFilter") ?? q.get("export") ?? "";
+      if (efRaw === "exported") api.set("exportFilter", "exported");
+      else if (efRaw === "not_exported" || efRaw === "pending") api.set("exportFilter", "not_exported");
+
+      const qs = api.toString();
       const path = qs ? `/api/purchase-bills?${qs}` : "/api/purchase-bills";
       const data = await apiFetch<BillRow[]>(path);
-      setRows(data);
+      setRows(Array.isArray(data) ? data : []);
     } catch (e) {
       const msg =
         e instanceof ApiRequestError
@@ -83,9 +141,32 @@ export function PurchaseBillsListPage() {
   }
 
   React.useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional filter reload
-  }, []);
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.search]);
+
+  function applyFiltersToUrl() {
+    const next = new URLSearchParams(sp);
+    if (fromDate) next.set("fromDate", fromDate);
+    else next.delete("fromDate");
+    if (toDate) next.set("toDate", toDate);
+    else next.delete("toDate");
+    if (supplierId) next.set("supplierId", supplierId);
+    else next.delete("supplierId");
+    if (paymentFilter) next.set("payment", paymentFilter);
+    else next.delete("payment");
+    if (exportBillFilter === "exported") next.set("exportFilter", "exported");
+    else if (exportBillFilter === "not_exported") next.set("exportFilter", "not_exported");
+    else {
+      next.delete("exportFilter");
+      next.delete("export");
+    }
+    if (search.trim()) next.set("search", search.trim());
+    else next.delete("search");
+    if (status !== "ALL") next.set("status", status);
+    else next.delete("status");
+    navigate({ pathname: location.pathname, search: next.toString() }, { replace: true });
+  }
 
   return (
     <PageContainer>
@@ -97,67 +178,91 @@ export function PurchaseBillsListPage() {
               Supplier invoices linked to GRNs (Tally-ready values; no stock impact).
             </p>
           </div>
-          <Link to={withReportsReturnContextIfPresent("/purchase-bills/new", location.search)} className="shrink-0 sm:pt-0.5">
-            <Button type="button">New purchase bill</Button>
-          </Link>
+          {hideNewBill ? null : (
+            <Link to={withReportsReturnContextIfPresent("/purchase-bills/new", location.search)} className="shrink-0 sm:pt-0.5">
+              <Button type="button">New purchase bill</Button>
+            </Link>
+          )}
         </div>
       </StickyWorkspaceHead>
 
-      <Card className="min-w-0 overflow-hidden">
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base">Filters</CardTitle>
+      <Card className={cn("min-w-0 overflow-hidden", commercialFilterCardClass)}>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-semibold text-slate-800">Filters</CardTitle>
         </CardHeader>
-        <CardContent className="grid min-w-0 gap-4 sm:grid-cols-2 lg:grid-cols-5">
-          <div className="grid min-w-0 gap-1">
-            <span className="text-xs font-medium text-slate-600">From date</span>
-            <Input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
-          </div>
-          <div className="grid min-w-0 gap-1">
-            <span className="text-xs font-medium text-slate-600">To date</span>
-            <Input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
-          </div>
-          <div className="grid min-w-0 gap-1">
-            <span className="text-xs font-medium text-slate-600">Supplier</span>
-            <select
-              className="flex h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm"
-              value={supplierId}
-              onChange={(e) => setSupplierId(e.target.value)}
-            >
-              <option value="">All suppliers</option>
-              {suppliers.map((s) => (
-                <option key={s.id} value={String(s.id)}>
-                  {s.name}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="grid min-w-0 gap-1">
-            <span className="text-xs font-medium text-slate-600">Status</span>
-            <select
-              className="flex h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm"
-              value={status}
-              onChange={(e) => setStatus(e.target.value)}
-            >
-              <option value="ALL">All</option>
-              <option value="DRAFT">Draft</option>
-              <option value="FINALIZED">Finalized</option>
-              <option value="CANCELLED">Cancelled</option>
-            </select>
-          </div>
-          <div className="grid min-w-0 gap-1">
-            <span className="text-xs font-medium text-slate-600">Search</span>
-            <Input
-              placeholder="Bill no. or supplier"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && load()}
-            />
-          </div>
-          <div className="flex min-w-0 flex-wrap items-end gap-3 sm:col-span-2 lg:col-span-5">
-            <Button type="button" onClick={() => void load()} disabled={loading}>
-              {loading ? "Loading…" : "Apply filters"}
-            </Button>
-          </div>
+        <CardContent>
+          <CommercialFilterGrid>
+            <CommercialFilterField label="From date">
+              <Input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
+            </CommercialFilterField>
+            <CommercialFilterField label="To date">
+              <Input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
+            </CommercialFilterField>
+            <CommercialFilterField label="Supplier" className="min-w-0 sm:min-w-[12rem]">
+              <NativeSelect value={supplierId} onChange={(e) => setSupplierId(e.target.value)}>
+                <option value="">All suppliers</option>
+                {suppliers.map((s) => (
+                  <option key={s.id} value={String(s.id)}>
+                    {s.name}
+                  </option>
+                ))}
+              </NativeSelect>
+            </CommercialFilterField>
+            <CommercialFilterField label="Document status" className="min-w-0 sm:min-w-[9.5rem]">
+              <NativeSelect value={status} onChange={(e) => setStatus(e.target.value)}>
+                <option value="ALL">All</option>
+                <option value="DRAFT">Draft</option>
+                <option value="FINALIZED">Finalized</option>
+                <option value="CANCELLED">Cancelled</option>
+              </NativeSelect>
+            </CommercialFilterField>
+            <CommercialFilterField label="Payment status" className="min-w-0 sm:min-w-[10.5rem]">
+              <NativeSelect
+                value={paymentFilter}
+                onChange={(e) =>
+                  setPaymentFilter(
+                    e.target.value === "pending" ||
+                      e.target.value === "overdue" ||
+                      e.target.value === "partial" ||
+                      e.target.value === "paid"
+                      ? e.target.value
+                      : "",
+                  )
+                }
+              >
+                <option value="">All</option>
+                <option value="pending">Pending</option>
+                <option value="partial">Partial</option>
+                <option value="paid">Paid</option>
+                <option value="overdue">Overdue</option>
+              </NativeSelect>
+            </CommercialFilterField>
+            <CommercialFilterField label="Export status" className="min-w-0 sm:min-w-[10.5rem]">
+              <NativeSelect
+                value={exportBillFilter}
+                onChange={(e) =>
+                  setExportBillFilter(e.target.value === "exported" || e.target.value === "not_exported" ? e.target.value : "")
+                }
+              >
+                <option value="">All</option>
+                <option value="exported">Exported</option>
+                <option value="not_exported">Not exported</option>
+              </NativeSelect>
+            </CommercialFilterField>
+            <CommercialFilterField label="Search" className="lg:col-span-2 xl:col-span-2">
+              <Input
+                placeholder="Bill no. or supplier"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && applyFiltersToUrl()}
+              />
+            </CommercialFilterField>
+            <CommercialFilterActions>
+              <Button type="button" onClick={() => applyFiltersToUrl()} disabled={loading}>
+                {loading ? "Loading…" : "Apply filters"}
+              </Button>
+            </CommercialFilterActions>
+          </CommercialFilterGrid>
         </CardContent>
       </Card>
 
@@ -173,94 +278,111 @@ export function PurchaseBillsListPage() {
         </CardHeader>
         <CardContent className="min-w-0 p-0 sm:p-6 sm:pt-0">
           <div className="min-w-0 overflow-x-auto px-3 pb-4 sm:px-0 sm:pb-0">
-            <table className="w-full min-w-[640px] border-collapse text-sm">
-            <thead>
-              <tr className="border-b border-slate-200 text-left text-xs font-medium uppercase text-slate-500">
-                <th className="px-4 py-2">Bill no.</th>
-                <th className="px-4 py-2">Bill date</th>
-                <th className="min-w-[8rem] px-4 py-2">Supplier</th>
-                <th className="px-4 py-2">Refs</th>
-                <th className="px-4 py-2 text-right">Taxable</th>
-                <th className="px-4 py-2 text-right">Tax</th>
-                <th className="px-4 py-2 text-right">Grand total</th>
-                <th className="px-4 py-2">Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.length === 0 ? (
-                <tr>
-                  <td colSpan={8} className="px-4 py-8 text-center text-slate-500">
-                    <div className="mx-auto max-w-[30rem] space-y-1">
-                      <div className="text-base font-semibold text-slate-900">🧾 No Purchase Bills yet</div>
-                      <div className="text-sm text-slate-600">Create a bill from received goods (GRN).</div>
-                    </div>
-                  </td>
+            <table className="w-full min-w-[1024px] border-collapse text-sm">
+              <thead>
+                <tr className="border-b border-slate-200 text-left text-xs font-medium uppercase text-slate-500">
+                  <th className="px-4 py-2">Bill no.</th>
+                  <th className="px-4 py-2">Bill date</th>
+                  <th className="min-w-[8rem] px-4 py-2">Supplier</th>
+                  <th className="px-4 py-2 text-right">Net</th>
+                  <th className="px-4 py-2 text-right">Paid</th>
+                  <th className="px-4 py-2 text-right">Pending</th>
+                  <th className="px-4 py-2">Due</th>
+                  <th className="px-4 py-2">Payment</th>
+                  <th className="px-4 py-2">Export</th>
+                  <th className="px-4 py-2 text-right">Open</th>
                 </tr>
-              ) : (
-                rows.map((r) => (
-                  <tr key={r.id} className="border-b border-slate-100 hover:bg-slate-50/80">
-                    <td className="px-4 py-2 font-medium text-slate-900">
-                      <Link
-                        className="text-sky-700 underline-offset-4 hover:underline"
-                        to={withReportsReturnContextIfPresent(`/purchase-bills/${r.id}`, location.search)}
-                      >
-                        {r.billNo?.trim() ? r.billNo : `PB-${r.id} (draft)`}
-                      </Link>
-                    </td>
-                    <td className="px-4 py-2 text-slate-700">{formatDate(r.billDate)}</td>
-                    <td className="max-w-[12rem] px-4 py-2 text-slate-700 sm:max-w-[16rem]">
-                      <span className="line-clamp-2 break-words">{r.supplier.name}</span>
-                    </td>
-                    <td className="px-4 py-2 text-slate-700">
-                      {r.grn?.id ? (
-                        <Link
-                          className="text-sky-700 underline-offset-4 hover:underline"
-                          to={withReportsReturnContextIfPresent("/rm-po-grn", location.search)}
-                        >
-                          GRN-{r.grn.id}
-                        </Link>
-                      ) : (
-                        <span className="text-slate-500">Multiple GRNs</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-2 text-right tabular-nums text-slate-800">{formatMoney(r.totalBasic)}</td>
-                    <td className="px-4 py-2 text-right tabular-nums text-slate-800">{formatMoney(r.totalTax)}</td>
-                    <td className="px-4 py-2 text-right tabular-nums text-slate-800">{formatMoney(r.netAmount)}</td>
-                    <td className="px-4 py-2">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span
-                          className={
-                            r.status === "FINALIZED"
-                              ? "rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-800"
-                              : r.status === "CANCELLED"
-                                ? "rounded-full bg-rose-50 px-2 py-0.5 text-xs font-medium text-rose-800"
-                                : "rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-900"
-                          }
-                        >
-                          {r.status === "FINALIZED" ? "Finalized" : r.status === "CANCELLED" ? "Cancelled" : "Draft"}
-                        </span>
-                        <span
-                          className={
-                            r.isExported
-                              ? "rounded-full bg-sky-50 px-2 py-0.5 text-xs font-medium text-sky-800"
-                              : "rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-700"
-                          }
-                          title={r.isExported ? "Exported to Tally" : "Not exported to Tally"}
-                        >
-                          {r.isExported ? "Exported" : "Not exported"}
-                        </span>
-                        {r.status === "CANCELLED" ? (
-                          <span className="text-xs text-slate-500" title="Stock unchanged; billing cancelled only.">
-                            Stock unchanged
-                          </span>
-                        ) : null}
+              </thead>
+              <tbody>
+                {rows.length === 0 ? (
+                  <tr>
+                    <td colSpan={10} className="px-4 py-8 text-center text-slate-500">
+                      <div className="mx-auto max-w-[30rem] space-y-1">
+                        <div className="text-base font-semibold text-slate-900">No purchase bills match these filters</div>
+                        <div className="text-sm text-slate-600">Adjust filters or create a bill from received goods (GRN).</div>
                       </div>
                     </td>
                   </tr>
-                ))
-              )}
-            </tbody>
-          </table>
+                ) : (
+                  rows.map((r) => {
+                    const pendAmt = num(r.pendingAmount ?? 0);
+                    const payLabel = commercialPaymentStatusLabel("purchase", r);
+                    const showOverdue =
+                      payLabel !== "—" &&
+                      isBillAmountOverdue(r.dueDate ?? null, pendAmt, r.status, r.cancelledAt ?? null);
+                    const fin = r.status === "FINALIZED";
+                    return (
+                      <tr key={r.id} className="border-b border-slate-100 hover:bg-slate-50/80">
+                        <td className="px-4 py-2 font-medium text-slate-900">
+                          <Link
+                            className="text-sky-700 underline-offset-4 hover:underline"
+                            to={withReportsReturnContextIfPresent(`/purchase-bills/${r.id}`, location.search)}
+                          >
+                            {r.billNo?.trim() ? r.billNo : `PB-${r.id} (draft)`}
+                          </Link>
+                          {r.grn?.id ? (
+                            <div className="mt-0.5 text-[10px] text-slate-500">
+                              <Link
+                                className="text-sky-700 underline-offset-4 hover:underline"
+                                to={withReportsReturnContextIfPresent("/rm-po-grn", location.search)}
+                              >
+                                GRN-{r.grn.id}
+                              </Link>
+                            </div>
+                          ) : (
+                            <div className="mt-0.5 text-[10px] text-slate-500">Multiple GRNs</div>
+                          )}
+                        </td>
+                        <td className="px-4 py-2 text-slate-700">{formatDate(r.billDate)}</td>
+                        <td className="max-w-[12rem] px-4 py-2 text-slate-700 sm:max-w-[16rem]">
+                          <span className="line-clamp-2 break-words">{r.supplier.name}</span>
+                        </td>
+                        <td className="px-4 py-2 text-right tabular-nums text-slate-800">{formatMoney(r.netAmount)}</td>
+                        <td className="px-4 py-2 text-right tabular-nums text-slate-800">
+                          {fin ? formatMoney(r.paidAmount ?? 0) : "—"}
+                        </td>
+                        <td className="px-4 py-2 text-right tabular-nums text-slate-800">
+                          {fin ? formatMoney(r.pendingAmount ?? 0) : "—"}
+                        </td>
+                        <td className="whitespace-nowrap px-4 py-2 text-slate-700">{formatCommercialDueDateCell(r.dueDate)}</td>
+                        <td className="px-4 py-2">
+                          <div className="flex flex-wrap items-center gap-1">
+                            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-800">
+                              {payLabel}
+                            </span>
+                            {showOverdue ? (
+                              <span className="rounded-full bg-rose-50 px-2 py-0.5 text-[10px] font-semibold text-rose-900">
+                                Overdue
+                              </span>
+                            ) : null}
+                          </div>
+                        </td>
+                        <td className="px-4 py-2">
+                          <span
+                            className={
+                              r.isExported
+                                ? "rounded-full bg-sky-50 px-2 py-0.5 text-xs font-medium text-sky-800"
+                                : "rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-700"
+                            }
+                            title={r.isExported ? "Exported to Tally" : "Not exported to Tally"}
+                          >
+                            {r.isExported ? "Exported" : "Not exported"}
+                          </span>
+                        </td>
+                        <td className="px-4 py-2 text-right">
+                          <Link
+                            className="text-sm font-medium text-sky-700 underline-offset-4 hover:underline"
+                            to={withReportsReturnContextIfPresent(`/purchase-bills/${r.id}`, location.search)}
+                          >
+                            Open
+                          </Link>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
           </div>
         </CardContent>
       </Card>

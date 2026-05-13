@@ -1,4 +1,4 @@
-const { DocType } = require("@prisma/client");
+const { DocType } = require("../prismaClientPackage");
 
 function pad4(n) {
   const x = Number(n);

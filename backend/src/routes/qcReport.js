@@ -10,7 +10,7 @@ const { buildCustomerReturnListPayload } = require("../services/customerReturnLi
 const qcReportRouter = express.Router();
 
 const ACCESS_DENIED = "Access denied.";
-const roles = requireRole(["ADMIN", "QC", "SUPERVISOR", "PRODUCTION", "STORE", "SALES"], ACCESS_DENIED);
+const roles = requireRole(["ADMIN", "QC", "PRODUCTION", "STORE", "SALES"], ACCESS_DENIED);
 
 function roundQty(n) {
   const v = Number(n);

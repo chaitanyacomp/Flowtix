@@ -1,15 +1,9 @@
 /**
  * Stock ledger + summary consistency when dispatch / QC are reversed (MySQL + Prisma + HTTP).
- * Run with: ERP_RUN_DB_INTEGRATION=1 INTEGRATION_DATABASE_URL=... npm run test:integration
+ * Run with: NODE_ENV=test TEST_DATABASE_URL=... npm run test:integration:db
  */
 
-const path = require("path");
-require("dotenv").config({ path: path.join(__dirname, "../../.env") });
-require("dotenv").config({ path: path.join(__dirname, "../../.env.integration") });
-
-if (process.env.ERP_RUN_DB_INTEGRATION === "1" && process.env.INTEGRATION_DATABASE_URL) {
-  process.env.DATABASE_URL = process.env.INTEGRATION_DATABASE_URL;
-}
+const { runIntegration } = require("./_integrationEnv");
 
 const { describe, it, before } = require("node:test");
 const assert = require("node:assert/strict");
@@ -20,7 +14,6 @@ const { createApp } = require("../../src/createApp");
 const { prisma } = require("../../src/utils/prisma");
 const { signAccessToken } = require("../../src/utils/jwt");
 
-const runIntegration = process.env.ERP_RUN_DB_INTEGRATION === "1";
 const d = runIntegration ? describe : describe.skip;
 
 const EPS = 1e-4;
@@ -153,6 +146,7 @@ d("Stock ledger reversal consistency", () => {
     await request(app)
       .post(`/api/opening-stock/${os.id}/approve`)
       .set(bearer(authCtx.admin))
+      .send({ adminPassword: "x" })
       .expect(200);
 
     const draft = await request(app)
@@ -337,6 +331,7 @@ d("Stock ledger reversal consistency", () => {
     await request(app)
       .post(`/api/opening-stock/${os.id}/approve`)
       .set(bearer(authCtx.admin))
+      .send({ adminPassword: "x" })
       .expect(200);
 
     const draft = await request(app)
@@ -411,6 +406,7 @@ d("Stock ledger reversal consistency", () => {
     await request(app)
       .post(`/api/opening-stock/${os1.id}/approve`)
       .set(bearer(authCtx.admin))
+      .send({ adminPassword: "x" })
       .expect(200);
 
     let usable = await getUsableFromSummary(app, bearer(authCtx.admin), rm.id);
@@ -419,7 +415,7 @@ d("Stock ledger reversal consistency", () => {
     await request(app)
       .post(`/api/opening-stock/${os1.id}/reverse`)
       .set(bearer(authCtx.admin))
-      .send({ reason: "integration opening reverse" })
+      .send({ reason: "integration opening reverse", adminPassword: "x" })
       .expect(201);
 
     usable = await getUsableFromSummary(app, bearer(authCtx.admin), rm.id);
@@ -472,6 +468,7 @@ d("Stock ledger reversal consistency", () => {
     await request(app)
       .post(`/api/opening-stock/${os2.id}/approve`)
       .set(bearer(authCtx.admin))
+      .send({ adminPassword: "x" })
       .expect(200);
     usable = await getUsableFromSummary(app, bearer(authCtx.admin), rm.id);
     assert.ok(Math.abs(usable - 50) < EPS, `second approve expected ~50, got ${usable}`);
@@ -493,6 +490,7 @@ d("Stock ledger reversal consistency", () => {
     await request(app)
       .post(`/api/opening-stock/${os3.id}/approve`)
       .set(bearer(authCtx.admin))
+      .send({ adminPassword: "x" })
       .expect(200);
 
     await request(app)
@@ -504,7 +502,7 @@ d("Stock ledger reversal consistency", () => {
     const revFail = await request(app)
       .post(`/api/opening-stock/${os3.id}/reverse`)
       .set(bearer(authCtx.admin))
-      .send({ reason: "should fail insufficient bucket" });
+      .send({ reason: "should fail insufficient bucket", adminPassword: "x" });
     assert.equal(revFail.status, 400);
 
     await deleteStockTransactionsForItem(rm.id);

@@ -24,7 +24,9 @@ async function maybeAutoCloseNoQtyCycle(tx, { soId, cycleId }) {
   });
   if (!so) return { closed: false, reason: "SO_NOT_FOUND" };
   if (so.orderType !== "NO_QTY") return { closed: false, reason: "NOT_NO_QTY" };
-  if (so.internalStatus === "CLOSED") return { closed: false, reason: "ALREADY_CLOSED" };
+  if (so.internalStatus === "MANUALLY_CLOSED" || so.internalStatus === "CLOSED") {
+    return { closed: false, reason: "ALREADY_CLOSED" };
+  }
   const currentCycleId = so.currentCycleId != null ? Number(so.currentCycleId) : 0;
   if (!currentCycleId || currentCycleId !== Number(cycleId)) {
     return { closed: false, reason: "NOT_CURRENT_CYCLE" };
@@ -75,7 +77,7 @@ async function maybeAutoCloseNoQtyCycle(tx, { soId, cycleId }) {
     if (pending > EPS) return { closed: false, reason: "PENDING_DISPATCH_REMAINS" };
   }
 
-  // Close the cycle and mark SO closed.
+  // Close the cycle only — NO_QTY SO stays open for the next requirement-sheet cycle.
   await tx.salesOrderCycle.updateMany({
     where: { id: currentCycleId, salesOrderId: soId },
     data: { status: "CLOSED", closedAt: new Date() },
@@ -83,8 +85,7 @@ async function maybeAutoCloseNoQtyCycle(tx, { soId, cycleId }) {
   await tx.salesOrder.update({
     where: { id: soId },
     data: {
-      internalStatus: "CLOSED",
-      // Never leave pointer on a CLOSED cycle — Dispatch dropdown uses ACTIVE cycles only.
+      // Never leave pointer on a CLOSED cycle — next RS creates/opens an ACTIVE cycle.
       currentCycleId: null,
     },
   });
@@ -146,7 +147,7 @@ async function diagnoseNoQtyCycleAutoClose(tx, { soId }) {
     out.failedReason = "NOT_NO_QTY";
     return out;
   }
-  if (so.internalStatus === "CLOSED") {
+  if (so.internalStatus === "MANUALLY_CLOSED" || so.internalStatus === "CLOSED") {
     out.failedReason = "ALREADY_CLOSED";
     return out;
   }

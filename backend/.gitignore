@@ -1,4 +1,6 @@
 node_modules
+# Generated after `npm install` / `npx prisma generate` (custom output in schema.prisma)
+prisma/generated/
 # Keep environment variables out of version control
 .env
 .env.integration

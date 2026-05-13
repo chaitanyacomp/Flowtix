@@ -15,7 +15,7 @@
  */
 
 require("dotenv").config();
-const { PrismaClient } = require("@prisma/client");
+const { PrismaClient } = require("../prisma/generated/client");
 
 const STOCK_EPS = 1e-6;
 

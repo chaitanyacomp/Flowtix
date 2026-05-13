@@ -10,6 +10,12 @@ export const operatorInputClass = "h-8";
 /** ~36px table row */
 export const operatorTableRowClass = "h-9";
 
+/** Tighter rows for operator QC / dispatch queues */
+export const operatorTableRowCompactClass = "h-8";
+
+/** QC cycle table — minimal row height */
+export const operatorTableRowQcClass = "h-7";
+
 export function OperatorPageBody({ children, className }: { children: React.ReactNode; className?: string }) {
   return <div className={cn("flex flex-col", operatorGapClass, className)}>{children}</div>;
 }
@@ -29,25 +35,59 @@ export function OperatorMainSplit({
   panel,
   className,
   panelClassName,
+  /** Override the outer panel container wrapper styles. */
+  panelContainerClassName,
+  /** When true, fixed-width dispatch/detail panel is the first column on large screens (queue on the right). */
+  panelFirstOnLg,
+  /**
+   * ~43% queue / ~57% inspection — compact operator workstation (QC-style).
+   * Default layout keeps a fixed-width second column for legacy pages.
+   */
+  balancedWorkbench,
+  /** Override the `lg:grid-cols-[...]` template for non-balanced layouts. */
+  lgGridClassName,
 }: {
   queue: React.ReactNode;
   panel: React.ReactNode;
   className?: string;
   /** Optional panel wrapper classes (e.g. Production entry emphasis) without changing queue column. */
   panelClassName?: string;
+  panelContainerClassName?: string;
+  panelFirstOnLg?: boolean;
+  balancedWorkbench?: boolean;
+  lgGridClassName?: string;
 }) {
   return (
     <div
       className={cn(
-        "grid grid-cols-1 items-start lg:grid-cols-[minmax(0,1fr)_minmax(280px,22rem)] xl:grid-cols-[minmax(0,1fr)_minmax(300px,24rem)]",
-        operatorGapClass,
+        balancedWorkbench
+          ? "grid grid-cols-1 items-stretch gap-2 lg:grid-cols-[minmax(0,42fr)_minmax(0,58fr)] lg:gap-2.5"
+          : cn(
+              "grid grid-cols-1 items-start",
+              lgGridClassName
+                ? lgGridClassName
+                : panelFirstOnLg
+                  ? "lg:grid-cols-[minmax(280px,22rem)_minmax(0,1fr)] xl:grid-cols-[minmax(300px,24rem)_minmax(0,1fr)]"
+                  : "lg:grid-cols-[minmax(0,1fr)_minmax(280px,22rem)] xl:grid-cols-[minmax(0,1fr)_minmax(300px,24rem)]",
+            ),
+        !balancedWorkbench && operatorGapClass,
         className,
       )}
     >
-      <div className="order-2 min-w-0 lg:order-1">{queue}</div>
       <div
         className={cn(
-          "order-1 min-w-0 rounded border border-slate-200 bg-white p-2 shadow-sm lg:order-2",
+          balancedWorkbench ? "order-1 min-h-0 min-w-0 lg:order-1" : "order-2 min-w-0",
+          !balancedWorkbench && (panelFirstOnLg ? "lg:order-2" : "lg:order-1"),
+        )}
+      >
+        {queue}
+      </div>
+      <div
+        className={cn(
+          balancedWorkbench ? "order-2 min-w-0 lg:order-2" : "order-1 min-w-0",
+          panelContainerClassName ?? "rounded border border-slate-200 bg-white p-2 shadow-sm",
+          balancedWorkbench && "flex min-h-0 flex-col",
+          !balancedWorkbench && (panelFirstOnLg ? "lg:order-1" : "lg:order-2"),
           panelClassName,
         )}
       >
@@ -58,9 +98,14 @@ export function OperatorMainSplit({
 }
 
 /** Inline metric (label 12px, value 14px bold) */
-export function OperatorMetricBadge({ label, value }: { label: string; value: string }) {
+export function OperatorMetricBadge({ label, value, className }: { label: string; value: string; className?: string }) {
   return (
-    <div className="flex min-w-[3rem] shrink-0 flex-col rounded border border-slate-200 bg-slate-50 px-1 py-0.5">
+    <div
+      className={cn(
+        "flex min-w-[3rem] shrink-0 flex-col rounded border border-slate-200 bg-slate-50 px-1 py-0.5",
+        className,
+      )}
+    >
       <span className="text-[12px] leading-tight text-slate-500">{label}</span>
       <span className="text-[14px] font-bold leading-tight tabular-nums text-slate-900">{value}</span>
     </div>

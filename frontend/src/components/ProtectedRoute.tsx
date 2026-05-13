@@ -1,11 +1,10 @@
 import { Navigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
+import { ALL_APP_ROLES } from "../config/erpRoles";
 
-/** Roles that may use the app; used for dashboard and global reports. */
-export const ALL_APP_ROLES = ["ADMIN", "SALES", "STORE", "PRODUCTION", "QC", "SUPERVISOR"] as const;
+export { ALL_APP_ROLES };
 
-type ProtectedRouteProps = {
-  /** User must have one of these roles (from JWT / localStorage user). */
+type ProtectedRouteProps = {  /** User must have one of these roles (from JWT / localStorage user). */
   allowedRoles: readonly string[];
   children: React.ReactNode;
 };

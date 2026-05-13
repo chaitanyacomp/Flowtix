@@ -1,4 +1,4 @@
-const { Prisma } = require("@prisma/client");
+const { Prisma } = require("../prismaClientPackage");
 const { ZodError } = require("zod");
 
 /**

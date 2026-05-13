@@ -4,11 +4,14 @@ const { prisma } = require("../utils/prisma");
 const { requireAuth, requireRole } = require("../middleware/auth");
 const auditLog = require("../services/auditLog");
 const { assertNonNegativeStockAfterNetChange } = require("../services/stockService");
+const { assertAnyAdminPassword } = require("../services/adminPasswordAuth");
 
 const openingStockRouter = express.Router();
 
 const OPENING_STOCK_ACCESS_DENIED = "Access denied. Only Admin and Store roles can manage opening stock.";
+const OPENING_STOCK_DELETE_DENIED = "Access denied. Only administrators can delete opening stock drafts.";
 const openingStockRoles = requireRole(["ADMIN", "STORE"], OPENING_STOCK_ACCESS_DENIED);
+const openingStockAdminOnly = requireRole(["ADMIN"], OPENING_STOCK_DELETE_DENIED);
 
 function safeNum(v) {
   if (v == null) return null;
@@ -58,8 +61,10 @@ openingStockRouter.post("/opening-stock", requireAuth, openingStockRoles, async 
       openingQty: z.union([z.number(), z.string()]),
       stockBucket: z.enum(["USABLE", "QC_HOLD", "QC_PENDING", "REWORK", "SCRAP"]).optional().default("USABLE"),
       remarks: z.string().optional().nullable(),
+      adminPassword: z.any().optional(),
     });
     const body = schema.parse(req.body);
+    await assertAnyAdminPassword(prisma, { password: body.adminPassword });
     const qty = safeNum(body.openingQty);
     if (qty == null || qty <= 0) {
       return res.status(400).json({ error: { message: "Opening Qty must be greater than 0", code: "VALIDATION" } });
@@ -101,8 +106,10 @@ openingStockRouter.put("/opening-stock/:id", requireAuth, openingStockRoles, asy
       openingQty: z.union([z.number(), z.string()]).optional(),
       stockBucket: z.enum(["USABLE", "QC_HOLD", "QC_PENDING", "REWORK", "SCRAP"]).optional(),
       remarks: z.string().optional().nullable(),
+      adminPassword: z.any().optional(),
     });
     const body = schema.parse(req.body);
+    await assertAnyAdminPassword(prisma, { password: body.adminPassword });
 
     if (body.itemId != null) {
       const item = await prisma.item.findUnique({ where: { id: body.itemId }, select: { id: true } });
@@ -135,7 +142,7 @@ openingStockRouter.put("/opening-stock/:id", requireAuth, openingStockRoles, asy
 });
 
 /** Draft-only removal (no stock posted yet). Approved rows must never be deleted — use an offsetting ledger row if reversal is added later. */
-openingStockRouter.delete("/opening-stock/:id", requireAuth, openingStockRoles, async (req, res, next) => {
+openingStockRouter.delete("/opening-stock/:id", requireAuth, openingStockAdminOnly, async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: { message: "Invalid id" } });
@@ -157,6 +164,9 @@ openingStockRouter.post("/opening-stock/:id/approve", requireAuth, openingStockR
   try {
     const id = Number(req.params.id);
     if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: { message: "Invalid id" } });
+
+    const approveBody = z.object({ adminPassword: z.any().optional() }).parse(req.body ?? {});
+    await assertAnyAdminPassword(prisma, { password: approveBody.adminPassword });
 
     const result = await prisma.$transaction(async (tx) => {
       const entry = await tx.openingStockEntry.findUnique({ where: { id } });
@@ -227,8 +237,10 @@ openingStockRouter.post("/opening-stock/:id/reverse", requireAuth, openingStockR
 
     const schema = z.object({
       reason: z.string().min(1, "Reason is required."),
+      adminPassword: z.any().optional(),
     });
     const body = schema.parse(req.body);
+    await assertAnyAdminPassword(prisma, { password: body.adminPassword });
 
     const userId = req.user?.userId;
     if (typeof userId !== "number" || !Number.isFinite(userId)) {

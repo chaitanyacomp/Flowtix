@@ -6,7 +6,7 @@ const { listExportHistory } = require("../services/exportHistoryService");
 const exportHistoryRouter = express.Router();
 
 const EXPORT_HISTORY_ACCESS_DENIED = "Access denied. Only administrators and sales staff can view export history.";
-const exportHistoryRoles = requireRole(["ADMIN", "SALES"], EXPORT_HISTORY_ACCESS_DENIED);
+const exportHistoryRoles = requireRole(["ADMIN", "SALES", "ACCOUNTS"], EXPORT_HISTORY_ACCESS_DENIED);
 
 function parseYmdStartUtc(ymd) {
   if (typeof ymd !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return null;

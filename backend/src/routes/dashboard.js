@@ -14,19 +14,19 @@ const {
 } = require("../services/reportMetrics");
 const { mapSoLinesToDispatchFifoInputs, dispatchFifoQtyForSoLine } = require("../services/regularSoBufferQty");
 const { buildQcAcceptedMap, buildReplacementReturnQcGrossBySoItemKey } = require("../services/dispatchQcCap");
-const { normalizePositiveCycleId } = require("../utils/cycleIds");
-const { netDispatchedByItemId } = require("../services/salesOrderDispatchAllocation");
 const {
-  DISPATCH_BACKLOG_EPS,
   getDispatchBacklogRows,
   getProductionQueueRows,
   getQcQueueRows,
   getContinueWorkingRows,
+  getActiveNoQtySalesOrders,
+  getActionableWorkOrderCount,
   getRmRiskRows,
   getPurchaseSummaryRows,
+  getQcWorkQueueCounts,
 } = require("../services/dashboardQueueSnapshots");
-const { usableStockDisplayQty } = require("../services/stockService");
-const { loadNoQtyCycleQcAcceptedMap } = require("./dispatch");
+const { usableStockDisplayQty, STOCK_EPS } = require("../services/stockService");
+const { getAccountsDashboard } = require("../services/accountsDashboardService");
 
 const dashboardRouter = express.Router();
 
@@ -47,73 +47,119 @@ const CONTINUE_WORKING_ACCESS_DENIED =
 const dashboardSummaryRoles = requireRole(["ADMIN"], DASHBOARD_SUMMARY_ACCESS_DENIED);
 /** Same broad operational audience as main app nav “Dashboard”. */
 const continueWorkingRoles = requireRole(
-  ["ADMIN", "SALES", "STORE", "PRODUCTION", "QC", "SUPERVISOR"],
+  ["ADMIN", "SALES", "STORE", "PRODUCTION", "QC"],
   CONTINUE_WORKING_ACCESS_DENIED,
 );
 const dispatchBacklogRoles = requireRole(["ADMIN", "SALES"], DISPATCH_BACKLOG_ACCESS_DENIED);
 const productionQueueRoles = requireRole(["ADMIN", "PRODUCTION"], PRODUCTION_QUEUE_ACCESS_DENIED);
-const qcQueueRoles = requireRole(["ADMIN", "QC", "SUPERVISOR"], QC_QUEUE_ACCESS_DENIED);
+const qcQueueRoles = requireRole(["ADMIN", "QC"], QC_QUEUE_ACCESS_DENIED);
 const rmRiskRoles = requireRole(["ADMIN", "STORE", "PRODUCTION"], RM_RISK_ACCESS_DENIED);
 const purchaseSummaryRoles = requireRole(["ADMIN", "STORE"], PURCHASE_SUMMARY_ACCESS_DENIED);
+const accountsDashboardRoles = requireRole(["ADMIN", "ACCOUNTS"], "Access denied.");
+
+function dashboardErrorResponse(res, err, endpoint) {
+  const e = err instanceof Error ? err : new Error(String(err));
+  console.error("Dashboard API Error:", { endpoint, message: e.message, stack: e.stack });
+  return res.status(500).json({
+    message: "Dashboard failed",
+    endpoint,
+    error: e.message,
+    stack: process.env.NODE_ENV === "development" ? e.stack : undefined,
+  });
+}
 
 dashboardRouter.get("/dispatch-backlog", requireAuth, dispatchBacklogRoles, async (req, res, next) => {
+  console.log("Dashboard API called", { endpoint: "/api/dashboard/dispatch-backlog" });
   try {
     const rows = await getDispatchBacklogRows();
     return res.json(rows);
-  } catch (e) {
-    return next(e);
+  } catch (err) {
+    return dashboardErrorResponse(res, err, "/api/dashboard/dispatch-backlog");
   }
 });
 
 dashboardRouter.get("/production-queue", requireAuth, productionQueueRoles, async (req, res, next) => {
+  console.log("Dashboard API called", { endpoint: "/api/dashboard/production-queue" });
   try {
     const rows = await getProductionQueueRows();
     return res.json(rows);
-  } catch (e) {
-    return next(e);
+  } catch (err) {
+    return dashboardErrorResponse(res, err, "/api/dashboard/production-queue");
   }
 });
 
 dashboardRouter.get("/qc-queue", requireAuth, qcQueueRoles, async (req, res, next) => {
+  console.log("Dashboard API called", { endpoint: "/api/dashboard/qc-queue" });
   try {
     const rows = await getQcQueueRows();
     return res.json(rows);
-  } catch (e) {
-    return next(e);
+  } catch (err) {
+    return dashboardErrorResponse(res, err, "/api/dashboard/qc-queue");
   }
 });
 
 dashboardRouter.get("/rm-risk", requireAuth, rmRiskRoles, async (req, res, next) => {
+  console.log("Dashboard API called", { endpoint: "/api/dashboard/rm-risk" });
   try {
     const rows = await getRmRiskRows();
     return res.json(rows);
-  } catch (e) {
-    return next(e);
+  } catch (err) {
+    return dashboardErrorResponse(res, err, "/api/dashboard/rm-risk");
   }
 });
 
 dashboardRouter.get("/purchase-summary", requireAuth, purchaseSummaryRoles, async (req, res, next) => {
+  console.log("Dashboard API called", { endpoint: "/api/dashboard/purchase-summary" });
   try {
     const rows = await getPurchaseSummaryRows();
     return res.json(rows);
-  } catch (e) {
-    return next(e);
+  } catch (err) {
+    return dashboardErrorResponse(res, err, "/api/dashboard/purchase-summary");
+  }
+});
+
+dashboardRouter.get("/accounts", requireAuth, accountsDashboardRoles, async (req, res, next) => {
+  try {
+    const payload = await getAccountsDashboard(prisma);
+    return res.json(payload);
+  } catch (err) {
+    return dashboardErrorResponse(res, err, "/api/dashboard/accounts");
   }
 });
 
 dashboardRouter.get("/continue-working", requireAuth, continueWorkingRoles, async (req, res, next) => {
+  console.log("Dashboard API called", { endpoint: "/api/dashboard/continue-working" });
   try {
     const raw = Number(req.query.limit);
-    const limit = Number.isFinite(raw) && raw > 0 ? raw : 10;
+    const limit =
+      Number.isFinite(raw) && raw > 0 ? Math.min(100, Math.max(5, Math.floor(raw))) : 50;
     const rows = await getContinueWorkingRows({ limit });
     return res.json(rows);
-  } catch (e) {
-    return next(e);
+  } catch (err) {
+    return dashboardErrorResponse(res, err, "/api/dashboard/continue-working");
+  }
+});
+
+dashboardRouter.get("/no-qty-active", requireAuth, continueWorkingRoles, async (req, res, next) => {
+  console.log("Dashboard API called", { endpoint: "/api/dashboard/no-qty-active" });
+  try {
+    const raw = Number(req.query.limit);
+    const limit =
+      Number.isFinite(raw) && raw > 0 ? Math.min(50, Math.max(1, Math.floor(raw))) : 10;
+    const rows = await getActiveNoQtySalesOrders({ limit });
+    return res.json(rows);
+  } catch (err) {
+    return dashboardErrorResponse(res, err, "/api/dashboard/no-qty-active");
   }
 });
 
 dashboardRouter.get("/", requireAuth, dashboardSummaryRoles, async (req, res, next) => {
+  console.log("Dashboard API called", { endpoint: "/api/dashboard/" });
   try {
+    if (process.env.DASHBOARD_ISOLATE === "1") {
+      return res.json({ ok: true, message: "Dashboard API working" });
+    }
+
     const stockRows = await prisma.stockTransaction.groupBy({
       by: ["itemId"],
       // Stock math must include reversed originals; reversal rows offset them.
@@ -132,9 +178,9 @@ dashboardRouter.get("/", requireAuth, dashboardSummaryRoles, async (req, res, ne
         itemId: i.id,
         itemName: i.itemName,
         qty: stockByItemId.get(i.id) || 0,
-        minStockLevel: Number(i.minStockLevel),
+        minStockLevel: Number(i.minStockLevel ?? 0),
       }))
-      .filter((r) => r.qty < r.minStockLevel)
+      .filter((r) => Number.isFinite(r.minStockLevel) && r.qty < r.minStockLevel)
       .sort((a, b) => a.qty - b.qty);
 
     const fgStock = fgItems
@@ -147,9 +193,7 @@ dashboardRouter.get("/", requireAuth, dashboardSummaryRoles, async (req, res, ne
 
     const fgStockTotalQty = fgStock.reduce((s, x) => s + Number(x.qty), 0);
 
-    const pendingWorkOrders = await prisma.workOrder.count({
-      where: { status: { notIn: ["COMPLETED", "REJECTED"] } },
-    });
+    const pendingWorkOrders = await getActionableWorkOrderCount(prisma);
 
     const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
     const qcAgg = await prisma.qcEntry.aggregate({
@@ -157,8 +201,52 @@ dashboardRouter.get("/", requireAuth, dashboardSummaryRoles, async (req, res, ne
       _sum: { acceptedQty: true, rejectedQty: true },
     });
     const acc = Number(qcAgg._sum.acceptedQty || 0);
-    const rej = Number(qcAgg._sum.rejectedQty || 0);
-    const qcRejectionPct = acc + rej > 0 ? (rej / (acc + rej)) * 100 : 0;
+    const rejGross = Number(qcAgg._sum.rejectedQty || 0);
+
+    /**
+     * Dashboard KPI: net scrap/loss tied to QC entries (ScrapRecord.qcEntryId) plus disposition qty
+     * that is not recoverable in rework QC (excludes REWORK_READY_FOR_QC — material still in rework pipeline).
+     */
+    function dispositionPendingExcludingReworkReady(dispositions) {
+      return (dispositions || []).reduce((ss, d) => {
+        const rem = Number(d.remainingQty ?? 0) || 0;
+        if (!(rem > STOCK_EPS)) return ss;
+        if (String(d.status) === "CLOSED") return ss;
+        if (String(d.status) === "REWORK_READY_FOR_QC") return ss;
+        return ss + rem;
+      }, 0);
+    }
+
+    const recentNetQcAggRows = await prisma.qcEntry.findMany({
+      where: { ...QC_ENTRY_ACTIVE_WHERE, date: { gte: since } },
+      select: {
+        id: true,
+        rejectedQty: true,
+        rejectedDispositions: {
+          where: { voidedAt: null },
+          select: { remainingQty: true, status: true },
+        },
+      },
+    });
+    const qcIdsForNet = recentNetQcAggRows.map((q) => q.id);
+    const scrapSumByQcId = new Map();
+    if (qcIdsForNet.length) {
+      const groupedScrap = await prisma.scrapRecord.groupBy({
+        by: ["qcEntryId"],
+        where: { qcEntryId: { in: qcIdsForNet }, voidedAt: null },
+        _sum: { rejectedQty: true },
+      });
+      for (const g of groupedScrap) {
+        if (g.qcEntryId == null) continue;
+        scrapSumByQcId.set(g.qcEntryId, Number(g._sum.rejectedQty || 0));
+      }
+    }
+    const netRejectedImpact30d = recentNetQcAggRows.reduce((s, q) => {
+      const scrapSum = scrapSumByQcId.get(q.id) || 0;
+      const pending = dispositionPendingExcludingReworkReady(q.rejectedDispositions);
+      return s + Math.max(0, scrapSum + pending);
+    }, 0);
+    const qcRejectionPct = acc + rejGross > 0 ? (netRejectedImpact30d / (acc + rejGross)) * 100 : 0;
 
     const scrapAgg = await prisma.scrapRecord.aggregate({
       where: { date: { gte: since }, voidedAt: null },
@@ -201,9 +289,35 @@ dashboardRouter.get("/", requireAuth, dashboardSummaryRoles, async (req, res, ne
         production: {
           include: { workOrderLine: { include: { fgItem: true } } },
         },
+        rejectedDispositions: {
+          where: { voidedAt: null },
+          select: { remainingQty: true, status: true },
+        },
       },
     });
-    const recentQcRejections = recentQcRejectionsRaw.filter((q) => Number(q.rejectedQty) > 0).slice(0, 8);
+    const recentIds = recentQcRejectionsRaw.map((q) => q.id);
+    const scrapByRecentQcId = new Map();
+    if (recentIds.length) {
+      const groupedRecentScrap = await prisma.scrapRecord.groupBy({
+        by: ["qcEntryId"],
+        where: { qcEntryId: { in: recentIds }, voidedAt: null },
+        _sum: { rejectedQty: true },
+      });
+      for (const g of groupedRecentScrap) {
+        if (g.qcEntryId == null) continue;
+        scrapByRecentQcId.set(g.qcEntryId, Number(g._sum.rejectedQty || 0));
+      }
+    }
+    const recentQcRejections = recentQcRejectionsRaw
+      .map((q) => {
+        const scrapSum = scrapByRecentQcId.get(q.id) || 0;
+        const pending = dispositionPendingExcludingReworkReady(q.rejectedDispositions);
+        const netLossOrUnresolvedQty = Math.max(0, scrapSum + pending);
+        const rejectedGrossQty = Number(q.rejectedQty) || 0;
+        return { q, netLossOrUnresolvedQty, rejectedGrossQty };
+      })
+      .filter(({ rejectedGrossQty, netLossOrUnresolvedQty }) => rejectedGrossQty > 0 && netLossOrUnresolvedQty > STOCK_EPS)
+      .slice(0, 8);
 
     const salesOrders = await prisma.salesOrder.findMany({
       include: { dispatch: true, lines: { include: { item: true } } },
@@ -212,13 +326,10 @@ dashboardRouter.get("/", requireAuth, dashboardSummaryRoles, async (req, res, ne
     /**
      * Dashboard KPI definition:
      *
-     * NO_QTY: matches Dispatch page QC-backed compulsory pending (not min(capRemaining, usableStock) alone):
-     * count when cycle QC-accepted qty still exceeds operational net dispatch for the cycle.
+     * NO_QTY: dispatch is optional; do NOT treat QC-backed availability as “dispatch pending”.
      *
-     * NORMAL (Regular SO): **excluded** — usable stock must not increase Dispatch prep; no counting from
-     * min(SO pending, usable FG).
-     *
-     * REPLACEMENT: lines with positive replacement dispatch headroom (return-QC pool), same operational rule as before.
+     * NORMAL (Regular SO): customer backlog driven by ordered qty.
+     * REPLACEMENT: lines with positive replacement dispatch headroom (return-QC pool).
      */
     let pendingDispatchCount = 0;
     let pendingDispatchableQty = 0;
@@ -227,69 +338,8 @@ dashboardRouter.get("/", requireAuth, dashboardSummaryRoles, async (req, res, ne
     const qcAcceptedMap = await buildQcAcceptedMap(prisma);
     const replacementQcGrossBySoItem = await buildReplacementReturnQcGrossBySoItemKey(prisma, salesOrders, qcAcceptedMap);
 
-    // NO_QTY: preload latest LOCKED caps per (soId, cycleId).
-    const noQtySos = salesOrders.filter((so) => so.orderType === "NO_QTY" && normalizePositiveCycleId(so.currentCycleId) != null);
-    const noQtySoIds = noQtySos.map((so) => so.id);
-    const noQtyCycleIds = [...new Set(noQtySos.map((so) => normalizePositiveCycleId(so.currentCycleId)).filter((x) => x != null))];
-    const noQtyCapBySoCycleKey = new Map();
-    if (noQtySoIds.length && noQtyCycleIds.length) {
-      const lockedSheets = await prisma.requirementSheet.findMany({
-        where: {
-          salesOrderId: { in: noQtySoIds },
-          cycleId: { in: noQtyCycleIds },
-          status: "LOCKED",
-        },
-        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-        include: { lines: true },
-      });
-      for (const sh of lockedSheets) {
-        const k = `${sh.salesOrderId}:${Number(sh.cycleId)}`;
-        if (noQtyCapBySoCycleKey.has(k)) continue; // already took latest
-        const capsByItemId = new Map();
-        for (const ln of sh.lines || []) {
-          const cap = Math.max(Number(ln.suggestedWoQtySnapshot ?? 0), Number(ln.requirementQty ?? 0));
-          if (!(cap > REPORT_QUEUE_EPS)) continue;
-          capsByItemId.set(ln.itemId, cap);
-        }
-        noQtyCapBySoCycleKey.set(k, capsByItemId);
-      }
-    }
-
-    /** @type {Map<string, number>} */
-    let noQtyCycleQcAcceptedMap = new Map();
-    if (noQtySos.length) {
-      noQtyCycleQcAcceptedMap = await loadNoQtyCycleQcAcceptedMap(
-        prisma,
-        noQtySos.map((so) => ({ id: so.id, currentCycleId: normalizePositiveCycleId(so.currentCycleId) })),
-      );
-    }
-
     for (const so of salesOrders) {
-      // NO_QTY: dispatch pending is NOT shortage. Count only what can ship now:
-      // min(current RS qty, usable FG stock).
-      if (so.orderType === "NO_QTY") {
-        const effCycleId = normalizePositiveCycleId(so.currentCycleId);
-        if (effCycleId == null) continue;
-        const capKey = `${so.id}:${effCycleId}`;
-        const capsByItemId = noQtyCapBySoCycleKey.get(capKey);
-        if (!capsByItemId) continue;
-
-        const dispatchInCycle = (so.dispatch || []).filter((d) => normalizePositiveCycleId(d.cycleId) === effCycleId);
-        const alreadyOpNetByItemId = netDispatchedByItemId(dispatchInCycle, DISPATCH_ALLOC_MODE.OPERATIONAL);
-
-        for (const ln of so.lines || []) {
-          const cap = Number(capsByItemId.get(ln.itemId) ?? 0);
-          if (!(cap > REPORT_QUEUE_EPS)) continue;
-          const already = Number(alreadyOpNetByItemId.get(ln.itemId) ?? 0);
-          const usable = Math.max(0, Number(stockByItemId.get(ln.itemId) ?? 0));
-          const compulsoryDispatchNow = Math.max(0, Math.min(cap, usable));
-          if (compulsoryDispatchNow > REPORT_QUEUE_EPS) {
-            pendingDispatchCount += 1;
-            pendingDispatchableQty += compulsoryDispatchNow;
-          }
-        }
-        continue;
-      }
+      if (so.orderType === "NO_QTY") continue;
 
       // NORMAL (Regular SO): customer PO commitment pending with dispatchable stock (same dispatchable helper as Dispatch page).
       if (so.orderType === "NORMAL") {
@@ -392,6 +442,8 @@ dashboardRouter.get("/", requireAuth, dashboardSummaryRoles, async (req, res, ne
       }
     }
 
+    const qcWorkQueueCounts = await getQcWorkQueueCounts(prisma);
+
     return res.json({
       rmStockAlert,
       fgStock,
@@ -404,11 +456,19 @@ dashboardRouter.get("/", requireAuth, dashboardSummaryRoles, async (req, res, ne
       pendingDispatchableQty,
       purchasePending,
       openEnquiries,
-      recentQcRejections: recentQcRejections.map((q) => ({
+      qcWorkQueueCounts,
+      recentQcRejections: recentQcRejections.map(({ q, netLossOrUnresolvedQty, rejectedGrossQty }) => ({
         id: q.id,
         date: q.date,
-        itemName: q.production.workOrderLine.fgItem.itemName,
-        rejectedQty: Number(q.rejectedQty),
+        itemName:
+          q.production?.workOrderLine?.fgItem?.itemName ??
+          q.production?.workOrderLine?.fgItem?.itemCode ??
+          "Unknown Item",
+        rejectedGrossQty,
+        netLossOrUnresolvedQty,
+        /** @deprecated prefer rejectedGrossQty / netLossOrUnresolvedQty */
+        rejectedQty: rejectedGrossQty,
+        netRejectedImpactQty: netLossOrUnresolvedQty,
         acceptedQty: Number(q.acceptedQty),
         lossQty: Number(q.lossQty),
         reason: q.reason,
@@ -418,18 +478,19 @@ dashboardRouter.get("/", requireAuth, dashboardSummaryRoles, async (req, res, ne
         fgStockTotalQty:
           "Sum of displayed USABLE FG qty (ledger USABLE, reversedAt null, floored at 0 per item — same display rule as Stock Summary)",
         pendingDispatchCount:
-          "NO_QTY: QC-backed compulsory dispatch lines. REPLACEMENT: lines with positive dispatchable qty from return-QC rules. NORMAL: customer PO qty still pending with positive dispatchable qty (buffer excluded).",
+          "NO_QTY: lines (SO × cycle × FG) with positive QC-backed dispatch headroom (any cycle). REPLACEMENT: lines with positive dispatchable qty from return-QC rules. NORMAL: customer PO qty still pending with positive dispatchable qty (buffer excluded).",
         pendingDispatchableQty:
           "Sum of dispatchable qty on counted lines (NO_QTY + REPLACEMENT + NORMAL).",
         openEnquiries:
           "Count of enquiries in active pre-quotation states: OPEN, DRAFT, PENDING, FEASIBLE (excludes NOT_FEASIBLE, QUOTED, PO_RECEIVED, CLOSED)",
-        pendingWorkOrders: "Count of work orders whose status is not COMPLETED or REJECTED (includes PENDING, IN_PROGRESS)",
+        pendingWorkOrders:
+          "Count of actionable work orders shown by the Work Orders open list; stale NO_QTY work orders from old cycles are excluded",
         metricDefinitionsRef: METRIC_DEFINITIONS,
         metricContextLegend: METRIC_CONTEXT,
       },
     });
-  } catch (e) {
-    return next(e);
+  } catch (err) {
+    return dashboardErrorResponse(res, err, "/api/dashboard/");
   }
 });
 

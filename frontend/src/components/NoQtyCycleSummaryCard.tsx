@@ -1,8 +1,9 @@
+import * as React from "react";
+import { Check, ChevronRight } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
 import { Badge } from "./ui/badge";
 import { cn } from "../lib/utils";
 import { displaySalesOrderNo } from "../lib/docNoDisplay";
-import { Check } from "lucide-react";
 
 export type NoQtyStageKey = "REQUIREMENT" | "WORK_ORDER" | "PRODUCTION" | "QC" | "DISPATCH" | "SALES_BILL";
 
@@ -50,6 +51,10 @@ export function NoQtyCycleSummaryCard({
   belowMetricsNote,
   metrics,
   showSteps = true,
+  showNextStepCard = true,
+  inlineStepStrip = false,
+  hideWorkOrderStep = false,
+  density = "default",
   className,
 }: {
   soId: number;
@@ -63,49 +68,95 @@ export function NoQtyCycleSummaryCard({
   belowMetricsNote?: string | null;
   metrics?: Metric[];
   showSteps?: boolean;
+  showNextStepCard?: boolean;
+  /** Compact horizontal flow (replaces separate sidebar step card). */
+  inlineStepStrip?: boolean;
+  /** Hide WO step in strip/list when WO is not an operator milestone. */
+  hideWorkOrderStep?: boolean;
+  density?: "default" | "compact";
   className?: string;
 }) {
   const cur = stageIndex(currentStage);
   const closed = cycleStatus === "Closed Cycle";
   const list = (metrics ?? []).filter((m) => Number.isFinite(m.value));
+  const stagesForUi = hideWorkOrderStep ? STAGES.filter((s) => s.key !== "WORK_ORDER") : STAGES;
+  const curIdxUi = hideWorkOrderStep ? Math.max(0, stagesForUi.findIndex((s) => s.key === currentStage)) : cur;
 
   return (
     <Card className={cn("border-slate-200", className)}>
-      <CardHeader className="pb-2">
-        <CardTitle className="text-base font-semibold text-slate-900">No Qty cycle</CardTitle>
+      <CardHeader className={cn(density === "compact" ? "px-3 pb-1 pt-2" : "pb-2")}>
+        <CardTitle className={cn("font-semibold text-slate-900", density === "compact" ? "text-sm" : "text-base")}>
+          No Qty cycle
+        </CardTitle>
       </CardHeader>
-      <CardContent className="pt-0">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+      <CardContent className={cn(density === "compact" ? "px-3 pb-2 pt-0" : "pt-0")}>
+        <div className={cn("flex flex-col sm:flex-row sm:items-start sm:justify-between", density === "compact" ? "gap-2" : "gap-3")}>
           <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-xs font-semibold text-slate-600">Sales Order No</span>
-              <span className="rounded border border-sky-200 bg-sky-50 px-2 py-0.5 font-mono text-xs font-semibold tabular-nums text-sky-900">
+            <div className="erp-context-inline">
+              <span className="font-semibold text-slate-600">SO</span>
+              <span className="rounded border border-sky-200 bg-sky-50 px-2 py-0.5 font-mono text-[11px] font-semibold tabular-nums text-sky-900">
                 {displaySalesOrderNo(soId, soDocNo ?? null)}
               </span>
-              <span className="text-slate-400">·</span>
-              <Badge variant={closed ? "info" : "success"}>
-                Cycle {cycleNo ?? "—"} ({closed ? "Closed" : "Active"})
+              <span className="text-slate-300">|</span>
+              <span className="truncate font-medium text-slate-800">{customerName || "—"}</span>
+              <span className="text-slate-300">|</span>
+              <Badge variant={closed ? "info" : "success"} className="text-[11px]">
+                Cycle {cycleNo ?? "—"} · {closed ? "Closed" : "Active"}
               </Badge>
-            </div>
-            <div className="mt-1 text-sm text-slate-700">
-              <span className="font-medium text-slate-900">{customerName || "—"}</span>
             </div>
           </div>
 
-          <div className="shrink-0 rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
-            <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Next Step</div>
-            <div className="mt-0.5 text-sm font-semibold text-slate-900">{nextStep}</div>
-            {nextStepHelp ? <div className="mt-0.5 text-xs text-slate-600">{nextStepHelp}</div> : null}
-          </div>
+          {showNextStepCard ? (
+            <div
+              className={cn(
+                "shrink-0 rounded border border-slate-200 bg-slate-50",
+                density === "compact" ? "px-2 py-1" : "px-2.5 py-1.5",
+              )}
+            >
+              <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Next</div>
+              <div className={cn(density === "compact" ? "text-[12px]" : "text-[13px]", "font-semibold leading-tight text-slate-900")}>
+                {nextStep}
+              </div>
+              {nextStepHelp ? <div className="mt-0.5 text-[11px] leading-snug text-slate-600">{nextStepHelp}</div> : null}
+            </div>
+          ) : null}
         </div>
+
+        {inlineStepStrip ? (
+          <div
+            className="mt-2 flex flex-wrap items-center gap-y-1 border-t border-slate-100 pt-2"
+            aria-label="No Qty workflow steps"
+          >
+            <span className="mr-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Flow</span>
+            {stagesForUi.map((s, idx) => {
+              const done = closed ? true : idx < curIdxUi;
+              const active = !closed && idx === curIdxUi;
+              return (
+                <React.Fragment key={s.key}>
+                  {idx > 0 ? <ChevronRight className="mx-0.5 h-3 w-3 shrink-0 text-slate-300" aria-hidden /> : null}
+                  <span
+                    className={cn(
+                      "rounded px-1.5 py-0.5 text-[11px] font-medium tabular-nums",
+                      active && "bg-sky-100 font-semibold text-sky-950 ring-1 ring-sky-200/80",
+                      done && !active && "bg-emerald-50/80 text-emerald-900",
+                      !done && !active && "text-slate-500",
+                    )}
+                  >
+                    {s.label}
+                  </span>
+                </React.Fragment>
+              );
+            })}
+          </div>
+        ) : null}
 
         {showSteps ? (
           <div className="mt-3">
             <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Steps</div>
             <ol className="mt-2 space-y-1">
-              {STAGES.map((s, idx) => {
-                const done = closed ? idx <= STAGES.length - 1 : idx < cur;
-                const active = idx === cur;
+              {stagesForUi.map((s, idx) => {
+                const done = closed ? idx <= stagesForUi.length - 1 : idx < curIdxUi;
+                const active = idx === curIdxUi;
                 return (
                   <li key={s.key}>
                     <div
@@ -137,7 +188,7 @@ export function NoQtyCycleSummaryCard({
         ) : null}
 
         {list.length ? (
-          <div className="mt-3">
+          <div className={cn(density === "compact" ? "mt-2" : "mt-3")}>
             <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
               {list.map((m) => (
                 <div
@@ -161,4 +212,3 @@ export function NoQtyCycleSummaryCard({
     </Card>
   );
 }
-

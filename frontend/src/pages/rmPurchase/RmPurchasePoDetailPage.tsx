@@ -1,21 +1,21 @@
 import * as React from "react";
 import { useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { PageContainer, PageSmartBackLink, StickyWorkspaceHead } from "../../components/PageHeader";
+import { PageBackLink, PageContainer, StickyWorkspaceHead } from "../../components/PageHeader";
+import { resolveRmPurchaseBackNav } from "./rmPurchaseBackNav";
 import { Card, CardContent, CardHeader, CardTitle } from "../../components/ui/card";
 import { apiFetch } from "../../services/api";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { useAuth } from "../../hooks/useAuth";
 import { useShortcutHints } from "../../hooks/useShortcutHints";
-import { ShortcutHintBar, ShortcutFirstUseTip } from "../../components/ui/ShortcutHintBar";
 import { FieldShortcutHint } from "../../components/ui/FieldShortcutHint";
 import {
   FIELD_HINT_CONFIRM,
   FIELD_HINT_GRID_NAV,
   FIELD_HINT_PO_SUPPLIER,
   FIELD_HINT_SAVE,
-  RM_PO_GRN_SHORTCUT_BAR,
 } from "../../lib/shortcutHintCopy";
+import { Package } from "lucide-react";
 import {
   buildInitialPoLine,
   computeLineAmount,
@@ -36,6 +36,7 @@ import {
   type RmPoRow,
   type Supplier,
 } from "./rmPurchaseShared";
+import { NO_QTY_TERMS } from "../../lib/flowTerminology";
 type PurchaseMeta = { testingModeRelaxedTaxFields: boolean };
 
 export function RmPurchasePoDetailPage() {
@@ -46,11 +47,42 @@ export function RmPurchasePoDetailPage() {
   const [searchParams] = useSearchParams();
   const isAdmin = useAuth().user?.role === "ADMIN";
 
+  const rmPurchaseBackNav = React.useMemo(
+    () =>
+      resolveRmPurchaseBackNav(new URLSearchParams(location.search), {
+        defaultRoute: "/rm-po-grn",
+        defaultLabel: "Back to Material Planning",
+      }),
+    [location.search],
+  );
+
   const source = searchParams.get("source") ?? "";
   const resumeReturnTo = searchParams.get("returnTo") ?? "";
   const flowSoIdRaw = searchParams.get("salesOrderId") ?? searchParams.get("soId") ?? "";
+  const flowWorkOrderIdQ = searchParams.get("workOrderId") ?? "";
   const flowSoId = Number(flowSoIdRaw);
   const hasFlowSalesOrder = Number.isFinite(flowSoId) && flowSoId > 0;
+  /** Customer tracking, RM check, work-order flow, or legacy `source` — not NO_QTY planning hub unless SO is NO_QTY. */
+  const fromParam = searchParams.get("from") ?? "";
+  const hasExplicitFromFlow =
+    fromParam === "customer-tracking" || fromParam === "rm-check" || fromParam === "work-order";
+  const fromLegacyProductionFlow = source === "production" || source === "wo_rm_shortage";
+  const hasProductionFlowContext = hasExplicitFromFlow || fromLegacyProductionFlow || hasFlowSalesOrder;
+  const shortfallQtyHint = Number(searchParams.get("shortfallQty") ?? 0);
+
+  // ───────────────────────────────────────────────────────────────────────
+  // STORE shortage-workflow context (source=rm-shortage)
+  // When set, render a context strip identifying the shortage being covered,
+  // and steer the post-GRN "Next Step" back to the RM Shortage Workspace
+  // / Dashboard instead of the generic Work Orders list.
+  // ───────────────────────────────────────────────────────────────────────
+  const isFromRmShortage = source === "rm-shortage";
+  const shortageItemName = (searchParams.get("itemName") ?? "").trim();
+  const shortageItemCode = (searchParams.get("itemCode") ?? "").trim();
+  const shortageQtyRaw = Number(searchParams.get("shortageQty") ?? 0);
+  const shortageQtyValid = Number.isFinite(shortageQtyRaw) && shortageQtyRaw > 0;
+  const rmShortageWorkspaceHref =
+    resumeReturnTo && resumeReturnTo.startsWith("/") ? resumeReturnTo : "/reports/rm-shortage";
 
   const [purchaseMeta, setPurchaseMeta] = React.useState<PurchaseMeta | null>(null);
   const relaxedTax = Boolean(purchaseMeta?.testingModeRelaxedTaxFields);
@@ -66,6 +98,9 @@ export function RmPurchasePoDetailPage() {
   const [error, setError] = React.useState<string | null>(null);
 
   const [grnModalOpen, setGrnModalOpen] = React.useState(false);
+  const [grnDateInput, setGrnDateInput] = React.useState("");
+  const [grnSupplierInvoiceNo, setGrnSupplierInvoiceNo] = React.useState("");
+  const [grnFieldErrors, setGrnFieldErrors] = React.useState<{ grnDate?: string; supplierInvoiceNo?: string }>({});
   const [grnLines, setGrnLines] = React.useState<GrnLineDraft[]>([]);
   const [grning, setGrning] = React.useState(false);
   const [grnSuccess, setGrnSuccess] = React.useState<string | null>(null);
@@ -77,6 +112,30 @@ export function RmPurchasePoDetailPage() {
   const [savingPo, setSavingPo] = React.useState(false);
 
   const [reversingGrnId, setReversingGrnId] = React.useState(0);
+
+  const [flowSoOrderType, setFlowSoOrderType] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    if (!hasFlowSalesOrder) {
+      setFlowSoOrderType(null);
+      return;
+    }
+    let cancelled = false;
+    void apiFetch<{ orderType?: string }>(`/api/sales-orders/${flowSoId}`)
+      .then((d) => {
+        if (!cancelled) setFlowSoOrderType(d.orderType ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setFlowSoOrderType(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [hasFlowSalesOrder, flowSoId]);
+
+  const flowIsNoQty = flowSoOrderType === "NO_QTY";
+  const noQtyPlanningHref = `/planning-dashboard?salesOrderId=${encodeURIComponent(String(flowSoId))}&source=rm_grn`;
+  const noQtyRequirementSheetsHref = `/sales-orders/${encodeURIComponent(String(flowSoId))}/requirement-sheets`;
 
   const supplierSelectRef = React.useRef<HTMLSelectElement | null>(null);
   const poQtyInputRefs = React.useRef<(HTMLInputElement | null)[]>([]);
@@ -152,6 +211,21 @@ export function RmPurchasePoDetailPage() {
     }, 0);
   }, [grnModalOpen, grnLines.length]);
 
+  function todayLocalIsoDate(): string {
+    const d = new Date();
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  }
+
+  React.useEffect(() => {
+    if (!grnModalOpen) return;
+    setGrnDateInput((cur) => (cur.trim() === "" ? todayLocalIsoDate() : cur));
+    setGrnSupplierInvoiceNo("");
+    setGrnFieldErrors({});
+  }, [grnModalOpen]);
+
   function openEditModal() {
     if (!po) return;
     setEditOpen(true);
@@ -215,7 +289,10 @@ export function RmPurchasePoDetailPage() {
       setPo(updated);
       setEditOpen(false);
       if (updated.taxWarnings?.length) {
-        navigate(`/rm-po-grn/${po.id}`, {
+        // Preserve any existing query context (source, returnTo, item context) so the
+        // shortage-workflow strip and source-aware back nav don't disappear after edit.
+        const preservedQuery = location.search && location.search.startsWith("?") ? location.search : "";
+        navigate(`/rm-po-grn/${po.id}${preservedQuery}`, {
           replace: true,
           state: { rmPoTaxWarnings: updated.taxWarnings },
         });
@@ -231,6 +308,16 @@ export function RmPurchasePoDetailPage() {
     if (!po) return;
     setError(null);
     setGrnSuccess(null);
+    const gd = grnDateInput.trim();
+    const inv = grnSupplierInvoiceNo.trim();
+    const fe: { grnDate?: string; supplierInvoiceNo?: string } = {};
+    if (!gd) fe.grnDate = "GRN date is required";
+    if (!inv) fe.supplierInvoiceNo = "Supplier invoice number is required";
+    if (Object.keys(fe).length) {
+      setGrnFieldErrors(fe);
+      return;
+    }
+    setGrnFieldErrors({});
     setGrning(true);
     try {
       const pendingByPoLineId = new Map<number, number>();
@@ -258,10 +345,42 @@ export function RmPurchasePoDetailPage() {
 
       await apiFetch("/api/purchase/grns", {
         method: "POST",
-        body: JSON.stringify({ rmPoId: po.id, lines }),
+        body: JSON.stringify({
+          rmPoId: po.id,
+          lines,
+          grnDate: gd,
+          supplierInvoiceNo: inv,
+        }),
       });
       const refreshed = await load({ silent: true });
       setGrnModalOpen(false);
+      try {
+        const raw = localStorage.getItem("noQtyReturnContext");
+        const ctx = raw ? (JSON.parse(raw) as { returnTo?: string; salesOrderId?: number; cycleId?: number | null; workOrderId?: number; workOrderLineId?: number }) : {};
+        if (
+          ctx.returnTo === "production" &&
+          ctx.salesOrderId != null &&
+          Number(ctx.salesOrderId) > 0 &&
+          ctx.workOrderId != null &&
+          Number(ctx.workOrderId) > 0
+        ) {
+          localStorage.removeItem("noQtyReturnContext");
+          const cyc =
+            ctx.cycleId != null && Number.isFinite(Number(ctx.cycleId)) && Number(ctx.cycleId) > 0
+              ? `&cycleId=${encodeURIComponent(String(ctx.cycleId))}`
+              : "";
+          const wol =
+            ctx.workOrderLineId != null && Number(ctx.workOrderLineId) > 0
+              ? `&workOrderLineId=${encodeURIComponent(String(ctx.workOrderLineId))}`
+              : "";
+          navigate(
+            `/production?source=no_qty_so&salesOrderId=${encodeURIComponent(String(ctx.salesOrderId))}${cyc}&workOrderId=${encodeURIComponent(String(ctx.workOrderId))}${wol}`,
+          );
+          return;
+        }
+      } catch {
+        /* ignore */
+      }
       if (refreshed?.status === "COMPLETED") {
         setGrnSuccess(
           "Goods receipt posted. This PO is fully received. RM is in usable stock and available for production.",
@@ -356,12 +475,16 @@ export function RmPurchasePoDetailPage() {
     grnQtyInputRefs.current = grnQtyInputRefs.current.slice(0, n);
   }, [po?.lines.length]);
 
+  const grnPostDisabled =
+    grning || grnDateInput.trim() === "" || grnSupplierInvoiceNo.trim() === "";
+
   const shortcutFlagsRef = React.useRef({
     saveEditDisabled: true,
     grnModalOpen: false,
     grnAllowed: false,
     grning: false,
     editOpen: false,
+    grnPostDisabled: true,
   });
   shortcutFlagsRef.current = {
     saveEditDisabled,
@@ -369,6 +492,7 @@ export function RmPurchasePoDetailPage() {
     grnAllowed: Boolean(grnAllowed),
     grning,
     editOpen,
+    grnPostDisabled,
   };
 
   const actionsRef = React.useRef({
@@ -404,7 +528,7 @@ export function RmPurchasePoDetailPage() {
       if ((ev.ctrlKey || ev.metaKey) && ev.key === "Enter") {
         ev.preventDefault();
         const flags = shortcutFlagsRef.current;
-        if (flags.grnModalOpen && flags.grnAllowed && !flags.grning) {
+        if (flags.grnModalOpen && flags.grnAllowed && !flags.grning && !flags.grnPostDisabled) {
           markShortcutRef.current("postGrn");
           void actionsRef.current.onGrnPost();
         } else if (flags.editOpen && !flags.saveEditDisabled) {
@@ -451,121 +575,306 @@ export function RmPurchasePoDetailPage() {
     Boolean(po) &&
     (Boolean(grnSuccess) || hasAnyActiveGrn || po?.status === "COMPLETED" || po?.status === "PARTIAL");
 
+  /** Rich next-step card (Create WO / Production) replaces the legacy single-button banner when both apply. */
+  const showRichProductionNextStep =
+    !loading &&
+    Boolean(po) &&
+    hasProductionFlowContext &&
+    (Boolean(grnSuccess) || po?.status === "COMPLETED");
+  const showFallbackProductionNextStep =
+    !loading && Boolean(po) && !hasProductionFlowContext && Boolean(grnSuccess);
+  /** Source-aware Next Step for STORE shortage workflow (no SO flow context). */
+  const showShortageNextStep =
+    !loading && Boolean(po) && isFromRmShortage && !hasProductionFlowContext && (Boolean(grnSuccess) || po?.status === "COMPLETED");
+  const showFlowResumeBannerSlim = showFlowResumeBanner && !showRichProductionNextStep;
+
   if (!Number.isFinite(poId) || poId <= 0) {
     return (
       <PageContainer>
-        <StickyWorkspaceHead lead={<PageSmartBackLink defaultTo="/rm-po-grn" defaultLabel="Back to RM Purchase" />} />
+        <StickyWorkspaceHead lead={<PageBackLink to={rmPurchaseBackNav.backRoute} label={rmPurchaseBackNav.backLabel} />} />
         <p className="text-sm text-red-700">Invalid purchase order link.</p>
       </PageContainer>
     );
   }
 
   return (
-    <div className="flex min-h-full flex-col pb-[5.5rem] sm:pb-20">
-      <PageContainer>
-        <ShortcutFirstUseTip
-          visible={shortcutHints.firstUseTipVisible}
-          message="Tip: Use Enter to move faster and Ctrl+Enter to confirm."
-          onDismiss={shortcutHints.dismissFirstUseTip}
-        />
+    <PageContainer className="space-y-4 pb-[5.5rem] sm:pb-20">
+      <StickyWorkspaceHead lead={<PageBackLink to={rmPurchaseBackNav.backRoute} label={rmPurchaseBackNav.backLabel} />} className="mb-1" />
 
-        <StickyWorkspaceHead lead={<PageSmartBackLink defaultTo="/rm-po-grn" defaultLabel="Back to RM Purchase" />} className="mb-2" />
-
-        {relaxedTax ? (
-          <p className="mb-2 rounded-md border border-amber-200 bg-amber-50/90 px-3 py-2 text-xs text-amber-950">
-            Testing mode (TESTING_MODE_RELAXED_TAX_FIELDS): relaxed tax/unit fallbacks are enabled on the server.
-          </p>
-        ) : null}
-
-        {!dismissedTaxBanner && incomingTaxWarnings.length > 0 ? (
-          <div className="mb-2 flex flex-col gap-2 rounded-md border border-sky-200 bg-sky-50/90 px-3 py-2 text-xs text-sky-950 sm:flex-row sm:items-start sm:justify-between">
-            <ul className="list-inside list-disc">
-              {incomingTaxWarnings.map((w) => (
-                <li key={w}>{w}</li>
-              ))}
-            </ul>
-            <button
-              type="button"
-              className="shrink-0 text-sky-800 underline underline-offset-2"
-              onClick={() => setDismissedTaxBanner(true)}
-            >
-              Dismiss
-            </button>
+      {isFromRmShortage ? (
+        <div
+          className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950 shadow-sm"
+          data-testid="rm-po-shortage-context-strip"
+        >
+          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+            <span className="text-[10.5px] font-bold uppercase tracking-[0.12em] text-amber-800">
+              Material Planning Workflow
+            </span>
+            <span className="text-amber-700/70">·</span>
+            <span className="font-semibold">
+              RM shortage cover
+              {shortageItemName
+                ? `: ${shortageItemName}`
+                : shortageItemCode
+                ? `: ${shortageItemCode}`
+                : ""}
+              {shortageQtyValid ? (
+                <>
+                  {" "}
+                  <span className="text-amber-700/80">·</span>{" "}
+                  <span className="tabular-nums">Shortage Qty {shortageQtyRaw.toFixed(3)}</span>
+                </>
+              ) : null}
+            </span>
           </div>
-        ) : null}
+        </div>
+      ) : null}
 
-        {loading ? <p className="text-sm text-slate-600">Loading…</p> : null}
-        {error ? <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div> : null}
+      {relaxedTax ? (
+        <div className="rounded-xl border border-amber-200 bg-amber-50/90 px-4 py-3 text-sm text-amber-950 shadow-sm">
+          Testing mode (TESTING_MODE_RELAXED_TAX_FIELDS): relaxed tax/unit fallbacks are enabled on the server.
+        </div>
+      ) : null}
 
-        {showFlowResumeBanner ? (
-          <div
-            className="mb-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-3 text-sm text-emerald-950"
-            data-testid="grn-flow-resume-banner"
+      {!dismissedTaxBanner && incomingTaxWarnings.length > 0 ? (
+        <div className="flex flex-col gap-2 rounded-xl border border-sky-200 bg-sky-50/90 px-4 py-3 text-sm text-sky-950 shadow-sm sm:flex-row sm:items-start sm:justify-between">
+          <ul className="list-inside list-disc">
+            {incomingTaxWarnings.map((w) => (
+              <li key={w}>{w}</li>
+            ))}
+          </ul>
+          <button
+            type="button"
+            className="shrink-0 text-sky-900 underline underline-offset-2"
+            onClick={() => setDismissedTaxBanner(true)}
           >
-            <p className="font-semibold text-emerald-950">
-              {grnSuccess ? "Material received. Continue Work Order" : "Continue Work Order"}
+            Dismiss
+          </button>
+        </div>
+      ) : null}
+
+      {loading ? <p className="text-sm text-slate-600">Loading…</p> : null}
+      {error ? (
+        <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 shadow-sm">{error}</div>
+      ) : null}
+
+      {grnSuccess && resumeReturnTo.trim() ? (
+        <div
+          className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-950 shadow-sm"
+          {...(flowWorkOrderIdQ ? { "data-flow-work-order-id": flowWorkOrderIdQ } : {})}
+        >
+          <p className="font-semibold">RM received successfully</p>
+          <Button type="button" size="sm" className="mt-2" onClick={() => navigate(resumeReturnTo)}>
+            Continue Production
+          </Button>
+        </div>
+      ) : null}
+
+      {showFlowResumeBannerSlim ? (
+        <div
+          className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-950 shadow-sm"
+          data-testid="grn-flow-resume-banner"
+        >
+          <p className="font-semibold text-emerald-950">
+            {flowIsNoQty
+              ? grnSuccess
+                ? `Material received — ${NO_QTY_TERMS.CONTINUE_NO_QTY_PLANNING}`
+                : NO_QTY_TERMS.CONTINUE_NO_QTY_PLANNING
+              : grnSuccess
+                ? "Material received. Continue Work Order"
+                : "Continue Work Order"}
+          </p>
+          {grnSuccess ? <p className="mt-1 text-sm leading-relaxed text-emerald-900/95">{grnSuccess}</p> : null}
+          {!grnSuccess ? (
+            <p className="mt-1 text-sm leading-relaxed text-emerald-900/90">
+              {flowIsNoQty
+                ? `Return to ${NO_QTY_TERMS.PLANNING_HUB_TITLE} or requirement sheets for this sales order.`
+                : source === "wo_rm_shortage"
+                  ? "RM is in stock. Return to Material Planning or Work Orders to continue the sales order."
+                  : "Use Material Planning or Work Orders to continue this sales order when ready."}
             </p>
-            {grnSuccess ? <p className="mt-1 text-[13px] leading-snug text-emerald-900/95">{grnSuccess}</p> : null}
-            {!grnSuccess ? (
-              <p className="mt-1 text-[13px] leading-snug text-emerald-900/90">
-                {source === "wo_rm_shortage"
-                  ? "RM is in stock. Return to RM check or Work Orders to continue the sales order."
-                  : "Use RM check or Work Orders to continue this sales order when ready."}
-              </p>
-            ) : null}
-            <div className="mt-3">
+          ) : null}
+          <div className="mt-3">
+            <Button
+              type="button"
+              size="sm"
+              data-testid="grn-continue-work-order-btn"
+              onClick={() => {
+                const fallbackReg = `/work-orders/prepare?salesOrderId=${encodeURIComponent(String(flowSoId))}`;
+                const fallbackNoQty = noQtyPlanningHref;
+                const target = resumeReturnTo.trim() ? resumeReturnTo : flowIsNoQty ? fallbackNoQty : fallbackReg;
+                navigate(target);
+              }}
+            >
+              {flowIsNoQty ? NO_QTY_TERMS.CONTINUE_NO_QTY_PLANNING : "Continue Work Order"}
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
+      {showShortageNextStep ? (
+        <Card
+          className="border-emerald-200/90 bg-emerald-50/50 shadow-sm ring-1 ring-emerald-100/80"
+          data-testid="rm-purchase-post-grn-next-step-shortage"
+        >
+          <CardHeader className="pb-2 pt-4">
+            <CardTitle className="text-base font-semibold text-emerald-950">Next Step</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3 pt-0">
+            <p className="text-sm font-medium leading-relaxed text-emerald-950">
+              {grnSuccess
+                ? grnSuccess
+                : "Goods receipt posted. RM is usable and available for production."}
+            </p>
+            <p className="text-sm text-slate-800">
+              Stock for{" "}
+              <span className="font-semibold">
+                {shortageItemName || shortageItemCode || "this material"}
+              </span>{" "}
+              is now available. You can return to the RM Shortage Workspace to verify the shortage
+              has cleared, or head back to the Dashboard to continue production.
+            </p>
+            <div className="flex flex-wrap gap-2">
               <Button
                 type="button"
                 size="sm"
-                data-testid="grn-continue-work-order-btn"
-                onClick={() => {
-                  const fallback = `/rm-check?soId=${encodeURIComponent(String(flowSoId))}`;
-                  const target = resumeReturnTo.trim() ? resumeReturnTo : fallback;
-                  navigate(target);
-                }}
+                className="font-semibold"
+                data-testid="rm-purchase-next-back-to-shortage-workspace"
+                onClick={() => navigate(rmShortageWorkspaceHref)}
               >
-                Continue Work Order
+                Back to RM Shortage Workspace
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                data-testid="rm-purchase-next-back-to-dashboard"
+                onClick={() => navigate("/dashboard")}
+              >
+                Go to Dashboard
               </Button>
             </div>
-          </div>
-        ) : null}
+          </CardContent>
+        </Card>
+      ) : null}
 
-        {!loading && po ? (
-          <>
-            <div className="flex flex-col gap-3 border-b border-slate-200 pb-4 sm:flex-row sm:items-start sm:justify-between">
-              <div className="min-w-0">
-                <h1 className="text-lg font-semibold text-slate-900">{formatRmPoNo(po.id)}</h1>
-                <p className="mt-1 text-sm text-slate-700">{po.supplier.name}</p>
-                <div className="mt-3 grid gap-1 text-sm text-slate-700">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-medium text-slate-800">Order Status:</span>
-                    <span className="inline-flex items-center gap-2">
-                      <span className={`inline-block h-2.5 w-2.5 shrink-0 rounded-full ${poStatusDotClass(po.status)}`} aria-hidden />
-                      <span>{poStatusLabel(po.status)}</span>
-                    </span>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-medium text-slate-800">Stock:</span>
-                    <span>
-                      {po.status === "COMPLETED"
-                        ? "Fully Received"
-                        : po.status === "PARTIAL"
-                          ? "Partially Received"
-                          : "Not Received"}
-                      {po.grns.length === 0 ? <span className="ml-1 text-amber-700">→ Action required</span> : null}
-                    </span>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-medium text-slate-800">Billing:</span>
-                    <span>{billingTotals.billed <= 1e-9 ? "Not Started" : billingTotals.pendingBilling > 1e-9 ? "In Progress" : "Completed"}</span>
-                  </div>
+      {(showRichProductionNextStep || (showFallbackProductionNextStep && !showShortageNextStep)) && (
+        <Card
+          className="border-emerald-200/90 bg-emerald-50/50 shadow-sm ring-1 ring-emerald-100/80"
+          data-testid="rm-purchase-post-grn-next-step"
+        >
+          <CardHeader className="pb-2 pt-4">
+            <CardTitle className="text-base font-semibold text-emerald-950">Next Step</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3 pt-0">
+            {grnSuccess ? (
+              <p className="text-sm font-medium leading-relaxed text-emerald-950">{grnSuccess}</p>
+            ) : po?.status === "COMPLETED" ? (
+              <p className="text-sm font-medium leading-relaxed text-emerald-950">
+                Goods receipt posted. This PO is fully received. RM is in usable stock and available for production.
+              </p>
+            ) : null}
+            <p className="text-sm text-slate-800">
+              {hasFlowSalesOrder && flowIsNoQty
+                ? `Raw material is ready. Continue in ${NO_QTY_TERMS.PLANNING_HUB_TITLE} or open requirement sheets for this order.`
+                : "Raw material is ready. You can now create a Work Order and start production."}
+            </p>
+            {shortfallQtyHint > 0 ? (
+              <p className="text-sm text-slate-700">
+                Suggested production qty:{" "}
+                <span className="font-semibold tabular-nums">{shortfallQtyHint}</span>
+              </p>
+            ) : null}
+            <div className="flex flex-wrap gap-2">
+              {hasFlowSalesOrder ? (
+                flowIsNoQty ? (
+                  <>
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="font-semibold"
+                      data-testid="rm-purchase-next-noqty-planning"
+                      onClick={() => navigate(noQtyPlanningHref)}
+                    >
+                      {NO_QTY_TERMS.CONTINUE_NO_QTY_PLANNING}
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      data-testid="rm-purchase-next-requirement-planning"
+                      onClick={() => navigate(noQtyRequirementSheetsHref)}
+                    >
+                      {NO_QTY_TERMS.OPEN_REQUIREMENT_PLANNING}
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      data-testid="rm-purchase-next-production"
+                      onClick={() =>
+                        navigate(
+                          `/production?salesOrderId=${encodeURIComponent(String(flowSoId))}&from=rm-purchase`,
+                        )
+                      }
+                    >
+                      Go to Production
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="font-semibold"
+                      data-testid="rm-purchase-next-create-wo"
+                      onClick={() =>
+                        navigate(
+                          `/work-orders?salesOrderId=${encodeURIComponent(String(flowSoId))}&from=rm-purchase`,
+                        )
+                      }
+                    >
+                      Create Work Order
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      data-testid="rm-purchase-next-production"
+                      onClick={() =>
+                        navigate(
+                          `/production?salesOrderId=${encodeURIComponent(String(flowSoId))}&from=rm-purchase`,
+                        )
+                      }
+                    >
+                      Go to Production
+                    </Button>
+                  </>
+                )
+              ) : (
+                <Button type="button" size="sm" data-testid="rm-purchase-next-work-orders-list" onClick={() => navigate("/work-orders")}>
+                  Go to Work Orders
+                </Button>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {!loading && po ? (
+        <>
+          <Card className="overflow-hidden border-slate-200/90 shadow-sm ring-1 ring-slate-100/70">
+            <CardHeader className="border-b border-slate-100 bg-gradient-to-b from-slate-50/95 to-white px-4 py-3 md:px-5">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+                <div className="min-w-0 space-y-1">
+                  <h1 className="text-xl font-semibold leading-tight tracking-tight text-slate-900">
+                    {formatRmPoNo(po.id)} <span className="text-slate-400">•</span> {po.supplier.name}
+                  </h1>
+                  {po.remarks ? <p className="text-sm text-slate-600">Remarks: {po.remarks}</p> : null}
                 </div>
-                {po.remarks ? <p className="mt-2 text-sm text-slate-600">Remarks: {po.remarks}</p> : null}
-              </div>
-              <div className="flex shrink-0 flex-col items-start gap-2">
-                <div className="flex flex-wrap items-center gap-2 text-sm">
+                <div className="flex shrink-0 flex-wrap items-center justify-start gap-2 sm:justify-end">
                   {canEditPo ? (
-                    <Button type="button" variant="outline" size="sm" onClick={openEditModal}>
+                    <Button type="button" variant="outline" size="sm" className="h-9 px-3 text-sm" onClick={openEditModal}>
                       Edit order
                     </Button>
                   ) : null}
@@ -574,6 +883,7 @@ export function RmPurchasePoDetailPage() {
                       type="button"
                       variant="outline"
                       size="sm"
+                      className="h-9 px-3 text-sm"
                       onClick={() => void onCancelPo()}
                       title="Closes this PO. Stock will not change unless you reverse a GRN."
                     >
@@ -582,187 +892,193 @@ export function RmPurchasePoDetailPage() {
                   ) : null}
                 </div>
               </div>
-            </div>
-
-            {!hasActiveGrnRecord(po) && grnAllowed ? (
-              <div className="rounded-md border border-sky-200 bg-sky-50 px-4 py-3">
-                <div className="text-sm font-semibold text-sky-950">Next Step: Create GRN to receive stock</div>
-                <div className="mt-1 text-xs text-sky-900/80">Record goods receipt to move RM into usable stock.</div>
-                <div className="mt-3">
-                  <Button type="button" className="h-11 px-6 text-base" onClick={() => setGrnModalOpen(true)}>
-                    Create GRN
-                  </Button>
-                </div>
+            </CardHeader>
+            <CardContent className="space-y-3 px-4 pb-4 pt-4 md:px-5">
+              <div className="flex flex-wrap gap-2">
+                <span className="inline-flex items-center gap-2 rounded-full border border-slate-200/80 bg-white px-3 py-1 text-sm text-slate-700">
+                  <span className={`inline-block h-2 w-2 shrink-0 rounded-full ${poStatusDotClass(po.status)}`} aria-hidden />
+                  <span className="font-medium text-slate-800">Order:</span> {poStatusLabel(po.status)}
+                </span>
+                <span className="inline-flex items-center gap-2 rounded-full border border-slate-200/80 bg-white px-3 py-1 text-sm text-slate-700">
+                  <span className={`inline-block h-2 w-2 shrink-0 rounded-full ${poStatusDotClass(po.status)}`} aria-hidden />
+                  <span className="font-medium text-slate-800">Stock:</span>{" "}
+                  {po.status === "COMPLETED" ? "Fully Received" : po.status === "PARTIAL" ? "Partially Received" : "Not Received"}
+                </span>
+                <span className="inline-flex items-center gap-2 rounded-full border border-slate-200/80 bg-white px-3 py-1 text-sm text-slate-700">
+                  <span className="font-medium text-slate-800">Billing:</span>{" "}
+                  {billingTotals.billed <= 1e-9 ? "Not Started" : billingTotals.pendingBilling > 1e-9 ? "In Progress" : "Completed"}
+                </span>
               </div>
-            ) : null}
+            </CardContent>
+          </Card>
 
-            <div className="grid gap-2 sm:grid-cols-2">
-              <div className="rounded-md border border-slate-200 bg-white px-3 py-2">
-                <div className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Stock summary</div>
-                <div className="mt-1 flex flex-wrap gap-2 text-xs">
-                  <span className="rounded-full bg-slate-100 px-2 py-0.5 font-medium text-slate-700">
-                    Stock status:{" "}
-                    {po.status === "COMPLETED"
-                      ? "Fully Received"
-                      : po.status === "PARTIAL"
-                        ? "Partially Received"
-                        : "Not Received"}
-                  </span>
+          {!hasActiveGrnRecord(po) && grnAllowed ? (
+            <Card className="border-sky-200 bg-sky-50/70 shadow-sm ring-1 ring-sky-100/70">
+              <CardContent className="flex flex-col gap-3 px-4 py-4 md:flex-row md:items-center md:justify-between">
+                <div className="min-w-0">
+                  <div className="text-sm font-semibold text-sky-950">Next Step: Create GRN</div>
+                  <div className="mt-1 text-sm text-sky-900/80">Create a GRN to record goods receipt and move RM into usable stock.</div>
                 </div>
-                <div className="mt-2 grid gap-1 text-xs text-slate-700">
-                  <div className="flex items-baseline justify-between gap-3">
-                    <span className="text-slate-600">Ordered qty</span>
-                    <span className="tabular-nums font-medium">{receiveInfo ? receiveInfo.ordered.toFixed(3) : "—"}</span>
-                  </div>
-                  <div className="flex items-baseline justify-between gap-3">
-                    <span className="text-slate-600">Received qty</span>
-                    <span className="tabular-nums font-medium">{receiveInfo ? receiveInfo.received.toFixed(3) : "—"}</span>
-                  </div>
-                  <div className="flex items-baseline justify-between gap-3">
-                    <span className="text-slate-600">Pending receipt qty</span>
-                    <span className="tabular-nums font-medium">{receiveInfo ? receiveInfo.pending.toFixed(3) : "—"}</span>
-                  </div>
-                </div>
+                <Button type="button" className="h-10 w-fit px-5 text-sm font-semibold shadow-sm" onClick={() => setGrnModalOpen(true)}>
+                  Create GRN
+                </Button>
+              </CardContent>
+            </Card>
+          ) : null}
+
+          <div className="grid gap-3 lg:grid-cols-2">
+            <div className="rounded-xl border border-slate-200/90 bg-white p-4 shadow-sm ring-1 ring-slate-100/70">
+              <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Stock summary</div>
+              <div className="mt-1 text-lg font-semibold tabular-nums text-slate-900">
+                {receiveInfo ? receiveInfo.received.toFixed(3) : "—"}
               </div>
-
-              <div className="rounded-md border border-slate-200 bg-white px-3 py-2">
-                <div className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Billing summary</div>
-                <div className="mt-1 flex flex-wrap gap-2 text-xs">
-                  <span className="rounded-full bg-slate-50 px-2 py-0.5 font-medium text-slate-700">
-                    Billing status:{" "}
-                    {billingTotals.billed <= 1e-9
-                      ? "Not Billed"
-                      : billingTotals.pendingBilling > 1e-9
-                        ? "Partially Billed"
-                        : "Fully Billed"}
-                  </span>
-                  {billingTotals.rebillable > 1e-9 ? (
-                    <span className="rounded-full bg-amber-50 px-2 py-0.5 font-medium text-amber-900">Billing Reopened</span>
-                  ) : null}
+              <div className="mt-2 grid gap-1.5 text-sm text-slate-700">
+                <div className="flex items-baseline justify-between gap-3">
+                  <span className="text-slate-600">Ordered</span>
+                  <span className="tabular-nums font-medium">{receiveInfo ? receiveInfo.ordered.toFixed(3) : "—"}</span>
                 </div>
-                <div className="mt-2 grid gap-1 text-xs text-slate-700">
-                  <div className="flex items-baseline justify-between gap-3">
-                    <span className="text-slate-600">Billed qty (finalized)</span>
-                    <span className="tabular-nums font-medium">{billingTotals.billed.toFixed(3)}</span>
-                  </div>
-                  <div className="flex items-baseline justify-between gap-3">
-                    <span className="text-slate-600">Pending billing qty</span>
-                    <span className="tabular-nums font-medium">{billingTotals.pendingBilling.toFixed(3)}</span>
-                  </div>
-                  <div className="flex items-baseline justify-between gap-3">
-                    <span className="text-slate-600">Re-billable qty</span>
-                    <span className="tabular-nums font-medium">{billingTotals.rebillable.toFixed(3)}</span>
-                  </div>
+                <div className="flex items-baseline justify-between gap-3">
+                  <span className="text-slate-600">Received</span>
+                  <span className="tabular-nums font-medium">{receiveInfo ? receiveInfo.received.toFixed(3) : "—"}</span>
                 </div>
-                <div className="mt-2 text-[11px] text-slate-600">
-                  Purchase Bills affect supplier billing only. Stock does not change when a bill is cancelled.
+                <div className="flex items-baseline justify-between gap-3">
+                  <span className="text-slate-600">Pending</span>
+                  <span className="tabular-nums font-medium">{receiveInfo ? receiveInfo.pending.toFixed(3) : "—"}</span>
                 </div>
               </div>
             </div>
 
-            {grnSuccess && !showFlowResumeBanner ? (
-              <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-950">{grnSuccess}</div>
-            ) : null}
+            <div className="rounded-xl border border-slate-200/90 bg-white p-4 shadow-sm ring-1 ring-slate-100/70">
+              <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Billing summary</div>
+              <div className="mt-1 text-lg font-semibold tabular-nums text-slate-900">{billingTotals.billed.toFixed(3)}</div>
+              <div className="mt-2 grid gap-1.5 text-sm text-slate-700">
+                <div className="flex items-baseline justify-between gap-3">
+                  <span className="text-slate-600">Billed (finalized)</span>
+                  <span className="tabular-nums font-medium">{billingTotals.billed.toFixed(3)}</span>
+                </div>
+                <div className="flex items-baseline justify-between gap-3">
+                  <span className="text-slate-600">Pending billing</span>
+                  <span className="tabular-nums font-medium">{billingTotals.pendingBilling.toFixed(3)}</span>
+                </div>
+                <div className="flex items-baseline justify-between gap-3">
+                  <span className="text-slate-600">Re-billable</span>
+                  <span className="tabular-nums font-medium">{billingTotals.rebillable.toFixed(3)}</span>
+                </div>
+              </div>
+              <div className="mt-2 text-xs text-slate-500">
+                Purchase Bills affect supplier billing only. Stock does not change when a bill is cancelled.
+              </div>
+            </div>
+          </div>
 
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-base">Line items</CardTitle>
-              </CardHeader>
-              <CardContent className="overflow-x-auto">
-                <table className="w-full min-w-[720px] text-sm">
+          {grnSuccess && !showFlowResumeBanner ? (
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-950 shadow-sm">
+              {grnSuccess}
+            </div>
+          ) : null}
+
+          <Card className="overflow-hidden border-slate-200/90 shadow-sm ring-1 ring-slate-100/70">
+            <CardHeader className="border-b border-slate-100 bg-gradient-to-b from-slate-50/95 to-white px-4 py-2.5 md:px-5">
+              <CardTitle className="text-base font-semibold text-slate-900">Line items</CardTitle>
+            </CardHeader>
+            <CardContent className="p-0">
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[820px] border-collapse text-sm">
                   <thead>
-                    <tr className="border-b text-left text-slate-600">
-                      <th className="py-2 pr-2">RM</th>
-                      <th className="py-2 pr-2 text-right">Ordered</th>
-                      <th className="py-2 pr-2 text-right">Received</th>
-                      <th className="py-2 pr-2">Unit</th>
-                      <th className="py-2 pr-2">HSN</th>
-                      <th className="py-2 pr-2 text-right">GST %</th>
-                      <th className="py-2 text-right">Amount</th>
+                    <tr className="border-b border-slate-200 bg-slate-50/95 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">
+                      <th className="px-4 py-2.5">RM</th>
+                      <th className="px-4 py-2.5 text-right">Ordered</th>
+                      <th className="px-4 py-2.5 text-right">Received</th>
+                      <th className="px-4 py-2.5">Unit</th>
+                      <th className="px-4 py-2.5">HSN</th>
+                      <th className="px-4 py-2.5 text-right">GST %</th>
+                      <th className="px-4 py-2.5 text-right">Amount</th>
                     </tr>
                   </thead>
-                  <tbody>
+                  <tbody className="divide-y divide-slate-100">
                     {po.lines.map((ln) => {
                       const amt =
                         ln.amount != null && String(ln.amount).trim() !== ""
                           ? Number(ln.amount)
                           : computeLineAmount(Number(ln.qty), Number(ln.rate ?? 0));
                       return (
-                        <tr key={ln.id} className="border-b border-slate-100">
-                          <td className="py-2 pr-2 font-medium text-slate-900">{ln.item?.itemName ?? `Item #${ln.itemId}`}</td>
-                          <td className="py-2 pr-2 text-right tabular-nums">{ln.qty}</td>
-                          <td className="py-2 pr-2 text-right tabular-nums">{receivedForLine(po, ln.id)}</td>
-                          <td className="py-2 pr-2 text-slate-800">{ln.unit || "—"}</td>
-                          <td className="py-2 pr-2 font-mono text-xs text-slate-800">{ln.hsn || "—"}</td>
-                          <td className="py-2 pr-2 text-right tabular-nums text-slate-800">
+                        <tr key={ln.id} className="bg-white">
+                          <td className="px-4 py-2.5 font-medium text-slate-900">{ln.item?.itemName ?? `Item #${ln.itemId}`}</td>
+                          <td className="px-4 py-2.5 text-right tabular-nums text-slate-800">{ln.qty}</td>
+                          <td className="px-4 py-2.5 text-right tabular-nums text-slate-800">{receivedForLine(po, ln.id)}</td>
+                          <td className="px-4 py-2.5 text-slate-800">{ln.unit || "—"}</td>
+                          <td className="px-4 py-2.5 font-mono text-xs text-slate-700">{ln.hsn || "—"}</td>
+                          <td className="px-4 py-2.5 text-right tabular-nums text-slate-800">
                             {ln.gstRate != null && String(ln.gstRate).trim() !== "" ? ln.gstRate : "—"}
                           </td>
-                          <td className="py-2 text-right tabular-nums text-slate-800">{Number.isFinite(amt) ? amt.toFixed(2) : "—"}</td>
+                          <td className="px-4 py-2.5 text-right tabular-nums text-slate-800">{Number.isFinite(amt) ? amt.toFixed(2) : "—"}</td>
                         </tr>
                       );
                     })}
                   </tbody>
                 </table>
-              </CardContent>
-            </Card>
+              </div>
+            </CardContent>
+          </Card>
 
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-base">Goods receipts (GRN)</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="mb-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
-                  <div className="font-medium text-slate-800">What this affects</div>
-                  <div className="mt-0.5">
-                    <span className="font-medium">GRN</span> affects stock received.{" "}
-                    <span className="font-medium">Purchase Bill</span> affects supplier billing only (stock will NOT change).
-                  </div>
+          <Card className="overflow-hidden border-slate-200/90 shadow-sm ring-1 ring-slate-100/70">
+            <CardHeader className="border-b border-slate-100 bg-gradient-to-b from-slate-50/95 to-white px-4 py-2.5 md:px-5">
+              <CardTitle className="text-base font-semibold text-slate-900">Goods receipts (GRN)</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3 px-4 py-4 md:px-5">
+              <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+                <div className="font-medium text-slate-800">What this affects</div>
+                <div className="mt-0.5">
+                  <span className="font-medium">GRN</span> affects stock received.{" "}
+                  <span className="font-medium">Purchase Bill</span> affects supplier billing only (stock will NOT change).
                 </div>
-                {!po.grns.length ? (
-                  <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-3">
-                    <div className="text-base font-semibold text-slate-900">📥 No goods received yet</div>
-                    <div className="mt-1 text-sm text-slate-600">Create a GRN to record stock receipt.</div>
-                  </div>
-                ) : (
-                  <ul className="space-y-2">
-                    {po.grns.map((g) => (
-                      <li
-                        key={g.id}
-                        className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-slate-200 bg-slate-50/80 px-3 py-2 text-sm"
-                      >
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="font-medium text-slate-900">GRN-{g.id}</span>
-                          <span className="inline-flex items-center gap-1.5 text-slate-700">
-                            <span className={`inline-block h-2 w-2 rounded-full ${grnStatusDotClass(g)}`} aria-hidden />
-                            {grnStatusLabel(g)}
-                          </span>
-                        </div>
-                        {isAdmin && !g.reversedAt ? (
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="outline"
-                            className="h-8"
-                            disabled={reversingGrnId === g.id}
-                            onClick={() => void onReverseGrn(g.id)}
-                            title="Reverses the stock receipt and reduces received stock."
-                          >
-                            {reversingGrnId === g.id ? "Reversing…" : "Reverse GRN"}
-                          </Button>
-                        ) : null}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </CardContent>
-            </Card>
-          </>
-        ) : null}
+              </div>
 
-        {!loading && !po && !error ? (
-          <p className="text-sm text-slate-600">Purchase order not found.</p>
-        ) : null}
-      </PageContainer>
+              {!po.grns.length ? (
+                <div className="rounded-xl border border-slate-200 bg-slate-50/70 px-4 py-6 text-center">
+                  <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-white ring-1 ring-slate-200/80">
+                    <Package className="h-6 w-6 text-slate-500" aria-hidden />
+                  </div>
+                  <div className="text-base font-semibold text-slate-900">No goods received yet</div>
+                  <div className="mt-1 text-sm text-slate-600">Create a GRN to record stock receipt.</div>
+                </div>
+              ) : (
+                <ul className="space-y-2">
+                  {po.grns.map((g) => (
+                    <li
+                      key={g.id}
+                      className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200/90 bg-white px-4 py-2.5 text-sm shadow-sm"
+                    >
+                      <div className="flex flex-wrap items-center gap-3">
+                        <span className="font-semibold text-slate-900">GRN-{g.id}</span>
+                        <span className="inline-flex items-center gap-2 text-slate-700">
+                          <span className={`inline-block h-2 w-2 rounded-full ${grnStatusDotClass(g)}`} aria-hidden />
+                          <span className="font-medium">{grnStatusLabel(g)}</span>
+                        </span>
+                      </div>
+                      {isAdmin && !g.reversedAt ? (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-9 px-3 text-sm"
+                          disabled={reversingGrnId === g.id}
+                          onClick={() => void onReverseGrn(g.id)}
+                          title="Reverses the stock receipt and reduces received stock."
+                        >
+                          {reversingGrnId === g.id ? "Reversing…" : "Reverse GRN"}
+                        </Button>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </CardContent>
+          </Card>
+        </>
+      ) : null}
+
+      {!loading && !po && !error ? <p className="text-sm text-slate-600">Purchase order not found.</p> : null}
 
       {editOpen && po ? (
         <div className="erp-modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="rm-po-edit-title">
@@ -1017,6 +1333,61 @@ export function RmPurchasePoDetailPage() {
                 </Button>
               </div>
 
+              <div className="grid gap-2 sm:grid-cols-2">
+                <div className="grid gap-1">
+                  <label htmlFor="rm-grn-date" className="text-[11px] font-medium text-slate-600">
+                    GRN date *
+                  </label>
+                  <Input
+                    id="rm-grn-date"
+                    type="date"
+                    className="h-9 max-w-[240px]"
+                    value={grnDateInput}
+                    onChange={(e) => {
+                      setGrnDateInput(e.target.value);
+                      setGrnFieldErrors((x) => {
+                        const n = { ...x };
+                        delete n.grnDate;
+                        return n;
+                      });
+                    }}
+                    disabled={grning}
+                  />
+                  {grnFieldErrors.grnDate ? (
+                    <p className="text-xs text-red-600" role="alert">
+                      {grnFieldErrors.grnDate}
+                    </p>
+                  ) : null}
+                </div>
+                <div className="grid gap-1">
+                  <label htmlFor="rm-grn-supplier-inv" className="text-[11px] font-medium text-slate-600">
+                    Supplier invoice no. *
+                  </label>
+                  <Input
+                    id="rm-grn-supplier-inv"
+                    type="text"
+                    className="h-9 max-w-[320px]"
+                    autoCapitalize="off"
+                    autoCorrect="off"
+                    value={grnSupplierInvoiceNo}
+                    onChange={(e) => {
+                      setGrnSupplierInvoiceNo(e.target.value);
+                      setGrnFieldErrors((x) => {
+                        const n = { ...x };
+                        delete n.supplierInvoiceNo;
+                        return n;
+                      });
+                    }}
+                    disabled={grning}
+                  />
+                  {grnFieldErrors.supplierInvoiceNo ? (
+                    <p className="text-xs text-red-600" role="alert">
+                      {grnFieldErrors.supplierInvoiceNo}
+                    </p>
+                  ) : null}
+                </div>
+              </div>
+
               <div className="space-y-2">
                 {po.lines.map((ln, i) => {
                   const got = receivedForLine(po, ln.id);
@@ -1089,7 +1460,7 @@ export function RmPurchasePoDetailPage() {
                       shortcutHints.markFieldShortcutUsed("postGrn");
                       void onGrnPost();
                     }}
-                    disabled={grning}
+                    disabled={grnPostDisabled}
                     onFocus={postGrnFocusBind.onFocus}
                     onBlur={postGrnFocusBind.onBlur}
                   >
@@ -1101,8 +1472,6 @@ export function RmPurchasePoDetailPage() {
           </Card>
         </div>
       ) : null}
-
-      <ShortcutHintBar items={RM_PO_GRN_SHORTCUT_BAR} />
-    </div>
+    </PageContainer>
   );
 }

@@ -16,6 +16,9 @@ type DispatchLineStat = {
   itemId: number;
   itemName: string;
   dispatchable: number;
+  dispatchableQty?: number;
+  pendingDispatchQty?: number;
+  noQtyCycleNo?: number | null;
   dispatchBlockedReason?: string | null;
 };
 
@@ -116,14 +119,23 @@ export function DispatchSummaryReportPage() {
         const pendingFlat = dispatchRows.flatMap((so) => {
           const soNo = String(so.docNo ?? `SO-${so.id}`);
           const customerName = String(so.customerName ?? so.customer?.name ?? "—");
-          return (so.lineStats || []).map((ls) => ({
-            soNo,
-            customerName,
-            itemId: Number(ls.itemId),
-            itemName: String(ls.itemName ?? `Item #${ls.itemId}`),
-            ready: safeNum(ls.dispatchable),
-            status: safeNum(ls.dispatchable) > 1e-9 ? "Can dispatch now" : (ls.dispatchBlockedReason?.trim() ?? "Cannot dispatch now"),
-          }));
+          return (so.lineStats || []).map((ls) => {
+            const pend = safeNum(ls.pendingDispatchQty ?? ls.dispatchable ?? ls.dispatchableQty);
+            const dispNow = safeNum(ls.dispatchable ?? ls.dispatchableQty);
+            return {
+              soNo,
+              customerName,
+              itemId: Number(ls.itemId),
+              itemName: String(ls.itemName ?? `Item #${ls.itemId}`),
+              ready: pend,
+              status:
+                pend > 1e-9
+                  ? "Can dispatch now"
+                  : dispNow > 1e-9
+                    ? "Can dispatch now"
+                    : ls.dispatchBlockedReason?.trim() ?? "Cannot dispatch now",
+            };
+          });
         });
 
         // Filters apply to pending too (but pending logic source remains the dispatch API).

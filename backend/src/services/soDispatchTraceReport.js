@@ -3,12 +3,13 @@
  * Row drivers: active QC entries, production batches with no active QC, WO lines with no production.
  */
 
-const { Prisma } = require("@prisma/client");
+const { Prisma } = require("../prismaClientPackage");
 const {
   getProductionBatchQcPendingQty,
   sumActiveQcAcceptedQty,
   sumActiveQcRejectedQty,
 } = require("./reportMetrics");
+const { getNoQtyCloseSnapshotMetaBatch } = require("./noQtySoCloseSnapshotService");
 const { QC_ENTRY_ACTIVE_WHERE } = require("./qcEntryConstants");
 const { netDispatchedByItemId, DISPATCH_ALLOC_MODE } = require("./salesOrderDispatchAllocation");
 
@@ -279,6 +280,15 @@ async function getSoDispatchTraceReport(prisma, query) {
   const fwol = buildBranchFilters(filters, "wol");
 
   const soSummaries = await computeSoSummariesForTraceScope(prisma, fq, fpe, fwol);
+
+  const nqSoIds = soSummaries.filter((r) => r.orderType === "NO_QTY").map((r) => r.salesOrderId);
+  const snapMetaBySo = await getNoQtyCloseSnapshotMetaBatch(prisma, nqSoIds);
+  for (const row of soSummaries) {
+    if (row.orderType !== "NO_QTY") continue;
+    const m = snapMetaBySo.get(row.salesOrderId);
+    row.closedShortageQty = m?.closedShortageQty ?? null;
+    row.reopenMode = m?.reopenMode ?? null;
+  }
 
   const unionSql = Prisma.sql`
     (SELECT 'qc' AS row_kind, q.id AS anchor_id, q.date AS sort_date

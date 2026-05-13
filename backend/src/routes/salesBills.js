@@ -12,7 +12,16 @@ const {
   cancelBill,
   deleteDraft,
   getSalesBillById,
+  patchDraftSalesBillLineRate,
+  updateSalesBillPaymentTracking,
+  addSalesBillReceipt,
+  deleteSalesBillReceipt,
 } = require("../services/salesBillService");
+const {
+  SALES_BILL_WRITE_ROLES,
+  SALES_BILL_READ_ROLES,
+  SALES_BILL_CANCEL_ROLES,
+} = require("../constants/erpRoles");
 const { mapSalesBillToTallyExportPayload } = require("../services/salesBillTallyExportPayload");
 const { buildSalesBillTallyXml } = require("../services/salesBillTallyXml");
 const { logActivity } = require("../services/activityLogService");
@@ -25,6 +34,8 @@ const { displaySalesBillNo } = require("../utils/docNoLabels");
 const { assertAdminPassword } = require("../services/adminPasswordAuth");
 
 const salesBillsRouter = express.Router();
+
+const dateInput = z.union([z.string().min(1), z.number(), z.coerce.date()]);
 
 function friendly400(message) {
   return { error: { message } };
@@ -74,7 +85,7 @@ function validateTallyExportEligibility({ bill, payload }) {
   return null;
 }
 
-salesBillsRouter.get("/", requireAuth, requireRole(["ADMIN", "SALES"]), async (req, res, next) => {
+salesBillsRouter.get("/", requireAuth, requireRole(SALES_BILL_READ_ROLES), async (req, res, next) => {
   try {
     const rows = await listSalesBills(prisma, req.query);
     return res.json(rows);
@@ -83,7 +94,7 @@ salesBillsRouter.get("/", requireAuth, requireRole(["ADMIN", "SALES"]), async (r
   }
 });
 
-salesBillsRouter.get("/eligible-dispatches", requireAuth, requireRole(["ADMIN", "SALES"]), async (req, res, next) => {
+salesBillsRouter.get("/eligible-dispatches", requireAuth, requireRole(SALES_BILL_WRITE_ROLES), async (req, res, next) => {
   try {
     const rows = await getEligibleDispatches(prisma);
     return res.json(rows);
@@ -92,7 +103,57 @@ salesBillsRouter.get("/eligible-dispatches", requireAuth, requireRole(["ADMIN", 
   }
 });
 
-salesBillsRouter.get("/:id", requireAuth, requireRole(["ADMIN", "SALES"]), async (req, res, next) => {
+salesBillsRouter.patch("/:id/lines/:lineId/rate", requireAuth, requireRole(["ADMIN"]), async (req, res, next) => {
+  try {
+    const billId = Number(req.params.id);
+    const lineId = Number(req.params.lineId);
+    const body = z.object({ rate: z.number().positive(), adminPassword: z.string().min(1) }).parse(req.body);
+    await assertAdminPassword(prisma, { userId: req.user.userId, password: body.adminPassword });
+    const updated = await patchDraftSalesBillLineRate(prisma, billId, lineId, body.rate);
+    return res.json(updated);
+  } catch (e) {
+    return next(e);
+  }
+});
+
+salesBillsRouter.patch("/:id/payment-tracking", requireAuth, requireRole(SALES_BILL_WRITE_ROLES), async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const updated = await updateSalesBillPaymentTracking(prisma, id, req.body ?? {});
+    return res.json(updated);
+  } catch (e) {
+    return next(e);
+  }
+});
+
+salesBillsRouter.post("/:id/receipts", requireAuth, requireRole(SALES_BILL_WRITE_ROLES), async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const updated = await addSalesBillReceipt(prisma, id, req.body ?? {}, {
+      userId: req.user?.userId,
+      role: req.user?.role,
+    });
+    return res.json(updated);
+  } catch (e) {
+    return next(e);
+  }
+});
+
+salesBillsRouter.delete("/:id/receipts/:receiptId", requireAuth, requireRole(SALES_BILL_WRITE_ROLES), async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const receiptId = Number(req.params.receiptId);
+    const updated = await deleteSalesBillReceipt(prisma, id, receiptId, {
+      role: req.user?.role,
+      adminPassword: req.body?.adminPassword,
+    });
+    return res.json(updated);
+  } catch (e) {
+    return next(e);
+  }
+});
+
+salesBillsRouter.get("/:id", requireAuth, requireRole(SALES_BILL_READ_ROLES), async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     const bill = await getSalesBillById(prisma, id);
@@ -102,10 +163,12 @@ salesBillsRouter.get("/:id", requireAuth, requireRole(["ADMIN", "SALES"]), async
   }
 });
 
-salesBillsRouter.post("/from-dispatch/:dispatchId", requireAuth, requireRole(["ADMIN", "SALES"]), async (req, res, next) => {
+salesBillsRouter.post("/from-dispatch/:dispatchId", requireAuth, requireRole(SALES_BILL_WRITE_ROLES), async (req, res, next) => {
   try {
     const dispatchId = Number(req.params.dispatchId);
-    const { bill, created } = await createDraftFromDispatch(prisma, dispatchId);
+    const parsedBody = z.object({ billDate: dateInput.optional() }).safeParse(req.body ?? {});
+    const billDate = parsedBody.success ? parsedBody.data.billDate : undefined;
+    const { bill, created } = await createDraftFromDispatch(prisma, dispatchId, { billDate });
     if (created) {
       const sbDoc = displaySalesBillNo(bill.id, bill.billNo, bill.docNo);
       await logActivity({
@@ -147,9 +210,7 @@ salesBillsRouter.post("/from-dispatch/:dispatchId", requireAuth, requireRole(["A
   }
 });
 
-const dateInput = z.union([z.string().min(1), z.number(), z.coerce.date()]);
-
-salesBillsRouter.put("/:id", requireAuth, requireRole(["ADMIN", "SALES"]), async (req, res, next) => {
+salesBillsRouter.put("/:id", requireAuth, requireRole(SALES_BILL_WRITE_ROLES), async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     // Dispatch-wise billing: line qty/rate are source-based and cannot be edited in phase 1.
@@ -184,7 +245,7 @@ salesBillsRouter.put("/:id", requireAuth, requireRole(["ADMIN", "SALES"]), async
   }
 });
 
-salesBillsRouter.post("/:id/finalize", requireAuth, requireRole(["ADMIN", "SALES"]), async (req, res, next) => {
+salesBillsRouter.post("/:id/finalize", requireAuth, requireRole(SALES_BILL_WRITE_ROLES), async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     const finalized = await finalizeBill(prisma, id, req.user?.userId);
@@ -226,7 +287,7 @@ salesBillsRouter.post("/:id/finalize", requireAuth, requireRole(["ADMIN", "SALES
   }
 });
 
-salesBillsRouter.post("/:id/cancel", requireAuth, requireRole(["ADMIN", "SALES"]), async (req, res, next) => {
+salesBillsRouter.post("/:id/cancel", requireAuth, requireRole(SALES_BILL_CANCEL_ROLES), async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     const body = z.object({ reason: z.string().min(1), adminPassword: z.string().min(1).optional() }).parse(req.body);
@@ -297,7 +358,7 @@ salesBillsRouter.delete("/:id", requireAuth, requireRole(["ADMIN"]), async (req,
   }
 });
 
-salesBillsRouter.get("/:id/export/tally.xml", requireAuth, requireRole(["ADMIN", "SALES"]), async (req, res, next) => {
+salesBillsRouter.get("/:id/export/tally.xml", requireAuth, requireRole(SALES_BILL_WRITE_ROLES), async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     if (!Number.isFinite(id) || id <= 0) return res.status(400).json(friendly400("Invalid sales bill id"));
@@ -394,7 +455,7 @@ salesBillsRouter.get("/:id/export/tally.xml", requireAuth, requireRole(["ADMIN",
  * Download Tally XML for an already-exported bill (does not flip export flags).
  * GET /api/sales-bills/:id/download/tally.xml
  */
-salesBillsRouter.get("/:id/download/tally.xml", requireAuth, requireRole(["ADMIN", "SALES"]), async (req, res, next) => {
+salesBillsRouter.get("/:id/download/tally.xml", requireAuth, requireRole(SALES_BILL_WRITE_ROLES), async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     if (!Number.isFinite(id) || id <= 0) return res.status(400).json(friendly400("Invalid sales bill id"));
@@ -473,7 +534,7 @@ salesBillsRouter.post("/:id/reset-export", requireAuth, requireRole(["ADMIN"]), 
  *
  * Creates the bill from dispatch if missing, finalizes if draft, then exports.
  */
-salesBillsRouter.post("/:dispatchId/export-tally", requireAuth, requireRole(["ADMIN", "SALES"]), async (req, res, next) => {
+salesBillsRouter.post("/:dispatchId/export-tally", requireAuth, requireRole(SALES_BILL_WRITE_ROLES), async (req, res, next) => {
   try {
     const dispatchId = Number(req.params.dispatchId);
     if (!Number.isFinite(dispatchId) || dispatchId <= 0) return res.status(400).json(friendly400("Invalid dispatch id"));

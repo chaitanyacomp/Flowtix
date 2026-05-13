@@ -162,7 +162,7 @@ export function PurchaseMatchingReportPage() {
     <PageContainer className="pb-8">
       <ReportPageHeader
         title="Purchase Matching Report"
-        purpose="Compare RM purchase orders, GRN receipts, and purchase bills to spot pending receipt, pending billing, or quantity mismatches."
+        purpose="Compare Material Planning orders, GRN receipts, and purchase bills to spot pending receipt, pending billing, or quantity mismatches."
       />
 
       {missingDates ? (
@@ -180,11 +180,11 @@ export function PurchaseMatchingReportPage() {
         </CardHeader>
         <CardContent className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <label className="grid gap-1.5 text-xs font-medium text-slate-600">
-            From date (RM Purchase date)
+            From date (Material Planning date)
             <Input type="date" value={fromDate} onChange={(e) => patch({ fromDate: e.target.value || null })} />
           </label>
           <label className="grid gap-1.5 text-xs font-medium text-slate-600">
-            To date (RM Purchase date)
+            To date (Material Planning date)
             <Input type="date" value={toDate} onChange={(e) => patch({ toDate: e.target.value || null })} />
           </label>
           <label className="grid gap-1.5 text-xs font-medium text-slate-600">

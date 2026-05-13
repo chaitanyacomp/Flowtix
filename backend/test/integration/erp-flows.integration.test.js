@@ -5,33 +5,26 @@
  *
  * Typical flow:
  *   1. Create empty DB (e.g. mini_erp_integration).
- *   2. INTEGRATION_DATABASE_URL=... npm run test:integration:prepare
- *   3. ERP_RUN_DB_INTEGRATION=1 INTEGRATION_DATABASE_URL=... npm run test:integration
+ *   2. NODE_ENV=test TEST_DATABASE_URL=... npm run test:integration:prepare
+ *   3. NODE_ENV=test TEST_DATABASE_URL=... npm run test:integration:db
  *
  * Optional: copy .env.integration.example → .env.integration for local overrides.
  */
 
-const path = require("path");
-require("dotenv").config({ path: path.join(__dirname, "../../.env") });
-require("dotenv").config({ path: path.join(__dirname, "../../.env.integration") });
-
-if (process.env.ERP_RUN_DB_INTEGRATION === "1" && process.env.INTEGRATION_DATABASE_URL) {
-  process.env.DATABASE_URL = process.env.INTEGRATION_DATABASE_URL;
-}
+const { runIntegration } = require("./_integrationEnv");
 
 const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert/strict");
 const request = require("supertest");
 
 const { createApp } = require("../../src/createApp");
-const { Prisma } = require("@prisma/client");
+const { Prisma } = require("../../src/prismaClientPackage");
 const { prisma } = require("../../src/utils/prisma");
 const { signAccessToken } = require("../../src/utils/jwt");
 const { computeWorkOrderTrackingSummaryFromRows, assertWorkOrderTrackingSummaryMatches } = require("../../src/services/reportMetrics");
 const { buildExceptionSummary } = require("../../src/services/operationsExceptionClassification");
 const { QUEUE_SNAPSHOT_ROW_METRIC_CONTEXT } = require("../../src/services/dashboardQueueSnapshots");
 
-const runIntegration = process.env.ERP_RUN_DB_INTEGRATION === "1";
 const d = runIntegration ? describe : describe.skip;
 
 /** Human-readable drift vs prisma/schema.prisma (integration-critical objects only). */
@@ -510,16 +503,15 @@ d("NO_QTY requirement sheet shortfall carry-forward (QC-based, no WO duplication
       },
     });
 
-    const cycle = await prisma.salesOrderCycle.create({
+    const cycle1 = await prisma.salesOrderCycle.create({
       data: { salesOrderId: so.id, cycleNo: 1, status: "ACTIVE" },
     });
-    await prisma.salesOrder.update({ where: { id: so.id }, data: { currentCycleId: cycle.id } });
 
-    // Completed WO planned = 5000, QC accepted = 4300 -> shortfall 700
+    // Completed WO planned = 5000, QC accepted = 4300 -> shortfall 700 (cycle 1)
     const wo = await prisma.workOrder.create({
       data: {
         salesOrderId: so.id,
-        cycleId: cycle.id,
+        cycleId: cycle1.id,
         status: "COMPLETED",
         lines: { create: [{ fgItemId: fg.id, qty: "5000", plannedQty: "5000" }] },
       },
@@ -538,19 +530,49 @@ d("NO_QTY requirement sheet shortfall carry-forward (QC-based, no WO duplication
       data: { itemId: fg.id, transactionType: "ADJUSTMENT", refId: pe.id, qtyIn: "300", qtyOut: "0", stockBucket: "USABLE" },
     });
 
-    // Draft requirement sheet with new requirement qty = 1000
+    // Locked RS defines cycle 1 planned qty (5000). Carry-forward shortfall = 5000 − 4300 QC accepted = 700.
+    await prisma.requirementSheet.create({
+      data: {
+        salesOrderId: so.id,
+        cycleId: cycle1.id,
+        periodKey: "2026-04",
+        version: 1,
+        status: "LOCKED",
+        lines: { create: [{ itemId: fg.id, requirementQty: "5000" }] },
+      },
+    });
+
+    await prisma.salesOrderCycle.update({
+      where: { id: cycle1.id },
+      data: { status: "CLOSED", closedAt: new Date() },
+    });
+    const cycle2 = await prisma.salesOrderCycle.create({
+      data: { salesOrderId: so.id, cycleNo: 2, status: "ACTIVE" },
+    });
+    await prisma.salesOrder.update({ where: { id: so.id }, data: { currentCycleId: cycle2.id } });
+
+    // Draft requirement sheet on cycle 2 — carry-forward from closed cycle 1
     const sheet = await prisma.requirementSheet.create({
       data: {
         salesOrderId: so.id,
-        cycleId: cycle.id,
-        periodKey: "2026-04",
+        cycleId: cycle2.id,
+        periodKey: "2026-05",
         version: 1,
         status: "DRAFT",
         lines: { create: [{ itemId: fg.id, requirementQty: "1000" }] },
       },
     });
 
-    ids = { customerId: customer.id, fgId: fg.id, soId: so.id, cycleId: cycle.id, woId: wo.id, wolId: wol.id, peId: pe.id, sheetId: sheet.id };
+    ids = {
+      customerId: customer.id,
+      fgId: fg.id,
+      soId: so.id,
+      cycleId: cycle2.id,
+      woId: wo.id,
+      wolId: wol.id,
+      peId: pe.id,
+      sheetId: sheet.id,
+    };
   });
 
   after(async () => {
@@ -559,14 +581,14 @@ d("NO_QTY requirement sheet shortfall carry-forward (QC-based, no WO duplication
     await prisma.qcEntry.deleteMany({ where: { productionId: ids.peId } });
     await prisma.productionEntry.deleteMany({ where: { id: ids.peId } });
     await prisma.workOrder.delete({ where: { id: ids.woId } }).catch(() => {});
-    await prisma.requirementSheet.delete({ where: { id: ids.sheetId } }).catch(() => {});
+    await prisma.requirementSheet.deleteMany({ where: { salesOrderId: ids.soId } }).catch(() => {});
     await prisma.salesOrderCycle.deleteMany({ where: { salesOrderId: ids.soId } }).catch(() => {});
     await prisma.salesOrder.delete({ where: { id: ids.soId } }).catch(() => {});
     await prisma.item.delete({ where: { id: ids.fgId } }).catch(() => {});
     await prisma.customer.delete({ where: { id: ids.customerId } }).catch(() => {});
   });
 
-  it("draft requirement sheet shows last shortage qty = 700 (not 5000) and total WO = 1400 (700+1000-300)", async () => {
+  it("draft requirement sheet shows last shortage qty = 700 (carry from closed cycle 1) and total to produce = 1700 (700+1000; NO_QTY draft free stock = 0)", async () => {
     const res = await request(app)
       .get(`/api/requirement-sheets/${ids.sheetId}`)
       .set(adminAuth())
@@ -575,8 +597,10 @@ d("NO_QTY requirement sheet shortfall carry-forward (QC-based, no WO duplication
     const line = (res.body?.lines || []).find((l) => Number(l.itemId) === ids.fgId);
     assert.ok(line, "expected requirement sheet line");
     assert.equal(Number(line.shortfallQty), 700);
-    assert.equal(Number(line.availableStockQty), 300);
-    assert.equal(Number(line.totalWoQty), 1400);
+    assert.equal(Number(line.pendingQcDispositionQty ?? 0), 0);
+    assert.equal(Number(line.fulfillmentQty), 1700);
+    assert.equal(Number(line.availableStockQty), 0);
+    assert.equal(Number(line.totalWoQty), 1700);
   });
 });
 
@@ -609,16 +633,15 @@ d("NO_QTY carry-forward guard: do not freeze shortage while QC pending", () => {
         lines: { create: [{ itemId: fg.id, qty: "0" }] },
       },
     });
-    const cycle = await prisma.salesOrderCycle.create({
+    const cycle1 = await prisma.salesOrderCycle.create({
       data: { salesOrderId: so.id, cycleNo: 1, status: "ACTIVE" },
     });
-    await prisma.salesOrder.update({ where: { id: so.id }, data: { currentCycleId: cycle.id } });
 
     // WO is production-complete, but QC is only partially checked (pending QC exists).
     const wo = await prisma.workOrder.create({
       data: {
         salesOrderId: so.id,
-        cycleId: cycle.id,
+        cycleId: cycle1.id,
         status: "COMPLETED",
         lines: { create: [{ fgItemId: fg.id, qty: "5000", plannedQty: "5000" }] },
       },
@@ -633,18 +656,47 @@ d("NO_QTY carry-forward guard: do not freeze shortage while QC pending", () => {
       data: { productionId: pe.id, acceptedQty: "2200", rejectedQty: "0", lossQty: "0" },
     });
 
+    await prisma.requirementSheet.create({
+      data: {
+        salesOrderId: so.id,
+        cycleId: cycle1.id,
+        periodKey: "2026-04",
+        version: 1,
+        status: "LOCKED",
+        lines: { create: [{ itemId: fg.id, requirementQty: "5000" }] },
+      },
+    });
+
+    await prisma.salesOrderCycle.update({
+      where: { id: cycle1.id },
+      data: { status: "CLOSED", closedAt: new Date() },
+    });
+    const cycle2 = await prisma.salesOrderCycle.create({
+      data: { salesOrderId: so.id, cycleNo: 2, status: "ACTIVE" },
+    });
+    await prisma.salesOrder.update({ where: { id: so.id }, data: { currentCycleId: cycle2.id } });
+
     const sheet = await prisma.requirementSheet.create({
       data: {
         salesOrderId: so.id,
-        cycleId: cycle.id,
-        periodKey: "2026-04",
+        cycleId: cycle2.id,
+        periodKey: "2026-05",
         version: 1,
         status: "DRAFT",
         lines: { create: [{ itemId: fg.id, requirementQty: "0" }] },
       },
     });
 
-    ids = { customerId: customer.id, fgId: fg.id, soId: so.id, cycleId: cycle.id, woId: wo.id, wolId: wol.id, peId: pe.id, sheetId: sheet.id };
+    ids = {
+      customerId: customer.id,
+      fgId: fg.id,
+      soId: so.id,
+      cycleId: cycle2.id,
+      woId: wo.id,
+      wolId: wol.id,
+      peId: pe.id,
+      sheetId: sheet.id,
+    };
   });
 
   after(async () => {
@@ -652,7 +704,7 @@ d("NO_QTY carry-forward guard: do not freeze shortage while QC pending", () => {
     await prisma.qcEntry.deleteMany({ where: { productionId: ids.peId } });
     await prisma.productionEntry.deleteMany({ where: { id: ids.peId } });
     await prisma.workOrder.delete({ where: { id: ids.woId } }).catch(() => {});
-    await prisma.requirementSheet.delete({ where: { id: ids.sheetId } }).catch(() => {});
+    await prisma.requirementSheet.deleteMany({ where: { salesOrderId: ids.soId } }).catch(() => {});
     await prisma.salesOrderCycle.deleteMany({ where: { salesOrderId: ids.soId } }).catch(() => {});
     await prisma.salesOrder.delete({ where: { id: ids.soId } }).catch(() => {});
     await prisma.item.delete({ where: { id: ids.fgId } }).catch(() => {});
@@ -667,8 +719,10 @@ d("NO_QTY carry-forward guard: do not freeze shortage while QC pending", () => {
 
     const line = (res.body?.lines || []).find((l) => Number(l.itemId) === ids.fgId);
     assert.ok(line, "expected requirement sheet line");
-    // planned=5000, accepted=2200 => shortfall=2800
+    // planned=5000, accepted=2200 => carry-forward shortfall=2800 (confirmed; no disposition rows)
     assert.equal(Number(line.shortfallQty), 2800);
+    assert.equal(Number(line.pendingQcDispositionQty ?? 0), 0);
+    assert.equal(Number(line.fulfillmentQty), 2800);
     assert.equal(Number(line.totalWoQty), 2800);
   });
 });

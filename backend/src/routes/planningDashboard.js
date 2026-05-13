@@ -1,3 +1,7 @@
+/**
+ * NO_QTY FLOW — HTTP routes for planning dashboard (requirement / cycle planning hub).
+ * REGULAR WO prep uses `sales-orders/:id/rm-check` and `/work-orders/prepare` in the frontend, not these endpoints.
+ */
 const express = require("express");
 const { requireAuth, requireRole } = require("../middleware/auth");
 const { getPlanningDashboard } = require("../services/planningDashboardService");
@@ -7,7 +11,10 @@ const planningDashboardRouter = express.Router();
 
 const PLANNING_DASHBOARD_ACCESS_DENIED =
   "Access denied. Only administrators and production staff can view the planning dashboard.";
-const planningDashboardRoles = requireRole(["ADMIN", "PRODUCTION", "STORE", "SALES"], PLANNING_DASHBOARD_ACCESS_DENIED);
+const planningDashboardRoles = requireRole(
+  ["ADMIN", "PRODUCTION", "STORE", "SALES", "ACCOUNTS"],
+  PLANNING_DASHBOARD_ACCESS_DENIED,
+);
 
 planningDashboardRouter.get("/", requireAuth, planningDashboardRoles, async (req, res, next) => {
   try {

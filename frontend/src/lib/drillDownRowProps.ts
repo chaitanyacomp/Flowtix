@@ -32,7 +32,7 @@ export function isDrillRowNestedInteractiveTarget(target: EventTarget | null, ro
  * Merged into getDrillRowProps; export as DRILL_DOWN_ROW_CLASS for rare manual composition.
  */
 export const DRILL_ACTIVATABLE_ROW_BASE_CLASS =
-  "group cursor-pointer transition-[background-color,box-shadow] duration-200 ease-out hover:bg-slate-50/90 hover:shadow-[0_1px_2px_0_rgb(0_0_0/0.04)] active:bg-slate-100/80 focus-visible:outline-none focus-visible:bg-slate-50/90 focus-visible:ring-2 focus-visible:ring-slate-400/90 focus-visible:ring-offset-2 focus-visible:ring-offset-white";
+  "group cursor-pointer select-none transition-[background-color,box-shadow] duration-200 ease-out hover:bg-slate-50/90 hover:shadow-[0_1px_2px_0_rgb(0_0_0/0.04)] active:bg-slate-100/80 focus-visible:outline-none focus-visible:bg-slate-50/90 focus-visible:ring-2 focus-visible:ring-slate-400/90 focus-visible:ring-offset-2 focus-visible:ring-offset-white";
 
 /** Non-interactive drill row: no pointer, no hover/focus affordance (role-aware / access denied). */
 export const DRILL_ROW_INACTIVE_CLASS =
@@ -43,8 +43,17 @@ export const DRILL_DOWN_ROW_CLASS = DRILL_ACTIVATABLE_ROW_BASE_CLASS;
 
 export type DrillRowProps = Pick<
   React.HTMLAttributes<HTMLElement>,
-  "role" | "tabIndex" | "onClick" | "onKeyDown" | "className" | "aria-label" | "title" | "aria-disabled"
+  "role" | "tabIndex" | "onClick" | "onKeyDown" | "onMouseDown" | "className" | "aria-label" | "title" | "aria-disabled"
 >;
+
+/**
+ * Read-only drill rows: avoid mouse clicks moving focus onto the row (focus/caret noise).
+ * Keyboard Tab → row still receives focus; Enter/Space unchanged.
+ */
+export function suppressMouseFocusOnDrillRow(e: React.MouseEvent<HTMLElement>) {
+  if (e.button !== 0) return;
+  e.preventDefault();
+}
 
 /**
  * Shared props for dashboard/report table rows (or block cards) that navigate on activate.
@@ -80,6 +89,7 @@ export function getDrillRowProps(options: {
     "aria-label": ariaLabel,
     title: title ?? ariaLabel,
     className: cn(DRILL_ACTIVATABLE_ROW_BASE_CLASS, className),
+    onMouseDown: suppressMouseFocusOnDrillRow,
     onClick: (e: React.MouseEvent<HTMLElement>) => {
       if (isDrillRowNestedInteractiveTarget(e.target, e.currentTarget)) return;
       onActivate();

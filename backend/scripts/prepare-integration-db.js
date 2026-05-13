@@ -1,12 +1,13 @@
 /**
  * Apply prisma/schema.prisma to an empty MySQL database dedicated to integration tests.
  *
- * Requires INTEGRATION_DATABASE_URL (must differ from DATABASE_URL after .env load).
+ * Requires TEST_DATABASE_URL (or legacy INTEGRATION_DATABASE_URL) and it must
+ * differ from DATABASE_URL after .env load.
  * Uses `prisma db push` so the database matches the current schema without relying on
  * a complete migration history from empty.
  *
  * Usage:
- *   INTEGRATION_DATABASE_URL="mysql://..." npm run test:integration:prepare
+ *   NODE_ENV=test TEST_DATABASE_URL="mysql://..." npm run test:integration:prepare
  */
 
 const { execSync } = require("child_process");
@@ -16,22 +17,27 @@ const backendRoot = path.join(__dirname, "..");
 
 require("dotenv").config({ path: path.join(backendRoot, ".env") });
 
-const integrationUrl = process.env.INTEGRATION_DATABASE_URL;
+const integrationUrl = process.env.TEST_DATABASE_URL || process.env.INTEGRATION_DATABASE_URL;
 const mainUrl = process.env.DATABASE_URL;
 
 if (!integrationUrl || !String(integrationUrl).trim()) {
   console.error(
-    "[prepare-integration-db] Missing INTEGRATION_DATABASE_URL.\n" +
+    "[prepare-integration-db] Missing TEST_DATABASE_URL.\n" +
       "Create an empty database, then set e.g.\n" +
-      '  INTEGRATION_DATABASE_URL="mysql://USER:PASS@localhost:3306/mini_erp_integration"\n' +
+      '  NODE_ENV=test TEST_DATABASE_URL="mysql://USER:PASS@localhost:3306/mini_erp_test"\n' +
       "See docs/INTEGRATION_TEST_DB.md (from backend/).",
   );
   process.exit(1);
 }
 
+if (process.env.NODE_ENV !== "test") {
+  console.error("[prepare-integration-db] Refusing to run: set NODE_ENV=test.");
+  process.exit(1);
+}
+
 if (mainUrl && integrationUrl.trim() === mainUrl.trim()) {
   console.error(
-    "[prepare-integration-db] INTEGRATION_DATABASE_URL must not equal DATABASE_URL.\n" +
+    "[prepare-integration-db] TEST_DATABASE_URL must not equal DATABASE_URL.\n" +
       "Use a separate empty database so your main dev data is never modified by this script.",
   );
   process.exit(1);
@@ -47,7 +53,7 @@ execSync("npx prisma db push", {
 console.log("[prepare-integration-db] Done.");
 console.log(
   "Run integration tests, e.g.\n" +
-    "  ERP_RUN_DB_INTEGRATION=1 INTEGRATION_DATABASE_URL=<same URL> npm run test:integration",
+    "  NODE_ENV=test TEST_DATABASE_URL=<same URL> npm run test:integration:db",
 );
 
 function maskUrl(url) {

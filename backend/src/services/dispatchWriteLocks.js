@@ -7,7 +7,7 @@
  * Dispatch create locks only SalesOrder + Item (no forward Dispatch row exists yet).
  */
 
-const { Prisma } = require("@prisma/client");
+const { Prisma } = require("../prismaClientPackage");
 
 /**
  * @param {import('@prisma/client').Prisma.TransactionClient} tx

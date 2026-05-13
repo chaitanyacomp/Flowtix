@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card"
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Badge } from "../components/ui/badge";
+import { ReportPageHeader } from "../components/PageHeader";
 
 type Bucket = "QC_HOLD" | "REWORK";
 
@@ -115,14 +116,14 @@ export function CustomerReturnBucketPage({ bucket }: { bucket: Bucket }) {
 
   return (
     <div className="grid gap-3">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h1 className="text-lg font-semibold text-slate-900">Customer Return · {titleForBucket(bucket)}</h1>
-        <p className="text-sm text-slate-600">
-          {bucket === "REWORK"
+      <ReportPageHeader
+        title={`Customer Return · ${titleForBucket(bucket)}`}
+        purpose={
+          bucket === "REWORK"
             ? "Approve rework to stock (one step) or scrap."
-            : "Approve to stock or scrap."}
-        </p>
-      </div>
+            : "Approve to stock or scrap."
+        }
+      />
 
       <Card className="border-slate-200 shadow-sm">
         <CardHeader className="pb-2">

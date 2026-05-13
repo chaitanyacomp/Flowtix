@@ -7,9 +7,23 @@ import { apiFetch } from "../services/api";
 import { getApiUrl } from "../services/api";
 import { computeLineTaxSplit, sumBillLines } from "../lib/purchaseBillCalc";
 import { useAuth } from "../hooks/useAuth";
+import { useToast } from "../contexts/ToastContext";
 import { PageContainer, PageSmartBackLink, StickyWorkspaceHead } from "../components/PageHeader";
 import { ActivityHistoryCard } from "../components/ActivityHistoryCard";
 import { BillExportStatusPanel } from "../components/BillExportStatusPanel";
+
+const COMMERCIAL_PAYMENT_MODES = ["CASH", "BANK", "UPI", "CHEQUE", "OTHER"] as const;
+
+type PurchaseBillPaymentRow = {
+  id: number;
+  paymentDate: string;
+  amount: string | number;
+  mode: string;
+  referenceNo?: string | null;
+  remarks?: string | null;
+  createdAt: string;
+  createdBy?: { id: number; name: string } | null;
+};
 
 type BillLine = {
   id: number;
@@ -49,6 +63,9 @@ type Bill = {
   totalIgst: string;
   totalTax: string;
   netAmount: string;
+  paymentStatus?: string;
+  paidAmount?: string;
+  pendingAmount?: string;
   finalizedAt: string | null;
   cancelledAt?: string | null;
   cancelReason?: string | null;
@@ -57,6 +74,7 @@ type Bill = {
   supplier: { id: number; name: string; state?: string | null };
   grn?: { id: number; date: string; rmPo: { id: number } } | null;
   lines: BillLine[];
+  payments?: PurchaseBillPaymentRow[];
 };
 
 function toDateInputValue(value: unknown): string {
@@ -79,11 +97,29 @@ function formatMoney(n: number): string {
   return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+function formatEffectiveDate(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" });
+}
+
+function todayDateInput(): string {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
 export function PurchaseBillEditPage() {
   const { id: idParam } = useParams<{ id: string }>();
   const location = useLocation();
   const billId = Number(idParam);
-  const isAdmin = useAuth().user?.role === "ADMIN";
+  const userRole = useAuth().user?.role;
+  const toast = useToast();
+  const isAdmin = userRole === "ADMIN";
+  const canEditPaymentTracking = userRole === "ADMIN" || userRole === "STORE" || userRole === "ACCOUNTS";
 
   const [bill, setBill] = React.useState<Bill | null>(null);
   const [loadError, setLoadError] = React.useState<string | null>(null);
@@ -101,6 +137,15 @@ export function PurchaseBillEditPage() {
   // Deletion disabled (audit-safe lifecycle uses CANCELLED).
   const [resetting, setResetting] = React.useState(false);
   const [exportError, setExportError] = React.useState<string | null>(null);
+  const [payTrackDue, setPayTrackDue] = React.useState("");
+  const [pvDate, setPvDate] = React.useState(() => todayDateInput());
+  const [pvAmount, setPvAmount] = React.useState("");
+  const [pvMode, setPvMode] = React.useState<(typeof COMMERCIAL_PAYMENT_MODES)[number]>("BANK");
+  const [pvRef, setPvRef] = React.useState("");
+  const [pvRemarks, setPvRemarks] = React.useState("");
+  const [pvAdminPwd, setPvAdminPwd] = React.useState("");
+  const [paySaving, setPaySaving] = React.useState(false);
+  const [pvSaving, setPvSaving] = React.useState(false);
   const [lineTouched, setLineTouched] = React.useState<Record<number, { qty?: boolean; rate?: boolean }>>({});
   const [adminCancelAuth, setAdminCancelAuth] = React.useState<{
     open: boolean;
@@ -152,6 +197,11 @@ export function PurchaseBillEditPage() {
         }
       });
   }, [billId]);
+
+  React.useEffect(() => {
+    if (!bill || bill.status !== "FINALIZED") return;
+    setPayTrackDue(toDateInputValue(bill.dueDate));
+  }, [bill?.id, bill?.status, bill?.dueDate]);
 
   React.useEffect(() => {
     if (readOnly || !bill || bill.lines.length === 0 || didFocusRates.current) return;
@@ -252,6 +302,101 @@ export function PurchaseBillEditPage() {
       setFormError(/over.?bill|cannot bill/i.test(String(raw)) ? String(raw) : "Could not save. Please check the values and try again.");
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function savePurchasePaymentTracking() {
+    if (!bill || bill.status !== "FINALIZED" || bill.cancelledAt || !canEditPaymentTracking) return;
+    setPaySaving(true);
+    setFormError(null);
+    setFormInfo(null);
+    try {
+      const body = {
+        dueDate: payTrackDue.trim() ? payTrackDue : null,
+      };
+      const updated = await apiFetch<Bill>(`/api/purchase-bills/${bill.id}/payment-tracking`, {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      });
+      setBill(updated);
+      setDueDate(toDateInputValue(updated.dueDate));
+      toast.showSuccess("Payment tracking saved.");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Could not save payment tracking.";
+      setFormError(msg);
+      toast.showError(msg);
+    } finally {
+      setPaySaving(false);
+    }
+  }
+
+  async function addPayment() {
+    if (!bill || bill.status !== "FINALIZED" || bill.cancelledAt || !canEditPaymentTracking) return;
+    const amt = Number(pvAmount);
+    if (!Number.isFinite(amt) || amt <= 0) {
+      toast.showError("Enter a positive payment amount.");
+      return;
+    }
+    setPvSaving(true);
+    setFormError(null);
+    setFormInfo(null);
+    try {
+      const body: Record<string, unknown> = {
+        paymentDate: pvDate,
+        amount: amt,
+        mode: pvMode,
+        referenceNo: pvRef.trim() || null,
+        remarks: pvRemarks.trim() || null,
+      };
+      if (pvAdminPwd.trim()) body.adminPassword = pvAdminPwd.trim();
+      const updated = await apiFetch<Bill>(`/api/purchase-bills/${bill.id}/payments`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      setBill(updated);
+      setPvAmount("");
+      setPvRef("");
+      setPvRemarks("");
+      setPvAdminPwd("");
+      toast.showSuccess("Payment added.");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Could not add payment.";
+      setFormError(msg);
+      toast.showError(msg);
+    } finally {
+      setPvSaving(false);
+    }
+  }
+
+  async function deletePayment(paymentId: number) {
+    if (!bill || bill.status !== "FINALIZED" || bill.cancelledAt || !canEditPaymentTracking) return;
+    let adminPassword: string | undefined;
+    if (!isAdmin) {
+      const p = window.prompt("Enter an admin password to remove this payment:");
+      if (p == null) return;
+      if (!String(p).trim()) {
+        toast.showError("Admin password required to delete a payment.");
+        return;
+      }
+      adminPassword = String(p).trim();
+    }
+    setPaySaving(true);
+    setFormError(null);
+    setFormInfo(null);
+    try {
+      const updated = await apiFetch<Bill>(`/api/purchase-bills/${bill.id}/payments/${paymentId}`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(adminPassword ? { adminPassword } : {}),
+      });
+      setBill(updated);
+      toast.showSuccess("Payment removed.");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Could not delete payment.";
+      setFormError(msg);
+      toast.showError(msg);
+    } finally {
+      setPaySaving(false);
     }
   }
 
@@ -811,6 +956,168 @@ export function PurchaseBillEditPage() {
               </div>
             </CardContent>
           </Card>
+
+          {bill.status === "FINALIZED" && !bill.cancelledAt ? (
+            <Card className="mt-4 min-w-0 overflow-hidden">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base">Payment tracking</CardTitle>
+                <p className="text-[11px] leading-snug text-slate-500">
+                  Commercial follow-up only — not statutory accounting. Status updates from paid vs net.
+                </p>
+              </CardHeader>
+              <CardContent className="grid gap-3 text-sm">
+                <div className="flex flex-wrap gap-3 text-[12px]">
+                  <span className="text-slate-600">
+                    Status:{" "}
+                    <span className="font-semibold tabular-nums text-slate-900">{bill.paymentStatus ?? "—"}</span>
+                  </span>
+                  <span className="text-slate-600">
+                    Net: <span className="font-semibold tabular-nums text-slate-900">{formatMoney(Number(bill.netAmount))}</span>
+                  </span>
+                  <span className="text-slate-600">
+                    Paid:{" "}
+                    <span className="font-semibold tabular-nums text-slate-900">
+                      {bill.paidAmount != null ? formatMoney(Number(bill.paidAmount)) : "—"}
+                    </span>
+                  </span>
+                  <span className="text-slate-600">
+                    Pending:{" "}
+                    <span className="font-semibold tabular-nums text-slate-900">
+                      {bill.pendingAmount != null ? formatMoney(Number(bill.pendingAmount)) : formatMoney(Number(bill.netAmount))}
+                    </span>
+                  </span>
+                </div>
+
+                <div className="overflow-x-auto rounded-md border border-slate-100">
+                  <table className="erp-table erp-table-dense w-full min-w-[520px] text-[11px] [&_td]:py-1 [&_th]:py-1">
+                    <thead>
+                      <tr>
+                        <th className="text-left">Date</th>
+                        <th className="text-right">Amount</th>
+                        <th className="text-left">Mode</th>
+                        <th className="text-left">Ref</th>
+                        <th className="text-left">Remarks</th>
+                        <th className="text-right"> </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(bill.payments ?? []).length === 0 ? (
+                        <tr>
+                          <td colSpan={6} className="text-slate-500">
+                            No payments yet.
+                          </td>
+                        </tr>
+                      ) : (
+                        (bill.payments ?? []).map((r) => (
+                          <tr key={r.id}>
+                            <td className="whitespace-nowrap">{formatEffectiveDate(r.paymentDate)}</td>
+                            <td className="text-right tabular-nums font-medium">{formatMoney(Number(r.amount))}</td>
+                            <td>{r.mode}</td>
+                            <td className="max-w-[6rem] truncate" title={r.referenceNo ?? ""}>
+                              {r.referenceNo ?? "—"}
+                            </td>
+                            <td className="max-w-[8rem] truncate" title={r.remarks ?? ""}>
+                              {r.remarks ?? "—"}
+                            </td>
+                            <td className="text-right">
+                              {canEditPaymentTracking ? (
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-7 text-[11px] text-rose-700"
+                                  disabled={paySaving}
+                                  onClick={() => void deletePayment(r.id)}
+                                >
+                                  Remove
+                                </Button>
+                              ) : null}
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+
+                {canEditPaymentTracking ? (
+                  <div className="grid gap-2 rounded-md border border-slate-100 bg-slate-50/50 p-2">
+                    <div className="text-[11px] font-medium text-slate-700">Add payment</div>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <label className="grid gap-0.5 text-[11px] text-slate-600">
+                        Date
+                        <Input type="date" value={pvDate} onChange={(e) => setPvDate(e.target.value)} disabled={pvSaving} />
+                      </label>
+                      <label className="grid gap-0.5 text-[11px] text-slate-600">
+                        Amount
+                        <Input
+                          type="number"
+                          min={0}
+                          step="0.01"
+                          value={pvAmount}
+                          onChange={(e) => setPvAmount(e.target.value)}
+                          disabled={pvSaving}
+                        />
+                      </label>
+                      <label className="grid gap-0.5 text-[11px] text-slate-600">
+                        Mode
+                        <select
+                          className="flex h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm"
+                          value={pvMode}
+                          onChange={(e) => setPvMode(e.target.value as (typeof COMMERCIAL_PAYMENT_MODES)[number])}
+                          disabled={pvSaving}
+                        >
+                          {COMMERCIAL_PAYMENT_MODES.map((m) => (
+                            <option key={m} value={m}>
+                              {m}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="grid gap-0.5 text-[11px] text-slate-600">
+                        Reference no.
+                        <Input value={pvRef} onChange={(e) => setPvRef(e.target.value)} disabled={pvSaving} />
+                      </label>
+                    </div>
+                    <label className="grid gap-0.5 text-[11px] text-slate-600">
+                      Line remarks
+                      <Input value={pvRemarks} onChange={(e) => setPvRemarks(e.target.value)} disabled={pvSaving} />
+                    </label>
+                    <label className="grid gap-0.5 text-[11px] text-slate-600">
+                      Admin password (only if the system asks for confirmation)
+                      <Input
+                        type="password"
+                        autoComplete="off"
+                        value={pvAdminPwd}
+                        onChange={(e) => setPvAdminPwd(e.target.value)}
+                        disabled={pvSaving}
+                      />
+                    </label>
+                    <Button type="button" size="sm" disabled={pvSaving} onClick={() => void addPayment()}>
+                      {pvSaving ? "Adding…" : "Add payment"}
+                    </Button>
+                  </div>
+                ) : null}
+
+                <div className="grid gap-2 border-t border-slate-100 pt-3">
+                  <label className="grid gap-1 text-xs font-medium text-slate-600">
+                    Due date
+                    <Input
+                      type="date"
+                      value={payTrackDue}
+                      onChange={(e) => setPayTrackDue(e.target.value)}
+                      disabled={!canEditPaymentTracking || paySaving}
+                    />
+                  </label>
+                  {canEditPaymentTracking ? (
+                    <Button type="button" variant="secondary" size="sm" disabled={paySaving} onClick={() => void savePurchasePaymentTracking()}>
+                      {paySaving ? "Saving…" : "Save due date"}
+                    </Button>
+                  ) : null}
+                </div>
+              </CardContent>
+            </Card>
+          ) : null}
         </div>
       </div>
 

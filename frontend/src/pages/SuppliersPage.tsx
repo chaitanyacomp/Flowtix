@@ -260,7 +260,7 @@ export function SuppliersPage() {
                         variant="destructive"
                         onClick={() => onDelete(r.id)}
                         aria-label="Delete"
-                        title="Suppliers linked to RM purchase orders cannot be deleted."
+                        title="Suppliers linked to Material Planning orders cannot be deleted."
                       >
                         <Trash2 className="h-4 w-4" />
                       </Button>

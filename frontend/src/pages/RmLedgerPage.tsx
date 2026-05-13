@@ -258,7 +258,7 @@ export function RmLedgerPage() {
       <p className="text-xs text-slate-500">
         Use{" "}
         <Link to="/rm-po-grn" className="font-medium text-primary underline">
-          RM Purchase
+          Material Planning
         </Link>{" "}
         to post GRN. This page is read-only history.{" "}
         <Link to="/stock" className="font-medium text-primary underline">
@@ -272,7 +272,7 @@ export function RmLedgerPage() {
         </CardHeader>
         <CardContent className="grid gap-3">
           {itemsError ? <p className="text-sm text-amber-800">{itemsError}</p> : null}
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <label className="grid gap-1 text-xs font-semibold text-slate-700">
               RM item
               <select

@@ -1,6 +1,12 @@
+/**
+ * SALES ORDERS LIST — MIXED SURFACE (REGULAR + NO_QTY rows)
+ *
+ * REGULAR: fixed-qty CTAs → `/work-orders/prepare` for WO_PENDING (never `/planning-dashboard`).
+ * NO_QTY: requirement-sheet / cycle navigation — keep separate from REGULAR RM check → WO prep.
+ */
 import * as React from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { applySearchParamsPatch, deleteUrlParamKeys } from "../lib/urlSearchParamsPatch";
+import { deleteUrlParamKeys } from "../lib/urlSearchParamsPatch";
 import { DrillFocusBanner } from "../components/DrillFocusBanner";
 import { useDebouncedUrlStringParam, useUrlQueryState } from "../hooks/useUrlQueryState";
 import {
@@ -22,12 +28,15 @@ import {
   type SalesInvoiceSoDetail,
 } from "../components/sales/SalesCommercialInvoiceView";
 import { Button } from "../components/ui/button";
+import { REGULAR_TERMS } from "../lib/flowTerminology";
 import { Input } from "../components/ui/input";
 import { Badge } from "../components/ui/badge";
-import { useIsAdmin } from "../hooks/useIsAdmin";
+import { useIsAdmin, useCanCreateNextRs, useCanOpenRequirementSheet } from "../hooks/useIsAdmin";
+import { PlanningStatusChip } from "../components/erp/PlanningStatusChip";
 import { useToast } from "../contexts/ToastContext";
 import { Trash2, Pencil, CheckCircle2, ChevronDown, ChevronUp, X } from "lucide-react";
 import { useFastEntryForm } from "../hooks/useFastEntryForm";
+import { useModalFocusRestore } from "../hooks/useModalFocusRestore";
 import { useShortcutHints } from "../hooks/useShortcutHints";
 import { FieldShortcutHint } from "../components/ui/FieldShortcutHint";
 import { ShortcutHintBar } from "../components/ui/ShortcutHintBar";
@@ -39,6 +48,7 @@ import {
   SALES_ORDERS_SHORTCUT_BAR,
 } from "../lib/shortcutHintCopy";
 import { displaySalesOrderNo } from "../lib/docNoDisplay";
+import { prefersFinePointer } from "../lib/erpFocus";
 import { ActivityHistoryCard } from "../components/ActivityHistoryCard";
 import { buildNoQtyGuidedHref } from "../lib/noQtyFlowState";
 import { DemoFlowBanner } from "../components/demo/DemoFlowBanner";
@@ -88,6 +98,8 @@ type SoRow = {
       gstPct?: string;
     } | null;
     item: { itemName: string };
+    /** Optional list price on NO_QTY / extended payloads. */
+    rate?: string | null;
   }[];
   dispatchSummary?: DispatchSummary;
   /** NO_QTY only: total dispatched qty not yet billed (dispatch-driven). */
@@ -110,6 +122,10 @@ type SoRow = {
   noQtyActiveCycleCount?: number | null;
   /** NO_QTY: IN_PROCESS but no ACTIVE cycle (data repair / needs Start next cycle). */
   noQtyStrandedWithoutActiveCycle?: boolean;
+  /** NO_QTY: user may add next-cycle RS (server eligibility). */
+  noQtyCreateNextRsEligible?: boolean;
+  /** NO_QTY: next-cycle RS already exists (doc no from server). */
+  noQtyNextRsAlreadyCreatedDocNo?: string | null;
   currentCycle?: { id: number; cycleNo: number; status?: string } | null;
   /** Admin-only temporary debug payload for NO_QTY stage derivation (current cycle only). */
   noQtyStageDebug?: {
@@ -149,30 +165,37 @@ type QuotationDetail = {
     rate: string;
     lineTotal: string;
     isFree?: boolean;
+    gstPct?: string;
     item: { itemName: string };
   }[];
   salesOrder: { id: number; docNo?: string | null } | null;
 };
 
+/** GET /api/sales-orders/copy-preview — Regular SO “create from previous”. */
+type CopyPreviewDetail = {
+  sourceType: "QUOTATION" | "SO";
+  sourceId: number;
+  quotationNo: string | null;
+  terms: string | null;
+  workflowStatus: string;
+  existingSalesOrder: { id: number; docNo?: string | null } | null;
+  remarksPreview?: string | null;
+  enquiry: { customerId: number; customer: Customer };
+  lines: Array<{
+    itemId: number;
+    itemName: string;
+    qty: string;
+    rate: string;
+    lineTotal: string;
+    discountPct?: string;
+    gstPct: string;
+    isFree?: boolean;
+    bufferPercentSnapshot?: string;
+  }>;
+};
+
 /** Per-line buffer planning when creating a NORMAL SO from an approved quotation (order matches `qDetail.lines`). */
 type QuoteCreateBufferLine = { itemId: number; customerPoQty: string; bufferPercent: string };
-
-type RmCheckPayload = {
-  fgLines: {
-    lineId: number;
-    fgName: string;
-    orderQty: number;
-    fgStock: number;
-    toProduce: number;
-    note?: string;
-  }[];
-  rmSummary: { rmItemId: number; itemName: string; enough: boolean; shortage: number }[];
-  allRmEnough: boolean;
-  allFgEnough: boolean;
-  strictInventoryControl: boolean;
-  proceedAllowed: boolean;
-  blockMessage: string | null;
-};
 
 type DraftLineEdit = {
   lineId: number;
@@ -199,12 +222,13 @@ function clampBufferPercentInput(raw: string, maxB: number): string {
 }
 
 type FgItemOption = { id: number; itemName: string; itemType?: string | null };
-type NoQtyCreateLine = { key: string; itemId: number; rate: string };
+type NoQtyCreateLine = { key: string; itemId: number };
 
 function statusBadgeVariant(s: string): "default" | "success" | "warning" | "info" {
   if (s === "APPROVED") return "success";
   if (s === "COMPLETED") return "info";
   if (s === "CLOSED") return "info";
+  if (s === "MANUALLY_CLOSED") return "info";
   if (s === "IN_PROCESS") return "warning";
   return "default";
 }
@@ -227,10 +251,20 @@ function isReplacementSalesOrder(so: SoRow): boolean {
   return so.orderType === "REPLACEMENT";
 }
 
-function displaySoStatus(row: SoRow, noQtyStage: NoQtyStage | null): "DRAFT" | "OPEN" | "APPROVED" | "IN_PROCESS" | "COMPLETED" | "CLOSED" {
-  const raw = (row.internalStatus ?? "DRAFT") as "DRAFT" | "OPEN" | "APPROVED" | "IN_PROCESS" | "COMPLETED" | "CLOSED";
-  // NO_QTY lifecycle is manually controlled: only CLOSED is terminal; everything else is OPEN for display/filtering.
-  if (row.orderType === "NO_QTY") return raw === "CLOSED" ? "CLOSED" : "OPEN";
+function displaySoStatus(
+  row: SoRow,
+  noQtyStage: NoQtyStage | null,
+): "DRAFT" | "OPEN" | "APPROVED" | "IN_PROCESS" | "COMPLETED" | "CLOSED" | "MANUALLY_CLOSED" {
+  const raw = (row.internalStatus ?? "DRAFT") as
+    | "DRAFT"
+    | "OPEN"
+    | "APPROVED"
+    | "IN_PROCESS"
+    | "COMPLETED"
+    | "CLOSED"
+    | "MANUALLY_CLOSED";
+  // NO_QTY lifecycle is manually controlled: only explicit SO close is terminal for display/filtering.
+  if (row.orderType === "NO_QTY") return raw === "CLOSED" || raw === "MANUALLY_CLOSED" ? "CLOSED" : "OPEN";
   // UI safety: operational stage is the source of truth for display.
   if (noQtyStage === "COMPLETED") return "COMPLETED";
   if (row.processStage?.key === "COMPLETED") return "COMPLETED";
@@ -284,7 +318,11 @@ function buildNoQtyStageContext(row: SoRow, opts: { isAdmin: boolean }): NoQtySt
 
   return {
     isNoQtySo: row.orderType === "NO_QTY",
-    isClosed: row.internalStatus === "COMPLETED" || row.internalStatus === "CLOSED" || row.processStage?.key === "COMPLETED",
+    isClosed:
+      row.internalStatus === "COMPLETED" ||
+      row.internalStatus === "CLOSED" ||
+      row.internalStatus === "MANUALLY_CLOSED" ||
+      row.processStage?.key === "COMPLETED",
     hasActiveRequirementSheet,
     requirementSheetLocked: null,
     requirementSheetDraft: null,
@@ -351,44 +389,12 @@ function getNoQtySoStageMeta(row: SoRow, opts: { isAdmin: boolean }): { stage: N
   return { stage: "DRAFT", ctx, reason: "fallback: requirement sheet signal missing" };
 }
 
-type NoQtyPrimaryAction =
-  | { label: string; action: "OPEN_RS" | "OPEN_WORK_ORDERS" | "OPEN_PRODUCTION" | "VIEW_PRODUCTION" | "OPEN_DISPATCH" | "OPEN_SALES_BILL" | "VIEW_SALES_BILLS" }
-  | { label: string; action: "REOPEN_SO" }
-  | null;
-
-function getNoQtySoPrimaryAction(
-  stage: NoQtyStage,
-  opts: { isAdmin: boolean; hasSalesBillForCycle: boolean; strandedWithoutActiveCycle: boolean },
-): NoQtyPrimaryAction {
-  if (opts.isAdmin && opts.strandedWithoutActiveCycle) {
-    return { label: "Start next cycle", action: "REOPEN_SO" };
-  }
-  switch (stage) {
-    case "COMPLETED":
-      return opts.isAdmin ? { label: "Reopen", action: "REOPEN_SO" } : null;
-    case "DRAFT":
-      return { label: "Create Requirement", action: "OPEN_RS" };
-    case "REQUIREMENT READY":
-      return { label: "Open Requirement", action: "OPEN_RS" };
-    case "WORK ORDER":
-      return { label: "Work Order", action: "OPEN_WORK_ORDERS" };
-    case "IN PRODUCTION":
-      return { label: "View Production Flow", action: "VIEW_PRODUCTION" };
-    case "DISPATCH / BILLING":
-      return opts.hasSalesBillForCycle
-        ? { label: "View Sales Bills", action: "VIEW_SALES_BILLS" }
-        : { label: "Sales Bill", action: "OPEN_SALES_BILL" };
-    default:
-      return { label: "Open Requirement", action: "OPEN_RS" };
-  }
-}
-
 function noQtyProgressSummary(stage: NoQtyStage, so: SoRow): string {
   const fgCount = Array.isArray(so.lines) ? so.lines.length : 0;
   const disp = Number(so.dispatchSummary?.totalDispatched ?? 0) || 0;
   const pend = Number(so.dispatchSummary?.totalPending ?? 0) || 0;
   if (stage === "COMPLETED") return "Current cycle closed";
-  if (stage === "DRAFT") return "Awaiting requirement";
+  if (stage === "DRAFT") return "Planning Pending";
   if (stage === "REQUIREMENT READY") return "Requirement prepared";
   if (stage === "WORK ORDER") return "Work order ready";
   if (stage === "IN PRODUCTION") return "Production / QC in progress";
@@ -397,38 +403,6 @@ function noQtyProgressSummary(stage: NoQtyStage, so: SoRow): string {
       ? `Dispatch or billing pending · Out ${disp} · Pend ${pend}`
       : "Dispatch or billing pending";
   return `${fgCount} item(s)`;
-}
-
-function noQtyPrimaryHref(primary: NoQtyPrimaryAction, soId: number): string {
-  if (!primary || primary.action === "REOPEN_SO") return "#";
-  if (primary.action === "OPEN_WORK_ORDERS") {
-    const qs = new URLSearchParams();
-    qs.set("salesOrderId", String(soId));
-    qs.set("source", "no_qty_so");
-    qs.set("soMode", "NO_QTY");
-    return `/work-orders?${qs.toString()}`;
-  }
-  if (primary.action === "OPEN_PRODUCTION" || primary.action === "VIEW_PRODUCTION") {
-    const qs = new URLSearchParams();
-    qs.set("salesOrderId", String(soId));
-    qs.set("source", "no_qty_so");
-    qs.set("soMode", "NO_QTY");
-    return `/production?${qs.toString()}`;
-  }
-  if (primary.action === "VIEW_SALES_BILLS") {
-    return `/sales-bills?source=no_qty_so&salesOrderId=${soId}`;
-  }
-  if (primary.action === "OPEN_DISPATCH") {
-    return `/dispatch?source=no_qty_so&salesOrderId=${soId}`;
-  }
-  if (primary.action === "OPEN_SALES_BILL") {
-    return `/sales-bills/new?source=no_qty_so&salesOrderId=${soId}`;
-  }
-  if (primary.action === "OPEN_RS") {
-    // For NO_QTY, show the Requirement Sheet page; it handles state-driven CTAs.
-    return `/sales-orders/${soId}/requirement-sheets`;
-  }
-  return `/sales-orders/${soId}/requirement-sheets`;
 }
 
 /** Uses `dispatchSummary` from the SO list API — same fields as the "Fully dispatched" badge. Normal SOs only. */
@@ -447,9 +421,9 @@ function getPrimaryCta(so: SoRow): { label: string; to: string } | null {
   const sid = encodeURIComponent(String(so.id));
   switch (stage) {
     case "WO_PENDING":
-      return { label: "Create Work Order", to: `/rm-check?soId=${sid}` };
+      return { label: "Create Work Order", to: `/work-orders/prepare?salesOrderId=${sid}` };
     case "PRODUCTION_PENDING":
-      return { label: "Start Production", to: `/production?salesOrderId=${sid}` };
+      return { label: "Start Production", to: `/production?salesOrderId=${sid}&from=sales-orders` };
     case "QC_PENDING":
       return { label: "Go to QC", to: `/qc-entry?salesOrderId=${sid}` };
     case "DISPATCH_PENDING":
@@ -469,14 +443,6 @@ const SO_LIST_URL_OMIT: Record<string, string> = {
   dir: "desc",
 };
 
-function stockStripClass(data: RmCheckPayload | undefined): string {
-  if (!data) return "border-slate-200 bg-slate-50 text-slate-700";
-  const sufficient = data.allFgEnough && data.allRmEnough;
-  if (sufficient) return "border-emerald-200 bg-emerald-50 text-emerald-900";
-  if (data.strictInventoryControl) return "border-red-200 bg-red-50 text-red-900";
-  return "border-amber-200 bg-amber-50 text-amber-950";
-}
-
 export function SalesOrdersPage() {
   const navigate = useNavigate();
   const toast = useToast();
@@ -484,8 +450,14 @@ export function SalesOrdersPage() {
   const soDemoHlRegular = demoHighlightKey(demo.enabled, demo.flow, demo.step, "regular", 1);
   const soDemoHlNoQty = demoHighlightKey(demo.enabled, demo.flow, demo.step, "no_qty", 1);
   const isAdmin = useIsAdmin();
+  const canCreateNextRs = useCanCreateNextRs();
+  const canOpenRs = useCanOpenRequirementSheet();
   const { searchParams, setSearchParams, patch, read } = useUrlQueryState(SO_LIST_URL_OMIT);
   const quotationFromUrl = read.int("quotationId");
+  const copySourceRaw = read.string("copySource");
+  const copyIdFromUrl = read.int("copyId");
+  const copyFromPreviousActive =
+    (copySourceRaw === "QUOTATION" || copySourceRaw === "SO") && Number.isFinite(copyIdFromUrl) && copyIdFromUrl > 0;
   const focusSalesOrderId = Number(searchParams.get(DRILL_QUERY.salesOrderId)) || 0;
 
   const statusFilter = read.enum(
@@ -511,18 +483,18 @@ export function SalesOrdersPage() {
   const [rows, setRows] = React.useState<SoRow[]>([]);
   const [listLoaded, setListLoaded] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
-  const [stockBySoId, setStockBySoId] = React.useState<Record<number, RmCheckPayload | "loading">>({});
-  const [stockLoadingId, setStockLoadingId] = React.useState(0);
-
   const [qDetail, setQDetail] = React.useState<QuotationDetail | null>(null);
   const [qLoading, setQLoading] = React.useState(false);
+  const [copyPreview, setCopyPreview] = React.useState<CopyPreviewDetail | null>(null);
+  const [copyLoading, setCopyLoading] = React.useState(false);
   const [createPoRef, setCreatePoRef] = React.useState("");
   const [createRemarks, setCreateRemarks] = React.useState("");
   const [createPoTouched, setCreatePoTouched] = React.useState(false);
   const [quoteCreateLines, setQuoteCreateLines] = React.useState<QuoteCreateBufferLine[]>([]);
   const createFromQuoteRef = React.useRef<HTMLDivElement | null>(null);
   const createPoRefInputRef = React.useRef<HTMLInputElement | null>(null);
-  useFastEntryForm({ containerRef: createFromQuoteRef, initialFocusRef: createPoRefInputRef });
+  const listFilterStatusSelectRef = React.useRef<HTMLSelectElement | null>(null);
+  const didAutoFocusSoListRef = React.useRef(false);
 
   const shortcutHints = useShortcutHints({
     pageKey: "sales-orders",
@@ -537,23 +509,40 @@ export function SalesOrdersPage() {
   });
 
   const editFormRef = React.useRef<HTMLFormElement | null>(null);
+  const editSoTypeSelectRef = React.useRef<HTMLSelectElement | null>(null);
+  const editDraftPoRefInputRef = React.useRef<HTMLInputElement | null>(null);
+  const listFiltersRef = React.useRef<HTMLDivElement | null>(null);
   useFastEntryForm({ containerRef: editFormRef });
+  useFastEntryForm({ containerRef: listFiltersRef });
 
   const [creating, setCreating] = React.useState(false);
-  const [createChoiceOpen, setCreateChoiceOpen] = React.useState(false);
+  const [createFromPreviousOpen, setCreateFromPreviousOpen] = React.useState(false);
+  const [previousKind, setPreviousKind] = React.useState<"QUOTATION" | "SO">("QUOTATION");
+  const [previousPickId, setPreviousPickId] = React.useState<number>(0);
+  const [quotationPickOptions, setQuotationPickOptions] = React.useState<
+    {
+      id: number;
+      quotationNo: string | null;
+      customerName: string;
+      existingSalesOrderId: number | null;
+      existingSalesOrderDocNo: string | null;
+    }[]
+  >([]);
+  const [soPickOptions, setSoPickOptions] = React.useState<
+    { id: number; docNo: string | null; customerName: string; internalStatus: string; lineCount: number }[]
+  >([]);
+  const [previousPickLoading, setPreviousPickLoading] = React.useState(false);
   const [noQtyCreateOpen, setNoQtyCreateOpen] = React.useState(false);
   const [noQtyCustomerId, setNoQtyCustomerId] = React.useState<number>(0);
   const [noQtyPoRef, setNoQtyPoRef] = React.useState("");
   const [noQtyRemarks, setNoQtyRemarks] = React.useState("");
-  const [noQtyLines, setNoQtyLines] = React.useState<NoQtyCreateLine[]>([{ key: "1", itemId: 0, rate: "" }]);
+  const [noQtyLines, setNoQtyLines] = React.useState<NoQtyCreateLine[]>([{ key: "1", itemId: 0 }]);
   const [customers, setCustomers] = React.useState<Array<{ id: number; name: string }>>([]);
   const [fgItems, setFgItems] = React.useState<FgItemOption[]>([]);
   const [savingNoQty, setSavingNoQty] = React.useState(false);
 
-  const demoRegularStep1ChoiceModal =
-    demo.enabled && demo.flow === "regular" && demo.step === 1 && createChoiceOpen;
-
   const [editSo, setEditSo] = React.useState<SoRow | null>(null);
+  useModalFocusRestore(Boolean(editSo));
   const [editPoRef, setEditPoRef] = React.useState("");
   const [editRemarks, setEditRemarks] = React.useState("");
   const [editLines, setEditLines] = React.useState<DraftLineEdit[]>([]);
@@ -565,29 +554,29 @@ export function SalesOrdersPage() {
   const [invoiceLoading, setInvoiceLoading] = React.useState(false);
   const [invoiceError, setInvoiceError] = React.useState<string | null>(null);
   const [noQtyDraftRsBySoId, setNoQtyDraftRsBySoId] = React.useState<Record<number, boolean>>({});
+  const [noQtyCloseDialog, setNoQtyCloseDialog] = React.useState<{ soId: number; docNo?: string | null } | null>(null);
+  const [noQtyReopenDialog, setNoQtyReopenDialog] = React.useState<{ soId: number; docNo?: string | null } | null>(null);
+  const [reopenAdminPassword, setReopenAdminPassword] = React.useState("");
+  const [reopenMode, setReopenMode] = React.useState<"CONTINUE_SHORTAGE" | "IGNORE_SHORTAGE">("CONTINUE_SHORTAGE");
+  const [reopenPreviewLoading, setReopenPreviewLoading] = React.useState(false);
+  const [reopenPreviewError, setReopenPreviewError] = React.useState<string | null>(null);
+  const [reopenPreview, setReopenPreview] = React.useState<{
+    closedShortageLines: { itemId: number; closedShortageQty: number }[];
+    currentUsableByItem: { itemId: number; usableQty: number }[];
+    pendingQcDispositionByItem: { itemId: number; pendingQty: number }[];
+    stockMayHaveChangedWarning: boolean;
+  } | null>(null);
 
-  const [closingEmptyCycleSoId, setClosingEmptyCycleSoId] = React.useState<number | null>(null);
   /** Doc no for drill-focused SO when missing from list row (e.g. list not yet refreshed). */
   const [drillSoDocNo, setDrillSoDocNo] = React.useState<string | null>(null);
-
-  const mode = soTypeFilter === "NO_QTY" ? "NO_QTY" : "REGULAR";
-  const isNoQtyMode = mode === "NO_QTY";
 
   const demoForcedMode: "REGULAR" | "NO_QTY" | null =
     demo.enabled && demo.flow === "regular" ? "REGULAR" : demo.enabled && demo.flow === "no_qty" ? "NO_QTY" : null;
   React.useEffect(() => {
     if (!demoForcedMode) return;
-    if (mode === demoForcedMode) return;
+    if (soTypeFilter === demoForcedMode) return;
     patch({ soType: demoForcedMode });
-  }, [demoForcedMode, mode, patch]);
-
-  const planningHref = React.useMemo(() => {
-    const qs = new URLSearchParams();
-    qs.set("source", "no_qty_so");
-    if (Number.isFinite(focusSalesOrderId) && focusSalesOrderId > 0) qs.set("salesOrderId", String(focusSalesOrderId));
-    const q = qs.toString();
-    return q ? `/planning-dashboard?${q}` : "/planning-dashboard";
-  }, [focusSalesOrderId]);
+  }, [demoForcedMode, soTypeFilter, patch]);
 
   function load() {
     setError(null);
@@ -625,52 +614,88 @@ export function SalesOrdersPage() {
       .catch(() => setCustomers([]));
   }
 
-  async function submitCloseEmptyCycle(soId: number) {
-    if (
-      !window.confirm(
-        "Close this empty active cycle? The No Qty sales order will return to completed status, and this cycle will be marked closed in history.",
-      )
-    )
-      return;
-    setClosingEmptyCycleSoId(soId);
+  async function runNoQtyClose() {
+    if (!noQtyCloseDialog) return;
+    const { soId, docNo } = noQtyCloseDialog;
     try {
-      await apiFetch(`/api/sales-orders/${soId}/no-qty-cycle/close-empty`, {
-        method: "POST",
-        body: JSON.stringify({}),
-      });
-      toast.showSuccess("Empty cycle closed. Sales order is now closed.");
-      await load();
-    } catch (e) {
-      toast.showError(e instanceof Error ? e.message : "Could not close cycle.");
-    } finally {
-      setClosingEmptyCycleSoId(null);
-    }
-  }
-
-  async function submitNoQtyStatus(soId: number, nextStatus: "OPEN" | "CLOSED") {
-    const endpoint = nextStatus === "CLOSED" ? "close" : "reopen";
-    try {
-      await apiFetch(`/api/sales-orders/${soId}/${endpoint}`, {
-        method: "POST",
-        body: JSON.stringify({}),
-      });
+      const res = await apiFetch<{
+        closedShortageSummary?: { totalClosedShortage: number; lines: { itemName: string; closedShortageQty: number }[] };
+      }>(`/api/sales-orders/${soId}/close`, { method: "POST", body: JSON.stringify({}) });
+      const label = displaySalesOrderNo(soId, docNo);
+      const sum = res?.closedShortageSummary?.totalClosedShortage;
+      const lines = res?.closedShortageSummary?.lines?.length
+        ? ` Items: ${res.closedShortageSummary.lines.map((l) => `${l.itemName} ${l.closedShortageQty}`).join("; ")}`
+        : "";
       toast.showSuccess(
-        nextStatus === "CLOSED"
-          ? `Sales Order ${displaySalesOrderNo(soId, rows.find((r) => r.id === soId)?.docNo)} closed.`
-          : `Sales Order ${displaySalesOrderNo(soId, rows.find((r) => r.id === soId)?.docNo)} reopened.`,
+        typeof sum === "number"
+          ? `Sales Order ${label} closed. Closed shortage total: ${sum}.${lines}`
+          : `Sales Order ${label} closed.`,
       );
+      setNoQtyCloseDialog(null);
       await load();
     } catch (e) {
-      toast.showError(e instanceof Error ? e.message : `Failed to set status ${nextStatus}.`);
+      toast.showError(e instanceof Error ? e.message : "Failed to close sales order.");
     }
   }
 
   React.useEffect(() => {
-    // In quotation-mode we render a single-purpose screen; skip list/customer preloads.
-    if (quotationFromUrl) return;
+    if (!noQtyReopenDialog) {
+      setReopenPreview(null);
+      setReopenPreviewError(null);
+      setReopenAdminPassword("");
+      setReopenMode("CONTINUE_SHORTAGE");
+      return;
+    }
+    let cancelled = false;
+    setReopenPreviewLoading(true);
+    setReopenPreviewError(null);
+    apiFetch<{
+      closedShortageLines: { itemId: number; closedShortageQty: number }[];
+      currentUsableByItem: { itemId: number; usableQty: number }[];
+      pendingQcDispositionByItem: { itemId: number; pendingQty: number }[];
+      stockMayHaveChangedWarning: boolean;
+    }>(`/api/sales-orders/${noQtyReopenDialog.soId}/reopen-preview`)
+      .then((r) => {
+        if (!cancelled) setReopenPreview(r);
+      })
+      .catch((e) => {
+        if (!cancelled) setReopenPreviewError(e instanceof Error ? e.message : "Preview failed.");
+      })
+      .finally(() => {
+        if (!cancelled) setReopenPreviewLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [noQtyReopenDialog]);
+
+  async function runNoQtyReopen() {
+    if (!noQtyReopenDialog) return;
+    const pwd = reopenAdminPassword.trim();
+    if (!pwd) {
+      toast.showError("Admin password is required.");
+      return;
+    }
+    const { soId, docNo } = noQtyReopenDialog;
+    try {
+      await apiFetch(`/api/sales-orders/${soId}/reopen`, {
+        method: "POST",
+        body: JSON.stringify({ adminPassword: pwd, mode: reopenMode }),
+      });
+      toast.showSuccess(`Sales Order ${displaySalesOrderNo(soId, docNo)} reopened.`);
+      setNoQtyReopenDialog(null);
+      await load();
+    } catch (e) {
+      toast.showError(e instanceof Error ? e.message : "Failed to reopen sales order.");
+    }
+  }
+
+  React.useEffect(() => {
+    // In quotation-mode or copy-from-previous we render a single-purpose screen; skip list/customer preloads.
+    if (quotationFromUrl || copyFromPreviousActive) return;
     void load();
     void loadCustomers();
-  }, [quotationFromUrl]);
+  }, [quotationFromUrl, copyFromPreviousActive]);
 
   React.useEffect(() => {
     if (openInvoiceFromUrl > 0) {
@@ -731,14 +756,13 @@ export function SalesOrdersPage() {
 
   const visibleRows = React.useMemo(() => {
     let list = rows.filter((so) => {
-      const stageMetaForFilter = isNoQtyMode ? getNoQtySoStageMeta(so, { isAdmin }) : null;
+      const stageMetaForFilter =
+        so.orderType === "NO_QTY" ? getNoQtySoStageMeta(so, { isAdmin }) : null;
       const displayStatusForFilter = displaySoStatus(so, stageMetaForFilter?.stage ?? null);
       if (statusFilter !== "ALL" && displayStatusForFilter !== statusFilter) return false;
-      // Top-level mode switch controls type visibility (do not mix Regular + No Qty UI).
-      if (mode === "NO_QTY") {
+      if (soTypeFilter === "NO_QTY") {
         if (so.orderType !== "NO_QTY") return false;
-      } else {
-        // Regular includes NORMAL + REPLACEMENT.
+      } else if (soTypeFilter === "REGULAR") {
         if (so.orderType === "NO_QTY") return false;
       }
       if (customerIdFilter > 0) {
@@ -756,8 +780,8 @@ export function SalesOrdersPage() {
           String(so.quotation?.id ?? "").includes(listSearch);
         if (!hit) return false;
       }
-      // Production filter is only relevant in Regular mode.
-      if (mode !== "NO_QTY" && prodFilter !== "ALL") {
+      // Production filter applies to Regular / replacement rows only (not NO_QTY lifecycle).
+      if (so.orderType !== "NO_QTY" && prodFilter !== "ALL") {
         const pending = Number(so.dispatchSummary?.totalPending ?? 0) || 0;
         if (prodFilter === "PENDING" && pending <= 0) return false;
         if (prodFilter === "NONE" && pending > 0) return false;
@@ -774,11 +798,22 @@ export function SalesOrdersPage() {
       return sortDir === "asc" ? cmp : -cmp;
     });
     return list;
-  }, [rows, statusFilter, customerIdFilter, listSearch, prodFilter, sortKey, sortDir, mode]);
+  }, [rows, statusFilter, customerIdFilter, listSearch, prodFilter, sortKey, sortDir, soTypeFilter, isAdmin]);
+
+  const regularTableRows = React.useMemo(() => {
+    if (soTypeFilter === "NO_QTY") return [];
+    return visibleRows.filter((so) => so.orderType !== "NO_QTY");
+  }, [visibleRows, soTypeFilter]);
+
+  const noQtyTableRows = React.useMemo(() => {
+    if (soTypeFilter === "REGULAR") return [];
+    return visibleRows.filter((so) => so.orderType === "NO_QTY");
+  }, [visibleRows, soTypeFilter]);
 
   const listFiltersActive =
     statusFilter !== "ALL" ||
     prodFilter !== "ALL" ||
+    soTypeFilter !== "ALL" ||
     customerIdFilter > 0 ||
     listSearch.length > 0 ||
     sortKey !== "date" ||
@@ -789,6 +824,7 @@ export function SalesOrdersPage() {
     patch({
       status: null,
       prod: null,
+      soType: null,
       search: null,
       customerId: null,
       sort: null,
@@ -810,6 +846,7 @@ export function SalesOrdersPage() {
       status: null,
       search: null,
       customerId: null,
+      soType: null,
     });
   }, [patch, setSearchDraft]);
 
@@ -879,38 +916,210 @@ export function SalesOrdersPage() {
       .finally(() => setQLoading(false));
   }, [quotationFromUrl]);
 
-  /** Dashboard (and bookmarks): `/sales-orders?action=new-so` | `?action=no-qty-so` opens the same flows as in-page CTAs. */
+  React.useEffect(() => {
+    if (!copyFromPreviousActive) {
+      setCopyPreview(null);
+      return;
+    }
+    setCopyLoading(true);
+    setError(null);
+    apiFetch<CopyPreviewDetail>(
+      `/api/sales-orders/copy-preview?sourceType=${encodeURIComponent(copySourceRaw)}&id=${encodeURIComponent(String(copyIdFromUrl))}`,
+    )
+      .then((p) => {
+        setCopyPreview(p);
+        setCreatePoRef("");
+        setCreateRemarks(
+          p.sourceType === "SO" && p.remarksPreview != null && String(p.remarksPreview).trim() !== ""
+            ? String(p.remarksPreview).trim()
+            : "",
+        );
+        setCreatePoTouched(false);
+        setQuoteCreateLines(
+          (p.lines || []).map((ln) => ({
+            itemId: ln.itemId,
+            customerPoQty: String(Math.max(0, Math.floor(Number(ln.qty) || 0))),
+            bufferPercent:
+              ln.bufferPercentSnapshot != null && String(ln.bufferPercentSnapshot).trim() !== ""
+                ? String(Math.max(0, Math.floor(Number(ln.bufferPercentSnapshot) || 0)))
+                : "0",
+          })),
+        );
+      })
+      .catch((e) => {
+        setCopyPreview(null);
+        setQuoteCreateLines([]);
+        setError(e instanceof Error ? e.message : "Failed to load template");
+      })
+      .finally(() => setCopyLoading(false));
+  }, [copyFromPreviousActive, copySourceRaw, copyIdFromUrl]);
+
+  const quoteDetailForCreate = React.useMemo((): QuotationDetail | null => {
+    if (quotationFromUrl && qDetail) return qDetail;
+    if (copyFromPreviousActive && copyPreview) {
+      return {
+        id: copyPreview.sourceId,
+        quotationNo: copyPreview.quotationNo,
+        workflowStatus: copyPreview.workflowStatus,
+        salesOrder: copyPreview.existingSalesOrder,
+        enquiry: copyPreview.enquiry,
+        lines: copyPreview.lines.map((ln) => ({
+          itemId: ln.itemId,
+          qty: ln.qty,
+          rate: ln.rate,
+          lineTotal: ln.lineTotal || "0",
+          isFree: ln.isFree,
+          gstPct: ln.gstPct,
+          item: { itemName: ln.itemName },
+        })),
+      };
+    }
+    return null;
+  }, [quotationFromUrl, qDetail, copyFromPreviousActive, copyPreview]);
+
+  const quoteFlowLoading = qLoading || (copyFromPreviousActive && copyLoading);
+
+  const canCreateFromQuoteFlow = React.useMemo(
+    () =>
+      Boolean(
+        quoteDetailForCreate &&
+          !quoteFlowLoading &&
+          (copyFromPreviousActive ||
+            (quoteDetailForCreate.workflowStatus === "APPROVED" && !quoteDetailForCreate.salesOrder)),
+      ),
+    [quoteDetailForCreate, quoteFlowLoading, copyFromPreviousActive],
+  );
+
+  useFastEntryForm({
+    containerRef: createFromQuoteRef,
+    initialFocusRef: createPoRefInputRef,
+    initialFocusEnabled: canCreateFromQuoteFlow,
+  });
+
+  React.useEffect(() => {
+    if (!listLoaded || didAutoFocusSoListRef.current) return;
+    if (!prefersFinePointer()) return;
+    if (canCreateFromQuoteFlow) return;
+    if (editSo) return;
+    if (invoiceModalSoId != null) return;
+    didAutoFocusSoListRef.current = true;
+    const id = window.setTimeout(() => listFilterStatusSelectRef.current?.focus({ preventScroll: true }), 0);
+    return () => window.clearTimeout(id);
+  }, [listLoaded, canCreateFromQuoteFlow, editSo, invoiceModalSoId]);
+
+  React.useEffect(() => {
+    if (!editSo) return;
+    if (!prefersFinePointer()) return;
+    const id = window.setTimeout(() => {
+      const sel = editSoTypeSelectRef.current;
+      if (sel && !sel.disabled) sel.focus({ preventScroll: true });
+      else editDraftPoRefInputRef.current?.focus({ preventScroll: true });
+    }, 0);
+    return () => window.clearTimeout(id);
+  }, [editSo?.id]);
+
+  React.useEffect(() => {
+    if (!createFromPreviousOpen) return;
+    setPreviousPickLoading(true);
+    const qUrl = "/api/sales-orders/regular-copy-sources/quotations";
+    const soUrl = "/api/sales-orders/regular-copy-sources/sales-orders";
+    Promise.all([
+      apiFetch<typeof quotationPickOptions>(qUrl).catch(() => []),
+      apiFetch<typeof soPickOptions>(soUrl).catch(() => []),
+    ])
+      .then(([qRows, soRows]) => {
+        setQuotationPickOptions(Array.isArray(qRows) ? qRows : []);
+        setSoPickOptions(Array.isArray(soRows) ? soRows : []);
+      })
+      .finally(() => setPreviousPickLoading(false));
+  }, [createFromPreviousOpen]);
+
+  /** `/sales-orders?action=new-so` sends users to Quotations (workflow continuation); `no-qty-so` opens exceptional NO_QTY create. */
   const quickEntryAction = searchParams.get("action") ?? "";
   React.useEffect(() => {
     if (quickEntryAction !== "new-so" && quickEntryAction !== "no-qty-so") return;
+    patch({ action: null });
     if (quickEntryAction === "new-so") {
-      setCreateChoiceOpen(true);
-      patch({ action: null });
+      navigate("/quotations", { replace: true });
       return;
     }
-    openNoQtyCreateModal({ alsoClearAction: true });
-  }, [quickEntryAction, patch]);
+    openNoQtyCreateModal();
+  }, [quickEntryAction, patch, navigate]);
 
-  async function runStockCheck(soId: number) {
-    setStockLoadingId(soId);
-    setStockBySoId((s) => ({ ...s, [soId]: "loading" }));
+  async function createFromPreviousSnapshot() {
+    if (!copyPreview) return;
+    const po = createPoRef.trim();
+    if (!po) {
+      setCreatePoTouched(true);
+      setError("Customer PO reference is required.");
+      toast.showError("Customer PO reference is required.");
+      createPoRefInputRef.current?.focus();
+      return;
+    }
+    if (
+      !window.confirm(
+        "Create a new approved Sales Order from this template? Original quotation or sales order records are not modified.",
+      )
+    ) {
+      return;
+    }
+    if (quoteCreateLines.length !== copyPreview.lines.length) {
+      const msg = "Lines do not match the template. Reload and try again.";
+      setError(msg);
+      toast.showError(msg);
+      return;
+    }
+    for (let i = 0; i < copyPreview.lines.length; i += 1) {
+      if (Number(quoteCreateLines[i]?.itemId) !== Number(copyPreview.lines[i]?.itemId)) {
+        const msg = "Line items are out of order. Reload and try again.";
+        setError(msg);
+        toast.showError(msg);
+        return;
+      }
+    }
+    if (
+      quoteCreateLines.some(
+        (l) => !Number.isFinite(Number(l.customerPoQty)) || Math.floor(Number(l.customerPoQty)) <= 0,
+      )
+    ) {
+      setError("Enter a valid Customer PO Qty (greater than zero) for every line.");
+      toast.showError("Enter a valid Customer PO Qty for every line.");
+      return;
+    }
+    setCreating(true);
     setError(null);
     try {
-      const res = await apiFetch<RmCheckPayload>(`/api/sales-orders/${soId}/rm-check`);
-      setStockBySoId((s) => ({ ...s, [soId]: res }));
-    } catch (e) {
-      setStockBySoId((s) => {
-        const next = { ...s };
-        delete next[soId];
-        return next;
+      const created = await apiFetch<{ id: number; docNo?: string | null }>(`/api/sales-orders/from-previous`, {
+        method: "POST",
+        body: JSON.stringify({
+          sourceType: copyPreview.sourceType,
+          sourceId: copyPreview.sourceId,
+          customerPoReference: po,
+          remarks: createRemarks.trim() || null,
+          lines: quoteCreateLines.map((l) => ({
+            itemId: l.itemId,
+            customerPoQty: Math.floor(Number(l.customerPoQty)),
+            bufferPercent: Number(l.bufferPercent ?? 0),
+          })),
+        }),
       });
-      setError(e instanceof Error ? e.message : "Stock check failed");
+      toast.showSuccess(REGULAR_TERMS.TOAST_CONTINUE_PREPARE_WORK_ORDER);
+      patch({ copySource: null, copyId: null });
+      navigate(`/work-orders/prepare?salesOrderId=${encodeURIComponent(String(created.id))}`);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Failed";
+      setError(msg);
+      toast.showError(msg);
     } finally {
-      setStockLoadingId(0);
+      setCreating(false);
     }
   }
 
   async function createFromQuotation() {
+    if (copyFromPreviousActive && copyPreview) {
+      await createFromPreviousSnapshot();
+      return;
+    }
     if (!qDetail || qDetail.workflowStatus !== "APPROVED" || qDetail.salesOrder) return;
     const po = createPoRef.trim();
     if (!po) {
@@ -961,9 +1170,9 @@ export function SalesOrdersPage() {
           })),
         }),
       });
-      toast.showSuccess("Sales order created as Approved — continue to production planning.");
+      toast.showSuccess(REGULAR_TERMS.TOAST_CONTINUE_PREPARE_WORK_ORDER);
       // Guided: go straight to the next operational step (Work Order planning).
-      navigate(`/rm-check?soId=${encodeURIComponent(String(created.id))}`);
+      navigate(`/work-orders/prepare?salesOrderId=${encodeURIComponent(String(created.id))}`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Failed";
       setError(msg);
@@ -981,11 +1190,13 @@ export function SalesOrdersPage() {
       so.lines.map((l) => {
         const qf = l.quotationLine?.isFree ?? l.isFree;
         const rateLabel =
-          l.quotationLine != null
-            ? qf
-              ? "0 (Free)"
-              : Number(l.quotationLine.rate).toFixed(2)
-            : "—";
+          so.orderType === "NO_QTY"
+            ? Number(l.rate ?? 0).toFixed(2)
+            : l.quotationLine != null
+              ? qf
+                ? "0 (Free)"
+                : Number(l.quotationLine.rate).toFixed(2)
+              : "—";
         if (so.orderType === "NORMAL") {
           return {
             lineId: l.id,
@@ -1007,14 +1218,14 @@ export function SalesOrdersPage() {
     );
   }
 
-  function openNoQtyCreateModal(opts?: { alsoClearAction?: boolean }) {
+  function openNoQtyCreateModal() {
     void loadCustomers();
+    setError(null);
     setNoQtyCreateOpen(true);
     setNoQtyCustomerId(0);
     setNoQtyPoRef("");
     setNoQtyRemarks("");
-    setNoQtyLines([{ key: String(Date.now()), itemId: 0, rate: "" }]);
-    patch(opts?.alsoClearAction ? { soType: "NO_QTY", action: null } : { soType: "NO_QTY" });
+    setNoQtyLines([{ key: String(Date.now()), itemId: 0 }]);
     if (fgItems.length === 0) {
       apiFetch<FgItemOption[]>("/api/items?type=FG")
         .then((xs) => setFgItems(Array.isArray(xs) ? xs : []))
@@ -1034,25 +1245,26 @@ export function SalesOrdersPage() {
     setNoQtyCustomerId(customers[0].id);
     setNoQtyPoRef("DEMO-PO-001");
     setNoQtyRemarks("Demo walkthrough");
-    setNoQtyLines([{ key: "demo-1", itemId: fgItems[0].id, rate: "1" }]);
+    setNoQtyLines([{ key: "demo-1", itemId: fgItems[0].id }]);
   }, [demo.enabled, demo.flow, demo.step, noQtyCreateOpen, customers, fgItems]);
 
   async function saveNoQtyCreate(e: React.FormEvent) {
     e.preventDefault();
     if (noQtyCustomerId <= 0) {
       setError("Customer is required.");
+      toast.showError("Customer is required.");
       return;
     }
-    const items = noQtyLines
-      .map((l) => ({ itemId: Number(l.itemId), rate: Number(l.rate) }))
-      .filter((x) => Number.isFinite(x.itemId) && x.itemId > 0);
+    const noQtyPoTrimmed = noQtyPoRef.trim();
+    if (!noQtyPoTrimmed) {
+      setError("Customer PO reference is required.");
+      toast.showError("Customer PO reference is required.");
+      return;
+    }
+    const items = noQtyLines.map((l) => ({ itemId: Number(l.itemId) })).filter((x) => Number.isFinite(x.itemId) && x.itemId > 0);
     if (items.length < 1) {
       setError("At least one item is required.");
-      return;
-    }
-    if (items.some((x) => !Number.isFinite(x.rate) || x.rate <= 0)) {
-      toast.showError("Enter valid rate");
-      setError("Enter a valid rate for all items.");
+      toast.showError("At least one item is required.");
       return;
     }
     setSavingNoQty(true);
@@ -1062,7 +1274,7 @@ export function SalesOrdersPage() {
         method: "POST",
         body: JSON.stringify({
           customerId: noQtyCustomerId,
-          customerPoReference: noQtyPoRef.trim() || null,
+          customerPoReference: noQtyPoTrimmed,
           remarks: noQtyRemarks.trim() || null,
           items,
         }),
@@ -1209,7 +1421,9 @@ export function SalesOrdersPage() {
 
   React.useEffect(() => {
     const needMaxBuffer =
-      Boolean(editSo && editSo.orderType === "NORMAL") || Boolean(quotationFromUrl && quotationFromUrl > 0);
+      Boolean(editSo && editSo.orderType === "NORMAL") ||
+      Boolean(quotationFromUrl && quotationFromUrl > 0) ||
+      copyFromPreviousActive;
     if (!needMaxBuffer) return;
     let cancelled = false;
     void apiFetch<{ maxRegularSoBufferPercent?: number }>("/api/settings/regular-so-buffer")
@@ -1221,7 +1435,7 @@ export function SalesOrdersPage() {
     return () => {
       cancelled = true;
     };
-  }, [editSo?.id, editSo?.orderType, quotationFromUrl]);
+  }, [editSo?.id, editSo?.orderType, quotationFromUrl, copyFromPreviousActive]);
   const creatingRef = React.useRef(creating);
   creatingRef.current = creating;
   const savingEditRef = React.useRef(savingEdit);
@@ -1232,10 +1446,10 @@ export function SalesOrdersPage() {
 
   const canCreateFromQuoteRef = React.useRef(false);
   canCreateFromQuoteRef.current = Boolean(
-    quotationFromUrl &&
-      qDetail &&
-      qDetail.workflowStatus === "APPROVED" &&
-      !qDetail.salesOrder,
+    quoteDetailForCreate &&
+      !quoteFlowLoading &&
+      (copyFromPreviousActive ||
+        (quoteDetailForCreate.workflowStatus === "APPROVED" && !quoteDetailForCreate.salesOrder)),
   );
 
   const markShortcutRef = React.useRef(shortcutHints.markFieldShortcutUsed);
@@ -1304,16 +1518,26 @@ export function SalesOrdersPage() {
 
   return (
     <PageContainer className="pb-[5.5rem] sm:pb-20">
-      {quotationFromUrl ? (
+      {quotationFromUrl || copyFromPreviousActive ? (
         <>
           <StickyWorkspaceHead
-            lead={<PageSmartBackLink defaultTo="/quotations" defaultLabel="Back to Quotations" />}
+            lead={
+              copyFromPreviousActive ? (
+                <PageSmartBackLink defaultTo="/sales-orders" defaultLabel="Back to sales orders" />
+              ) : (
+                <PageSmartBackLink defaultTo="/quotations" defaultLabel="Back to Quotations" />
+              )
+            }
           >
             <PageHeader
               title={
-                qDetail?.quotationNo
-                  ? `Create Sales Order from Quotation (${qDetail.quotationNo})`
-                  : "Create Sales Order from Quotation"
+                copyFromPreviousActive
+                  ? copyPreview?.sourceType === "SO"
+                    ? "Create Sales Order from previous order"
+                    : "Create Sales Order from previous quotation"
+                  : quoteDetailForCreate?.quotationNo
+                    ? `Create Sales Order from Quotation (${quoteDetailForCreate.quotationNo})`
+                    : "Create Sales Order from Quotation"
               }
               actions={null}
             />
@@ -1329,38 +1553,70 @@ export function SalesOrdersPage() {
                 <CardTitle className="text-base">Sales Order details</CardTitle>
               </CardHeader>
               <CardContent className="space-y-4 text-sm">
-                {qLoading ? <p className="text-slate-600">Loading quotation…</p> : null}
+                {quoteFlowLoading ? <p className="text-slate-600">Loading…</p> : null}
 
-                {!qLoading && qDetail ? (
+                {!quoteFlowLoading && quoteDetailForCreate ? (
                   <>
-                    {qDetail.workflowStatus !== "APPROVED" ? (
+                    {!copyFromPreviousActive && quoteDetailForCreate.workflowStatus !== "APPROVED" ? (
                       <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-amber-900">
                         Only an <strong>approved</strong> quotation can generate a sales order. This quotation is{" "}
-                        <strong>{qDetail.workflowStatus.replace(/_/g, " ")}</strong>.
+                        <strong>{quoteDetailForCreate.workflowStatus.replace(/_/g, " ")}</strong>.
                       </p>
-                    ) : qDetail.salesOrder ? (
+                    ) : !copyFromPreviousActive && quoteDetailForCreate.salesOrder ? (
                       <p className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-slate-800">
                         A sales order already exists for this quotation:{" "}
                         <span className="font-mono">
-                          {displaySalesOrderNo(qDetail.salesOrder.id, qDetail.salesOrder.docNo)}
+                          {displaySalesOrderNo(
+                            quoteDetailForCreate.salesOrder.id,
+                            quoteDetailForCreate.salesOrder.docNo,
+                          )}
                         </span>
                       </p>
                     ) : (
                       <>
+                        {copyFromPreviousActive && copyPreview?.existingSalesOrder && copyPreview.sourceType === "QUOTATION" ? (
+                          <p className="rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-[13px] leading-snug text-sky-950">
+                            This quotation already has{" "}
+                            <span className="font-mono font-semibold">
+                              {displaySalesOrderNo(
+                                copyPreview.existingSalesOrder.id,
+                                copyPreview.existingSalesOrder.docNo,
+                              )}
+                            </span>
+                            . You are creating an <strong>additional</strong> sales order using the same commercial snapshot;
+                            existing documents are unchanged.
+                          </p>
+                        ) : null}
                         <p className="rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-[13px] leading-snug text-sky-950">
-                          This sales order will be created as <strong>Approved</strong> because the quotation is already
-                          approved. You can go straight to production planning (RM check / work order) — no second
-                          approval on the sales order. Set <strong>Customer PO Qty</strong> (dispatch cap) and optional{" "}
-                          <strong>Buffer %</strong>; <strong>Planned Qty</strong> is what production and RM check use.
+                          This sales order will be created as <strong>Approved</strong>
+                          {copyFromPreviousActive ? (
+                            <> using the selected template snapshot.</>
+                          ) : (
+                            <>
+                              {" "}
+                              because the quotation is already approved. {REGULAR_TERMS.SALES_ORDER_APPROVED_RM_CHECK_HINT}
+                            </>
+                          )}{" "}
+                          Set <strong>Customer PO Qty</strong> (dispatch cap) and optional <strong>Buffer %</strong>;{" "}
+                          <strong>Planned Qty</strong> is what production and RM check use.
                         </p>
                         <div className="grid gap-3 sm:grid-cols-2">
                           <div className="erp-form-field">
                             <span className="erp-form-label">Customer</span>
-                            <Input value={qDetail.enquiry.customer.name} disabled />
+                            <Input value={quoteDetailForCreate.enquiry.customer.name} disabled />
                           </div>
                           <div className="erp-form-field">
-                            <span className="erp-form-label">Quotation</span>
-                            <Input value={qDetail.quotationNo || `#${qDetail.id}`} disabled />
+                            <span className="erp-form-label">
+                              {copyFromPreviousActive && copyPreview?.sourceType === "SO" ? "Previous sales order" : "Quotation"}
+                            </span>
+                            <Input
+                              value={
+                                copyFromPreviousActive && copyPreview?.sourceType === "SO"
+                                  ? copyPreview.quotationNo || `SO-${copyPreview.sourceId}`
+                                  : quoteDetailForCreate.quotationNo || `#${quoteDetailForCreate.id}`
+                              }
+                              disabled
+                            />
                           </div>
                         </div>
 
@@ -1377,16 +1633,25 @@ export function SalesOrdersPage() {
                                   <th className="px-3 py-2 text-right">Buffer %</th>
                                   <th className="px-3 py-2 text-right">Planned Qty</th>
                                   <th className="px-3 py-2 text-right">Rate</th>
+                                  <th className="px-3 py-2 text-right">GST %</th>
                                 </tr>
                               </thead>
                               <tbody className="divide-y divide-slate-200">
-                                {qDetail.lines.map((ln, idx) => {
+                                {quoteDetailForCreate.lines.map((ln, idx) => {
                                   const row = quoteCreateLines[idx];
                                   const cp = Number(row?.customerPoQty ?? ln.qty);
                                   const buf = Number(row?.bufferPercent ?? 0);
                                   const planned = computePlannedQtyPreview(cp, buf);
+                                  const gstPctStr = ln.gstPct;
+                                  const gstLabel =
+                                    gstPctStr != null && String(gstPctStr).trim() !== ""
+                                      ? `${Number(gstPctStr).toFixed(0)}%`
+                                      : "—";
                                   return (
-                                    <tr key={ln.id != null ? `ql-${ln.id}` : `${qDetail.id}-ln-${idx}`} className="bg-white">
+                                    <tr
+                                      key={ln.id != null ? `ql-${ln.id}` : `${quoteDetailForCreate.id}-ln-${idx}`}
+                                      className="bg-white"
+                                    >
                                       <td className="px-3 py-2 font-medium text-slate-900">
                                         {ln.item.itemName}
                                         {ln.isFree ? (
@@ -1435,6 +1700,7 @@ export function SalesOrdersPage() {
                                       <td className="px-3 py-2 text-right tabular-nums text-slate-800">
                                         {ln.isFree ? "0 (Free)" : Number(ln.rate).toFixed(2)}
                                       </td>
+                                      <td className="px-3 py-2 text-right tabular-nums text-slate-600">{gstLabel}</td>
                                     </tr>
                                   );
                                 })}
@@ -1484,10 +1750,10 @@ export function SalesOrdersPage() {
                             <Button
                               type="button"
                               variant="outline"
-                              onClick={() => navigate("/quotations")}
+                              onClick={() => patch({ quotationId: null, copySource: null, copyId: null })}
                               disabled={creating}
                             >
-                              Cancel / Back
+                              Cancel
                             </Button>
                             <Button
                               type="button"
@@ -1514,115 +1780,180 @@ export function SalesOrdersPage() {
         </>
       ) : null}
 
-      {quotationFromUrl ? null : (
+      {quotationFromUrl || copyFromPreviousActive ? null : (
         <>
           <StickyWorkspaceHead
-            lead={<PageSmartBackLink defaultTo="/dashboard" defaultLabel="Back to Dashboard" />}
+            className="space-y-1.5"
+            lead={
+              /* Uses ?from= / ?source=, navigation state, session workflow hint (after Enquiries/Quotations), then dashboard. */
+              <PageSmartBackLink
+                workflowSessionFallback
+                defaultTo="/dashboard"
+                defaultLabel="Back to Dashboard"
+              />
+            }
           >
             <PageHeader
               title="Sales orders"
               actions={
-                isNoQtyMode ? (
-                  <Button
-                    type="button"
-                    size="sm"
-                    data-testid="create-sales-order-btn"
-                    onClick={() => openNoQtyCreateModal()}
-                    {...(soDemoHlNoQty && !createChoiceOpen ? { "data-demo-highlight": soDemoHlNoQty } : {})}
+                <div className="flex flex-wrap items-center gap-2">
+                  <Link
+                    to="/quotations"
+                    className={cn(buttonVariants({ size: "sm" }), "no-underline")}
+                    data-testid="open-approved-quotations-btn"
+                    title="Open Quotations — create a sales order from an approved quotation"
+                    {...(soDemoHlRegular ? { "data-demo-highlight": soDemoHlRegular } : {})}
                   >
-                    + New No Qty SO
-                  </Button>
-                ) : (
-                  <Button
-                    type="button"
-                    size="sm"
-                    data-testid="create-sales-order-btn"
-                    onClick={() => setCreateChoiceOpen(true)}
-                    {...(soDemoHlRegular && !createChoiceOpen ? { "data-demo-highlight": soDemoHlRegular } : {})}
-                  >
-                    + New Sales Order
-                  </Button>
-                )
+                    Open approved quotations
+                  </Link>
+                </div>
               }
             />
           </StickyWorkspaceHead>
 
-          <div className="grid gap-4">
+          <div className="grid gap-2">
             <DemoFlowBanner />
 
-      <div className="rounded-md border border-slate-200 bg-white px-3 py-2">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Mode</div>
-        </div>
-        <div className="mt-1 flex flex-wrap gap-4">
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="radio"
-              name="so-mode"
-              checked={mode === "REGULAR"}
-              onChange={() => patch({ soType: "REGULAR" })}
-              disabled={demoForcedMode === "NO_QTY"}
-            />
-            Regular SO
-          </label>
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="radio"
-              name="so-mode"
-              checked={mode === "NO_QTY"}
-              onChange={() => patch({ soType: "NO_QTY" })}
-              disabled={demoForcedMode === "REGULAR"}
-            />
-            No Qty SO
-          </label>
-        </div>
-      </div>
+            <div className="erp-info-strip" data-tone="info">
+              <span className="font-semibold text-sky-950">Workflow:</span>
+              <span>
+                Create SOs from{" "}
+                <Link to="/quotations" className="font-medium text-blue-800 underline underline-offset-2">
+                  approved quotations
+                </Link>
+                ; track fulfillment here.
+              </span>
+            </div>
 
-      {createChoiceOpen ? (
-        <div className="erp-modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="so-create-choice-title">
+            <details
+              className="erp-advanced-section"
+              {...(soDemoHlNoQty ? { "data-demo-highlight": soDemoHlNoQty } : {})}
+            >
+              <summary>
+                <span>Advanced · Exceptional creation (bypasses enquiry → quotation)</span>
+              </summary>
+              <div className="erp-advanced-body">
+                <p className="mb-1.5 text-slate-500">For admin / edge cases only. Prefer Quotations for normal work.</p>
+                <div className="flex flex-wrap gap-1.5">
+                  <button
+                    type="button"
+                    className="erp-soft-action"
+                    data-testid="create-from-previous-btn"
+                    onClick={() => {
+                      setPreviousKind("QUOTATION");
+                      setPreviousPickId(0);
+                      setCreateFromPreviousOpen(true);
+                    }}
+                  >
+                    Create from previous…
+                  </button>
+                  <button
+                    type="button"
+                    className="erp-soft-action"
+                    onClick={() => openNoQtyCreateModal()}
+                  >
+                    New NO_QTY SO (exception)
+                  </button>
+                </div>
+              </div>
+            </details>
+
+      {createFromPreviousOpen ? (
+        <div
+          className="erp-modal-backdrop"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="so-create-from-prev-title"
+        >
           <Card className="w-full max-w-md rounded-lg border border-slate-200 bg-white shadow-lg">
             <CardHeader>
               <div className="flex items-center justify-between gap-3">
-                <CardTitle id="so-create-choice-title" className="text-base">
-                  New sales order
+                <CardTitle id="so-create-from-prev-title" className="text-base">
+                  Create from previous
                 </CardTitle>
-                <Button type="button" variant="ghost" size="sm" onClick={() => setCreateChoiceOpen(false)}>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setCreateFromPreviousOpen(false)}
+                  aria-label="Close"
+                >
                   <X className="h-4 w-4" />
                 </Button>
               </div>
             </CardHeader>
-            <CardContent className="space-y-3">
-              <button
-                type="button"
-                className="w-full rounded-md border border-slate-200 bg-white p-3 text-left shadow-sm transition-colors hover:border-slate-300 hover:bg-slate-50"
-                onClick={() => {
-                  setCreateChoiceOpen(false);
-                  // Regular SO flow remains quotation-based (existing screen).
-                  window.location.assign("/quotations");
-                }}
-                {...(demoRegularStep1ChoiceModal && soDemoHlRegular ? { "data-demo-highlight": soDemoHlRegular } : {})}
-              >
-                <div className="text-sm font-semibold text-slate-900">Regular SO</div>
-                <div className="mt-0.5 text-xs text-slate-600">Create from approved quotation</div>
-              </button>
-
-              <button
-                type="button"
-                disabled={demo.enabled && demo.flow === "regular" && demo.step === 1}
-                className={cn(
-                  "w-full rounded-md border border-slate-200 bg-white p-3 text-left shadow-sm transition-colors",
-                  demo.enabled && demo.flow === "regular" && demo.step === 1
-                    ? "cursor-not-allowed opacity-45"
-                    : "hover:border-slate-300 hover:bg-slate-50",
-                )}
-                onClick={() => {
-                  setCreateChoiceOpen(false);
-                  openNoQtyCreateModal();
-                }}
-              >
-                <div className="text-sm font-semibold text-slate-900">No Qty SO</div>
-                <div className="mt-0.5 text-xs text-slate-600">Create open PO based sales order without quotation link</div>
-              </button>
+            <CardContent className="space-y-4 text-sm">
+              <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Select source</div>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <label className="flex cursor-pointer items-center gap-2 rounded-md border border-slate-200 px-3 py-2">
+                  <input
+                    type="radio"
+                    name="copy-prev-kind"
+                    checked={previousKind === "QUOTATION"}
+                    onChange={() => {
+                      setPreviousKind("QUOTATION");
+                      setPreviousPickId(0);
+                    }}
+                  />
+                  Previous quotation
+                </label>
+                <label className="flex cursor-pointer items-center gap-2 rounded-md border border-slate-200 px-3 py-2">
+                  <input
+                    type="radio"
+                    name="copy-prev-kind"
+                    checked={previousKind === "SO"}
+                    onChange={() => {
+                      setPreviousKind("SO");
+                      setPreviousPickId(0);
+                    }}
+                  />
+                  Previous sales order
+                </label>
+              </div>
+              <label className="grid gap-1">
+                <span className="text-xs font-medium text-slate-600">
+                  {previousKind === "QUOTATION" ? "Approved quotation" : "Sales order"}
+                </span>
+                <select
+                  className="h-10 rounded-md border border-slate-200 bg-white px-2 text-sm"
+                  value={previousPickId || ""}
+                  disabled={previousPickLoading}
+                  onChange={(e) => setPreviousPickId(Number(e.target.value) || 0)}
+                >
+                  <option value="">{previousPickLoading ? "Loading…" : "Select…"}</option>
+                  {previousKind === "QUOTATION"
+                    ? quotationPickOptions.map((q) => (
+                        <option key={q.id} value={q.id}>
+                          {(q.quotationNo || `#${q.id}`) + ` — ${q.customerName}`}
+                          {q.existingSalesOrderId != null ? " (has SO)" : ""}
+                        </option>
+                      ))
+                    : soPickOptions.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {(s.docNo || `SO-${s.id}`) + ` — ${s.customerName}`} · {s.lineCount} line(s)
+                        </option>
+                      ))}
+                </select>
+              </label>
+              <div className="flex justify-end gap-2 pt-1">
+                <Button type="button" variant="outline" onClick={() => setCreateFromPreviousOpen(false)}>
+                  Cancel
+                </Button>
+                <Button
+                  type="button"
+                  disabled={previousPickId <= 0 || previousPickLoading}
+                  onClick={() => {
+                    setCreateFromPreviousOpen(false);
+                    patch({
+                      copySource: previousKind,
+                      copyId: previousPickId,
+                      quotationId: null,
+                    });
+                  }}
+                >
+                  Continue
+                </Button>
+              </div>
             </CardContent>
           </Card>
         </div>
@@ -1641,7 +1972,7 @@ export function SalesOrdersPage() {
                   <Input value="No Qty SO" disabled />
                 </div>
                 <div className="erp-form-field">
-                  <span className="erp-form-label">Customer</span>
+                  <span className="erp-form-label">Customer *</span>
                   <select
                     className="h-9 rounded-md border border-slate-200 bg-white px-2 text-sm"
                     value={noQtyCustomerId || ""}
@@ -1656,8 +1987,18 @@ export function SalesOrdersPage() {
                   </select>
                 </div>
                 <div className="erp-form-field">
-                  <span className="erp-form-label">Customer PO reference</span>
-                  <Input value={noQtyPoRef} onChange={(e) => setNoQtyPoRef(e.target.value)} />
+                  <span className="erp-form-label">Customer PO reference *</span>
+                  <Input
+                    value={noQtyPoRef}
+                    onChange={(e) => {
+                      setNoQtyPoRef(e.target.value);
+                      if (error === "Customer PO reference is required." && e.target.value.trim()) setError(null);
+                    }}
+                    aria-invalid={noQtyPoRef.trim() === ""}
+                  />
+                  {noQtyPoRef.trim() === "" ? (
+                    <div className="mt-1 text-xs font-medium text-red-700">Customer PO reference is required.</div>
+                  ) : null}
                 </div>
                 <div className="erp-form-field">
                   <span className="erp-form-label">Remarks</span>
@@ -1666,10 +2007,14 @@ export function SalesOrdersPage() {
 
                 <div className="space-y-2">
                   <div className="text-sm font-medium text-slate-800">Items</div>
+                  <p className="text-xs leading-relaxed text-slate-600">
+                    Commercial rates are loaded from approved rate contracts as of today (not from requirement sheets).
+                  </p>
+                  <p className="text-xs font-medium text-slate-700">Quantity will be defined later in Requirement Sheet (RS).</p>
                   {noQtyLines.map((ln) => (
-                    <div key={ln.key} className="flex flex-wrap items-end gap-2 rounded border border-slate-200 p-2">
-                      <label className="grid flex-1 gap-1 text-sm">
-                        <span className="text-slate-600">Item</span>
+                    <div key={ln.key} className="flex flex-wrap items-center gap-2 rounded border border-slate-200 p-2">
+                      <label className="grid min-w-0 flex-1 gap-1 text-sm">
+                        <span className="text-slate-600">Item *</span>
                         <select
                           className="h-9 rounded-md border border-slate-200 bg-white px-2 text-sm"
                           value={ln.itemId || ""}
@@ -1680,7 +2025,9 @@ export function SalesOrdersPage() {
                               toast.showError("Item already added");
                               return;
                             }
-                            setNoQtyLines((p) => p.map((x) => (x.key === ln.key ? { ...x, itemId: selectedItemId } : x)));
+                            setNoQtyLines((p) =>
+                              p.map((x) => (x.key === ln.key ? { ...x, itemId: selectedItemId } : x)),
+                            );
                           }}
                         >
                           <option value="">Select…</option>
@@ -1690,20 +2037,6 @@ export function SalesOrdersPage() {
                             </option>
                           ))}
                         </select>
-                      </label>
-                      <label className="grid gap-1 text-sm">
-                        <span className="text-slate-600">Rate</span>
-                        <Input
-                          className="w-28 tabular-nums"
-                          value={ln.rate}
-                          onChange={(e) =>
-                            setNoQtyLines((p) => p.map((x) => (x.key === ln.key ? { ...x, rate: e.target.value } : x)))
-                          }
-                        />
-                      </label>
-                      <label className="grid gap-1 text-sm">
-                        <span className="text-slate-600">Qty</span>
-                        <Input className="w-20 tabular-nums" value="0" disabled />
                       </label>
                       <Button
                         type="button"
@@ -1720,7 +2053,7 @@ export function SalesOrdersPage() {
                     type="button"
                     variant="outline"
                     size="sm"
-                    onClick={() => setNoQtyLines((p) => [...p, { key: String(Date.now()), itemId: 0, rate: "" }])}
+                    onClick={() => setNoQtyLines((p) => [...p, { key: String(Date.now()), itemId: 0 }])}
                   >
                     + Add item
                   </Button>
@@ -1732,7 +2065,12 @@ export function SalesOrdersPage() {
                   </Button>
                   <Button
                     type="submit"
-                    disabled={savingNoQty || noQtyLines.filter((l) => Number(l.itemId) > 0).length === 0}
+                    disabled={
+                      savingNoQty ||
+                      noQtyCustomerId <= 0 ||
+                      noQtyPoRef.trim() === "" ||
+                      noQtyLines.filter((l) => Number(l.itemId) > 0).length === 0
+                    }
                   >
                     {savingNoQty ? "Saving…" : "Save"}
                   </Button>
@@ -1766,235 +2104,81 @@ export function SalesOrdersPage() {
         onClearFocus={clearSalesOrderDrillFocus}
       />
 
-      {quotationFromUrl ? (
-        <Card className="border-slate-200 shadow-sm">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base">Create from quotation</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3 text-sm">
-            {qLoading ? <p className="text-slate-600">Loading quotation…</p> : null}
-            {!qLoading && qDetail ? (
-              <>
-                {qDetail.workflowStatus !== "APPROVED" ? (
-                  <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-amber-900">
-                    Only an <strong>approved</strong> quotation can generate a sales order. This quotation is{" "}
-                    <strong>{qDetail.workflowStatus.replace(/_/g, " ")}</strong>.
-                  </p>
-                ) : qDetail.salesOrder ? (
-                  <p className="text-slate-700">
-                    A sales order already exists for this quotation (
-                    <Link className="text-primary underline" to="/sales-orders">
-                      Sales Order No: {displaySalesOrderNo(qDetail.salesOrder.id, qDetail.salesOrder.docNo)}
-                    </Link>
-                    ).
-                  </p>
-                ) : (
-                  <>
-                    <p className="text-slate-700">
-                      <span className="font-medium">{qDetail.quotationNo || `#${qDetail.id}`}</span> ·{" "}
-                      {qDetail.enquiry.customer.name} · {qDetail.lines.length} line(s). Use Customer PO Qty and buffer
-                      below; planned qty updates for production.
-                    </p>
-                    <div className="overflow-x-auto rounded-md border border-slate-200">
-                      <table className="min-w-full text-sm">
-                        <thead className="bg-slate-50">
-                          <tr className="text-left text-xs font-semibold text-slate-600">
-                            <th className="px-3 py-2">Item</th>
-                            <th className="px-3 py-2 text-right">Customer PO Qty</th>
-                            <th className="px-3 py-2 text-right">Buffer %</th>
-                            <th className="px-3 py-2 text-right">Planned</th>
-                            <th className="px-3 py-2 text-right">Rate</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-200 bg-white">
-                          {qDetail.lines.map((ln, idx) => {
-                            const row = quoteCreateLines[idx];
-                            const cp = Number(row?.customerPoQty ?? ln.qty);
-                            const buf = Number(row?.bufferPercent ?? 0);
-                            const planned = computePlannedQtyPreview(cp, buf);
-                            return (
-                              <tr key={ln.id != null ? `ql2-${ln.id}` : `${qDetail.id}-ln2-${idx}`}>
-                                <td className="px-3 py-2 font-medium text-slate-900">
-                                  {ln.item.itemName}
-                                  {ln.isFree ? <span className="ml-1 text-emerald-800">(Free)</span> : null}
-                                </td>
-                                <td className="px-3 py-2 text-right align-middle">
-                                  <Input
-                                    className="ml-auto w-28 text-right tabular-nums"
-                                    inputMode="numeric"
-                                    value={row?.customerPoQty ?? ""}
-                                    onChange={(e) =>
-                                      setQuoteCreateLines((prev) => {
-                                        const next = [...prev];
-                                        if (next[idx]) next[idx] = { ...next[idx], customerPoQty: e.target.value };
-                                        return next;
-                                      })
-                                    }
-                                  />
-                                </td>
-                                <td className="px-3 py-2 text-right align-middle">
-                                  <Input
-                                    className="ml-auto w-24 text-right tabular-nums"
-                                    inputMode="numeric"
-                                    value={row?.bufferPercent ?? "0"}
-                                    onChange={(e) =>
-                                      setQuoteCreateLines((prev) => {
-                                        const next = [...prev];
-                                        if (next[idx])
-                                          next[idx] = {
-                                            ...next[idx],
-                                            bufferPercent: clampBufferPercentInput(
-                                              e.target.value,
-                                              maxRegularSoBufferPercent,
-                                            ),
-                                          };
-                                        return next;
-                                      })
-                                    }
-                                  />
-                                </td>
-                                <td className="px-3 py-2 text-right align-middle tabular-nums text-slate-800">
-                                  <Input className="ml-auto w-24 text-right tabular-nums" readOnly value={planned} />
-                                </td>
-                                <td className="px-3 py-2 text-right tabular-nums text-slate-800">
-                                  {ln.isFree ? "—" : Number(ln.rate).toFixed(2)}
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                    <div className="erp-form max-w-xl">
-                      <FieldShortcutHint
-                        show={shortcutHints.activeFieldId === "soQuotePoRef"}
-                        hint={shortcutHints.activeFieldHintText ?? ""}
-                        placement="below"
-                        className="erp-form-field"
-                      >
-                        <div>
-                          <span className="erp-form-label">Customer PO reference (required)</span>
-                          <Input
-                            ref={createPoRefInputRef}
-                            data-testid="customer-po-input"
-                            {...quotePoBind}
-                            value={createPoRef}
-                            onChange={(e) => {
-                              setCreatePoRef(e.target.value);
-                              setCreatePoTouched(true);
-                              if (error === "Customer PO reference is required." && e.target.value.trim()) {
-                                setError(null);
-                              }
-                            }}
-                            placeholder="Customer PO number"
-                          />
-                          {createPoTouched && !createPoRef.trim() ? (
-                            <div className="mt-1 text-xs font-medium text-red-700">Customer PO reference is required.</div>
-                          ) : null}
-                        </div>
-                      </FieldShortcutHint>
-                      <div className="erp-form-field">
-                        <span className="erp-form-label">Remarks (optional)</span>
-                        <Input value={createRemarks} onChange={(e) => setCreateRemarks(e.target.value)} placeholder="Internal notes" />
-                      </div>
-                      <FieldShortcutHint
-                        show={shortcutHints.activeFieldId === "soQuoteCreate"}
-                        hint={shortcutHints.activeFieldHintText ?? ""}
-                        placement="above"
-                        className="inline-block"
-                      >
-                        <Button
-                          type="button"
-                          onFocus={quoteCreateFocusBind.onFocus}
-                          onBlur={quoteCreateFocusBind.onBlur}
-                          onClick={() => {
-                            shortcutHints.markFieldShortcutUsed("soQuoteCreate");
-                            void createFromQuotation();
-                          }}
-                          disabled={creating}
-                        >
-                          {creating ? "Creating…" : "Create sales order"}
-                        </Button>
-                      </FieldShortcutHint>
-                    </div>
-                  </>
-                )}
-              </>
-            ) : null}
-            {!qLoading && qDetail === null && quotationFromUrl && !error ? (
-              <p className="text-slate-600">Loading…</p>
-            ) : null}
-        <div className="pt-1">
-          <button
-            type="button"
-            className="text-sm text-slate-600 underline"
-            onClick={() =>
-              setSearchParams((prev) => applySearchParamsPatch(prev, { quotationId: null }), { replace: true })
-            }
-          >
-            Clear quotation selection
-          </button>
-        </div>
-          </CardContent>
-        </Card>
-      ) : null}
-
       {error ? <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{error}</div> : null}
 
       <Card>
-        <CardHeader className="flex flex-col gap-3 space-y-0 pb-2 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
-          <CardTitle className="text-base">All sales orders</CardTitle>
-          <div className="flex flex-wrap items-center gap-2">
-            <Button type="button" variant="outline" size="sm" className="h-8" disabled={!listFiltersActive} onClick={clearListFilters}>
-              Clear list filters
-            </Button>
+        <CardHeader className="flex flex-col gap-2 space-y-0 pb-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+          <div className="flex items-baseline gap-2">
+            <CardTitle className="text-sm">Sales order list</CardTitle>
+            {listFiltersActive && rows.length > 0 ? (
+              <span className="text-[11px] text-slate-500">
+                <span className="font-semibold tabular-nums text-slate-700">{visibleRows.length}</span>
+                <span> / </span>
+                <span className="tabular-nums">{rows.length}</span>
+              </span>
+            ) : null}
           </div>
+          <button
+            type="button"
+            className="erp-soft-action"
+            disabled={!listFiltersActive}
+            onClick={clearListFilters}
+          >
+            Clear filters
+          </button>
         </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="grid gap-3 rounded-md border border-slate-200 bg-slate-50/80 p-3 sm:grid-cols-2 lg:grid-cols-4">
-            <label className="grid gap-1 text-xs font-medium text-slate-600">
-              Status
+        <CardContent className="space-y-2">
+          <div ref={listFiltersRef} className="erp-filter-bar">
+            <label className="erp-filter-field">
+              <span className="text-slate-500">Status</span>
               <select
-                className="h-9 rounded-md border border-slate-200 bg-white px-2 text-sm"
+                ref={listFilterStatusSelectRef}
                 value={statusFilter}
                 onChange={(e) => patch({ status: e.target.value as typeof statusFilter })}
               >
-                <option value="ALL">All statuses</option>
-                <option value="DRAFT">DRAFT</option>
-                <option value="OPEN">OPEN</option>
-                <option value="APPROVED">APPROVED</option>
-                <option value="IN_PROCESS">IN PROCESS</option>
-                <option value="COMPLETED">COMPLETED</option>
-                <option value="CLOSED">CLOSED</option>
+                <option value="ALL">All</option>
+                <option value="DRAFT">Draft</option>
+                <option value="OPEN">Open</option>
+                <option value="APPROVED">Approved</option>
+                <option value="IN_PROCESS">In Process</option>
+                <option value="COMPLETED">Completed</option>
+                <option value="CLOSED">Closed</option>
               </select>
             </label>
-            {mode !== "NO_QTY" ? (
-              <label className="grid gap-1 text-xs font-medium text-slate-600">
-                Show
+            <label className="erp-filter-field">
+              <span className="text-slate-500">Type</span>
+              <select
+                value={soTypeFilter}
+                onChange={(e) => patch({ soType: e.target.value as typeof soTypeFilter })}
+              >
+                <option value="ALL">All</option>
+                <option value="REGULAR">Regular / Replacement</option>
+                <option value="NO_QTY">NO_QTY</option>
+              </select>
+            </label>
+            {soTypeFilter !== "NO_QTY" ? (
+              <label className="erp-filter-field">
+                <span className="text-slate-500">Show</span>
                 <select
-                  className="h-9 rounded-md border border-slate-200 bg-white px-2 text-sm"
                   value={prodFilter}
                   onChange={(e) => patch({ prod: e.target.value as typeof prodFilter })}
                 >
                   <option value="ALL">All</option>
                   <option value="PENDING">Pending production</option>
-                  <option value="NONE">No pending (completed)</option>
+                  <option value="NONE">No pending</option>
                 </select>
               </label>
-            ) : (
-              <div className="hidden lg:block" />
-            )}
-            <label className="grid gap-1 text-xs font-medium text-slate-600">
-              Customer
+            ) : null}
+            <label className="erp-filter-field">
+              <span className="text-slate-500">Customer</span>
               <select
-                className="h-9 rounded-md border border-slate-200 bg-white px-2 text-sm"
                 value={customerIdFilter || ""}
                 onChange={(e) => {
                   const v = e.target.value;
                   patch({ customerId: v ? Number(v) : null });
                 }}
               >
-                <option value="">All customers</option>
+                <option value="">All</option>
                 {customerOptions.map(([id, name]) => (
                   <option key={id} value={id}>
                     {name}
@@ -2002,48 +2186,52 @@ export function SalesOrdersPage() {
                 ))}
               </select>
             </label>
-            <label className="grid gap-1 text-xs font-medium text-slate-600 sm:col-span-2 lg:col-span-2">
-              Search
-              <Input
-                className="h-9"
+            <span className="erp-filter-divider" aria-hidden />
+            <label className="erp-filter-field">
+              <span className="text-slate-500">Sort</span>
+              <select
+                value={sortKey}
+                onChange={(e) => patch({ sort: e.target.value as "date" | "id" })}
+              >
+                <option value="date">Date</option>
+                <option value="id">SO #</option>
+              </select>
+            </label>
+            <button
+              type="button"
+              className="erp-soft-action shrink-0"
+              onClick={() => patch({ dir: sortDir === "asc" ? "desc" : "asc" })}
+              aria-label={sortDir === "asc" ? "Sort ascending" : "Sort descending"}
+              title={sortDir === "asc" ? "Ascending" : "Descending"}
+            >
+              {sortDir === "asc" ? (
+                <>
+                  Asc <ChevronUp className="ml-0.5 inline h-3 w-3" />
+                </>
+              ) : (
+                <>
+                  Desc <ChevronDown className="ml-0.5 inline h-3 w-3" />
+                </>
+              )}
+            </button>
+            <label className="erp-filter-field erp-filter-grow">
+              <span className="sr-only">Search</span>
+              <input
+                type="search"
+                className="search-input w-full"
                 value={searchDraft}
                 onChange={(e) => setSearchDraft(e.target.value)}
-                placeholder="SO #, customer, PO ref, quotation…"
+                placeholder="Search SO #, customer, PO ref, quotation…"
+                data-erp-enter-default
               />
             </label>
-            <div className="flex flex-wrap items-end gap-2 sm:col-span-2 lg:col-span-4">
-              <label className="grid gap-1 text-xs font-medium text-slate-600">
-                Sort by
-                <select
-                  className="h-9 w-[10rem] rounded-md border border-slate-200 bg-white px-2 text-sm"
-                  value={sortKey}
-                  onChange={(e) => patch({ sort: e.target.value as "date" | "id" })}
-                >
-                  <option value="date">Order date</option>
-                  <option value="id">SO number</option>
-                </select>
-              </label>
-              <Button type="button" variant="outline" size="sm" className="h-9 shrink-0" onClick={() => patch({ dir: sortDir === "asc" ? "desc" : "asc" })}>
-                {sortDir === "asc" ? (
-                  <>
-                    Asc <ChevronUp className="ml-1 inline h-3.5 w-3.5" />
-                  </>
-                ) : (
-                  <>
-                    Desc <ChevronDown className="ml-1 inline h-3.5 w-3.5" />
-                  </>
-                )}
-              </Button>
-            </div>
           </div>
-          {listFiltersActive && rows.length > 0 ? (
-            <p className="text-xs text-slate-600">
-              Showing <span className="font-semibold tabular-nums text-slate-900">{visibleRows.length}</span> of{" "}
-              <span className="tabular-nums">{rows.length}</span> orders
-            </p>
-          ) : null}
-          <div className="erp-table-wrap">
-            {mode === "NO_QTY" ? (
+          <div className="erp-table-wrap space-y-5">
+            {noQtyTableRows.length > 0 ? (
+              <div className="space-y-2">
+                {soTypeFilter === "ALL" ? (
+                  <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">NO_QTY</div>
+                ) : null}
               <table className="erp-table">
                 <thead>
                   <tr>
@@ -2055,23 +2243,20 @@ export function SalesOrdersPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {visibleRows.map((so) => {
+                  {noQtyTableRows.map((so) => {
                     const meta = getNoQtySoStageMeta(so, { isAdmin });
-                    const isClosed = so.internalStatus === "CLOSED" || so.internalStatus === "COMPLETED" || so.processStage?.key === "COMPLETED";
+                    const isClosed =
+                      so.internalStatus === "MANUALLY_CLOSED" ||
+                      so.internalStatus === "CLOSED" ||
+                      so.internalStatus === "COMPLETED" ||
+                      so.processStage?.key === "COMPLETED";
                     const hasDraftRequirementSheet = Boolean(noQtyDraftRsBySoId[so.id]);
                     const stage = meta.stage;
-                    const displayStage = so.internalStatus === "CLOSED" ? "CLOSED" : "OPEN";
+                    const displayStage =
+                      so.internalStatus === "CLOSED" || so.internalStatus === "MANUALLY_CLOSED" ? "CLOSED" : "OPEN";
                     const progress = isClosed ? "Sales order closed" : noQtyProgressSummary(stage, so);
-                    const hasSalesBillForCycle = Boolean(so.hasCurrentCycleSalesBill);
-                    const primary = getNoQtySoPrimaryAction(stage, {
-                      isAdmin,
-                      hasSalesBillForCycle,
-                      strandedWithoutActiveCycle: Boolean(so.noQtyStrandedWithoutActiveCycle),
-                    });
-                    const showRequirementButton = !isClosed;
                     const customer = so.customer?.name ?? so.po?.customer?.name ?? "—";
                     const dateStr = new Date(so.createdAt).toLocaleDateString();
-                    const primaryHref = noQtyPrimaryHref(primary, so.id);
 
                     const noQtySoGuided = (() => {
                       const next = so.noQtyNextAction ?? null;
@@ -2083,45 +2268,60 @@ export function SalesOrdersPage() {
                             nextStep: "Cycle Completed",
                             label: isAdmin ? "Reopen Cycle" : "Cycle Completed",
                             to: buildNoQtyGuidedHref({ to: `/sales-orders/${so.id}/requirement-sheets`, ...ctx }),
+                            // Reopen is admin-only and lives in the planning workspace.
+                            isPlanningAction: true as const,
+                            waitingLabel: "Cycle Completed",
                           };
                         case "WORK_ORDER":
                           return {
                             // NO_QTY rule: do not route operators to WO as the primary step.
                             // Requirement Sheet remains the canonical "flow hub" for WO readiness and next-step guidance.
-                            nextStep: "Requirement Ready",
+                            nextStep: "Requirement Ready · With Planning",
                             label: "Open Requirement Sheet",
                             to: buildNoQtyGuidedHref({ to: `/sales-orders/${so.id}/requirement-sheets`, ...ctx, fromStep: "requirement" }),
+                            isPlanningAction: true as const,
+                            waitingLabel: "Requirement Ready · With Planning",
                           };
                         case "PRODUCTION":
                           return {
                             nextStep: "In Production",
                             label: "Open Production",
                             to: buildNoQtyGuidedHref({ to: `/production`, ...ctx, fromStep: "requirement" }),
+                            isPlanningAction: false as const,
+                            waitingLabel: "In Production",
                           };
                         case "QC":
                           return {
                             nextStep: "Awaiting QC",
                             label: "Open QC",
                             to: buildNoQtyGuidedHref({ to: `/qc-entry`, ...ctx, fromStep: "production" }),
+                            isPlanningAction: false as const,
+                            waitingLabel: "Awaiting QC",
                           };
                         case "DISPATCH":
                           return {
                             nextStep: "Ready for Dispatch",
                             label: "Open Dispatch",
                             to: buildNoQtyGuidedHref({ to: `/dispatch`, ...ctx, fromStep: "qc" }),
+                            isPlanningAction: false as const,
+                            waitingLabel: "Ready for Dispatch",
                           };
                         case "SALES_BILL":
                           return {
                             nextStep: "Ready for Billing",
                             label: "Open Sales Bill",
                             to: buildNoQtyGuidedHref({ to: `/sales-bills`, ...ctx, fromStep: "dispatch" }),
+                            isPlanningAction: false as const,
+                            waitingLabel: "Ready for Billing",
                           };
                         case "REQUIREMENT":
                         default:
                           return {
-                            nextStep: "Requirement Pending",
+                            nextStep: "Planning Pending",
                             label: "Open Requirement Sheet",
                             to: buildNoQtyGuidedHref({ to: `/sales-orders/${so.id}/requirement-sheets`, ...ctx }),
+                            isPlanningAction: true as const,
+                            waitingLabel: "Waiting for Planning Team",
                           };
                       }
                     })();
@@ -2177,59 +2377,89 @@ export function SalesOrdersPage() {
                           <span className="text-xs text-slate-500">{nextStep ?? "—"}</span>
                         </td>
                         <td className="text-right">
-                          {/* Keep a single primary CTA per row: show actions only here; Next step remains informational. */}
-                          <div className="inline-flex flex-wrap justify-end gap-2">
-                            {!isClosed ? (
-                              hasDraftRequirementSheet ? (
-                                <Link
-                                  className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
-                                  to={buildNoQtyGuidedHref({
-                                    to: `/sales-orders/${so.id}/requirement-sheets`,
-                                    salesOrderId: so.id,
-                                    cycleId: so.currentCycle?.id ?? null,
-                                    fromStep: "requirement",
-                                  })}
+                          <div className="inline-flex max-w-[min(24rem,100%)] flex-col items-end gap-1">
+                            <div className="inline-flex flex-wrap justify-end gap-2">
+                              {!isClosed ? (
+                                hasDraftRequirementSheet ? (
+                                  canOpenRs ? (
+                                    <Link
+                                      className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
+                                      to={buildNoQtyGuidedHref({
+                                        to: `/sales-orders/${so.id}/requirement-sheets`,
+                                        salesOrderId: so.id,
+                                        cycleId: so.currentCycle?.id ?? null,
+                                        fromStep: "requirement",
+                                      })}
+                                    >
+                                      Open Draft Requirement Sheet
+                                    </Link>
+                                  ) : (
+                                    <PlanningStatusChip
+                                      inline
+                                      label="Draft Requirement Sheet · With Planning"
+                                    />
+                                  )
+                                ) : (
+                                  <>
+                                    {noQtySoGuided.isPlanningAction && !canOpenRs ? (
+                                      <PlanningStatusChip
+                                        inline
+                                        label={noQtySoGuided.waitingLabel}
+                                      />
+                                    ) : (
+                                      <Link className={cn(buttonVariants({ size: "sm" }))} to={noQtySoGuided.to}>
+                                        {noQtySoGuided.label}
+                                      </Link>
+                                    )}
+                                    {so.noQtyCreateNextRsEligible && canCreateNextRs ? (
+                                      <Link
+                                        className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
+                                        to={buildNoQtyGuidedHref({
+                                          to: `/sales-orders/${so.id}/requirement-sheets?intent=add`,
+                                          salesOrderId: so.id,
+                                          cycleId: so.currentCycle?.id ?? null,
+                                          fromStep: "requirement",
+                                        })}
+                                      >
+                                        Create Next RS
+                                      </Link>
+                                    ) : null}
+                                  </>
+                                )
+                              ) : null}
+                              {so.internalStatus !== "CLOSED" && so.internalStatus !== "MANUALLY_CLOSED" ? (
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => setNoQtyCloseDialog({ soId: so.id, docNo: so.docNo })}
                                 >
-                                  Open Draft Requirement Sheet
-                                </Link>
-                              ) : (
-                                <Link
-                                  className={cn(buttonVariants({ size: "sm" }))}
-                                  to={buildNoQtyGuidedHref({
-                                    to: `/sales-orders/${so.id}/requirement-sheets?intent=add`,
-                                    salesOrderId: so.id,
-                                    cycleId: so.currentCycle?.id ?? null,
-                                    fromStep: "requirement",
-                                  })}
+                                  Close SO
+                                </Button>
+                              ) : null}
+                              {so.internalStatus === "CLOSED" || so.internalStatus === "MANUALLY_CLOSED" ? (
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => setNoQtyReopenDialog({ soId: so.id, docNo: so.docNo })}
                                 >
-                                  Create Next RS
-                                </Link>
-                              )
-                            ) : null}
-                            {so.internalStatus !== "CLOSED" ? (
-                              <Button
-                                type="button"
-                                size="sm"
-                                variant="outline"
-                                onClick={() => void submitNoQtyStatus(so.id, "CLOSED")}
-                              >
-                                Close SO
-                              </Button>
-                            ) : null}
-                            {so.internalStatus === "CLOSED" ? (
-                              <Button
-                                type="button"
-                                size="sm"
-                                variant="outline"
-                                onClick={() => void submitNoQtyStatus(so.id, "OPEN")}
-                              >
-                                Reopen SO
-                              </Button>
-                            ) : null}
-                            {isAdmin && so.deleteAllowed === true ? (
-                              <Button type="button" size="sm" variant="destructive" onClick={() => onDelete(so.id)}>
-                                <Trash2 className="h-3.5 w-3.5" />
-                              </Button>
+                                  Reopen SO
+                                </Button>
+                              ) : null}
+                              {isAdmin && so.deleteAllowed === true ? (
+                                <Button type="button" size="sm" variant="destructive" onClick={() => onDelete(so.id)}>
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </Button>
+                              ) : null}
+                            </div>
+                            {!isClosed &&
+                            !hasDraftRequirementSheet &&
+                            !so.noQtyCreateNextRsEligible &&
+                            so.noQtyNextRsAlreadyCreatedDocNo ? (
+                              <p className="max-w-[18rem] text-right text-[11px] leading-snug text-slate-500">
+                                Next RS already created: {so.noQtyNextRsAlreadyCreatedDocNo}
+                              </p>
                             ) : null}
                           </div>
                         </td>
@@ -2238,7 +2468,13 @@ export function SalesOrdersPage() {
                   })}
                 </tbody>
               </table>
-            ) : (
+              </div>
+            ) : null}
+            {regularTableRows.length > 0 ? (
+              <div className="space-y-2">
+                {soTypeFilter === "ALL" ? (
+                  <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Regular & replacement</div>
+                ) : null}
               <table className="erp-table">
                 <thead>
                   <tr>
@@ -2255,7 +2491,7 @@ export function SalesOrdersPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {visibleRows.map((so) => {
+                  {regularTableRows.map((so) => {
                     const showPlanningStockActions =
                       !isReplacementSalesOrder(so) && shouldShowCheckStockAndRmCheck(so);
                     const pending = Number(so.dispatchSummary?.totalPending ?? 0) || 0;
@@ -2391,16 +2627,29 @@ export function SalesOrdersPage() {
                   })}
                 </tbody>
               </table>
-            )}
+              </div>
+            ) : null}
           </div>
-          {!rows.length ? <p className="py-6 text-center text-sm text-slate-600">No sales orders yet.</p> : null}
+          {!rows.length ? (
+            <div
+              className="rounded border border-slate-200/90 bg-slate-50/80 px-3 py-2.5 text-[13px] leading-snug text-slate-600"
+              data-testid="sales-orders-empty-state"
+            >
+              <span className="font-medium text-slate-800">No sales orders yet.</span>{" "}
+              Create the first SO from an approved quotation (use <strong className="font-medium text-slate-700">Open approved quotations</strong> above). Flow
+              type follows the enquiry.
+            </div>
+          ) : null}
           {rows.length > 0 && visibleRows.length === 0 ? (
-            mode === "NO_QTY" ? (
-              <div className="py-8 text-center">
-                <p className="text-sm font-medium text-slate-800">No No Qty Sales Orders found.</p>
-                <p className="mt-1 text-sm text-slate-600">
-                  Create a No Qty SO to begin Requirement → Production → QC → Dispatch → Sales Bill for a cycle. The same SO can run many cycles over time (add
-                  requirements while active, or admin Reopen after a cycle completes); older cycles stay in history.
+            soTypeFilter === "NO_QTY" ? (
+              <div className="py-5 text-center">
+                <p className="text-sm font-medium text-slate-800">No NO_QTY sales orders match the current filters.</p>
+                <p className="mt-1 text-[13px] text-slate-600">
+                  NO_QTY sales orders normally follow an approved NO_QTY quotation. Use{" "}
+                  <Link to="/quotations" className="font-medium text-blue-800 underline">
+                    Quotations
+                  </Link>{" "}
+                  to continue the workflow, or use Advanced on this page only for exceptional cases.
                 </p>
               </div>
             ) : (
@@ -2449,6 +2698,7 @@ export function SalesOrdersPage() {
                 <div className="erp-form-field">
                   <span className="erp-form-label">SO type</span>
                   <select
+                    ref={editSoTypeSelectRef}
                     className="h-9 rounded-md border border-slate-200 bg-white px-2 text-sm"
                     value={editSo.orderType ?? "NORMAL"}
                     disabled={Boolean(editSo.quotationId) || editSo.orderType === "REPLACEMENT"}
@@ -2498,7 +2748,7 @@ export function SalesOrdersPage() {
                 </div>
                 <div className="erp-form-field">
                   <span className="erp-form-label">Customer PO reference</span>
-                  <Input value={editPoRef} onChange={(e) => setEditPoRef(e.target.value)} />
+                  <Input ref={editDraftPoRefInputRef} value={editPoRef} onChange={(e) => setEditPoRef(e.target.value)} />
                 </div>
                 <div className="erp-form-field">
                   <span className="erp-form-label">Remarks</span>
@@ -2526,8 +2776,17 @@ export function SalesOrdersPage() {
                             ) : null}
                           </div>
                           <div className="mt-0.5 text-xs text-slate-600">
-                            Quotation rate: <span className="tabular-nums font-medium">{ln.rateLabel}</span>
-                            {ln.isFree ? <span className="text-slate-500"> — not editable</span> : null}
+                            {editSo.orderType === "NO_QTY" ? (
+                              <>
+                                Rate snapshot: <span className="tabular-nums font-medium">{ln.rateLabel}</span>
+                                <span className="text-slate-500"> — from rate contract at creation</span>
+                              </>
+                            ) : (
+                              <>
+                                Quotation rate: <span className="tabular-nums font-medium">{ln.rateLabel}</span>
+                                {ln.isFree ? <span className="text-slate-500"> — not editable</span> : null}
+                              </>
+                            )}
                           </div>
                         </div>
                         {isNormalEdit ? (
@@ -2653,6 +2912,140 @@ export function SalesOrdersPage() {
                   </FieldShortcutHint>
                 </div>
               </form>
+            </CardContent>
+          </Card>
+        </div>
+      ) : null}
+
+      {noQtyCloseDialog ? (
+        <div className="erp-modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="no-qty-close-title">
+          <Card className="w-full max-w-lg rounded-lg border border-slate-200 bg-white shadow-lg">
+            <CardHeader>
+              <div className="flex items-center justify-between gap-3">
+                <CardTitle id="no-qty-close-title" className="text-base">
+                  Close NO_QTY sales order?
+                </CardTitle>
+                <Button type="button" variant="ghost" size="sm" onClick={() => setNoQtyCloseDialog(null)}>
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4 text-sm text-slate-700">
+              <p className="leading-relaxed">
+                Closing this NO_QTY SO will freeze current carry-forward shortage as <strong>Closed Shortage</strong>.
+                Stock will not be moved. Current usable, rework, hold, and scrap quantities stay in inventory as free
+                stock (no ledger postings on close).
+              </p>
+              <div className="flex justify-end gap-2 pt-2">
+                <Button type="button" variant="outline" onClick={() => setNoQtyCloseDialog(null)}>
+                  Cancel
+                </Button>
+                <Button type="button" onClick={() => void runNoQtyClose()}>
+                  Close SO
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      ) : null}
+
+      {noQtyReopenDialog ? (
+        <div className="erp-modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="no-qty-reopen-title">
+          <Card className="w-full max-w-lg rounded-lg border border-slate-200 bg-white shadow-lg">
+            <CardHeader>
+              <div className="flex items-center justify-between gap-3">
+                <CardTitle id="no-qty-reopen-title" className="text-base">
+                  Reopen NO_QTY sales order
+                </CardTitle>
+                <Button type="button" variant="ghost" size="sm" onClick={() => setNoQtyReopenDialog(null)}>
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4 text-sm text-slate-700">
+              <p className="text-xs text-slate-500">
+                Admin password required. Demand-only: planning will use <strong>current</strong> usable inventory — never a
+                frozen stock snapshot.
+              </p>
+              {reopenPreviewLoading ? <p className="text-xs text-slate-500">Loading preview…</p> : null}
+              {reopenPreviewError ? <p className="text-xs text-amber-800">{reopenPreviewError}</p> : null}
+              {reopenPreview?.stockMayHaveChangedWarning ? (
+                <p className="text-xs text-amber-800">
+                  Inventory may have changed since this SO was closed. Reopen still uses live stock when you continue.
+                </p>
+              ) : null}
+              {reopenPreview?.closedShortageLines?.length ? (
+                <div className="rounded-md border border-slate-100 bg-slate-50 px-3 py-2 text-xs">
+                  <div className="font-medium text-slate-600">Frozen closed shortage (demand)</div>
+                  <ul className="mt-1 list-inside list-disc">
+                    {reopenPreview.closedShortageLines.map((ln) => (
+                      <li key={ln.itemId}>
+                        Item #{ln.itemId}: {ln.closedShortageQty}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+              {reopenPreview?.currentUsableByItem?.length ? (
+                <div className="rounded-md border border-slate-100 bg-slate-50 px-3 py-2 text-xs">
+                  <div className="font-medium text-slate-600">Current usable stock (reference)</div>
+                  <ul className="mt-1 list-inside list-disc">
+                    {reopenPreview.currentUsableByItem.map((u) => (
+                      <li key={u.itemId}>
+                        Item #{u.itemId}: {u.usableQty}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+              <label className="grid gap-1">
+                <span className="text-xs font-medium text-slate-600">Admin password</span>
+                <Input
+                  type="password"
+                  autoComplete="off"
+                  value={reopenAdminPassword}
+                  onChange={(e) => setReopenAdminPassword(e.target.value)}
+                  className="max-w-sm"
+                />
+              </label>
+              <div className="space-y-2">
+                <label className="flex cursor-pointer items-start gap-2 rounded-md border border-slate-200 p-2">
+                  <input
+                    type="radio"
+                    name="nq-reopen-mode"
+                    checked={reopenMode === "CONTINUE_SHORTAGE"}
+                    onChange={() => setReopenMode("CONTINUE_SHORTAGE")}
+                  />
+                  <span>
+                    <span className="font-medium text-slate-900">Continue with previous shortage</span>
+                    <span className="mt-0.5 block text-xs text-slate-600">
+                      Restore closed shortage as carry-forward demand. Stock will be recalculated from current inventory.
+                    </span>
+                  </span>
+                </label>
+                <label className="flex cursor-pointer items-start gap-2 rounded-md border border-slate-200 p-2">
+                  <input
+                    type="radio"
+                    name="nq-reopen-mode"
+                    checked={reopenMode === "IGNORE_SHORTAGE"}
+                    onChange={() => setReopenMode("IGNORE_SHORTAGE")}
+                  />
+                  <span>
+                    <span className="font-medium text-slate-900">Start fresh, ignore previous shortage</span>
+                    <span className="mt-0.5 block text-xs text-slate-600">
+                      Keep old shortage as history only. New planning starts without old shortage carry-forward.
+                    </span>
+                  </span>
+                </label>
+              </div>
+              <div className="flex justify-end gap-2 pt-2">
+                <Button type="button" variant="outline" onClick={() => setNoQtyReopenDialog(null)}>
+                  Cancel
+                </Button>
+                <Button type="button" onClick={() => void runNoQtyReopen()}>
+                  Reopen SO
+                </Button>
+              </div>
             </CardContent>
           </Card>
         </div>

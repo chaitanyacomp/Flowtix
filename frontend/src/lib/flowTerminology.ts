@@ -1,0 +1,88 @@
+/**
+ * Flow terminology firewall — labels only (no business logic).
+ *
+ * REGULAR vs NO_QTY ecosystems must not share copy accidentally.
+ * Import from here instead of hardcoding “planning”, “requirement”, etc.
+ */
+
+/** Stable identifiers for guards, analytics, and future route tagging (not persisted server-side). */
+export const FLOW_TYPE = {
+  REGULAR_FLOW: "REGULAR_FLOW",
+  NO_QTY_FLOW: "NO_QTY_FLOW",
+} as const;
+
+/** Customer PO–driven, fixed-qty sales order → RM check → WO → production → dispatch. */
+export const REGULAR_TERMS = {
+  WORK_ORDER_PREPARE_TITLE: "Prepare Work Order",
+  WORK_ORDER_PREPARE_SUBTITLE: "Review RM availability and create a work order for this sales order.",
+  LOAD_RM_FG_BUTTON: "Review RM & FG",
+  SELECT_SO_HELPER: "Choose a sales order, then review requirements below.",
+  SELECT_SO_PROMPT: "Select a sales order to continue.",
+  PRODUCTION_REQUIREMENT_CARD_TITLE: "Production requirement",
+  RM_STATUS_CARD_TITLE: "Raw material status",
+  SIDEBAR_BACK_TO_SALES_ORDERS: "Back to Sales Orders",
+  RM_SHORTAGE_REFRESH_HINT: "RM shortage — raise a Material Planning order or add stock, then refresh this screen.",
+  RM_SHORTAGE_RESOLVE_FIRST: "Resolve RM shortage first, then refresh this screen to continue.",
+  RM_OK_CONTINUE_WO: "RM is now sufficient. Continue to create the work order.",
+  RESUME_WO_SUBTITLE: "RM is now sufficient. Continue on the work order screen.",
+  NEXT_REVIEW_REQUIREMENTS: "Next step: review production requirements",
+  /** Dashboard / global RM policy alerts — REGULAR-safe destination (stock), not NO_QTY planning hub. */
+  REVIEW_RM_STATUS: "Review RM status",
+  /** Ribbon metric: items below minimum or RM alert count (navigates to Stock). */
+  DASHBOARD_RM_ALERTS_LABEL: "RM alerts",
+  TOAST_CONTINUE_PREPARE_WORK_ORDER: "Sales order created as Approved — continue to prepare work order (RM check).",
+  SALES_ORDER_APPROVED_RM_CHECK_HINT:
+    "You can go straight to prepare work order (RM check) — no second approval on the sales order.",
+  OPEN_WORK_ORDERS: "Open Work Orders",
+  VIEW_SALES_ORDER_SPOTLIGHT: "View Sales Order",
+  WORK_ORDER_PREPARATION: "Work order preparation",
+  /** Dense toolbar (dispatch, etc.) */
+  TOOLBAR_PREPARE_WO: "Prepare WO",
+  BACK_TO_PREPARE_WORK_ORDER: "Back to prepare work order",
+} as const;
+
+/**
+ * Department-oriented copy for non-planning roles (Sales / Production / QC / Accounts).
+ * Use these labels in workflow status chips so factory operators and managers read
+ * department wording instead of technical jargon ("Requirement Pending", etc.).
+ */
+export const WORKFLOW_STATUS_COPY = {
+  PLANNING_PENDING: "Planning Pending",
+  WAITING_FOR_PLANNING_TEAM: "Waiting for Planning Team",
+  WITH_PLANNING_TEAM: "With Planning Team",
+  REQUIREMENT_READY_WITH_PLANNING: "Requirement Ready · With Planning",
+  PLANNED_BY_STORE: "Planned by Store/Planning",
+  SENT_TO_PLANNING: "Sent to Planning Department",
+  CYCLE_RETURNS_TO_PLANNING: "Cycle returns to Planning Team",
+  DRAFT_WITH_PLANNING: "Draft Requirement Sheet · With Planning",
+  IN_PRODUCTION: "In Production",
+  AWAITING_QC: "Awaiting QC",
+  READY_FOR_DISPATCH: "Ready for Dispatch",
+  READY_FOR_BILLING: "Ready for Billing",
+  CYCLE_COMPLETED: "Cycle Completed",
+} as const;
+
+/** NO_QTY cycle / requirement-sheet / rolling planning ecosystem. */
+export const NO_QTY_TERMS = {
+  /** Matches sidebar / route title capitalization. */
+  PLANNING_HUB_TITLE: "Requirement & Cycle Planning",
+  PLANNING_HUB_SUBTITLE: "Review requirement sheets, shortages, and cycle-driven production signals.",
+  /** Explicit CTA — use instead of generic “planning” or “production planning”. */
+  OPEN_REQUIREMENT_AND_CYCLE_PLANNING: "Open Requirement & Cycle Planning",
+  CONTINUE_NO_QTY_PLANNING: "Continue NO_QTY Planning",
+  REQUIREMENT_SHEET_LINK: "Requirement Sheet",
+  CONTINUE_PLANNING_SHORT: "Continue Planning",
+  /** From NO_QTY planning hub — RM resolution is purchase/stock, not REGULAR WO prep (`/work-orders/prepare`). */
+  OPEN_RM_PURCHASE_FROM_SHORTAGE: "Open Material Planning",
+  WRONG_FLOW_REGULAR_SO_TITLE: "Regular sales order",
+  WRONG_FLOW_REGULAR_SO_BODY:
+    "This sales order uses the fixed-quantity work-order path (RM check → work order), not requirement-sheet planning.",
+  OPEN_PREPARE_WORK_ORDER: "Open prepare work order",
+  WRONG_FLOW_NO_QTY_TITLE: "NO_QTY requirement planning",
+  /** Shown when a NO_QTY SO is opened on REGULAR WO preparation routes. */
+  WRONG_FLOW_NO_QTY_BODY: "This order belongs to NO_QTY requirement planning flow.",
+  /** Primary action on REGULAR screen when order is NO_QTY — navigates to NO_QTY planning hub. */
+  OPEN_REQUIREMENT_PLANNING: "Open Requirement Planning",
+  /** Smart back / RM purchase back nav — aligned capitalization. */
+  BACK_TO_REQUIREMENT_CYCLE_PLANNING: "Back to Requirement & Cycle Planning",
+} as const;

@@ -7,10 +7,24 @@ const { assertSufficientStockForQtyOut, getItemStockQty, STOCK_EPS } = require("
  */
 async function pairBucketTransferInTx(
   tx,
-  { itemId, item, qty, fromBucket, toBucket, reasonDetail, userId, req, auditLogTitle, qcRejectedDispositionId },
+  {
+    itemId,
+    item,
+    qty,
+    fromBucket,
+    toBucket,
+    reasonDetail,
+    userId,
+    req,
+    auditLogTitle,
+    qcRejectedDispositionId,
+    /** When set, IN row uses this disposition id (OUT still uses qcRejectedDispositionId). Hold→rework: out parent hold, in child REWORK. */
+    toQcRejectedDispositionId,
+  },
 ) {
   const detail = String(reasonDetail || "").trim() || "—";
   const reasonNote = `Bucket ${fromBucket}→${toBucket}: ${detail}`;
+  const inDispId = toQcRejectedDispositionId ?? qcRejectedDispositionId;
   await assertSufficientStockForQtyOut(tx, itemId, qty, "Insufficient quantity in source bucket.", {
     stockBucket: fromBucket,
     ...(qcRejectedDispositionId ? { qcRejectedDispositionId } : {}),
@@ -20,7 +34,7 @@ async function pairBucketTransferInTx(
     data: {
       itemId,
       transactionType: "BUCKET_TRANSFER",
-      refId: qcRejectedDispositionId ?? 0,
+      refId: qcRejectedDispositionId ?? inDispId ?? 0,
       qcRejectedDispositionId: qcRejectedDispositionId ?? null,
       stockBucket: fromBucket,
       qtyIn: "0",
@@ -34,8 +48,8 @@ async function pairBucketTransferInTx(
     data: {
       itemId,
       transactionType: "BUCKET_TRANSFER",
-      refId: qcRejectedDispositionId ?? 0,
-      qcRejectedDispositionId: qcRejectedDispositionId ?? null,
+      refId: inDispId ?? qcRejectedDispositionId ?? 0,
+      qcRejectedDispositionId: inDispId ?? null,
       stockBucket: toBucket,
       qtyIn: String(qty),
       qtyOut: "0",

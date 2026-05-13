@@ -1,16 +1,18 @@
 import * as React from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { useDebouncedUrlStringParam, useUrlQueryState } from "../hooks/useUrlQueryState";
 import { apiFetch } from "../services/api";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
+import { suppressMouseFocusOnDrillRow } from "../lib/drillDownRowProps";
 import { cn } from "../lib/utils";
 import { ROW_NUM_EPS, dashboardToneToBadgeVariant, maxInSlice } from "../lib/dispatchBacklog";
 import { purchasePoStatusTone, rmRiskStatusTone } from "../lib/reportStatusTones";
 import { useToast } from "../contexts/ToastContext";
 import { useAuth } from "../hooks/useAuth";
-import { ChevronDown, ChevronUp, Download } from "lucide-react";
+import { ChevronDown, ChevronUp, Download, ShoppingCart } from "lucide-react";
 import { ReportPageHeader } from "../components/PageHeader";
 
 type RmRiskRow = {
@@ -58,11 +60,57 @@ function rmShortageReportAllowed(role: string | undefined): boolean {
   return role === "ADMIN" || role === "STORE" || role === "PRODUCTION";
 }
 
+/**
+ * Build the navigation target for "Create RM PO" from a shortage row.
+ *
+ * Carries the item context as query params (itemId, itemCode, itemName,
+ * shortageQty, source) plus a `returnTo` so the RM PO list page can render a
+ * smart "Back to RM Shortage Workspace" link that preserves the operator's
+ * original entry source (e.g. Dashboard).
+ *
+ * Quantity-related params are PRESENTATIONAL ONLY — the RM PO page uses them
+ * to prefill the line; no business calculation is mutated here.
+ */
+function buildCreateRmPoHref(args: {
+  itemId: number;
+  itemCode: string;
+  itemName: string;
+  shortageQty: number;
+  rmShortageSearch: string;
+}): string {
+  const params = new URLSearchParams();
+  params.set("source", "rm-shortage");
+  params.set("itemId", String(args.itemId));
+  if (args.itemCode) params.set("itemCode", args.itemCode);
+  if (args.itemName) params.set("itemName", args.itemName);
+  if (Number.isFinite(args.shortageQty) && args.shortageQty > 0) {
+    params.set("shortageQty", String(args.shortageQty));
+    params.set("requiredQty", String(args.shortageQty));
+  }
+  const returnPath = `/reports/rm-shortage${args.rmShortageSearch || ""}`;
+  params.set("returnTo", returnPath);
+  return `/rm-po-grn/create?${params.toString()}`;
+}
+
 export function RMShortageReportPage() {
   const auth = useAuth();
   const toast = useToast();
+  const navigate = useNavigate();
+  const location = useLocation();
   const allowed = rmShortageReportAllowed(auth.user?.role);
   const { patch, read } = useUrlQueryState(RM_SHORTAGE_URL_OMIT);
+
+  // Smart back-nav: if opened from Dashboard (source=dashboard), go back to
+  // Dashboard; otherwise default to the Reports hub. Mirrors the same query
+  // param convention used elsewhere on the dashboard.
+  const sourceFromUrl = read.string("source");
+  const back = React.useMemo(
+    () =>
+      sourceFromUrl === "dashboard"
+        ? { to: "/dashboard", label: "Back to Dashboard" }
+        : { to: "/reports", label: "Back to Reports" },
+    [sourceFromUrl],
+  );
 
   const [rmRows, setRmRows] = React.useState<RmRiskRow[]>([]);
   const [poRows, setPoRows] = React.useState<PurchaseSummaryRow[]>([]);
@@ -241,12 +289,39 @@ export function RMShortageReportPage() {
     toast.showInfo("Export purchase coverage to Excel will be available in a future update.");
   }
 
+  /**
+   * Row click on a shortage line opens the RM ledger filtered to this item so
+   * STORE can verify recent stock movement before placing an RM PO. The
+   * explicit "Create RM PO" button on the row is the actual action — row
+   * activation is informational.
+   */
   function onRmRowActivate(r: RmRiskRow) {
-    toast.showInfo(`Item ${r.itemName} (ID ${r.itemId}) — detail navigation coming soon.`);
+    navigate(`/stock/rm-ledger?itemId=${encodeURIComponent(String(r.itemId))}&source=rm-shortage`);
   }
 
+  /**
+   * Row click on a pending purchase line opens the corresponding RM PO detail
+   * page so STORE can review/edit it without leaving the workspace flow.
+   */
   function onPoRowActivate(r: PurchaseSummaryRow) {
-    toast.showInfo(`${r.purchaseOrderNo} / ${r.itemName} — navigation coming soon.`);
+    navigate(`/rm-po-grn/${r.purchaseOrderId}?source=rm-shortage`);
+  }
+
+  /**
+   * Navigate to the RM Purchase Order create page with item context prefilled
+   * via query params. The list page reads `source=rm-shortage` and auto-opens
+   * the new PO modal with the shortage qty.
+   */
+  function onCreateRmPoForRow(r: RmRiskRow) {
+    navigate(
+      buildCreateRmPoHref({
+        itemId: r.itemId,
+        itemCode: r.itemCode,
+        itemName: r.itemName,
+        shortageQty: Number(r.shortageQty || 0),
+        rmShortageSearch: location.search,
+      }),
+    );
   }
 
   const selectClass =
@@ -277,7 +352,7 @@ export function RMShortageReportPage() {
       <div className="rounded-md border border-slate-200 bg-slate-50 px-6 py-10 text-center shadow-sm">
         <h2 className="text-lg font-semibold text-slate-900">Not authorized</h2>
         <p className="mt-2 text-sm text-slate-600">
-          You don&apos;t have permission to view the RM Shortage report. If you need access, contact an administrator.
+          You don&apos;t have permission to view the RM Shortage Workspace. If you need access, contact an administrator.
         </p>
       </div>
     );
@@ -287,8 +362,9 @@ export function RMShortageReportPage() {
     <div className="flex min-h-0 flex-col gap-4">
       <ReportPageHeader
         className="mb-0"
-        title="RM Shortage Report"
-        purpose="Surfaces RM items at risk from shortages or low buffer against open demand, plus pending purchase coverage."
+        title="RM Shortage Workspace"
+        purpose="Review material shortages, pending purchase coverage, and create RM PO for blocked production."
+        back={back}
       />
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -305,7 +381,7 @@ export function RMShortageReportPage() {
           <div className="mt-1 text-2xl font-semibold tabular-nums text-slate-900">{summary.totalShortage.toFixed(3)}</div>
         </div>
         <div className="rounded-md border border-slate-200 bg-white p-3 shadow-sm">
-          <div className="text-xs font-medium uppercase tracking-wide text-slate-500">Pending RM purchase lines</div>
+          <div className="text-xs font-medium uppercase tracking-wide text-slate-500">Pending Material Planning lines</div>
           <div className="mt-1 text-2xl font-semibold tabular-nums text-slate-900">{summary.pendingLines}</div>
         </div>
       </div>
@@ -364,7 +440,7 @@ export function RMShortageReportPage() {
                   patch({ rmPending: e.target.checked ? "1" : null })
                 }
               />
-              <span>Only items with pending RM purchase (any open PO line)</span>
+              <span>Only items with pending Material Planning (any open PO line)</span>
             </label>
             <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-700">
               <input
@@ -460,7 +536,7 @@ export function RMShortageReportPage() {
               </div>
               <div className="max-h-[min(55vh,560px)] min-h-0 overflow-auto border-t border-slate-200">
                 <div className="erp-table-wrap border-0">
-                  <table className="erp-table min-w-[800px] text-xs sm:text-sm">
+                  <table className="erp-table min-w-[940px] text-xs sm:text-sm">
                     <thead className="sticky top-0 z-[1] shadow-[0_1px_0_0_rgb(226_232_240)] [&_th]:bg-slate-50">
                       <tr>
                         <th>Item Code</th>
@@ -512,21 +588,26 @@ export function RMShortageReportPage() {
                           </span>
                         </th>
                         <th>Status</th>
+                        <th className="whitespace-nowrap text-right">Action</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {rmSorted.map((r, idx) => (
+                      {rmSorted.map((r, idx) => {
+                        const needsPo = r.shortageQty > ROW_NUM_EPS;
+                        return (
                         <tr
                           key={`${r.itemId}-${idx}`}
                           role="button"
                           tabIndex={0}
+                          aria-label={`Open RM ledger for ${r.itemName}`}
                           className={cn(
-                            "cursor-pointer transition-colors hover:bg-slate-50/90 focus-visible:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-300 focus-visible:ring-offset-1",
+                            "cursor-pointer select-none transition-colors hover:bg-slate-50/90 focus-visible:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-300 focus-visible:ring-offset-1",
                             r.status === "CRITICAL" &&
                               "[&_td]:!bg-red-50 [&_td]:border-b-red-100/90",
                             r.status === "LOW_BUFFER" && "[&_td]:!bg-amber-50/55 [&_td]:border-b-amber-100/70",
                           )}
                           onClick={() => onRmRowActivate(r)}
+                          onMouseDown={suppressMouseFocusOnDrillRow}
                           onKeyDown={(e) => {
                             if (e.key === "Enter" || e.key === " ") {
                               e.preventDefault();
@@ -563,8 +644,34 @@ export function RMShortageReportPage() {
                           <td className="whitespace-nowrap">
                             <Badge variant={dashboardToneToBadgeVariant(rmRiskStatusTone(r.status))}>{r.status}</Badge>
                           </td>
+                          <td
+                            className="whitespace-nowrap text-right"
+                            onClick={(e) => e.stopPropagation()}
+                            onKeyDown={(e) => e.stopPropagation()}
+                          >
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant={r.status === "CRITICAL" ? "default" : "outline"}
+                              className={cn(
+                                "h-8 gap-1.5 px-3 text-xs font-semibold shadow-sm",
+                                r.status === "CRITICAL" && "bg-red-700 text-white hover:bg-red-800",
+                              )}
+                              disabled={!needsPo}
+                              title={
+                                needsPo
+                                  ? `Create RM PO for ${r.itemName}${r.shortageQty ? ` (shortage ${r.shortageQty})` : ""}`
+                                  : "No active shortage on this item"
+                              }
+                              onClick={() => onCreateRmPoForRow(r)}
+                            >
+                              <ShoppingCart className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                              Create RM PO
+                            </Button>
+                          </td>
                         </tr>
-                      ))}
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -578,7 +685,7 @@ export function RMShortageReportPage() {
       <Card className="flex min-h-0 flex-col border-slate-200 shadow-sm">
         <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-3 space-y-0 pb-2">
           <div className="min-w-0 max-w-xl space-y-1">
-            <CardTitle className="text-sm font-semibold text-slate-800">Pending RM purchase coverage</CardTitle>
+            <CardTitle className="text-sm font-semibold text-slate-800">Pending Material Planning coverage</CardTitle>
             <p className="text-xs leading-relaxed text-slate-500">
               Open purchase orders with quantity still to receive on each RM line. Use <span className="font-medium text-slate-600">item</span> with
               the RM risk table above to mentally tie coverage to demand — data stays in separate tables; no server join.
@@ -619,7 +726,7 @@ export function RMShortageReportPage() {
             <div className="border-t border-slate-200 px-4 py-8 text-sm text-slate-500">Loading purchase lines…</div>
           ) : poSorted.length === 0 ? (
             <div className="border-t border-slate-200 px-4 py-10">
-              <p className="text-sm font-medium text-slate-800">No matching pending RM purchase lines</p>
+              <p className="text-sm font-medium text-slate-800">No matching pending Material Planning lines</p>
               <p className="mt-1 max-w-md text-xs leading-relaxed text-slate-500">
                 The purchase summary API returned no open RM lines with pending receipt (or the request failed). When data exists, lines appear here
                 unchanged by the RM risk filters above.
@@ -631,7 +738,7 @@ export function RMShortageReportPage() {
                 <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Purchase summary rows</p>
                 <p className="mt-0.5 text-sm text-slate-700">
                   Showing <span className="font-semibold tabular-nums text-slate-900">{poSorted.length}</span> of{" "}
-                  <span className="tabular-nums text-slate-600">{poRows.length}</span>                   pending RM purchase line{poRows.length === 1 ? "" : "s"}{" "}
+                  <span className="tabular-nums text-slate-600">{poRows.length}</span>                   pending Material Planning line{poRows.length === 1 ? "" : "s"}{" "}
                   <span className="text-slate-500">(full API result; sort only)</span>
                 </p>
               </div>
@@ -687,10 +794,11 @@ export function RMShortageReportPage() {
                             role="button"
                             tabIndex={0}
                             className={cn(
-                              "cursor-pointer transition-colors hover:bg-slate-50/90 focus-visible:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-300 focus-visible:ring-offset-1",
+                              "cursor-pointer select-none transition-colors hover:bg-slate-50/90 focus-visible:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-300 focus-visible:ring-offset-1",
                               pUrg === "high" && "[&_td]:!bg-slate-50/90",
                             )}
                             onClick={() => onPoRowActivate(r)}
+                            onMouseDown={suppressMouseFocusOnDrillRow}
                             onKeyDown={(e) => {
                               if (e.key === "Enter" || e.key === " ") {
                                 e.preventDefault();

@@ -17,14 +17,8 @@ import { apiFetch } from "../../services/api";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { useShortcutHints } from "../../hooks/useShortcutHints";
-import { ShortcutHintBar, ShortcutFirstUseTip } from "../../components/ui/ShortcutHintBar";
 import { FieldShortcutHint } from "../../components/ui/FieldShortcutHint";
-import {
-  FIELD_HINT_GRID_NAV,
-  FIELD_HINT_PO_SUPPLIER,
-  FIELD_HINT_SAVE,
-  RM_PO_GRN_SHORTCUT_BAR,
-} from "../../lib/shortcutHintCopy";
+import { FIELD_HINT_GRID_NAV, FIELD_HINT_PO_SUPPLIER, FIELD_HINT_SAVE } from "../../lib/shortcutHintCopy";
 import {
   buildInitialPoLine,
   computeLineAmount,
@@ -33,20 +27,61 @@ import {
   type Item,
   type PoLineDraft,
   type RmPoRow,
-  poStatusDotClass,
   poStatusLabel,
   type Supplier,
 } from "./rmPurchaseShared";
-import { PageSmartBackLink, StickyWorkspaceHead } from "../../components/PageHeader";
+import { PageBackLink, PageContainer, StickyWorkspaceHead } from "../../components/PageHeader";
+import { resolveRmPurchaseBackNav } from "./rmPurchaseBackNav";
+import { Package } from "lucide-react";
+import { suppressMouseFocusOnDrillRow } from "../../lib/drillDownRowProps";
+import { cn } from "../../lib/utils";
+import { useFastEntryForm } from "../../hooks/useFastEntryForm";
+import { useModalFocusRestore } from "../../hooks/useModalFocusRestore";
 
 type PurchaseMeta = { testingModeRelaxedTaxFields: boolean };
 
 const RM_PO_GRN_URL_OMIT: Record<string, string> = { poStatus: "ALL" };
 
+function rmPoCreatedAt(r: RmPoRow): string | undefined {
+  const v = (r as { createdAt?: string }).createdAt;
+  return typeof v === "string" && v.trim() ? v : undefined;
+}
+
+function formatPoListDate(iso?: string): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+}
+
+function poStatusBadgeClass(status: string): string {
+  switch (status) {
+    case "COMPLETED":
+      return "border-emerald-200/90 bg-emerald-50 text-emerald-900";
+    case "PARTIAL":
+      return "border-amber-200/90 bg-amber-50 text-amber-950";
+    case "PENDING":
+      return "border-sky-200/90 bg-sky-50 text-sky-950";
+    case "CANCELLED":
+      return "border-slate-200 bg-slate-100 text-slate-700";
+    default:
+      return "border-slate-200 bg-slate-50 text-slate-800";
+  }
+}
+
 export function RmPurchaseListPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const [navSearchParams] = useSearchParams();
+
+  const rmPurchaseBackNav = React.useMemo(
+    () =>
+      resolveRmPurchaseBackNav(new URLSearchParams(location.search), {
+        defaultRoute: "/dashboard",
+        defaultLabel: "Back to Dashboard",
+      }),
+    [location.search],
+  );
   const { searchParams, setSearchParams, patch, read } = useUrlQueryState(RM_PO_GRN_URL_OMIT);
   const focusPoId = Number(searchParams.get(DRILL_QUERY.rmPoId)) || 0;
   const poStatusFilter = read.enum("poStatus", ["ALL", "OPEN", "COMPLETED", "CANCELLED"] as const, "ALL");
@@ -69,9 +104,12 @@ export function RmPurchaseListPage() {
   const relaxedTax = Boolean(purchaseMeta?.testingModeRelaxedTaxFields);
 
   const supplierSelectRef = React.useRef<HTMLSelectElement | null>(null);
+  const newPoModalFormRef = React.useRef<HTMLDivElement | null>(null);
   const poItemSelectRefs = React.useRef<(HTMLSelectElement | null)[]>([]);
   const poQtyInputRefs = React.useRef<(HTMLInputElement | null)[]>([]);
   const poRateInputRefs = React.useRef<(HTMLInputElement | null)[]>([]);
+  const noQtyShortagePrefillDoneRef = React.useRef(false);
+  const rmShortagePrefillDoneRef = React.useRef(false);
 
   const [lineTouched, setLineTouched] = React.useState<Record<number, { item?: boolean; qty?: boolean; rate?: boolean }>>({});
   const [lineAttemptedAdd, setLineAttemptedAdd] = React.useState<Record<number, boolean>>({});
@@ -124,6 +162,112 @@ export function RmPurchaseListPage() {
     void refresh();
   }, []);
 
+  useModalFocusRestore(newPoOpen);
+  useFastEntryForm({
+    containerRef: newPoModalFormRef,
+    initialFocusRef: supplierSelectRef,
+    initialFocusEnabled: newPoOpen,
+  });
+
+  React.useEffect(() => {
+    const sp = new URLSearchParams(location.search);
+    if (sp.get("source") !== "no_qty_production_shortage") {
+      noQtyShortagePrefillDoneRef.current = false;
+    }
+  }, [location.search]);
+
+  React.useEffect(() => {
+    const sp = new URLSearchParams(location.search);
+    if (sp.get("source") !== "no_qty_production_shortage") return;
+    if (!listLoaded || !items.length) return;
+    if (noQtyShortagePrefillDoneRef.current) return;
+    noQtyShortagePrefillDoneRef.current = true;
+
+    const st = location.state as {
+      shortages?: Array<{ rmItemId: number; shortageQty: number }>;
+      context?: {
+        salesOrderId?: number;
+        cycleId?: number | null;
+        workOrderId?: number;
+        workOrderLineId?: number;
+      };
+    } | null;
+    const shortages = st?.shortages ?? [];
+    const ctx = st?.context;
+
+    const salesOrderId = Number(sp.get("salesOrderId") ?? ctx?.salesOrderId ?? 0);
+    const cycleRaw = sp.get("cycleId");
+    const cycleId =
+      cycleRaw != null && cycleRaw !== "" && Number.isFinite(Number(cycleRaw))
+        ? Number(cycleRaw)
+        : (ctx?.cycleId ?? null);
+    const workOrderId = Number(sp.get("workOrderId") ?? ctx?.workOrderId ?? 0);
+    const workOrderLineId = Number(sp.get("workOrderLineId") ?? ctx?.workOrderLineId ?? 0);
+
+    try {
+      localStorage.setItem(
+        "noQtyReturnContext",
+        JSON.stringify({
+          salesOrderId,
+          cycleId,
+          workOrderId,
+          workOrderLineId,
+          returnTo: "production",
+        }),
+      );
+    } catch {
+      /* ignore */
+    }
+
+    const lines: PoLineDraft[] = [];
+    for (const s of shortages) {
+      const item = items.find((x) => x.id === s.rmItemId);
+      lines.push(buildInitialPoLine(item, relaxedTax, s.shortageQty, Number.NaN));
+    }
+    if (lines.length === 0 && items.length) {
+      lines.push(buildInitialPoLine(items[0], relaxedTax));
+    }
+    setPoLines(lines);
+    setSupplierId(suppliers[0]?.id ?? 0);
+    setPoRemarks("");
+    setNewPoOpen(true);
+  }, [listLoaded, items, relaxedTax, suppliers, location.search, location.state]);
+
+  /**
+   * RM Shortage Workspace → Create RM PO prefill.
+   *
+   * When the user clicks "Create RM PO" from `/reports/rm-shortage`, we land
+   * here with `?source=rm-shortage&itemId=X[&shortageQty=Y&...]`. Auto-open
+   * the new PO modal with that single RM line prefilled. Rate is intentionally
+   * left empty for the operator to set against the supplier's quote.
+   *
+   * PRESENTATIONAL ONLY — no math is mutated; we just preselect the item and
+   * carry the shortage qty into the line draft as a starting quantity.
+   */
+  React.useEffect(() => {
+    const sp = new URLSearchParams(location.search);
+    if (sp.get("source") !== "rm-shortage") {
+      rmShortagePrefillDoneRef.current = false;
+      return;
+    }
+    if (!listLoaded || !items.length) return;
+    if (rmShortagePrefillDoneRef.current) return;
+    rmShortagePrefillDoneRef.current = true;
+
+    const itemIdRaw = Number(sp.get("itemId") ?? 0);
+    const shortageRaw = Number(sp.get("shortageQty") ?? sp.get("requiredQty") ?? 0);
+    const matched = Number.isFinite(itemIdRaw) && itemIdRaw > 0
+      ? items.find((x) => x.id === itemIdRaw)
+      : undefined;
+    const baseQty = Number.isFinite(shortageRaw) && shortageRaw > 0 ? shortageRaw : Number.NaN;
+    const line = buildInitialPoLine(matched ?? items[0], relaxedTax, baseQty, Number.NaN);
+
+    setPoLines([line]);
+    setSupplierId(suppliers[0]?.id ?? 0);
+    setPoRemarks(matched ? `RM shortage cover: ${matched.itemName}` : "");
+    setNewPoOpen(true);
+  }, [listLoaded, items, relaxedTax, suppliers, location.search]);
+
   React.useEffect(() => {
     apiFetch<PurchaseMeta>("/api/purchase/meta")
       .then(setPurchaseMeta)
@@ -155,6 +299,15 @@ export function RmPurchaseListPage() {
     }
     return [...new Set(w)];
   }, [poLines, items, relaxedTax]);
+
+  const poKpi = React.useMemo(() => {
+    return {
+      total: rows.length,
+      pending: rows.filter((r) => r.status === "PENDING").length,
+      partial: rows.filter((r) => r.status === "PARTIAL").length,
+      completed: rows.filter((r) => r.status === "COMPLETED").length,
+    };
+  }, [rows]);
 
   const visiblePoRows = React.useMemo(() => {
     const q = qDraft.trim().toLowerCase();
@@ -230,7 +383,28 @@ export function RmPurchaseListPage() {
         }),
       });
       setNewPoOpen(false);
-      navigate(withReportsReturnContextIfPresent(`/rm-po-grn/${created.id}`, location.search), {
+      // Preserve shortage-workflow context (source, returnTo, item & qty for context strip)
+      // into the detail URL so back-nav resolves to "Back to RM Shortage Workspace" and the
+      // detail page can render the shortage-cover banner.
+      const sp = new URLSearchParams(location.search);
+      const sourceParam = sp.get("source") ?? "";
+      let detailHref = withReportsReturnContextIfPresent(`/rm-po-grn/${created.id}`, location.search);
+      if (sourceParam === "rm-shortage") {
+        const carry = new URLSearchParams();
+        carry.set("source", "rm-shortage");
+        const returnTo = sp.get("returnTo");
+        if (returnTo) carry.set("returnTo", returnTo);
+        const itemId = sp.get("itemId");
+        if (itemId) carry.set("itemId", itemId);
+        const itemCode = sp.get("itemCode");
+        if (itemCode) carry.set("itemCode", itemCode);
+        const itemName = sp.get("itemName");
+        if (itemName) carry.set("itemName", itemName);
+        const shortageQty = sp.get("shortageQty");
+        if (shortageQty) carry.set("shortageQty", shortageQty);
+        detailHref = `/rm-po-grn/${created.id}?${carry.toString()}`;
+      }
+      navigate(detailHref, {
         state: { rmPoTaxWarnings: created.taxWarnings ?? [] },
       });
     } catch (e) {
@@ -362,151 +536,243 @@ export function RmPurchaseListPage() {
   }
 
   return (
-    <div className="flex min-h-full flex-col pb-[5.5rem] sm:pb-20">
-      <div className="grid flex-1 gap-3">
-        <ShortcutFirstUseTip
-          visible={shortcutHints.firstUseTipVisible}
-          message="Tip: Use Enter to move faster and Ctrl+Enter to confirm."
-          onDismiss={shortcutHints.dismissFirstUseTip}
-        />
+    <PageContainer className="space-y-4 pb-[5.5rem] sm:pb-20">
+      <DrillFocusBanner
+        active={focusPoId > 0}
+        title={drillFocusTitleRmPo(focusPoId, focusedPoRow?.supplier.name)}
+        variant={
+          listLoaded && focusPoId > 0 && !poDrillInData ? "soft" : poDrillHiddenByFilters ? "soft" : "default"
+        }
+        hint={
+          listLoaded && focusPoId > 0 && !poDrillInData
+            ? DRILL_FOCUS_HINT_NOT_IN_LIST.purchaseOrder
+            : poDrillHiddenByFilters
+              ? DRILL_FOCUS_HINT_HIDDEN_BY_FILTERS.purchaseOrder
+              : undefined
+        }
+        recoveryAction={
+          poDrillHiddenByFilters ? { label: DRILL_RECOVERY_LABEL.purchaseOrder, onClick: revealPoDrillTarget } : undefined
+        }
+        onClearFocus={clearPoDrillFocus}
+      />
 
-        <DrillFocusBanner
-          active={focusPoId > 0}
-          title={drillFocusTitleRmPo(focusPoId, focusedPoRow?.supplier.name)}
-          variant={
-            listLoaded && focusPoId > 0 && !poDrillInData ? "soft" : poDrillHiddenByFilters ? "soft" : "default"
-          }
-          hint={
-            listLoaded && focusPoId > 0 && !poDrillInData
-              ? DRILL_FOCUS_HINT_NOT_IN_LIST.purchaseOrder
-              : poDrillHiddenByFilters
-                ? DRILL_FOCUS_HINT_HIDDEN_BY_FILTERS.purchaseOrder
-                : undefined
-          }
-          recoveryAction={
-            poDrillHiddenByFilters ? { label: DRILL_RECOVERY_LABEL.purchaseOrder, onClick: revealPoDrillTarget } : undefined
-          }
-          onClearFocus={clearPoDrillFocus}
-        />
-
-        <StickyWorkspaceHead lead={<PageSmartBackLink defaultTo="/dashboard" defaultLabel="Back to Dashboard" />}>
-          <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
-            <div className="min-w-0 space-y-1">
-              <h1 className="text-lg font-semibold leading-snug text-slate-900">RM Purchase</h1>
-              <p className="text-sm leading-relaxed text-slate-600">Pending purchase orders, GRN receipts, and receiving follow-up.</p>
-            </div>
-            <Button type="button" size="sm" className="h-9 w-fit shrink-0" onClick={openNewPoModal}>
-              + New Purchase Order
-            </Button>
+      <StickyWorkspaceHead lead={<PageBackLink to={rmPurchaseBackNav.backRoute} label={rmPurchaseBackNav.backLabel} />}>
+        <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+          <div className="min-w-0 space-y-1">
+            <h1 className="text-xl font-semibold leading-tight tracking-tight text-slate-900">Material Planning</h1>
+            <p className="text-sm leading-relaxed text-slate-600">
+              Purchase orders, GRN receipts, and supplier follow-up.
+            </p>
           </div>
-        </StickyWorkspaceHead>
+          <Button type="button" className="h-10 w-fit shrink-0 font-semibold shadow-sm sm:mt-0.5" onClick={openNewPoModal}>
+            + New Purchase Order
+          </Button>
+        </div>
+      </StickyWorkspaceHead>
 
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-semibold text-slate-800">Search &amp; filters</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {error && !newPoOpen ? (
-              <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>
-            ) : null}
-            <div className="grid gap-3 rounded-md border border-slate-200 bg-slate-50/80 p-3 sm:grid-cols-2">
-              <label className="grid gap-1 text-xs font-medium text-slate-600">
-                PO status
-                <select
-                  className="h-9 rounded-md border border-slate-200 bg-white px-2 text-sm"
-                  value={poStatusFilter}
-                  onChange={(e) => patch({ poStatus: e.target.value as typeof poStatusFilter })}
-                >
-                  <option value="ALL">All</option>
-                  <option value="OPEN">Open (pending / partial)</option>
-                  <option value="COMPLETED">Fully received</option>
-                  <option value="CANCELLED">Cancelled</option>
-                </select>
-              </label>
-              <label className="grid gap-1 text-xs font-medium text-slate-600">
-                Search
-                <Input className="h-9" value={qDraft} onChange={(e) => setQDraft(e.target.value)} placeholder="PO #, supplier, item…" />
-              </label>
-            </div>
-            <div className="flex justify-end">
-              <Button type="button" variant="outline" size="sm" className="h-8 w-fit" disabled={!poListFiltersActive} onClick={clearPoListFilters}>
-                Clear list filters
+      {navSearchParams.get("source") === "no_qty_production_shortage" ? (
+        <div className="rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-950 shadow-sm">
+          <p className="font-semibold">Source: NO_QTY Production Shortage</p>
+          <p className="mt-1 text-sky-900/90">SO / Cycle / WO linked — post GRN to return to the same Production step.</p>
+        </div>
+      ) : null}
+
+      {navSearchParams.get("source") === "rm-shortage" ? (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950 shadow-sm">
+          <p className="font-semibold">
+            Source: RM Shortage Workspace
+            {navSearchParams.get("itemName")
+              ? ` — ${navSearchParams.get("itemName")}`
+              : navSearchParams.get("itemCode")
+                ? ` — ${navSearchParams.get("itemCode")}`
+                : ""}
+          </p>
+          <p className="mt-1 text-amber-900/90">
+            New PO modal opened with the shortage item prefilled
+            {navSearchParams.get("shortageQty") ? ` (qty ${navSearchParams.get("shortageQty")})` : ""}
+            . Set supplier and rate, then save to unblock production.
+          </p>
+        </div>
+      ) : null}
+
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        {(
+          [
+            { key: "total", label: "Total POs", value: poKpi.total },
+            { key: "pending", label: "Pending GRN", value: poKpi.pending },
+            { key: "partial", label: "Partially Received", value: poKpi.partial },
+            { key: "completed", label: "Completed", value: poKpi.completed },
+          ] as const
+        ).map(({ key, label, value }) => (
+          <div
+            key={key}
+            className="rounded-xl border border-slate-200/90 bg-white p-3 shadow-sm ring-1 ring-slate-100/70"
+          >
+            <div className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</div>
+            <div className="mt-1 text-2xl font-semibold tabular-nums text-slate-900">{value}</div>
+          </div>
+        ))}
+      </div>
+
+      <Card className="overflow-hidden border-slate-200/90 shadow-sm ring-1 ring-slate-100/70">
+        <CardHeader className="border-b border-slate-100 bg-gradient-to-b from-slate-50/95 to-white px-4 py-2.5">
+          <CardTitle className="text-sm font-semibold text-slate-900">Search &amp; filters</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-2 p-4">
+          {error && !newPoOpen ? (
+            <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{error}</div>
+          ) : null}
+          <div className="flex flex-col gap-2 md:flex-row md:items-end md:gap-3">
+            <label className="grid min-w-[12rem] flex-1 shrink-0 gap-1 text-xs font-medium text-slate-600 md:max-w-[200px]">
+              PO status
+              <select
+                className="h-9 rounded-md border border-slate-200 bg-white px-2.5 text-sm shadow-sm"
+                value={poStatusFilter}
+                onChange={(e) => patch({ poStatus: e.target.value as typeof poStatusFilter })}
+              >
+                <option value="ALL">All</option>
+                <option value="OPEN">Open (pending / partial)</option>
+                <option value="COMPLETED">Fully received</option>
+                <option value="CANCELLED">Cancelled</option>
+              </select>
+            </label>
+            <label className="grid min-w-0 flex-1 gap-1 text-xs font-medium text-slate-600">
+              Search
+              <Input
+                className="h-9 shadow-sm"
+                value={qDraft}
+                onChange={(e) => setQDraft(e.target.value)}
+                placeholder="PO #, supplier, item…"
+              />
+            </label>
+            <div className="flex justify-end md:shrink-0 md:pb-px">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8 px-3 text-xs font-medium"
+                disabled={!poListFiltersActive}
+                onClick={clearPoListFilters}
+              >
+                Clear filters
               </Button>
             </div>
-            {poListFiltersActive && rows.length > 0 ? (
-              <p className="text-xs text-slate-600">
-                Showing <span className="font-semibold tabular-nums">{visiblePoRows.length}</span> of{" "}
-                <span className="tabular-nums">{rows.length}</span> purchase orders
-              </p>
-            ) : null}
+          </div>
+          {poListFiltersActive && rows.length > 0 ? (
+            <p className="text-xs text-slate-500">
+              Showing <span className="font-semibold tabular-nums text-slate-700">{visiblePoRows.length}</span> of{" "}
+              <span className="tabular-nums">{rows.length}</span> purchase orders
+            </p>
+          ) : null}
+        </CardContent>
+      </Card>
 
-            <div className="overflow-x-auto rounded-md border border-slate-200">
-              <table className="w-full min-w-[520px] border-collapse text-sm">
-                <thead className="border-b border-slate-200 bg-slate-50">
-                  <tr className="text-left text-xs font-medium uppercase text-slate-500">
-                    <th className="px-3 py-2">PO number</th>
-                    <th className="px-3 py-2">Supplier</th>
-                    <th className="px-3 py-2">Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {!rows.length && listLoaded ? (
-                    <tr>
-                      <td colSpan={3} className="px-3 py-8 text-center text-slate-600">
-                        <div className="mx-auto max-w-[28rem] space-y-1">
-                          <div className="text-base font-semibold text-slate-900">📦 No Purchase Orders yet</div>
-                          <div className="text-sm text-slate-600">Click “+ New Purchase Order” to create your first PO.</div>
+      <Card className="overflow-hidden border-slate-200/90 shadow-sm ring-1 ring-slate-100/70">
+        <CardHeader className="border-b border-slate-100 bg-gradient-to-b from-slate-50/95 to-white px-4 py-2.5">
+          <CardTitle className="text-sm font-semibold text-slate-900">Purchase orders</CardTitle>
+        </CardHeader>
+        <CardContent className="p-0">
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[760px] border-collapse text-sm">
+              <thead>
+                <tr className="border-b border-slate-200 bg-slate-50/95 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">
+                  <th className="whitespace-nowrap px-4 py-2.5">PO number</th>
+                  <th className="min-w-[8rem] px-4 py-2.5">Supplier</th>
+                  <th className="whitespace-nowrap px-4 py-2.5">Status</th>
+                  <th className="whitespace-nowrap px-4 py-2.5">PO date</th>
+                  <th className="whitespace-nowrap px-4 py-2.5 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {!rows.length && listLoaded ? (
+                  <tr>
+                    <td colSpan={5} className="p-0">
+                      <div className="flex flex-col items-center justify-center px-4 py-12 text-center">
+                        <div className="mb-4 rounded-full bg-slate-100 p-3 ring-1 ring-slate-200/80">
+                          <Package className="h-8 w-8 text-slate-500" aria-hidden />
                         </div>
-                      </td>
-                    </tr>
-                  ) : null}
-                  {visiblePoRows.map((r) => (
+                        <h3 className="text-base font-semibold text-slate-900">No purchase orders yet</h3>
+                        <p className="mt-1 max-w-sm text-sm leading-relaxed text-slate-600">
+                          Create your first purchase order to receive raw material stock.
+                        </p>
+                        <Button type="button" className="mt-5 font-semibold shadow-sm" onClick={openNewPoModal}>
+                          + New Purchase Order
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                ) : null}
+                {visiblePoRows.map((r) => {
+                  const detailUrl = withReportsReturnContextIfPresent(`/rm-po-grn/${r.id}`, location.search);
+                  return (
                     <tr
                       key={r.id}
                       {...{ [DRILL_DATA.poId]: r.id }}
-                      className="cursor-pointer border-b border-slate-100 hover:bg-sky-50/60"
-                      onClick={() => navigate(withReportsReturnContextIfPresent(`/rm-po-grn/${r.id}`, location.search))}
+                      className="cursor-pointer select-none bg-white transition-colors hover:bg-slate-50/90"
+                      onClick={() => navigate(detailUrl)}
                       onKeyDown={(e) => {
                         if (e.key === "Enter" || e.key === " ") {
                           e.preventDefault();
-                          navigate(withReportsReturnContextIfPresent(`/rm-po-grn/${r.id}`, location.search));
+                          navigate(detailUrl);
                         }
                       }}
+                      onMouseDown={suppressMouseFocusOnDrillRow}
                       tabIndex={0}
-                      role="link"
+                      role="button"
+                      aria-label={`Open purchase order ${formatRmPoNo(r.id)}`}
                     >
-                      <td className="px-3 py-2.5 font-medium text-slate-900">{formatRmPoNo(r.id)}</td>
-                      <td className="px-3 py-2.5 text-slate-800">{r.supplier.name}</td>
-                      <td className="px-3 py-2.5">
-                        <span className="inline-flex items-center gap-2">
-                          <span className={`inline-block h-2 w-2 shrink-0 rounded-full ${poStatusDotClass(r.status)}`} aria-hidden />
-                          <span>{poStatusLabel(r.status)}</span>
+                      <td className="whitespace-nowrap px-4 py-2.5 font-semibold text-slate-900">{formatRmPoNo(r.id)}</td>
+                      <td className="max-w-[14rem] truncate px-4 py-2.5 text-slate-800" title={r.supplier.name}>
+                        {r.supplier.name}
+                      </td>
+                      <td className="px-4 py-2.5">
+                        <span
+                          className={cn(
+                            "inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium",
+                            poStatusBadgeClass(r.status),
+                          )}
+                        >
+                          {poStatusLabel(r.status)}
                         </span>
                       </td>
+                      <td className="whitespace-nowrap px-4 py-2.5 tabular-nums text-slate-700">
+                        {formatPoListDate(rmPoCreatedAt(r))}
+                      </td>
+                      <td className="px-4 py-2 text-right" onClick={(e) => e.stopPropagation()}>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-8 px-3 text-xs font-medium"
+                          onClick={() => navigate(detailUrl)}
+                        >
+                          Open
+                        </Button>
+                      </td>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          {!rows.length ? null : visiblePoRows.length === 0 ? (
+            <div className="border-t border-slate-100 px-4 py-3 text-sm text-slate-600">
+              No purchase orders match the current filters.
+              {poDrillHiddenByFilters ? ` ${DRILL_FOCUS_EMPTY_FILTERED_SUFFIX.purchaseOrder}` : ""}
             </div>
-            {!rows.length ? null : visiblePoRows.length === 0 ? (
-              <p className="text-sm text-slate-600">
-                No purchase orders match the current filters.
-                {poDrillHiddenByFilters ? ` ${DRILL_FOCUS_EMPTY_FILTERED_SUFFIX.purchaseOrder}` : ""}
-              </p>
-            ) : null}
-          </CardContent>
-        </Card>
-      </div>
+          ) : null}
+        </CardContent>
+      </Card>
 
       {newPoOpen ? (
         <div className="erp-modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="rm-po-new-title">
-          <Card className="erp-modal-shell max-h-[90vh] overflow-y-auto">
-            <CardHeader className="pb-2">
-              <CardTitle id="rm-po-new-title" className="text-base">
+          <Card className="erp-modal-shell max-h-[90vh] overflow-y-auto rounded-xl border-slate-200/90 shadow-xl ring-1 ring-slate-200/50">
+            <CardHeader className="border-b border-slate-100 bg-gradient-to-b from-slate-50/95 to-white pb-3">
+              <CardTitle id="rm-po-new-title" className="text-base font-semibold text-slate-900">
                 New purchase order
               </CardTitle>
             </CardHeader>
-            <CardContent className="space-y-3">
+            <CardContent ref={newPoModalFormRef} className="space-y-3">
               {error ? (
                 <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>
               ) : null}
@@ -755,8 +1021,6 @@ export function RmPurchaseListPage() {
           </Card>
         </div>
       ) : null}
-
-      <ShortcutHintBar items={RM_PO_GRN_SHORTCUT_BAR} />
-    </div>
+    </PageContainer>
   );
 }

@@ -2,6 +2,7 @@ import * as React from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
 import { apiFetch } from "../services/api";
 import { PageContainer, PageNoQtyFlowBackLink, PageSmartBackLink, StickyWorkspaceHead } from "../components/PageHeader";
 import { withReportsReturnContextIfPresent } from "../lib/drillDownRoutes";
@@ -33,21 +34,34 @@ function dispatchDateMs(iso: string): number {
   return Number.isFinite(t) ? t : 0;
 }
 
+function todayYmdLocal(): string {
+  const t = new Date();
+  const y = t.getFullYear();
+  const m = String(t.getMonth() + 1).padStart(2, "0");
+  const d = String(t.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
 export function SalesBillNewPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const [sp] = useSearchParams();
   const source = sp.get("source") ?? "";
   const fromNoQtySo = source === "no_qty_so";
+  const fromDispatch = sp.get("from") === "dispatch";
+  const dispatchIdFromUrl = (sp.get("dispatchId") ?? "").trim();
   const focusSoId = Number(sp.get("salesOrderId") ?? 0);
   const focusSoIdValid = Number.isFinite(focusSoId) && focusSoId > 0;
   const [focusSo, setFocusSo] = React.useState<{ id: number; customerName: string } | null>(null);
 
   const [rows, setRows] = React.useState<EligibleDispatch[]>([]);
-  const [dispatchId, setDispatchId] = React.useState<string>("");
+  const [dispatchId, setDispatchId] = React.useState<string>(() =>
+    /^\d+$/.test(dispatchIdFromUrl) && Number(dispatchIdFromUrl) > 0 ? dispatchIdFromUrl : "",
+  );
   const [loadError, setLoadError] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
   const [loaded, setLoaded] = React.useState(false);
+  const [newBillDate, setNewBillDate] = React.useState(todayYmdLocal);
 
   React.useEffect(() => {
     setLoadError(null);
@@ -66,10 +80,15 @@ export function SalesBillNewPage() {
           return;
         }
         setRows(list);
+        const urlId = (sp.get("dispatchId") ?? "").trim();
+        if (fromDispatch && /^\d+$/.test(urlId) && Number(urlId) > 0) {
+          const exists = list.some((r) => Number(r.dispatchId) === Number(urlId));
+          if (exists) setDispatchId(urlId);
+        }
       })
       .catch((e) => setLoadError(e instanceof Error ? e.message : "Could not load eligible dispatches."))
       .finally(() => setLoaded(true));
-  }, [fromNoQtySo, focusSoId, focusSoIdValid]);
+  }, [fromNoQtySo, fromDispatch, focusSoId, focusSoIdValid, dispatchIdFromUrl]);
 
   React.useEffect(() => {
     if (!fromNoQtySo || !focusSoIdValid) {
@@ -92,7 +111,7 @@ export function SalesBillNewPage() {
     try {
       const bill = await apiFetch<{ id: number }>(`/api/sales-bills/from-dispatch/${id}`, {
         method: "POST",
-        body: JSON.stringify({}),
+        body: JSON.stringify(fromNoQtySo && focusSoIdValid ? { billDate: newBillDate } : {}),
       });
       if (fromNoQtySo && focusSoIdValid) {
         const qs = new URLSearchParams();
@@ -204,6 +223,24 @@ export function SalesBillNewPage() {
                       {selected.draftBillId ? ` Continue Draft Bill (#${selected.draftBillId}).` : " Continue Draft Bill."}
                     </div>
                   ) : null}
+                </div>
+              ) : null}
+
+              {fromNoQtySo ? (
+                <div className="grid gap-1.5">
+                  <label className="text-xs font-medium text-slate-600" htmlFor="sb-new-bill-date">
+                    Bill date *
+                  </label>
+                  <Input
+                    id="sb-new-bill-date"
+                    type="date"
+                    className="h-10"
+                    value={newBillDate}
+                    onChange={(e) => setNewBillDate(e.target.value)}
+                  />
+                  <p className="text-xs leading-relaxed text-slate-500">
+                    Applicable rates are picked from approved rate contracts using this bill date (not dispatch date).
+                  </p>
                 </div>
               ) : null}
 

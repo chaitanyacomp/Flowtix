@@ -1,10 +1,17 @@
 const { COMPANY_STATE } = require("../config/company");
-const { DocType } = require("@prisma/client");
+const { DocType, Prisma } = require("../prismaClientPackage");
 const { allocateDocNo } = require("./docNoService");
 const { maybeAutoCloseNoQtyCycle } = require("./noQtyCycleAutoClose");
+const { findApplicableRateContractLine, normalizeUtcDateOnly } = require("./rateContractService");
+const { assertAnyAdminPassword } = require("./adminPasswordAuth");
 
 function round2(n) {
   return Math.round(Number(n) * 100) / 100;
+}
+
+function startOfUtcDay(d = new Date()) {
+  const x = d instanceof Date ? d : new Date(d);
+  return new Date(Date.UTC(x.getUTCFullYear(), x.getUTCMonth(), x.getUTCDate()));
 }
 
 function friendlyError(message, statusCode = 400) {
@@ -85,8 +92,7 @@ async function deriveSalesRateForSoItem(tx, so, itemId) {
     });
     if (pol) return Number(pol.rate);
   }
-  // Final fallback: SO line rate (manual NO_QTY and legacy flows).
-  // NO_QTY creation persists pricing on SalesOrderLine.rate.
+  // Final fallback: SO line rate (legacy / snapshots).
   if (soLine) {
     if (Boolean(soLine.isFree)) return 0;
     const r = Number(soLine.rate ?? 0);
@@ -100,6 +106,7 @@ const billInclude = {
   dispatch: { include: { salesOrder: { include: { customer: true, po: { include: { customer: true } }, lines: true } }, item: true } },
   exportedBy: { select: { id: true, name: true } },
   lines: { include: { item: true }, orderBy: { id: "asc" } },
+  receipts: { orderBy: { id: "asc" }, include: { createdBy: { select: { id: true, name: true } } } },
 };
 
 async function getCompanyState(tx) {
@@ -134,7 +141,8 @@ function withSalesBillGstBreakup(bill, { intraState, companyState }) {
 }
 
 async function listSalesBills(prisma, query) {
-  const { fromDate, toDate, customerId, status, search } = query;
+  const { fromDate, toDate, customerId, status, search, payment, exportFilter, export: exportQ } = query;
+  const exportKey = exportFilter != null && exportFilter !== "" ? exportFilter : exportQ;
   /** @type {import('@prisma/client').Prisma.SalesBillWhereInput} */
   const where = {};
   if (fromDate || toDate) {
@@ -167,6 +175,47 @@ async function listSalesBills(prisma, query) {
       { dispatchNoSnapshot: { contains: searchTrim } },
     ];
   }
+
+  const paymentNorm = typeof payment === "string" ? payment.trim().toLowerCase() : "";
+  const expNorm = typeof exportKey === "string" ? String(exportKey).trim().toLowerCase() : "";
+
+  /** @type {import('@prisma/client').Prisma.SalesBillWhereInput[]} */
+  const paymentAnd = [];
+  if (paymentNorm === "pending") {
+    paymentAnd.push({
+      status: "FINALIZED",
+      cancelledAt: null,
+      pendingAmount: { gt: new Prisma.Decimal("0.0001") },
+    });
+  } else if (paymentNorm === "overdue") {
+    const today = startOfUtcDay(new Date());
+    const minBusinessDue = new Date(Date.UTC(1971, 0, 1));
+    paymentAnd.push({
+      status: "FINALIZED",
+      cancelledAt: null,
+      pendingAmount: { gt: new Prisma.Decimal("0.0001") },
+      dueDate: { not: null, lt: today, gte: minBusinessDue },
+    });
+  } else if (paymentNorm === "partial") {
+    paymentAnd.push({ status: "FINALIZED", cancelledAt: null, paymentStatus: "PARTIAL" });
+  } else if (paymentNorm === "paid") {
+    paymentAnd.push({
+      status: "FINALIZED",
+      cancelledAt: null,
+      OR: [{ paymentStatus: "PAID" }, { pendingAmount: { lte: new Prisma.Decimal("0.0001") } }],
+    });
+  }
+
+  if (expNorm === "not_exported" || expNorm === "pending") {
+    paymentAnd.push({ isExported: false });
+  } else if (expNorm === "exported") {
+    paymentAnd.push({ isExported: true });
+  }
+
+  if (paymentAnd.length) {
+    where.AND = [...(where.AND ? (Array.isArray(where.AND) ? where.AND : [where.AND]) : []), ...paymentAnd];
+  }
+
   return prisma.salesBill.findMany({
     where,
     orderBy: { id: "desc" },
@@ -238,7 +287,82 @@ async function getEligibleDispatches(prisma) {
     }));
 }
 
-async function createDraftFromDispatch(prisma, dispatchId) {
+/**
+ * Rebuild all lines on a NO_QTY draft bill from the rate contract for the given bill date.
+ * @param {import('@prisma/client').Prisma.TransactionClient} tx
+ */
+async function refreshNoQtyDraftLinesFromContract(tx, billId, billDateUtc) {
+  const bill = await tx.salesBill.findUnique({
+    where: { id: billId },
+    include: {
+      customer: { include: { stateRef: { select: { id: true, stateName: true, stateCode: true } } } },
+      dispatch: { include: { salesOrder: true } },
+      lines: { include: { item: true }, orderBy: { id: "asc" } },
+    },
+  });
+  if (!bill?.dispatch?.salesOrder || bill.dispatch.salesOrder.orderType !== "NO_QTY") return;
+
+  const intra = resolveSalesIntraFromStateCodes({ customer: bill.customer }).intraState;
+  const customerId = bill.customerId;
+
+  for (const ln of bill.lines) {
+    const item = ln.item;
+    const contract = await findApplicableRateContractLine(tx, {
+      customerId,
+      itemId: ln.itemId,
+      asOf: billDateUtc,
+    });
+    if (!contract) {
+      const label = item?.itemName ? String(item.itemName) : `ID ${ln.itemId}`;
+      throw friendlyError(`No approved rate contract for “${label}” on the selected bill date.`, 400);
+    }
+    const rate = Number(contract.rate);
+    const gstRatePct =
+      contract.gstRate != null && String(contract.gstRate).trim() !== ""
+        ? Number(contract.gstRate)
+        : Number(item?.gstRate ?? 0);
+    const qty = Number(ln.qty);
+    const calc = computeLineTaxSplit(qty * rate, gstRatePct, intra);
+    await tx.salesBillLine.update({
+      where: { id: ln.id },
+      data: {
+        rate: String(rate),
+        gstRate: String(calc.gstRate),
+        rateEffectiveFrom: contract.effectiveFrom,
+        basicAmount: String(calc.basicAmount),
+        cgstAmount: String(calc.cgstAmount),
+        sgstAmount: String(calc.sgstAmount),
+        igstAmount: String(calc.igstAmount),
+        lineTotal: String(calc.lineTotal),
+      },
+    });
+  }
+
+  const linesAfter = await tx.salesBillLine.findMany({ where: { salesBillId: billId } });
+  const totals = sumTotals(
+    linesAfter.map((x) => ({
+      basicAmount: Number(x.basicAmount),
+      cgstAmount: Number(x.cgstAmount),
+      sgstAmount: Number(x.sgstAmount),
+      igstAmount: Number(x.igstAmount),
+      totalTax: Number(x.cgstAmount) + Number(x.sgstAmount) + Number(x.igstAmount),
+      lineTotal: Number(x.lineTotal),
+    })),
+  );
+  await tx.salesBill.update({
+    where: { id: billId },
+    data: {
+      totalBasic: String(totals.totalBasic),
+      totalCgst: String(totals.totalCgst),
+      totalSgst: String(totals.totalSgst),
+      totalIgst: String(totals.totalIgst),
+      totalTax: String(totals.totalTax),
+      netAmount: String(totals.netAmount),
+    },
+  });
+}
+
+async function createDraftFromDispatch(prisma, dispatchId, opts = {}) {
   if (!Number.isFinite(dispatchId) || dispatchId <= 0) throw friendlyError("Invalid dispatch id");
   return prisma.$transaction(async (tx) => {
     const existing = await tx.salesBill.findFirst({
@@ -282,14 +406,61 @@ async function createDraftFromDispatch(prisma, dispatchId) {
     const item = dispatch.item;
     if (!item) throw friendlyError("Item not found.");
     if (!item.hsnCode) throw friendlyError("Item HSN is missing for one or more lines.", 409);
-    if (item.gstRate == null) throw friendlyError("Item GST rate is missing for one or more lines.", 409);
 
-    const rate = await deriveSalesRateForSoItem(tx, so, dispatch.itemId);
-    const intra = resolveSalesIntraFromStateCodes({ customer }).intraState;
-    const calc = computeLineTaxSplit(qty * rate, Number(item.gstRate), intra);
+    const isNoQty = so.orderType === "NO_QTY";
+    if (!isNoQty && item.gstRate == null) throw friendlyError("Item GST rate is missing for one or more lines.", 409);
 
     const today = new Date();
-    const billDate = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
+    const billDate =
+      normalizeUtcDateOnly(opts?.billDate != null ? opts.billDate : null) ?? normalizeUtcDateOnly(today);
+
+    const intra = resolveSalesIntraFromStateCodes({ customer }).intraState;
+    let rate;
+    let gstRatePct;
+    /** Rate contract row used for NO_QTY rate/GST snapshot + line.rateEffectiveFrom only. */
+    let applicableRateContract = null;
+
+    if (isNoQty) {
+      applicableRateContract = await findApplicableRateContractLine(tx, {
+        customerId: customer.id,
+        itemId: dispatch.itemId,
+        asOf: billDate,
+      });
+      if (!applicableRateContract) {
+        throw friendlyError("No approved rate contract for this customer and item on the selected bill date.", 400);
+      }
+      rate = Number(applicableRateContract.rate);
+      gstRatePct =
+        applicableRateContract.gstRate != null && String(applicableRateContract.gstRate).trim() !== ""
+          ? Number(applicableRateContract.gstRate)
+          : Number(item.gstRate ?? 0);
+      if (!Number.isFinite(gstRatePct) || gstRatePct < 0) {
+        throw friendlyError("GST rate is missing for billing (item master or rate contract).", 409);
+      }
+    } else {
+      rate = await deriveSalesRateForSoItem(tx, so, dispatch.itemId);
+      gstRatePct = Number(item.gstRate);
+    }
+
+    const calc = computeLineTaxSplit(qty * rate, gstRatePct, intra);
+
+    const billLineCreate = {
+      dispatchId: dispatch.id,
+      soId: dispatch.soId,
+      itemId: item.id,
+      itemNameSnapshot: String(item.itemName || "").slice(0, 256),
+      hsnCodeSnapshot: String(item.hsnCode || "").trim().toUpperCase().slice(0, 32),
+      unitSnapshot: String(item.unit || "").slice(0, 64),
+      qty: String(qty),
+      rate: String(rate),
+      basicAmount: String(calc.basicAmount),
+      gstRate: String(calc.gstRate),
+      cgstAmount: String(calc.cgstAmount),
+      sgstAmount: String(calc.sgstAmount),
+      igstAmount: String(calc.igstAmount),
+      lineTotal: String(calc.lineTotal),
+      ...(isNoQty && applicableRateContract ? { rateEffectiveFrom: applicableRateContract.effectiveFrom } : {}),
+    };
 
     const created = await tx.salesBill.create({
       data: {
@@ -314,24 +485,7 @@ async function createDraftFromDispatch(prisma, dispatchId) {
         totalTax: String(calc.totalTax),
         netAmount: String(calc.lineTotal),
         lines: {
-          create: [
-            {
-              dispatchId: dispatch.id,
-              soId: dispatch.soId,
-              itemId: item.id,
-              itemNameSnapshot: String(item.itemName || "").slice(0, 256),
-              hsnCodeSnapshot: String(item.hsnCode || "").trim().toUpperCase().slice(0, 32),
-              unitSnapshot: String(item.unit || "").slice(0, 64),
-              qty: String(qty),
-              rate: String(rate),
-              basicAmount: String(calc.basicAmount),
-              gstRate: String(calc.gstRate),
-              cgstAmount: String(calc.cgstAmount),
-              sgstAmount: String(calc.sgstAmount),
-              igstAmount: String(calc.igstAmount),
-              lineTotal: String(calc.lineTotal),
-            },
-          ],
+          create: [billLineCreate],
         },
       },
       include: billInclude,
@@ -357,18 +511,111 @@ async function updateDraft(prisma, billId, body) {
     if (Number.isNaN(parsedBillDate.getTime())) throw friendlyError("Please enter a valid bill date.");
     parsedBillDate = new Date(Date.UTC(parsedBillDate.getUTCFullYear(), parsedBillDate.getUTCMonth(), parsedBillDate.getUTCDate()));
 
-    const updated = await tx.salesBill.update({
+    const prevBillDateNorm = normalizeUtcDateOnly(bill.billDate);
+    const billDateChanged =
+      !prevBillDateNorm || !parsedBillDate || prevBillDateNorm.getTime() !== parsedBillDate.getTime();
+
+    await tx.salesBill.update({
       where: { id: billId },
       data: {
         billNo: trimmedBillNo,
         billDate: parsedBillDate,
         remarks: remarks != null && String(remarks).trim() !== "" ? String(remarks).trim() : null,
       },
+    });
+
+    const orderType = bill.dispatch?.salesOrder?.orderType;
+    if (orderType === "NO_QTY" && billDateChanged) {
+      await refreshNoQtyDraftLinesFromContract(tx, billId, parsedBillDate);
+    }
+
+    const updated = await tx.salesBill.findUnique({
+      where: { id: billId },
       include: billInclude,
     });
     const companyState = await getCompanyState(tx);
     const intra = resolveSalesIntraFromStateCodes({ customer: updated.customer }).intraState;
     return withSalesBillGstBreakup(updated, { intraState: intra, companyState });
+  });
+}
+
+/**
+ * Admin correction of a single line rate on a NO_QTY draft bill (does not alter rate contracts).
+ */
+async function patchDraftSalesBillLineRate(prisma, billId, lineId, rateInput) {
+  const rate = Number(rateInput);
+  if (!Number.isFinite(rate) || rate <= 0) throw friendlyError("Enter a valid rate.", 400);
+
+  return prisma.$transaction(async (tx) => {
+    const bill = await tx.salesBill.findUnique({
+      where: { id: billId },
+      include: {
+        customer: { include: { stateRef: { select: { id: true, stateName: true, stateCode: true } } } },
+        dispatch: { include: { salesOrder: true } },
+        lines: { include: { item: true }, orderBy: { id: "asc" } },
+      },
+    });
+    if (!bill) throw friendlyError("Sales bill not found.", 404);
+    if (bill.status !== "DRAFT") throw friendlyError("Only draft Sales Bills can be edited.", 409);
+    if (bill.isExported) throw friendlyError("Cannot edit rate: this sales bill is exported.", 409);
+    if (bill.dispatch?.salesOrder?.orderType !== "NO_QTY") {
+      throw friendlyError("Rate correction applies only to No Qty sales orders.", 409);
+    }
+
+    const ln = bill.lines.find((l) => l.id === lineId) || null;
+    if (!ln) throw friendlyError("Line not found on this bill.", 404);
+
+    const intra = resolveSalesIntraFromStateCodes({ customer: bill.customer }).intraState;
+    const qty = Number(ln.qty);
+    const gstRate = Number(ln.gstRate);
+    const calc = computeLineTaxSplit(qty * rate, gstRate, intra);
+
+    await tx.salesBillLine.update({
+      where: { id: lineId },
+      data: {
+        rate: String(rate),
+        rateEffectiveFrom: null,
+        basicAmount: String(calc.basicAmount),
+        gstRate: String(calc.gstRate),
+        cgstAmount: String(calc.cgstAmount),
+        sgstAmount: String(calc.sgstAmount),
+        igstAmount: String(calc.igstAmount),
+        lineTotal: String(calc.lineTotal),
+      },
+    });
+
+    await tx.salesOrderLine.updateMany({
+      where: { soId: bill.dispatch.soId, itemId: ln.itemId },
+      data: { rate: new Prisma.Decimal(String(rate)) },
+    });
+
+    const linesAfter = await tx.salesBillLine.findMany({ where: { salesBillId: billId } });
+    const totals = sumTotals(
+      linesAfter.map((x) => ({
+        basicAmount: Number(x.basicAmount),
+        cgstAmount: Number(x.cgstAmount),
+        sgstAmount: Number(x.sgstAmount),
+        igstAmount: Number(x.igstAmount),
+        totalTax: Number(x.cgstAmount) + Number(x.sgstAmount) + Number(x.igstAmount),
+        lineTotal: Number(x.lineTotal),
+      })),
+    );
+    await tx.salesBill.update({
+      where: { id: billId },
+      data: {
+        totalBasic: String(totals.totalBasic),
+        totalCgst: String(totals.totalCgst),
+        totalSgst: String(totals.totalSgst),
+        totalIgst: String(totals.totalIgst),
+        totalTax: String(totals.totalTax),
+        netAmount: String(totals.netAmount),
+      },
+    });
+
+    const refreshed = await tx.salesBill.findUnique({ where: { id: billId }, include: billInclude });
+    const companyState = await getCompanyState(tx);
+    const intra2 = resolveSalesIntraFromStateCodes({ customer: refreshed.customer }).intraState;
+    return withSalesBillGstBreakup(refreshed, { intraState: intra2, companyState });
   });
 }
 
@@ -426,6 +673,9 @@ async function finalizeBill(prisma, billId, userId) {
         totalIgst: String(totals.totalIgst),
         totalTax: String(totals.totalTax),
         netAmount: String(totals.netAmount),
+        pendingAmount: String(totals.netAmount),
+        receivedAmount: "0",
+        paymentStatus: "PENDING",
       },
       include: billInclude,
     });
@@ -470,6 +720,194 @@ async function cancelBill(prisma, billId, { reason, userId }) {
   });
 }
 
+function deriveSalesBillPaymentStatus(receivedAmt, pendingAmt) {
+  const r = Number(receivedAmt);
+  const p = Number(pendingAmt);
+  if (Number.isFinite(p) && p <= 1e-6) return "PAID";
+  if (Number.isFinite(r) && r > 1e-6) return "PARTIAL";
+  return "PENDING";
+}
+
+/**
+ * @param {import('@prisma/client').Prisma.TransactionClient} tx
+ */
+async function recalculateSalesBillPaymentTotals(tx, billId) {
+  const bill = await tx.salesBill.findUnique({
+    where: { id: billId },
+    select: { netAmount: true },
+  });
+  if (!bill) return;
+  const agg = await tx.salesBillReceipt.aggregate({
+    where: { salesBillId: billId },
+    _sum: { amount: true },
+  });
+  const received = round2(Number(agg._sum.amount || 0));
+  const net = round2(Number(bill.netAmount));
+  const pending = Math.max(0, round2(net - received));
+  const paymentStatus = deriveSalesBillPaymentStatus(received, pending);
+  await tx.salesBill.update({
+    where: { id: billId },
+    data: {
+      receivedAmount: String(received),
+      pendingAmount: String(pending),
+      paymentStatus,
+    },
+  });
+}
+
+const RECEIPT_MODES = new Set(["CASH", "BANK", "UPI", "CHEQUE", "OTHER"]);
+
+/**
+ * @param {import('@prisma/client').PrismaClient} prisma
+ */
+async function addSalesBillReceipt(prisma, billId, input, { userId, role }) {
+  const mode = String(input?.mode || "").toUpperCase();
+  if (!RECEIPT_MODES.has(mode)) throw friendlyError("Invalid payment mode.", 400);
+
+  let amount = Number(input?.amount);
+  if (!Number.isFinite(amount) || amount <= 0) throw friendlyError("Amount must be positive.", 400);
+
+  const receiptDateRaw = input?.receiptDate;
+  if (receiptDateRaw == null || receiptDateRaw === "") throw friendlyError("Receipt date is required.", 400);
+  const rd = receiptDateRaw instanceof Date ? receiptDateRaw : new Date(receiptDateRaw);
+  if (Number.isNaN(rd.getTime())) throw friendlyError("Invalid receipt date.", 400);
+  const receiptDateVal = new Date(Date.UTC(rd.getUTCFullYear(), rd.getUTCMonth(), rd.getUTCDate()));
+
+  const refTrim = input?.referenceNo != null ? String(input.referenceNo).trim().slice(0, 128) : "";
+  const remarksTrim = input?.remarks != null ? String(input.remarks).trim().slice(0, 4000) : "";
+
+  return prisma.$transaction(async (tx) => {
+    const bill = await tx.salesBill.findUnique({
+      where: { id: billId },
+      include: billInclude,
+    });
+    if (!bill) throw friendlyError("Sales bill not found.", 404);
+    if (bill.status !== "FINALIZED") throw friendlyError("Receipts apply only to finalized bills.", 409);
+    if (bill.cancelledAt) throw friendlyError("Bill is cancelled.", 409);
+
+    const net = round2(Number(bill.netAmount));
+    const agg = await tx.salesBillReceipt.aggregate({
+      where: { salesBillId: billId },
+      _sum: { amount: true },
+    });
+    const currentReceived = round2(Number(agg._sum.amount || 0));
+    const pendingBefore = Math.max(0, round2(net - currentReceived));
+    const newTotal = round2(currentReceived + amount);
+
+    const needsConfirm =
+      newTotal > net + 1e-6 || (role !== "ADMIN" && amount > pendingBefore + 1e-6);
+    if (needsConfirm) {
+      await assertAnyAdminPassword(tx, { password: input?.adminPassword });
+    }
+
+    await tx.salesBillReceipt.create({
+      data: {
+        salesBillId: billId,
+        receiptDate: receiptDateVal,
+        amount: String(round2(amount)),
+        mode,
+        referenceNo: refTrim || null,
+        remarks: remarksTrim || null,
+        createdById: typeof userId === "number" ? userId : null,
+      },
+    });
+
+    await recalculateSalesBillPaymentTotals(tx, billId);
+
+    const updated = await tx.salesBill.findUnique({
+      where: { id: billId },
+      include: billInclude,
+    });
+    const companyState = await getCompanyState(tx);
+    const intra = resolveSalesIntraFromStateCodes({ customer: updated.customer }).intraState;
+    return withSalesBillGstBreakup(updated, { intraState: intra, companyState });
+  });
+}
+
+/**
+ * @param {import('@prisma/client').PrismaClient} prisma
+ */
+async function deleteSalesBillReceipt(prisma, billId, receiptId, { role, adminPassword }) {
+  return prisma.$transaction(async (tx) => {
+    if (role !== "ADMIN") {
+      await assertAnyAdminPassword(tx, { password: adminPassword });
+    }
+    const row = await tx.salesBillReceipt.findFirst({
+      where: { id: receiptId, salesBillId: billId },
+    });
+    if (!row) throw friendlyError("Receipt not found.", 404);
+    const bill = await tx.salesBill.findUnique({
+      where: { id: billId },
+      select: { status: true, cancelledAt: true },
+    });
+    if (!bill || bill.status !== "FINALIZED" || bill.cancelledAt) {
+      throw friendlyError("Cannot delete receipt for this bill.", 409);
+    }
+    await tx.salesBillReceipt.delete({ where: { id: receiptId } });
+    await recalculateSalesBillPaymentTotals(tx, billId);
+    const updated = await tx.salesBill.findUnique({
+      where: { id: billId },
+      include: billInclude,
+    });
+    const companyState = await getCompanyState(tx);
+    const intra = resolveSalesIntraFromStateCodes({ customer: updated.customer }).intraState;
+    return withSalesBillGstBreakup(updated, { intraState: intra, companyState });
+  });
+}
+
+/**
+ * ERP-side AR tracking for finalized bills (not Tally ledger posting).
+ * Updates due date and remarks only — receipts drive amounts.
+ * @param {import('@prisma/client').PrismaClient} prisma
+ */
+async function updateSalesBillPaymentTracking(prisma, billId, input) {
+  const inObj = input ?? {};
+  const hasDue = Object.prototype.hasOwnProperty.call(inObj, "dueDate");
+  const hasRem = Object.prototype.hasOwnProperty.call(inObj, "paymentRemarks");
+
+  return prisma.$transaction(async (tx) => {
+    const bill = await tx.salesBill.findUnique({
+      where: { id: billId },
+      include: billInclude,
+    });
+    if (!bill) throw friendlyError("Sales bill not found.", 404);
+    if (bill.status !== "FINALIZED") throw friendlyError("Payment tracking applies only to finalized bills.", 409);
+    if (bill.cancelledAt) throw friendlyError("Bill is cancelled.", 409);
+
+    let dueDateVal = bill.dueDate;
+    if (hasDue) {
+      const dueDateRaw = inObj.dueDate;
+      if (dueDateRaw === null || dueDateRaw === "") {
+        dueDateVal = null;
+      } else {
+        const d = dueDateRaw instanceof Date ? dueDateRaw : new Date(dueDateRaw);
+        if (Number.isNaN(d.getTime())) throw friendlyError("Please enter a valid due date.", 400);
+        dueDateVal = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+      }
+    }
+
+    let paymentRemarksVal = bill.paymentRemarks;
+    if (hasRem) {
+      const remarksRaw = inObj.paymentRemarks;
+      paymentRemarksVal =
+        remarksRaw != null && String(remarksRaw).trim() !== "" ? String(remarksRaw).trim().slice(0, 4000) : null;
+    }
+
+    const updated = await tx.salesBill.update({
+      where: { id: billId },
+      data: {
+        dueDate: dueDateVal,
+        paymentRemarks: paymentRemarksVal,
+      },
+      include: billInclude,
+    });
+
+    const companyState = await getCompanyState(tx);
+    const intra = resolveSalesIntraFromStateCodes({ customer: updated.customer }).intraState;
+    return withSalesBillGstBreakup(updated, { intraState: intra, companyState });
+  });
+}
+
 async function deleteDraft(prisma, billId) {
   return prisma.$transaction(async (tx) => {
     const bill = await tx.salesBill.findUnique({ where: { id: billId }, select: { id: true, status: true, isExported: true } });
@@ -494,9 +932,13 @@ module.exports = {
   getEligibleDispatches,
   createDraftFromDispatch,
   updateDraft,
+  patchDraftSalesBillLineRate,
   finalizeBill,
   cancelBill,
   deleteDraft,
   getSalesBillById,
+  updateSalesBillPaymentTracking,
+  addSalesBillReceipt,
+  deleteSalesBillReceipt,
 };
 

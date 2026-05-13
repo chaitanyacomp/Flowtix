@@ -1,12 +1,17 @@
 import * as React from "react";
 import { Link } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
-import { Input } from "../components/ui/input";
 import { PageContainer, ReportPageHeader } from "../components/PageHeader";
 import { apiFetch } from "../services/api";
 import { useDebouncedUrlStringParam, useUrlQueryState } from "../hooks/useUrlQueryState";
 import { cn } from "../lib/utils";
 import { dispatchLedgerFocusHref, salesOrdersFocusHref, withReportsReturnContext } from "../lib/drillDownRoutes";
+import {
+  ReportFilterToolbar,
+  ReportFilterField,
+  ReportKpiStrip,
+  ReportEmptyState,
+} from "../components/erp/ReportChrome";
 
 type Customer = { id: number; name: string };
 type Item = { id: number; itemName: string };
@@ -180,100 +185,105 @@ export function SalesMatchingReportPage() {
 
       {loadError ? <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{loadError}</div> : null}
 
-      <Card className="border-slate-200 shadow-sm">
-        <CardHeader className="pb-3">
-          <CardTitle className="text-sm font-semibold text-slate-800">Filters</CardTitle>
-        </CardHeader>
-        <CardContent className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <label className="grid gap-1.5 text-xs font-medium text-slate-600">
-            From date (SO date)
-            <Input type="date" value={fromDate} onChange={(e) => patch({ fromDate: e.target.value || null })} />
+      <ReportFilterToolbar
+        applyBusy={loading}
+        leftExtras={
+          <label className="inline-flex items-center gap-1.5 text-[12px] font-medium text-slate-700">
+            <input
+              type="checkbox"
+              checked={mismatchesOnly}
+              onChange={(e) => patch({ mismatchesOnly: String(e.target.checked) })}
+            />
+            Mismatches only
           </label>
-          <label className="grid gap-1.5 text-xs font-medium text-slate-600">
-            To date (SO date)
-            <Input type="date" value={toDate} onChange={(e) => patch({ toDate: e.target.value || null })} />
-          </label>
-          <label className="grid gap-1.5 text-xs font-medium text-slate-600">
-            Customer
-            <select
-              className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm"
-              value={customerId || ""}
-              onChange={(e) => patch({ customerId: e.target.value ? Number(e.target.value) : null })}
-            >
-              <option value="">All customers</option>
-              {customers.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="grid gap-1.5 text-xs font-medium text-slate-600">
-            Item (FG)
-            <select
-              className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm"
-              value={itemId || ""}
-              onChange={(e) => patch({ itemId: e.target.value ? Number(e.target.value) : null })}
-            >
-              <option value="">All items</option>
-              {filteredItems.map((it) => (
-                <option key={it.id} value={it.id}>
-                  {it.itemName}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="grid gap-1.5 text-xs font-medium text-slate-600 sm:col-span-2 lg:col-span-4">
-            Search item (helps the dropdown)
-            <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Type item name…" />
-          </label>
-          <label className="grid gap-1.5 text-xs font-medium text-slate-600">
-            SO Type
-            <select className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm" value={soType} onChange={(e) => patch({ soType: e.target.value || null })}>
-              <option value="ALL">All</option>
-              <option value="NORMAL">Normal</option>
-              <option value="NO_QTY">No Qty SO</option>
-            </select>
-          </label>
-          <label className="grid gap-1.5 text-xs font-medium text-slate-600">
-            Status
-            <select className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm" value={status} onChange={(e) => patch({ status: e.target.value || null })}>
-              <option value="ALL">All</option>
-              <option value="Open">Open</option>
-              <option value="Partly Dispatched">Partly Dispatched</option>
-              <option value="Pending Billing">Pending Billing</option>
-              <option value="Fully Billed">Fully Billed</option>
-              <option value="Mismatch">Mismatch</option>
-              <option value="Closed">Closed</option>
-            </select>
-          </label>
-          <div className="flex items-end sm:col-span-2 lg:col-span-2">
-            <label className="flex items-center gap-2 text-sm text-slate-700">
-              <input type="checkbox" checked={mismatchesOnly} onChange={(e) => patch({ mismatchesOnly: String(e.target.checked) })} />
-              Show mismatches only
-            </label>
-          </div>
-        </CardContent>
-      </Card>
+        }
+      >
+        <ReportFilterField label="From">
+          <input type="date" value={fromDate} onChange={(e) => patch({ fromDate: e.target.value || null })} />
+        </ReportFilterField>
+        <ReportFilterField label="To">
+          <input type="date" value={toDate} onChange={(e) => patch({ toDate: e.target.value || null })} />
+        </ReportFilterField>
+        <ReportFilterField label="Customer">
+          <select
+            value={customerId || ""}
+            onChange={(e) => patch({ customerId: e.target.value ? Number(e.target.value) : null })}
+          >
+            <option value="">All customers</option>
+            {customers.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </select>
+        </ReportFilterField>
+        <ReportFilterField label="Item">
+          <select
+            value={itemId || ""}
+            onChange={(e) => patch({ itemId: e.target.value ? Number(e.target.value) : null })}
+          >
+            <option value="">All items</option>
+            {filteredItems.map((it) => (
+              <option key={it.id} value={it.id}>
+                {it.itemName}
+              </option>
+            ))}
+          </select>
+        </ReportFilterField>
+        <ReportFilterField label="Type">
+          <select value={soType} onChange={(e) => patch({ soType: e.target.value || null })}>
+            <option value="ALL">All</option>
+            <option value="NORMAL">Normal</option>
+            <option value="NO_QTY">No Qty SO</option>
+          </select>
+        </ReportFilterField>
+        <ReportFilterField label="Status">
+          <select value={status} onChange={(e) => patch({ status: e.target.value || null })}>
+            <option value="ALL">All</option>
+            <option value="Open">Open</option>
+            <option value="Partly Dispatched">Partly Dispatched</option>
+            <option value="Pending Billing">Pending Billing</option>
+            <option value="Fully Billed">Fully Billed</option>
+            <option value="Mismatch">Mismatch</option>
+            <option value="Closed">Closed</option>
+          </select>
+        </ReportFilterField>
+        <ReportFilterField label="Search item" hideLabel span={2}>
+          <input
+            type="search"
+            className="search-input"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Search item name…"
+          />
+        </ReportFilterField>
+      </ReportFilterToolbar>
 
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <div className="rounded border border-slate-200 bg-slate-50/70 px-3 py-2">
-          <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Rows</div>
-          <div className="mt-0.5 text-lg font-bold tabular-nums text-slate-900">{data?.summary.totalRows ?? (loading ? "…" : 0)}</div>
-        </div>
-        <div className="rounded border border-slate-200 bg-slate-50/70 px-3 py-2">
-          <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Mismatches</div>
-          <div className="mt-0.5 text-lg font-bold tabular-nums text-slate-900">{data?.summary.mismatchRows ?? (loading ? "…" : 0)}</div>
-        </div>
-        <div className="rounded border border-slate-200 bg-slate-50/70 px-3 py-2">
-          <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Total dispatched qty</div>
-          <div className="mt-0.5 text-lg font-bold tabular-nums text-slate-900">{data ? fmtQty(data.summary.totalDispatchedQty) : loading ? "…" : "0"}</div>
-        </div>
-        <div className="rounded border border-slate-200 bg-slate-50/70 px-3 py-2">
-          <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Total invoiced qty</div>
-          <div className="mt-0.5 text-lg font-bold tabular-nums text-slate-900">{data ? fmtQty(data.summary.totalInvoicedQty) : loading ? "…" : "0"}</div>
-        </div>
-      </div>
+      <ReportKpiStrip
+        items={[
+          {
+            key: "rows",
+            label: "Rows",
+            value: data?.summary.totalRows ?? (loading ? "…" : 0),
+          },
+          {
+            key: "mismatches",
+            label: "Mismatches",
+            value: data?.summary.mismatchRows ?? (loading ? "…" : 0),
+            tone: (data?.summary.mismatchRows ?? 0) > 0 ? "warning" : "default",
+          },
+          {
+            key: "dispatched",
+            label: "Dispatched qty",
+            value: data ? fmtQty(data.summary.totalDispatchedQty) : loading ? "…" : "0",
+          },
+          {
+            key: "invoiced",
+            label: "Invoiced qty",
+            value: data ? fmtQty(data.summary.totalInvoicedQty) : loading ? "…" : "0",
+          },
+        ]}
+      />
 
       <Card className="border-slate-200 shadow-sm">
         <CardHeader className="pb-2">
@@ -281,18 +291,20 @@ export function SalesMatchingReportPage() {
         </CardHeader>
         <CardContent className="p-0">
           {missingDates ? (
-            <div className="border-t border-slate-200 px-4 py-10 text-sm text-slate-600">
-              Choose a full date range in <span className="font-medium text-slate-800">Filters</span> to load sales matching
-              results.
+            <div className="p-3">
+              <ReportEmptyState
+                title="Select a date range"
+                body="Choose both From and To dates above to load sales matching results."
+              />
             </div>
           ) : loading ? (
-            <div className="px-4 py-8 text-sm text-slate-500">Loading…</div>
+            <div className="px-4 py-6 text-sm text-slate-500">Loading…</div>
           ) : !rows.length ? (
-            <div className="border-t border-slate-200 px-4 py-10">
-              <p className="text-sm font-medium text-slate-800">No rows</p>
-              <p className="mt-1 max-w-md text-xs leading-relaxed text-slate-500">
-                No SO lines match the current filters for this date range. Try widening dates or clearing SO type / status.
-              </p>
+            <div className="p-3">
+              <ReportEmptyState
+                title="No rows match these filters"
+                body="Widen the date range, clear SO type / status, or untick “Mismatches only”."
+              />
             </div>
           ) : (
             <div className="erp-table-wrap mt-auto max-w-full overflow-x-auto border-t border-slate-200">

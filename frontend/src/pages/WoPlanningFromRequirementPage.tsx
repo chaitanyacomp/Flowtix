@@ -1,3 +1,10 @@
+/**
+ * NO_QTY FLOW ONLY
+ *
+ * WO planning from a locked requirement sheet — not REGULAR `/work-orders/prepare` RM check.
+ *
+ * DO NOT IMPORT regular fixed-qty WO prep components or REGULAR-only dispatch assumptions.
+ */
 import * as React from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";

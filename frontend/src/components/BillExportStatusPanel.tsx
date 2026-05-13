@@ -1,6 +1,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
 import { Button } from "./ui/button";
 import { Badge } from "./ui/badge";
+import { cn } from "../lib/utils";
 
 export type BillExportLifecycle = "DRAFT" | "FINALIZED" | "CANCELLED";
 
@@ -21,6 +22,9 @@ export type BillExportStatusPanelProps = {
   resetting: boolean;
   onExport: () => void;
   onResetExport: () => void;
+  className?: string;
+  /** Sidebar / de-emphasized: tighter chrome; export uses outline styling. */
+  density?: "default" | "compact";
 };
 
 function formatDateTime(iso: string | null | undefined): string {
@@ -46,7 +50,10 @@ export function BillExportStatusPanel({
   resetting,
   onExport,
   onResetExport,
+  className,
+  density = "default",
 }: BillExportStatusPanelProps) {
+  const compact = density === "compact";
   const canExport = lifecycle === "FINALIZED" && !isExported && !exportBlockedReason;
   const showReset = lifecycle === "FINALIZED" && isExported && isAdmin;
 
@@ -77,23 +84,43 @@ export function BillExportStatusPanel({
   const billStatusPhrase = lifecycle === "FINALIZED" ? "Finalized" : lifecycle === "CANCELLED" ? "Cancelled" : "Draft";
 
   return (
-    <Card className="border-slate-200">
-      <CardHeader className="pb-2">
-        <CardTitle className="text-base font-semibold text-slate-900">Tally export</CardTitle>
-        <p className="mt-0.5 text-xs text-slate-500">
-          Bill status: <span className="font-medium text-slate-700">{billStatusPhrase}</span> · current export state (see History for past events).
-        </p>
+    <Card className={cn("border-slate-200", compact ? "shadow-none ring-1 ring-slate-100" : "", className)}>
+      <CardHeader className={cn(compact ? "space-y-0 pb-1 pt-2" : "space-y-0 pb-1.5 pt-3")}>
+        <CardTitle className={cn(compact ? "text-[11px] font-semibold uppercase tracking-wide text-slate-500" : "text-sm font-semibold text-slate-900")}>
+          Tally export
+        </CardTitle>
+        {!compact ? (
+          <p className="text-[11px] text-slate-500">
+            Bill: <span className="font-medium text-slate-700">{billStatusPhrase}</span>
+          </p>
+        ) : (
+          <p className="text-[11px] text-slate-600">
+            <span className="font-medium text-slate-700">{billStatusPhrase}</span>
+            {lifecycle === "FINALIZED" ? (
+              <>
+                {" "}
+                ·{" "}
+                <span className="tabular-nums">{isExported ? "Exported" : "Not exported"}</span>
+              </>
+            ) : null}
+          </p>
+        )}
       </CardHeader>
-      <CardContent className="pt-0">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-          <div className="min-w-0 space-y-1 text-sm">
+      <CardContent className={cn("pt-0", compact ? "pb-2" : "")}>
+        <div className={cn("flex flex-col sm:flex-row sm:items-start sm:justify-between", compact ? "gap-2" : "gap-3")}>
+          <div className={cn("min-w-0 text-sm", compact ? "space-y-0.5" : "space-y-1")}>
             <div className="flex flex-wrap items-center gap-2">
-              <span className="font-medium text-slate-900">{statusLabel}</span>
-              {exportBadge ? <Badge variant={exportBadge.variant} className="shrink-0">{exportBadge.text}</Badge> : null}
+              <span className={compact ? "text-xs font-medium text-slate-800" : "font-medium text-slate-900"}>{statusLabel}</span>
+              {exportBadge ? (
+                <Badge variant={exportBadge.variant} className={cn("shrink-0", compact ? "text-[10px] leading-none" : "")}>
+                  {exportBadge.text}
+                </Badge>
+              ) : null}
             </div>
-            {help ? <p className="text-xs leading-relaxed text-slate-600">{help}</p> : null}
+            {help && !compact ? <p className="text-xs leading-relaxed text-slate-600">{help}</p> : null}
+            {help && compact ? <p className="text-[10px] leading-snug text-slate-600">{help}</p> : null}
             {lifecycle === "FINALIZED" && isExported ? (
-              <dl className="mt-2 grid gap-1 text-xs text-slate-600">
+              <dl className={cn("grid gap-1 text-xs text-slate-600", compact ? "mt-1" : "mt-2")}>
                 <div className="flex flex-wrap gap-x-2">
                   <dt className="font-medium text-slate-500">Exported on</dt>
                   <dd className="tabular-nums text-slate-800">{formatDateTime(exportedAt)}</dd>
@@ -114,14 +141,28 @@ export function BillExportStatusPanel({
               </div>
             ) : null}
           </div>
-          <div className="flex shrink-0 flex-col items-stretch gap-2 sm:min-w-[11rem] sm:items-end">
+          <div className={cn("flex shrink-0 flex-col items-stretch gap-2", compact ? "sm:items-stretch" : "sm:min-w-[11rem] sm:items-end")}>
             {canExport ? (
-              <Button type="button" data-testid="export-tally-btn" disabled={exporting} onClick={() => void onExport()}>
+              <Button
+                type="button"
+                data-testid="export-tally-btn"
+                size={compact ? "sm" : "default"}
+                variant={compact ? "outline" : "default"}
+                disabled={exporting}
+                onClick={() => void onExport()}
+              >
                 {exporting ? "Exporting…" : "Export to Tally"}
               </Button>
             ) : null}
             {showReset ? (
-              <Button type="button" data-testid="reset-export-btn" variant="outline" disabled={resetting} onClick={() => void onResetExport()}>
+              <Button
+                type="button"
+                data-testid="reset-export-btn"
+                variant="outline"
+                size={compact ? "sm" : "default"}
+                disabled={resetting}
+                onClick={() => void onResetExport()}
+              >
                 {resetting ? "Resetting…" : "Reset Export"}
               </Button>
             ) : null}

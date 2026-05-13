@@ -11,7 +11,7 @@ const { normalizeGstinOnSave } = require("../services/gstinNormalize");
 const SUPPLIER_DELETE_BLOCKED = "Supplier is used in transactions and cannot be deleted.";
 const DUPLICATE_SUPPLIER_NAME = "A supplier with this name already exists.";
 const SUPPLIER_READ_ACCESS_DENIED = "Access denied. Only Admin and Store roles can view suppliers.";
-const supplierReadRoles = requireRole(["ADMIN", "STORE"], SUPPLIER_READ_ACCESS_DENIED);
+const supplierReadRoles = requireRole(["ADMIN", "STORE", "ACCOUNTS"], SUPPLIER_READ_ACCESS_DENIED);
 
 const supplierRouter = express.Router();
 

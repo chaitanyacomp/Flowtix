@@ -22,7 +22,10 @@ import { useFastEntryForm } from "../hooks/useFastEntryForm";
 import { useDependentFieldFocus } from "../hooks/useDependentFieldFocus";
 import { parsePositiveQuantityDraft } from "../lib/quantityDraft";
 import { cn } from "../lib/utils";
+import { REGULAR_TERMS } from "../lib/flowTerminology";
 import { WoInfoPanel } from "../components/erp/WoInfoPanel";
+import { PlanningStatusChip } from "../components/erp/PlanningStatusChip";
+import { useCanOpenRequirementSheet } from "../hooks/useIsAdmin";
 import { X } from "lucide-react";
 import { DemoFlowBanner } from "../components/demo/DemoFlowBanner";
 import { useDemoMode } from "../contexts/DemoModeContext";
@@ -47,6 +50,7 @@ type WoRow = {
   salesOrderId: number;
   salesOrder?: { docNo?: string | null } | null;
   cycleId?: number | null;
+  cycle?: { cycleNo?: number | null } | null;
   requirementSheetId?: number | null;
   lines: WoLine[];
 };
@@ -83,6 +87,30 @@ type RmCheckResponse = {
 };
 
 type RmCheckFgPlanning = { orderQty: number; fgStock: number; toProduce: number };
+
+/** Default until `settings.shortfallBufferPercent` is wired from the API. */
+const DEFAULT_SHORTFALL_BUFFER_PERCENT = 10;
+const SHORTFALL_BUFFER_PERCENT_MAX = 10;
+
+function parseShortfallBufferPercentInput(raw: string): number | null {
+  const t = String(raw).trim().replace(",", ".");
+  if (t === "") return null;
+  const n = Number(t);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Suggested WO qty for shortfall production: remaining + ceil(remaining × bufferPercent / 100).
+ * `bufferPercent` is clamped to 0–10 for the calculation.
+ */
+function getShortfallSuggestedQty(shortfallQty: number, bufferPercent: number): number {
+  const s = Number(shortfallQty);
+  if (!Number.isFinite(s) || s <= 0) return 0;
+  const bp = Math.min(SHORTFALL_BUFFER_PERCENT_MAX, Math.max(0, Number(bufferPercent)));
+  if (!Number.isFinite(bp)) return s;
+  const bufferQty = Math.ceil((s * bp) / 100);
+  return s + bufferQty;
+}
 
 function fmtWoExplainQty(n: number): string {
   const v = Number(n);
@@ -199,6 +227,7 @@ type WoLineRow = {
   woDocNo?: string | null;
   salesOrderId: number;
   soDocNo?: string | null;
+  cycleNo?: number | null;
   status: string;
   fgName: string;
   qty: string;
@@ -215,6 +244,7 @@ function flattenWoLines(list: WoRow[]): WoLineRow[] {
         woDocNo: wo.docNo ?? null,
         salesOrderId: wo.salesOrderId,
         soDocNo: wo.salesOrder?.docNo ?? null,
+        cycleNo: wo.cycle?.cycleNo != null ? Number(wo.cycle.cycleNo) : null,
         status: wo.status,
         fgName: l.fgItem?.itemName ?? "—",
         qty: l.qty,
@@ -226,10 +256,23 @@ function flattenWoLines(list: WoRow[]): WoLineRow[] {
   return out;
 }
 
+/**
+ * WORK ORDERS — MIXED SURFACE (REGULAR + NO_QTY)
+ *
+ * REGULAR FLOW (fixed-qty WO):
+ * Enquiry → Quotation → Sales Order → RM Check (`/work-orders/prepare`) → Work Order (this page) → Production → QC → Dispatch → Sales Bill.
+ *
+ * NO_QTY rows may appear with cycle banners — use NO_QTY helpers only for those rows.
+ *
+ * DO NOT merge requirement-sheet shortage math or cycle dispatch assumptions into REGULAR WO line builders.
+ *
+ * Default “back” from REGULAR entry must not push operators into `/planning-dashboard` (NO_QTY hub).
+ */
 export function WorkOrdersPage() {
   const auth = useAuth();
   const isAdmin = auth.user?.role === "ADMIN";
   const canProd = isAdmin || auth.user?.role === "PRODUCTION";
+  const canOpenRs = useCanOpenRequirementSheet();
 
   const loc = useLocation() as { state?: LocationState };
 
@@ -247,6 +290,30 @@ export function WorkOrdersPage() {
   const source = sp.get("source") ?? "";
   const fromNoQtySo = source === "no_qty_so";
   const focusSoIdFromUrl = Number(sp.get("salesOrderId") ?? 0);
+  const rawGuidedCycleId = Number(sp.get("cycleId") ?? 0);
+  const noQtyCycleIdFromUrl =
+    Number.isFinite(rawGuidedCycleId) && rawGuidedCycleId > 0 ? rawGuidedCycleId : null;
+  const rawGuidedRsId = Number(sp.get("requirementSheetId") ?? 0);
+  const noQtyRequirementSheetIdFromUrl =
+    Number.isFinite(rawGuidedRsId) && rawGuidedRsId > 0 ? rawGuidedRsId : null;
+  const shortfallQtyCustomerTracking = Number(sp.get("shortfallQty") ?? 0);
+  const fromCustomerTrackingWo = sp.get("from") === "customer-tracking";
+  const fromQcEntryWo = sp.get("from") === "qc-entry";
+  /** Pre-fill WO qty from Customer Tracking or QC entry “produce shortfall” links. */
+  const woShortfallFromGuidedEntry = fromCustomerTrackingWo || fromQcEntryWo;
+  /** REGULAR shortfall: editable buffer % (0–10). Invalid high/low still clamp for suggested qty. */
+  const [shortfallBufferPercentInput, setShortfallBufferPercentInput] = React.useState("10");
+  const shortfallWoQtyUserTouchedRef = React.useRef<Set<number>>(new Set());
+
+  const shortfallBufferParsed = parseShortfallBufferPercentInput(shortfallBufferPercentInput);
+  const shortfallBufferPercentForCalc =
+    shortfallBufferParsed == null
+      ? DEFAULT_SHORTFALL_BUFFER_PERCENT
+      : Math.min(SHORTFALL_BUFFER_PERCENT_MAX, Math.max(0, shortfallBufferParsed));
+  const shortfallBufferPercentInvalidHigh =
+    shortfallBufferParsed != null && shortfallBufferParsed > SHORTFALL_BUFFER_PERCENT_MAX + 1e-9;
+  const shortfallBufferPercentInvalidLow = shortfallBufferParsed != null && shortfallBufferParsed < 0 - 1e-9;
+
   const { searchParams, setSearchParams, patch, read } = useUrlQueryState(WO_LIST_URL_OMIT);
   const focusWorkOrderId = Number(searchParams.get(DRILL_QUERY.workOrderId)) || 0;
   const soFromUrl = read.int("so");
@@ -288,6 +355,12 @@ export function WorkOrdersPage() {
     }
     return "";
   });
+
+  React.useEffect(() => {
+    setShortfallBufferPercentInput("10");
+    shortfallWoQtyUserTouchedRef.current.clear();
+  }, [salesOrderId]);
+
   const [woLines, setWoLines] = React.useState<WoFormLine[]>([{ fgItemId: 0, qtyStr: "" }]);
   /** Regular (non–NO_QTY) new WO: per–FG-item selection + WO qty draft for the planning table. */
   const [regularWoByItemId, setRegularWoByItemId] = React.useState<Record<number, { sel: boolean; qtyStr: string }>>({});
@@ -311,8 +384,6 @@ export function WorkOrdersPage() {
   const salesOrderSelectRef = React.useRef<HTMLSelectElement | null>(null);
   const fgItemSelectRef = React.useRef<HTMLSelectElement | null>(null);
   const woQtyPrimaryRef = React.useRef<HTMLInputElement | null>(null);
-
-  useFastEntryForm({ containerRef: woFormRef });
 
   const appliedPrefill = React.useRef(false);
   const appliedPlanningPrefill = React.useRef(false);
@@ -372,6 +443,12 @@ export function WorkOrdersPage() {
     salesOrderId,
   ]);
 
+  useFastEntryForm({
+    containerRef: woFormRef,
+    initialFocusRef: salesOrderSelectRef,
+    initialFocusEnabled: Boolean(canProd && approvedSos.length > 0 && !lockSalesOrderSelector),
+  });
+
   const fgSoLines = React.useMemo(
     () => soDetail?.lines.filter((l) => l.item.itemType === "FG") ?? [],
     [soDetail],
@@ -379,6 +456,72 @@ export function WorkOrdersPage() {
 
   const fgBalanceByItemId = React.useMemo(() => new Map(fgBalances.map((b) => [b.itemId, b])), [fgBalances]);
   const [fgBalancesLoading, setFgBalancesLoading] = React.useState(false);
+
+  /** REGULAR (NORMAL) SO work-order planning only — not NO_QTY / REPLACEMENT. */
+  const isRegularNormalOrderForWoPlanning =
+    useRegularWoPlanningTable &&
+    soDetail != null &&
+    (soDetail.orderType === "NORMAL" || soDetail.orderType == null);
+
+  const shortfallQtyUrlActive =
+    isRegularNormalOrderForWoPlanning && shortfallQtyCustomerTracking > QTY_EPS;
+
+  /** Any FG still has WO-planning remainder (QC recovery, partial dispatch, etc.) — does not depend on URL. */
+  const hasAnyFgRemainingForShortfall = React.useMemo(() => {
+    if (!isRegularNormalOrderForWoPlanning) return false;
+    return fgSoLines.some((sl) => {
+      const bal = fgBalanceByItemId.get(sl.itemId);
+      return (bal?.balanceQty ?? 0) > QTY_EPS;
+    });
+  }, [isRegularNormalOrderForWoPlanning, fgSoLines, fgBalanceByItemId]);
+
+  /** Net order need vs production / QC cleared — catches edge cases where balance row is still catching up. */
+  const hasOrderProductionShortfallSignal = React.useMemo(() => {
+    if (!isRegularNormalOrderForWoPlanning) return false;
+    return fgSoLines.some((sl) => {
+      const bal = fgBalanceByItemId.get(sl.itemId);
+      if (!bal) return false;
+      const ord = Number(bal.soOrderedQty ?? 0);
+      const disp = Number(bal.dispatchedQty ?? 0);
+      const netOrd = Math.max(0, ord - disp);
+      const prod = Number(bal.producedQty ?? 0);
+      const qcOk = Number(bal.qcAcceptedGross ?? 0);
+      const completedLike = Math.max(prod, qcOk);
+      return netOrd > completedLike + QTY_EPS;
+    });
+  }, [isRegularNormalOrderForWoPlanning, fgSoLines, fgBalanceByItemId]);
+
+  const pageIsShortfallProduction =
+    shortfallQtyUrlActive || hasAnyFgRemainingForShortfall || hasOrderProductionShortfallSignal;
+
+  /** REGULAR (NORMAL) SO shortfall recovery only — backend relaxes WO cap when these are sent. */
+  const sendShortfallWoBufferToApi =
+    pageIsShortfallProduction &&
+    !fromNoQtySo &&
+    soDetail != null &&
+    soDetail.orderType !== "NO_QTY" &&
+    (soDetail.orderType === "NORMAL" || soDetail.orderType == null);
+
+  const firstShortfallEligibleItemId = React.useMemo(() => {
+    if (!isRegularNormalOrderForWoPlanning) return null;
+    const f = fgSoLines.find((sl) => (fgBalanceByItemId.get(sl.itemId)?.balanceQty ?? 0) > QTY_EPS);
+    return f?.itemId ?? null;
+  }, [isRegularNormalOrderForWoPlanning, fgSoLines, fgBalanceByItemId]);
+
+  function rowUsesShortfallBufferFeatures(itemId: number): boolean {
+    if (!useRegularWoPlanningTable || !isRegularNormalOrderForWoPlanning) return false;
+    if (!pageIsShortfallProduction) return false;
+    const bal = fgBalanceByItemId.get(itemId);
+    if (!bal || bal.balanceQty <= QTY_EPS) return false;
+    return true;
+  }
+
+  function shortfallBaseQtyForRow(itemId: number, balanceQty: number): number {
+    if (shortfallQtyUrlActive && firstShortfallEligibleItemId === itemId) {
+      return Math.min(shortfallQtyCustomerTracking, balanceQty);
+    }
+    return balanceQty;
+  }
 
   React.useEffect(() => {
     if (salesOrderId === "") {
@@ -453,12 +596,12 @@ export function WorkOrdersPage() {
     // For edit mode (excludeWo present), keep showing all FG lines so the existing selection remains visible.
     const excl = read.int("excludeWo") > 0 ? read.int("excludeWo") : undefined;
     if (excl != null) return fgSoLines;
-    // Regular Production Planning → WO: trust planning payload; do not hide FGs behind balance/eligibility filters.
+    // REGULAR RM check / prepare-WO payload: trust planning payload; do not hide FGs behind balance/eligibility filters.
     if (cameFromRmCheckPlanning) return fgSoLines;
     // Requirement Sheet prefill must be allowed even when SO qty is 0 (NO_QTY) and eligibility filters would hide it.
     if (isPrefilledFromRequirementSheet) return fgSoLines;
     if (fgBalancesLoading) return [];
-    // Pending-only rule aligned with Production Planning "To produce" minus active planned WOs:
+    // Pending-only rule aligned with RM-check “To produce” minus active planned WOs:
     // remainingAfterConfirmedDispatch = max(0, soOrderedQty - confirmedDispatchedQty)
     // pending_for_wo = max(0, min(toProduce, remainingAfterConfirmedDispatch) - plannedOnOtherWorkOrdersQty)
     return fgSoLines.filter((sl) => {
@@ -501,7 +644,7 @@ export function WorkOrdersPage() {
     primaryBalRow != null &&
     primaryItemTotalDraft > primaryBalRow.balanceQty + QTY_EPS;
 
-  /** Same figures as Production Planning (`/api/sales-orders/:id/rm-check`); USABLE FG stock only. */
+  /** Same figures as RM check (`/api/sales-orders/:id/rm-check`); USABLE FG stock only. */
   const regularWoRmCheckPlan =
     !noQtySelected && primaryLine.fgItemId > 0
       ? rmCheckFgPlanningByItemId.get(primaryLine.fgItemId) ?? null
@@ -536,6 +679,7 @@ export function WorkOrdersPage() {
       ? `/production?${new URLSearchParams({
           salesOrderId: String(salesOrderId),
           woId: String(openWoForPrimaryFg.woId),
+          from: "work-orders",
         }).toString()}`
       : null;
 
@@ -582,16 +726,37 @@ export function WorkOrdersPage() {
       sums.set(l.fgItemId, (sums.get(l.fgItemId) || 0) + q);
     }
     for (const [itemId, sum] of sums) {
+      if (rowUsesShortfallBufferFeatures(itemId)) {
+        if (sum <= QTY_EPS) return false;
+        continue;
+      }
       const bal = fgBalanceByItemId.get(itemId);
-      if (!bal || sum > bal.balanceQty + QTY_EPS) return false;
+      if (!bal) return false;
+      if (sum > bal.balanceQty + QTY_EPS) return false;
     }
     return true;
-  }, [salesOrderId, soDetail, fgSoLines, woLines, fgBalanceByItemId, fgBalancesLoading, noQtyBlocked]);
+  }, [
+    salesOrderId,
+    soDetail,
+    fgSoLines,
+    woLines,
+    fgBalanceByItemId,
+    fgBalancesLoading,
+    noQtyBlocked,
+    pageIsShortfallProduction,
+    isRegularNormalOrderForWoPlanning,
+    shortfallQtyUrlActive,
+    shortfallQtyCustomerTracking,
+  ]);
+
+  /** Dedupes REGULAR shortfall buffered prefill when balances / open WOs change. */
+  const regularShortfallPrefillKeyRef = React.useRef("");
 
   React.useEffect(() => {
     if (!useRegularWoPlanningTable) return;
     if (salesOrderId === "") {
       setRegularWoByItemId({});
+      regularShortfallPrefillKeyRef.current = "";
       return;
     }
     setRegularWoByItemId((prev) => {
@@ -604,7 +769,7 @@ export function WorkOrdersPage() {
   }, [salesOrderId, fgSoLines, useRegularWoPlanningTable]);
 
   React.useEffect(() => {
-    // Production Planning Dashboard deep-link: after SO is selected, auto-select the item and prefill qty.
+    // Prepare-WO deep-link: after SO is selected, auto-select the item and prefill qty.
     if (!useRegularWoPlanningTable) return;
     if (appliedPlanningPrefill.current) return;
     if (salesOrderId === "") return; // user still needs to choose SO
@@ -636,6 +801,104 @@ export function WorkOrdersPage() {
     prefillItemIdFromUrl,
     prefillQtyFromUrl,
     setSearchParams,
+  ]);
+
+  /**
+   * REGULAR NORMAL: pre-fill first FG that still has remaining WO qty and no open WO on that FG.
+   * Uses `?shortfallQty=` base when present; otherwise remaining from balance API. Always applies buffer.
+   */
+  React.useEffect(() => {
+    if (!useRegularWoPlanningTable || !isRegularNormalOrderForWoPlanning) return;
+    if (!pageIsShortfallProduction) return;
+    if (salesOrderId === "" || fgBalancesLoading) return;
+    if (!fgSoLines.length) return;
+
+    const soId = Number(salesOrderId);
+    const first = fgSoLines.find((sl) => {
+      const rem = fgBalanceByItemId.get(sl.itemId)?.balanceQty ?? 0;
+      if (!(rem > QTY_EPS)) return false;
+      const hasOpen = openWoRows.some(
+        (w) => w.salesOrderId === soId && (w.lines ?? []).some((l) => Number(l.fgItemId) === sl.itemId),
+      );
+      return !hasOpen;
+    });
+    if (!first) return;
+
+    const rem = fgBalanceByItemId.get(first.itemId)?.balanceQty ?? 0;
+    const base = shortfallQtyUrlActive ? Math.min(shortfallQtyCustomerTracking, rem) : rem;
+    if (!(base > QTY_EPS)) return;
+    const suggested = getShortfallSuggestedQty(base, shortfallBufferPercentForCalc);
+    if (!(suggested > QTY_EPS)) return;
+
+    const openSig = openWoRows
+      .filter((w) => w.salesOrderId === soId)
+      .map((w) => w.id)
+      .sort((a, b) => a - b)
+      .join(",");
+    const applyKey = `${soId}:${first.itemId}:${openSig}:${rem.toFixed(6)}:sf:${shortfallQtyUrlActive ? String(shortfallQtyCustomerTracking) : "x"}:bp:${shortfallBufferPercentForCalc}`;
+    if (regularShortfallPrefillKeyRef.current === applyKey) return;
+
+    setRegularWoByItemId((prev) => {
+      const cur = prev[first.itemId] ?? { sel: false, qtyStr: "" };
+      if (cur.sel && cur.qtyStr.trim() !== "") return prev;
+      return {
+        ...prev,
+        [first.itemId]: {
+          sel: true,
+          qtyStr: Number.isInteger(suggested) ? String(suggested) : String(Number(suggested.toFixed(4))),
+        },
+      };
+    });
+    regularShortfallPrefillKeyRef.current = applyKey;
+  }, [
+    useRegularWoPlanningTable,
+    isRegularNormalOrderForWoPlanning,
+    pageIsShortfallProduction,
+    salesOrderId,
+    fgBalancesLoading,
+    fgSoLines,
+    fgBalanceByItemId,
+    openWoRows,
+    shortfallQtyUrlActive,
+    shortfallQtyCustomerTracking,
+    shortfallBufferPercentForCalc,
+  ]);
+
+  /** When buffer % changes, refresh suggested WO qty for rows the user has not edited manually. */
+  React.useEffect(() => {
+    if (!useRegularWoPlanningTable || !isRegularNormalOrderForWoPlanning || !pageIsShortfallProduction) return;
+    if (fgBalancesLoading) return;
+    setRegularWoByItemId((prev) => {
+      let changed = false;
+      const next: Record<number, { sel: boolean; qtyStr: string }> = { ...prev };
+      for (const sl of fgSoLines) {
+        const id = sl.itemId;
+        if (shortfallWoQtyUserTouchedRef.current.has(id)) continue;
+        const cell = prev[id];
+        if (!cell?.sel) continue;
+        if (!rowUsesShortfallBufferFeatures(id)) continue;
+        const rem = fgBalanceByItemId.get(id)?.balanceQty ?? 0;
+        const base = shortfallBaseQtyForRow(id, rem);
+        const sug = getShortfallSuggestedQty(base, shortfallBufferPercentForCalc);
+        const newStr = Number.isInteger(sug) ? String(sug) : String(Number(sug.toFixed(4)));
+        if (cell.qtyStr !== newStr) {
+          next[id] = { ...cell, qtyStr: newStr };
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [
+    shortfallBufferPercentForCalc,
+    pageIsShortfallProduction,
+    isRegularNormalOrderForWoPlanning,
+    useRegularWoPlanningTable,
+    fgBalancesLoading,
+    fgSoLines,
+    fgBalanceByItemId,
+    shortfallQtyUrlActive,
+    firstShortfallEligibleItemId,
+    shortfallQtyCustomerTracking,
   ]);
 
   React.useEffect(() => {
@@ -980,6 +1243,7 @@ export function WorkOrdersPage() {
     for (const [itemId, qty] of agg) {
       const bal = fgBalanceByItemId.get(itemId);
       const allowed = bal?.balanceQty ?? 0;
+      if (rowUsesShortfallBufferFeatures(itemId)) continue;
       if (qty > allowed + QTY_EPS) {
         setError("Exceeds allowed quantity");
         return;
@@ -998,6 +1262,7 @@ export function WorkOrdersPage() {
               },
             }
           : {}),
+        ...(sendShortfallWoBufferToApi ? { shortfallMode: true, shortfallBufferPercent: shortfallBufferPercentForCalc } : {}),
       };
       await apiFetch("/api/production/work-orders", {
         method: "POST",
@@ -1056,6 +1321,7 @@ export function WorkOrdersPage() {
       for (const [itemId, qty] of overrideAgg) {
         const bal = fgBalanceByItemId.get(itemId);
         const allowed = bal?.balanceQty ?? 0;
+        if (rowUsesShortfallBufferFeatures(itemId)) continue;
         if (qty > allowed + QTY_EPS) {
           setError("Exceeds allowed quantity");
           return;
@@ -1070,6 +1336,7 @@ export function WorkOrdersPage() {
           salesOrderId: overridePayload.salesOrderId,
           lines: overrideParsed,
           fgStockOverride: { enabled: true, reason },
+          ...(sendShortfallWoBufferToApi ? { shortfallMode: true, shortfallBufferPercent: shortfallBufferPercentForCalc } : {}),
         }),
       });
       closeOverrideModal();
@@ -1106,8 +1373,41 @@ export function WorkOrdersPage() {
   const { state: noQtyFlowState } = useNoQtyFlowState(
     fromNoQtySo && Number.isFinite(focusSoIdFromUrl) && focusSoIdFromUrl > 0 ? focusSoIdFromUrl : null,
     Boolean(fromNoQtySo && Number.isFinite(focusSoIdFromUrl) && focusSoIdFromUrl > 0),
+    fromNoQtySo ? { cycleId: noQtyCycleIdFromUrl } : undefined,
   );
-  const noQtyCycleId = fromNoQtySo ? (noQtyFlowState?.cycleId ?? null) : null;
+  /** Guided links + list filtering: URL cycle wins over flow-state cycle (RS may be on an older cycle than SO.currentCycleId). */
+  const noQtyGuidedCycleForLinks =
+    fromNoQtySo ? noQtyCycleIdFromUrl ?? noQtyFlowState?.cycleId ?? null : null;
+
+  const noQtyOpenWoContext = React.useMemo(() => {
+    if (!fromNoQtySo || focusSoIdFromUrl <= 0) {
+      return { primary: null as WoRow | null, older: [] as WoRow[] };
+    }
+    const scopedForSo = visibleOpenRows.filter((w) => w.salesOrderId === focusSoIdFromUrl);
+    const matchesNoQtyContext = (w: WoRow) => {
+      if (noQtyRequirementSheetIdFromUrl != null) {
+        return Number(w.requirementSheetId ?? 0) === noQtyRequirementSheetIdFromUrl;
+      }
+      if (noQtyCycleIdFromUrl != null) {
+        return Number(w.cycleId ?? 0) === noQtyCycleIdFromUrl;
+      }
+      const flowC = noQtyFlowState?.cycleId ?? null;
+      if (flowC != null) return Number(w.cycleId ?? 0) === Number(flowC);
+      return true;
+    };
+    const matched = scopedForSo.filter(matchesNoQtyContext);
+    return {
+      primary: matched[0] ?? null,
+      older: scopedForSo.filter((w) => !matchesNoQtyContext(w)),
+    };
+  }, [
+    fromNoQtySo,
+    focusSoIdFromUrl,
+    visibleOpenRows,
+    noQtyRequirementSheetIdFromUrl,
+    noQtyCycleIdFromUrl,
+    noQtyFlowState?.cycleId,
+  ]);
 
   const cameFromRegularPlanning =
     !fromNoQtySo &&
@@ -1137,7 +1437,15 @@ export function WorkOrdersPage() {
         if (rem <= QTY_EPS) {
           next[id] = { sel: false, qtyStr: "" };
         } else if (on) {
-          const s = Number.isInteger(rem) ? String(rem) : String(Number(rem.toFixed(3)));
+          let s: string;
+          if (rowUsesShortfallBufferFeatures(id)) {
+            shortfallWoQtyUserTouchedRef.current.delete(id);
+            const base = shortfallBaseQtyForRow(id, rem);
+            const sug = getShortfallSuggestedQty(base, shortfallBufferPercentForCalc);
+            s = Number.isInteger(sug) ? String(sug) : String(Number(sug.toFixed(4)));
+          } else {
+            s = Number.isInteger(rem) ? String(rem) : String(Number(rem.toFixed(3)));
+          }
           next[id] = { sel: true, qtyStr: s };
         } else {
           next[id] = { sel: false, qtyStr: "" };
@@ -1164,6 +1472,54 @@ export function WorkOrdersPage() {
     return t;
   }, [useRegularWoPlanningTable, fgSoLines, regularWoByItemId]);
 
+  /** Hide “exceeds planning remainder” in WoInfoPanel when REGULAR shortfall buffer allows draft &gt; remaining. */
+  const woInfoRelaxPlanningDraftOverCap = React.useMemo(() => {
+    if (!useRegularWoPlanningTable || !isRegularNormalOrderForWoPlanning || !pageIsShortfallProduction) return false;
+    if (primaryLine.fgItemId <= 0) return false;
+    return rowUsesShortfallBufferFeatures(primaryLine.fgItemId);
+  }, [
+    useRegularWoPlanningTable,
+    isRegularNormalOrderForWoPlanning,
+    pageIsShortfallProduction,
+    primaryLine.fgItemId,
+    fgBalanceByItemId,
+  ]);
+
+  const shortfallSuggestedCapFromUrl =
+    shortfallQtyUrlActive && shortfallQtyCustomerTracking > 0
+      ? getShortfallSuggestedQty(shortfallQtyCustomerTracking, shortfallBufferPercentForCalc)
+      : null;
+
+  /** Sum of per-line buffered suggestions for currently selected FG rows (no URL shortfall). */
+  const regularWoSuggestedBufferTotalSelectedCap = React.useMemo(() => {
+    if (!pageIsShortfallProduction || !isRegularNormalOrderForWoPlanning || !useRegularWoPlanningTable) return null;
+    let sum = 0;
+    for (const sl of fgSoLines) {
+      const c = regularWoByItemId[sl.itemId];
+      if (!c?.sel) continue;
+      const rem = fgBalanceByItemId.get(sl.itemId)?.balanceQty ?? 0;
+      if (!(rem > QTY_EPS)) continue;
+      sum += getShortfallSuggestedQty(rem, shortfallBufferPercentForCalc);
+    }
+    return sum > QTY_EPS ? sum : null;
+  }, [
+    pageIsShortfallProduction,
+    isRegularNormalOrderForWoPlanning,
+    useRegularWoPlanningTable,
+    fgSoLines,
+    regularWoByItemId,
+    fgBalanceByItemId,
+    shortfallBufferPercentForCalc,
+  ]);
+
+  const customerTrackingWoQtyExceedsShortfall =
+    shortfallSuggestedCapFromUrl != null
+      ? (woShortfallFromGuidedEntry || shortfallQtyUrlActive) &&
+        regularWoTotalQtySelected > shortfallSuggestedCapFromUrl + QTY_EPS
+      : pageIsShortfallProduction &&
+        regularWoSuggestedBufferTotalSelectedCap != null &&
+        regularWoTotalQtySelected > regularWoSuggestedBufferTotalSelectedCap + QTY_EPS;
+
   const openWoCount = openWoRows.length;
   const listFilteredOut =
     rows.length > 0 && visibleOpenRows.length === 0 && visibleCompletedRows.length === 0;
@@ -1177,7 +1533,7 @@ export function WorkOrdersPage() {
             {fromNoQtySo ? (
               <PageNoQtyFlowBackLink step="WORK_ORDER" />
             ) : (
-              <PageSmartBackLink defaultTo="/planning-dashboard" defaultLabel="Back to Planning" />
+              <PageSmartBackLink defaultTo="/sales-orders" defaultLabel={REGULAR_TERMS.SIDEBAR_BACK_TO_SALES_ORDERS} />
             )}
           </>
         }
@@ -1188,6 +1544,68 @@ export function WorkOrdersPage() {
         </div>
       </StickyWorkspaceHead>
       {fromNoQtySo && salesOrderId !== "" ? <NoQtyCycleBanner so={soDetail as any} /> : null}
+      {!fromNoQtySo && isRegularNormalOrderForWoPlanning && pageIsShortfallProduction && salesOrderId !== "" ? (
+        <div className="rounded-md border border-amber-200 bg-amber-50/90 px-3 py-3 text-sm text-amber-950 shadow-sm">
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="erp-form-field min-w-0">
+              <label className="erp-form-label text-xs" htmlFor="shortfall-buffer-pct">
+                Shortfall buffer %
+              </label>
+              <Input
+                id="shortfall-buffer-pct"
+                type="number"
+                min={0}
+                max={10}
+                step={0.5}
+                className="h-9 w-28 tabular-nums"
+                value={shortfallBufferPercentInput}
+                onChange={(e) => setShortfallBufferPercentInput(e.target.value)}
+              />
+            </div>
+          </div>
+          <p className="mt-1.5 text-[11px] leading-snug text-amber-900">
+            Use 0–10%. Extra production will go to usable stock.
+          </p>
+          {shortfallBufferPercentInvalidHigh ? (
+            <p className="mt-1 text-[11px] font-medium text-amber-900">Maximum shortfall buffer allowed is 10%.</p>
+          ) : null}
+          {shortfallBufferPercentInvalidLow ? (
+            <p className="mt-1 text-[11px] font-medium text-amber-900">Minimum shortfall buffer is 0%.</p>
+          ) : null}
+          {!woShortfallFromGuidedEntry && hasAnyFgRemainingForShortfall ? (
+            <p className="mt-2 text-xs text-amber-950">
+              <span className="font-semibold">Tip:</span> The table uses a{" "}
+              <span className="tabular-nums font-semibold">{shortfallBufferPercentForCalc}</span>% buffer on each
+              line&apos;s remaining qty for the suggested WO qty until you edit WO qty manually.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+      {!fromNoQtySo && woShortfallFromGuidedEntry && shortfallQtyCustomerTracking > 0 && salesOrderId !== "" ? (
+        <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-950 shadow-sm">
+          {fromQcEntryWo ? (
+            <>
+              <span className="font-semibold">Shortfall production:</span> At least{" "}
+              <span className="tabular-nums font-semibold">{fmtWoExplainQty(shortfallQtyCustomerTracking)}</span> is still
+              needed on the order. The table suggests{" "}
+              <span className="tabular-nums font-semibold">
+                {fmtWoExplainQty(getShortfallSuggestedQty(shortfallQtyCustomerTracking, shortfallBufferPercentForCalc))}
+              </span>{" "}
+              (uses {shortfallBufferPercentForCalc}% buffer above) — you can change WO qty anytime.
+            </>
+          ) : (
+            <>
+              <span className="font-semibold">Customer Tracking shortfall:</span>{" "}
+              <span className="tabular-nums">{fmtWoExplainQty(shortfallQtyCustomerTracking)}</span> still pending to
+              deliver. Suggested WO qty with {shortfallBufferPercentForCalc}% buffer:{" "}
+              <span className="tabular-nums font-semibold">
+                {fmtWoExplainQty(getShortfallSuggestedQty(shortfallQtyCustomerTracking, shortfallBufferPercentForCalc))}
+              </span>
+              . You can lower or raise qty in the table.
+            </>
+          )}
+        </div>
+      ) : null}
 
       <NextStepStrip
         visible={Boolean(fromNoQtySo && noQtySelected && noQtyFlowState?.nextAction === "PRODUCTION" && noQtyFlowState)}
@@ -1313,48 +1731,71 @@ export function WorkOrdersPage() {
                         </>
                       ) : null}
                     </div>
-                    <div className="flex shrink-0 flex-wrap gap-2">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={() => nav(buildNoQtyGuidedHref({ to: `/sales-orders/${focusSoIdFromUrl}/requirement-sheets`, salesOrderId: focusSoIdFromUrl, cycleId: noQtyCycleId }))}
-                      >
-                        Open Requirement Sheet
-                      </Button>
-                      <Link
-                        to={buildNoQtyGuidedHref({
-                          to: "/production",
-                          salesOrderId: focusSoIdFromUrl,
-                          cycleId: noQtyCycleId,
-                          fromStep: "work_order",
-                        })}
-                      >
-                        <Button type="button" size="sm">
-                          Go to Production
+                    <div className="flex shrink-0 flex-wrap items-center gap-2">
+                      {canOpenRs ? (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => {
+                            const base = buildNoQtyGuidedHref({
+                              to: `/sales-orders/${focusSoIdFromUrl}/requirement-sheets`,
+                              salesOrderId: focusSoIdFromUrl,
+                              cycleId: noQtyGuidedCycleForLinks,
+                              requirementSheetId: noQtyRequirementSheetIdFromUrl,
+                            });
+                            const sep = base.includes("?") ? "&" : "?";
+                            nav(
+                              noQtyRequirementSheetIdFromUrl != null
+                                ? `${base}${sep}sheetId=${encodeURIComponent(String(noQtyRequirementSheetIdFromUrl))}`
+                                : base,
+                            );
+                          }}
+                        >
+                          Open Requirement Sheet
                         </Button>
-                      </Link>
+                      ) : (
+                        <PlanningStatusChip inline label="Planned in Requirement Sheet" />
+                      )}
+                      {noQtyOpenWoContext.primary ? (
+                        <Link
+                          to={buildNoQtyGuidedHref({
+                            to: "/production",
+                            salesOrderId: focusSoIdFromUrl,
+                            cycleId: noQtyGuidedCycleForLinks,
+                            fromStep: "work_order",
+                          })}
+                        >
+                          <Button type="button" size="sm">
+                            Go to Production
+                          </Button>
+                        </Link>
+                      ) : null}
                     </div>
                   </div>
                   {(() => {
-                    const current = visibleOpenRows.filter(
-                      (w) =>
-                        w.salesOrderId === focusSoIdFromUrl &&
-                        (noQtyCycleId == null || Number(w.cycleId ?? 0) === Number(noQtyCycleId)),
-                    );
-                    const older =
-                      noQtyCycleId != null
-                        ? visibleOpenRows.filter(
-                            (w) => w.salesOrderId === focusSoIdFromUrl && Number(w.cycleId ?? 0) !== Number(noQtyCycleId),
-                          )
-                        : [];
-                    const wo = current[0] ?? null;
-                    if (!wo) return <div className="mt-2 text-xs text-slate-600">No active work order lines found for the current cycle.</div>;
+                    const wo = noQtyOpenWoContext.primary;
+                    const older = noQtyOpenWoContext.older;
+
+                    if (!wo) {
+                      return (
+                        <div className="mt-2 text-xs text-slate-600">
+                          No active work order lines found for the current cycle.
+                        </div>
+                      );
+                    }
                     return (
                       <div className="mt-2 space-y-2">
                         <div className="overflow-x-auto rounded border border-slate-200 bg-slate-50 px-2 py-2">
                           <div className="text-[12px] font-semibold text-slate-700">
-                            WO {displayWorkOrderNo(wo.id, wo.docNo)} · {wo.lines.length} line(s)
+                            WO {displayWorkOrderNo(wo.id, wo.docNo)}
+                            {wo.cycle?.cycleNo != null ? (
+                              <span className="text-violet-900">
+                                {" "}
+                                · Cycle {Number(wo.cycle.cycleNo)}
+                              </span>
+                            ) : null}{" "}
+                            · {wo.lines.length} line(s)
                           </div>
                           <table className="mt-2 w-full min-w-[520px] text-[12px]">
                             <thead>
@@ -1384,8 +1825,12 @@ export function WorkOrdersPage() {
                                 <div key={w.id} className="rounded border border-slate-200 bg-slate-50 px-2 py-1.5 text-[12px]">
                                   <div className="font-medium text-slate-800">
                                     WO {displayWorkOrderNo(w.id, w.docNo)}
-                                    {w.cycleId != null ? <span className="text-slate-400"> · </span> : null}
-                                    {w.cycleId != null ? <span className="text-slate-700">Cycle {Number(w.cycleId)}</span> : null}
+                                    {w.cycle?.cycleNo != null ? (
+                                      <span className="text-slate-600">
+                                        {" "}
+                                        · Cycle {Number(w.cycle.cycleNo)}
+                                      </span>
+                                    ) : null}
                                   </div>
                                   <div className="mt-0.5 text-[11px] text-slate-600">
                                     {(w.lines || []).slice(0, 3).map((ln) => ln.fgItem.itemName).join(", ")}
@@ -1417,15 +1862,19 @@ export function WorkOrdersPage() {
                 Sales Order No: {displaySalesOrderNo(Number(salesOrderId), soDetail?.docNo)}
               </span>
                       </span>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="h-8"
-                        onClick={() => nav(`/sales-orders/${Number(salesOrderId)}/requirement-sheets`)}
-                      >
-                        Open Requirement Sheet
-                      </Button>
+                      {canOpenRs ? (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-8"
+                          onClick={() => nav(`/sales-orders/${Number(salesOrderId)}/requirement-sheets`)}
+                        >
+                          Open Requirement Sheet
+                        </Button>
+                      ) : (
+                        <PlanningStatusChip inline label="Waiting for Planning Team" />
+                      )}
                     </div>
                   ) : null}
                   {salesOrderId !== "" && !fgBalancesLoading && fgBalances.length > 0 ? (
@@ -1574,12 +2023,30 @@ export function WorkOrdersPage() {
                               const cell = regularWoByItemId[sl.itemId] ?? { sel: false, qtyStr: "" };
                               const selectable = remaining > QTY_EPS && !fgBalancesLoading;
                               const q = parsePositiveQuantityDraft(cell.qtyStr);
+                              const rowShortfallBuf = rowUsesShortfallBufferFeatures(sl.itemId);
+                              const baseForSuggest = shortfallBaseQtyForRow(sl.itemId, remaining);
+                              const suggestedQty =
+                                rowShortfallBuf && remaining > QTY_EPS
+                                  ? getShortfallSuggestedQty(baseForSuggest, shortfallBufferPercentForCalc)
+                                  : null;
                               const rowErr =
                                 cell.sel && (q == null || q <= 0)
                                   ? "Enter a quantity greater than zero."
-                                  : cell.sel && q != null && q > remaining + QTY_EPS
+                                  : !rowShortfallBuf && cell.sel && q != null && q > remaining + QTY_EPS
                                     ? `Max ${fmtWoExplainQty(remaining)}.`
                                     : null;
+                              const rowWarnShort =
+                                rowShortfallBuf &&
+                                cell.sel &&
+                                q != null &&
+                                q > QTY_EPS &&
+                                q < remaining - QTY_EPS
+                                  ? "Entered qty is less than remaining. Shortfall may remain."
+                                  : null;
+                              const rowInfoExtra =
+                                rowShortfallBuf && cell.sel && q != null && q > remaining + QTY_EPS
+                                  ? "Extra production will go to usable stock."
+                                  : null;
                               return (
                                 <tr key={sl.itemId} className="border-b border-slate-100 transition-colors hover:bg-slate-50/90">
                                   <td className="px-2 py-1.5 align-middle">
@@ -1592,12 +2059,17 @@ export function WorkOrdersPage() {
                                         const checked = e.target.checked;
                                         setRegularWoByItemId((prev) => {
                                           const rem = fgBalanceByItemId.get(sl.itemId)?.balanceQty ?? 0;
-                                          const s =
-                                            rem > QTY_EPS
-                                              ? Number.isInteger(rem)
-                                                ? String(rem)
-                                                : String(Number(rem.toFixed(3)))
-                                              : "";
+                                          let s = "";
+                                          if (checked && rem > QTY_EPS) {
+                                            if (rowUsesShortfallBufferFeatures(sl.itemId)) {
+                                              shortfallWoQtyUserTouchedRef.current.delete(sl.itemId);
+                                              const base = shortfallBaseQtyForRow(sl.itemId, rem);
+                                              const sug = getShortfallSuggestedQty(base, shortfallBufferPercentForCalc);
+                                              s = Number.isInteger(sug) ? String(sug) : String(Number(sug.toFixed(4)));
+                                            } else {
+                                              s = Number.isInteger(rem) ? String(rem) : String(Number(rem.toFixed(3)));
+                                            }
+                                          }
                                           return {
                                             ...prev,
                                             [sl.itemId]: { sel: checked, qtyStr: checked ? s : "" },
@@ -1624,13 +2096,39 @@ export function WorkOrdersPage() {
                                       disabled={!cell.sel || !selectable}
                                       onChange={(e) => {
                                         const raw = e.target.value;
+                                        if (rowShortfallBuf) {
+                                          shortfallWoQtyUserTouchedRef.current.add(sl.itemId);
+                                        }
                                         setRegularWoByItemId((prev) => ({
                                           ...prev,
                                           [sl.itemId]: { ...cell, sel: prev[sl.itemId]?.sel ?? false, qtyStr: raw },
                                         }));
                                       }}
                                     />
+                                    {rowShortfallBuf && suggestedQty != null && suggestedQty > QTY_EPS ? (
+                                      <div className="mt-1 space-y-0.5 text-left text-[11px] leading-snug text-slate-600">
+                                        <div>
+                                          Remaining:{" "}
+                                          <span className="font-semibold tabular-nums text-slate-800">
+                                            {fmtWoExplainQty(remaining)}
+                                          </span>
+                                        </div>
+                                        <div>
+                                          Suggested:{" "}
+                                          <span className="font-semibold tabular-nums text-slate-800">
+                                            {fmtWoExplainQty(suggestedQty)}
+                                          </span>{" "}
+                                          (includes {shortfallBufferPercentForCalc}% buffer to cover QC rejection)
+                                        </div>
+                                      </div>
+                                    ) : null}
                                     {rowErr ? <p className="mt-1 text-left text-[11px] font-medium text-amber-800">{rowErr}</p> : null}
+                                    {rowWarnShort ? (
+                                      <p className="mt-1 text-left text-[11px] font-medium text-amber-800">{rowWarnShort}</p>
+                                    ) : null}
+                                    {rowInfoExtra ? (
+                                      <p className="mt-1 text-left text-[11px] leading-snug text-sky-900/90">{rowInfoExtra}</p>
+                                    ) : null}
                                   </td>
                                 </tr>
                               );
@@ -1644,6 +2142,17 @@ export function WorkOrdersPage() {
                           {regularWoTotalQtySelected.toFixed(3).replace(/\.?0+$/, "")}
                         </span>
                       </div>
+                      {customerTrackingWoQtyExceedsShortfall ? (
+                        <div className="rounded-md border border-amber-300 bg-amber-50/90 px-3 py-2 text-xs font-medium text-amber-950">
+                          Total selected WO qty is above the suggested amount with buffer (
+                          <span className="tabular-nums">
+                            {fmtWoExplainQty(
+                              shortfallSuggestedCapFromUrl ?? regularWoSuggestedBufferTotalSelectedCap ?? 0,
+                            )}
+                          </span>
+                          ). Reduce quantities unless you intentionally plan more production.
+                        </div>
+                      ) : null}
                       <details className="rounded-md border border-slate-200 bg-slate-50/90 px-3 py-2 text-sm">
                         <summary className="cursor-pointer text-xs font-semibold text-slate-700">More planning details</summary>
                         <div className="mt-2 space-y-2">
@@ -1675,6 +2184,7 @@ export function WorkOrdersPage() {
                               fallbackSoOrdered={primaryFgSoLine != null ? Number(primaryFgSoLine.qty) : undefined}
                               draftEntryQty={primaryLine.fgItemId > 0 ? primaryItemTotalDraft : null}
                               isEditingWorkOrder={isEditMode}
+                              relaxPlanningDraftOverCap={woInfoRelaxPlanningDraftOverCap}
                             />
                           </div>
                         </div>
@@ -2182,6 +2692,7 @@ export function WorkOrdersPage() {
                         <tr className="text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500">
                           <th className="px-3 py-1.5">WO No</th>
                           <th className="px-3 py-1.5">Sales order</th>
+                          <th className="px-3 py-1.5 text-center">Cycle</th>
                           <th className="px-3 py-1.5">FG item</th>
                           <th className="px-3 py-1.5 text-right">Qty</th>
                           <th className="px-3 py-1.5">Status</th>
@@ -2205,6 +2716,9 @@ export function WorkOrdersPage() {
                             </td>
                             <td className="px-3 py-1.5 font-mono text-[13px] tabular-nums text-slate-800">
                               {displaySalesOrderNo(row.salesOrderId, row.soDocNo)}
+                            </td>
+                            <td className="px-3 py-1.5 text-center tabular-nums text-[12px] text-slate-700">
+                              {row.cycleNo != null ? row.cycleNo : "—"}
                             </td>
                             <td className="px-3 py-1.5 text-[13px] text-slate-800">{row.fgName}</td>
                             <td className="px-3 py-1.5 text-right tabular-nums text-slate-800">{row.qty}</td>
@@ -2255,6 +2769,7 @@ export function WorkOrdersPage() {
                         <tr className="text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500">
                           <th className="px-3 py-1.5">WO No</th>
                           <th className="px-3 py-1.5">Sales order</th>
+                          <th className="px-3 py-1.5 text-center">Cycle</th>
                           <th className="px-3 py-1.5">FG item</th>
                           <th className="px-3 py-1.5 text-right">Qty</th>
                           <th className="px-3 py-1.5">Status</th>
@@ -2278,6 +2793,9 @@ export function WorkOrdersPage() {
                             </td>
                             <td className="px-3 py-1.5 font-mono text-[13px] tabular-nums text-slate-800">
                               {displaySalesOrderNo(row.salesOrderId, row.soDocNo)}
+                            </td>
+                            <td className="px-3 py-1.5 text-center tabular-nums text-[12px] text-slate-700">
+                              {row.cycleNo != null ? row.cycleNo : "—"}
                             </td>
                             <td className="px-3 py-1.5 text-[13px] text-slate-800">{row.fgName}</td>
                             <td className="px-3 py-1.5 text-right tabular-nums text-slate-800">{row.qty}</td>

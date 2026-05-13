@@ -4,7 +4,7 @@
  * Uses MySQL SELECT … FOR UPDATE via Prisma raw SQL.
  */
 
-const { Prisma } = require("@prisma/client");
+const { Prisma } = require("../prismaClientPackage");
 
 /**
  * @param {import('@prisma/client').Prisma.TransactionClient} tx

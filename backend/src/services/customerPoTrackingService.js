@@ -1,6 +1,17 @@
 const { DISPATCH_ALLOC_MODE, netDispatchedByItemId } = require("./salesOrderDispatchAllocation");
 const { buildQcAcceptedMap } = require("./dispatchQcCap");
 const { getApprovedProducedQtyByWorkOrderLineIds } = require("./productionMetrics");
+const { QC_ENTRY_ACTIVE_WHERE } = require("./qcEntryConstants");
+const {
+  sumActiveQcAcceptedQty,
+  sumActiveQcRejectedQty,
+  getProductionBatchQcPendingQty,
+  getSoItemDispatchableReadyQty,
+  REPORT_QUEUE_EPS,
+} = require("./reportMetrics");
+const { mapSoLinesToDispatchFifoInputs } = require("./regularSoBufferQty");
+const { getUsableItemStockQty } = require("./stockService");
+const { sumQcAcceptedForSoItem } = require("./dispatchQcCap");
 
 /**
  * Parse YYYY-MM-DD to Date at local start-of-day. Returns undefined when missing/invalid.
@@ -37,33 +48,159 @@ function balanceQty(ordered, dispatched) {
 }
 
 /**
- * Simple operational status per item row.
- * @param {{ ordered: number; planned: number; produced: number; qcCleared: number; dispatched: number }} q
+ * Customer PO lines by item (customer-requested qty).
+ * @param {any} po
+ * @returns {Map<number, number>}
  */
-function deriveItemStatus(q) {
-  const ordered = Number(q.ordered || 0);
-  const planned = Number(q.planned || 0);
-  const produced = Number(q.produced || 0);
-  const qc = Number(q.qcCleared || 0);
-  const disp = Number(q.dispatched || 0);
+function buildPoQtyByItemId(po) {
+  const m = new Map();
+  if (!po?.lines?.length) return m;
+  for (const pl of po.lines) {
+    const id = pl.itemId;
+    m.set(id, (m.get(id) ?? 0) + Number(pl.qty || 0));
+  }
+  return m;
+}
 
-  if (disp >= ordered && ordered > 0) return "Delivered";
-  if (disp > 0) return "Partly Delivered";
-  if (qc > 0) return "Ready to Dispatch";
-  if (produced > 0) return "QC Pending";
-  if (planned > 0) return "In Production";
+/**
+ * Customer commitment for one sales order line — not planned production qty (`SalesOrderLine.qty`).
+ * @param {any} line
+ * @param {Map<number, number>} poQtyByItem
+ */
+function customerOrderQtyForSalesOrderLine(line, poQtyByItem) {
+  const cpq = Number(line.customerPoQty || 0);
+  if (cpq > 0) return cpq;
+  const pq = Number(poQtyByItem.get(line.itemId) ?? 0);
+  if (pq > 0) return pq;
+  return 0;
+}
+
+/**
+ * Total customer-ordered qty for Customer Tracking (dispatch/billing cap), never WO/planned buffer.
+ * @param {any} so
+ * @param {any|null} po
+ */
+function sumCustomerOrderedQtyForTracking(so, po) {
+  const poQtyByItem = buildPoQtyByItemId(po);
+  let sumLines = 0;
+  for (const l of so.lines || []) {
+    sumLines += customerOrderQtyForSalesOrderLine(l, poQtyByItem);
+  }
+  if (sumLines > 0) return sumLines;
+  if (po?.lines?.length) {
+    return po.lines.reduce((s, pl) => s + Number(pl.qty || 0), 0);
+  }
+  return 0;
+}
+
+/**
+ * Per-item customer ordered qty for detail rows.
+ * @param {any} so
+ * @param {Map<number, number>} poQtyByItem
+ * @returns {Map<number, number>}
+ */
+function buildCustomerOrderQtyByItemId(so, poQtyByItem) {
+  const m = new Map();
+  for (const l of so.lines || []) {
+    const id = l.itemId;
+    const q = customerOrderQtyForSalesOrderLine(l, poQtyByItem);
+    m.set(id, (m.get(id) ?? 0) + q);
+  }
+  return m;
+}
+
+/**
+ * Batch-level QC pending (same as GET /production/production-entries?withoutQc=1):
+ * each APPROVED ProductionEntry contributes max(0, produced − active accepted − active rejected).
+ *
+ * @param {import('@prisma/client').PrismaClient} db
+ * @param {number[]} salesOrderIds
+ * @returns {Promise<{ pendingTotalBySo: Map<number, number>; pendingBySoFg: Map<string, number> }>}
+ */
+async function buildApprovedBatchQcPendingAggregatesForSalesOrders(db, salesOrderIds) {
+  /** @type {Map<number, number>} */
+  const pendingTotalBySo = new Map();
+  /** @type {Map<string, number>} key `${salesOrderId}:${fgItemId}` */
+  const pendingBySoFg = new Map();
+  const ids = [...new Set((salesOrderIds || []).filter((n) => Number.isFinite(n) && n > 0))];
+  if (!ids.length) return { pendingTotalBySo, pendingBySoFg };
+
+  const entries = await db.productionEntry.findMany({
+    where: {
+      workflowStatus: "APPROVED",
+      workOrderLine: { workOrder: { salesOrderId: { in: ids } } },
+    },
+    include: {
+      qcEntries: { where: QC_ENTRY_ACTIVE_WHERE },
+      workOrderLine: { select: { fgItemId: true, workOrder: { select: { salesOrderId: true } } } },
+    },
+  });
+
+  for (const row of entries) {
+    const soId = row.workOrderLine?.workOrder?.salesOrderId;
+    const fgId = row.workOrderLine?.fgItemId;
+    if (!Number.isFinite(soId)) continue;
+    const produced = Number(row.producedQty ?? 0);
+    const acc = sumActiveQcAcceptedQty(row.qcEntries);
+    const rej = sumActiveQcRejectedQty(row.qcEntries);
+    const pend = getProductionBatchQcPendingQty(produced, acc, rej);
+    pendingTotalBySo.set(soId, (pendingTotalBySo.get(soId) ?? 0) + pend);
+    if (Number.isFinite(fgId)) {
+      const k = `${soId}:${fgId}`;
+      pendingBySoFg.set(k, (pendingBySoFg.get(k) ?? 0) + pend);
+    }
+  }
+  return { pendingTotalBySo, pendingBySoFg };
+}
+
+/**
+ * Line status for Customer Tracking only: customer ordered qty vs net delivered (no WO/QC/planned).
+ */
+function deriveItemStatusForTracking(ordered, netDelivered) {
+  const o = Number(ordered || 0);
+  const d = Number(netDelivered || 0);
+  if (o > 0 && d >= o) return "Completed";
+  if (d > 0) return "Partly Delivered";
   return "Pending";
 }
 
 /**
- * Overall status for a PO from ordered vs dispatched totals.
- * @param {{ ordered: number; dispatched: number; anyStarted: boolean }} p
+ * Overall list/detail status: customer ordered vs net dispatched only (not production).
+ * @param {{ ordered: number; dispatched: number }} p
  */
-function derivePoStatus({ ordered, dispatched, anyStarted }) {
-  if (ordered > 0 && dispatched >= ordered) return "Delivered";
+function derivePoStatus({ ordered, dispatched }) {
+  if (ordered > 0 && dispatched >= ordered) return "Completed";
   if (dispatched > 0) return "Partly Delivered";
-  if (anyStarted) return "In Process";
   return "Pending";
+}
+
+/**
+ * REGULAR (NORMAL) SO: at least one finalized sales bill (via dispatch) → treat order as commercially complete for status.
+ * @param {import('@prisma/client').PrismaClient} db
+ * @param {number} salesOrderId
+ */
+async function hasFinalizedSalesBillForSalesOrder(db, salesOrderId) {
+  const id = Number(salesOrderId);
+  if (!Number.isFinite(id) || id <= 0) return false;
+  const n = await db.salesBill.count({
+    where: { status: "FINALIZED", dispatch: { soId: id } },
+  });
+  return n > 0;
+}
+
+/**
+ * @param {import('@prisma/client').PrismaClient} db
+ * @param {number[]} salesOrderIds
+ * @returns {Promise<Set<number>>}
+ */
+async function loadNormalSoIdsWithFinalizedSalesBill(db, salesOrderIds) {
+  const ids = [...new Set((salesOrderIds || []).filter((n) => Number.isFinite(n) && n > 0))];
+  if (!ids.length) return new Set();
+  const rows = await db.salesBill.findMany({
+    where: { status: "FINALIZED", dispatch: { soId: { in: ids } } },
+    select: { dispatch: { select: { soId: true } } },
+  });
+  return new Set(rows.map((r) => Number(r.dispatch.soId)).filter((n) => Number.isFinite(n) && n > 0));
 }
 
 /**
@@ -170,16 +307,17 @@ const soIncludeForTracking = {
  * @param {any} so
  * @param {Map<string, number>} qcMap
  * @param {Map<string, number>} returnedBySoItem
+ * @param {{ pendingTotalBySo: Map<number, number>; pendingBySoFg: Map<string, number> }} [qcBatchPendingCtx]
  */
-async function aggregateMetricsForSalesOrder(db, so, qcMap, returnedBySoItem) {
+async function aggregateMetricsForSalesOrder(db, so, qcMap, returnedBySoItem, qcBatchPendingCtx) {
   const po = so.po || null;
-  const orderedFromPoLines = po?.lines?.length
-    ? po.lines.reduce((s, l) => s + Number(l.qty || 0), 0)
-    : 0;
-  const orderedFromSoLines = (so.lines || []).reduce((s, l) => s + Number(l.qty || 0), 0);
-  const ordered = orderedFromPoLines > 0 ? orderedFromPoLines : orderedFromSoLines;
+  const poQtyByItem = buildPoQtyByItemId(po);
+  const ordered = sumCustomerOrderedQtyForTracking(so, po);
+  let soQty = (so.lines || []).reduce((s, l) => s + customerOrderQtyForSalesOrderLine(l, poQtyByItem), 0);
+  if (soQty <= 0 && po?.lines?.length) {
+    soQty = po.lines.reduce((s, pl) => s + Number(pl.qty || 0), 0);
+  }
 
-  let soQty = 0;
   let planned = 0;
   let produced = 0;
   let qcCleared = 0;
@@ -187,9 +325,7 @@ async function aggregateMetricsForSalesOrder(db, so, qcMap, returnedBySoItem) {
   let returned = 0;
   let netDelivered = 0;
   let lastActivity = displayOrderDate(so, po);
-  let anyStarted = false;
 
-  soQty = orderedFromSoLines;
   planned = (so.workOrders || []).flatMap((w) => w.lines || []).reduce((s, l) => s + Number(l.qty || 0), 0);
 
   const woLines = (so.workOrders || []).flatMap((w) => w.lines || []);
@@ -197,10 +333,20 @@ async function aggregateMetricsForSalesOrder(db, so, qcMap, returnedBySoItem) {
   const producedByLineId = await getApprovedProducedQtyByWorkOrderLineIds(db, woLineIds);
   produced = woLines.reduce((s, l) => s + (producedByLineId.get(l.id) ?? 0), 0);
 
-  qcCleared = woLines.reduce((s, l) => {
-    const k = `${so.id}:${l.fgItemId}`;
+  /** QC accepted is keyed once per (SO, FG item); do not sum the same map entry once per WO line. */
+  const fgIdsForQc = new Set(woLines.map((l) => l.fgItemId));
+  qcCleared = [...fgIdsForQc].reduce((s, fgId) => {
+    const k = `${so.id}:${fgId}`;
     return s + (qcMap.get(k) ?? 0);
   }, 0);
+
+  let qcPendingBatchTotal = 0;
+  if (qcBatchPendingCtx?.pendingTotalBySo) {
+    qcPendingBatchTotal = Number(qcBatchPendingCtx.pendingTotalBySo.get(so.id) ?? 0);
+  } else {
+    const built = await buildApprovedBatchQcPendingAggregatesForSalesOrders(db, [so.id]);
+    qcPendingBatchTotal = Number(built.pendingTotalBySo.get(so.id) ?? 0);
+  }
 
   const confirmedDispatched = Array.from(
     netDispatchedByItemId(so.dispatch || [], DISPATCH_ALLOC_MODE.CONFIRMED).values(),
@@ -217,8 +363,6 @@ async function aggregateMetricsForSalesOrder(db, so, qcMap, returnedBySoItem) {
     replacementRecovery = [...recoveryByItem.values()].reduce((s, v) => s + Number(v || 0), 0);
   }
   netDelivered = Math.max(0, confirmedDispatched - returned) + replacementRecovery;
-
-  anyStarted = planned > 0 || produced > 0 || qcCleared > 0 || dispatched > 0 || soQty > 0;
 
   const candidates = [
     so.updatedAt,
@@ -240,8 +384,9 @@ async function aggregateMetricsForSalesOrder(db, so, qcMap, returnedBySoItem) {
     dispatched,
     returned,
     netDelivered,
-    anyStarted,
     lastActivity,
+    /** Sum of production-batch QC pending; matches QC queue (`withoutQc=1`) totals for this SO. */
+    qcPendingBatchTotal,
   };
 }
 
@@ -259,12 +404,18 @@ async function aggregateMetricsForSalesOrder(db, so, qcMap, returnedBySoItem) {
  *  dateFrom?: unknown;
  *  dateTo?: unknown;
  *  limit?: unknown;
+ *  includeNoQty?: unknown;
  * }} q
  */
 async function listCustomerPosForTracking(db, q) {
   const customerId = q.customerId != null && String(q.customerId).trim() !== "" ? Number(q.customerId) : undefined;
   const poSearch = typeof q.poSearch === "string" ? q.poSearch.trim() : "";
   const status = typeof q.status === "string" ? q.status.trim() : "All";
+  const includeNoQty =
+    q.includeNoQty === true ||
+    q.includeNoQty === 1 ||
+    String(q.includeNoQty ?? "").trim().toLowerCase() === "1" ||
+    String(q.includeNoQty ?? "").trim().toLowerCase() === "true";
   const dateFrom = parseDateStart(q.dateFrom);
   const dateTo = parseDateEnd(q.dateTo);
   const limitRaw = q.limit != null ? Number(q.limit) : 50;
@@ -287,9 +438,11 @@ async function listCustomerPosForTracking(db, q) {
         { replacementForReturn: { is: { customerId } } },
       ],
     },
-    // Customer Tracking: customer commitment only (Requirement Sheet / cycles own NO_QTY).
-    { orderType: { not: "NO_QTY" } },
   ];
+  if (!includeNoQty) {
+    // Default: Requirement Sheet / cycles own NO_QTY elsewhere; optional inclusion for commercial tracking screens.
+    andParts.push({ orderType: { not: "NO_QTY" } });
+  }
   if (Object.keys(dateFilter).length) {
     andParts.push({ createdAt: dateFilter });
   }
@@ -316,14 +469,20 @@ async function listCustomerPosForTracking(db, q) {
   const qcMap = await buildQcAcceptedMap(db);
   const soIds = page.map((s) => s.id);
   const returnedBySoItem = await buildReturnedQtyBySoItemMap(db, soIds);
+  const qcBatchPendingCtx = await buildApprovedBatchQcPendingAggregatesForSalesOrders(db, soIds);
+  const normalSoFinalizedBill = await loadNormalSoIdsWithFinalizedSalesBill(db, soIds);
 
   const rows = [];
   for (const so of page) {
     const po = so.po || null;
-    const m = await aggregateMetricsForSalesOrder(db, so, qcMap, returnedBySoItem);
-    const derivedStatus = derivePoStatus({ ordered: m.ordered, dispatched: m.netDelivered, anyStarted: m.anyStarted });
+    const m = await aggregateMetricsForSalesOrder(db, so, qcMap, returnedBySoItem, qcBatchPendingCtx);
+    let derivedStatus = derivePoStatus({ ordered: m.ordered, dispatched: m.netDelivered });
+    if (normalSoFinalizedBill.has(so.id)) {
+      derivedStatus = "Completed";
+    }
     if (status !== "All" && derivedStatus !== status) continue;
 
+    const commerciallyClosed = normalSoFinalizedBill.has(so.id);
     rows.push({
       poKey: so.id,
       salesOrderId: so.id,
@@ -337,12 +496,14 @@ async function listCustomerPosForTracking(db, q) {
       plannedQty: m.planned,
       producedQty: m.produced,
       qcClearedQty: m.qcCleared,
+      qcPendingQty: m.qcPendingBatchTotal,
       dispatchedQty: m.dispatched,
       returnedQty: m.returned,
       netDeliveredQty: m.netDelivered,
       balanceQty: balanceQty(m.ordered, m.netDelivered),
       status: derivedStatus,
       lastActivityDate: m.lastActivity,
+      isCommerciallyClosed: commerciallyClosed,
     });
   }
 
@@ -405,12 +566,7 @@ async function getCustomerPoTrackingDetail(db, routeKey) {
   }
   const { so, po } = resolved;
 
-  if (String(so.orderType || "") === "NO_QTY") {
-    const err = new Error("Sales order not found");
-    err.statusCode = 404;
-    throw err;
-  }
-
+  const poQtyByItem = buildPoQtyByItemId(po);
   const orderedByItemId = new Map();
   if (po?.lines?.length) {
     for (const l of po.lines) {
@@ -418,12 +574,12 @@ async function getCustomerPoTrackingDetail(db, routeKey) {
     }
   }
 
-  const soOrderedByItemId = new Map();
-  for (const l of so.lines || []) {
-    soOrderedByItemId.set(l.itemId, (soOrderedByItemId.get(l.itemId) ?? 0) + Number(l.qty || 0));
-  }
+  const customerOrderByItemId = buildCustomerOrderQtyByItemId(so, poQtyByItem);
 
   const woLines = (so.workOrders || []).flatMap((w) => w.lines || []);
+  const qcBatchPendingCtx = await buildApprovedBatchQcPendingAggregatesForSalesOrders(db, [so.id]);
+  const qcPendingOrderTotal = Number(qcBatchPendingCtx.pendingTotalBySo.get(so.id) ?? 0);
+
   const plannedByItemId = new Map();
   for (const wl of woLines) {
     plannedByItemId.set(wl.fgItemId, (plannedByItemId.get(wl.fgItemId) ?? 0) + Number(wl.qty || 0));
@@ -447,14 +603,17 @@ async function getCustomerPoTrackingDetail(db, routeKey) {
   const replacementRecoveryByItemId =
     String(so.orderType || "") === "NORMAL" ? await buildReplacementRecoveryByItemIdForOriginalSo(db, so.id) : new Map();
 
+  const isNormalSo = String(so.orderType || "") === "NORMAL";
+  const isCommerciallyClosed = await hasFinalizedSalesBillForSalesOrder(db, so.id);
+
   /** @type {any[]} */
   const itemRows = [];
-  const itemIds = Array.from(new Set([...orderedByItemId.keys(), ...soOrderedByItemId.keys()]));
+  const itemIds = Array.from(new Set([...orderedByItemId.keys(), ...customerOrderByItemId.keys()]));
 
   for (const itemId of itemIds) {
-    const poQty = orderedByItemId.get(itemId) ?? 0;
-    const soQty = soOrderedByItemId.get(itemId) ?? 0;
-    const orderedForItem = poQty > 0 ? poQty : soQty;
+    const fromPo = orderedByItemId.get(itemId) ?? 0;
+    const fromSoCustomer = customerOrderByItemId.get(itemId) ?? 0;
+    const orderedForItem = fromSoCustomer > 0 ? fromSoCustomer : fromPo;
     const plannedQty = plannedByItemId.get(itemId) ?? 0;
     const producedQty = producedByItemId.get(itemId) ?? 0;
     const qcClearedQty = qcClearedByItemId.get(itemId) ?? 0;
@@ -463,19 +622,16 @@ async function getCustomerPoTrackingDetail(db, routeKey) {
     const recoveryQty = replacementRecoveryByItemId.get(itemId) ?? 0;
     const netDeliveredQty = Math.max(0, dispatchedQty - returnedQty) + recoveryQty;
     const bal = balanceQty(orderedForItem, netDeliveredQty);
+    const qcPendingForItem = Number(qcBatchPendingCtx.pendingBySoFg.get(`${so.id}:${itemId}`) ?? 0);
 
     const itemName =
       po?.lines?.find((l) => l.itemId === itemId)?.item?.itemName ||
       so.lines?.find((l) => l.itemId === itemId)?.item?.itemName ||
       `Item #${itemId}`;
 
-    const statusLabel = deriveItemStatus({
-      ordered: orderedForItem,
-      planned: plannedQty,
-      produced: producedQty,
-      qcCleared: qcClearedQty,
-      dispatched: netDeliveredQty,
-    });
+    const statusLabel = isCommerciallyClosed
+      ? "Completed"
+      : deriveItemStatusForTracking(orderedForItem, netDeliveredQty);
 
     const workOrdersForItem = (so.workOrders || [])
       .filter((w) => (w.lines || []).some((ln) => ln.fgItemId === itemId))
@@ -496,10 +652,11 @@ async function getCustomerPoTrackingDetail(db, routeKey) {
       itemId,
       itemName,
       poQty: orderedForItem,
-      soQty,
+      soQty: fromSoCustomer,
       plannedQty,
       producedQty,
       qcClearedQty,
+      qcPendingQty: qcPendingForItem,
       dispatchedQty,
       returnedQty,
       netDeliveredQty,
@@ -510,6 +667,7 @@ async function getCustomerPoTrackingDetail(db, routeKey) {
         planned: plannedQty,
         produced: producedQty,
         qcCleared: qcClearedQty,
+        qcPendingBatch: qcPendingForItem,
         dispatched: dispatchedQty,
         returned: returnedQty,
         netDelivered: netDeliveredQty,
@@ -529,8 +687,8 @@ async function getCustomerPoTrackingDetail(db, routeKey) {
   const netDeliveredTotal = itemRows.reduce((s, r) => s + Number(r.netDeliveredQty || 0), 0);
   const balanceTotal = balanceQty(orderedTotal, netDeliveredTotal);
 
-  const anyStarted = plannedTotal > 0 || producedTotal > 0 || qcTotal > 0 || dispatchedTotal > 0 || Boolean(so);
-  const overallStatus = derivePoStatus({ ordered: orderedTotal, dispatched: netDeliveredTotal, anyStarted });
+  let overallStatus = derivePoStatus({ ordered: orderedTotal, dispatched: netDeliveredTotal });
+  if (isCommerciallyClosed) overallStatus = "Completed";
 
   const stage = (name, qty, done, lastAt, state) => ({ name, qty, done: Boolean(done), lastAt: lastAt ?? null, state });
   const orderPlacedAt = displayOrderDate(so, po);
@@ -539,6 +697,56 @@ async function getCustomerPoTrackingDetail(db, routeKey) {
   const lastDispatchAt = (so.dispatch || [])[0]?.date ?? null;
 
   const dispatchBaseline = orderedTotal;
+  const deliveryPending = Math.max(0, orderedTotal - netDeliveredTotal);
+  const prodGapStrict = Math.max(0, plannedTotal - producedTotal);
+  const productionInProgressFlg = producedTotal > REPORT_QUEUE_EPS && prodGapStrict > REPORT_QUEUE_EPS;
+  const workOrderBacklogFlg =
+    !productionInProgressFlg &&
+    (prodGapStrict > REPORT_QUEUE_EPS ||
+      (plannedTotal <= REPORT_QUEUE_EPS &&
+        producedTotal <= REPORT_QUEUE_EPS &&
+        deliveryPending > REPORT_QUEUE_EPS));
+
+  /** @type {null | { qtyPendingToDeliver: number; dispatchableNowTotal: number; realQcBatchPendingQty: number; productionInProgress: boolean; workOrderBacklog: boolean }} */
+  let regularDispatchGuidance = null;
+  let dispatchableNowTotal = 0;
+  if (isNormalSo && (so.lines || []).length > 0 && !isCommerciallyClosed) {
+    const lineInputs = mapSoLinesToDispatchFifoInputs(so.lines || [], so.orderType);
+    const dispatchRows = so.dispatch || [];
+    const uniqItemIds = [
+      ...new Set((so.lines || []).map((l) => Number(l.itemId)).filter((n) => Number.isFinite(n) && n > 0)),
+    ];
+    const perItemDispatchable = await Promise.all(
+      uniqItemIds.map(async (itemId) => {
+        const [stockAvailableQty, qcAcceptedGross] = await Promise.all([
+          getUsableItemStockQty(itemId, db),
+          sumQcAcceptedForSoItem(db, so.id, itemId),
+        ]);
+        const dispatchableQty = getSoItemDispatchableReadyQty({
+          orderLineInputs: lineInputs,
+          dispatchRecords: dispatchRows,
+          itemId,
+          orderType: so.orderType,
+          onHandQty: stockAvailableQty,
+          qcAcceptedTotalForSoItem: qcAcceptedGross,
+        });
+        return Math.max(0, Number(dispatchableQty || 0));
+      }),
+    );
+    dispatchableNowTotal = perItemDispatchable.reduce((a, b) => a + b, 0);
+    regularDispatchGuidance = {
+      qtyPendingToDeliver: deliveryPending,
+      dispatchableNowTotal,
+      realQcBatchPendingQty: qcPendingOrderTotal,
+      productionInProgress: productionInProgressFlg,
+      workOrderBacklog: workOrderBacklogFlg,
+    };
+  }
+
+  const dispatchDeliveredDonePhysically =
+    dispatchBaseline > 0 && netDeliveredTotal >= dispatchBaseline;
+  const dispatchDeliveredDone = dispatchDeliveredDonePhysically || isCommerciallyClosed;
+
   const journey = [
     stage("Order / PO recorded", orderedTotal, true, orderPlacedAt, "completed"),
     stage("Sales Order", orderedTotal, true, soCreatedAt, "completed"),
@@ -553,38 +761,49 @@ async function getCustomerPoTrackingDetail(db, routeKey) {
     stage(
       "QC Cleared",
       qcTotal,
-      qcTotal > 0,
+      qcPendingOrderTotal <= REPORT_QUEUE_EPS && producedTotal > REPORT_QUEUE_EPS,
       prodUpdatedAt,
-      qcTotal >= producedTotal && producedTotal > 0 ? "completed" : qcTotal > 0 ? "in_progress" : "not_started",
+      producedTotal <= REPORT_QUEUE_EPS
+        ? "not_started"
+        : qcPendingOrderTotal <= REPORT_QUEUE_EPS
+          ? "completed"
+          : "in_progress",
     ),
     stage(
       "Dispatch",
       netDeliveredTotal,
-      netDeliveredTotal > 0,
+      netDeliveredTotal > 0 || isCommerciallyClosed,
       lastDispatchAt,
-      dispatchBaseline > 0 && netDeliveredTotal >= dispatchBaseline ? "completed" : netDeliveredTotal > 0 ? "in_progress" : "not_started",
+      dispatchDeliveredDone ? "completed" : netDeliveredTotal > 0 ? "in_progress" : "not_started",
     ),
     stage(
       "Delivered",
       netDeliveredTotal,
-      dispatchBaseline > 0 && netDeliveredTotal >= dispatchBaseline,
+      dispatchDeliveredDone,
       lastDispatchAt,
-      dispatchBaseline > 0 && netDeliveredTotal >= dispatchBaseline ? "completed" : netDeliveredTotal > 0 ? "in_progress" : "not_started",
+      dispatchDeliveredDone ? "completed" : netDeliveredTotal > 0 ? "in_progress" : "not_started",
     ),
   ];
 
   const exceptions = [];
   const prodPending = Math.max(0, (plannedTotal || orderedTotal) - producedTotal);
-  const qcPending = Math.max(0, producedTotal - qcTotal);
+  /** Same basis as GET /production/production-entries?withoutQc=1&salesOrderId= (batch rollups, includes rejects). */
+  const qcPending = qcPendingOrderTotal;
   const dispatchPending = Math.max(0, qcTotal - netDeliveredTotal);
-  const deliveryPending = Math.max(0, orderedTotal - netDeliveredTotal);
-  if (prodPending > 0) exceptions.push(`${Math.round(prodPending * 1000) / 1000} pending for production`);
-  if (qcPending > 0) exceptions.push(`${Math.round(qcPending * 1000) / 1000} waiting for QC`);
-  if (dispatchPending > 0) exceptions.push(`${Math.round(dispatchPending * 1000) / 1000} ready for dispatch`);
-  if (po?.requiredDate && new Date(po.requiredDate).getTime() < Date.now() && deliveryPending > 0) {
-    exceptions.push("Delivery date crossed");
+  const stockDispatch = isNormalSo && dispatchableNowTotal > REPORT_QUEUE_EPS;
+  if (!isCommerciallyClosed) {
+    if (prodPending > 0) exceptions.push(`${Math.round(prodPending * 1000) / 1000} pending for production`);
+    if (qcPending > REPORT_QUEUE_EPS && (!isNormalSo || !stockDispatch)) {
+      exceptions.push(`${Math.round(qcPending * 1000) / 1000} waiting for QC`);
+    }
+    if (dispatchPending > REPORT_QUEUE_EPS && (!isNormalSo || !stockDispatch)) {
+      exceptions.push(`${Math.round(dispatchPending * 1000) / 1000} ready for dispatch`);
+    }
+    if (po?.requiredDate && new Date(po.requiredDate).getTime() < Date.now() && deliveryPending > 0) {
+      exceptions.push("Delivery date crossed");
+    }
+    if (dispatchedTotal > 0 && dispatchedTotal < orderedTotal) exceptions.push("Partial delivery done");
   }
-  if (dispatchedTotal > 0 && dispatchedTotal < orderedTotal) exceptions.push("Partial delivery done");
 
   // Dispatch / return audit trail (detail only): include forward dispatch + dispatch reversals + customer returns.
   // Keep summary totals unchanged (netDelivered is still dispatched - returned via separate aggregation).
@@ -638,12 +857,14 @@ async function getCustomerPoTrackingDetail(db, routeKey) {
       requiredDate: po?.requiredDate ?? null,
       customer: cust,
       status: overallStatus,
+      isCommerciallyClosed: Boolean(isCommerciallyClosed),
     },
     summaryCards: {
       orderedQty: orderedTotal,
       plannedQty: plannedTotal,
       producedQty: producedTotal,
       qcClearedQty: qcTotal,
+      qcPendingQty: qcPendingOrderTotal,
       dispatchedQty: netDeliveredTotal,
       returnedQty: returnedTotal,
       netDeliveredQty: netDeliveredTotal,
@@ -653,6 +874,7 @@ async function getCustomerPoTrackingDetail(db, routeKey) {
     items: itemRows,
     dispatchHistory,
     exceptions,
+    regularDispatchGuidance,
   };
 }
 

@@ -1,5 +1,5 @@
 const bcrypt = require("bcryptjs");
-const { PrismaClient } = require("@prisma/client");
+const { PrismaClient } = require("./generated/client");
 const { ensureIndiaStatesSeeded, backfillLegacyStateLinks } = require("../src/services/stateMaster");
 const { ensureDefaultUnitsSeeded, backfillLegacyItemUnitLinks } = require("../src/services/unitMaster");
 
@@ -25,7 +25,8 @@ async function main() {
   await upsertUser({ email: "store@test.com", name: "Store", role: "STORE", password: "123456" });
   await upsertUser({ email: "production@test.com", name: "Production", role: "PRODUCTION", password: "123456" });
   await upsertUser({ email: "qc@test.com", name: "QC", role: "QC", password: "123456" });
-  await upsertUser({ email: "supervisor@test.com", name: "Supervisor", role: "SUPERVISOR", password: "123456" });
+  await upsertUser({ email: "accounts@test.com", name: "Accounts", role: "ACCOUNTS", password: "123456" });
+  // SUPERVISOR role retired (Phase 1 — workflow ownership cleanup). See scripts/migrateSupervisorUsersToAdmin.js.
 
   // Best-effort backfill for legacy free-text states → stateId.
   await backfillLegacyStateLinks();

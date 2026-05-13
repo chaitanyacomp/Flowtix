@@ -27,6 +27,7 @@ const { salesOrderRouter } = require("./routes/salesOrders");
 const { requirementSheetsRouter } = require("./routes/requirementSheets");
 const { scrapRouter } = require("./routes/scrap");
 const { settingsRouter } = require("./routes/settings");
+const { companyProfileRouter } = require("./routes/companyProfile");
 const { activityRouter } = require("./routes/activity");
 const { activityLogsRouter } = require("./routes/activityLogs");
 const { customerPoTrackingRouter } = require("./routes/customerPoTracking");
@@ -36,19 +37,11 @@ const { searchRouter } = require("./routes/search");
 const { statesRouter } = require("./routes/states");
 const { unitsRouter } = require("./routes/units");
 const { adminDatabaseCleanupRouter } = require("./routes/adminDatabaseCleanup");
+const { adminBackupsRouter } = require("./routes/adminBackups");
+const { tallyMasterImportRouter } = require("./routes/tallyMasterImport");
 const { openingStockRouter } = require("./routes/openingStock");
-
-function parseDatabaseName() {
-  const raw = process.env.DATABASE_URL;
-  if (!raw) return null;
-  try {
-    const u = new URL(raw);
-    const name = u.pathname ? u.pathname.replace(/^\//, "") : null;
-    return name || null;
-  } catch {
-    return null;
-  }
-}
+const { rateContractsRouter } = require("./routes/rateContracts");
+const { noQtyNextActionRouter } = require("./routes/noQtyNextAction");
 
 /**
  * Express app with all API routes (shared by server.js and integration tests).
@@ -89,27 +82,6 @@ function createApp() {
     }
   });
 
-  // TEMP DEBUG endpoint to prove runtime DB/instance mapping (remove after verification).
-  app.get("/api/debug/runtime-info", async (req, res) => {
-    try {
-      const totalSalesOrders = await prisma.salesOrder.count();
-      const latest = await prisma.salesOrder.findMany({
-        orderBy: { id: "desc" },
-        take: 10,
-        select: { id: true, docNo: true },
-      });
-      return res.json({
-        pid: process.pid,
-        port: process.env.PORT ? Number(process.env.PORT) : 4000,
-        databaseName: parseDatabaseName(),
-        totalSalesOrders,
-        latestSalesOrders: latest.map((r) => ({ id: r.id, docNo: r.docNo ?? null })),
-      });
-    } catch (e) {
-      return res.status(500).json({ error: { message: e instanceof Error ? e.message : "Failed" } });
-    }
-  });
-
   app.use("/api/auth", authRouter);
   app.use("/api/pos", poRouter);
   app.use("/api/customers", customerRouter);
@@ -120,6 +92,7 @@ function createApp() {
   app.use("/api/purchase", purchaseRouter);
   app.use("/api/purchase-bills", purchaseBillsRouter);
   app.use("/api/sales-bills", salesBillsRouter);
+  app.use("/api/rate-contracts", rateContractsRouter);
   app.use("/api/production", productionRouter);
   app.use("/api/production", qcRejectedDispositionsRouter);
   app.use("/api/production", qcLegacyRejectedClassificationsRouter);
@@ -132,8 +105,10 @@ function createApp() {
   app.use("/api/quotations", quotationRouter);
   app.use("/api/suppliers", supplierRouter);
   app.use("/api/sales-orders", salesOrderRouter);
+  app.use("/api/no-qty", noQtyNextActionRouter);
   app.use("/api", requirementSheetsRouter);
   app.use("/api/settings", settingsRouter);
+  app.use("/api/company-profile", companyProfileRouter);
   app.use("/api/states", statesRouter);
   app.use("/api/units", unitsRouter);
   app.use("/api/scrap", scrapRouter);
@@ -144,6 +119,8 @@ function createApp() {
   app.use("/api/qc", qcReportRouter);
   app.use("/api/search", searchRouter);
   app.use("/api/admin", adminDatabaseCleanupRouter);
+  app.use("/api/admin", adminBackupsRouter);
+  app.use("/api/admin", tallyMasterImportRouter);
   app.use("/api", openingStockRouter);
 
   app.use(errorHandler);

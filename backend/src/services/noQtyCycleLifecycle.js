@@ -4,6 +4,7 @@
  */
 
 const auditLog = require("./auditLog");
+const { computeNoQtyCreateNextRsEligibility } = require("./noQtyCreateNextRsEligibility");
 
 /**
  * Normalize duplicate ACTIVE cycles: keep exactly one (highest cycleNo), close others.
@@ -103,7 +104,11 @@ async function repairNoQtyCycleIntegrity(tx, salesOrderId) {
   if (actives.length === 1) {
     const only = actives[0];
     const cur = so.currentCycleId != null ? Number(so.currentCycleId) : null;
-    if (cur !== only.id && so.internalStatus !== "CLOSED") {
+    if (
+      cur !== only.id &&
+      so.internalStatus !== "CLOSED" &&
+      so.internalStatus !== "MANUALLY_CLOSED"
+    ) {
       await tx.salesOrder.update({
         where: { id: soId },
         data: { currentCycleId: only.id },
@@ -134,7 +139,126 @@ async function getExistingActiveNoQtyCycleId(tx, salesOrderId) {
   return row?.id ?? null;
 }
 
+/**
+ * NO_QTY: Close the current ACTIVE cycle and create the next one when operators may open the next
+ * requirement sheet — same gates as {@link computeNoQtyCreateNextRsEligibility} (locked RS, QC complete,
+ * no RS already on a higher cycleNo). Single ACTIVE cycle invariant: prior ACTIVE → CLOSED, new row ACTIVE.
+ * Does not use dispatch, sales bill, or export.
+ *
+ * @param {import('@prisma/client').Prisma.TransactionClient} tx
+ * @param {number} salesOrderId
+ * @param {number | null} [actorUserId]
+ * @returns {Promise<{
+ *   advanced: boolean;
+ *   currentCycleId: number | null;
+ *   cycleNo: number | null;
+ *   reason: string;
+ *   previousCycleId?: number;
+ *   previousCycleNo?: number;
+ * }>}
+ */
+async function advanceNoQtyCycleForNextRequirementSheetIfEligible(tx, salesOrderId, actorUserId = null) {
+  await repairNoQtyCycleIntegrity(tx, salesOrderId);
+  const soId = Number(salesOrderId);
+  if (!Number.isFinite(soId) || soId <= 0) {
+    return { advanced: false, currentCycleId: null, cycleNo: null, reason: "INVALID_SO" };
+  }
+
+  const so = await tx.salesOrder.findUnique({
+    where: { id: soId },
+    select: { orderType: true, internalStatus: true, currentCycleId: true },
+  });
+  if (!so || so.orderType !== "NO_QTY") {
+    return { advanced: false, currentCycleId: null, cycleNo: null, reason: "NOT_NO_QTY" };
+  }
+  if (["COMPLETED", "CLOSED", "MANUALLY_CLOSED"].includes(String(so.internalStatus ?? ""))) {
+    return {
+      advanced: false,
+      currentCycleId: so.currentCycleId != null ? Number(so.currentCycleId) : null,
+      cycleNo: null,
+      reason: "SO_CLOSED",
+    };
+  }
+
+  const active = await tx.salesOrderCycle.findFirst({
+    where: { salesOrderId: soId, status: "ACTIVE" },
+    orderBy: { cycleNo: "desc" },
+    select: { id: true, cycleNo: true },
+  });
+  if (!active) {
+    return {
+      advanced: false,
+      currentCycleId: so.currentCycleId != null ? Number(so.currentCycleId) : null,
+      cycleNo: null,
+      reason: "NO_ACTIVE_CYCLE",
+    };
+  }
+
+  const elig = await computeNoQtyCreateNextRsEligibility(tx, { salesOrderId: soId, cycleId: active.id });
+  if (!elig.eligible) {
+    return {
+      advanced: false,
+      currentCycleId: active.id,
+      cycleNo: active.cycleNo,
+      reason: elig.reason ?? "NOT_ELIGIBLE",
+    };
+  }
+
+  await tx.salesOrderCycle.update({
+    where: { id: active.id },
+    data: { status: "CLOSED", closedAt: new Date() },
+  });
+
+  const agg = await tx.salesOrderCycle.aggregate({
+    where: { salesOrderId: soId },
+    _max: { cycleNo: true },
+  });
+  const nextNo = Math.max(1, Number(agg._max.cycleNo ?? 0) + 1);
+
+  const created = await tx.salesOrderCycle.create({
+    data: {
+      salesOrderId: soId,
+      cycleNo: nextNo,
+      status: "ACTIVE",
+    },
+    select: { id: true, cycleNo: true },
+  });
+
+  await tx.salesOrder.update({
+    where: { id: soId },
+    data: { currentCycleId: created.id },
+  });
+
+  await auditLog.write(tx, {
+    action: auditLog.AuditAction.UPDATE,
+    entityType: auditLog.AuditEntityType.SALES_ORDER,
+    entityId: String(soId),
+    actorUserId: actorUserId ?? null,
+    actorRole: null,
+    summary: `NO_QTY advanced to cycle ${created.cycleNo} for next requirement sheet (prior cycle ${active.cycleNo} closed).`,
+    payload: {
+      module: "SALES",
+      actionLabel: "NO_QTY_ADVANCE_CYCLE_FOR_NEXT_RS",
+      previousCycleId: active.id,
+      previousCycleNo: active.cycleNo,
+      newCycleId: created.id,
+      newCycleNo: created.cycleNo,
+    },
+    reason: null,
+  });
+
+  return {
+    advanced: true,
+    currentCycleId: created.id,
+    cycleNo: created.cycleNo,
+    reason: "OK",
+    previousCycleId: active.id,
+    previousCycleNo: active.cycleNo,
+  };
+}
+
 module.exports = {
   repairNoQtyCycleIntegrity,
   getExistingActiveNoQtyCycleId,
+  advanceNoQtyCycleForNextRequirementSheetIfEligible,
 };

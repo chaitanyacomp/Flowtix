@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Link, Navigate, useNavigate, useSearchParams } from "react-router-dom";
+import { Link, Navigate, useNavigate, useSearchParams, useLocation } from "react-router-dom";
 import { cn } from "../lib/utils";
 import { buttonVariants } from "../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
@@ -10,6 +10,7 @@ import { Badge } from "../components/ui/badge";
 import { useToast } from "../contexts/ToastContext";
 import { useAuth } from "../hooks/useAuth";
 import { Download, Pencil, Trash2 } from "lucide-react";
+import { CommercialWorkflowStrip, commercialWorkflowStripFramedClassName } from "../components/erp/CommercialWorkflowStrip";
 import {
   type QuoteLineDraft,
   defaultQuoteLineDraft,
@@ -26,6 +27,7 @@ type QRow = {
   id: number;
   quotationNo: string | null;
   enquiryId: number;
+  flowTypeSnapshot?: "REGULAR" | "NO_QTY";
   workflowStatus: string;
   subtotal: string;
   gstTotal: string;
@@ -47,12 +49,29 @@ type QRow = {
   }[];
 };
 
+type RateContractRow = {
+  id: number;
+  customerId: number;
+  itemId: number;
+  rate: string;
+  gstRate: string;
+  effectiveFrom: string;
+  status: string;
+};
+
 type EnquiryOpt = {
   id: number;
   status: string;
   customer: Customer;
   lines: { itemId: number; item: Item; qty: string }[];
 };
+
+function flowTypeBadge(flowTypeSnapshot: QRow["flowTypeSnapshot"]) {
+  const ft = flowTypeSnapshot ?? "REGULAR";
+  const label = ft === "NO_QTY" ? "NO_QTY" : "REGULAR";
+  const variant: "info" | "warning" = ft === "NO_QTY" ? "warning" : "info";
+  return <Badge variant={variant}>{label}</Badge>;
+}
 
 function lineTotal(qty: number, rate: number, discountPct: number, gstPct: number, isFree?: boolean) {
   const r = isFree ? 0 : rate;
@@ -106,7 +125,11 @@ function QuotationNextStepCell({ r }: { r: QRow }) {
     return <span className="text-sm font-medium text-slate-400">—</span>;
   }
   if (isApproved(r.workflowStatus)) {
-    return <span className="text-sm text-slate-600">Pending SO creation</span>;
+    return (
+      <span className="text-[13px] font-medium text-emerald-900">
+        Ready for Sales Order
+      </span>
+    );
   }
   return (
     <span className="inline-flex items-center rounded-md border border-amber-200 bg-amber-50/90 px-2.5 py-1 text-xs font-medium text-amber-950">
@@ -143,6 +166,7 @@ async function downloadPdf(quotationId: number) {
 
 export function QuotationsPage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const toast = useToast();
   const isAdmin = useAuth().user?.role === "ADMIN";
   const [searchParams] = useSearchParams();
@@ -163,6 +187,17 @@ export function QuotationsPage() {
   const [cancelApprovalReason, setCancelApprovalReason] = React.useState("");
   const [cancelApprovalTarget, setCancelApprovalTarget] = React.useState<QRow | null>(null);
   const [listLoaded, setListLoaded] = React.useState(false);
+
+  React.useEffect(() => {
+    const hash = location.hash.replace(/^#/, "");
+    if (!hash.startsWith("quotation-row-")) return;
+    const el = document.getElementById(hash);
+    if (!el) return;
+    const t = window.setTimeout(() => {
+      el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }, 80);
+    return () => window.clearTimeout(t);
+  }, [location.hash, rows.length, listLoaded]);
 
   async function refresh() {
     try {
@@ -205,20 +240,55 @@ export function QuotationsPage() {
   async function saveEdit(e: React.FormEvent) {
     e.preventDefault();
     if (!editQ) return;
+    const quotation = editQ;
     setError(null);
-    const v = validateQuoteLinesForSave(quoteLines);
-    if (v) {
-      setError(v);
-      toast.showError(v);
-      return;
+
+    const isNoQty = (quotation.flowTypeSnapshot ?? "REGULAR") === "NO_QTY";
+    async function resolveApplicableRate(customerId: number, itemId: number): Promise<{ rate: string; gstPct: string } | null> {
+      const rows = await apiFetch<RateContractRow[]>(`/api/rate-contracts?customerId=${customerId}&itemId=${itemId}`);
+      const asOf = new Date(quotation.createdAt).getTime();
+      const applicable =
+        rows
+          .map((r) => ({ ...r, eff: new Date(r.effectiveFrom).getTime() }))
+          .filter((r) => Number.isFinite(r.eff) && r.eff <= asOf)
+          .sort((a, b) => (b.eff !== a.eff ? b.eff - a.eff : b.id - a.id))[0] ?? null;
+      if (!applicable) return null;
+      return { rate: String(applicable.rate), gstPct: String(applicable.gstRate) };
+    }
+
+    if (isNoQty) {
+      // No manual override: block save if any line has no valid approved rate contract as-of quotation date.
+      const custId = quotation.enquiry?.customer?.id ?? 0;
+      for (const ln of quoteLines) {
+        const rc = await resolveApplicableRate(custId, ln.itemId);
+        if (!rc) {
+          const msg = "No approved rate contract found for selected customer/item as of quotation date.";
+          setError(msg);
+          toast.showError(msg);
+          return;
+        }
+      }
+    }
+
+    if (!isNoQty) {
+      const v = validateQuoteLinesForSave(quoteLines);
+      if (v) {
+        setError(v);
+        toast.showError(v);
+        return;
+      }
     }
     setSaving(true);
     try {
-      await apiFetch(`/api/quotations/${editQ.id}`, {
+      await apiFetch(`/api/quotations/${quotation.id}`, {
         method: "PUT",
         body: JSON.stringify({
           terms: terms.trim() || null,
-          lines: draftLinesToApiPayload(quoteLines),
+          lines: draftLinesToApiPayload(
+            isNoQty
+              ? quoteLines.map((l) => ({ ...l, qty: "0", discountPct: "0", isFree: false }))
+              : quoteLines,
+          ),
         }),
       });
       setEditQ(null);
@@ -326,27 +396,32 @@ export function QuotationsPage() {
 
   return (
     <div className="mx-auto flex w-full min-w-0 max-w-5xl flex-col gap-4 pb-8">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <h1 className="text-xl font-semibold text-slate-900">Quotations</h1>
-        {feasibleEnquiries.length ? (
-          <Link to="/quotations/new" className={cn(buttonVariants(), "shrink-0")}>
-            + New Quotation
-          </Link>
-        ) : (
-          <span
-            className={cn(buttonVariants(), "pointer-events-none shrink-0 cursor-not-allowed opacity-50")}
-            title="No feasible enquiries without a quotation yet"
-            aria-disabled
-          >
-            + New Quotation
-          </span>
-        )}
+      <div className="flex flex-col gap-2 border-b border-slate-200 pb-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <h1 className="text-xl font-semibold tracking-tight text-slate-900">Quotations</h1>
+          {feasibleEnquiries.length ? (
+            <Link to="/quotations/new" className={cn(buttonVariants(), "shrink-0")}>
+              + New Quotation
+            </Link>
+          ) : (
+            <span
+              className={cn(buttonVariants(), "pointer-events-none shrink-0 cursor-not-allowed opacity-50")}
+              title="No feasible enquiries without a quotation yet"
+              aria-disabled
+            >
+              + New Quotation
+            </span>
+          )}
+        </div>
+        <CommercialWorkflowStrip active="quotation" className={commercialWorkflowStripFramedClassName} />
       </div>
 
       {showQuotationConversionBanner ? (
-        <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800">
-          <p className="font-medium text-slate-900">Approved quotations without a Sales Order</p>
-          <p className="mt-0.5 text-slate-600">Use the row action on each quotation to create its Sales Order.</p>
+        <div className="rounded-t-lg border border-b-0 border-blue-200/80 bg-gradient-to-r from-blue-50/95 to-sky-50/90 px-3 py-2.5 text-[13px] leading-snug text-slate-800 shadow-sm">
+          <p className="font-semibold text-slate-900">Approved quotations are ready for Sales Order creation.</p>
+          <p className="mt-0.5 text-slate-700">
+            Use <span className="font-medium text-blue-900">Create Sales Order</span> on each row below to continue the workflow.
+          </p>
         </div>
       ) : null}
       {showEmptyStrip ? (
@@ -373,14 +448,20 @@ export function QuotationsPage() {
         </p>
       ) : null}
 
-      <section className="min-w-0">
-        <div className="erp-table-wrap">
+      <section
+        className={cn(
+          "min-w-0",
+          showQuotationConversionBanner && "overflow-hidden rounded-b-lg border border-t-0 border-blue-200/80 bg-white shadow-sm",
+        )}
+      >
+        <div className={cn("erp-table-wrap", showQuotationConversionBanner && "border-t border-slate-200/90")}>
           <table className="erp-table">
             <thead>
               <tr>
                 <th>Date</th>
                 <th>Quotation No</th>
                 <th>Customer</th>
+                <th>Flow</th>
                 <th>Status</th>
                 <th>Next Step</th>
                 <th className="text-right">Actions</th>
@@ -389,156 +470,197 @@ export function QuotationsPage() {
             <tbody>
               {rows.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-4 py-6 text-center text-sm text-slate-500">
+                  <td colSpan={7} className="px-4 py-6 text-center text-sm text-slate-500">
                     No quotations in the list.
                   </td>
                 </tr>
               ) : (
                 rows.map((r) => (
-                    <tr key={r.id}>
+                    <tr key={r.id} id={`quotation-row-${r.id}`}>
                       <td className="whitespace-nowrap">{new Date(r.createdAt).toLocaleDateString()}</td>
                       <td className="font-medium">{r.quotationNo || `#${r.id}`}</td>
                       <td>{r.enquiry.customer.name}</td>
+                      <td>{flowTypeBadge(r.flowTypeSnapshot)}</td>
                       <td>
                         <Badge variant={workflowBadgeVariant(r.workflowStatus)}>{r.workflowStatus.replace(/_/g, " ")}</Badge>
                       </td>
                       <td className="min-w-[10rem]">
                         <QuotationNextStepCell r={r} />
                       </td>
-                      <td>
-                        <div className="flex flex-col items-end gap-2">
-                          {isLocked(r.workflowStatus) ? (
-                            <span
-                              className="inline-flex h-8 min-w-[148px] max-w-[180px] items-center justify-end rounded-md border border-slate-200 bg-slate-50 px-2 text-xs font-medium text-slate-800"
-                              title={
-                                r.workflowStatus === "APPROVED"
-                                  ? "Approved. An administrator can cancel approval if no Sales Order exists yet."
-                                  : "Rejected — approval is final for this quotation."
-                              }
-                            >
-                              {r.workflowStatus === "APPROVED" ? "Approved" : "Rejected"}
-                            </span>
-                          ) : (
-                            <>
-                              <label className="sr-only" htmlFor={`q-decision-${r.id}`}>
-                                Approval decision
-                              </label>
-                              <select
-                                id={`q-decision-${r.id}`}
-                                className="erp-select h-8 min-w-[148px] max-w-[180px] text-xs"
-                                value={decisionSelectValue(r.workflowStatus)}
-                                disabled={statusUpdatingId === r.id}
-                                onChange={(e) => onDecisionChange(r.id, e.target.value)}
-                              >
-                                <option value="">Set approval…</option>
-                                <option value="APPROVED">Approved</option>
-                                <option value="REJECTED">Rejected</option>
-                              </select>
-                            </>
-                          )}
-                          <div className="erp-table-actions flex-wrap justify-end">
-                            {!r.salesOrder && isApproved(r.workflowStatus) ? (
-                              <Link
-                                to={`/sales-orders?quotationId=${r.id}`}
-                                data-testid="create-sales-order-btn"
-                                className={cn(buttonVariants({ variant: "secondary", size: "sm" }))}
-                              >
-                                Create Sales Order
-                              </Link>
-                            ) : null}
-                            {isApproved(r.workflowStatus) ? (
-                              <Button
-                                type="button"
-                                size="icon"
-                                variant="outline"
-                                aria-label="Download PDF"
-                                onClick={() => onPdf(r.id)}
-                              >
-                                <Download className="h-4 w-4" />
-                              </Button>
-                            ) : (
-                              <span className="inline-flex" title="Quotation must be approved before download">
-                                <span
-                                  className={cn(
-                                    buttonVariants({ variant: "outline", size: "icon" }),
-                                    "pointer-events-none cursor-not-allowed opacity-50",
-                                  )}
-                                  aria-disabled
-                                >
-                                  <Download className="h-4 w-4" />
-                                </span>
-                              </span>
-                            )}
-                            {canEditQuotation(r.workflowStatus) ? (
-                              <Button
-                                type="button"
-                                size="icon"
-                                variant="outline"
-                                aria-label="Edit"
-                                data-testid="edit-quotation-btn"
-                                onClick={() => openEdit(r)}
-                              >
-                                <Pencil className="h-4 w-4" />
-                              </Button>
-                            ) : (
-                              <span className="inline-flex" title={editDisabledTitle(r.workflowStatus)}>
-                                <span
-                                  className={cn(
-                                    buttonVariants({ variant: "outline", size: "icon" }),
-                                    "pointer-events-none cursor-not-allowed opacity-50",
-                                  )}
-                                  aria-disabled
-                                >
-                                  <Pencil className="h-4 w-4" />
-                                </span>
-                              </span>
-                            )}
-                            {isAdmin ? (
-                              canDeleteQuotation(r.workflowStatus) ? (
-                                <Button
-                                  type="button"
-                                  size="icon"
-                                  variant="destructive"
-                                  aria-label="Delete"
-                                  data-testid="delete-quotation-btn"
-                                  onClick={() => onDelete(r.id, r.workflowStatus)}
-                                >
-                                  <Trash2 className="h-4 w-4" />
-                                </Button>
-                              ) : (
-                                <span className="inline-flex" title="Approved quotation cannot be deleted">
-                                  <span
-                                    className={cn(
-                                      buttonVariants({ variant: "destructive", size: "icon" }),
-                                      "pointer-events-none cursor-not-allowed opacity-50",
-                                    )}
-                                    aria-disabled
+                      <td className="align-top text-right">
+                        {(() => {
+                          const approvedNeedsSo = isApproved(r.workflowStatus) && !r.salesOrder;
+                          const showApprovalSelect = !isLocked(r.workflowStatus);
+
+                          const createSoTo =
+                            (r.flowTypeSnapshot ?? "REGULAR") === "NO_QTY"
+                              ? `/sales-orders/no-qty/from-quotation?quotationId=${r.id}&from=quotations`
+                              : `/sales-orders?quotationId=${r.id}&from=quotations`;
+
+                          const secondaryIconBtn =
+                            "h-7 w-7 text-slate-500 hover:bg-slate-100 hover:text-slate-900";
+
+                          return (
+                            <div className="flex flex-col items-end gap-1.5">
+                              {showApprovalSelect ? (
+                                <>
+                                  <label className="sr-only" htmlFor={`q-decision-${r.id}`}>
+                                    Approval decision
+                                  </label>
+                                  <select
+                                    id={`q-decision-${r.id}`}
+                                    className="erp-select h-7 min-w-[9.25rem] max-w-[11rem] text-[11px]"
+                                    value={decisionSelectValue(r.workflowStatus)}
+                                    disabled={statusUpdatingId === r.id}
+                                    onChange={(e) => onDecisionChange(r.id, e.target.value)}
                                   >
-                                    <Trash2 className="h-4 w-4" />
-                                  </span>
-                                </span>
-                              )
-                            ) : null}
-                            {isAdmin && r.workflowStatus === "APPROVED" ? (
-                              <Button
-                                type="button"
-                                size="sm"
-                                variant="outline"
-                                className="h-8"
-                                data-testid="cancel-quotation-approval-btn"
-                                disabled={statusUpdatingId === r.id}
-                                onClick={() => openCancelApproval(r)}
-                                title={
-                                  r.salesOrder
-                                    ? "Admin only. Allowed only if Sales Order has no downstream transactions; otherwise blocked with a clear reason."
-                                    : "Admin only"
-                                }
-                              >
-                                Cancel approval
-                              </Button>
-                            ) : null}
-                          </div>
-                        </div>
+                                    <option value="">Set approval…</option>
+                                    <option value="APPROVED">Approved</option>
+                                    <option value="REJECTED">Rejected</option>
+                                  </select>
+                                </>
+                              ) : null}
+
+                              {approvedNeedsSo ? (
+                                <>
+                                  <Link
+                                    to={createSoTo}
+                                    data-testid="create-sales-order-btn"
+                                    className={cn(
+                                      buttonVariants({ size: "sm" }),
+                                      "inline-flex min-w-[11rem] justify-center font-semibold shadow-md ring-1 ring-blue-600/15",
+                                    )}
+                                  >
+                                    Create Sales Order
+                                  </Link>
+                                  <div className="flex flex-wrap items-center justify-end gap-0.5 border-t border-slate-100 pt-1.5">
+                                    <Button
+                                      type="button"
+                                      size="icon"
+                                      variant="ghost"
+                                      className={secondaryIconBtn}
+                                      aria-label="Download PDF"
+                                      onClick={() => onPdf(r.id)}
+                                    >
+                                      <Download className="h-3.5 w-3.5" />
+                                    </Button>
+                                    {isAdmin ? (
+                                      <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="sm"
+                                        className="h-7 px-2 text-[11px] font-normal text-slate-600 hover:text-slate-900"
+                                        data-testid="cancel-quotation-approval-btn"
+                                        disabled={statusUpdatingId === r.id}
+                                        onClick={() => openCancelApproval(r)}
+                                        title={
+                                          r.salesOrder
+                                            ? "Admin only. Allowed only if Sales Order has no downstream transactions; otherwise blocked with a clear reason."
+                                            : "Revert approval and return quotation to draft"
+                                        }
+                                      >
+                                        Undo approval
+                                      </Button>
+                                    ) : null}
+                                  </div>
+                                </>
+                              ) : (
+                                <div className="erp-table-actions flex-wrap justify-end gap-1">
+                                  {isApproved(r.workflowStatus) ? (
+                                    <Button
+                                      type="button"
+                                      size="icon"
+                                      variant="ghost"
+                                      className={secondaryIconBtn}
+                                      aria-label="Download PDF"
+                                      onClick={() => onPdf(r.id)}
+                                    >
+                                      <Download className="h-3.5 w-3.5" />
+                                    </Button>
+                                  ) : (
+                                    <span className="inline-flex" title="Quotation must be approved before download">
+                                      <span
+                                        className={cn(
+                                          buttonVariants({ variant: "ghost", size: "icon" }),
+                                          "pointer-events-none h-7 w-7 cursor-not-allowed opacity-40",
+                                        )}
+                                        aria-disabled
+                                      >
+                                        <Download className="h-3.5 w-3.5" />
+                                      </span>
+                                    </span>
+                                  )}
+                                  {canEditQuotation(r.workflowStatus) ? (
+                                    <Button
+                                      type="button"
+                                      size="icon"
+                                      variant="ghost"
+                                      className={secondaryIconBtn}
+                                      aria-label="Edit"
+                                      data-testid="edit-quotation-btn"
+                                      onClick={() => openEdit(r)}
+                                    >
+                                      <Pencil className="h-3.5 w-3.5" />
+                                    </Button>
+                                  ) : (
+                                    <span className="inline-flex" title={editDisabledTitle(r.workflowStatus)}>
+                                      <span
+                                        className={cn(
+                                          buttonVariants({ variant: "ghost", size: "icon" }),
+                                          "pointer-events-none h-7 w-7 cursor-not-allowed opacity-40",
+                                        )}
+                                        aria-disabled
+                                      >
+                                        <Pencil className="h-3.5 w-3.5" />
+                                      </span>
+                                    </span>
+                                  )}
+                                  {isAdmin ? (
+                                    canDeleteQuotation(r.workflowStatus) ? (
+                                      <Button
+                                        type="button"
+                                        size="icon"
+                                        variant="ghost"
+                                        className="h-7 w-7 text-slate-500 hover:bg-red-50 hover:text-red-700"
+                                        aria-label="Delete"
+                                        data-testid="delete-quotation-btn"
+                                        onClick={() => onDelete(r.id, r.workflowStatus)}
+                                      >
+                                        <Trash2 className="h-3.5 w-3.5" />
+                                      </Button>
+                                    ) : (
+                                      <span className="inline-flex" title="Approved quotation cannot be deleted">
+                                        <span
+                                          className={cn(
+                                            buttonVariants({ variant: "ghost", size: "icon" }),
+                                            "pointer-events-none h-7 w-7 cursor-not-allowed opacity-40",
+                                          )}
+                                          aria-disabled
+                                        >
+                                          <Trash2 className="h-3.5 w-3.5" />
+                                        </span>
+                                      </span>
+                                    )
+                                  ) : null}
+                                  {isAdmin && r.workflowStatus === "APPROVED" && r.salesOrder ? (
+                                    <Button
+                                      type="button"
+                                      variant="ghost"
+                                      size="sm"
+                                      className="h-7 px-2 text-[11px] font-normal text-slate-600 hover:text-slate-900"
+                                      data-testid="cancel-quotation-approval-btn"
+                                      disabled={statusUpdatingId === r.id}
+                                      onClick={() => openCancelApproval(r)}
+                                      title="Revert approval (admin)"
+                                    >
+                                      Undo approval
+                                    </Button>
+                                  ) : null}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
                       </td>
                     </tr>
                 ))
@@ -589,7 +711,10 @@ export function QuotationsPage() {
         <div className="erp-modal-backdrop" role="dialog">
           <Card className="max-h-[90vh] w-full max-w-3xl overflow-hidden rounded-lg border border-slate-200 bg-white shadow-lg">
             <CardHeader className="shrink-0 pb-2">
-              <CardTitle className="text-base">Edit quotation {editQ.quotationNo || `#${editQ.id}`}</CardTitle>
+              <CardTitle className="flex flex-wrap items-center gap-2 text-base">
+                <span>Edit quotation {editQ.quotationNo || `#${editQ.id}`}</span>
+                {flowTypeBadge(editQ.flowTypeSnapshot)}
+              </CardTitle>
             </CardHeader>
             <CardContent className="overflow-y-auto">
               <form onSubmit={saveEdit} className="erp-form">
@@ -613,19 +738,21 @@ export function QuotationsPage() {
                           ))}
                         </select>
                       </div>
-                      <div className="erp-form-field">
-                        <span className="erp-form-label">Qty</span>
-                        <Input
-                          type="number"
-                          step="any"
-                          min={0}
-                          inputMode="decimal"
-                          value={l.qty}
-                          onChange={(e) => {
-                            setQuoteLines((p) => p.map((x, j) => (j === i ? { ...x, qty: e.target.value } : x)));
-                          }}
-                        />
-                      </div>
+                      {(editQ.flowTypeSnapshot ?? "REGULAR") === "NO_QTY" ? null : (
+                        <div className="erp-form-field">
+                          <span className="erp-form-label">Qty</span>
+                          <Input
+                            type="number"
+                            step="any"
+                            min={0}
+                            inputMode="decimal"
+                            value={l.qty}
+                            onChange={(e) => {
+                              setQuoteLines((p) => p.map((x, j) => (j === i ? { ...x, qty: e.target.value } : x)));
+                            }}
+                          />
+                        </div>
+                      )}
                       <div className="erp-form-field">
                         <span className="erp-form-label">Rate</span>
                         <Input
@@ -634,7 +761,7 @@ export function QuotationsPage() {
                           min={0}
                           inputMode="decimal"
                           value={l.isFree ? "0" : l.rate}
-                          disabled={l.isFree}
+                          disabled={l.isFree || (editQ.flowTypeSnapshot ?? "REGULAR") === "NO_QTY"}
                           onChange={(e) => {
                             setQuoteLines((p) => p.map((x, j) => (j === i ? { ...x, rate: e.target.value } : x)));
                           }}
@@ -662,6 +789,7 @@ export function QuotationsPage() {
                           step="any"
                           inputMode="decimal"
                           value={l.gstPct}
+                          disabled={(editQ.flowTypeSnapshot ?? "REGULAR") === "NO_QTY"}
                           onChange={(e) => {
                             setQuoteLines((p) => p.map((x, j) => (j === i ? { ...x, gstPct: e.target.value } : x)));
                           }}
@@ -673,6 +801,7 @@ export function QuotationsPage() {
                         type="checkbox"
                         className="h-4 w-4 rounded border-slate-300"
                         checked={l.isFree}
+                        disabled={(editQ.flowTypeSnapshot ?? "REGULAR") === "NO_QTY"}
                         onChange={(e) => {
                           const checked = e.target.checked;
                           setQuoteLines((p) =>
@@ -692,9 +821,11 @@ export function QuotationsPage() {
                         Free item <span className="text-slate-500">(rate must be 0)</span>
                       </span>
                     </label>
-                    <div className="text-sm text-slate-600">
-                      Line amount: {lineTotalFromDraft(l, lineTotal).toFixed(2)}
-                    </div>
+                    {(editQ.flowTypeSnapshot ?? "REGULAR") === "NO_QTY" ? (
+                      <div className="text-sm text-slate-600">NO_QTY: quantity and totals are captured later via Requirement Sheets.</div>
+                    ) : (
+                      <div className="text-sm text-slate-600">Line amount: {lineTotalFromDraft(l, lineTotal).toFixed(2)}</div>
+                    )}
                   </div>
                 ))}
                 <div className="erp-form-field">

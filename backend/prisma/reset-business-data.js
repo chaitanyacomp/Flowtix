@@ -6,7 +6,7 @@
  * Or:                     npm run db:reset-business
  */
 require("dotenv").config();
-const { PrismaClient } = require("@prisma/client");
+const { PrismaClient } = require("./generated/client");
 
 const prisma = new PrismaClient();
 

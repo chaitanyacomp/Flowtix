@@ -61,7 +61,7 @@ const {
 } = require("../services/productionEntryIntegrity");
 const { getApprovedProducedQtyByWorkOrderLineIds } = require("../services/productionMetrics");
 const productionRouter = express.Router();
-const { DocType } = require("@prisma/client");
+const { DocType } = require("../prismaClientPackage");
 const { allocateDocNo } = require("../services/docNoService");
 
 async function assertNoQtyWorkOrderInActiveCycleOrThrow(tx, workOrderId, messagePrefix) {
@@ -84,7 +84,7 @@ async function assertNoQtyWorkOrderInActiveCycleOrThrow(tx, workOrderId, message
     throw err;
   }
   if (so.orderType !== "NO_QTY") return { wo, so }; // regular flows unchanged
-  if (so.internalStatus === "COMPLETED") {
+  if (so.internalStatus === "COMPLETED" || so.internalStatus === "MANUALLY_CLOSED" || so.internalStatus === "CLOSED") {
     const err = new Error("This sales order is closed. Production/QC is view-only.");
     err.statusCode = 409;
     throw err;
@@ -95,8 +95,9 @@ async function assertNoQtyWorkOrderInActiveCycleOrThrow(tx, workOrderId, message
     throw err;
   }
   if (!wo.cycleId || Number(wo.cycleId) !== Number(so.currentCycleId)) {
-    const err = new Error(`${messagePrefix || "This work order"} does not belong to the current active cycle.`);
+    const err = new Error("Production must be done on latest cycle Work Order.");
     err.statusCode = 409;
+    err.code = "NO_QTY_WRONG_CYCLE_WORK_ORDER";
     throw err;
   }
   const lockedSheet = await tx.requirementSheet.findFirst({
@@ -109,6 +110,145 @@ async function assertNoQtyWorkOrderInActiveCycleOrThrow(tx, workOrderId, message
     throw err;
   }
   return { wo, so };
+}
+
+/**
+ * NO_QTY: hide work orders that are not on {@link SalesOrder.currentCycleId} or that lack a LOCKED RS for that cycle.
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {Awaited<ReturnType<import("@prisma/client").PrismaClient["workOrder"]["findMany"]>>} rowsRaw
+ */
+async function filterNoQtyWorkOrdersForActiveLockedCycle(prisma, rowsRaw) {
+  const noQtyKeys = new Set(
+    (rowsRaw || [])
+      .map((w) => w.salesOrder)
+      .filter((s) => s?.orderType === "NO_QTY")
+      .map((s) => {
+        const soId = Number(s?.id);
+        const cy = Number(s?.currentCycleId);
+        if (!Number.isFinite(soId) || soId <= 0) return null;
+        if (!Number.isFinite(cy) || cy <= 0) return null;
+        return `${soId}:${cy}`;
+      })
+      .filter(Boolean),
+  );
+  const lockedSheets =
+    noQtyKeys.size > 0
+      ? await prisma.requirementSheet.findMany({
+          where: {
+            status: "LOCKED",
+            OR: Array.from(noQtyKeys).map((k) => {
+              const [soIdStr, cyStr] = String(k).split(":");
+              return { salesOrderId: Number(soIdStr), cycleId: Number(cyStr) };
+            }),
+          },
+          select: { salesOrderId: true, cycleId: true },
+        })
+      : [];
+  const lockedKeySet = new Set(lockedSheets.map((s) => `${Number(s.salesOrderId)}:${Number(s.cycleId)}`));
+  return (rowsRaw || []).filter((wo) => {
+    const so = wo.salesOrder;
+    if (!so || so.orderType !== "NO_QTY") return true;
+    if (so.internalStatus === "COMPLETED" || so.internalStatus === "MANUALLY_CLOSED" || so.internalStatus === "CLOSED") {
+      return false;
+    }
+    const activeCycleId = Number(so.currentCycleId);
+    if (!Number.isFinite(activeCycleId) || activeCycleId <= 0) return false;
+    const woCycleId = wo.cycleId == null ? null : Number(wo.cycleId);
+    if (!woCycleId || woCycleId !== activeCycleId) return false;
+    if (!lockedKeySet.has(`${so.id}:${activeCycleId}`)) return false;
+    return true;
+  });
+}
+
+const NO_QTY_RS_RECON_EPS = 1e-6;
+
+/**
+ * Align NO_QTY WO line qty with RequirementSheetLine.suggestedWoQtySnapshot when the WO target drifted upward.
+ * Does not shrink below approved produced qty (manual repair needed if that happens).
+ * @param {import("@prisma/client").PrismaClient} prismaClient
+ */
+async function reconcileNoQtyWoLineQtyWithRsSnapshot(prismaClient, woRowsRaw, { includeCompletedWorkOrders = false } = {}) {
+  /** @type {Map<string, Map<number, number>>} */
+  const snapMapsBySoCycle = new Map();
+
+  async function loadSnap(soId, cycleId) {
+    const key = `${soId}:${cycleId}`;
+    if (snapMapsBySoCycle.has(key)) return snapMapsBySoCycle.get(key);
+    const sheet = await prismaClient.requirementSheet.findFirst({
+      where: { salesOrderId: soId, cycleId, status: "LOCKED" },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      include: { lines: true },
+    });
+    const m = new Map();
+    for (const ln of sheet?.lines ?? []) {
+      const iid = Number(ln.itemId);
+      if (!(Number.isFinite(iid) && iid > 0)) continue;
+      const raw = ln.suggestedWoQtySnapshot;
+      const sug =
+        raw != null && typeof raw === "object" && typeof raw.toNumber === "function"
+          ? raw.toNumber()
+          : Number(raw ?? 0);
+      m.set(iid, (m.get(iid) ?? 0) + (Number.isFinite(sug) ? sug : 0));
+    }
+    snapMapsBySoCycle.set(key, m);
+    return m;
+  }
+
+  const candidates = [];
+  for (const wo of woRowsRaw ?? []) {
+    if (!includeCompletedWorkOrders && wo.status === "COMPLETED") continue;
+    const so = wo.salesOrder;
+    if (!so || so.orderType !== "NO_QTY") continue;
+    const cid = wo.cycleId == null ? null : Number(wo.cycleId);
+    if (!(cid > 0)) continue;
+    for (const l of wo.lines ?? []) {
+      const itemId = Number(l.fgItemId);
+      if (!(itemId > 0)) continue;
+      candidates.push({ wo, line: l, soId: so.id, cycleId: cid, itemId });
+    }
+  }
+  if (!candidates.length) return;
+
+  const lineIds = [...new Set(candidates.map((c) => Number(c.line.id)).filter((x) => Number.isFinite(x) && x > 0))];
+  const producedMap =
+    lineIds.length === 0 ? new Map() : await getApprovedProducedQtyByWorkOrderLineIds(prismaClient, lineIds);
+
+  for (const { wo, line, soId, cycleId, itemId } of candidates) {
+    const snaps = await loadSnap(soId, cycleId);
+    const snapNum = Number(snaps.get(itemId) ?? 0);
+    if (!(snapNum > NO_QTY_RS_RECON_EPS)) continue;
+    const q = Number(line.qty ?? 0);
+    const approvedMade = Number(producedMap.get(line.id) ?? 0);
+    if (!(q > snapNum + NO_QTY_RS_RECON_EPS)) continue;
+    if (approvedMade > snapNum + NO_QTY_RS_RECON_EPS) {
+      console.warn("[NO_QTY] RS suggestedWoQtySnapshot below approved produced qty; skipping WO line reconcile", {
+        workOrderLineId: line.id,
+        workOrderId: wo.id,
+        salesOrderId: soId,
+        cycleId,
+        itemId,
+        workOrderQty: q,
+        rsSnapshotQty: snapNum,
+        approvedProducedQty: approvedMade,
+      });
+      continue;
+    }
+    console.warn("[NO_QTY] WO line qty exceeded RS suggestedWoQtySnapshot — correcting downward", {
+      workOrderLineId: line.id,
+      workOrderId: wo.id,
+      salesOrderId: soId,
+      cycleId,
+      itemId,
+      previousQty: q,
+      rsSnapshotQty: snapNum,
+    });
+    await prismaClient.workOrderLine.update({
+      where: { id: line.id },
+      data: { qty: String(snapNum), plannedQty: String(snapNum) },
+    });
+    line.qty = String(snapNum);
+    line.plannedQty = String(snapNum);
+  }
 }
 
 /**
@@ -219,6 +359,46 @@ async function issueRmStockForProductionBatch(tx, { productionId, fgItemId, prod
 }
 
 /**
+ * For NO_QTY production approval: RM lines where on-hand stock is below BOM requirement
+ * (same effective qty math as issueRmStockForProductionBatch). Used to return a structured
+ * error before any RM issue runs inside the approve transaction.
+ * @param {import('@prisma/client').PrismaClient | import('@prisma/client').Prisma.TransactionClient} client
+ */
+async function computeNoQtyRmShortagesForApproval(client, { fgItemId, producedQty }) {
+  const bom = await client.bom.findUnique({
+    where: { fgItemId },
+    include: { lines: true },
+  });
+  if (!bom?.lines?.length) return [];
+  const producedQtyNum = Number(producedQty);
+  /** @type {{ rmItemId: number; rmItemName: string; requiredQty: number; availableQty: number; shortageQty: number; unitName: string }[]} */
+  const shortages = [];
+  const round6 = (x) => Math.round(Number(x) * 1e6) / 1e6;
+  for (const line of bom.lines) {
+    const perUnit = effectiveQtyPerUnit(line.baseQty, line.wastagePercent);
+    const requiredQty = perUnit * producedQtyNum;
+    if (requiredQty <= STOCK_EPS) continue;
+    const availableQty = await getItemStockQty(line.rmItemId, client);
+    const shortageQty = Math.max(0, requiredQty - availableQty);
+    if (shortageQty > STOCK_EPS) {
+      const item = await client.item.findUnique({
+        where: { id: line.rmItemId },
+        select: { itemName: true, unit: true },
+      });
+      shortages.push({
+        rmItemId: line.rmItemId,
+        rmItemName: item?.itemName ?? `Item #${line.rmItemId}`,
+        requiredQty: round6(requiredQty),
+        availableQty: round6(availableQty),
+        shortageQty: round6(shortageQty),
+        unitName: item?.unit ?? "",
+      });
+    }
+  }
+  return shortages;
+}
+
+/**
  * Return RM to stock for an approved batch (mirror of issueRmStockForProductionBatch).
  * Uses ISSUE rows with qtyIn only so net ledger cancels the original ISSUE qtyOut rows for this refId.
  * @returns {{ touchedRmItemIds: number[] }}
@@ -317,6 +497,8 @@ productionRouter.post(
             reason: z.string().optional(),
           })
           .optional(),
+        shortfallMode: z.boolean().optional(),
+        shortfallBufferPercent: z.number().min(0).max(10).optional(),
       });
       const body = schema.parse(req.body);
       const normalizedLines = normalizeWorkOrderLinePayloads(body.lines);
@@ -327,6 +509,8 @@ productionRouter.post(
           salesOrderId: body.salesOrderId,
           lineRequests: normalizedLines.map((l) => ({ fgItemId: l.fgItemId, qty: l.qty })),
           excludeWorkOrderId: null,
+          shortfallMode: body.shortfallMode,
+          shortfallBufferPercent: body.shortfallBufferPercent,
         });
 
         // Dispatch-ready sufficiency: block WO only when dispatchable qty (same basis as Dispatch screen)
@@ -481,6 +665,8 @@ productionRouter.put(
             }),
           )
           .min(1),
+        shortfallMode: z.boolean().optional(),
+        shortfallBufferPercent: z.number().min(0).max(10).optional(),
       });
       const body = schema.parse(req.body);
       const normalizedLines = normalizeWorkOrderLinePayloads(body.lines);
@@ -501,6 +687,8 @@ productionRouter.put(
           salesOrderId: body.salesOrderId,
           lineRequests: normalizedLines.map((l) => ({ fgItemId: l.fgItemId, qty: l.qty })),
           excludeWorkOrderId: id,
+          shortfallMode: body.shortfallMode,
+          shortfallBufferPercent: body.shortfallBufferPercent,
         });
         await tx.workOrderLine.deleteMany({ where: { workOrderId: id } });
         await tx.workOrder.update({
@@ -698,6 +886,7 @@ productionRouter.get(
         orderBy: { id: "desc" },
         include: woInclude,
       });
+      await reconcileNoQtyWoLineQtyWithRsSnapshot(prisma, raw || []);
       const payload = await buildWorkOrderListPayload(prisma, raw || [], {
         pendingOnly: false,
         includeWorkOrderLineId: undefined,
@@ -744,7 +933,11 @@ productionRouter.get(
           : undefined;
 
       const listScope = typeof req.query.listScope === "string" ? req.query.listScope.trim() : "";
-      const woInclude = { lines: { include: { fgItem: true } }, salesOrder: true };
+      const woInclude = {
+        lines: { include: { fgItem: true } },
+        salesOrder: true,
+        cycle: { select: { id: true, cycleNo: true } },
+      };
 
       const completedPageRaw = Number(req.query.completedPage ?? req.query.page ?? 1);
       const completedPage = Number.isFinite(completedPageRaw) ? Math.max(1, Math.floor(completedPageRaw)) : 1;
@@ -761,56 +954,21 @@ productionRouter.get(
         });
 
         // NO_QTY safety: only expose producible WOs for the active cycle (and only after RS is LOCKED).
-        // This keeps the Production UI consistent (no selectable WO when it will be rejected on save).
-        const noQtyKeys = new Set(
-          (rowsRaw || [])
-            .map((w) => w.salesOrder)
-            .filter((s) => s?.orderType === "NO_QTY")
-            .map((s) => {
-              const soId = Number(s?.id);
-              const cy = Number(s?.currentCycleId);
-              if (!Number.isFinite(soId) || soId <= 0) return null;
-              if (!Number.isFinite(cy) || cy <= 0) return null;
-              return `${soId}:${cy}`;
-            })
-            .filter(Boolean),
-        );
-        const lockedSheets = noQtyKeys.size
-          ? await prisma.requirementSheet.findMany({
-              where: {
-                status: "LOCKED",
-                OR: Array.from(noQtyKeys).map((k) => {
-                  const [soIdStr, cyStr] = String(k).split(":");
-                  return { salesOrderId: Number(soIdStr), cycleId: Number(cyStr) };
-                }),
-              },
-              select: { salesOrderId: true, cycleId: true },
-            })
-          : [];
-        const lockedKeySet = new Set(lockedSheets.map((s) => `${Number(s.salesOrderId)}:${Number(s.cycleId)}`));
-
-        const rows = (rowsRaw || []).filter((wo) => {
-          const so = wo.salesOrder;
-          if (!so || so.orderType !== "NO_QTY") return true;
-          if (so.internalStatus === "COMPLETED") return false;
-          const activeCycleId = Number(so.currentCycleId);
-          if (!Number.isFinite(activeCycleId) || activeCycleId <= 0) return false;
-          const woCycleId = wo.cycleId == null ? null : Number(wo.cycleId);
-          if (!woCycleId || woCycleId !== activeCycleId) return false;
-          if (!lockedKeySet.has(`${so.id}:${activeCycleId}`)) return false;
-          return true;
-        });
+        const rows = await filterNoQtyWorkOrdersForActiveLockedCycle(prisma, rowsRaw);
+        await reconcileNoQtyWoLineQtyWithRsSnapshot(prisma, rows);
 
         const out = await buildWorkOrderListPayload(prisma, rows, { pendingOnly, includeWorkOrderLineId });
         return res.json(out);
       }
 
       if (listScope === "nonCompleted") {
-        const rows = await prisma.workOrder.findMany({
+        const rowsRaw = await prisma.workOrder.findMany({
           where: { status: { not: "COMPLETED" } },
           orderBy: { id: "desc" },
           include: woInclude,
         });
+        const rows = await filterNoQtyWorkOrdersForActiveLockedCycle(prisma, rowsRaw);
+        await reconcileNoQtyWoLineQtyWithRsSnapshot(prisma, rows);
         const out = await buildWorkOrderListPayload(prisma, rows, { pendingOnly: false, includeWorkOrderLineId: undefined });
         return res.json(out);
       }
@@ -835,7 +993,7 @@ productionRouter.get(
       }
 
       if (listScope === "all") {
-        const [openRows, completedTotal, completedSlice] = await prisma.$transaction([
+        const [openRowsRaw, completedTotal, completedSlice] = await prisma.$transaction([
           prisma.workOrder.findMany({
             where: { status: { not: "COMPLETED" } },
             orderBy: { id: "desc" },
@@ -850,6 +1008,8 @@ productionRouter.get(
             include: woInclude,
           }),
         ]);
+        const openRows = await filterNoQtyWorkOrdersForActiveLockedCycle(prisma, openRowsRaw);
+        await reconcileNoQtyWoLineQtyWithRsSnapshot(prisma, openRows);
         const nonCompleted = await buildWorkOrderListPayload(prisma, openRows, {
           pendingOnly: false,
           includeWorkOrderLineId: undefined,
@@ -884,14 +1044,14 @@ productionRouter.get(
 productionRouter.get(
   "/production-entries",
   requireAuth,
-  requireRole(["ADMIN", "PRODUCTION", "QC", "SUPERVISOR"]),
+  requireRole(["ADMIN", "PRODUCTION", "QC"]),
   async (req, res, next) => {
     try {
       const soIdRaw = req.query.salesOrderId;
       const salesOrderId =
         soIdRaw != null && String(soIdRaw).trim() !== "" ? Number(soIdRaw) : null;
       const cycleIdRaw = Number(req.query.cycleId ?? 0);
-      const cycleId = Number.isFinite(cycleIdRaw) && cycleIdRaw > 0 ? cycleIdRaw : null;
+      const cycleIdFromQuery = Number.isFinite(cycleIdRaw) && cycleIdRaw > 0 ? cycleIdRaw : null;
 
       const withoutQc = req.query.withoutQc === "1" || req.query.withoutQc === "true";
       const withActiveQc = req.query.withActiveQc === "1" || req.query.withActiveQc === "true";
@@ -905,19 +1065,37 @@ productionRouter.get(
         };
       }
       if (salesOrderId && Number.isFinite(salesOrderId) && salesOrderId > 0) {
-        const woScope = {
-          salesOrderId,
-          ...(cycleId
-            ? {
+        const soPeek = await prisma.salesOrder.findUnique({
+          where: { id: salesOrderId },
+          select: { orderType: true, currentCycleId: true },
+        });
+        if (soPeek?.orderType === "NO_QTY") {
+          const effectiveCycleId =
+            cycleIdFromQuery ?? (soPeek.currentCycleId != null ? Number(soPeek.currentCycleId) : null);
+          if (effectiveCycleId) {
+            where = {
+              ...where,
+              workOrderLine: { workOrder: { salesOrderId, cycleId: effectiveCycleId } },
+            };
+          } else {
+            where = { ...where, workOrderLine: { workOrder: { salesOrderId } } };
+          }
+        } else if (cycleIdFromQuery) {
+          where = {
+            ...where,
+            workOrderLine: {
+              workOrder: {
+                salesOrderId,
                 OR: [
-                  { cycleId },
-                  // Legacy WOs may have null cycleId; fall back to linked requirement sheet cycle.
-                  { cycleId: null, requirementSheet: { cycleId } },
+                  { cycleId: cycleIdFromQuery },
+                  { cycleId: null, requirementSheet: { cycleId: cycleIdFromQuery } },
                 ],
-              }
-            : {}),
-        };
-        where = { ...where, workOrderLine: { workOrder: woScope } };
+              },
+            },
+          };
+        } else {
+          where = { ...where, workOrderLine: { workOrder: { salesOrderId } } };
+        }
       }
       const rows = await prisma.productionEntry.findMany({
         where,
@@ -928,6 +1106,7 @@ productionRouter.get(
               workOrder: {
                 include: {
                   salesOrder: { select: { orderType: true } },
+                  cycle: { select: { id: true, cycleNo: true } },
                 },
               },
               fgItem: true,
@@ -1105,6 +1284,8 @@ productionRouter.put(
           throw err;
         }
 
+        await assertNoQtyWorkOrderInActiveCycleOrThrow(tx, wol.workOrderId, "This work order");
+
         const others = await sumProducedQtyOnLine(tx, wol.id, { excludeProductionId: id });
         const lineQty = Number(wol.qty);
         const allowedMaxQty = lineQty * (1 + PROD_TOLERANCE_PCT);
@@ -1187,6 +1368,49 @@ productionRouter.post(
   async (req, res, next) => {
     try {
       const id = Number(req.params.id);
+
+      const prodForNoQtyCheck = await prisma.productionEntry.findUnique({
+        where: { id },
+        include: {
+          workOrderLine: {
+            include: {
+              workOrder: {
+                include: {
+                  salesOrder: { select: { id: true, orderType: true } },
+                },
+              },
+            },
+          },
+        },
+      });
+      if (
+        prodForNoQtyCheck?.workflowStatus === PE_DRAFT &&
+        prodForNoQtyCheck.workOrderLine?.workOrder?.salesOrder?.orderType === "NO_QTY"
+      ) {
+        const wol = prodForNoQtyCheck.workOrderLine;
+        const wo = wol.workOrder;
+        const shortages = await computeNoQtyRmShortagesForApproval(prisma, {
+          fgItemId: wol.fgItemId,
+          producedQty: prodForNoQtyCheck.producedQty,
+        });
+        if (shortages.length > 0) {
+          return res.status(400).json({
+            code: "INSUFFICIENT_RM_FOR_NO_QTY_PRODUCTION",
+            message: "Raw material stock is not sufficient for this NO_QTY production.",
+            source: "NO_QTY",
+            context: {
+              salesOrderId: wo.salesOrderId,
+              cycleId: wo.cycleId,
+              workOrderId: wo.id,
+              workOrderLineId: wol.id,
+              itemId: wol.fgItemId,
+            },
+            shortages,
+            actions: { canRaiseRmPurchase: true, returnTo: "production" },
+          });
+        }
+      }
+
       const result = await prisma.$transaction(async (tx) => {
         await lockProductionEntryForUpdate(tx, id);
         const prod = await tx.productionEntry.findUnique({
@@ -1211,6 +1435,7 @@ productionRouter.post(
         }
 
         const wol = prod.workOrderLine;
+        await assertNoQtyWorkOrderInActiveCycleOrThrow(tx, wol.workOrderId, "This work order");
         await lockWorkOrderLineForUpdate(tx, wol.id);
 
         const others = await sumProducedQtyOnLine(tx, wol.id, { excludeProductionId: id });
@@ -1230,17 +1455,21 @@ productionRouter.post(
           where: { fgItemId },
           include: { lines: true },
         });
+        if (!bomPre || !bomPre.lines?.length) {
+          const bomErr = new Error("BOM_MISSING");
+          bomErr.code = "BOM_MISSING";
+          bomErr.statusCode = 400;
+          throw bomErr;
+        }
         /** @type {{ itemId: number; stockBefore: number; stockAfter?: number }[]} */
         const rmStock = [];
-        if (bomPre?.lines?.length) {
-          for (const line of bomPre.lines) {
-            const perUnit = effectiveQtyPerUnit(line.baseQty, line.wastagePercent);
-            if (perUnit * producedQtyNum <= STOCK_EPS) continue;
-            rmStock.push({
-              itemId: line.rmItemId,
-              stockBefore: await getItemStockQty(line.rmItemId, tx),
-            });
-          }
+        for (const line of bomPre.lines) {
+          const perUnit = effectiveQtyPerUnit(line.baseQty, line.wastagePercent);
+          if (perUnit * producedQtyNum <= STOCK_EPS) continue;
+          rmStock.push({
+            itemId: line.rmItemId,
+            stockBefore: await getItemStockQty(line.rmItemId, tx),
+          });
         }
 
         const bomFound = await issueRmStockForProductionBatch(tx, {
@@ -1368,6 +1597,15 @@ productionRouter.post(
 
       return res.status(200).json(result);
     } catch (e) {
+      const isBomMissing =
+        (e && typeof e === "object" && "code" in e && e.code === "BOM_MISSING") ||
+        (e instanceof Error && e.message === "BOM_MISSING");
+      if (isBomMissing) {
+        return res.status(400).json({
+          error: "BOM_MISSING",
+          message: "BOM is required before production. RM consumption cannot be calculated.",
+        });
+      }
       return next(e);
     }
   },
@@ -1379,7 +1617,7 @@ productionRouter.post(
 productionRouter.post(
   "/production-entries/:id/reverse",
   requireAuth,
-  requireRole(["ADMIN", "PRODUCTION"]),
+  requireRole(["ADMIN"], "Only Admin can reverse approved production batches."),
   async (req, res, next) => {
     try {
       const id = Number(req.params.id);
@@ -1676,7 +1914,7 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QC"]), 
         }
       }
 
-      /** Operator choice from UI (REWORK = approval workflow; stock for rework pending is posted to QC_HOLD, not REWORK). */
+      /** Operator routing on reject: rework qty goes to owned REWORK (manual rework → final rework QC); hold uses owned QC_HOLD. */
       /** @type {"USABLE" | "QC_HOLD" | "REWORK" | "SCRAP" | null} */
       const requestedRejectedBucket = !hasSplit && rejectedQty > WO_SO_EPS ? body.rejectedStockBucket : null;
 
@@ -1687,12 +1925,19 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QC"]), 
       let rejectedRoute = null;
       if (hasSplit) {
         // Split routing: rejectedQty is distributed across multiple dispositions/buckets.
-        // Persist rejectedStockBucket as QC_HOLD when any rework/hold exists, else SCRAP.
-        ledgerRejectedBucket = splitRework + splitHold > WO_SO_EPS ? "QC_HOLD" : splitScrap > WO_SO_EPS ? "SCRAP" : null;
+        // Snapshot bucket on QcEntry: prefer QC_HOLD when hold exists; else REWORK when rework-only; else SCRAP.
+        ledgerRejectedBucket =
+          splitHold > WO_SO_EPS
+            ? "QC_HOLD"
+            : splitRework > WO_SO_EPS
+              ? "REWORK"
+              : splitScrap > WO_SO_EPS
+                ? "SCRAP"
+                : null;
         rejectedRoute = null;
       }
       if (requestedRejectedBucket === "REWORK") {
-        ledgerRejectedBucket = "QC_HOLD";
+        ledgerRejectedBucket = "REWORK";
         rejectedRoute = "REWORK";
       } else if (requestedRejectedBucket === "QC_HOLD") {
         ledgerRejectedBucket = "QC_HOLD";
@@ -1705,22 +1950,55 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QC"]), 
         rejectedRoute = "USABLE";
       }
 
-      const lossQty = Math.max(0, rejectedQty);
+      // Accounting loss on the QC row: initial scrap only (rework/hold are recoverable until scrapped).
+      const lossQty = hasSplit
+        ? Math.max(0, splitScrap)
+        : rejectedRoute === "SCRAP"
+          ? Math.max(0, rejectedQty)
+          : 0;
       // FG stock: accepted credits USABLE; rejected credits exactly one bucket (no double-count across buckets).
       const fgItemIdForAssert = prod.workOrderLine.fgItemId;
       await assertNonNegativeStockAfterNetChange(
         tx,
         fgItemIdForAssert,
         acceptedQty,
-        "QC posting would make finished goods usable stock negative; adjust checked/rejected quantities or stock.",
+        "Cannot post this QC: usable stock would go negative. Adjust quantities or refresh and try again.",
         { stockBucket: "USABLE" },
       );
-      if (ledgerRejectedBucket === "USABLE") {
+      if (hasSplit) {
+        if (splitRework > WO_SO_EPS) {
+          await assertNonNegativeStockAfterNetChange(
+            tx,
+            fgItemIdForAssert,
+            splitRework,
+            "Cannot post this QC: rework bucket would go negative. Adjust rework split or refresh.",
+            { stockBucket: "REWORK" },
+          );
+        }
+        if (splitHold > WO_SO_EPS) {
+          await assertNonNegativeStockAfterNetChange(
+            tx,
+            fgItemIdForAssert,
+            splitHold,
+            "Cannot post this QC: QC hold bucket would go negative. Adjust hold split or refresh.",
+            { stockBucket: "QC_HOLD" },
+          );
+        }
+        if (splitScrap > WO_SO_EPS) {
+          await assertNonNegativeStockAfterNetChange(
+            tx,
+            fgItemIdForAssert,
+            splitScrap,
+            "Cannot post this QC: scrap bucket would go negative. Adjust scrap split or refresh.",
+            { stockBucket: "SCRAP" },
+          );
+        }
+      } else if (ledgerRejectedBucket === "USABLE") {
         await assertNonNegativeStockAfterNetChange(
           tx,
           fgItemIdForAssert,
           rejectedQty,
-          "QC posting would make finished goods usable stock negative; adjust rejected quantity or stock.",
+          "Cannot post this QC: usable stock would go negative. Adjust rejected quantity or refresh.",
           { stockBucket: "USABLE" },
         );
       } else if (ledgerRejectedBucket === "QC_HOLD") {
@@ -1728,7 +2006,7 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QC"]), 
           tx,
           fgItemIdForAssert,
           rejectedQty,
-          "QC posting would make QC hold stock negative; adjust rejected quantity or stock.",
+          "Cannot post this QC: QC hold bucket would go negative. Adjust rejected quantity or refresh.",
           { stockBucket: "QC_HOLD" },
         );
       } else if (ledgerRejectedBucket === "REWORK") {
@@ -1736,15 +2014,23 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QC"]), 
           tx,
           fgItemIdForAssert,
           rejectedQty,
-          "QC posting would make rework stock negative; adjust rejected quantity or stock.",
+          "Cannot post this QC: rework bucket would go negative. Adjust rejected quantity or refresh.",
           { stockBucket: "REWORK" },
+        );
+      } else if (ledgerRejectedBucket === "QC_PENDING") {
+        await assertNonNegativeStockAfterNetChange(
+          tx,
+          fgItemIdForAssert,
+          rejectedQty,
+          "Cannot post this QC: awaiting-QC bucket would go negative. Adjust rejected quantity or refresh.",
+          { stockBucket: "QC_PENDING" },
         );
       } else if (ledgerRejectedBucket === "SCRAP") {
         await assertNonNegativeStockAfterNetChange(
           tx,
           fgItemIdForAssert,
           rejectedQty,
-          "QC posting would make scrap bucket stock negative; adjust rejected quantity or stock.",
+          "Cannot post this QC: scrap bucket would go negative. Adjust rejected quantity or refresh.",
           { stockBucket: "SCRAP" },
         );
       }
@@ -1764,27 +2050,27 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QC"]), 
       });
 
       const woId = prod.workOrderLine.workOrderId;
-      // IMPORTANT: these must be declared before any REWORK pre/post reads.
+      // IMPORTANT: these must be declared before any REWORK pre/post reads (REWORK bucket, not production WO).
       /** @type {number | undefined} */
-      let qcHoldBefore;
+      let reworkStockGlobalBefore;
       /** @type {number | undefined} */
-      let qcHoldAfter;
+      let reworkStockGlobalAfter;
       /** @type {number | undefined} */
-      let ownedQcHoldBefore;
+      let ownedReworkStockBefore;
       /** @type {number | undefined} */
-      let ownedQcHoldAfter;
+      let ownedReworkStockAfter;
 
       /** @type {number | null} */
       let createdDispositionId = null;
       /** @type {import("@prisma/client").StockTransaction | null} */
-      let reworkOwnedQcHoldTxn = null;
+      let reworkOwnedStockTxn = null;
 
       if (hasSplit && rejectedQty > WO_SO_EPS) {
         // Split: create multiple dispositions and stock postings.
         const now = new Date();
         const reasonTrim = typeof body.reason === "string" ? body.reason.trim() : "";
 
-        // REWORK portion (existing workflow: disposition + owned QC_HOLD credit).
+        // REWORK portion: disposition ready for final rework QC + owned REWORK (manual rework → final QC).
         if (splitRework > WO_SO_EPS) {
           const disp = await tx.qcRejectedDisposition.create({
             data: {
@@ -1794,7 +2080,7 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QC"]), 
               qty: String(splitRework),
               remainingQty: String(splitRework),
               phase: "FIRST_QC",
-              status: "REWORK_PENDING_SUPERVISOR",
+              status: "REWORK_READY_FOR_QC",
               remarks: reasonTrim || null,
               createdByUserId: req.user.userId,
             },
@@ -1807,32 +2093,33 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QC"]), 
           }
           createdDispositionId = createdDispositionId ?? dispId;
 
-          // Capture QC_HOLD before posting so verification checks real delta (same as existing REWORK path).
-          qcHoldBefore = await getItemStockQty(fgItemIdForAssert, tx, { stockBucket: "QC_HOLD" });
-          ownedQcHoldBefore = await getItemStockQty(fgItemIdForAssert, tx, {
-            stockBucket: "QC_HOLD",
+          reworkStockGlobalBefore = await getItemStockQty(fgItemIdForAssert, tx, { stockBucket: "REWORK" });
+          ownedReworkStockBefore = await getItemStockQty(fgItemIdForAssert, tx, {
+            stockBucket: "REWORK",
             qcRejectedDispositionId: dispId,
           });
 
-          reworkOwnedQcHoldTxn = await tx.stockTransaction.create({
+          reworkOwnedStockTxn = await tx.stockTransaction.create({
             data: {
               itemId: fgItemIdForAssert,
               transactionType: "QC",
               refId: created.id,
               qcRejectedDispositionId: dispId,
-              stockBucket: "QC_HOLD",
+              stockBucket: "REWORK",
               qtyIn: String(splitRework),
               qtyOut: "0",
-              reason: reasonTrim ? `QC reject → REWORK (owned QC_HOLD) — ${reasonTrim}` : "QC reject → REWORK (owned QC_HOLD)",
+              reason: reasonTrim
+                ? `QC reject → rework bucket (owned REWORK) — ${reasonTrim}`
+                : "QC reject → rework bucket (owned REWORK)",
               createdByUserId: req.user.userId,
             },
           });
           const reRead = await tx.stockTransaction.findFirst({
-            where: { id: reworkOwnedQcHoldTxn.id, qcRejectedDispositionId: dispId },
+            where: { id: reworkOwnedStockTxn.id, qcRejectedDispositionId: dispId },
             select: { id: true },
           });
           if (!reRead) {
-            const err = new Error("QC split posting failed: owned QC_HOLD stock row was not created.");
+            const err = new Error("QC split posting failed: owned REWORK stock row was not created.");
             err.statusCode = 500;
             throw err;
           }
@@ -1902,7 +2189,7 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QC"]), 
           });
         }
       } else if (rejectedQty > WO_SO_EPS && rejectedRoute && rejectedRoute !== "USABLE") {
-        // Legacy single-route behavior (unchanged).
+        // Single-route reject dispositions + owned stock (rework skips supervisor approval).
         if (rejectedRoute === "REWORK") {
           const disp = await tx.qcRejectedDisposition.create({
             data: {
@@ -1912,7 +2199,7 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QC"]), 
               qty: String(rejectedQty),
               remainingQty: String(rejectedQty),
               phase: "FIRST_QC",
-              status: "REWORK_PENDING_SUPERVISOR",
+              status: "REWORK_READY_FOR_QC",
               remarks: body.reason ?? null,
               createdByUserId: req.user.userId,
             },
@@ -1924,42 +2211,30 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QC"]), 
             throw err;
           }
 
-          // Capture QC_HOLD before posting so verification checks real delta.
-          qcHoldBefore = await getItemStockQty(fgItemIdForAssert, tx, { stockBucket: "QC_HOLD" });
-          ownedQcHoldBefore = await getItemStockQty(fgItemIdForAssert, tx, {
-            stockBucket: "QC_HOLD",
+          reworkStockGlobalBefore = await getItemStockQty(fgItemIdForAssert, tx, { stockBucket: "REWORK" });
+          ownedReworkStockBefore = await getItemStockQty(fgItemIdForAssert, tx, {
+            stockBucket: "REWORK",
             qcRejectedDispositionId: createdDispositionId,
           });
-          // eslint-disable-next-line no-console
-          console.debug("[QC_REWORK_PRE_POST]", {
-            qcEntryId: created.id,
-            dispositionId: createdDispositionId,
-            itemId: fgItemIdForAssert,
-            rejectedQty,
-            qcHoldBefore,
-            ownedQcHoldBefore,
-          });
 
-          // IMPORTANT: REWORK ownership invariant.
-          // Create the owned QC_HOLD stock credit immediately after disposition creation.
-          reworkOwnedQcHoldTxn = await tx.stockTransaction.create({
+          reworkOwnedStockTxn = await tx.stockTransaction.create({
             data: {
               itemId: fgItemIdForAssert,
               transactionType: "QC",
               refId: created.id,
               qcRejectedDispositionId: createdDispositionId,
-              stockBucket: "QC_HOLD",
+              stockBucket: "REWORK",
               qtyIn: String(rejectedQty),
               qtyOut: "0",
               reason: body.reason?.trim()
-                ? `QC reject → REWORK (owned QC_HOLD) — ${body.reason.trim()}`
-                : "QC reject → REWORK (owned QC_HOLD)",
+                ? `QC reject → rework bucket (owned REWORK) — ${body.reason.trim()}`
+                : "QC reject → rework bucket (owned REWORK)",
               createdByUserId: req.user.userId,
             },
           });
 
           const reRead = await tx.stockTransaction.findFirst({
-            where: { id: reworkOwnedQcHoldTxn.id, qcRejectedDispositionId: createdDispositionId },
+            where: { id: reworkOwnedStockTxn.id, qcRejectedDispositionId: createdDispositionId },
             select: {
               id: true,
               itemId: true,
@@ -1971,15 +2246,12 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QC"]), 
             },
           });
           if (!reRead) {
-            const err = new Error("QC rework posting failed: owned QC_HOLD stock row was not created.");
+            const err = new Error("QC rework posting failed: owned REWORK stock row was not created.");
             err.statusCode = 500;
             throw err;
           }
-          // TEMP DEBUG
-          // eslint-disable-next-line no-console
-          console.debug("[QC_REWORK_OWNED_HOLD_TXN_CREATED]", reRead);
         } else if (rejectedRoute === "HOLD") {
-          await tx.qcRejectedDisposition.create({
+          const dispHold = await tx.qcRejectedDisposition.create({
             data: {
               sourceQcEntryId: created.id,
               workOrderId: woId,
@@ -1989,6 +2261,27 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QC"]), 
               phase: "FIRST_QC",
               status: "HOLD",
               remarks: body.reason ?? null,
+              createdByUserId: req.user.userId,
+            },
+          });
+          const dispHoldId = Number(dispHold?.id ?? 0) > 0 ? Number(dispHold.id) : null;
+          if (dispHoldId == null) {
+            const err = new Error("QC hold posting failed: disposition could not be created.");
+            err.statusCode = 500;
+            throw err;
+          }
+          await tx.stockTransaction.create({
+            data: {
+              itemId: fgItemIdForAssert,
+              transactionType: "QC",
+              refId: created.id,
+              qcRejectedDispositionId: dispHoldId,
+              stockBucket: "QC_HOLD",
+              qtyIn: String(rejectedQty),
+              qtyOut: "0",
+              reason: body.reason?.trim()
+                ? `QC reject → HOLD (owned QC_HOLD) — ${body.reason.trim()}`
+                : "QC reject → HOLD (owned QC_HOLD)",
               createdByUserId: req.user.userId,
             },
           });
@@ -2011,8 +2304,12 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QC"]), 
       }
 
       // Scrap system (loss tracking only, not stock): auto-create on QC reject.
-      // For split routing, record only the SCRAP portion as loss.
-      const scrapLossQty = hasSplit ? Math.max(0, splitScrap) : Math.max(0, rejectedQty);
+      // For split routing, record only the SCRAP portion as loss (rework/hold are not scrap until decided).
+      const scrapLossQty = hasSplit
+        ? Math.max(0, splitScrap)
+        : rejectedRoute === "SCRAP"
+          ? Math.max(0, rejectedQty)
+          : 0;
       if (scrapLossQty > 0) {
         await tx.scrapRecord.create({
           data: {
@@ -2028,10 +2325,11 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QC"]), 
       const fgItemId = prod.workOrderLine.fgItemId;
       const affectsUsableFg = acceptedQty > WO_SO_EPS;
       const affectsRejectedBucket = !hasSplit && rejectedQty > WO_SO_EPS && ledgerRejectedBucket != null;
-      // For REWORK, we already posted the owned QC_HOLD credit immediately after creating the disposition.
-      // Avoid double-crediting QC_HOLD in the generic rejected bucket posting block.
-      const affectsRejectedBucketPosting = affectsRejectedBucket && rejectedRoute !== "REWORK";
-      const affectsReworkHoldPosting = rejectedRoute === "REWORK" && ledgerRejectedBucket === "QC_HOLD" && rejectedQty > WO_SO_EPS;
+      // REWORK/HOLD post owned rows above; SCRAP/USABLE use generic posting when applicable.
+      const affectsRejectedBucketPosting =
+        affectsRejectedBucket && rejectedRoute !== "REWORK" && rejectedRoute !== "HOLD";
+      const affectsReworkBucketPosting =
+        rejectedRoute === "REWORK" && ledgerRejectedBucket === "REWORK" && rejectedQty > WO_SO_EPS;
       /** @type {number | undefined} */
       let stockBefore;
       /** @type {number | undefined} */
@@ -2039,12 +2337,13 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QC"]), 
       if (affectsUsableFg || affectsRejectedBucket) {
         stockBefore = await getItemStockQty(fgItemId, tx);
       }
-      if (affectsReworkHoldPosting) {
-        // For REWORK we may have captured qcHoldBefore/ownedQcHoldBefore before posting the owned QC_HOLD credit.
-        if (qcHoldBefore === undefined) qcHoldBefore = await getItemStockQty(fgItemId, tx, { stockBucket: "QC_HOLD" });
-        if (createdDispositionId != null && ownedQcHoldBefore === undefined) {
-          ownedQcHoldBefore = await getItemStockQty(fgItemId, tx, {
-            stockBucket: "QC_HOLD",
+      if (affectsReworkBucketPosting) {
+        if (reworkStockGlobalBefore === undefined) {
+          reworkStockGlobalBefore = await getItemStockQty(fgItemId, tx, { stockBucket: "REWORK" });
+        }
+        if (createdDispositionId != null && ownedReworkStockBefore === undefined) {
+          ownedReworkStockBefore = await getItemStockQty(fgItemId, tx, {
+            stockBucket: "REWORK",
             qcRejectedDispositionId: createdDispositionId,
           });
         }
@@ -2076,58 +2375,57 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QC"]), 
       if (affectsUsableFg || affectsRejectedBucket) {
         stockAfter = await getItemStockQty(fgItemId, tx);
       }
-      if (affectsReworkHoldPosting) {
-        qcHoldAfter = await getItemStockQty(fgItemId, tx, { stockBucket: "QC_HOLD" });
+      if (affectsReworkBucketPosting) {
+        reworkStockGlobalAfter = await getItemStockQty(fgItemId, tx, { stockBucket: "REWORK" });
         if (createdDispositionId != null) {
-          ownedQcHoldAfter = await getItemStockQty(fgItemId, tx, {
-            stockBucket: "QC_HOLD",
+          ownedReworkStockAfter = await getItemStockQty(fgItemId, tx, {
+            stockBucket: "REWORK",
             qcRejectedDispositionId: createdDispositionId,
           });
         }
-        const inc = Number(qcHoldAfter ?? 0) - Number(qcHoldBefore ?? 0);
-        // Required invariant: REWORK rejects must actually appear in QC_HOLD.
+        const inc = Number(reworkStockGlobalAfter ?? 0) - Number(reworkStockGlobalBefore ?? 0);
         if (Math.abs(inc - rejectedQty) > 1e-6) {
           const err = new Error(
-            `QC rework posting failed: expected QC_HOLD to increase by ${rejectedQty}, got ${inc}.`,
+            `QC rework posting failed: expected REWORK stock to increase by ${rejectedQty}, got ${inc}.`,
           );
           err.statusCode = 500;
           throw err;
         }
         if (createdDispositionId != null) {
-          const ownedInc = Number(ownedQcHoldAfter ?? 0) - Number(ownedQcHoldBefore ?? 0);
+          const ownedInc = Number(ownedReworkStockAfter ?? 0) - Number(ownedReworkStockBefore ?? 0);
           if (Math.abs(ownedInc - rejectedQty) > 1e-6) {
             const err = new Error(
-              `QC rework posting failed: expected OWNED QC_HOLD to increase by ${rejectedQty}, got ${ownedInc}.`,
+              `QC rework posting failed: expected OWNED REWORK to increase by ${rejectedQty}, got ${ownedInc}.`,
             );
             err.statusCode = 500;
             throw err;
           }
-          const ownedRows = await tx.stockTransaction.findMany({
-            where: { qcRejectedDispositionId: createdDispositionId },
-            orderBy: [{ id: "asc" }],
-            select: { id: true, itemId: true, refId: true, stockBucket: true, qtyIn: true, qtyOut: true, reason: true, transactionType: true },
-          });
-          // eslint-disable-next-line no-console
-          console.debug("[QC_REWORK_POST_OWNED]", {
-            qcEntryId: created.id,
-            dispositionId: createdDispositionId,
-            itemId: fgItemId,
-            rejectedQty,
-            ownedQcHoldBefore,
-            ownedQcHoldAfter,
-            ownedRows,
-          });
         }
-        // TEMP DEBUG
-        // eslint-disable-next-line no-console
-        console.debug("[QC_REWORK_POST]", {
-          qcEntryId: created.id,
-          dispositionId: createdDispositionId,
-          itemId: fgItemId,
-          rejectedQty,
-          qcHoldBefore,
-          qcHoldAfter,
+      }
+
+      // Split rework: verify global + owned REWORK deltas match splitRework.
+      if (hasSplit && splitRework > WO_SO_EPS && createdDispositionId != null) {
+        const afterGlobal = await getItemStockQty(fgItemId, tx, { stockBucket: "REWORK" });
+        const beforeGlobal = Number(reworkStockGlobalBefore ?? 0);
+        if (Math.abs(Number(afterGlobal) - beforeGlobal - splitRework) > 1e-6) {
+          const err = new Error(
+            `QC split rework posting failed: expected REWORK stock to increase by ${splitRework}, got ${Number(afterGlobal) - beforeGlobal}.`,
+          );
+          err.statusCode = 500;
+          throw err;
+        }
+        const ownedAfter = await getItemStockQty(fgItemId, tx, {
+          stockBucket: "REWORK",
+          qcRejectedDispositionId: createdDispositionId,
         });
+        const ownedBefore = Number(ownedReworkStockBefore ?? 0);
+        if (Math.abs(ownedAfter - ownedBefore - splitRework) > 1e-6) {
+          const err = new Error(
+            `QC split rework posting failed: expected OWNED REWORK to increase by ${splitRework}, got ${ownedAfter - ownedBefore}.`,
+          );
+          err.statusCode = 500;
+          throw err;
+        }
       }
 
       const wol = prod.workOrderLine;

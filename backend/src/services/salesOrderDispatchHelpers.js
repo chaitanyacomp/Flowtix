@@ -43,7 +43,7 @@ function assertSalesOrderNotCompletedForDispatch(so) {
   // NO_QTY: internalStatus=COMPLETED can be true even when a new cycle is active and dispatchable qty exists.
   // We only hard-block dispatch when the SO is CLOSED.
   if (so.orderType === "NO_QTY") {
-    if (so.internalStatus === "CLOSED") {
+    if (so.internalStatus === "MANUALLY_CLOSED" || so.internalStatus === "CLOSED") {
       const err = new Error("This sales order is closed. Dispatch is view-only.");
       err.statusCode = 409;
       throw err;

@@ -1,5 +1,5 @@
 const { prisma } = require("../utils/prisma");
-const { DocType } = require("@prisma/client");
+const { DocType } = require("../prismaClientPackage");
 const { allocateDocNo } = require("./docNoService");
 
 async function createSalesOrderFromPo(poId) {

@@ -5,7 +5,7 @@
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
-const { Prisma } = require("@prisma/client");
+const { Prisma } = require("../src/prismaClientPackage");
 const {
   DEFAULT_RED_THRESHOLD_PCT,
   DEFAULT_YELLOW_THRESHOLD_PCT,

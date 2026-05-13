@@ -1,6 +1,6 @@
 const express = require("express");
 const { z } = require("zod");
-const { Prisma } = require("@prisma/client");
+const { Prisma } = require("../prismaClientPackage");
 const { prisma } = require("../utils/prisma");
 const { requireAuth, requireRole } = require("../middleware/auth");
 const {
@@ -15,8 +15,9 @@ const CUSTOMER_DUPLICATE_NAME = "A customer with this name already exists.";
 const CUSTOMER_SAVE_FAILED =
   "Could not save customer. Please check entered details.";
 const CUSTOMER_NOT_FOUND = "Customer not found.";
-const CUSTOMER_READ_ACCESS_DENIED = "Access denied. Only Admin and Sales roles can view customers.";
-const customerReadRoles = requireRole(["ADMIN", "SALES"], CUSTOMER_READ_ACCESS_DENIED);
+const CUSTOMER_READ_ACCESS_DENIED =
+  "Access denied. Only Admin, Sales, and Accounts roles can view customers (Accounts is read-only).";
+const customerReadRoles = requireRole(["ADMIN", "SALES", "ACCOUNTS"], CUSTOMER_READ_ACCESS_DENIED);
 
 /** @param {string} displayName @param {number | null} excludeId */
 async function customerNameTakenByOther(displayName, excludeId) {

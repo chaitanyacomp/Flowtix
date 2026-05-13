@@ -10,7 +10,7 @@ const ENQUIRY_DUPLICATE_ITEM_MESSAGE =
 
 const lineSchema = z.object({
   itemId: z.number().int(),
-  qty: z.number().positive(),
+  qty: z.number().optional(),
 });
 
 /**
@@ -95,22 +95,45 @@ enquiryRouter.get("/:id", requireAuth, requireRole(["ADMIN", "SALES"]), async (r
 
 enquiryRouter.post("/", requireAuth, requireRole(["ADMIN", "SALES"]), async (req, res, next) => {
   try {
+    const isValidNoQtyLineQty = (v) => v === undefined || v === null || (Number.isFinite(Number(v)) && Number(v) >= 0);
     const schema = z.object({
       customerId: z.number().int(),
       lines: z.array(lineSchema).min(1),
+      flowType: z.enum(["REGULAR", "NO_QTY"]).optional(),
       remarks: z.string().optional(),
     });
     const body = schema.parse(req.body);
+    const flowType = body.flowType ?? "REGULAR";
     assertEnquiryLinesUniqueItems(body.lines);
+    if (flowType === "REGULAR") {
+      for (const l of body.lines) {
+        const q = Number(l.qty);
+        if (!Number.isFinite(q) || q <= 0) {
+          const err = new Error("Quantity must be greater than zero for each enquiry line (Regular enquiry).");
+          err.statusCode = 400;
+          throw err;
+        }
+      }
+    } else {
+      // NO_QTY: qty is informational at enquiry stage; allow omitted/blank/0.
+      for (const l of body.lines) {
+        if (!isValidNoQtyLineQty(l.qty)) {
+          const err = new Error("Quantity must be a non-negative number when provided (No Qty enquiry).");
+          err.statusCode = 400;
+          throw err;
+        }
+      }
+    }
     const created = await prisma.enquiry.create({
       data: {
         customerId: body.customerId,
         status: "OPEN",
+        flowType,
         remarks: body.remarks?.trim() || null,
         lines: {
           create: body.lines.map((l) => ({
             itemId: l.itemId,
-            qty: String(l.qty),
+            qty: String(flowType === "NO_QTY" ? Number(l.qty ?? 0) : Number(l.qty)),
           })),
         },
       },
@@ -125,9 +148,11 @@ enquiryRouter.post("/", requireAuth, requireRole(["ADMIN", "SALES"]), async (req
 enquiryRouter.put("/:id", requireAuth, requireRole(["ADMIN", "SALES"]), async (req, res, next) => {
   try {
     const id = Number(req.params.id);
+    const isValidNoQtyLineQty = (v) => v === undefined || v === null || (Number.isFinite(Number(v)) && Number(v) >= 0);
     const schema = z.object({
       customerId: z.number().int().optional(),
       lines: z.array(lineSchema).min(1).optional(),
+      flowType: z.enum(["REGULAR", "NO_QTY"]).optional(),
       remarks: z.string().optional().nullable(),
     });
     const body = schema.parse(req.body);
@@ -140,6 +165,11 @@ enquiryRouter.put("/:id", requireAuth, requireRole(["ADMIN", "SALES"]), async (r
         throw err;
       }
       if (enq.quotation) {
+        if (body.flowType !== undefined && body.flowType !== enq.flowType) {
+          const err = new Error("Flow type cannot be changed after quotation creation.");
+          err.statusCode = 400;
+          throw err;
+        }
         const err = new Error("Cannot edit enquiry after quotation is created");
         err.statusCode = 400;
         throw err;
@@ -150,6 +180,28 @@ enquiryRouter.put("/:id", requireAuth, requireRole(["ADMIN", "SALES"]), async (r
         throw err;
       }
 
+      const effectiveFlowType = body.flowType ?? enq.flowType ?? "REGULAR";
+      if (body.lines != null) {
+        if (effectiveFlowType === "REGULAR") {
+          for (const l of body.lines) {
+            const q = Number(l.qty);
+            if (!Number.isFinite(q) || q <= 0) {
+              const err = new Error("Quantity must be greater than zero for each enquiry line (Regular enquiry).");
+              err.statusCode = 400;
+              throw err;
+            }
+          }
+        } else {
+          for (const l of body.lines) {
+            if (!isValidNoQtyLineQty(l.qty)) {
+              const err = new Error("Quantity must be a non-negative number when provided (No Qty enquiry).");
+              err.statusCode = 400;
+              throw err;
+            }
+          }
+        }
+      }
+
       if (body.lines != null) {
         assertEnquiryLinesUniqueItems(body.lines);
         await tx.enquiryLine.deleteMany({ where: { enquiryId: id } });
@@ -157,7 +209,7 @@ enquiryRouter.put("/:id", requireAuth, requireRole(["ADMIN", "SALES"]), async (r
           data: body.lines.map((l) => ({
             enquiryId: id,
             itemId: l.itemId,
-            qty: String(l.qty),
+            qty: String(effectiveFlowType === "NO_QTY" ? Number(l.qty ?? 0) : Number(l.qty)),
           })),
         });
       }
@@ -166,6 +218,7 @@ enquiryRouter.put("/:id", requireAuth, requireRole(["ADMIN", "SALES"]), async (r
         where: { id },
         data: {
           customerId: body.customerId ?? undefined,
+          flowType: body.flowType ?? undefined,
           remarks: body.remarks === undefined ? undefined : body.remarks?.trim() || null,
         },
         include: includeEnquiry,

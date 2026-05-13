@@ -9,6 +9,16 @@ import { withReportsReturnContextIfPresent } from "../lib/drillDownRoutes";
 import { displayDispatchNo, displaySalesBillNo, displaySalesOrderNo } from "../lib/docNoDisplay";
 import { useDemoMode } from "../contexts/DemoModeContext";
 import { demoHighlightKey } from "../lib/demoFlowConfig";
+import { commercialPaymentStatusLabel, isBillAmountOverdue } from "../lib/commercialBillPaymentLabels";
+import { formatCommercialDueDateCell } from "../lib/commercialDueDateDisplay";
+import { cn } from "../lib/utils";
+import { NativeSelect } from "../components/ui/native-select";
+import {
+  commercialFilterCardClass,
+  CommercialFilterActions,
+  CommercialFilterField,
+  CommercialFilterGrid,
+} from "../components/erp/CommercialFilterLayout";
 
 type Customer = { id: number; name: string };
 
@@ -20,6 +30,11 @@ type BillRow = {
   netAmount: string | number;
   status: string;
   isExported?: boolean;
+  dueDate?: string | null;
+  receivedAmount?: string | number | null;
+  pendingAmount?: string | number | null;
+  paymentStatus?: string | null;
+  cancelledAt?: string | null;
   customer: { id: number; name: string };
   dispatch: { id: number; soId: number; date: string; docNo?: string | null; salesOrder?: { docNo?: string | null } };
 };
@@ -38,6 +53,18 @@ function formatDate(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "—";
   return d.toLocaleDateString();
+}
+
+function parsePaymentParam(v: string | null): "" | "pending" | "overdue" | "partial" | "paid" {
+  if (v === "pending" || v === "overdue" || v === "partial" || v === "paid") return v;
+  return "";
+}
+
+function parseExportParam(sp: URLSearchParams): "" | "exported" | "not_exported" {
+  const raw = sp.get("exportFilter") ?? sp.get("export") ?? "";
+  if (raw === "exported") return "exported";
+  if (raw === "not_exported" || raw === "pending") return "not_exported";
+  return "";
 }
 
 export function SalesBillsListPage() {
@@ -63,9 +90,23 @@ export function SalesBillsListPage() {
   const [customerId, setCustomerId] = React.useState<string>("");
   const [status, setStatus] = React.useState<string>("ALL");
   const [search, setSearch] = React.useState("");
+  const [paymentFilter, setPaymentFilter] = React.useState<"" | "pending" | "overdue" | "partial" | "paid">("");
+  const [exportBillFilter, setExportBillFilter] = React.useState<"" | "exported" | "not_exported">("");
   const [loading, setLoading] = React.useState(false);
   const [pendingTallyOnly, setPendingTallyOnly] = React.useState(false);
   const [hasCompletedLoad, setHasCompletedLoad] = React.useState(false);
+
+  React.useEffect(() => {
+    const spSync = new URLSearchParams(location.search);
+    setPaymentFilter(parsePaymentParam(spSync.get("payment")));
+    setExportBillFilter(parseExportParam(spSync));
+    setCustomerId(spSync.get("customerId") ?? "");
+    setFromDate(spSync.get("fromDate") ?? "");
+    setToDate(spSync.get("toDate") ?? "");
+    setSearch(spSync.get("search") ?? "");
+    const st = spSync.get("status");
+    setStatus(st && ["DRAFT", "FINALIZED", "CANCELLED"].includes(st) ? st : "ALL");
+  }, [location.search]);
 
   React.useEffect(() => {
     apiFetch<Customer[]>("/api/customers").then(setCustomers).catch(() => {});
@@ -75,13 +116,25 @@ export function SalesBillsListPage() {
     setLoadError(null);
     setLoading(true);
     try {
-      const q = new URLSearchParams();
-      if (fromDate) q.set("fromDate", fromDate);
-      if (toDate) q.set("toDate", toDate);
-      if (customerId) q.set("customerId", customerId);
-      if (status && status !== "ALL") q.set("status", status);
-      if (search.trim()) q.set("search", search.trim());
-      const qs = q.toString();
+      const q = new URLSearchParams(location.search);
+      const api = new URLSearchParams();
+      const fd = q.get("fromDate");
+      if (fd) api.set("fromDate", fd);
+      const td = q.get("toDate");
+      if (td) api.set("toDate", td);
+      const cid = q.get("customerId");
+      if (cid) api.set("customerId", cid);
+      const st = q.get("status");
+      if (st && ["DRAFT", "FINALIZED", "CANCELLED"].includes(st)) api.set("status", st);
+      const sr = q.get("search");
+      if (sr?.trim()) api.set("search", sr.trim());
+      const pay = q.get("payment");
+      if (pay && ["pending", "overdue", "partial", "paid"].includes(pay)) api.set("payment", pay);
+      const efRaw = q.get("exportFilter") ?? q.get("export") ?? "";
+      if (efRaw === "exported") api.set("exportFilter", "exported");
+      else if (efRaw === "not_exported" || efRaw === "pending") api.set("exportFilter", "not_exported");
+
+      const qs = api.toString();
       const path = qs ? `/api/sales-bills?${qs}` : "/api/sales-bills";
       const data = await apiFetch<BillRow[]>(path);
       const list = Array.isArray(data) ? data : [];
@@ -100,13 +153,43 @@ export function SalesBillsListPage() {
     }
   }
 
+  function applyFiltersToUrl() {
+    const next = new URLSearchParams(sp);
+    if (fromDate) next.set("fromDate", fromDate);
+    else next.delete("fromDate");
+    if (toDate) next.set("toDate", toDate);
+    else next.delete("toDate");
+    if (customerId) next.set("customerId", customerId);
+    else next.delete("customerId");
+    if (paymentFilter) next.set("payment", paymentFilter);
+    else next.delete("payment");
+    if (exportBillFilter === "exported") next.set("exportFilter", "exported");
+    else if (exportBillFilter === "not_exported") next.set("exportFilter", "not_exported");
+    else {
+      next.delete("exportFilter");
+      next.delete("export");
+    }
+    if (search.trim()) next.set("search", search.trim());
+    else next.delete("search");
+    if (status !== "ALL") next.set("status", status);
+    else next.delete("status");
+    navigate({ pathname: location.pathname, search: next.toString() }, { replace: true });
+  }
+
   React.useEffect(() => {
-    load();
+    void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fromNoQtySo, focusSoId, focusSoIdValid]);
+  }, [location.search, focusSoId, focusSoIdValid]);
 
   const isDefaultFilterState =
-    !fromDate && !toDate && !customerId && status === "ALL" && !search.trim() && !pendingTallyOnly;
+    !fromDate &&
+    !toDate &&
+    !customerId &&
+    status === "ALL" &&
+    !search.trim() &&
+    !paymentFilter &&
+    !exportBillFilter &&
+    !pendingTallyOnly;
 
   const stripKind = React.useMemo(() => {
     if (loading || !hasCompletedLoad) return null;
@@ -259,61 +342,90 @@ export function SalesBillsListPage() {
         </div>
       ) : null}
 
-      <Card className="min-w-0 overflow-hidden">
-        <CardHeader className="pb-2">
-          <CardTitle className="text-base">Filters</CardTitle>
-        </CardHeader>
-        <CardContent className="grid min-w-0 gap-3 sm:grid-cols-2 lg:grid-cols-5">
-          <div className="grid min-w-0 gap-1">
-            <span className="text-xs font-medium text-slate-600">From date</span>
-            <Input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
-          </div>
-          <div className="grid min-w-0 gap-1">
-            <span className="text-xs font-medium text-slate-600">To date</span>
-            <Input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
-          </div>
-          <div className="grid min-w-0 gap-1">
-            <span className="text-xs font-medium text-slate-600">Customer</span>
-            <select
-              className="flex h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm"
-              value={customerId}
-              onChange={(e) => setCustomerId(e.target.value)}
-            >
-              <option value="">All customers</option>
-              {customers.map((c) => (
-                <option key={c.id} value={String(c.id)}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="grid min-w-0 gap-1">
-            <span className="text-xs font-medium text-slate-600">Status</span>
-            <select
-              className="flex h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm"
-              value={status}
-              onChange={(e) => setStatus(e.target.value)}
-            >
-              <option value="ALL">All</option>
-              <option value="DRAFT">Draft</option>
-              <option value="FINALIZED">Finalized</option>
-              <option value="CANCELLED">Cancelled</option>
-            </select>
-          </div>
-          <div className="grid min-w-0 gap-1">
-            <span className="text-xs font-medium text-slate-600">Search</span>
-            <Input
-              placeholder="Bill no., dispatch, customer…"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && load()}
-            />
-          </div>
-          <div className="flex min-w-0 flex-wrap items-end gap-3 sm:col-span-2 lg:col-span-5">
-            <Button type="button" data-testid="sales-bills-apply-filters-btn" onClick={() => void load()} disabled={loading}>
-              {loading ? "Loading…" : "Apply filters"}
-            </Button>
-          </div>
+      <Card className={cn("min-w-0 overflow-hidden", commercialFilterCardClass)}>
+        <CardContent className="p-2.5">
+          <CommercialFilterGrid>
+            <CommercialFilterField label="From">
+              <Input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} className="h-8 text-[12px]" />
+            </CommercialFilterField>
+            <CommercialFilterField label="To">
+              <Input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} className="h-8 text-[12px]" />
+            </CommercialFilterField>
+            <CommercialFilterField label="Customer" className="min-w-0 sm:min-w-[12rem]">
+              <NativeSelect value={customerId} onChange={(e) => setCustomerId(e.target.value)} className="h-8 text-[12px]">
+                <option value="">All customers</option>
+                {customers.map((c) => (
+                  <option key={c.id} value={String(c.id)}>
+                    {c.name}
+                  </option>
+                ))}
+              </NativeSelect>
+            </CommercialFilterField>
+            <CommercialFilterField label="Document status" className="min-w-0 sm:min-w-[9.5rem]">
+              <NativeSelect value={status} onChange={(e) => setStatus(e.target.value)} className="h-8 text-[12px]">
+                <option value="ALL">All</option>
+                <option value="DRAFT">Draft</option>
+                <option value="FINALIZED">Finalized</option>
+                <option value="CANCELLED">Cancelled</option>
+              </NativeSelect>
+            </CommercialFilterField>
+            <CommercialFilterField label="Payment status" className="min-w-0 sm:min-w-[10.5rem]">
+              <NativeSelect
+                value={paymentFilter}
+                className="h-8 text-[12px]"
+                onChange={(e) =>
+                  setPaymentFilter(
+                    e.target.value === "pending" ||
+                      e.target.value === "overdue" ||
+                      e.target.value === "partial" ||
+                      e.target.value === "paid"
+                      ? e.target.value
+                      : "",
+                  )
+                }
+              >
+                <option value="">All</option>
+                <option value="pending">Pending</option>
+                <option value="partial">Partial</option>
+                <option value="paid">Paid</option>
+                <option value="overdue">Overdue</option>
+              </NativeSelect>
+            </CommercialFilterField>
+            <CommercialFilterField label="Export status" className="min-w-0 sm:min-w-[10.5rem]">
+              <NativeSelect
+                value={exportBillFilter}
+                className="h-8 text-[12px]"
+                onChange={(e) =>
+                  setExportBillFilter(e.target.value === "exported" || e.target.value === "not_exported" ? e.target.value : "")
+                }
+              >
+                <option value="">All</option>
+                <option value="exported">Exported</option>
+                <option value="not_exported">Not exported</option>
+              </NativeSelect>
+            </CommercialFilterField>
+            <CommercialFilterField label="Search" className="lg:col-span-2 xl:col-span-2">
+              <Input
+                placeholder="Bill no., dispatch, customer…"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && applyFiltersToUrl()}
+                className="h-8 text-[12px]"
+              />
+            </CommercialFilterField>
+            <CommercialFilterActions>
+              <button
+                type="button"
+                data-testid="sales-bills-apply-filters-btn"
+                onClick={() => applyFiltersToUrl()}
+                disabled={loading}
+                className="inline-flex h-8 items-center rounded-md bg-blue-600 px-3 text-[12px] font-semibold text-white shadow-sm transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                aria-busy={loading || undefined}
+              >
+                {loading ? "Loading…" : "Apply"}
+              </button>
+            </CommercialFilterActions>
+          </CommercialFilterGrid>
         </CardContent>
       </Card>
 
@@ -329,84 +441,116 @@ export function SalesBillsListPage() {
         </CardHeader>
         <CardContent className="min-w-0 p-0 sm:p-6 sm:pt-0">
           <div className="min-w-0 overflow-x-auto px-3 pb-4 sm:px-0 sm:pb-0">
-            <table className="w-full min-w-[720px] border-collapse text-sm">
+            <table className="w-full min-w-[1080px] border-collapse text-sm">
               <thead>
                 <tr className="border-b border-slate-200 text-left text-xs font-medium uppercase text-slate-500">
                   <th className="px-4 py-2">Bill no.</th>
                   <th className="px-4 py-2">Bill date</th>
                   <th className="min-w-[10rem] px-4 py-2">Customer</th>
-                  <th className="px-4 py-2">Dispatch / SO</th>
-                  <th className="px-4 py-2 text-right">Net amount</th>
-                  <th className="px-4 py-2">Status</th>
+                  <th className="px-4 py-2 text-right">Net</th>
+                  <th className="px-4 py-2 text-right">Received</th>
+                  <th className="px-4 py-2 text-right">Pending</th>
+                  <th className="px-4 py-2">Due</th>
+                  <th className="px-4 py-2">Payment</th>
+                  <th className="px-4 py-2">Export</th>
+                  <th className="px-4 py-2 text-right">Open</th>
                 </tr>
               </thead>
               <tbody>
                 {tableRows.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="px-4 py-8 text-center text-slate-500">
-                      {showNoQtyFinalStepPreview && rows.length === 0
-                        ? "Demo preview shown above."
-                        : rows.length === 0
-                        ? "No sales bills match these filters. Create a new entry from dispatch."
-                        : pendingTallyOnly
-                          ? "No bills pending Tally export in this list."
-                          : "No sales bills match these filters."}
+                    <td colSpan={10} className="px-4 py-4">
+                      <div className="mx-auto flex max-w-md flex-col items-center justify-center gap-1.5 rounded-md border border-dashed border-slate-200 bg-slate-50/60 px-4 py-5 text-center">
+                        <div className="text-[13px] font-semibold text-slate-800">
+                          {showNoQtyFinalStepPreview && rows.length === 0
+                            ? "Demo preview shown above"
+                            : rows.length === 0
+                              ? "No sales bills yet"
+                              : pendingTallyOnly
+                                ? "No bills pending Tally export"
+                                : "No bills match these filters"}
+                        </div>
+                        <div className="text-[12px] leading-snug text-slate-600">
+                          {rows.length === 0
+                            ? "Complete a dispatch to generate a sales bill, or adjust the filters above."
+                            : "Try a wider date range or clear status filters."}
+                        </div>
+                      </div>
                     </td>
                   </tr>
                 ) : (
-                  tableRows.map((r) => (
-                    <tr key={r.id} className="border-b border-slate-100 hover:bg-slate-50/80">
-                      <td className="px-4 py-2 font-medium text-slate-900">
-                        <Link
-                          className="text-sky-700 underline-offset-4 hover:underline"
-                          to={withReportsReturnContextIfPresent(`/sales-bills/${r.id}`, location.search)}
-                        >
-                          <span className="inline-flex items-center gap-2">
-                            <span className="text-[11px] font-semibold text-slate-600">Sales Bill No</span>
-                            <span className="rounded border border-emerald-200 bg-emerald-50 px-2 py-0.5 font-mono text-xs font-semibold tabular-nums text-emerald-900">
-                              {displaySalesBillNo(r.id, r.billNo, r.docNo)}
+                  tableRows.map((r) => {
+                    const pendAmt = num(r.pendingAmount ?? 0);
+                    const payLabel = commercialPaymentStatusLabel("sales", r);
+                    const showOverdue =
+                      payLabel !== "—" &&
+                      isBillAmountOverdue(r.dueDate ?? null, pendAmt, r.status, r.cancelledAt ?? null);
+                    return (
+                      <tr key={r.id} className="border-b border-slate-100 hover:bg-slate-50/80">
+                        <td className="px-4 py-2 font-medium text-slate-900">
+                          <Link
+                            className="text-sky-700 underline-offset-4 hover:underline"
+                            to={withReportsReturnContextIfPresent(`/sales-bills/${r.id}`, location.search)}
+                          >
+                            <span className="inline-flex items-center gap-2">
+                              <span className="rounded border border-emerald-200 bg-emerald-50 px-2 py-0.5 font-mono text-xs font-semibold tabular-nums text-emerald-900">
+                                {displaySalesBillNo(r.id, r.billNo, r.docNo)}
+                              </span>
                             </span>
+                          </Link>
+                          <div className="mt-0.5 text-[10px] text-slate-500">
+                            Disp {displayDispatchNo(r.dispatch.id, r.dispatch.docNo)} · SO{" "}
+                            {displaySalesOrderNo(r.dispatch.soId, r.dispatch.salesOrder?.docNo)}
+                          </div>
+                        </td>
+                        <td className="px-4 py-2 text-slate-700">{formatDate(r.billDate)}</td>
+                        <td className="max-w-[14rem] px-4 py-2 text-slate-700 sm:max-w-[18rem]">
+                          <span className="line-clamp-2 break-words">{r.customer.name}</span>
+                        </td>
+                        <td className="px-4 py-2 text-right tabular-nums text-slate-800">{formatMoney(r.netAmount)}</td>
+                        <td className="px-4 py-2 text-right tabular-nums text-slate-800">
+                          {r.status === "FINALIZED" ? formatMoney(r.receivedAmount ?? 0) : "—"}
+                        </td>
+                        <td className="px-4 py-2 text-right tabular-nums text-slate-800">
+                          {r.status === "FINALIZED" ? formatMoney(r.pendingAmount ?? 0) : "—"}
+                        </td>
+                        <td className="whitespace-nowrap px-4 py-2 text-slate-700">
+                          {formatCommercialDueDateCell(r.dueDate)}
+                        </td>
+                        <td className="px-4 py-2">
+                          <div className="flex flex-wrap items-center gap-1">
+                            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-800">
+                              {payLabel}
+                            </span>
+                            {showOverdue ? (
+                              <span className="rounded-full bg-rose-50 px-2 py-0.5 text-[10px] font-semibold text-rose-900">
+                                Overdue
+                              </span>
+                            ) : null}
+                          </div>
+                        </td>
+                        <td className="px-4 py-2">
+                          <span
+                            className={
+                              r.isExported
+                                ? "rounded-full bg-purple-50 px-2 py-0.5 text-xs font-medium text-purple-800"
+                                : "rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-700"
+                            }
+                          >
+                            {r.isExported ? "Exported" : "Not exported"}
                           </span>
-                        </Link>
-                      </td>
-                      <td className="px-4 py-2 text-slate-700">{formatDate(r.billDate)}</td>
-                      <td className="max-w-[14rem] px-4 py-2 text-slate-700 sm:max-w-[18rem]">
-                        <span className="line-clamp-2 break-words">{r.customer.name}</span>
-                      </td>
-                      <td className="px-4 py-2 text-slate-700">
-                        <div className="flex flex-col gap-1">
-                          <div className="flex items-center gap-2">
-                            <span className="text-[11px] font-semibold text-slate-600">Dispatch No</span>
-                            <span className="rounded border border-violet-200 bg-violet-50 px-2 py-0.5 font-mono text-xs font-semibold tabular-nums text-violet-900">
-                              {displayDispatchNo(r.dispatch.id, r.dispatch.docNo)}
-                            </span>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <span className="text-[11px] font-semibold text-slate-600">SO No</span>
-                            <span className="rounded border border-sky-200 bg-sky-50 px-2 py-0.5 font-mono text-xs font-semibold tabular-nums text-sky-900">
-                              {displaySalesOrderNo(r.dispatch.soId, r.dispatch.salesOrder?.docNo)}
-                            </span>
-                          </div>
-                        </div>
-                      </td>
-                      <td className="px-4 py-2 text-right tabular-nums text-slate-800">{formatMoney(r.netAmount)}</td>
-                      <td className="px-4 py-2">
-                        <span
-                          className={
-                            r.isExported
-                              ? "rounded-full bg-purple-50 px-2 py-0.5 text-xs font-medium text-purple-800"
-                              : r.status === "FINALIZED"
-                                ? "rounded-full bg-sky-50 px-2 py-0.5 text-xs font-medium text-sky-800"
-                                : r.status === "CANCELLED"
-                                  ? "rounded-full bg-red-50 px-2 py-0.5 text-xs font-medium text-red-800"
-                                  : "rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-800"
-                          }
-                        >
-                          {r.isExported ? "Exported" : r.status === "FINALIZED" ? "Finalized" : r.status === "CANCELLED" ? "Cancelled" : "Draft"}
-                        </span>
-                      </td>
-                    </tr>
-                  ))
+                        </td>
+                        <td className="px-4 py-2 text-right">
+                          <Link
+                            className="text-sm font-medium text-sky-700 underline-offset-4 hover:underline"
+                            to={withReportsReturnContextIfPresent(`/sales-bills/${r.id}`, location.search)}
+                          >
+                            Open
+                          </Link>
+                        </td>
+                      </tr>
+                    );
+                  })
                 )}
               </tbody>
             </table>

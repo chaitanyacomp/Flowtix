@@ -13,7 +13,25 @@ const {
   getUnbilledGrns,
   getEligibleGrnLinesBySupplier,
   getPurchaseBillById,
+  updatePurchaseBillPaymentTracking,
+  addPurchaseBillPayment,
+  deletePurchaseBillPayment,
 } = require("../services/purchaseBillService");
+/**
+ * Phase 1 ownership:
+ *  - Draft create/edit: STORE (physical invoice entry) + ACCOUNTS + ADMIN.
+ *  - Finalize / payment / Tally export: ACCOUNTS + ADMIN only.
+ *  - Cancel / delete: ADMIN only.
+ *  - Read: STORE + ACCOUNTS + ADMIN (Store keeps visibility for reconciliation).
+ */
+const {
+  PURCHASE_BILL_WRITE_ROLES,
+  PURCHASE_BILL_DRAFT_ROLES,
+  PURCHASE_BILL_READ_ROLES,
+} = require("../constants/erpRoles");
+// Legacy aliases kept for minimal diff; map onto the new groups.
+const PURCHASE_BILL_FULL_OPS_ROLES = PURCHASE_BILL_DRAFT_ROLES;
+const PURCHASE_BILL_ACCOUNTS_READ_ROLES = PURCHASE_BILL_READ_ROLES;
 const { mapPurchaseBillToTallyExportPayload } = require("../services/purchaseBillTallyExportPayload");
 const { buildPurchaseBillTallyXml } = require("../services/purchaseBillTallyXml");
 const { logActivity } = require("../services/activityLogService");
@@ -94,7 +112,7 @@ function validateTallyExportEligibility({ bill, payload }) {
   return null;
 }
 
-purchaseBillsRouter.get("/", requireAuth, requireRole(["ADMIN", "STORE"]), async (req, res, next) => {
+purchaseBillsRouter.get("/", requireAuth, requireRole(PURCHASE_BILL_ACCOUNTS_READ_ROLES), async (req, res, next) => {
   try {
     const rows = await listPurchaseBills(prisma, req.query);
     return res.json(rows);
@@ -103,7 +121,7 @@ purchaseBillsRouter.get("/", requireAuth, requireRole(["ADMIN", "STORE"]), async
   }
 });
 
-purchaseBillsRouter.get("/unbilled-grns", requireAuth, requireRole(["ADMIN", "STORE"]), async (req, res, next) => {
+purchaseBillsRouter.get("/unbilled-grns", requireAuth, requireRole(PURCHASE_BILL_FULL_OPS_ROLES), async (req, res, next) => {
   try {
     const rows = await getUnbilledGrns(prisma);
     return res.json(rows);
@@ -116,7 +134,7 @@ purchaseBillsRouter.get("/unbilled-grns", requireAuth, requireRole(["ADMIN", "ST
 purchaseBillsRouter.get(
   "/eligible-grn-lines",
   requireAuth,
-  requireRole(["ADMIN", "STORE"]),
+  requireRole(PURCHASE_BILL_FULL_OPS_ROLES),
   async (req, res, next) => {
     try {
       const supplierId = Number(req.query.supplierId);
@@ -128,7 +146,44 @@ purchaseBillsRouter.get(
   },
 );
 
-purchaseBillsRouter.get("/:id", requireAuth, requireRole(["ADMIN", "STORE"]), async (req, res, next) => {
+purchaseBillsRouter.patch("/:id/payment-tracking", requireAuth, requireRole(PURCHASE_BILL_WRITE_ROLES), async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const updated = await updatePurchaseBillPaymentTracking(prisma, id, req.body ?? {});
+    return res.json(updated);
+  } catch (e) {
+    return next(e);
+  }
+});
+
+purchaseBillsRouter.post("/:id/payments", requireAuth, requireRole(PURCHASE_BILL_WRITE_ROLES), async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const updated = await addPurchaseBillPayment(prisma, id, req.body ?? {}, {
+      userId: req.user?.userId,
+      role: req.user?.role,
+    });
+    return res.json(updated);
+  } catch (e) {
+    return next(e);
+  }
+});
+
+purchaseBillsRouter.delete("/:id/payments/:paymentId", requireAuth, requireRole(PURCHASE_BILL_WRITE_ROLES), async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const paymentId = Number(req.params.paymentId);
+    const updated = await deletePurchaseBillPayment(prisma, id, paymentId, {
+      role: req.user?.role,
+      adminPassword: req.body?.adminPassword,
+    });
+    return res.json(updated);
+  } catch (e) {
+    return next(e);
+  }
+});
+
+purchaseBillsRouter.get("/:id", requireAuth, requireRole(PURCHASE_BILL_ACCOUNTS_READ_ROLES), async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     const bill = await getPurchaseBillById(prisma, id);
@@ -145,7 +200,7 @@ purchaseBillsRouter.get("/:id", requireAuth, requireRole(["ADMIN", "STORE"]), as
 purchaseBillsRouter.post(
   "/draft-from-selection",
   requireAuth,
-  requireRole(["ADMIN", "STORE"]),
+  requireRole(PURCHASE_BILL_FULL_OPS_ROLES),
   async (req, res, next) => {
     try {
       const out = await createDraftFromSelection(prisma, req.body ?? {});
@@ -252,7 +307,7 @@ purchaseBillsRouter.get("/:id/export-xml", requireAuth, requireRole(["ADMIN"]), 
   }
 });
 
-purchaseBillsRouter.get("/:id/export/tally.xml", requireAuth, requireRole(["ADMIN", "STORE"]), async (req, res, next) => {
+purchaseBillsRouter.get("/:id/export/tally.xml", requireAuth, requireRole(PURCHASE_BILL_WRITE_ROLES), async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     if (!Number.isFinite(id) || id <= 0) {
@@ -359,7 +414,7 @@ purchaseBillsRouter.get("/:id/export/tally.xml", requireAuth, requireRole(["ADMI
  *
  * Audit-safe default: cancelled bills are NOT downloadable (prevents accidental use of voided vouchers).
  */
-purchaseBillsRouter.get("/:id/download/tally.xml", requireAuth, requireRole(["ADMIN", "STORE"]), async (req, res, next) => {
+purchaseBillsRouter.get("/:id/download/tally.xml", requireAuth, requireRole(PURCHASE_BILL_WRITE_ROLES), async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     if (!Number.isFinite(id) || id <= 0) {
@@ -518,7 +573,7 @@ purchaseBillsRouter.delete("/:id", requireAuth, requireRole(["ADMIN"]), async (r
   }
 });
 
-purchaseBillsRouter.post("/", requireAuth, requireRole(["ADMIN", "STORE"]), async (req, res, next) => {
+purchaseBillsRouter.post("/", requireAuth, requireRole(PURCHASE_BILL_FULL_OPS_ROLES), async (req, res, next) => {
   try {
     const body = z.object({ grnId: z.number().int() }).parse(req.body);
     const { bill, created } = await createDraftForGrn(prisma, body.grnId);
@@ -568,7 +623,7 @@ const dateInput = z.union([
   z.coerce.date(),
 ]);
 
-purchaseBillsRouter.put("/:id", requireAuth, requireRole(["ADMIN", "STORE"]), async (req, res, next) => {
+purchaseBillsRouter.put("/:id", requireAuth, requireRole(PURCHASE_BILL_FULL_OPS_ROLES), async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     const schema = z.object({
@@ -609,7 +664,7 @@ purchaseBillsRouter.put("/:id", requireAuth, requireRole(["ADMIN", "STORE"]), as
   }
 });
 
-purchaseBillsRouter.post("/:id/finalize", requireAuth, requireRole(["ADMIN", "STORE"]), async (req, res, next) => {
+purchaseBillsRouter.post("/:id/finalize", requireAuth, requireRole(PURCHASE_BILL_WRITE_ROLES), async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     const finalized = await finalizeBill(prisma, id);

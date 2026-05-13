@@ -65,12 +65,12 @@
   }
 
   .erp-topbar {
-    @apply flex shrink-0 items-center justify-between gap-4 border-b border-slate-200 bg-white px-6 py-3;
+    @apply flex shrink-0 items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 py-2.5 shadow-sm sm:gap-4 sm:px-6 sm:py-3;
   }
 
   /** Context-aware back navigation — compact pill, not a full-width banner. */
   .erp-back-nav-chip {
-    @apply inline-flex w-fit max-w-full shrink-0 items-center gap-1.5 rounded-full border border-sky-200/90 bg-sky-100/45 px-3.5 py-1.5 text-[13px] font-semibold leading-snug text-sky-950 no-underline shadow-sm outline-none transition-colors;
+    @apply inline-flex w-fit max-w-full shrink-0 items-center gap-1.5 rounded-full border border-sky-200/90 bg-sky-100/45 px-2.5 py-1 text-[12px] font-semibold leading-snug text-sky-950 no-underline shadow-sm outline-none transition-colors;
   }
 
   .erp-back-nav-chip:hover {
@@ -81,8 +81,40 @@
     @apply ring-2 ring-sky-500/40 ring-offset-2 ring-offset-slate-50;
   }
 
+  /** Subtle inline back link for report pages. No background, no border, no
+   * shadow — just muted text with an arrow icon. Use above report titles
+   * (replaces the old white sticky strip behind "Back to Reports"). */
+  .erp-report-back-link {
+    @apply inline-flex w-fit max-w-full shrink-0 items-center gap-1 rounded-sm px-0 py-0.5 text-[12px] font-medium leading-snug text-slate-500 no-underline transition-colors outline-none;
+  }
+
+  .erp-report-back-link:hover {
+    @apply text-slate-900;
+  }
+
+  .erp-report-back-link:focus-visible {
+    @apply ring-2 ring-sky-500/40 ring-offset-2 ring-offset-slate-50;
+  }
+
+  /**
+   * Operational scroll surface — owns the global horizontal gutter so every
+   * page rendered inside `<Outlet/>` shares the same left/right alignment
+   * regardless of whether it wraps in `<PageContainer>`. Bottom padding is
+   * intentionally larger than top so the last card doesn't sit flush against
+   * the viewport edge.
+   */
   .erp-main {
-    @apply min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden p-6;
+    @apply min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden px-3 pt-3 pb-6;
+  }
+
+  /**
+   * Document-level shell helper for pages NOT wrapped in `<PageContainer>`
+   * (Dashboard, Admin Settings, Account, etc.). Gives them the same vertical
+   * rhythm and overflow safety as PageContainer-wrapped pages without
+   * imposing a max-width or centering.
+   */
+  .erp-page-shell {
+    @apply w-full min-w-0 space-y-3 overflow-x-hidden;
   }
 
   .erp-table-wrap {
@@ -90,15 +122,25 @@
   }
 
   .erp-table {
-    @apply w-full border-collapse text-sm;
+    @apply w-full border-collapse text-[13px];
   }
 
   .erp-table thead th {
-    @apply border-b border-slate-200 bg-slate-50 px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-slate-600;
+    @apply border-b border-slate-200 bg-slate-50 px-2.5 py-1.5 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-600;
   }
 
   .erp-table tbody td {
-    @apply border-b border-slate-100 px-3 py-2.5 align-middle text-slate-800;
+    @apply border-b border-slate-100 px-2.5 py-1.5 align-middle text-slate-800;
+  }
+
+  /** Single-line workflow cue below primary work (operators). */
+  .erp-next-action-bar {
+    @apply flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 rounded border border-slate-200 bg-slate-50/90 px-2.5 py-1.5 text-[12px] text-slate-800;
+  }
+
+  /** Compact context row: SO | Customer | Cycle | Status */
+  .erp-context-inline {
+    @apply flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[12px] leading-snug text-slate-700;
   }
 
   .erp-table tbody tr:nth-child(even) td {
@@ -185,5 +227,236 @@
 
   .erp-modal-backdrop {
     @apply fixed inset-0 z-50 flex items-start justify-center overflow-y-auto overflow-x-hidden bg-black/40 p-4 sm:items-center sm:p-4;
+  }
+
+  /** Sticky operational anchor (extends to edges of padded erp-main). */
+  .erp-op-context-sticky {
+    @apply sticky top-0 z-[26] -mx-4 border-b border-slate-200/95 bg-slate-50/95 px-4 pb-2 pt-1 shadow-[0_1px_0_0_rgb(226_232_240)] backdrop-blur-sm supports-[backdrop-filter]:bg-slate-50/90;
+  }
+
+  .erp-op-context-row {
+    @apply flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[12px] leading-snug text-slate-800;
+  }
+
+  .erp-op-context-sep {
+    @apply shrink-0 select-none text-slate-300;
+  }
+
+  /** Primary (~65%) + support (~35%) — collapses to single column below lg. */
+  .erp-workspace-2col {
+    @apply grid min-w-0 gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(15rem,34%)];
+  }
+
+  /** Unified footer: history / next action / links (one chrome block). */
+  .erp-operational-footer {
+    @apply mt-3 overflow-hidden rounded-md border border-slate-200 bg-slate-50/90;
+  }
+
+  .erp-operational-footer-section {
+    @apply border-b border-slate-200/90 px-3 py-2 text-[12px] last:border-b-0;
+  }
+
+  .erp-operational-footer-section-title {
+    @apply mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500;
+  }
+
+  .erp-table-dense thead th {
+    @apply px-2 py-1 text-[10.5px];
+  }
+
+  .erp-table-dense tbody td {
+    @apply px-2 py-1 text-[12.5px];
+  }
+
+  /* =====================================================================
+   * Compact ERP density utilities (system-wide refinement pass).
+   * Pages opt into these to achieve SAP/ERPNext-grade screen density on
+   * 1366x768 laptops without bespoke per-page styling.
+   * ===================================================================== */
+
+  /** Single-row horizontal filter toolbar (Status / Type / Customer / Search / Sort). */
+  .erp-filter-bar {
+    @apply flex flex-wrap items-center gap-2 rounded-md border border-slate-200 bg-white px-2 py-1.5 shadow-sm;
+  }
+
+  .erp-filter-bar > .erp-filter-divider {
+    @apply hidden h-5 w-px shrink-0 bg-slate-200 sm:block;
+  }
+
+  .erp-filter-bar > label,
+  .erp-filter-bar > .erp-filter-field {
+    @apply inline-flex items-center gap-1.5 text-[11px] font-medium text-slate-600;
+  }
+
+  .erp-filter-bar select,
+  .erp-filter-bar input[type="search"],
+  .erp-filter-bar input[type="text"],
+  .erp-filter-bar input[type="date"] {
+    @apply h-8 rounded-md border border-slate-200 bg-white px-2 text-[12px] text-slate-900 shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400;
+  }
+
+  .erp-filter-bar .erp-filter-grow {
+    @apply ml-auto w-full max-w-[18rem];
+  }
+
+  /** Unified responsive ERP report filter grid.
+   * 1 column on mobile, 2 on tablet (sm), 4 on desktop (lg). Wraps gracefully
+   * — Status/Customer/From/To etc. always lock to the same column rhythm and
+   * never overflow the toolbar edge. Use this on ALL report pages instead of
+   * hand-rolled `grid-cols-N` filter blocks. */
+  .erp-filter-grid {
+    @apply grid w-full min-w-0 grid-cols-1 gap-x-3 gap-y-2 rounded-md border border-slate-200 bg-white p-2 shadow-sm sm:grid-cols-2 lg:grid-cols-4;
+  }
+
+  .erp-filter-grid > .erp-filter-field {
+    @apply flex min-w-0 flex-col gap-1 text-[11px] font-medium text-slate-600;
+  }
+
+  .erp-filter-grid > .erp-filter-field > span {
+    @apply truncate text-[10.5px] font-medium uppercase tracking-wide text-slate-500;
+  }
+
+  .erp-filter-grid > .erp-filter-field select,
+  .erp-filter-grid > .erp-filter-field input[type="search"],
+  .erp-filter-grid > .erp-filter-field input[type="text"],
+  .erp-filter-grid > .erp-filter-field input[type="number"],
+  .erp-filter-grid > .erp-filter-field input[type="date"] {
+    @apply h-8 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 text-[12px] text-slate-900 shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400;
+  }
+
+  /** Optional column-span helpers for wide fields (e.g. search, address). */
+  .erp-filter-grid > .erp-filter-span-2 {
+    @apply sm:col-span-2;
+  }
+
+  .erp-filter-grid > .erp-filter-span-full {
+    @apply col-span-full;
+  }
+
+  /** Actions row (Apply / Reset / extras) — always spans full width and aligns
+   * right so the grid above keeps its column rhythm unbroken. */
+  .erp-filter-grid > .erp-filter-actions {
+    @apply col-span-full -mx-2 -mb-2 mt-1 flex flex-wrap items-center justify-end gap-2 border-t border-slate-100 bg-slate-50/60 px-2 py-1.5;
+  }
+
+  .erp-filter-grid > .erp-filter-actions > .erp-filter-actions-grow {
+    @apply mr-auto flex flex-wrap items-center gap-2;
+  }
+
+  /** Compact workflow / helper strip (replaces big colored banners). */
+  .erp-info-strip {
+    @apply flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-slate-200 bg-slate-50/90 px-2.5 py-1.5 text-[12px] leading-snug text-slate-700;
+  }
+
+  .erp-info-strip[data-tone="info"] {
+    @apply border-sky-200/80 bg-sky-50/80 text-sky-950;
+  }
+
+  .erp-info-strip[data-tone="warning"] {
+    @apply border-amber-200/80 bg-amber-50/80 text-amber-950;
+  }
+
+  .erp-info-strip[data-tone="success"] {
+    @apply border-emerald-200/80 bg-emerald-50/80 text-emerald-950;
+  }
+
+  /** Dense single-row page title (title + subtitle + workflow strip on one line). */
+  .erp-page-title-row {
+    @apply flex flex-wrap items-center justify-between gap-2;
+  }
+
+  .erp-page-title-row .erp-page-title {
+    @apply text-base font-semibold tracking-tight text-slate-900;
+  }
+
+  .erp-page-title-row .erp-page-subtitle {
+    @apply text-[12px] text-slate-500;
+  }
+
+  /** Sticky bottom shortcut / utility footer (keyboard hints, totals, etc.). */
+  .erp-shortcut-footer {
+    @apply sticky bottom-0 z-30 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-slate-200 bg-slate-900/[0.03] px-3 py-1 text-[11px] text-slate-600 backdrop-blur supports-[backdrop-filter]:bg-slate-100/80;
+  }
+
+  .erp-shortcut-footer kbd {
+    @apply inline-flex h-4 min-w-[1rem] items-center justify-center rounded border border-slate-300 bg-white px-1 font-mono text-[10px] font-semibold text-slate-700 shadow-[0_1px_0_0_rgb(203_213_225)];
+  }
+
+  /** Collapsible advanced / admin section — chip-style summary, hidden by default. */
+  .erp-advanced-section {
+    @apply overflow-hidden rounded-md border border-slate-200 bg-slate-50/60;
+  }
+
+  .erp-advanced-section > summary {
+    @apply flex cursor-pointer list-none items-center gap-2 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 transition-colors hover:bg-slate-100/80;
+  }
+
+  .erp-advanced-section > summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .erp-advanced-section > summary::before {
+    content: "▸";
+    @apply text-[11px] leading-none text-slate-400 transition-transform;
+  }
+
+  .erp-advanced-section[open] > summary::before {
+    transform: rotate(90deg);
+  }
+
+  .erp-advanced-section > .erp-advanced-body {
+    @apply border-t border-slate-200 bg-white px-2.5 py-2 text-[12px] text-slate-700;
+  }
+
+  /**
+   * Soft secondary/destructive action — visually reduced so it does not compete
+   * with primary workflow CTAs. Use for: Close SO, Cancel, Delete, Reset, etc.
+   */
+  .erp-soft-action {
+    @apply inline-flex h-7 items-center rounded-md border border-slate-200 bg-white px-2 text-[11.5px] font-medium text-slate-600 shadow-sm transition-colors hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900;
+  }
+
+  .erp-soft-action[data-tone="danger"] {
+    @apply border-red-200/70 text-red-700 hover:border-red-300 hover:bg-red-50 hover:text-red-800;
+  }
+
+  /** Compact dense badge — slightly tighter than the `Badge` component default. */
+  .erp-chip {
+    @apply inline-flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10.5px] font-semibold uppercase tracking-wide text-slate-700;
+  }
+
+  .erp-chip[data-tone="info"] {
+    @apply border-sky-200 bg-sky-50 text-sky-800;
+  }
+
+  .erp-chip[data-tone="warning"] {
+    @apply border-amber-200 bg-amber-50 text-amber-900;
+  }
+
+  .erp-chip[data-tone="success"] {
+    @apply border-emerald-200 bg-emerald-50 text-emerald-900;
+  }
+
+  /**
+   * Global ERP polish: `caret-color` inherits. Suppress stray text carets on non-editable surfaces;
+   * restore on real entry controls. Applies under `body` so portaled modals are included.
+   */
+  body :where(*) {
+    caret-color: transparent;
+  }
+
+  body :where(
+      input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]),
+      textarea,
+      select,
+      [contenteditable="true"]
+    ) {
+    caret-color: auto;
+  }
+
+  /** Class hooks for custom search fields (keep text caret when these are inputs or contenteditable). */
+  .search-input,
+  .dropdown-search-input {
+    caret-color: auto;
   }
 }

@@ -2,7 +2,9 @@ import * as React from "react";
 import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "../../lib/utils";
 
-const badgeVariants = cva("inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold", {
+// Compact ERP density: tighter horizontal padding + 11px text so badges sit comfortably
+// inside dense table cells and ribbons. Override via className when needed.
+const badgeVariants = cva("inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-semibold", {
   variants: {
     variant: {
       default: "border-slate-200 bg-slate-100 text-slate-900",

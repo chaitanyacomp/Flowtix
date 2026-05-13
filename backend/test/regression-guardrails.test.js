@@ -4,6 +4,9 @@
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
+const request = require("supertest");
+const { createApp } = require("../src/createApp");
+const { signAccessToken } = require("../src/utils/jwt");
 const {
   getDraftSoItemQtyFloorViolations,
   formatDraftSoFloorViolationMessage,
@@ -34,6 +37,32 @@ const {
   OPERATIONS_EXCEPTION_CONFIG,
   ROW_NUM_EPS,
 } = require("../src/services/operationsExceptionClassification");
+
+function bearerForRole(role) {
+  return `Bearer ${signAccessToken({ userId: role === "ADMIN" ? 1 : 2, email: `${role.toLowerCase()}@test.com`, role, name: role })}`;
+}
+
+describe("release-readiness route guardrails", () => {
+  it("blocks non-admin users from reversing approved production batches before any DB work", async () => {
+    const app = createApp();
+    const res = await request(app)
+      .post("/api/production/production-entries/1/reverse")
+      .set("Authorization", bearerForRole("PRODUCTION"))
+      .send({ reason: "release guardrail" });
+
+    assert.equal(res.status, 403);
+    assert.equal(res.body?.error?.message, "Only Admin can reverse approved production batches.");
+  });
+
+  it("does not expose the temporary runtime debug endpoint", async () => {
+    const app = createApp();
+    const res = await request(app)
+      .get("/api/debug/runtime-info")
+      .set("Authorization", bearerForRole("ADMIN"));
+
+    assert.equal(res.status, 404);
+  });
+});
 
 describe("draft SO qty floor (summed per item, not per-line dispatched)", () => {
   const itemA = 9001;

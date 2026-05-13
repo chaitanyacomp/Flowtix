@@ -27,6 +27,33 @@ function uniqueWarnings(arr) {
   return [...new Set((arr || []).filter(Boolean))];
 }
 
+function trimGrnText(v) {
+  if (typeof v === "string") return v.trim();
+  if (v == null) return "";
+  return String(v).trim();
+}
+
+/** YYYY-MM-DD from UI → stable DateTime for persistence */
+function parseGrnDateFromInput(raw) {
+  const s = trimGrnText(raw);
+  if (!s) return { ok: false, reason: "empty" };
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  if (!m) return { ok: false, reason: "bad" };
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  const dt = new Date(Date.UTC(y, mo - 1, d, 12, 0, 0));
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo - 1 || dt.getUTCDate() !== d) return { ok: false, reason: "bad" };
+  return { ok: true, date: dt };
+}
+
+/** Signals POST /purchase/grns to respond with `{ error: string, message: string }`. */
+function purchaseGrnFlat400(payload) {
+  const err = new Error("GRN purchase flat 400");
+  err.purchaseFlat400 = payload;
+  return err;
+}
+
 function buildResolvedRmLine(item, l, relaxed) {
   assertPositiveRate(l.rate);
   const resolved = resolveLineTaxFromItem(item, { relaxed });
@@ -673,8 +700,30 @@ purchaseRouter.post("/grns", requireAuth, requireRole(["ADMIN", "STORE"]), async
           }),
         )
         .min(1),
+      grnDate: z.unknown().optional(),
+      supplierInvoiceNo: z.unknown().optional(),
     });
     const body = schema.parse(req.body);
+
+    const grnDateRaw = trimGrnText(body.grnDate);
+    const supplierInvoiceNoRaw = trimGrnText(body.supplierInvoiceNo);
+    if (!grnDateRaw) {
+      const err = new Error("GRN date is required");
+      err.statusCode = 400;
+      throw err;
+    }
+    if (!supplierInvoiceNoRaw) {
+      return res.status(400).json({
+        error: "SUPPLIER_INVOICE_REQUIRED",
+        message: "Supplier invoice number is required",
+      });
+    }
+    const parsedGrnDate = parseGrnDateFromInput(grnDateRaw);
+    if (!parsedGrnDate.ok) {
+      const err = new Error("Enter a valid GRN date.");
+      err.statusCode = 400;
+      throw err;
+    }
 
     const userId = req.user?.userId;
     const result = await prisma.$transaction(async (tx) => {
@@ -717,9 +766,44 @@ purchaseRouter.post("/grns", requireAuth, requireRole(["ADMIN", "STORE"]), async
         }
       }
 
+      const dupGrn = await tx.grn.findFirst({
+        where: {
+          supplierInvoiceNo: supplierInvoiceNoRaw,
+          reversedAt: null,
+          rmPo: {
+            supplierId: rmPo.supplierId,
+          },
+        },
+        select: { id: true },
+      });
+      if (dupGrn) {
+        throw purchaseGrnFlat400({
+          error: "DUPLICATE_SUPPLIER_INVOICE",
+          message: "This supplier invoice number is already used for this supplier.",
+        });
+      }
+
+      const dupBill = await tx.purchaseBill.findFirst({
+        where: {
+          supplierId: rmPo.supplierId,
+          billNo: supplierInvoiceNoRaw,
+          status: { not: "CANCELLED" },
+        },
+        select: { id: true },
+      });
+      if (dupBill) {
+        throw purchaseGrnFlat400({
+          error: "DUPLICATE_SUPPLIER_INVOICE",
+          message: "This supplier invoice number is already used for this supplier.",
+        });
+      }
+
       const grn = await tx.grn.create({
         data: {
           rmPoId: rmPo.id,
+          supplierId: rmPo.supplierId,
+          date: parsedGrnDate.date,
+          supplierInvoiceNo: supplierInvoiceNoRaw,
           lines: {
             create: body.lines.map((l) => ({
               rmPoLineId: l.rmPoLineId,
@@ -767,6 +851,9 @@ purchaseRouter.post("/grns", requireAuth, requireRole(["ADMIN", "STORE"]), async
 
     return res.status(201).json(result);
   } catch (e) {
+    if (e instanceof Error && e.purchaseFlat400 && typeof e.purchaseFlat400 === "object") {
+      return res.status(400).json(e.purchaseFlat400);
+    }
     return next(e);
   }
 });

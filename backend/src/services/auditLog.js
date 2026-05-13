@@ -1,4 +1,4 @@
-const { AuditAction, AuditEntityType, UserRole } = require("@prisma/client");
+const { AuditAction, AuditEntityType, UserRole } = require("../prismaClientPackage");
 
 const ALLOWED_ACTIONS = new Set(Object.values(AuditAction));
 const ALLOWED_ENTITY_TYPES = new Set(Object.values(AuditEntityType));

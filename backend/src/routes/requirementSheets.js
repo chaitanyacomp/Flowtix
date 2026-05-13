@@ -2,7 +2,8 @@ const express = require("express");
 const { z } = require("zod");
 const { prisma } = require("../utils/prisma");
 const { requireAuth, requireRole } = require("../middleware/auth");
-const { DocType } = require("@prisma/client");
+const { RS_WRITE_ROLES, RS_READ_ROLES } = require("../constants/erpRoles");
+const { DocType } = require("../prismaClientPackage");
 const { allocateDocNo } = require("../services/docNoService");
 const { computeZone } = require("../services/planningThresholds");
 const {
@@ -10,7 +11,7 @@ const {
   DISPATCH_ALLOC_MODE,
   remainingDispatchCapacityForSoItem,
 } = require("../services/salesOrderDispatchAllocation");
-const { repairNoQtyCycleIntegrity } = require("../services/noQtyCycleLifecycle");
+const { repairNoQtyCycleIntegrity, advanceNoQtyCycleForNextRequirementSheetIfEligible } = require("../services/noQtyCycleLifecycle");
 const { logActivity } = require("../services/activityLogService");
 const { usableStockDisplayQty } = require("../services/stockService");
 const { buildQcAcceptedMap } = require("../services/dispatchQcCap");
@@ -20,6 +21,19 @@ const {
   ACTIVITY_ENTITY_TYPES,
 } = require("../constants/activityLogConstants");
 const { displayRequirementSheetNo, displaySalesOrderNo } = require("../utils/docNoLabels");
+const { normalizePositiveCycleId } = require("../utils/cycleIds");
+const { QC_ENTRY_ACTIVE_WHERE } = require("../services/qcEntryConstants");
+const {
+  loadNoQtyPostCycleApprovalQtyByItem,
+  loadNoQtyPendingQcDispositionQtyByItem,
+} = require("../services/noQtyPostCycleApprovalService");
+const {
+  loadNoQtyCycleQcAcceptedMap,
+  loadNoQtyCycleRecheckAcceptedMap,
+  filterNoQtyDispatchRowsForActiveCycle,
+  netNoQtyCycleDispatchedByItemId,
+} = require("./dispatch");
+const { loadEffectiveNoQtyCarryForwardShortfallByItem } = require("../services/noQtySoCloseSnapshotService");
 
 const requirementSheetsRouter = express.Router();
 
@@ -38,6 +52,105 @@ function round2(v) {
 
 function round3(v) {
   return Math.round(n(v) * 1000) / 1000;
+}
+
+/**
+ * Multiple LOCKED requirement sheets can exist for the same NO_QTY cycle (e.g. v1 then v2).
+ * Carry-forward must count each cycle once — use the latest RS document only.
+ * Tie-break: periodKey (desc), version (desc), createdAt (desc), id (desc).
+ *
+ * @param {{ id: number; periodKey: string | null; version: number | null; createdAt: Date }} a
+ * @param {{ id: number; periodKey: string | null; version: number | null; createdAt: Date }} b
+ */
+/**
+ * NO_QTY: QC (+ recheck + post-cycle approvals) still in the dispatch pool from the **prior** cycle
+ * minus same-cycle operational dispatch — reduces fresh production on the current-cycle RS.
+ *
+ * @param {import("@prisma/client").PrismaClient | import("@prisma/client").Prisma.TransactionClient} db
+ * @param {number} salesOrderId
+ * @param {number|null|undefined} currentCycleId — sheet / SO active cycle
+ * @returns {Promise<Map<number, number>>} fg itemId → undispatched accepted qty
+ */
+async function loadNoQtyPriorCycleUndispatchedAcceptedByItem(db, salesOrderId, currentCycleId) {
+  const soId = Number(salesOrderId);
+  const curCid = normalizePositiveCycleId(currentCycleId);
+  if (!Number.isFinite(soId) || soId <= 0 || curCid == null) return new Map();
+
+  const cur = await db.salesOrderCycle.findFirst({
+    where: { id: curCid, salesOrderId: soId },
+    select: { cycleNo: true },
+  });
+  if (!cur) return new Map();
+  const curNo = Number(cur.cycleNo);
+  if (!Number.isFinite(curNo) || curNo <= 1) return new Map();
+
+  const prev = await db.salesOrderCycle.findFirst({
+    where: { salesOrderId: soId, cycleNo: curNo - 1 },
+    select: { id: true },
+  });
+  const prevId = prev?.id != null ? Number(prev.id) : null;
+  if (!prevId || prevId <= 0) return new Map();
+
+  const [qcMap, recheckMap, postByItem, dispRows] = await Promise.all([
+    loadNoQtyCycleQcAcceptedMap(db, [{ id: soId, currentCycleId: prevId }]),
+    loadNoQtyCycleRecheckAcceptedMap(db, [{ id: soId, currentCycleId: prevId }]),
+    loadNoQtyPostCycleApprovalQtyByItem(db, soId, prevId),
+    db.dispatch.findMany({
+      where: { soId, reversalOfId: null },
+      select: { itemId: true, dispatchedQty: true, cycleId: true, workflowStatus: true },
+    }),
+  ]);
+
+  const cycleDisp = filterNoQtyDispatchRowsForActiveCycle(dispRows, prevId);
+  const netByItem = netNoQtyCycleDispatchedByItemId(cycleDisp, DISPATCH_ALLOC_MODE.OPERATIONAL);
+
+  /** @type {Set<number>} */
+  const itemIds = new Set();
+  const prefix = `${soId}:${prevId}:`;
+  for (const k of qcMap.keys()) {
+    if (!String(k).startsWith(prefix)) continue;
+    const parts = String(k).split(":");
+    const iid = Number(parts[2]);
+    if (Number.isFinite(iid) && iid > 0) itemIds.add(iid);
+  }
+  for (const k of recheckMap.keys()) {
+    if (!String(k).startsWith(prefix)) continue;
+    const parts = String(k).split(":");
+    const iid = Number(parts[2]);
+    if (Number.isFinite(iid) && iid > 0) itemIds.add(iid);
+  }
+  for (const itemId of postByItem.keys()) {
+    const iid = Number(itemId);
+    if (Number.isFinite(iid) && iid > 0) itemIds.add(iid);
+  }
+  for (const itemId of netByItem.keys()) {
+    const iid = Number(itemId);
+    if (Number.isFinite(iid) && iid > 0) itemIds.add(iid);
+  }
+
+  /** @type {Map<number, number>} */
+  const out = new Map();
+  for (const itemId of itemIds) {
+    const key = `${soId}:${prevId}:${itemId}`;
+    const qcGross = n(qcMap.get(key) ?? 0) + n(recheckMap.get(key) ?? 0) + n(postByItem.get(itemId) ?? 0);
+    const dispatched = n(netByItem.get(itemId) ?? 0);
+    const und = round3(Math.max(0, qcGross - dispatched));
+    if (und > EPS) out.set(itemId, und);
+  }
+  return out;
+}
+
+function pickWinningLockedRequirementSheet(a, b) {
+  const pkA = String(a.periodKey ?? "");
+  const pkB = String(b.periodKey ?? "");
+  if (pkA !== pkB) return pkA > pkB ? a : b;
+  const vA = Number(a.version ?? 0);
+  const vB = Number(b.version ?? 0);
+  if (vA !== vB) return vA >= vB ? a : b;
+  const tA = a.createdAt instanceof Date ? a.createdAt.getTime() : new Date(a.createdAt).getTime();
+  const tB = b.createdAt instanceof Date ? b.createdAt.getTime() : new Date(b.createdAt).getTime();
+  if (tA !== tB) return tA >= tB ? a : b;
+  return Number(a.id) >= Number(b.id) ? a : b;
 }
 
 function computeGapPercent(req, stock) {
@@ -63,11 +176,14 @@ async function stockByItemIdUsable() {
 
 const EPS = 1e-6;
 
+const {
+  computeNoQtyUsablePlanningBreakdownByItem,
+} = require("../services/noQtyUsablePlanningService");
+
 /**
  * Planning: compute FREE usable FG stock (not reserved for dispatch).
  *
  * reservedQty (per FG item) is the sum of remaining dispatch demand across:
- * - NO_QTY sales orders: max(0, QC accepted total for SO+item − operational net dispatched for SO+item)
  * - NORMAL / REPLACEMENT sales orders: remaining dispatch capacity on SO lines (FIFO), operational mode
  *
  * Then:
@@ -79,15 +195,23 @@ async function freeUsableFgStockByItemForNoQtyPlanning(args) {
 
   const totalUsableByItem = await stockByItemIdUsable();
 
-  // 1) Load all OPEN sales orders (reserve stock for any pending dispatch demand).
+  /**
+   * CONFIRMED RULES (NO_QTY):
+   * - Pending dispatch is optional; remaining USABLE stock must reduce the next RS production requirement.
+   * - Therefore, do NOT reserve USABLE stock away from planning due to NO_QTY dispatchability.
+   *
+   * We still reserve stock for NORMAL/REPLACEMENT open dispatch commitments so their pending dispatch doesn't
+   * get double-planned into production.
+   */
   const openSos = await prisma.salesOrder.findMany({
-    where: { internalStatus: { notIn: ["COMPLETED", "CLOSED"] } },
+    where: {
+      orderType: { not: "NO_QTY" },
+      internalStatus: { notIn: ["COMPLETED", "CLOSED"] },
+    },
     select: {
       id: true,
       orderType: true,
       customerReturnId: true,
-      currentCycleId: true,
-      currentCycle: { select: { id: true, status: true } },
       lines: { select: { id: true, itemId: true, qty: true, customerPoQty: true } },
     },
   });
@@ -105,137 +229,12 @@ async function freeUsableFgStockByItemForNoQtyPlanning(args) {
     dispatchBySoId.get(id).push(d);
   }
 
-  // 2) QC accepted totals for NO_QTY reservations (ACTIVE cycle only).
-  // Key: `${soId}:${itemId}`.
-  const qcAcceptedMap = new Map();
-
-  // 3) APPROVED produced totals for NO_QTY reservations (covers flows where usable FG is posted on production approval).
-  const openNoQtySoIds = openSos
-    .filter((s) => String(s.orderType ?? "") === "NO_QTY")
-    .map((s) => Number(s.id))
-    .filter((x) => Number.isFinite(x) && x > 0);
-  const activeCycleIds = openSos
-    .filter((s) => String(s.orderType ?? "") === "NO_QTY")
-    .map((s) => {
-      const cycId = s.currentCycle?.id ?? s.currentCycleId ?? null;
-      const st = String(s.currentCycle?.status ?? "");
-      return cycId != null && Number.isFinite(Number(cycId)) && Number(cycId) > 0 && st === "ACTIVE"
-        ? Number(cycId)
-        : null;
-    })
-    .filter((x) => x != null);
-
-  /** @type {Map<string, number>} key `${soId}:${itemId}` -> approved produced qty */
-  const approvedProducedBySoItemKey = new Map();
-  if (openNoQtySoIds.length) {
-    const woLines = await prisma.workOrderLine.findMany({
-      where: {
-        workOrder: {
-          salesOrderId: { in: openNoQtySoIds },
-          cycleId: { in: activeCycleIds },
-          status: { not: "REJECTED" },
-        },
-      },
-      select: { id: true, fgItemId: true, workOrder: { select: { salesOrderId: true } } },
-    });
-    const wolIds = woLines.map((l) => Number(l.id)).filter((x) => Number.isFinite(x) && x > 0);
-    const wolMeta = new Map(
-      woLines.map((l) => [Number(l.id), { soId: Number(l.workOrder?.salesOrderId), itemId: Number(l.fgItemId) }]),
-    );
-    if (wolIds.length) {
-      const prodAgg = await prisma.productionEntry.groupBy({
-        by: ["workOrderLineId"],
-        where: { workOrderLineId: { in: wolIds }, workflowStatus: "APPROVED" },
-        _sum: { producedQty: true },
-      });
-      for (const r of prodAgg) {
-        const wolId = Number(r.workOrderLineId);
-        const meta = wolMeta.get(wolId);
-        if (!meta || !meta.soId || !meta.itemId) continue;
-        const k = `${meta.soId}:${meta.itemId}`;
-        approvedProducedBySoItemKey.set(k, (approvedProducedBySoItemKey.get(k) ?? 0) + n(r._sum.producedQty));
-      }
-    }
-  }
-
-  if (openNoQtySoIds.length && activeCycleIds.length) {
-    // QC accepted in ACTIVE cycle only (exclude CLOSED cycles from reservation).
-    const qcRows = await prisma.qcEntry.findMany({
-      where: {
-        reversedAt: null,
-        production: {
-          workOrderLine: {
-            workOrder: {
-              salesOrderId: { in: openNoQtySoIds },
-              cycleId: { in: activeCycleIds },
-            },
-          },
-        },
-      },
-      select: {
-        acceptedQty: true,
-        production: { select: { workOrderLine: { select: { fgItemId: true, workOrder: { select: { salesOrderId: true } } } } } },
-      },
-    });
-    for (const r of qcRows) {
-      const soId = Number(r.production?.workOrderLine?.workOrder?.salesOrderId);
-      const itemId = Number(r.production?.workOrderLine?.fgItemId);
-      if (!soId || !itemId) continue;
-      const k = `${soId}:${itemId}`;
-      qcAcceptedMap.set(k, (qcAcceptedMap.get(k) ?? 0) + n(r.acceptedQty));
-    }
-  }
-
   /** @type {Map<number, number>} itemId -> reserved qty */
   const reservedByItem = new Map();
 
   for (const so of openSos) {
     const id = Number(so.id);
-    const orderType = String(so.orderType ?? "");
     const disp = dispatchBySoId.get(id) ?? [];
-    const activeCycleId = so.currentCycle?.id ?? so.currentCycleId ?? null;
-    const activeCycleOk =
-      orderType === "NO_QTY" && activeCycleId != null && Number.isFinite(Number(activeCycleId)) && Number(activeCycleId) > 0 && so.currentCycle?.status === "ACTIVE";
-    const dispScoped = activeCycleOk ? disp.filter((d) => Number(d.cycleId) === Number(activeCycleId)) : disp;
-    const netOpByItem = netDispatchedByItemId(dispScoped, DISPATCH_ALLOC_MODE.OPERATIONAL);
-
-    if (orderType === "NO_QTY") {
-      // Scope reservation strictly to ACTIVE cycle only (exclude CLOSED cycles completely).
-      if (!activeCycleOk) continue;
-      // Special rule: QC-passed stock generated within the SAME SO (any cycle) is reserved by default
-      // until dispatched (operational). This prevents it from reducing next RS planning.
-      for (const [itemId, netOp] of netOpByItem.entries()) {
-        const key = `${id}:${itemId}`;
-        const qcAccepted = n(qcAcceptedMap.get(key) ?? 0);
-        const approvedProduced = n(approvedProducedBySoItemKey.get(key) ?? 0);
-        const reservedBase = Math.max(qcAccepted, approvedProduced);
-        const reserved = Math.max(0, reservedBase - n(netOp));
-        if (reserved > EPS) reservedByItem.set(itemId, (reservedByItem.get(itemId) ?? 0) + reserved);
-      }
-      // Also cover items with QC but no dispatch rows yet.
-      for (const [k, qc] of qcAcceptedMap.entries()) {
-        const [kSoId, kItemId] = String(k).split(":");
-        if (Number(kSoId) !== id) continue;
-        const itemId = Number(kItemId);
-        const netOp = n(netOpByItem.get(itemId) ?? 0);
-        const approvedProduced = n(approvedProducedBySoItemKey.get(k) ?? 0);
-        const reservedBase = Math.max(n(qc), approvedProduced);
-        const reserved = Math.max(0, reservedBase - netOp);
-        if (reserved > EPS) reservedByItem.set(itemId, (reservedByItem.get(itemId) ?? 0) + reserved);
-      }
-      // Also cover items with production approval but no QC/dispatch rows yet.
-      for (const [k, produced] of approvedProducedBySoItemKey.entries()) {
-        const [kSoId, kItemId] = String(k).split(":");
-        if (Number(kSoId) !== id) continue;
-        const itemId = Number(kItemId);
-        const netOp = n(netOpByItem.get(itemId) ?? 0);
-        const qcAccepted = n(qcAcceptedMap.get(k) ?? 0);
-        const reservedBase = Math.max(qcAccepted, n(produced));
-        const reserved = Math.max(0, reservedBase - netOp);
-        if (reserved > EPS) reservedByItem.set(itemId, (reservedByItem.get(itemId) ?? 0) + reserved);
-      }
-      continue;
-    }
 
     // NORMAL / REPLACEMENT: reserve remaining dispatch capacity on SO lines (FIFO).
     const lineInputs = (so.lines || []).map((l) => ({
@@ -256,6 +255,42 @@ async function freeUsableFgStockByItemForNoQtyPlanning(args) {
     out.set(itemId, Math.max(0, n(total) - reserved));
   }
   return out;
+}
+
+/**
+ * Existing NORMAL/REPLACEMENT reserve semantics, extracted as "reserved qty" map.
+ * reservedNormal = max(0, totalUsable - freeAfterNormalReservation).
+ *
+ * @param {number} salesOrderId
+ * @returns {Promise<Map<number, number>>}
+ */
+async function reservedNormalDispatchQtyByItemForPlanning(salesOrderId) {
+  const totalUsableByItem = await stockByItemIdUsable();
+  const freeAfterNormal = await freeUsableFgStockByItemForNoQtyPlanning({ salesOrderId });
+  const out = new Map();
+  for (const [itemId, totalRaw] of totalUsableByItem.entries()) {
+    const total = n(totalRaw);
+    const free = n(freeAfterNormal.get(itemId) ?? 0);
+    out.set(itemId, Math.max(0, total - free));
+  }
+  return out;
+}
+
+/**
+ * UNLOCKED dispatch drafts reserve usable stock operationally (not yet posted to StockTransaction).
+ * For RS planning, treat them as reserved so we don't double-count the same physical stock
+ * as both "free usable" and "to produce".
+ *
+ * @param {import('@prisma/client').PrismaClient | import('@prisma/client').Prisma.TransactionClient} db
+ * @returns {Promise<Map<number, number>>} itemId -> reserved draft qty
+ */
+async function reservedUnlockedDispatchDraftQtyByItemForPlanning(db) {
+  const rows = await db.dispatch.groupBy({
+    by: ["itemId"],
+    where: { workflowStatus: "UNLOCKED", reversalOfId: null },
+    _sum: { dispatchedQty: true },
+  });
+  return new Map(rows.map((r) => [Number(r.itemId), Math.max(0, n(r._sum.dispatchedQty))]));
 }
 
 /**
@@ -347,71 +382,269 @@ function mergeShortfallMaps(a, b) {
 }
 
 /**
- * Unresolved NO_QTY shortfall (per FG item) shown on draft requirement sheets:
- * (1) Prior **closed** sales-order cycles: planned − confirmed dispatch (inter-cycle carry).
- * (2) **Current** active cycle: same formula for the same cycleId — required when cycleNo === 1
- *     (otherwise v2/v3 drafts in the same period as v1 LOCKED never see WO vs dispatch balance).
+ * Per **one** NO_QTY cycle: for each FG item, locked RS gross from the winning LOCKED sheet
+ * (`shortfallQtySnapshot + requirementQty` per line, summed) vs QC-backed fulfillment for shortage closure:
+ * - original first-pass QC accepted: sum of {@link QcEntry}.acceptedQty on APPROVED {@link ProductionEntry} in this cycle
+ * - plus any disposition-linked BUCKET_TRANSFER → USABLE for WOs in this cycle (rework recovery / recheck acceptance)
+ * - plus post-cycle approvals (disposition→USABLE after earlier cycle close) that are available to fulfill this cycle’s
+ *   carry-forward snapshot demand.
  *
- * (1) and (2) are disjoint by cycleId and are summed per item.
+ * This is required so “Last shortage Qty” can be reduced to 0 when rejected qty is later recovered and made usable.
  *
- * @param {{ salesOrderId: number; currentCycleId: number | null }} input
- * @returns {Promise<Map<number, { rawShortfall: number; dispatched: number; planned: number }>>}
+ * @param {number} soId
+ * @param {number} cycleId `SalesOrderCycle.id`
+ * @returns {Promise<Map<number, { planned: number; qcAccepted: number }>>}
+ *   `qcAccepted` = original QC accepted + recovered-to-usable qty for this cycle.
  */
-async function loadNoQtyCarryForwardShortfallByItem(input) {
-  const soId = Number(input?.salesOrderId);
-  const currentCycleId = input?.currentCycleId != null ? Number(input.currentCycleId) : null;
-  if (!Number.isFinite(soId) || soId <= 0) return new Map();
-  if (!currentCycleId || !Number.isFinite(currentCycleId) || currentCycleId <= 0) return new Map();
+async function plannedNewRequirementAndQcAcceptedByItemForSingleCycle(soId, cycleId) {
+  const sid = Number(soId);
+  const cid = Number(cycleId);
+  if (!Number.isFinite(sid) || sid <= 0 || !Number.isFinite(cid) || cid <= 0) return new Map();
 
-  const current = await prisma.salesOrderCycle.findUnique({
-    where: { id: currentCycleId },
-    select: { id: true, salesOrderId: true, cycleNo: true },
+  const lockedSheets = await prisma.requirementSheet.findMany({
+    where: {
+      salesOrderId: sid,
+      status: "LOCKED",
+      cycleId: cid,
+    },
+    select: { id: true, periodKey: true, version: true, createdAt: true },
   });
-  if (!current || current.salesOrderId !== soId) return new Map();
 
-  // NO_QTY business rule: shortage nets across the SO lifecycle.
-  // Compute item-level cumulative planned vs produced across included cycles, then apply max(0, planned - produced) once.
-  const includeCycleIds = [];
-  if (Number(current.cycleNo) > 1) {
-    const prevCycles = await prisma.salesOrderCycle.findMany({
-      where: { salesOrderId: soId, cycleNo: { lt: current.cycleNo }, status: "CLOSED" },
-      select: { id: true },
+  let winning = null;
+  for (const sh of lockedSheets) {
+    winning = winning ? pickWinningLockedRequirementSheet(winning, sh) : sh;
+  }
+
+  /** @type {Map<number, number>} */
+  const plannedByItem = new Map();
+  if (winning) {
+    const lockedLines = await prisma.requirementSheetLine.findMany({
+      where: { sheetId: winning.id },
+      select: { itemId: true, requirementQty: true, shortfallQtySnapshot: true },
     });
-    for (const c of prevCycles) {
-      const id = Number(c.id);
-      if (Number.isFinite(id) && id > 0) includeCycleIds.push(id);
+    for (const l of lockedLines) {
+      const itemId = Number(l.itemId);
+      if (!Number.isFinite(itemId) || itemId <= 0) continue;
+      const req = n(l.requirementQty);
+      const sf = l.shortfallQtySnapshot != null ? n(l.shortfallQtySnapshot) : 0;
+      const grossRsLine = l.shortfallQtySnapshot == null ? round3(req) : round3(sf + req);
+      plannedByItem.set(itemId, (plannedByItem.get(itemId) || 0) + grossRsLine);
     }
   }
-  includeCycleIds.push(current.id);
 
-  const totalsByItem = await plannedNewRequirementAndApprovedProducedTotalsByItemForCycles(soId, includeCycleIds);
-  const out = new Map();
-  for (const [itemId, v] of totalsByItem) {
-    const planned = v.planned;
-    const produced = v.produced;
-    const rawShortfall = Math.max(0, planned - produced);
-    if (rawShortfall > EPS) out.set(itemId, { rawShortfall, planned, produced });
+  const productions = await prisma.productionEntry.findMany({
+    where: {
+      workflowStatus: "APPROVED",
+      workOrderLine: {
+        workOrder: {
+          salesOrderId: sid,
+          cycleId: cid,
+          status: { not: "REJECTED" },
+        },
+      },
+    },
+    select: { id: true, workOrderLine: { select: { fgItemId: true } } },
+  });
+  const prodIds = productions.map((p) => p.id).filter((x) => Number.isFinite(x) && x > 0);
+  /** @type {Map<number, number>} */
+  const qcAcceptedByItem = new Map();
+  if (prodIds.length > 0) {
+    const qcAgg = await prisma.qcEntry.groupBy({
+      by: ["productionId"],
+      where: { productionId: { in: prodIds }, ...QC_ENTRY_ACTIVE_WHERE },
+      _sum: { acceptedQty: true },
+    });
+    const prodIdToItemId = new Map(productions.map((p) => [p.id, p.workOrderLine.fgItemId]));
+    for (const r of qcAgg) {
+      const pid = Number(r.productionId);
+      const itemId = Number(prodIdToItemId.get(pid));
+      if (!Number.isFinite(itemId) || itemId <= 0) continue;
+      qcAcceptedByItem.set(itemId, (qcAcceptedByItem.get(itemId) || 0) + n(r._sum.acceptedQty));
+    }
   }
-  if (soId === 14) {
-    // eslint-disable-next-line no-console
-    console.info("[NO_QTY_CARRY_FORWARD_NET]", {
-      soId,
-      currentCycleId: current.id,
-      includedCycleIds: includeCycleIds,
-      byItem: [...out.entries()].map(([itemId, v]) => ({ itemId, ...v })),
+
+  // Rework/recheck recovery: sum BUCKET_TRANSFER → USABLE for dispositions owned by this cycle.
+  /** @type {Map<number, number>} */
+  const recoveredUsableByItem = new Map();
+  {
+    const dispositions = await prisma.qcRejectedDisposition.findMany({
+      where: { voidedAt: null, workOrder: { salesOrderId: sid, cycleId: cid } },
+      select: { id: true, itemId: true },
+    });
+    const dispIds = dispositions.map((d) => Number(d.id)).filter((x) => Number.isFinite(x) && x > 0);
+    if (dispIds.length) {
+      const dispById = new Map(dispositions.map((d) => [Number(d.id), Number(d.itemId)]));
+      const txns = await prisma.stockTransaction.findMany({
+        where: {
+          transactionType: "BUCKET_TRANSFER",
+          stockBucket: "USABLE",
+          refId: { in: dispIds },
+          qtyIn: { gt: 0 },
+        },
+        select: { refId: true, itemId: true, qtyIn: true },
+      });
+      for (const t of txns) {
+        const iid = dispById.get(Number(t.refId)) ?? Number(t.itemId);
+        if (!Number.isFinite(iid) || iid <= 0) continue;
+        recoveredUsableByItem.set(iid, (recoveredUsableByItem.get(iid) || 0) + n(t.qtyIn));
+      }
+    }
+  }
+
+  // Carry-forward recovery: usable moved from prior CLOSED cycles (post-cycle approvals) that is available to fulfill this cycle.
+  const postCycleApprovedByItem = await loadNoQtyPostCycleApprovalQtyByItem(prisma, sid, cid);
+
+  /** @type {Map<number, { planned: number; qcAccepted: number }>} */
+  const out = new Map();
+  const itemIds = new Set([
+    ...plannedByItem.keys(),
+    ...qcAcceptedByItem.keys(),
+    ...recoveredUsableByItem.keys(),
+    ...postCycleApprovedByItem.keys(),
+  ]);
+  for (const itemId of itemIds) {
+    out.set(itemId, {
+      planned: plannedByItem.get(itemId) || 0,
+      qcAccepted:
+        (qcAcceptedByItem.get(itemId) || 0) +
+        (recoveredUsableByItem.get(itemId) || 0) +
+        n(postCycleApprovedByItem.get(itemId) || 0),
     });
   }
   return out;
 }
 
 /**
- * Per FG item: running NO_QTY shortfall for planning (unproduced planning balance):
- *   rawShortfall = max(0, SUM(plannedQty on non-REJECTED WOs in these cycles) − SUM(APPROVED producedQty recorded so far))
+ * Last shortage for one FG item in one cycle: {@code max(0, locked RS gross − original QC accepted)} for that cycle only
+ * (same basis as {@link plannedNewRequirementAndQcAcceptedByItemForSingleCycle}).
  *
- * Key semantics:
- * - Does NOT wait for WO completion; this is operational "not yet produced" qty.
- * - Does NOT use dispatch; dispatch is downstream and often lags QC/production.
- * - QC acceptance/rejection does NOT change this shortfall; this is carry-forward for next Requirement Sheet.
+ * @param {number} salesOrderId
+ * @param {number} cycleId
+ * @param {number} itemId FG item id
+ */
+async function getNoQtyLastShortageQtyForCycleItem(salesOrderId, cycleId, itemId) {
+  const m = await plannedNewRequirementAndQcAcceptedByItemForSingleCycle(salesOrderId, cycleId);
+  const v = m.get(Number(itemId));
+  if (!v) return 0;
+  return Math.max(0, v.planned - v.qcAccepted);
+}
+
+/**
+ * Unresolved NO_QTY shortfall (per FG item) shown on draft requirement sheets.
+ *
+ * **Formula:** Take **only the latest closed cycle** before the current one (`cycleNo` \< currentCycleNo):
+ * `rawShortfall = max(0, lockedRsGrossForThatCycle − originalQcAcceptedForThatCycle)` via
+ * {@link plannedNewRequirementAndQcAcceptedByItemForSingleCycle}.
+ * Summing shortages across *all* prior cycles double-counts, because later cycles’ RS gross already embeds
+ * earlier shortages via `shortfallQtySnapshot`. The **current** cycle is excluded.
+ *
+ * **Breakdown:** `carryForwardBreakdownByItem` still lists **every** prior cycle (for debug); `rawShortfall`
+ * uses **last prior cycle only**.
+ *
+ * @param {{ salesOrderId: number; currentCycleId: number | null }} input
+ * @returns {Promise<{
+ *   shortfallByItem: Map<number, { rawShortfall: number; planned: number; produced: number }>;
+ *   carryForwardBreakdownByItem: Map<number, Array<{ cycleNo: number; cycleId: number; planned: number; qc: number; shortage: number }>>;
+ * }>}
+ *   `planned` / `produced` are from the **latest previous** cycle only (`produced` = original QC accepted); breakdown arrays cover all prior cycles for diagnostics.
+ */
+async function loadNoQtyCarryForwardShortfallByItem(input) {
+  const empty = () => ({
+    shortfallByItem: new Map(),
+    carryForwardBreakdownByItem: new Map(),
+  });
+
+  const soId = Number(input?.salesOrderId);
+  const currentCycleId = input?.currentCycleId != null ? Number(input.currentCycleId) : null;
+  if (!Number.isFinite(soId) || soId <= 0) return empty();
+  if (!currentCycleId || !Number.isFinite(currentCycleId) || currentCycleId <= 0) return empty();
+
+  const current = await prisma.salesOrderCycle.findUnique({
+    where: { id: currentCycleId },
+    select: { id: true, salesOrderId: true, cycleNo: true },
+  });
+  if (!current || current.salesOrderId !== soId) return empty();
+
+  const currentCycleNo = Number(current.cycleNo);
+  if (!Number.isFinite(currentCycleNo) || currentCycleNo <= 1) {
+    return empty();
+  }
+
+  const prevCycleRows = await prisma.salesOrderCycle.findMany({
+    where: { salesOrderId: soId, cycleNo: { lt: currentCycleNo } },
+    select: { id: true, cycleNo: true },
+    orderBy: { cycleNo: "asc" },
+  });
+
+  /** @type {Map<number, Array<{ cycleNo: number; cycleId: number; planned: number; qc: number; shortage: number }>>} */
+  const breakdownByItem = new Map();
+  /** @type {Map<number, { planned: number; qcAccepted: number }> | null} */
+  let lastCyclePerItem = null;
+
+  for (const row of prevCycleRows) {
+    const cycleRowId = Number(row.id);
+    const cycleNo = Number(row.cycleNo);
+    if (!Number.isFinite(cycleRowId) || cycleRowId <= 0 || !Number.isFinite(cycleNo)) continue;
+
+    const perCycle = await plannedNewRequirementAndQcAcceptedByItemForSingleCycle(soId, cycleRowId);
+    lastCyclePerItem = perCycle;
+
+    for (const [itemId, v] of perCycle) {
+      const planned = n(v.planned);
+      const qcAccepted = n(v.qcAccepted);
+      const cycleShortfall = Math.max(0, planned - qcAccepted);
+
+      const br = breakdownByItem.get(itemId) ?? [];
+      br.push({
+        cycleNo,
+        cycleId: cycleRowId,
+        planned: round3(planned),
+        qc: round3(qcAccepted),
+        shortage: round3(cycleShortfall),
+      });
+      breakdownByItem.set(itemId, br);
+    }
+  }
+
+  /** @type {Map<number, { rawShortfall: number; planned: number; produced: number }>} */
+  const out = new Map();
+  if (lastCyclePerItem) {
+    for (const [itemId, v] of lastCyclePerItem) {
+      const planned = n(v.planned);
+      const qcAccepted = n(v.qcAccepted);
+      const cycleShortfall = Math.max(0, planned - qcAccepted);
+      out.set(itemId, {
+        rawShortfall: cycleShortfall,
+        planned,
+        produced: qcAccepted,
+      });
+    }
+  }
+
+  const filtered = new Map();
+  /** @type {Map<number, Array<{ cycleNo: number; cycleId: number; planned: number; qc: number; shortage: number }>>} */
+  const filteredBreakdown = new Map();
+  for (const [itemId, v] of out) {
+    if (v.rawShortfall > EPS) {
+      filtered.set(itemId, v);
+      const bd = breakdownByItem.get(itemId);
+      if (bd?.length) filteredBreakdown.set(itemId, bd);
+    }
+  }
+
+  // eslint-disable-next-line no-console
+  console.debug("[NO_QTY_CARRY_FORWARD_SHORTFALL]", {
+    salesOrderId: soId,
+    currentCycleId,
+    currentCycleNo,
+    breakdown: Object.fromEntries(filteredBreakdown),
+  });
+
+  return { shortfallByItem: filtered, carryForwardBreakdownByItem: filteredBreakdown };
+}
+
+/**
+ * Legacy helper (unused): planned WO line qty minus APPROVED produced qty by FG item.
  *
  * @param {number} soId
  * @param {number[]} cycleIds
@@ -472,79 +705,6 @@ async function plannedMinusApprovedProducedByItemForCycles(soId, cycleIds) {
   return out;
 }
 
-/**
- * Per FG item: cumulative totals used for net carry-forward.
- * Returns totals (planned, produced) without applying max() at intermediate boundaries.
- *
- * @param {number} soId
- * @param {number[]} cycleIds
- * @returns {Promise<Map<number, { planned: number; produced: number }>>}
- */
-async function plannedNewRequirementAndApprovedProducedTotalsByItemForCycles(soId, cycleIds) {
-  const ids = (cycleIds || []).filter((x) => Number.isFinite(x) && x > 0);
-  if (!ids.length) return new Map();
-
-  // Planned = NEW requirement only from LOCKED requirement sheets in these cycles (does not include carried shortage).
-  const lockedLines = await prisma.requirementSheetLine.findMany({
-    where: {
-      sheet: {
-        salesOrderId: soId,
-        status: "LOCKED",
-        cycleId: { in: ids },
-      },
-    },
-    select: { itemId: true, requirementQty: true, shortfallQtySnapshot: true },
-  });
-  if (!lockedLines.length) return new Map();
-
-  const plannedByItem = new Map();
-  for (const l of lockedLines) {
-    // Historical compatibility:
-    // - Older LOCKED rows persisted `requirementQty` as fulfillment (shortfall + new).
-    // - New semantics persist `requirementQty` as NEW requirement only.
-    // We normalize planned NEW requirement as: max(0, requirementQty - shortfallSnapshot).
-    const req = n(l.requirementQty);
-    const sf = l.shortfallQtySnapshot != null ? n(l.shortfallQtySnapshot) : 0;
-    const plannedNew = Math.max(0, round3(req - sf));
-    plannedByItem.set(l.itemId, (plannedByItem.get(l.itemId) || 0) + plannedNew);
-  }
-
-  // Produced = APPROVED production quantities linked to WOs in these cycles (regardless of QC).
-  const woLines = await prisma.workOrderLine.findMany({
-    where: {
-      workOrder: {
-        salesOrderId: soId,
-        cycleId: { in: ids },
-        status: { not: "REJECTED" },
-      },
-    },
-    select: { id: true, fgItemId: true },
-  });
-  const lineIds = woLines.map((l) => l.id);
-  const lineIdToItemId = new Map(woLines.map((l) => [l.id, l.fgItemId]));
-
-  const prodAgg = await prisma.productionEntry.groupBy({
-    by: ["workOrderLineId"],
-    where: { workOrderLineId: { in: lineIds }, workflowStatus: "APPROVED" },
-    _sum: { producedQty: true },
-  });
-  const producedByItem = new Map();
-  for (const r of prodAgg) {
-    const lineId = Number(r.workOrderLineId);
-    if (!lineId) continue;
-    const itemId = lineIdToItemId.get(lineId);
-    if (!itemId) continue;
-    producedByItem.set(itemId, (producedByItem.get(itemId) || 0) + n(r._sum.producedQty));
-  }
-
-  const out = new Map();
-  for (const [itemId, planned] of plannedByItem) {
-    const produced = producedByItem.get(itemId) || 0;
-    out.set(itemId, { planned, produced });
-  }
-  return out;
-}
-
 async function assertSoNoQtyOrThrow(tx, soId) {
   const so = await tx.salesOrder.findUnique({
     where: { id: soId },
@@ -560,7 +720,7 @@ async function assertSoNoQtyOrThrow(tx, soId) {
     err.statusCode = 409;
     throw err;
   }
-  if (so.internalStatus === "CLOSED") {
+  if (so.internalStatus === "MANUALLY_CLOSED" || so.internalStatus === "CLOSED") {
     const err = new Error("This sales order is closed. Requirement Sheet is view-only.");
     err.statusCode = 409;
     throw err;
@@ -577,89 +737,50 @@ async function mapSheetDetail(sheet) {
   });
 
   const stockMap = await stockByItemIdUsable();
-  // For NO_QTY draft planning clarity: compute pending-dispatch reserve for THIS sales order
-  // (separate from the global free-stock computation which reserves across all OPEN SOs).
-  /** @type {Map<number, { reservedDemand: number; reservedApplied: number; usableTotal: number }>} */
-  const noQtyReserveForThisSoByItem = new Map();
-  if (sheet?.salesOrder?.orderType === "NO_QTY") {
-    const soId = Number(sheet.salesOrderId);
-    if (Number.isFinite(soId) && soId > 0) {
-      const dispRows = await prisma.dispatch.findMany({
-        where: { soId, reversalOfId: null },
-        select: { itemId: true, dispatchedQty: true },
-      });
-      const revRows = await prisma.dispatch.findMany({
-        where: { soId, reversalOfId: { not: null } },
-        select: { itemId: true, dispatchedQty: true },
-      });
-      const netOpByItem = new Map();
-      for (const d of dispRows) {
-        const itemId = Number(d.itemId);
-        if (!itemId) continue;
-        netOpByItem.set(itemId, (netOpByItem.get(itemId) ?? 0) + n(d.dispatchedQty));
-      }
-      for (const d of revRows) {
-        const itemId = Number(d.itemId);
-        if (!itemId) continue;
-        netOpByItem.set(itemId, (netOpByItem.get(itemId) ?? 0) - n(d.dispatchedQty));
-      }
-
-      const qcAcceptedMap = await buildQcAcceptedMap(prisma);
-
-      // APPROVED produced totals per item for this SO (any cycle).
-      const woLines = await prisma.workOrderLine.findMany({
-        where: { workOrder: { salesOrderId: soId, status: { not: "REJECTED" } } },
-        select: { id: true, fgItemId: true, workOrder: { select: { salesOrderId: true } } },
-      });
-      const wolIds = woLines.map((l) => Number(l.id)).filter((x) => Number.isFinite(x) && x > 0);
-      const wolMeta = new Map(woLines.map((l) => [Number(l.id), Number(l.fgItemId)]));
-      const approvedProducedByItem = new Map();
-      if (wolIds.length) {
-        const prodAgg = await prisma.productionEntry.groupBy({
-          by: ["workOrderLineId"],
-          where: { workOrderLineId: { in: wolIds }, workflowStatus: "APPROVED" },
-          _sum: { producedQty: true },
-        });
-        for (const r of prodAgg) {
-          const itemId = wolMeta.get(Number(r.workOrderLineId));
-          if (!itemId) continue;
-          approvedProducedByItem.set(itemId, (approvedProducedByItem.get(itemId) ?? 0) + n(r._sum.producedQty));
-        }
-      }
-
-      for (const [itemId, totalUsable] of stockMap.entries()) {
-        const key = `${soId}:${itemId}`;
-        const qcAccepted = n(qcAcceptedMap.get(key) ?? 0);
-        const approvedProduced = n(approvedProducedByItem.get(itemId) ?? 0);
-        const netOp = n(netOpByItem.get(itemId) ?? 0);
-        const reservedBase = Math.max(qcAccepted, approvedProduced);
-        const reservedDemand = Math.max(0, reservedBase - netOp);
-        const reservedApplied = Math.min(Math.max(0, n(totalUsable)), reservedDemand);
-        noQtyReserveForThisSoByItem.set(itemId, {
-          reservedDemand: round3(reservedDemand),
-          reservedApplied: round3(reservedApplied),
-          usableTotal: round3(usableStockDisplayQty(n(totalUsable))),
-        });
-      }
-    }
-  }
-  const freeNoQtyStockMap =
-    sheet?.salesOrder?.orderType === "NO_QTY" && sheet.status !== "LOCKED"
-      ? await freeUsableFgStockByItemForNoQtyPlanning({
-          salesOrderId: sheet.salesOrderId,
-          activeCycleId: sheet.cycleId ?? sheet.salesOrder?.currentCycleId ?? null,
-        })
+  const reservedUnlockedDraftByItem =
+    sheet?.salesOrder?.orderType === "NO_QTY" ? await reservedUnlockedDispatchDraftQtyByItemForPlanning(prisma) : new Map();
+  const freeAfterNormalByItem =
+    sheet?.salesOrder?.orderType === "NO_QTY"
+      ? await freeUsableFgStockByItemForNoQtyPlanning({ salesOrderId: sheet.salesOrderId })
+      : new Map();
+  const noQtyBreakdownByItem =
+    sheet?.salesOrder?.orderType === "NO_QTY"
+      ? await (async () => {
+          const reservedNormalByItem = await reservedNormalDispatchQtyByItemForPlanning(sheet.salesOrderId);
+          const excludeCycleId = sheet.cycleId ?? sheet.salesOrder?.currentCycleId ?? null;
+          return computeNoQtyUsablePlanningBreakdownByItem(prisma, {
+            salesOrderId: sheet.salesOrderId,
+            reservedForNormalDispatchByItem: reservedNormalByItem,
+            excludeCycleId,
+            includeDebugRows: false,
+          });
+        })()
       : null;
-  const shortfallByItem = await loadNoQtyCarryForwardShortfallByItem({
+  const effCycleIdForPost = sheet.cycleId ?? sheet.salesOrder?.currentCycleId ?? null;
+  const { shortfallByItem } = await loadEffectiveNoQtyCarryForwardShortfallByItem(prisma, {
     salesOrderId: sheet.salesOrderId,
-    currentCycleId: sheet.cycleId ?? sheet.salesOrder?.currentCycleId ?? null,
+    currentCycleId: effCycleIdForPost,
   });
+  const postCycleByItem =
+    sheet?.salesOrder?.orderType === "NO_QTY" && effCycleIdForPost != null && Number(effCycleIdForPost) > 0
+      ? await loadNoQtyPostCycleApprovalQtyByItem(prisma, sheet.salesOrderId, Number(effCycleIdForPost))
+      : new Map();
+  const pendingDispositionByItem =
+    sheet?.salesOrder?.orderType === "NO_QTY" && effCycleIdForPost != null && Number(effCycleIdForPost) > 0
+      ? await loadNoQtyPendingQcDispositionQtyByItem(prisma, sheet.salesOrderId, Number(effCycleIdForPost))
+      : new Map();
+  const undispatchedPriorByItem =
+    sheet?.salesOrder?.orderType === "NO_QTY" && effCycleIdForPost != null && Number(effCycleIdForPost) > 0
+      ? await loadNoQtyPriorCycleUndispatchedAcceptedByItem(prisma, sheet.salesOrderId, Number(effCycleIdForPost))
+      : new Map();
 
   const lines = (sheet.lines || []).map((ln) => {
     const item = ln.item;
     const greenTh = item?.planningGapGreenThresholdPercent ?? null;
     const yellowTh = item?.planningGapYellowThresholdPercent ?? null;
     const newWoQty = n(ln.requirementQty);
+    // Used by NO_QTY response mapping as a safe fallback stock source.
+    const rawTotal = stockMap.get(ln.itemId) ?? 0;
 
     let availableStockQty = null;
     let gapPercent = null;
@@ -671,19 +792,53 @@ async function mapSheetDetail(sheet) {
     let fulfillmentQty = null;
     let coveredFromStockQty = null;
     let productionRequiredQty = null;
-    /** System recommendation: total to produce = max(0, carry-forward + new requirement − free usable stock). */
+    /** System recommendation: REGULAR = fulfillment-based net; NO_QTY = max(0, confirmed last shortage + new requirement). */
     let suggestedNetWoQty = 0;
     /** DRAFT only: QC-usable stock used for suggested WO (same source as `availableStockQty` on the line). */
     let draftUsableStockForSuggest = 0;
+    const postCycleQty =
+      sheet?.salesOrder?.orderType === "NO_QTY" ? round3(n(postCycleByItem.get(ln.itemId) ?? 0)) : 0;
+    const pendingDispositionQty =
+      sheet?.salesOrder?.orderType === "NO_QTY" ? round3(n(pendingDispositionByItem.get(ln.itemId) ?? 0)) : 0;
+    const undispatchedPriorQty =
+      sheet?.salesOrder?.orderType === "NO_QTY" ? round3(n(undispatchedPriorByItem.get(ln.itemId) ?? 0)) : 0;
 
-    if (sheet.status === "LOCKED") {
-      const rawSnapStock = ln.availableStockQtySnapshot != null ? n(ln.availableStockQtySnapshot) : null;
-      // Operational display: match Stock Summary / dashboard (floor at 0); do not treat negative ledger as cover.
-      availableStockQty = rawSnapStock != null ? usableStockDisplayQty(rawSnapStock) : null;
-      shortfallQty = ln.shortfallQtySnapshot != null ? n(ln.shortfallQtySnapshot) : 0;
-      // LOCKED semantics (NO_QTY): `requirementQty` remains NEW requirement only.
-      // Fulfillment for this cycle = shortfall snapshot + new requirement.
+    if (sheet.status === "LOCKED" && sheet?.salesOrder?.orderType === "NO_QTY") {
+      const rawSnapStock = ln.availableStockQtySnapshot != null ? n(ln.availableStockQtySnapshot) : 0;
+      availableStockQty = usableStockDisplayQty(rawSnapStock);
+      const snapCarry = ln.shortfallQtySnapshot != null ? n(ln.shortfallQtySnapshot) : 0;
+      shortfallQty = round3(Math.max(0, snapCarry));
       fulfillmentQty = round3(round3(shortfallQty) + round3(newWoQty));
+      coveredFromStockQty = round3(availableStockQty);
+      const fromSnapshot =
+        ln.suggestedWoQtySnapshot != null ? round3(n(ln.suggestedWoQtySnapshot)) : null;
+      const recomputedDraftStyle = round3(
+        Math.max(0, round3(shortfallQty) + round3(newWoQty) - round3(availableStockQty)),
+      );
+      productionRequiredQty = fromSnapshot != null ? fromSnapshot : recomputedDraftStyle;
+      if (
+        fromSnapshot != null &&
+        Math.abs(fromSnapshot - recomputedDraftStyle) > EPS &&
+        fulfillmentQty > EPS
+      ) {
+        console.warn("[NO_QTY_RS_DETAIL] Locked line suggestedWoQtySnapshot differs from demand − stock snapshot replay", {
+          requirementSheetId: sheet.id,
+          itemId: ln.itemId,
+          suggestedWoQtySnapshot: fromSnapshot,
+          recomputedDemandMinusStock: recomputedDraftStyle,
+        });
+      }
+      gapPercent = computeGapPercent(fulfillmentQty, availableStockQty ?? 0);
+      zone = computeZone(gapPercent, greenTh, yellowTh);
+      totalWoQty = productionRequiredQty;
+      qcStockNote = availableStockQty > EPS ? "Free surplus usable stock is deducted from this requirement sheet." : null;
+      if (totalWoQty != null && totalWoQty < 0) totalWoQty = 0;
+    } else if (sheet.status === "LOCKED") {
+      const rawSnapStock = ln.availableStockQtySnapshot != null ? n(ln.availableStockQtySnapshot) : null;
+      availableStockQty = rawSnapStock != null ? usableStockDisplayQty(rawSnapStock) : null;
+      const snapCarry = ln.shortfallQtySnapshot != null ? n(ln.shortfallQtySnapshot) : 0;
+      shortfallQty = snapCarry;
+      fulfillmentQty = round3(round3(snapCarry) + round3(newWoQty));
       coveredFromStockQty =
         availableStockQty != null ? round3(Math.min(fulfillmentQty, availableStockQty)) : null;
       productionRequiredQty =
@@ -701,60 +856,76 @@ async function mapSheetDetail(sheet) {
       }
       if (totalWoQty != null && totalWoQty < 0) totalWoQty = 0;
     } else {
-      const rawTotal = stockMap.get(ln.itemId) ?? 0;
-      const rawFree =
-        freeNoQtyStockMap?.get(ln.itemId) ??
-        (sheet?.salesOrder?.orderType === "NO_QTY" ? 0 : null) ??
-        (stockMap.get(ln.itemId) ?? 0);
-      const rawStock = rawFree;
+      const rawStock =
+        sheet?.salesOrder?.orderType === "NO_QTY"
+          ? Math.max(
+              0,
+              n(freeAfterNormalByItem.get(ln.itemId) ?? 0) - n(reservedUnlockedDraftByItem.get(ln.itemId) ?? 0),
+            )
+          : (stockMap.get(ln.itemId) ?? 0);
       const stock = usableStockDisplayQty(rawStock);
       draftUsableStockForSuggest = round3(stock);
       availableStockQty = draftUsableStockForSuggest;
-      const rawShortfall = shortfallByItem.get(ln.itemId)?.rawShortfall ?? 0;
-      // Show gross carry-forward from prior cycles in Shortfall; net production need uses stock once below.
-      shortfallQty = round3(rawShortfall);
-      // Draft semantics (NO_QTY): user input is the new cycle fulfillment intent (may be 0 until entered).
-      // Fulfillment includes carry-forward shortfall, because dispatch cap is defined by total fulfillment per cycle.
-      const grossFulfillment = round3(round3(rawShortfall) + round3(newWoQty));
+      const rawCarryShortfall = shortfallByItem.get(ln.itemId)?.rawShortfall ?? 0;
+      // NO_QTY: API `shortfallQty` = last shortage from prior cycle (RS gross − original QC); post-cycle / pending / undispatched are separate fields.
+      shortfallQty =
+        sheet?.salesOrder?.orderType === "NO_QTY"
+          ? round3(Math.max(0, rawCarryShortfall))
+          : round3(rawCarryShortfall);
+      // Draft: gross fulfillment uses raw carry + new (same-cycle messaging); Total to Produce uses shortfallQty + new − prior undispatched QC.
+      const grossFulfillment = round3(round3(rawCarryShortfall) + round3(newWoQty));
       fulfillmentQty = grossFulfillment;
-      coveredFromStockQty = round3(Math.min(grossFulfillment, stock));
-      productionRequiredQty = round3(Math.max(0, grossFulfillment - stock));
+      coveredFromStockQty =
+        sheet?.salesOrder?.orderType === "NO_QTY" ? 0 : round3(Math.min(grossFulfillment, stock));
+      productionRequiredQty =
+        sheet?.salesOrder?.orderType === "NO_QTY"
+          ? round3(Math.max(0, round3(shortfallQty) + round3(newWoQty) - round3(stock)))
+          : round3(Math.max(0, grossFulfillment - postCycleQty - stock));
       gapPercent = computeGapPercent(grossFulfillment, stock);
       zone = computeZone(gapPercent, greenTh, yellowTh);
       stockCoveredNote = grossFulfillment > EPS && stock > EPS;
       totalWoQty = productionRequiredQty;
 
-      if (
-        sheet?.salesOrder?.orderType === "NO_QTY" &&
-        usableStockDisplayQty(rawTotal) > EPS &&
-        usableStockDisplayQty(rawFree) <= EPS
-      ) {
+      if (sheet?.salesOrder?.orderType === "NO_QTY") {
+        qcStockNote = stock > EPS ? "Free surplus usable (planning) reduces Total to Produce on this sheet." : null;
         stockCoveredNote = false;
-        qcStockNote = "Stock reserved for dispatch – not available for planning";
       } else if (stockCoveredNote) {
         qcStockNote = "QC passed stock is available";
       }
     }
 
-    // enforce excess semantics
+    // enforce excess semantics (stock-backed only; NO_QTY cycle production is stock-isolated)
     if (gapPercent != null && gapPercent < 0) {
       zone = "EXCESS";
-      totalWoQty = 0;
+      if (sheet?.salesOrder?.orderType !== "NO_QTY") totalWoQty = 0;
     }
     if (totalWoQty != null && totalWoQty < 0) totalWoQty = 0;
 
     if (sheet.status === "LOCKED") {
       const ful = fulfillmentQty != null ? round3(n(fulfillmentQty)) : 0;
-      const sf = round3(n(shortfallQty ?? 0));
-      const newPortion = round3(Math.max(0, ful - sf));
       const stockForSug = round3(n(availableStockQty ?? 0));
-      suggestedNetWoQty = newPortion <= EPS ? 0 : round3(Math.max(0, newPortion - stockForSug));
+      if (sheet?.salesOrder?.orderType === "NO_QTY") {
+        suggestedNetWoQty =
+          productionRequiredQty != null ? round3(n(productionRequiredQty)) : round3(Math.max(0, round3(shortfallQty ?? 0) + round3(newWoQty)));
+      } else {
+        suggestedNetWoQty = ful <= EPS ? 0 : round3(Math.max(0, ful - postCycleQty - stockForSug));
+      }
     } else {
-      // NO_QTY: suggested == total to produce for this cycle (carry-forward + new requirement − free usable stock)
-      const sf = round3(n(shortfallQty ?? 0));
-      suggestedNetWoQty = round3(Math.max(0, round3(sf) + round3(newWoQty) - round3(draftUsableStockForSuggest)));
+      // NO_QTY: Total to Produce planning uses (demand − free usable) to avoid double-planning production.
+      const rawSf =
+        sheet?.salesOrder?.orderType === "NO_QTY"
+          ? round3(n(shortfallQty ?? 0))
+          : round3(n(shortfallByItem.get(ln.itemId)?.rawShortfall ?? 0));
+      suggestedNetWoQty =
+        sheet?.salesOrder?.orderType === "NO_QTY"
+          ? productionRequiredQty != null
+            ? round3(n(productionRequiredQty))
+            : round3(Math.max(0, rawSf + round3(newWoQty)))
+          : round3(
+              Math.max(0, rawSf + round3(newWoQty) - postCycleQty - round3(draftUsableStockForSuggest)),
+            );
     }
-    if (zone === "EXCESS") suggestedNetWoQty = 0;
+    if (zone === "EXCESS" && sheet?.salesOrder?.orderType !== "NO_QTY") suggestedNetWoQty = 0;
 
     return {
       id: ln.id,
@@ -762,17 +933,27 @@ async function mapSheetDetail(sheet) {
       itemName: item?.itemName ?? `Item #${ln.itemId}`,
       shortfallQty,
       qcStockNote,
-      ...(sheet?.salesOrder?.orderType === "NO_QTY" && sheet.status !== "LOCKED"
-        ? (() => {
-            const r = noQtyReserveForThisSoByItem.get(ln.itemId) ?? null;
-            return r
-              ? {
-                  usableTotalQty: r.usableTotal,
-                  reservedPendingDispatchQty: r.reservedDemand,
-                  reservedPendingDispatchAppliedQty: r.reservedApplied,
-                }
-              : { usableTotalQty: null, reservedPendingDispatchQty: null, reservedPendingDispatchAppliedQty: null };
-          })()
+      ...(sheet?.salesOrder?.orderType === "NO_QTY"
+        ? {
+            postCycleApprovalQty: postCycleQty > EPS ? postCycleQty : 0,
+            pendingQcDispositionQty: pendingDispositionQty > EPS ? pendingDispositionQty : 0,
+            previousCycleUndispatchedAcceptedQty: undispatchedPriorQty > EPS ? undispatchedPriorQty : 0,
+            totalUsableQty: round3(n(noQtyBreakdownByItem?.get(ln.itemId)?.totalUsableQty ?? usableStockDisplayQty(rawTotal))),
+            /** Pending confirmed dispatch vs locked RS commitment (FIFO; includes closed cycles until fulfilled). */
+            reservedForActiveNoQtyDispatchQty: round3(n(noQtyBreakdownByItem?.get(ln.itemId)?.reservedForActiveNoQtyDispatchQty ?? 0)),
+            freeSurplusUsableQty: round3(
+              Math.max(
+                0,
+                n(freeAfterNormalByItem.get(ln.itemId) ?? n(noQtyBreakdownByItem?.get(ln.itemId)?.freeSurplusUsableQty ?? 0)) -
+                  n(reservedUnlockedDraftByItem.get(ln.itemId) ?? 0),
+              ),
+            ),
+            ...(sheet.status !== "LOCKED"
+              ? (() => {
+                  return { usableTotalQty: null, reservedPendingDispatchQty: null, reservedPendingDispatchAppliedQty: null };
+                })()
+              : {}),
+          }
         : {}),
       newWoQty: String(round3(newWoQty)),
       /** NO_QTY: total fulfillment qty in this cycle (carry-forward + new). */
@@ -814,7 +995,7 @@ async function mapSheetDetail(sheet) {
 requirementSheetsRouter.get(
   "/sales-orders/:id/requirement-sheets",
   requireAuth,
-  requireRole(["ADMIN", "SALES", "STORE", "PRODUCTION"]),
+  requireRole(RS_READ_ROLES),
   async (req, res, next) => {
     try {
       const soId = Number(req.params.id);
@@ -824,9 +1005,27 @@ requirementSheetsRouter.get(
       const rows = await prisma.requirementSheet.findMany({
         where: { salesOrderId: soId },
         orderBy: [{ periodKey: "desc" }, { version: "desc" }, { id: "desc" }],
-        select: { id: true, periodKey: true, version: true, status: true, cycleId: true, createdAt: true },
+        select: {
+          id: true,
+          periodKey: true,
+          version: true,
+          status: true,
+          cycleId: true,
+          createdAt: true,
+          cycle: { select: { cycleNo: true } },
+        },
       });
-      return res.json(rows);
+      return res.json(
+        rows.map((r) => ({
+          id: r.id,
+          periodKey: r.periodKey,
+          version: r.version,
+          status: r.status,
+          cycleId: r.cycleId,
+          createdAt: r.createdAt,
+          cycleNo: r.cycle?.cycleNo != null ? Number(r.cycle.cycleNo) : null,
+        })),
+      );
     } catch (e) {
       return next(e);
     }
@@ -837,7 +1036,7 @@ requirementSheetsRouter.get(
 requirementSheetsRouter.post(
   "/sales-orders/:id/requirement-sheets",
   requireAuth,
-  requireRole(["ADMIN", "SALES", "STORE", "PRODUCTION"]),
+  requireRole(RS_WRITE_ROLES),
   async (req, res, next) => {
     try {
       const soId = Number(req.params.id);
@@ -857,6 +1056,7 @@ requirementSheetsRouter.post(
 
       const created = await prisma.$transaction(async (tx) => {
         const so = await assertSoNoQtyOrThrow(tx, soId);
+        await advanceNoQtyCycleForNextRequirementSheetIfEligible(tx, soId, req.user?.userId ?? null);
         const cycleId = await resolveNoQtyActiveCycleIdForPlanning(tx, soId);
 
         const maxV = await tx.requirementSheet.aggregate({
@@ -918,7 +1118,7 @@ requirementSheetsRouter.post(
 requirementSheetsRouter.get(
   "/requirement-sheets/:id",
   requireAuth,
-  requireRole(["ADMIN", "SALES", "STORE", "PRODUCTION"]),
+  requireRole(RS_READ_ROLES),
   async (req, res, next) => {
     try {
       const id = Number(req.params.id);
@@ -973,7 +1173,7 @@ async function assertDraftRequirementSheetDeletable(tx, sheetId) {
     err.statusCode = 409;
     throw err;
   }
-  if (so.internalStatus === "CLOSED") {
+  if (so.internalStatus === "MANUALLY_CLOSED" || so.internalStatus === "CLOSED") {
     const err = new Error("This sales order is closed. Requirement Sheet is view-only.");
     err.statusCode = 409;
     throw err;
@@ -1023,7 +1223,7 @@ async function assertDraftRequirementSheetDeletable(tx, sheetId) {
 requirementSheetsRouter.delete(
   "/requirement-sheets/:id",
   requireAuth,
-  requireRole(["ADMIN", "SALES", "STORE", "PRODUCTION"]),
+  requireRole(RS_WRITE_ROLES),
   async (req, res, next) => {
     try {
       const id = Number(req.params.id);
@@ -1186,7 +1386,7 @@ requirementSheetsRouter.delete(
 requirementSheetsRouter.put(
   "/requirement-sheets/:id",
   requireAuth,
-  requireRole(["ADMIN", "SALES", "STORE", "PRODUCTION"]),
+  requireRole(RS_WRITE_ROLES),
   async (req, res, next) => {
     try {
       const id = Number(req.params.id);
@@ -1215,7 +1415,7 @@ requirementSheetsRouter.put(
 requirementSheetsRouter.put(
   "/requirement-sheets/:id/lines",
   requireAuth,
-  requireRole(["ADMIN", "SALES", "STORE", "PRODUCTION"]),
+  requireRole(RS_WRITE_ROLES),
   async (req, res, next) => {
     try {
       const id = Number(req.params.id);
@@ -1280,7 +1480,7 @@ requirementSheetsRouter.put(
 requirementSheetsRouter.post(
   "/requirement-sheets/:id/recalculate",
   requireAuth,
-  requireRole(["ADMIN", "SALES", "STORE", "PRODUCTION"]),
+  requireRole(RS_WRITE_ROLES),
   async (req, res, next) => {
     try {
       const id = Number(req.params.id);
@@ -1345,7 +1545,7 @@ requirementSheetsRouter.post(
         for (const ln of before.lines || []) beforeByItemId.set(Number(ln.itemId), Number(ln.requirementQty));
 
         const stockMap = await stockByItemIdUsable();
-        const shortfallByItem = await loadNoQtyCarryForwardShortfallByItem({
+        const { shortfallByItem } = await loadEffectiveNoQtyCarryForwardShortfallByItem(prisma, {
           salesOrderId: sheet.salesOrderId,
           currentCycleId: sheet.cycleId,
         });
@@ -1393,7 +1593,7 @@ requirementSheetsRouter.post(
 requirementSheetsRouter.post(
   "/requirement-sheets/:id/lock",
   requireAuth,
-  requireRole(["ADMIN", "SALES", "STORE", "PRODUCTION"]),
+  requireRole(RS_WRITE_ROLES),
   async (req, res, next) => {
     try {
       const id = Number(req.params.id);
@@ -1431,45 +1631,70 @@ requirementSheetsRouter.post(
           await tx.requirementSheet.update({ where: { id }, data: { cycleId: activeCycleId } });
         }
 
-        const stockMap = await stockByItemIdUsable();
-        // NO_QTY planning: lock snapshots must use FREE usable stock (not QC-passed stock reserved for dispatch).
-        // Otherwise the created WO is incorrectly reduced by reserved stock.
-        const freeStockMap = await freeUsableFgStockByItemForNoQtyPlanning({
-          salesOrderId: existing.salesOrderId,
-          activeCycleId,
-        });
-        const shortfallByItem = await loadNoQtyCarryForwardShortfallByItem({
+        const { shortfallByItem } = await loadEffectiveNoQtyCarryForwardShortfallByItem(tx, {
           salesOrderId: existing.salesOrderId,
           currentCycleId: activeCycleId,
+        });
+        /** Diagnostic only: legacy lock math (post-cycle / prior undispatched). Must not change persisted Total to Produce. */
+        const postCycleByItemLock = await loadNoQtyPostCycleApprovalQtyByItem(tx, existing.salesOrderId, activeCycleId);
+        const undispatchedPriorByItemLock = await loadNoQtyPriorCycleUndispatchedAcceptedByItem(tx, existing.salesOrderId, activeCycleId);
+        const reservedNormalByItemLock = await reservedNormalDispatchQtyByItemForPlanning(existing.salesOrderId);
+        const freeAfterNormalByItemLock = await freeUsableFgStockByItemForNoQtyPlanning({ salesOrderId: existing.salesOrderId });
+        const reservedUnlockedDraftByItemLock = await reservedUnlockedDispatchDraftQtyByItemForPlanning(tx);
+        const noQtyBreakdownByItemLock = await computeNoQtyUsablePlanningBreakdownByItem(tx, {
+          salesOrderId: existing.salesOrderId,
+          reservedForNormalDispatchByItem: reservedNormalByItemLock,
+          // Critical: do NOT self-reserve the cycle being locked.
+          excludeCycleId: activeCycleId,
+          includeDebugRows: false,
         });
 
         let anyPositiveFulfillment = false;
         for (const ln of existing.lines || []) {
           const item = ln.item;
           const newWoQty = n(ln.requirementQty);
-          const rawTotalStock = stockMap.get(ln.itemId) ?? 0;
-          const rawFreeStock = freeStockMap.get(ln.itemId) ?? 0;
-          const stock = usableStockDisplayQty(rawFreeStock);
           const rawShortfall = shortfallByItem.get(ln.itemId)?.rawShortfall ?? 0;
-          const fulfillmentQty = round3(round3(rawShortfall) + round3(newWoQty));
-          const coveredFromStockQty = Math.min(fulfillmentQty, stock);
-          const productionRequiredQty = round3(Math.max(0, fulfillmentQty - stock));
-          const gapPercent = computeGapPercent(fulfillmentQty, stock);
+          /** Last shortage for carry = RS gross − original QC (same as draft). */
+          const confirmedCarrySnapshot = round3(Math.max(0, rawShortfall));
+          const rawFree = Math.max(
+            0,
+            n(freeAfterNormalByItemLock.get(ln.itemId) ?? n(noQtyBreakdownByItemLock.get(ln.itemId)?.freeSurplusUsableQty ?? 0)) -
+              n(reservedUnlockedDraftByItemLock.get(ln.itemId) ?? 0),
+          );
+          const usableStockUsed = round3(usableStockDisplayQty(rawFree));
+          const totalDemand = round3(round3(confirmedCarrySnapshot) + round3(newWoQty));
+          const productionRequiredQty = round3(Math.max(0, totalDemand - usableStockUsed));
+
+          const postPc = round3(n(postCycleByItemLock.get(ln.itemId) ?? 0));
+          const undPrior = round3(n(undispatchedPriorByItemLock.get(ln.itemId) ?? 0));
+          const legacyLockTotalToProduce = round3(
+            Math.max(0, confirmedCarrySnapshot + round3(newWoQty) - postPc - undPrior),
+          );
+          if (Math.abs(legacyLockTotalToProduce - productionRequiredQty) > EPS) {
+            console.warn("[NO_QTY_RS_LOCK] Total to Produce uses draft formula (demand − usable); legacy post-cycle/undispatched formula differed", {
+              salesOrderId: existing.salesOrderId,
+              requirementSheetId: existing.id,
+              itemId: ln.itemId,
+              totalDemand,
+              usableStockUsed,
+              totalToProduceDraftFormula: productionRequiredQty,
+              legacyPostCycleUndispatchedFormula: legacyLockTotalToProduce,
+            });
+          }
+
+          const gapPercent = computeGapPercent(totalDemand, usableStockUsed);
           const zone = computeZone(gapPercent, item?.planningGapGreenThresholdPercent, item?.planningGapYellowThresholdPercent);
-          if (fulfillmentQty > EPS) anyPositiveFulfillment = true;
+          if (totalDemand > EPS) anyPositiveFulfillment = true;
 
           await tx.requirementSheetLine.update({
             where: { id: ln.id },
             data: {
-              // NO_QTY semantics:
-              // - requirementQty stays as the user's NEW requirement only
-              // - shortfallQtySnapshot captures carry-forward from previous cycles
-              // - suggestedWoQtySnapshot captures production required this cycle (total to produce after free stock)
+              // NO_QTY: requirementQty = new requirement only; shortfall snapshot = last shortage;
+              // suggestedWoQtySnapshot = max(0, lastShortage + newReq − freeSurplusUsableStockUsed) same as draft.
               requirementQty: String(round3(newWoQty)),
-              availableStockQtySnapshot: round3(stock),
+              availableStockQtySnapshot: usableStockUsed,
               gapPercentSnapshot: gapPercent,
-              shortfallQtySnapshot: round3(rawShortfall),
-              // Persist NO_QTY production-required qty only (not the fulfillment cap).
+              shortfallQtySnapshot: confirmedCarrySnapshot,
               suggestedWoQtySnapshot: productionRequiredQty,
               colorZoneSnapshot: zone,
             },
@@ -1816,7 +2041,9 @@ requirementSheetsRouter.post(
           .filter((x) => Number.isFinite(x.qty) && x.qty > 0);
 
         if (!positiveLines.length) {
-          const err = new Error("No production-required lines found (usable stock covers the cycle cap).");
+          const err = new Error(
+            "No production-required lines on this sheet (fulfillment is already covered — e.g. by post-cycle approvals or zero suggested production at lock).",
+          );
           err.statusCode = 409;
           throw err;
         }
@@ -1872,5 +2099,12 @@ requirementSheetsRouter.post(
   },
 );
 
-module.exports = { requirementSheetsRouter };
+module.exports = {
+  requirementSheetsRouter,
+  loadNoQtyCarryForwardShortfallByItem,
+  plannedNewRequirementAndQcAcceptedByItemForSingleCycle,
+  loadEffectiveNoQtyCarryForwardShortfallByItem,
+  getNoQtyLastShortageQtyForCycleItem,
+  loadNoQtyPriorCycleUndispatchedAcceptedByItem,
+};
 

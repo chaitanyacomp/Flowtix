@@ -2,7 +2,7 @@ const express = require("express");
 const { z } = require("zod");
 const { prisma } = require("../utils/prisma");
 const { requireAuth, requireRole } = require("../middleware/auth");
-const { AuditAction, AuditEntityType } = require("@prisma/client");
+const { AuditAction, AuditEntityType } = require("../prismaClientPackage");
 
 const activityRouter = express.Router();
 

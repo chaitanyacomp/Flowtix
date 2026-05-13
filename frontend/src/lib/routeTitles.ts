@@ -1,7 +1,7 @@
 const TITLES: Record<string, string> = {
   "/dashboard": "Dashboard",
-  "/planning-dashboard": "Planning dashboard",
-  "/planning-dashboard/production": "Production planning",
+  "/account": "Account",
+  "/planning-dashboard": "Requirement & Cycle Planning",
   "/export-history": "Export history",
   "/customers": "Customers",
   "/items": "Items",
@@ -13,13 +13,15 @@ const TITLES: Record<string, string> = {
   "/quotations": "Quotations",
   "/quotations/new": "New quotation",
   "/sales-orders": "Sales orders",
+  "/sales-orders/no-qty/from-quotation": "Continue to Sales Order",
   "/sales-orders/requirements": "Requirement sheet",
   "/dispatch": "Dispatch",
-  "/rm-check": "Production Planning",
+  "/rm-check": "Prepare work order",
+  "/work-orders/prepare": "Prepare work order",
   "/stock": "Stock Summary",
   "/stock/rm-ledger": "RM Movement",
   "/stock/adjustment": "Stock Adjustment",
-  "/rm-po-grn": "RM Purchase",
+  "/rm-po-grn": "Material Planning",
   "/purchase-bills": "Purchase bills",
   "/purchase-bills/new": "New purchase bill",
   "/work-orders": "Work order",
@@ -31,8 +33,9 @@ const TITLES: Record<string, string> = {
   "/reports/stock-reconciliation": "Stock reconciliation",
   "/reports/purchase-matching": "Purchase matching",
   "/reports/sales-matching": "Sales matching",
+  "/reports/customer-so-rs": "Customer-wise SO & RS Report",
   "/reports/batch-traceability": "Batch traceability",
-  "/reports/rm-shortage": "RM Shortage Report",
+  "/reports/rm-shortage": "RM Shortage Workspace",
   "/reports/work-order-tracking": "Work Order Tracking Report",
   "/reports/operations-exceptions": "Operations Exception Report",
   "/reports/so-dispatch-trace": "SO to Dispatch Trace",
@@ -45,13 +48,23 @@ const TITLES: Record<string, string> = {
   "/customer-returns/qc-hold": "Customer Return · Hold for Checking",
   "/customer-returns/rework": "Customer Return · Rework",
   "/admin/settings": "Admin settings",
+  "/admin/company-profile": "Company Profile",
+  "/admin/rate-contracts": "Rate contracts",
   "/admin/database-cleanup": "Database cleanup",
+  "/admin/backup-restore": "Backup & Restore",
+  "/masters/tally-import": "Tally master import",
   "/activity": "Activity",
 };
 
 export function getPageTitle(pathname: string): string {
+  if (pathname.startsWith("/work-orders/prepare")) {
+    return TITLES["/work-orders/prepare"];
+  }
+  if (pathname.startsWith("/planning-dashboard")) {
+    return TITLES["/planning-dashboard"];
+  }
   if (pathname.startsWith("/rm-po-grn/") && pathname !== "/rm-po-grn") {
-    return "RM Purchase · Order";
+    return "RM Purchase Order";
   }
   if (pathname.startsWith("/purchase-bills/") && pathname !== "/purchase-bills/new") {
     return "Purchase bill";

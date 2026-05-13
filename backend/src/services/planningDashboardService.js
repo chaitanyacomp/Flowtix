@@ -1,5 +1,10 @@
+/**
+ * NO_QTY FLOW ONLY — planning dashboard aggregation (requirement sheets, cycles, rolling demand).
+ * Not used for REGULAR fixed-qty sales order → RM check → work order. Do not import from REGULAR WO prep paths.
+ */
 const { prisma } = require("../utils/prisma");
 const { usableStockDisplayQty } = require("./stockService");
+const { computeGlobalNoQtyUsablePlanningBreakdownByItem } = require("./noQtyUsablePlanningService");
 const {
   classifyPlanningZone,
   resolveOrderWiseBoundariesFromLegacyDbFields,
@@ -49,15 +54,7 @@ function computeSuggestedWo(req, stock) {
  * using latest-sheet requirement quantities as the demand signal.
  */
 async function getPlanningDashboard() {
-  const stockRows = await prisma.stockTransaction.groupBy({
-    by: ["itemId"],
-    // Stock math must include reversed originals; reversal rows offset them.
-    where: { stockBucket: "USABLE" },
-    _sum: { qtyIn: true, qtyOut: true },
-  });
-  const stockByItemId = new Map(
-    stockRows.map((r) => [r.itemId, n(r._sum.qtyIn) - n(r._sum.qtyOut)]),
-  );
+  const globalBreakdownByItem = await computeGlobalNoQtyUsablePlanningBreakdownByItem(prisma);
 
   // NO_QTY only; active cycle only (currentCycleId) and not closed SO.
   const sheets = await prisma.requirementSheet.findMany({
@@ -121,8 +118,8 @@ async function getPlanningDashboard() {
         gapPercent = computeGapPercent(req, stock);
         suggestedWoQty = computeSuggestedWo(req, stock);
       } else {
-        // DRAFT sheets use live stock (same ledger filter as requirement sheet / dashboard).
-        stock = usableStockDisplayQty(stockByItemId.get(l.itemId) ?? 0);
+        // DRAFT sheets use live FREE SURPLUS usable stock (global; excludes reserved active-cycle commitments).
+        stock = usableStockDisplayQty(n(globalBreakdownByItem.get(l.itemId)?.freeSurplusUsableQty ?? 0));
         gapPercent = computeGapPercent(req, stock);
         suggestedWoQty = computeSuggestedWo(req, stock);
       }
@@ -190,7 +187,7 @@ async function getPlanningDashboard() {
   let pExcess = 0;
   for (const [itemId, totalReq0] of itemAgg.entries()) {
     const totalReq = round3(totalReq0);
-    const stock = round3(usableStockDisplayQty(stockByItemId.get(itemId) ?? 0));
+    const stock = round3(usableStockDisplayQty(n(globalBreakdownByItem.get(itemId)?.freeSurplusUsableQty ?? 0)));
     const meta = itemMeta.get(itemId);
     const minStockFloor = meta?.minimumStockQty != null ? n(meta.minimumStockQty) : null;
     const baseReq = round3(Math.max(totalReq, minStockFloor != null && Number.isFinite(minStockFloor) ? minStockFloor : 0));

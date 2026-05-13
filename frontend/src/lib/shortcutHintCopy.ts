@@ -13,7 +13,7 @@ export const FIELD_HINT_GRN_PO = "Alt+2 — RM PO";
 export const FIELD_HINT_GRID_NAV = "↵ Next · Shift+↵ Previous · ↑↓";
 export const FIELD_HINT_SAVE = "Ctrl+S Save";
 export const FIELD_HINT_CONFIRM = "Ctrl+Enter Confirm";
-/** Operator forms: Enter moves focus like Tab (see useFastEntryForm). */
+/** Operator forms: Enter moves focus like Tab (see useFastEntryForm); skipped on search fields and fields marked data-erp-enter-default. */
 export const FIELD_HINT_ENTER_NEXT = "↵ Next field";
 
 export const FIELD_HINT_DISPATCH_SO = "Alt+1 — Sales order";

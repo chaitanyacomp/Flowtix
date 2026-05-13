@@ -787,7 +787,7 @@ export function OperationsExceptionReportPage() {
                               key={`${r.purchaseOrderId}-${r.itemId}-${idx}`}
                               {...getDrillRowProps({
                                 onActivate: () => navigate(withReportsReturnContext(rmPoGrnFocusHref(r.purchaseOrderId))),
-                                ariaLabel: `Open RM Purchase — ${r.purchaseOrderNo}`,
+                                ariaLabel: `Open Material Planning — ${r.purchaseOrderNo}`,
                                 className: cn(
                                   r.severity === "CRITICAL" && "[&_td]:!bg-red-50/90",
                                   r.severity === "WARNING" && "[&_td]:!bg-amber-50/40",

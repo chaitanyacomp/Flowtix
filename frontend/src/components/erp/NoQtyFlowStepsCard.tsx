@@ -20,16 +20,23 @@ function stageIndex(k: NoQtyStageKey): number {
 export function NoQtyFlowStepsCard({
   currentStage,
   cycleStatus,
+  hideWorkOrderStep = false,
   className,
   ariaLabel = "No Qty workflow steps",
 }: {
   currentStage: NoQtyStageKey;
   cycleStatus: "Active Cycle" | "Closed Cycle";
+  /** NO_QTY operational cycle flow skips Work Order as an operator step. */
+  hideWorkOrderStep?: boolean;
   className?: string;
   ariaLabel?: string;
 }) {
   const cur = stageIndex(currentStage);
   const closed = cycleStatus === "Closed Cycle";
+  const stages = hideWorkOrderStep ? STAGES.filter((s) => s.key !== "WORK_ORDER") : STAGES;
+  const curIdx = hideWorkOrderStep
+    ? Math.max(0, stages.findIndex((s) => s.key === currentStage))
+    : cur;
 
   return (
     <nav
@@ -38,9 +45,9 @@ export function NoQtyFlowStepsCard({
     >
       <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Steps</div>
       <ol className="mt-2 space-y-1">
-        {STAGES.map((s, idx) => {
-          const done = closed ? idx <= STAGES.length - 1 : idx < cur;
-          const active = idx === cur;
+        {stages.map((s, idx) => {
+          const done = closed ? idx <= stages.length - 1 : idx < curIdx;
+          const active = idx === curIdx;
           return (
             <li key={s.key}>
               <div

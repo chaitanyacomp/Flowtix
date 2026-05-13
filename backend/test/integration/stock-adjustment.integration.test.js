@@ -1,15 +1,9 @@
 /**
  * Stock adjustment + reversal HTTP tests (MySQL + Prisma).
- * Run with: ERP_RUN_DB_INTEGRATION=1 INTEGRATION_DATABASE_URL=... npm run test:integration
+ * Run with: NODE_ENV=test TEST_DATABASE_URL=... npm run test:integration:db
  */
 
-const path = require("path");
-require("dotenv").config({ path: path.join(__dirname, "../../.env") });
-require("dotenv").config({ path: path.join(__dirname, "../../.env.integration") });
-
-if (process.env.ERP_RUN_DB_INTEGRATION === "1" && process.env.INTEGRATION_DATABASE_URL) {
-  process.env.DATABASE_URL = process.env.INTEGRATION_DATABASE_URL;
-}
+const { runIntegration } = require("./_integrationEnv");
 
 const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert/strict");
@@ -22,7 +16,6 @@ const { signAccessToken } = require("../../src/utils/jwt");
 const { setStrictInventoryControl } = require("../../src/services/appSettings");
 const { MSG } = require("../../src/services/stockAdjustmentPolicy");
 
-const runIntegration = process.env.ERP_RUN_DB_INTEGRATION === "1";
 const d = runIntegration ? describe : describe.skip;
 
 function bearer(user) {

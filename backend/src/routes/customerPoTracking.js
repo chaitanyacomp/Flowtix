@@ -8,7 +8,7 @@ const CUSTOMER_PO_TRACKING_ACCESS_DENIED =
   "Access denied. This screen is available to admin, sales, store, production, and QC roles.";
 
 const trackingRoles = requireRole(
-  ["ADMIN", "SALES", "STORE", "PRODUCTION", "QC"],
+  ["ADMIN", "SALES", "STORE", "PRODUCTION", "QC", "ACCOUNTS"],
   CUSTOMER_PO_TRACKING_ACCESS_DENIED,
 );
 
@@ -16,7 +16,7 @@ const customerPoTrackingRouter = express.Router();
 
 /**
  * GET /api/customer-po-tracking
- * Customer-first listing: rows are **sales orders** (NORMAL + REPLACEMENT; NO_QTY excluded) for the customer,
+ * Customer-first listing: rows are **sales orders** (NORMAL + REPLACEMENT; NO_QTY excluded unless `includeNoQty=1`) for the customer,
  * with optional Customer PO metadata when linked. Query param `poKey` / detail route key = **salesOrderId**
  * (legacy: customer PO id still resolves when that PO is linked to an SO).
  */
@@ -30,6 +30,8 @@ customerPoTrackingRouter.get("/", requireAuth, trackingRoles, async (req, res, n
         dateFrom: z.string().optional(),
         dateTo: z.string().optional(),
         limit: z.string().optional(),
+        /** When "1", include NO_QTY sales orders (commercial/dispatch-backed tracking). */
+        includeNoQty: z.string().optional(),
       })
       .passthrough()
       .parse(req.query);

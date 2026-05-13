@@ -5,8 +5,9 @@ import { apiFetch } from "../services/api";
 import { Button } from "../components/ui/button";
 import { useToast } from "../contexts/ToastContext";
 import { useIsAdmin } from "../hooks/useIsAdmin";
-import { Navigate } from "react-router-dom";
+import { Link, Navigate } from "react-router-dom";
 import type { StockAdjustmentPolicyDto } from "../lib/stockAdjustmentPolicyText";
+import { REGULAR_TERMS } from "../lib/flowTerminology";
 
 type StateRow = { id: number; stateName: string; stateCode: string };
 
@@ -139,6 +140,13 @@ export function AdminSettingsPage() {
           <CardTitle className="text-base">Company GST Details</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4 text-sm text-slate-700">
+          <div className="rounded-md border border-sky-200 bg-sky-50/70 px-3 py-2 text-[12px] text-sky-900">
+            For full company branding (name, address, logo, signatory, document presentation), use{" "}
+            <Link to="/admin/company-profile" className="font-semibold underline">
+              Company Profile
+            </Link>
+            . The fields below are kept here for quick GST setup; they share the same source.
+          </div>
           <p className="text-slate-600">Used to decide same-state (CGST+SGST) vs different-state (IGST) for purchase GST split.</p>
           <div className="grid max-w-md gap-3">
             <label className="grid gap-1">
@@ -191,9 +199,9 @@ export function AdminSettingsPage() {
         <CardContent className="space-y-4 text-sm text-slate-700">
           {error ? <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-red-800">{error}</div> : null}
           <p>
-            When <strong>ON</strong>, stock shortages block the next process (for example work order from Production Planning) until inventory is
-            resolved. When <strong>OFF</strong>, shortages still show as warnings but you can continue—useful for testing or flexible
-            operations.
+            When <strong>ON</strong>, stock shortages block the next process (for example{" "}
+            {REGULAR_TERMS.WORK_ORDER_PREPARATION}) until inventory is resolved. When <strong>OFF</strong>, shortages still show as warnings
+            but you can continue—useful for testing or flexible operations.
           </p>
           <div className="flex flex-wrap items-center gap-3">
             <span className="font-medium text-slate-900">Current mode:</span>

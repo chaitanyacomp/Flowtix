@@ -212,8 +212,15 @@ async function loadWorkOrderQuantityContext(db, salesOrderId, excludeWorkOrderId
     }
   }
 
-  // NO_QTY: SalesOrderLine.qty may be 0/placeholder. Planning eligibility must use the current cycle cap
-  // from the latest LOCKED Requirement Sheet for that cycle (suggestedWoQtySnapshot / requirementQty).
+  /** NO_QTY: authoritative cycle production target = SUM(RequirementSheetLine.suggestedWoQtySnapshot) on latest LOCKED RS. */
+  /** @type {Map<number, number>} */
+  const noQtyRsSuggestedSnapshotByItem = new Map();
+  /** @type {Map<number, number>} */
+  const noQtyRsShortfallSnapshotByItem = new Map();
+  /** @type {Map<number, number>} */
+  const noQtyRsRequirementQtyByItem = new Map();
+
+  // NO_QTY: SalesOrderLine.qty may be 0/placeholder. WO caps and validation use RS snapshot only (no stock/QC recompute).
   if (so.orderType === "NO_QTY" && so.currentCycleId != null) {
     const cycleId = Number(so.currentCycleId);
     if (Number.isFinite(cycleId) && cycleId > 0) {
@@ -225,9 +232,16 @@ async function loadWorkOrderQuantityContext(db, salesOrderId, excludeWorkOrderId
       if (sheet?.lines?.length) {
         fgOrderQtyByItem.clear();
         for (const ln of sheet.lines) {
-          const cap = Math.max(n(ln.suggestedWoQtySnapshot ?? 0), n(ln.requirementQty ?? 0));
-          if (!(cap > 0)) continue;
-          fgOrderQtyByItem.set(ln.itemId, (fgOrderQtyByItem.get(ln.itemId) || 0) + cap);
+          const itemId = Number(ln.itemId);
+          if (!Number.isFinite(itemId) || itemId <= 0) continue;
+          const snap = n(ln.suggestedWoQtySnapshot ?? 0);
+          const reqL = n(ln.requirementQty ?? 0);
+          const sf =
+            ln.shortfallQtySnapshot == null || ln.shortfallQtySnapshot === undefined ? 0 : n(ln.shortfallQtySnapshot);
+          noQtyRsSuggestedSnapshotByItem.set(itemId, (noQtyRsSuggestedSnapshotByItem.get(itemId) || 0) + snap);
+          noQtyRsRequirementQtyByItem.set(itemId, (noQtyRsRequirementQtyByItem.get(itemId) || 0) + reqL);
+          noQtyRsShortfallSnapshotByItem.set(itemId, (noQtyRsShortfallSnapshotByItem.get(itemId) || 0) + sf);
+          fgOrderQtyByItem.set(itemId, (fgOrderQtyByItem.get(itemId) || 0) + snap);
         }
       }
     }
@@ -295,6 +309,9 @@ async function loadWorkOrderQuantityContext(db, salesOrderId, excludeWorkOrderId
     allocatedByItem,
     acceptedByItem,
     carryForwardShortfallByItem,
+    noQtyRsSuggestedSnapshotByItem,
+    noQtyRsShortfallSnapshotByItem,
+    noQtyRsRequirementQtyByItem,
   };
 }
 
@@ -313,6 +330,18 @@ function remainingOpenQtyForItem(ctx, itemId) {
   return Math.max(0, fgQty - accepted - woPlanned);
 }
 
+/**
+ * Max WO qty allowed when REGULAR (NORMAL) SO shortfall buffer mode is active on the request:
+ * remaining + ceil(remaining * bufferPercent / 100), bufferPercent clamped to [0, 10].
+ * @param {number} remainingOpenQty
+ * @param {number} bufferPercent0to10
+ */
+function maxQtyWithShortfallBuffer(remainingOpenQty, bufferPercent0to10) {
+  const rem = Math.max(0, n(remainingOpenQty));
+  const p = Math.min(10, Math.max(0, Math.round(n(bufferPercent0to10))));
+  return rem + Math.ceil((rem * p) / 100);
+}
+
 function aggregateQtyByItem(lineRequests) {
   const m = new Map();
   for (const l of lineRequests) {
@@ -324,9 +353,15 @@ function aggregateQtyByItem(lineRequests) {
 
 /**
  * @param {import('@prisma/client').Prisma.TransactionClient} tx
- * @param {{ salesOrderId: number; lineRequests: { fgItemId: number; qty: number }[]; excludeWorkOrderId?: number | null }} params
+ * @param {{
+ *   salesOrderId: number;
+ *   lineRequests: { fgItemId: number; qty: number }[];
+ *   excludeWorkOrderId?: number | null;
+ *   shortfallMode?: boolean;
+ *   shortfallBufferPercent?: number | null | undefined;
+ * }} params
  */
-async function assertWorkOrderLinesAgainstSalesOrder(tx, { salesOrderId, lineRequests, excludeWorkOrderId }) {
+async function assertWorkOrderLinesAgainstSalesOrder(tx, { salesOrderId, lineRequests, excludeWorkOrderId, shortfallMode, shortfallBufferPercent }) {
   if (!lineRequests.length) {
     const err = new Error("Work order must include at least one line.");
     err.statusCode = 400;
@@ -364,6 +399,13 @@ async function assertWorkOrderLinesAgainstSalesOrder(tx, { salesOrderId, lineReq
     throw err;
   }
 
+  /** REGULAR SO shortfall buffer (client-flagged). Never applies to NO_QTY or non-NORMAL order types. */
+  const isNormalRegularSo = so.orderType === "NORMAL" || so.orderType == null;
+  const useShortfallBufferCap = Boolean(shortfallMode) && isNormalRegularSo;
+  let bufferPct = n(shortfallBufferPercent);
+  if (!Number.isFinite(bufferPct)) bufferPct = 10;
+  bufferPct = Math.min(10, Math.max(0, Math.round(bufferPct)));
+
   const requested = aggregateQtyByItem(lineRequests);
   const itemIds = [...requested.keys()];
   const items = await tx.item.findMany({
@@ -391,13 +433,24 @@ async function assertWorkOrderLinesAgainstSalesOrder(tx, { salesOrderId, lineReq
       throw err;
     }
 
-    const allowed = remainingOpenQtyForItem(ctx, itemId);
+    /** NO_QTY: remaining WO headroom = RS total-to-produce snapshot − qty on other open WOs (no global QC/stock adjustment). */
+    let allowed;
+    if (so.orderType === "NO_QTY") {
+      const snap = ctx.noQtyRsSuggestedSnapshotByItem?.get(itemId) ?? 0;
+      const woPlanned = ctx.allocatedByItem.get(itemId) || 0;
+      allowed = Math.max(0, snap - woPlanned);
+    } else {
+      allowed = remainingOpenQtyForItem(ctx, itemId);
+    }
+    const maxAllowed = useShortfallBufferCap ? maxQtyWithShortfallBuffer(allowed, bufferPct) : allowed;
 
-    if (reqQty > allowed + EPS) {
-      const maxShow = Math.max(0, allowed);
+    if (reqQty > maxAllowed + EPS) {
+      const maxShow = Math.max(0, maxAllowed);
       const maxStr = Number.isInteger(maxShow) ? String(maxShow) : maxShow.toFixed(3);
       const err = new Error(
-        `Work order quantity for "${itemLabel(itemId)}" exceeds the remaining open quantity for this sales order. Maximum allowed now: ${maxStr}.`,
+        useShortfallBufferCap
+          ? `WO qty for "${itemLabel(itemId)}" exceeds allowed shortfall buffer. Maximum allowed now: ${maxStr}.`
+          : `Work order quantity for "${itemLabel(itemId)}" exceeds the remaining open quantity for this sales order. Maximum allowed now: ${maxStr}.`,
       );
       err.statusCode = 409;
       throw err;
@@ -409,7 +462,9 @@ async function assertWorkOrderLinesAgainstSalesOrder(tx, { salesOrderId, lineReq
  * Read-only breakdown per FG item on a sales order — same quantity rules as
  * {@link assertWorkOrderLinesAgainstSalesOrder}.
  *
- * balanceQty = remainingQty = max(0, FG_SO_QTY − totalAcceptedQty − woPlanned(other open WOs)).
+ * balanceQty / remaining headroom:
+ * - NORMAL/etc.: max(0, FG_SO_QTY − totalAcceptedQty − woPlanned(other open WOs)).
+ * - NO_QTY: max(0, Σ RS suggestedWoQtySnapshot − woPlanned(other open WOs)) — QC/stock/recheck excluded here.
  *
  * @param {import('@prisma/client').PrismaClient | import('@prisma/client').Prisma.TransactionClient} db
  * @param {{ salesOrderId: number; excludeWorkOrderId?: number | null }} params
@@ -427,27 +482,6 @@ async function getSalesOrderFgWorkOrderBalances(db, { salesOrderId, excludeWorkO
   const lineInputsForDispatch = mapSoLinesToDispatchFifoInputs(so.lines, so.orderType);
   /** Operational / QC / dispatch UI only — not used for balanceQty / remainingQty. */
   const netByItemOp = netDispatchedByItemId(so.dispatch || [], DISPATCH_ALLOC_MODE.OPERATIONAL);
-
-  /** NO_QTY: latest locked requirement sheet quantities for current cycle (balance + latest RS demand). */
-  const noQtyRsByItemId = new Map();
-  if (so.orderType === "NO_QTY" && so.currentCycleId != null) {
-    const cycleId = Number(so.currentCycleId);
-    if (Number.isFinite(cycleId) && cycleId > 0) {
-      const locked = await db.requirementSheet.findFirst({
-        where: { salesOrderId, cycleId, status: "LOCKED" },
-        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-        include: { lines: true },
-      });
-      for (const ln of locked?.lines || []) {
-        // Balance qty: carried shortfall snapshot at lock time.
-        const balanceQty = n(ln.shortfallQtySnapshot ?? 0);
-        // Latest RS qty: fresh manual requirement qty on the locked sheet.
-        const latestRsQty = n(ln.requirementQty ?? 0);
-        // Only FG items are relevant; filter later by fgNameByItem.
-        noQtyRsByItemId.set(ln.itemId, { balanceQty, latestRsQty });
-      }
-    }
-  }
 
   /** @type {Map<number, string>} */
   const fgNameByItem = new Map();
@@ -467,7 +501,11 @@ async function getSalesOrderFgWorkOrderBalances(db, { salesOrderId, excludeWorkO
     const planned = ctx.allocatedByItem.get(itemId) || 0;
     const totalAcceptedQty = ctx.acceptedByItem.get(itemId) || 0;
     const carryForwardShortfallQty = ctx.carryForwardShortfallByItem.get(itemId) || 0;
-    const balanceQty = remainingOpenQtyForItem(ctx, itemId);
+    const rsPlanQty = ctx.noQtyRsSuggestedSnapshotByItem?.get(itemId) ?? 0;
+    const balanceQty =
+      so.orderType === "NO_QTY"
+        ? Math.max(0, rsPlanQty - n(planned))
+        : remainingOpenQtyForItem(ctx, itemId);
     const stockAvailableQty = await getUsableItemStockQty(itemId, db);
     const qcAcceptedGross = await sumQcAcceptedForSoItem(db, salesOrderId, itemId);
     const netOp = netByItemOp.get(itemId) ?? 0;
@@ -482,17 +520,11 @@ async function getSalesOrderFgWorkOrderBalances(db, { salesOrderId, excludeWorkO
       qcAcceptedTotalForSoItem: qcAcceptedGross,
     });
     const shortageQty = Math.max(0, pendingSoQty - dispatchableQty);
-    // NO_QTY next-WO planning standard:
-    // Final WO Qty = Balance Qty + Latest RS Qty - QC Passed Stock available
-    // ... then apply existing open-WO reservation (plannedOnOtherWorkOrdersQty) to avoid double-counting.
-    const noQtyRs = noQtyRsByItemId.get(itemId) ?? null;
-    const latestRsQty = noQtyRs ? n(noQtyRs.latestRsQty) : 0;
-    const balanceCarry = noQtyRs ? n(noQtyRs.balanceQty) : 0;
+    /** NO_QTY: suggested additional WO qty follows locked RS Total to Produce only (open-WO reservation applied above). */
+    const balanceCarry = ctx.noQtyRsShortfallSnapshotByItem?.get(itemId) ?? 0;
+    const latestRsQty = ctx.noQtyRsRequirementQtyByItem?.get(itemId) ?? 0;
     const qcPassedStockAvailable = n(stockAvailableQty);
-    const finalWoQtyRaw = Math.max(0, balanceCarry + latestRsQty - qcPassedStockAvailable);
-    const finalWoQty = Math.max(0, finalWoQtyRaw - n(planned));
-    /** Prefill WO qty */
-    const suggestedWoQty = so.orderType === "NO_QTY" ? finalWoQty : Math.max(0, balanceQty);
+    const suggestedWoQty = balanceQty;
     items.push({
       itemId,
       itemName,
@@ -508,7 +540,7 @@ async function getSalesOrderFgWorkOrderBalances(db, { salesOrderId, excludeWorkO
             noQtyBalanceQty: balanceCarry,
             noQtyLatestRsQty: latestRsQty,
             noQtyQcPassedStockQty: qcPassedStockAvailable,
-            noQtyFinalWoQty: finalWoQty,
+            noQtyFinalWoQty: suggestedWoQty,
           }
         : {}),
       pendingSoQty,
@@ -603,12 +635,62 @@ async function getEligibleSalesOrderIdsForWorkOrder(db, opts = {}) {
     }
   }
 
+  /** NO_QTY latest LOCKED RS: `${soId}:${cycleId}` → itemId → Σ suggestedWoQtySnapshot */
+  const noQtySnapBySoCycle = new Map();
+  const noQtyTargets = approved
+    .filter((s) => s.orderType === "NO_QTY" && s.currentCycleId != null)
+    .map((s) => ({ salesOrderId: Number(s.id), cycleId: Number(s.currentCycleId) }))
+    .filter((x) => Number.isFinite(x.salesOrderId) && x.salesOrderId > 0 && Number.isFinite(x.cycleId) && x.cycleId > 0);
+  if (noQtyTargets.length) {
+    const sheets = await db.requirementSheet.findMany({
+      where: { status: "LOCKED", OR: noQtyTargets },
+      include: { lines: true },
+    });
+    const latestByKey = new Map();
+    for (const sh of sheets) {
+      const ck = `${sh.salesOrderId}:${sh.cycleId}`;
+      const prev = latestByKey.get(ck);
+      if (!prev || n(sh.version) > n(prev.version)) latestByKey.set(ck, sh);
+    }
+    for (const sh of latestByKey.values()) {
+      const ck = `${sh.salesOrderId}:${sh.cycleId}`;
+      const m = new Map();
+      for (const ln of sh.lines || []) {
+        const iid = Number(ln.itemId);
+        const sug = n(ln.suggestedWoQtySnapshot ?? 0);
+        if (!(Number.isFinite(iid) && iid > 0)) continue;
+        m.set(iid, (m.get(iid) || 0) + sug);
+      }
+      noQtySnapBySoCycle.set(ck, m);
+    }
+  }
+
   for (const so of approved) {
     if (so.orderType === "REPLACEMENT" || so.customerReturnId != null) continue;
     const fgLines = (so.lines || []).filter((sl) => sl.item?.itemType === "FG");
     if (!fgLines.length) continue;
 
     let hasPositive = false;
+
+    if (so.orderType === "NO_QTY") {
+      if (!so.currentCycleId) continue;
+      const ck = `${so.id}:${Number(so.currentCycleId)}`;
+      const snapByItem = noQtySnapBySoCycle.get(ck);
+      if (!snapByItem || snapByItem.size === 0) continue;
+      for (const sl of fgLines) {
+        const itemId = sl.itemId;
+        const snap = snapByItem.get(itemId) ?? 0;
+        const planned = plannedBySoItem.get(`${so.id}:${itemId}`) || 0;
+        const pendingForWo = Math.max(0, snap - planned);
+        if (pendingForWo > EPS) {
+          hasPositive = true;
+          break;
+        }
+      }
+      if (hasPositive) eligibleIds.add(so.id);
+      continue;
+    }
+
     // Pending-only rule aligned with Production Planning "To produce" AND active planned WOs:
     // toProduce = max(0, orderedQty - current FG stock)
     // remainingAfterConfirmedDispatch = max(0, orderedQty - confirmedNetDispatched(CONFIRMED))
@@ -646,6 +728,7 @@ module.exports = {
   loadWorkOrderQuantityContext,
   getSalesOrderFgWorkOrderBalances,
   getEligibleSalesOrderIdsForWorkOrder,
+  maxQtyWithShortfallBuffer,
   EPS,
   WORK_ORDER_STATUSES_BLOCKING_REMAINING_WO_PLAN,
   WORK_ORDER_STATUSES_WITH_WO_LINE_METRICS,

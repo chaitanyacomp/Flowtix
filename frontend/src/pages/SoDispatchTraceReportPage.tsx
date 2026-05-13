@@ -1,11 +1,11 @@
 import * as React from "react";
-import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
+import { Card, CardContent } from "../components/ui/card";
 import { apiFetch } from "../services/api";
 import { Button } from "../components/ui/button";
-import { Input } from "../components/ui/input";
 import { useAuth } from "../hooks/useAuth";
 import { ALL_APP_ROLES } from "../components/ProtectedRoute";
 import { PageContainer, ReportPageHeader, StickyReportBackStrip } from "../components/PageHeader";
+import { ReportFilterToolbar, ReportFilterField } from "../components/erp/ReportChrome";
 
 type TraceCell = {
   label: string | null;
@@ -167,55 +167,43 @@ export function SoDispatchTraceReportPage() {
         title="SO to Dispatch Trace"
         purpose="Follow each FG line from sales order through work order, production, QC, and dispatch (read-only). Partial flows show blank downstream cells."
       />
-      <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-base">Filters</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="rounded-md border border-sky-100 bg-sky-50/80 px-3 py-2 text-xs leading-relaxed text-slate-700">
-            <span className="font-medium text-slate-800">Tip:</span> the SO summary (beside the grid) uses the same filter scope
-            as the trace. Dispatch cells show document id and date at SO+FG level; use the summary for quantities.
-          </div>
-          <div className="flex flex-wrap items-end gap-3 text-sm">
-            <label className="grid gap-1">
-              <span className="text-slate-600">SO no.</span>
-              <Input
-                className="h-9 w-36"
-                placeholder="e.g. 12"
-                value={soSearch}
-                onChange={(e) => setSoSearch(e.target.value)}
-              />
-            </label>
-            <label className="grid gap-1">
-              <span className="text-slate-600">Item (FG)</span>
-              <select
-                className="h-9 min-w-[10rem] rounded-md border border-slate-200 bg-white px-2 text-sm"
-                value={itemId === "" ? "" : String(itemId)}
-                onChange={(e) => setItemId(e.target.value === "" ? "" : Number(e.target.value))}
-              >
-                <option value="">All</option>
-                {fgItems.map((it) => (
-                  <option key={it.id} value={it.id}>
-                    {it.itemName}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="grid gap-1">
-              <span className="text-slate-600">From</span>
-              <Input className="h-9 w-40" type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
-            </label>
-            <label className="grid gap-1">
-              <span className="text-slate-600">To</span>
-              <Input className="h-9 w-40" type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
-            </label>
-            <Button type="button" variant="secondary" className="h-9" onClick={applyFilters}>
-              Apply filters
-            </Button>
-          </div>
-          {error ? <div className="text-sm text-red-700">{error}</div> : null}
-        </CardContent>
-      </Card>
+      <ReportFilterToolbar onApply={applyFilters} applyLabel="Apply" applyBusy={loading}>
+        <ReportFilterField label="SO #">
+          <input
+            type="text"
+            placeholder="e.g. 12"
+            value={soSearch}
+            onChange={(e) => setSoSearch(e.target.value)}
+          />
+        </ReportFilterField>
+        <ReportFilterField label="Item (FG)">
+          <select
+            value={itemId === "" ? "" : String(itemId)}
+            onChange={(e) => setItemId(e.target.value === "" ? "" : Number(e.target.value))}
+          >
+            <option value="">All</option>
+            {fgItems.map((it) => (
+              <option key={it.id} value={it.id}>
+                {it.itemName}
+              </option>
+            ))}
+          </select>
+        </ReportFilterField>
+        <ReportFilterField label="From">
+          <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
+        </ReportFilterField>
+        <ReportFilterField label="To">
+          <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+        </ReportFilterField>
+      </ReportFilterToolbar>
+      <div className="erp-info-strip" data-tone="info">
+        <span className="font-semibold">Tip:</span>
+        <span>
+          The SO summary uses the same filter scope as the trace. Dispatch cells show document id and date at
+          SO+FG level — use the summary for quantities.
+        </span>
+      </div>
+      {error ? <div className="text-sm text-red-700">{error}</div> : null}
 
       <Card>
         <CardContent className="pt-4">

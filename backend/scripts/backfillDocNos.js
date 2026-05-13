@@ -17,7 +17,7 @@
 
 require("dotenv").config({ path: require("path").join(__dirname, "..", ".env") });
 
-const { PrismaClient } = require("@prisma/client");
+const { PrismaClient } = require("../prisma/generated/client");
 const { formatDocNo, year2FromDate } = require("../src/services/docNoService");
 
 const prisma = new PrismaClient();

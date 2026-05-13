@@ -6,15 +6,53 @@ import { ReportBackLink, ReportPageHeader, StickyPageHeader, StickyReportBackStr
 import { apiFetch } from "../services/api";
 import { isReportsReturnContext } from "../lib/drillDownRoutes";
 import { displaySalesOrderNo } from "../lib/docNoDisplay";
+import { NO_QTY_TERMS } from "../lib/flowTerminology";
+import { useCanOpenRequirementSheet } from "../hooks/useIsAdmin";
 
 /** Row below the shell title bar: primary actions (e.g. Add), right-aligned. */
 export function PageActions({ children, className }: { children: React.ReactNode; className?: string }) {
   return <div className={cn("mb-4 flex flex-wrap justify-end gap-2", className)}>{children}</div>;
 }
 
-/** Standard centered page container. */
-export function PageContainer({ children, className }: { children: React.ReactNode; className?: string }) {
-  return <div className={cn("mx-auto w-full min-w-0 max-w-5xl space-y-6 overflow-x-hidden pb-8", className)}>{children}</div>;
+/**
+ * Standard ERP page wrapper.
+ *
+ * **Default**: full operational workspace width — aligns to the same invisible
+ * vertical grid as every other page rendered inside `.erp-main`. This is the
+ * correct choice for list, dashboard, report, and split-panel screens (SAP
+ * Business One / ERPNext convention).
+ *
+ * **`narrow`**: opt-in narrow column (max-w-5xl, centered). Use for
+ * content-light data-entry forms (Bill entry, Settings, Account, login-style
+ * flows) where a wide form would feel sprawling.
+ *
+ * Vertical rhythm is `space-y-3` to match the system-wide density pass; pages
+ * that need more breathing room pass `className="space-y-4"` explicitly.
+ *
+ * The horizontal gutter is owned by `.erp-main` in `AppLayout` so every page
+ * (with or without PageContainer) shares the same left/right padding — this is
+ * what unifies the layout grid across the application.
+ */
+export function PageContainer({
+  children,
+  className,
+  narrow = false,
+}: {
+  children: React.ReactNode;
+  className?: string;
+  narrow?: boolean;
+}) {
+  return (
+    <div
+      className={cn(
+        "erp-page-shell page-shell w-full min-w-0 space-y-3 overflow-x-hidden",
+        narrow ? "mx-auto max-w-5xl" : null,
+        className,
+      )}
+    >
+      {children}
+    </div>
+  );
 }
 
 /** Consistent context-aware back control — compact navigation chip (shared with report hub). */
@@ -39,6 +77,9 @@ export function PageBackLink({
 /**
  * Sticky band for back + primary page heading row (inside `erp-main` scroll).
  * Keeps navigation visible without duplicating sticky CSS on each screen.
+ *
+ * Compact ERP density: vertical gap tightened from `space-y-2.5` to `space-y-1.5`
+ * so the back-chip and PageHeader sit closer to the top edge.
  */
 export function StickyWorkspaceHead({
   lead,
@@ -50,7 +91,7 @@ export function StickyWorkspaceHead({
   className?: string;
 }) {
   return (
-    <StickyPageHeader className={cn("space-y-2.5", className)}>
+    <StickyPageHeader className={cn("space-y-1.5", className)}>
       {lead}
       {children}
     </StickyPageHeader>
@@ -64,7 +105,10 @@ type SmartBackSource =
   | "reports"
   | "stock_summary"
   | "production_flow"
-  | "no_qty_so";
+  | "no_qty_so"
+  | "quotations"
+  | "enquiries"
+  | "planning";
 
 const SMART_BACK_MAP: Record<SmartBackSource, { to: string; label: string }> = {
   dashboard: { to: "/dashboard", label: "Back to Dashboard" },
@@ -74,7 +118,13 @@ const SMART_BACK_MAP: Record<SmartBackSource, { to: string; label: string }> = {
   production_flow: { to: "/dashboard", label: "Back to Dashboard" },
   // NO_QTY list page used in this project.
   no_qty_so: { to: "/sales-orders?soType=NO_QTY", label: "Back to No Qty Sales Orders" },
+  quotations: { to: "/quotations", label: "Back to Quotations" },
+  enquiries: { to: "/enquiries", label: "Back to Enquiries" },
+  planning: { to: "/planning-dashboard", label: NO_QTY_TERMS.BACK_TO_REQUIREMENT_CYCLE_PLANNING },
 };
+
+/** Last commercial workflow screen for contextual “Back” on Sales Orders (`workflowSessionFallback`). */
+export const ERP_COMMERCIAL_ORIGIN_SESSION_KEY = "erp:commercialOrigin";
 
 function asSmartSourceKey(v: string | null | undefined): SmartBackSource | null {
   const x = String(v ?? "").trim().toLowerCase();
@@ -83,7 +133,10 @@ function asSmartSourceKey(v: string | null | undefined): SmartBackSource | null 
     x === "reports" ||
     x === "stock_summary" ||
     x === "production_flow" ||
-    x === "no_qty_so"
+    x === "no_qty_so" ||
+    x === "quotations" ||
+    x === "enquiries" ||
+    x === "planning"
   ) {
     return x;
   }
@@ -96,8 +149,9 @@ function asSmartSourceKey(v: string | null | undefined): SmartBackSource | null 
  * Context-aware back link with safe fallbacks.
  *
  * Supported context hints:
- * - URL query: ?from=dashboard|reports (or ?source=...)
+ * - URL query: `?from=` / `?source=` — dashboard | reports | quotations | enquiries | planning | … (see `SMART_BACK_MAP`)
  * - Navigation state: { backTo: "/path", backLabel?: "..." } or { from: "/path" }
+ * - With `workflowSessionFallback`: session hint from `CommercialWorkflowOriginTrace` / `ERP_COMMERCIAL_ORIGIN_SESSION_KEY`
  *
  * It does NOT rely on browser history, and always renders as a normal Link.
  */
@@ -107,6 +161,7 @@ export function PageSmartBackLink({
   fallbackTo,
   defaultTo,
   defaultLabel,
+  workflowSessionFallback = false,
 }: {
   kind?: SmartBackKind;
   className?: string;
@@ -114,6 +169,10 @@ export function PageSmartBackLink({
   /** New universal API: used when no known source context is present. */
   defaultTo?: string;
   defaultLabel?: string;
+  /**
+   * When true (e.g. Sales Orders): if no `?from=` / state, use last visited Enquiries/Quotations from session (see `ERP_COMMERCIAL_ORIGIN_SESSION_KEY`).
+   */
+  workflowSessionFallback?: boolean;
 }) {
   const location = useLocation();
   const searchParams = React.useMemo(() => new URLSearchParams(location.search), [location.search]);
@@ -122,6 +181,18 @@ export function PageSmartBackLink({
     backLabel?: unknown;
     from?: unknown;
   };
+
+  const sessionWorkflowBack = React.useMemo(() => {
+    if (!workflowSessionFallback) return null;
+    try {
+      const raw = sessionStorage.getItem(ERP_COMMERCIAL_ORIGIN_SESSION_KEY);
+      const k = asSmartSourceKey(raw);
+      if (k === "quotations" || k === "enquiries") return SMART_BACK_MAP[k];
+    } catch {
+      /* ignore */
+    }
+    return null;
+  }, [workflowSessionFallback, location.key, location.pathname]);
 
   const stateBackTo = typeof state.backTo === "string" ? state.backTo : null;
   const stateBackLabel = typeof state.backLabel === "string" ? state.backLabel : null;
@@ -155,6 +226,9 @@ export function PageSmartBackLink({
   } else if (querySourceKey) {
     to = SMART_BACK_MAP[querySourceKey].to;
     label = SMART_BACK_MAP[querySourceKey].label;
+  } else if (sessionWorkflowBack) {
+    to = sessionWorkflowBack.to;
+    label = sessionWorkflowBack.label;
   } else if (kind === "dashboard") {
     to = "/dashboard";
     label = "Back to Dashboard";
@@ -188,12 +262,37 @@ export function PageSmartBackLink({
   return <PageBackLink to={to} label={label} className={className} />;
 }
 
+/**
+ * Records the last Enquiries / Quotations screen in sessionStorage so Sales Orders can offer a workflow-aware back target
+ * when the URL has no `?from=` (see `PageSmartBackLink` + `workflowSessionFallback`).
+ * Cleared when visiting the dashboard home (standalone entry).
+ */
+export function CommercialWorkflowOriginTrace() {
+  const location = useLocation();
+  React.useEffect(() => {
+    const p = location.pathname;
+    try {
+      if (p === "/quotations" || p.startsWith("/quotations/")) {
+        sessionStorage.setItem(ERP_COMMERCIAL_ORIGIN_SESSION_KEY, "quotations");
+      } else if (p === "/enquiries" || p.startsWith("/enquiries/")) {
+        sessionStorage.setItem(ERP_COMMERCIAL_ORIGIN_SESSION_KEY, "enquiries");
+      } else if (p === "/dashboard") {
+        sessionStorage.removeItem(ERP_COMMERCIAL_ORIGIN_SESSION_KEY);
+      }
+    } catch {
+      /* ignore */
+    }
+  }, [location.pathname]);
+  return null;
+}
+
 type NoQtyFlowStep = "REQUIREMENT" | "PLANNING" | "WORK_ORDER" | "PRODUCTION" | "QC" | "DISPATCH" | "SALES_BILL";
 
 function readNoQtyContext(location: ReturnType<typeof useLocation>): {
   active: boolean;
   soId: number | null;
   fromStep: string | null;
+  fromDashboard: boolean;
   qs: URLSearchParams;
 } {
   const qs = new URLSearchParams(location.search);
@@ -202,7 +301,8 @@ function readNoQtyContext(location: ReturnType<typeof useLocation>): {
   const soIdRaw = Number(qs.get("salesOrderId") ?? 0);
   const soId = Number.isFinite(soIdRaw) && soIdRaw > 0 ? soIdRaw : null;
   const fromStep = qs.get("fromStep");
-  return { active, soId, fromStep, qs };
+  const fromDashboard = qs.get("fromDashboard") === "1" || qs.get("from") === "dashboard";
+  return { active, soId, fromStep, fromDashboard, qs };
 }
 
 type NoQtyCycleBannerSo = {
@@ -287,19 +387,36 @@ export function PageNoQtyFlowBackLink({
 }) {
   const location = useLocation();
   const ctx = React.useMemo(() => readNoQtyContext(location), [location]);
+  const canOpenRs = useCanOpenRequirementSheet();
   if (!ctx.active) return null;
 
-  const baseCtx = `source=no_qty_so${ctx.soId != null ? `&salesOrderId=${ctx.soId}` : ""}`;
+  const cycleIdRaw = ctx.qs.get("cycleId");
+  const cycleId =
+    cycleIdRaw != null && cycleIdRaw !== "" && Number.isFinite(Number(cycleIdRaw)) && Number(cycleIdRaw) > 0
+      ? String(Number(cycleIdRaw))
+      : null;
+  const baseCtx = `source=no_qty_so${ctx.soId != null ? `&salesOrderId=${ctx.soId}` : ""}${cycleId ? `&cycleId=${encodeURIComponent(cycleId)}` : ""}`;
+
+  // Role-safe back target for any step whose canonical "back" lives inside the planning workspace.
+  // Non-planning roles (SALES / PRODUCTION / QC / ACCOUNTS) are routed up to the SO list/detail
+  // instead of being deep-linked into Requirement Sheet (where they'd see "Forbidden").
+  const rsBackTarget =
+    canOpenRs && ctx.soId != null
+      ? { to: `/sales-orders/${ctx.soId}/requirement-sheets?${baseCtx}`, label: "Back to Requirement Sheet" }
+      : ctx.soId != null
+        ? { to: `/sales-orders?soType=NO_QTY&salesOrderId=${ctx.soId}`, label: "Back to No Qty Sales Order" }
+        : { to: "/sales-orders?soType=NO_QTY", label: "Back to No Qty Sales Orders" };
 
   const chain: Record<NoQtyFlowStep, { to: string; label: string }> = {
-    REQUIREMENT: { to: "/sales-orders?soType=NO_QTY", label: "Back to No Qty Sales Orders" },
+    REQUIREMENT: ctx.fromDashboard
+      ? { to: "/dashboard", label: "Back to Dashboard" }
+      : { to: "/sales-orders?soType=NO_QTY", label: "Back to No Qty Sales Orders" },
     // Back-compat: legacy "PLANNING" step behaves like Requirement list back.
     PLANNING: { to: "/sales-orders?soType=NO_QTY", label: "Back to No Qty Sales Orders" },
-    WORK_ORDER: {
-      to: ctx.soId != null ? `/sales-orders/${ctx.soId}/requirement-sheets?${baseCtx}` : `/sales-orders?soType=NO_QTY`,
-      label: "Back to Requirement Sheet",
-    },
-    PRODUCTION: { to: `/work-orders?${baseCtx}`, label: "Back to Work Order" },
+    WORK_ORDER: rsBackTarget,
+    // NO_QTY flow is cycle-driven; Production returns to Requirement Sheet context (planning authority)
+    // — but only for users who can actually open it.
+    PRODUCTION: rsBackTarget,
     QC: { to: `/production?${baseCtx}`, label: "Back to Production" },
     DISPATCH: { to: `/qc-entry?${baseCtx}`, label: "Back to QC" },
     SALES_BILL: { to: `/dispatch?${baseCtx}`, label: "Back to Dispatch" },
@@ -307,16 +424,13 @@ export function PageNoQtyFlowBackLink({
 
   // If a guided CTA intentionally skipped the Work Order page, keep back navigation coherent.
   if (step === "PRODUCTION" && ctx.fromStep === "requirement" && ctx.soId != null) {
-    chain.PRODUCTION = {
-      to: `/sales-orders/${ctx.soId}/requirement-sheets?${baseCtx}`,
-      label: "Back to Requirement Sheet",
-    };
+    chain.PRODUCTION = rsBackTarget;
   }
 
   // Small safety: if salesOrderId is missing, still keep a safe step-to-step route (drops so scope).
   if (ctx.soId == null) {
     chain.WORK_ORDER.to = "/sales-orders?soType=NO_QTY";
-    chain.PRODUCTION.to = "/work-orders?source=no_qty_so";
+    chain.PRODUCTION.to = "/sales-orders?soType=NO_QTY";
     chain.QC.to = "/production?source=no_qty_so";
     chain.DISPATCH.to = "/qc-entry?source=no_qty_so";
     chain.SALES_BILL.to = "/dispatch?source=no_qty_so";
@@ -329,11 +443,15 @@ export function PageNoQtyFlowBackLink({
   return <PageBackLink to={to} label={next.label} className={className} />;
 }
 
-/** Optional in-page title when the screen needs a subtitle under the top bar. */
+/**
+ * Compact ERP page header — title + action row on one line.
+ * Density refinement: smaller h2 (`text-base`) so the header strip occupies
+ * less vertical space, matching SAP/ERPNext transaction headers.
+ */
 export function PageHeader({ title, actions, className }: { title: string; actions?: React.ReactNode; className?: string }) {
   return (
-    <div className={cn("erp-page-header mb-0 flex flex-wrap items-center justify-between gap-3", className)}>
-      <h2 className="text-lg font-semibold leading-snug tracking-tight text-slate-900">{title}</h2>
+    <div className={cn("erp-page-header mb-0 flex flex-wrap items-center justify-between gap-2", className)}>
+      <h2 className="text-base font-semibold leading-snug tracking-tight text-slate-900">{title}</h2>
       {actions ? <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div> : null}
     </div>
   );

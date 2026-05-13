@@ -2,6 +2,8 @@
 
 generator client {
   provider = "prisma-client-js"
+  /// Outside node_modules/.prisma so `prisma generate` succeeds when query_engine DLL is locked on Windows.
+  output   = "./generated/client"
 }
 
 datasource db {
@@ -16,6 +18,24 @@ enum UserRole {
   PRODUCTION
   QC
   SUPERVISOR
+  /// Commercial / billing support — Tally remains statutory system of record.
+  ACCOUNTS
+}
+
+/// ERP-side payment tracking only (not double-entry / ledger posting).
+enum BillPaymentTrackingStatus {
+  PENDING
+  PARTIAL
+  PAID
+}
+
+/// ERP receipt/payment line mode — commercial tracking only (not bank ledger).
+enum CommercialPaymentMode {
+  CASH
+  BANK
+  UPI
+  CHEQUE
+  OTHER
 }
 
 /// Phase 1 audit trail — see services/auditLog.js
@@ -48,6 +68,18 @@ enum AuditEntityType {
   USER
   SETTINGS
   USER_SESSION
+}
+
+/// Local DB backup file metadata (Phase 1: disk + mysqldump only).
+enum DbBackupType {
+  MANUAL
+  PRE_RESTORE_AUTO
+}
+
+enum DbBackupStatus {
+  CREATED
+  FAILED
+  RESTORED
 }
 
 /// Canonical document types for ERP numbering (docNo).
@@ -111,6 +143,11 @@ enum EnquiryStatus {
   CLOSED
 }
 
+enum EnquiryFlowType {
+  REGULAR
+  NO_QTY
+}
+
 enum QuotationWorkflowStatus {
   DRAFT
   SENT
@@ -125,6 +162,7 @@ enum SalesOrderInternalStatus {
   IN_PROCESS
   COMPLETED
   CLOSED
+  MANUALLY_CLOSED
 }
 
 enum SalesOrderType {
@@ -238,6 +276,30 @@ model User {
   qcRejectedDispositionsCreated            QcRejectedDisposition[]          @relation("QcRejDispCreatedBy")
   qcRejectedDispositionsSupervisorApproved QcRejectedDisposition[]          @relation("QcRejDispSupervisorApproved")
   qcLegacyRejectedClassifications          QcLegacyRejectedClassification[]
+  noQtySoCloseSnapshotsClosed             NoQtySoCloseSnapshot[]          @relation("NoQtySoCloseSnapshotClosedBy")
+  noQtySoCloseSnapshotsReopened           NoQtySoCloseSnapshot[]          @relation("NoQtySoCloseSnapshotReopenedBy")
+  salesBillReceiptsCreated                SalesBillReceipt[]              @relation("SalesBillReceiptCreatedBy")
+  purchaseBillPaymentsCreated             PurchaseBillPayment[]           @relation("PurchaseBillPaymentCreatedBy")
+  dbBackupsCreated                        DbBackup[]                      @relation("DbBackupCreatedBy")
+}
+
+/// Full-database SQL backup row (see admin backup routes). `filePath` is server-only; never return to clients.
+model DbBackup {
+  id              Int            @id @default(autoincrement())
+  fileName        String         @db.VarChar(255)
+  filePath        String         @db.VarChar(1024)
+  fileSizeBytes   BigInt?
+  backupType      DbBackupType
+  status          DbBackupStatus
+  createdByUserId Int
+  createdAt       DateTime       @default(now())
+  restoredAt      DateTime?
+  remarks         String?        @db.Text
+
+  createdBy User @relation("DbBackupCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
+
+  @@index([createdAt])
+  @@index([backupType, status])
 }
 
 /// Cached successful responses for Idempotency-Key on critical POST routes (dispatch, etc.).
@@ -282,6 +344,7 @@ model Supplier {
   rmPurchaseOrders RmPurchaseOrder[]
   customerPOs      CustomerPO[]
   purchaseBills    PurchaseBill[]
+  grns             Grn[]
 
   @@index([stateId])
   @@index([stateCode])
@@ -307,6 +370,7 @@ model Customer {
   enquiries       Enquiry[]
   pos             CustomerPO[]
   salesOrders     SalesOrder[]
+  rateContractLines RateContractLine[]
   customerReturns CustomerReturn[]
   salesBills      SalesBill[]
 
@@ -349,12 +413,14 @@ model Item {
   bomLinesAsRm                    BomLine[]                        @relation("BomLineRmItem")
   enquiryLines                    EnquiryLine[]
   quotationLines                  QuotationLine[]
+  rateContractLines               RateContractLine[]
   poLines                         CustomerPOLine[]
   soLines                         SalesOrderLine[]
   rmPoLines                       RmPurchaseOrderLine[]
   workOrderLines                  WorkOrderLine[]                  @relation("WoLineFg")
   salesBillLines                  SalesBillLine[]
   requirementSheetLines           RequirementSheetLine[]
+  noQtyClosedShortageLines        NoQtySoClosedShortageLine[]
   scrapRecords                    ScrapRecord[]                    @relation("ScrapFgItem")
   dispatches                      Dispatch[]
   stockTxns                       StockTransaction[]
@@ -391,6 +457,10 @@ model Bom {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  /// BOM revisions require admin password when true (see routes/boms.js).
+  isLocked Boolean   @default(true)
+  lockedAt DateTime?
+
   fgItem Item      @relation("BomFgItem", fields: [fgItemId], references: [id], onDelete: Cascade)
   lines  BomLine[]
 
@@ -402,8 +472,12 @@ model BomLine {
   bomId          Int
   rmItemId       Int
   /// Per unit of FG, before wastage
-  baseQty        Decimal @db.Decimal(18, 3)
-  wastagePercent Decimal @default(0) @db.Decimal(18, 3)
+  baseQty            Decimal @db.Decimal(18, 3)
+  /// Legacy operational compatibility field. Currently mirrors processLossPercent for RM issue math.
+  wastagePercent     Decimal @default(0) @db.Decimal(18, 3)
+  processLossPercent Decimal @default(0) @db.Decimal(18, 3)
+  qcAllowancePercent Decimal @default(0) @db.Decimal(18, 3)
+  notes              String?
 
   bom    Bom  @relation(fields: [bomId], references: [id], onDelete: Cascade)
   rmItem Item @relation("BomLineRmItem", fields: [rmItemId], references: [id], onDelete: Restrict)
@@ -416,6 +490,7 @@ model Enquiry {
   id         Int           @id @default(autoincrement())
   customerId Int
   status     EnquiryStatus @default(PENDING)
+  flowType   EnquiryFlowType @default(REGULAR)
   remarks    String?
   createdAt  DateTime      @default(now())
   updatedAt  DateTime      @updatedAt
@@ -427,6 +502,7 @@ model Enquiry {
 
   @@index([customerId])
   @@index([status])
+  @@index([flowType])
 }
 
 model EnquiryLine {
@@ -456,6 +532,8 @@ model Quotation {
   id                        Int                     @id @default(autoincrement())
   enquiryId                 Int                     @unique
   quotationNo               String?                 @unique
+  /// Immutable snapshot of originating enquiry flow type (used for future SO branching).
+  flowTypeSnapshot          EnquiryFlowType         @default(REGULAR)
   workflowStatus            QuotationWorkflowStatus @default(DRAFT)
   status                    SimpleStatus            @default(PENDING)
   subtotal                  Decimal                 @default(0) @db.Decimal(18, 2)
@@ -474,6 +552,7 @@ model Quotation {
   salesOrder          SalesOrder?
   approvalCancelledBy User?           @relation("QuotationApprovalCancelledBy", fields: [approvalCancelledByUserId], references: [id], onDelete: SetNull)
 
+  @@index([flowTypeSnapshot])
   @@index([workflowStatus])
   @@index([approvalCancelledByUserId])
 }
@@ -487,6 +566,10 @@ model QuotationLine {
   discountPct Decimal @default(0) @db.Decimal(18, 2)
   gstPct      Decimal @default(18) @db.Decimal(18, 2)
   lineTotal   Decimal @db.Decimal(18, 2)
+  /// For NO_QTY quotations: snapshot the applicable approved contract line.
+  rateContractLineIdSnapshot Int?
+  /// For NO_QTY quotations: contract effectiveFrom (UTC date) used for the snapshot.
+  rateEffectiveFromSnapshot  DateTime?
   /// When true, rate is stored as 0 and the line is treated as intentionally free (not a pricing error).
   isFree      Boolean @default(false)
 
@@ -495,6 +578,28 @@ model QuotationLine {
   salesOrderLines SalesOrderLine[]
 
   @@index([quotationId])
+  @@index([rateContractLineIdSnapshot])
+}
+
+enum RateContractLineStatus {
+  APPROVED
+}
+
+model RateContractLine {
+  id            Int                  @id @default(autoincrement())
+  customerId    Int
+  itemId        Int
+  rate          Decimal              @db.Decimal(18, 4)
+  gstRate       Decimal              @db.Decimal(5, 2)
+  effectiveFrom DateTime
+  status        RateContractLineStatus @default(APPROVED)
+  createdAt     DateTime             @default(now())
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  item     Item     @relation(fields: [itemId], references: [id], onDelete: Restrict)
+
+  @@index([customerId, itemId, effectiveFrom])
+  @@index([status])
 }
 
 model CustomerPO {
@@ -557,6 +662,28 @@ model AppSetting {
   /// Company GSTIN (nullable; no strict validation in demo mode).
   companyGstin                      String? @db.VarChar(15)
 
+  /// ===== Company Profile (document branding only) =====
+  /// All fields below are purely presentational — they drive Quotation /
+  /// Sales Bill / Purchase Bill / future document chrome. They DO NOT
+  /// participate in GST math, Tally export, numbering, or any calculation.
+  companyName                       String? @db.VarChar(160)
+  companyAddressLine1               String? @db.VarChar(160)
+  companyAddressLine2               String? @db.VarChar(160)
+  companyCity                       String? @db.VarChar(96)
+  companyPincode                    String? @db.VarChar(12)
+  companyPan                        String? @db.VarChar(10)
+  companyMobile                     String? @db.VarChar(32)
+  companyPhone                      String? @db.VarChar(32)
+  companyEmail                      String? @db.VarChar(160)
+  companyWebsite                    String? @db.VarChar(160)
+  /// Path (relative to BRANDING_STORAGE_DIR) of the uploaded company logo.
+  companyLogoPath                   String? @db.VarChar(255)
+  companyLogoMime                   String? @db.VarChar(64)
+  /// Free-text authorised signatory name printed under documents.
+  companySignatoryName              String? @db.VarChar(160)
+  companySignaturePath              String? @db.VarChar(255)
+  companySignatureMime              String? @db.VarChar(64)
+
   companyStateRef State? @relation(fields: [companyStateId], references: [id], onDelete: SetNull)
 }
 
@@ -612,12 +739,53 @@ model SalesOrder {
 
   cycles       SalesOrderCycle[]
   currentCycle SalesOrderCycle?  @relation("SalesOrderCurrentCycle", fields: [currentCycleId], references: [id], onDelete: SetNull)
+  noQtyCloseSnapshots NoQtySoCloseSnapshot[]
+  noQtyClosedShortageLines NoQtySoClosedShortageLine[]
 
   @@index([customerId])
   @@index([orderType])
   @@index([customerReturnId])
   @@index([internalStatus])
   @@index([currentCycleId])
+}
+
+model NoQtySoCloseSnapshot {
+  id               Int      @id @default(autoincrement())
+  salesOrderId     Int
+  closeVersion     Int
+  closedAt         DateTime @default(now())
+  closedByUserId   Int?
+  reopenMode       String?  @db.VarChar(32)
+  reopenedAt       DateTime?
+  reopenedByUserId Int?
+  status           String   @default("ACTIVE") @db.VarChar(32)
+  reason           String?  @db.Text
+
+  salesOrder SalesOrder @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
+  closedBy   User?      @relation("NoQtySoCloseSnapshotClosedBy", fields: [closedByUserId], references: [id], onDelete: SetNull)
+  reopenedBy User?      @relation("NoQtySoCloseSnapshotReopenedBy", fields: [reopenedByUserId], references: [id], onDelete: SetNull)
+  lines      NoQtySoClosedShortageLine[]
+
+  @@unique([salesOrderId, closeVersion])
+  @@index([salesOrderId])
+}
+
+model NoQtySoClosedShortageLine {
+  id               Int     @id @default(autoincrement())
+  snapshotId       Int
+  salesOrderId     Int
+  itemId           Int
+  cycleIdAtClose   Int?
+  cycleNoAtClose   Int?
+  closedShortageQty Decimal @default(0) @db.Decimal(18, 3)
+
+  snapshot  NoQtySoCloseSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+  salesOrder SalesOrder          @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
+  item      Item                 @relation(fields: [itemId], references: [id], onDelete: Restrict)
+
+  @@index([snapshotId])
+  @@index([salesOrderId])
+  @@index([itemId])
 }
 
 model SalesOrderLine {
@@ -632,6 +800,10 @@ model SalesOrderLine {
   qty             Decimal @db.Decimal(18, 3)
   /// Manual NO_QTY SO: capture rate for downstream billing; quotation-based flow uses quotation line rate.
   rate            Decimal @default(0) @db.Decimal(18, 4)
+  /// NO_QTY: GST rate snapshot for downstream billing (nullable for legacy).
+  gstRate         Decimal? @db.Decimal(5, 2)
+  /// NO_QTY: rate effective-from snapshot (nullable for legacy).
+  rateEffectiveFrom DateTime?
   /// When SO is created from a quotation, links to that quotation line (source of truth for pricing/free intent).
   quotationLineId Int?
   /// Commercial snapshot from QuotationLine.isFree at SO creation (read-only downstream). Not used for RM/WO/QC/dispatch math.
@@ -790,6 +962,13 @@ model SalesBill {
   totalTax   Decimal @default(0) @db.Decimal(18, 2)
   netAmount  Decimal @default(0) @db.Decimal(18, 2)
 
+  /// Commercial payment follow-up (Tally is ledger of record).
+  paymentStatus  BillPaymentTrackingStatus @default(PENDING)
+  dueDate        DateTime?                 @db.Date
+  receivedAmount Decimal                   @default(0) @db.Decimal(18, 2)
+  pendingAmount  Decimal                   @default(0) @db.Decimal(18, 2)
+  paymentRemarks String?                   @db.Text
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -797,6 +976,7 @@ model SalesBill {
   dispatch Dispatch         @relation(fields: [dispatchId], references: [id], onDelete: Restrict)
   cycle    SalesOrderCycle? @relation(fields: [cycleId], references: [id], onDelete: SetNull)
   lines    SalesBillLine[]
+  receipts SalesBillReceipt[]
 
   exportResetBy User? @relation("SalesBillExportResetBy", fields: [exportResetById], references: [id], onDelete: SetNull)
   exportedBy    User? @relation("SalesBillExportedBy", fields: [exportedById], references: [id], onDelete: SetNull)
@@ -813,6 +993,25 @@ model SalesBill {
   @@index([exportResetById])
   @@index([finalizedById])
   @@index([cancelledById])
+}
+
+/// Commercial receipt lines against a sales bill (sum drives receivedAmount).
+model SalesBillReceipt {
+  id           Int                   @id @default(autoincrement())
+  salesBillId  Int
+  receiptDate  DateTime              @db.Date
+  amount       Decimal               @db.Decimal(18, 2)
+  mode         CommercialPaymentMode
+  referenceNo  String?               @db.VarChar(128)
+  remarks      String?               @db.Text
+  createdById  Int?
+  createdAt    DateTime              @default(now())
+
+  salesBill SalesBill @relation(fields: [salesBillId], references: [id], onDelete: Cascade)
+  createdBy User?     @relation("SalesBillReceiptCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([salesBillId])
+  @@index([receiptDate])
 }
 
 model SalesBillLine {
@@ -833,6 +1032,9 @@ model SalesBillLine {
   sgstAmount       Decimal @db.Decimal(18, 2)
   igstAmount       Decimal @db.Decimal(18, 2)
   lineTotal        Decimal @db.Decimal(18, 2)
+
+  /// NO_QTY billing from approved rate contract: snapshot of contract `effectiveFrom`. Null for REGULAR SO lines.
+  rateEffectiveFrom DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -891,17 +1093,23 @@ model RmPurchaseOrderLine {
 model Grn {
   id             Int              @id @default(autoincrement())
   rmPoId         Int
+  /// Denormalized from RM PO at receipt time; used with supplierInvoiceNo for duplicate checks.
+  supplierId     Int
+  /// Supplier invoice / bill number on this GRN receipt (required for new GRNs).
+  supplierInvoiceNo String          @db.VarChar(128)
   date           DateTime         @default(now())
   reversedAt     DateTime?
   reversalReason String?          @db.Text
   billingStatus  GrnBillingStatus @default(PENDING)
 
   rmPo          RmPurchaseOrder @relation(fields: [rmPoId], references: [id], onDelete: Cascade)
+  supplier      Supplier        @relation(fields: [supplierId], references: [id], onDelete: Restrict)
   lines         GrnLine[]
   /// Purchase bills created from this GRN (may be multiple with partial billing).
   purchaseBills PurchaseBill[]
 
   @@index([rmPoId])
+  @@index([supplierId, supplierInvoiceNo])
   @@index([date])
   @@index([reversedAt])
   @@index([billingStatus])
@@ -949,6 +1157,10 @@ model PurchaseBill {
   totalIgst                 Decimal            @default(0) @db.Decimal(18, 2)
   totalTax                  Decimal            @default(0) @db.Decimal(18, 2)
   netAmount                 Decimal            @default(0) @db.Decimal(18, 2)
+  /// Commercial payment follow-up (Tally is ledger of record).
+  paymentStatus  BillPaymentTrackingStatus @default(PENDING)
+  paidAmount     Decimal                   @default(0) @db.Decimal(18, 2)
+  pendingAmount  Decimal                   @default(0) @db.Decimal(18, 2)
   finalizedAt               DateTime?
   cancelledAt               DateTime?
   cancelReason              String?            @db.Text
@@ -964,6 +1176,7 @@ model PurchaseBill {
   supplier      Supplier           @relation(fields: [supplierId], references: [id], onDelete: Restrict)
   grn           Grn?               @relation(fields: [grnId], references: [id], onDelete: SetNull)
   lines         PurchaseBillLine[]
+  payments      PurchaseBillPayment[]
   exportResetBy User?              @relation("PurchaseBillExportResetBy", fields: [exportResetById], references: [id], onDelete: SetNull)
   cancelledBy   User?              @relation("PurchaseBillCancelledBy", fields: [cancelledById], references: [id], onDelete: SetNull)
 
@@ -974,6 +1187,25 @@ model PurchaseBill {
   @@index([isExported])
   @@index([exportResetById])
   @@index([cancelledById])
+}
+
+/// Commercial payment lines against a purchase bill (sum drives paidAmount).
+model PurchaseBillPayment {
+  id             Int                   @id @default(autoincrement())
+  purchaseBillId Int
+  paymentDate    DateTime              @db.Date
+  amount         Decimal               @db.Decimal(18, 2)
+  mode           CommercialPaymentMode
+  referenceNo    String?               @db.VarChar(128)
+  remarks        String?               @db.Text
+  createdById    Int?
+  createdAt      DateTime              @default(now())
+
+  purchaseBill PurchaseBill @relation(fields: [purchaseBillId], references: [id], onDelete: Cascade)
+  createdBy    User?        @relation("PurchaseBillPaymentCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([purchaseBillId])
+  @@index([paymentDate])
 }
 
 model PurchaseBillLine {

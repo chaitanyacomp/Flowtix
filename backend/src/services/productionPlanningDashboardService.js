@@ -1,5 +1,6 @@
 const { prisma } = require("../utils/prisma");
 const { usableStockDisplayQty } = require("./stockService");
+const { computeGlobalNoQtyUsablePlanningBreakdownByItem } = require("./noQtyUsablePlanningService");
 
 const DEFAULT_CRITICAL_COVERAGE_PERCENT = 50;
 const DEFAULT_WARNING_COVERAGE_PERCENT = 80;
@@ -26,13 +27,7 @@ function round3(v) {
  * - Status: RED (<50% coverage), YELLOW (<80%), GREEN otherwise
  */
 async function getProductionPlanningDashboard() {
-  const stockRows = await prisma.stockTransaction.groupBy({
-    by: ["itemId"],
-    // Stock math must include reversed originals; reversal rows offset them.
-    where: { stockBucket: "USABLE" },
-    _sum: { qtyIn: true, qtyOut: true },
-  });
-  const stockByItemId = new Map(stockRows.map((r) => [r.itemId, n(r._sum.qtyIn) - n(r._sum.qtyOut)]));
+  const globalBreakdownByItem = await computeGlobalNoQtyUsablePlanningBreakdownByItem(prisma);
 
   // Same sheet selection semantics as existing planning dashboard: NO_QTY only, active cycle only, latest version per key.
   const sheets = await prisma.requirementSheet.findMany({
@@ -86,7 +81,7 @@ async function getProductionPlanningDashboard() {
   for (const [itemId, req0] of reqByItemId.entries()) {
     const requirementQty = round3(req0);
     if (!(requirementQty > 0)) continue;
-    const stockQty = round3(usableStockDisplayQty(stockByItemId.get(itemId) ?? 0));
+    const stockQty = round3(usableStockDisplayQty(n(globalBreakdownByItem.get(itemId)?.freeSurplusUsableQty ?? 0)));
     const gapPercent = round2((stockQty / requirementQty) * 100);
     const suggestedWoQty = round3(Math.max(0, requirementQty - stockQty));
 

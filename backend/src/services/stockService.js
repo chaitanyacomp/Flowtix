@@ -65,6 +65,7 @@ async function assertSufficientStockForQtyOut(db, itemId, qtyOut, messagePrefix,
   const onHand = await getItemStockQty(itemId, db, {
     stockBucket: bucket,
     ...(opts?.qcRejectedDispositionId ? { qcRejectedDispositionId: opts.qcRejectedDispositionId } : {}),
+    ...(opts?.excludeReversed ? { excludeReversed: true } : {}),
   });
   const q = Number(qtyOut);
   if (onHand - q < -STOCK_EPS) {

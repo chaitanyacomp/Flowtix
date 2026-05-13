@@ -1,6 +1,6 @@
 const express = require("express");
 const { z, ZodError } = require("zod");
-const { Prisma } = require("@prisma/client");
+const { Prisma } = require("../prismaClientPackage");
 const { prisma } = require("../utils/prisma");
 const { requireAuth, requireRole } = require("../middleware/auth");
 const { getStrictInventoryControl, getStockAdjustmentPolicy } = require("../services/appSettings");
@@ -105,7 +105,14 @@ async function assertStockAdjustmentAllowed() {
 }
 
 const adjustmentRoles = requireRole(["ADMIN", "STORE"], STOCK_ADJUSTMENT_ACCESS_DENIED);
-const stockReadRoles = requireRole(["ADMIN", "STORE"], STOCK_READ_ACCESS_DENIED);
+/**
+ * Stock summary / ledger reads — broad operational visibility (Phase 1 step 8).
+ * Write operations (`adjustmentRoles`) remain Admin+Store only.
+ */
+const stockReadRoles = requireRole(
+  ["ADMIN", "STORE", "PRODUCTION", "QC", "SALES"],
+  STOCK_READ_ACCESS_DENIED,
+);
 /** Move quantity between stock buckets (USABLE / QC_HOLD / QC_PENDING / REWORK / SCRAP) for an FG item. */
 const bucketTransferRoles = requireRole(["ADMIN", "STORE", "QC"], STOCK_READ_ACCESS_DENIED);
 const qcReworkRoles = requireRole(["ADMIN", "QC"], "Access denied. Only Admin and QC can manage the rework QC queue.");
@@ -494,6 +501,29 @@ stockRouter.post("/complete-rework-qc", requireAuth, qcReworkRoles, async (req, 
     const reasonNote = typeof body.reason === "string" ? body.reason.trim() : "";
     const detail = reasonNote || "Rework QC";
 
+    const dispAwaiting = await prisma.qcRejectedDisposition.findMany({
+      where: { voidedAt: null, status: "REWORK_READY_FOR_QC", itemId: body.itemId },
+      select: { id: true },
+      take: 500,
+    });
+    for (const row of dispAwaiting) {
+      const netRework = await getItemStockQty(body.itemId, prisma, {
+        stockBucket: "REWORK",
+        qcRejectedDispositionId: row.id,
+      });
+      const netLegacyPending = await getItemStockQty(body.itemId, prisma, {
+        stockBucket: "QC_PENDING",
+        qcRejectedDispositionId: row.id,
+      });
+      if (netRework > STOCK_EPS || netLegacyPending > STOCK_EPS) {
+        const err = new Error(
+          "This item has rework waiting in the QC work queue. Complete rework QC there before using internal stock rework.",
+        );
+        err.statusCode = 409;
+        throw err;
+      }
+    }
+
     await prisma.$transaction(async (tx) => {
       await lockItemForUpdate(tx, body.itemId);
 
@@ -512,7 +542,7 @@ stockRouter.post("/complete-rework-qc", requireAuth, qcReworkRoles, async (req, 
         tx,
         body.itemId,
         acceptedQty,
-        "Rework QC posting would make usable stock negative; adjust checked/rejected quantities.",
+        "Cannot complete internal rework QC with these quantities. Refresh or use the QC work queue.",
         { stockBucket: "USABLE" },
       );
       if (rejectedStockBucket === "USABLE") {
@@ -520,7 +550,7 @@ stockRouter.post("/complete-rework-qc", requireAuth, qcReworkRoles, async (req, 
           tx,
           body.itemId,
           rejectedQty,
-          "Rework QC posting would make usable stock negative; adjust rejected quantity.",
+          "Cannot complete internal rework QC with these quantities. Refresh or use the QC work queue.",
           { stockBucket: "USABLE" },
         );
       } else if (rejectedStockBucket === "QC_HOLD") {
@@ -528,7 +558,7 @@ stockRouter.post("/complete-rework-qc", requireAuth, qcReworkRoles, async (req, 
           tx,
           body.itemId,
           rejectedQty,
-          "Rework QC posting would make QC hold stock negative; adjust rejected quantity.",
+          "Cannot complete internal rework QC with these quantities. Refresh or use the QC work queue.",
           { stockBucket: "QC_HOLD" },
         );
       } else if (rejectedStockBucket === "REWORK") {
@@ -536,7 +566,7 @@ stockRouter.post("/complete-rework-qc", requireAuth, qcReworkRoles, async (req, 
           tx,
           body.itemId,
           rejectedQty,
-          "Rework QC posting would make rework stock negative; adjust rejected quantity.",
+          "Cannot complete internal rework QC with these quantities. Refresh or use the QC work queue.",
           { stockBucket: "REWORK" },
         );
       } else if (rejectedStockBucket === "SCRAP") {
@@ -544,7 +574,7 @@ stockRouter.post("/complete-rework-qc", requireAuth, qcReworkRoles, async (req, 
           tx,
           body.itemId,
           rejectedQty,
-          "Rework QC posting would make scrap bucket stock negative; adjust rejected quantity.",
+          "Cannot complete internal rework QC with these quantities. Refresh or use the QC work queue.",
           { stockBucket: "SCRAP" },
         );
       }

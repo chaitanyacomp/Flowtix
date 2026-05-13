@@ -12,14 +12,22 @@ export class ApiRequestError extends Error {
   readonly code?: string;
   readonly step?: string;
   readonly backendError?: string;
+  /** Full JSON body when the server returned structured fields (e.g. shortages on production approve). */
+  readonly body?: Record<string, unknown>;
 
-  constructor(message: string, status: number, code?: string, meta?: { step?: string; backendError?: string }) {
+  constructor(
+    message: string,
+    status: number,
+    code?: string,
+    meta?: { step?: string; backendError?: string; body?: Record<string, unknown> },
+  ) {
     super(message);
     this.name = "ApiRequestError";
     this.status = status;
     this.code = code;
     this.step = meta?.step;
     this.backendError = meta?.backendError;
+    this.body = meta?.body;
   }
 }
 
@@ -165,12 +173,25 @@ export async function apiFetch<T>(path: string, opts: RequestInit = {}): Promise
   const data = await parseJsonSafe(res);
 
   if (!res.ok) {
+    const record = data && typeof data === "object" ? (data as Record<string, unknown>) : null;
+    const topCode = record && typeof record.code === "string" ? record.code : undefined;
+    const topMessage = record && typeof record.message === "string" ? record.message : null;
+
+    const flatBiz =
+      data &&
+      typeof data === "object" &&
+      typeof (data as Record<string, unknown>).error === "string" &&
+      typeof (data as Record<string, unknown>).message === "string"
+        ? (data as { error: string; message: string })
+        : null;
+
     const errObj =
       data && typeof data === "object" && "error" in data && data.error && typeof data.error === "object"
         ? (data as { error: { message?: string; code?: string } }).error
         : null;
-    const fromJson = errObj && typeof errObj.message === "string" ? errObj.message : null;
-    const errCode = errObj && typeof errObj.code === "string" ? errObj.code : undefined;
+    const fromJson = flatBiz?.message ?? (errObj && typeof errObj.message === "string" ? errObj.message : null);
+    const errCode =
+      topCode ?? flatBiz?.error ?? (errObj && typeof errObj.code === "string" ? errObj.code : undefined);
     const fromHtml =
       typeof data === "string" && data.trimStart().startsWith("<")
         ? `API returned HTML (${res.status}) — wrong URL or server not running. Tried: ${url}`
@@ -183,13 +204,17 @@ export async function apiFetch<T>(path: string, opts: RequestInit = {}): Promise
     const cleanupError = cleanupObj && typeof cleanupObj.error === "string" ? cleanupObj.error : undefined;
     const cleanupMsg = cleanupObj && typeof cleanupObj.message === "string" ? cleanupObj.message : null;
 
-    const msg = fromJson || cleanupMsg || fromHtml || `Request failed: ${res.status}`;
+    const msg = topMessage ?? (fromJson || cleanupMsg || fromHtml || `Request failed: ${res.status}`);
 
     if (isAuthFailure(res.status, msg)) {
       handleAuthFailureOnce();
       throw new ApiRequestError(SESSION_EXPIRED_MESSAGE, 401);
     }
-    throw new ApiRequestError(msg, res.status, errCode, { step: cleanupStep, backendError: cleanupError });
+    throw new ApiRequestError(msg, res.status, errCode, {
+      step: cleanupStep,
+      backendError: cleanupError,
+      body: record ?? undefined,
+    });
   }
   return data as T;
 }

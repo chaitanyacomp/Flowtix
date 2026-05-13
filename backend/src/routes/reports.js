@@ -1,8 +1,16 @@
 const express = require("express");
-const { AuditAction } = require("@prisma/client");
+const { AuditAction } = require("../prismaClientPackage");
 const { prisma } = require("../utils/prisma");
 const { requireAuth, requireRole } = require("../middleware/auth");
 const { netDispatchedByItemId, DISPATCH_ALLOC_MODE } = require("../services/salesOrderDispatchAllocation");
+const {
+  loadNoQtyCycleQcAcceptedMap,
+  loadNoQtyDispositionUsableForDispatchPoolMap,
+  loadNoQtyPostCycleApprovalMapForInputs,
+  computeNoQtyDispatchHeadroom,
+  filterNoQtyDispatchRowsForActiveCycle,
+  netNoQtyCycleDispatchedByItemId,
+} = require("./dispatch");
 const {
   aggregateSoOrderedQtyByItemId,
   allocateDispatchFifoAcrossWorkOrderLines,
@@ -24,6 +32,7 @@ const {
   parseDateStart,
   parseDateEnd,
 } = require("../services/soDispatchTraceReport");
+const { buildCustomerSoRsReport } = require("../services/customerSoRsReportService");
 
 const WORK_ORDER_TRACKING_ACCESS_DENIED =
   "Access denied. Only administrators and production staff can view the work order tracking report.";
@@ -37,7 +46,7 @@ const SO_DISPATCH_TRACE_ACCESS_DENIED =
   "Access denied. This report is available to admin, sales, store, production, and QC roles.";
 
 const soDispatchTraceRoles = requireRole(
-  ["ADMIN", "SALES", "STORE", "PRODUCTION", "QC"],
+  ["ADMIN", "SALES", "STORE", "PRODUCTION", "QC", "ACCOUNTS"],
   SO_DISPATCH_TRACE_ACCESS_DENIED,
 );
 
@@ -47,11 +56,15 @@ const stockReconRoles = requireRole(["ADMIN", "STORE", "PRODUCTION"], STOCK_RECO
 
 const PURCHASE_MATCH_ACCESS_DENIED =
   "Access denied. Only administrators and store roles can view the purchase matching report.";
-const purchaseMatchRoles = requireRole(["ADMIN", "STORE"], PURCHASE_MATCH_ACCESS_DENIED);
+const purchaseMatchRoles = requireRole(["ADMIN", "STORE", "ACCOUNTS"], PURCHASE_MATCH_ACCESS_DENIED);
 
 const SALES_MATCH_ACCESS_DENIED =
   "Access denied. This report is available to admin, sales, store, production, and QC roles.";
-const salesMatchRoles = requireRole(["ADMIN", "SALES", "STORE", "PRODUCTION", "QC"], SALES_MATCH_ACCESS_DENIED);
+const salesMatchRoles = requireRole(["ADMIN", "SALES", "STORE", "PRODUCTION", "QC", "ACCOUNTS"], SALES_MATCH_ACCESS_DENIED);
+
+const CUSTOMER_SO_RS_ACCESS_DENIED =
+  "Access denied. This report is available to admin, sales, store, production, and QC roles.";
+const customerSoRsRoles = requireRole(["ADMIN", "SALES", "STORE", "PRODUCTION", "QC", "ACCOUNTS"], CUSTOMER_SO_RS_ACCESS_DENIED);
 
 const BATCH_TRACE_ACCESS_DENIED =
   "Access denied. This report is available to admin, sales, store, production, and QC roles.";
@@ -59,7 +72,7 @@ const batchTraceRoles = requireRole(["ADMIN", "SALES", "STORE", "PRODUCTION", "Q
 
 const DISPATCH_SUMMARY_ACCESS_DENIED =
   "Access denied. This report is available to admin, sales, and store roles.";
-const dispatchSummaryRoles = requireRole(["ADMIN", "SALES", "STORE"], DISPATCH_SUMMARY_ACCESS_DENIED);
+const dispatchSummaryRoles = requireRole(["ADMIN", "SALES", "STORE", "ACCOUNTS"], DISPATCH_SUMMARY_ACCESS_DENIED);
 
 const ACTIVITY_LOG_ACCESS_DENIED = "Access denied. Only administrators can view the audit activity log.";
 const activityLogRoles = requireRole(["ADMIN"], ACTIVITY_LOG_ACCESS_DENIED);
@@ -566,33 +579,79 @@ reportsRouter.get("/sales-matching", requireAuth, salesMatchRoles, async (req, r
 
     const EPS = 1e-6;
 
-    // For NO_QTY: load latest locked requirement-sheet caps for current cycles (used as "Operational qty" cap).
-    const noQtySos = salesOrders.filter((so) => so.orderType === "NO_QTY" && so.currentCycleId != null);
-    const noQtySoIds = noQtySos.map((so) => so.id);
-    const noQtyCycleIds = [...new Set(noQtySos.map((so) => Number(so.currentCycleId)).filter((x) => Number.isFinite(x) && x > 0))];
-    /** @type {Map<string, Map<number, number>>} */
-    const noQtyCapBySoCycleKey = new Map();
-    if (noQtySoIds.length && noQtyCycleIds.length) {
-      const lockedSheets = await prisma.requirementSheet.findMany({
-        where: {
-          salesOrderId: { in: noQtySoIds },
-          cycleId: { in: noQtyCycleIds },
-          status: "LOCKED",
-        },
-        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-        include: { lines: true },
-      });
-      for (const sh of lockedSheets) {
-        const k = `${sh.salesOrderId}:${Number(sh.cycleId)}`;
-        if (noQtyCapBySoCycleKey.has(k)) continue;
-        const capsByItemId = new Map();
-        for (const ln of sh.lines || []) {
-          const cap = Number(ln.suggestedWoQtySnapshot ?? 0);
-          if (!(cap > EPS)) continue;
-          capsByItemId.set(ln.itemId, cap);
+    /** NO_QTY: per-cycle QC pool + same-cycle operational dispatch (aligned with dashboard / dispatch list). */
+    const noQtyOrdersAll = salesOrders.filter((so) => so.orderType === "NO_QTY");
+    const noQtySoIds = noQtyOrdersAll.map((so) => so.id);
+    const allNoQtyCyclesRows =
+      noQtySoIds.length > 0
+        ? await prisma.salesOrderCycle.findMany({
+            where: { salesOrderId: { in: noQtySoIds } },
+            select: { id: true, salesOrderId: true, cycleNo: true },
+            orderBy: [{ salesOrderId: "asc" }, { cycleNo: "asc" }],
+          })
+        : [];
+    /** @type {Map<number, { id: number; cycleNo: number }[]>} */
+    const noQtyAllCyclesBySoId = new Map();
+    for (const r of allNoQtyCyclesRows) {
+      const arr = noQtyAllCyclesBySoId.get(r.salesOrderId) ?? [];
+      arr.push({ id: r.id, cycleNo: Number(r.cycleNo) });
+      noQtyAllCyclesBySoId.set(r.salesOrderId, arr);
+    }
+    const noQtyCycleInputsForMaps = allNoQtyCyclesRows.map((r) => ({ id: r.salesOrderId, currentCycleId: r.id }));
+    let noQtyQcMapRep = new Map();
+    let noQtyRecheckMapRep = new Map();
+    let noQtyPostMapRep = new Map();
+    if (noQtyCycleInputsForMaps.length) {
+      const trip = await Promise.all([
+        loadNoQtyCycleQcAcceptedMap(prisma, noQtyCycleInputsForMaps),
+        loadNoQtyDispositionUsableForDispatchPoolMap(prisma, noQtyCycleInputsForMaps),
+        loadNoQtyPostCycleApprovalMapForInputs(prisma, noQtyCycleInputsForMaps),
+      ]);
+      noQtyQcMapRep = trip[0];
+      noQtyRecheckMapRep = trip[1];
+      noQtyPostMapRep = trip[2];
+    }
+
+    function collectNoQtyItemIdsFromMaps(soIdL) {
+      const cycles = noQtyAllCyclesBySoId.get(soIdL) || [];
+      const out = new Set();
+      const maps = [noQtyQcMapRep, noQtyRecheckMapRep, noQtyPostMapRep];
+      for (const cy of cycles) {
+        const pref = `${soIdL}:${cy.id}:`;
+        for (const m of maps) {
+          for (const k of m.keys()) {
+            if (!String(k).startsWith(pref)) continue;
+            const parts = String(k).split(":");
+            const iid = Number(parts[2]);
+            if (Number.isFinite(iid) && iid > 0) out.add(iid);
+          }
         }
-        noQtyCapBySoCycleKey.set(k, capsByItemId);
       }
+      return out;
+    }
+
+    function computeNoQtyMatchingMetrics(soIdL, itIdL, dispatchRecords) {
+      const cycles = noQtyAllCyclesBySoId.get(soIdL) || [];
+      let pendingSum = 0;
+      let dispatchedOpSum = 0;
+      let grossSum = 0;
+      for (const cy of cycles) {
+        const qcKey = `${soIdL}:${cy.id}:${itIdL}`;
+        const qc = Number(noQtyQcMapRep.get(qcKey) ?? 0);
+        const recheck = Number(noQtyRecheckMapRep.get(qcKey) ?? 0);
+        const post = Number(noQtyPostMapRep.get(qcKey) ?? 0);
+        grossSum += qc + recheck + post;
+        const recs = filterNoQtyDispatchRowsForActiveCycle(dispatchRecords, cy.id);
+        const net = Number(netNoQtyCycleDispatchedByItemId(recs, DISPATCH_ALLOC_MODE.OPERATIONAL).get(itIdL) ?? 0);
+        dispatchedOpSum += net;
+        pendingSum += computeNoQtyDispatchHeadroom({
+          alreadyOpNet: net,
+          qcAcceptedThisCycle: qc,
+          recheckAcceptedThisCycle: recheck,
+          postCycleApprovalQty: post,
+        });
+      }
+      return { pendingSum, dispatchedOpSum, grossSum };
     }
 
     // Preload finalized sales bills for relevant dispatches; sum invoiced by (soId,itemId) via bill lines.
@@ -646,8 +705,21 @@ reportsRouter.get("/sales-matching", requireAuth, salesMatchRoles, async (req, r
       return "Unknown Customer";
     }
 
-    function statusForRow({ operationalQty, dispatchedQty, invoicedQty, soInternalStatus, soOrderType, hasCap }) {
-      const pendingDispatchQty = operationalQty != null ? Math.max(0, operationalQty - dispatchedQty) : null;
+    function statusForRow({
+      operationalQty,
+      dispatchedQty,
+      invoicedQty,
+      soInternalStatus,
+      soOrderType,
+      hasDispatchBasis,
+      pendingDispatchOverride,
+    }) {
+      const pendingDispatchQty =
+        pendingDispatchOverride != null
+          ? pendingDispatchOverride
+          : operationalQty != null
+            ? Math.max(0, operationalQty - dispatchedQty)
+            : null;
       const excessDispatchQty = operationalQty != null ? Math.max(0, dispatchedQty - operationalQty) : 0;
       const pendingInvoiceQty = Math.max(0, dispatchedQty - invoicedQty);
       const excessInvoiceQty = Math.max(0, invoicedQty - dispatchedQty);
@@ -658,43 +730,19 @@ reportsRouter.get("/sales-matching", requireAuth, salesMatchRoles, async (req, r
 
       if (soInternalStatus === "COMPLETED") return "Closed";
 
-      // NO_QTY without locked requirement cap: dispatch is blocked in ERP; still show open.
-      if (soOrderType === "NO_QTY" && !hasCap) return "Open";
+      if (soOrderType === "NO_QTY" && !hasDispatchBasis) return "Open";
 
       if (dispatchedQty <= EPS) return "Open";
-      if (operationalQty != null && pendingDispatchQty != null && pendingDispatchQty > EPS) return "Partly Dispatched";
+      if (pendingDispatchQty != null && pendingDispatchQty > EPS) return "Partly Dispatched";
       if (pendingInvoiceQty > EPS) return "Pending Billing";
       if (pendingInvoiceQty <= EPS) return "Fully Billed";
       return "Open";
     }
 
-    // For NO_QTY, when cap items exist but SO lines don't include them, preload item masters once (avoid per-row DB hits).
-    const capOnlyItemIds = new Set();
-    for (const so of salesOrders) {
-      if (so.orderType !== "NO_QTY" || so.currentCycleId == null) continue;
-      const k = `${so.id}:${Number(so.currentCycleId)}`;
-      const caps = noQtyCapBySoCycleKey.get(k);
-      if (!caps) continue;
-      const lineItemIds = new Set((so.lines || []).map((l) => l.itemId));
-      for (const itId of caps.keys()) {
-        if (!lineItemIds.has(itId)) capOnlyItemIds.add(itId);
-      }
-    }
-    const capOnlyItems = capOnlyItemIds.size
-      ? await prisma.item.findMany({
-          where: { id: { in: Array.from(capOnlyItemIds) } },
-          include: { unitRef: { select: { id: true, unitName: true } } },
-        })
-      : [];
-    const capOnlyItemById = new Map(capOnlyItems.map((it) => [it.id, it]));
-
     const rows = [];
     for (const so of salesOrders) {
       const soId = so.id;
       const orderType = so.orderType;
-      const cycleId = so.currentCycleId != null ? Number(so.currentCycleId) : null;
-      const capKey = orderType === "NO_QTY" && cycleId ? `${soId}:${cycleId}` : null;
-      const capsByItemId = capKey ? noQtyCapBySoCycleKey.get(capKey) || null : null;
 
       /** @type {Map<number, { itemName: string, unit: string, plannedQty: number, customerPoQty: number, bufferPercent: number }>} */
       const soItemAgg = new Map();
@@ -717,54 +765,65 @@ reportsRouter.get("/sales-matching", requireAuth, salesMatchRoles, async (req, r
         soItemAgg.set(ln.itemId, cur);
       }
 
-      // Include NO_QTY cap items even if SO lines qty is 0 (manual NO_QTY creates lines but qty=0 is typical).
-      if (orderType === "NO_QTY" && capsByItemId) {
-        for (const [itId, cap] of capsByItemId.entries()) {
-          if (itemId != null && Number.isFinite(itemId) && itemId > 0 && Number(itId) !== Number(itemId)) continue;
-          if (soItemAgg.has(itId)) continue;
-          const it = capOnlyItemById.get(itId) || null;
-          if (!it) continue;
-          soItemAgg.set(itId, {
-            itemName: it.itemName,
-            unit: it.unitRef?.unitName ?? it.unit ?? "",
+      if (orderType === "NO_QTY") {
+        for (const ii of collectNoQtyItemIdsFromMaps(soId)) {
+          if (itemId != null && Number.isFinite(itemId) && itemId > 0 && Number(ii) !== Number(itemId)) continue;
+          if (soItemAgg.has(ii)) continue;
+          soItemAgg.set(ii, {
+            itemName: `Item #${ii}`,
+            unit: "",
             plannedQty: 0,
             customerPoQty: 0,
             bufferPercent: 0,
           });
+        }
+        const lineItemIdSet = new Set((so.lines || []).map((l) => l.itemId));
+        const needNames = [...soItemAgg.keys()].filter((id) => !lineItemIdSet.has(id));
+        if (needNames.length) {
+          const items = await prisma.item.findMany({
+            where: { id: { in: needNames } },
+            include: { unitRef: { select: { id: true, unitName: true } } },
+          });
+          for (const it of items) {
+            const cur = soItemAgg.get(it.id);
+            if (!cur) continue;
+            soItemAgg.set(it.id, {
+              ...cur,
+              itemName: it.itemName ?? cur.itemName,
+              unit: it.unitRef?.unitName ?? it.unit ?? cur.unit,
+            });
+          }
         }
       }
 
       const dispatchRecords = so.dispatch || [];
       const netDispatchedConfirmed = netDispatchedByItemId(dispatchRecords, DISPATCH_ALLOC_MODE.CONFIRMED);
 
-      // NO_QTY: use operational net within current cycle (cap-based), not full SO lifetime dispatch.
-      const netNoQtyOperational = orderType === "NO_QTY" && cycleId
-        ? netDispatchedByItemId(dispatchRecords.filter((d) => Number(d.cycleId) === cycleId), DISPATCH_ALLOC_MODE.OPERATIONAL)
-        : null;
-
       for (const [itId, meta] of soItemAgg.entries()) {
         const key = `${soId}-${itId}`;
-        const dispatchedQty =
-          orderType === "NO_QTY" && netNoQtyOperational
-            ? Number(netNoQtyOperational.get(itId) ?? 0)
-            : Number(netDispatchedConfirmed.get(itId) ?? 0);
+        let dispatchedQty;
+        let operationalQty;
+        let pendingDispatchQty;
+        let excessDispatchQty;
+        let hasDispatchBasis;
+
+        if (orderType === "NO_QTY") {
+          const m = computeNoQtyMatchingMetrics(soId, itId, dispatchRecords);
+          operationalQty = m.grossSum;
+          dispatchedQty = m.dispatchedOpSum;
+          pendingDispatchQty = m.pendingSum;
+          excessDispatchQty = Math.max(0, dispatchedQty - operationalQty);
+          hasDispatchBasis = m.grossSum > EPS || m.dispatchedOpSum > EPS || m.pendingSum > EPS;
+        } else {
+          dispatchedQty = Number(netDispatchedConfirmed.get(itId) ?? 0);
+          operationalQty =
+            orderType === "NORMAL" ? meta.customerPoQty : meta.plannedQty;
+          pendingDispatchQty = operationalQty != null ? Math.max(0, operationalQty - dispatchedQty) : null;
+          excessDispatchQty = operationalQty != null ? Math.max(0, dispatchedQty - operationalQty) : null;
+          hasDispatchBasis = true;
+        }
+
         const invoicedQty = Number(invoicedBySoItemKey.get(key) ?? 0);
-
-        const operationalQty =
-          orderType === "NO_QTY"
-            ? capsByItemId
-              ? Number(capsByItemId.get(itId) ?? 0) || 0
-              : null
-            : orderType === "NORMAL"
-              ? meta.customerPoQty
-              : meta.plannedQty;
-
-        const hasCap = orderType !== "NO_QTY" ? true : Boolean(capsByItemId && capsByItemId.has(itId));
-
-        const pendingDispatchQty = operationalQty != null ? Math.max(0, operationalQty - dispatchedQty) : null;
-        const excessDispatchQty = operationalQty != null ? Math.max(0, dispatchedQty - operationalQty) : null;
-        const pendingInvoiceQty = Math.max(0, dispatchedQty - invoicedQty);
-        const excessInvoiceQty = Math.max(0, invoicedQty - dispatchedQty);
 
         const status = statusForRow({
           operationalQty,
@@ -772,8 +831,12 @@ reportsRouter.get("/sales-matching", requireAuth, salesMatchRoles, async (req, r
           invoicedQty,
           soInternalStatus: so.internalStatus,
           soOrderType: orderType,
-          hasCap,
+          hasDispatchBasis,
+          pendingDispatchOverride: orderType === "NO_QTY" ? pendingDispatchQty : null,
         });
+
+        const pendingInvoiceQty = Math.max(0, dispatchedQty - invoicedQty);
+        const excessInvoiceQty = Math.max(0, invoicedQty - dispatchedQty);
 
         const mismatch =
           (operationalQty != null && excessDispatchQty != null && excessDispatchQty > EPS) ||
@@ -1663,6 +1726,53 @@ reportsRouter.get("/work-order-tracking", requireAuth, workOrderTrackingRoles, a
         metricDefinitionsRef: METRIC_DEFINITIONS,
       },
     });
+  } catch (e) {
+    return next(e);
+  }
+});
+
+/**
+ * GET /api/reports/customer-so-rs
+ *
+ * Customer-wise SO + requirement sheet position (NO_QTY RS fields + dashboard-aligned next action).
+ *
+ * Query:
+ * - customerId? (number)
+ * - soType? NORMAL | NO_QTY | ALL
+ * - status? SalesOrderInternalStatus or ALL
+ * - dateFrom? / dateTo? (YYYY-MM-DD, filters SalesOrder.createdAt)
+ * - q? / search? — partial match on docNo or customerPoReference; when set, NO_QTY orders emit one row per cycle
+ */
+reportsRouter.get("/customer-so-rs", requireAuth, customerSoRsRoles, async (req, res, next) => {
+  try {
+    const statusRaw = String(req.query.status ?? "").trim();
+    if (statusRaw && statusRaw.toUpperCase() !== "ALL") {
+      const allowed = new Set([
+        "DRAFT",
+        "OPEN",
+        "APPROVED",
+        "IN_PROCESS",
+        "COMPLETED",
+        "CLOSED",
+        "MANUALLY_CLOSED",
+      ]);
+      if (!allowed.has(statusRaw)) {
+        const err = new Error(`Invalid status. Use ALL or one of: ${[...allowed].join(", ")}.`);
+        err.statusCode = 400;
+        throw err;
+      }
+    }
+
+    const df = parseDateStart(req.query.dateFrom);
+    const dt = parseDateEnd(req.query.dateTo);
+    if (df && dt && df.getTime() > dt.getTime()) {
+      const err = new Error("dateFrom cannot be after dateTo.");
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const payload = await buildCustomerSoRsReport(req.query);
+    return res.json(payload);
   } catch (e) {
     return next(e);
   }

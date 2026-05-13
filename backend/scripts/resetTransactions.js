@@ -14,7 +14,7 @@
  * - Auto-increment reset is intentionally NOT done by default (MySQL DDL like TRUNCATE/ALTER may auto-commit).
  */
 
-const { PrismaClient } = require("@prisma/client");
+const { PrismaClient } = require("../prisma/generated/client");
 
 const prisma = new PrismaClient();
 

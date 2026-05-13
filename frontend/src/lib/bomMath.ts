@@ -1,3 +1,3 @@
-export function effectiveQty(baseQty: number, wastagePercent: number) {
-  return Number(baseQty) * (1 + Number(wastagePercent) / 100);
+export function effectiveQty(baseQty: number, processLossPercent: number, qcAllowancePercent = 0) {
+  return Number(baseQty) * (1 + (Number(processLossPercent) + Number(qcAllowancePercent)) / 100);
 }

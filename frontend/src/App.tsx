@@ -1,4 +1,4 @@
-import { Navigate, Route, Routes, useNavigate, useSearchParams } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useState } from "react";
 import { Button } from "./components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "./components/ui/card";
@@ -39,9 +39,11 @@ import { DispatchPage } from "./pages/DispatchPage";
 import { SuppliersPage } from "./pages/SuppliersPage";
 import { BomsPage } from "./pages/BomsPage";
 import { SalesOrdersPage } from "./pages/SalesOrdersPage";
+import { NoQtySalesOrderFromQuotationPage } from "./pages/NoQtySalesOrderFromQuotationPage";
 import { RequirementSheetPage } from "./pages/RequirementSheetPage";
 import { WoPlanningFromRequirementPage } from "./pages/WoPlanningFromRequirementPage";
 import { RmCheckPage } from "./pages/RmCheckPage";
+import { RegularWorkOrderPlanningPage } from "./pages/RegularWorkOrderPlanningPage";
 import { ScrapReportPage } from "./pages/ScrapReportPage";
 import { ReportsPage } from "./pages/ReportsPage";
 import { RMShortageReportPage } from "./pages/RMShortageReportPage";
@@ -51,17 +53,47 @@ import { SoDispatchTraceReportPage } from "./pages/SoDispatchTraceReportPage";
 import { StockReconciliationReportPage } from "./pages/StockReconciliationReportPage";
 import { PurchaseMatchingReportPage } from "./pages/PurchaseMatchingReportPage";
 import { SalesMatchingReportPage } from "./pages/SalesMatchingReportPage";
+import { CustomerSoRsReportPage } from "./pages/CustomerSoRsReportPage";
 import { BatchTraceabilityReportPage } from "./pages/BatchTraceabilityReportPage";
 import { ActivityLogReportPage } from "./pages/ActivityLogReportPage";
 import { DispatchSummaryReportPage } from "./pages/DispatchSummaryReportPage";
 import { DispatchBacklogReportPage } from "./pages/DispatchBacklogReportPage";
 import { AdminSettingsPage } from "./pages/AdminSettingsPage";
+import { CompanyProfilePage } from "./pages/CompanyProfilePage";
 import { ActivityPage } from "./pages/ActivityPage";
 import { PlanningDashboardPage } from "./pages/PlanningDashboardPage";
-import { ProductionPlanningDashboardPage } from "./pages/ProductionPlanningDashboardPage";
 import { ExportHistoryPage } from "./pages/ExportHistoryPage";
-import { ALL_APP_ROLES, ProtectedRoute } from "./components/ProtectedRoute";
+import { ProtectedRoute } from "./components/ProtectedRoute";
+import {
+  ALL_APP_ROLES,
+  ALL_APP_ROLES_NO_ACCOUNTS,
+  REPORTS_WITH_ACCOUNTS_ROLES,
+  SUPPLIER_VIEW_ROLES,
+  SO_WRITE_ROLES,
+  SO_READ_ROLES,
+  ENQUIRY_QUOTATION_WRITE_ROLES,
+  RS_WRITE_ROLES,
+  WO_PLAN_PREP_ROLES,
+  QC_PAGE_ROLES,
+  DISPATCH_READ_ROLES,
+  CUSTOMER_RETURN_READ_ROLES,
+  SALES_BILL_READ_ROLES,
+  SALES_BILL_WRITE_ROLES,
+  PURCHASE_BILL_READ_ROLES,
+  PURCHASE_BILL_DRAFT_ROLES,
+  PLANNING_DASHBOARD_ROLES,
+} from "./config/erpRoles";
 import { DatabaseCleanupPage } from "./pages/DatabaseCleanupPage";
+import { BackupRestorePage } from "./pages/BackupRestorePage";
+import { TallyMasterImportPage } from "./pages/TallyMasterImportPage";
+import { RateContractsPage } from "./pages/RateContractsPage";
+import { AccountPage } from "./pages/AccountPage";
+
+/** Legacy `/planning-dashboard/production` → single planning hub (preserve query string). */
+function PlanningProductionPathRedirect() {
+  const { search } = useLocation();
+  return <Navigate to={`/planning-dashboard${search}`} replace />;
+}
 
 /** Old /sales-invoice links → sales orders with invoice modal (query openInvoice). */
 function LegacySalesInvoiceRedirect() {
@@ -210,9 +242,17 @@ export default function App() {
           }
         />
         <Route
-          path="/planning-dashboard"
+          path="/account"
           element={
             <ProtectedRoute allowedRoles={[...ALL_APP_ROLES]}>
+              <AccountPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/planning-dashboard"
+          element={
+            <ProtectedRoute allowedRoles={[...PLANNING_DASHBOARD_ROLES]}>
               <PlanningDashboardPage />
             </ProtectedRoute>
           }
@@ -220,8 +260,8 @@ export default function App() {
         <Route
           path="/planning-dashboard/production"
           element={
-            <ProtectedRoute allowedRoles={[...ALL_APP_ROLES]}>
-              <ProductionPlanningDashboardPage />
+            <ProtectedRoute allowedRoles={[...PLANNING_DASHBOARD_ROLES]}>
+              <PlanningProductionPathRedirect />
             </ProtectedRoute>
           }
         />
@@ -236,7 +276,7 @@ export default function App() {
         <Route
           path="/customers"
           element={
-            <ProtectedRoute allowedRoles={["ADMIN", "SALES"]}>
+            <ProtectedRoute allowedRoles={[...ENQUIRY_QUOTATION_WRITE_ROLES]}>
               <CustomersPage />
             </ProtectedRoute>
           }
@@ -268,7 +308,7 @@ export default function App() {
         <Route
           path="/enquiries"
           element={
-            <ProtectedRoute allowedRoles={["ADMIN", "SALES"]}>
+            <ProtectedRoute allowedRoles={[...ENQUIRY_QUOTATION_WRITE_ROLES]}>
               <EnquiriesPage />
             </ProtectedRoute>
           }
@@ -276,7 +316,7 @@ export default function App() {
         <Route
           path="/quotations/new"
           element={
-            <ProtectedRoute allowedRoles={["ADMIN", "SALES", "STORE"]}>
+            <ProtectedRoute allowedRoles={[...ENQUIRY_QUOTATION_WRITE_ROLES]}>
               <QuotationsNewPage />
             </ProtectedRoute>
           }
@@ -284,7 +324,7 @@ export default function App() {
         <Route
           path="/quotations"
           element={
-            <ProtectedRoute allowedRoles={["ADMIN", "SALES", "STORE"]}>
+            <ProtectedRoute allowedRoles={[...ENQUIRY_QUOTATION_WRITE_ROLES]}>
               <QuotationsPage />
             </ProtectedRoute>
           }
@@ -300,12 +340,21 @@ export default function App() {
           }
         >
           <Route index element={<RmPurchaseListPage />} />
+          <Route path="create" element={<RmPurchaseListPage />} />
           <Route path=":poId" element={<RmPurchasePoDetailPage />} />
         </Route>
         <Route
-          path="/purchase-bills"
+          path="/rm-purchase/create"
           element={
             <ProtectedRoute allowedRoles={["ADMIN", "STORE"]}>
+              <Navigate to="/rm-po-grn/create" replace />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/purchase-bills"
+          element={
+            <ProtectedRoute allowedRoles={[...PURCHASE_BILL_READ_ROLES]}>
               <PurchaseBillsListPage />
             </ProtectedRoute>
           }
@@ -313,7 +362,7 @@ export default function App() {
         <Route
           path="/purchase-bills/new"
           element={
-            <ProtectedRoute allowedRoles={["ADMIN", "STORE"]}>
+            <ProtectedRoute allowedRoles={[...PURCHASE_BILL_DRAFT_ROLES]}>
               <PurchaseBillNewPage />
             </ProtectedRoute>
           }
@@ -321,7 +370,7 @@ export default function App() {
         <Route
           path="/purchase-bills/:id"
           element={
-            <ProtectedRoute allowedRoles={["ADMIN", "STORE"]}>
+            <ProtectedRoute allowedRoles={[...PURCHASE_BILL_READ_ROLES]}>
               <PurchaseBillEditPage />
             </ProtectedRoute>
           }
@@ -330,7 +379,7 @@ export default function App() {
         <Route
           path="/sales-bills"
           element={
-            <ProtectedRoute allowedRoles={["ADMIN", "SALES"]}>
+            <ProtectedRoute allowedRoles={[...SALES_BILL_READ_ROLES]}>
               <SalesBillsListPage />
             </ProtectedRoute>
           }
@@ -338,7 +387,7 @@ export default function App() {
         <Route
           path="/sales-bills/new"
           element={
-            <ProtectedRoute allowedRoles={["ADMIN", "SALES"]}>
+            <ProtectedRoute allowedRoles={[...SALES_BILL_WRITE_ROLES]}>
               <SalesBillNewPage />
             </ProtectedRoute>
           }
@@ -346,7 +395,7 @@ export default function App() {
         <Route
           path="/sales-bills/:id"
           element={
-            <ProtectedRoute allowedRoles={["ADMIN", "SALES"]}>
+            <ProtectedRoute allowedRoles={[...SALES_BILL_READ_ROLES]}>
               <SalesBillEditPage />
             </ProtectedRoute>
           }
@@ -370,7 +419,7 @@ export default function App() {
         <Route
           path="/production-entry"
           element={
-            <ProtectedRoute allowedRoles={[...ALL_APP_ROLES]}>
+            <ProtectedRoute allowedRoles={[...ALL_APP_ROLES_NO_ACCOUNTS]}>
               <ProductionFlowLandingPage />
             </ProtectedRoute>
           }
@@ -378,7 +427,7 @@ export default function App() {
         <Route
           path="/qc-entry"
           element={
-            <ProtectedRoute allowedRoles={["ADMIN", "QC", "SUPERVISOR"]}>
+            <ProtectedRoute allowedRoles={[...QC_PAGE_ROLES]}>
               <QcEntryPage />
             </ProtectedRoute>
           }
@@ -386,7 +435,7 @@ export default function App() {
         <Route
           path="/qc-report"
           element={
-            <ProtectedRoute allowedRoles={[...ALL_APP_ROLES]}>
+            <ProtectedRoute allowedRoles={[...ALL_APP_ROLES_NO_ACCOUNTS]}>
               <QcReportPage />
             </ProtectedRoute>
           }
@@ -394,7 +443,7 @@ export default function App() {
         <Route
           path="/dispatch"
           element={
-            <ProtectedRoute allowedRoles={["ADMIN", "SALES"]}>
+            <ProtectedRoute allowedRoles={[...DISPATCH_READ_ROLES]}>
               <DispatchPage />
             </ProtectedRoute>
           }
@@ -402,7 +451,7 @@ export default function App() {
         <Route
           path="/stock"
           element={
-            <ProtectedRoute allowedRoles={["ADMIN", "STORE"]}>
+            <ProtectedRoute allowedRoles={["ADMIN", "STORE", "PRODUCTION", "QC", "SALES"]}>
               <StockPage />
             </ProtectedRoute>
           }
@@ -450,7 +499,7 @@ export default function App() {
         <Route
           path="/customer-returns"
           element={
-            <ProtectedRoute allowedRoles={[...ALL_APP_ROLES]}>
+            <ProtectedRoute allowedRoles={[...CUSTOMER_RETURN_READ_ROLES]}>
               <CustomerReturnPage />
             </ProtectedRoute>
           }
@@ -458,7 +507,7 @@ export default function App() {
         <Route
           path="/customer-returns/qc-hold"
           element={
-            <ProtectedRoute allowedRoles={[...ALL_APP_ROLES]}>
+            <ProtectedRoute allowedRoles={[...CUSTOMER_RETURN_READ_ROLES]}>
               <CustomerReturnBucketPage bucket="QC_HOLD" />
             </ProtectedRoute>
           }
@@ -466,7 +515,7 @@ export default function App() {
         <Route
           path="/customer-returns/rework"
           element={
-            <ProtectedRoute allowedRoles={[...ALL_APP_ROLES]}>
+            <ProtectedRoute allowedRoles={[...CUSTOMER_RETURN_READ_ROLES]}>
               <CustomerReturnBucketPage bucket="REWORK" />
             </ProtectedRoute>
           }
@@ -474,7 +523,7 @@ export default function App() {
         <Route
           path="/suppliers"
           element={
-            <ProtectedRoute allowedRoles={["ADMIN", "STORE"]}>
+            <ProtectedRoute allowedRoles={[...SUPPLIER_VIEW_ROLES]}>
               <SuppliersPage />
             </ProtectedRoute>
           }
@@ -482,7 +531,7 @@ export default function App() {
         <Route
           path="/boms"
           element={
-            <ProtectedRoute allowedRoles={["ADMIN", "STORE", "PRODUCTION"]}>
+            <ProtectedRoute allowedRoles={["ADMIN", "STORE", "PRODUCTION", "SALES", "QC"]}>
               <BomsPage />
             </ProtectedRoute>
           }
@@ -490,7 +539,7 @@ export default function App() {
         <Route
           path="/sales-orders/new"
           element={
-            <ProtectedRoute allowedRoles={["ADMIN", "SALES", "STORE", "PRODUCTION"]}>
+            <ProtectedRoute allowedRoles={[...SO_WRITE_ROLES]}>
               <SalesOrdersNewRedirect />
             </ProtectedRoute>
           }
@@ -498,15 +547,27 @@ export default function App() {
         <Route
           path="/sales-orders"
           element={
-            <ProtectedRoute allowedRoles={["ADMIN", "SALES", "STORE", "PRODUCTION"]}>
+            <ProtectedRoute allowedRoles={[...SO_READ_ROLES]}>
               <SalesOrdersPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/sales-orders/no-qty/from-quotation"
+          element={
+            <ProtectedRoute allowedRoles={[...SO_WRITE_ROLES]}>
+              <NoQtySalesOrderFromQuotationPage />
             </ProtectedRoute>
           }
         />
         <Route
           path="/sales-orders/:id/requirement-sheets"
           element={
-            <ProtectedRoute allowedRoles={["ADMIN", "SALES", "STORE", "PRODUCTION"]}>
+            // Phase 1 role discipline: Requirement Sheet workspace is owned by Planning
+            // (ADMIN + STORE). Non-planning roles see a workflow-status chip on every page
+            // that used to deep-link here; URL-hacking yields a clean access-denied screen
+            // instead of partial-page Forbidden errors mid-render.
+            <ProtectedRoute allowedRoles={[...RS_WRITE_ROLES]}>
               <RequirementSheetPage />
             </ProtectedRoute>
           }
@@ -514,7 +575,7 @@ export default function App() {
         <Route
           path="/requirement-sheets/:id/wo-plan"
           element={
-            <ProtectedRoute allowedRoles={["ADMIN", "SALES", "STORE", "PRODUCTION"]}>
+            <ProtectedRoute allowedRoles={[...WO_PLAN_PREP_ROLES]}>
               <WoPlanningFromRequirementPage />
             </ProtectedRoute>
           }
@@ -522,15 +583,23 @@ export default function App() {
         <Route
           path="/sales-invoice"
           element={
-            <ProtectedRoute allowedRoles={["ADMIN", "SALES", "STORE", "PRODUCTION"]}>
+            <ProtectedRoute allowedRoles={[...SO_READ_ROLES]}>
               <LegacySalesInvoiceRedirect />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/work-orders/prepare"
+          element={
+            <ProtectedRoute allowedRoles={[...WO_PLAN_PREP_ROLES]}>
+              <RegularWorkOrderPlanningPage />
             </ProtectedRoute>
           }
         />
         <Route
           path="/rm-check"
           element={
-            <ProtectedRoute allowedRoles={["ADMIN", "STORE", "SALES", "PRODUCTION"]}>
+            <ProtectedRoute allowedRoles={[...WO_PLAN_PREP_ROLES]}>
               <RmCheckPage />
             </ProtectedRoute>
           }
@@ -546,7 +615,7 @@ export default function App() {
         <Route
           path="/reports"
           element={
-            <ProtectedRoute allowedRoles={["ADMIN", "SALES", "STORE", "PRODUCTION"]}>
+            <ProtectedRoute allowedRoles={[...REPORTS_WITH_ACCOUNTS_ROLES]}>
               <ReportsPage />
             </ProtectedRoute>
           }
@@ -562,7 +631,7 @@ export default function App() {
         <Route
           path="/reports/dispatch-summary"
           element={
-            <ProtectedRoute allowedRoles={["ADMIN", "SALES", "STORE"]}>
+            <ProtectedRoute allowedRoles={[...REPORTS_WITH_ACCOUNTS_ROLES]}>
               <DispatchSummaryReportPage />
             </ProtectedRoute>
           }
@@ -578,7 +647,7 @@ export default function App() {
         <Route
           path="/reports/purchase-matching"
           element={
-            <ProtectedRoute allowedRoles={["ADMIN", "STORE"]}>
+            <ProtectedRoute allowedRoles={[...PURCHASE_BILL_READ_ROLES]}>
               <PurchaseMatchingReportPage />
             </ProtectedRoute>
           }
@@ -586,8 +655,16 @@ export default function App() {
         <Route
           path="/reports/sales-matching"
           element={
-            <ProtectedRoute allowedRoles={["ADMIN", "SALES", "STORE", "PRODUCTION", "QC"]}>
+            <ProtectedRoute allowedRoles={[...REPORTS_WITH_ACCOUNTS_ROLES]}>
               <SalesMatchingReportPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/reports/customer-so-rs"
+          element={
+            <ProtectedRoute allowedRoles={[...REPORTS_WITH_ACCOUNTS_ROLES]}>
+              <CustomerSoRsReportPage />
             </ProtectedRoute>
           }
         />
@@ -648,10 +725,42 @@ export default function App() {
           }
         />
         <Route
+          path="/admin/company-profile"
+          element={
+            <ProtectedRoute allowedRoles={["ADMIN"]}>
+              <CompanyProfilePage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
           path="/admin/database-cleanup"
           element={
             <ProtectedRoute allowedRoles={["ADMIN"]}>
               <DatabaseCleanupPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/admin/backup-restore"
+          element={
+            <ProtectedRoute allowedRoles={["ADMIN"]}>
+              <BackupRestorePage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/masters/tally-import"
+          element={
+            <ProtectedRoute allowedRoles={["ADMIN"]}>
+              <TallyMasterImportPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/admin/rate-contracts"
+          element={
+            <ProtectedRoute allowedRoles={["ADMIN"]}>
+              <RateContractsPage />
             </ProtectedRoute>
           }
         />

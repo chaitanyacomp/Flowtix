@@ -1,11 +1,42 @@
+/**
+ * REGULAR FLOW ONLY
+ *
+ * Flow:
+ * Enquiry
+ * → Quotation
+ * → Regular Sales Order
+ * → RM Check
+ * → Work Order
+ * → Production
+ * → QC
+ * → Dispatch
+ * → Sales Bill
+ *
+ * This flow is:
+ * - fixed quantity
+ * - customer PO driven
+ * - WO driven
+ * - dispatch against SO qty
+ *
+ * DO NOT IMPORT:
+ * - Requirement Sheet logic
+ * - NO_QTY planning services
+ * - cycle planning helpers
+ * - carry-forward shortage logic
+ * - NO_QTY dashboard widgets
+ *
+ * Routes: `/rm-check` (legacy alias), `/work-orders/prepare` (canonical).
+ * APIs: SO list/detail, `GET /api/sales-orders/:id/rm-check`, `/api/boms`, `/api/production/work-orders` — never `/api/planning-dashboard`.
+ */
 import * as React from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { apiFetch } from "../services/api";
-import { Button } from "../components/ui/button";
+import { Button, buttonVariants } from "../components/ui/button";
 import { Badge } from "../components/ui/badge";
 import { useIsAdmin } from "../hooks/useIsAdmin";
 import { cn } from "../lib/utils";
+import { REGULAR_TERMS, NO_QTY_TERMS } from "../lib/flowTerminology";
 
 type SoRow = {
   id: number;
@@ -63,20 +94,47 @@ type RmCheckResponse = {
 
 type BomRowLite = { id: number; fgItemId: number };
 
+function isRegularSoRow(o: Pick<SoRow, "orderType">): boolean {
+  const t = o.orderType ?? "NORMAL";
+  return t === "NORMAL" || t === "REPLACEMENT";
+}
+
 function fgRowTone(f: FgRow): string {
   if (f.note) return "bg-slate-50";
   if (f.toProduce <= 0) return "bg-emerald-50/80";
   return "bg-amber-50/80";
 }
 
+/** Greedy allocation of Customer Tracking `shortfallQty` across FG lines capped by each line’s `toProduce`. */
+function applyCustomerTrackingShortfallToPlanDefaults(
+  fgLines: FgRow[],
+  base: Record<number, string>,
+  shortfall: number,
+): Record<number, string> {
+  if (!(shortfall > 0) || !fgLines?.length) return base;
+  const out = { ...base };
+  let rem = shortfall;
+  for (const f of fgLines) {
+    if (f.note || !(f.toProduce > 0)) continue;
+    const cap = Math.max(0, Number(f.toProduce) || 0);
+    const take = Math.min(rem, cap);
+    out[f.lineId] = String(take);
+    rem -= take;
+    if (rem <= 1e-9) break;
+  }
+  return out;
+}
+
 const RM_CHECK_STRICT_STOCK_MSG =
-  "Strict Inventory Control is ON. Resolve shortage through proper stock process (RM Purchase: PO → goods receipt).";
+  "Strict Inventory Control is ON. Resolve shortage through proper stock process (Material Planning: PO → goods receipt).";
 
 export function RmCheckPage() {
   const nav = useNavigate();
   const [searchParams] = useSearchParams();
   const isAdmin = useIsAdmin();
-  const focusedSoIdFromUrl = Number(searchParams.get("soId")) || 0;
+  const urlSoId = Number(searchParams.get("salesOrderId")) || Number(searchParams.get("soId")) || 0;
+  const customerTrackingShortfallQty = Number(searchParams.get("shortfallQty") ?? 0);
+  const fromCustomerTracking = (searchParams.get("from") ?? "") === "customer-tracking";
   const [orders, setOrders] = React.useState<SoRow[]>([]);
   const [soId, setSoId] = React.useState(0);
   const [data, setData] = React.useState<RmCheckResponse | null>(null);
@@ -88,14 +146,24 @@ export function RmCheckPage() {
   const [planQtyByLineId, setPlanQtyByLineId] = React.useState<Record<number, string>>({});
   const didAutoRunRef = React.useRef(false);
   const [allowSoChange, setAllowSoChange] = React.useState(false);
+  const [noQtyGate, setNoQtyGate] = React.useState<"loading" | "no_qty" | "ok">("ok");
 
   React.useEffect(() => {
-    const fromUrl = Number(searchParams.get("soId"));
+    if (!urlSoId) {
+      setNoQtyGate("ok");
+      return;
+    }
+    setNoQtyGate("loading");
+    apiFetch<{ orderType?: string }>(`/api/sales-orders/${urlSoId}`)
+      .then((so) => setNoQtyGate(so.orderType === "NO_QTY" ? "no_qty" : "ok"))
+      .catch(() => setNoQtyGate("ok"));
+  }, [urlSoId]);
+
+  React.useEffect(() => {
+    const fromUrl = urlSoId;
     apiFetch<SoRow[]>("/api/sales-orders")
       .then((r) => {
-        // CRITICAL: this page is for Regular SO production planning only.
-        // Keep NO_QTY flow completely isolated by hiding NO_QTY orders in this selector.
-        const regularOnly = (Array.isArray(r) ? r : []).filter((o) => (o.orderType ?? "NORMAL") === "NORMAL");
+        const regularOnly = (Array.isArray(r) ? r : []).filter((o) => isRegularSoRow(o));
         setOrders(regularOnly);
         setSoId((cur) => {
           if (fromUrl && regularOnly.some((o) => o.id === fromUrl)) return fromUrl;
@@ -106,9 +174,8 @@ export function RmCheckPage() {
   }, [searchParams]);
 
   React.useEffect(() => {
-    // Reset focus-lock when navigation context changes.
     setAllowSoChange(false);
-  }, [focusedSoIdFromUrl]);
+  }, [urlSoId]);
 
   React.useEffect(() => {
     apiFetch<{ strictInventoryControl: boolean }>("/api/settings/inventory-mode")
@@ -138,7 +205,11 @@ export function RmCheckPage() {
       for (const f of res.fgLines || []) {
         defaults[f.lineId] = String(Math.max(0, Number(f.toProduce) || 0));
       }
-      setPlanQtyByLineId(defaults);
+      const fromTr = (searchParams.get("from") ?? "") === "customer-tracking";
+      const sf = Number(searchParams.get("shortfallQty") ?? 0);
+      const merged =
+        fromTr && sf > 0 ? applyCustomerTrackingShortfallToPlanDefaults(res.fgLines ?? [], defaults, sf) : defaults;
+      setPlanQtyByLineId(merged);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed");
       setData(null);
@@ -150,15 +221,13 @@ export function RmCheckPage() {
     }
   }
 
-  // Auto-load when navigated with a selected Regular SO (soId in URL).
   React.useEffect(() => {
-    const fromUrl = Number(searchParams.get("soId"));
+    const fromUrl = urlSoId;
     if (!fromUrl || !soId) return;
     if (Number(fromUrl) !== Number(soId)) return;
     if (didAutoRunRef.current) return;
-    // Only auto-run for Regular SOs (selector is already filtered, but keep this guard explicit).
     const sel = orders.find((o) => Number(o.id) === Number(soId));
-    if (!sel || (sel.orderType ?? "NORMAL") !== "NORMAL") return;
+    if (!sel || !isRegularSoRow(sel)) return;
     didAutoRunRef.current = true;
     runCheck();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -189,19 +258,37 @@ export function RmCheckPage() {
     nav("/work-orders", { state: { source: "rmCheck", salesOrderId: soId, woLines: lines } });
   }
 
-  function createRmPo() {
+  async function createRmPo() {
     if (!soId) {
       nav("/rm-po-grn");
       return;
     }
     const so = orders.find((o) => Number(o.id) === Number(soId));
+    let workOrderId = 0;
+    try {
+      const wos = await apiFetch<{ id: number }[]>(
+        `/api/production/work-orders?salesOrderId=${encodeURIComponent(String(soId))}&pendingOnly=1`,
+      );
+      if (Array.isArray(wos) && wos.length > 0) {
+        const wid = Number(wos[0]?.id);
+        if (Number.isFinite(wid) && wid > 0) workOrderId = wid;
+      }
+    } catch {
+      // Role/network: continue without WO id (return still lands on Production list filtered by SO).
+    }
     const q = new URLSearchParams();
-    q.set("source", "wo_rm_shortage");
+    q.set("source", "production");
+    q.set("from", "rm-check");
     q.set("salesOrderId", String(soId));
+    const sf = Number(searchParams.get("shortfallQty") ?? 0);
+    if (sf > 0) q.set("shortfallQty", String(sf));
     if (so?.docNo) q.set("salesOrderDocNo", String(so.docNo));
-    // Preserve guided continuation after GRN: return to rm-check with nextStep hint.
-    q.set("returnTo", `/rm-check?soId=${encodeURIComponent(String(soId))}&nextStep=resume-work-order`);
-    q.set("nextStep", "resume-work-order");
+    if (workOrderId > 0) {
+      q.set("workOrderId", String(workOrderId));
+      q.set("returnTo", `/production?workOrderId=${encodeURIComponent(String(workOrderId))}`);
+    } else {
+      q.set("returnTo", `/production?salesOrderId=${encodeURIComponent(String(soId))}`);
+    }
     nav(`/rm-po-grn?${q.toString()}`);
   }
 
@@ -221,9 +308,24 @@ export function RmCheckPage() {
       return Number.isFinite(qty) && qty > 0;
     });
 
-  const autoLoadSelected = Boolean(Number(searchParams.get("soId")) && soId);
+  const autoLoadSelected = Boolean(urlSoId && soId && Number(urlSoId) === Number(soId));
   const selectionMissing = !soId;
   const woCreateDisabled = !canStartWo || loading || Boolean(blockMsg && strict) || Boolean(data && !data.allRmEnough);
+
+  const rmPlanTotalQty = React.useMemo(() => {
+    if (!data) return 0;
+    let t = 0;
+    for (const f of data.fgLines || []) {
+      if (f.note) continue;
+      t += Math.max(0, Number(planQtyByLineId[f.lineId]) || 0);
+    }
+    return t;
+  }, [data, planQtyByLineId]);
+
+  const customerTrackingPlanExceedsShortfall =
+    fromCustomerTracking &&
+    customerTrackingShortfallQty > 0 &&
+    rmPlanTotalQty > customerTrackingShortfallQty + 1e-6;
 
   const rateByFgItemId = React.useMemo(() => {
     const m = new Map<number, number>();
@@ -240,14 +342,62 @@ export function RmCheckPage() {
     return m;
   }, [soDetail]);
 
+  if (noQtyGate === "loading" && urlSoId > 0) {
+    return (
+      <div className="mx-auto max-w-lg p-4 text-sm text-slate-600" aria-live="polite">
+        Loading sales order…
+      </div>
+    );
+  }
+
+  if (noQtyGate === "no_qty" && urlSoId > 0) {
+    return (
+      <div className="mx-auto max-w-lg space-y-4 p-4">
+        <Card className="border-amber-200 bg-amber-50/80 shadow-sm">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base text-amber-950">{NO_QTY_TERMS.WRONG_FLOW_NO_QTY_TITLE}</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3 text-sm text-slate-800">
+            <p>{NO_QTY_TERMS.WRONG_FLOW_NO_QTY_BODY}</p>
+            <div className="flex flex-wrap gap-2">
+              <Link
+                to="/planning-dashboard"
+                className={cn(buttonVariants({ variant: "default", size: "sm" }), "no-underline")}
+              >
+                {NO_QTY_TERMS.OPEN_REQUIREMENT_PLANNING}
+              </Link>
+              <Link
+                to="/sales-orders"
+                className={cn(buttonVariants({ variant: "outline", size: "sm" }), "no-underline")}
+              >
+                {REGULAR_TERMS.SIDEBAR_BACK_TO_SALES_ORDERS}
+              </Link>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  const primaryCardTitle = REGULAR_TERMS.WORK_ORDER_PREPARE_TITLE;
+  const primaryCardHelp =
+    urlSoId > 0 ? REGULAR_TERMS.WORK_ORDER_PREPARE_SUBTITLE : REGULAR_TERMS.SELECT_SO_HELPER;
+
   return (
     <div className="grid gap-2">
+      {fromCustomerTracking && customerTrackingShortfallQty > 0 && soId > 0 ? (
+        <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-950 shadow-sm">
+          <span className="font-semibold">Customer Tracking shortfall:</span>{" "}
+          <span className="tabular-nums">{customerTrackingShortfallQty}</span> Qty pending to deliver. Create production
+          only for pending qty.
+        </div>
+      ) : null}
       <Card className="border-slate-200 shadow-sm">
         <CardHeader className="pb-1 pt-3">
-          <CardTitle className="text-base">Production planning</CardTitle>
+          <CardTitle className="text-base">{primaryCardTitle}</CardTitle>
         </CardHeader>
         <CardContent className="space-y-1.5 pt-0">
-          <p className="text-sm text-slate-600">Select a sales order, load planning, then use the sections below.</p>
+          <p className="text-sm text-slate-600">{primaryCardHelp}</p>
           {error ? <div className="text-sm text-red-700">{error}</div> : null}
           {bomMissingExists ? (
             <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">
@@ -257,7 +407,7 @@ export function RmCheckPage() {
           <div className="flex flex-wrap items-end gap-2">
             <label className="grid gap-1 text-sm">
               <span className="text-slate-600">Sales order</span>
-              {focusedSoIdFromUrl > 0 && !allowSoChange ? (
+              {urlSoId > 0 && !allowSoChange ? (
                 <div className="flex flex-wrap items-center gap-2">
                   <div className="inline-flex h-10 min-w-[200px] items-center rounded-md border border-slate-200 bg-slate-50 px-3 text-sm font-medium text-slate-900">
                     SO #{soId}
@@ -291,10 +441,10 @@ export function RmCheckPage() {
               )}
             </label>
             {selectionMissing ? (
-              <div className="text-sm text-slate-600">Select a sales order to view production planning.</div>
+              <div className="text-sm text-slate-600">{REGULAR_TERMS.SELECT_SO_PROMPT}</div>
             ) : !autoLoadSelected ? (
               <Button type="button" onClick={runCheck} disabled={loading || !soId}>
-                {loading ? "Loading…" : "Load planning"}
+                {loading ? "Loading…" : REGULAR_TERMS.LOAD_RM_FG_BUTTON}
               </Button>
             ) : null}
           </div>
@@ -305,7 +455,7 @@ export function RmCheckPage() {
         <Card>
           <CardHeader className="py-2 pb-1">
             <CardTitle className="flex flex-wrap items-center gap-2 text-base">
-              Production requirement
+              {REGULAR_TERMS.PRODUCTION_REQUIREMENT_CARD_TITLE}
               {data.allFgEnough ? (
                 <Badge variant="success">FG OK</Badge>
               ) : (
@@ -393,6 +543,12 @@ export function RmCheckPage() {
             {!canStartWo ? (
               <p className="mt-1.5 text-xs text-slate-500">Enter Plan qty for at least one FG line to enable “Create work order”.</p>
             ) : null}
+            {customerTrackingPlanExceedsShortfall ? (
+              <p className="mt-2 text-xs font-medium text-amber-900">
+                Total plan qty ({rmPlanTotalQty.toFixed(3).replace(/\.?0+$/, "")}) exceeds Customer Tracking pending qty (
+                {customerTrackingShortfallQty}).
+              </p>
+            ) : null}
           </CardContent>
         </Card>
       ) : null}
@@ -401,7 +557,7 @@ export function RmCheckPage() {
         <Card>
           <CardHeader className="py-2 pb-1">
             <CardTitle className="flex flex-wrap items-center gap-2 text-base">
-              Raw material status
+              {REGULAR_TERMS.RM_STATUS_CARD_TITLE}
               {data.allRmEnough ? (
                 <Badge variant="success">RM OK</Badge>
               ) : (
@@ -420,7 +576,7 @@ export function RmCheckPage() {
             ) : !data.allRmEnough ? (
               <div className="space-y-2">
                 <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-medium text-slate-800">
-                  RM shortage — create an RM Purchase or add stock, then refresh planning.
+                  {REGULAR_TERMS.RM_SHORTAGE_REFRESH_HINT}
                 </div>
                 {strict && blockMsg && !data.allRmEnough ? (
                   <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-900">{blockMsg}</div>
@@ -500,7 +656,7 @@ export function RmCheckPage() {
             {!data.allRmEnough ? (
               <p className="text-xs text-amber-800">
                 {strictInventory
-                  ? "Create an RM PO and post the goods receipt in RM Purchase, then refresh this view before opening a work order."
+                  ? "Create an RM PO and post the goods receipt in Material Planning, then refresh this view before opening a work order."
                   : "Create an RM PO or adjust stock, then refresh this view before opening a work order."}
               </p>
             ) : null}
@@ -521,13 +677,13 @@ export function RmCheckPage() {
             {!data.allRmEnough ? (
               <>
                 <p className="text-lg font-bold tracking-tight text-slate-900">Next Step: Resolve RM shortage</p>
-                <p className="text-sm text-slate-600">Resolve RM shortage first, then refresh planning to continue.</p>
+                <p className="text-sm text-slate-600">{REGULAR_TERMS.RM_SHORTAGE_RESOLVE_FIRST}</p>
                 <div className="flex flex-wrap gap-2">
                   <Button
                     type="button"
                     variant="outline"
                     data-testid="next-resolve-rm-btn"
-                    onClick={createRmPo}
+                    onClick={() => void createRmPo()}
                     disabled={!hasRmDemand || !hasRmShortage}
                   >
                     Create RM PO
@@ -537,7 +693,7 @@ export function RmCheckPage() {
                       <p className="max-w-xl self-center text-sm text-slate-700">
                         {RM_CHECK_STRICT_STOCK_MSG}{" "}
                         <Link to="/rm-po-grn" className="font-medium text-primary underline">
-                          Open RM Purchase
+                          Open Material Planning
                         </Link>
                       </p>
                     ) : (
@@ -551,7 +707,7 @@ export function RmCheckPage() {
             ) : nextStepHint === "resume-work-order" && !data.allFgEnough && data.allRmEnough ? (
               <>
                 <p className="text-lg font-bold tracking-tight text-slate-900">Next Step: Resume Work Order</p>
-                <p className="text-sm text-slate-600">RM is now sufficient. Continue Work Order planning.</p>
+                <p className="text-sm text-slate-600">{REGULAR_TERMS.RESUME_WO_SUBTITLE}</p>
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <Button
                     type="button"
@@ -570,6 +726,13 @@ export function RmCheckPage() {
               <>
                 <p className="text-lg font-bold tracking-tight text-slate-900">Next Step: Create Work Order</p>
                 <p className="text-sm text-slate-600">RM is sufficient for planned quantities. Create the Work Order.</p>
+                {customerTrackingPlanExceedsShortfall ? (
+                  <div className="rounded-md border border-amber-300 bg-amber-50/90 px-3 py-2 text-sm font-medium text-amber-950">
+                    Total plan qty ({rmPlanTotalQty.toFixed(3).replace(/\.?0+$/, "")}) exceeds Customer Tracking pending
+                    qty ({customerTrackingShortfallQty}). Reduce plan quantities unless you intentionally need more
+                    production.
+                  </div>
+                ) : null}
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                   <Button
                     type="button"
@@ -594,7 +757,7 @@ export function RmCheckPage() {
               </>
             ) : (
               <>
-                <p className="text-lg font-bold tracking-tight text-slate-900">Next Step: Review planning</p>
+                <p className="text-lg font-bold tracking-tight text-slate-900">{REGULAR_TERMS.NEXT_REVIEW_REQUIREMENTS}</p>
                 <p className="text-sm text-slate-600">Confirm FG and RM sections above.</p>
               </>
             )}

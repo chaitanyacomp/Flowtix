@@ -11,7 +11,9 @@ export function StickyPageHeader({ children, className }: { children: React.Reac
   return (
     <header
       className={cn(
-        "sticky top-0 z-[25] mb-4 border-b border-slate-200/95 bg-slate-50/98 pb-2.5 pt-1.5 shadow-[0_1px_0_0_rgb(226_232_240)] backdrop-blur-sm supports-[backdrop-filter]:bg-slate-50/92",
+        // Compact ERP density: tighter vertical padding + reduced bottom margin so operational
+        // pages start their working area higher on 1366x768 laptops.
+        "sticky top-0 z-[25] mb-2.5 border-b border-slate-200/95 bg-slate-50/98 pb-1.5 pt-1 shadow-[0_1px_0_0_rgb(226_232_240)] backdrop-blur-sm supports-[backdrop-filter]:bg-slate-50/92",
         className,
       )}
     >
@@ -20,29 +22,55 @@ export function StickyPageHeader({ children, className }: { children: React.Reac
   );
 }
 
-/** Primary navigation back to the Reports hub — compact chip (same as {@link PageBackLink}). */
-export function ReportBackLink({ className }: { className?: string }) {
+/** Configurable back destination for the {@link ReportBackLink}. `to` is the
+ * route, `label` is the displayed text. Useful when a report page is opened
+ * from a non-Reports context (e.g. Dashboard) — pass `{ to: "/dashboard",
+ * label: "Back to Dashboard" }`. */
+export type ReportBackTarget = { to: string; label: string };
+
+/** Default back target — Reports hub. */
+export const DEFAULT_REPORT_BACK_TARGET: ReportBackTarget = {
+  to: "/reports",
+  label: "Back to Reports",
+};
+
+/** Primary back-nav for report pages — subtle inline text link with arrow icon.
+ * No background, border, or shadow; reads as a muted breadcrumb. Destination
+ * defaults to the Reports hub but can be overridden via {@link back}. */
+export function ReportBackLink({
+  className,
+  back,
+}: {
+  className?: string;
+  back?: ReportBackTarget;
+}) {
+  const target = back ?? DEFAULT_REPORT_BACK_TARGET;
   return (
-    <Link to="/reports" className={cn("erp-back-nav-chip", className)}>
-      <ArrowLeft className="h-3.5 w-3.5 shrink-0 opacity-80" aria-hidden />
-      <span>Back to Reports</span>
+    <Link to={target.to} className={cn("erp-report-back-link", className)}>
+      <ArrowLeft className="h-3.5 w-3.5 shrink-0" aria-hidden />
+      <span>{target.label}</span>
     </Link>
   );
 }
 
 /**
- * Reports hub only: slim sticky strip with the back control. No title, filters, blur, or heavy shadow.
- * Title / purpose / filters stay in normal document flow below this.
+ * Inline back-nav row above the report title. Kept under the old name for
+ * backward compatibility with existing report pages — but no longer renders a
+ * white sticky strip, border, or shadow. It is now a transparent wrapper with
+ * the same horizontal gutter as the title and filter toolbar.
  */
-export function StickyReportBackStrip({ className }: { className?: string }) {
+export function StickyReportBackStrip({
+  className,
+  back,
+}: {
+  className?: string;
+  back?: ReportBackTarget;
+}) {
+  const target = back ?? DEFAULT_REPORT_BACK_TARGET;
   return (
-    <header
-      role="navigation"
-      aria-label="Back to Reports"
-      className={cn("sticky top-0 z-[25] border-b border-slate-200 bg-white py-1.5", className)}
-    >
-      <ReportBackLink />
-    </header>
+    <div role="navigation" aria-label={target.label} className={cn("min-w-0", className)}>
+      <ReportBackLink back={back} />
+    </div>
   );
 }
 
@@ -59,10 +87,10 @@ export function ReportPageTitleBlock({
   className?: string;
 }) {
   return (
-    <div className={cn("flex flex-wrap items-start justify-between gap-3", className)}>
-      <div className="min-w-0 flex-1 space-y-1">
-        <h2 className="text-lg font-semibold leading-snug tracking-tight text-slate-900">{title}</h2>
-        {purpose ? <p className="max-w-3xl text-sm leading-relaxed text-slate-600">{purpose}</p> : null}
+    <div className={cn("flex flex-wrap items-start justify-between gap-2", className)}>
+      <div className="min-w-0 flex-1 space-y-0.5">
+        <h2 className="text-base font-semibold leading-snug tracking-tight text-slate-900">{title}</h2>
+        {purpose ? <p className="max-w-3xl text-[12px] leading-relaxed text-slate-600">{purpose}</p> : null}
       </div>
       {actions ? <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div> : null}
     </div>
@@ -72,21 +100,26 @@ export function ReportPageTitleBlock({
 /**
  * Standard report page chrome: sticky back strip only, then scrolling title / actions row.
  * Does not wrap filters, KPIs, or results in a sticky container.
+ *
+ * Pass `back={{ to, label }}` to customize the breadcrumb destination — useful
+ * when the page is opened from a non-Reports context (e.g. `?source=dashboard`).
  */
 export function ReportPageHeader({
   title,
   purpose,
   actions,
   className,
+  back,
 }: {
   title: string;
   purpose?: string;
   actions?: React.ReactNode;
   className?: string;
+  back?: ReportBackTarget;
 }) {
   return (
-    <div className={cn("mb-4 space-y-2.5", className)}>
-      <StickyReportBackStrip />
+    <div className={cn("erp-report-page report-page mb-2.5 space-y-1.5", className)}>
+      <StickyReportBackStrip back={back} />
       <ReportPageTitleBlock title={title} purpose={purpose} actions={actions} />
     </div>
   );

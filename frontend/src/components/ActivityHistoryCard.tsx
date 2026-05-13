@@ -1,6 +1,7 @@
 import * as React from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
 import { apiFetch } from "../services/api";
+import { cn } from "../lib/utils";
 
 export type ActivityLogRow = {
   id: number;
@@ -16,6 +17,8 @@ type Props = {
   title?: string;
   /** e.g. `entityType=SALES_ORDER&entityId=12&limit=50` or `salesOrderId=5&limit=50` */
   query: string;
+  className?: string;
+  density?: "default" | "compact";
 };
 
 function formatTime(iso: string): string {
@@ -24,7 +27,7 @@ function formatTime(iso: string): string {
   return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 }
 
-export function ActivityHistoryCard({ title = "History", query }: Props) {
+export function ActivityHistoryCard({ title = "History", query, className, density = "default" }: Props) {
   const [rows, setRows] = React.useState<ActivityLogRow[] | "loading" | "error">("loading");
   const [errMsg, setErrMsg] = React.useState<string | null>(null);
 
@@ -47,25 +50,38 @@ export function ActivityHistoryCard({ title = "History", query }: Props) {
     };
   }, [query]);
 
+  const compact = density === "compact";
+  const showTitle = title != null && String(title).trim().length > 0;
+
   return (
-    <Card className="border-slate-200">
-      <CardHeader className="pb-2">
-        <CardTitle className="text-base font-semibold text-slate-900">{title}</CardTitle>
-      </CardHeader>
-      <CardContent className="pt-0">
-        {rows === "loading" ? <p className="text-sm text-slate-600">Loading…</p> : null}
-        {rows === "error" ? <p className="text-sm text-amber-800">{errMsg || "Could not load history."}</p> : null}
-        {Array.isArray(rows) && rows.length === 0 ? <p className="text-sm text-slate-600">No activity yet.</p> : null}
+    <Card className={cn("border-slate-200", compact ? "shadow-none" : "", className)}>
+      {showTitle ? (
+        <CardHeader className={compact ? "space-y-0 pb-1 pt-2" : "pb-2"}>
+          <CardTitle className={compact ? "text-xs font-semibold uppercase tracking-wide text-slate-600" : "text-base font-semibold text-slate-900"}>
+            {title}
+          </CardTitle>
+        </CardHeader>
+      ) : null}
+      <CardContent className={cn(compact ? "pb-2" : "", showTitle ? "pt-0" : compact ? "px-0 pt-1" : "pt-4")}>
+        {rows === "loading" ? <p className={compact ? "text-xs text-slate-600" : "text-sm text-slate-600"}>Loading…</p> : null}
+        {rows === "error" ? (
+          <p className={compact ? "text-xs text-amber-800" : "text-sm text-amber-800"}>{errMsg || "Could not load history."}</p>
+        ) : null}
+        {Array.isArray(rows) && rows.length === 0 ? (
+          <p className={compact ? "text-xs text-slate-600" : "text-sm text-slate-600"}>No activity yet.</p>
+        ) : null}
         {Array.isArray(rows) && rows.length > 0 ? (
           <ul className="divide-y divide-slate-100">
             {rows.map((r) => (
-              <li key={r.id} className="py-2.5 first:pt-0">
-                <div className="text-xs text-slate-500">
+              <li key={r.id} className={compact ? "py-1.5 first:pt-0" : "py-2.5 first:pt-0"}>
+                <div className={compact ? "text-[10px] text-slate-500" : "text-xs text-slate-500"}>
                   {formatTime(r.createdAt)}
                   {r.userNameSnapshot ? <span className="text-slate-600"> — {r.userNameSnapshot}</span> : null}
                 </div>
-                <div className="mt-0.5 text-sm text-slate-900">{r.message}</div>
-                {r.reason ? <div className="mt-1 text-xs text-slate-600">Reason: {r.reason}</div> : null}
+                <div className={cn(compact ? "mt-0.5 text-xs" : "mt-0.5 text-sm", "text-slate-900")}>{r.message}</div>
+                {r.reason ? (
+                  <div className={compact ? "mt-0.5 text-[10px] text-slate-600" : "mt-1 text-xs text-slate-600"}>Reason: {r.reason}</div>
+                ) : null}
               </li>
             ))}
           </ul>

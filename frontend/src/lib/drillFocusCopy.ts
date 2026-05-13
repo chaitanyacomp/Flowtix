@@ -9,7 +9,7 @@ export const DRILL_RECOVERY_LABEL = {
   salesOrder: "Show sales order",
   workOrder: "Show work order",
   item: "Show item",
-  purchaseOrder: "Show in RM Purchase",
+  purchaseOrder: "Show in Material Planning",
 } as const;
 
 export function drillFocusTitleSalesOrder(id: number): string {
@@ -53,7 +53,7 @@ export const DRILL_FOCUS_HINT_HIDDEN_BY_FILTERS = {
   salesOrder: "Loaded but hidden by filters. Use Show sales order or Clear focus.",
   workOrder: "Loaded but hidden by search or status. Use Show work order or Clear focus.",
   stockItem: "Loaded but hidden by type or search. Use Show item or Clear focus.",
-  purchaseOrder: "Loaded but hidden by list filters. Use Show in RM Purchase or Clear focus.",
+  purchaseOrder: "Loaded but hidden by list filters. Use Show in Material Planning or Clear focus.",
 } as const;
 
 /** QC-specific (no URL list filters; recovery is Clear focus only) */
@@ -72,5 +72,5 @@ export const DRILL_FOCUS_EMPTY_FILTERED_SUFFIX = {
     "A work order is focused in the address bar — use Show work order in the banner, or Clear focus.",
   stockItem: "An item is focused in the address bar — use Show item in the banner, or Clear focus.",
   purchaseOrder:
-    "A PO is focused in the address bar — use Show in RM Purchase in the banner, or Clear focus.",
+    "A PO is focused in the address bar — use Show in Material Planning in the banner, or Clear focus.",
 } as const;

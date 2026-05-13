@@ -32,7 +32,7 @@ P3005 appears when Prisma sees a **non-empty** database that was never marked as
 Safest for local/dev (no silent wipes of your main ERP data):
 
 1. Create a **new empty** database on the same MySQL instance (or a disposable instance).
-2. Point **`INTEGRATION_DATABASE_URL`** at it.
+2. Point **`TEST_DATABASE_URL`** at it.
 3. Run **`npm run test:integration:prepare`** (runs `prisma db push` against that URL).
 
 `db push` syncs the database to **`schema.prisma`**, which matches what the running app and integration tests expect. Use an **empty** database so push does not need destructive reconciles.
@@ -48,11 +48,13 @@ CREATE DATABASE mini_erp_integration CHARACTER SET utf8mb4 COLLATE utf8mb4_unico
 | Variable | When |
 |----------|------|
 | `DATABASE_URL` | Normal dev server and **unit tests** (no DB for unit tests). |
-| `INTEGRATION_DATABASE_URL` | Optional; when set **and** `ERP_RUN_DB_INTEGRATION=1`, integration tests override `DATABASE_URL` for that process only (see `erp-flows.integration.test.js`). |
-| `ERP_RUN_DB_INTEGRATION=1` | Enables integration suites (otherwise they are skipped). |
+| `NODE_ENV=test` | Required by the strict prepare/run scripts so DB-backed tests cannot run in a normal dev/production mode. |
+| `TEST_DATABASE_URL` | Required by the strict prepare/run scripts. Must point at a dedicated disposable test DB and must not equal `DATABASE_URL`. |
+| `INTEGRATION_DATABASE_URL` | Legacy fallback still accepted by the raw skipped integration tests, but prefer `TEST_DATABASE_URL`. |
+| `ERP_RUN_DB_INTEGRATION=1` | Internal guard used by `npm run test:integration:db`; raw `npm run test:integration` skips suites unless this is set. |
 | `JWT_SECRET` | Optional in dev; integration tests sign JWTs with the same rules as the app. |
 
-Copy `backend/.env.example` to `.env` and optionally add `INTEGRATION_DATABASE_URL` (see `.env.integration.example`).
+Copy `backend/.env.example` to `.env` and keep test DB credentials separate in `TEST_DATABASE_URL`.
 
 ## Commands
 
@@ -68,37 +70,39 @@ npm test
 ```bash
 cd backend
 # Set a URL that is NOT your main dev database:
-set INTEGRATION_DATABASE_URL=mysql://USER:PASS@localhost:3306/mini_erp_integration
+set NODE_ENV=test
+set TEST_DATABASE_URL=mysql://USER:PASS@localhost:3306/mini_erp_test
 npm run test:integration:prepare
 ```
 
 PowerShell:
 
 ```powershell
-$env:INTEGRATION_DATABASE_URL = "mysql://erp:erp1234@localhost:3306/mini_erp_integration"
+$env:NODE_ENV = "test"
+$env:TEST_DATABASE_URL = "mysql://erp:erp1234@localhost:3306/mini_erp_test"
 npm run test:integration:prepare
 ```
 
-The script **refuses** to run if `INTEGRATION_DATABASE_URL` equals `DATABASE_URL` (after loading `.env`) so you do not accidentally push against your primary DB.
+The script **refuses** to run unless `NODE_ENV=test` and refuses if `TEST_DATABASE_URL` equals `DATABASE_URL` (after loading `.env`) so you do not accidentally push against your primary DB.
 
 ### Run integration tests
 
 ```bash
 cd backend
-set ERP_RUN_DB_INTEGRATION=1
-set INTEGRATION_DATABASE_URL=mysql://USER:PASS@localhost:3306/mini_erp_integration
-npm run test:integration
+set NODE_ENV=test
+set TEST_DATABASE_URL=mysql://USER:PASS@localhost:3306/mini_erp_test
+npm run test:integration:db
 ```
 
 PowerShell:
 
 ```powershell
-$env:ERP_RUN_DB_INTEGRATION = "1"
-$env:INTEGRATION_DATABASE_URL = "mysql://erp:erp1234@localhost:3306/mini_erp_integration"
-npm run test:integration
+$env:NODE_ENV = "test"
+$env:TEST_DATABASE_URL = "mysql://erp:erp1234@localhost:3306/mini_erp_test"
+npm run test:integration:db
 ```
 
-If you already point `DATABASE_URL` at the integration database, you can omit `INTEGRATION_DATABASE_URL` and only set `ERP_RUN_DB_INTEGRATION=1`.
+Use `npm run test:integration:db` for real DB-backed tests. The lower-level `npm run test:integration` command remains available for CI plumbing, but it skips suites unless the integration guard is set.
 
 ## If schema drift is detected
 

@@ -1,6 +1,6 @@
 const express = require("express");
 const { z } = require("zod");
-const { Prisma } = require("@prisma/client");
+const { Prisma } = require("../prismaClientPackage");
 const { prisma } = require("../utils/prisma");
 const { requireAuth, requireRole } = require("../middleware/auth");
 const { assertNonNegativeStockAfterNetChange, getItemStockQty } = require("../services/stockService");
@@ -14,11 +14,29 @@ const { sumQcAcceptedForSoItem } = require("../services/dispatchQcCap");
 const { netDispatchedByItemId, DISPATCH_ALLOC_MODE } = require("../services/salesOrderDispatchAllocation");
 const auditLog = require("../services/auditLog");
 
+const {
+  CUSTOMER_RETURN_CREATE_ROLES,
+  CUSTOMER_RETURN_APPROVE_ROLES,
+  CUSTOMER_RETURN_READ_ROLES,
+} = require("../constants/erpRoles");
+
 const customerReturnsRouter = express.Router();
 
-const ACCESS_DENIED =
-  "Access denied. This screen is available to admin, sales, store, production, QC, and supervisor roles.";
-const roles = requireRole(["ADMIN", "SALES", "STORE", "PRODUCTION", "QC", "SUPERVISOR"], ACCESS_DENIED);
+const ACCESS_DENIED = "Access denied for Customer Returns.";
+const READ_DENIED = "Customer Returns is visible to operational roles only.";
+const CREATE_DENIED = "Only Admin and Store can record a customer return.";
+const APPROVE_REPLACEMENT_DENIED =
+  "Only Admin and Sales can create or open a replacement Sales Order for a return.";
+
+/** Read-only screens: list, filters, queue views — broad operational visibility. */
+const readRoles = requireRole(CUSTOMER_RETURN_READ_ROLES, READ_DENIED);
+/** Store-owned write actions: create return, approve-to-stock, scrap, rework approval / completion. */
+const createRoles = requireRole(CUSTOMER_RETURN_CREATE_ROLES, CREATE_DENIED);
+/** Sales-owned: create/open a replacement Sales Order (customer-facing commercial commitment). */
+const approveReplacementRoles = requireRole(
+  CUSTOMER_RETURN_APPROVE_ROLES,
+  APPROVE_REPLACEMENT_DENIED,
+);
 
 async function sumAlreadyReturnedQty(tx, dispatchId) {
   const agg = await tx.customerReturn.aggregate({
@@ -29,7 +47,7 @@ async function sumAlreadyReturnedQty(tx, dispatchId) {
 }
 
 // Recent locked dispatches for a customer (customer-first picker).
-customerReturnsRouter.get("/dispatches", requireAuth, roles, async (req, res, next) => {
+customerReturnsRouter.get("/dispatches", requireAuth, readRoles, async (req, res, next) => {
   try {
     const customerId = Number(req.query.customerId);
     if (!Number.isFinite(customerId) || customerId <= 0) {
@@ -88,7 +106,7 @@ customerReturnsRouter.get("/dispatches", requireAuth, roles, async (req, res, ne
 });
 
 // History list
-customerReturnsRouter.get("/", requireAuth, roles, async (req, res, next) => {
+customerReturnsRouter.get("/", requireAuth, readRoles, async (req, res, next) => {
   try {
     const take = Math.max(1, Math.min(200, Number(req.query.limit ?? 200) || 200));
     const rows = await prisma.customerReturn.findMany({
@@ -110,7 +128,7 @@ customerReturnsRouter.get("/", requireAuth, roles, async (req, res, next) => {
 });
 
 // Create or open replacement Sales Order for an approved-to-stock return.
-customerReturnsRouter.post("/:id/replacement-order", requireAuth, roles, async (req, res, next) => {
+customerReturnsRouter.post("/:id/replacement-order", requireAuth, approveReplacementRoles, async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     if (!Number.isFinite(id) || id <= 0) {
@@ -219,7 +237,7 @@ customerReturnsRouter.post("/:id/replacement-order", requireAuth, roles, async (
   }
 });
 
-customerReturnsRouter.get("/by-dispatch/:id", requireAuth, roles, async (req, res, next) => {
+customerReturnsRouter.get("/by-dispatch/:id", requireAuth, readRoles, async (req, res, next) => {
   try {
     const dispatchId = Number(req.params.id);
     if (!Number.isFinite(dispatchId) || dispatchId <= 0) {
@@ -250,7 +268,7 @@ customerReturnsRouter.get("/by-dispatch/:id", requireAuth, roles, async (req, re
 });
 
 // Bucket queues (QC_HOLD / REWORK) for scrap action screens.
-customerReturnsRouter.get("/bucket/:bucket", requireAuth, roles, async (req, res, next) => {
+customerReturnsRouter.get("/bucket/:bucket", requireAuth, readRoles, async (req, res, next) => {
   try {
     const bucket = String(req.params.bucket || "").toUpperCase();
     if (!(bucket === "QC_HOLD" || bucket === "REWORK")) {
@@ -286,7 +304,7 @@ customerReturnsRouter.get("/bucket/:bucket", requireAuth, roles, async (req, res
 });
 
 // QC Entry page — returns awaiting customer-return QC (hold after intake or after external rework, plus active rework).
-customerReturnsRouter.get("/qc-queue", requireAuth, roles, async (req, res, next) => {
+customerReturnsRouter.get("/qc-queue", requireAuth, readRoles, async (req, res, next) => {
   try {
     const take = Math.max(1, Math.min(200, Number(req.query.limit ?? 200) || 200));
     const rows = await prisma.customerReturn.findMany({
@@ -319,7 +337,7 @@ customerReturnsRouter.get("/qc-queue", requireAuth, roles, async (req, res, next
 });
 
 // Scrap action: scrap from the current bucket (QC_HOLD or REWORK).
-customerReturnsRouter.post("/:id/scrap", requireAuth, roles, async (req, res, next) => {
+customerReturnsRouter.post("/:id/scrap", requireAuth, createRoles, async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     if (!Number.isFinite(id) || id <= 0) {
@@ -419,7 +437,7 @@ customerReturnsRouter.post("/:id/scrap", requireAuth, roles, async (req, res, ne
 });
 
 // Rework completed: move stock REWORK -> QC_HOLD and mark QC pending.
-customerReturnsRouter.post("/:id/rework-completed", requireAuth, roles, async (req, res, next) => {
+customerReturnsRouter.post("/:id/rework-completed", requireAuth, createRoles, async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     if (!Number.isFinite(id) || id <= 0) {
@@ -506,7 +524,7 @@ customerReturnsRouter.post("/:id/rework-completed", requireAuth, roles, async (r
 });
 
 // One-step rework QC: REWORK bucket -> QC_HOLD -> USABLE, same outcome as rework-completed + approve (no production).
-customerReturnsRouter.post("/:id/approve-rework", requireAuth, roles, async (req, res, next) => {
+customerReturnsRouter.post("/:id/approve-rework", requireAuth, createRoles, async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     if (!Number.isFinite(id) || id <= 0) {
@@ -621,7 +639,7 @@ customerReturnsRouter.post("/:id/approve-rework", requireAuth, roles, async (req
 });
 
 // QC approve: move stock QC_HOLD -> USABLE and close.
-customerReturnsRouter.post("/:id/approve", requireAuth, roles, async (req, res, next) => {
+customerReturnsRouter.post("/:id/approve", requireAuth, createRoles, async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     if (!Number.isFinite(id) || id <= 0) {
@@ -708,7 +726,7 @@ customerReturnsRouter.post("/:id/approve", requireAuth, roles, async (req, res, 
 });
 
 // Create return (posts stock movements per disposition)
-customerReturnsRouter.post("/", requireAuth, roles, async (req, res, next) => {
+customerReturnsRouter.post("/", requireAuth, createRoles, async (req, res, next) => {
   try {
     const schema = z
       .object({

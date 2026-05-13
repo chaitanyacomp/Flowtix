@@ -4,6 +4,13 @@ import { Input } from "../components/ui/input";
 import { Button } from "../components/ui/button";
 import { apiFetch, getApiUrl } from "../services/api";
 import { ReportPageHeader } from "../components/PageHeader";
+import { cn } from "../lib/utils";
+import { NativeSelect } from "../components/ui/native-select";
+import {
+  commercialFilterCardClass,
+  CommercialFilterField,
+  CommercialFilterGrid,
+} from "../components/erp/CommercialFilterLayout";
 
 type RecordRow = {
   id: number;
@@ -98,8 +105,6 @@ export function ExportHistoryPage() {
     }
   }
 
-  const selectClass = "h-9 w-full rounded-md border border-slate-200 bg-white px-2.5 text-sm text-slate-900 shadow-sm";
-
   return (
     <div className="flex min-h-0 flex-col gap-4">
       <ReportPageHeader
@@ -110,34 +115,32 @@ export function ExportHistoryPage() {
 
       {error ? <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{error}</div> : null}
 
-      <Card className="min-w-0 overflow-hidden">
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base">Filters</CardTitle>
+      <Card className={cn("min-w-0 overflow-hidden", commercialFilterCardClass)}>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-semibold text-slate-800">Filters</CardTitle>
         </CardHeader>
-        <CardContent className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <div className="grid gap-1">
-            <div className="text-xs font-medium text-slate-600">From</div>
-            <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
-          </div>
-          <div className="grid gap-1">
-            <div className="text-xs font-medium text-slate-600">To</div>
-            <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
-          </div>
-          <div className="grid gap-1">
-            <div className="text-xs font-medium text-slate-600">Customer</div>
-            <select className={selectClass} value={customer} onChange={(e) => setCustomer(e.target.value)}>
-              <option value="ALL">All</option>
-              {customers.map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="grid gap-1">
-            <div className="text-xs font-medium text-slate-600">Search</div>
-            <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Voucher / file name" />
-          </div>
+        <CardContent>
+          <CommercialFilterGrid className="sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-4">
+            <CommercialFilterField label="From">
+              <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
+            </CommercialFilterField>
+            <CommercialFilterField label="To">
+              <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+            </CommercialFilterField>
+            <CommercialFilterField label="Customer" className="min-w-0 sm:min-w-[12rem]">
+              <NativeSelect value={customer} onChange={(e) => setCustomer(e.target.value)}>
+                <option value="ALL">All</option>
+                {customers.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </NativeSelect>
+            </CommercialFilterField>
+            <CommercialFilterField label="Search">
+              <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Voucher / file name" />
+            </CommercialFilterField>
+          </CommercialFilterGrid>
         </CardContent>
       </Card>
 

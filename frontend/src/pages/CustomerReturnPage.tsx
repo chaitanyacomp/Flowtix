@@ -9,6 +9,7 @@ import { salesOrdersFocusHref } from "../lib/drillDownRoutes";
 import { X } from "lucide-react";
 import { cn } from "../lib/utils";
 import { DemoFlowBanner } from "../components/demo/DemoFlowBanner";
+import { ReportPageHeader } from "../components/PageHeader";
 
 type Customer = { id: number; name: string };
 
@@ -349,10 +350,10 @@ export function CustomerReturnPage() {
   return (
     <div className="grid gap-3">
       <DemoFlowBanner />
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h1 className="text-lg font-semibold text-slate-900">Customer Return</h1>
-        <p className="text-sm text-slate-600">Record post-dispatch rejection and next action.</p>
-      </div>
+      <ReportPageHeader
+        title="Customer Return"
+        purpose="Record post-dispatch rejection and set next action — QC hold, rework, or back to stock."
+      />
 
       {showStripNoCustomer ? (
         <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800">

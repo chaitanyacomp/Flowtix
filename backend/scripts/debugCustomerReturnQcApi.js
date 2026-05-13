@@ -1,5 +1,5 @@
 const http = require("http");
-const { PrismaClient } = require("@prisma/client");
+const { PrismaClient } = require("../prisma/generated/client");
 const { signAccessToken } = require("../src/utils/jwt");
 
 const prisma = new PrismaClient();

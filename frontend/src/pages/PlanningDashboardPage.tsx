@@ -1,12 +1,36 @@
+/**
+ * NO_QTY FLOW ONLY
+ *
+ * Flow:
+ * NO_QTY SO
+ * → Requirement Sheet
+ * → Cycle Planning
+ * → Production
+ * → QC
+ * → Dispatch
+ * → Continue Planning
+ *
+ * This flow is:
+ * - cycle based
+ * - planning driven
+ * - shortage carry-forward based
+ *
+ * DO NOT IMPORT:
+ * - Regular WO preparation routes (`/work-orders/prepare`, `/rm-check`) — those are REGULAR-only; this hub links there only as a wrong-flow escape when a REGULAR SO id appears in the URL.
+ * - fixed-order dispatch assumptions for REGULAR NORMAL SO
+ * - customer PO pending logic from REGULAR RM check
+ *
+ * Uses `/api/planning-dashboard` (requirement-sheet–driven signals). Not used for REGULAR fixed-qty WO prep.
+ */
 import * as React from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { PageContainer, PageNoQtyFlowBackLink, PageSmartBackLink, StickyWorkspaceHead } from "../components/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
-import { Input } from "../components/ui/input";
 import { Button, buttonVariants } from "../components/ui/button";
 import { Badge } from "../components/ui/badge";
 import { apiFetch } from "../services/api";
 import { cn } from "../lib/utils";
+import { NO_QTY_TERMS, REGULAR_TERMS } from "../lib/flowTerminology";
 import { useAuth } from "../hooks/useAuth";
 import { useDemoMode } from "../contexts/DemoModeContext";
 import { demoHighlightKey } from "../lib/demoFlowConfig";
@@ -172,6 +196,42 @@ export function PlanningDashboardPage() {
 
   const showDemoPlanningMock = demo.enabled && demo.flow === "no_qty" && demo.step === 2;
 
+  const planningSalesOrderIdFromUrl = Number(sp.get("salesOrderId") ?? 0);
+  const [urlSoConflict, setUrlSoConflict] = React.useState<"idle" | "loading" | "ok" | "regular_so" | "error">("idle");
+
+  React.useEffect(() => {
+    const id = planningSalesOrderIdFromUrl;
+    if (!(Number.isFinite(id) && id > 0)) {
+      setUrlSoConflict("idle");
+      return;
+    }
+    setUrlSoConflict("loading");
+    let cancelled = false;
+    apiFetch<{ orderType?: string }>(`/api/sales-orders/${id}`)
+      .then((so) => {
+        if (cancelled) return;
+        const t = so.orderType ?? "NORMAL";
+        setUrlSoConflict(t === "NO_QTY" ? "ok" : "regular_so");
+      })
+      .catch(() => {
+        if (!cancelled) setUrlSoConflict("error");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [planningSalesOrderIdFromUrl]);
+
+  const rmPurchaseFromPlanningHref = React.useMemo(() => {
+    const q = new URLSearchParams();
+    q.set("source", "planning_dashboard");
+    const backPath =
+      Number.isFinite(planningSalesOrderIdFromUrl) && planningSalesOrderIdFromUrl > 0
+        ? `/planning-dashboard?salesOrderId=${encodeURIComponent(String(planningSalesOrderIdFromUrl))}`
+        : "/planning-dashboard";
+    q.set("returnTo", backPath);
+    return `/rm-po-grn?${q.toString()}`;
+  }, [planningSalesOrderIdFromUrl]);
+
   /** When NO_QTY demo is on planning step and the table would be empty, show one mock requirement (no API). */
   const displayOrderWise = React.useMemo(() => {
     if (showDemoPlanningMock && filteredOrderWise.length === 0) return [DEMO_PLANNING_MOCK_ORDER_ROW];
@@ -228,10 +288,53 @@ export function PlanningDashboardPage() {
         }
       >
         <div className="min-w-0 space-y-0.5">
-          <h1 className="text-base font-semibold leading-tight tracking-tight text-slate-900">Planning Dashboard</h1>
-          <p className="text-xs leading-snug text-slate-600">Review shortages, stock gaps, and create work orders.</p>
+          <h1 className="text-base font-semibold leading-tight tracking-tight text-slate-900">
+            {NO_QTY_TERMS.PLANNING_HUB_TITLE}
+          </h1>
+          <p className="text-xs leading-snug text-slate-600">{NO_QTY_TERMS.PLANNING_HUB_SUBTITLE}</p>
         </div>
       </StickyWorkspaceHead>
+
+      {planningSalesOrderIdFromUrl > 0 && urlSoConflict === "loading" ? (
+        <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700" aria-live="polite">
+          Checking sales order context…
+        </div>
+      ) : null}
+
+      {planningSalesOrderIdFromUrl > 0 && urlSoConflict === "regular_so" ? (
+        <div className="rounded-md border border-amber-200 bg-amber-50/90 px-3 py-2.5 text-sm text-amber-950 shadow-sm">
+          <div className="font-semibold">{NO_QTY_TERMS.WRONG_FLOW_REGULAR_SO_TITLE}</div>
+          <p className="mt-1 text-xs leading-snug text-amber-950/95">{NO_QTY_TERMS.WRONG_FLOW_REGULAR_SO_BODY}</p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <Link
+              to={`/work-orders/prepare?salesOrderId=${encodeURIComponent(String(planningSalesOrderIdFromUrl))}`}
+              className={cn(
+                buttonVariants({ variant: "default", size: "sm" }),
+                "h-8 border-amber-300 bg-amber-900 text-white hover:bg-amber-950",
+              )}
+            >
+              {NO_QTY_TERMS.OPEN_PREPARE_WORK_ORDER}
+            </Link>
+            <Link
+              to="/sales-orders"
+              className={cn(buttonVariants({ variant: "outline", size: "sm" }), "h-8 border-amber-300 bg-white text-amber-950")}
+            >
+              {REGULAR_TERMS.SIDEBAR_BACK_TO_SALES_ORDERS}
+            </Link>
+          </div>
+        </div>
+      ) : null}
+
+      {planningSalesOrderIdFromUrl > 0 && urlSoConflict === "error" ? (
+        <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-900">
+          Could not verify this sales order. Remove <code className="rounded bg-white px-1">salesOrderId</code> from the URL
+          or open the hub from{" "}
+          <Link to="/planning-dashboard" className="font-medium text-primary underline">
+            {NO_QTY_TERMS.PLANNING_HUB_TITLE}
+          </Link>
+          .
+        </div>
+      ) : null}
 
       {showDemoPlanningContinue ? (
         <div className="flex flex-wrap items-center justify-end gap-2 rounded-md border border-sky-200 bg-sky-50/95 px-3 py-2">
@@ -270,13 +373,13 @@ export function PlanningDashboardPage() {
                   <p className="text-xs text-amber-900/90">Material purchase required before production.</p>
                 </div>
                 <Link
-                  to="/rm-po-grn"
+                  to={rmPurchaseFromPlanningHref}
                   className={cn(
                     buttonVariants({ variant: "outline", size: "sm" }),
                     "h-8 shrink-0 border-amber-300 bg-white text-xs text-amber-950 hover:bg-amber-50",
                   )}
                 >
-                  Go to RM Purchase
+                  {NO_QTY_TERMS.OPEN_RM_PURCHASE_FROM_SHORTAGE}
                 </Link>
               </div>
               <div className="mt-2 overflow-x-auto rounded border border-amber-100 bg-white/80">
@@ -372,12 +475,11 @@ export function PlanningDashboardPage() {
           </div>
           <p className="text-[11px] leading-snug text-slate-500">Latest requirement sheets · FG · shortage-first when “Show Only Shortage” is on</p>
         </CardHeader>
-        <CardContent className="space-y-2.5 px-3.5 py-2.5">
-          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4 lg:items-end lg:gap-x-2">
-            <div className="grid gap-1">
-              <span className="text-[11px] font-medium text-slate-600">Customer</span>
+        <CardContent className="space-y-2 px-2.5 py-2">
+          <div className="erp-filter-bar">
+            <label className="erp-filter-field">
+              <span className="text-slate-500">Customer</span>
               <select
-                className="erp-flow-filter-input h-9 w-full rounded-md border border-slate-200 bg-white px-2.5 text-sm"
                 value={customerFilter}
                 onChange={(e) => setCustomerFilter(e.target.value)}
                 disabled={view === "PRODUCT"}
@@ -389,15 +491,10 @@ export function PlanningDashboardPage() {
                   </option>
                 ))}
               </select>
-            </div>
-            <div className="grid gap-1">
-              <span className="text-[11px] font-medium text-slate-600">Item search</span>
-              <Input className="erp-flow-filter-input h-9 text-sm" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search item…" />
-            </div>
-            <div className="grid gap-1">
-              <span className="text-[11px] font-medium text-slate-600">Status</span>
+            </label>
+            <label className="erp-filter-field">
+              <span className="text-slate-500">Status</span>
               <select
-                className="erp-flow-filter-input h-9 w-full rounded-md border border-slate-200 bg-white px-2.5 text-sm"
                 value={statusFilter}
                 onChange={(e) => setStatusFilter(e.target.value as "ALL" | Zone)}
               >
@@ -407,23 +504,29 @@ export function PlanningDashboardPage() {
                 <option value="GREEN">Green</option>
                 <option value="EXCESS">Excess</option>
               </select>
-            </div>
-            <div className="grid gap-1 sm:col-span-2 lg:col-span-1">
-              <span className="text-[11px] font-medium text-slate-600">Actions</span>
-              <div className="flex flex-wrap items-center gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="erp-flow-filter-input h-9 flex-1 min-w-[7rem] px-2 text-xs"
-                  onClick={() => setOnlyShortage((v) => !v)}
-                >
-                  {onlyShortage ? "Show All" : "Shortage only"}
-                </Button>
-                <Button type="button" variant="secondary" className="erp-flow-filter-input h-9 flex-1 min-w-[7rem] px-2 text-xs" onClick={resetFilters}>
-                  Reset
-                </Button>
-              </div>
-            </div>
+            </label>
+            <span className="erp-filter-divider" aria-hidden />
+            <button
+              type="button"
+              className="erp-soft-action"
+              onClick={() => setOnlyShortage((v) => !v)}
+              aria-pressed={onlyShortage}
+            >
+              {onlyShortage ? "Show all" : "Shortage only"}
+            </button>
+            <button type="button" className="erp-soft-action" onClick={resetFilters}>
+              Reset
+            </button>
+            <label className="erp-filter-field erp-filter-grow">
+              <span className="sr-only">Search item</span>
+              <input
+                type="search"
+                className="search-input w-full"
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                placeholder="Search item…"
+              />
+            </label>
           </div>
 
           <div className="overflow-x-auto rounded-md border border-slate-200">
@@ -434,7 +537,7 @@ export function PlanningDashboardPage() {
                     <th className="px-3 py-1.5">Item</th>
                     <th className="px-3 py-1.5">Customer</th>
                     <th className="px-3 py-1.5 text-right">Requirement</th>
-                    <th className="px-3 py-1.5 text-right">Stock</th>
+                    <th className="px-3 py-1.5 text-right">Free surplus</th>
                     <th className="px-3 py-1.5 text-right">Gap %</th>
                     <th className="px-3 py-1.5 text-right">Suggested WO</th>
                     <th className="px-3 py-1.5">Status</th>
@@ -496,7 +599,7 @@ export function PlanningDashboardPage() {
                   <tr className="text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500">
                     <th className="px-3 py-1.5">Item</th>
                     <th className="px-3 py-1.5 text-right">Total requirement</th>
-                    <th className="px-3 py-1.5 text-right">Available stock</th>
+                    <th className="px-3 py-1.5 text-right">Free surplus</th>
                     <th className="px-3 py-1.5 text-right">Gap</th>
                     <th className="px-3 py-1.5 text-right">Gap %</th>
                     <th className="px-3 py-1.5 text-right">Suggested WO</th>

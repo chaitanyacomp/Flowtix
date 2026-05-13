@@ -5,6 +5,7 @@ import { stockAdjustmentUserMessage } from "../lib/stockAdjustmentErrors";
 import { useCanPostStockAdjustment } from "../hooks/useIsAdmin";
 import { useAuth } from "../hooks/useAuth";
 import { useFastEntryForm } from "../hooks/useFastEntryForm";
+import { prefersFinePointer } from "../lib/erpFocus";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -57,7 +58,7 @@ function adjustmentStatus(a: AdjustmentRow): "active" | "reversed" | "reversal_e
 }
 
 const STRICT_ADJUSTMENT_MSG =
-  "Strict Inventory Control is ON. Receive material through RM Purchase (purchase orders and goods receipts) only—manual stock adjustments are disabled.";
+  "Strict Inventory Control is ON. Receive material through Material Planning (purchase orders and goods receipts) only—manual stock adjustments are disabled.";
 
 export function StockAdjustmentPage() {
   const auth = useAuth();
@@ -70,9 +71,6 @@ export function StockAdjustmentPage() {
   const [itemId, setItemId] = React.useState(0);
   const [adjustmentType, setAdjustmentType] = React.useState<"INCREASE" | "DECREASE">("INCREASE");
   const [qty, setQty] = React.useState<NumberDraft>("");
-  // Keep legacy qtyIn/qtyOut values for API payloads and modal display.
-  const [qtyIn, setQtyIn] = React.useState<NumberDraft>("");
-  const [qtyOut, setQtyOut] = React.useState<NumberDraft>("");
   const [reason, setReason] = React.useState("");
   const [confirmOpen, setConfirmOpen] = React.useState(false);
   const [adminPassword, setAdminPassword] = React.useState("");
@@ -95,7 +93,11 @@ export function StockAdjustmentPage() {
 
   const formRef = React.useRef<HTMLFormElement | null>(null);
   const itemSelectRef = React.useRef<HTMLSelectElement | null>(null);
-  useFastEntryForm({ containerRef: formRef, initialFocusRef: itemSelectRef });
+  useFastEntryForm({
+    containerRef: formRef,
+    initialFocusRef: itemSelectRef,
+    initialFocusEnabled: Boolean(canAdjust && items.length > 0),
+  });
 
   function loadAdjustments() {
     if (!canAdjust) return;
@@ -177,17 +179,6 @@ export function StockAdjustmentPage() {
     loadStockSummary();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canAdjust]);
-
-  React.useEffect(() => {
-    // Map single Qty + type into qtyIn/qtyOut (no dual-input confusion).
-    if (adjustmentType === "INCREASE") {
-      setQtyIn(qty);
-      setQtyOut("");
-    } else {
-      setQtyIn("");
-      setQtyOut(qty);
-    }
-  }, [adjustmentType, qty]);
 
   const safePolicy = parseStockAdjustmentPolicyDto(policy);
   const canCreatePerSettings = userCanCreatePerPolicy(userRole, safePolicy);
@@ -299,6 +290,10 @@ export function StockAdjustmentPage() {
       closeConfirm();
       loadAdjustments();
       loadStockSummary();
+      window.requestAnimationFrame(() => {
+        if (!prefersFinePointer()) return;
+        itemSelectRef.current?.focus({ preventScroll: true });
+      });
     } catch (err) {
       setError(stockAdjustmentUserMessage(err));
     } finally {
@@ -430,7 +425,7 @@ export function StockAdjustmentPage() {
                 <p>
                   Use{" "}
                   <Link to="/rm-po-grn" className="font-medium text-primary underline">
-                    RM Purchase
+                    Material Planning
                   </Link>{" "}
                   to receive stock and update inventory.
                 </p>
@@ -742,7 +737,7 @@ export function StockAdjustmentPage() {
           ) : null}
           {strictInventory ? (
             <p className="mb-3 text-sm text-slate-600">
-              Strict mode: ledger is read-only. Use RM Purchase to change stock levels.
+              Strict mode: ledger is read-only. Use Material Planning to change stock levels.
             </p>
           ) : null}
           <div className="overflow-auto">

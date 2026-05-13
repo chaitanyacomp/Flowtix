@@ -40,12 +40,24 @@ type Props = {
   draftEntryQty: number | null;
   /** When editing a WO, planned qty is only on *other* work orders — label reflects that. */
   isEditingWorkOrder?: boolean;
+  /**
+   * REGULAR SO shortfall / buffer: draft may exceed planning remainder intentionally — do not warn.
+   * Does not apply to NO_QTY.
+   */
+  relaxPlanningDraftOverCap?: boolean;
 };
 
 /**
  * Read-only WO planning context (StatBlocks): planning caps plus dispatch-ready alignment (same basis as Dispatch).
  */
-export function WoInfoPanel({ className, balance, fallbackSoOrdered, draftEntryQty, isEditingWorkOrder }: Props) {
+export function WoInfoPanel({
+  className,
+  balance,
+  fallbackSoOrdered,
+  draftEntryQty,
+  isEditingWorkOrder,
+  relaxPlanningDraftOverCap,
+}: Props) {
   if (balance) {
     const produced = balance.producedQty ?? 0;
     const hasDispatchMetrics =
@@ -60,7 +72,11 @@ export function WoInfoPanel({ className, balance, fallbackSoOrdered, draftEntryQ
     if (balance.plannedOnOtherWorkOrdersQty > 0 && balance.balanceQty <= 1e-9) {
       warnings.push(isEditingWorkOrder ? "Other work orders already use the rest of this FG." : "Already fully planned on work orders.");
     }
-    if (draftEntryQty != null && draftEntryQty > balance.balanceQty + 1e-6) {
+    if (
+      !relaxPlanningDraftOverCap &&
+      draftEntryQty != null &&
+      draftEntryQty > balance.balanceQty + 1e-6
+    ) {
       warnings.push("Exceeds allowed quantity for planning.");
     }
 

@@ -9,6 +9,7 @@ const { ensureAppSettings } = require("./services/appSettings");
 const { ensureIndiaStatesSeeded, backfillLegacyStateLinks } = require("./services/stateMaster");
 const { ensureDefaultUnitsSeeded, backfillLegacyItemUnitLinks } = require("./services/unitMaster");
 const { createApp } = require("./createApp");
+const { resetBackupJobLockOnProcessStart } = require("./services/databaseBackupService");
 
 const app = createApp();
 
@@ -36,6 +37,7 @@ async function start() {
     await prisma.$queryRaw`SELECT 1`;
     // eslint-disable-next-line no-console
     console.log("[startup] Database connection OK");
+    resetBackupJobLockOnProcessStart();
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error(

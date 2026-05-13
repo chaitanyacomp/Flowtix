@@ -1,6 +1,6 @@
 /**
  * NO_QTY: close an active cycle that has no requirement / WO / production / QC / dispatch / sales bill rows.
- * Closes the sales order and points currentCycleId at the previous closed cycle (or null).
+ * Closes only the cycle row; sales order stays open and currentCycleId is cleared for the next cycle.
  *
  * @param {import('@prisma/client').Prisma.TransactionClient} tx
  * @param {{ salesOrderId: number }} input
@@ -28,7 +28,7 @@ async function closeEmptyNoQtyActiveCycle(tx, { salesOrderId }) {
     err.statusCode = 409;
     throw err;
   }
-  if (so.internalStatus === "CLOSED") {
+  if (so.internalStatus === "MANUALLY_CLOSED" || so.internalStatus === "CLOSED") {
     const err = new Error("Sales order is already closed.");
     err.statusCode = 409;
     throw err;
@@ -77,8 +77,7 @@ async function closeEmptyNoQtyActiveCycle(tx, { salesOrderId }) {
   await tx.salesOrder.update({
     where: { id: soId },
     data: {
-      internalStatus: "CLOSED",
-      // Do not point at a prior CLOSED cycle — Reopen / next cycle will create a fresh ACTIVE cycle.
+      // SO stays open; only the empty cycle row is closed.
       currentCycleId: null,
     },
   });

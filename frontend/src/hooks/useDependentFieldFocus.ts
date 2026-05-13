@@ -1,4 +1,5 @@
 import * as React from "react";
+import { prefersFinePointer } from "../lib/erpFocus";
 
 type UseDependentFieldFocusOpts = {
   /** Field to receive focus when `enabled` is true (e.g. quantity after prerequisites). */
@@ -16,9 +17,10 @@ type UseDependentFieldFocusOpts = {
 export function useDependentFieldFocus({ targetRef, enabled, deps }: UseDependentFieldFocusOpts) {
   React.useEffect(() => {
     if (!enabled) return;
+    if (!prefersFinePointer()) return;
     const id = window.setTimeout(() => {
       const el = targetRef.current;
-      if (el && typeof el.focus === "function") el.focus();
+      if (el && typeof el.focus === "function") el.focus({ preventScroll: true });
     }, 0);
     return () => window.clearTimeout(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- caller controls deps array

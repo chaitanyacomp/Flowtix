@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card"
 import { PageContainer, ReportPageHeader } from "../components/PageHeader";
 import { apiFetch } from "../services/api";
 import { useDebouncedUrlStringParam, useUrlQueryState } from "../hooks/useUrlQueryState";
+import { ERP_REPORT_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
 import { cn } from "../lib/utils";
 import { dispatchLedgerFocusHref, salesOrdersFocusHref, withReportsReturnContext } from "../lib/drillDownRoutes";
 import {
@@ -122,11 +123,12 @@ export function SalesMatchingReportPage() {
   const [loadError, setLoadError] = React.useState<string | null>(null);
 
   const missingDates = !fromDate.trim() || !toDate.trim();
+  const liveTick = useErpRefreshTick(["reports", "sales", "dispatch"], { pollIntervalMs: ERP_REPORT_POLL_MS });
 
   React.useEffect(() => {
     apiFetch<Customer[]>("/api/customers").then(setCustomers).catch(() => setCustomers([]));
     apiFetch<Item[]>("/api/items?type=FG").then(setItems).catch(() => setItems([]));
-  }, []);
+  }, [liveTick]);
 
   const filteredItems = React.useMemo(() => {
     const query = q.trim().toLowerCase();
@@ -165,7 +167,7 @@ export function SalesMatchingReportPage() {
     }
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fromDate, toDate, customerId, itemId, soType, status, mismatchesOnly]);
+  }, [fromDate, toDate, customerId, itemId, soType, status, mismatchesOnly, liveTick]);
 
   const rows = data?.rows ?? [];
 

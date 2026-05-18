@@ -13,7 +13,7 @@ export function useCanPostStockAdjustment() {
 }
 
 /**
- * NO_QTY Next RS creation visibility — matches backend NEXT_RS_WRITE_ROLES (ADMIN + STORE).
+ * NO_QTY Next RS creation visibility — matches backend NEXT_RS_WRITE_ROLES (ADMIN + SALES).
  * Use this to gate "Create Next RS" CTAs across Dashboard / NO_QTY SO detail / Requirement Sheet pages.
  */
 export function useCanCreateNextRs() {
@@ -24,12 +24,8 @@ export function useCanCreateNextRs() {
 /**
  * Role-based UI gate for the "Open Requirement Sheet" / planning workspace CTAs.
  *
- * Planning (Requirement Sheet) is owned by ADMIN + STORE. Non-planning roles (SALES,
- * PRODUCTION, QC, ACCOUNTS) get a read-only "Planning Status" chip instead of a
- * button that would deep-link them into the planning workspace — this avoids the
- * "Forbidden" mid-page error for normal workflow operators.
- *
- * Matches frontend `RS_WRITE_ROLES` (= backend RS_WRITE_ROLES).
+ * Requirement sheet authoring is owned by ADMIN + SALES (mirrors backend RS_WRITE_ROLES).
+ * Other roles see a read-only "Planning Status" chip instead of a deep-link that would 403.
  */
 export function useCanOpenRequirementSheet() {
   const role = useAuth().user?.role ?? "";

@@ -5,18 +5,16 @@
  * NO_QTY: requirement-sheet / cycle navigation — keep separate from REGULAR RM check → WO prep.
  */
 import * as React from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useLocation } from "react-router-dom";
 import { deleteUrlParamKeys } from "../lib/urlSearchParamsPatch";
-import { DrillFocusBanner } from "../components/DrillFocusBanner";
 import { useDebouncedUrlStringParam, useUrlQueryState } from "../hooks/useUrlQueryState";
 import {
   DRILL_FOCUS_EMPTY_FILTERED_SUFFIX,
   DRILL_FOCUS_HINT_HIDDEN_BY_FILTERS,
   DRILL_FOCUS_HINT_NOT_IN_LIST,
   DRILL_RECOVERY_LABEL,
-  drillFocusTitleSalesOrder,
 } from "../lib/drillFocusCopy";
-import { DRILL_DATA, DRILL_QUERY } from "../lib/drillDownRoutes";
+import { DRILL_DATA, DRILL_QUERY, isReportsReturnContext } from "../lib/drillDownRoutes";
 import { useDrillFocus } from "../hooks/useDrillFocus";
 import { cn } from "../lib/utils";
 import { buttonVariants } from "../components/ui/button";
@@ -32,6 +30,16 @@ import { REGULAR_TERMS } from "../lib/flowTerminology";
 import { Input } from "../components/ui/input";
 import { Badge } from "../components/ui/badge";
 import { useIsAdmin, useCanCreateNextRs, useCanOpenRequirementSheet } from "../hooks/useIsAdmin";
+import { useAuth } from "../hooks/useAuth";
+import {
+  SO_WRITE_ROLES,
+  DISPATCH_READ_ROLES,
+  SALES_BILL_WRITE_ROLES,
+  WO_PLAN_PREP_ROLES,
+  ENQUIRY_QUOTATION_WRITE_ROLES,
+  QC_PAGE_ROLES,
+  PRODUCTION_WRITE_ROLES,
+} from "../config/erpRoles";
 import { PlanningStatusChip } from "../components/erp/PlanningStatusChip";
 import { useToast } from "../contexts/ToastContext";
 import { Trash2, Pencil, CheckCircle2, ChevronDown, ChevronUp, X } from "lucide-react";
@@ -39,13 +47,11 @@ import { useFastEntryForm } from "../hooks/useFastEntryForm";
 import { useModalFocusRestore } from "../hooks/useModalFocusRestore";
 import { useShortcutHints } from "../hooks/useShortcutHints";
 import { FieldShortcutHint } from "../components/ui/FieldShortcutHint";
-import { ShortcutHintBar } from "../components/ui/ShortcutHintBar";
 import {
   FIELD_HINT_SO_CREATE,
   FIELD_HINT_SO_EDIT_QTY,
   FIELD_HINT_SO_EDIT_SAVE,
   FIELD_HINT_SO_QUOTE_PO,
-  SALES_ORDERS_SHORTCUT_BAR,
 } from "../lib/shortcutHintCopy";
 import { displaySalesOrderNo } from "../lib/docNoDisplay";
 import { prefersFinePointer } from "../lib/erpFocus";
@@ -111,7 +117,24 @@ type SoRow = {
   /** Operational flow stage from backend (WO → production → QC → dispatch). */
   processStage?: { key: string; label: string };
   /** NO_QTY only: next actionable module (current cycle). */
-  noQtyNextAction?: "REQUIREMENT" | "WORK_ORDER" | "PRODUCTION" | "QC" | "DISPATCH" | "SALES_BILL" | "COMPLETED";
+  noQtyNextAction?:
+    | "REQUIREMENT"
+    | "WORK_ORDER"
+    | "PRODUCTION"
+    | "QC"
+    | "DISPATCH"
+    | "SALES_BILL"
+    | "CLOSE_SO"
+    | "CREATE_NEXT_RS"
+    | "COMPLETED";
+  /** Human-readable next step for list (NO_QTY). */
+  noQtyNextActionLabel?: string | null;
+  /** Same as commercial caption when set (API convenience). */
+  commercialStatusLabel?: string | null;
+  /** NO_QTY list cycle: at least one FINALIZED sales bill on this cycle (display only). */
+  noQtyFinalizedBillingComplete?: boolean | null;
+  /** NO_QTY list cycle: finalized bill marked exported (display only). */
+  noQtyBillingExported?: boolean | null;
   /** NO_QTY only: whether current cycle has at least one Requirement Sheet created. */
   hasCurrentCycleRequirementSheet?: boolean | null;
   /** NO_QTY only: whether current cycle already has at least one Sales Bill. */
@@ -126,20 +149,24 @@ type SoRow = {
   noQtyCreateNextRsEligible?: boolean;
   /** NO_QTY: next-cycle RS already exists (doc no from server). */
   noQtyNextRsAlreadyCreatedDocNo?: string | null;
+  /** NO_QTY list: server-built cycle / between-cycles position line (display only). */
+  noQtyListPositionLabel?: string | null;
+  /** NO_QTY list: commercial / billing line (display only). */
+  noQtyCommercialCaption?: string | null;
+  /** NO_QTY guided links: prefer over `currentCycle.id` when SO pointer is stale. */
+  noQtyGuidedCycleId?: number | null;
+  noQtyLatestBilledCycleNo?: number | null;
+  noQtyActiveCycleNo?: number | null;
+  /** Workflow-active cycle (ACTIVE + RS/WO/prod/QC/dispatch/bill evidence); operator truth for “current cycle”. */
+  noQtyActualActiveCycleNo?: number | null;
+  /** When no workflow-active cycle: last cycle number with finalized billing (display). */
+  noQtyLatestCompletedCycleNo?: number | null;
+  /** Count of ACTIVE cycles that pass workflow evidence (operator “in flight”). */
+  noQtyWorkflowActiveCycleCount?: number | null;
+  /** ADMIN only: max existing cycleNo + 1; not shown as an active cycle until RS/row exists. */
+  noQtyNextPossibleCycleNo?: number | null;
+  noQtyIsBetweenCycles?: boolean;
   currentCycle?: { id: number; cycleNo: number; status?: string } | null;
-  /** Admin-only temporary debug payload for NO_QTY stage derivation (current cycle only). */
-  noQtyStageDebug?: {
-    salesOrderId: number;
-    orderType: string;
-    currentCycleId: number;
-    cycleNo: number | null;
-    requirementExists: boolean;
-    workOrderExists: boolean;
-    productionExists: boolean;
-    qcExists: boolean;
-    dispatchExists: boolean;
-    salesBillExists: boolean;
-  } | null;
   /** Admin-only: hard-delete eligibility for non-connected sales orders (server source of truth). */
   deleteAllowed?: boolean;
   /** Admin-only: reasons that block hard delete. */
@@ -194,8 +221,8 @@ type CopyPreviewDetail = {
   }>;
 };
 
-/** Per-line buffer planning when creating a NORMAL SO from an approved quotation (order matches `qDetail.lines`). */
-type QuoteCreateBufferLine = { itemId: number; customerPoQty: string; bufferPercent: string };
+/** Per-line qty when creating a NORMAL SO from an approved quotation (order matches `qDetail.lines`). */
+type QuoteCreateLine = { itemId: number; customerPoQty: string };
 
 type DraftLineEdit = {
   lineId: number;
@@ -204,22 +231,9 @@ type DraftLineEdit = {
   rateLabel: string;
   /** Regular (NORMAL) SO */
   customerPoQty?: string;
-  bufferPercent?: string;
   /** NO_QTY / REPLACEMENT */
   qty?: string;
 };
-
-function computePlannedQtyPreview(customerPoQty: number, bufferPercent: number): number {
-  const c = Math.max(0, Math.floor(Number(customerPoQty) || 0));
-  const b = Math.max(0, Number(bufferPercent) || 0);
-  return c + Math.ceil((c * b) / 100);
-}
-
-function clampBufferPercentInput(raw: string, maxB: number): string {
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n < 0) return "0";
-  return String(Math.min(Math.max(0, maxB), Math.floor(n)));
-}
 
 type FgItemOption = { id: number; itemName: string; itemType?: string | null };
 type NoQtyCreateLine = { key: string; itemId: number };
@@ -235,6 +249,7 @@ function statusBadgeVariant(s: string): "default" | "success" | "warning" | "inf
 
 function processStageBadgeVariant(key: string): "default" | "success" | "warning" | "info" {
   if (key === "COMPLETED") return "info";
+  if (key === "NO_QTY_BILLING_COMPLETE") return "success";
   if (
     key === "DISPATCH_PENDING" ||
     key === "QC_PENDING" ||
@@ -277,9 +292,17 @@ type NoQtyStage =
   | "WORK ORDER"
   | "IN PRODUCTION"
   | "DISPATCH / BILLING"
+  | "BILLING COMPLETE"
   | "COMPLETED";
 
-type NoQtyNextStep = "Create Requirement" | "Work Order" | "Dispatch" | "Sales Bill" | "Billed" | null;
+type NoQtyNextStep =
+  | "Create Requirement"
+  | "Work Order"
+  | "Dispatch"
+  | "Sales Bill"
+  | "Billed"
+  | "Review & Close SO"
+  | null;
 
 type NoQtyStageContext = {
   isNoQtySo: boolean;
@@ -355,6 +378,7 @@ function getNoQtySoStageMeta(row: SoRow, opts: { isAdmin: boolean }): { stage: N
   if (ctx.isClosed) return { stage: "COMPLETED", ctx, reason: "status indicates closed/completed" };
 
   // Backend NO_QTY stage override (priority-based, current cycle only).
+  if (key === "NO_QTY_BILLING_COMPLETE") return { stage: "BILLING COMPLETE", ctx, reason: "backend stage: billing finalized" };
   if (key === "NO_QTY_DISPATCH_BILLING") return { stage: "DISPATCH / BILLING", ctx, reason: "backend stage: dispatch/billing" };
   if (key === "NO_QTY_IN_PRODUCTION") return { stage: "IN PRODUCTION", ctx, reason: "backend stage: in production" };
   if (key === "NO_QTY_WORK_ORDER") return { stage: "WORK ORDER", ctx, reason: "backend stage: work order" };
@@ -364,8 +388,11 @@ function getNoQtySoStageMeta(row: SoRow, opts: { isAdmin: boolean }): { stage: N
   const hasReq = ctx.hasActiveRequirementSheet === true;
   const noReq = ctx.hasActiveRequirementSheet === false;
 
-  // Dispatch/billing signals we can trust from list payload:
-  if ((ctx.unbilledDispatchedQty != null && ctx.unbilledDispatchedQty > 0) || ctx.actualDispatchedQty > 0 || (key === "DISPATCH_PENDING" && pendingDispatch > 0)) {
+  // Dispatch/billing: use unbilled qty (not gross dispatch) so finalized billing does not read as "pending".
+  if (
+    (ctx.unbilledDispatchedQty != null && ctx.unbilledDispatchedQty > 0) ||
+    (key === "DISPATCH_PENDING" && pendingDispatch > 0)
+  ) {
     return { stage: "DISPATCH / BILLING", ctx, reason: "dispatch/billing activity detected" };
   }
 
@@ -398,6 +425,10 @@ function noQtyProgressSummary(stage: NoQtyStage, so: SoRow): string {
   if (stage === "REQUIREMENT READY") return "Requirement prepared";
   if (stage === "WORK ORDER") return "Work order ready";
   if (stage === "IN PRODUCTION") return "Production / QC in progress";
+  if (stage === "BILLING COMPLETE") {
+    if (so.noQtyBillingExported === true) return "Billing completed · Exported";
+    return "Billing completed";
+  }
   if (stage === "DISPATCH / BILLING")
     return disp > 0 || pend > 0
       ? `Dispatch or billing pending · Out ${disp} · Pend ${pend}`
@@ -414,21 +445,50 @@ function shouldShowCheckStockAndRmCheck(so: SoRow): boolean {
   return true;
 }
 
+function hasErpRole(role: string | undefined, allowed: readonly string[]): boolean {
+  if (!role) return false;
+  return (allowed as readonly string[]).includes(role);
+}
+
+/** Regular SO list: compact commercial / dispatch line (display only). */
+function regularSoCommercialSummary(so: SoRow): string {
+  if (isReplacementSalesOrder(so)) return "—";
+  const pending = Number(so.dispatchSummary?.totalPending ?? 0) || 0;
+  const dispatched = Number(so.dispatchSummary?.totalDispatched ?? 0) || 0;
+  const invoiced = Number(so.invoicedQty ?? 0) || 0;
+  const invoicePendingQty = Math.max(0, dispatched - invoiced);
+  if (invoicePendingQty > 0) return `Invoice pending (${invoicePendingQty})`;
+  if (invoiced > 0 && pending <= 0) return `Invoiced (${invoiced})`;
+  if (pending > 0) return `Dispatch pending (${pending})`;
+  if (dispatched > 0) return `Dispatched (${dispatched})`;
+  return "—";
+}
+
 /** Primary row CTA from `processStage` for all non–NO_QTY orders (NORMAL, REPLACEMENT, etc.). */
-function getPrimaryCta(so: SoRow): { label: string; to: string } | null {
+function getPrimaryCta(so: SoRow, role: string): { label: string; to: string; state?: { from: string } } | null {
   if (so.orderType === "NO_QTY") return null;
   const stage = so.processStage?.key;
   const sid = encodeURIComponent(String(so.id));
+  const canWoFromSo = hasErpRole(role, [...SO_WRITE_ROLES, ...WO_PLAN_PREP_ROLES]) && role !== "PRODUCTION";
   switch (stage) {
     case "WO_PENDING":
+      if (!canWoFromSo) return null;
       return { label: "Create Work Order", to: `/work-orders/prepare?salesOrderId=${sid}` };
     case "PRODUCTION_PENDING":
+      if (!hasErpRole(role, PRODUCTION_WRITE_ROLES)) return null;
       return { label: "Start Production", to: `/production?salesOrderId=${sid}&from=sales-orders` };
     case "QC_PENDING":
+      if (!hasErpRole(role, QC_PAGE_ROLES)) return null;
       return { label: "Go to QC", to: `/qc-entry?salesOrderId=${sid}` };
     case "DISPATCH_PENDING":
-      return { label: "Go to Dispatch", to: `/dispatch?salesOrderId=${sid}` };
+      if (!hasErpRole(role, DISPATCH_READ_ROLES)) return null;
+      return {
+        label: "Go to Dispatch",
+        to: `/dispatch?salesOrderId=${sid}&source=sales_orders`,
+        state: { from: "sales-orders" },
+      };
     case "SALES_BILL_PENDING":
+      if (!hasErpRole(role, SALES_BILL_WRITE_ROLES)) return null;
       return { label: "Create Sales Bill", to: `/sales-bills?salesOrderId=${sid}` };
     default:
       return null;
@@ -438,13 +498,16 @@ function getPrimaryCta(so: SoRow): { label: string; to: string } | null {
 const SO_LIST_URL_OMIT: Record<string, string> = {
   status: "ALL",
   prod: "ALL",
-  soType: "ALL",
+  soType: "REGULAR",
   sort: "date",
   dir: "desc",
 };
 
+type SalesOrdersListTab = "REGULAR" | "NO_QTY";
+
 export function SalesOrdersPage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const toast = useToast();
   const demo = useDemoMode();
   const soDemoHlRegular = demoHighlightKey(demo.enabled, demo.flow, demo.step, "regular", 1);
@@ -452,6 +515,10 @@ export function SalesOrdersPage() {
   const isAdmin = useIsAdmin();
   const canCreateNextRs = useCanCreateNextRs();
   const canOpenRs = useCanOpenRequirementSheet();
+  const { user } = useAuth();
+  const role = user?.role ?? "";
+  const canUseCommercialQuotations = hasErpRole(role, ENQUIRY_QUOTATION_WRITE_ROLES);
+  const canCloseNoQtySo = hasErpRole(role, SO_WRITE_ROLES);
   const { searchParams, setSearchParams, patch, read } = useUrlQueryState(SO_LIST_URL_OMIT);
   const quotationFromUrl = read.int("quotationId");
   const copySourceRaw = read.string("copySource");
@@ -466,7 +533,8 @@ export function SalesOrdersPage() {
     "ALL",
   );
   const prodFilter = read.enum("prod", ["ALL", "PENDING", "NONE"] as const, "ALL");
-  const soTypeFilter = read.enum("soType", ["ALL", "REGULAR", "NO_QTY"] as const, "ALL");
+  const soTypeFilter: SalesOrdersListTab =
+    read.string("soType") === "NO_QTY" ? "NO_QTY" : "REGULAR";
   const sortKey = read.enum("sort", ["date", "id"] as const, "date");
   const sortDir = read.enum("dir", ["asc", "desc"] as const, "desc");
   const customerIdFilter = read.int("customerId");
@@ -490,7 +558,7 @@ export function SalesOrdersPage() {
   const [createPoRef, setCreatePoRef] = React.useState("");
   const [createRemarks, setCreateRemarks] = React.useState("");
   const [createPoTouched, setCreatePoTouched] = React.useState(false);
-  const [quoteCreateLines, setQuoteCreateLines] = React.useState<QuoteCreateBufferLine[]>([]);
+  const [quoteCreateLines, setQuoteCreateLines] = React.useState<QuoteCreateLine[]>([]);
   const createFromQuoteRef = React.useRef<HTMLDivElement | null>(null);
   const createPoRefInputRef = React.useRef<HTMLInputElement | null>(null);
   const listFilterStatusSelectRef = React.useRef<HTMLSelectElement | null>(null);
@@ -547,8 +615,6 @@ export function SalesOrdersPage() {
   const [editRemarks, setEditRemarks] = React.useState("");
   const [editLines, setEditLines] = React.useState<DraftLineEdit[]>([]);
   const [savingEdit, setSavingEdit] = React.useState(false);
-  const [maxRegularSoBufferPercent, setMaxRegularSoBufferPercent] = React.useState(10);
-
   const [invoiceModalSoId, setInvoiceModalSoId] = React.useState<number | null>(null);
   const [invoiceSo, setInvoiceSo] = React.useState<SalesInvoiceSoDetail | null>(null);
   const [invoiceLoading, setInvoiceLoading] = React.useState(false);
@@ -566,6 +632,7 @@ export function SalesOrdersPage() {
     pendingQcDispositionByItem: { itemId: number; pendingQty: number }[];
     stockMayHaveChangedWarning: boolean;
   } | null>(null);
+  const [activityHistoryOpen, setActivityHistoryOpen] = React.useState(false);
 
   /** Doc no for drill-focused SO when missing from list row (e.g. list not yet refreshed). */
   const [drillSoDocNo, setDrillSoDocNo] = React.useState<string | null>(null);
@@ -575,23 +642,40 @@ export function SalesOrdersPage() {
   React.useEffect(() => {
     if (!demoForcedMode) return;
     if (soTypeFilter === demoForcedMode) return;
-    patch({ soType: demoForcedMode });
+    patch({ soType: demoForcedMode === "REGULAR" ? null : demoForcedMode });
   }, [demoForcedMode, soTypeFilter, patch]);
+
+  React.useEffect(() => {
+    if (!listLoaded || focusSalesOrderId <= 0) return;
+    const hit = rows.find((r) => r.id === focusSalesOrderId);
+    if (!hit) return;
+    const want: SalesOrdersListTab = hit.orderType === "NO_QTY" ? "NO_QTY" : "REGULAR";
+    if (soTypeFilter === want) return;
+    patch({ soType: want === "REGULAR" ? null : want });
+  }, [listLoaded, focusSalesOrderId, rows, soTypeFilter, patch]);
+
+  React.useEffect(() => {
+    setActivityHistoryOpen(false);
+  }, [focusSalesOrderId]);
 
   function load() {
     setError(null);
     return apiFetch<SoRow[]>("/api/sales-orders")
       .then(async (fetchedRows) => {
         setRows(fetchedRows);
-        const noQtyRows = fetchedRows.filter((so) => so.orderType === "NO_QTY" && Number(so.currentCycle?.id) > 0);
+        const noQtyRows = fetchedRows.filter((so) => so.orderType === "NO_QTY");
         const draftStatusPairs = await Promise.all(
           noQtyRows.map(async (so) => {
             try {
               const sheets = await apiFetch<RequirementSheetListRow[]>(`/api/sales-orders/${so.id}/requirement-sheets`);
               const currentCycleId = Number(so.currentCycle?.id);
-              const hasDraftInCurrentCycle = sheets.some(
-                (sheet) => Number(sheet.cycleId) === currentCycleId && sheet.status === "DRAFT",
-              );
+              const hasDraftInCurrentCycle = sheets.some((sheet) => {
+                if (sheet.status !== "DRAFT") return false;
+                if (Number.isFinite(currentCycleId) && currentCycleId > 0) {
+                  return Number(sheet.cycleId) === currentCycleId;
+                }
+                return true;
+              });
               return [so.id, hasDraftInCurrentCycle] as const;
             } catch {
               return [so.id, false] as const;
@@ -800,20 +884,9 @@ export function SalesOrdersPage() {
     return list;
   }, [rows, statusFilter, customerIdFilter, listSearch, prodFilter, sortKey, sortDir, soTypeFilter, isAdmin]);
 
-  const regularTableRows = React.useMemo(() => {
-    if (soTypeFilter === "NO_QTY") return [];
-    return visibleRows.filter((so) => so.orderType !== "NO_QTY");
-  }, [visibleRows, soTypeFilter]);
-
-  const noQtyTableRows = React.useMemo(() => {
-    if (soTypeFilter === "REGULAR") return [];
-    return visibleRows.filter((so) => so.orderType === "NO_QTY");
-  }, [visibleRows, soTypeFilter]);
-
   const listFiltersActive =
     statusFilter !== "ALL" ||
     prodFilter !== "ALL" ||
-    soTypeFilter !== "ALL" ||
     customerIdFilter > 0 ||
     listSearch.length > 0 ||
     sortKey !== "date" ||
@@ -853,6 +926,17 @@ export function SalesOrdersPage() {
   const soDrillTargetInData = focusSalesOrderId > 0 && rows.some((r) => r.id === focusSalesOrderId);
   const soDrillTargetVisible = focusSalesOrderId > 0 && visibleRows.some((r) => r.id === focusSalesOrderId);
   const soDrillHiddenByFilters = listLoaded && soDrillTargetInData && !soDrillTargetVisible;
+
+  /** Compact focus chrome only for dashboard / reports drill-down (not plain deep links). */
+  const showSalesOrdersFocusedChrome = React.useMemo(() => {
+    if (focusSalesOrderId <= 0) return false;
+    const q = new URLSearchParams(location.search);
+    const from = (q.get("from") ?? "").trim().toLowerCase();
+    const source = (q.get("source") ?? "").trim().toLowerCase();
+    return (
+      isReportsReturnContext(location.search) || from === "dashboard" || source === "dashboard"
+    );
+  }, [focusSalesOrderId, location.search]);
 
   useDrillFocus({
     attribute: DRILL_DATA.salesOrderId,
@@ -904,7 +988,6 @@ export function SalesOrdersPage() {
           (q.lines || []).map((ln) => ({
             itemId: ln.itemId,
             customerPoQty: String(Math.max(0, Math.floor(Number(ln.qty) || 0))),
-            bufferPercent: "0",
           })),
         );
       })
@@ -939,10 +1022,6 @@ export function SalesOrdersPage() {
           (p.lines || []).map((ln) => ({
             itemId: ln.itemId,
             customerPoQty: String(Math.max(0, Math.floor(Number(ln.qty) || 0))),
-            bufferPercent:
-              ln.bufferPercentSnapshot != null && String(ln.bufferPercentSnapshot).trim() !== ""
-                ? String(Math.max(0, Math.floor(Number(ln.bufferPercentSnapshot) || 0)))
-                : "0",
           })),
         );
       })
@@ -1099,7 +1178,7 @@ export function SalesOrdersPage() {
           lines: quoteCreateLines.map((l) => ({
             itemId: l.itemId,
             customerPoQty: Math.floor(Number(l.customerPoQty)),
-            bufferPercent: Number(l.bufferPercent ?? 0),
+            bufferPercent: 0,
           })),
         }),
       });
@@ -1166,7 +1245,7 @@ export function SalesOrdersPage() {
           lines: quoteCreateLines.map((l) => ({
             itemId: l.itemId,
             customerPoQty: Math.floor(Number(l.customerPoQty)),
-            bufferPercent: Number(l.bufferPercent ?? 0),
+            bufferPercent: 0,
           })),
         }),
       });
@@ -1204,7 +1283,6 @@ export function SalesOrdersPage() {
             isFree: Boolean(qf),
             rateLabel,
             customerPoQty: String(Number(l.customerPoQty ?? l.qty)),
-            bufferPercent: String(Number(l.bufferPercent ?? 0)),
           };
         }
         return {
@@ -1309,7 +1387,7 @@ export function SalesOrdersPage() {
           ? editLines.map((l) => ({
               lineId: l.lineId,
               customerPoQty: Number(l.customerPoQty),
-              bufferPercent: Number(l.bufferPercent ?? 0),
+              bufferPercent: 0,
             }))
           : editLines.map((l) => ({ lineId: l.lineId, qty: Number(l.qty) }));
       if (isNormal) {
@@ -1419,23 +1497,6 @@ export function SalesOrdersPage() {
   const soEditSaveFocusBind = shortcutHints.bindField("soEditSave");
   const quoteCreateFocusBind = shortcutHints.bindField("soQuoteCreate");
 
-  React.useEffect(() => {
-    const needMaxBuffer =
-      Boolean(editSo && editSo.orderType === "NORMAL") ||
-      Boolean(quotationFromUrl && quotationFromUrl > 0) ||
-      copyFromPreviousActive;
-    if (!needMaxBuffer) return;
-    let cancelled = false;
-    void apiFetch<{ maxRegularSoBufferPercent?: number }>("/api/settings/regular-so-buffer")
-      .then((r) => {
-        if (cancelled || r == null || typeof r.maxRegularSoBufferPercent !== "number") return;
-        setMaxRegularSoBufferPercent(Math.max(0, Math.floor(r.maxRegularSoBufferPercent)));
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [editSo?.id, editSo?.orderType, quotationFromUrl, copyFromPreviousActive]);
   const creatingRef = React.useRef(creating);
   creatingRef.current = creating;
   const savingEditRef = React.useRef(savingEdit);
@@ -1517,7 +1578,7 @@ export function SalesOrdersPage() {
   }, [invoiceModalSoId]);
 
   return (
-    <PageContainer className="pb-[5.5rem] sm:pb-20">
+    <PageContainer className="pb-10 sm:pb-14">
       {quotationFromUrl || copyFromPreviousActive ? (
         <>
           <StickyWorkspaceHead
@@ -1597,8 +1658,8 @@ export function SalesOrdersPage() {
                               because the quotation is already approved. {REGULAR_TERMS.SALES_ORDER_APPROVED_RM_CHECK_HINT}
                             </>
                           )}{" "}
-                          Set <strong>Customer PO Qty</strong> (dispatch cap) and optional <strong>Buffer %</strong>;{" "}
-                          <strong>Planned Qty</strong> is what production and RM check use.
+                          Set <strong>Customer PO Qty</strong> as the customer commitment (dispatch cap). Production buffer,
+                          if needed, is set later on the work order.
                         </p>
                         <div className="grid gap-3 sm:grid-cols-2">
                           <div className="erp-form-field">
@@ -1622,7 +1683,7 @@ export function SalesOrdersPage() {
 
                         <div>
                           <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                            Lines — customer commitment and production plan
+                            Lines — customer commitment
                           </div>
                           <div className="mt-2 overflow-x-auto rounded-md border border-slate-200">
                             <table className="min-w-full text-sm">
@@ -1630,8 +1691,6 @@ export function SalesOrdersPage() {
                                 <tr className="text-left text-xs font-semibold text-slate-600">
                                   <th className="px-3 py-2">Item</th>
                                   <th className="px-3 py-2 text-right">Customer PO Qty</th>
-                                  <th className="px-3 py-2 text-right">Buffer %</th>
-                                  <th className="px-3 py-2 text-right">Planned Qty</th>
                                   <th className="px-3 py-2 text-right">Rate</th>
                                   <th className="px-3 py-2 text-right">GST %</th>
                                 </tr>
@@ -1639,9 +1698,6 @@ export function SalesOrdersPage() {
                               <tbody className="divide-y divide-slate-200">
                                 {quoteDetailForCreate.lines.map((ln, idx) => {
                                   const row = quoteCreateLines[idx];
-                                  const cp = Number(row?.customerPoQty ?? ln.qty);
-                                  const buf = Number(row?.bufferPercent ?? 0);
-                                  const planned = computePlannedQtyPreview(cp, buf);
                                   const gstPctStr = ln.gstPct;
                                   const gstLabel =
                                     gstPctStr != null && String(gstPctStr).trim() !== ""
@@ -1672,31 +1728,6 @@ export function SalesOrdersPage() {
                                           }
                                         />
                                       </td>
-                                      <td className="px-3 py-2 text-right align-middle">
-                                        <Input
-                                          className="ml-auto w-24 text-right tabular-nums"
-                                          inputMode="numeric"
-                                          title={`Max ${maxRegularSoBufferPercent}%`}
-                                          value={row?.bufferPercent ?? "0"}
-                                          onChange={(e) =>
-                                            setQuoteCreateLines((prev) => {
-                                              const next = [...prev];
-                                              if (next[idx])
-                                                next[idx] = {
-                                                  ...next[idx],
-                                                  bufferPercent: clampBufferPercentInput(
-                                                    e.target.value,
-                                                    maxRegularSoBufferPercent,
-                                                  ),
-                                                };
-                                              return next;
-                                            })
-                                          }
-                                        />
-                                      </td>
-                                      <td className="px-3 py-2 text-right align-middle tabular-nums text-slate-800">
-                                        <Input className="ml-auto w-28 text-right tabular-nums" readOnly value={planned} />
-                                      </td>
                                       <td className="px-3 py-2 text-right tabular-nums text-slate-800">
                                         {ln.isFree ? "0 (Free)" : Number(ln.rate).toFixed(2)}
                                       </td>
@@ -1708,8 +1739,8 @@ export function SalesOrdersPage() {
                             </table>
                           </div>
                           <p className="mt-1 text-[11px] text-slate-500">
-                            Buffer % is capped at the admin maximum ({maxRegularSoBufferPercent}%). With buffer 0,
-                            planned qty equals Customer PO Qty.
+                            Customer PO Qty is stored as-is on the sales order. Optional production buffer for rejection
+                            risk is applied on work order planning only.
                           </p>
                         </div>
 
@@ -1783,7 +1814,6 @@ export function SalesOrdersPage() {
       {quotationFromUrl || copyFromPreviousActive ? null : (
         <>
           <StickyWorkspaceHead
-            className="space-y-1.5"
             lead={
               /* Uses ?from= / ?source=, navigation state, session workflow hint (after Enquiries/Quotations), then dashboard. */
               <PageSmartBackLink
@@ -1793,10 +1823,17 @@ export function SalesOrdersPage() {
               />
             }
           >
-            <PageHeader
-              title="Sales orders"
-              actions={
-                <div className="flex flex-wrap items-center gap-2">
+            <div className="erp-page-header mb-1 flex flex-wrap items-end justify-between gap-3">
+              <div className="min-w-0">
+                <h2 className="erp-type-page-title text-xl font-extrabold uppercase tracking-[0.14em] text-slate-900">
+                  SALES ORDERS
+                </h2>
+                <p className="mt-1 max-w-xl text-[12.5px] font-medium leading-snug text-slate-600">
+                  Operational customer order tracking
+                </p>
+              </div>
+              {canUseCommercialQuotations ? (
+                <div className="flex shrink-0 flex-wrap items-center gap-2">
                   <Link
                     to="/quotations"
                     className={cn(buttonVariants({ size: "sm" }), "no-underline")}
@@ -1807,30 +1844,53 @@ export function SalesOrdersPage() {
                     Open approved quotations
                   </Link>
                 </div>
-              }
-            />
+              ) : null}
+            </div>
           </StickyWorkspaceHead>
 
-          <div className="grid gap-2">
+          <div className="sales-orders-page-shell grid gap-1">
             <DemoFlowBanner />
 
-            <div className="erp-info-strip" data-tone="info">
-              <span className="font-semibold text-sky-950">Workflow:</span>
-              <span>
-                Create SOs from{" "}
-                <Link to="/quotations" className="font-medium text-blue-800 underline underline-offset-2">
-                  approved quotations
-                </Link>
-                ; track fulfillment here.
-              </span>
+            <div
+              className="flex border-b border-slate-200"
+              role="tablist"
+              aria-label="Sales order list type"
+            >
+              {(
+                [
+                  { id: "REGULAR" as const, label: "Regular Orders" },
+                  { id: "NO_QTY" as const, label: "NO_QTY Agreements" },
+                ] as const
+              ).map((tab) => {
+                const selected = soTypeFilter === tab.id;
+                return (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={selected}
+                    className={cn(
+                      "-mb-px border-b-2 px-4 py-2 text-[13px] font-semibold transition-colors",
+                      selected
+                        ? "border-slate-900 text-slate-900"
+                        : "border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-800",
+                    )}
+                    onClick={() => patch({ soType: tab.id === "REGULAR" ? null : tab.id })}
+                  >
+                    {tab.label}
+                  </button>
+                );
+              })}
             </div>
 
             <details
-              className="erp-advanced-section"
+              className="erp-advanced-section opacity-95"
               {...(soDemoHlNoQty ? { "data-demo-highlight": soDemoHlNoQty } : {})}
             >
               <summary>
-                <span>Advanced · Exceptional creation (bypasses enquiry → quotation)</span>
+                <span className="font-normal normal-case tracking-normal text-slate-500">
+                  Advanced · Exceptional creation (bypasses enquiry → quotation)
+                </span>
               </summary>
               <div className="erp-advanced-body">
                 <p className="mb-1.5 text-slate-500">For admin / edge cases only. Prefer Quotations for normal work.</p>
@@ -2081,35 +2141,42 @@ export function SalesOrdersPage() {
         </div>
       ) : null}
 
-      <DrillFocusBanner
-        active={focusSalesOrderId > 0}
-        title={drillFocusTitleSalesOrder(focusSalesOrderId)}
-        variant={
-          listLoaded && focusSalesOrderId > 0 && !soDrillTargetInData
-            ? "soft"
-            : soDrillHiddenByFilters
-              ? "soft"
-              : "default"
-        }
-        hint={
-          listLoaded && focusSalesOrderId > 0 && !soDrillTargetInData
-            ? DRILL_FOCUS_HINT_NOT_IN_LIST.salesOrder
-            : soDrillHiddenByFilters
-              ? DRILL_FOCUS_HINT_HIDDEN_BY_FILTERS.salesOrder
-              : undefined
-        }
-        recoveryAction={
-          soDrillHiddenByFilters ? { label: DRILL_RECOVERY_LABEL.salesOrder, onClick: revealSalesOrderDrillTarget } : undefined
-        }
-        onClearFocus={clearSalesOrderDrillFocus}
-      />
+      {showSalesOrdersFocusedChrome ? (
+        <div
+          className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-1.5 text-[13px] text-slate-800"
+          role="status"
+        >
+          <div className="min-w-0 flex-1">
+            <span className="font-semibold text-slate-900">Focused SO:</span>{" "}
+            <span className="font-mono font-medium tabular-nums text-slate-900">
+              {displaySalesOrderNo(focusSalesOrderId, drillSoDocNo)}
+            </span>
+            {listLoaded && focusSalesOrderId > 0 && !soDrillTargetInData ? (
+              <span className="ml-2 text-xs font-normal text-amber-800">{DRILL_FOCUS_HINT_NOT_IN_LIST.salesOrder}</span>
+            ) : null}
+            {soDrillHiddenByFilters ? (
+              <span className="ml-2 text-xs font-normal text-amber-800">{DRILL_FOCUS_HINT_HIDDEN_BY_FILTERS.salesOrder}</span>
+            ) : null}
+          </div>
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
+            {soDrillHiddenByFilters ? (
+              <Button type="button" variant="outline" size="sm" onClick={revealSalesOrderDrillTarget}>
+                {DRILL_RECOVERY_LABEL.salesOrder}
+              </Button>
+            ) : null}
+            <Button type="button" variant="ghost" size="sm" className="h-8 px-2 text-slate-700" onClick={clearSalesOrderDrillFocus}>
+              Clear
+            </Button>
+          </div>
+        </div>
+      ) : null}
 
       {error ? <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{error}</div> : null}
 
-      <Card>
-        <CardHeader className="flex flex-col gap-2 space-y-0 pb-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+      <Card className="border border-slate-300 bg-white shadow-none">
+        <CardHeader className="flex flex-col gap-1 space-y-0 border-b border-slate-200 bg-slate-100 px-3 py-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
           <div className="flex items-baseline gap-2">
-            <CardTitle className="text-sm">Sales order list</CardTitle>
+            <CardTitle className="text-xs font-bold uppercase tracking-wide text-slate-800">Sales order list</CardTitle>
             {listFiltersActive && rows.length > 0 ? (
               <span className="text-[11px] text-slate-500">
                 <span className="font-semibold tabular-nums text-slate-700">{visibleRows.length}</span>
@@ -2127,8 +2194,8 @@ export function SalesOrdersPage() {
             Clear filters
           </button>
         </CardHeader>
-        <CardContent className="space-y-2">
-          <div ref={listFiltersRef} className="erp-filter-bar">
+        <CardContent className="space-y-1.5 px-0 pb-2 pt-0">
+          <div ref={listFiltersRef} className="erp-filter-bar px-2.5 py-1">
             <label className="erp-filter-field">
               <span className="text-slate-500">Status</span>
               <select
@@ -2143,17 +2210,6 @@ export function SalesOrdersPage() {
                 <option value="IN_PROCESS">In Process</option>
                 <option value="COMPLETED">Completed</option>
                 <option value="CLOSED">Closed</option>
-              </select>
-            </label>
-            <label className="erp-filter-field">
-              <span className="text-slate-500">Type</span>
-              <select
-                value={soTypeFilter}
-                onChange={(e) => patch({ soType: e.target.value as typeof soTypeFilter })}
-              >
-                <option value="ALL">All</option>
-                <option value="REGULAR">Regular / Replacement</option>
-                <option value="NO_QTY">NO_QTY</option>
               </select>
             </label>
             {soTypeFilter !== "NO_QTY" ? (
@@ -2226,24 +2282,36 @@ export function SalesOrdersPage() {
               />
             </label>
           </div>
-          <div className="erp-table-wrap space-y-5">
-            {noQtyTableRows.length > 0 ? (
-              <div className="space-y-2">
-                {soTypeFilter === "ALL" ? (
-                  <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">NO_QTY</div>
-                ) : null}
-              <table className="erp-table">
-                <thead>
-                  <tr>
-                    <th className={cn(sortKey === "id" && "bg-slate-100/90")}>SO</th>
-                    <th>Stage</th>
-                    <th>Progress</th>
-                    <th className="text-right">Next step</th>
-                    <th className="text-right">View</th>
-                  </tr>
-                </thead>
+          <div className="space-y-2 px-2.5 pb-0.5 pt-0">
+            {soTypeFilter === "NO_QTY" && visibleRows.length > 0 ? (
+              <div className="erp-table-wrap border-x-0 border-t-0">
+                <table className="erp-table sales-orders-so-table w-full min-w-[1000px]">
+                  <colgroup>
+                    <col style={{ width: "7.25rem" }} />
+                    <col style={{ width: "5.75rem" }} />
+                    <col style={{ width: "16%" }} />
+                    <col style={{ width: "9rem" }} />
+                    <col style={{ width: "9rem" }} />
+                    <col style={{ width: "17%" }} />
+                    <col style={{ width: "19%" }} />
+                    <col style={{ width: "8.5rem" }} />
+                    <col style={{ width: "11rem" }} />
+                  </colgroup>
+                  <thead>
+                    <tr>
+                      <th className={cn(sortKey === "id" && "bg-slate-300/80")}>SO No.</th>
+                      <th className={cn(sortKey === "date" && "bg-slate-300/80")}>Date</th>
+                      <th>Customer</th>
+                      <th>PO Ref</th>
+                      <th>Type</th>
+                      <th>Current position</th>
+                      <th>Commercial status</th>
+                      <th className="text-right">Next action</th>
+                      <th className="erp-table-action-col erp-so-th-num">Actions</th>
+                    </tr>
+                  </thead>
                 <tbody>
-                  {noQtyTableRows.map((so) => {
+                  {visibleRows.map((so) => {
                     const meta = getNoQtySoStageMeta(so, { isAdmin });
                     const isClosed =
                       so.internalStatus === "MANUALLY_CLOSED" ||
@@ -2257,12 +2325,37 @@ export function SalesOrdersPage() {
                     const progress = isClosed ? "Sales order closed" : noQtyProgressSummary(stage, so);
                     const customer = so.customer?.name ?? so.po?.customer?.name ?? "—";
                     const dateStr = new Date(so.createdAt).toLocaleDateString();
+                    const guidedCycleId =
+                      so.noQtyGuidedCycleId != null &&
+                      Number.isFinite(Number(so.noQtyGuidedCycleId)) &&
+                      Number(so.noQtyGuidedCycleId) > 0
+                        ? Number(so.noQtyGuidedCycleId)
+                        : null;
+                    const positionLabel =
+                      (so.noQtyListPositionLabel && String(so.noQtyListPositionLabel).trim()) || (isClosed ? "Closed" : "—");
+                    const commercialDisplay =
+                      (so.commercialStatusLabel && String(so.commercialStatusLabel).trim()) ||
+                      (so.noQtyCommercialCaption && String(so.noQtyCommercialCaption).trim()) ||
+                      (isClosed ? "—" : progress);
 
                     const noQtySoGuided = (() => {
                       const next = so.noQtyNextAction ?? null;
-                      const cycleId = so.currentCycle?.id ?? null;
+                      const cycleId = guidedCycleId;
                       const ctx = { salesOrderId: so.id, cycleId };
                       switch (next) {
+                        case "CREATE_NEXT_RS":
+                          return {
+                            nextStep: "Create next RS",
+                            label: "Create next RS",
+                            to: buildNoQtyGuidedHref({
+                              to: `/sales-orders/${so.id}/requirement-sheets?intent=add`,
+                              salesOrderId: so.id,
+                              cycleId: guidedCycleId,
+                              fromStep: "requirement",
+                            }),
+                            isPlanningAction: true as const,
+                            waitingLabel: "Create next RS",
+                          };
                         case "COMPLETED":
                           return {
                             nextStep: "Cycle Completed",
@@ -2283,6 +2376,16 @@ export function SalesOrdersPage() {
                             waitingLabel: "Requirement Ready · With Planning",
                           };
                         case "PRODUCTION":
+                          if (!hasErpRole(role, PRODUCTION_WRITE_ROLES)) {
+                            return {
+                              nextStep: "In Production",
+                              label: "Open Production",
+                              to: buildNoQtyGuidedHref({ to: `/production`, ...ctx, fromStep: "requirement" }),
+                              isPlanningAction: false as const,
+                              waitingLabel: "In Production",
+                              surfaceChip: "Production is owned by the Production team.",
+                            };
+                          }
                           return {
                             nextStep: "In Production",
                             label: "Open Production",
@@ -2291,6 +2394,16 @@ export function SalesOrdersPage() {
                             waitingLabel: "In Production",
                           };
                         case "QC":
+                          if (!hasErpRole(role, QC_PAGE_ROLES)) {
+                            return {
+                              nextStep: "Awaiting QC",
+                              label: "Open QC",
+                              to: buildNoQtyGuidedHref({ to: `/qc-entry`, ...ctx, fromStep: "production" }),
+                              isPlanningAction: false as const,
+                              waitingLabel: "Awaiting QC",
+                              surfaceChip: "QC is owned by the QC team.",
+                            };
+                          }
                           return {
                             nextStep: "Awaiting QC",
                             label: "Open QC",
@@ -2299,6 +2412,16 @@ export function SalesOrdersPage() {
                             waitingLabel: "Awaiting QC",
                           };
                         case "DISPATCH":
+                          if (!hasErpRole(role, DISPATCH_READ_ROLES)) {
+                            return {
+                              nextStep: "Ready for Dispatch",
+                              label: "Open Dispatch",
+                              to: buildNoQtyGuidedHref({ to: `/dispatch`, ...ctx, fromStep: "qc" }),
+                              isPlanningAction: false as const,
+                              waitingLabel: "Ready for Dispatch",
+                              surfaceChip: "Dispatch is owned by the Store team.",
+                            };
+                          }
                           return {
                             nextStep: "Ready for Dispatch",
                             label: "Open Dispatch",
@@ -2307,12 +2430,40 @@ export function SalesOrdersPage() {
                             waitingLabel: "Ready for Dispatch",
                           };
                         case "SALES_BILL":
+                          if (!hasErpRole(role, SALES_BILL_WRITE_ROLES)) {
+                            return {
+                              nextStep: "Ready for Billing",
+                              label: "Open Sales Bill",
+                              to: buildNoQtyGuidedHref({ to: `/sales-bills`, ...ctx, fromStep: "dispatch" }),
+                              isPlanningAction: false as const,
+                              waitingLabel: "Ready for Billing",
+                              surfaceChip: "Billing is owned by the Accounts team.",
+                            };
+                          }
                           return {
                             nextStep: "Ready for Billing",
                             label: "Open Sales Bill",
                             to: buildNoQtyGuidedHref({ to: `/sales-bills`, ...ctx, fromStep: "dispatch" }),
                             isPlanningAction: false as const,
                             waitingLabel: "Ready for Billing",
+                          };
+                        case "CLOSE_SO":
+                          if (!hasErpRole(role, SALES_BILL_WRITE_ROLES)) {
+                            return {
+                              nextStep: "Review & Close SO",
+                              label: "Open Sales Bill",
+                              to: buildNoQtyGuidedHref({ to: `/sales-bills`, ...ctx, fromStep: "dispatch" }),
+                              isPlanningAction: false as const,
+                              waitingLabel: "Billing completed",
+                              surfaceChip: "Commercial close: use Close SO when operations are complete.",
+                            };
+                          }
+                          return {
+                            nextStep: "Review & Close SO",
+                            label: "Open Sales Bill",
+                            to: buildNoQtyGuidedHref({ to: `/sales-bills`, ...ctx, fromStep: "dispatch" }),
+                            isPlanningAction: false as const,
+                            waitingLabel: "Billing completed",
                           };
                         case "REQUIREMENT":
                         default:
@@ -2326,68 +2477,75 @@ export function SalesOrdersPage() {
                       }
                     })();
 
-                    // NO_QTY: keep a single primary CTA (in the View column). Next step column is informational only.
+                    const noQtySurfaceChip = (noQtySoGuided as { surfaceChip?: string }).surfaceChip;
+
+                    // NO_QTY: primary CTAs in Actions column; next action is informational only.
 
                     // STRICT: derive Next Step text + CTA label + href from the SAME source: `so.noQtyNextAction`.
                     const nextStep: NoQtyNextStep = isClosed ? null : (noQtySoGuided.nextStep as NoQtyNextStep);
+                    const nextStepDisplay =
+                      !isClosed &&
+                      so.noQtyNextActionLabel &&
+                      String(so.noQtyNextActionLabel).trim() &&
+                      so.noQtyNextActionLabel !== "—"
+                        ? so.noQtyNextActionLabel
+                        : nextStep ?? "—";
                     return (
                       <tr key={so.id} {...{ [DRILL_DATA.salesOrderId]: so.id }}>
-                        <td>
-                          <div className="flex min-w-0 flex-col gap-1">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <span className="inline-flex items-center gap-2">
-                                <span className="text-xs font-semibold text-slate-600">SO No</span>
-                                <span className="rounded border border-sky-200 bg-sky-50 px-2 py-0.5 font-mono text-xs font-semibold tabular-nums text-sky-900">
-                                  {displaySalesOrderNo(so.id, so.docNo)}
-                                </span>
-                              </span>
-                              {so.currentCycle?.cycleNo != null && Number.isFinite(Number(so.currentCycle.cycleNo)) ? (
-                                <span className="text-[11px] font-medium text-slate-500">
-                                  Cycle: {so.currentCycle.cycleNo}
-                                </span>
-                              ) : null}
-                              <Badge variant="info">No Qty SO</Badge>
-                              {/* Hide base internalStatus badge for NO_QTY to avoid conflicting status systems. */}
-                            </div>
-                            <div className="text-xs text-slate-600">
-                              <span className="font-medium text-slate-800">{customer}</span>
-                              <span className="text-slate-400"> · </span>
-                              <span>{dateStr}</span>
-                              <span className="text-slate-400"> · </span>
-                              <span className="truncate">{so.customerPoReference ?? "—"}</span>
-                            </div>
-                          </div>
+                        <td className="erp-so-td-mono whitespace-nowrap">
+                          {displaySalesOrderNo(so.id, so.docNo)}
+                        </td>
+                        <td className="whitespace-nowrap tabular-nums text-[12px] text-slate-700">{dateStr}</td>
+                        <td className="min-w-0 max-w-0 truncate text-[12.5px] text-slate-900" title={customer}>
+                          {customer}
+                        </td>
+                        <td
+                          className="min-w-0 max-w-0 truncate font-mono text-[11px] text-slate-700"
+                          title={so.customerPoReference ?? ""}
+                        >
+                          {so.customerPoReference ?? "—"}
                         </td>
                         <td className="whitespace-nowrap">
-                          <span
-                            title={
-                              isClosed
-                                ? "This cycle is finished. Admin Reopen starts the next cycle on this same No Qty SO; past cycles stay in history."
-                                : stage === "DRAFT"
-                                  ? "Waiting for first Requirement Sheet of this cycle."
-                                  : undefined
-                            }
-                            className="inline-flex items-center gap-1"
-                          >
-                            <Badge variant={statusBadgeVariant(displayStage)}>{displayStage}</Badge>
-                          </span>
+                          <div className="flex flex-col items-start gap-0.5">
+                            <Badge variant="info" className="w-fit px-1.5 py-0 text-[10px] leading-tight">
+                              NO_QTY
+                            </Badge>
+                            <span
+                              title={
+                                isClosed
+                                  ? "This cycle is finished. Admin Reopen starts the next cycle on this same No Qty SO; past cycles stay in history."
+                                  : stage === "DRAFT"
+                                    ? "Waiting for first Requirement Sheet of this cycle."
+                                    : undefined
+                              }
+                            >
+                              <Badge variant={statusBadgeVariant(displayStage)} className="w-fit px-1.5 py-0 text-[10px] leading-tight">
+                                {displayStage}
+                              </Badge>
+                            </span>
+                          </div>
                         </td>
-                        <td className="text-xs text-slate-700">{progress}</td>
+                        <td className="min-w-0 text-[12px] leading-snug text-slate-800">{positionLabel}</td>
+                        <td className="min-w-0 text-[12px] leading-snug text-slate-700">{commercialDisplay}</td>
                         <td className="text-right">
-                          <span className="text-xs text-slate-500">{nextStep ?? "—"}</span>
+                          <span className="text-[12px] font-semibold text-slate-800">{nextStepDisplay}</span>
                         </td>
-                        <td className="text-right">
-                          <div className="inline-flex max-w-[min(24rem,100%)] flex-col items-end gap-1">
-                            <div className="inline-flex flex-wrap justify-end gap-2">
-                              {!isClosed ? (
-                                hasDraftRequirementSheet ? (
+                        <td className="erp-table-action-col">
+                          <div className="erp-table-actions">
+                            {!isClosed ? (
+                                noQtySurfaceChip ? (
+                                  <PlanningStatusChip inline label={noQtySurfaceChip} />
+                                ) : hasDraftRequirementSheet ? (
                                   canOpenRs ? (
                                     <Link
-                                      className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
+                                      className={cn(
+                                        buttonVariants({ variant: "outline", size: "sm" }),
+                                        "erp-so-act-secondary",
+                                      )}
                                       to={buildNoQtyGuidedHref({
                                         to: `/sales-orders/${so.id}/requirement-sheets`,
                                         salesOrderId: so.id,
-                                        cycleId: so.currentCycle?.id ?? null,
+                                        cycleId: guidedCycleId,
                                         fromStep: "requirement",
                                       })}
                                     >
@@ -2407,17 +2565,25 @@ export function SalesOrdersPage() {
                                         label={noQtySoGuided.waitingLabel}
                                       />
                                     ) : (
-                                      <Link className={cn(buttonVariants({ size: "sm" }))} to={noQtySoGuided.to}>
+                                      <Link
+                                        className={cn(buttonVariants({ size: "sm" }), "erp-so-act-primary")}
+                                        to={noQtySoGuided.to}
+                                      >
                                         {noQtySoGuided.label}
                                       </Link>
                                     )}
-                                    {so.noQtyCreateNextRsEligible && canCreateNextRs ? (
+                                    {so.noQtyCreateNextRsEligible &&
+                                    canCreateNextRs &&
+                                    so.noQtyNextAction !== "CREATE_NEXT_RS" ? (
                                       <Link
-                                        className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
+                                        className={cn(
+                                          buttonVariants({ variant: "outline", size: "sm" }),
+                                          "erp-so-act-secondary",
+                                        )}
                                         to={buildNoQtyGuidedHref({
                                           to: `/sales-orders/${so.id}/requirement-sheets?intent=add`,
                                           salesOrderId: so.id,
-                                          cycleId: so.currentCycle?.id ?? null,
+                                          cycleId: guidedCycleId,
                                           fromStep: "requirement",
                                         })}
                                       >
@@ -2427,28 +2593,36 @@ export function SalesOrdersPage() {
                                   </>
                                 )
                               ) : null}
-                              {so.internalStatus !== "CLOSED" && so.internalStatus !== "MANUALLY_CLOSED" ? (
+                              {so.internalStatus !== "CLOSED" && so.internalStatus !== "MANUALLY_CLOSED" && canCloseNoQtySo ? (
                                 <Button
                                   type="button"
                                   size="sm"
                                   variant="outline"
+                                  className="erp-so-act-secondary"
                                   onClick={() => setNoQtyCloseDialog({ soId: so.id, docNo: so.docNo })}
                                 >
                                   Close SO
                                 </Button>
                               ) : null}
-                              {so.internalStatus === "CLOSED" || so.internalStatus === "MANUALLY_CLOSED" ? (
+                              {(so.internalStatus === "CLOSED" || so.internalStatus === "MANUALLY_CLOSED") && isAdmin ? (
                                 <Button
                                   type="button"
                                   size="sm"
                                   variant="outline"
+                                  className="erp-so-act-secondary"
                                   onClick={() => setNoQtyReopenDialog({ soId: so.id, docNo: so.docNo })}
                                 >
                                   Reopen SO
                                 </Button>
                               ) : null}
                               {isAdmin && so.deleteAllowed === true ? (
-                                <Button type="button" size="sm" variant="destructive" onClick={() => onDelete(so.id)}>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="destructive"
+                                  className="h-7 px-2"
+                                  onClick={() => onDelete(so.id)}
+                                >
                                   <Trash2 className="h-3.5 w-3.5" />
                                 </Button>
                               ) : null}
@@ -2457,11 +2631,10 @@ export function SalesOrdersPage() {
                             !hasDraftRequirementSheet &&
                             !so.noQtyCreateNextRsEligible &&
                             so.noQtyNextRsAlreadyCreatedDocNo ? (
-                              <p className="max-w-[18rem] text-right text-[11px] leading-snug text-slate-500">
+                              <p className="mt-0.5 max-w-[18rem] text-right text-[11px] leading-snug text-slate-500">
                                 Next RS already created: {so.noQtyNextRsAlreadyCreatedDocNo}
                               </p>
                             ) : null}
-                          </div>
                         </td>
                       </tr>
                     );
@@ -2470,28 +2643,35 @@ export function SalesOrdersPage() {
               </table>
               </div>
             ) : null}
-            {regularTableRows.length > 0 ? (
-              <div className="space-y-2">
-                {soTypeFilter === "ALL" ? (
-                  <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Regular & replacement</div>
-                ) : null}
-              <table className="erp-table">
-                <thead>
-                  <tr>
-                    <th className={cn(sortKey === "id" && "bg-slate-100/90")}>SO No</th>
-                    <th className={cn(sortKey === "date" && "bg-slate-100/90")}>Date</th>
-                    <th>Customer</th>
-                    <th>Quotation</th>
-                    <th>Status</th>
-                    <th>Stage</th>
-                    <th>PO ref</th>
-                    <th>Stock</th>
-                    <th className="text-right">Pending dispatch</th>
-                    <th className="text-right">Actions</th>
-                  </tr>
-                </thead>
+            {soTypeFilter === "REGULAR" && visibleRows.length > 0 ? (
+              <div className="erp-table-wrap border-x-0 border-t-0">
+                <table className="erp-table sales-orders-so-table w-full min-w-[1000px]">
+                  <colgroup>
+                    <col style={{ width: "7.25rem" }} />
+                    <col style={{ width: "5.75rem" }} />
+                    <col style={{ width: "16%" }} />
+                    <col style={{ width: "9rem" }} />
+                    <col style={{ width: "9rem" }} />
+                    <col style={{ width: "17%" }} />
+                    <col style={{ width: "19%" }} />
+                    <col style={{ width: "8.5rem" }} />
+                    <col style={{ width: "11rem" }} />
+                  </colgroup>
+                  <thead>
+                    <tr>
+                      <th className={cn(sortKey === "id" && "bg-slate-300/80")}>SO No.</th>
+                      <th className={cn(sortKey === "date" && "bg-slate-300/80")}>Date</th>
+                      <th>Customer</th>
+                      <th>PO Ref</th>
+                      <th>Type</th>
+                      <th>Current position</th>
+                      <th>Commercial status</th>
+                      <th className="text-right">Next action</th>
+                      <th className="erp-table-action-col erp-so-th-num">Actions</th>
+                    </tr>
+                  </thead>
                 <tbody>
-                  {regularTableRows.map((so) => {
+                  {visibleRows.map((so) => {
                     const showPlanningStockActions =
                       !isReplacementSalesOrder(so) && shouldShowCheckStockAndRmCheck(so);
                     const pending = Number(so.dispatchSummary?.totalPending ?? 0) || 0;
@@ -2500,129 +2680,148 @@ export function SalesOrdersPage() {
                     const invoicePendingQty = Math.max(0, dispatchedQty - invoicedQty);
                     const dispStatus = displaySoStatus(so, null);
 
-                    const primaryCta = getPrimaryCta(so);
+                    const primaryCta = getPrimaryCta(so, role);
                     const showInvoice = showPlanningStockActions && invoicePendingQty > 0;
                     const showViewInvoice = showPlanningStockActions && !showInvoice && invoicedQty > 0;
+                    const customerNm = so.customer?.name ?? so.po?.customer?.name ?? "—";
+                    const positionLine =
+                      so.processStage != null ? (
+                        <Badge variant={processStageBadgeVariant(so.processStage.key)} className="w-fit text-[10px]">
+                          {so.processStage.label}
+                        </Badge>
+                      ) : so.dispatchSummary && so.dispatchSummary.totalOrdered > 0 ? (
+                        `${so.dispatchSummary.fullyDispatched ? "Fully dispatched" : so.dispatchSummary.totalDispatched > 0 ? "Partial dispatch" : "Dispatch pending"} · Ord ${so.dispatchSummary.totalOrdered} · Out ${so.dispatchSummary.totalDispatched} · Pend ${so.dispatchSummary.totalPending}`
+                      ) : (
+                        "—"
+                      );
                     return (
-                      <React.Fragment key={so.id}>
-                        <tr
-                          {...{ [DRILL_DATA.salesOrderId]: so.id }}
-                          className={pending > 0 ? "bg-amber-50/60" : undefined}
+                      <tr
+                        key={so.id}
+                        {...{ [DRILL_DATA.salesOrderId]: so.id }}
+                        className={pending > 0 && !isReplacementSalesOrder(so) ? "bg-amber-50/50" : undefined}
+                      >
+                        <td className="erp-so-td-mono whitespace-nowrap">
+                          {displaySalesOrderNo(so.id, so.docNo)}
+                        </td>
+                        <td className="whitespace-nowrap tabular-nums text-[12px] text-slate-700">
+                          {new Date(so.createdAt).toLocaleDateString()}
+                        </td>
+                        <td className="min-w-0 max-w-0 truncate text-[12.5px] text-slate-900" title={customerNm}>
+                          {customerNm}
+                        </td>
+                        <td
+                          className="min-w-0 max-w-0 truncate font-mono text-[11px] text-slate-700"
+                          title={so.customerPoReference ?? ""}
                         >
-                          <td className="font-medium tabular-nums">
-                            <span className="rounded border border-sky-200 bg-sky-50 px-2 py-0.5 font-mono text-xs font-semibold text-sky-900">
-                              {displaySalesOrderNo(so.id, so.docNo)}
-                            </span>
-                          </td>
-                          <td className="whitespace-nowrap">{new Date(so.createdAt).toLocaleDateString()}</td>
-                          <td>{so.customer?.name ?? so.po?.customer?.name ?? "—"}</td>
-                          <td>
-                            {so.quotation ? (
-                              <Link to="/quotations" className="text-primary underline">
+                          {so.customerPoReference ?? "—"}
+                        </td>
+                        <td className="whitespace-nowrap">
+                          <div className="flex flex-col items-start gap-0.5">
+                            {isReplacementSalesOrder(so) ? (
+                              <Badge variant="warning" className="w-fit px-1.5 py-0 text-[10px] leading-tight">
+                                REPLACEMENT
+                              </Badge>
+                            ) : (
+                              <span className="text-[11px] font-semibold text-slate-600">REGULAR</span>
+                            )}
+                            <Badge variant={statusBadgeVariant(dispStatus)} className="w-fit px-1.5 py-0 text-[10px] leading-tight">
+                              {dispStatus.replace(/_/g, " ")}
+                            </Badge>
+                          </div>
+                        </td>
+                        <td className="min-w-0 text-[12px] leading-snug text-slate-800">
+                          <div>{positionLine}</div>
+                          {isReplacementSalesOrder(so) ? (
+                            <div className="mt-0.5 text-[11px] text-slate-600">
+                              RET {so.customerReturnId != null ? String(so.customerReturnId) : "—"} · Orig SO{" "}
+                              {so.originalSalesOrderId != null ? String(so.originalSalesOrderId) : "—"}
+                            </div>
+                          ) : null}
+                        </td>
+                        <td className="min-w-0 text-[12px] leading-snug text-slate-700">
+                          <div>{regularSoCommercialSummary(so)}</div>
+                          {so.quotation ? (
+                            <div className="mt-0.5">
+                              <Link to="/quotations" className="text-sky-800 underline underline-offset-2">
                                 {so.quotation.quotationNo || `#${so.quotation.id}`}
                               </Link>
-                            ) : (
-                              "—"
-                            )}
-                          </td>
-                          <td>
-                            <div className="flex flex-wrap items-center gap-2">
-                              {isReplacementSalesOrder(so) ? <Badge variant="warning">Replacement</Badge> : null}
-                              <Badge variant={statusBadgeVariant(dispStatus)}>{dispStatus.replace(/_/g, " ")}</Badge>
                             </div>
-                            {isReplacementSalesOrder(so) ? (
-                              <div className="mt-1 text-[11px] text-slate-600">
-                                Return Ref:{" "}
-                                <span className="font-mono">
-                                  {so.customerReturnId != null ? `RET-${String(so.customerReturnId).padStart(6, "0")}` : "—"}
-                                </span>{" "}
-                                · Original SO:{" "}
-                                <span className="font-mono">{so.originalSalesOrderId != null ? `SO-${so.originalSalesOrderId}` : "—"}</span>{" "}
-                                · Original Dispatch:{" "}
-                                <span className="font-mono">
-                                  {so.originalDispatchId != null ? `DSP-${String(so.originalDispatchId).padStart(6, "0")}` : "—"}
-                                </span>
-                              </div>
+                          ) : null}
+                        </td>
+                        <td className="text-right text-[12px] font-semibold text-slate-800">
+                          {primaryCta?.label ?? "—"}
+                        </td>
+                        <td className="erp-table-action-col">
+                          <div className="erp-table-actions">
+                            {primaryCta ? (
+                              <Link
+                                to={primaryCta.to}
+                                state={primaryCta.state}
+                                className={cn(buttonVariants({ variant: "default", size: "sm" }), "erp-so-act-primary")}
+                              >
+                                {primaryCta.label}
+                              </Link>
                             ) : null}
-                          </td>
-                          <td className="max-w-[240px] align-top text-xs">
-                            <div className="space-y-1">
-                              {so.processStage ? (
-                                <Badge variant={processStageBadgeVariant(so.processStage.key)}>{so.processStage.label}</Badge>
-                              ) : so.dispatchSummary && so.dispatchSummary.totalOrdered > 0 ? (
-                                so.dispatchSummary.fullyDispatched ? (
-                                  <Badge variant="success">Fully dispatched</Badge>
-                                ) : so.dispatchSummary.totalDispatched > 0 ? (
-                                  <Badge variant="warning">Partially dispatched</Badge>
-                                ) : (
-                                  <Badge variant="default">Dispatch pending</Badge>
-                                )
-                              ) : (
-                                <span className="text-slate-500">—</span>
-                              )}
-                              {so.dispatchSummary && so.dispatchSummary.totalOrdered > 0 ? (
-                                <div className="tabular-nums text-slate-500">
-                                  Ord {so.dispatchSummary.totalOrdered} · Out {so.dispatchSummary.totalDispatched} · Pend{" "}
-                                  {so.dispatchSummary.totalPending}
-                                </div>
-                              ) : null}
-                            </div>
-                          </td>
-                          <td className="max-w-[140px] truncate">{so.customerPoReference ?? "—"}</td>
-                          <td>
-                            <span className="text-xs text-slate-500">—</span>
-                          </td>
-                          <td className="text-right tabular-nums">
-                            {isReplacementSalesOrder(so) ? (
-                              <span className="text-xs text-slate-500">—</span>
-                            ) : pending > 0 ? (
-                              <span className="font-semibold text-amber-900">{pending}</span>
-                            ) : (
-                              <span className="text-xs font-medium text-emerald-800">0</span>
-                            )}
-                          </td>
-                          <td>
-                            <div className="erp-table-actions flex-wrap justify-end">
-                              {primaryCta ? (
-                                <Link
-                                  to={primaryCta.to}
-                                  className={cn(buttonVariants({ variant: "default", size: "sm" }))}
-                                >
-                                  {primaryCta.label}
-                                </Link>
-                              ) : null}
 
-                              {showInvoice ? (
-                                <Button type="button" variant="outline" size="sm" onClick={() => setInvoiceModalSoId(so.id)}>
-                                  Invoice
-                                </Button>
-                              ) : showViewInvoice ? (
-                                <Button type="button" variant="outline" size="sm" onClick={() => setInvoiceModalSoId(so.id)}>
-                                  View Invoice
-                                </Button>
-                              ) : null}
-                              {so.internalStatus === "DRAFT" ? (
-                                <Button type="button" size="sm" variant="outline" onClick={() => openEdit(so)}>
-                                  <Pencil className="mr-1 h-3.5 w-3.5" />
-                                  Edit
-                                </Button>
-                              ) : null}
-                              {so.internalStatus === "DRAFT" ? (
-                                <Button type="button" size="sm" variant="outline" onClick={() => approveSo(so.id)}>
-                                  <CheckCircle2 className="mr-1 h-3.5 w-3.5" />
-                                  Approve
-                                </Button>
-                              ) : null}
-                              {isAdmin && so.deleteAllowed === true ? (
-                                <Button type="button" size="sm" variant="destructive" onClick={() => onDelete(so.id)}>
-                                  <Trash2 className="h-3.5 w-3.5" />
-                                </Button>
-                              ) : null}
-                            </div>
-                          </td>
-                        </tr>
-                        {/* Removed non-critical inline planning summary to reduce vertical clutter (Regular SO only). */}
-                      </React.Fragment>
+                            {showInvoice ? (
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                className="erp-so-act-secondary"
+                                onClick={() => setInvoiceModalSoId(so.id)}
+                              >
+                                Invoice
+                              </Button>
+                            ) : showViewInvoice ? (
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                className="erp-so-act-secondary"
+                                onClick={() => setInvoiceModalSoId(so.id)}
+                              >
+                                View Invoice
+                              </Button>
+                            ) : null}
+                            {so.internalStatus === "DRAFT" ? (
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                className="erp-so-act-secondary"
+                                onClick={() => openEdit(so)}
+                              >
+                                <Pencil className="mr-1 h-3.5 w-3.5" />
+                                Edit
+                              </Button>
+                            ) : null}
+                            {so.internalStatus === "DRAFT" ? (
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                className="erp-so-act-secondary"
+                                onClick={() => approveSo(so.id)}
+                              >
+                                <CheckCircle2 className="mr-1 h-3.5 w-3.5" />
+                                Approve
+                              </Button>
+                            ) : null}
+                            {isAdmin && so.deleteAllowed === true ? (
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="destructive"
+                                className="h-7 px-2"
+                                onClick={() => onDelete(so.id)}
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </Button>
+                            ) : null}
+                          </div>
+                        </td>
+                      </tr>
                     );
                   })}
                 </tbody>
@@ -2636,8 +2835,15 @@ export function SalesOrdersPage() {
               data-testid="sales-orders-empty-state"
             >
               <span className="font-medium text-slate-800">No sales orders yet.</span>{" "}
-              Create the first SO from an approved quotation (use <strong className="font-medium text-slate-700">Open approved quotations</strong> above). Flow
-              type follows the enquiry.
+              {canUseCommercialQuotations ? (
+                <>
+                  Create the first SO from an approved quotation (use{" "}
+                  <strong className="font-medium text-slate-700">Open approved quotations</strong> above). Flow type follows
+                  the enquiry.
+                </>
+              ) : (
+                <>Sales orders will appear here when Sales creates them from the quotation workflow.</>
+              )}
             </div>
           ) : null}
           {rows.length > 0 && visibleRows.length === 0 ? (
@@ -2663,11 +2869,25 @@ export function SalesOrdersPage() {
       </Card>
 
       {focusSalesOrderId > 0 ? (
-        <div className="mt-3 max-w-3xl">
-          <ActivityHistoryCard
-            title={`History — ${displaySalesOrderNo(focusSalesOrderId, drillSoDocNo)}`}
-            query={`entityType=SALES_ORDER&entityId=${encodeURIComponent(String(focusSalesOrderId))}&limit=50`}
-          />
+        <div className="mt-2 max-w-3xl px-0 sm:px-0">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-8 text-xs font-medium"
+            onClick={() => setActivityHistoryOpen((o) => !o)}
+            aria-expanded={activityHistoryOpen}
+          >
+            {activityHistoryOpen ? "Hide activity history" : "View activity history"}
+          </Button>
+          {activityHistoryOpen ? (
+            <div className="mt-2 rounded-md border border-slate-200 bg-white p-2 shadow-sm">
+              <ActivityHistoryCard
+                title={`History — ${displaySalesOrderNo(focusSalesOrderId, drillSoDocNo)}`}
+                query={`entityType=SALES_ORDER&entityId=${encodeURIComponent(String(focusSalesOrderId))}&limit=50`}
+              />
+            </div>
+          ) : null}
         </div>
       ) : null}
 
@@ -2684,8 +2904,8 @@ export function SalesOrdersPage() {
                 <p className="text-sm text-slate-600">
                   {editSo.orderType === "NORMAL" ? (
                     <>
-                      Item names and pricing come from the quotation. For each line set Customer PO Qty (dispatch cap) and
-                      optional Buffer %; Planned Qty updates for production. Free lines stay at zero rate and cannot be priced
+                      Item names and pricing come from the quotation. Set Customer PO Qty (dispatch cap) per line. Production
+                      buffer, if needed, is applied on work order planning. Free lines stay at zero rate and cannot be priced
                       here.
                     </>
                   ) : (
@@ -2713,7 +2933,6 @@ export function SalesOrdersPage() {
                             ...x,
                             qty: "0",
                             customerPoQty: undefined,
-                            bufferPercent: undefined,
                           })),
                         );
                       } else {
@@ -2732,7 +2951,6 @@ export function SalesOrdersPage() {
                               isFree: Boolean(qf),
                               rateLabel,
                               customerPoQty: String(Number(l.customerPoQty ?? l.qty)),
-                              bufferPercent: String(Number(l.bufferPercent ?? 0)),
                             };
                           }),
                         );
@@ -2760,11 +2978,6 @@ export function SalesOrdersPage() {
                     const isFirst = editLines.length > 0 && ln.lineId === editLines[0].lineId;
                     const disableQty = editSo.orderType === "NO_QTY";
                     const isNormalEdit = editSo.orderType === "NORMAL";
-                    const cpNum = Number(ln.customerPoQty ?? 0);
-                    const bufNum = Number(ln.bufferPercent ?? 0);
-                    const plannedDisplay = isNormalEdit
-                      ? computePlannedQtyPreview(cpNum, bufNum)
-                      : Number(ln.qty ?? 0);
                     return (
                       <div key={ln.lineId} className="flex flex-wrap items-end gap-2 rounded border border-slate-200 p-2">
                         <div className="min-w-0 flex-1">
@@ -2827,34 +3040,6 @@ export function SalesOrdersPage() {
                                 />
                               </label>
                             )}
-                            <label className="grid gap-1 text-sm">
-                              <span className="text-slate-600">Buffer % (max {maxRegularSoBufferPercent})</span>
-                              <Input
-                                className="w-24"
-                                inputMode="numeric"
-                                value={ln.bufferPercent ?? "0"}
-                                disabled={disableQty}
-                                onChange={(e) =>
-                                  setEditLines((prev) =>
-                                    prev.map((x) =>
-                                      x.lineId === ln.lineId
-                                        ? {
-                                            ...x,
-                                            bufferPercent: clampBufferPercentInput(
-                                              e.target.value,
-                                              maxRegularSoBufferPercent,
-                                            ),
-                                          }
-                                        : x,
-                                    ),
-                                  )
-                                }
-                              />
-                            </label>
-                            <label className="grid gap-1 text-sm">
-                              <span className="text-slate-600">Planned Qty</span>
-                              <Input className="w-28 tabular-nums" readOnly value={plannedDisplay} disabled={disableQty} />
-                            </label>
                           </div>
                         ) : isFirst ? (
                           <FieldShortcutHint
@@ -3087,8 +3272,6 @@ export function SalesOrdersPage() {
           </Card>
         </div>
       ) : null}
-
-            <ShortcutHintBar items={SALES_ORDERS_SHORTCUT_BAR} />
           </div>
         </>
       )}

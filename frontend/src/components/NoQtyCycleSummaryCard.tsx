@@ -1,7 +1,6 @@
-import * as React from "react";
-import { Check, ChevronRight } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
-import { Badge } from "./ui/badge";
+import { ErpStatusChip } from "./erp/foundation/ErpStatusChip";
+import { ErpOperationalWorkflowStrip } from "./erp/foundation/ErpOperationalWorkflowStrip";
 import { cn } from "../lib/utils";
 import { displaySalesOrderNo } from "../lib/docNoDisplay";
 
@@ -69,9 +68,7 @@ export function NoQtyCycleSummaryCard({
   metrics?: Metric[];
   showSteps?: boolean;
   showNextStepCard?: boolean;
-  /** Compact horizontal flow (replaces separate sidebar step card). */
   inlineStepStrip?: boolean;
-  /** Hide WO step in strip/list when WO is not an operator milestone. */
   hideWorkOrderStep?: boolean;
   density?: "default" | "compact";
   className?: string;
@@ -100,9 +97,9 @@ export function NoQtyCycleSummaryCard({
               <span className="text-slate-300">|</span>
               <span className="truncate font-medium text-slate-800">{customerName || "—"}</span>
               <span className="text-slate-300">|</span>
-              <Badge variant={closed ? "info" : "success"} className="text-[11px]">
+              <ErpStatusChip tone={closed ? "info" : "success"} density="compact">
                 Cycle {cycleNo ?? "—"} · {closed ? "Closed" : "Active"}
-              </Badge>
+              </ErpStatusChip>
             </div>
           </div>
 
@@ -113,7 +110,7 @@ export function NoQtyCycleSummaryCard({
                 density === "compact" ? "px-2 py-1" : "px-2.5 py-1.5",
               )}
             >
-              <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Next</div>
+              <div className="erp-type-workflow-label text-slate-500">Next</div>
               <div className={cn(density === "compact" ? "text-[12px]" : "text-[13px]", "font-semibold leading-tight text-slate-900")}>
                 {nextStep}
               </div>
@@ -123,68 +120,28 @@ export function NoQtyCycleSummaryCard({
         </div>
 
         {inlineStepStrip ? (
-          <div
-            className="mt-2 flex flex-wrap items-center gap-y-1 border-t border-slate-100 pt-2"
-            aria-label="No Qty workflow steps"
-          >
-            <span className="mr-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Flow</span>
-            {stagesForUi.map((s, idx) => {
-              const done = closed ? true : idx < curIdxUi;
-              const active = !closed && idx === curIdxUi;
-              return (
-                <React.Fragment key={s.key}>
-                  {idx > 0 ? <ChevronRight className="mx-0.5 h-3 w-3 shrink-0 text-slate-300" aria-hidden /> : null}
-                  <span
-                    className={cn(
-                      "rounded px-1.5 py-0.5 text-[11px] font-medium tabular-nums",
-                      active && "bg-sky-100 font-semibold text-sky-950 ring-1 ring-sky-200/80",
-                      done && !active && "bg-emerald-50/80 text-emerald-900",
-                      !done && !active && "text-slate-500",
-                    )}
-                  >
-                    {s.label}
-                  </span>
-                </React.Fragment>
-              );
-            })}
-          </div>
+          <ErpOperationalWorkflowStrip
+            className="mt-2 border-t border-slate-100 pt-2"
+            stages={stagesForUi}
+            currentIndex={curIdxUi}
+            allComplete={closed}
+            layout="horizontal"
+            leadingLabel="Flow"
+            dense
+            ariaLabel="No Qty workflow steps"
+          />
         ) : null}
 
         {showSteps ? (
-          <div className="mt-3">
-            <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Steps</div>
-            <ol className="mt-2 space-y-1">
-              {stagesForUi.map((s, idx) => {
-                const done = closed ? idx <= stagesForUi.length - 1 : idx < curIdxUi;
-                const active = idx === curIdxUi;
-                return (
-                  <li key={s.key}>
-                    <div
-                      className={cn(
-                        "flex items-center gap-2 rounded px-2 py-1 text-[13px]",
-                        active && "bg-sky-50 text-sky-950 ring-1 ring-sky-200/70",
-                        done && !active && "bg-emerald-50/60 text-emerald-950",
-                        !done && !active && "text-slate-700",
-                      )}
-                    >
-                      <span
-                        className={cn(
-                          "inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border text-[11px] font-semibold",
-                          done && "border-emerald-200 bg-emerald-50 text-emerald-800",
-                          active && "border-sky-200 bg-sky-50 text-sky-900",
-                          !done && !active && "border-slate-200 bg-slate-100 text-slate-700",
-                        )}
-                        aria-hidden="true"
-                      >
-                        {done ? <Check className="h-3.5 w-3.5" aria-hidden="true" /> : idx + 1}
-                      </span>
-                      <span className={cn("min-w-0 truncate", active && "font-semibold")}>{s.label}</span>
-                    </div>
-                  </li>
-                );
-              })}
-            </ol>
-          </div>
+          <ErpOperationalWorkflowStrip
+            className="mt-3"
+            stages={stagesForUi}
+            currentIndex={curIdxUi}
+            allComplete={closed}
+            layout="vertical"
+            leadingLabel="Steps"
+            ariaLabel="No Qty workflow steps"
+          />
         ) : null}
 
         {list.length ? (
@@ -198,7 +155,7 @@ export function NoQtyCycleSummaryCard({
                     m.subtle && "bg-slate-50",
                   )}
                 >
-                  <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">{m.label}</div>
+                  <div className="erp-type-helper font-medium text-slate-500">{m.label}</div>
                   <div className={cn("mt-0.5 text-lg font-semibold tabular-nums", m.subtle ? "text-slate-700" : "text-slate-900")}>
                     {fmtQty(m.value)}
                   </div>

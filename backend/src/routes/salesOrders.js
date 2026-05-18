@@ -6,7 +6,10 @@ const { requireAuth, requireRole } = require("../middleware/auth");
 const {
   SO_WRITE_ROLES,
   SO_READ_ROLES,
+  SO_DETAIL_READ_ROLES,
   NEXT_RS_WRITE_ROLES,
+  NO_QTY_FLOW_STATE_READ_ROLES,
+  DISPATCH_WRITE_ROLES,
 } = require("../constants/erpRoles");
 const { createSalesOrderFromPo } = require("../services/salesOrderFromPo");
 const { rmCheckForSalesOrder } = require("../services/rmCheckService");
@@ -47,7 +50,7 @@ const {
   ACTIVITY_ENTITY_TYPES,
 } = require("../constants/activityLogConstants");
 const { displaySalesOrderNo } = require("../utils/docNoLabels");
-const { normalizePositiveCycleId } = require("../utils/cycleIds");
+const { normalizePositiveCycleId, parseStrictPositiveIntId } = require("../utils/cycleIds");
 const { loadNoQtyCycleQcAcceptedMap } = require("./dispatch");
 const {
   loadNoQtyDispositionUsableForDispatchPoolMap,
@@ -60,6 +63,8 @@ const {
   sumActiveQcRejectedQty,
 } = require("../services/reportMetrics");
 const { computeNoQtyCreateNextRsEligibility, computeNoQtyCreateNextRsEligibilityResolved, resolveNoQtyEligibilityCycleId } = require("../services/noQtyCreateNextRsEligibility");
+const { findNoQtyNextRollingRequirementSheetTarget } = require("../services/noQtyRollingRequirementNav");
+const { resolveNoQtyWorkflowState } = require("../services/noQtyWorkflowEngine");
 const { advanceNoQtyCycleForNextRequirementSheetIfEligible } = require("../services/noQtyCycleLifecycle");
 const { assertAnyAdminPassword } = require("../services/adminPasswordAuth");
 const { getUsableItemStockQty } = require("../services/stockService");
@@ -514,17 +519,20 @@ salesOrderRouter.get(
       // NO_QTY sales bill eligibility: dispatch-driven only.
       // unbilledDispatchedQty = sum(locked forward dispatch qty without an active bill).
       const noQtyIds = staged.filter((s) => s.orderType === "NO_QTY").map((s) => s.id);
+      /** Prisma ACTIVE rows (may include pre-allocated empty “next” cycles — not used alone for operator display). */
+      /** @type {Array<{ id: number; salesOrderId: number; cycleNo: number }>} */
+      let noQtyPrismaActiveRows = [];
       /** @type {Map<number, number>} */
       const noQtyActiveCycleCountBySoId = new Map();
       /** Prefer highest cycleNo among ACTIVE rows (matches prepare-next RS / eligibility resolution). */
       /** @type {Map<number, { id: number; cycleNo: number }>} */
       const noQtyPreferredActiveCycleBySoId = new Map();
       if (noQtyIds.length) {
-        const activeRows = await prisma.salesOrderCycle.findMany({
+        noQtyPrismaActiveRows = await prisma.salesOrderCycle.findMany({
           where: { salesOrderId: { in: noQtyIds }, status: "ACTIVE" },
           select: { id: true, salesOrderId: true, cycleNo: true },
         });
-        for (const r of activeRows) {
+        for (const r of noQtyPrismaActiveRows) {
           const sid = r.salesOrderId;
           noQtyActiveCycleCountBySoId.set(sid, (noQtyActiveCycleCountBySoId.get(sid) ?? 0) + 1);
           const prev = noQtyPreferredActiveCycleBySoId.get(sid);
@@ -533,6 +541,69 @@ salesOrderRouter.get(
           }
         }
       }
+      /** SalesOrderCycle.id → cycleNo (NO_QTY list display only). */
+      /** @type {Map<number, number>} */
+      const noQtyCycleNoById = new Map();
+      /** `${salesOrderId}:${cycleNo}` → cycle row id (list anchor / display only). */
+      /** @type {Map<string, number>} */
+      const noQtyCycleIdBySoAndNo = new Map();
+      /** When an SO has exactly one cycle row, attribute list state to it even before first RS exists. */
+      /** @type {Map<number, number>} */
+      const noQtySingleCycleIdBySoId = new Map();
+      /** @type {Map<number, Array<{ id: number; cycleNo: number }>>} */
+      const noQtyCyclesListBySoId = new Map();
+      /** Highest finalized-bill cycleNo per SO (display only; not used for caps). */
+      /** @type {Map<number, { maxCycleNo: number; exported: boolean }>} */
+      const noQtyFinalizedCommercialBySoId = new Map();
+      if (noQtyIds.length) {
+        const allCyc = await prisma.salesOrderCycle.findMany({
+          where: { salesOrderId: { in: noQtyIds } },
+          select: { id: true, salesOrderId: true, cycleNo: true },
+        });
+        for (const row of allCyc) {
+          const sid = Number(row.salesOrderId);
+          const cid = Number(row.id);
+          const cn = Number(row.cycleNo);
+          if (Number.isFinite(cid) && cid > 0 && Number.isFinite(cn)) noQtyCycleNoById.set(cid, cn);
+          if (Number.isFinite(sid) && sid > 0 && Number.isFinite(cid) && cid > 0 && Number.isFinite(cn)) {
+            noQtyCycleIdBySoAndNo.set(`${sid}:${cn}`, cid);
+            const arr = noQtyCyclesListBySoId.get(sid) ?? [];
+            arr.push({ id: cid, cycleNo: cn });
+            noQtyCyclesListBySoId.set(sid, arr);
+          }
+        }
+        for (const [sid, arr] of noQtyCyclesListBySoId.entries()) {
+          if (arr.length === 1 && arr[0]?.id != null) noQtySingleCycleIdBySoId.set(sid, Number(arr[0].id));
+        }
+        const finBillsAll = await prisma.salesBill.findMany({
+          where: { status: "FINALIZED", dispatch: { soId: { in: noQtyIds } } },
+          select: { cycleId: true, isExported: true, dispatch: { select: { soId: true } } },
+        });
+        for (const b of finBillsAll) {
+          const sid = b.dispatch?.soId;
+          const cid = b.cycleId != null ? Number(b.cycleId) : 0;
+          if (!sid || !cid) continue;
+          const cn = noQtyCycleNoById.get(cid);
+          if (!Number.isFinite(cn)) continue;
+          const cur = noQtyFinalizedCommercialBySoId.get(sid);
+          if (!cur || cn > cur.maxCycleNo) {
+            noQtyFinalizedCommercialBySoId.set(sid, { maxCycleNo: cn, exported: b.isExported === true });
+          } else if (cn === cur.maxCycleNo && b.isExported === true) {
+            cur.exported = true;
+            noQtyFinalizedCommercialBySoId.set(sid, cur);
+          }
+        }
+      }
+      /** All cycle row ids for NO_QTY SOs on this list — include every cycle so evidence maps cover billed/closed rows. */
+      const noQtyAllGraphCycleIds = [
+        ...new Set(
+          [...noQtyCyclesListBySoId.values()]
+            .flat()
+            .map((r) => Number(r.id))
+            .filter((id) => Number.isFinite(id) && id > 0),
+        ),
+      ];
+
       /** @type {Map<number, number>} */
       const unbilledBySoId = new Map();
       if (noQtyIds.length) {
@@ -578,18 +649,20 @@ salesOrderRouter.get(
       // Used by the NO_QTY SO list to show "Requirement Pending" only when truly waiting for the first sheet.
       /** @type {Set<string>} */
       const noQtyHasReqSheetBySoCycleKey = new Set();
+      /** `${soId}:${cycleId}` — LOCKED RS only; distinguishes operational cycle from draft / planning pointer. */
+      const noQtyLockedReqBySoCycleKey = new Set();
       const pointerCycleIds = staged
         .filter((s) => s.orderType === "NO_QTY" && s.currentCycleId != null)
         .map((s) => Number(s.currentCycleId))
         .filter((x) => Number.isFinite(x) && x > 0);
       const preferredActiveCycleIds = [...noQtyPreferredActiveCycleBySoId.values()].map((v) => v.id);
-      const noQtyCycleIds = [...new Set([...pointerCycleIds, ...preferredActiveCycleIds])].filter(
+      const noQtyCycleIds = [...new Set([...pointerCycleIds, ...preferredActiveCycleIds, ...noQtyAllGraphCycleIds])].filter(
         (x) => Number.isFinite(x) && x > 0,
       );
       if (noQtyIds.length && noQtyCycleIds.length) {
         const sheets = await prisma.requirementSheet.findMany({
           where: { salesOrderId: { in: noQtyIds }, cycleId: { in: noQtyCycleIds } },
-          select: { salesOrderId: true, cycleId: true },
+          select: { salesOrderId: true, cycleId: true, status: true },
         });
         for (const sh of sheets) {
           const soId = Number(sh.salesOrderId);
@@ -597,6 +670,7 @@ salesOrderRouter.get(
           if (!Number.isFinite(soId) || soId <= 0) continue;
           if (!Number.isFinite(cycleId) || cycleId <= 0) continue;
           noQtyHasReqSheetBySoCycleKey.add(`${soId}:${cycleId}`);
+          if (String(sh.status) === "LOCKED") noQtyLockedReqBySoCycleKey.add(`${soId}:${cycleId}`);
         }
       }
 
@@ -606,6 +680,8 @@ salesOrderRouter.get(
       const noQtyQcBySoCycleKey = new Set();
       const noQtyDispatchBySoCycleKey = new Set();
       const noQtySalesBillBySoCycleKey = new Set();
+      const noQtyFinalizedBillBySoCycleKey = new Set();
+      const noQtyExportedFinalizedBillBySoCycleKey = new Set();
       /** Any WO / any dispatch in cycle (empty-cycle close eligibility). */
       const noQtyAnyWorkOrderBySoCycleKey = new Set();
       const noQtyAnyDispatchBySoCycleKey = new Set();
@@ -677,12 +753,17 @@ salesOrderRouter.get(
             status: { in: ["DRAFT", "FINALIZED"] },
             dispatch: { soId: { in: noQtyIds } },
           },
-          select: { id: true, cycleId: true, dispatch: { select: { soId: true } } },
+          select: { id: true, cycleId: true, status: true, isExported: true, dispatch: { select: { soId: true } } },
         });
         for (const b of bills) {
           const soId = b.dispatch?.soId;
           if (!soId) continue;
-          noQtySalesBillBySoCycleKey.add(`${soId}:${Number(b.cycleId)}`);
+          const key = `${soId}:${Number(b.cycleId)}`;
+          noQtySalesBillBySoCycleKey.add(key);
+          if (b.status === "FINALIZED") {
+            noQtyFinalizedBillBySoCycleKey.add(key);
+            if (b.isExported === true) noQtyExportedFinalizedBillBySoCycleKey.add(key);
+          }
         }
 
         const wosAny = await prisma.workOrder.findMany({
@@ -713,46 +794,6 @@ salesOrderRouter.get(
           const sid = q.production.workOrderLine.workOrder.salesOrderId;
           const c = Number(q.production.workOrderLine.workOrder.cycleId);
           noQtyAnyQcBySoCycleKey.add(`${sid}:${c}`);
-        }
-      }
-
-      // Temporary admin-only debug evidence (NO_QTY, current cycle only).
-      /** @type {Map<number, any>} */
-      const noQtyDebugBySoId = new Map();
-      if (req.user?.role === "ADMIN" && noQtyIds.length && noQtyCycleIds.length) {
-        const hasReq = new Set(noQtyHasReqSheetBySoCycleKey);
-
-        const woByKey = new Set(noQtyWorkOrderBySoCycleKey);
-
-        const prodByKey = new Set(noQtyProductionBySoCycleKey);
-
-        const qcByKey = new Set(noQtyQcBySoCycleKey);
-
-        const dispByKey = new Set(noQtyDispatchBySoCycleKey);
-
-        const billByKey = new Set(noQtySalesBillBySoCycleKey);
-
-        for (const s of staged) {
-          if (s.orderType !== "NO_QTY") continue;
-          const pref = noQtyPreferredActiveCycleBySoId.get(s.id);
-          const ptr = s.currentCycleId != null ? Number(s.currentCycleId) : 0;
-          const c =
-            pref?.id ??
-            (Number.isFinite(ptr) && ptr > 0 ? ptr : 0);
-          if (!Number.isFinite(c) || c <= 0) continue;
-          const key = `${s.id}:${c}`;
-          noQtyDebugBySoId.set(s.id, {
-            salesOrderId: s.id,
-            orderType: s.orderType,
-            currentCycleId: c,
-            cycleNo: pref?.cycleNo ?? s.currentCycle?.cycleNo ?? null,
-            requirementExists: hasReq.has(key),
-            workOrderExists: woByKey.has(key),
-            productionExists: prodByKey.has(key),
-            qcExists: qcByKey.has(key),
-            dispatchExists: dispByKey.has(key),
-            salesBillExists: billByKey.has(key),
-          });
         }
       }
 
@@ -894,17 +935,78 @@ salesOrderRouter.get(
         }
       }
 
-      /** List/stage attribution: eligibility cycle id, else preferred ACTIVE, else SO pointer (may be stale). */
+      /**
+       * NO_QTY list row: cycle has RS / WO / production / QC / locked dispatch / any sales bill.
+       * Used so an empty “next cycle” pointer is never the sole attribution source.
+       */
+      const noQtyCycleHasListEvidence = (soId, cid) => {
+        const sid = Number(soId);
+        const c = Number(cid);
+        if (!Number.isFinite(sid) || sid <= 0 || !Number.isFinite(c) || c <= 0) return false;
+        const k = `${sid}:${c}`;
+        return (
+          noQtyHasReqSheetBySoCycleKey.has(k) ||
+          noQtyWorkOrderBySoCycleKey.has(k) ||
+          noQtyProductionBySoCycleKey.has(k) ||
+          noQtyQcBySoCycleKey.has(k) ||
+          noQtyDispatchBySoCycleKey.has(k) ||
+          noQtySalesBillBySoCycleKey.has(k)
+        );
+      };
+
+      /**
+       * Operator-visible “active” cycle: Prisma ACTIVE **and** at least one RS/WO/prod/QC/dispatch/bill row.
+       * Excludes empty pre-allocated ACTIVE rows (e.g. next cycle pointer with no RS yet).
+       */
+      /** @type {Map<number, { id: number; cycleNo: number }>} */
+      const noQtyWorkflowActiveCycleBySoId = new Map();
+      /** @type {Map<number, number>} */
+      const noQtyWorkflowActiveCycleCountBySoId = new Map();
+      for (const r of noQtyPrismaActiveRows) {
+        const sid = r.salesOrderId;
+        const id = Number(r.id);
+        if (!Number.isFinite(sid) || sid <= 0 || !Number.isFinite(id) || id <= 0) continue;
+        if (!noQtyCycleHasListEvidence(sid, id)) continue;
+        noQtyWorkflowActiveCycleCountBySoId.set(sid, (noQtyWorkflowActiveCycleCountBySoId.get(sid) ?? 0) + 1);
+        const prev = noQtyWorkflowActiveCycleBySoId.get(sid);
+        const cn = Number(r.cycleNo);
+        if (!prev || cn > prev.cycleNo) noQtyWorkflowActiveCycleBySoId.set(sid, { id, cycleNo: cn });
+      }
+
+      /**
+       * List/stage attribution cycle id (display + row pipeline on one consistent cycle):
+       * Workflow-active (ACTIVE + evidence) → resolved id only if it has evidence → anchor on max finalized bill cycleNo
+       * → pointer only if it has evidence → single existing cycle row → 0.
+       * Does not change billing/RS math elsewhere — only which cycle keys drive this list payload.
+       */
       const noQtyEffectiveListCycleId = (s) => {
-        let eff = noQtyEligibilityResolvedCycleIdBySoId.get(s.id);
-        if (eff === undefined || eff == null || !Number.isFinite(Number(eff)) || Number(eff) <= 0) {
-          eff = noQtyPreferredActiveCycleBySoId.get(s.id)?.id ?? null;
+        if (s.orderType !== "NO_QTY") return 0;
+        const soId = s.id;
+        const wfCnt = noQtyWorkflowActiveCycleCountBySoId.get(soId) ?? 0;
+        const wfPref = noQtyWorkflowActiveCycleBySoId.get(soId);
+        if (wfCnt > 0 && wfPref?.id != null) {
+          const id = Number(wfPref.id);
+          return Number.isFinite(id) && id > 0 ? id : 0;
         }
-        if (eff == null || !Number.isFinite(Number(eff)) || Number(eff) <= 0) {
-          const ptr = s.currentCycleId != null ? Number(s.currentCycleId) : 0;
-          eff = Number.isFinite(ptr) && ptr > 0 ? ptr : null;
+
+        const resolved = noQtyEligibilityResolvedCycleIdBySoId.get(soId);
+        const resolvedNum =
+          resolved != null && Number.isFinite(Number(resolved)) && Number(resolved) > 0 ? Number(resolved) : 0;
+        if (resolvedNum > 0 && noQtyCycleHasListEvidence(soId, resolvedNum)) return resolvedNum;
+
+        const commercial = noQtyFinalizedCommercialBySoId.get(soId);
+        if (commercial && Number.isFinite(commercial.maxCycleNo)) {
+          const anchor = noQtyCycleIdBySoAndNo.get(`${soId}:${commercial.maxCycleNo}`);
+          if (anchor != null && Number.isFinite(Number(anchor)) && Number(anchor) > 0) return Number(anchor);
         }
-        return eff != null && Number.isFinite(Number(eff)) && Number(eff) > 0 ? Number(eff) : 0;
+
+        const ptr = s.currentCycleId != null ? Number(s.currentCycleId) : 0;
+        if (Number.isFinite(ptr) && ptr > 0 && noQtyCycleHasListEvidence(soId, ptr)) return ptr;
+
+        const only = noQtySingleCycleIdBySoId.get(soId);
+        if (only != null && Number.isFinite(Number(only)) && Number(only) > 0) return Number(only);
+
+        return 0;
       };
 
       return res.json(
@@ -914,19 +1016,44 @@ salesOrderRouter.get(
             ? (() => {
                 const c = noQtyEffectiveListCycleId(s);
                 const key = `${s.id}:${c}`;
-                // Priority-based stage mapping for NO_QTY (current cycle only).
-                const isCompleted =
-                  s.internalStatus === "MANUALLY_CLOSED" || s.internalStatus === "CLOSED";
+                const elig = createNextRsEligibilityBySoId.get(s.id);
+                const createNextRsEligible = elig?.eligible ?? false;
+                const commercial = noQtyFinalizedCommercialBySoId.get(s.id);
+                const wfCnt = noQtyWorkflowActiveCycleCountBySoId.get(s.id) ?? 0;
+                const wfPref = noQtyWorkflowActiveCycleBySoId.get(s.id);
+                const completedSoRow =
+                  s.internalStatus === "MANUALLY_CLOSED" ||
+                  s.internalStatus === "CLOSED" ||
+                  s.internalStatus === "COMPLETED";
+
+                /** Max cycleNo among **this SO’s cycle rows** that have a finalized bill (display truth). */
+                let latestBilledCycleNo = null;
+                for (const row of noQtyCyclesListBySoId.get(s.id) ?? []) {
+                  if (noQtyFinalizedBillBySoCycleKey.has(`${s.id}:${row.id}`)) {
+                    const cn = Number(row.cycleNo);
+                    if (Number.isFinite(cn) && (latestBilledCycleNo == null || cn > latestBilledCycleNo)) latestBilledCycleNo = cn;
+                  }
+                }
+                const commercialCycleNoForCaption =
+                  latestBilledCycleNo != null
+                    ? latestBilledCycleNo
+                    : commercial && Number.isFinite(commercial.maxCycleNo)
+                      ? commercial.maxCycleNo
+                      : null;
+
                 const salesBillExists = c > 0 ? noQtySalesBillBySoCycleKey.has(key) : false;
+                const finalizedBillExists = c > 0 ? noQtyFinalizedBillBySoCycleKey.has(key) : false;
+                const billingExportedForCycle = c > 0 ? noQtyExportedFinalizedBillBySoCycleKey.has(key) : false;
                 const dispatchExists = c > 0 ? noQtyDispatchBySoCycleKey.has(key) : false;
                 const qcExists = c > 0 ? noQtyQcBySoCycleKey.has(key) : false;
                 const productionExists = c > 0 ? noQtyProductionBySoCycleKey.has(key) : false;
                 const workOrderExists = c > 0 ? noQtyWorkOrderBySoCycleKey.has(key) : false;
                 const requirementExists = c > 0 ? noQtyHasReqSheetBySoCycleKey.has(key) : false;
 
-                // Single next-action hint for NO_QTY list: open the current actionable module directly.
                 const nextAction = (() => {
-                  if (isCompleted) return "COMPLETED";
+                  if (completedSoRow) return "COMPLETED";
+                  if (wfCnt === 0 && createNextRsEligible) return "CREATE_NEXT_RS";
+                  if (finalizedBillExists) return "CLOSE_SO";
                   if (salesBillExists) return "SALES_BILL";
                   if (dispatchExists) return "SALES_BILL";
                   if (qcExists) return "DISPATCH";
@@ -938,9 +1065,15 @@ salesOrderRouter.get(
 
                 let stageKey = "NO_QTY_DRAFT";
                 let stageLabel = "Draft";
-                if (isCompleted) {
+                if (completedSoRow) {
                   stageKey = "COMPLETED";
                   stageLabel = "Completed";
+                } else if (nextAction === "CREATE_NEXT_RS") {
+                  stageKey = "NO_QTY_PREPARE_NEXT_RS";
+                  stageLabel = "Next cycle RS";
+                } else if (finalizedBillExists) {
+                  stageKey = "NO_QTY_BILLING_COMPLETE";
+                  stageLabel = "Billing complete";
                 } else if (salesBillExists || dispatchExists) {
                   stageKey = "NO_QTY_DISPATCH_BILLING";
                   stageLabel = "Dispatch / Billing";
@@ -958,12 +1091,112 @@ salesOrderRouter.get(
                   stageLabel = "Draft";
                 }
 
-                const elig = createNextRsEligibilityBySoId.get(s.id);
+                let noQtyListPositionLabel = "";
+                const operatorEvidenceOnCycle = (soId, cycleRowId) => {
+                  const k = `${soId}:${cycleRowId}`;
+                  return (
+                    noQtyLockedReqBySoCycleKey.has(k) ||
+                    noQtyWorkOrderBySoCycleKey.has(k) ||
+                    noQtyProductionBySoCycleKey.has(k) ||
+                    noQtyQcBySoCycleKey.has(k) ||
+                    noQtyDispatchBySoCycleKey.has(k) ||
+                    noQtySalesBillBySoCycleKey.has(k)
+                  );
+                };
+                /** Prisma ACTIVE row ahead of last billed cycle but no operational docs on that cycle (SO planning pointer after prepare-next). */
+                const wfIsEmptyPlanningPointer =
+                  wfPref != null &&
+                  createNextRsEligible &&
+                  !operatorEvidenceOnCycle(s.id, wfPref.id) &&
+                  (commercialCycleNoForCaption == null || wfPref.cycleNo > commercialCycleNoForCaption);
+                if (completedSoRow) {
+                  noQtyListPositionLabel = "Closed";
+                } else if (wfCnt > 0 && wfPref && wfIsEmptyPlanningPointer) {
+                  noQtyListPositionLabel =
+                    commercialCycleNoForCaption != null && Number.isFinite(commercialCycleNoForCaption)
+                      ? `Cycle ${commercialCycleNoForCaption} completed`
+                      : "Between cycles";
+                } else if (wfCnt > 0 && wfPref) {
+                  noQtyListPositionLabel = `Active cycle ${wfPref.cycleNo}`;
+                } else if (wfCnt === 0 && createNextRsEligible) {
+                  noQtyListPositionLabel = "Between cycles";
+                } else if (wfCnt === 0 && commercialCycleNoForCaption != null && Number.isFinite(commercialCycleNoForCaption)) {
+                  noQtyListPositionLabel = `Cycle ${commercialCycleNoForCaption} completed`;
+                } else if (wfCnt === 0) {
+                  noQtyListPositionLabel = "Between cycles";
+                } else {
+                  noQtyListPositionLabel = "Between cycles";
+                }
+
+                const unbNow = unbilledBySoId.get(s.id) ?? 0;
+                let billingExportedDisplay = commercial?.exported === true;
+                if (!billingExportedDisplay && commercialCycleNoForCaption != null) {
+                  for (const row of noQtyCyclesListBySoId.get(s.id) ?? []) {
+                    if (Number(row.cycleNo) !== commercialCycleNoForCaption) continue;
+                    if (noQtyExportedFinalizedBillBySoCycleKey.has(`${s.id}:${row.id}`)) {
+                      billingExportedDisplay = true;
+                      break;
+                    }
+                  }
+                }
+
+                let noQtyCommercialCaption = null;
+                if (commercialCycleNoForCaption != null && Number.isFinite(commercialCycleNoForCaption)) {
+                  noQtyCommercialCaption = billingExportedDisplay
+                    ? `Billing completed · Exported · Cycle ${commercialCycleNoForCaption}`
+                    : `Billing completed · Cycle ${commercialCycleNoForCaption}`;
+                } else if (c > 0 && salesBillExists && !finalizedBillExists) {
+                  noQtyCommercialCaption = "Billing (draft)";
+                } else if (c > 0 && dispatchExists) {
+                  noQtyCommercialCaption = unbNow > 0 ? "Dispatch · billing pending" : "Dispatched";
+                }
+
+                const noQtyNextActionLabel = (() => {
+                  if (completedSoRow) return "—";
+                  switch (nextAction) {
+                    case "CREATE_NEXT_RS":
+                      return "Create next RS";
+                    case "CLOSE_SO":
+                      return "Review & close SO";
+                    case "SALES_BILL":
+                      return "Complete billing";
+                    case "DISPATCH":
+                      return "Dispatch";
+                    case "QC":
+                      return "QC";
+                    case "PRODUCTION":
+                      return "Production";
+                    case "WORK_ORDER":
+                      return "Work order";
+                    case "REQUIREMENT":
+                      return "Requirement";
+                    case "COMPLETED":
+                      return "—";
+                    default:
+                      return "—";
+                  }
+                })();
+
+                const noQtyGuidedCycleId = wfCnt > 0 && wfPref ? wfPref.id : null;
+
                 return {
                   processStage: { key: stageKey, label: stageLabel },
                   noQtyNextAction: nextAction,
-                  noQtyCreateNextRsEligible: elig?.eligible ?? false,
+                  noQtyNextActionLabel,
+                  noQtyFinalizedBillingComplete: finalizedBillExists,
+                  noQtyBillingExported: billingExportedDisplay || billingExportedForCycle,
+                  noQtyCreateNextRsEligible: createNextRsEligible,
                   noQtyNextRsAlreadyCreatedDocNo: elig?.existingNextRsDocNo ?? null,
+                  noQtyListPositionLabel,
+                  noQtyCommercialCaption,
+                  commercialStatusLabel: noQtyCommercialCaption,
+                  noQtyGuidedCycleId,
+                  noQtyLatestBilledCycleNo: commercialCycleNoForCaption,
+                  noQtyActualActiveCycleNo: wfPref?.cycleNo ?? null,
+                  noQtyLatestCompletedCycleNo: wfCnt === 0 ? commercialCycleNoForCaption ?? null : null,
+                  noQtyActiveCycleNo: wfPref?.cycleNo ?? null,
+                  noQtyWorkflowActiveCycleCount: wfCnt,
+                  noQtyIsBetweenCycles: !completedSoRow && wfCnt === 0,
                 };
               })()
             : {}),
@@ -1005,13 +1238,23 @@ salesOrderRouter.get(
                   );
                 })()
               : null,
-          ...(req.user?.role === "ADMIN" && s.orderType === "NO_QTY"
-            ? { noQtyStageDebug: noQtyDebugBySoId.get(s.id) ?? null }
-            : {}),
           ...(req.user?.role === "ADMIN"
             ? {
                 deleteAllowed: !(deleteBlockedReasonsBySoId.get(s.id) ?? []).length,
                 deleteBlockedReasons: deleteBlockedReasonsBySoId.get(s.id) ?? [],
+                ...(s.orderType === "NO_QTY"
+                  ? {
+                      /** Display-only: max(cycleNo)+1 from existing cycle rows; not an active workflow cycle. */
+                      noQtyNextPossibleCycleNo: (() => {
+                        let max = 0;
+                        for (const row of noQtyCyclesListBySoId.get(s.id) ?? []) {
+                          const cn = Number(row.cycleNo);
+                          if (Number.isFinite(cn) && cn > max) max = cn;
+                        }
+                        return max > 0 ? max + 1 : null;
+                      })(),
+                    }
+                  : {}),
               }
             : {}),
           noQtyActiveCycleCount: s.orderType === "NO_QTY" ? (noQtyActiveCycleCountBySoId.get(s.id) ?? 0) : null,
@@ -1485,7 +1728,7 @@ salesOrderRouter.post(
 salesOrderRouter.post(
   "/:id/reopen",
   requireAuth,
-  requireRole(SO_WRITE_ROLES),
+  requireRole(["ADMIN"], "Only Admin can reopen a closed No Qty sales order."),
   async (req, res, next) => {
     try {
       const soId = Number(req.params.id);
@@ -1598,7 +1841,7 @@ salesOrderRouter.post(
 salesOrderRouter.get(
   "/:id/reopen-preview",
   requireAuth,
-  requireRole(SO_READ_ROLES),
+  requireRole(["ADMIN"], "Only Admin can preview reopen for a No Qty sales order."),
   async (req, res, next) => {
     try {
       const soId = Number(req.params.id);
@@ -1693,7 +1936,7 @@ salesOrderRouter.get(
 salesOrderRouter.get(
   "/:id/no-qty-flow-state",
   requireAuth,
-  requireRole(SO_READ_ROLES),
+  requireRole(NO_QTY_FLOW_STATE_READ_ROLES),
   async (req, res, next) => {
     try {
       const soId = Number(req.params.id);
@@ -1702,6 +1945,13 @@ salesOrderRouter.get(
         err.statusCode = 400;
         throw err;
       }
+
+      const flow = await resolveNoQtyWorkflowState(prisma, {
+        salesOrderId: soId,
+        cycleId: parseStrictPositiveIntId(req.query?.cycleId),
+        userRole: req.user?.role,
+      });
+      return res.json(flow);
 
       const head = await prisma.salesOrder.findUnique({
         where: { id: soId },
@@ -1733,14 +1983,30 @@ salesOrderRouter.get(
           activeStep: 1,
           createNextRsEligible: false,
           nextRsAlreadyCreatedDocNo: null,
+          treatFgAsOptionalStoreStock: false,
+          nextRollingRequirementSheetId: null,
+          nextRollingRequirementSheetCycleId: null,
         });
       }
 
-      const cycleIdFromQueryRaw = Number(req.query?.cycleId ?? 0);
-      const cycleIdFromQuery =
-        Number.isFinite(cycleIdFromQueryRaw) && cycleIdFromQueryRaw > 0 ? cycleIdFromQueryRaw : null;
-      const cycleIdRaw = cycleIdFromQuery ?? (head.currentCycleId != null ? Number(head.currentCycleId) : 0);
-      const cycleId = Number.isFinite(cycleIdRaw) && cycleIdRaw > 0 ? cycleIdRaw : null;
+      const cycleIdFromQuery = parseStrictPositiveIntId(req.query?.cycleId);
+      const cycleIdFromPointer = parseStrictPositiveIntId(head.currentCycleId);
+      /** Prefer validated query cycle, else SO pointer — must belong to this SO (never trust raw ids alone). */
+      const tryCycleIds = [];
+      if (cycleIdFromQuery != null) tryCycleIds.push(cycleIdFromQuery);
+      if (cycleIdFromPointer != null && !tryCycleIds.includes(cycleIdFromPointer)) tryCycleIds.push(cycleIdFromPointer);
+      let cycleId = null;
+      for (const cid of tryCycleIds) {
+        // eslint-disable-next-line no-await-in-loop -- tiny list (≤2); keeps flow-state one round-trip
+        const row = await prisma.salesOrderCycle.findFirst({
+          where: { id: cid, salesOrderId: soId },
+          select: { id: true },
+        });
+        if (row?.id != null) {
+          cycleId = Number(row.id);
+          break;
+        }
+      }
 
       if (!cycleId) {
         const createNextRs = await computeNoQtyCreateNextRsEligibilityResolved(prisma, soId);
@@ -1763,6 +2029,9 @@ salesOrderRouter.get(
           activeStep: 1,
           createNextRsEligible: createNextRs.eligible,
           nextRsAlreadyCreatedDocNo: createNextRs.existingNextRsDocNo,
+          treatFgAsOptionalStoreStock: false,
+          nextRollingRequirementSheetId: null,
+          nextRollingRequirementSheetCycleId: null,
         });
       }
 
@@ -1973,6 +2242,14 @@ salesOrderRouter.get(
 
       const createNextRs = await computeNoQtyCreateNextRsEligibilityResolved(prisma, soId);
 
+      const cycleUi = await prisma.salesOrderCycle.findFirst({
+        where: { id: cycleId, salesOrderId: soId },
+        select: { noQtyTreatFgAsOptionalStoreStock: true },
+      });
+      const treatFgAsOptionalStoreStock = Boolean(cycleUi?.noQtyTreatFgAsOptionalStoreStock);
+
+      const rolling = await findNoQtyNextRollingRequirementSheetTarget(prisma, soId, cycleId);
+
       return res.json({
         salesOrderId: soId,
         cycleId,
@@ -1985,6 +2262,9 @@ salesOrderRouter.get(
         qcExists,
         qcPendingForCycle,
         hasQcDispatchPending: hasQcAcceptedUndispatched,
+        treatFgAsOptionalStoreStock,
+        nextRollingRequirementSheetId: rolling.sheetId,
+        nextRollingRequirementSheetCycleId: rolling.cycleId,
         dispatchExists,
         salesBillExists,
         nextAction,
@@ -1999,8 +2279,70 @@ salesOrderRouter.get(
 );
 
 /**
- * NO_QTY only: Before opening/planning the *next* requirement sheet, close the completed active cycle and
- * create the next SalesOrderCycle when {@link computeNoQtyCreateNextRsEligibility} passes (QC-based; no billing).
+ * Admin / support only: manual override of dashboard optional-dispatch pressure. Operators use automatic
+ * intent from POST /api/dispatch/dispatches (prepare) and lock/delete flows.
+ *
+ * POST /api/sales-orders/:id/no-qty-cycle/:cycleId/optional-store-stock-intent
+ * Body: { "treatAsOptionalStoreStock": boolean }
+ */
+salesOrderRouter.post(
+  "/:id/no-qty-cycle/:cycleId/optional-store-stock-intent",
+  requireAuth,
+  requireRole(["ADMIN"]),
+  async (req, res, next) => {
+    try {
+      const soId = Number(req.params.id);
+      const cyclePk = Number(req.params.cycleId);
+      if (!Number.isFinite(soId) || soId <= 0 || !Number.isFinite(cyclePk) || cyclePk <= 0) {
+        return res.status(400).json({ error: { message: "Invalid sales order or cycle id." } });
+      }
+      const schema = z.object({ treatAsOptionalStoreStock: z.boolean() });
+      const parsed = schema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return res.status(400).json({ error: { message: "Body must include treatAsOptionalStoreStock (boolean)." } });
+      }
+
+      const so = await prisma.salesOrder.findUnique({
+        where: { id: soId },
+        select: { orderType: true },
+      });
+      if (!so || so.orderType !== "NO_QTY") {
+        return res.status(400).json({ error: { message: "Only NO_QTY sales orders support this intent." } });
+      }
+
+      const cyc = await prisma.salesOrderCycle.findFirst({
+        where: { id: cyclePk, salesOrderId: soId },
+        select: { id: true },
+      });
+      if (!cyc) {
+        return res.status(404).json({ error: { message: "Cycle not found for this order." } });
+      }
+
+      await prisma.salesOrderCycle.update({
+        where: { id: cyclePk },
+        data: { noQtyTreatFgAsOptionalStoreStock: parsed.data.treatAsOptionalStoreStock },
+      });
+
+      await logActivity({
+        user: req.user,
+        module: ACTIVITY_MODULES.SALES_ORDER,
+        entityType: ACTIVITY_ENTITY_TYPES.SALES_ORDER,
+        entityId: soId,
+        action: ACTIVITY_ACTIONS.UPDATED,
+        message: `NO_QTY optional store stock intent: cycle ${cyclePk} → ${parsed.data.treatAsOptionalStoreStock}`,
+        metadata: { cycleId: cyclePk, treatAsOptionalStoreStock: parsed.data.treatAsOptionalStoreStock },
+      });
+
+      return res.json({ ok: true, treatAsOptionalStoreStock: parsed.data.treatAsOptionalStoreStock });
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
+/**
+ * NO_QTY only: Before opening/planning the *next* requirement sheet, close the active cycle and
+ * create the next SalesOrderCycle when {@link computeNoQtyCreateNextRsEligibility} passes (demand-driven / rolling; no billing).
  * Idempotent when not eligible. Backend-owned cycle pointer — callers must not rely on URL cycleId.
  *
  * POST /api/sales-orders/:id/no-qty-cycle/prepare-next-requirement-sheet
@@ -2994,7 +3336,7 @@ salesOrderRouter.post(
 salesOrderRouter.get(
   "/:id",
   requireAuth,
-  requireRole(SO_READ_ROLES),
+  requireRole(SO_DETAIL_READ_ROLES),
   async (req, res, next) => {
     try {
       const soId = Number(req.params.id);

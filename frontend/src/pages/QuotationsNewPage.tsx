@@ -1,4 +1,4 @@
-import * as React from "react";
+﻿import * as React from "react";
 import { Link, Navigate, useNavigate, useSearchParams } from "react-router-dom";
 import { ArrowLeft, X } from "lucide-react";
 import { apiFetch } from "../services/api";
@@ -9,6 +9,8 @@ import {
   CommercialWorkflowStrip,
   commercialWorkflowStripDenseFramedClassName,
 } from "../components/erp/CommercialWorkflowStrip";
+import { NO_QTY_TERMS } from "../lib/flowTerminology";
+import { cn } from "../lib/utils";
 import { useToast } from "../contexts/ToastContext";
 import {
   type QuoteLineDraft,
@@ -37,7 +39,7 @@ function emptyNoQtyCommercial(): NoQtyCommercialDraft {
   };
 }
 
-/** Single `terms` field on quotation — grouped labels for NO_QTY commercial UX only. */
+/** Single `terms` field on quotation â€” grouped labels for NO_QTY commercial UX only. */
 function buildNoQtyTermsPayload(c: NoQtyCommercialDraft): string | undefined {
   const blocks: string[] = [];
   const push = (heading: string, body: string) => {
@@ -61,7 +63,7 @@ const noQtyCommercialTextareaMedium =
 
 function contractStatusLabel(raw: string): string {
   const s = raw.trim();
-  if (!s) return "—";
+  if (!s) return "â€”";
   return s
     .split("_")
     .map((w) => w.charAt(0) + w.slice(1).toLowerCase())
@@ -252,6 +254,17 @@ export function QuotationsNewPage() {
     }
   }, [createEnquiryId, feasibleEnquiries]);
 
+  const gstSummary = React.useMemo(() => {
+    const pcts = new Set<string>();
+    for (const l of quoteLines) {
+      const n = previewNum(l.gstPct);
+      if (Number.isFinite(n)) pcts.add(String(n));
+    }
+    if (pcts.size === 0) return "â€”";
+    if (pcts.size === 1) return `${[...pcts][0]}%`;
+    return "Mixed";
+  }, [quoteLines]);
+
   async function onCreateQuotation() {
     if (!createEnquiryId) return;
     setError(null);
@@ -327,7 +340,7 @@ export function QuotationsNewPage() {
   if (loading) {
     return (
       <div className="flex flex-col gap-3 p-1 text-sm text-slate-600" aria-busy="true">
-        Loading…
+        Loadingâ€¦
       </div>
     );
   }
@@ -368,13 +381,15 @@ export function QuotationsNewPage() {
   const validationMessage = error
     ? error
     : isNoQty && !noQtyHasEnquiryLines
-      ? "No enquiry lines — update the enquiry first."
+      ? "No enquiry lines â€” update the enquiry first."
       : isNoQty && noQtyRatesIncomplete
         ? "Complete rate contracts for every item before saving."
         : isNoQty && noQtyRatesLoading
-          ? "Resolving rate contracts…"
+          ? "Resolving rate contractsâ€¦"
           : null;
   const saveDisabled = creating || !createEnquiryId || noQtySaveBlocked;
+
+  const rcLinked = isNoQty && noQtyHasEnquiryLines && !noQtyRatesIncomplete && !noQtyRatesLoading;
 
   return (
     <div className="flex min-h-[calc(100vh-8.5rem)] flex-col gap-2.5">
@@ -391,7 +406,7 @@ export function QuotationsNewPage() {
               variant={isNoQty ? "warning" : "info"}
               className="text-[10px] font-semibold uppercase tracking-wide"
             >
-              {isNoQty ? "NO_QTY" : "REGULAR"}
+              {isNoQty ? NO_QTY_TERMS.AGREEMENT_LABEL : "REGULAR"}
             </Badge>
           </div>
           <CommercialWorkflowStrip
@@ -405,14 +420,14 @@ export function QuotationsNewPage() {
           <span>
             <span className="text-slate-500">Customer </span>
             <span className="font-semibold text-slate-900">
-              {selectedEnquiry?.customer.name ?? "—"}
+              {selectedEnquiry?.customer.name ?? "â€”"}
             </span>
           </span>
           <span className="text-slate-300">|</span>
           <span>
             <span className="text-slate-500">Enquiry </span>
             <span className="font-mono font-semibold text-slate-800">
-              #{selectedEnquiry?.id ?? "—"}
+              #{selectedEnquiry?.id ?? "â€”"}
             </span>
           </span>
           <span className="text-slate-300">|</span>
@@ -425,7 +440,7 @@ export function QuotationsNewPage() {
               <span className="text-slate-300">|</span>
               {noQtyRatesLoading ? (
                 <span className="text-slate-500" aria-live="polite">
-                  Resolving rates…
+                  Resolving ratesâ€¦
                 </span>
               ) : noQtyRatesIncomplete ? (
                 <Badge variant="warning" className="text-[10px]">
@@ -449,7 +464,7 @@ export function QuotationsNewPage() {
               >
                 {feasibleEnquiries.map((e) => (
                   <option key={e.id} value={e.id}>
-                    #{e.id} — {e.customer.name}
+                    #{e.id} â€” {e.customer.name}
                   </option>
                 ))}
               </select>
@@ -465,7 +480,7 @@ export function QuotationsNewPage() {
             >
               {feasibleEnquiries.map((e) => (
                 <option key={e.id} value={e.id}>
-                  #{e.id} — {e.customer.name}
+                  #{e.id} â€” {e.customer.name}
                 </option>
               ))}
             </select>
@@ -482,7 +497,7 @@ export function QuotationsNewPage() {
               Items &amp; rates
             </span>
             <span className="text-[11px] text-slate-500">
-              {isNoQty ? "From enquiry · contract-linked · read-only" : `${quoteLines.length} line${quoteLines.length === 1 ? "" : "s"}`}
+              {isNoQty ? "From enquiry Â· contract-linked Â· read-only" : `${quoteLines.length} line${quoteLines.length === 1 ? "" : "s"}`}
             </span>
           </div>
 
@@ -504,6 +519,20 @@ export function QuotationsNewPage() {
             )}
           </div>
 
+          <QuotationDraftSummaryCards
+            isNoQty={isNoQty}
+            itemCount={itemCount}
+            rcLinked={rcLinked}
+            rcLoading={noQtyRatesLoading}
+            gstLabel={gstSummary}
+          />
+
+          {isNoQty ? (
+            <div className="border-t border-amber-200/80 bg-amber-50/50 px-3 py-2 text-[11px] leading-snug text-amber-950">
+              Quotation locks commercial framework. Quantities are planned later in Requirement Sheet cycles.
+            </div>
+          ) : null}
+
           {!isNoQty ? (
             <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-200 bg-slate-50/80 px-3 py-1.5">
               <button
@@ -519,7 +548,7 @@ export function QuotationsNewPage() {
               <div className="text-[12px] font-semibold text-slate-800">
                 Grand total{" "}
                 <span className="ml-1 tabular-nums text-slate-900">
-                  ₹{formatInrAmount(sumPreview)}
+                  â‚¹{formatInrAmount(sumPreview)}
                 </span>
               </div>
             </div>
@@ -539,7 +568,7 @@ export function QuotationsNewPage() {
             </div>
             <div className="mt-0.5 text-[11px] text-slate-600">
               {isNoQty
-                ? "Rate contract-linked · qty managed later"
+                ? "Rate contract-linked Â· qty managed later"
                 : "Set payment / delivery and review totals"}
             </div>
           </div>
@@ -572,7 +601,7 @@ export function QuotationsNewPage() {
                 {isNoQty
                   ? noQtyRatesIncomplete
                     ? "Complete rate contracts to enable save."
-                    : "Lock commercial framework — quantities follow in Requirement Sheet."
+                    : "Quotation locks commercial framework. Quantities are planned later in Requirement Sheet cycles."
                   : "Save creates a Draft quotation, ready for approval and PDF."}
               </div>
             </div>
@@ -649,7 +678,7 @@ export function QuotationsNewPage() {
                           commercialConditions: e.target.value,
                         }))
                       }
-                      placeholder="Incoterms, price basis, escalation…"
+                      placeholder="Incoterms, price basis, escalationâ€¦"
                     />
                   </label>
                 </div>
@@ -697,7 +726,7 @@ export function QuotationsNewPage() {
               <span className="text-[12px] text-slate-500">
                 {isNoQty
                   ? "Ready to save commercial framework"
-                  : `Grand total ₹${formatInrAmount(sumPreview)}`}
+                  : `Grand total â‚¹${formatInrAmount(sumPreview)}`}
               </span>
             )}
           </div>
@@ -715,7 +744,7 @@ export function QuotationsNewPage() {
             onClick={() => void onCreateQuotation()}
             disabled={saveDisabled}
           >
-            {creating ? "Saving…" : "Save quotation →"}
+            {creating ? "Savingâ€¦" : "Save quotation â†’"}
           </Button>
         </div>
       </footer>
@@ -738,7 +767,7 @@ function NoQtyItemsView(props: {
   if (!lines.length) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-1.5 px-6 py-10 text-center">
-        <p className="text-[13px] text-amber-900">No enquiry lines — update the enquiry first.</p>
+        <p className="text-[13px] text-amber-900">No enquiry lines â€” update the enquiry first.</p>
       </div>
     );
   }
@@ -762,21 +791,21 @@ function NoQtyItemsView(props: {
             ? null
             : loading && !rateOk
               ? null
-              : (statusByLine[i] ?? "—");
+              : (statusByLine[i] ?? "â€”");
           return (
             <tr key={`${ln.itemId}-${i}`}>
               <td className="max-w-[14rem] truncate font-medium">{ln.item.itemName}</td>
               <td className="text-right tabular-nums">
                 {missing ? (
-                  <span className="text-amber-800">—</span>
+                  <span className="text-amber-800">â€”</span>
                 ) : loading && !rateOk ? (
-                  <span className="text-slate-400">…</span>
+                  <span className="text-slate-400">â€¦</span>
                 ) : (
-                  <>₹{formatInrAmount(previewNum(draft?.rate ?? "0"))}</>
+                  <>â‚¹{formatInrAmount(previewNum(draft?.rate ?? "0"))}</>
                 )}
               </td>
               <td className="text-right tabular-nums">
-                {missing ? "—" : loading && gstTxt === "" ? "…" : `${previewNum(gstTxt || "0")}%`}
+                {missing ? "â€”" : loading && gstTxt === "" ? "â€¦" : `${previewNum(gstTxt || "0")}%`}
               </td>
               <td className="text-right">
                 {missing ? (
@@ -784,7 +813,7 @@ function NoQtyItemsView(props: {
                     Missing
                   </span>
                 ) : loading && !rateOk ? (
-                  <span className="text-slate-400">…</span>
+                  <span className="text-slate-400">â€¦</span>
                 ) : (
                   <span className="text-[11px] font-medium text-slate-800">{statusDisp}</span>
                 )}
@@ -794,6 +823,46 @@ function NoQtyItemsView(props: {
         })}
       </tbody>
     </table>
+  );
+}
+
+function QuotationDraftSummaryCards(props: {
+  isNoQty: boolean;
+  itemCount: number;
+  rcLinked: boolean;
+  rcLoading: boolean;
+  gstLabel: string;
+}) {
+  const { isNoQty, itemCount, rcLinked, rcLoading, gstLabel } = props;
+  return (
+    <div className="erp-kpi-strip erp-kpi-strip--compact grid grid-cols-2 gap-px border-t border-slate-200 bg-slate-50/90 sm:grid-cols-4">
+      <div className="erp-kpi-segment !border-0 !bg-transparent px-2.5 py-1.5">
+        <span className="erp-kpi-label">Rate contract</span>
+        <span className={cn("erp-kpi-value text-[12px]", rcLinked ? "text-emerald-800" : "text-amber-800")}>
+          {isNoQty ? (rcLoading ? "â€¦" : rcLinked ? "Linked" : "Missing") : "N/A"}
+        </span>
+      </div>
+      <div className="erp-kpi-segment !border-0 !bg-transparent px-2.5 py-1.5">
+        <span className="erp-kpi-label">Items</span>
+        <span className="erp-kpi-value text-[12px]">{itemCount}</span>
+      </div>
+      <div className="erp-kpi-segment !border-0 !bg-transparent px-2.5 py-1.5">
+        <span className="erp-kpi-label">GST</span>
+        <span className="erp-kpi-value text-[12px]">{gstLabel}</span>
+      </div>
+      <div className="erp-kpi-segment !border-0 !bg-transparent px-2.5 py-1.5">
+        <span className="erp-kpi-label">Rate source</span>
+        <span className="erp-kpi-value text-[12px]">Approved Rate Contract</span>
+      </div>
+      {isNoQty ? (
+        <div className="erp-kpi-segment col-span-2 !border-0 !bg-transparent px-2.5 py-1.5 sm:col-span-4">
+          <span className="erp-kpi-label">Qty rule</span>
+          <span className="erp-kpi-value-muted text-[11px] leading-snug">
+            Managed later in Requirement Sheets
+          </span>
+        </div>
+      ) : null}
+    </div>
   );
 }
 

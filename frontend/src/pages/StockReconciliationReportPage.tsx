@@ -5,6 +5,7 @@ import { Input } from "../components/ui/input";
 import { PageContainer, ReportPageHeader } from "../components/PageHeader";
 import { apiFetch } from "../services/api";
 import { useDebouncedUrlStringParam, useUrlQueryState } from "../hooks/useUrlQueryState";
+import { ERP_REPORT_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
 import { cn } from "../lib/utils";
 
 type ItemOpt = { id: number; itemName: string; itemType: "RM" | "FG"; unitName?: string | null; unit?: string | null };
@@ -135,12 +136,13 @@ export function StockReconciliationReportPage() {
   const [loadError, setLoadError] = React.useState<string | null>(null);
 
   const missingDates = !fromDate.trim() || !toDate.trim();
+  const liveTick = useErpRefreshTick(["reports", "stock"], { pollIntervalMs: ERP_REPORT_POLL_MS });
 
   React.useEffect(() => {
     apiFetch<ItemOpt[]>("/api/items")
       .then((xs) => setItems(Array.isArray(xs) ? xs : []))
       .catch(() => setItems([]));
-  }, []);
+  }, [liveTick]);
 
   const filteredItems = React.useMemo(() => {
     const query = q.trim().toLowerCase();
@@ -181,7 +183,7 @@ export function StockReconciliationReportPage() {
     }
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fromDate, toDate, itemType, itemId, onlyAdjustments, onlyMovement]);
+  }, [fromDate, toDate, itemType, itemId, onlyAdjustments, onlyMovement, liveTick]);
 
   const rows = data?.rows ?? [];
 

@@ -7,7 +7,9 @@ import { PageContainer, ReportPageHeader } from "../components/PageHeader";
 import { Badge } from "../components/ui/badge";
 import { apiFetch } from "../services/api";
 import { useDebouncedUrlStringParam, useUrlQueryState } from "../hooks/useUrlQueryState";
+import { salesOrdersFocusHref, withReportsReturnContext } from "../lib/drillDownRoutes";
 import { cn } from "../lib/utils";
+import { ERP_REPORT_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
 
 type Customer = { id: number; name: string };
 
@@ -88,7 +90,7 @@ export function CustomerSoRsReportPage() {
    * Sales-facing roles get a simplified column set: the technical planning
    * fields (Suggested WO Qty, Closed shortage, Active carry, Reopen mode)
    * are useful to Planning / Admin but expose internal mechanics to Sales.
-   * Mirrors the audience of `useCanOpenRequirementSheet()` (ADMIN + STORE).
+   * Mirrors the audience of `useCanOpenRequirementSheet()` (ADMIN + SALES).
    */
   const showInternals = canOpenRs;
   const { patch, read } = useUrlQueryState({
@@ -116,10 +118,13 @@ export function CustomerSoRsReportPage() {
   const [data, setData] = React.useState<ApiResp | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [loadError, setLoadError] = React.useState<string | null>(null);
+  const liveTick = useErpRefreshTick(["reports", "requirement", "sales"], {
+    pollIntervalMs: ERP_REPORT_POLL_MS,
+  });
 
   React.useEffect(() => {
     apiFetch<Customer[]>("/api/customers").then(setCustomers).catch(() => setCustomers([]));
-  }, []);
+  }, [liveTick]);
 
   async function load() {
     setLoading(true);
@@ -145,7 +150,7 @@ export function CustomerSoRsReportPage() {
   React.useEffect(() => {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [customerId, soType, status, dateFrom, dateTo, qFromUrl]);
+  }, [customerId, soType, status, dateFrom, dateTo, qFromUrl, liveTick]);
 
   const rows = data?.rows ?? [];
 
@@ -280,7 +285,10 @@ export function CustomerSoRsReportPage() {
                   {r.customerName}
                 </td>
                 <td className="whitespace-nowrap px-2 py-1.5">
-                  <Link className="font-medium text-sky-700 underline-offset-2 hover:underline" to={`/sales-orders?salesOrderId=${r.salesOrderId}`}>
+                  <Link
+                    className="font-medium text-sky-700 underline-offset-2 hover:underline"
+                    to={withReportsReturnContext(salesOrdersFocusHref(r.salesOrderId))}
+                  >
                     {r.salesOrderNo}
                   </Link>
                 </td>

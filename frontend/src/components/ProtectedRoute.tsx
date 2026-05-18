@@ -15,6 +15,13 @@ type ProtectedRouteProps = {  /** User must have one of these roles (from JWT / 
  */
 export function ProtectedRoute({ allowedRoles, children }: ProtectedRouteProps) {
   const auth = useAuth();
+  if (import.meta.env.DEV && (!auth.isAuthed || !auth.user)) {
+    // eslint-disable-next-line no-console
+    console.debug("[auth] ProtectedRoute → unauthenticated, redirect /login", {
+      isAuthed: auth.isAuthed,
+      hasUser: Boolean(auth.user),
+    });
+  }
   if (!auth.isAuthed || !auth.user) {
     return <Navigate to="/login" replace />;
   }

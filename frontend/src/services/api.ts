@@ -3,6 +3,7 @@ import {
   isDemoSafeMutationsBlocked,
   notifyDemoMutationBlocked,
 } from "../lib/demoSafeMode";
+import { bumpErpRefresh, erpRefreshScopesForMutation } from "../lib/erpRefresh";
 
 export type ApiError = { message: string; code?: string };
 
@@ -216,5 +217,11 @@ export async function apiFetch<T>(path: string, opts: RequestInit = {}): Promise
       body: record ?? undefined,
     });
   }
+
+  if (mutates) {
+    const scopes = erpRefreshScopesForMutation(path, method);
+    if (scopes.length > 0) bumpErpRefresh(scopes);
+  }
+
   return data as T;
 }

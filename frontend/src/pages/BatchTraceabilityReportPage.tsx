@@ -6,6 +6,7 @@ import { Input } from "../components/ui/input";
 import { PageContainer, ReportPageHeader } from "../components/PageHeader";
 import { apiFetch } from "../services/api";
 import { useUrlQueryState } from "../hooks/useUrlQueryState";
+import { ERP_REPORT_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
 import { cn } from "../lib/utils";
 import { salesOrdersFocusHref, withReportsReturnContext } from "../lib/drillDownRoutes";
 
@@ -181,11 +182,14 @@ export function BatchTraceabilityReportPage() {
   const [loadError, setLoadError] = React.useState<string | null>(null);
 
   const missingDates = !fromDate.trim() || !toDate.trim();
+  const liveTick = useErpRefreshTick(["reports", "production", "qc", "dispatch"], {
+    pollIntervalMs: ERP_REPORT_POLL_MS,
+  });
 
   React.useEffect(() => {
     apiFetch<FgItem[]>("/api/items?type=FG").then(setFgItems).catch(() => setFgItems([]));
     apiFetch<Customer[]>("/api/customers").then(setCustomers).catch(() => setCustomers([]));
-  }, []);
+  }, [liveTick]);
 
   async function load() {
     setLoading(true);
@@ -219,7 +223,7 @@ export function BatchTraceabilityReportPage() {
     }
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fromDate, toDate, productionId, fgItemId, customerId, salesOrderId, dispatchId, qcStatus]);
+  }, [fromDate, toDate, productionId, fgItemId, customerId, salesOrderId, dispatchId, qcStatus, liveTick]);
 
   const rows = data?.rows ?? [];
 

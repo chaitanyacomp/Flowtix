@@ -38,6 +38,7 @@ const { statesRouter } = require("./routes/states");
 const { unitsRouter } = require("./routes/units");
 const { adminDatabaseCleanupRouter } = require("./routes/adminDatabaseCleanup");
 const { adminBackupsRouter } = require("./routes/adminBackups");
+const { adminSecurityRouter } = require("./routes/adminSecurity");
 const { tallyMasterImportRouter } = require("./routes/tallyMasterImport");
 const { openingStockRouter } = require("./routes/openingStock");
 const { rateContractsRouter } = require("./routes/rateContracts");
@@ -120,6 +121,7 @@ function createApp() {
   app.use("/api/search", searchRouter);
   app.use("/api/admin", adminDatabaseCleanupRouter);
   app.use("/api/admin", adminBackupsRouter);
+  app.use("/api/admin", adminSecurityRouter);
   app.use("/api/admin", tallyMasterImportRouter);
   app.use("/api", openingStockRouter);
 

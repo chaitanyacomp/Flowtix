@@ -14,6 +14,7 @@ import { Badge } from "../components/ui/badge";
 import { ApiRequestError, apiFetch } from "../services/api";
 import { useToast } from "../contexts/ToastContext";
 import { buildNoQtyGuidedHref } from "../lib/noQtyFlowState";
+import { buildNoQtySoCreatedBannerState } from "../lib/noQtySoCreatedNavState";
 import { CommercialWorkflowStrip, commercialWorkflowStripFramedClassName } from "../components/erp/CommercialWorkflowStrip";
 import { cn } from "../lib/utils";
 
@@ -99,7 +100,14 @@ export function NoQtySalesOrderFromQuotationPage() {
         cycleId,
         fromStep: "requirement",
       });
-      navigate(to);
+      navigate(to, {
+        state: buildNoQtySoCreatedBannerState({
+          salesOrderId: so.id,
+          docNo: so.docNo,
+          customerName: q.enquiry.customer.name,
+          cycleNo: so.currentCycle?.cycleNo ?? 1,
+        }),
+      });
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Failed to create sales order";
       setError(msg);

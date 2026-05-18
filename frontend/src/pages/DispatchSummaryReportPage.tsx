@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card"
 import { buttonVariants } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { useUrlQueryState } from "../hooks/useUrlQueryState";
+import { ERP_REPORT_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
 
 type Customer = { id: number; name: string };
 type Item = { id: number; itemName: string; itemType: string };
@@ -85,11 +86,14 @@ export function DispatchSummaryReportPage() {
   const [kpis, setKpis] = React.useState<{ dispatchTodayQty: number; dispatchMonthQty: number }>({ dispatchTodayQty: 0, dispatchMonthQty: 0 });
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
+  const liveTick = useErpRefreshTick(["reports", "dispatch", "dashboard"], {
+    pollIntervalMs: ERP_REPORT_POLL_MS,
+  });
 
   React.useEffect(() => {
     apiFetch<Customer[]>("/api/customers").then(setCustomers).catch(() => setCustomers([]));
     apiFetch<Item[]>("/api/items").then(setItems).catch(() => setItems([]));
-  }, []);
+  }, [liveTick]);
 
   React.useEffect(() => {
     let mounted = true;
@@ -180,7 +184,7 @@ export function DispatchSummaryReportPage() {
     return () => {
       mounted = false;
     };
-  }, [fromDate, toDate, customerId, itemId, customers]);
+  }, [fromDate, toDate, customerId, itemId, customers, liveTick]);
 
   const pendingDispatchLines = pendingRows.length;
   const pendingDispatchQty = pendingRows.reduce((s, r) => s + safeNum(r.ready), 0);

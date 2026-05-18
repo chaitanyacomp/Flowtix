@@ -80,6 +80,7 @@ async function start() {
       });
       // eslint-disable-next-line no-console
       console.log("[startup] Readiness: GET /api/health (includes DB check)");
+      console.log("[startup] Dashboard commercial: GET /api/dashboard/quotations-pending-so");
       resolve();
     });
   });

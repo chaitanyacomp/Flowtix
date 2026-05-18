@@ -6,10 +6,15 @@ export type DispatchBacklogRow = {
   customerName: string;
   itemId: number;
   itemName: string;
+  /** Prisma SalesOrderLine.id — matches REGULAR dispatch UI `lineId`; NO_QTY UI uses synthetic line ids + `itemId` deep link. */
+  salesOrderLineId?: number;
+  orderType?: string | null;
   orderedQty: number;
   dispatchedQty: number;
   pendingQty: number;
   dispatchableNow?: number;
+  /** NO_QTY backlog row: SalesOrderCycle.id for per-cycle dashboard filters. */
+  cycleId?: number | null;
   salesOrderDate: string;
   status: string;
   /** Backend label, e.g. SO_FIFO — see METRIC_CONTEXT /api */

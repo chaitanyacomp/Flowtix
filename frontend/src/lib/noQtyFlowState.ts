@@ -5,6 +5,8 @@ import type { FlowStep } from "../components/erp/FlowStepBar";
 export type NoQtyFromStep = "requirement" | "rs" | "work_order" | "production" | "qc" | "dispatch";
 
 export type NoQtyNextAction = "REQUIREMENT" | "WORK_ORDER" | "PRODUCTION" | "QC" | "DISPATCH" | "SALES_BILL";
+export type NoQtyPrimaryAction = NoQtyNextAction | "NEXT_RS" | "DONE" | "BLOCKED";
+export type NoQtyUserAction = NoQtyPrimaryAction | "CREATE_NEXT_RS" | "NONE";
 
 export type NoQtyFlowState = {
   salesOrderId: number;
@@ -20,12 +22,47 @@ export type NoQtyFlowState = {
   qcPendingForCycle?: boolean;
   /** True when cycle QC accepted qty exceeds operational net dispatch for some FG line. */
   hasQcDispatchPending?: boolean;
+  productionRemainingQty?: number;
+  carryForwardShortageOnly?: boolean;
+  /** NO_QTY: server-derived optional-store intent (partial prepare / remaining QC headroom); dashboard pressure only. */
+  treatFgAsOptionalStoreStock?: boolean;
+  /** Next-cycle draft RS id when present, else later-cycle locked RS id from rolling eligibility (navigation hint only). */
+  nextRollingRequirementSheetId?: number | null;
+  nextRollingRequirementSheetCycleId?: number | null;
   dispatchExists: boolean;
   salesBillExists: boolean;
   nextAction: NoQtyNextAction;
+  primaryAction?: NoQtyPrimaryAction;
+  overallWorkflowState?:
+    | "NEXT_RS_READY"
+    | "QC_PENDING"
+    | "DISPATCH_READY"
+    | "PRODUCTION_REQUIRED"
+    | "REQUIREMENT_PENDING"
+    | "WORK_ORDER_REQUIRED"
+    | "SALES_BILL_PENDING"
+    | "DONE"
+    | "BLOCKED";
+  overallAction?: NoQtyUserAction;
+  primaryActionForCurrentUser?: NoQtyUserAction;
+  nextDepartmentAction?: NoQtyUserAction;
+  currentUserActionLabel?: string | null;
+  currentUserActionHref?: string | null;
+  roleAllowedSecondaryActions?: NoQtyUserAction[];
+  roleAllowedOptionalActions?: NoQtyUserAction[];
+  actionOwner?: string | null;
+  message?: string | null;
+  secondaryActions?: NoQtyPrimaryAction[];
+  optionalActions?: NoQtyPrimaryAction[];
+  canonicalCycleId?: number | null;
+  actionLabel?: string | null;
+  actionHref?: string | null;
+  blockedReasons?: string[];
+  workflowSummary?: string | null;
+  displaySummary?: string | null;
   /** 1..6 per Requirement→Sales Bill */
   activeStep: 1 | 2 | 3 | 4 | 5 | 6;
-  /** True when current-cycle RS is locked, QC is complete for the cycle, and no RS exists on a later cycle. */
+  /** True when current-cycle RS is locked, no RS exists on a later cycle, and SO is open (rolling — not gated on QC/WO completion). */
   createNextRsEligible?: boolean;
   /** When a later-cycle RS already exists, its document number (Create Next RS hidden). */
   nextRsAlreadyCreatedDocNo?: string | null;
@@ -102,7 +139,11 @@ export function lockedNoQtyPrimaryStep(
   flow: NoQtyFlowState | null,
 ): { mode: "create_next_rs" } | { mode: "action"; action: NoQtyNextAction } | null {
   if (!flow) return null;
-  if (flow.createNextRsEligible && !flow.nextRsAlreadyCreatedDocNo) {
+  const canCreateNextRs =
+    flow.primaryActionForCurrentUser != null
+      ? flow.primaryActionForCurrentUser === "CREATE_NEXT_RS"
+      : flow.primaryAction === "NEXT_RS" || Boolean(flow.createNextRsEligible);
+  if (canCreateNextRs && !flow.nextRsAlreadyCreatedDocNo) {
     return { mode: "create_next_rs" };
   }
   return { mode: "action", action: clampNoQtyNextActionForLockedRs(flow) };
@@ -136,18 +177,24 @@ export function buildQcEntryHref(args: {
   cycleId?: number | null;
   orderType?: string | null;
   fromStep?: NoQtyFromStep;
+  /** Preserves `PageSmartBackLink` / NO_QTY banner targets (append-only; never replaces `source=no_qty_so`). */
+  navOrigin?: "dashboard" | "production_screen";
 }): string {
   const pid = args.productionId != null ? Number(args.productionId) : 0;
   const prodQs = Number.isFinite(pid) && pid > 0 ? `&productionId=${encodeURIComponent(String(pid))}` : "";
   if (String(args.orderType ?? "").trim() === "NO_QTY") {
-    return `${buildNoQtyGuidedHref({
+    let href = `${buildNoQtyGuidedHref({
       to: "/qc-entry",
       salesOrderId: args.salesOrderId,
       cycleId: args.cycleId ?? null,
       fromStep: args.fromStep ?? "production",
     })}${prodQs}`;
+    if (args.navOrigin === "dashboard") href += "&from=dashboard";
+    if (args.navOrigin === "production_screen") href += "&from=production_screen";
+    return href;
   }
-  return `/qc-entry?salesOrderId=${encodeURIComponent(String(args.salesOrderId))}${prodQs}`;
+  const origin = args.navOrigin === "dashboard" ? "dashboard" : "production_screen";
+  return `/qc-entry?salesOrderId=${encodeURIComponent(String(args.salesOrderId))}${prodQs}&from=${origin}`;
 }
 
 export function buildNoQtyFlowSteps(args: {
@@ -177,4 +224,3 @@ export function buildNoQtyFlowSteps(args: {
     { label: "Sales Bill", to: buildNoQtyGuidedHref({ to: `/sales-bills`, salesOrderId, cycleId: state?.cycleId ?? null }), status: st(6) },
   ];
 }
-

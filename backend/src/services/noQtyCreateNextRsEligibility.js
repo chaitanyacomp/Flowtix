@@ -1,5 +1,6 @@
 /**
- * NO_QTY: When operators may create the next cycle's requirement sheet — independent of dispatch / billing / export.
+ * NO_QTY: When operators may create the next cycle's requirement sheet — rolling / demand-driven planning.
+ * Independent of dispatch, billing, export, QC completion, and WO line completion.
  *
  * Cycle scope: evaluate using a concrete `SalesOrderCycle` row that belongs to the SO (`cycleId` + `salesOrderId`).
  * Callers resolve the evaluation cycle via {@link resolveNoQtyEligibilityCycleId} (ACTIVE, pointer, or latest CLOSED
@@ -8,21 +9,12 @@
  *
  * Eligible when (evaluated cycle):
  * 1) Current cycle has a LOCKED requirement sheet
- * 2) At least one QC entry exists for production in that cycle
- * 3) Every approved batch has at least started QC (accepted or rejected classified). Remaining produced qty can stay
- *    pending (e.g. rework path) without blocking the next RS — parallel with dispatch per NO_QTY rules.
- * 4) No LOCKED requirement sheet exists on any cycle with cycleNo strictly greater than current
- *    (DRAFT-only rows do not block advancing — stale drafts must not prevent closing the active cycle)
+ * 2) No LOCKED requirement sheet exists on any non-CLOSED cycle with cycleNo strictly greater than current
+ *    (DRAFT-only rows do not block advancing — stale drafts must not prevent closing the active cycle;
+ *     LOCKED sheets on CLOSED higher cycles are historical artifacts and do not block rolling planning.)
+ *
+ * Not eligible: NOT_NO_QTY, SO closed, invalid cycle, no locked RS on that cycle, or a non-closed later cycle already has a LOCKED RS.
  */
-
-const { QC_ENTRY_ACTIVE_WHERE } = require("./qcEntryConstants");
-const {
-  getProductionBatchQcPendingQty,
-  sumActiveQcAcceptedQty,
-  sumActiveQcRejectedQty,
-} = require("./reportMetrics");
-
-const EPS = 1e-6;
 
 /**
  * Same cycle resolution as prepare-next-requirement-sheet: prefer ACTIVE cycle (highest cycleNo),
@@ -150,40 +142,16 @@ async function computeNoQtyCreateNextRsEligibility(db, input) {
     return { eligible: false, reason: "NO_LOCKED_RS", existingNextRsDocNo: null, existingNextRsId: null };
   }
 
-  const qcAny = await db.qcEntry.findFirst({
-    where: {
-      reversedAt: null,
-      production: { workOrderLine: { workOrder: { salesOrderId, cycleId } } },
-    },
-    select: { id: true },
-  });
-  if (!qcAny) {
-    return { eligible: false, reason: "NO_QC", existingNextRsDocNo: null, existingNextRsId: null };
-  }
-
-  const prodRows = await db.productionEntry.findMany({
-    where: {
-      workflowStatus: "APPROVED",
-      workOrderLine: { workOrder: { salesOrderId, cycleId } },
-    },
-    include: { qcEntries: { where: QC_ENTRY_ACTIVE_WHERE } },
-  });
-
-  for (const pe of prodRows) {
-    const producedQty = Number(pe.producedQty);
-    const ac = sumActiveQcAcceptedQty(pe.qcEntries);
-    const rj = sumActiveQcRejectedQty(pe.qcEntries);
-    const pend = getProductionBatchQcPendingQty(producedQty, ac, rj);
-    if (pend > EPS && ac <= EPS && rj <= EPS) {
-      return { eligible: false, reason: "QC_PENDING", existingNextRsDocNo: null, existingNextRsId: null };
-    }
-  }
-
   const sheetAhead = await db.requirementSheet.findFirst({
     where: {
       salesOrderId,
       status: "LOCKED",
-      cycle: { cycleNo: { gt: currentCycle.cycleNo } },
+      cycle: {
+        salesOrderId,
+        cycleNo: { gt: currentCycle.cycleNo },
+        /** Rolling cycles: dispatch/stock may remain open on older cycles; CLOSED higher cycles must not gate next RS. */
+        status: { not: "CLOSED" },
+      },
     },
     orderBy: [{ id: "asc" }],
     select: { id: true, docNo: true },

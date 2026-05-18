@@ -6,6 +6,7 @@ import { useAuth } from "../hooks/useAuth";
 import { ALL_APP_ROLES } from "../components/ProtectedRoute";
 import { PageContainer, ReportPageHeader, StickyReportBackStrip } from "../components/PageHeader";
 import { ReportFilterToolbar, ReportFilterField } from "../components/erp/ReportChrome";
+import { ERP_REPORT_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
 
 type TraceCell = {
   label: string | null;
@@ -103,13 +104,16 @@ export function SoDispatchTraceReportPage() {
   const [filterTick, setFilterTick] = React.useState(0);
   const [fgItems, setFgItems] = React.useState<FgItem[]>([]);
   const [soSummaries, setSoSummaries] = React.useState<SoSummaryItem[]>([]);
+  const liveTick = useErpRefreshTick(["reports", "dispatch", "production", "qc"], {
+    pollIntervalMs: ERP_REPORT_POLL_MS,
+  });
 
   React.useEffect(() => {
     if (!allowed) return;
     apiFetch<FgItem[]>("/api/items?type=FG")
       .then(setFgItems)
       .catch(() => setFgItems([]));
-  }, [allowed]);
+  }, [allowed, liveTick]);
 
   const load = React.useCallback(async () => {
     if (!allowed) return;
@@ -137,7 +141,7 @@ export function SoDispatchTraceReportPage() {
     } finally {
       setLoading(false);
     }
-  }, [allowed, page, soSearch, itemId, dateFrom, dateTo, filterTick]);
+  }, [allowed, page, soSearch, itemId, dateFrom, dateTo, filterTick, liveTick]);
 
   React.useEffect(() => {
     void load();

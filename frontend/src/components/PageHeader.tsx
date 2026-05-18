@@ -11,7 +11,7 @@ import { useCanOpenRequirementSheet } from "../hooks/useIsAdmin";
 
 /** Row below the shell title bar: primary actions (e.g. Add), right-aligned. */
 export function PageActions({ children, className }: { children: React.ReactNode; className?: string }) {
-  return <div className={cn("mb-4 flex flex-wrap justify-end gap-2", className)}>{children}</div>;
+  return <div className={cn("mb-3 flex flex-wrap justify-end gap-2", className)}>{children}</div>;
 }
 
 /**
@@ -105,6 +105,8 @@ type SmartBackSource =
   | "reports"
   | "stock_summary"
   | "production_flow"
+  /** Deep-link from Production / workbench into QC — return to `/production`, not dashboard. */
+  | "production_screen"
   | "no_qty_so"
   | "quotations"
   | "enquiries"
@@ -116,6 +118,7 @@ const SMART_BACK_MAP: Record<SmartBackSource, { to: string; label: string }> = {
   stock_summary: { to: "/stock", label: "Back to Stock Summary" },
   // Production Flow landing: must always be a valid page.
   production_flow: { to: "/dashboard", label: "Back to Dashboard" },
+  production_screen: { to: "/production", label: "Back to Production" },
   // NO_QTY list page used in this project.
   no_qty_so: { to: "/sales-orders?soType=NO_QTY", label: "Back to No Qty Sales Orders" },
   quotations: { to: "/quotations", label: "Back to Quotations" },
@@ -133,6 +136,7 @@ function asSmartSourceKey(v: string | null | undefined): SmartBackSource | null 
     x === "reports" ||
     x === "stock_summary" ||
     x === "production_flow" ||
+    x === "production_screen" ||
     x === "no_qty_so" ||
     x === "quotations" ||
     x === "enquiries" ||
@@ -417,7 +421,9 @@ export function PageNoQtyFlowBackLink({
     // NO_QTY flow is cycle-driven; Production returns to Requirement Sheet context (planning authority)
     // — but only for users who can actually open it.
     PRODUCTION: rsBackTarget,
-    QC: { to: `/production?${baseCtx}`, label: "Back to Production" },
+    QC: ctx.fromDashboard
+      ? { to: "/dashboard", label: "Back to Dashboard" }
+      : { to: `/production?${baseCtx}`, label: "Back to Production" },
     DISPATCH: { to: `/qc-entry?${baseCtx}`, label: "Back to QC" },
     SALES_BILL: { to: `/dispatch?${baseCtx}`, label: "Back to Dispatch" },
   };
@@ -436,6 +442,10 @@ export function PageNoQtyFlowBackLink({
     chain.SALES_BILL.to = "/dispatch?source=no_qty_so";
   }
 
+  if (ctx.qs.get("from") === "work-order-workspace" && step === "PRODUCTION") {
+    chain.PRODUCTION = { to: "/work-orders", label: "Back to Work Order Workspace" };
+  }
+
   const next = chain[step];
   // Avoid self-linking: if already at the computed target, fall back to NO_QTY list.
   const to = next.to === `${location.pathname}${location.search}` || next.to === location.pathname ? "/sales-orders?soType=NO_QTY" : next.to;
@@ -444,15 +454,36 @@ export function PageNoQtyFlowBackLink({
 }
 
 /**
- * Compact ERP page header — title + action row on one line.
- * Density refinement: smaller h2 (`text-base`) so the header strip occupies
- * less vertical space, matching SAP/ERPNext transaction headers.
+ * Compact ERP page header — title (+ optional subtitle) + right actions.
+ * Uses the global `erp-type-page-title` scale from `style.css` for cross-module parity.
  */
-export function PageHeader({ title, actions, className }: { title: string; actions?: React.ReactNode; className?: string }) {
+export function PageHeader({
+  title,
+  subtitle,
+  actions,
+  className,
+}: {
+  title: string;
+  /** Secondary line under the title (filters context, document scope, etc.). */
+  subtitle?: React.ReactNode;
+  actions?: React.ReactNode;
+  className?: string;
+}) {
   return (
-    <div className={cn("erp-page-header mb-0 flex flex-wrap items-center justify-between gap-2", className)}>
-      <h2 className="text-base font-semibold leading-snug tracking-tight text-slate-900">{title}</h2>
-      {actions ? <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div> : null}
+    <div
+      className={cn(
+        "erp-page-header mb-0 flex min-w-0 flex-wrap justify-between gap-x-3 gap-y-2",
+        subtitle ? "items-start" : "items-center",
+        className,
+      )}
+    >
+      <div className={cn("min-w-0", subtitle ? "space-y-0.5" : "")}>
+        <h2 className="erp-type-page-title">{title}</h2>
+        {subtitle ? <div className="erp-type-helper max-w-[min(100%,42rem)] text-slate-500">{subtitle}</div> : null}
+      </div>
+      {actions ? (
+        <div className={cn("erp-page-header-actions", subtitle ? "self-start pt-0.5" : "")}>{actions}</div>
+      ) : null}
     </div>
   );
 }

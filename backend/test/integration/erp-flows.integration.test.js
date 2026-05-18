@@ -407,6 +407,23 @@ d("Reporting + dispatch integration (seeded chain)", () => {
     assert.equal(oursPur[0].quantityMetricContext, QUEUE_SNAPSHOT_ROW_METRIC_CONTEXT.purchaseSummary);
   });
 
+  it("GET /api/dashboard/quotations-pending-so — JSON array for commercial control", async () => {
+    const res = await request(app)
+      .get("/api/dashboard/quotations-pending-so?limit=25")
+      .set(adminAuth())
+      .expect(200);
+    assert.ok(Array.isArray(res.body));
+    assert.match(res.headers["content-type"] || "", /application\/json/i);
+    for (const row of res.body) {
+      assert.ok(typeof row.quotationId === "number" && row.quotationId > 0);
+      assert.ok(typeof row.quotationNo === "string");
+      assert.ok(typeof row.customerName === "string");
+      assert.ok(row.flowType === "REGULAR" || row.flowType === "NO_QTY");
+      assert.equal(row.nextStep, "Create Sales Order");
+      assert.ok(typeof row.href === "string" && row.href.includes("quotationId="));
+    }
+  });
+
   it("GET /api/dashboard — pendingDispatchCount includes seeded SO when backlog exists", async () => {
     const res = await request(app).get("/api/dashboard").set(adminAuth()).expect(200);
     assert.ok(typeof res.body.pendingDispatchCount === "number");

@@ -64,6 +64,10 @@ export const WORKFLOW_STATUS_COPY = {
 
 /** NO_QTY cycle / requirement-sheet / rolling planning ecosystem. */
 export const NO_QTY_TERMS = {
+  /** Operator-facing enquiry / commercial label (not the DB enum). */
+  AGREEMENT_LABEL: "NO_QTY Agreement",
+  /** Explains that qty is planned later — Requirement Sheets / cycles. */
+  PLANNING_HELPER: "Requirement cycle-based planning",
   /** Matches sidebar / route title capitalization. */
   PLANNING_HUB_TITLE: "Requirement & Cycle Planning",
   PLANNING_HUB_SUBTITLE: "Review requirement sheets, shortages, and cycle-driven production signals.",

@@ -91,16 +91,26 @@ type Bill = {
     date: string;
     soId: number;
     docNo?: string | null;
+    cycle?: { id: number; cycleNo: number } | null;
     salesOrder?: { docNo?: string | null; orderType?: "NORMAL" | "REPLACEMENT" | "NO_QTY" };
   };
   lines: BillLine[];
   receipts?: SalesBillReceiptRow[];
+  /** Document-linked cycle for operator UI (from bill or dispatch), not SO planning pointer. */
+  operationalCycleNo?: number | null;
+  cycle?: { id: number; cycleNo: number } | null;
 };
+
+function billHeaderOperationalCycleNo(b: Bill): number | null {
+  if (b.operationalCycleNo != null && Number.isFinite(Number(b.operationalCycleNo))) return Number(b.operationalCycleNo);
+  if (b.cycle?.cycleNo != null && Number.isFinite(Number(b.cycle.cycleNo))) return Number(b.cycle.cycleNo);
+  if (b.dispatch?.cycle?.cycleNo != null && Number.isFinite(Number(b.dispatch.cycle.cycleNo)))
+    return Number(b.dispatch.cycle.cycleNo);
+  return null;
+}
 
 type SoHeadLite = {
   orderType?: "NORMAL" | "REPLACEMENT" | "NO_QTY";
-  internalStatus?: string;
-  currentCycle?: { id?: number; cycleNo?: number | null } | null;
 };
 
 function toDateInputValue(iso: string): string {
@@ -191,11 +201,9 @@ export function SalesBillEditPage() {
       return;
     }
     try {
-      const so = await apiFetch<SoHeadLite & { currentCycle?: SoHeadLite["currentCycle"] }>(`/api/sales-orders/${salesOrderId}`);
+      const so = await apiFetch<SoHeadLite>(`/api/sales-orders/${salesOrderId}`);
       setSoHead({
         orderType: so.orderType,
-        internalStatus: so.internalStatus,
-        currentCycle: so.currentCycle ?? null,
       });
     } catch {
       setSoHead(null);
@@ -598,6 +606,8 @@ export function SalesBillEditPage() {
     );
   }
 
+  const billOperationalCycleNo = billHeaderOperationalCycleNo(bill);
+
   return (
     <PageContainer>
       {adminCancelAuth?.open ? (
@@ -694,10 +704,10 @@ export function SalesBillEditPage() {
           <Badge variant="default" className="h-5 rounded-md border-slate-200 px-1.5 text-[10px] font-semibold text-slate-700">
             {billOrderTypeLabel(soHead?.orderType ?? bill.dispatch.salesOrder?.orderType)}
           </Badge>
-          {soHead?.currentCycle?.cycleNo != null && Number.isFinite(Number(soHead.currentCycle.cycleNo)) ? (
+          {billOperationalCycleNo != null ? (
             <>
               <OpCtxSep />
-              <span className="font-medium text-slate-700">Cycle {soHead.currentCycle.cycleNo}</span>
+              <span className="font-medium text-slate-700">Cycle {billOperationalCycleNo}</span>
             </>
           ) : null}
           <OpCtxSep />

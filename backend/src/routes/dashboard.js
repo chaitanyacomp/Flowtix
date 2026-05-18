@@ -19,21 +19,31 @@ const {
   getProductionQueueRows,
   getQcQueueRows,
   getContinueWorkingRows,
+  logAuditWo147ContinueWorkingRows,
   getActiveNoQtySalesOrders,
   getActionableWorkOrderCount,
   getRmRiskRows,
   getPurchaseSummaryRows,
   getQcWorkQueueCounts,
+  getQuotationsPendingSalesOrderRows,
 } = require("../services/dashboardQueueSnapshots");
-const { usableStockDisplayQty, STOCK_EPS } = require("../services/stockService");
+const { usableStockDisplayQty } = require("../services/stockService");
+const { DISPATCH_READ_ROLES } = require("../constants/erpRoles");
 const { getAccountsDashboard } = require("../services/accountsDashboardService");
+const {
+  dispositionPendingExcludingReworkReady,
+  dispositionHoldRemaining,
+  buildRecentQcRejectionsReportDtos,
+  resolveReportDateRangeFromQuery,
+  sumTotals,
+  buildRecentQcRejectionsPdfBuffer,
+} = require("../services/recentQcRejectionsReport");
 
 const dashboardRouter = express.Router();
 
 const DASHBOARD_SUMMARY_ACCESS_DENIED = "Access denied. Only administrators can view the dashboard summary.";
-/** Target matrix includes DISPATCH; UserRole has no DISPATCH yet — enforce ADMIN + SALES until role system supports it. */
 const DISPATCH_BACKLOG_ACCESS_DENIED =
-  "Access denied. Only administrators and sales staff can view dispatch backlog.";
+  "Access denied. Only administrators and store staff can view dispatch backlog.";
 const PRODUCTION_QUEUE_ACCESS_DENIED =
   "Access denied. Only administrators and production staff can view the production queue.";
 const QC_QUEUE_ACCESS_DENIED = "Access denied. Only administrators and QC staff can view the QC queue.";
@@ -43,18 +53,21 @@ const PURCHASE_SUMMARY_ACCESS_DENIED =
   "Access denied. Only administrators and store staff can view purchase summary.";
 const CONTINUE_WORKING_ACCESS_DENIED =
   "Access denied. You do not have access to the continue-working pipeline list.";
+const QUOTATIONS_PENDING_SO_ACCESS_DENIED =
+  "Access denied. Only administrators and sales staff can view quotations pending sales order creation.";
 
 const dashboardSummaryRoles = requireRole(["ADMIN"], DASHBOARD_SUMMARY_ACCESS_DENIED);
 /** Same broad operational audience as main app nav “Dashboard”. */
 const continueWorkingRoles = requireRole(
-  ["ADMIN", "SALES", "STORE", "PRODUCTION", "QC"],
+  ["ADMIN", "SALES", "STORE", "PRODUCTION", "QC", "DISPATCH"],
   CONTINUE_WORKING_ACCESS_DENIED,
 );
-const dispatchBacklogRoles = requireRole(["ADMIN", "SALES"], DISPATCH_BACKLOG_ACCESS_DENIED);
+const dispatchBacklogRoles = requireRole([...DISPATCH_READ_ROLES], DISPATCH_BACKLOG_ACCESS_DENIED);
 const productionQueueRoles = requireRole(["ADMIN", "PRODUCTION"], PRODUCTION_QUEUE_ACCESS_DENIED);
 const qcQueueRoles = requireRole(["ADMIN", "QC"], QC_QUEUE_ACCESS_DENIED);
 const rmRiskRoles = requireRole(["ADMIN", "STORE", "PRODUCTION"], RM_RISK_ACCESS_DENIED);
 const purchaseSummaryRoles = requireRole(["ADMIN", "STORE"], PURCHASE_SUMMARY_ACCESS_DENIED);
+const quotationsPendingSoRoles = requireRole(["ADMIN", "SALES"], QUOTATIONS_PENDING_SO_ACCESS_DENIED);
 const accountsDashboardRoles = requireRole(["ADMIN", "ACCOUNTS"], "Access denied.");
 
 function dashboardErrorResponse(res, err, endpoint) {
@@ -91,6 +104,7 @@ dashboardRouter.get("/production-queue", requireAuth, productionQueueRoles, asyn
 dashboardRouter.get("/qc-queue", requireAuth, qcQueueRoles, async (req, res, next) => {
   console.log("Dashboard API called", { endpoint: "/api/dashboard/qc-queue" });
   try {
+    /** Same pool as QC workspace production queue: all APPROVED batches with pending first-pass QC (REGULAR + NO_QTY). */
     const rows = await getQcQueueRows();
     return res.json(rows);
   } catch (err) {
@@ -127,6 +141,19 @@ dashboardRouter.get("/accounts", requireAuth, accountsDashboardRoles, async (req
   }
 });
 
+dashboardRouter.get("/quotations-pending-so", requireAuth, quotationsPendingSoRoles, async (req, res, next) => {
+  console.log("Dashboard API called", { endpoint: "/api/dashboard/quotations-pending-so" });
+  try {
+    const raw = Number(req.query.limit);
+    const limit =
+      Number.isFinite(raw) && raw > 0 ? Math.min(50, Math.max(1, Math.floor(raw))) : 25;
+    const rows = await getQuotationsPendingSalesOrderRows({ limit });
+    return res.json(rows);
+  } catch (err) {
+    return dashboardErrorResponse(res, err, "/api/dashboard/quotations-pending-so");
+  }
+});
+
 dashboardRouter.get("/continue-working", requireAuth, continueWorkingRoles, async (req, res, next) => {
   console.log("Dashboard API called", { endpoint: "/api/dashboard/continue-working" });
   try {
@@ -134,6 +161,7 @@ dashboardRouter.get("/continue-working", requireAuth, continueWorkingRoles, asyn
     const limit =
       Number.isFinite(raw) && raw > 0 ? Math.min(100, Math.max(5, Math.floor(raw))) : 50;
     const rows = await getContinueWorkingRows({ limit });
+    logAuditWo147ContinueWorkingRows(rows);
     return res.json(rows);
   } catch (err) {
     return dashboardErrorResponse(res, err, "/api/dashboard/continue-working");
@@ -150,6 +178,57 @@ dashboardRouter.get("/no-qty-active", requireAuth, continueWorkingRoles, async (
     return res.json(rows);
   } catch (err) {
     return dashboardErrorResponse(res, err, "/api/dashboard/no-qty-active");
+  }
+});
+
+const RECENT_QC_REJECTIONS_REPORT_ROW_CAP = 2500;
+
+dashboardRouter.get("/recent-qc-rejections-report.pdf", requireAuth, dashboardSummaryRoles, async (req, res, next) => {
+  try {
+    const parsed = resolveReportDateRangeFromQuery(req.query);
+    if ("error" in parsed) return res.status(400).json({ message: parsed.error });
+    const { from, to } = parsed;
+    const rows = await buildRecentQcRejectionsReportDtos(prisma, {
+      dateFrom: from,
+      dateTo: to,
+      take: RECENT_QC_REJECTIONS_REPORT_ROW_CAP,
+    });
+    const buf = await buildRecentQcRejectionsPdfBuffer({
+      rows,
+      from,
+      to,
+      generatedAt: new Date(),
+    });
+    const fname = `recent-qc-rejections_${from.toISOString().slice(0, 10)}_${to.toISOString().slice(0, 10)}.pdf`;
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="${fname}"`);
+    return res.send(buf);
+  } catch (err) {
+    return dashboardErrorResponse(res, err, "/api/dashboard/recent-qc-rejections-report.pdf");
+  }
+});
+
+dashboardRouter.get("/recent-qc-rejections-report", requireAuth, dashboardSummaryRoles, async (req, res, next) => {
+  try {
+    const parsed = resolveReportDateRangeFromQuery(req.query);
+    if ("error" in parsed) return res.status(400).json({ message: parsed.error });
+    const { from, to } = parsed;
+    const rows = await buildRecentQcRejectionsReportDtos(prisma, {
+      dateFrom: from,
+      dateTo: to,
+      take: RECENT_QC_REJECTIONS_REPORT_ROW_CAP,
+    });
+    const totals = sumTotals(rows);
+    const generatedAt = new Date();
+    return res.json({
+      from: from.toISOString(),
+      to: to.toISOString(),
+      generatedAt: generatedAt.toISOString(),
+      rows,
+      totals,
+    });
+  } catch (err) {
+    return dashboardErrorResponse(res, err, "/api/dashboard/recent-qc-rejections-report");
   }
 });
 
@@ -202,20 +281,6 @@ dashboardRouter.get("/", requireAuth, dashboardSummaryRoles, async (req, res, ne
     });
     const acc = Number(qcAgg._sum.acceptedQty || 0);
     const rejGross = Number(qcAgg._sum.rejectedQty || 0);
-
-    /**
-     * Dashboard KPI: net scrap/loss tied to QC entries (ScrapRecord.qcEntryId) plus disposition qty
-     * that is not recoverable in rework QC (excludes REWORK_READY_FOR_QC — material still in rework pipeline).
-     */
-    function dispositionPendingExcludingReworkReady(dispositions) {
-      return (dispositions || []).reduce((ss, d) => {
-        const rem = Number(d.remainingQty ?? 0) || 0;
-        if (!(rem > STOCK_EPS)) return ss;
-        if (String(d.status) === "CLOSED") return ss;
-        if (String(d.status) === "REWORK_READY_FOR_QC") return ss;
-        return ss + rem;
-      }, 0);
-    }
 
     const recentNetQcAggRows = await prisma.qcEntry.findMany({
       where: { ...QC_ENTRY_ACTIVE_WHERE, date: { gte: since } },
@@ -281,43 +346,8 @@ dashboardRouter.get("/", requireAuth, dashboardSummaryRoles, async (req, res, ne
       },
     });
 
-    const recentQcRejectionsRaw = await prisma.qcEntry.findMany({
-      where: { ...QC_ENTRY_ACTIVE_WHERE },
-      orderBy: { date: "desc" },
-      take: 40,
-      include: {
-        production: {
-          include: { workOrderLine: { include: { fgItem: true } } },
-        },
-        rejectedDispositions: {
-          where: { voidedAt: null },
-          select: { remainingQty: true, status: true },
-        },
-      },
-    });
-    const recentIds = recentQcRejectionsRaw.map((q) => q.id);
-    const scrapByRecentQcId = new Map();
-    if (recentIds.length) {
-      const groupedRecentScrap = await prisma.scrapRecord.groupBy({
-        by: ["qcEntryId"],
-        where: { qcEntryId: { in: recentIds }, voidedAt: null },
-        _sum: { rejectedQty: true },
-      });
-      for (const g of groupedRecentScrap) {
-        if (g.qcEntryId == null) continue;
-        scrapByRecentQcId.set(g.qcEntryId, Number(g._sum.rejectedQty || 0));
-      }
-    }
-    const recentQcRejections = recentQcRejectionsRaw
-      .map((q) => {
-        const scrapSum = scrapByRecentQcId.get(q.id) || 0;
-        const pending = dispositionPendingExcludingReworkReady(q.rejectedDispositions);
-        const netLossOrUnresolvedQty = Math.max(0, scrapSum + pending);
-        const rejectedGrossQty = Number(q.rejectedQty) || 0;
-        return { q, netLossOrUnresolvedQty, rejectedGrossQty };
-      })
-      .filter(({ rejectedGrossQty, netLossOrUnresolvedQty }) => rejectedGrossQty > 0 && netLossOrUnresolvedQty > STOCK_EPS)
-      .slice(0, 8);
+    const recentQcRejectionsFull = await buildRecentQcRejectionsReportDtos(prisma, { take: 40 });
+    const recentQcRejections = recentQcRejectionsFull.slice(0, 8);
 
     const salesOrders = await prisma.salesOrder.findMany({
       include: { dispatch: true, lines: { include: { item: true } } },
@@ -457,23 +487,7 @@ dashboardRouter.get("/", requireAuth, dashboardSummaryRoles, async (req, res, ne
       purchasePending,
       openEnquiries,
       qcWorkQueueCounts,
-      recentQcRejections: recentQcRejections.map(({ q, netLossOrUnresolvedQty, rejectedGrossQty }) => ({
-        id: q.id,
-        date: q.date,
-        itemName:
-          q.production?.workOrderLine?.fgItem?.itemName ??
-          q.production?.workOrderLine?.fgItem?.itemCode ??
-          "Unknown Item",
-        rejectedGrossQty,
-        netLossOrUnresolvedQty,
-        /** @deprecated prefer rejectedGrossQty / netLossOrUnresolvedQty */
-        rejectedQty: rejectedGrossQty,
-        netRejectedImpactQty: netLossOrUnresolvedQty,
-        acceptedQty: Number(q.acceptedQty),
-        lossQty: Number(q.lossQty),
-        reason: q.reason,
-        scrapReusable: q.scrapReusable,
-      })),
+      recentQcRejections,
       dashboardMetricHints: {
         fgStockTotalQty:
           "Sum of displayed USABLE FG qty (ledger USABLE, reversedAt null, floored at 0 per item — same display rule as Stock Summary)",
@@ -487,6 +501,8 @@ dashboardRouter.get("/", requireAuth, dashboardSummaryRoles, async (req, res, ne
           "Count of actionable work orders shown by the Work Orders open list; stale NO_QTY work orders from old cycles are excluded",
         metricDefinitionsRef: METRIC_DEFINITIONS,
         metricContextLegend: METRIC_CONTEXT,
+        recentQcRejections:
+          "Rows: latest QC entries with rejected qty > 0. Rejected (Gross) = qcEntry.rejectedQty. Hold = sum(remainingQty) on dispositions in HOLD. Scrap / Net Loss (table) = ScrapRecord sum for qcEntryId + disposition remainder in rework-pending / disposition-SCRAP paths (pending excluding HOLD; still excludes REWORK_READY_FOR_QC). Recovered = Gross − ScrapRecord − full pending (so Recovered + Hold + Scrap/Net Loss = Gross). KPI netRejectedImpact still uses scrap + full pending (includes hold).",
       },
     });
   } catch (err) {

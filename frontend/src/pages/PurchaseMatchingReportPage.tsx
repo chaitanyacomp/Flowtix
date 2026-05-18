@@ -5,6 +5,7 @@ import { Input } from "../components/ui/input";
 import { PageContainer, ReportPageHeader } from "../components/PageHeader";
 import { apiFetch } from "../services/api";
 import { useDebouncedUrlStringParam, useUrlQueryState } from "../hooks/useUrlQueryState";
+import { ERP_REPORT_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
 import { cn } from "../lib/utils";
 import { rmPoGrnFocusHref, withReportsReturnContext } from "../lib/drillDownRoutes";
 
@@ -112,11 +113,12 @@ export function PurchaseMatchingReportPage() {
   const [loadError, setLoadError] = React.useState<string | null>(null);
 
   const missingDates = !fromDate.trim() || !toDate.trim();
+  const liveTick = useErpRefreshTick(["reports", "stock"], { pollIntervalMs: ERP_REPORT_POLL_MS });
 
   React.useEffect(() => {
     apiFetch<Supplier[]>("/api/suppliers").then(setSuppliers).catch(() => setSuppliers([]));
     apiFetch<Item[]>("/api/items?type=RM").then(setItems).catch(() => setItems([]));
-  }, []);
+  }, [liveTick]);
 
   const filteredItems = React.useMemo(() => {
     const query = q.trim().toLowerCase();
@@ -154,7 +156,7 @@ export function PurchaseMatchingReportPage() {
     }
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fromDate, toDate, supplierId, itemId, status, mismatchesOnly]);
+  }, [fromDate, toDate, supplierId, itemId, status, mismatchesOnly, liveTick]);
 
   const rows = data?.rows ?? [];
 

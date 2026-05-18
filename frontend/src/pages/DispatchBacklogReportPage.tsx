@@ -7,6 +7,7 @@ import { Input } from "../components/ui/input";
 import { Badge } from "../components/ui/badge";
 import { apiFetch } from "../services/api";
 import { cn } from "../lib/utils";
+import { ERP_REPORT_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
 import {
   type DispatchBacklogRow,
   daysSince,
@@ -82,9 +83,13 @@ export function DispatchBacklogReportPage() {
     });
   }
 
+  const liveTick = useErpRefreshTick(["reports", "dispatch", "dashboard"], {
+    pollIntervalMs: ERP_REPORT_POLL_MS,
+  });
+
   React.useEffect(() => {
     apiFetch<Customer[]>("/api/customers").then(setCustomers).catch(() => setCustomers([]));
-  }, []);
+  }, [liveTick]);
 
   React.useEffect(() => {
     let mounted = true;
@@ -109,7 +114,7 @@ export function DispatchBacklogReportPage() {
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [liveTick]);
 
   const filtered = React.useMemo(() => {
     const q = search.trim().toLowerCase();

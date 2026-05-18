@@ -403,7 +403,7 @@ async function assertWorkOrderLinesAgainstSalesOrder(tx, { salesOrderId, lineReq
   const isNormalRegularSo = so.orderType === "NORMAL" || so.orderType == null;
   const useShortfallBufferCap = Boolean(shortfallMode) && isNormalRegularSo;
   let bufferPct = n(shortfallBufferPercent);
-  if (!Number.isFinite(bufferPct)) bufferPct = 10;
+  if (!Number.isFinite(bufferPct)) bufferPct = 0;
   bufferPct = Math.min(10, Math.max(0, Math.round(bufferPct)));
 
   const requested = aggregateQtyByItem(lineRequests);

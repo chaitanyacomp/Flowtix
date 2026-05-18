@@ -14,6 +14,7 @@ import { useToast } from "../contexts/ToastContext";
 import { useAuth } from "../hooks/useAuth";
 import { ChevronDown, ChevronUp, Download, ShoppingCart } from "lucide-react";
 import { ReportPageHeader } from "../components/PageHeader";
+import { ERP_REPORT_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
 
 type RmRiskRow = {
   itemId: number;
@@ -56,8 +57,13 @@ const RM_SHORTAGE_URL_OMIT: Record<string, string> = {
   poDir: "asc",
 };
 
-function rmShortageReportAllowed(role: string | undefined): boolean {
+function rmShortageWorkspaceViewAllowed(role: string | undefined): boolean {
   return role === "ADMIN" || role === "STORE" || role === "PRODUCTION";
+}
+
+/** RM PO creation and RM PO drill-down — Store / Admin only (material planning ownership). */
+function canProcureRmFromShortageWorkspace(role: string | undefined): boolean {
+  return role === "ADMIN" || role === "STORE";
 }
 
 /**
@@ -97,7 +103,8 @@ export function RMShortageReportPage() {
   const toast = useToast();
   const navigate = useNavigate();
   const location = useLocation();
-  const allowed = rmShortageReportAllowed(auth.user?.role);
+  const workspaceViewAllowed = rmShortageWorkspaceViewAllowed(auth.user?.role);
+  const procurementAllowed = canProcureRmFromShortageWorkspace(auth.user?.role);
   const { patch, read } = useUrlQueryState(RM_SHORTAGE_URL_OMIT);
 
   // Smart back-nav: if opened from Dashboard (source=dashboard), go back to
@@ -135,9 +142,12 @@ export function RMShortageReportPage() {
     paramKey: "q",
   });
   const search = searchDraft;
+  const liveTick = useErpRefreshTick(["reports", "stock", "production", "dashboard"], {
+    pollIntervalMs: ERP_REPORT_POLL_MS,
+  });
 
   React.useEffect(() => {
-    if (!allowed) return;
+    if (!workspaceViewAllowed) return;
     let mounted = true;
     setRmLoading(true);
     setRmError(null);
@@ -160,10 +170,15 @@ export function RMShortageReportPage() {
     return () => {
       mounted = false;
     };
-  }, [allowed]);
+  }, [workspaceViewAllowed, liveTick]);
 
   React.useEffect(() => {
-    if (!allowed) return;
+    if (!workspaceViewAllowed || !procurementAllowed) {
+      setPoRows([]);
+      setPoError(null);
+      setPoLoading(false);
+      return;
+    }
     let mounted = true;
     setPoLoading(true);
     setPoError(null);
@@ -186,7 +201,13 @@ export function RMShortageReportPage() {
     return () => {
       mounted = false;
     };
-  }, [allowed]);
+  }, [workspaceViewAllowed, procurementAllowed, liveTick]);
+
+  React.useEffect(() => {
+    if (!procurementAllowed && onlyWithPendingPurchase) {
+      patch({ rmPending: null });
+    }
+  }, [procurementAllowed, onlyWithPendingPurchase, patch]);
 
   const itemIdsWithPendingPurchase = React.useMemo(() => {
     const s = new Set<number>();
@@ -204,10 +225,11 @@ export function RMShortageReportPage() {
 
   const rmFiltered = React.useMemo(() => {
     const q = search.trim().toLowerCase();
+    const pendingPurchaseFilterActive = procurementAllowed && onlyWithPendingPurchase;
     return rmRows.filter((r) => {
       if (shortageOnly && r.status !== "CRITICAL") return false;
       if (statusFilter !== "ALL" && r.status !== statusFilter) return false;
-      if (onlyWithPendingPurchase && !itemIdsWithPendingPurchase.has(r.itemId)) return false;
+      if (pendingPurchaseFilterActive && !itemIdsWithPendingPurchase.has(r.itemId)) return false;
       if (q) {
         const code = (r.itemCode || "").toLowerCase();
         const name = (r.itemName || "").toLowerCase();
@@ -215,7 +237,15 @@ export function RMShortageReportPage() {
       }
       return true;
     });
-  }, [rmRows, statusFilter, search, onlyWithPendingPurchase, shortageOnly, itemIdsWithPendingPurchase]);
+  }, [
+    rmRows,
+    statusFilter,
+    search,
+    onlyWithPendingPurchase,
+    procurementAllowed,
+    shortageOnly,
+    itemIdsWithPendingPurchase,
+  ]);
 
   const rmSorted = React.useMemo(() => {
     const out = [...rmFiltered];
@@ -250,7 +280,7 @@ export function RMShortageReportPage() {
   const hasActiveRmFilters =
     statusFilter !== "ALL" ||
     search.trim() !== "" ||
-    onlyWithPendingPurchase ||
+    (procurementAllowed && onlyWithPendingPurchase) ||
     shortageOnly;
 
   const rmSortDiffers = rmSortBy !== DEFAULT_RM_SORT || rmSortDir !== DEFAULT_RM_DIR;
@@ -290,12 +320,10 @@ export function RMShortageReportPage() {
   }
 
   /**
-   * Row click on a shortage line opens the RM ledger filtered to this item so
-   * STORE can verify recent stock movement before placing an RM PO. The
-   * explicit "Create RM PO" button on the row is the actual action — row
-   * activation is informational.
+   * Row click opens RM ledger for Store/Admin. Production has no ledger route — row stays static.
    */
   function onRmRowActivate(r: RmRiskRow) {
+    if (!procurementAllowed) return;
     navigate(`/stock/rm-ledger?itemId=${encodeURIComponent(String(r.itemId))}&source=rm-shortage`);
   }
 
@@ -313,6 +341,10 @@ export function RMShortageReportPage() {
    * the new PO modal with the shortage qty.
    */
   function onCreateRmPoForRow(r: RmRiskRow) {
+    if (!procurementAllowed) {
+      toast.showInfo("RM Purchase Orders are created by Store or Admin only.");
+      return;
+    }
     navigate(
       buildCreateRmPoHref({
         itemId: r.itemId,
@@ -347,7 +379,7 @@ export function RMShortageReportPage() {
     return cn("border-l-2 border-slate-500/70 border-y-0 border-r-0 border-solid pl-2");
   }
 
-  if (!allowed) {
+  if (!workspaceViewAllowed) {
     return (
       <div className="rounded-md border border-slate-200 bg-slate-50 px-6 py-10 text-center shadow-sm">
         <h2 className="text-lg font-semibold text-slate-900">Not authorized</h2>
@@ -363,11 +395,33 @@ export function RMShortageReportPage() {
       <ReportPageHeader
         className="mb-0"
         title="RM Shortage Workspace"
-        purpose="Review material shortages, pending purchase coverage, and create RM PO for blocked production."
+        purpose={
+          procurementAllowed
+            ? "Review material shortages, pending purchase coverage, and create RM PO for blocked production."
+            : "Read-only view of raw material shortages affecting open work orders. RM PO creation and purchase coverage are handled by Store / Admin (Material Planning)."
+        }
         back={back}
       />
 
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      {!procurementAllowed ? (
+        <div
+          role="status"
+          className="rounded-md border border-amber-200 bg-amber-50/90 px-4 py-3 text-sm text-amber-950 shadow-sm"
+        >
+          <p className="font-semibold">Production view — no procurement actions</p>
+          <p className="mt-1 text-xs leading-relaxed text-amber-900/95">
+            You can review shortage quantities here. To open RM ledger, create RM POs, or manage pending purchase lines, use an account with Store or
+            Admin role. Contact Material Planning if production is blocked by raw material shortage.
+          </p>
+        </div>
+      ) : null}
+
+      <div
+        className={cn(
+          "grid gap-3 sm:grid-cols-2",
+          procurementAllowed ? "lg:grid-cols-4" : "lg:grid-cols-3",
+        )}
+      >
         <div className="rounded-md border border-slate-200 bg-white p-3 shadow-sm">
           <div className="text-xs font-medium uppercase tracking-wide text-slate-500">Critical RM items</div>
           <div className="mt-1 text-2xl font-semibold tabular-nums text-red-800">{summary.critical}</div>
@@ -380,10 +434,12 @@ export function RMShortageReportPage() {
           <div className="text-xs font-medium uppercase tracking-wide text-slate-500">Total shortage qty</div>
           <div className="mt-1 text-2xl font-semibold tabular-nums text-slate-900">{summary.totalShortage.toFixed(3)}</div>
         </div>
-        <div className="rounded-md border border-slate-200 bg-white p-3 shadow-sm">
-          <div className="text-xs font-medium uppercase tracking-wide text-slate-500">Pending Material Planning lines</div>
-          <div className="mt-1 text-2xl font-semibold tabular-nums text-slate-900">{summary.pendingLines}</div>
-        </div>
+        {procurementAllowed ? (
+          <div className="rounded-md border border-slate-200 bg-white p-3 shadow-sm">
+            <div className="text-xs font-medium uppercase tracking-wide text-slate-500">Pending Material Planning lines</div>
+            <div className="mt-1 text-2xl font-semibold tabular-nums text-slate-900">{summary.pendingLines}</div>
+          </div>
+        ) : null}
       </div>
 
       <Card className="border-slate-200 shadow-sm">
@@ -431,11 +487,22 @@ export function RMShortageReportPage() {
           </p>
 
           <div className="flex flex-col gap-3 border-t border-slate-100 pt-3 sm:flex-row sm:flex-wrap sm:items-center sm:gap-6">
-            <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-700">
+            <label
+              className={cn(
+                "flex items-center gap-2 text-sm text-slate-700",
+                procurementAllowed ? "cursor-pointer" : "cursor-not-allowed opacity-60",
+              )}
+              title={
+                procurementAllowed
+                  ? undefined
+                  : "Purchase-line coverage is visible to Store and Admin only. This filter is disabled in your role."
+              }
+            >
               <input
                 type="checkbox"
                 className="h-4 w-4 rounded border-slate-300 text-slate-900"
                 checked={onlyWithPendingPurchase}
+                disabled={!procurementAllowed}
                 onChange={(e) =>
                   patch({ rmPending: e.target.checked ? "1" : null })
                 }
@@ -594,26 +661,38 @@ export function RMShortageReportPage() {
                     <tbody>
                       {rmSorted.map((r, idx) => {
                         const needsPo = r.shortageQty > ROW_NUM_EPS;
+                        const rowDrillEnabled = procurementAllowed;
+                        const createPoDisabled = !procurementAllowed || !needsPo;
+                        const createPoTitle = !procurementAllowed
+                          ? "No permission — RM POs are created by Store or Admin only."
+                          : needsPo
+                            ? `Create RM PO for ${r.itemName}${r.shortageQty ? ` (shortage ${r.shortageQty})` : ""}`
+                            : "No active shortage on this item";
                         return (
                         <tr
                           key={`${r.itemId}-${idx}`}
-                          role="button"
-                          tabIndex={0}
-                          aria-label={`Open RM ledger for ${r.itemName}`}
+                          {...(rowDrillEnabled
+                            ? {
+                                role: "button" as const,
+                                tabIndex: 0,
+                                "aria-label": `Open RM ledger for ${r.itemName}`,
+                                onClick: () => onRmRowActivate(r),
+                                onMouseDown: suppressMouseFocusOnDrillRow,
+                                onKeyDown: (e: React.KeyboardEvent<HTMLTableRowElement>) => {
+                                  if (e.key === "Enter" || e.key === " ") {
+                                    e.preventDefault();
+                                    onRmRowActivate(r);
+                                  }
+                                },
+                              }
+                            : { "aria-label": `${r.itemName} — read-only row` })}
                           className={cn(
-                            "cursor-pointer select-none transition-colors hover:bg-slate-50/90 focus-visible:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-300 focus-visible:ring-offset-1",
+                            rowDrillEnabled &&
+                              "cursor-pointer select-none transition-colors hover:bg-slate-50/90 focus-visible:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-300 focus-visible:ring-offset-1",
                             r.status === "CRITICAL" &&
                               "[&_td]:!bg-red-50 [&_td]:border-b-red-100/90",
                             r.status === "LOW_BUFFER" && "[&_td]:!bg-amber-50/55 [&_td]:border-b-amber-100/70",
                           )}
-                          onClick={() => onRmRowActivate(r)}
-                          onMouseDown={suppressMouseFocusOnDrillRow}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter" || e.key === " ") {
-                              e.preventDefault();
-                              onRmRowActivate(r);
-                            }
-                          }}
                         >
                           <td
                             className={cn(
@@ -652,21 +731,25 @@ export function RMShortageReportPage() {
                             <Button
                               type="button"
                               size="sm"
-                              variant={r.status === "CRITICAL" ? "default" : "outline"}
+                              variant={!procurementAllowed ? "outline" : r.status === "CRITICAL" ? "default" : "outline"}
                               className={cn(
                                 "h-8 gap-1.5 px-3 text-xs font-semibold shadow-sm",
-                                r.status === "CRITICAL" && "bg-red-700 text-white hover:bg-red-800",
+                                procurementAllowed &&
+                                  r.status === "CRITICAL" &&
+                                  "bg-red-700 text-white hover:bg-red-800",
                               )}
-                              disabled={!needsPo}
-                              title={
-                                needsPo
-                                  ? `Create RM PO for ${r.itemName}${r.shortageQty ? ` (shortage ${r.shortageQty})` : ""}`
-                                  : "No active shortage on this item"
-                              }
+                              disabled={createPoDisabled}
+                              title={createPoTitle}
                               onClick={() => onCreateRmPoForRow(r)}
                             >
-                              <ShoppingCart className="h-3.5 w-3.5 shrink-0" aria-hidden />
-                              Create RM PO
+                              {procurementAllowed ? (
+                                <>
+                                  <ShoppingCart className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                                  Create RM PO
+                                </>
+                              ) : (
+                                "No access"
+                              )}
                             </Button>
                           </td>
                         </tr>
@@ -681,7 +764,8 @@ export function RMShortageReportPage() {
         </CardContent>
       </Card>
 
-      {/* Purchase coverage */}
+      {/* Purchase coverage — procurement roles only (same API gate as RM PO create). */}
+      {procurementAllowed ? (
       <Card className="flex min-h-0 flex-col border-slate-200 shadow-sm">
         <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-3 space-y-0 pb-2">
           <div className="min-w-0 max-w-xl space-y-1">
@@ -845,6 +929,7 @@ export function RMShortageReportPage() {
           )}
         </CardContent>
       </Card>
+      ) : null}
     </div>
   );
 }

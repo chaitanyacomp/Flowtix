@@ -59,6 +59,7 @@ import {
   STOCK_READ_ROLES,
   CUSTOMER_RETURN_READ_ROLES,
 } from "../config/erpRoles";
+import { isStoreNavItemVisible } from "../lib/storeNavFilter";
 
 type NavItem = {
   to: string;
@@ -290,7 +291,17 @@ export function AppLayout() {
   const { pathname } = useLocation();
   const role = auth.user?.role || "";
   const pageTitle =
-    pathname === "/dashboard" && role === "ACCOUNTS" ? "Accounts" : getPageTitle(pathname);
+    pathname === "/dashboard" && role === "ACCOUNTS"
+      ? "Accounts"
+      : pathname === "/dashboard" && (role === "STORE" || role === "DISPATCH")
+        ? "Dispatch desk"
+        : pathname === "/dashboard" && role === "PRODUCTION"
+          ? "Production desk"
+          : pathname === "/dashboard" && role === "QC"
+            ? "QC desk"
+            : pathname === "/dashboard" && role === "ADMIN"
+              ? "Operations"
+              : getPageTitle(pathname);
 
   const [sidebarCollapsed, setSidebarCollapsed] = React.useState(() => {
     if (typeof window === "undefined") return false;
@@ -318,8 +329,8 @@ export function AppLayout() {
     <div className="erp-shell erp-app-shell app-shell">
       <aside
         className={cn(
-          "erp-sidebar flex shrink-0 flex-col overflow-hidden border-r border-slate-200 bg-white transition-[width] duration-200 ease-in-out",
-          sidebarCollapsed ? "w-[3.25rem]" : "w-48 sm:w-56",
+          "erp-sidebar overflow-hidden transition-[width] duration-300 ease-[cubic-bezier(0.4,0,0.2,1)]",
+          sidebarCollapsed ? "w-14" : "w-60",
         )}
         data-sidebar-collapsed={sidebarCollapsed ? "1" : "0"}
       >
@@ -328,14 +339,14 @@ export function AppLayout() {
           title={sidebarCollapsed ? "Dashboard · Mini ERP home" : undefined}
           className={({ isActive }) =>
             cn(
-              "flex shrink-0 items-center border-b border-slate-200 text-sm font-semibold text-slate-900 no-underline hover:bg-slate-50",
-              sidebarCollapsed ? "justify-center px-0 py-2.5" : "erp-sidebar-brand",
-              isActive ? "bg-blue-50 text-blue-900" : "",
+              "erp-nav-link flex shrink-0 items-center rounded-none border-b border-slate-200/80 text-[13px] font-semibold tracking-tight text-slate-900 no-underline",
+              sidebarCollapsed ? "py-2.5" : "px-3 py-2.5",
+              isActive ? "erp-nav-link-active" : "",
             )
           }
         >
           {sidebarCollapsed ? (
-            <LayoutDashboard className="h-5 w-5 shrink-0 text-blue-800" aria-hidden />
+            <LayoutDashboard className="h-[1.15rem] w-[1.15rem] shrink-0 text-slate-800" aria-hidden />
           ) : (
             "Mini ERP"
           )}
@@ -343,30 +354,26 @@ export function AppLayout() {
         <nav
           id="erp-sidebar-nav"
           className={cn(
-            "flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto pb-4 pt-1",
+            "flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto pb-3 pt-1.5",
             sidebarCollapsed ? "px-1" : "px-2",
           )}
         >
           {navGroups.map((group) => {
-            const visible = group.items.filter((n) => n.roles.includes(role));
+            const visible = group.items.filter(
+              (n) => n.roles.includes(role) && isStoreNavItemVisible(role, n.navKey),
+            );
             if (!visible.length) return null;
 
             if (!group.collapsible) {
               const item = visible[0] ?? null;
               if (!item) return null;
               return (
-                <div key={group.key} className="pt-0.5">
+                <div key={group.key} className="pt-0">
                   <DemoGatedNavLink
                     to={item.to}
                     end={item.end === true}
                     title={sidebarCollapsed ? item.label : undefined}
-                    className={({ isActive }) =>
-                      cn(
-                        "erp-nav-link",
-                        sidebarCollapsed && "justify-center gap-0 px-1.5 py-2",
-                        isActive ? "erp-nav-link-active" : "",
-                      )
-                    }
+                    className={({ isActive }) => cn("erp-nav-link", isActive ? "erp-nav-link-active" : "")}
                   >
                     {group.icon}
                     {!sidebarCollapsed ? <span className="min-w-0 truncate">{group.label}</span> : null}
@@ -382,8 +389,7 @@ export function AppLayout() {
                   title={sidebarCollapsed ? group.label : undefined}
                   className={cn(
                     "erp-nav-link list-none cursor-pointer select-none",
-                    defaultOpen ? "bg-slate-50" : "",
-                    sidebarCollapsed && "justify-center gap-0 px-1.5 py-2",
+                    defaultOpen ? "bg-slate-50/55" : "",
                   )}
                 >
                   {group.icon}
@@ -399,20 +405,14 @@ export function AppLayout() {
                     <span className="sr-only">{group.label}</span>
                   )}
                 </summary>
-                <div className={cn("mt-1 space-y-0.5", sidebarCollapsed ? "pl-0" : "pl-3")}>
+                <div className={cn("mt-0.5 space-y-0.5", sidebarCollapsed ? "pl-0" : "pl-2.5")}>
                   {visible.map((item) => (
                     <DemoGatedNavLink
                       key={item.navKey}
                       to={item.to}
                       end={item.end === true}
                       title={sidebarCollapsed ? item.label : undefined}
-                      className={({ isActive }) =>
-                        cn(
-                          "erp-nav-link py-1.5 text-[13px]",
-                          sidebarCollapsed && "justify-center gap-0 px-1.5",
-                          isActive ? "erp-nav-link-active" : "",
-                        )
-                      }
+                      className={({ isActive }) => cn("erp-nav-link text-[13px] leading-snug", isActive ? "erp-nav-link-active" : "")}
                     >
                       {item.icon}
                       {!sidebarCollapsed ? <span className="min-w-0 truncate">{item.label}</span> : null}
@@ -445,7 +445,7 @@ export function AppLayout() {
                 <ChevronLeft className="h-5 w-5" aria-hidden />
               )}
             </Button>
-            <h1 className="min-w-0 max-w-[40vw] shrink truncate border-l-[3px] border-l-blue-800 pl-2.5 text-lg font-bold leading-tight tracking-tight text-slate-950 sm:max-w-[min(50vw,28rem)] sm:pl-3 sm:text-xl">
+            <h1 className="min-w-0 max-w-[40vw] shrink truncate border-l-[3px] border-l-blue-800/90 pl-2.5 text-base font-semibold leading-tight tracking-tight text-slate-800 sm:max-w-[min(50vw,28rem)] sm:pl-3 sm:text-lg">
               {pageTitle}
             </h1>
           </div>

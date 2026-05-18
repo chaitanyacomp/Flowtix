@@ -1,5 +1,5 @@
 /**
- * NO_QTY recovery closes shortage (rework / post-cycle approvals).
+ * NO_QTY carry-forward uses operator pending qty, not QC-backed recovery.
  *
  * Scenario:
  * - Cycle 2: planned 3000, original QC accepted 2900, rejected 100 → later recovered
@@ -7,7 +7,8 @@
  *   Recovery 100 becomes usable after Cycle 2 closes, and is dispatched in Cycle 3.
  *
  * Assertion:
- * - Carry-forward to Cycle 4 is 0 (shortfall map empty) because recovery counts toward Cycle 3 gross fulfillment.
+ * - Carry-forward to Cycle 4 is 100 because Cycle 3 planned 4100 and approved produced 4000.
+ *   Recovered/dispatched QC stock remains dispatchable, but does not reduce operator planning shortage.
  */
 const { runIntegration } = require("./_integrationEnv");
 
@@ -23,7 +24,7 @@ function daysAgo(n) {
   return new Date(Date.now() - n * 24 * 60 * 60 * 1000);
 }
 
-d("NO_QTY carry-forward closes after recovery", () => {
+d("NO_QTY carry-forward ignores QC-backed recovery for operator planning", () => {
   /** @type {{ soId:number, itemId:number, c2:number, c3:number, c4:number }} */
   let ctx;
 
@@ -94,18 +95,18 @@ d("NO_QTY carry-forward closes after recovery", () => {
     // Cycle 3 embeds carry-forward 100 (gross 4100)
     await lockedRs(c3.id, "2026-03", 4000, 100);
 
-    // Work orders + production + QC accepted
-    async function makeCycleQc(cycleId, acceptedQty) {
+    // Work orders + approved production + QC accepted.
+    async function makeCycleQc(cycleId, producedQty, acceptedQty) {
       const wo = await prisma.workOrder.create({
         data: { salesOrderId: so.id, cycleId, status: "APPROVED", docNo: `WO_${tag}_${cycleId}` },
         select: { id: true },
       });
       const wol = await prisma.workOrderLine.create({
-        data: { workOrderId: wo.id, fgItemId: fg.id, plannedQty: "0", qty: "0" },
+        data: { workOrderId: wo.id, fgItemId: fg.id, plannedQty: String(producedQty), qty: String(producedQty) },
         select: { id: true },
       });
       const pe = await prisma.productionEntry.create({
-        data: { workOrderLineId: wol.id, workflowStatus: "APPROVED", qty: "0" },
+        data: { workOrderLineId: wol.id, workflowStatus: "APPROVED", producedQty: String(producedQty) },
         select: { id: true },
       });
       await prisma.qcEntry.create({
@@ -113,9 +114,9 @@ d("NO_QTY carry-forward closes after recovery", () => {
       });
       return { woId: wo.id };
     }
-    await makeCycleQc(c1.id, 10000);
-    const c2Wo = await makeCycleQc(c2.id, 2900);
-    await makeCycleQc(c3.id, 4000);
+    await makeCycleQc(c1.id, 10000, 10000);
+    const c2Wo = await makeCycleQc(c2.id, 3000, 2900);
+    await makeCycleQc(c3.id, 4000, 4000);
 
     // Cycle 2 rejection disposition + recovery to usable AFTER cycle 2 close (post-cycle approval)
     const disp = await prisma.qcRejectedDisposition.create({
@@ -150,9 +151,11 @@ d("NO_QTY carry-forward closes after recovery", () => {
     ctx = { soId: so.id, itemId: fg.id, c2: c2.id, c3: c3.id, c4: c4.id };
   });
 
-  it("carry-forward shortfall for next cycle is 0", async () => {
+  it("carry-forward shortfall for next cycle is planned minus approved produced", async () => {
     const r = await loadNoQtyCarryForwardShortfallByItem({ salesOrderId: ctx.soId, currentCycleId: ctx.c4 });
-    assert.equal(r.shortfallByItem.size, 0);
+    assert.equal(r.shortfallByItem.get(ctx.itemId)?.rawShortfall, 100);
+    assert.equal(r.shortfallByItem.get(ctx.itemId)?.planned, 4100);
+    assert.equal(r.shortfallByItem.get(ctx.itemId)?.produced, 4000);
   });
 });
 

@@ -127,6 +127,10 @@ function LoginPage() {
     setLoading(true);
     try {
       await auth.login(email.trim(), password);
+      if (import.meta.env.DEV) {
+        // eslint-disable-next-line no-console
+        console.debug("[auth] navigate → /dashboard");
+      }
       navigate("/dashboard");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed");

@@ -25,6 +25,7 @@ import {
 import type { ReactNode } from "react";
 import { withReportsReturnContext } from "../lib/drillDownRoutes";
 import { useAuth } from "../hooks/useAuth";
+import { STORE_REPORT_GROUP_ORDER } from "../lib/storeNavFilter";
 import { Card, CardContent } from "../components/ui/card";
 import { cn } from "../lib/utils";
 
@@ -119,7 +120,7 @@ const GROUP_DEFS: Record<GroupKey, ReportGroupDef> = {
  */
 const ROLE_GROUP_ORDER: Record<RoleKey, GroupKey[]> = {
   SALES: ["sales-ops", "customer-service"],
-  STORE: ["sales-ops", "stock", "purchase", "production", "exceptions"],
+  STORE: [...STORE_REPORT_GROUP_ORDER],
   PRODUCTION: ["production", "quality", "stock", "customer-service"],
   QC: ["quality", "production", "customer-service"],
   ACCOUNTS: ["commercial"],
@@ -150,7 +151,7 @@ const TILES: ReportTile[] = [
     to: "/reports/dispatch-backlog",
     title: "Dispatch Backlog",
     description: "Pending dispatch across active sales orders",
-    roles: ["ADMIN", "SALES"],
+    roles: ["ADMIN", "SALES", "STORE"],
     group: "sales-ops",
     icon: <Truck className="h-4 w-4" />,
     priority: 20,
@@ -186,7 +187,7 @@ const TILES: ReportTile[] = [
     to: "/reports/customer-so-rs",
     title: "Customer-wise SO & RS Report",
     description: "Customer, SO type, cycle, requirement sheet, quantities, and pipeline next action",
-    roles: ["ADMIN", "SALES", "STORE"],
+    roles: ["ADMIN", "SALES"],
     group: "sales-ops",
     icon: <ClipboardList className="h-4 w-4" />,
     priority: 60,
@@ -270,7 +271,8 @@ const TILES: ReportTile[] = [
   {
     to: "/reports/rm-shortage",
     title: "RM Shortage Workspace",
-    description: "Review shortages, plan purchase coverage, and create RM PO",
+    description:
+      "Raw material shortage vs open WO demand. Store and Admin manage purchase coverage and RM PO; Production sees a read-only shortage list.",
     roles: ["ADMIN", "STORE", "PRODUCTION"],
     group: "stock",
     icon: <AlertTriangle className="h-4 w-4" />,
@@ -501,11 +503,13 @@ export function ReportsPage() {
 
   const totalTiles = visibleGroups.reduce((sum, g) => sum + g.tiles.length, 0);
 
-  const heading = role === "ACCOUNTS" ? "Commercial reports" : "Reports";
+  const heading = role === "ACCOUNTS" ? "Commercial reports" : role === "STORE" ? "Dispatch reports" : "Reports";
   const subheading =
     role === "ACCOUNTS"
       ? "Operational registers and billing alignment — statutory books remain in Tally."
-      : "Your reports — organized by department";
+      : role === "STORE"
+        ? "Shipment, stock movement, and dispatch backlog — operational only."
+        : "Your reports — organized by department";
 
   return (
     <div className="flex min-h-0 flex-col gap-3">

@@ -12,6 +12,7 @@ import { useAuth } from "../hooks/useAuth";
 import { NativeSelect } from "../components/ui/native-select";
 import { ReportFilterToolbar, ReportFilterField } from "../components/erp/ReportChrome";
 import { CheckCircle2, Circle, Clock } from "lucide-react";
+import { ERP_REPORT_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
 
 type Customer = { id: number; name: string };
 
@@ -408,6 +409,9 @@ export function CustomerPoTrackingPage() {
   const [detailLoading, setDetailLoading] = React.useState(false);
   const [detailError, setDetailError] = React.useState<string | null>(null);
   const [detail, setDetail] = React.useState<PoDetail | null>(null);
+  const liveTick = useErpRefreshTick(["reports", "customer-tracking", "dashboard", "production", "qc", "dispatch"], {
+    pollIntervalMs: ERP_REPORT_POLL_MS,
+  });
 
   // (was used for a small header suffix; removed to avoid unused var)
 
@@ -539,7 +543,13 @@ export function CustomerPoTrackingPage() {
       cancelled = true;
       window.clearTimeout(t);
     };
-  }, [customerId, dateFrom, dateTo, status, poSearch, accountsRole]);
+  }, [customerId, dateFrom, dateTo, status, poSearch, accountsRole, liveTick]);
+
+  React.useEffect(() => {
+    if (!selectedPoKey) return;
+    void loadDetail(selectedPoKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedPoKey, liveTick]);
 
   async function loadDetail(poKey: number) {
     setSelectedPoKey(poKey);

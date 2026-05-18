@@ -34,7 +34,29 @@ import { NO_QTY_TERMS, REGULAR_TERMS } from "../lib/flowTerminology";
 import { useAuth } from "../hooks/useAuth";
 import { useDemoMode } from "../contexts/DemoModeContext";
 import { demoHighlightKey } from "../lib/demoFlowConfig";
+import { ERP_REPORT_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
+import type { DashboardProductionStatusSource } from "../lib/dashboardProductionStatus";
+import {
+  buildPlanningLifecycleIndex,
+  planningItemNeedsWo,
+  planningLifecycleBadgeVariant,
+  planningLifecycleLabel,
+  resolveOrderWisePlanningPhase,
+  resolveProductWisePlanningPhase,
+} from "../lib/planningItemLifecycleStatus";
 import type { RmRequirementRow } from "./rmPurchase/rmPurchaseShared";
+
+type WoLifecycleRow = {
+  status: string;
+  salesOrderId: number;
+  lines: Array<{ fgItemId: number; approvedProducedQty?: number; remainingQty?: number }>;
+};
+
+type SoCustomerRow = {
+  id: number;
+  customer?: { name?: string | null } | null;
+  po?: { customer?: { name?: string | null } | null } | null;
+};
 
 type Zone = "RED" | "YELLOW" | "GREEN" | "EXCESS";
 
@@ -127,12 +149,18 @@ export function PlanningDashboardPage() {
   const [error, setError] = React.useState<string | null>(null);
   const [rmRequirements, setRmRequirements] = React.useState<RmRequirementRow[]>([]);
   const [rmReqError, setRmReqError] = React.useState<string | null>(null);
+  const [lifecycleIndex, setLifecycleIndex] = React.useState<ReturnType<typeof buildPlanningLifecycleIndex> | null>(
+    null,
+  );
 
   const [view, setView] = React.useState<"ORDER" | "PRODUCT">("ORDER");
   const [customerFilter, setCustomerFilter] = React.useState<string>("ALL");
   const [q, setQ] = React.useState("");
   const [statusFilter, setStatusFilter] = React.useState<"ALL" | Zone>("ALL");
   const [onlyShortage, setOnlyShortage] = React.useState(true); // default: Red+Yellow
+  const liveTick = useErpRefreshTick(["reports", "requirement", "dashboard", "stock"], {
+    pollIntervalMs: ERP_REPORT_POLL_MS,
+  });
 
   React.useEffect(() => {
     setBusy(true);
@@ -141,7 +169,7 @@ export function PlanningDashboardPage() {
       .then((d) => setData(d))
       .catch((e) => setError(e instanceof Error ? e.message : "Failed to load."))
       .finally(() => setBusy(false));
-  }, []);
+  }, [liveTick]);
 
   React.useEffect(() => {
     if (!canSeeRmRequirements) {
@@ -153,7 +181,40 @@ export function PlanningDashboardPage() {
     apiFetch<RmRequirementRow[]>("/api/purchase/rm-requirements")
       .then((rows) => setRmRequirements(Array.isArray(rows) ? rows : []))
       .catch((e) => setRmReqError(e instanceof Error ? e.message : "Could not load RM requirements"));
-  }, [canSeeRmRequirements]);
+  }, [canSeeRmRequirements, liveTick]);
+
+  React.useEffect(() => {
+    let mounted = true;
+    void Promise.all([
+      apiFetch<DashboardProductionStatusSource[]>("/api/dashboard/production-queue"),
+      apiFetch<{ nonCompleted: WoLifecycleRow[]; completed: WoLifecycleRow[] }>(
+        "/api/production/work-orders?listScope=all&completedPage=1&limit=20",
+      ),
+      apiFetch<SoCustomerRow[]>("/api/sales-orders"),
+    ])
+      .then(([queueRows, woBundle, salesOrders]) => {
+        if (!mounted) return;
+        const customerNameBySalesOrderId = new Map<number, string>();
+        for (const so of salesOrders ?? []) {
+          const name = so.customer?.name ?? so.po?.customer?.name ?? "—";
+          customerNameBySalesOrderId.set(so.id, name);
+        }
+        const workOrders = [...(woBundle?.nonCompleted ?? []), ...(woBundle?.completed ?? [])];
+        setLifecycleIndex(
+          buildPlanningLifecycleIndex({
+            queueRows: Array.isArray(queueRows) ? queueRows : [],
+            workOrders,
+            customerNameBySalesOrderId,
+          }),
+        );
+      })
+      .catch(() => {
+        if (mounted) setLifecycleIndex(null);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [liveTick]);
 
   const customers = React.useMemo(() => {
     const set = new Set<string>();
@@ -272,7 +333,17 @@ export function PlanningDashboardPage() {
     return "No items in this view. Try Show All or adjust filters.";
   }
 
-  const planningWoNeedCount = view === "ORDER" ? displayOrderWise.length : displayProductWise.length;
+  const planningWoNeedCount = React.useMemo(() => {
+    if (!lifecycleIndex) return null;
+    if (view === "ORDER") {
+      return displayOrderWise.filter(
+        (r) => planningItemNeedsWo(resolveOrderWisePlanningPhase(lifecycleIndex, r.itemId, r.customerName)),
+      ).length;
+    }
+    return displayProductWise.filter((r) =>
+      planningItemNeedsWo(resolveProductWisePlanningPhase(lifecycleIndex, r.itemId)),
+    ).length;
+  }, [lifecycleIndex, view, displayOrderWise, displayProductWise]);
 
   const showDemoPlanningContinue = showDemoPlanningMock;
 
@@ -445,7 +516,11 @@ export function PlanningDashboardPage() {
             </div>
             <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1.5 sm:ml-auto">
               <p className="whitespace-nowrap text-right text-[11px] tabular-nums text-slate-500" title="Rows in the table below (current view & filters)">
-                {busy ? "…" : `${planningWoNeedCount} ${planningWoNeedCount === 1 ? "item" : "items"} need WO`}
+                {busy
+                  ? "…"
+                  : planningWoNeedCount == null
+                    ? "…"
+                    : `${planningWoNeedCount} ${planningWoNeedCount === 1 ? "item" : "items"} need WO`}
               </p>
               <div className="flex flex-wrap gap-1.5">
               <button
@@ -552,15 +627,19 @@ export function PlanningDashboardPage() {
                     </tr>
                   ) : (
                     displayOrderWise.map((r) => {
+                      const lifecyclePhase = lifecycleIndex
+                        ? resolveOrderWisePlanningPhase(lifecycleIndex, r.itemId, r.customerName)
+                        : null;
                       const b = zoneBadge(r.colorZone);
+                      const showShortageTone = !lifecyclePhase || planningItemNeedsWo(lifecyclePhase);
                       const gapClass =
                         r.gapPercent == null
                           ? "text-slate-500"
                           : r.gapPercent < 0
                             ? "text-sky-800"
-                            : r.colorZone === "RED"
+                            : showShortageTone && r.colorZone === "RED"
                               ? "text-red-700 font-semibold"
-                              : r.colorZone === "YELLOW"
+                              : showShortageTone && r.colorZone === "YELLOW"
                                 ? "text-amber-800 font-semibold"
                                 : "text-emerald-800";
                       return (
@@ -580,6 +659,10 @@ export function PlanningDashboardPage() {
                             {isDemoPlanningMockRow(r.itemId) ? (
                               <Badge variant="warning" className="text-[10px]">
                                 Planning Required
+                              </Badge>
+                            ) : lifecyclePhase && !planningItemNeedsWo(lifecyclePhase) ? (
+                              <Badge variant={planningLifecycleBadgeVariant(lifecyclePhase)} className="text-[10px]">
+                                {planningLifecycleLabel(lifecyclePhase)}
                               </Badge>
                             ) : (
                               <Badge variant={b.variant} className="text-[10px]">
@@ -615,13 +698,17 @@ export function PlanningDashboardPage() {
                     </tr>
                   ) : (
                     displayProductWise.map((r) => {
+                      const lifecyclePhase = lifecycleIndex
+                        ? resolveProductWisePlanningPhase(lifecycleIndex, r.itemId)
+                        : null;
                       const b = zoneBadge(r.colorZone);
+                      const showShortageTone = !lifecyclePhase || planningItemNeedsWo(lifecyclePhase);
                       const gapClass =
                         r.gapQty < 0
                           ? "text-sky-800"
-                          : r.colorZone === "RED"
+                          : showShortageTone && r.colorZone === "RED"
                             ? "text-red-700 font-semibold"
-                            : r.colorZone === "YELLOW"
+                            : showShortageTone && r.colorZone === "YELLOW"
                               ? "text-amber-800 font-semibold"
                               : "text-emerald-800";
                       return (
@@ -636,6 +723,10 @@ export function PlanningDashboardPage() {
                             {isDemoPlanningMockRow(r.itemId) ? (
                               <Badge variant="warning" className="text-[10px]">
                                 Planning Required
+                              </Badge>
+                            ) : lifecyclePhase && !planningItemNeedsWo(lifecyclePhase) ? (
+                              <Badge variant={planningLifecycleBadgeVariant(lifecyclePhase)} className="text-[10px]">
+                                {planningLifecycleLabel(lifecyclePhase)}
                               </Badge>
                             ) : (
                               <Badge variant={b.variant} className="text-[10px]">

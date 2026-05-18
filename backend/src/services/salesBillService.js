@@ -103,7 +103,14 @@ async function deriveSalesRateForSoItem(tx, so, itemId) {
 
 const billInclude = {
   customer: { include: { stateRef: { select: { id: true, stateName: true, stateCode: true } } } },
-  dispatch: { include: { salesOrder: { include: { customer: true, po: { include: { customer: true } }, lines: true } }, item: true } },
+  cycle: { select: { id: true, cycleNo: true } },
+  dispatch: {
+    include: {
+      cycle: { select: { id: true, cycleNo: true } },
+      salesOrder: { include: { customer: true, po: { include: { customer: true } }, lines: true } },
+      item: true,
+    },
+  },
   exportedBy: { select: { id: true, name: true } },
   lines: { include: { item: true }, orderBy: { id: "asc" } },
   receipts: { orderBy: { id: "asc" }, include: { createdBy: { select: { id: true, name: true } } } },
@@ -131,12 +138,21 @@ function withSalesBillGstBreakup(bill, { intraState, companyState }) {
     const gst = cgst + sgst + igst;
     return { ...ln, baseAmount: basic.toFixed(2), gstAmount: gst.toFixed(2) };
   });
+  const operationalCycleNo = (() => {
+    if (bill?.cycle?.cycleNo != null && Number.isFinite(Number(bill.cycle.cycleNo))) return Number(bill.cycle.cycleNo);
+    if (bill?.dispatch?.cycle?.cycleNo != null && Number.isFinite(Number(bill.dispatch.cycle.cycleNo)))
+      return Number(bill.dispatch.cycle.cycleNo);
+    return null;
+  })();
+
   return {
     ...bill,
     taxIntraState: Boolean(intraState),
     companyStateCode: companyState?.companyStateRef?.stateCode ?? null,
     customerStateCode: bill?.customer?.stateRef?.stateCode ?? null,
     lines: nextLines,
+    /** NO_QTY: document-linked cycle for operator UI (not SalesOrder.currentCycle). */
+    operationalCycleNo,
   };
 }
 

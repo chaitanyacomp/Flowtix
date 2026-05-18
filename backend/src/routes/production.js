@@ -63,11 +63,12 @@ const { getApprovedProducedQtyByWorkOrderLineIds } = require("../services/produc
 const productionRouter = express.Router();
 const { DocType } = require("../prismaClientPackage");
 const { allocateDocNo } = require("../services/docNoService");
+const { normalizePositiveCycleId } = require("../utils/cycleIds");
 
 async function assertNoQtyWorkOrderInActiveCycleOrThrow(tx, workOrderId, messagePrefix) {
   const wo = await tx.workOrder.findUnique({
     where: { id: workOrderId },
-    select: { id: true, salesOrderId: true, cycleId: true },
+    select: { id: true, salesOrderId: true, cycleId: true, status: true },
   });
   if (!wo) {
     const err = new Error("Work order not found.");
@@ -89,22 +90,26 @@ async function assertNoQtyWorkOrderInActiveCycleOrThrow(tx, workOrderId, message
     err.statusCode = 409;
     throw err;
   }
-  if (!so.currentCycleId) {
-    const err = new Error("No active cycle available for production.");
+  if (wo.status === "COMPLETED" || wo.status === "REJECTED") {
+    const err = new Error("This work order is not open for production.");
     err.statusCode = 409;
     throw err;
   }
-  if (!wo.cycleId || Number(wo.cycleId) !== Number(so.currentCycleId)) {
-    const err = new Error("Production must be done on latest cycle Work Order.");
+  /**
+   * NO_QTY: allow optional production on this WO's cycle even when {@link SalesOrder.currentCycleId}
+   * has advanced (next RS / new cycle). Same RS-on-cycle guard as QC — do not require wo.cycleId === pointer.
+   */
+  const woCycleId = normalizePositiveCycleId(wo.cycleId);
+  if (!woCycleId) {
+    const err = new Error("This work order is not linked to a requirement-sheet cycle. Production cannot be recorded.");
     err.statusCode = 409;
-    err.code = "NO_QTY_WRONG_CYCLE_WORK_ORDER";
     throw err;
   }
-  const lockedSheet = await tx.requirementSheet.findFirst({
-    where: { salesOrderId: so.id, cycleId: so.currentCycleId, status: "LOCKED" },
+  const lockedOnWoCycle = await tx.requirementSheet.findFirst({
+    where: { salesOrderId: so.id, cycleId: woCycleId, status: "LOCKED" },
     select: { id: true },
   });
-  if (!lockedSheet) {
+  if (!lockedOnWoCycle) {
     const err = new Error("Requirement Sheet must be locked before production.");
     err.statusCode = 409;
     throw err;
@@ -113,24 +118,73 @@ async function assertNoQtyWorkOrderInActiveCycleOrThrow(tx, workOrderId, message
 }
 
 /**
- * NO_QTY: hide work orders that are not on {@link SalesOrder.currentCycleId} or that lack a LOCKED RS for that cycle.
+ * NO_QTY only: allow QC on approved batches for the work order's own cycle when that cycle still has a LOCKED RS.
+ * Production create/update/approve uses the same per-WO-cycle RS lock rule via {@link assertNoQtyWorkOrderInActiveCycleOrThrow}
+ * (no longer requires `wo.cycleId === so.currentCycleId`).
+ * @param {import("@prisma/client").Prisma.TransactionClient} tx
+ * @param {number} workOrderId
+ */
+async function assertNoQtyWorkOrderEligibleForQcOrThrow(tx, workOrderId) {
+  const wo = await tx.workOrder.findUnique({
+    where: { id: workOrderId },
+    select: { id: true, salesOrderId: true, cycleId: true },
+  });
+  if (!wo) {
+    const err = new Error("Work order not found.");
+    err.statusCode = 404;
+    throw err;
+  }
+  const so = await tx.salesOrder.findUnique({
+    where: { id: wo.salesOrderId },
+    select: { id: true, orderType: true, internalStatus: true },
+  });
+  if (!so) {
+    const err = new Error("Sales order not found.");
+    err.statusCode = 404;
+    throw err;
+  }
+  if (so.orderType !== "NO_QTY") return;
+  if (so.internalStatus === "COMPLETED" || so.internalStatus === "MANUALLY_CLOSED" || so.internalStatus === "CLOSED") {
+    const err = new Error("This sales order is closed. Production/QC is view-only.");
+    err.statusCode = 409;
+    throw err;
+  }
+  const woCycleId = wo.cycleId != null ? Number(wo.cycleId) : null;
+  if (!woCycleId || !Number.isFinite(woCycleId) || woCycleId <= 0) {
+    const err = new Error("This production batch is not linked to a requirement-sheet cycle. QC cannot be recorded.");
+    err.statusCode = 409;
+    throw err;
+  }
+  const lockedSheet = await tx.requirementSheet.findFirst({
+    where: { salesOrderId: so.id, cycleId: woCycleId, status: "LOCKED" },
+    select: { id: true },
+  });
+  if (!lockedSheet) {
+    const err = new Error("Requirement Sheet must be locked for this cycle before QC can be recorded.");
+    err.statusCode = 409;
+    throw err;
+  }
+}
+
+/**
+ * NO_QTY: hide work orders that lack a LOCKED RS on the WO's cycle, or that are not actionable vs SO cycle drift.
+ * (Aligned with dashboard {@link filterDashboardActionableWorkOrders}: RS-backed WOs stay visible when
+ * {@link SalesOrder.currentCycleId} advanced before the prior-cycle WO finished.)
  * @param {import("@prisma/client").PrismaClient} prisma
  * @param {Awaited<ReturnType<import("@prisma/client").PrismaClient["workOrder"]["findMany"]>>} rowsRaw
  */
 async function filterNoQtyWorkOrdersForActiveLockedCycle(prisma, rowsRaw) {
-  const noQtyKeys = new Set(
-    (rowsRaw || [])
-      .map((w) => w.salesOrder)
-      .filter((s) => s?.orderType === "NO_QTY")
-      .map((s) => {
-        const soId = Number(s?.id);
-        const cy = Number(s?.currentCycleId);
-        if (!Number.isFinite(soId) || soId <= 0) return null;
-        if (!Number.isFinite(cy) || cy <= 0) return null;
-        return `${soId}:${cy}`;
-      })
-      .filter(Boolean),
-  );
+  const noQtyKeys = new Set();
+  for (const wo of rowsRaw || []) {
+    const so = wo.salesOrder;
+    if (!so || so.orderType !== "NO_QTY") continue;
+    const soId = Number(so.id ?? wo.salesOrderId);
+    if (!Number.isFinite(soId) || soId <= 0) continue;
+    const pointerCy = normalizePositiveCycleId(so.currentCycleId);
+    if (pointerCy != null) noQtyKeys.add(`${soId}:${pointerCy}`);
+    const woCy = normalizePositiveCycleId(wo.cycle?.id) ?? normalizePositiveCycleId(wo.cycleId);
+    if (woCy != null) noQtyKeys.add(`${soId}:${woCy}`);
+  }
   const lockedSheets =
     noQtyKeys.size > 0
       ? await prisma.requirementSheet.findMany({
@@ -151,12 +205,15 @@ async function filterNoQtyWorkOrdersForActiveLockedCycle(prisma, rowsRaw) {
     if (so.internalStatus === "COMPLETED" || so.internalStatus === "MANUALLY_CLOSED" || so.internalStatus === "CLOSED") {
       return false;
     }
-    const activeCycleId = Number(so.currentCycleId);
-    if (!Number.isFinite(activeCycleId) || activeCycleId <= 0) return false;
-    const woCycleId = wo.cycleId == null ? null : Number(wo.cycleId);
-    if (!woCycleId || woCycleId !== activeCycleId) return false;
-    if (!lockedKeySet.has(`${so.id}:${activeCycleId}`)) return false;
-    return true;
+    const pointerCycleId = normalizePositiveCycleId(so.currentCycleId);
+    const woCycleId =
+      normalizePositiveCycleId(wo.cycle?.id) ?? normalizePositiveCycleId(wo.cycleId);
+    if (woCycleId == null) return false;
+    if (!lockedKeySet.has(`${so.id}:${woCycleId}`)) return false;
+
+    if (pointerCycleId != null && woCycleId === pointerCycleId) return true;
+    if (wo.requirementSheetId != null) return true;
+    return wo.cycle?.status === "ACTIVE";
   });
 }
 
@@ -858,6 +915,31 @@ productionRouter.get(
         err.statusCode = 400;
         throw err;
       }
+
+      const woInclude = { lines: { include: { fgItem: true } }, salesOrder: true, cycle: { select: { id: true, cycleNo: true, status: true } } };
+      const rawAll = await prisma.workOrder.findMany({
+        where: { salesOrderId: so.id, status: { not: "COMPLETED" } },
+        orderBy: { id: "desc" },
+        include: woInclude,
+      });
+      const rowsFiltered = await filterNoQtyWorkOrdersForActiveLockedCycle(prisma, rawAll);
+      await reconcileNoQtyWoLineQtyWithRsSnapshot(prisma, rowsFiltered || []);
+      const payload = await buildWorkOrderListPayload(prisma, rowsFiltered || [], {
+        pendingOnly: false,
+        includeWorkOrderLineId: undefined,
+      });
+      const hasPendingLine = (payload || []).some((w) =>
+        (w.lines || []).some((l) => {
+          const rem =
+            l.remainingQty != null ? Number(l.remainingQty) : Math.max(0, Number(l.qty) - Number(l.approvedProducedQty ?? 0));
+          return rem > REPORT_QUEUE_EPS;
+        }),
+      );
+
+      if (hasPendingLine) {
+        return res.json({ reason: "HAS_PENDING", message: "" });
+      }
+
       if (!so.currentCycleId) {
         return res.json({
           reason: "NO_ACTIVE_CYCLE",
@@ -876,36 +958,10 @@ productionRouter.get(
         });
       }
 
-      const woInclude = { lines: { include: { fgItem: true } }, salesOrder: true };
-      const raw = await prisma.workOrder.findMany({
-        where: {
-          salesOrderId: so.id,
-          cycleId: so.currentCycleId,
-          status: { not: "COMPLETED" },
-        },
-        orderBy: { id: "desc" },
-        include: woInclude,
+      return res.json({
+        reason: "ALL_COMPLETED",
+        message: "All production completed for this cycle",
       });
-      await reconcileNoQtyWoLineQtyWithRsSnapshot(prisma, raw || []);
-      const payload = await buildWorkOrderListPayload(prisma, raw || [], {
-        pendingOnly: false,
-        includeWorkOrderLineId: undefined,
-      });
-      const hasPendingLine = (payload || []).some((w) =>
-        (w.lines || []).some((l) => {
-          const rem = l.remainingQty != null ? Number(l.remainingQty) : Math.max(0, Number(l.qty) - Number(l.approvedProducedQty ?? 0));
-          return rem > REPORT_QUEUE_EPS;
-        }),
-      );
-
-      if (!hasPendingLine) {
-        return res.json({
-          reason: "ALL_COMPLETED",
-          message: "All production completed for this cycle",
-        });
-      }
-
-      return res.json({ reason: "HAS_PENDING", message: "" });
     } catch (e) {
       return next(e);
     }
@@ -936,7 +992,7 @@ productionRouter.get(
       const woInclude = {
         lines: { include: { fgItem: true } },
         salesOrder: true,
-        cycle: { select: { id: true, cycleNo: true } },
+        cycle: { select: { id: true, cycleNo: true, status: true } },
       };
 
       const completedPageRaw = Number(req.query.completedPage ?? req.query.page ?? 1);
@@ -1039,6 +1095,7 @@ productionRouter.get(
 /**
  * GET /production-entries — list batches; qcEntries filtered to active (non-reversed) for rollups.
  * `withoutQc=1`: APPROVED batches with pending QC qty > 0 (QC queue; excludes DRAFT).
+ * `excludeNoQty=1` with global `withoutQc=1` (no `salesOrderId`): omit NO_QTY batches — REGULAR production QC workspace only.
  * DRAFT batches are editable on the Production page until approved.
  */
 productionRouter.get(
@@ -1096,6 +1153,21 @@ productionRouter.get(
         } else {
           where = { ...where, workOrderLine: { workOrder: { salesOrderId } } };
         }
+      } else if (
+        withoutQc &&
+        (req.query.excludeNoQty === "1" || req.query.excludeNoQty === "true")
+      ) {
+        /** Global REGULAR production-QC workspace: never mix NO_QTY cycle batches into the same list. */
+        where = {
+          ...where,
+          workOrderLine: {
+            workOrder: {
+              salesOrder: {
+                is: { orderType: { not: "NO_QTY" } },
+              },
+            },
+          },
+        };
       }
       const rows = await prisma.productionEntry.findMany({
         where,
@@ -1106,7 +1178,7 @@ productionRouter.get(
               workOrder: {
                 include: {
                   salesOrder: { select: { orderType: true } },
-                  cycle: { select: { id: true, cycleNo: true } },
+                  cycle: { select: { id: true, cycleNo: true, status: true } },
                 },
               },
               fgItem: true,
@@ -1824,9 +1896,9 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QC"]), 
         throw err;
       }
 
-      // NO_QTY: QC allowed only for the active cycle and only after RS is locked.
+      // NO_QTY: QC on approved batches follows the batch WO cycle + locked RS for that cycle (rolling SO pointer may advance).
       if (prod.workOrderLine?.workOrderId) {
-        await assertNoQtyWorkOrderInActiveCycleOrThrow(tx, prod.workOrderLine.workOrderId, "This production batch");
+        await assertNoQtyWorkOrderEligibleForQcOrThrow(tx, prod.workOrderLine.workOrderId);
       }
 
       const producedQty = Number(prod.producedQty);

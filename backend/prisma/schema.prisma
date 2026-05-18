@@ -281,6 +281,8 @@ model User {
   salesBillReceiptsCreated                SalesBillReceipt[]              @relation("SalesBillReceiptCreatedBy")
   purchaseBillPaymentsCreated             PurchaseBillPayment[]           @relation("PurchaseBillPaymentCreatedBy")
   dbBackupsCreated                        DbBackup[]                      @relation("DbBackupCreatedBy")
+  rateContractLinesCreated                RateContractLine[]              @relation("RateContractLineCreatedBy")
+  rateContractLinesDeactivated            RateContractLine[]              @relation("RateContractLineDeactivatedBy")
 }
 
 /// Full-database SQL backup row (see admin backup routes). `filePath` is server-only; never return to clients.
@@ -583,23 +585,37 @@ model QuotationLine {
 
 enum RateContractLineStatus {
   APPROVED
+  SUPERSEDED
+  INACTIVE
 }
 
 model RateContractLine {
-  id            Int                  @id @default(autoincrement())
-  customerId    Int
-  itemId        Int
-  rate          Decimal              @db.Decimal(18, 4)
-  gstRate       Decimal              @db.Decimal(5, 2)
-  effectiveFrom DateTime
-  status        RateContractLineStatus @default(APPROVED)
-  createdAt     DateTime             @default(now())
+  id                    Int                    @id @default(autoincrement())
+  customerId            Int
+  itemId                Int
+  rate                  Decimal                @db.Decimal(18, 4)
+  gstRate               Decimal                @db.Decimal(5, 2)
+  effectiveFrom         DateTime
+  status                RateContractLineStatus @default(APPROVED)
+  revisedFromId         Int?
+  createdByUserId       Int?
+  deactivatedAt         DateTime?
+  deactivatedByUserId   Int?
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
 
-  customer Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  item     Item     @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  customer      Customer            @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  item          Item                @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  revisedFrom   RateContractLine?   @relation("RateContractLineRevisions", fields: [revisedFromId], references: [id], onDelete: SetNull)
+  revisions     RateContractLine[]  @relation("RateContractLineRevisions")
+  createdBy     User?               @relation("RateContractLineCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  deactivatedBy User?               @relation("RateContractLineDeactivatedBy", fields: [deactivatedByUserId], references: [id], onDelete: SetNull)
 
   @@index([customerId, itemId, effectiveFrom])
   @@index([status])
+  @@index([revisedFromId])
+  @@index([createdByUserId])
+  @@index([deactivatedByUserId])
 }
 
 model CustomerPO {
@@ -900,7 +916,7 @@ model RequirementSheetLine {
   sheetId                   Int
   itemId                    Int
   requirementQty            Decimal                    @db.Decimal(18, 3)
-  /// NO_QTY: gross carry-forward shortfall from previous cycles (planned − confirmed dispatch). Snapshot on lock.
+  /// NO_QTY: operator carry-forward shortfall from latest previous cycle (planned qty - approved produced qty). Snapshot on lock.
   shortfallQtySnapshot      Decimal?                   @db.Decimal(18, 3)
   availableStockQtySnapshot Decimal?                   @db.Decimal(18, 3)
   gapPercentSnapshot        Decimal?                   @db.Decimal(18, 2)
@@ -1290,6 +1306,9 @@ model SalesOrderCycle {
   salesOrder           SalesOrder  @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
   reopenedBy           User?       @relation("SalesOrderCycleReopenedBy", fields: [reopenedByUserId], references: [id], onDelete: SetNull)
   currentForSalesOrder SalesOrder? @relation("SalesOrderCurrentCycle")
+
+  /// NO_QTY only: operator chose to treat remaining usable FG as optional store stock — suppresses operational dispatch dashboard pressure only (no stock math change).
+  noQtyTreatFgAsOptionalStoreStock Boolean @default(false)
 
   dispatchRows      Dispatch[]
   requirementSheets RequirementSheet[]

@@ -38,6 +38,20 @@ async function deleteManySafe(tx, label, deleter) {
   return { table: label, deleted: count };
 }
 
+function logCleanup(message, payload) {
+  // eslint-disable-next-line no-console
+  console.log(`[database-cleanup] ${message}`, payload ?? "");
+}
+
+async function countRowsSafe(label, counter) {
+  try {
+    return await counter();
+  } catch (err) {
+    logCleanup("remaining-count-failed", { table: label, error: err?.message || String(err) });
+    throw err;
+  }
+}
+
 class CleanupStepError extends Error {
   /** @param {{ step: string; error: string }} input */
   constructor({ step, error }) {
@@ -79,6 +93,17 @@ function formatCleanupDeleteError(stepLabel, err) {
   return fallback;
 }
 
+function getCleanupFkFailureTable(err) {
+  if (!err || typeof err !== "object" || err === null) return null;
+  const code = "code" in err ? String(/** @type {{ code?: unknown }} */ (err).code) : "";
+  if (code !== "P2003") return null;
+  const rawMeta = "meta" in err ? /** @type {{ meta?: unknown }} */ (err).meta : undefined;
+  const meta = rawMeta && typeof rawMeta === "object" && rawMeta !== null ? /** @type {Record<string, unknown>} */ (rawMeta) : {};
+  const modelName = typeof meta.model_name === "string" ? meta.model_name : null;
+  const fieldName = typeof meta.field_name === "string" ? meta.field_name : null;
+  return [modelName, fieldName].filter(Boolean).join(".");
+}
+
 async function runDeleteSteps(tx, summary, steps) {
   for (const [name, fn] of steps) {
     try {
@@ -87,6 +112,75 @@ async function runDeleteSteps(tx, summary, steps) {
       const msg = formatCleanupDeleteError(name, err);
       throw new CleanupStepError({ step: name, error: msg });
     }
+  }
+}
+
+/**
+ * @param {{ table: string; deleted: number; remaining: number }[]} summary
+ * @param {{ table: string; delete: () => Promise<{ count?: number }>; count: () => Promise<number> }} step
+ */
+async function runLoggedCleanupStep(summary, step) {
+  try {
+    const res = await step.delete();
+    const deleted = typeof res?.count === "number" ? res.count : 0;
+    const remaining = await countRowsSafe(step.table, step.count);
+    logCleanup("delete", { table: step.table, deleted, remaining });
+    summary.push({ table: step.table, deleted, remaining });
+  } catch (err) {
+    const fkFailureTable = getCleanupFkFailureTable(err);
+    logCleanup("delete-failed", {
+      table: step.table,
+      fkFailureTable,
+      error: formatCleanupDeleteError(step.table, err),
+    });
+    throw new CleanupStepError({ step: step.table, error: formatCleanupDeleteError(step.table, err) });
+  }
+}
+
+/**
+ * @param {{ table: string; deleted: number; remaining: number }[]} summary
+ * @param {{ table: string; candidates: string[] | string; delete: () => Promise<{ count?: number }>; count: () => Promise<number> }} step
+ */
+async function runOptionalLoggedCleanupStep(tx, summary, step) {
+  if (!(await tableExists(tx, step.candidates))) {
+    logCleanup("skip-missing-table", { table: step.table });
+    summary.push({ table: step.table, deleted: 0, remaining: 0 });
+    return;
+  }
+  await runLoggedCleanupStep(summary, step);
+}
+
+async function runLoggedCleanupAction(label, action) {
+  try {
+    await action();
+    logCleanup("action", { step: label });
+  } catch (err) {
+    const fkFailureTable = getCleanupFkFailureTable(err);
+    logCleanup("action-failed", {
+      step: label,
+      fkFailureTable,
+      error: formatCleanupDeleteError(label, err),
+    });
+    throw new CleanupStepError({ step: label, error: formatCleanupDeleteError(label, err) });
+  }
+}
+
+/**
+ * @param {Array<{ table: string; count: () => Promise<number> }>} checks
+ */
+async function verifyCleanupComplete(checks) {
+  const remaining = [];
+  for (const check of checks) {
+    const count = await countRowsSafe(check.table, check.count);
+    logCleanup("verify", { table: check.table, remaining: count });
+    if (count > 0) remaining.push({ table: check.table, count });
+  }
+  if (remaining.length > 0) {
+    logCleanup("verification-failed", { remaining });
+    throw new CleanupStepError({
+      step: "verification",
+      error: `Rows remain after cleanup: ${remaining.map((r) => `${r.table}=${r.count}`).join(", ")}`,
+    });
   }
 }
 
@@ -563,97 +657,143 @@ adminDatabaseCleanupRouter.post(
       try {
         const results = await prisma.$transaction(
           async (tx) => {
-            /** @type {{ table: string; deleted: number }[]} */
+            /** @type {{ table: string; deleted: number; remaining: number }[]} */
             const summary = [];
 
-            // Delete transactional data in FK-safe order (do not add masters here).
-            const steps = [
-              ["salesBillLine", () => tx.salesBillLine.deleteMany({})],
-              ["salesBill", () => tx.salesBill.deleteMany({})],
-              [
-                "dispatch",
-                async () => {
-                  // Dispatch has a self-referencing FK (reversalOfId). Break it before deleteMany().
-                  await tx.dispatch.updateMany({ data: { reversalOfId: null } });
-                  return await tx.dispatch.deleteMany({});
-                },
-              ],
-              ["customerReturn", () => tx.customerReturn.deleteMany({})],
-              ["qcRejectedDisposition", () => tx.qcRejectedDisposition.deleteMany({})],
+            await runLoggedCleanupAction("stockTransaction:clearReversalRefs", () =>
+              tx.stockTransaction.updateMany({ data: { reversalOfId: null } }),
+            );
+            await runLoggedCleanupAction("dispatch:clearReversalRefs", () => tx.dispatch.updateMany({ data: { reversalOfId: null } }));
+            await runLoggedCleanupAction("qcRejectedDisposition:clearParentRefs", () =>
+              tx.qcRejectedDisposition.updateMany({ data: { parentDispositionId: null } }),
+            );
+            await runLoggedCleanupAction("salesOrder:clearCustomerReturnRefs", () =>
+              tx.salesOrder.updateMany({ where: { customerReturnId: { not: null } }, data: { customerReturnId: null } }),
+            );
+            await runLoggedCleanupAction("salesOrder:clearCurrentCycle", () => tx.salesOrder.updateMany({ data: { currentCycleId: null } }));
+
+            const transactionDocTypes = [
+              "SALES_ORDER",
+              "WORK_ORDER",
+              "PRODUCTION_ENTRY",
+              "QC_ENTRY",
+              "DISPATCH",
+              "SALES_BILL",
+              "REQUIREMENT_SHEET",
             ];
 
-            await runDeleteSteps(tx, summary, steps);
+            const cleanupSteps = [
+              { table: "salesBillReceipt", delete: () => tx.salesBillReceipt.deleteMany({}), count: () => tx.salesBillReceipt.count() },
+              { table: "salesBillLine", delete: () => tx.salesBillLine.deleteMany({}), count: () => tx.salesBillLine.count() },
+              { table: "salesBill", delete: () => tx.salesBill.deleteMany({}), count: () => tx.salesBill.count() },
+              { table: "customerReturn", delete: () => tx.customerReturn.deleteMany({}), count: () => tx.customerReturn.count() },
+              { table: "dispatch", delete: () => tx.dispatch.deleteMany({}), count: () => tx.dispatch.count() },
+              {
+                table: "stockAdjustmentQcEntry",
+                delete: () => tx.stockAdjustmentQcEntry.deleteMany({}),
+                count: () => tx.stockAdjustmentQcEntry.count(),
+              },
+              { table: "stockTransaction", delete: () => tx.stockTransaction.deleteMany({}), count: () => tx.stockTransaction.count() },
+              { table: "qcReversal", delete: () => tx.qcReversal.deleteMany({}), count: () => tx.qcReversal.count() },
+              { table: "scrapRecord", delete: () => tx.scrapRecord.deleteMany({}), count: () => tx.scrapRecord.count() },
+              {
+                table: "qcRejectedDisposition",
+                delete: () => tx.qcRejectedDisposition.deleteMany({}),
+                count: () => tx.qcRejectedDisposition.count(),
+              },
+              { table: "qcEntry", delete: () => tx.qcEntry.deleteMany({}), count: () => tx.qcEntry.count() },
+              { table: "productionEntry", delete: () => tx.productionEntry.deleteMany({}), count: () => tx.productionEntry.count() },
+              { table: "workOrderLine", delete: () => tx.workOrderLine.deleteMany({}), count: () => tx.workOrderLine.count() },
+              { table: "workOrder", delete: () => tx.workOrder.deleteMany({}), count: () => tx.workOrder.count() },
+              { table: "requirementSheetLine", delete: () => tx.requirementSheetLine.deleteMany({}), count: () => tx.requirementSheetLine.count() },
+              { table: "requirementSheet", delete: () => tx.requirementSheet.deleteMany({}), count: () => tx.requirementSheet.count() },
+              {
+                table: "noQtySoClosedShortageLine",
+                delete: () => tx.noQtySoClosedShortageLine.deleteMany({}),
+                count: () => tx.noQtySoClosedShortageLine.count(),
+              },
+              {
+                table: "noQtySoCloseSnapshot",
+                delete: () => tx.noQtySoCloseSnapshot.deleteMany({}),
+                count: () => tx.noQtySoCloseSnapshot.count(),
+              },
+              { table: "salesOrderCycle", delete: () => tx.salesOrderCycle.deleteMany({}), count: () => tx.salesOrderCycle.count() },
+              { table: "salesOrderLine", delete: () => tx.salesOrderLine.deleteMany({}), count: () => tx.salesOrderLine.count() },
+              { table: "salesOrder", delete: () => tx.salesOrder.deleteMany({}), count: () => tx.salesOrder.count() },
+              { table: "quotationLine", delete: () => tx.quotationLine.deleteMany({}), count: () => tx.quotationLine.count() },
+              { table: "quotation", delete: () => tx.quotation.deleteMany({}), count: () => tx.quotation.count() },
+              { table: "feasibility", delete: () => tx.feasibility.deleteMany({}), count: () => tx.feasibility.count() },
+              { table: "enquiryLine", delete: () => tx.enquiryLine.deleteMany({}), count: () => tx.enquiryLine.count() },
+              { table: "enquiry", delete: () => tx.enquiry.deleteMany({}), count: () => tx.enquiry.count() },
+              { table: "purchaseBillPayment", delete: () => tx.purchaseBillPayment.deleteMany({}), count: () => tx.purchaseBillPayment.count() },
+              { table: "purchaseBillLine", delete: () => tx.purchaseBillLine.deleteMany({}), count: () => tx.purchaseBillLine.count() },
+              { table: "purchaseBill", delete: () => tx.purchaseBill.deleteMany({}), count: () => tx.purchaseBill.count() },
+              { table: "grnLine", delete: () => tx.grnLine.deleteMany({}), count: () => tx.grnLine.count() },
+              { table: "grn", delete: () => tx.grn.deleteMany({}), count: () => tx.grn.count() },
+              { table: "rmPurchaseOrderLine", delete: () => tx.rmPurchaseOrderLine.deleteMany({}), count: () => tx.rmPurchaseOrderLine.count() },
+              { table: "rmPurchaseOrder", delete: () => tx.rmPurchaseOrder.deleteMany({}), count: () => tx.rmPurchaseOrder.count() },
+              { table: "customerPOLine", delete: () => tx.customerPOLine.deleteMany({}), count: () => tx.customerPOLine.count() },
+              { table: "customerPO", delete: () => tx.customerPO.deleteMany({}), count: () => tx.customerPO.count() },
+            ];
 
-            // Optional table: older DBs may not have this migration applied.
-            if (await tableExists(tx, ["qclegacyrejectedclassification", "QcLegacyRejectedClassification"])) {
-              await runDeleteSteps(tx, summary, [
-                ["qcLegacyRejectedClassification", () => tx.qcLegacyRejectedClassification.deleteMany({})],
-              ]);
-            } else {
-              summary.push({ table: "qcLegacyRejectedClassification", deleted: 0 });
+            let qcLegacyChecked = false;
+            for (const step of cleanupSteps) {
+              if (step.table === "qcEntry" && !qcLegacyChecked) {
+                await runOptionalLoggedCleanupStep(tx, summary, {
+                  table: "qcLegacyRejectedClassification",
+                  candidates: ["qclegacyrejectedclassification", "QcLegacyRejectedClassification"],
+                  delete: () => tx.qcLegacyRejectedClassification.deleteMany({}),
+                  count: () => tx.qcLegacyRejectedClassification.count(),
+                });
+                qcLegacyChecked = true;
+              }
+              await runLoggedCleanupStep(summary, step);
             }
 
-            await runDeleteSteps(tx, summary, [
-              ["qcEntry", () => tx.qcEntry.deleteMany({})],
-              ["productionEntry", () => tx.productionEntry.deleteMany({})],
-              ["workOrderLine", () => tx.workOrderLine.deleteMany({})],
-              ["workOrder", () => tx.workOrder.deleteMany({})],
-              ["requirementSheetLine", () => tx.requirementSheetLine.deleteMany({})],
-              ["requirementSheet", () => tx.requirementSheet.deleteMany({})],
-              ["salesOrderLine", () => tx.salesOrderLine.deleteMany({})],
-              ["salesOrder", () => tx.salesOrder.deleteMany({})],
-              ["quotationLine", () => tx.quotationLine.deleteMany({})],
-              ["quotation", () => tx.quotation.deleteMany({})],
-              ["enquiry", () => tx.enquiry.deleteMany({})],
-              ["purchaseBillLine", () => tx.purchaseBillLine.deleteMany({})],
-              ["purchaseBill", () => tx.purchaseBill.deleteMany({})],
-              ["grnLine", () => tx.grnLine.deleteMany({})],
-              ["grn", () => tx.grn.deleteMany({})],
-              ["rmPurchaseOrderLine", () => tx.rmPurchaseOrderLine.deleteMany({})],
-              ["rmPurchaseOrder", () => tx.rmPurchaseOrder.deleteMany({})],
-            ]);
+            await runOptionalLoggedCleanupStep(tx, summary, {
+              table: "docSequence",
+              candidates: ["docsequence", "DocSequence"],
+              delete: () =>
+                tx.docSequence.deleteMany({
+                  where: { docType: { in: transactionDocTypes } },
+                }),
+              count: () => tx.docSequence.count({ where: { docType: { in: transactionDocTypes } } }),
+            });
 
-            // Reset DocSequence entries related to transactional doc types (if table exists).
-            // Current schema supports: SO, WO, PROD, QC, D, SB, RS.
+            const verificationChecks = [...cleanupSteps.map((s) => ({ table: s.table, count: s.count }))];
             if (await tableExists(tx, ["docsequence", "DocSequence"])) {
-              const r = await tx.docSequence.deleteMany({
-                where: {
-                  docType: {
-                    in: [
-                      "SALES_ORDER",
-                      "WORK_ORDER",
-                      "PRODUCTION_ENTRY",
-                      "QC_ENTRY",
-                      "DISPATCH",
-                      "SALES_BILL",
-                      "REQUIREMENT_SHEET",
-                    ],
-                  },
-                },
+              verificationChecks.push({
+                table: "docSequence(transactional)",
+                count: () => tx.docSequence.count({ where: { docType: { in: transactionDocTypes } } }),
               });
-              summary.push({ table: "docSequence", deleted: typeof r?.count === "number" ? r.count : 0 });
-            } else {
-              summary.push({ table: "docSequence", deleted: 0 });
             }
-
-            // IMPORTANT: keep StockTransaction delete as the very last step (highest fan-in for references).
-            await runDeleteSteps(tx, summary, [
-              [
-                "stockTransaction",
-                async () => {
-                  // StockTransaction has a self-referencing FK (reversalOfId). Break it before deleteMany().
-                  await tx.stockTransaction.updateMany({ data: { reversalOfId: null } });
-                  return await tx.stockTransaction.deleteMany({});
-                },
-              ],
-            ]);
+            if (await tableExists(tx, ["qclegacyrejectedclassification", "QcLegacyRejectedClassification"])) {
+              verificationChecks.push({ table: "qcLegacyRejectedClassification", count: () => tx.qcLegacyRejectedClassification.count() });
+            }
+            await verifyCleanupComplete(verificationChecks);
 
             return summary;
           },
           { timeout: 120_000 },
         );
 
-        return res.json({ ok: true, summary: results });
+        return res.json({
+          ok: true,
+          summary: results,
+          preservedMasterData: [
+            "rateContractLine (customer/item billing rates)",
+            "customers",
+            "items",
+            "suppliers",
+            "units",
+            "BOM",
+            "opening stock",
+            "users",
+            "roles",
+            "app settings",
+          ],
+          note: "Transaction reset does not clear rate contracts or other master data. Use Full Demo Reset to wipe rate contracts, or deactivate future-dated contracts from Rate Contracts.",
+        });
       } catch (e) {
         if (e instanceof CleanupStepError) {
           return res.status(500).json({ message: "Database cleanup failed", step: e.step, error: e.error });
@@ -742,4 +882,3 @@ adminDatabaseCleanupRouter.post(
 );
 
 module.exports = { adminDatabaseCleanupRouter };
-

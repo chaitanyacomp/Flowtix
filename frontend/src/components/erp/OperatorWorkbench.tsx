@@ -1,8 +1,8 @@
 import * as React from "react";
 import { cn } from "../../lib/utils";
 
-/** 12px gap between major blocks */
-export const operatorGapClass = "gap-3";
+/** Compact gap between major operator blocks (above-fold focus). */
+export const operatorGapClass = "gap-2";
 
 /** 32px control height */
 export const operatorInputClass = "h-8";
@@ -13,8 +13,8 @@ export const operatorTableRowClass = "h-9";
 /** Tighter rows for operator QC / dispatch queues */
 export const operatorTableRowCompactClass = "h-8";
 
-/** QC cycle table — minimal row height */
-export const operatorTableRowQcClass = "h-7";
+/** QC cycle table — comfortable operator row height */
+export const operatorTableRowQcClass = "min-h-[2.875rem]";
 
 export function OperatorPageBody({ children, className }: { children: React.ReactNode; className?: string }) {
   return <div className={cn("flex flex-col", operatorGapClass, className)}>{children}</div>;
@@ -46,6 +46,7 @@ export function OperatorMainSplit({
   balancedWorkbench,
   /** Override the `lg:grid-cols-[...]` template for non-balanced layouts. */
   lgGridClassName,
+  queueClassName,
 }: {
   queue: React.ReactNode;
   panel: React.ReactNode;
@@ -56,12 +57,14 @@ export function OperatorMainSplit({
   panelFirstOnLg?: boolean;
   balancedWorkbench?: boolean;
   lgGridClassName?: string;
+  /** Muted queue column chrome (QC / dispatch line pickers). */
+  queueClassName?: string;
 }) {
   return (
     <div
       className={cn(
         balancedWorkbench
-          ? "grid grid-cols-1 items-stretch gap-2 lg:grid-cols-[minmax(0,42fr)_minmax(0,58fr)] lg:gap-2.5"
+          ? "grid grid-cols-1 items-stretch gap-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] lg:items-start lg:gap-3"
           : cn(
               "grid grid-cols-1 items-start",
               lgGridClassName
@@ -78,6 +81,8 @@ export function OperatorMainSplit({
         className={cn(
           balancedWorkbench ? "order-1 min-h-0 min-w-0 lg:order-1" : "order-2 min-w-0",
           !balancedWorkbench && (panelFirstOnLg ? "lg:order-2" : "lg:order-1"),
+          balancedWorkbench && "erp-op-queue-zone min-h-0 p-1.5",
+          queueClassName,
         )}
       >
         {queue}
@@ -85,7 +90,10 @@ export function OperatorMainSplit({
       <div
         className={cn(
           balancedWorkbench ? "order-2 min-w-0 lg:order-2" : "order-1 min-w-0",
-          panelContainerClassName ?? "rounded border border-slate-200 bg-white p-2 shadow-sm",
+          panelContainerClassName ??
+            (balancedWorkbench
+              ? "erp-op-inspect-zone flex min-h-0 flex-col overflow-x-hidden overflow-y-visible lg:sticky lg:top-20 lg:z-[6] lg:max-h-[calc(100dvh-5.5rem)] lg:self-start lg:overflow-y-auto"
+              : "rounded border border-slate-200 bg-white p-2 shadow-sm"),
           balancedWorkbench && "flex min-h-0 flex-col",
           !balancedWorkbench && (panelFirstOnLg ? "lg:order-1" : "lg:order-2"),
           panelClassName,

@@ -13,7 +13,7 @@ export function StickyPageHeader({ children, className }: { children: React.Reac
       className={cn(
         // Compact ERP density: tighter vertical padding + reduced bottom margin so operational
         // pages start their working area higher on 1366x768 laptops.
-        "sticky top-0 z-[25] mb-2.5 border-b border-slate-200/95 bg-slate-50/98 pb-1.5 pt-1 shadow-[0_1px_0_0_rgb(226_232_240)] backdrop-blur-sm supports-[backdrop-filter]:bg-slate-50/92",
+        "sticky top-0 z-[25] mb-2 border-b border-slate-200/70 bg-slate-50/95 pb-1.5 pt-1 shadow-[0_1px_0_0_rgb(226_232_240_/0.65)] backdrop-blur-sm supports-[backdrop-filter]:bg-slate-50/90",
         className,
       )}
     >
@@ -89,10 +89,10 @@ export function ReportPageTitleBlock({
   return (
     <div className={cn("flex flex-wrap items-start justify-between gap-2", className)}>
       <div className="min-w-0 flex-1 space-y-0.5">
-        <h2 className="text-base font-semibold leading-snug tracking-tight text-slate-900">{title}</h2>
-        {purpose ? <p className="max-w-3xl text-[12px] leading-relaxed text-slate-600">{purpose}</p> : null}
+        <h2 className="erp-type-page-title">{title}</h2>
+        {purpose ? <p className="erp-type-helper max-w-3xl text-slate-500">{purpose}</p> : null}
       </div>
-      {actions ? <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div> : null}
+      {actions ? <div className="erp-page-header-actions">{actions}</div> : null}
     </div>
   );
 }

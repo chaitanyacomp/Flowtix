@@ -19,6 +19,7 @@ import {
   normalizeWoTrackingApiResponse,
 } from "../lib/woTrackingResponse";
 import { ChevronDown, ChevronUp, Download } from "lucide-react";
+import { ERP_REPORT_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
 
 type Customer = { id: number; name: string };
 
@@ -61,13 +62,16 @@ export function WorkOrderTrackingReportPage() {
 
   const [sortBy, setSortBy] = React.useState<SortKey>(DEFAULT_SORT);
   const [sortDir, setSortDir] = React.useState<"asc" | "desc">(DEFAULT_SORT_DIR);
+  const liveTick = useErpRefreshTick(["reports", "production", "workorders", "qc", "dispatch"], {
+    pollIntervalMs: ERP_REPORT_POLL_MS,
+  });
 
   React.useEffect(() => {
     if (!allowed) return;
     apiFetch<Customer[]>("/api/customers")
       .then(setCustomers)
       .catch(() => setCustomers([]));
-  }, [allowed]);
+  }, [allowed, liveTick]);
 
   React.useEffect(() => {
     if (!allowed) return;
@@ -96,7 +100,7 @@ export function WorkOrderTrackingReportPage() {
     return () => {
       mounted = false;
     };
-  }, [allowed]);
+  }, [allowed, liveTick]);
 
   React.useEffect(() => {
     if (!allowed) setLoading(false);

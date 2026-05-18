@@ -18,6 +18,7 @@ const {
   getWoLineRemainingProductionQty,
 } = require("../services/reportMetrics");
 const { getNoQtyLastShortageQtyForCycleItem } = require("./requirementSheets");
+const { resolveNoQtyWorkflowState } = require("../services/noQtyWorkflowEngine");
 
 const noQtyNextActionRouter = express.Router();
 
@@ -170,7 +171,7 @@ noQtyNextActionRouter.get(
         productionBalanceQty = getWoLineRemainingProductionQty(Number(wol?.qty ?? 0), approvedSum);
       }
 
-      /** Cycle-output Last Shortage: locked RS gross for cycle − QC accepted for same cycle (not WO remainder, not stock). */
+      /** Cycle-output Last Shortage: locked RS gross for cycle - approved produced qty (not QC, dispatch, or stock). */
       const lastShortageQty =
         fgItemId != null ? await getNoQtyLastShortageQtyForCycleItem(salesOrderId, cycleId, fgItemId) : 0;
 
@@ -180,6 +181,8 @@ noQtyNextActionRouter.get(
       } else if (acceptedQty <= EPS && productionBalanceQty > EPS) {
         nextAction = "PRODUCTION";
       }
+
+      const workflow = await resolveNoQtyWorkflowState(prisma, { salesOrderId, cycleId, userRole: req.user?.role });
 
       return res.json({
         salesOrderId,
@@ -197,7 +200,20 @@ noQtyNextActionRouter.get(
         dispatchableQty,
         productionBalanceQty,
         lastShortageQty,
-        nextAction,
+        nextAction: workflow.primaryAction === "NEXT_RS" ? "NEXT_RS" : nextAction,
+        primaryAction: workflow.primaryAction,
+        overallWorkflowState: workflow.overallWorkflowState,
+        overallAction: workflow.overallAction,
+        primaryActionForCurrentUser: workflow.primaryActionForCurrentUser,
+        nextDepartmentAction: workflow.nextDepartmentAction,
+        currentUserActionLabel: workflow.currentUserActionLabel,
+        currentUserActionHref: workflow.currentUserActionHref,
+        message: workflow.message,
+        secondaryActions: workflow.secondaryActions,
+        optionalActions: workflow.optionalActions,
+        actionLabel: workflow.actionLabel,
+        actionHref: workflow.actionHref,
+        workflowSummary: workflow.workflowSummary,
       });
     } catch (e) {
       return next(e);

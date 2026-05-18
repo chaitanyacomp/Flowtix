@@ -23,7 +23,7 @@
  * (Requirement sheet authoring per cycle — not REGULAR fixed-qty RM check / WO prep.)
  */
 import * as React from "react";
-import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { workOrdersFocusHref } from "../lib/drillDownRoutes";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
@@ -31,13 +31,16 @@ import { Input } from "../components/ui/input";
 import { Badge } from "../components/ui/badge";
 import { apiFetch, ApiRequestError } from "../services/api";
 import { PageContainer } from "../components/PageHeader";
+import { NoQtyCycleContextBar } from "../components/erp/foundation/NoQtyCycleContextBar";
+import { ErpWorkflowBanner } from "../components/erp/foundation/ErpWorkflowBanner";
+import { readNoQtySoCreatedBannerState, type NoQtySoCreatedBannerState } from "../lib/noQtySoCreatedNavState";
 import {
   OperationalContextBar,
   OperationalContextSticky,
   OperationalWorkspaceFooter,
   OpCtxSep,
 } from "../components/erp/OperationalWorkspaceChrome";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, CircleHelp } from "lucide-react";
 import { displaySalesOrderNo } from "../lib/docNoDisplay";
 import { ActivityHistoryCard } from "../components/ActivityHistoryCard";
 import { PageNoQtyFlowBackLink } from "../components/PageHeader";
@@ -142,11 +145,11 @@ type SheetLine = {
   newWoQty?: string;
   totalWoQty?: number | null;
   availableStockQty?: number | null;
-  /** NO_QTY: total physical USABLE (global bucket; floored at 0); prefer freeSurplusUsableQty for planning deduction */
+  /** NO_QTY: total physical USABLE (global bucket; floored at 0); see freeSurplusUsableQty for dispatch-context surplus */
   totalUsableQty?: number | null;
   /** NO_QTY: usable reserved for pending cycle dispatch (FIFO; includes closed cycles until confirmed dispatch meets commitment) */
   reservedForActiveNoQtyDispatchQty?: number | null;
-  /** NO_QTY: free surplus usable (what planning can deduct) */
+  /** NO_QTY: usable surplus FG available for optional dispatch (informational; not deducted from Total to Produce). */
   freeSurplusUsableQty?: number | null;
   /** NO_QTY LOCKED-only legacy fields; null in DRAFT (see totalUsableQty / reservedForActive / freeSurplusUsableQty) */
   usableTotalQty?: number | null;
@@ -154,11 +157,11 @@ type SheetLine = {
   reservedPendingDispatchQty?: number | null;
   /** NO_QTY draft clarity: how much of the reserve is actually blocking this SO's usable stock (min(usableTotal, reserveDemand)) */
   reservedPendingDispatchAppliedQty?: number | null;
-  /** NO_QTY: FG qty approved to USABLE after a prior cycle closed (reduces fresh production required). */
+  /** NO_QTY: FG qty approved to USABLE after a prior cycle closed (informational for dispatch / QC context). */
   postCycleApprovalQty?: number | null;
   /** NO_QTY: FG qty from previous cycle still in hold/rework/recheck disposition (not yet USABLE). */
   pendingQcDispositionQty?: number | null;
-  /** NO_QTY: QC-accepted (+ recheck/post) from prior cycle still not operationally dispatched — reduces Total to Produce. */
+  /** NO_QTY: QC-accepted (+ recheck/post) from prior cycle still not operationally dispatched — informational for dispatch context. */
   previousCycleUndispatchedAcceptedQty?: number | null;
   gapPercent?: number | null;
   suggestedWoQty?: number | null;
@@ -218,15 +221,13 @@ const PLAN_EPS = 1e-6;
 
 /**
  * Draft: matches backend `productionRequiredQty`.
- * NO_QTY: max(0, Total demand − free surplus usable for planning).
- * Pending QC / disposition qty is informational only (excluded).
+ * NO_QTY: last shortage + new requirement (same-SO prior usable stock is informational for dispatch only).
  */
 function computeDraftProductionRequired(line: SheetLine, isNoQtyOrder: boolean): number {
   const newWo = safeNum(line.newWoQty ?? line.requirementQty);
   if (isNoQtyOrder) {
     const short = safeNum(line.shortfallQty);
-    const usable = usableDisplayStock(line.freeSurplusUsableQty ?? line.availableStockQty);
-    return Math.max(0, Math.round((short + newWo - usable) * 1000) / 1000);
+    return Math.max(0, Math.round((short + newWo) * 1000) / 1000);
   }
   const stock = usableDisplayStock(line.availableStockQty);
   const post = safeNum(line.postCycleApprovalQty);
@@ -251,11 +252,22 @@ export function RequirementSheetPage() {
   const { id: soIdParam } = useParams<{ id: string }>();
   const soId = Number(soIdParam);
   const nav = useNavigate();
+  const location = useLocation();
   const [searchParams] = useSearchParams();
   const fromNoQtySo = (searchParams.get("source") || searchParams.get("from") || "").toLowerCase() === "no_qty_so";
   const addRequirementIntent = searchParams.get("intent") === "add";
   /** Dashboard ran prepare-next-requirement-sheet before navigation; skip duplicate prepare on mount. */
   const fromDashboard = searchParams.get("fromDashboard") === "1";
+  /** Guided NO_QTY navigation often includes `cycleId` before SO header re-hydrates after prepare-next. */
+  const cycleIdFromUrl = React.useMemo(() => {
+    const raw = searchParams.get("cycleId");
+    if (raw == null) return null;
+    const s = raw.trim();
+    if (!/^\d{1,15}$/.test(s)) return null;
+    const n = Number(s);
+    return Number.isSafeInteger(n) && n > 0 ? n : null;
+  }, [searchParams]);
+
   const createNewSheetRef = React.useRef<HTMLDivElement | null>(null);
   const toast = useToast();
   const isAdmin = useIsAdmin();
@@ -275,13 +287,41 @@ export function RequirementSheetPage() {
   const [showCreatePanel, setShowCreatePanel] = React.useState(false);
   const [justCreatedSheetId, setJustCreatedSheetId] = React.useState<number | null>(null);
   const [createSelectedItemIds, setCreateSelectedItemIds] = React.useState<number[]>([]);
+  /** Pre–RS-create new requirement qty (NO_QTY empty active cycle); applied via PUT /lines after POST creates draft. */
+  const [pendingNoQtyNewReqQty, setPendingNoQtyNewReqQty] = React.useState<Record<number, string>>({});
   const [woPreviewOpen, setWoPreviewOpen] = React.useState(false);
   const [nextRsPrepareBusy, setNextRsPrepareBusy] = React.useState(false);
+  const soCreatedBannerRef = React.useRef<NoQtySoCreatedBannerState | null>(null);
+  if (soCreatedBannerRef.current == null) {
+    soCreatedBannerRef.current = readNoQtySoCreatedBannerState(location.state, soId);
+  }
+  const soCreatedBanner = soCreatedBannerRef.current;
+
+  React.useEffect(() => {
+    if (!readNoQtySoCreatedBannerState(location.state, soId)) return;
+    nav({ pathname: location.pathname, search: location.search }, { replace: true, state: null });
+  }, [soId, nav, location.pathname, location.search, location.state]);
 
   const customerName = so?.customer?.name ?? so?.po?.customer?.name ?? "—";
   const selectedPeriod = sheet?.periodKey ?? null;
   const selectedVersion = sheetVersionNum(sheet?.version);
-  const activePlanningCycleId = so?.currentCycle?.id ?? so?.currentCycleId ?? null;
+  const soCycleId =
+    so?.currentCycle?.id != null && Number.isFinite(Number(so.currentCycle.id)) && Number(so.currentCycle.id) > 0
+      ? Number(so.currentCycle.id)
+      : so?.currentCycleId != null && Number.isFinite(Number(so.currentCycleId)) && Number(so.currentCycleId) > 0
+        ? Number(so.currentCycleId)
+        : null;
+  const activePlanningCycleId = React.useMemo(() => {
+    if (addRequirementIntent && fromNoQtySo && cycleIdFromUrl != null) {
+      if (soCycleId == null) return cycleIdFromUrl;
+      if (so?.orderType !== "NO_QTY") return soCycleId;
+      if (soCycleId !== cycleIdFromUrl) {
+        return fromDashboard ? cycleIdFromUrl : soCycleId;
+      }
+      return soCycleId;
+    }
+    return soCycleId;
+  }, [addRequirementIntent, fromNoQtySo, cycleIdFromUrl, fromDashboard, so?.orderType, soCycleId]);
   const isNoQty = so?.orderType === "NO_QTY";
   const cycleNo = so?.currentCycle?.cycleNo != null ? Number(so.currentCycle.cycleNo) : null;
   const cycleStatus: "Active Cycle" | "Closed Cycle" | "Next Cycle" =
@@ -325,7 +365,9 @@ export function RequirementSheetPage() {
       const scoped =
         soRow?.orderType === "NO_QTY" && activeId != null
           ? rows.filter((r) => Number(r.cycleId ?? 0) === Number(activeId))
-          : rows;
+          : soRow?.orderType === "NO_QTY"
+            ? []
+            : rows;
       const sortKey = (r: SheetListRow) => (r.createdAt ? new Date(r.createdAt).getTime() : r.id);
       const drafts = scoped.filter((r) => r.status === "DRAFT").sort((a, b) => sortKey(b) - sortKey(a));
       const lockedRows = scoped.filter((r) => r.status === "LOCKED").sort((a, b) => sortKey(b) - sortKey(a));
@@ -334,7 +376,7 @@ export function RequirementSheetPage() {
     }
   }
 
-  const sheetIdFromUrl = React.useMemo(() => {
+  const sheetIdRawFromUrl = React.useMemo(() => {
     const fromSheet = Number(searchParams.get("sheetId") || "");
     const fromGuided = Number(searchParams.get("requirementSheetId") || "");
     const raw =
@@ -346,28 +388,73 @@ export function RequirementSheetPage() {
     return Number.isFinite(raw) && raw > 0 ? raw : null;
   }, [searchParams]);
 
+  /** For NO_QTY + intent=add, ignore guided/list sheet ids unless that row is on the active planning cycle (avoids stale locked RS from prior cycle in URL). */
+  const sheetIdFromUrl = React.useMemo(() => {
+    if (sheetIdRawFromUrl == null) return null;
+    if (!addRequirementIntent || !isNoQty) return sheetIdRawFromUrl;
+    if (activePlanningCycleId == null) return null;
+    const ac = Number(activePlanningCycleId);
+    if (!Number.isFinite(ac) || ac <= 0) return null;
+    if (sheets.length === 0) return null;
+    const row = sheets.find((s) => Number(s.id) === Number(sheetIdRawFromUrl));
+    if (!row) return null;
+    const rc = row.cycleId != null ? Number(row.cycleId) : NaN;
+    if (!Number.isFinite(rc) || rc !== ac) return null;
+    return sheetIdRawFromUrl;
+  }, [sheetIdRawFromUrl, addRequirementIntent, isNoQty, activePlanningCycleId, sheets]);
+
   const lastAppliedSheetParamRef = React.useRef<number | null>(null);
 
   React.useEffect(() => {
     lastAppliedSheetParamRef.current = null;
-  }, [sheetIdFromUrl]);
+  }, [sheetIdRawFromUrl]);
+
+  /** Strip stale sheet deep-links from the address bar so they are not re-applied after navigation. */
+  React.useEffect(() => {
+    if (!addRequirementIntent || !isNoQty || activePlanningCycleId == null || sheets.length === 0) return;
+    const ac = Number(activePlanningCycleId);
+    if (!Number.isFinite(ac) || ac <= 0) return;
+    const rawSheet = searchParams.get("sheetId");
+    const rawGuided = searchParams.get("requirementSheetId");
+    if (!rawSheet && !rawGuided) return;
+    const rawId = Number(rawSheet || rawGuided || 0);
+    if (!Number.isFinite(rawId) || rawId <= 0) return;
+    const row = sheets.find((s) => Number(s.id) === rawId);
+    if (!row) return;
+    const rc = row.cycleId != null ? Number(row.cycleId) : NaN;
+    if (!Number.isFinite(rc) || rc === ac) return;
+    const next = new URLSearchParams(searchParams);
+    next.delete("sheetId");
+    next.delete("requirementSheetId");
+    next.delete("fromStep");
+    const qs = next.toString();
+    nav({ pathname: location.pathname, search: qs ? `?${qs}` : "" }, { replace: true });
+  }, [addRequirementIntent, isNoQty, activePlanningCycleId, sheets, searchParams, location.pathname, nav]);
 
   React.useEffect(() => {
     if (sheetIdFromUrl == null) return;
     if (lastAppliedSheetParamRef.current === sheetIdFromUrl) return;
     if (sheets.length === 0) return;
-    if (!sheets.some((s) => s.id === sheetIdFromUrl)) return;
+    const row = sheets.find((s) => s.id === sheetIdFromUrl);
+    if (!row) return;
+    if (addRequirementIntent && isNoQty) {
+      if (activePlanningCycleId == null) return;
+      const rc = row.cycleId != null ? Number(row.cycleId) : NaN;
+      const ac = Number(activePlanningCycleId);
+      if (!Number.isFinite(rc) || !Number.isFinite(ac) || rc !== ac) return;
+    }
     lastAppliedSheetParamRef.current = sheetIdFromUrl;
     setSelectedSheetId(sheetIdFromUrl);
-  }, [sheetIdFromUrl, sheets]);
+  }, [sheetIdFromUrl, sheets, addRequirementIntent, isNoQty, activePlanningCycleId]);
 
-  async function loadSelectedSheet(id: number) {
+  async function loadSelectedSheet(id: number): Promise<SheetDetail> {
     setError(null);
     setSuccess(null);
     const s = await apiFetch<SheetDetail>(`/api/requirement-sheets/${id}`);
     setSheet(s);
     setRemarks(s.remarks?.trim() ?? "");
     setNeedsRecalc(false);
+    return s;
   }
 
   async function voidLockedSheet() {
@@ -456,12 +543,17 @@ export function RequirementSheetPage() {
   // When opened via "Create Next RS" intent:
   // - If a DRAFT exists in the active cycle, open that draft (do not start a new sheet).
   // - Else show the create panel and do not auto-open locked history.
+  // - Never pick a draft from another cycle: require SO current cycle id before selecting.
   React.useEffect(() => {
     if (!addRequirementIntent) return;
     if (!isNoQty) return;
     const activeId = so?.currentCycle?.id ?? so?.currentCycleId ?? null;
-    const scoped =
-      activeId != null ? sheets.filter((s) => Number(s.cycleId ?? 0) === Number(activeId)) : sheets;
+    if (activeId == null || !Number.isFinite(Number(activeId)) || Number(activeId) <= 0) {
+      setSelectedSheetId(null);
+      setShowCreatePanel(true);
+      return;
+    }
+    const scoped = sheets.filter((s) => Number(s.cycleId ?? 0) === Number(activeId));
     const sortKey = (r: SheetListRow) => (r.createdAt ? new Date(r.createdAt).getTime() : r.id);
     const drafts = scoped.filter((s) => s.status === "DRAFT").sort((a, b) => sortKey(b) - sortKey(a));
     const draftId = drafts.length ? Number(drafts[0].id) : null;
@@ -514,6 +606,17 @@ export function RequirementSheetPage() {
     void loadSelectedSheet(selectedSheetId).catch((e) => setError(e instanceof Error ? e.message : "Failed to load sheet."));
   }, [selectedSheetId, justCreatedSheetId]);
 
+  /** Drop cross-cycle detail if intent=add landed on a stale id before SO/sheets aligned. */
+  React.useEffect(() => {
+    if (!addRequirementIntent || !isNoQty) return;
+    if (sheet == null || activePlanningCycleId == null) return;
+    const sc = sheet.cycleId != null ? Number(sheet.cycleId) : NaN;
+    const ac = Number(activePlanningCycleId);
+    if (Number.isFinite(sc) && Number.isFinite(ac) && sc !== ac) {
+      setSelectedSheetId(null);
+    }
+  }, [addRequirementIntent, isNoQty, sheet, activePlanningCycleId]);
+
   async function createNewSheet() {
     if (!periodKey.trim()) {
       setError("Period is required (e.g. 2026-04).");
@@ -533,7 +636,21 @@ export function RequirementSheetPage() {
       // Ensure the newly created draft is immediately selected and loaded (no "blank right side" state).
       await loadSoAndSheets();
       setSelectedSheetId(created.id);
-      await loadSelectedSheet(created.id);
+      let detail = await loadSelectedSheet(created.id);
+      if (isNoQty && Object.keys(pendingNoQtyNewReqQty).length > 0) {
+        const linePayload = (Array.isArray(detail.lines) ? detail.lines : []).map((l) => ({
+          itemId: l.itemId,
+          requirementQty: Math.max(0, safeNum(pendingNoQtyNewReqQty[l.itemId])),
+        }));
+        if (linePayload.some((ln) => ln.requirementQty > PLAN_EPS)) {
+          await apiFetch(`/api/requirement-sheets/${created.id}/lines`, {
+            method: "PUT",
+            body: JSON.stringify({ lines: linePayload }),
+          });
+          detail = await loadSelectedSheet(created.id);
+        }
+      }
+      setPendingNoQtyNewReqQty({});
       setPeriodKey("");
       setJustDeletedDraft(false);
       setShowCreatePanel(false);
@@ -627,9 +744,18 @@ export function RequirementSheetPage() {
     }
   }
 
+  const sheetCycleIdForAlign = sheet?.cycleId != null ? Number(sheet.cycleId) : NaN;
+  const sheetOnActiveCycle =
+    Boolean(sheet) &&
+    activePlanningCycleId != null &&
+    Number.isFinite(sheetCycleIdForAlign) &&
+    Number.isFinite(Number(activePlanningCycleId)) &&
+    sheetCycleIdForAlign === Number(activePlanningCycleId);
+
   const locked = sheet?.status === "LOCKED";
-  // Editing is blocked for LOCKED sheets and for older versions.
-  const editingDisabled = Boolean(sheet) && (!isLatestForPeriod || locked);
+  // Editing is blocked for LOCKED sheets, older versions, or a sheet row that belongs to a different cycle than SO current.
+  const editingDisabled =
+    Boolean(sheet) && (!isLatestForPeriod || locked || (isNoQty && !sheetOnActiveCycle));
   const showOlderVersionBanner = Boolean(sheet) && !isLatestForPeriod;
 
   async function lockSheet() {
@@ -786,9 +912,86 @@ export function RequirementSheetPage() {
   const cycleScopedSheets =
     isNoQty && activePlanningCycleId != null
       ? sheets.filter((s) => Number(s.cycleId ?? 0) === Number(activePlanningCycleId))
-      : sheets;
+      : isNoQty && addRequirementIntent && activePlanningCycleId == null
+        ? // SO current cycle not hydrated yet — do not treat every historical sheet as "this cycle" (breaks empty-cycle Next RS UI).
+          []
+        : sheets;
   const hasAnySheets = cycleScopedSheets.length > 0;
   const noSheetsUi = !hasAnySheets;
+
+  /** Dashboard Next RS → active cycle has no RS rows in list (and/or detail is off-cycle): keep create workspace visible even when `sheet` is stale non-null. */
+  const showNoQtyEmptyCycleCreateWorkspace = React.useMemo(() => {
+    if (!addRequirementIntent || !isNoQty) return false;
+    if (activePlanningCycleId == null) {
+      return selectedSheetId == null;
+    }
+    const ac = Number(activePlanningCycleId);
+    if (!Number.isFinite(ac) || ac <= 0) return selectedSheetId == null;
+    const rowsOnActiveCycle = sheets.filter((s) => Number(s.cycleId ?? 0) === ac);
+    if (rowsOnActiveCycle.length > 0) return false;
+    if (sheet != null && !sheetOnActiveCycle) return true;
+    if (selectedSheetId == null) return true;
+    const sel = sheets.find((s) => Number(s.id) === Number(selectedSheetId));
+    return !sel || Number(sel.cycleId ?? 0) !== ac;
+  }, [
+    addRequirementIntent,
+    isNoQty,
+    activePlanningCycleId,
+    selectedSheetId,
+    sheets,
+    sheet,
+    sheetOnActiveCycle,
+  ]);
+
+  React.useEffect(() => {
+    if (!showNoQtyEmptyCycleCreateWorkspace) {
+      setPendingNoQtyNewReqQty({});
+      return;
+    }
+    setPendingNoQtyNewReqQty((prev) => {
+      const next: Record<number, string> = {};
+      for (const id of createSelectedItemIds) {
+        next[id] = prev[id] ?? "";
+      }
+      return next;
+    });
+  }, [showNoQtyEmptyCycleCreateWorkspace, createSelectedItemIds]);
+
+  React.useEffect(() => {
+    if (!showNoQtyEmptyCycleCreateWorkspace || !so) return;
+    const opts = fgItemOptionsFromSo(so);
+    if (opts.length === 0) return;
+    setCreateSelectedItemIds((prev) => (prev.length > 0 ? prev : opts.map((x) => x.itemId)));
+  }, [showNoQtyEmptyCycleCreateWorkspace, so]);
+
+  /** Pre-create NO_QTY preview: last shortage is unknown until draft/recalc — use 0 for totals strip only. */
+  const noQtyEmptyCreatePreview = React.useMemo(() => {
+    if (!showNoQtyEmptyCycleCreateWorkspace || !so) {
+      return { rows: [] as Array<{ itemId: number; itemName: string; raw: string; newReq: number; previewTot: number }>, newSum: 0, totSum: 0 };
+    }
+    let newSum = 0;
+    let totSum = 0;
+    const rows = fgItemOptionsFromSo(so)
+      .filter((o) => createSelectedItemIds.includes(o.itemId))
+      .map((o) => {
+        const raw = pendingNoQtyNewReqQty[o.itemId] ?? "";
+        const newReq = safeNum(raw);
+        newSum += newReq;
+        const line: SheetLine = {
+          itemId: o.itemId,
+          itemName: o.itemName,
+          requirementQty: raw || "0",
+          newWoQty: raw,
+          shortfallQty: 0,
+          availableStockQty: 0,
+          postCycleApprovalQty: 0,
+        };
+        const previewTot = computeDraftProductionRequired(line, true);
+        totSum += previewTot;
+        return { itemId: o.itemId, itemName: o.itemName, raw, newReq, previewTot };
+      });
+    return { rows, newSum, totSum };
+  }, [showNoQtyEmptyCycleCreateWorkspace, so, createSelectedItemIds, pendingNoQtyNewReqQty]);
 
   // Strict state-driven UI: base banners/actions on the SELECTED sheet only.
   // This prevents stale "draft" UI from showing after the selected sheet is locked.
@@ -808,7 +1011,14 @@ export function RequirementSheetPage() {
   /** Redundant "Continue draft" only when this same draft is selected+open and no other draft exists. */
   const continueDraftRedundant = draftUi && selectionMatchesOpenDraft && !hasOtherUnfinishedDraft;
 
+  const noQtyIntentEmptyActiveCycle =
+    Boolean(addRequirementIntent && isNoQty && activePlanningCycleId != null && draftRowsInCycle.length === 0);
+
+  const showNoQtyFinalizeActions =
+    isNoQty && Boolean(sheet) && sheetOnActiveCycle && draftUi && isLatestForPeriod;
+
   const primaryMode: "DRAFT" | "EMPTY" | "LOCKED" = draftUi ? "DRAFT" : lockedUi ? "LOCKED" : "EMPTY";
+
   const safeLines: SheetLine[] = Array.isArray(sheet?.lines) ? sheet!.lines : [];
   /** True when no suggested WO remains on any line (includes carry-forward covered by operational stock). */
   const isZeroPlanning =
@@ -835,12 +1045,16 @@ export function RequirementSheetPage() {
 
   const flowStateCycleIdForApi = React.useMemo(() => {
     if (!isNoQty) return null;
+    if (addRequirementIntent && activePlanningCycleId != null) {
+      const ac = Number(activePlanningCycleId);
+      if (Number.isFinite(ac) && ac > 0) return ac;
+    }
     const fromSheet = sheet?.cycleId != null ? Number(sheet.cycleId) : NaN;
     if (Number.isFinite(fromSheet) && fromSheet > 0) return fromSheet;
     const ac = activePlanningCycleId != null ? Number(activePlanningCycleId) : NaN;
     if (Number.isFinite(ac) && ac > 0) return ac;
     return null;
-  }, [isNoQty, sheet?.cycleId, activePlanningCycleId]);
+  }, [isNoQty, sheet, activePlanningCycleId, addRequirementIntent]);
 
   /** Same predicate as the Items grid "WO Required" badge (locked lines) — display-only next-step override. */
   const lockedNoQtyAnyItemWoRequiredBadge = React.useMemo(() => {
@@ -927,15 +1141,59 @@ export function RequirementSheetPage() {
     }
   }
 
-  // Reveal create panel automatically only when create is the primary mode.
+  // Create panel: keep open for Dashboard → Next RS until a draft exists on the active cycle;
+  // do not force-close just because a stale cross-cycle sheet briefly hydrated.
   React.useEffect(() => {
-    if (primaryMode === "EMPTY") {
+    const draftCountOnActive =
+      activePlanningCycleId != null
+        ? sheets.filter(
+            (s) => Number(s.cycleId ?? 0) === Number(activePlanningCycleId) && s.status === "DRAFT",
+          ).length
+        : 0;
+    const selectedListRow =
+      selectedSheetId != null ? sheets.find((s) => Number(s.id) === Number(selectedSheetId)) : null;
+    const selectedRowOnActiveCycle =
+      activePlanningCycleId != null &&
+      selectedSheetId != null &&
+      selectedListRow != null &&
+      Number(selectedListRow.cycleId ?? 0) === Number(activePlanningCycleId);
+    /** Intent=add: keep create until a draft on the active cycle is the working selection (handles stale / cross-cycle id + SO cycle hydrate). */
+    const noQtyIntentAddKeepCreateOpen =
+      addRequirementIntent &&
+      isNoQty &&
+      !selectedRowOnActiveCycle &&
+      (activePlanningCycleId == null || draftCountOnActive === 0);
+    if (noQtyIntentAddKeepCreateOpen) {
       setShowCreatePanel(true);
       return;
     }
-    // In DRAFT/LOCKED modes, keep create panel hidden unless user explicitly asks for "Create New Version".
+    if (showNoQtyEmptyCycleCreateWorkspace) {
+      setShowCreatePanel(true);
+      return;
+    }
+    if (addRequirementIntent && isNoQty && activePlanningCycleId != null) {
+      if (draftCountOnActive === 0) {
+        setShowCreatePanel(true);
+        return;
+      }
+    }
+    if (primaryMode === "EMPTY") {
+      // Avoid flashing create while a draft row is already selected but detail has not hydrated yet.
+      if (!(addRequirementIntent && isNoQty && selectedSheetId != null)) {
+        setShowCreatePanel(true);
+        return;
+      }
+    }
     setShowCreatePanel(false);
-  }, [primaryMode, activePlanningCycleId]);
+  }, [
+    primaryMode,
+    activePlanningCycleId,
+    addRequirementIntent,
+    isNoQty,
+    sheets,
+    showNoQtyEmptyCycleCreateWorkspace,
+    selectedSheetId,
+  ]);
 
   if (!Number.isFinite(soId) || soId <= 0) {
     return (
@@ -952,9 +1210,37 @@ export function RequirementSheetPage() {
           <DemoFlowBanner />
         </div>
 
-        <OperationalContextSticky>
-          <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
-            <span className="text-[13px] font-semibold text-slate-900">Requirement sheet</span>
+        {soCreatedBanner ? (
+          <ErpWorkflowBanner
+            tone="success"
+            className="mb-1 flex-col items-stretch gap-1.5 sm:flex-row sm:items-start sm:justify-between"
+            role="status"
+            aria-live="polite"
+          >
+            <div>
+              <div className="text-[12px] font-semibold text-emerald-950">NO_QTY Sales Order Created</div>
+              <p className="mt-0.5 text-[12px] leading-snug text-emerald-900">
+                Sales Order <span className="font-mono font-semibold tabular-nums">{soCreatedBanner.soNo}</span> created
+                successfully. Continue with Cycle {soCreatedBanner.cycleNo} Requirement Planning.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] font-medium text-emerald-900/90 sm:shrink-0">
+              <span className="max-w-[12rem] truncate" title={soCreatedBanner.customerName}>
+                {soCreatedBanner.customerName}
+              </span>
+              <OpCtxSep />
+              <span className="font-mono tabular-nums">{soCreatedBanner.soNo}</span>
+              <OpCtxSep />
+              <span>NO_QTY</span>
+              <OpCtxSep />
+              <span>Cycle {soCreatedBanner.cycleNo}</span>
+            </div>
+          </ErpWorkflowBanner>
+        ) : null}
+
+        <OperationalContextSticky className="space-y-1">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
+            <span className="text-[12px] font-semibold text-slate-900">Requirement sheet</span>
             {isNoQty && fromNoQtySo ? (
               <PageNoQtyFlowBackLink step="REQUIREMENT" className="mt-0" />
             ) : isNoQty ? (
@@ -1011,18 +1297,21 @@ export function RequirementSheetPage() {
             </span>
           </OperationalContextBar>
           ) : null}
-          {isNoQty && sheet ? (
-            <div className="mt-1 flex flex-wrap items-center justify-between gap-1.5 rounded-md border border-slate-200 bg-white/95 px-2 py-1">
+          {isNoQty && so ? (
+            <NoQtyCycleContextBar
+              compact
+              soId={soId}
+              soDocNo={so.docNo ?? null}
+              customerName={customerName}
+              cycleNo={cycleNo}
+              erpAdjustedPlanningQty={summary.shortfallSum > 1e-6 ? summary.shortfallSum : null}
+              currentRequirementQty={summary.newWoSum > 1e-6 ? summary.newWoSum : null}
+              totalToProduceQty={summary.totalWoSum > 1e-6 ? summary.totalWoSum : null}
+            />
+          ) : null}
+          {isNoQty && sheet && sheetOnActiveCycle ? (
+            <div className="flex flex-wrap items-center justify-between gap-1 rounded-md border border-slate-200 bg-white/95 px-1.5 py-0.5">
               <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-[12px] text-slate-800">
-                <span className="font-mono text-[13px] font-semibold tabular-nums text-slate-950">
-                  {displaySalesOrderNo(soId, so?.docNo)}
-                </span>
-                <span className="max-w-[13rem] truncate font-semibold text-slate-900" title={customerName}>
-                  {customerName}
-                </span>
-                <span className="rounded border border-emerald-200 bg-emerald-50 px-1.5 py-0 text-[11px] font-semibold text-emerald-800">
-                  {cycleStatus === "Next Cycle" ? "Next cycle" : cycleNo != null ? `Cycle ${cycleNo}` : "Cycle -"}
-                </span>
                 <select
                   className="h-7 max-w-[13rem] rounded-md border border-slate-200 bg-white px-2 text-[12px]"
                   value={selectedSheetId ?? ""}
@@ -1053,6 +1342,7 @@ export function RequirementSheetPage() {
                 >
                   Recalculate
                 </Button>
+                {showNoQtyFinalizeActions ? (
                 <Button
                   type="button"
                   size="sm"
@@ -1062,7 +1352,8 @@ export function RequirementSheetPage() {
                 >
                   {draftUi ? "Finalize RS" : "Finalize Requirement"}
                 </Button>
-                {draftUi && !noQtyDraftCanFinalize ? (
+                ) : null}
+                {showNoQtyFinalizeActions && draftUi && !noQtyDraftCanFinalize ? (
                   <span className="text-xs font-medium text-amber-800">Enter requirement qty.</span>
                 ) : null}
                 <details className="relative">
@@ -1088,19 +1379,19 @@ export function RequirementSheetPage() {
           ) : null}
         </OperationalContextSticky>
 
-        <div className={cn("mt-1 min-w-0", isNoQty ? "space-y-0.5" : "space-y-1")}>
-        {isNoQty ? (
+        <div className={cn("mt-0.5 min-w-0", isNoQty ? "space-y-0.5" : "space-y-1")}>
+        {isNoQty && !noQtyIntentEmptyActiveCycle ? (
           <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] leading-snug text-slate-500">
             <span>Finalize creates the Work Order.</span>
             <details className="inline-block">
               <summary className="inline cursor-pointer text-slate-600 underline underline-offset-2">Info</summary>
               <div className="mt-1 max-w-3xl rounded border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-600 shadow-sm">
-                Draft is editable. Locked is used for production planning. Total to Produce = Last shortage + New requirement - Free surplus usable.
+                Includes previous cycle shortage. Usable stock from prior cycles is dispatch-only and does not reduce Total to Produce.
               </div>
             </details>
           </div>
         ) : null}
-        {fromDashboard && isNoQty && cycleNo != null ? (
+        {fromDashboard && isNoQty && cycleNo != null && !showNoQtyEmptyCycleCreateWorkspace ? (
           <div className="rounded-md border border-sky-200 bg-sky-50 px-2 py-1 text-[12px] text-sky-950">
             Continue Requirement Sheet for{" "}
             <span className="font-semibold tabular-nums">Cycle {cycleNo}</span>
@@ -1137,20 +1428,24 @@ export function RequirementSheetPage() {
                 <span className="font-medium">Pending QC disposition qty</span> = informational only (not included in Total to Produce).
               </div>
               <div>
-                <span className="font-medium">Prior undispatched QC qty</span> = informational only (it is excluded from Total to Produce; free surplus usable planning already reflects confirmed dispatch attachment).
+                <span className="font-medium">Prior undispatched QC qty</span> = informational only (dispatch pool context; not subtracted from Total to Produce on this sheet).
               </div>
               <div>
-                <span className="font-medium">Total to Produce</span> = max(0, Last shortage qty + New requirement qty − Free surplus usable stock).
+                <span className="font-medium">Total to Produce</span> = max(0, Last shortage qty + New requirement qty). Usable stock from prior cycles is shown separately for dispatch — it does not reduce Total to Produce.
               </div>
             </div>
           </details>
         )}
         {addRequirementIntent ? (
-          <p className="border-l-2 border-emerald-200 bg-emerald-50/40 py-0.5 pl-2 text-[11px] leading-snug text-slate-600">
-            <span className="font-medium text-emerald-900">Create Requirement Sheet:</span> New sheets attach to this SO&apos;s{" "}
-            <span className="font-medium">current active cycle</span> (same sales order — no need to create another No Qty SO). Use a new period or a new
-            version for the same period if you are revising the requirement.
-          </p>
+          <details className="inline-block text-[11px] text-slate-500">
+            <summary className="flex cursor-pointer list-none items-center gap-1 rounded border border-slate-200/80 bg-white px-1.5 py-0.5 text-slate-600 hover:bg-slate-50 [&::-webkit-details-marker]:hidden">
+              <CircleHelp className="h-3 w-3 shrink-0" aria-hidden />
+              <span>Create RS help</span>
+            </summary>
+            <p className="mt-1 max-w-lg rounded border border-slate-200 bg-white px-2 py-1 text-[11px] leading-snug text-slate-600 shadow-sm">
+              New sheets attach to this SO&apos;s active cycle. Use a new period or version when revising the requirement.
+            </p>
+          </details>
         ) : null}
       </div>
 
@@ -1166,7 +1461,7 @@ export function RequirementSheetPage() {
           <div className="font-semibold">Draft deleted. Create a new requirement sheet</div>
           <div className="mt-0.5 text-xs text-amber-900">You can now create a fresh requirement sheet for this cycle.</div>
         </div>
-      ) : isNoQty && noSheetsUi ? (
+      ) : isNoQty && noSheetsUi && !showNoQtyEmptyCycleCreateWorkspace ? (
         <div className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-800">
           <div className="font-semibold">No requirement sheet created yet</div>
           <div className="mt-0.5 text-xs text-slate-600">Create a requirement sheet for this cycle to begin planning.</div>
@@ -1319,7 +1614,7 @@ export function RequirementSheetPage() {
                 if (!canCreateNextRs) {
                   return (
                     <div className="grid gap-1">
-                      <div className="text-xs font-semibold text-slate-700">Next step: Create Next RS</div>
+                      <div className="text-xs font-semibold text-slate-700">Next step: Next RS</div>
                       <p className="text-[11px] leading-snug text-slate-600">
                         Ask Admin or Store to create the next requirement sheet.
                       </p>
@@ -1328,14 +1623,14 @@ export function RequirementSheetPage() {
                 }
                 return (
                   <div className="grid gap-1">
-                    <div className="text-xs font-semibold text-slate-700">Next step: Create Next RS</div>
+                    <div className="text-xs font-semibold text-slate-700">Next step: Next RS</div>
                     <Button
                       type="button"
                       size="sm"
                       disabled={nextRsPrepareBusy || noQtyFlowLoading}
                       onClick={() => void prepareNextRsFromLockedFooter()}
                     >
-                      {nextRsPrepareBusy ? "…" : "Create Next RS"}
+                      {nextRsPrepareBusy ? "…" : "Next RS"}
                     </Button>
                   </div>
                 );
@@ -1352,7 +1647,7 @@ export function RequirementSheetPage() {
                     : next === "QC"
                       ? "Next step: QC"
                       : next === "DISPATCH"
-                        ? "Next step: Dispatch"
+                        ? "Next step: Optional dispatch"
                         : "Next step: Sales Bill";
 
               const btn =
@@ -1365,7 +1660,7 @@ export function RequirementSheetPage() {
                     : next === "QC"
                       ? "Go to QC"
                       : next === "DISPATCH"
-                        ? "Go to Dispatch"
+                        ? "Review dispatch (optional)"
                         : "Go to Sales Bill";
 
               const to =
@@ -1522,12 +1817,18 @@ export function RequirementSheetPage() {
         </div>
       ) : null}
 
-      {(!sheet || showCreatePanel) ? (
+      {(!sheet || showCreatePanel || showNoQtyEmptyCycleCreateWorkspace) ? (
       <div className={noSheetsUi ? "grid gap-6 lg:grid-cols-1" : "grid gap-6 lg:grid-cols-2"}>
         <Card className="min-w-0 overflow-hidden">
-          {!sheet ? (
+          {!sheet || showNoQtyEmptyCycleCreateWorkspace ? (
             <CardHeader className="pb-3">
-              <CardTitle className="text-base">{primaryMode === "EMPTY" ? "Create requirement sheet" : "Versions"}</CardTitle>
+              <CardTitle className="text-base">
+                {showNoQtyEmptyCycleCreateWorkspace && cycleNo != null
+                  ? `Create Requirement Sheet — Cycle ${cycleNo}`
+                  : primaryMode === "EMPTY"
+                    ? "Create requirement sheet"
+                    : "Versions"}
+              </CardTitle>
             </CardHeader>
           ) : null}
           <CardContent className="grid gap-3">
@@ -1548,7 +1849,7 @@ export function RequirementSheetPage() {
               </div>
             ) : null}
 
-            {showCreatePanel ? (
+            {showCreatePanel || showNoQtyEmptyCycleCreateWorkspace ? (
               <div
                 ref={createNewSheetRef}
                 className={
@@ -1558,12 +1859,103 @@ export function RequirementSheetPage() {
                 }
               >
                 <div className="text-xs font-medium text-slate-700">
-                  {isNoQty ? "Create requirement sheet" : primaryMode === "EMPTY" ? "Start requirement sheet" : "Create new version"}
+                  {showNoQtyEmptyCycleCreateWorkspace && cycleNo != null
+                    ? `New cycle ${cycleNo} — add requirement quantities, then create the draft.`
+                    : isNoQty
+                      ? "Create requirement sheet"
+                      : primaryMode === "EMPTY"
+                        ? "Start requirement sheet"
+                        : "Create new version"}
                 </div>
-                <div className="text-xs text-slate-600">
-                  <span className="font-medium text-slate-800">Only selected items will be planned in this cycle.</span>{" "}
-                  Select the FG items you want to plan. Items are not auto-included.
-                </div>
+                {!showNoQtyEmptyCycleCreateWorkspace ? (
+                  <div className="text-xs text-slate-600">
+                    <span className="font-medium text-slate-800">Only selected items will be planned in this cycle.</span>{" "}
+                    Select the FG items you want to plan. Items are not auto-included.
+                  </div>
+                ) : (
+                  <div className="rounded-md border border-sky-200/80 bg-sky-50/90 px-2.5 py-2 text-[11px] leading-snug text-sky-950">
+                    <div className="font-semibold text-sky-950">Planning preview (before draft)</div>
+                    <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 tabular-nums">
+                      <span>
+                        <span className="text-sky-800/90">Last shortage</span>{" "}
+                        <span className="font-semibold">—</span>
+                        <span className="text-sky-800/80"> (set after create + recalc)</span>
+                      </span>
+                      <span>
+                        <span className="text-sky-800/90">New requirement</span>{" "}
+                        <span className="font-semibold">{noQtyEmptyCreatePreview.newSum.toFixed(3).replace(/\.000$/, "")}</span>
+                      </span>
+                      <span>
+                        <span className="text-sky-800/90">Total to Produce</span>{" "}
+                        <span className="font-semibold">{noQtyEmptyCreatePreview.totSum.toFixed(3).replace(/\.000$/, "")}</span>
+                        <span className="font-normal text-sky-800/80"> (shortage treated as 0 until draft)</span>
+                      </span>
+                    </div>
+                  </div>
+                )}
+                {showNoQtyEmptyCycleCreateWorkspace ? (
+                  noQtyEmptyCreatePreview.rows.length === 0 ? (
+                    <div className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                      No FG items in scope. Open “FG item scope” below and select at least one line.
+                    </div>
+                  ) : (
+                    <div className="grid gap-2">
+                      {noQtyEmptyCreatePreview.rows.map((row) => {
+                        const fmt = (n: number) => n.toFixed(3).replace(/\.000$/, "");
+                        return (
+                          <div key={row.itemId} className="rounded-lg border border-slate-200 bg-white p-2.5 shadow-sm">
+                            <div className="text-sm font-semibold text-slate-900">{row.itemName}</div>
+                            <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                              <div>
+                                <div className="text-[11px] font-medium text-slate-600">New Requirement Qty</div>
+                                <Input
+                                  className="mt-0.5 h-9 w-full tabular-nums text-[14px]"
+                                  value={row.raw}
+                                  disabled={busy}
+                                  onChange={(e) => {
+                                    const v = e.target.value;
+                                    setPendingNoQtyNewReqQty((prev) => ({ ...prev, [row.itemId]: v }));
+                                  }}
+                                  placeholder="0"
+                                />
+                              </div>
+                              <div className="rounded-md border border-slate-100 bg-slate-50/90 p-2">
+                                <div className="text-[11px] font-medium text-slate-600">Total to Produce (preview)</div>
+                                <div className="mt-0.5 text-lg font-bold tabular-nums text-slate-950">{fmt(row.previewTot)}</div>
+                                <div className="mt-0.5 text-[10px] text-slate-500">Last shortage: — until draft exists</div>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )
+                ) : null}
+                {showNoQtyEmptyCycleCreateWorkspace ? (
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <div className="grid gap-1">
+                      <span className="text-xs font-medium text-slate-600">Period (YYYY-MM)</span>
+                      <Input
+                        autoFocus={Boolean(addRequirementIntent && primaryMode === "EMPTY")}
+                        value={periodKey}
+                        onChange={(e) => setPeriodKey(e.target.value)}
+                        placeholder="2026-04"
+                      />
+                    </div>
+                    <div className="flex items-end">
+                      <Button
+                        type="button"
+                        variant="default"
+                        size="sm"
+                        className="h-9 w-full font-semibold shadow-sm"
+                        disabled={busy}
+                        onClick={() => void createNewSheet()}
+                      >
+                        {busy ? "Working…" : "Create Requirement Sheet"}
+                      </Button>
+                    </div>
+                  </div>
+                ) : null}
                 {sheet?.status && (sheet.periodKey ?? "").trim() && periodKey.trim() === String(sheet.periodKey ?? "").trim() ? (
                   <div className="rounded border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700">
                     <div className="font-semibold text-slate-800">Previous version items (reference)</div>
@@ -1573,105 +1965,163 @@ export function RequirementSheetPage() {
                     <div className="mt-1 text-[11px] text-slate-500">These are not auto-selected. Choose items below.</div>
                   </div>
                 ) : null}
-                {(() => {
-                  const opts = fgItemOptionsFromSo(so);
-                  if (opts.length === 0) {
+                {showNoQtyEmptyCycleCreateWorkspace ? (
+                  (() => {
+                    const opts = fgItemOptionsFromSo(so);
+                    if (opts.length === 0) {
+                      return (
+                        <div className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                          No FG items found on this sales order.
+                        </div>
+                      );
+                    }
                     return (
-                      <div className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-                        No FG items found on this sales order.
-                      </div>
+                      <details className="rounded-md border border-slate-200 bg-white px-2 py-1.5">
+                        <summary className="cursor-pointer select-none text-[12px] font-medium text-slate-700">FG item scope (optional)</summary>
+                        <div className="mt-2 grid gap-2">
+                          <div className="grid gap-1">
+                            <div className="grid gap-1">
+                              {opts.map((o) => {
+                                const checked = createSelectedItemIds.includes(o.itemId);
+                                return (
+                                  <label key={o.itemId} className="flex items-center gap-2 text-sm text-slate-800">
+                                    <input
+                                      type="checkbox"
+                                      checked={checked}
+                                      disabled={busy}
+                                      onChange={(e) => {
+                                        const next = Boolean(e.target.checked);
+                                        setCreateSelectedItemIds((prev) => {
+                                          const set = new Set(prev);
+                                          if (next) set.add(o.itemId);
+                                          else set.delete(o.itemId);
+                                          return [...set];
+                                        });
+                                      }}
+                                    />
+                                    <span className="text-sm">{o.itemName}</span>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            <Button type="button" variant="outline" disabled={busy} onClick={() => setCreateSelectedItemIds(opts.map((x) => x.itemId))}>
+                              Select all
+                            </Button>
+                            <Button type="button" variant="outline" disabled={busy} onClick={() => setCreateSelectedItemIds([])}>
+                              Clear
+                            </Button>
+                          </div>
+                        </div>
+                      </details>
                     );
-                  }
-                  return (
-                    <div className="grid gap-2">
-                      <div className="grid gap-1">
-                        <span className="text-xs font-medium text-slate-600">FG items in this sales order</span>
+                  })()
+                ) : (
+                  (() => {
+                    const opts = fgItemOptionsFromSo(so);
+                    if (opts.length === 0) {
+                      return (
+                        <div className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                          No FG items found on this sales order.
+                        </div>
+                      );
+                    }
+                    return (
+                      <div className="grid gap-2">
                         <div className="grid gap-1">
-                          {opts.map((o) => {
-                            const checked = createSelectedItemIds.includes(o.itemId);
-                            return (
-                              <label key={o.itemId} className="flex items-center gap-2 text-sm text-slate-800">
-                                <input
-                                  type="checkbox"
-                                  checked={checked}
-                                  disabled={busy}
-                                  onChange={(e) => {
-                                    const next = Boolean(e.target.checked);
-                                    setCreateSelectedItemIds((prev) => {
-                                      const set = new Set(prev);
-                                      if (next) set.add(o.itemId);
-                                      else set.delete(o.itemId);
-                                      return [...set];
-                                    });
-                                  }}
-                                />
-                                <span className="text-sm">{o.itemName}</span>
-                              </label>
-                            );
-                          })}
+                          <span className="text-xs font-medium text-slate-600">FG items in this sales order</span>
+                          <div className="grid gap-1">
+                            {opts.map((o) => {
+                              const checked = createSelectedItemIds.includes(o.itemId);
+                              return (
+                                <label key={o.itemId} className="flex items-center gap-2 text-sm text-slate-800">
+                                  <input
+                                    type="checkbox"
+                                    checked={checked}
+                                    disabled={busy}
+                                    onChange={(e) => {
+                                      const next = Boolean(e.target.checked);
+                                      setCreateSelectedItemIds((prev) => {
+                                        const set = new Set(prev);
+                                        if (next) set.add(o.itemId);
+                                        else set.delete(o.itemId);
+                                        return [...set];
+                                      });
+                                    }}
+                                  />
+                                  <span className="text-sm">{o.itemName}</span>
+                                </label>
+                              );
+                            })}
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            disabled={
+                              busy ||
+                              !sheet ||
+                              String(sheet.periodKey ?? "").trim() === "" ||
+                              periodKey.trim() !== String(sheet.periodKey ?? "").trim() ||
+                              !Array.isArray(sheet?.lines) ||
+                              (sheet?.lines?.length ?? 0) === 0
+                            }
+                            onClick={() => {
+                              if (!sheet) return;
+                              if (periodKey.trim() !== String(sheet.periodKey ?? "").trim()) return;
+                              const prevIds = (sheet?.lines || [])
+                                .map((l) => Number(l.itemId))
+                                .filter((x) => Number.isFinite(x) && x > 0);
+                              const allowed = new Set(opts.map((x) => x.itemId));
+                              const next = [...new Set(prevIds.filter((id) => allowed.has(id)))];
+                              setCreateSelectedItemIds(next);
+                            }}
+                          >
+                            Copy previous selection
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            disabled={busy}
+                            onClick={() => setCreateSelectedItemIds(opts.map((x) => x.itemId))}
+                          >
+                            Select all
+                          </Button>
+                          <Button type="button" variant="outline" disabled={busy} onClick={() => setCreateSelectedItemIds([])}>
+                            Clear
+                          </Button>
                         </div>
                       </div>
-                      <div className="flex flex-wrap gap-2">
-                        <Button
-                          type="button"
-                          variant="outline"
-                          disabled={
-                            busy ||
-                            !sheet ||
-                            String(sheet.periodKey ?? "").trim() === "" ||
-                            periodKey.trim() !== String(sheet.periodKey ?? "").trim() ||
-                            !Array.isArray(sheet?.lines) ||
-                            (sheet?.lines?.length ?? 0) === 0
-                          }
-                          onClick={() => {
-                            if (!sheet) return;
-                            if (periodKey.trim() !== String(sheet.periodKey ?? "").trim()) return;
-                            const prevIds = (sheet?.lines || [])
-                              .map((l) => Number(l.itemId))
-                              .filter((x) => Number.isFinite(x) && x > 0);
-                            const allowed = new Set(opts.map((x) => x.itemId));
-                            const next = [...new Set(prevIds.filter((id) => allowed.has(id)))];
-                            setCreateSelectedItemIds(next);
-                          }}
-                        >
-                          Copy previous selection
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          disabled={busy}
-                          onClick={() => setCreateSelectedItemIds(opts.map((x) => x.itemId))}
-                        >
-                          Select all
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          disabled={busy}
-                          onClick={() => setCreateSelectedItemIds([])}
-                        >
-                          Clear
-                        </Button>
-                      </div>
+                    );
+                  })()
+                )}
+                {!showNoQtyEmptyCycleCreateWorkspace ? (
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <div className="grid gap-1">
+                      <span className="text-xs font-medium text-slate-600">Period (YYYY-MM)</span>
+                      <Input
+                        autoFocus={Boolean(addRequirementIntent && primaryMode === "EMPTY")}
+                        value={periodKey}
+                        onChange={(e) => setPeriodKey(e.target.value)}
+                        placeholder="2026-04"
+                      />
                     </div>
-                  );
-                })()}
-                <div className="grid gap-2 sm:grid-cols-2">
-                  <div className="grid gap-1">
-                    <span className="text-xs font-medium text-slate-600">Period (YYYY-MM)</span>
-                    <Input
-                      autoFocus={Boolean(addRequirementIntent && primaryMode === "EMPTY")}
-                      value={periodKey}
-                      onChange={(e) => setPeriodKey(e.target.value)}
-                      placeholder="2026-04"
-                    />
+                    <div className="flex items-end">
+                      <Button
+                        type="button"
+                        variant="default"
+                        size="sm"
+                        className="h-9 w-full font-semibold shadow-sm"
+                        disabled={busy}
+                        onClick={() => void createNewSheet()}
+                      >
+                        {busy ? "Working…" : "Create Requirement Sheet"}
+                      </Button>
+                    </div>
                   </div>
-                  <div className="flex items-end">
-                    <Button type="button" className="w-full" disabled={busy} onClick={() => void createNewSheet()}>
-                      {busy ? "Working…" : "Create Requirement Sheet"}
-                    </Button>
-                  </div>
-                </div>
+                ) : null}
                 <div className="text-xs text-slate-500">Multiple versions per period are supported (v1, v2, v3…).</div>
               </div>
             ) : null}
@@ -1746,10 +2196,12 @@ export function RequirementSheetPage() {
               <Button type="button" variant="outline" disabled={!sheet || editingDisabled || busy || isZeroPlanning} onClick={() => void recalc()}>
                 Recalculate
               </Button>
+              {(!isNoQty || showNoQtyFinalizeActions) ? (
               <Button type="button" disabled={noQtyFinalizeDisabled} onClick={() => void lockSheet()}>
                 {isNoQty && draftUi ? "Finalize Requirement Sheet" : "Finalize Requirement"}
               </Button>
-              {isNoQty && draftUi && !noQtyDraftCanFinalize ? (
+              ) : null}
+              {(!isNoQty || showNoQtyFinalizeActions) && draftUi && !noQtyDraftCanFinalize ? (
                 <div className="w-full text-xs font-medium text-amber-800">Enter requirement qty to continue.</div>
               ) : null}
               {sheet ? (
@@ -1803,7 +2255,7 @@ export function RequirementSheetPage() {
       </div>
       ) : null}
 
-      {sheet ? (
+      {sheet && (!isNoQty || sheetOnActiveCycle) ? (
         <Card className={cn("min-w-0 overflow-hidden", isNoQty && "border-0 shadow-none")}>
           <CardHeader className={cn(isNoQty ? "px-3 py-2" : "pb-3")}>
             <CardTitle className="text-base">Items</CardTitle>
@@ -1917,13 +2369,15 @@ export function RequirementSheetPage() {
                                   <span>New requirement</span>
                                   <span className="font-semibold tabular-nums">{fmtPlan(newReqNum)}</span>
                                 </div>
+                                {isAdmin ? (
+                                  <div className="flex justify-between gap-2 text-slate-600">
+                                    <span>Carry-forward planning qty</span>
+                                    <span className="font-semibold tabular-nums">{fmtPlan(shortfall)}</span>
+                                  </div>
+                                ) : null}
                                 <div className="flex justify-between gap-2">
-                                  <span>Last shortage</span>
-                                  <span className="font-semibold tabular-nums">{fmtPlan(shortfall)}</span>
-                                </div>
-                                <div className="flex justify-between gap-2">
-                                  <span className="text-slate-600">Less: Free surplus usable used</span>
-                                  <span className="font-semibold tabular-nums text-slate-900">-{fmtPlan(usable)}</span>
+                                  <span className="text-slate-600">Usable stock available for dispatch (info)</span>
+                                  <span className="font-semibold tabular-nums text-slate-900">{fmtPlan(usable)}</span>
                                 </div>
                                 <div className="mt-0.5 flex justify-between gap-2 border-t border-slate-200 pt-0.5">
                                   <span className="font-semibold">Total to Produce</span>
@@ -1933,9 +2387,9 @@ export function RequirementSheetPage() {
                             </div>
                           </div>
 
-                          <details className="mt-2 rounded-lg border border-slate-200 bg-white px-2 py-1.5">
-                            <summary className="cursor-pointer text-[12px] font-medium text-slate-700">
-                              Info-only (excluded from calculation)
+                          <details className="mt-1.5 rounded border border-slate-200/80 bg-slate-50/50 px-1.5 py-1">
+                            <summary className="cursor-pointer text-[11px] font-medium text-slate-500 hover:text-slate-700">
+                              More qty detail (info only)
                             </summary>
                             <div className="mt-2 grid gap-2 text-[12px] text-slate-700 sm:grid-cols-2">
                               <div className="flex justify-between gap-2">
@@ -1965,7 +2419,7 @@ export function RequirementSheetPage() {
                           <th className="px-4 py-2 text-right">Last shortage qty</th>
                           <th className="px-4 py-2 text-right">New requirement qty</th>
                           <th className="px-4 py-2 text-right bg-slate-50">Suggested WO qty</th>
-                          <th className="px-4 py-2 text-right">Free surplus usable</th>
+                          <th className="px-4 py-2 text-right">Usable for dispatch (info)</th>
                           <th className="px-4 py-2">Status</th>
                         </tr>
                       </thead>
@@ -1979,7 +2433,11 @@ export function RequirementSheetPage() {
                           const reservedActive = usableDisplayStock(l.reservedForActiveNoQtyDispatchQty);
                           const fmtPlan = (n: number) => n.toFixed(3).replace(/\.000$/, "");
                           const newReqNum = safeNum(rawNewWo);
-                          const suggestedNet = locked ? safeNum(l.suggestedWoQty) : computeSystemSuggestedNet(newReqNum, stock);
+                          const suggestedNet = locked
+                            ? safeNum(l.suggestedWoQty)
+                            : isNoQty
+                              ? computeDraftProductionRequired(l, true)
+                              : computeSystemSuggestedNet(newReqNum, stock);
                           const effectiveDemand = shortfall + newReqNum;
                           const noProduction = Math.abs(suggestedNet) <= 1e-6;
                           const status =
@@ -2048,18 +2506,22 @@ export function RequirementSheetPage() {
         </Card>
       ) : null}
 
-      {sheet ? (
+      {sheet && !showNoQtyEmptyCycleCreateWorkspace ? (
         <details className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
           <summary className="cursor-pointer text-[12px] font-medium text-slate-700">Summary</summary>
           <div
             className={`mt-2 grid gap-2 sm:grid-cols-2 ${isNoQty ? "lg:grid-cols-5" : "lg:grid-cols-4"}`}
           >
-            <div className="rounded border border-slate-200 bg-white px-3 py-2">
-              <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Total last shortage</div>
-              <div className="mt-0.5 text-lg font-bold tabular-nums text-slate-900">
-                {summary.shortfallSum.toFixed(3).replace(/\.000$/, "")}
+            {isAdmin && isNoQty ? (
+              <div className="rounded border border-slate-200 bg-white px-3 py-2">
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                  Carry-forward planning qty (total)
+                </div>
+                <div className="mt-0.5 text-lg font-bold tabular-nums text-slate-900">
+                  {summary.shortfallSum.toFixed(3).replace(/\.000$/, "")}
+                </div>
               </div>
-            </div>
+            ) : null}
             {isNoQty ? (
               <div className="rounded border border-slate-200 bg-white px-3 py-2">
                 <div
@@ -2092,21 +2554,21 @@ export function RequirementSheetPage() {
                 className="text-[11px] font-semibold uppercase tracking-wide text-slate-500"
                 title={
                   isNoQty
-                    ? "Free surplus usable stock available for planning deduction on this requirement sheet (excludes usable reserved for pending cycle dispatch)."
+                    ? "Usable FG stock available for optional dispatch (same SO / prior cycles). Informational — not deducted from Total to Produce."
                     : undefined
                 }
               >
-                {isNoQty ? "Free surplus usable (planning)" : "Usable stock"}
+                {isNoQty ? "Usable for dispatch (info)" : "Usable stock"}
               </div>
               <div className="mt-0.5 text-lg font-bold tabular-nums text-slate-900">
-                {(isNoQty ? summary.postCycleApprovalSum : summary.stockSum).toFixed(3).replace(/\.000$/, "")}
+                {summary.stockSum.toFixed(3).replace(/\.000$/, "")}
               </div>
             </div>
           </div>
         </details>
       ) : null}
 
-      {sheet ? (
+      {sheet && !showNoQtyEmptyCycleCreateWorkspace ? (
         <OperationalWorkspaceFooter
           className="mt-3 max-w-3xl"
           sections={[
@@ -2117,7 +2579,7 @@ export function RequirementSheetPage() {
                     title: "Next",
                     children: (
                       <div className="flex flex-wrap items-center justify-between gap-2">
-                        <span className="text-[12px] text-slate-600">Create next Requirement Sheet</span>
+                        <span className="text-[12px] text-slate-600">Continue rolling planning (next cycle)</span>
                         <Button
                           type="button"
                           size="sm"
@@ -2125,7 +2587,7 @@ export function RequirementSheetPage() {
                           disabled={nextRsPrepareBusy || noQtyFlowLoading}
                           onClick={() => void prepareNextRsFromLockedFooter()}
                         >
-                          {nextRsPrepareBusy ? "…" : "Create Next RS"}
+                          {nextRsPrepareBusy ? "…" : "Next RS"}
                         </Button>
                       </div>
                     ),

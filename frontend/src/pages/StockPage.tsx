@@ -16,6 +16,7 @@ import {
   operatorTableRowClass,
 } from "../components/erp/OperatorWorkbench";
 import { PageSmartBackLink, StickyReportBackStrip, StickyWorkspaceHead } from "../components/PageHeader";
+import { ERP_REPORT_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
 
 type StockBucketsRow = {
   itemId: number;
@@ -49,6 +50,9 @@ export function StockPage() {
   const [rows, setRows] = React.useState<StockBucketsRow[]>([]);
   const [summaryLoaded, setSummaryLoaded] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const liveTick = useErpRefreshTick(["reports", "stock", "qc", "production", "dispatch"], {
+    pollIntervalMs: ERP_REPORT_POLL_MS,
+  });
 
   function loadSummary() {
     return apiFetch<StockBucketsRow[]>("/api/stock/summary-buckets")
@@ -66,7 +70,7 @@ export function StockPage() {
 
   React.useEffect(() => {
     loadSummary();
-  }, []);
+  }, [liveTick]);
 
   const visibleStockRows = React.useMemo(() => {
     const q = qDraft.trim().toLowerCase();

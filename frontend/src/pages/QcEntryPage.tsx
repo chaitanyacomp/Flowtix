@@ -18,7 +18,9 @@ import { Button, buttonVariants } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { isValidNumberDraft, type NumberDraft, toNumberDraft } from "../lib/numberDraft";
 import { useAuth } from "../hooks/useAuth";
-import { useCanOpenRequirementSheet } from "../hooks/useIsAdmin";
+import { useCanCreateNextRs, useCanOpenRequirementSheet } from "../hooks/useIsAdmin";
+import { useErpRoleUi } from "../hooks/useErpRoleUi";
+import { getRoleEmptyState } from "../lib/erpRoleEmptyStates";
 import { PlanningStatusChip } from "../components/erp/PlanningStatusChip";
 import { useFastEntryForm } from "../hooks/useFastEntryForm";
 import { useDependentFieldFocus } from "../hooks/useDependentFieldFocus";
@@ -40,8 +42,11 @@ import {
   PageNoQtyFlowBackLink,
 } from "../components/PageHeader";
 import { OperationalContextBar, OperationalContextSticky, OpCtxSep } from "../components/erp/OperationalWorkspaceChrome";
+import { ErpEmptyState } from "../components/erp/foundation/ErpEmptyState";
+import { NoQtyCycleContextBar } from "../components/erp/foundation/NoQtyCycleContextBar";
 import { displaySalesOrderNo } from "../lib/docNoDisplay";
 import { buildNoQtyGuidedHref, useNoQtyFlowState } from "../lib/noQtyFlowState";
+import { prepareNoQtyNextRequirementSheetAndNavigate } from "../lib/noQtyPrepareNextRsNavigate";
 import { useToast } from "../contexts/ToastContext";
 import { DemoFlowBanner } from "../components/demo/DemoFlowBanner";
 import { DemoSafeNoQtyContinue } from "../components/demo/DemoSafeNoQtyContinue";
@@ -129,7 +134,12 @@ type NoQtyQcNextActionPayload = {
   dispatchableQty: number;
   productionBalanceQty: number;
   lastShortageQty: number;
-  nextAction: "DISPATCH" | "PRODUCTION" | "DONE";
+  nextAction: "NEXT_RS" | "DISPATCH" | "PRODUCTION" | "DONE";
+  primaryAction?: "NEXT_RS" | "REQUIREMENT" | "WORK_ORDER" | "PRODUCTION" | "QC" | "DISPATCH" | "SALES_BILL" | "DONE" | "BLOCKED";
+  primaryActionForCurrentUser?: "CREATE_NEXT_RS" | "NEXT_RS" | "REQUIREMENT" | "WORK_ORDER" | "PRODUCTION" | "QC" | "DISPATCH" | "SALES_BILL" | "DONE" | "BLOCKED" | "NONE";
+  optionalActions?: string[];
+  message?: string | null;
+  workflowSummary?: string | null;
 };
 
 /** Backend may return `{ rows: T[] }` or a raw `T[]` depending on client/version. */
@@ -398,6 +408,8 @@ function qcStatusLabel(s: QcStatus): string {
 
 export function QcEntryPage() {
   const auth = useAuth();
+  const roleUi = useErpRoleUi();
+  const canCreateNextRs = useCanCreateNextRs();
   const canOpenRs = useCanOpenRequirementSheet();
   const navigate = useNavigate();
   const location = useLocation();
@@ -1905,12 +1917,108 @@ export function QcEntryPage() {
     noQtyQcNextAction,
   ]);
 
-  const hideNoQtyQcWorkbenchForDispatchFlow = noQtyDispatchReadyForHeader;
+  const QC_OPS_EPS = 1e-6;
+
+  const focusSoDispQueues = React.useMemo(() => {
+    const empty = {
+      reworkRecheck: [] as QcDispQueueRow[],
+      hold: [] as QcDispQueueRow[],
+      reworkSupervisor: [] as QcDispQueueRow[],
+      reworkExec: [] as QcDispQueueRow[],
+    };
+    if (!focusSoIdValid) return empty;
+    if (fromNoQtySo && noQtyCycleId != null) {
+      return {
+        reworkRecheck: dispQueuesScoped.readyForQcRecheck,
+        hold: dispQueuesScoped.holdStock,
+        reworkSupervisor: dispQueuesScoped.reworkPendingSupervisor,
+        reworkExec: dispQueuesScoped.reworkApprovedPendingExecution,
+      };
+    }
+    const filterSo = (rows: QcDispQueueRow[] | undefined) =>
+      (rows ?? []).filter((r) => Number(r.workOrder?.salesOrderId) === Number(focusSoId));
+    return {
+      reworkRecheck: filterSo(dispQueues?.readyForQcRecheck),
+      hold: filterSo(dispQueues?.holdStock),
+      reworkSupervisor: filterSo(dispQueues?.reworkPendingSupervisor),
+      reworkExec: filterSo(dispQueues?.reworkApprovedPendingExecution),
+    };
+  }, [dispQueues, dispQueuesScoped, focusSoId, focusSoIdValid, fromNoQtySo, noQtyCycleId]);
+
+  const hasQcReworkOrHoldPending = React.useMemo(() => {
+    const q = focusSoDispQueues;
+    if (
+      q.reworkRecheck.length > 0 ||
+      q.hold.length > 0 ||
+      q.reworkSupervisor.length > 0 ||
+      q.reworkExec.length > 0
+    ) {
+      return true;
+    }
+    if (
+      fromNoQtySo &&
+      noQtyLastQcSave &&
+      (noQtyLastQcSave.reworkQty > QC_OPS_EPS || noQtyLastQcSave.holdQty > QC_OPS_EPS)
+    ) {
+      return true;
+    }
+    return false;
+  }, [focusSoDispQueues, fromNoQtySo, noQtyLastQcSave]);
+
+  const qcProductionQueueClear = React.useMemo(() => {
+    if (!listReady) return false;
+    return qcQueueRows.length <= QC_OPS_EPS;
+  }, [listReady, qcQueueRows.length]);
+
+  const showNoPendingQcBatchesMessage = React.useMemo(() => {
+    if (!listReady || !focusSoIdValid || fromNoQtySo) return false;
+    if (productionBatchesAll.length === 0) return false;
+    if (!qcProductionQueueClear) return false;
+    if (hasQcReworkOrHoldPending) return false;
+    return true;
+  }, [
+    listReady,
+    focusSoIdValid,
+    fromNoQtySo,
+    productionBatchesAll.length,
+    qcProductionQueueClear,
+    hasQcReworkOrHoldPending,
+  ]);
+
+  const showRegularDispatchPostQcPanel =
+    !fromNoQtySo && Boolean(regularDispatchPostQc) && !hasQcReworkOrHoldPending && qcProductionQueueClear;
+
+  const showNextStepDispatchStripEffective = showNextStepDispatchStrip && !hasQcReworkOrHoldPending;
+
+  const noQtyDispatchReadyForHeaderEffective = noQtyDispatchReadyForHeader && !hasQcReworkOrHoldPending;
+
+  const qcHeaderQueueCounts = React.useMemo(() => {
+    if (fromNoQtySo && focusSoIdValid && noQtyCycleId != null) {
+      return {
+        rework: dispQueuesScoped.readyForQcRecheck.length,
+        hold: dispQueuesScoped.holdStock.length,
+      };
+    }
+    if (focusSoIdValid) {
+      return {
+        rework: focusSoDispQueues.reworkRecheck.length,
+        hold: focusSoDispQueues.hold.length,
+      };
+    }
+    return {
+      rework: dispQueues?.readyForQcRecheck?.length ?? 0,
+      hold: dispQueues?.holdStock?.length ?? 0,
+    };
+  }, [dispQueues, dispQueuesScoped, focusSoDispQueues, fromNoQtySo, focusSoIdValid, noQtyCycleId]);
+
+  const hideNoQtyQcWorkbenchForDispatchFlow = noQtyDispatchReadyForHeaderEffective;
 
   type QcGuidance =
     | { kind: "CONTINUE_QC"; nextStepLabel: string }
     | { kind: "REWORK_SUPERVISOR"; nextStepLabel: string }
     | { kind: "REWORK_FINAL_QC"; nextStepLabel: string }
+    | { kind: "NEXT_RS"; nextStepLabel: string }
+    | { kind: "WAIT_NEXT_DEPARTMENT"; nextStepLabel: string }
     | { kind: "DISPATCH"; nextStepLabel: string; href: string; buttonLabel: string }
     | { kind: "PRODUCTION"; nextStepLabel: string; href: string; buttonLabel: string }
     | { kind: "NONE"; nextStepLabel: string };
@@ -1919,8 +2027,23 @@ export function QcEntryPage() {
     if (!fromNoQtySo || !focusSoIdValid) return { kind: "NONE", nextStepLabel: "—" };
     if (focusSo?.cycleStatus === "Closed Cycle") return { kind: "NONE", nextStepLabel: "Cycle Closed" };
 
-    // Priority (cycle-scoped): dispatch accepted qty first — rework/hold/recheck do not block NO_QTY dispatch.
+    // Operator hierarchy: production QC → rework/hold → dispatch.
     if (qcQueueRows.length > 0) return { kind: "CONTINUE_QC", nextStepLabel: "Continue QC" };
+    if (dispQueuesScoped.readyForQcRecheck.length > 0) {
+      return { kind: "REWORK_FINAL_QC", nextStepLabel: "Rework queue — complete before dispatch" };
+    }
+    if (dispQueuesScoped.reworkPendingSupervisor.length > 0) {
+      return { kind: "REWORK_SUPERVISOR", nextStepLabel: "Rework approval pending" };
+    }
+    if (dispQueuesScoped.holdStock.length > 0) {
+      return { kind: "REWORK_SUPERVISOR", nextStepLabel: "Hold decisions pending" };
+    }
+    if (noQtyFlowState?.primaryActionForCurrentUser === "CREATE_NEXT_RS") {
+      return { kind: "NEXT_RS", nextStepLabel: "Next RS" };
+    }
+    if (noQtyFlowState?.overallWorkflowState === "NEXT_RS_READY") {
+      return { kind: "WAIT_NEXT_DEPARTMENT", nextStepLabel: "Waiting for Sales/Planning" };
+    }
     if (
       noQtyFlowState?.hasQcDispatchPending ||
       noQtyFlowState?.nextAction === "DISPATCH" ||
@@ -1928,7 +2051,7 @@ export function QcEntryPage() {
     ) {
       return {
         kind: "DISPATCH",
-        nextStepLabel: "Dispatch accepted qty (rework can continue separately)",
+        nextStepLabel: "Dispatch accepted qty",
         href: buildNoQtyGuidedHref({
           to: "/dispatch",
           salesOrderId: focusSoId,
@@ -1936,15 +2059,6 @@ export function QcEntryPage() {
           fromStep: "qc",
         }),
         buttonLabel: "Open Dispatch",
-      };
-    }
-    if (dispQueuesScoped.readyForQcRecheck.length > 0) {
-      return { kind: "REWORK_FINAL_QC", nextStepLabel: "Rework Final QC (parallel with dispatch)" };
-    }
-    if (dispQueuesScoped.reworkPendingSupervisor.length > 0) {
-      return {
-        kind: "REWORK_SUPERVISOR",
-        nextStepLabel: "Legacy rework approval — you can still dispatch accepted qty above",
       };
     }
     if (noQtyFlowState?.nextAction === "PRODUCTION" || noQtyFlowState?.activeStep === 3) {
@@ -1964,6 +2078,7 @@ export function QcEntryPage() {
   }, [
     dispQueuesScoped.readyForQcRecheck.length,
     dispQueuesScoped.reworkPendingSupervisor.length,
+    dispQueuesScoped.holdStock.length,
     focusSo?.cycleStatus,
     focusSoId,
     focusSoIdValid,
@@ -1972,8 +2087,20 @@ export function QcEntryPage() {
     noQtyFlowState?.cycleId,
     noQtyFlowState?.hasQcDispatchPending,
     noQtyFlowState?.nextAction,
+    noQtyFlowState?.primaryAction,
+    noQtyFlowState?.primaryActionForCurrentUser,
+    noQtyFlowState?.overallWorkflowState,
     qcQueueRows.length,
   ]);
+
+  /** Sticky header already shows the primary next-step CTA — hide duplicate in-card panels. */
+  const noQtyPrimaryNextInHeader =
+    showNoQtyQcNextStepPanel &&
+    !noQtyQcNextActionLoading &&
+    !noQtyQcNextActionError &&
+    (qcGuidance.kind === "NEXT_RS" ||
+      qcGuidance.kind === "WAIT_NEXT_DEPARTMENT" ||
+      (noQtyDispatchReadyForHeaderEffective && Boolean(noQtyQcNextAction)));
 
   const fatalFallback = (message: string, err?: unknown) => {
     // eslint-disable-next-line no-console
@@ -2039,40 +2166,33 @@ export function QcEntryPage() {
             </div>
           </div>
           {focusSoIdValid && focusSo ? (
-            <OperationalContextBar>
-              <span className="font-semibold text-slate-600">SO</span>
-              <span className="rounded border border-sky-200 bg-sky-50 px-1.5 py-0.5 font-mono text-[11px] font-semibold tabular-nums text-sky-950">
-                {displaySalesOrderNo(focusSo.id, focusSo.docNo ?? null)}
-              </span>
-              <OpCtxSep />
-              <span className="max-w-[14rem] truncate font-medium text-slate-800">{focusSo.customerName}</span>
-              <OpCtxSep />
-              <span className="rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[11px] font-semibold text-slate-700">
-                {focusSo.orderType === "NO_QTY"
-                  ? "NO_QTY"
-                  : focusSo.orderType === "NORMAL"
+            fromNoQtySo ? (
+              <NoQtyCycleContextBar
+                soId={focusSo.id}
+                soDocNo={focusSo.docNo ?? null}
+                customerName={focusSo.customerName}
+                cycleNo={focusSo.cycleNo}
+              />
+            ) : (
+              <OperationalContextBar>
+                <span className="font-semibold text-slate-600">SO</span>
+                <span className="rounded border border-sky-200 bg-sky-50 px-1.5 py-0.5 font-mono text-[11px] font-semibold tabular-nums text-sky-950">
+                  {displaySalesOrderNo(focusSo.id, focusSo.docNo ?? null)}
+                </span>
+                <OpCtxSep />
+                <span className="max-w-[14rem] truncate font-medium text-slate-800">{focusSo.customerName}</span>
+                <OpCtxSep />
+                <span className="rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[11px] font-semibold text-slate-700">
+                  {focusSo.orderType === "NORMAL"
                     ? "REGULAR"
                     : focusSo.orderType === "REPLACEMENT"
                       ? "REPLACEMENT"
                       : focusSo.orderType ?? "—"}
-              </span>
-              {focusSo.cycleNo != null ? (
-                <>
-                  <OpCtxSep />
-                  <span className="font-medium text-slate-700">Cycle {focusSo.cycleNo}</span>
-                </>
-              ) : null}
-              <OpCtxSep />
-              <span className="rounded bg-violet-50 px-1.5 py-0.5 text-[11px] font-semibold text-violet-900 ring-1 ring-violet-200">QC</span>
-              {fromNoQtySo ? (
-                <>
-                  <OpCtxSep />
-                  <span className="text-[11px] text-slate-600">
-                    Pointer: <span className="font-medium text-slate-800">{qcGuidance.nextStepLabel}</span>
-                  </span>
-                </>
-              ) : null}
-            </OperationalContextBar>
+                </span>
+                <OpCtxSep />
+                <span className="rounded bg-violet-50 px-1.5 py-0.5 text-[11px] font-semibold text-violet-900 ring-1 ring-violet-200">QC</span>
+              </OperationalContextBar>
+            )
           ) : null}
           {fromNoQtySo && focusSoIdValid ? (
             <>
@@ -2082,12 +2202,47 @@ export function QcEntryPage() {
               {showNoQtyQcNextStepPanel && !noQtyQcNextActionLoading && noQtyQcNextActionError ? (
                 <div className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-950">{noQtyQcNextActionError}</div>
               ) : null}
-              {noQtyDispatchReadyForHeader && noQtyQcNextAction ? (
+              {qcGuidance.kind === "NEXT_RS" ? (
+                <div className="erp-next-action-bar justify-between gap-2 border-sky-200/90 bg-sky-50/95">
+                  <span className="min-w-0 text-[12px] leading-snug text-sky-950">
+                    <span className="font-semibold">Next:</span>{" "}
+                    {canCreateNextRs
+                      ? noQtyFlowState?.workflowSummary ?? "Cycle completed. Ready for Next RS."
+                      : noQtyFlowState?.message ?? "Waiting for Sales/Planning to create Next RS."}
+                  </span>
+                  {canCreateNextRs ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="h-8 shrink-0"
+                      onClick={() =>
+                        prepareNoQtyNextRequirementSheetAndNavigate({
+                          salesOrderId: focusSoId,
+                          navigate,
+                          toast,
+                          navigateState: { from: "qc" },
+                        })
+                      }
+                    >
+                      Next RS
+                    </Button>
+                  ) : null}
+                </div>
+              ) : null}
+              {qcGuidance.kind === "WAIT_NEXT_DEPARTMENT" ? (
+                <div className="erp-next-action-bar justify-between gap-2 border-slate-200/90 bg-slate-50/95">
+                  <span className="min-w-0 text-[12px] leading-snug text-slate-700">
+                    {noQtyFlowState?.message ?? "QC completed. Waiting for Sales/Planning to create Next RS."}
+                  </span>
+                </div>
+              ) : null}
+              {roleUi.showQcDispatchHandoff && noQtyDispatchReadyForHeaderEffective && noQtyQcNextAction ? (
                 <div className="erp-next-action-bar justify-between gap-2 border-emerald-200/90 bg-emerald-50/95">
                   <span className="min-w-0 text-[12px] leading-snug text-emerald-950">
                     <span className="font-semibold">Next:</span>{" "}
                     <span className="font-bold tabular-nums">{fmtQcQty(noQtyQcNextAction.dispatchableQty)}</span> ready for dispatch.
-                    {noQtyQcNextAction.dispatchableQty + 1e-9 < noQtyQcNextAction.qcPoolRemaining ? (
+                    {!roleUi.quietNoQtyExplanations &&
+                    noQtyQcNextAction.dispatchableQty + 1e-9 < noQtyQcNextAction.qcPoolRemaining ? (
                       <span className="mt-0.5 block text-[10px] font-normal text-emerald-900/85">
                         Dispatch limited by usable stock (below QC-accepted pool).
                       </span>
@@ -2111,35 +2266,35 @@ export function QcEntryPage() {
               ) : null}
             </>
           ) : null}
-          {listReady ? (
-            <div className="flex flex-wrap gap-1.5 border-t border-slate-100 pt-1.5">
+          {listReady && roleUi.showQcSecondaryQueueChips ? (
+            <div className="flex flex-wrap gap-1 border-t border-slate-100 pt-1">
               <Link
                 to={`${qcChipBaseTo}#qc-production-pending`}
-                className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-800 shadow-sm hover:border-slate-300"
+                className="inline-flex items-center gap-1 rounded border border-slate-200/90 bg-white px-1.5 py-0 text-[10px] font-medium text-slate-700 hover:bg-slate-50"
               >
-                Production QC
-                <span className="tabular-nums text-slate-600">{qcQueueRows.length}</span>
+                Prod QC
+                <span className="tabular-nums font-semibold text-slate-900">{qcQueueRows.length}</span>
               </Link>
               <Link
                 to={`${qcChipBaseTo}#qc-rework-pending`}
-                className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-800 shadow-sm hover:border-slate-300"
+                className="inline-flex items-center gap-1 rounded border border-slate-200/90 bg-white px-1.5 py-0 text-[10px] font-medium text-slate-700 hover:bg-slate-50"
               >
-                Rework QC
-                <span className="tabular-nums text-slate-600">{dispQueues?.readyForQcRecheck?.length ?? 0}</span>
+                Rework
+                <span className="tabular-nums font-semibold text-slate-900">{qcHeaderQueueCounts.rework}</span>
               </Link>
               <Link
                 to={`${qcChipBaseTo}#qc-hold-decisions`}
-                className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-800 shadow-sm hover:border-slate-300"
+                className="inline-flex items-center gap-1 rounded border border-slate-200/90 bg-white px-1.5 py-0 text-[10px] font-medium text-slate-700 hover:bg-slate-50"
               >
                 Hold
-                <span className="tabular-nums text-slate-600">{dispQueues?.holdStock?.length ?? 0}</span>
+                <span className="tabular-nums font-semibold text-slate-900">{qcHeaderQueueCounts.hold}</span>
               </Link>
               <Link
                 to={`${qcChipBaseTo}#qc-recent-scrap`}
-                className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-800 shadow-sm hover:border-slate-300"
+                className="inline-flex items-center gap-1 rounded border border-slate-200/90 bg-white px-1.5 py-0 text-[10px] font-medium text-slate-700 hover:bg-slate-50"
               >
-                Scrap today
-                <span className="tabular-nums text-slate-600">{qcSummaryScrapToday}</span>
+                Scrap
+                <span className="tabular-nums font-semibold text-slate-900">{qcSummaryScrapToday}</span>
               </Link>
             </div>
           ) : (
@@ -2149,13 +2304,13 @@ export function QcEntryPage() {
         {qcDrillBannerActive ? (
           <div
             className={cn(
-              "rounded border px-1.5 py-0.5 text-[11px]",
-              qcBannerSoft ? "border-amber-200 bg-amber-50/90 text-amber-950" : "border-slate-200 bg-slate-50 text-slate-700",
+              "rounded border px-1.5 py-0.5 text-[10px] text-slate-500",
+              qcBannerSoft ? "border-amber-100 bg-amber-50/60 text-amber-900/90" : "border-slate-200/80 bg-slate-50/80 text-slate-500",
             )}
           >
             <div className="flex flex-wrap items-center justify-between gap-1.5">
               <div className="min-w-0 truncate">
-                <span className="text-slate-500">Focus:</span>{" "}
+                <span className="text-slate-400">Focus:</span>{" "}
                 <span className="font-medium text-slate-900">{qcBannerTitle}</span>
               </div>
               <Button type="button" variant="outline" size="sm" className="h-6 px-2 text-[10px]" onClick={clearQcDrillFocus}>
@@ -2166,7 +2321,12 @@ export function QcEntryPage() {
           </div>
         ) : null}
         <OperatorPageBody className="gap-1.5">
-          {!fromNoQtySo && focusSoIdValid && regularDispatchPostQc ? (
+          {!fromNoQtySo &&
+          !roleUi.isPureQcOperator &&
+          focusSoIdValid &&
+          showRegularDispatchPostQcPanel &&
+          regularDispatchPostQc &&
+          !(showNextStepDispatchStripEffective && regularDispatchPostQc.kind === "DISPATCH_ONLY") ? (
             <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-3 text-sm text-amber-950 shadow-sm">
               {regularDispatchPostQc.kind === "DECISION" ? (
                 <>
@@ -2278,7 +2438,7 @@ export function QcEntryPage() {
             </div>
           ) : null}
       <NextStepStrip
-        visible={showNextStepDispatchStrip && !fromNoQtySo}
+        visible={showNextStepDispatchStripEffective && !fromNoQtySo}
         variant="action"
         className="!gap-1.5 !px-2 !py-1.5 [&_p]:text-[13px]"
         title="Next: Dispatch"
@@ -2313,9 +2473,9 @@ export function QcEntryPage() {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-0.5 px-2 py-0.5">
-          {showNoQtyQcNextStepPanel && !noQtyDispatchReadyForHeader && !noQtyQcNextActionLoading && noQtyQcNextAction ? (
-            <details className="rounded border border-slate-200 bg-slate-50/80">
-              <summary className="cursor-pointer select-none list-none px-2 py-1 text-[11px] font-semibold text-slate-600 [&::-webkit-details-marker]:hidden">
+          {showNoQtyQcNextStepPanel && !noQtyPrimaryNextInHeader && !noQtyQcNextActionLoading && noQtyQcNextAction ? (
+            <details className="erp-advanced-section">
+              <summary className="cursor-pointer select-none list-none px-2 py-1 text-[11px] font-semibold text-slate-500 [&::-webkit-details-marker]:hidden">
                 <span className="text-slate-400" aria-hidden>
                   ▸{" "}
                 </span>
@@ -2323,7 +2483,37 @@ export function QcEntryPage() {
               </summary>
               <div className="border-t border-slate-200 px-2.5 py-1.5 text-[12px] text-slate-800">
                 <div className="mt-1 space-y-2">
-                  {noQtyQcNextAction.nextAction === "DISPATCH" && noQtyQcNextAction.dispatchableQty <= 1e-6 ? (
+                  {noQtyQcNextAction.primaryActionForCurrentUser === "CREATE_NEXT_RS" && canCreateNextRs ? (
+                    <>
+                      <p className="text-[12px] leading-snug text-slate-800">
+                        {noQtyQcNextAction.workflowSummary ?? "Cycle completed. Ready for Next RS."}
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        <Button
+                          type="button"
+                          size="sm"
+                          onClick={() =>
+                            prepareNoQtyNextRequirementSheetAndNavigate({
+                              salesOrderId: focusSoId,
+                              navigate,
+                              toast,
+                              navigateState: { from: "qc" },
+                            })
+                          }
+                        >
+                          Next RS
+                        </Button>
+                      </div>
+                    </>
+                  ) : noQtyQcNextAction.primaryActionForCurrentUser === "CREATE_NEXT_RS" && !canCreateNextRs ? (
+                    <p className="text-[12px] leading-snug text-slate-700">
+                      {noQtyQcNextAction.message ?? "Waiting for Sales/Planning to create Next RS."}
+                    </p>
+                  ) : noQtyQcNextAction.nextAction === "NEXT_RS" || noQtyQcNextAction.primaryAction === "NEXT_RS" ? (
+                    <p className="text-[12px] leading-snug text-slate-700">
+                      {noQtyQcNextAction.message ?? "QC completed. Waiting for Sales/Planning to create Next RS."}
+                    </p>
+                  ) : noQtyQcNextAction.nextAction === "DISPATCH" && noQtyQcNextAction.dispatchableQty <= 1e-6 ? (
                     <p className="text-[12px] leading-snug text-slate-700">No dispatchable quantity for this cycle yet.</p>
                   ) : noQtyQcNextAction.nextAction === "PRODUCTION" ? (
                     <>
@@ -2429,6 +2619,41 @@ export function QcEntryPage() {
             </div>
           ) : null}
           {error ? <div className="mt-2 rounded border border-red-200 bg-red-50 px-2 py-1 text-[13px] text-red-800">{error}</div> : null}
+          {hasQcReworkOrHoldPending &&
+          qcProductionQueueClear &&
+          productionBatchesFiltered.length === 0 &&
+          !(fromNoQtySo && noQtyLastQcSave) ? (
+            <div
+              className="mt-2 rounded-md border border-violet-300/90 bg-violet-50 px-3 py-2 text-sm text-violet-950 shadow-sm"
+              role="status"
+              data-testid="qc-rework-primary-bar"
+            >
+              <div className="font-semibold text-violet-950">Next: complete rework / hold queue</div>
+              <p className="mt-0.5 text-xs leading-snug text-violet-900/90">
+                Prod QC is clear for this view. Finish rework and hold dispositions before dispatch.
+              </p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {focusSoDispQueues.reworkRecheck.length > 0 ||
+                focusSoDispQueues.reworkSupervisor.length > 0 ||
+                focusSoDispQueues.reworkExec.length > 0 ? (
+                  <a
+                    href="#qc-rework-pending"
+                    className={cn(buttonVariants({ size: "sm", variant: "default" }), "bg-violet-800 text-white hover:bg-violet-900")}
+                  >
+                    Open Rework Queue
+                  </a>
+                ) : null}
+                {focusSoDispQueues.hold.length > 0 ? (
+                  <a
+                    href="#qc-hold-decisions"
+                    className={cn(buttonVariants({ size: "sm", variant: "outline" }), "border-violet-400 bg-white text-violet-950")}
+                  >
+                    Open Hold Queue
+                  </a>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
           <DemoSafeNoQtyContinue
             visible={showDemoNoQtyQcContinue}
             body="Demo mode: QC saves are blocked in Safe Demo. Continue without recording inspection data."
@@ -2445,14 +2670,19 @@ export function QcEntryPage() {
                   <span className="font-medium text-slate-800">Completed QC</span> above to review batches.
                 </p>
               ) : null}
-              {!fromNoQtySo && focusSoIdValid && productionBatchesAll.length > 0 ? (
-                <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-950">
-                  <div className="font-semibold">No pending QC batches for this order</div>
-                  <p className="mt-1 text-xs leading-snug text-amber-900">
-                    QC may already be completed. Use <span className="font-medium">Show: All</span> or{" "}
-                    <span className="font-medium">Completed QC</span> above to review batches for this sales order.
-                  </p>
-                </div>
+              {showNoPendingQcBatchesMessage ? (
+                <ErpEmptyState
+                  className="mt-2"
+                  title={getRoleEmptyState("qc_batches", roleUi.role).title}
+                  body={
+                    getRoleEmptyState("qc_batches", roleUi.role).body ?? (
+                      <>
+                        Use <span className="font-medium text-slate-800">Show: All</span> or{" "}
+                        <span className="font-medium text-slate-800">Completed QC</span> to review batches.
+                      </>
+                    )
+                  }
+                />
               ) : null}
               {!fromNoQtySo && focusSoIdValid && productionBatchesAll.length === 0 ? (
                 <p className="mt-2 text-[12px] leading-snug text-slate-700">
@@ -2468,12 +2698,22 @@ export function QcEntryPage() {
               ) : null}
             </>
           ) : hideNoQtyQcWorkbenchForDispatchFlow ? (
-            <p className="text-[12px] leading-snug text-slate-600">No batches awaiting QC.</p>
+            <p className="text-[12px] leading-snug text-slate-600">{getRoleEmptyState("qc_batches", roleUi.role).title}</p>
           ) : (
             <div ref={qcFormRef} className="mt-0 flex flex-col gap-1">
               {fromNoQtySo && noQtyLastQcSave ? (
-                <Card className="border-slate-200 shadow-sm">
-                  <CardHeader className="border-b border-slate-100 bg-slate-50/60 px-3 py-2">
+                <Card
+                  className={cn(
+                    "shadow-sm",
+                    hasQcReworkOrHoldPending ? "border-violet-200" : "border-slate-200",
+                  )}
+                >
+                  <CardHeader
+                    className={cn(
+                      "border-b px-3 py-2",
+                      hasQcReworkOrHoldPending ? "border-violet-100 bg-violet-50/60" : "border-slate-100 bg-slate-50/60",
+                    )}
+                  >
                     <CardTitle className="text-sm font-semibold tracking-tight text-slate-900">QC completed</CardTitle>
                   </CardHeader>
                   <CardContent className="px-3 py-2">
@@ -2516,9 +2756,37 @@ export function QcEntryPage() {
                       </div>
                     ) : null}
                     <div className="mt-3 flex flex-wrap justify-end gap-2">
-                      <Button type="button" size="sm" variant="outline" onClick={() => setNoQtyLastQcSave(null)}>
-                        Continue QC
-                      </Button>
+                      {hasQcReworkOrHoldPending ? (
+                        <>
+                          <a
+                            href="#qc-rework-pending"
+                            className={cn(
+                              buttonVariants({ size: "sm", variant: "default" }),
+                              "bg-violet-800 text-white hover:bg-violet-900",
+                            )}
+                          >
+                            Open Rework Queue
+                          </a>
+                          {noQtyLastQcSave.holdQty > QC_OPS_EPS ? (
+                            <a
+                              href="#qc-hold-decisions"
+                              className={cn(
+                                buttonVariants({ size: "sm", variant: "outline" }),
+                                "border-violet-400 bg-white text-violet-950",
+                              )}
+                            >
+                              Open Hold Queue
+                            </a>
+                          ) : null}
+                          <Button type="button" size="sm" variant="ghost" onClick={() => setNoQtyLastQcSave(null)}>
+                            Dismiss
+                          </Button>
+                        </>
+                      ) : (
+                        <Button type="button" size="sm" variant="outline" onClick={() => setNoQtyLastQcSave(null)}>
+                          Continue QC
+                        </Button>
+                      )}
                     </div>
                   </CardContent>
                 </Card>
@@ -2622,13 +2890,13 @@ export function QcEntryPage() {
                 queue={
                   <div className="flex min-h-0 flex-col gap-px lg:h-full lg:min-h-0">
                     <div className="flex flex-wrap items-baseline justify-between gap-0.5">
-                      <h3 className="text-[10px] font-bold uppercase tracking-wide text-slate-600">
+                      <h3 className="text-[11px] font-semibold text-slate-600">
                         {fromNoQtySo && focusSoIdValid ? "Current cycle work" : "Production QC queue"}
                       </h3>
                     </div>
                     <div
                       className={cn(
-                        "min-h-0 flex-1 overflow-auto rounded border border-slate-200 bg-white",
+                        "min-h-0 flex-1 overflow-auto rounded-md border border-slate-200/60 bg-white",
                         qcQueueRows.length > 8 ? "max-h-40 lg:max-h-none" : "",
                       )}
                     >
@@ -2655,8 +2923,8 @@ export function QcEntryPage() {
                                 className={cn(
                                   "border-t border-slate-100",
                                   operatorTableRowQcClass,
-                                  !sel && "bg-amber-50/30",
-                                  sel && "bg-emerald-50",
+                                  !sel && status === "AWAITING_QC" && "bg-amber-50/25",
+                                  sel && "bg-sky-50/80 ring-1 ring-inset ring-sky-200/80",
                                 )}
                               >
                                 <td
@@ -2778,9 +3046,10 @@ export function QcEntryPage() {
                         draftCheckedTotal > selectedRollups.pending + 1e-6 ? (
                           <p className="text-[10px] font-medium text-amber-800">Total exceeds remaining QC quantity</p>
                         ) : null}
-                        <div className="flex flex-wrap items-end gap-1">
-                          <div className="erp-form-field min-w-[5.25rem] max-w-[8.5rem] [&_span]:leading-none">
-                            <span className="text-[10px] font-medium text-slate-600">Inspecting now</span>
+                        <div className="erp-op-action-focus space-y-1.5">
+                        <div className="grid grid-cols-3 gap-1.5">
+                          <div className="erp-form-field min-w-0 [&_span]:leading-none">
+                            <span className="text-[11px] font-semibold text-slate-700">Inspecting now</span>
                             <Input
                               ref={checkedQtyRef}
                               type="text"
@@ -2797,7 +3066,7 @@ export function QcEntryPage() {
                               <p className="mt-px text-[10px] font-medium text-amber-800">Enter inspected quantity</p>
                             ) : null}
                           </div>
-                          <div className="erp-form-field min-w-[5.25rem] max-w-[8.5rem] [&_span]:leading-none">
+                          <div className="erp-form-field min-w-0 [&_span]:leading-none">
                             <span className="text-[10px] font-medium text-slate-600">Rejected qty</span>
                             <Input
                               type="text"
@@ -2813,7 +3082,7 @@ export function QcEntryPage() {
                               <p className="mt-px text-[10px] font-medium text-amber-800">Enter a valid rejected quantity.</p>
                             ) : null}
                           </div>
-                          <div className="erp-form-field min-w-[5.25rem] max-w-[8.5rem] [&_span]:leading-none">
+                          <div className="erp-form-field min-w-0 [&_span]:leading-none">
                             <span className="text-[10px] font-medium text-slate-600">Accepted qty</span>
                             <Input
                               type="text"
@@ -2871,7 +3140,7 @@ export function QcEntryPage() {
                             variant="default"
                             size="sm"
                             data-testid="qc-save-btn"
-                            className="h-8 min-w-[6.25rem] shrink-0 border border-emerald-700/40 bg-emerald-600 px-3 text-[11px] font-semibold text-white shadow-md hover:bg-emerald-700"
+                            className="h-8 min-w-[6.5rem] shrink-0 px-3 text-[13px] font-semibold shadow-md"
                             onClick={onSubmit}
                             disabled={saving || !qcFormCanSubmit}
                             {...(qcDemoHl ? { "data-demo-highlight": qcDemoHl } : {})}
@@ -2880,7 +3149,8 @@ export function QcEntryPage() {
                           </Button>
                         </div>
 
-                        <div className="flex flex-wrap items-end gap-1 border-t border-slate-100/90 pt-0.5">
+                        </div>
+                        <div className="flex flex-wrap items-end gap-1 border-t border-dashed border-slate-200/60 pt-1">
                           <div className="erp-form-field min-w-[8rem] max-w-[min(100%,18rem)] flex-1 [&_span]:leading-none">
                             <span className="text-[10px] font-medium text-slate-600">Reason</span>
                             <Input

@@ -141,8 +141,9 @@ async function getExistingActiveNoQtyCycleId(tx, salesOrderId) {
 
 /**
  * NO_QTY: Close the current ACTIVE cycle and create the next one when operators may open the next
- * requirement sheet — same gates as {@link computeNoQtyCreateNextRsEligibility} (locked RS, QC complete,
- * no RS already on a higher cycleNo). Single ACTIVE cycle invariant: prior ACTIVE → CLOSED, new row ACTIVE.
+ * requirement sheet — same gates as {@link computeNoQtyCreateNextRsEligibility} (locked RS on the active cycle,
+ * no RS already on a higher cycleNo; rolling flow — not blocked by QC or WO completion). Single ACTIVE cycle
+ * invariant: prior ACTIVE → CLOSED, new row ACTIVE.
  * Does not use dispatch, sales bill, or export.
  *
  * @param {import('@prisma/client').Prisma.TransactionClient} tx

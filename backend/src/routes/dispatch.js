@@ -36,8 +36,15 @@ const {
   lockDispatchForUpdate,
 } = require("../services/dispatchWriteLocks");
 const { mapSoLinesToDispatchFifoInputs, dispatchFifoQtyForSoLine } = require("../services/regularSoBufferQty");
+const { fetchInvoicedQtyBySoId } = require("../services/salesOrderProcessStage");
+const {
+  filterLineStatsForDispatchOpenList,
+  shouldExcludeSalesOrderFromDispatchOpenList,
+  isDispatchOpenListLineCandidate,
+  isSalesOrderCommerciallyClosedForDispatch,
+} = require("../services/dispatchOpenListEligibility");
 const { assertAdminPassword } = require("../services/adminPasswordAuth");
-const { DISPATCH_WRITE_ROLES, DISPATCH_READ_ROLES } = require("../constants/erpRoles");
+const { DISPATCH_WRITE_ROLES, DISPATCH_READ_ROLES, QC_PAGE_ROLES } = require("../constants/erpRoles");
 const {
   ROUTE_KEYS,
   normalizeIdempotencyKey,
@@ -427,6 +434,74 @@ function computeNoQtyFifoPrepareSlicesForItem({
     }
   }
   return { slices, totalAvailable, unallocated: Math.max(0, rem) };
+}
+
+/**
+ * NO_QTY only: set {@link SalesOrderCycle.noQtyTreatFgAsOptionalStoreStock} from **QC-backed** per-cycle
+ * dispatch headroom after dispatch rows change (prepare / lock / delete draft). True when any FG on that
+ * cycle still has positive `getNoQtyCycleDispatchHeadroomForItem` (same basis as FIFO prepare validation).
+ * Does not alter dispatch math, stock, or shortage — dashboard / UX intent only.
+ *
+ * @param {import("@prisma/client").Prisma.TransactionClient} tx
+ * @param {number} soId
+ * @param {{ qcMapAll: Map<string, number>; recheckMapAll: Map<string, number>; postCycleMapAll: Map<string, number> } | null} mapsOrNull
+ *        Pass preloaded maps when already available in the caller transaction; otherwise reloads.
+ */
+async function syncNoQtyOptionalStoreStockIntentForSalesOrderAfterDispatchChange(tx, soId, mapsOrNull) {
+  const soFresh = await tx.salesOrder.findUnique({
+    where: { id: soId },
+    include: { lines: { include: { item: true } }, dispatch: true },
+  });
+  if (!soFresh || soFresh.orderType !== "NO_QTY") return;
+
+  const allCycles = await tx.salesOrderCycle.findMany({
+    where: { salesOrderId: soId },
+    orderBy: { cycleNo: "asc" },
+    select: { id: true },
+  });
+  if (!allCycles.length) return;
+
+  const allCycleInputs = allCycles.map((c) => ({ id: soId, currentCycleId: c.id }));
+  let qcMapAll;
+  let recheckMapAll;
+  let postCycleMapAll;
+  if (mapsOrNull) {
+    qcMapAll = mapsOrNull.qcMapAll;
+    recheckMapAll = mapsOrNull.recheckMapAll;
+    postCycleMapAll = mapsOrNull.postCycleMapAll;
+  } else {
+    [qcMapAll, recheckMapAll, postCycleMapAll] = await Promise.all([
+      loadNoQtyCycleQcAcceptedMap(tx, allCycleInputs),
+      loadNoQtyDispositionUsableForDispatchPoolMap(tx, allCycleInputs),
+      loadNoQtyPostCycleApprovalMapForInputs(tx, allCycleInputs),
+    ]);
+  }
+
+  const syntheticSo = { id: soFresh.id, dispatch: soFresh.dispatch };
+
+  for (const c of allCycles) {
+    const itemIds = collectNoQtyItemIdsForCycle({
+      soId: soFresh.id,
+      cycleIdNorm: c.id,
+      salesOrderLines: soFresh.lines,
+      cycleQcAcceptedMap: qcMapAll,
+      cycleRecheckAcceptedMap: recheckMapAll,
+      postCycleApprovalMap: postCycleMapAll,
+      dispatchRecords: soFresh.dispatch,
+    });
+    let anyRemain = false;
+    for (const itemId of itemIds) {
+      const h = getNoQtyCycleDispatchHeadroomForItem(syntheticSo, c.id, itemId, qcMapAll, recheckMapAll, postCycleMapAll);
+      if (h > REPORT_QUEUE_EPS) {
+        anyRemain = true;
+        break;
+      }
+    }
+    await tx.salesOrderCycle.update({
+      where: { id: c.id },
+      data: { noQtyTreatFgAsOptionalStoreStock: anyRemain },
+    });
+  }
 }
 
 /**
@@ -1158,7 +1233,7 @@ dispatchRouter.get("/no-qty-debug", requireAuth, requireRole(["ADMIN"]), async (
  * GET /api/dispatch/no-qty-cycles?soId=
  * Sales order cycles (incl. closed when they still have QC-backed dispatch or a prepared draft).
  */
-dispatchRouter.get("/no-qty-cycles", requireAuth, requireRole(["ADMIN", "SALES", "STORE"]), async (req, res, next) => {
+dispatchRouter.get("/no-qty-cycles", requireAuth, requireRole(DISPATCH_READ_ROLES), async (req, res, next) => {
   try {
     const soId = Number(req.query.soId);
     if (!Number.isFinite(soId) || soId <= 0) {
@@ -1308,7 +1383,7 @@ function attachDispatchMaxReversibleQty(dispatchRows) {
   });
 }
 
-dispatchRouter.get("/sales-orders", requireAuth, requireRole(["ADMIN", "SALES", "STORE", "ACCOUNTS"]), async (req, res, next) => {
+dispatchRouter.get("/sales-orders", requireAuth, requireRole(DISPATCH_READ_ROLES), async (req, res, next) => {
   try {
     const noQtySoIdQ = Number(req.query.noQtySoId);
     const noQtyCycleRaw = req.query.noQtyCycleId;
@@ -1690,6 +1765,11 @@ dispatchRouter.get("/sales-orders", requireAuth, requireRole(["ADMIN", "SALES", 
       };
     });
 
+    const regularSoIdsForInvoice = enriched
+      .filter((so) => so.orderType !== "NO_QTY")
+      .map((so) => so.id);
+    const invoicedBySoId = await fetchInvoicedQtyBySoId(prisma, regularSoIdsForInvoice);
+
     const pendingFirst = enriched
       .map((so) => {
         if (so.orderType === "NO_QTY") {
@@ -1697,20 +1777,15 @@ dispatchRouter.get("/sales-orders", requireAuth, requireRole(["ADMIN", "SALES", 
         }
         return {
           ...so,
-          // Keep rows visible when a draft/Prepared dispatch exists, even if pendingDispatchQty is 0.
-          lineStats: (so.lineStats || []).filter(
-            (l) => Number(l.pendingDispatchQty) > 0 || Number(l.dispatchPendingLock ?? 0) > 0,
-          ),
+          lineStats: filterLineStatsForDispatchOpenList(so.lineStats || [], so.orderType),
         };
       })
       .filter((so) => {
+        if (shouldExcludeSalesOrderFromDispatchOpenList(so, invoicedBySoId.get(so.id))) {
+          return false;
+        }
         if (so.orderType === "NO_QTY") {
-          return (so.lineStats || []).some(
-            (l) =>
-              Number(l.pendingDispatchQty ?? 0) > REPORT_QUEUE_EPS ||
-              Number(l.dispatchable ?? l.dispatchableQty ?? 0) > REPORT_QUEUE_EPS ||
-              Number(l.dispatchPendingLock ?? 0) > REPORT_QUEUE_EPS,
-          );
+          return (so.lineStats || []).some((l) => isDispatchOpenListLineCandidate(l, so.orderType));
         }
         return (so.lineStats || []).length > 0;
       });
@@ -2046,22 +2121,35 @@ dispatchRouter.get("/sales-orders-debug", requireAuth, requireRole(["ADMIN"]), a
       };
     }
 
+    const invoicedQtyDebug = await fetchInvoicedQtyBySoId(prisma, enriched.orderType !== "NO_QTY" ? [enriched.id] : []);
     const afterPendingFirst =
       enriched.orderType === "NO_QTY"
         ? { ...enriched, lineStats: enriched.lineStats || [] }
         : {
             ...enriched,
-            lineStats: (enriched.lineStats || []).filter(
-              (l) => Number(l.pendingDispatchQty) > 0 || Number(l.dispatchPendingLock ?? 0) > 0,
-            ),
+            lineStats: filterLineStatsForDispatchOpenList(enriched.lineStats || [], enriched.orderType),
           };
-    const afterLineFilterIncluded = (afterPendingFirst.lineStats || []).length > 0;
+    const excludedAtSoLevel = shouldExcludeSalesOrderFromDispatchOpenList(
+      enriched,
+      invoicedQtyDebug.get(enriched.id),
+    );
+    const afterLineFilterIncluded =
+      !excludedAtSoLevel &&
+      (enriched.orderType === "NO_QTY"
+        ? (afterPendingFirst.lineStats || []).some((l) => isDispatchOpenListLineCandidate(l, enriched.orderType))
+        : (afterPendingFirst.lineStats || []).length > 0);
     const afterReadOnlyIncluded = afterLineFilterIncluded && !afterPendingFirst.dispatchReadOnly;
 
     return res.json({
       soId: so.id,
       orderType: so.orderType,
       internalStatus: so.internalStatus,
+      invoicedQty: invoicedQtyDebug.get(enriched.id) ?? 0,
+      excludedAtSoLevel,
+      commerciallyClosed: isSalesOrderCommerciallyClosedForDispatch(
+        enriched,
+        invoicedQtyDebug.get(enriched.id),
+      ),
       noQtyEffectiveCycleId: eff,
       noQtyLockedRequirementSheetId: lockedSheetId,
       enrichedRow_beforeFiltering: enriched,
@@ -2069,7 +2157,8 @@ dispatchRouter.get("/sales-orders-debug", requireAuth, requireRole(["ADMIN"]), a
       included_afterPendingFirst: afterLineFilterIncluded,
       included_afterReadOnlyFilter: afterReadOnlyIncluded,
       note:
-        "If included_afterPendingFirst is false, the SO will not show on Dispatch open list. " +
+        "NORMAL open list: line needs (pending + dispatchable) OR draft lock; fully confirmed lines drop unless lock remains. " +
+        "SO excluded when DRAFT/COMPLETED/CLOSED or fully dispatched + finalized billing. " +
         "For NO_QTY, check locked requirement sheet, cycle id, and usable stock basis (USABLE bucket).",
     });
   } catch (e) {
@@ -2096,7 +2185,7 @@ function parseLedgerYmdEndUtc(ymd) {
  * Dispatch audit view: draft + locked + reversals, newest first.
  * Open list remains separate (GET /sales-orders filters by backlog).
  */
-dispatchRouter.get("/ledger", requireAuth, requireRole(["ADMIN", "SALES", "STORE", "ACCOUNTS"]), async (req, res, next) => {
+dispatchRouter.get("/ledger", requireAuth, requireRole(DISPATCH_READ_ROLES), async (req, res, next) => {
   try {
     const limitIn = Number(req.query.limit ?? 10);
     const limit = Number.isFinite(limitIn) ? Math.max(1, Math.min(100, Math.floor(limitIn))) : 10;
@@ -2257,7 +2346,7 @@ dispatchRouter.get("/ledger", requireAuth, requireRole(["ADMIN", "SALES", "STORE
  * GET /api/dispatch/dispatches/:id
  * Fetch a single dispatch row (draft or locked) with enough context to reopen a prepared draft by id.
  */
-dispatchRouter.get("/dispatches/:id", requireAuth, requireRole(["ADMIN", "SALES", "STORE", "ACCOUNTS"]), async (req, res, next) => {
+dispatchRouter.get("/dispatches/:id", requireAuth, requireRole(DISPATCH_READ_ROLES), async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     if (!Number.isFinite(id) || id <= 0) {
@@ -2319,7 +2408,7 @@ dispatchRouter.get("/dispatches/:id", requireAuth, requireRole(["ADMIN", "SALES"
 dispatchRouter.get(
   "/eligible-sales-orders-for-item",
   requireAuth,
-  requireRole(["ADMIN", "SALES", "STORE", "QC"]),
+  requireRole([...new Set([...DISPATCH_READ_ROLES, ...QC_PAGE_ROLES])]),
   async (req, res, next) => {
     try {
       const itemId = Number(req.query.itemId);
@@ -2706,6 +2795,7 @@ dispatchRouter.post("/dispatches", requireAuth, requireRole(DISPATCH_WRITE_ROLES
           autoAllocated: true,
           dispatch: noQtyFifoResult.dispatches[0] ?? null,
         };
+        await syncNoQtyOptionalStoreStockIntentForSalesOrderAfterDispatchChange(tx, so.id, null);
         await completeDispatchIdempotency(tx, {
           userId,
           routeKey: ROUTE_KEYS.POST_DISPATCHES,
@@ -2746,6 +2836,10 @@ dispatchRouter.post("/dispatches", requireAuth, requireRole(DISPATCH_WRITE_ROLES
               workflowStatus: "UNLOCKED",
             },
           });
+
+      if (isNoQty) {
+        await syncNoQtyOptionalStoreStockIntentForSalesOrderAfterDispatchChange(tx, so.id, null);
+      }
 
       const payload = { dispatch };
       await completeDispatchIdempotency(tx, {
@@ -2919,10 +3013,7 @@ dispatchRouter.post("/dispatches/:id/lock", requireAuth, requireRole(DISPATCH_WR
       const stockBefore = await getItemStockQty(existing.itemId, tx);
       console.debug("[LOCK_BEFORE_POST]", { dispatchId: existing?.id ?? null });
 
-      // NO_QTY: eligibility is cycle QC − same-cycle dispatch only — do not block finalize on global USABLE.
-      if (!isNoQty) {
-        await assertUsableStockBeforeDispatchOut(tx, existing.itemId, qty);
-      }
+      await assertUsableStockBeforeDispatchOut(tx, existing.itemId, qty);
       await tx.stockTransaction.create({
         data: {
           itemId: existing.itemId,
@@ -2996,6 +3087,10 @@ dispatchRouter.post("/dispatches/:id/lock", requireAuth, requireRole(DISPATCH_WR
           orderType: so.orderType,
         },
       });
+
+      if (isNoQty) {
+        await syncNoQtyOptionalStoreStockIntentForSalesOrderAfterDispatchChange(tx, so.id, null);
+      }
 
       const payload = { dispatch };
       await completeDispatchIdempotency(tx, {
@@ -3172,9 +3267,7 @@ dispatchRouter.post(
         }
 
         // Post stock and lock row (same as /lock).
-        if (so.orderType !== "NO_QTY") {
-          await assertUsableStockBeforeDispatchOut(tx, existing.itemId, qty);
-        }
+        await assertUsableStockBeforeDispatchOut(tx, existing.itemId, qty);
         await tx.stockTransaction.create({
           data: {
             itemId: existing.itemId,
@@ -3247,6 +3340,10 @@ dispatchRouter.post(
           },
         });
 
+        if (so.orderType === "NO_QTY") {
+          await syncNoQtyOptionalStoreStockIntentForSalesOrderAfterDispatchChange(tx, so.id, null);
+        }
+
         console.debug("[FINALIZE_DRAFT_SUCCESS]", { dispatchId: existing.id });
 
         const payload = { dispatch };
@@ -3314,6 +3411,9 @@ dispatchRouter.delete("/dispatches/:id", requireAuth, requireRole(["ADMIN"]), as
       }
       assertSalesOrderNotCompletedForDispatch(so);
       await tx.dispatch.delete({ where: { id } });
+      if (so.orderType === "NO_QTY") {
+        await syncNoQtyOptionalStoreStockIntentForSalesOrderAfterDispatchChange(tx, d.soId, null);
+      }
     });
 
     return res.sendStatus(204);
@@ -3339,6 +3439,8 @@ dispatchRouter.post(
       dispatchId: z.number().int().positive(),
       reverseQty: z.number().positive(),
       reason: z.string().min(1, "Reversal reason is required."),
+      /** NO_QTY only: ADMIN acknowledgement for correcting a dispatch from a historical cycle. */
+      confirmHistoricalCycleReversal: z.boolean().optional(),
       /** Required only when exported-to-Tally. */
       adminPassword: z.string().min(1).optional(),
     });
@@ -3430,9 +3532,10 @@ dispatchRouter.post(
       if (so.orderType === "NO_QTY") {
         const active = normalizePositiveCycleId(so.currentCycleId);
         const forwardCycle = normalizePositiveCycleId(original.cycleId);
-        if (active != null && forwardCycle != null && forwardCycle !== active) {
+        const isHistoricalCycleCorrection = active != null && forwardCycle != null && forwardCycle !== active;
+        if (isHistoricalCycleCorrection && body.confirmHistoricalCycleReversal !== true) {
           const err = new Error(
-            "Cannot reverse this dispatch: it belongs to a different cycle than the sales order's active cycle.",
+            "Cannot reverse this dispatch: it belongs to a different cycle than the sales order's active cycle. Confirm historical-cycle reversal to proceed.",
           );
           err.statusCode = 409;
           throw err;
@@ -3545,6 +3648,14 @@ dispatchRouter.post(
         reason: reasonTrim,
         isExportedToTally,
         adminPasswordVerified: isExportedToTally ? true : false,
+        noQtyHistoricalCycleReversal:
+          so.orderType === "NO_QTY"
+            ? {
+                confirmed: body.confirmHistoricalCycleReversal === true,
+                salesOrderCurrentCycleId: normalizePositiveCycleId(so.currentCycleId),
+                dispatchCycleId: normalizePositiveCycleId(original.cycleId),
+              }
+            : undefined,
         salesBill: bill?.id
           ? {
               id: bill.id,
@@ -3642,4 +3753,7 @@ module.exports = {
   computeNoQtyDispatchHeadroom,
   filterNoQtyDispatchRowsForActiveCycle,
   netNoQtyCycleDispatchedByItemId,
+  /** Dashboard / reports: same NO_QTY per-cycle line stats as GET /api/dispatch/sales-orders. */
+  buildNoQtyDispatchLineStatsForAllCycles,
+  loadNoQtyCycleIdsWithBatchQcPendingBySalesOrderIds,
 };

@@ -6,6 +6,9 @@ import { apiFetch } from "../services/api";
 import { cn } from "../lib/utils";
 import { displaySalesOrderNo } from "../lib/docNoDisplay";
 import { PageContainer } from "../components/PageHeader";
+import { useAuth } from "../hooks/useAuth";
+import { getRoleEmptyState } from "../lib/erpRoleEmptyStates";
+import { ERP_DASHBOARD_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
 import { formatCommercialDueDateCell } from "../lib/commercialDueDateDisplay";
 
 type AccountsDashboardPayload = {
@@ -84,9 +87,14 @@ const kpiLinkInner =
   "flex min-h-[4rem] flex-col justify-between rounded-lg border border-slate-200/90 bg-white px-3 py-2 shadow-sm ring-1 ring-slate-900/[0.03] transition-colors hover:border-sky-300 hover:bg-sky-50/40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500";
 
 export function AccountsDashboardPage() {
+  const auth = useAuth();
+  const billingEmpty = getRoleEmptyState("accounts_billing_pending", auth.user?.role ?? "");
   const [data, setData] = React.useState<AccountsDashboardPayload | null>(null);
   const [err, setErr] = React.useState<string | null>(null);
   const [loading, setLoading] = React.useState(true);
+  const liveTick = useErpRefreshTick(["dashboard", "reports", "sales"], {
+    pollIntervalMs: ERP_DASHBOARD_POLL_MS,
+  });
 
   React.useEffect(() => {
     let cancelled = false;
@@ -104,7 +112,7 @@ export function AccountsDashboardPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [liveTick]);
 
   if (loading) {
     return (
@@ -173,7 +181,10 @@ export function AccountsDashboardPage() {
             </CardHeader>
             <CardContent className="max-h-64 overflow-auto p-0">
               {billingPending.length === 0 ? (
-                <div className="px-3 py-3 text-[12px] text-slate-600">None — all eligible dispatches are billed.</div>
+                <div className="px-3 py-3 text-[12px] text-slate-600">
+                  <div className="font-medium text-slate-800">{billingEmpty.title}</div>
+                  {billingEmpty.body ? <div className="mt-0.5">{billingEmpty.body}</div> : null}
+                </div>
               ) : (
                 <table className="erp-table erp-table-dense w-full text-[12px] [&_td]:py-1 [&_th]:py-1">
                   <thead>
@@ -282,7 +293,7 @@ export function AccountsDashboardPage() {
           </CardHeader>
           <CardContent className="overflow-x-auto p-0">
             {paymentFollowUp.length === 0 ? (
-              <div className="px-3 py-3 text-[12px] text-slate-600">No open AR rows with pending amount.</div>
+              <div className="px-3 py-2 text-[11px] leading-snug text-slate-600">No open receivables with pending amount.</div>
             ) : (
               <table className="erp-table erp-table-dense min-w-[640px] w-full text-[12px] [&_td]:py-1 [&_th]:py-1">
                 <thead>
@@ -330,7 +341,7 @@ export function AccountsDashboardPage() {
           </CardHeader>
           <CardContent className="overflow-x-auto p-0">
             {payablesFollowUp.length === 0 ? (
-              <div className="px-3 py-3 text-[12px] text-slate-600">No open AP rows with pending amount.</div>
+              <div className="px-3 py-2 text-[11px] leading-snug text-slate-600">No open payables with pending amount.</div>
             ) : (
               <table className="erp-table erp-table-dense min-w-[640px] w-full text-[12px] [&_td]:py-1 [&_th]:py-1">
                 <thead>

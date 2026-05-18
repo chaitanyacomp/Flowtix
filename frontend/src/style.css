@@ -21,6 +21,37 @@
     --erp-success: 142 76% 36%;
     --erp-warning: 38 92% 50%;
     --erp-danger: 0 72% 51%;
+
+    /* ---------------------------------------------------------------------
+     * Phase 1 — ERP UI foundation scale (spacing + type rhythm).
+     * Components reference these for consistency; Tailwind @apply uses rem.
+     * --------------------------------------------------------------------- */
+    --erp-space-xs: 0.125rem;
+    --erp-space-sm: 0.25rem;
+    --erp-space-md: 0.5rem;
+    --erp-space-lg: 0.75rem;
+    --erp-space-xl: 1rem;
+    --erp-space-2xl: 1.5rem;
+    --erp-space-page-y: 0.375rem;
+    --erp-space-section-y: 0.75rem;
+    --erp-space-card-pad-y: 0.625rem;
+    --erp-space-card-pad-x: 0.75rem;
+    --erp-space-form-gap: 0.75rem;
+    --erp-space-table-y: 0.375rem;
+    --erp-space-table-x: 0.5rem;
+    --erp-space-workflow-y: 0.375rem;
+
+    /* Page titles: one step above body for authority without oversized chrome */
+    --erp-fs-page-title: 1.0625rem;
+    --erp-lh-page-title: 1.3;
+    --erp-fs-section: 0.875rem;
+    --erp-fs-subsection: 0.8125rem;
+    --erp-fs-workflow: 0.6875rem;
+    --erp-fs-table: 0.8125rem;
+    --erp-fs-helper: 0.75rem;
+    --erp-fs-kpi-label: 0.625rem;
+    --erp-fs-kpi-value: 1.0625rem;
+    --erp-fs-action: 0.875rem;
   }
 
   html,
@@ -44,37 +75,75 @@
     @apply flex h-screen overflow-hidden bg-slate-100;
   }
 
+  /**
+   * Sidebar shell — single width rhythm (expanded / collapsed). Visual separation
+   * uses light shadow + soft border so groups read cleaner than a heavy rail.
+   */
   .erp-sidebar {
-    @apply flex shrink-0 flex-col border-r border-slate-200 bg-white;
+    @apply flex shrink-0 flex-col border-r border-slate-200/80 bg-white shadow-[1px_0_0_0_rgb(15_23_42_/0.04)];
   }
 
   .erp-sidebar-brand {
-    @apply border-b border-slate-200 px-4 py-3 text-sm font-semibold text-slate-900;
+    @apply border-b border-slate-200/80 px-3 py-2.5 text-[13px] font-semibold tracking-tight text-slate-900;
   }
 
   .erp-nav-section-title {
     @apply px-3 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wide text-slate-400;
   }
 
-  .erp-nav-link {
-    @apply flex items-center gap-2 rounded-md px-3 py-2 text-sm text-slate-700 hover:bg-slate-100;
+  #erp-sidebar-nav .erp-nav-link svg {
+    @apply h-4 w-4 shrink-0 text-slate-800;
   }
 
+  #erp-sidebar-nav .erp-nav-link-active svg {
+    @apply text-blue-900;
+  }
+
+  .erp-nav-link {
+    @apply relative flex min-h-[2.25rem] items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[13px] font-medium leading-snug text-slate-700 no-underline outline-none transition-[background-color,color,box-shadow] duration-150 ease-out;
+  }
+
+  .erp-nav-link:hover {
+    @apply bg-slate-100/85 text-slate-900;
+  }
+
+  .erp-nav-link:focus-visible {
+    @apply ring-2 ring-blue-500/35 ring-offset-2 ring-offset-white;
+  }
+
+  /** Active route: soft fill + inset left accent (manufacturing ERP convention). */
   .erp-nav-link-active {
-    @apply bg-blue-50 font-medium text-blue-800;
+    @apply bg-slate-100/90 font-semibold text-slate-900 shadow-[inset_3px_0_0_0_rgb(29_78_216)];
+  }
+
+  .erp-nav-link-active:hover {
+    @apply bg-slate-100 text-slate-900;
+  }
+
+  /** Collapsed rail: icon-only targets stay square-ish and optically centered. */
+  .erp-sidebar[data-sidebar-collapsed="1"] .erp-nav-link {
+    @apply justify-center gap-0 px-0 py-2;
+  }
+
+  .erp-sidebar[data-sidebar-collapsed="1"] #erp-sidebar-nav .erp-nav-link svg {
+    @apply h-[1.15rem] w-[1.15rem];
+  }
+
+  .erp-sidebar[data-sidebar-collapsed="1"] .erp-nav-link-active {
+    @apply bg-slate-100 shadow-[inset_0_0_0_2px_rgb(29_78_216_/0.35)];
   }
 
   .erp-topbar {
-    @apply flex shrink-0 items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 py-2.5 shadow-sm sm:gap-4 sm:px-6 sm:py-3;
+    @apply flex shrink-0 items-center justify-between gap-3 border-b border-slate-200/90 bg-white px-3 py-2 shadow-[0_1px_0_0_rgb(226_232_240_/0.9)] sm:gap-4 sm:px-5 sm:py-2.5;
   }
 
   /** Context-aware back navigation — compact pill, not a full-width banner. */
   .erp-back-nav-chip {
-    @apply inline-flex w-fit max-w-full shrink-0 items-center gap-1.5 rounded-full border border-sky-200/90 bg-sky-100/45 px-2.5 py-1 text-[12px] font-semibold leading-snug text-sky-950 no-underline shadow-sm outline-none transition-colors;
+    @apply inline-flex h-8 min-h-8 w-fit max-w-full shrink-0 items-center gap-1.5 rounded-md border border-slate-200/80 bg-white px-2.5 text-[12px] font-semibold leading-none text-slate-800 no-underline shadow-sm outline-none transition-[background-color,border-color,color,box-shadow] duration-150 ease-out;
   }
 
   .erp-back-nav-chip:hover {
-    @apply border-sky-300/95 bg-sky-100/90 text-sky-950 shadow;
+    @apply border-slate-300 bg-slate-50 text-slate-950 shadow-[0_1px_2px_0_rgb(15_23_42_/0.06)];
   }
 
   .erp-back-nav-chip:focus-visible {
@@ -104,7 +173,7 @@
    * the viewport edge.
    */
   .erp-main {
-    @apply min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden px-3 pt-3 pb-6;
+    @apply min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden px-3 pt-2 pb-5 sm:px-4;
   }
 
   /**
@@ -118,7 +187,7 @@
   }
 
   .erp-table-wrap {
-    @apply w-full max-w-full overflow-x-auto rounded-md border border-slate-200 bg-white;
+    @apply w-full max-w-full overflow-x-auto rounded-md border border-slate-200/75 bg-white shadow-[0_1px_2px_0_rgb(15_23_42_/0.04)] ring-1 ring-slate-900/[0.025];
   }
 
   .erp-table {
@@ -126,7 +195,12 @@
   }
 
   .erp-table thead th {
-    @apply border-b border-slate-200 bg-slate-50 px-2.5 py-1.5 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-600;
+    @apply border-b border-slate-200 bg-slate-50/90 px-2.5 py-1.5 text-left text-[11px] font-semibold normal-case tracking-normal text-slate-600;
+  }
+
+  .erp-table thead th.erp-table-num,
+  .erp-table thead th[class*="text-right"] {
+    @apply text-right;
   }
 
   .erp-table tbody td {
@@ -147,9 +221,60 @@
     @apply bg-slate-50/70;
   }
 
+  /** Sales Orders list: fixed layout, sticky header band, row separators (enterprise grid). */
+  .erp-table.sales-orders-so-table {
+    @apply table-fixed border-collapse;
+  }
+  .erp-table.sales-orders-so-table thead {
+    @apply sticky top-0 z-20;
+  }
+  .erp-table.sales-orders-so-table thead th {
+    @apply border-b-2 border-slate-300/90 bg-slate-100/90 py-2 text-left text-[11px] font-semibold normal-case tracking-normal text-slate-700 shadow-[inset_0_-1px_0_0_rgba(15,23,42,0.05)];
+  }
+  .erp-table.sales-orders-so-table thead th.erp-so-th-num {
+    @apply text-right tabular-nums;
+  }
+  .erp-table.sales-orders-so-table tbody td {
+    @apply border-b border-slate-200 px-2 py-1.5 align-middle text-[12.5px] leading-snug text-slate-800;
+  }
+  .erp-table.sales-orders-so-table tbody td.erp-so-td-mono {
+    @apply font-mono text-[12px] font-semibold tabular-nums text-sky-950;
+  }
+  .erp-table.sales-orders-so-table tbody tr:nth-child(even) td {
+    @apply bg-slate-50/90;
+  }
+  .erp-table.sales-orders-so-table tbody tr:hover td {
+    @apply bg-slate-100/80;
+  }
+
+  /** Sales Orders page: flatter shell, denser filter toolbar. */
+  .sales-orders-page-shell .erp-filter-bar {
+    @apply rounded-none border-x-0 border-t-0 border-b border-slate-200 bg-slate-50/90 py-1 shadow-none;
+  }
+  .sales-orders-page-shell .erp-filter-bar select,
+  .sales-orders-page-shell .erp-filter-bar input[type="search"] {
+    @apply h-7 text-[12px] shadow-none;
+  }
+  .sales-orders-page-shell .erp-table-wrap {
+    @apply rounded-none border-slate-200 shadow-none;
+  }
+  .sales-orders-page-shell .erp-table-actions {
+    @apply flex-nowrap items-center gap-1.5;
+  }
+  .sales-orders-page-shell .erp-so-act-primary {
+    @apply h-7 shrink-0 whitespace-nowrap px-2.5 text-xs font-semibold leading-none shadow-sm;
+  }
+  .sales-orders-page-shell .erp-so-act-secondary {
+    @apply h-7 shrink-0 whitespace-nowrap px-2 text-xs font-medium leading-none;
+  }
+  .sales-orders-page-shell thead th.erp-table-action-col,
+  .sales-orders-page-shell tbody td.erp-table-action-col {
+    min-width: 11.5rem;
+  }
+
   /** Dashboard tables: tighter headers/rows + hover (used with .erp-table.dash-table) */
   .erp-table.dash-table thead th {
-    @apply py-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500;
+    @apply py-2 text-[11px] font-semibold normal-case tracking-normal text-slate-600;
   }
 
   .erp-table.dash-table tbody td {
@@ -164,12 +289,124 @@
     @apply bg-slate-50/70;
   }
 
+  /**
+   * Dashboard “Recent QC rejections”: fixed layout, premium alignment (overrides global `.erp-table thead th`).
+   */
+  .erp-table.dash-table-recent-qc {
+    @apply table-fixed border-collapse;
+  }
+  .erp-table.dash-table-recent-qc thead th {
+    @apply whitespace-nowrap border-b border-slate-200 bg-slate-50/90 py-2.5 align-bottom text-[12px] font-semibold normal-case tracking-normal text-slate-700;
+  }
+  .erp-table.dash-table-recent-qc thead th.dash-recent-qc-th--text {
+    @apply text-left;
+  }
+  .erp-table.dash-table-recent-qc thead th.dash-recent-qc-th--date {
+    @apply pl-3 pr-3;
+  }
+  .erp-table.dash-table-recent-qc thead th.dash-recent-qc-th--fg {
+    @apply pl-2 pr-2;
+  }
+  .erp-table.dash-table-recent-qc thead th.dash-recent-qc-th--num {
+    @apply text-right tabular-nums pr-3 pl-1;
+  }
+  .erp-table.dash-table-recent-qc tbody td {
+    @apply border-b border-slate-100 py-2.5 align-middle text-[12px] text-slate-800;
+  }
+  .erp-table.dash-table-recent-qc tbody td.dash-recent-qc-td--text {
+    @apply text-left;
+  }
+  .erp-table.dash-table-recent-qc tbody td.dash-recent-qc-td--date {
+    @apply pl-3 pr-3 font-medium tabular-nums text-slate-700;
+  }
+  .erp-table.dash-table-recent-qc tbody td.dash-recent-qc-td--fg {
+    @apply overflow-hidden text-ellipsis whitespace-nowrap pl-2 pr-2 font-medium;
+  }
+  .erp-table.dash-table-recent-qc tbody td.dash-recent-qc-td--num {
+    @apply text-right tabular-nums pr-3 pl-1 font-semibold text-slate-900;
+  }
+  .erp-table.dash-table-recent-qc tbody tr:last-child td {
+    @apply border-b-0;
+  }
+
+  @media print {
+    @page {
+      margin: 12mm;
+    }
+    body * {
+      visibility: hidden;
+    }
+    #recent-qc-rejections-printable,
+    #recent-qc-rejections-printable * {
+      visibility: visible;
+    }
+    #recent-qc-rejections-printable {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 100%;
+    }
+    #recent-qc-rejections-printable table {
+      width: 100% !important;
+      font-size: 11pt;
+    }
+    #recent-qc-rejections-printable thead {
+      display: table-header-group;
+    }
+    #recent-qc-rejections-printable table tbody tr {
+      page-break-inside: avoid;
+    }
+    #recent-qc-rejections-printable .erp-table thead th,
+    #recent-qc-rejections-printable .erp-table tbody td {
+      border-color: #c5c5c5 !important;
+    }
+  }
+
+  /** Workflow table action cells — single-line CTAs, no wrap (Create Quote, Dispatch Now, etc.). */
+  .erp-table thead th.erp-table-action-col,
+  .erp-table tbody td.erp-table-action-col {
+    @apply w-[1%] whitespace-nowrap text-right align-middle;
+    min-width: 10.5rem;
+  }
+
   .erp-table-actions {
-    @apply flex justify-end gap-1;
+    @apply flex flex-nowrap items-center justify-end gap-1.5;
+  }
+
+  .erp-table-actions > :is(a, button),
+  .erp-table-act {
+    @apply inline-flex h-8 shrink-0 items-center justify-center whitespace-nowrap leading-none;
+  }
+
+  a.erp-table-act--link {
+    @apply h-auto px-0 py-0 text-[12px] font-semibold text-sky-800 underline decoration-sky-800/40 underline-offset-2 hover:text-sky-950;
+  }
+
+  button.erp-table-act--link {
+    @apply h-auto min-h-0 cursor-pointer border-0 bg-transparent px-0 py-0 text-[12px] font-semibold text-sky-800 underline decoration-sky-800/40 underline-offset-2 hover:text-sky-950;
+  }
+
+  .enquiries-workspace-table thead th.erp-table-action-col,
+  .enquiries-workspace-table tbody td.erp-table-action-col {
+    min-width: 6.75rem;
+  }
+
+  .quotations-workspace-table thead th.erp-table-action-col,
+  .quotations-workspace-table tbody td.erp-table-action-col {
+    min-width: 6.75rem;
+  }
+
+  /** Card / panel workflow CTA rows (same single-line rule as table actions). */
+  .erp-workflow-actions {
+    @apply flex flex-nowrap items-center justify-end gap-1.5;
+  }
+
+  .erp-workflow-actions > :is(a, button) {
+    @apply shrink-0 whitespace-nowrap leading-none;
   }
 
   .erp-card-metric {
-    @apply rounded-md border border-slate-200 bg-white p-4 shadow-sm;
+    @apply rounded-md border border-slate-200/70 bg-white p-4 shadow-[0_1px_2px_0_rgb(15_23_42_/0.04)] ring-1 ring-slate-900/[0.03];
   }
 
   .erp-card-metric-label {
@@ -276,7 +513,7 @@
 
   /** Single-row horizontal filter toolbar (Status / Type / Customer / Search / Sort). */
   .erp-filter-bar {
-    @apply flex flex-wrap items-center gap-2 rounded-md border border-slate-200 bg-white px-2 py-1.5 shadow-sm;
+    @apply flex flex-wrap items-center gap-2 rounded-md border border-slate-200/75 bg-white px-2 py-1.5 shadow-[0_1px_2px_0_rgb(15_23_42_/0.04)] ring-1 ring-slate-900/[0.02];
   }
 
   .erp-filter-bar > .erp-filter-divider {
@@ -305,7 +542,7 @@
    * never overflow the toolbar edge. Use this on ALL report pages instead of
    * hand-rolled `grid-cols-N` filter blocks. */
   .erp-filter-grid {
-    @apply grid w-full min-w-0 grid-cols-1 gap-x-3 gap-y-2 rounded-md border border-slate-200 bg-white p-2 shadow-sm sm:grid-cols-2 lg:grid-cols-4;
+    @apply grid w-full min-w-0 grid-cols-1 gap-x-3 gap-y-2 rounded-md border border-slate-200/75 bg-white p-2 shadow-[0_1px_2px_0_rgb(15_23_42_/0.04)] ring-1 ring-slate-900/[0.02] sm:grid-cols-2 lg:grid-cols-4;
   }
 
   .erp-filter-grid > .erp-filter-field {
@@ -360,17 +597,321 @@
     @apply border-emerald-200/80 bg-emerald-50/80 text-emerald-950;
   }
 
+  /** Foundation — workflow context strip (alias of info-strip base tone). */
+  .erp-workflow-banner {
+    @apply flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-slate-200 bg-slate-50/90 px-2.5 py-1.5 text-[12px] leading-snug text-slate-700;
+  }
+
+  .erp-workflow-banner[data-tone="info"] {
+    @apply border-sky-200/80 bg-sky-50/80 text-sky-950;
+  }
+
+  .erp-workflow-banner[data-tone="warning"] {
+    @apply border-amber-200/80 bg-amber-50/80 text-amber-950;
+  }
+
+  .erp-workflow-banner[data-tone="success"] {
+    @apply border-emerald-200/80 bg-emerald-50/80 text-emerald-950;
+  }
+
+  /* --- Typography scale (manufacturing ERP readability) --- */
+  .erp-type-page-title {
+    font-size: var(--erp-fs-page-title);
+    line-height: var(--erp-lh-page-title);
+    @apply font-semibold tracking-tight text-slate-950;
+  }
+
+  /** Default shell card — soft edge + micro elevation (pages may override). */
+  .erp-card-surface {
+    @apply border-slate-200/70 shadow-[0_1px_2px_0_rgb(15_23_42_/0.045)] ring-1 ring-slate-900/[0.035];
+  }
+
+  .erp-type-section-title {
+    font-size: var(--erp-fs-section);
+    @apply font-semibold leading-snug tracking-tight text-slate-900;
+  }
+
+  .erp-type-subsection-title {
+    font-size: var(--erp-fs-subsection);
+    @apply font-bold uppercase tracking-wide text-slate-600;
+  }
+
+  .erp-type-workflow-label {
+    font-size: var(--erp-fs-workflow);
+    @apply font-semibold uppercase tracking-[0.14em] text-slate-500;
+  }
+
+  .erp-type-table-body {
+    font-size: var(--erp-fs-table);
+    @apply leading-snug text-slate-800;
+  }
+
+  .erp-type-helper {
+    font-size: var(--erp-fs-helper);
+    @apply leading-snug text-slate-600;
+  }
+
+  .erp-type-kpi-label {
+    font-size: var(--erp-fs-kpi-label);
+    @apply font-bold uppercase tracking-[0.08em] text-slate-600 [font-feature-settings:'tnum'];
+  }
+
+  .erp-type-kpi-value {
+    font-size: var(--erp-fs-kpi-value);
+    @apply font-extrabold tabular-nums leading-none tracking-tight text-slate-900 [font-feature-settings:'tnum'];
+  }
+
+  .erp-type-action-button {
+    font-size: var(--erp-fs-action);
+    @apply font-semibold;
+  }
+
+  /* --- Spacing helpers --- */
+  .erp-space-page-top {
+    padding-top: var(--erp-space-page-y);
+  }
+
+  .erp-space-section-y {
+    margin-top: var(--erp-space-section-y);
+  }
+
+  .erp-space-card-padding {
+    padding: var(--erp-space-card-pad-y) var(--erp-space-card-pad-x);
+  }
+
+  .erp-space-form-gap {
+    gap: var(--erp-space-form-gap);
+  }
+
+  .erp-space-table-cell {
+    padding: var(--erp-space-table-y) var(--erp-space-table-x);
+  }
+
+  .erp-space-workflow-strip {
+    padding-top: var(--erp-space-workflow-y);
+    padding-bottom: var(--erp-space-workflow-y);
+  }
+
+  /* --- Standard KPI strip (aligned with Dashboard metrics ribbon) --- */
+  .erp-kpi-strip {
+    @apply flex w-max min-w-full flex-nowrap items-stretch divide-x divide-slate-200 rounded-md border border-slate-300/80 bg-white shadow-sm ring-1 ring-slate-900/[0.03];
+  }
+
+  .erp-kpi-strip--compact .erp-kpi-segment {
+    @apply min-w-[4.75rem] gap-0 px-2 py-1;
+  }
+
+  .erp-kpi-strip--compact .erp-kpi-value {
+    font-size: 0.9375rem;
+  }
+
+  .erp-kpi-segment {
+    @apply flex min-w-[5.5rem] shrink-0 flex-col justify-center gap-0.5 px-2.5 py-1.5 text-left transition-colors hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-slate-400/40;
+  }
+
+  .erp-dash-clear-strip {
+    @apply flex flex-wrap items-center gap-x-1.5 gap-y-0.5 rounded-md border border-emerald-200/60 bg-emerald-50/40 px-2 py-1 text-[11px] leading-snug text-emerald-950;
+  }
+
+  .erp-dash-clear-strip__icon {
+    @apply h-3 w-3 shrink-0 text-emerald-600;
+  }
+
+  .erp-dash-shortcuts {
+    @apply flex flex-wrap items-center gap-1.5;
+  }
+
+  /** Dual-control dashboard — compact laptop band; avoid page scroll when content fits. */
+  .erp-dash-dual-root {
+    max-height: min(92dvh, calc(100dvh - 3rem));
+  }
+
+  .erp-dash-dual-inner {
+    display: flex;
+    flex-direction: column;
+    gap: 0.375rem;
+    min-height: 0;
+  }
+
+  .erp-dash-dual-grid {
+    align-items: start;
+    align-content: start;
+  }
+
+  @media (max-width: 1023px) {
+    .erp-dash-dual-root {
+      max-height: none;
+      height: auto;
+      overflow: visible;
+    }
+
+    .erp-dash-dual-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  @media (min-width: 1024px) {
+    .erp-dash-dual-grid:not(.erp-dash-dual-grid--single) {
+      grid-template-columns: minmax(0, 1.86fr) minmax(0, 1fr);
+    }
+  }
+
+  .erp-dash-ops-col > .erp-dash-control-col,
+  .erp-dash-commercial-col > .erp-dash-control-col {
+    width: 100%;
+  }
+
+  .erp-dash-live-workspace {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .erp-dash-history-panel {
+    margin-top: 0.125rem;
+    flex-shrink: 0;
+  }
+
+  .erp-dash-history-panel--secondary {
+    @apply border-slate-200/50 bg-slate-50/30;
+  }
+
+  .erp-dash-history-panel--secondary > summary {
+    @apply text-slate-500;
+  }
+
+  .erp-dash-history-panel[open] > div:last-child {
+    max-height: min(22vh, 12rem);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .erp-dash-production-status {
+    flex: 1 1 auto;
+    min-height: 0;
+    max-height: min(24rem, 42vh);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .erp-dash-production-status > div:last-child {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    min-height: 0;
+  }
+
+  .erp-dash-ops-metrics {
+    @apply shrink-0 rounded-md border border-slate-200/90 bg-white/80 shadow-sm ring-1 ring-slate-900/[0.03];
+  }
+
+  .erp-kpi-label {
+    font-size: var(--erp-fs-kpi-label);
+    @apply font-bold uppercase tracking-[0.08em] text-slate-600 [font-feature-settings:'tnum'];
+  }
+
+  .erp-kpi-value {
+    font-size: var(--erp-fs-kpi-value);
+    @apply font-extrabold tabular-nums leading-none tracking-tight text-slate-900 [font-feature-settings:'tnum'];
+  }
+
+  .erp-kpi-value-muted {
+    @apply text-slate-700;
+  }
+
+  .erp-kpi-value-warn {
+    @apply text-amber-800;
+  }
+
+  .erp-kpi-value-crit {
+    @apply text-red-800;
+  }
+
+  /* --- Section card shell (additive on `Card`) --- */
+  .erp-section-card {
+    @apply ring-1 ring-slate-900/[0.02];
+  }
+
+  .erp-section-card-header {
+    @apply border-b border-slate-100 bg-slate-50/50;
+  }
+
+  .erp-section-card-body {
+    @apply min-w-0;
+  }
+
+  /** Operator queue: between global `.erp-table` and ultra-dense legacy cells. */
+  .erp-table-queue thead th {
+    @apply erp-space-table-cell text-left text-[10.5px] font-semibold normal-case tracking-normal text-slate-600;
+  }
+
+  .erp-table-queue tbody td {
+    @apply erp-space-table-cell align-middle text-[12.5px] leading-snug text-slate-800;
+  }
+
+  .erp-table-queue .erp-table-num {
+    @apply text-right tabular-nums;
+  }
+
+  .erp-table-queue .erp-table-action-col {
+    @apply w-8 min-w-[1.75rem] px-1 text-right;
+  }
+
+  /**
+   * QC Entry — production workbench (scoped).
+   * Improves operator readability without changing global `.erp-table-queue` elsewhere.
+   */
+  .qc-operator-workbench .qc-queue-scroll {
+    @apply rounded-lg border border-slate-200/95 bg-white shadow-sm;
+  }
+
+  .qc-operator-workbench table.erp-table-queue {
+    width: 100%;
+    min-width: 0;
+    table-layout: auto;
+  }
+
+  .qc-operator-workbench table.erp-table-queue thead th {
+    @apply whitespace-nowrap px-3 py-3 text-xs font-semibold normal-case tracking-normal text-slate-600;
+  }
+
+  .qc-operator-workbench table.erp-table-queue tbody td {
+    @apply px-3 py-3 text-sm leading-snug text-slate-800;
+  }
+
+  .qc-operator-workbench table.erp-table-queue tbody td.erp-table-num {
+    @apply text-base font-semibold tabular-nums;
+  }
+
+  .qc-operator-workbench table.erp-table-queue .erp-table-action-col {
+    @apply w-10 min-w-[2.25rem];
+  }
+
   /** Dense single-row page title (title + subtitle + workflow strip on one line). */
   .erp-page-title-row {
     @apply flex flex-wrap items-center justify-between gap-2;
   }
 
+  /** Transaction header row (paired with `PageHeader` / workspace headers). */
+  .erp-page-header {
+    @apply min-w-0;
+  }
+
+  /** Right cluster on page headers — consistent alignment with title block. */
+  .erp-page-header-actions {
+    @apply flex min-h-8 shrink-0 flex-wrap items-center justify-end gap-2;
+  }
+
   .erp-page-title-row .erp-page-title {
-    @apply text-base font-semibold tracking-tight text-slate-900;
+    font-size: var(--erp-fs-page-title);
+    line-height: var(--erp-lh-page-title);
+    @apply font-semibold tracking-tight text-slate-950;
   }
 
   .erp-page-title-row .erp-page-subtitle {
-    @apply text-[12px] text-slate-500;
+    font-size: var(--erp-fs-helper);
+    @apply leading-snug text-slate-500;
   }
 
   /** Sticky bottom shortcut / utility footer (keyboard hints, totals, etc.). */
@@ -384,11 +925,11 @@
 
   /** Collapsible advanced / admin section — chip-style summary, hidden by default. */
   .erp-advanced-section {
-    @apply overflow-hidden rounded-md border border-slate-200 bg-slate-50/60;
+    @apply overflow-hidden rounded-md border border-slate-200/65 bg-slate-50/50 shadow-[inset_0_1px_0_0_rgb(255_255_255_/0.65)];
   }
 
   .erp-advanced-section > summary {
-    @apply flex cursor-pointer list-none items-center gap-2 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 transition-colors hover:bg-slate-100/80;
+    @apply flex cursor-pointer list-none items-center gap-2 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500 transition-colors hover:bg-slate-100/70 hover:text-slate-700;
   }
 
   .erp-advanced-section > summary::-webkit-details-marker {
@@ -422,19 +963,207 @@
 
   /** Compact dense badge — slightly tighter than the `Badge` component default. */
   .erp-chip {
-    @apply inline-flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10.5px] font-semibold uppercase tracking-wide text-slate-700;
+    @apply erp-status-chip erp-status-chip--neutral h-5 min-h-5 gap-1 px-1.5 text-[10.5px] font-semibold normal-case tracking-normal;
   }
 
   .erp-chip[data-tone="info"] {
-    @apply border-sky-200 bg-sky-50 text-sky-800;
+    @apply erp-status-chip--info;
   }
 
   .erp-chip[data-tone="warning"] {
-    @apply border-amber-200 bg-amber-50 text-amber-900;
+    @apply erp-status-chip--warning;
   }
 
   .erp-chip[data-tone="success"] {
-    @apply border-emerald-200 bg-emerald-50 text-emerald-900;
+    @apply erp-status-chip--success;
+  }
+
+  .erp-chip[data-tone="danger"] {
+    @apply erp-status-chip--danger;
+  }
+
+  /* =====================================================================
+   * Interaction system — status chips, workflow strips, empty states
+   * ===================================================================== */
+
+  .erp-status-chip {
+    @apply rounded-md border shadow-none;
+  }
+
+  .erp-status-chip--neutral {
+    @apply border-slate-200/80 bg-slate-100/90 text-slate-800;
+  }
+
+  .erp-status-chip--success {
+    @apply border-emerald-200/80 bg-emerald-50 text-emerald-800;
+  }
+
+  .erp-status-chip--warning {
+    @apply border-amber-200/80 bg-amber-50 text-amber-900;
+  }
+
+  .erp-status-chip--info {
+    @apply border-sky-200/75 bg-sky-50/90 text-sky-900;
+  }
+
+  .erp-status-chip--danger {
+    @apply border-red-200/80 bg-red-50 text-red-800;
+  }
+
+  /** Operational workflow strip (horizontal + vertical). */
+  .erp-workflow-strip {
+    @apply min-w-0;
+  }
+
+  .erp-workflow-strip--horizontal {
+    @apply flex flex-wrap items-center gap-x-1 gap-y-1 rounded-md border border-slate-200/70 bg-white px-2 py-1 shadow-[0_1px_2px_0_rgb(15_23_42_/0.04)] ring-1 ring-slate-900/[0.02];
+  }
+
+  .erp-workflow-strip--horizontal.erp-workflow-strip--dense {
+    @apply px-1.5 py-0.5 text-[10px] sm:text-[11px];
+  }
+
+  .erp-workflow-strip--vertical {
+    @apply rounded-md border border-slate-200/70 bg-white p-2.5 shadow-[0_1px_2px_0_rgb(15_23_42_/0.04)] ring-1 ring-slate-900/[0.02];
+  }
+
+  .erp-workflow-strip__leading {
+    @apply mr-1 shrink-0 text-[10px] font-semibold text-slate-500;
+  }
+
+  .erp-workflow-strip__track {
+    @apply flex min-w-0 flex-wrap items-center gap-y-0.5;
+  }
+
+  .erp-workflow-strip__sep {
+    @apply mx-0.5 h-3 w-3 shrink-0 text-slate-300;
+  }
+
+  .erp-workflow-strip__stage {
+    @apply inline-flex shrink-0 items-center rounded-md px-1.5 py-0.5 text-[11px] font-medium leading-snug transition-colors;
+  }
+
+  .erp-workflow-strip__stage--done {
+    @apply bg-emerald-50/80 text-emerald-800/95;
+  }
+
+  .erp-workflow-strip__stage--active {
+    @apply bg-blue-600 font-semibold text-white shadow-[0_1px_2px_0_rgb(29_78_216_/0.35)] ring-1 ring-blue-700/20;
+  }
+
+  .erp-workflow-strip__stage--upcoming {
+    @apply text-slate-500;
+  }
+
+  .erp-workflow-strip__list-vertical {
+    @apply mt-1.5 space-y-0.5;
+  }
+
+  .erp-workflow-strip--vertical .erp-workflow-strip__stage {
+    @apply w-full gap-2 px-2 py-1 text-[13px];
+  }
+
+  .erp-workflow-strip--vertical .erp-workflow-strip__stage--active {
+    @apply bg-sky-50 font-semibold text-sky-950 shadow-none ring-1 ring-sky-200/80;
+  }
+
+  .erp-workflow-strip--vertical .erp-workflow-strip__stage--done {
+    @apply bg-emerald-50/70 text-emerald-900;
+  }
+
+  .erp-workflow-strip__bullet {
+    @apply inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border text-[10px] font-semibold;
+  }
+
+  .erp-workflow-strip__stage--done .erp-workflow-strip__bullet {
+    @apply border-emerald-200 bg-emerald-50 text-emerald-800;
+  }
+
+  .erp-workflow-strip__stage--active .erp-workflow-strip__bullet {
+    @apply border-sky-300 bg-sky-100 text-sky-900;
+  }
+
+  .erp-workflow-strip__stage--upcoming .erp-workflow-strip__bullet {
+    @apply border-slate-200 bg-slate-100 text-slate-600;
+  }
+
+  .erp-workflow-strip__label {
+    @apply min-w-0 truncate;
+  }
+
+  /** Compact operational empty states. */
+  .erp-empty-state {
+    @apply flex flex-col items-center justify-center text-center;
+  }
+
+  .erp-empty-state--panel {
+    @apply gap-1 rounded-md border border-dashed border-slate-200/80 bg-slate-50/50 px-3 py-2.5;
+  }
+
+  .erp-empty-state--strip {
+    @apply flex-row gap-2 rounded-md border border-emerald-200/50 bg-emerald-50/30 px-2 py-1.5 text-left;
+  }
+
+  .erp-empty-state--strip .erp-empty-state__icon {
+    @apply h-6 w-6;
+  }
+
+  .erp-empty-state--strip .erp-empty-state__title {
+    @apply text-[12px];
+  }
+
+  .erp-empty-state--strip .erp-empty-state__body {
+    @apply text-[11px];
+  }
+
+  .erp-empty-state--inline {
+    @apply gap-1 rounded-md border border-slate-200/60 bg-slate-50/40 px-3 py-3;
+  }
+
+  .erp-empty-state__icon {
+    @apply inline-flex h-8 w-8 items-center justify-center rounded-full border border-slate-200/80 bg-white text-slate-400 shadow-sm;
+  }
+
+  .erp-empty-state__text {
+    @apply flex max-w-md flex-col gap-0.5;
+  }
+
+  .erp-empty-state__title {
+    @apply text-[13px] font-semibold text-slate-800;
+  }
+
+  .erp-empty-state__body {
+    @apply text-[12px] leading-snug text-slate-600;
+  }
+
+  .erp-empty-state__action {
+    @apply mt-1;
+  }
+
+  /* --- Operational workspace zones (Prompt 3 — focus hierarchy) --- */
+  .erp-op-workspace-primary {
+    @apply border-slate-200/90 shadow-[0_2px_10px_0_rgb(29_78_216_/0.08)] ring-2 ring-blue-500/10;
+  }
+
+  .erp-op-workspace-secondary {
+    @apply border-slate-200/60 bg-slate-50/30 shadow-none ring-0;
+  }
+
+  .erp-op-workspace-secondary .erp-type-section-title,
+  .erp-op-workspace-secondary h3 {
+    @apply text-[12px] font-semibold normal-case tracking-normal text-slate-600;
+  }
+
+  .erp-op-queue-zone {
+    @apply rounded-md border border-slate-200/60 bg-slate-50/35;
+  }
+
+  .erp-op-inspect-zone {
+    @apply border-slate-200/85 bg-white shadow-[0_2px_10px_0_rgb(15_23_42_/0.06)] ring-2 ring-blue-500/10;
+  }
+
+  .erp-op-action-focus {
+    @apply rounded-md border border-blue-200/50 bg-gradient-to-b from-white to-slate-50/80 p-2 shadow-sm;
   }
 
   /**

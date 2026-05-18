@@ -27,6 +27,137 @@ function adminAuth() {
   return { Authorization: `Bearer ${token}` };
 }
 
+async function createNoQtyDraftWithExhaustedUsable(app, auth, tagSuffix) {
+  const tag = `noqty_disp_write_cap_${tagSuffix}_${Date.now()}`;
+  const customer = await prisma.customer.create({ data: { name: `IntegCust_${tag}` } });
+  const fg = await prisma.item.create({
+    data: { itemName: `IntegFG_${tag}`, itemType: "FG", unit: "PCS", minStockLevel: "0" },
+  });
+
+  const so = await prisma.salesOrder.create({
+    data: {
+      customerId: customer.id,
+      orderType: "NO_QTY",
+      internalStatus: "IN_PROCESS",
+      lines: { create: [{ itemId: fg.id, qty: "0", rate: "0" }] },
+    },
+    select: { id: true },
+  });
+
+  const cyc = await prisma.salesOrderCycle.create({
+    data: { salesOrderId: so.id, cycleNo: 1, status: "ACTIVE" },
+    select: { id: true },
+  });
+  await prisma.salesOrder.update({ where: { id: so.id }, data: { currentCycleId: cyc.id } });
+
+  const wo = await prisma.workOrder.create({
+    data: { salesOrderId: so.id, cycleId: cyc.id, status: "COMPLETED", docNo: `WO_${tag}` },
+    select: { id: true },
+  });
+  const wol = await prisma.workOrderLine.create({
+    data: { workOrderId: wo.id, fgItemId: fg.id, plannedQty: "100", qty: "100" },
+    select: { id: true },
+  });
+  const pe = await prisma.productionEntry.create({
+    data: { workOrderLineId: wol.id, workflowStatus: "APPROVED", producedQty: "100" },
+    select: { id: true },
+  });
+  await prisma.qcEntry.create({
+    data: { productionId: pe.id, acceptedQty: "100", rejectedQty: "0" },
+  });
+
+  // QC headroom exists, but physical USABLE is exhausted before finalization.
+  await prisma.stockTransaction.create({
+    data: {
+      itemId: fg.id,
+      transactionType: "QC",
+      stockBucket: "USABLE",
+      refId: pe.id,
+      qtyIn: "100",
+      qtyOut: "0",
+      reason: "Integration seed: usable stock in",
+    },
+  });
+  await prisma.stockTransaction.create({
+    data: {
+      itemId: fg.id,
+      transactionType: "DISPATCH",
+      stockBucket: "USABLE",
+      refId: 0,
+      qtyIn: "0",
+      qtyOut: "100",
+      reason: "Integration seed: usable stock exhausted",
+    },
+  });
+
+  const draft = await request(app)
+    .post("/api/dispatch/dispatches")
+    .set(auth)
+    .send({ soId: so.id, itemId: fg.id, cycleId: cyc.id, dispatchedQty: 50 })
+    .expect(201);
+
+  return { soId: so.id, itemId: fg.id, cycleId: cyc.id, dispatchId: draft.body.dispatch.id };
+}
+
+async function createHistoricalNoQtyLockedDispatch(tagSuffix) {
+  const tag = `noqty_hist_reverse_${tagSuffix}_${Date.now()}`;
+  const customer = await prisma.customer.create({ data: { name: `IntegCust_${tag}` } });
+  const fg = await prisma.item.create({
+    data: { itemName: `IntegFG_${tag}`, itemType: "FG", unit: "PCS", minStockLevel: "0" },
+  });
+  const so = await prisma.salesOrder.create({
+    data: {
+      customerId: customer.id,
+      orderType: "NO_QTY",
+      internalStatus: "IN_PROCESS",
+      lines: { create: [{ itemId: fg.id, qty: "0", rate: "0" }] },
+    },
+    select: { id: true },
+  });
+  const historicalCycle = await prisma.salesOrderCycle.create({
+    data: { salesOrderId: so.id, cycleNo: 1, status: "CLOSED", closedAt: new Date() },
+    select: { id: true },
+  });
+  const activeCycle = await prisma.salesOrderCycle.create({
+    data: { salesOrderId: so.id, cycleNo: 2, status: "ACTIVE" },
+    select: { id: true },
+  });
+  await prisma.salesOrder.update({ where: { id: so.id }, data: { currentCycleId: activeCycle.id } });
+
+  const dispatch = await prisma.dispatch.create({
+    data: {
+      docNo: `DH${String(Date.now()).slice(-10)}${tagSuffix.slice(0, 1)}`,
+      soId: so.id,
+      itemId: fg.id,
+      cycleId: historicalCycle.id,
+      dispatchedQty: "25",
+      workflowStatus: "LOCKED",
+    },
+    select: { id: true },
+  });
+  const stockTxn = await prisma.stockTransaction.create({
+    data: {
+      itemId: fg.id,
+      transactionType: "DISPATCH",
+      refId: dispatch.id,
+      stockBucket: "USABLE",
+      qtyIn: "0",
+      qtyOut: "25",
+      reason: "Integration seed: historical NO_QTY dispatch",
+    },
+    select: { id: true },
+  });
+
+  return {
+    soId: so.id,
+    itemId: fg.id,
+    historicalCycleId: historicalCycle.id,
+    activeCycleId: activeCycle.id,
+    dispatchId: dispatch.id,
+    stockTxnId: stockTxn.id,
+  };
+}
+
 d("NO_QTY dispatchable capped by physical USABLE", () => {
   let app;
   let auth;
@@ -115,6 +246,89 @@ d("NO_QTY dispatchable capped by physical USABLE", () => {
 
     // QC headroom is 100, but physical USABLE is 0 => must show 0.
     assert.equal(Number(cyc.dispatchableQty), 0);
+  });
+
+  it("rejects NO_QTY /dispatches/:id/lock when physical USABLE is insufficient", async () => {
+    const c = await createNoQtyDraftWithExhaustedUsable(app, auth, "lock");
+    const before = await prisma.stockTransaction.count({
+      where: { itemId: c.itemId, transactionType: "DISPATCH", refId: c.dispatchId },
+    });
+
+    const res = await request(app)
+      .post(`/api/dispatch/dispatches/${c.dispatchId}/lock`)
+      .set(auth)
+      .expect(400);
+
+    assert.match(String(res.body?.message ?? res.body?.error?.message ?? ""), /Insufficient usable stock for dispatch/i);
+    const after = await prisma.stockTransaction.count({
+      where: { itemId: c.itemId, transactionType: "DISPATCH", refId: c.dispatchId },
+    });
+    assert.equal(before, 0);
+    assert.equal(after, 0);
+  });
+
+  it("rejects NO_QTY /dispatches/:id/finalize-draft when physical USABLE is insufficient", async () => {
+    const c = await createNoQtyDraftWithExhaustedUsable(app, auth, "finalize");
+    const before = await prisma.stockTransaction.count({
+      where: { itemId: c.itemId, transactionType: "DISPATCH", refId: c.dispatchId },
+    });
+
+    const res = await request(app)
+      .post(`/api/dispatch/dispatches/${c.dispatchId}/finalize-draft`)
+      .set(auth)
+      .expect(400);
+
+    assert.match(String(res.body?.message ?? res.body?.error?.message ?? ""), /Insufficient usable stock for dispatch/i);
+    const after = await prisma.stockTransaction.count({
+      where: { itemId: c.itemId, transactionType: "DISPATCH", refId: c.dispatchId },
+    });
+    assert.equal(before, 0);
+    assert.equal(after, 0);
+  });
+
+  it("keeps NO_QTY historical-cycle reversal blocked unless ADMIN confirms the correction", async () => {
+    const c = await createHistoricalNoQtyLockedDispatch("blocked");
+
+    const res = await request(app)
+      .post("/api/dispatch/reverse")
+      .set(auth)
+      .send({ dispatchId: c.dispatchId, reverseQty: 5, reason: "historical correction missing confirmation" })
+      .expect(409);
+
+    assert.match(String(res.body?.message ?? res.body?.error?.message ?? ""), /Confirm historical-cycle reversal/i);
+    const reversals = await prisma.dispatch.count({ where: { reversalOfId: c.dispatchId } });
+    assert.equal(reversals, 0);
+  });
+
+  it("allows ADMIN-confirmed NO_QTY historical-cycle reversal and preserves ledger linkage", async () => {
+    const c = await createHistoricalNoQtyLockedDispatch("allowed");
+
+    const res = await request(app)
+      .post("/api/dispatch/reverse")
+      .set(auth)
+      .send({
+        dispatchId: c.dispatchId,
+        reverseQty: 5,
+        reason: "confirmed historical NO_QTY correction",
+        confirmHistoricalCycleReversal: true,
+      })
+      .expect(201);
+
+    const reversalId = Number(res.body?.reversalDispatch?.id);
+    assert.ok(Number.isFinite(reversalId) && reversalId > 0);
+
+    const reversal = await prisma.dispatch.findUnique({ where: { id: reversalId } });
+    assert.equal(Number(reversal.reversalOfId), c.dispatchId);
+    assert.equal(Number(reversal.cycleId), c.historicalCycleId);
+    assert.equal(Number(reversal.dispatchedQty), -5);
+
+    const stockReversal = await prisma.stockTransaction.findFirst({
+      where: { transactionType: "DISPATCH_REVERSAL", refId: reversalId },
+    });
+    assert.ok(stockReversal);
+    assert.equal(Number(stockReversal.reversalOfId), c.stockTxnId);
+    assert.equal(Number(stockReversal.qtyIn), 5);
+    assert.equal(Number(stockReversal.qtyOut), 0);
   });
 });
 

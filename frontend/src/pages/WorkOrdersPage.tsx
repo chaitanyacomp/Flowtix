@@ -37,10 +37,19 @@ import {
   PageSmartBackLink,
   StickyWorkspaceHead,
 } from "../components/PageHeader";
+import { ErpEmptyState } from "../components/erp/foundation/ErpEmptyState";
+import { useErpRoleUi } from "../hooks/useErpRoleUi";
+import { getRoleEmptyState } from "../lib/erpRoleEmptyStates";
 import { NextStepStrip } from "../components/erp/NextStepStrip";
 import { displaySalesOrderNo, displayWorkOrderNo } from "../lib/docNoDisplay";
-import { NoQtyCycleSummaryCard } from "../components/NoQtyCycleSummaryCard";
+import { NoQtyCycleContextBar } from "../components/erp/foundation/NoQtyCycleContextBar";
 import { buildNoQtyGuidedHref, useNoQtyFlowState } from "../lib/noQtyFlowState";
+import { isWorkOrderWorkspaceEntry } from "../lib/operationalPageEntry";
+import { OperationalWorkOrderWorkspace } from "../components/erp/OperationalWorkOrderWorkspace";
+import { useErpRefreshTick } from "../hooks/useErpRefreshTick";
+import type { DashboardProductionStatusSource } from "../lib/dashboardProductionStatus";
+import { resolveNoQtyCycleDisplayStatusForWorkOrder } from "../lib/noQtyCycleDisplayStatus";
+import { formatErpStatusLabel } from "../lib/erpStatusTone";
 
 type WoLine = { id: number; fgItemId: number; qty: string; fgItem: { itemName: string } };
 type WoRow = {
@@ -88,8 +97,8 @@ type RmCheckResponse = {
 
 type RmCheckFgPlanning = { orderQty: number; fgStock: number; toProduce: number };
 
-/** Default until `settings.shortfallBufferPercent` is wired from the API. */
-const DEFAULT_SHORTFALL_BUFFER_PERCENT = 10;
+/** Default WO planning buffer when the field is blank (user may raise manually). */
+const DEFAULT_SHORTFALL_BUFFER_PERCENT = 0;
 const SHORTFALL_BUFFER_PERCENT_MAX = 10;
 
 function parseShortfallBufferPercentInput(raw: string): number | null {
@@ -235,6 +244,27 @@ type WoLineRow = {
   requirementSheetId?: number | null;
 };
 
+function woListStatusBadgeVariant(label: string, rawStatus: string): "success" | "warning" | "default" {
+  if (label === "Completed" || rawStatus === "COMPLETED") return "success";
+  if (label === "Carried Forward" || label === "Closed") return "default";
+  return "warning";
+}
+
+function renderWoListStatusBadge(
+  row: WoLineRow,
+  noQtySelected: boolean,
+  noQtyWoDisplayStatusById: Map<number, { label: string; rawStatus: string }>,
+) {
+  const display = noQtySelected
+    ? (noQtyWoDisplayStatusById.get(row.woId)?.label ?? formatErpStatusLabel(row.status))
+    : formatErpStatusLabel(row.status);
+  return (
+    <Badge variant={woListStatusBadgeVariant(display, row.status)} className="text-[10px] font-medium">
+      {display}
+    </Badge>
+  );
+}
+
 function flattenWoLines(list: WoRow[]): WoLineRow[] {
   const out: WoLineRow[] = [];
   for (const wo of list) {
@@ -271,6 +301,7 @@ function flattenWoLines(list: WoRow[]): WoLineRow[] {
 export function WorkOrdersPage() {
   const auth = useAuth();
   const isAdmin = auth.user?.role === "ADMIN";
+  const roleUi = useErpRoleUi();
   const canProd = isAdmin || auth.user?.role === "PRODUCTION";
   const canOpenRs = useCanOpenRequirementSheet();
 
@@ -302,7 +333,7 @@ export function WorkOrdersPage() {
   /** Pre-fill WO qty from Customer Tracking or QC entry “produce shortfall” links. */
   const woShortfallFromGuidedEntry = fromCustomerTrackingWo || fromQcEntryWo;
   /** REGULAR shortfall: editable buffer % (0–10). Invalid high/low still clamp for suggested qty. */
-  const [shortfallBufferPercentInput, setShortfallBufferPercentInput] = React.useState("10");
+  const [shortfallBufferPercentInput, setShortfallBufferPercentInput] = React.useState("0");
   const shortfallWoQtyUserTouchedRef = React.useRef<Set<number>>(new Set());
 
   const shortfallBufferParsed = parseShortfallBufferPercentInput(shortfallBufferPercentInput);
@@ -357,7 +388,7 @@ export function WorkOrdersPage() {
   });
 
   React.useEffect(() => {
-    setShortfallBufferPercentInput("10");
+    setShortfallBufferPercentInput("0");
     shortfallWoQtyUserTouchedRef.current.clear();
   }, [salesOrderId]);
 
@@ -397,6 +428,17 @@ export function WorkOrdersPage() {
   const isPrefilledFromRequirementSheet =
     loc.state?.fromRequirementSheet === true || loc.state?.source === "requirementSheet";
   const noQtyBlocked = noQtySelected && !isPrefilledFromRequirementSheet;
+
+  const showWoWorkspace = isWorkOrderWorkspaceEntry({
+    fromNoQtySo,
+    regularSoIdFromUrl,
+    focusSoIdFromUrl,
+    isEditMode,
+    focusWorkOrderId,
+    salesOrderId,
+    fromRequirementSheet: isPrefilledFromRequirementSheet,
+    fromRmCheck: cameFromRmCheckPlanning,
+  });
 
   React.useEffect(() => {
     if (!fromNoQtySo) return;
@@ -679,7 +721,7 @@ export function WorkOrdersPage() {
       ? `/production?${new URLSearchParams({
           salesOrderId: String(salesOrderId),
           woId: String(openWoForPrimaryFg.woId),
-          from: "work-orders",
+          from: showWoWorkspace ? "work-order-workspace" : "work-orders",
         }).toString()}`
       : null;
 
@@ -1408,6 +1450,74 @@ export function WorkOrdersPage() {
     noQtyCycleIdFromUrl,
     noQtyFlowState?.cycleId,
   ]);
+  const noQtyGuidedCycleNoForDisplay = React.useMemo((): number | null => {
+    const primaryNo = noQtyOpenWoContext.primary?.cycle?.cycleNo;
+    if (primaryNo != null && Number.isFinite(Number(primaryNo))) return Number(primaryNo);
+    const guidedId = noQtyGuidedCycleForLinks;
+    if (guidedId == null) return null;
+    const match = [...openWoRows, ...completedWoRows].find((w) => Number(w.cycleId ?? 0) === Number(guidedId));
+    const n = match?.cycle?.cycleNo;
+    return n != null && Number.isFinite(Number(n)) ? Number(n) : null;
+  }, [noQtyOpenWoContext.primary, noQtyGuidedCycleForLinks, openWoRows, completedWoRows]);
+
+  const liveTick = useErpRefreshTick(["production", "dashboard", "workorders"], { pollIntervalMs: 0 });
+  const [noQtyProductionQueue, setNoQtyProductionQueue] = React.useState<DashboardProductionStatusSource[]>([]);
+
+  React.useEffect(() => {
+    if (!noQtySelected) return;
+    let mounted = true;
+    void apiFetch<DashboardProductionStatusSource[]>("/api/dashboard/production-queue")
+      .then((data) => {
+        if (mounted) setNoQtyProductionQueue(Array.isArray(data) ? data : []);
+      })
+      .catch(() => {
+        if (mounted) setNoQtyProductionQueue([]);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [noQtySelected, liveTick]);
+
+  const noQtyWoDisplayStatusById = React.useMemo(() => {
+    const map = new Map<number, { label: string; rawStatus: string }>();
+    if (!noQtySelected) return map;
+    const currentCycleId = noQtyFlowState?.canonicalCycleId ?? noQtyFlowState?.cycleId ?? null;
+    for (const wo of [...openWoRows, ...completedWoRows]) {
+      const isPriorCycle =
+        currentCycleId != null &&
+        Number(wo.cycleId ?? 0) > 0 &&
+        Number(wo.cycleId) !== Number(currentCycleId);
+      const display = resolveNoQtyCycleDisplayStatusForWorkOrder(wo, noQtyProductionQueue, {
+        isPriorCycle,
+        scope: isPriorCycle ? "historical" : "auto",
+      });
+      map.set(wo.id, { label: display.label, rawStatus: wo.status });
+    }
+    return map;
+  }, [noQtySelected, openWoRows, completedWoRows, noQtyProductionQueue, noQtyFlowState?.canonicalCycleId, noQtyFlowState?.cycleId]);
+
+  const noQtyGuidedCycleDisplayStatus = React.useMemo(() => {
+    const wo = noQtyOpenWoContext.primary;
+    if (!fromNoQtySo || !wo) return null;
+    const currentCycleId = noQtyFlowState?.canonicalCycleId ?? noQtyFlowState?.cycleId ?? null;
+    const viewedCycleId = noQtyCycleIdFromUrl ?? (Number(wo.cycleId ?? 0) > 0 ? Number(wo.cycleId) : null);
+    const isPriorCycle =
+      currentCycleId != null &&
+      viewedCycleId != null &&
+      Number(viewedCycleId) > 0 &&
+      Number(viewedCycleId) !== Number(currentCycleId);
+    return resolveNoQtyCycleDisplayStatusForWorkOrder(wo, noQtyProductionQueue, {
+      isPriorCycle,
+      scope: isPriorCycle ? "historical" : "auto",
+    });
+  }, [
+    fromNoQtySo,
+    noQtyOpenWoContext.primary,
+    noQtyProductionQueue,
+    noQtyFlowState?.canonicalCycleId,
+    noQtyFlowState?.cycleId,
+    noQtyCycleIdFromUrl,
+  ]);
 
   const cameFromRegularPlanning =
     !fromNoQtySo &&
@@ -1539,8 +1649,14 @@ export function WorkOrdersPage() {
         }
       >
         <div className="min-w-0 space-y-0.5">
-          <h1 className="text-base font-semibold leading-tight tracking-tight text-slate-900">Work Order</h1>
-          <p className="text-xs leading-snug text-slate-600">Create and manage work orders for production.</p>
+          <h1 className="text-base font-semibold leading-tight tracking-tight text-slate-900">
+            {showWoWorkspace ? "Work Order Workspace" : "Work Order"}
+          </h1>
+          <p className="erp-type-helper text-slate-500">
+            {showWoWorkspace
+              ? "Track open and completed work orders across REGULAR and NO_QTY."
+              : "Select SO · set WO qty · create work order."}
+          </p>
         </div>
       </StickyWorkspaceHead>
       {fromNoQtySo && salesOrderId !== "" ? <NoQtyCycleBanner so={soDetail as any} /> : null}
@@ -1549,7 +1665,7 @@ export function WorkOrdersPage() {
           <div className="flex flex-wrap items-end gap-3">
             <div className="erp-form-field min-w-0">
               <label className="erp-form-label text-xs" htmlFor="shortfall-buffer-pct">
-                Shortfall buffer %
+                Production buffer % (optional)
               </label>
               <Input
                 id="shortfall-buffer-pct"
@@ -1564,7 +1680,8 @@ export function WorkOrdersPage() {
             </div>
           </div>
           <p className="mt-1.5 text-[11px] leading-snug text-amber-900">
-            Use 0–10%. Extra production will go to usable stock.
+            Optional production buffer to cover rejection risk. Default is 0% — WO qty starts at remaining planned qty.
+            Use 0–10%; extra production goes to usable stock.
           </p>
           {shortfallBufferPercentInvalidHigh ? (
             <p className="mt-1 text-[11px] font-medium text-amber-900">Maximum shortfall buffer allowed is 10%.</p>
@@ -1572,11 +1689,16 @@ export function WorkOrdersPage() {
           {shortfallBufferPercentInvalidLow ? (
             <p className="mt-1 text-[11px] font-medium text-amber-900">Minimum shortfall buffer is 0%.</p>
           ) : null}
-          {!woShortfallFromGuidedEntry && hasAnyFgRemainingForShortfall ? (
+          {!woShortfallFromGuidedEntry && hasAnyFgRemainingForShortfall && shortfallBufferPercentForCalc > 0 ? (
             <p className="mt-2 text-xs text-amber-950">
-              <span className="font-semibold">Tip:</span> The table uses a{" "}
-              <span className="tabular-nums font-semibold">{shortfallBufferPercentForCalc}</span>% buffer on each
-              line&apos;s remaining qty for the suggested WO qty until you edit WO qty manually.
+              <span className="font-semibold">Tip:</span> Suggested WO qty adds{" "}
+              <span className="tabular-nums font-semibold">{shortfallBufferPercentForCalc}</span>% to each line&apos;s
+              remaining qty until you edit WO qty manually.
+            </p>
+          ) : !woShortfallFromGuidedEntry && hasAnyFgRemainingForShortfall ? (
+            <p className="mt-2 text-xs text-amber-950">
+              <span className="font-semibold">Tip:</span> WO qty defaults to each line&apos;s remaining planned qty. Raise
+              buffer % only if you want extra production for rejection risk.
             </p>
           ) : null}
         </div>
@@ -1591,27 +1713,37 @@ export function WorkOrdersPage() {
               <span className="tabular-nums font-semibold">
                 {fmtWoExplainQty(getShortfallSuggestedQty(shortfallQtyCustomerTracking, shortfallBufferPercentForCalc))}
               </span>{" "}
-              (uses {shortfallBufferPercentForCalc}% buffer above) — you can change WO qty anytime.
+              {shortfallBufferPercentForCalc > 0
+                ? ` (includes ${shortfallBufferPercentForCalc}% optional buffer)`
+                : " (remaining qty, no buffer)"}{" "}
+              — you can change WO qty anytime.
             </>
           ) : (
             <>
               <span className="font-semibold">Customer Tracking shortfall:</span>{" "}
               <span className="tabular-nums">{fmtWoExplainQty(shortfallQtyCustomerTracking)}</span> still pending to
-              deliver. Suggested WO qty with {shortfallBufferPercentForCalc}% buffer:{" "}
+              deliver. Suggested WO qty:{" "}
               <span className="tabular-nums font-semibold">
                 {fmtWoExplainQty(getShortfallSuggestedQty(shortfallQtyCustomerTracking, shortfallBufferPercentForCalc))}
               </span>
-              . You can lower or raise qty in the table.
+              {shortfallBufferPercentForCalc > 0 ? ` (includes ${shortfallBufferPercentForCalc}% optional buffer)` : ""}. You
+              can lower or raise qty in the table.
             </>
           )}
         </div>
       ) : null}
 
       <NextStepStrip
-        visible={Boolean(fromNoQtySo && noQtySelected && noQtyFlowState?.nextAction === "PRODUCTION" && noQtyFlowState)}
+        visible={Boolean(
+          roleUi.showWoNoQtyProductionHandoffStrip &&
+            fromNoQtySo &&
+            noQtySelected &&
+            noQtyFlowState?.nextAction === "PRODUCTION" &&
+            noQtyFlowState,
+        )}
         variant="action"
-        title="Next Step: Start Production"
-        subtitle="Work Order created successfully."
+        title="Start Production"
+        subtitle="Work order is ready."
         primaryAction={{
           label: "Go to Production",
           testId: "next-start-production",
@@ -1628,9 +1760,15 @@ export function WorkOrdersPage() {
         }}
       />
       <NextStepStrip
-        visible={Boolean(fromNoQtySo && noQtySelected && noQtyFlowState?.nextAction === "QC" && noQtyFlowState)}
+        visible={Boolean(
+          roleUi.showWoNoQtyQcHandoffStrip &&
+            fromNoQtySo &&
+            noQtySelected &&
+            noQtyFlowState?.nextAction === "QC" &&
+            noQtyFlowState,
+        )}
         variant="action"
-        title="Next Step: Send items to QC"
+        title="QC pending"
         subtitle="Production entries exist for this cycle."
         primaryAction={{
           label: "Go to QC",
@@ -1649,33 +1787,15 @@ export function WorkOrdersPage() {
       />
 
       {fromNoQtySo && noQtySelected && soDetail && salesOrderId !== "" ? (
-        <NoQtyCycleSummaryCard
+        <NoQtyCycleContextBar
           soId={soDetail.id}
           soDocNo={soDetail.docNo ?? null}
           customerName={soDetail.customer?.name ?? soDetail.po?.customer?.name ?? "—"}
-          cycleNo={soDetail.currentCycle?.cycleNo != null ? Number(soDetail.currentCycle.cycleNo) : null}
-          cycleStatus={
-            soDetail.currentCycle?.status === "ACTIVE" && String(soDetail.processStage?.key ?? "") !== "COMPLETED"
-              ? "Active Cycle"
-              : "Closed Cycle"
-          }
-          currentStage="WORK_ORDER"
-          nextStep={(() => {
-            const soIdNum = Number(salesOrderId);
-            const hasOpenWoForSo = openWoRows.some((w) => w.salesOrderId === soIdNum);
-            if (!hasOpenWoForSo) return "Create Work Order";
-            return "Start Production";
-          })()}
-          metrics={(() => {
-            const planned = fgBalances.reduce((s, b) => s + Number(b.noQtyFinalWoQty ?? b.noQtyLatestRsQty ?? 0), 0);
-            const qcPassed = fgBalances.reduce((s, b) => s + Number(b.noQtyQcPassedStockQty ?? 0), 0);
-            const lastShort = fgBalances.reduce((s, b) => s + Number(b.carryForwardShortfallQty ?? 0), 0);
-            const out: Array<{ label: any; value: number; subtle?: boolean }> = [];
-            if (Number.isFinite(planned) && planned > 0) out.push({ label: "Planned Qty", value: planned });
-            if (Number.isFinite(qcPassed) && qcPassed > 0) out.push({ label: "QC Passed Qty", value: qcPassed });
-            if (Number.isFinite(lastShort) && lastShort > 0) out.push({ label: "Last Shortage Qty", value: lastShort, subtle: true });
-            return out;
-          })()}
+          cycleNo={noQtyGuidedCycleNoForDisplay}
+          erpAdjustedPlanningQty={fgBalances.reduce((s, b) => s + Number(b.carryForwardShortfallQty ?? 0), 0)}
+          operatorPendingQty={fgBalances.reduce((s, b) => s + Math.max(0, Number(b.balanceQty ?? 0)), 0)}
+          totalToProduceQty={fgBalances.reduce((s, b) => s + Number(b.noQtyFinalWoQty ?? b.noQtyLatestRsQty ?? 0), 0)}
+          qcPassedQty={fgBalances.reduce((s, b) => s + Number(b.noQtyQcPassedStockQty ?? 0), 0)}
         />
       ) : null}
 
@@ -1701,8 +1821,11 @@ export function WorkOrdersPage() {
         }
         onClearFocus={clearWorkOrderDrillFocus}
       />
-      <Card className="min-w-0 overflow-hidden border-slate-200 shadow-sm">
-        <CardHeader className="space-y-0 border-b border-slate-100 bg-slate-50/50 px-3 py-2">
+      {showWoWorkspace ? (
+        <OperationalWorkOrderWorkspace />
+      ) : (
+      <Card className="erp-op-workspace-primary min-w-0 overflow-hidden">
+        <CardHeader className="space-y-0 border-b border-slate-100 bg-white px-3 py-2">
           <CardTitle className="text-sm font-semibold tracking-tight text-slate-900">Create Work Order</CardTitle>
         </CardHeader>
         <CardContent className="px-3 py-2">
@@ -1724,10 +1847,24 @@ export function WorkOrdersPage() {
                         <span className="text-slate-400"> · </span>
                       ) : null}
                       <span className="truncate">{soDetail?.customer?.name ?? soDetail?.po?.customer?.name ?? "—"}</span>
-                      {soDetail?.currentCycle?.cycleNo != null ? (
+                      {noQtyGuidedCycleNoForDisplay != null ? (
                         <>
                           <span className="text-slate-400"> · </span>
-                          <span className="font-medium">Cycle {Number(soDetail.currentCycle.cycleNo)}</span>
+                          <span className="font-medium">Cycle {Number(noQtyGuidedCycleNoForDisplay)}</span>
+                        </>
+                      ) : null}
+                      {noQtyGuidedCycleDisplayStatus ? (
+                        <>
+                          <span className="text-slate-400"> · </span>
+                          <Badge
+                            variant={woListStatusBadgeVariant(
+                              noQtyGuidedCycleDisplayStatus.label,
+                              noQtyOpenWoContext.primary?.status ?? "",
+                            )}
+                            className="text-[10px] font-medium"
+                          >
+                            {noQtyGuidedCycleDisplayStatus.label}
+                          </Badge>
                         </>
                       ) : null}
                     </div>
@@ -2010,8 +2147,8 @@ export function WorkOrdersPage() {
                               <th className="px-2 py-1.5">Item</th>
                               <th className="px-2 py-1.5 text-right">Order Qty</th>
                               <th className="px-2 py-1.5 text-right">Already planned</th>
-                              <th className="px-2 py-1.5 text-right">Remaining</th>
-                              <th className="min-w-[7rem] px-2 py-1.5 text-right">WO Qty</th>
+                              <th className="px-2 py-1.5 text-right font-medium text-slate-600">Remaining</th>
+                              <th className="min-w-[7rem] px-2 py-1.5 text-right font-semibold text-slate-800">WO Qty</th>
                             </tr>
                           </thead>
                           <tbody>
@@ -2118,7 +2255,9 @@ export function WorkOrdersPage() {
                                           <span className="font-semibold tabular-nums text-slate-800">
                                             {fmtWoExplainQty(suggestedQty)}
                                           </span>{" "}
-                                          (includes {shortfallBufferPercentForCalc}% buffer to cover QC rejection)
+                                          {shortfallBufferPercentForCalc > 0
+                                            ? ` (includes ${shortfallBufferPercentForCalc}% optional buffer)`
+                                            : " (same as remaining)"}
                                         </div>
                                       </div>
                                     ) : null}
@@ -2513,6 +2652,7 @@ export function WorkOrdersPage() {
           )}
         </CardContent>
       </Card>
+      )}
 
       {overrideOpen ? (
         <div className="erp-modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="wo-override-title">
@@ -2562,10 +2702,11 @@ export function WorkOrdersPage() {
         </div>
       ) : null}
 
-      <Card className="min-w-0 overflow-hidden border-slate-200 shadow-sm">
-        <CardHeader className="space-y-0 border-b border-slate-100 bg-slate-50/50 px-3 py-2">
+      {!showWoWorkspace ? (
+      <Card className="erp-op-workspace-secondary min-w-0 overflow-hidden">
+        <CardHeader className="space-y-0 border-b border-slate-100/80 bg-slate-50/40 px-3 py-2">
           <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1">
-            <CardTitle className="text-sm font-semibold tracking-tight text-slate-900">Work Orders</CardTitle>
+            <CardTitle className="text-[12px] font-semibold text-slate-600">Work orders list</CardTitle>
             <p className="whitespace-nowrap text-[11px] tabular-nums text-slate-500" title="Open work orders loaded">
               {openWoCount} open
             </p>
@@ -2673,17 +2814,17 @@ export function WorkOrdersPage() {
             {(woStatusFilter === "OPEN" || woStatusFilter === "ALL") && (
               <div className="space-y-1.5">
                 {woStatusFilter === "ALL" ? (
-                  <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Open / in progress</div>
+                  <div className="text-[11px] font-semibold text-slate-600">Open / in progress</div>
                 ) : null}
                 {!listFilteredOut && woStatusFilter === "ALL" && visibleOpenRows.length === 0 && openWoRows.length > 0 ? (
-                  <p className="text-xs leading-snug text-slate-600">No work orders match the selected filters.</p>
+                  <ErpEmptyState variant="inline" title="No open work orders match filters" body="Try another status or search." />
                 ) : null}
                 {!listFilteredOut &&
                 woStatusFilter === "ALL" &&
                 visibleOpenRows.length === 0 &&
                 openWoRows.length === 0 &&
                 completedTotal > 0 ? (
-                  <p className="text-xs leading-snug text-slate-600">No open work orders in this view.</p>
+                  <ErpEmptyState variant="inline" title="No open work orders" body="Completed work orders are listed below." />
                 ) : null}
                 {visibleOpenRows.length > 0 ? (
                   <div className="overflow-x-auto rounded-md border border-slate-200">
@@ -2723,9 +2864,7 @@ export function WorkOrdersPage() {
                             <td className="px-3 py-1.5 text-[13px] text-slate-800">{row.fgName}</td>
                             <td className="px-3 py-1.5 text-right tabular-nums text-slate-800">{row.qty}</td>
                             <td className="px-3 py-1.5">
-                              <Badge variant={row.status === "COMPLETED" ? "success" : "warning"} className="text-[10px] font-medium">
-                                {row.status}
-                              </Badge>
+                              {renderWoListStatusBadge(row, noQtySelected, noQtyWoDisplayStatusById)}
                             </td>
                             <td className="px-3 py-1.5 text-right">
                               {isAdmin && !noQtySelected ? (
@@ -2752,15 +2891,15 @@ export function WorkOrdersPage() {
             {(woStatusFilter === "COMPLETED" || woStatusFilter === "ALL") && (
               <div className="space-y-1.5">
                 {woStatusFilter === "ALL" ? (
-                  <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Completed</div>
+                  <div className="text-[11px] font-semibold text-slate-600">Completed</div>
                 ) : null}
                 {woStatusFilter === "ALL" && visibleCompletedRows.length === 0 && completedTotal === 0 ? (
-                  <p className="text-xs leading-snug text-slate-600">No completed work orders.</p>
+                  <ErpEmptyState variant="inline" title="No completed work orders" body="Completed work orders will appear here." />
                 ) : null}
                 {(woStatusFilter === "ALL" || woStatusFilter === "COMPLETED") &&
                 visibleCompletedRows.length === 0 &&
                 completedTotal > 0 ? (
-                  <p className="text-xs leading-snug text-slate-600">No completed work orders match the current search.</p>
+                  <ErpEmptyState variant="inline" title="No completed work orders match search" body="Clear search or switch status filter." />
                 ) : null}
                 {visibleCompletedRows.length > 0 ? (
                   <div className="overflow-x-auto rounded-md border border-slate-200">
@@ -2800,9 +2939,7 @@ export function WorkOrdersPage() {
                             <td className="px-3 py-1.5 text-[13px] text-slate-800">{row.fgName}</td>
                             <td className="px-3 py-1.5 text-right tabular-nums text-slate-800">{row.qty}</td>
                             <td className="px-3 py-1.5">
-                              <Badge variant={row.status === "COMPLETED" ? "success" : "warning"} className="text-[10px] font-medium">
-                                {row.status}
-                              </Badge>
+                              {renderWoListStatusBadge(row, noQtySelected, noQtyWoDisplayStatusById)}
                             </td>
                             <td className="px-3 py-1.5 text-right">
                               {isAdmin && !noQtySelected ? (
@@ -2828,26 +2965,39 @@ export function WorkOrdersPage() {
             )}
           </div>
           {listFilteredOut ? (
-            <p className="mt-1 text-xs leading-snug text-slate-600">
-              No work orders match the selected filters.
-              {woDrillHiddenByFilters ? ` ${DRILL_FOCUS_EMPTY_FILTERED_SUFFIX.workOrder}` : ""}
-            </p>
+            <ErpEmptyState
+              className="mt-1"
+              variant="inline"
+              title="No work orders match filters"
+              body={
+                woDrillHiddenByFilters
+                  ? DRILL_FOCUS_EMPTY_FILTERED_SUFFIX.workOrder
+                  : "Adjust status or search to see work orders."
+              }
+            />
           ) : null}
           {!listFilteredOut && woStatusFilter === "OPEN" && openWoRows.length === 0 ? (
-            <p className="mt-1 text-xs leading-snug text-slate-600">
-              No work orders yet. Select an approved sales order to create one.
-            </p>
+            <ErpEmptyState
+              className="mt-2"
+              variant="inline"
+              title={getRoleEmptyState("work_orders_open", roleUi.role).title}
+              body={getRoleEmptyState("work_orders_open", roleUi.role).body}
+            />
           ) : null}
           {!listFilteredOut && woStatusFilter === "COMPLETED" && completedTotal === 0 ? (
-            <p className="mt-1 text-xs leading-snug text-slate-600">No completed work orders yet.</p>
+            <ErpEmptyState className="mt-1" variant="inline" title="No completed work orders yet" body="Completed work orders will appear here." />
           ) : null}
           {!listFilteredOut && woStatusFilter === "ALL" && openWoRows.length === 0 && completedTotal === 0 ? (
-            <p className="mt-1 text-xs leading-snug text-slate-600">
-              No work orders yet. Select an approved sales order to create one.
-            </p>
+            <ErpEmptyState
+              className="mt-2"
+              variant="inline"
+              title={getRoleEmptyState("work_orders_none", roleUi.role).title}
+              body={getRoleEmptyState("work_orders_none", roleUi.role).body}
+            />
           ) : null}
         </CardContent>
       </Card>
+      ) : null}
     </PageContainer>
   );
 }

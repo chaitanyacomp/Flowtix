@@ -37,6 +37,7 @@ const {
   OPERATIONS_EXCEPTION_CONFIG,
   ROW_NUM_EPS,
 } = require("../src/services/operationsExceptionClassification");
+const { computeNoQtyOperatorCarryForwardQty } = require("../src/routes/requirementSheets");
 
 function bearerForRole(role) {
   return `Bearer ${signAccessToken({ userId: role === "ADMIN" ? 1 : 2, email: `${role.toLowerCase()}@test.com`, role, name: role })}`;
@@ -61,6 +62,16 @@ describe("release-readiness route guardrails", () => {
       .set("Authorization", bearerForRole("ADMIN"));
 
     assert.equal(res.status, 404);
+  });
+});
+
+describe("NO_QTY operator carry-forward formula", () => {
+  it("uses planned qty minus approved produced qty", () => {
+    assert.equal(computeNoQtyOperatorCarryForwardQty(4295, 4100), 195);
+  });
+
+  it("does not create negative carry-forward when produced exceeds planned", () => {
+    assert.equal(computeNoQtyOperatorCarryForwardQty(2000, 2200), 0);
   });
 });
 

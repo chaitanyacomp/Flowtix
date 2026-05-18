@@ -15,6 +15,50 @@ function normalizeUtcDateOnly(input) {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
 }
 
+const FUTURE_EFFECTIVE_DATE_MESSAGE = "Future effective date is not allowed.";
+
+/**
+ * Reject effectiveFrom after today's UTC calendar day (inclusive today allowed).
+ * @param {Date} effectiveFrom normalized UTC date-only
+ */
+function assertEffectiveFromNotFuture(effectiveFrom) {
+  const eff = normalizeUtcDateOnly(effectiveFrom);
+  const today = normalizeUtcDateOnly(new Date());
+  if (!eff || !today) {
+    const err = new Error("Invalid effectiveFrom date.");
+    err.statusCode = 400;
+    throw err;
+  }
+  if (eff.getTime() > today.getTime()) {
+    const err = new Error(FUTURE_EFFECTIVE_DATE_MESSAGE);
+    err.statusCode = 400;
+    throw err;
+  }
+  return eff;
+}
+
+/**
+ * Deactivate APPROVED rows with effectiveFrom after today (safe correction for bad test data).
+ * @param {import('@prisma/client').Prisma.TransactionClient | import('@prisma/client').PrismaClient} tx
+ */
+async function deactivateFutureApprovedRateContractLines(tx, { userId = null } = {}) {
+  const todayEnd = endOfUtcCalendarDay(new Date());
+  if (!todayEnd) return { count: 0 };
+  const rateContractLine = getRateContractLineDelegate(tx);
+  const result = await rateContractLine.updateMany({
+    where: {
+      status: "APPROVED",
+      effectiveFrom: { gt: todayEnd },
+    },
+    data: {
+      status: "INACTIVE",
+      deactivatedAt: new Date(),
+      deactivatedByUserId: userId ?? null,
+    },
+  });
+  return { count: result.count ?? 0 };
+}
+
 /**
  * Ensures the generated client includes `RateContractLine` (camelCase delegate `rateContractLine`).
  * Stale `node_modules/@prisma/client` after adding the model yields undefined here.
@@ -60,4 +104,7 @@ module.exports = {
   endOfUtcCalendarDay,
   normalizeUtcDateOnly,
   getRateContractLineDelegate,
+  assertEffectiveFromNotFuture,
+  deactivateFutureApprovedRateContractLines,
+  FUTURE_EFFECTIVE_DATE_MESSAGE,
 };

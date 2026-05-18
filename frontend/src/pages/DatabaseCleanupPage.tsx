@@ -119,7 +119,7 @@ function WarningModal({
               <div className="space-y-1">
                 <div className="font-semibold">This will permanently delete transaction data.</div>
                 <div className="text-amber-950/80">
-                  Master data is preserved (users, roles, items, customers, suppliers, units, settings, GST/HSN masters).
+                  Master data is preserved (users, roles, items, customers, suppliers, units, rate contracts, settings, GST/HSN masters).
                   This action runs inside a single DB transaction; any failure will roll back everything.
                 </div>
               </div>

@@ -11,8 +11,10 @@ import { Trash2, X, Search } from "lucide-react";
 import { useFastEntryForm } from "../hooks/useFastEntryForm";
 import {
   CommercialWorkflowStrip,
+  commercialStageFromEnquiryContext,
   commercialWorkflowStripDenseFramedClassName,
 } from "../components/erp/CommercialWorkflowStrip";
+import { NO_QTY_TERMS } from "../lib/flowTerminology";
 
 /** Must match backend `enquiries.js` validation message. */
 const ENQUIRY_DUPLICATE_ITEM_MESSAGE =
@@ -74,6 +76,72 @@ const STATUS_FILTER_OPTIONS: { value: StatusFilter; label: string }[] = [
   { value: "CLOSED", label: "Closed" },
 ];
 
+/** Prominent flow picker for the New Enquiry draft — operators must not miss REGULAR vs NO_QTY. */
+function NewEnquiryFlowTypePicker(props: {
+  value: "REGULAR" | "NO_QTY";
+  onChange: (v: "REGULAR" | "NO_QTY") => void;
+}) {
+  const { value, onChange } = props;
+  const opts: {
+    v: "REGULAR" | "NO_QTY";
+    title: string;
+    helper: string;
+    tone: string;
+    selectedTone: string;
+  }[] = [
+    {
+      v: "REGULAR",
+      title: "REGULAR Order",
+      helper: "Fixed customer PO quantity",
+      tone: "border-slate-200 bg-white hover:border-blue-200",
+      selectedTone: "border-blue-600 bg-blue-50 ring-2 ring-blue-200",
+    },
+    {
+      v: "NO_QTY",
+      title: NO_QTY_TERMS.AGREEMENT_LABEL,
+      helper: NO_QTY_TERMS.PLANNING_HELPER,
+      tone: "border-slate-200 bg-white hover:border-amber-200",
+      selectedTone: "border-amber-600 bg-amber-50 ring-2 ring-amber-200",
+    },
+  ];
+  const selected = opts.find((o) => o.v === value) ?? opts[0];
+  return (
+    <div className="grid gap-2">
+      <div
+        className={[
+          "rounded-md border px-2.5 py-1.5 text-[12px] font-semibold leading-snug",
+          value === "REGULAR" ? "border-blue-300 bg-blue-50 text-blue-950" : "border-amber-300 bg-amber-50 text-amber-950",
+        ].join(" ")}
+        aria-live="polite"
+      >
+        Selected Flow: {selected.title}
+      </div>
+      <div role="radiogroup" aria-label="Enquiry flow type" className="grid gap-2 sm:grid-cols-2">
+        {opts.map((o) => {
+          const isSelected = value === o.v;
+          return (
+            <button
+              key={o.v}
+              type="button"
+              role="radio"
+              aria-checked={isSelected}
+              className={[
+                "rounded-md border px-2.5 py-2 text-left transition",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2",
+                isSelected ? o.selectedTone : o.tone,
+              ].join(" ")}
+              onClick={() => onChange(o.v)}
+            >
+              <div className="text-[12px] font-semibold text-slate-900">{o.title}</div>
+              <div className="mt-0.5 text-[11px] leading-snug text-slate-600">{o.helper}</div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function FlowTypeSegmentedControl(props: {
   value: "REGULAR" | "NO_QTY";
   onChange: (v: "REGULAR" | "NO_QTY") => void;
@@ -122,8 +190,9 @@ function FlowTypeSegmentedControl(props: {
           disabled ? "cursor-not-allowed" : "",
         ].join(" ")}
         onClick={() => onChange("NO_QTY")}
+        title={NO_QTY_TERMS.AGREEMENT_LABEL}
       >
-        NO_QTY
+        Agreement
       </button>
     </div>
   );
@@ -134,7 +203,7 @@ function FlowFilterSegmented(props: { value: FlowFilter; onChange: (v: FlowFilte
   const opts: { v: FlowFilter; label: string }[] = [
     { v: "ALL", label: "All" },
     { v: "REGULAR", label: "REGULAR" },
-    { v: "NO_QTY", label: "NO_QTY" },
+    { v: "NO_QTY", label: NO_QTY_TERMS.AGREEMENT_LABEL },
   ];
   return (
     <div
@@ -166,7 +235,7 @@ function FlowFilterSegmented(props: { value: FlowFilter; onChange: (v: FlowFilte
 
 function flowTypeBadge(flowType: EnquiryRow["flowType"]) {
   const ft = flowType ?? "REGULAR";
-  const label = ft === "NO_QTY" ? "NO_QTY" : "REGULAR";
+  const label = ft === "NO_QTY" ? NO_QTY_TERMS.AGREEMENT_LABEL : "REGULAR";
   const variant: "info" | "warning" = ft === "NO_QTY" ? "warning" : "info";
   return <Badge variant={variant}>{label}</Badge>;
 }
@@ -238,6 +307,12 @@ export function EnquiriesPage() {
   const [feasRemarks, setFeasRemarks] = React.useState("");
   const [feasBusy, setFeasBusy] = React.useState(false);
 
+  /** List-only refresh — must never touch new-enquiry draft state. */
+  async function refreshEnquiryList() {
+    const e = await apiFetch<EnquiryRow[]>("/api/enquiries");
+    setRows(e);
+  }
+
   async function refresh() {
     const [c, i, e] = await Promise.all([
       apiFetch<Customer[]>("/api/customers"),
@@ -247,8 +322,7 @@ export function EnquiriesPage() {
     setCustomers(c);
     setItems(i);
     setRows(e);
-    if (c.length && !customerId) setCustomerId(c[0].id);
-    if (i.length && enqLines[0].itemId === 0) setEnqLines([{ itemId: i[0].id, qty: Number.NaN }]);
+    // Draft defaults are applied in mount effects below — not here (avoids stale-closure resets on tab focus).
   }
 
   React.useEffect(() => {
@@ -256,12 +330,29 @@ export function EnquiriesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // One-time defaults after master data loads (functional updates — safe across re-renders).
+  React.useEffect(() => {
+    if (!customers.length) return;
+    setCustomerId((prev) => (prev > 0 ? prev : customers[0].id));
+  }, [customers]);
+
+  React.useEffect(() => {
+    if (!items.length) return;
+    setEnqLines((prev) => {
+      if (prev.length === 1 && prev[0].itemId === 0) {
+        return [{ itemId: items[0].id, qty: prev[0].qty }];
+      }
+      return prev;
+    });
+  }, [items]);
+
+  // Keep enquiry table fresh on tab return without resetting operator draft (root cause of lost form).
   React.useEffect(() => {
     function onFocus() {
-      refresh().catch(() => {});
+      refreshEnquiryList().catch(() => {});
     }
     function onVis() {
-      if (document.visibilityState === "visible") refresh().catch(() => {});
+      if (document.visibilityState === "visible") refreshEnquiryList().catch(() => {});
     }
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVis);
@@ -269,17 +360,13 @@ export function EnquiriesPage() {
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVis);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function resetNewForm() {
     setFlowType("REGULAR");
     setRemarks("");
-    setEnqLines((p) =>
-      p.length
-        ? p.map((x) => ({ ...x, qty: Number.NaN }))
-        : [{ itemId: items[0]?.id ?? 0, qty: Number.NaN }],
-    );
+    setCustomerId(customers[0]?.id ?? 0);
+    setEnqLines([{ itemId: items[0]?.id ?? 0, qty: Number.NaN }]);
   }
 
   async function onCreate() {
@@ -436,6 +523,7 @@ export function EnquiriesPage() {
   }
 
   function closePanel() {
+    if (panelMode === "new") resetNewForm();
     setPanelMode("idle");
     setSelectedId(null);
     setFeasRemarks("");
@@ -468,6 +556,13 @@ export function EnquiriesPage() {
     [rows, selectedId],
   );
 
+  const isNewPanelOpen = panelMode === "new";
+  // One primary CTA per context — avoid duplicate "+ New Enquiry" while draft panel is open.
+  const showToolbarNewBtn = !isNewPanelOpen && rows.length > 0;
+  const showEmptyListNewBtn = rows.length === 0 && !isNewPanelOpen;
+
+  const commercialWorkflowActive = commercialStageFromEnquiryContext(panelMode, selectedRow);
+
   return (
     <div className="flex min-h-[calc(100vh-8.5rem)] flex-col gap-2.5">
       {error ? (
@@ -483,23 +578,27 @@ export function EnquiriesPage() {
           <span className="text-[12px] text-slate-500">Track and progress sales enquiries</span>
         </div>
         <CommercialWorkflowStrip
-          active="enquiry"
+          active={commercialWorkflowActive}
           className={commercialWorkflowStripDenseFramedClassName}
         />
       </div>
 
       {/* SINGLE-ROW TOOLBAR */}
       <div className="flex flex-wrap items-center gap-2 rounded-md border border-slate-200 bg-white px-2 py-1.5 shadow-sm">
-        <Button
-          type="button"
-          size="sm"
-          className="h-8 text-[12px] font-semibold"
-          data-testid="open-new-enquiry-btn"
-          onClick={openNewPanel}
-        >
-          + New Enquiry
-        </Button>
-        <div className="h-5 w-px bg-slate-200" aria-hidden="true" />
+        {showToolbarNewBtn ? (
+          <>
+            <Button
+              type="button"
+              size="sm"
+              className="h-8 text-[12px] font-semibold"
+              data-testid="open-new-enquiry-btn"
+              onClick={openNewPanel}
+            >
+              + New Enquiry
+            </Button>
+            <div className="h-5 w-px bg-slate-200" aria-hidden="true" />
+          </>
+        ) : null}
         <FlowFilterSegmented value={flowFilter} onChange={setFlowFilter} />
         <select
           aria-label="Status filter"
@@ -542,14 +641,24 @@ export function EnquiriesPage() {
             {rows.length === 0 ? (
               <div className="flex h-full flex-col items-center justify-center gap-2 px-6 py-10 text-center">
                 <div className="rounded-full bg-slate-100 px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                  No enquiries yet
+                  {isNewPanelOpen ? "New enquiry in progress" : "No enquiries yet"}
                 </div>
                 <p className="max-w-sm text-[13px] leading-snug text-slate-600">
-                  Create the first enquiry to begin the commercial workflow. The list and workflow actions will appear here.
+                  {isNewPanelOpen
+                    ? "Complete the draft in the operator panel on the right. Saved enquiries will appear in this list."
+                    : "Create the first enquiry to begin the commercial workflow. The list and workflow actions will appear here."}
                 </p>
-                <Button type="button" size="sm" className="mt-1 h-8 text-[12px]" onClick={openNewPanel}>
-                  + New Enquiry
-                </Button>
+                {showEmptyListNewBtn ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="mt-1 h-8 text-[12px]"
+                    data-testid="open-new-enquiry-empty-list-btn"
+                    onClick={openNewPanel}
+                  >
+                    + New Enquiry
+                  </Button>
+                ) : null}
               </div>
             ) : filteredRows.length === 0 ? (
               <div className="flex h-full flex-col items-center justify-center gap-2 px-6 py-10 text-center">
@@ -569,7 +678,7 @@ export function EnquiriesPage() {
                 </Button>
               </div>
             ) : (
-              <table className="erp-table erp-table-dense w-full">
+              <table className="erp-table erp-table-dense enquiries-workspace-table w-full">
                 <thead className="sticky top-0 z-10">
                   <tr>
                     <th className="w-[5.5rem]">ID</th>
@@ -578,7 +687,7 @@ export function EnquiriesPage() {
                     <th className="w-[5rem]">Type</th>
                     <th className="w-[8rem]">Status</th>
                     <th className="w-[10rem]">Next Step</th>
-                    <th className="w-[12rem] text-right">Actions</th>
+                    <th className="erp-table-action-col">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -609,34 +718,30 @@ export function EnquiriesPage() {
                         <td>{statusBadge(r.status)}</td>
                         <td className="text-[12px] text-slate-700">{nextStepLabel(r)}</td>
                         <td
-                          className="text-right"
+                          className="erp-table-action-col"
                           onClick={(e) => e.stopPropagation()}
                         >
-                          <div className="inline-flex items-center justify-end gap-1.5">
+                          <div className="erp-table-actions">
                             {primaryIsCreateQuote || primaryIsViewQuote ? (
-                              <Link
-                                to={
-                                  primaryIsViewQuote && r.quotation
-                                    ? `/quotations#quotation-row-${r.quotation.id}`
-                                    : `/quotations/new?enquiryId=${r.id}`
-                                }
+                              <button
+                                type="button"
                                 data-testid={
                                   primaryIsViewQuote ? "next-view-quotation" : "next-create-quotation"
                                 }
-                                className="inline-flex h-7 items-center rounded-md bg-blue-600 px-2.5 text-[12px] font-medium text-white hover:bg-blue-700"
+                                className="erp-table-act erp-table-act--link text-[11px]"
+                                onClick={() => openDetails(r)}
                               >
-                                {primaryIsViewQuote ? "View quote" : "Create quote"}
-                              </Link>
+                                Quotation
+                              </button>
                             ) : primaryIsFeas ? (
-                              <Button
+                              <button
                                 type="button"
-                                size="sm"
-                                className="h-7 px-2.5 text-[12px]"
                                 data-testid="enquiry-check-feasibility-btn"
+                                className="erp-table-act erp-table-act--link text-[11px]"
                                 onClick={() => openFeasibility(r)}
                               >
-                                Check feasibility
-                              </Button>
+                                Feasibility
+                              </button>
                             ) : (
                               <span className="text-[11px] text-slate-400">—</span>
                             )}
@@ -647,7 +752,7 @@ export function EnquiriesPage() {
                                   type="button"
                                   size="sm"
                                   variant="outline"
-                                  className="h-7 px-2 text-[12px]"
+                                  className="h-7 shrink-0 whitespace-nowrap px-2 text-[12px] leading-none"
                                   onClick={() => openEdit(r)}
                                 >
                                   Edit
@@ -723,7 +828,7 @@ export function EnquiriesPage() {
 
           <div className="min-h-0 flex-1 overflow-auto p-3">
             {panelMode === "idle" ? (
-              <PanelIdleState onNew={openNewPanel} />
+              <PanelIdleState hasListData={rows.length > 0} />
             ) : panelMode === "new" ? (
               <NewEnquiryPanel
                 containerRef={newFormRef}
@@ -767,7 +872,7 @@ export function EnquiriesPage() {
                 onDelete={() => onDelete(selectedRow.id)}
               />
             ) : (
-              <PanelIdleState onNew={openNewPanel} />
+              <PanelIdleState hasListData={rows.length > 0} />
             )}
           </div>
         </aside>
@@ -910,18 +1015,17 @@ export function EnquiriesPage() {
 // Right-panel subcomponents (UI-only; no business-logic changes).
 // ---------------------------------------------------------------------------
 
-function PanelIdleState(props: { onNew: () => void }) {
+function PanelIdleState(props: { hasListData: boolean }) {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 px-4 py-10 text-center">
       <div className="rounded-full bg-slate-100 px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
         Workflow Action
       </div>
-      <p className="text-[13px] leading-snug text-slate-600">
-        Select an enquiry from the list to view details, or start a new one.
+      <p className="max-w-xs text-[13px] leading-snug text-slate-600">
+        {props.hasListData
+          ? "Select an enquiry from the list to view details and next steps. Use + New Enquiry in the toolbar to start another."
+          : "Use + New Enquiry in the list area to open the creation form in this panel."}
       </p>
-      <Button type="button" size="sm" className="h-8 text-[12px]" onClick={props.onNew}>
-        + New Enquiry
-      </Button>
     </div>
   );
 }
@@ -968,13 +1072,8 @@ function NewEnquiryPanel(props: {
   } = props;
 
   return (
-    <div ref={containerRef} className="flex flex-col gap-3">
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-          Flow type
-        </span>
-        <FlowTypeSegmentedControl value={flowType} onChange={setFlowType} />
-      </div>
+    <div ref={containerRef} className="flex flex-col gap-3.5">
+      <NewEnquiryFlowTypePicker value={flowType} onChange={setFlowType} />
 
       <label className="grid gap-1 text-[11px] font-medium uppercase tracking-wide text-slate-500">
         Customer
@@ -1004,22 +1103,26 @@ function NewEnquiryPanel(props: {
       </label>
 
       <div className="grid gap-1.5">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-1">
           <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-            {flowType === "REGULAR" ? "Items & qty" : "Items"}
+            {flowType === "REGULAR" ? "Items & quantity" : "Items (agreement scope)"}
           </span>
           {flowType === "NO_QTY" ? (
-            <Badge variant="warning" className="text-[10px]">
-              Qty managed in Requirement Sheet
-            </Badge>
-          ) : null}
+            <span className="text-[11px] leading-snug text-amber-800">
+              No fixed PO qty — {NO_QTY_TERMS.PLANNING_HELPER.toLowerCase()} in Requirement Sheets
+            </span>
+          ) : (
+            <span className="text-[11px] font-medium text-blue-800">Qty required per line</span>
+          )}
         </div>
 
         {flowType === "REGULAR" ? (
           <>
             <div className="grid grid-cols-12 gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
               <div className="col-span-7">Item</div>
-              <div className="col-span-5">Qty</div>
+              <div className="col-span-5">
+                Qty <span className="text-red-600">*</span>
+              </div>
             </div>
             {lines.map((l, i) => (
               <div key={`nl-${i}`} className="grid grid-cols-12 items-center gap-1.5">

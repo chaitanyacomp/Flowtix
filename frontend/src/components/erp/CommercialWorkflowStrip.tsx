@@ -1,16 +1,13 @@
-import * as React from "react";
 import { cn } from "../../lib/utils";
+import { ErpOperationalWorkflowStrip } from "./foundation/ErpOperationalWorkflowStrip";
 
 /** Use around `CommercialWorkflowStrip` on quotation / sales-order screens for consistent rhythm. */
-export const commercialWorkflowStripFramedClassName =
-  "rounded-md border border-slate-200 bg-white px-2 py-1.5 shadow-sm text-[11px] sm:text-[12px]";
+export const commercialWorkflowStripFramedClassName = "erp-workflow-strip--horizontal";
 
 /**
  * Tighter variant for compact ERP workspace headers (enquiry / quotation transaction screens).
- * Smaller text + reduced vertical padding so the strip does not consume header height.
  */
-export const commercialWorkflowStripDenseFramedClassName =
-  "rounded-md border border-slate-200 bg-white px-1.5 py-0.5 shadow-sm text-[10px] sm:text-[11px]";
+export const commercialWorkflowStripDenseFramedClassName = "erp-workflow-strip--horizontal erp-workflow-strip--dense";
 
 /** Commercial / sales stages only — do not mix with operational (Production, QC, etc.). */
 export type CommercialWorkflowStage = "enquiry" | "feasibility" | "quotation" | "sales_order";
@@ -26,41 +23,49 @@ const STEPS: { key: CommercialWorkflowStage; label: string }[] = [
  * Compact horizontal strip for the commercial pipeline.
  * Highlights the current stage only (not a full app menu).
  */
+/** Map enquiry workspace context → commercial strip stage (UI only). */
+export function commercialStageFromEnquiryContext(
+  panelMode: "idle" | "new" | "feasibility" | "details",
+  row: { status: string; quotation: unknown } | null,
+): CommercialWorkflowStage {
+  if (panelMode === "new") return "enquiry";
+  if (panelMode === "feasibility") return "feasibility";
+  if (row) {
+    if (row.quotation) return "quotation";
+    if (row.status === "FEASIBLE") return "quotation";
+    if (["OPEN", "DRAFT", "PENDING", "NOT_FEASIBLE"].includes(row.status)) return "feasibility";
+  }
+  return "enquiry";
+}
+
+/** Quotations list / new quotation — commercial strip stage (UI only). */
+export function commercialStageFromQuotationContext(
+  row: { workflowStatus: string; salesOrder?: { id: number } | null } | null,
+): { active: CommercialWorkflowStage; allComplete?: boolean } {
+  if (!row) return { active: "quotation" };
+  if (row.salesOrder) return { active: "sales_order", allComplete: true };
+  if (row.workflowStatus === "APPROVED") return { active: "sales_order" };
+  return { active: "quotation" };
+}
+
 export function CommercialWorkflowStrip(props: {
   active: CommercialWorkflowStage;
   className?: string;
+  allComplete?: boolean;
 }) {
-  const { active, className } = props;
+  const { active, className, allComplete } = props;
+  const currentIndex = Math.max(0, STEPS.findIndex((s) => s.key === active));
+  const dense = className?.includes("erp-workflow-strip--dense") ?? false;
+
   return (
-    <nav
-      aria-label="Commercial workflow"
-      className={cn(
-        "flex flex-wrap items-center gap-x-1 gap-y-1 text-[11px] font-medium text-slate-500 sm:text-xs",
-        className,
-      )}
-    >
-      {STEPS.map((s, i) => {
-        const isActive = s.key === active;
-        return (
-          <React.Fragment key={s.key}>
-            {i > 0 ? (
-              <span className="select-none text-slate-300" aria-hidden="true">
-                →
-              </span>
-            ) : null}
-            <span
-              className={cn(
-                "rounded-full px-2 py-0.5 transition-colors",
-                isActive
-                  ? "bg-blue-100 font-semibold text-blue-900 ring-1 ring-blue-300/70 shadow-sm"
-                  : "text-slate-500",
-              )}
-            >
-              {s.label}
-            </span>
-          </React.Fragment>
-        );
-      })}
-    </nav>
+    <ErpOperationalWorkflowStrip
+      stages={STEPS}
+      currentIndex={currentIndex}
+      allComplete={allComplete}
+      layout="horizontal"
+      dense={dense}
+      ariaLabel="Commercial workflow"
+      className={cn(className)}
+    />
   );
 }

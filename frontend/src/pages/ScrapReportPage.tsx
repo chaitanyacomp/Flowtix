@@ -4,6 +4,7 @@ import { apiFetch } from "../services/api";
 import { Button } from "../components/ui/button";
 import { PageContainer, ReportPageHeader } from "../components/PageHeader";
 import { Input } from "../components/ui/input";
+import { useErpReportLiveLoad } from "../hooks/useErpReportLiveLoad";
 
 type FgItem = { id: number; itemName: string };
 
@@ -53,10 +54,7 @@ export function ScrapReportPage() {
     }
   }
 
-  React.useEffect(() => {
-    load().catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  useErpReportLiveLoad(() => load(), ["reports", "qc"], []);
 
   const total = rows.reduce((s, r) => s + Number(r.rejectedQty || 0), 0);
 

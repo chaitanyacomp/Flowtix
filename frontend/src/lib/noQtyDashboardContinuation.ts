@@ -5,8 +5,16 @@ export type ResolvedNoQtyContinuation =
   | { kind: "prepare_next_rs"; label: string };
 
 /**
- * Maps NO_QTY flow state + dashboard row hints to the primary continuation action.
- * Routing/UX only — same signals as {@link NoQtyFlowState} from the API.
+ * Maps NO_QTY flow state + dashboard row hints to the primary continuation action
+ * for the **Sales / Admin planning launcher** (not Store dispatch ownership).
+ *
+ * **Dashboard → Next RS (rolling / continue planning):** always `prepare_next_rs` so the client runs
+ * `prepareNoQtyNextRequirementSheetAndNavigate` — never a direct `navigate` with stale `sheetId` /
+ * `fromStep=requirement` (those URLs loaded the prior cycle’s locked RS and hid the create workspace).
+ *
+ * **Exception:** when the row is clearly a **draft** RS, we still deep-link so operators open that draft.
+ *
+ * This resolver never targets `/work-orders` — WO creation remains from the RS workspace.
  */
 export function resolveNoQtyDashboardContinuation(args: {
   salesOrderId: number;
@@ -14,47 +22,55 @@ export function resolveNoQtyDashboardContinuation(args: {
   latestRequirementSheetId: number | null | undefined;
   lastRsStatus: string | null | undefined;
   flow: NoQtyFlowState | null;
+  /** Dashboard viewer — blocking QC step applies only for roles that own the QC floor. */
+  viewerRole?: string | null;
 }): ResolvedNoQtyContinuation {
-  const { salesOrderId, cycleId, latestRequirementSheetId, lastRsStatus, flow } = args;
+  const { salesOrderId, cycleId, latestRequirementSheetId, lastRsStatus, flow, viewerRole } = args;
   const effCycleId = flow?.cycleId ?? cycleId ?? null;
+  const viewer = String(viewerRole ?? "").trim().toUpperCase();
+
+  const rollingSheetId =
+    flow?.nextRollingRequirementSheetId != null && Number(flow.nextRollingRequirementSheetId) > 0
+      ? Number(flow.nextRollingRequirementSheetId)
+      : null;
 
   const rsDraft =
     String(lastRsStatus ?? "").toUpperCase() === "DRAFT" ||
     Boolean(flow && flow.requirementExists && !flow.requirementLocked);
 
+  /** A) Draft / unlocked RS — open that sheet (only navigate-with-sheet case we keep). */
   if (rsDraft) {
+    const sid =
+      rollingSheetId != null
+        ? rollingSheetId
+        : latestRequirementSheetId != null
+          ? Number(latestRequirementSheetId)
+          : 0;
+    const rollingCycleId =
+      flow?.nextRollingRequirementSheetCycleId != null && Number(flow.nextRollingRequirementSheetCycleId) > 0
+        ? Number(flow.nextRollingRequirementSheetCycleId)
+        : null;
     const base = buildNoQtyGuidedHref({
       to: `/sales-orders/${salesOrderId}/requirement-sheets`,
       salesOrderId,
-      cycleId: effCycleId,
+      cycleId: rollingCycleId ?? effCycleId,
       fromStep: "requirement",
     });
-    const sid = latestRequirementSheetId != null ? Number(latestRequirementSheetId) : 0;
     const sep = base.includes("?") ? "&" : "?";
     const withSheet =
       Number.isFinite(sid) && sid > 0 ? `${base}${sep}sheetId=${encodeURIComponent(String(sid))}` : base;
-    return { kind: "navigate", label: "Open RS", to: withSheet };
+    return { kind: "navigate", label: "Next RS", to: withSheet };
   }
 
+  /** Flow not loaded yet but row shows locked RS — POST prepare (same as eligible path); never deep-link stale sheetId. */
   if (!flow) {
     const lockedNoFlow = String(lastRsStatus ?? "").toUpperCase() === "LOCKED";
-    const sidEarly = latestRequirementSheetId != null ? Number(latestRequirementSheetId) : 0;
-    if (lockedNoFlow && Number.isFinite(sidEarly) && sidEarly > 0) {
-      return {
-        kind: "navigate",
-        label: "Go to Work Order",
-        to: buildNoQtyGuidedHref({
-          to: `/work-orders?soMode=NO_QTY`,
-          salesOrderId,
-          cycleId: cycleId ?? effCycleId,
-          requirementSheetId: sidEarly,
-          fromStep: "rs",
-        }),
-      };
+    if (lockedNoFlow) {
+      return { kind: "prepare_next_rs", label: "Next RS" };
     }
     return {
       kind: "navigate",
-      label: "Open requirement sheets",
+      label: "Next RS",
       to: buildNoQtyGuidedHref({
         to: `/sales-orders/${salesOrderId}/requirement-sheets`,
         salesOrderId,
@@ -65,46 +81,31 @@ export function resolveNoQtyDashboardContinuation(args: {
   }
 
   const na = flow.nextAction;
+  const hasQcDispatchTail = Boolean(flow.hasQcDispatchPending);
 
-  if (flow.createNextRsEligible) {
-    return { kind: "prepare_next_rs", label: "Create Next RS" };
-  }
+  const userCanCreateNextRs =
+    flow.primaryActionForCurrentUser != null
+      ? flow.primaryActionForCurrentUser === "CREATE_NEXT_RS" ||
+        flow.roleAllowedSecondaryActions?.includes("CREATE_NEXT_RS") ||
+        flow.roleAllowedSecondaryActions?.includes("NEXT_RS")
+      : flow.primaryAction === "NEXT_RS" || Boolean(flow.createNextRsEligible);
 
-  /** Locked RS with no WO yet: API often returns REQUIREMENT; ops next step is Work Order (not re-open RS). */
-  const latestLocked = String(lastRsStatus ?? "").toUpperCase() === "LOCKED";
-  const stockDispatchWithoutWo = !flow.workOrderExists && na === "DISPATCH";
-  const sid = latestRequirementSheetId != null ? Number(latestRequirementSheetId) : 0;
-  const hasRsId = Number.isFinite(sid) && sid > 0;
-  if (latestLocked && !stockDispatchWithoutWo && !flow.workOrderExists && hasRsId) {
-    return {
-      kind: "navigate",
-      label: "Create Work Order",
-      to: buildNoQtyGuidedHref({
-        to: `/work-orders?soMode=NO_QTY`,
+  const openQc = () =>
+    ({
+      kind: "navigate" as const,
+      label: "Open QC",
+      to: buildQcEntryHref({
         salesOrderId,
         cycleId: effCycleId,
-        requirementSheetId: sid,
-        fromStep: "rs",
+        orderType: "NO_QTY",
+        fromStep: "production",
+        navOrigin: "dashboard",
       }),
-    };
-  }
+    });
 
-  if (na === "WORK_ORDER") {
-    return {
-      kind: "navigate",
-      label: flow.workOrderExists ? "Go to Work Order" : "Create Work Order",
-      to: buildNoQtyGuidedHref({
-        to: `/work-orders?soMode=NO_QTY`,
-        salesOrderId,
-        cycleId: effCycleId,
-        requirementSheetId: latestRequirementSheetId ?? null,
-        fromStep: "rs",
-      }),
-    };
-  }
-  if (na === "PRODUCTION") {
-    return {
-      kind: "navigate",
+  const openProduction = () =>
+    ({
+      kind: "navigate" as const,
       label: "Open Production",
       to: buildNoQtyGuidedHref({
         to: `/production`,
@@ -112,31 +113,54 @@ export function resolveNoQtyDashboardContinuation(args: {
         cycleId: effCycleId,
         fromStep: "work_order",
       }),
-    };
-  }
-  if (na === "QC") {
-    return {
-      kind: "navigate",
-      label: "Open QC",
-      to: buildQcEntryHref({
-        salesOrderId,
-        cycleId: effCycleId,
-        orderType: "NO_QTY",
-        fromStep: "production",
-      }),
-    };
-  }
-  if (na === "DISPATCH") {
-    return {
-      kind: "navigate",
-      label: "Open Dispatch",
+    });
+
+  const openDispatch = () =>
+    ({
+      kind: "navigate" as const,
+      label: "Open NO_QTY Dispatch",
       to: buildNoQtyGuidedHref({
         to: `/dispatch`,
         salesOrderId,
         cycleId: effCycleId,
-        fromStep: "qc",
+        fromStep: "dispatch",
       }),
-    };
+    });
+
+  /** Planning (SALES/ADMIN) is independent of shop-floor production balance. */
+  if (userCanCreateNextRs && (viewer === "SALES" || viewer === "ADMIN")) {
+    return { kind: "prepare_next_rs", label: "Next RS" };
+  }
+
+  /** QC → Dispatch → Production for shop-floor roles. */
+  if (flow.qcPendingForCycle && (viewer === "ADMIN" || viewer === "QC" || viewer === "PRODUCTION")) {
+    return openQc();
+  }
+  if (
+    (na === "DISPATCH" || flow.hasQcDispatchPending) &&
+    (viewer === "ADMIN" || viewer === "STORE" || viewer === "DISPATCH")
+  ) {
+    return openDispatch();
+  }
+  if (na === "PRODUCTION" && (viewer === "ADMIN" || viewer === "PRODUCTION")) {
+    return openProduction();
+  }
+
+  if (rollingSheetId != null && Number.isFinite(Number(rollingSheetId)) && Number(rollingSheetId) > 0) {
+    return { kind: "prepare_next_rs", label: "Next RS" };
+  }
+
+  if (na === "WORK_ORDER" && !hasQcDispatchTail) {
+    return { kind: "prepare_next_rs", label: "Next RS" };
+  }
+  if (na === "QC") {
+    return openQc();
+  }
+  if (na === "PRODUCTION") {
+    return openProduction();
+  }
+  if (na === "DISPATCH") {
+    return openDispatch();
   }
   if (na === "SALES_BILL") {
     return {
@@ -151,14 +175,5 @@ export function resolveNoQtyDashboardContinuation(args: {
     };
   }
 
-  return {
-    kind: "navigate",
-    label: "Open RS",
-    to: buildNoQtyGuidedHref({
-      to: `/sales-orders/${salesOrderId}/requirement-sheets`,
-      salesOrderId,
-      cycleId: effCycleId,
-      fromStep: "requirement",
-    }),
-  };
+  return { kind: "prepare_next_rs", label: "Next RS" };
 }

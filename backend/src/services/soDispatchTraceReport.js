@@ -162,13 +162,56 @@ async function computeSoSummariesForTraceScope(prisma, fq, fpe, fwol) {
   const soIds = [...new Set(pairRows.map((p) => Number(p.so_id)))];
   const salesOrders = await prisma.salesOrder.findMany({
     where: { id: { in: soIds } },
-    include: { lines: true, currentCycle: { select: { cycleNo: true } } },
+    include: { lines: true },
   });
   const soById = new Map(salesOrders.map((s) => [s.id, s]));
 
   const dispatches = await prisma.dispatch.findMany({
     where: { soId: { in: soIds } },
   });
+  const dispatchCycleIds = [
+    ...new Set(
+      dispatches
+        .map((d) => (d.cycleId != null ? Number(d.cycleId) : 0))
+        .filter((id) => Number.isFinite(id) && id > 0),
+    ),
+  ];
+  const lockedRsRows =
+    soIds.length > 0
+      ? await prisma.requirementSheet.findMany({
+          where: { salesOrderId: { in: soIds }, status: "LOCKED" },
+          select: { salesOrderId: true, cycle: { select: { cycleNo: true } } },
+        })
+      : [];
+  const maxLockedCycleNoBySo = new Map();
+  for (const r of lockedRsRows) {
+    const sid = r.salesOrderId;
+    const cn = r.cycle?.cycleNo != null ? Number(r.cycle.cycleNo) : NaN;
+    if (!Number.isFinite(cn)) continue;
+    const prev = maxLockedCycleNoBySo.get(sid);
+    if (prev == null || cn > prev) maxLockedCycleNoBySo.set(sid, cn);
+  }
+  const dispatchCycleNoById = new Map();
+  if (dispatchCycleIds.length) {
+    const cyc = await prisma.salesOrderCycle.findMany({
+      where: { id: { in: dispatchCycleIds } },
+      select: { id: true, salesOrderId: true, cycleNo: true },
+    });
+    for (const c of cyc) {
+      dispatchCycleNoById.set(c.id, Number(c.cycleNo));
+    }
+  }
+  const maxDispatchCycleNoBySo = new Map();
+  for (const d of dispatches) {
+    const cid = d.cycleId != null ? Number(d.cycleId) : 0;
+    if (!cid) continue;
+    const cn = dispatchCycleNoById.get(cid);
+    if (!Number.isFinite(cn)) continue;
+    const sid = d.soId;
+    const prev = maxDispatchCycleNoBySo.get(sid);
+    if (prev == null || cn > prev) maxDispatchCycleNoBySo.set(sid, cn);
+  }
+
   /** @type {Map<number, typeof dispatches>} */
   const dispBySo = new Map();
   for (const d of dispatches) {
@@ -202,10 +245,20 @@ async function computeSoSummariesForTraceScope(prisma, fq, fpe, fwol) {
 
       const soQty = isNoQty ? null : roundReportQty(v.soQty);
       const dispatchQty = roundReportQty(v.dispatchQty);
-      const cycleNo =
-        orderType === "NO_QTY" && so?.currentCycle?.cycleNo != null && Number.isFinite(Number(so.currentCycle.cycleNo))
-          ? Number(so.currentCycle.cycleNo)
+      const fromDisp = maxDispatchCycleNoBySo.get(salesOrderId);
+      const fromLocked = maxLockedCycleNoBySo.get(salesOrderId);
+      const operationalCycleNo =
+        orderType === "NO_QTY"
+          ? (() => {
+              const a = fromDisp != null && Number.isFinite(fromDisp) ? fromDisp : null;
+              const b = fromLocked != null && Number.isFinite(fromLocked) ? fromLocked : null;
+              if (a == null && b == null) return null;
+              if (a == null) return b;
+              if (b == null) return a;
+              return Math.max(a, b);
+            })()
           : null;
+      const cycleNo = operationalCycleNo;
       return {
         salesOrderId,
         salesOrderNo: displayDocNo(so?.docNo, "SO", salesOrderId),

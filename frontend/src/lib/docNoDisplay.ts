@@ -19,9 +19,18 @@ export function displayDispatchNo(id: number, docNo?: string | null): string {
 export function displayWorkOrderNo(id: number, docNo?: string | null): string {
   const s = docNo?.trim();
   if (s) return s;
-  const n = Number(id);
+  return displayWorkOrderTraceNo(id);
+}
+
+/**
+ * Operational traceability label — always WO-{database id}.
+ * Use in cycle history, dashboards, and workspace lists so WO numbers stay sequential
+ * and are not mixed with PREFIX-YY-#### docNo values on individual rows.
+ */
+export function displayWorkOrderTraceNo(woId: number): string {
+  const n = Number(woId);
   if (!Number.isFinite(n) || n <= 0) return "WO-—";
-  return `WO-${String(n).padStart(3, "0")}`;
+  return `WO-${n}`;
 }
 
 export function displayProductionEntryNo(id: number, docNo?: string | null): string {

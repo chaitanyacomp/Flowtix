@@ -8,7 +8,7 @@ import { cn } from "../../lib/utils";
  * still pass explicit `className` overrides.
  */
 const Card = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(({ className, ...props }, ref) => (
-  <div ref={ref} className={cn("erp-card-surface rounded-md border border-slate-200 bg-white shadow-sm", className)} {...props} />
+  <div ref={ref} className={cn("erp-card-surface rounded-md border border-slate-200/70 bg-white", className)} {...props} />
 ));
 Card.displayName = "Card";
 

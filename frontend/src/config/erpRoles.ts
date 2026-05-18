@@ -5,7 +5,7 @@
  * Phase 1 ownership cleanup:
  *  - SUPERVISOR is removed.
  *  - Workflow ownership groups (e.g. SO_WRITE_ROLES) replace literal arrays.
- *  - One primary owner per stage; other roles get read-only access.
+ *  - One primary owner per stage; other roles get read-only visibility where useful.
  */
 export const ERP_ROLES = [
   "ADMIN",
@@ -29,24 +29,30 @@ export const ALL_APP_ROLES_NO_ACCOUNTS = ["ADMIN", "SALES", "STORE", "PRODUCTION
 
 /** SALES — owns sales pipeline. */
 export const SO_WRITE_ROLES = ["ADMIN", "SALES"] as const;
-export const SO_READ_ROLES = ["ADMIN", "SALES", "STORE", "PRODUCTION", "ACCOUNTS"] as const;
+/** Sales Orders list/detail — commercial + production context (not Store dispatch-only). */
+export const SO_READ_ROLES = ["ADMIN", "SALES", "PRODUCTION"] as const;
 export const ENQUIRY_QUOTATION_WRITE_ROLES = ["ADMIN", "SALES"] as const;
 
-/** STORE — owns material planning, RS, RM PO, GRN, dispatch, stock, customer return create. */
-export const RS_WRITE_ROLES = ["ADMIN", "STORE"] as const;
+/** Requirement sheet authoring / NO_QTY planning — Sales + Admin. */
+export const RS_WRITE_ROLES = ["ADMIN", "SALES"] as const;
 export const RS_READ_ROLES = ["ADMIN", "STORE", "SALES", "PRODUCTION"] as const;
 export const RM_PO_WRITE_ROLES = ["ADMIN", "STORE"] as const;
 export const RM_PO_READ_ROLES = ["ADMIN", "STORE", "ACCOUNTS"] as const;
 export const STOCK_READ_ROLES = ["ADMIN", "STORE", "PRODUCTION", "QC", "SALES"] as const;
 export const STOCK_WRITE_ROLES = ["ADMIN", "STORE"] as const;
 export const DISPATCH_WRITE_ROLES = ["ADMIN", "STORE"] as const;
-export const DISPATCH_READ_ROLES = ["ADMIN", "STORE", "SALES", "ACCOUNTS"] as const;
+export const DISPATCH_READ_ROLES = ["ADMIN", "STORE", "DISPATCH"] as const;
 export const CUSTOMER_RETURN_CREATE_ROLES = ["ADMIN", "STORE"] as const;
 export const CUSTOMER_RETURN_APPROVE_ROLES = ["ADMIN", "SALES"] as const;
 export const CUSTOMER_RETURN_READ_ROLES = ["ADMIN", "SALES", "STORE", "PRODUCTION", "QC"] as const;
 
-/** Next RS (NO_QTY) — Store + Admin only. */
-export const NEXT_RS_WRITE_ROLES = ["ADMIN", "STORE"] as const;
+/** Next RS (NO_QTY) — Sales + Admin. */
+export const NEXT_RS_WRITE_ROLES = ["ADMIN", "SALES"] as const;
+
+/**
+ * NO_QTY flow-state API — matches backend NO_QTY_FLOW_STATE_READ_ROLES (QC / Production / Dispatch / Dashboard).
+ */
+export const NO_QTY_FLOW_STATE_READ_ROLES = ["ADMIN", "SALES", "STORE", "PRODUCTION", "QC"] as const;
 
 /** PRODUCTION — owns work order, production entry, rework approval. */
 export const WO_WRITE_ROLES = ["ADMIN", "PRODUCTION"] as const;
@@ -65,14 +71,14 @@ export const SALES_BILL_WRITE_ROLES = ["ADMIN", "ACCOUNTS"] as const;
 export const SALES_BILL_READ_ROLES = ["ADMIN", "ACCOUNTS", "SALES"] as const;
 export const SALES_BILL_CANCEL_ROLES = ["ADMIN"] as const;
 export const PURCHASE_BILL_WRITE_ROLES = ["ADMIN", "ACCOUNTS"] as const;
-export const PURCHASE_BILL_DRAFT_ROLES = ["ADMIN", "STORE", "ACCOUNTS"] as const;
-export const PURCHASE_BILL_READ_ROLES = ["ADMIN", "STORE", "ACCOUNTS"] as const;
+export const PURCHASE_BILL_DRAFT_ROLES = ["ADMIN", "ACCOUNTS"] as const;
+export const PURCHASE_BILL_READ_ROLES = ["ADMIN", "ACCOUNTS"] as const;
 
 /** Legacy alias — Sales/Accounts/Admin read on commercial screens. Prefer SALES_BILL_* groups. */
 export const ACCOUNTS_COMMERCIAL_ROLES = SALES_BILL_READ_ROLES;
 
 /** Dashboards / reports. */
-export const PLANNING_DASHBOARD_ROLES = ["ADMIN", "STORE", "PRODUCTION", "SALES", "ACCOUNTS"] as const;
+export const PLANNING_DASHBOARD_ROLES = ["ADMIN", "SALES", "PRODUCTION"] as const;
 export const REPORTS_WITH_ACCOUNTS_ROLES = ["ADMIN", "SALES", "STORE", "PRODUCTION", "QC", "ACCOUNTS"] as const;
 export const SUPPLIER_VIEW_ROLES = ["ADMIN", "STORE", "ACCOUNTS"] as const;
 

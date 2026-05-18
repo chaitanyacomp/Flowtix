@@ -54,6 +54,10 @@ function round3(v) {
   return Math.round(n(v) * 1000) / 1000;
 }
 
+function computeNoQtyOperatorCarryForwardQty(plannedQty, approvedProducedQty) {
+  return round3(Math.max(0, round3(plannedQty) - round3(approvedProducedQty)));
+}
+
 /**
  * Multiple LOCKED requirement sheets can exist for the same NO_QTY cycle (e.g. v1 then v2).
  * Carry-forward must count each cycle once — use the latest RS document only.
@@ -383,18 +387,14 @@ function mergeShortfallMaps(a, b) {
 
 /**
  * Per **one** NO_QTY cycle: for each FG item, locked RS gross from the winning LOCKED sheet
- * (`shortfallQtySnapshot + requirementQty` per line, summed) vs QC-backed fulfillment for shortage closure:
- * - original first-pass QC accepted: sum of {@link QcEntry}.acceptedQty on APPROVED {@link ProductionEntry} in this cycle
- * - plus any disposition-linked BUCKET_TRANSFER → USABLE for WOs in this cycle (rework recovery / recheck acceptance)
- * - plus post-cycle approvals (disposition→USABLE after earlier cycle close) that are available to fulfill this cycle’s
- *   carry-forward snapshot demand.
+ * (`shortfallQtySnapshot + requirementQty` per line, summed) vs APPROVED produced qty for operator planning.
  *
- * This is required so “Last shortage Qty” can be reduced to 0 when rejected qty is later recovered and made usable.
+ * NO_QTY carry-forward is operator-first pending qty:
+ * `max(0, planned RS/WO qty - approved produced qty)`.
+ * QC/rework/post-cycle stock still affects dispatchable stock elsewhere, but must not reduce next-cycle production planning.
  *
- * @param {number} soId
- * @param {number} cycleId `SalesOrderCycle.id`
- * @returns {Promise<Map<number, { planned: number; qcAccepted: number }>>}
- *   `qcAccepted` = original QC accepted + recovered-to-usable qty for this cycle.
+ * Returned `qcAccepted` is a historical field name; it now carries approved produced qty for callers computing
+ * `planned - qcAccepted` shortage.
  */
 async function plannedNewRequirementAndQcAcceptedByItemForSingleCycle(soId, cycleId) {
   const sid = Number(soId);
@@ -443,79 +443,31 @@ async function plannedNewRequirementAndQcAcceptedByItemForSingleCycle(soId, cycl
         },
       },
     },
-    select: { id: true, workOrderLine: { select: { fgItemId: true } } },
+    select: { id: true, producedQty: true, workOrderLine: { select: { fgItemId: true } } },
   });
-  const prodIds = productions.map((p) => p.id).filter((x) => Number.isFinite(x) && x > 0);
   /** @type {Map<number, number>} */
-  const qcAcceptedByItem = new Map();
-  if (prodIds.length > 0) {
-    const qcAgg = await prisma.qcEntry.groupBy({
-      by: ["productionId"],
-      where: { productionId: { in: prodIds }, ...QC_ENTRY_ACTIVE_WHERE },
-      _sum: { acceptedQty: true },
-    });
-    const prodIdToItemId = new Map(productions.map((p) => [p.id, p.workOrderLine.fgItemId]));
-    for (const r of qcAgg) {
-      const pid = Number(r.productionId);
-      const itemId = Number(prodIdToItemId.get(pid));
-      if (!Number.isFinite(itemId) || itemId <= 0) continue;
-      qcAcceptedByItem.set(itemId, (qcAcceptedByItem.get(itemId) || 0) + n(r._sum.acceptedQty));
-    }
+  const producedQtyByItem = new Map();
+  for (const p of productions) {
+    const itemId = Number(p.workOrderLine?.fgItemId);
+    if (!Number.isFinite(itemId) || itemId <= 0) continue;
+    producedQtyByItem.set(itemId, (producedQtyByItem.get(itemId) || 0) + n(p.producedQty));
   }
-
-  // Rework/recheck recovery: sum BUCKET_TRANSFER → USABLE for dispositions owned by this cycle.
-  /** @type {Map<number, number>} */
-  const recoveredUsableByItem = new Map();
-  {
-    const dispositions = await prisma.qcRejectedDisposition.findMany({
-      where: { voidedAt: null, workOrder: { salesOrderId: sid, cycleId: cid } },
-      select: { id: true, itemId: true },
-    });
-    const dispIds = dispositions.map((d) => Number(d.id)).filter((x) => Number.isFinite(x) && x > 0);
-    if (dispIds.length) {
-      const dispById = new Map(dispositions.map((d) => [Number(d.id), Number(d.itemId)]));
-      const txns = await prisma.stockTransaction.findMany({
-        where: {
-          transactionType: "BUCKET_TRANSFER",
-          stockBucket: "USABLE",
-          refId: { in: dispIds },
-          qtyIn: { gt: 0 },
-        },
-        select: { refId: true, itemId: true, qtyIn: true },
-      });
-      for (const t of txns) {
-        const iid = dispById.get(Number(t.refId)) ?? Number(t.itemId);
-        if (!Number.isFinite(iid) || iid <= 0) continue;
-        recoveredUsableByItem.set(iid, (recoveredUsableByItem.get(iid) || 0) + n(t.qtyIn));
-      }
-    }
-  }
-
-  // Carry-forward recovery: usable moved from prior CLOSED cycles (post-cycle approvals) that is available to fulfill this cycle.
-  const postCycleApprovedByItem = await loadNoQtyPostCycleApprovalQtyByItem(prisma, sid, cid);
-
   /** @type {Map<number, { planned: number; qcAccepted: number }>} */
   const out = new Map();
-  const itemIds = new Set([
-    ...plannedByItem.keys(),
-    ...qcAcceptedByItem.keys(),
-    ...recoveredUsableByItem.keys(),
-    ...postCycleApprovedByItem.keys(),
-  ]);
+  const itemIds = new Set([...plannedByItem.keys(), ...producedQtyByItem.keys()]);
   for (const itemId of itemIds) {
+    const planned = plannedByItem.get(itemId) || 0;
+    const approvedProducedQty = producedQtyByItem.get(itemId) || 0;
     out.set(itemId, {
-      planned: plannedByItem.get(itemId) || 0,
-      qcAccepted:
-        (qcAcceptedByItem.get(itemId) || 0) +
-        (recoveredUsableByItem.get(itemId) || 0) +
-        n(postCycleApprovedByItem.get(itemId) || 0),
+      planned,
+      qcAccepted: round3(approvedProducedQty),
     });
   }
   return out;
 }
 
 /**
- * Last shortage for one FG item in one cycle: {@code max(0, locked RS gross − original QC accepted)} for that cycle only
+ * Last shortage for one FG item in one cycle: {@code max(0, locked RS gross - approved produced qty)} for that cycle only
  * (same basis as {@link plannedNewRequirementAndQcAcceptedByItemForSingleCycle}).
  *
  * @param {number} salesOrderId
@@ -526,14 +478,14 @@ async function getNoQtyLastShortageQtyForCycleItem(salesOrderId, cycleId, itemId
   const m = await plannedNewRequirementAndQcAcceptedByItemForSingleCycle(salesOrderId, cycleId);
   const v = m.get(Number(itemId));
   if (!v) return 0;
-  return Math.max(0, v.planned - v.qcAccepted);
+  return computeNoQtyOperatorCarryForwardQty(v.planned, v.qcAccepted);
 }
 
 /**
  * Unresolved NO_QTY shortfall (per FG item) shown on draft requirement sheets.
  *
  * **Formula:** Take **only the latest closed cycle** before the current one (`cycleNo` \< currentCycleNo):
- * `rawShortfall = max(0, lockedRsGrossForThatCycle − originalQcAcceptedForThatCycle)` via
+ * `rawShortfall = max(0, lockedRsGrossForThatCycle - approvedProducedQtyForThatCycle)` via
  * {@link plannedNewRequirementAndQcAcceptedByItemForSingleCycle}.
  * Summing shortages across *all* prior cycles double-counts, because later cycles’ RS gross already embeds
  * earlier shortages via `shortfallQtySnapshot`. The **current** cycle is excluded.
@@ -544,9 +496,9 @@ async function getNoQtyLastShortageQtyForCycleItem(salesOrderId, cycleId, itemId
  * @param {{ salesOrderId: number; currentCycleId: number | null }} input
  * @returns {Promise<{
  *   shortfallByItem: Map<number, { rawShortfall: number; planned: number; produced: number }>;
- *   carryForwardBreakdownByItem: Map<number, Array<{ cycleNo: number; cycleId: number; planned: number; qc: number; shortage: number }>>;
+ *   carryForwardBreakdownByItem: Map<number, Array<{ cycleNo: number; cycleId: number; planned: number; produced: number; qc: number; shortage: number }>>;
  * }>}
- *   `planned` / `produced` are from the **latest previous** cycle only (`produced` = original QC accepted); breakdown arrays cover all prior cycles for diagnostics.
+ *   `planned` / `produced` are from the **latest previous** cycle only; breakdown arrays cover all prior cycles for diagnostics.
  */
 async function loadNoQtyCarryForwardShortfallByItem(input) {
   const empty = () => ({
@@ -576,7 +528,7 @@ async function loadNoQtyCarryForwardShortfallByItem(input) {
     orderBy: { cycleNo: "asc" },
   });
 
-  /** @type {Map<number, Array<{ cycleNo: number; cycleId: number; planned: number; qc: number; shortage: number }>>} */
+  /** @type {Map<number, Array<{ cycleNo: number; cycleId: number; planned: number; produced: number; qc: number; shortage: number }>>} */
   const breakdownByItem = new Map();
   /** @type {Map<number, { planned: number; qcAccepted: number }> | null} */
   let lastCyclePerItem = null;
@@ -591,15 +543,16 @@ async function loadNoQtyCarryForwardShortfallByItem(input) {
 
     for (const [itemId, v] of perCycle) {
       const planned = n(v.planned);
-      const qcAccepted = n(v.qcAccepted);
-      const cycleShortfall = Math.max(0, planned - qcAccepted);
+      const approvedProduced = n(v.qcAccepted);
+      const cycleShortfall = computeNoQtyOperatorCarryForwardQty(planned, approvedProduced);
 
       const br = breakdownByItem.get(itemId) ?? [];
       br.push({
         cycleNo,
         cycleId: cycleRowId,
         planned: round3(planned),
-        qc: round3(qcAccepted),
+        produced: round3(approvedProduced),
+        qc: round3(approvedProduced),
         shortage: round3(cycleShortfall),
       });
       breakdownByItem.set(itemId, br);
@@ -611,12 +564,12 @@ async function loadNoQtyCarryForwardShortfallByItem(input) {
   if (lastCyclePerItem) {
     for (const [itemId, v] of lastCyclePerItem) {
       const planned = n(v.planned);
-      const qcAccepted = n(v.qcAccepted);
-      const cycleShortfall = Math.max(0, planned - qcAccepted);
+      const approvedProduced = n(v.qcAccepted);
+      const cycleShortfall = computeNoQtyOperatorCarryForwardQty(planned, approvedProduced);
       out.set(itemId, {
         rawShortfall: cycleShortfall,
         planned,
-        produced: qcAccepted,
+        produced: approvedProduced,
       });
     }
   }
@@ -809,29 +762,31 @@ async function mapSheetDetail(sheet) {
       const snapCarry = ln.shortfallQtySnapshot != null ? n(ln.shortfallQtySnapshot) : 0;
       shortfallQty = round3(Math.max(0, snapCarry));
       fulfillmentQty = round3(round3(shortfallQty) + round3(newWoQty));
-      coveredFromStockQty = round3(availableStockQty);
+      /** Prior-cycle usable remains for dispatch; do not treat as RS “covered from stock” for production planning. */
+      coveredFromStockQty = 0;
       const fromSnapshot =
         ln.suggestedWoQtySnapshot != null ? round3(n(ln.suggestedWoQtySnapshot)) : null;
-      const recomputedDraftStyle = round3(
-        Math.max(0, round3(shortfallQty) + round3(newWoQty) - round3(availableStockQty)),
-      );
+      const recomputedDraftStyle = round3(Math.max(0, round3(shortfallQty) + round3(newWoQty)));
       productionRequiredQty = fromSnapshot != null ? fromSnapshot : recomputedDraftStyle;
       if (
         fromSnapshot != null &&
         Math.abs(fromSnapshot - recomputedDraftStyle) > EPS &&
         fulfillmentQty > EPS
       ) {
-        console.warn("[NO_QTY_RS_DETAIL] Locked line suggestedWoQtySnapshot differs from demand − stock snapshot replay", {
+        console.warn("[NO_QTY_RS_DETAIL] Locked line suggestedWoQtySnapshot differs from last shortage + new requirement replay", {
           requirementSheetId: sheet.id,
           itemId: ln.itemId,
           suggestedWoQtySnapshot: fromSnapshot,
-          recomputedDemandMinusStock: recomputedDraftStyle,
+          recomputedLastShortagePlusNewReq: recomputedDraftStyle,
         });
       }
       gapPercent = computeGapPercent(fulfillmentQty, availableStockQty ?? 0);
       zone = computeZone(gapPercent, greenTh, yellowTh);
       totalWoQty = productionRequiredQty;
-      qcStockNote = availableStockQty > EPS ? "Free surplus usable stock is deducted from this requirement sheet." : null;
+      qcStockNote =
+        availableStockQty > EPS
+          ? "Usable stock available for dispatch (informational only; not deducted from Total to Produce)."
+          : null;
       if (totalWoQty != null && totalWoQty < 0) totalWoQty = 0;
     } else if (sheet.status === "LOCKED") {
       const rawSnapStock = ln.availableStockQtySnapshot != null ? n(ln.availableStockQtySnapshot) : null;
@@ -867,19 +822,19 @@ async function mapSheetDetail(sheet) {
       draftUsableStockForSuggest = round3(stock);
       availableStockQty = draftUsableStockForSuggest;
       const rawCarryShortfall = shortfallByItem.get(ln.itemId)?.rawShortfall ?? 0;
-      // NO_QTY: API `shortfallQty` = last shortage from prior cycle (RS gross − original QC); post-cycle / pending / undispatched are separate fields.
+      // NO_QTY: API `shortfallQty` = last shortage from prior cycle (planned qty - approved produced qty); stock/QC fields are separate.
       shortfallQty =
         sheet?.salesOrder?.orderType === "NO_QTY"
           ? round3(Math.max(0, rawCarryShortfall))
           : round3(rawCarryShortfall);
-      // Draft: gross fulfillment uses raw carry + new (same-cycle messaging); Total to Produce uses shortfallQty + new − prior undispatched QC.
+      // Draft: gross fulfillment uses raw carry + new (same-cycle messaging); NO_QTY Total to Produce = shortfallQty + new (usable surplus informational only).
       const grossFulfillment = round3(round3(rawCarryShortfall) + round3(newWoQty));
       fulfillmentQty = grossFulfillment;
       coveredFromStockQty =
         sheet?.salesOrder?.orderType === "NO_QTY" ? 0 : round3(Math.min(grossFulfillment, stock));
       productionRequiredQty =
         sheet?.salesOrder?.orderType === "NO_QTY"
-          ? round3(Math.max(0, round3(shortfallQty) + round3(newWoQty) - round3(stock)))
+          ? round3(Math.max(0, round3(shortfallQty) + round3(newWoQty)))
           : round3(Math.max(0, grossFulfillment - postCycleQty - stock));
       gapPercent = computeGapPercent(grossFulfillment, stock);
       zone = computeZone(gapPercent, greenTh, yellowTh);
@@ -887,7 +842,10 @@ async function mapSheetDetail(sheet) {
       totalWoQty = productionRequiredQty;
 
       if (sheet?.salesOrder?.orderType === "NO_QTY") {
-        qcStockNote = stock > EPS ? "Free surplus usable (planning) reduces Total to Produce on this sheet." : null;
+        qcStockNote =
+          stock > EPS
+            ? "Usable stock available for dispatch (informational only; not deducted from Total to Produce)."
+            : null;
         stockCoveredNote = false;
       } else if (stockCoveredNote) {
         qcStockNote = "QC passed stock is available";
@@ -911,7 +869,7 @@ async function mapSheetDetail(sheet) {
         suggestedNetWoQty = ful <= EPS ? 0 : round3(Math.max(0, ful - postCycleQty - stockForSug));
       }
     } else {
-      // NO_QTY: Total to Produce planning uses (demand − free usable) to avoid double-planning production.
+      // NO_QTY: Total to Produce on draft = last shortage + new requirement (usable surplus is informational for dispatch).
       const rawSf =
         sheet?.salesOrder?.orderType === "NO_QTY"
           ? round3(n(shortfallQty ?? 0))
@@ -1654,7 +1612,7 @@ requirementSheetsRouter.post(
           const item = ln.item;
           const newWoQty = n(ln.requirementQty);
           const rawShortfall = shortfallByItem.get(ln.itemId)?.rawShortfall ?? 0;
-          /** Last shortage for carry = RS gross − original QC (same as draft). */
+          /** Last shortage for carry = prior cycle planned qty - approved produced qty (same as draft). */
           const confirmedCarrySnapshot = round3(Math.max(0, rawShortfall));
           const rawFree = Math.max(
             0,
@@ -1663,23 +1621,29 @@ requirementSheetsRouter.post(
           );
           const usableStockUsed = round3(usableStockDisplayQty(rawFree));
           const totalDemand = round3(round3(confirmedCarrySnapshot) + round3(newWoQty));
-          const productionRequiredQty = round3(Math.max(0, totalDemand - usableStockUsed));
+          /** Prior-cycle leftover usable stays available for dispatch; do not auto-deduct from next cycle Total to Produce. */
+          const productionRequiredQty = round3(Math.max(0, totalDemand));
 
           const postPc = round3(n(postCycleByItemLock.get(ln.itemId) ?? 0));
           const undPrior = round3(n(undispatchedPriorByItemLock.get(ln.itemId) ?? 0));
+          const legacyDemandMinusSurplus = round3(Math.max(0, totalDemand - usableStockUsed));
           const legacyLockTotalToProduce = round3(
             Math.max(0, confirmedCarrySnapshot + round3(newWoQty) - postPc - undPrior),
           );
-          if (Math.abs(legacyLockTotalToProduce - productionRequiredQty) > EPS) {
-            console.warn("[NO_QTY_RS_LOCK] Total to Produce uses draft formula (demand − usable); legacy post-cycle/undispatched formula differed", {
-              salesOrderId: existing.salesOrderId,
-              requirementSheetId: existing.id,
-              itemId: ln.itemId,
-              totalDemand,
-              usableStockUsed,
-              totalToProduceDraftFormula: productionRequiredQty,
-              legacyPostCycleUndispatchedFormula: legacyLockTotalToProduce,
-            });
+          if (Math.abs(legacyDemandMinusSurplus - productionRequiredQty) > EPS) {
+            console.warn(
+              "[NO_QTY_RS_LOCK] Total to Produce = last shortage + new requirement (usable surplus informational only; not subtracted).",
+              {
+                salesOrderId: existing.salesOrderId,
+                requirementSheetId: existing.id,
+                itemId: ln.itemId,
+                totalDemand,
+                usableStockSurplusSnapshot: usableStockUsed,
+                totalToProduce: productionRequiredQty,
+                legacyDemandMinusSurplus,
+                legacyPostCycleUndispatchedFormula: legacyLockTotalToProduce,
+              },
+            );
           }
 
           const gapPercent = computeGapPercent(totalDemand, usableStockUsed);
@@ -1690,7 +1654,7 @@ requirementSheetsRouter.post(
             where: { id: ln.id },
             data: {
               // NO_QTY: requirementQty = new requirement only; shortfall snapshot = last shortage;
-              // suggestedWoQtySnapshot = max(0, lastShortage + newReq − freeSurplusUsableStockUsed) same as draft.
+              // suggestedWoQtySnapshot = max(0, lastShortage + newReq); availableStockQtySnapshot = informational usable surplus for dispatch.
               requirementQty: String(round3(newWoQty)),
               availableStockQtySnapshot: usableStockUsed,
               gapPercentSnapshot: gapPercent,
@@ -2106,5 +2070,5 @@ module.exports = {
   loadEffectiveNoQtyCarryForwardShortfallByItem,
   getNoQtyLastShortageQtyForCycleItem,
   loadNoQtyPriorCycleUndispatchedAcceptedByItem,
+  computeNoQtyOperatorCarryForwardQty,
 };
-

@@ -23,6 +23,7 @@ import {
   workOrderStatusTone,
 } from "../lib/reportStatusTones";
 import { useToast } from "../contexts/ToastContext";
+import { ERP_REPORT_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
 import { useAuth } from "../hooks/useAuth";
 import { useDrillAccessMap } from "../hooks/useDrillAccess";
 import { Download } from "lucide-react";
@@ -169,6 +170,7 @@ export function OperationsExceptionReportPage() {
   const [sectionFilter, setSectionFilter] = React.useState<ExceptionSection>("ALL");
   const [severityFilter, setSeverityFilter] = React.useState<"ALL" | Severity>("ALL");
   const [search, setSearch] = React.useState("");
+  const liveTick = useErpRefreshTick(["reports", "dashboard"], { pollIntervalMs: ERP_REPORT_POLL_MS });
 
   React.useEffect(() => {
     if (!allowed) {
@@ -197,7 +199,7 @@ export function OperationsExceptionReportPage() {
     return () => {
       mounted = false;
     };
-  }, [allowed]);
+  }, [allowed, liveTick]);
 
   const dispatchEx = payload?.dispatch ?? [];
   const productionEx = payload?.production ?? [];

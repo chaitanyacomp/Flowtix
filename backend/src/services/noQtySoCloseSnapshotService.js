@@ -30,8 +30,8 @@ function loadRequirementSheetsModule() {
 }
 
 /**
- * Closed-line shortage = **locked RS gross − original QC accepted** for the relevant cycle (same as carry-forward
- * `rawShortfall` / last shortage), not net of post-cycle, scrap, or disposition.
+ * Closed-line shortage = **locked RS gross - approved produced qty** for the relevant cycle (same as carry-forward
+ * `rawShortfall` / last shortage), not net of QC, post-cycle, scrap, or disposition.
  *
  * @returns {Promise<Array<{ itemId: number; closedShortageQty: number; cycleIdAtClose: number | null; cycleNoAtClose: number | null }>>}
  */

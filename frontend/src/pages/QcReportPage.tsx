@@ -9,6 +9,7 @@ import { PageBackLink, PageContainer, StickyWorkspaceHead } from "../components/
 import { displaySalesOrderNo } from "../lib/docNoDisplay";
 import { salesOrdersFocusHref, workOrdersFocusHref } from "../lib/drillDownRoutes";
 import { cn } from "../lib/utils";
+import { useErpReportLiveLoad } from "../hooks/useErpReportLiveLoad";
 
 type CustomerOpt = { id: number; name: string };
 type ItemOpt = { id: number; itemName: string };
@@ -68,6 +69,12 @@ type QcReportRow = {
     producedQty?: number | null;
     lossQty?: number;
     reversalReason?: string | null;
+    inspectedQty?: number;
+    initialAcceptedQty?: number;
+    reworkAcceptedQty?: number;
+    finalUsableQty?: number;
+    directScrapQty?: number;
+    reworkFinalScrapQty?: number;
     stockTransactionId?: number;
     stockTransactionType?: string | null;
     disposition?: string;
@@ -108,9 +115,54 @@ type QcHistoryTableSectionProps = {
   rows: QcReportRow[];
   loading: boolean;
   onOpenDetail: (r: QcReportRow) => void;
+  /** Production: inspected → disposition split → final accepted. Customer return keeps legacy qty column order. */
+  qtyColumnLayout?: "production" | "customerReturn";
 };
 
-function QcHistoryTableSection({ title, subtitle, rows, loading, onOpenDetail }: QcHistoryTableSectionProps) {
+function QcQtyCells({ r, layout }: { r: QcReportRow; layout: "production" | "customerReturn" }) {
+  const inspected = <td className="px-2 py-1 text-right tabular-nums">{fmt(r.inputQty)}</td>;
+  const rejected = <td className="px-2 py-1 text-right tabular-nums">{fmt(r.rejectedQty)}</td>;
+  const rework = <td className="px-2 py-1 text-right tabular-nums">{fmt(r.reworkQty)}</td>;
+  const hold = <td className="px-2 py-1 text-right tabular-nums">{fmt(r.holdQty)}</td>;
+  const scrap = <td className="px-2 py-1 text-right tabular-nums">{fmt(r.scrapQty)}</td>;
+  const accepted = (
+    <td className="px-2 py-1 text-right tabular-nums text-emerald-800">{fmt(r.acceptedQty)}</td>
+  );
+
+  if (layout === "production") {
+    return (
+      <>
+        {inspected}
+        {rejected}
+        {rework}
+        {hold}
+        {scrap}
+        {accepted}
+      </>
+    );
+  }
+
+  return (
+    <>
+      {inspected}
+      {accepted}
+      {rejected}
+      {rework}
+      {hold}
+      {scrap}
+    </>
+  );
+}
+
+function QcHistoryTableSection({
+  title,
+  subtitle,
+  rows,
+  loading,
+  onOpenDetail,
+  qtyColumnLayout = "customerReturn",
+}: QcHistoryTableSectionProps) {
+  const productionQtyCols = qtyColumnLayout === "production";
   return (
     <Card className="min-w-0 overflow-hidden border-slate-200 shadow-sm">
       <CardHeader className="border-b border-slate-100 bg-slate-50/50 px-3 py-2">
@@ -137,11 +189,23 @@ function QcHistoryTableSection({ title, subtitle, rows, loading, onOpenDetail }:
                   <th className="px-2 py-1.5 font-medium">SO</th>
                   <th className="px-2 py-1.5 font-medium">Item</th>
                   <th className="px-2 py-1.5 text-right font-medium">Inspected</th>
-                  <th className="px-2 py-1.5 text-right font-medium">Accepted</th>
-                  <th className="px-2 py-1.5 text-right font-medium">Rejected</th>
-                  <th className="px-2 py-1.5 text-right font-medium">Rework</th>
-                  <th className="px-2 py-1.5 text-right font-medium">Hold</th>
-                  <th className="px-2 py-1.5 text-right font-medium">Scrap</th>
+                  {productionQtyCols ? (
+                    <>
+                      <th className="px-2 py-1.5 text-right font-medium">Rejected</th>
+                      <th className="px-2 py-1.5 text-right font-medium">Rework</th>
+                      <th className="px-2 py-1.5 text-right font-medium">Hold</th>
+                      <th className="px-2 py-1.5 text-right font-medium">Scrap</th>
+                      <th className="px-2 py-1.5 text-right font-medium">Accepted</th>
+                    </>
+                  ) : (
+                    <>
+                      <th className="px-2 py-1.5 text-right font-medium">Accepted</th>
+                      <th className="px-2 py-1.5 text-right font-medium">Rejected</th>
+                      <th className="px-2 py-1.5 text-right font-medium">Rework</th>
+                      <th className="px-2 py-1.5 text-right font-medium">Hold</th>
+                      <th className="px-2 py-1.5 text-right font-medium">Scrap</th>
+                    </>
+                  )}
                   <th className="px-2 py-1.5 font-medium">Status</th>
                   <th className="px-2 py-1.5 text-right font-medium">Dispatchable</th>
                   <th className="px-2 py-1.5 text-right font-medium">Actions</th>
@@ -177,12 +241,7 @@ function QcHistoryTableSection({ title, subtitle, rows, loading, onOpenDetail }:
                     <td className="max-w-[12rem] truncate px-2 py-1" title={r.itemName}>
                       {r.itemName}
                     </td>
-                    <td className="px-2 py-1 text-right tabular-nums">{fmt(r.inputQty)}</td>
-                    <td className="px-2 py-1 text-right tabular-nums text-emerald-800">{fmt(r.acceptedQty)}</td>
-                    <td className="px-2 py-1 text-right tabular-nums">{fmt(r.rejectedQty)}</td>
-                    <td className="px-2 py-1 text-right tabular-nums">{fmt(r.reworkQty)}</td>
-                    <td className="px-2 py-1 text-right tabular-nums">{fmt(r.holdQty)}</td>
-                    <td className="px-2 py-1 text-right tabular-nums">{fmt(r.scrapQty)}</td>
+                    <QcQtyCells r={r} layout={qtyColumnLayout} />
                     <td className="px-2 py-1">
                       <Badge
                         variant={statusBadgeClass(r.statusLabel, r.isReversed)}
@@ -270,10 +329,7 @@ export function QcReportPage() {
     }
   }
 
-  React.useEffect(() => {
-    void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  useErpReportLiveLoad(() => load(), ["reports", "qc"], []);
 
   const productionRows = React.useMemo(() => rows.filter((r) => r.sourceType === "PRODUCTION"), [rows]);
   const customerReturnRows = React.useMemo(() => rows.filter((r) => r.sourceType === "CUSTOMER_RETURN"), [rows]);
@@ -434,6 +490,7 @@ export function QcReportPage() {
             rows={productionRows}
             loading={loading}
             onOpenDetail={setDetailRow}
+            qtyColumnLayout="production"
           />
         ) : null}
         {showCustomerReturnSection ? (
@@ -530,8 +587,30 @@ export function QcReportPage() {
                         <dd className="tabular-nums font-medium">{fmt(Number(detailRow.detail?.producedQty ?? 0))}</dd>
                       </div>
                       <div className="flex justify-between gap-2">
-                        <dt className="text-slate-600">This posting — accepted</dt>
-                        <dd className="tabular-nums font-medium text-emerald-800">{fmt(detailRow.acceptedQty)}</dd>
+                        <dt className="text-slate-600">Inspected (this QC)</dt>
+                        <dd className="tabular-nums font-medium">
+                          {fmt(Number(detailRow.detail?.inspectedQty ?? detailRow.inputQty))}
+                        </dd>
+                      </div>
+                      <div className="flex justify-between gap-2">
+                        <dt className="text-slate-600">Initial accepted</dt>
+                        <dd className="tabular-nums font-medium text-emerald-800">
+                          {fmt(Number(detailRow.detail?.initialAcceptedQty ?? detailRow.acceptedQty))}
+                        </dd>
+                      </div>
+                      {(detailRow.detail?.reworkAcceptedQty ?? 0) > 0 ? (
+                        <div className="flex justify-between gap-2">
+                          <dt className="text-slate-600">Rework recheck accepted</dt>
+                          <dd className="tabular-nums font-medium text-emerald-800">
+                            {fmt(Number(detailRow.detail?.reworkAcceptedQty ?? 0))}
+                          </dd>
+                        </div>
+                      ) : null}
+                      <div className="flex justify-between gap-2">
+                        <dt className="text-slate-600">Final usable</dt>
+                        <dd className="tabular-nums font-semibold text-emerald-900">
+                          {fmt(Number(detailRow.detail?.finalUsableQty ?? detailRow.acceptedQty))}
+                        </dd>
                       </div>
                       <div className="flex justify-between gap-2">
                         <dt className="text-slate-600">This posting — rejected</dt>
@@ -543,9 +622,18 @@ export function QcReportPage() {
                           {fmt(detailRow.reworkQty)} / {fmt(detailRow.holdQty)} / {fmt(detailRow.scrapQty)}
                         </dd>
                       </div>
+                      {(detailRow.detail?.reworkFinalScrapQty ?? 0) > 0 ? (
+                        <div className="flex justify-between gap-2">
+                          <dt className="text-slate-600">Scrap (incl. rework final)</dt>
+                          <dd className="tabular-nums">
+                            {fmt(Number(detailRow.detail?.directScrapQty ?? 0))} +{" "}
+                            {fmt(Number(detailRow.detail?.reworkFinalScrapQty ?? 0))} = {fmt(detailRow.scrapQty)}
+                          </dd>
+                        </div>
+                      ) : null}
                       {detailRow.detail?.lossQty != null && Number(detailRow.detail.lossQty) > 0 ? (
                         <div className="flex justify-between gap-2">
-                          <dt className="text-slate-600">Process loss</dt>
+                          <dt className="text-slate-600">Process loss (ledger)</dt>
                           <dd className="tabular-nums">{fmt(Number(detailRow.detail.lossQty))}</dd>
                         </div>
                       ) : null}

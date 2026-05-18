@@ -1,5 +1,7 @@
 /**
- * Regular (NORMAL) sales order: customer PO commitment + optional rejection buffer → planned production qty.
+ * Regular (NORMAL) sales order line quantities.
+ * Customer PO qty is the commercial commitment; line.qty matches it (no SO-level production buffer).
+ * Optional rejection buffer is applied only at work-order planning, not on the sales order.
  * Dispatch FIFO and caps use {@link dispatchFifoQtyForSoLine} / {@link mapSoLinesToDispatchFifoInputs} only for NORMAL.
  */
 
@@ -94,25 +96,13 @@ function normalizeSalesOrderDraftLineQuantities(bodyLine, orderType, maxBufferPe
   }
   if (orderType === "NORMAL") {
     const cp = Number(bodyLine.customerPoQty != null ? bodyLine.customerPoQty : bodyLine.qty);
-    const bufRaw = bodyLine.bufferPercent != null ? Number(bodyLine.bufferPercent) : 0;
     if (!Number.isFinite(cp) || cp <= 0) {
       const err = new Error("Customer PO Qty must be greater than zero for each line.");
       err.statusCode = 400;
       throw err;
     }
-    if (!Number.isFinite(bufRaw) || bufRaw < 0) {
-      const err = new Error("Buffer % must be zero or greater.");
-      err.statusCode = 400;
-      throw err;
-    }
-    if (bufRaw > maxB + 1e-9) {
-      const err = new Error(`Buffer % cannot exceed the configured maximum (${maxB}%).`);
-      err.statusCode = 400;
-      throw err;
-    }
-    const buf = Math.min(maxB, Math.max(0, bufRaw));
-    const planned = computePlannedQtyFromCustomerBuffer(cp, buf);
-    return { customerPoQty: cp, bufferPercent: buf, plannedQty: planned };
+    // SO stores pure customer commitment; WO planning may add optional buffer separately.
+    return { customerPoQty: cp, bufferPercent: 0, plannedQty: cp };
   }
   const q = Number(bodyLine.qty);
   return { customerPoQty: q, bufferPercent: 0, plannedQty: q };

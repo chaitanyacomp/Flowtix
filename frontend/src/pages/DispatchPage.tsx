@@ -10,6 +10,8 @@ import { useDependentFieldFocus } from "../hooks/useDependentFieldFocus";
 import { prefersFinePointer } from "../lib/erpFocus";
 import { useMandatoryPositiveQtyDraft } from "../hooks/useMandatoryPositiveQtyDraft";
 import { useIsAdmin, useCanOpenRequirementSheet } from "../hooks/useIsAdmin";
+import { useErpRoleUi } from "../hooks/useErpRoleUi";
+import { useAuth } from "../hooks/useAuth";
 import { PlanningStatusChip } from "../components/erp/PlanningStatusChip";
 import { useShortcutHints } from "../hooks/useShortcutHints";
 import { FieldShortcutHint } from "../components/ui/FieldShortcutHint";
@@ -20,6 +22,8 @@ import {
   FIELD_HINT_ENTER_NEXT,
 } from "../lib/shortcutHintCopy";
 import { cn } from "../lib/utils";
+import { isDispatchOpenListLineCandidate } from "../lib/dispatchOpenListEligibility";
+import { useErpRefreshTick } from "../hooks/useErpRefreshTick";
 import {
   OperatorMainSplit,
   OperatorPageBody,
@@ -27,7 +31,9 @@ import {
   operatorInputClass,
   operatorTableRowClass,
 } from "../components/erp/OperatorWorkbench";
-import { NoQtyCycleBanner, PageContainer } from "../components/PageHeader";
+import { PageContainer } from "../components/PageHeader";
+import { NoQtyCycleContextBar } from "../components/erp/foundation/NoQtyCycleContextBar";
+import { Settings } from "lucide-react";
 import {
   OperationalContextBar,
   OperationalContextSticky,
@@ -35,19 +41,38 @@ import {
   OpCtxSep,
   type OperationalFooterSection,
 } from "../components/erp/OperationalWorkspaceChrome";
-import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { displayDispatchNo, displaySalesOrderNo } from "../lib/docNoDisplay";
 import { ActivityHistoryCard } from "../components/ActivityHistoryCard";
 import { buildNoQtyGuidedHref, useNoQtyFlowState } from "../lib/noQtyFlowState";
+import { prepareNoQtyNextRequirementSheetAndNavigate } from "../lib/noQtyPrepareNextRsNavigate";
 import { useToast } from "../contexts/ToastContext";
 import { DemoFlowBanner } from "../components/demo/DemoFlowBanner";
 import { DemoSafeNoQtyContinue } from "../components/demo/DemoSafeNoQtyContinue";
 import { useDemoMode } from "../contexts/DemoModeContext";
 import { demoHighlightKey } from "../lib/demoFlowConfig";
 import { NO_QTY_TERMS, REGULAR_TERMS } from "../lib/flowTerminology";
+import { DISPATCH_WRITE_ROLES } from "../config/erpRoles";
 
 /** Soft flag for optional dashboard reminders — user chose “wait” on NORMAL partial dispatch (no API). */
 const DISPATCH_PARTIAL_WAIT_STORAGE_PREFIX = "erp:dispatch:partial-wait:";
+
+/** Operator-facing copy: UNLOCKED = draft only; LOCKED = stock posted. */
+const DISPATCH_OP = {
+  BADGE_DRAFT: "Dispatch Draft",
+  BADGE_FINAL: "Finalized",
+  GUIDANCE_DRAFT_ONLY: "DRAFT ONLY — inventory is not deducted until finalized.",
+  BANNER_REOPENED: "Dispatch draft reopened — stock not yet dispatched.",
+  FINALIZE: "Finalize Dispatch",
+  DISCARD_DRAFT: "Discard draft",
+  EDIT_DRAFT_QTY: "Edit draft qty",
+  SAVE_DRAFT_FULL: "Save draft (full qty)",
+  SAVE_DRAFT_AVAILABLE: "Save draft (available qty)",
+  SAVE_DRAFT_QTY: "Save draft qty",
+  CARD_TITLE_DRAFT_PENDING: "Finalize dispatch (draft open)",
+  CARD_TITLE_REOPENED: "Reopened dispatch draft",
+  DOC_SUFFIX_DRAFT: "Draft",
+} as const;
 
 /** Soft warning: if dispatch qty is much lower than available-to-dispatch, confirm (does not block). */
 const DISPATCH_LOW_QTY_WARN_RATIO = 0.5;
@@ -300,7 +325,7 @@ function noQtyDispatchNextActionMessage(params: {
   const lastShort = safeNum(ls.lastShortageQty);
 
   if (existingDraftQty > NO_QTY_BLOCK_EPS && headroomToPrepare <= NO_QTY_BLOCK_EPS) {
-    return "Draft ready — click Finalize to confirm dispatch.";
+    return "Dispatch draft is ready — use Finalize Dispatch to post stock.";
   }
   if (qcCycle > NO_QTY_BLOCK_EPS) {
     return "QC-accepted quantity for this cycle is fully dispatched (same-cycle basis).";
@@ -368,6 +393,14 @@ function effectiveRegularDispatchReadiness(so: SoRow, ls: LineStat): RegularDisp
   if (cap <= eps) return "NOT_READY";
   if (cap + eps >= pending) return "READY_FULL";
   return "PARTIAL_AVAILABLE";
+}
+
+function regularPartialDispatchPrefillQty(so: SoRow, ls: LineStat): number | null {
+  if (effectiveRegularDispatchReadiness(so, ls) !== "PARTIAL_AVAILABLE") return null;
+  const dispatchable = safeNum(ls.dispatchable ?? ls.dispatchableQty ?? 0);
+  const pending = linePendingOnOrderDisplay(ls);
+  const qty = Math.min(dispatchable, pending);
+  return qty > 1e-9 ? qty : null;
 }
 
 type DispatchBacklogStatus = "READY_FULL" | "PARTIAL_AVAILABLE" | "WAITING";
@@ -609,6 +642,10 @@ function confirmedBacklogQty(ls: LineStat): number {
   return Math.max(0, Number(ls.pendingDispatchQty ?? 0));
 }
 
+function regularLineNetDispatched(ls: LineStat): number {
+  return Math.max(0, safeNum(ls.operationalNetDispatchedQty ?? ls.dispatched));
+}
+
 function draftQtyForSoItem(
   so: SoRow | undefined,
   itemId: number,
@@ -661,6 +698,79 @@ function computeNoQtyTotalPrepareHeadroomForItem(so: SoRow, itemId: number): num
   return sum;
 }
 
+/** Per-cycle dispatchable split for the workbench (UI only; same inputs as computeDispatchableNow per row). */
+type NoQtyHeadroomBreakdown = {
+  selectedCycleId: number | null;
+  selectedCycleNo: number | null;
+  thisCycleDispatchable: number;
+  carryForwardByCycle: Array<{ cycleId: number; cycleNo: number | null; qty: number }>;
+  carryForwardTotal: number;
+  totalDispatchableNow: number;
+};
+
+function computeNoQtyHeadroomBreakdownForItem(
+  so: SoRow,
+  itemId: number,
+  selectedCycleId: number | null,
+): NoQtyHeadroomBreakdown | null {
+  if (so.orderType !== "NO_QTY" || !itemId) return null;
+  const sel = normalizePositiveCycleId(selectedCycleId);
+  const eps = 1e-9;
+  const rows = (so.lineStats || []).filter((l) => Number(l.itemId) === Number(itemId));
+  let thisCycle = 0;
+  let total = 0;
+  const otherMap = new Map<number, { qty: number; cycleNo: number | null }>();
+  let selectedCycleNo: number | null = null;
+
+  for (const ls of rows) {
+    const cyc = normalizePositiveCycleId(
+      ls.noQtyCycleId ?? so.noQtyDispatchContext?.selectedCycleId ?? so.currentCycleId,
+    );
+    if (cyc == null) continue;
+    const d = computeDispatchableNow({ so, ls, cycleIdOverride: cyc });
+    total += d;
+    const cno = ls.noQtyCycleNo != null && Number.isFinite(Number(ls.noQtyCycleNo)) ? Number(ls.noQtyCycleNo) : null;
+    if (sel != null && cyc === sel) {
+      thisCycle += d;
+      selectedCycleNo = selectedCycleNo ?? cno;
+    } else if (d > eps) {
+      const prev = otherMap.get(cyc) ?? { qty: 0, cycleNo: cno };
+      otherMap.set(cyc, { qty: prev.qty + d, cycleNo: prev.cycleNo ?? cno });
+    }
+  }
+
+  const carryForwardByCycle = [...otherMap.entries()]
+    .map(([cycleId, v]) => ({ cycleId, cycleNo: v.cycleNo, qty: v.qty }))
+    .sort((a, b) => {
+      const an = a.cycleNo ?? a.cycleId;
+      const bn = b.cycleNo ?? b.cycleId;
+      return an - bn;
+    });
+  const carryForwardTotal = carryForwardByCycle.reduce((s, x) => s + x.qty, 0);
+
+  return {
+    selectedCycleId: sel,
+    selectedCycleNo,
+    thisCycleDispatchable: thisCycle,
+    carryForwardByCycle,
+    carryForwardTotal,
+    totalDispatchableNow: total,
+  };
+}
+
+function formatNoQtyCarryForwardDisplay(total: number, byCycle: NoQtyHeadroomBreakdown["carryForwardByCycle"]): string {
+  if (!(total > 1e-9)) return fmtDispatchQty(0);
+  if (byCycle.length === 1) {
+    const c = byCycle[0];
+    const lab = c.cycleNo != null && Number.isFinite(c.cycleNo) ? `Cycle ${c.cycleNo}` : `Cycle #${c.cycleId}`;
+    return `${fmtDispatchQty(total)} (${lab})`;
+  }
+  const labs = byCycle.map((c) =>
+    c.cycleNo != null && Number.isFinite(c.cycleNo) ? `Cycle ${c.cycleNo}` : `Cycle #${c.cycleId}`,
+  );
+  return `${fmtDispatchQty(total)} (${labs.join(", ")})`;
+}
+
 const LEDGER_PAGE_SIZE = 10;
 
 function rowStatusBadge(d: DispatchEvent): { label: string; className: string } {
@@ -668,9 +778,15 @@ function rowStatusBadge(d: DispatchEvent): { label: string; className: string } 
     return { label: "Reversed", className: "bg-red-50 text-red-900 border-red-200" };
   }
   if (d.workflowStatus === "UNLOCKED") {
-    return { label: "Prepared", className: "bg-amber-50 text-amber-900 border-amber-200" };
+    return {
+      label: DISPATCH_OP.BADGE_DRAFT,
+      className: "bg-amber-100 text-amber-950 border-amber-300 ring-1 ring-amber-200/90",
+    };
   }
-  return { label: "Finalized", className: "bg-emerald-50 text-emerald-900 border-emerald-200" };
+  return {
+    label: DISPATCH_OP.BADGE_FINAL,
+    className: "bg-emerald-100 text-emerald-950 border-emerald-300 ring-1 ring-emerald-100/90",
+  };
 }
 
 /** Compact QC vs dispatch context for the active line (matches GET /api/dispatch/sales-orders fields). */
@@ -679,12 +795,15 @@ function DispatchAvailabilityStrip({
   line,
   readyToShip,
   noQtyNextAction,
+  compact = false,
 }: {
   orderType?: string;
   line: LineStat;
   readyToShip: number;
   /** NO_QTY: plain-language next step when Dispatchable Now is 0 */
   noQtyNextAction?: string | null;
+  /** Dense neutral breakdown for MES-style panels (NORMAL orders only). */
+  compact?: boolean;
 }) {
   const qcPassed = safeNum(line.qcAccepted);
   const netDispatched = safeNum(line.operationalNetDispatchedQty ?? line.dispatched);
@@ -813,6 +932,40 @@ function DispatchAvailabilityStrip({
     );
   }
 
+  if (compact) {
+    return (
+      <div className="rounded border border-slate-200/80 bg-white/80 px-2 py-1.5 text-[10px] leading-tight text-slate-800">
+        <div className="flex flex-wrap gap-x-3 gap-y-1">
+          <span className="tabular-nums">
+            <span className="text-slate-500">QC passed</span>{" "}
+            <span className="font-semibold text-slate-900">{fmtDispatchQty(qcPassed)}</span>
+          </span>
+          <span className="tabular-nums">
+            <span className="text-slate-500">Net shipped</span>{" "}
+            <span className="font-semibold text-slate-900">{fmtDispatchQty(netDispatched)}</span>
+          </span>
+          <span className="tabular-nums">
+            <span className="text-slate-500">Pool left</span>{" "}
+            <span className="font-semibold text-slate-900">{fmtDispatchQty(poolRemaining)}</span>
+          </span>
+          <span className="tabular-nums">
+            <span className="text-slate-500">On hand</span>{" "}
+            <span className="font-semibold text-slate-900">{fmtDispatchQty(stock)}</span>
+          </span>
+          <span className="tabular-nums">
+            <span className="text-slate-500">Max prepare</span>{" "}
+            <span className="font-semibold text-emerald-900">{fmtDispatchQty(readyToShip)}</span>
+          </span>
+        </div>
+        {reworkHint > 1e-9 ? (
+          <p className="mt-1 text-[9px] text-slate-500">
+            Hold / rework (not dispatchable): <span className="tabular-nums font-medium">{fmtDispatchQty(reworkHint)}</span>
+          </p>
+        ) : null}
+      </div>
+    );
+  }
+
   return (
     <div className="rounded-md border border-sky-200 bg-sky-50/90 px-2.5 py-2 text-[11px] leading-snug text-slate-800">
       <div className="text-[10px] font-semibold uppercase tracking-wide text-sky-900/90">Dispatch basis (QC vs shipped)</div>
@@ -913,8 +1066,10 @@ function DispatchDecisionSummaryCard(props: {
   readyToShip: number;
   noQtyNextAction?: string | null;
   regularReadiness?: RegularDispatchReadiness | null;
+  /** Dense MES-style KPI strip for Regular SO dispatch panel only */
+  variant?: "default" | "exec";
 }) {
-  const { so, ls, readyToShip, noQtyNextAction, regularReadiness } = props;
+  const { so, ls, readyToShip, noQtyNextAction, regularReadiness, variant = "default" } = props;
   const ordered = safeNum(ls.orderQty);
   const pending = confirmedBacklogQty(ls);
   const delivered = Math.max(0, ordered - pending);
@@ -944,6 +1099,55 @@ function DispatchDecisionSummaryCard(props: {
     shortNote = `You can prepare up to ${fmtDispatchQty(maxNow)} within return limits and stock.`;
   } else {
     shortNote = `You can prepare up to ${fmtDispatchQty(maxNow)}.`;
+  }
+
+  if (variant === "exec" && regNormal) {
+    return (
+      <div className="mb-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 border-b border-slate-200/80 pb-1.5">
+        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[11px] leading-none">
+          <span className="text-slate-500">Pending</span>
+          <span className="font-bold tabular-nums text-amber-950">{fmtDispatchQty(pending)}</span>
+        </div>
+        <span className="hidden text-slate-300 sm:inline" aria-hidden>
+          ·
+        </span>
+        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[11px] leading-none">
+          <span className="text-slate-500">Ready now</span>
+          <span
+            className={cn(
+              "font-bold tabular-nums",
+              partialRegularUx ? "text-slate-900" : "text-emerald-800",
+            )}
+          >
+            {fmtDispatchQty(displayMaxPrepare)}
+          </span>
+        </div>
+        <span className="hidden text-slate-300 sm:inline" aria-hidden>
+          ·
+        </span>
+        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[11px] leading-none">
+          <span className="text-slate-500">Usable</span>
+          <span className="font-semibold tabular-nums text-slate-900">{fmtDispatchQty(usable)}</span>
+        </div>
+        {shortNote.trim() && !(regNormal && maxNow > NO_QTY_BLOCK_EPS) ? (
+          <span className="w-full text-[10px] leading-snug text-slate-600 sm:w-auto sm:max-w-[20rem]">{shortNote}</span>
+        ) : null}
+        <details className="w-full sm:ml-auto sm:w-auto">
+          <summary className="cursor-pointer list-none py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500 hover:text-slate-800 [&::-webkit-details-marker]:hidden">
+            QC / pool
+          </summary>
+          <div className="mt-1">
+            <DispatchAvailabilityStrip
+              orderType={so.orderType}
+              line={ls}
+              readyToShip={readyToShip}
+              noQtyNextAction={noQtyNextAction}
+              compact
+            />
+          </div>
+        </details>
+      </div>
+    );
   }
 
   return (
@@ -1023,10 +1227,17 @@ export function DispatchPage() {
     demoHighlightKey(demo.enabled, demo.flow, demo.step, "regular", 5) ??
     demoHighlightKey(demo.enabled, demo.flow, demo.step, "no_qty", 6);
   const showDemoNoQtyDispatchContinue = demo.enabled && demo.flow === "no_qty" && demo.step === 6;
+  const liveTick = useErpRefreshTick(["dispatch", "dashboard", "reports", "sales", "customer-tracking"], {
+    pollIntervalMs: 0,
+  });
   const [sp, setSearchParams] = useSearchParams();
+  const location = useLocation();
   const source = sp.get("source") ?? "";
   const fromNoQtySo = source === "no_qty_so";
   const fromGlobalSearch = source === "global_search";
+  const fromDashboard = source === "dashboard";
+  const focusSalesOrderLineId = Number(sp.get("salesOrderLineId") ?? 0);
+  const focusSalesOrderLineIdValid = Number.isFinite(focusSalesOrderLineId) && focusSalesOrderLineId > 0;
   const draftDispatchId = Number(sp.get("draftDispatchId") ?? 0);
   const focusSoId = Number(sp.get("salesOrderId") ?? 0);
   const focusLedgerDispatchId = Number(sp.get("dispatchId") ?? 0);
@@ -1039,6 +1250,9 @@ export function DispatchPage() {
   const [focusSo, setFocusSo] = React.useState<{ id: number; customerName: string; docNo?: string | null } | null>(null);
 
   const isAdmin = useIsAdmin();
+  const roleUi = useErpRoleUi();
+  const { user } = useAuth();
+  const canDispatchWrite = (DISPATCH_WRITE_ROLES as readonly string[]).includes(user?.role ?? "");
   const canOpenRs = useCanOpenRequirementSheet();
   const [rows, setRows] = React.useState<SoRow[]>([]);
   /** When GET /api/dispatch/sales-orders omits a focused NO_QTY SO, hydrate from GET /api/sales-orders/:id (FG lines, zeroed metrics). */
@@ -1210,6 +1424,7 @@ export function DispatchPage() {
             : 0,
       );
       setDispatchQtyStr(String(draft.qty ?? ""));
+      setIsPartialMode(true);
       setReopenedPreparedDraft({
         id: draft.id,
         workflowStatus: "UNLOCKED",
@@ -1219,7 +1434,7 @@ export function DispatchPage() {
         qty: String(draft.qty ?? ""),
         docNo: draft.docNo ?? null,
       });
-      setDispatchInfo(`Reopened prepared dispatch ${draft.docNo ?? `#${draft.id}`}.`);
+      setDispatchInfo(`Reopened dispatch draft ${draft.docNo ?? `#${draft.id}`}. ${DISPATCH_OP.BANNER_REOPENED}`);
       // Persist in URL for stable “reopened draft mode”.
       {
         const params = new URLSearchParams(sp);
@@ -1268,13 +1483,15 @@ export function DispatchPage() {
     // TEMP DEBUG (remove after live verification)
     const params = new URLSearchParams();
     const pinSo =
-      (fromNoQtySo && focusSoIdValid) || (fromGlobalSearch && focusSoIdValid) ? focusSoId : soId;
+      (fromNoQtySo && focusSoIdValid) || (fromGlobalSearch && focusSoIdValid) || (fromDashboard && focusSoIdValid)
+        ? focusSoId
+        : soId;
     const pinCycle = noQtySelectedCycleId;
     const selectedRow = displayRowsRef.current.find((r) => r.id === pinSo);
     const allowNoQtyCycleQuery =
       pinSo > 0 &&
       pinCycle != null &&
-      ((fromNoQtySo && focusSoIdValid && pinSo === focusSoId) || selectedRow?.orderType === "NO_QTY");
+      (((fromNoQtySo || fromDashboard) && focusSoIdValid && pinSo === focusSoId) || selectedRow?.orderType === "NO_QTY");
     if (allowNoQtyCycleQuery) {
       params.set("noQtySoId", String(pinSo));
       params.set("noQtyCycleId", String(pinCycle));
@@ -1283,7 +1500,9 @@ export function DispatchPage() {
     const url = `/api/dispatch/sales-orders${qs ? `?${qs}` : ""}`;
     const list = await apiFetch<SoRow[]>(url);
     const finalRows =
-      (fromNoQtySo || fromGlobalSearch) && focusSoIdValid ? (list || []).filter((r) => r.id === focusSoId) : list || [];
+      (fromNoQtySo || fromGlobalSearch || fromDashboard) && focusSoIdValid
+        ? (list || []).filter((r) => r.id === focusSoId)
+        : list || [];
     console.debug("[DISPATCH_UI_TRACE][sales-orders-response]", {
       url,
       rawCount: Array.isArray(list) ? list.length : null,
@@ -1295,10 +1514,10 @@ export function DispatchPage() {
     });
     setRows(finalRows);
     return finalRows;
-  }, [fromNoQtySo, fromGlobalSearch, focusSoId, focusSoIdValid, soId, noQtySelectedCycleId]);
+  }, [fromNoQtySo, fromGlobalSearch, fromDashboard, focusSoId, focusSoIdValid, soId, noQtySelectedCycleId]);
 
   const displayRows = React.useMemo(() => {
-    if ((fromNoQtySo || fromGlobalSearch) && focusSoIdValid) {
+    if ((fromNoQtySo || fromGlobalSearch || fromDashboard) && focusSoIdValid) {
       const hit = rows.find((r) => r.id === focusSoId);
       if (hit) return rows;
       if (fallbackSoRow?.id === focusSoId) return [fallbackSoRow];
@@ -1309,13 +1528,13 @@ export function DispatchPage() {
       if (!hit && reopenFallbackSoRow?.id === soId) return [reopenFallbackSoRow];
     }
     return rows;
-  }, [rows, fallbackSoRow, reopenFallbackSoRow, soId, fromNoQtySo, fromGlobalSearch, focusSoId, focusSoIdValid]);
+  }, [rows, fallbackSoRow, reopenFallbackSoRow, soId, fromNoQtySo, fromGlobalSearch, fromDashboard, focusSoId, focusSoIdValid]);
 
   const displayRowsRef = React.useRef(displayRows);
   displayRowsRef.current = displayRows;
 
   React.useEffect(() => {
-    if (!(fromNoQtySo || fromGlobalSearch) || !focusSoIdValid) {
+    if (!(fromNoQtySo || fromGlobalSearch || fromDashboard) || !focusSoIdValid) {
       setFallbackSoRow(null);
       return;
     }
@@ -1390,7 +1609,7 @@ export function DispatchPage() {
     return () => {
       cancelled = true;
     };
-  }, [fromNoQtySo, fromGlobalSearch, focusSoIdValid, focusSoId, rows]);
+  }, [fromNoQtySo, fromGlobalSearch, fromDashboard, focusSoIdValid, focusSoId, rows]);
 
   const selectedSo = React.useMemo(() => displayRows.find((r) => r.id === soId), [displayRows, soId]);
 
@@ -1398,17 +1617,29 @@ export function DispatchPage() {
     if (selectedSo != null) {
       return selectedSo.orderType === "NO_QTY" && selectedSo.id > 0 ? selectedSo.id : null;
     }
-    return fromNoQtySo && focusSoIdValid ? focusSoId : null;
-  }, [selectedSo, fromNoQtySo, focusSoIdValid, focusSoId]);
+    return (fromNoQtySo || fromDashboard) && focusSoIdValid ? focusSoId : null;
+  }, [selectedSo, fromNoQtySo, fromDashboard, focusSoIdValid, focusSoId]);
+
+  const noQtyFlowCycleOpt = React.useMemo(() => {
+    if (!selectedSo || selectedSo.orderType !== "NO_QTY") return undefined;
+    const c =
+      noQtySelectedCycleId ??
+      selectedSo.noQtyDispatchContext?.selectedCycleId ??
+      selectedSo.currentCycleId ??
+      null;
+    const n = c != null ? Number(c) : null;
+    return Number.isFinite(n) && n != null && n > 0 ? n : undefined;
+  }, [selectedSo, noQtySelectedCycleId]);
 
   const { state: noQtyFlowState } = useNoQtyFlowState(
     noQtyFlowTargetId,
     noQtyFlowTargetId != null && noQtyFlowTargetId > 0,
+    { cycleId: noQtyFlowCycleOpt },
   );
 
   // NO_QTY guided entry: when routed from QC/Production with itemId, preselect that item’s first eligible line.
   React.useEffect(() => {
-    if (!fromNoQtySo || !focusSoIdValid) return;
+    if (!(fromNoQtySo || fromDashboard) || !focusSoIdValid) return;
     if (!selectedSo || selectedSo.id !== focusSoId) return;
     if (!focusItemIdValid) return;
     if (salesOrderLineId > 0) return;
@@ -1418,9 +1649,9 @@ export function DispatchPage() {
     scored.sort((a, b) => b.pend - a.pend || a.cyc - b.cyc);
     const hit = scored[0]?.l ?? hits[0];
     setSalesOrderLineId(hit.lineId);
-  }, [fromNoQtySo, focusSoIdValid, focusSoId, selectedSo, focusItemId, focusItemIdValid, salesOrderLineId]);
-  // Read-only should still apply in NO_QTY (completed/closed SOs are view-only).
-  const dispatchReadOnly = Boolean(selectedSo?.dispatchReadOnly);
+  }, [fromNoQtySo, fromDashboard, focusSoIdValid, focusSoId, selectedSo, focusItemId, focusItemIdValid, salesOrderLineId]);
+  // Read-only when SO is completed/closed, or when the signed-in role cannot post dispatch (e.g. Accounts).
+  const dispatchReadOnly = Boolean(selectedSo?.dispatchReadOnly) || !canDispatchWrite;
 
   React.useEffect(() => {
     setNoQtySelectedCycleId(null);
@@ -1461,7 +1692,7 @@ export function DispatchPage() {
       const eligibleCycles = noQtyCycles.filter(isEligible);
       const hasDispatchable = (c: NoQtyCycleOption) => safeNum(c.dispatchableQty) > 1e-9;
       if (
-        fromNoQtySo &&
+        (fromNoQtySo || fromDashboard) &&
         focusSoIdValid &&
         selectedSo?.id === focusSoId &&
         focusCycleIdValid &&
@@ -1490,6 +1721,7 @@ export function DispatchPage() {
     noQtyCyclesLoading,
     reopenedPreparedDraftMode,
     fromNoQtySo,
+    fromDashboard,
     focusSoIdValid,
     focusSoId,
     focusCycleIdValid,
@@ -1551,7 +1783,7 @@ export function DispatchPage() {
       // NO_QTY: load ledger for the whole SO (all cycles) so multi-cycle prepared rows are visible without switching cycles.
       if (pin?.orderType === "NO_QTY" && soId > 0) {
         params.set("soId", String(soId));
-      } else if ((fromNoQtySo || fromGlobalSearch) && focusSoIdValid) {
+      } else if ((fromNoQtySo || fromGlobalSearch || fromDashboard) && focusSoIdValid) {
         params.set("soId", String(focusSoId));
         const pinF = displayRowsRef.current.find((r) => r.id === focusSoId);
         if (pinF?.orderType !== "NO_QTY" && noQtySelectedCycleId != null) {
@@ -1564,7 +1796,7 @@ export function DispatchPage() {
     );
     let rows = ledger.rows || [];
     let total = typeof ledger.total === "number" ? ledger.total : 0;
-    if ((fromNoQtySo || fromGlobalSearch) && focusSoIdValid && !params.has("cycleId")) {
+    if ((fromNoQtySo || fromGlobalSearch || fromDashboard) && focusSoIdValid && !params.has("cycleId")) {
       rows = rows.filter((r) => r.soId === focusSoId);
       total = rows.length;
     }
@@ -1583,7 +1815,7 @@ export function DispatchPage() {
       total,
       unlockedForwards: rows.filter((r) => r.workflowStatus === "UNLOCKED" && r.reversalOfId == null).map((r) => r.id),
     });
-  }, [ledgerPage, ledgerDateFrom, ledgerDateTo, fromNoQtySo, fromGlobalSearch, focusSoId, focusSoIdValid, soId, noQtySelectedCycleId]);
+  }, [ledgerPage, ledgerDateFrom, ledgerDateTo, fromNoQtySo, fromGlobalSearch, fromDashboard, focusSoId, focusSoIdValid, soId, noQtySelectedCycleId]);
 
   React.useEffect(() => {
     void loadLedger();
@@ -1591,15 +1823,15 @@ export function DispatchPage() {
     if (row?.orderType === "NO_QTY" && noQtySelectedCycleId != null) {
       void loadSalesOrders();
     }
-  }, [noQtySelectedCycleId, soId, loadLedger, loadSalesOrders]);
+  }, [noQtySelectedCycleId, soId, loadLedger, loadSalesOrders, liveTick]);
 
   React.useEffect(() => {
-    if (!(fromNoQtySo || fromGlobalSearch) || !focusSoIdValid) setFocusSo(null);
-  }, [fromNoQtySo, fromGlobalSearch, focusSoIdValid]);
+    if (!(fromNoQtySo || fromGlobalSearch || fromDashboard) || !focusSoIdValid) setFocusSo(null);
+  }, [fromNoQtySo, fromGlobalSearch, fromDashboard, focusSoIdValid]);
 
   // When opened from NO_QTY Sales Orders, auto-select that SO and load context.
   React.useEffect(() => {
-    if ((!fromNoQtySo && !fromGlobalSearch) || !focusSoIdValid) return;
+    if ((!fromNoQtySo && !fromGlobalSearch && !fromDashboard) || !focusSoIdValid) return;
     setSoId(focusSoId);
     setSalesOrderLineId(0);
     resetDispatchQty();
@@ -1610,14 +1842,14 @@ export function DispatchPage() {
       })
       .catch(() => setFocusSo({ id: focusSoId, customerName: "—", docNo: null }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fromNoQtySo, fromGlobalSearch, focusSoId, focusSoIdValid]);
+  }, [fromNoQtySo, fromGlobalSearch, fromDashboard, focusSoId, focusSoIdValid]);
 
   const refresh = React.useCallback(async () => {
     await loadSalesOrders();
     await loadLedger();
   }, [loadSalesOrders, loadLedger]);
 
-  /** Select SO line; leave dispatch qty blank so operators use Dispatch Full or expand partial dispatch intentionally. */
+  /** Select SO line. REGULAR partial rows open ready to dispatch the currently available qty. */
   const selectLineFromBacklog = React.useCallback(
     (r: SoRow, ls: LineStat) => {
       setError(null);
@@ -1628,8 +1860,14 @@ export function DispatchPage() {
         const c = normalizePositiveCycleId(ls.noQtyCycleId);
         if (c != null) setNoQtySelectedCycleId(c);
       }
-      setIsPartialMode(false);
-      resetDispatchQty();
+      const regularPartialQty = r.orderType !== "NO_QTY" ? regularPartialDispatchPrefillQty(r, ls) : null;
+      if (regularPartialQty != null) {
+        setIsPartialMode(true);
+        setDispatchQtyStr(String(regularPartialQty));
+      } else {
+        setIsPartialMode(false);
+        resetDispatchQty();
+      }
       window.requestAnimationFrame(() => {
         dispatchFormRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
       });
@@ -1637,9 +1875,25 @@ export function DispatchPage() {
     [resetDispatchQty],
   );
 
+  React.useEffect(() => {
+    if (!fromDashboard || !focusSoIdValid || !focusSalesOrderLineIdValid) return;
+    if (!selectedSo || selectedSo.id !== focusSoId) return;
+    if (selectedSo.orderType === "NO_QTY") return;
+    const ls = (selectedSo.lineStats ?? []).find((l) => Number(l.lineId) === Number(focusSalesOrderLineId));
+    if (ls) selectLineFromBacklog(selectedSo, ls);
+  }, [
+    fromDashboard,
+    focusSoIdValid,
+    focusSalesOrderLineIdValid,
+    focusSalesOrderLineId,
+    selectedSo,
+    focusSoId,
+    selectLineFromBacklog,
+  ]);
+
   // NO_QTY usability: when a focused SO is pre-selected, also pre-select the best dispatchable line.
   React.useEffect(() => {
-    if (!fromNoQtySo || !focusSoIdValid) return;
+    if (!(fromNoQtySo || fromDashboard) || !focusSoIdValid) return;
     if (!selectedSo || selectedSo.id !== focusSoId) return;
     if (salesOrderLineId > 0) return;
     if (dispatchReadOnly) return;
@@ -1652,7 +1906,7 @@ export function DispatchPage() {
     const fallback = (selectedSo.lineStats || [])[0];
     const pick = best ?? fallback;
     if (pick) selectLineFromBacklog(selectedSo, pick);
-  }, [fromNoQtySo, focusSoId, focusSoIdValid, selectedSo, salesOrderLineId, dispatchReadOnly, selectLineFromBacklog, noQtySelectedCycleId]);
+  }, [fromNoQtySo, fromDashboard, focusSoId, focusSoIdValid, selectedSo, salesOrderLineId, dispatchReadOnly, selectLineFromBacklog, noQtySelectedCycleId]);
 
   const prepareQueueSections = React.useMemo(() => buildPrepareQueueSections(displayRows), [displayRows]);
   const prepareQueueRowCount = React.useMemo(
@@ -1688,7 +1942,7 @@ export function DispatchPage() {
 
   React.useEffect(() => {
     loadSalesOrders().catch((e) => setError(e instanceof Error ? e.message : "Failed"));
-  }, [loadSalesOrders]);
+  }, [loadSalesOrders, liveTick]);
 
   // Reopened prepared draft mode: load draft by id from URL.
   React.useEffect(() => {
@@ -1719,16 +1973,30 @@ export function DispatchPage() {
 
   React.useEffect(() => {
     loadLedger().catch((e) => setError(e instanceof Error ? e.message : "Failed"));
-  }, [loadLedger]);
+  }, [loadLedger, liveTick]);
 
   const selectedSoReplacement = selectedSo?.orderType === "REPLACEMENT";
 
-  /** Clear FG + qty when SO cleared; drop stale line id when it no longer exists on the SO. */
+  /** Drop stale SO/line when open-list refresh removes them (e.g. after full dispatch or commercial close). */
   React.useEffect(() => {
     if (!soId) {
       setSalesOrderLineId(0);
       resetDispatchQty();
       return;
+    }
+    const soStillListed = displayRows.some((r) => r.id === soId);
+    if (!soStillListed) {
+      const reopeningThisSo =
+        reopenedPreparedDraft &&
+        Number(reopenedPreparedDraft.soId) === Number(soId) &&
+        Number.isFinite(draftDispatchId) &&
+        draftDispatchId > 0;
+      if (!reopeningThisSo) {
+        setSoId(0);
+        setSalesOrderLineId(0);
+        resetDispatchQty();
+        return;
+      }
     }
     const so = displayRows.find((r) => r.id === soId);
     if (!so) return;
@@ -1740,7 +2008,7 @@ export function DispatchPage() {
           );
           return computeDispatchableNow({ so, ls: l, cycleIdOverride: cyc }) > 1e-9;
         })
-      : (so.lineStats ?? []).filter((l) => (l.pendingDispatchQty ?? 0) > 0);
+      : (so.lineStats ?? []).filter((l) => isDispatchOpenListLineCandidate(l, so.orderType));
     if (!selectable.length) {
       // Keep SO/FG selection when a prepared draft was reopened from history — finalize path even if headroom shows 0.
       if (
@@ -1752,6 +2020,7 @@ export function DispatchPage() {
       ) {
         return;
       }
+      setSoId(0);
       setSalesOrderLineId(0);
       resetDispatchQty();
       return;
@@ -1777,7 +2046,7 @@ export function DispatchPage() {
         return can > 1e-9 || linePendingOnOrderDisplay(l) > 1e-9;
       });
     }
-    return allLines.filter((l) => (l.pendingDispatchQty ?? 0) > 0);
+    return allLines.filter((l) => isDispatchOpenListLineCandidate(l, selectedSo.orderType));
   }, [selectedSo, allLines, noQtySelectedCycleId]);
 
   /** Single source of truth for selection: salesOrderLineId, looked up on full lineStats (not the filtered dropdown). */
@@ -1964,6 +2233,9 @@ export function DispatchPage() {
       : Math.max(0, currentDispatchableBase - existingDraftQty);
   const readyToShip = headroomToPrepare;
   const currentDispatchableQty = headroomToPrepare;
+  /** Upper bound for POST /dispatches qty when replacing an existing draft (draft qty + additional headroom). */
+  const maxDispatchPrepareQty =
+    existingDraftQty > 1e-9 ? existingDraftQty + headroomToPrepare : headroomToPrepare;
 
   const noQtySelectedCycleIdResolved = React.useMemo(
     () =>
@@ -1980,6 +2252,11 @@ export function DispatchPage() {
       selectedSo?.currentCycleId,
     ],
   );
+
+  const noQtyWorkbenchHeadroomBreakdown = React.useMemo(() => {
+    if (!selectedSo || selectedSo.orderType !== "NO_QTY" || !currentLine) return null;
+    return computeNoQtyHeadroomBreakdownForItem(selectedSo, currentLine.itemId, noQtySelectedCycleIdResolved);
+  }, [selectedSo, currentLine, currentLine?.itemId, noQtySelectedCycleIdResolved]);
 
   const noQtyFinalizedQtyThisCycleForCurrentItem = React.useMemo(() => {
     if (!selectedSo || selectedSo.orderType !== "NO_QTY" || !currentLine) return 0;
@@ -2019,22 +2296,29 @@ export function DispatchPage() {
         })
       : null;
 
-  const qtyInputDisabled =
-    dispatching ||
-    dispatchReadOnly ||
-    reopenedPreparedDraftMode ||
-    !currentLine ||
-    readyToShip <= 1e-9 ||
-    noQtyBlocked;
-
-  const canNoQtyDispatchNow = Boolean(
-    selectedSo?.orderType === "NO_QTY" &&
-      !qtyInputDisabled &&
-      dispatchQtyValid &&
-      dispatchQtyParsed != null &&
-      dispatchQtyParsed > 1e-9 &&
-      dispatchQtyParsed <= headroomToPrepare + 1e-6,
-  );
+  const onContinuePartialDispatch = React.useCallback(() => {
+    if (!selectedSo || !currentLine) return;
+    setDispatchInfo(null);
+    setError(null);
+    const prefill = regularPartialDispatchPrefillQty(selectedSo, currentLine);
+    if (prefill != null) {
+      setIsPartialMode(true);
+      setDispatchQtyStr(String(prefill));
+      setNormalPartialDispatchAck(true);
+    } else if (headroomToPrepare > 1e-9) {
+      const qty = Math.min(headroomToPrepare, confirmedBacklogQty(currentLine));
+      setIsPartialMode(true);
+      setDispatchQtyStr(String(qty));
+      setNormalPartialDispatchAck(true);
+    } else {
+      setIsPartialMode(false);
+      resetDispatchQty();
+    }
+    window.requestAnimationFrame(() => {
+      dispatchFormRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      dispatchQtyRef.current?.focus({ preventScroll: true });
+    });
+  }, [selectedSo, currentLine, headroomToPrepare, resetDispatchQty]);
 
   const dispatchQtyHintPrimary =
     noQtyBlocked && selectedSo?.orderType === "NO_QTY"
@@ -2043,17 +2327,17 @@ export function DispatchPage() {
         ? isRegularNormalSalesOrder(selectedSo)
           ? needsPartialDispatchAck
             ? existingDraftQty > 1e-9
-              ? `Prepared draft: ${fmtDispatchQty(existingDraftQty)}.`
+              ? `Open dispatch draft: ${fmtDispatchQty(existingDraftQty)}.`
               : null
-            : `You can prepare up to ${fmtDispatchQty(Math.min(readyToShip, remainingSoLine))} (ready to dispatch — ${fmtDispatchQty(
+            : `You can save a draft up to ${fmtDispatchQty(Math.min(readyToShip, remainingSoLine))} (ready now — ${fmtDispatchQty(
                 remainingSoLine,
-              )} pending on order).${existingDraftQty > 1e-9 ? ` Draft already prepared: ${fmtDispatchQty(existingDraftQty)}.` : ""}`
+              )} pending on order).${existingDraftQty > 1e-9 ? ` Draft already saved: ${fmtDispatchQty(existingDraftQty)}.` : ""}`
           : selectedSo?.orderType === "NO_QTY"
-            ? `You may ship up to ${fmtDispatchQty(readyToShip)} when ready (optional).${
-                existingDraftQty > 1e-9 ? ` Prepared draft: ${fmtDispatchQty(existingDraftQty)}.` : ""
+            ? `You may save a draft up to ${fmtDispatchQty(readyToShip)} when ready (optional).${
+                existingDraftQty > 1e-9 ? ` Open draft: ${fmtDispatchQty(existingDraftQty)}.` : ""
               }`
-            : `Max prepare now: ${fmtDispatchQty(readyToShip)}${
-                existingDraftQty > 1e-9 ? ` · Prepared draft: ${fmtDispatchQty(existingDraftQty)}` : ""
+            : `Max draft qty now: ${fmtDispatchQty(readyToShip)}${
+                existingDraftQty > 1e-9 ? ` · Open draft: ${fmtDispatchQty(existingDraftQty)}` : ""
               }`
         : currentLine && selectedSo?.orderType === "NO_QTY" && currentDispatchableBase <= 1e-9
           ? noQtySelectedNextAction
@@ -2216,12 +2500,12 @@ export function DispatchPage() {
   }
 
   async function onDeleteDraft(dispatchId: number) {
-    if (!window.confirm("Remove this prepared dispatch? Stock has not been posted yet.")) return;
+    if (!window.confirm("Discard this dispatch draft? Inventory has not been deducted yet.")) return;
     setError(null);
     setDeletingId(dispatchId);
     try {
       await apiFetch(`/api/dispatch/dispatches/${dispatchId}`, { method: "DELETE" });
-      setDispatchInfo("Prepared dispatch removed.");
+      setDispatchInfo("Dispatch draft removed.");
       if (reopenedPreparedDraftMode && reopenedPreparedDraft?.id === dispatchId) {
         setReopenedPreparedDraft(null);
         setReopenFallbackSoRow(null);
@@ -2229,7 +2513,7 @@ export function DispatchPage() {
         const params = new URLSearchParams(sp);
         params.delete("draftDispatchId");
         navigate(`/dispatch?${params.toString()}`, { replace: true });
-        toast.showSuccess("Prepared dispatch removed.");
+        toast.showSuccess("Dispatch draft removed.");
       }
       setSalesBillStepDispatchId(null);
       await refresh();
@@ -2269,12 +2553,13 @@ export function DispatchPage() {
       dispatchSubmitLockRef.current = false;
       return;
     }
-    if (dispatchQtyParsed > currentDispatchableQty + 1e-6) {
+    const prepareQtyCap = existingDraftQty > 1e-9 ? maxDispatchPrepareQty : currentDispatchableQty;
+    if (dispatchQtyParsed > prepareQtyCap + 1e-6) {
       setError("Exceeds dispatchable quantity");
       dispatchSubmitLockRef.current = false;
       return;
     }
-    const avail = safeNum(currentDispatchableQty);
+    const avail = safeNum(prepareQtyCap);
     if (avail > 1e-9 && dispatchQtyParsed < DISPATCH_LOW_QTY_WARN_RATIO * avail - 1e-9) {
       const remainingUsable = Math.max(0, safeNum(getUsableStock(currentLine)) - dispatchQtyParsed);
       const proceed = window.confirm(
@@ -2310,10 +2595,10 @@ export function DispatchPage() {
         const totalAlloc = alloc.reduce((s, a) => s + safeNum(a.qty), 0);
         const lines = alloc.map((a) => `Cycle ${a.cycleNo} → ${fmtDispatchQty(Number(a.qty))}`);
         const footer =
-          alloc.length > 1 ? "Finalize each prepared row to post stock." : "Finalize to post stock.";
+          alloc.length > 1 ? "Finalize each draft row to post stock." : "Finalize Dispatch to post stock.";
         setDispatchInfo([...lines, `Total → ${fmtDispatchQty(totalAlloc)}`, footer].join("\n"));
       } else {
-        setDispatchInfo("Prepared dispatch saved. Finalize to post stock.");
+        setDispatchInfo("Dispatch draft saved. Use Finalize Dispatch to post stock.");
       }
       setSalesBillStepDispatchId(null);
       const list = await loadSalesOrders();
@@ -2349,7 +2634,10 @@ export function DispatchPage() {
     }
   }
 
-  /** Partial dispatch only (isPartialMode): qty strictly between 0 and max (not equal to full headroom — use Dispatch Full). */
+  const allowFullHeadroomPartialSubmit =
+    isRegularNormalSalesOrder(selectedSo) && currentRegularReadiness === "PARTIAL_AVAILABLE";
+
+  /** Partial dispatch mode: REGULAR partial rows may submit the full available headroom. */
   const partialDispatchQtySubmit = Boolean(
     isPartialMode &&
       !dispatchReadOnly &&
@@ -2357,12 +2645,14 @@ export function DispatchPage() {
       !noQtyBlocked &&
       selectableLines.length > 0 &&
       currentLine &&
-      readyToShip > 1e-9 &&
+      (readyToShip > 1e-9 || existingDraftQty > 1e-9) &&
       dispatchQtyValid &&
       dispatchQtyParsed != null &&
       dispatchQtyParsed > 1e-9 &&
-      dispatchQtyParsed < headroomToPrepare - 1e-6 &&
-      dispatchQtyParsed <= currentDispatchableQty + 1e-6 &&
+      (allowFullHeadroomPartialSubmit
+        ? dispatchQtyParsed <= headroomToPrepare + 1e-6
+        : dispatchQtyParsed < headroomToPrepare - 1e-6) &&
+      dispatchQtyParsed <= maxDispatchPrepareQty + 1e-6 &&
       (!needsPartialDispatchAck || normalPartialDispatchAck),
   );
 
@@ -2379,9 +2669,13 @@ export function DispatchPage() {
       selectableLines.length > 0 &&
       currentLine &&
       headroomToPrepare > 1e-9 &&
-      !qtyInputDisabled &&
       (!needsPartialDispatchAck || normalPartialDispatchAck),
   );
+
+  const dispatchFullButtonLabel =
+    isRegularNormalSalesOrder(selectedSo) && currentRegularReadiness === "PARTIAL_AVAILABLE"
+      ? DISPATCH_OP.SAVE_DRAFT_AVAILABLE
+      : DISPATCH_OP.SAVE_DRAFT_FULL;
 
   async function onDispatchFullPrepare() {
     if (dispatchSubmitLockRef.current || dispatching) return;
@@ -2428,7 +2722,6 @@ export function DispatchPage() {
   });
 
   const shortcutFlagsRef = React.useRef({ canPrepareSubmit: false, canPrepareFull: false });
-  shortcutFlagsRef.current = { canPrepareSubmit: partialDispatchQtySubmit, canPrepareFull: canDispatchFull };
   const dispatchActionRef = React.useRef(onDispatch);
   dispatchActionRef.current = onDispatch;
   const dispatchFullPrepareRef = React.useRef(onDispatchFullPrepare);
@@ -2786,6 +3079,39 @@ export function DispatchPage() {
       existingDraftQty > dqEps,
   );
 
+  const inDraftOperatorPanel = Boolean(finalizePrepDraftMode || reopenedPreparedDraftMode);
+
+  const qtyInputDisabled =
+    dispatching || dispatchReadOnly || noQtyBlocked || !currentLine || (!inDraftOperatorPanel && readyToShip <= 1e-9);
+
+  const canNoQtyDispatchNow = Boolean(
+    selectedSo?.orderType === "NO_QTY" &&
+      !qtyInputDisabled &&
+      dispatchQtyValid &&
+      dispatchQtyParsed != null &&
+      dispatchQtyParsed > 1e-9 &&
+      dispatchQtyParsed <= maxDispatchPrepareQty + 1e-6,
+  );
+
+  const canUpdateDispatchDraftQty = Boolean(
+    inDraftOperatorPanel &&
+      !dispatchReadOnly &&
+      !dispatching &&
+      !noQtyBlocked &&
+      currentLine &&
+      primaryFinalizeDraftId != null &&
+      existingDraftQty > dqEps &&
+      dispatchQtyValid &&
+      dispatchQtyParsed != null &&
+      dispatchQtyParsed > dqEps &&
+      dispatchQtyParsed <= maxDispatchPrepareQty + 1e-6,
+  );
+
+  shortcutFlagsRef.current = {
+    canPrepareSubmit: partialDispatchQtySubmit || canUpdateDispatchDraftQty,
+    canPrepareFull: canDispatchFull,
+  };
+
   React.useEffect(() => {
     if (selectedSo?.orderType !== "NO_QTY") return;
     if (reopenedPreparedDraftMode || finalizePrepDraftMode) return;
@@ -2822,6 +3148,9 @@ export function DispatchPage() {
       primaryFinalizeDraftId != null &&
       (finalizePrepDraftMode || reopenedPreparedDraftMode),
   );
+
+  /** Prepared / reopened draft action card already carries guidance — hide verbose guided panels. */
+  const hideGuidedNoQtyVerbosePanel = showPreparedDispatchActionCard || reopenedPreparedDraftMode;
 
   /** Next billing step: in-session finalize sets salesBillStepDispatchId; refresh uses ledger + guided CREATE or SO/cycle match. */
   const billingTargetDispatchId = React.useMemo(() => {
@@ -2912,6 +3241,42 @@ export function DispatchPage() {
         )),
   );
 
+  const showRegularDispatchEntryPanel =
+    isRegularNormalSalesOrder(selectedSo) && safeNum(currentDispatchableQty) > 1e-9;
+
+  const regularPartialContinuationMetrics = React.useMemo(() => {
+    const eps = 1e-9;
+    if (!isRegularNormalSalesOrder(selectedSo) || !currentLine) return null;
+    const pending = confirmedBacklogQty(currentLine);
+    const dispatched = regularLineNetDispatched(currentLine);
+    const availableNow = safeNum(currentDispatchableQty);
+    if (pending <= eps || dispatched <= eps) return null;
+    return { pending, dispatched, availableNow };
+  }, [selectedSo, currentLine, currentDispatchableQty]);
+
+  const showRegularPartialDispatchContinuation = Boolean(
+    showMainDispatchUi &&
+      selectedSo &&
+      !dispatchReadOnly &&
+      currentLine &&
+      primaryFinalizeDraftId == null &&
+      !showPreparedDispatchActionCard &&
+      regularPartialContinuationMetrics &&
+      regularPartialContinuationMetrics.pending > 1e-9,
+  );
+
+  const canContinueRegularPartialDispatch = Boolean(
+    showRegularPartialDispatchContinuation &&
+      regularPartialContinuationMetrics &&
+      regularPartialContinuationMetrics.availableNow > 1e-9,
+  );
+
+  const showDispatchCompletedBillingCardEffective = Boolean(
+    showDispatchCompletedBillingCard && !showRegularPartialDispatchContinuation,
+  );
+
+  const isRegularDispatchWorkbench = isRegularNormalSalesOrder(selectedSo);
+
   const dispatchCompletedDocLabel =
     billingTargetDispatchId != null
       ? displayDispatchNo(billingTargetDispatchId, billingTargetLedgerRow?.docNo ?? null)
@@ -2956,7 +3321,8 @@ export function DispatchPage() {
         guidedBillAction &&
         (guidedBillAction.kind === "CREATE" || guidedBillAction.kind === "OPEN") &&
         !showDispatchCompletedBillingCard &&
-        !showDispatchCompletedBillingFallback,
+        !showDispatchCompletedBillingFallback &&
+        !showRegularPartialDispatchContinuation,
     );
 
   // Keep dispatch screen operational-only: do not surface billing/export steps here.
@@ -2984,9 +3350,19 @@ export function DispatchPage() {
         (noQtyBlocked && selectedSo?.orderType === "NO_QTY"
           ? "Cannot dispatch: pick an active cycle above, or reopen the sales order if no cycles appear."
           : isRegularNormalSalesOrder(selectedSo)
-            ? "Nothing can be prepared on this line yet (usable stock may still be available for other needs)."
+            ? "Nothing can be saved on this line yet (usable stock may still be available for other needs)."
             : "Nothing is ready to ship on this line yet."))
     : "";
+
+  /** Regular SO: one primary action zone in the dispatch card — suppress footer/top duplicates. */
+  const regularOpsActionsInDispatchCard = Boolean(
+    isRegularDispatchWorkbench &&
+      (showRegularPartialDispatchContinuation ||
+        showRegularDispatchEntryPanel ||
+        showPreparedDispatchActionCard ||
+        stripShowFinalize ||
+        dispatchBlockedStripVisible),
+  );
 
   const finalizeStripSubtitle =
     showCompactDispatchStrip && selectedSo && currentLine
@@ -2994,13 +3370,15 @@ export function DispatchPage() {
       : "";
 
   const finalizePreparedStripTitle =
-    stripShowFinalize && existingDraftQty > dqEps ? "Next Step: Finalize Prepared Dispatch" : "Next Step: Finalize Dispatch";
+    stripShowFinalize && existingDraftQty > dqEps
+      ? "Next: finalize dispatch (draft on this line)"
+      : "Next: finalize dispatch";
   const finalizePreparedStripSubtitle =
     stripShowFinalize && existingDraftQty > dqEps
-      ? `Prepared qty: ${fmtDispatchQty(existingDraftQty)}\n${
-          isRegularNormalSalesOrder(selectedSo) ? "Max prepare now" : "Ready now"
-        }: ${fmtDispatchQty(currentDispatchableQty)}\n\nThis dispatch was already prepared earlier. You can finalize it even if nothing is currently ready.`
-      : `${finalizeStripSubtitle} · ${isRegularNormalSalesOrder(selectedSo) ? "Max prepare" : "Ready"}: ${stripReady}`;
+      ? `Draft qty: ${fmtDispatchQty(existingDraftQty)}\n${
+          isRegularNormalSalesOrder(selectedSo) ? "Additional qty you could add now" : "Ready now"
+        }: ${fmtDispatchQty(currentDispatchableQty)}\n\n${DISPATCH_OP.GUIDANCE_DRAFT_ONLY} You can finalize even if no additional qty is available.`
+      : `${finalizeStripSubtitle} · ${isRegularNormalSalesOrder(selectedSo) ? "Max draft qty" : "Ready"}: ${stripReady}`;
 
   const salesBillFlowHref =
     topStripSalesBillNext && (noQtyFlowTargetId != null && noQtyFlowTargetId > 0 || focusSoIdValid)
@@ -3019,7 +3397,11 @@ export function DispatchPage() {
     const soIdFooter = soFooter?.id ?? (focusSoIdValid ? focusSoId : 0);
     const soIdValidFooter = Number.isFinite(soIdFooter) && soIdFooter > 0;
     const noQtyFooter = soFooter?.orderType === "NO_QTY";
-    const rsHref = soIdValidFooter ? `/sales-orders/${soIdFooter}/requirement-sheets` : "/sales-orders";
+    const footerCycleId = noQtyFlowState?.canonicalCycleId ?? noQtyFlowState?.cycleId ?? noQtySelectedCycleId ?? null;
+    const rsHref =
+      noQtyFooter && soIdValidFooter
+        ? buildNoQtyGuidedHref({ to: `/sales-orders/${soIdFooter}/requirement-sheets`, salesOrderId: soIdFooter, cycleId: footerCycleId, fromStep: "dispatch" })
+        : soIdValidFooter ? `/sales-orders/${soIdFooter}/requirement-sheets` : "/sales-orders";
     const planningHubHref = soIdValidFooter
       ? `/planning-dashboard?salesOrderId=${encodeURIComponent(String(soIdFooter))}&source=dispatch_footer`
       : "/planning-dashboard";
@@ -3032,10 +3414,22 @@ export function DispatchPage() {
     const salesOrderSpotHref = soIdValidFooter
       ? `/sales-orders?salesOrderId=${encodeURIComponent(String(soIdFooter))}`
       : "/sales-orders";
-    const prodHref = soIdValidFooter ? `/production?salesOrderId=${soIdFooter}&fromStep=dispatch` : "/production";
-    const qcHref = soIdValidFooter ? `/qc-entry?salesOrderId=${soIdFooter}&fromStep=dispatch` : "/qc-entry";
-    const dispatchHref = soIdValidFooter ? `/dispatch?salesOrderId=${soIdFooter}` : "/dispatch";
-    const billHref = soIdValidFooter ? `/sales-bills?salesOrderId=${soIdFooter}` : "/sales-bills";
+    const prodHref =
+      noQtyFooter && soIdValidFooter
+        ? buildNoQtyGuidedHref({ to: "/production", salesOrderId: soIdFooter, cycleId: footerCycleId, fromStep: "dispatch" })
+        : soIdValidFooter ? `/production?salesOrderId=${soIdFooter}&fromStep=dispatch` : "/production";
+    const qcHref =
+      noQtyFooter && soIdValidFooter
+        ? buildNoQtyGuidedHref({ to: "/qc-entry", salesOrderId: soIdFooter, cycleId: footerCycleId, fromStep: "dispatch" })
+        : soIdValidFooter ? `/qc-entry?salesOrderId=${soIdFooter}&fromStep=dispatch` : "/qc-entry";
+    const dispatchHref =
+      noQtyFooter && soIdValidFooter
+        ? buildNoQtyGuidedHref({ to: "/dispatch", salesOrderId: soIdFooter, cycleId: footerCycleId, fromStep: "dispatch" })
+        : soIdValidFooter ? `/dispatch?salesOrderId=${soIdFooter}` : "/dispatch";
+    const billHref =
+      noQtyFooter && soIdValidFooter
+        ? buildNoQtyGuidedHref({ to: "/sales-bills", salesOrderId: soIdFooter, cycleId: footerCycleId, fromStep: "dispatch" })
+        : soIdValidFooter ? `/sales-bills?salesOrderId=${soIdFooter}` : "/sales-bills";
 
     const relatedChildren = soIdValidFooter ? (
       <div className="flex min-w-0 flex-wrap items-center gap-1.5">
@@ -3113,6 +3507,7 @@ export function DispatchPage() {
     ) : null;
 
     const sections: OperationalFooterSection[] = [];
+    const suppressFooterNextActions = regularOpsActionsInDispatchCard;
 
     const hid = focusSoIdValid ? focusSoId : soIdFooter > 0 ? soIdFooter : 0;
     const showInlineHistory = hid > 0;
@@ -3124,20 +3519,25 @@ export function DispatchPage() {
       const soLabel = displaySalesOrderNo(hid, docNoForLabel ?? null);
       sections.push({
         key: "history",
-        title: "History",
+        title: undefined,
         children: (
-          <div ref={dispatchHistoryAnchorRef} className="max-h-44 overflow-auto" aria-label={`Dispatch history ${soLabel}`}>
-            <ActivityHistoryCard
-              title=""
-              density="compact"
-              query={`module=DISPATCH&salesOrderId=${encodeURIComponent(String(hid))}&limit=50`}
-            />
-          </div>
+          <details className="rounded border border-slate-200 bg-slate-50/80">
+            <summary className="cursor-pointer px-2 py-1 text-[11px] font-semibold text-slate-800 hover:bg-slate-100">
+              Activity history ({soLabel})
+            </summary>
+            <div className="max-h-44 overflow-auto border-t border-slate-200 bg-white px-1 py-1" aria-label={`Dispatch history ${soLabel}`}>
+              <ActivityHistoryCard
+                title=""
+                density="compact"
+                query={`module=DISPATCH&salesOrderId=${encodeURIComponent(String(hid))}&limit=50`}
+              />
+            </div>
+          </details>
         ),
       });
     }
 
-    if (dispatchBlockedStripVisible) {
+    if (dispatchBlockedStripVisible && !suppressFooterNextActions) {
       sections.push({
         key: "next",
         title: "Next action",
@@ -3148,7 +3548,7 @@ export function DispatchPage() {
           </div>
         ),
       });
-    } else if (stripShowFinalize && primaryFinalizeDraftId != null && !showPreparedDispatchActionCard) {
+    } else if (stripShowFinalize && primaryFinalizeDraftId != null && !showPreparedDispatchActionCard && !suppressFooterNextActions) {
       sections.push({
         key: "next",
         title: "Next action",
@@ -3164,7 +3564,7 @@ export function DispatchPage() {
               {...(finalizeDemoHl ? { "data-demo-highlight": finalizeDemoHl } : {})}
               onClick={() => primaryFinalizeDraftId != null && void onFinalizeDraftDispatch(primaryFinalizeDraftId)}
             >
-              {lockingId === primaryFinalizeDraftId ? "…" : "Finalize Dispatch"}
+              {lockingId === primaryFinalizeDraftId ? "…" : DISPATCH_OP.FINALIZE}
             </Button>
             <Button
               type="button"
@@ -3174,7 +3574,7 @@ export function DispatchPage() {
               disabled={deletingId === primaryFinalizeDraftId}
               onClick={() => primaryFinalizeDraftId != null && void onDeleteDraft(primaryFinalizeDraftId)}
             >
-              {deletingId === primaryFinalizeDraftId ? "…" : "Delete Draft"}
+              {deletingId === primaryFinalizeDraftId ? "…" : DISPATCH_OP.DISCARD_DRAFT}
             </Button>
             {finalizePreparedStripSubtitle ? (
               <span className="w-full text-[11px] whitespace-pre-line text-slate-600">{finalizePreparedStripSubtitle}</span>
@@ -3188,7 +3588,8 @@ export function DispatchPage() {
       salesBillFlowHref &&
       salesBillStepDispatchId == null &&
       !showDispatchCompletedBillingCard &&
-      !showDispatchCompletedBillingFallback
+      !showDispatchCompletedBillingFallback &&
+      !suppressFooterNextActions
     ) {
       sections.push({
         key: "next",
@@ -3213,7 +3614,8 @@ export function DispatchPage() {
       selectedSo &&
       salesBillStepDispatchId == null &&
       !showDispatchCompletedBillingCard &&
-      !showDispatchCompletedBillingFallback
+      !showDispatchCompletedBillingFallback &&
+      !suppressFooterNextActions
     ) {
       sections.push({
         key: "next",
@@ -3241,6 +3643,7 @@ export function DispatchPage() {
       salesBillStepDispatchId == null &&
       !showDispatchCompletedBillingCard &&
       !showDispatchCompletedBillingFallback &&
+      !suppressFooterNextActions &&
       guidedBillAction?.kind === "CREATE"
     ) {
       sections.push({
@@ -3265,7 +3668,18 @@ export function DispatchPage() {
     }
 
     if (relatedChildren) {
-      sections.push({ key: "related", title: "Related links", children: relatedChildren });
+      sections.push({
+        key: "related",
+        title: undefined,
+        children: (
+          <details className="rounded border border-slate-200 bg-slate-50/80">
+            <summary className="cursor-pointer px-2 py-1 text-[11px] font-semibold text-slate-800 hover:bg-slate-100">
+              Related links
+            </summary>
+            <div className="border-t border-slate-200 bg-white px-2 py-1.5">{relatedChildren}</div>
+          </details>
+        ),
+      });
     }
 
     return sections;
@@ -3285,212 +3699,272 @@ export function DispatchPage() {
     guidedBillAction,
     lockingId,
     navigate,
+    noQtyFlowState?.canonicalCycleId,
+    noQtyFlowState?.cycleId,
     noQtyShowCompletedSalesBillNext,
+    noQtySelectedCycleId,
+    onContinuePartialDispatch,
     onCreateSalesBillFromDispatch,
     onDeleteDraft,
     onFinalizeDraftDispatch,
+    billingTargetDispatchId,
+    canContinueRegularPartialDispatch,
     primaryFinalizeDraftId,
+    regularPartialContinuationMetrics,
     salesBillFlowHref,
     salesBillStepDispatchId,
     selectedSo,
     showDispatchCompletedBillingCard,
     showDispatchCompletedBillingFallback,
     showPreparedDispatchActionCard,
+    isRegularDispatchWorkbench,
+    regularOpsActionsInDispatchCard,
+    showRegularPartialDispatchContinuation,
     stripShowFinalize,
     topStripSalesBillNext,
   ]);
 
   React.useEffect(() => {
-    if (showPreparedDispatchActionCard || showDispatchCompletedBillingCard || showDispatchCompletedBillingFallback)
+    if (
+      showPreparedDispatchActionCard ||
+      showDispatchCompletedBillingCardEffective ||
+      showDispatchCompletedBillingFallback
+    )
       setShowOpenLinesQueue(false);
-  }, [showPreparedDispatchActionCard, showDispatchCompletedBillingCard, showDispatchCompletedBillingFallback]);
+  }, [
+    showPreparedDispatchActionCard,
+    showDispatchCompletedBillingCardEffective,
+    showDispatchCompletedBillingFallback,
+  ]);
 
-  function renderSoDispatchLedger(layout: "panel" | "belowPrepared") {
+  function renderSoDispatchLedger(
+    layout: "panel" | "belowPrepared",
+    opts?: { mesPanel?: boolean; startCollapsed?: boolean },
+  ) {
     if (!showSoDispatchLedger || !selectedSo) return null;
     const so = selectedSo;
+    const mes = Boolean(opts?.mesPanel) && layout === "panel";
+    const collapse = Boolean(opts?.startCollapsed) && layout === "panel";
     const outer =
       layout === "belowPrepared"
         ? "rounded-lg border border-slate-200/80 bg-white px-3 py-2 shadow-sm ring-1 ring-slate-100/70"
-        : "mt-2 border-t border-slate-100 pt-2";
+        : mes
+          ? "mt-1.5 border-t border-slate-100 pt-1.5"
+          : "mt-2 border-t border-slate-100 pt-2";
     const titleCls =
       layout === "belowPrepared"
         ? "mb-1 text-[11px] font-semibold text-slate-700"
-        : "mb-1 text-[12px] font-semibold text-slate-700";
-    const scrollMax = layout === "belowPrepared" ? "max-h-36" : "max-h-52";
+        : mes
+          ? "mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500"
+          : "mb-1 text-[12px] font-semibold text-slate-700";
+    const scrollMax = layout === "belowPrepared" ? "max-h-36" : mes ? "max-h-[min(24vh,150px)]" : "max-h-52";
+    const tableText = mes ? "text-[11px]" : "text-[13px]";
+    const thText = mes ? "text-[10px]" : "text-[12px]";
+    const rowPad = mes ? "py-0 pr-2" : "py-0.5 pr-2";
+
+    const ledgerRowsBlock = (
+      <div className={cn(scrollMax, "overflow-auto")}>
+        <table className={cn("erp-table erp-table-dense w-full", tableText)}>
+          <thead>
+            <tr className={cn("border-b border-slate-200 text-left text-slate-600", thText)}>
+              <th className={cn(rowPad)}>#</th>
+              <th className={cn(rowPad)}>Status</th>
+              <th className={cn(rowPad)}>Type</th>
+              <th className={cn(rowPad)}>Item</th>
+              <th className={cn(rowPad, "text-right")}>Qty</th>
+              <th className={cn(rowPad)}>Note</th>
+              <th className={mes ? "py-0" : "py-0.5"} />
+            </tr>
+          </thead>
+          {(() => {
+            function rowEl(d: DispatchEvent) {
+              const isRev = d.reversalOfId != null;
+              const qty = Number(d.dispatchedQty);
+              const itemName = (so.lineStats ?? []).find((ls) => ls.itemId === d.itemId)?.itemName ?? `Item #${d.itemId}`;
+              const maxRev = typeof d.maxReversibleQty === "number" ? d.maxReversibleQty : 0;
+              const badge = rowStatusBadge(d);
+              const isUnlockedForward = !isRev && d.workflowStatus === "UNLOCKED";
+              const isLockedForward = !isRev && (d.workflowStatus === "LOCKED" || d.workflowStatus == null);
+              const badgeCls = mes
+                ? `inline-flex rounded border px-0.5 py-px text-[9px] font-medium ${badge.className}`
+                : `inline-flex rounded border px-1 py-0.5 text-[10px] font-medium ${badge.className}`;
+              const actionBtnCls = mes ? "h-6 px-1.5 text-[10px]" : "h-7 px-2 text-[11px]";
+              return (
+                <tr
+                  key={d.id}
+                  id={`so-dispatch-ledger-row-${d.id}`}
+                  className={cn(
+                    "border-t border-slate-100",
+                    isRev && "bg-red-50/40",
+                    isUnlockedForward && "bg-amber-50/75",
+                    isLockedForward && "bg-emerald-50/40",
+                  )}
+                >
+                  <td className={cn(rowPad, "tabular-nums")}>{d.id}</td>
+                  <td className={rowPad}>
+                    <span className={badgeCls}>{badge.label}</span>
+                  </td>
+                  <td className={rowPad}>{isRev ? "Reversal" : "Dispatch"}</td>
+                  <td className={cn("max-w-[10rem] truncate", rowPad)} title={itemName}>
+                    {itemName}
+                  </td>
+                  <td className={cn(rowPad, "text-right tabular-nums")}>{isRev ? qty : `+${qty}`}</td>
+                  <td className={cn(rowPad, "text-slate-600")}>{isRev ? (d.reversalReason?.trim() || "—") : "—"}</td>
+                  <td className={cn("erp-table-action-col", mes ? "py-0" : "py-0.5")}>
+                    <div className="erp-table-actions">
+                      {isUnlockedForward && !so.dispatchReadOnly ? (
+                        primaryFinalizeDraftId != null && d.id === primaryFinalizeDraftId ? null : (
+                          <>
+                            <Button
+                              type="button"
+                              variant="default"
+                              size="sm"
+                              data-testid="finalize-dispatch-btn"
+                              className={cn(actionBtnCls, "leading-none")}
+                              disabled={lockingId === d.id}
+                              onClick={() => onLockDispatch(d.id)}
+                            >
+                              {lockingId === d.id ? "…" : "Finalize Dispatch"}
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className={actionBtnCls}
+                              disabled={deletingId === d.id}
+                              onClick={() => onDeleteDraft(d.id)}
+                            >
+                              {deletingId === d.id ? "…" : "Discard"}
+                            </Button>
+                          </>
+                        )
+                      ) : null}
+                      {isLockedForward && maxRev > 0 ? (
+                        <details className="inline-block text-right">
+                          <summary className="cursor-pointer list-none text-[10px] font-medium text-slate-500 underline decoration-slate-300 underline-offset-2 [&::-webkit-details-marker]:hidden">
+                            More actions
+                          </summary>
+                          <div className="erp-table-actions mt-1 border-t border-slate-100 pt-1">
+                            <Button
+                              type="button"
+                              variant="destructive"
+                              size="sm"
+                              className={cn(actionBtnCls, "leading-none")}
+                              disabled={reversingId === d.id}
+                              onClick={() => onReverseDispatch(d.id, maxRev)}
+                            >
+                              {reversingId === d.id ? "…" : "Reverse Dispatch"}
+                            </Button>
+                          </div>
+                        </details>
+                      ) : null}
+                      {isLockedForward &&
+                      qty > 0 &&
+                      !(billingTargetDispatchId != null && d.id === billingTargetDispatchId) ? (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className={actionBtnCls}
+                          onClick={() => void onCreateSalesBillFromDispatch(d.id)}
+                        >
+                          Create bill
+                        </Button>
+                      ) : null}
+                    </div>
+                  </td>
+                </tr>
+              );
+            }
+            const primary = [...soLedgerDispatches].sort((a, b) => b.id - a.id);
+            const other = [...soLedgerDispatchesOtherCycles].sort((a, b) => b.id - a.id);
+            return (
+              <>
+                <tbody>
+                  {so.orderType === "NO_QTY" && primary.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className={cn("text-slate-500", mes ? "py-1 text-[11px]" : "py-2 text-[12px]")}>
+                          No dispatch drafts or finalized rows for this item yet.
+                      </td>
+                    </tr>
+                  ) : (
+                    primary.map(rowEl)
+                  )}
+                </tbody>
+                {so.orderType === "NO_QTY" && other.length > 0 ? (
+                  <tbody>
+                    <tr>
+                      <td colSpan={7} className="border-t border-slate-200 bg-slate-50 px-2 py-2">
+                        <details>
+                          <summary className="cursor-pointer text-[12px] font-semibold text-slate-700">
+                            Older history (other cycles) ({other.length})
+                          </summary>
+                          <div className="mt-2 overflow-x-hidden">
+                            <table className="w-full table-fixed text-[12px]">
+                              <thead>
+                                <tr className="border-b border-slate-200 text-left text-[11px] font-medium text-slate-600">
+                                  <th className="w-[6rem] py-1 pr-2">Date</th>
+                                  <th className="w-[7.25rem] py-1 pr-2">Dispatch</th>
+                                  <th className="w-[4.25rem] py-1 pr-2 text-right">Qty</th>
+                                  <th className="w-[6.25rem] py-1 pr-2">Status</th>
+                                  <th className="py-1 pr-2">Sales Bill</th>
+                                  <th className="w-[5.25rem] py-1 pr-2">Reversal</th>
+                                  <th className="erp-table-action-col py-1">Actions</th>
+                                </tr>
+                              </thead>
+                              <tbody>{other.map(rowEl)}</tbody>
+                            </table>
+                          </div>
+                        </details>
+                      </td>
+                    </tr>
+                  </tbody>
+                ) : null}
+              </>
+            );
+          })()}
+        </table>
+      </div>
+    );
+
+    const ledgerLineCount = soLedgerDispatches.length;
+    if (collapse) {
+      return (
+        <details className={outer}>
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 outline-none hover:text-slate-700 [&::-webkit-details-marker]:hidden">
+            <span>Line ledger</span>
+            <span className="tabular-nums font-normal text-slate-400">{ledgerLineCount}</span>
+          </summary>
+          <div className="pt-1">{ledgerRowsBlock}</div>
+        </details>
+      );
+    }
+
     return (
       <div className={outer}>
         <div className={titleCls}>Dispatch ledger</div>
-        <div className={cn(scrollMax, "overflow-auto")}>
-          <table className="erp-table erp-table-dense w-full text-[13px]">
-            <thead>
-              <tr className="border-b border-slate-200 text-left text-[12px] text-slate-600">
-                <th className="py-0.5 pr-2">#</th>
-                <th className="py-0.5 pr-2">Status</th>
-                <th className="py-0.5 pr-2">Type</th>
-                <th className="py-0.5 pr-2">Item</th>
-                <th className="py-0.5 pr-2 text-right">Qty</th>
-                <th className="py-0.5 pr-2">Note</th>
-                <th className="py-0.5" />
-              </tr>
-            </thead>
-            {(() => {
-              function rowEl(d: DispatchEvent) {
-                const isRev = d.reversalOfId != null;
-                const qty = Number(d.dispatchedQty);
-                const itemName = (so.lineStats ?? []).find((ls) => ls.itemId === d.itemId)?.itemName ?? `Item #${d.itemId}`;
-                const maxRev = typeof d.maxReversibleQty === "number" ? d.maxReversibleQty : 0;
-                const badge = rowStatusBadge(d);
-                const isUnlockedForward = !isRev && d.workflowStatus === "UNLOCKED";
-                const isLockedForward = !isRev && (d.workflowStatus === "LOCKED" || d.workflowStatus == null);
-                return (
-                  <tr
-                    key={d.id}
-                    id={`so-dispatch-ledger-row-${d.id}`}
-                    className={cn("border-t border-slate-100", isRev && "bg-red-50/40")}
-                  >
-                    <td className="py-0.5 pr-2 tabular-nums">{d.id}</td>
-                    <td className="py-0.5 pr-2">
-                      <span
-                        className={`inline-flex rounded border px-1 py-0.5 text-[10px] font-medium ${badge.className}`}
-                      >
-                        {badge.label}
-                      </span>
-                    </td>
-                    <td className="py-0.5 pr-2">{isRev ? "Reversal" : "Dispatch"}</td>
-                    <td className="max-w-[10rem] truncate py-0.5 pr-2" title={itemName}>
-                      {itemName}
-                    </td>
-                    <td className="py-0.5 pr-2 text-right tabular-nums">{isRev ? qty : `+${qty}`}</td>
-                    <td className="py-0.5 pr-2 text-slate-600">{isRev ? (d.reversalReason?.trim() || "—") : "—"}</td>
-                    <td className="py-0.5 text-right">
-                      <div className="flex flex-wrap justify-end gap-1">
-                        {isUnlockedForward && !so.dispatchReadOnly ? (
-                          primaryFinalizeDraftId != null && d.id === primaryFinalizeDraftId ? null : (
-                            <>
-                              <Button
-                                type="button"
-                                variant="default"
-                                size="sm"
-                                data-testid="finalize-dispatch-btn"
-                                className="h-7 px-2 text-[11px]"
-                                disabled={lockingId === d.id}
-                                onClick={() => onLockDispatch(d.id)}
-                              >
-                                {lockingId === d.id ? "…" : "Finalize Dispatch"}
-                              </Button>
-                              <Button
-                                type="button"
-                                variant="outline"
-                                size="sm"
-                                className="h-7 px-2 text-[11px]"
-                                disabled={deletingId === d.id}
-                                onClick={() => onDeleteDraft(d.id)}
-                              >
-                                {deletingId === d.id ? "…" : "Remove"}
-                              </Button>
-                            </>
-                          )
-                        ) : null}
-                        {isLockedForward && maxRev > 0 ? (
-                          <details className="inline-block text-right">
-                            <summary className="cursor-pointer list-none text-[10px] font-medium text-slate-500 underline decoration-slate-300 underline-offset-2 [&::-webkit-details-marker]:hidden">
-                              More actions
-                            </summary>
-                            <div className="mt-1 flex flex-wrap justify-end gap-1 border-t border-slate-100 pt-1">
-                              <Button
-                                type="button"
-                                variant="destructive"
-                                size="sm"
-                                className="h-7 px-2 text-[11px]"
-                                disabled={reversingId === d.id}
-                                onClick={() => onReverseDispatch(d.id, maxRev)}
-                              >
-                                {reversingId === d.id ? "…" : "Reverse Dispatch"}
-                              </Button>
-                            </div>
-                          </details>
-                        ) : null}
-                        {isLockedForward &&
-                        qty > 0 &&
-                        !(billingTargetDispatchId != null && d.id === billingTargetDispatchId) ? (
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            className="h-7 px-2 text-[11px]"
-                            onClick={() => void onCreateSalesBillFromDispatch(d.id)}
-                          >
-                            Create bill
-                          </Button>
-                        ) : null}
-                      </div>
-                    </td>
-                  </tr>
-                );
-              }
-              const primary = [...soLedgerDispatches].sort((a, b) => b.id - a.id);
-              const other = [...soLedgerDispatchesOtherCycles].sort((a, b) => b.id - a.id);
-              return (
-                <>
-                  <tbody>
-                    {so.orderType === "NO_QTY" && primary.length === 0 ? (
-                      <tr>
-                        <td colSpan={7} className="py-2 text-[12px] text-slate-500">
-                          No prepared or finalized dispatches for this item yet.
-                        </td>
-                      </tr>
-                    ) : (
-                      primary.map(rowEl)
-                    )}
-                  </tbody>
-                  {so.orderType === "NO_QTY" && other.length > 0 ? (
-                    <tbody>
-                      <tr>
-                        <td colSpan={7} className="border-t border-slate-200 bg-slate-50 px-2 py-2">
-                          <details>
-                            <summary className="cursor-pointer text-[12px] font-semibold text-slate-700">
-                              Older history (other cycles) ({other.length})
-                            </summary>
-                            <div className="mt-2 overflow-x-hidden">
-                              <table className="w-full table-fixed text-[12px]">
-                                <thead>
-                                  <tr className="border-b border-slate-200 text-left text-[11px] font-medium text-slate-600">
-                                    <th className="w-[6rem] py-1 pr-2">Date</th>
-                                    <th className="w-[7.25rem] py-1 pr-2">Dispatch</th>
-                                    <th className="w-[4.25rem] py-1 pr-2 text-right">Qty</th>
-                                    <th className="w-[6.25rem] py-1 pr-2">Status</th>
-                                    <th className="py-1 pr-2">Sales Bill</th>
-                                    <th className="w-[5.25rem] py-1 pr-2">Reversal</th>
-                                    <th className="w-[4.5rem] py-1">Actions</th>
-                                  </tr>
-                                </thead>
-                                <tbody>{other.map(rowEl)}</tbody>
-                              </table>
-                            </div>
-                          </details>
-                        </td>
-                      </tr>
-                    </tbody>
-                  ) : null}
-                </>
-              );
-            })()}
-          </table>
-        </div>
+        {ledgerRowsBlock}
       </div>
     );
   }
 
+  const dispatchBreadcrumbRoot = React.useMemo(() => {
+    const st = (location.state as { from?: string } | null)?.from;
+    if (st === "dashboard" || fromDashboard) return { to: "/dashboard", label: "Dashboard" as const };
+    if (st === "sales-orders") return { to: "/sales-orders", label: "Sales Orders" as const };
+    return { to: "/sales-orders", label: "Sales Orders" as const };
+  }, [location.state, fromDashboard]);
+
   return (
-    <PageContainer className="pb-6 sm:pb-8">
+    <PageContainer className="pb-4 sm:pb-6">
       <div className="mb-1">
         <DemoFlowBanner />
       </div>
       <div className="grid gap-1.5">
         <OperationalContextSticky>
           <nav className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-slate-600">
-            <Link to="/sales-orders" className="font-medium text-sky-900 hover:underline">
-              Sales Orders
+            <Link to={dispatchBreadcrumbRoot.to} className="font-medium text-sky-900 hover:underline">
+              {dispatchBreadcrumbRoot.label}
             </Link>
             <span className="text-slate-300" aria-hidden>
               /
@@ -3507,19 +3981,13 @@ export function DispatchPage() {
             const eps = 1e-9;
             const so = selectedSo;
             const isNoQty = so?.orderType === "NO_QTY";
-            const cycleLabel = isNoQty
-              ? currentLine?.noQtyCycleNo != null
-                ? `Cycle ${currentLine.noQtyCycleNo}`
-                : so?.noQtyDispatchContext?.cycleNo != null
-                  ? `Cycle ${so.noQtyDispatchContext.cycleNo}`
-                  : "Cycle —"
-              : null;
             const usable = so && currentLine ? lineAvailableStockTable(so, currentLine) : 0;
             const qcPending = safeNum(currentLine?.qcPendingQty ?? 0);
             const pending = Math.max(0, remainingSoLine);
             const dispatchable = headroomToPrepare;
 
             const suggest: "RS" | "PROD" | "QC" | "DISPATCH" | "BILL" = (() => {
+              if (isNoQty && noQtyFlowState?.primaryActionForCurrentUser === "CREATE_NEXT_RS") return "RS";
               if (noQtyPreviousDispatchBillWarning || showDispatchCompletedBillingCard || showDispatchCompletedBillingFallback) return "BILL";
               if (dispatchable > eps || usable > eps) return "DISPATCH";
               if (qcPending > eps) return "QC";
@@ -3554,77 +4022,117 @@ export function DispatchPage() {
 
             const soId = so?.id ?? focusSoId;
             const soIdValid = Number.isFinite(soId) && soId > 0;
-            const rsHref = soIdValid ? `/sales-orders/${soId}/requirement-sheets` : "/sales-orders";
-            const prodHref = soIdValid ? `/production?salesOrderId=${soId}&fromStep=dispatch` : "/production";
-            const qcHref = soIdValid ? `/qc-entry?salesOrderId=${soId}&fromStep=dispatch` : "/qc-entry";
-            const dispatchHref = soIdValid ? `/dispatch?salesOrderId=${soId}` : "/dispatch";
-            const billHref = soIdValid ? `/sales-bills?salesOrderId=${soId}` : "/sales-bills";
+            const flowCycleId = noQtyFlowState?.canonicalCycleId ?? noQtyFlowState?.cycleId ?? noQtySelectedCycleId ?? null;
+            const rsHref =
+              isNoQty && soIdValid
+                ? buildNoQtyGuidedHref({ to: `/sales-orders/${soId}/requirement-sheets`, salesOrderId: soId, cycleId: flowCycleId, fromStep: "requirement" })
+                : soIdValid ? `/sales-orders/${soId}/requirement-sheets` : "/sales-orders";
+            const prodHref =
+              isNoQty && soIdValid
+                ? buildNoQtyGuidedHref({ to: "/production", salesOrderId: soId, cycleId: flowCycleId, fromStep: "dispatch" })
+                : soIdValid ? `/production?salesOrderId=${soId}&fromStep=dispatch` : "/production";
+            const qcHref =
+              isNoQty && soIdValid
+                ? buildNoQtyGuidedHref({ to: "/qc-entry", salesOrderId: soId, cycleId: flowCycleId, fromStep: "dispatch" })
+                : soIdValid ? `/qc-entry?salesOrderId=${soId}&fromStep=dispatch` : "/qc-entry";
+            const dispatchHref =
+              isNoQty && soIdValid
+                ? buildNoQtyGuidedHref({ to: "/dispatch", salesOrderId: soId, cycleId: flowCycleId, fromStep: "dispatch" })
+                : soIdValid ? `/dispatch?salesOrderId=${soId}` : "/dispatch";
+            const billHref =
+              isNoQty && soIdValid
+                ? buildNoQtyGuidedHref({ to: "/sales-bills", salesOrderId: soId, cycleId: flowCycleId, fromStep: "dispatch" })
+                : soIdValid ? `/sales-bills?salesOrderId=${soId}` : "/sales-bills";
 
             const prepareWoHref = soIdValid ? `/work-orders/prepare?salesOrderId=${encodeURIComponent(String(soId))}` : "/work-orders/prepare";
-
-            const docSeg =
-              primaryFinalizeDraftId != null && preparedDispatchDocLabel
-                ? `${preparedDispatchDocLabel} · Draft`
-                : billingTargetDispatchId != null && dispatchCompletedDocLabel && primaryFinalizeDraftId == null
-                  ? `${dispatchCompletedDocLabel} · Finalized`
-                  : "—";
 
             const statusSeg = dispatchReadOnly
               ? "View-only"
               : showPreparedDispatchActionCard
-                ? "Finalize draft"
+                ? "Draft open"
                 : showDispatchCompletedBillingCard || showDispatchCompletedBillingFallback
                   ? "Bill next"
                   : dispatchBlockedStripVisible
                     ? "Blocked"
                     : "Operational";
 
+            const noQtyCycleNo =
+              currentLine?.noQtyCycleNo != null
+                ? Number(currentLine.noQtyCycleNo)
+                : so?.noQtyDispatchContext?.cycleNo != null
+                  ? Number(so.noQtyDispatchContext.cycleNo)
+                  : null;
+
             return (
               <>
-                <OperationalContextBar className="mt-1">
-                  <span className="font-mono font-semibold tabular-nums text-slate-900">
-                    {so ? displaySalesOrderNo(so.id, so.docNo) : focusSoIdValid ? `SO-${focusSoId}` : "—"}
-                  </span>
-                  <OpCtxSep />
-                  <span className="max-w-[11rem] truncate font-medium text-slate-900" title={so ? customerDisplayName(so) : ""}>
-                    {so ? customerDisplayName(so) : "—"}
-                  </span>
-                  <OpCtxSep />
-                  <span className="rounded border border-slate-200 bg-white px-1.5 py-0 text-[11px] font-semibold text-slate-700">
-                    {so?.orderType ?? "—"}
-                  </span>
-                  {cycleLabel ? (
-                    <>
-                      <OpCtxSep />
-                      <span className="text-[11px] font-medium text-slate-600">{cycleLabel}</span>
-                    </>
-                  ) : null}
-                  <OpCtxSep />
-                  <span className="max-w-[14rem] truncate font-medium text-slate-800" title={currentLine?.itemName ?? ""}>
-                    {currentLine?.itemName ?? "—"}
-                  </span>
-                  <OpCtxSep />
-                  <span className="font-mono text-[11px] font-semibold text-violet-900">{docSeg}</span>
-                  <OpCtxSep />
-                  <span className="text-[11px] font-semibold text-slate-700">{statusSeg}</span>
-                </OperationalContextBar>
-                <div className="erp-next-action-bar mt-1 border-slate-200/90 bg-white/80 py-1">
+                {isNoQty && soIdValid && so ? (
+                  <NoQtyCycleContextBar
+                    compact
+                    className="mt-0.5"
+                    soId={so.id}
+                    soDocNo={so.docNo ?? null}
+                    itemName={currentLine?.itemName ?? null}
+                    cycleNo={noQtyCycleNo}
+                  />
+                ) : (
+                  <OperationalContextBar className="mt-1">
+                    <span className="font-mono font-semibold tabular-nums text-slate-900">
+                      {so ? displaySalesOrderNo(so.id, so.docNo) : focusSoIdValid ? `SO-${focusSoId}` : "—"}
+                    </span>
+                    <OpCtxSep />
+                    <span className="max-w-[14rem] truncate font-medium text-slate-800" title={currentLine?.itemName ?? ""}>
+                      {currentLine?.itemName ?? "—"}
+                    </span>
+                    <OpCtxSep />
+                    <span className="text-[11px] font-semibold text-slate-700">{statusSeg}</span>
+                  </OperationalContextBar>
+                )}
+                <div className="erp-next-action-bar mt-1 border-slate-200/90 bg-white/80 py-0.5">
                   <div className="flex min-w-0 flex-wrap items-center gap-1">
-                    {isNoQty
-                      ? canOpenRs
-                        ? stepBtn("RS", "Req. sheet", rsHref, soIdValid)
-                        : <PlanningStatusChip inline label="Req. sheet · Planning" />
-                      : stepBtn("PREPARE", REGULAR_TERMS.TOOLBAR_PREPARE_WO, prepareWoHref, soIdValid)}
-                    {stepBtn("PROD", "Production", prodHref, soIdValid)}
-                    {stepBtn("QC", "QC", qcHref, soIdValid)}
+                    {isNoQty && canOpenRs && noQtyFlowState?.primaryActionForCurrentUser === "CREATE_NEXT_RS" && soIdValid ? (
+                      <Button
+                        type="button"
+                        size="sm"
+                        className="h-7 px-2 text-[11px] font-semibold"
+                        onClick={() =>
+                          prepareNoQtyNextRequirementSheetAndNavigate({
+                            salesOrderId: soId,
+                            navigate,
+                            toast,
+                            navigateState: { from: "dispatch" },
+                          })
+                        }
+                      >
+                        Next RS
+                      </Button>
+                    ) : isNoQty && canOpenRs ? (
+                      stepBtn("RS", "Next RS", rsHref, soIdValid)
+                    ) : null}
                     {stepBtn("DISPATCH", "Dispatch", dispatchHref, true)}
-                    {stepBtn("BILL", "Sales Bill", billHref, soIdValid)}
-                    <Link to="/qc-report" className="text-[11px] font-semibold text-sky-800 hover:underline">
-                      QC Report
-                    </Link>
+                    {roleUi.showDispatchBillingNav ? stepBtn("BILL", "Sales Bill", billHref, soIdValid) : null}
+                    {roleUi.showDispatchCrossDeptNav ? (
+                      <details className="inline-block text-[11px]">
+                        <summary className="cursor-pointer list-none rounded border border-slate-200 bg-white px-2 py-0.5 font-medium text-slate-600 hover:bg-slate-50 [&::-webkit-details-marker]:hidden">
+                          Related workflow
+                        </summary>
+                        <div className="mt-1 flex flex-wrap gap-1 rounded border border-slate-200 bg-white p-1 shadow-sm">
+                          {!isNoQty ? stepBtn("PREPARE", REGULAR_TERMS.TOOLBAR_PREPARE_WO, prepareWoHref, soIdValid) : null}
+                          {stepBtn("PROD", "Production", prodHref, soIdValid)}
+                          {stepBtn("QC", "QC", qcHref, soIdValid)}
+                          <Link to="/qc-report" className="px-1.5 py-0.5 text-[11px] font-medium text-slate-600 hover:text-slate-800">
+                            QC Report
+                          </Link>
+                        </div>
+                      </details>
+                    ) : null}
                   </div>
                   <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-                    {isNoQty && dispatchable > eps ? (
+                    {roleUi.showDispatchCrossDeptNav && isNoQty && noQtyFlowState?.overallWorkflowState === "NEXT_RS_READY" ? (
+                      <span className="inline-flex items-center gap-1 rounded border border-sky-200 bg-sky-50 px-1.5 py-0.5 text-[10px] font-semibold text-sky-950">
+                        {noQtyFlowState.message ?? noQtyFlowState.workflowSummary ?? "Ready for Next RS"}
+                      </span>
+                    ) : null}
+                    {isNoQty && dispatchable > eps && !showPreparedDispatchActionCard ? (
                       <span className="inline-flex items-center gap-1 rounded border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-950">
                         Optional dispatch <span className="tabular-nums">{fmtDispatchQty(dispatchable)}</span>
                       </span>
@@ -3649,63 +4157,33 @@ export function DispatchPage() {
 
         {/* NO_QTY optional dispatch guidance is now a compact chip in the toolbar above. */}
 
-        {showPreparedDispatchActionCard && primaryFinalizeDraftId != null ? (
-          <div className="min-w-0 overflow-hidden rounded-md border border-amber-200 bg-amber-50/90 px-2.5 py-2">
-            <div className="flex min-w-0 flex-wrap items-start justify-between gap-2">
-              <div className="min-w-0">
-                <div className="text-[12px] font-semibold text-amber-950">Prepared dispatch</div>
-                {preparedDispatchDocLabel && preparedDispatchQtyLabel !== "—" ? (
-                  <p className="mt-0.5 text-[12px] leading-snug text-slate-800">
-                    <span className="font-mono font-semibold">{preparedDispatchDocLabel}</span> ·{" "}
-                    <span className="tabular-nums font-semibold">{preparedDispatchQtyLabel}</span> qty
-                  </p>
-                ) : (
-                  <p className="mt-0.5 text-[12px] text-slate-800">Prepared dispatch is ready.</p>
-                )}
-              </div>
-              <div className="flex shrink-0 flex-wrap items-center gap-2">
-                <Button
-                  type="button"
-                  size="sm"
-                  className="font-semibold"
-                  data-testid="prepared-dispatch-finalize-btn"
-                  disabled={lockingId === primaryFinalizeDraftId}
-                  onClick={() => primaryFinalizeDraftId != null && void onFinalizeDraftDispatch(primaryFinalizeDraftId)}
-                >
-                  {lockingId === primaryFinalizeDraftId ? "…" : "Finalize Dispatch"}
-                </Button>
-                <Button
-                  type="button"
-                  variant="destructive"
-                  size="sm"
-                  className="font-semibold"
-                  data-testid="prepared-dispatch-delete-btn"
-                  disabled={deletingId === primaryFinalizeDraftId}
-                  onClick={() => primaryFinalizeDraftId != null && void onDeleteDraft(primaryFinalizeDraftId)}
-                >
-                  {deletingId === primaryFinalizeDraftId ? "…" : "Delete Draft"}
-                </Button>
-              </div>
-            </div>
-            <button
-              type="button"
-              className="mt-1.5 block w-fit text-left text-[11px] font-medium text-sky-800 underline decoration-sky-800/40 underline-offset-2 hover:text-sky-950"
-              onClick={() => {
-                setReopenedPreparedDraft(null);
-                setReopenFallbackSoRow(null);
-                const params = new URLSearchParams(sp);
-                params.delete("draftDispatchId");
-                navigate(`/dispatch?${params.toString()}`, { replace: true });
-              }}
-            >
-              Back to open lines
-            </button>
+        {showPreparedDispatchActionCard ? renderSoDispatchLedger("belowPrepared") : null}
+
+        {showRegularPartialDispatchContinuation && regularPartialContinuationMetrics && !isRegularDispatchWorkbench ? (
+          <div
+            className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-sky-200/80 bg-sky-50/80 px-2.5 py-1.5 text-[11px] leading-snug"
+            data-testid="dispatch-partial-continuation-strip"
+          >
+            <span className="font-semibold text-sky-950">Partial dispatch in progress</span>
+            <span className="text-slate-500" aria-hidden>·</span>
+            <span>
+              Dispatched{" "}
+              <span className="font-bold tabular-nums text-slate-900">{fmtDispatchQty(regularPartialContinuationMetrics.dispatched)}</span>
+            </span>
+            <span className="text-slate-500" aria-hidden>·</span>
+            <span>
+              Pending{" "}
+              <span className="font-bold tabular-nums text-amber-950">{fmtDispatchQty(regularPartialContinuationMetrics.pending)}</span>
+            </span>
+            <span className="text-slate-500" aria-hidden>·</span>
+            <span>
+              Available now{" "}
+              <span className="font-bold tabular-nums text-emerald-900">{fmtDispatchQty(regularPartialContinuationMetrics.availableNow)}</span>
+            </span>
           </div>
         ) : null}
 
-        {showPreparedDispatchActionCard ? renderSoDispatchLedger("belowPrepared") : null}
-
-        {showDispatchCompletedBillingCard && billingTargetDispatchId != null ? (
+                {showDispatchCompletedBillingCardEffective && billingTargetDispatchId != null ? (
           <div className="min-w-0 overflow-hidden rounded-md border border-emerald-200/90 bg-emerald-50/80 px-2.5 py-2">
             <div className="flex min-w-0 flex-wrap items-start justify-between gap-2">
               <div className="min-w-0 text-[12px] leading-snug text-slate-800">
@@ -3782,9 +4260,6 @@ export function DispatchPage() {
 
       <OperatorPageBody className="pb-0">
         {/* Phase 1: "Create Next RS" CTA removed from Dispatch page. */}
-        {fromNoQtySo && focusSoIdValid ? (
-          <NoQtyCycleBanner className="mb-1" />
-        ) : null}
         {error ? <div className="rounded border border-red-200 bg-red-50 px-2 py-1 text-[13px] text-red-800">{error}</div> : null}
         {dispatchInfo ? (
           <div className="whitespace-pre-line rounded border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[12px] leading-snug text-emerald-900">
@@ -3825,9 +4300,9 @@ export function DispatchPage() {
         <div className="rounded border border-emerald-200 bg-emerald-50 px-3 py-2 text-[13px] text-emerald-950">
           {hasPreparedDraftLedger ? (
             <>
-              <div className="font-semibold text-amber-950">Prepared dispatch exists</div>
+              <div className="font-semibold text-amber-950">Dispatch draft pending</div>
               <div className="mt-0.5 text-amber-900">
-                A prepared (draft) dispatch is pending finalization. Use the dispatch list above to reopen it, or adjust filters/dates below to locate it in history.
+                A dispatch draft is waiting for finalization. Reopen it from the line ledger above, or use dispatch history below.
               </div>
             </>
           ) : (
@@ -3902,12 +4377,12 @@ export function DispatchPage() {
                       <div className="rounded border border-sky-200 bg-sky-50 px-2.5 py-2 text-[12px] text-sky-950">
                         Loading guided dispatch context…
                       </div>
-                    ) : finalizePrepDraftMode ? (
-                      <div className="rounded border border-amber-200 bg-amber-50 px-2.5 py-2 text-[12px] text-amber-950">
-                        <div className="font-semibold">Prepared dispatch</div>
-                        <div className="mt-0.5 text-[11px] text-amber-900/90">Draft saved — finalize or delete when ready.</div>
+                    ) : finalizePrepDraftMode && !hideGuidedNoQtyVerbosePanel ? (
+                      <div className="flex flex-wrap items-center gap-2 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-950">
+                        <span className="font-semibold">{DISPATCH_OP.BADGE_DRAFT}</span>
+                        <span className="text-amber-900/90">{DISPATCH_OP.GUIDANCE_DRAFT_ONLY} Finalize when ready.</span>
                       </div>
-                    ) : (
+                    ) : hideGuidedNoQtyVerbosePanel ? null : (
                       <div
                         className={
                           guidedLedgerContext?.preparedDraft
@@ -3919,8 +4394,10 @@ export function DispatchPage() {
                       >
                         {guidedLedgerContext?.preparedDraft ? (
                           <>
-                            <div className="font-semibold">Dispatch Ready</div>
-                            <div className="mt-0.5 text-[11px] text-amber-900">Prepared draft — finalize or delete when ready.</div>
+                            <div className="font-semibold">Draft saved — next step</div>
+                            <div className="mt-0.5 text-[11px] text-amber-900">
+                              {DISPATCH_OP.GUIDANCE_DRAFT_ONLY} Use Finalize in the card or ledger.
+                            </div>
                           </>
                         ) : safeNum(currentDispatchableQty) <= 1e-9 && guidedLedgerContext?.latestFinalized ? (
                           <>
@@ -3979,7 +4456,7 @@ export function DispatchPage() {
                                 </div>
                               </div>
                             ) : null}
-                            {!noQtyPartialAfterFirstDispatchThisCycle ? (
+                            {!noQtyPartialAfterFirstDispatchThisCycle && !roleUi.quietNoQtyExplanations ? (
                               <p className="mt-1.5 text-[11px] leading-snug text-slate-600">
                                 Enter quantity on the right and tap <span className="font-semibold text-slate-800">Dispatch Now</span>. Allocation
                                 across cycles is automatic (FIFO). Nothing posts until you finalize the prepared dispatch.
@@ -4015,7 +4492,7 @@ export function DispatchPage() {
                                       <div className="font-semibold tabular-nums">{fmtDispatchQty(safeNum(currentLine?.cycleCapRemaining ?? 0))}</div>
                                     </div>
                                     <div>
-                                      <div className="text-slate-600">Prepared draft</div>
+                                      <div className="text-slate-600">Open dispatch draft</div>
                                       <div className="font-semibold tabular-nums">{fmtDispatchQty(existingDraftQty)}</div>
                                     </div>
                                   </div>
@@ -4091,7 +4568,7 @@ export function DispatchPage() {
                           {dup ? ` (line ${l.lineId})` : ""}
                           {partialOpt}
                           {currentLine && l.lineId === currentLine.lineId && !selectableLines.some((x) => x.lineId === l.lineId) ? "" : ""}
-                          {d > 0 ? ` · prepared ${fmtDispatchQty(d)}` : ""}
+                          {d > 0 ? ` · draft saved ${fmtDispatchQty(d)}` : ""}
                         </option>
                       );
                     })}
@@ -4100,16 +4577,17 @@ export function DispatchPage() {
               </FieldShortcutHint>
               {selectedSo?.orderType === "NO_QTY" && isAdmin ? (
                 <div className="erp-form-field min-w-[9rem] max-w-[12rem] shrink-0 self-end">
-                  <span className="text-[12px] font-medium text-slate-600">Admin</span>
                   <button
                     type="button"
+                    title="Admin tools"
                     className={cn(
-                      "mt-0.5 w-full rounded border border-slate-200 bg-white px-2 text-left text-[12px] font-medium leading-8 text-sky-900 shadow-sm hover:bg-slate-50",
+                      "mt-0.5 inline-flex w-full items-center justify-center gap-1 rounded border border-slate-200 bg-white px-2 text-[11px] font-medium leading-7 text-slate-700 shadow-sm hover:bg-slate-50",
                       operatorInputClass,
                     )}
                     onClick={() => setNoQtyAdminAdvancedOpen((v) => !v)}
                   >
-                    {noQtyAdminAdvancedOpen ? "Hide advanced" : "Advanced / debug"}
+                    <Settings className="h-3.5 w-3.5" aria-hidden />
+                    Admin
                   </button>
                 </div>
               ) : null}
@@ -4175,7 +4653,7 @@ export function DispatchPage() {
                     </div>
                   </details>
                 ) : null
-              ) : (
+              ) : !isRegularDispatchWorkbench ? (
                 <DispatchDecisionSummaryCard
                   so={selectedSo}
                   ls={currentLine}
@@ -4183,19 +4661,26 @@ export function DispatchPage() {
                   noQtyNextAction={noQtySelectedNextAction}
                   regularReadiness={currentRegularReadiness}
                 />
-              )
+              ) : null
             ) : null}
               </>
           </OperatorTopBar>
 
           <OperatorMainSplit
-            panelFirstOnLg={selectedSo?.orderType === "NO_QTY"}
-            lgGridClassName={selectedSo?.orderType === "NO_QTY" ? "lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]" : undefined}
-            panelContainerClassName={
-              selectedSo?.orderType === "NO_QTY" ? "order-1 min-w-0" : undefined
+            panelFirstOnLg={selectedSo?.orderType === "NO_QTY" || isRegularDispatchWorkbench}
+            lgGridClassName={
+              selectedSo?.orderType === "NO_QTY"
+                ? "lg:grid-cols-[minmax(0,2.4fr)_minmax(180px,220px)]"
+                : isRegularDispatchWorkbench
+                  ? "lg:grid-cols-[minmax(0,1.45fr)_minmax(220px,280px)]"
+                  : undefined
             }
+            panelContainerClassName={
+              selectedSo?.orderType === "NO_QTY" || isRegularDispatchWorkbench ? "order-1 min-w-0" : undefined
+            }
+            panelClassName={isRegularDispatchWorkbench ? "p-2.5" : undefined}
             queue={
-              <div className="flex flex-col gap-3">
+              <div className={cn("flex flex-col", isRegularDispatchWorkbench ? "gap-1.5" : "gap-3")}>
                 {finalizePrepDraftMode ? null : (showPreparedDispatchActionCard ||
                   showDispatchCompletedBillingCard ||
                   showDispatchCompletedBillingFallback) &&
@@ -4210,18 +4695,25 @@ export function DispatchPage() {
                     </button>
                   </div>
                 ) : !finalizePrepDraftMode ? (
-                <section className="space-y-1">
-                  <div className="flex flex-wrap items-baseline justify-between gap-2">
-                    <h3 className="text-[12px] font-bold uppercase tracking-wide text-slate-600">
-                      {selectedSo?.orderType === "NO_QTY" ? "Operational Queue" : "Open lines"}
+                <section className={cn("space-y-1", selectedSo?.orderType === "NO_QTY" && "space-y-0.5")}>
+                  <div className="flex flex-wrap items-baseline justify-between gap-1">
+                    <h3 className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                      {selectedSo?.orderType === "NO_QTY" ? "Queue" : "Open lines"}
                     </h3>
-                    <span className="text-[11px] text-slate-500">
-                      {fromNoQtySo && focusSoIdValid && selectedSo?.orderType === "NO_QTY"
-                        ? "Use the item selector in the panel to change the FG line."
+                    {selectedSo?.orderType === "NO_QTY" ? null : (
+                    <span className="max-w-[min(100%,20rem)] text-[11px] leading-snug text-slate-400">
+                      {fromNoQtySo && focusSoIdValid
+                        ? "Change line from the item selector in the panel."
                         : noQtyLineEntries
-                          ? "All FG lines for this cycle are listed below."
-                          : "Choose a sales order and line to prepare dispatch."}
+                          ? "FG lines for this cycle."
+                          : "Pick an order and line to dispatch."}
                     </span>
+                    )}
+                  {selectedSo?.orderType === "NO_QTY" ? (
+                    <span className="max-w-[min(100%,22rem)] text-[10px] leading-snug text-slate-500">
+                      FIFO by cycle — qty shows per source cycle; prepare still allocates oldest pool first.
+                    </span>
+                  ) : null}
                   </div>
                   {selectedSo?.orderType === "NO_QTY" ? null : (() => {
                     const entries: Array<{ so: SoRow; ls: LineStat }> = noQtyLineEntries
@@ -4231,7 +4723,7 @@ export function DispatchPage() {
                       (acc, e) => {
                         const cyc =
                           e.so.orderType === "NO_QTY"
-                            ? normalizePositiveCycleId(e.so.noQtyDispatchContext?.selectedCycleId ?? e.so.currentCycleId)
+                            ? normalizePositiveCycleId(e.ls.noQtyCycleId ?? e.so.noQtyDispatchContext?.selectedCycleId)
                             : null;
                         const pending = linePendingOnOrderDisplay(e.ls);
                         const maxNow = computeDispatchableNow({ so: e.so, ls: e.ls, cycleIdOverride: cyc });
@@ -4244,8 +4736,13 @@ export function DispatchPage() {
                       { ready: 0, partial: 0, waiting: 0 },
                     );
 
-                    return (
-                      <div className="grid gap-2 rounded border border-slate-200 bg-white p-2 sm:grid-cols-3">
+      return (
+                      <details className="rounded border border-slate-200 bg-white">
+                        <summary className="cursor-pointer px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-50">
+                          Open-line queue counts (optional)
+                        </summary>
+                        <div className="border-t border-slate-100 p-1.5">
+                      <div className="grid gap-2 sm:grid-cols-3">
                         <Card className="border-emerald-200 bg-emerald-50 shadow-none">
                           <CardHeader className="p-3 pb-1">
                             <CardTitle className="text-[12px] font-semibold text-emerald-950">Ready to Dispatch</CardTitle>
@@ -4271,6 +4768,8 @@ export function DispatchPage() {
                           </CardContent>
                         </Card>
                       </div>
+                        </div>
+                      </details>
                     );
                   })()}
                   {selectedSo?.orderType === "NO_QTY" ? (
@@ -4281,7 +4780,7 @@ export function DispatchPage() {
                       const eps = 1e-9;
                       type OpState = "OPTIONAL_DISPATCH" | "AWAITING_QC" | "AWAITING_PRODUCTION" | "COMPLETED";
                       const stateLabel = (s: OpState): string => {
-                        if (s === "OPTIONAL_DISPATCH") return "Optional Dispatch";
+                        if (s === "OPTIONAL_DISPATCH") return "Optional";
                         if (s === "AWAITING_QC") return "Awaiting QC";
                         if (s === "AWAITING_PRODUCTION") return "Awaiting Production";
                         return "Completed";
@@ -4293,30 +4792,53 @@ export function DispatchPage() {
                         itemName: string;
                         bestLs: LineStat;
                         usableAny: number;
-                        dispatchableAny: number;
+                        /** Sum of per-cycle QC-backed dispatchable (matches prepare FIFO cap). */
+                        dispatchableSum: number;
+                        /** Source-cycle breakdown (non-zero pools), ascending by cycle no. */
+                        dispatchableByCycle: Array<{ cycleId: number; cycleNo: number | null; qty: number }>;
                         qcPendingAny: number;
                         customerPendingAny: number;
                         state: OpState;
+                      };
+
+                      const betterFifoPrepareLineStat = (prev: LineStat, next: LineStat, prevDisp: number, nextDisp: number): LineStat => {
+                        if (nextDisp > eps && prevDisp <= eps) return next;
+                        if (prevDisp > eps && nextDisp <= eps) return prev;
+                        if (prevDisp > eps && nextDisp > eps) {
+                          const pn = prev.noQtyCycleNo != null && Number.isFinite(Number(prev.noQtyCycleNo)) ? Number(prev.noQtyCycleNo) : 999999;
+                          const nn = next.noQtyCycleNo != null && Number.isFinite(Number(next.noQtyCycleNo)) ? Number(next.noQtyCycleNo) : 999999;
+                          return nn < pn ? next : prev;
+                        }
+                        return prev;
                       };
 
                       const byKey = new Map<string, Grouped>();
                       for (const { so, ls } of entries) {
                         const key = `${so.id}-${ls.itemId}`;
                         const usable = lineAvailableStockTable(so, ls);
-                        const cyc = normalizePositiveCycleId(so.noQtyDispatchContext?.selectedCycleId ?? so.currentCycleId);
-                        const dispatchable = computeDispatchableNow({ so, ls, cycleIdOverride: cyc });
+                        const cyc = normalizePositiveCycleId(
+                          ls.noQtyCycleId ?? so.noQtyDispatchContext?.selectedCycleId ?? so.currentCycleId,
+                        );
+                        const visibleCyc = normalizePositiveCycleId(ls.noQtyCycleId ?? so.noQtyDispatchContext?.selectedCycleId);
+                        const dispatchable = cyc != null ? computeDispatchableNow({ so, ls, cycleIdOverride: cyc }) : 0;
                         const qcPending = safeNum(ls.qcPendingQty ?? 0);
                         const customerPending = linePendingOnOrderDisplay(ls);
 
                         const existing = byKey.get(key);
                         if (!existing) {
+                          const byCycle: Array<{ cycleId: number; cycleNo: number | null; qty: number }> = [];
+                          if (visibleCyc != null && dispatchable > eps) {
+                            const cno = ls.noQtyCycleNo != null && Number.isFinite(Number(ls.noQtyCycleNo)) ? Number(ls.noQtyCycleNo) : null;
+                            byCycle.push({ cycleId: visibleCyc, cycleNo: cno, qty: dispatchable });
+                          }
                           byKey.set(key, {
                             so,
                             itemId: ls.itemId,
                             itemName: ls.itemName,
                             bestLs: ls,
                             usableAny: usable,
-                            dispatchableAny: dispatchable,
+                            dispatchableSum: dispatchable,
+                            dispatchableByCycle: byCycle,
                             qcPendingAny: qcPending,
                             customerPendingAny: customerPending,
                             state: "COMPLETED",
@@ -4325,22 +4847,50 @@ export function DispatchPage() {
                         }
 
                         existing.usableAny = Math.max(existing.usableAny, usable);
-                        existing.dispatchableAny = Math.max(existing.dispatchableAny, dispatchable);
+                        existing.dispatchableSum += dispatchable;
+                        if (cyc != null && dispatchable > eps) {
+                          const cno = ls.noQtyCycleNo != null && Number.isFinite(Number(ls.noQtyCycleNo)) ? Number(ls.noQtyCycleNo) : null;
+                          const idx = existing.dispatchableByCycle.findIndex((x) => x.cycleId === cyc);
+                          if (idx >= 0) {
+                            const prev = existing.dispatchableByCycle[idx];
+                            existing.dispatchableByCycle[idx] = { ...prev, qty: prev.qty + dispatchable };
+                          } else {
+                            existing.dispatchableByCycle.push({ cycleId: cyc, cycleNo: cno, qty: dispatchable });
+                          }
+                          existing.dispatchableByCycle.sort(
+                            (a, b) => (a.cycleNo ?? a.cycleId) - (b.cycleNo ?? b.cycleId),
+                          );
+                        }
                         existing.qcPendingAny = Math.max(existing.qcPendingAny, qcPending);
                         existing.customerPendingAny = Math.max(existing.customerPendingAny, customerPending);
 
-                        // Pick a single representative row for actions (best available action first).
-                        const existingBestCyc = normalizePositiveCycleId(existing.so.noQtyDispatchContext?.selectedCycleId ?? existing.so.currentCycleId);
-                        const existingBestDispatchable = computeDispatchableNow({
-                          so: existing.so,
-                          ls: existing.bestLs,
-                          cycleIdOverride: existingBestCyc,
-                        });
-                        const score = (d: number, q: number, p: number) =>
-                          (d > eps ? 3_000_000 + d : 0) + (q > eps ? 2_000 + q : 0) + (p > eps ? 1 + p : 0);
-                        const existingScore = score(existingBestDispatchable, safeNum(existing.bestLs.qcPendingQty ?? 0), linePendingOnOrderDisplay(existing.bestLs));
-                        const candidateScore = score(dispatchable, qcPending, customerPending);
-                        if (candidateScore > existingScore) existing.bestLs = ls;
+                        const prevCyc = normalizePositiveCycleId(
+                          existing.bestLs.noQtyCycleId ??
+                            existing.so.noQtyDispatchContext?.selectedCycleId ??
+                            existing.so.currentCycleId,
+                        );
+                        const prevDisp =
+                          prevCyc != null
+                            ? computeDispatchableNow({
+                                so: existing.so,
+                                ls: existing.bestLs,
+                                cycleIdOverride: prevCyc,
+                              })
+                            : 0;
+                        const candDisp = dispatchable;
+                        if (prevDisp <= eps && candDisp <= eps) {
+                          const score = (d: number, q: number, p: number) =>
+                            (d > eps ? 3_000_000 + d : 0) + (q > eps ? 2_000 + q : 0) + (p > eps ? 1 + p : 0);
+                          const existingScore = score(
+                            prevDisp,
+                            safeNum(existing.bestLs.qcPendingQty ?? 0),
+                            linePendingOnOrderDisplay(existing.bestLs),
+                          );
+                          const candidateScore = score(candDisp, qcPending, customerPending);
+                          if (candidateScore > existingScore) existing.bestLs = ls;
+                        } else {
+                          existing.bestLs = betterFifoPrepareLineStat(existing.bestLs, ls, prevDisp, candDisp);
+                        }
                       }
 
                       const groups: Grouped[] = [];
@@ -4349,7 +4899,8 @@ export function DispatchPage() {
                         // - If customer pending = 0 AND usable/dispatchable > 0 => Optional Dispatch
                         // - If customer pending = 0 AND usable/dispatchable = 0 AND no QC/prod pending => Completed
                         // Otherwise QC/prod states.
-                        const hasOptional = g.customerPendingAny <= eps && (g.usableAny > eps || g.dispatchableAny > eps);
+                        const hasOptional =
+                          g.customerPendingAny <= eps && (g.usableAny > eps || g.dispatchableSum > eps);
                         if (hasOptional) g.state = "OPTIONAL_DISPATCH";
                         else if (g.qcPendingAny > eps) g.state = "AWAITING_QC";
                         else if (g.customerPendingAny > eps) g.state = "AWAITING_PRODUCTION";
@@ -4367,15 +4918,15 @@ export function DispatchPage() {
                         return a.itemName.localeCompare(b.itemName);
                       });
                       return (
-                        <div className="overflow-hidden rounded border border-slate-200 bg-white">
+                        <div className="overflow-hidden rounded-lg border border-slate-200/80 bg-white shadow-sm ring-1 ring-slate-100/50">
                           <div className="overflow-x-hidden">
-                            <table className="w-full table-fixed text-[12px]">
-                              <thead className="sticky top-0 z-[1] border-b border-slate-200 bg-slate-50">
-                                <tr className="text-left text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                                  <th className="w-[6.75rem] px-2 py-1.5 font-medium">SO</th>
-                                  <th className="px-2 py-1.5 font-medium">Item</th>
-                                  <th className="w-[7.5rem] px-2 py-1.5 font-medium">Current State</th>
-                                  <th className="w-[5.5rem] px-2 py-1.5 text-right font-medium">Action</th>
+                            <table className="w-full table-fixed text-[11px]">
+                              <thead className="sticky top-0 z-[1] border-b border-slate-200/80 bg-slate-50/95">
+                                <tr className="text-left text-[9px] font-medium uppercase tracking-wide text-slate-500">
+                                  <th className="w-[4.75rem] px-1.5 py-1 font-medium">SO</th>
+                                  <th className="min-w-0 px-1.5 py-1 font-medium">Item</th>
+                                  <th className="w-[3.25rem] px-1.5 py-1 text-right font-medium">Qty</th>
+                                  <th className="w-[4.25rem] px-1 py-1 text-right font-medium"> </th>
                                 </tr>
                               </thead>
                               <tbody>
@@ -4384,9 +4935,27 @@ export function DispatchPage() {
                                   const ls = g.bestLs;
                                   const state = g.state;
                                   const selected = soId === so.id && salesOrderLineId === ls.lineId;
+                                  const rowQty =
+                                    state === "OPTIONAL_DISPATCH"
+                                      ? fmtDispatchQty(g.dispatchableSum)
+                                      : state === "AWAITING_QC"
+                                        ? fmtDispatchQty(g.qcPendingAny)
+                                        : state === "AWAITING_PRODUCTION"
+                                          ? fmtDispatchQty(g.customerPendingAny)
+                                          : "—";
+                                  const cycleFifoHint =
+                                    state === "OPTIONAL_DISPATCH" && g.dispatchableByCycle.length > 0
+                                      ? g.dispatchableByCycle
+                                          .map((c) => {
+                                            const lab =
+                                              c.cycleNo != null && Number.isFinite(c.cycleNo) ? `C${c.cycleNo}` : `#${c.cycleId}`;
+                                            return `${lab} ${fmtDispatchQty(c.qty)}`;
+                                          })
+                                          .join(" · ")
+                                      : null;
                                   const action =
                                     state === "OPTIONAL_DISPATCH"
-                                      ? { label: "Prepare", kind: "prepare" as const }
+                                      ? { label: "Select", kind: "prepare" as const }
                                       : state === "AWAITING_QC"
                                         ? { label: "Open QC", kind: "qc" as const }
                                         : state === "AWAITING_PRODUCTION"
@@ -4396,42 +4965,37 @@ export function DispatchPage() {
                                     <tr
                                       key={`${so.id}-${g.itemId}`}
                                       className={cn(
-                                        "border-t border-slate-100 hover:bg-slate-50/70",
+                                        "border-t border-slate-100/90 hover:bg-slate-50/50",
                                         operatorTableRowClass,
-                                        selected && "bg-emerald-50",
+                                        selected && "bg-sky-50/60",
                                       )}
+                                      title={stateLabel(state)}
                                     >
-                                      <td className="whitespace-nowrap px-2 py-1 font-mono text-[11px] text-slate-800">
+                                      <td className="whitespace-nowrap px-1.5 py-1 font-mono text-[10px] text-slate-800">
                                         {displaySalesOrderNo(so.id, so.docNo)}
                                       </td>
-                                      <td className="min-w-0 truncate px-2 py-1" title={g.itemName}>
-                                        {g.itemName}
+                                      <td className="min-w-0 truncate px-1.5 py-1 text-slate-700" title={g.itemName}>
+                                        <div className="truncate">{g.itemName}</div>
+                                        {cycleFifoHint ? (
+                                          <div className="mt-0.5 truncate text-[9px] font-normal text-slate-500" title={cycleFifoHint}>
+                                            {cycleFifoHint}
+                                          </div>
+                                        ) : null}
                                       </td>
-                                      <td className="px-2 py-1 text-[11px] font-medium">
-                                        <span
-                                          className={cn(
-                                            "inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
-                                            state === "OPTIONAL_DISPATCH"
-                                              ? "border-emerald-200 bg-emerald-50 text-emerald-950"
-                                              : state === "AWAITING_QC"
-                                                ? "border-amber-200 bg-amber-50 text-amber-950"
-                                                : state === "AWAITING_PRODUCTION"
-                                                  ? "border-sky-200 bg-sky-50 text-sky-950"
-                                                  : "border-slate-200 bg-slate-100 text-slate-700",
-                                          )}
-                                        >
-                                          {stateLabel(state)}
-                                        </span>
+                                      <td className="whitespace-nowrap px-1.5 py-1 text-right font-semibold tabular-nums text-slate-800">
+                                        {rowQty}
                                       </td>
-                                      <td className="px-2 py-0.5 text-right">
+                                      <td className="px-1 py-0.5 text-right">
                                         <Button
                                           type="button"
-                                          variant={action.kind === "prepare" ? "default" : "ghost"}
+                                          variant="outline"
                                           size="sm"
                                           className={cn(
-                                            "h-7 px-2 text-[11px] font-semibold",
+                                            "h-7 min-w-0 px-1.5 text-[10px] font-semibold",
                                             action.kind === "prepare" &&
-                                              "bg-slate-900 text-white shadow-sm hover:bg-slate-950 active:bg-black",
+                                              "border-slate-200/90 bg-white text-slate-700 hover:bg-slate-50",
+                                            action.kind === "qc" && "border-amber-200/80 text-amber-950 hover:bg-amber-50/50",
+                                            action.kind === "prod" && "border-sky-200/80 text-sky-950 hover:bg-sky-50/50",
                                           )}
                                           onClick={() => {
                                             if (action.kind === "prepare" || action.kind === "view") {
@@ -4459,171 +5023,180 @@ export function DispatchPage() {
                     })()
                   ) : null}
                   {fromNoQtySo && focusSoIdValid && selectedSo?.orderType === "NO_QTY" ? null : (
-                    <div className="max-h-[min(38vh,280px)] overflow-auto rounded border border-slate-200 bg-white">
-                      <table className="w-full text-[13px]">
-                      <thead className="sticky top-0 z-[1] border-b border-slate-200 bg-slate-50">
-                        <tr className="text-left text-[12px] text-slate-600">
-                          <th className="px-2 py-1 font-medium">Customer</th>
-                          <th className="px-2 py-1 font-medium">SO No</th>
-                          <th className="px-2 py-1 font-medium">Item</th>
-                          <th className="px-2 py-1 text-right font-medium">Customer Pending</th>
-                          <th className="px-2 py-1 text-right font-medium">Usable Stock</th>
-                          <th className="px-2 py-1 text-right font-medium">Optional dispatch</th>
-                          <th className="px-2 py-1 font-medium">Status</th>
-                          <th className="px-2 py-1 font-medium">Action</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {noQtyLineEntries
-                          ? noQtyLineEntries.map(({ so, ls }) => {
-                              const selected = soId === so.id && salesOrderLineId === ls.lineId;
-                              const cyc = normalizePositiveCycleId(
-                                so.noQtyDispatchContext?.selectedCycleId ?? so.currentCycleId,
-                              );
-                              const disp = computeDispatchableNow({ so, ls, cycleIdOverride: cyc });
-                              const pend = linePendingOnOrderDisplay(ls);
-                              const avail = lineAvailableStockTable(so, ls);
-                              const status = backlogStatus(pend, disp);
-                              const cycleLabel =
-                                so.noQtyDispatchContext?.cycleLabel?.trim() ||
-                                (cyc != null ? `Cycle #${cyc}` : "Cycle");
-                              return (
-                                <tr
-                                  key={`${so.id}-${ls.lineId}-${ls.noQtyCycleId ?? "x"}`}
-                                  className={cn(
-                                    "border-t border-slate-100",
-                                    operatorTableRowClass,
-                                    selected && "bg-emerald-50 ring-2 ring-inset ring-emerald-500/40",
-                                    fromNoQtySo && soId > 0 && so.id !== soId && "opacity-60",
-                                  )}
-                                >
-                                  <td className="max-w-[10rem] truncate px-2 py-1 text-slate-900" title={customerDisplayName(so)}>
-                                    {customerDisplayName(so)}
-                                  </td>
-                                  <td className="px-2 py-1 tabular-nums text-slate-900">
-                                    <span className="rounded border border-sky-200 bg-sky-50 px-1.5 py-0.5 font-mono text-[12px] font-semibold text-sky-900">
-                                      {displaySalesOrderNo(so.id, so.docNo)}
-                                    </span>
-                                  </td>
-                                  <td className="max-w-[10rem] truncate px-2 py-1 font-medium text-slate-900" title={ls.itemName}>
-                                    {ls.itemName}
-                                  </td>
-                                  <td className="px-2 py-1 text-right tabular-nums text-slate-800">{fmtDispatchQty(pend)}</td>
-                                  <td className="px-2 py-1 text-right tabular-nums text-slate-800">{fmtDispatchQty(avail)}</td>
-                                  <td className="px-2 py-1 text-right font-semibold tabular-nums text-slate-900">
-                                    {fmtDispatchQty(disp)}
-                                  </td>
-                                  <td className="px-2 py-1 text-[12px] text-slate-900">
-                                    <div className="flex flex-wrap items-center gap-2">
-                                      <span
-                                        className={cn(
-                                          "inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-semibold",
-                                          backlogStatusBadgeClass(status),
-                                        )}
-                                      >
-                                        {backlogStatusLabel(status)}
-                                      </span>
-                                      {isAdmin && noQtyAdminAdvancedOpen ? (
-                                        <Badge variant="info" className="text-[11px]">
-                                          {cycleLabel}
-                                        </Badge>
-                                      ) : null}
-                                    </div>
-                                  </td>
-                                  <td className="px-2 py-1 text-right">
-                                    <Button
-                                      type="button"
-                                      variant="ghost"
-                                      size="sm"
-                                      className="h-7 w-7 shrink-0 p-0 text-[13px]"
-                                      onClick={() => selectLineFromBacklog(so, ls)}
-                                      aria-label={`Select ${ls.itemName}`}
-                                    >
-                                      ▶
-                                    </Button>
-                                  </td>
-                                </tr>
-                              );
-                            })
-                          : prepareQueueSections.flatMap((section) => {
-                              const header = (
-                                <tr key={`hdr-${section.key}`} className="border-t border-slate-200 bg-slate-100">
-                                  <td colSpan={8} className="px-2 py-1.5 text-[11px] font-bold uppercase tracking-wide text-slate-600">
-                                    {section.label}
-                                  </td>
-                                </tr>
-                              );
-                              const body = section.rows.map(({ so, ls }) => {
+                    <div
+                      className={cn(
+                        "overflow-auto rounded border border-slate-200 bg-white",
+                        isRegularDispatchWorkbench ? "max-h-[min(28vh,200px)]" : "max-h-[min(30vh,220px)]",
+                      )}
+                    >
+                      <table className="w-full table-fixed text-[12px]">
+                        <thead className="sticky top-0 z-[1] border-b border-slate-200 bg-slate-50">
+                          <tr className="text-left text-[11px] text-slate-600">
+                            <th className="w-[38%] px-1.5 py-0.5 font-medium">Customer · SO</th>
+                            <th className="w-[32%] px-1.5 py-0.5 font-medium">Item</th>
+                            <th className="w-[18%] px-1.5 py-0.5 text-right font-medium">Dispatch</th>
+                            <th className="w-[12%] px-1.5 py-0.5 text-right font-medium"> </th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {noQtyLineEntries
+                            ? noQtyLineEntries.map(({ so, ls }) => {
                                 const selected = soId === so.id && salesOrderLineId === ls.lineId;
-                                const ready = computeDispatchableNow({
-                                  so,
-                                  ls,
-                                  cycleIdOverride:
-                                    so.orderType === "NO_QTY"
-                                      ? normalizePositiveCycleId(so.noQtyDispatchContext?.selectedCycleId ?? so.currentCycleId)
-                                      : null,
-                                });
+                                const cyc = normalizePositiveCycleId(
+                                  ls.noQtyCycleId ?? so.noQtyDispatchContext?.selectedCycleId ?? so.currentCycleId,
+                                );
+                                const disp = computeDispatchableNow({ so, ls, cycleIdOverride: cyc });
                                 const pend = linePendingOnOrderDisplay(ls);
-                                const avail = lineAvailableStockTable(so, ls);
-                                const status = backlogStatus(pend, ready);
+                                const status = backlogStatus(pend, disp);
+                                const cycleLabel =
+                                  ls.noQtyCycleNo != null && Number.isFinite(Number(ls.noQtyCycleNo))
+                                    ? `Cycle ${Number(ls.noQtyCycleNo)}`
+                                    : ls.noQtyCycleId != null
+                                      ? `Cycle #${ls.noQtyCycleId}`
+                                      : so.noQtyDispatchContext?.cycleLabel?.trim() ||
+                                        (so.noQtyDispatchContext?.selectedCycleId != null
+                                          ? `Cycle #${so.noQtyDispatchContext.selectedCycleId}`
+                                          : "Cycle");
                                 return (
                                   <tr
                                     key={`${so.id}-${ls.lineId}-${ls.noQtyCycleId ?? "x"}`}
                                     className={cn(
                                       "border-t border-slate-100",
                                       operatorTableRowClass,
-                                      selected && "bg-emerald-50 ring-2 ring-inset ring-emerald-500/40",
+                                      selected && "bg-emerald-50 ring-1 ring-inset ring-emerald-500/30",
+                                      fromNoQtySo && soId > 0 && so.id !== soId && "opacity-60",
                                     )}
                                   >
-                                    <td className="max-w-[10rem] truncate px-2 py-1 text-slate-900" title={customerDisplayName(so)}>
-                                      {customerDisplayName(so)}
-                                    </td>
-                                    <td className="px-2 py-1 tabular-nums text-slate-900">
-                                      <span className="rounded border border-sky-200 bg-sky-50 px-1.5 py-0.5 font-mono text-[12px] font-semibold text-sky-900">
+                                    <td className="min-w-0 px-1.5 py-0.5 align-top">
+                                      <div className="truncate text-slate-900" title={customerDisplayName(so)}>
+                                        {customerDisplayName(so)}
+                                      </div>
+                                      <div className="font-mono text-[11px] font-semibold text-sky-900">
                                         {displaySalesOrderNo(so.id, so.docNo)}
-                                      </span>
+                                      </div>
                                     </td>
-                                    <td className="max-w-[10rem] truncate px-2 py-1 font-medium text-slate-900" title={ls.itemName}>
-                                      {ls.itemName}
+                                    <td className="min-w-0 px-1.5 py-0.5 align-top" title={ls.itemName}>
+                                      <div className="truncate font-medium text-slate-900">{ls.itemName}</div>
+                                      <div className="truncate text-[10px] text-slate-500">{cycleLabel}</div>
                                     </td>
-                                    <td className="px-2 py-1 text-right tabular-nums text-slate-800">{fmtDispatchQty(pend)}</td>
-                                    <td className="px-2 py-1 text-right tabular-nums text-slate-800">{fmtDispatchQty(avail)}</td>
-                                    <td className="px-2 py-1 text-right font-semibold tabular-nums text-slate-900">{fmtDispatchQty(ready)}</td>
-                                    <td className="px-2 py-1 text-[12px] text-slate-900">
-                                      <span
+                                    <td className="px-1.5 py-0.5 text-right align-top tabular-nums">
+                                      <div className="font-semibold text-slate-900">{fmtDispatchQty(disp)}</div>
+                                      <div
                                         className={cn(
-                                          "inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-semibold",
+                                          "mt-0.5 inline-flex rounded-full border px-1.5 py-0.5 text-[10px] font-semibold",
                                           backlogStatusBadgeClass(status),
                                         )}
                                       >
                                         {backlogStatusLabel(status)}
-                                      </span>
-                                      {status === "PARTIAL_AVAILABLE" ? (
-                                        <div className="mt-0.5 text-[11px] text-amber-900">
-                                          Available {fmtDispatchQty(ready)} / Pending {fmtDispatchQty(pend)}. You can dispatch partial qty now or wait.
-                                        </div>
-                                      ) : null}
+                                      </div>
                                     </td>
-                                    <td className="px-2 py-1 text-right">
+                                    <td className="px-1.5 py-0.5 text-right align-top">
                                       <Button
                                         type="button"
                                         variant="ghost"
                                         size="sm"
-                                        className="h-7 w-7 shrink-0 p-0 text-[13px]"
+                                        className="h-7 px-1.5 text-[11px] font-semibold"
                                         onClick={() => selectLineFromBacklog(so, ls)}
                                         aria-label={`Select ${ls.itemName}`}
                                       >
-                                        ▶
+                                        Select
                                       </Button>
                                     </td>
                                   </tr>
                                 );
-                              });
-                              return [header, ...body];
-                            })}
-                      </tbody>
-                    </table>
-                  </div>
+                              })
+                            : prepareQueueSections.flatMap((section) => {
+                                const header = (
+                                  <tr key={`hdr-${section.key}`} className="border-t border-slate-200 bg-slate-100">
+                                    <td colSpan={4} className="px-1.5 py-1 text-[10px] font-bold uppercase tracking-wide text-slate-600">
+                                      {section.label}
+                                    </td>
+                                  </tr>
+                                );
+                                const body = section.rows.map(({ so, ls }) => {
+                                  const selected = soId === so.id && salesOrderLineId === ls.lineId;
+                                  const rowCyc = normalizePositiveCycleId(
+                                    ls.noQtyCycleId ?? so.noQtyDispatchContext?.selectedCycleId ?? so.currentCycleId,
+                                  );
+                                  const ready = computeDispatchableNow({
+                                    so,
+                                    ls,
+                                    cycleIdOverride:
+                                      so.orderType === "NO_QTY"
+                                        ? rowCyc
+                                        : null,
+                                  });
+                                  const pend = linePendingOnOrderDisplay(ls);
+                                  const status = backlogStatus(pend, ready);
+                                  const rowCycleLabel =
+                                    so.orderType === "NO_QTY"
+                                      ? ls.noQtyCycleNo != null && Number.isFinite(Number(ls.noQtyCycleNo))
+                                        ? `Cycle ${Number(ls.noQtyCycleNo)}`
+                                        : ls.noQtyCycleId != null
+                                          ? `Cycle #${ls.noQtyCycleId}`
+                                          : so.noQtyDispatchContext?.cycleLabel?.trim() || so.noQtyDispatchContext?.selectedCycleId != null
+                                            ? so.noQtyDispatchContext?.cycleLabel?.trim() || `Cycle #${so.noQtyDispatchContext?.selectedCycleId}`
+                                            : ""
+                                      : "";
+                                  return (
+                                    <tr
+                                      key={`${so.id}-${ls.lineId}-${ls.noQtyCycleId ?? "x"}`}
+                                      className={cn(
+                                        "border-t border-slate-100",
+                                        operatorTableRowClass,
+                                        selected && "bg-emerald-50 ring-1 ring-inset ring-emerald-500/30",
+                                      )}
+                                    >
+                                      <td className="min-w-0 px-1.5 py-0.5 align-top">
+                                        <div className="truncate text-slate-900" title={customerDisplayName(so)}>
+                                          {customerDisplayName(so)}
+                                        </div>
+                                        <div className="font-mono text-[11px] font-semibold text-sky-900">
+                                          {displaySalesOrderNo(so.id, so.docNo)}
+                                        </div>
+                                      </td>
+                                      <td className="min-w-0 px-1.5 py-0.5 align-top" title={ls.itemName}>
+                                        <div className="truncate font-medium text-slate-900">{ls.itemName}</div>
+                                        {rowCycleLabel ? (
+                                          <div className="truncate text-[10px] text-slate-500">{rowCycleLabel}</div>
+                                        ) : null}
+                                      </td>
+                                      <td className="px-1.5 py-0.5 text-right align-top tabular-nums">
+                                        <div className="font-semibold text-slate-900">{fmtDispatchQty(ready)}</div>
+                                        <div
+                                          className={cn(
+                                            "mt-0.5 inline-flex max-w-full truncate rounded-full border px-1.5 py-0.5 text-[10px] font-semibold",
+                                            backlogStatusBadgeClass(status),
+                                          )}
+                                          title={
+                                            status === "PARTIAL_AVAILABLE"
+                                              ? `Available ${fmtDispatchQty(ready)} / Pending ${fmtDispatchQty(pend)}`
+                                              : undefined
+                                          }
+                                        >
+                                          {backlogStatusLabel(status)}
+                                        </div>
+                                      </td>
+                                      <td className="px-1.5 py-0.5 text-right align-top">
+                                        <Button
+                                          type="button"
+                                          variant="ghost"
+                                          size="sm"
+                                          className="h-7 px-1.5 text-[11px] font-semibold"
+                                          onClick={() => selectLineFromBacklog(so, ls)}
+                                          aria-label={`Select ${ls.itemName}`}
+                                        >
+                                          Select
+                                        </Button>
+                                      </td>
+                                    </tr>
+                                  );
+                                });
+                                return [header, ...body];
+                              })}
+                        </tbody>
+                      </table>
+                    </div>
                   )}
                   {prepareQueueRowCount === 0 && !noQtyLineEntries ? (
                     <p className="text-[13px] text-slate-600">
@@ -4669,7 +5242,9 @@ export function DispatchPage() {
                         ls,
                         cycleIdOverride:
                           so.orderType === "NO_QTY"
-                            ? normalizePositiveCycleId(so.noQtyDispatchContext?.selectedCycleId ?? so.currentCycleId)
+                            ? normalizePositiveCycleId(
+                                ls.noQtyCycleId ?? so.noQtyDispatchContext?.selectedCycleId ?? so.currentCycleId,
+                              )
                             : null,
                       });
                       const pend = linePendingOnOrderDisplay(ls);
@@ -4713,306 +5288,670 @@ export function DispatchPage() {
               </div>
             }
             panel={
-              <div className="space-y-2">
+              <div className={cn("min-w-0", selectedSo?.orderType === "NO_QTY" ? "space-y-2" : isRegularDispatchWorkbench ? "space-y-1.5" : "space-y-3")}>
             {isAdmin && selectedSo?.orderType === "NO_QTY" ? (
-              noQtyAdminDebugOpen ? (
-                <NoQtyAdminDispatchDebugPanel
-                  expanded={noQtyAdminDebugOpen}
-                  onToggle={() => setNoQtyAdminDebugOpen(false)}
-                  loading={noQtyDebugLoading}
-                  error={noQtyDebugError}
-                  json={noQtyDebugJson}
-                  uiSnapshot={noQtyUiDebugSnapshot}
-                  onLoad={() => void loadNoQtyDispatchDebug()}
-                />
-              ) : (
-                <div className="flex justify-end">
-                  <button
-                    type="button"
-                    className="inline-flex items-center gap-1 rounded border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-semibold text-slate-500 hover:bg-slate-50 hover:text-slate-700"
-                    onClick={() => setNoQtyAdminDebugOpen(true)}
-                    title="Admin / debug"
-                  >
-                    ⚙ <span>Debug</span>
-                  </button>
+              <details className="rounded-md border border-dashed border-slate-200/80 bg-slate-50/30">
+                <summary className="cursor-pointer list-none px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-slate-400 outline-none hover:text-slate-600 [&::-webkit-details-marker]:hidden">
+                  <span className="inline-flex items-center gap-2">
+                    <span className="text-slate-400" aria-hidden>
+                      ◇
+                    </span>
+                    Advanced
+                  </span>
+                </summary>
+                <div className="border-t border-slate-200/70 px-2 pb-1.5 pt-1">
+                  {noQtyAdminDebugOpen ? (
+                    <NoQtyAdminDispatchDebugPanel
+                      expanded={noQtyAdminDebugOpen}
+                      onToggle={() => setNoQtyAdminDebugOpen(false)}
+                      loading={noQtyDebugLoading}
+                      error={noQtyDebugError}
+                      json={noQtyDebugJson}
+                      uiSnapshot={noQtyUiDebugSnapshot}
+                      onLoad={() => void loadNoQtyDispatchDebug()}
+                    />
+                  ) : (
+                    <button
+                      type="button"
+                      className="rounded-md px-2 py-1.5 text-[11px] font-medium text-slate-600 underline decoration-slate-300 underline-offset-2 hover:text-slate-900"
+                      onClick={() => setNoQtyAdminDebugOpen(true)}
+                    >
+                      Open debug
+                    </button>
+                  )}
                 </div>
-              )
+              </details>
             ) : null}
-            {!showPreparedDispatchActionCard &&
-            !showDispatchCompletedBillingCard &&
+            {(!showDispatchCompletedBillingCardEffective || showRegularDispatchEntryPanel || showRegularPartialDispatchContinuation) &&
             !showDispatchCompletedBillingFallback ? (
-            <Card className="min-w-0 overflow-hidden border-slate-200/90 shadow-sm ring-1 ring-slate-100/80">
-              <CardHeader className="border-b border-slate-100 bg-gradient-to-b from-slate-50/90 to-white px-3 py-2.5">
-                <CardTitle className="text-sm font-semibold tracking-tight text-slate-900">
-                  {finalizePrepDraftMode
-                    ? "Prepared for finalization"
-                    : reopenedPreparedDraftMode
-                      ? "Reopened prepared draft"
-                      : selectedSo?.orderType === "NO_QTY"
-                        ? "Dispatch"
-                        : "Ready to Dispatch"}
-                </CardTitle>
+            <Card className="erp-op-workspace-primary min-w-0 overflow-hidden">
+              <CardHeader
+                className={cn(
+                  "border-b border-slate-100 bg-white px-3",
+                  selectedSo?.orderType === "NO_QTY" || isRegularDispatchWorkbench ? "py-1.5" : "py-2",
+                )}
+              >
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <CardTitle
+                    className={cn(
+                      "font-semibold tracking-tight text-slate-900",
+                      selectedSo?.orderType === "NO_QTY" || isRegularDispatchWorkbench ? "text-xs" : "text-sm",
+                    )}
+                  >
+                    {finalizePrepDraftMode
+                      ? DISPATCH_OP.CARD_TITLE_DRAFT_PENDING
+                      : reopenedPreparedDraftMode
+                        ? DISPATCH_OP.CARD_TITLE_REOPENED
+                        : selectedSo?.orderType === "NO_QTY"
+                          ? "Dispatch"
+                          : "Ready to Dispatch"}
+                  </CardTitle>
+                  {!dispatchReadOnly ? (
+                    <div className="flex flex-wrap items-center gap-2">
+                      {showPreparedDispatchActionCard && primaryFinalizeDraftId != null ? (
+                        <>
+                          <Button
+                            type="button"
+                            size="sm"
+                            className="font-semibold"
+                            data-testid="prepared-dispatch-finalize-btn"
+                            disabled={lockingId === primaryFinalizeDraftId}
+                            onClick={() => primaryFinalizeDraftId != null && void onFinalizeDraftDispatch(primaryFinalizeDraftId)}
+                          >
+                            {lockingId === primaryFinalizeDraftId ? "…" : DISPATCH_OP.FINALIZE}
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="font-semibold border-amber-300 bg-white text-amber-950 hover:bg-amber-50"
+                            data-testid="prepared-dispatch-edit-draft-btn"
+                            onClick={() => {
+                              dispatchFormRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+                              window.requestAnimationFrame(() => dispatchQtyRef.current?.focus({ preventScroll: true }));
+                            }}
+                          >
+                            {DISPATCH_OP.EDIT_DRAFT_QTY}
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="destructive"
+                            size="sm"
+                            className="font-semibold"
+                            data-testid="prepared-dispatch-delete-btn"
+                            disabled={deletingId === primaryFinalizeDraftId}
+                            onClick={() => primaryFinalizeDraftId != null && void onDeleteDraft(primaryFinalizeDraftId)}
+                          >
+                            {deletingId === primaryFinalizeDraftId ? "…" : DISPATCH_OP.DISCARD_DRAFT}
+                          </Button>
+                          {reopenedPreparedDraftMode ? (
+                            <button
+                              type="button"
+                              className="text-[11px] font-medium text-sky-800 underline decoration-sky-800/40 underline-offset-2 hover:text-sky-950"
+                              onClick={() => {
+                                setReopenedPreparedDraft(null);
+                                setReopenFallbackSoRow(null);
+                                const params = new URLSearchParams(sp);
+                                params.delete("draftDispatchId");
+                                navigate(`/dispatch?${params.toString()}`, { replace: true });
+                              }}
+                            >
+                              Back to open lines
+                            </button>
+                          ) : null}
+                        </>
+                      ) : isRegularDispatchWorkbench ? (
+                        <>
+                          {showRegularPartialDispatchContinuation ? (
+                        <>
+                          <Button
+                            type="button"
+                            size="sm"
+                            className="font-semibold"
+                            data-testid="dispatch-continue-partial-btn"
+                            disabled={!canContinueRegularPartialDispatch}
+                            onClick={() => onContinuePartialDispatch()}
+                          >
+                            Continue Dispatch
+                          </Button>
+                          {billingTargetDispatchId != null ? (
+                            <Link
+                              to={`/sales-bills/new?dispatchId=${billingTargetDispatchId}&from=dispatch`}
+                              data-testid="dispatch-partial-create-sales-bill"
+                              className={cn(
+                                buttonVariants({ size: "sm", variant: "outline" }),
+                                "font-medium no-underline",
+                                dispatchReadOnly ? "pointer-events-none opacity-50" : "",
+                              )}
+                            >
+                              Create Sales Bill
+                            </Link>
+                          ) : latestRegularUnbilledDispatchId != null ? (
+                            <Link
+                              to={`/sales-bills/new?dispatchId=${latestRegularUnbilledDispatchId}&from=dispatch`}
+                              className={cn(buttonVariants({ size: "sm", variant: "outline" }), "font-medium no-underline")}
+                              data-testid="dispatch-partial-create-sales-bill"
+                            >
+                              Create Sales Bill
+                            </Link>
+                          ) : null}
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="font-medium text-slate-700"
+                            data-testid="dispatch-partial-view-history-btn"
+                            onClick={() =>
+                              dispatchHistoryAnchorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
+                            }
+                          >
+                            View History
+                          </Button>
+                        </>
+                      ) : showDispatchCompletedBillingCardEffective && billingTargetDispatchId != null ? (
+                        <>
+                          <Link
+                            to={`/sales-bills/new?dispatchId=${billingTargetDispatchId}&from=dispatch`}
+                            data-testid="dispatch-next-create-sales-bill-card"
+                            className={cn(
+                              buttonVariants({ size: "sm", variant: "outline" }),
+                              "font-medium no-underline",
+                            )}
+                          >
+                            Create Sales Bill
+                          </Link>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="font-medium text-slate-700"
+                            onClick={() =>
+                              dispatchHistoryAnchorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
+                            }
+                          >
+                            View History
+                          </Button>
+                        </>
+                      ) : null}
+                        </>
+                    ) : null}
+                    </div>
+                  ) : null}
+                </div>
               </CardHeader>
-              {finalizePrepDraftMode ? (
-                <CardContent className="px-3 py-3">
-                  <p className="text-[12px] leading-snug text-slate-600">
-                    Prepared draft on this line — finalize or delete to continue.
-                  </p>
-                </CardContent>
-              ) : reopenedPreparedDraftMode && reopenedPreparedDraft ? (
-                <CardContent className="px-3 py-3">
-                  <p className="text-[12px] leading-snug text-slate-600">
-                    Reopened from ledger — finalize or delete to continue (or use ledger actions below).
+              {finalizePrepDraftMode || (reopenedPreparedDraftMode && reopenedPreparedDraft) ? (
+                <CardContent className="space-y-3 border-t border-amber-100/80 bg-amber-50/25 px-3 py-2.5">
+                  <div className="rounded-md border-2 border-amber-300/80 bg-amber-50 px-2.5 py-2 shadow-sm">
+                    <p className="text-[11px] font-bold uppercase tracking-wide text-amber-900/95">{DISPATCH_OP.BADGE_DRAFT}</p>
+                    <p className="mt-1 text-[11px] font-medium leading-snug text-amber-950">{DISPATCH_OP.GUIDANCE_DRAFT_ONLY}</p>
+                    {reopenedPreparedDraftMode ? (
+                      <p className="mt-1 text-[11px] font-semibold text-amber-950">{DISPATCH_OP.BANNER_REOPENED}</p>
+                    ) : null}
+                    {preparedDispatchDocLabel && preparedDispatchQtyLabel !== "—" ? (
+                      <p className="mt-2 text-[12px] text-slate-900">
+                        <span className="font-mono font-semibold">{preparedDispatchDocLabel}</span> ·{" "}
+                        <span className="tabular-nums font-semibold">{preparedDispatchQtyLabel}</span>{" "}
+                        <span className="text-slate-600">(draft, not posted)</span>
+                      </p>
+                    ) : null}
+                  </div>
+                  {currentLine ? (
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+                      <FieldShortcutHint
+                        show={shortcutHints.activeFieldId === "dispatchQty"}
+                        hint={shortcutHints.activeFieldHintText ?? ""}
+                        placement="below-end"
+                        className="min-w-0 flex-1 sm:max-w-[13rem]"
+                      >
+                        <div className="erp-form-field min-w-0">
+                          <span className="text-[11px] font-medium text-slate-700">Qty for this dispatch draft</span>
+                          <Input
+                            ref={dispatchQtyRef}
+                            {...dispatchQtyBind}
+                            type="text"
+                            data-testid="dispatch-qty-input"
+                            inputMode="decimal"
+                            autoComplete="off"
+                            className={cn("mt-0.5 h-9 w-full tabular-nums text-sm", operatorInputClass)}
+                            placeholder="Qty"
+                            value={dispatchQtyStr}
+                            disabled={qtyInputDisabled}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
+                                shortcutHints.markFieldShortcutUsed("dispatchQty");
+                              }
+                            }}
+                          />
+                        </div>
+                      </FieldShortcutHint>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        data-testid="dispatch-save-draft-qty-btn"
+                        className="h-9 shrink-0 font-semibold"
+                        disabled={!canUpdateDispatchDraftQty}
+                        onClick={() => {
+                          shortcutHints.markFieldShortcutUsed("dispatchPrepare");
+                          void onDispatch();
+                        }}
+                      >
+                        {dispatching ? "Saving…" : DISPATCH_OP.SAVE_DRAFT_QTY}
+                      </Button>
+                    </div>
+                  ) : null}
+                  <p className="text-[10px] leading-snug text-slate-600">
+                    Maximum you can set on this draft now:{" "}
+                    <span className="font-semibold tabular-nums text-slate-900">{fmtDispatchQty(maxDispatchPrepareQty)}</span>
+                    . Then use <span className="font-semibold">{DISPATCH_OP.FINALIZE}</span> above to post stock.
                   </p>
                 </CardContent>
               ) : (
-                <CardContent className="space-y-4 px-3 py-3">
+                <CardContent
+                  className={cn(
+                    selectedSo?.orderType === "NO_QTY"
+                      ? "space-y-2 px-3 py-2"
+                      : isRegularDispatchWorkbench
+                        ? "space-y-2 px-3 py-2"
+                        : "space-y-3 px-3 py-2.5",
+                  )}
+                >
                   {selectedSo?.orderType === "NO_QTY" ? (
                     <div className="space-y-2">
-                      {/* 1) Compact Header Strip */}
-                      <div className="rounded border border-slate-200 bg-white px-2 py-1 shadow-sm">
-                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-slate-700">
-                          <span className="font-mono font-semibold text-slate-900">
+                      <div className="overflow-hidden rounded-lg border border-slate-200/90 bg-white px-2.5 py-2 shadow-sm ring-1 ring-slate-100/70">
+                        <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] leading-tight text-slate-700">
+                          <span className="shrink-0 font-mono font-semibold text-slate-900">
                             {selectedSo ? displaySalesOrderNo(selectedSo.id, selectedSo.docNo) : "—"}
                           </span>
                           <span className="text-slate-300" aria-hidden>
-                            |
+                            ·
                           </span>
-                          <span className="max-w-[14rem] truncate">{selectedSo ? customerDisplayName(selectedSo) : "—"}</span>
+                          <span className="min-w-0 max-w-[11rem] truncate sm:max-w-[14rem]">
+                            {selectedSo ? customerDisplayName(selectedSo) : "—"}
+                          </span>
                           <span className="text-slate-300" aria-hidden>
-                            |
+                            ·
                           </span>
-                          <span className="max-w-[14rem] truncate font-semibold text-slate-900" title={currentLine?.itemName ?? ""}>
+                          <span
+                            className="min-w-0 max-w-[9rem] truncate font-medium text-slate-900 sm:max-w-[13rem]"
+                            title={currentLine?.itemName ?? ""}
+                          >
                             {currentLine?.itemName ?? "—"}
                           </span>
                           <span className="text-slate-300" aria-hidden>
-                            |
+                            ·
                           </span>
-                          <span className="text-slate-600">
-                            Cycle{" "}
+                          <span className="shrink-0 text-slate-600">
+                            Row cycle{" "}
                             <span className="font-semibold tabular-nums text-slate-900">
                               {currentLine?.noQtyCycleNo ?? selectedSo?.noQtyDispatchContext?.cycleNo ?? "—"}
                             </span>
                           </span>
-
-                          <span className="ml-auto flex flex-wrap items-center justify-end gap-2">
-                            <span className="inline-flex items-center gap-1 rounded border border-slate-200 bg-slate-50 px-2 py-0.5">
-                              <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Customer Pending</span>
-                              <span className="font-bold tabular-nums text-slate-900">{fmtDispatchQty(Math.max(0, remainingSoLine))}</span>
-                            </span>
-                            <span className="inline-flex items-center gap-1 rounded border border-emerald-200 bg-emerald-50 px-2 py-0.5">
-                              <span className="text-[10px] font-semibold uppercase tracking-wide text-emerald-800">Usable Stock</span>
-                              <span className="font-bold tabular-nums text-emerald-950">
-                                {fmtDispatchQty(lineAvailableStockTable(selectedSo, currentLine ?? ({} as any)))}
-                              </span>
-                            </span>
-                            <span className="inline-flex items-center gap-1 rounded border border-amber-200 bg-amber-50 px-2 py-0.5">
-                              <span className="text-[10px] font-semibold uppercase tracking-wide text-amber-800">QC Hold</span>
-                              <span className="font-bold tabular-nums text-amber-950">{fmtDispatchQty(Math.max(0, safeNum(currentLine?.qcHoldQty ?? 0)))}</span>
-                            </span>
-                            <span className="inline-flex items-center gap-1 rounded border border-sky-200 bg-sky-50 px-2 py-0.5">
-                              <span className="text-[10px] font-semibold uppercase tracking-wide text-sky-800">Rework</span>
-                              <span className="font-bold tabular-nums text-sky-950">{fmtDispatchQty(Math.max(0, safeNum(currentLine?.reworkQty ?? 0)))}</span>
-                            </span>
-                          </span>
                         </div>
-                      </div>
 
-                      {/* 2) Dispatch Action Card */}
-                      <div className="rounded border border-slate-200 bg-white px-3 py-2 shadow-sm">
-                        <div className="flex flex-wrap items-end justify-between gap-2">
-                          <div>
-                            <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Available Usable Stock</div>
-                            <div className="mt-0.5 text-[34px] font-bold tabular-nums leading-none text-slate-950">
-                              {fmtDispatchQty(headroomToPrepare)}
-                            </div>
-                            <div className="mt-1 text-[11px] text-slate-600">Optional dispatch available.</div>
-                          </div>
-
-                          <div className="w-full max-w-[30rem]">
-                            <div className="grid grid-cols-1 items-end gap-2 sm:grid-cols-[minmax(0,1fr)_auto_auto]">
-                              <FieldShortcutHint
-                                show={shortcutHints.activeFieldId === "dispatchQty"}
-                                hint={shortcutHints.activeFieldHintText ?? ""}
-                                placement="below-end"
-                                className="block w-full min-w-0"
-                              >
-                                <div className="erp-form-field min-w-0">
-                                  <span className="text-[11px] font-medium text-slate-600">Dispatch Qty</span>
-                                  <Input
-                                    ref={dispatchQtyRef}
-                                    {...dispatchQtyBind}
-                                    type="text"
-                                    data-testid="dispatch-qty-input"
-                                    inputMode="decimal"
-                                    autoComplete="off"
-                                    className={cn("mt-0.5 h-9 tabular-nums text-[14px]", operatorInputClass)}
-                                    placeholder="Qty"
-                                    value={dispatchQtyStr}
-                                    disabled={qtyInputDisabled}
-                                    onKeyDown={(e) => {
-                                      if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
-                                        shortcutHints.markFieldShortcutUsed("dispatchPrepare");
-                                        void onDispatch();
-                                      }
-                                      if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
-                                        shortcutHints.markFieldShortcutUsed("dispatchQty");
-                                      }
-                                    }}
-                                  />
+                        <div className="mt-2 space-y-2 border-t border-slate-100 pt-2">
+                          {noQtyWorkbenchHeadroomBreakdown ? (
+                            <>
+                              <div className="grid w-full min-w-0 gap-2 sm:grid-cols-3">
+                                <div className="rounded-md border border-slate-100 bg-slate-50/90 px-2 py-1.5">
+                                  <div className="text-[9px] font-semibold uppercase tracking-wide text-slate-500">
+                                    This cycle dispatchable
+                                  </div>
+                                  <div className="mt-0.5 text-xl font-bold tabular-nums leading-none text-slate-900 sm:text-[1.45rem]">
+                                    {fmtDispatchQty(noQtyWorkbenchHeadroomBreakdown.thisCycleDispatchable)}
+                                  </div>
+                                  <div className="mt-0.5 text-[9px] text-slate-500">
+                                    {noQtyWorkbenchHeadroomBreakdown.selectedCycleNo != null
+                                      ? `Cycle ${noQtyWorkbenchHeadroomBreakdown.selectedCycleNo} row`
+                                      : "Selected row cycle"}
+                                  </div>
                                 </div>
-                              </FieldShortcutHint>
-
-                              <Button
-                                type="button"
-                                variant="default"
-                                size="sm"
-                                data-testid="prepare-dispatch-btn"
-                                className="h-9 w-full bg-slate-900 px-3 text-[13px] font-semibold text-white shadow-sm hover:bg-slate-950 active:bg-black sm:w-auto"
-                                disabled={!canNoQtyDispatchNow || dispatching}
-                                onClick={() => {
-                                  shortcutHints.markFieldShortcutUsed("dispatchPrepare");
-                                  void onDispatch();
-                                }}
-                              >
-                                {dispatching ? "Saving…" : "Dispatch Now"}
-                              </Button>
-
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="sm"
-                                className="h-9 w-full px-3 text-[13px] font-semibold sm:w-auto"
-                                disabled={dispatching}
-                                onClick={() => {
-                                  setError(null);
-                                  resetDispatchQty();
-                                }}
-                              >
-                                Keep for Later
-                              </Button>
+                                <div className="rounded-md border border-amber-100/90 bg-amber-50/55 px-2 py-1.5">
+                                  <div className="text-[9px] font-semibold uppercase tracking-wide text-amber-900/85">
+                                    FIFO carry-forward usable
+                                  </div>
+                                  <div className="mt-0.5 text-xl font-bold tabular-nums leading-none text-amber-950 sm:text-[1.45rem]">
+                                    {fmtDispatchQty(noQtyWorkbenchHeadroomBreakdown.carryForwardTotal)}
+                                  </div>
+                                  <div
+                                    className="mt-0.5 truncate text-[9px] text-amber-900/85"
+                                    title={formatNoQtyCarryForwardDisplay(
+                                      noQtyWorkbenchHeadroomBreakdown.carryForwardTotal,
+                                      noQtyWorkbenchHeadroomBreakdown.carryForwardByCycle,
+                                    )}
+                                  >
+                                    {noQtyWorkbenchHeadroomBreakdown.carryForwardTotal > 1e-9
+                                      ? formatNoQtyCarryForwardDisplay(
+                                          noQtyWorkbenchHeadroomBreakdown.carryForwardTotal,
+                                          noQtyWorkbenchHeadroomBreakdown.carryForwardByCycle,
+                                        )
+                                      : "—"}
+                                  </div>
+                                </div>
+                                <div className="rounded-md border border-sky-100/90 bg-sky-50/65 px-2 py-1.5">
+                                  <div className="text-[9px] font-semibold uppercase tracking-wide text-sky-900/85">
+                                    Total dispatchable now
+                                  </div>
+                                  <div className="mt-0.5 text-xl font-bold tabular-nums leading-none text-sky-950 sm:text-[1.45rem]">
+                                    {fmtDispatchQty(noQtyWorkbenchHeadroomBreakdown.totalDispatchableNow)}
+                                  </div>
+                                  <div className="mt-0.5 text-[9px] text-sky-900/75">Across cycles (prepare cap)</div>
+                                </div>
+                              </div>
+                              <p className="text-[10px] leading-snug text-slate-500">
+                                Dispatch uses FIFO cycle allocation automatically when you prepare.
+                              </p>
+                            </>
+                          ) : (
+                            <div className="flex flex-wrap items-end gap-x-3 gap-y-2">
+                              <div className="shrink-0">
+                                <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                                  Total dispatchable now
+                                </div>
+                                <div className="mt-0.5 text-2xl font-bold tabular-nums leading-none text-slate-900 sm:text-[1.65rem]">
+                                  {fmtDispatchQty(headroomToPrepare)}
+                                </div>
+                              </div>
                             </div>
+                          )}
 
-                            <div className="text-[11px] text-slate-600">
-                              This dispatch uses stock from{" "}
-                              <span className="font-semibold">Cycle {currentLine?.noQtyCycleNo ?? selectedSo?.noQtyDispatchContext?.cycleNo ?? "—"}</span>
+                          <FieldShortcutHint
+                            show={shortcutHints.activeFieldId === "dispatchQty"}
+                            hint={shortcutHints.activeFieldHintText ?? ""}
+                            placement="below-end"
+                            className="min-w-0 flex-1 sm:max-w-[8rem]"
+                          >
+                            <div className="erp-form-field min-w-0">
+                              <span className="text-[10px] font-medium text-slate-600">Dispatch qty</span>
+                              <Input
+                                ref={dispatchQtyRef}
+                                {...dispatchQtyBind}
+                                type="text"
+                                data-testid="dispatch-qty-input"
+                                inputMode="decimal"
+                                autoComplete="off"
+                                className={cn(
+                                  "mt-0.5 h-9 w-full min-w-[4.5rem] rounded-md border-slate-200 px-2 text-sm tabular-nums",
+                                  operatorInputClass,
+                                )}
+                                placeholder="0"
+                                value={dispatchQtyStr}
+                                disabled={qtyInputDisabled}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+                                    shortcutHints.markFieldShortcutUsed("dispatchPrepare");
+                                    void onDispatch();
+                                  }
+                                  if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
+                                    shortcutHints.markFieldShortcutUsed("dispatchQty");
+                                  }
+                                }}
+                              />
+                            </div>
+                          </FieldShortcutHint>
+
+                          <div className="flex shrink-0 items-end gap-1.5">
+                            <Button
+                              type="button"
+                              variant="default"
+                              size="sm"
+                              data-testid="prepare-dispatch-btn"
+                              className="h-9 shrink-0 rounded-md border-transparent bg-slate-900 px-3 text-[13px] font-semibold text-white shadow-sm hover:bg-slate-950"
+                              disabled={!canNoQtyDispatchNow || dispatching}
+                              onClick={() => {
+                                shortcutHints.markFieldShortcutUsed("dispatchPrepare");
+                                void onDispatch();
+                              }}
+                            >
+                              {dispatching ? "Saving…" : DISPATCH_OP.SAVE_DRAFT_QTY}
+                            </Button>
+                            <button
+                              type="button"
+                              className="mb-0.5 hidden whitespace-nowrap text-[11px] font-medium text-slate-500 underline decoration-slate-300 underline-offset-2 hover:text-slate-800 sm:inline disabled:pointer-events-none disabled:opacity-50"
+                              disabled={dispatching}
+                              onClick={() => {
+                                setError(null);
+                                resetDispatchQty();
+                              }}
+                            >
+                              Clear
+                            </button>
+                          </div>
+                        </div>
+                        <div className="mt-1 flex justify-end sm:hidden">
+                          <button
+                            type="button"
+                            className="text-[11px] font-medium text-slate-500 underline decoration-slate-300 underline-offset-2 hover:text-slate-800 disabled:pointer-events-none disabled:opacity-50"
+                            disabled={dispatching}
+                            onClick={() => {
+                              setError(null);
+                              resetDispatchQty();
+                            }}
+                          >
+                            Clear
+                          </button>
+                        </div>
+
+                        {selectedSo?.orderType === "NO_QTY" &&
+                        currentLine &&
+                        headroomToPrepare > dqEps &&
+                        dispatchQtyValid &&
+                        dispatchQtyParsed != null &&
+                        dispatchQtyParsed > dqEps ? (
+                          <div className="mt-2 rounded-md border border-sky-100 bg-sky-50/90 px-2 py-1.5 text-[11px] leading-snug text-sky-950">
+                            {dispatchQtyParsed < headroomToPrepare - 1e-6 ? (
+                              <span>
+                                Remaining{" "}
+                                <span className="font-semibold tabular-nums">
+                                  {fmtDispatchQty(Math.max(0, headroomToPrepare - dispatchQtyParsed))}
+                                </span>{" "}
+                                will stay as store stock.
+                              </span>
+                            ) : (
+                              <span>Full available qty will be dispatched.</span>
+                            )}
+                          </div>
+                        ) : null}
+                      </div>
+
+                      <details className="rounded-md border border-slate-200/80 bg-slate-50/50">
+                        <summary className="cursor-pointer list-none px-2 py-1.5 text-[11px] font-medium text-slate-500 transition hover:bg-slate-100/70 [&::-webkit-details-marker]:hidden">
+                          More — order & stock
+                        </summary>
+                        <div className="border-t border-slate-100 px-2 pb-2 pt-1.5">
+                          <div className="grid grid-cols-2 gap-1.5">
+                            <div className="rounded border border-slate-200/80 bg-white px-2 py-1.5">
+                              <div className="text-[9px] font-medium uppercase tracking-wide text-slate-500">Cust. pend.</div>
+                              <div className="text-sm font-semibold tabular-nums text-slate-900">
+                                {fmtDispatchQty(Math.max(0, remainingSoLine))}
+                              </div>
+                            </div>
+                            <div className="rounded border border-slate-200/80 bg-white px-2 py-1.5">
+                              <div className="text-[9px] font-medium uppercase tracking-wide text-slate-500">Usable line</div>
+                              <div className="text-sm font-semibold tabular-nums text-slate-900">
+                                {fmtDispatchQty(lineAvailableStockTable(selectedSo, currentLine ?? ({} as any)))}
+                              </div>
+                            </div>
+                            <div className="rounded border border-amber-200/40 bg-amber-50/50 px-2 py-1.5">
+                              <div className="text-[9px] font-medium uppercase tracking-wide text-amber-800/90">QC hold</div>
+                              <div className="text-sm font-semibold tabular-nums text-amber-950">
+                                {fmtDispatchQty(Math.max(0, safeNum(currentLine?.qcHoldQty ?? 0)))}
+                              </div>
+                            </div>
+                            <div className="rounded border border-sky-200/40 bg-sky-50/50 px-2 py-1.5">
+                              <div className="text-[9px] font-medium uppercase tracking-wide text-sky-800/90">Rework</div>
+                              <div className="text-sm font-semibold tabular-nums text-sky-950">
+                                {fmtDispatchQty(Math.max(0, safeNum(currentLine?.reworkQty ?? 0)))}
+                              </div>
                             </div>
                           </div>
                         </div>
-                      </div>
+                      </details>
 
-                      {/* Recent Dispatch Ledger (latest 5) */}
-                      <div className="overflow-hidden rounded border border-slate-200 bg-white shadow-sm">
-                        <div className="flex items-center justify-between border-b border-slate-100 px-3 py-1.5">
-                          <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-600">Recent Dispatch Ledger</div>
-                          <details>
-                            <summary className="cursor-pointer select-none text-[11px] font-medium text-sky-800 underline decoration-sky-800/40 underline-offset-2 hover:text-sky-950">
-                              View Full History
+                      <details className="overflow-hidden rounded-md border border-slate-200/80 bg-white shadow-sm">
+                        <summary className="cursor-pointer list-none px-2 py-1.5 text-[11px] font-medium text-slate-500 transition hover:bg-slate-50 [&::-webkit-details-marker]:hidden">
+                          Recent dispatches
+                        </summary>
+                        <div className="border-t border-slate-100">
+                          <div className="overflow-x-hidden">
+                            <table className="w-full table-fixed text-[11px]">
+                              <thead>
+                                <tr className="border-b border-slate-100 bg-slate-50/90 text-left text-[9px] font-medium uppercase tracking-wide text-slate-500">
+                                  <th className="w-[38%] px-1.5 py-1 font-medium">No.</th>
+                                  <th className="w-[22%] px-1.5 py-1 text-right font-medium">Qty</th>
+                                  <th className="px-1.5 py-1 font-medium">Date</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {(ledgerRows || [])
+                                  .filter((r) => r.soId === selectedSo.id && r.itemId === (currentLine?.itemId ?? r.itemId))
+                                  .slice(0, 5)
+                                  .map((r) => (
+                                    <tr
+                                      key={r.id}
+                                      className={cn("border-t border-slate-100/90 hover:bg-slate-50/40", operatorTableRowClass)}
+                                    >
+                                      <td className="px-1.5 py-1 font-mono text-[10px]">
+                                        <button
+                                          type="button"
+                                          className="text-left font-semibold text-slate-700 underline decoration-slate-300 underline-offset-1 hover:text-slate-900"
+                                          onClick={() => {
+                                            const el = document.getElementById(`so-dispatch-ledger-row-${r.id}`);
+                                            if (el) el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+                                          }}
+                                        >
+                                          {displayDispatchNo(r.id, r.docNo)}
+                                        </button>
+                                      </td>
+                                      <td className="px-1.5 py-1 text-right font-semibold tabular-nums text-slate-800">
+                                        {fmtDispatchQty(safeNum(r.dispatchedQty))}
+                                      </td>
+                                      <td className="px-1.5 py-1 tabular-nums text-slate-600">{String(r.date).slice(0, 10)}</td>
+                                    </tr>
+                                  ))}
+                                {(ledgerRows || []).filter((r) => r.soId === selectedSo.id && r.itemId === (currentLine?.itemId ?? r.itemId))
+                                  .length === 0 ? (
+                                  <tr>
+                                    <td colSpan={3} className="px-2 py-2 text-[11px] text-slate-500">
+                                      No history yet.
+                                    </td>
+                                  </tr>
+                                ) : null}
+                              </tbody>
+                            </table>
+                          </div>
+                          <details className="border-t border-slate-100 bg-slate-50/40">
+                            <summary className="cursor-pointer px-2 py-1 text-[10px] font-medium text-slate-500 underline decoration-slate-300 underline-offset-2 hover:text-slate-700">
+                              Full ledger
                             </summary>
-                            <div className="mt-2">{renderSoDispatchLedger("panel")}</div>
+                            <div className="max-h-[40vh] overflow-auto border-t border-slate-100 p-1.5">
+                              {renderSoDispatchLedger("panel")}
+                            </div>
                           </details>
                         </div>
-                        <div className="overflow-x-hidden">
-                          <table className="w-full table-fixed text-[12px]">
-                            <thead>
-                              <tr className="bg-slate-50 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                                <th className="w-[7.25rem] px-2 py-1.5 font-medium">Dispatch No</th>
-                                <th className="w-[4.25rem] px-2 py-1.5 text-right font-medium">Qty</th>
-                                <th className="w-[6rem] px-2 py-1.5 font-medium">Date</th>
-                                <th className="w-[6.25rem] px-2 py-1.5 font-medium">Status</th>
-                                <th className="px-2 py-1.5 font-medium">Sales Bill</th>
-                                <th className="w-[4.5rem] px-2 py-1.5 text-right font-medium">Actions</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {(ledgerRows || [])
-                                .filter((r) => r.soId === selectedSo.id && r.itemId === (currentLine?.itemId ?? r.itemId))
-                                .slice(0, 5)
-                                .map((r) => {
-                                  const status =
-                                    r.reversalOfId != null ? ("REVERSAL" as const) : r.workflowStatus === "UNLOCKED" ? ("PREPARED" as const) : ("DISPATCH" as const);
-                                  return (
-                                  <tr
-                                    key={r.id}
-                                    className={cn("border-t border-slate-100 hover:bg-slate-50/70", operatorTableRowClass)}
-                                  >
-                                    <td className="px-2 py-1 font-mono text-[11px]">
-                                      <button
-                                        type="button"
-                                        className="text-left font-semibold text-sky-900 underline decoration-sky-900/30 underline-offset-2 hover:text-sky-950"
-                                        onClick={() => {
-                                          const el = document.getElementById(`so-dispatch-ledger-row-${r.id}`);
-                                          if (el) el.scrollIntoView({ behavior: "smooth", block: "nearest" });
-                                        }}
-                                        title="Jump to full history row"
-                                      >
-                                        {displayDispatchNo(r.id, r.docNo)}
-                                      </button>
-                                    </td>
-                                    <td className="px-2 py-1 text-right font-semibold tabular-nums">{fmtDispatchQty(safeNum(r.dispatchedQty))}</td>
-                                    <td className="px-2 py-1 tabular-nums text-slate-700">{String(r.date).slice(0, 10)}</td>
-                                    <td className="px-2 py-1 text-[11px]">
-                                      <span
-                                        className={cn(
-                                          "inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
-                                          status === "DISPATCH"
-                                            ? "border-emerald-200 bg-emerald-50 text-emerald-950"
-                                            : status === "PREPARED"
-                                              ? "border-amber-200 bg-amber-50 text-amber-950"
-                                              : "border-slate-200 bg-slate-100 text-slate-700",
-                                        )}
-                                      >
-                                        {status === "DISPATCH" ? "Dispatch" : status === "PREPARED" ? "Prepared" : "Reversal"}
-                                      </span>
-                                    </td>
-                                    <td className="px-2 py-1 text-[11px] text-slate-700">
-                                      {r.salesBillExists ? (r.salesBillIsExported ? "Created (exported)" : "Created") : "—"}
-                                    </td>
-                                    <td className="px-2 py-1 text-right text-[11px] text-slate-500">—</td>
-                                  </tr>
-                                )})}
-                              {(ledgerRows || []).filter((r) => r.soId === selectedSo.id && r.itemId === (currentLine?.itemId ?? r.itemId)).length === 0 ? (
-                                <tr>
-                                  <td colSpan={6} className="px-3 py-2 text-[12px] text-slate-600">
-                                    No dispatch history for this line yet.
-                                  </td>
-                                </tr>
-                              ) : null}
-                            </tbody>
-                          </table>
-                        </div>
-                      </div>
+                      </details>
                     </div>
                   ) : (
                     <>
-                  <div className="rounded-lg border border-slate-200/90 bg-slate-50/90 px-3 py-2.5">
-                    <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Quantity</div>
-                    <p className="mt-1 text-[13px] font-medium leading-snug text-slate-900">
-                      {headroomToPrepare > 1e-9 ? (
+                  {isRegularDispatchWorkbench && showRegularPartialDispatchContinuation && regularPartialContinuationMetrics ? (
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 rounded-md border border-amber-200/75 bg-amber-50/45 px-2 py-1 text-[10px] text-amber-950">
+                      <span className="font-semibold uppercase tracking-wide text-[9px] text-amber-900/90">Partial</span>
+                      <span className="text-slate-600">Shipped</span>
+                      <span className="font-bold tabular-nums text-slate-900">
+                        {fmtDispatchQty(regularPartialContinuationMetrics.dispatched)}
+                      </span>
+                      <span className="text-slate-300" aria-hidden>
+                        ·
+                      </span>
+                      <span className="text-slate-600">Pending</span>
+                      <span className="font-bold tabular-nums text-amber-950">
+                        {fmtDispatchQty(regularPartialContinuationMetrics.pending)}
+                      </span>
+                      <span className="text-slate-300" aria-hidden>
+                        ·
+                      </span>
+                      <span className="text-slate-600">Ready</span>
+                      <span className="font-bold tabular-nums text-emerald-900">
+                        {fmtDispatchQty(regularPartialContinuationMetrics.availableNow)}
+                      </span>
+                    </div>
+                  ) : null}
+                  {isRegularDispatchWorkbench && selectedSo && currentLine ? (
+                    <DispatchDecisionSummaryCard
+                      so={selectedSo}
+                      ls={currentLine}
+                      readyToShip={readyToShip}
+                      noQtyNextAction={noQtySelectedNextAction}
+                      regularReadiness={currentRegularReadiness}
+                      variant="exec"
+                    />
+                  ) : null}
+                  {isRegularDispatchWorkbench ? (
+                    <div className="space-y-1">
+                      {existingDraftQty > 1e-9 ? (
+                        <p className="text-[10px] leading-snug text-amber-900">
+                          Open dispatch draft on line:{" "}
+                          <span className="font-semibold tabular-nums">{fmtDispatchQty(existingDraftQty)}</span>
+                          {headroomToPrepare > 1e-9 ? (
+                            <>
+                              {" "}
+                              · extra headroom{" "}
+                              <span className="font-semibold tabular-nums">{fmtDispatchQty(headroomToPrepare)}</span>
+                            </>
+                          ) : null}
+                        </p>
+                      ) : headroomToPrepare <= 1e-9 && !needsPartialDispatchAck ? (
+                        <p className="text-[10px] text-slate-600">Nothing dispatchable on this line right now.</p>
+                      ) : null}
+                      {dispatchQtyHintPrimary ? (
+                        <p className="text-[10px] leading-snug text-slate-600">{dispatchQtyHintPrimary}</p>
+                      ) : null}
+                    </div>
+                  ) : (
+                    <div className="rounded-lg border border-slate-200/90 bg-slate-50/90 px-3 py-2.5">
+                      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Quantity</div>
+                      <p className="mt-1 text-[13px] font-medium leading-snug text-slate-900">
+                        {headroomToPrepare > 1e-9 ? (
                           <>
                             Ready to dispatch{" "}
                             <span className="tabular-nums text-emerald-800">{fmtDispatchQty(headroomToPrepare)}</span> units
                             {existingDraftQty > 1e-9 ? (
                               <span className="block text-[12px] font-normal text-slate-600">
-                                Prepared draft on this line: {fmtDispatchQty(existingDraftQty)} · additional headroom shown above
+                                Draft on this line: {fmtDispatchQty(existingDraftQty)} · extra qty you can add is shown above
                               </span>
                             ) : null}
                           </>
-                      ) : (
-                        <span className="text-slate-600">Nothing dispatchable on this line right now.</span>
-                      )}
-                    </p>
-                    {dispatchQtyHintPrimary ? (
-                      <p className="mt-1.5 text-[11px] leading-snug text-slate-600">{dispatchQtyHintPrimary}</p>
-                    ) : null}
-                  </div>
+                        ) : (
+                          <span className="text-slate-600">Nothing dispatchable on this line right now.</span>
+                        )}
+                      </p>
+                      {dispatchQtyHintPrimary ? (
+                        <p className="mt-1.5 text-[11px] leading-snug text-slate-600">{dispatchQtyHintPrimary}</p>
+                      ) : null}
+                    </div>
+                  )}
 
                   {needsPartialDispatchAck && !reopenedPreparedDraftMode ? (
-                    <div className="rounded border border-slate-200 bg-slate-50 px-2.5 py-2 text-[12px] text-slate-800">
-                      <p className="text-[12px] font-medium leading-snug text-slate-800">
+                    <div
+                      className={cn(
+                        "rounded border border-slate-200 bg-slate-50 text-slate-800",
+                        isRegularDispatchWorkbench ? "px-2 py-1.5 text-[11px]" : "px-2.5 py-2 text-[12px]",
+                      )}
+                    >
+                      <p
+                        className={cn(
+                          "font-medium leading-snug text-slate-800",
+                          isRegularDispatchWorkbench ? "text-[11px]" : "text-[12px]",
+                        )}
+                      >
                         Only {fmtDispatchQty(readyToShip)} available against pending {fmtDispatchQty(remainingSoLine)}.
                       </p>
-                      <label className="mt-2 flex cursor-pointer items-start gap-2 text-[12px] font-medium text-slate-800">
+                      <label
+                        className={cn(
+                          "mt-2 flex cursor-pointer items-start gap-2 font-medium text-slate-800",
+                          isRegularDispatchWorkbench ? "mt-1.5 text-[11px]" : "text-[12px]",
+                        )}
+                      >
                         <input
                           type="checkbox"
                           className="mt-0.5 h-3.5 w-3.5 shrink-0 rounded border-slate-300"
@@ -5029,7 +5968,7 @@ export function DispatchPage() {
                       type="button"
                       variant="secondary"
                       size="sm"
-                      className="h-9 w-full text-[12px] sm:w-auto"
+                      className={cn("w-full sm:w-auto", isRegularDispatchWorkbench ? "h-8 text-[11px]" : "h-9 text-[12px]")}
                       disabled={dispatching || dispatchReadOnly}
                       onClick={async () => {
                         setError(null);
@@ -5070,13 +6009,18 @@ export function DispatchPage() {
                   ) : null}
 
                   {headroomToPrepare > 1e-9 ? (
-                    <div className="space-y-2">
+                    <div className={cn("space-y-2", isRegularDispatchWorkbench && "space-y-1.5")}>
                       <Button
                         type="button"
                         variant="default"
                         size="sm"
                         data-testid="prepare-dispatch-btn"
-                        className="h-10 w-full text-[13px] font-semibold shadow-sm"
+                        className={cn(
+                          "font-semibold shadow-sm",
+                          isRegularDispatchWorkbench
+                            ? "h-8 w-full max-w-md text-[12px] sm:w-auto"
+                            : "h-10 w-full text-[13px]",
+                        )}
                         disabled={dispatching || !canDispatchFull}
                         onClick={() => {
                           shortcutHints.markFieldShortcutUsed("dispatchPrepare");
@@ -5086,8 +6030,8 @@ export function DispatchPage() {
                         {dispatching
                           ? "Saving…"
                           : existingDraftQty > 1e-9
-                            ? "Update dispatch (full headroom)"
-                            : "Dispatch Full"}
+                            ? "Update draft (full qty)"
+                            : dispatchFullButtonLabel}
                       </Button>
                       {noQtyBlocked ? (
                         <p className="text-[11px] text-slate-600">{currentLine ? noQtyBlockedReasonPlain(currentLine) : "Cannot dispatch now"}</p>
@@ -5096,11 +6040,14 @@ export function DispatchPage() {
                   ) : null}
 
                   {headroomToPrepare > 1e-9 ? (
-                    <div className="border-t border-slate-200 pt-3">
+                    <div className={cn("border-t border-slate-200", isRegularDispatchWorkbench ? "pt-2" : "pt-3")}>
                       {!isPartialMode ? (
                         <button
                           type="button"
-                          className="text-[12px] font-medium text-sky-800 underline decoration-sky-800/40 underline-offset-2 hover:text-sky-950"
+                          className={cn(
+                            "font-medium text-sky-800 underline decoration-sky-800/40 underline-offset-2 hover:text-sky-950",
+                            isRegularDispatchWorkbench ? "text-[11px]" : "text-[12px]",
+                          )}
                           onClick={() => {
                             setError(null);
                             resetDispatchQty();
@@ -5110,9 +6057,13 @@ export function DispatchPage() {
                           Need partial dispatch?
                         </button>
                       ) : (
-                        <div className="space-y-2">
+                        <div className={cn("space-y-2", isRegularDispatchWorkbench && "space-y-1.5")}>
                           <div className="flex flex-wrap items-center justify-between gap-2">
-                            <p className="text-[12px] font-medium text-slate-800">Partial dispatch</p>
+                            <p
+                              className={cn("font-medium text-slate-800", isRegularDispatchWorkbench ? "text-[11px]" : "text-[12px]")}
+                            >
+                              Partial dispatch
+                            </p>
                             <button
                               type="button"
                               className="text-[11px] font-medium text-slate-500 underline decoration-slate-400 underline-offset-2 hover:text-slate-700"
@@ -5125,17 +6076,33 @@ export function DispatchPage() {
                               Hide
                             </button>
                           </div>
-                          <p className="text-[11px] leading-snug text-slate-500">
-                            Max dispatchable now: <span className="font-semibold tabular-nums">{fmtDispatchQty(headroomToPrepare)}</span> units.
-                          </p>
+                          {!isRegularDispatchWorkbench ? (
+                            <p className="text-[11px] leading-snug text-slate-500">
+                              Max dispatchable now: <span className="font-semibold tabular-nums">{fmtDispatchQty(headroomToPrepare)}</span>{" "}
+                              units.
+                            </p>
+                          ) : null}
+                          <div
+                            className={cn(
+                              isRegularDispatchWorkbench &&
+                                "flex flex-col gap-1.5 sm:flex-row sm:items-end sm:gap-2",
+                            )}
+                          >
                           <FieldShortcutHint
                             show={shortcutHints.activeFieldId === "dispatchQty"}
                             hint={shortcutHints.activeFieldHintText ?? ""}
                             placement="below-end"
-                            className="block w-full min-w-0"
+                            className={cn(
+                              "min-w-0",
+                              isRegularDispatchWorkbench ? "block w-full flex-1 sm:max-w-[11rem]" : "block w-full",
+                            )}
                           >
-                            <div className="erp-form-field min-w-0">
-                              <span className="text-[12px] font-medium text-slate-600">Quantity</span>
+                            <div className={cn("erp-form-field min-w-0", isRegularDispatchWorkbench && "w-full")}>
+                              <span
+                                className={cn("font-medium text-slate-600", isRegularDispatchWorkbench ? "text-[10px]" : "text-[12px]")}
+                              >
+                                Qty (max {fmtDispatchQty(headroomToPrepare)})
+                              </span>
                               <Input
                                 ref={dispatchQtyRef}
                                 {...dispatchQtyBind}
@@ -5143,7 +6110,10 @@ export function DispatchPage() {
                                 data-testid="dispatch-qty-input"
                                 inputMode="decimal"
                                 autoComplete="off"
-                                className="mt-0.5 h-9 tabular-nums text-[13px]"
+                                className={cn(
+                                  "mt-0.5 tabular-nums",
+                                  isRegularDispatchWorkbench ? "h-8 text-xs" : "h-9 text-[13px]",
+                                )}
                                 placeholder="Enter qty"
                                 value={dispatchQtyStr}
                                 disabled={qtyInputDisabled}
@@ -5153,7 +6123,7 @@ export function DispatchPage() {
                                   }
                                 }}
                               />
-                              {isPartialMode && qtyMatchesFullHeadroom ? (
+                              {isPartialMode && qtyMatchesFullHeadroom && !allowFullHeadroomPartialSubmit ? (
                                 <p className="mt-1 text-[11px] font-medium text-sky-900">Use Dispatch Full for full quantity.</p>
                               ) : null}
                               {salesOrderLineId > 0 &&
@@ -5180,15 +6150,21 @@ export function DispatchPage() {
                             variant="outline"
                             size="sm"
                             data-testid="dispatch-qty-btn"
-                            className="h-9 w-full font-semibold sm:w-auto"
-                            disabled={!partialDispatchQtySubmit || dispatching}
+                            className={cn(
+                              "font-semibold",
+                              isRegularDispatchWorkbench
+                                ? "h-8 w-full shrink-0 px-3 text-[11px] sm:w-auto"
+                                : "h-9 w-full sm:w-auto",
+                            )}
+                            disabled={!(partialDispatchQtySubmit || canUpdateDispatchDraftQty) || dispatching}
                             onClick={() => {
                               shortcutHints.markFieldShortcutUsed("dispatchPrepare");
                               void onDispatch();
                             }}
                           >
-                            {dispatching ? "Saving…" : existingDraftQty > 0 ? "Update Prepared Dispatch" : "Dispatch Qty"}
+                            {dispatching ? "Saving…" : existingDraftQty > 0 ? "Update draft qty" : DISPATCH_OP.SAVE_DRAFT_QTY}
                           </Button>
+                          </div>
                         </div>
                       )}
                     </div>
@@ -5201,14 +6177,24 @@ export function DispatchPage() {
             ) : null}
 
             {currentLine && selectedSo ? (
-              <div className="mt-2 space-y-1.5 border-t border-slate-100 pt-2">
+              <div
+                className={cn(
+                  "mt-2 space-y-1.5 border-t border-slate-100 pt-2",
+                  isRegularDispatchWorkbench && "mt-1 space-y-1 border-slate-100/80 pt-1.5",
+                )}
+              >
                 {existingDraftQty > 0 && !showPreparedDispatchActionCard ? (
-                  <div className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[12px] text-amber-900">
+                  <div
+                    className={cn(
+                      "rounded border border-amber-200 bg-amber-50 text-amber-900",
+                      isRegularDispatchWorkbench ? "px-2 py-1 text-[11px]" : "px-2 py-1 text-[12px]",
+                    )}
+                  >
                     <span className="font-medium">
                       <Badge variant="warning" className="mr-1.5 align-middle text-[10px]">
-                        Prepared
+                        Draft
                       </Badge>
-                      Prepared qty: <span className="tabular-nums font-bold">{fmtDispatchQty(existingDraftQty)}</span>
+                      Draft qty: <span className="tabular-nums font-bold">{fmtDispatchQty(existingDraftQty)}</span>
                       {!finalizePrepDraftMode ? (
                         <>
                           {" · "}
@@ -5219,7 +6205,7 @@ export function DispatchPage() {
                     </span>
                     {!finalizePrepDraftMode ? (
                       <span className="mt-0.5 block text-[11px] text-amber-900/90">
-                        Updating dispatch replaces this prepared row (no duplicate drafts).
+                        Updating this dispatch replaces the draft row (no duplicate drafts).
                       </span>
                     ) : null}
                   </div>
@@ -5253,7 +6239,9 @@ export function DispatchPage() {
               </div>
             ) : null}
 
-            {!showPreparedDispatchActionCard ? renderSoDispatchLedger("panel") : null}
+            {!showPreparedDispatchActionCard
+              ? renderSoDispatchLedger("panel", isRegularDispatchWorkbench ? { mesPanel: true, startCollapsed: true } : undefined)
+              : null}
               </div>
             }
           />
@@ -5262,11 +6250,31 @@ export function DispatchPage() {
 
       {!showPreparedDispatchActionCard ? (
       <div ref={dispatchHistoryAnchorRef} id="dispatch-page-history" className="scroll-mt-24">
-      <Card className="border-slate-200 shadow-sm">
-        <CardHeader className="py-2 pb-1">
-          <CardTitle className="text-sm font-semibold">Dispatch History</CardTitle>
-        </CardHeader>
-        <CardContent className="px-3 pb-3 pt-0">
+      <details
+        className={cn(
+          "erp-op-workspace-secondary rounded-lg border border-slate-200/70 bg-slate-50/30 shadow-none",
+          isRegularDispatchWorkbench && "ring-0",
+        )}
+      >
+        <summary
+          className={cn(
+            "flex cursor-pointer list-none items-center justify-between gap-2 hover:bg-slate-50 [&::-webkit-details-marker]:hidden",
+            isRegularDispatchWorkbench
+              ? "px-2.5 py-1.5 text-xs font-semibold text-slate-800"
+              : "px-3 py-2 text-sm font-semibold text-slate-900",
+          )}
+        >
+          <span>Dispatch history</span>
+          <span className="text-[11px] font-normal tabular-nums text-slate-500">
+            {ledgerTotal === 0 ? "No rows yet" : `${ledgerTotal} ledger row(s)`}
+          </span>
+        </summary>
+        <div
+          className={cn(
+            "border-t border-slate-100",
+            isRegularDispatchWorkbench ? "px-2.5 pb-2 pt-1" : "px-3 pb-3 pt-1",
+          )}
+        >
           {!isAdmin ? (
             <div className="mb-2 rounded border border-slate-200 bg-slate-50 px-2 py-1 text-[13px] text-slate-700">
               Only Admin can reverse dispatch.
@@ -5345,7 +6353,12 @@ export function DispatchPage() {
             <p className="mb-2 text-[13px] text-slate-600">No rows on this page.</p>
           ) : null}
           {ledgerRows.length > 0 ? (
-            <div className="max-h-[min(50vh,360px)] overflow-auto">
+            <div
+              className={cn(
+                "overflow-auto",
+                isRegularDispatchWorkbench ? "max-h-[min(38vh,260px)]" : "max-h-[min(50vh,360px)]",
+              )}
+            >
               {(() => {
                 // History = forward finalized dispatch rows only (no "pending" concept here).
                 const forwards = ledgerRows.filter(
@@ -5406,7 +6419,7 @@ export function DispatchPage() {
                           <th className="py-1.5 pr-3 text-right">Reversed</th>
                           <th className="py-1.5 pr-3 text-right">Balance</th>
                           <th className="py-1.5 pr-3">Status</th>
-                          <th className="py-1.5 pr-2">Actions</th>
+                          <th className="erp-table-action-col py-1.5 pr-2">Actions</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -5451,20 +6464,20 @@ export function DispatchPage() {
                                   {pillLabel}
                                 </span>
                               </td>
-                              <td className="py-2 pr-2 align-top">
+                              <td className="erp-table-action-col py-2 pr-2 align-top">
                                 {isRegularNormalLedgerSoOrderType(d.soOrderType) ? (
                                   d.status === "DISPATCHED" ? (
                                     d.salesBillExists === true && d.salesBillId != null && Number(d.salesBillId) > 0 ? (
                                       <Link
                                         to={`/sales-bills/${d.salesBillId}?from=dispatch`}
-                                        className="text-[12px] font-semibold text-sky-800 underline decoration-sky-800/40 underline-offset-2 hover:text-sky-950"
+                                        className="erp-table-act erp-table-act--link"
                                       >
                                         View Sales Bill
                                       </Link>
                                     ) : (
                                       <Link
                                         to={`/sales-bills/new?dispatchId=${d.id}&from=dispatch`}
-                                        className="text-[12px] font-semibold text-sky-800 underline decoration-sky-800/40 underline-offset-2 hover:text-sky-950"
+                                        className="erp-table-act erp-table-act--link"
                                       >
                                         Create Sales Bill
                                       </Link>
@@ -5485,9 +6498,11 @@ export function DispatchPage() {
                 );
               })()}
             </div>
+          ) : ledgerTotal === 0 ? (
+            <p className="py-2 text-[12px] text-slate-600">No finalized dispatch history for this filter.</p>
           ) : null}
-        </CardContent>
-      </Card>
+        </div>
+      </details>
       </div>
       ) : null}
 

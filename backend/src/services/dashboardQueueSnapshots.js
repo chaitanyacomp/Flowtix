@@ -12,11 +12,13 @@ const {
   buildSoLineDispatchAllocation,
   getSoLineAttributedDispatchedQty,
   getSoLineOrderQtyMinusAttributedDispatch,
+  getSoLineDispatchPendingQty,
   buildDispatchableQtyBySalesOrderLineId,
   getWoLineRemainingProductionQty,
   getProductionBatchQcPendingQty,
   sumActiveQcAcceptedQty,
   sumActiveQcRejectedQty,
+  REPORT_QUEUE_EPS,
 } = require("./reportMetrics");
 const { mapSoLinesToDispatchFifoInputs, dispatchFifoQtyForSoLine } = require("./regularSoBufferQty");
 const { getApprovedProducedQtyByWorkOrderLineIds } = require("./productionMetrics");
@@ -30,6 +32,7 @@ const {
   computeNoQtyDispatchHeadroom,
   filterNoQtyDispatchRowsForActiveCycle,
   netNoQtyCycleDispatchedByItemId,
+  buildNoQtyDispatchLineStatsForAllCycles,
 } = require("../routes/dispatch");
 const { loadEffectiveNoQtyCarryForwardShortfallByItem } = require("./noQtySoCloseSnapshotService");
 const { loadNoQtyPendingQcDispositionQtyByItem } = require("./noQtyPostCycleApprovalService");
@@ -68,6 +71,45 @@ function isClosedNoQtySalesOrderStatus(status) {
   return ["MANUALLY_CLOSED", "CLOSED", "COMPLETED"].includes(String(status ?? ""));
 }
 
+/** Set `DASHBOARD_AUDIT_WO147=1` for temporary structured logs for work order id 147 only (runtime audit). */
+function auditWo147Enabled() {
+  return process.env.DASHBOARD_AUDIT_WO147 === "1";
+}
+
+function auditWo147(wo) {
+  return auditWo147Enabled() && wo && Number(wo.id) === 147;
+}
+
+/** Logs final continue-working rows relevant to PRODUCTION UI when `DASHBOARD_AUDIT_WO147=1`. */
+function logAuditWo147ContinueWorkingRows(rows) {
+  if (!auditWo147Enabled() || !Array.isArray(rows)) return;
+  const workOrderIdFromHref = (href) => {
+    if (href == null) return null;
+    const m = /[?&]workOrderId=(\d+)/i.exec(String(href));
+    return m ? Number(m[1]) : null;
+  };
+  const productionRelevant = rows.filter(
+    (r) =>
+      r.stageKey === "PRODUCTION" ||
+      r.nextStep === "Continue Production" ||
+      workOrderIdFromHref(r.href) === 147,
+  );
+  console.info("[AUDIT_WO147_CONTINUE_WORKING]", {
+    note:
+      "Rows tied to PRODUCTION-stage UI (stageKey PRODUCTION, Continue Production, or href workOrderId=147). /continue-working is not role-scoped on the server.",
+    rowCount: productionRelevant.length,
+    rows: productionRelevant.map((r) => ({
+      id: r.key,
+      stageKey: r.stageKey,
+      nextAction: r.nextAction,
+      salesOrderId: r.salesOrderId,
+      workOrderId: workOrderIdFromHref(r.href),
+      label: r.metricLabel ?? r.itemName ?? null,
+      title: r.nextStep ?? null,
+    })),
+  });
+}
+
 async function filterDashboardActionableWorkOrders(workOrders, db = prisma) {
   const noQtyPairs = [];
   const seen = new Set();
@@ -75,12 +117,25 @@ async function filterDashboardActionableWorkOrders(workOrders, db = prisma) {
     const so = wo.salesOrder;
     if (!so || so.orderType !== "NO_QTY") continue;
     const soId = Number(wo.salesOrderId ?? so.id);
-    const cycleId = normalizePositiveCycleId(so.currentCycleId);
-    if (!Number.isFinite(soId) || soId <= 0 || cycleId == null) continue;
-    const key = `${soId}:${cycleId}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    noQtyPairs.push({ salesOrderId: soId, cycleId });
+    if (!Number.isFinite(soId) || soId <= 0) continue;
+
+    const pointerCycleId = normalizePositiveCycleId(so.currentCycleId);
+    if (pointerCycleId != null) {
+      const key = `${soId}:${pointerCycleId}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        noQtyPairs.push({ salesOrderId: soId, cycleId: pointerCycleId });
+      }
+    }
+
+    const woCycleId = normalizePositiveCycleId(wo.cycle?.id) ?? normalizePositiveCycleId(wo.cycleId);
+    if (woCycleId != null) {
+      const key2 = `${soId}:${woCycleId}`;
+      if (!seen.has(key2)) {
+        seen.add(key2);
+        noQtyPairs.push({ salesOrderId: soId, cycleId: woCycleId });
+      }
+    }
   }
 
   const lockedSheets =
@@ -99,14 +154,72 @@ async function filterDashboardActionableWorkOrders(workOrders, db = prisma) {
 
   return (workOrders || []).filter((wo) => {
     const so = wo.salesOrder;
-    if (!so || so.orderType !== "NO_QTY") return true;
-    if (isClosedNoQtySalesOrderStatus(so.internalStatus)) return false;
+    if (!so || so.orderType !== "NO_QTY") {
+      if (auditWo147(wo)) {
+        console.info("[AUDIT_WO147_FILTER]", {
+          woId: wo.id,
+          woDocNo: wo.docNo ?? null,
+          soOrderType: so?.orderType ?? null,
+          include: true,
+          reason: "INCLUDE_NON_NO_QTY_FILTER_BYPASS",
+        });
+      }
+      return true;
+    }
 
-    const currentCycleId = normalizePositiveCycleId(so.currentCycleId);
+    const pointerCycleId = normalizePositiveCycleId(so.currentCycleId);
     const woCycleId = normalizePositiveCycleId(wo.cycle?.id) ?? normalizePositiveCycleId(wo.cycleId);
-    if (currentCycleId == null || woCycleId == null || woCycleId !== currentCycleId) return false;
-    if (so.currentCycle?.status && so.currentCycle.status !== "ACTIVE") return false;
-    return lockedSheetKeys.has(`${Number(wo.salesOrderId ?? so.id)}:${currentCycleId}`);
+    const soId = Number(wo.salesOrderId ?? so.id);
+    const lockKey = Number.isFinite(soId) && soId > 0 && woCycleId != null ? `${soId}:${woCycleId}` : null;
+    const lockedSheetKeyFound = lockKey != null && lockedSheetKeys.has(lockKey);
+
+    let include;
+    /** @type {string} */
+    let reason;
+
+    if (isClosedNoQtySalesOrderStatus(so.internalStatus)) {
+      include = false;
+      reason = "EXCLUDE_SO_INTERNAL_CLOSED";
+    } else if (woCycleId == null) {
+      include = false;
+      reason = "EXCLUDE_WO_CYCLE_ID_NULL";
+    } else if (!lockedSheetKeys.has(`${soId}:${woCycleId}`)) {
+      include = false;
+      reason = "EXCLUDE_NO_LOCKED_RS_FOR_WO_CYCLE";
+    } else if (pointerCycleId != null && woCycleId === pointerCycleId) {
+      if (so.currentCycle?.status && so.currentCycle.status !== "ACTIVE") {
+        include = false;
+        reason = "EXCLUDE_POINTER_CYCLE_NOT_ACTIVE";
+      } else {
+        include = true;
+        reason = "INCLUDE_POINTER_ALIGNED";
+      }
+    } else if (wo.requirementSheetId != null) {
+      include = true;
+      reason = "INCLUDE_DRIFT_RS_BACKED";
+    } else {
+      const driftOk = wo.cycle?.status === "ACTIVE";
+      include = driftOk;
+      reason = driftOk ? "INCLUDE_DRIFT_ACTIVE_WO_CYCLE" : "EXCLUDE_DRIFT_WO_CYCLE_NOT_ACTIVE";
+    }
+
+    if (auditWo147(wo)) {
+      console.info("[AUDIT_WO147_FILTER]", {
+        woId: wo.id,
+        woDocNo: wo.docNo ?? null,
+        soOrderType: so.orderType,
+        woCycleId,
+        soCurrentCycleId: so.currentCycleId,
+        woRequirementSheetId: wo.requirementSheetId ?? null,
+        lockedSheetKeyFound,
+        lockKey,
+        woCycleStatus: wo.cycle?.status ?? null,
+        pointerCycleStatus: so.currentCycle?.status ?? null,
+        include,
+        reason,
+      });
+    }
+    return include;
   });
 }
 
@@ -114,7 +227,7 @@ async function getActionableWorkOrderCount(db = prisma) {
   const workOrders = await db.workOrder.findMany({
     where: { status: { notIn: ["COMPLETED", "REJECTED"] } },
     include: {
-      cycle: { select: { id: true } },
+      cycle: { select: { id: true, status: true } },
       salesOrder: {
         select: {
           id: true,
@@ -130,21 +243,31 @@ async function getActionableWorkOrderCount(db = prisma) {
   return actionable.length;
 }
 
+function numDash(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/**
+ * Dispatch backlog rows for dashboard + operations-exception dispatch section.
+ * REGULAR: same line inclusion as GET /api/dispatch/sales-orders `pendingFirst` (customer pending or draft lock).
+ * NO_QTY: same per-cycle `dispatchable` / lock / pending flags as dispatch list (not REGULAR ship-pool `buildDispatchableQtyBySalesOrderLineId`).
+ */
 async function getDispatchBacklogRows() {
-  const stockAgg = await prisma.stockTransaction.groupBy({
-    by: ["itemId"],
-    // Stock math must include reversed originals; reversal rows offset them.
-    where: { stockBucket: "USABLE" },
+  const bucketStockRows = await prisma.stockTransaction.groupBy({
+    by: ["itemId", "stockBucket"],
+    where: { stockBucket: { in: ["USABLE", "QC_HOLD", "QC_PENDING", "REWORK", "SCRAP"] } },
     _sum: { qtyIn: true, qtyOut: true },
   });
-  const stockByItemId = new Map(
-    stockAgg.map((r) => [r.itemId, Number(r._sum.qtyIn ?? 0) - Number(r._sum.qtyOut ?? 0)]),
-  );
+  /** USABLE net by item — same bucket slice as GET /api/dispatch/sales-orders `onHandByItemId`. */
+  const onHandByItemId = new Map();
+  for (const r of bucketStockRows) {
+    if (r.stockBucket !== "USABLE") continue;
+    const net = Number(r._sum.qtyIn ?? 0) - Number(r._sum.qtyOut ?? 0);
+    onHandByItemId.set(r.itemId, net);
+  }
 
   const orders = await prisma.salesOrder.findMany({
-    where: {
-      internalStatus: { in: ["APPROVED", "IN_PROCESS"] },
-    },
     orderBy: { createdAt: "asc" },
     include: {
       lines: { include: { item: true }, orderBy: { id: "asc" } },
@@ -157,12 +280,147 @@ async function getDispatchBacklogRows() {
   const qcAcceptedMap = await buildQcAcceptedMap(prisma);
   const replacementQcGrossBySoItem = await buildReplacementReturnQcGrossBySoItemKey(prisma, orders, qcAcceptedMap);
 
+  const allNoQtyFromRows = orders.filter((so) => so.orderType === "NO_QTY");
+  const noQtySoIds = allNoQtyFromRows.map((so) => so.id);
+  const allCyclesForNoQty =
+    noQtySoIds.length > 0
+      ? await prisma.salesOrderCycle.findMany({
+          where: { salesOrderId: { in: noQtySoIds } },
+          select: { id: true, salesOrderId: true, cycleNo: true, status: true },
+          orderBy: [{ salesOrderId: "asc" }, { cycleNo: "asc" }],
+        })
+      : [];
+
+  const allCyclesBySoId = new Map();
+  for (const c of allCyclesForNoQty) {
+    const row = { id: c.id, cycleNo: Number(c.cycleNo), status: String(c.status ?? "") };
+    const arrAll = allCyclesBySoId.get(c.salesOrderId) ?? [];
+    arrAll.push(row);
+    allCyclesBySoId.set(c.salesOrderId, arrAll);
+  }
+
+  const noQtySoCycleInputsAll = [];
+  const seenSoCycleInput = new Set();
+  for (const c of allCyclesForNoQty) {
+    const k = `${c.salesOrderId}:${c.id}`;
+    if (seenSoCycleInput.has(k)) continue;
+    seenSoCycleInput.add(k);
+    noQtySoCycleInputsAll.push({ id: c.salesOrderId, currentCycleId: c.id });
+  }
+  const noQtyCycleIdsAll = [...new Set(allCyclesForNoQty.map((c) => c.id))];
+
+  const noQtyCapBySoCycleKey = new Map();
+  const [cycleQcAcceptedMap, cycleRecheckAcceptedMap, postCycleApprovalMapAll] = await Promise.all([
+    loadNoQtyCycleQcAcceptedMap(prisma, noQtySoCycleInputsAll),
+    loadNoQtyDispositionUsableForDispatchPoolMap(prisma, noQtySoCycleInputsAll),
+    loadNoQtyPostCycleApprovalMapForInputs(prisma, noQtySoCycleInputsAll),
+  ]);
+
+  if (noQtySoIds.length && noQtyCycleIdsAll.length) {
+    const lockedSheets = await prisma.requirementSheet.findMany({
+      where: {
+        salesOrderId: { in: noQtySoIds },
+        cycleId: { in: noQtyCycleIdsAll },
+        status: "LOCKED",
+      },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      include: { lines: { include: { item: true } } },
+    });
+    for (const sh of lockedSheets) {
+      const k = `${sh.salesOrderId}:${Number(sh.cycleId)}`;
+      if (noQtyCapBySoCycleKey.has(k)) continue;
+      const capsByItemId = new Map();
+      for (const ln of sh.lines || []) {
+        const cap = Math.max(numDash(ln.suggestedWoQtySnapshot ?? 0), numDash(ln.requirementQty ?? 0));
+        if (!(cap > REPORT_QUEUE_EPS)) continue;
+        capsByItemId.set(ln.itemId, {
+          cap,
+          itemName: ln.item?.itemName ?? `Item #${ln.itemId}`,
+          fulfillmentQtySnapshot: numDash(ln.requirementQty ?? 0),
+          productionRequiredQtySnapshot: numDash(ln.suggestedWoQtySnapshot ?? 0),
+          availableStockQtySnapshot: ln.availableStockQtySnapshot != null ? numDash(ln.availableStockQtySnapshot) : null,
+          shortfallQtySnapshot: ln.shortfallQtySnapshot != null ? numDash(ln.shortfallQtySnapshot) : null,
+        });
+      }
+      noQtyCapBySoCycleKey.set(k, { capsByItemId });
+    }
+  }
+
   const rows = [];
   for (const so of orders) {
     const customerName = customerNameForSalesOrder(so);
     const soLines = Array.isArray(so?.lines) ? so.lines : [];
+
+    if (so.orderType === "NO_QTY") {
+      if (so.internalStatus === "MANUALLY_CLOSED" || so.internalStatus === "CLOSED") continue;
+
+      const { lineStats } = buildNoQtyDispatchLineStatsForAllCycles({
+        soId: so.id,
+        dispatchRecords: so.dispatch,
+        onHandByItemId,
+        noQtyCapBySoCycleKey,
+        cycleQcAcceptedMap,
+        cycleRecheckAcceptedMap,
+        postCycleApprovalMap: postCycleApprovalMapAll,
+        salesOrderLines: soLines,
+        cyclesForSo: allCyclesBySoId.get(so.id) || [],
+      });
+
+      for (const ls of lineStats || []) {
+        const pend = Number(ls.pendingDispatchQty ?? 0);
+        const dbl = Number(ls.dispatchable ?? ls.dispatchableQty ?? 0);
+        const lock = Number(ls.dispatchPendingLock ?? 0);
+        if (
+          pend <= REPORT_QUEUE_EPS &&
+          dbl <= REPORT_QUEUE_EPS &&
+          lock <= REPORT_QUEUE_EPS
+        ) {
+          continue;
+        }
+
+        const rowCycleId = ls.noQtyCycleId != null ? Number(ls.noQtyCycleId) : null;
+
+        const itemId = Number(ls.itemId);
+        const fgLine = soLines.find((l) => Number(l.itemId) === itemId);
+        const rowCycleNo =
+          rowCycleId != null
+            ? (() => {
+                const cy = (allCyclesBySoId.get(so.id) || []).find((c) => Number(c.id) === Number(rowCycleId));
+                return cy != null && Number.isFinite(Number(cy.cycleNo)) ? Number(cy.cycleNo) : null;
+              })()
+            : null;
+
+        rows.push({
+          salesOrderId: so.id,
+          salesOrderNo: `SO-${so.id}`,
+          customerName,
+          itemId,
+          itemName: String(ls.itemName ?? fgLine?.item?.itemName ?? `Item #${itemId}`),
+          salesOrderLineId: fgLine?.id,
+          orderType: so.orderType,
+          orderedQty: Number(ls.cycleCap ?? 0),
+          dispatchedQty: Number(ls.dispatched ?? ls.cycleDispatchedQty ?? 0),
+          pendingQty: pend,
+          dispatchableNow: dbl,
+          cycleId: rowCycleId,
+          ...(rowCycleNo != null ? { cycleNo: rowCycleNo } : {}),
+          salesOrderDate: so.createdAt.toISOString(),
+          status: so.internalStatus,
+          quantityMetricContext: QUEUE_SNAPSHOT_ROW_METRIC_CONTEXT.dispatchBacklog,
+        });
+      }
+      continue;
+    }
+
+    if (so.internalStatus === "COMPLETED") continue;
+
     const lineInputs = mapSoLinesToDispatchFifoInputs(soLines, so.orderType);
-    const { alloc } = buildSoLineDispatchAllocation(
+    const { alloc: allocOp } = buildSoLineDispatchAllocation(
+      lineInputs,
+      so.dispatch,
+      DISPATCH_ALLOC_MODE.OPERATIONAL,
+    );
+    const { alloc: allocConf } = buildSoLineDispatchAllocation(
       lineInputs,
       so.dispatch,
       DISPATCH_ALLOC_MODE.CONFIRMED,
@@ -172,7 +430,7 @@ async function getDispatchBacklogRows() {
     for (const li of lineInputs) {
       const repKey = `${so.id}:${li.itemId}`;
       let qcGross = qcAcceptedMap.get(repKey) ?? 0;
-      if (replacementQcGrossBySoItem.has(repKey)) {
+      if (so.orderType === "REPLACEMENT" && replacementQcGrossBySoItem.has(repKey)) {
         qcGross = replacementQcGrossBySoItem.get(repKey) ?? 0;
       }
       qcAcceptedTotalByItemId.set(li.itemId, qcGross);
@@ -181,22 +439,30 @@ async function getDispatchBacklogRows() {
       orderLineInputs: lineInputs,
       dispatchRecords: so.dispatch,
       orderType: so.orderType,
-      onHandByItemId: stockByItemId,
+      onHandByItemId,
       qcAcceptedTotalByItemId,
     });
 
     for (const line of soLines) {
-      const dispatched = getSoLineAttributedDispatchedQty(alloc, line.id);
-      const orderedQty = dispatchFifoQtyForSoLine(line, so.orderType);
-      const pendingQty = getSoLineOrderQtyMinusAttributedDispatch(orderedQty, dispatched);
-      if (pendingQty <= DISPATCH_BACKLOG_EPS) continue;
+      const attrOp = getSoLineAttributedDispatchedQty(allocOp, line.id);
+      const dispatched = getSoLineAttributedDispatchedQty(allocConf, line.id);
+      const dispatchPendingLock = Math.max(0, attrOp - dispatched);
+      const fifoCommitment = dispatchFifoQtyForSoLine(line, so.orderType);
+      const pendingDispatchQty = getSoLineDispatchPendingQty(fifoCommitment, dispatched);
       const dispatchableNow = Number(dispatchableByLineId.get(line.id) ?? 0);
+      if (pendingDispatchQty <= REPORT_QUEUE_EPS && dispatchPendingLock <= REPORT_QUEUE_EPS) continue;
+
+      const orderedQty = fifoCommitment;
+      const pendingQty = getSoLineOrderQtyMinusAttributedDispatch(orderedQty, dispatched);
+
       rows.push({
         salesOrderId: so.id,
         salesOrderNo: `SO-${so.id}`,
         customerName,
         itemId: line.itemId,
         itemName: line.item?.itemName ?? `Item #${line.itemId}`,
+        salesOrderLineId: line.id,
+        orderType: so.orderType,
         orderedQty,
         dispatchedQty: dispatched,
         pendingQty,
@@ -516,6 +782,14 @@ async function getProductionQueueRows() {
       orderType === "NO_QTY" &&
       ["MANUALLY_CLOSED", "CLOSED", "COMPLETED"].includes(String(so?.internalStatus ?? ""))
     ) {
+      if (auditWo147(wo)) {
+        console.info("[AUDIT_WO147_QUEUE]", {
+          woId: wo.id,
+          emitted: false,
+          skipReason: "SKIP_SO_INTERNAL_CLOSED",
+          internalStatus: so?.internalStatus ?? null,
+        });
+      }
       continue;
     }
     const customerName = so ? customerNameForSalesOrder(so) : "Unknown Customer";
@@ -523,14 +797,31 @@ async function getProductionQueueRows() {
     const woLines = Array.isArray(wo?.lines) ? wo.lines : [];
     for (const line of woLines) {
       const requiredQty = Number(line.qty);
+      const plannedQty = Number(line.plannedQty);
       const approvedProduced = producedByLineId.get(line.id) ?? 0;
       const balanceQty = getWoLineRemainingProductionQty(requiredQty, approvedProduced);
+      if (auditWo147(wo) && balanceQty <= QUEUE_EPS) {
+        console.info("[AUDIT_WO147_QUEUE]", {
+          woId: wo.id,
+          workOrderLineId: line.id,
+          qty: requiredQty,
+          plannedQty,
+          producedQty: approvedProduced,
+          balanceQty,
+          initialNextAction: null,
+          finalNextAction: null,
+          emitted: false,
+          skipReason: "SKIP_LINE_ZERO_BALANCE",
+        });
+      }
       if (balanceQty <= QUEUE_EPS) continue;
 
       const linePendingQc = pendingQcByLineId.get(line.id) ?? 0;
       const productionIdForQc = firstPendingProdIdByLineId.get(line.id) ?? null;
 
       let nextAction = "PRODUCTION_PENDING";
+      /** Primary classification before NO_QTY CLOSED / RS dashboard overrides. */
+      let initialNextAction = null;
       let hasPendingQc = false;
       let dispatchableQty = 0;
       let lastShortageQty = 0;
@@ -555,9 +846,6 @@ async function getProductionQueueRows() {
         if (linePendingQc > QUEUE_EPS) {
           nextAction = "QC_PENDING";
           hasPendingQc = true;
-        } else if (cycleId != null && cycleStatusById.get(cycleId) === "CLOSED") {
-          /** Cycle closed: never send remaining WO balance to Production — next step is RS per workflow. */
-          nextAction = "NEXT_RS_REQUIRED";
         } else if (cycleId != null) {
           const capKey = `${wo.salesOrderId}:${cycleId}`;
           const caps = capMapBySoCycle.get(capKey);
@@ -606,17 +894,24 @@ async function getProductionQueueRows() {
           nextAction = approvedProduced <= QUEUE_EPS ? "PRODUCTION_PENDING" : "NEXT_RS_REQUIRED";
         }
 
-        /** Safety net: carry-forward can be 0 while WO balance remains on a CLOSED cycle — never Production. */
+        initialNextAction = nextAction;
+
+        /**
+         * CLOSED cycle + remaining WO balance without an RS-backed WO: treat as Next RS (carry-forward edge).
+         * RS-linked WOs (requirementSheetId) stay PRODUCTION_PENDING so operators can finish the locked sheet WO.
+         */
         if (
           nextAction === "PRODUCTION_PENDING" &&
           linePendingQc <= QUEUE_EPS &&
           cycleId != null &&
           cycleStatusById.get(cycleId) === "CLOSED" &&
-          balanceQty > QUEUE_EPS
+          balanceQty > QUEUE_EPS &&
+          wo.requirementSheetId == null
         ) {
           nextAction = "NEXT_RS_REQUIRED";
           dispatchableQty = 0;
         }
+
       } else {
         if (linePendingQc > QUEUE_EPS) {
           nextAction = "QC_PENDING";
@@ -624,22 +919,13 @@ async function getProductionQueueRows() {
         } else {
           nextAction = "PRODUCTION_PENDING";
         }
+        initialNextAction = nextAction;
       }
 
-      /** NEXT_RS only: row + link cycle = SO current planning cycle (matches carry-forward shortage). WO `cycleId` above stays for dispatch/QC/closed math. */
-      let rowDisplayCycleId = cycleId;
-      let rowDisplayCycleNo =
+      /** Operator-facing cycle = WO line cycle (document-linked). Do not substitute SO.currentCycleId (planning pointer). */
+      const rowDisplayCycleId = cycleId;
+      const rowDisplayCycleNo =
         orderType === "NO_QTY" && cycleId != null ? cycleNoById.get(cycleId) ?? null : null;
-      if (orderType === "NO_QTY" && nextAction === "NEXT_RS_REQUIRED") {
-        const curCid = normalizePositiveCycleId(so.currentCycleId);
-        if (curCid != null) {
-          rowDisplayCycleId = curCid;
-          rowDisplayCycleNo =
-            so.currentCycle?.cycleNo != null && Number.isFinite(Number(so.currentCycle.cycleNo))
-              ? Number(so.currentCycle.cycleNo)
-              : cycleNoById.get(curCid) ?? null;
-        }
-      }
 
       const href = buildDashboardProductionHref({
         nextAction,
@@ -670,6 +956,24 @@ async function getProductionQueueRows() {
             : "Last shortage Qty";
       } else {
         qtyLabel = undefined;
+      }
+
+      if (auditWo147(wo)) {
+        console.info("[AUDIT_WO147_QUEUE]", {
+          woId: wo.id,
+          woDocNo: wo.docNo ?? null,
+          orderType,
+          workOrderLineId: line.id,
+          qty: requiredQty,
+          plannedQty,
+          producedQty: approvedProduced,
+          balanceQty,
+          woCycleIdResolved: cycleId,
+          cycleRowStatus: cycleId != null ? cycleStatusById.get(cycleId) : null,
+          initialNextAction,
+          finalNextAction: nextAction,
+          emitted: true,
+        });
       }
 
       rows.push({
@@ -708,15 +1012,40 @@ async function getProductionQueueRows() {
   return rows;
 }
 
-async function getQcQueueRows() {
+/**
+ * Production batches with first-pass QC still pending (APPROVED entries only).
+ * @param {{ excludeNoQty?: boolean }} [options]
+ * @param {boolean} [options.excludeNoQty] When true, omit NO_QTY cycle batches so this queue stays REGULAR-only
+ *   (NORMAL / REPLACEMENT / etc.). Reports and exception payloads should pass false (default) to see all pending QC.
+ */
+async function getQcQueueRows(options = {}) {
+  const excludeNoQty = options.excludeNoQty === true;
+  const where = excludeNoQty
+    ? {
+        workflowStatus: "APPROVED",
+        workOrderLine: {
+          workOrder: {
+            salesOrder: {
+              is: { orderType: { not: "NO_QTY" } },
+            },
+          },
+        },
+      }
+    : { workflowStatus: "APPROVED" };
+
   const productions = await prisma.productionEntry.findMany({
-    where: { workflowStatus: "APPROVED" },
+    where,
     orderBy: [{ date: "asc" }, { id: "asc" }],
     include: {
       workOrderLine: {
         include: {
           fgItem: true,
-          workOrder: true,
+          workOrder: {
+            include: {
+              salesOrder: { select: { orderType: true } },
+              cycle: { select: { id: true, cycleNo: true } },
+            },
+          },
         },
       },
       qcEntries: { where: QC_ENTRY_ACTIVE_WHERE },
@@ -738,6 +1067,9 @@ async function getQcQueueRows() {
     if (pendingQcQty <= QUEUE_EPS) continue;
 
     const status = prod.qcEntries.length === 0 ? "PENDING_QC" : "PARTIAL_QC";
+    const orderType = wo.salesOrder?.orderType ?? null;
+    const cycleIdRaw = wo.cycleId != null ? Number(wo.cycleId) : NaN;
+    const cycleId = Number.isFinite(cycleIdRaw) && cycleIdRaw > 0 ? cycleIdRaw : null;
 
     rows.push({
       qcRef: `PE-${prod.id}`,
@@ -754,6 +1086,11 @@ async function getQcQueueRows() {
       status,
       qcDate: prod.date.toISOString(),
       quantityMetricContext: QUEUE_SNAPSHOT_ROW_METRIC_CONTEXT.qcQueue,
+      ...(orderType != null ? { orderType } : {}),
+      ...(cycleId != null ? { cycleId } : {}),
+      ...(orderType === "NO_QTY" && wo.cycle?.cycleNo != null && Number.isFinite(Number(wo.cycle.cycleNo))
+        ? { cycleNo: Number(wo.cycle.cycleNo) }
+        : {}),
     });
   }
   return rows;
@@ -802,6 +1139,7 @@ async function getContinueWorkingRows(options = {}) {
 
   const [prodRows, qcRows, dispRows] = await Promise.all([
     getProductionQueueRows(),
+    /** Same eligibility as `/api/dashboard/qc-queue` and global `withoutQc=1` production entries (includes NO_QTY). */
     getQcQueueRows(),
     getDispatchBacklogRows(),
   ]);
@@ -867,6 +1205,31 @@ async function getContinueWorkingRows(options = {}) {
   });
   const soById = new Map(sos.map((s) => [s.id, s]));
 
+  const qcCycleIdCandidates = [...qcBySo.values()]
+    .map((q) => (q.cycleId != null ? Number(q.cycleId) : 0))
+    .filter((id) => Number.isFinite(id) && id > 0);
+  const pointerCycleIds = [...soById.values()]
+    .filter((s) => s.orderType === "NO_QTY" && s.currentCycleId != null)
+    .map((s) => Number(s.currentCycleId))
+    .filter((id) => Number.isFinite(id) && id > 0);
+  const dispCycleIds = [...dispBySo.values()]
+    .map((d) => (d.cycleId != null ? Number(d.cycleId) : 0))
+    .filter((id) => Number.isFinite(id) && id > 0);
+  const prodCycleIds = [...prodBestBySo.values()]
+    .map((p) => (p.cycleId != null ? Number(p.cycleId) : 0))
+    .filter((id) => Number.isFinite(id) && id > 0);
+  const allAggCycleIds = [...new Set([...qcCycleIdCandidates, ...pointerCycleIds, ...dispCycleIds, ...prodCycleIds])];
+  const continueWorkingCycleRows =
+    allAggCycleIds.length > 0
+      ? await prisma.salesOrderCycle.findMany({
+          where: { id: { in: allAggCycleIds } },
+          select: { id: true, cycleNo: true },
+        })
+      : [];
+  const continueWorkingCycleNoById = new Map(
+    continueWorkingCycleRows.map((c) => [c.id, Number.isFinite(Number(c.cycleNo)) ? Number(c.cycleNo) : null]),
+  );
+
   function stageKeyFromNext(nextAction) {
     if (nextAction === "QC_PENDING") return "QC";
     if (nextAction === "DISPATCH_PENDING") return "DISPATCH";
@@ -888,7 +1251,18 @@ async function getContinueWorkingRows(options = {}) {
     const awaitingQcQty = qc ? Number(qc.pendingQcQty) || 0 : 0;
 
     if (awaitingQcQty > QUEUE_EPS) {
-      const cycleId = normalizePositiveCycleId(so.currentCycleId);
+      const cycleId =
+        so.orderType === "NO_QTY" && qc.cycleId != null && Number.isFinite(Number(qc.cycleId)) && Number(qc.cycleId) > 0
+          ? normalizePositiveCycleId(qc.cycleId)
+          : normalizePositiveCycleId(so.currentCycleId);
+      const cycleNoResolved =
+        so.orderType === "NO_QTY"
+          ? qc.cycleNo != null && Number.isFinite(Number(qc.cycleNo))
+            ? Number(qc.cycleNo)
+            : cycleId != null
+              ? continueWorkingCycleNoById.get(cycleId) ?? null
+              : null
+          : null;
       const m = /^PE-(\d+)$/.exec(String(qc.qcRef ?? ""));
       const productionId = m ? Number(m[1]) : null;
       const route = buildDashboardProductionHref({
@@ -907,7 +1281,7 @@ async function getContinueWorkingRows(options = {}) {
         customerName: customerNameForSalesOrder(so),
         itemName: qc.itemName,
         orderType: so.orderType,
-        cycleNo: so.orderType === "NO_QTY" ? (so.currentCycle?.cycleNo ?? null) : null,
+        cycleNo: cycleNoResolved,
         cycleId,
         stageKey: "QC",
         awaitingQcQty,
@@ -987,8 +1361,8 @@ async function getContinueWorkingRows(options = {}) {
       const cycleNoOut =
         prodPick.orderType === "NO_QTY" && prodPick.cycleNo != null
           ? Number(prodPick.cycleNo)
-          : so.orderType === "NO_QTY"
-            ? (so.currentCycle?.cycleNo ?? null)
+          : so.orderType === "NO_QTY" && cycleIdOut != null
+            ? continueWorkingCycleNoById.get(cycleIdOut) ?? null
             : null;
       out.push({
         key: prodPick.nextAction === "NEXT_RS_REQUIRED" ? `so-${soId}-nqrs` : `so-${soId}`,
@@ -1013,7 +1387,16 @@ async function getContinueWorkingRows(options = {}) {
         href: prodPick.actionHref,
       });
     } else if (disp && Number(disp.dispatchableNow) > QUEUE_EPS) {
-      const cycleId = normalizePositiveCycleId(so.currentCycleId);
+      const cycleId =
+        so.orderType === "NO_QTY" && disp.cycleId != null && Number.isFinite(Number(disp.cycleId)) && Number(disp.cycleId) > 0
+          ? normalizePositiveCycleId(disp.cycleId)
+          : normalizePositiveCycleId(so.currentCycleId);
+      const cycleNoOut =
+        so.orderType === "NO_QTY" && disp.cycleNo != null && Number.isFinite(Number(disp.cycleNo))
+          ? Number(disp.cycleNo)
+          : so.orderType === "NO_QTY" && cycleId != null
+            ? continueWorkingCycleNoById.get(cycleId) ?? null
+            : null;
       const route =
         so.orderType === "NO_QTY"
           ? buildDashboardProductionHref({
@@ -1034,7 +1417,7 @@ async function getContinueWorkingRows(options = {}) {
         customerName: customerNameForSalesOrder(so),
         itemName: disp.itemName,
         orderType: so.orderType,
-        cycleNo: so.orderType === "NO_QTY" ? (so.currentCycle?.cycleNo ?? null) : null,
+        cycleNo: cycleNoOut,
         cycleId: so.orderType === "NO_QTY" ? cycleId : null,
         stageKey: "DISPATCH",
         dispatchableNow: metricQty,
@@ -1086,10 +1469,9 @@ async function getContinueWorkingRows(options = {}) {
  * Minimal ACTIVE NO_QTY Sales Orders list for dashboard continuity UI.
  * Intentionally does NOT compute next-action heuristics; frontend uses /no-qty-flow-state.
  *
- * Important: after a cycle completes, {@link maybeAutoCloseNoQtyCycle} sets SalesOrder.currentCycleId
- * to null while the SO stays open until the next RS creates a new ACTIVE cycle. Dashboard continuation
- * must still list those SOs — do NOT require currentCycleId (between-cycles is exactly when operators
- * need "Create next RS").
+ * Operator-facing cycle labels come from **document-linked** state (locked RS / latest sheet cycle),
+ * not {@link SalesOrder.currentCycleId} (planning pointer after prepare-next). `planningPointerCycleNo`
+ * is exposed separately when the pointer is ahead of operational work (empty next cycle).
  */
 async function getActiveNoQtySalesOrders(options = {}) {
   const limitRaw = Number(options.limit);
@@ -1110,32 +1492,93 @@ async function getActiveNoQtySalesOrders(options = {}) {
   });
 
   const soIds = rows.map((so) => so.id);
-  const latestSheets =
-    soIds.length > 0
-      ? await prisma.requirementSheet.findMany({
-          where: { salesOrderId: { in: soIds } },
-          orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-          select: { id: true, docNo: true, status: true, salesOrderId: true, cycleId: true },
-        })
-      : [];
-  const latestSheetBySoId = new Map();
-  for (const sheet of latestSheets) {
-    if (!latestSheetBySoId.has(sheet.salesOrderId)) latestSheetBySoId.set(sheet.salesOrderId, sheet);
+  if (!soIds.length) return [];
+
+  const [lockedSheetsAll, anySheetsAll] = await Promise.all([
+    prisma.requirementSheet.findMany({
+      where: { salesOrderId: { in: soIds }, status: "LOCKED" },
+      select: { id: true, docNo: true, status: true, salesOrderId: true, cycleId: true, createdAt: true, cycle: { select: { id: true, cycleNo: true } } },
+    }),
+    prisma.requirementSheet.findMany({
+      where: { salesOrderId: { in: soIds } },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      select: { id: true, docNo: true, status: true, salesOrderId: true, cycleId: true, createdAt: true, cycle: { select: { id: true, cycleNo: true } } },
+    }),
+  ]);
+
+  const lockedBySo = new Map();
+  for (const sh of lockedSheetsAll) {
+    const sid = sh.salesOrderId;
+    const arr = lockedBySo.get(sid) ?? [];
+    arr.push(sh);
+    lockedBySo.set(sid, arr);
   }
 
-  return rows.map((so) => ({
-    salesOrderId: so.id,
-    salesOrderDocNo: so.docNo ?? null,
-    customerName: customerNameForSalesOrder(so),
-    cycleId: so.currentCycleId != null ? Number(so.currentCycleId) : null,
-    cycleNo: so.currentCycle?.cycleNo != null ? Number(so.currentCycle.cycleNo) : null,
-    internalStatus: so.internalStatus ?? null,
-    latestRequirementSheetId: latestSheetBySoId.get(so.id)?.id ?? null,
-    latestRequirementSheetDocNo: latestSheetBySoId.get(so.id)?.docNo ?? null,
-    latestRequirementSheetStatus: latestSheetBySoId.get(so.id)?.status ?? null,
-    latestRequirementSheetCycleId:
-      latestSheetBySoId.get(so.id)?.cycleId != null ? Number(latestSheetBySoId.get(so.id).cycleId) : null,
-  }));
+  const firstAnyBySo = new Map();
+  for (const sh of anySheetsAll) {
+    if (!firstAnyBySo.has(sh.salesOrderId)) firstAnyBySo.set(sh.salesOrderId, sh);
+  }
+
+  /** Pick operational locked RS: highest cycleNo, tie-break latest createdAt. */
+  function pickPrimaryLocked(sid) {
+    const arr = lockedBySo.get(sid) ?? [];
+    if (!arr.length) return null;
+    let best = arr[0];
+    let bestNo = best.cycle?.cycleNo != null ? Number(best.cycle.cycleNo) : -Infinity;
+    let bestTs = best.createdAt ? new Date(best.createdAt).getTime() : 0;
+    for (let i = 1; i < arr.length; i++) {
+      const sh = arr[i];
+      const cn = sh.cycle?.cycleNo != null ? Number(sh.cycle.cycleNo) : -Infinity;
+      const ts = sh.createdAt ? new Date(sh.createdAt).getTime() : 0;
+      if (cn > bestNo || (cn === bestNo && ts > bestTs)) {
+        best = sh;
+        bestNo = cn;
+        bestTs = ts;
+      }
+    }
+    return best;
+  }
+
+  return rows.map((so) => {
+    const sid = so.id;
+    const primaryLocked = pickPrimaryLocked(sid);
+    const fallbackSheet = primaryLocked ?? firstAnyBySo.get(sid) ?? null;
+
+    const opCycleId =
+      fallbackSheet?.cycleId != null && Number.isFinite(Number(fallbackSheet.cycleId)) && Number(fallbackSheet.cycleId) > 0
+        ? Number(fallbackSheet.cycleId)
+        : null;
+    const opCycleNo =
+      fallbackSheet?.cycle?.cycleNo != null && Number.isFinite(Number(fallbackSheet.cycle.cycleNo))
+        ? Number(fallbackSheet.cycle.cycleNo)
+        : null;
+
+    const ptrId = so.currentCycleId != null && Number.isFinite(Number(so.currentCycleId)) && Number(so.currentCycleId) > 0 ? Number(so.currentCycleId) : null;
+    const ptrNo =
+      so.currentCycle?.cycleNo != null && Number.isFinite(Number(so.currentCycle.cycleNo)) ? Number(so.currentCycle.cycleNo) : null;
+
+    const planningPointerAhead =
+      ptrNo != null && opCycleNo != null && ptrNo > opCycleNo && (primaryLocked != null || fallbackSheet != null);
+
+    return {
+      salesOrderId: sid,
+      salesOrderDocNo: so.docNo ?? null,
+      customerName: customerNameForSalesOrder(so),
+      internalStatus: so.internalStatus ?? null,
+      /** Operator-facing: document-linked cycle (locked RS preferred). */
+      cycleId: opCycleId,
+      cycleNo: opCycleNo,
+      /** SO planning pointer — may point at an empty next cycle; do not merge with RS doc for display. */
+      planningPointerCycleId: ptrId,
+      planningPointerCycleNo: ptrNo,
+      noQtyPlanningPointerAhead: planningPointerAhead,
+      latestRequirementSheetId: fallbackSheet?.id ?? null,
+      latestRequirementSheetDocNo: fallbackSheet?.docNo ?? null,
+      latestRequirementSheetStatus: fallbackSheet?.status ?? null,
+      latestRequirementSheetCycleId: opCycleId,
+      latestRequirementSheetCycleNo: opCycleNo,
+    };
+  });
 }
 
 async function getRmRiskRows() {
@@ -1143,7 +1586,7 @@ async function getRmRiskRows() {
     where: { status: { notIn: ["COMPLETED", "REJECTED"] } },
     orderBy: { createdAt: "asc" },
     include: {
-      cycle: { select: { id: true } },
+      cycle: { select: { id: true, status: true } },
       lines: { include: { fgItem: true }, orderBy: { id: "asc" } },
       salesOrder: {
         select: {
@@ -1314,6 +1757,7 @@ async function getPurchaseSummaryRows() {
 
 /**
  * Counts for QC work queue summary (production first QC vs disposition rework vs hold).
+ * `productionQcPendingCount` matches {@link getQcQueueRows} (all order types with pending first-pass QC).
  * @param {import('@prisma/client').PrismaClient} prisma
  */
 async function getQcWorkQueueCounts(prisma) {
@@ -1321,7 +1765,7 @@ async function getQcWorkQueueCounts(prisma) {
     await reconcileStaleSupervisorReworkDispositions(tx);
   });
 
-  const qcRows = await getQcQueueRows();
+  const qcRowsAll = await getQcQueueRows();
   const [reworkReady, holdRows, legacySupervisorRows] = await Promise.all([
     prisma.qcRejectedDisposition.findMany({
       where: { voidedAt: null, status: "REWORK_READY_FOR_QC" },
@@ -1400,11 +1844,63 @@ async function getQcWorkQueueCounts(prisma) {
     if (net > QUEUE_EPS) reworkQcPendingCount += 1;
   }
   return {
-    productionQcPendingCount: qcRows.length,
+    productionQcPendingCount: qcRowsAll.length,
     reworkQcPendingCount,
     holdDecisionsPendingCount: countPositiveDispositionLines(holdGrouped),
     legacyReworkApprovalCount: countPositiveDispositionLines(legacyHoldGrouped),
   };
+}
+
+/**
+ * Approved quotations with no linked sales order — commercial workflow continuation for dashboard.
+ * REGULAR + NO_QTY; excludes REJECTED and any quotation that already has an SO.
+ */
+async function getQuotationsPendingSalesOrderRows({ limit = 25 } = {}) {
+  const take =
+    Number.isFinite(Number(limit)) && Number(limit) > 0
+      ? Math.min(50, Math.max(1, Math.floor(Number(limit))))
+      : 25;
+
+  const rows = await prisma.quotation.findMany({
+    where: {
+      workflowStatus: "APPROVED",
+      salesOrder: { is: null },
+    },
+    orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+    take,
+    select: {
+      id: true,
+      quotationNo: true,
+      flowTypeSnapshot: true,
+      enquiry: {
+        select: {
+          customer: { select: { name: true } },
+        },
+      },
+    },
+  });
+
+  return rows.map((q) => {
+    const flowType = q.flowTypeSnapshot === "NO_QTY" ? "NO_QTY" : "REGULAR";
+    const quotationId = q.id;
+    const from = "dashboard";
+    const href =
+      flowType === "NO_QTY"
+        ? `/sales-orders/no-qty/from-quotation?quotationId=${quotationId}&from=${from}`
+        : `/sales-orders?quotationId=${quotationId}&from=${from}`;
+    const quotationNo =
+      q.quotationNo && String(q.quotationNo).trim() ? String(q.quotationNo).trim() : `Q-${quotationId}`;
+    const customerName = q.enquiry?.customer?.name?.trim() || "—";
+    return {
+      key: `quotation-pending-so-${quotationId}`,
+      quotationId,
+      quotationNo,
+      customerName,
+      flowType,
+      nextStep: "Create Sales Order",
+      href,
+    };
+  });
 }
 
 module.exports = {
@@ -1417,10 +1913,12 @@ module.exports = {
   getProductionQueueRows,
   getQcQueueRows,
   getContinueWorkingRows,
+  logAuditWo147ContinueWorkingRows,
   getActiveNoQtySalesOrders,
   getNoQtyDispatchPendingRowsForDashboard,
   getRmRiskRows,
   getPurchaseSummaryRows,
   buildDashboardActionLabel,
   getQcWorkQueueCounts,
+  getQuotationsPendingSalesOrderRows,
 };

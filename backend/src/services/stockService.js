@@ -86,7 +86,7 @@ async function assertUsableStockBeforeDispatchOut(db, itemId, dispatchQty) {
   const usable = await getItemStockQty(itemId, db, { stockBucket: "USABLE" });
   const q = Number(dispatchQty);
   if (usable + STOCK_EPS < q) {
-    const err = new Error(`Insufficient stock for dispatch. Available: ${usable}, required: ${q}.`);
+    const err = new Error(`Insufficient usable stock for dispatch. Available: ${usable}, required: ${q}.`);
     err.statusCode = 400;
     throw err;
   }

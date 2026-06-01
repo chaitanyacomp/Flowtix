@@ -47,16 +47,16 @@ d("Stock adjustment API (immutable + reversal)", () => {
       },
       update: { role: "ADMIN" },
     });
-    const sales = await prisma.user.upsert({
-      where: { email: "stock_adj_integ_sales@test.local" },
+    const purchase = await prisma.user.upsert({
+      where: { email: "stock_adj_integ_purchase@test.local" },
       create: {
-        email: "stock_adj_integ_sales@test.local",
-        name: "SA Integ Sales",
-        role: "SALES",
+        email: "stock_adj_integ_purchase@test.local",
+        name: "SA Integ Purchase",
+        role: "PURCHASE",
         passwordHash: hash,
         isActive: true,
       },
-      update: { role: "SALES" },
+      update: { role: "PURCHASE" },
     });
     const store = await prisma.user.upsert({
       where: { email: "stock_adj_integ_store@test.local" },
@@ -74,7 +74,7 @@ d("Stock adjustment API (immutable + reversal)", () => {
       data: { itemName: `IntegAdj_${tag}`, itemType: "RM", unit: "KG", minStockLevel: "0" },
     });
     await setStrictInventoryControl(false);
-    ctx = { admin, sales, itemId: item.id };
+    ctx = { admin, purchase, itemId: item.id };
   });
 
   after(async () => {
@@ -115,10 +115,10 @@ d("Stock adjustment API (immutable + reversal)", () => {
     assert.equal(res.status, 401);
   });
 
-  it("POST adjustment 403 SALES", async () => {
+  it("POST adjustment 403 PURCHASE", async () => {
     const res = await request(app)
       .post("/api/stock/adjustment")
-      .set(bearer(ctx.sales))
+      .set(bearer(ctx.purchase))
       .send({ itemId: ctx.itemId, qtyIn: 1, qtyOut: 0, reason: "nope" });
     assert.equal(res.status, 403);
     assert.equal(res.body?.error?.message, "Access denied. Only Admin and Store roles can post stock adjustments.");

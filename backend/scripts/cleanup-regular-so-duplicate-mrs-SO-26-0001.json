@@ -1,0 +1,78 @@
+{
+  "salesOrder": {
+    "id": 127,
+    "docNo": "SO-26-0001"
+  },
+  "canonical": {
+    "id": 45,
+    "docNo": "MR-26-0011",
+    "status": "CLOSED"
+  },
+  "removed": [
+    {
+      "id": 44,
+      "docNo": "MR-26-0010",
+      "from": "CLOSED",
+      "to": "CANCELLED"
+    },
+    {
+      "id": 42,
+      "docNo": "MR-26-0008",
+      "from": "CLOSED",
+      "to": "CANCELLED"
+    },
+    {
+      "id": 41,
+      "docNo": "MR-26-0007",
+      "from": "CLOSED",
+      "to": "CANCELLED"
+    },
+    {
+      "id": 40,
+      "docNo": "MR-26-0006",
+      "from": "CLOSED",
+      "to": "CANCELLED"
+    },
+    {
+      "id": 39,
+      "docNo": "MR-26-0005",
+      "from": "CLOSED",
+      "to": "CANCELLED"
+    },
+    {
+      "id": 38,
+      "docNo": "MR-26-0004",
+      "from": "CLOSED",
+      "to": "CANCELLED"
+    },
+    {
+      "id": 37,
+      "docNo": "MR-26-0003",
+      "from": "CLOSED",
+      "to": "CANCELLED"
+    },
+    {
+      "id": 36,
+      "docNo": "MR-26-0002",
+      "from": "CLOSED",
+      "to": "CANCELLED"
+    },
+    {
+      "id": 35,
+      "docNo": "MR-26-0001",
+      "from": "CLOSED",
+      "to": "CANCELLED"
+    }
+  ],
+  "updated": [
+    {
+      "id": 45,
+      "docNo": "MR-26-0011",
+      "status": "PENDING_APPROVAL",
+      "fgItemId": 58,
+      "plannedProductionQty": "15150"
+    }
+  ],
+  "linkedPreserved": [],
+  "dryRun": false
+}

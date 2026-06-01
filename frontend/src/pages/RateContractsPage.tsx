@@ -9,6 +9,7 @@ import { apiFetch } from "../services/api";
 import { useToast } from "../contexts/ToastContext";
 import { useIsAdmin } from "../hooks/useIsAdmin";
 import { cn } from "../lib/utils";
+import { ErpModal } from "../components/erp/ErpModal";
 
 type CustomerOption = { id: number; name: string };
 type ItemOption = { id: number; itemName: string; itemType?: string };
@@ -580,7 +581,7 @@ export function RateContractsPage() {
       </Card>
 
       {pendingAction ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/35 px-4">
+        <ErpModal onClose={() => setPendingAction(null)} backdropClassName="bg-slate-950/35" aria-label="Admin password required">
           <div className="w-full max-w-sm rounded-lg border border-slate-200 bg-white shadow-xl">
             <div className="flex items-start justify-between gap-3 border-b border-slate-100 px-4 py-3">
               <div>
@@ -623,7 +624,7 @@ export function RateContractsPage() {
               </Button>
             </div>
           </div>
-        </div>
+        </ErpModal>
       ) : null}
     </div>
   );

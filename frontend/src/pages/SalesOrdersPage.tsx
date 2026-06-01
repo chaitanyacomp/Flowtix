@@ -26,7 +26,10 @@ import {
   type SalesInvoiceSoDetail,
 } from "../components/sales/SalesCommercialInvoiceView";
 import { Button } from "../components/ui/button";
+import { ErpModal } from "../components/erp/ErpModal";
 import { REGULAR_TERMS } from "../lib/flowTerminology";
+import { woPreparePositionLabel, woPreparePrimaryCta, type WoPrepareOperational } from "../lib/woPrepareOperationalStage";
+import { formatProcessStageDisplayLabel } from "../lib/operationalErrorPresentation";
 import { Input } from "../components/ui/input";
 import { Badge } from "../components/ui/badge";
 import { useIsAdmin, useCanCreateNextRs, useCanOpenRequirementSheet } from "../hooks/useIsAdmin";
@@ -76,6 +79,7 @@ type SoRow = {
   poId: number | null;
   customerId: number | null;
   customer: Customer | null;
+  shipToAddressId?: number | null;
   quotationId: number | null;
   quotation: { id: number; quotationNo: string | null; enquiryId: number } | null;
   customerPoReference: string | null;
@@ -116,6 +120,8 @@ type SoRow = {
   dispatchProgressPercent?: number;
   /** Operational flow stage from backend (WO → production → QC → dispatch). */
   processStage?: { key: string; label: string };
+  /** REGULAR WO_PENDING substage (RM shortage / purchase pending / ready for WO). */
+  woPrepareOperational?: WoPrepareOperational | null;
   /** NO_QTY only: next actionable module (current cycle). */
   noQtyNextAction?:
     | "REQUIREMENT"
@@ -171,6 +177,50 @@ type SoRow = {
   deleteAllowed?: boolean;
   /** Admin-only: reasons that block hard delete. */
   deleteBlockedReasons?: string[];
+
+  /** Phase 1 commercial address architecture */
+  snapshotState?: "LIVE" | "FROZEN" | "LEGACY" | string;
+  resolvedBillTo?: {
+    name: string | null;
+    address: string | null;
+    gstin: string | null;
+    stateName: string | null;
+    stateCode: string | null;
+  } | null;
+  resolvedShipTo?: {
+    label: string | null;
+    address: string | null;
+    gstin: string | null;
+    stateName: string | null;
+    stateCode: string | null;
+  } | null;
+  resolvedPOS?: {
+    stateCode: string | null;
+    stateName: string | null;
+    source: "SHIP_TO" | "BILL_TO" | "MANUAL" | string | null;
+    gstMode: "LOCAL" | "INTERSTATE" | string | null;
+  } | null;
+};
+
+type CustomerDeliveryAddressRow = {
+  id: number;
+  label: string;
+  address: string | null;
+  city: string | null;
+  gst: string | null;
+  isDefault: boolean;
+  isActive: boolean;
+  stateRef?: { stateName: string; stateCode: string } | null;
+  stateId?: number | null;
+};
+
+type CustomerDetail = {
+  id: number;
+  name: string;
+  gst?: string | null;
+  address?: string | null;
+  stateRef?: { stateName: string; stateCode: string } | null;
+  deliveryAddresses?: CustomerDeliveryAddressRow[];
 };
 
 type RequirementSheetListRow = {
@@ -247,7 +297,12 @@ function statusBadgeVariant(s: string): "default" | "success" | "warning" | "inf
   return "default";
 }
 
-function processStageBadgeVariant(key: string): "default" | "success" | "warning" | "info" {
+function processStageBadgeVariant(
+  key: string,
+  woPrepareKey?: string | null,
+): "default" | "success" | "warning" | "info" {
+  if (woPrepareKey === "READY_FOR_WO") return "success";
+  if (woPrepareKey === "PURCHASE_GRN_PENDING" || woPrepareKey === "RM_SHORTAGE") return "warning";
   if (key === "COMPLETED") return "info";
   if (key === "NO_QTY_BILLING_COMPLETE") return "success";
   if (
@@ -464,6 +519,14 @@ function regularSoCommercialSummary(so: SoRow): string {
   return "—";
 }
 
+function regularSoPositionLabel(so: SoRow): string {
+  if (so.processStage?.key === "SALES_BILL_PENDING") return "Dispatch complete";
+  return woPreparePositionLabel(
+    so.woPrepareOperational,
+    formatProcessStageDisplayLabel(so.processStage?.label ?? "—"),
+  );
+}
+
 /** Primary row CTA from `processStage` for all non–NO_QTY orders (NORMAL, REPLACEMENT, etc.). */
 function getPrimaryCta(so: SoRow, role: string): { label: string; to: string; state?: { from: string } } | null {
   if (so.orderType === "NO_QTY") return null;
@@ -473,13 +536,16 @@ function getPrimaryCta(so: SoRow, role: string): { label: string; to: string; st
   switch (stage) {
     case "WO_PENDING":
       if (!canWoFromSo) return null;
-      return { label: "Create Work Order", to: `/work-orders/prepare?salesOrderId=${sid}` };
+      return { ...woPreparePrimaryCta(so.id, so.woPrepareOperational ?? null), state: { from: "sales-orders" } };
     case "PRODUCTION_PENDING":
       if (!hasErpRole(role, PRODUCTION_WRITE_ROLES)) return null;
-      return { label: "Start Production", to: `/production?salesOrderId=${sid}&from=sales-orders` };
+      return {
+        label: "Continue on Work Order",
+        to: `/work-orders?salesOrderId=${sid}&from=sales-orders`,
+      };
     case "QC_PENDING":
       if (!hasErpRole(role, QC_PAGE_ROLES)) return null;
-      return { label: "Go to QC", to: `/qc-entry?salesOrderId=${sid}` };
+      return { label: "Complete QA", to: `/qc-entry?salesOrderId=${sid}` };
     case "DISPATCH_PENDING":
       if (!hasErpRole(role, DISPATCH_READ_ROLES)) return null;
       return {
@@ -615,6 +681,9 @@ export function SalesOrdersPage() {
   const [editRemarks, setEditRemarks] = React.useState("");
   const [editLines, setEditLines] = React.useState<DraftLineEdit[]>([]);
   const [savingEdit, setSavingEdit] = React.useState(false);
+  const [editCustomerDetail, setEditCustomerDetail] = React.useState<CustomerDetail | null>(null);
+  const [editShipToId, setEditShipToId] = React.useState<string>("");
+  const [editShowAddress, setEditShowAddress] = React.useState(false);
   const [invoiceModalSoId, setInvoiceModalSoId] = React.useState<number | null>(null);
   const [invoiceSo, setInvoiceSo] = React.useState<SalesInvoiceSoDetail | null>(null);
   const [invoiceLoading, setInvoiceLoading] = React.useState(false);
@@ -817,15 +886,6 @@ export function SalesOrdersPage() {
     return () => {
       cancelled = true;
     };
-  }, [invoiceModalSoId]);
-
-  React.useEffect(() => {
-    if (invoiceModalSoId == null) return;
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") setInvoiceModalSoId(null);
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
   }, [invoiceModalSoId]);
 
   const customerOptions = React.useMemo(() => {
@@ -1265,6 +1325,9 @@ export function SalesOrdersPage() {
     setEditSo(so);
     setEditPoRef(so.customerPoReference ?? "");
     setEditRemarks(so.remarks ?? "");
+    setEditCustomerDetail(null);
+    setEditShipToId(so.shipToAddressId != null ? String(so.shipToAddressId) : "");
+    setEditShowAddress(false);
     setEditLines(
       so.lines.map((l) => {
         const qf = l.quotationLine?.isFree ?? l.isFree;
@@ -1295,6 +1358,25 @@ export function SalesOrdersPage() {
       }),
     );
   }
+
+  React.useEffect(() => {
+    if (!editSo || !editSo.customerId) {
+      setEditCustomerDetail(null);
+      return;
+    }
+    let cancelled = false;
+    apiFetch<CustomerDetail>(`/api/customers/${editSo.customerId}`)
+      .then((c) => {
+        if (cancelled) return;
+        setEditCustomerDetail(c ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setEditCustomerDetail(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [editSo?.id, editSo?.customerId]);
 
   function openNoQtyCreateModal() {
     void loadCustomers();
@@ -1412,6 +1494,7 @@ export function SalesOrdersPage() {
         body: JSON.stringify({
           customerPoReference: editPoRef.trim() || null,
           remarks: editRemarks.trim() || null,
+          shipToAddressId: editShipToId ? Number(editShipToId) : null,
           // Keep regular SO flow unchanged: qty edits only apply to non-NO_QTY draft SOs.
           lines,
         }),
@@ -1919,12 +2002,7 @@ export function SalesOrdersPage() {
             </details>
 
       {createFromPreviousOpen ? (
-        <div
-          className="erp-modal-backdrop"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="so-create-from-prev-title"
-        >
+        <ErpModal onClose={() => setCreateFromPreviousOpen(false)} aria-labelledby="so-create-from-prev-title">
           <Card className="w-full max-w-md rounded-lg border border-slate-200 bg-white shadow-lg">
             <CardHeader>
               <div className="flex items-center justify-between gap-3">
@@ -2016,11 +2094,11 @@ export function SalesOrdersPage() {
               </div>
             </CardContent>
           </Card>
-        </div>
+        </ErpModal>
       ) : null}
 
       {noQtyCreateOpen ? (
-        <div className="erp-modal-backdrop" role="dialog" aria-modal="true">
+        <ErpModal onClose={() => setNoQtyCreateOpen(false)}>
           <Card className="w-full max-w-lg rounded-lg border border-slate-200 bg-white shadow-lg">
             <CardHeader>
               <CardTitle className="text-base">Create No Qty SO</CardTitle>
@@ -2138,7 +2216,7 @@ export function SalesOrdersPage() {
               </form>
             </CardContent>
           </Card>
-        </div>
+        </ErpModal>
       ) : null}
 
       {showSalesOrdersFocusedChrome ? (
@@ -2396,20 +2474,20 @@ export function SalesOrdersPage() {
                         case "QC":
                           if (!hasErpRole(role, QC_PAGE_ROLES)) {
                             return {
-                              nextStep: "Awaiting QC",
-                              label: "Open QC",
+                              nextStep: "Awaiting QA",
+                              label: "Complete QA",
                               to: buildNoQtyGuidedHref({ to: `/qc-entry`, ...ctx, fromStep: "production" }),
                               isPlanningAction: false as const,
-                              waitingLabel: "Awaiting QC",
-                              surfaceChip: "QC is owned by the QC team.",
+                              waitingLabel: "Awaiting QA",
+                              surfaceChip: "Complete QA from Production or Production QA workspace.",
                             };
                           }
                           return {
-                            nextStep: "Awaiting QC",
-                            label: "Open QC",
+                            nextStep: "Awaiting QA",
+                            label: "Complete QA",
                             to: buildNoQtyGuidedHref({ to: `/qc-entry`, ...ctx, fromStep: "production" }),
                             isPlanningAction: false as const,
-                            waitingLabel: "Awaiting QC",
+                            waitingLabel: "Awaiting QA",
                           };
                         case "DISPATCH":
                           if (!hasErpRole(role, DISPATCH_READ_ROLES)) {
@@ -2652,9 +2730,8 @@ export function SalesOrdersPage() {
                     <col style={{ width: "16%" }} />
                     <col style={{ width: "9rem" }} />
                     <col style={{ width: "9rem" }} />
-                    <col style={{ width: "17%" }} />
-                    <col style={{ width: "19%" }} />
-                    <col style={{ width: "8.5rem" }} />
+                    <col style={{ width: "20%" }} />
+                    <col style={{ width: "22%" }} />
                     <col style={{ width: "11rem" }} />
                   </colgroup>
                   <thead>
@@ -2666,7 +2743,6 @@ export function SalesOrdersPage() {
                       <th>Type</th>
                       <th>Current position</th>
                       <th>Commercial status</th>
-                      <th className="text-right">Next action</th>
                       <th className="erp-table-action-col erp-so-th-num">Actions</th>
                     </tr>
                   </thead>
@@ -2686,8 +2762,11 @@ export function SalesOrdersPage() {
                     const customerNm = so.customer?.name ?? so.po?.customer?.name ?? "—";
                     const positionLine =
                       so.processStage != null ? (
-                        <Badge variant={processStageBadgeVariant(so.processStage.key)} className="w-fit text-[10px]">
-                          {so.processStage.label}
+                        <Badge
+                          variant={processStageBadgeVariant(so.processStage.key, so.woPrepareOperational?.key)}
+                          className="w-fit text-[10px]"
+                        >
+                          {regularSoPositionLabel(so)}
                         </Badge>
                       ) : so.dispatchSummary && so.dispatchSummary.totalOrdered > 0 ? (
                         `${so.dispatchSummary.fullyDispatched ? "Fully dispatched" : so.dispatchSummary.totalDispatched > 0 ? "Partial dispatch" : "Dispatch pending"} · Ord ${so.dispatchSummary.totalOrdered} · Out ${so.dispatchSummary.totalDispatched} · Pend ${so.dispatchSummary.totalPending}`
@@ -2747,9 +2826,6 @@ export function SalesOrdersPage() {
                               </Link>
                             </div>
                           ) : null}
-                        </td>
-                        <td className="text-right text-[12px] font-semibold text-slate-800">
-                          {primaryCta?.label ?? "—"}
                         </td>
                         <td className="erp-table-action-col">
                           <div className="erp-table-actions">
@@ -2892,7 +2968,7 @@ export function SalesOrdersPage() {
       ) : null}
 
       {editSo ? (
-        <div className="erp-modal-backdrop" role="dialog" aria-modal="true">
+        <ErpModal onClose={() => setEditSo(null)}>
           <Card className="w-full max-w-lg rounded-lg border border-slate-200 bg-white shadow-lg">
             <CardHeader>
               <CardTitle className="text-base">
@@ -2971,6 +3047,111 @@ export function SalesOrdersPage() {
                 <div className="erp-form-field">
                   <span className="erp-form-label">Remarks</span>
                   <Input value={editRemarks} onChange={(e) => setEditRemarks(e.target.value)} />
+                </div>
+
+                <div className="rounded-md border border-slate-200 bg-slate-50/70 p-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="text-sm font-medium text-slate-800">Commercial</div>
+                    <div className="flex items-center gap-2">
+                      <span className="rounded-full bg-slate-200 px-2 py-0.5 text-[11px] font-medium text-slate-700">
+                        {editSo.snapshotState ?? "LIVE"}
+                      </span>
+                      <span
+                        className={
+                          "rounded-full px-2 py-0.5 text-[11px] font-semibold " +
+                          ((editSo.resolvedPOS?.gstMode ?? null) === "INTERSTATE"
+                            ? "bg-purple-100 text-purple-900"
+                            : (editSo.resolvedPOS?.gstMode ?? null) === "LOCAL"
+                              ? "bg-emerald-100 text-emerald-900"
+                              : "bg-slate-100 text-slate-700")
+                        }
+                        title={editSo.resolvedPOS?.stateName ?? ""}
+                      >
+                        {(editSo.resolvedPOS?.gstMode ?? null) === "INTERSTATE"
+                          ? "Interstate"
+                          : (editSo.resolvedPOS?.gstMode ?? null) === "LOCAL"
+                            ? "Local"
+                            : "POS Pending"}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    <div className="rounded border border-slate-200 bg-white px-2 py-1.5">
+                      <div className="text-[11px] font-medium text-slate-600">Bill To</div>
+                      <div className="mt-0.5 text-[13px] font-semibold text-slate-900">
+                        {editSo.resolvedBillTo?.name ?? editSo.customer?.name ?? "—"}
+                      </div>
+                      <div className="mt-0.5 text-[12px] text-slate-600">
+                        {(editSo.resolvedBillTo?.stateCode ?? "") || (editSo.resolvedBillTo?.stateName ?? "") ? (
+                          <>
+                            {(editSo.resolvedBillTo?.stateCode ?? "").trim()}
+                            {(editSo.resolvedBillTo?.stateCode ?? "").trim() && (editSo.resolvedBillTo?.stateName ?? "").trim()
+                              ? " · "
+                              : ""}
+                            {(editSo.resolvedBillTo?.stateName ?? "").trim()}
+                          </>
+                        ) : (
+                          "State not set"
+                        )}
+                        {editSo.resolvedBillTo?.gstin ? (
+                          <span className="ml-2 rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[11px] text-slate-700">
+                            {editSo.resolvedBillTo.gstin}
+                          </span>
+                        ) : null}
+                      </div>
+                    </div>
+
+                    <div className="rounded border border-slate-200 bg-white px-2 py-1.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="text-[11px] font-medium text-slate-600">Ship To</div>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 px-2 text-xs"
+                          onClick={() => setEditShowAddress((s) => !s)}
+                          aria-expanded={editShowAddress}
+                        >
+                          {editShowAddress ? "Hide address" : "View address"}
+                        </Button>
+                      </div>
+                      <select
+                        className="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm"
+                        value={editShipToId}
+                        onChange={(e) => setEditShipToId(e.target.value)}
+                        disabled={savingEdit || (editSo.snapshotState ?? "") === "FROZEN"}
+                      >
+                        <option value="">Auto (default)</option>
+                        {(editCustomerDetail?.deliveryAddresses ?? [])
+                          .filter((a) => a.isActive)
+                          .map((a) => {
+                            const sc = a.stateRef?.stateCode ? ` · ${a.stateRef.stateCode}` : "";
+                            return (
+                              <option key={a.id} value={String(a.id)}>
+                                {a.label}
+                                {sc}
+                                {a.isDefault ? " (Default)" : ""}
+                              </option>
+                            );
+                          })}
+                      </select>
+                      {editShowAddress ? (
+                        <div className="mt-1 rounded border border-slate-200 bg-slate-50 p-2 text-[12px] leading-snug text-slate-700">
+                          <div className="font-medium text-slate-800">
+                            {editSo.resolvedShipTo?.label ?? "—"}
+                            {editSo.resolvedShipTo?.stateCode ? ` · ${editSo.resolvedShipTo.stateCode}` : ""}
+                          </div>
+                          <div className="mt-0.5 whitespace-pre-wrap break-words">
+                            {editSo.resolvedShipTo?.address ?? "Address not set"}
+                          </div>
+                        </div>
+                      ) : null}
+                      {(editSo.snapshotState ?? "") === "FROZEN" ? (
+                        <div className="mt-1 text-[11px] text-slate-500">Ship To is frozen for this sales order.</div>
+                      ) : null}
+                    </div>
+                  </div>
                 </div>
                 <div className="space-y-2">
                   <div className="text-sm font-medium text-slate-800">Lines</div>
@@ -3099,11 +3280,11 @@ export function SalesOrdersPage() {
               </form>
             </CardContent>
           </Card>
-        </div>
+        </ErpModal>
       ) : null}
 
       {noQtyCloseDialog ? (
-        <div className="erp-modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="no-qty-close-title">
+        <ErpModal onClose={() => setNoQtyCloseDialog(null)} aria-labelledby="no-qty-close-title">
           <Card className="w-full max-w-lg rounded-lg border border-slate-200 bg-white shadow-lg">
             <CardHeader>
               <div className="flex items-center justify-between gap-3">
@@ -3131,11 +3312,11 @@ export function SalesOrdersPage() {
               </div>
             </CardContent>
           </Card>
-        </div>
+        </ErpModal>
       ) : null}
 
       {noQtyReopenDialog ? (
-        <div className="erp-modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="no-qty-reopen-title">
+        <ErpModal onClose={() => setNoQtyReopenDialog(null)} aria-labelledby="no-qty-reopen-title">
           <Card className="w-full max-w-lg rounded-lg border border-slate-200 bg-white shadow-lg">
             <CardHeader>
               <div className="flex items-center justify-between gap-3">
@@ -3233,18 +3414,14 @@ export function SalesOrdersPage() {
               </div>
             </CardContent>
           </Card>
-        </div>
+        </ErpModal>
       ) : null}
 
       {invoiceModalSoId != null ? (
-        <div
-          className="erp-modal-backdrop"
-          role="dialog"
-          aria-modal="true"
+        <ErpModal
+          onClose={() => setInvoiceModalSoId(null)}
+          closeOnBackdropClick
           aria-labelledby="sales-commercial-invoice-title"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setInvoiceModalSoId(null);
-          }}
         >
           <Card className="erp-modal-shell flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-lg border border-slate-200 bg-white shadow-lg">
             <CardHeader className="shrink-0 flex-row items-center justify-between space-y-0 border-b border-slate-200 pb-4">
@@ -3270,7 +3447,7 @@ export function SalesOrdersPage() {
               {invoiceSo && !invoiceLoading ? <SalesCommercialInvoiceView so={invoiceSo} /> : null}
             </CardContent>
           </Card>
-        </div>
+        </ErpModal>
       ) : null}
           </div>
         </>

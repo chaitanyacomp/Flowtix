@@ -27,15 +27,15 @@ export function getRoleEmptyState(workspace: ErpWorkspaceEmptyKey, role: string)
       };
 
     case "qc_batches":
-      if (role === "QC") {
+      if (role === "QA" || role === "PRODUCTION") {
         return {
-          title: "No batches awaiting QC.",
-          body: "Production output will appear here when posted.",
+          title: "No batches awaiting QA.",
+          body: "Approved production output will appear here for quality checks.",
         };
       }
       return {
-        title: "No pending QC batches for this order.",
-        body: "Use Show: All or Completed QC to review prior batches.",
+        title: "No pending QA batches for this order.",
+        body: "Use Show: All or completed QA to review prior batches.",
       };
 
     case "dispatch_queue":
@@ -45,7 +45,7 @@ export function getRoleEmptyState(workspace: ErpWorkspaceEmptyKey, role: string)
           body: "Select a sales order with dispatchable stock to prepare a draft.",
         };
       }
-      if (role === "ACCOUNTS") {
+      if (role === "PURCHASE") {
         return {
           title: "No dispatches ready in this view.",
           body: "Finalized dispatches awaiting billing appear on the commercial desk.",
@@ -60,27 +60,18 @@ export function getRoleEmptyState(workspace: ErpWorkspaceEmptyKey, role: string)
       if (role === "PRODUCTION") {
         return {
           title: "No open work orders.",
-          body: "Planning will release work orders when requirement and RM are ready.",
-        };
-      }
-      if (role === "SALES" || role === "STORE") {
-        return {
-          title: "No open work orders.",
-          body: "Create a work order from an approved sales order when planning is complete.",
+          body: "Work orders appear here after Store completes RM validation on sales orders.",
         };
       }
       return {
-        title: "No open work orders.",
-        body: "Select an approved sales order above to create one.",
+        title: "No Work Orders available.",
+        body: "Work Orders are created from Sales Orders after RM validation.",
       };
 
     case "work_orders_none":
       return {
-        title: "No work orders yet.",
-        body:
-          role === "PRODUCTION"
-            ? "Work orders appear here after planning releases them."
-            : "Select an approved sales order, set WO qty, and create a work order.",
+        title: "No Work Orders available.",
+        body: "Work Orders are created from Sales Orders after RM validation.",
       };
 
     case "accounts_billing_pending":

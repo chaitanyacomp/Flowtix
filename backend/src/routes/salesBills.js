@@ -31,7 +31,7 @@ const {
   ACTIVITY_ENTITY_TYPES,
 } = require("../constants/activityLogConstants");
 const { displaySalesBillNo } = require("../utils/docNoLabels");
-const { assertAdminPassword } = require("../services/adminPasswordAuth");
+const { assertAdminPassword, assertAnyAdminPassword } = require("../services/adminPasswordAuth");
 
 const salesBillsRouter = express.Router();
 
@@ -54,7 +54,12 @@ function validateTallyExportEligibility({ bill, payload }) {
   if (!bill) return "Sales bill not found.";
   if (bill.status !== "FINALIZED") return "Only finalized Sales Bills can be exported.";
   if (!bill.customer) return "Cannot export sales bill because customer is missing.";
-  const stateCode = bill.customer?.stateRef?.stateCode ?? bill.customerStateCodeSnapshot ?? null;
+  const stateCode =
+    payload?.placeOfSupply?.stateCode ??
+    payload?.customer?.customerStateCode ??
+    bill.customerStateCodeSnapshot ??
+    bill.customer?.stateRef?.stateCode ??
+    null;
   if (!isNonEmptyStr(stateCode)) return "Cannot export sales bill because customer state is missing.";
   const lines = Array.isArray(bill.lines) ? bill.lines : [];
   if (!lines.length) return "Cannot export sales bill because it has no line items.";
@@ -83,6 +88,121 @@ function validateTallyExportEligibility({ bill, payload }) {
     }
   }
   return null;
+}
+
+const RE_EXPORT_AUTH_REQUIRED_MESSAGE =
+  "This sales bill is already exported. Admin authorization is required for re-export.";
+
+async function authorizeSalesBillReExportIfNeeded({ bill, adminPassword }) {
+  if (!bill?.isExported) return { reExport: false, adminUserId: null };
+  const password = typeof adminPassword === "string" ? adminPassword.trim() : "";
+  if (!password) {
+    const err = new Error(RE_EXPORT_AUTH_REQUIRED_MESSAGE);
+    err.statusCode = 409;
+    throw err;
+  }
+  try {
+    const adminUserId = await assertAnyAdminPassword(prisma, { password });
+    return { reExport: true, adminUserId };
+  } catch (e) {
+    const err = new Error("Invalid admin password.");
+    err.statusCode = 401;
+    throw err;
+  }
+}
+
+async function exportSalesBillXmlResponse(req, res, { bill, adminPassword, dispatchId = null, viaDispatch = false }) {
+  const { reExport, adminUserId } = await authorizeSalesBillReExportIfNeeded({ bill, adminPassword });
+
+  const companyState = await prisma.appSetting.findUnique({
+    where: { id: 1 },
+    select: {
+      companyGstin: true,
+      companyState: true,
+      companyStateRef: { select: { id: true, stateName: true, stateCode: true } },
+    },
+  });
+
+  const payload = mapSalesBillToTallyExportPayload({ bill, companyState });
+  const errMsg = validateTallyExportEligibility({ bill, payload });
+  if (errMsg) {
+    const sbDoc = displaySalesBillNo(bill.id, bill.billNo, bill.docNo);
+    await logActivity({
+      user: req.user,
+      module: ACTIVITY_MODULES.SALES_BILL,
+      entityType: ACTIVITY_ENTITY_TYPES.SALES_BILL,
+      entityId: bill.id,
+      docNo: sbDoc,
+      action: ACTIVITY_ACTIONS.EXPORT_FAILED,
+      message: `Sales Bill ${sbDoc} Tally export failed`,
+      metadata: { error: String(errMsg).slice(0, 240), ...(dispatchId != null ? { dispatchId } : {}) },
+    });
+    return res.status(400).json(friendly400(errMsg));
+  }
+
+  const xml = buildSalesBillTallyXml(payload);
+  const safeNo = String(bill.billNo || `SB-${bill.id}`).replace(/[^\w\-\.]+/g, "-");
+  const filename = `sales-bill-${safeNo}.xml`;
+
+  let shouldLogExport = false;
+  if (reExport) {
+    await prisma.salesBill.update({
+      where: { id: bill.id },
+      data: { isExported: true, exportedAt: new Date(), exportedFileName: filename, exportedById: req.user?.userId ?? null },
+    });
+    shouldLogExport = true;
+  } else {
+    const flipResult = await prisma.salesBill.updateMany({
+      where: { id: bill.id, isExported: false },
+      data: { isExported: true, exportedAt: new Date(), exportedFileName: filename, exportedById: req.user?.userId ?? null },
+    });
+    shouldLogExport = flipResult.count === 1;
+  }
+
+  const sbDocOk = displaySalesBillNo(bill.id, bill.billNo, bill.docNo);
+  if (shouldLogExport) {
+    await logActivity({
+      user: req.user,
+      module: ACTIVITY_MODULES.SALES_BILL,
+      entityType: ACTIVITY_ENTITY_TYPES.SALES_BILL,
+      entityId: bill.id,
+      docNo: sbDocOk,
+      action: ACTIVITY_ACTIONS.EXPORTED,
+      message: `Sales Bill ${sbDocOk} ${reExport ? "re-exported" : "exported"} to Tally`,
+      metadata: {
+        fileName: filename,
+        dispatchIds: dispatchId != null ? [dispatchId] : bill.dispatchId != null ? [bill.dispatchId] : undefined,
+        reExport,
+        authorizedByAdminUserId: adminUserId,
+      },
+    });
+    if (req.user?.userId) {
+      await auditLog.write(prisma, {
+        action: auditLog.AuditAction.UPDATE,
+        entityType: auditLog.AuditEntityType.SETTINGS,
+        entityId: `SALES_BILL:${bill.id}`,
+        actorUserId: req.user.userId,
+        actorRole: req.user.role,
+        summary: `Sales bill ${bill.billNo || `SB-${bill.id}`} ${reExport ? "re-exported" : "exported"} to Tally XML${viaDispatch ? " (via dispatch)" : ""}`,
+        payload: {
+          module: "REPORTS",
+          actionLabel: reExport ? "RE_EXPORT" : "EXPORT",
+          ref: { type: "TALLY_EXPORT", id: String(bill.id), no: filename },
+          snapshot: {
+            salesBillId: bill.id,
+            dispatchId: dispatchId ?? bill.dispatchId ?? null,
+            fileName: filename,
+            reExport,
+            authorizedByAdminUserId: adminUserId ?? null,
+          },
+        },
+      });
+    }
+  }
+
+  res.setHeader("Content-Type", "application/xml; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename=\"${filename}\"`);
+  return res.status(200).send(xml);
 }
 
 salesBillsRouter.get("/", requireAuth, requireRole(SALES_BILL_READ_ROLES), async (req, res, next) => {
@@ -196,7 +316,7 @@ salesBillsRouter.post("/from-dispatch/:dispatchId", requireAuth, requireRole(SAL
         actorRole: req.user.role,
         summary: `Sales bill ${bill.billNo || `SB-${bill.id}`} created from dispatch #${dispatchId}`,
         payload: {
-          module: "SALES",
+          module: "ADMIN",
           actionLabel: "CREATE",
           ref: { type: "SALES_BILL", id: String(bill.id), no: bill.billNo || `SB-${bill.id}` },
           snapshot: { dispatchId, status: bill.status },
@@ -233,7 +353,7 @@ salesBillsRouter.put("/:id", requireAuth, requireRole(SALES_BILL_WRITE_ROLES), a
         actorRole: req.user.role,
         summary: `Sales bill ${updated.billNo || `SB-${id}`} updated`,
         payload: {
-          module: "SALES",
+          module: "ADMIN",
           actionLabel: "UPDATE",
           ref: { type: "SALES_BILL", id: String(id), no: updated.billNo || `SB-${id}` },
         },
@@ -274,7 +394,7 @@ salesBillsRouter.post("/:id/finalize", requireAuth, requireRole(SALES_BILL_WRITE
         actorRole: req.user.role,
         summary: `Sales bill ${finalized.billNo || `SB-${id}`} finalized`,
         payload: {
-          module: "SALES",
+          module: "ADMIN",
           actionLabel: "FINALIZE",
           ref: { type: "SALES_BILL", id: String(id), no: finalized.billNo || `SB-${id}` },
           status: { from: "DRAFT", to: "FINALIZED" },
@@ -324,7 +444,7 @@ salesBillsRouter.post("/:id/cancel", requireAuth, requireRole(SALES_BILL_CANCEL_
         summary: `Sales bill ${updated.billNo || `SB-${id}`} cancelled`,
         reason: reason || null,
         payload: {
-          module: "SALES",
+          module: "ADMIN",
           actionLabel: "CANCEL",
           ref: { type: "SALES_BILL", id: String(id), no: updated.billNo || `SB-${id}` },
           status: { from: "FINALIZED", to: "CANCELLED" },
@@ -349,7 +469,7 @@ salesBillsRouter.delete("/:id", requireAuth, requireRole(["ADMIN"]), async (req,
         actorUserId: req.user.userId,
         actorRole: req.user.role,
         summary: `Sales bill SB-${id} deleted (draft)`,
-        payload: { module: "SALES", actionLabel: "DELETE", ref: { type: "SALES_BILL", id: String(id), no: `SB-${id}` } },
+        payload: { module: "ADMIN", actionLabel: "DELETE", ref: { type: "SALES_BILL", id: String(id), no: `SB-${id}` } },
       });
     }
     return res.status(204).send();
@@ -373,9 +493,7 @@ salesBillsRouter.get("/:id/export/tally.xml", requireAuth, requireRole(SALES_BIL
     });
     if (!bill) return res.status(404).json(friendly400("Sales bill not found"));
     if (bill.isExported) {
-      return res.status(400).json(
-        friendly400("This sales bill has already been exported. Reset export to export again."),
-      );
+      return res.status(409).json(friendly400(RE_EXPORT_AUTH_REQUIRED_MESSAGE));
     }
 
     const companyState = await prisma.appSetting.findUnique({
@@ -446,6 +564,31 @@ salesBillsRouter.get("/:id/export/tally.xml", requireAuth, requireRole(SALES_BIL
     res.setHeader("Content-Type", "application/xml; charset=utf-8");
     res.setHeader("Content-Disposition", `attachment; filename=\"${filename}\"`);
     return res.status(200).send(xml);
+  } catch (e) {
+    return next(e);
+  }
+});
+
+salesBillsRouter.post("/:id/export/tally.xml", requireAuth, requireRole(SALES_BILL_WRITE_ROLES), async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) return res.status(400).json(friendly400("Invalid sales bill id"));
+
+    const body = z.object({ adminPassword: z.string().optional() }).parse(req.body ?? {});
+    const bill = await prisma.salesBill.findUnique({
+      where: { id },
+      include: {
+        customer: { include: { stateRef: true } },
+        dispatch: { include: { salesOrder: true } },
+        lines: { include: { item: true }, orderBy: { id: "asc" } },
+      },
+    });
+    if (!bill) return res.status(404).json(friendly400("Sales bill not found"));
+
+    return exportSalesBillXmlResponse(req, res, {
+      bill,
+      adminPassword: body.adminPassword,
+    });
   } catch (e) {
     return next(e);
   }
@@ -538,6 +681,7 @@ salesBillsRouter.post("/:dispatchId/export-tally", requireAuth, requireRole(SALE
   try {
     const dispatchId = Number(req.params.dispatchId);
     if (!Number.isFinite(dispatchId) || dispatchId <= 0) return res.status(400).json(friendly400("Invalid dispatch id"));
+    const body = z.object({ adminPassword: z.string().optional() }).parse(req.body ?? {});
 
     // Must be a completed (locked) forward dispatch row.
     const dispatchRow = await prisma.dispatch.findUnique({
@@ -556,11 +700,20 @@ salesBillsRouter.post("/:dispatchId/export-tally", requireAuth, requireRole(SALE
 
     const fullBill = await prisma.salesBill.findUnique({
       where: { id: ensured.id },
-      include: { customer: { include: { stateRef: true } }, lines: { include: { item: true }, orderBy: { id: "asc" } } },
+      include: {
+        customer: { include: { stateRef: true } },
+        dispatch: { include: { salesOrder: true } },
+        lines: { include: { item: true }, orderBy: { id: "asc" } },
+      },
     });
     if (!fullBill) return res.status(404).json(friendly400("Sales bill not found"));
     if (fullBill.isExported) {
-      return res.status(400).json(friendly400("This sales bill has already been exported. Reset export to export again."));
+      return exportSalesBillXmlResponse(req, res, {
+        bill: fullBill,
+        adminPassword: body.adminPassword,
+        dispatchId,
+        viaDispatch: true,
+      });
     }
 
     const companyState = await prisma.appSetting.findUnique({
@@ -636,4 +789,3 @@ salesBillsRouter.post("/:dispatchId/export-tally", requireAuth, requireRole(SALE
 });
 
 module.exports = { salesBillsRouter };
-

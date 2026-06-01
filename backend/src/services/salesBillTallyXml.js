@@ -54,6 +54,63 @@ function fmtPctCompact(n) {
   return s.replace(/\.00$/, "").replace(/(\.\d)0$/, "$1");
 }
 
+function splitAddressLines(address) {
+  return String(address || "")
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function buildAddressListXml(tagBase, lines) {
+  if (!Array.isArray(lines) || !lines.length) return "";
+  const listTag = `${tagBase}.LIST`;
+  const itemTag = tagBase;
+  return [
+    `<${listTag}>`,
+    ...lines.map((line) => `<${itemTag}>${xmlEscape(line)}</${itemTag}>`),
+    `</${listTag}>`,
+  ].join("");
+}
+
+/**
+ * Buyer / consignee / POS tags for Sales voucher (Release 3.0 GST fields).
+ * Does not alter ledger structure — informational only.
+ */
+function buildCommercialVoucherXml(payload) {
+  const billTo = payload?.billTo ?? null;
+  const shipTo = payload?.shipTo ?? null;
+  const pos = payload?.placeOfSupply ?? null;
+  const parts = [];
+
+  const partyName = billTo?.name || payload?.customer?.customerName;
+  if (partyName) parts.push(`<PARTYNAME>${xmlEscape(partyName)}</PARTYNAME>`);
+
+  const partyGstin = billTo?.gstin || payload?.customer?.customerGstin;
+  if (partyGstin) parts.push(`<PARTYGSTIN>${xmlEscape(partyGstin)}</PARTYGSTIN>`);
+
+  const buyerLines = splitAddressLines(billTo?.address);
+  if (buyerLines.length) parts.push(buildAddressListXml("BASICBUYERADDRESS", buyerLines));
+
+  const buyerState = billTo?.stateName || payload?.customer?.customerStateName;
+  if (buyerState) parts.push(`<STATENAME>${xmlEscape(buyerState)}</STATENAME>`);
+
+  const posName = pos?.stateName;
+  if (posName) parts.push(`<PLACEOFSUPPLY>${xmlEscape(posName)}</PLACEOFSUPPLY>`);
+
+  if (shipTo && !shipTo.sameAsBillTo) {
+    const consigneeLabel = shipTo.label;
+    if (consigneeLabel) parts.push(`<CONSIGNEEMAILINGNAME>${xmlEscape(consigneeLabel)}</CONSIGNEEMAILINGNAME>`);
+
+    const shipLines = splitAddressLines(shipTo.address);
+    if (shipLines.length) parts.push(buildAddressListXml("BASICFINALDESTINATION", shipLines));
+
+    if (shipTo.stateName) parts.push(`<CONSIGNEESTATENAME>${xmlEscape(shipTo.stateName)}</CONSIGNEESTATENAME>`);
+    if (shipTo.gstin) parts.push(`<CONSIGNEEGSTIN>${xmlEscape(shipTo.gstin)}</CONSIGNEEGSTIN>`);
+  }
+
+  return parts.join("");
+}
+
 function buildStockItemMasterXml(line, { todayDateYYYYMMDD, action }) {
   try {
     // SAFE DATA HANDLING (MANDATORY)
@@ -311,6 +368,7 @@ function buildSalesBillTallyXml(payload) {
     `<DATE>${xmlEscape(voucherDate)}</DATE>`,
     `<VOUCHERNUMBER>${xmlEscape(voucherNo)}</VOUCHERNUMBER>`,
     `<PARTYLEDGERNAME>${xmlEscape(partyName)}</PARTYLEDGERNAME>`,
+    buildCommercialVoucherXml(payload),
     narration ? `<NARRATION>${xmlEscape(narration)}</NARRATION>` : "",
     inventoryEntries,
     ledgerEntries,
@@ -347,5 +405,9 @@ function buildSalesBillTallyXml(payload) {
   return xml;
 }
 
-module.exports = { buildSalesBillTallyXml };
+module.exports = {
+  buildSalesBillTallyXml,
+  buildCommercialVoucherXml,
+  splitAddressLines,
+};
 

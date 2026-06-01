@@ -8,9 +8,8 @@ function num(v) {
 }
 
 /**
- * Auto-close NO_QTY sales order current cycle when:
- * - every locked forward dispatch in current cycle has a FINALIZED sales bill
- * - and no pending dispatch quantity remains against the locked requirement sheet cycle cap
+ * Auto-close NO_QTY sales order current cycle when no pending dispatch quantity
+ * remains against the locked requirement sheet cycle cap.
  *
  * This is strictly cycle-scoped (salesOrderId + currentCycleId).
  *
@@ -42,17 +41,6 @@ async function maybeAutoCloseNoQtyCycle(tx, { soId, cycleId }) {
     (d) => d.reversalOfId == null && num(d.dispatchedQty) > EPS,
   );
   if (!forwardLocked.length) return { closed: false, reason: "NO_DISPATCHES" };
-
-  // Every forward locked dispatch must have a FINALIZED sales bill.
-  const forwardIds = forwardLocked.map((d) => d.id);
-  const finalizedBills = await tx.salesBill.findMany({
-    where: { dispatchId: { in: forwardIds }, status: "FINALIZED" },
-    select: { dispatchId: true },
-  });
-  const billed = new Set(finalizedBills.map((b) => b.dispatchId));
-  for (const id of forwardIds) {
-    if (!billed.has(id)) return { closed: false, reason: "UNBILLED_DISPATCH_EXISTS" };
-  }
 
   // Pending dispatch qty check: compare cycle cap vs confirmed net dispatch.
   const sheet = await tx.requirementSheet.findFirst({
@@ -112,8 +100,6 @@ async function diagnoseNoQtyCycleAutoClose(tx, { soId }) {
     dispatch: {
       cycleDispatchRows: [],
       forwardLockedIds: [],
-      billedForwardIds: [],
-      unbilledForwardIds: [],
     },
     requirementSheet: {
       lockedSheetId: null,
@@ -178,18 +164,6 @@ async function diagnoseNoQtyCycleAutoClose(tx, { soId }) {
     return out;
   }
 
-  const finalizedBills = await tx.salesBill.findMany({
-    where: { dispatchId: { in: forwardIds }, status: "FINALIZED" },
-    select: { id: true, dispatchId: true },
-  });
-  const billed = new Set(finalizedBills.map((b) => b.dispatchId));
-  out.dispatch.billedForwardIds = [...billed.values()];
-  out.dispatch.unbilledForwardIds = forwardIds.filter((id) => !billed.has(id));
-  if (out.dispatch.unbilledForwardIds.length) {
-    out.failedReason = "UNBILLED_DISPATCH_EXISTS";
-    return out;
-  }
-
   const sheet = await tx.requirementSheet.findFirst({
     where: { salesOrderId: soId, cycleId: currentCycleId, status: "LOCKED" },
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
@@ -241,4 +215,3 @@ module.exports = {
   maybeAutoCloseNoQtyCycle,
   diagnoseNoQtyCycleAutoClose,
 };
-

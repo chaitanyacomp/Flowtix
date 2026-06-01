@@ -33,6 +33,18 @@ function prefixForDocType(docType) {
       return "SB";
     case DocType.REQUIREMENT_SHEET:
       return "RS";
+    case DocType.MATERIAL_REQUIREMENT:
+      return "MR";
+    case DocType.PURCHASE_REQUEST:
+      return "PR";
+    case DocType.MATERIAL_ISSUE_NOTE:
+      return "MIN";
+    case DocType.MATERIAL_RETURN_NOTE:
+      return "MRN";
+    case DocType.PRODUCTION_MATERIAL_REQUEST:
+      return "PMR";
+    case DocType.BOM:
+      return "BOM";
     default:
       return "DOC";
   }

@@ -9,6 +9,8 @@ export type PlanningLifecyclePhase =
   | "WO_CREATED"
   | "READY_FOR_PRODUCTION"
   | "IN_PRODUCTION"
+  | "ON_HOLD"
+  | "SHORTFALL_CLOSED"
   | "CARRY_FORWARD_PENDING"
   | "CARRIED_FORWARD"
   | "PRODUCTION_DONE"
@@ -20,8 +22,10 @@ const PHASE_RANK: Record<PlanningLifecyclePhase, number> = {
   WO_CREATED: 1,
   READY_FOR_PRODUCTION: 2,
   IN_PRODUCTION: 3,
+  ON_HOLD: 3,
   CARRY_FORWARD_PENDING: 4,
   CARRIED_FORWARD: 4,
+  SHORTFALL_CLOSED: 5,
   PRODUCTION_DONE: 5,
   QC_PENDING: 6,
   QC_DONE: 7,
@@ -41,6 +45,10 @@ export function planningLifecycleLabel(phase: PlanningLifecyclePhase): string {
       return "Ready for Production";
     case "IN_PRODUCTION":
       return "In Production";
+    case "ON_HOLD":
+      return "On Hold";
+    case "SHORTFALL_CLOSED":
+      return "Shortfall Closed";
     case "CARRY_FORWARD_PENDING":
       return "Next Cycle";
     case "CARRIED_FORWARD":
@@ -48,7 +56,7 @@ export function planningLifecycleLabel(phase: PlanningLifecyclePhase): string {
     case "PRODUCTION_DONE":
       return "Production Done";
     case "QC_PENDING":
-      return "QC Pending";
+      return "QA in progress";
     case "QC_DONE":
       return "QC Done";
     default:
@@ -61,7 +69,8 @@ export function planningLifecycleBadgeVariant(
 ): "rejected" | "warning" | "success" | "info" | "default" {
   if (phase === "NEEDS_WO") return "rejected";
   if (phase === "WO_CREATED" || phase === "READY_FOR_PRODUCTION") return "warning";
-  if (phase === "IN_PRODUCTION" || phase === "QC_PENDING") return "info";
+  if (phase === "IN_PRODUCTION" || phase === "QC_PENDING" || phase === "ON_HOLD") return "info";
+  if (phase === "SHORTFALL_CLOSED") return "default";
   if (phase === "CARRY_FORWARD_PENDING" || phase === "CARRIED_FORWARD") return "warning";
   if (phase === "PRODUCTION_DONE" || phase === "QC_DONE") return "success";
   return "default";
@@ -84,10 +93,18 @@ export function planningPhaseFromProductionQueueRow(
   const produced = Number(row.producedQty ?? 0);
   const balance = Number(row.balanceQty ?? 0);
   const woStatus = String(row.status ?? "").toUpperCase();
+  const hasPendingQc = Boolean(row.hasPendingQc);
 
-  if (next === "QC_PENDING" || row.hasPendingQc) return "QC_PENDING";
+  if (woStatus === "HOLD") return "ON_HOLD";
+  if (woStatus === "CLOSED_WITH_SHORTFALL") return hasPendingQc ? "QC_PENDING" : "SHORTFALL_CLOSED";
+
+  if (next === "QC_PENDING" || hasPendingQc) return "QC_PENDING";
   if (next === "DISPATCH_PENDING" || next === "SALES_BILL_PENDING") return "QC_DONE";
-  if (woStatus === "COMPLETED" && balance <= EPS) return "QC_DONE";
+  // WO `status === COMPLETED` is driven by approved production qty alone (see
+  // backend `syncWorkOrderStatusFromProduction`). Treat as QC_DONE only when no
+  // batch on this row still has QC pending — otherwise the correct label is
+  // "QC Pending" (covered above) or "Production Done" (handled below).
+  if (woStatus === "COMPLETED" && balance <= EPS && !hasPendingQc) return "QC_DONE";
 
   const op = operationalStatusFromProductionRow(row, allQueueRows);
   if (
@@ -105,7 +122,7 @@ export function planningPhaseFromProductionQueueRow(
 
   if (produced > EPS && balance <= EPS) return "PRODUCTION_DONE";
   if (produced > EPS && balance > EPS) return "IN_PRODUCTION";
-  if (produced <= EPS && (woStatus === "IN_PROGRESS" || woStatus === "PENDING" || next === "PRODUCTION_PENDING")) {
+  if (produced <= EPS && op.label === "Ready for Production") {
     return "READY_FOR_PRODUCTION";
   }
   return "WO_CREATED";
@@ -113,20 +130,46 @@ export function planningPhaseFromProductionQueueRow(
 
 type WoLifecycleSource = {
   status: string;
+  holdReason?: string | null;
   salesOrderId: number;
   lines: Array<{
     fgItemId: number;
     approvedProducedQty?: number;
     remainingQty?: number;
+    /**
+     * Per-line aggregated pending QC qty (production-approved but not finalized by QC).
+     * Sourced from the WO list API; required to distinguish "Production Done" from
+     * "QC Pending" when the WO status flips to COMPLETED on approved production qty alone.
+     */
+    qcPendingQty?: number;
+    hasPendingQc?: boolean;
   }>;
 };
 
 export function planningPhaseFromWorkOrder(wo: WoLifecycleSource): PlanningLifecyclePhase {
   const woStatus = String(wo.status ?? "").toUpperCase();
-  if (woStatus === "COMPLETED") return "QC_DONE";
+  const lines = wo.lines ?? [];
+  const anyLineHasPendingQc = lines.some(
+    (l) => Boolean(l.hasPendingQc) || Number(l.qcPendingQty ?? 0) > EPS,
+  );
+  if (woStatus === "CLOSED_WITH_SHORTFALL") {
+    return anyLineHasPendingQc ? "QC_PENDING" : "SHORTFALL_CLOSED";
+  }
+  if (woStatus === "HOLD") {
+    return anyLineHasPendingQc ? "QC_PENDING" : "ON_HOLD";
+  }
+
+  // WO `status === COMPLETED` is set from approved production qty alone (backend
+  // `syncWorkOrderStatusFromProduction`). It does not imply QC is done — only that
+  // the shop floor has nothing more to produce on this WO. Promote to QC_DONE only
+  // when every line has cleared QC; otherwise surface QC_PENDING.
+  if (woStatus === "COMPLETED") {
+    return anyLineHasPendingQc ? "QC_PENDING" : "QC_DONE";
+  }
+  if (anyLineHasPendingQc) return "QC_PENDING";
 
   let best: PlanningLifecyclePhase = "WO_CREATED";
-  for (const line of wo.lines ?? []) {
+  for (const line of lines) {
     const produced = Number(line.approvedProducedQty ?? 0);
     const remaining = Number(line.remainingQty ?? NaN);
     const rem = Number.isFinite(remaining) ? remaining : NaN;

@@ -39,7 +39,7 @@ function includeContractRefs() {
   };
 }
 
-rateContractsRouter.get("/", requireAuth, requireRole(["ADMIN", "SALES"]), async (req, res, next) => {
+rateContractsRouter.get("/", requireAuth, requireRole(["ADMIN"]), async (req, res, next) => {
   try {
     const customerId = req.query.customerId != null ? Number(req.query.customerId) : null;
     const itemId = req.query.itemId != null ? Number(req.query.itemId) : null;

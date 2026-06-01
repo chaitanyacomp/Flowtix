@@ -2,11 +2,95 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!-- Favicon is applied at runtime by `applyBrandIdentity()` (main.tsx)
+         using the FT compact logo so it stays in sync with the in-app brand
+         and updates cleanly even when the asset is fingerprinted by Vite. -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>frontend</title>
+    <meta name="description" content="Flowtix ERP — Enquiry to Dispatch" />
+    <meta name="theme-color" content="#1d4ed8" />
+    <title>Flowtix ERP</title>
+    <style>
+      /* Initial pre-mount splash. Removed automatically once React mounts. */
+      html, body { margin: 0; padding: 0; background: #f8fafc; }
+      #ft-erp-splash {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-direction: column;
+        gap: 14px;
+        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        color: #0f172a;
+        background:
+          radial-gradient(1200px 600px at 50% -20%, rgba(238, 242, 255, 0.9), transparent 60%),
+          linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+        animation: ftFadeIn 280ms cubic-bezier(0.4, 0, 0.2, 1) both;
+        z-index: 2147483646;
+      }
+      #ft-erp-splash .ft-mark {
+        font-weight: 800;
+        font-size: 56px;
+        line-height: 1;
+        letter-spacing: -0.02em;
+        color: #2f6df0;
+        user-select: none;
+      }
+      #ft-erp-splash .ft-name {
+        font-size: 16px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+        color: #0f172a;
+      }
+      #ft-erp-splash .ft-tagline {
+        font-size: 11px;
+        font-weight: 500;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: #64748b;
+        margin-top: 2px;
+      }
+      #ft-erp-splash .ft-bar {
+        position: relative;
+        width: 96px;
+        height: 3px;
+        border-radius: 999px;
+        background: rgba(226, 232, 240, 0.8);
+        overflow: hidden;
+        margin-top: 4px;
+      }
+      #ft-erp-splash .ft-bar::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        width: 40%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, transparent, rgba(37, 99, 235, 0.85), transparent);
+        animation: ftSplashSlide 1.4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+      }
+      @keyframes ftFadeIn {
+        from { opacity: 0; }
+        to { opacity: 1; }
+      }
+      @keyframes ftSplashSlide {
+        0%   { transform: translateX(-100%); }
+        100% { transform: translateX(350%); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #ft-erp-splash { animation: none; }
+        #ft-erp-splash .ft-bar::after { animation: none; }
+      }
+    </style>
   </head>
   <body>
+    <div id="ft-erp-splash" aria-label="Loading Flowtix ERP" role="status">
+      <div class="ft-mark" aria-hidden="true">Ft</div>
+      <div style="display:flex;flex-direction:column;align-items:center;">
+        <div class="ft-name">Flowtix ERP</div>
+        <div class="ft-tagline">Enquiry to Dispatch</div>
+      </div>
+      <div class="ft-bar" aria-hidden="true"></div>
+    </div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

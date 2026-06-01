@@ -6,7 +6,7 @@ const { requireAuth, requireRole } = require("../middleware/auth");
 const scrapRouter = express.Router();
 
 // Reporting: scrap/loss list (not stock). Filters are optional.
-scrapRouter.get("/", requireAuth, requireRole(["ADMIN", "SALES", "STORE", "PRODUCTION", "QC"]), async (req, res, next) => {
+scrapRouter.get("/", requireAuth, requireRole(["ADMIN", "STORE", "PURCHASE", "PRODUCTION", "QA"]), async (req, res, next) => {
   try {
     const schema = z.object({
       fgItemId: z.string().optional(),

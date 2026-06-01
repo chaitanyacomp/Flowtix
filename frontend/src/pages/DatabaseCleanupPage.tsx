@@ -5,6 +5,7 @@ import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { apiFetch, ApiRequestError } from "../services/api";
 import { useToast } from "../contexts/ToastContext";
+import { ErpModal } from "../components/erp/ErpModal";
 
 type SummaryRow = { table: string; deleted: number };
 
@@ -81,7 +82,6 @@ function WarningModal({
   React.useEffect(() => {
     if (!open) return;
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
       if (e.key === "Enter") onConfirm();
     }
     window.addEventListener("keydown", onKey);
@@ -94,14 +94,11 @@ function WarningModal({
   const confirmDisabled = submitting || !typedOk;
 
   return (
-    <div
-      className="erp-modal-backdrop"
-      role="dialog"
-      aria-modal="true"
+    <ErpModal
+      open={open}
+      onClose={onClose}
+      closeOnBackdropClick
       aria-labelledby="db-cleanup-modal-title"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
     >
       <Card className="erp-modal-shell max-w-lg">
         <CardHeader className="flex flex-row items-center justify-between space-y-0 border-b border-slate-200 pb-3">
@@ -153,7 +150,7 @@ function WarningModal({
           </div>
         </CardContent>
       </Card>
-    </div>
+    </ErpModal>
   );
 }
 
@@ -188,7 +185,6 @@ function FullDemoResetModal({
   React.useEffect(() => {
     if (!open) return;
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
       if (e.key === "Enter") onConfirm();
     }
     window.addEventListener("keydown", onKey);
@@ -201,14 +197,11 @@ function FullDemoResetModal({
   const confirmDisabled = submitting || !typedOk;
 
   return (
-    <div
-      className="erp-modal-backdrop"
-      role="dialog"
-      aria-modal="true"
+    <ErpModal
+      open={open}
+      onClose={onClose}
+      closeOnBackdropClick
       aria-labelledby="full-demo-reset-modal-title"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
     >
       <Card className="erp-modal-shell max-w-lg border-red-200">
         <CardHeader className="flex flex-row items-center justify-between space-y-0 border-b border-red-100 bg-red-50/80 pb-3">
@@ -263,7 +256,7 @@ function FullDemoResetModal({
           </div>
         </CardContent>
       </Card>
-    </div>
+    </ErpModal>
   );
 }
 
@@ -298,7 +291,6 @@ function NoQtyResetModal({
   React.useEffect(() => {
     if (!open) return;
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
       if (e.key === "Enter") onConfirm();
     }
     window.addEventListener("keydown", onKey);
@@ -311,14 +303,11 @@ function NoQtyResetModal({
   const confirmDisabled = submitting || !typedOk;
 
   return (
-    <div
-      className="erp-modal-backdrop"
-      role="dialog"
-      aria-modal="true"
+    <ErpModal
+      open={open}
+      onClose={onClose}
+      closeOnBackdropClick
       aria-labelledby="noqty-reset-modal-title"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
     >
       <Card className="erp-modal-shell max-w-lg">
         <CardHeader className="flex flex-row items-center justify-between space-y-0 border-b border-slate-200 pb-3">
@@ -370,7 +359,7 @@ function NoQtyResetModal({
           </div>
         </CardContent>
       </Card>
-    </div>
+    </ErpModal>
   );
 }
 

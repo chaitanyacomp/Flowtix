@@ -13,6 +13,43 @@ export type Supplier = {
   state?: string | null;
   stateName?: string | null;
   stateCode?: string | null;
+  gst?: string | null;
+  gstin?: string | null;
+};
+
+export type SupplierLocationOption = {
+  id: number;
+  label: string;
+  gstin?: string | null;
+  stateName?: string | null;
+  stateCode?: string | null;
+  isDefault?: boolean;
+  isActive?: boolean;
+};
+
+export type ResolvedSupplierCommercial = {
+  snapshotState?: "FROZEN" | "LIVE" | "LEGACY" | string;
+  registeredSupplier?: {
+    name?: string | null;
+    address?: string | null;
+    gstin?: string | null;
+    stateName?: string | null;
+    stateCode?: string | null;
+  } | null;
+  supplyLocation?: {
+    id?: number | null;
+    label?: string | null;
+    address?: string | null;
+    gstin?: string | null;
+    stateName?: string | null;
+    stateCode?: string | null;
+  } | null;
+  purchaseSource?: {
+    stateName?: string | null;
+    stateCode?: string | null;
+    source?: string | null;
+  } | null;
+  gstMode?: "LOCAL" | "INTERSTATE" | "UNKNOWN" | string | null;
 };
 export type RmPoLine = {
   id: number;
@@ -25,21 +62,45 @@ export type RmPoLine = {
   amount?: string | null;
   item: Item;
 };
-export type GrnLineDraft = { rmPoLineId: number; receivedQty: number };
+export type GrnReceivingLocation = {
+  id: number;
+  locationCode: string;
+  locationName: string;
+  locationType: string;
+  locationTypeLabel?: string;
+  allowedItemTypes?: string[];
+  isActive: boolean;
+};
+
+export type GrnLineDraft = { rmPoLineId: number; receivedQty: number; locationId: number };
 export type GrnRow = {
   id: number;
   reversedAt?: string | null;
   reversalReason?: string | null;
-  lines: { rmPoLineId: number; receivedQty: string }[];
+  supplierLocationId?: number | null;
+  resolvedSupplyFrom?: ResolvedSupplierCommercial | null;
+  lines: {
+    rmPoLineId: number;
+    receivedQty: string;
+    locationId?: number | null;
+    location?: { id: number; locationName: string; locationCode?: string } | null;
+  }[];
+};
+
+export type GrnReceivingContext = {
+  locations: GrnReceivingLocation[];
+  suggestionsByRmPoLineId: Record<number, number>;
 };
 export type RmPoRow = {
   id: number;
   supplierId: number;
+  supplierLocationId?: number | null;
   supplier: Supplier;
   status: string;
   remarks?: string | null;
   lines: RmPoLine[];
   grns: GrnRow[];
+  resolvedSupplierCommercial?: ResolvedSupplierCommercial | null;
   billingSummary?: {
     finalizedBilledQtyByPoLineId?: Record<number, number>;
     cancelledBilledQtyByPoLineId?: Record<number, number>;

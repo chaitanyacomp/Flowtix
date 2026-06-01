@@ -16,11 +16,11 @@
  * - **soItemDispatchShortfall**: soItemOrderedTotal − soItemNetDispatched (item-level gap; not shown
  *   per line directly).
  * - **qcApprovedRemainingAtSoItem**: max(0, total active QC accepted for that SO+FG item −
- *   soItemNetDispatched). Shared by every SO line with the same itemId — display / tracking only for dispatch UI;
- *   it does **not** cap dispatchable qty.
+ *   soItemNetDispatched). Shared by every SO line with the same itemId.
  * - **dispatchableQty (SO line)**: Dispatch-ready qty for that line — SO-line FIFO operational remaining,
- *   sharing one pool per SO+itemId of min(usable on-hand, QC pool remaining when QC exists for that SO+item;
- *   otherwise usable only). Same basis as the WO “sufficient dispatch” guard.
+ *   sharing one pool per SO+itemId of min(physical usable on-hand, QC pool remaining for that SO+item).
+ *   Regular (NORMAL) SO: surplus FG from another order's buffer production is **not** dispatchable here.
+ *   REPLACEMENT uses return-QC pool rules via {@link getSoItemDispatchShipCap}.
  * - **woLineRemainingProductionQty** (operational): max(0, WorkOrderLine.qty − sum of APPROVED
  *   ProductionEntry.producedQty on that line). Reversed approvals return batches to DRAFT and are excluded.
  *   Used for production dropdowns, dashboard production queue, and WO tracking “production pending”.
@@ -116,19 +116,26 @@ function getSoItemQcApprovedRemainingQty(qcAcceptedTotalForSoItem, netDispatched
 /**
  * Dispatch ship cap at SO+item.
  *
- * NORMAL / NO_QTY: physical usable FG (QC rollup is reflected separately in dispatchable composition where used).
+ * NORMAL (Regular SO): min(QC-approved remaining for this SO+item, physical USABLE on-hand).
+ * Surplus buffer FG in store from another SO is not in this SO's QC pool.
  *
- * REPLACEMENT: cap by **return / replacement QC pool remaining** (gross return-QC for SO+item minus operational net
- * dispatched on that replacement SO+item), not production QcEntry and not raw global on-hand alone.
+ * REPLACEMENT: cap by return / replacement QC pool remaining (gross return-QC for SO+item minus operational net
+ * dispatched on that replacement SO+item), further limited by USABLE on-hand at lock time.
  *
  * @param {{ orderType?: string | null; onHandQty: number; qcAcceptedTotalForSoItem: number; netDispatchedOperationalForSoItem: number }} p
  */
 function getSoItemDispatchShipCap(p) {
-  const onHand = Number(p.onHandQty);
+  const onHand = Math.max(0, Number(p.onHandQty) || 0);
   if (p.orderType === "REPLACEMENT") {
     const qc = Number(p.qcAcceptedTotalForSoItem ?? 0);
     const net = Number(p.netDispatchedOperationalForSoItem ?? 0);
     return Math.max(0, qc - net);
+  }
+  if (p.orderType === "NORMAL" || p.orderType == null) {
+    const qc = Number(p.qcAcceptedTotalForSoItem ?? 0);
+    const net = Number(p.netDispatchedOperationalForSoItem ?? 0);
+    const qcRemaining = Math.max(0, qc - net);
+    return Math.min(qcRemaining, onHand);
   }
   return onHand;
 }
@@ -236,6 +243,12 @@ function getDispatchBlockedReason(p) {
   }
   if (p.reworkQty > eps) return "Stock is under rework";
   if (p.qcHoldQty + p.qcPendingQty > eps) return "Stock is under QC";
+  if (p.orderType === "NORMAL" || p.orderType == null) {
+    const qcGross = p.qcAcceptedGross;
+    if ((qcGross == null || qcGross <= eps) && p.totalStock > eps) {
+      return "No QC-accepted production for this sales order — store surplus cannot be dispatched against another order";
+    }
+  }
   if (p.totalStock <= eps) return "Insufficient usable stock";
   if (p.operationalRemaining <= eps) {
     return "No remaining qty to dispatch on this line (drafts may reserve capacity)";
@@ -547,7 +560,7 @@ const METRIC_DEFINITIONS = {
   qcApprovedRemaining:
     "Total active QC accepted for this sales order + FG item minus net dispatched at that item (shared across SO lines)",
   dispatchableQty:
-    "SO-line FIFO operational remaining, capped by a shared per SO+item pool of min(usable stock, QC pool remaining when QC exists for that SO+item; else usable only). Same basis as WO sufficiency guard.",
+    "SO-line FIFO operational remaining, capped by a shared per SO+item pool of min(physical USABLE stock, QC-approved remaining for that SO+item). Regular SO surplus from another order's buffer is not auto-dispatchable.",
   productionBalanceQty:
     "WO line SO required qty minus sum of APPROVED production on that line; remaining uses max(0, ...)",
   qcPendingQty: "Production batch produced qty minus (accepted + rejected) from active (non-reversed) QC rows",

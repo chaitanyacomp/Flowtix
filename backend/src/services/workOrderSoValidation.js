@@ -4,31 +4,29 @@
  * Commercial fields on sales order lines (e.g. isFree, quotation pricing) are intentionally ignored here;
  * only quantities and operational caps matter.
  *
- * Remaining quantity rule (WO / production planning):
+ * Regular SO remaining quantity rule (WO planning):
  *   remainingQty = FG_SO_QTY
- *                - confirmedNetDispatched (LOCKED forwards + reversal rows via {@link DISPATCH_ALLOC_MODE.CONFIRMED})
- *                - woPlannedQty (other reserving work orders for same SO + FG item)
+ *                - woPlannedQty (non-rejected work orders for same SO + FG item)
  *
- * Does **not** use operational / draft / UNLOCKED dispatch — those are excluded by CONFIRMED filtering.
+ * Dispatch / QC / stock fields are reporting context only for Regular SO planning headroom.
  *
  * Other WO planned qty:
  * - Creating / validating without excludeWorkOrderId: all reserving WO lines on the SO for that item.
  * - Editing (excludeWorkOrderId set): only lines *not* on the WO under edit.
  *
- * Approved production does **not** reduce remaining for planning (dispatch fulfillment drives the cap).
- * Open WO commitments that still consume “remaining qty” for **new** WO planning:
- * {@link WORK_ORDER_STATUSES_BLOCKING_REMAINING_WO_PLAN} (PENDING + IN_PROGRESS only).
- * COMPLETED work orders do not reduce that headroom — fulfillment vs the SO is reflected in
- * confirmed dispatch and production metrics instead.
+ * Approved production does **not** reduce Regular SO remaining for planning.
+ * NO_QTY uses a separate current-cycle RS snapshot minus open WO reservations.
  *
  * REJECTED (and any future CANCELLED/CLOSED-style statuses) are excluded everywhere below.
  */
 
 const { getApprovedProducedQtyByWorkOrderLineIds } = require("./productionMetrics");
+const { effectiveLinePlanQty } = require("./workOrderLifecycleService");
 const { getUsableItemStockQty, getItemStockQty } = require("./stockService");
 const { sumQcAcceptedForSoItem } = require("./dispatchQcCap");
 const { remainingDispatchCapacityForSoItem, netDispatchedByItemId, DISPATCH_ALLOC_MODE } = require("./salesOrderDispatchAllocation");
 const { mapSoLinesToDispatchFifoInputs } = require("./regularSoBufferQty");
+const { buildRegularSoPlanningSnapshotView } = require("./regularSoPlanningSnapshotService");
 const {
   getSoItemDispatchableReadyQty,
   getSoItemQcApprovedRemainingQty,
@@ -46,13 +44,34 @@ function n(v) {
  * (same basis as {@link remainingOpenQtyForItem} / allocatedByItem).
  * @type {import("@prisma/client").SimpleStatus[]}
  */
-const WORK_ORDER_STATUSES_BLOCKING_REMAINING_WO_PLAN = ["PENDING", "IN_PROGRESS"];
+const WORK_ORDER_STATUSES_BLOCKING_REMAINING_WO_PLAN = ["PENDING", "IN_PROGRESS", "HOLD", "PAUSED"];
 
 /**
  * Include COMPLETED when aggregating approved production on WO lines for this SO (UI / breakdown).
  * @type {import("@prisma/client").SimpleStatus[]}
  */
-const WORK_ORDER_STATUSES_WITH_WO_LINE_METRICS = ["PENDING", "IN_PROGRESS", "COMPLETED"];
+const WORK_ORDER_STATUSES_WITH_WO_LINE_METRICS = [
+  "PENDING",
+  "IN_PROGRESS",
+  "COMPLETED",
+  "HOLD",
+  "PAUSED",
+  "CLOSED_WITH_SHORTFALL",
+];
+
+/**
+ * Regular SO planning headroom is consumed by every non-rejected WO line already created
+ * for the same SO + FG item. NO_QTY keeps using open cycle reservations separately.
+ * @type {import("@prisma/client").SimpleStatus[]}
+ */
+const WORK_ORDER_STATUSES_COUNTING_REGULAR_SO_PLAN = [
+  "PENDING",
+  "IN_PROGRESS",
+  "COMPLETED",
+  "HOLD",
+  "PAUSED",
+  "CLOSED_WITH_SHORTFALL",
+];
 
 /**
  * Total QC accepted qty per FG item for one sales order (production QC only; non-reversed).
@@ -203,12 +222,35 @@ async function loadWorkOrderQuantityContext(db, salesOrderId, excludeWorkOrderId
   if (!so) return null;
 
   const orderQtyByItem = new Map();
-  /** Sum of SalesOrderLine.qty for FG lines only — must match {@link getEligibleSalesOrderIdsForWorkOrder} and dispatch confirmed backlog. */
+  const customerCommittedQtyByItem = new Map();
+  /** REGULAR: planned production qty per FG item (snapshot/buffer-driven). NO_QTY is overwritten below. */
   const fgOrderQtyByItem = new Map();
+  const regularPlannedProductionQtyByItem = new Map();
+
   for (const sl of so.lines) {
-    orderQtyByItem.set(sl.itemId, (orderQtyByItem.get(sl.itemId) || 0) + Number(sl.qty));
-    if (sl.item?.itemType === "FG") {
-      fgOrderQtyByItem.set(sl.itemId, (fgOrderQtyByItem.get(sl.itemId) || 0) + Number(sl.qty));
+    const committedQty = Number(sl.customerPoQty ?? sl.qty);
+    customerCommittedQtyByItem.set(sl.itemId, (customerCommittedQtyByItem.get(sl.itemId) || 0) + committedQty);
+    orderQtyByItem.set(sl.itemId, (orderQtyByItem.get(sl.itemId) || 0) + committedQty);
+  }
+
+  if ((so.orderType ?? "NORMAL") !== "NO_QTY") {
+    const planningView = await buildRegularSoPlanningSnapshotView(salesOrderId, db);
+    const plannedByLineId = new Map((planningView.lines || []).map((row) => [Number(row.lineId), row]));
+    for (const sl of so.lines) {
+      if (sl.item?.itemType !== "FG") continue;
+      const planned = plannedByLineId.get(Number(sl.id));
+      const plannedQty = Number(planned?.plannedProductionQty ?? sl.customerPoQty ?? sl.qty);
+      fgOrderQtyByItem.set(sl.itemId, (fgOrderQtyByItem.get(sl.itemId) || 0) + plannedQty);
+      regularPlannedProductionQtyByItem.set(
+        sl.itemId,
+        (regularPlannedProductionQtyByItem.get(sl.itemId) || 0) + plannedQty,
+      );
+    }
+  } else {
+    for (const sl of so.lines) {
+      if (sl.item?.itemType === "FG") {
+        fgOrderQtyByItem.set(sl.itemId, (fgOrderQtyByItem.get(sl.itemId) || 0) + Number(sl.qty));
+      }
     }
   }
 
@@ -283,13 +325,32 @@ async function loadWorkOrderQuantityContext(db, salesOrderId, excludeWorkOrderId
     ...(excludeWorkOrderId != null ? { id: { not: excludeWorkOrderId } } : {}),
   };
 
-  const otherWoLines = await db.workOrderLine.findMany({
+  const allocatedByItem = new Map();
+  const otherWoLinesWithWo = await db.workOrderLine.findMany({
     where: { workOrder: otherWoWhere },
+    include: { workOrder: { select: { status: true, shortfallQty: true } } },
+  });
+  for (const ol of otherWoLinesWithWo) {
+    allocatedByItem.set(
+      ol.fgItemId,
+      (allocatedByItem.get(ol.fgItemId) || 0) + effectiveLinePlanQty(ol, ol.workOrder.status),
+    );
+  }
+
+  const regularPlanWoWhere = {
+    salesOrderId,
+    status: { in: WORK_ORDER_STATUSES_COUNTING_REGULAR_SO_PLAN },
+    ...(excludeWorkOrderId != null ? { id: { not: excludeWorkOrderId } } : {}),
+  };
+  const regularPlanWoLines = await db.workOrderLine.findMany({
+    where: { workOrder: regularPlanWoWhere },
+    include: { workOrder: { select: { status: true, shortfallQty: true } } },
   });
 
-  const allocatedByItem = new Map();
-  for (const ol of otherWoLines) {
-    allocatedByItem.set(ol.fgItemId, (allocatedByItem.get(ol.fgItemId) || 0) + Number(ol.qty));
+  const regularPlannedByItem = new Map();
+  for (const ol of regularPlanWoLines) {
+    const planned = effectiveLinePlanQty(ol, ol.workOrder.status);
+    regularPlannedByItem.set(ol.fgItemId, (regularPlannedByItem.get(ol.fgItemId) || 0) + planned);
   }
 
   const acceptedByItem = await loadSoTotalAcceptedQtyByItem(db, salesOrderId, excludeWorkOrderId);
@@ -302,11 +363,14 @@ async function loadWorkOrderQuantityContext(db, salesOrderId, excludeWorkOrderId
   return {
     so,
     orderQtyByItem,
+    customerCommittedQtyByItem,
     fgOrderQtyByItem,
+    regularPlannedProductionQtyByItem,
     dispatchedByItem,
     producedTotalByItem,
     producedSubtractByItem,
     allocatedByItem,
+    regularPlannedByItem,
     acceptedByItem,
     carryForwardShortfallByItem,
     noQtyRsSuggestedSnapshotByItem,
@@ -325,9 +389,8 @@ async function loadWorkOrderQuantityContext(db, salesOrderId, excludeWorkOrderId
  */
 function remainingOpenQtyForItem(ctx, itemId) {
   const fgQty = ctx.fgOrderQtyByItem.get(itemId) ?? 0;
-  const accepted = ctx.acceptedByItem?.get(itemId) || 0;
-  const woPlanned = ctx.allocatedByItem.get(itemId) || 0;
-  return Math.max(0, fgQty - accepted - woPlanned);
+  const woPlanned = ctx.regularPlannedByItem?.get(itemId) || 0;
+  return Math.max(0, fgQty - woPlanned);
 }
 
 /**
@@ -495,10 +558,14 @@ async function getSalesOrderFgWorkOrderBalances(db, { salesOrderId, excludeWorkO
 
   const items = [];
   for (const [itemId, itemName] of fgNameByItem) {
-    const ordered = ctx.fgOrderQtyByItem.get(itemId) ?? 0;
+    const customerOrdered = ctx.customerCommittedQtyByItem?.get(itemId) ?? 0;
+    const plannedProduction = ctx.fgOrderQtyByItem.get(itemId) ?? 0;
     const disp = ctx.dispatchedByItem.get(itemId) ?? 0;
     const produced = ctx.producedTotalByItem.get(itemId) || 0;
-    const planned = ctx.allocatedByItem.get(itemId) || 0;
+    const planned =
+      so.orderType === "NO_QTY"
+        ? ctx.allocatedByItem.get(itemId) || 0
+        : ctx.regularPlannedByItem?.get(itemId) || 0;
     const totalAcceptedQty = ctx.acceptedByItem.get(itemId) || 0;
     const carryForwardShortfallQty = ctx.carryForwardShortfallByItem.get(itemId) || 0;
     const rsPlanQty = ctx.noQtyRsSuggestedSnapshotByItem?.get(itemId) ?? 0;
@@ -528,7 +595,9 @@ async function getSalesOrderFgWorkOrderBalances(db, { salesOrderId, excludeWorkO
     items.push({
       itemId,
       itemName,
-      soOrderedQty: ordered,
+      soOrderedQty: customerOrdered,
+      customerCommittedQty: customerOrdered,
+      plannedProductionQty: plannedProduction,
       dispatchedQty: disp,
       producedQty: produced,
       plannedOnOtherWorkOrdersQty: planned,
@@ -585,7 +654,7 @@ async function getEligibleSalesOrderIdsForWorkOrder(db, opts = {}) {
     where: {
       workOrder: {
         salesOrderId: { in: soIds },
-        status: { in: WORK_ORDER_STATUSES_BLOCKING_REMAINING_WO_PLAN },
+        status: { in: WORK_ORDER_STATUSES_COUNTING_REGULAR_SO_PLAN },
       },
     },
     include: { workOrder: true },
@@ -597,6 +666,22 @@ async function getEligibleSalesOrderIdsForWorkOrder(db, opts = {}) {
     const soId = l.workOrder.salesOrderId;
     const key = `${soId}:${l.fgItemId}`;
     plannedBySoItem.set(key, (plannedBySoItem.get(key) || 0) + Number(l.qty));
+  }
+
+  const noQtyWoLines = await db.workOrderLine.findMany({
+    where: {
+      workOrder: {
+        salesOrderId: { in: soIds },
+        status: { in: WORK_ORDER_STATUSES_BLOCKING_REMAINING_WO_PLAN },
+      },
+    },
+    include: { workOrder: true },
+  });
+  const noQtyPlannedBySoItem = new Map();
+  for (const l of noQtyWoLines) {
+    const soId = l.workOrder.salesOrderId;
+    const key = `${soId}:${l.fgItemId}`;
+    noQtyPlannedBySoItem.set(key, (noQtyPlannedBySoItem.get(key) || 0) + Number(l.qty));
   }
 
   const eligibleIds = new Set();
@@ -680,7 +765,7 @@ async function getEligibleSalesOrderIdsForWorkOrder(db, opts = {}) {
       for (const sl of fgLines) {
         const itemId = sl.itemId;
         const snap = snapByItem.get(itemId) ?? 0;
-        const planned = plannedBySoItem.get(`${so.id}:${itemId}`) || 0;
+        const planned = noQtyPlannedBySoItem.get(`${so.id}:${itemId}`) || 0;
         const pendingForWo = Math.max(0, snap - planned);
         if (pendingForWo > EPS) {
           hasPositive = true;
@@ -691,17 +776,21 @@ async function getEligibleSalesOrderIdsForWorkOrder(db, opts = {}) {
       continue;
     }
 
-    // Pending-only rule aligned with Production Planning "To produce" AND active planned WOs:
-    // toProduce = max(0, orderedQty - current FG stock)
-    // remainingAfterConfirmedDispatch = max(0, orderedQty - confirmedNetDispatched(CONFIRMED))
-    // pending_for_wo = max(0, min(toProduce, remainingAfterConfirmedDispatch) - active_planned_wo_qty)
+    // Pending-only rule aligned with Production Planning Qty AND active planned WOs:
+    // plannedProductionQty = customer commitment + FG buffer
+    // pending_for_wo = max(0, plannedProductionQty - active_planned_wo_qty)
     // (active = PENDING + IN_PROGRESS)
-    const orderedByItem = new Map();
-    for (const sl of fgLines) orderedByItem.set(sl.itemId, (orderedByItem.get(sl.itemId) || 0) + Number(sl.qty));
-    for (const [itemId, ordered] of orderedByItem) {
+    const planningView = await buildRegularSoPlanningSnapshotView(so.id, db);
+    const plannedByLineId = new Map((planningView.lines || []).map((row) => [Number(row.lineId), row]));
+    const plannedByItem = new Map();
+    for (const sl of fgLines) {
+      const planned = plannedByLineId.get(Number(sl.id));
+      const plannedQty = Number(planned?.plannedProductionQty ?? sl.customerPoQty ?? sl.qty);
+      plannedByItem.set(sl.itemId, (plannedByItem.get(sl.itemId) || 0) + plannedQty);
+    }
+    for (const [itemId, plannedProductionQty] of plannedByItem) {
       const planned = plannedBySoItem.get(`${so.id}:${itemId}`) || 0;
-      const accepted = acceptedBySoItem.get(`${so.id}:${itemId}`) || 0;
-      const pendingForWo = Math.max(0, ordered - accepted - planned);
+      const pendingForWo = Math.max(0, plannedProductionQty - planned);
       if (pendingForWo > EPS) {
         hasPositive = true;
         break;
@@ -732,4 +821,5 @@ module.exports = {
   EPS,
   WORK_ORDER_STATUSES_BLOCKING_REMAINING_WO_PLAN,
   WORK_ORDER_STATUSES_WITH_WO_LINE_METRICS,
+  WORK_ORDER_STATUSES_COUNTING_REGULAR_SO_PLAN,
 };

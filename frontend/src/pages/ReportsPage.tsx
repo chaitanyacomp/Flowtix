@@ -41,7 +41,7 @@ import { cn } from "../lib/utils";
  * gates in App.tsx and per-API requireRole gates in the backend.
  * ---------------------------------------------------------------------------*/
 
-type RoleKey = "ADMIN" | "SALES" | "STORE" | "PRODUCTION" | "QC" | "ACCOUNTS";
+type RoleKey = "ADMIN" | "PURCHASE" | "STORE" | "PRODUCTION" | "QA";
 
 type GroupKey =
   | "sales-ops"
@@ -119,11 +119,6 @@ const GROUP_DEFS: Record<GroupKey, ReportGroupDef> = {
  * (Admin sees everything in operational reading order.)
  */
 const ROLE_GROUP_ORDER: Record<RoleKey, GroupKey[]> = {
-  SALES: ["sales-ops", "customer-service"],
-  STORE: [...STORE_REPORT_GROUP_ORDER],
-  PRODUCTION: ["production", "quality", "stock", "customer-service"],
-  QC: ["quality", "production", "customer-service"],
-  ACCOUNTS: ["commercial"],
   ADMIN: [
     "sales-ops",
     "customer-service",
@@ -134,6 +129,10 @@ const ROLE_GROUP_ORDER: Record<RoleKey, GroupKey[]> = {
     "commercial",
     "exceptions",
   ],
+  PURCHASE: ["purchase", "commercial", "stock"],
+  STORE: [...STORE_REPORT_GROUP_ORDER],
+  PRODUCTION: ["production", "quality", "stock", "customer-service"],
+  QA: ["quality", "production", "customer-service"],
 };
 
 const TILES: ReportTile[] = [
@@ -142,7 +141,7 @@ const TILES: ReportTile[] = [
     to: withReportsReturnContext("/sales-orders"),
     title: "Sales Order Status",
     description: "Open, in-process, and closed sales orders across customers",
-    roles: ["ADMIN", "SALES", "STORE"],
+    roles: ["ADMIN", "STORE"],
     group: "sales-ops",
     icon: <ListChecks className="h-4 w-4" />,
     priority: 10,
@@ -151,7 +150,7 @@ const TILES: ReportTile[] = [
     to: "/reports/dispatch-backlog",
     title: "Dispatch Backlog",
     description: "Pending dispatch across active sales orders",
-    roles: ["ADMIN", "SALES", "STORE"],
+    roles: ["ADMIN", "STORE"],
     group: "sales-ops",
     icon: <Truck className="h-4 w-4" />,
     priority: 20,
@@ -160,7 +159,7 @@ const TILES: ReportTile[] = [
     to: "/customer-tracking-flow?from=reports",
     title: "Customer Tracking Report",
     description: "Order journey from dispatch through billing, returns, and replacements",
-    roles: ["ADMIN", "SALES", "STORE", "PRODUCTION", "QC"],
+    roles: ["ADMIN", "STORE", "PRODUCTION", "QA"],
     group: "sales-ops",
     icon: <Users className="h-4 w-4" />,
     priority: 30,
@@ -169,7 +168,7 @@ const TILES: ReportTile[] = [
     to: withReportsReturnContext("/sales-bills"),
     title: "Sales Bills",
     description: "Dispatch-wise customer invoices (Tally export ready)",
-    roles: ["ADMIN", "SALES"],
+    roles: ["ADMIN"],
     group: "sales-ops",
     icon: <Receipt className="h-4 w-4" />,
     priority: 40,
@@ -178,7 +177,7 @@ const TILES: ReportTile[] = [
     to: "/reports/dispatch-summary",
     title: "Dispatch Summary",
     description: "Ready-to-ship now (matches Dispatch) + locked dispatch history",
-    roles: ["ADMIN", "SALES", "STORE"],
+    roles: ["ADMIN", "STORE"],
     group: "sales-ops",
     icon: <Truck className="h-4 w-4" />,
     priority: 50,
@@ -187,7 +186,7 @@ const TILES: ReportTile[] = [
     to: "/reports/customer-so-rs",
     title: "Customer-wise SO & RS Report",
     description: "Customer, SO type, cycle, requirement sheet, quantities, and pipeline next action",
-    roles: ["ADMIN", "SALES"],
+    roles: ["ADMIN"],
     group: "sales-ops",
     icon: <ClipboardList className="h-4 w-4" />,
     priority: 60,
@@ -196,7 +195,7 @@ const TILES: ReportTile[] = [
     to: "/reports/so-dispatch-trace",
     title: "SO to Dispatch Trace",
     description: "Follow a sales order through dispatch references",
-    roles: ["ADMIN", "SALES", "STORE"],
+    roles: ["ADMIN", "STORE"],
     group: "sales-ops",
     icon: <GitBranch className="h-4 w-4" />,
     priority: 70,
@@ -205,7 +204,7 @@ const TILES: ReportTile[] = [
     to: "/reports/sales-matching",
     title: "Sales Matching Report",
     description: "Sales Order vs Dispatch vs Sales Bill (partial dispatch / billing, mismatches)",
-    roles: ["ADMIN", "SALES"],
+    roles: ["ADMIN"],
     group: "sales-ops",
     icon: <FileCheck className="h-4 w-4" />,
     priority: 80,
@@ -214,7 +213,7 @@ const TILES: ReportTile[] = [
     to: "/export-history?from=reports",
     title: "Export History",
     description: "Download previously exported Tally XML (sales bills)",
-    roles: ["ADMIN", "SALES", "ACCOUNTS"],
+    roles: ["ADMIN", "PURCHASE"],
     group: "sales-ops",
     icon: <FileUp className="h-4 w-4" />,
     priority: 90,
@@ -225,7 +224,7 @@ const TILES: ReportTile[] = [
     to: withReportsReturnContext("/customer-returns"),
     title: "Customer Returns",
     description: "Returned material — QC hold, rework, and replacement status",
-    roles: ["ADMIN", "SALES", "STORE", "PRODUCTION", "QC"],
+    roles: ["ADMIN", "STORE", "PRODUCTION", "QA"],
     group: "customer-service",
     icon: <RotateCcw className="h-4 w-4" />,
     priority: 10,
@@ -234,7 +233,7 @@ const TILES: ReportTile[] = [
     to: withReportsReturnContext("/customer-po-tracking"),
     title: "Customer PO Tracking",
     description: "Customer purchase orders — fulfillment, dispatch, and billing alignment",
-    roles: ["ADMIN", "SALES"],
+    roles: ["ADMIN"],
     group: "customer-service",
     icon: <Contact className="h-4 w-4" />,
     priority: 20,
@@ -284,7 +283,7 @@ const TILES: ReportTile[] = [
     to: "/reports/purchase-matching",
     title: "Purchase Matching Report",
     description: "Material Planning vs GRN receipt vs Purchase Bill (pending receipt / billing, mismatches)",
-    roles: ["ADMIN", "STORE", "ACCOUNTS"],
+    roles: ["ADMIN", "PURCHASE"],
     group: "purchase",
     icon: <FileSearch className="h-4 w-4" />,
     priority: 10,
@@ -293,7 +292,7 @@ const TILES: ReportTile[] = [
     to: withReportsReturnContext("/purchase-bills"),
     title: "Purchase Bills",
     description: "Search and review purchase bills",
-    roles: ["ADMIN", "STORE", "ACCOUNTS"],
+    roles: ["ADMIN", "PURCHASE"],
     group: "purchase",
     icon: <ShoppingCart className="h-4 w-4" />,
     priority: 20,
@@ -302,7 +301,7 @@ const TILES: ReportTile[] = [
     to: withReportsReturnContext("/rm-po-grn"),
     title: "Material Planning",
     description: "Pending purchase orders and GRN follow-up",
-    roles: ["ADMIN", "STORE"],
+    roles: ["ADMIN", "PURCHASE"],
     group: "purchase",
     icon: <Factory className="h-4 w-4" />,
     priority: 30,
@@ -322,10 +321,19 @@ const TILES: ReportTile[] = [
     to: "/reports/batch-traceability",
     title: "Batch Traceability",
     description: "Forward / backward trace from production batch to QC and SO / dispatch",
-    roles: ["ADMIN", "PRODUCTION", "QC", "STORE"],
+    roles: ["ADMIN", "PRODUCTION", "QA", "STORE"],
     group: "production",
     icon: <Network className="h-4 w-4" />,
     priority: 20,
+  },
+  {
+    to: "/reports/production-rm-variance",
+    title: "Production RM Variance",
+    description: "Standard vs actual RM consumption — extra usage, lower usage, and BOM accuracy signals",
+    roles: ["ADMIN", "STORE", "PRODUCTION"],
+    group: "production",
+    icon: <ClipboardList className="h-4 w-4" />,
+    priority: 15,
   },
 
   /* ------------------------------- Quality & Scrap ---------------------------- */
@@ -333,7 +341,7 @@ const TILES: ReportTile[] = [
     to: "/scrap-report?from=reports",
     title: "Scrap Report",
     description: "Scrap summary and reasons",
-    roles: ["ADMIN", "QC", "PRODUCTION", "STORE"],
+    roles: ["ADMIN", "QA", "PRODUCTION", "STORE"],
     group: "quality",
     icon: <Trash2 className="h-4 w-4" />,
     priority: 10,
@@ -344,7 +352,7 @@ const TILES: ReportTile[] = [
     to: "/sales-bills?payment=pending",
     title: "Receivables / Pending Receipts",
     description: "Finalized sales bills with outstanding customer balance",
-    roles: ["ADMIN", "ACCOUNTS"],
+    roles: ["ADMIN"],
     group: "commercial",
     icon: <Receipt className="h-4 w-4" />,
     priority: 10,
@@ -353,7 +361,7 @@ const TILES: ReportTile[] = [
     to: "/purchase-bills?payment=pending",
     title: "Payables / Pending Payments",
     description: "Finalized purchase bills with outstanding supplier balance",
-    roles: ["ADMIN", "ACCOUNTS"],
+    roles: ["ADMIN", "PURCHASE"],
     group: "commercial",
     icon: <ShoppingCart className="h-4 w-4" />,
     priority: 20,
@@ -362,7 +370,7 @@ const TILES: ReportTile[] = [
     to: "/reports/sales-matching",
     title: "Sales Register (matching)",
     description: "Sales Order vs Dispatch vs Sales Bill — dispatch vs billing gaps",
-    roles: ["ADMIN", "ACCOUNTS"],
+    roles: ["ADMIN"],
     group: "commercial",
     icon: <FileCheck className="h-4 w-4" />,
     priority: 30,
@@ -371,7 +379,7 @@ const TILES: ReportTile[] = [
     to: "/reports/purchase-matching",
     title: "Purchase Register (matching)",
     description: "RM PO vs GRN vs Purchase Bill — receipt and billing coverage",
-    roles: ["ADMIN", "ACCOUNTS"],
+    roles: ["ADMIN", "PURCHASE"],
     group: "commercial",
     icon: <FileSearch className="h-4 w-4" />,
     priority: 40,
@@ -380,7 +388,7 @@ const TILES: ReportTile[] = [
     to: "/reports/dispatch-summary",
     title: "Dispatch Summary",
     description: "Ready-to-ship and locked dispatch history",
-    roles: ["ADMIN", "ACCOUNTS"],
+    roles: ["ADMIN", "PURCHASE"],
     group: "commercial",
     icon: <Truck className="h-4 w-4" />,
     priority: 50,
@@ -389,7 +397,7 @@ const TILES: ReportTile[] = [
     to: "/reports/so-dispatch-trace",
     title: "SO → Dispatch Trace",
     description: "Follow an order through dispatch references",
-    roles: ["ADMIN", "ACCOUNTS"],
+    roles: ["ADMIN", "PURCHASE"],
     group: "commercial",
     icon: <GitBranch className="h-4 w-4" />,
     priority: 60,
@@ -398,7 +406,7 @@ const TILES: ReportTile[] = [
     to: withReportsReturnContext("/customer-po-tracking"),
     title: "Customer Ledger Summary",
     description: "Customer journey — dispatch, billing, returns (where linked)",
-    roles: ["ADMIN", "ACCOUNTS"],
+    roles: ["ADMIN"],
     group: "commercial",
     icon: <Contact className="h-4 w-4" />,
     priority: 70,
@@ -407,7 +415,7 @@ const TILES: ReportTile[] = [
     to: withReportsReturnContext("/suppliers"),
     title: "Supplier Master",
     description: "Supplier directory for payable context (GST / terms)",
-    roles: ["ADMIN", "ACCOUNTS"],
+    roles: ["ADMIN", "PURCHASE"],
     group: "commercial",
     icon: <Contact className="h-4 w-4" />,
     priority: 80,
@@ -437,11 +445,10 @@ const TILES: ReportTile[] = [
 function isRoleKey(value: string): value is RoleKey {
   return (
     value === "ADMIN" ||
-    value === "SALES" ||
     value === "STORE" ||
+    value === "PURCHASE" ||
     value === "PRODUCTION" ||
-    value === "QC" ||
-    value === "ACCOUNTS"
+    value === "QA"
   );
 }
 
@@ -503,13 +510,22 @@ export function ReportsPage() {
 
   const totalTiles = visibleGroups.reduce((sum, g) => sum + g.tiles.length, 0);
 
-  const heading = role === "ACCOUNTS" ? "Commercial reports" : role === "STORE" ? "Dispatch reports" : "Reports";
+  const heading =
+    role === "PURCHASE"
+      ? "Purchase & commercial reports"
+      : role === "STORE"
+        ? "Dispatch reports"
+        : role === "QA"
+          ? "Quality reports"
+          : "Reports";
   const subheading =
-    role === "ACCOUNTS"
-      ? "Operational registers and billing alignment — statutory books remain in Tally."
+    role === "PURCHASE"
+      ? "Purchase audit, payables, and supplier registers — statutory books remain in Tally."
       : role === "STORE"
         ? "Shipment, stock movement, and dispatch backlog — operational only."
-        : "Your reports — organized by department";
+        : role === "QA"
+          ? "Inspection trace, scrap, and batch quality reports."
+          : "Your reports — organized by department";
 
   return (
     <div className="flex min-h-0 flex-col gap-3">

@@ -8,7 +8,7 @@ const CUSTOMER_PO_TRACKING_ACCESS_DENIED =
   "Access denied. This screen is available to admin, sales, store, production, and QC roles.";
 
 const trackingRoles = requireRole(
-  ["ADMIN", "SALES", "STORE", "PRODUCTION", "QC", "ACCOUNTS"],
+  ["ADMIN", "STORE", "PURCHASE", "PRODUCTION", "QA"],
   CUSTOMER_PO_TRACKING_ACCESS_DENIED,
 );
 

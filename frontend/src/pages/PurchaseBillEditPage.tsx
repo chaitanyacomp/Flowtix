@@ -11,6 +11,9 @@ import { useToast } from "../contexts/ToastContext";
 import { PageContainer, PageSmartBackLink, StickyWorkspaceHead } from "../components/PageHeader";
 import { ActivityHistoryCard } from "../components/ActivityHistoryCard";
 import { BillExportStatusPanel } from "../components/BillExportStatusPanel";
+import { PurchaseBillCommercialPanel } from "../components/purchase/PurchaseBillCommercialPanel";
+import { ErpModal } from "../components/erp/ErpModal";
+import type { ResolvedSupplierCommercial } from "./rmPurchase/rmPurchaseShared";
 
 const COMMERCIAL_PAYMENT_MODES = ["CASH", "BANK", "UPI", "CHEQUE", "OTHER"] as const;
 
@@ -71,6 +74,8 @@ type Bill = {
   cancelReason?: string | null;
   hasTemporaryTaxData?: boolean;
   taxIntraState: boolean;
+  gstMode?: string | null;
+  resolvedSupplierCommercial?: ResolvedSupplierCommercial | null;
   supplier: { id: number; name: string; state?: string | null };
   grn?: { id: number; date: string; rmPo: { id: number } } | null;
   lines: BillLine[];
@@ -119,7 +124,7 @@ export function PurchaseBillEditPage() {
   const userRole = useAuth().user?.role;
   const toast = useToast();
   const isAdmin = userRole === "ADMIN";
-  const canEditPaymentTracking = userRole === "ADMIN" || userRole === "STORE" || userRole === "ACCOUNTS";
+  const canEditPaymentTracking = userRole === "ADMIN" || userRole === "PURCHASE";
 
   const [bill, setBill] = React.useState<Bill | null>(null);
   const [loadError, setLoadError] = React.useState<string | null>(null);
@@ -609,7 +614,7 @@ export function PurchaseBillEditPage() {
   return (
     <PageContainer>
       {adminCancelAuth?.open ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
+        <ErpModal onClose={() => setAdminCancelAuth(null)} backdropClassName="bg-black/30" aria-label="Admin authorization">
           <div className="w-full max-w-md rounded-lg border border-slate-200 bg-white shadow-xl">
             <div className="border-b border-slate-200 px-4 py-3">
               <div className="text-sm font-semibold text-slate-900">Admin Authorization Required</div>
@@ -636,7 +641,7 @@ export function PurchaseBillEditPage() {
               </Button>
             </div>
           </div>
-        </div>
+        </ErpModal>
       ) : null}
       {incomingWarnings.length ? (
         <div className="rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-950">
@@ -770,6 +775,9 @@ export function PurchaseBillEditPage() {
               <CardTitle className="text-base">GRN + bill details</CardTitle>
             </CardHeader>
             <CardContent className="grid min-w-0 gap-4 sm:grid-cols-2">
+              <div className="sm:col-span-2">
+                <PurchaseBillCommercialPanel commercial={bill.resolvedSupplierCommercial} />
+              </div>
               <div className="grid min-w-0 gap-1 sm:col-span-2">
                 <span className="text-xs font-medium text-slate-600">GRN ref</span>
                 <Input value={bill.grn?.id ? `GRN-${bill.grn.id}` : "Multiple GRNs"} readOnly className="min-w-0 bg-slate-50" />

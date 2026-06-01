@@ -1,5 +1,6 @@
 import { Card, CardContent } from "../ui/card";
 import { Button } from "../ui/button";
+import { ErpModal } from "../erp/ErpModal";
 
 type Props = {
   open: boolean;
@@ -10,9 +11,8 @@ type Props = {
 };
 
 export function BulkDeleteConfirmModal({ open, count, loading, onCancel, onConfirm }: Props) {
-  if (!open) return null;
   return (
-    <div className="erp-modal-backdrop" role="dialog" aria-label="Confirm bulk delete">
+    <ErpModal open={open} onClose={onCancel} aria-label="Confirm bulk delete">
       <Card className="erp-modal-shell w-[calc(100vw-2rem)] max-w-[520px] overflow-hidden">
         <CardContent className="p-4">
           <div className="text-base font-semibold text-slate-900">Delete {count} selected records?</div>
@@ -27,6 +27,6 @@ export function BulkDeleteConfirmModal({ open, count, loading, onCancel, onConfi
           </div>
         </CardContent>
       </Card>
-    </div>
+    </ErpModal>
   );
 }

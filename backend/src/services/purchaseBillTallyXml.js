@@ -58,6 +58,65 @@ function extractLedgerNamesFromXml(xml) {
   return out;
 }
 
+function splitAddressLines(address) {
+  return String(address || "")
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function buildAddressListXml(tagBase, lines) {
+  if (!Array.isArray(lines) || !lines.length) return "";
+  const listTag = `${tagBase}.LIST`;
+  const itemTag = tagBase;
+  return [
+    `<${listTag}>`,
+    ...lines.map((line) => `<${itemTag}>${xmlEscape(line)}</${itemTag}>`),
+    `</${listTag}>`,
+  ].join("");
+}
+
+/**
+ * Supplier / supply-from / purchase source tags for Purchase voucher (GST informational).
+ * Does not alter ledger structure.
+ */
+function buildCommercialVoucherXml(payload) {
+  const registered = payload?.registeredSupplier ?? payload?.supplier ?? null;
+  const supply = payload?.supplyFrom ?? null;
+  const source = payload?.purchaseSource ?? null;
+  const parts = [];
+
+  const partyName = registered?.name || payload?.supplier?.supplierName;
+  if (partyName) {
+    parts.push(`<PARTYNAME>${xmlEscape(partyName)}</PARTYNAME>`);
+  }
+
+  const partyGstin = registered?.gstin || payload?.supplier?.supplierGstin;
+  if (partyGstin) parts.push(`<PARTYGSTIN>${xmlEscape(partyGstin)}</PARTYGSTIN>`);
+
+  const supplierLines = splitAddressLines(registered?.address || payload?.supplier?.supplierAddress);
+  if (supplierLines.length) parts.push(buildAddressListXml("BASICBUYERADDRESS", supplierLines));
+
+  const supplierState = registered?.stateName || payload?.supplier?.supplierStateName;
+  if (supplierState) parts.push(`<STATENAME>${xmlEscape(supplierState)}</STATENAME>`);
+
+  const posName = source?.stateName;
+  if (posName) parts.push(`<PLACEOFSUPPLY>${xmlEscape(posName)}</PLACEOFSUPPLY>`);
+
+  if (supply && !supply.sameAsRegistered) {
+    const dispatchLabel = supply.label;
+    if (dispatchLabel) parts.push(`<DISPATCHFROMNAME>${xmlEscape(dispatchLabel)}</DISPATCHFROMNAME>`);
+
+    const dispatchLines = splitAddressLines(supply.address);
+    if (dispatchLines.length) parts.push(buildAddressListXml("DISPATCHFROMADDRESS", dispatchLines));
+
+    if (supply.stateName) parts.push(`<DISPATCHFROMSTATENAME>${xmlEscape(supply.stateName)}</DISPATCHFROMSTATENAME>`);
+    if (supply.gstin) parts.push(`<DISPATCHFROMGSTIN>${xmlEscape(supply.gstin)}</DISPATCHFROMGSTIN>`);
+  }
+
+  return parts.join("");
+}
+
 /**
  * Build a first-pass Tally XML voucher draft from the export payload.
  * This is intentionally minimal (no ledger mapping automation yet).
@@ -65,7 +124,7 @@ function extractLedgerNamesFromXml(xml) {
 function buildPurchaseBillTallyXml(payload) {
   const voucherNo = payload?.voucherNo || `PB-${payload?.purchaseBillId ?? ""}`;
   const voucherDate = fmtDateYYYYMMDD(payload?.billDate);
-  const partyName = payload?.supplier?.supplierName || "Supplier";
+  const partyName = payload?.supplier?.supplierName || payload?.registeredSupplier?.name || "Supplier";
 
   const totalAmount = n2(payload?.tax?.totalAmount);
   const taxable = n2(payload?.tax?.subtotal);
@@ -241,11 +300,16 @@ function buildPurchaseBillTallyXml(payload) {
     Array.isArray(payload?.distinctRmPoIds) && payload.distinctRmPoIds.length ? `RMPO:${payload.distinctRmPoIds.join(",")}` : null,
     payload?.tax?.taxIntraState === true ? "IntraState" : "InterState",
     payload?.company?.companyStateCode ? `CoState:${payload.company.companyStateCode}` : null,
-    payload?.supplierStateCodeSnapshot
-      ? `SuppState:${payload.supplierStateCodeSnapshot}`
-      : payload?.supplier?.supplierStateCode
-        ? `SuppState:${payload.supplier.supplierStateCode}`
-        : null,
+    payload?.purchaseSource?.stateCode
+      ? `SrcState:${payload.purchaseSource.stateCode}`
+      : payload?.supplierStateCodeSnapshot
+        ? `SuppState:${payload.supplierStateCodeSnapshot}`
+        : payload?.supplier?.supplierStateCode
+          ? `SuppState:${payload.supplier.supplierStateCode}`
+          : null,
+    payload?.supplyFrom?.label && !payload?.supplyFrom?.sameAsRegistered
+      ? `SupplyFrom:${payload.supplyFrom.label}`
+      : null,
   ].filter(Boolean);
   const narration = narrationParts.join(" | ").slice(0, 240);
 
@@ -276,6 +340,7 @@ function buildPurchaseBillTallyXml(payload) {
     `<DATE>${xmlEscape(voucherDate)}</DATE>`,
     `<VOUCHERNUMBER>${xmlEscape(voucherNo)}</VOUCHERNUMBER>`,
     `<PARTYLEDGERNAME>${xmlEscape(partyName)}</PARTYLEDGERNAME>`,
+    buildCommercialVoucherXml(payload),
     narration ? `<NARRATION>${xmlEscape(narration)}</NARRATION>` : "",
     inventoryEntries,
     ledgerEntries,
@@ -315,5 +380,5 @@ function buildPurchaseBillTallyXml(payload) {
   return xml;
 }
 
-module.exports = { buildPurchaseBillTallyXml };
+module.exports = { buildPurchaseBillTallyXml, buildCommercialVoucherXml };
 

@@ -9,11 +9,10 @@ function emailPrefix(email: string): string {
 /** Short role context — statutory accounting stays in Tally for commercial roles. */
 const ROLE_FOCUS_NOTES: Record<string, string> = {
   ADMIN: "Full ERP administration access.",
-  SALES: "Customer, enquiry, quotation, sales order workflow. Read-only on billing/dispatch.",
-  PRODUCTION: "Work order, production execution and rework approval workflow.",
-  QC: "Quality checking, hold, rework and rejection workflow.",
-  ACCOUNTS: "Sales/Purchase bill finalization and Tally export workflow. Accounting remains in Tally.",
-  STORE: "Material planning, RM purchase, GRN, dispatch, stock and customer return operations.",
+  PURCHASE: "Procurement, RM PO, GRN follow-up, and purchase bills.",
+  PRODUCTION: "Work orders, production execution, and rework approval.",
+  QA: "Production QA inspection, hold, rework, and rejection workflow.",
+  STORE: "GRN, stock, material issue, and dispatch operations.",
 };
 
 export function AccountPage() {

@@ -13,15 +13,43 @@ const {
 const { getRmRequirementShortagesUsable } = require("../services/rmRequirementService");
 const { assertSufficientStockForQtyOut } = require("../services/stockService");
 const {
+  loadGrnReceivingLocations,
+  suggestReceivingLocationId,
+  assertValidGrnReceivingLocation,
+} = require("../services/grnLocationService");
+const {
   isTestingModeRelaxed,
   resolveLineTaxFromItem,
   computeLineAmount,
-  resolveSupplierSnapshots,
   assertPositiveRate,
 } = require("../services/rmPoTaxFields");
+const {
+  freezeRmPurchaseOrderCommercialSnapshots,
+  enrichRmPurchaseOrderCommercial,
+  getCompanyStateCode,
+  mapCommercialViewFromPoRow,
+  commercialSnapshotsPresent,
+  resolveSupplierCommercialView,
+} = require("../services/purchaseCommercialAddress");
 const { repairRmPurchaseTaxData } = require("../services/rmPoTaxRepair");
+const {
+  listPendingPurchaseRequests,
+  createRmPoFromPurchaseRequestLines,
+} = require("../services/purchaseRequestService");
+const {
+  recalculateMaterialRequirementClosureForRmPo,
+  loadMaterialRequirementIdsForRmPo,
+} = require("../services/procurementLifecycleService");
+const {
+  ensureSubmittedProductionMaterialRequestForWorkOrder,
+} = require("../services/productionMaterialRequestService");
 
 const purchaseRouter = express.Router();
+
+const { RM_PO_WRITE_ROLES, RM_PO_READ_ROLES, GRN_WRITE_ROLES } = require("../constants/erpRoles");
+const rmPoReadRoles = requireRole([...RM_PO_READ_ROLES]);
+const rmPoWriteRoles = requireRole([...RM_PO_WRITE_ROLES]);
+const grnWriteRoles = requireRole([...GRN_WRITE_ROLES]);
 
 function uniqueWarnings(arr) {
   return [...new Set((arr || []).filter(Boolean))];
@@ -54,6 +82,36 @@ function purchaseGrnFlat400(payload) {
   return err;
 }
 
+async function resolveRmPoCommercialUpdateData(tx, rmPo, body) {
+  const supplierChanging = body.supplierId != null && body.supplierId !== rmPo.supplierId;
+  const locationExplicit = body.supplierLocationId !== undefined;
+  let supplierLocationId = rmPo.supplierLocationId ?? null;
+  if (supplierChanging && !locationExplicit) {
+    supplierLocationId = null;
+  } else if (locationExplicit) {
+    supplierLocationId = body.supplierLocationId;
+  }
+  return freezeRmPurchaseOrderCommercialSnapshots(tx, {
+    supplierId: body.supplierId ?? rmPo.supplierId,
+    supplierLocationId,
+  });
+}
+
+async function enrichGrnSupplyFrom(tx, grn, rmPo, companyStateCode) {
+  if (!grn) return grn;
+  const commercial = commercialSnapshotsPresent(rmPo)
+    ? mapCommercialViewFromPoRow(rmPo, companyStateCode)
+    : await resolveSupplierCommercialView(
+        tx,
+        {
+          ...rmPo,
+          supplierLocationId: grn.supplierLocationId ?? rmPo.supplierLocationId ?? null,
+        },
+        { companyStateCode },
+      );
+  return { ...grn, resolvedSupplyFrom: commercial };
+}
+
 function buildResolvedRmLine(item, l, relaxed) {
   assertPositiveRate(l.rate);
   const resolved = resolveLineTaxFromItem(item, { relaxed });
@@ -79,7 +137,7 @@ const lineInSchema = z.object({
   rate: z.number().positive(),
 });
 
-purchaseRouter.get("/rm-requirements", requireAuth, requireRole(["ADMIN", "STORE"]), async (req, res, next) => {
+purchaseRouter.get("/rm-requirements", requireAuth, requireRole([...RM_PO_READ_ROLES]), async (req, res, next) => {
   try {
     const rows = await getRmRequirementShortagesUsable();
     return res.json(rows);
@@ -88,23 +146,33 @@ purchaseRouter.get("/rm-requirements", requireAuth, requireRole(["ADMIN", "STORE
   }
 });
 
-purchaseRouter.get("/rm-pos", requireAuth, requireRole(["ADMIN", "STORE"]), async (req, res, next) => {
+purchaseRouter.get("/rm-pos", requireAuth, requireRole([...RM_PO_READ_ROLES]), async (req, res, next) => {
   try {
     const rows = await prisma.rmPurchaseOrder.findMany({
       orderBy: { id: "desc" },
       include: {
-        supplier: true,
+        supplier: { include: { stateRef: { select: { stateName: true, stateCode: true } } } },
+        supplierLocation: { include: { stateRef: { select: { stateName: true, stateCode: true } } } },
         lines: { include: { item: true }, orderBy: { id: "asc" } },
         grns: { include: { lines: true }, orderBy: { id: "desc" } },
       },
     });
-    return res.json(rows);
+    const companyStateCode = await getCompanyStateCode(prisma);
+    const enriched = await Promise.all(
+      rows.map(async (row) => {
+        const resolvedSupplierCommercial = commercialSnapshotsPresent(row)
+          ? mapCommercialViewFromPoRow(row, companyStateCode)
+          : await resolveSupplierCommercialView(prisma, row, { companyStateCode });
+        return { ...row, resolvedSupplierCommercial };
+      }),
+    );
+    return res.json(enriched);
   } catch (e) {
     return next(e);
   }
 });
 
-purchaseRouter.get("/rm-pos/:id", requireAuth, requireRole(["ADMIN", "STORE"]), async (req, res, next) => {
+purchaseRouter.get("/rm-pos/:id", requireAuth, requireRole([...RM_PO_READ_ROLES]), async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     if (!Number.isFinite(id)) {
@@ -115,9 +183,54 @@ purchaseRouter.get("/rm-pos/:id", requireAuth, requireRole(["ADMIN", "STORE"]), 
     const row = await prisma.rmPurchaseOrder.findUnique({
       where: { id },
       include: {
-        supplier: true,
-        lines: { include: { item: true }, orderBy: { id: "asc" } },
-        grns: { include: { lines: true }, orderBy: { id: "desc" } },
+        supplier: { include: { stateRef: { select: { stateName: true, stateCode: true } } } },
+        supplierLocation: { include: { stateRef: { select: { stateName: true, stateCode: true } } } },
+        lines: {
+          include: {
+            item: true,
+            procurementLinks: {
+              include: {
+                purchaseRequestLine: {
+                  include: {
+                    purchaseRequest: { select: { docNo: true, id: true } },
+                    sourceLinks: {
+                      include: {
+                        materialRequirementLine: {
+                          include: {
+                            materialRequirement: {
+                              include: {
+                                quotation: { select: { quotationNo: true } },
+                                salesOrder: { select: { docNo: true } },
+                              },
+                            },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+                materialRequirementLine: {
+                  include: {
+                    materialRequirement: {
+                      include: {
+                        quotation: { select: { quotationNo: true } },
+                        salesOrder: { select: { docNo: true } },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          orderBy: { id: "asc" },
+        },
+        grns: {
+          include: {
+            supplierLocation: { include: { stateRef: { select: { stateName: true, stateCode: true } } } },
+            lines: { include: { location: true } },
+          },
+          orderBy: { id: "desc" },
+        },
       },
     });
     if (!row) {
@@ -126,11 +239,18 @@ purchaseRouter.get("/rm-pos/:id", requireAuth, requireRole(["ADMIN", "STORE"]), 
       throw err;
     }
 
+    const companyStateCode = await getCompanyStateCode(prisma);
+    const enrichedPo = await enrichRmPurchaseOrderCommercial(prisma, row);
+    const enrichedGrns = await Promise.all(
+      (enrichedPo.grns || []).map((g) => enrichGrnSupplyFrom(prisma, g, enrichedPo, companyStateCode)),
+    );
+    enrichedPo.grns = enrichedGrns;
+
     // Read-only aggregates for UI clarity: separate stock vs billing.
     // Billing numbers use bill status:
     // - FINALIZED locks quantities (billed)
     // - CANCELLED re-opens quantities (rebillable)
-    const poLineIds = (row.lines || []).map((l) => l.id);
+    const poLineIds = (enrichedPo.lines || []).map((l) => l.id);
     const billedLines = await prisma.purchaseBillLine.findMany({
       where: {
         OR: [{ rmPoId: id }, { rmPoLineId: { in: poLineIds } }],
@@ -157,7 +277,7 @@ purchaseRouter.get("/rm-pos/:id", requireAuth, requireRole(["ADMIN", "STORE"]), 
     }
 
     return res.json({
-      ...row,
+      ...enrichedPo,
       billingSummary: {
         finalizedBilledQtyByPoLineId: finalizedByLineId,
         cancelledBilledQtyByPoLineId: cancelledByLineId,
@@ -192,7 +312,7 @@ purchaseRouter.post(
 );
 
 /** Purchase module flags (e.g. testing-mode relaxed tax fallbacks). */
-purchaseRouter.get("/meta", requireAuth, requireRole(["ADMIN", "STORE"]), async (req, res, next) => {
+purchaseRouter.get("/meta", requireAuth, requireRole([...RM_PO_READ_ROLES]), async (req, res, next) => {
   try {
     return res.json({
       testingModeRelaxedTaxFields: isTestingModeRelaxed(),
@@ -217,8 +337,12 @@ purchaseRouter.post(
   },
 );
 
-purchaseRouter.post("/rm-pos", requireAuth, requireRole(["ADMIN", "STORE"]), async (req, res, next) => {
+purchaseRouter.post("/rm-pos", requireAuth, requireRole([...RM_PO_WRITE_ROLES]), async (req, res, next) => {
   try {
+    const err = new Error("Direct RM PO creation is blocked. Create PO only from approved Store RM Requisitions.");
+    err.statusCode = 400;
+    err.code = "RM_PO_REQUIRES_APPROVED_REQUISITION";
+    throw err;
     const schema = z.object({
       supplierId: z.number().int(),
       remarks: z.string().max(4000).optional().nullable(),
@@ -331,11 +455,12 @@ purchaseRouter.post("/rm-pos", requireAuth, requireRole(["ADMIN", "STORE"]), asy
  * PENDING with GRN rows (e.g. all reversed): update/delete/add lines without dropping lines referenced by GRNs.
  * PARTIAL: same line ids + itemIds; qty >= received; remarks/supplier optional.
  */
-purchaseRouter.put("/rm-pos/:id", requireAuth, requireRole(["ADMIN", "STORE"]), async (req, res, next) => {
+purchaseRouter.put("/rm-pos/:id", requireAuth, requireRole([...RM_PO_WRITE_ROLES]), async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     const schema = z.object({
       supplierId: z.number().int().optional(),
+      supplierLocationId: z.number().int().positive().nullable().optional(),
       remarks: z.string().max(4000).optional().nullable(),
       lines: z.array(lineInSchema).min(1),
     });
@@ -361,6 +486,19 @@ purchaseRouter.put("/rm-pos/:id", requireAuth, requireRole(["ADMIN", "STORE"]), 
       const hasAnyGrn = rmPo.grns.length > 0;
       const receivedByLine = sumReceivedByRmPoLineFromGrns(rmPo.grns);
       const useInPlaceLineEdit = rmPo.status === "PARTIAL" || hasAnyGrn;
+
+      if (hasAnyGrn) {
+        if (body.supplierId != null && body.supplierId !== rmPo.supplierId) {
+          const err = new Error("Cannot change supplier after a GRN has been posted for this PO.");
+          err.statusCode = 400;
+          throw err;
+        }
+        if (body.supplierLocationId !== undefined && body.supplierLocationId !== rmPo.supplierLocationId) {
+          const err = new Error("Cannot change supply location after a GRN has been posted for this PO.");
+          err.statusCode = 400;
+          throw err;
+        }
+      }
 
       if (useInPlaceLineEdit) {
         const lineIdsWithGrn = new Set();
@@ -482,22 +620,42 @@ purchaseRouter.put("/rm-pos/:id", requireAuth, requireRole(["ADMIN", "STORE"]), 
           err.statusCode = 404;
           throw err;
         }
-        const snap = resolveSupplierSnapshots(supplierRow, { relaxed });
-        taxWarnings.push(...snap.warnings);
+        const commercial = await resolveRmPoCommercialUpdateData(tx, rmPo, body);
 
         const data = {
-          supplierStateSnapshot: snap.supplierStateSnapshot,
-          supplierStateCodeSnapshot: snap.supplierStateCodeSnapshot,
+          supplierLocationId: commercial.supplierLocationId,
+          supplierStateSnapshot: commercial.supplierStateSnapshot,
+          supplierStateCodeSnapshot: commercial.supplierStateCodeSnapshot,
+          supplierNameSnapshot: commercial.supplierNameSnapshot,
+          supplierRegisteredGstinSnapshot: commercial.supplierRegisteredGstinSnapshot,
+          supplierRegisteredAddressSnapshot: commercial.supplierRegisteredAddressSnapshot,
+          supplierRegisteredStateNameSnapshot: commercial.supplierRegisteredStateNameSnapshot,
+          supplierRegisteredStateCodeSnapshot: commercial.supplierRegisteredStateCodeSnapshot,
+          supplyLocationLabelSnapshot: commercial.supplyLocationLabelSnapshot,
+          supplyLocationAddressSnapshot: commercial.supplyLocationAddressSnapshot,
+          supplyLocationGstinSnapshot: commercial.supplyLocationGstinSnapshot,
+          supplyLocationStateNameSnapshot: commercial.supplyLocationStateNameSnapshot,
+          supplyLocationStateCodeSnapshot: commercial.supplyLocationStateCodeSnapshot,
+          purchaseSourceStateNameSnapshot: commercial.purchaseSourceStateNameSnapshot,
+          purchaseSourceStateCodeSnapshot: commercial.purchaseSourceStateCodeSnapshot,
+          purchaseSourceSnapshot: commercial.purchaseSourceSnapshot,
+          purchaseGstModeSnapshot: commercial.purchaseGstModeSnapshot,
         };
         if (body.supplierId != null) data.supplierId = body.supplierId;
         if (body.remarks !== undefined) data.remarks = body.remarks?.trim() || null;
         await tx.rmPurchaseOrder.update({ where: { id }, data });
 
         await recalcRmPoStatus(tx, id);
-        const out = await tx.rmPurchaseOrder.findUnique({
+        const outRaw = await tx.rmPurchaseOrder.findUnique({
           where: { id },
-          include: { supplier: true, lines: { include: { item: true }, orderBy: { id: "asc" } }, grns: { include: { lines: true } } },
+          include: {
+            supplier: { include: { stateRef: { select: { stateName: true, stateCode: true } } } },
+            supplierLocation: { include: { stateRef: { select: { stateName: true, stateCode: true } } } },
+            lines: { include: { item: true }, orderBy: { id: "asc" } },
+            grns: { include: { lines: true } },
+          },
         });
+        const out = await enrichRmPurchaseOrderCommercial(tx, outRaw);
         if (out && typeof userId === "number" && Number.isFinite(userId)) {
           await auditLog.write(tx, {
             action: auditLog.AuditAction.UPDATE,
@@ -554,27 +712,47 @@ purchaseRouter.put("/rm-pos/:id", requireAuth, requireRole(["ADMIN", "STORE"]), 
         err.statusCode = 404;
         throw err;
       }
-      const snap = resolveSupplierSnapshots(supplierRow, { relaxed });
-      taxWarnings.push(...snap.warnings);
+      const commercial = await resolveRmPoCommercialUpdateData(tx, rmPo, body);
 
       await tx.rmPurchaseOrderLine.deleteMany({ where: { rmPoId: id } });
       await tx.rmPurchaseOrder.update({
         where: { id },
         data: {
           supplierId: body.supplierId ?? undefined,
+          supplierLocationId: commercial.supplierLocationId,
           remarks: body.remarks !== undefined ? body.remarks?.trim() || null : undefined,
-          supplierStateSnapshot: snap.supplierStateSnapshot,
-          supplierStateCodeSnapshot: snap.supplierStateCodeSnapshot,
+          supplierStateSnapshot: commercial.supplierStateSnapshot,
+          supplierStateCodeSnapshot: commercial.supplierStateCodeSnapshot,
+          supplierNameSnapshot: commercial.supplierNameSnapshot,
+          supplierRegisteredGstinSnapshot: commercial.supplierRegisteredGstinSnapshot,
+          supplierRegisteredAddressSnapshot: commercial.supplierRegisteredAddressSnapshot,
+          supplierRegisteredStateNameSnapshot: commercial.supplierRegisteredStateNameSnapshot,
+          supplierRegisteredStateCodeSnapshot: commercial.supplierRegisteredStateCodeSnapshot,
+          supplyLocationLabelSnapshot: commercial.supplyLocationLabelSnapshot,
+          supplyLocationAddressSnapshot: commercial.supplyLocationAddressSnapshot,
+          supplyLocationGstinSnapshot: commercial.supplyLocationGstinSnapshot,
+          supplyLocationStateNameSnapshot: commercial.supplyLocationStateNameSnapshot,
+          supplyLocationStateCodeSnapshot: commercial.supplyLocationStateCodeSnapshot,
+          purchaseSourceStateNameSnapshot: commercial.purchaseSourceStateNameSnapshot,
+          purchaseSourceStateCodeSnapshot: commercial.purchaseSourceStateCodeSnapshot,
+          purchaseSourceSnapshot: commercial.purchaseSourceSnapshot,
+          purchaseGstModeSnapshot: commercial.purchaseGstModeSnapshot,
           lines: {
             create: lineCreates,
           },
         },
       });
       await recalcRmPoStatus(tx, id);
-      const out = await tx.rmPurchaseOrder.findUnique({
+      const outRaw = await tx.rmPurchaseOrder.findUnique({
         where: { id },
-        include: { supplier: true, lines: { include: { item: true }, orderBy: { id: "asc" } }, grns: { include: { lines: true } } },
+        include: {
+          supplier: { include: { stateRef: { select: { stateName: true, stateCode: true } } } },
+          supplierLocation: { include: { stateRef: { select: { stateName: true, stateCode: true } } } },
+          lines: { include: { item: true }, orderBy: { id: "asc" } },
+          grns: { include: { lines: true } },
+        },
       });
+      const out = await enrichRmPurchaseOrderCommercial(tx, outRaw);
       if (out && typeof userId === "number" && Number.isFinite(userId)) {
         await auditLog.write(tx, {
           action: auditLog.AuditAction.UPDATE,
@@ -688,7 +866,36 @@ purchaseRouter.post("/rm-pos/:id/cancel", requireAuth, requireRole(["ADMIN"]), a
   }
 });
 
-purchaseRouter.post("/grns", requireAuth, requireRole(["ADMIN", "STORE"]), async (req, res, next) => {
+/** Active receiving locations + per PO line default suggestions for GRN modal. */
+purchaseRouter.get("/grn-receiving-context", requireAuth, grnWriteRoles, async (req, res, next) => {
+  try {
+    const rmPoId = Number(req.query.rmPoId);
+    if (!Number.isFinite(rmPoId) || rmPoId <= 0) {
+      const err = new Error("rmPoId query parameter is required");
+      err.statusCode = 400;
+      throw err;
+    }
+    const rmPo = await prisma.rmPurchaseOrder.findUnique({
+      where: { id: rmPoId },
+      include: { lines: { include: { item: true }, orderBy: { id: "asc" } } },
+    });
+    if (!rmPo) {
+      const err = new Error("RM PO not found");
+      err.statusCode = 404;
+      throw err;
+    }
+    const locations = await loadGrnReceivingLocations(prisma);
+    const suggestionsByRmPoLineId = {};
+    for (const ln of rmPo.lines) {
+      suggestionsByRmPoLineId[ln.id] = suggestReceivingLocationId(locations, ln.item);
+    }
+    return res.json({ locations, suggestionsByRmPoLineId });
+  } catch (e) {
+    return next(e);
+  }
+});
+
+purchaseRouter.post("/grns", requireAuth, grnWriteRoles, async (req, res, next) => {
   try {
     const schema = z.object({
       rmPoId: z.number().int(),
@@ -697,6 +904,7 @@ purchaseRouter.post("/grns", requireAuth, requireRole(["ADMIN", "STORE"]), async
           z.object({
             rmPoLineId: z.number().int(),
             receivedQty: z.number().positive(),
+            locationId: z.number().int().positive(),
           }),
         )
         .min(1),
@@ -764,6 +972,7 @@ purchaseRouter.post("/grns", requireAuth, requireRole(["ADMIN", "STORE"]), async
           err.statusCode = 400;
           throw err;
         }
+        await assertValidGrnReceivingLocation(tx, ln.locationId, poLine.itemId);
       }
 
       const dupGrn = await tx.grn.findFirst({
@@ -802,6 +1011,7 @@ purchaseRouter.post("/grns", requireAuth, requireRole(["ADMIN", "STORE"]), async
         data: {
           rmPoId: rmPo.id,
           supplierId: rmPo.supplierId,
+          supplierLocationId: rmPo.supplierLocationId ?? null,
           date: parsedGrnDate.date,
           supplierInvoiceNo: supplierInvoiceNoRaw,
           lines: {
@@ -809,17 +1019,28 @@ purchaseRouter.post("/grns", requireAuth, requireRole(["ADMIN", "STORE"]), async
               rmPoLineId: l.rmPoLineId,
               receivedQty: String(l.receivedQty),
               rateSnapshot: String(rmPo.lines.find((x) => x.id === l.rmPoLineId)?.rate ?? 0),
+              locationId: l.locationId,
             })),
           },
         },
-        include: { lines: true },
+        include: {
+          supplierLocation: { include: { stateRef: { select: { stateName: true, stateCode: true } } } },
+          lines: { include: { location: true } },
+        },
       });
 
       for (const gl of grn.lines) {
         const poLine = rmPo.lines.find((l) => l.id === gl.rmPoLineId);
+        if (!gl.locationId) {
+          const err = new Error("GRN line is missing receiving location.");
+          err.statusCode = 400;
+          err.code = "GRN_LOCATION_REQUIRED";
+          throw err;
+        }
         await tx.stockTransaction.create({
           data: {
             itemId: poLine.itemId,
+            locationId: gl.locationId,
             transactionType: "GRN",
             refId: gl.id,
             stockBucket: "USABLE",
@@ -830,6 +1051,23 @@ purchaseRouter.post("/grns", requireAuth, requireRole(["ADMIN", "STORE"]), async
       }
 
       await recalcRmPoStatus(tx, rmPo.id);
+      await recalculateMaterialRequirementClosureForRmPo(tx, rmPo.id);
+      const relatedMrIds = await loadMaterialRequirementIdsForRmPo(tx, rmPo.id);
+      const relatedMrs =
+        relatedMrIds.length > 0
+          ? await tx.materialRequirement.findMany({
+              where: { id: { in: relatedMrIds } },
+              select: { id: true, workOrderId: true, status: true },
+            })
+          : [];
+      const autoPmrWorkOrderIds = [
+        ...new Set(
+          relatedMrs
+            .map((mr) => mr.workOrderId)
+            .filter((id) => Number.isFinite(Number(id)) && Number(id) > 0)
+            .map((id) => Number(id)),
+        ),
+      ];
       if (typeof userId === "number" && Number.isFinite(userId)) {
         await auditLog.write(tx, {
           action: auditLog.AuditAction.CREATE,
@@ -846,10 +1084,26 @@ purchaseRouter.post("/grns", requireAuth, requireRole(["ADMIN", "STORE"]), async
           },
         });
       }
-      return { grn };
+      return { grn, autoPmrWorkOrderIds };
     });
 
-    return res.status(201).json(result);
+    const autoPmrResults = [];
+    for (const workOrderId of result.autoPmrWorkOrderIds || []) {
+      try {
+        const pmr = await ensureSubmittedProductionMaterialRequestForWorkOrder(workOrderId, {
+          userId,
+          role: req.user?.role,
+        });
+        autoPmrResults.push({ workOrderId, pmrId: pmr?.id ?? null, pmrDocNo: pmr?.docNo ?? null });
+      } catch (autoErr) {
+        console.warn("Auto PMR generation failed after GRN", {
+          workOrderId,
+          message: autoErr instanceof Error ? autoErr.message : String(autoErr),
+        });
+      }
+    }
+
+    return res.status(201).json({ ...result, autoPmrResults });
   } catch (e) {
     if (e instanceof Error && e.purchaseFlat400 && typeof e.purchaseFlat400 === "object") {
       return res.status(400).json(e.purchaseFlat400);
@@ -915,17 +1169,19 @@ purchaseRouter.post("/grns/:id/reverse", requireAuth, requireRole(["ADMIN"]), as
           throw err;
         }
         const qIn = Number(forward.qtyIn);
+        const reversalLocationId = forward.locationId ?? gl.locationId ?? null;
         await assertSufficientStockForQtyOut(
           tx,
           forward.itemId,
           qIn,
           `Cannot reverse GRN: insufficient USABLE stock for item #${forward.itemId}.`,
-          { stockBucket: "USABLE" },
+          { stockBucket: "USABLE", locationId: reversalLocationId },
         );
 
         await tx.stockTransaction.create({
           data: {
             itemId: forward.itemId,
+            ...(reversalLocationId != null ? { locationId: reversalLocationId } : {}),
             transactionType: "ADJUSTMENT",
             refId: 0,
             stockBucket: "USABLE",
@@ -952,6 +1208,7 @@ purchaseRouter.post("/grns/:id/reverse", requireAuth, requireRole(["ADMIN"]), as
       });
 
       await recalcRmPoStatus(tx, grn.rmPoId);
+      await recalculateMaterialRequirementClosureForRmPo(tx, grn.rmPoId);
 
       const outRow = await tx.grn.findUnique({
         where: { id: grnId },
@@ -983,5 +1240,51 @@ purchaseRouter.post("/grns/:id/reverse", requireAuth, requireRole(["ADMIN"]), as
     return next(e);
   }
 });
+
+purchaseRouter.get(
+  "/purchase-requests/pending",
+  requireAuth,
+  requireRole([...RM_PO_READ_ROLES]),
+  async (req, res, next) => {
+    try {
+      const rows = await listPendingPurchaseRequests();
+      return res.json(rows);
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
+purchaseRouter.post(
+  "/purchase-requests/create-po",
+  requireAuth,
+  requireRole([...RM_PO_WRITE_ROLES]),
+  async (req, res, next) => {
+    try {
+      const schema = z.object({
+        supplierId: z.number().int().positive(),
+        supplierLocationId: z.number().int().positive().optional().nullable(),
+        remarks: z.string().max(4000).optional().nullable(),
+        lines: z
+          .array(
+            z.object({
+              purchaseRequestLineId: z.number().int().positive(),
+              qty: z.number().positive(),
+              rate: z.number().positive(),
+            }),
+          )
+          .min(1),
+      });
+      const body = schema.parse(req.body);
+      const { po, taxWarnings } = await createRmPoFromPurchaseRequestLines(body, {
+        userId: req.user?.userId,
+        role: req.user?.role,
+      });
+      return res.status(201).json({ ...po, taxWarnings });
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
 
 module.exports = { purchaseRouter };

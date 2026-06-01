@@ -68,7 +68,9 @@ function validateTallyExportEligibility({ bill, payload }) {
   if (!bill.supplier) return "Cannot export purchase bill because supplier is missing.";
 
   const supplierStateCode =
+    (payload?.purchaseSource?.stateCode ?? null) ||
     (payload?.supplierStateCodeSnapshot ?? null) ||
+    bill.purchaseSourceStateCodeSnapshot ||
     bill.supplierStateCodeSnapshot ||
     bill.supplier.stateCode ||
     bill.supplier.stateRef?.stateCode ||

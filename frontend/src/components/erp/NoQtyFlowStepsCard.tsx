@@ -7,7 +7,7 @@ const STAGES: Array<{ key: NoQtyStageKey; label: string }> = [
   { key: "REQUIREMENT", label: "Requirement" },
   { key: "WORK_ORDER", label: "Work Order" },
   { key: "PRODUCTION", label: "Production" },
-  { key: "QC", label: "QC" },
+  { key: "QC", label: "QA" },
   { key: "DISPATCH", label: "Dispatch" },
   { key: "SALES_BILL", label: "Sales Bill" },
 ];

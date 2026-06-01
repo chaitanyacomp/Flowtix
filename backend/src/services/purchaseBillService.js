@@ -1,8 +1,13 @@
-const { resolvePurchaseIntraState } = require("./purchaseStateCompare");
-const { COMPANY_STATE } = require("../config/company");
 const { Prisma } = require("../prismaClientPackage");
-const { isTestingModeRelaxed, resolveLineTaxFromItem, resolveSupplierSnapshots } = require("./rmPoTaxFields");
+const { isTestingModeRelaxed, resolveLineTaxFromItem } = require("./rmPoTaxFields");
 const { assertAnyAdminPassword } = require("./adminPasswordAuth");
+const {
+  resolvePurchaseBillCommercialSnapshots,
+  resolvePurchaseBillIntraState,
+  resolvePurchaseBillCommercialView,
+  resolvePurchaseBillSourceStateCode,
+  resolvePurchaseBillSourceStateName,
+} = require("./purchaseCommercialAddress");
 
 function startOfUtcDay(d = new Date()) {
   const x = d instanceof Date ? d : new Date(d);
@@ -17,7 +22,7 @@ function fmt2(n) {
   return round2(n).toFixed(2);
 }
 
-function withPurchaseBillGstBreakup(bill, { intraState, companyState }) {
+function withPurchaseBillGstBreakup(bill, { intraState, companyState, resolvedSupplierCommercial, gstMode, purchaseTaxBasis }) {
   const lines = Array.isArray(bill?.lines) ? bill.lines : [];
   const nextLines = lines.map((ln) => {
     const basic = Number(ln.basicAmount ?? 0);
@@ -32,20 +37,49 @@ function withPurchaseBillGstBreakup(bill, { intraState, companyState }) {
     };
   });
 
+  const commercial = resolvedSupplierCommercial ?? resolvePurchaseBillCommercialView(
+    bill,
+    companyState?.companyStateRef?.stateCode ?? null,
+  );
+
   return {
     ...bill,
     taxIntraState: Boolean(intraState),
+    gstMode: gstMode ?? commercial?.gstMode ?? null,
+    purchaseTaxBasis: purchaseTaxBasis ?? null,
+    resolvedSupplierCommercial: commercial,
     companyGstin: companyState?.companyGstin ?? null,
     companyStateName: companyState?.companyStateRef?.stateName ?? null,
     companyStateCode: companyState?.companyStateRef?.stateCode ?? null,
-    supplierGstin: bill?.supplier?.gst ?? null,
-    supplierStateName: bill?.supplier?.stateName ?? bill?.supplier?.stateRef?.stateName ?? null,
-    supplierStateCode: bill?.supplier?.stateCode ?? bill?.supplier?.stateRef?.stateCode ?? null,
+    supplierGstin:
+      (bill?.supplierRegisteredGstinSnapshot && String(bill.supplierRegisteredGstinSnapshot).trim()) ||
+      bill?.supplier?.gst ||
+      null,
+    supplierStateName:
+      resolvePurchaseBillSourceStateName(bill) ??
+      bill?.supplier?.stateName ??
+      bill?.supplier?.stateRef?.stateName ??
+      null,
+    supplierStateCode: resolvePurchaseBillSourceStateCode(bill),
     totalCgst: bill.totalCgst,
     totalSgst: bill.totalSgst,
     totalIgst: bill.totalIgst,
     lines: nextLines,
   };
+}
+
+function enrichPurchaseBill(bill, companyState) {
+  if (!bill) return bill;
+  const companyStateCode = companyState?.companyStateRef?.stateCode ?? null;
+  const { intraState, basis } = resolvePurchaseBillIntraState(bill, companyState);
+  const resolvedSupplierCommercial = resolvePurchaseBillCommercialView(bill, companyStateCode);
+  return withPurchaseBillGstBreakup(bill, {
+    intraState,
+    companyState,
+    resolvedSupplierCommercial,
+    gstMode: resolvedSupplierCommercial?.gstMode ?? null,
+    purchaseTaxBasis: basis,
+  });
 }
 
 function computeLineTaxSplit(basic, gstRatePct, intraState) {
@@ -73,21 +107,8 @@ function computeLineTaxSplit(basic, gstRatePct, intraState) {
   };
 }
 
-function resolveIntraFromStateCodes({ supplier }) {
-  const supplierCode = supplier?.stateCode ?? supplier?.stateRef?.stateCode ?? null;
-  if (!supplierCode) return { intraState: false, basis: "MISSING_SUPPLIER_STATE_CODE" };
-  return { intraState: String(supplierCode) === String(COMPANY_STATE.code), basis: "STATIC_CODE" };
-}
-
-/** Prefer stable snapshot stored on PurchaseBill (or supplier fallbacks). */
 function resolveIntraForBill(bill, companyState) {
-  const supplierCode =
-    bill?.supplierStateCodeSnapshot ??
-    bill?.supplier?.stateCode ??
-    bill?.supplier?.stateRef?.stateCode ??
-    null;
-  if (!supplierCode) return { intraState: false, basis: "MISSING_SUPPLIER_STATE_CODE" };
-  return { intraState: String(supplierCode) === String(companyState?.companyStateRef?.stateCode ?? COMPANY_STATE.code), basis: "BILL_SNAPSHOT_OR_SUPPLIER" };
+  return resolvePurchaseBillIntraState(bill, companyState);
 }
 
 function isFallbackTaxLine(ln) {
@@ -182,13 +203,18 @@ async function loadGrnForBilling(tx, grnId) {
         orderBy: { id: "asc" },
         include: { rmPoLine: { include: { item: true } } },
       },
-      rmPo: { include: { supplier: true } },
+      rmPo: {
+        include: {
+          supplier: { include: { stateRef: { select: { stateName: true, stateCode: true } } } },
+          supplierLocation: { include: { stateRef: { select: { stateName: true, stateCode: true } } } },
+        },
+      },
       purchaseBills: { select: { id: true, status: true } },
     },
   });
 }
 
-function linePayloadFromGrnLine(grnLine, companyState, supplier) {
+function linePayloadFromGrnLine(grnLine, { intraState }) {
   const item = grnLine.rmPoLine.item;
   const poLine = grnLine.rmPoLine;
   const qty = Number(grnLine.receivedQty);
@@ -218,7 +244,7 @@ function linePayloadFromGrnLine(grnLine, companyState, supplier) {
     if (!unitSnap) throw friendlyError("Cannot create purchase bill: item master missing unit.");
     if (!hsnCodeSnapshot) throw friendlyError("Cannot create purchase bill: item master missing HSN.");
   }
-  const intra = resolveIntraFromStateCodes({ supplier }).intraState;
+  const intra = Boolean(intraState);
   const calc = computeLineTaxSplit(qty * rate, gstRate, intra);
   return {
     itemId: item.id,
@@ -346,17 +372,32 @@ async function createDraftFromSelection(prisma, body) {
       include: { stateRef: { select: { stateName: true, stateCode: true } } },
     });
     if (!supplier) throw friendlyError("Supplier not found.", 404);
-    const supplierSnap = resolveSupplierSnapshots(supplier, { relaxed });
 
     const ids = [...new Set(data.selections.map((s) => s.grnLineId))];
     const grnLines = await tx.grnLine.findMany({
       where: { id: { in: ids } },
       include: {
-        grn: { include: { rmPo: { include: { supplier: true } } } },
+        grn: {
+          include: {
+            rmPo: {
+              include: {
+                supplier: { include: { stateRef: { select: { stateName: true, stateCode: true } } } },
+                supplierLocation: { include: { stateRef: { select: { stateName: true, stateCode: true } } } },
+              },
+            },
+          },
+        },
         rmPoLine: { include: { item: { include: { unitRef: { select: { unitName: true } } } } } },
       },
     });
     const byId = new Map(grnLines.map((l) => [l.id, l]));
+
+    const commercialSnaps = await resolvePurchaseBillCommercialSnapshots(tx, {
+      rmPo: grnLines[0]?.grn?.rmPo ?? null,
+    });
+    const companyState = await getCompanyState(tx);
+    const billForTax = { ...commercialSnaps, supplier };
+    const { intraState } = resolvePurchaseBillIntraState(billForTax, companyState);
 
     // Compute remaining qty per line based on FINALIZED bills only (DRAFT/CANCELLED do not lock).
     const billedBy = await computeFinalizedBilledQtyByGrnLineId(tx, ids);
@@ -378,11 +419,9 @@ async function createDraftFromSelection(prisma, body) {
         throw friendlyError(`Cannot bill more than remaining qty (${remaining}) for GRN line #${gl.id}.`, 400);
       }
 
-      const companyState = await getCompanyState(tx);
       const payload = linePayloadFromGrnLine(
-        { ...gl, receivedQty: sel.qty }, // pretend receivedQty = billed qty for tax split
-        companyState,
-        supplier,
+        { ...gl, receivedQty: sel.qty },
+        { intraState },
       );
       const { _meta, ...row } = payload;
       meta.push(_meta);
@@ -418,8 +457,22 @@ async function createDraftFromSelection(prisma, body) {
         grnId: null,
         remarks: data.remarks?.trim() || null,
         status: "DRAFT",
-        supplierStateSnapshot: supplierSnap.supplierStateSnapshot,
-        supplierStateCodeSnapshot: supplierSnap.supplierStateCodeSnapshot,
+        supplierStateSnapshot: commercialSnaps.supplierStateSnapshot,
+        supplierStateCodeSnapshot: commercialSnaps.supplierStateCodeSnapshot,
+        supplierNameSnapshot: commercialSnaps.supplierNameSnapshot,
+        supplierRegisteredGstinSnapshot: commercialSnaps.supplierRegisteredGstinSnapshot,
+        supplierRegisteredAddressSnapshot: commercialSnaps.supplierRegisteredAddressSnapshot,
+        supplierRegisteredStateNameSnapshot: commercialSnaps.supplierRegisteredStateNameSnapshot,
+        supplierRegisteredStateCodeSnapshot: commercialSnaps.supplierRegisteredStateCodeSnapshot,
+        supplyLocationLabelSnapshot: commercialSnaps.supplyLocationLabelSnapshot,
+        supplyLocationAddressSnapshot: commercialSnaps.supplyLocationAddressSnapshot,
+        supplyLocationGstinSnapshot: commercialSnaps.supplyLocationGstinSnapshot,
+        supplyLocationStateNameSnapshot: commercialSnaps.supplyLocationStateNameSnapshot,
+        supplyLocationStateCodeSnapshot: commercialSnaps.supplyLocationStateCodeSnapshot,
+        purchaseSourceStateNameSnapshot: commercialSnaps.purchaseSourceStateNameSnapshot,
+        purchaseSourceStateCodeSnapshot: commercialSnaps.purchaseSourceStateCodeSnapshot,
+        purchaseSourceSnapshot: commercialSnaps.purchaseSourceSnapshot,
+        purchaseGstModeSnapshot: commercialSnaps.purchaseGstModeSnapshot,
         hasTemporaryTaxData: relaxed && lineRows.some((r) => String(r.hsnCodeSnapshot).trim() === "0000" || Number(r.gstRate) === 0),
         totalBasic: String(totals.totalBasic),
         totalCgst: String(totals.totalCgst),
@@ -433,12 +486,15 @@ async function createDraftFromSelection(prisma, body) {
     });
 
     const csAfter = await getCompanyState(tx);
-    const intra = resolveIntraFromStateCodes({ supplier: created.supplier ?? null }).intraState;
     return {
-      bill: withPurchaseBillGstBreakup(created, { intraState: intra, companyState: csAfter }),
-      warnings: [...new Set([...supplierSnap.warnings, ...warnings])],
+      bill: enrichPurchaseBill(created, csAfter),
+      warnings: uniqueWarnings(warnings),
     };
   });
+}
+
+function uniqueWarnings(arr) {
+  return [...new Set((arr || []).filter(Boolean))];
 }
 
 /**
@@ -457,9 +513,8 @@ async function createDraftForGrn(prisma, grnId) {
     });
     if (existing) {
       const cs0 = await getCompanyState(tx);
-      const intra0 = resolveIntraFromStateCodes({ supplier: existing.supplier ?? null }).intraState;
       return {
-        bill: withPurchaseBillGstBreakup(existing, { intraState: intra0, companyState: cs0 }),
+        bill: enrichPurchaseBill(existing, cs0),
         created: false,
       };
     }
@@ -476,7 +531,9 @@ async function createDraftForGrn(prisma, grnId) {
     }
 
     const companyState = await getCompanyState(tx);
-    const supplier = grn.rmPo.supplier ?? null;
+    const commercialSnaps = await resolvePurchaseBillCommercialSnapshots(tx, { rmPo: grn.rmPo });
+    const billForTax = { ...commercialSnaps, supplier: grn.rmPo.supplier ?? null };
+    const { intraState } = resolvePurchaseBillIntraState(billForTax, companyState);
 
     // Only bill remaining quantities (already billed FINALIZED lines are excluded).
     const grnLineIds = grn.lines.map((l) => l.id);
@@ -489,7 +546,7 @@ async function createDraftForGrn(prisma, grnId) {
       const already = billedBy.get(gl.id) || 0;
       const remaining = Math.max(0, received - already);
       if (remaining <= 1e-9) continue;
-      const payload = linePayloadFromGrnLine({ ...gl, receivedQty: remaining }, companyState, supplier);
+      const payload = linePayloadFromGrnLine({ ...gl, receivedQty: remaining }, { intraState });
       const { _meta, ...data } = payload;
       meta.push(_meta);
       lineRows.push({
@@ -526,8 +583,22 @@ async function createDraftForGrn(prisma, grnId) {
         grnId: grn.id,
         remarks: null,
         status: "DRAFT",
-        supplierStateSnapshot: resolveSupplierSnapshots(supplier, { relaxed: isTestingModeRelaxed() }).supplierStateSnapshot,
-        supplierStateCodeSnapshot: resolveSupplierSnapshots(supplier, { relaxed: isTestingModeRelaxed() }).supplierStateCodeSnapshot,
+        supplierStateSnapshot: commercialSnaps.supplierStateSnapshot,
+        supplierStateCodeSnapshot: commercialSnaps.supplierStateCodeSnapshot,
+        supplierNameSnapshot: commercialSnaps.supplierNameSnapshot,
+        supplierRegisteredGstinSnapshot: commercialSnaps.supplierRegisteredGstinSnapshot,
+        supplierRegisteredAddressSnapshot: commercialSnaps.supplierRegisteredAddressSnapshot,
+        supplierRegisteredStateNameSnapshot: commercialSnaps.supplierRegisteredStateNameSnapshot,
+        supplierRegisteredStateCodeSnapshot: commercialSnaps.supplierRegisteredStateCodeSnapshot,
+        supplyLocationLabelSnapshot: commercialSnaps.supplyLocationLabelSnapshot,
+        supplyLocationAddressSnapshot: commercialSnaps.supplyLocationAddressSnapshot,
+        supplyLocationGstinSnapshot: commercialSnaps.supplyLocationGstinSnapshot,
+        supplyLocationStateNameSnapshot: commercialSnaps.supplyLocationStateNameSnapshot,
+        supplyLocationStateCodeSnapshot: commercialSnaps.supplyLocationStateCodeSnapshot,
+        purchaseSourceStateNameSnapshot: commercialSnaps.purchaseSourceStateNameSnapshot,
+        purchaseSourceStateCodeSnapshot: commercialSnaps.purchaseSourceStateCodeSnapshot,
+        purchaseSourceSnapshot: commercialSnaps.purchaseSourceSnapshot,
+        purchaseGstModeSnapshot: commercialSnaps.purchaseGstModeSnapshot,
         hasTemporaryTaxData: isTestingModeRelaxed() && lineRows.some((r) => String(r.hsnCodeSnapshot).trim() === "0000" || Number(r.gstRate) === 0),
         totalBasic: String(totals.totalBasic),
         totalCgst: String(totals.totalCgst),
@@ -541,9 +612,8 @@ async function createDraftForGrn(prisma, grnId) {
     });
 
     const companyStateAfter = await getCompanyState(tx);
-    const intra = resolveIntraFromStateCodes({ supplier: created.supplier ?? null }).intraState;
     return {
-      bill: withPurchaseBillGstBreakup(created, { intraState: intra, companyState: companyStateAfter }),
+      bill: enrichPurchaseBill(created, companyStateAfter),
       created: true,
     };
   });
@@ -572,9 +642,7 @@ async function updateDraft(prisma, billId, body) {
     assertDraftEditable(bill);
 
     const companyState = await getCompanyState(tx);
-    const supplier = bill.supplier ?? null;
-    const cmp = resolvePurchaseIntraState({ company: companyState, supplier });
-    const intra = cmp.intraState;
+    const { intraState: intra } = resolvePurchaseBillIntraState(bill, companyState);
 
     const lineById = new Map(bill.lines.map((l) => [l.id, l]));
     const grnLineIds = bill.lines.map((l) => l.grnLineId).filter((x) => Number.isFinite(Number(x))).map(Number);
@@ -670,8 +738,6 @@ async function updateDraft(prisma, billId, body) {
         billDate: parsedBillDate,
         dueDate: parsedDue,
         remarks: remarks != null && String(remarks).trim() !== "" ? String(remarks).trim() : null,
-        supplierStateSnapshot: resolveSupplierSnapshots(supplier, { relaxed: isTestingModeRelaxed() }).supplierStateSnapshot,
-        supplierStateCodeSnapshot: resolveSupplierSnapshots(supplier, { relaxed: isTestingModeRelaxed() }).supplierStateCodeSnapshot,
         totalBasic: String(totals.totalBasic),
         totalCgst: String(totals.totalCgst),
         totalSgst: String(totals.totalSgst),
@@ -682,7 +748,7 @@ async function updateDraft(prisma, billId, body) {
       include: billInclude,
     });
 
-    return withPurchaseBillGstBreakup(updated, { intraState: intra, companyState });
+    return enrichPurchaseBill(updated, companyState);
   });
 }
 
@@ -762,16 +828,15 @@ async function finalizeBill(prisma, billId) {
     }
 
     const companyState = await getCompanyState(tx);
-    const supplier = bill.supplier ?? null;
-    const supplierCode = supplier?.stateCode ?? supplier?.stateRef?.stateCode ?? null;
-    const supplierName = supplier?.stateName ?? supplier?.stateRef?.stateName ?? supplier?.state ?? null;
-    if ((!supplierCode || !supplierName) && !relaxed) {
+    const sourceCode = resolvePurchaseBillSourceStateCode(bill);
+    const sourceName = resolvePurchaseBillSourceStateName(bill);
+    if ((!sourceCode || !sourceName) && !relaxed) {
       throw friendlyError(
-        "Supplier state is required to finalize purchase bill. Update the supplier stateName/stateCode first.",
+        "Purchase source state is required to finalize purchase bill. Ensure PO commercial snapshots or supplier state are set.",
         409,
       );
     }
-    const intra = resolveIntraFromStateCodes({ supplier }).intraState;
+    const { intraState: intra } = resolvePurchaseBillIntraState(bill, companyState);
 
     const rebuilt = [];
     for (const ln of bill.lines) {
@@ -818,15 +883,12 @@ async function finalizeBill(prisma, billId) {
       throw friendlyError(dupMsg);
     }
 
-    const snap = resolveSupplierSnapshots(supplier, { relaxed });
     const finalized = await tx.purchaseBill.update({
       where: { id: billId },
       data: {
         billNo: billNoTrim,
         status: "FINALIZED",
         finalizedAt: new Date(),
-        supplierStateSnapshot: snap.supplierStateSnapshot,
-        supplierStateCodeSnapshot: snap.supplierStateCodeSnapshot,
         hasTemporaryTaxData: Boolean(bill.hasTemporaryTaxData) || (relaxed && bill.lines.some(isFallbackTaxLine)),
         totalBasic: String(totals.totalBasic),
         totalCgst: String(totals.totalCgst),
@@ -861,7 +923,7 @@ async function finalizeBill(prisma, billId) {
       });
     }
 
-    return withPurchaseBillGstBreakup(finalized, { intraState: intra, companyState });
+    return enrichPurchaseBill(finalized, companyState);
   });
 }
 
@@ -912,8 +974,7 @@ async function cancelBill(prisma, billId, { reason, actorUserId, allowExported =
     }
 
     const companyState = await getCompanyState(tx);
-    const intra = resolveIntraForBill(cancelled, companyState).intraState;
-    return withPurchaseBillGstBreakup(cancelled, { intraState: intra, companyState });
+    return enrichPurchaseBill(cancelled, companyState);
   });
 }
 
@@ -1055,8 +1116,7 @@ async function getPurchaseBillById(prisma, id) {
     throw friendlyError("Purchase bill not found.", 404);
   }
   const companyState = await getCompanyState(prisma);
-  const intra = resolveIntraForBill(bill, companyState).intraState;
-  return withPurchaseBillGstBreakup(bill, { intraState: intra, companyState });
+  return enrichPurchaseBill(bill, companyState);
 }
 
 function derivePurchaseBillPaymentStatus(paidAmt, pendingAmt) {
@@ -1158,8 +1218,7 @@ async function addPurchaseBillPayment(prisma, billId, input, { userId, role }) {
       include: billInclude,
     });
     const companyState = await getCompanyState(tx);
-    const intra = resolveIntraForBill(updated, companyState).intraState;
-    return withPurchaseBillGstBreakup(updated, { intraState: intra, companyState });
+    return enrichPurchaseBill(updated, companyState);
   });
 }
 
@@ -1189,8 +1248,7 @@ async function deletePurchaseBillPayment(prisma, billId, paymentId, { role, admi
       include: billInclude,
     });
     const companyState = await getCompanyState(tx);
-    const intra = resolveIntraForBill(updated, companyState).intraState;
-    return withPurchaseBillGstBreakup(updated, { intraState: intra, companyState });
+    return enrichPurchaseBill(updated, companyState);
   });
 }
 
@@ -1232,8 +1290,7 @@ async function updatePurchaseBillPaymentTracking(prisma, billId, input) {
     });
 
     const companyState = await getCompanyState(tx);
-    const intra = resolveIntraForBill(updated, companyState).intraState;
-    return withPurchaseBillGstBreakup(updated, { intraState: intra, companyState });
+    return enrichPurchaseBill(updated, companyState);
   });
 }
 

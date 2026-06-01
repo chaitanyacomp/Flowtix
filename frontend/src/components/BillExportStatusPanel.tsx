@@ -22,6 +22,7 @@ export type BillExportStatusPanelProps = {
   resetting: boolean;
   onExport: () => void;
   onResetExport: () => void;
+  allowReExport?: boolean;
   className?: string;
   /** Sidebar / de-emphasized: tighter chrome; export uses outline styling. */
   density?: "default" | "compact";
@@ -50,11 +51,12 @@ export function BillExportStatusPanel({
   resetting,
   onExport,
   onResetExport,
+  allowReExport = false,
   className,
   density = "default",
 }: BillExportStatusPanelProps) {
   const compact = density === "compact";
-  const canExport = lifecycle === "FINALIZED" && !isExported && !exportBlockedReason;
+  const canExport = lifecycle === "FINALIZED" && (!isExported || allowReExport) && !exportBlockedReason;
   const showReset = lifecycle === "FINALIZED" && isExported && isAdmin;
 
   let statusLabel = "Not Exported";
@@ -151,7 +153,7 @@ export function BillExportStatusPanel({
                 disabled={exporting}
                 onClick={() => void onExport()}
               >
-                {exporting ? "Exporting…" : "Export to Tally"}
+                {exporting ? "Exporting…" : isExported ? "Re-export to Tally" : "Export to Tally"}
               </Button>
             ) : null}
             {showReset ? (

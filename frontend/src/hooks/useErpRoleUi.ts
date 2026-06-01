@@ -3,16 +3,14 @@ import { useAuth } from "./useAuth";
 
 /**
  * Role-based UI visibility — presentation only.
- * Does not grant permissions; pair action buttons with existing role gates / API checks.
  */
 export function useErpRoleUi() {
   const role = useAuth().user?.role ?? "";
   const isAdmin = role === "ADMIN";
   const isProduction = role === "PRODUCTION";
-  const isQc = role === "QC";
+  const isQa = role === "QA";
   const isStore = role === "STORE";
-  const isSales = role === "SALES";
-  const isAccounts = role === "ACCOUNTS";
+  const isPurchase = role === "PURCHASE";
   const isOperator = !isAdmin;
 
   return useMemo(
@@ -20,49 +18,34 @@ export function useErpRoleUi() {
       role,
       isAdmin,
       isProduction,
-      isQc,
+      isQc: isQa,
+      isQa,
       isStore,
-      isSales,
-      isAccounts,
+      isPurchase,
+      /** @deprecated use isPurchase */
+      isAccounts: isPurchase,
+      /** @deprecated use isAdmin for commercial */
+      isSales: isAdmin,
+      isOperator,
       isPureProductionOperator: isProduction && isOperator,
-      isPureQcOperator: isQc && isOperator,
+      isPureQcOperator: isQa && isOperator,
       isPureDispatchOperator: isStore && isOperator,
-      isPurePlanningOperator: isSales && isOperator,
-      isPureAccountsOperator: isAccounts && isOperator,
+      isPurePlanningOperator: isAdmin && isOperator,
+      isPureAccountsOperator: isPurchase && isOperator,
+      isPurePurchaseOperator: isPurchase && isOperator,
 
-      /** Planning-owned Next RS / requirement-sheet workflow surfaces. */
-      showPlanningWorkflowActions: isAdmin || isSales,
-
-      /** Production NO_QTY shell: requirement-sheet breadcrumb trail. */
-      showProductionPlanningBreadcrumb: isAdmin || isSales || isStore,
-
-      /** Production: optional dispatch handoff strip. */
+      showPlanningWorkflowActions: isAdmin,
+      showProductionPlanningBreadcrumb: isAdmin || isStore,
       showProductionDispatchHandoff: isAdmin || isStore,
-
-      /** Dispatch page: RS · Prepare WO · Production · QC jump links. */
       showDispatchCrossDeptNav: isAdmin,
-
-      /** Dispatch page: Sales bill jump link. */
-      showDispatchBillingNav: isAdmin || isStore || isAccounts,
-
-      /** QC: dispatch handoff CTA after QC-complete. */
-      showQcDispatchHandoff: isAdmin || isStore || isQc,
-
-      /** Long NO_QTY carry-forward / planning helper paragraphs. */
-      quietNoQtyExplanations: isOperator && !isSales,
-
-      /** Work Orders: NO_QTY top strip aimed at QC department. */
-      showWoNoQtyQcHandoffStrip: isAdmin || isQc,
-
-      /** Work Orders: NO_QTY top strip aimed at Production department. */
+      showDispatchBillingNav: isAdmin || isStore,
+      showQcDispatchHandoff: isAdmin || isStore || isQa,
+      quietNoQtyExplanations: isOperator && !isAdmin,
+      showWoNoQtyQcHandoffStrip: isAdmin || isQa || isProduction,
       showWoNoQtyProductionHandoffStrip: isAdmin || isProduction,
-
-      /** QC sticky header: rework / hold / scrap summary chips. */
-      showQcSecondaryQueueChips: isAdmin || isQc,
-
-      /** Production page: full workflow trail chip row (NO_QTY / Regular). */
-      showProductionWorkflowTrail: isAdmin || isSales || isStore,
+      showQcSecondaryQueueChips: isAdmin || isQa,
+      showProductionWorkflowTrail: isAdmin || isStore,
     }),
-    [role, isAdmin, isProduction, isQc, isStore, isSales, isAccounts, isOperator],
+    [role, isAdmin, isProduction, isQa, isStore, isPurchase, isOperator],
   );
 }

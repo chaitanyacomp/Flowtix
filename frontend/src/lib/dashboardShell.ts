@@ -26,16 +26,12 @@ export const dashboardShell = {
 export function dashboardWorkspaceHeadline(role: string): { title: string; subtitle: string } {
   switch (role) {
     case "PRODUCTION":
-      return { title: "Production desk", subtitle: "Shop floor · work orders · cycles" };
-    case "QC":
-      return { title: "QC desk", subtitle: "Inspection · rework · disposition" };
-    case "SALES":
-      return {
-        title: "Dual Control Center",
-        subtitle: "Commercial control · requirement & cycle planning",
-      };
+      return { title: "Production desk", subtitle: "Shop floor · production · embedded QA" };
+    case "QA":
+      return { title: "Production QA desk", subtitle: "Inspection · rework · disposition (production workflow)" };
+    case "PURCHASE":
+      return { title: "Purchase desk", subtitle: "Procurement · RM PO · purchase bills" };
     case "STORE":
-    case "DISPATCH":
       return { title: "Dispatch desk", subtitle: "Ship readiness · FG · billing handoff" };
     case "ADMIN":
       return {

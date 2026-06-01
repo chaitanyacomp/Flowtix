@@ -16,7 +16,7 @@ const { QC_REWORK_APPROVE_ROLES } = require("../constants/erpRoles");
 
 const qcRejectedDispositionsRouter = express.Router();
 
-const QC_ROLES = ["ADMIN", "QC"];
+const QC_ROLES = ["ADMIN", "QA"];
 /**
  * Rework approval (Phase 1 corrected): PRODUCTION owns "Approve rework" / "Send For Rework".
  * ADMIN remains as an override. QC enters rejects; QC handles final recheck after rework.
@@ -26,7 +26,7 @@ const QC_ROLES = ["ADMIN", "QC"];
  * is a domain status (not a role) and is intentionally not renamed.
  */
 const SUPERVISOR_ROLES = QC_REWORK_APPROVE_ROLES;
-const QC_PAGE_ROLES = ["ADMIN", "QC"];
+const QC_PAGE_ROLES = ["ADMIN", "QA"];
 
 const dispInclude = {
   item: { select: { id: true, itemName: true, unit: true, itemType: true } },

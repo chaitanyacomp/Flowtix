@@ -48,11 +48,14 @@ import { displaySalesOrderNo } from "../lib/docNoDisplay";
 import { buildNoQtyGuidedHref, useNoQtyFlowState } from "../lib/noQtyFlowState";
 import { prepareNoQtyNextRequirementSheetAndNavigate } from "../lib/noQtyPrepareNextRsNavigate";
 import { useToast } from "../contexts/ToastContext";
+import { pauseWorkOrderProductionApi } from "../lib/workOrderLifecycle";
+import { ErpModal } from "../components/erp/ErpModal";
 import { DemoFlowBanner } from "../components/demo/DemoFlowBanner";
 import { DemoSafeNoQtyContinue } from "../components/demo/DemoSafeNoQtyContinue";
 import { useDemoMode } from "../contexts/DemoModeContext";
 import { demoHighlightKey } from "../lib/demoFlowConfig";
 import { NextStepStrip } from "../components/erp/NextStepStrip";
+import { PRODUCTION_QA_TERMS } from "../lib/productionQaTerminology";
 
 type ReworkQcQueueRow = {
   itemId: number;
@@ -401,7 +404,7 @@ function qcStatusForRollups(roll: { accepted: number; rejected: number; pending:
 }
 
 function qcStatusLabel(s: QcStatus): string {
-  if (s === "AWAITING_QC") return "Awaiting QC";
+  if (s === "AWAITING_QC") return PRODUCTION_QA_TERMS.AWAITING_QA;
   if (s === "PARTIAL_QC") return "Partial QC";
   return "Completed QC";
 }
@@ -516,6 +519,7 @@ export function QcEntryPage() {
   const [qcFgBalanceItems, setQcFgBalanceItems] = React.useState<
     { itemId: number; pendingSoQty?: number; dispatchableQty?: number }[]
   >([]);
+  const [pauseWoBusy, setPauseWoBusy] = React.useState(false);
 
   const [productionId, setProductionId] = React.useState(0);
   /** Maps to API checkedQty (inspected quantity) for this posting. */
@@ -1030,10 +1034,10 @@ export function QcEntryPage() {
    * The legacy variable name and `REWORK_PENDING_SUPERVISOR` domain status are kept intact.
    */
   const canSupervisorDecide = role === "ADMIN" || role === "PRODUCTION";
-  const canQcRecheck = role === "ADMIN" || role === "QC";
-  const canHoldAct = role === "ADMIN" || role === "QC";
+  const canQcRecheck = role === "ADMIN" || role === "QA";
+  const canHoldAct = role === "ADMIN" || role === "QA";
   /** Matches backend LEGACY_CLASSIFY_ROLES for POST classify. */
-  const canLegacyClassify = role === "ADMIN" || role === "QC";
+  const canLegacyClassify = role === "ADMIN" || role === "QA";
 
   const selectedRecheckDisp = React.useMemo(
     () => dispQueues?.readyForQcRecheck.find((r) => r.id === recheckDispId) ?? null,
@@ -1067,7 +1071,7 @@ export function QcEntryPage() {
       });
       await refresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Supervisor action failed.");
+      setError(e instanceof Error ? e.message : "Rework approval action failed.");
     } finally {
       setSupervisorSavingId(null);
     }
@@ -1169,15 +1173,6 @@ export function QcEntryPage() {
     },
     [canLegacyClassify, toast],
   );
-
-  React.useEffect(() => {
-    if (!legacyClassifyOpen) return;
-    function onKeyDown(e: KeyboardEvent) {
-      if (e.key === "Escape") closeLegacyClassifyModal();
-    }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [legacyClassifyOpen, closeLegacyClassifyModal]);
 
   async function submitLegacyClassify() {
     if (!legacyClassifyOpen) return;
@@ -1749,6 +1744,7 @@ export function QcEntryPage() {
 
     const qcAcceptedQty = selectedRollups.accepted;
     const rejectedQty = selectedRollups.rejected;
+    const workOrderId = Number(selected.workOrderLine?.workOrder?.id ?? 0);
     const fgItemId = Number(selected.workOrderLine?.fgItem?.id ?? 0);
     const balRow =
       Number.isFinite(fgItemId) && fgItemId > 0 ? qcFgBalanceItems.find((x) => Number(x.itemId) === fgItemId) : undefined;
@@ -1763,6 +1759,7 @@ export function QcEntryPage() {
       if (dispatchableNow >= qtyPendingToDeliver - eps) {
         return {
           kind: "DISPATCH_ONLY" as const,
+          workOrderId: workOrderId > 0 ? workOrderId : null,
           qtyPendingToDeliver: r3(qtyPendingToDeliver),
           dispatchableNow: r3(dispatchableNow),
           qcAcceptedQty: r3(qcAcceptedQty),
@@ -1772,6 +1769,7 @@ export function QcEntryPage() {
       if (dispatchableNow <= eps) {
         return {
           kind: "SHORTFALL_WO" as const,
+          workOrderId: workOrderId > 0 ? workOrderId : null,
           qtyPendingToDeliver: r3(qtyPendingToDeliver),
           dispatchableNow: r3(dispatchableNow),
           qcAcceptedQty: r3(qcAcceptedQty),
@@ -1781,6 +1779,7 @@ export function QcEntryPage() {
       }
       return {
         kind: "DECISION" as const,
+        workOrderId: workOrderId > 0 ? workOrderId : null,
         qtyPendingToDeliver: r3(qtyPendingToDeliver),
         dispatchableNow: r3(dispatchableNow),
         qcAcceptedQty: r3(qcAcceptedQty),
@@ -1793,6 +1792,7 @@ export function QcEntryPage() {
     if (qcAcceptedQty <= eps) {
       return {
         kind: "SHORTFALL_WO" as const,
+        workOrderId: workOrderId > 0 ? workOrderId : null,
         qtyPendingToDeliver: r3(qtyPendingToDeliver),
         qcAcceptedQty: 0,
         rejectedQty: r3(rejectedQty),
@@ -1802,6 +1802,7 @@ export function QcEntryPage() {
     if (qtyPendingToDeliver <= qcAcceptedQty + eps) {
       return {
         kind: "DISPATCH_ONLY" as const,
+        workOrderId: workOrderId > 0 ? workOrderId : null,
         qtyPendingToDeliver: r3(qtyPendingToDeliver),
         qcAcceptedQty: r3(qcAcceptedQty),
         rejectedQty: r3(rejectedQty),
@@ -1809,6 +1810,7 @@ export function QcEntryPage() {
     }
     return {
       kind: "DECISION" as const,
+      workOrderId: workOrderId > 0 ? workOrderId : null,
       qtyPendingToDeliver: r3(qtyPendingToDeliver),
       qcAcceptedQty: r3(qcAcceptedQty),
       rejectedQty: r3(rejectedQty),
@@ -1824,6 +1826,20 @@ export function QcEntryPage() {
     selectedRollups,
     qcFgBalanceItems,
   ]);
+
+  async function handleKeepStockAndPauseWo(workOrderId: number) {
+    if (!(workOrderId > 0) || pauseWoBusy) return;
+    setPauseWoBusy(true);
+    try {
+      await pauseWorkOrderProductionApi(workOrderId);
+      toast.showSuccess("Work order paused. Accepted FG remains reserved for this sales order.");
+      navigate(`/production?workOrderId=${workOrderId}&salesOrderId=${focusSoId}&from=qc-entry`);
+    } catch (e) {
+      toast.showError(e instanceof Error ? e.message : "Could not pause work order");
+    } finally {
+      setPauseWoBusy(false);
+    }
+  }
 
   const noQtyCycleId =
     fromNoQtySo && focusSoIdValid
@@ -2145,9 +2161,16 @@ export function QcEntryPage() {
           <div>
             <DemoFlowBanner />
           </div>
+          {role === "PRODUCTION" ? (
+            <p className="w-full rounded-md border border-blue-200 bg-blue-50/80 px-2.5 py-1.5 text-[11px] font-medium text-blue-950">
+              {PRODUCTION_QA_TERMS.HANDOFF_BANNER}
+            </p>
+          ) : null}
           <div className="flex flex-wrap items-center gap-2">
             {fromNoQtySo ? <PageNoQtyFlowBackLink step="QC" /> : <PageBackLink to="/production" label="Back to Production" />}
-            <h1 className="text-sm font-semibold leading-tight tracking-tight text-slate-900">QC Work Queue</h1>
+            <h1 className="text-sm font-semibold leading-tight tracking-tight text-slate-900">
+              {PRODUCTION_QA_TERMS.PRODUCTION_QA_QUEUE}
+            </h1>
             <div className="flex w-full flex-wrap items-center gap-2 sm:ml-auto sm:w-auto sm:justify-end">
               <label className="flex cursor-pointer select-none items-center gap-1.5 text-[11px] text-slate-600">
                 <input
@@ -2190,7 +2213,9 @@ export function QcEntryPage() {
                       : focusSo.orderType ?? "—"}
                 </span>
                 <OpCtxSep />
-                <span className="rounded bg-violet-50 px-1.5 py-0.5 text-[11px] font-semibold text-violet-900 ring-1 ring-violet-200">QC</span>
+                <span className="rounded bg-violet-50 px-1.5 py-0.5 text-[11px] font-semibold text-violet-900 ring-1 ring-violet-200">
+                  Production QA
+                </span>
               </OperationalContextBar>
             )
           ) : null}
@@ -2380,6 +2405,26 @@ export function QcEntryPage() {
                     <p className="text-[11px] leading-snug text-amber-900 sm:w-full">
                       Plan production for the remaining qty and ship the full order in one bill later.
                     </p>
+                    {canSupervisorDecide &&
+                    regularDispatchPostQc.workOrderId != null &&
+                    Number(regularDispatchPostQc.qcAcceptedQty ?? 0) > 1e-6 ? (
+                      <>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          data-testid="qc-keep-stock-pause-wo"
+                          className="border-amber-500 bg-white text-amber-950 hover:bg-amber-100"
+                          disabled={pauseWoBusy}
+                          onClick={() => void handleKeepStockAndPauseWo(regularDispatchPostQc.workOrderId!)}
+                        >
+                          {pauseWoBusy ? "Pausing…" : "Keep stock and pause WO"}
+                        </Button>
+                        <p className="text-[11px] leading-snug text-amber-900 sm:w-full">
+                          Keep accepted FG in store, pause this work order, and resume production later.
+                        </p>
+                      </>
+                    ) : null}
                   </div>
                 </>
               ) : regularDispatchPostQc.kind === "DISPATCH_ONLY" ? (
@@ -2424,7 +2469,7 @@ export function QcEntryPage() {
                       ? "No dispatch-ready usable stock for this order line yet, but qty is still pending to deliver."
                       : "Nothing usable from this batch yet, but the order still has pending qty."}
                   </p>
-                  <div className="mt-2">
+                  <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-start">
                     <Link
                       to={`/work-orders?salesOrderId=${focusSoId}&shortfallQty=${encodeURIComponent(String(regularDispatchPostQc.workOrderShortfall))}&from=qc-entry`}
                       data-testid="qc-create-wo-shortfall"
@@ -2432,13 +2477,29 @@ export function QcEntryPage() {
                     >
                       Produce shortfall
                     </Link>
+                    {canSupervisorDecide &&
+                    regularDispatchPostQc.workOrderId != null &&
+                    Number(regularDispatchPostQc.qcAcceptedQty ?? 0) > 1e-6 ? (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        data-testid="qc-keep-stock-pause-wo-shortfall"
+                        className="border-amber-500 bg-white text-amber-950 hover:bg-amber-100"
+                        disabled={pauseWoBusy}
+                        onClick={() => void handleKeepStockAndPauseWo(regularDispatchPostQc.workOrderId!)}
+                      >
+                        {pauseWoBusy ? "Pausing…" : "Keep stock and pause WO"}
+                      </Button>
+                    ) : null}
                   </div>
                 </>
               )}
             </div>
           ) : null}
       <NextStepStrip
-        visible={showNextStepDispatchStripEffective && !fromNoQtySo}
+        visible={showNextStepDispatchStripEffective && !fromNoQtySo && !(showRegularDispatchPostQcPanel && regularDispatchPostQc?.kind === "DECISION")}
+        density="compact"
         variant="action"
         className="!gap-1.5 !px-2 !py-1.5 [&_p]:text-[13px]"
         title="Next: Dispatch"
@@ -2806,7 +2867,7 @@ export function QcEntryPage() {
                     onChange={(e) => setProdShowFilter(e.target.value as typeof prodShowFilter)}
                   >
                     <option value="ALL">All</option>
-                    <option value="AWAITING">Awaiting QC</option>
+                    <option value="AWAITING">{PRODUCTION_QA_TERMS.AWAITING_QA}</option>
                     <option value="COMPLETED">Completed QC</option>
                   </select>
                 </label>
@@ -2993,7 +3054,7 @@ export function QcEntryPage() {
                                 <th className="py-1 pr-2 text-right">Produced qty</th>
                                 <th className="py-1 pr-2 text-right">Accepted qty</th>
                                 <th className="py-1 pr-2 text-right">Rejected qty</th>
-                                <th className="py-1 text-right">Awaiting QC</th>
+                                <th className="py-1 text-right">{PRODUCTION_QA_TERMS.AWAITING_QA}</th>
                               </tr>
                             </thead>
                             <tbody>
@@ -3306,7 +3367,7 @@ export function QcEntryPage() {
                   {selectedAdj ? (
                     <p className="mt-1 text-xs text-slate-600">
                       Qty in: <span className="tabular-nums font-medium">{fmtQcQty(selectedAdj.qtyIn)}</span> · QC used:{" "}
-                      <span className="tabular-nums font-medium">{fmtQcQty(selectedAdj.qcUsedQty)}</span> · Awaiting QC:{" "}
+                      <span className="tabular-nums font-medium">{fmtQcQty(selectedAdj.qcUsedQty)}</span> · {PRODUCTION_QA_TERMS.AWAITING_QA}:{" "}
                       <span className="tabular-nums font-medium">{fmtQcQty(selectedAdj.qcPendingQty)}</span>
                     </p>
                   ) : null}
@@ -3377,7 +3438,9 @@ export function QcEntryPage() {
       {showAdvancedQcTools && (!listReady || (dispQueues && dispQueues.reworkPendingSupervisor.length > 0)) ? (
         <Card id="qc-rework-supervisor" className="border-slate-200 shadow-sm">
           <CardHeader className="border-b border-slate-100 bg-slate-50/40 px-3 py-2 pb-2">
-            <CardTitle className="text-sm font-semibold text-slate-900">Legacy rework approval (supervisor)</CardTitle>
+            <CardTitle className="text-sm font-semibold text-slate-900">
+              {PRODUCTION_QA_TERMS.REWORK_APPROVAL_SECTION}
+            </CardTitle>
           </CardHeader>
           <CardContent className="px-0 py-0 sm:px-0">
             {!listReady || !dispQueues ? (
@@ -3419,7 +3482,7 @@ export function QcEntryPage() {
                                 void submitSupervisorDecision(r.id, "APPROVE", undefined, undefined);
                               }}
                             >
-                              {supervisorSavingId === r.id ? "…" : "Approve rework"}
+                              {supervisorSavingId === r.id ? "…" : PRODUCTION_QA_TERMS.APPROVE_REWORK}
                             </Button>
                             <Button
                               type="button"
@@ -3448,7 +3511,7 @@ export function QcEntryPage() {
                             </Button>
                           </div>
                         ) : (
-                          <span className="text-[12px] text-slate-500">Supervisor only</span>
+                          <span className="text-[12px] text-slate-500">{PRODUCTION_QA_TERMS.SUPERVISOR_ONLY_LEGACY}</span>
                         )}
                       </td>
                     </tr>
@@ -4136,20 +4199,14 @@ export function QcEntryPage() {
 
       {reverseQcModal && typeof document !== "undefined"
         ? createPortal(
-            <div
-              className="fixed inset-0 z-[200] flex items-center justify-center bg-black/50 p-4"
-              role="presentation"
-              onClick={(e) => {
-                if (e.target === e.currentTarget) closeReverseQcModal();
-              }}
+            <ErpModal
+              onClose={closeReverseQcModal}
+              closeOnBackdropClick
+              backdropClassName="z-[200] items-center justify-center bg-black/50 p-4"
+              aria-labelledby="qc-reverse-modal-title"
+              escapeDisabled={() => reversingId != null}
             >
-              <div
-                className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-xl border border-slate-200 bg-white p-5 shadow-xl"
-                role="dialog"
-                aria-modal="true"
-                aria-labelledby="qc-reverse-modal-title"
-                onClick={(e) => e.stopPropagation()}
-              >
+              <div className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-xl border border-slate-200 bg-white p-5 shadow-xl">
                 <h2 id="qc-reverse-modal-title" className="text-base font-semibold text-slate-900">
                   Admin reverse QC
                 </h2>
@@ -4255,27 +4312,21 @@ export function QcEntryPage() {
                   </Button>
                 </div>
               </div>
-            </div>,
+            </ErpModal>,
             document.body,
           )
         : null}
 
       {legacyClassifyOpen && typeof document !== "undefined"
         ? createPortal(
-            <div
-              className="fixed inset-0 z-[280] flex items-center justify-center bg-black/50 p-4"
-              role="presentation"
-              onClick={(e) => {
-                if (e.target === e.currentTarget) closeLegacyClassifyModal();
-              }}
+            <ErpModal
+              onClose={closeLegacyClassifyModal}
+              closeOnBackdropClick
+              backdropClassName="z-[280] items-center justify-center bg-black/50 p-4"
+              aria-labelledby="legacy-classify-title"
+              escapeDisabled={() => legacyClassifySaving}
             >
-              <div
-                className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-xl border border-slate-200 bg-white p-4 shadow-xl"
-                role="dialog"
-                aria-modal="true"
-                aria-labelledby="legacy-classify-title"
-                onClick={(e) => e.stopPropagation()}
-              >
+              <div className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-xl border border-slate-200 bg-white p-4 shadow-xl">
                 <h2 id="legacy-classify-title" className="text-base font-semibold text-slate-900">
                   Classify Rejected Qty
                 </h2>
@@ -4407,7 +4458,7 @@ export function QcEntryPage() {
                   </Button>
                 </div>
               </div>
-            </div>,
+            </ErpModal>,
             document.body,
           )
         : null}

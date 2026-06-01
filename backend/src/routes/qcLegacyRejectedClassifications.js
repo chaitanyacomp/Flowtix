@@ -7,7 +7,7 @@ const { getItemStockQty, STOCK_EPS } = require("../services/stockService");
 const qcLegacyRejectedClassificationsRouter = express.Router();
 
 /** ADMIN + QC: operational closure without editing historical QcEntry rows. */
-const LEGACY_CLASSIFY_ROLES = ["ADMIN", "QC"];
+const LEGACY_CLASSIFY_ROLES = ["ADMIN", "QA"];
 
 /** Eligible: not reversed, has reject qty, no legacy classification row yet. Requires `QcLegacyRejectedClassification` in DB. */
 const LEGACY_ELIGIBLE_WHERE = {

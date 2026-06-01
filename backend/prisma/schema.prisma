@@ -3,7 +3,7 @@
 generator client {
   provider = "prisma-client-js"
   /// Outside node_modules/.prisma so `prisma generate` succeeds when query_engine DLL is locked on Windows.
-  output   = "./generated/client"
+  output   = "./generated/client-v2"
 }
 
 datasource db {
@@ -13,13 +13,10 @@ datasource db {
 
 enum UserRole {
   ADMIN
-  SALES
   STORE
+  PURCHASE
   PRODUCTION
-  QC
-  SUPERVISOR
-  /// Commercial / billing support — Tally remains statutory system of record.
-  ACCOUNTS
+  QA
 }
 
 /// ERP-side payment tracking only (not double-entry / ledger posting).
@@ -91,6 +88,70 @@ enum DocType {
   DISPATCH
   SALES_BILL
   REQUIREMENT_SHEET
+  MATERIAL_REQUIREMENT
+  PURCHASE_REQUEST
+  MATERIAL_ISSUE_NOTE
+  MATERIAL_RETURN_NOTE
+  PRODUCTION_MATERIAL_REQUEST
+  BOM
+  MONTHLY_PRODUCTION_PLAN
+}
+
+/// Production → Store RM request (PMR); fulfilled via Material Issue Note (MIN).
+enum ProductionMaterialRequestStatus {
+  DRAFT
+  REQUESTED
+  PARTIALLY_ISSUED
+  FULLY_ISSUED
+  CANCELLED
+}
+
+enum MaterialAllocationStatus {
+  ACTIVE
+  PARTIALLY_ISSUED
+  ISSUED
+  RELEASED
+  CANCELLED
+}
+
+enum MaterialAllocationPriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+enum MaterialAllocationType {
+  PMR_CREATED
+  MANUAL
+  SYSTEM_MIGRATED
+}
+
+/// Store → Purchase handoff (consolidated RM requirement; not an RM PO).
+enum PurchaseRequestStatus {
+  PENDING_PURCHASE
+  PARTIALLY_ORDERED
+  ORDERED
+  CANCELLED
+}
+
+/// Operational BOM classification (manufacturing planning, not accounting).
+enum BomType {
+  STANDARD
+  APPROXIMATE
+  CUSTOMER_SPECIFIC
+}
+
+enum BomStatus {
+  DRAFT
+  APPROVED
+  INACTIVE
+  ARCHIVED
+}
+
+enum BomNormalizationMode {
+  PER_PIECE
+  LEGACY_BATCH
 }
 
 enum SimpleStatus {
@@ -98,6 +159,24 @@ enum SimpleStatus {
   IN_PROGRESS
   COMPLETED
   REJECTED
+  /// REGULAR WO: operational hold (RM shortage, management, etc.).
+  HOLD
+  /// REGULAR WO: intentional production pause after partial QC; FG kept for originating SO.
+  PAUSED
+  /// REGULAR WO: management closed remaining balance; shortfallQty records unreleased plan.
+  CLOSED_WITH_SHORTFALL
+}
+
+/// REGULAR work order hold reason (operational pause).
+enum WoHoldReason {
+  RM_SHORTAGE
+  MACHINE_BREAKDOWN
+  PRIORITY_SHIFT
+  CUSTOMER_HOLD
+  MANAGEMENT_HOLD
+  /// Partial production + QC accepted; user chose to keep stock and pause WO.
+  PRODUCTION_PAUSE
+  OTHER
 }
 
 /// No Qty SO internal workflow cycles (reopen creates a new active cycle; history is locked per cycle).
@@ -174,6 +253,10 @@ enum SalesOrderType {
 enum ItemType {
   RM
   FG
+  /// Semi-finished — may have its own child BOM (components for parent FG BOM).
+  SFG
+  /// Future-ready; not required for Phase 2 operations.
+  CONSUMABLE
 }
 
 enum StockTxnType {
@@ -190,6 +273,8 @@ enum StockTxnType {
   ADJUSTMENT
   /// Internal stock bucket movement (e.g. QC_HOLD→REWORK, REWORK→QC_PENDING, bucket transfers). Not a user "adjustment".
   BUCKET_TRANSFER
+  /// Store → Production location transfer (paired qtyOut / qtyIn rows). Not production BOM consumption (see ISSUE).
+  LOCATION_TRANSFER
   DISPATCH_REVERSAL
   QC_REVERSAL
   CUSTOMER_RETURN
@@ -208,6 +293,25 @@ enum StockBucket {
   REWORK
   /// Non-dispatchable loss bucket (QC rejects directed to scrap).
   SCRAP
+}
+
+/// Physical / process stock location (separate from StockBucket quality state).
+enum LocationType {
+  RM_STORE
+  PRODUCTION
+  FG_STORE
+  WIP
+  SCRAP
+  VENDOR
+  CONSUMABLE
+  DISPATCH
+}
+
+enum LocationDepartment {
+  STORES
+  PRODUCTION
+  PURCHASE
+  PLANT_HEAD
 }
 
 /// Operator intent for rejected quantity on a QC posting (stock bucket may match QC_HOLD for both Rework and Hold).
@@ -246,6 +350,14 @@ enum ProductionEntryWorkflowStatus {
   APPROVED
 }
 
+/// Operator-classified RM consumption variance on production approval (REGULAR only).
+enum RmConsumptionType {
+  NORMAL
+  EXTRA_PROCESS_LOSS
+  LOWER_USAGE
+  REWORK_RESERVED
+}
+
 model User {
   id           Int      @id @default(autoincrement())
   email        String   @unique
@@ -263,6 +375,10 @@ model User {
   openingStockEntriesCreated               OpeningStockEntry[]              @relation("OpeningStockCreatedBy")
   openingStockEntriesApproved              OpeningStockEntry[]              @relation("OpeningStockApprovedBy")
   workOrdersFgStockOverride                WorkOrder[]                      @relation("WoFgStockOverrideBy")
+  workOrdersHeld                           WorkOrder[]                      @relation("WoHeldBy")
+  workOrdersClosedShortfall                WorkOrder[]                      @relation("WoClosedBy")
+  regularSoPlanningSnapshotsCreated        RegularSoPlanningSnapshot[]      @relation("RegularSoPlanningSnapshotCreatedBy")
+  regularSoPlanningSnapshotsUpdated        RegularSoPlanningSnapshot[]      @relation("RegularSoPlanningSnapshotUpdatedBy")
   reopenedSalesOrderCycles                 SalesOrderCycle[]                @relation("SalesOrderCycleReopenedBy")
   quotationsApprovalCancelled              Quotation[]                      @relation("QuotationApprovalCancelledBy")
   purchaseBillsExportReset                 PurchaseBill[]                   @relation("PurchaseBillExportResetBy")
@@ -283,6 +399,22 @@ model User {
   dbBackupsCreated                        DbBackup[]                      @relation("DbBackupCreatedBy")
   rateContractLinesCreated                RateContractLine[]              @relation("RateContractLineCreatedBy")
   rateContractLinesDeactivated            RateContractLine[]              @relation("RateContractLineDeactivatedBy")
+  materialRequirementsCreated             MaterialRequirement[]           @relation("MaterialRequirementCreatedBy")
+  materialRequirementsReversed            MaterialRequirement[]           @relation("MaterialRequirementReversedBy")
+  materialRequirementsRaised              MaterialRequirement[]           @relation("MaterialRequirementRaisedBy")
+  materialRequirementsApproved            MaterialRequirement[]           @relation("MaterialRequirementApprovedBy")
+  purchaseRequestsCreated                 PurchaseRequest[]               @relation("PurchaseRequestCreatedBy")
+  materialIssueNotesCreated               MaterialIssueNote[]             @relation("MaterialIssueCreatedBy")
+  materialReturnNotesCreated               MaterialReturnNote[]            @relation("MaterialReturnCreatedBy")
+  productionMaterialRequestsCreated       ProductionMaterialRequest[]     @relation("PmrCreatedBy")
+  productionMaterialRequestsRequested     ProductionMaterialRequest[]     @relation("PmrRequestedBy")
+  materialAllocationsCreated              MaterialAllocation[]            @relation("MaterialAllocationCreatedBy")
+  materialAllocationsReleased             MaterialAllocation[]            @relation("MaterialAllocationReleasedBy")
+  monthlyProductionPlansCreated           MonthlyProductionPlan[]         @relation("MppCreatedBy")
+  monthlyProductionPlansLocked            MonthlyProductionPlan[]         @relation("MppLockedBy")
+  monthlyProductionPlansReopened          MonthlyProductionPlan[]         @relation("MppReopenedBy")
+  monthlyProductionPlansReleased          MonthlyProductionPlan[]         @relation("MppReleasedBy")
+  rmPlansRecalculated                     RmPlan[]                        @relation("RmPlanRecalcBy")
 }
 
 /// Full-database SQL backup row (see admin backup routes). `filePath` is server-only; never return to clients.
@@ -338,6 +470,7 @@ model Supplier {
   stateCode String?  @db.VarChar(2)
   /// Structured state reference (GST code mapping). Nullable for backward compatibility.
   stateId   Int?
+  isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -347,9 +480,41 @@ model Supplier {
   customerPOs      CustomerPO[]
   purchaseBills    PurchaseBill[]
   grns             Grn[]
+  locations        SupplierLocation[]
 
   @@index([stateId])
   @@index([stateCode])
+  @@index([gst])
+  @@index([isActive])
+}
+
+model SupplierLocation {
+  id            Int      @id @default(autoincrement())
+  supplierId    Int
+  label         String   @db.VarChar(128)
+  address       String?  @db.Text
+  city          String?  @db.VarChar(128)
+  stateId       Int?
+  /// Optional GSTIN for this supply location (Tally branch / depot GST).
+  gst           String?  @db.VarChar(15)
+  contactPerson String?  @db.VarChar(128)
+  phone         String?  @db.VarChar(32)
+  isDefault     Boolean  @default(false)
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  supplier Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  stateRef State?   @relation(fields: [stateId], references: [id], onDelete: SetNull)
+
+  rmPurchaseOrders RmPurchaseOrder[]
+  grns             Grn[]
+
+  @@index([supplierId])
+  @@index([stateId])
+  @@index([gst])
+  @@index([isDefault])
+  @@index([isActive])
 }
 
 model Customer {
@@ -364,19 +529,50 @@ model Customer {
   state     String?  @db.VarChar(128)
   /// Structured state reference (GST code mapping). Nullable for backward compatibility.
   stateId   Int?
+  isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   stateRef State? @relation(fields: [stateId], references: [id], onDelete: SetNull)
 
-  enquiries       Enquiry[]
-  pos             CustomerPO[]
-  salesOrders     SalesOrder[]
+  enquiries         Enquiry[]
+  pos               CustomerPO[]
+  salesOrders       SalesOrder[]
   rateContractLines RateContractLine[]
-  customerReturns CustomerReturn[]
-  salesBills      SalesBill[]
+  customerReturns   CustomerReturn[]
+  salesBills        SalesBill[]
+  deliveryAddresses CustomerDeliveryAddress[]
 
   @@index([stateId])
+  @@index([gst])
+  @@index([isActive])
+}
+
+model CustomerDeliveryAddress {
+  id            Int      @id @default(autoincrement())
+  customerId    Int
+  label         String   @db.VarChar(128)
+  address       String?  @db.Text
+  city          String?  @db.VarChar(128)
+  stateId       Int?
+  /// Optional GSTIN for this delivery location (Tally ship-to / branch GST).
+  gst           String?  @db.VarChar(15)
+  contactPerson String?  @db.VarChar(128)
+  phone         String?  @db.VarChar(32)
+  isDefault     Boolean  @default(false)
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  stateRef State?   @relation(fields: [stateId], references: [id], onDelete: SetNull)
+  shipToSalesOrders SalesOrder[]
+
+  @@index([customerId])
+  @@index([stateId])
+  @@index([gst])
+  @@index([isDefault])
+  @@index([isActive])
 }
 
 model Item {
@@ -420,8 +616,16 @@ model Item {
   soLines                         SalesOrderLine[]
   rmPoLines                       RmPurchaseOrderLine[]
   workOrderLines                  WorkOrderLine[]                  @relation("WoLineFg")
+  materialRequirementsAsFg        MaterialRequirement[]            @relation("MaterialRequirementFgItem")
   salesBillLines                  SalesBillLine[]
   requirementSheetLines           RequirementSheetLine[]
+  materialRequirementLines        MaterialRequirementLine[]
+  purchaseRequestLines            PurchaseRequestLine[]
+  materialIssueLines              MaterialIssueLine[]
+  materialReturnLines             MaterialReturnLine[]
+  productionEntryRmConsumptions   ProductionEntryRmConsumption[]
+  pmrLines                        ProductionMaterialRequestLine[]
+  materialAllocations             MaterialAllocation[]            @relation("MaterialAllocationRmItem")
   noQtyClosedShortageLines        NoQtySoClosedShortageLine[]
   scrapRecords                    ScrapRecord[]                    @relation("ScrapFgItem")
   dispatches                      Dispatch[]
@@ -432,6 +636,8 @@ model Item {
   qcRejectedDispositions          QcRejectedDisposition[]
   qcLegacyRejectedClassifications QcLegacyRejectedClassification[]
   openingStockEntries             OpeningStockEntry[]
+  monthlyProductionPlanLinesAsFg  MonthlyProductionPlanLine[]      @relation("MppLineFgItem")
+  rmPlanLinesAsRm                 RmPlanLine[]                     @relation("RmPlanLineRmItem")
 
   @@index([itemType])
   @@index([unitId])
@@ -446,7 +652,8 @@ model Unit {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  items Item[]
+  items        Item[]
+  bomsFgWeight Bom[]  @relation("BomFgWeightUnit")
 
   @@unique([unitName])
   @@unique([unitCode])
@@ -459,14 +666,42 @@ model Bom {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  /// BOM revisions require admin password when true (see routes/boms.js).
-  isLocked Boolean   @default(true)
+  /// ERP document number (e.g. BOM-26-0001); shared across revisions.
+  docNo String? @db.VarChar(32)
+
+  bomType       BomType   @default(STANDARD)
+  status        BomStatus @default(DRAFT)
+  normalizationMode BomNormalizationMode @default(PER_PIECE)
+  revisionNo    Int       @default(1)
+  effectiveFrom DateTime? @db.Date
+  remarks       String?   @db.VarChar(500)
+  approvedAt    DateTime?
+
+  /// Approved BOMs are locked; edits require admin password (see routes/boms.js).
+  isLocked Boolean   @default(false)
   lockedAt DateTime?
 
-  fgItem Item      @relation("BomFgItem", fields: [fgItemId], references: [id], onDelete: Cascade)
-  lines  BomLine[]
+  /// Finished-good net weight for one BOM output batch (manufacturing planning).
+  fgWeight         Decimal? @db.Decimal(18, 4)
+  fgWeightUnitId   Int?
+  /// Number of FG units this BOM represents (default 1 Nos).
+  outputQty            Decimal @default(1) @db.Decimal(18, 3)
+  /// Centralized expected production + QC losses (not per RM line).
+  processLossPercent   Decimal @default(0) @db.Decimal(18, 3)
+  qcLossPercent        Decimal @default(0) @db.Decimal(18, 3)
+  /// Optional default FG planning buffer % suggested at Prepare WO (not mandatory).
+  suggestedFgPlanningBufferPercent Decimal? @db.Decimal(5, 2)
 
-  @@unique([fgItemId])
+  fgItem       Item  @relation("BomFgItem", fields: [fgItemId], references: [id], onDelete: Cascade)
+  fgWeightUnit Unit? @relation("BomFgWeightUnit", fields: [fgWeightUnitId], references: [id], onDelete: SetNull)
+  lines        BomLine[]
+
+  @@unique([fgItemId, revisionNo])
+  @@index([fgItemId])
+  @@index([docNo])
+  @@index([fgWeightUnitId])
+  @@index([status])
+  @@index([bomType])
 }
 
 model BomLine {
@@ -474,7 +709,7 @@ model BomLine {
   bomId          Int
   rmItemId       Int
   /// Per unit of FG, before wastage
-  baseQty            Decimal @db.Decimal(18, 3)
+  baseQty            Decimal @db.Decimal(18, 6)
   /// Legacy operational compatibility field. Currently mirrors processLossPercent for RM issue math.
   wastagePercent     Decimal @default(0) @db.Decimal(18, 3)
   processLossPercent Decimal @default(0) @db.Decimal(18, 3)
@@ -551,8 +786,9 @@ model Quotation {
 
   enquiry             Enquiry         @relation(fields: [enquiryId], references: [id], onDelete: Cascade)
   lines               QuotationLine[]
-  salesOrder          SalesOrder?
-  approvalCancelledBy User?           @relation("QuotationApprovalCancelledBy", fields: [approvalCancelledByUserId], references: [id], onDelete: SetNull)
+  salesOrder           SalesOrder?
+  materialRequirements MaterialRequirement[]
+  approvalCancelledBy  User?           @relation("QuotationApprovalCancelledBy", fields: [approvalCancelledByUserId], references: [id], onDelete: SetNull)
 
   @@index([flowTypeSnapshot])
   @@index([workflowStatus])
@@ -575,8 +811,8 @@ model QuotationLine {
   /// When true, rate is stored as 0 and the line is treated as intentionally free (not a pricing error).
   isFree      Boolean @default(false)
 
-  quotation       Quotation        @relation(fields: [quotationId], references: [id], onDelete: Cascade)
-  item            Item             @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  quotation            Quotation                @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+  item                 Item                     @relation(fields: [itemId], references: [id], onDelete: Restrict)
   salesOrderLines SalesOrderLine[]
 
   @@index([quotationId])
@@ -713,7 +949,9 @@ model State {
   updatedAt DateTime @updatedAt
 
   suppliers   Supplier[]
+  supplierLocations SupplierLocation[]
   customers   Customer[]
+  customerDeliveryAddresses CustomerDeliveryAddress[]
   appSettings AppSetting[]
 
   @@unique([stateName])
@@ -727,6 +965,8 @@ model SalesOrder {
   docNo                String?                  @unique @db.VarChar(32)
   poId                 Int?                     @unique
   customerId           Int?
+  /// Operational ship-to reference (nullable for legacy SOs; does not affect NO_QTY cycle logic).
+  shipToAddressId      Int?
   quotationId          Int?                     @unique
   customerPoReference  String?
   remarks              String?
@@ -739,10 +979,29 @@ model SalesOrder {
   createdAt            DateTime                 @default(now())
   updatedAt            DateTime                 @updatedAt
 
+  /// Commercial snapshots (frozen after approval/open per sales flow; nullable for backward compatibility).
+  billToNameSnapshot        String? @db.VarChar(256)
+  billToAddressSnapshot     String? @db.Text
+  billToGstinSnapshot       String? @db.VarChar(15)
+  billToStateNameSnapshot   String? @db.VarChar(128)
+  billToStateCodeSnapshot   String? @db.VarChar(2)
+
+  shipToLabelSnapshot       String? @db.VarChar(128)
+  shipToAddressSnapshot     String? @db.Text
+  shipToGstinSnapshot       String? @db.VarChar(15)
+  shipToStateNameSnapshot   String? @db.VarChar(128)
+  shipToStateCodeSnapshot   String? @db.VarChar(2)
+
+  posStateNameSnapshot      String? @db.VarChar(128)
+  posStateCodeSnapshot      String? @db.VarChar(2)
+  /// POS source at freeze time: SHIP_TO | BILL_TO | MANUAL (nullable until frozen).
+  posSourceSnapshot         String? @db.VarChar(32)
+
   /// NO_QTY: current active workflow cycle (null for legacy rows created before cycles).
   currentCycleId Int? @unique
 
   customer                 Customer?                @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  shipToAddress            CustomerDeliveryAddress? @relation(fields: [shipToAddressId], references: [id], onDelete: SetNull)
   quotation                Quotation?               @relation(fields: [quotationId], references: [id], onDelete: SetNull)
   po                       CustomerPO?              @relation(fields: [poId], references: [id], onDelete: Cascade)
   replacementForReturn     CustomerReturn?          @relation("ReplacementForReturn", fields: [customerReturnId], references: [id], onDelete: SetNull)
@@ -750,8 +1009,12 @@ model SalesOrder {
   dispatch                 Dispatch[]
   workOrders               WorkOrder[]
   requirementSheets        RequirementSheet[]
+  materialRequirements     MaterialRequirement[]
+  materialAllocations      MaterialAllocation[]
   stockAdjustmentQcEntries StockAdjustmentQcEntry[]
   customerReturns          CustomerReturn[]
+  regularSoPlanningSnapshot RegularSoPlanningSnapshot?
+  regularSoPlanningSnapshotLines RegularSoPlanningSnapshotLine[]
 
   cycles       SalesOrderCycle[]
   currentCycle SalesOrderCycle?  @relation("SalesOrderCurrentCycle", fields: [currentCycleId], references: [id], onDelete: SetNull)
@@ -759,10 +1022,52 @@ model SalesOrder {
   noQtyClosedShortageLines NoQtySoClosedShortageLine[]
 
   @@index([customerId])
+  @@index([shipToAddressId])
   @@index([orderType])
   @@index([customerReturnId])
   @@index([internalStatus])
   @@index([currentCycleId])
+}
+
+model RegularSoPlanningSnapshot {
+  id              Int      @id @default(autoincrement())
+  salesOrderId    Int      @unique
+  bufferPercent   Decimal  @default(0) @db.Decimal(18, 2)
+  createdByUserId Int?
+  updatedByUserId Int?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  salesOrder SalesOrder @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
+  createdBy  User?      @relation("RegularSoPlanningSnapshotCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  updatedBy  User?      @relation("RegularSoPlanningSnapshotUpdatedBy", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+  lines      RegularSoPlanningSnapshotLine[]
+
+  @@index([salesOrderId])
+  @@index([createdByUserId])
+  @@index([updatedByUserId])
+}
+
+model RegularSoPlanningSnapshotLine {
+  id                      Int      @id @default(autoincrement())
+  snapshotId              Int
+  salesOrderId            Int
+  salesOrderLineId        Int      @unique
+  customerCommittedQty    Decimal  @db.Decimal(18, 3)
+  productionBufferPercent Decimal  @default(0) @db.Decimal(18, 2)
+  productionBufferQty     Decimal  @default(0) @db.Decimal(18, 3)
+  plannedProductionQty    Decimal  @db.Decimal(18, 3)
+  fgStockAdjustmentQty    Decimal  @default(0) @db.Decimal(18, 3)
+  rmPlanningQty           Decimal  @db.Decimal(18, 3)
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  snapshot       RegularSoPlanningSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+  salesOrder     SalesOrder                @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
+  salesOrderLine SalesOrderLine            @relation(fields: [salesOrderLineId], references: [id], onDelete: Cascade)
+
+  @@index([snapshotId])
+  @@index([salesOrderId])
 }
 
 model NoQtySoCloseSnapshot {
@@ -828,6 +1133,7 @@ model SalesOrderLine {
   so            SalesOrder     @relation(fields: [soId], references: [id], onDelete: Cascade)
   item          Item           @relation(fields: [itemId], references: [id], onDelete: Restrict)
   quotationLine QuotationLine? @relation(fields: [quotationLineId], references: [id], onDelete: SetNull)
+  planningSnapshotLine RegularSoPlanningSnapshotLine?
 
   @@index([soId])
   @@index([quotationLineId])
@@ -933,6 +1239,462 @@ model RequirementSheetLine {
   @@index([itemId])
 }
 
+enum MaterialRequirementStatus {
+  /// Store requisition draft; not visible to Purchase.
+  DRAFT
+  /// Store requisition awaiting Store approval; not visible to Purchase.
+  PENDING_APPROVAL
+  /// Store-approved requisition; visible for Store-to-Purchase handoff.
+  APPROVED
+  /// Requisition sent to Purchase.
+  SENT_TO_PURCHASE
+  /// Purchase is executing supplier PO / follow-up.
+  PROCUREMENT_IN_PROGRESS
+  PARTIALLY_PROCURED
+  FULLY_PROCURED
+  CLOSED
+  CANCELLED
+}
+
+enum MaterialPlanningSourceType {
+  QUOTATION
+  SALES_ORDER
+  /// REGULAR Prepare Work Order — RM shortage from planned FG qty (Store → Purchase).
+  WORK_ORDER_PLANNING
+  /// Store-level RM minimum stock replenishment; not linked to SO/RS/WO/production.
+  STOCK_REPLENISHMENT
+  /// Planning-driven RM demand released from a locked Monthly Production Plan.
+  MONTHLY_PLAN
+}
+
+/// Monthly Planning Workspace (Phase 1 foundation). Status is intentionally minimal:
+/// DRAFT (editable) and LOCKED (frozen; revisable). "Released" is a flag, not a status.
+enum MonthlyProductionPlanStatus {
+  DRAFT
+  LOCKED
+}
+
+/// Provenance of a Monthly Production Plan FG line's suggested quantity.
+/// CUSTOMER_SCHEDULE is reserved for a later phase (not populated in Phase 1).
+enum MonthlyPlanLineSource {
+  CUSTOMER_SCHEDULE
+  SALES_ORDER
+  REQUIREMENT_SHEET
+  MANUAL
+}
+
+/// Monthly Production Plan — master planning document (one per month). Store-owned.
+model MonthlyProductionPlan {
+  id               Int                         @id @default(autoincrement())
+  docNo            String?                     @unique @db.VarChar(32)
+  periodKey        String                      @db.VarChar(16) // e.g. "2026-06"
+  status           MonthlyProductionPlanStatus @default(DRAFT)
+  /// 0 while never locked; increments on each lock.
+  currentRevision  Int                         @default(0)
+  remarks          String?                     @db.Text
+
+  lockedAt         DateTime?
+  lockedByUserId   Int?
+  reopenedAt       DateTime?
+  reopenedByUserId Int?
+  /// "Released to procurement" is a flag on a LOCKED plan, not a separate status.
+  releasedAt       DateTime?
+  releasedByUserId Int?
+  releasedRevision Int?
+
+  createdByUserId  Int?
+  createdAt        DateTime                    @default(now())
+  updatedAt        DateTime                    @updatedAt
+
+  lines                MonthlyProductionPlanLine[]
+  rmPlans              RmPlan[]
+  materialRequirements MaterialRequirement[]       @relation("MaterialRequirementMonthlyPlan")
+  createdBy            User?                       @relation("MppCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  lockedBy             User?                       @relation("MppLockedBy", fields: [lockedByUserId], references: [id], onDelete: SetNull)
+  reopenedBy           User?                       @relation("MppReopenedBy", fields: [reopenedByUserId], references: [id], onDelete: SetNull)
+  releasedBy           User?                       @relation("MppReleasedBy", fields: [releasedByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([periodKey])
+  @@index([status])
+  @@index([periodKey])
+  @@index([releasedAt])
+}
+
+/// Monthly Production Plan FG demand line. Aggregate per FG per plan (no SO/RS scalar FK by design).
+model MonthlyProductionPlanLine {
+  id             Int                   @id @default(autoincrement())
+  planId         Int
+  fgItemId       Int
+  suggestedFgQty Decimal               @default(0) @db.Decimal(18, 3)
+  plannedFgQty   Decimal               @default(0) @db.Decimal(18, 3)
+  source         MonthlyPlanLineSource @default(MANUAL)
+  remarks        String?               @db.Text
+  createdAt      DateTime              @default(now())
+  updatedAt      DateTime              @updatedAt
+
+  plan   MonthlyProductionPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  fgItem Item                  @relation("MppLineFgItem", fields: [fgItemId], references: [id], onDelete: Restrict)
+
+  @@unique([planId, fgItemId])
+  @@index([planId])
+  @@index([fgItemId])
+}
+
+/// Immutable RM Planning snapshot for one lock of a Monthly Production Plan (one per revision).
+model RmPlan {
+  id                   Int      @id @default(autoincrement())
+  planId               Int
+  revision             Int
+  totalFgPlannedQty    Decimal  @default(0) @db.Decimal(18, 3)
+  fgPlanHashSnapshot   String?  @db.VarChar(64)
+  recalculatedAt       DateTime @default(now())
+  recalculatedByUserId Int?
+
+  plan          MonthlyProductionPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  lines         RmPlanLine[]
+  recalculatedBy User?                @relation("RmPlanRecalcBy", fields: [recalculatedByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([planId, revision])
+  @@index([planId])
+}
+
+/// Immutable RM demand line within an RmPlan snapshot.
+model RmPlanLine {
+  id                 Int      @id @default(autoincrement())
+  rmPlanId           Int
+  rmItemId           Int
+  grossDemandQty     Decimal  @default(0) @db.Decimal(18, 3)
+  freeStockSnapshot  Decimal  @default(0) @db.Decimal(18, 3)
+  reservedSnapshot   Decimal  @default(0) @db.Decimal(18, 3)
+  incomingPoSnapshot Decimal  @default(0) @db.Decimal(18, 3)
+  minStockTopUpQty   Decimal  @default(0) @db.Decimal(18, 3)
+  netRequirementQty  Decimal  @default(0) @db.Decimal(18, 3)
+  unitSnapshot       String?  @db.VarChar(64)
+  leadTimeRiskFlag   Boolean  @default(false)
+  belowMinStockFlag  Boolean  @default(false)
+  warningsJson       Json?
+
+  rmPlan RmPlan @relation(fields: [rmPlanId], references: [id], onDelete: Cascade)
+  rmItem Item   @relation("RmPlanLineRmItem", fields: [rmItemId], references: [id], onDelete: Restrict)
+
+  @@unique([rmPlanId, rmItemId])
+  @@index([rmPlanId])
+  @@index([rmItemId])
+}
+
+/// Store material planning output — RM Requisition (not a PO).
+model MaterialRequirement {
+  id              Int                        @id @default(autoincrement())
+  docNo           String?                    @unique @db.VarChar(32)
+  status          MaterialRequirementStatus  @default(DRAFT)
+  sourceType      MaterialPlanningSourceType
+  quotationId     Int?
+  salesOrderId    Int?
+  /// REGULAR WO prepare: optional link when a work order already exists for this SO.
+  workOrderId     Int?
+  fgItemId        Int?
+  plannedProductionQty Decimal?              @db.Decimal(18, 3)
+  /// Monthly Planning (Phase 1): plan that released this MR (variance anchor). Null for all legacy/non-plan MRs.
+  monthlyProductionPlanId Int?
+  /// Monthly Planning (Phase 1): plan revision that produced this MR (traceability; optional).
+  sourceRevision  Int?
+  createdByUserId Int?
+  reversedAt      DateTime?
+  reversedByUserId Int?
+  reversalReason  String?                    @db.Text
+  requiredDate    DateTime?                  @db.Date
+  raisedByUserId  Int?
+  approvedByUserId Int?
+  approvedAt      DateTime?
+  sentToPurchaseAt DateTime?
+  closedAt        DateTime?
+  requisitionRemarks String?                 @db.Text
+  approvalRemarks String?                    @db.Text
+  remarks         String?                    @db.Text
+  createdAt       DateTime                   @default(now())
+  updatedAt       DateTime                   @updatedAt
+
+  quotation  Quotation?  @relation(fields: [quotationId], references: [id], onDelete: SetNull)
+  salesOrder SalesOrder? @relation(fields: [salesOrderId], references: [id], onDelete: SetNull)
+  workOrder  WorkOrder?  @relation(fields: [workOrderId], references: [id], onDelete: SetNull)
+  fgItem     Item?       @relation("MaterialRequirementFgItem", fields: [fgItemId], references: [id], onDelete: SetNull)
+  createdBy  User?       @relation("MaterialRequirementCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  reversedBy User?       @relation("MaterialRequirementReversedBy", fields: [reversedByUserId], references: [id], onDelete: SetNull)
+  raisedBy   User?       @relation("MaterialRequirementRaisedBy", fields: [raisedByUserId], references: [id], onDelete: SetNull)
+  approvedBy User?       @relation("MaterialRequirementApprovedBy", fields: [approvedByUserId], references: [id], onDelete: SetNull)
+  monthlyProductionPlan MonthlyProductionPlan? @relation("MaterialRequirementMonthlyPlan", fields: [monthlyProductionPlanId], references: [id], onDelete: SetNull)
+  lines      MaterialRequirementLine[]
+
+  @@index([quotationId])
+  @@index([salesOrderId])
+  @@index([workOrderId])
+  @@index([fgItemId])
+  @@index([status])
+  @@index([createdByUserId])
+  @@index([reversedByUserId])
+  @@index([raisedByUserId])
+  @@index([approvedByUserId])
+  @@index([sentToPurchaseAt])
+  @@index([monthlyProductionPlanId])
+}
+
+model MaterialRequirementLine {
+  id                    Int     @id @default(autoincrement())
+  materialRequirementId Int
+  rmItemId              Int
+  requiredQty           Decimal @db.Decimal(18, 3)
+  shortageQty           Decimal @db.Decimal(18, 3)
+  availableQtySnapshot  Decimal @default(0) @db.Decimal(18, 3)
+  unitSnapshot          String? @db.VarChar(64)
+  /// Qty already covered by linked RM PO lines (planning traceability; not stock reservation).
+  procuredQty           Decimal @default(0) @db.Decimal(18, 3)
+
+  materialRequirement MaterialRequirement       @relation(fields: [materialRequirementId], references: [id], onDelete: Cascade)
+  rmItem              Item                      @relation(fields: [rmItemId], references: [id], onDelete: Restrict)
+  procurementLinks         RmPoLineProcurementLink[]
+  purchaseRequestSourceLinks PurchaseRequestLineSourceLink[]
+
+  @@unique([materialRequirementId, rmItemId])
+  @@index([materialRequirementId])
+  @@index([rmItemId])
+}
+
+/// Traceability: RM PO line fulfillment of a purchase request line (Purchase dept stage).
+model RmPoLineProcurementLink {
+  id                        Int     @id @default(autoincrement())
+  rmPoLineId                Int
+  purchaseRequestLineId     Int?
+  /// Legacy direct MR link (pre–purchase-request flow); prefer purchaseRequestLineId.
+  materialRequirementLineId Int?
+  allocatedQty              Decimal @db.Decimal(18, 3)
+
+  rmPoLine                RmPurchaseOrderLine     @relation(fields: [rmPoLineId], references: [id], onDelete: Cascade)
+  purchaseRequestLine     PurchaseRequestLine?    @relation(fields: [purchaseRequestLineId], references: [id], onDelete: Restrict)
+  materialRequirementLine MaterialRequirementLine? @relation(fields: [materialRequirementLineId], references: [id], onDelete: Restrict)
+
+  @@index([rmPoLineId])
+  @@index([purchaseRequestLineId])
+  @@index([materialRequirementLineId])
+}
+
+/// Consolidated RM requirement sent from Store to Purchase (not an RM PO).
+model PurchaseRequest {
+  id              Int                   @id @default(autoincrement())
+  docNo           String?               @unique @db.VarChar(32)
+  status          PurchaseRequestStatus @default(PENDING_PURCHASE)
+  remarks         String?               @db.Text
+  createdByUserId Int?
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+
+  createdBy User?               @relation("PurchaseRequestCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  lines     PurchaseRequestLine[]
+
+  @@index([status])
+  @@index([createdByUserId])
+}
+
+model PurchaseRequestLine {
+  id                   Int     @id @default(autoincrement())
+  purchaseRequestId    Int
+  rmItemId             Int
+  requiredQty          Decimal @db.Decimal(18, 3)
+  availableQtySnapshot Decimal @default(0) @db.Decimal(18, 3)
+  netRequiredQty       Decimal @db.Decimal(18, 3)
+  orderedQty           Decimal @default(0) @db.Decimal(18, 3)
+  unitSnapshot         String? @db.VarChar(64)
+
+  purchaseRequest PurchaseRequest                 @relation(fields: [purchaseRequestId], references: [id], onDelete: Cascade)
+  rmItem          Item                            @relation(fields: [rmItemId], references: [id], onDelete: Restrict)
+  sourceLinks     PurchaseRequestLineSourceLink[]
+  poLinks         RmPoLineProcurementLink[]
+
+  @@unique([purchaseRequestId, rmItemId])
+  @@index([purchaseRequestId])
+  @@index([rmItemId])
+}
+
+/// Traceability: purchase request line back to originating material requirement lines.
+model PurchaseRequestLineSourceLink {
+  id                        Int     @id @default(autoincrement())
+  purchaseRequestLineId     Int
+  materialRequirementLineId Int
+  allocatedQty              Decimal @db.Decimal(18, 3)
+
+  purchaseRequestLine     PurchaseRequestLine     @relation(fields: [purchaseRequestLineId], references: [id], onDelete: Cascade)
+  materialRequirementLine MaterialRequirementLine @relation(fields: [materialRequirementLineId], references: [id], onDelete: Restrict)
+
+  @@index([purchaseRequestLineId])
+  @@index([materialRequirementLineId])
+}
+
+/// Production material request (PMR) — request/control layer before MIN stock transfer.
+model ProductionMaterialRequest {
+  id                Int                             @id @default(autoincrement())
+  docNo             String?                         @unique @db.VarChar(32)
+  workOrderId       Int
+  status            ProductionMaterialRequestStatus @default(DRAFT)
+  remarks           String?                         @db.Text
+  requestedAt       DateTime?
+  requestedByUserId Int?
+  createdByUserId   Int?
+  createdAt         DateTime                        @default(now())
+  updatedAt         DateTime                        @updatedAt
+
+  workOrder           WorkOrder           @relation(fields: [workOrderId], references: [id], onDelete: Restrict)
+  requestedBy         User?               @relation("PmrRequestedBy", fields: [requestedByUserId], references: [id], onDelete: SetNull)
+  createdBy           User?               @relation("PmrCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  lines               ProductionMaterialRequestLine[]
+  materialIssueNotes  MaterialIssueNote[]
+  materialReturnNotes MaterialReturnNote[]
+  materialAllocations MaterialAllocation[]
+
+  @@index([workOrderId])
+  @@index([status])
+  @@index([requestedByUserId])
+  @@index([createdByUserId])
+}
+
+model ProductionMaterialRequestLine {
+  id                          Int     @id @default(autoincrement())
+  productionMaterialRequestId Int
+  itemId                      Int
+  requiredQty                 Decimal @db.Decimal(18, 3)
+  issuedQty                   Decimal @default(0) @db.Decimal(18, 3)
+  returnedQty                 Decimal @default(0) @db.Decimal(18, 3)
+  unitSnapshot                String? @db.VarChar(64)
+
+  productionMaterialRequest ProductionMaterialRequest @relation(fields: [productionMaterialRequestId], references: [id], onDelete: Cascade)
+  item                      Item                      @relation(fields: [itemId], references: [id], onDelete: Restrict)
+
+  @@unique([productionMaterialRequestId, itemId], map: "PmrLine_pmrId_itemId_key")
+  @@index([productionMaterialRequestId])
+  @@index([itemId])
+}
+
+/// Store material issue to production location (MIN). Stock movement only — not production consumption.
+model MaterialAllocation {
+  id                          Int                        @id @default(autoincrement())
+  allocationNo                String?                    @unique @db.VarChar(32)
+  rmItemId                    Int
+  salesOrderId                Int?
+  workOrderId                 Int?
+  workOrderLineId             Int?
+  productionMaterialRequestId Int?
+  sourceLocationId            Int?
+  qtyAllocated                Decimal                    @db.Decimal(18, 3)
+  qtyIssued                   Decimal                    @default(0) @db.Decimal(18, 3)
+  status                      MaterialAllocationStatus
+  priority                    MaterialAllocationPriority @default(NORMAL)
+  allocationType              MaterialAllocationType
+  remarks                     String?                    @db.Text
+  createdByUserId             Int?
+  releasedByUserId            Int?
+  createdAt                   DateTime                   @default(now())
+  updatedAt                   DateTime                   @updatedAt
+
+  rmItem                    Item                       @relation("MaterialAllocationRmItem", fields: [rmItemId], references: [id], onDelete: Restrict)
+  salesOrder                SalesOrder?                @relation(fields: [salesOrderId], references: [id], onDelete: SetNull)
+  workOrder                 WorkOrder?                 @relation(fields: [workOrderId], references: [id], onDelete: SetNull)
+  workOrderLine             WorkOrderLine?             @relation(fields: [workOrderLineId], references: [id], onDelete: SetNull)
+  productionMaterialRequest ProductionMaterialRequest? @relation(fields: [productionMaterialRequestId], references: [id], onDelete: SetNull)
+  sourceLocation            Location?                  @relation(fields: [sourceLocationId], references: [id], onDelete: SetNull)
+  createdBy                 User?                      @relation("MaterialAllocationCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  releasedBy                User?                      @relation("MaterialAllocationReleasedBy", fields: [releasedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([rmItemId, status])
+  @@index([salesOrderId])
+  @@index([workOrderId])
+  @@index([workOrderLineId])
+  @@index([productionMaterialRequestId])
+  @@index([sourceLocationId])
+  @@index([status])
+  @@index([createdByUserId])
+  @@index([releasedByUserId])
+}
+
+model MaterialIssueNote {
+  id                          Int      @id @default(autoincrement())
+  docNo                       String?  @unique @db.VarChar(32)
+  fromLocationId              Int
+  toLocationId                Int
+  workOrderId                 Int?
+  productionMaterialRequestId Int?
+  remarks                     String?  @db.Text
+  createdByUserId             Int?
+  createdAt                   DateTime @default(now())
+  updatedAt                   DateTime @updatedAt
+
+  fromLocation              Location                   @relation("MaterialIssueFromLocation", fields: [fromLocationId], references: [id], onDelete: Restrict)
+  toLocation                Location                   @relation("MaterialIssueToLocation", fields: [toLocationId], references: [id], onDelete: Restrict)
+  workOrder                 WorkOrder?                 @relation(fields: [workOrderId], references: [id], onDelete: SetNull)
+  productionMaterialRequest ProductionMaterialRequest? @relation(fields: [productionMaterialRequestId], references: [id], onDelete: SetNull)
+  createdBy                 User?                      @relation("MaterialIssueCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  lines                     MaterialIssueLine[]
+
+  @@index([fromLocationId])
+  @@index([toLocationId])
+  @@index([workOrderId])
+  @@index([productionMaterialRequestId])
+  @@index([createdByUserId])
+}
+
+model MaterialIssueLine {
+  id                  Int     @id @default(autoincrement())
+  materialIssueNoteId Int
+  itemId              Int
+  issueQty            Decimal @db.Decimal(18, 3)
+  unitSnapshot        String? @db.VarChar(64)
+
+  materialIssueNote MaterialIssueNote @relation(fields: [materialIssueNoteId], references: [id], onDelete: Cascade)
+  item              Item              @relation(fields: [itemId], references: [id], onDelete: Restrict)
+
+  @@index([materialIssueNoteId])
+  @@index([itemId])
+}
+
+/// Production → Store RM return (MRN). Stock movement only — paired LOCATION_TRANSFER (inverse of MIN).
+model MaterialReturnNote {
+  id                          Int      @id @default(autoincrement())
+  docNo                       String?  @unique @db.VarChar(32)
+  fromLocationId              Int
+  toLocationId                Int
+  workOrderId                 Int?
+  productionMaterialRequestId Int?
+  remarks                     String?  @db.Text
+  createdByUserId             Int?
+  createdAt                   DateTime @default(now())
+  updatedAt                   DateTime @updatedAt
+
+  fromLocation              Location                   @relation("MaterialReturnFromLocation", fields: [fromLocationId], references: [id], onDelete: Restrict)
+  toLocation                Location                   @relation("MaterialReturnToLocation", fields: [toLocationId], references: [id], onDelete: Restrict)
+  workOrder                 WorkOrder?                 @relation(fields: [workOrderId], references: [id], onDelete: SetNull)
+  productionMaterialRequest ProductionMaterialRequest? @relation(fields: [productionMaterialRequestId], references: [id], onDelete: SetNull)
+  createdBy                 User?                      @relation("MaterialReturnCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  lines                     MaterialReturnLine[]
+
+  @@index([fromLocationId])
+  @@index([toLocationId])
+  @@index([workOrderId])
+  @@index([productionMaterialRequestId])
+  @@index([createdByUserId])
+}
+
+model MaterialReturnLine {
+  id                   Int      @id @default(autoincrement())
+  materialReturnNoteId Int
+  itemId               Int
+  returnQty            Decimal  @db.Decimal(18, 3)
+  remarks              String?  @db.Text
+  unitSnapshot         String?  @db.VarChar(64)
+
+  materialReturnNote MaterialReturnNote @relation(fields: [materialReturnNoteId], references: [id], onDelete: Cascade)
+  item               Item               @relation(fields: [itemId], references: [id], onDelete: Restrict)
+
+  @@index([materialReturnNoteId])
+  @@index([itemId])
+}
+
 /// Customer sales invoice against one confirmed dispatch row (phase 1: 1 dispatch = 1 sales bill).
 model SalesBill {
   id         Int             @id @default(autoincrement())
@@ -951,6 +1713,16 @@ model SalesBill {
   customerNameSnapshot      String    @default("") @db.VarChar(256)
   customerStateNameSnapshot String    @default("") @db.VarChar(128)
   customerStateCodeSnapshot String    @default("") @db.VarChar(2)
+  billToAddressSnapshot     String    @default("") @db.Text
+  billToGstinSnapshot       String    @default("") @db.VarChar(15)
+  shipToLabelSnapshot       String    @default("") @db.VarChar(128)
+  shipToAddressSnapshot     String    @default("") @db.Text
+  shipToGstinSnapshot       String    @default("") @db.VarChar(15)
+  shipToStateNameSnapshot   String    @default("") @db.VarChar(128)
+  shipToStateCodeSnapshot   String    @default("") @db.VarChar(2)
+  posStateNameSnapshot      String    @default("") @db.VarChar(128)
+  posStateCodeSnapshot      String    @default("") @db.VarChar(2)
+  posSourceSnapshot         String    @default("") @db.VarChar(32)
   dispatchNoSnapshot        String    @default("") @db.VarChar(64)
   dispatchDateSnapshot      DateTime?
   soIdSnapshot              Int?
@@ -1067,20 +1839,41 @@ model SalesBillLine {
 model RmPurchaseOrder {
   id                        Int        @id @default(autoincrement())
   supplierId                Int
+  /// Supply location (branch/depot) for commercial source — not warehouse receiving.
+  supplierLocationId        Int?
   status                    RmPoStatus @default(PENDING)
   remarks                   String?    @db.Text
   /// Supplier state snapshot at PO time (GST / Tally); optional for legacy rows.
   supplierStateSnapshot     String?    @db.VarChar(128)
   /// Supplier GST state code snapshot (2-digit); optional for legacy rows.
   supplierStateCodeSnapshot String?    @db.VarChar(2)
+  /// Registered supplier snapshots (frozen at PO create).
+  supplierNameSnapshot                 String? @db.VarChar(256)
+  supplierRegisteredGstinSnapshot      String? @db.VarChar(15)
+  supplierRegisteredAddressSnapshot    String? @db.Text
+  supplierRegisteredStateNameSnapshot  String? @db.VarChar(128)
+  supplierRegisteredStateCodeSnapshot  String? @db.VarChar(2)
+  /// Supply location snapshots (frozen at PO create).
+  supplyLocationLabelSnapshot          String? @db.VarChar(128)
+  supplyLocationAddressSnapshot        String? @db.Text
+  supplyLocationGstinSnapshot          String? @db.VarChar(15)
+  supplyLocationStateNameSnapshot      String? @db.VarChar(128)
+  supplyLocationStateCodeSnapshot      String? @db.VarChar(2)
+  /// Purchase tax source state (for GST mode; bill phase uses later).
+  purchaseSourceStateNameSnapshot        String? @db.VarChar(128)
+  purchaseSourceStateCodeSnapshot        String? @db.VarChar(2)
+  purchaseSourceSnapshot                 String? @db.VarChar(32)
+  purchaseGstModeSnapshot                String? @db.VarChar(32)
   createdAt                 DateTime   @default(now())
   updatedAt                 DateTime   @updatedAt
 
-  supplier Supplier              @relation(fields: [supplierId], references: [id], onDelete: Restrict)
-  lines    RmPurchaseOrderLine[]
-  grns     Grn[]
+  supplier         Supplier          @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  supplierLocation SupplierLocation? @relation(fields: [supplierLocationId], references: [id], onDelete: SetNull)
+  lines            RmPurchaseOrderLine[]
+  grns             Grn[]
 
   @@index([supplierId])
+  @@index([supplierLocationId])
   @@index([status])
 }
 
@@ -1102,6 +1895,7 @@ model RmPurchaseOrderLine {
   rmPo     RmPurchaseOrder @relation(fields: [rmPoId], references: [id], onDelete: Cascade)
   item     Item            @relation(fields: [itemId], references: [id], onDelete: Restrict)
   grnLines GrnLine[]
+  procurementLinks RmPoLineProcurementLink[]
 
   @@index([rmPoId])
 }
@@ -1111,6 +1905,8 @@ model Grn {
   rmPoId         Int
   /// Denormalized from RM PO at receipt time; used with supplierInvoiceNo for duplicate checks.
   supplierId     Int
+  /// Commercial supply location inherited from RM PO (not warehouse receiving location).
+  supplierLocationId Int?
   /// Supplier invoice / bill number on this GRN receipt (required for new GRNs).
   supplierInvoiceNo String          @db.VarChar(128)
   date           DateTime         @default(now())
@@ -1118,14 +1914,16 @@ model Grn {
   reversalReason String?          @db.Text
   billingStatus  GrnBillingStatus @default(PENDING)
 
-  rmPo          RmPurchaseOrder @relation(fields: [rmPoId], references: [id], onDelete: Cascade)
-  supplier      Supplier        @relation(fields: [supplierId], references: [id], onDelete: Restrict)
-  lines         GrnLine[]
+  rmPo             RmPurchaseOrder  @relation(fields: [rmPoId], references: [id], onDelete: Cascade)
+  supplier         Supplier         @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  supplierLocation SupplierLocation? @relation(fields: [supplierLocationId], references: [id], onDelete: SetNull)
+  lines            GrnLine[]
   /// Purchase bills created from this GRN (may be multiple with partial billing).
   purchaseBills PurchaseBill[]
 
   @@index([rmPoId])
   @@index([supplierId, supplierInvoiceNo])
+  @@index([supplierLocationId])
   @@index([date])
   @@index([reversedAt])
   @@index([billingStatus])
@@ -1138,13 +1936,17 @@ model GrnLine {
   receivedQty  Decimal @db.Decimal(18, 3)
   /// Snapshot: agreed purchase rate copied from RM PO line at receipt time.
   rateSnapshot Decimal @default(0) @db.Decimal(18, 4)
+  /// Receiving location (godown) — required for new GRNs; nullable for legacy rows.
+  locationId   Int?
 
   grn               Grn                 @relation(fields: [grnId], references: [id], onDelete: Cascade)
   rmPoLine          RmPurchaseOrderLine @relation(fields: [rmPoLineId], references: [id], onDelete: Cascade)
+  location          Location?           @relation(fields: [locationId], references: [id], onDelete: Restrict)
   purchaseBillLines PurchaseBillLine[]
 
   @@index([grnId])
   @@index([rmPoLineId])
+  @@index([locationId])
 }
 
 /// Supplier purchase invoice against one GRN (no stock movement).
@@ -1184,6 +1986,23 @@ model PurchaseBill {
   /// Supplier state snapshots (optional; used for GST/tally stability in testing mode).
   supplierStateSnapshot     String?            @db.VarChar(128)
   supplierStateCodeSnapshot String?            @db.VarChar(2)
+  /// Registered supplier commercial snapshots (frozen at bill creation).
+  supplierNameSnapshot                 String @default("") @db.VarChar(256)
+  supplierRegisteredGstinSnapshot      String @default("") @db.VarChar(15)
+  supplierRegisteredAddressSnapshot    String @default("") @db.Text
+  supplierRegisteredStateNameSnapshot  String @default("") @db.VarChar(128)
+  supplierRegisteredStateCodeSnapshot  String @default("") @db.VarChar(2)
+  /// Supply location commercial snapshots (frozen at bill creation).
+  supplyLocationLabelSnapshot        String @default("") @db.VarChar(128)
+  supplyLocationAddressSnapshot      String @default("") @db.Text
+  supplyLocationGstinSnapshot        String @default("") @db.VarChar(15)
+  supplyLocationStateNameSnapshot    String @default("") @db.VarChar(128)
+  supplyLocationStateCodeSnapshot    String @default("") @db.VarChar(2)
+  /// Purchase source / GST mode snapshots (frozen at bill creation).
+  purchaseSourceStateNameSnapshot String @default("") @db.VarChar(128)
+  purchaseSourceStateCodeSnapshot String @default("") @db.VarChar(2)
+  purchaseSourceSnapshot          String @default("") @db.VarChar(32)
+  purchaseGstModeSnapshot         String @default("") @db.VarChar(32)
   /// True when bill used relaxed fallback values (testing mode) at any point.
   hasTemporaryTaxData       Boolean            @default(false)
   createdAt                 DateTime           @default(now())
@@ -1269,6 +2088,16 @@ model WorkOrder {
   /// NO_QTY flow: when created from a locked requirement sheet version, link to prevent duplicates.
   requirementSheetId      Int?         @unique
   status                  SimpleStatus @default(PENDING)
+  /// REGULAR: operational hold (does not change line qty or produced qty).
+  holdReason              WoHoldReason?
+  heldAt                  DateTime?
+  heldByUserId            Int?
+  holdRemarks             String?      @db.Text
+  /// Sum of line shortfalls when status = CLOSED_WITH_SHORTFALL (original line qty unchanged).
+  shortfallQty            Decimal?     @db.Decimal(18, 3)
+  closureReason           String?      @db.Text
+  closedAt                DateTime?
+  closedByUserId          Int?
   /// Admin-only override reason when WO is created despite sufficient usable FG stock.
   fgStockOverrideReason   String?      @db.Text
   fgStockOverrideAt       DateTime?
@@ -1276,14 +2105,21 @@ model WorkOrder {
   createdAt               DateTime     @default(now())
   updatedAt               DateTime     @updatedAt
 
+  heldBy                          User?                            @relation("WoHeldBy", fields: [heldByUserId], references: [id], onDelete: SetNull)
+  closedBy                        User?                            @relation("WoClosedBy", fields: [closedByUserId], references: [id], onDelete: SetNull)
   salesOrder                      SalesOrder                       @relation(fields: [salesOrderId], references: [id], onDelete: Restrict)
   cycle                           SalesOrderCycle?                 @relation(fields: [cycleId], references: [id], onDelete: SetNull)
   lines                           WorkOrderLine[]
+  materialAllocations             MaterialAllocation[]
   scrapLoss                       ScrapRecord[]
   requirementSheet                RequirementSheet?                @relation(fields: [requirementSheetId], references: [id], onDelete: SetNull)
   fgStockOverrideBy               User?                            @relation("WoFgStockOverrideBy", fields: [fgStockOverrideByUserId], references: [id], onDelete: SetNull)
   qcRejectedDispositions          QcRejectedDisposition[]
   qcLegacyRejectedClassifications QcLegacyRejectedClassification[]
+  materialIssueNotes              MaterialIssueNote[]
+  productionMaterialRequests      ProductionMaterialRequest[]
+  materialReturnNotes             MaterialReturnNote[]
+  materialRequirements            MaterialRequirement[]
 
   @@index([status])
   @@index([salesOrderId])
@@ -1328,10 +2164,13 @@ model WorkOrderLine {
   qty         Decimal @db.Decimal(18, 3)
   /// Production target for this line; may exceed `qty` for QC/reject buffer. Production is capped here.
   plannedQty  Decimal @db.Decimal(18, 3)
+  /// Set when WO is CLOSED_WITH_SHORTFALL: max(0, qty − approved produced) at close time.
+  shortfallQty Decimal? @db.Decimal(18, 3)
 
   workOrder   WorkOrder         @relation(fields: [workOrderId], references: [id], onDelete: Cascade)
   fgItem      Item              @relation("WoLineFg", fields: [fgItemId], references: [id], onDelete: Restrict)
   productions ProductionEntry[]
+  materialAllocations MaterialAllocation[]
 
   @@index([workOrderId])
   @@index([fgItemId])
@@ -1347,12 +2186,34 @@ model ProductionEntry {
   /// DRAFT: editable; no RM stock issue; excluded from QC queue. APPROVED: locked; RM issued; eligible for QC.
   workflowStatus  ProductionEntryWorkflowStatus @default(DRAFT)
 
-  workOrderLine WorkOrderLine @relation(fields: [workOrderLineId], references: [id], onDelete: Cascade)
-  qcEntries     QcEntry[]
+  workOrderLine   WorkOrderLine                  @relation(fields: [workOrderLineId], references: [id], onDelete: Cascade)
+  qcEntries       QcEntry[]
+  rmConsumptions  ProductionEntryRmConsumption[]
 
   @@index([workOrderLineId])
   @@index([date])
   @@index([workflowStatus])
+}
+
+/// Immutable RM standard vs actual snapshot per approved production batch (REGULAR).
+model ProductionEntryRmConsumption {
+  id                Int                @id @default(autoincrement())
+  productionEntryId Int
+  itemId            Int
+  standardQty       Decimal            @db.Decimal(18, 3)
+  actualQty         Decimal            @db.Decimal(18, 3)
+  varianceQty       Decimal            @db.Decimal(18, 3)
+  variancePercent   Decimal?           @db.Decimal(18, 3)
+  consumptionType   RmConsumptionType?
+  remarks           String?            @db.Text
+  createdAt         DateTime           @default(now())
+
+  productionEntry ProductionEntry @relation(fields: [productionEntryId], references: [id], onDelete: Cascade)
+  item            Item            @relation(fields: [itemId], references: [id], onDelete: Restrict)
+
+  @@unique([productionEntryId, itemId], map: "PeRmConsumption_peId_itemId_key")
+  @@index([productionEntryId])
+  @@index([itemId])
 }
 
 model QcEntry {
@@ -1480,9 +2341,41 @@ model ScrapRecord {
   @@index([qcEntryId])
 }
 
+/// Inventory location master (RM Store, Production, FG Store, etc.).
+model Location {
+  id               Int                @id @default(autoincrement())
+  /// Auto-generated code (e.g. LOC-RM-STORE).
+  locationCode     String             @unique @db.VarChar(32)
+  locationName     String             @db.VarChar(128)
+  locationType     LocationType
+  departmentOwner  LocationDepartment
+  allowRm          Boolean            @default(false)
+  allowFg          Boolean            @default(false)
+  allowSfg         Boolean            @default(false)
+  allowConsumable  Boolean            @default(false)
+  isActive         Boolean            @default(true)
+  /// System-seeded defaults — cannot delete.
+  isSystem         Boolean            @default(false)
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  stockTransactions     StockTransaction[]
+  grnLines              GrnLine[]
+  materialIssuesFrom    MaterialIssueNote[] @relation("MaterialIssueFromLocation")
+  materialIssuesTo      MaterialIssueNote[] @relation("MaterialIssueToLocation")
+  materialReturnsFrom   MaterialReturnNote[] @relation("MaterialReturnFromLocation")
+  materialReturnsTo     MaterialReturnNote[] @relation("MaterialReturnToLocation")
+  materialAllocations   MaterialAllocation[]
+
+  @@index([locationType])
+  @@index([isActive])
+}
+
 model StockTransaction {
   id                      Int          @id @default(autoincrement())
   itemId                  Int
+  /// Nullable for legacy rows; reads treat null as default RM Store until fully migrated.
+  locationId              Int?
   transactionType         StockTxnType
   refId                   Int
   /// Optional linkage for disposition-owned rework QC (prevents pooled consumption across WOs).
@@ -1502,6 +2395,7 @@ model StockTransaction {
   reversedByUserId Int?
 
   item                     Item                     @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  location                 Location?                @relation(fields: [locationId], references: [id], onDelete: Restrict)
   qcRejectedDisposition    QcRejectedDisposition?   @relation(fields: [qcRejectedDispositionId], references: [id], onDelete: SetNull)
   createdBy                User?                    @relation("StockTxnCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
   approvedBy               User?                    @relation("StockTxnApprovedBy", fields: [approvedByUserId], references: [id], onDelete: SetNull)
@@ -1511,6 +2405,7 @@ model StockTransaction {
   stockAdjustmentQcEntries StockAdjustmentQcEntry[]
 
   @@index([itemId, date])
+  @@index([locationId, itemId, stockBucket])
   @@index([transactionType, refId])
   @@index([stockBucket, itemId])
   @@index([qcRejectedDispositionId, stockBucket, itemId])

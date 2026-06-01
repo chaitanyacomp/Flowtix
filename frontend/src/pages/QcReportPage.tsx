@@ -10,6 +10,7 @@ import { displaySalesOrderNo } from "../lib/docNoDisplay";
 import { salesOrdersFocusHref, workOrdersFocusHref } from "../lib/drillDownRoutes";
 import { cn } from "../lib/utils";
 import { useErpReportLiveLoad } from "../hooks/useErpReportLiveLoad";
+import { ErpModal } from "../components/erp/ErpModal";
 
 type CustomerOpt = { id: number; name: string };
 type ItemOpt = { id: number; itemName: string };
@@ -338,7 +339,7 @@ export function QcReportPage() {
 
   return (
     <PageContainer className="erp-flow-page -mt-2 max-w-[min(110rem,calc(100vw-2rem))] space-y-2.5 pb-6">
-      <StickyWorkspaceHead lead={<PageBackLink to="/qc-entry" label="Back to QC" />}>
+      <StickyWorkspaceHead lead={<PageBackLink to="/qc-entry" label="Back to Production QA" />}>
         <div className="min-w-0 space-y-0.5">
           <h1 className="text-base font-semibold leading-tight tracking-tight text-slate-900">QC Report</h1>
           <p className="text-xs leading-snug text-slate-600">
@@ -505,19 +506,13 @@ export function QcReportPage() {
       </div>
 
       {detailRow ? (
-        <div
-          className="fixed inset-0 z-[100] flex justify-end bg-black/40 p-2 sm:p-4"
-          role="presentation"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setDetailRow(null);
-          }}
+        <ErpModal
+          onClose={() => setDetailRow(null)}
+          closeOnBackdropClick
+          backdropClassName="z-[100] !items-stretch !justify-end bg-black/40 p-2 sm:p-4"
+          aria-label="QC trace"
         >
-          <div
-            className="flex h-full w-full max-w-md flex-col overflow-hidden rounded-lg border border-slate-200 bg-white shadow-xl"
-            role="dialog"
-            aria-modal="true"
-            onClick={(e) => e.stopPropagation()}
-          >
+          <div className="flex h-full w-full max-w-md flex-col overflow-hidden rounded-lg border border-slate-200 bg-white shadow-xl">
             <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
               <h2 className="text-sm font-semibold text-slate-900">QC trace</h2>
               <Button type="button" variant="ghost" size="sm" onClick={() => setDetailRow(null)}>
@@ -725,14 +720,14 @@ export function QcReportPage() {
                   ) : null}
                   <Link to="/qc-entry">
                     <Button type="button" size="sm" variant="default">
-                      Open QC
+                      Open Production QA
                     </Button>
                   </Link>
                 </div>
               </div>
             </div>
           </div>
-        </div>
+        </ErpModal>
       ) : null}
     </PageContainer>
   );

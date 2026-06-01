@@ -14,7 +14,7 @@ import {
   operatorTableRowClass,
 } from "../components/erp/OperatorWorkbench";
 import { isReportsReturnContext } from "../lib/drillDownRoutes";
-import { ledgerActivityLabel } from "../lib/stockLedger";
+import { ledgerActivityLabel, ledgerMovementRowClass } from "../lib/stockLedger";
 
 type Item = { id: number; itemName: string; itemType: string; unit: string };
 
@@ -247,29 +247,31 @@ export function StockLedgerPage() {
 
           {bucketRow ? (
             <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-6">
-              <div className="rounded border border-slate-200 bg-slate-50/70 px-3 py-2">
-                <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Usable</div>
-                <div className="mt-0.5 text-lg font-bold tabular-nums text-slate-900">{fmtQty(Number(bucketRow.usableQty || 0))}</div>
+              <div className="rounded-md border border-emerald-200/90 bg-emerald-50/80 px-2.5 py-2 shadow-sm ring-1 ring-emerald-100/70">
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-emerald-900/85">Usable</div>
+                <div className="mt-0.5 text-xl font-bold tabular-nums text-emerald-950">
+                  {fmtQty(Number(bucketRow.usableQty || 0))}
+                </div>
               </div>
-              <div className="rounded border border-slate-200 bg-slate-50/70 px-3 py-2">
-                <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">QC Hold</div>
-                <div className="mt-0.5 text-lg font-bold tabular-nums text-slate-900">{fmtQty(Number(bucketRow.qcHoldQty || 0))}</div>
+              <div className="rounded border border-slate-200/90 bg-slate-50/60 px-2 py-1.5">
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">QC Hold</div>
+                <div className="mt-0.5 text-base font-bold tabular-nums text-slate-800">{fmtQty(Number(bucketRow.qcHoldQty || 0))}</div>
               </div>
-              <div className="rounded border border-slate-200 bg-slate-50/70 px-3 py-2">
-                <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">QC Pending</div>
-                <div className="mt-0.5 text-lg font-bold tabular-nums text-slate-900">{fmtQty(Number(bucketRow.qcPendingQty || 0))}</div>
+              <div className="rounded border border-slate-200/90 bg-slate-50/60 px-2 py-1.5">
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">QC Pending</div>
+                <div className="mt-0.5 text-base font-bold tabular-nums text-slate-800">{fmtQty(Number(bucketRow.qcPendingQty || 0))}</div>
               </div>
-              <div className="rounded border border-slate-200 bg-slate-50/70 px-3 py-2">
-                <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Rework</div>
-                <div className="mt-0.5 text-lg font-bold tabular-nums text-slate-900">{fmtQty(Number(bucketRow.reworkQty || 0))}</div>
+              <div className="rounded border border-violet-100/90 bg-violet-50/40 px-2 py-1.5">
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-violet-900/80">Rework</div>
+                <div className="mt-0.5 text-base font-bold tabular-nums text-slate-800">{fmtQty(Number(bucketRow.reworkQty || 0))}</div>
               </div>
-              <div className="rounded border border-slate-200 bg-slate-50/70 px-3 py-2">
-                <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Scrap</div>
-                <div className="mt-0.5 text-lg font-bold tabular-nums text-slate-900">{fmtQty(Number(bucketRow.scrapQty || 0))}</div>
+              <div className="rounded border border-slate-200/90 bg-slate-100/70 px-2 py-1.5">
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Scrap</div>
+                <div className="mt-0.5 text-base font-bold tabular-nums text-slate-800">{fmtQty(Number(bucketRow.scrapQty || 0))}</div>
               </div>
-              <div className="rounded border border-slate-200 bg-slate-50/70 px-3 py-2">
-                <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Total</div>
-                <div className="mt-0.5 text-lg font-bold tabular-nums text-slate-900">{fmtQty(Number(summaryAllBuckets || 0))}</div>
+              <div className="rounded border border-slate-200/90 bg-white px-2 py-1.5">
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Total</div>
+                <div className="mt-0.5 text-base font-bold tabular-nums text-slate-900">{fmtQty(Number(summaryAllBuckets || 0))}</div>
               </div>
             </div>
           ) : null}
@@ -294,7 +296,7 @@ export function StockLedgerPage() {
                         <th className="px-3 py-2 font-medium">Bucket</th>
                         <th className="px-3 py-2 text-right font-medium">Qty IN</th>
                         <th className="px-3 py-2 text-right font-medium">Qty OUT</th>
-                        <th className="px-3 py-2 text-right font-medium">Usable after txn</th>
+                        <th className="px-2 py-1.5 text-right font-medium text-emerald-900">Usable after txn</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -305,23 +307,38 @@ export function StockLedgerPage() {
                         const refText =
                           r.refId && Number(r.refId) > 0 ? `#${r.refId}` : r.qcRejectedDispositionId ? `Disp #${r.qcRejectedDispositionId}` : "—";
                         const isLatestRow = sort === "desc" && idx === 0;
+                        const movementTint = ledgerMovementRowClass(r.transactionType, r.stockBucket);
+                        const isUsableBucket = String(r.stockBucket).toUpperCase() === "USABLE";
                         return (
                           <tr
                             key={r.id}
                             className={cn(
                               "border-b border-slate-100 align-middle",
-                              isLatestRow && "bg-emerald-50/70",
+                              movementTint,
+                              isLatestRow && isUsableBucket && "ring-1 ring-inset ring-emerald-200/80",
                               operatorTableRowClass,
                             )}
-                            title={isLatestRow ? "Latest transaction (most recent stock state)" : undefined}
+                            title={isLatestRow ? "Latest movement — current usable balance" : undefined}
                           >
-                            <td className="px-3 py-2 tabular-nums text-slate-700">{String(r.date).slice(0, 10)}</td>
-                            <td className="px-3 py-2 text-slate-800">{ledgerActivityLabel(r.transactionType, r)}</td>
-                            <td className="px-3 py-2 text-slate-700">{refText}</td>
-                            <td className="px-3 py-2 font-mono text-[12px] text-slate-700">{r.stockBucket}</td>
-                            <td className="px-3 py-2 text-right tabular-nums text-emerald-700">{qIn > 0 ? fmtQty(qIn) : "—"}</td>
-                            <td className="px-3 py-2 text-right tabular-nums text-red-700">{qOut > 0 ? fmtQty(qOut) : "—"}</td>
-                            <td className="px-3 py-2 text-right tabular-nums text-slate-700">
+                            <td className="px-2 py-1.5 tabular-nums text-slate-700">{String(r.date).slice(0, 10)}</td>
+                            <td className="px-2 py-1.5 font-medium text-slate-800">{ledgerActivityLabel(r.transactionType, r)}</td>
+                            <td className="px-2 py-1.5 text-slate-700">{refText}</td>
+                            <td
+                              className={cn(
+                                "px-2 py-1.5 font-mono text-[11px]",
+                                isUsableBucket ? "font-semibold text-emerald-900" : "text-slate-600",
+                              )}
+                            >
+                              {r.stockBucket}
+                            </td>
+                            <td className="px-2 py-1.5 text-right tabular-nums text-emerald-700">{qIn > 0 ? fmtQty(qIn) : "—"}</td>
+                            <td className="px-2 py-1.5 text-right tabular-nums text-red-700">{qOut > 0 ? fmtQty(qOut) : "—"}</td>
+                            <td
+                              className={cn(
+                                "px-2 py-1.5 text-right tabular-nums",
+                                isUsableBucket ? "font-bold text-emerald-900" : "text-slate-600",
+                              )}
+                            >
                               {running != null && Number.isFinite(running) ? fmtQty(running) : "—"}
                             </td>
                           </tr>

@@ -4,6 +4,8 @@ import { deleteUrlParamKeys } from "../../lib/urlSearchParamsPatch";
 import { DrillFocusBanner } from "../../components/DrillFocusBanner";
 import { useDebouncedUrlStringParam, useUrlQueryState } from "../../hooks/useUrlQueryState";
 import { Card, CardContent, CardHeader, CardTitle } from "../../components/ui/card";
+import { ErpEmptyState, ErpKpiLabel, ErpKpiSegment, ErpKpiStrip, ErpKpiValue } from "../../components/erp/foundation";
+import { erpKpi, erpTable } from "../../lib/erpFoundationTokens";
 import {
   DRILL_FOCUS_EMPTY_FILTERED_SUFFIX,
   DRILL_FOCUS_HINT_HIDDEN_BY_FILTERS,
@@ -19,6 +21,7 @@ import { Input } from "../../components/ui/input";
 import { useShortcutHints } from "../../hooks/useShortcutHints";
 import { FieldShortcutHint } from "../../components/ui/FieldShortcutHint";
 import { FIELD_HINT_GRID_NAV, FIELD_HINT_PO_SUPPLIER, FIELD_HINT_SAVE } from "../../lib/shortcutHintCopy";
+import { ErpModal } from "../../components/erp/ErpModal";
 import {
   buildInitialPoLine,
   computeLineAmount,
@@ -32,15 +35,20 @@ import {
 } from "./rmPurchaseShared";
 import { PageBackLink, PageContainer, StickyWorkspaceHead } from "../../components/PageHeader";
 import { resolveRmPurchaseBackNav } from "./rmPurchaseBackNav";
-import { Package } from "lucide-react";
+import { Package, Search, X } from "lucide-react";
 import { suppressMouseFocusOnDrillRow } from "../../lib/drillDownRowProps";
 import { cn } from "../../lib/utils";
 import { useFastEntryForm } from "../../hooks/useFastEntryForm";
 import { useModalFocusRestore } from "../../hooks/useModalFocusRestore";
+import { ProcurementQueueContextBanner } from "../../components/erp/ProcurementQueueContextBanner";
+import { PROCUREMENT_TERMS } from "../../lib/procurementTerminology";
+import { PendingMaterialRequestsPanel } from "../../components/purchase/PendingMaterialRequestsPanel";
 
 type PurchaseMeta = { testingModeRelaxedTaxFields: boolean };
 
 const RM_PO_GRN_URL_OMIT: Record<string, string> = { poStatus: "ALL" };
+const DIRECT_PO_DISABLED_MESSAGE =
+  "Direct RM PO creation is blocked. Create POs only from approved Store RM Requisitions in the pending requests queue.";
 
 function rmPoCreatedAt(r: RmPoRow): string | undefined {
   const v = (r as { createdAt?: string }).createdAt;
@@ -84,6 +92,8 @@ export function RmPurchaseListPage() {
   );
   const { searchParams, setSearchParams, patch, read } = useUrlQueryState(RM_PO_GRN_URL_OMIT);
   const focusPoId = Number(searchParams.get(DRILL_QUERY.rmPoId)) || 0;
+  const focusPendingRequests = searchParams.get("focus") === "pending-requests";
+  const focusOpenPos = searchParams.get("focus") === "open-pos";
   const poStatusFilter = read.enum("poStatus", ["ALL", "OPEN", "COMPLETED", "CANCELLED"] as const, "ALL");
   const qFromUrl = read.string("q");
   const [qDraft, setQDraft] = useDebouncedUrlStringParam({ urlValue: qFromUrl, patch, paramKey: "q" });
@@ -162,6 +172,23 @@ export function RmPurchaseListPage() {
     void refresh();
   }, []);
 
+  React.useEffect(() => {
+    if (!focusPendingRequests || !listLoaded) return;
+    const t = window.setTimeout(() => {
+      document.getElementById("rm-po-pending-requests")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 150);
+    return () => window.clearTimeout(t);
+  }, [focusPendingRequests, listLoaded]);
+
+  React.useEffect(() => {
+    if (!focusOpenPos || !listLoaded) return;
+    if (poStatusFilter !== "OPEN") patch({ poStatus: "OPEN" });
+    const t = window.setTimeout(() => {
+      document.getElementById("rm-po-order-list")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 150);
+    return () => window.clearTimeout(t);
+  }, [focusOpenPos, listLoaded, poStatusFilter, patch]);
+
   useModalFocusRestore(newPoOpen);
   useFastEntryForm({
     containerRef: newPoModalFormRef,
@@ -230,7 +257,7 @@ export function RmPurchaseListPage() {
     setPoLines(lines);
     setSupplierId(suppliers[0]?.id ?? 0);
     setPoRemarks("");
-    setNewPoOpen(true);
+    setError(DIRECT_PO_DISABLED_MESSAGE);
   }, [listLoaded, items, relaxedTax, suppliers, location.search, location.state]);
 
   /**
@@ -265,7 +292,7 @@ export function RmPurchaseListPage() {
     setPoLines([line]);
     setSupplierId(suppliers[0]?.id ?? 0);
     setPoRemarks(matched ? `RM shortage cover: ${matched.itemName}` : "");
-    setNewPoOpen(true);
+    setError(DIRECT_PO_DISABLED_MESSAGE);
   }, [listLoaded, items, relaxedTax, suppliers, location.search]);
 
   React.useEffect(() => {
@@ -284,8 +311,7 @@ export function RmPurchaseListPage() {
   }, [items, newPoOpen, relaxedTax]);
 
   function openNewPoModal() {
-    setError(null);
-    setNewPoOpen(true);
+    setError(DIRECT_PO_DISABLED_MESSAGE);
     setPoRemarks("");
     setPoLines(items.length ? [buildInitialPoLine(items[0], relaxedTax)] : []);
     setSupplierId(suppliers[0]?.id ?? 0);
@@ -489,10 +515,6 @@ export function RmPurchaseListPage() {
         }
         return;
       }
-      if (ev.key === "Escape" && !ev.ctrlKey && !ev.altKey && !ev.metaKey) {
-        setNewPoOpen(false);
-        setError(null);
-      }
     }
     window.addEventListener("keydown", onGlobalKey);
     return () => window.removeEventListener("keydown", onGlobalKey);
@@ -535,8 +557,15 @@ export function RmPurchaseListPage() {
     }, 0);
   }
 
+  const kpiSegments = [
+    { key: "total", label: "Total POs", value: poKpi.total, tone: "muted" as const },
+    { key: "pending", label: "Pending GRN", value: poKpi.pending, tone: poKpi.pending > 0 ? ("warn" as const) : ("muted" as const) },
+    { key: "partial", label: "Partially Received", value: poKpi.partial, tone: poKpi.partial > 0 ? ("warn" as const) : ("muted" as const) },
+    { key: "completed", label: "Completed", value: poKpi.completed, tone: "muted" as const },
+  ] as const;
+
   return (
-    <PageContainer className="space-y-4 pb-[5.5rem] sm:pb-20">
+    <PageContainer className="space-y-2 pb-4">
       <DrillFocusBanner
         active={focusPoId > 0}
         title={drillFocusTitleRmPo(focusPoId, focusedPoRow?.supplier.name)}
@@ -557,28 +586,40 @@ export function RmPurchaseListPage() {
       />
 
       <StickyWorkspaceHead lead={<PageBackLink to={rmPurchaseBackNav.backRoute} label={rmPurchaseBackNav.backLabel} />}>
-        <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
-          <div className="min-w-0 space-y-1">
-            <h1 className="text-xl font-semibold leading-tight tracking-tight text-slate-900">Material Planning</h1>
-            <p className="text-sm leading-relaxed text-slate-600">
-              Purchase orders, GRN receipts, and supplier follow-up.
+        <div className="erp-page-title-row flex min-w-0 flex-wrap items-start justify-between gap-2">
+          <div className="min-w-0 flex-1 space-y-0.5">
+            <h1 className="erp-type-page-title">Purchase & GRN</h1>
+            <p className="erp-type-helper text-slate-500">
+              Manage supplier purchase orders, GRN tracking, and raw material receipts.
             </p>
           </div>
-          <Button type="button" className="h-10 w-fit shrink-0 font-semibold shadow-sm sm:mt-0.5" onClick={openNewPoModal}>
-            + New Purchase Order
-          </Button>
+          <div className="erp-page-header-actions shrink-0 pt-0.5">
+            <Button type="button" size="sm" className="h-8 font-semibold shadow-sm" disabled title={DIRECT_PO_DISABLED_MESSAGE}>
+              New PO from approved requisition only
+            </Button>
+          </div>
         </div>
       </StickyWorkspaceHead>
 
+      <ProcurementQueueContextBanner
+        salesOrderId={Number(navSearchParams.get("salesOrderId")) || undefined}
+        materialRequirementId={Number(navSearchParams.get("materialRequirementId")) || undefined}
+      />
+
+      <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-sm">
+        <p className="text-[13px] font-bold text-slate-950">{PROCUREMENT_TERMS.PROCUREMENT_QUEUE_SECTION}</p>
+        <PendingMaterialRequestsPanel embedded />
+      </div>
+
       {navSearchParams.get("source") === "no_qty_production_shortage" ? (
-        <div className="rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-950 shadow-sm">
+        <div className="rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-[12px] leading-snug text-sky-950">
           <p className="font-semibold">Source: NO_QTY Production Shortage</p>
-          <p className="mt-1 text-sky-900/90">SO / Cycle / WO linked — post GRN to return to the same Production step.</p>
+          <p className="text-sky-900/90">SO linked — after GRN, continue with Work Order creation and RM issue before production.</p>
         </div>
       ) : null}
 
       {navSearchParams.get("source") === "rm-shortage" ? (
-        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950 shadow-sm">
+        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] leading-snug text-amber-950">
           <p className="font-semibold">
             Source: RM Shortage Workspace
             {navSearchParams.get("itemName")
@@ -587,128 +628,136 @@ export function RmPurchaseListPage() {
                 ? ` — ${navSearchParams.get("itemCode")}`
                 : ""}
           </p>
-          <p className="mt-1 text-amber-900/90">
-            New PO modal opened with the shortage item prefilled
+          <p className="text-amber-900/90">
+            Direct PO creation is blocked until Store approves and sends an RM Requisition
             {navSearchParams.get("shortageQty") ? ` (qty ${navSearchParams.get("shortageQty")})` : ""}
-            . Set supplier and rate, then save to unblock production.
+            . Use the pending approved requisitions queue.
           </p>
         </div>
       ) : null}
 
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        {(
-          [
-            { key: "total", label: "Total POs", value: poKpi.total },
-            { key: "pending", label: "Pending GRN", value: poKpi.pending },
-            { key: "partial", label: "Partially Received", value: poKpi.partial },
-            { key: "completed", label: "Completed", value: poKpi.completed },
-          ] as const
-        ).map(({ key, label, value }) => (
-          <div
-            key={key}
-            className="rounded-xl border border-slate-200/90 bg-white p-3 shadow-sm ring-1 ring-slate-100/70"
-          >
-            <div className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</div>
-            <div className="mt-1 text-2xl font-semibold tabular-nums text-slate-900">{value}</div>
-          </div>
+      {!focusPendingRequests ? (
+      <>
+      <ErpKpiStrip className={erpKpi.stripCompact} role="toolbar" aria-label="Purchase order metrics">
+        {kpiSegments.map(({ key, label, value, tone }) => (
+          <ErpKpiSegment key={key} as="div">
+            <ErpKpiLabel>{label}</ErpKpiLabel>
+            <ErpKpiValue tone={tone} className="tabular-nums">
+              {value}
+            </ErpKpiValue>
+          </ErpKpiSegment>
         ))}
+      </ErpKpiStrip>
+
+      {error && !newPoOpen ? (
+        <div className="rounded-md border border-red-200 bg-red-50 px-3 py-1.5 text-[12px] text-red-800">{error}</div>
+      ) : null}
+
+      <div className="flex flex-wrap items-center gap-2 rounded-md border border-slate-200 bg-white px-2 py-1.5 shadow-sm">
+        <select
+          aria-label="PO status"
+          className="erp-flow-filter-input h-8 min-w-[10rem] rounded-md border border-slate-200 bg-white px-2 text-[12px] text-slate-800 shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+          value={poStatusFilter}
+          onChange={(e) => patch({ poStatus: e.target.value as typeof poStatusFilter })}
+        >
+          <option value="ALL">All statuses</option>
+          <option value="OPEN">Open (pending / partial)</option>
+          <option value="COMPLETED">Fully received</option>
+          <option value="CANCELLED">Cancelled</option>
+        </select>
+        <div className="relative min-w-[10rem] flex-1 max-w-[18rem]">
+          <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" aria-hidden />
+          <Input
+            type="search"
+            aria-label="Search purchase orders"
+            className="h-8 pl-7 text-[12px] shadow-sm"
+            value={qDraft}
+            onChange={(e) => setQDraft(e.target.value)}
+            placeholder="PO #, supplier, item…"
+          />
+        </div>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="h-8 w-8 shrink-0 p-0"
+          disabled={!poListFiltersActive}
+          onClick={clearPoListFilters}
+          aria-label="Clear filters"
+          title="Clear filters"
+        >
+          <X className="h-3.5 w-3.5" aria-hidden />
+        </Button>
+        {poListFiltersActive && rows.length > 0 ? (
+          <span className="ml-auto text-[11px] tabular-nums text-slate-500">
+            {visiblePoRows.length} of {rows.length}
+          </span>
+        ) : null}
       </div>
 
-      <Card className="overflow-hidden border-slate-200/90 shadow-sm ring-1 ring-slate-100/70">
-        <CardHeader className="border-b border-slate-100 bg-gradient-to-b from-slate-50/95 to-white px-4 py-2.5">
-          <CardTitle className="text-sm font-semibold text-slate-900">Search &amp; filters</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-2 p-4">
-          {error && !newPoOpen ? (
-            <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{error}</div>
-          ) : null}
-          <div className="flex flex-col gap-2 md:flex-row md:items-end md:gap-3">
-            <label className="grid min-w-[12rem] flex-1 shrink-0 gap-1 text-xs font-medium text-slate-600 md:max-w-[200px]">
-              PO status
-              <select
-                className="h-9 rounded-md border border-slate-200 bg-white px-2.5 text-sm shadow-sm"
-                value={poStatusFilter}
-                onChange={(e) => patch({ poStatus: e.target.value as typeof poStatusFilter })}
-              >
-                <option value="ALL">All</option>
-                <option value="OPEN">Open (pending / partial)</option>
-                <option value="COMPLETED">Fully received</option>
-                <option value="CANCELLED">Cancelled</option>
-              </select>
-            </label>
-            <label className="grid min-w-0 flex-1 gap-1 text-xs font-medium text-slate-600">
-              Search
-              <Input
-                className="h-9 shadow-sm"
-                value={qDraft}
-                onChange={(e) => setQDraft(e.target.value)}
-                placeholder="PO #, supplier, item…"
-              />
-            </label>
-            <div className="flex justify-end md:shrink-0 md:pb-px">
+      <div
+        id="rm-po-order-list"
+        className="flex min-h-0 flex-col overflow-hidden rounded-md border border-slate-200 bg-white shadow-sm"
+      >
+        {rows.length > 0 ? (
+          <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50/80 px-3 py-1.5">
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-600">Purchase orders</span>
+            <span className="text-[11px] tabular-nums text-slate-500">
+              {visiblePoRows.length} of {rows.length}
+            </span>
+          </div>
+        ) : null}
+
+        <div className="overflow-x-auto">
+          {!rows.length && listLoaded ? (
+            <ErpEmptyState
+              variant="inline"
+              title="No purchase orders created yet"
+              body="Create a purchase order from the header to receive raw material stock and post GRNs against supplier deliveries."
+              icon={<Package className="h-4 w-4" strokeWidth={2} />}
+              className="border-0 bg-transparent py-8 shadow-none"
+            />
+          ) : rows.length > 0 && visiblePoRows.length === 0 ? (
+            <div className="px-3 py-6 text-center">
+              <p className="text-[13px] text-slate-600">
+                No purchase orders match the current filters.
+                {poDrillHiddenByFilters ? ` ${DRILL_FOCUS_EMPTY_FILTERED_SUFFIX.purchaseOrder}` : ""}
+              </p>
               <Button
                 type="button"
-                variant="outline"
                 size="sm"
-                className="h-8 px-3 text-xs font-medium"
-                disabled={!poListFiltersActive}
+                variant="outline"
+                className="mt-2 h-7 text-[12px]"
                 onClick={clearPoListFilters}
               >
                 Clear filters
               </Button>
             </div>
-          </div>
-          {poListFiltersActive && rows.length > 0 ? (
-            <p className="text-xs text-slate-500">
-              Showing <span className="font-semibold tabular-nums text-slate-700">{visiblePoRows.length}</span> of{" "}
-              <span className="tabular-nums">{rows.length}</span> purchase orders
-            </p>
-          ) : null}
-        </CardContent>
-      </Card>
-
-      <Card className="overflow-hidden border-slate-200/90 shadow-sm ring-1 ring-slate-100/70">
-        <CardHeader className="border-b border-slate-100 bg-gradient-to-b from-slate-50/95 to-white px-4 py-2.5">
-          <CardTitle className="text-sm font-semibold text-slate-900">Purchase orders</CardTitle>
-        </CardHeader>
-        <CardContent className="p-0">
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[760px] border-collapse text-sm">
-              <thead>
-                <tr className="border-b border-slate-200 bg-slate-50/95 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">
-                  <th className="whitespace-nowrap px-4 py-2.5">PO number</th>
-                  <th className="min-w-[8rem] px-4 py-2.5">Supplier</th>
-                  <th className="whitespace-nowrap px-4 py-2.5">Status</th>
-                  <th className="whitespace-nowrap px-4 py-2.5">PO date</th>
-                  <th className="whitespace-nowrap px-4 py-2.5 text-right">Actions</th>
+          ) : (
+            <table
+              className={cn(
+                erpTable.standard,
+                "erp-table-dense w-full min-w-[640px] text-[12px] [&_tbody_td]:!py-1 [&_thead_th]:!py-1",
+              )}
+            >
+              <thead className="sticky top-0 z-10 bg-slate-50">
+                <tr>
+                  <th className="whitespace-nowrap">PO number</th>
+                  <th className="min-w-[8rem]">Supplier</th>
+                  <th className="min-w-[7rem]">Supply from</th>
+                  <th className="whitespace-nowrap">Status</th>
+                  <th className="whitespace-nowrap text-right">PO date</th>
+                  <th className={cn(erpTable.actionCell, "text-right")}>Actions</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100">
-                {!rows.length && listLoaded ? (
-                  <tr>
-                    <td colSpan={5} className="p-0">
-                      <div className="flex flex-col items-center justify-center px-4 py-12 text-center">
-                        <div className="mb-4 rounded-full bg-slate-100 p-3 ring-1 ring-slate-200/80">
-                          <Package className="h-8 w-8 text-slate-500" aria-hidden />
-                        </div>
-                        <h3 className="text-base font-semibold text-slate-900">No purchase orders yet</h3>
-                        <p className="mt-1 max-w-sm text-sm leading-relaxed text-slate-600">
-                          Create your first purchase order to receive raw material stock.
-                        </p>
-                        <Button type="button" className="mt-5 font-semibold shadow-sm" onClick={openNewPoModal}>
-                          + New Purchase Order
-                        </Button>
-                      </div>
-                    </td>
-                  </tr>
-                ) : null}
+              <tbody>
                 {visiblePoRows.map((r) => {
                   const detailUrl = withReportsReturnContextIfPresent(`/rm-po-grn/${r.id}`, location.search);
                   return (
                     <tr
                       key={r.id}
                       {...{ [DRILL_DATA.poId]: r.id }}
-                      className="cursor-pointer select-none bg-white transition-colors hover:bg-slate-50/90"
+                      className="cursor-pointer select-none transition-colors hover:bg-slate-50/90"
                       onClick={() => navigate(detailUrl)}
                       onKeyDown={(e) => {
                         if (e.key === "Enter" || e.key === " ") {
@@ -721,51 +770,65 @@ export function RmPurchaseListPage() {
                       role="button"
                       aria-label={`Open purchase order ${formatRmPoNo(r.id)}`}
                     >
-                      <td className="whitespace-nowrap px-4 py-2.5 font-semibold text-slate-900">{formatRmPoNo(r.id)}</td>
-                      <td className="max-w-[14rem] truncate px-4 py-2.5 text-slate-800" title={r.supplier.name}>
+                      <td className="whitespace-nowrap font-semibold text-slate-900">{formatRmPoNo(r.id)}</td>
+                      <td className="max-w-[14rem] truncate text-slate-800" title={r.supplier.name}>
                         {r.supplier.name}
                       </td>
-                      <td className="px-4 py-2.5">
+                      <td className="max-w-[10rem] truncate text-slate-600" title={r.resolvedSupplierCommercial?.supplyLocation?.label ?? ""}>
+                        {r.resolvedSupplierCommercial?.supplyLocation?.label ?? "—"}
+                        {r.resolvedSupplierCommercial?.gstMode === "INTERSTATE" ? (
+                          <span className="ml-1 rounded bg-purple-100 px-1 py-0.5 text-[10px] font-semibold text-purple-900">
+                            IGST
+                          </span>
+                        ) : r.resolvedSupplierCommercial?.gstMode === "LOCAL" ? (
+                          <span className="ml-1 rounded bg-emerald-100 px-1 py-0.5 text-[10px] font-semibold text-emerald-900">
+                            Local
+                          </span>
+                        ) : null}
+                      </td>
+                      <td>
                         <span
                           className={cn(
-                            "inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium",
+                            "inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium",
                             poStatusBadgeClass(r.status),
                           )}
                         >
                           {poStatusLabel(r.status)}
                         </span>
                       </td>
-                      <td className="whitespace-nowrap px-4 py-2.5 tabular-nums text-slate-700">
+                      <td className="whitespace-nowrap text-right tabular-nums text-slate-700">
                         {formatPoListDate(rmPoCreatedAt(r))}
                       </td>
-                      <td className="px-4 py-2 text-right" onClick={(e) => e.stopPropagation()}>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          className="h-8 px-3 text-xs font-medium"
-                          onClick={() => navigate(detailUrl)}
-                        >
-                          Open
-                        </Button>
+                      <td className={erpTable.actionCell} onClick={(e) => e.stopPropagation()}>
+                        <div className={erpTable.actions}>
+                          <button
+                            type="button"
+                            className={cn(erpTable.actLink, "text-[11px]")}
+                            onClick={() => navigate(detailUrl)}
+                          >
+                            Open
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   );
                 })}
               </tbody>
             </table>
-          </div>
-          {!rows.length ? null : visiblePoRows.length === 0 ? (
-            <div className="border-t border-slate-100 px-4 py-3 text-sm text-slate-600">
-              No purchase orders match the current filters.
-              {poDrillHiddenByFilters ? ` ${DRILL_FOCUS_EMPTY_FILTERED_SUFFIX.purchaseOrder}` : ""}
-            </div>
-          ) : null}
-        </CardContent>
-      </Card>
+          )}
+        </div>
+      </div>
+      </>
+      ) : null}
 
       {newPoOpen ? (
-        <div className="erp-modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="rm-po-new-title">
+        <ErpModal
+          onClose={() => {
+            setNewPoOpen(false);
+            setError(null);
+          }}
+          aria-labelledby="rm-po-new-title"
+        >
           <Card className="erp-modal-shell max-h-[90vh] overflow-y-auto rounded-xl border-slate-200/90 shadow-xl ring-1 ring-slate-200/50">
             <CardHeader className="border-b border-slate-100 bg-gradient-to-b from-slate-50/95 to-white pb-3">
               <CardTitle id="rm-po-new-title" className="text-base font-semibold text-slate-900">
@@ -1019,7 +1082,7 @@ export function RmPurchaseListPage() {
               </div>
             </CardContent>
           </Card>
-        </div>
+        </ErpModal>
       ) : null}
     </PageContainer>
   );

@@ -21,6 +21,10 @@ export function workOrderStatusTone(status: string): DashboardBadgeTone {
       return "success";
     case "REJECTED":
       return "critical";
+    case "HOLD":
+      return "active";
+    case "CLOSED_WITH_SHORTFALL":
+      return "neutral";
     default:
       return "neutral";
   }

@@ -3,6 +3,7 @@ const { z } = require("zod");
 const { prisma } = require("../utils/prisma");
 const { requireAuth, requireRole } = require("../middleware/auth");
 const { effectiveQtyPerUnit } = require("../services/bomUtils");
+const { filterBomLinesForRmIssue } = require("../services/bomComponentService");
 const {
   assertSufficientStockForQtyOut,
   assertNonNegativeStockAfterNetChange,
@@ -31,6 +32,10 @@ const {
   DISPATCH_ALLOC_MODE,
 } = require("../services/salesOrderDispatchAllocation");
 const { mapSoLinesToDispatchFifoInputs } = require("../services/regularSoBufferQty");
+const { upsertRegularSoPlanningSnapshot } = require("../services/regularSoPlanningSnapshotService");
+const {
+  ensureSubmittedProductionMaterialRequestForWorkOrder,
+} = require("../services/productionMaterialRequestService");
 const {
   assertWorkOrderLinesAgainstSalesOrder,
   loadWorkOrderQuantityContext,
@@ -64,6 +69,32 @@ const productionRouter = express.Router();
 const { DocType } = require("../prismaClientPackage");
 const { allocateDocNo } = require("../services/docNoService");
 const { normalizePositiveCycleId } = require("../utils/cycleIds");
+const { maybeAutoCloseSalesOrderOperationally } = require("../services/salesOrderOperationalAutoClose");
+const { approvedBomWhere, approvedBomOrderBy } = require("../services/bomStatus");
+const { evaluateWoPrepareReadiness } = require("../services/materialPlanningService");
+const { computeFgGapLinesForSalesOrder } = require("../services/rmCheckService");
+const {
+  buildProductionRmReadiness,
+  assertRegularProductionRmReadiness,
+  issueRmStockForProductionBatchAtProductionLocations,
+  returnRmStockForProductionBatchFromProductionLocations,
+  getWorkOrderProductionLocationIds,
+} = require("../services/productionRmReadinessService");
+const { aggregateRmDemandForFgLines } = require("../services/bomExplosionService");
+const {
+  buildRmConsumptionPreview,
+  resolveConsumptionForRegularApproval,
+  persistProductionEntryRmConsumption,
+  RM_CONSUMPTION_ROUNDING_TOLERANCE_KG,
+} = require("../services/productionRmConsumptionService");
+const {
+  HOLD_REASONS,
+  holdWorkOrder,
+  resumeWorkOrder,
+  closeWorkOrderWithShortfall,
+  assertWorkOrderAllowsProduction,
+  shouldFreezeStatusSync,
+} = require("../services/workOrderLifecycleService");
 
 async function assertNoQtyWorkOrderInActiveCycleOrThrow(tx, workOrderId, messagePrefix) {
   const wo = await tx.workOrder.findUnique({
@@ -342,15 +373,53 @@ async function buildWorkOrderListPayload(db, rows, { pendingOnly, includeWorkOrd
   const producedByLineId =
     lineIds.length === 0 ? new Map() : await getApprovedProducedQtyByWorkOrderLineIds(db, lineIds);
 
+  /**
+   * Per-line aggregated pending QC qty, derived from approved production entries on the line.
+   *
+   * Planning & Cycle Planning surfaces use this to distinguish "Production Done" (no remaining
+   * production, QC complete) from "QC Pending" (production approved, QC not finalized) — the
+   * Work Order `status` flag alone is set to COMPLETED from approved production qty and must
+   * not be treated as proof that QC has cleared.
+   */
+  const pendingQcByLineId = new Map();
+  if (lineIds.length > 0) {
+    const prodEntries = await db.productionEntry.findMany({
+      where: { workOrderLineId: { in: lineIds }, workflowStatus: "APPROVED" },
+      select: {
+        id: true,
+        workOrderLineId: true,
+        producedQty: true,
+        qcEntries: {
+          where: QC_ENTRY_ACTIVE_WHERE,
+          select: { acceptedQty: true, rejectedQty: true },
+        },
+      },
+    });
+    for (const pe of prodEntries) {
+      const lid = Number(pe.workOrderLineId);
+      if (!(lid > 0)) continue;
+      const producedQty = Number(pe.producedQty ?? 0);
+      const acc = sumActiveQcAcceptedQty(pe.qcEntries || []);
+      const rej = sumActiveQcRejectedQty(pe.qcEntries || []);
+      const pend = getProductionBatchQcPendingQty(producedQty, acc, rej);
+      if (pend > REPORT_QUEUE_EPS) {
+        pendingQcByLineId.set(lid, (pendingQcByLineId.get(lid) || 0) + pend);
+      }
+    }
+  }
+
   const mapped = rows.map((wo) => {
     const linesWithMetrics = (wo.lines || []).map((l) => {
       const required = Number(l.qty);
       const usedQty = producedByLineId.get(l.id) ?? 0;
       const remainingQty = Math.max(0, required - usedQty);
+      const qcPendingQty = pendingQcByLineId.get(l.id) ?? 0;
       return {
         ...l,
         approvedProducedQty: usedQty,
         remainingQty,
+        qcPendingQty,
+        hasPendingQc: qcPendingQty > REPORT_QUEUE_EPS,
       };
     });
     const lines = pendingOnly
@@ -371,6 +440,16 @@ const PROD_TOLERANCE_PCT = 0.05;
  * @param {import('@prisma/client').Prisma.TransactionClient} tx
  * @param {{ excludeProductionId?: number }} [opts]
  */
+/** REGULAR / REPLACEMENT — Phase 3C RM readiness gate applies; NO_QTY unchanged. */
+async function isRegularProductionWorkOrderLine(tx, workOrderLineId) {
+  const wol = await tx.workOrderLine.findUnique({
+    where: { id: workOrderLineId },
+    select: { workOrder: { select: { salesOrder: { select: { orderType: true } } } } },
+  });
+  const ot = wol?.workOrder?.salesOrder?.orderType;
+  return ot != null && ot !== "NO_QTY";
+}
+
 async function sumProducedQtyOnLine(tx, workOrderLineId, opts = {}) {
   const where = { workOrderLineId };
   if (opts.excludeProductionId != null) {
@@ -388,13 +467,15 @@ async function sumProducedQtyOnLine(tx, workOrderLineId, opts = {}) {
  * @param {import('@prisma/client').Prisma.TransactionClient} tx
  */
 async function issueRmStockForProductionBatch(tx, { productionId, fgItemId, producedQty }) {
-  const bom = await tx.bom.findUnique({
-    where: { fgItemId },
+  const bom = await tx.bom.findFirst({
+    where: approvedBomWhere(fgItemId),
+    orderBy: approvedBomOrderBy,
     include: { lines: true },
   });
   if (!bom) return false;
-  for (const line of bom.lines) {
-    const perUnit = effectiveQtyPerUnit(line.baseQty, line.wastagePercent);
+  const issueLines = await filterBomLinesForRmIssue(tx, bom);
+  for (const line of issueLines) {
+    const perUnit = effectiveQtyPerUnit(line.baseQtyPerFg ?? line.baseQty, line.wastagePercent, line.qcAllowancePercent);
     const rmQtyOut = perUnit * Number(producedQty);
     await assertSufficientStockForQtyOut(
       tx,
@@ -422,17 +503,19 @@ async function issueRmStockForProductionBatch(tx, { productionId, fgItemId, prod
  * @param {import('@prisma/client').PrismaClient | import('@prisma/client').Prisma.TransactionClient} client
  */
 async function computeNoQtyRmShortagesForApproval(client, { fgItemId, producedQty }) {
-  const bom = await client.bom.findUnique({
-    where: { fgItemId },
+  const bom = await client.bom.findFirst({
+    where: approvedBomWhere(fgItemId),
+    orderBy: approvedBomOrderBy,
     include: { lines: true },
   });
   if (!bom?.lines?.length) return [];
   const producedQtyNum = Number(producedQty);
+  const issueLines = await filterBomLinesForRmIssue(client, bom);
   /** @type {{ rmItemId: number; rmItemName: string; requiredQty: number; availableQty: number; shortageQty: number; unitName: string }[]} */
   const shortages = [];
   const round6 = (x) => Math.round(Number(x) * 1e6) / 1e6;
-  for (const line of bom.lines) {
-    const perUnit = effectiveQtyPerUnit(line.baseQty, line.wastagePercent);
+  for (const line of issueLines) {
+    const perUnit = effectiveQtyPerUnit(line.baseQtyPerFg ?? line.baseQty, line.wastagePercent, line.qcAllowancePercent);
     const requiredQty = perUnit * producedQtyNum;
     if (requiredQty <= STOCK_EPS) continue;
     const availableQty = await getItemStockQty(line.rmItemId, client);
@@ -461,14 +544,16 @@ async function computeNoQtyRmShortagesForApproval(client, { fgItemId, producedQt
  * @returns {{ touchedRmItemIds: number[] }}
  */
 async function returnRmStockForProductionBatch(tx, { productionId, fgItemId, producedQty }) {
-  const bom = await tx.bom.findUnique({
-    where: { fgItemId },
+  const bom = await tx.bom.findFirst({
+    where: approvedBomWhere(fgItemId),
+    orderBy: approvedBomOrderBy,
     include: { lines: true },
   });
   if (!bom) return { touchedRmItemIds: [] };
+  const issueLines = await filterBomLinesForRmIssue(tx, bom);
   const touchedRmItemIds = [];
-  for (const line of bom.lines) {
-    const perUnit = effectiveQtyPerUnit(line.baseQty, line.wastagePercent);
+  for (const line of issueLines) {
+    const perUnit = effectiveQtyPerUnit(line.baseQtyPerFg ?? line.baseQty, line.wastagePercent, line.qcAllowancePercent);
     const rmQtyIn = perUnit * Number(producedQty);
     if (rmQtyIn <= STOCK_EPS) continue;
     await tx.stockTransaction.create({
@@ -513,6 +598,7 @@ async function syncWorkOrderStatusFromProduction(tx, workOrderId) {
     include: { lines: { select: { id: true, qty: true } } },
   });
   if (!wo || wo.status === "REJECTED" || !wo.lines.length) return;
+  if (shouldFreezeStatusSync(wo.status)) return;
 
   const lineIds = wo.lines.map((l) => l.id);
   const producedByLineId = await getApprovedProducedQtyByWorkOrderLineIds(tx, lineIds);
@@ -537,6 +623,7 @@ productionRouter.post(
   requireAuth,
   requireRole(["ADMIN", "PRODUCTION"]),
   async (req, res, next) => {
+    let parsedWorkOrderBody = null;
     try {
       const schema = z.object({
         salesOrderId: z.number().int(),
@@ -558,10 +645,25 @@ productionRouter.post(
         shortfallBufferPercent: z.number().min(0).max(10).optional(),
       });
       const body = schema.parse(req.body);
+      parsedWorkOrderBody = body;
       const normalizedLines = normalizeWorkOrderLinePayloads(body.lines);
 
       const wo = await prisma.$transaction(async (tx) => {
         await lockSalesOrderForUpdate(tx, body.salesOrderId);
+        const soMeta = await tx.salesOrder.findUnique({
+          where: { id: body.salesOrderId },
+          select: { orderType: true },
+        });
+        if ((soMeta?.orderType ?? "NORMAL") !== "NO_QTY" && (body.shortfallMode || body.shortfallBufferPercent != null)) {
+          await upsertRegularSoPlanningSnapshot(
+            {
+              salesOrderId: body.salesOrderId,
+              bufferPercent: body.shortfallBufferPercent ?? 0,
+              createdByUserId: req.user?.userId ?? null,
+            },
+            tx,
+          );
+        }
         await assertWorkOrderLinesAgainstSalesOrder(tx, {
           salesOrderId: body.salesOrderId,
           lineRequests: normalizedLines.map((l) => ({ fgItemId: l.fgItemId, qty: l.qty })),
@@ -579,6 +681,26 @@ productionRouter.post(
           throw err;
         }
         const { so: soForWo } = woQtyCtx;
+        const orderType = soForWo.orderType ?? "NORMAL";
+        if (orderType === "NORMAL" || orderType === "REPLACEMENT") {
+          const { fgLines } = await computeFgGapLinesForSalesOrder(soForWo, tx);
+          const planQtyByFgItemId = Object.fromEntries(
+            normalizedLines.map((l) => [l.fgItemId, l.qty]),
+          );
+          const materialReady = await evaluateWoPrepareReadiness(
+            body.salesOrderId,
+            { fgLines, planQtyByFgItemId },
+            tx,
+          );
+          if (!materialReady.canCreateWorkOrder) {
+            const err = new Error(
+              materialReady.woBlockReason ?? "Material not ready for work order.",
+            );
+            err.statusCode = 409;
+            err.code = "MATERIAL_NOT_READY";
+            throw err;
+          }
+        }
         const lineInputsForDispatch = mapSoLinesToDispatchFifoInputs(soForWo.lines, soForWo.orderType);
         /** @type {Map<number, string>} */
         const fgItemNameById = new Map();
@@ -698,8 +820,45 @@ productionRouter.post(
         },
       });
 
+      // Align Material Issue + production-readiness with the WO-level RM demand that
+      // RM Control Center already derives from BOM. Regular WO creation now ensures a
+      // submitted (store-visible) PMR so the WO appears in the Material Issue "waiting
+      // for issue" queue and its RM lines load. Mirrors the post-GRN auto-PMR path.
+      // Best-effort: WO creation must never fail because PMR ensure failed.
+      if (so && so.orderType !== "NO_QTY") {
+        try {
+          await ensureSubmittedProductionMaterialRequestForWorkOrder(wo.id, {
+            userId: req.user?.userId,
+            role: req.user?.role,
+          });
+        } catch (pmrErr) {
+          console.warn(
+            `Auto-ensure PMR after WO ${wo.id} creation failed:`,
+            pmrErr?.message || pmrErr,
+          );
+        }
+      }
+
       return res.status(201).json(wo);
     } catch (e) {
+      if (!e?.statusCode) {
+        console.error("Work Order creation failed", {
+          salesOrderId: parsedWorkOrderBody?.salesOrderId ?? req.body?.salesOrderId ?? null,
+          lines: parsedWorkOrderBody?.lines ?? req.body?.lines ?? null,
+          plannedQty: (parsedWorkOrderBody?.lines ?? req.body?.lines ?? []).map((line) => ({
+            fgItemId: line?.fgItemId,
+            plannedQty: line?.qty,
+          })),
+          shortfallMode: parsedWorkOrderBody?.shortfallMode ?? req.body?.shortfallMode ?? null,
+          shortfallBufferPercent: parsedWorkOrderBody?.shortfallBufferPercent ?? req.body?.shortfallBufferPercent ?? null,
+          errorMessage: e instanceof Error ? e.message : String(e),
+          stack: e instanceof Error ? e.stack : null,
+        });
+        return res.status(500).json({
+          error: "WORK_ORDER_CREATION_FAILED",
+          message: "Work Order creation failed. Please retry or contact admin.",
+        });
+      }
       return next(e);
     }
   },
@@ -739,6 +898,20 @@ productionRouter.put(
           throw err;
         }
         await lockSalesOrderForUpdate(tx, woMeta.salesOrderId);
+        const soMeta = await tx.salesOrder.findUnique({
+          where: { id: woMeta.salesOrderId },
+          select: { orderType: true },
+        });
+        if ((soMeta?.orderType ?? "NORMAL") !== "NO_QTY" && (body.shortfallMode || body.shortfallBufferPercent != null)) {
+          await upsertRegularSoPlanningSnapshot(
+            {
+              salesOrderId: woMeta.salesOrderId,
+              bufferPercent: body.shortfallBufferPercent ?? 0,
+              createdByUserId: req.user?.userId ?? null,
+            },
+            tx,
+          );
+        }
 
         await assertWorkOrderLinesAgainstSalesOrder(tx, {
           salesOrderId: body.salesOrderId,
@@ -823,6 +996,118 @@ productionRouter.delete(
   },
 );
 
+productionRouter.post(
+  "/work-orders/:id/hold",
+  requireAuth,
+  requireRole(["ADMIN", "PRODUCTION"]),
+  async (req, res, next) => {
+    try {
+      const id = Number(req.params.id);
+      const body = z
+        .object({
+          holdReason: z.enum(HOLD_REASONS),
+          remarks: z.string().max(500).optional().nullable(),
+        })
+        .parse(req.body ?? {});
+      const updated = await prisma.$transaction(async (tx) => {
+        await lockWorkOrderForUpdate(tx, id);
+        return holdWorkOrder(tx, id, {
+          holdReason: body.holdReason,
+          remarks: body.remarks,
+          actorUserId: req.user?.userId,
+          actorRole: req.user?.role,
+        });
+      });
+      return res.json(updated);
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
+productionRouter.post(
+  "/work-orders/:id/resume",
+  requireAuth,
+  requireRole(["ADMIN", "PRODUCTION"]),
+  async (req, res, next) => {
+    try {
+      const id = Number(req.params.id);
+      const updated = await prisma.$transaction(async (tx) => {
+        await lockWorkOrderForUpdate(tx, id);
+        return resumeWorkOrder(tx, id, {
+          actorUserId: req.user?.userId,
+          actorRole: req.user?.role,
+        });
+      });
+      return res.json(updated);
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
+productionRouter.post(
+  "/work-orders/:id/close-shortfall",
+  requireAuth,
+  requireRole(["ADMIN", "PRODUCTION"]),
+  async (req, res, next) => {
+    try {
+      const id = Number(req.params.id);
+      const body = z
+        .object({
+          closureReason: z.string().min(3).max(500),
+        })
+        .parse(req.body ?? {});
+      const result = await prisma.$transaction(async (tx) => {
+        await lockWorkOrderForUpdate(tx, id);
+        return closeWorkOrderWithShortfall(tx, id, {
+          closureReason: body.closureReason,
+          actorUserId: req.user?.userId,
+          actorRole: req.user?.role,
+        });
+      });
+      return res.json(result);
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
+/**
+ * Phase 3C — RM readiness for REGULAR production (PMR/MIN → production location stock).
+ */
+productionRouter.get(
+  "/work-order-lines/:workOrderLineId/rm-readiness",
+  requireAuth,
+  requireRole(["ADMIN", "PRODUCTION"]),
+  async (req, res, next) => {
+    try {
+      const workOrderLineId = Number(req.params.workOrderLineId);
+      if (!Number.isFinite(workOrderLineId) || workOrderLineId <= 0) {
+        const err = new Error("Invalid work order line id.");
+        err.statusCode = 400;
+        throw err;
+      }
+      const wol = await prisma.workOrderLine.findUnique({
+        where: { id: workOrderLineId },
+        select: { workOrder: { select: { salesOrder: { select: { orderType: true } } } } },
+      });
+      if (!wol) {
+        const err = new Error("Work order line not found");
+        err.statusCode = 404;
+        throw err;
+      }
+      if (wol.workOrder?.salesOrder?.orderType === "NO_QTY") {
+        return res.json({ skipped: true, reason: "NO_QTY", gate: null });
+      }
+      const data = await buildProductionRmReadiness(prisma, workOrderLineId);
+      return res.json(data);
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
 productionRouter.get(
   "/sales-orders/:salesOrderId/fg-work-order-balance",
   requireAuth,
@@ -891,7 +1176,7 @@ productionRouter.get(
 productionRouter.get(
   "/no-qty-so/:salesOrderId/production-context",
   requireAuth,
-  requireRole(["ADMIN", "PRODUCTION", "QC"]),
+  requireRole(["ADMIN", "PRODUCTION", "QA"]),
   async (req, res, next) => {
     try {
       const salesOrderId = Number(req.params.salesOrderId);
@@ -1101,7 +1386,7 @@ productionRouter.get(
 productionRouter.get(
   "/production-entries",
   requireAuth,
-  requireRole(["ADMIN", "PRODUCTION", "QC"]),
+  requireRole(["ADMIN", "PRODUCTION", "QA"]),
   async (req, res, next) => {
     try {
       const soIdRaw = req.query.salesOrderId;
@@ -1266,6 +1551,7 @@ productionRouter.post(
 
         // NO_QTY: production allowed only for the active cycle and only after RS is locked.
         await assertNoQtyWorkOrderInActiveCycleOrThrow(tx, wol.workOrderId, "This work order");
+        await assertWorkOrderAllowsProduction(tx, wol.workOrderId);
 
         const alreadyProduced = await sumProducedQtyOnLine(tx, wol.id);
         const lineQty = Number(wol.qty);
@@ -1278,6 +1564,13 @@ productionRouter.post(
           );
           err.statusCode = 409;
           throw err;
+        }
+
+        if (await isRegularProductionWorkOrderLine(tx, wol.id)) {
+          await assertRegularProductionRmReadiness(tx, {
+            workOrderLineId: wol.id,
+            producedQty: body.producedQty,
+          });
         }
 
         const prod = await tx.productionEntry.create({
@@ -1357,6 +1650,7 @@ productionRouter.put(
         }
 
         await assertNoQtyWorkOrderInActiveCycleOrThrow(tx, wol.workOrderId, "This work order");
+        await assertWorkOrderAllowsProduction(tx, wol.workOrderId);
 
         const others = await sumProducedQtyOnLine(tx, wol.id, { excludeProductionId: id });
         const lineQty = Number(wol.qty);
@@ -1369,6 +1663,14 @@ productionRouter.put(
           );
           err.statusCode = 409;
           throw err;
+        }
+
+        if (await isRegularProductionWorkOrderLine(tx, wol.id)) {
+          await assertRegularProductionRmReadiness(tx, {
+            workOrderLineId: wol.id,
+            producedQty: body.producedQty,
+            excludeProductionId: id,
+          });
         }
 
         return tx.productionEntry.update({
@@ -1430,6 +1732,43 @@ productionRouter.delete(
   },
 );
 
+const rmConsumptionLineSchema = z.object({
+  itemId: z.number().int().positive(),
+  actualQty: z.number().positive(),
+  remarks: z.string().max(500).optional().nullable(),
+  consumptionType: z
+    .enum(["NORMAL", "EXTRA_PROCESS_LOSS", "LOWER_USAGE", "REWORK_RESERVED"])
+    .optional()
+    .nullable(),
+});
+
+const approveProductionEntrySchema = z.object({
+  consumptionLines: z.array(rmConsumptionLineSchema).optional(),
+});
+
+/**
+ * REGULAR only: standard BOM RM lines + available qty for consumption review before approve.
+ */
+productionRouter.get(
+  "/production-entries/:id/rm-consumption-preview",
+  requireAuth,
+  requireRole(["ADMIN", "PRODUCTION"]),
+  async (req, res, next) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id)) {
+        const err = new Error("Invalid production entry id");
+        err.statusCode = 400;
+        throw err;
+      }
+      const data = await buildRmConsumptionPreview(prisma, id);
+      return res.json(data);
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
 /**
  * Approve a draft batch: issue RM per BOM, lock row, sync WO status. Not allowed if any QC history exists.
  */
@@ -1440,6 +1779,7 @@ productionRouter.post(
   async (req, res, next) => {
     try {
       const id = Number(req.params.id);
+      const body = approveProductionEntrySchema.parse(req.body ?? {});
 
       const prodForNoQtyCheck = await prisma.productionEntry.findUnique({
         where: { id },
@@ -1487,7 +1827,16 @@ productionRouter.post(
         await lockProductionEntryForUpdate(tx, id);
         const prod = await tx.productionEntry.findUnique({
           where: { id },
-          include: { workOrderLine: { include: { workOrder: true, fgItem: true } } },
+          include: {
+            workOrderLine: {
+              include: {
+                workOrder: {
+                  include: { salesOrder: { select: { orderType: true } } },
+                },
+                fgItem: true,
+              },
+            },
+          },
         });
         if (!prod) {
           const err = new Error("Production entry not found");
@@ -1508,6 +1857,7 @@ productionRouter.post(
 
         const wol = prod.workOrderLine;
         await assertNoQtyWorkOrderInActiveCycleOrThrow(tx, wol.workOrderId, "This work order");
+        await assertWorkOrderAllowsProduction(tx, wol.workOrderId);
         await lockWorkOrderLineForUpdate(tx, wol.id);
 
         const others = await sumProducedQtyOnLine(tx, wol.id, { excludeProductionId: id });
@@ -1523,8 +1873,20 @@ productionRouter.post(
 
         const fgItemId = wol.fgItemId;
         const producedQtyNum = Number(prod.producedQty);
-        const bomPre = await tx.bom.findUnique({
-          where: { fgItemId },
+        const orderType = wol.workOrder?.salesOrder?.orderType;
+        const isRegular = orderType != null && orderType !== "NO_QTY";
+
+        if (isRegular) {
+          await assertRegularProductionRmReadiness(tx, {
+            workOrderLineId: wol.id,
+            producedQty: prod.producedQty,
+            excludeProductionId: id,
+          });
+        }
+
+        const bomPre = await tx.bom.findFirst({
+          where: approvedBomWhere(fgItemId),
+          orderBy: approvedBomOrderBy,
           include: { lines: true },
         });
         if (!bomPre || !bomPre.lines?.length) {
@@ -1535,23 +1897,66 @@ productionRouter.post(
         }
         /** @type {{ itemId: number; stockBefore: number; stockAfter?: number }[]} */
         const rmStock = [];
-        for (const line of bomPre.lines) {
-          const perUnit = effectiveQtyPerUnit(line.baseQty, line.wastagePercent);
-          if (perUnit * producedQtyNum <= STOCK_EPS) continue;
-          rmStock.push({
-            itemId: line.rmItemId,
-            stockBefore: await getItemStockQty(line.rmItemId, tx),
+        if (isRegular) {
+          const prodLocIds = await getWorkOrderProductionLocationIds(tx, wol.workOrderId);
+          const { rmNeeded } = await aggregateRmDemandForFgLines(tx, [
+            { fgItemId, fgQty: producedQtyNum, bomMissing: false },
+          ]);
+          for (const [rmItemId] of rmNeeded) {
+            let before = 0;
+            for (const locId of prodLocIds) {
+              before += await getItemStockQty(rmItemId, tx, { stockBucket: "USABLE", locationId: locId });
+            }
+            rmStock.push({ itemId: rmItemId, stockBefore: before });
+          }
+        } else {
+          for (const line of bomPre.lines) {
+            const perUnit = effectiveQtyPerUnit(line.baseQtyPerFg ?? line.baseQty, line.wastagePercent, line.qcAllowancePercent);
+            if (perUnit * producedQtyNum <= STOCK_EPS) continue;
+            rmStock.push({
+              itemId: line.rmItemId,
+              stockBefore: await getItemStockQty(line.rmItemId, tx),
+            });
+          }
+        }
+
+        let bomFound = false;
+        /** @type {string[]} */
+        let consumptionWarnings = [];
+        if (isRegular) {
+          const resolved = await resolveConsumptionForRegularApproval(tx, {
+            fgItemId,
+            producedQty: prod.producedQty,
+            workOrderId: wol.workOrderId,
+            consumptionLines: body.consumptionLines,
+          });
+          consumptionWarnings = resolved.warnings;
+          bomFound = await issueRmStockForProductionBatchAtProductionLocations(tx, {
+            productionId: prod.id,
+            workOrderId: wol.workOrderId,
+            actualQtyByItemId: resolved.actualQtyByItemId,
+            roundingToleranceKg: RM_CONSUMPTION_ROUNDING_TOLERANCE_KG,
+          });
+          await persistProductionEntryRmConsumption(tx, prod.id, resolved.lines);
+        } else {
+          bomFound = await issueRmStockForProductionBatch(tx, {
+            productionId: prod.id,
+            fgItemId,
+            producedQty: prod.producedQty,
           });
         }
 
-        const bomFound = await issueRmStockForProductionBatch(tx, {
-          productionId: prod.id,
-          fgItemId,
-          producedQty: prod.producedQty,
-        });
-
         for (const row of rmStock) {
-          row.stockAfter = await getItemStockQty(row.itemId, tx);
+          if (isRegular) {
+            const prodLocIds = await getWorkOrderProductionLocationIds(tx, wol.workOrderId);
+            let after = 0;
+            for (const locId of prodLocIds) {
+              after += await getItemStockQty(row.itemId, tx, { stockBucket: "USABLE", locationId: locId });
+            }
+            row.stockAfter = after;
+          } else {
+            row.stockAfter = await getItemStockQty(row.itemId, tx);
+          }
         }
 
         await tx.productionEntry.update({
@@ -1664,7 +2069,15 @@ productionRouter.post(
             },
           });
         }
-        return { wo: woFull ?? wol.workOrder, prod: prodAfter, bomFound };
+        const operationalSoId = woAfter?.salesOrderId ?? woBefore?.salesOrderId ?? wol.workOrder.salesOrderId;
+        if (operationalSoId != null) {
+          await maybeAutoCloseSalesOrderOperationally(tx, operationalSoId, {
+            actorUserId: req.user?.userId,
+            actorRole: req.user?.role,
+            reason: "Production approval completed the remaining operational work.",
+          });
+        }
+        return { wo: woFull ?? wol.workOrder, prod: prodAfter, bomFound, consumptionWarnings };
       });
 
       return res.status(200).json(result);
@@ -1727,15 +2140,16 @@ productionRouter.post(
         const fgItemId = wol.fgItemId;
         const producedQty = Number(prod.producedQty);
 
-        const bomPre = await tx.bom.findUnique({
-          where: { fgItemId },
+        const bomPre = await tx.bom.findFirst({
+          where: approvedBomWhere(fgItemId),
+    orderBy: approvedBomOrderBy,
           include: { lines: true },
         });
         /** @type {{ itemId: number; stockBefore: number; stockAfter?: number }[]} */
         const rmStock = [];
         if (bomPre?.lines?.length) {
           for (const line of bomPre.lines) {
-            const perUnit = effectiveQtyPerUnit(line.baseQty, line.wastagePercent);
+            const perUnit = effectiveQtyPerUnit(line.baseQtyPerFg ?? line.baseQty, line.wastagePercent, line.qcAllowancePercent);
             if (perUnit * producedQty <= STOCK_EPS) continue;
             rmStock.push({
               itemId: line.rmItemId,
@@ -1744,11 +2158,28 @@ productionRouter.post(
           }
         }
 
-        await returnRmStockForProductionBatch(tx, {
-          productionId: prod.id,
-          fgItemId,
-          producedQty: prod.producedQty,
+        const soType = await tx.salesOrder.findUnique({
+          where: { id: wol.workOrder.salesOrderId },
+          select: { orderType: true },
         });
+        const isRegularReverse = soType?.orderType != null && soType.orderType !== "NO_QTY";
+        const locIssueCount = await tx.stockTransaction.count({
+          where: {
+            refId: prod.id,
+            transactionType: "ISSUE",
+            locationId: { not: null },
+            qtyOut: { gt: 0 },
+          },
+        });
+        if (isRegularReverse && locIssueCount > 0) {
+          await returnRmStockForProductionBatchFromProductionLocations(tx, { productionId: prod.id });
+        } else {
+          await returnRmStockForProductionBatch(tx, {
+            productionId: prod.id,
+            fgItemId,
+            producedQty: prod.producedQty,
+          });
+        }
 
         for (const row of rmStock) {
           row.stockAfter = await getItemStockQty(row.itemId, tx);
@@ -1851,7 +2282,7 @@ productionRouter.post(
   },
 );
 
-productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QC"]), async (req, res, next) => {
+productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QA"]), async (req, res, next) => {
   try {
     const schema = z.object({
       productionId: z.number().int(),
@@ -2557,6 +2988,12 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QC"]), 
         },
       });
 
+      await maybeAutoCloseSalesOrderOperationally(tx, soId, {
+        actorUserId: req.user?.userId,
+        actorRole: req.user?.role,
+        reason: "QC posting completed the remaining operational work.",
+      });
+
       return created;
     }).catch((e) => {
       // Attach high-signal context for server logs (errorHandler prints the error object).
@@ -2587,7 +3024,7 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QC"]), 
  * GET /api/production/qc-stock-adjustments
  * FG stock-in adjustments waiting for QC allocation to a sales order (so they can contribute to dispatch QC pool).
  */
-productionRouter.get("/qc-stock-adjustments", requireAuth, requireRole(["ADMIN", "QC"]), async (req, res, next) => {
+productionRouter.get("/qc-stock-adjustments", requireAuth, requireRole(["ADMIN", "QA"]), async (req, res, next) => {
   try {
     const txns = await prisma.stockTransaction.findMany({
       where: {
@@ -2658,7 +3095,7 @@ productionRouter.get("/qc-stock-adjustments", requireAuth, requireRole(["ADMIN",
  * POST /api/production/qc-stock-adjustments
  * Record QC against stock-adjusted FG and allocate accepted qty to a sales order + item for dispatch QC pool.
  */
-productionRouter.post("/qc-stock-adjustments", requireAuth, requireRole(["ADMIN", "QC"]), async (req, res, next) => {
+productionRouter.post("/qc-stock-adjustments", requireAuth, requireRole(["ADMIN", "QA"]), async (req, res, next) => {
   try {
     const schema = z.object({
       stockTransactionId: z.number().int(),
@@ -2786,7 +3223,7 @@ productionRouter.post("/qc-stock-adjustments", requireAuth, requireRole(["ADMIN"
  * Original QC entry rows are not deleted; a new QC may be posted for the same production.
  * After qcEntry.reversedAt is set, this row is excluded from dispatch caps and QC aggregates (see qcEntryConstants.js).
  */
-productionRouter.post("/qc-reverse", requireAuth, requireRole(["ADMIN", "QC"]), async (req, res, next) => {
+productionRouter.post("/qc-reverse", requireAuth, requireRole(["ADMIN", "QA"]), async (req, res, next) => {
   try {
     const schema = z.object({
       qcEntryId: z.number().int().positive(),

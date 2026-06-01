@@ -36,7 +36,7 @@ const includeEnquiry = {
   quotation: { include: { lines: { include: { item: true } } } },
 };
 
-enquiryRouter.get("/", requireAuth, requireRole(["ADMIN", "SALES"]), async (req, res, next) => {
+enquiryRouter.get("/", requireAuth, requireRole(["ADMIN"]), async (req, res, next) => {
   try {
     const rows = await prisma.enquiry.findMany({
       where: {
@@ -75,7 +75,7 @@ enquiryRouter.get("/", requireAuth, requireRole(["ADMIN", "SALES"]), async (req,
   }
 });
 
-enquiryRouter.get("/:id", requireAuth, requireRole(["ADMIN", "SALES"]), async (req, res, next) => {
+enquiryRouter.get("/:id", requireAuth, requireRole(["ADMIN"]), async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     const row = await prisma.enquiry.findUnique({
@@ -93,7 +93,7 @@ enquiryRouter.get("/:id", requireAuth, requireRole(["ADMIN", "SALES"]), async (r
   }
 });
 
-enquiryRouter.post("/", requireAuth, requireRole(["ADMIN", "SALES"]), async (req, res, next) => {
+enquiryRouter.post("/", requireAuth, requireRole(["ADMIN"]), async (req, res, next) => {
   try {
     const isValidNoQtyLineQty = (v) => v === undefined || v === null || (Number.isFinite(Number(v)) && Number(v) >= 0);
     const schema = z.object({
@@ -145,7 +145,7 @@ enquiryRouter.post("/", requireAuth, requireRole(["ADMIN", "SALES"]), async (req
   }
 });
 
-enquiryRouter.put("/:id", requireAuth, requireRole(["ADMIN", "SALES"]), async (req, res, next) => {
+enquiryRouter.put("/:id", requireAuth, requireRole(["ADMIN"]), async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     const isValidNoQtyLineQty = (v) => v === undefined || v === null || (Number.isFinite(Number(v)) && Number(v) >= 0);
@@ -302,7 +302,7 @@ async function applyFeasibility(req, res, next) {
   }
 }
 
-enquiryRouter.post("/:id/feasibility", requireAuth, requireRole(["ADMIN", "SALES"]), applyFeasibility);
-enquiryRouter.put("/:id/feasibility", requireAuth, requireRole(["ADMIN", "SALES"]), applyFeasibility);
+enquiryRouter.post("/:id/feasibility", requireAuth, requireRole(["ADMIN"]), applyFeasibility);
+enquiryRouter.put("/:id/feasibility", requireAuth, requireRole(["ADMIN"]), applyFeasibility);
 
 module.exports = { enquiryRouter };

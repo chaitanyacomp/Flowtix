@@ -7,10 +7,12 @@ const { requireAuth, requireRole } = require("../middleware/auth");
 const { QC_ENTRY_ACTIVE_WHERE } = require("../services/qcEntryConstants");
 const { buildCustomerReturnListPayload } = require("../services/customerReturnListPayload");
 
+const { QA_REPORT_READ_ROLES } = require("../constants/erpRoles");
+
 const qcReportRouter = express.Router();
 
 const ACCESS_DENIED = "Access denied.";
-const roles = requireRole(["ADMIN", "QC", "PRODUCTION", "STORE", "SALES"], ACCESS_DENIED);
+const roles = requireRole([...QA_REPORT_READ_ROLES], ACCESS_DENIED);
 
 function roundQty(n) {
   const v = Number(n);

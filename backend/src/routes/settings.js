@@ -28,7 +28,7 @@ const stockAdjustmentControlPutSchema = z.object({
 settingsRouter.get(
   "/regular-so-buffer",
   requireAuth,
-  requireRole(["ADMIN", "STORE", "SALES", "PRODUCTION", "QC"]),
+  requireRole(["ADMIN", "STORE", "ADMIN", "PRODUCTION", "QA"]),
   async (req, res, next) => {
     try {
       const maxRegularSoBufferPercent = await getMaxRegularSoBufferPercent();
@@ -59,7 +59,7 @@ settingsRouter.put(
 settingsRouter.get(
   "/inventory-mode",
   requireAuth,
-  requireRole(["ADMIN", "STORE", "SALES", "PRODUCTION", "QC"]),
+  requireRole(["ADMIN", "STORE", "ADMIN", "PRODUCTION", "QA"]),
   async (req, res, next) => {
     try {
       const strictInventoryControl = await getStrictInventoryControl();

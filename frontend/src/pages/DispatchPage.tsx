@@ -52,6 +52,8 @@ import { DemoSafeNoQtyContinue } from "../components/demo/DemoSafeNoQtyContinue"
 import { useDemoMode } from "../contexts/DemoModeContext";
 import { demoHighlightKey } from "../lib/demoFlowConfig";
 import { NO_QTY_TERMS, REGULAR_TERMS } from "../lib/flowTerminology";
+import { OperationalDispatchSnapshot } from "../components/erp/OperationalDispatchSnapshot";
+import { buildNoQtyOperationalMetrics } from "../lib/noQtyOperationalMetrics";
 import { DISPATCH_WRITE_ROLES } from "../config/erpRoles";
 
 /** Soft flag for optional dashboard reminders — user chose “wait” on NORMAL partial dispatch (no API). */
@@ -254,6 +256,14 @@ function normalizePositiveCycleId(v: unknown): number | null {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
+function resolveNoQtyDispatchSourceCycleId(
+  so: Pick<SoRow, "noQtyDispatchContext">,
+  ls: Pick<LineStat, "noQtyCycleId">,
+  selectedCycleId?: number | null,
+): number | null {
+  return normalizePositiveCycleId(ls.noQtyCycleId ?? selectedCycleId ?? so.noQtyDispatchContext?.selectedCycleId);
+}
+
 type NoQtyCycleOption = {
   cycleId: number;
   cycleNo: number;
@@ -435,15 +445,11 @@ function normalPartialPrepareTier(so: SoRow, ls: LineStat): 0 | 1 {
 function comparePrepareQueueEntries(a: { so: SoRow; ls: LineStat }, b: { so: SoRow; ls: LineStat }): number {
   const cycleA =
     a.so.orderType === "NO_QTY"
-      ? normalizePositiveCycleId(
-          a.ls.noQtyCycleId ?? a.so.noQtyDispatchContext?.selectedCycleId ?? a.so.currentCycleId,
-        )
+      ? resolveNoQtyDispatchSourceCycleId(a.so, a.ls)
       : null;
   const cycleB =
     b.so.orderType === "NO_QTY"
-      ? normalizePositiveCycleId(
-          b.ls.noQtyCycleId ?? b.so.noQtyDispatchContext?.selectedCycleId ?? b.so.currentCycleId,
-        )
+      ? resolveNoQtyDispatchSourceCycleId(b.so, b.ls)
       : null;
   const tierA = normalPartialPrepareTier(a.so, a.ls);
   const tierB = normalPartialPrepareTier(b.so, b.ls);
@@ -466,11 +472,7 @@ function computeDispatchableBaseNoDraft(params: {
 }): number {
   const { so, ls } = params;
   if (so.orderType === "NO_QTY") {
-    const net = safeNum(ls.operationalNetDispatchedQty ?? ls.cycleDispatchedQty ?? 0);
-    const qc = safeNum(ls.cycleQcAcceptedQty ?? ls.qcAccepted ?? 0);
-    const recheck = safeNum(ls.cycleRecheckAcceptedQty ?? 0);
-    const post = safeNum(ls.postCycleApprovalQty ?? 0);
-    return Math.max(0, qc + recheck + post - net);
+    return computeNoQtyPhysicalDispatchableNow({ so, ls });
   }
   const usable = getUsableStock(ls);
   const soRemaining = confirmedBacklogQty(ls);
@@ -485,6 +487,33 @@ function computeDispatchableBaseNoDraft(params: {
 }
 
 /** NO_QTY only: QC + in-cycle disposition→USABLE + post-cycle approvals − same-cycle operational dispatch (matches API). */
+function computeNoQtyCycleHeadroom(params: { ls: LineStat }): number {
+  const { ls } = params;
+  const net = safeNum(ls.operationalNetDispatchedQty ?? ls.cycleDispatchedQty ?? 0);
+  const qc = safeNum(ls.cycleQcAcceptedQty ?? ls.qcAccepted ?? 0);
+  const recheck = safeNum(ls.cycleRecheckAcceptedQty ?? 0);
+  const post = safeNum(ls.postCycleApprovalQty ?? 0);
+  return Math.max(0, qc + recheck + post - net);
+}
+
+function finiteQtyOrNull(v: unknown): number | null {
+  if (v == null) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.max(0, n) : null;
+}
+
+function noQtyFreeUsableStockForItem(so: SoRow, itemId: number, usableStock: number): number {
+  return Math.max(0, safeNum(usableStock) - totalNoQtyDraftQtyForItem(so, itemId));
+}
+
+function computeNoQtyPhysicalDispatchableNow(params: { so: SoRow; ls: LineStat }): number {
+  const { so, ls } = params;
+  if (so.orderType !== "NO_QTY") return 0;
+  const serverCapped = finiteQtyOrNull(ls.dispatchable ?? ls.dispatchableQty);
+  if (serverCapped != null) return serverCapped;
+  return Math.min(computeNoQtyCycleHeadroom({ ls }), noQtyFreeUsableStockForItem(so, ls.itemId, getUsableStock(ls)));
+}
+
 function computeNoQtyAutoReadyQty(params: { so: SoRow; ls: LineStat }): number {
   const { so, ls } = params;
   if (so.orderType !== "NO_QTY") return 0;
@@ -499,6 +528,7 @@ function computeDispatchableNow(params: {
 }): number {
   const { so, ls, cycleIdOverride } = params;
   const base = computeDispatchableBaseNoDraft({ so, ls });
+  if (so.orderType === "NO_QTY") return base;
   const existingDraftQty = draftQtyForSoItem(so, ls.itemId, cycleIdOverride, ls.noQtyCycleId ?? null);
   return Math.max(0, base - existingDraftQty);
 }
@@ -525,7 +555,7 @@ function pickBestDispatchContext(params: { rows: SoRow[]; ledgerRows: DispatchLe
     for (const ls of so.lineStats || []) {
       const cycleId =
         so.orderType === "NO_QTY"
-          ? normalizePositiveCycleId(ls.noQtyCycleId ?? so.noQtyDispatchContext?.selectedCycleId ?? so.currentCycleId)
+          ? resolveNoQtyDispatchSourceCycleId(so, ls)
           : null;
       const qty = computeDispatchableNow({ so, ls, cycleIdOverride: cycleId });
       if (!(qty > 1e-9)) continue;
@@ -557,9 +587,7 @@ function isCurrentDispatchSelectionStillValid(params: {
   const ls = (so.lineStats || []).find((l) => Number(l.lineId) === Number(salesOrderLineId));
   if (!ls) return false;
   if (so.orderType === "NO_QTY") {
-    const cyc = normalizePositiveCycleId(
-      ls.noQtyCycleId ?? noQtySelectedCycleId ?? so.noQtyDispatchContext?.selectedCycleId ?? so.currentCycleId,
-    );
+    const cyc = resolveNoQtyDispatchSourceCycleId(so, ls, noQtySelectedCycleId);
     if (cyc == null) return false;
     // Still actionable if either draft exists for this context or dispatchable now > 0.
     const draftQty = draftQtyForSoItem(so, ls.itemId, noQtySelectedCycleId, ls.noQtyCycleId ?? null);
@@ -578,7 +606,7 @@ function buildReadySorted(rows: SoRow[]): { so: SoRow; ls: LineStat }[] {
     .filter(({ so, ls }) => {
       const cycleId =
         so.orderType === "NO_QTY"
-          ? normalizePositiveCycleId(ls.noQtyCycleId ?? so.noQtyDispatchContext?.selectedCycleId ?? so.currentCycleId)
+          ? resolveNoQtyDispatchSourceCycleId(so, ls)
           : null;
       return computeDispatchableNow({ so, ls, cycleIdOverride: cycleId }) > 1e-9;
     })
@@ -656,9 +684,7 @@ function draftQtyForSoItem(
   if (!so || !itemId) return 0;
   const want =
     so.orderType === "NO_QTY"
-      ? normalizePositiveCycleId(
-          rowNoQtyCycleId ?? noQtySelectedCycleId ?? so.noQtyDispatchContext?.selectedCycleId ?? so.currentCycleId,
-        )
+      ? normalizePositiveCycleId(rowNoQtyCycleId ?? noQtySelectedCycleId ?? so.noQtyDispatchContext?.selectedCycleId)
       : null;
   const drafts = (so.dispatch || []).filter((d) => {
     if (d.reversalOfId != null || d.workflowStatus !== "UNLOCKED" || d.itemId !== itemId) return false;
@@ -688,24 +714,27 @@ function totalNoQtyDraftQtyForItem(so: SoRow, itemId: number): number {
 function computeNoQtyTotalPrepareHeadroomForItem(so: SoRow, itemId: number): number {
   if (so.orderType !== "NO_QTY") return 0;
   const lines = (so.lineStats || []).filter((l) => Number(l.itemId) === Number(itemId));
+  const usable = lines.reduce((max, ls) => Math.max(max, getUsableStock(ls)), 0);
+  const freeUsable = noQtyFreeUsableStockForItem(so, itemId, usable);
   let sum = 0;
   for (const ls of lines) {
-    const cyc = normalizePositiveCycleId(
-      ls.noQtyCycleId ?? so.noQtyDispatchContext?.selectedCycleId ?? so.currentCycleId,
-    );
+    const cyc = resolveNoQtyDispatchSourceCycleId(so, ls);
     sum += computeDispatchableNow({ so, ls, cycleIdOverride: cyc });
   }
-  return sum;
+  return Math.min(sum, freeUsable);
 }
 
 /** Per-cycle dispatchable split for the workbench (UI only; same inputs as computeDispatchableNow per row). */
 type NoQtyHeadroomBreakdown = {
   selectedCycleId: number | null;
   selectedCycleNo: number | null;
-  thisCycleDispatchable: number;
+  thisCycleHeadroom: number;
   carryForwardByCycle: Array<{ cycleId: number; cycleNo: number | null; qty: number }>;
   carryForwardTotal: number;
-  totalDispatchableNow: number;
+  cycleFifoHeadroom: number;
+  usableStockNow: number;
+  dispatchPossibleNow: number;
+  stockLimitedQty: number;
 };
 
 function computeNoQtyHeadroomBreakdownForItem(
@@ -717,21 +746,21 @@ function computeNoQtyHeadroomBreakdownForItem(
   const sel = normalizePositiveCycleId(selectedCycleId);
   const eps = 1e-9;
   const rows = (so.lineStats || []).filter((l) => Number(l.itemId) === Number(itemId));
-  let thisCycle = 0;
-  let total = 0;
+  let thisCycleHeadroom = 0;
+  let totalCycleHeadroom = 0;
+  let usableStockNow = 0;
   const otherMap = new Map<number, { qty: number; cycleNo: number | null }>();
   let selectedCycleNo: number | null = null;
 
   for (const ls of rows) {
-    const cyc = normalizePositiveCycleId(
-      ls.noQtyCycleId ?? so.noQtyDispatchContext?.selectedCycleId ?? so.currentCycleId,
-    );
+    const cyc = resolveNoQtyDispatchSourceCycleId(so, ls);
     if (cyc == null) continue;
-    const d = computeDispatchableNow({ so, ls, cycleIdOverride: cyc });
-    total += d;
+    const d = computeNoQtyCycleHeadroom({ ls });
+    totalCycleHeadroom += d;
+    usableStockNow = Math.max(usableStockNow, getUsableStock(ls));
     const cno = ls.noQtyCycleNo != null && Number.isFinite(Number(ls.noQtyCycleNo)) ? Number(ls.noQtyCycleNo) : null;
     if (sel != null && cyc === sel) {
-      thisCycle += d;
+      thisCycleHeadroom += d;
       selectedCycleNo = selectedCycleNo ?? cno;
     } else if (d > eps) {
       const prev = otherMap.get(cyc) ?? { qty: 0, cycleNo: cno };
@@ -747,28 +776,20 @@ function computeNoQtyHeadroomBreakdownForItem(
       return an - bn;
     });
   const carryForwardTotal = carryForwardByCycle.reduce((s, x) => s + x.qty, 0);
+  const freeUsable = noQtyFreeUsableStockForItem(so, itemId, usableStockNow);
+  const dispatchPossibleNow = Math.min(totalCycleHeadroom, freeUsable);
 
   return {
     selectedCycleId: sel,
     selectedCycleNo,
-    thisCycleDispatchable: thisCycle,
+    thisCycleHeadroom,
     carryForwardByCycle,
     carryForwardTotal,
-    totalDispatchableNow: total,
+    cycleFifoHeadroom: totalCycleHeadroom,
+    usableStockNow,
+    dispatchPossibleNow,
+    stockLimitedQty: Math.max(0, totalCycleHeadroom - dispatchPossibleNow),
   };
-}
-
-function formatNoQtyCarryForwardDisplay(total: number, byCycle: NoQtyHeadroomBreakdown["carryForwardByCycle"]): string {
-  if (!(total > 1e-9)) return fmtDispatchQty(0);
-  if (byCycle.length === 1) {
-    const c = byCycle[0];
-    const lab = c.cycleNo != null && Number.isFinite(c.cycleNo) ? `Cycle ${c.cycleNo}` : `Cycle #${c.cycleId}`;
-    return `${fmtDispatchQty(total)} (${lab})`;
-  }
-  const labs = byCycle.map((c) =>
-    c.cycleNo != null && Number.isFinite(c.cycleNo) ? `Cycle ${c.cycleNo}` : `Cycle #${c.cycleId}`,
-  );
-  return `${fmtDispatchQty(total)} (${labs.join(", ")})`;
 }
 
 const LEDGER_PAGE_SIZE = 10;
@@ -1898,9 +1919,7 @@ export function DispatchPage() {
     if (salesOrderLineId > 0) return;
     if (dispatchReadOnly) return;
     const best = (selectedSo.lineStats || []).find((l) => {
-      const cyc = normalizePositiveCycleId(
-        l.noQtyCycleId ?? noQtySelectedCycleId ?? selectedSo.noQtyDispatchContext?.selectedCycleId ?? selectedSo.currentCycleId,
-      );
+      const cyc = resolveNoQtyDispatchSourceCycleId(selectedSo, l, noQtySelectedCycleId);
       return computeDispatchableNow({ so: selectedSo, ls: l, cycleIdOverride: cyc }) > 1e-9;
     });
     const fallback = (selectedSo.lineStats || [])[0];
@@ -1919,9 +1938,7 @@ export function DispatchPage() {
         if (so.orderType !== "NO_QTY") {
           return computeDispatchableNow({ so, ls }) <= 1e-9;
         }
-        const cycleId = normalizePositiveCycleId(
-          ls.noQtyCycleId ?? so.noQtyDispatchContext?.selectedCycleId ?? so.currentCycleId,
-        );
+        const cycleId = resolveNoQtyDispatchSourceCycleId(so, ls);
         return computeDispatchableNow({ so, ls, cycleIdOverride: cycleId }) <= 1e-9;
       }),
     [displayRows],
@@ -2003,9 +2020,7 @@ export function DispatchPage() {
     const isNoQty = so.orderType === "NO_QTY";
     const selectable = isNoQty
       ? (so.lineStats || []).filter((l) => {
-          const cyc = normalizePositiveCycleId(
-            l.noQtyCycleId ?? noQtySelectedCycleId ?? so.noQtyDispatchContext?.selectedCycleId ?? so.currentCycleId,
-          );
+          const cyc = resolveNoQtyDispatchSourceCycleId(so, l, noQtySelectedCycleId);
           return computeDispatchableNow({ so, ls: l, cycleIdOverride: cyc }) > 1e-9;
         })
       : (so.lineStats ?? []).filter((l) => isDispatchOpenListLineCandidate(l, so.orderType));
@@ -2039,9 +2054,7 @@ export function DispatchPage() {
     if (!selectedSo) return [];
     if (selectedSo.flowMode === "NO_QTY_SO") {
       return allLines.filter((l) => {
-        const cyc = normalizePositiveCycleId(
-          l.noQtyCycleId ?? noQtySelectedCycleId ?? selectedSo.noQtyDispatchContext?.selectedCycleId ?? selectedSo.currentCycleId,
-        );
+        const cyc = resolveNoQtyDispatchSourceCycleId(selectedSo, l, noQtySelectedCycleId);
         const can = computeDispatchableNow({ so: selectedSo, ls: l, cycleIdOverride: cyc });
         return can > 1e-9 || linePendingOnOrderDisplay(l) > 1e-9;
       });
@@ -2119,12 +2132,7 @@ export function DispatchPage() {
     if (!error) return;
     if (!selectedSo || selectedSo.orderType !== "NO_QTY") return;
     if (!currentLine) return;
-    const cyc = normalizePositiveCycleId(
-      currentLine.noQtyCycleId ??
-        noQtySelectedCycleId ??
-        selectedSo.noQtyDispatchContext?.selectedCycleId ??
-        selectedSo.currentCycleId,
-    );
+    const cyc = resolveNoQtyDispatchSourceCycleId(selectedSo, currentLine, noQtySelectedCycleId);
     const dispatchable = computeDispatchableNow({ so: selectedSo, ls: currentLine, cycleIdOverride: cyc });
     if (!(dispatchable > 1e-9)) return;
     const t = error.trim();
@@ -2132,12 +2140,10 @@ export function DispatchPage() {
       setError(null);
     }
   }, [error, selectedSo, currentLine, noQtySelectedCycleId]);
-  const noQtyCycleResolved = normalizePositiveCycleId(
-    currentLine?.noQtyCycleId ??
-      noQtySelectedCycleId ??
-      selectedSo?.noQtyDispatchContext?.selectedCycleId ??
-      selectedSo?.currentCycleId,
-  );
+  const noQtyCycleResolved =
+    selectedSo && currentLine
+      ? resolveNoQtyDispatchSourceCycleId(selectedSo, currentLine, noQtySelectedCycleId)
+      : normalizePositiveCycleId(noQtySelectedCycleId ?? selectedSo?.noQtyDispatchContext?.selectedCycleId);
   const noQtyBlocked =
     selectedSo?.orderType === "NO_QTY" &&
     (noQtyCyclesLoading || (noQtyCycles.length === 0 && noQtyCycleResolved == null && !reopenedPreparedDraftMode));
@@ -2225,6 +2231,12 @@ export function DispatchPage() {
     selectedSo?.orderType === "NO_QTY" && currentLine
       ? computeNoQtyTotalPrepareHeadroomForItem(selectedSo, currentLine.itemId)
       : null;
+  const noQtyUsableStockForCurrentItem =
+    selectedSo?.orderType === "NO_QTY" && currentLine ? getUsableStock(currentLine) : null;
+  const noQtyDraftExceedsUsable =
+    selectedSo?.orderType === "NO_QTY" &&
+    noQtyUsableStockForCurrentItem != null &&
+    existingDraftQty > noQtyUsableStockForCurrentItem + 1e-9;
 
   /** Max qty you can enter for prepare = Dispatchable Now (draft-aware). NO_QTY uses summed FIFO pools across cycles. */
   const headroomToPrepare =
@@ -2235,21 +2247,22 @@ export function DispatchPage() {
   const currentDispatchableQty = headroomToPrepare;
   /** Upper bound for POST /dispatches qty when replacing an existing draft (draft qty + additional headroom). */
   const maxDispatchPrepareQty =
-    existingDraftQty > 1e-9 ? existingDraftQty + headroomToPrepare : headroomToPrepare;
+    selectedSo?.orderType === "NO_QTY" && noQtyUsableStockForCurrentItem != null
+      ? Math.min(noQtyUsableStockForCurrentItem, existingDraftQty > 1e-9 ? existingDraftQty + headroomToPrepare : headroomToPrepare)
+      : existingDraftQty > 1e-9
+        ? existingDraftQty + headroomToPrepare
+        : headroomToPrepare;
 
   const noQtySelectedCycleIdResolved = React.useMemo(
     () =>
-      normalizePositiveCycleId(
-        currentLine?.noQtyCycleId ??
-          noQtySelectedCycleId ??
-          selectedSo?.noQtyDispatchContext?.selectedCycleId ??
-          selectedSo?.currentCycleId,
-      ),
+      selectedSo && currentLine
+        ? resolveNoQtyDispatchSourceCycleId(selectedSo, currentLine, noQtySelectedCycleId)
+        : normalizePositiveCycleId(noQtySelectedCycleId ?? selectedSo?.noQtyDispatchContext?.selectedCycleId),
     [
       currentLine?.noQtyCycleId,
       noQtySelectedCycleId,
       selectedSo?.noQtyDispatchContext?.selectedCycleId,
-      selectedSo?.currentCycleId,
+      selectedSo,
     ],
   );
 
@@ -2347,6 +2360,14 @@ export function DispatchPage() {
                   ? "Nothing can be prepared on this line yet (see limits above)."
                   : "Nothing is ready to ship on this line yet."))
             : null;
+
+  const dispatchQtyExceedsPrepareCap = Boolean(
+    currentLine &&
+      selectedSo &&
+      dispatchQtyValid &&
+      dispatchQtyParsed != null &&
+      dispatchQtyParsed > maxDispatchPrepareQty + 1e-6,
+  );
 
   React.useEffect(() => {
     if (selectedSo?.orderType !== "NO_QTY" || !currentLine || dispatchQtyParsed == null || !(dispatchQtyParsed > 1e-9)) {
@@ -2555,7 +2576,11 @@ export function DispatchPage() {
     }
     const prepareQtyCap = existingDraftQty > 1e-9 ? maxDispatchPrepareQty : currentDispatchableQty;
     if (dispatchQtyParsed > prepareQtyCap + 1e-6) {
-      setError("Exceeds dispatchable quantity");
+      setError(
+        selectedSo?.orderType === "NO_QTY"
+          ? `Cannot prepare more than current usable stock allows (${fmtDispatchQty(prepareQtyCap)}).`
+          : "Exceeds dispatchable quantity",
+      );
       dispatchSubmitLockRef.current = false;
       return;
     }
@@ -2927,7 +2952,7 @@ export function DispatchPage() {
       .filter((so) => so.orderType === "NO_QTY")
       .flatMap((so) => (so.lineStats ?? []).map((ls) => ({ so, ls })));
     const filtered = flat.filter(({ so, ls }) => {
-      const cycleId = normalizePositiveCycleId(so.noQtyDispatchContext?.selectedCycleId ?? so.currentCycleId);
+      const cycleId = resolveNoQtyDispatchSourceCycleId(so, ls);
       // NO_QTY: do not treat cycle-remaining as a limiter; show lines when something is dispatchable now.
       return computeDispatchableNow({ so, ls, cycleIdOverride: cycleId }) > 1e-9;
     });
@@ -2965,9 +2990,7 @@ export function DispatchPage() {
   const guidedLedgerContext = React.useMemo(() => {
     if (!guidedNoQtyResolved || !selectedSo || !currentLine) return null;
     const cycleId = Number(focusCycleId);
-    const selectedCycle = normalizePositiveCycleId(
-      noQtySelectedCycleId ?? selectedSo.noQtyDispatchContext?.selectedCycleId ?? selectedSo.currentCycleId,
-    );
+    const selectedCycle = resolveNoQtyDispatchSourceCycleId(selectedSo, currentLine, noQtySelectedCycleId);
     const rows = ledgerRows.filter(
       (r) =>
         r.soId === selectedSo.id &&
@@ -3040,9 +3063,10 @@ export function DispatchPage() {
 
   const noQtyPreviousDispatchBillWarning = React.useMemo(() => {
     if (selectedSo?.orderType !== "NO_QTY") return false;
-    const sel = normalizePositiveCycleId(
-      noQtySelectedCycleId ?? selectedSo.noQtyDispatchContext?.selectedCycleId ?? selectedSo.currentCycleId,
-    );
+    const sel =
+      currentLine != null
+        ? resolveNoQtyDispatchSourceCycleId(selectedSo, currentLine, noQtySelectedCycleId)
+        : normalizePositiveCycleId(noQtySelectedCycleId ?? selectedSo.noQtyDispatchContext?.selectedCycleId);
     return ledgerRows.some((r) => {
       if (r.soId !== selectedSo.id || r.reversalOfId) return false;
       if (r.workflowStatus !== "LOCKED") return false;
@@ -3051,7 +3075,7 @@ export function DispatchPage() {
       if (r.salesBillExists === true && r.salesBillIsExported === true) return false;
       return true;
     });
-  }, [selectedSo, noQtySelectedCycleId, ledgerRows]);
+  }, [selectedSo, currentLine, noQtySelectedCycleId, ledgerRows]);
 
   const stripDispatchingNow =
     showCompactDispatchStrip && currentLine
@@ -3158,9 +3182,10 @@ export function DispatchPage() {
     if (salesBillStepDispatchId != null) return salesBillStepDispatchId;
     if (guidedBillAction?.kind === "CREATE") return guidedBillAction.dispatchId;
 
-    const cid = normalizePositiveCycleId(
-      noQtySelectedCycleId ?? selectedSo.noQtyDispatchContext?.selectedCycleId ?? selectedSo.currentCycleId,
-    );
+    const cid =
+      currentLine != null
+        ? resolveNoQtyDispatchSourceCycleId(selectedSo, currentLine, noQtySelectedCycleId)
+        : normalizePositiveCycleId(noQtySelectedCycleId ?? selectedSo.noQtyDispatchContext?.selectedCycleId);
 
     const pickLatestLedgerDispatchId = (rows: typeof ledgerRows): number | null => {
       const forwards = rows.filter((r) => !r.reversalOfId && r.workflowStatus === "LOCKED" && r.salesBillExists !== true);
@@ -3371,8 +3396,8 @@ export function DispatchPage() {
 
   const finalizePreparedStripTitle =
     stripShowFinalize && existingDraftQty > dqEps
-      ? "Next: finalize dispatch (draft on this line)"
-      : "Next: finalize dispatch";
+      ? "Prepared dispatch draft ready on this line"
+      : "Prepared dispatch ready to finalize";
   const finalizePreparedStripSubtitle =
     stripShowFinalize && existingDraftQty > dqEps
       ? `Draft qty: ${fmtDispatchQty(existingDraftQty)}\n${
@@ -3596,7 +3621,7 @@ export function DispatchPage() {
         title: "Next action",
         children: (
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-[12px] text-slate-700">Next: Sales Bill</span>
+            <span className="text-[12px] text-slate-700">Sales billing pending</span>
             <Button
               type="button"
               size="sm"
@@ -3622,7 +3647,7 @@ export function DispatchPage() {
         title: "Next action",
         children: (
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-[12px] text-slate-700">Dispatch completed — bill next</span>
+            <span className="text-[12px] text-slate-700">Billing pending after dispatch</span>
             <Button
               type="button"
               size="sm"
@@ -3651,7 +3676,7 @@ export function DispatchPage() {
         title: "Next action",
         children: (
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-[12px] text-slate-700">Finalize dispatch is done — create bill.</span>
+            <span className="text-[12px] text-slate-700">Sales bill creation pending</span>
             <Button
               type="button"
               size="sm"
@@ -3956,7 +3981,7 @@ export function DispatchPage() {
   }, [location.state, fromDashboard]);
 
   return (
-    <PageContainer className="pb-4 sm:pb-6">
+    <PageContainer className="erp-flow-page pb-3">
       <div className="mb-1">
         <DemoFlowBanner />
       </div>
@@ -4780,7 +4805,7 @@ export function DispatchPage() {
                       const eps = 1e-9;
                       type OpState = "OPTIONAL_DISPATCH" | "AWAITING_QC" | "AWAITING_PRODUCTION" | "COMPLETED";
                       const stateLabel = (s: OpState): string => {
-                        if (s === "OPTIONAL_DISPATCH") return "Optional";
+                        if (s === "OPTIONAL_DISPATCH") return "Optional usable stock";
                         if (s === "AWAITING_QC") return "Awaiting QC";
                         if (s === "AWAITING_PRODUCTION") return "Awaiting Production";
                         return "Completed";
@@ -4816,9 +4841,7 @@ export function DispatchPage() {
                       for (const { so, ls } of entries) {
                         const key = `${so.id}-${ls.itemId}`;
                         const usable = lineAvailableStockTable(so, ls);
-                        const cyc = normalizePositiveCycleId(
-                          ls.noQtyCycleId ?? so.noQtyDispatchContext?.selectedCycleId ?? so.currentCycleId,
-                        );
+                        const cyc = resolveNoQtyDispatchSourceCycleId(so, ls);
                         const visibleCyc = normalizePositiveCycleId(ls.noQtyCycleId ?? so.noQtyDispatchContext?.selectedCycleId);
                         const dispatchable = cyc != null ? computeDispatchableNow({ so, ls, cycleIdOverride: cyc }) : 0;
                         const qcPending = safeNum(ls.qcPendingQty ?? 0);
@@ -4864,11 +4887,7 @@ export function DispatchPage() {
                         existing.qcPendingAny = Math.max(existing.qcPendingAny, qcPending);
                         existing.customerPendingAny = Math.max(existing.customerPendingAny, customerPending);
 
-                        const prevCyc = normalizePositiveCycleId(
-                          existing.bestLs.noQtyCycleId ??
-                            existing.so.noQtyDispatchContext?.selectedCycleId ??
-                            existing.so.currentCycleId,
-                        );
+                        const prevCyc = resolveNoQtyDispatchSourceCycleId(existing.so, existing.bestLs);
                         const prevDisp =
                           prevCyc != null
                             ? computeDispatchableNow({
@@ -4895,6 +4914,8 @@ export function DispatchPage() {
 
                       const groups: Grouped[] = [];
                       for (const g of byKey.values()) {
+                        const freeUsable = noQtyFreeUsableStockForItem(g.so, g.itemId, g.usableAny);
+                        g.dispatchableSum = Math.min(g.dispatchableSum, freeUsable);
                         // Final state rule (explicitly matches your requirement):
                         // - If customer pending = 0 AND usable/dispatchable > 0 => Optional Dispatch
                         // - If customer pending = 0 AND usable/dispatchable = 0 AND no QC/prod pending => Completed
@@ -4948,8 +4969,10 @@ export function DispatchPage() {
                                       ? g.dispatchableByCycle
                                           .map((c) => {
                                             const lab =
-                                              c.cycleNo != null && Number.isFinite(c.cycleNo) ? `C${c.cycleNo}` : `#${c.cycleId}`;
-                                            return `${lab} ${fmtDispatchQty(c.qty)}`;
+                                              c.cycleNo != null && Number.isFinite(c.cycleNo)
+                                                ? `Cycle ${c.cycleNo}`
+                                                : `Cycle #${c.cycleId}`;
+                                            return `Usable stock from ${lab}: ${fmtDispatchQty(c.qty)}`;
                                           })
                                           .join(" · ")
                                       : null;
@@ -5042,17 +5065,16 @@ export function DispatchPage() {
                           {noQtyLineEntries
                             ? noQtyLineEntries.map(({ so, ls }) => {
                                 const selected = soId === so.id && salesOrderLineId === ls.lineId;
-                                const cyc = normalizePositiveCycleId(
-                                  ls.noQtyCycleId ?? so.noQtyDispatchContext?.selectedCycleId ?? so.currentCycleId,
-                                );
+                                const cyc = resolveNoQtyDispatchSourceCycleId(so, ls);
                                 const disp = computeDispatchableNow({ so, ls, cycleIdOverride: cyc });
                                 const pend = linePendingOnOrderDisplay(ls);
                                 const status = backlogStatus(pend, disp);
+                                const optionalNoQty = so.orderType === "NO_QTY" && pend <= 1e-9 && disp > 1e-9;
                                 const cycleLabel =
                                   ls.noQtyCycleNo != null && Number.isFinite(Number(ls.noQtyCycleNo))
-                                    ? `Cycle ${Number(ls.noQtyCycleNo)}`
+                                    ? `${optionalNoQty ? "Usable stock from " : ""}Cycle ${Number(ls.noQtyCycleNo)}`
                                     : ls.noQtyCycleId != null
-                                      ? `Cycle #${ls.noQtyCycleId}`
+                                      ? `${optionalNoQty ? "Usable stock from " : ""}Cycle #${ls.noQtyCycleId}`
                                       : so.noQtyDispatchContext?.cycleLabel?.trim() ||
                                         (so.noQtyDispatchContext?.selectedCycleId != null
                                           ? `Cycle #${so.noQtyDispatchContext.selectedCycleId}`
@@ -5087,7 +5109,7 @@ export function DispatchPage() {
                                           backlogStatusBadgeClass(status),
                                         )}
                                       >
-                                        {backlogStatusLabel(status)}
+                                        {optionalNoQty ? "Optional usable stock" : backlogStatusLabel(status)}
                                       </div>
                                     </td>
                                     <td className="px-1.5 py-0.5 text-right align-top">
@@ -5115,9 +5137,7 @@ export function DispatchPage() {
                                 );
                                 const body = section.rows.map(({ so, ls }) => {
                                   const selected = soId === so.id && salesOrderLineId === ls.lineId;
-                                  const rowCyc = normalizePositiveCycleId(
-                                    ls.noQtyCycleId ?? so.noQtyDispatchContext?.selectedCycleId ?? so.currentCycleId,
-                                  );
+                                  const rowCyc = resolveNoQtyDispatchSourceCycleId(so, ls);
                                   const ready = computeDispatchableNow({
                                     so,
                                     ls,
@@ -5128,12 +5148,13 @@ export function DispatchPage() {
                                   });
                                   const pend = linePendingOnOrderDisplay(ls);
                                   const status = backlogStatus(pend, ready);
+                                  const optionalNoQty = so.orderType === "NO_QTY" && pend <= 1e-9 && ready > 1e-9;
                                   const rowCycleLabel =
                                     so.orderType === "NO_QTY"
                                       ? ls.noQtyCycleNo != null && Number.isFinite(Number(ls.noQtyCycleNo))
-                                        ? `Cycle ${Number(ls.noQtyCycleNo)}`
+                                        ? `${optionalNoQty ? "Usable stock from " : ""}Cycle ${Number(ls.noQtyCycleNo)}`
                                         : ls.noQtyCycleId != null
-                                          ? `Cycle #${ls.noQtyCycleId}`
+                                          ? `${optionalNoQty ? "Usable stock from " : ""}Cycle #${ls.noQtyCycleId}`
                                           : so.noQtyDispatchContext?.cycleLabel?.trim() || so.noQtyDispatchContext?.selectedCycleId != null
                                             ? so.noQtyDispatchContext?.cycleLabel?.trim() || `Cycle #${so.noQtyDispatchContext?.selectedCycleId}`
                                             : ""
@@ -5174,7 +5195,7 @@ export function DispatchPage() {
                                               : undefined
                                           }
                                         >
-                                          {backlogStatusLabel(status)}
+                                          {optionalNoQty ? "Optional usable stock" : backlogStatusLabel(status)}
                                         </div>
                                       </td>
                                       <td className="px-1.5 py-0.5 text-right align-top">
@@ -5242,9 +5263,7 @@ export function DispatchPage() {
                         ls,
                         cycleIdOverride:
                           so.orderType === "NO_QTY"
-                            ? normalizePositiveCycleId(
-                                ls.noQtyCycleId ?? so.noQtyDispatchContext?.selectedCycleId ?? so.currentCycleId,
-                              )
+                            ? resolveNoQtyDispatchSourceCycleId(so, ls)
                             : null,
                       });
                       const pend = linePendingOnOrderDisplay(ls);
@@ -5590,63 +5609,39 @@ export function DispatchPage() {
                         </div>
 
                         <div className="mt-2 space-y-2 border-t border-slate-100 pt-2">
-                          {noQtyWorkbenchHeadroomBreakdown ? (
+                          {noQtyWorkbenchHeadroomBreakdown && selectedSo && currentLine ? (
                             <>
-                              <div className="grid w-full min-w-0 gap-2 sm:grid-cols-3">
-                                <div className="rounded-md border border-slate-100 bg-slate-50/90 px-2 py-1.5">
-                                  <div className="text-[9px] font-semibold uppercase tracking-wide text-slate-500">
-                                    This cycle dispatchable
-                                  </div>
-                                  <div className="mt-0.5 text-xl font-bold tabular-nums leading-none text-slate-900 sm:text-[1.45rem]">
-                                    {fmtDispatchQty(noQtyWorkbenchHeadroomBreakdown.thisCycleDispatchable)}
-                                  </div>
-                                  <div className="mt-0.5 text-[9px] text-slate-500">
-                                    {noQtyWorkbenchHeadroomBreakdown.selectedCycleNo != null
-                                      ? `Cycle ${noQtyWorkbenchHeadroomBreakdown.selectedCycleNo} row`
-                                      : "Selected row cycle"}
-                                  </div>
-                                </div>
-                                <div className="rounded-md border border-amber-100/90 bg-amber-50/55 px-2 py-1.5">
-                                  <div className="text-[9px] font-semibold uppercase tracking-wide text-amber-900/85">
-                                    FIFO carry-forward usable
-                                  </div>
-                                  <div className="mt-0.5 text-xl font-bold tabular-nums leading-none text-amber-950 sm:text-[1.45rem]">
-                                    {fmtDispatchQty(noQtyWorkbenchHeadroomBreakdown.carryForwardTotal)}
-                                  </div>
-                                  <div
-                                    className="mt-0.5 truncate text-[9px] text-amber-900/85"
-                                    title={formatNoQtyCarryForwardDisplay(
-                                      noQtyWorkbenchHeadroomBreakdown.carryForwardTotal,
-                                      noQtyWorkbenchHeadroomBreakdown.carryForwardByCycle,
-                                    )}
-                                  >
-                                    {noQtyWorkbenchHeadroomBreakdown.carryForwardTotal > 1e-9
-                                      ? formatNoQtyCarryForwardDisplay(
-                                          noQtyWorkbenchHeadroomBreakdown.carryForwardTotal,
-                                          noQtyWorkbenchHeadroomBreakdown.carryForwardByCycle,
-                                        )
-                                      : "—"}
-                                  </div>
-                                </div>
-                                <div className="rounded-md border border-sky-100/90 bg-sky-50/65 px-2 py-1.5">
-                                  <div className="text-[9px] font-semibold uppercase tracking-wide text-sky-900/85">
-                                    Total dispatchable now
-                                  </div>
-                                  <div className="mt-0.5 text-xl font-bold tabular-nums leading-none text-sky-950 sm:text-[1.45rem]">
-                                    {fmtDispatchQty(noQtyWorkbenchHeadroomBreakdown.totalDispatchableNow)}
-                                  </div>
-                                  <div className="mt-0.5 text-[9px] text-sky-900/75">Across cycles (prepare cap)</div>
-                                </div>
-                              </div>
-                              <p className="text-[10px] leading-snug text-slate-500">
-                                Dispatch uses FIFO cycle allocation automatically when you prepare.
-                              </p>
+                              {(() => {
+                                const base = buildNoQtyOperationalMetrics(selectedSo, currentLine.itemId, {
+                                  canDispatchNowOverride: noQtyWorkbenchHeadroomBreakdown.dispatchPossibleNow,
+                                });
+                                const metrics = base
+                                  ? {
+                                      ...base,
+                                      customerPending: noQtyWorkbenchHeadroomBreakdown.cycleFifoHeadroom,
+                                      usableStockNow: noQtyWorkbenchHeadroomBreakdown.usableStockNow,
+                                      canDispatchNow: noQtyWorkbenchHeadroomBreakdown.dispatchPossibleNow,
+                                    }
+                                  : {
+                                      customerPending: noQtyWorkbenchHeadroomBreakdown.cycleFifoHeadroom,
+                                      producedApproved: 0,
+                                      totalDispatched: 0,
+                                      usableStockNow: noQtyWorkbenchHeadroomBreakdown.usableStockNow,
+                                      canDispatchNow: noQtyWorkbenchHeadroomBreakdown.dispatchPossibleNow,
+                                    };
+                                return <OperationalDispatchSnapshot metrics={metrics} showFlowHint={false} />;
+                              })()}
+                              {noQtyDraftExceedsUsable ? (
+                                <p className="text-[10px] font-medium leading-snug text-red-800">
+                                  Draft exceeds current usable stock. Reduce draft qty or wait for more usable stock.
+                                </p>
+                              ) : null}
                             </>
                           ) : (
                             <div className="flex flex-wrap items-end gap-x-3 gap-y-2">
                               <div className="shrink-0">
                                 <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                                  Total dispatchable now
+                                  Can dispatch now
                                 </div>
                                 <div className="mt-0.5 text-2xl font-bold tabular-nums leading-none text-slate-900 sm:text-[1.65rem]">
                                   {fmtDispatchQty(headroomToPrepare)}
@@ -5687,6 +5682,11 @@ export function DispatchPage() {
                                   }
                                 }}
                               />
+                              {dispatchQtyExceedsPrepareCap ? (
+                                <p className="mt-0.5 text-[11px] font-medium text-red-800">
+                                  Cannot dispatch more than can dispatch now ({fmtDispatchQty(maxDispatchPrepareQty)}).
+                                </p>
+                              ) : null}
                             </div>
                           </FieldShortcutHint>
 
@@ -6131,9 +6131,9 @@ export function DispatchPage() {
                               selectedSo &&
                               dispatchQtyValid &&
                               dispatchQtyParsed != null &&
-                              dispatchQtyParsed > readyToShip + 1e-9 ? (
+                              dispatchQtyExceedsPrepareCap ? (
                                 <p className="mt-0.5 text-[11px] font-medium text-red-800">
-                                  Cannot dispatch more than available/pending quantity.
+                                  Cannot dispatch more than can dispatch now ({fmtDispatchQty(maxDispatchPrepareQty)}).
                                 </p>
                               ) : null}
                               {salesOrderLineId > 0 &&

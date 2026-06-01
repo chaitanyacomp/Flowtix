@@ -177,7 +177,7 @@ noQtyNextActionRouter.get(
 
       let nextAction = "DONE";
       if (qcPoolRemaining > EPS) {
-        nextAction = "DISPATCH";
+        nextAction = "STORE";
       } else if (acceptedQty <= EPS && productionBalanceQty > EPS) {
         nextAction = "PRODUCTION";
       }

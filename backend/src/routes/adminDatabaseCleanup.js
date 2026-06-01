@@ -2,6 +2,7 @@ const express = require("express");
 const { z } = require("zod");
 const { prisma } = require("../utils/prisma");
 const { requireAuth, requireRole } = require("../middleware/auth");
+const { DocType } = require("../prismaClientPackage");
 
 const adminDatabaseCleanupRouter = express.Router();
 
@@ -126,6 +127,12 @@ async function runLoggedCleanupStep(summary, step) {
     const remaining = await countRowsSafe(step.table, step.count);
     logCleanup("delete", { table: step.table, deleted, remaining });
     summary.push({ table: step.table, deleted, remaining });
+    if (remaining > 0) {
+      throw new CleanupStepError({
+        step: step.table,
+        error: `Delete step finished but ${remaining} row(s) still remain in ${step.table}. A later pass should not be required.`,
+      });
+    }
   } catch (err) {
     const fkFailureTable = getCleanupFkFailureTable(err);
     logCleanup("delete-failed", {
@@ -184,6 +191,374 @@ async function verifyCleanupComplete(checks) {
   }
 }
 
+/** Doc types cleared on transaction reset (masters such as BOM keep their own sequences). */
+const RESET_TRANSACTION_DOC_TYPES = [
+  "SALES_ORDER",
+  "WORK_ORDER",
+  "PRODUCTION_ENTRY",
+  "QC_ENTRY",
+  "DISPATCH",
+  "SALES_BILL",
+  "REQUIREMENT_SHEET",
+  "PRODUCTION_MATERIAL_REQUEST",
+  "MATERIAL_ISSUE_NOTE",
+  "MATERIAL_RETURN_NOTE",
+  "MATERIAL_REQUIREMENT",
+  "PURCHASE_REQUEST",
+];
+
+const VALID_DOC_TYPES = new Set(Object.values(DocType));
+
+function assertResetTransactionDocTypesValid() {
+  const invalid = RESET_TRANSACTION_DOC_TYPES.filter((docType) => !VALID_DOC_TYPES.has(docType));
+  if (invalid.length > 0) {
+    throw new Error(
+      `RESET_TRANSACTION_DOC_TYPES contains invalid DocType value(s): ${invalid.join(", ")}. ` +
+        `Valid DocType values: ${[...VALID_DOC_TYPES].join(", ")}`,
+    );
+  }
+}
+
+assertResetTransactionDocTypesValid();
+
+/**
+ * Transaction tables that must be empty after a successful reset (final verification + sweep).
+ * Masters (Item, Customer, BOM, OpeningStockEntry, Location, etc.) are intentionally excluded.
+ */
+const RESET_TRANSACTION_VERIFY_TABLES = [
+  "salesBillReceipt",
+  "salesBillLine",
+  "salesBill",
+  "customerReturn",
+  "dispatch",
+  "stockAdjustmentQcEntry",
+  "stockTransaction",
+  "qcReversal",
+  "scrapRecord",
+  "qcRejectedDisposition",
+  "qcEntry",
+  "productionEntryRmConsumption",
+  "productionEntry",
+  "materialReturnLine",
+  "materialReturnNote",
+  "materialIssueLine",
+  "materialIssueNote",
+  "productionMaterialRequestLine",
+  "productionMaterialRequest",
+  "materialAllocation",
+  "workOrderLine",
+  "workOrder",
+  "requirementSheetLine",
+  "requirementSheet",
+  "noQtySoClosedShortageLine",
+  "noQtySoCloseSnapshot",
+  "salesOrderCycle",
+  "regularSoPlanningSnapshotLine",
+  "regularSoPlanningSnapshot",
+  "salesOrderLine",
+  "salesOrder",
+  "rmPoLineProcurementLink",
+  "purchaseRequestLineSourceLink",
+  "materialRequirementLine",
+  "materialRequirement",
+  "purchaseRequestLine",
+  "purchaseRequest",
+  "quotationLine",
+  "quotation",
+  "feasibility",
+  "enquiryLine",
+  "enquiry",
+  "purchaseBillPayment",
+  "purchaseBillLine",
+  "purchaseBill",
+  "grnLine",
+  "grn",
+  "rmPurchaseOrderLine",
+  "rmPurchaseOrder",
+  "customerPOLine",
+  "customerPO",
+];
+
+/**
+ * Store procurement planning (MR → PR → RM PO traceability). Must run before rmPurchaseOrderLine
+ * because RmPoLineProcurementLink.purchaseRequestLineId and .materialRequirementLineId use Restrict.
+ *
+ * @param {import("@prisma/client").Prisma.TransactionClient} tx
+ */
+function buildProcurementPlanningCleanupSteps(tx) {
+  return [
+    {
+      table: "rmPoLineProcurementLink",
+      delete: () => tx.rmPoLineProcurementLink.deleteMany({}),
+      count: () => tx.rmPoLineProcurementLink.count(),
+    },
+    {
+      table: "purchaseRequestLineSourceLink",
+      delete: () => tx.purchaseRequestLineSourceLink.deleteMany({}),
+      count: () => tx.purchaseRequestLineSourceLink.count(),
+    },
+    {
+      table: "materialRequirementLine",
+      delete: () => tx.materialRequirementLine.deleteMany({}),
+      count: () => tx.materialRequirementLine.count(),
+    },
+    {
+      table: "materialRequirement",
+      delete: () => tx.materialRequirement.deleteMany({}),
+      count: () => tx.materialRequirement.count(),
+    },
+    {
+      table: "purchaseRequestLine",
+      delete: () => tx.purchaseRequestLine.deleteMany({}),
+      count: () => tx.purchaseRequestLine.count(),
+    },
+    {
+      table: "purchaseRequest",
+      delete: () => tx.purchaseRequest.deleteMany({}),
+      count: () => tx.purchaseRequest.count(),
+    },
+  ];
+}
+
+/**
+ * FK-safe delete order for Settings → Reset Transaction Data (single transaction).
+ *
+ * @param {import("@prisma/client").Prisma.TransactionClient} tx
+ */
+function buildResetTransactionDataCleanupSteps(tx) {
+  return [
+    { table: "salesBillReceipt", delete: () => tx.salesBillReceipt.deleteMany({}), count: () => tx.salesBillReceipt.count() },
+    { table: "salesBillLine", delete: () => tx.salesBillLine.deleteMany({}), count: () => tx.salesBillLine.count() },
+    { table: "salesBill", delete: () => tx.salesBill.deleteMany({}), count: () => tx.salesBill.count() },
+    { table: "customerReturn", delete: () => tx.customerReturn.deleteMany({}), count: () => tx.customerReturn.count() },
+    { table: "STORE", delete: () => tx.dispatch.deleteMany({}), count: () => tx.dispatch.count() },
+    {
+      table: "stockAdjustmentQcEntry",
+      delete: () => tx.stockAdjustmentQcEntry.deleteMany({}),
+      count: () => tx.stockAdjustmentQcEntry.count(),
+    },
+    { table: "stockTransaction", delete: () => tx.stockTransaction.deleteMany({}), count: () => tx.stockTransaction.count() },
+    { table: "qcReversal", delete: () => tx.qcReversal.deleteMany({}), count: () => tx.qcReversal.count() },
+    { table: "scrapRecord", delete: () => tx.scrapRecord.deleteMany({}), count: () => tx.scrapRecord.count() },
+    {
+      table: "qcRejectedDisposition",
+      delete: () => tx.qcRejectedDisposition.deleteMany({}),
+      count: () => tx.qcRejectedDisposition.count(),
+    },
+    { table: "qcEntry", delete: () => tx.qcEntry.deleteMany({}), count: () => tx.qcEntry.count() },
+    {
+      table: "productionEntryRmConsumption",
+      delete: () => tx.productionEntryRmConsumption.deleteMany({}),
+      count: () => tx.productionEntryRmConsumption.count(),
+    },
+    { table: "productionEntry", delete: () => tx.productionEntry.deleteMany({}), count: () => tx.productionEntry.count() },
+    ...buildProductionRmFlowCleanupSteps(tx),
+    { table: "workOrderLine", delete: () => tx.workOrderLine.deleteMany({}), count: () => tx.workOrderLine.count() },
+    { table: "workOrder", delete: () => tx.workOrder.deleteMany({}), count: () => tx.workOrder.count() },
+    {
+      table: "requirementSheetLine",
+      delete: () => tx.requirementSheetLine.deleteMany({}),
+      count: () => tx.requirementSheetLine.count(),
+    },
+    { table: "requirementSheet", delete: () => tx.requirementSheet.deleteMany({}), count: () => tx.requirementSheet.count() },
+    {
+      table: "noQtySoClosedShortageLine",
+      delete: () => tx.noQtySoClosedShortageLine.deleteMany({}),
+      count: () => tx.noQtySoClosedShortageLine.count(),
+    },
+    {
+      table: "noQtySoCloseSnapshot",
+      delete: () => tx.noQtySoCloseSnapshot.deleteMany({}),
+      count: () => tx.noQtySoCloseSnapshot.count(),
+    },
+    {
+      table: "salesOrderCycle",
+      delete: async () => {
+        await tx.salesOrder.updateMany({ data: { currentCycleId: null } });
+        return tx.salesOrderCycle.deleteMany({});
+      },
+      count: () => tx.salesOrderCycle.count(),
+    },
+    {
+      table: "regularSoPlanningSnapshotLine",
+      delete: () => tx.regularSoPlanningSnapshotLine.deleteMany({}),
+      count: () => tx.regularSoPlanningSnapshotLine.count(),
+    },
+    {
+      table: "regularSoPlanningSnapshot",
+      delete: () => tx.regularSoPlanningSnapshot.deleteMany({}),
+      count: () => tx.regularSoPlanningSnapshot.count(),
+    },
+    { table: "salesOrderLine", delete: () => tx.salesOrderLine.deleteMany({}), count: () => tx.salesOrderLine.count() },
+    { table: "salesOrder", delete: () => tx.salesOrder.deleteMany({}), count: () => tx.salesOrder.count() },
+    { table: "quotationLine", delete: () => tx.quotationLine.deleteMany({}), count: () => tx.quotationLine.count() },
+    { table: "quotation", delete: () => tx.quotation.deleteMany({}), count: () => tx.quotation.count() },
+    { table: "feasibility", delete: () => tx.feasibility.deleteMany({}), count: () => tx.feasibility.count() },
+    { table: "enquiryLine", delete: () => tx.enquiryLine.deleteMany({}), count: () => tx.enquiryLine.count() },
+    { table: "enquiry", delete: () => tx.enquiry.deleteMany({}), count: () => tx.enquiry.count() },
+    {
+      table: "purchaseBillPayment",
+      delete: () => tx.purchaseBillPayment.deleteMany({}),
+      count: () => tx.purchaseBillPayment.count(),
+    },
+    { table: "purchaseBillLine", delete: () => tx.purchaseBillLine.deleteMany({}), count: () => tx.purchaseBillLine.count() },
+    { table: "purchaseBill", delete: () => tx.purchaseBill.deleteMany({}), count: () => tx.purchaseBill.count() },
+    { table: "grnLine", delete: () => tx.grnLine.deleteMany({}), count: () => tx.grnLine.count() },
+    { table: "grn", delete: () => tx.grn.deleteMany({}), count: () => tx.grn.count() },
+    ...buildProcurementPlanningCleanupSteps(tx),
+    { table: "rmPurchaseOrderLine", delete: () => tx.rmPurchaseOrderLine.deleteMany({}), count: () => tx.rmPurchaseOrderLine.count() },
+    { table: "rmPurchaseOrder", delete: () => tx.rmPurchaseOrder.deleteMany({}), count: () => tx.rmPurchaseOrder.count() },
+    { table: "customerPOLine", delete: () => tx.customerPOLine.deleteMany({}), count: () => tx.customerPOLine.count() },
+    { table: "customerPO", delete: () => tx.customerPO.deleteMany({}), count: () => tx.customerPO.count() },
+  ];
+}
+
+/**
+ * Second pass in the same transaction: re-delete anything still present if FK order left orphans.
+ * @param {import("@prisma/client").Prisma.TransactionClient} tx
+ */
+async function runFinalTransactionResetSweep(tx) {
+  await tx.stockTransaction.updateMany({ data: { reversalOfId: null } });
+  await tx.dispatch.updateMany({ data: { reversalOfId: null } });
+  await tx.qcRejectedDisposition.updateMany({ data: { parentDispositionId: null } });
+  await tx.salesOrder.updateMany({ where: { customerReturnId: { not: null } }, data: { customerReturnId: null } });
+
+  if (await tableExists(tx, ["qclegacyrejectedclassification", "QcLegacyRejectedClassification"])) {
+    await tx.qcLegacyRejectedClassification.deleteMany({});
+  }
+  for (const step of buildResetTransactionDataCleanupSteps(tx)) {
+    await step.delete();
+  }
+}
+
+/**
+ * @param {import("@prisma/client").Prisma.TransactionClient} tx
+ */
+async function verifyTransactionResetComplete(tx) {
+  /** @type {Array<{ table: string; count: () => Promise<number> }>} */
+  const checks = RESET_TRANSACTION_VERIFY_TABLES.map((table) => {
+    if (table === "dispatch") {
+      return { table: "dispatch", count: () => tx.dispatch.count() };
+    }
+    return { table, count: () => tx[table].count() };
+  });
+
+  if (await tableExists(tx, ["qclegacyrejectedclassification", "QcLegacyRejectedClassification"])) {
+    checks.push({
+      table: "qcLegacyRejectedClassification",
+      count: () => tx.qcLegacyRejectedClassification.count(),
+    });
+  }
+  if (await tableExists(tx, ["docsequence", "DocSequence"])) {
+    checks.push({
+      table: "docSequence(transactional)",
+      count: () => tx.docSequence.count({ where: { docType: { in: RESET_TRANSACTION_DOC_TYPES } } }),
+    });
+  }
+
+  await verifyCleanupComplete(checks);
+}
+
+/**
+ * Phase 3 RM issuance/return (PMR → MIN → MRN).
+ * Must run after stockTransaction is cleared and before workOrder:
+ * - ProductionMaterialRequest.workOrderId → WorkOrder (onDelete: Restrict) blocks workOrder.deleteMany.
+ * - MaterialIssueNote / MaterialReturnNote use SetNull on WO/PMR; lines cascade from parent notes.
+ * - LOCATION_TRANSFER stock rows reference MIN/MRN ids via refId (no DB FK); wiped with stockTransaction.
+ *
+ * @param {import("@prisma/client").Prisma.TransactionClient} tx
+ * @returns {Array<{ table: string; delete: () => Promise<{ count?: number }>; count: () => Promise<number> }>}
+ */
+function buildProductionRmFlowCleanupSteps(tx) {
+  return [
+    { table: "materialReturnLine", delete: () => tx.materialReturnLine.deleteMany({}), count: () => tx.materialReturnLine.count() },
+    { table: "materialReturnNote", delete: () => tx.materialReturnNote.deleteMany({}), count: () => tx.materialReturnNote.count() },
+    { table: "materialIssueLine", delete: () => tx.materialIssueLine.deleteMany({}), count: () => tx.materialIssueLine.count() },
+    { table: "materialIssueNote", delete: () => tx.materialIssueNote.deleteMany({}), count: () => tx.materialIssueNote.count() },
+    {
+      table: "productionMaterialRequestLine",
+      delete: () => tx.productionMaterialRequestLine.deleteMany({}),
+      count: () => tx.productionMaterialRequestLine.count(),
+    },
+    {
+      table: "productionMaterialRequest",
+      delete: () => tx.productionMaterialRequest.deleteMany({}),
+      count: () => tx.productionMaterialRequest.count(),
+    },
+    {
+      table: "materialAllocation",
+      delete: () => tx.materialAllocation.deleteMany({}),
+      count: () => tx.materialAllocation.count(),
+    },
+  ];
+}
+
+/**
+ * Scoped PMR/MIN/MRN deletes for NO_QTY reset (same FK order as buildProductionRmFlowCleanupSteps).
+ *
+ * @param {import("@prisma/client").Prisma.TransactionClient} tx
+ * @param {Record<string, number>} deletedCounts
+ * @param {{ workOrderIds: number[] }} scope
+ */
+async function deleteProductionRmFlowForWorkOrders(tx, deletedCounts, { workOrderIds }) {
+  if (workOrderIds.length === 0) {
+    deletedCounts.materialReturnLine = 0;
+    deletedCounts.materialReturnNote = 0;
+    deletedCounts.materialIssueLine = 0;
+    deletedCounts.materialIssueNote = 0;
+    deletedCounts.materialAllocation = 0;
+    deletedCounts.productionMaterialRequestLine = 0;
+    deletedCounts.productionMaterialRequest = 0;
+    return;
+  }
+
+  const pmrIds = (
+    await tx.productionMaterialRequest.findMany({
+      where: { workOrderId: { in: workOrderIds } },
+      select: { id: true },
+    })
+  ).map((r) => r.id);
+
+  /** @type {Record<string, unknown>[]} */
+  const noteOr = [{ workOrderId: { in: workOrderIds } }];
+  if (pmrIds.length > 0) {
+    noteOr.push({ productionMaterialRequestId: { in: pmrIds } });
+  }
+  const noteWhere = { OR: noteOr };
+
+  await addDeleteCountStep(deletedCounts, "materialReturnLine", () =>
+    tx.materialReturnLine.deleteMany({ where: { materialReturnNote: noteWhere } }),
+  );
+  await addDeleteCountStep(deletedCounts, "materialReturnNote", () => tx.materialReturnNote.deleteMany({ where: noteWhere }));
+  await addDeleteCountStep(deletedCounts, "materialIssueLine", () =>
+    tx.materialIssueLine.deleteMany({ where: { materialIssueNote: noteWhere } }),
+  );
+  await addDeleteCountStep(deletedCounts, "materialIssueNote", () => tx.materialIssueNote.deleteMany({ where: noteWhere }));
+
+  const allocationWhere = {
+    OR: [
+      { workOrderId: { in: workOrderIds } },
+      { workOrderLine: { workOrderId: { in: workOrderIds } } },
+      ...(pmrIds.length > 0 ? [{ productionMaterialRequestId: { in: pmrIds } }] : []),
+    ],
+  };
+  await addDeleteCountStep(deletedCounts, "materialAllocation", () =>
+    tx.materialAllocation.deleteMany({ where: allocationWhere }),
+  );
+
+  if (pmrIds.length > 0) {
+    await addDeleteCountStep(deletedCounts, "productionMaterialRequestLine", () =>
+      tx.productionMaterialRequestLine.deleteMany({ where: { productionMaterialRequestId: { in: pmrIds } } }),
+    );
+    await addDeleteCountStep(deletedCounts, "productionMaterialRequest", () =>
+      tx.productionMaterialRequest.deleteMany({ where: { id: { in: pmrIds } } }),
+    );
+  } else {
+    deletedCounts.productionMaterialRequestLine = 0;
+    deletedCounts.productionMaterialRequest = 0;
+  }
+}
+
 /**
  * @param {Record<string, number>} deleted
  * @param {string} key
@@ -193,6 +568,20 @@ async function addDeleteCount(deleted, key, fn) {
   const res = await fn();
   const c = typeof res?.count === "number" ? res.count : 0;
   deleted[key] = (deleted[key] ?? 0) + c;
+}
+
+async function addDeleteCountStep(deleted, key, fn) {
+  try {
+    await addDeleteCount(deleted, key, fn);
+  } catch (err) {
+    const fkFailureTable = getCleanupFkFailureTable(err);
+    logCleanup("delete-failed", {
+      table: key,
+      fkFailureTable,
+      error: formatCleanupDeleteError(key, err),
+    });
+    throw new CleanupStepError({ step: key, error: formatCleanupDeleteError(key, err) });
+  }
 }
 
 /**
@@ -310,6 +699,40 @@ async function runResetNoQtyTransactionalDeletes(tx) {
   });
   const adjustmentTxnIdsFromSaQc = [...new Set(saqcRows.map((r) => r.stockTransactionId))];
 
+  const noQtyMaterialRequirementIds = (
+    await tx.materialRequirement.findMany({
+      where: {
+        OR: [
+          { salesOrderId: { in: noQtySoIds } },
+          ...(woIds.length > 0 ? [{ workOrderId: { in: woIds } }] : []),
+        ],
+      },
+      select: { id: true },
+    })
+  ).map((r) => r.id);
+  const noQtyMaterialRequirementLineIds =
+    noQtyMaterialRequirementIds.length === 0
+      ? []
+      : (
+          await tx.materialRequirementLine.findMany({
+            where: { materialRequirementId: { in: noQtyMaterialRequirementIds } },
+            select: { id: true },
+          })
+        ).map((r) => r.id);
+  const noQtyPurchaseRequestLineIds =
+    noQtyMaterialRequirementLineIds.length === 0
+      ? []
+      : [
+          ...new Set(
+            (
+              await tx.purchaseRequestLineSourceLink.findMany({
+                where: { materialRequirementLineId: { in: noQtyMaterialRequirementLineIds } },
+                select: { purchaseRequestLineId: true },
+              })
+            ).map((r) => r.purchaseRequestLineId),
+          ),
+        ];
+
   // 1) Break self-references (scoped to NO_QTY dispatch / disposition trees).
   await tx.dispatch.updateMany({
     where: { soId: { in: noQtySoIds } },
@@ -334,11 +757,15 @@ async function runResetNoQtyTransactionalDeletes(tx) {
         ).map((r) => r.id);
 
   if (salesBillIds.length > 0) {
+    await addDeleteCountStep(deletedCounts, "salesBillReceipt", () =>
+      tx.salesBillReceipt.deleteMany({ where: { salesBillId: { in: salesBillIds } } }),
+    );
     await addDeleteCount(deletedCounts, "salesBillLine", () =>
       tx.salesBillLine.deleteMany({ where: { salesBillId: { in: salesBillIds } } }),
     );
     await addDeleteCount(deletedCounts, "salesBill", () => tx.salesBill.deleteMany({ where: { id: { in: salesBillIds } } }));
   } else {
+    deletedCounts.salesBillReceipt = 0;
     deletedCounts.salesBillLine = 0;
     deletedCounts.salesBill = 0;
   }
@@ -355,7 +782,7 @@ async function runResetNoQtyTransactionalDeletes(tx) {
     tx.customerReturn.deleteMany({ where: { salesOrderId: { in: noQtySoIds } } }),
   );
 
-  await addDeleteCount(deletedCounts, "dispatch", () =>
+  await addDeleteCount(deletedCounts, "STORE", () =>
     tx.dispatch.deleteMany({ where: { soId: { in: noQtySoIds } } }),
   );
 
@@ -404,14 +831,69 @@ async function runResetNoQtyTransactionalDeletes(tx) {
   }
 
   if (peIds.length > 0) {
+    await addDeleteCount(deletedCounts, "productionEntryRmConsumption", () =>
+      tx.productionEntryRmConsumption.deleteMany({ where: { productionEntryId: { in: peIds } } }),
+    );
     await addDeleteCount(deletedCounts, "productionEntry", () =>
       tx.productionEntry.deleteMany({ where: { id: { in: peIds } } }),
     );
   } else {
+    deletedCounts.productionEntryRmConsumption = 0;
     deletedCounts.productionEntry = 0;
   }
 
+  if (noQtyMaterialRequirementLineIds.length > 0) {
+    await addDeleteCountStep(deletedCounts, "rmPoLineProcurementLink", () =>
+      tx.rmPoLineProcurementLink.deleteMany({
+        where: {
+          OR: [
+            { materialRequirementLineId: { in: noQtyMaterialRequirementLineIds } },
+            ...(noQtyPurchaseRequestLineIds.length > 0 ? [{ purchaseRequestLineId: { in: noQtyPurchaseRequestLineIds } }] : []),
+          ],
+        },
+      }),
+    );
+    await addDeleteCountStep(deletedCounts, "purchaseRequestLineSourceLink", () =>
+      tx.purchaseRequestLineSourceLink.deleteMany({
+        where: { materialRequirementLineId: { in: noQtyMaterialRequirementLineIds } },
+      }),
+    );
+    if (noQtyPurchaseRequestLineIds.length > 0) {
+      await addDeleteCountStep(deletedCounts, "purchaseRequestLine", () =>
+        tx.purchaseRequestLine.deleteMany({
+          where: {
+            id: { in: noQtyPurchaseRequestLineIds },
+            sourceLinks: { none: {} },
+            poLinks: { none: {} },
+          },
+        }),
+      );
+    } else {
+      deletedCounts.purchaseRequestLine = 0;
+    }
+    await addDeleteCountStep(deletedCounts, "materialRequirementLine", () =>
+      tx.materialRequirementLine.deleteMany({ where: { id: { in: noQtyMaterialRequirementLineIds } } }),
+    );
+  } else {
+    deletedCounts.rmPoLineProcurementLink = 0;
+    deletedCounts.purchaseRequestLineSourceLink = 0;
+    deletedCounts.purchaseRequestLine = 0;
+    deletedCounts.materialRequirementLine = 0;
+  }
+  if (noQtyMaterialRequirementIds.length > 0) {
+    await addDeleteCountStep(deletedCounts, "materialRequirement", () =>
+      tx.materialRequirement.deleteMany({ where: { id: { in: noQtyMaterialRequirementIds } } }),
+    );
+  } else {
+    deletedCounts.materialRequirement = 0;
+  }
+
+  await addDeleteCountStep(deletedCounts, "materialAllocation", () =>
+    tx.materialAllocation.deleteMany({ where: { salesOrderId: { in: noQtySoIds } } }),
+  );
+
   if (woIds.length > 0) {
+    await deleteProductionRmFlowForWorkOrders(tx, deletedCounts, { workOrderIds: woIds });
     await addDeleteCount(deletedCounts, "workOrderLine", () =>
       tx.workOrderLine.deleteMany({ where: { workOrderId: { in: woIds } } }),
     );
@@ -419,6 +901,7 @@ async function runResetNoQtyTransactionalDeletes(tx) {
       tx.workOrder.deleteMany({ where: { salesOrderId: { in: noQtySoIds } } }),
     );
   } else {
+    if (deletedCounts.materialAllocation == null) deletedCounts.materialAllocation = 0;
     deletedCounts.workOrderLine = 0;
     deletedCounts.workOrder = 0;
   }
@@ -440,6 +923,13 @@ async function runResetNoQtyTransactionalDeletes(tx) {
 
   await addDeleteCount(deletedCounts, "requirementSheet", () =>
     tx.requirementSheet.deleteMany({ where: { salesOrderId: { in: noQtySoIds } } }),
+  );
+
+  await addDeleteCountStep(deletedCounts, "noQtySoClosedShortageLine", () =>
+    tx.noQtySoClosedShortageLine.deleteMany({ where: { salesOrderId: { in: noQtySoIds } } }),
+  );
+  await addDeleteCountStep(deletedCounts, "noQtySoCloseSnapshot", () =>
+    tx.noQtySoCloseSnapshot.deleteMany({ where: { salesOrderId: { in: noQtySoIds } } }),
   );
 
   await tx.salesOrder.updateMany({
@@ -538,13 +1028,14 @@ async function runFullDemoResetDeletes(tx, deleted) {
         await tx.dispatch.updateMany({ data: { reversalOfId: null } });
       },
     ],
+    ["salesBillReceipt", async () => addDeleteCount(deleted, "salesBillReceipt", () => tx.salesBillReceipt.deleteMany({}))],
     ["salesBillLine", async () => addDeleteCount(deleted, "salesBillLine", () => tx.salesBillLine.deleteMany({}))],
     ["salesBill", async () => addDeleteCount(deleted, "salesBill", () => tx.salesBill.deleteMany({}))],
     ["customerReturn", async () => addDeleteCount(deleted, "customerReturn", () => tx.customerReturn.deleteMany({}))],
     [
-      "dispatch",
+      "STORE",
       async () =>
-        addDeleteCount(deleted, "dispatch", async () => {
+        addDeleteCount(deleted, "STORE", async () => {
           await tx.dispatch.updateMany({ data: { reversalOfId: null } });
           return tx.dispatch.deleteMany({});
         }),
@@ -571,8 +1062,51 @@ async function runFullDemoResetDeletes(tx, deleted) {
         ),
     ],
     ["qcEntry", async () => addDeleteCount(deleted, "qcEntry", () => tx.qcEntry.deleteMany({}))],
+    [
+      "productionEntryRmConsumption",
+      async () => addDeleteCount(deleted, "productionEntryRmConsumption", () => tx.productionEntryRmConsumption.deleteMany({})),
+    ],
     ["productionEntry", async () => addDeleteCount(deleted, "productionEntry", () => tx.productionEntry.deleteMany({}))],
     ["scrapRecord", async () => addDeleteCount(deleted, "scrapRecord", () => tx.scrapRecord.deleteMany({}))],
+    [
+      "materialReturnLine",
+      async () => addDeleteCount(deleted, "materialReturnLine", () => tx.materialReturnLine.deleteMany({})),
+    ],
+    ["materialReturnNote", async () => addDeleteCount(deleted, "materialReturnNote", () => tx.materialReturnNote.deleteMany({}))],
+    ["materialIssueLine", async () => addDeleteCount(deleted, "materialIssueLine", () => tx.materialIssueLine.deleteMany({}))],
+    ["materialIssueNote", async () => addDeleteCount(deleted, "materialIssueNote", () => tx.materialIssueNote.deleteMany({}))],
+    [
+      "productionMaterialRequestLine",
+      async () =>
+        addDeleteCount(deleted, "productionMaterialRequestLine", () => tx.productionMaterialRequestLine.deleteMany({})),
+    ],
+    [
+      "productionMaterialRequest",
+      async () => addDeleteCount(deleted, "productionMaterialRequest", () => tx.productionMaterialRequest.deleteMany({})),
+    ],
+    ["materialAllocation", async () => addDeleteCount(deleted, "materialAllocation", () => tx.materialAllocation.deleteMany({}))],
+    [
+      "rmPoLineProcurementLink",
+      async () => addDeleteCount(deleted, "rmPoLineProcurementLink", () => tx.rmPoLineProcurementLink.deleteMany({})),
+    ],
+    [
+      "purchaseRequestLineSourceLink",
+      async () =>
+        addDeleteCount(deleted, "purchaseRequestLineSourceLink", () => tx.purchaseRequestLineSourceLink.deleteMany({})),
+    ],
+    [
+      "materialRequirementLine",
+      async () => addDeleteCount(deleted, "materialRequirementLine", () => tx.materialRequirementLine.deleteMany({})),
+    ],
+    [
+      "materialRequirement",
+      async () => addDeleteCount(deleted, "materialRequirement", () => tx.materialRequirement.deleteMany({})),
+    ],
+    [
+      "purchaseRequestLine",
+      async () => addDeleteCount(deleted, "purchaseRequestLine", () => tx.purchaseRequestLine.deleteMany({})),
+    ],
+    ["purchaseRequest", async () => addDeleteCount(deleted, "purchaseRequest", () => tx.purchaseRequest.deleteMany({}))],
     ["workOrderLine", async () => addDeleteCount(deleted, "workOrderLine", () => tx.workOrderLine.deleteMany({}))],
     ["workOrder", async () => addDeleteCount(deleted, "workOrder", () => tx.workOrder.deleteMany({}))],
     ["requirementSheetLine", async () => addDeleteCount(deleted, "requirementSheetLine", () => tx.requirementSheetLine.deleteMany({}))],
@@ -584,6 +1118,14 @@ async function runFullDemoResetDeletes(tx, deleted) {
       },
     ],
     ["salesOrderCycle", async () => addDeleteCount(deleted, "salesOrderCycle", () => tx.salesOrderCycle.deleteMany({}))],
+    [
+      "regularSoPlanningSnapshotLine",
+      async () => addDeleteCount(deleted, "regularSoPlanningSnapshotLine", () => tx.regularSoPlanningSnapshotLine.deleteMany({})),
+    ],
+    [
+      "regularSoPlanningSnapshot",
+      async () => addDeleteCount(deleted, "regularSoPlanningSnapshot", () => tx.regularSoPlanningSnapshot.deleteMany({})),
+    ],
     ["salesOrderLine", async () => addDeleteCount(deleted, "salesOrderLine", () => tx.salesOrderLine.deleteMany({}))],
     ["salesOrder", async () => addDeleteCount(deleted, "salesOrder", () => tx.salesOrder.deleteMany({}))],
     ["quotationLine", async () => addDeleteCount(deleted, "quotationLine", () => tx.quotationLine.deleteMany({}))],
@@ -628,6 +1170,11 @@ async function runFullDemoResetDeletes(tx, deleted) {
       await fn();
     } catch (err) {
       const msg = formatCleanupDeleteError(label, err);
+      logCleanup("full-demo-reset-step-failed", {
+        step: label,
+        fkFailureTable: getCleanupFkFailureTable(err),
+        error: msg,
+      });
       throw new CleanupStepError({ step: label, error: msg });
     }
   }
@@ -670,71 +1217,8 @@ adminDatabaseCleanupRouter.post(
             await runLoggedCleanupAction("salesOrder:clearCustomerReturnRefs", () =>
               tx.salesOrder.updateMany({ where: { customerReturnId: { not: null } }, data: { customerReturnId: null } }),
             );
-            await runLoggedCleanupAction("salesOrder:clearCurrentCycle", () => tx.salesOrder.updateMany({ data: { currentCycleId: null } }));
 
-            const transactionDocTypes = [
-              "SALES_ORDER",
-              "WORK_ORDER",
-              "PRODUCTION_ENTRY",
-              "QC_ENTRY",
-              "DISPATCH",
-              "SALES_BILL",
-              "REQUIREMENT_SHEET",
-            ];
-
-            const cleanupSteps = [
-              { table: "salesBillReceipt", delete: () => tx.salesBillReceipt.deleteMany({}), count: () => tx.salesBillReceipt.count() },
-              { table: "salesBillLine", delete: () => tx.salesBillLine.deleteMany({}), count: () => tx.salesBillLine.count() },
-              { table: "salesBill", delete: () => tx.salesBill.deleteMany({}), count: () => tx.salesBill.count() },
-              { table: "customerReturn", delete: () => tx.customerReturn.deleteMany({}), count: () => tx.customerReturn.count() },
-              { table: "dispatch", delete: () => tx.dispatch.deleteMany({}), count: () => tx.dispatch.count() },
-              {
-                table: "stockAdjustmentQcEntry",
-                delete: () => tx.stockAdjustmentQcEntry.deleteMany({}),
-                count: () => tx.stockAdjustmentQcEntry.count(),
-              },
-              { table: "stockTransaction", delete: () => tx.stockTransaction.deleteMany({}), count: () => tx.stockTransaction.count() },
-              { table: "qcReversal", delete: () => tx.qcReversal.deleteMany({}), count: () => tx.qcReversal.count() },
-              { table: "scrapRecord", delete: () => tx.scrapRecord.deleteMany({}), count: () => tx.scrapRecord.count() },
-              {
-                table: "qcRejectedDisposition",
-                delete: () => tx.qcRejectedDisposition.deleteMany({}),
-                count: () => tx.qcRejectedDisposition.count(),
-              },
-              { table: "qcEntry", delete: () => tx.qcEntry.deleteMany({}), count: () => tx.qcEntry.count() },
-              { table: "productionEntry", delete: () => tx.productionEntry.deleteMany({}), count: () => tx.productionEntry.count() },
-              { table: "workOrderLine", delete: () => tx.workOrderLine.deleteMany({}), count: () => tx.workOrderLine.count() },
-              { table: "workOrder", delete: () => tx.workOrder.deleteMany({}), count: () => tx.workOrder.count() },
-              { table: "requirementSheetLine", delete: () => tx.requirementSheetLine.deleteMany({}), count: () => tx.requirementSheetLine.count() },
-              { table: "requirementSheet", delete: () => tx.requirementSheet.deleteMany({}), count: () => tx.requirementSheet.count() },
-              {
-                table: "noQtySoClosedShortageLine",
-                delete: () => tx.noQtySoClosedShortageLine.deleteMany({}),
-                count: () => tx.noQtySoClosedShortageLine.count(),
-              },
-              {
-                table: "noQtySoCloseSnapshot",
-                delete: () => tx.noQtySoCloseSnapshot.deleteMany({}),
-                count: () => tx.noQtySoCloseSnapshot.count(),
-              },
-              { table: "salesOrderCycle", delete: () => tx.salesOrderCycle.deleteMany({}), count: () => tx.salesOrderCycle.count() },
-              { table: "salesOrderLine", delete: () => tx.salesOrderLine.deleteMany({}), count: () => tx.salesOrderLine.count() },
-              { table: "salesOrder", delete: () => tx.salesOrder.deleteMany({}), count: () => tx.salesOrder.count() },
-              { table: "quotationLine", delete: () => tx.quotationLine.deleteMany({}), count: () => tx.quotationLine.count() },
-              { table: "quotation", delete: () => tx.quotation.deleteMany({}), count: () => tx.quotation.count() },
-              { table: "feasibility", delete: () => tx.feasibility.deleteMany({}), count: () => tx.feasibility.count() },
-              { table: "enquiryLine", delete: () => tx.enquiryLine.deleteMany({}), count: () => tx.enquiryLine.count() },
-              { table: "enquiry", delete: () => tx.enquiry.deleteMany({}), count: () => tx.enquiry.count() },
-              { table: "purchaseBillPayment", delete: () => tx.purchaseBillPayment.deleteMany({}), count: () => tx.purchaseBillPayment.count() },
-              { table: "purchaseBillLine", delete: () => tx.purchaseBillLine.deleteMany({}), count: () => tx.purchaseBillLine.count() },
-              { table: "purchaseBill", delete: () => tx.purchaseBill.deleteMany({}), count: () => tx.purchaseBill.count() },
-              { table: "grnLine", delete: () => tx.grnLine.deleteMany({}), count: () => tx.grnLine.count() },
-              { table: "grn", delete: () => tx.grn.deleteMany({}), count: () => tx.grn.count() },
-              { table: "rmPurchaseOrderLine", delete: () => tx.rmPurchaseOrderLine.deleteMany({}), count: () => tx.rmPurchaseOrderLine.count() },
-              { table: "rmPurchaseOrder", delete: () => tx.rmPurchaseOrder.deleteMany({}), count: () => tx.rmPurchaseOrder.count() },
-              { table: "customerPOLine", delete: () => tx.customerPOLine.deleteMany({}), count: () => tx.customerPOLine.count() },
-              { table: "customerPO", delete: () => tx.customerPO.deleteMany({}), count: () => tx.customerPO.count() },
-            ];
+            const cleanupSteps = buildResetTransactionDataCleanupSteps(tx);
 
             let qcLegacyChecked = false;
             for (const step of cleanupSteps) {
@@ -755,22 +1239,13 @@ adminDatabaseCleanupRouter.post(
               candidates: ["docsequence", "DocSequence"],
               delete: () =>
                 tx.docSequence.deleteMany({
-                  where: { docType: { in: transactionDocTypes } },
+                  where: { docType: { in: RESET_TRANSACTION_DOC_TYPES } },
                 }),
-              count: () => tx.docSequence.count({ where: { docType: { in: transactionDocTypes } } }),
+              count: () => tx.docSequence.count({ where: { docType: { in: RESET_TRANSACTION_DOC_TYPES } } }),
             });
 
-            const verificationChecks = [...cleanupSteps.map((s) => ({ table: s.table, count: s.count }))];
-            if (await tableExists(tx, ["docsequence", "DocSequence"])) {
-              verificationChecks.push({
-                table: "docSequence(transactional)",
-                count: () => tx.docSequence.count({ where: { docType: { in: transactionDocTypes } } }),
-              });
-            }
-            if (await tableExists(tx, ["qclegacyrejectedclassification", "QcLegacyRejectedClassification"])) {
-              verificationChecks.push({ table: "qcLegacyRejectedClassification", count: () => tx.qcLegacyRejectedClassification.count() });
-            }
-            await verifyCleanupComplete(verificationChecks);
+            await runLoggedCleanupAction("finalTransactionResetSweep", () => runFinalTransactionResetSweep(tx));
+            await verifyTransactionResetComplete(tx);
 
             return summary;
           },

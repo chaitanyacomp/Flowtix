@@ -71,7 +71,7 @@ export function PurchaseBillsListPage() {
   const [sp] = useSearchParams();
   const auth = useAuth();
   const role = auth.user?.role ?? "";
-  const hideNewBill = role === "ACCOUNTS";
+  const hideNewBill = role === "PURCHASE";
 
   const [rows, setRows] = React.useState<BillRow[]>([]);
   const [suppliers, setSuppliers] = React.useState<Supplier[]>([]);

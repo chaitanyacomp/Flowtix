@@ -14,21 +14,30 @@ const {
 } = require("../services/reportMetrics");
 const { mapSoLinesToDispatchFifoInputs, dispatchFifoQtyForSoLine } = require("../services/regularSoBufferQty");
 const { buildQcAcceptedMap, buildReplacementReturnQcGrossBySoItemKey } = require("../services/dispatchQcCap");
+const { getWoPrepareDashboardQueues } = require("../services/woPrepareOperationalQueue");
+const { buildProcurementPendingQueue } = require("../services/procurementWorkspaceService");
 const {
   getDispatchBacklogRows,
   getProductionQueueRows,
+  getPausedWorkOrderRows,
   getQcQueueRows,
   getContinueWorkingRows,
   logAuditWo147ContinueWorkingRows,
   getActiveNoQtySalesOrders,
+  getNoQtyDashboardCycleHistory,
   getActionableWorkOrderCount,
   getRmRiskRows,
   getPurchaseSummaryRows,
   getQcWorkQueueCounts,
   getQuotationsPendingSalesOrderRows,
 } = require("../services/dashboardQueueSnapshots");
-const { usableStockDisplayQty } = require("../services/stockService");
-const { DISPATCH_READ_ROLES } = require("../constants/erpRoles");
+const { usableStockDisplayQty, loadStockByItemIdUsableMap } = require("../services/stockService");
+const {
+  DISPATCH_READ_ROLES,
+  PURCHASE_DASHBOARD_ROLES,
+  WO_PREPARE_CREATION_DASHBOARD_ROLES,
+  ALL_APP_ROLES,
+} = require("../constants/erpRoles");
 const { getAccountsDashboard } = require("../services/accountsDashboardService");
 const {
   dispositionPendingExcludingReworkReady,
@@ -46,29 +55,33 @@ const DISPATCH_BACKLOG_ACCESS_DENIED =
   "Access denied. Only administrators and store staff can view dispatch backlog.";
 const PRODUCTION_QUEUE_ACCESS_DENIED =
   "Access denied. Only administrators and production staff can view the production queue.";
-const QC_QUEUE_ACCESS_DENIED = "Access denied. Only administrators and QC staff can view the QC queue.";
+const QC_QUEUE_ACCESS_DENIED = "Access denied. Only administrators and QA staff can view the QA queue.";
 const RM_RISK_ACCESS_DENIED =
-  "Access denied. Only administrators, store, and production staff can view RM risk.";
+  "Access denied. Only administrators, store, purchase, and production staff can view RM risk.";
 const PURCHASE_SUMMARY_ACCESS_DENIED =
-  "Access denied. Only administrators and store staff can view purchase summary.";
+  "Access denied. Only administrators and purchase staff can view purchase summary.";
 const CONTINUE_WORKING_ACCESS_DENIED =
   "Access denied. You do not have access to the continue-working pipeline list.";
 const QUOTATIONS_PENDING_SO_ACCESS_DENIED =
-  "Access denied. Only administrators and sales staff can view quotations pending sales order creation.";
+  "Access denied. Only administrators can view quotations pending sales order creation.";
 
 const dashboardSummaryRoles = requireRole(["ADMIN"], DASHBOARD_SUMMARY_ACCESS_DENIED);
-/** Same broad operational audience as main app nav “Dashboard”. */
-const continueWorkingRoles = requireRole(
-  ["ADMIN", "SALES", "STORE", "PRODUCTION", "QC", "DISPATCH"],
-  CONTINUE_WORKING_ACCESS_DENIED,
-);
+const continueWorkingRoles = requireRole(["ADMIN", "STORE", "PRODUCTION", "QA"], CONTINUE_WORKING_ACCESS_DENIED);
 const dispatchBacklogRoles = requireRole([...DISPATCH_READ_ROLES], DISPATCH_BACKLOG_ACCESS_DENIED);
 const productionQueueRoles = requireRole(["ADMIN", "PRODUCTION"], PRODUCTION_QUEUE_ACCESS_DENIED);
-const qcQueueRoles = requireRole(["ADMIN", "QC"], QC_QUEUE_ACCESS_DENIED);
-const rmRiskRoles = requireRole(["ADMIN", "STORE", "PRODUCTION"], RM_RISK_ACCESS_DENIED);
-const purchaseSummaryRoles = requireRole(["ADMIN", "STORE"], PURCHASE_SUMMARY_ACCESS_DENIED);
-const quotationsPendingSoRoles = requireRole(["ADMIN", "SALES"], QUOTATIONS_PENDING_SO_ACCESS_DENIED);
-const accountsDashboardRoles = requireRole(["ADMIN", "ACCOUNTS"], "Access denied.");
+const qcQueueRoles = requireRole(["ADMIN", "QA"], QC_QUEUE_ACCESS_DENIED);
+const rmRiskRoles = requireRole(["ADMIN", "PRODUCTION"], RM_RISK_ACCESS_DENIED);
+const purchaseSummaryRoles = requireRole(["ADMIN", "PURCHASE", "STORE"], PURCHASE_SUMMARY_ACCESS_DENIED);
+const woPrepareProcurementRoles = requireRole(
+  [...PURCHASE_DASHBOARD_ROLES],
+  "Access denied. Only administrators and purchase staff can view procurement prepare queues.",
+);
+const woPrepareQueuesRoles = requireRole(
+  [...new Set([...PURCHASE_DASHBOARD_ROLES, ...WO_PREPARE_CREATION_DASHBOARD_ROLES])],
+  "Access denied.",
+);
+const quotationsPendingSoRoles = requireRole(["ADMIN"], QUOTATIONS_PENDING_SO_ACCESS_DENIED);
+const purchaseDashboardRoles = requireRole(["ADMIN", "PURCHASE"], "Access denied.");
 
 function dashboardErrorResponse(res, err, endpoint) {
   const e = err instanceof Error ? err : new Error(String(err));
@@ -101,6 +114,16 @@ dashboardRouter.get("/production-queue", requireAuth, productionQueueRoles, asyn
   }
 });
 
+dashboardRouter.get("/paused-work-orders", requireAuth, productionQueueRoles, async (req, res, next) => {
+  console.log("Dashboard API called", { endpoint: "/api/dashboard/paused-work-orders" });
+  try {
+    const rows = await getPausedWorkOrderRows();
+    return res.json(rows);
+  } catch (err) {
+    return dashboardErrorResponse(res, err, "/api/dashboard/paused-work-orders");
+  }
+});
+
 dashboardRouter.get("/qc-queue", requireAuth, qcQueueRoles, async (req, res, next) => {
   console.log("Dashboard API called", { endpoint: "/api/dashboard/qc-queue" });
   try {
@@ -122,6 +145,44 @@ dashboardRouter.get("/rm-risk", requireAuth, rmRiskRoles, async (req, res, next)
   }
 });
 
+dashboardRouter.get("/procurement-pending", requireAuth, woPrepareProcurementRoles, async (req, res, next) => {
+  console.log("Dashboard API called", { endpoint: "/api/dashboard/procurement-pending" });
+  try {
+    const {
+      buildStoreIssuePendingDashboardRows,
+      buildAllocationFirstDashboardRows,
+    } = require("../services/materialAvailabilityWorkspaceService");
+    const [rows, storeIssuePending] = await Promise.all([
+      buildProcurementPendingQueue(prisma, { woPlanningOnly: true }),
+      buildStoreIssuePendingDashboardRows(prisma),
+    ]);
+    const allocationFirstPending = await buildAllocationFirstDashboardRows(prisma);
+    return res.json({ rows, storeIssuePending, allocationFirstPending, count: rows.length });
+  } catch (err) {
+    console.error("Dashboard procurement-pending aggregation failed", {
+      endpoint: "/api/dashboard/procurement-pending",
+      message: err instanceof Error ? err.message : String(err),
+      stack: err instanceof Error ? err.stack : undefined,
+    });
+    return dashboardErrorResponse(res, err, "/api/dashboard/procurement-pending");
+  }
+});
+
+dashboardRouter.get("/wo-prepare-queues", requireAuth, woPrepareQueuesRoles, async (req, res, next) => {
+  console.log("Dashboard API called", { endpoint: "/api/dashboard/wo-prepare-queues" });
+  try {
+    const queues = await getWoPrepareDashboardQueues(prisma);
+    return res.json(queues);
+  } catch (err) {
+    console.error("Dashboard wo-prepare-queues aggregation failed", {
+      endpoint: "/api/dashboard/wo-prepare-queues",
+      message: err instanceof Error ? err.message : String(err),
+      stack: err instanceof Error ? err.stack : undefined,
+    });
+    return dashboardErrorResponse(res, err, "/api/dashboard/wo-prepare-queues");
+  }
+});
+
 dashboardRouter.get("/purchase-summary", requireAuth, purchaseSummaryRoles, async (req, res, next) => {
   console.log("Dashboard API called", { endpoint: "/api/dashboard/purchase-summary" });
   try {
@@ -132,7 +193,7 @@ dashboardRouter.get("/purchase-summary", requireAuth, purchaseSummaryRoles, asyn
   }
 });
 
-dashboardRouter.get("/accounts", requireAuth, accountsDashboardRoles, async (req, res, next) => {
+dashboardRouter.get("/accounts", requireAuth, purchaseDashboardRoles, async (req, res, next) => {
   try {
     const payload = await getAccountsDashboard(prisma);
     return res.json(payload);
@@ -178,6 +239,22 @@ dashboardRouter.get("/no-qty-active", requireAuth, continueWorkingRoles, async (
     return res.json(rows);
   } catch (err) {
     return dashboardErrorResponse(res, err, "/api/dashboard/no-qty-active");
+  }
+});
+
+dashboardRouter.get("/no-qty-cycle-history", requireAuth, continueWorkingRoles, async (req, res, next) => {
+  try {
+    const soId = Number(req.query.soId);
+    if (!Number.isFinite(soId) || soId <= 0) {
+      return res.status(400).json({ message: "Query soId (positive integer) is required." });
+    }
+    const payload = await getNoQtyDashboardCycleHistory(soId);
+    if (!payload) {
+      return res.status(404).json({ message: "No Qty sales order not found." });
+    }
+    return res.json(payload);
+  } catch (err) {
+    return dashboardErrorResponse(res, err, "/api/dashboard/no-qty-cycle-history");
   }
 });
 
@@ -239,28 +316,19 @@ dashboardRouter.get("/", requireAuth, dashboardSummaryRoles, async (req, res, ne
       return res.json({ ok: true, message: "Dashboard API working" });
     }
 
-    const stockRows = await prisma.stockTransaction.groupBy({
-      by: ["itemId"],
-      // Stock math must include reversed originals; reversal rows offset them.
-      where: { stockBucket: "USABLE" },
-      _sum: { qtyIn: true, qtyOut: true },
-    });
-    const stockByItemId = new Map(
-      stockRows.map((r) => [r.itemId, Number(r._sum.qtyIn || 0) - Number(r._sum.qtyOut || 0)]),
-    );
+    const stockByItemId = await loadStockByItemIdUsableMap(prisma);
 
     const rmItems = await prisma.item.findMany({ where: { itemType: "RM" } });
     const fgItems = await prisma.item.findMany({ where: { itemType: "FG" } });
 
-    const rmStockAlert = rmItems
-      .map((i) => ({
-        itemId: i.id,
-        itemName: i.itemName,
-        qty: stockByItemId.get(i.id) || 0,
-        minStockLevel: Number(i.minStockLevel ?? 0),
-      }))
-      .filter((r) => Number.isFinite(r.minStockLevel) && r.qty < r.minStockLevel)
-      .sort((a, b) => a.qty - b.qty);
+    const { buildRmStockHealthAlerts } = require("../services/inventoryHealthService");
+    const {
+      rmStockCritical,
+      rmStockWarning,
+      rmStockAlert,
+      rmStockCriticalCount,
+      rmStockWarningCount,
+    } = buildRmStockHealthAlerts(rmItems, stockByItemId);
 
     const fgStock = fgItems
       .map((i) => ({
@@ -476,6 +544,10 @@ dashboardRouter.get("/", requireAuth, dashboardSummaryRoles, async (req, res, ne
 
     return res.json({
       rmStockAlert,
+      rmStockCritical,
+      rmStockWarning,
+      rmStockCriticalCount,
+      rmStockWarningCount,
       fgStock,
       fgStockTotalQty,
       pendingWorkOrders,
@@ -492,7 +564,7 @@ dashboardRouter.get("/", requireAuth, dashboardSummaryRoles, async (req, res, ne
         fgStockTotalQty:
           "Sum of displayed USABLE FG qty (ledger USABLE, reversedAt null, floored at 0 per item — same display rule as Stock Summary)",
         pendingDispatchCount:
-          "NO_QTY: lines (SO × cycle × FG) with positive QC-backed dispatch headroom (any cycle). REPLACEMENT: lines with positive dispatchable qty from return-QC rules. NORMAL: customer PO qty still pending with positive dispatchable qty (buffer excluded).",
+          "NO_QTY: lines (SO × cycle × FG) with positive QC-backed dispatch headroom (any cycle). REPLACEMENT: lines with positive dispatchable qty from return-QC rules. NORMAL: customer PO qty still pending with positive SO-linked QC dispatchable qty (surplus buffer FG excluded).",
         pendingDispatchableQty:
           "Sum of dispatchable qty on counted lines (NO_QTY + REPLACEMENT + NORMAL).",
         openEnquiries:

@@ -1,28 +1,37 @@
 /**
- * STORE (dispatch desk) sidebar visibility — presentation only.
- * Does not change route permissions; hidden links remain unreachable via nav only.
+ * STORE (dispatch desk) sidebar visibility — presentation only (Phase 2 UI cleanup).
  */
-
 const STORE_HIDDEN_NAV_KEYS = new Set([
-  // Masters — config / engineering
   "cust",
   "tally-import",
   "backup-restore",
   "supp",
-  "units",
   "boms",
-  // Sales flow — non-dispatch commercial
   "enq",
   "quot",
   "so",
-  // Production flow
+  "disp",
+  "salebill",
+  "cust-track",
+  "cust-ret",
+  "mat-plan",
+  "rm-stock-plan",
+  "proc-plan",
+  "purbill",
+  "monthly-planning",
   "plan-dash",
   "wo",
   "prod",
   "qc",
   "qc-report",
-  // Purchase accounting (GRN lives under Material Planning)
-  "purbill",
+  "pmr",
+  "mrn",
+  "rm-control-center",
+  "rm-ledger",
+  "stock-adj",
+  "stock-move",
+  "reports",
+  "account-prof",
 ]);
 
 export function isStoreNavItemVisible(role: string, navKey: string): boolean {
@@ -30,10 +39,5 @@ export function isStoreNavItemVisible(role: string, navKey: string): boolean {
   return !STORE_HIDDEN_NAV_KEYS.has(navKey);
 }
 
-/** Reports hub: STORE sees dispatch + stock operational reports first. */
-export const STORE_REPORT_GROUP_ORDER = [
-  "sales-ops",
-  "stock",
-  "purchase",
-  "exceptions",
-] as const;
+/** STORE reports workspace — dispatch/stock only (when reports route is opened). */
+export const STORE_REPORT_GROUP_ORDER = ["sales-ops", "stock"] as const;

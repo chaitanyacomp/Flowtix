@@ -31,6 +31,22 @@ describe("operationalStatusFromProductionRow — REGULAR", () => {
     const s = operationalStatusFromProductionRow(row({ producedQty: 40, balanceQty: 60 }));
     expect(s.label).toBe("Partially Produced");
   });
+
+  it("labels HOLD as on hold instead of running production", () => {
+    const s = operationalStatusFromProductionRow(
+      row({ status: "HOLD", holdReason: "CUSTOMER_HOLD", producedQty: 40, balanceQty: 60, nextAction: "ON_HOLD" }),
+    );
+    expect(s.label).toBe("On Hold - Customer hold");
+    expect(s.tone).toBe("partial");
+  });
+
+  it("labels CLOSED_WITH_SHORTFALL as terminal", () => {
+    const s = operationalStatusFromProductionRow(
+      row({ status: "CLOSED_WITH_SHORTFALL", producedQty: 40, balanceQty: 60 }),
+    );
+    expect(s.label).toBe("Shortfall Closed");
+    expect(s.tone).toBe("idle");
+  });
 });
 
 describe("operationalStatusFromProductionRow — NO_QTY", () => {
@@ -106,10 +122,23 @@ describe("operationalStatusFromProductionRow — NO_QTY", () => {
     expect(s.tone).toBe("carriedForward");
     expect(s.contextHint).toBe("Shortage moved to next RS/WO");
   });
+
+  it("labels HOLD as on hold before NO_QTY production routing", () => {
+    const r = noQty({
+      status: "HOLD",
+      holdReason: "MANAGEMENT_HOLD",
+      producedQty: 8000,
+      balanceQty: 2000,
+      nextAction: "ON_HOLD",
+    });
+    const s = operationalStatusFromProductionRow(r, [r]);
+    expect(s.label).toBe("On Hold - Management hold");
+    expect(s.tone).toBe("partial");
+  });
 });
 
 describe("buildDashboardProductionStatusRows", () => {
-  it("shows carried-forward rows in WO desc order but counts only active", () => {
+  it("shows only current owner rows and keeps carried-forward rows out of operational cards", () => {
     const wo167 = row({
       workOrderId: 167,
       workOrderNo: "WO-167",
@@ -139,12 +168,8 @@ describe("buildDashboardProductionStatusRows", () => {
     expect(built.activeCount).toBe(1);
     expect(built.activeWorkOrderCount).toBe(1);
     expect(built.carriedForwardCount).toBe(1);
-    expect(built.visible).toHaveLength(2);
+    expect(built.visible).toHaveLength(1);
     expect(built.visible[0].workOrderId).toBe(168);
-    expect(built.visible[1].workOrderId).toBe(167);
-    expect(built.visible[1].operationalStatus.label).toBe("Carried Forward");
-    expect(built.visible[1].countsAsActive).toBe(false);
-    expect(built.visible[1].actionHref).toContain("/work-orders");
   });
 });
 

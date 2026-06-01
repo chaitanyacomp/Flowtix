@@ -25,6 +25,7 @@ import { ReportPageHeader } from "../components/PageHeader";
 type Customer = { id: number; name: string };
 type StatusFilter = "ALL" | "APPROVED" | "IN_PROCESS";
 type SortKey = "date" | "pending";
+const PENDING_QTY_EPS = 1e-6;
 
 const DEFAULT_SORT_KEY: SortKey = "date";
 const DEFAULT_SORT_DIR: "asc" | "desc" = "asc";
@@ -98,7 +99,7 @@ export function DispatchBacklogReportPage() {
     apiFetch<DispatchBacklogRow[]>("/api/dashboard/dispatch-backlog")
       .then((data) => {
         if (mounted) {
-          setRows(data);
+          setRows((Array.isArray(data) ? data : []).filter((r) => Number(r.pendingQty ?? 0) > PENDING_QTY_EPS));
           setError(null);
         }
       })
@@ -413,4 +414,3 @@ export function DispatchBacklogReportPage() {
     </div>
   );
 }
-

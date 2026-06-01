@@ -9,6 +9,12 @@ import { useToast } from "../contexts/ToastContext";
 import { useIsAdmin } from "../hooks/useIsAdmin";
 import { Navigate } from "react-router-dom";
 import { Upload, Trash2, ImageOff } from "lucide-react";
+import {
+  CompanyLogo,
+  BRAND_COMPANY_NAME,
+  BRAND_PRODUCT_NAME,
+  BRAND_TAGLINE,
+} from "../components/branding/Branding";
 
 type StateRow = { id: number; stateName: string; stateCode: string };
 
@@ -279,6 +285,24 @@ export function CompanyProfilePage() {
         <p className="text-[12px] text-slate-600">
           Drives branding on every document: Quotation, Sales Bill, Purchase Bill, future exports.
         </p>
+      </div>
+
+      {/* Vendor identity — Chaitanya Computer Solutions remains the software
+          provider while Flowtix ERP stays the product brand. Tasteful badge,
+          kept compact so it never competes with the customer's own branding. */}
+      <div className="flex flex-wrap items-center gap-3 rounded-md border border-slate-200/80 bg-white px-3 py-2 shadow-[0_1px_2px_0_rgb(15_23_42_/0.04)]">
+        <CompanyLogo size="md" />
+        <div className="flex min-w-0 flex-col">
+          <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            Software by
+          </span>
+          <span className="truncate text-[13px] font-semibold tracking-tight text-slate-900">
+            {BRAND_COMPANY_NAME}
+          </span>
+          <span className="truncate text-[11px] text-slate-500">
+            {BRAND_PRODUCT_NAME} · {BRAND_TAGLINE}
+          </span>
+        </div>
       </div>
 
       {error ? (

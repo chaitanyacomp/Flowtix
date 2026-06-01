@@ -11,9 +11,11 @@ import { cn } from "../lib/utils";
 import { getPageTitle } from "../lib/routeTitles";
 import { GlobalSearch } from "./GlobalSearch";
 import { CommercialWorkflowOriginTrace } from "./PageHeader";
+import { BrandLogo, BrandMark, BRAND_NAME } from "./branding/Branding";
 import {
   LayoutDashboard,
   Package,
+  PackageMinus,
   Users,
   Boxes,
   LogOut,
@@ -44,22 +46,32 @@ import {
   Contact,
   HardDrive,
   FileUp,
+  ShieldAlert,
+  CalendarRange,
 } from "lucide-react";
+import { useFeatureFlags } from "../hooks/useFeatureFlags";
 import {
   ALL_APP_ROLES,
-  ALL_APP_ROLES_NO_ACCOUNTS,
-  REPORTS_WITH_ACCOUNTS_ROLES,
+  ALL_APP_ROLES_OPERATIONAL,
+  REPORTS_ROLES,
   SO_READ_ROLES,
   ENQUIRY_QUOTATION_WRITE_ROLES,
   DISPATCH_READ_ROLES,
   SALES_BILL_READ_ROLES,
   PURCHASE_BILL_READ_ROLES,
-  PLANNING_DASHBOARD_ROLES,
-  QC_PAGE_ROLES,
+  QA_PAGE_ROLES,
+  QA_REPORT_READ_ROLES,
   STOCK_READ_ROLES,
   CUSTOMER_RETURN_READ_ROLES,
+  PROCUREMENT_PLANNING_ROLES,
+  MATERIAL_ISSUE_ROLES,
+  SUPPLIER_VIEW_ROLES,
+  MONTHLY_PLANNING_READ_ROLES,
 } from "../config/erpRoles";
 import { isStoreNavItemVisible } from "../lib/storeNavFilter";
+import { isPurchaseNavItemVisible } from "../lib/purchaseNavFilter";
+import { isProductionNavItemVisible } from "../lib/productionNavFilter";
+import { isQaNavItemVisible } from "../lib/qaNavFilter";
 
 type NavItem = {
   to: string;
@@ -69,6 +81,8 @@ type NavItem = {
   navKey: string;
   /** When true, NavLink only matches this path exactly (avoids /stock highlighting on /stock/rm-ledger). */
   end?: boolean;
+  /** When set, the item is only shown if this runtime feature flag is enabled. */
+  featureFlag?: "monthlyPlanning";
 };
 type NavGroup = {
   key: string;
@@ -81,7 +95,7 @@ type NavGroup = {
 };
 
 const allRoles = [...ALL_APP_ROLES];
-const opsRolesNoAccounts = [...ALL_APP_ROLES_NO_ACCOUNTS];
+const opsRoles = [...ALL_APP_ROLES_OPERATIONAL];
 
 const navGroups: NavGroup[] = [
   {
@@ -95,7 +109,7 @@ const navGroups: NavGroup[] = [
   {
     key: "masters",
     label: "Masters",
-    roles: [...opsRolesNoAccounts],
+    roles: [...opsRoles],
     icon: <Package className="h-4 w-4 shrink-0" />,
     collapsible: true,
     items: [
@@ -103,28 +117,29 @@ const navGroups: NavGroup[] = [
       { to: "/items", navKey: "items", label: "Items", roles: ["ADMIN", "STORE"], icon: <Package className="h-4 w-4 shrink-0" /> },
       { to: "/opening-stock", navKey: "opening-stock", label: "Opening Stock", roles: ["ADMIN", "STORE"], icon: <Boxes className="h-4 w-4 shrink-0" /> },
       { to: "/units", navKey: "units", label: "Units", roles: ["ADMIN", "STORE"], icon: <Ruler className="h-4 w-4 shrink-0" /> },
+      { to: "/locations", navKey: "locations", label: "Locations", roles: ["ADMIN", "STORE"], icon: <Boxes className="h-4 w-4 shrink-0" /> },
       { to: "/masters/tally-import", navKey: "tally-import", label: "Tally import", roles: ["ADMIN"], icon: <FileUp className="h-4 w-4 shrink-0" /> },
-      { to: "/suppliers", navKey: "supp", label: "Suppliers", roles: ["ADMIN", "STORE", "ACCOUNTS"], icon: <Building2 className="h-4 w-4 shrink-0" /> },
-      { to: "/boms", navKey: "boms", label: "BOM", roles: ["ADMIN", "STORE", "PRODUCTION", "SALES", "QC"], icon: <Network className="h-4 w-4 shrink-0" /> },
+      { to: "/suppliers", navKey: "supp", label: "Suppliers", roles: [...SUPPLIER_VIEW_ROLES], icon: <Building2 className="h-4 w-4 shrink-0" /> },
+      { to: "/boms", navKey: "boms", label: "BOM", roles: ["ADMIN", "STORE"], icon: <Network className="h-4 w-4 shrink-0" /> },
       { to: "/admin/backup-restore", navKey: "backup-restore", label: "Backup & Restore", roles: ["ADMIN"], icon: <HardDrive className="h-4 w-4 shrink-0" /> },
     ],
   },
   {
     key: "sales-flow",
     label: "Sales Flow",
-    roles: [...allRoles],
+    roles: ["ADMIN", "STORE"],
     icon: <FileSpreadsheet className="h-4 w-4 shrink-0" />,
     collapsible: true,
     items: [
       { to: "/enquiries", navKey: "enq", label: "Enquiries", roles: [...ENQUIRY_QUOTATION_WRITE_ROLES], icon: <MessageSquare className="h-4 w-4 shrink-0" /> },
       { to: "/quotations", navKey: "quot", label: "Quotations", roles: [...ENQUIRY_QUOTATION_WRITE_ROLES], icon: <FileText className="h-4 w-4 shrink-0" /> },
       { to: "/sales-orders", navKey: "so", label: "Sales Orders", roles: [...SO_READ_ROLES], icon: <FileSpreadsheet className="h-4 w-4 shrink-0" /> },
-      { to: "/dispatch", navKey: "disp", label: "Dispatch", roles: [...DISPATCH_READ_ROLES], icon: <Truck className="h-4 w-4 shrink-0" /> },
+      { to: "/dispatch", navKey: "disp", label: "Dispatch Workspace", roles: [...DISPATCH_READ_ROLES], icon: <Truck className="h-4 w-4 shrink-0" /> },
       {
         to: "/customer-po-tracking",
         navKey: "cust-track",
         label: "Customer tracking",
-        roles: [...allRoles],
+        roles: ["ADMIN"],
         icon: <Contact className="h-4 w-4 shrink-0" />,
       },
       { to: "/sales-bills", navKey: "salebill", label: "Sales Bills", roles: [...SALES_BILL_READ_ROLES], icon: <Receipt className="h-4 w-4 shrink-0" /> },
@@ -133,12 +148,56 @@ const navGroups: NavGroup[] = [
   },
   {
     key: "rm-purchase",
-    label: "Material Planning & Purchase",
+    label: "Operations",
     roles: [...allRoles],
     icon: <ShoppingCart className="h-4 w-4 shrink-0" />,
     collapsible: true,
     items: [
-      { to: "/rm-po-grn", navKey: "grn", label: "Material Planning", roles: ["ADMIN", "STORE"], icon: <ShoppingCart className="h-4 w-4 shrink-0" /> },
+      {
+        to: "/monthly-planning",
+        navKey: "monthly-planning",
+        label: "Monthly Planning",
+        roles: [...MONTHLY_PLANNING_READ_ROLES],
+        icon: <CalendarRange className="h-4 w-4 shrink-0" />,
+        featureFlag: "monthlyPlanning",
+      },
+      {
+        to: "/reports/rm-shortage",
+        navKey: "rm-control-center",
+        label: "RM Control Center",
+        roles: ["ADMIN", "STORE", "PRODUCTION"],
+        icon: <ShieldAlert className="h-4 w-4 shrink-0" />,
+      },
+      {
+        to: "/material-planning",
+        navKey: "mat-plan",
+        label: "Material Planning",
+        roles: [...PROCUREMENT_PLANNING_ROLES],
+        icon: <Package className="h-4 w-4 shrink-0" />,
+      },
+      {
+        to: "/rm-stock-planning",
+        navKey: "rm-stock-plan",
+        label: "RM Stock Planning",
+        roles: [...PROCUREMENT_PLANNING_ROLES],
+        icon: <Boxes className="h-4 w-4 shrink-0" />,
+      },
+      {
+        to: "/procurement-planning",
+        navKey: "proc-plan",
+        label: "Procurement Workspace",
+        roles: [...PROCUREMENT_PLANNING_ROLES],
+        icon: <ClipboardList className="h-4 w-4 shrink-0" />,
+      },
+      {
+        to: "/material-issue",
+        navKey: "mat-issue",
+        label: "Material Issue Workspace",
+        roles: [...MATERIAL_ISSUE_ROLES],
+        icon: <Truck className="h-4 w-4 shrink-0" />,
+      },
+      { to: "/dispatch", navKey: "disp", label: "Dispatch Workspace", roles: [...DISPATCH_READ_ROLES], icon: <Truck className="h-4 w-4 shrink-0" /> },
+      { to: "/rm-po-grn", navKey: "grn", label: "Purchase & GRN Workspace", roles: ["ADMIN", "PURCHASE", "STORE"], icon: <ShoppingCart className="h-4 w-4 shrink-0" /> },
       {
         to: "/purchase-bills",
         navKey: "purbill",
@@ -159,6 +218,13 @@ const navGroups: NavGroup[] = [
         label: "Stock Overview",
         roles: [...STOCK_READ_ROLES],
         icon: <Boxes className="h-4 w-4 shrink-0" />,
+      },
+      {
+        to: "/stock/movement-history",
+        navKey: "stock-move",
+        label: "Movement History",
+        roles: [...STOCK_READ_ROLES],
+        icon: <Table className="h-4 w-4 shrink-0" />,
         end: true,
       },
       {
@@ -173,32 +239,52 @@ const navGroups: NavGroup[] = [
   {
     key: "production-flow",
     label: "Production Flow",
-    roles: [...opsRolesNoAccounts],
+    roles: [...opsRoles],
     icon: <Factory className="h-4 w-4 shrink-0" />,
     collapsible: true,
     items: [
-      { to: "/planning-dashboard", navKey: "plan-dash", label: "Requirement & Cycle Planning", roles: [...PLANNING_DASHBOARD_ROLES], icon: <BarChart3 className="h-4 w-4 shrink-0" /> },
+      { to: "/planning-dashboard", navKey: "plan-dash", label: "Requirement & Cycle Planning", roles: ["ADMIN"], icon: <BarChart3 className="h-4 w-4 shrink-0" /> },
       { to: "/work-orders", navKey: "wo", label: "Work Order", roles: ["ADMIN", "PRODUCTION"], icon: <Factory className="h-4 w-4 shrink-0" /> },
-      { to: "/production", navKey: "prod", label: "Production", roles: ["ADMIN", "PRODUCTION"], icon: <GitBranch className="h-4 w-4 shrink-0" /> },
-      { to: "/qc-entry", navKey: "qc", label: "QC", roles: [...QC_PAGE_ROLES], icon: <ClipboardCheck className="h-4 w-4 shrink-0" /> },
-      { to: "/qc-report", navKey: "qc-report", label: "QC Report", roles: [...opsRolesNoAccounts], icon: <FileText className="h-4 w-4 shrink-0" /> },
+      { to: "/production", navKey: "prod", label: "Production Workspace", roles: ["ADMIN", "PRODUCTION"], icon: <GitBranch className="h-4 w-4 shrink-0" /> },
+      {
+        to: "/production/material-requests",
+        navKey: "pmr",
+        label: "Material Requests",
+        roles: ["ADMIN", "STORE"],
+        icon: <ClipboardList className="h-4 w-4 shrink-0" />,
+      },
+      {
+        to: "/production/rm-returns",
+        navKey: "mrn",
+        label: "RM Returns",
+        roles: ["ADMIN", "STORE"],
+        icon: <PackageMinus className="h-4 w-4 shrink-0" />,
+      },
+      {
+        to: "/qc-entry",
+        navKey: "qc",
+        label: "Production QA",
+        roles: [...QA_PAGE_ROLES],
+        icon: <ClipboardCheck className="h-4 w-4 shrink-0" />,
+      },
+      { to: "/qc-report", navKey: "qc-report", label: "QC Report", roles: [...QA_REPORT_READ_ROLES], icon: <FileText className="h-4 w-4 shrink-0" /> },
     ],
   },
   {
     key: "reports",
-    label: "Reports",
+    label: "Analysis",
     roles: [...allRoles],
     icon: <ClipboardList className="h-4 w-4 shrink-0" />,
     collapsible: false,
-    items: [{ to: "/reports", navKey: "reports", label: "Reports", roles: [...REPORTS_WITH_ACCOUNTS_ROLES], icon: <ClipboardList className="h-4 w-4 shrink-0" /> }],
+    items: [{ to: "/reports", navKey: "reports", label: "Reports", roles: [...REPORTS_ROLES], icon: <ClipboardList className="h-4 w-4 shrink-0" /> }],
   },
   {
     key: "account",
     label: "Account",
-    roles: [...allRoles],
+    roles: ["ADMIN"],
     icon: <UserCircle className="h-4 w-4 shrink-0" />,
     collapsible: false,
-    items: [{ to: "/account", navKey: "account-prof", label: "Profile", roles: [...allRoles], icon: <UserCircle className="h-4 w-4 shrink-0" /> }],
+    items: [{ to: "/account", navKey: "account-prof", label: "Profile", roles: ["ADMIN"], icon: <UserCircle className="h-4 w-4 shrink-0" /> }],
   },
   {
     key: "settings",
@@ -260,6 +346,7 @@ function groupDefaultOpen(pathname: string, group: NavGroup): boolean {
       pathname === "/customers" ||
       pathname === "/items" ||
       pathname === "/units" ||
+      pathname === "/locations" ||
       pathname === "/suppliers" ||
       pathname === "/boms" ||
       pathname.startsWith("/admin/backup-restore") ||
@@ -269,7 +356,10 @@ function groupDefaultOpen(pathname: string, group: NavGroup): boolean {
     return ["/enquiries", "/quotations", "/sales-orders", "/dispatch", "/sales-bills", "/customer-returns", "/customer-po-tracking"].some((p) =>
       pathname.startsWith(p),
     );
-  if (group.key === "rm-purchase") return ["/rm-po-grn", "/purchase-bills", "/stock"].some((p) => pathname.startsWith(p));
+  if (group.key === "rm-purchase")
+    return ["/monthly-planning", "/reports/rm-shortage", "/material-planning", "/rm-stock-planning", "/procurement-planning", "/material-issue", "/dispatch", "/rm-po-grn", "/purchase-bills", "/stock"].some((p) =>
+      pathname.startsWith(p),
+    );
   if (group.key === "production-flow")
     return ["/planning-dashboard", "/work-orders", "/rm-check", "/production", "/qc-entry", "/qc-report"].some((p) =>
       pathname.startsWith(p),
@@ -289,16 +379,17 @@ export function AppLayout() {
   const demo = useDemoMode();
   const nav = useNavigate();
   const { pathname } = useLocation();
+  const { flags } = useFeatureFlags();
   const role = auth.user?.role || "";
   const pageTitle =
-    pathname === "/dashboard" && role === "ACCOUNTS"
-      ? "Accounts"
-      : pathname === "/dashboard" && (role === "STORE" || role === "DISPATCH")
+    pathname === "/dashboard" && role === "PURCHASE"
+      ? "Purchase desk"
+      : pathname === "/dashboard" && role === "STORE"
         ? "Dispatch desk"
         : pathname === "/dashboard" && role === "PRODUCTION"
           ? "Production desk"
-          : pathname === "/dashboard" && role === "QC"
-            ? "QC desk"
+          : pathname === "/dashboard" && role === "QA"
+            ? "Production QA desk"
             : pathname === "/dashboard" && role === "ADMIN"
               ? "Operations"
               : getPageTitle(pathname);
@@ -336,19 +427,20 @@ export function AppLayout() {
       >
         <DemoGatedNavLink
           to="/dashboard"
-          title={sidebarCollapsed ? "Dashboard · Mini ERP home" : undefined}
+          title={sidebarCollapsed ? `Dashboard · ${BRAND_NAME} home` : `${BRAND_NAME} · Dashboard`}
+          aria-label={`${BRAND_NAME} · Dashboard`}
           className={({ isActive }) =>
             cn(
               "erp-nav-link flex shrink-0 items-center rounded-none border-b border-slate-200/80 text-[13px] font-semibold tracking-tight text-slate-900 no-underline",
-              sidebarCollapsed ? "py-2.5" : "px-3 py-2.5",
+              sidebarCollapsed ? "justify-center py-2.5" : "gap-2 px-3 py-2.5",
               isActive ? "erp-nav-link-active" : "",
             )
           }
         >
           {sidebarCollapsed ? (
-            <LayoutDashboard className="h-[1.15rem] w-[1.15rem] shrink-0 text-slate-800" aria-hidden />
+            <BrandMark size="md" className="erp-brand-mark--interactive" decorative />
           ) : (
-            "Mini ERP"
+            <BrandLogo size="compact" className="erp-brand-mark--interactive" />
           )}
         </DemoGatedNavLink>
         <nav
@@ -360,7 +452,13 @@ export function AppLayout() {
         >
           {navGroups.map((group) => {
             const visible = group.items.filter(
-              (n) => n.roles.includes(role) && isStoreNavItemVisible(role, n.navKey),
+              (n) =>
+                n.roles.includes(role) &&
+                isStoreNavItemVisible(role, n.navKey) &&
+                isPurchaseNavItemVisible(role, n.navKey) &&
+                isProductionNavItemVisible(role, n.navKey) &&
+                isQaNavItemVisible(role, n.navKey) &&
+                (!n.featureFlag || flags[n.featureFlag]),
             );
             if (!visible.length) return null;
 
@@ -445,6 +543,11 @@ export function AppLayout() {
                 <ChevronLeft className="h-5 w-5" aria-hidden />
               )}
             </Button>
+            <BrandMark
+              size="sm"
+              className="hidden shrink-0 sm:inline-flex"
+              alt={`${BRAND_NAME} home`}
+            />
             <h1 className="min-w-0 max-w-[40vw] shrink truncate border-l-[3px] border-l-blue-800/90 pl-2.5 text-base font-semibold leading-tight tracking-tight text-slate-800 sm:max-w-[min(50vw,28rem)] sm:pl-3 sm:text-lg">
               {pageTitle}
             </h1>

@@ -33,6 +33,7 @@ const {
   parseDateEnd,
 } = require("../services/soDispatchTraceReport");
 const { buildCustomerSoRsReport } = require("../services/customerSoRsReportService");
+const { buildProductionRmVarianceReport } = require("../services/productionRmVarianceReportService");
 
 const WORK_ORDER_TRACKING_ACCESS_DENIED =
   "Access denied. Only administrators and production staff can view the work order tracking report.";
@@ -46,7 +47,7 @@ const SO_DISPATCH_TRACE_ACCESS_DENIED =
   "Access denied. This report is available to admin, sales, store, production, and QC roles.";
 
 const soDispatchTraceRoles = requireRole(
-  ["ADMIN", "SALES", "STORE", "PRODUCTION", "QC", "ACCOUNTS"],
+  ["ADMIN", "STORE", "PURCHASE", "PRODUCTION", "QA"],
   SO_DISPATCH_TRACE_ACCESS_DENIED,
 );
 
@@ -56,26 +57,33 @@ const stockReconRoles = requireRole(["ADMIN", "STORE", "PRODUCTION"], STOCK_RECO
 
 const PURCHASE_MATCH_ACCESS_DENIED =
   "Access denied. Only administrators and store roles can view the purchase matching report.";
-const purchaseMatchRoles = requireRole(["ADMIN", "STORE", "ACCOUNTS"], PURCHASE_MATCH_ACCESS_DENIED);
+const purchaseMatchRoles = requireRole(["ADMIN", "PURCHASE"], PURCHASE_MATCH_ACCESS_DENIED);
 
 const SALES_MATCH_ACCESS_DENIED =
   "Access denied. This report is available to admin, sales, store, production, and QC roles.";
-const salesMatchRoles = requireRole(["ADMIN", "SALES", "STORE", "PRODUCTION", "QC", "ACCOUNTS"], SALES_MATCH_ACCESS_DENIED);
+const salesMatchRoles = requireRole(["ADMIN", "STORE", "PURCHASE", "PRODUCTION", "QA"], SALES_MATCH_ACCESS_DENIED);
 
 const CUSTOMER_SO_RS_ACCESS_DENIED =
   "Access denied. This report is available to admin, sales, store, production, and QC roles.";
-const customerSoRsRoles = requireRole(["ADMIN", "SALES", "STORE", "PRODUCTION", "QC", "ACCOUNTS"], CUSTOMER_SO_RS_ACCESS_DENIED);
+const customerSoRsRoles = requireRole(["ADMIN", "STORE", "PURCHASE", "PRODUCTION", "QA"], CUSTOMER_SO_RS_ACCESS_DENIED);
 
 const BATCH_TRACE_ACCESS_DENIED =
   "Access denied. This report is available to admin, sales, store, production, and QC roles.";
-const batchTraceRoles = requireRole(["ADMIN", "SALES", "STORE", "PRODUCTION", "QC"], BATCH_TRACE_ACCESS_DENIED);
+const batchTraceRoles = requireRole(["ADMIN", "STORE", "PURCHASE", "PRODUCTION", "QA"], BATCH_TRACE_ACCESS_DENIED);
 
 const DISPATCH_SUMMARY_ACCESS_DENIED =
   "Access denied. This report is available to admin, sales, and store roles.";
-const dispatchSummaryRoles = requireRole(["ADMIN", "SALES", "STORE", "ACCOUNTS"], DISPATCH_SUMMARY_ACCESS_DENIED);
+const dispatchSummaryRoles = requireRole(["ADMIN", "STORE", "PURCHASE"], DISPATCH_SUMMARY_ACCESS_DENIED);
 
 const ACTIVITY_LOG_ACCESS_DENIED = "Access denied. Only administrators can view the audit activity log.";
 const activityLogRoles = requireRole(["ADMIN"], ACTIVITY_LOG_ACCESS_DENIED);
+
+const PRODUCTION_RM_VARIANCE_ACCESS_DENIED =
+  "Access denied. This report is available to admin, store, and production roles.";
+const productionRmVarianceRoles = requireRole(
+  ["ADMIN", "STORE", "PRODUCTION"],
+  PRODUCTION_RM_VARIANCE_ACCESS_DENIED,
+);
 
 const reportsRouter = express.Router();
 
@@ -179,7 +187,7 @@ reportsRouter.get("/dispatch-summary", requireAuth, dispatchSummaryRoles, async 
 function normalizeAuditModule(input) {
   const s = String(input || "").trim().toUpperCase();
   if (!s) return null;
-  const allowed = new Set(["SALES", "PURCHASE", "STOCK", "PRODUCTION", "QC", "DISPATCH", "REPORTS", "SETTINGS", "SESSION", "ADMIN"]);
+  const allowed = new Set(["ADMIN", "PURCHASE", "STOCK", "PRODUCTION", "QA", "STORE", "REPORTS", "SETTINGS", "SESSION", "ADMIN"]);
   return allowed.has(s) ? s : null;
 }
 
@@ -191,8 +199,8 @@ function normalizeRefType(input) {
     "SO",
     "WO",
     "PRODUCTION",
-    "QC",
-    "DISPATCH",
+    "QA",
+    "STORE",
     "RM_PO",
     "GRN",
     "PURCHASE_BILL",
@@ -1743,6 +1751,34 @@ reportsRouter.get("/work-order-tracking", requireAuth, workOrderTrackingRoles, a
  * - dateFrom? / dateTo? (YYYY-MM-DD, filters SalesOrder.createdAt)
  * - q? / search? — partial match on docNo or customerPoReference; when set, NO_QTY orders emit one row per cycle
  */
+/**
+ * GET /api/reports/production-rm-variance
+ * Immutable consumption snapshots (REGULAR only). Query: dateFrom, dateTo, fgItemId, rmItemId,
+ * varianceType, consumptionType, thresholdPct, highVarianceOnly, woNumber, soNumber, page, pageSize.
+ * export=csv returns text/csv attachment payload in JSON { csv } or set Accept — returns { csv, rowCount }.
+ */
+reportsRouter.get(
+  "/production-rm-variance",
+  requireAuth,
+  productionRmVarianceRoles,
+  async (req, res, next) => {
+    try {
+      const data = await buildProductionRmVarianceReport(req.query);
+      if (data.export === "csv") {
+        res.setHeader("Content-Type", "text/csv; charset=utf-8");
+        res.setHeader(
+          "Content-Disposition",
+          `attachment; filename="production-rm-variance_${new Date().toISOString().slice(0, 10)}.csv"`,
+        );
+        return res.send(data.csv);
+      }
+      return res.json(data);
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
 reportsRouter.get("/customer-so-rs", requireAuth, customerSoRsRoles, async (req, res, next) => {
   try {
     const statusRaw = String(req.query.status ?? "").trim();

@@ -1,9 +1,12 @@
 const { COMPANY_STATE } = require("../config/company");
 const { DocType, Prisma } = require("../prismaClientPackage");
 const { allocateDocNo } = require("./docNoService");
-const { maybeAutoCloseNoQtyCycle } = require("./noQtyCycleAutoClose");
 const { findApplicableRateContractLine, normalizeUtcDateOnly } = require("./rateContractService");
 const { assertAnyAdminPassword } = require("./adminPasswordAuth");
+const {
+  gstModeFromCompanyVsPos,
+  resolveSalesBillCommercialSnapshots,
+} = require("./salesOrderCommercialAddress");
 
 function round2(n) {
   return Math.round(Number(n) * 100) / 100;
@@ -49,6 +52,32 @@ function resolveSalesIntraFromStateCodes({ customer }) {
   const customerCode = customer?.stateRef?.stateCode ?? null;
   if (!customerCode) return { intraState: false, basis: "MISSING_CUSTOMER_STATE_CODE" };
   return { intraState: String(customerCode) === String(COMPANY_STATE.code), basis: "STATIC_CODE" };
+}
+
+function trimCommercialSnapshot(v) {
+  if (v == null) return "";
+  return String(v).trim();
+}
+
+/**
+ * POS-based tax mode for billing: prefer SalesBill POS snapshot, else legacy customer-state logic.
+ */
+function resolveSalesIntraForBilling({ bill, customer, companyState }) {
+  const posCode = trimCommercialSnapshot(bill?.posStateCodeSnapshot);
+  const companyCode = companyState?.companyStateRef?.stateCode ?? COMPANY_STATE.code ?? null;
+  if (posCode && companyCode) {
+    return {
+      intraState: String(companyCode) === String(posCode),
+      basis: "POS_SNAPSHOT",
+      compareStateCode: posCode,
+    };
+  }
+  const legacy = resolveSalesIntraFromStateCodes({ customer });
+  return {
+    ...legacy,
+    compareStateCode:
+      customer?.stateRef?.stateCode ?? trimCommercialSnapshot(bill?.customerStateCodeSnapshot) ?? null,
+  };
 }
 
 function sumTotals(lines) {
@@ -145,11 +174,26 @@ function withSalesBillGstBreakup(bill, { intraState, companyState }) {
     return null;
   })();
 
+  const companyStateCode = companyState?.companyStateRef?.stateCode ?? null;
+  const posStateCode = trimCommercialSnapshot(bill?.posStateCodeSnapshot) || null;
+  const posStateName = trimCommercialSnapshot(bill?.posStateNameSnapshot) || null;
+  const posSource = trimCommercialSnapshot(bill?.posSourceSnapshot) || null;
+  const gstMode =
+    gstModeFromCompanyVsPos({
+      companyStateCode,
+      posStateCode: posStateCode ?? trimCommercialSnapshot(bill?.customerStateCodeSnapshot) ?? null,
+    }) ?? null;
+
   return {
     ...bill,
     taxIntraState: Boolean(intraState),
-    companyStateCode: companyState?.companyStateRef?.stateCode ?? null,
-    customerStateCode: bill?.customer?.stateRef?.stateCode ?? null,
+    gstMode,
+    posStateCode,
+    posStateName,
+    posSource,
+    companyStateCode,
+    customerStateCode:
+      trimCommercialSnapshot(bill?.customerStateCodeSnapshot) || bill?.customer?.stateRef?.stateCode || null,
     lines: nextLines,
     /** NO_QTY: document-linked cycle for operator UI (not SalesOrder.currentCycle). */
     operationalCycleNo,
@@ -318,7 +362,8 @@ async function refreshNoQtyDraftLinesFromContract(tx, billId, billDateUtc) {
   });
   if (!bill?.dispatch?.salesOrder || bill.dispatch.salesOrder.orderType !== "NO_QTY") return;
 
-  const intra = resolveSalesIntraFromStateCodes({ customer: bill.customer }).intraState;
+  const companyState = await getCompanyState(tx);
+  const intra = resolveSalesIntraForBilling({ bill, customer: bill.customer, companyState }).intraState;
   const customerId = bill.customerId;
 
   for (const ln of bill.lines) {
@@ -392,7 +437,11 @@ async function createDraftFromDispatch(prisma, dispatchId, opts = {}) {
       }
       // DRAFT: reopen
       const companyState0 = await getCompanyState(tx);
-      const intra0 = resolveSalesIntraFromStateCodes({ customer: existing.customer }).intraState;
+      const intra0 = resolveSalesIntraForBilling({
+        bill: existing,
+        customer: existing.customer,
+        companyState: companyState0,
+      }).intraState;
       return { bill: withSalesBillGstBreakup(existing, { intraState: intra0, companyState: companyState0 }), created: false };
     }
 
@@ -416,9 +465,20 @@ async function createDraftFromDispatch(prisma, dispatchId, opts = {}) {
     }
     const customer = so.customer ?? so.po?.customer ?? null;
     if (!customer) throw friendlyError("Customer is required before creating a Sales Bill.");
-    if (!customer.stateRef?.stateCode || !customer.stateRef?.stateName) {
+
+    const companyState = await getCompanyState(tx);
+    const commercialSnapshots = await resolveSalesBillCommercialSnapshots(tx, so, {
+      companyStateCode: companyState?.companyStateRef?.stateCode ?? null,
+    });
+    const billStateCode = trimCommercialSnapshot(commercialSnapshots.customerStateCodeSnapshot);
+    const billStateName = trimCommercialSnapshot(commercialSnapshots.customerStateNameSnapshot);
+    if (
+      (!billStateCode || !billStateName) &&
+      (!customer.stateRef?.stateCode || !customer.stateRef?.stateName)
+    ) {
       throw friendlyError("Customer state is required before creating a Sales Bill.", 409);
     }
+
     const item = dispatch.item;
     if (!item) throw friendlyError("Item not found.");
     if (!item.hsnCode) throw friendlyError("Item HSN is missing for one or more lines.", 409);
@@ -430,7 +490,11 @@ async function createDraftFromDispatch(prisma, dispatchId, opts = {}) {
     const billDate =
       normalizeUtcDateOnly(opts?.billDate != null ? opts.billDate : null) ?? normalizeUtcDateOnly(today);
 
-    const intra = resolveSalesIntraFromStateCodes({ customer }).intraState;
+    const intra = resolveSalesIntraForBilling({
+      bill: commercialSnapshots,
+      customer,
+      companyState,
+    }).intraState;
     let rate;
     let gstRatePct;
     /** Rate contract row used for NO_QTY rate/GST snapshot + line.rateEffectiveFrom only. */
@@ -488,9 +552,7 @@ async function createDraftFromDispatch(prisma, dispatchId, opts = {}) {
         cycleId: dispatch.cycleId ?? null,
         remarks: null,
         status: "DRAFT",
-        customerNameSnapshot: String(customer.name || "").slice(0, 256),
-        customerStateNameSnapshot: String(customer.stateRef.stateName || "").slice(0, 128),
-        customerStateCodeSnapshot: String(customer.stateRef.stateCode || "").slice(0, 2),
+        ...commercialSnapshots,
         dispatchNoSnapshot: dispatch.docNo || `DISP-${dispatch.id}`,
         dispatchDateSnapshot: dispatch.date,
         soIdSnapshot: dispatch.soId,
@@ -507,8 +569,7 @@ async function createDraftFromDispatch(prisma, dispatchId, opts = {}) {
       include: billInclude,
     });
 
-    const companyStateAfter = await getCompanyState(tx);
-    return { bill: withSalesBillGstBreakup(created, { intraState: intra, companyState: companyStateAfter }), created: true };
+    return { bill: withSalesBillGstBreakup(created, { intraState: intra, companyState }), created: true };
   });
 }
 
@@ -550,7 +611,7 @@ async function updateDraft(prisma, billId, body) {
       include: billInclude,
     });
     const companyState = await getCompanyState(tx);
-    const intra = resolveSalesIntraFromStateCodes({ customer: updated.customer }).intraState;
+    const intra = resolveSalesIntraForBilling({ bill: updated, customer: updated.customer, companyState }).intraState;
     return withSalesBillGstBreakup(updated, { intraState: intra, companyState });
   });
 }
@@ -581,7 +642,8 @@ async function patchDraftSalesBillLineRate(prisma, billId, lineId, rateInput) {
     const ln = bill.lines.find((l) => l.id === lineId) || null;
     if (!ln) throw friendlyError("Line not found on this bill.", 404);
 
-    const intra = resolveSalesIntraFromStateCodes({ customer: bill.customer }).intraState;
+    const companyState = await getCompanyState(tx);
+    const intra = resolveSalesIntraForBilling({ bill, customer: bill.customer, companyState }).intraState;
     const qty = Number(ln.qty);
     const gstRate = Number(ln.gstRate);
     const calc = computeLineTaxSplit(qty * rate, gstRate, intra);
@@ -629,8 +691,7 @@ async function patchDraftSalesBillLineRate(prisma, billId, lineId, rateInput) {
     });
 
     const refreshed = await tx.salesBill.findUnique({ where: { id: billId }, include: billInclude });
-    const companyState = await getCompanyState(tx);
-    const intra2 = resolveSalesIntraFromStateCodes({ customer: refreshed.customer }).intraState;
+    const intra2 = resolveSalesIntraForBilling({ bill: refreshed, customer: refreshed.customer, companyState }).intraState;
     return withSalesBillGstBreakup(refreshed, { intraState: intra2, companyState });
   });
 }
@@ -643,7 +704,12 @@ async function finalizeBill(prisma, billId, userId) {
     });
     if (!bill) throw friendlyError("Sales bill not found.", 404);
     if (bill.status !== "DRAFT") throw friendlyError("This bill is already finalized or cancelled.");
-    if (!bill.customer?.stateRef?.stateCode) throw friendlyError("Customer state is required before finalizing.", 409);
+    if (
+      !bill.customer?.stateRef?.stateCode &&
+      !trimCommercialSnapshot(bill.customerStateCodeSnapshot)
+    ) {
+      throw friendlyError("Customer state is required before finalizing.", 409);
+    }
     if (!bill.lines.length) throw friendlyError("Add at least one line item before finalizing.");
     for (const ln of bill.lines) {
       const rate = Number(ln.rate);
@@ -655,7 +721,8 @@ async function finalizeBill(prisma, billId, userId) {
       }
     }
 
-    const intra = resolveSalesIntraFromStateCodes({ customer: bill.customer }).intraState;
+    const companyState = await getCompanyState(tx);
+    const intra = resolveSalesIntraForBilling({ bill, customer: bill.customer, companyState }).intraState;
     const rebuilt = [];
     for (const ln of bill.lines) {
       const qty = Number(ln.qty);
@@ -696,19 +763,6 @@ async function finalizeBill(prisma, billId, userId) {
       include: billInclude,
     });
 
-    // NO_QTY: Auto-close current cycle when fully billed and no pending dispatch remains.
-    // Strictly current-cycle scoped and safe to no-op when not eligible.
-    try {
-      const soId = finalized?.dispatch?.soId != null ? Number(finalized.dispatch.soId) : 0;
-      const cycleId = finalized?.cycleId != null ? Number(finalized.cycleId) : (finalized?.dispatch?.cycleId != null ? Number(finalized.dispatch.cycleId) : 0);
-      if (Number.isFinite(soId) && soId > 0 && Number.isFinite(cycleId) && cycleId > 0) {
-        await maybeAutoCloseNoQtyCycle(tx, { soId, cycleId });
-      }
-    } catch {
-      // Auto-close is best-effort; billing finalize must succeed even if closing cannot be evaluated.
-    }
-
-    const companyState = await getCompanyState(tx);
     return withSalesBillGstBreakup(finalized, { intraState: intra, companyState });
   });
 }
@@ -731,7 +785,7 @@ async function cancelBill(prisma, billId, { reason, userId }) {
       include: billInclude,
     });
     const companyState = await getCompanyState(tx);
-    const intra = resolveSalesIntraFromStateCodes({ customer: updated.customer }).intraState;
+    const intra = resolveSalesIntraForBilling({ bill: updated, customer: updated.customer, companyState }).intraState;
     return withSalesBillGstBreakup(updated, { intraState: intra, companyState });
   });
 }
@@ -835,7 +889,7 @@ async function addSalesBillReceipt(prisma, billId, input, { userId, role }) {
       include: billInclude,
     });
     const companyState = await getCompanyState(tx);
-    const intra = resolveSalesIntraFromStateCodes({ customer: updated.customer }).intraState;
+    const intra = resolveSalesIntraForBilling({ bill: updated, customer: updated.customer, companyState }).intraState;
     return withSalesBillGstBreakup(updated, { intraState: intra, companyState });
   });
 }
@@ -866,7 +920,7 @@ async function deleteSalesBillReceipt(prisma, billId, receiptId, { role, adminPa
       include: billInclude,
     });
     const companyState = await getCompanyState(tx);
-    const intra = resolveSalesIntraFromStateCodes({ customer: updated.customer }).intraState;
+    const intra = resolveSalesIntraForBilling({ bill: updated, customer: updated.customer, companyState }).intraState;
     return withSalesBillGstBreakup(updated, { intraState: intra, companyState });
   });
 }
@@ -919,7 +973,7 @@ async function updateSalesBillPaymentTracking(prisma, billId, input) {
     });
 
     const companyState = await getCompanyState(tx);
-    const intra = resolveSalesIntraFromStateCodes({ customer: updated.customer }).intraState;
+    const intra = resolveSalesIntraForBilling({ bill: updated, customer: updated.customer, companyState }).intraState;
     return withSalesBillGstBreakup(updated, { intraState: intra, companyState });
   });
 }
@@ -939,7 +993,7 @@ async function getSalesBillById(prisma, id) {
   const bill = await prisma.salesBill.findUnique({ where: { id }, include: billInclude });
   if (!bill) throw friendlyError("Sales bill not found.", 404);
   const companyState = await getCompanyState(prisma);
-  const intra = resolveSalesIntraFromStateCodes({ customer: bill.customer }).intraState;
+  const intra = resolveSalesIntraForBilling({ bill, customer: bill.customer, companyState }).intraState;
   return withSalesBillGstBreakup(bill, { intraState: intra, companyState });
 }
 
@@ -957,4 +1011,3 @@ module.exports = {
   addSalesBillReceipt,
   deleteSalesBillReceipt,
 };
-

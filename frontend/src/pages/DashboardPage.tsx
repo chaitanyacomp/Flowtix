@@ -1,7 +1,6 @@
-﻿import * as React from "react";
+import * as React from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { CheckCircle2, ChevronRight } from "lucide-react";
-import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { apiFetch } from "../services/api";
 import { Button, buttonVariants } from "../components/ui/button";
 import { cn } from "../lib/utils";
@@ -13,14 +12,25 @@ import { useDemoMode } from "../contexts/DemoModeContext";
 import { ApiRequestError } from "../services/api";
 import { type DispatchBacklogRow, ROW_NUM_EPS } from "../lib/dispatchBacklog";
 import { displaySalesOrderNo } from "../lib/docNoDisplay";
+import { salesOrdersFocusHref } from "../lib/drillDownRoutes";
 import { useAuth } from "../hooks/useAuth";
-import { AccountsDashboardPage } from "./AccountsDashboardPage";
+import { PurchaseDashboardPage } from "./PurchaseDashboardPage";
+import { QaDashboardPage } from "./QaDashboardPage";
 import { StoreDispatchDashboard, type StoreDispatchActionRow } from "./store/StoreDispatchDashboard";
+import { type WoPrepareDashboardQueues } from "../components/erp/WoPrepareOperationalQueuesCard";
+import { type ProcurementPendingRow } from "../components/erp/ProcurementPendingDashboardCard";
+import { OperationalBlockersCard } from "../components/erp/OperationalBlockersCard";
+import { buildOperationalSoActions } from "../lib/operationalBlockers";
+import { DashboardLiveFactoryPanel } from "../components/erp/DashboardLiveFactoryPanel";
+import { OperationalAlertStrip } from "../components/erp/OperationalAlertStrip";
 import { REGULAR_TERMS } from "../lib/flowTerminology";
+import { PRODUCTION_QA_TERMS } from "../lib/productionQaTerminology";
 import type { ResolvedNoQtyContinuation } from "../lib/noQtyDashboardContinuation";
 import {
   DashboardControlColumn,
   DashboardCurrentProductionStatus,
+  DashboardPausedWorkOrders,
+  type PausedWorkOrderRow,
   DashboardOpsClearStrip,
   DashboardRoleShortcuts,
   DashboardViewAllLink,
@@ -38,7 +48,13 @@ import type { DashboardShortcut } from "../components/erp/foundation/DashboardRo
 import { ERP_DASHBOARD_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
 import { summarizeDashboardProductionAttention } from "../lib/dashboardProductionStatus";
 import {
+  coverageFromOperationalBlockers,
+  operationalControlColumnHasContent,
+  shouldShowProductionPendingRegularControlCard,
+} from "../lib/dashboardOperationalDedup";
+import {
   buildActionRequiredFromQueues,
+  buildDashboardDispatchHref,
   dedupeContinueWorkingBySalesOrder,
   enrichActionRequiredWithNoQtyPlanning,
   enforceUniqueSalesOrdersAcrossGroups,
@@ -51,36 +67,45 @@ import {
   type ContinueWorkingRow,
 } from "../lib/dashboardActionQueue";
 import {
+  aggregateNoQtyOptionalDispatchBySo,
+  shouldShowNoQtyOptionalDispatchChip,
+} from "../lib/noQtyDashboardOptionalDispatch";
+import {
   flowLabelForQuotationPendingSo,
   normalizeQuotationPendingSoRow,
   type QuotationPendingSoRow,
 } from "../lib/dashboardCommercialWorkflow";
+import { buildNoQtyDashboardTraceLine } from "../lib/noQtyDashboardCycleTrace";
+import { NoQtyDashboardCycleHistoryDialog } from "../components/erp/NoQtyDashboardCycleHistoryDialog";
+import { formatRmStockAlertBanner } from "../lib/inventoryHealth";
+import { hasSoWoRmBlockerAttention } from "../lib/dashboardRmClassification";
+import {
+  productionMaterialBlockedHref,
+  productionWorkspaceHref,
+  rmControlCenterHref,
+} from "../lib/materialWorkflowLinks";
 
 /** Role-based access to dashboard API sections (aligns with future backend requireRole). */
 function dashboardWidgetFlags(role: string) {
   const isAdmin = role === "ADMIN";
-  const isSales = role === "SALES";
-  const isDispatch = role === "DISPATCH";
   const isProduction = role === "PRODUCTION";
-  const isQc = role === "QC";
   const isStore = role === "STORE";
+  const isPurchase = role === "PURCHASE";
 
   return {
     canViewOverallSummary: isAdmin,
-    canViewDispatchBacklog: isAdmin || isDispatch || isStore,
+    canViewDispatchBacklog: isAdmin || isStore,
     canViewProductionQueue: isAdmin || isProduction,
-    canViewQcQueue: isAdmin || isQc,
-    canViewRmRisk: isAdmin || isProduction || isStore,
-    canViewPurchaseSummary: isAdmin || isStore,
-    /** STORE: continue-working limited to DISPATCH + SALES_BILL rows in partitionContinueWorkingForActions. */
-    canViewContinueWorking: isAdmin || isSales || isProduction || isQc || isStore || isDispatch,
-    /**
-     * NO_QTY â€œOpen orders / planning & cyclesâ€ launcher (RS / planning handoff).
-     * SALES + ADMIN: planning visibility. STORE: dispatch + stock only â€” no launcher fetch.
-     */
-    canUseOpenNoQtyContinuation: isAdmin || isSales,
-    /** Approved quotation → SO creation handoff (commercial workflow). */
-    canViewQuotationsPendingSo: isAdmin || isSales,
+    canViewProductionQaQueue: isAdmin || isProduction,
+    canViewRmRisk: isAdmin || isProduction,
+    canViewPurchaseSummary: isAdmin || isPurchase,
+    canViewGrnPendingSummary: isAdmin || isStore || isPurchase,
+    canViewWoPrepareProcurement: isAdmin || isPurchase,
+    canViewWoPrepareCreation: isAdmin || isProduction,
+    canViewWoPrepareQueues: isAdmin || isPurchase || isProduction,
+    canViewContinueWorking: isAdmin || isProduction || isStore,
+    canUseOpenNoQtyContinuation: isAdmin,
+    canViewQuotationsPendingSo: isAdmin,
   };
 }
 
@@ -89,74 +114,50 @@ function dashboardWidgetFlags(role: string) {
  *
  * `dashboardWidgetFlags` controls which API sections a role can *fetch*. This
  * helper controls which workflow cards a role should actually *see and act on*
- * once data is loaded â€” so STORE never sees production / QC / sales-bill CTAs
+ * once data is loaded ? so STORE never sees production / QC / sales-bill CTAs
  * even though continue-working data may include them.
  *
  * Role intent (per ERP philosophy):
- *  - STORE     â†’ RM shortage, material planning / purchase receipts, stock alerts,
+ *  - STORE     ? RM shortage, material planning / purchase receipts, stock alerts,
  *                and dispatch-ready FG lines (same backlog snapshot as Dispatch).
  *                NOT production / QC / sales-bill / NO_QTY RS or SO planning CTAs.
- *  - PRODUCTIONâ†’ production cards (and shortage visibility, view-only).
+ *  - PRODUCTION? production cards (and shortage visibility, view-only).
  *                NOT responsible for creating RM POs.
- *  - QC        â†’ QC cards only.
- *  - DISPATCH  â†’ dispatch cards only.
- *  - SALES     â†’ NO_QTY requirement sheet / planning (not dispatch â€” Store owns dispatch), sales-bill, enquiry cards.
- *  - ACCOUNTS  â†’ has a separate AccountsDashboardPage; not handled here.
- *  - ADMIN     â†’ all cards.
+ *  - QC        ? QC cards only.
+ *  - DISPATCH  ? dispatch cards only.
+ *  - SALES     ? NO_QTY requirement sheet / planning (not dispatch ? Store owns dispatch), sales-bill, enquiry cards.
+ *  - ACCOUNTS  ? has a separate AccountsDashboardPage; not handled here.
+ *  - ADMIN     ? all cards.
  */
 function dashboardActionVisibility(role: string) {
   const isAdmin = role === "ADMIN";
   const isStore = role === "STORE";
   const isProduction = role === "PRODUCTION";
-  const isQc = role === "QC";
-  const isDispatch = role === "DISPATCH";
-  const isSales = role === "SALES";
+  const isPurchase = role === "PURCHASE";
   return {
-    canShowQcCards: isAdmin || isQc,
-    canShowDispatchCards: isAdmin || isDispatch || isStore,
+    canShowProductionQaCards: isAdmin || isProduction,
+    canShowDispatchCards: isAdmin || isStore,
     canShowProductionCards: isAdmin || isProduction,
-    canShowSalesBillCards: isAdmin || isStore || isDispatch,
-    /** Who should see RM shortage / RM-below-min in ops attention counts. */
-    canSeeRmShortageOperational: isAdmin || isStore || isProduction,
-    /** RM shortage workspace link + PO creation â€” Store / Admin (material planning ownership). */
-    canActOnRmShortageProcurement: isAdmin || isStore,
-    /** Purchase receipts pending â€” STORE owns GRN, ADMIN sees everything. */
-    canShowPurchaseCards: isAdmin || isStore,
-    canShowEnquiryCards: isAdmin || isSales,
-    /** Approved quotation awaiting sales order — Sales / Admin commercial continuation. */
-    canShowQuotationPendingSoCards: isAdmin || isSales,
-    /** REGULAR next-RS card links into /production â€” production owners only. */
+    canShowSalesBillCards: isAdmin || isStore,
+    canSeeRmShortageOperational: isAdmin || isProduction,
+    canActOnRmShortageProcurement: isAdmin || isPurchase,
+    canShowPurchaseCards: isAdmin || isPurchase,
+    canShowEnquiryCards: isAdmin,
+    canShowQuotationPendingSoCards: isAdmin,
     canShowNextRsCard: isAdmin || isProduction,
-    /** NO_QTY rolling RS planning â€” Sales / Admin only. */
-    canShowNoQtyPlanningCard: isAdmin || isSales,
-    /** Whether the user can act on a NO_QTY production CTA (launcher or shop-floor card). */
-    canActOnNoQtyProductionCta: isAdmin || isProduction || isSales,
+    canShowNoQtyPlanningCard: isAdmin,
+    canActOnNoQtyProductionCta: isAdmin || isProduction,
   };
 }
 
 /**
  * Per-row gate for the NO_QTY continuation list: which primary actions a role may see.
  * STORE: none (dispatch backlog cards cover FG-ready work).
- * SALES: customer / RS / planning and billing handoffs â€” not shop-floor Production or QC.
+ * SALES: customer / RS / planning and billing handoffs ? not shop-floor Production or QC.
  */
-function isNoQtyResolvedRelevantForRole(role: string, resolved: ResolvedNoQtyContinuation): boolean {
+function isNoQtyResolvedRelevantForRole(role: string, _resolved: ResolvedNoQtyContinuation): boolean {
   if (role === "ADMIN") return true;
   if (role === "STORE") return false;
-  if (role === "SALES") {
-    if (resolved.kind === "prepare_next_rs") return true;
-    if (resolved.kind === "navigate") {
-      const shopOrDispatch = new Set([
-        "Open Production",
-        "Open QC",
-        "Open Dispatch",
-        "Open Dispatch Queue",
-        "Open NO_QTY Dispatch",
-        "Open Sales Bill",
-      ]);
-      return !shopOrDispatch.has(resolved.label);
-    }
-    return false;
-  }
   return false;
 }
 
@@ -167,7 +168,7 @@ function DashboardTableEmpty({
 }: {
   title: string;
   description?: string;
-  /** Single dense row â€” no flex-grow empty shell */
+  /** Single dense row ? no flex-grow empty shell */
   compact?: boolean;
 }) {
   if (compact) {
@@ -184,7 +185,7 @@ function DashboardTableEmpty({
       <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-600" aria-hidden />
       <div className="min-w-0">
         <span className="font-semibold text-slate-900">{title}</span>
-        {description ? <span className="text-slate-600"> Â· {description}</span> : null}
+        {description ? <span className="text-slate-600"> ? {description}</span> : null}
       </div>
     </div>
   );
@@ -192,7 +193,7 @@ function DashboardTableEmpty({
 
 function formatDashDispatchMetricQty(q: number): string {
   const n = Number(q);
-  if (!Number.isFinite(n)) return "â€”";
+  if (!Number.isFinite(n)) return "?";
   return Number.isInteger(n) ? String(n) : n.toFixed(3);
 }
 
@@ -209,31 +210,46 @@ function OperationalDashCard({
   onAction,
   readOnly,
   readOnlyHint,
+  contextLine,
+  blockerReason,
+  owner,
+  nextAction,
 }: {
   tier: "blocker" | "approval" | "ready" | "supply";
   title: string;
   detail: string;
-  /** Used when `readOnly` is false â€” CTA label on the linked card. */
   actionLabel?: string;
-  /** Dashboard navigation target when `readOnly` is false. */
   href?: string;
-  /** When set, primary CTA runs this handler instead of navigating via `href`. */
   onAction?: () => void;
-  /** When true, render a non-interactive status card (no procurement / planning navigation). */
   readOnly?: boolean;
-  /** Short guidance shown on the right when `readOnly` is true (e.g. Production RM shortage context). */
   readOnlyHint?: string;
+  contextLine?: string;
+  blockerReason?: string;
+  owner?: string;
+  nextAction?: string;
 }) {
-  // Tier accent: subtle background tint + 3px left rule; no thick borders, no
-  // colorful boxes, hairline outline so cards feel premium-corporate.
+  if (tier === "blocker" || tier === "approval") {
+    return (
+      <OperationalAlertStrip
+        tier={tier}
+        headline={title}
+        contextLine={contextLine ?? detail}
+        blockerReason={blockerReason ?? detail}
+        owner={owner}
+        nextAction={nextAction}
+        actionLabel={actionLabel}
+        href={href}
+        onAction={onAction}
+        readOnly={readOnly}
+        readOnlyHint={readOnlyHint}
+      />
+    );
+  }
+
   const tierClass =
-    tier === "blocker"
-      ? "border-red-200/85 bg-red-50/40 border-l-[3px] border-l-red-600"
-      : tier === "approval"
-        ? "border-amber-200/85 bg-amber-50/40 border-l-[3px] border-l-amber-500"
-        : tier === "supply"
-          ? "border-violet-200/75 bg-violet-50/35 border-l-[3px] border-l-violet-500"
-          : "border-slate-200/95 bg-white border-l-[3px] border-l-slate-400";
+    tier === "supply"
+      ? "bg-violet-50/50 ring-violet-200/70"
+      : "bg-slate-50/80 ring-slate-200/80";
 
   const body = (
     <div className="flex flex-col gap-1.5 sm:flex-row sm:items-center sm:justify-between sm:gap-2.5">
@@ -243,7 +259,7 @@ function OperationalDashCard({
       </div>
       {readOnly ? (
         <div className="flex max-w-[16rem] shrink-0 text-right">
-          <p className="text-[11px] font-semibold leading-snug text-slate-700">{readOnlyHint ?? "â€”"}</p>
+          <p className="text-[11px] font-semibold leading-snug text-slate-700">{readOnlyHint ?? "?"}</p>
         </div>
       ) : (
         <div className="flex shrink-0">
@@ -300,7 +316,7 @@ function OperationalDashCard({
     <Link
       to={href as string}
       state={{ from: "dashboard" }}
-      aria-label={`${title} â€” ${actionLabel ?? "Open"}`}
+      aria-label={`${title} ? ${actionLabel ?? "Open"}`}
       className={cn(
         "group block rounded-md border py-2 pl-2.5 pr-2.5 shadow-sm no-underline outline-none transition-shadow",
         "hover:shadow-md focus-visible:ring-2 focus-visible:ring-blue-400/50 focus-visible:ring-offset-1",
@@ -321,24 +337,24 @@ const DASH_MAX = dashboardShell.max;
 /** Row caps keep the dashboard within ~90vh without page scroll. */
 const DASH_NO_QTY_CONTINUATION_CAP = 5;
 const DASH_COMMERCIAL_QUOTE_CAP = 5;
-const DASH_CARD_MUTED = dashboardShell.cardMuted;
 const DASH_BTN_PRIMARY = dashboardShell.btnPrimary;
-const DASH_BTN_SECONDARY = dashboardShell.btnSecondary;
-/** Demo-friendly short labels for inventory snapshot (full string in title tooltip). */
-function displayShortItemName(name: string, maxLen = 28): string {
-  let s = String(name ?? "")
-    .replace(/_/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  s = s.replace(/\s+\d{10,}$/, "").trim();
-  s = s.replace(/\s+[a-z]{2,}\s+\d{8,}$/i, "").trim();
-  s = s.replace(/\s+[a-z]{2,}$/i, "").trim();
-  if (s.length <= maxLen) return s;
-  return `${s.slice(0, Math.max(0, maxLen - 1)).trimEnd()}â€¦`;
-}
+
+type RmStockHealthRow = {
+  itemId: number;
+  itemName: string;
+  qty: number;
+  minimumStockQty: number;
+  minStockLevel: number;
+  status?: "OUT_OF_STOCK" | "CRITICAL" | "LOW" | "HEALTHY";
+};
 
 type DashboardDto = {
-  rmStockAlert: { itemId: number; itemName: string; qty: number; minStockLevel: number }[];
+  /** All non-healthy RM rows (critical band first, then warning). */
+  rmStockAlert: RmStockHealthRow[];
+  rmStockCritical?: RmStockHealthRow[];
+  rmStockWarning?: RmStockHealthRow[];
+  rmStockCriticalCount?: number;
+  rmStockWarningCount?: number;
   fgStock: { itemId: number; itemName: string; qty: number }[];
   /** Server sum of FG on-hand from ledger (same universe as fgStock list) */
   fgStockTotalQty?: number;
@@ -377,6 +393,7 @@ type ProductionQueueNextAction =
   | "QC_PENDING"
   | "DISPATCH_PENDING"
   | "SALES_BILL_PENDING"
+  | "ON_HOLD"
   | "PRODUCTION_PENDING"
   | "NEXT_RS_REQUIRED";
 
@@ -393,7 +410,7 @@ type ProductionQueueRow = {
   requiredQty: number;
   /** Sum of APPROVED production on the line */
   producedQty: number;
-  /** max(0, WO line qty âˆ’ approved produced) */
+  /** max(0, WO line qty ? approved produced) */
   balanceQty: number;
   status: string;
   workOrderDate: string;
@@ -405,6 +422,8 @@ type ProductionQueueRow = {
   hasPendingQc?: boolean;
   dispatchableQty?: number;
   productionId?: number | null;
+  rmReadinessGate?: string | null;
+  rmReadyForProduction?: boolean;
   /** Primary qty shown in dashboard cells */
   displayQty?: number;
   qtyLabel?: string;
@@ -427,7 +446,7 @@ type QcQueueRow = {
   status: string;
   qcDate: string;
   quantityMetricContext?: string;
-  /** From linked SalesOrder â€” used when continue-working is unavailable. */
+  /** From linked SalesOrder ? used when continue-working is unavailable. */
   orderType?: string | null;
   cycleId?: number | null;
 };
@@ -436,11 +455,20 @@ type RmRiskRow = {
   itemId: number;
   itemCode: string;
   itemName: string;
+  salesOrderId?: number | null;
+  /** Canonical SO doc no (e.g. SO-26-0001). */
+  salesOrderNo?: string | null;
+  workOrderId?: number | null;
+  workOrderNo?: string | null;
+  fgItemName?: string | null;
   currentStockQty: number;
   requiredQty: number;
   freeQty: number;
   shortageQty: number;
   status: string;
+  blockerReason?: string | null;
+  recommendedAction?: string | null;
+  href?: string | null;
   quantityMetricContext?: string;
 };
 
@@ -533,6 +561,8 @@ export function DashboardPage() {
   const auth = useAuth();
   const role = auth.user?.role ?? "";
   const demo = useDemoMode();
+  // Phase E: operator-first regular flow. Hide procurement-style panels/wording on the dashboard.
+  const phaseEOperatorFlow = true;
   const liveTick = useErpRefreshTick(["dashboard"], { pollIntervalMs: ERP_DASHBOARD_POLL_MS });
 
   function clickTo(to: string) {
@@ -545,9 +575,10 @@ export function DashboardPage() {
     canViewOverallSummary,
     canViewDispatchBacklog,
     canViewProductionQueue,
-    canViewQcQueue,
+    canViewProductionQaQueue,
     canViewRmRisk,
     canViewPurchaseSummary,
+    canViewWoPrepareQueues,
     canViewContinueWorking,
     canUseOpenNoQtyContinuation,
     canViewQuotationsPendingSo,
@@ -569,7 +600,7 @@ export function DashboardPage() {
     canViewOverallSummary ||
     canViewDispatchBacklog ||
     canViewProductionQueue ||
-    canViewQcQueue ||
+    canViewProductionQaQueue ||
     canViewRmRisk ||
     canViewPurchaseSummary ||
     canViewContinueWorking ||
@@ -581,16 +612,25 @@ export function DashboardPage() {
   const [backlogError, setBacklogError] = React.useState<string | null>(null);
   const [prodQueue, setProdQueue] = React.useState<ProductionQueueRow[] | null>(null);
   const [prodQueueError, setProdQueueError] = React.useState<string | null>(null);
+  const [pausedWorkOrders, setPausedWorkOrders] = React.useState<PausedWorkOrderRow[] | null>(null);
+  const [pausedWorkOrdersError, setPausedWorkOrdersError] = React.useState<string | null>(null);
   const [qcQueue, setQcQueue] = React.useState<QcQueueRow[] | null>(null);
   const [qcQueueError, setQcQueueError] = React.useState<string | null>(null);
   const [rmRisk, setRmRisk] = React.useState<RmRiskRow[] | null>(null);
   const [rmRiskError, setRmRiskError] = React.useState<string | null>(null);
   const [purchaseSummary, setPurchaseSummary] = React.useState<PurchaseSummaryRow[] | null>(null);
   const [purchaseSummaryError, setPurchaseSummaryError] = React.useState<string | null>(null);
+  const [woPrepareQueues, setWoPrepareQueues] = React.useState<WoPrepareDashboardQueues | null>(null);
+  const [procurementPending, setProcurementPending] = React.useState<ProcurementPendingRow[] | null>(null);
+  const [storeIssuePending, setStoreIssuePending] = React.useState<ProcurementPendingRow[] | null>(null);
+  const [allocationFirstPending, setAllocationFirstPending] = React.useState<any[] | null>(null);
   const [dispQueues, setDispQueues] = React.useState<DashboardDispQueues | null>(null);
   const [continueWorking, setContinueWorking] = React.useState<ContinueWorkingRow[] | null>(null);
   const [continueWorkingError, setContinueWorkingError] = React.useState<string | null>(null);
   const [dashboardRsPrepareSoId, setDashboardRsPrepareSoId] = React.useState<number | null>(null);
+  const [noQtyCycleHistoryTarget, setNoQtyCycleHistoryTarget] = React.useState<OpenNoQtyContinuationRow | null>(
+    null,
+  );
   const [salesOrdersForDashboard, setSalesOrdersForDashboard] = React.useState<DashboardSalesOrderHead[] | null>(null);
   const [quotationsPendingSo, setQuotationsPendingSo] = React.useState<QuotationPendingSoRow[] | null>(null);
   const [quotationsPendingSoError, setQuotationsPendingSoError] = React.useState<string | null>(null);
@@ -604,10 +644,15 @@ export function DashboardPage() {
     }
     if (!canViewDispatchBacklog) setBacklog([]);
     if (!canViewProductionQueue) setProdQueue([]);
-    if (!canViewQcQueue) setQcQueue([]);
+    if (!canViewProductionQueue) setPausedWorkOrders([]);
+    if (!canViewProductionQaQueue) setQcQueue([]);
     if (!canViewRmRisk) setRmRisk([]);
     if (!canViewPurchaseSummary) setPurchaseSummary([]);
-    if (!canViewQcQueue)
+    if (!canViewWoPrepareQueues) {
+      setWoPrepareQueues(null);
+      setProcurementPending(null);
+    }
+    if (!canViewProductionQaQueue)
       setDispQueues({
         reworkPendingSupervisor: [],
         reworkApprovedPendingExecution: [],
@@ -618,9 +663,10 @@ export function DashboardPage() {
   }, [
     canViewDispatchBacklog,
     canViewProductionQueue,
-    canViewQcQueue,
+    canViewProductionQaQueue,
     canViewRmRisk,
     canViewPurchaseSummary,
+    canViewWoPrepareQueues,
     canViewContinueWorking,
     canViewQuotationsPendingSo,
   ]);
@@ -713,9 +759,25 @@ export function DashboardPage() {
             setProdQueueError(e instanceof Error ? e.message : "Failed to load production queue");
           }
         });
+
+      apiFetch<PausedWorkOrderRow[]>("/api/dashboard/paused-work-orders")
+        .then((rows) => {
+          if (mounted) {
+            setPausedWorkOrders(Array.isArray(rows) ? rows : []);
+            setPausedWorkOrdersError(null);
+          }
+        })
+        .catch((e) => {
+          if (mounted) {
+            setPausedWorkOrders([]);
+            setPausedWorkOrdersError(
+              e instanceof Error ? e.message : "Failed to load paused work orders",
+            );
+          }
+        });
     }
 
-    if (canViewQcQueue) {
+    if (canViewProductionQaQueue) {
       apiFetch<QcQueueRow[]>("/api/dashboard/qc-queue")
         .then((rows) => {
           if (mounted) {
@@ -778,6 +840,54 @@ export function DashboardPage() {
         });
     }
 
+    if (canViewWoPrepareQueues) {
+      apiFetch<{
+        rows: ProcurementPendingRow[];
+        storeIssuePending?: ProcurementPendingRow[];
+        allocationFirstPending?: Array<{
+          workOrderId?: number | null;
+          workOrderNo?: string | null;
+          salesOrderId?: number | null;
+          salesOrderDocNo?: string | null;
+          primaryFgName?: string | null;
+          operationalKey?: string;
+          operationalLabel?: string;
+          nextActionKey?: string;
+        }>;
+      }>(
+        "/api/dashboard/procurement-pending",
+      )
+        .then((res) => {
+          if (mounted) {
+            setProcurementPending(res.rows ?? []);
+            setStoreIssuePending(res.storeIssuePending ?? []);
+            setAllocationFirstPending(res.allocationFirstPending ?? []);
+          }
+        })
+        .catch((e) => {
+          console.warn("Dashboard procurement-pending fetch failed", e);
+          if (mounted) {
+            setProcurementPending([]);
+            setStoreIssuePending([]);
+            setAllocationFirstPending([]);
+          }
+        });
+      apiFetch<WoPrepareDashboardQueues>("/api/dashboard/wo-prepare-queues")
+        .then((rows) => {
+          if (mounted) setWoPrepareQueues(rows);
+        })
+        .catch((e) => {
+          console.warn("Dashboard wo-prepare-queues fetch failed", e);
+          if (mounted) {
+            setWoPrepareQueues({
+              rmShortageBlocking: [],
+              purchaseGrnPending: [],
+              readyForWoCreation: [],
+            });
+          }
+        });
+    }
+
     if (canViewQuotationsPendingSo) {
       apiFetch<unknown[]>("/api/dashboard/quotations-pending-so?limit=25")
         .then((rows) => {
@@ -809,9 +919,10 @@ export function DashboardPage() {
     canViewOverallSummary,
     canViewDispatchBacklog,
     canViewProductionQueue,
-    canViewQcQueue,
+    canViewProductionQaQueue,
     canViewRmRisk,
     canViewPurchaseSummary,
+    canViewWoPrepareQueues,
     canViewContinueWorking,
     canViewQuotationsPendingSo,
     liveTick,
@@ -965,13 +1076,25 @@ export function DashboardPage() {
   const noQtyPlanningEnrichInputs = React.useMemo(() => {
     return openNoQtyContinuationRows.map((row) => {
       const flow = noQtyFlowBySo[row.salesOrderId];
+      const ownerCycleId =
+        row.noQtyPlanningPointerAhead &&
+        row.planningPointerCycleId != null &&
+        Number(row.planningPointerCycleId) > 0
+          ? Number(row.planningPointerCycleId)
+          : row.cycleId;
+      const ownerCycleNo =
+        row.noQtyPlanningPointerAhead &&
+        row.planningPointerCycleNo != null &&
+        Number.isFinite(Number(row.planningPointerCycleNo))
+          ? Number(row.planningPointerCycleNo)
+          : row.cycleNo;
       return {
         salesOrderId: row.salesOrderId,
         salesOrderDocNo: row.salesOrderDocNo,
         customerName: row.customerName,
         itemName: row.customerName,
-        cycleNo: row.cycleNo,
-        cycleId: row.cycleId,
+        cycleNo: ownerCycleNo,
+        cycleId: ownerCycleId,
         createNextRsEligible: Boolean(flow?.createNextRsEligible),
         lastShortageQty: row.lastShortageQty ?? null,
       };
@@ -985,7 +1108,7 @@ export function DashboardPage() {
             partitionContinueWorkingForActions(dedupeContinueWorkingBySalesOrder(continueWorking), { role }),
           )
         : buildActionRequiredFromQueues(
-            canViewQcQueue ? qcQueue : null,
+            canViewProductionQaQueue ? qcQueue : null,
             canViewDispatchBacklog ? backlog : null,
             canViewProductionQueue ? prodQueue : null,
             { role },
@@ -994,7 +1117,7 @@ export function DashboardPage() {
   }, [
     canViewContinueWorking,
     continueWorking,
-    canViewQcQueue,
+    canViewProductionQaQueue,
     qcQueue,
     canViewDispatchBacklog,
     backlog,
@@ -1009,26 +1132,53 @@ export function DashboardPage() {
     [actionRequiredGroups],
   );
 
+  /** QC-backed optional dispatch headroom per NO_QTY SO (informational chip only ? not Action Required). */
+  const noQtyOptionalDispatchBySo = React.useMemo(
+    () => aggregateNoQtyOptionalDispatchBySo(prodQueue),
+    [prodQueue],
+  );
+
+  /**
+   * Commercial continuation rows visible on the Planning Dashboard.
+   *
+   * Business rule (FINAL): for an OPEN NO_QTY sales order, ADMIN and SALES
+   * must continue to see the Next RS / Open Draft RS continuation row
+   * **independently** of the operational queues (Production / QC /
+   * Dispatch / RM). NO_QTY continuation is a commercial planning workflow;
+   * shop-floor queues live in their own cards on the same dashboard
+   * column. Therefore:
+   *
+   *   ? we resolve in `commercialContinuation: true` mode ? SALES/ADMIN
+   *     always land on a planning action;
+   *   ? we do **not** gate on `createNextRsEligible` here ? the actual
+   *     eligibility check is deferred to `prepareNoQtyNextRsAndNavigate`
+   *     at click time so the row remains visible across the entire
+   *     between-cycles / planning-pending lifetime of the SO.
+   *
+   * Non-planning viewers (STORE / PRODUCTION / QC / DISPATCH) still see
+   * only rows whose resolved action is relevant to their role.
+   */
   const visibleOpenNoQtyContinuationRows = React.useMemo(() => {
     if (!hasNoQtyContinuationInActionRequired) return [] as OpenNoQtyContinuationRow[];
     return openNoQtyContinuationRows.filter((row) => {
       const flow = noQtyFlowBySo[row.salesOrderId] ?? null;
+      const ownerCycleId =
+        row.noQtyPlanningPointerAhead &&
+        row.planningPointerCycleId != null &&
+        Number(row.planningPointerCycleId) > 0
+          ? Number(row.planningPointerCycleId)
+          : row.cycleId;
       const resolved = resolveNoQtyDashboardContinuation({
         salesOrderId: row.salesOrderId,
-        cycleId: row.cycleId,
+        cycleId: ownerCycleId,
         latestRequirementSheetId: row.latestRequirementSheetId,
         lastRsStatus: row.lastRsStatus,
         flow,
         viewerRole: role,
+        commercialContinuation: true,
       });
       if (role !== "ADMIN" && !isNoQtyResolvedRelevantForRole(role, resolved)) return false;
       if (!isNoQtyDashboardPlanningRow(flow, resolved)) return false;
-      if (flow && !flow.createNextRsEligible) {
-        const rollingId =
-          flow.nextRollingRequirementSheetId != null && Number(flow.nextRollingRequirementSheetId) > 0;
-        const rowDraft = String(row.lastRsStatus ?? "").toUpperCase() === "DRAFT";
-        if (!rollingId && !rowDraft) return false;
-      }
       const label = resolved.kind === "prepare_next_rs" ? "Next RS" : resolved.label;
       if (shouldHideOpenNoQtyForActionRequired(row.salesOrderId, label, primaryActionBySo)) return false;
       return true;
@@ -1060,42 +1210,132 @@ export function DashboardPage() {
         { label: "Work orders", href: "/work-orders?from=dashboard" },
         { label: "Production", href: "/production?source=dashboard" },
       ];
-      if (canViewRmRisk) links.push({ label: "RM shortage", href: "/reports/rm-shortage?source=dashboard" });
+      if (canViewRmRisk) links.push({ label: "RM Control Center", href: rmControlCenterHref({ returnTo: "dashboard" }) });
       return links;
     }
-    if (role === "QC") {
+    if (role === "QA") {
       return [
-        { label: "QC workspace", href: "/qc-entry?source=dashboard" },
-        { label: "QC report", href: "/qc-report?source=dashboard" },
-        { label: "Dispatch", href: "/dispatch?source=dashboard" },
+        { label: PRODUCTION_QA_TERMS.WORKSPACE_NAV, href: "/qc-entry?source=dashboard" },
+        { label: "QA report", href: "/qc-report?source=dashboard" },
       ];
     }
-    if (role === "SALES") {
+    if (role === "PURCHASE") {
       return [
-        { label: "Sales orders", href: "/sales-orders?from=dashboard" },
-        { label: "Quotations", href: "/quotations?from=dashboard" },
+        { label: "Procurement workspace", href: "/procurement-planning?source=dashboard" },
+        { label: "RM purchase", href: "/rm-po-grn?source=dashboard" },
+        { label: "Purchase bills", href: "/purchase-bills?source=dashboard" },
+      ];
+    }
+    if (role === "STORE") {
+      return [
+        { label: "Dispatch", href: "/dispatch?source=dashboard" },
+        { label: "Material issue", href: "/material-issue?source=dashboard" },
+        { label: "Stock", href: "/stock?source=dashboard" },
       ];
     }
     if (role === "ADMIN") {
       return [
+        { label: "Sales orders", href: "/sales-orders?from=dashboard" },
+        { label: "Enquiries", href: "/enquiries?from=dashboard" },
         { label: "Dispatch", href: "/dispatch?source=dashboard" },
         { label: "Production", href: "/production?source=dashboard" },
-        { label: "QC", href: "/qc-entry?source=dashboard" },
       ];
     }
     return [];
   }, [role, canViewRmRisk]);
+
+  const allocationFirstWoIds = React.useMemo(() => {
+    const ids = new Set<number>();
+    for (const r of allocationFirstPending ?? []) {
+      const woId = Number((r as any)?.workOrderId ?? 0);
+      if (woId > 0) ids.add(woId);
+    }
+    for (const r of storeIssuePending ?? []) {
+      const woId = Number((r as any)?.workOrderId ?? 0);
+      if (woId > 0) ids.add(woId);
+    }
+    return ids;
+  }, [allocationFirstPending, storeIssuePending]);
+
+  const procurementPendingSecondary = React.useMemo(() => {
+    const rows = procurementPending ?? [];
+    if (!rows.length) return rows;
+    return rows.filter((r) => {
+      const woId = Number(r.workOrderId ?? 0);
+      if (woId > 0 && allocationFirstWoIds.has(woId)) return false;
+      return true;
+    });
+  }, [procurementPending, allocationFirstWoIds]);
+
+  const operationalBlockersReady =
+    !canViewWoPrepareQueues ||
+    (procurementPending !== null &&
+      storeIssuePending !== null &&
+      allocationFirstPending !== null &&
+      woPrepareQueues !== null);
+
+  const operationalSoActions = React.useMemo(() => {
+    if (!canViewWoPrepareQueues || !operationalBlockersReady) return [];
+    return buildOperationalSoActions(
+      procurementPendingSecondary,
+      woPrepareQueues,
+      storeIssuePending,
+      allocationFirstPending,
+    );
+  }, [
+    canViewWoPrepareQueues,
+    operationalBlockersReady,
+    procurementPendingSecondary,
+    woPrepareQueues,
+    storeIssuePending,
+    allocationFirstPending,
+  ]);
+
+  const hasOperationalBlockerCards = operationalSoActions.length > 0;
+
+  const operationalBlockerCoverage = React.useMemo(
+    () => coverageFromOperationalBlockers(operationalSoActions),
+    [operationalSoActions],
+  );
+
+  const rmRiskSecondary = React.useMemo(() => {
+    const rows = rmRisk ?? [];
+    if (!rows.length) return rows;
+    return rows.filter((r) => {
+      const woId = Number(r.workOrderId ?? 0);
+      if (woId > 0 && allocationFirstWoIds.has(woId)) return false;
+      return true;
+    });
+  }, [rmRisk, allocationFirstWoIds]);
 
   const prodAttention = React.useMemo(
     () => summarizeDashboardProductionAttention(prodQueue ?? []),
     [prodQueue],
   );
 
+  const prodWaitingForMaterial = React.useMemo(() => {
+    if (!prodQueue?.length) return { workOrderCount: 0, waitingStoreIssueCount: 0 };
+    const materialGates = new Set(["NO_PMR", "PMR_DRAFT_ONLY", "WAITING_STORE_ISSUE"]);
+    const woIds = new Set<number>();
+    const waitingStoreWoIds = new Set<number>();
+    for (const row of prodQueue) {
+      if (row.orderType === "NO_QTY") continue;
+      const gate = row.rmReadinessGate ?? null;
+      if (!gate || !materialGates.has(gate)) continue;
+      woIds.add(row.workOrderId);
+      if (gate === "WAITING_STORE_ISSUE") waitingStoreWoIds.add(row.workOrderId);
+    }
+    return {
+      workOrderCount: woIds.size,
+      waitingStoreIssueCount: waitingStoreWoIds.size,
+    };
+  }, [prodQueue]);
+
   const loading =
     (canViewOverallSummary && data === null && !error) ||
     (canViewDispatchBacklog && backlog === null) ||
     (canViewProductionQueue && prodQueue === null) ||
-    (canViewQcQueue && qcQueue === null) ||
+    (canViewProductionQaQueue && qcQueue === null) ||
     (canViewRmRisk && rmRisk === null) ||
     (canViewPurchaseSummary && purchaseSummary === null) ||
     (canViewContinueWorking && continueWorking === null);
@@ -1114,14 +1354,18 @@ export function DashboardPage() {
     return (
       <div className={DASH_SHELL}>
         <div className={DASH_MAX}>
-          <p className="text-sm text-slate-600">Loadingâ€¦</p>
+          <p className="text-sm text-slate-600">Loading?</p>
         </div>
       </div>
     );
   }
 
-  if (role === "ACCOUNTS") {
-    return <AccountsDashboardPage />;
+  if (role === "PURCHASE") {
+    return <PurchaseDashboardPage />;
+  }
+
+  if (role === "QA") {
+    return <QaDashboardPage />;
   }
 
   if (!hasAnyWidget) {
@@ -1156,9 +1400,16 @@ export function DashboardPage() {
   const salesBillRegular = salesBillActions.filter((r) => !isDashActionNoQty(r));
   const salesBillNoQty = salesBillActions.filter(isDashActionNoQty);
 
-  const qcBatchCount = canViewQcQueue ? (qcQueue?.length ?? 0) : 0;
+  const showProductionPendingRegularCard = shouldShowProductionPendingRegularControlCard({
+    woProdRegularSalesOrderIds: woProdRegular.map((r) => r.salesOrderId),
+    hasOperationalBlockerCards,
+    blockerCoverage: operationalBlockerCoverage,
+    prodQueue,
+  });
+
+  const qcBatchCount = canViewProductionQaQueue ? (qcQueue?.length ?? 0) : 0;
   const qcPendingTotalQty =
-    canViewQcQueue && qcQueue && qcQueue.length > 0
+    canViewProductionQaQueue && qcQueue && qcQueue.length > 0
       ? qcQueue.reduce((s, r) => s + Number(r.pendingQcQty ?? 0), 0)
       : 0;
   const qcPendingQtyDisplay =
@@ -1172,20 +1423,34 @@ export function DashboardPage() {
     canViewOverallSummary && data != null ? Number(data.pendingDispatchCount ?? 0) : 0;
   const rmRiskCount = canViewRmRisk ? (rmRisk?.length ?? 0) : 0;
   const purchaseLineCount = canViewPurchaseSummary ? (purchaseSummary?.length ?? 0) : 0;
+  const firstProcurementPending =
+    procurementPending?.find((r) => Number(r.workOrderId ?? 0) > 0 || Number(r.materialRequirementId ?? 0) > 0) ??
+    null;
+  const purchaseContinueHref = firstProcurementPending
+    ? rmControlCenterHref({
+        workOrderId: firstProcurementPending.workOrderId ?? undefined,
+        salesOrderId: firstProcurementPending.salesOrderId ?? undefined,
+        materialRequirementId: firstProcurementPending.materialRequirementId,
+        returnTo: "dashboard",
+      })
+    : rmControlCenterHref({ onlyBlocked: true, returnTo: "dashboard" });
 
   // Role-filtered attention check. A pending action only "counts" toward
   // the operations-attention banner when the current role can actually act
   // on it. Without this filter, a STORE user with a pending PRODUCTION
   // queue would see "operations not clear" yet have no visible action card.
   const hasOperationalQueueAttention =
-    (actionVisibility.canSeeRmShortageOperational && rmRiskCount > 0) ||
-    (actionVisibility.canShowQcCards && canViewQcQueue && qcWqHold > 0) ||
-    (actionVisibility.canShowQcCards && canViewQcQueue && qcWqLegacy > 0) ||
-    (actionVisibility.canShowQcCards && canViewQcQueue && qcWqRework > 0) ||
-    (actionVisibility.canShowQcCards && canViewQcQueue && qcBatchCount > 0) ||
-    (actionVisibility.canShowQcCards && actionRequiredGroups.qc.length > 0) ||
+    (canViewWoPrepareQueues && hasOperationalBlockerCards) ||
+    hasSoWoRmBlockerAttention(rmRiskCount, actionVisibility.canSeeRmShortageOperational) ||
+    (actionVisibility.canShowProductionQaCards && canViewProductionQaQueue && qcWqHold > 0) ||
+    (actionVisibility.canShowProductionQaCards && canViewProductionQaQueue && qcWqLegacy > 0) ||
+    (actionVisibility.canShowProductionQaCards && canViewProductionQaQueue && qcWqRework > 0) ||
+    (actionVisibility.canShowProductionQaCards && canViewProductionQaQueue && qcBatchCount > 0) ||
+    (actionVisibility.canShowProductionQaCards && actionRequiredGroups.qc.length > 0) ||
     (actionVisibility.canShowDispatchCards && actionRequiredGroups.dispatch.length > 0) ||
-    (actionVisibility.canShowProductionCards && woProdRegular.length > 0) ||
+    (actionVisibility.canShowProductionCards && showProductionPendingRegularCard) ||
+    (actionVisibility.canShowProductionCards &&
+      prodWaitingForMaterial.workOrderCount > 0) ||
     (actionVisibility.canShowProductionCards &&
       role === "PRODUCTION" &&
       woProdNoQtyEligible.length > 0) ||
@@ -1195,8 +1460,7 @@ export function DashboardPage() {
     (actionVisibility.canShowPurchaseCards && purchaseLineCount > 0) ||
     (canViewOverallSummary &&
       data != null &&
-      ((actionVisibility.canSeeRmShortageOperational && data.rmStockAlert.length > 0) ||
-        (actionVisibility.canShowDispatchCards && data.pendingDispatchCount > 0) ||
+      ((actionVisibility.canShowDispatchCards && data.pendingDispatchCount > 0) ||
         (actionVisibility.canShowEnquiryCards && data.openEnquiries > 0))) ||
     (actionVisibility.canShowQuotationPendingSoCards &&
       quotationsPendingSo != null &&
@@ -1219,7 +1483,7 @@ export function DashboardPage() {
   const opsQueuesReady =
     (!canViewDispatchBacklog || backlog !== null) &&
     (!canViewProductionQueue || prodQueue !== null) &&
-    (!canViewQcQueue || qcQueue !== null) &&
+    (!canViewProductionQaQueue || qcQueue !== null) &&
     (!canViewRmRisk || rmRisk !== null) &&
     (!canViewPurchaseSummary || purchaseSummary !== null);
 
@@ -1234,7 +1498,7 @@ export function DashboardPage() {
   const userHasOperationalSummaryWidgets =
     canViewDispatchBacklog ||
     canViewProductionQueue ||
-    canViewQcQueue ||
+    canViewProductionQaQueue ||
     canViewRmRisk ||
     canViewPurchaseSummary ||
     (canViewOverallSummary && !!data);
@@ -1244,9 +1508,11 @@ export function DashboardPage() {
     userHasOperationalSummaryWidgets &&
     opsQueuesReady &&
     noOperationalFetchErrors &&
-    opsAttentionClear;
-
-  const dashboardQuietMode = showOperationsClearStrip;
+    opsAttentionClear &&
+    // Phase B: Operations are not "clear" while any allocation/issue blockers exist.
+    (allocationFirstPending?.length ?? 0) === 0 &&
+    (storeIssuePending?.length ?? 0) === 0 &&
+    (!canViewWoPrepareQueues || (operationalBlockersReady && !hasOperationalBlockerCards));
 
   const prodWoNeedsActionCount =
     canViewProductionQueue && prodQueue != null ? prodAttention.activeWorkOrderCount : 0;
@@ -1258,12 +1524,6 @@ export function DashboardPage() {
 
   const showRoleKpiStrip =
     !demo.enabled && !canViewOverallSummary && opsQueuesReady && noOperationalFetchErrors;
-
-  const inventorySnapshotBothClear =
-    data != null && data.fgStock.length === 0 && data.rmStockAlert.length === 0;
-
-  const showInventorySnapshot =
-    canViewOverallSummary && data != null && !(dashboardQuietMode && inventorySnapshotBothClear);
 
   const qcRejMetricTone: "muted" | "warn" | "crit" =
     data == null || data.qcRejectionPct <= 0 ? "muted" : data.qcRejectionPct >= 12 ? "crit" : "warn";
@@ -1289,10 +1549,8 @@ export function DashboardPage() {
   const regularFlowDashAlertNodes: React.ReactNode[] = [];
   const noQtyFlowDashAlertNodes: React.ReactNode[] = [];
 
-  const dashActionGrid = "grid gap-1 grid-cols-1 sm:grid-cols-2";
+  const dashActionGrid = "flex flex-col gap-1.5";
   const dashCommercialGrid = "grid gap-1 grid-cols-1";
-  const dashFlowSectionLabel = "text-[11px] font-bold uppercase tracking-wider text-slate-800";
-  const dashFlowSectionLabelNoQty = "text-[11px] font-bold uppercase tracking-wider text-slate-900";
 
   const noQtyContinuationRowsCapped = visibleOpenNoQtyContinuationRows.slice(0, DASH_NO_QTY_CONTINUATION_CAP);
   const noQtyContinuationTruncated =
@@ -1300,34 +1558,62 @@ export function DashboardPage() {
   const commercialQuotationsCapped = visibleQuotationsPendingSo.slice(0, DASH_COMMERCIAL_QUOTE_CAP);
   const commercialQuotationsTruncated = visibleQuotationsPendingSo.length > DASH_COMMERCIAL_QUOTE_CAP;
 
-  if (actionVisibility.canSeeRmShortageOperational && canViewRmRisk && rmRisk != null && rmRisk.length > 0) {
+  if (!phaseEOperatorFlow && actionVisibility.canSeeRmShortageOperational && canViewRmRisk && rmRisk != null && rmRisk.length > 0) {
+    // Avoid duplicate RM shortage CTAs: Store/admin see the deduped Operational Blockers list.
+    const showRmBlockedWoCard = !canViewWoPrepareQueues;
     const blockedWoLines = rmRisk.length;
     const affectedItemCount = new Set(rmRisk.map((r) => r.itemId)).size;
     const rmSeverity: "blocker" | "approval" = blockedWoLines >= 3 ? "blocker" : "approval";
     const rmBase =
       affectedItemCount > 0 && affectedItemCount !== blockedWoLines
-        ? `${blockedWoLines} WO line(s) blocked Â· ${affectedItemCount} item(s) short`
+        ? `${blockedWoLines} WO line(s) blocked ? ${affectedItemCount} item(s) short`
         : `${blockedWoLines} WO line(s) blocked on material`;
 
-    if (actionVisibility.canActOnRmShortageProcurement) {
-      const rmDetail = `${rmBase} â€” opens shortage planning workspace`;
+    if (showRmBlockedWoCard && actionVisibility.canActOnRmShortageProcurement) {
+      const firstRmBlocker = rmRisk.find((r) => r.workOrderId && r.itemId) ?? rmRisk[0];
+      const rmHref =
+        firstRmBlocker?.href ||
+        (firstRmBlocker?.workOrderId && firstRmBlocker?.itemId
+          ? rmControlCenterHref({
+              workOrderId: firstRmBlocker.workOrderId,
+              rmItemId: firstRmBlocker.itemId,
+              onlyBlocked: true,
+              returnTo: "dashboard",
+            })
+          : rmControlCenterHref({ onlyBlocked: true, returnTo: "dashboard" }));
       neutralDashAlertNodes.push(
         <OperationalDashCard
           key="rm-shortage-wo"
           tier={rmSeverity}
-          title="RM shortage â€” production blocked"
-          detail={rmDetail}
-          actionLabel="Open RM Shortage Workspace"
-          href="/reports/rm-shortage?source=dashboard"
+          title="RM blocked work orders"
+          detail={rmBase}
+          contextLine={
+            firstRmBlocker
+              ? [
+                  firstRmBlocker.workOrderNo,
+                  firstRmBlocker.salesOrderId
+                    ? displaySalesOrderNo(firstRmBlocker.salesOrderId, firstRmBlocker.salesOrderNo ?? null)
+                    : null,
+                  firstRmBlocker.fgItemName,
+                ]
+                  .filter(Boolean)
+                  .join(" ? ")
+              : undefined
+          }
+          blockerReason={firstRmBlocker?.blockerReason ?? rmBase}
+          owner="Store Department"
+          nextAction="Approve requisition / continue resolution"
+          actionLabel="Continue RM Resolution"
+          href={rmHref}
         />,
       );
-    } else {
+    } else if (showRmBlockedWoCard && role !== "PRODUCTION") {
       neutralDashAlertNodes.push(
         <OperationalDashCard
           key="rm-shortage-wo-readonly"
           readOnly
           tier={rmSeverity}
-          title="RM shortage blocking production"
+          title="RM blocked work orders"
           detail={rmBase}
           readOnlyHint="Contact Material Planning (Store). RM POs are not created from Production."
         />,
@@ -1336,21 +1622,116 @@ export function DashboardPage() {
   }
 
   if (
+    prodWaitingForMaterial.workOrderCount > 0 &&
+    !canViewWoPrepareQueues &&
+    (role === "PRODUCTION" || role === "STORE" || role === "ADMIN")
+  ) {
+    const woCount = prodWaitingForMaterial.waitingStoreIssueCount || prodWaitingForMaterial.workOrderCount;
+    const woWord = woCount === 1 ? "work order" : "work orders";
+    const waitingDetail =
+      prodWaitingForMaterial.waitingStoreIssueCount > 0
+        ? `${prodWaitingForMaterial.waitingStoreIssueCount} ${woWord} waiting for Store issue.`
+        : `${prodWaitingForMaterial.workOrderCount} ${woWord} need material before production can continue.`;
+    const firstWaitingWo = prodQueue?.find((row) => {
+      if (row.orderType === "NO_QTY") return false;
+      const gate = row.rmReadinessGate ?? null;
+      return gate === "WAITING_STORE_ISSUE" || gate === "NO_PMR" || gate === "PMR_DRAFT_ONLY";
+    });
+    const waitingGate = firstWaitingWo?.rmReadinessGate ?? null;
+    const woId = firstWaitingWo?.workOrderId ?? 0;
+    const isProductionRole = role === "PRODUCTION";
+    let materialHref: string;
+    let actionLabel: string;
+
+    if (isProductionRole) {
+      if (waitingGate === "WAITING_STORE_ISSUE" && woId > 0) {
+        materialHref = productionWorkspaceHref(woId);
+        actionLabel = "Open Production Workspace";
+      } else if ((waitingGate === "NO_PMR" || waitingGate === "PMR_DRAFT_ONLY") && woId > 0) {
+        materialHref = rmControlCenterHref({ workOrderId: woId, returnTo: "dashboard" });
+        actionLabel = "Open Store RM Workspace";
+      } else if (woId > 0) {
+        const gate =
+          waitingGate === "NO_PMR" || waitingGate === "PMR_DRAFT_ONLY" || waitingGate === "WAITING_STORE_ISSUE"
+            ? waitingGate
+            : null;
+        materialHref = productionMaterialBlockedHref({ workOrderId: woId, gate, returnTo: "dashboard" });
+        actionLabel = "Open Production Workspace";
+      } else {
+        materialHref = rmControlCenterHref({ onlyBlocked: true, returnTo: "dashboard" });
+        actionLabel = "Continue RM Resolution";
+      }
+    } else if (woId > 0) {
+      materialHref = rmControlCenterHref({ workOrderId: woId, returnTo: "dashboard" });
+      actionLabel = "Continue RM Resolution";
+    } else {
+      materialHref = rmControlCenterHref({ onlyBlocked: true, returnTo: "dashboard" });
+      actionLabel = "Continue RM Resolution";
+    }
+
+    neutralDashAlertNodes.push(
+      <OperationalDashCard
+        key="prod-waiting-material"
+        tier="approval"
+        title={
+          prodWaitingForMaterial.waitingStoreIssueCount > 0
+            ? "Production blocked ? waiting for store issue"
+            : "Production blocked ? waiting for RM issue"
+        }
+        detail={waitingDetail}
+        blockerReason={waitingDetail}
+        owner={isProductionRole ? "Production" : "Store Department"}
+        nextAction={
+          prodWaitingForMaterial.waitingStoreIssueCount > 0
+            ? "Waiting for store issue"
+            : isProductionRole
+              ? "Material request pending"
+              : "RM resolution pending"
+        }
+        actionLabel={actionLabel}
+        href={materialHref}
+      />,
+    );
+  }
+
+  const hasRmBlockedWoCard =
+    actionVisibility.canSeeRmShortageOperational && canViewRmRisk && rmRisk != null && rmRisk.length > 0;
+
+  if (
     actionVisibility.canSeeRmShortageOperational &&
     role !== "PRODUCTION" &&
     canViewOverallSummary &&
     data != null &&
-    data.rmStockAlert.length > 0
+    !hasRmBlockedWoCard &&
+    (data.rmStockCriticalCount ?? data.rmStockCritical?.length ?? 0) +
+      (data.rmStockWarningCount ?? data.rmStockWarning?.length ?? 0) >
+      0
   ) {
+    const crit = data.rmStockCriticalCount ?? data.rmStockCritical?.length ?? 0;
+    const warn = data.rmStockWarningCount ?? data.rmStockWarning?.length ?? 0;
+    const bannerText = formatRmStockAlertBanner(crit, warn);
     neutralDashAlertNodes.push(
-      <OperationalDashCard
+      <div
         key="rm-below-min"
-        tier="blocker"
-        title="RM below minimum stock"
-        detail={`${data.rmStockAlert.length} item(s) under policy minimum`}
-        actionLabel={REGULAR_TERMS.REVIEW_RM_STATUS}
-        href="/stock?source=dashboard"
-      />,
+        className={cn(
+          "flex flex-wrap items-center justify-between gap-2 rounded-md border px-2.5 py-1.5",
+          crit > 0 ? "border-red-200/70 bg-red-50/45" : "border-amber-200/70 bg-amber-50/45",
+        )}
+      >
+        <div className="min-w-0">
+          <span className="text-[12px] font-semibold text-slate-900">
+            {bannerText ?? "Stock replenishment alert"}
+          </span>
+          <p className="mt-0.5 text-[11px] text-slate-600">{REGULAR_TERMS.DASHBOARD_STOCK_REPLENISHMENT_TOOLTIP}</p>
+        </div>
+        <Link
+          to="/stock?source=dashboard"
+          state={{ from: "dashboard" }}
+          className={cn(buttonVariants({ variant: "outline", size: "sm" }), "h-8 shrink-0 text-[11px] no-underline")}
+        >
+          {REGULAR_TERMS.REVIEW_RM_STATUS}
+        </Link>
+      </div>,
     );
   }
 
@@ -1359,7 +1740,7 @@ export function DashboardPage() {
       <OperationalDashCard
         key="next-rs"
         tier="supply"
-        title="Regular flow â€” next requirement sheet"
+        title="Regular flow ? next requirement sheet"
         detail={`${actionRequiredGroups.nextRs.length} regular order line(s) await the next RS before production`}
         actionLabel="Open Production Queue"
         href="/production?source=dashboard"
@@ -1367,68 +1748,68 @@ export function DashboardPage() {
     );
   }
 
-  if (actionVisibility.canShowQcCards && canViewQcQueue && qcWqHold > 0) {
+  if (actionVisibility.canShowProductionQaCards && canViewProductionQaQueue && qcWqHold > 0) {
     neutralDashAlertNodes.push(
       <OperationalDashCard
         key="qc-hold"
         tier="approval"
-        title="QC hold decisions"
-        detail={`${qcWqHold} disposition(s) need a decision`}
-        actionLabel="Open Hold Queue"
+        title={PRODUCTION_QA_TERMS.QA_BLOCKED_HOLD}
+        detail={`${qcWqHold} disposition(s) need a hold decision`}
+        actionLabel={PRODUCTION_QA_TERMS.OPEN_PRODUCTION_QA}
         href="/qc-entry?source=dashboard#qc-hold-decisions"
       />,
     );
   }
 
-  if (actionVisibility.canShowQcCards && canViewQcQueue && qcWqLegacy > 0) {
+  if (actionVisibility.canShowProductionQaCards && canViewProductionQaQueue && qcWqLegacy > 0) {
     neutralDashAlertNodes.push(
       <OperationalDashCard
         key="qc-legacy"
         tier="approval"
-        title="Legacy rework approval"
-        detail={`${qcWqLegacy} record(s) need supervisor sign-off`}
-        actionLabel="Open Supervisor Queue"
+        title={PRODUCTION_QA_TERMS.QA_BLOCKED_REWORK_APPROVAL}
+        detail={`${qcWqLegacy} record(s) need production rework approval`}
+        actionLabel={PRODUCTION_QA_TERMS.OPEN_PRODUCTION_QA}
         href="/qc-entry?source=dashboard#qc-rework-supervisor"
       />,
     );
   }
 
-  if (actionVisibility.canShowQcCards && canViewQcQueue && qcBatchCount > 0) {
+  if (actionVisibility.canShowProductionQaCards && canViewProductionQaQueue && qcBatchCount > 0) {
     const batchWord = qcBatchCount === 1 ? "batch" : "batches";
     neutralDashAlertNodes.push(
       <OperationalDashCard
         key="qc-batch"
         tier="ready"
-        title="QC inspection pending"
-        detail={`${qcBatchCount} production ${batchWord} awaiting QC Â· ${qcPendingQtyDisplay} qty`}
-        actionLabel="Open QC Workspace"
+        title={PRODUCTION_QA_TERMS.QA_BLOCKED_BATCHES}
+        detail={`${qcBatchCount} production ${batchWord} ? ${qcPendingQtyDisplay} qty ${PRODUCTION_QA_TERMS.QA_IN_PROGRESS.toLowerCase()}`}
+        actionLabel={PRODUCTION_QA_TERMS.OPEN_PRODUCTION_QA}
         href="/qc-entry?source=dashboard#qc-production-pending"
       />,
     );
   }
 
-  if (actionVisibility.canShowQcCards && canViewQcQueue && qcWqRework > 0) {
+  if (actionVisibility.canShowProductionQaCards && canViewProductionQaQueue && qcWqRework > 0) {
     neutralDashAlertNodes.push(
       <OperationalDashCard
         key="qc-rework"
         tier="ready"
-        title="Rework QC pending"
-        detail={`${qcWqRework} rework line(s) await final QC`}
-        actionLabel="Open Rework QC"
+        title={PRODUCTION_QA_TERMS.QA_BLOCKED_RECHECK}
+        detail={`${qcWqRework} rework line(s) await QA review`}
+        actionLabel={PRODUCTION_QA_TERMS.OPEN_PRODUCTION_QA}
         href="/qc-entry?source=dashboard#qc-rework-pending"
       />,
     );
   }
 
-  if (actionVisibility.canShowProductionCards && woProdRegular.length > 0) {
+  if (actionVisibility.canShowProductionCards && showProductionPendingRegularCard) {
     regularFlowDashAlertNodes.push(
       <OperationalDashCard
         key="wo-prod-regular"
         tier="ready"
-        title="Production pending â€” regular SO(s)"
+        title="Production pending ? regular SO(s)"
         detail={`${woProdRegular.length} regular WO line(s) still on the shop floor`}
-        actionLabel="Continue Production"
-        href="/production?source=dashboard"
+        actionLabel="Open Production Workspace"
+        href={woProdRegular[0]?.href ?? "/production?source=dashboard"}
       />,
     );
   }
@@ -1451,9 +1832,9 @@ export function DashboardPage() {
         <OperationalDashCard
           key={`wo-prod-no-qty-${prodRow.key}`}
           tier="ready"
-          title="NO_QTY · Production"
-          detail={`${soLabel} · ${prodRow.customerName} · Balance: ${qtyLabel}`}
-          actionLabel="Continue Production"
+          title="NO_QTY ? Production ready"
+          detail={`${soLabel} ? ${prodRow.customerName} ? Balance: ${qtyLabel}`}
+          actionLabel="Open Production Workspace"
           href={prodHref}
         />,
       );
@@ -1465,10 +1846,10 @@ export function DashboardPage() {
       <OperationalDashCard
         key="sales-bill-regular"
         tier="ready"
-        title="Sales bill pending â€” regular"
+        title="Sales bill pending ? regular"
         detail={`${salesBillRegular.length} regular line(s) ready to invoice`}
-        actionLabel="Open Sales Bills"
-        href="/sales-bills?source=dashboard"
+        actionLabel="Open Sales Bill Workspace"
+        href={salesBillRegular[0]?.href ?? "/sales-bills?source=dashboard"}
       />,
     );
   }
@@ -1478,10 +1859,10 @@ export function DashboardPage() {
       <OperationalDashCard
         key="sales-bill-no-qty"
         tier="ready"
-        title="Sales bill pending â€” NO_QTY"
+        title="Sales bill pending ? NO_QTY"
         detail={`${salesBillNoQty.length} NO_QTY cycle line(s) ready to invoice`}
-        actionLabel="Open NO_QTY Sales Bills"
-        href="/sales-bills?source=dashboard"
+        actionLabel="Open Sales Bill Workspace"
+        href={salesBillNoQty[0]?.href ?? "/sales-bills?source=dashboard"}
       />,
     );
   }
@@ -1508,15 +1889,15 @@ export function DashboardPage() {
                 ? "Regular"
                 : String(d.orderType);
         const detail = isNoQty
-          ? `${soLabel} Â· ${d.customerName} Â· ${d.itemName} Â· NO_QTY Â· Dispatch available: ${qtyLabel}`
-          : `${soLabel} Â· ${d.customerName} Â· ${d.itemName} Â· ${qtyLabel} ready Â· ${ot}`;
+          ? `${soLabel} ? ${d.customerName} ? ${d.itemName} ? NO_QTY ? Dispatch available: ${qtyLabel}`
+          : `${soLabel} ? ${d.customerName} ? ${d.itemName} ? ${qtyLabel} ready ? ${ot}`;
         const card = (
           <OperationalDashCard
             key={`store-dispatch-${d.key}`}
             tier="ready"
-            title={isNoQty ? "NO_QTY Â· Dispatch available" : "Optional dispatch available"}
-            detail={`${detail} Â· Store-owned dispatch`}
-            actionLabel="Open Dispatch"
+            title={isNoQty ? "Waiting for dispatch ? NO_QTY" : "Waiting for dispatch"}
+            detail={`${detail} ? Store-owned dispatch`}
+            actionLabel="Open Dispatch Workspace"
             href={d.href}
           />
         );
@@ -1528,9 +1909,9 @@ export function DashboardPage() {
         <OperationalDashCard
           key="dispatch-prep"
           tier="ready"
-          title="Dispatch prep (all flows)"
+          title="Waiting for dispatch ? all flows"
           detail={`${prepLines} line(s) still in dispatch prep`}
-          actionLabel="Open Dispatch"
+          actionLabel="Open Dispatch Workspace"
           href="/dispatch?source=dashboard"
         />,
       );
@@ -1540,17 +1921,17 @@ export function DashboardPage() {
         if (prepLines > 0) {
           dRegular +=
             dispatchDashNoQty.length > 0
-              ? ` Â· ${prepLines} line(s) in dispatch prep (all SO types)`
-              : ` Â· ${prepLines} line(s) still in dispatch prep`;
+              ? ` ? ${prepLines} line(s) in dispatch prep (all SO types)`
+              : ` ? ${prepLines} line(s) still in dispatch prep`;
         }
         regularFlowDashAlertNodes.push(
           <OperationalDashCard
             key="dispatch-regular"
             tier="ready"
-            title="Dispatch queue â€” regular SO(s)"
+            title="Waiting for dispatch ? regular SO(s)"
             detail={dRegular}
-            actionLabel="Open Regular Dispatch"
-            href="/dispatch?source=dashboard"
+            actionLabel="Open Dispatch Workspace"
+            href={dispatchDashRegular[0]?.href ?? "/dispatch?source=dashboard"}
           />,
         );
       }
@@ -1562,10 +1943,10 @@ export function DashboardPage() {
       <OperationalDashCard
         key="purchase"
         tier="supply"
-        title="Purchase receipts pending"
+        title="Procurement blocked ? waiting for GRN"
         detail={`${purchaseLineCount} PO line(s) awaiting GRN`}
-        actionLabel="Open Material Planning"
-        href="/rm-po-grn?source=dashboard"
+        actionLabel="Continue RM Resolution"
+        href={purchaseContinueHref}
       />,
     );
   }
@@ -1578,8 +1959,8 @@ export function DashboardPage() {
         <OperationalDashCard
           key={row.key}
           tier="approval"
-          title={`${row.quotationNo} · ${row.customerName}`}
-          detail={`${flowLabel} · Next step: ${row.nextStep}`}
+          title={`${row.quotationNo} ? ${row.customerName}`}
+          detail={`${flowLabel} ? Next step: ${row.nextStep}`}
           actionLabel="Continue"
           href={row.href}
         />,
@@ -1604,10 +1985,17 @@ export function DashboardPage() {
     regularFlowDashAlertNodes.length > 0 ||
     noQtyFlowDashAlertNodes.length > 0;
 
-  const operationalActionCardsPresent =
-    operationalDashGroupsPresent || hasVisibleNoQtyContinuation;
+  const operationalControlHasContent = operationalControlColumnHasContent({
+    neutralCardCount: neutralDashAlertNodes.length,
+    regularCardCount: regularFlowDashAlertNodes.length,
+    noQtyCardCount: noQtyFlowDashAlertNodes.length,
+    hasVisibleNoQtyContinuation,
+  });
 
-  if ((role === "STORE" || role === "DISPATCH") && !demo.enabled) {
+  const operationalActionCardsPresent =
+    operationalDashGroupsPresent || hasVisibleNoQtyContinuation || hasOperationalBlockerCards;
+
+  if (role === "STORE" && !demo.enabled) {
     const storeDispatchReady: StoreDispatchActionRow[] = actionRequiredGroups.dispatch.map((d) => ({
       key: d.key,
       salesOrderId: d.salesOrderId,
@@ -1618,43 +2006,22 @@ export function DashboardPage() {
       metricQty: d.metricQty,
       href: d.href,
     }));
-    const storeBillingPending: StoreDispatchActionRow[] = salesBillActions.map((b) => ({
-      key: b.key,
-      salesOrderId: b.salesOrderId,
-      salesOrderDocNo: b.salesOrderDocNo,
-      customerName: b.customerName,
-      itemName: b.itemName,
-      orderType: b.orderType,
-      metricQty: b.metricQty,
-      href: b.href,
-    }));
     return (
       <StoreDispatchDashboard
-        summary={
-          data
-            ? {
-                fgStockTotalQty: fgStockTotal,
-                pendingDispatchCount: data.pendingDispatchCount,
-                purchasePending: data.purchasePending,
-                fgStock: data.fgStock,
-              }
-            : null
-        }
         dispatchReady={storeDispatchReady}
-        billingPending={storeBillingPending}
         backlogPreview={backlog ?? []}
-        purchaseLineCount={purchaseLineCount}
-        rmAlertCount={rmRiskCount}
+        fgStockTotal={fgStockTotal}
+        dispatchBacklogCount={backlog?.length ?? 0}
       />
     );
   }
 
   const operationalActionQueue =
-    showOperationalLeftPanel || showCommercialRightPanel ? (
+    (showOperationalLeftPanel || showCommercialRightPanel) && operationalControlHasContent ? (
     <DashboardControlColumn
       variant="operational"
       title="Operational Control"
-      subtitle="Factory execution · QC · dispatch · production"
+      subtitle="Factory execution ? production QA ? dispatch ? production"
       footer={
         noQtyContinuationTruncated ? (
           <DashboardViewAllLink href="/sales-orders?soType=NO_QTY&source=dashboard" label="View all NO_QTY orders" />
@@ -1665,16 +2032,10 @@ export function DashboardPage() {
             <div className={dashActionGrid}>{neutralDashAlertNodes}</div>
           ) : null}
           {regularFlowDashAlertNodes.length > 0 ? (
-            <div className="space-y-1">
-              <div className={dashFlowSectionLabel}>Regular flow Â· production & dispatch</div>
-              <div className={dashActionGrid}>{regularFlowDashAlertNodes}</div>
-            </div>
+            <div className={dashActionGrid}>{regularFlowDashAlertNodes}</div>
           ) : null}
           {noQtyFlowDashAlertNodes.length > 0 ? (
-            <div className="space-y-1">
-              <div className={dashFlowSectionLabelNoQty}>NO_QTY</div>
-              <div className={dashActionGrid}>{noQtyFlowDashAlertNodes}</div>
-            </div>
+            <div className={dashActionGrid}>{noQtyFlowDashAlertNodes}</div>
           ) : null}
 
           {hasVisibleNoQtyContinuation ? (
@@ -1698,6 +2059,7 @@ export function DashboardPage() {
                     lastRsStatus: row.lastRsStatus,
                     flow: flow ?? null,
                     viewerRole: role,
+                    commercialContinuation: true,
                   });
                   const busy =
                     resolved.kind === "prepare_next_rs" && dashboardRsPrepareSoId === row.salesOrderId;
@@ -1716,11 +2078,13 @@ export function DashboardPage() {
                         ? String(row.cycleNo)
                         : planCycleId != null && planCycleId > 0
                           ? `#${planCycleId}`
-                          : "â€”";
-                  const shortageQty =
-                    row.lastShortageQty != null && Number(row.lastShortageQty) > ROW_NUM_EPS
-                      ? Number(row.lastShortageQty)
-                      : null;
+                          : "?";
+                  const traceLine = buildNoQtyDashboardTraceLine({
+                    cycleNo: row.cycleNo,
+                    planningPointerCycleNo: row.planningPointerCycleNo,
+                    noQtyPlanningPointerAhead: row.noQtyPlanningPointerAhead,
+                    lastRsStatus: row.lastRsStatus,
+                  });
                   const evalCycleId =
                     row.cycleId != null && Number(row.cycleId) > 0 ? Number(row.cycleId) : null;
                   const showContinueProduction =
@@ -1740,6 +2104,49 @@ export function DashboardPage() {
                     Number.isFinite(Number(row.cycleNo))
                       ? String(row.cycleNo)
                       : cycleShown;
+                  /**
+                   * Commercial state badge ? independent of operational queues.
+                   * Mirrors the labels shown on the Sales Order screen so the
+                   * dashboard reads consistently with that workspace:
+                   *   ? Draft RS         ? `lastRsStatus === "DRAFT"`
+                   *   ? Between cycles   ? planning pointer ahead of doc cycle
+                   *                        (current cycle CLOSED, no active RS)
+                   *   ? Planning pending ? default while SO is OPEN and
+                   *                        commercial continuation is needed
+                   */
+                  const upperRsStatus = String(row.lastRsStatus ?? "").toUpperCase();
+                  const planningState: "draft" | "between" | "pending" =
+                    upperRsStatus === "DRAFT"
+                      ? "draft"
+                      : row.noQtyPlanningPointerAhead
+                        ? "between"
+                        : "pending";
+                  const planningStateLabel =
+                    planningState === "draft"
+                      ? "Draft RS"
+                      : planningState === "between"
+                        ? "Between cycles"
+                        : "Planning pending";
+                  const planningStateChipClass =
+                    planningState === "draft"
+                      ? "bg-amber-100 text-amber-900 ring-amber-200"
+                      : planningState === "between"
+                        ? "bg-blue-100 text-blue-900 ring-blue-200"
+                        : "bg-slate-100 text-slate-700 ring-slate-200";
+                  const closeSoHref = salesOrdersFocusHref(row.salesOrderId);
+                  const optionalDispatch = shouldShowNoQtyOptionalDispatchChip(
+                    row.salesOrderId,
+                    noQtyOptionalDispatchBySo,
+                    actionRequiredGroups,
+                    continueWorking,
+                  );
+                  const optionalDispatchHref = optionalDispatch
+                    ? buildDashboardDispatchHref({
+                        salesOrderId: row.salesOrderId,
+                        orderType: "NO_QTY",
+                        itemId: optionalDispatch.itemId,
+                      })
+                    : null;
                   return (
                     <li
                       key={`no-qty-cycle-${row.salesOrderId}-${planCycleId ?? "c"}-${cycleShown}`}
@@ -1752,24 +2159,46 @@ export function DashboardPage() {
                             {displaySalesOrderNo(row.salesOrderId, row.salesOrderDocNo)}
                           </span>
                           <span className="text-slate-400" aria-hidden>
-                            Â·
+                            ?
                           </span>
-                          <span className="font-semibold text-slate-800">Cycle {headerCycleShown}</span>
-                          <span className="text-slate-400" aria-hidden>
-                            Â·
-                          </span>
-                          <span className="font-medium text-slate-700">Next RS</span>
-                          {shortageQty != null ? (
+                          {!traceLine ? (
                             <>
+                              <span className="font-semibold text-slate-800">Cycle {headerCycleShown}</span>
                               <span className="text-slate-400" aria-hidden>
-                                Â·
-                              </span>
-                              <span className="font-semibold tabular-nums text-slate-900">
-                                {shortageQty} next cycle pending
+                                ?
                               </span>
                             </>
                           ) : null}
+                          <span
+                            className={cn(
+                              "inline-flex items-center rounded-full px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide ring-1",
+                              planningStateChipClass,
+                            )}
+                            data-testid={`dashboard-no-qty-state-${row.salesOrderId}`}
+                          >
+                            {planningStateLabel}
+                          </span>
                         </div>
+                        {traceLine ? (
+                          <p
+                            className="text-[11px] leading-snug text-slate-600"
+                            data-testid={`dashboard-no-qty-trace-${row.salesOrderId}`}
+                          >
+                            <span>{traceLine.positionText}</span>
+                            <span className="text-slate-400" aria-hidden>
+                              {" "}
+                              ?{" "}
+                            </span>
+                            <button
+                              type="button"
+                              className="font-semibold text-blue-800 underline-offset-2 hover:underline"
+                              data-testid={`dashboard-no-qty-cycle-history-${row.salesOrderId}`}
+                              onClick={() => setNoQtyCycleHistoryTarget(row)}
+                            >
+                              View cycle history
+                            </button>
+                          </p>
+                        ) : null}
                         <div className="flex flex-wrap items-center gap-1">
                             <Button
                               type="button"
@@ -1788,7 +2217,7 @@ export function DashboardPage() {
                                 }
                               }}
                             >
-                              {busy ? "…" : "Next RS"}
+                              {busy ? "?" : planningState === "draft" ? "Open Draft RS" : "Next RS"}
                             </Button>
                             {showContinueProduction && continueProductionAction ? (
                               <Button
@@ -1803,9 +2232,45 @@ export function DashboardPage() {
                                   });
                                 }}
                               >
-                                Continue Production
+                                Open Production Workspace
                               </Button>
                             ) : null}
+                            {optionalDispatch && optionalDispatchHref ? (
+                              <button
+                                type="button"
+                                className="inline-flex h-8 max-w-full items-center rounded-full border border-slate-200/90 bg-slate-50/95 px-2.5 text-[10px] font-medium tabular-nums text-slate-700 ring-1 ring-slate-200/80 transition-colors hover:border-slate-300 hover:bg-slate-100"
+                                title="Usable FG stock ? optional dispatch only (not mandatory on dashboard)"
+                                data-testid={`dashboard-no-qty-opt-dispatch-${row.salesOrderId}`}
+                                onClick={() => {
+                                  navigate(appendFromDashboard(optionalDispatchHref), {
+                                    state: { from: "dashboard" },
+                                  });
+                                }}
+                              >
+                                Optional dispatch available: {formatDashDispatchMetricQty(optionalDispatch.qty)}
+                              </button>
+                            ) : null}
+                            {/*
+                              Close SO ? quiet secondary link that navigates
+                              to the Sales Orders workspace focused on this
+                              SO. The actual close action (with confirmation
+                              dialog and carry-forward freeze) lives there;
+                              we never duplicate that flow on the dashboard.
+                            */}
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="ml-auto h-8 rounded-md px-2 text-xs font-medium text-slate-500 hover:text-slate-900"
+                              data-testid={`dashboard-no-qty-close-${row.salesOrderId}`}
+                              onClick={() => {
+                                navigate(appendFromDashboard(closeSoHref), {
+                                  state: { from: "dashboard" },
+                                });
+                              }}
+                            >
+                              Close SO
+                            </Button>
                         </div>
                       </div>
                     </li>
@@ -1821,7 +2286,7 @@ export function DashboardPage() {
     <DashboardControlColumn
       variant="commercial"
       title="Commercial Control"
-      subtitle="Sales pipeline · continue workflow"
+      compact
       footer={
         commercialQuotationsTruncated ? (
           <DashboardViewAllLink href="/quotations?source=dashboard" label="View all quotations" />
@@ -1831,11 +2296,7 @@ export function DashboardPage() {
       {commercialWorkflowDashNodes.length > 0 ? (
         <div className={dashCommercialGrid}>{commercialWorkflowDashNodes}</div>
       ) : !quotationsPendingSoError ? (
-        <DashboardTableEmpty
-          compact
-          title="Commercial pipeline clear"
-          description="No enquiry or quotation handoffs pending."
-        />
+        <DashboardTableEmpty compact title="Commercial pipeline clear ?" />
       ) : null}
       {quotationsPendingSoError ? (
         <ErpWorkflowBanner tone="warning" className="text-[12px] leading-snug" role="alert">
@@ -1846,129 +2307,23 @@ export function DashboardPage() {
     </DashboardControlColumn>
   ) : null;
 
-  const overviewHistorySection =
+  const liveFactorySection =
     !demo.enabled && canViewOverallSummary && data ? (
-      <details
-        className={cn(
-          "erp-dash-history-panel erp-dash-history-panel--secondary min-h-0 shrink overflow-hidden rounded-lg border border-slate-200/60 bg-slate-50/40 [&_summary::-webkit-details-marker]:hidden",
-          dashboardQuietMode && "erp-op-workspace-secondary",
-        )}
-      >
-        <summary className="cursor-pointer list-none px-2 py-1 text-[11px] font-bold uppercase tracking-wider text-slate-500 hover:bg-slate-50/80">
-          Overview & history
-          {dashboardQuietMode ? <span className="ml-1 font-normal normal-case text-slate-500">· expand</span> : null}
-        </summary>
-        <div
-          className={cn(
-            "grid border-t border-slate-200/60 p-1.5 lg:items-stretch",
-            dashboardQuietMode ? "grid-cols-1 gap-1.5" : "gap-1.5 lg:grid-cols-2",
-          )}
-        >
-          {!showInventorySnapshot ? null : inventorySnapshotBothClear && !dashboardQuietMode ? (
-            <div className={cn(DASH_CARD_MUTED, "px-2.5 py-1.5")}>
-              <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-700">
-                  Inventory snapshot
-                </span>
-                <span className="text-[11px] text-slate-700">
-                  <span className="font-medium text-slate-800">FG</span> no listed rows ·{" "}
-                  <span className="font-medium text-slate-800">RM below min</span> none — snapshot quiet.
-                </span>
-              </div>
-            </div>
-          ) : showInventorySnapshot ? (
-            <Card className={DASH_CARD_MUTED}>
-              <CardHeader className="space-y-0 px-2.5 pb-0 pt-1">
-                <CardTitle className="text-[10px] font-bold uppercase tracking-wider text-slate-700">
-                  Inventory snapshot
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="grid gap-1 px-2.5 pb-1.5 pt-0 sm:grid-cols-2">
-                <div className="min-w-0 overflow-hidden rounded border border-slate-200/90 bg-white/60">
-                  <div className="border-b border-slate-100 bg-slate-50/90 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-slate-600">
-                    FG usable · top 5
-                  </div>
-                  {data.fgStock.length === 0 ? (
-                    <DashboardTableEmpty compact title="No FG rows" />
-                  ) : (
-                    <table className="erp-table erp-table-dense dash-table w-full [&_thead_th]:!py-1 [&_thead_th]:!px-2 [&_tbody_td]:!py-1 [&_tbody_td]:!px-2 [&_tbody_td]:text-[11px] [&_thead_th]:text-[10px]">
-                      <thead>
-                        <tr>
-                          <th className="text-left">Item</th>
-                          <th className="text-right">Qty</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {data.fgStock.slice(0, 5).map((fg) => (
-                          <tr key={fg.itemId}>
-                            <td className="max-w-[11rem] truncate text-slate-800" title={fg.itemName}>
-                              {displayShortItemName(fg.itemName)}
-                            </td>
-                            <td className="text-right tabular-nums font-semibold text-slate-900">{fg.qty}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
-                </div>
-                <div className="min-w-0 overflow-hidden rounded border border-slate-200/90 bg-white/60">
-                  <div className="border-b border-slate-100 bg-slate-50/90 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-slate-600">
-                    RM below min · top 5
-                  </div>
-                  {data.rmStockAlert.length === 0 ? (
-                    <DashboardTableEmpty compact title="None below minimum — all clear" />
-                  ) : (
-                    <table className="erp-table erp-table-dense dash-table w-full [&_thead_th]:!py-1 [&_thead_th]:!px-2 [&_tbody_td]:!py-1 [&_tbody_td]:!px-2 [&_tbody_td]:text-[11px] [&_thead_th]:text-[10px]">
-                      <thead>
-                        <tr>
-                          <th className="text-left">Item</th>
-                          <th className="text-right">Stock / min</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {data.rmStockAlert.slice(0, 5).map((r) => (
-                          <tr key={r.itemId}>
-                            <td className="max-w-[11rem] truncate text-slate-800" title={r.itemName}>
-                              {displayShortItemName(r.itemName)}
-                            </td>
-                            <td className="text-right tabular-nums text-slate-800">
-                              {r.qty} / {r.minStockLevel}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
-                </div>
-              </CardContent>
-            </Card>
-          ) : null}
-
-          {!demo.enabled && role === "ADMIN" ? (
-            <details className="rounded border border-slate-200/60 bg-slate-50/50 px-2 py-1 text-[10px] text-slate-600 lg:col-span-2 [&_summary::-webkit-details-marker]:hidden">
-              <summary className="cursor-pointer select-none text-slate-600 hover:text-slate-800">
-                Advanced · direct SO entry
-              </summary>
-              <div className="mt-1 flex flex-wrap gap-1.5">
-                <Link
-                  to="/sales-orders?action=new-so"
-                  state={{ from: "dashboard" }}
-                  className={cn(DASH_BTN_SECONDARY, "inline-flex items-center px-2.5 py-1 text-[11px] no-underline")}
-                >
-                  New SO (shortcut)
-                </Link>
-                <Link
-                  to="/sales-orders?action=no-qty-so"
-                  state={{ from: "dashboard" }}
-                  className={cn(DASH_BTN_SECONDARY, "inline-flex items-center px-2.5 py-1 text-[11px] no-underline")}
-                >
-                  NO_QTY SO (shortcut)
-                </Link>
-              </div>
-            </details>
-          ) : null}
-        </div>
-      </details>
+      <DashboardLiveFactoryPanel
+        data={{
+          pendingDispatchCount: data.pendingDispatchCount,
+          readyIssueCount: 0,
+        }}
+        prodQueue={prodQueue}
+        prodWaitingWoCount={prodWaitingForMaterial.workOrderCount}
+        prodWaitingIssueCount={prodWaitingForMaterial.waitingStoreIssueCount}
+        procurementPending={procurementPendingSecondary}
+        qcBatchCount={qcBatchCount}
+        qcHoldCount={qcWqHold}
+        qcReworkCount={qcWqRework}
+        qcRejectionPct={data.qcRejectionPct}
+        rmRisk={rmRiskSecondary}
+      />
     ) : null;
 
   return (
@@ -1992,7 +2347,7 @@ export function DashboardPage() {
             <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-sky-200/90 bg-sky-50/95 px-2 py-1.5 text-[12px] text-sky-950">
               <div className="min-w-0">
                 <span className="font-semibold">DEMO MODE</span>{" "}
-                <span className="text-sky-900/90">Guided workflow Â· sample data</span>
+                <span className="text-sky-900/90">Guided workflow ? sample data</span>
               </div>
               <Button
                 type="button"
@@ -2030,7 +2385,7 @@ export function DashboardPage() {
                   type="button"
                   title="Counts sales order lines with dispatch backlog: Regular (NORMAL) by customer PO commitment, plus NO_QTY (cycle-driven) and replacement flows."
                   {...clickTo("/dispatch")}
-                  aria-label="Open Dispatch â€” dispatch prep (regular, No Qty, and replacement)"
+                  aria-label="Open Dispatch ? dispatch prep (regular, No Qty, and replacement)"
                 >
                   <ErpKpiLabel>Dispatch prep</ErpKpiLabel>
                   <ErpKpiValue tone={data.pendingDispatchCount > 0 ? "warn" : "muted"}>{data.pendingDispatchCount}</ErpKpiValue>
@@ -2046,17 +2401,43 @@ export function DashboardPage() {
                     {displayWoNeedsActionCount}
                   </ErpKpiValue>
                 </ErpKpiSegment>
-                {canViewQcQueue ? (
-                  <ErpKpiSegment type="button" {...clickTo("/qc-entry?source=dashboard")} aria-label="Open QC">
-                    <ErpKpiLabel>QC pending</ErpKpiLabel>
+                {canViewProductionQaQueue ? (
+                  <ErpKpiSegment type="button" {...clickTo("/qc-entry?source=dashboard")} aria-label={PRODUCTION_QA_TERMS.OPEN_PRODUCTION_QA}>
+                    <ErpKpiLabel>{PRODUCTION_QA_TERMS.QA_IN_PROGRESS_LABEL}</ErpKpiLabel>
                     <ErpKpiValue tone={(qcQueue?.length ?? 0) > 0 ? "warn" : "muted"}>
                       {qcQueue ? qcQueue.length : 0}
                     </ErpKpiValue>
                   </ErpKpiSegment>
                 ) : null}
-                <ErpKpiSegment type="button" {...clickTo("/stock?source=dashboard")} aria-label={REGULAR_TERMS.REVIEW_RM_STATUS}>
-                  <ErpKpiLabel>{REGULAR_TERMS.DASHBOARD_RM_ALERTS_LABEL}</ErpKpiLabel>
-                  <ErpKpiValue tone={data.rmStockAlert.length > 0 ? "crit" : "muted"}>{data.rmStockAlert.length}</ErpKpiValue>
+                <ErpKpiSegment
+                  type="button"
+                  title={REGULAR_TERMS.DASHBOARD_STOCK_REPLENISHMENT_TOOLTIP}
+                  {...clickTo("/stock?source=dashboard")}
+                  aria-label={REGULAR_TERMS.REVIEW_RM_STATUS}
+                >
+                  <ErpKpiLabel>{REGULAR_TERMS.DASHBOARD_RM_CRITICAL_LABEL}</ErpKpiLabel>
+                  <ErpKpiValue
+                    tone={
+                      (data.rmStockCriticalCount ?? data.rmStockCritical?.length ?? 0) > 0 ? "crit" : "muted"
+                    }
+                  >
+                    {data.rmStockCriticalCount ?? data.rmStockCritical?.length ?? 0}
+                  </ErpKpiValue>
+                </ErpKpiSegment>
+                <ErpKpiSegment
+                  type="button"
+                  title={REGULAR_TERMS.DASHBOARD_STOCK_REPLENISHMENT_TOOLTIP}
+                  {...clickTo("/stock?source=dashboard")}
+                  aria-label="Review replenishment low stock"
+                >
+                  <ErpKpiLabel>{REGULAR_TERMS.DASHBOARD_RM_WARNING_LABEL}</ErpKpiLabel>
+                  <ErpKpiValue
+                    tone={
+                      (data.rmStockWarningCount ?? data.rmStockWarning?.length ?? 0) > 0 ? "warn" : "muted"
+                    }
+                  >
+                    {data.rmStockWarningCount ?? data.rmStockWarning?.length ?? 0}
+                  </ErpKpiValue>
                 </ErpKpiSegment>
                 <ErpKpiSegment type="button" {...clickTo("/stock")} aria-label="Open Stock">
                   <ErpKpiLabel>FG usable</ErpKpiLabel>
@@ -2096,20 +2477,31 @@ export function DashboardPage() {
                         {woProductionActions.length}
                       </ErpKpiValue>
                     </ErpKpiSegment>
+                    {canViewProductionQaQueue ? (
+                      <ErpKpiSegment type="button" {...clickTo("/qc-entry?source=dashboard")} aria-label={PRODUCTION_QA_TERMS.QA_BATCHES_KPI}>
+                        <ErpKpiLabel>{PRODUCTION_QA_TERMS.QA_IN_PROGRESS_LABEL}</ErpKpiLabel>
+                        <ErpKpiValue tone={qcBatchCount > 0 ? "warn" : "muted"}>{qcBatchCount}</ErpKpiValue>
+                      </ErpKpiSegment>
+                    ) : null}
                     {canViewRmRisk ? (
-                      <ErpKpiSegment type="button" {...clickTo("/reports/rm-shortage?source=dashboard")} aria-label="RM shortage">
-                        <ErpKpiLabel>RM blocked</ErpKpiLabel>
+                      <ErpKpiSegment
+                        type="button"
+                        title="Sales order / work order material shortages blocking production or issue."
+                        {...clickTo(rmControlCenterHref({ onlyBlocked: true, returnTo: "dashboard" }))}
+                        aria-label={REGULAR_TERMS.DASHBOARD_WO_RM_BLOCKED_LABEL}
+                      >
+                        <ErpKpiLabel>{REGULAR_TERMS.DASHBOARD_WO_RM_BLOCKED_LABEL}</ErpKpiLabel>
                         <ErpKpiValue tone={rmRiskCount > 0 ? "crit" : "muted"}>{rmRiskCount}</ErpKpiValue>
                       </ErpKpiSegment>
                     ) : null}
                   </>
-                ) : role === "QC" ? (
+                ) : role === "QA" ? (
                   <>
-                    <ErpKpiSegment type="button" {...clickTo("/qc-entry?source=dashboard")} aria-label="QC batches">
+                    <ErpKpiSegment type="button" {...clickTo("/qc-entry?source=dashboard")} aria-label={PRODUCTION_QA_TERMS.QA_BATCHES_KPI}>
                       <ErpKpiLabel>Batches</ErpKpiLabel>
                       <ErpKpiValue tone={qcBatchCount > 0 ? "warn" : "muted"}>{qcBatchCount}</ErpKpiValue>
                     </ErpKpiSegment>
-                    <ErpKpiSegment type="button" {...clickTo("/qc-entry?source=dashboard")} aria-label="QC qty pending">
+                    <ErpKpiSegment type="button" {...clickTo("/qc-entry?source=dashboard")} aria-label={PRODUCTION_QA_TERMS.QA_QTY_PENDING_KPI}>
                       <ErpKpiLabel>Qty pending</ErpKpiLabel>
                       <ErpKpiValue tone={qcPendingTotalQty > ROW_NUM_EPS ? "warn" : "muted"}>{qcPendingQtyDisplay}</ErpKpiValue>
                     </ErpKpiSegment>
@@ -2126,15 +2518,30 @@ export function DashboardPage() {
               </ErpKpiStrip>
             </div>
           ) : null}
+            {canViewWoPrepareQueues && !demo.enabled ? (
+              <OperationalBlockersCard
+        procurementPending={role === "PRODUCTION" ? [] : procurementPendingSecondary}
+                storeIssuePending={storeIssuePending}
+                allocationFirstPending={allocationFirstPending as any}
+                woPrepareQueues={woPrepareQueues}
+                loading={
+                  procurementPending === null ||
+                  storeIssuePending === null ||
+                  allocationFirstPending === null ||
+                  woPrepareQueues === null
+                }
+              />
+            ) : null}
             {!demo.enabled ? operationalActionQueue : null}
             {!demo.enabled &&
             !operationalActionCardsPresent &&
             !hasVisibleNoQtyContinuation &&
+            operationalBlockersReady &&
             (showOperationalLeftPanel || showCommercialRightPanel) ? (
               <DashboardTableEmpty
                 compact
                 title="Operations clear"
-                description="Operations clear — No shop-floor actions pending right now."
+                description="Operations clear ? No shop-floor actions pending right now."
               />
             ) : null}
           {!demo.enabled && !showOperationsClearStrip && roleShortcuts.length > 0 ? (
@@ -2149,18 +2556,39 @@ export function DashboardPage() {
         </div>
 
         {!demo.enabled && canViewProductionQueue ? (
-          <div className="erp-dash-live-workspace min-h-0 shrink-0">
+          <div className="erp-dash-live-workspace min-h-0 shrink-0 space-y-2">
+            <DashboardPausedWorkOrders
+              rows={pausedWorkOrders}
+              loading={pausedWorkOrders === null}
+              error={pausedWorkOrdersError}
+              onResumed={() => {
+                void apiFetch<ProductionQueueRow[]>("/api/dashboard/production-queue")
+                  .then((rows) => setProdQueue(rows))
+                  .catch(() => setProdQueue([]));
+                void apiFetch<PausedWorkOrderRow[]>("/api/dashboard/paused-work-orders")
+                  .then((rows) => setPausedWorkOrders(Array.isArray(rows) ? rows : []))
+                  .catch(() => setPausedWorkOrders([]));
+              }}
+            />
             <DashboardCurrentProductionStatus
-              className="shadow-md ring-1 ring-slate-900/[0.06]"
               rows={prodQueue}
               loading={prodQueue === null}
               error={prodQueueError}
+              hideWhenEmpty
             />
           </div>
         ) : null}
 
-        {overviewHistorySection}
+        {liveFactorySection}
       </div>
+
+      <NoQtyDashboardCycleHistoryDialog
+        open={noQtyCycleHistoryTarget != null}
+        onClose={() => setNoQtyCycleHistoryTarget(null)}
+        salesOrderId={noQtyCycleHistoryTarget?.salesOrderId ?? 0}
+        salesOrderDocNo={noQtyCycleHistoryTarget?.salesOrderDocNo}
+        customerName={noQtyCycleHistoryTarget?.customerName}
+      />
     </div>
   );
 }

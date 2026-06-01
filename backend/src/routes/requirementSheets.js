@@ -13,7 +13,7 @@ const {
 } = require("../services/salesOrderDispatchAllocation");
 const { repairNoQtyCycleIntegrity, advanceNoQtyCycleForNextRequirementSheetIfEligible } = require("../services/noQtyCycleLifecycle");
 const { logActivity } = require("../services/activityLogService");
-const { usableStockDisplayQty } = require("../services/stockService");
+const { usableStockDisplayQty, loadStockByItemIdUsableMap } = require("../services/stockService");
 const { buildQcAcceptedMap } = require("../services/dispatchQcCap");
 const {
   ACTIVITY_MODULES,
@@ -169,13 +169,7 @@ function computeSuggestedWo(req, stock) {
 }
 
 async function stockByItemIdUsable() {
-  const stockRows = await prisma.stockTransaction.groupBy({
-    by: ["itemId"],
-    // Stock math must include reversed originals; reversal rows offset them.
-    where: { stockBucket: "USABLE" },
-    _sum: { qtyIn: true, qtyOut: true },
-  });
-  return new Map(stockRows.map((r) => [r.itemId, n(r._sum.qtyIn) - n(r._sum.qtyOut)]));
+  return loadStockByItemIdUsableMap(prisma);
 }
 
 const EPS = 1e-6;

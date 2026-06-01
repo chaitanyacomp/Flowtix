@@ -10,6 +10,7 @@ import { apiDownloadAuthorized } from "../services/apiDownload";
 import { useToast } from "../contexts/ToastContext";
 import { useIsAdmin } from "../hooks/useIsAdmin";
 import { cn } from "../lib/utils";
+import { ErpModal } from "../components/erp/ErpModal";
 
 type BackupType = "MANUAL" | "PRE_RESTORE_AUTO";
 type BackupStatus = "CREATED" | "FAILED" | "RESTORED";
@@ -93,15 +94,6 @@ function RestoreModal({
     return () => handles.forEach((h) => window.clearTimeout(h));
   }, [open, backup?.id]);
 
-  React.useEffect(() => {
-    if (!open) return;
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
-
   if (!open || !backup) return null;
 
   const backupId = backup.id;
@@ -137,15 +129,7 @@ function RestoreModal({
   }
 
   return (
-    <div
-      className="erp-modal-backdrop"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="restore-modal-title"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
+    <ErpModal open={open} onClose={onClose} closeOnBackdropClick aria-labelledby="restore-modal-title">
       <Card className="erp-modal-shell max-w-lg border-red-200">
         <CardHeader className="flex flex-row items-center justify-between space-y-0 border-b border-red-100 bg-red-50/80 pb-3">
           <CardTitle id="restore-modal-title" className="text-lg font-semibold tracking-tight text-red-950">
@@ -273,7 +257,7 @@ function RestoreModal({
           </form>
         </CardContent>
       </Card>
-    </div>
+    </ErpModal>
   );
 }
 
@@ -538,15 +522,7 @@ export function BackupRestorePage() {
       />
 
       {deleteTarget ? (
-        <div
-          className="erp-modal-backdrop"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="del-bk-title"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setDeleteTarget(null);
-          }}
-        >
+        <ErpModal onClose={() => setDeleteTarget(null)} closeOnBackdropClick aria-labelledby="del-bk-title">
           <Card className="erp-modal-shell max-w-md">
             <CardHeader className="flex flex-row items-center justify-between border-b border-slate-200 pb-3">
               <CardTitle id="del-bk-title" className="text-base font-semibold">
@@ -570,7 +546,7 @@ export function BackupRestorePage() {
               </div>
             </CardContent>
           </Card>
-        </div>
+        </ErpModal>
       ) : null}
     </div>
   );

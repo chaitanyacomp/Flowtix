@@ -26,7 +26,21 @@ const {
   normalizeWorkOrderTrackingApiPayloadForVerification,
   METRIC_CONTEXT,
 } = require("../src/services/reportMetrics");
-const { QUEUE_SNAPSHOT_ROW_METRIC_CONTEXT } = require("../src/services/dashboardQueueSnapshots");
+const {
+  assertWorkOrderLinesAgainstSalesOrder,
+  getSalesOrderFgWorkOrderBalances,
+} = require("../src/services/workOrderSoValidation");
+const {
+  QUEUE_SNAPSHOT_ROW_METRIC_CONTEXT,
+  DASHBOARD_ACTIVE_WORK_ORDER_STATUSES,
+  DASHBOARD_RUNNING_WORK_ORDER_STATUSES,
+  DASHBOARD_TERMINAL_WORK_ORDER_STATUSES,
+  dashboardActiveWorkOrderWhere,
+  dashboardRunningWorkOrderWhere,
+  isDashboardHoldWorkOrderStatus,
+  isDashboardTerminalWorkOrderStatus,
+  resolveNoQtyDashboardCycleHistoryStatus,
+} = require("../src/services/dashboardQueueSnapshots");
 const {
   buildDispatchExceptions,
   buildProductionExceptions,
@@ -63,6 +77,81 @@ describe("release-readiness route guardrails", () => {
 
     assert.equal(res.status, 404);
   });
+
+  it("GET /api/reports/production-rm-variance is registered (Phase 3F)", async () => {
+    const app = createApp();
+    const missingRoute = await request(app)
+      .get("/api/reports/production-rm-variance-typo")
+      .set("Authorization", bearerForRole("PRODUCTION"));
+    assert.equal(missingRoute.status, 404);
+
+    const res = await request(app)
+      .get("/api/reports/production-rm-variance")
+      .set("Authorization", bearerForRole("PRODUCTION"));
+
+    assert.match(String(res.headers["content-type"] ?? ""), /application\/json/);
+    assert.equal(res.status, 200);
+    assert.ok(Array.isArray(res.body?.rows));
+    assert.ok(res.body?.kpis);
+  });
+
+  it("GET /api/production/production-entries/:id/rm-consumption-preview is registered (Phase 3E)", async () => {
+    const app = createApp();
+    const missingRoute = await request(app)
+      .get("/api/production/production-entries/1/rm-consumption-preview-typo")
+      .set("Authorization", bearerForRole("PRODUCTION"));
+    assert.equal(missingRoute.status, 404);
+
+    const res = await request(app)
+      .get("/api/production/production-entries/1/rm-consumption-preview")
+      .set("Authorization", bearerForRole("PRODUCTION"));
+
+    assert.match(String(res.headers["content-type"] ?? ""), /application\/json/);
+    assert.ok(
+      res.status === 200 || res.status === 404 || res.status === 409,
+      `expected JSON response, got ${res.status}`,
+    );
+  });
+
+  it("GET /api/production-material-returns/returnable is registered (Phase 3D)", async () => {
+    const app = createApp();
+    const missingRoute = await request(app)
+      .get("/api/production-material-returns-typo/returnable")
+      .set("Authorization", bearerForRole("PRODUCTION"));
+    assert.equal(missingRoute.status, 404);
+
+    const res = await request(app)
+      .get("/api/production-material-returns/returnable")
+      .set("Authorization", bearerForRole("PRODUCTION"));
+
+    assert.match(String(res.headers["content-type"] ?? ""), /application\/json/);
+    assert.equal(res.status, 400);
+    assert.match(String(res.body?.error?.message ?? res.body?.message ?? ""), /workOrderId/i);
+  });
+
+  it("GET /api/production/work-order-lines/:workOrderLineId/rm-readiness is registered (Phase 3C)", async () => {
+    const app = createApp();
+    const missingRoute = await request(app)
+      .get("/api/production/work-order-lines/1/rm-readiness-typo")
+      .set("Authorization", bearerForRole("PRODUCTION"));
+    assert.equal(missingRoute.status, 404);
+    assert.doesNotMatch(String(missingRoute.body?.error?.message ?? missingRoute.text ?? ""), /work order line/i);
+
+    const res = await request(app)
+      .get("/api/production/work-order-lines/1/rm-readiness")
+      .set("Authorization", bearerForRole("PRODUCTION"));
+
+    assert.match(String(res.headers["content-type"] ?? ""), /application\/json/);
+    assert.ok(
+      res.status === 200 || res.status === 404,
+      `expected JSON 200 or work-order-line 404, got ${res.status}`,
+    );
+    if (res.status === 200) {
+      assert.ok(typeof res.body?.gate === "string" || res.body?.skipped === true);
+    } else {
+      assert.match(String(res.body?.error?.message ?? ""), /work order line/i);
+    }
+  });
 });
 
 describe("NO_QTY operator carry-forward formula", () => {
@@ -72,6 +161,159 @@ describe("NO_QTY operator carry-forward formula", () => {
 
   it("does not create negative carry-forward when produced exceeds planned", () => {
     assert.equal(computeNoQtyOperatorCarryForwardQty(2000, 2200), 0);
+  });
+});
+
+describe("NO_QTY dashboard cycle history status", () => {
+  it("marks prior cycles COMPLETED when planning pointer is ahead", () => {
+    assert.equal(
+      resolveNoQtyDashboardCycleHistoryStatus({
+        cycleNo: 3,
+        cycleRowStatus: "ACTIVE",
+        isCurrentCycle: false,
+        planningPointerAhead: true,
+        planningPointerCycleNo: 4,
+        documentCycleNo: 3,
+        hasLockedRs: true,
+        hasDraftRs: false,
+        hasProduction: true,
+      }),
+      "COMPLETED",
+    );
+  });
+
+  it("marks current empty planning cycle PLANNING PENDING", () => {
+    assert.equal(
+      resolveNoQtyDashboardCycleHistoryStatus({
+        cycleNo: 4,
+        cycleRowStatus: "ACTIVE",
+        isCurrentCycle: true,
+        planningPointerAhead: true,
+        planningPointerCycleNo: 4,
+        documentCycleNo: 3,
+        hasLockedRs: false,
+        hasDraftRs: false,
+        hasProduction: false,
+      }),
+      "PLANNING PENDING",
+    );
+  });
+
+  it("marks locked current cycle IN PROCESS not ACTIVE", () => {
+    assert.equal(
+      resolveNoQtyDashboardCycleHistoryStatus({
+        cycleNo: 3,
+        cycleRowStatus: "ACTIVE",
+        isCurrentCycle: true,
+        planningPointerAhead: false,
+        planningPointerCycleNo: null,
+        documentCycleNo: 3,
+        hasLockedRs: true,
+        hasDraftRs: false,
+        hasProduction: true,
+      }),
+      "IN PROCESS",
+    );
+  });
+});
+
+describe("Regular SO work-order planning quantity cap", () => {
+  function buildRegularSoPlanningDb(existingWoLines) {
+    const fg = { id: 10, itemName: "Regular FG", itemType: "FG" };
+    const so = {
+      id: 1,
+      orderType: "NORMAL",
+      internalStatus: "APPROVED",
+      customerReturnId: null,
+      currentCycleId: null,
+      lines: [{ id: 101, itemId: fg.id, qty: "10000", item: fg }],
+      dispatch: [],
+    };
+    const workOrders = [
+      { id: 201, salesOrderId: so.id, status: "PENDING" },
+      { id: 202, salesOrderId: so.id, status: "PENDING" },
+    ];
+    const statusMatches = (status, cond) => {
+      if (!cond) return true;
+      if (cond.in) return cond.in.includes(status);
+      if (cond.not) return status !== cond.not;
+      return true;
+    };
+    const linesForWhere = (where = {}) => {
+      const woCond = where.workOrder || {};
+      return existingWoLines
+        .map((l) => ({ ...l, workOrder: workOrders.find((w) => w.id === l.workOrderId) }))
+        .filter((l) => {
+          const wo = l.workOrder;
+          if (!wo) return false;
+          if (woCond.salesOrderId != null) {
+            if (typeof woCond.salesOrderId === "object" && woCond.salesOrderId.in) {
+              if (!woCond.salesOrderId.in.includes(wo.salesOrderId)) return false;
+            } else if (wo.salesOrderId !== woCond.salesOrderId) {
+              return false;
+            }
+          }
+          if (!statusMatches(wo.status, woCond.status)) return false;
+          if (woCond.id?.not != null && wo.id === woCond.id.not) return false;
+          return true;
+        });
+    };
+    return {
+      salesOrder: {
+        findUnique: async () => so,
+      },
+      item: {
+        findMany: async () => [fg],
+      },
+      workOrderLine: {
+        findMany: async ({ where } = {}) => linesForWhere(where),
+      },
+      productionEntry: {
+        findMany: async () => [],
+        groupBy: async () => [],
+      },
+      qcEntry: {
+        groupBy: async () => [],
+        aggregate: async () => ({ _sum: { acceptedQty: 0 } }),
+      },
+      stockAdjustmentQcEntry: {
+        aggregate: async () => ({ _sum: { acceptedQty: 0 } }),
+      },
+      stockTransaction: {
+        aggregate: async () => ({ _sum: { qtyIn: 0, qtyOut: 0 } }),
+      },
+      location: {
+        findFirst: async () => ({ id: 1 }),
+      },
+    };
+  }
+
+  it("allows split WOs until total WO line qty reaches SO item qty, then blocks more", async () => {
+    const existingWoLines = [{ id: 301, workOrderId: 201, fgItemId: 10, qty: "5000", plannedQty: "5000" }];
+    const db = buildRegularSoPlanningDb(existingWoLines);
+
+    const afterFirst = await getSalesOrderFgWorkOrderBalances(db, { salesOrderId: 1 });
+    assert.equal(afterFirst.items[0].soOrderedQty, 10000);
+    assert.equal(afterFirst.items[0].plannedOnOtherWorkOrdersQty, 5000);
+    assert.equal(afterFirst.items[0].balanceQty, 5000);
+
+    await assertWorkOrderLinesAgainstSalesOrder(db, {
+      salesOrderId: 1,
+      lineRequests: [{ fgItemId: 10, qty: 5000 }],
+      excludeWorkOrderId: null,
+    });
+
+    existingWoLines.push({ id: 302, workOrderId: 202, fgItemId: 10, qty: "5000", plannedQty: "5000" });
+
+    await assert.rejects(
+      () =>
+        assertWorkOrderLinesAgainstSalesOrder(db, {
+          salesOrderId: 1,
+          lineRequests: [{ fgItemId: 10, qty: 1 }],
+          excludeWorkOrderId: null,
+        }),
+      /Maximum allowed now: 0/,
+    );
   });
 });
 
@@ -285,6 +527,20 @@ describe("dashboard queue metric context map", () => {
     assert.equal(QUEUE_SNAPSHOT_ROW_METRIC_CONTEXT.qcQueue, METRIC_CONTEXT.QC_BATCH);
     assert.equal(QUEUE_SNAPSHOT_ROW_METRIC_CONTEXT.rmRisk, METRIC_CONTEXT.RM_PLANNING);
     assert.equal(QUEUE_SNAPSHOT_ROW_METRIC_CONTEXT.purchaseSummary, METRIC_CONTEXT.RM_PO_LINE);
+  });
+
+  it("work-order status filters handle HOLD and CLOSED_WITH_SHORTFALL explicitly", () => {
+    assert.deepEqual(DASHBOARD_ACTIVE_WORK_ORDER_STATUSES, ["PENDING", "IN_PROGRESS", "HOLD"]);
+    assert.deepEqual(DASHBOARD_RUNNING_WORK_ORDER_STATUSES, ["PENDING", "IN_PROGRESS"]);
+    assert.ok(DASHBOARD_TERMINAL_WORK_ORDER_STATUSES.includes("CLOSED_WITH_SHORTFALL"));
+    assert.deepEqual(dashboardActiveWorkOrderWhere(), {
+      status: { in: ["PENDING", "IN_PROGRESS", "HOLD"] },
+    });
+    assert.deepEqual(dashboardRunningWorkOrderWhere(), {
+      status: { in: ["PENDING", "IN_PROGRESS"] },
+    });
+    assert.equal(isDashboardHoldWorkOrderStatus("HOLD"), true);
+    assert.equal(isDashboardTerminalWorkOrderStatus("CLOSED_WITH_SHORTFALL"), true);
   });
 });
 

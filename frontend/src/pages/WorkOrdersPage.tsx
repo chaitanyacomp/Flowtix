@@ -14,15 +14,17 @@ import { DRILL_DATA, DRILL_QUERY } from "../lib/drillDownRoutes";
 import { useDrillFocus } from "../hooks/useDrillFocus";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { ApiRequestError, apiFetch } from "../services/api";
-import { Button } from "../components/ui/button";
+import { Button, buttonVariants } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Badge } from "../components/ui/badge";
 import { useAuth } from "../hooks/useAuth";
 import { useFastEntryForm } from "../hooks/useFastEntryForm";
+import { ErpModal } from "../components/erp/ErpModal";
 import { useDependentFieldFocus } from "../hooks/useDependentFieldFocus";
 import { parsePositiveQuantityDraft } from "../lib/quantityDraft";
 import { cn } from "../lib/utils";
 import { REGULAR_TERMS } from "../lib/flowTerminology";
+import { RM_PURCHASE_POST_GRN_MESSAGES } from "../lib/rmPurchaseWoContinuity";
 import { WoInfoPanel } from "../components/erp/WoInfoPanel";
 import { PlanningStatusChip } from "../components/erp/PlanningStatusChip";
 import { useCanOpenRequirementSheet } from "../hooks/useIsAdmin";
@@ -41,6 +43,9 @@ import { ErpEmptyState } from "../components/erp/foundation/ErpEmptyState";
 import { useErpRoleUi } from "../hooks/useErpRoleUi";
 import { getRoleEmptyState } from "../lib/erpRoleEmptyStates";
 import { NextStepStrip } from "../components/erp/NextStepStrip";
+import type { ProductionRmReadiness } from "../components/erp/ProductionRmReadinessStrip";
+import { isProductionBlockedByRmReadiness } from "../components/erp/ProductionRmReadinessStrip";
+import { buildRmIssueNextStep } from "../lib/regularSoOperationalGuidance";
 import { displaySalesOrderNo, displayWorkOrderNo } from "../lib/docNoDisplay";
 import { NoQtyCycleContextBar } from "../components/erp/foundation/NoQtyCycleContextBar";
 import { buildNoQtyGuidedHref, useNoQtyFlowState } from "../lib/noQtyFlowState";
@@ -50,12 +55,21 @@ import { useErpRefreshTick } from "../hooks/useErpRefreshTick";
 import type { DashboardProductionStatusSource } from "../lib/dashboardProductionStatus";
 import { resolveNoQtyCycleDisplayStatusForWorkOrder } from "../lib/noQtyCycleDisplayStatus";
 import { formatErpStatusLabel } from "../lib/erpStatusTone";
+import {
+  workOrderStatusDisplayLabel,
+  workOrderStatusBadgeVariant,
+} from "../lib/workOrderLifecycle";
+import { WorkOrderLifecyclePanel } from "../components/erp/WorkOrderLifecyclePanel";
 
 type WoLine = { id: number; fgItemId: number; qty: string; fgItem: { itemName: string } };
 type WoRow = {
   id: number;
   docNo?: string | null;
   status: string;
+  holdReason?: string | null;
+  holdRemarks?: string | null;
+  shortfallQty?: number | string | null;
+  closureReason?: string | null;
   salesOrderId: number;
   salesOrder?: { docNo?: string | null } | null;
   cycleId?: number | null;
@@ -88,14 +102,30 @@ type SoDetail = {
 type RmCheckResponse = {
   fgLines: {
     fgItemId: number;
+    customerCommittedQty?: number;
     orderQty: number;
+    productionBufferPercent?: number;
+    productionBufferQty?: number;
+    plannedProductionQty?: number;
+    fgStockAdjustmentQty?: number;
     fgStock: number;
+    rmPlanningQty?: number;
     toProduce: number;
     note?: string;
   }[];
 };
 
-type RmCheckFgPlanning = { orderQty: number; fgStock: number; toProduce: number };
+type RmCheckFgPlanning = {
+  customerCommittedQty?: number;
+  orderQty: number;
+  productionBufferPercent?: number;
+  productionBufferQty?: number;
+  plannedProductionQty?: number;
+  fgStockAdjustmentQty?: number;
+  fgStock: number;
+  rmPlanningQty?: number;
+  toProduce: number;
+};
 
 /** Default WO planning buffer when the field is blank (user may raise manually). */
 const DEFAULT_SHORTFALL_BUFFER_PERCENT = 0;
@@ -238,6 +268,7 @@ type WoLineRow = {
   soDocNo?: string | null;
   cycleNo?: number | null;
   status: string;
+  holdReason?: string | null;
   fgName: string;
   qty: string;
   woLineId: number;
@@ -257,9 +288,12 @@ function renderWoListStatusBadge(
 ) {
   const display = noQtySelected
     ? (noQtyWoDisplayStatusById.get(row.woId)?.label ?? formatErpStatusLabel(row.status))
-    : formatErpStatusLabel(row.status);
+    : workOrderStatusDisplayLabel({ status: row.status, holdReason: row.holdReason });
+  const variant = noQtySelected
+    ? woListStatusBadgeVariant(display, row.status)
+    : workOrderStatusBadgeVariant(row.status);
   return (
-    <Badge variant={woListStatusBadgeVariant(display, row.status)} className="text-[10px] font-medium">
+    <Badge variant={variant} className="text-[10px] font-medium">
       {display}
     </Badge>
   );
@@ -276,6 +310,7 @@ function flattenWoLines(list: WoRow[]): WoLineRow[] {
         soDocNo: wo.salesOrder?.docNo ?? null,
         cycleNo: wo.cycle?.cycleNo != null ? Number(wo.cycle.cycleNo) : null,
         status: wo.status,
+        holdReason: wo.holdReason ?? null,
         fgName: l.fgItem?.itemName ?? "—",
         qty: l.qty,
         woLineId: l.id,
@@ -319,6 +354,7 @@ export function WorkOrdersPage() {
     demoHighlightKey(demo.enabled, demo.flow, demo.step, "no_qty", 3);
   const [sp] = useSearchParams();
   const source = sp.get("source") ?? "";
+  const fromRmPurchase = sp.get("from") === "rm-purchase";
   const fromNoQtySo = source === "no_qty_so";
   const focusSoIdFromUrl = Number(sp.get("salesOrderId") ?? 0);
   const rawGuidedCycleId = Number(sp.get("cycleId") ?? 0);
@@ -420,6 +456,13 @@ export function WorkOrdersPage() {
   const appliedPlanningPrefill = React.useRef(false);
   const isEditMode = read.int("excludeWo") > 0;
   const noQtySelected = soDetail?.orderType === "NO_QTY";
+  const editingWoId = read.int("excludeWo");
+  const editingWo = React.useMemo(() => {
+    if (!(editingWoId > 0)) return null;
+    return [...openWoRows, ...completedWoRows].find((w) => w.id === editingWoId) ?? null;
+  }, [editingWoId, openWoRows, completedWoRows]);
+  const showRegularLifecyclePanel =
+    isEditMode && editingWo != null && !noQtySelected && editingWo.requirementSheetId == null;
   /** Simplified multi-line FG table for new Regular SO work orders only. */
   const useRegularWoPlanningTable = !fromNoQtySo && !noQtySelected && !isEditMode;
   const lockSalesOrderSelector =
@@ -460,11 +503,15 @@ export function WorkOrdersPage() {
         : loc.state?.source === "rmCheck" && loc.state?.salesOrderId != null
           ? Number(loc.state.salesOrderId)
           : undefined;
+    const rmPurchaseIncludeSoId =
+      fromRmPurchase && regularSoIdFromUrl > 0 ? regularSoIdFromUrl : undefined;
     const includeId =
       isEditMode && soFromUrl > 0
         ? soFromUrl
         : isPrefilledFromRequirementSheet && loc.state?.salesOrderId != null
           ? loc.state.salesOrderId
+          : rmPurchaseIncludeSoId != null
+            ? rmPurchaseIncludeSoId
           : rmCheckIncludeSoId != null && Number.isFinite(rmCheckIncludeSoId) && rmCheckIncludeSoId > 0
             ? rmCheckIncludeSoId
             : undefined;
@@ -483,6 +530,8 @@ export function WorkOrdersPage() {
     loc.state?.source,
     cameFromRmCheckPlanning,
     salesOrderId,
+    fromRmPurchase,
+    regularSoIdFromUrl,
   ]);
 
   useFastEntryForm({
@@ -538,6 +587,7 @@ export function WorkOrdersPage() {
 
   /** REGULAR (NORMAL) SO shortfall recovery only — backend relaxes WO cap when these are sent. */
   const sendShortfallWoBufferToApi =
+    !cameFromRmCheckPlanning &&
     pageIsShortfallProduction &&
     !fromNoQtySo &&
     soDetail != null &&
@@ -583,11 +633,18 @@ export function WorkOrdersPage() {
     const qs = excl != null ? `?excludeWorkOrderId=${excl}` : "";
     let cancelled = false;
     setFgBalancesLoading(true);
-    Promise.all([
-      apiFetch<{ items: FgWoBalanceItem[] }>(`/api/production/sales-orders/${id}/fg-work-order-balance${qs}`),
-      apiFetch<RmCheckResponse>(`/api/sales-orders/${id}/rm-check`),
-    ])
-      .then(([balPayload, rmPayload]) => {
+    (async () => {
+      try {
+        if (!cameFromRmCheckPlanning) {
+          await apiFetch(`/api/sales-orders/${id}/production-planning-snapshot`, {
+            method: "PUT",
+            body: JSON.stringify({ bufferPercent: shortfallBufferPercentForCalc }),
+          });
+        }
+        const [balPayload, rmPayload] = await Promise.all([
+          apiFetch<{ items: FgWoBalanceItem[] }>(`/api/production/sales-orders/${id}/fg-work-order-balance${qs}`),
+          apiFetch<RmCheckResponse>(`/api/sales-orders/${id}/rm-check`),
+        ]);
         if (cancelled) return;
         setFgBalances(balPayload.items ?? []);
         const m = new Map<number, RmCheckFgPlanning>();
@@ -596,25 +653,30 @@ export function WorkOrdersPage() {
           const itemId = Number(f.fgItemId);
           if (!Number.isFinite(itemId) || itemId <= 0) continue;
           m.set(itemId, {
+            customerCommittedQty: Number(f.customerCommittedQty ?? f.orderQty),
             orderQty: Number(f.orderQty),
+            productionBufferPercent: Number(f.productionBufferPercent ?? 0),
+            productionBufferQty: Number(f.productionBufferQty ?? 0),
+            plannedProductionQty: Number(f.plannedProductionQty ?? f.orderQty),
+            fgStockAdjustmentQty: Number(f.fgStockAdjustmentQty ?? f.fgStock),
             fgStock: Number(f.fgStock),
+            rmPlanningQty: Number(f.rmPlanningQty ?? f.toProduce),
             toProduce: Number(f.toProduce),
           });
         }
         setRmCheckFgPlanningByItemId(m);
-      })
-      .catch(() => {
+      } catch {
         if (cancelled) return;
         setFgBalances([]);
         setRmCheckFgPlanningByItemId(new Map());
-      })
-      .finally(() => {
+      } finally {
         if (!cancelled) setFgBalancesLoading(false);
-      });
+      }
+    })();
     return () => {
       cancelled = true;
     };
-  }, [salesOrderId, openWoRows, completedWoRows, read, searchParams.toString()]);
+  }, [salesOrderId, openWoRows, completedWoRows, read, searchParams.toString(), shortfallBufferPercentForCalc, cameFromRmCheckPlanning]);
 
   /** When balance API returns after FG is chosen, prefill WO qty with suggested shortage (if field still empty). */
   React.useEffect(() => {
@@ -707,6 +769,50 @@ export function WorkOrdersPage() {
 
   const hasOpenWoCoveringPrimaryFg = openWoForPrimaryFg.woId != null;
 
+  const openWoPrimaryLineId = React.useMemo(() => {
+    const woId = openWoForPrimaryFg.woId;
+    if (woId == null) return null;
+    const wo = openWoRows.find((w) => w.id === woId);
+    if (!wo?.lines?.length) return null;
+    const fgId = primaryLine.fgItemId;
+    const line = wo.lines.find((l) => Number(l.fgItemId) === fgId) ?? wo.lines[0];
+    return line?.id ?? null;
+  }, [openWoForPrimaryFg.woId, openWoRows, primaryLine.fgItemId]);
+
+  const [woRmReadiness, setWoRmReadiness] = React.useState<ProductionRmReadiness | null>(null);
+  React.useEffect(() => {
+    if (!openWoPrimaryLineId) {
+      setWoRmReadiness(null);
+      return;
+    }
+    let cancelled = false;
+    void apiFetch<ProductionRmReadiness | { skipped: boolean }>(
+      `/api/production/work-order-lines/${openWoPrimaryLineId}/rm-readiness`,
+    )
+      .then((res) => {
+        if (cancelled) return;
+        if ("skipped" in res && res.skipped) {
+          setWoRmReadiness(null);
+          return;
+        }
+        setWoRmReadiness(res as ProductionRmReadiness);
+      })
+      .catch(() => {
+        if (!cancelled) setWoRmReadiness(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [openWoPrimaryLineId]);
+
+  const rmIssueNextStep =
+    !fromNoQtySo &&
+    !noQtySelected &&
+    woRmReadiness != null &&
+    isProductionBlockedByRmReadiness(woRmReadiness)
+      ? buildRmIssueNextStep(woRmReadiness, showWoWorkspace ? "work-order-workspace" : "work-orders")
+      : null;
+
   const showProductionNextStep =
     !fromNoQtySo &&
     !noQtySelected &&
@@ -716,8 +822,10 @@ export function WorkOrdersPage() {
     primaryNoRemaining &&
     hasOpenWoCoveringPrimaryFg;
 
+  const showProductionNextStepEffective = showProductionNextStep && rmIssueNextStep == null;
+
   const productionEntryHref =
-    showProductionNextStep && salesOrderId !== "" && openWoForPrimaryFg.woId != null
+    showProductionNextStepEffective && salesOrderId !== "" && openWoForPrimaryFg.woId != null
       ? `/production?${new URLSearchParams({
           salesOrderId: String(salesOrderId),
           woId: String(openWoForPrimaryFg.woId),
@@ -1066,11 +1174,21 @@ export function WorkOrdersPage() {
     if (!eligibleSoIds.has(id)) {
       if (cameFromRmCheckPlanning) return;
       if (regularSoIdFromUrl > 0 && id === regularSoIdFromUrl) return;
+      if (fromRmPurchase && regularSoIdFromUrl > 0 && id === regularSoIdFromUrl) return;
       setSalesOrderId("");
       setSoDetail(null);
       setFgBalances([]);
     }
-  }, [isEditMode, salesOrderId, eligibleSoIds, cameFromRmCheckPlanning, regularSoIdFromUrl]);
+  }, [isEditMode, salesOrderId, eligibleSoIds, cameFromRmCheckPlanning, regularSoIdFromUrl, fromRmPurchase]);
+
+  React.useEffect(() => {
+    if (!fromRmPurchase || !listLoaded || salesOrderId === "") return;
+    if (fgBalancesLoading) return;
+    const t = window.setTimeout(() => {
+      woFormRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 80);
+    return () => window.clearTimeout(t);
+  }, [fromRmPurchase, listLoaded, salesOrderId, fgBalancesLoading]);
 
   const skipWoListFilterEffect = React.useRef(true);
   React.useEffect(() => {
@@ -1635,7 +1753,7 @@ export function WorkOrdersPage() {
     rows.length > 0 && visibleOpenRows.length === 0 && visibleCompletedRows.length === 0;
 
   return (
-    <PageContainer className={cn("erp-flow-page -mt-2 space-y-2.5 pb-6", cameFromRegularPlanning && "space-y-2")}>
+    <PageContainer className={cn("erp-flow-page -mt-2 space-y-1.5 pb-3", cameFromRegularPlanning && "space-y-1.5")}>
       <StickyWorkspaceHead
         lead={
           <>
@@ -1660,7 +1778,17 @@ export function WorkOrdersPage() {
         </div>
       </StickyWorkspaceHead>
       {fromNoQtySo && salesOrderId !== "" ? <NoQtyCycleBanner so={soDetail as any} /> : null}
-      {!fromNoQtySo && isRegularNormalOrderForWoPlanning && pageIsShortfallProduction && salesOrderId !== "" ? (
+      {fromRmPurchase && !fromNoQtySo && salesOrderId !== "" ? (
+        <div
+          className="rounded-md border border-emerald-200 bg-emerald-50/90 px-3 py-2.5 text-sm text-emerald-950 shadow-sm"
+          data-testid="wo-rm-purchase-continuity-banner"
+        >
+          <p className="font-semibold">{RM_PURCHASE_POST_GRN_MESSAGES.fulfilledHeadline}</p>
+          <p className="mt-0.5">{RM_PURCHASE_POST_GRN_MESSAGES.fulfilledDetail}</p>
+          <p className="mt-1 text-emerald-900">{RM_PURCHASE_POST_GRN_MESSAGES.fulfilledNextStep}</p>
+        </div>
+      ) : null}
+      {!fromNoQtySo && isRegularNormalOrderForWoPlanning && pageIsShortfallProduction && salesOrderId !== "" && !cameFromRmCheckPlanning ? (
         <div className="rounded-md border border-amber-200 bg-amber-50/90 px-3 py-3 text-sm text-amber-950 shadow-sm">
           <div className="flex flex-wrap items-end gap-3">
             <div className="erp-form-field min-w-0">
@@ -1703,6 +1831,11 @@ export function WorkOrdersPage() {
           ) : null}
         </div>
       ) : null}
+      {!fromNoQtySo && isRegularNormalOrderForWoPlanning && pageIsShortfallProduction && salesOrderId !== "" && cameFromRmCheckPlanning ? (
+        <div className="rounded-md border border-emerald-200 bg-emerald-50/90 px-3 py-2 text-xs font-medium text-emerald-950 shadow-sm">
+          Buffer already applied in planning. Work Order quantities use the prepared planned production quantity.
+        </div>
+      ) : null}
       {!fromNoQtySo && woShortfallFromGuidedEntry && shortfallQtyCustomerTracking > 0 && salesOrderId !== "" ? (
         <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-950 shadow-sm">
           {fromQcEntryWo ? (
@@ -1741,6 +1874,7 @@ export function WorkOrdersPage() {
             noQtyFlowState?.nextAction === "PRODUCTION" &&
             noQtyFlowState,
         )}
+        density="compact"
         variant="action"
         title="Start Production"
         subtitle="Work order is ready."
@@ -1767,11 +1901,12 @@ export function WorkOrdersPage() {
             noQtyFlowState?.nextAction === "QC" &&
             noQtyFlowState,
         )}
+        density="compact"
         variant="action"
-        title="QC pending"
+        title="QA in progress"
         subtitle="Production entries exist for this cycle."
         primaryAction={{
-          label: "Go to QC",
+          label: "Complete QA",
           testId: "next-save-qc",
           onClick: () =>
             noQtyFlowState &&
@@ -1830,6 +1965,15 @@ export function WorkOrdersPage() {
         </CardHeader>
         <CardContent className="px-3 py-2">
           {error ? <div className="mb-2 text-sm text-red-700">{error}</div> : null}
+          {showRegularLifecyclePanel && editingWo ? (
+            <WorkOrderLifecyclePanel
+              className="mb-3"
+              wo={editingWo}
+              onUpdated={() => {
+                void refresh();
+              }}
+            />
+          ) : null}
           {canProd ? (
             <div
               ref={woFormRef}
@@ -2062,12 +2206,34 @@ export function WorkOrdersPage() {
                   <div className="space-y-2 border-t border-slate-100 pt-2.5">
                   <NextStepStrip
                     className="w-full"
-                    visible={Boolean(showProductionNextStep && productionEntryHref)}
-                    variant="action"
-                    title="Next Step: Start Production"
-                    subtitle="Work Order created successfully."
+                    density="compact"
+                    visible={Boolean(rmIssueNextStep)}
+                    variant="blocked"
+                    title={rmIssueNextStep?.statusTitle ?? "Waiting for RM Issue"}
+                    subtitle={
+                      rmIssueNextStep?.blockingReason
+                        ? `${rmIssueNextStep.statusSubtitle ?? ""} · ${rmIssueNextStep.blockingReason}`
+                        : rmIssueNextStep?.statusSubtitle
+                    }
                     primaryAction={{
-                      label: "Go to Production",
+                      label: rmIssueNextStep?.primaryAction.label ?? "Issue RM to Production",
+                      testId: rmIssueNextStep?.primaryAction.testId,
+                      onClick: () => {
+                        const href = rmIssueNextStep?.primaryAction.href;
+                        if (href) nav(href);
+                      },
+                    }}
+                  />
+                  <NextStepStrip
+                    className="w-full"
+                    density="compact"
+                    visible={Boolean(showProductionNextStepEffective && productionEntryHref)}
+                    variant="action"
+                    title="RM Issued – Start Production"
+                    subtitle="Work order is ready for production entry."
+                    primaryAction={{
+                      label: "Enter Production",
+                      testId: "next-enter-production-from-wo",
                       onClick: () => productionEntryHref && nav(productionEntryHref),
                     }}
                   />
@@ -2145,10 +2311,10 @@ export function WorkOrdersPage() {
                                 />
                               </th>
                               <th className="px-2 py-1.5">Item</th>
-                              <th className="px-2 py-1.5 text-right">Order Qty</th>
+                              <th className="px-2 py-1.5 text-right">Customer Qty</th>
                               <th className="px-2 py-1.5 text-right">Already planned</th>
                               <th className="px-2 py-1.5 text-right font-medium text-slate-600">Remaining</th>
-                              <th className="min-w-[7rem] px-2 py-1.5 text-right font-semibold text-slate-800">WO Qty</th>
+                              <th className="min-w-[7rem] px-2 py-1.5 text-right font-semibold text-slate-800">Planned Production Qty</th>
                             </tr>
                           </thead>
                           <tbody>
@@ -2300,17 +2466,17 @@ export function WorkOrdersPage() {
                               <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-600">WO calculation (first selected FG)</div>
                               <div className="mt-1.5 grid max-w-md gap-1 text-[13px]">
                                 <div className="flex flex-wrap justify-between gap-x-4 gap-y-0.5">
-                                  <span>Order Qty</span>
-                                  <span className="tabular-nums font-medium">{fmtWoExplainQty(regularWoRmCheckPlan.orderQty)}</span>
+                                  <span>Customer Qty</span>
+                                  <span className="tabular-nums font-medium">{fmtWoExplainQty(regularWoRmCheckPlan.customerCommittedQty ?? regularWoRmCheckPlan.orderQty)}</span>
                                 </div>
                                 <div className="flex flex-wrap justify-between gap-x-4 gap-y-0.5">
-                                  <span>Less Available FG stock</span>
+                                  <span>FG buffer %</span>
                                   <span className="tabular-nums font-medium">{fmtWoExplainQty(regularWoRmCheckPlan.fgStock)}</span>
                                 </div>
                                 <div className="flex flex-wrap justify-between gap-x-4 gap-y-0.5 border-t border-slate-200/80 pt-1">
-                                  <span className="font-medium">WO Qty to produce</span>
+                                  <span className="font-medium">RM planning qty</span>
                                   <span className="tabular-nums font-semibold text-slate-900">
-                                    {fmtWoExplainQty(regularWoRmCheckPlan.toProduce)}
+                                    {fmtWoExplainQty(regularWoRmCheckPlan.rmPlanningQty ?? regularWoRmCheckPlan.toProduce)}
                                   </span>
                                 </div>
                               </div>
@@ -2336,12 +2502,32 @@ export function WorkOrdersPage() {
                 <div className="grid grid-cols-1 items-start gap-x-4 gap-y-3 sm:grid-cols-2">
                 <NextStepStrip
                   className="sm:col-span-2"
-                  visible={Boolean(showProductionNextStep && productionEntryHref)}
-                  variant="action"
-                  title="Next Step: Start Production"
-                  subtitle="Work Order created successfully."
+                  visible={Boolean(rmIssueNextStep)}
+                  variant="blocked"
+                  title={rmIssueNextStep?.statusTitle ?? "Waiting for RM Issue"}
+                  subtitle={
+                    rmIssueNextStep?.blockingReason
+                      ? `${rmIssueNextStep.statusSubtitle ?? ""} · ${rmIssueNextStep.blockingReason}`
+                      : rmIssueNextStep?.statusSubtitle
+                  }
                   primaryAction={{
-                    label: "Go to Production",
+                    label: rmIssueNextStep?.primaryAction.label ?? "Issue RM to Production",
+                    testId: rmIssueNextStep?.primaryAction.testId,
+                    onClick: () => {
+                      const href = rmIssueNextStep?.primaryAction.href;
+                      if (href) nav(href);
+                    },
+                  }}
+                />
+                <NextStepStrip
+                  className="sm:col-span-2"
+                  visible={Boolean(showProductionNextStepEffective && productionEntryHref)}
+                  variant="action"
+                  title="RM Issued – Start Production"
+                  subtitle="Work order is ready for production entry."
+                  primaryAction={{
+                    label: "Enter Production",
+                    testId: "next-enter-production-from-wo",
                     onClick: () => productionEntryHref && nav(productionEntryHref),
                   }}
                 />
@@ -2453,28 +2639,40 @@ export function WorkOrdersPage() {
                     <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-600">WO calculation</div>
                     <div className="mt-1.5 grid max-w-md gap-1 text-[13px]">
                       <div className="flex flex-wrap justify-between gap-x-4 gap-y-0.5">
-                        <span>Order Qty</span>
-                        <span className="tabular-nums font-medium">{fmtWoExplainQty(regularWoRmCheckPlan.orderQty)}</span>
+                        <span>Customer Qty</span>
+                        <span className="tabular-nums font-medium">{fmtWoExplainQty(regularWoRmCheckPlan.customerCommittedQty ?? regularWoRmCheckPlan.orderQty)}</span>
                       </div>
                       <div className="flex flex-wrap justify-between gap-x-4 gap-y-0.5">
-                        <span>Less Available FG stock</span>
-                        <span className="tabular-nums font-medium">{fmtWoExplainQty(regularWoRmCheckPlan.fgStock)}</span>
-                      </div>
-                      <div className="flex flex-wrap justify-between gap-x-4 gap-y-0.5 border-t border-slate-200/80 pt-1">
-                        <span className="font-medium">WO Qty to produce</span>
-                        <span className="tabular-nums font-semibold text-slate-900">
-                          {fmtWoExplainQty(regularWoRmCheckPlan.toProduce)}
-                        </span>
-                      </div>
-                    </div>
-                    <p className="mt-2 text-[11px] leading-snug text-slate-600">
-                      WO Qty is calculated as Order Qty minus available FG stock.
-                    </p>
+                                  <span>FG buffer %</span>
+                                  <span className="tabular-nums font-medium">{fmtWoExplainQty(regularWoRmCheckPlan.productionBufferPercent ?? 0)}</span>
+                                </div>
+                                <div className="flex flex-wrap justify-between gap-x-4 gap-y-0.5">
+                                  <span>Buffer Qty</span>
+                                  <span className="tabular-nums font-medium">{fmtWoExplainQty(regularWoRmCheckPlan.productionBufferQty ?? 0)}</span>
+                                </div>
+                                <div className="flex flex-wrap justify-between gap-x-4 gap-y-0.5">
+                                  <span>Planned Production Qty</span>
+                                  <span className="tabular-nums font-medium">{fmtWoExplainQty(regularWoRmCheckPlan.plannedProductionQty ?? regularWoRmCheckPlan.orderQty)}</span>
+                                </div>
+                                <div className="flex flex-wrap justify-between gap-x-4 gap-y-0.5">
+                                  <span>FG buffer %</span>
+                                  <span className="tabular-nums font-medium">{fmtWoExplainQty(regularWoRmCheckPlan.fgStock)}</span>
+                                </div>
+                                <div className="flex flex-wrap justify-between gap-x-4 gap-y-0.5 border-t border-slate-200/80 pt-1">
+                                  <span className="font-medium">RM planning qty</span>
+                                  <span className="tabular-nums font-semibold text-slate-900">
+                                    {fmtWoExplainQty(regularWoRmCheckPlan.rmPlanningQty ?? regularWoRmCheckPlan.toProduce)}
+                                  </span>
+                                </div>
+                              </div>
+                              <p className="mt-2 text-[11px] leading-snug text-slate-600">
+                                Planned Production Qty is calculated from Customer Qty plus FG buffer. RM planning qty then subtracts available FG stock.
+                              </p>
                   </div>
                 ) : null}
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
                 <div className="erp-form-field w-full min-w-[7rem] max-w-[12rem] shrink-0 sm:w-40">
-                  <span className="erp-form-label">WO Qty</span>
+                  <span className="erp-form-label">Planned Production Qty</span>
                   <Input
                     ref={woQtyPrimaryRef}
                     type="text"
@@ -2608,7 +2806,7 @@ export function WorkOrdersPage() {
                           </select>
                         </div>
                         <div className="erp-form-field w-full min-w-[7rem] max-w-[10rem] sm:w-28">
-                          <span className="erp-form-label">WO Qty</span>
+                          <span className="erp-form-label">Planned Production Qty</span>
                           <Input
                             type="text"
                             inputMode="decimal"
@@ -2655,7 +2853,7 @@ export function WorkOrdersPage() {
       )}
 
       {overrideOpen ? (
-        <div className="erp-modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="wo-override-title">
+        <ErpModal onClose={closeOverrideModal} aria-labelledby="wo-override-title">
           <div className="w-full max-w-[480px] rounded-xl border border-slate-200/90 bg-white p-4 shadow-xl sm:p-5">
             <h2 id="wo-override-title" className="text-base font-bold leading-snug text-slate-900">
               Dispatch-ready stock covers the order
@@ -2699,7 +2897,7 @@ export function WorkOrdersPage() {
               </Button>
             </div>
           </div>
-        </div>
+        </ErpModal>
       ) : null}
 
       {!showWoWorkspace ? (
@@ -2982,6 +3180,16 @@ export function WorkOrdersPage() {
               variant="inline"
               title={getRoleEmptyState("work_orders_open", roleUi.role).title}
               body={getRoleEmptyState("work_orders_open", roleUi.role).body}
+              action={
+                roleUi.role === "STORE" || roleUi.role === "ADMIN" ? (
+                  <Link
+                    to="/sales-orders"
+                    className={cn(buttonVariants({ variant: "default", size: "sm" }), "no-underline")}
+                  >
+                    Open Sales Orders
+                  </Link>
+                ) : undefined
+              }
             />
           ) : null}
           {!listFilteredOut && woStatusFilter === "COMPLETED" && completedTotal === 0 ? (
@@ -2993,6 +3201,16 @@ export function WorkOrdersPage() {
               variant="inline"
               title={getRoleEmptyState("work_orders_none", roleUi.role).title}
               body={getRoleEmptyState("work_orders_none", roleUi.role).body}
+              action={
+                roleUi.role === "STORE" || roleUi.role === "ADMIN" ? (
+                  <Link
+                    to="/sales-orders"
+                    className={cn(buttonVariants({ variant: "default", size: "sm" }), "no-underline")}
+                  >
+                    Open Sales Orders
+                  </Link>
+                ) : undefined
+              }
             />
           ) : null}
         </CardContent>

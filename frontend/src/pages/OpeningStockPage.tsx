@@ -8,6 +8,7 @@ import { PageActions } from "../components/PageHeader";
 import { useToast } from "../contexts/ToastContext";
 import { useAuth } from "../hooks/useAuth";
 import { Pencil, CheckCircle2, Plus, Trash2, Undo2, X } from "lucide-react";
+import { ErpModal } from "../components/erp/ErpModal";
 
 type StockBucket = "USABLE" | "QC_HOLD" | "QC_PENDING" | "REWORK" | "SCRAP";
 type OpeningStockStatus = "DRAFT" | "APPROVED";
@@ -420,7 +421,7 @@ export function OpeningStockPage() {
       </div>
 
       {showForm ? (
-        <div className="erp-modal-backdrop" role="dialog">
+        <ErpModal onClose={closeForm}>
           <Card className="erp-modal-shell flex w-[calc(100vw-2rem)] max-w-[640px] max-h-[85vh] flex-col overflow-hidden">
             <div className="sticky top-0 z-[2] flex items-center justify-between gap-2 border-b border-slate-200 bg-white px-4 py-3">
               <div className="text-base font-semibold text-slate-900">{editingId != null ? "Edit Opening Stock" : "Add Opening Stock"}</div>
@@ -485,11 +486,11 @@ export function OpeningStockPage() {
               </form>
             </CardContent>
           </Card>
-        </div>
+        </ErpModal>
       ) : null}
 
       {draftConfirmOpen ? (
-        <div className="erp-modal-backdrop z-[60]" role="dialog" aria-label="Confirm save opening stock draft">
+        <ErpModal onClose={closeDraftConfirm} backdropClassName="z-[60]" aria-label="Confirm save opening stock draft">
           <Card className="erp-modal-shell flex w-[calc(100vw-2rem)] max-w-[640px] max-h-[85vh] flex-col overflow-hidden">
             <div className="sticky top-0 z-[2] flex items-center justify-between gap-2 border-b border-slate-200 bg-white px-4 py-3">
               <div className="text-base font-semibold text-slate-900">Confirm opening stock draft</div>
@@ -563,11 +564,18 @@ export function OpeningStockPage() {
               </form>
             </CardContent>
           </Card>
-        </div>
+        </ErpModal>
       ) : null}
 
       {approveTarget ? (
-        <div className="erp-modal-backdrop z-[60]" role="dialog" aria-modal="true" aria-labelledby="os-approve-title">
+        <ErpModal
+          onClose={() => {
+            setApproveTarget(null);
+            setApprovePassword("");
+          }}
+          backdropClassName="z-[60]"
+          aria-labelledby="os-approve-title"
+        >
           <Card className="erp-modal-shell max-w-md">
             <CardHeader className="pb-2">
               <CardTitle id="os-approve-title" className="text-base">
@@ -631,11 +639,19 @@ export function OpeningStockPage() {
               </form>
             </CardContent>
           </Card>
-        </div>
+        </ErpModal>
       ) : null}
 
       {reverseTarget ? (
-        <div className="erp-modal-backdrop z-[60]" role="dialog" aria-modal="true" aria-labelledby="os-reverse-title">
+        <ErpModal
+          onClose={() => {
+            setReverseTarget(null);
+            setReverseReason("");
+            setReversePassword("");
+          }}
+          backdropClassName="z-[60]"
+          aria-labelledby="os-reverse-title"
+        >
           <Card className="erp-modal-shell max-w-md">
             <CardHeader className="pb-2">
               <CardTitle id="os-reverse-title" className="text-base">
@@ -699,11 +715,11 @@ export function OpeningStockPage() {
               </form>
             </CardContent>
           </Card>
-        </div>
+        </ErpModal>
       ) : null}
 
       {deleteTarget ? (
-        <div className="erp-modal-backdrop z-[60]" role="dialog" aria-labelledby="os-delete-title">
+        <ErpModal onClose={() => setDeleteTarget(null)} backdropClassName="z-[60]" aria-labelledby="os-delete-title">
           <Card className="erp-modal-shell max-w-md">
             <CardHeader className="pb-2">
               <CardTitle id="os-delete-title" className="text-base">
@@ -732,7 +748,7 @@ export function OpeningStockPage() {
               </form>
             </CardContent>
           </Card>
-        </div>
+        </ErpModal>
       ) : null}
     </div>
   );

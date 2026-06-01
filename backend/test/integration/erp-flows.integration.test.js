@@ -224,6 +224,9 @@ d("Reporting + dispatch integration (seeded chain)", () => {
     const bom = await prisma.bom.create({
       data: {
         fgItemId: fg.id,
+        status: "APPROVED",
+        isLocked: true,
+        docNo: `BOM-TEST-${tag}`,
         lines: {
           create: [{ rmItemId: rm.id, baseQty: "1", wastagePercent: "0" }],
         },

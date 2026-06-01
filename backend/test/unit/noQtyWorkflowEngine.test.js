@@ -4,7 +4,7 @@ const assert = require("node:assert/strict");
 const { _test } = require("../../src/services/noQtyWorkflowEngine");
 
 describe("noQtyWorkflowEngine role-aware actions", () => {
-  it("keeps NEXT_RS_READY overall but gives CREATE_NEXT_RS only to Sales/Admin owners", () => {
+  it("keeps NEXT_RS_READY overall but gives CREATE_NEXT_RS only to Admin commercial owners", () => {
     const base = {
       overallAction: "NEXT_RS",
       secondaryActions: ["DISPATCH"],
@@ -14,10 +14,10 @@ describe("noQtyWorkflowEngine role-aware actions", () => {
       displaySummary: "Cycle completed. Ready for Next RS.",
     };
 
-    const sales = _test.roleAwareActionPayload({ ...base, role: "SALES" });
-    assert.equal(sales.overallWorkflowState, "NEXT_RS_READY");
-    assert.equal(sales.primaryActionForCurrentUser, "CREATE_NEXT_RS");
-    assert.equal(sales.nextDepartmentAction, "NONE");
+    const admin = _test.roleAwareActionPayload({ ...base, role: "ADMIN" });
+    assert.equal(admin.overallWorkflowState, "NEXT_RS_READY");
+    assert.equal(admin.primaryActionForCurrentUser, "CREATE_NEXT_RS");
+    assert.equal(admin.nextDepartmentAction, "NONE");
 
     const store = _test.roleAwareActionPayload({ ...base, role: "STORE" });
     assert.equal(store.overallWorkflowState, "NEXT_RS_READY");
@@ -44,8 +44,8 @@ describe("noQtyWorkflowEngine role-aware actions", () => {
     assert.equal(dispatch.primaryActionForCurrentUser, "DISPATCH");
     assert.equal(dispatch.nextDepartmentAction, "NONE");
 
-    const qcViewingDispatch = _test.roleAwareActionPayload({
-      role: "QC",
+    const qaViewingDispatch = _test.roleAwareActionPayload({
+      role: "QA",
       overallAction: "DISPATCH",
       secondaryActions: [],
       optionalActions: [],
@@ -53,13 +53,13 @@ describe("noQtyWorkflowEngine role-aware actions", () => {
       cycleId: 20,
       displaySummary: "QC-accepted quantity is ready for dispatch.",
     });
-    assert.equal(qcViewingDispatch.primaryActionForCurrentUser, "NONE");
-    assert.equal(qcViewingDispatch.nextDepartmentAction, "DISPATCH");
+    assert.equal(qaViewingDispatch.primaryActionForCurrentUser, "NONE");
+    assert.equal(qaViewingDispatch.nextDepartmentAction, "DISPATCH");
   });
 
-  it("lets Sales/Admin prepare Next RS in parallel while QC remains the department action", () => {
-    const sales = _test.roleAwareActionPayload({
-      role: "SALES",
+  it("lets Admin see QC as primary while Create Next RS stays in secondary actions", () => {
+    const admin = _test.roleAwareActionPayload({
+      role: "ADMIN",
       overallAction: "QC",
       secondaryActions: ["NEXT_RS"],
       optionalActions: [],
@@ -68,9 +68,9 @@ describe("noQtyWorkflowEngine role-aware actions", () => {
       displaySummary: "QC or rework/hold action is pending.",
     });
 
-    assert.equal(sales.overallWorkflowState, "QC_PENDING");
-    assert.equal(sales.primaryActionForCurrentUser, "CREATE_NEXT_RS");
-    assert.equal(sales.nextDepartmentAction, "QC");
-    assert.deepEqual(sales.roleAllowedSecondaryActions, ["CREATE_NEXT_RS"]);
+    assert.equal(admin.overallWorkflowState, "QC_PENDING");
+    assert.equal(admin.primaryActionForCurrentUser, "QC");
+    assert.equal(admin.nextDepartmentAction, "NONE");
+    assert.deepEqual(admin.roleAllowedSecondaryActions, ["CREATE_NEXT_RS"]);
   });
 });

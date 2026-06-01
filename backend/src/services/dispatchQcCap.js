@@ -1,11 +1,11 @@
 /**
- * QC rollup helpers for reporting and other modules (e.g. production). Dispatch posting is **not** capped
- * by QC-approved totals: {@link assertDispatchAllowedForSoItem} enforces SO-line FIFO headroom + stock or replacement pool.
+ * QC rollup helpers for reporting and dispatch guards.
  *
  * sumQcAcceptedForSoItem: active QcEntry.acceptedQty for WOs on this SO+FG + adjustment QC rows.
  *
- * Dispatch-ready qty and the WO sufficiency guard use this rollup (when QC exists for the SO+item) with
- * usable on-hand — see reportMetrics.getSoItemDispatchShipCap / buildDispatchableQtyBySalesOrderLineId.
+ * Regular (NORMAL) SO dispatch-ready qty and lock/finalize gates use SO-linked QC remaining capped by
+ * physical USABLE on-hand — see reportMetrics.getSoItemDispatchShipCap / buildDispatchableQtyBySalesOrderLineId.
+ * Global item-level FG stock alone does not make another SO dispatchable.
  *
  * Physical FG: assertSufficientStockForQtyOut (stockService) uses the full stock ledger — same on-hand as
  * GET /dispatch/sales-orders onHand. **REPLACEMENT** dispatch is capped by both the return-QC pool and **USABLE**
@@ -228,6 +228,27 @@ async function assertDispatchAllowedForSoItem(tx, params, opts = {}) {
         err.statusCode = 400;
         throw err;
       }
+      return;
+    }
+
+    if (orderType === "NORMAL" || orderType == null) {
+      const qcGross = await sumQcAcceptedForSoItem(tx, soId, itemId);
+      const netOp = netDispatchedByItemId(dispatchRecords || [], DISPATCH_ALLOC_MODE.OPERATIONAL).get(itemId) ?? 0;
+      const onHandUsable = Number(await getItemStockQty(itemId, tx, { stockBucket: "USABLE" }));
+      const allowedQty = getSoItemDispatchShipCap({
+        orderType: "NORMAL",
+        onHandQty: onHandUsable,
+        qcAcceptedTotalForSoItem: qcGross,
+        netDispatchedOperationalForSoItem: netOp,
+      });
+      if (requestQty > allowedQty + STOCK_EPS) {
+        const err = new Error(
+          `Insufficient QC-linked stock for dispatch. Available for this sales order: ${formatQtyForMessage(allowedQty)}, required: ${formatQtyForMessage(requestQty)}.`,
+        );
+        err.statusCode = 400;
+        throw err;
+      }
+      await assertSufficientStockForQtyOut(tx, itemId, requestQty, "Insufficient stock for dispatch.");
       return;
     }
 

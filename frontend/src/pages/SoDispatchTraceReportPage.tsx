@@ -7,6 +7,11 @@ import { ALL_APP_ROLES } from "../components/ProtectedRoute";
 import { PageContainer, ReportPageHeader, StickyReportBackStrip } from "../components/PageHeader";
 import { ReportFilterToolbar, ReportFilterField } from "../components/erp/ReportChrome";
 import { ERP_REPORT_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
+import {
+  OperationalDispatchSnapshot,
+  type OperationalDispatchSnapshotMetrics,
+} from "../components/erp/OperationalDispatchSnapshot";
+import { buildNoQtyOperationalMetrics, type DispatchSoLike } from "../lib/noQtyOperationalMetrics";
 
 type TraceCell = {
   label: string | null;
@@ -104,6 +109,10 @@ export function SoDispatchTraceReportPage() {
   const [filterTick, setFilterTick] = React.useState(0);
   const [fgItems, setFgItems] = React.useState<FgItem[]>([]);
   const [soSummaries, setSoSummaries] = React.useState<SoSummaryItem[]>([]);
+  const [operationalSnapshot, setOperationalSnapshot] = React.useState<OperationalDispatchSnapshotMetrics | null>(
+    null,
+  );
+  const [snapshotLoading, setSnapshotLoading] = React.useState(false);
   const liveTick = useErpRefreshTick(["reports", "dispatch", "production", "qc"], {
     pollIntervalMs: ERP_REPORT_POLL_MS,
   });
@@ -146,6 +155,54 @@ export function SoDispatchTraceReportPage() {
   React.useEffect(() => {
     void load();
   }, [load]);
+
+  const focusedNoQtySummary =
+    soSummaries.length === 1 && soSummaries[0]?.orderType === "NO_QTY" ? soSummaries[0] : null;
+  const focusedItemId = itemId !== "" && Number.isFinite(Number(itemId)) ? Number(itemId) : null;
+
+  React.useEffect(() => {
+    if (!focusedNoQtySummary || focusedItemId == null) {
+      setOperationalSnapshot(null);
+      return;
+    }
+    let cancelled = false;
+    setSnapshotLoading(true);
+    (async () => {
+      try {
+        const soId = focusedNoQtySummary.salesOrderId;
+        const cycles = await apiFetch<Array<{ id: number; cycleNo: number }>>(
+          `/api/dispatch/no-qty-cycles?soId=${soId}`,
+        );
+        const cycleNo = focusedNoQtySummary.cycleNo;
+        const cycleList = Array.isArray(cycles) ? cycles : [];
+        const cycle =
+          cycleNo != null
+            ? cycleList.find((c) => Number(c.cycleNo) === Number(cycleNo))
+            : cycleList[0];
+        const cycleId = cycle?.id;
+        const qs = new URLSearchParams();
+        qs.set("noQtySoId", String(soId));
+        if (cycleId != null) qs.set("noQtyCycleId", String(cycleId));
+        const list = await apiFetch<DispatchSoLike[]>(`/api/dispatch/sales-orders?${qs.toString()}`);
+        const so = (Array.isArray(list) ? list : []).find((r) => Number(r.id) === soId) ?? null;
+        if (cancelled || !so) {
+          if (!cancelled) setOperationalSnapshot(null);
+          return;
+        }
+        const metrics = buildNoQtyOperationalMetrics(so, focusedItemId, {
+          totalDispatchedOverride: focusedNoQtySummary.dispatchQty,
+        });
+        if (!cancelled) setOperationalSnapshot(metrics);
+      } catch {
+        if (!cancelled) setOperationalSnapshot(null);
+      } finally {
+        if (!cancelled) setSnapshotLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [focusedNoQtySummary, focusedItemId, liveTick]);
 
   function applyFilters() {
     setPage(1);
@@ -203,11 +260,17 @@ export function SoDispatchTraceReportPage() {
       <div className="erp-info-strip" data-tone="info">
         <span className="font-semibold">Tip:</span>
         <span>
-          The SO summary uses the same filter scope as the trace. Dispatch cells show document id and date at
-          SO+FG level — use the summary for quantities.
+          Filter to one NO_QTY sales order and one FG item to see an operational dispatch snapshot (customer
+          pending, usable stock, can dispatch now).
         </span>
       </div>
       {error ? <div className="text-sm text-red-700">{error}</div> : null}
+
+      {snapshotLoading ? (
+        <p className="text-xs text-slate-500">Loading operational snapshot…</p>
+      ) : operationalSnapshot ? (
+        <OperationalDispatchSnapshot metrics={operationalSnapshot} />
+      ) : null}
 
       <Card>
         <CardContent className="pt-4">
@@ -346,32 +409,46 @@ export function SoDispatchTraceReportPage() {
                             </div>
                           ) : null}
                           <div className="mt-2 space-y-1 text-sm tabular-nums">
-                            <div className="flex justify-between gap-3">
-                              <span className="text-slate-600">SO Qty</span>
-                              <span className="font-medium text-slate-900">{isNoQty ? "OPEN" : formatSummaryQty(s.soQty)}</span>
-                            </div>
-                            <div className="flex justify-between gap-3">
-                              <span className="text-slate-600">Dispatch Qty</span>
-                              <span className="font-medium text-slate-900">{formatSummaryQty(s.dispatchQty)}</span>
-                            </div>
-                            <div
-                              className={
-                                pending
-                                  ? "flex justify-between gap-3 rounded border border-amber-200/80 bg-amber-50/90 px-2 py-1 -mx-0.5"
-                                  : "flex justify-between gap-3"
-                              }
-                            >
-                              <span className={pending ? "font-medium text-amber-900" : "text-slate-600"}>
-                                {isNoQty ? "-" : "Balance"}
-                              </span>
-                              <span
-                                className={
-                                  pending ? "font-semibold tabular-nums text-amber-950" : "font-medium text-slate-900"
-                                }
-                              >
-                                {isNoQty ? "-" : formatSummaryQty(s.balanceQty)}
-                              </span>
-                            </div>
+                            {isNoQty ? (
+                              <>
+                                <div className="flex justify-between gap-3">
+                                  <span className="text-slate-600">Total dispatched</span>
+                                  <span className="font-medium text-slate-900">{formatSummaryQty(s.dispatchQty)}</span>
+                                </div>
+                                <p className="text-[10px] leading-snug text-slate-500">
+                                  Open order — use operational snapshot above when one item is selected.
+                                </p>
+                              </>
+                            ) : (
+                              <>
+                                <div className="flex justify-between gap-3">
+                                  <span className="text-slate-600">SO Qty</span>
+                                  <span className="font-medium text-slate-900">{formatSummaryQty(s.soQty)}</span>
+                                </div>
+                                <div className="flex justify-between gap-3">
+                                  <span className="text-slate-600">Total dispatched</span>
+                                  <span className="font-medium text-slate-900">{formatSummaryQty(s.dispatchQty)}</span>
+                                </div>
+                                <div
+                                  className={
+                                    pending
+                                      ? "flex justify-between gap-3 rounded border border-amber-200/80 bg-amber-50/90 px-2 py-1 -mx-0.5"
+                                      : "flex justify-between gap-3"
+                                  }
+                                >
+                                  <span className={pending ? "font-medium text-amber-900" : "text-slate-600"}>
+                                    Balance pending
+                                  </span>
+                                  <span
+                                    className={
+                                      pending ? "font-semibold tabular-nums text-amber-950" : "font-medium text-slate-900"
+                                    }
+                                  >
+                                    {formatSummaryQty(s.balanceQty)}
+                                  </span>
+                                </div>
+                              </>
+                            )}
                           </div>
                         </li>
                       );

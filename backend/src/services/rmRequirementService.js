@@ -3,10 +3,11 @@
  */
 
 const { prisma } = require("../utils/prisma");
-const { effectiveQtyPerUnit } = require("./bomUtils");
+const { rmRequiredForFgCount } = require("./bomWeightPlanning");
 const { getApprovedProducedQtyByWorkOrderLineIds } = require("./productionMetrics");
 const { getWoLineRemainingProductionQty } = require("./reportMetrics");
 const { getUsableItemStockQty } = require("./stockService");
+const { BomStatus } = require("./bomStatus");
 
 const QUEUE_EPS = 1e-6;
 
@@ -26,6 +27,7 @@ async function getRmRequirementShortagesUsable() {
   const producedByLineId = await getApprovedProducedQtyByWorkOrderLineIds(prisma, lineIds);
 
   const boms = await prisma.bom.findMany({
+    where: { status: BomStatus.APPROVED },
     include: { lines: true },
   });
   const bomByFgId = new Map(boms.map((b) => [b.fgItemId, b]));
@@ -40,7 +42,14 @@ async function getRmRequirementShortagesUsable() {
       const bom = bomByFgId.get(line.fgItemId);
       if (!bom) continue;
       for (const bl of bom.lines) {
-        const perUnit = effectiveQtyPerUnit(bl.baseQty, bl.wastagePercent);
+        const perUnit = rmRequiredForFgCount(
+          bl.baseQty,
+          1,
+          bom.outputQty,
+          bl.wastagePercent,
+          bl.qcAllowancePercent,
+          bom.normalizationMode,
+        );
         const add = perUnit * balance;
         rmNeeded.set(bl.rmItemId, (rmNeeded.get(bl.rmItemId) || 0) + add);
       }

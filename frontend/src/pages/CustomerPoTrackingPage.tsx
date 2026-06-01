@@ -160,7 +160,7 @@ function mapTrackingCtasForAccountsRole(
   role: string | undefined,
   salesOrderId: number,
 ): TrackingCtaPair | null {
-  if (!pair || role !== "ACCOUNTS") return pair;
+  if (!pair || role !== "PURCHASE") return pair;
   const salesBills = `/sales-bills?salesOrderId=${encodeURIComponent(String(salesOrderId))}&from=${encodeURIComponent(TRACKING_FROM)}`;
   const dispatch = `/dispatch?salesOrderId=${encodeURIComponent(String(salesOrderId))}&from=${encodeURIComponent(TRACKING_FROM)}`;
 
@@ -367,7 +367,7 @@ function stagePill(stage: JourneyStage) {
 
 export function CustomerPoTrackingPage() {
   const auth = useAuth();
-  const accountsRole = auth.user?.role === "ACCOUNTS";
+  const accountsRole = auth.user?.role === "PURCHASE";
   const [urlSearch] = useSearchParams();
   const [customers, setCustomers] = React.useState<Customer[]>([]);
   const [customerSearch, setCustomerSearch] = React.useState("");
@@ -387,7 +387,7 @@ export function CustomerPoTrackingPage() {
 
   const accountsDateDefaultRef = React.useRef(false);
   React.useEffect(() => {
-    if (auth.user?.role !== "ACCOUNTS" || accountsDateDefaultRef.current) return;
+    if (auth.user?.role !== "PURCHASE" || accountsDateDefaultRef.current) return;
     accountsDateDefaultRef.current = true;
     setDateRange("ALL_DATES");
     setDateFrom("");

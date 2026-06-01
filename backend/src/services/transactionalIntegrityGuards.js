@@ -9,7 +9,12 @@ const { STOCK_EPS } = require("./stockService");
  * (WO “remaining headroom” for *new* planning uses only PENDING+IN_PROGRESS — see workOrderSoValidation.)
  * @type {import("@prisma/client").SimpleStatus[]}
  */
-const WORK_ORDER_STATUSES_FOR_DRAFT_FLOOR_PLANNED = ["PENDING", "IN_PROGRESS", "COMPLETED"];
+const WORK_ORDER_STATUSES_FOR_DRAFT_FLOOR_PLANNED = [
+  "PENDING",
+  "IN_PROGRESS",
+  "COMPLETED",
+  "HOLD",
+];
 
 /**
  * @param {import('@prisma/client').Prisma.TransactionClient} tx

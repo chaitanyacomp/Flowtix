@@ -99,7 +99,7 @@ export function DispatchInfoPanel({
         role="group"
         aria-label="Order quantities"
       >
-        <StatBlock label="SO qty" value={fmtQty(orderQty)} />
+        <StatBlock label="Customer qty" value={fmtQty(orderQty)} />
         <StatBlock label="Confirmed dispatched" value={fmtQty(dispatchedQty)} />
         <StatBlock label="Remaining SO" value={fmtQty(pendingQty)} />
         <StatBlock label="Draft dispatch" value={fmtQty(existingDraftQty)} />

@@ -7,8 +7,18 @@ import { apiFetch } from "../services/api";
 import { useDebouncedUrlStringParam, useUrlQueryState } from "../hooks/useUrlQueryState";
 import { ERP_REPORT_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
 import { cn } from "../lib/utils";
+import { ItemStockStatusBadge } from "../components/erp/ItemStockStatusBadge";
+import { itemStockStatusFromItemFields, itemStockStatusLabel } from "../lib/itemStockStatus";
 
-type ItemOpt = { id: number; itemName: string; itemType: "RM" | "FG"; unitName?: string | null; unit?: string | null };
+type ItemOpt = {
+  id: number;
+  itemName: string;
+  itemType: "RM" | "FG";
+  unitName?: string | null;
+  unit?: string | null;
+  minimumStockQty?: string | null;
+  minStockLevel?: string | null;
+};
 
 type Row = {
   itemId: number;
@@ -74,11 +84,15 @@ function fmtDate(iso: string | null | undefined): string {
   return d.toLocaleDateString();
 }
 
-function toCsv(rows: Row[]): string {
+function toCsv(
+  rows: Row[],
+  thresholdsByItemId: Map<number, { minimumStockQty?: string | null; minStockLevel?: string | null }>,
+): string {
   const header = [
     "Item",
     "Item Type",
     "Unit",
+    "Stock Status",
     "Opening Qty",
     "Total Inward Qty",
     "Total Outward Qty",
@@ -92,11 +106,24 @@ function toCsv(rows: Row[]): string {
     const s = v == null ? "" : String(v);
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
-  const lines = rows.map((r) =>
-    [
+  const lines = rows.map((r) => {
+    const th = thresholdsByItemId.get(r.itemId);
+    const currentQty =
+      r.currentAvailableQty != null && Number.isFinite(Number(r.currentAvailableQty))
+        ? Number(r.currentAvailableQty)
+        : Number(r.systemClosingQty) || 0;
+    const statusLabel = itemStockStatusLabel(
+      itemStockStatusFromItemFields({
+        currentQty,
+        minimumStockQty: th?.minimumStockQty,
+        minStockLevel: th?.minStockLevel,
+      }),
+    );
+    return [
       r.itemName,
       r.itemType ?? "",
       r.unit,
+      statusLabel,
       fmtQty(r.openingQty),
       fmtQty(r.totalInwardQty),
       fmtQty(r.totalOutwardQty),
@@ -105,8 +132,10 @@ function toCsv(rows: Row[]): string {
       fmtQty(r.systemClosingQty),
       r.currentAvailableQty == null ? "" : fmtQty(r.currentAvailableQty),
       r.lastMovementDate ? new Date(r.lastMovementDate).toISOString().slice(0, 10) : "",
-    ].map(esc).join(","),
-  );
+    ]
+      .map(esc)
+      .join(",");
+  });
   return [header.map(esc).join(","), ...lines].join("\n");
 }
 
@@ -187,8 +216,16 @@ export function StockReconciliationReportPage() {
 
   const rows = data?.rows ?? [];
 
+  const itemThresholdsById = React.useMemo(() => {
+    const m = new Map<number, { minimumStockQty?: string | null; minStockLevel?: string | null }>();
+    for (const it of items) {
+      m.set(it.id, { minimumStockQty: it.minimumStockQty, minStockLevel: it.minStockLevel });
+    }
+    return m;
+  }, [items]);
+
   function downloadCsv() {
-    const csv = toCsv(rows);
+    const csv = toCsv(rows, itemThresholdsById);
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -316,12 +353,13 @@ export function StockReconciliationReportPage() {
             </div>
           ) : (
             <div className="erp-table-wrap mt-auto max-w-full overflow-x-auto border-t border-slate-200">
-              <table className="erp-table min-w-[1120px] text-xs sm:text-sm">
+              <table className="erp-table min-w-[1200px] text-xs sm:text-sm">
                 <thead className="sticky top-0 z-[1] shadow-[0_1px_0_0_rgb(226_232_240)] [&_th]:bg-slate-50">
                   <tr>
                     <th>Item</th>
                     <th>Type</th>
                     <th>Unit</th>
+                    <th className="whitespace-nowrap">Stock status</th>
                     <th className="text-right">Opening</th>
                     <th className="text-right">Inward</th>
                     <th className="text-right">Outward</th>
@@ -333,11 +371,24 @@ export function StockReconciliationReportPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.map((r) => (
+                  {rows.map((r) => {
+                    const th = itemThresholdsById.get(r.itemId);
+                    const currentQty =
+                      r.currentAvailableQty != null && Number.isFinite(Number(r.currentAvailableQty))
+                        ? Number(r.currentAvailableQty)
+                        : Number(r.systemClosingQty) || 0;
+                    return (
                     <tr key={r.itemId}>
                       <td className="max-w-[18rem] truncate font-medium text-slate-900">{r.itemName}</td>
                       <td className="whitespace-nowrap">{r.itemType ?? "—"}</td>
                       <td className="whitespace-nowrap">{r.unit || "—"}</td>
+                      <td className="whitespace-nowrap">
+                        <ItemStockStatusBadge
+                          currentQty={currentQty}
+                          minimumStockQty={th?.minimumStockQty}
+                          minStockLevel={th?.minStockLevel}
+                        />
+                      </td>
                       <td className="text-right tabular-nums">{fmtQty(r.openingQty)}</td>
                       <td className="text-right tabular-nums">{fmtQty(r.totalInwardQty)}</td>
                       <td className="text-right tabular-nums">{fmtQty(r.totalOutwardQty)}</td>
@@ -351,7 +402,8 @@ export function StockReconciliationReportPage() {
                       <td className="text-right tabular-nums">{r.currentAvailableQty == null ? "—" : fmtQty(r.currentAvailableQty)}</td>
                       <td className="whitespace-nowrap">{fmtDate(r.lastMovementDate)}</td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

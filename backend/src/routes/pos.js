@@ -12,7 +12,7 @@ function lineTotal(qty, rate, discountPct, gstPct) {
   return (Math.round((base + gst) * 100) / 100).toFixed(2);
 }
 
-poRouter.post("/", requireAuth, requireRole(["ADMIN", "SALES"]), async (req, res, next) => {
+poRouter.post("/", requireAuth, requireRole(["ADMIN"]), async (req, res, next) => {
   try {
     const schema = z.object({
       customerId: z.number().int(),
@@ -62,7 +62,7 @@ poRouter.post("/", requireAuth, requireRole(["ADMIN", "SALES"]), async (req, res
   }
 });
 
-poRouter.put("/:id", requireAuth, requireRole(["ADMIN", "SALES"]), async (req, res, next) => {
+poRouter.put("/:id", requireAuth, requireRole(["ADMIN"]), async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     const schema = z.object({
@@ -140,7 +140,7 @@ poRouter.delete("/:id", requireAuth, requireRole(["ADMIN"]), async (req, res, ne
   }
 });
 
-poRouter.post("/:id/apply-decision", requireAuth, requireRole(["ADMIN", "SALES"]), async (req, res, next) => {
+poRouter.post("/:id/apply-decision", requireAuth, requireRole(["ADMIN"]), async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     const { salesOrder, created } = await createSalesOrderFromPo(id);
@@ -150,7 +150,7 @@ poRouter.post("/:id/apply-decision", requireAuth, requireRole(["ADMIN", "SALES"]
   }
 });
 
-poRouter.get("/", requireAuth, requireRole(["ADMIN", "SALES"]), async (req, res, next) => {
+poRouter.get("/", requireAuth, requireRole(["ADMIN"]), async (req, res, next) => {
   try {
     const pos = await prisma.customerPO.findMany({
       orderBy: { id: "desc" },

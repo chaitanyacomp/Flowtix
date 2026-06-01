@@ -40,30 +40,36 @@ export function DashboardCurrentProductionStatus({
   error,
   rowLimit = 8,
   className,
+  hideWhenEmpty,
 }: {
   rows: DashboardProductionStatusSource[] | null;
   loading?: boolean;
   error?: string | null;
   rowLimit?: number;
   className?: string;
+  /** Omit the section when the queue is loaded and has no active lines. */
+  hideWhenEmpty?: boolean;
 }) {
   const { visible, activeCount, carriedForwardCount, totalInQueue } = React.useMemo(
     () => buildDashboardProductionStatusRows(rows ?? [], { limit: rowLimit }),
     [rows, rowLimit],
   );
 
+  if (hideWhenEmpty && !loading && !error && rows !== null && totalInQueue === 0) {
+    return null;
+  }
+
   return (
     <section
       aria-label="Current Production Status"
       className={cn(
-        "erp-dash-production-status rounded-lg border border-slate-300/90 bg-white shadow-sm ring-1 ring-slate-900/[0.04]",
+        "erp-dash-production-status rounded-lg border border-slate-200/80 bg-white shadow-sm",
         className,
       )}
     >
-      <header className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200/80 bg-gradient-to-r from-slate-50/95 to-white px-2.5 py-1.5">
+      <header className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200/70 px-2.5 py-1">
         <div className="min-w-0">
-          <h2 className="text-[14px] font-extrabold tracking-tight text-slate-950">Current Production Status</h2>
-          <p className="text-[12px] font-medium text-slate-600">Live shop-floor · newest WO first</p>
+          <h2 className="text-[13px] font-extrabold tracking-tight text-slate-950">Current Production Status</h2>
         </div>
         {totalInQueue > 0 ? (
           <div className="flex shrink-0 flex-wrap items-center gap-1.5">
@@ -79,20 +85,20 @@ export function DashboardCurrentProductionStatus({
         ) : null}
       </header>
 
-      <div className="p-1.5 md:p-2">
+      <div className="px-2.5 py-1">
         {error ? (
-          <p className="rounded-md border border-amber-200/80 bg-amber-50/60 px-2 py-1.5 text-[12px] text-amber-950">
+          <p className="rounded-md border border-amber-200/80 bg-amber-50/60 px-2 py-1 text-[12px] text-amber-950">
             {error}
           </p>
         ) : null}
         {loading && rows === null ? (
-          <p className="px-1 py-2 text-[13px] text-slate-600">Loading production status…</p>
+          <p className="py-1 text-[12px] text-slate-600">Loading…</p>
         ) : null}
         {!loading && rows !== null && visible.length === 0 ? (
-          <p className="px-1 py-2 text-[13px] text-slate-600">No production lines in queue.</p>
+          <p className="py-1 text-[12px] font-medium text-slate-600">No active production lines</p>
         ) : null}
         {!loading && rows !== null && visible.length > 0 && activeCount === 0 ? (
-          <p className="mb-1 px-1 text-[12px] text-slate-600">No shop-floor actions pending — carried-forward history below.</p>
+          <p className="mb-0.5 text-[11px] text-slate-600">No shop-floor actions pending</p>
         ) : null}
         {visible.length > 0 ? (
           <ul className="divide-y divide-slate-200/80">

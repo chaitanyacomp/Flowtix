@@ -90,16 +90,16 @@ function userOwnsAction(role, action) {
   switch (action) {
     case "CREATE_NEXT_RS":
     case "REQUIREMENT":
-      return r === "SALES";
+      return r === "ADMIN";
     case "WORK_ORDER":
     case "PRODUCTION":
       return r === "PRODUCTION";
     case "QC":
-      return r === "QC";
+      return r === "QA";
     case "DISPATCH":
       return r === "STORE";
     case "SALES_BILL":
-      return r === "ACCOUNTS";
+      return r === "ADMIN";
     case "DONE":
     case "BLOCKED":
       return true;

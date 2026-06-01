@@ -113,7 +113,7 @@ describe("reportMetrics dispatchable (SO line × usable stock)", () => {
     assert.equal(getSoItemQcApprovedRemainingQty(10, 12), 0);
   });
 
-  it("getSoItemDispatchableReadyQty uses usable only when no QC accepted for SO+item", () => {
+  it("getSoItemDispatchableReadyQty requires SO-linked QC for Regular SO — not global stock", () => {
     const lines = [
       { id: 1, itemId: 10, qty: 100 },
       { id: 2, itemId: 10, qty: 50 },
@@ -127,10 +127,10 @@ describe("reportMetrics dispatchable (SO line × usable stock)", () => {
       onHandQty: 40,
       qcAcceptedTotalForSoItem: 0,
     });
-    assert.equal(d, 40);
+    assert.equal(d, 0);
   });
 
-  it("getSoItemDispatchableReadyQty uses usable stock even when QC exists", () => {
+  it("getSoItemDispatchableReadyQty caps Regular SO by QC pool even when global stock is higher", () => {
     const lines = [{ id: 1, itemId: 10, qty: 5000 }];
     const dispatch = [];
     const d = getSoItemDispatchableReadyQty({
@@ -141,16 +141,29 @@ describe("reportMetrics dispatchable (SO line × usable stock)", () => {
       onHandQty: 5000,
       qcAcceptedTotalForSoItem: 2000,
     });
-    assert.equal(d, 5000);
+    assert.equal(d, 2000);
   });
 
-  it("buildDispatchableQtyBySalesOrderLineId shares one ship pool across two SO lines (same item)", () => {
+  it("surplus buffer stock from another SO does not dispatch against a new Regular SO", () => {
+    const lines = [{ id: 1, itemId: 10, qty: 1000 }];
+    const d = getSoItemDispatchableReadyQty({
+      orderLineInputs: lines,
+      dispatchRecords: [],
+      itemId: 10,
+      orderType: "NORMAL",
+      onHandQty: 100,
+      qcAcceptedTotalForSoItem: 0,
+    });
+    assert.equal(d, 0);
+  });
+
+  it("buildDispatchableQtyBySalesOrderLineId shares QC-linked ship pool across two SO lines (same item)", () => {
     const lines = [
       { id: 1, itemId: 10, qty: 10 },
       { id: 2, itemId: 10, qty: 10 },
     ];
     const onHand = new Map([[10, 15]]);
-    const qc = new Map([[10, 0]]);
+    const qc = new Map([[10, 15]]);
     const byLine = buildDispatchableQtyBySalesOrderLineId({
       orderLineInputs: lines,
       dispatchRecords: [],
@@ -161,6 +174,22 @@ describe("reportMetrics dispatchable (SO line × usable stock)", () => {
     assert.equal(byLine.get(1), 10);
     assert.equal(byLine.get(2), 5);
     assert.equal((byLine.get(1) ?? 0) + (byLine.get(2) ?? 0), 15);
+  });
+
+  it("buildDispatchableQtyBySalesOrderLineId returns zero when no QC exists for Regular SO", () => {
+    const lines = [
+      { id: 1, itemId: 10, qty: 10 },
+      { id: 2, itemId: 10, qty: 10 },
+    ];
+    const byLine = buildDispatchableQtyBySalesOrderLineId({
+      orderLineInputs: lines,
+      dispatchRecords: [],
+      orderType: "NORMAL",
+      onHandByItemId: new Map([[10, 100]]),
+      qcAcceptedTotalByItemId: new Map([[10, 0]]),
+    });
+    assert.equal(byLine.get(1), 0);
+    assert.equal(byLine.get(2), 0);
   });
 
   it("NORMAL: customerPoQty caps FIFO + dispatchable; planned qty above PO does not stay dispatchable after PO shipped", () => {
@@ -209,6 +238,24 @@ describe("getDispatchBlockedReason", () => {
         reworkQty: 0,
       }),
       null,
+    );
+  });
+
+  it("explains Regular SO blocked by surplus store stock without own QC", () => {
+    assert.equal(
+      getDispatchBlockedReason({
+        orderType: "NORMAL",
+        pendingDispatchQty: 1000,
+        dispatchable: 0,
+        operationalRemaining: 1000,
+        totalStock: 100,
+        qcHoldQty: 0,
+        qcPendingQty: 0,
+        reworkQty: 0,
+        qcAcceptedGross: 0,
+        qcApprovedRemaining: 0,
+      }),
+      "No QC-accepted production for this sales order — store surplus cannot be dispatched against another order",
     );
   });
 

@@ -15,6 +15,24 @@ export type ResolvedNoQtyContinuation =
  * **Exception:** when the row is clearly a **draft** RS, we still deep-link so operators open that draft.
  *
  * This resolver never targets `/work-orders` — WO creation remains from the RS workspace.
+ *
+ * ### Commercial continuation mode (`commercialContinuation: true`)
+ *
+ * The Planning Dashboard renders a **commercial continuation** list for OPEN
+ * NO_QTY sales orders — this list is intentionally separate from the
+ * operational queues (Production / QC / Dispatch). For ADMIN / SALES it must
+ * **always** surface a planning action (Open Draft RS or Prepare Next RS),
+ * never an operational step like "Open QC" / "Open Production" / "Open
+ * Dispatch". Operational steps still live in their own cards on the same
+ * dashboard column.
+ *
+ * Concretely, when `commercialContinuation: true` and viewer is SALES/ADMIN:
+ *   - a `DRAFT` RS still wins (operators need to open and finalize it),
+ *   - otherwise we always return `prepare_next_rs` regardless of
+ *     `createNextRsEligible` / `primaryAction` / pending QC / pending
+ *     dispatch / cycle pointer state. The actual eligibility check
+ *     happens **at click time** in `prepareNoQtyNextRsAndNavigate` so the
+ *     dashboard can show planning continuation as long as the SO is OPEN.
  */
 export function resolveNoQtyDashboardContinuation(args: {
   salesOrderId: number;
@@ -24,10 +42,26 @@ export function resolveNoQtyDashboardContinuation(args: {
   flow: NoQtyFlowState | null;
   /** Dashboard viewer — blocking QC step applies only for roles that own the QC floor. */
   viewerRole?: string | null;
+  /**
+   * When `true`, force a planning-oriented resolution for SALES/ADMIN even
+   * if operational steps are pending. See doc block above. The Planning
+   * Dashboard's NO_QTY continuation list passes this flag; deep-link
+   * navigations from operational cards do not.
+   */
+  commercialContinuation?: boolean;
 }): ResolvedNoQtyContinuation {
-  const { salesOrderId, cycleId, latestRequirementSheetId, lastRsStatus, flow, viewerRole } = args;
+  const {
+    salesOrderId,
+    cycleId,
+    latestRequirementSheetId,
+    lastRsStatus,
+    flow,
+    viewerRole,
+    commercialContinuation,
+  } = args;
   const effCycleId = flow?.cycleId ?? cycleId ?? null;
   const viewer = String(viewerRole ?? "").trim().toUpperCase();
+  const isPlanningViewer = viewer === "ADMIN";
 
   const rollingSheetId =
     flow?.nextRollingRequirementSheetId != null && Number(flow.nextRollingRequirementSheetId) > 0
@@ -68,6 +102,14 @@ export function resolveNoQtyDashboardContinuation(args: {
     if (lockedNoFlow) {
       return { kind: "prepare_next_rs", label: "Next RS" };
     }
+    /**
+     * Commercial continuation: SALES/ADMIN must see a planning action even
+     * before flow state has resolved — fall back to prepare_next_rs so the
+     * row never disappears between fetches.
+     */
+    if (commercialContinuation && isPlanningViewer) {
+      return { kind: "prepare_next_rs", label: "Next RS" };
+    }
     return {
       kind: "navigate",
       label: "Next RS",
@@ -78,6 +120,16 @@ export function resolveNoQtyDashboardContinuation(args: {
         fromStep: "requirement",
       }),
     };
+  }
+
+  /**
+   * Commercial continuation (SALES/ADMIN): always plan. We never surface
+   * shop-floor steps in this lane — those have their own dashboard cards.
+   * Eligibility is re-checked at click time, so the row stays visible for
+   * the entire lifetime of an OPEN NO_QTY sales order.
+   */
+  if (commercialContinuation && isPlanningViewer) {
+    return { kind: "prepare_next_rs", label: "Next RS" };
   }
 
   const na = flow.nextAction;
@@ -93,7 +145,7 @@ export function resolveNoQtyDashboardContinuation(args: {
   const openQc = () =>
     ({
       kind: "navigate" as const,
-      label: "Open QC",
+      label: "Complete QA",
       to: buildQcEntryHref({
         salesOrderId,
         cycleId: effCycleId,
@@ -128,17 +180,17 @@ export function resolveNoQtyDashboardContinuation(args: {
     });
 
   /** Planning (SALES/ADMIN) is independent of shop-floor production balance. */
-  if (userCanCreateNextRs && (viewer === "SALES" || viewer === "ADMIN")) {
+  if (userCanCreateNextRs && viewer === "ADMIN") {
     return { kind: "prepare_next_rs", label: "Next RS" };
   }
 
   /** QC → Dispatch → Production for shop-floor roles. */
-  if (flow.qcPendingForCycle && (viewer === "ADMIN" || viewer === "QC" || viewer === "PRODUCTION")) {
+  if (flow.qcPendingForCycle && (viewer === "ADMIN" || viewer === "QA" || viewer === "PRODUCTION")) {
     return openQc();
   }
   if (
     (na === "DISPATCH" || flow.hasQcDispatchPending) &&
-    (viewer === "ADMIN" || viewer === "STORE" || viewer === "DISPATCH")
+    (viewer === "ADMIN" || viewer === "STORE")
   ) {
     return openDispatch();
   }

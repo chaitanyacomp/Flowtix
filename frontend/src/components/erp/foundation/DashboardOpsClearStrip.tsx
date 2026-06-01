@@ -4,14 +4,13 @@ import { cn } from "../../../lib/utils";
 export function dashboardClearStateCopy(role: string): { title: string; hint?: string } {
   switch (role) {
     case "STORE":
-    case "DISPATCH":
       return { title: "Queues clear — dispatch & billing", hint: "KPIs live" };
     case "PRODUCTION":
-      return { title: "Operations clear — shop floor", hint: "No pending actions" };
-    case "QC":
-      return { title: "Queues clear — inspection", hint: "Batches & rework clear" };
-    case "SALES":
-      return { title: "Queues clear — sales ops", hint: "Planning & enquiries quiet" };
+      return { title: "Operations clear — production & QA", hint: "No pending actions" };
+    case "QA":
+      return { title: "Queues clear — production QA", hint: "Batches & rework clear" };
+    case "PURCHASE":
+      return { title: "Queues clear — purchase ops", hint: "Procurement & bills quiet" };
     default:
       return { title: "Queues clear — operations", hint: "All pipelines quiet" };
   }

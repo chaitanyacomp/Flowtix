@@ -223,7 +223,7 @@ export function SalesBillsListPage() {
   }, [fromNoQtySo, focusSoIdValid, focusSoId, location.search]);
 
   return (
-    <PageContainer className="space-y-4">
+    <PageContainer className="erp-txn-workspace space-y-1.5">
       <StickyWorkspaceHead lead={<PageSmartBackLink defaultTo="/dashboard" defaultLabel="Back to Dashboard" />}>
         <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
           <div className="min-w-0">

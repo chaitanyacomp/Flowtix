@@ -7,6 +7,8 @@ function fmtQty(n: number): string {
 
 type FgWoBalanceItem = {
   soOrderedQty: number;
+  customerCommittedQty?: number;
+  plannedProductionQty?: number;
   /** Confirmed (locked) net dispatched for this SO + FG — matches planning remainder math on server. */
   dispatchedQty?: number;
   plannedOnOtherWorkOrdersQty: number;
@@ -14,7 +16,7 @@ type FgWoBalanceItem = {
   carryForwardShortfallQty?: number;
   /** APPROVED production summed across WO lines for this SO + FG (informational). */
   producedQty?: number;
-  /** Remaining for WO planning: SO qty − dispatched − planned on other WOs. */
+  /** Remaining for WO planning: planned production qty − dispatched − planned on other WOs. */
   balanceQty: number;
   /** Prefill hint — matches balanceQty (planning remainder). */
   suggestedWoQty?: number;
@@ -64,6 +66,8 @@ export function WoInfoPanel({
       balance.pendingSoQty != null && balance.dispatchableQty != null && balance.shortageQty != null;
     const dispatched = balance.dispatchedQty ?? 0;
     const suggested = balance.suggestedWoQty ?? balance.balanceQty;
+    const customerQty = balance.customerCommittedQty ?? balance.soOrderedQty;
+    const plannedQty = balance.plannedProductionQty ?? balance.balanceQty + balance.plannedOnOtherWorkOrdersQty;
     const carry = balance.carryForwardShortfallQty ?? 0;
     const warnings: string[] = [];
     if (balance.balanceQty <= 1e-9) {
@@ -89,8 +93,9 @@ export function WoInfoPanel({
           role="group"
           aria-label="Sales order finished good: work order planning quantities"
         >
-          <StatBlock label="SO qty" value={fmtQty(balance.soOrderedQty)} />
+          <StatBlock label="Customer qty" value={fmtQty(customerQty)} />
           <StatBlock label="Dispatched qty" value={fmtQty(dispatched)} />
+          <StatBlock label="Planned production qty" value={fmtQty(plannedQty)} />
           <StatBlock label="Remaining (planning)" value={fmtQty(balance.balanceQty)} emphasis />
           <StatBlock label="Suggested WO qty" value={fmtQty(suggested)} />
         </div>
@@ -103,7 +108,7 @@ export function WoInfoPanel({
           <StatBlock label="Produced qty" value={fmtQty(produced)} />
         </div>
         <p className="mt-1.5 text-[10px] leading-snug text-slate-500">
-          Remaining (planning) = max(0, SO qty − total QC accepted − already planned on other work orders).
+          Remaining (planning) = max(0, planned production qty − total QC accepted − already planned on other work orders).
           Pending SO / dispatch-ready row uses operational rules like the Dispatch screen.
         </p>
         {carry > 1e-9 ? (
@@ -145,7 +150,7 @@ export function WoInfoPanel({
   if (fallbackSoOrdered != null && Number.isFinite(fallbackSoOrdered)) {
     return (
       <p className={cn("text-left text-sm leading-snug text-slate-500 sm:text-right", className)}>
-        SO qty: <span className="font-medium tabular-nums text-slate-800">{fmtQty(fallbackSoOrdered)}</span>
+        Customer qty: <span className="font-medium tabular-nums text-slate-800">{fmtQty(fallbackSoOrdered)}</span>
         <span className="text-slate-500"> · Balance details load after FG is selected.</span>
       </p>
     );

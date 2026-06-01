@@ -219,7 +219,7 @@ export function buildNoQtyFlowSteps(args: {
     },
     { label: "Work Order", to: buildNoQtyGuidedHref({ to: `/work-orders?soMode=NO_QTY`, salesOrderId, cycleId: state?.cycleId ?? null }), status: st(2) },
     { label: "Production", to: buildNoQtyGuidedHref({ to: `/production`, salesOrderId, cycleId: state?.cycleId ?? null }), status: st(3) },
-    { label: "QC", to: buildNoQtyGuidedHref({ to: `/qc-entry`, salesOrderId, cycleId: state?.cycleId ?? null }), status: st(4) },
+    { label: "QA", to: buildNoQtyGuidedHref({ to: `/qc-entry`, salesOrderId, cycleId: state?.cycleId ?? null }), status: st(4) },
     { label: "Dispatch", to: buildNoQtyGuidedHref({ to: `/dispatch`, salesOrderId, cycleId: state?.cycleId ?? null }), status: st(5) },
     { label: "Sales Bill", to: buildNoQtyGuidedHref({ to: `/sales-bills`, salesOrderId, cycleId: state?.cycleId ?? null }), status: st(6) },
   ];

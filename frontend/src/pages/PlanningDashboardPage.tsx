@@ -31,6 +31,7 @@ import { Badge } from "../components/ui/badge";
 import { apiFetch } from "../services/api";
 import { cn } from "../lib/utils";
 import { NO_QTY_TERMS, REGULAR_TERMS } from "../lib/flowTerminology";
+import { materialPlanningReviewHref } from "../lib/woPrepareOperationalStage";
 import { useAuth } from "../hooks/useAuth";
 import { useDemoMode } from "../contexts/DemoModeContext";
 import { demoHighlightKey } from "../lib/demoFlowConfig";
@@ -49,7 +50,14 @@ import type { RmRequirementRow } from "./rmPurchase/rmPurchaseShared";
 type WoLifecycleRow = {
   status: string;
   salesOrderId: number;
-  lines: Array<{ fgItemId: number; approvedProducedQty?: number; remainingQty?: number }>;
+  lines: Array<{
+    fgItemId: number;
+    approvedProducedQty?: number;
+    remainingQty?: number;
+    /** Pending-QC qty per WO line — used so QC Pending wins over the production-driven WO COMPLETED flag. */
+    qcPendingQty?: number;
+    hasPendingQc?: boolean;
+  }>;
 };
 
 type SoCustomerRow = {
@@ -282,15 +290,12 @@ export function PlanningDashboardPage() {
     };
   }, [planningSalesOrderIdFromUrl]);
 
-  const rmPurchaseFromPlanningHref = React.useMemo(() => {
-    const q = new URLSearchParams();
-    q.set("source", "planning_dashboard");
-    const backPath =
+  const rmPlanningFromShortageHref = React.useMemo(() => {
+    const soId =
       Number.isFinite(planningSalesOrderIdFromUrl) && planningSalesOrderIdFromUrl > 0
-        ? `/planning-dashboard?salesOrderId=${encodeURIComponent(String(planningSalesOrderIdFromUrl))}`
-        : "/planning-dashboard";
-    q.set("returnTo", backPath);
-    return `/rm-po-grn?${q.toString()}`;
+        ? planningSalesOrderIdFromUrl
+        : undefined;
+    return materialPlanningReviewHref({ salesOrderId: soId, source: "planning_dashboard" });
   }, [planningSalesOrderIdFromUrl]);
 
   /** When NO_QTY demo is on planning step and the table would be empty, show one mock requirement (no API). */
@@ -444,7 +449,7 @@ export function PlanningDashboardPage() {
                   <p className="text-xs text-amber-900/90">Material purchase required before production.</p>
                 </div>
                 <Link
-                  to={rmPurchaseFromPlanningHref}
+                  to={rmPlanningFromShortageHref}
                   className={cn(
                     buttonVariants({ variant: "outline", size: "sm" }),
                     "h-8 shrink-0 border-amber-300 bg-white text-xs text-amber-950 hover:bg-amber-50",

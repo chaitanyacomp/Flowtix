@@ -7,12 +7,22 @@ const {
   SO_WRITE_ROLES,
   SO_READ_ROLES,
   SO_DETAIL_READ_ROLES,
+  WO_PLAN_PREP_ROLES,
   NEXT_RS_WRITE_ROLES,
   NO_QTY_FLOW_STATE_READ_ROLES,
   DISPATCH_WRITE_ROLES,
+  RM_PO_WRITE_ROLES,
 } = require("../constants/erpRoles");
 const { createSalesOrderFromPo } = require("../services/salesOrderFromPo");
 const { rmCheckForSalesOrder } = require("../services/rmCheckService");
+const { createMaterialRequirementFromWoPlanning } = require("../services/materialPlanningService");
+const { blockProcurementDemandWhenPlanningDriven } = require("../middleware/planningDrivenProcurementGuard");
+const {
+  buildRegularSoPlanningSnapshotView,
+  regularSoPlanningSnapshotToDto,
+  upsertRegularSoPlanningSnapshot,
+  resolveSuggestedFgPlanningBufferPercentForSalesOrder,
+} = require("../services/regularSoPlanningSnapshotService");
 const { getStrictInventoryControl } = require("../services/appSettings");
 const { DocType } = require("../prismaClientPackage");
 const { allocateDocNo } = require("../services/docNoService");
@@ -23,6 +33,7 @@ const {
 const { diagnoseNoQtyCycleAutoClose, maybeAutoCloseNoQtyCycle } = require("../services/noQtyCycleAutoClose");
 const { closeEmptyNoQtyActiveCycle } = require("../services/noQtyCloseEmptyCycle");
 const { enrichSalesOrdersWithProcessStage, fetchInvoicedQtyBySoId } = require("../services/salesOrderProcessStage");
+const { enrichSalesOrdersWithWoPrepareOperational } = require("../services/woPrepareOperationalQueue");
 const {
   STOCK_EPS: INTEGRITY_EPS,
   totalWoPlannedQtyForSoItem,
@@ -52,6 +63,12 @@ const {
 const { displaySalesOrderNo } = require("../utils/docNoLabels");
 const { normalizePositiveCycleId, parseStrictPositiveIntId } = require("../utils/cycleIds");
 const { loadNoQtyCycleQcAcceptedMap } = require("./dispatch");
+const { getCompanyStateDetails } = require("../services/appSettings");
+const {
+  resolveCommercialView,
+  freezeSalesOrderCommercialSnapshots,
+  ensureShipToAutoPick,
+} = require("../services/salesOrderCommercialAddress");
 const {
   loadNoQtyDispositionUsableForDispatchPoolMap,
   loadNoQtyPostCycleApprovalMapForInputs,
@@ -167,11 +184,25 @@ const quotationLineSelectForSo = {
 const soInclude = {
   po: { include: { customer: true } },
   customer: true,
+  shipToAddress: { include: { stateRef: true, customer: true } },
   quotation: { include: { enquiry: true } },
   lines: { include: { item: true, quotationLine: quotationLineSelectForSo } },
   dispatch: true,
   currentCycle: { select: { id: true, cycleNo: true, status: true } },
 };
+
+async function enrichSalesOrderWithCommercialAddress(tx, so) {
+  const company = await getCompanyStateDetails();
+  const companyStateCode = company?.companyStateRef?.stateCode ?? null;
+  const view = await resolveCommercialView(tx, so, { companyStateCode });
+  return {
+    ...so,
+    snapshotState: view.snapshotState,
+    resolvedBillTo: view.resolvedBillTo,
+    resolvedShipTo: view.resolvedShipTo,
+    resolvedPOS: view.resolvedPOS,
+  };
+}
 
 const statusEnum = z.enum([
   "DRAFT",
@@ -195,6 +226,7 @@ salesOrderRouter.post(
         .object({
           customerPoReference: z.string().min(1, "Customer PO reference is required."),
           remarks: z.string().optional().nullable(),
+          shipToAddressId: z.number().int().positive().optional().nullable(),
           /** Optional: per-line customer commitment + buffer for NORMAL SO (server sets planned `qty`). */
           lines: z
             .array(
@@ -287,6 +319,7 @@ salesOrderRouter.post(
           data: {
             docNo: await allocateDocNo(tx, { docType: DocType.SALES_ORDER, date: new Date() }),
             customerId: q.enquiry.customerId,
+            shipToAddressId: body.shipToAddressId ?? null,
             quotationId: q.id,
             customerPoReference: body.customerPoReference.trim(),
             remarks: body.remarks?.trim() || null,
@@ -298,6 +331,26 @@ salesOrderRouter.post(
           },
           include: soInclude,
         });
+
+        // Validate ship-to ownership/active and auto-pick default if missing.
+        if (createdSo.shipToAddressId != null) {
+          const ok = await tx.customerDeliveryAddress.findFirst({
+            where: { id: createdSo.shipToAddressId, customerId: createdSo.customerId, isActive: true },
+            select: { id: true },
+          });
+          if (!ok) {
+            const err = new Error("Invalid Ship To address for selected customer.");
+            err.statusCode = 400;
+            throw err;
+          }
+        } else {
+          await ensureShipToAutoPick(tx, createdSo.id);
+        }
+
+        // Freeze commercial snapshots immediately for auto-approved REGULAR SO.
+        const company = await getCompanyStateDetails();
+        const companyStateCode = company?.companyStateRef?.stateCode ?? null;
+        await freezeSalesOrderCommercialSnapshots(tx, createdSo.id, { companyStateCode });
 
         // Optional flow: when Sales Order is created from quotation, close enquiry to avoid duplicate funnel state.
         if (q.enquiry?.id != null) {
@@ -313,7 +366,7 @@ salesOrderRouter.post(
           actorRole: req.user.role,
           summary: "Sales Order created from approved quotation and auto-approved",
           payload: {
-            module: "SALES",
+            module: "ADMIN",
             actionLabel: "CREATE",
             ref: { type: "SO", id: String(createdSo.id), no: docLabel },
             snapshot: {
@@ -338,7 +391,8 @@ salesOrderRouter.post(
           metadata: salesOrderActivityMeta(createdSo),
         });
 
-        return createdSo;
+        const row = await tx.salesOrder.findUnique({ where: { id: createdSo.id }, include: soInclude });
+        return row ?? createdSo;
       });
 
       return res.status(201).json(so);
@@ -410,6 +464,7 @@ salesOrderRouter.post(
           data: {
             docNo: await allocateDocNo(tx, { docType: DocType.SALES_ORDER, date: new Date() }),
             customerId: q.enquiry.customerId,
+            shipToAddressId: null,
             quotationId: q.id,
             poId: null,
             customerPoReference: body.customerPoReference.trim(),
@@ -450,7 +505,8 @@ salesOrderRouter.post(
       });
 
       const [out] = await enrichSalesOrdersWithProcessStage(prisma, [enrichSalesOrderWithDispatchStats(so)]);
-      return res.status(201).json(out);
+      const enriched = await prisma.$transaction(async (tx) => enrichSalesOrderWithCommercialAddress(tx, out));
+      return res.status(201).json(enriched);
     } catch (e) {
       return next(e);
     }
@@ -1009,8 +1065,28 @@ salesOrderRouter.get(
         return 0;
       };
 
+      staged = await enrichSalesOrdersWithWoPrepareOperational(prisma, staged);
+
+      const company = await getCompanyStateDetails();
+      const companyStateCode = company?.companyStateRef?.stateCode ?? null;
+
+      const enriched = await prisma.$transaction(async (tx) =>
+        Promise.all(
+          staged.map(async (s) => {
+            const view = await resolveCommercialView(tx, s, { companyStateCode });
+            return {
+              ...s,
+              snapshotState: view.snapshotState,
+              resolvedBillTo: view.resolvedBillTo,
+              resolvedShipTo: view.resolvedShipTo,
+              resolvedPOS: view.resolvedPOS,
+            };
+          }),
+        ),
+      );
+
       return res.json(
-        staged.map((s) => ({
+        enriched.map((s) => ({
           ...s,
           ...(s.orderType === "NO_QTY"
             ? (() => {
@@ -1056,8 +1132,8 @@ salesOrderRouter.get(
                   if (finalizedBillExists) return "CLOSE_SO";
                   if (salesBillExists) return "SALES_BILL";
                   if (dispatchExists) return "SALES_BILL";
-                  if (qcExists) return "DISPATCH";
-                  if (productionExists) return "QC";
+                  if (qcExists) return "STORE";
+                  if (productionExists) return "QA";
                   if (workOrderExists) return "PRODUCTION";
                   if (requirementExists) return "WORK_ORDER";
                   return "REQUIREMENT";
@@ -1160,10 +1236,10 @@ salesOrderRouter.get(
                       return "Review & close SO";
                     case "SALES_BILL":
                       return "Complete billing";
-                    case "DISPATCH":
-                      return "Dispatch";
-                    case "QC":
-                      return "QC";
+                    case "STORE":
+                      return "STORE";
+                    case "QA":
+                      return "QA";
                     case "PRODUCTION":
                       return "Production";
                     case "WORK_ORDER":
@@ -1274,27 +1350,172 @@ salesOrderRouter.get(
  * REGULAR FLOW — RM / FG availability check before work order (NORMAL, REPLACEMENT). Not NO_QTY requirement planning.
  * Service: `rmCheckForSalesOrder` (no `planningDashboard` / NO_QTY cycle services).
  */
+function parsePlanQtyByLineIdFromQuery(query) {
+  const raw = query.planLineQty ?? query.planQty;
+  if (!raw) return {};
+  const out = {};
+  for (const part of String(raw).split(",")) {
+    const seg = part.trim();
+    if (!seg) continue;
+    const [k, v] = seg.split(":");
+    const lineId = Number(k);
+    const qty = Number(v);
+    if (Number.isFinite(lineId) && lineId > 0 && Number.isFinite(qty) && qty >= 0) {
+      out[lineId] = qty;
+    }
+  }
+  return out;
+}
+
 salesOrderRouter.get(
-  "/:id/rm-check",
+  "/:id/production-planning-snapshot",
   requireAuth,
-  requireRole(SO_READ_ROLES),
+  requireRole(WO_PLAN_PREP_ROLES),
   async (req, res, next) => {
     try {
       const soId = Number(req.params.id);
-      const data = await rmCheckForSalesOrder(soId);
+      const view = await buildRegularSoPlanningSnapshotView(soId, prisma);
+      const suggestedFgPlanningBufferPercent = await resolveSuggestedFgPlanningBufferPercentForSalesOrder(soId, prisma);
+      return res.json({
+        salesOrderId: view.salesOrderId,
+        orderType: view.orderType,
+        bufferPercent: view.bufferPercent,
+        suggestedFgPlanningBufferPercent,
+        snapshotId: view.snapshotId,
+        snapshotUpdatedAt: view.snapshotUpdatedAt,
+        source: view.source,
+        allFgEnough: view.allFgEnough,
+        lines: view.lines,
+      });
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
+salesOrderRouter.put(
+  "/:id/production-planning-snapshot",
+  requireAuth,
+  requireRole(["ADMIN", "STORE", "PRODUCTION"]),
+  async (req, res, next) => {
+    try {
+      const soId = Number(req.params.id);
+      const schema = z.object({
+        bufferPercent: z.number().min(0).max(10).optional(),
+      });
+      const body = schema.parse(req.body ?? {});
+      const snapshot = await upsertRegularSoPlanningSnapshot(
+        {
+          salesOrderId: soId,
+          bufferPercent: body.bufferPercent ?? 0,
+          createdByUserId: req.user?.userId ?? null,
+        },
+        prisma,
+      );
+      return res.json({
+        ok: true,
+        snapshot: regularSoPlanningSnapshotToDto(snapshot),
+      });
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
+salesOrderRouter.get(
+  "/:id/rm-check",
+  requireAuth,
+  requireRole(WO_PLAN_PREP_ROLES),
+  async (req, res, next) => {
+    try {
+      const soId = Number(req.params.id);
+      const planQtyByLineId = parsePlanQtyByLineIdFromQuery(req.query);
+      const data = await rmCheckForSalesOrder(soId, { planQtyByLineId });
       const strict = await getStrictInventoryControl();
-      const sufficient = data.allFgEnough && data.allRmEnough;
+      const materialOk = Boolean(data.canCreateWorkOrder);
       return res.json({
         ...data,
         strictInventoryControl: strict,
-        /** WO / downstream flows do not block on RM check; UI may still warn when strict + shortage. */
-        proceedAllowed: true,
-        blockMessage:
-          strict && !sufficient
-            ? "Strict Inventory Control is ON. Review shortage before proceeding."
-            : null,
+        /** REGULAR WO prepare: material planning engine gates work-order creation. */
+        proceedAllowed: materialOk,
+        blockMessage: data.woBlockReason ?? null,
       });
     } catch (e) {
+      return next(e);
+    }
+  },
+);
+
+const raiseMaterialRequirementBodySchema = z.object({
+  workOrderId: z.number().int().positive().optional(),
+  planLineQty: z.record(z.string(), z.coerce.number().nonnegative()).optional(),
+  confirmReuse: z.boolean().optional(),
+  confirmReopenClosed: z.boolean().optional(),
+});
+
+salesOrderRouter.post(
+  "/:id/raise-material-requirement",
+  requireAuth,
+  requireRole(RM_PO_WRITE_ROLES, "Only Admin and Store can raise material requirements."),
+  blockProcurementDemandWhenPlanningDriven,
+  async (req, res, next) => {
+    try {
+      const soId = Number(req.params.id);
+      const body = raiseMaterialRequirementBodySchema.parse(req.body ?? {});
+      const planQtyByLineId = {};
+      if (body.planLineQty) {
+        for (const [k, v] of Object.entries(body.planLineQty)) {
+          const lineId = Number(k);
+          if (Number.isFinite(lineId) && lineId > 0) planQtyByLineId[lineId] = v;
+        }
+      }
+      const result = await createMaterialRequirementFromWoPlanning({
+        salesOrderId: soId,
+        workOrderId: body.workOrderId,
+        planQtyByLineId,
+        createdByUserId: req.user?.userId,
+        confirmReuse: Boolean(body.confirmReuse),
+        confirmReopenClosed: Boolean(body.confirmReopenClosed),
+      });
+      const mr = result.materialRequirement;
+      return res.status(result.reused ? 200 : 201).json({
+        ok: true,
+        reused: result.reused,
+        message: result.reused
+          ? "Material requirement updated successfully."
+          : "Material requirement raised successfully.",
+        materialRequirement: {
+          id: mr.id,
+          docNo: mr.docNo,
+          status: mr.status,
+          sourceType: mr.sourceType,
+          salesOrderId: mr.salesOrderId,
+          workOrderId: mr.workOrderId,
+          lines: (mr.lines ?? []).map((l) => ({
+            rmItemId: l.rmItemId,
+            itemName: l.rmItem?.itemName ?? "",
+            unit: l.unitSnapshot ?? l.rmItem?.unit ?? "",
+            requiredQty: Number(l.requiredQty),
+            availableQty: Number(l.availableQtySnapshot),
+            shortageQty: Number(l.shortageQty),
+          })),
+        },
+      });
+    } catch (e) {
+      if (e?.code === "DUPLICATE_MATERIAL_REQUIREMENT") {
+        return res.status(409).json({
+          code: e.code,
+          message: e.message,
+          existingMaterialRequirement: e.existingMaterialRequirement ?? null,
+        });
+      }
+      if (e?.code === "REOPEN_CONFIRM_REQUIRED") {
+        return res.status(409).json({
+          code: e.code,
+          message: e.message,
+          existingMaterialRequirement: e.existingMaterialRequirement ?? null,
+        });
+      }
       return next(e);
     }
   },
@@ -1340,6 +1561,9 @@ salesOrderRouter.put(
           include: soInclude,
         });
         if (internalStatus === "APPROVED") {
+          const company = await getCompanyStateDetails();
+          const companyStateCode = company?.companyStateRef?.stateCode ?? null;
+          await freezeSalesOrderCommercialSnapshots(tx, soId, { companyStateCode });
           await auditLog.write(tx, {
             action: auditLog.AuditAction.APPROVE,
             entityType: auditLog.AuditEntityType.SALES_ORDER,
@@ -1383,7 +1607,8 @@ salesOrderRouter.put(
         return updated;
       });
       const [out] = await enrichSalesOrdersWithProcessStage(prisma, [enrichSalesOrderWithDispatchStats(row)]);
-      return res.json(out);
+      const enriched = await prisma.$transaction(async (tx) => enrichSalesOrderWithCommercialAddress(tx, out));
+      return res.json(enriched);
     } catch (e) {
       return next(e);
     }
@@ -1487,6 +1712,7 @@ salesOrderRouter.post(
           data: {
             docNo: await allocateDocNo(tx, { docType: DocType.SALES_ORDER, date: new Date() }),
             customerId: body.customerId,
+            shipToAddressId: null,
             quotationId: null,
             poId: null,
             customerPoReference: poRef,
@@ -1523,7 +1749,7 @@ salesOrderRouter.post(
           actorRole: req.user.role,
           summary: `No Qty sales order SO-${createdSo.id} created`,
           payload: {
-            module: "SALES",
+            module: "ADMIN",
             actionLabel: "CREATE",
             ref: { type: "SO", id: String(createdSo.id), no: `SO-${createdSo.id}` },
             snapshot: { orderType: "NO_QTY", customerId: createdSo.customerId, lineCount: createdSo.lines?.length ?? null },
@@ -1534,7 +1760,8 @@ salesOrderRouter.post(
       });
 
       const [out] = await enrichSalesOrdersWithProcessStage(prisma, [enrichSalesOrderWithDispatchStats(so)]);
-      return res.status(201).json(out);
+      const enriched = await prisma.$transaction(async (tx) => enrichSalesOrderWithCommercialAddress(tx, out));
+      return res.status(201).json(enriched);
     } catch (e) {
       return next(e);
     }
@@ -2215,13 +2442,13 @@ salesOrderRouter.get(
         if (salesBillExists) return "SALES_BILL";
         if (dispatchExists) return "SALES_BILL";
         // Dispatch accepted qty even when rework / remaining batch QC is still pending (parallel paths).
-        if (hasQcAcceptedUndispatched) return "DISPATCH";
-        if (qcPendingForCycle) return "QC";
-        if (noQtyDispatchableNow && requirementLocked) return "DISPATCH";
+        if (hasQcAcceptedUndispatched) return "STORE";
+        if (qcPendingForCycle) return "QA";
+        if (noQtyDispatchableNow && requirementLocked) return "STORE";
         if (workOrderExists && !productionExists) return "PRODUCTION";
-        if (workOrderExists && productionExists) return "DISPATCH";
+        if (workOrderExists && productionExists) return "STORE";
         if (workOrderExists) return "PRODUCTION";
-        if (requirementLocked) return noQtyDispatchableNow ? "DISPATCH" : "WORK_ORDER";
+        if (requirementLocked) return noQtyDispatchableNow ? "STORE" : "WORK_ORDER";
         return "REQUIREMENT";
       })();
 
@@ -2421,7 +2648,7 @@ salesOrderRouter.post(
           actorRole: req.user.role,
           summary: `No Qty SO empty cycle closed (cycle ${result.closedCycleNo}).`,
           payload: {
-            module: "SALES",
+            module: "ADMIN",
             actionLabel: "NO_QTY_CLOSE_EMPTY_CYCLE",
             closedCycleId: result.closedCycleId,
             closedCycleNo: result.closedCycleNo,
@@ -2457,6 +2684,7 @@ salesOrderRouter.put(
         .object({
           customerPoReference: z.string().nullable().optional(),
           remarks: z.string().nullable().optional(),
+          shipToAddressId: z.number().int().positive().optional().nullable(),
           lines: z
             .array(
               z.object({
@@ -2490,6 +2718,29 @@ salesOrderRouter.put(
           const err = new Error("Only draft sales orders can be edited.");
           err.statusCode = 409;
           throw err;
+        }
+
+        if (body.shipToAddressId !== undefined) {
+          const customerId = so.customerId;
+          if (!customerId) {
+            const err = new Error("Customer is required before setting Ship To address.");
+            err.statusCode = 400;
+            throw err;
+          }
+          if (body.shipToAddressId == null) {
+            await tx.salesOrder.update({ where: { id: soId }, data: { shipToAddressId: null } });
+          } else {
+            const addr = await tx.customerDeliveryAddress.findFirst({
+              where: { id: body.shipToAddressId, customerId: customerId, isActive: true },
+              select: { id: true },
+            });
+            if (!addr) {
+              const err = new Error("Invalid Ship To address for selected customer.");
+              err.statusCode = 400;
+              throw err;
+            }
+            await tx.salesOrder.update({ where: { id: soId }, data: { shipToAddressId: addr.id } });
+          }
         }
 
         if (so.orderType === "REPLACEMENT") {
@@ -2636,7 +2887,7 @@ salesOrderRouter.put(
         });
 
         await assertReplacementSoQtyWithinAvailable(tx, saved);
-        return saved;
+        return enrichSalesOrderWithCommercialAddress(tx, saved);
       });
 
       return res.json(result);
@@ -2826,7 +3077,7 @@ salesOrderRouter.post(
           actorRole: req.user.role,
           summary: `No Qty SO empty cycle closed (cycle ${result.closedCycleNo}).`,
           payload: {
-            module: "SALES",
+            module: "ADMIN",
             actionLabel: "NO_QTY_CLOSE_EMPTY_CYCLE",
             closedCycleId: result.closedCycleId,
             closedCycleNo: result.closedCycleNo,
@@ -3067,6 +3318,7 @@ salesOrderRouter.post(
           sourceId: z.number().int().positive(),
           customerPoReference: z.string().min(1, "Customer PO reference is required."),
           remarks: z.string().optional().nullable(),
+          shipToAddressId: z.number().int().positive().optional().nullable(),
           lines: z
             .array(
               z.object({
@@ -3151,6 +3403,7 @@ salesOrderRouter.post(
             data: {
               docNo: await allocateDocNo(tx, { docType: DocType.SALES_ORDER, date: new Date() }),
               customerId: q.enquiry.customerId,
+              shipToAddressId: body.shipToAddressId ?? null,
               quotationId: null,
               customerPoReference: body.customerPoReference.trim(),
               remarks: mergedRemarks,
@@ -3163,6 +3416,24 @@ salesOrderRouter.post(
             include: soInclude,
           });
 
+          if (createdSo.shipToAddressId != null) {
+            const ok = await tx.customerDeliveryAddress.findFirst({
+              where: { id: createdSo.shipToAddressId, customerId: createdSo.customerId, isActive: true },
+              select: { id: true },
+            });
+            if (!ok) {
+              const err = new Error("Invalid Ship To address for selected customer.");
+              err.statusCode = 400;
+              throw err;
+            }
+          } else {
+            await ensureShipToAutoPick(tx, createdSo.id);
+          }
+
+          const company = await getCompanyStateDetails();
+          const companyStateCode = company?.companyStateRef?.stateCode ?? null;
+          await freezeSalesOrderCommercialSnapshots(tx, createdSo.id, { companyStateCode });
+
           const docLabel = displaySalesOrderNo(createdSo.id, createdSo.docNo);
           await auditLog.write(tx, {
             action: auditLog.AuditAction.CREATE,
@@ -3172,7 +3443,7 @@ salesOrderRouter.post(
             actorRole: req.user.role,
             summary: "Sales Order created from previous quotation (snapshot)",
             payload: {
-              module: "SALES",
+              module: "ADMIN",
               actionLabel: "CREATE",
               ref: { type: "SO", id: String(createdSo.id), no: docLabel },
               snapshot: {
@@ -3198,7 +3469,8 @@ salesOrderRouter.post(
             metadata: salesOrderActivityMeta(createdSo),
           });
 
-          return createdSo;
+          const row = await tx.salesOrder.findUnique({ where: { id: createdSo.id }, include: soInclude });
+          return row ?? createdSo;
         }
 
         const src = await tx.salesOrder.findUnique({
@@ -3296,7 +3568,7 @@ salesOrderRouter.post(
           actorRole: req.user.role,
           summary: "Sales Order created from previous sales order (snapshot)",
           payload: {
-            module: "SALES",
+            module: "ADMIN",
             actionLabel: "CREATE",
             ref: { type: "SO", id: String(createdSo.id), no: docLabel },
             snapshot: {
@@ -3326,7 +3598,8 @@ salesOrderRouter.post(
       });
 
       const [out] = await enrichSalesOrdersWithProcessStage(prisma, [enrichSalesOrderWithDispatchStats(so)]);
-      return res.status(201).json(out);
+      const enriched = await prisma.$transaction(async (tx) => enrichSalesOrderWithCommercialAddress(tx, out));
+      return res.status(201).json(enriched);
     } catch (e) {
       return next(e);
     }
@@ -3350,7 +3623,8 @@ salesOrderRouter.get(
         throw err;
       }
       const [out] = await enrichSalesOrdersWithProcessStage(prisma, [enrichSalesOrderWithDispatchStats(row)]);
-      return res.json(out);
+      const enriched = await prisma.$transaction(async (tx) => enrichSalesOrderWithCommercialAddress(tx, out));
+      return res.json(enriched);
     } catch (e) {
       return next(e);
     }

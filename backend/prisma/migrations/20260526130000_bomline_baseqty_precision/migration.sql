@@ -1,0 +1,2 @@
+ALTER TABLE `BomLine`
+  MODIFY `baseQty` DECIMAL(18, 6) NOT NULL;

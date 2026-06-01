@@ -36,6 +36,7 @@ const { qcReportRouter } = require("./routes/qcReport");
 const { searchRouter } = require("./routes/search");
 const { statesRouter } = require("./routes/states");
 const { unitsRouter } = require("./routes/units");
+const { locationsRouter } = require("./routes/locations");
 const { adminDatabaseCleanupRouter } = require("./routes/adminDatabaseCleanup");
 const { adminBackupsRouter } = require("./routes/adminBackups");
 const { adminSecurityRouter } = require("./routes/adminSecurity");
@@ -43,6 +44,12 @@ const { tallyMasterImportRouter } = require("./routes/tallyMasterImport");
 const { openingStockRouter } = require("./routes/openingStock");
 const { rateContractsRouter } = require("./routes/rateContracts");
 const { noQtyNextActionRouter } = require("./routes/noQtyNextAction");
+const { materialPlanningRouter } = require("./routes/materialPlanning");
+const { materialAvailabilityRouter } = require("./routes/materialAvailability");
+const { procurementPlanningRouter } = require("./routes/procurementPlanning");
+const { rmStockPlanningRouter } = require("./routes/rmStockPlanning");
+const { monthlyPlanningRouter } = require("./routes/monthlyPlanning");
+const { isMonthlyPlanningEnabled, isPlanningDrivenProcurementEnabled } = require("./config/featureFlags");
 
 /**
  * Express app with all API routes (shared by server.js and integration tests).
@@ -63,6 +70,14 @@ function createApp() {
 
   app.get("/api/health/live", (req, res) => {
     res.json({ ok: true, database: null });
+  });
+
+  // Runtime feature flags for the client (additive; no auth needed — exposes booleans only).
+  app.get("/api/config/feature-flags", (req, res) => {
+    res.json({
+      monthlyPlanning: isMonthlyPlanningEnabled(),
+      planningDrivenProcurement: isPlanningDrivenProcurementEnabled(),
+    });
   });
 
   app.get("/api/health", async (req, res) => {
@@ -106,12 +121,25 @@ function createApp() {
   app.use("/api/quotations", quotationRouter);
   app.use("/api/suppliers", supplierRouter);
   app.use("/api/sales-orders", salesOrderRouter);
+  app.use("/api/material-availability", materialAvailabilityRouter);
+  app.use("/api/material-planning", materialPlanningRouter);
+  app.use("/api/procurement-planning", procurementPlanningRouter);
+  app.use("/api/rm-stock-planning", rmStockPlanningRouter);
+  // Monthly Planning Workspace (Phase 1 foundation) — gated behind FEATURE_MONTHLY_PLANNING (default OFF).
+  app.use("/api/monthly-planning", monthlyPlanningRouter);
+  const { materialIssueRouter } = require("./routes/materialIssues");
+  app.use("/api/material-issues", materialIssueRouter);
+  const { pmrRouter } = require("./routes/productionMaterialRequests");
+  app.use("/api/production-material-requests", pmrRouter);
+  const { productionMaterialReturnRouter } = require("./routes/productionMaterialReturns");
+  app.use("/api/production-material-returns", productionMaterialReturnRouter);
   app.use("/api/no-qty", noQtyNextActionRouter);
   app.use("/api", requirementSheetsRouter);
   app.use("/api/settings", settingsRouter);
   app.use("/api/company-profile", companyProfileRouter);
   app.use("/api/states", statesRouter);
   app.use("/api/units", unitsRouter);
+  app.use("/api/locations", locationsRouter);
   app.use("/api/scrap", scrapRouter);
   app.use("/api/activity", activityRouter);
   app.use("/api", activityLogsRouter);

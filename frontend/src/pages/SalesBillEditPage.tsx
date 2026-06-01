@@ -13,6 +13,7 @@ import { withReportsReturnContextIfPresent } from "../lib/drillDownRoutes";
 import { ActivityHistoryCard } from "../components/ActivityHistoryCard";
 import { BillExportStatusPanel } from "../components/BillExportStatusPanel";
 import { Badge } from "../components/ui/badge";
+import { ErpModal } from "../components/erp/ErpModal";
 import {
   OperationalContextBar,
   OperationalContextSticky,
@@ -20,6 +21,8 @@ import {
   OpCtxSep,
 } from "../components/erp/OperationalWorkspaceChrome";
 import { cn } from "../lib/utils";
+import { SalesBillInvoiceDocument } from "../components/sales/SalesBillInvoiceDocument";
+import { StickyWorkflowActionBar } from "../components/erp/StickyWorkflowActionBar";
 
 type SalesBillReceiptRow = {
   id: number;
@@ -85,6 +88,23 @@ type Bill = {
   cancelledAt?: string | null;
   cancelReason?: string | null;
   taxIntraState?: boolean;
+  gstMode?: "LOCAL" | "INTERSTATE" | string | null;
+  posStateCode?: string | null;
+  posStateName?: string | null;
+  posSource?: string | null;
+  customerNameSnapshot?: string;
+  customerStateNameSnapshot?: string;
+  customerStateCodeSnapshot?: string;
+  billToAddressSnapshot?: string;
+  billToGstinSnapshot?: string;
+  shipToLabelSnapshot?: string;
+  shipToAddressSnapshot?: string;
+  shipToGstinSnapshot?: string;
+  shipToStateNameSnapshot?: string;
+  shipToStateCodeSnapshot?: string;
+  posStateNameSnapshot?: string;
+  posStateCodeSnapshot?: string;
+  posSourceSnapshot?: string;
   customer: { id: number; name: string };
   dispatch: {
     id: number;
@@ -150,6 +170,18 @@ function todayDateInput(): string {
   return `${y}-${m}-${day}`;
 }
 
+function printSalesBillInvoice() {
+  document.body.classList.add("sales-bill-invoice-print");
+  window.print();
+  window.addEventListener(
+    "afterprint",
+    () => {
+      document.body.classList.remove("sales-bill-invoice-print");
+    },
+    { once: true },
+  );
+}
+
 export function SalesBillEditPage() {
   const { id: idParam } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -158,7 +190,7 @@ export function SalesBillEditPage() {
   const userRole = useAuth().user?.role;
   const toast = useToast();
   const isAdmin = userRole === "ADMIN";
-  const canEditPaymentTracking = userRole === "ADMIN" || userRole === "SALES" || userRole === "ACCOUNTS";
+  const canEditPaymentTracking = userRole === "ADMIN";
 
   const [bill, setBill] = React.useState<Bill | null>(null);
   const [loadError, setLoadError] = React.useState<string | null>(null);
@@ -187,10 +219,13 @@ export function SalesBillEditPage() {
     reason: string;
     password: string;
   } | null>(null);
+  const [reExportAuth, setReExportAuth] = React.useState<{ open: boolean; password: string } | null>(null);
   const [adminRateDlg, setAdminRateDlg] = React.useState<{ lineId: number; password: string } | null>(null);
   const [localRates, setLocalRates] = React.useState<Record<number, string>>({});
   const [applyingRate, setApplyingRate] = React.useState(false);
   const [soHead, setSoHead] = React.useState<SoHeadLite | null>(null);
+  const [showCommercialAddress, setShowCommercialAddress] = React.useState(false);
+  const [invoicePreviewOpen, setInvoicePreviewOpen] = React.useState(false);
 
   const readOnly = bill?.status === "FINALIZED" || bill?.status === "CANCELLED";
   const soId = bill?.dispatch.soId ?? 0;
@@ -406,15 +441,20 @@ export function SalesBillEditPage() {
     }
   }
 
-  async function exportToTally() {
-    if (!bill || bill.status !== "FINALIZED" || bill.isExported || exporting) return;
+  async function performSalesBillExport(adminPassword?: string) {
+    if (!bill || bill.status !== "FINALIZED" || exporting) return;
     setExporting(true);
     setFormError(null);
     setExportError(null);
     try {
       const token = localStorage.getItem("token");
       const res = await fetch(getApiUrl(`/api/sales-bills/${bill.id}/export/tally.xml`), {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify(adminPassword ? { adminPassword } : {}),
       });
       if (!res.ok) {
         let msg = "Could not export to Tally";
@@ -440,6 +480,7 @@ export function SalesBillEditPage() {
       const refreshed = await apiFetch<Bill>(`/api/sales-bills/${bill.id}`);
       setBill(refreshed);
       setExportError(null);
+      setReExportAuth(null);
       await loadSoHead(refreshed.dispatch.soId);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Could not export to Tally";
@@ -449,6 +490,25 @@ export function SalesBillEditPage() {
     } finally {
       setExporting(false);
     }
+  }
+
+  async function exportToTally() {
+    if (!bill || bill.status !== "FINALIZED" || exporting) return;
+    if (bill.isExported) {
+      setReExportAuth({ open: true, password: "" });
+      return;
+    }
+    await performSalesBillExport();
+  }
+
+  async function approveReExport() {
+    if (!bill || bill.status !== "FINALIZED" || !bill.isExported || !reExportAuth?.open || exporting) return;
+    const password = reExportAuth.password.trim();
+    if (!password) {
+      setExportError("Admin password is required for re-export.");
+      return;
+    }
+    await performSalesBillExport(password);
   }
 
   async function deleteDraft() {
@@ -609,9 +669,9 @@ export function SalesBillEditPage() {
   const billOperationalCycleNo = billHeaderOperationalCycleNo(bill);
 
   return (
-    <PageContainer>
+    <PageContainer className="erp-txn-workspace erp-txn-workspace--sticky-submit">
       {adminCancelAuth?.open ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
+        <ErpModal onClose={() => setAdminCancelAuth(null)} backdropClassName="bg-black/30" aria-label="Admin authorization">
           <div className="w-full max-w-md rounded-lg border border-slate-200 bg-white shadow-xl">
             <div className="border-b border-slate-200 px-4 py-3">
               <div className="text-sm font-semibold text-slate-900">Admin Authorization Required</div>
@@ -638,10 +698,40 @@ export function SalesBillEditPage() {
               </Button>
             </div>
           </div>
-        </div>
+        </ErpModal>
+      ) : null}
+      {reExportAuth?.open ? (
+        <ErpModal onClose={() => setReExportAuth(null)} backdropClassName="bg-black/30" aria-label="Re-export authorization">
+          <div className="w-full max-w-md rounded-lg border border-slate-200 bg-white shadow-xl">
+            <div className="border-b border-slate-200 px-4 py-3">
+              <div className="text-sm font-semibold text-slate-900">Admin Authorization Required</div>
+              <div className="mt-1 text-xs leading-relaxed text-slate-600">
+                This bill is already exported to Tally. Re-export may create duplicate voucher entries. Enter Admin password to continue.
+              </div>
+            </div>
+            <div className="px-4 py-3">
+              <label className="block text-xs font-medium text-slate-700">Admin password</label>
+              <Input
+                type="password"
+                className="mt-1 h-9"
+                value={reExportAuth.password}
+                onChange={(e) => setReExportAuth((s) => (s ? { ...s, password: e.target.value } : s))}
+                autoFocus
+              />
+            </div>
+            <div className="flex items-center justify-end gap-2 border-t border-slate-200 px-4 py-3">
+              <Button type="button" variant="outline" className="h-8 text-xs" onClick={() => setReExportAuth(null)} disabled={exporting}>
+                Cancel
+              </Button>
+              <Button type="button" className="h-8 text-xs" onClick={() => void approveReExport()} disabled={exporting}>
+                {exporting ? "Exporting…" : "Re-export"}
+              </Button>
+            </div>
+          </div>
+        </ErpModal>
       ) : null}
       {adminRateDlg != null ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
+        <ErpModal onClose={() => setAdminRateDlg(null)} backdropClassName="bg-black/30" aria-label="Rate correction authorization">
           <div className="w-full max-w-md rounded-lg border border-slate-200 bg-white shadow-xl">
             <div className="border-b border-slate-200 px-4 py-3">
               <div className="text-sm font-semibold text-slate-900">Confirm rate correction</div>
@@ -677,9 +767,9 @@ export function SalesBillEditPage() {
               </Button>
             </div>
           </div>
-        </div>
+        </ErpModal>
       ) : null}
-      <OperationalContextSticky className="space-y-1.5">
+      <OperationalContextSticky className="space-y-1">
         <div className="flex flex-wrap items-center gap-2">
           <PageSmartBackLink defaultTo="/sales-bills" defaultLabel="Back to sales bills" />
           <h1 className="text-sm font-semibold leading-tight text-slate-900">Sales bill</h1>
@@ -745,6 +835,9 @@ export function SalesBillEditPage() {
               </span>
             </>
           ) : null}
+          <OpCtxSep />
+          <span className="font-semibold text-slate-600">Amount</span>
+          <span className="font-semibold tabular-nums text-slate-900">{formatMoney(bill.netAmount)}</span>
         </OperationalContextBar>
       </OperationalContextSticky>
 
@@ -755,16 +848,137 @@ export function SalesBillEditPage() {
       ) : null}
 
       <div className="erp-workspace-2col">
-        <div className="min-w-0 space-y-3">
+        <div className="min-w-0 space-y-2">
           <Card className="min-w-0 overflow-hidden shadow-sm ring-1 ring-slate-100">
-            <CardHeader className="border-b border-slate-100 pb-2 pt-3">
+            <CardHeader className="erp-txn-card-header">
               <CardTitle className="text-sm font-semibold text-slate-900">Bill details</CardTitle>
             </CardHeader>
-            <CardContent className="grid min-w-0 gap-3 pt-3">
-              <div className="grid gap-1">
-                <span className="text-xs font-medium text-slate-600">Customer</span>
-                <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800">{bill.customer.name}</div>
+            <CardContent className="erp-txn-card-body grid min-w-0 gap-2">
+              <div className="rounded-md border border-slate-200 bg-slate-50/70 p-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-sm font-medium text-slate-800">Commercial</div>
+                  <span
+                    className={cn(
+                      "rounded-full px-2 py-0.5 text-[11px] font-semibold",
+                      bill.gstMode === "INTERSTATE"
+                        ? "bg-purple-100 text-purple-900"
+                        : bill.gstMode === "LOCAL"
+                          ? "bg-emerald-100 text-emerald-900"
+                          : bill.taxIntraState === false
+                            ? "bg-purple-100 text-purple-900"
+                            : bill.taxIntraState === true
+                              ? "bg-emerald-100 text-emerald-900"
+                              : "bg-slate-100 text-slate-700",
+                    )}
+                    title={bill.posStateName ?? bill.posStateNameSnapshot ?? ""}
+                  >
+                    {bill.gstMode === "INTERSTATE" || (bill.gstMode == null && bill.taxIntraState === false)
+                      ? "Interstate"
+                      : bill.gstMode === "LOCAL" || (bill.gstMode == null && bill.taxIntraState === true)
+                        ? "Local"
+                        : "POS Pending"}
+                  </span>
+                </div>
+
+                <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <div className="rounded border border-slate-200 bg-white px-2 py-1.5">
+                    <div className="text-[11px] font-medium text-slate-600">Bill To</div>
+                    <div className="mt-0.5 text-[13px] font-semibold text-slate-900">
+                      {bill.customerNameSnapshot?.trim() || bill.customer.name}
+                    </div>
+                    <div className="mt-0.5 text-[12px] text-slate-600">
+                      {(bill.customerStateCodeSnapshot ?? "").trim() || (bill.customerStateNameSnapshot ?? "").trim() ? (
+                        <>
+                          {(bill.customerStateCodeSnapshot ?? "").trim()}
+                          {(bill.customerStateCodeSnapshot ?? "").trim() &&
+                          (bill.customerStateNameSnapshot ?? "").trim()
+                            ? " · "
+                            : ""}
+                          {(bill.customerStateNameSnapshot ?? "").trim()}
+                        </>
+                      ) : (
+                        "State not set"
+                      )}
+                      {bill.billToGstinSnapshot?.trim() ? (
+                        <span className="ml-2 rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[11px] text-slate-700">
+                          {bill.billToGstinSnapshot.trim()}
+                        </span>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  <div className="rounded border border-slate-200 bg-white px-2 py-1.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-[11px] font-medium text-slate-600">Ship To</div>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-2 text-xs"
+                        onClick={() => setShowCommercialAddress((s) => !s)}
+                        aria-expanded={showCommercialAddress}
+                      >
+                        {showCommercialAddress ? "Hide address" : "View address"}
+                      </Button>
+                    </div>
+                    <div className="mt-0.5 text-[13px] font-semibold text-slate-900">
+                      {bill.shipToLabelSnapshot?.trim() ||
+                      bill.shipToAddressSnapshot?.trim() ||
+                      bill.shipToStateCodeSnapshot?.trim() ||
+                      bill.shipToGstinSnapshot?.trim()
+                        ? bill.shipToLabelSnapshot?.trim() || "Delivery address"
+                        : "Same as Bill To"}
+                    </div>
+                    <div className="mt-0.5 text-[12px] text-slate-600">
+                      {(bill.shipToStateCodeSnapshot ?? "").trim() || (bill.shipToStateNameSnapshot ?? "").trim() ? (
+                        <>
+                          {(bill.shipToStateCodeSnapshot ?? "").trim()}
+                          {(bill.shipToStateCodeSnapshot ?? "").trim() && (bill.shipToStateNameSnapshot ?? "").trim()
+                            ? " · "
+                            : ""}
+                          {(bill.shipToStateNameSnapshot ?? "").trim()}
+                        </>
+                      ) : (
+                        "State not set"
+                      )}
+                      {bill.shipToGstinSnapshot?.trim() ? (
+                        <span className="ml-2 rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[11px] text-slate-700">
+                          {bill.shipToGstinSnapshot.trim()}
+                        </span>
+                      ) : null}
+                    </div>
+                    {showCommercialAddress ? (
+                      <div className="mt-1 space-y-1 rounded border border-slate-200 bg-slate-50 p-2 text-[12px] leading-snug text-slate-700">
+                        <div>
+                          <span className="font-medium text-slate-800">Bill To address: </span>
+                          <span className="whitespace-pre-wrap break-words">
+                            {bill.billToAddressSnapshot?.trim() || "Not recorded on this bill"}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="font-medium text-slate-800">Ship To address: </span>
+                          <span className="whitespace-pre-wrap break-words">
+                            {bill.shipToAddressSnapshot?.trim() ||
+                            bill.shipToLabelSnapshot?.trim() ||
+                            bill.shipToStateCodeSnapshot?.trim()
+                              ? bill.shipToAddressSnapshot?.trim() || "Same as Bill To"
+                              : "Same as Bill To"}
+                          </span>
+                        </div>
+                        {(bill.posStateCodeSnapshot ?? bill.posStateCode)?.trim() ? (
+                          <div className="text-[11px] text-slate-500">
+                            POS: {(bill.posStateCodeSnapshot ?? bill.posStateCode)?.trim()}
+                            {(bill.posStateNameSnapshot ?? bill.posStateName)?.trim()
+                              ? ` · ${(bill.posStateNameSnapshot ?? bill.posStateName)?.trim()}`
+                              : ""}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
               </div>
+
               <div className="grid gap-1 sm:grid-cols-2 sm:gap-3">
                 <div className="grid gap-1">
                   <span className="text-xs font-medium text-slate-600">Bill no.</span>
@@ -807,7 +1021,50 @@ export function SalesBillEditPage() {
           </Card>
 
           <Card className="min-w-0 overflow-hidden shadow-sm ring-1 ring-slate-100">
-            <CardHeader className="border-b border-slate-100 pb-2 pt-3">
+            <CardHeader className="erp-txn-card-header">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <CardTitle className="text-sm font-semibold text-slate-900">Invoice preview</CardTitle>
+                <div className="flex flex-wrap items-center gap-2">
+                  {invoicePreviewOpen ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-[11px]"
+                      data-testid="print-sales-bill-invoice-btn"
+                      onClick={printSalesBillInvoice}
+                    >
+                      Print invoice
+                    </Button>
+                  ) : null}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 text-[11px]"
+                    data-testid="toggle-sales-bill-invoice-preview"
+                    onClick={() => setInvoicePreviewOpen((open) => !open)}
+                  >
+                    {invoicePreviewOpen ? "Collapse" : "Expand"}
+                  </Button>
+                </div>
+              </div>
+            </CardHeader>
+            {invoicePreviewOpen ? (
+              <CardContent className="erp-txn-card-body pt-0">
+                <SalesBillInvoiceDocument bill={bill} />
+              </CardContent>
+            ) : (
+              <CardContent className="erp-txn-card-body pt-0">
+                <p className="text-[11px] leading-snug text-slate-600">
+                  Preview hidden to save space. Expand when reviewing the invoice layout before finalize or export.
+                </p>
+              </CardContent>
+            )}
+          </Card>
+
+          <Card className="min-w-0 overflow-hidden shadow-sm ring-1 ring-slate-100">
+            <CardHeader className="erp-txn-card-header">
               <CardTitle className="text-sm font-semibold text-slate-900">Line items</CardTitle>
             </CardHeader>
             <CardContent className="min-w-0 p-0 sm:p-4 sm:pt-0">
@@ -879,12 +1136,12 @@ export function SalesBillEditPage() {
           </Card>
         </div>
 
-        <aside className="min-w-0 space-y-3 lg:sticky lg:top-[4.5rem] lg:self-start">
+        <aside className="min-w-0 space-y-2 lg:sticky lg:top-[3.25rem] lg:self-start">
           <Card className="overflow-hidden shadow-sm ring-1 ring-slate-100">
-            <CardHeader className="border-b border-slate-100 pb-2 pt-3">
+            <CardHeader className="erp-txn-card-header">
               <CardTitle className="text-sm font-semibold text-slate-900">Totals</CardTitle>
             </CardHeader>
-            <CardContent className="grid gap-1.5 pt-3 text-sm">
+            <CardContent className="erp-txn-card-body grid gap-1 pt-0 text-sm">
               <div className="flex items-center justify-between gap-4">
                 <span className="text-slate-600">Taxable</span>
                 <span className="tabular-nums">{formatMoney(bill.totalBasic)}</span>
@@ -909,10 +1166,10 @@ export function SalesBillEditPage() {
           </Card>
 
           <Card className="overflow-hidden shadow-sm ring-1 ring-slate-100">
-            <CardHeader className="border-b border-slate-100 pb-2 pt-3">
+            <CardHeader className="erp-txn-card-header">
               <CardTitle className="text-sm font-semibold text-slate-900">Actions</CardTitle>
             </CardHeader>
-            <CardContent className="flex flex-col gap-2 pt-3">
+            <CardContent className="erp-txn-card-body flex flex-col gap-1.5 pt-0">
               <Button type="button" data-testid="finalize-sales-bill-btn" disabled={readOnly || saving} onClick={() => void finalize()}>
                 Finalize bill
               </Button>
@@ -957,6 +1214,7 @@ export function SalesBillEditPage() {
             resetting={resetting}
             onExport={exportToTally}
             onResetExport={resetExport}
+            allowReExport
             density="compact"
             className="shadow-none ring-1 ring-slate-100"
           />
@@ -1223,7 +1481,35 @@ export function SalesBillEditPage() {
           },
         ]}
       />
+      {bill.status === "DRAFT" ? (
+        <StickyWorkflowActionBar
+          title={`Draft · ${formatMoney(bill.netAmount)}`}
+          subtitle={bill.customer.name}
+          primaryAction={{
+            label: "Finalize bill",
+            testId: "finalize-sales-bill-sticky-btn",
+            disabled: readOnly || saving,
+            onClick: () => void finalize(),
+          }}
+          secondaryAction={{
+            label: saving ? "Saving…" : "Save draft",
+            testId: "save-sales-bill-sticky-btn",
+            disabled: readOnly || saving,
+            onClick: () => void saveDraft(),
+          }}
+        />
+      ) : bill.status === "FINALIZED" && !bill.isExported ? (
+        <StickyWorkflowActionBar
+          title={`Finalized · ${formatMoney(bill.netAmount)}`}
+          subtitle="Ready to export to Tally"
+          primaryAction={{
+            label: exporting ? "Exporting…" : "Export to Tally",
+            testId: "export-sales-bill-sticky-btn",
+            disabled: exporting,
+            onClick: () => void exportToTally(),
+          }}
+        />
+      ) : null}
     </PageContainer>
   );
 }
-

@@ -152,13 +152,13 @@ describe("dashboardActionQueue", () => {
 
 
 
-  it("partitions NO_QTY NEXT_RS into noQtyPlanning for SALES", () => {
+  it("partitions NO_QTY NEXT_RS into noQtyPlanning for ADMIN", () => {
 
     const g = partitionContinueWorkingForActions(
 
       [row({ salesOrderId: 3, orderType: "NO_QTY", stageKey: "NEXT_RS", lastShortageQty: 3000 })],
 
-      { role: "SALES" },
+      { role: "ADMIN" },
 
     );
 
@@ -250,7 +250,7 @@ describe("dashboardActionQueue", () => {
 
       ],
 
-      { role: "SALES" },
+      { role: "ADMIN" },
 
     );
 
@@ -262,13 +262,29 @@ describe("dashboardActionQueue", () => {
 
 
 
-  it("hides launcher when action required has higher priority", () => {
+  it("hides Open Production launcher when QC owns the primary action", () => {
 
     const primary = new Map([[5, "QC"]]);
 
     expect(shouldHideOpenNoQtyForActionRequired(5, "Open Production", primary)).toBe(true);
 
-    expect(shouldHideOpenNoQtyForActionRequired(5, "Next RS", primary)).toBe(true);
+  });
+
+
+
+  it("never hides NO_QTY Create Next RS launcher — planning is parallel to shop-floor", () => {
+
+    // Planning (Create Next RS) is parallel to QC / Dispatch / Production:
+
+    // Sales / Admin must always be able to start the next requirement sheet for the next cycle.
+
+    for (const shopFloorStage of ["QC", "DISPATCH", "PRODUCTION", "SALES_BILL"]) {
+
+      const primary = new Map([[5, shopFloorStage]]);
+
+      expect(shouldHideOpenNoQtyForActionRequired(5, "Next RS", primary)).toBe(false);
+
+    }
 
   });
 
@@ -279,6 +295,184 @@ describe("dashboardActionQueue", () => {
     const primary = new Map([[5, "NO_QTY_PLANNING"]]);
 
     expect(shouldHideOpenNoQtyForActionRequired(5, "Next RS", primary)).toBe(false);
+
+  });
+
+
+
+  it("Create Next RS card is added in parallel to QC when QC is pending (ADMIN)", () => {
+
+    // Simulate continueWorking where the SO is currently on QC stage.
+
+    const base = enforceUniqueSalesOrdersAcrossGroups(
+
+      partitionContinueWorkingForActions(
+
+        [
+
+          row({
+
+            salesOrderId: 77,
+
+            stageKey: "QC",
+
+            orderType: "NO_QTY",
+
+            awaitingQcQty: 5000,
+
+          }),
+
+        ],
+
+        { role: "ADMIN" },
+
+      ),
+
+    );
+
+
+
+    // Flow state reports Create Next RS is eligible for this SO (locked RS + no later locked).
+
+    const enriched = enrichActionRequiredWithNoQtyPlanning(
+
+      base,
+
+      [
+
+        {
+
+          salesOrderId: 77,
+
+          customerName: "Cust",
+
+          createNextRsEligible: true,
+
+          lastShortageQty: 0,
+
+        },
+
+      ],
+
+      { role: "ADMIN" },
+
+    );
+
+
+
+    expect(enriched.qc).toHaveLength(1);
+
+    expect(enriched.noQtyPlanning).toHaveLength(1);
+
+    expect(enriched.noQtyPlanning[0]?.buttonLabel).toBe("Create Next RS");
+
+
+
+    // PURCHASE does not own QC or planning — no rows in either lane.
+
+    const purchaseBase = enforceUniqueSalesOrdersAcrossGroups(
+
+      partitionContinueWorkingForActions(
+
+        [
+
+          row({
+
+            salesOrderId: 77,
+
+            stageKey: "QC",
+
+            orderType: "NO_QTY",
+
+            awaitingQcQty: 5000,
+
+          }),
+
+        ],
+
+        { role: "PURCHASE" },
+
+      ),
+
+    );
+
+    const purchaseEnriched = enrichActionRequiredWithNoQtyPlanning(
+
+      purchaseBase,
+
+      [
+
+        {
+
+          salesOrderId: 77,
+
+          customerName: "Cust",
+
+          createNextRsEligible: true,
+
+        },
+
+      ],
+
+      { role: "PURCHASE" },
+
+    );
+
+    expect(purchaseEnriched.noQtyPlanning).toHaveLength(0);
+
+    expect(purchaseEnriched.qc).toHaveLength(0);
+
+  });
+
+
+
+  it("Production / QA / Store / Purchase never see NO_QTY Create Next RS planning rows", () => {
+
+    const base = enforceUniqueSalesOrdersAcrossGroups({
+
+      qc: [],
+
+      dispatch: [],
+
+      production: [],
+
+      salesBill: [],
+
+      nextRs: [],
+
+      noQtyPlanning: [],
+
+    });
+
+
+
+    for (const role of ["PRODUCTION", "QA", "STORE", "PURCHASE"]) {
+
+      const enriched = enrichActionRequiredWithNoQtyPlanning(
+
+        base,
+
+        [
+
+          {
+
+            salesOrderId: 88,
+
+            customerName: "Cust",
+
+            createNextRsEligible: true,
+
+          },
+
+        ],
+
+        { role },
+
+      );
+
+      expect(enriched.noQtyPlanning).toHaveLength(0);
+
+    }
 
   });
 

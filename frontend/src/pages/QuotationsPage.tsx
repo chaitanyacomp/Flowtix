@@ -1,4 +1,4 @@
-﻿import * as React from "react";
+import * as React from "react";
 import { Link, Navigate, useNavigate, useSearchParams, useLocation } from "react-router-dom";
 import { cn } from "../lib/utils";
 import { buttonVariants } from "../components/ui/button";
@@ -16,6 +16,7 @@ import {
   commercialWorkflowStripDenseFramedClassName,
 } from "../components/erp/CommercialWorkflowStrip";
 import { NO_QTY_TERMS } from "../lib/flowTerminology";
+import { ErpModal } from "../components/erp/ErpModal";
 import {
   type QuoteLineDraft,
   defaultQuoteLineDraft,
@@ -599,7 +600,7 @@ export function QuotationsPage() {
 
 
       {cancelApprovalOpen && cancelApprovalTarget ? (
-        <div className="erp-modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="cancel-approval-title">
+        <ErpModal onClose={closeCancelApproval} aria-labelledby="cancel-approval-title">
           <Card className="w-full max-w-[520px] rounded-xl border border-slate-200 bg-white p-4 shadow-xl sm:p-5">
             <h2 id="cancel-approval-title" className="text-base font-bold leading-snug text-slate-900">
               Cancel quotation approval
@@ -632,11 +633,11 @@ export function QuotationsPage() {
               </Button>
             </div>
           </Card>
-        </div>
+        </ErpModal>
       ) : null}
 
       {editQ ? (
-        <div className="erp-modal-backdrop" role="dialog">
+        <ErpModal onClose={() => setEditQ(null)}>
           <Card className="max-h-[90vh] w-full max-w-3xl overflow-hidden rounded-lg border border-slate-200 bg-white shadow-lg">
             <CardHeader className="shrink-0 pb-2">
               <CardTitle className="flex flex-wrap items-center gap-2 text-base">
@@ -773,7 +774,7 @@ export function QuotationsPage() {
               </form>
             </CardContent>
           </Card>
-        </div>
+        </ErpModal>
       ) : null}
     </div>
   );
@@ -884,11 +885,11 @@ function QuotationOperatorPanel(props: {
       : `/sales-orders?quotationId=${row.id}&from=quotations`;
 
   const nextTitle = row.salesOrder
-    ? "Sales Order created"
+    ? "Sales order linked"
     : showCreateSo
-      ? "Create Sales Order"
+      ? "Ready for sales order"
       : showApprove
-        ? "Complete & Approve"
+        ? "Approval pending"
         : row.workflowStatus === "REJECTED"
           ? "Rejected"
           : "No further action";

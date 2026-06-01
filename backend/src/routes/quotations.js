@@ -194,7 +194,7 @@ async function lineRowsFromPayload(tx, lines) {
   };
 }
 
-quotationRouter.get("/", requireAuth, requireRole(["ADMIN", "SALES", "STORE"]), async (req, res, next) => {
+quotationRouter.get("/", requireAuth, requireRole(["ADMIN", "ADMIN", "STORE"]), async (req, res, next) => {
   try {
     const companyState = await getCompanyState(prisma);
     const rows = await prisma.quotation.findMany({
@@ -230,7 +230,7 @@ quotationRouter.get("/", requireAuth, requireRole(["ADMIN", "SALES", "STORE"]), 
   }
 });
 
-quotationRouter.get("/:id/pdf", requireAuth, requireRole(["ADMIN", "SALES"]), async (req, res, next) => {
+quotationRouter.get("/:id/pdf", requireAuth, requireRole(["ADMIN"]), async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     const q = await prisma.quotation.findUnique({
@@ -262,7 +262,7 @@ quotationRouter.get("/:id/pdf", requireAuth, requireRole(["ADMIN", "SALES"]), as
   }
 });
 
-quotationRouter.get("/:id", requireAuth, requireRole(["ADMIN", "SALES", "STORE"]), async (req, res, next) => {
+quotationRouter.get("/:id", requireAuth, requireRole(["ADMIN", "ADMIN", "STORE"]), async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     const companyState = await getCompanyState(prisma);
@@ -283,7 +283,7 @@ quotationRouter.get("/:id", requireAuth, requireRole(["ADMIN", "SALES", "STORE"]
   }
 });
 
-quotationRouter.post("/", requireAuth, requireRole(["ADMIN", "SALES"]), async (req, res, next) => {
+quotationRouter.post("/", requireAuth, requireRole(["ADMIN"]), async (req, res, next) => {
   try {
     const schema = z.object({
       enquiryId: z.number().int(),
@@ -408,7 +408,7 @@ quotationRouter.post("/", requireAuth, requireRole(["ADMIN", "SALES"]), async (r
   }
 });
 
-quotationRouter.put("/:id/status", requireAuth, requireRole(["ADMIN", "SALES"]), async (req, res, next) => {
+quotationRouter.put("/:id/status", requireAuth, requireRole(["ADMIN"]), async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     const schema = z.object({
@@ -604,7 +604,7 @@ quotationRouter.post(
   },
 );
 
-quotationRouter.put("/:id", requireAuth, requireRole(["ADMIN", "SALES"]), async (req, res, next) => {
+quotationRouter.put("/:id", requireAuth, requireRole(["ADMIN"]), async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     const schema = z.object({

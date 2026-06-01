@@ -14,8 +14,13 @@ const {
   assertSufficientStockForQtyOut,
   getItemStockQty,
   getUsableItemStockQty,
+  loadStockByItemIdUsableMap,
+  buildStockSummaryBucketsRows,
+  loadStockBucketsByItemIdMap,
+  loadStockUsableByItemAndLocation,
   STOCK_EPS,
 } = require("../services/stockService");
+const { UNASSIGNED_LOCATION_LABEL } = require("../services/grnLocationService");
 const auditLog = require("../services/auditLog");
 const { lockItemForUpdate } = require("../services/dispatchWriteLocks");
 const { assertAnyAdminPassword } = require("../services/adminPasswordAuth");
@@ -110,31 +115,29 @@ const adjustmentRoles = requireRole(["ADMIN", "STORE"], STOCK_ADJUSTMENT_ACCESS_
  * Write operations (`adjustmentRoles`) remain Admin+Store only.
  */
 const stockReadRoles = requireRole(
-  ["ADMIN", "STORE", "PRODUCTION", "QC", "SALES"],
+  ["ADMIN", "STORE", "PRODUCTION", "QA", "ADMIN"],
   STOCK_READ_ACCESS_DENIED,
 );
 /** Move quantity between stock buckets (USABLE / QC_HOLD / QC_PENDING / REWORK / SCRAP) for an FG item. */
-const bucketTransferRoles = requireRole(["ADMIN", "STORE", "QC"], STOCK_READ_ACCESS_DENIED);
-const qcReworkRoles = requireRole(["ADMIN", "QC"], "Access denied. Only Admin and QC can manage the rework QC queue.");
+const bucketTransferRoles = requireRole(["ADMIN", "STORE", "QA"], STOCK_READ_ACCESS_DENIED);
+const qcReworkRoles = requireRole(["ADMIN", "QA"], "Access denied. Only Admin and QA can manage the rework QC queue.");
 
 // Summary per item: sum(qtyIn - qtyOut)
 stockRouter.get("/summary", requireAuth, stockReadRoles, async (req, res, next) => {
   try {
-    const rows = await prisma.stockTransaction.groupBy({
-      by: ["itemId"],
-      where: { stockBucket: "USABLE" },
-      _sum: { qtyIn: true, qtyOut: true },
-    });
-    const itemIds = rows.map((r) => r.itemId);
-    const items = await prisma.item.findMany({ where: { id: { in: itemIds } } });
+    const stockMap = await loadStockByItemIdUsableMap(prisma);
+    const itemIds = [...stockMap.keys()];
+    const items = itemIds.length
+      ? await prisma.item.findMany({ where: { id: { in: itemIds } } })
+      : [];
     const itemsById = new Map(items.map((i) => [i.id, i]));
 
-    const result = rows
-      .map((r) => {
-        const qty = Number(r._sum.qtyIn || 0) - Number(r._sum.qtyOut || 0);
-        const item = itemsById.get(r.itemId);
-        return { itemId: r.itemId, item, qty };
-      })
+    const result = itemIds
+      .map((itemId) => ({
+        itemId,
+        item: itemsById.get(itemId),
+        qty: stockMap.get(itemId) ?? 0,
+      }))
       .sort((a, b) => (b.itemId || 0) - (a.itemId || 0));
 
     return res.json(result);
@@ -146,47 +149,82 @@ stockRouter.get("/summary", requireAuth, stockReadRoles, async (req, res, next) 
 // Summary per item with buckets: USABLE / QC_HOLD / QC_PENDING / REWORK / SCRAP
 stockRouter.get("/summary-buckets", requireAuth, stockReadRoles, async (req, res, next) => {
   try {
-    const rows = await prisma.stockTransaction.groupBy({
-      by: ["itemId", "stockBucket"],
-      // IMPORTANT: do NOT exclude reversed originals from stock math.
-      // Reversal rows offset the original; excluding the original doubles the effect.
-      _sum: { qtyIn: true, qtyOut: true },
-    });
+    const result = await buildStockSummaryBucketsRows(prisma);
+    return res.json(result);
+  } catch (e) {
+    return next(e);
+  }
+});
 
-    const itemIds = Array.from(new Set(rows.map((r) => r.itemId)));
-    const items = await prisma.item.findMany({ where: { id: { in: itemIds } } });
-    const itemsById = new Map(items.map((i) => [i.id, i]));
+/**
+ * GET /api/stock/godown-overview
+ * Godown-wise USABLE (by location type) + QC_HOLD + SCRAP buckets per item (read-only).
+ */
+stockRouter.get("/godown-overview", requireAuth, stockReadRoles, async (req, res, next) => {
+  try {
+    const itemTypeRaw = req.query.itemType != null ? String(req.query.itemType).trim().toUpperCase() : "ALL";
+    const itemType = itemTypeRaw === "RM" || itemTypeRaw === "FG" ? itemTypeRaw : "ALL";
+    const q = req.query.q != null ? String(req.query.q) : "";
+    const data = await buildGodownStockOverview(prisma, { itemType, q });
+    return res.json(data);
+  } catch (e) {
+    return next(e);
+  }
+});
 
-    const emptyBuckets = () => ({ USABLE: 0, QC_HOLD: 0, QC_PENDING: 0, REWORK: 0, SCRAP: 0 });
-    const bucketsByItemId = new Map();
-    for (const r of rows) {
-      const qty = Number(r._sum.qtyIn || 0) - Number(r._sum.qtyOut || 0);
-      if (!bucketsByItemId.has(r.itemId)) {
-        bucketsByItemId.set(r.itemId, emptyBuckets());
-      }
-      const b = bucketsByItemId.get(r.itemId);
-      if (r.stockBucket === "USABLE") b.USABLE = Math.max(0, qty);
-      if (r.stockBucket === "QC_HOLD") b.QC_HOLD = qty;
-      if (r.stockBucket === "QC_PENDING") b.QC_PENDING = qty;
-      if (r.stockBucket === "REWORK") b.REWORK = qty;
-      if (r.stockBucket === "SCRAP") b.SCRAP = qty;
+/**
+ * GET /api/stock/items/:itemId/drilldown
+ * Item operational positions + flow summary + recent movements (read-only).
+ */
+stockRouter.get("/items/:itemId/drilldown", requireAuth, stockReadRoles, async (req, res, next) => {
+  try {
+    const itemId = Number(req.params.itemId);
+    if (!Number.isFinite(itemId) || itemId <= 0) {
+      const err = new Error("Invalid item id");
+      err.statusCode = 400;
+      throw err;
     }
+    const data = await buildItemStockDrilldown(prisma, itemId);
+    return res.json(data);
+  } catch (e) {
+    return next(e);
+  }
+});
 
-    const result = itemIds
-      .map((itemId) => {
-        const item = itemsById.get(itemId);
-        const b = bucketsByItemId.get(itemId) || emptyBuckets();
+/** USABLE qty per item per location (operational view; does not replace item-level summary). */
+stockRouter.get("/summary-by-location", requireAuth, stockReadRoles, async (req, res, next) => {
+  try {
+    const rows = await loadStockUsableByItemAndLocation(prisma);
+    const locationIds = [...new Set(rows.map((r) => r.locationId).filter((id) => id != null))];
+    const itemIds = [...new Set(rows.map((r) => r.itemId))];
+    const [locations, items] = await Promise.all([
+      locationIds.length
+        ? prisma.location.findMany({ where: { id: { in: locationIds } } })
+        : [],
+      itemIds.length ? prisma.item.findMany({ where: { id: { in: itemIds } } }) : [],
+    ]);
+    const locById = new Map(locations.map((l) => [l.id, l]));
+    const itemById = new Map(items.map((i) => [i.id, i]));
+
+    const result = rows
+      .filter((r) => r.qty > STOCK_EPS)
+      .map((r) => {
+        const loc = r.locationId != null ? locById.get(r.locationId) : null;
         return {
-          itemId,
-          item,
-          usableQty: b.USABLE,
-          qcHoldQty: b.QC_HOLD,
-          qcPendingQty: b.QC_PENDING,
-          reworkQty: b.REWORK,
-          scrapQty: b.SCRAP,
+          itemId: r.itemId,
+          item: itemById.get(r.itemId) ?? null,
+          locationId: r.locationId,
+          locationName: loc?.locationName ?? UNASSIGNED_LOCATION_LABEL,
+          locationCode: loc?.locationCode ?? null,
+          qty: r.qty,
         };
       })
-      .sort((a, b) => (b.itemId || 0) - (a.itemId || 0));
+      .sort((a, b) => {
+        const nameA = a.item?.itemName ?? "";
+        const nameB = b.item?.itemName ?? "";
+        if (nameA !== nameB) return nameA.localeCompare(nameB);
+        return (a.locationName || "").localeCompare(b.locationName || "");
+      });
 
     return res.json(result);
   } catch (e) {
@@ -966,15 +1004,66 @@ const LEDGER_STOCK_TXN_TYPES = new Set([
   "GRN",
   "ISSUE",
   "PRODUCTION",
-  "QC",
-  "DISPATCH",
+  "QA",
+  "STORE",
   "SCRAP",
   "ADJUSTMENT",
   "BUCKET_TRANSFER",
+  "LOCATION_TRANSFER",
   "DISPATCH_REVERSAL",
   "QC_REVERSAL",
   "CUSTOMER_RETURN",
 ]);
+
+const { listMovementHistory } = require("../services/stockMovementLedgerService");
+const {
+  buildGodownStockOverview,
+  buildItemStockDrilldown,
+} = require("../services/stockVisibilityService");
+
+/**
+ * GET /api/stock/movement-history
+ * Operational stock movement ledger (read-only). Query: itemId?, locationId?, movement (filter),
+ * transactionType?, itemType?, stockBucket?, dateFrom, dateTo, page, pageSize, sort.
+ */
+stockRouter.get("/movement-history", requireAuth, stockReadRoles, async (req, res, next) => {
+  try {
+    const itemIdRaw = req.query.itemId;
+    const itemId =
+      itemIdRaw !== undefined && itemIdRaw !== null && String(itemIdRaw).trim() !== ""
+        ? Number(itemIdRaw)
+        : null;
+    const locationIdRaw = req.query.locationId;
+    const locationId =
+      locationIdRaw !== undefined && locationIdRaw !== null && String(locationIdRaw).trim() !== ""
+        ? Number(locationIdRaw)
+        : null;
+
+    const page = Math.max(1, Math.floor(Number(req.query.page)) || 1);
+    const limitLegacy = Number(req.query.limit);
+    const psRaw =
+      req.query.pageSize != null ? Number(req.query.pageSize) : Number.isFinite(limitLegacy) ? limitLegacy : 50;
+    const pageSize = Math.max(1, Math.min(200, Math.floor(psRaw) || 50));
+    const sort = String(req.query.sort || "desc").toLowerCase() === "asc" ? "asc" : "desc";
+
+    const data = await listMovementHistory({
+      itemId: Number.isFinite(itemId) && itemId > 0 ? itemId : null,
+      locationId: Number.isFinite(locationId) && locationId > 0 ? locationId : null,
+      itemType: req.query.itemType != null ? String(req.query.itemType) : null,
+      movement: req.query.movement != null ? String(req.query.movement) : "ALL",
+      transactionType: req.query.transactionType != null ? String(req.query.transactionType) : null,
+      stockBucket: req.query.stockBucket != null ? String(req.query.stockBucket) : null,
+      dateFrom: parseLedgerDateStart(req.query.dateFrom),
+      dateTo: parseLedgerDateEnd(req.query.dateTo),
+      page,
+      pageSize,
+      sort,
+    });
+    return res.json(data);
+  } catch (e) {
+    return next(e);
+  }
+});
 
 /**
  * GET /api/stock/ledger
@@ -1188,8 +1277,8 @@ function rmLedgerActivityLabel(row) {
   if (t === "OPENING_REVERSAL") return "Opening Reversal";
   if (t === "CUSTOMER_RETURN") return "Customer Return";
   if (t === "PRODUCTION") return "Production";
-  if (t === "QC") return "QC Posting";
-  if (t === "DISPATCH") return "Dispatch";
+  if (t === "QA") return "QC Posting";
+  if (t === "STORE") return "STORE";
   if (t === "BUCKET_TRANSFER") return "Bucket transfer";
   return String(t).replace(/_/g, " ");
 }
@@ -1210,8 +1299,8 @@ function rmLedgerRefType(t) {
     BUCKET_TRANSFER: "Bucket transfer",
     CUSTOMER_RETURN: "Customer Return",
     PRODUCTION: "Production",
-    QC: "QC",
-    DISPATCH: "Dispatch",
+    QC: "QA",
+    DISPATCH: "STORE",
   };
   return map[t] || String(t).replace(/_/g, " ");
 }

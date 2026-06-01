@@ -15,13 +15,16 @@ import {
   FIELD_HINT_PO_SUPPLIER,
   FIELD_HINT_SAVE,
 } from "../../lib/shortcutHintCopy";
-import { Package } from "lucide-react";
+import { ErpModal } from "../../components/erp/ErpModal";
+import { NextStepStrip } from "../../components/erp/NextStepStrip";
 import {
   buildInitialPoLine,
   computeLineAmount,
   deriveRmLineDisplayFromItem,
   formatRmPoNo,
   type GrnLineDraft,
+  type GrnReceivingContext,
+  type GrnReceivingLocation,
   grnStatusDotClass,
   grnStatusLabel,
   hasActiveGrnRecord,
@@ -30,13 +33,23 @@ import {
   type PoLineDraft,
   poOrderedReceivedPending,
   poResponseLineToDraft,
-  poStatusDotClass,
   poStatusLabel,
   receivedForLine,
   type RmPoRow,
   type Supplier,
+  type SupplierLocationOption,
 } from "./rmPurchaseShared";
+import { RmPoCommercialSummary } from "../../components/purchase/RmPoCommercialSummary";
 import { NO_QTY_TERMS } from "../../lib/flowTerminology";
+import {
+  buildRmPoDetailHref,
+  fetchPostGrnContinuitySnapshot,
+  postGrnFulfilledMessage,
+  resolvePoLinkedSalesOrderId,
+  resolvePostGrnNextStep,
+  RM_PURCHASE_POST_GRN_MESSAGES,
+  type PostGrnNextStep,
+} from "../../lib/rmPurchaseWoContinuity";
 type PurchaseMeta = { testingModeRelaxedTaxFields: boolean };
 
 export function RmPurchasePoDetailPage() {
@@ -67,7 +80,6 @@ export function RmPurchasePoDetailPage() {
   const hasExplicitFromFlow =
     fromParam === "customer-tracking" || fromParam === "rm-check" || fromParam === "work-order";
   const fromLegacyProductionFlow = source === "production" || source === "wo_rm_shortage";
-  const hasProductionFlowContext = hasExplicitFromFlow || fromLegacyProductionFlow || hasFlowSalesOrder;
   const shortfallQtyHint = Number(searchParams.get("shortfallQty") ?? 0);
 
   // ───────────────────────────────────────────────────────────────────────
@@ -92,6 +104,11 @@ export function RmPurchasePoDetailPage() {
   ).filter(Boolean);
 
   const [po, setPo] = React.useState<RmPoRow | null>(null);
+  const poLinkedSoId = React.useMemo(() => resolvePoLinkedSalesOrderId(po), [po]);
+  const effectiveFlowSoId = hasFlowSalesOrder ? flowSoId : poLinkedSoId ?? 0;
+  const hasEffectiveFlowSalesOrder = Number.isFinite(effectiveFlowSoId) && effectiveFlowSoId > 0;
+  const hasProductionFlowContext =
+    hasExplicitFromFlow || fromLegacyProductionFlow || hasFlowSalesOrder || hasEffectiveFlowSalesOrder;
   const [suppliers, setSuppliers] = React.useState<Supplier[]>([]);
   const [items, setItems] = React.useState<Item[]>([]);
   const [loading, setLoading] = React.useState(true);
@@ -102,26 +119,33 @@ export function RmPurchasePoDetailPage() {
   const [grnSupplierInvoiceNo, setGrnSupplierInvoiceNo] = React.useState("");
   const [grnFieldErrors, setGrnFieldErrors] = React.useState<{ grnDate?: string; supplierInvoiceNo?: string }>({});
   const [grnLines, setGrnLines] = React.useState<GrnLineDraft[]>([]);
+  const [grnLocations, setGrnLocations] = React.useState<GrnReceivingLocation[]>([]);
+  const [grnLocationSuggestions, setGrnLocationSuggestions] = React.useState<Record<number, number>>({});
+  const [grnLocationsLoading, setGrnLocationsLoading] = React.useState(false);
   const [grning, setGrning] = React.useState(false);
   const [grnSuccess, setGrnSuccess] = React.useState<string | null>(null);
 
   const [editOpen, setEditOpen] = React.useState(false);
   const [supplierId, setSupplierId] = React.useState(0);
+  const [supplierLocationId, setSupplierLocationId] = React.useState<number | null>(null);
+  const [editSupplierLocations, setEditSupplierLocations] = React.useState<SupplierLocationOption[]>([]);
   const [poRemarks, setPoRemarks] = React.useState("");
   const [poLines, setPoLines] = React.useState<PoLineDraft[]>([]);
   const [savingPo, setSavingPo] = React.useState(false);
 
   const [reversingGrnId, setReversingGrnId] = React.useState(0);
+  const [commercialDetailsOpen, setCommercialDetailsOpen] = React.useState(false);
+  const [traceabilityOpen, setTraceabilityOpen] = React.useState(false);
 
   const [flowSoOrderType, setFlowSoOrderType] = React.useState<string | null>(null);
 
   React.useEffect(() => {
-    if (!hasFlowSalesOrder) {
+    if (!hasEffectiveFlowSalesOrder) {
       setFlowSoOrderType(null);
       return;
     }
     let cancelled = false;
-    void apiFetch<{ orderType?: string }>(`/api/sales-orders/${flowSoId}`)
+    void apiFetch<{ orderType?: string }>(`/api/sales-orders/${effectiveFlowSoId}`)
       .then((d) => {
         if (!cancelled) setFlowSoOrderType(d.orderType ?? null);
       })
@@ -131,11 +155,19 @@ export function RmPurchasePoDetailPage() {
     return () => {
       cancelled = true;
     };
-  }, [hasFlowSalesOrder, flowSoId]);
+  }, [hasEffectiveFlowSalesOrder, effectiveFlowSoId]);
 
   const flowIsNoQty = flowSoOrderType === "NO_QTY";
-  const noQtyPlanningHref = `/planning-dashboard?salesOrderId=${encodeURIComponent(String(flowSoId))}&source=rm_grn`;
-  const noQtyRequirementSheetsHref = `/sales-orders/${encodeURIComponent(String(flowSoId))}/requirement-sheets`;
+  const noQtyPlanningHref = `/planning-dashboard?salesOrderId=${encodeURIComponent(String(effectiveFlowSoId))}&source=rm_grn`;
+  const noQtyRequirementSheetsHref = `/sales-orders/${encodeURIComponent(String(effectiveFlowSoId))}/requirement-sheets`;
+  const poReturnHref = React.useMemo(
+    () =>
+      buildRmPoDetailHref(poId, {
+        salesOrderId: hasEffectiveFlowSalesOrder ? effectiveFlowSoId : undefined,
+        from: fromParam || "rm-purchase",
+      }),
+    [poId, hasEffectiveFlowSalesOrder, effectiveFlowSoId, fromParam],
+  );
 
   const supplierSelectRef = React.useRef<HTMLSelectElement | null>(null);
   const poQtyInputRefs = React.useRef<(HTMLInputElement | null)[]>([]);
@@ -188,6 +220,21 @@ export function RmPurchasePoDetailPage() {
 
   React.useEffect(() => {
     if (!po || !grnModalOpen) return;
+    setGrnLocationsLoading(true);
+    apiFetch<GrnReceivingContext>(`/api/purchase/grn-receiving-context?rmPoId=${po.id}`)
+      .then((ctx) => {
+        setGrnLocations(Array.isArray(ctx.locations) ? ctx.locations : []);
+        setGrnLocationSuggestions(ctx.suggestionsByRmPoLineId ?? {});
+      })
+      .catch(() => {
+        setGrnLocations([]);
+        setGrnLocationSuggestions({});
+      })
+      .finally(() => setGrnLocationsLoading(false));
+  }, [po?.id, grnModalOpen]);
+
+  React.useEffect(() => {
+    if (!po || !grnModalOpen) return;
     const received = new Map<number, number>();
     for (const g of po.grns) {
       if (g.reversedAt) continue;
@@ -195,13 +242,15 @@ export function RmPurchasePoDetailPage() {
         received.set(l.rmPoLineId, (received.get(l.rmPoLineId) || 0) + Number(l.receivedQty));
       }
     }
+    const fallbackLocId = grnLocations[0]?.id ?? 0;
     setGrnLines(
       po.lines.map((ln) => ({
         rmPoLineId: ln.id,
         receivedQty: Math.max(0, Number(ln.qty) - (received.get(ln.id) || 0)),
+        locationId: grnLocationSuggestions[ln.id] ?? fallbackLocId,
       })),
     );
-  }, [po?.id, grnModalOpen]);
+  }, [po?.id, grnModalOpen, grnLocationSuggestions, grnLocations]);
 
   React.useEffect(() => {
     if (!grnModalOpen) return;
@@ -231,8 +280,36 @@ export function RmPurchasePoDetailPage() {
     setEditOpen(true);
     setPoRemarks(po.remarks ?? "");
     setSupplierId(po.supplierId);
+    setSupplierLocationId(po.supplierLocationId ?? po.resolvedSupplierCommercial?.supplyLocation?.id ?? null);
     setPoLines(po.lines.map((l) => poResponseLineToDraft(l)));
   }
+
+  const canChangeCommercial = Boolean(po && !po.grns.length);
+
+  React.useEffect(() => {
+    if (!editOpen || !supplierId || !canChangeCommercial) {
+      if (!editOpen) setEditSupplierLocations([]);
+      return;
+    }
+    let cancelled = false;
+    void apiFetch<{ locations?: SupplierLocationOption[] }>(`/api/suppliers/${supplierId}`)
+      .then((detail) => {
+        if (cancelled) return;
+        const active = (detail.locations ?? []).filter((l) => l.isActive !== false);
+        setEditSupplierLocations(active);
+        setSupplierLocationId((prev) => {
+          if (prev != null && active.some((l) => l.id === prev)) return prev;
+          const def = active.find((l) => l.isDefault) ?? active[0] ?? null;
+          return def?.id ?? null;
+        });
+      })
+      .catch(() => {
+        if (!cancelled) setEditSupplierLocations([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [editOpen, supplierId, canChangeCommercial]);
 
   const editModalWarnings = React.useMemo(() => {
     const w: string[] = [];
@@ -268,6 +345,82 @@ export function RmPurchasePoDetailPage() {
     receiveInfo &&
     receiveInfo.pending > 1e-6;
 
+  const poPrimaryUnit = po?.lines[0]?.unit?.trim() ?? "";
+  const stockStatusLabel =
+    po?.status === "COMPLETED"
+      ? "Fully Received"
+      : po?.status === "PARTIAL"
+        ? "Partially Received"
+        : "Not Received";
+  const billingStatusLabel =
+    billingTotals.billed <= 1e-9
+      ? "Not Started"
+      : billingTotals.pendingBilling > 1e-9
+        ? "In Progress"
+        : "Completed";
+
+  const procurementTraceabilityRows = React.useMemo(() => {
+    if (!po) return [];
+    return po.lines
+      .map((ln) => {
+        const links = (
+          ln as {
+            procurementLinks?: {
+              allocatedQty: string | number;
+              purchaseRequestLine?: {
+                purchaseRequest?: { docNo?: string | null };
+                sourceLinks?: {
+                  allocatedQty: string | number;
+                  materialRequirementLine?: {
+                    materialRequirement?: {
+                      docNo?: string | null;
+                      quotation?: { quotationNo?: string | null };
+                      salesOrder?: { docNo?: string | null };
+                    };
+                  };
+                }[];
+              };
+              materialRequirementLine?: {
+                materialRequirement?: {
+                  docNo?: string | null;
+                  quotation?: { quotationNo?: string | null };
+                  salesOrder?: { docNo?: string | null };
+                };
+              };
+            }[];
+          }
+        ).procurementLinks;
+        if (!links?.length) return null;
+        const summary = links
+          .map((lk) => {
+            const pr = lk.purchaseRequestLine?.purchaseRequest?.docNo;
+            if (pr) {
+              const sources = (lk.purchaseRequestLine?.sourceLinks ?? [])
+                .map((sl) => {
+                  const mr = sl.materialRequirementLine?.materialRequirement;
+                  const ref =
+                    mr?.salesOrder?.docNo ?? mr?.quotation?.quotationNo ?? mr?.docNo ?? "MR";
+                  return `${ref} ${sl.allocatedQty}`;
+                })
+                .join(", ");
+              return `${pr} → ${lk.allocatedQty}${sources ? ` (${sources})` : ""}`;
+            }
+            const mr = lk.materialRequirementLine?.materialRequirement;
+            const ref = mr?.salesOrder?.docNo ?? mr?.quotation?.quotationNo ?? mr?.docNo ?? "requirement";
+            return `${ref} → ${lk.allocatedQty}`;
+          })
+          .join("; ");
+        return {
+          lineId: ln.id,
+          itemName: ln.item?.itemName ?? `Item #${ln.itemId}`,
+          summary,
+        };
+      })
+      .filter((row): row is NonNullable<typeof row> => row != null);
+  }, [po]);
+
+  const hasProcurementTraceability = procurementTraceabilityRows.length > 0;
+
   async function onSavePoEdit() {
     if (!po) return;
     setSavingPo(true);
@@ -277,6 +430,7 @@ export function RmPurchasePoDetailPage() {
         method: "PUT",
         body: JSON.stringify({
           supplierId,
+          ...(canChangeCommercial && supplierLocationId != null ? { supplierLocationId } : {}),
           remarks: poRemarks.trim() || null,
           lines: poLines.map((l) => ({
             ...(l.id != null ? { id: l.id } : {}),
@@ -341,6 +495,12 @@ export function RmPurchasePoDetailPage() {
           setGrning(false);
           return;
         }
+        if (!Number.isFinite(l.locationId) || l.locationId <= 0) {
+          const nm = po.lines.find((x) => x.id === l.rmPoLineId)?.item?.itemName ?? `Line ${l.rmPoLineId}`;
+          setError(`Select a receiving location for ${nm}.`);
+          setGrning(false);
+          return;
+        }
       }
 
       await apiFetch("/api/purchase/grns", {
@@ -382,13 +542,9 @@ export function RmPurchasePoDetailPage() {
         /* ignore */
       }
       if (refreshed?.status === "COMPLETED") {
-        setGrnSuccess(
-          "Goods receipt posted. This PO is fully received. RM is in usable stock and available for production.",
-        );
+        setGrnSuccess(postGrnFulfilledMessage());
       } else {
-        setGrnSuccess(
-          "Goods receipt posted. Quantities from this receipt are in usable stock. Receive remaining lines when ready.",
-        );
+        setGrnSuccess(RM_PURCHASE_POST_GRN_MESSAGES.partialHeadline);
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed");
@@ -538,11 +694,6 @@ export function RmPurchasePoDetailPage() {
         return;
       }
 
-      if (ev.key === "Escape" && !ev.ctrlKey && !ev.altKey && !ev.metaKey) {
-        if (grnModalOpen) setGrnModalOpen(false);
-        else if (editOpen) setEditOpen(false);
-        else setError((cur) => (cur ? null : cur));
-      }
     }
     window.addEventListener("keydown", onGlobalKey);
     return () => window.removeEventListener("keydown", onGlobalKey);
@@ -571,7 +722,7 @@ export function RmPurchasePoDetailPage() {
   const hasAnyActiveGrn = Boolean(po?.grns?.some((g) => !g.reversedAt));
   /** After GRN (or when returning with SO context), offer one-tap return to RM check / WO flow — not a list page strip. */
   const showFlowResumeBanner =
-    hasFlowSalesOrder &&
+    hasEffectiveFlowSalesOrder &&
     Boolean(po) &&
     (Boolean(grnSuccess) || hasAnyActiveGrn || po?.status === "COMPLETED" || po?.status === "PARTIAL");
 
@@ -588,6 +739,228 @@ export function RmPurchasePoDetailPage() {
     !loading && Boolean(po) && isFromRmShortage && !hasProductionFlowContext && (Boolean(grnSuccess) || po?.status === "COMPLETED");
   const showFlowResumeBannerSlim = showFlowResumeBanner && !showRichProductionNextStep;
 
+  const [postGrnNextStep, setPostGrnNextStep] = React.useState<PostGrnNextStep | null>(null);
+  const [postGrnContinuityLoading, setPostGrnContinuityLoading] = React.useState(false);
+
+  const shouldResolvePostGrnStep =
+    hasEffectiveFlowSalesOrder &&
+    !flowIsNoQty &&
+    (showRichProductionNextStep || showFlowResumeBannerSlim || showFallbackProductionNextStep);
+
+  React.useEffect(() => {
+    if (!shouldResolvePostGrnStep) {
+      setPostGrnNextStep(null);
+      setPostGrnContinuityLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setPostGrnContinuityLoading(true);
+    void fetchPostGrnContinuitySnapshot(effectiveFlowSoId)
+      .then((snapshot) => {
+        if (cancelled) return;
+        setPostGrnNextStep(resolvePostGrnNextStep(snapshot, { materialIssueReturnTo: poReturnHref }));
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setPostGrnNextStep(
+          resolvePostGrnNextStep(
+            {
+              salesOrderId: effectiveFlowSoId,
+              salesOrderDocNo: null,
+              orderType: "NORMAL",
+              processStageKey: "WO_PENDING",
+              workOrderId: null,
+              workOrderNo: null,
+              workOrderLineId: null,
+              allocationFirstKey: null,
+              hasProductionEntry: false,
+              rmReadiness: null,
+            },
+            { materialIssueReturnTo: poReturnHref },
+          ),
+        );
+      })
+      .finally(() => {
+        if (!cancelled) setPostGrnContinuityLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [shouldResolvePostGrnStep, effectiveFlowSoId, poReturnHref]);
+
+  const rmPoNextActionStrip = React.useMemo(() => {
+    if (loading || !po) return null;
+
+    if (!hasActiveGrnRecord(po) && grnAllowed) {
+      return {
+        variant: "info" as const,
+        title: "Create GRN",
+        subtitle: receiveInfo
+          ? `${receiveInfo.pending.toFixed(3)}${poPrimaryUnit ? ` ${poPrimaryUnit}` : ""} pending receipt`
+          : "Pending receipt",
+        flowWorkOrderAttr: false,
+        primary: {
+          label: "Create GRN",
+          testId: "rm-po-create-grn-btn",
+          onClick: () => setGrnModalOpen(true),
+        },
+      };
+    }
+
+    if (showShortageNextStep) {
+      return {
+        variant: "success" as const,
+        title: grnSuccess
+          ? grnSuccess
+          : po.status === "COMPLETED"
+            ? postGrnFulfilledMessage()
+            : "Goods receipt posted — shortage may be cleared",
+        flowWorkOrderAttr: false,
+        primary: {
+          label: "RM Shortage Workspace",
+          testId: "rm-purchase-next-back-to-shortage-workspace",
+          onClick: () => navigate(rmShortageWorkspaceHref),
+        },
+        secondary: {
+          label: "Dashboard",
+          testId: "rm-purchase-next-back-to-dashboard",
+          onClick: () => navigate("/dashboard"),
+        },
+      };
+    }
+
+    if (showRichProductionNextStep || (showFallbackProductionNextStep && !showShortageNextStep)) {
+      const title =
+        postGrnNextStep?.nextStepLine ??
+        (postGrnNextStep?.isWorkflowComplete
+          ? postGrnNextStep.detail
+          : hasEffectiveFlowSalesOrder && flowIsNoQty
+            ? `Continue in ${NO_QTY_TERMS.PLANNING_HUB_TITLE}`
+            : (grnSuccess ?? postGrnFulfilledMessage()));
+      const subtitle = shortfallQtyHint > 0 ? `Suggested production qty: ${shortfallQtyHint}` : undefined;
+
+      if (hasEffectiveFlowSalesOrder && flowIsNoQty) {
+        return {
+          variant: "success" as const,
+          title,
+          subtitle,
+          flowWorkOrderAttr: false,
+          primary: {
+            label: NO_QTY_TERMS.CONTINUE_NO_QTY_PLANNING,
+            testId: "rm-purchase-next-noqty-planning",
+            onClick: () => navigate(noQtyPlanningHref),
+          },
+          secondary: {
+            label: "Requirement sheets",
+            testId: "rm-purchase-next-requirement-planning",
+            onClick: () => navigate(noQtyRequirementSheetsHref),
+          },
+        };
+      }
+
+      if (hasEffectiveFlowSalesOrder) {
+        return {
+          variant: "success" as const,
+          title,
+          subtitle,
+          flowWorkOrderAttr: false,
+          primary: {
+            label: postGrnContinuityLoading ? "Loading…" : (postGrnNextStep?.actionLabel ?? "Create Work Order"),
+            testId: "rm-purchase-next-primary",
+            disabled: postGrnContinuityLoading,
+            onClick: () => navigate(postGrnNextStep?.actionHref ?? poReturnHref),
+          },
+          secondary:
+            postGrnNextStep?.secondaryLabel && postGrnNextStep.secondaryHref
+              ? {
+                  label: postGrnNextStep.secondaryLabel,
+                  testId: "rm-purchase-next-secondary",
+                  disabled: postGrnContinuityLoading,
+                  onClick: () => navigate(postGrnNextStep.secondaryHref!),
+                }
+              : undefined,
+        };
+      }
+
+      return {
+        variant: "success" as const,
+        title,
+        subtitle,
+        flowWorkOrderAttr: false,
+        primary: {
+          label: "Go to Work Orders",
+          testId: "rm-purchase-next-work-orders-list",
+          onClick: () => navigate("/work-orders"),
+        },
+      };
+    }
+
+    if (showFlowResumeBannerSlim) {
+      return {
+        variant: "success" as const,
+        title: flowIsNoQty
+          ? grnSuccess
+            ? `Material received — ${NO_QTY_TERMS.CONTINUE_NO_QTY_PLANNING}`
+            : NO_QTY_TERMS.CONTINUE_NO_QTY_PLANNING
+          : (postGrnNextStep?.headline ?? (grnSuccess ? "Material received." : "Continue Work Order")),
+        subtitle: postGrnNextStep?.nextStepLine,
+        flowWorkOrderAttr: true,
+        primary: {
+          label: flowIsNoQty
+            ? NO_QTY_TERMS.CONTINUE_NO_QTY_PLANNING
+            : postGrnContinuityLoading
+              ? "Loading…"
+              : (postGrnNextStep?.actionLabel ?? "Create Work Order"),
+          testId: "grn-continue-work-order-btn",
+          disabled: !flowIsNoQty && postGrnContinuityLoading,
+          onClick: () => {
+            if (flowIsNoQty) {
+              navigate(resumeReturnTo.trim() ? resumeReturnTo : noQtyPlanningHref);
+              return;
+            }
+            navigate(resumeReturnTo.trim() ? resumeReturnTo : (postGrnNextStep?.actionHref ?? poReturnHref));
+          },
+        },
+      };
+    }
+
+    if (grnSuccess && resumeReturnTo.trim()) {
+      return {
+        variant: "success" as const,
+        title: "RM received successfully",
+        flowWorkOrderAttr: false,
+        primary: {
+          label: "Continue Production",
+          onClick: () => navigate(resumeReturnTo),
+        },
+      };
+    }
+
+    return null;
+  }, [
+    loading,
+    po,
+    grnAllowed,
+    receiveInfo,
+    poPrimaryUnit,
+    showShortageNextStep,
+    grnSuccess,
+    showRichProductionNextStep,
+    showFallbackProductionNextStep,
+    postGrnNextStep,
+    postGrnContinuityLoading,
+    hasEffectiveFlowSalesOrder,
+    flowIsNoQty,
+    shortfallQtyHint,
+    showFlowResumeBannerSlim,
+    resumeReturnTo,
+    noQtyPlanningHref,
+    noQtyRequirementSheetsHref,
+    rmShortageWorkspaceHref,
+    poReturnHref,
+    navigate,
+  ]);
+
   if (!Number.isFinite(poId) || poId <= 0) {
     return (
       <PageContainer>
@@ -598,12 +971,12 @@ export function RmPurchasePoDetailPage() {
   }
 
   return (
-    <PageContainer className="space-y-4 pb-[5.5rem] sm:pb-20">
-      <StickyWorkspaceHead lead={<PageBackLink to={rmPurchaseBackNav.backRoute} label={rmPurchaseBackNav.backLabel} />} className="mb-1" />
+    <PageContainer className="erp-txn-workspace space-y-1.5 pb-1">
+      <StickyWorkspaceHead lead={<PageBackLink to={rmPurchaseBackNav.backRoute} label={rmPurchaseBackNav.backLabel} />} className="mb-0" />
 
       {isFromRmShortage ? (
         <div
-          className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950 shadow-sm"
+          className="rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[12px] text-amber-950"
           data-testid="rm-po-shortage-context-strip"
         >
           <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
@@ -631,13 +1004,13 @@ export function RmPurchasePoDetailPage() {
       ) : null}
 
       {relaxedTax ? (
-        <div className="rounded-xl border border-amber-200 bg-amber-50/90 px-4 py-3 text-sm text-amber-950 shadow-sm">
+        <div className="rounded-md border border-amber-200 bg-amber-50/90 px-2.5 py-1.5 text-[12px] text-amber-950">
           Testing mode (TESTING_MODE_RELAXED_TAX_FIELDS): relaxed tax/unit fallbacks are enabled on the server.
         </div>
       ) : null}
 
       {!dismissedTaxBanner && incomingTaxWarnings.length > 0 ? (
-        <div className="flex flex-col gap-2 rounded-xl border border-sky-200 bg-sky-50/90 px-4 py-3 text-sm text-sky-950 shadow-sm sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex flex-col gap-1.5 rounded-md border border-sky-200 bg-sky-50/90 px-2.5 py-1.5 text-[12px] text-sky-950 sm:flex-row sm:items-start sm:justify-between">
           <ul className="list-inside list-disc">
             {incomingTaxWarnings.map((w) => (
               <li key={w}>{w}</li>
@@ -655,344 +1028,138 @@ export function RmPurchasePoDetailPage() {
 
       {loading ? <p className="text-sm text-slate-600">Loading…</p> : null}
       {error ? (
-        <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 shadow-sm">{error}</div>
+        <div className="rounded-md border border-red-200 bg-red-50 px-2.5 py-1.5 text-sm text-red-800">{error}</div>
       ) : null}
-
-      {grnSuccess && resumeReturnTo.trim() ? (
-        <div
-          className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-950 shadow-sm"
-          {...(flowWorkOrderIdQ ? { "data-flow-work-order-id": flowWorkOrderIdQ } : {})}
-        >
-          <p className="font-semibold">RM received successfully</p>
-          <Button type="button" size="sm" className="mt-2" onClick={() => navigate(resumeReturnTo)}>
-            Continue Production
-          </Button>
-        </div>
-      ) : null}
-
-      {showFlowResumeBannerSlim ? (
-        <div
-          className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-950 shadow-sm"
-          data-testid="grn-flow-resume-banner"
-        >
-          <p className="font-semibold text-emerald-950">
-            {flowIsNoQty
-              ? grnSuccess
-                ? `Material received — ${NO_QTY_TERMS.CONTINUE_NO_QTY_PLANNING}`
-                : NO_QTY_TERMS.CONTINUE_NO_QTY_PLANNING
-              : grnSuccess
-                ? "Material received. Continue Work Order"
-                : "Continue Work Order"}
-          </p>
-          {grnSuccess ? <p className="mt-1 text-sm leading-relaxed text-emerald-900/95">{grnSuccess}</p> : null}
-          {!grnSuccess ? (
-            <p className="mt-1 text-sm leading-relaxed text-emerald-900/90">
-              {flowIsNoQty
-                ? `Return to ${NO_QTY_TERMS.PLANNING_HUB_TITLE} or requirement sheets for this sales order.`
-                : source === "wo_rm_shortage"
-                  ? "RM is in stock. Return to Material Planning or Work Orders to continue the sales order."
-                  : "Use Material Planning or Work Orders to continue this sales order when ready."}
-            </p>
-          ) : null}
-          <div className="mt-3">
-            <Button
-              type="button"
-              size="sm"
-              data-testid="grn-continue-work-order-btn"
-              onClick={() => {
-                const fallbackReg = `/work-orders/prepare?salesOrderId=${encodeURIComponent(String(flowSoId))}`;
-                const fallbackNoQty = noQtyPlanningHref;
-                const target = resumeReturnTo.trim() ? resumeReturnTo : flowIsNoQty ? fallbackNoQty : fallbackReg;
-                navigate(target);
-              }}
-            >
-              {flowIsNoQty ? NO_QTY_TERMS.CONTINUE_NO_QTY_PLANNING : "Continue Work Order"}
-            </Button>
-          </div>
-        </div>
-      ) : null}
-
-      {showShortageNextStep ? (
-        <Card
-          className="border-emerald-200/90 bg-emerald-50/50 shadow-sm ring-1 ring-emerald-100/80"
-          data-testid="rm-purchase-post-grn-next-step-shortage"
-        >
-          <CardHeader className="pb-2 pt-4">
-            <CardTitle className="text-base font-semibold text-emerald-950">Next Step</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3 pt-0">
-            <p className="text-sm font-medium leading-relaxed text-emerald-950">
-              {grnSuccess
-                ? grnSuccess
-                : "Goods receipt posted. RM is usable and available for production."}
-            </p>
-            <p className="text-sm text-slate-800">
-              Stock for{" "}
-              <span className="font-semibold">
-                {shortageItemName || shortageItemCode || "this material"}
-              </span>{" "}
-              is now available. You can return to the RM Shortage Workspace to verify the shortage
-              has cleared, or head back to the Dashboard to continue production.
-            </p>
-            <div className="flex flex-wrap gap-2">
-              <Button
-                type="button"
-                size="sm"
-                className="font-semibold"
-                data-testid="rm-purchase-next-back-to-shortage-workspace"
-                onClick={() => navigate(rmShortageWorkspaceHref)}
-              >
-                Back to RM Shortage Workspace
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                data-testid="rm-purchase-next-back-to-dashboard"
-                onClick={() => navigate("/dashboard")}
-              >
-                Go to Dashboard
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      ) : null}
-
-      {(showRichProductionNextStep || (showFallbackProductionNextStep && !showShortageNextStep)) && (
-        <Card
-          className="border-emerald-200/90 bg-emerald-50/50 shadow-sm ring-1 ring-emerald-100/80"
-          data-testid="rm-purchase-post-grn-next-step"
-        >
-          <CardHeader className="pb-2 pt-4">
-            <CardTitle className="text-base font-semibold text-emerald-950">Next Step</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3 pt-0">
-            {grnSuccess ? (
-              <p className="text-sm font-medium leading-relaxed text-emerald-950">{grnSuccess}</p>
-            ) : po?.status === "COMPLETED" ? (
-              <p className="text-sm font-medium leading-relaxed text-emerald-950">
-                Goods receipt posted. This PO is fully received. RM is in usable stock and available for production.
-              </p>
-            ) : null}
-            <p className="text-sm text-slate-800">
-              {hasFlowSalesOrder && flowIsNoQty
-                ? `Raw material is ready. Continue in ${NO_QTY_TERMS.PLANNING_HUB_TITLE} or open requirement sheets for this order.`
-                : "Raw material is ready. You can now create a Work Order and start production."}
-            </p>
-            {shortfallQtyHint > 0 ? (
-              <p className="text-sm text-slate-700">
-                Suggested production qty:{" "}
-                <span className="font-semibold tabular-nums">{shortfallQtyHint}</span>
-              </p>
-            ) : null}
-            <div className="flex flex-wrap gap-2">
-              {hasFlowSalesOrder ? (
-                flowIsNoQty ? (
-                  <>
-                    <Button
-                      type="button"
-                      size="sm"
-                      className="font-semibold"
-                      data-testid="rm-purchase-next-noqty-planning"
-                      onClick={() => navigate(noQtyPlanningHref)}
-                    >
-                      {NO_QTY_TERMS.CONTINUE_NO_QTY_PLANNING}
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      data-testid="rm-purchase-next-requirement-planning"
-                      onClick={() => navigate(noQtyRequirementSheetsHref)}
-                    >
-                      {NO_QTY_TERMS.OPEN_REQUIREMENT_PLANNING}
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      data-testid="rm-purchase-next-production"
-                      onClick={() =>
-                        navigate(
-                          `/production?salesOrderId=${encodeURIComponent(String(flowSoId))}&from=rm-purchase`,
-                        )
-                      }
-                    >
-                      Go to Production
-                    </Button>
-                  </>
-                ) : (
-                  <>
-                    <Button
-                      type="button"
-                      size="sm"
-                      className="font-semibold"
-                      data-testid="rm-purchase-next-create-wo"
-                      onClick={() =>
-                        navigate(
-                          `/work-orders?salesOrderId=${encodeURIComponent(String(flowSoId))}&from=rm-purchase`,
-                        )
-                      }
-                    >
-                      Create Work Order
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      data-testid="rm-purchase-next-production"
-                      onClick={() =>
-                        navigate(
-                          `/production?salesOrderId=${encodeURIComponent(String(flowSoId))}&from=rm-purchase`,
-                        )
-                      }
-                    >
-                      Go to Production
-                    </Button>
-                  </>
-                )
-              ) : (
-                <Button type="button" size="sm" data-testid="rm-purchase-next-work-orders-list" onClick={() => navigate("/work-orders")}>
-                  Go to Work Orders
-                </Button>
-              )}
-            </div>
-          </CardContent>
-        </Card>
-      )}
 
       {!loading && po ? (
         <>
-          <Card className="overflow-hidden border-slate-200/90 shadow-sm ring-1 ring-slate-100/70">
-            <CardHeader className="border-b border-slate-100 bg-gradient-to-b from-slate-50/95 to-white px-4 py-3 md:px-5">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
-                <div className="min-w-0 space-y-1">
-                  <h1 className="text-xl font-semibold leading-tight tracking-tight text-slate-900">
-                    {formatRmPoNo(po.id)} <span className="text-slate-400">•</span> {po.supplier.name}
-                  </h1>
-                  {po.remarks ? <p className="text-sm text-slate-600">Remarks: {po.remarks}</p> : null}
-                </div>
-                <div className="flex shrink-0 flex-wrap items-center justify-start gap-2 sm:justify-end">
-                  {canEditPo ? (
-                    <Button type="button" variant="outline" size="sm" className="h-9 px-3 text-sm" onClick={openEditModal}>
-                      Edit order
-                    </Button>
-                  ) : null}
-                  {showCancel ? (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className="h-9 px-3 text-sm"
-                      onClick={() => void onCancelPo()}
-                      title="Closes this PO. Stock will not change unless you reverse a GRN."
-                    >
-                      Cancel order
-                    </Button>
-                  ) : null}
-                </div>
+          {/* Section 1 — Transaction header */}
+          <div className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 shadow-sm ring-1 ring-slate-100/70">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                <h1 className="text-base font-bold tracking-tight text-slate-950">{formatRmPoNo(po.id)}</h1>
+                <span className="text-slate-400">·</span>
+                <span className="text-sm font-semibold text-slate-800">{po.supplier.name}</span>
+                {po.remarks ? (
+                  <span className="text-[12px] text-slate-500" title={po.remarks}>
+                    ({po.remarks.length > 40 ? `${po.remarks.slice(0, 40)}…` : po.remarks})
+                  </span>
+                ) : null}
               </div>
-            </CardHeader>
-            <CardContent className="space-y-3 px-4 pb-4 pt-4 md:px-5">
-              <div className="flex flex-wrap gap-2">
-                <span className="inline-flex items-center gap-2 rounded-full border border-slate-200/80 bg-white px-3 py-1 text-sm text-slate-700">
-                  <span className={`inline-block h-2 w-2 shrink-0 rounded-full ${poStatusDotClass(po.status)}`} aria-hidden />
-                  <span className="font-medium text-slate-800">Order:</span> {poStatusLabel(po.status)}
-                </span>
-                <span className="inline-flex items-center gap-2 rounded-full border border-slate-200/80 bg-white px-3 py-1 text-sm text-slate-700">
-                  <span className={`inline-block h-2 w-2 shrink-0 rounded-full ${poStatusDotClass(po.status)}`} aria-hidden />
-                  <span className="font-medium text-slate-800">Stock:</span>{" "}
-                  {po.status === "COMPLETED" ? "Fully Received" : po.status === "PARTIAL" ? "Partially Received" : "Not Received"}
-                </span>
-                <span className="inline-flex items-center gap-2 rounded-full border border-slate-200/80 bg-white px-3 py-1 text-sm text-slate-700">
-                  <span className="font-medium text-slate-800">Billing:</span>{" "}
-                  {billingTotals.billed <= 1e-9 ? "Not Started" : billingTotals.pendingBilling > 1e-9 ? "In Progress" : "Completed"}
-                </span>
-              </div>
-            </CardContent>
-          </Card>
-
-          {!hasActiveGrnRecord(po) && grnAllowed ? (
-            <Card className="border-sky-200 bg-sky-50/70 shadow-sm ring-1 ring-sky-100/70">
-              <CardContent className="flex flex-col gap-3 px-4 py-4 md:flex-row md:items-center md:justify-between">
-                <div className="min-w-0">
-                  <div className="text-sm font-semibold text-sky-950">Next Step: Create GRN</div>
-                  <div className="mt-1 text-sm text-sky-900/80">Create a GRN to record goods receipt and move RM into usable stock.</div>
-                </div>
-                <Button type="button" className="h-10 w-fit px-5 text-sm font-semibold shadow-sm" onClick={() => setGrnModalOpen(true)}>
-                  Create GRN
-                </Button>
-              </CardContent>
-            </Card>
-          ) : null}
-
-          <div className="grid gap-3 lg:grid-cols-2">
-            <div className="rounded-xl border border-slate-200/90 bg-white p-4 shadow-sm ring-1 ring-slate-100/70">
-              <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Stock summary</div>
-              <div className="mt-1 text-lg font-semibold tabular-nums text-slate-900">
-                {receiveInfo ? receiveInfo.received.toFixed(3) : "—"}
-              </div>
-              <div className="mt-2 grid gap-1.5 text-sm text-slate-700">
-                <div className="flex items-baseline justify-between gap-3">
-                  <span className="text-slate-600">Ordered</span>
-                  <span className="tabular-nums font-medium">{receiveInfo ? receiveInfo.ordered.toFixed(3) : "—"}</span>
-                </div>
-                <div className="flex items-baseline justify-between gap-3">
-                  <span className="text-slate-600">Received</span>
-                  <span className="tabular-nums font-medium">{receiveInfo ? receiveInfo.received.toFixed(3) : "—"}</span>
-                </div>
-                <div className="flex items-baseline justify-between gap-3">
-                  <span className="text-slate-600">Pending</span>
-                  <span className="tabular-nums font-medium">{receiveInfo ? receiveInfo.pending.toFixed(3) : "—"}</span>
-                </div>
+              <div className="flex shrink-0 flex-wrap gap-1.5">
+                {canEditPo ? (
+                  <Button type="button" variant="outline" size="sm" className="h-7 px-2.5 text-[11px]" onClick={openEditModal}>
+                    Edit order
+                  </Button>
+                ) : null}
+                {showCancel ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 px-2.5 text-[11px]"
+                    onClick={() => void onCancelPo()}
+                    title="Closes this PO. Stock will not change unless you reverse a GRN."
+                  >
+                    Cancel order
+                  </Button>
+                ) : null}
               </div>
             </div>
-
-            <div className="rounded-xl border border-slate-200/90 bg-white p-4 shadow-sm ring-1 ring-slate-100/70">
-              <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Billing summary</div>
-              <div className="mt-1 text-lg font-semibold tabular-nums text-slate-900">{billingTotals.billed.toFixed(3)}</div>
-              <div className="mt-2 grid gap-1.5 text-sm text-slate-700">
-                <div className="flex items-baseline justify-between gap-3">
-                  <span className="text-slate-600">Billed (finalized)</span>
-                  <span className="tabular-nums font-medium">{billingTotals.billed.toFixed(3)}</span>
-                </div>
-                <div className="flex items-baseline justify-between gap-3">
-                  <span className="text-slate-600">Pending billing</span>
-                  <span className="tabular-nums font-medium">{billingTotals.pendingBilling.toFixed(3)}</span>
-                </div>
-                <div className="flex items-baseline justify-between gap-3">
-                  <span className="text-slate-600">Re-billable</span>
-                  <span className="tabular-nums font-medium">{billingTotals.rebillable.toFixed(3)}</span>
-                </div>
-              </div>
-              <div className="mt-2 text-xs text-slate-500">
-                Purchase Bills affect supplier billing only. Stock does not change when a bill is cancelled.
-              </div>
+            <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[12px] text-slate-700">
+              <span>
+                <span className="font-semibold text-slate-600">Order:</span> {poStatusLabel(po.status)}
+              </span>
+              <span>
+                <span className="font-semibold text-slate-600">Stock:</span> {stockStatusLabel}
+              </span>
+              <span>
+                <span className="font-semibold text-slate-600">Billing:</span> {billingStatusLabel}
+              </span>
             </div>
           </div>
 
-          {grnSuccess && !showFlowResumeBanner ? (
-            <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-950 shadow-sm">
+          {/* Section 2 — Primary action bar (one workflow state = one banner) */}
+          {rmPoNextActionStrip ? (
+            <div
+              {...(rmPoNextActionStrip.flowWorkOrderAttr && flowWorkOrderIdQ
+                ? { "data-flow-work-order-id": flowWorkOrderIdQ }
+                : {})}
+              data-testid={
+                showShortageNextStep
+                  ? "rm-purchase-post-grn-next-step-shortage"
+                  : showFlowResumeBannerSlim
+                    ? "grn-flow-resume-banner"
+                    : showRichProductionNextStep || showFallbackProductionNextStep
+                      ? "rm-purchase-post-grn-next-step"
+                      : undefined
+              }
+            >
+              <NextStepStrip
+                visible
+                density="compact"
+                variant={rmPoNextActionStrip.variant}
+                title={rmPoNextActionStrip.title}
+                subtitle={rmPoNextActionStrip.subtitle}
+                primaryAction={rmPoNextActionStrip.primary}
+                secondaryAction={rmPoNextActionStrip.secondary}
+              />
+            </div>
+          ) : null}
+
+          {grnSuccess && !rmPoNextActionStrip ? (
+            <div className="rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-[12px] text-emerald-950">
               {grnSuccess}
             </div>
           ) : null}
 
+          {/* Section 3 — Procurement KPI summary */}
+          <div className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 shadow-sm ring-1 ring-slate-100/70">
+            <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 sm:grid-cols-4">
+              <div>
+                <div className="text-[12px] font-semibold text-slate-600">Ordered</div>
+                <div className="text-[15px] font-extrabold tabular-nums leading-tight text-slate-950">
+                  {receiveInfo ? receiveInfo.ordered.toFixed(3) : "—"}
+                </div>
+              </div>
+              <div>
+                <div className="text-[12px] font-semibold text-slate-600">Received</div>
+                <div className="text-[15px] font-extrabold tabular-nums leading-tight text-slate-950">
+                  {receiveInfo ? receiveInfo.received.toFixed(3) : "—"}
+                </div>
+              </div>
+              <div>
+                <div className="text-[12px] font-semibold text-slate-600">Pending</div>
+                <div className="text-[15px] font-extrabold tabular-nums leading-tight text-slate-950">
+                  {receiveInfo ? receiveInfo.pending.toFixed(3) : "—"}
+                </div>
+              </div>
+              <div>
+                <div className="text-[12px] font-semibold text-slate-600">Billing pending</div>
+                <div className="text-[15px] font-extrabold tabular-nums leading-tight text-slate-950">
+                  {billingTotals.pendingBilling.toFixed(3)}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Section 4 — RM line items */}
           <Card className="overflow-hidden border-slate-200/90 shadow-sm ring-1 ring-slate-100/70">
-            <CardHeader className="border-b border-slate-100 bg-gradient-to-b from-slate-50/95 to-white px-4 py-2.5 md:px-5">
-              <CardTitle className="text-base font-semibold text-slate-900">Line items</CardTitle>
+            <CardHeader className="border-b border-slate-100 px-2.5 py-1.5">
+              <CardTitle className="text-[11px] font-bold uppercase tracking-wider text-slate-700">RM line items</CardTitle>
             </CardHeader>
             <CardContent className="p-0">
               <div className="overflow-x-auto">
-                <table className="w-full min-w-[820px] border-collapse text-sm">
+                <table className="w-full min-w-[720px] border-collapse text-[12px]">
                   <thead>
-                    <tr className="border-b border-slate-200 bg-slate-50/95 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">
-                      <th className="px-4 py-2.5">RM</th>
-                      <th className="px-4 py-2.5 text-right">Ordered</th>
-                      <th className="px-4 py-2.5 text-right">Received</th>
-                      <th className="px-4 py-2.5">Unit</th>
-                      <th className="px-4 py-2.5">HSN</th>
-                      <th className="px-4 py-2.5 text-right">GST %</th>
-                      <th className="px-4 py-2.5 text-right">Amount</th>
+                    <tr className="border-b border-slate-200 bg-slate-50/95 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-600">
+                      <th className="px-2 py-1.5">RM</th>
+                      <th className="px-2 py-1.5 text-right">Ordered</th>
+                      <th className="px-2 py-1.5 text-right">Received</th>
+                      <th className="px-2 py-1.5">Unit</th>
+                      <th className="px-2 py-1.5">HSN</th>
+                      <th className="px-2 py-1.5 text-right">GST %</th>
+                      <th className="px-2 py-1.5 text-right">Amount</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
@@ -1003,15 +1170,15 @@ export function RmPurchasePoDetailPage() {
                           : computeLineAmount(Number(ln.qty), Number(ln.rate ?? 0));
                       return (
                         <tr key={ln.id} className="bg-white">
-                          <td className="px-4 py-2.5 font-medium text-slate-900">{ln.item?.itemName ?? `Item #${ln.itemId}`}</td>
-                          <td className="px-4 py-2.5 text-right tabular-nums text-slate-800">{ln.qty}</td>
-                          <td className="px-4 py-2.5 text-right tabular-nums text-slate-800">{receivedForLine(po, ln.id)}</td>
-                          <td className="px-4 py-2.5 text-slate-800">{ln.unit || "—"}</td>
-                          <td className="px-4 py-2.5 font-mono text-xs text-slate-700">{ln.hsn || "—"}</td>
-                          <td className="px-4 py-2.5 text-right tabular-nums text-slate-800">
+                          <td className="px-2 py-1.5 font-medium text-slate-900">{ln.item?.itemName ?? `Item #${ln.itemId}`}</td>
+                          <td className="px-2 py-1.5 text-right tabular-nums text-slate-800">{ln.qty}</td>
+                          <td className="px-2 py-1.5 text-right tabular-nums text-slate-800">{receivedForLine(po, ln.id)}</td>
+                          <td className="px-2 py-1.5 text-slate-800">{ln.unit || "—"}</td>
+                          <td className="px-2 py-1.5 font-mono text-[11px] text-slate-700">{ln.hsn || "—"}</td>
+                          <td className="px-2 py-1.5 text-right tabular-nums text-slate-800">
                             {ln.gstRate != null && String(ln.gstRate).trim() !== "" ? ln.gstRate : "—"}
                           </td>
-                          <td className="px-4 py-2.5 text-right tabular-nums text-slate-800">{Number.isFinite(amt) ? amt.toFixed(2) : "—"}</td>
+                          <td className="px-2 py-1.5 text-right tabular-nums text-slate-800">{Number.isFinite(amt) ? amt.toFixed(2) : "—"}</td>
                         </tr>
                       );
                     })}
@@ -1021,38 +1188,73 @@ export function RmPurchasePoDetailPage() {
             </CardContent>
           </Card>
 
-          <Card className="overflow-hidden border-slate-200/90 shadow-sm ring-1 ring-slate-100/70">
-            <CardHeader className="border-b border-slate-100 bg-gradient-to-b from-slate-50/95 to-white px-4 py-2.5 md:px-5">
-              <CardTitle className="text-base font-semibold text-slate-900">Goods receipts (GRN)</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3 px-4 py-4 md:px-5">
-              <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
-                <div className="font-medium text-slate-800">What this affects</div>
-                <div className="mt-0.5">
-                  <span className="font-medium">GRN</span> affects stock received.{" "}
-                  <span className="font-medium">Purchase Bill</span> affects supplier billing only (stock will NOT change).
+          {/* Section 5 — Commercial details (collapsed) */}
+          {po.resolvedSupplierCommercial ? (
+            <div className="rounded-lg border border-slate-200 bg-white shadow-sm ring-1 ring-slate-100/70">
+              <button
+                type="button"
+                className="flex w-full items-center justify-between px-2.5 py-1.5 text-left"
+                onClick={() => setCommercialDetailsOpen((open) => !open)}
+                aria-expanded={commercialDetailsOpen}
+              >
+                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-700">Commercial details</span>
+                <span className="text-[12px] font-semibold text-slate-600">
+                  {commercialDetailsOpen ? "Hide" : "Show Commercial Details"}
+                </span>
+              </button>
+              {commercialDetailsOpen ? (
+                <div className="border-t border-slate-100 px-2.5 py-2">
+                  <RmPoCommercialSummary commercial={po.resolvedSupplierCommercial} />
                 </div>
-              </div>
+              ) : null}
+            </div>
+          ) : null}
 
+          {/* Section 6 — Procurement traceability (collapsed) */}
+          {hasProcurementTraceability ? (
+            <div className="rounded-lg border border-slate-200 bg-white shadow-sm ring-1 ring-slate-100/70">
+              <button
+                type="button"
+                className="flex w-full items-center justify-between px-2.5 py-1.5 text-left"
+                onClick={() => setTraceabilityOpen((open) => !open)}
+                aria-expanded={traceabilityOpen}
+              >
+                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-700">Procurement traceability</span>
+                <span className="text-[12px] font-semibold text-slate-600">
+                  {traceabilityOpen ? "Hide" : "Show traceability"}
+                </span>
+              </button>
+              {traceabilityOpen ? (
+                <ul className="space-y-1 border-t border-slate-100 px-2.5 py-2 text-[12px] text-slate-800">
+                  {procurementTraceabilityRows.map((row) => (
+                    <li key={row.lineId}>
+                      <span className="font-semibold">{row.itemName}:</span> {row.summary}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </div>
+          ) : null}
+
+          {/* Section 7 — GRN history */}
+          <Card className="mb-0 overflow-hidden border-slate-200/90 shadow-sm ring-1 ring-slate-100/70">
+            <CardHeader className="border-b border-slate-100 px-2.5 py-1">
+              <CardTitle className="text-[11px] font-bold uppercase tracking-wider text-slate-700">GRN history</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-1 px-2.5 py-1.5 pb-1">
               {!po.grns.length ? (
-                <div className="rounded-xl border border-slate-200 bg-slate-50/70 px-4 py-6 text-center">
-                  <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-white ring-1 ring-slate-200/80">
-                    <Package className="h-6 w-6 text-slate-500" aria-hidden />
-                  </div>
-                  <div className="text-base font-semibold text-slate-900">No goods received yet</div>
-                  <div className="mt-1 text-sm text-slate-600">Create a GRN to record stock receipt.</div>
-                </div>
+                <p className="text-[12px] leading-snug text-slate-600">No goods received yet. Use Create GRN when stock arrives.</p>
               ) : (
-                <ul className="space-y-2">
+                <ul className="space-y-1">
                   {po.grns.map((g) => (
                     <li
                       key={g.id}
-                      className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200/90 bg-white px-4 py-2.5 text-sm shadow-sm"
+                      className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-slate-200/90 bg-white px-2.5 py-1.5 text-[12px]"
                     >
-                      <div className="flex flex-wrap items-center gap-3">
+                      <div className="flex flex-wrap items-center gap-2">
                         <span className="font-semibold text-slate-900">GRN-{g.id}</span>
-                        <span className="inline-flex items-center gap-2 text-slate-700">
-                          <span className={`inline-block h-2 w-2 rounded-full ${grnStatusDotClass(g)}`} aria-hidden />
+                        <span className="inline-flex items-center gap-1.5 text-slate-700">
+                          <span className={`inline-block h-1.5 w-1.5 rounded-full ${grnStatusDotClass(g)}`} aria-hidden />
                           <span className="font-medium">{grnStatusLabel(g)}</span>
                         </span>
                       </div>
@@ -1061,7 +1263,7 @@ export function RmPurchasePoDetailPage() {
                           type="button"
                           size="sm"
                           variant="outline"
-                          className="h-9 px-3 text-sm"
+                          className="h-7 px-2.5 text-[11px]"
                           disabled={reversingGrnId === g.id}
                           onClick={() => void onReverseGrn(g.id)}
                           title="Reverses the stock receipt and reduces received stock."
@@ -1081,7 +1283,7 @@ export function RmPurchasePoDetailPage() {
       {!loading && !po && !error ? <p className="text-sm text-slate-600">Purchase order not found.</p> : null}
 
       {editOpen && po ? (
-        <div className="erp-modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="rm-po-edit-title">
+        <ErpModal onClose={() => setEditOpen(false)} aria-labelledby="rm-po-edit-title">
           <Card className="erp-modal-shell max-h-[90vh] overflow-y-auto">
             <CardHeader className="pb-2">
               <CardTitle id="rm-po-edit-title" className="text-base">
@@ -1124,6 +1326,23 @@ export function RmPurchasePoDetailPage() {
                     </select>
                   </label>
                 </FieldShortcutHint>
+                {canChangeCommercial && editSupplierLocations.length > 0 ? (
+                  <label className="grid gap-1 text-sm">
+                    <span className="text-slate-600">Supply location</span>
+                    <select
+                      className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm"
+                      value={supplierLocationId ?? ""}
+                      onChange={(e) => setSupplierLocationId(Number(e.target.value) || null)}
+                    >
+                      {editSupplierLocations.map((loc) => (
+                        <option key={loc.id} value={loc.id}>
+                          {loc.label}
+                          {loc.isDefault ? " (default)" : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ) : null}
               </div>
               <label className="grid gap-1 text-sm">
                 <span className="text-slate-600">Remarks</span>
@@ -1294,11 +1513,11 @@ export function RmPurchasePoDetailPage() {
               </div>
             </CardContent>
           </Card>
-        </div>
+        </ErpModal>
       ) : null}
 
       {grnModalOpen && po && grnAllowed ? (
-        <div className="erp-modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="rm-grn-title">
+        <ErpModal onClose={() => setGrnModalOpen(false)} aria-labelledby="rm-grn-title">
           <Card className="erp-modal-shell max-h-[90vh] overflow-y-auto">
             <CardHeader className="pb-2">
               <CardTitle id="rm-grn-title" className="text-base">
@@ -1306,9 +1525,17 @@ export function RmPurchasePoDetailPage() {
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
+              <div className="rounded-md border border-sky-100 bg-sky-50/80 px-3 py-2 text-xs text-sky-950">
+                <span className="font-medium">Receiving Location</span>
+                <span className="text-sky-900/90">
+                  {" "}
+                  — Material will be added to the selected location after you confirm receipt.
+                </span>
+              </div>
+
               <div className="flex flex-wrap items-start justify-between gap-2">
                 <p className="text-xs text-slate-600">
-                  Enter receive quantities (pending shown per line). Tip: Tab moves to next line. Enter confirms receipt.
+                  Enter receive quantities and location per line. Tab moves to the next field. Enter confirms receipt.
                 </p>
                 <Button
                   type="button"
@@ -1316,11 +1543,16 @@ export function RmPurchasePoDetailPage() {
                   size="sm"
                   disabled={grning}
                   onClick={() => {
+                    const fallbackLocId = grnLocations[0]?.id ?? 0;
                     setGrnLines(
                       po.lines.map((ln) => {
                         const got = receivedForLine(po, ln.id);
                         const pending = Math.max(0, Number(ln.qty) - got);
-                        return { rmPoLineId: ln.id, receivedQty: pending };
+                        return {
+                          rmPoLineId: ln.id,
+                          receivedQty: pending,
+                          locationId: grnLocationSuggestions[ln.id] ?? fallbackLocId,
+                        };
                       }),
                     );
                     window.setTimeout(() => {
@@ -1400,7 +1632,8 @@ export function RmPurchasePoDetailPage() {
                       setGrnLines((prev) => {
                         const n = [...prev];
                         const ix = n.findIndex((x) => x.rmPoLineId === ln.id);
-                        if (ix >= 0) n[ix] = { rmPoLineId: ln.id, receivedQty: v };
+                        const locId = ix >= 0 ? n[ix].locationId : grnLocationSuggestions[ln.id] ?? grnLocations[0]?.id ?? 0;
+                        if (ix >= 0) n[ix] = { rmPoLineId: ln.id, receivedQty: v, locationId: locId };
                         return n;
                       });
                     },
@@ -1417,9 +1650,39 @@ export function RmPurchasePoDetailPage() {
                           </div>
                         </div>
 
-                        <div className="grid gap-1">
-                          <div className="text-[11px] font-medium text-slate-600">Receive qty</div>
-                          <FieldShortcutHint
+                        <div className="grid gap-2 sm:grid-cols-2">
+                          <div className="grid gap-1">
+                            <label className="text-[11px] font-medium text-slate-600" htmlFor={`grn-loc-${ln.id}`}>
+                              Receiving Location *
+                            </label>
+                            <select
+                              id={`grn-loc-${ln.id}`}
+                              className="h-9 min-w-[10rem] rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-900"
+                              value={gl?.locationId && gl.locationId > 0 ? String(gl.locationId) : ""}
+                              disabled={grning || grnLocationsLoading || !grnLocations.length}
+                              onChange={(e) => {
+                                const locationId = Number(e.target.value);
+                                setGrnLines((prev) => {
+                                  const n = [...prev];
+                                  const ix = n.findIndex((x) => x.rmPoLineId === ln.id);
+                                  const qty = ix >= 0 ? n[ix].receivedQty : Number.NaN;
+                                  if (ix >= 0) n[ix] = { rmPoLineId: ln.id, receivedQty: qty, locationId };
+                                  else n.push({ rmPoLineId: ln.id, receivedQty: Number.NaN, locationId });
+                                  return n;
+                                });
+                              }}
+                            >
+                              <option value="">{grnLocationsLoading ? "Loading…" : "Select location"}</option>
+                              {grnLocations.map((loc) => (
+                                <option key={loc.id} value={String(loc.id)}>
+                                  {loc.locationName}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          <div className="grid gap-1">
+                            <div className="text-[11px] font-medium text-slate-600">Receive qty</div>
+                            <FieldShortcutHint
                             show={i === 0 && shortcutHints.activeFieldId === "grnQty"}
                             hint={shortcutHints.activeFieldHintText ?? ""}
                             placement="below-end"
@@ -1437,6 +1700,7 @@ export function RmPurchasePoDetailPage() {
                               {...grnQtyBind}
                             />
                           </FieldShortcutHint>
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -1470,7 +1734,7 @@ export function RmPurchasePoDetailPage() {
               </div>
             </CardContent>
           </Card>
-        </div>
+        </ErpModal>
       ) : null}
     </PageContainer>
   );

@@ -59,16 +59,21 @@ function mapPrismaKnownRequest(err) {
       let message;
       if (lower.includes("purchasebill")) {
         message =
-          "Purchase bill storage is not set up on this database. Apply the Prisma migration that creates PurchaseBill / PurchaseBillLine, or contact an administrator.";
-      } else if (tableHint) {
-        message = `A required database table is missing (${tableHint}). Apply Prisma migrations so the schema matches this application.`;
+          "Production planning setup is incomplete. Please contact administrator or apply the latest system update.";
       } else {
-        message = "A required database table is missing. Apply Prisma migrations so the schema matches this application.";
+        message = "Production planning setup is incomplete. Please contact administrator or apply the latest system update.";
       }
       return {
         status: 503,
         message,
         code: "MISSING_TABLE",
+        details: tableHint
+          ? {
+              adminOnly: true,
+              table: tableHint,
+              guidance: "Apply the latest Prisma migration bundle on the server.",
+            }
+          : undefined,
       };
     }
     /** Raw SQL / driver failure (e.g. MySQL 1146 table missing) — meta.message has the engine text. */

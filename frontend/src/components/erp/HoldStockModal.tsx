@@ -5,6 +5,7 @@ import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { apiFetch, ApiRequestError } from "../../services/api";
 import { cn } from "../../lib/utils";
+import { ErpModal } from "./ErpModal";
 
 export type HoldStockRow = {
   itemId: number;
@@ -68,15 +69,6 @@ export function HoldStockModal({ open, row, onClose, onSuccess }: Props) {
     return () => window.clearTimeout(t);
   }, [open, row?.itemId]);
 
-  React.useEffect(() => {
-    if (!open) return;
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
-
   const parsedQty = parseQtyInput(qtyDraft);
   const qtyValid =
     parsedQty != null && parsedQty > 0 && parsedQty <= holdQty + 1e-9;
@@ -109,14 +101,11 @@ export function HoldStockModal({ open, row, onClose, onSuccess }: Props) {
   if (!open || !row) return null;
 
   return (
-    <div
-      className="erp-modal-backdrop"
-      role="dialog"
-      aria-modal="true"
+    <ErpModal
+      open={open}
+      onClose={onClose}
+      closeOnBackdropClick
       aria-labelledby="hold-stock-modal-title"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
     >
       <Card className="erp-modal-shell max-w-md">
         <CardHeader className="flex flex-row items-center justify-between space-y-0 border-b border-slate-200 pb-3">
@@ -200,6 +189,6 @@ export function HoldStockModal({ open, row, onClose, onSuccess }: Props) {
           </div>
         </CardContent>
       </Card>
-    </div>
+    </ErpModal>
   );
 }

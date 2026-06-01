@@ -10,9 +10,14 @@ type FlowPick = Pick<NoQtyFlowState, "createNextRsEligible" | "nextRsAlreadyCrea
 /**
  * Renders the "Create Next RS" CTA for a NO_QTY sales order.
  *
- * Phase 1 ownership rule: only ADMIN and STORE can create Next RS.
- * For other roles we still surface the read-only "already created" tag when applicable,
- * but never the action button. Callers may pass any role — the guard lives here.
+ * Ownership rule: only ADMIN can create Next RS (matches backend
+ * `NEXT_RS_WRITE_ROLES`). For other roles we still surface the read-only
+ * "already created" tag when applicable, but never the action button.
+ * Callers may pass any role — the guard lives here.
+ *
+ * Eligibility is independent of QC / Dispatch / Sales bill completion:
+ * NO_QTY rolling planning runs in parallel to shop-floor work for an open SO
+ * with a locked current RS and no later locked RS.
  */
 export function NoQtyCreateNextRsInline(props: {
   salesOrderId: number;

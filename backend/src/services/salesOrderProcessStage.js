@@ -48,6 +48,15 @@ async function fetchInvoicedQtyBySoId(prisma, soIds) {
   return invoicedBySoId;
 }
 
+function resolvePostDispatchProcessStage(dispatchSummary, invoicedQty = 0) {
+  const dispatched = Number(dispatchSummary?.totalDispatched ?? 0);
+  const invoiced = Number(invoicedQty ?? 0);
+  if (dispatched > EPS && invoiced + EPS < dispatched) {
+    return { key: "SALES_BILL_PENDING", label: "Sales Bill pending" };
+  }
+  return { key: "COMPLETED", label: "Completed" };
+}
+
 /**
  * @param {{ lines?: { item?: { itemType?: string } }[] }} so
  */
@@ -64,16 +73,7 @@ function salesOrderHasFgLines(so) {
 async function enrichSalesOrdersWithProcessStage(prisma, enrichedSalesOrders, opts = {}) {
   const list = enrichedSalesOrders || [];
   if (!list.length) return [];
-
-  let invoicedQtyBySoId = opts.invoicedQtyBySoId;
-  if (invoicedQtyBySoId === undefined && list.length) {
-    invoicedQtyBySoId = await fetchInvoicedQtyBySoId(
-      prisma,
-      list.map((s) => s.id),
-    );
-  } else if (invoicedQtyBySoId === undefined) {
-    invoicedQtyBySoId = null;
-  }
+  const invoicedQtyBySoId = opts.invoicedQtyBySoId instanceof Map ? opts.invoicedQtyBySoId : new Map();
 
   const byId = new Map();
   for (const so of list) byId.set(so.id, so);
@@ -127,14 +127,6 @@ async function enrichSalesOrdersWithProcessStage(prisma, enrichedSalesOrders, op
     peBySo.get(soId).push(pe);
   }
 
-  function salesBillStagePending(so, dispatchSummary) {
-    if (!invoicedQtyBySoId) return false;
-    const td = Number(dispatchSummary?.totalDispatched ?? 0);
-    if (!(td > EPS)) return false;
-    const inv = Number(invoicedQtyBySoId.get(so.id) ?? 0);
-    return inv + EPS < td;
-  }
-
   return list.map((so) => {
     const isNoQty = so.orderType === "NO_QTY";
     const currentCycleId = so.currentCycleId != null ? Number(so.currentCycleId) : null;
@@ -146,6 +138,7 @@ async function enrichSalesOrdersWithProcessStage(prisma, enrichedSalesOrders, op
       so.dispatchSummary != null && !isNoQty
         ? so.dispatchSummary
         : computeSalesOrderDispatchLineStats(so.lines ?? [], dispatchForStage, so.orderType).dispatchSummary;
+    const invoicedQty = invoicedQtyBySoId.get(so.id) ?? Number(so.invoicedQty ?? 0);
 
     /** Replacement SOs: dispatch-only lifecycle (no WO / production / QC pipeline stages). */
     if (so.orderType === "REPLACEMENT") {
@@ -153,10 +146,7 @@ async function enrichSalesOrdersWithProcessStage(prisma, enrichedSalesOrders, op
         return { ...so, processStage: { key: "DRAFT", label: "Draft" } };
       }
       if (dispatchSummary.fullyDispatched) {
-        if (salesBillStagePending(so, dispatchSummary)) {
-          return { ...so, processStage: { key: "SALES_BILL_PENDING", label: "Sales bill pending" } };
-        }
-        return { ...so, processStage: { key: "COMPLETED", label: "Completed" } };
+        return { ...so, processStage: resolvePostDispatchProcessStage(dispatchSummary, invoicedQty) };
       }
       return { ...so, processStage: { key: "DISPATCH_PENDING", label: "Dispatch pending" } };
     }
@@ -167,10 +157,7 @@ async function enrichSalesOrdersWithProcessStage(prisma, enrichedSalesOrders, op
 
     if (!salesOrderHasFgLines(so)) {
       if (dispatchSummary.fullyDispatched) {
-        if (salesBillStagePending(so, dispatchSummary)) {
-          return { ...so, processStage: { key: "SALES_BILL_PENDING", label: "Sales bill pending" } };
-        }
-        return { ...so, processStage: { key: "COMPLETED", label: "Completed" } };
+        return { ...so, processStage: resolvePostDispatchProcessStage(dispatchSummary, invoicedQty) };
       }
       return { ...so, processStage: { key: "DISPATCH_PENDING", label: "Dispatch pending" } };
     }
@@ -205,22 +192,19 @@ async function enrichSalesOrdersWithProcessStage(prisma, enrichedSalesOrders, op
       }
     }
     if (qcPending) {
-      return { ...so, processStage: { key: "QC_PENDING", label: "QC pending" } };
+      return { ...so, processStage: { key: "QC_PENDING", label: "QA in progress" } };
     }
 
     if (!dispatchSummary.fullyDispatched) {
       return { ...so, processStage: { key: "DISPATCH_PENDING", label: "Dispatch pending" } };
     }
 
-    if (salesBillStagePending(so, dispatchSummary)) {
-      return { ...so, processStage: { key: "SALES_BILL_PENDING", label: "Sales bill pending" } };
-    }
-
-    return { ...so, processStage: { key: "COMPLETED", label: "Completed" } };
+    return { ...so, processStage: resolvePostDispatchProcessStage(dispatchSummary, invoicedQty) };
   });
 }
 
 module.exports = {
   enrichSalesOrdersWithProcessStage,
   fetchInvoicedQtyBySoId,
+  resolvePostDispatchProcessStage,
 };

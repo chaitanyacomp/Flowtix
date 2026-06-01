@@ -10,6 +10,10 @@ function safeStrOrNull(v) {
   return t ? t : null;
 }
 
+function trimSnap(v) {
+  return safeStr(v).trim();
+}
+
 function fmtPct(n) {
   const x = Number(n);
   if (!Number.isFinite(x)) return "";
@@ -31,6 +35,72 @@ function resolveTaxIntraStateFromCodes({ companyStateCode, customerStateCode }) 
   return String(c1) === String(c2);
 }
 
+function hasShipToSnapshots(bill) {
+  return Boolean(
+    trimSnap(bill?.shipToLabelSnapshot) ||
+      trimSnap(bill?.shipToAddressSnapshot) ||
+      trimSnap(bill?.shipToGstinSnapshot) ||
+      trimSnap(bill?.shipToStateNameSnapshot) ||
+      trimSnap(bill?.shipToStateCodeSnapshot),
+  );
+}
+
+/**
+ * Resolve Bill To / Ship To / POS for Tally export and invoice display.
+ * Fallback: SalesBill snapshots → legacy customer snapshots → live customer.
+ */
+function resolveSalesBillCommercialForTallyExport(bill, customer) {
+  const billToName = safeStrOrNull(bill?.customerNameSnapshot) ?? safeStrOrNull(customer?.name);
+  const billToAddress = trimSnap(bill?.billToAddressSnapshot) || trimSnap(customer?.address) || "";
+  const billToGstin = safeStrOrNull(bill?.billToGstinSnapshot) ?? safeStrOrNull(customer?.gst);
+  const billToStateName =
+    safeStrOrNull(bill?.customerStateNameSnapshot) ?? safeStrOrNull(customer?.stateRef?.stateName);
+  const billToStateCode =
+    safeStrOrNull(bill?.customerStateCodeSnapshot) ?? safeStrOrNull(customer?.stateRef?.stateCode);
+
+  const shipPresent = hasShipToSnapshots(bill);
+  const shipToLabel = shipPresent ? safeStrOrNull(bill?.shipToLabelSnapshot) : "Same as Bill To";
+  const shipToAddress = shipPresent ? trimSnap(bill?.shipToAddressSnapshot) : billToAddress;
+  const shipToGstin = shipPresent
+    ? safeStrOrNull(bill?.shipToGstinSnapshot) ?? billToGstin
+    : billToGstin;
+  const shipToStateName = shipPresent
+    ? safeStrOrNull(bill?.shipToStateNameSnapshot) ?? billToStateName
+    : billToStateName;
+  const shipToStateCode = shipPresent
+    ? safeStrOrNull(bill?.shipToStateCodeSnapshot) ?? billToStateCode
+    : billToStateCode;
+
+  const posStateName =
+    safeStrOrNull(bill?.posStateNameSnapshot) ?? shipToStateName ?? billToStateName ?? null;
+  const posStateCode =
+    safeStrOrNull(bill?.posStateCodeSnapshot) ?? shipToStateCode ?? billToStateCode ?? null;
+  const posSource = safeStrOrNull(bill?.posSourceSnapshot);
+
+  return {
+    billTo: {
+      name: billToName,
+      address: billToAddress,
+      gstin: billToGstin,
+      stateName: billToStateName,
+      stateCode: billToStateCode,
+    },
+    shipTo: {
+      label: shipToLabel,
+      address: shipToAddress,
+      gstin: shipToGstin,
+      stateName: shipToStateName,
+      stateCode: shipToStateCode,
+      sameAsBillTo: !shipPresent,
+    },
+    placeOfSupply: {
+      stateName: posStateName,
+      stateCode: posStateCode,
+      source: posSource,
+    },
+  };
+}
+
 /**
  * Map a Sales Bill DB row into an export-ready structured payload.
  * Mapping only (no tax recalculation; uses stored breakup fields).
@@ -41,6 +111,7 @@ function mapSalesBillToTallyExportPayload({ bill, companyState }) {
   const orderType = bill?.dispatch?.salesOrder?.orderType ?? null;
   const soId = bill?.soIdSnapshot ?? bill?.dispatch?.soId ?? null;
   const cycleId = bill?.cycleId ?? bill?.dispatch?.cycleId ?? null;
+  const commercial = resolveSalesBillCommercialForTallyExport(bill, customer);
 
   const mappedLines = lines.map((ln) => {
     const item = ln.item ?? null;
@@ -62,11 +133,14 @@ function mapSalesBillToTallyExportPayload({ bill, companyState }) {
   });
 
   const companyStateCode = companyState?.companyStateRef?.stateCode ?? null;
-  const customerStateCode = bill.customerStateCodeSnapshot || customer?.stateRef?.stateCode || null;
+  const posStateCode = commercial.placeOfSupply.stateCode;
+  const billToStateCode = commercial.billTo.stateCode;
   const taxIntraState =
     typeof bill.taxIntraState === "boolean"
       ? bill.taxIntraState
-      : resolveTaxIntraStateFromCodes({ companyStateCode, customerStateCode });
+      : posStateCode && companyStateCode
+        ? String(companyStateCode) === String(posStateCode)
+        : resolveTaxIntraStateFromCodes({ companyStateCode, customerStateCode: billToStateCode });
 
   const distinctGstRates = Array.from(
     new Set(mappedLines.map((l) => String(l.gstRate ?? "").trim()).filter(Boolean)),
@@ -111,11 +185,15 @@ function mapSalesBillToTallyExportPayload({ bill, companyState }) {
 
     customer: {
       customerId: bill.customerId,
-      customerName: safeStrOrNull(bill.customerNameSnapshot) ?? safeStrOrNull(customer?.name),
-      customerGstin: customer?.gst ?? null,
-      customerStateName: bill.customerStateNameSnapshot || customer?.stateRef?.stateName || null,
-      customerStateCode,
+      customerName: commercial.billTo.name,
+      customerGstin: commercial.billTo.gstin,
+      customerStateName: commercial.billTo.stateName,
+      customerStateCode: commercial.billTo.stateCode,
     },
+
+    billTo: commercial.billTo,
+    shipTo: commercial.shipTo,
+    placeOfSupply: commercial.placeOfSupply,
 
     tax: {
       taxIntraState,
@@ -141,5 +219,7 @@ function mapSalesBillToTallyExportPayload({ bill, companyState }) {
   };
 }
 
-module.exports = { mapSalesBillToTallyExportPayload };
-
+module.exports = {
+  mapSalesBillToTallyExportPayload,
+  resolveSalesBillCommercialForTallyExport,
+};

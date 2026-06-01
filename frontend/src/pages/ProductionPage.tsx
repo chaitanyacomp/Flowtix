@@ -10,6 +10,7 @@ import { isValidNumberDraft, type NumberDraft, toNumberDraft } from "../lib/numb
 import { useFastEntryForm } from "../hooks/useFastEntryForm";
 import { useDependentFieldFocus } from "../hooks/useDependentFieldFocus";
 import { useMandatoryPositiveQtyDraft } from "../hooks/useMandatoryPositiveQtyDraft";
+import { sanitizeProductionQtyDraftInput } from "../lib/quantityDraft";
 import {
   OperatorMetricBadge,
   OperatorPageBody,
@@ -17,6 +18,7 @@ import {
   operatorInputClass,
 } from "../components/erp/OperatorWorkbench";
 import { cn } from "../lib/utils";
+import { ErpModal } from "../components/erp/ErpModal";
 import { useShortcutHints } from "../hooks/useShortcutHints";
 import { FieldShortcutHint } from "../components/ui/FieldShortcutHint";
 import {
@@ -49,16 +51,46 @@ import { useCanCreateNextRs } from "../hooks/useIsAdmin";
 import { getRoleEmptyState } from "../lib/erpRoleEmptyStates";
 import { isProductionWorkspaceEntry } from "../lib/operationalPageEntry";
 import { productionHrefFromDashboardRow } from "../lib/operationalWorkspaceLinks";
+import {
+  materialRequestsQueueHref,
+  rmControlCenterHref,
+} from "../lib/materialWorkflowLinks";
 import { OperationalProductionWorkspace } from "../components/erp/OperationalProductionWorkspace";
+import {
+  ProductionMaterialWorkflowCard,
+} from "../components/erp/ProductionMaterialWorkflowCard";
+import { ProductionRmBlockedBanner } from "../components/erp/ProductionRmBlockedBanner";
+import {
+  isRegularProductionEntryBlocked,
+  resolveRegularRmAllowedNowQty,
+  resolveRegularRmEntryQtyCap,
+  type ProductionRmReadiness,
+} from "../components/erp/ProductionRmReadinessStrip";
+import { ProductionRmConsumptionReviewModal } from "../components/erp/ProductionRmConsumptionReviewModal";
 import type { DashboardProductionStatusSource } from "../lib/dashboardProductionStatus";
 import {
   resolveNoQtyCycleDisplayStatus,
   resolveNoQtyCycleDisplayStatusForWorkOrder,
 } from "../lib/noQtyCycleDisplayStatus";
+import { PRODUCTION_QA_TERMS } from "../lib/productionQaTerminology";
 import {
   noQtyErpAdjustedPlanningQtyForWorkOrder,
   noQtyOperatorPendingQtyForWorkOrder,
 } from "../lib/noQtyShortagePresentation";
+import {
+  isWorkOrderPausedStatus,
+  isWorkOrderProductionBlocked,
+  resumeWorkOrderApi,
+  workOrderProductionBlockedMessage,
+  workOrderStatusDisplayLabel,
+} from "../lib/workOrderLifecycle";
+import {
+  buildCompleteQaNextStep,
+  buildRmIssueNextStep,
+  buildRmReadyProductionNextStep,
+  resolveProductionStickyContext,
+  resolveProductionStickyMetrics,
+} from "../lib/regularSoOperationalGuidance";
 
 type WoLine = {
   id: number;
@@ -75,6 +107,10 @@ type WoRow = {
   salesOrderId: number;
   docNo?: string | null;
   status?: string;
+  holdReason?: string | null;
+  holdRemarks?: string | null;
+  shortfallQty?: number | string | null;
+  closureReason?: string | null;
   requirementSheetId?: number | null;
   cycleId?: number | null;
   cycle?: { cycleNo?: number | null; id?: number | null } | null;
@@ -181,6 +217,12 @@ function productionSoTypeUi(e: ProdEntryRow): ProductionSoTypeUi {
   if (raw === "NO_QTY") return { kind: "badge", variant: "no_qty" };
   if (raw === "NORMAL") return { kind: "badge", variant: "regular" };
   return { kind: "muted", text: raw };
+}
+
+/** REGULAR (non–NO_QTY) batches use RM consumption review before approve (Phase 3E). */
+function entryUsesRmConsumptionReview(e: ProdEntryRow | undefined): boolean {
+  if (!e) return false;
+  return prodEntryOrderTypeRaw(e) !== "NO_QTY";
 }
 
 function fmtProdQty(n: number): string {
@@ -527,6 +569,19 @@ export function ProductionPage() {
     isValid: producedQtyValid,
     reset: resetProducedQty,
   } = useMandatoryPositiveQtyDraft();
+  /** Prevents async line prefill / RM clamp from overwriting manual qty entry. */
+  const producedQtyUserTouchedRef = React.useRef(false);
+  const resetProducedQtyField = React.useCallback(() => {
+    producedQtyUserTouchedRef.current = false;
+    resetProducedQty();
+  }, [resetProducedQty]);
+  const onProducedQtyInputChange = React.useCallback(
+    (raw: string) => {
+      producedQtyUserTouchedRef.current = true;
+      setProducedQtyStr(sanitizeProductionQtyDraftInput(raw));
+    },
+    [setProducedQtyStr],
+  );
   const [posting, setPosting] = React.useState(false);
 
   const demoProdQtyPrefilledRef = React.useRef(false);
@@ -547,6 +602,7 @@ export function ProductionPage() {
   const [editSaving, setEditSaving] = React.useState(false);
   const [rowBusy, setRowBusy] = React.useState<number | null>(null);
   const [reverseModalEntry, setReverseModalEntry] = React.useState<ProdEntryRow | null>(null);
+  const [consumptionApproveId, setConsumptionApproveId] = React.useState<number | null>(null);
   const [reverseQtyDraft, setReverseQtyDraft] = React.useState("");
   const [reverseReasonDraft, setReverseReasonDraft] = React.useState("");
   const [reverseModalError, setReverseModalError] = React.useState<string | null>(null);
@@ -566,8 +622,8 @@ export function ProductionPage() {
     setWoId((prev) => (prev !== 0 ? 0 : prev));
     setWolId((prev) => (prev !== 0 ? 0 : prev));
     setUserLockedFlowMode(null);
-    resetProducedQty();
-  }, [resetProducedQty]);
+    resetProducedQtyField();
+  }, [resetProducedQtyField]);
 
   const [noQtyShortageHistorySheets, setNoQtyShortageHistorySheets] = React.useState<NoQtyShortageHistorySheet[]>([]);
   const [noQtyShortageHistoryWorkOrders, setNoQtyShortageHistoryWorkOrders] = React.useState<WoRow[]>([]);
@@ -604,7 +660,6 @@ export function ProductionPage() {
         setKbHelpOpen((v) => !v);
         return;
       }
-      if (ev.key === "Escape" && kbHelpOpen) setKbHelpOpen(false);
     }
 
     window.addEventListener("keydown", onKey);
@@ -960,8 +1015,23 @@ export function ProductionPage() {
     effectiveNoQtyCycleId,
   ]);
 
+  /**
+   * NO_QTY-only APIs may run only after `soOrderTypeById` confirms the scoped SO is NO_QTY
+   * (avoids calling no-qty endpoints while flow mode is transitional or mis-recovered).
+   */
+  const confirmedNoQtySoId = React.useMemo(() => {
+    if (productionFlowMode !== "NO_QTY") return 0;
+    const soId = noQtyWorkbenchSoId > 0 ? noQtyWorkbenchSoId : focusSoIdValid ? focusSoId : 0;
+    if (!(soId > 0)) return 0;
+    if (!Object.prototype.hasOwnProperty.call(soOrderTypeById, soId)) return 0;
+    if (String(soOrderTypeById[soId] ?? "") !== "NO_QTY") return 0;
+    return soId;
+  }, [productionFlowMode, noQtyWorkbenchSoId, focusSoIdValid, focusSoId, soOrderTypeById]);
+
+  const noQtyRequirementSheetsEnabled = confirmedNoQtySoId > 0;
+
   React.useEffect(() => {
-    if (!showNoQtyScopedProductionCard || noQtyWorkbenchSoId <= 0) {
+    if (!noQtyRequirementSheetsEnabled) {
       setNoQtyShortageHistorySheets([]);
       setNoQtyShortageHistoryWorkOrders([]);
       setNoQtyShortageHistoryEntriesByCycle({});
@@ -1047,7 +1117,7 @@ export function ProductionPage() {
     return () => {
       cancelled = true;
     };
-  }, [showNoQtyScopedProductionCard, noQtyWorkbenchSoId, liveTick]);
+  }, [noQtyRequirementSheetsEnabled, noQtyWorkbenchSoId, liveTick]);
 
   const noQtyProductShortageHistoryRows = React.useMemo((): NoQtyProductShortageHistoryRow[] => {
     if (!showNoQtyScopedProductionCard) return [];
@@ -1225,7 +1295,7 @@ export function ProductionPage() {
       setWoId((prev) => (prev === l.workOrderId ? prev : l.workOrderId));
       setWolId((prev) => (prev === l.id ? prev : l.id));
       const rem = lineRemaining(l);
-      resetProducedQty();
+      resetProducedQtyField();
       const woRow = workOrders.find((w) => w.id === l.workOrderId);
       const embeddedType = String(
         woRow?.salesOrder?.orderType ?? soOrderTypeById[l.salesOrderId] ?? "",
@@ -1234,9 +1304,16 @@ export function ProductionPage() {
       else if (embeddedType) setUserLockedFlowMode("REGULAR");
       void (async () => {
         const t = await ensureSoOrderType(l.salesOrderId);
-        setUserLockedFlowMode(t === "NO_QTY" ? "NO_QTY" : "REGULAR");
+        // Only refine the synchronous lock above when the async fetch resolved to a
+        // concrete order type. An empty `t` (transient API failure / unknown SO) must
+        // not silently clobber a correct NO_QTY lock back to REGULAR — that is what
+        // hid the Next RS strip when Admin opened Production from the left menu.
+        if (t === "NO_QTY") setUserLockedFlowMode("NO_QTY");
+        else if (t) setUserLockedFlowMode("REGULAR");
         if (isCarryForwardLine(l, t) && !noQtyAllowShopFloorContinue) return;
-        if (rem > 1e-9) setProducedQtyStr(fmtProdQty(rem));
+        if (rem > 1e-9 && !producedQtyUserTouchedRef.current) {
+          setProducedQtyStr(fmtProdQty(rem));
+        }
       })();
     },
     [
@@ -1245,7 +1322,7 @@ export function ProductionPage() {
       ensureSoOrderType,
       isCarryForwardLine,
       noQtyAllowShopFloorContinue,
-      resetProducedQty,
+      resetProducedQtyField,
       setProducedQtyStr,
     ],
   );
@@ -1256,18 +1333,187 @@ export function ProductionPage() {
     deps: [wolId],
   });
 
-  const createFormCanSubmit = Boolean(wolId > 0 && flatLines.some((l) => l.id === wolId) && producedQtyValid);
+  const [rmReadiness, setRmReadiness] = React.useState<ProductionRmReadiness | null>(null);
+  const [rmReadinessLoading, setRmReadinessLoading] = React.useState(false);
+  const isNoQtyProductionFlow =
+    fromNoQtySo || productionFlowMode === "NO_QTY" || navigateNoQtyContext;
+  const showRegularRmReadiness = !isNoQtyProductionFlow && wolId > 0;
+  const rmProductionEntryBlocked =
+    showRegularRmReadiness && isRegularProductionEntryBlocked(rmReadiness, rmReadinessLoading);
+
+  const selectedWoForLifecycle = React.useMemo(() => {
+    const id = woId > 0 ? woId : selected?.workOrderId ?? 0;
+    if (!(id > 0)) return null;
+    return workOrders.find((w) => w.id === id) ?? null;
+  }, [woId, selected?.workOrderId, workOrders]);
+
+  const woProductionLifecycleBlocked =
+    !isNoQtyProductionFlow &&
+    selectedWoForLifecycle != null &&
+    isWorkOrderProductionBlocked(selectedWoForLifecycle.status);
+  const woProductionLifecycleMessage = selectedWoForLifecycle
+    ? workOrderProductionBlockedMessage(selectedWoForLifecycle)
+    : null;
+  const selectedWoPaused = isWorkOrderPausedStatus(selectedWoForLifecycle?.status);
+  const [resumeWoBusy, setResumeWoBusy] = React.useState(false);
+
+  /** Active DRAFT on the selected WO line — REGULAR create form must not add a second batch. */
+  const latestDraftForSelectedWoLine = React.useMemo(() => {
+    if (!selected || !canProd || isNoQtyProductionFlow) return null;
+    const lineId = selected.id;
+    const draftsForLine = entries.filter(
+      (e) => isDraft(e) && Number(e.workOrderLine?.id ?? 0) === lineId,
+    );
+    if (!draftsForLine.length) return null;
+    const latest = draftsForLine
+      .slice()
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0];
+    const qty = Number(latest?.producedQty ?? 0);
+    const producedQty = Number.isFinite(qty) ? qty : 0;
+    return { latest, producedQty };
+  }, [selected, canProd, entries, isNoQtyProductionFlow]);
+
+  const regularCreateFormLockedByDraft = Boolean(latestDraftForSelectedWoLine);
 
   const selectedMetrics = React.useMemo(() => {
     if (!selected) return null;
     const approved = selected.approvedProducedQty ?? 0;
+    // Production planning is scoped to the selected WO line, not the SO item total.
+    const woLineQty = Number(selected.qty);
     const remaining = lineRemaining(selected);
     return {
-      woLineQty: Number(selected.qty),
+      woLineQty: Number.isFinite(woLineQty) ? woLineQty : 0,
       usedQty: approved,
       remainingQty: remaining,
     };
   }, [selected]);
+
+  const pausedWoQtyStrip = React.useMemo(() => {
+    if (!selected || !selectedWoPaused || !selectedMetrics) return null;
+    const lineEntries = entries.filter(
+      (e) => Number(e.workOrderLine?.id ?? 0) === Number(selected.id) && isApproved(e),
+    );
+    const qcAcceptedQty = lineEntries.reduce((s, e) => s + Math.max(0, Number(e.qcAcceptedQty ?? 0)), 0);
+    return {
+      plannedQty: selectedMetrics.woLineQty,
+      producedQty: selectedMetrics.usedQty,
+      qcAcceptedQty,
+      remainingProductionQty: selectedMetrics.remainingQty,
+    };
+  }, [selected, selectedWoPaused, selectedMetrics, entries]);
+
+  const [pausedFgBalance, setPausedFgBalance] = React.useState<{ dispatchedQty: number; reservedFgQty: number } | null>(
+    null,
+  );
+  React.useEffect(() => {
+    if (!selectedWoPaused || !focusSoIdValid || !selected) {
+      setPausedFgBalance(null);
+      return;
+    }
+    let cancelled = false;
+    void apiFetch<{ items?: Array<{ itemId: number; qcApprovedRemaining?: number; dispatchedQty?: number }> }>(
+      `/api/production/sales-orders/${focusSoId}/fg-work-order-balance`,
+    )
+      .then((payload) => {
+        if (cancelled) return;
+        const row = (payload.items ?? []).find((x) => Number(x.itemId) === Number(selected.fgItemId));
+        const reservedFgQty = Math.max(0, Number(row?.qcApprovedRemaining ?? 0));
+        const dispatchedQty = Math.max(0, Number(row?.dispatchedQty ?? 0));
+        setPausedFgBalance({ dispatchedQty, reservedFgQty });
+      })
+      .catch(() => {
+        if (!cancelled) setPausedFgBalance(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedWoPaused, focusSoIdValid, focusSoId, selected?.fgItemId, selected?.id]);
+
+  /** Matches RM readiness strip headline ("Production allowed now"). */
+  const rmAllowedNowQty = React.useMemo(() => {
+    if (!showRegularRmReadiness) return null;
+    return resolveRegularRmAllowedNowQty(rmReadiness);
+  }, [showRegularRmReadiness, rmReadiness]);
+
+  /** Max qty for save/approve/clamp — same readiness payload, WO balance from API when present. */
+  const rmEntryQtyCap = React.useMemo(() => {
+    if (!showRegularRmReadiness || !selectedMetrics) return null;
+    return resolveRegularRmEntryQtyCap(rmReadiness, {
+      lineWoRemaining: selectedMetrics.remainingQty,
+      excludeProductionQty: editing?.workOrderLine?.id === wolId ? Number(editing.producedQty) : undefined,
+    });
+  }, [showRegularRmReadiness, rmReadiness, selectedMetrics, editing, wolId]);
+
+  const producedQtyWithinCaps = React.useMemo(() => {
+    if (!producedQtyValid || producedQtyParsed == null) return false;
+    if (selectedMetrics && producedQtyParsed > selectedMetrics.remainingQty + 1e-6) return false;
+    if (
+      showRegularRmReadiness &&
+      rmEntryQtyCap != null &&
+      !rmReadinessLoading &&
+      producedQtyParsed > rmEntryQtyCap + 1e-6
+    ) {
+      return false;
+    }
+    return true;
+  }, [
+    producedQtyValid,
+    producedQtyParsed,
+    selectedMetrics,
+    showRegularRmReadiness,
+    rmEntryQtyCap,
+    rmReadinessLoading,
+  ]);
+
+  const createFormCanSubmit = Boolean(
+    wolId > 0 &&
+      flatLines.some((l) => l.id === wolId) &&
+      producedQtyValid &&
+      producedQtyWithinCaps &&
+      !rmProductionEntryBlocked &&
+      !woProductionLifecycleBlocked &&
+      !regularCreateFormLockedByDraft,
+  );
+
+  const onRmReadinessLoaded = React.useCallback((data: ProductionRmReadiness | null) => {
+    setRmReadiness(data);
+  }, []);
+
+  const onRmReadinessLoadingChange = React.useCallback((loading: boolean) => {
+    setRmReadinessLoading(loading);
+  }, []);
+
+  React.useEffect(() => {
+    if (!showRegularRmReadiness) {
+      setRmReadiness(null);
+      setRmReadinessLoading(false);
+      return;
+    }
+    setRmReadiness(null);
+    setRmReadinessLoading(true);
+  }, [showRegularRmReadiness, wolId]);
+
+  const productionMaterialContext = React.useMemo(() => {
+    if (!selected || !selectedMetrics) return undefined;
+    const woRow = workOrders.find((w) => w.id === selected.workOrderId);
+    return {
+      flowLabel: "REGULAR FLOW",
+      soLabel: displaySalesOrderNo(selected.salesOrderId, woRow?.salesOrder?.docNo ?? null),
+      woLabel: displayWorkOrderNo(selected.workOrderId, woRow?.docNo ?? null),
+      fgName: selected.fgItem.itemName,
+      planned: selectedMetrics.woLineQty,
+      produced: selectedMetrics.usedQty,
+      remaining: selectedMetrics.remainingQty,
+    };
+  }, [selected, selectedMetrics, workOrders]);
+
+  const showRegularProductionEntry =
+    showRegularRmReadiness && !rmProductionEntryBlocked && !rmReadinessLoading;
+
+  React.useEffect(() => {
+    if (!regularCreateFormLockedByDraft) return;
+    if (producedQtyStr.trim()) resetProducedQtyField();
+  }, [regularCreateFormLockedByDraft, producedQtyStr, resetProducedQtyField]);
 
   const noQtyEntryContextLine = React.useMemo(() => {
     if (!selected || !selectedMetrics) return "";
@@ -1440,6 +1686,55 @@ export function ProductionPage() {
     [entries, qcBannerSoId],
   );
 
+  /** REGULAR: QC next step is scoped to the selected WO line (not every pending batch on the SO). */
+  const selectedLineQcPending = React.useMemo(() => {
+    if (navigateNoQtyContext || !selected) return false;
+    return entries.some(
+      (e) => Number(e.workOrderLine?.id ?? 0) === Number(selected.id) && qcPendingEntry(e),
+    );
+  }, [navigateNoQtyContext, selected, entries]);
+
+  const selectedLinePendingProductionId = React.useMemo(() => {
+    if (!selected) return 0;
+    const pending = entries.find(
+      (e) => Number(e.workOrderLine?.id ?? 0) === Number(selected.id) && qcPendingEntry(e),
+    );
+    return pending?.id ?? 0;
+  }, [selected, entries]);
+
+  const regularQcBannerHref = React.useMemo(() => {
+    if (!selected || !selectedLineQcPending) return "";
+    const ot =
+      String(soOrderTypeById[selected.salesOrderId] ?? "").trim() ||
+      (fromNoQtySo && selected.salesOrderId === focusSoId ? "NO_QTY" : "NORMAL");
+    return buildQcEntryHref({
+      salesOrderId: selected.salesOrderId,
+      productionId: selectedLinePendingProductionId > 0 ? selectedLinePendingProductionId : null,
+      orderType: ot,
+      fromStep: "production",
+    });
+  }, [
+    selected,
+    selectedLineQcPending,
+    selectedLinePendingProductionId,
+    soOrderTypeById,
+    fromNoQtySo,
+    focusSoId,
+  ]);
+
+  const productionStickyContext = React.useMemo(
+    () =>
+      resolveProductionStickyContext({
+        selected: selected ?? null,
+        woId,
+        wolId,
+        workOrders,
+        entries: visibleEntries,
+        focusSo,
+      }),
+    [selected, woId, wolId, workOrders, visibleEntries, focusSo],
+  );
+
   const showQcCompletedStrip = React.useMemo(() => {
     if (navigateNoQtyContext) return false;
     if (!canProd) return false;
@@ -1487,8 +1782,19 @@ export function ProductionPage() {
     Boolean(selected);
 
   /** One primary QC / dispatch CTA surface — suppress in-card duplicates when the top strip is shown. */
-  const showTopQcNextStrip = Boolean(showQcNextBanner && qcBannerHref && !hideTopQcNextStrip);
+  const showRegularQcNextStrip = Boolean(
+    !navigateNoQtyContext && selectedLineQcPending && regularQcBannerHref,
+  );
+  const showNoQtyQcNextStrip = Boolean(
+    navigateNoQtyContext && showQcNextBanner && qcBannerHref && !hideTopQcNextStrip,
+  );
+  const showTopQcNextStrip = showRegularQcNextStrip || showNoQtyQcNextStrip;
   const suppressDuplicateQcWorkflowUi = showTopQcNextStrip;
+
+  const displayHeaderMetrics = React.useMemo(
+    () => resolveProductionStickyMetrics({ selectedMetrics, wolId, flatLines }),
+    [selectedMetrics, wolId, flatLines],
+  );
 
   const qcEntryHrefForEntry = React.useCallback(
     (r: ProdEntryRow) => {
@@ -1520,8 +1826,27 @@ export function ProductionPage() {
     ) {
       w.push("Entered quantity exceeds remaining capacity.");
     }
+    if (
+      !fromNoQtySo &&
+      producedQtyValid &&
+      producedQtyParsed != null &&
+      rmEntryQtyCap != null &&
+      !rmReadinessLoading &&
+      producedQtyParsed > rmEntryQtyCap + 1e-6
+    ) {
+      const capLabel = rmAllowedNowQty != null ? rmAllowedNowQty : rmEntryQtyCap;
+      w.push(`Entered quantity exceeds production allowed now (${fmtProdQty(capLabel ?? 0)}).`);
+    }
     return w;
-  }, [fromNoQtySo, selectedMetrics, producedQtyParsed, producedQtyValid]);
+  }, [
+    fromNoQtySo,
+    selectedMetrics,
+    producedQtyParsed,
+    producedQtyValid,
+    rmEntryQtyCap,
+    rmAllowedNowQty,
+    rmReadinessLoading,
+  ]);
 
   async function refresh(): Promise<FlatLine[]> {
     const includeWorkOrderLineId = editing?.workOrderLine?.id ?? 0;
@@ -1576,14 +1901,9 @@ export function ProductionPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [productionFlowMode, focusSoIdValid, noQtyWorkbenchSoId, focusSoId, effectiveNoQtyCycleId, liveTick]);
 
-  // When scoped to a NO_QTY SO, show a context-aware empty state if nothing is eligible.
+  // When scoped to a confirmed NO_QTY SO, show a context-aware empty state if nothing is eligible.
   React.useEffect(() => {
-    if (productionFlowMode !== "NO_QTY") {
-      setNoQtyEmptyMsg("");
-      return;
-    }
-    const soId = noQtyWorkbenchSoId > 0 ? noQtyWorkbenchSoId : focusSoIdValid ? focusSoId : 0;
-    if (!(soId > 0)) {
+    if (confirmedNoQtySoId <= 0) {
       setNoQtyEmptyMsg("");
       return;
     }
@@ -1592,10 +1912,12 @@ export function ProductionPage() {
       setNoQtyEmptyMsg("");
       return;
     }
-    apiFetch<{ reason: string; message: string }>(`/api/production/no-qty-so/${soId}/production-context`)
+    apiFetch<{ reason: string; message: string }>(
+      `/api/production/no-qty-so/${confirmedNoQtySoId}/production-context`,
+    )
       .then((ctx) => setNoQtyEmptyMsg(ctx?.message ?? ""))
       .catch(() => setNoQtyEmptyMsg(""));
-  }, [productionFlowMode, noQtyWorkbenchSoId, focusSoId, focusSoIdValid, canProd, flatLines.length]);
+  }, [confirmedNoQtySoId, canProd, flatLines.length]);
 
   // Load SO header for NO_QTY guided production (URL may omit `source=no_qty_so` until order type is resolved).
   React.useEffect(() => {
@@ -1839,12 +2161,40 @@ export function ProductionPage() {
   async function onPost(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+    if (regularCreateFormLockedByDraft) {
+      setError(
+        "A draft production batch already exists for this line. Edit, approve, or cancel it above before recording another batch.",
+      );
+      return;
+    }
     if (!wolId || !flatLines.some((l) => l.id === wolId)) {
       setError("Select a work order line.");
       return;
     }
     if (!producedQtyValid || producedQtyParsed == null) {
       setError("Enter produced quantity.");
+      return;
+    }
+    if (woProductionLifecycleBlocked && woProductionLifecycleMessage) {
+      setError(woProductionLifecycleMessage);
+      return;
+    }
+    if (rmProductionEntryBlocked) {
+      setError(
+        rmReadiness?.gate === "WAITING_STORE_ISSUE"
+          ? "Production is blocked until Store issues material to the production location."
+          : "Production is blocked until a material request is submitted and Store issues RM.",
+      );
+      return;
+    }
+    if (
+      showRegularRmReadiness &&
+      rmEntryQtyCap != null &&
+      producedQtyParsed > rmEntryQtyCap + 1e-6
+    ) {
+      setError(
+        `Production entry cannot exceed ${rmEntryQtyCap} based on issued RM at production location.`,
+      );
       return;
     }
     const prevWol = wolId;
@@ -1859,7 +2209,7 @@ export function ProductionPage() {
         }),
       });
       setEditing(null);
-      resetProducedQty();
+      resetProducedQtyField();
       const nextFlat = await refresh();
       // NO_QTY: do not auto-advance / push operators to complete production.
       // Keep the current selection stable; partial production is a valid state.
@@ -1895,60 +2245,111 @@ export function ProductionPage() {
     }
   }
 
-  async function approveDraft(id: number) {
-    if (!window.confirm("Approve this batch? Raw material stock will be issued and the batch will move to QC.")) return;
+  async function afterProductionApproveSuccess(
+    _id: number,
+    approvedRow: ProdEntryRow | undefined,
+    consumptionWarnings?: string[],
+  ) {
+    setEditing(null);
+    setNoQtyRmShortage(null);
+    await refresh();
+    const woIdNav = approvedRow ? Number(approvedRow.workOrderLine?.workOrder?.id ?? 0) : 0;
+    if (navigateNoQtyContext && Number.isFinite(woIdNav) && woIdNav > 0) {
+      const replaceParams = new URLSearchParams();
+      replaceParams.set("workOrderId", String(woIdNav));
+      replaceParams.set("source", "no_qty_so");
+      if (focusSoIdValid) replaceParams.set("salesOrderId", String(focusSoId));
+      else if (approvedRow?.workOrderLine?.workOrder?.salesOrderId) {
+        replaceParams.set(
+          "salesOrderId",
+          String(approvedRow.workOrderLine.workOrder.salesOrderId),
+        );
+      }
+      const cycleForReplace =
+        effectiveNoQtyCycleId ?? approvedRow?.workOrderLine?.workOrder?.cycleId ?? null;
+      if (cycleForReplace != null && Number(cycleForReplace) > 0) {
+        replaceParams.set("cycleId", String(cycleForReplace));
+      }
+      const nextSearch = `?${replaceParams.toString()}`;
+      if (location.search !== nextSearch) {
+        navigate(`/production${nextSearch}`, { replace: true });
+      }
+    }
+    if (consumptionWarnings?.length) {
+      toast.showSuccess(`Production approved. ${consumptionWarnings.join(" ")}`);
+    } else if (navigateNoQtyContext && focusSoIdValid) {
+      toast.showSuccess("Production approved.");
+    } else if (!navigateNoQtyContext) {
+      toast.showSuccess("Production approved.");
+    }
+  }
+
+  async function approveDraftNoQty(id: number) {
+    if (!window.confirm("Approve this batch? Raw material stock will be issued and the batch will move to QC.")) {
+      return;
+    }
     setError(null);
     setNoQtyRmShortage(null);
     setRowBusy(id);
     const approvedRow = entries.find((e) => e.id === id);
-    const woIdNav = approvedRow ? Number(approvedRow.workOrderLine?.workOrder?.id ?? 0) : 0;
     try {
       await apiFetch(`/api/production/production-entries/${id}/approve`, {
         method: "POST",
         body: JSON.stringify({}),
       });
-      setEditing(null);
-      setNoQtyRmShortage(null);
-      await refresh();
-      if (navigateNoQtyContext && Number.isFinite(woIdNav) && woIdNav > 0) {
-        /**
-         * Self-replace must preserve NO_QTY identity. Previously this rewrote URL to
-         * `/production?workOrderId=…` only, stripping `source=no_qty_so` / `salesOrderId` /
-         * `cycleId`, which caused ProductionPage to flicker into the REGULAR render branch
-         * on the next render before identity could re-recover. Carry NO_QTY context forward.
-         */
-        const replaceParams = new URLSearchParams();
-        replaceParams.set("workOrderId", String(woIdNav));
-        replaceParams.set("source", "no_qty_so");
-        if (focusSoIdValid) replaceParams.set("salesOrderId", String(focusSoId));
-        else if (approvedRow?.workOrderLine?.workOrder?.salesOrderId) {
-          replaceParams.set(
-            "salesOrderId",
-            String(approvedRow.workOrderLine.workOrder.salesOrderId),
-          );
-        }
-        const cycleForReplace =
-          effectiveNoQtyCycleId ?? approvedRow?.workOrderLine?.workOrder?.cycleId ?? null;
-        if (cycleForReplace != null && Number(cycleForReplace) > 0) {
-          replaceParams.set("cycleId", String(cycleForReplace));
-        }
-        const nextSearch = `?${replaceParams.toString()}`;
-        if (location.search !== nextSearch) {
-          navigate(`/production${nextSearch}`, { replace: true });
-        }
-      }
-      if (navigateNoQtyContext && focusSoIdValid) toast.showSuccess("Production approved.");
+      await afterProductionApproveSuccess(id, approvedRow);
     } catch (err) {
       if (err instanceof ApiRequestError && err.code === "INSUFFICIENT_RM_FOR_NO_QTY_PRODUCTION" && err.body) {
         setNoQtyRmShortage(err.body as NoQtyRmShortagePayload);
         setError(null);
       } else {
         setNoQtyRmShortage(null);
-        setError(err instanceof Error ? err.message : "Approve failed");
+        const msg = err instanceof Error ? err.message : "Approve failed";
+        setError(msg);
+        toast.showError(msg);
       }
     } finally {
       setRowBusy(null);
     }
+  }
+
+  const closeConsumptionApproveModal = React.useCallback(() => {
+    setConsumptionApproveId((openId) => {
+      if (openId != null) {
+        setRowBusy((busy) => (busy === openId ? null : busy));
+      }
+      return null;
+    });
+  }, []);
+
+  const onConsumptionPreviewSettled = React.useCallback(() => {
+    setRowBusy(null);
+  }, []);
+
+  function approveDraft(id: number) {
+    const row = entries.find((e) => e.id === id);
+    if (entryUsesRmConsumptionReview(row)) {
+      setRowBusy(id);
+      setConsumptionApproveId(id);
+      return;
+    }
+    void approveDraftNoQty(id);
+  }
+
+  function renderApproveButtonLabel(entryId: number, idleLabel: string, compact?: boolean) {
+    if (rowBusy !== entryId) return idleLabel;
+    return (
+      <span className="inline-flex items-center gap-1">
+        <span
+          className={cn(
+            "inline-block h-3 w-3 shrink-0 animate-spin rounded-full border-2",
+            compact ? "border-slate-300 border-t-slate-700" : "border-white/40 border-t-white",
+          )}
+          aria-hidden
+        />
+        Opening…
+      </span>
+    );
   }
 
   function openReverseModal(entry: ProdEntryRow) {
@@ -2053,7 +2454,7 @@ export function ProductionPage() {
         applyLine(fl);
       } else {
         setWolId(0);
-        resetProducedQty();
+        resetProducedQtyField();
       }
     },
   });
@@ -2068,13 +2469,13 @@ export function ProductionPage() {
         applyLine({ ...line, workOrderId: wo.id, salesOrderId: wo.salesOrderId });
       } else {
         setWolId(0);
-        resetProducedQty();
+        resetProducedQtyField();
       }
     },
   });
 
   const prodQtyBind = shortcutHints.bindField("prodQty", {
-    onChange: (e) => setProducedQtyStr((e.target as HTMLInputElement).value),
+    onChange: (e) => onProducedQtyInputChange((e.target as HTMLInputElement).value),
   });
 
   const prodSaveFocusBind = shortcutHints.bindField("prodSave");
@@ -2148,23 +2549,117 @@ export function ProductionPage() {
     return { latest, producedQty };
   }, [selected, canProd, visibleEntries]);
 
+  /** Regular flow: draft on selected line blocks RM Ready and duplicate workflow surfaces. */
+  const draftApprovalPendingRegular =
+    !navigateNoQtyContext && Boolean(latestDraftForSelectedWoLine && selected);
+
   /** One primary next-action strip per screen state (NO_QTY + regular). */
   const productionPrimaryStrip = React.useMemo((): {
-    variant: "action" | "success" | "info";
+    variant: "action" | "success" | "info" | "blocked";
     title: string;
     subtitle?: string;
-    primaryAction?: { label: string; onClick: () => void };
+    primaryAction?: { label: string; onClick: () => void; testId?: string };
   } | null => {
-    if (showTopQcNextStrip && qcBannerHref) {
+    if (draftApprovalPendingRegular && latestDraftForSelectedWoLine) {
       return {
         variant: "action",
-        title: navigateNoQtyContext ? "QC pending" : "Next Step: Send batch to QC",
-        subtitle: navigateNoQtyContext ? "Production is approved." : "Production is approved — complete QC for eligible batches.",
+        title: "Draft Production Entry Awaiting Approval",
+        subtitle: `Qty ${fmtProdQty(latestDraftForSelectedWoLine.producedQty)} · Approve, edit, or cancel from the entries table below`,
         primaryAction: {
-          label: navigateNoQtyContext ? "Go to QC" : "Open QC",
-          onClick: () => navigate(qcBannerHref),
+          label: "Approve Draft",
+          testId: "next-approve-production-draft",
+          onClick: () => approveDraft(latestDraftForSelectedWoLine.latest.id),
         },
       };
+    }
+    if (!navigateNoQtyContext && showRegularRmReadiness && rmReadiness && rmProductionEntryBlocked) {
+      const step = buildRmIssueNextStep(rmReadiness, "production-workspace");
+      return {
+        variant: "blocked",
+        title: step.statusTitle,
+        subtitle: step.blockingReason
+          ? `${step.statusSubtitle ?? ""} · ${step.blockingReason}`
+          : step.statusSubtitle,
+        primaryAction: {
+          label: step.primaryAction.label,
+          testId: step.primaryAction.testId,
+          onClick: () => {
+            if (step.primaryAction.href) navigate(step.primaryAction.href);
+          },
+        },
+      };
+    }
+    if (!navigateNoQtyContext && woProductionLifecycleBlocked && woProductionLifecycleMessage) {
+      const paused = isWorkOrderPausedStatus(selectedWoForLifecycle?.status);
+      const hold = !paused && String(selectedWoForLifecycle?.status ?? "").toUpperCase() === "HOLD";
+      return {
+        variant: "info",
+        title: paused
+          ? "Work Order paused"
+          : hold
+            ? workOrderStatusDisplayLabel({
+                status: selectedWoForLifecycle?.status ?? "HOLD",
+                holdReason: selectedWoForLifecycle?.holdReason,
+              })
+            : "Production blocked",
+        subtitle: woProductionLifecycleMessage,
+        primaryAction: paused
+          ? {
+              label: resumeWoBusy ? "Resuming…" : "Resume Production",
+              testId: "next-resume-production",
+              onClick: () => {
+                const id = selectedWoForLifecycle?.id ?? 0;
+                if (!(id > 0) || resumeWoBusy) return;
+                setResumeWoBusy(true);
+                void resumeWorkOrderApi(id)
+                  .then(() => refresh())
+                  .catch((e) => setError(e instanceof Error ? e.message : "Resume failed"))
+                  .finally(() => setResumeWoBusy(false));
+              },
+            }
+          : hold
+            ? {
+                label: "Open work order",
+                onClick: () =>
+                  navigate(
+                    `/work-orders?excludeWo=${selectedWoForLifecycle?.id ?? 0}&so=${selectedWoForLifecycle?.salesOrderId ?? selected?.salesOrderId ?? 0}`,
+                  ),
+              }
+            : undefined,
+      };
+    }
+    if (showTopQcNextStrip) {
+      const qcHref = navigateNoQtyContext ? qcBannerHref : regularQcBannerHref;
+      if (qcHref) {
+        if (!navigateNoQtyContext) {
+          const qaSoId = selected?.salesOrderId ?? qcBannerSoId;
+          const step = buildCompleteQaNextStep(
+            qaSoId,
+            selectedLinePendingProductionId > 0 ? selectedLinePendingProductionId : null,
+          );
+          return {
+            variant: "action",
+            title: step.statusTitle,
+            subtitle: step.statusSubtitle,
+            primaryAction: {
+              label: step.primaryAction.label,
+              testId: step.primaryAction.testId,
+              onClick: () => navigate(qcHref),
+            },
+          };
+        }
+        return {
+          variant: "action",
+          title: navigateNoQtyContext ? PRODUCTION_QA_TERMS.QA_PENDING_STRIP : PRODUCTION_QA_TERMS.NEXT_STEP_COMPLETE_QA,
+          subtitle: navigateNoQtyContext
+            ? "Production is approved."
+            : PRODUCTION_QA_TERMS.NEXT_STEP_COMPLETE_QA_NO_QTY,
+          primaryAction: {
+            label: PRODUCTION_QA_TERMS.COMPLETE_QA,
+            onClick: () => navigate(qcHref),
+          },
+        };
+      }
     }
     if (navigateNoQtyContext && showNoQtyScopedProductionCard) {
       if (
@@ -2256,9 +2751,9 @@ export function ProductionPage() {
       return {
         variant: "success",
         title: "Next Step: Review or continue downstream",
-        subtitle: "All batches on this line have cleared QC. Open QC to review entries or return to the sales order.",
+        subtitle: PRODUCTION_QA_TERMS.CLEARED_QA_SUBTITLE,
         primaryAction: {
-          label: "View QC entries",
+          label: PRODUCTION_QA_TERMS.VIEW_QA_ENTRIES,
           onClick: () =>
             navigate(
               buildQcEntryHref({
@@ -2272,16 +2767,73 @@ export function ProductionPage() {
       };
     }
     if (
+      showRegularRmReadiness &&
+      rmReadiness &&
+      rmReadiness.rmLines.some((ln) => (ln.returnableQty ?? 0) > 0)
+    ) {
+      return {
+        variant: "info",
+        title: "Unused RM at production",
+        subtitle: "Return surplus RM to store (MRN). Does not reverse production consumption.",
+        primaryAction: {
+          label: "Return unused RM",
+          onClick: () =>
+            navigate(
+              `/production/rm-returns?workOrderId=${rmReadiness.workOrderId}${
+                rmReadiness.latestPmrId ? `&pmrId=${rmReadiness.latestPmrId}` : ""
+              }`,
+            ),
+        },
+      };
+    }
+    if (
+      !navigateNoQtyContext &&
+      showRegularRmReadiness &&
+      rmReadiness &&
+      !rmProductionEntryBlocked &&
+      !regularCreateFormLockedByDraft &&
+      !woProductionLifecycleBlocked &&
+      selectedMetrics &&
+      selectedMetrics.remainingQty > 1e-6 &&
+      canProd &&
+      flatLines.length > 0
+    ) {
+      const step = buildRmReadyProductionNextStep(selected!.workOrderId, wolId);
+      return {
+        variant: "action",
+        title: step.statusTitle,
+        subtitle: step.statusSubtitle,
+        primaryAction: {
+          label: step.primaryAction.label,
+          testId: step.primaryAction.testId,
+          onClick: () => {
+            document.getElementById("regular-production-entry")?.scrollIntoView({ behavior: "smooth", block: "start" });
+            window.setTimeout(() => producedQtyRef.current?.focus(), 120);
+          },
+        },
+      };
+    }
+    if (
       selectedMetrics &&
       selectedMetrics.remainingQty > 1e-6 &&
       canProd &&
       flatLines.length > 0 &&
-      !latestDraftForSelectedWo
+      !latestDraftForSelectedWo &&
+      !regularCreateFormLockedByDraft &&
+      !rmProductionEntryBlocked &&
+      !woProductionLifecycleBlocked
     ) {
+      const rmCap =
+        showRegularRmReadiness && rmReadiness
+          ? fmtProdQty(rmReadiness.productionAllowedNowQty)
+          : null;
       return {
         variant: "info",
         title: "Next Step: Record production",
-        subtitle: `Remaining production pending: ${fmtProdQty(selectedMetrics.remainingQty)}`,
+        subtitle:
+          rmCap != null
+            ? `Production allowed now: ${rmCap} ${rmReadiness?.fgUnit || ""}. WO balance: ${fmtProdQty(selectedMetrics.remainingQty)}.`
+            : `Remaining production pending: ${fmtProdQty(selectedMetrics.remainingQty)}`,
         primaryAction: {
           label: "Continue production",
           onClick: () => {
@@ -2295,6 +2847,11 @@ export function ProductionPage() {
   }, [
     showTopQcNextStrip,
     qcBannerHref,
+    regularQcBannerHref,
+    qcBannerSoId,
+    selectedLinePendingProductionId,
+    selectedLineQcPending,
+    firstPendingProductionEntryId,
     navigateNoQtyContext,
     showNoQtyScopedProductionCard,
     roleUi.showPlanningWorkflowActions,
@@ -2308,6 +2865,9 @@ export function ProductionPage() {
     canProd,
     flatLines.length,
     latestDraftForSelectedWo,
+    latestDraftForSelectedWoLine,
+    regularCreateFormLockedByDraft,
+    draftApprovalPendingRegular,
     showQcNextBanner,
     showQcCompletedStrip,
     selected,
@@ -2316,6 +2876,85 @@ export function ProductionPage() {
     navigate,
     toast,
     soOrderTypeById,
+    showRegularRmReadiness,
+    rmReadiness,
+    rmProductionEntryBlocked,
+    woProductionLifecycleBlocked,
+    woProductionLifecycleMessage,
+    selectedWoForLifecycle,
+    resumeWoBusy,
+  ]);
+
+  const productionPrimaryStripCoversDraft = draftApprovalPendingRegular;
+  const productionPrimaryStripCoversRmIssue = productionPrimaryStrip?.title === "Waiting for RM Issue";
+  const productionPrimaryStripCoversRmReady = productionPrimaryStrip?.title === "RM Ready – Enter Production";
+  const productionPrimaryStripCoversPause = productionPrimaryStrip?.title === "Work Order paused";
+  const productionPrimaryStripCoversMaterialCard =
+    productionPrimaryStripCoversDraft ||
+    productionPrimaryStripCoversRmIssue ||
+    productionPrimaryStripCoversRmReady ||
+    productionPrimaryStrip?.title === "Unused RM at production";
+
+  /**
+   * Parallel "Create Next RS" strip for NO_QTY production screen.
+   *
+   * Renders independently of {@link productionPrimaryStrip}: NO_QTY rolling planning is
+   * parallel to shop-floor work. When QC is pending and Next RS is eligible, ADMIN/SALES
+   * see both "Go to QC" (primary) AND "Create Next RS" (this strip). De-duplicates when
+   * the primary strip is already the Next RS action.
+   *
+   * SO id resolution does **not** require `?source=no_qty_so` in the URL — when Admin opens
+   * Production from the left menu and selects a NO_QTY work order line, the workbench SO id
+   * is derived from `noQtyWorkbenchSoId` / `noQtyFlowSoId`. This is the same identity the
+   * `noQtyFlowState` hook uses, so eligibility, action, and CTA all act on the same SO.
+   *
+   * Visibility: ADMIN + SALES only ({@link useCanCreateNextRs}); NO_QTY context with
+   * `createNextRsEligible` and no existing later RS. Other roles never see this strip.
+   */
+  const productionNextRsParallelStrip = React.useMemo((): {
+    subtitle: string;
+    onClick: () => void;
+  } | null => {
+    if (!navigateNoQtyContext) return null;
+    if (!roleUi.showPlanningWorkflowActions || !canCreateNextRs) return null;
+    if (!noQtyFlowState?.createNextRsEligible) return null;
+    if (noQtyFlowState?.nextRsAlreadyCreatedDocNo) return null;
+    const targetSoId =
+      noQtyWorkbenchSoId > 0
+        ? noQtyWorkbenchSoId
+        : noQtyFlowSoId != null && noQtyFlowSoId > 0
+          ? noQtyFlowSoId
+          : 0;
+    if (targetSoId <= 0) return null;
+    if (
+      productionPrimaryStrip?.title === "Next RS" ||
+      productionPrimaryStrip?.title === "Cycle ready for Next RS"
+    ) {
+      return null;
+    }
+    const subtitle = noQtyFlowState.qcPendingForCycle
+      ? "Planning runs in parallel — start the next requirement sheet while QC clears this cycle."
+      : "Planning runs in parallel — start the next requirement sheet now.";
+    return {
+      subtitle,
+      onClick: () =>
+        prepareNoQtyNextRequirementSheetAndNavigate({
+          salesOrderId: targetSoId,
+          navigate,
+          toast,
+          navigateState: { from: "production_screen" },
+        }),
+    };
+  }, [
+    navigateNoQtyContext,
+    roleUi.showPlanningWorkflowActions,
+    canCreateNextRs,
+    noQtyFlowState,
+    productionPrimaryStrip,
+    noQtyWorkbenchSoId,
+    noQtyFlowSoId,
+    navigate,
+    toast,
   ]);
 
   const renderDraftProductionBanner = (opts?: { compact?: boolean }) => {
@@ -2355,7 +2994,7 @@ export function ProductionPage() {
           disabled={rowBusy === latest.id}
           onClick={() => approveDraft(latest.id)}
         >
-          {rowBusy === latest.id ? "…" : "Approve"}
+          {renderApproveButtonLabel(latest.id, "Approve")}
         </Button>
         <Button
           type="button"
@@ -2462,8 +3101,9 @@ export function ProductionPage() {
     );
   };
 
-  /** Top compact strip is shown; hide duplicate Approve/Edit/Cancel on the same row in Production Entries. */
+  /** Top strip owns draft approval — hide duplicate Approve/Edit/Cancel on ledger rows. */
   const showCompactDraftApprovalStrip = React.useMemo(() => {
+    if (draftApprovalPendingRegular) return true;
     if (!latestDraftForSelectedWo || !selected || !(flatLines.length > 0) || !canProd) return false;
     return (
       placeDraftInNoQtyPrimaryCard ||
@@ -2471,6 +3111,7 @@ export function ProductionPage() {
       (Boolean(fromNoQtySo) && !showNoQtyScopedProductionCard)
     );
   }, [
+    draftApprovalPendingRegular,
     latestDraftForSelectedWo,
     selected,
     flatLines.length,
@@ -2553,20 +3194,122 @@ export function ProductionPage() {
 
   const regularWorkflowStageLabel = React.useMemo(() => {
     if (navigateNoQtyContext) return "";
-    if (latestDraftForSelectedWo) return "Draft";
-    if (showQcNextBanner && qcBannerHref) return "QC pending";
+    if (draftApprovalPendingRegular) return "Draft approval pending";
+    if (selectedLineQcPending && regularQcBannerHref) return "QC pending";
+    if (woProductionLifecycleBlocked && isWorkOrderPausedStatus(selectedWoForLifecycle?.status)) return "Paused";
+    if (rmProductionEntryBlocked && showRegularRmReadiness) return "Waiting for RM issue";
     if (selectedMetrics && selectedMetrics.remainingQty > 1e-6) return "In progress";
     if (showQcCompletedStrip) return "Complete";
     if (selectedMetrics && selectedMetrics.remainingQty <= 1e-6) return "Line complete";
+    if (!selected && wolId > 0) {
+      const lineEntries = entries.filter((e) => Number(e.workOrderLine?.id ?? 0) === wolId);
+      if (lineEntries.some((e) => qcPendingEntry(e))) return "QC pending";
+      if (lineEntries.some((e) => isDraft(e))) return "Draft";
+      if (lineEntries.some((e) => isApproved(e))) return "Approved";
+    }
+    if (productionStickyContext) return "Production";
     return "Production";
   }, [
     navigateNoQtyContext,
-    latestDraftForSelectedWo,
-    showQcNextBanner,
-    qcBannerHref,
+    draftApprovalPendingRegular,
+    latestDraftForSelectedWoLine,
+    selectedLineQcPending,
+    regularQcBannerHref,
+    woProductionLifecycleBlocked,
+    selectedWoForLifecycle?.status,
+    rmProductionEntryBlocked,
+    showRegularRmReadiness,
     selectedMetrics,
     showQcCompletedStrip,
+    selected,
+    wolId,
+    entries,
+    productionStickyContext,
   ]);
+
+  /** Single SO/WO/Item context — rendered below the primary action strip (not duplicated in form). */
+  const productionCompactContextBar =
+    !navigateNoQtyContext && !showProductionWorkspace && (selected || productionStickyContext) ? (
+      <OperationalContextBar className="rounded-md border border-slate-200 bg-gradient-to-r from-slate-50 to-white px-2 py-1 text-[11px] shadow-sm">
+        <span className="font-semibold text-slate-600">SO</span>
+        <span className="rounded border border-sky-200 bg-sky-50 px-1.5 py-0.5 font-mono text-[11px] font-semibold tabular-nums text-sky-900">
+          {(() => {
+            const soId = selected?.salesOrderId ?? productionStickyContext?.salesOrderId ?? 0;
+            if (!(soId > 0)) return "—";
+            const soDoc =
+              selected && selected.salesOrderId === focusSoId
+                ? focusSo?.docNo
+                : productionStickyContext?.soDocNo ?? (soId === focusSoId ? focusSo?.docNo : null);
+            return displaySalesOrderNo(soId, soDoc);
+          })()}
+        </span>
+        {isRegularShellNoQtyUi ? (
+          <>
+            <OpCtxSep />
+            <span className="text-slate-500">Cycle</span>
+            <span className="font-semibold tabular-nums text-slate-900">
+              {activeWoForRegularShell?.cycle?.cycleNo != null
+                ? Number(activeWoForRegularShell.cycle.cycleNo)
+                : "—"}
+            </span>
+            <OpCtxSep />
+            <span className="text-slate-500">RS</span>
+            <span className="rounded border border-violet-200 bg-violet-50/80 px-1.5 py-0.5 font-mono text-[11px] font-semibold tabular-nums text-violet-950">
+              {activeWoForRegularShell?.requirementSheetId != null &&
+              Number(activeWoForRegularShell.requirementSheetId) > 0
+                ? displayRequirementSheetNo(Number(activeWoForRegularShell.requirementSheetId), null)
+                : "—"}
+            </span>
+          </>
+        ) : null}
+        <OpCtxSep />
+        <span className="font-semibold text-slate-600">WO</span>
+        <span className="font-mono text-[11px] font-semibold tabular-nums text-slate-900">
+          {(() => {
+            const id =
+              woId > 0
+                ? woId
+                : selected?.workOrderId ??
+                  productionStickyContext?.workOrderId ??
+                  activeWoForRegularShell?.id ??
+                  0;
+            if (!(id > 0)) return "—";
+            const woDoc =
+              activeWoForRegularShell?.id === id
+                ? activeWoForRegularShell?.docNo
+                : productionStickyContext?.woDocNo ?? workOrders.find((w) => w.id === id)?.docNo ?? null;
+            return displayWorkOrderNo(id, woDoc);
+          })()}
+        </span>
+        <OpCtxSep />
+        <span className="text-slate-500">Item</span>
+        <span className="max-w-[12rem] truncate font-semibold text-slate-900">
+          {selected?.fgItem.itemName ?? productionStickyContext?.itemName ?? "—"}
+        </span>
+        <OpCtxSep />
+        <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">
+          Status
+        </span>
+        <span className="font-semibold text-slate-900">
+          {isRegularShellNoQtyUi && noQtyCycleDisplayStatus
+            ? noQtyCycleDisplayStatus.label
+            : regularWorkflowStageLabel}
+        </span>
+        {displayHeaderMetrics && (selected || productionStickyContext) ? (
+          <>
+            <OpCtxSep />
+            <span className="text-slate-500">Planned</span>
+            <span className="font-bold tabular-nums text-slate-900">{fmtProdQty(displayHeaderMetrics.woLineQty)}</span>
+            <OpCtxSep />
+            <span className="text-slate-500">Produced</span>
+            <span className="font-bold tabular-nums text-slate-900">{fmtProdQty(displayHeaderMetrics.usedQty)}</span>
+            <OpCtxSep />
+            <span className="text-emerald-800">Remaining</span>
+            <span className="font-bold tabular-nums text-emerald-950">{fmtProdQty(displayHeaderMetrics.remainingQty)}</span>
+          </>
+        ) : null}
+      </OperationalContextBar>
+    ) : null;
 
   const main = (
     <OperatorPageBody
@@ -2593,9 +3336,85 @@ export function ProductionPage() {
         </div>
       ) : null}
       {error ? <div className="rounded border border-red-200 bg-red-50 px-2 py-1 text-[13px] text-red-800">{error}</div> : null}
+      {woProductionLifecycleBlocked && woProductionLifecycleMessage && !productionPrimaryStripCoversPause && !draftApprovalPendingRegular ? (
+        <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-[13px] text-amber-950">
+          {selectedWoPaused ? (
+            <>
+              <div className="font-semibold">Work Order paused</div>
+              <p className="mt-1 text-[12px] leading-snug text-amber-900">
+                Accepted FG stock is kept in store. Production can be resumed later.
+              </p>
+              {pausedWoQtyStrip ? (
+                <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-[11px] sm:grid-cols-5">
+                  <div>
+                    <dt className="text-amber-800/80">Planned</dt>
+                    <dd className="font-bold tabular-nums">{fmtProdQty(pausedWoQtyStrip.plannedQty)}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-amber-800/80">Produced</dt>
+                    <dd className="font-bold tabular-nums">{fmtProdQty(pausedWoQtyStrip.producedQty)}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-amber-800/80">QC accepted</dt>
+                    <dd className="font-bold tabular-nums">{fmtProdQty(pausedWoQtyStrip.qcAcceptedQty)}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-amber-800/80">Dispatched</dt>
+                    <dd className="font-bold tabular-nums">
+                      {fmtProdQty(pausedFgBalance?.dispatchedQty ?? 0)}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-amber-800/80">Remaining production</dt>
+                    <dd className="font-bold tabular-nums">{fmtProdQty(pausedWoQtyStrip.remainingProductionQty)}</dd>
+                  </div>
+                </dl>
+              ) : null}
+              <div className="mt-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  className="h-8 bg-amber-800 text-white hover:bg-amber-900"
+                  disabled={resumeWoBusy}
+                  onClick={() => {
+                    const id = selectedWoForLifecycle?.id ?? 0;
+                    if (!(id > 0)) return;
+                    setResumeWoBusy(true);
+                    void resumeWorkOrderApi(id)
+                      .then(() => refresh())
+                      .catch((e) => setError(e instanceof Error ? e.message : "Resume failed"))
+                      .finally(() => setResumeWoBusy(false));
+                  }}
+                >
+                  {resumeWoBusy ? "Resuming…" : "Resume Production"}
+                </Button>
+              </div>
+            </>
+          ) : (
+            <>
+              <span className="font-semibold">Production paused — </span>
+              {woProductionLifecycleMessage}
+              {String(selectedWoForLifecycle?.status ?? "").toUpperCase() === "HOLD" ? (
+                <span className="mt-1 block">
+                  <Link
+                    to={`/work-orders?excludeWo=${selectedWoForLifecycle?.id ?? 0}&so=${selectedWoForLifecycle?.salesOrderId ?? selected?.salesOrderId ?? 0}`}
+                    className="font-medium text-amber-900 underline underline-offset-2"
+                  >
+                    Resume on Work Orders
+                  </Link>
+                </span>
+              ) : null}
+            </>
+          )}
+        </div>
+      ) : null}
       {noQtyRmShortage?.shortages?.length ? (
         <div className="rm-shortage-panel rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[13px] text-amber-950">
           <h3 className="text-sm font-semibold text-amber-950">RM shortage detected</h3>
+          <p className="mt-1 text-xs font-medium text-amber-900/90">
+            Store owns procurement and RM purchase. Production can report the shortage and track status — do not create PO
+            from here.
+          </p>
           <ul className="mt-1.5 space-y-0.5">
             {noQtyRmShortage.shortages!.map((s) => (
               <li key={s.rmItemId}>
@@ -2606,30 +3425,30 @@ export function ProductionPage() {
             ))}
           </ul>
           <div className="mt-2 flex flex-wrap items-center gap-2">
-            <Button
-              type="button"
-              size="sm"
-              className="h-8"
-              onClick={() => {
-                const ctx = noQtyRmShortage.context;
-                if (!ctx) return;
-                const cyc =
-                  ctx.cycleId != null && Number.isFinite(Number(ctx.cycleId)) && Number(ctx.cycleId) > 0
-                    ? `&cycleId=${encodeURIComponent(String(ctx.cycleId))}`
-                    : "";
-                navigate(
-                  `/rm-po-grn/create?source=no_qty_production_shortage&salesOrderId=${encodeURIComponent(String(ctx.salesOrderId))}${cyc}&workOrderId=${encodeURIComponent(String(ctx.workOrderId))}&workOrderLineId=${encodeURIComponent(String(ctx.workOrderLineId))}&returnTo=production`,
-                  {
-                    state: {
-                      shortages: noQtyRmShortage.shortages,
-                      context: noQtyRmShortage.context,
-                    },
-                  },
-                );
-              }}
-            >
-              Raise Material Planning
-            </Button>
+            {noQtyRmShortage.context?.workOrderId ? (
+              <Link
+                to={rmControlCenterHref({
+                  workOrderId: noQtyRmShortage.context.workOrderId,
+                  onlyBlocked: true,
+                  returnTo: "production",
+                })}
+                className={cn(buttonVariants({ size: "sm" }), "h-8 no-underline")}
+              >
+                Open RM Control Center
+              </Link>
+            ) : null}
+            {noQtyRmShortage.context?.workOrderId ? (
+              <Link
+                to={materialRequestsQueueHref({
+                  workOrderId: noQtyRmShortage.context.workOrderId,
+                  workOrderLineId: noQtyRmShortage.context.workOrderLineId,
+                  returnTo: "production-workspace",
+                })}
+                className={cn(buttonVariants({ variant: "outline", size: "sm" }), "h-8 no-underline")}
+              >
+                Material Requests
+              </Link>
+            ) : null}
             <button
               type="button"
               className="text-[11px] font-medium text-amber-900/80 underline decoration-amber-700/40 underline-offset-2 hover:text-amber-950"
@@ -2648,11 +3467,27 @@ export function ProductionPage() {
       {productionPrimaryStrip && !showNoQtyScopedProductionCard ? (
         <NextStepStrip
           visible
+          density="compact"
           variant={productionPrimaryStrip.variant}
           title={productionPrimaryStrip.title}
           subtitle={productionPrimaryStrip.subtitle}
           className="gap-1.5 rounded-md px-2 py-1.5"
           primaryAction={productionPrimaryStrip.primaryAction}
+        />
+      ) : null}
+      {productionCompactContextBar}
+      {productionNextRsParallelStrip ? (
+        <NextStepStrip
+          visible
+          variant="action"
+          title="Create Next RS"
+          subtitle={productionNextRsParallelStrip.subtitle}
+          className="gap-1.5 rounded-md px-2 py-1.5"
+          primaryAction={{
+            label: "Create Next RS",
+            onClick: productionNextRsParallelStrip.onClick,
+            testId: "production-next-rs-parallel-cta",
+          }}
         />
       ) : null}
       {showProductionWorkspace ? (
@@ -3031,7 +3866,7 @@ export function ProductionPage() {
                                   className="h-8 px-3 text-[11px] font-semibold shadow-sm"
                                   onClick={() => navigate(qcHref)}
                                 >
-                                  Go to QC
+                                  {PRODUCTION_QA_TERMS.COMPLETE_QA}
                                 </Button>
                               </div>
                             </div>
@@ -3173,7 +4008,7 @@ export function ProductionPage() {
                                   className="h-8 px-3 text-[11px] font-semibold shadow-sm"
                                   onClick={() => navigate(qcHref)}
                                 >
-                                  Go to QC
+                                  {PRODUCTION_QA_TERMS.COMPLETE_QA}
                                 </Button>
                               </div>
                             </div>
@@ -3311,7 +4146,10 @@ export function ProductionPage() {
                                   size="sm"
                                   className="h-9 shrink-0 text-[13px]"
                                   disabled={posting || !selectedMetrics || selectedMetrics.remainingQty <= 0}
-                                  onClick={() => setProducedQtyStr(fmtProdQty(selectedMetrics?.remainingQty ?? 0))}
+                                  onClick={() => {
+                                    producedQtyUserTouchedRef.current = true;
+                                    setProducedQtyStr(fmtProdQty(selectedMetrics?.remainingQty ?? 0));
+                                  }}
                                 >
                                   Use full
                                 </Button>
@@ -3381,165 +4219,170 @@ export function ProductionPage() {
           ) : null}
         </>
       ) : (
-        <form ref={createFormRef} onSubmit={onPost} className={cn("flex flex-col", !fromNoQtySo ? "gap-2" : "gap-3")}>
+        <form ref={createFormRef} onSubmit={onPost} className={cn("flex flex-col", !fromNoQtySo ? "gap-1.5" : "gap-3")}>
           {!fromNoQtySo ? (
             <>
-              {placeDraftAfterRegularProductionCard ? (
-                <div className="pb-0.5">{renderDraftProductionBanner({ compact: true })}</div>
+              {showRegularRmReadiness && !draftApprovalPendingRegular ? (
+                <>
+                  {rmProductionEntryBlocked &&
+                  rmReadiness &&
+                  rmReadiness.gate !== "NO_PMR" &&
+                  rmReadiness.gate !== "PMR_DRAFT_ONLY" &&
+                  !productionPrimaryStripCoversRmIssue ? (
+                    <ProductionRmBlockedBanner
+                      workOrderId={rmReadiness.workOrderId}
+                      workOrderNo={productionMaterialContext?.woLabel ?? null}
+                      gate={rmReadiness.gate}
+                    />
+                  ) : null}
+                  <div
+                    className={cn(
+                      ((rmProductionEntryBlocked &&
+                        rmReadiness &&
+                        rmReadiness.gate !== "NO_PMR" &&
+                        rmReadiness.gate !== "PMR_DRAFT_ONLY") ||
+                        productionPrimaryStripCoversMaterialCard) &&
+                        "sr-only",
+                    )}
+                  >
+                    <ProductionMaterialWorkflowCard
+                      workOrderLineId={wolId}
+                      refreshKey={liveTick}
+                      context={productionMaterialContext}
+                      onLoaded={onRmReadinessLoaded}
+                      onLoadingChange={onRmReadinessLoadingChange}
+                    />
+                  </div>
+                </>
               ) : null}
+              {showRegularProductionEntry ? (
               <Card
                 id="regular-production-entry"
-                className="erp-op-workspace-primary min-w-0 scroll-mt-24 overflow-hidden"
+                className={cn(
+                  "erp-op-workspace-primary min-w-0 scroll-mt-24 overflow-hidden",
+                  regularCreateFormLockedByDraft && "border-amber-200/80",
+                )}
               >
-                <CardHeader className="border-b border-slate-100 bg-white px-2.5 py-1.5">
+                <CardHeader className="border-b border-slate-100 bg-white px-2.5 py-1">
                   <CardTitle className="text-[13px] font-semibold tracking-tight text-slate-900">Production entry</CardTitle>
-                  <p className="erp-type-helper mt-0.5 text-slate-500">WO · Item · Date · Qty · Save</p>
+                  {!regularCreateFormLockedByDraft ? (
+                    <p className="erp-type-helper mt-0.5 text-[11px] text-slate-500">Date · Qty · Save</p>
+                  ) : null}
                 </CardHeader>
-                <CardContent className="space-y-1.5 px-2.5 py-1.5">
+                <CardContent className="px-2.5 py-1">
+                  {regularCreateFormLockedByDraft ? (
+                    <p
+                      className="rounded-md border border-amber-200 bg-amber-50 px-2.5 py-2 text-[12px] leading-snug text-amber-950"
+                      data-testid="regular-draft-owns-create-form"
+                    >
+                      Draft already exists. Approve, edit, or cancel the draft to continue.
+                    </p>
+                  ) : (
+                  <>
                   <div className="flex flex-col gap-1.5 lg:flex-row lg:flex-wrap lg:items-end lg:gap-x-2 lg:gap-y-1">
-                    <FieldShortcutHint
-                      show={shortcutHints.activeFieldId === "prodWo"}
-                      hint={shortcutHints.activeFieldHintText ?? ""}
-                      placement="below"
-                      className="min-w-[10rem] max-w-[22rem] flex-[1_1_14rem]"
-                    >
-                      <div className="grid w-full gap-1">
-                        <span className="text-[11px] font-medium text-slate-600">Work order</span>
-                        <select
-                          ref={woSelectRef}
-                          {...prodWoBind}
-                          className="erp-flow-filter-input h-8 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 text-[13px]"
-                          value={woId === 0 ? "" : String(woId)}
+                        <div className="grid w-full min-w-[9rem] shrink-0 gap-0.5 sm:w-[10.25rem]">
+                          <span className="text-[11px] font-medium text-slate-600">Date</span>
+                          <Input
+                            type="date"
+                            className="erp-flow-filter-input h-8 w-full tabular-nums text-[13px]"
+                            value={prodDate}
+                            onChange={(e) => setProdDate(e.target.value)}
+                            required
+                          />
+                        </div>
+                        <FieldShortcutHint
+                          show={shortcutHints.activeFieldId === "prodQty"}
+                          hint={shortcutHints.activeFieldHintText ?? ""}
+                          placement="below-end"
+                          className="w-full min-w-[7rem] max-w-[9rem] shrink-0"
                         >
-                          <option value="">Select…</option>
-                          {workOrders.map((w) => (
-                            <option key={w.id} value={w.id}>
-                              {navigateNoQtyContext
-                                ? formatNoQtyProductionWoLabel(
-                                    w,
-                                    w.salesOrderId,
-                                    w.salesOrderId === focusSoId ? focusSo?.docNo : undefined,
-                                  )
-                                : `WO #${w.id} · SO #${w.salesOrderId}`}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    </FieldShortcutHint>
-                    <FieldShortcutHint
-                      show={shortcutHints.activeFieldId === "prodLine"}
-                      hint={shortcutHints.activeFieldHintText ?? ""}
-                      placement="below"
-                      className="min-w-[12rem] flex-[1_1_18rem]"
-                    >
-                      <div className="grid w-full gap-1">
-                        <span className="text-[11px] font-medium text-slate-600">Item</span>
-                        <select
-                          ref={lineSelectRef}
-                          {...prodLineBind}
-                          className="erp-flow-filter-input h-8 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 text-[13px]"
-                          value={wolId === 0 ? "" : String(wolId)}
-                          disabled={!woId || !linesForWo.length}
-                        >
-                          <option value="">{woId ? "Select line…" : "Select WO first…"}</option>
-                          {linesForWo.map((l) => {
-                            const fl = {
-                              ...l,
-                              workOrderId: woId,
-                              salesOrderId: workOrders.find((w) => w.id === woId)?.salesOrderId ?? 0,
-                            };
-                            const rem = lineRemaining(fl as FlatLine);
-                            return (
-                              <option key={l.id} value={l.id}>
-                                {l.fgItem.itemName} · {fromNoQtySo ? "last shortage" : "balance"} {fmtProdQty(rem)}
-                              </option>
-                            );
-                          })}
-                        </select>
-                      </div>
-                    </FieldShortcutHint>
-                    <div className="grid w-full min-w-[9rem] shrink-0 gap-0.5 sm:w-[10.25rem]">
-                      <span className="text-[11px] font-medium text-slate-600">Date</span>
-                      <Input
-                        type="date"
-                        className="erp-flow-filter-input h-8 w-full tabular-nums text-[13px]"
-                        value={prodDate}
-                        onChange={(e) => setProdDate(e.target.value)}
-                        required
-                      />
-                    </div>
-                    <FieldShortcutHint
-                      show={shortcutHints.activeFieldId === "prodQty"}
-                      hint={shortcutHints.activeFieldHintText ?? ""}
-                      placement="below-end"
-                      className="w-full min-w-[7rem] max-w-[9rem] shrink-0"
-                    >
-                      <div className="grid gap-0.5">
-                        <span className="text-[11px] font-medium text-slate-600">Qty</span>
-                        <Input
-                          ref={producedQtyRef}
-                          {...prodQtyBind}
-                          type="text"
-                          data-testid="production-qty-input"
-                          inputMode="decimal"
-                          autoComplete="off"
-                          className="erp-flow-filter-input h-8 tabular-nums text-[13px] font-semibold"
-                          placeholder="0"
-                          value={producedQtyStr}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
-                              shortcutHints.markFieldShortcutUsed("prodQty");
-                            }
-                          }}
-                        />
-                        {wolId > 0 && !producedQtyValid ? (
-                          <p className="text-[11px] font-medium text-amber-800">Enter quantity.</p>
-                        ) : null}
-                      </div>
-                    </FieldShortcutHint>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      className="h-8 shrink-0 px-2.5 text-[12px]"
-                      disabled={posting || !selectedMetrics || selectedMetrics.remainingQty <= 0}
-                      onClick={() => setProducedQtyStr(fmtProdQty(selectedMetrics?.remainingQty ?? 0))}
-                    >
-                      Use full
-                    </Button>
-                    <FieldShortcutHint
-                      show={shortcutHints.activeFieldId === "prodSave"}
-                      hint={shortcutHints.activeFieldHintText ?? ""}
-                      placement="above"
-                      className="inline-block shrink-0"
-                    >
-                      <div className="grid gap-0.5">
-                        <span className="text-[11px] font-medium text-transparent select-none" aria-hidden>
-                          ·
-                        </span>
+                          <div className="grid gap-0.5">
+                            <span className="text-[11px] font-medium text-slate-600">Qty</span>
+                            <Input
+                              ref={producedQtyRef}
+                              {...prodQtyBind}
+                              type="text"
+                              data-testid="production-qty-input"
+                              inputMode="decimal"
+                              autoComplete="off"
+                              className="erp-flow-filter-input h-8 tabular-nums text-[13px] font-semibold"
+                              placeholder="0"
+                              value={producedQtyStr}
+                              disabled={rmProductionEntryBlocked}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
+                                  shortcutHints.markFieldShortcutUsed("prodQty");
+                                }
+                              }}
+                            />
+                            {rmReadinessLoading ? (
+                              <p className="text-[11px] text-slate-500">Checking RM readiness…</p>
+                            ) : rmAllowedNowQty != null && !rmProductionEntryBlocked ? (
+                              <p className="text-[11px] text-emerald-800">
+                                Max from issued RM: {fmtProdQty(rmAllowedNowQty)}
+                              </p>
+                            ) : null}
+                            {wolId > 0 && !producedQtyValid ? (
+                              <p className="text-[11px] font-medium text-amber-800">Enter quantity.</p>
+                            ) : null}
+                          </div>
+                        </FieldShortcutHint>
                         <Button
-                          type="submit"
-                          data-testid="save-production-btn"
-                          className="h-8 px-3 text-[13px] font-semibold shadow-sm"
-                          onFocus={prodSaveFocusBind.onFocus}
-                          onBlur={prodSaveFocusBind.onBlur}
-                          onClick={() => shortcutHints.markFieldShortcutUsed("prodSave")}
-                          disabled={posting || !createFormCanSubmit}
-                          {...(prodDemoHl ? { "data-demo-highlight": prodDemoHl } : {})}
+                          type="button"
+                          variant="outline"
+                          className="h-8 shrink-0 px-2.5 text-[12px]"
+                          disabled={
+                            posting ||
+                            !selectedMetrics ||
+                            selectedMetrics.remainingQty <= 0 ||
+                            rmProductionEntryBlocked
+                          }
+                          onClick={() => {
+                            const woRem = selectedMetrics?.remainingQty ?? 0;
+                            const cap = rmEntryQtyCap != null ? Math.min(woRem, rmEntryQtyCap) : woRem;
+                            producedQtyUserTouchedRef.current = true;
+                            setProducedQtyStr(fmtProdQty(cap));
+                          }}
                         >
-                          {posting ? "Saving…" : "Save"}
+                          Use full
                         </Button>
-                      </div>
-                    </FieldShortcutHint>
+                        <FieldShortcutHint
+                          show={shortcutHints.activeFieldId === "prodSave"}
+                          hint={shortcutHints.activeFieldHintText ?? ""}
+                          placement="above"
+                          className="inline-block shrink-0"
+                        >
+                          <div className="grid gap-0.5">
+                            <span className="text-[11px] font-medium text-transparent select-none" aria-hidden>
+                              ·
+                            </span>
+                            <Button
+                              type="submit"
+                              data-testid="save-production-btn"
+                              className="h-8 px-3 text-[13px] font-semibold shadow-sm"
+                              onFocus={prodSaveFocusBind.onFocus}
+                              onBlur={prodSaveFocusBind.onBlur}
+                              onClick={() => shortcutHints.markFieldShortcutUsed("prodSave")}
+                              disabled={posting || !createFormCanSubmit}
+                              {...(prodDemoHl ? { "data-demo-highlight": prodDemoHl } : {})}
+                            >
+                              {posting ? "Saving…" : "Save"}
+                            </Button>
+                          </div>
+                        </FieldShortcutHint>
                   </div>
                   {productionWarnings.length > 0 ? (
-                    <ul className="space-y-0.5 text-[11px] font-medium text-amber-900">
+                    <ul className="mt-1 space-y-0.5 text-[11px] font-medium text-amber-900">
                       {productionWarnings.map((w) => (
                         <li key={w}>{w}</li>
                       ))}
                     </ul>
                   ) : null}
+                  </>
+                  )}
                 </CardContent>
               </Card>
+              ) : null}
 
               <div className="min-w-0 space-y-1.5">
                 <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -3857,7 +4700,10 @@ export function ProductionPage() {
                         size="sm"
                         className={cn("h-10 shrink-0 text-[13px]", operatorInputClass)}
                         disabled={posting || !selectedMetrics || selectedMetrics.remainingQty <= 0}
-                        onClick={() => setProducedQtyStr(fmtProdQty(selectedMetrics?.remainingQty ?? 0))}
+                        onClick={() => {
+                          producedQtyUserTouchedRef.current = true;
+                          setProducedQtyStr(fmtProdQty(selectedMetrics?.remainingQty ?? 0));
+                        }}
                       >
                         Use full
                       </Button>
@@ -3899,6 +4745,7 @@ export function ProductionPage() {
 
       {!placeDraftInNoQtyPrimaryCard &&
       !placeDraftAfterRegularProductionCard &&
+      !productionPrimaryStripCoversDraft &&
       !(fromNoQtySo && !showNoQtyScopedProductionCard && flatLines.length > 0 && canProd) ? (
         <div className="mb-1.5">{renderDraftProductionBanner({ compact: true })}</div>
       ) : null}
@@ -4096,7 +4943,7 @@ export function ProductionPage() {
                                     disabled={rowBusy === r.id}
                                     onClick={() => approveDraft(r.id)}
                                   >
-                                    {rowBusy === r.id ? "…" : "Approve"}
+                                    {renderApproveButtonLabel(r.id, "Approve", true)}
                                   </Button>
                                   <Button
                                     type="button"
@@ -4112,15 +4959,23 @@ export function ProductionPage() {
                               )
                             ) : isApproved(r) && qcPendingEntry(r) ? (
                               <div className="flex flex-col items-end gap-1">
-                                <Link
-                                  to={qcEntryHrefForEntry(r)}
-                                  className={cn(
-                                    buttonVariants({ variant: "secondary", size: "sm" }),
-                                    "inline-flex h-7 max-w-[70px] items-center justify-center px-1.5 text-[10px]",
-                                  )}
-                                >
-                                  Go to QC
-                                </Link>
+                                {/*
+                                 * Per-batch "Go to QC" link. Hidden when the page-level top
+                                 * QC strip ({@link suppressDuplicateQcWorkflowUi}) already
+                                 * surfaces the same action — operators only see one canonical
+                                 * QC CTA per screen state, never two.
+                                 */}
+                                {!suppressDuplicateQcWorkflowUi ? (
+                                  <Link
+                                    to={qcEntryHrefForEntry(r)}
+                                    className={cn(
+                                      buttonVariants({ variant: "secondary", size: "sm" }),
+                                      "inline-flex h-7 max-w-[70px] items-center justify-center px-1.5 text-[10px]",
+                                    )}
+                                  >
+                                    {PRODUCTION_QA_TERMS.COMPLETE_QA}
+                                  </Link>
+                                ) : null}
                                 {canOfferProductionReverse(r, isAdmin) ? (
                                   <Button
                                     type="button"
@@ -4217,15 +5072,7 @@ export function ProductionPage() {
       </Card>
 
       {reverseModalEntry && isAdmin ? (
-        <div
-          className="erp-modal-backdrop"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="prod-admin-reverse-title"
-          onMouseDown={(e) => {
-            if (e.target === e.currentTarget) closeReverseModal();
-          }}
-        >
+        <ErpModal onClose={closeReverseModal} closeOnBackdropClick aria-labelledby="prod-admin-reverse-title">
           <div className="w-full max-w-lg rounded-xl border border-slate-200/90 bg-white p-4 shadow-xl sm:p-5">
             <h2 id="prod-admin-reverse-title" className="text-base font-semibold leading-snug text-slate-900">
               Admin Reversal
@@ -4336,9 +5183,31 @@ export function ProductionPage() {
               );
             })()}
           </div>
-        </div>
+        </ErpModal>
       ) : null}
     </OperatorPageBody>
+  );
+
+  /** REGULAR approve modal — must render on every branch (REGULAR early returns omitted it previously). */
+  const rmConsumptionApproveModal = (
+    <ProductionRmConsumptionReviewModal
+      open={consumptionApproveId != null}
+      productionEntryId={consumptionApproveId}
+      onClose={closeConsumptionApproveModal}
+      onPreviewSettled={onConsumptionPreviewSettled}
+      onApproved={(res) => {
+        setConsumptionApproveId((openId) => {
+          if (openId != null) {
+            const approvedRow = entries.find((e) => e.id === openId);
+            setRowBusy(openId);
+            void afterProductionApproveSuccess(openId, approvedRow, res.consumptionWarnings).finally(
+              () => setRowBusy(null),
+            );
+          }
+          return null;
+        });
+      }}
+    />
   );
 
   /**
@@ -4374,14 +5243,14 @@ export function ProductionPage() {
   if (productionFlowMode !== "NO_QTY") {
     if (showProductionWorkspace) {
       return (
-        <PageContainer className="erp-flow-page -mt-1 max-w-none space-y-2 pb-2">
-          <OperationalContextSticky className="sticky top-0 z-20 space-y-1 border-b border-slate-200/90 bg-white/95 pb-2 pt-1 shadow-sm backdrop-blur-sm">
+        <PageContainer className="erp-flow-page -mt-1 max-w-none space-y-1.5">
+          <OperationalContextSticky className="sticky top-0 z-20 space-y-1 border-b border-slate-200/90 bg-white/95 pb-1.5 pt-0.5 shadow-sm backdrop-blur-sm">
             <DemoFlowBanner />
             <div className="flex flex-wrap items-end justify-between gap-2">
               <div className="min-w-0 space-y-0.5">
                 <PageSmartBackLink defaultTo="/dashboard" defaultLabel="Back to Dashboard" />
-                <h1 className="text-base font-semibold leading-tight tracking-tight text-slate-900">Production Workspace</h1>
-                <p className="text-xs leading-snug text-slate-600">
+                <h1 className="text-sm font-semibold leading-tight tracking-tight text-slate-900">Production Workspace</h1>
+                <p className="text-[11px] leading-snug text-slate-600">
                   Active shop-floor work across REGULAR and NO_QTY.
                 </p>
               </div>
@@ -4401,13 +5270,14 @@ export function ProductionPage() {
             </div>
           </OperationalContextSticky>
           {main}
+          {rmConsumptionApproveModal}
         </PageContainer>
       );
     }
     return (
-      <PageContainer className="erp-flow-page -mt-1 max-w-none space-y-2 pb-2">
+      <PageContainer className="erp-flow-page -mt-1 max-w-none space-y-1.5">
         {kbHelpOpen && canProd ? (
-          <div className="erp-modal-backdrop" role="dialog" aria-label="Keyboard shortcuts">
+          <ErpModal onClose={() => setKbHelpOpen(false)} aria-label="Keyboard shortcuts">
             <Card className="erp-modal-shell-md max-w-[640px] overflow-hidden">
               <CardHeader className="space-y-0.5 border-b border-slate-100 bg-slate-50 px-4 py-3">
                 <CardTitle className="text-sm font-semibold tracking-tight text-slate-900">Keyboard shortcuts</CardTitle>
@@ -4439,9 +5309,9 @@ export function ProductionPage() {
                 </div>
               </CardContent>
             </Card>
-          </div>
+          </ErpModal>
         ) : null}
-        <OperationalContextSticky className="sticky top-0 z-20 space-y-1 border-b border-slate-200/90 bg-white/95 pb-2 pt-1 shadow-sm backdrop-blur-sm">
+        <OperationalContextSticky className="sticky top-0 z-20 space-y-1 border-b border-slate-200/90 bg-white/95 pb-1.5 pt-0.5 shadow-sm backdrop-blur-sm">
           <DemoFlowBanner />
           <div className="flex flex-wrap items-center justify-between gap-2">
             <nav
@@ -4585,15 +5455,25 @@ export function ProductionPage() {
                   Sales Order
                 </Link>
               ) : null}
-              {qcBannerHref ? (
+              {regularQcBannerHref && !showTopQcNextStrip && selectedLineQcPending ? (
+                /*
+                 * Breadcrumb "Open QC" link. Hidden when the page-level top QC strip already
+                 * exposes the same action — keeps a single canonical QC CTA per screen state.
+                 */
+                <Link className="text-sky-900 underline-offset-2 hover:underline" to={regularQcBannerHref}>
+                  {PRODUCTION_QA_TERMS.OPEN_PRODUCTION_QA}
+                </Link>
+              ) : qcBannerHref && !showTopQcNextStrip && navigateNoQtyContext ? (
                 <Link className="text-sky-900 underline-offset-2 hover:underline" to={qcBannerHref}>
-                  Open QC
+                  {PRODUCTION_QA_TERMS.OPEN_PRODUCTION_QA}
                 </Link>
               ) : null}
               {selectedMetrics &&
               selectedMetrics.remainingQty > 1e-6 &&
               !latestDraftForSelectedWo &&
+              !draftApprovalPendingRegular &&
               canProd &&
+              !rmProductionEntryBlocked &&
               !(isRegularShellNoQtyUi && noQtyNextRsReady) ? (
                 <button
                   type="button"
@@ -4608,12 +5488,22 @@ export function ProductionPage() {
               ) : null}
             </div>
           ) : null}
+          {navigateNoQtyContext || showProductionWorkspace ? (
           <OperationalContextBar className="rounded-md border border-slate-200 bg-gradient-to-r from-slate-50 to-white px-2 py-1 shadow-sm">
             <span className="font-semibold text-slate-600">SO</span>
             <span className="rounded border border-sky-200 bg-sky-50 px-1.5 py-0.5 font-mono text-[11px] font-semibold tabular-nums text-sky-900">
-              {selected
-                ? displaySalesOrderNo(selected.salesOrderId, selected.salesOrderId === focusSoId ? focusSo?.docNo : null)
-                : "—"}
+              {(() => {
+                const soId =
+                  selected?.salesOrderId ??
+                  productionStickyContext?.salesOrderId ??
+                  0;
+                if (!(soId > 0)) return "—";
+                const soDoc =
+                  selected && selected.salesOrderId === focusSoId
+                    ? focusSo?.docNo
+                    : productionStickyContext?.soDocNo ?? (soId === focusSoId ? focusSo?.docNo : null);
+                return displaySalesOrderNo(soId, soDoc);
+              })()}
             </span>
             {isRegularShellNoQtyUi ? (
               <>
@@ -4638,14 +5528,28 @@ export function ProductionPage() {
             <span className="font-semibold text-slate-600">WO</span>
             <span className="font-mono text-[11px] font-semibold tabular-nums text-slate-900">
               {(() => {
-                const id = woId > 0 ? woId : activeWoForRegularShell?.id ?? 0;
+                const id =
+                  woId > 0
+                    ? woId
+                    : selected?.workOrderId ??
+                      productionStickyContext?.workOrderId ??
+                      activeWoForRegularShell?.id ??
+                      0;
                 if (!(id > 0)) return "—";
-                return displayWorkOrderNo(id, activeWoForRegularShell?.docNo ?? null);
+                const woDoc =
+                  activeWoForRegularShell?.id === id
+                    ? activeWoForRegularShell?.docNo
+                    : productionStickyContext?.woDocNo ??
+                      workOrders.find((w) => w.id === id)?.docNo ??
+                      null;
+                return displayWorkOrderNo(id, woDoc);
               })()}
             </span>
             <OpCtxSep />
             <span className="text-slate-500">Item</span>
-            <span className="max-w-[12rem] truncate font-semibold text-slate-900">{selected ? selected.fgItem.itemName : "—"}</span>
+            <span className="max-w-[12rem] truncate font-semibold text-slate-900">
+              {selected?.fgItem.itemName ?? productionStickyContext?.itemName ?? "—"}
+            </span>
             <OpCtxSep />
             <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">
               Status
@@ -4655,29 +5559,31 @@ export function ProductionPage() {
                 ? noQtyCycleDisplayStatus.label
                 : regularWorkflowStageLabel}
             </span>
-            {selectedMetrics && selected ? (
+            {displayHeaderMetrics && (selected || productionStickyContext) ? (
               <>
                 <OpCtxSep />
                 <span className="text-slate-500">Planned</span>
-                <span className="font-bold tabular-nums text-slate-900">{fmtProdQty(selectedMetrics.woLineQty)}</span>
+                <span className="font-bold tabular-nums text-slate-900">{fmtProdQty(displayHeaderMetrics.woLineQty)}</span>
                 <OpCtxSep />
                 <span className="text-slate-500">Produced</span>
-                <span className="font-bold tabular-nums text-slate-900">{fmtProdQty(selectedMetrics.usedQty)}</span>
+                <span className="font-bold tabular-nums text-slate-900">{fmtProdQty(displayHeaderMetrics.usedQty)}</span>
                 <OpCtxSep />
                 <span className="text-emerald-800">Remaining</span>
-                <span className="font-bold tabular-nums text-emerald-950">{fmtProdQty(selectedMetrics.remainingQty)}</span>
+                <span className="font-bold tabular-nums text-emerald-950">{fmtProdQty(displayHeaderMetrics.remainingQty)}</span>
               </>
             ) : null}
           </OperationalContextBar>
+          ) : null}
         </OperationalContextSticky>
         {main}
+        {rmConsumptionApproveModal}
       </PageContainer>
     );
   }
   return (
-    <PageContainer className="erp-flow-page -mt-1 max-w-none space-y-2 pb-[5.25rem] sm:pb-[5.25rem]">
+    <PageContainer className="erp-flow-page -mt-1 max-w-none space-y-2">
       {kbHelpOpen && canProd ? (
-        <div className="erp-modal-backdrop" role="dialog" aria-label="Keyboard shortcuts">
+        <ErpModal onClose={() => setKbHelpOpen(false)} aria-label="Keyboard shortcuts">
           <Card className="erp-modal-shell-md max-w-[640px] overflow-hidden">
             <CardHeader className="space-y-0.5 border-b border-slate-100 bg-slate-50 px-4 py-3">
               <CardTitle className="text-sm font-semibold tracking-tight text-slate-900">Keyboard shortcuts</CardTitle>
@@ -4709,9 +5615,9 @@ export function ProductionPage() {
               </div>
             </CardContent>
           </Card>
-        </div>
+        </ErpModal>
       ) : null}
-      <OperationalContextSticky className="space-y-1.5">
+      <OperationalContextSticky className="space-y-1">
         <PageNoQtyFlowBackLink step="PRODUCTION" />
         <div className="flex flex-wrap items-end justify-between gap-2">
           <div className="min-w-0 space-y-0.5">
@@ -4851,6 +5757,7 @@ export function ProductionPage() {
        * NO_QTY Next RS ownership now lives only on Dashboard, NO_QTY SO detail and Requirement Sheet pages.
        */}
       {main}
+      {rmConsumptionApproveModal}
     </PageContainer>
   );
 }

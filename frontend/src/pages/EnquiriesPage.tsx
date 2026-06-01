@@ -15,6 +15,7 @@ import {
   commercialWorkflowStripDenseFramedClassName,
 } from "../components/erp/CommercialWorkflowStrip";
 import { NO_QTY_TERMS } from "../lib/flowTerminology";
+import { ErpModal } from "../components/erp/ErpModal";
 
 /** Must match backend `enquiries.js` validation message. */
 const ENQUIRY_DUPLICATE_ITEM_MESSAGE =
@@ -880,7 +881,7 @@ export function EnquiriesPage() {
 
       {/* EDIT MODAL (kept) */}
       {editRow ? (
-        <div className="erp-modal-backdrop" role="dialog">
+        <ErpModal onClose={() => setEditRow(null)}>
           <Card className="erp-modal-shell-md max-h-[90vh]">
             <CardHeader className="pb-2">
               <CardTitle className="text-base">Edit enquiry #{editRow.id}</CardTitle>
@@ -1005,7 +1006,7 @@ export function EnquiriesPage() {
               </form>
             </CardContent>
           </Card>
-        </div>
+        </ErpModal>
       ) : null}
     </div>
   );

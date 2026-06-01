@@ -68,6 +68,10 @@ const { DocType } = require("../prismaClientPackage");
 const { allocateDocNo } = require("../services/docNoService");
 const { normalizePositiveCycleId } = require("../utils/cycleIds");
 const { repairNoQtyCycleIntegrity } = require("../services/noQtyCycleLifecycle");
+const { maybeAutoCloseNoQtyCycle } = require("../services/noQtyCycleAutoClose");
+const { maybeAutoCloseSalesOrderOperationally } = require("../services/salesOrderOperationalAutoClose");
+const { getCompanyStateDetails } = require("../services/appSettings");
+const { freezeSalesOrderCommercialSnapshots } = require("../services/salesOrderCommercialAddress");
 
 const dispatchRouter = express.Router();
 
@@ -83,13 +87,13 @@ function num(v) {
 }
 
 /**
- * NO_QTY: operational net and caps MUST use only rows where Dispatch.cycleId equals SalesOrder.currentCycleId.
+ * NO_QTY: operational net and caps MUST use only rows where Dispatch.cycleId equals the dispatch source cycle.
  * - Rows with null/undefined cycleId are excluded (no fallback).
  * - Rows for other cycles are excluded so a new cycle is not blocked by prior-cycle dispatch.
  * - Reversals are included only when they carry the same non-null cycleId (set from the forward row at reversal create).
  *
  * @param {Array<{ id?: number; cycleId?: unknown; itemId?: unknown; reversalOfId?: unknown }>} dispatchRecords
- * @param {unknown} activeCycleId — typically SalesOrder.currentCycleId
+ * @param {unknown} activeCycleId — SalesOrderCycle.id for the dispatch source cycle
  */
 function filterNoQtyDispatchRowsForActiveCycle(dispatchRecords, activeCycleId) {
   const want = normalizePositiveCycleId(activeCycleId);
@@ -171,9 +175,10 @@ function netNoQtyCycleDispatchedByItemId(dispatchRecords, mode) {
 }
 
 /**
- * Sum active QC accepted qty for NO_QTY, attributed to a sales-order cycle.
+ * Sum active QC accepted qty for NO_QTY, attributed to the operational source cycle.
  * Uses WorkOrder.cycleId when set; otherwise falls back to RequirementSheet.cycleId via WO.requirementSheet
- * (legacy WOs may omit cycleId).
+ * (legacy WOs may omit cycleId). Do not reassign to SalesOrder.currentCycleId: that is the
+ * planning/continuity pointer and may refer to a future cycle with no dispatch ownership yet.
  *
  * @param {import('@prisma/client').PrismaClient} prisma
  * @param {{ id: number; currentCycleId: number | null }[]} noQtySos
@@ -182,24 +187,6 @@ function netNoQtyCycleDispatchedByItemId(dispatchRecords, mode) {
 async function loadNoQtyCycleQcAcceptedMap(prisma, noQtySos) {
   const soIds = [...new Set(noQtySos.map((s) => s.id).filter((x) => Number.isFinite(x) && x > 0))];
   if (!soIds.length) return new Map();
-
-  /**
-   * FINAL DESIGN DECISION:
-   * "Late QC" (QC accepted posted after a cycle was closed) must be attributed to the current ACTIVE cycle,
-   * not to the historical (closed) work-order cycle.
-   *
-   * This keeps closed cycles "completed" while still letting new usable stock increase dispatchability on the active cycle.
-   */
-  const soActiveCycleRows = await prisma.salesOrder.findMany({
-    where: { id: { in: soIds }, orderType: "NO_QTY" },
-    select: { id: true, currentCycleId: true },
-  });
-  /** @type {Map<number, number>} */
-  const activeCycleIdBySoId = new Map(
-    soActiveCycleRows
-      .map((r) => [Number(r.id), normalizePositiveCycleId(r.currentCycleId)])
-      .filter(([, cid]) => cid != null),
-  );
 
   const rows = await prisma.qcEntry.findMany({
     where: {
@@ -234,41 +221,6 @@ async function loadNoQtyCycleQcAcceptedMap(prisma, noQtySos) {
     },
   });
 
-  /** Cycle meta for "late QC" reassignment */
-  const cycleIds = [
-    ...new Set(
-      rows
-        .map((r) => {
-          const wo = r.production?.workOrderLine?.workOrder;
-          const raw =
-            wo?.cycleId != null
-              ? normalizePositiveCycleId(wo.cycleId)
-              : wo?.requirementSheet?.cycleId != null
-                ? normalizePositiveCycleId(wo.requirementSheet.cycleId)
-                : null;
-          return raw ?? null;
-        })
-        .filter((x) => x != null),
-    ),
-  ];
-  const cycleMetaRows =
-    cycleIds.length > 0
-      ? await prisma.salesOrderCycle.findMany({
-          where: { id: { in: cycleIds } },
-          select: { id: true, status: true, closedAt: true },
-        })
-      : [];
-  /** @type {Map<number, { status: string; closedAt: Date | null }>} */
-  const cycleMetaById = new Map(
-    cycleMetaRows.map((c) => [
-      Number(c.id),
-      {
-        status: String(c.status ?? ""),
-        closedAt: c.closedAt ? (c.closedAt instanceof Date ? c.closedAt : new Date(c.closedAt)) : null,
-      },
-    ]),
-  );
-
   /** @type {Map<string, number>} */
   const map = new Map();
   for (const r of rows) {
@@ -286,18 +238,7 @@ async function loadNoQtyCycleQcAcceptedMap(prisma, noQtySos) {
           : null;
     if (cycleIdNorm == null) continue;
 
-    // Late QC: if the WO cycle is CLOSED and this QC entry was posted after closedAt, attribute to active cycle.
-    let effCycleId = cycleIdNorm;
-    const meta = cycleMetaById.get(cycleIdNorm);
-    if (meta?.status === "CLOSED" && meta.closedAt instanceof Date && !Number.isNaN(meta.closedAt.getTime())) {
-      const qcDate = r.date instanceof Date ? r.date : new Date(r.date);
-      if (!Number.isNaN(qcDate.getTime()) && qcDate.getTime() > meta.closedAt.getTime()) {
-        const active = activeCycleIdBySoId.get(Number(soId)) ?? null;
-        if (active != null) effCycleId = active;
-      }
-    }
-
-    const k = `${soId}:${effCycleId}:${itemId}`;
+    const k = `${soId}:${cycleIdNorm}:${itemId}`;
     map.set(k, (map.get(k) || 0) + num(r.acceptedQty));
   }
   return map;
@@ -403,10 +344,16 @@ function getNoQtyCycleDispatchHeadroomForItem(so, cycleId, itemId, qcMap, rechec
   return Math.max(0, qcTotal - net);
 }
 
+function getNoQtyUnlockedDraftQtyForItem(so, itemId) {
+  return (so.dispatch || [])
+    .filter((d) => d.reversalOfId == null && d.workflowStatus === "UNLOCKED" && Number(d.itemId) === Number(itemId))
+    .reduce((s, d) => s + num(d.dispatchedQty), 0);
+}
+
 /**
  * FIFO across sales-order cycles (cycleNo ascending) for one FG item: oldest cycle pool first, then next.
  *
- * @returns {{ slices: Array<{ cycleId: number; cycleNo: number; qty: number }>; totalAvailable: number; unallocated: number }}
+ * @returns {{ slices: Array<{ cycleId: number; cycleNo: number; qty: number }>; totalAvailable: number; cycleHeadroomTotal: number; freePhysicalUsable: number; unallocated: number }}
  */
 function computeNoQtyFifoPrepareSlicesForItem({
   so,
@@ -416,24 +363,31 @@ function computeNoQtyFifoPrepareSlicesForItem({
   qcMap,
   recheckMap,
   postCycleMap,
+  usableStock,
+  unlockedDraftReservedQty,
+  replaceableDraftQty,
 }) {
   let rem = num(requestedQty);
   /** @type {Array<{ cycleId: number; cycleNo: number; qty: number }>} */
   const slices = [];
-  let totalAvailable = 0;
+  let cycleHeadroomTotal = 0;
   for (const c of cyclesSorted) {
-    totalAvailable += getNoQtyCycleDispatchHeadroomForItem(so, c.id, itemId, qcMap, recheckMap, postCycleMap);
+    cycleHeadroomTotal += getNoQtyCycleDispatchHeadroomForItem(so, c.id, itemId, qcMap, recheckMap, postCycleMap);
   }
+  const freePhysicalUsable = Math.max(0, num(usableStock) - num(unlockedDraftReservedQty) + num(replaceableDraftQty));
+  const totalAvailable = Math.min(cycleHeadroomTotal, freePhysicalUsable);
+  let physicalRemaining = totalAvailable;
   for (const c of cyclesSorted) {
-    if (rem <= REPORT_QUEUE_EPS) break;
+    if (rem <= REPORT_QUEUE_EPS || physicalRemaining <= REPORT_QUEUE_EPS) break;
     const headroom = getNoQtyCycleDispatchHeadroomForItem(so, c.id, itemId, qcMap, recheckMap, postCycleMap);
-    const take = Math.min(rem, headroom);
+    const take = Math.min(rem, headroom, physicalRemaining);
     if (take > REPORT_QUEUE_EPS) {
       slices.push({ cycleId: c.id, cycleNo: num(c.cycleNo), qty: take });
       rem -= take;
+      physicalRemaining -= take;
     }
   }
-  return { slices, totalAvailable, unallocated: Math.max(0, rem) };
+  return { slices, totalAvailable, cycleHeadroomTotal, freePhysicalUsable, unallocated: Math.max(0, rem) };
 }
 
 /**
@@ -857,6 +811,13 @@ function buildNoQtyLineStats({
       .filter((d) => d.reversalOfId == null && d.workflowStatus === "UNLOCKED" && Number(d.itemId) === Number(itemId))
       .reduce((s, d) => s + num(d.dispatchedQty), 0);
     const rowsInCycleNetForItem = cycleDispatchRecords.filter((d) => Number(d.itemId) === Number(itemId));
+    const hasDispatchSourceEvidence =
+      cycleCap > REPORT_QUEUE_EPS ||
+      qcPoolGross > REPORT_QUEUE_EPS ||
+      Math.abs(dispatched) > REPORT_QUEUE_EPS ||
+      draftPreparedQty > REPORT_QUEUE_EPS ||
+      rowsInCycleNetForItem.length > 0;
+    if (!hasDispatchSourceEvidence) continue;
 
     lineStats.push({
       lineId: itemId, // stable synthetic id for UI selection
@@ -1254,6 +1215,15 @@ dispatchRouter.get("/no-qty-cycles", requireAuth, requireRole(DISPATCH_READ_ROLE
       orderBy: { cycleNo: "asc" },
       select: { id: true, cycleNo: true, status: true },
     });
+    const lockedRsRows = cycles.length
+      ? await prisma.requirementSheet.findMany({
+          where: { salesOrderId: soId, cycleId: { in: cycles.map((c) => c.id) }, status: "LOCKED" },
+          select: { cycleId: true },
+        })
+      : [];
+    const lockedRsCycleIds = new Set(
+      lockedRsRows.map((r) => normalizePositiveCycleId(r.cycleId)).filter((cid) => cid != null),
+    );
     const inputs = cycles.map((c) => ({ id: soId, currentCycleId: c.id }));
     const [qcMap, recheckMap, postCycleMap, batchPendingMapCyc] = await Promise.all([
       loadNoQtyCycleQcAcceptedMap(prisma, inputs),
@@ -1318,7 +1288,15 @@ dispatchRouter.get("/no-qty-cycles", requireAuth, requireRole(DISPATCH_READ_ROLE
           d.workflowStatus === "UNLOCKED" &&
           normalizePositiveCycleId(d.cycleId) === c.id,
       );
+      const hasAnyDispatchActivity = (so.dispatch || []).some(
+        (d) => normalizePositiveCycleId(d.cycleId) === c.id,
+      );
       const needsWork = totalReady > REPORT_QUEUE_EPS || hasPreparedDraft;
+      const hasDispatchSourceEvidence =
+        lockedRsCycleIds.has(c.id) ||
+        totalReady > REPORT_QUEUE_EPS ||
+        hasPreparedDraft ||
+        hasAnyDispatchActivity;
 
       let eligible = false;
       /** @type {string | null} */
@@ -1343,7 +1321,8 @@ dispatchRouter.get("/no-qty-cycles", requireAuth, requireRole(DISPATCH_READ_ROLE
         cycleLabel = `Cycle ${c.cycleNo} — Locked`;
       }
 
-      if (String(c.status) !== "ACTIVE" && !needsWork) continue;
+      if (!hasDispatchSourceEvidence) continue;
+      if (String(c.status) !== "ACTIVE" && !needsWork && !lockedRsCycleIds.has(c.id) && !hasAnyDispatchActivity) continue;
 
       out.push({
         cycleId: c.id,
@@ -1726,6 +1705,8 @@ dispatchRouter.get("/sales-orders", requireAuth, requireRole(DISPATCH_READ_ROLES
           onHand,
           /** Same as onHand — global usable FG for this SKU (matches GET /api/stock/summary scope). */
           totalStock: onHand,
+          /** SO-linked QC-approved remaining (Regular SO); not global item stock. */
+          ...(so.orderType === "NORMAL" ? { usableQcPassedStock: qcApprovedRemaining } : {}),
           qcAccepted,
           /** Gross QC accepted for this sales order + FG item (production + adjustment QC); display label "QC approved". */
           qcApprovedStock: qcAccepted,
@@ -2097,6 +2078,7 @@ dispatchRouter.get("/sales-orders-debug", requireAuth, requireRole(["ADMIN"]), a
           pendingDispatchQty,
           onHand,
           totalStock: onHand,
+          ...(so.orderType === "NORMAL" ? { usableQcPassedStock: qcApprovedRemaining } : {}),
           qcAccepted,
           qcApprovedStock: qcAccepted,
           qcApprovedRemaining,
@@ -2538,6 +2520,8 @@ dispatchRouter.post(
         postCycleApprovalMap: postCycleMapAll,
         cycleIdsWithBatchQcPending: batchSet,
       });
+      const usableStock = await getItemStockQty(body.itemId, prisma, { stockBucket: "USABLE" });
+      const unlockedDraftReservedQty = getNoQtyUnlockedDraftQtyForItem(so, body.itemId);
       const fifo = computeNoQtyFifoPrepareSlicesForItem({
         so,
         itemId: body.itemId,
@@ -2546,6 +2530,9 @@ dispatchRouter.post(
         qcMap: qcMapAll,
         recheckMap: recheckMapAll,
         postCycleMap: postCycleMapAll,
+        usableStock,
+        unlockedDraftReservedQty,
+        replaceableDraftQty: unlockedDraftReservedQty,
       });
       const first = fifo.slices[0] ?? null;
       let gateBlockedReason = null;
@@ -2555,6 +2542,8 @@ dispatchRouter.post(
       return res.json({
         allocation: fifo.slices.map((s) => ({ cycleId: s.cycleId, cycleNo: s.cycleNo, qty: s.qty })),
         totalAvailable: fifo.totalAvailable,
+        cycleHeadroomTotal: fifo.cycleHeadroomTotal,
+        freePhysicalUsable: fifo.freePhysicalUsable,
         requestedQty: body.dispatchedQty,
         unallocated: fifo.unallocated,
         wouldExceedTotal: fifo.totalAvailable + REPORT_QUEUE_EPS < body.dispatchedQty,
@@ -2652,6 +2641,8 @@ dispatchRouter.post("/dispatches", requireAuth, requireRole(DISPATCH_WRITE_ROLES
         });
 
         if (body.autoAllocateAcrossCycles === true) {
+          const usableStock = await getItemStockQty(body.itemId, tx, { stockBucket: "USABLE" });
+          const unlockedDraftReservedQty = getNoQtyUnlockedDraftQtyForItem(so, body.itemId);
           const fifo = computeNoQtyFifoPrepareSlicesForItem({
             so,
             itemId: body.itemId,
@@ -2660,10 +2651,13 @@ dispatchRouter.post("/dispatches", requireAuth, requireRole(DISPATCH_WRITE_ROLES
             qcMap: qcMapAll,
             recheckMap: recheckMapAll,
             postCycleMap: postCycleMapAll,
+            usableStock,
+            unlockedDraftReservedQty,
+            replaceableDraftQty: unlockedDraftReservedQty,
           });
           if (fifo.totalAvailable + REPORT_QUEUE_EPS < body.dispatchedQty) {
             throw friendlyNoQtyDispatchError(
-              "Dispatch exceeds total QC-backed quantity available across cycles.",
+              "Dispatch exceeds current usable stock available for this item.",
               400,
             );
           }
@@ -2720,8 +2714,20 @@ dispatchRouter.post("/dispatches", requireAuth, requireRole(DISPATCH_WRITE_ROLES
                     reversalOfId: null,
                     workflowStatus: "UNLOCKED",
                   },
-                });
+            });
             dispatchesOut.push(row);
+          }
+          const allocatedCycleIds = fifo.slices.map((s) => s.cycleId);
+          if (allocatedCycleIds.length > 0) {
+            await tx.dispatch.deleteMany({
+              where: {
+                soId: so.id,
+                itemId: body.itemId,
+                reversalOfId: null,
+                workflowStatus: "UNLOCKED",
+                cycleId: { notIn: allocatedCycleIds },
+              },
+            });
           }
           const allocation = fifo.slices.map((s) => ({ cycleId: s.cycleId, cycleNo: s.cycleNo, qty: s.qty }));
           noQtyFifoResult = { dispatches: dispatchesOut, allocation };
@@ -2839,7 +2845,16 @@ dispatchRouter.post("/dispatches", requireAuth, requireRole(DISPATCH_WRITE_ROLES
 
       if (isNoQty) {
         await syncNoQtyOptionalStoreStockIntentForSalesOrderAfterDispatchChange(tx, so.id, null);
+        if (currentCycleId != null) {
+          await maybeAutoCloseNoQtyCycle(tx, { soId: so.id, cycleId: currentCycleId });
+        }
       }
+
+      await maybeAutoCloseSalesOrderOperationally(tx, so.id, {
+        actorUserId: req.user?.userId,
+        actorRole: req.user?.role,
+        reason: "Dispatch finalization completed the operational workflow.",
+      });
 
       const payload = { dispatch };
       await completeDispatchIdempotency(tx, {
@@ -3030,6 +3045,15 @@ dispatchRouter.post("/dispatches/:id/lock", requireAuth, requireRole(DISPATCH_WR
         data: { workflowStatus: "LOCKED" },
       });
 
+      // Commercial snapshots: freeze on first confirmed dispatch for NO_QTY (or any legacy SO).
+      try {
+        const company = await getCompanyStateDetails();
+        const companyStateCode = company?.companyStateRef?.stateCode ?? null;
+        await freezeSalesOrderCommercialSnapshots(tx, existing.soId, { companyStateCode });
+      } catch {
+        // Do not block dispatch on snapshot freeze; operational flow must proceed.
+      }
+
       const stockAfter = await getItemStockQty(existing.itemId, tx);
 
       await auditLog.write(tx, {
@@ -3210,6 +3234,8 @@ dispatchRouter.post(
 
         assertSalesOrderNotCompletedForDispatch(so);
 
+        /** @type {number | null} */
+        let finalizedNoQtyCycleId = null;
         if (so.orderType === "NO_QTY") {
           const dispatchCycleId = normalizePositiveCycleId(existing.cycleId);
           if (dispatchCycleId == null) {
@@ -3223,6 +3249,7 @@ dispatchRouter.post(
             throw friendlyNoQtyDispatchError("This dispatch belongs to an unknown sales-order cycle.", 409);
           }
           const currentCycleId = soCycleFd.id;
+          finalizedNoQtyCycleId = currentCycleId;
 
           const allCyclesFd = await tx.salesOrderCycle.findMany({
             where: { salesOrderId: so.id },
@@ -3342,7 +3369,16 @@ dispatchRouter.post(
 
         if (so.orderType === "NO_QTY") {
           await syncNoQtyOptionalStoreStockIntentForSalesOrderAfterDispatchChange(tx, so.id, null);
+          if (finalizedNoQtyCycleId != null) {
+            await maybeAutoCloseNoQtyCycle(tx, { soId: so.id, cycleId: finalizedNoQtyCycleId });
+          }
         }
+
+        await maybeAutoCloseSalesOrderOperationally(tx, so.id, {
+          actorUserId: req.user?.userId,
+          actorRole: req.user?.role,
+          reason: "Dispatch finalization completed the operational workflow.",
+        });
 
         console.debug("[FINALIZE_DRAFT_SUCCESS]", { dispatchId: existing.id });
 

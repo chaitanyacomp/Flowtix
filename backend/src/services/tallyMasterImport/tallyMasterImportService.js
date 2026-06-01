@@ -3,7 +3,7 @@ const {
   normalizeMasterNameDisplay,
   normalizeMasterNameKey,
 } = require("../masterNameNormalize");
-const { normalizeGstinOnSave } = require("../gstinNormalize");
+const { normalizeGstinOnSave, validateGstinFormatMessage } = require("../gstinNormalize");
 const { normalizeHsnOnSave } = require("../hsnNormalize");
 const { normalizeUnitKey } = require("../unitMaster");
 const { parseTallyMastersXml, strVal } = require("./parseTallyMastersXml");
@@ -146,6 +146,145 @@ function stateIdFromStateText(stateText, states) {
   return null;
 }
 
+function normalizeDeliveryLabelKey(raw) {
+  return String(raw ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+}
+
+/**
+ * Ensure new CustomerDeliveryAddress structure stays operational for imported masters.
+ * - Creates/updates ONE default "Registered Office" delivery address
+ * - Avoid duplicates on re-import
+ *
+ * @param {import("@prisma/client").PrismaClient} db
+ * @param {number} customerId
+ * @param {{ address: string | null; stateId: number | null; gst: string | null; contact: string | null }} src
+ * @param {"CREATE" | "UPDATE_EMPTY_FIELDS"} mode
+ */
+async function upsertRegisteredOfficeDeliveryAddress(db, customerId, src, mode) {
+  if (!customerId) return;
+  const label = "Registered Office";
+  const labelKey = normalizeDeliveryLabelKey(label);
+
+  const existing = await db.customerDeliveryAddress.findMany({
+    where: { customerId },
+    select: { id: true, label: true, isDefault: true, address: true, stateId: true, gst: true, contactPerson: true, phone: true },
+    orderBy: [{ isDefault: "desc" }, { id: "asc" }],
+    take: 20,
+  });
+  const byLabel = existing.find((r) => normalizeDeliveryLabelKey(r.label) === labelKey) ?? null;
+  const target = byLabel ?? existing.find((r) => r.isDefault) ?? null;
+
+  const desired = {
+    label,
+    address: src.address || null,
+    city: null,
+    stateId: src.stateId || null,
+    gst: src.gst || null,
+    contactPerson: null,
+    phone: src.contact || null,
+    isDefault: true,
+    isActive: true,
+  };
+
+  if (!target) {
+    await db.customerDeliveryAddress.create({
+      data: { customerId, ...desired },
+      select: { id: true },
+    });
+    return;
+  }
+
+  const patch = {};
+  if (!target.isDefault) patch.isDefault = true;
+  if (mode === "CREATE") {
+    patch.label = desired.label;
+    patch.address = desired.address;
+    patch.stateId = desired.stateId;
+    patch.gst = desired.gst;
+    patch.phone = desired.phone;
+    patch.isActive = true;
+  } else {
+    if (isEmptyField(target.label) && desired.label) patch.label = desired.label;
+    if (isEmptyField(target.address) && desired.address) patch.address = desired.address;
+    if (isEmptyField(target.stateId) && desired.stateId) patch.stateId = desired.stateId;
+    if (isEmptyField(target.gst) && desired.gst) patch.gst = desired.gst;
+    if (isEmptyField(target.phone) && desired.phone) patch.phone = desired.phone;
+    if (target.isActive === false) patch.isActive = true;
+  }
+  if (Object.keys(patch).length) {
+    await db.customerDeliveryAddress.update({ where: { id: target.id }, data: patch });
+  }
+}
+
+/**
+ * Ensure SupplierLocation structure stays operational for imported masters.
+ * - Creates/updates ONE default "Registered Office" supply location
+ * - Avoid duplicates on re-import
+ *
+ * @param {import("@prisma/client").PrismaClient} db
+ * @param {number} supplierId
+ * @param {{ address: string | null; stateId: number | null; gst: string | null; contact: string | null }} src
+ * @param {"CREATE" | "UPDATE_EMPTY_FIELDS"} mode
+ */
+async function upsertRegisteredOfficeSupplierLocation(db, supplierId, src, mode) {
+  if (!supplierId) return;
+  const label = "Registered Office";
+  const labelKey = normalizeDeliveryLabelKey(label);
+
+  const existing = await db.supplierLocation.findMany({
+    where: { supplierId },
+    select: { id: true, label: true, isDefault: true, address: true, stateId: true, gst: true, contactPerson: true, phone: true },
+    orderBy: [{ isDefault: "desc" }, { id: "asc" }],
+    take: 20,
+  });
+  const byLabel = existing.find((r) => normalizeDeliveryLabelKey(r.label) === labelKey) ?? null;
+  const target = byLabel ?? existing.find((r) => r.isDefault) ?? null;
+
+  const desired = {
+    label,
+    address: src.address || null,
+    city: null,
+    stateId: src.stateId || null,
+    gst: src.gst || null,
+    contactPerson: null,
+    phone: src.contact || null,
+    isDefault: true,
+    isActive: true,
+  };
+
+  if (!target) {
+    await db.supplierLocation.create({
+      data: { supplierId, ...desired },
+      select: { id: true },
+    });
+    return;
+  }
+
+  const patch = {};
+  if (!target.isDefault) patch.isDefault = true;
+  if (mode === "CREATE") {
+    patch.label = desired.label;
+    patch.address = desired.address;
+    patch.stateId = desired.stateId;
+    patch.gst = desired.gst;
+    patch.phone = desired.phone;
+    patch.isActive = true;
+  } else {
+    if (isEmptyField(target.label) && desired.label) patch.label = desired.label;
+    if (isEmptyField(target.address) && desired.address) patch.address = desired.address;
+    if (isEmptyField(target.stateId) && desired.stateId) patch.stateId = desired.stateId;
+    if (isEmptyField(target.gst) && desired.gst) patch.gst = desired.gst;
+    if (isEmptyField(target.phone) && desired.phone) patch.phone = desired.phone;
+    if (target.isActive === false) patch.isActive = true;
+  }
+  if (Object.keys(patch).length) {
+    await db.supplierLocation.update({ where: { id: target.id }, data: patch });
+  }
+}
+
 /**
  * @param {number | null} gstRate
  */
@@ -202,6 +341,12 @@ async function buildPreviewPayload(db, xmlString, options) {
   const unitsDb = await db.unit.findMany({ where: { isActive: true }, select: { id: true, unitName: true, unitCode: true } });
 
   const customerByKey = new Map(customersDb.map((c) => [normalizeMasterNameKey(c.name), c]));
+  const customerByGstin = new Map(
+    customersDb
+      .map((c) => ({ id: c.id, gst: normalizeGstinOnSave(c.gst) }))
+      .filter((c) => c.gst)
+      .map((c) => [c.gst, c]),
+  );
   const supplierByKey = new Map(suppliersDb.map((s) => [normalizeMasterNameKey(s.name), s]));
   const itemByKey = new Map(itemsDb.map((it) => [normalizeMasterNameKey(it.itemName), it]));
   const unitByKey = new Map(unitsDb.map((u) => [normalizeUnitKey(u.unitName), u]));
@@ -270,15 +415,31 @@ async function buildPreviewPayload(db, xmlString, options) {
     const cust = mapLedgerToParty(lRaw, "CUSTOMER");
     if (cust) {
       const nk = normalizeMasterNameKey(cust.name);
-      const existing = customerByKey.get(nk);
-      const gstNorm = cust.gst ? normalizeGstinOnSave(cust.gst) : null;
-      const stateId =
-        stateIdFromGstinPrefix(gstNorm, statesByCode) ||
-        stateIdFromStateText(cust.stateText, states) ||
-        (options.fallbackStateId && states.some((s) => s.id === options.fallbackStateId) ? options.fallbackStateId : null);
+      let gstNorm = cust.gst ? normalizeGstinOnSave(cust.gst) : null;
+      const gstMsg = gstNorm ? validateGstinFormatMessage(gstNorm) : null;
+      if (gstNorm && gstMsg) {
+        gstNorm = null;
+      }
+
+      const existingByGst = gstNorm ? customerByGstin.get(gstNorm) : null;
+      const existingByName = customerByKey.get(nk);
+      const existing =
+        existingByGst && existingByGst.id ? customersDb.find((c) => c.id === existingByGst.id) ?? existingByName : existingByName;
+
+      const stateIdFromGst = gstNorm ? stateIdFromGstinPrefix(gstNorm, statesByCode) : null;
+      const stateIdFromText = stateIdFromStateText(cust.stateText, states);
+      const fallbackStateId =
+        options.fallbackStateId && states.some((s) => s.id === options.fallbackStateId) ? options.fallbackStateId : null;
+      const stateId = stateIdFromGst || stateIdFromText || fallbackStateId;
 
       const rowWarnings = [];
       const rowErrors = [];
+      if (gstMsg) {
+        rowWarnings.push(`Invalid GSTIN in Tally (${gstMsg}) — GSTIN will be left blank.`);
+      }
+      if (stateIdFromGst && stateIdFromText && stateIdFromGst !== stateIdFromText) {
+        rowWarnings.push("GSTIN state differs from Tally state. GSTIN state will be used.");
+      }
       if (existing && gstNorm && existing.gst) {
         const eg = normalizeGstinOnSave(existing.gst);
         if (eg && gstNorm && eg !== gstNorm) rowWarnings.push("GSTIN in Tally differs from existing customer record.");
@@ -624,9 +785,16 @@ async function applyFromPreviewToken(db, token, itemTypeOverrides) {
               : row.mapped.stateText || null,
             contact: row.mapped.contact,
             email: row.mapped.email,
+            isActive: true,
           },
           select: { id: true },
         });
+        await upsertRegisteredOfficeDeliveryAddress(
+          db,
+          createdRow.id,
+          { address: row.mapped.address || null, stateId: row.mapped.stateId || null, gst: row.mapped.gst || null, contact: row.mapped.contact || null },
+          "CREATE",
+        );
         created += 1;
         pushResult("CUSTOMER", row.tallyName, "CREATED", createdRow.id, null, null);
       } else if (row.proposedAction === "UPDATE_EMPTY_FIELDS" && row.existingErpId) {
@@ -653,6 +821,19 @@ async function applyFromPreviewToken(db, token, itemTypeOverrides) {
           skipped += 1;
           pushResult("CUSTOMER", row.tallyName, "SKIPPED", ex.id, null, null);
         }
+
+        // Delivery address backfill: ensure at least one default delivery address exists.
+        await upsertRegisteredOfficeDeliveryAddress(
+          db,
+          ex.id,
+          {
+            address: row.mapped.address || ex.address || null,
+            stateId: row.mapped.stateId || ex.stateId || null,
+            gst: row.mapped.gst || ex.gst || null,
+            contact: row.mapped.contact || ex.contact || null,
+          },
+          "UPDATE_EMPTY_FIELDS",
+        );
       }
     } catch (e) {
       failed += 1;
@@ -695,6 +876,17 @@ async function applyFromPreviewToken(db, token, itemTypeOverrides) {
           },
           select: { id: true },
         });
+        await upsertRegisteredOfficeSupplierLocation(
+          db,
+          createdRow.id,
+          {
+            address: row.mapped.address || null,
+            stateId: row.mapped.stateId || null,
+            gst: row.mapped.gst || null,
+            contact: row.mapped.contact || null,
+          },
+          "CREATE",
+        );
         created += 1;
         pushResult("SUPPLIER", row.tallyName, "CREATED", createdRow.id, null, null);
       } else if (row.proposedAction === "UPDATE_EMPTY_FIELDS" && row.existingErpId) {
@@ -723,6 +915,18 @@ async function applyFromPreviewToken(db, token, itemTypeOverrides) {
           skipped += 1;
           pushResult("SUPPLIER", row.tallyName, "SKIPPED", ex.id, null, null);
         }
+
+        await upsertRegisteredOfficeSupplierLocation(
+          db,
+          ex.id,
+          {
+            address: row.mapped.address || ex.address || null,
+            stateId: row.mapped.stateId || ex.stateId || null,
+            gst: row.mapped.gst || ex.gst || null,
+            contact: row.mapped.contact || ex.contact || null,
+          },
+          "UPDATE_EMPTY_FIELDS",
+        );
       }
     } catch (e) {
       failed += 1;

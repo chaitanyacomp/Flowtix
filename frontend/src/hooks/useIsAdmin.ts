@@ -1,5 +1,5 @@
 import { useAuth } from "./useAuth";
-import { NEXT_RS_WRITE_ROLES, RS_WRITE_ROLES } from "../config/erpRoles";
+import { NEXT_RS_WRITE_ROLES, RM_PO_WRITE_ROLES, RS_WRITE_ROLES } from "../config/erpRoles";
 
 /** Spec: Add/Edit/Delete visible only for Admin (except where role-specific actions apply). */
 export function useIsAdmin() {
@@ -10,6 +10,12 @@ export function useIsAdmin() {
 export function useCanPostStockAdjustment() {
   const role = useAuth().user?.role;
   return role === "ADMIN" || role === "STORE";
+}
+
+/** Raise material requirement from Prepare Work Order — ADMIN and STORE only (matches API). */
+export function useCanRaiseMaterialRequirement() {
+  const role = useAuth().user?.role ?? "";
+  return (RM_PO_WRITE_ROLES as readonly string[]).includes(role);
 }
 
 /**

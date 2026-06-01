@@ -5,6 +5,7 @@ const { requireAuth, requireRole } = require("../middleware/auth");
 const auditLog = require("../services/auditLog");
 const { assertNonNegativeStockAfterNetChange } = require("../services/stockService");
 const { assertAnyAdminPassword } = require("../services/adminPasswordAuth");
+const { resolveDefaultOpeningStockLocationId } = require("../services/locationService");
 
 const openingStockRouter = express.Router();
 
@@ -187,6 +188,16 @@ openingStockRouter.post("/opening-stock/:id/approve", requireAuth, openingStockR
         throw err;
       }
 
+      const item = await tx.item.findUnique({
+        where: { id: entry.itemId },
+        select: { id: true, itemType: true },
+      });
+      if (!item) {
+        const err = new Error("Item not found");
+        err.statusCode = 400;
+        throw err;
+      }
+
       const existingOpening = await tx.stockTransaction.count({
         where: { itemId: entry.itemId, transactionType: "OPENING", reversedAt: null },
       });
@@ -196,9 +207,12 @@ openingStockRouter.post("/opening-stock/:id/approve", requireAuth, openingStockR
         throw err;
       }
 
+      const locationId = await resolveDefaultOpeningStockLocationId(tx, item.itemType);
+
       await tx.stockTransaction.create({
         data: {
           itemId: entry.itemId,
+          locationId,
           transactionType: "OPENING",
           refId: entry.id,
           stockBucket: entry.stockBucket,
@@ -303,6 +317,7 @@ openingStockRouter.post("/opening-stock/:id/reverse", requireAuth, openingStockR
       const reversal = await tx.stockTransaction.create({
         data: {
           itemId: entry.itemId,
+          locationId: original.locationId,
           transactionType: "OPENING_REVERSAL",
           refId: entry.id,
           stockBucket: bucket,

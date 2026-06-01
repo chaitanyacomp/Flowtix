@@ -99,9 +99,26 @@ async function buildRecentQcRejectionsReportDtos(prisma, { dateFrom = null, date
     where,
     orderBy: { date: "desc" },
     take,
-    include: {
+    select: {
+      id: true,
+      date: true,
+      rejectedQty: true,
+      acceptedQty: true,
+      lossQty: true,
+      reason: true,
+      scrapReusable: true,
       production: {
-        include: { workOrderLine: { include: { fgItem: true } } },
+        select: {
+          workOrderLine: {
+            select: {
+              fgItem: {
+                select: {
+                  itemName: true,
+                },
+              },
+            },
+          },
+        },
       },
       rejectedDispositions: {
         where: { voidedAt: null },
@@ -143,7 +160,6 @@ async function buildRecentQcRejectionsReportDtos(prisma, { dateFrom = null, date
     date: q.date,
     itemName:
       q.production?.workOrderLine?.fgItem?.itemName ??
-      q.production?.workOrderLine?.fgItem?.itemCode ??
       "Unknown Item",
     rejectedGrossQty,
     recoveredQty,

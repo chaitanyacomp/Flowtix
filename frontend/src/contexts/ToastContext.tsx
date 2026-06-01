@@ -39,19 +39,32 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   return (
     <ToastContext.Provider value={value}>
       {children}
+      {/*
+        Global toast viewport — fixed at the **top-center** of the
+        page, offset just below the AppLayout topbar so it never
+        overlaps the user name / role label / Logout button on the
+        right or the page title on the left. Positioning, vertical
+        offset (via `--app-header-height`) and width clamping all live
+        in `.erp-toast-viewport` (see style.css). Routes without an
+        authenticated shell (e.g. /login) inherit `--app-header-height:
+        0px` and the toast sits flush near the top edge — there is no
+        header to clear there.
+      */}
       {toast ? (
         <div
-          className="erp-toast pointer-events-none fixed right-4 top-4 z-[100] max-w-md rounded-md border px-4 py-3 text-sm shadow-md"
-          role="status"
-          data-kind={toast.kind}
+          className="erp-toast-viewport"
+          aria-live="polite"
+          aria-atomic="true"
         >
-          {toast.kind === "success" ? (
-            <span className="text-green-800">{toast.message}</span>
-          ) : toast.kind === "info" ? (
-            <span className="text-slate-700">{toast.message}</span>
-          ) : (
-            <span className="text-red-800">{toast.message}</span>
-          )}
+          <div className="erp-toast" role="status" data-kind={toast.kind}>
+            {toast.kind === "success" ? (
+              <span className="text-green-800">{toast.message}</span>
+            ) : toast.kind === "info" ? (
+              <span className="text-slate-700">{toast.message}</span>
+            ) : (
+              <span className="text-red-800">{toast.message}</span>
+            )}
+          </div>
         </div>
       ) : null}
     </ToastContext.Provider>

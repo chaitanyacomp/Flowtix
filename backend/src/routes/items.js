@@ -172,7 +172,7 @@ itemRouter.post("/", requireAuth, requireRole(["ADMIN", "STORE"]), async (req, r
   try {
     const schema = z.object({
       itemName: z.string().min(1),
-      itemType: z.enum(["RM", "FG"]),
+      itemType: z.enum(["RM", "FG", "SFG", "CONSUMABLE"]),
       unit: z.string().min(1).optional(),
       unitId: z.number().int().positive().optional().nullable(),
       minStockLevel: z.number().nonnegative().default(0),

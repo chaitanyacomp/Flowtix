@@ -2,6 +2,8 @@ import { StatBlock } from "./StatBlock";
 
 type FgWoBalanceItem = {
   soOrderedQty: number;
+  customerCommittedQty?: number;
+  plannedProductionQty?: number;
   plannedOnOtherWorkOrdersQty: number;
   producedQty?: number;
   balanceQty: number;
@@ -23,13 +25,16 @@ export function FgWoBalanceSummary({
 }) {
   if (balance) {
     const produced = balance.producedQty ?? 0;
+    const customerQty = balance.customerCommittedQty ?? balance.soOrderedQty;
+    const plannedQty = balance.plannedProductionQty ?? balance.balanceQty + balance.plannedOnOtherWorkOrdersQty;
     return (
       <div
         className="mt-2 flex flex-wrap gap-2"
         role="group"
         aria-label="Work order planning quantities for this finished good"
       >
-        <StatBlock label="SO qty" value={fmtQty(balance.soOrderedQty)} />
+        <StatBlock label="Customer qty" value={fmtQty(customerQty)} />
+        <StatBlock label="Planned production qty" value={fmtQty(plannedQty)} />
         <StatBlock label="Already planned (WO)" value={fmtQty(balance.plannedOnOtherWorkOrdersQty)} />
         <StatBlock label="Produced qty" value={fmtQty(produced)} />
         <StatBlock label="Remaining for planning" value={fmtQty(balance.balanceQty)} emphasis />
@@ -39,7 +44,7 @@ export function FgWoBalanceSummary({
   if (fallbackSoOrdered != null && Number.isFinite(fallbackSoOrdered)) {
     return (
       <p className="mt-2 text-xs text-slate-600">
-        SO qty: <span className="font-medium tabular-nums text-slate-800">{fmtQty(fallbackSoOrdered)}</span>
+        Customer qty: <span className="font-medium tabular-nums text-slate-800">{fmtQty(fallbackSoOrdered)}</span>
         <span className="text-slate-500"> · Balance details load after FG list is available.</span>
       </p>
     );

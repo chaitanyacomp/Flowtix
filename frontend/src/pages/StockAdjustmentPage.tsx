@@ -10,6 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card"
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Badge } from "../components/ui/badge";
+import { ErpModal } from "../components/erp/ErpModal";
 import { type NumberDraft, toNumberDraft } from "../lib/numberDraft";
 import {
   type StockAdjustmentPolicyDto,
@@ -647,7 +648,7 @@ export function StockAdjustmentPage() {
       </div>
 
       {confirmOpen ? (
-        <div className="erp-modal-backdrop" role="dialog" aria-label="Confirm stock adjustment">
+        <ErpModal onClose={closeConfirm} aria-label="Confirm stock adjustment">
           <Card className="erp-modal-shell flex w-[calc(100vw-2rem)] max-w-[640px] max-h-[85vh] flex-col overflow-hidden">
             <div className="sticky top-0 z-[2] flex items-center justify-between gap-2 border-b border-slate-200 bg-white px-4 py-3">
               <div className="text-base font-semibold text-slate-900">Confirm Stock Adjustment</div>
@@ -722,7 +723,7 @@ export function StockAdjustmentPage() {
               </form>
             </CardContent>
           </Card>
-        </div>
+        </ErpModal>
       ) : null}
 
       <Card>
@@ -857,7 +858,14 @@ export function StockAdjustmentPage() {
       </Card>
 
       {reverseTarget ? (
-        <div className="erp-modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="reverse-adj-title">
+        <ErpModal
+          onClose={() => {
+            setReverseTarget(null);
+            setReverseReason("");
+            setReverseAdminPassword("");
+          }}
+          aria-labelledby="reverse-adj-title"
+        >
           <Card className="erp-modal-shell max-w-md">
             <CardHeader className="pb-2">
               <CardTitle id="reverse-adj-title" className="text-base">
@@ -926,7 +934,7 @@ export function StockAdjustmentPage() {
               </form>
             </CardContent>
           </Card>
-        </div>
+        </ErpModal>
       ) : null}
     </div>
   );

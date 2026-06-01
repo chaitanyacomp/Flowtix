@@ -22,6 +22,8 @@ export type NextStepStripProps = {
     testId?: string;
   };
   visible?: boolean;
+  /** Tighter layout for transaction workspaces (~80–100px target height). */
+  density?: "default" | "compact";
   className?: string;
 };
 
@@ -46,37 +48,51 @@ export function NextStepStrip({
   primaryAction,
   secondaryAction,
   visible = true,
+  density = "default",
   className,
 }: NextStepStripProps) {
   if (visible === false) return null;
 
+  const compact = density === "compact";
+
   return (
     <div
       className={cn(
-        "flex min-w-0 flex-col gap-2 rounded-md border px-3 py-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3",
+        "flex min-w-0 max-h-[100px] flex-col overflow-hidden rounded-md border sm:flex-row sm:items-center sm:justify-between",
+        compact ? "gap-1.5 px-2 py-1.5 sm:gap-2" : "gap-2 px-3 py-2 sm:gap-3",
         variantShell[variant],
         className,
       )}
       role="region"
       aria-label="Next step"
     >
-      <div className="flex min-w-0 gap-2">
-        <span className="mt-0.5 shrink-0">{variantIcon[variant]}</span>
+      <div className={cn("flex min-w-0", compact ? "gap-1.5" : "gap-2")}>
+        <span className={cn("shrink-0", compact ? "mt-0" : "mt-0.5")}>{variantIcon[variant]}</span>
         <div className="min-w-0">
-          <p className="text-sm font-semibold leading-snug">{title}</p>
+          <p className={cn("font-semibold leading-snug", compact ? "text-[13px] line-clamp-1" : "text-sm")}>{title}</p>
           {subtitle ? (
-            <p className="mt-0.5 whitespace-pre-line text-xs font-normal leading-snug text-slate-600">{subtitle}</p>
+            <p
+              className={cn(
+                "whitespace-pre-line font-normal leading-snug text-slate-600",
+                compact ? "mt-0 line-clamp-1 text-[11px]" : "mt-0.5 text-xs",
+              )}
+            >
+              {subtitle}
+            </p>
           ) : null}
         </div>
       </div>
       {(primaryAction || secondaryAction) && (
-        <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end">
+        <div className="flex shrink-0 flex-wrap items-center gap-1.5 sm:justify-end">
           {secondaryAction ? (
             <Button
               type="button"
               size="sm"
               variant="outline"
-              className="h-8 border-slate-300 bg-white/80 text-[12px]"
+              className={cn(
+                "border-slate-300 bg-white/80",
+                compact ? "h-7 px-2 text-[11px]" : "h-8 text-[12px]",
+              )}
               disabled={secondaryAction.disabled}
               onClick={secondaryAction.onClick}
               data-testid={secondaryAction.testId}
@@ -89,7 +105,7 @@ export function NextStepStrip({
               type="button"
               size="sm"
               className={cn(
-                "h-8 text-[12px] font-semibold",
+                compact ? "h-7 px-3 text-[11px] font-semibold" : "h-8 text-[12px] font-semibold",
                 variant === "action" && "bg-amber-600 text-white hover:bg-amber-700",
                 variant === "info" && "bg-blue-600 text-white hover:bg-blue-700",
                 variant === "success" && "bg-emerald-600 text-white hover:bg-emerald-700",

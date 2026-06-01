@@ -1,6 +1,7 @@
 import { ROW_NUM_EPS } from "./dispatchBacklog";
 import { NO_QTY_TERMS } from "./flowTerminology";
 import { workOrderHrefForOpenWo } from "./operationalWorkspaceLinks";
+import { holdReasonLabel } from "./workOrderLifecycle";
 import {
   noQtyErpAdjustedPlanningQty,
   noQtyOperatorPendingQtyFromRow,
@@ -20,6 +21,7 @@ export type DashboardProductionStatusSource = {
   producedQty: number;
   balanceQty: number;
   status?: string;
+  holdReason?: string | null;
   orderType?: string | null;
   nextAction?: string | null;
   hasPendingQc?: boolean;
@@ -29,6 +31,10 @@ export type DashboardProductionStatusSource = {
   actionHref?: string;
   cycleId?: number | null;
   cycleNo?: number | null;
+  /** Phase 3C — REGULAR only; from production-queue API */
+  rmReadinessGate?: string | null;
+  rmProductionAllowedNowQty?: number | null;
+  rmReadyForProduction?: boolean | null;
 };
 
 export type ProductionOperationalStatusTone =
@@ -63,7 +69,7 @@ export type DashboardProductionStatusRow = DashboardProductionStatusSource & {
 };
 
 export type DashboardProductionStatusBuild = {
-  /** Rows for display (active + carried-forward history), newest WO first. */
+  /** Current operational rows for display, newest WO first. Historical carry-forward rows are counted but not shown. */
   visible: DashboardProductionStatusRow[];
   /** Lines that still need operator action. */
   activeCount: number;
@@ -184,16 +190,42 @@ function effectiveProductionHref(row: DashboardProductionStatusSource): string |
   return row.actionHref ?? undefined;
 }
 
-/** REGULAR flow — unchanged generic ERP production wording. */
+/** REGULAR flow — production status respects Phase 3C PMR/MIN readiness when present. */
 function operationalStatusFromRegularRow(row: DashboardProductionStatusSource): ProductionOperationalStatus {
   const produced = Number(row.producedQty ?? 0);
   const remaining = Math.max(0, Number(row.balanceQty ?? 0));
   const dispatchable = Number(row.dispatchableQty ?? 0);
   const next = String(row.nextAction ?? "").toUpperCase();
   const route = inferProductionHrefRoute(row.actionHref);
+  const gate = row.rmReadinessGate ?? null;
+  const rmReady = row.rmReadyForProduction === true;
+  const woStatus = String(row.status ?? "").toUpperCase();
+
+  if (woStatus === "HOLD" || next === "ON_HOLD") {
+    return {
+      label: holdReasonLabel(row.holdReason) === "On hold" ? "On Hold" : `On Hold - ${holdReasonLabel(row.holdReason)}`,
+      tone: "partial",
+    };
+  }
+  if (woStatus === "CLOSED_WITH_SHORTFALL") {
+    return { label: "Shortfall Closed", tone: "idle" };
+  }
+
+  if (gate === "NO_PMR" || gate === "PMR_DRAFT_ONLY") {
+    return { label: "Waiting for Material", tone: "partial" };
+  }
+  if (gate === "WAITING_STORE_ISSUE") {
+    return { label: "Waiting for RM issue", tone: "partial" };
+  }
+  if (gate === "PARTIAL_READY" && produced <= ROW_NUM_EPS) {
+    return { label: "Partial RM at Production", tone: "partial" };
+  }
+  if (gate != null && !rmReady && produced <= ROW_NUM_EPS) {
+    return { label: "Waiting for Production", tone: "running" };
+  }
 
   if (next === "QC_PENDING" || row.hasPendingQc) {
-    return { label: "QC Pending", tone: "qc" };
+    return { label: "QA in progress", tone: "qc" };
   }
   if (next === "DISPATCH_PENDING" || (dispatchable > ROW_NUM_EPS && route === "dispatch")) {
     return { label: "Waiting Dispatch", tone: "dispatch" };
@@ -202,14 +234,20 @@ function operationalStatusFromRegularRow(row: DashboardProductionStatusSource): 
     return { label: "Ready to Bill", tone: "dispatch" };
   }
   if (produced > ROW_NUM_EPS && remaining > ROW_NUM_EPS) {
+    if (gate === "WAITING_STORE_ISSUE" || gate === "NO_PMR" || gate === "PMR_DRAFT_ONLY") {
+      return { label: "Waiting RM", tone: "partial" };
+    }
     return { label: "Partially Produced", tone: "partial" };
   }
   if (next === "NEXT_RS_REQUIRED") {
     return { label: "Partially Produced", tone: "partial" };
   }
-  const woStatus = String(row.status ?? "").toUpperCase();
   if (produced <= ROW_NUM_EPS) {
-    if (woStatus === "IN_PROGRESS" || woStatus === "PENDING" || next === "PRODUCTION_PENDING") {
+    const canStart =
+      gate == null
+        ? woStatus === "IN_PROGRESS" || woStatus === "PENDING" || next === "PRODUCTION_PENDING"
+        : gate === "FULLY_ISSUED_READY" && rmReady;
+    if (canStart) {
       return { label: "Ready for Production", tone: "running" };
     }
     return { label: "Waiting for Production", tone: "running" };
@@ -236,8 +274,18 @@ function operationalStatusFromNoQtyRow(
   const absorbed = noQtyShortageAbsorbedByLaterRow(row, ctx);
   const route = inferProductionHrefRoute(effectiveProductionHref(row));
 
+  if (woStatus === "HOLD" || next === "ON_HOLD") {
+    return {
+      label: holdReasonLabel(row.holdReason) === "On hold" ? "On Hold" : `On Hold - ${holdReasonLabel(row.holdReason)}`,
+      tone: "partial",
+    };
+  }
+  if (woStatus === "CLOSED_WITH_SHORTFALL") {
+    return { label: "Shortfall Closed", tone: "idle" };
+  }
+
   if (next === "QC_PENDING" || row.hasPendingQc || route === "qc") {
-    return { label: "QC Pending", tone: "qc" };
+    return { label: "QA in progress", tone: "qc" };
   }
 
   if (produced > ROW_NUM_EPS && remaining > ROW_NUM_EPS && absorbed) {
@@ -315,7 +363,8 @@ export function productionStatusShowsProgressBar(tone: ProductionOperationalStat
 }
 
 export function productionStatusCountsAsActive(status: ProductionOperationalStatus): boolean {
-  return status.label !== "Carried Forward";
+  if (status.label === "Carried Forward" || status.label === "Shortfall Closed") return false;
+  return true;
 }
 
 function sortRankForRow(row: DashboardProductionStatusRow): number {
@@ -396,7 +445,7 @@ export function buildDashboardProductionStatusRows(
   const carriedForward = enriched.filter((r) => r.operationalStatus.label === "Carried Forward");
   const activeWorkOrderCount = new Set(active.map((r) => r.workOrderId)).size;
 
-  const displaySorted = [...enriched].sort(compareRowsForDisplay);
+  const displaySorted = [...active].sort(compareRowsForDisplay);
 
   const activeCount = active.length;
   return {

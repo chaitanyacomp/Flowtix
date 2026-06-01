@@ -11,10 +11,12 @@
  * @returns {number}
  */
 function computePlannedQtyFromCustomerBuffer(customerPoQty, bufferPercent) {
-  const c = Math.max(0, Math.floor(Number(customerPoQty) || 0));
-  const b = Math.max(0, Number(bufferPercent) || 0);
-  const extra = Math.ceil((c * b) / 100);
-  return c + extra;
+  const c = Number(customerPoQty);
+  const b = Number(bufferPercent);
+  if (!Number.isFinite(c) || c <= 0) return 0;
+  if (!Number.isFinite(b) || b <= 0) return c;
+  const planned = c + (c * b) / 100;
+  return planned;
 }
 
 /**

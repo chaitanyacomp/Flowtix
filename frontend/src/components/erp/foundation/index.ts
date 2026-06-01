@@ -2,6 +2,7 @@ export { ErpKpiStrip, ErpKpiSegment, ErpKpiLabel, ErpKpiValue } from "./ErpKpiSt
 export { DashboardWorkspaceHeader } from "./DashboardWorkspaceHeader";
 export { DashboardControlColumn, DashboardViewAllLink } from "./DashboardControlColumn";
 export { DashboardCurrentProductionStatus } from "./DashboardCurrentProductionStatus";
+export { DashboardPausedWorkOrders, type PausedWorkOrderRow } from "./DashboardPausedWorkOrders";
 export { DashboardOpsClearStrip } from "./DashboardOpsClearStrip";
 export { DashboardRoleShortcuts } from "./DashboardRoleShortcuts";
 export { DashboardWalkthroughHelp } from "./DashboardWalkthroughHelp";

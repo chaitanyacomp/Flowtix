@@ -1,5 +1,6 @@
 import { ROW_NUM_EPS } from "./dispatchBacklog";
 import { buildNoQtyGuidedHref } from "./noQtyFlowState";
+import { PRODUCTION_QA_TERMS } from "./productionQaTerminology";
 
 /** Canonical continue-working / action-required priority (lower = higher). */
 export const CONTINUE_WORKING_STAGE_PRIORITY: Record<string, number> = {
@@ -235,16 +236,14 @@ export function partitionContinueWorkingForActions(
   const role = String(opts?.role ?? "").trim().toUpperCase();
 
   for (const r of rows) {
-    if (role === "STORE" || role === "DISPATCH") {
+    if (role === "STORE") {
       if (r.stageKey !== "DISPATCH" && r.stageKey !== "SALES_BILL") continue;
     } else if (role === "PRODUCTION") {
-      if (r.stageKey !== "PRODUCTION") continue;
-    } else if (role === "QC") {
+      if (r.stageKey !== "PRODUCTION" && r.stageKey !== "QC") continue;
+    } else if (role === "QA") {
       if (r.stageKey !== "QC") continue;
-    } else if (role === "SALES") {
-      if (r.stageKey === "DISPATCH" || r.stageKey === "SALES_BILL" || r.stageKey === "PRODUCTION" || r.stageKey === "QC") {
-        continue;
-      }
+    } else if (role === "PURCHASE") {
+      continue;
     }
 
     if (r.stageKey === "DONE" || r.nextStep === "Completed / Waiting") continue;
@@ -264,7 +263,17 @@ export function partitionContinueWorkingForActions(
     if (r.stageKey === "QC") {
       const mq = Number(r.awaitingQcQty ?? r.metricQty ?? 0);
       if (mq <= ROW_NUM_EPS) continue;
-      qc.push({ ...base, group: "QC", metricQty: mq, buttonLabel: "Continue QC" });
+      const qaRow = {
+        ...base,
+        metricQty: mq,
+        metricLabel: PRODUCTION_QA_TERMS.QA_IN_PROGRESS_LABEL,
+        buttonLabel: PRODUCTION_QA_TERMS.CONTINUE_QA,
+      };
+      if (role === "PRODUCTION") {
+        production.push({ ...qaRow, group: "PRODUCTION" });
+      } else {
+        qc.push({ ...qaRow, group: "QC" });
+      }
     } else if (r.stageKey === "DISPATCH") {
       const mq = Number(r.dispatchableNow ?? r.dispatchableQty ?? r.metricQty ?? 0);
       if (mq <= ROW_NUM_EPS) continue;
@@ -273,7 +282,7 @@ export function partitionContinueWorkingForActions(
         group: "DISPATCH",
         metricQty: mq,
         metricLabel: r.metricLabel ?? "Dispatch pending",
-        buttonLabel: role === "STORE" || role === "DISPATCH" ? "Open Dispatch" : "Go to Dispatch",
+        buttonLabel: role === "STORE" ? "Open Dispatch" : "Go to Dispatch",
       });
     } else if (r.stageKey === "SALES_BILL") {
       const mq = Number(r.metricQty ?? 0);
@@ -283,11 +292,11 @@ export function partitionContinueWorkingForActions(
         group: "SALES_BILL",
         metricQty: mq,
         metricLabel: r.metricLabel ?? "Sales bill pending",
-        buttonLabel: role === "STORE" || role === "DISPATCH" ? "Open sales bills" : "Create Sales Bill",
+        buttonLabel: role === "STORE" ? "Open sales bills" : "Create Sales Bill",
       });
     } else if (r.stageKey === "NEXT_RS") {
       if (r.orderType === "NO_QTY") {
-        if (role !== "SALES" && role !== "ADMIN") continue;
+        if (role !== "ADMIN") continue;
         const mq = Number(r.lastShortageQty ?? r.metricQty ?? 0);
         pushNoQtyPlanningRow(noQtyPlanning, r, mq > ROW_NUM_EPS ? mq : 1);
         continue;
@@ -302,10 +311,10 @@ export function partitionContinueWorkingForActions(
         buttonLabel: "Create Next RS",
       });
     } else if (r.stageKey === "PRODUCTION") {
-      if (r.orderType === "NO_QTY" && role === "SALES") continue;
+      if (r.orderType === "NO_QTY" && role !== "ADMIN") continue;
       const mq = Number(r.productionRemaining ?? r.metricQty ?? 0);
       if (mq <= ROW_NUM_EPS) continue;
-      production.push({ ...base, group: "PRODUCTION", metricQty: mq, buttonLabel: "Continue Production" });
+      production.push({ ...base, group: "PRODUCTION", metricQty: mq, buttonLabel: "Open Production Workspace" });
     }
   }
 
@@ -330,7 +339,9 @@ export function primaryActionStageBySalesOrder(groups: ActionRequiredGroups): Ma
 }
 
 export function launcherStageFromResolvedLabel(label: string): string {
-  if (label === "Open QC") return "QC";
+  if (label === "Open QC" || label === PRODUCTION_QA_TERMS.COMPLETE_QA || label === PRODUCTION_QA_TERMS.OPEN_PRODUCTION_QA) {
+    return "QC";
+  }
   if (label.includes("Dispatch")) return "DISPATCH";
   if (label === "Open Production") return "PRODUCTION";
   if (label === "Next RS" || label.includes("RS")) return "NO_QTY_PLANNING";
@@ -340,6 +351,16 @@ export function launcherStageFromResolvedLabel(label: string): string {
 
 /**
  * Dashboard NO_QTY launcher: planning (Next RS / open RS workspace).
+ *
+ * NO_QTY commercial continuation is a **planning** workflow that lives
+ * parallel to shop-floor queues. Visibility on the dashboard depends on
+ * the resolver landing on a planning action (`prepare_next_rs` or a
+ * `/requirement-sheets/*` deep link) — **not** on `createNextRsEligible`
+ * being true. The Planning Dashboard always invokes the resolver in
+ * `commercialContinuation: true` mode for SALES/ADMIN, which forces a
+ * planning resolution as long as the sales order is OPEN; the actual
+ * Next RS eligibility check happens at click time. Older callers that
+ * pass `flow.createNextRsEligible: true` are still accepted as planning.
  */
 export function isNoQtyDashboardPlanningRow(
   flow: { createNextRsEligible?: boolean } | null | undefined,
@@ -433,7 +454,17 @@ export function findNoQtyContinueProductionForLauncher(args: {
   };
 }
 
-/** Hide Open NO_QTY launcher rows when Action Required already owns a higher-priority step for the SO. */
+/**
+ * Hide Open NO_QTY launcher rows when Action Required already owns a higher-priority step for the SO.
+ *
+ * NO_QTY rolling planning ("Create / Open Next RS") is **parallel** to shop-floor steps
+ * (QC, Dispatch, Production) — Sales/Admin can prepare the next requirement sheet while
+ * QC/Dispatch finish the current cycle. Therefore, when the launcher resolves to the
+ * `NO_QTY_PLANNING` stage we never suppress it based on the SO's shop-floor primary.
+ *
+ * For all other launcher stages (e.g. "Open Production"), the higher-priority Action Required
+ * card still wins.
+ */
 export function shouldHideOpenNoQtyForActionRequired(
   salesOrderId: number,
   resolvedLabel: string,
@@ -442,7 +473,7 @@ export function shouldHideOpenNoQtyForActionRequired(
   const primary = primaryBySo.get(salesOrderId);
   if (!primary) return false;
   const launcherStage = launcherStageFromResolvedLabel(resolvedLabel);
-  if (primary === "NO_QTY_PLANNING" && launcherStage === "NO_QTY_PLANNING") return false;
+  if (launcherStage === "NO_QTY_PLANNING") return false;
   return continueWorkingStagePriority(primary) < continueWorkingStagePriority(launcherStage);
 }
 
@@ -466,7 +497,7 @@ export function enrichActionRequiredWithNoQtyPlanning(
   opts?: { role?: string },
 ): ActionRequiredGroups {
   const role = String(opts?.role ?? "").trim().toUpperCase();
-  if (role !== "SALES" && role !== "ADMIN") {
+  if (role !== "ADMIN") {
     return { ...EMPTY_GROUPS, ...groups, noQtyPlanning: groups.noQtyPlanning ?? [] };
   }
 
@@ -525,6 +556,7 @@ export function buildDashboardDispatchHref(params: {
 export function prodQueueNextRank(n?: string): number {
   if (n === "QC_PENDING") return continueWorkingStagePriority("QC");
   if (n === "DISPATCH_PENDING") return continueWorkingStagePriority("DISPATCH");
+  if (n === "ON_HOLD") return continueWorkingStagePriority("PRODUCTION");
   if (n === "PRODUCTION_PENDING") return continueWorkingStagePriority("PRODUCTION");
   if (n === "NEXT_RS_REQUIRED") return continueWorkingStagePriority("NO_QTY_PLANNING");
   if (n === "SALES_BILL_PENDING") return continueWorkingStagePriority("SALES_BILL");
@@ -535,6 +567,7 @@ export type ProductionQueueNextAction =
   | "QC_PENDING"
   | "DISPATCH_PENDING"
   | "SALES_BILL_PENDING"
+  | "ON_HOLD"
   | "PRODUCTION_PENDING"
   | "NEXT_RS_REQUIRED";
 
@@ -730,7 +763,7 @@ export function buildActionRequiredFromQueues(
     }
   }
 
-  const showNoQtyPlanning = role === "SALES" || role === "ADMIN";
+  const showNoQtyPlanning = role === "ADMIN";
 
   for (const soId of [...bySo.keys()].sort((x, y) => x - y)) {
     const a = bySo.get(soId)!;
@@ -743,14 +776,19 @@ export function buildActionRequiredFromQueues(
     };
 
     if (a.awaitingQc > ROW_NUM_EPS) {
-      qc.push({
-        key: `${key}-qc`,
+      const qaRow = {
+        key: `${key}-qa`,
         ...common,
         metricQty: a.awaitingQc,
         href: a.hrefQc,
-        group: "QC",
-        buttonLabel: "Continue QC",
-      });
+        metricLabel: PRODUCTION_QA_TERMS.QA_IN_PROGRESS_LABEL,
+        buttonLabel: PRODUCTION_QA_TERMS.CONTINUE_QA,
+      };
+      if (role === "PRODUCTION") {
+        production.push({ ...qaRow, group: "PRODUCTION" });
+      } else {
+        qc.push({ ...qaRow, group: "QC" });
+      }
     } else if (a.dispatchableNow > ROW_NUM_EPS) {
       dispatch.push({
         key: `${key}-disp`,
@@ -763,7 +801,7 @@ export function buildActionRequiredFromQueues(
           itemId: a.bestBacklogItemId,
         }),
         group: "DISPATCH",
-        buttonLabel: role === "STORE" || role === "DISPATCH" ? "Open Dispatch" : "Go to Dispatch",
+        buttonLabel: role === "STORE" ? "Open Dispatch" : "Go to Dispatch",
       });
     } else if (a.prodNextAction === "SALES_BILL_PENDING" && a.bestProdMetric > ROW_NUM_EPS) {
       salesBill.push({
@@ -803,7 +841,7 @@ export function buildActionRequiredFromQueues(
         metricQty: a.bestProdMetric > ROW_NUM_EPS ? a.bestProdMetric : a.productionRemaining,
         href: a.hrefProd,
         group: "PRODUCTION",
-        buttonLabel: "Continue Production",
+        buttonLabel: "Open Production Workspace",
         cycleId: a.bestProdCycleId ?? null,
       });
     } else if (a.prodNextAction === "NEXT_RS_REQUIRED" && a.bestProdMetric > ROW_NUM_EPS) {

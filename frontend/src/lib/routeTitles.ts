@@ -47,6 +47,7 @@ const TITLES: Record<string, string> = {
   "/reports/batch-traceability": "Batch traceability",
   "/reports/rm-shortage": "RM Control Center",
   "/reports/production-rm-variance": "Production RM Variance",
+  "/reports/rm-wastage": "RM Wastage Report",
   "/reports/work-order-tracking": "Work Order Tracking Report",
   "/reports/operations-exceptions": "Operations Exception Report",
   "/reports/so-dispatch-trace": "SO to Dispatch Trace",

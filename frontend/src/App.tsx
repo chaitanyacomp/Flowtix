@@ -60,6 +60,7 @@ import { MonthlyPlanningWorkspacePage } from "./pages/MonthlyPlanningWorkspacePa
 import { ProductionMaterialRequestsPage } from "./pages/ProductionMaterialRequestsPage";
 import { ProductionRmReturnsPage } from "./pages/ProductionRmReturnsPage";
 import { ProductionRmVarianceReportPage } from "./pages/ProductionRmVarianceReportPage";
+import { RmWastageReportPage } from "./pages/RmWastageReportPage";
 import { RegularWorkOrderPlanningPage } from "./pages/RegularWorkOrderPlanningPage";
 import { ScrapReportPage } from "./pages/ScrapReportPage";
 import { ReportsPage } from "./pages/ReportsPage";
@@ -931,6 +932,14 @@ export default function App() {
           element={
             <ProtectedRoute allowedRoles={["ADMIN", "STORE", "PRODUCTION"]}>
               <ProductionRmVarianceReportPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/reports/rm-wastage"
+          element={
+            <ProtectedRoute allowedRoles={["ADMIN", "STORE", "PRODUCTION"]}>
+              <RmWastageReportPage />
             </ProtectedRoute>
           }
         />

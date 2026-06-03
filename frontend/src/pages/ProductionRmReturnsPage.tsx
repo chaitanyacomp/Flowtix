@@ -4,6 +4,7 @@
 import * as React from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { ArrowLeft, PackageMinus, Send, Trash2 } from "lucide-react";
+import { RmWastageModal } from "../components/erp/RmWastageModal";
 import { apiFetch } from "../services/api";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -11,6 +12,7 @@ import { useToast } from "../contexts/ToastContext";
 import { PageContainer, StickyWorkspaceHead } from "../components/PageHeader";
 import { ErpKpiLabel, ErpKpiSegment, ErpKpiStrip, ErpKpiValue } from "../components/erp/foundation";
 import { computeUnusedIssuedRmQty, validateReturnQtyInput } from "../lib/rmReturnUx";
+import { logRmReturnsApiError, parsePositiveIntParam } from "../lib/rmReturnsPageLoad";
 
 type LocationRow = {
   id: number;
@@ -33,11 +35,14 @@ type ReturnableLine = {
   grossIssuedQty: number;
   consumedQty: number;
   returnedQty: number;
+  wastageQty?: number;
   unusedQty?: number;
   netIssuedQty: number;
   returnableQty: number;
+  availableWastageQty?: number;
   onHandAtProduction: number;
   canReturn: boolean;
+  canDeclareWastage?: boolean;
 };
 
 type ReturnableResponse = {
@@ -66,17 +71,16 @@ type ReturnLineDraft = {
   returnQty: string;
 };
 
-type RecentReturn = {
+type HistoryEntry = {
+  kind: "RETURN" | "WASTAGE";
   id: number;
   docNo: string | null;
-  fromLocation: LocationRow;
-  toLocation: LocationRow;
-  workOrderNo: string | null;
-  pmrDocNo: string | null;
-  remarks: string | null;
   createdAt: string;
-  lineCount: number;
-  lines: Array<{ itemName: string; returnQty: number; unit: string }>;
+  direction: string;
+  workOrderNo: string | null;
+  reason?: string;
+  reasonLabel?: string;
+  lines: Array<{ itemName: string; qty: number; unit: string }>;
 };
 
 function fmtQty(n: number, unit?: string) {
@@ -91,15 +95,19 @@ function newLineKey() {
 export function ProductionRmReturnsPage() {
   const [searchParams] = useSearchParams();
   const { showSuccess, showError } = useToast();
+  const urlWoId = parsePositiveIntParam(searchParams.get("workOrderId"));
+  const urlPmrId = parsePositiveIntParam(searchParams.get("pmrId"));
   const [ctx, setCtx] = React.useState<ContextResponse | null>(null);
-  const [recent, setRecent] = React.useState<RecentReturn[]>([]);
+  const [history, setHistory] = React.useState<HistoryEntry[]>([]);
+  const [wastageLine, setWastageLine] = React.useState<ReturnableLine | null>(null);
   const [returnable, setReturnable] = React.useState<ReturnableResponse | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [loadingReturnable, setLoadingReturnable] = React.useState(false);
   const [submitting, setSubmitting] = React.useState(false);
+  const [historyLoadFailed, setHistoryLoadFailed] = React.useState(false);
 
-  const [workOrderId, setWorkOrderId] = React.useState<number | "">("");
-  const [pmrId, setPmrId] = React.useState<number | "">("");
+  const [workOrderId, setWorkOrderId] = React.useState<number | "">(urlWoId ?? "");
+  const [pmrId, setPmrId] = React.useState<number | "">(urlPmrId ?? "");
   const [fromLocationId, setFromLocationId] = React.useState<number | "">("");
   const [toLocationId, setToLocationId] = React.useState<number | "">("");
   const [remarks, setRemarks] = React.useState("");
@@ -107,51 +115,84 @@ export function ProductionRmReturnsPage() {
 
   async function loadReturnable(woId: number, pmr?: number | "") {
     setLoadingReturnable(true);
+    const qs = new URLSearchParams({ workOrderId: String(woId) });
+    if (typeof pmr === "number" && pmr > 0) qs.set("productionMaterialRequestId", String(pmr));
+    if (typeof fromLocationId === "number") qs.set("fromLocationId", String(fromLocationId));
+    if (typeof toLocationId === "number") qs.set("toLocationId", String(toLocationId));
+    const endpoint = `/api/production-material-returns/returnable?${qs}`;
     try {
-      const qs = new URLSearchParams({ workOrderId: String(woId) });
-      if (typeof pmr === "number" && pmr > 0) qs.set("productionMaterialRequestId", String(pmr));
-      if (typeof fromLocationId === "number") qs.set("fromLocationId", String(fromLocationId));
-      if (typeof toLocationId === "number") qs.set("toLocationId", String(toLocationId));
-      const data = await apiFetch<ReturnableResponse>(`/api/production-material-returns/returnable?${qs}`);
+      const data = await apiFetch<ReturnableResponse>(endpoint);
       setReturnable(data);
-      if (data.defaultFromLocationId && !fromLocationId) setFromLocationId(data.defaultFromLocationId);
-      if (data.defaultToLocationId && !toLocationId) setToLocationId(data.defaultToLocationId);
+      if (data.defaultFromLocationId) {
+        setFromLocationId((prev) => (prev === "" ? data.defaultFromLocationId! : prev));
+      }
+      if (data.defaultToLocationId) {
+        setToLocationId((prev) => (prev === "" ? data.defaultToLocationId! : prev));
+      }
     } catch (e) {
       setReturnable(null);
+      logRmReturnsApiError(endpoint, e);
       showError(e instanceof Error ? e.message : "Could not load returnable RM");
     } finally {
       setLoadingReturnable(false);
     }
   }
 
-  async function loadAll() {
-    setLoading(true);
+  async function loadContext(focusWo?: number | null, focusPmr?: number | null) {
+    const qs = new URLSearchParams();
+    const wo = focusWo ?? urlWoId;
+    const pmr = focusPmr ?? urlPmrId;
+    if (wo) qs.set("workOrderId", String(wo));
+    if (pmr) qs.set("pmrId", String(pmr));
+    const endpoint = `/api/production-material-returns/context${qs.toString() ? `?${qs}` : ""}`;
+    const context = await apiFetch<ContextResponse>(endpoint);
+    setCtx(context);
+  }
+
+  async function loadHistory() {
     try {
-      const [context, list] = await Promise.all([
-        apiFetch<ContextResponse>("/api/production-material-returns/context"),
-        apiFetch<RecentReturn[]>("/api/production-material-returns/"),
-      ]);
-      setCtx(context);
-      setRecent(Array.isArray(list) ? list : []);
+      const hist = await apiFetch<HistoryEntry[]>("/api/production-material-returns/history");
+      setHistory(Array.isArray(hist) ? hist : []);
+      setHistoryLoadFailed(false);
     } catch (e) {
-      showError(e instanceof Error ? e.message : "Failed to load RM returns");
-    } finally {
-      setLoading(false);
+      logRmReturnsApiError("/api/production-material-returns/history", e);
+      setHistory([]);
+      setHistoryLoadFailed(true);
     }
   }
 
+  async function loadPageBootstrap() {
+    setLoading(true);
+    try {
+      await loadContext(
+        typeof workOrderId === "number" ? workOrderId : urlWoId,
+        typeof pmrId === "number" ? pmrId : urlPmrId,
+      );
+    } catch (e) {
+      logRmReturnsApiError("/api/production-material-returns/context", e);
+      showError(e instanceof Error ? e.message : "Failed to load RM return workspace");
+    } finally {
+      setLoading(false);
+    }
+    void loadHistory();
+  }
+
   React.useEffect(() => {
-    void loadAll();
+    void loadPageBootstrap();
   }, []);
 
   React.useEffect(() => {
-    const wo = Number(searchParams.get("workOrderId"));
-    const pmr = Number(searchParams.get("pmrId"));
-    if (Number.isFinite(wo) && wo > 0) {
-      setWorkOrderId(wo);
-      if (Number.isFinite(pmr) && pmr > 0) setPmrId(pmr);
+    if (urlWoId) setWorkOrderId(urlWoId);
+    if (urlPmrId) setPmrId(urlPmrId);
+  }, [urlWoId, urlPmrId]);
+
+  React.useEffect(() => {
+    if (urlWoId || urlPmrId) {
+      void loadContext(urlWoId, urlPmrId).catch((e) => {
+        logRmReturnsApiError("/api/production-material-returns/context (url)", e);
+      });
     }
-  }, [searchParams]);
+  }, [urlWoId, urlPmrId]);
 
   React.useEffect(() => {
     if (typeof workOrderId === "number" && workOrderId > 0) {
@@ -214,7 +255,7 @@ export function ProductionRmReturnsPage() {
       showSuccess(`Material return ${res.docNo} posted.`);
       setDraftLines([]);
       setRemarks("");
-      await loadAll();
+      await loadPageBootstrap();
       if (typeof workOrderId === "number") await loadReturnable(workOrderId, pmrId);
     } catch (err) {
       showError(err instanceof Error ? err.message : "Return failed");
@@ -223,9 +264,25 @@ export function ProductionRmReturnsPage() {
     }
   }
 
-  const woOptions = ctx?.workOrders ?? [];
+  const woOptions = React.useMemo(() => {
+    const base = ctx?.workOrders ?? [];
+    if (typeof workOrderId !== "number") return base;
+    if (base.some((w) => w.id === workOrderId)) return base;
+    const label =
+      returnable?.workOrderNo != null
+        ? `${returnable.workOrderNo} · WO #${workOrderId}`
+        : `WO #${workOrderId}`;
+    return [{ id: workOrderId, docNo: returnable?.workOrderNo ?? null, label, pmrs: [] }, ...base];
+  }, [ctx?.workOrders, workOrderId, returnable?.workOrderNo]);
+
   const selectedWo = woOptions.find((w) => w.id === workOrderId);
-  const pmrOptions = selectedWo?.pmrs ?? [];
+  const pmrOptions = React.useMemo(() => {
+    const base = selectedWo?.pmrs ?? [];
+    if (typeof pmrId !== "number") return base;
+    if (base.some((p) => p.id === pmrId)) return base;
+    const doc = returnable?.productionMaterialRequestDocNo;
+    return [{ id: pmrId, docNo: doc ?? null, status: "SELECTED" }, ...base];
+  }, [selectedWo?.pmrs, pmrId, returnable?.productionMaterialRequestDocNo]);
 
   return (
     <PageContainer>
@@ -283,7 +340,7 @@ export function ProductionRmReturnsPage() {
                   </option>
                 ))}
               </select>
-              {pmrOptions.length > 0 ? (
+              {pmrOptions.length > 0 || typeof pmrId === "number" ? (
                 <select
                   className="erp-flow-filter-input h-8 min-w-[10rem] rounded-md border border-slate-200 px-2 text-[13px]"
                   value={pmrId === "" ? "" : String(pmrId)}
@@ -311,7 +368,7 @@ export function ProductionRmReturnsPage() {
                       <th className="px-2 py-1 text-right">Returned</th>
                       <th className="px-2 py-1 text-right">Unused</th>
                       <th className="px-2 py-1 text-right">Returnable</th>
-                      <th className="px-2 py-1" />
+                      <th className="px-2 py-1">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -328,16 +385,28 @@ export function ProductionRmReturnsPage() {
                         <td className="px-2 py-0.5 text-right tabular-nums">{fmtQty(unused, ln.unit)}</td>
                         <td className="px-2 py-0.5 text-right tabular-nums font-medium">{fmtQty(ln.returnableQty, ln.unit)}</td>
                         <td className="px-2 py-0.5">
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            className="h-6 text-[10px]"
-                            disabled={!ln.canReturn}
-                            onClick={() => addDraftLine(ln)}
-                          >
-                            Add
-                          </Button>
+                          <div className="flex flex-wrap gap-1">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="h-6 text-[10px]"
+                              disabled={!ln.canReturn}
+                              onClick={() => addDraftLine(ln)}
+                            >
+                              Return
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="h-6 text-[10px] text-amber-900"
+                              disabled={!(ln.canDeclareWastage ?? ln.canReturn) || typeof fromLocationId !== "number"}
+                              onClick={() => setWastageLine(ln)}
+                            >
+                              Wastage
+                            </Button>
+                          </div>
                         </td>
                       </tr>
                     );
@@ -440,27 +509,59 @@ export function ProductionRmReturnsPage() {
 
           <section className="rounded-lg border border-slate-200 bg-white p-3">
             <h2 className="text-sm font-semibold text-slate-900">3. History</h2>
-            {recent.length === 0 ? (
-              <p className="mt-1 text-xs text-slate-500">No returns yet.</p>
+            {historyLoadFailed ? (
+              <p className="mt-1 text-xs text-amber-800">
+                Return history loaded; wastage notes could not be loaded (migration may be pending). Returns still work.
+              </p>
+            ) : null}
+            {history.length === 0 ? (
+              <p className="mt-1 text-xs text-slate-500">No returns or wastage yet.</p>
             ) : (
               <ul className="mt-2 divide-y divide-slate-100 text-[12px]">
-                {recent.map((r) => (
-                  <li key={r.id} className="py-2">
-                    <div className="font-medium text-slate-900">
-                      {r.docNo || `MRN-${r.id}`} · {r.fromLocation.locationName} → {r.toLocation.locationName}
+                {history.map((r) => (
+                  <li key={`${r.kind}-${r.id}`} className="py-2">
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={
+                          r.kind === "WASTAGE"
+                            ? "rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-900"
+                            : "rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-700"
+                        }
+                      >
+                        {r.kind === "WASTAGE" ? "Wastage" : "Returns"}
+                      </span>
+                      <span className="font-medium text-slate-900">
+                        {r.docNo || (r.kind === "WASTAGE" ? `MWN-${r.id}` : `MRN-${r.id}`)}
+                      </span>
                     </div>
-                    <div className="text-slate-600">
-                      {r.workOrderNo ? `WO ${r.workOrderNo}` : ""}
-                      {r.pmrDocNo ? ` · ${r.pmrDocNo}` : ""}
-                    </div>
+                    <div className="text-slate-600">{r.direction}</div>
+                    {r.workOrderNo ? <div className="text-slate-600">WO {r.workOrderNo}</div> : null}
+                    {r.reasonLabel ? (
+                      <div className="text-slate-500">Reason: {r.reasonLabel}</div>
+                    ) : null}
                     <div className="text-slate-500">
-                      {r.lines.map((ln) => `${ln.itemName} ${fmtQty(ln.returnQty, ln.unit)}`).join(" · ")}
+                      {r.lines.map((ln) => `${ln.itemName} ${fmtQty(ln.qty, ln.unit)}`).join(" · ")}
                     </div>
                   </li>
                 ))}
               </ul>
             )}
           </section>
+
+          {wastageLine && typeof workOrderId === "number" && typeof fromLocationId === "number" ? (
+            <RmWastageModal
+              open
+              line={wastageLine}
+              workOrderId={workOrderId}
+              pmrId={pmrId}
+              fromLocationId={fromLocationId}
+              onClose={() => setWastageLine(null)}
+              onSuccess={async () => {
+                await loadPageBootstrap();
+                if (typeof workOrderId === "number") await loadReturnable(workOrderId, pmrId);
+              }}
+            />
+          ) : null}
         </div>
       )}
     </PageContainer>

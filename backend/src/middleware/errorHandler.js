@@ -57,11 +57,14 @@ function mapPrismaKnownRequest(err) {
       const tableHint = tableRaw.replace(/^.*\./, "").trim();
       const lower = tableHint.toLowerCase();
       let message;
-      if (lower.includes("purchasebill")) {
+      if (lower.includes("materialwastagenote")) {
+        message =
+          "RM Wastage is not installed on this database. Apply migration 20260529140000_material_wastage_note (npx prisma migrate deploy), then npx prisma generate.";
+      } else if (lower.includes("purchasebill")) {
         message =
           "Production planning setup is incomplete. Please contact administrator or apply the latest system update.";
       } else {
-        message = "Production planning setup is incomplete. Please contact administrator or apply the latest system update.";
+        message = `Database table is missing (${tableHint || "unknown"}). Apply Prisma migrations on the server (npx prisma migrate deploy).`;
       }
       return {
         status: 503,

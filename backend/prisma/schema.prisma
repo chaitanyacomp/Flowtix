@@ -92,9 +92,20 @@ enum DocType {
   PURCHASE_REQUEST
   MATERIAL_ISSUE_NOTE
   MATERIAL_RETURN_NOTE
+  MATERIAL_WASTAGE_NOTE
   PRODUCTION_MATERIAL_REQUEST
   BOM
   MONTHLY_PRODUCTION_PLAN
+}
+
+/// RM declared as process loss / scrap at production (MWN) — not returned to store.
+enum RmWastageReason {
+  PROCESS_LOSS
+  MACHINE_SETTING
+  SPILLAGE
+  CONTAMINATION
+  PURGING
+  OTHER
 }
 
 /// Production → Store RM request (PMR); fulfilled via Material Issue Note (MIN).
@@ -278,6 +289,8 @@ enum StockTxnType {
   DISPATCH_REVERSAL
   QC_REVERSAL
   CUSTOMER_RETURN
+  /// Production-location RM written off as wastage (MWN). qtyOut only — final loss, not reusable stock.
+  RM_WASTAGE
 }
 
 enum OpeningStockStatus {
@@ -406,6 +419,7 @@ model User {
   purchaseRequestsCreated                 PurchaseRequest[]               @relation("PurchaseRequestCreatedBy")
   materialIssueNotesCreated               MaterialIssueNote[]             @relation("MaterialIssueCreatedBy")
   materialReturnNotesCreated               MaterialReturnNote[]            @relation("MaterialReturnCreatedBy")
+  materialWastageNotesCreated              MaterialWastageNote[]           @relation("MaterialWastageCreatedBy")
   productionMaterialRequestsCreated       ProductionMaterialRequest[]     @relation("PmrCreatedBy")
   productionMaterialRequestsRequested     ProductionMaterialRequest[]     @relation("PmrRequestedBy")
   materialAllocationsCreated              MaterialAllocation[]            @relation("MaterialAllocationCreatedBy")
@@ -623,6 +637,7 @@ model Item {
   purchaseRequestLines            PurchaseRequestLine[]
   materialIssueLines              MaterialIssueLine[]
   materialReturnLines             MaterialReturnLine[]
+  materialWastageNotes            MaterialWastageNote[]
   productionEntryRmConsumptions   ProductionEntryRmConsumption[]
   pmrLines                        ProductionMaterialRequestLine[]
   materialAllocations             MaterialAllocation[]            @relation("MaterialAllocationRmItem")
@@ -1547,6 +1562,7 @@ model ProductionMaterialRequest {
   lines               ProductionMaterialRequestLine[]
   materialIssueNotes  MaterialIssueNote[]
   materialReturnNotes MaterialReturnNote[]
+  materialWastageNotes MaterialWastageNote[]
   materialAllocations MaterialAllocation[]
 
   @@index([workOrderId])
@@ -1693,6 +1709,35 @@ model MaterialReturnLine {
 
   @@index([materialReturnNoteId])
   @@index([itemId])
+}
+
+/// Production-location RM wastage declaration (MWN). Final loss — no return to store.
+model MaterialWastageNote {
+  id                          Int             @id @default(autoincrement())
+  docNo                       String?         @unique @db.VarChar(32)
+  workOrderId                 Int
+  productionMaterialRequestId Int?
+  fromLocationId              Int
+  itemId                      Int
+  qty                         Decimal         @db.Decimal(18, 3)
+  reason                      RmWastageReason
+  remarks                     String?         @db.Text
+  createdByUserId             Int?
+  createdAt                   DateTime        @default(now())
+
+  fromLocation              Location                   @relation("MaterialWastageFromLocation", fields: [fromLocationId], references: [id], onDelete: Restrict)
+  workOrder                 WorkOrder                  @relation(fields: [workOrderId], references: [id], onDelete: Restrict)
+  productionMaterialRequest ProductionMaterialRequest? @relation(fields: [productionMaterialRequestId], references: [id], onDelete: SetNull)
+  item                      Item                       @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  createdBy                 User?                      @relation("MaterialWastageCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@index([workOrderId])
+  @@index([productionMaterialRequestId])
+  @@index([fromLocationId])
+  @@index([itemId])
+  @@index([createdByUserId])
+  @@index([createdAt])
+  @@index([reason])
 }
 
 /// Customer sales invoice against one confirmed dispatch row (phase 1: 1 dispatch = 1 sales bill).
@@ -2119,6 +2164,7 @@ model WorkOrder {
   materialIssueNotes              MaterialIssueNote[]
   productionMaterialRequests      ProductionMaterialRequest[]
   materialReturnNotes             MaterialReturnNote[]
+  materialWastageNotes            MaterialWastageNote[]
   materialRequirements            MaterialRequirement[]
 
   @@index([status])
@@ -2365,6 +2411,7 @@ model Location {
   materialIssuesTo      MaterialIssueNote[] @relation("MaterialIssueToLocation")
   materialReturnsFrom   MaterialReturnNote[] @relation("MaterialReturnFromLocation")
   materialReturnsTo     MaterialReturnNote[] @relation("MaterialReturnToLocation")
+  materialWastageFrom   MaterialWastageNote[] @relation("MaterialWastageFromLocation")
   materialAllocations   MaterialAllocation[]
 
   @@index([locationType])

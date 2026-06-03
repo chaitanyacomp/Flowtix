@@ -335,6 +335,15 @@ const TILES: ReportTile[] = [
     icon: <ClipboardList className="h-4 w-4" />,
     priority: 15,
   },
+  {
+    to: "/reports/rm-wastage",
+    title: "RM Wastage Report",
+    description: "Material Wastage Notes (MWN) — production RM loss with qty and GRN-based value",
+    roles: ["ADMIN", "STORE", "PRODUCTION"],
+    group: "production",
+    icon: <Trash2 className="h-4 w-4" />,
+    priority: 16,
+  },
 
   /* ------------------------------- Quality & Scrap ---------------------------- */
   {

@@ -15,6 +15,7 @@ const {
 const { qtyToNumber } = require("./rmPurchaseHelpers");
 const { round3 } = require("./bomExplosionService");
 const auditLog = require("./auditLog");
+const { isMaterialWastageSchemaUnavailable } = require("./materialWastageSchemaGuard");
 
 const TXN_TYPE = "LOCATION_TRANSFER";
 const SUBMITTED_PMR_STATUSES = ["REQUESTED", "PARTIALLY_ISSUED", "FULLY_ISSUED"];
@@ -32,13 +33,13 @@ function isStoreDestinationLocation(loc) {
 }
 
 /** Logical unused issued RM still attributed to production (not consumption reversal). */
-function computeUnusedIssuedRmQty(grossIssued, consumed, returned) {
-  return round3(Math.max(0, n(grossIssued) - n(consumed) - n(returned)));
+function computeUnusedIssuedRmQty(grossIssued, consumed, returned, wastage = 0) {
+  return round3(Math.max(0, n(grossIssued) - n(consumed) - n(returned) - n(wastage)));
 }
 
 /** Returnable cap: unused logical qty capped by physical on-hand at production. */
-function computePhysicalReturnableQty(grossIssued, consumed, returned, onHand) {
-  const logical = computeUnusedIssuedRmQty(grossIssued, consumed, returned);
+function computePhysicalReturnableQty(grossIssued, consumed, returned, onHand, wastage = 0) {
+  const logical = computeUnusedIssuedRmQty(grossIssued, consumed, returned, wastage);
   return round3(Math.min(logical, Math.max(0, n(onHand))));
 }
 
@@ -136,6 +137,34 @@ async function loadReturnedByWorkOrder(db, workOrderId) {
   return map;
 }
 
+/**
+ * @param {import('@prisma/client').Prisma.TransactionClient | import('@prisma/client').PrismaClient} db
+ */
+async function loadWastageByWorkOrder(db, workOrderId) {
+  if (!db.materialWastageNote?.findMany) return new Map();
+  try {
+    const notes = await db.materialWastageNote.findMany({
+      where: { workOrderId },
+      select: { itemId: true, qty: true },
+    });
+    const map = new Map();
+    for (const note of notes) {
+      map.set(note.itemId, round3((map.get(note.itemId) || 0) + n(note.qty)));
+    }
+    return map;
+  } catch (e) {
+    if (isMaterialWastageSchemaUnavailable(e)) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        "[materialReturnService] MaterialWastageNote unavailable; wastageQty treated as 0 for returnable.",
+        e?.code,
+      );
+      return new Map();
+    }
+    throw e;
+  }
+}
+
 async function sumStockAtLocations(db, itemId, locationIds) {
   if (!locationIds.length) return 0;
   let total = 0;
@@ -210,10 +239,11 @@ async function buildReturnableLinesForWorkOrder(db = prisma, opts) {
   }
 
   const prodLocIds = await getWorkOrderProductionLocationIdsForReturn(db, workOrderId);
-  const [grossMap, consumedMap, returnedMap] = await Promise.all([
+  const [grossMap, consumedMap, returnedMap, wastageMap] = await Promise.all([
     loadGrossIssuedByWorkOrder(db, workOrderId),
     loadNetConsumedAtProduction(db, workOrderId, prodLocIds),
     loadReturnedByWorkOrder(db, workOrderId),
+    loadWastageByWorkOrder(db, workOrderId),
   ]);
 
   const itemIds = new Set([...grossMap.keys(), ...consumedMap.keys()]);
@@ -249,10 +279,17 @@ async function buildReturnableLinesForWorkOrder(db = prisma, opts) {
     const grossIssued = n(grossMap.get(itemId));
     const consumed = n(consumedMap.get(itemId));
     const returned = n(returnedMap.get(itemId));
-    const netIssued = round3(Math.max(0, grossIssued - returned));
-    const unusedQty = computeUnusedIssuedRmQty(grossIssued, consumed, returned);
+    const wastageQty = n(wastageMap.get(itemId));
+    const netIssued = round3(Math.max(0, grossIssued - returned - wastageQty));
+    const unusedQty = computeUnusedIssuedRmQty(grossIssued, consumed, returned, wastageQty);
     const onHand = await sumStockAtLocations(db, itemId, prodLocIds);
-    const physicalReturnable = computePhysicalReturnableQty(grossIssued, consumed, returned, onHand);
+    const physicalReturnable = computePhysicalReturnableQty(
+      grossIssued,
+      consumed,
+      returned,
+      onHand,
+      wastageQty,
+    );
 
     if (grossIssued <= STOCK_EPS && onHand <= STOCK_EPS) continue;
 
@@ -263,11 +300,14 @@ async function buildReturnableLinesForWorkOrder(db = prisma, opts) {
       grossIssuedQty: round3(grossIssued),
       consumedQty: round3(consumed),
       returnedQty: round3(returned),
+      wastageQty: round3(wastageQty),
       unusedQty,
       netIssuedQty: netIssued,
       returnableQty: physicalReturnable,
+      availableWastageQty: physicalReturnable,
       onHandAtProduction: round3(onHand),
       canReturn: physicalReturnable > STOCK_EPS,
+      canDeclareWastage: physicalReturnable > STOCK_EPS,
     });
   }
 
@@ -283,7 +323,26 @@ async function buildReturnableLinesForWorkOrder(db = prisma, opts) {
   };
 }
 
-async function buildMaterialReturnFormContext(db = prisma) {
+function mapWorkOrderContextRow(wo) {
+  return {
+    id: wo.id,
+    docNo: wo.docNo,
+    salesOrderNo: wo.salesOrder?.docNo ?? null,
+    label: `${wo.docNo || `WO-${wo.id}`}${wo.salesOrder?.docNo ? ` · ${wo.salesOrder.docNo}` : ""}`,
+    pmrs: wo.productionMaterialRequests ?? [],
+  };
+}
+
+async function buildMaterialReturnFormContext(db = prisma, { focusWorkOrderId, focusPmrId } = {}) {
+  const focusId =
+    focusWorkOrderId != null && Number.isFinite(Number(focusWorkOrderId)) && Number(focusWorkOrderId) > 0
+      ? Number(focusWorkOrderId)
+      : null;
+  const focusPmr =
+    focusPmrId != null && Number.isFinite(Number(focusPmrId)) && Number(focusPmrId) > 0
+      ? Number(focusPmrId)
+      : null;
+
   const [fromLocations, toLocations, workOrders] = await Promise.all([
     db.location.findMany({
       where: { isActive: true, allowRm: true, locationType: { in: ["PRODUCTION", "WIP"] } },
@@ -310,16 +369,39 @@ async function buildMaterialReturnFormContext(db = prisma) {
     }),
   ]);
 
+  const mapped = workOrders.map(mapWorkOrderContextRow);
+  if (focusId && !mapped.some((w) => w.id === focusId)) {
+    const focusWo = await db.workOrder.findUnique({
+      where: { id: focusId },
+      select: {
+        id: true,
+        docNo: true,
+        salesOrder: { select: { docNo: true, id: true } },
+        productionMaterialRequests: {
+          orderBy: { id: "desc" },
+          select: { id: true, docNo: true, status: true },
+        },
+      },
+    });
+    if (focusWo) {
+      const row = mapWorkOrderContextRow(focusWo);
+      if (focusPmr && !row.pmrs.some((p) => p.id === focusPmr)) {
+        const pmrRow = await db.productionMaterialRequest.findFirst({
+          where: { id: focusPmr, workOrderId: focusId },
+          select: { id: true, docNo: true, status: true },
+        });
+        if (pmrRow) {
+          row.pmrs = [{ id: pmrRow.id, docNo: pmrRow.docNo, status: pmrRow.status }, ...row.pmrs];
+        }
+      }
+      mapped.unshift(row);
+    }
+  }
+
   return {
     fromLocations: fromLocations.map(mapLocationRow),
     toLocations: toLocations.map(mapLocationRow),
-    workOrders: workOrders.map((wo) => ({
-      id: wo.id,
-      docNo: wo.docNo,
-      salesOrderNo: wo.salesOrder?.docNo ?? null,
-      label: `${wo.docNo || `WO-${wo.id}`}${wo.salesOrder?.docNo ? ` · ${wo.salesOrder.docNo}` : ""}`,
-      pmrs: wo.productionMaterialRequests,
-    })),
+    workOrders: mapped,
   };
 }
 
@@ -593,6 +675,7 @@ async function createMaterialReturnNote(input, actor = {}) {
 
 module.exports = {
   TXN_TYPE,
+  loadWastageByWorkOrder,
   isProductionSourceLocation,
   isStoreDestinationLocation,
   computeUnusedIssuedRmQty,

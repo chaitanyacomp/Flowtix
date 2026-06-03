@@ -34,6 +34,7 @@ const {
 } = require("../services/soDispatchTraceReport");
 const { buildCustomerSoRsReport } = require("../services/customerSoRsReportService");
 const { buildProductionRmVarianceReport } = require("../services/productionRmVarianceReportService");
+const { buildRmWastageReport } = require("../services/rmWastageReportService");
 
 const WORK_ORDER_TRACKING_ACCESS_DENIED =
   "Access denied. Only administrators and production staff can view the work order tracking report.";
@@ -83,6 +84,13 @@ const PRODUCTION_RM_VARIANCE_ACCESS_DENIED =
 const productionRmVarianceRoles = requireRole(
   ["ADMIN", "STORE", "PRODUCTION"],
   PRODUCTION_RM_VARIANCE_ACCESS_DENIED,
+);
+
+const RM_WASTAGE_REPORT_ACCESS_DENIED =
+  "Access denied. This report is available to admin, store, and production roles.";
+const rmWastageReportRoles = requireRole(
+  ["ADMIN", "STORE", "PRODUCTION"],
+  RM_WASTAGE_REPORT_ACCESS_DENIED,
 );
 
 const reportsRouter = express.Router();
@@ -1778,6 +1786,27 @@ reportsRouter.get(
     }
   },
 );
+
+/**
+ * GET /api/reports/rm-wastage
+ * RM Wastage register (MWN). Query: dateFrom, dateTo, rmItemId, workOrderId, woNumber, reason, page, pageSize, export=csv
+ */
+reportsRouter.get("/rm-wastage", requireAuth, rmWastageReportRoles, async (req, res, next) => {
+  try {
+    const data = await buildRmWastageReport(req.query);
+    if (data.export === "csv") {
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="rm-wastage_${new Date().toISOString().slice(0, 10)}.csv"`,
+      );
+      return res.send(data.csv);
+    }
+    return res.json(data);
+  } catch (e) {
+    return next(e);
+  }
+});
 
 reportsRouter.get("/customer-so-rs", requireAuth, customerSoRsRoles, async (req, res, next) => {
   try {

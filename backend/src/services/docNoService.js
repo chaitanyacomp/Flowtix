@@ -41,6 +41,8 @@ function prefixForDocType(docType) {
       return "MIN";
     case DocType.MATERIAL_RETURN_NOTE:
       return "MRN";
+    case DocType.MATERIAL_WASTAGE_NOTE:
+      return "MWN";
     case DocType.PRODUCTION_MATERIAL_REQUEST:
       return "PMR";
     case DocType.BOM:

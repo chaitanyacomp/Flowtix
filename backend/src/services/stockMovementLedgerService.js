@@ -71,6 +71,7 @@ function movementActivityLabel(row) {
   if (t === "OPENING") return "Opening Stock";
   if (t === "OPENING_REVERSAL") return "Opening Reversal";
   if (t === "SCRAP") return "Scrap / Loss";
+  if (t === "RM_WASTAGE") return "RM Wastage";
   if (t === "BUCKET_TRANSFER") return "Bucket Transfer";
   if (t === "CUSTOMER_RETURN") return "Customer Return";
   if (t === "ADJUSTMENT") {

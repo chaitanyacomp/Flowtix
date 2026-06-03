@@ -29,6 +29,10 @@ describe("computeUnusedIssuedRmQty", () => {
     assert.equal(computeUnusedIssuedRmQty(5200, 3120, 1000), 1080);
   });
 
+  it("without wastage arg behaves as before (default 0)", () => {
+    assert.equal(computeUnusedIssuedRmQty(5200, 3120, 1000, undefined), 1080);
+  });
+
   it("consumed qty is not reduced by return (return is not consumption reversal)", () => {
     const consumed = 3120;
     assert.equal(computeUnusedIssuedRmQty(5200, consumed, 1000), 1080);

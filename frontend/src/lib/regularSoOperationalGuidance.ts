@@ -46,6 +46,22 @@ export function buildRmIssueNextStep(
       },
     };
   }
+  if (readiness.gate === "WAITING_STORE_ISSUE") {
+    const pmrId = readiness.latestPmrId;
+    return {
+      statusTitle: "Waiting for Store RM Issue",
+      statusSubtitle: "Store must issue RM to production before you can save or approve production.",
+      blockingReason: "PMR is open — waiting for store issue",
+      primaryAction: {
+        label: "Issue RM to Production",
+        href:
+          pmrId && pmrId > 0
+            ? materialIssueWorkspaceHref({ pmrId, workOrderId: woId, returnTo: "production-workspace" })
+            : `/material-issue?workOrderId=${encodeURIComponent(String(woId))}&returnTo=${encodeURIComponent(returnTo)}`,
+        testId: "next-issue-rm-material-issue",
+      },
+    };
+  }
   const pmrId = readiness.latestPmrId;
   return {
     statusTitle: "Waiting for RM Issue",

@@ -9,7 +9,12 @@ import { ErpModal } from "../components/erp/ErpModal";
 
 type SummaryRow = { table: string; deleted: number };
 
-type ResetResponse = { ok: true; summary: SummaryRow[] };
+type ResetResponse = {
+  ok: true;
+  summary: SummaryRow[];
+  message?: string;
+  note?: string;
+};
 
 type FullDemoResetResponse = {
   success: true;
@@ -432,7 +437,9 @@ export function DatabaseCleanupPage() {
         body: JSON.stringify({ confirmText }),
       });
       setSummary(res.summary ?? []);
-      toast.showSuccess("Transaction data reset completed.");
+      toast.showSuccess(
+        res.message?.trim() || "Transaction data reset completed.",
+      );
       setModalOpen(false);
     } catch (e) {
       if (e instanceof ApiRequestError && e.step) {
@@ -534,7 +541,7 @@ export function DatabaseCleanupPage() {
             <div className="font-semibold text-slate-900">Reset Transaction Data</div>
             <div className="mt-1 text-slate-700/90">
               Deletes only transaction records in dependency-safe order and resets related document sequences (SO, WO, PE, QC, D, SB, RS
-              where available).
+              where available). Inventory is zero after reset; approved Opening Stock is reverted to DRAFT (re-approve to restore stock).
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">

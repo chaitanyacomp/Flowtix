@@ -34,6 +34,7 @@ const {
   netNoQtyCycleDispatchedByItemId,
 } = require("./dispatch");
 const { loadEffectiveNoQtyCarryForwardShortfallByItem } = require("../services/noQtySoCloseSnapshotService");
+const { ensureSubmittedProductionMaterialRequestForWorkOrder } = require("../services/productionMaterialRequestService");
 
 const requirementSheetsRouter = express.Router();
 
@@ -682,6 +683,17 @@ async function mapSheetDetail(sheet) {
     where: { requirementSheetId: sheet.id },
     select: { id: true },
   });
+  const openPmr =
+    existingWo?.id != null
+      ? await prisma.productionMaterialRequest.findFirst({
+          where: {
+            workOrderId: existingWo.id,
+            status: { in: ["REQUESTED", "PARTIALLY_ISSUED", "FULLY_ISSUED"] },
+          },
+          orderBy: { id: "desc" },
+          select: { id: true, docNo: true, status: true },
+        })
+      : null;
 
   const stockMap = await stockByItemIdUsable();
   const reservedUnlockedDraftByItem =
@@ -936,6 +948,9 @@ async function mapSheetDetail(sheet) {
     periodKey: sheet.periodKey,
     version: sheet.version,
     workOrderId: existingWo?.id ?? null,
+    productionMaterialRequestId: openPmr?.id ?? null,
+    pmrDocNo: openPmr?.docNo ?? null,
+    pmrStatus: openPmr?.status ?? null,
     sourceReference: null,
     remarks: sheet.remarks ?? null,
     customerName,
@@ -1675,6 +1690,7 @@ requirementSheetsRouter.post(
 
         // Auto-create Work Order for NO_QTY on lock (idempotent).
         // This is required for production to start immediately after locking the sheet.
+        let workOrderCreatedThisLock = false;
         const already = await tx.workOrder.findFirst({
           where: { requirementSheetId: locked.id },
           select: { id: true, cycleId: true, salesOrderId: true },
@@ -1762,6 +1778,7 @@ requirementSheetsRouter.post(
               },
               select: { id: true },
             });
+            workOrderCreatedThisLock = true;
           }
         }
 
@@ -1800,10 +1817,64 @@ requirementSheetsRouter.post(
           },
         });
 
-        return locked;
+        return { locked, workOrderCreatedThisLock };
       });
 
-      return res.json(await mapSheetDetail(sheet));
+      const lockedSheet = sheet.locked;
+      const detail = await mapSheetDetail(lockedSheet);
+      const wo = detail.workOrderId
+        ? await prisma.workOrder.findUnique({
+            where: { id: Number(detail.workOrderId) },
+            select: { id: true, docNo: true },
+          })
+        : null;
+
+      let productionMaterialRequest = null;
+      if (wo?.id) {
+        try {
+          const pmr = await ensureSubmittedProductionMaterialRequestForWorkOrder(wo.id, {
+            userId: req.user?.userId,
+            role: req.user?.role,
+          });
+          productionMaterialRequest = {
+            id: pmr.id,
+            docNo: pmr.docNo ?? null,
+            status: pmr.status ?? null,
+            createdThisLock: true,
+          };
+        } catch (pmrErr) {
+          console.warn(
+            `[NO_QTY_RS_LOCK] Auto-ensure PMR after lock for WO ${wo.id} failed:`,
+            pmrErr?.message || pmrErr,
+          );
+          const existingPmr = await prisma.productionMaterialRequest.findFirst({
+            where: {
+              workOrderId: wo.id,
+              status: { in: ["REQUESTED", "PARTIALLY_ISSUED", "FULLY_ISSUED", "DRAFT"] },
+            },
+            orderBy: { id: "desc" },
+            select: { id: true, docNo: true, status: true },
+          });
+          if (existingPmr) {
+            productionMaterialRequest = {
+              id: existingPmr.id,
+              docNo: existingPmr.docNo ?? null,
+              status: existingPmr.status ?? null,
+              createdThisLock: false,
+            };
+          }
+        }
+      }
+
+      return res.json({
+        ...detail,
+        lockHandoff: {
+          workOrderCreated: Boolean(sheet.workOrderCreatedThisLock),
+          workOrderId: wo?.id ?? detail.workOrderId ?? null,
+          workOrderDocNo: wo?.docNo ?? null,
+          productionMaterialRequest,
+        },
+      });
     } catch (e) {
       return next(e);
     }

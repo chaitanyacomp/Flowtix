@@ -167,6 +167,45 @@ async function computeNoQtyCreateNextRsEligibility(db, input) {
     };
   }
 
+  const pendingDispositionCount = await db.qcRejectedDisposition.count({
+    where: {
+      voidedAt: null,
+      closedAt: null,
+      remainingQty: { gt: 0 },
+      status: {
+        in: ["REWORK_PENDING_SUPERVISOR", "REWORK_APPROVED_PENDING_EXECUTION", "REWORK_READY_FOR_QC", "HOLD"],
+      },
+      workOrder: { salesOrderId, cycleId },
+    },
+  });
+  if (pendingDispositionCount > 0) {
+    return {
+      eligible: false,
+      reason: "DISPOSITION_PENDING",
+      existingNextRsDocNo: null,
+      existingNextRsId: null,
+    };
+  }
+
+  const openPmr = await db.productionMaterialRequest.findFirst({
+    where: {
+      workOrder: { salesOrderId, cycleId },
+      status: { in: ["REQUESTED", "PARTIALLY_ISSUED"] },
+    },
+    orderBy: { id: "desc" },
+    select: { id: true, docNo: true, status: true },
+  });
+  if (openPmr) {
+    return {
+      eligible: false,
+      reason: openPmr.status === "REQUESTED" ? "PMR_WAITING_STORE_ISSUE" : "PMR_PARTIALLY_ISSUED",
+      existingNextRsDocNo: null,
+      existingNextRsId: null,
+      blockingPmrDocNo: openPmr.docNo ?? null,
+      blockingPmrStatus: openPmr.status,
+    };
+  }
+
   return { eligible: true, reason: "OK", existingNextRsDocNo: null, existingNextRsId: null };
 }
 

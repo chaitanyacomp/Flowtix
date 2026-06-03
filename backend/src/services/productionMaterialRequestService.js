@@ -245,16 +245,6 @@ async function buildWorkOrderMaterialIssueSnapshot(db, workOrderId, fromLocation
     throw err;
   }
 
-  if (wo.salesOrder?.orderType === "NO_QTY") {
-    return {
-      workOrderId: wo.id,
-      workOrderNo: wo.docNo,
-      orderType: "NO_QTY",
-      linesByItemId: new Map(),
-      fgLines: [],
-    };
-  }
-
   const workOrderLineIds = (wo.lines || []).map((ln) => ln.id);
   const approvedProducedByLine = await loadApprovedProducedQtyByWorkOrderLine(db, workOrderLineIds);
   const shortfallClosed = String(wo.status) === "CLOSED_WITH_SHORTFALL";
@@ -626,10 +616,7 @@ async function issueMaterialAgainstPmr(pmrId, input, actor = {}) {
     includeIssued: false,
   });
   const issueAvailabilityByItem = new Map(issueAvailabilityRows.map((row) => [row.itemId, row]));
-  const woIssueSnapshot =
-    pmr.workOrder?.salesOrder?.orderType === "NO_QTY"
-      ? null
-      : await buildWorkOrderMaterialIssueSnapshot(prisma, pmr.workOrderId, input.fromLocationId);
+  const woIssueSnapshot = await buildWorkOrderMaterialIssueSnapshot(prisma, pmr.workOrderId, input.fromLocationId);
   const issueLines = [];
   for (const row of input.lines) {
     const pl = lineById.get(row.pmrLineId);
@@ -740,10 +727,7 @@ async function buildPmrIssueContext(pmrId, fromLocationId, db = prisma) {
   ];
   const productionItemName = fgNames.length ? fgNames.join(", ") : null;
 
-  const woIssueSnapshot =
-    rawPmr?.workOrder?.salesOrder?.orderType === "NO_QTY"
-      ? null
-      : await buildWorkOrderMaterialIssueSnapshot(db, pmr.workOrderId, fromLocationId ?? null);
+  const woIssueSnapshot = await buildWorkOrderMaterialIssueSnapshot(db, pmr.workOrderId, fromLocationId ?? null);
   const itemIds = pmr.lines.map((l) => l.itemId);
   const requiredQtyByItemId = new Map(pmr.lines.map((l) => [l.itemId, n(l.pendingQty)]));
   const globalAvailabilityRows =

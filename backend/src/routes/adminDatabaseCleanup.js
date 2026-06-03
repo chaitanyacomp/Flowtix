@@ -203,6 +203,7 @@ const RESET_TRANSACTION_DOC_TYPES = [
   "PRODUCTION_MATERIAL_REQUEST",
   "MATERIAL_ISSUE_NOTE",
   "MATERIAL_RETURN_NOTE",
+  "MATERIAL_WASTAGE_NOTE",
   "MATERIAL_REQUIREMENT",
   "PURCHASE_REQUEST",
 ];
@@ -220,6 +221,10 @@ function assertResetTransactionDocTypesValid() {
 }
 
 assertResetTransactionDocTypesValid();
+
+/** Shown after successful Reset Transaction Data (opening stock aligned with zero ledger). */
+const RESET_TRANSACTION_OPENING_STOCK_MESSAGE =
+  "Approved Opening Stock entries were reverted to DRAFT. Re-approve Opening Stock to restore inventory.";
 
 /**
  * Transaction tables that must be empty after a successful reset (final verification + sweep).
@@ -243,6 +248,7 @@ const RESET_TRANSACTION_VERIFY_TABLES = [
   "materialReturnNote",
   "materialIssueLine",
   "materialIssueNote",
+  "materialWastageNote",
   "productionMaterialRequestLine",
   "productionMaterialRequest",
   "materialAllocation",
@@ -338,6 +344,11 @@ function buildResetTransactionDataCleanupSteps(tx) {
       count: () => tx.stockAdjustmentQcEntry.count(),
     },
     { table: "stockTransaction", delete: () => tx.stockTransaction.deleteMany({}), count: () => tx.stockTransaction.count() },
+    {
+      table: "openingStockEntry:revertApproved",
+      delete: () => revertApprovedOpeningStockAfterLedgerWipe(tx),
+      count: () => tx.openingStockEntry.count({ where: { status: "APPROVED" } }),
+    },
     { table: "qcReversal", delete: () => tx.qcReversal.deleteMany({}), count: () => tx.qcReversal.count() },
     { table: "scrapRecord", delete: () => tx.scrapRecord.deleteMany({}), count: () => tx.scrapRecord.count() },
     {
@@ -432,16 +443,36 @@ async function runFinalTransactionResetSweep(tx) {
 }
 
 /**
+ * After the stock ledger is wiped, demote approved opening stock so masters match zero inventory.
+ * @param {import("@prisma/client").Prisma.TransactionClient} tx
+ */
+async function revertApprovedOpeningStockAfterLedgerWipe(tx) {
+  return tx.openingStockEntry.updateMany({
+    where: { status: "APPROVED" },
+    data: {
+      status: "DRAFT",
+      approvedAt: null,
+      approvedByUserId: null,
+    },
+  });
+}
+
+/**
  * @param {import("@prisma/client").Prisma.TransactionClient} tx
  */
 async function verifyTransactionResetComplete(tx) {
   /** @type {Array<{ table: string; count: () => Promise<number> }>} */
-  const checks = RESET_TRANSACTION_VERIFY_TABLES.map((table) => {
-    if (table === "dispatch") {
-      return { table: "dispatch", count: () => tx.dispatch.count() };
+  const checks = [];
+  for (const table of RESET_TRANSACTION_VERIFY_TABLES) {
+    if (table === "materialWastageNote") {
+      if (!(await tableExists(tx, ["materialwastagenote", "MaterialWastageNote"]))) continue;
     }
-    return { table, count: () => tx[table].count() };
-  });
+    if (table === "dispatch") {
+      checks.push({ table: "dispatch", count: () => tx.dispatch.count() });
+    } else {
+      checks.push({ table, count: () => tx[table].count() });
+    }
+  }
 
   if (await tableExists(tx, ["qclegacyrejectedclassification", "QcLegacyRejectedClassification"])) {
     checks.push({
@@ -455,14 +486,21 @@ async function verifyTransactionResetComplete(tx) {
       count: () => tx.docSequence.count({ where: { docType: { in: RESET_TRANSACTION_DOC_TYPES } } }),
     });
   }
+  if (await tableExists(tx, ["openingstockentry", "OpeningStockEntry"])) {
+    checks.push({
+      table: "openingStockEntry(APPROVED)",
+      count: () => tx.openingStockEntry.count({ where: { status: "APPROVED" } }),
+    });
+  }
 
   await verifyCleanupComplete(checks);
 }
 
 /**
- * Phase 3 RM issuance/return (PMR → MIN → MRN).
+ * Phase 3 RM issuance/return/wastage (PMR → MIN → MRN → MWN).
  * Must run after stockTransaction is cleared and before workOrder:
  * - ProductionMaterialRequest.workOrderId → WorkOrder (onDelete: Restrict) blocks workOrder.deleteMany.
+ * - MaterialWastageNote.workOrderId → WorkOrder (onDelete: Restrict) blocks workOrder.deleteMany.
  * - MaterialIssueNote / MaterialReturnNote use SetNull on WO/PMR; lines cascade from parent notes.
  * - LOCATION_TRANSFER stock rows reference MIN/MRN ids via refId (no DB FK); wiped with stockTransaction.
  *
@@ -471,10 +509,15 @@ async function verifyTransactionResetComplete(tx) {
  */
 function buildProductionRmFlowCleanupSteps(tx) {
   return [
-    { table: "materialReturnLine", delete: () => tx.materialReturnLine.deleteMany({}), count: () => tx.materialReturnLine.count() },
-    { table: "materialReturnNote", delete: () => tx.materialReturnNote.deleteMany({}), count: () => tx.materialReturnNote.count() },
     { table: "materialIssueLine", delete: () => tx.materialIssueLine.deleteMany({}), count: () => tx.materialIssueLine.count() },
     { table: "materialIssueNote", delete: () => tx.materialIssueNote.deleteMany({}), count: () => tx.materialIssueNote.count() },
+    { table: "materialReturnLine", delete: () => tx.materialReturnLine.deleteMany({}), count: () => tx.materialReturnLine.count() },
+    { table: "materialReturnNote", delete: () => tx.materialReturnNote.deleteMany({}), count: () => tx.materialReturnNote.count() },
+    {
+      table: "materialWastageNote",
+      delete: () => tx.materialWastageNote.deleteMany({}),
+      count: () => tx.materialWastageNote.count(),
+    },
     {
       table: "productionMaterialRequestLine",
       delete: () => tx.productionMaterialRequestLine.deleteMany({}),
@@ -502,13 +545,14 @@ function buildProductionRmFlowCleanupSteps(tx) {
  */
 async function deleteProductionRmFlowForWorkOrders(tx, deletedCounts, { workOrderIds }) {
   if (workOrderIds.length === 0) {
-    deletedCounts.materialReturnLine = 0;
-    deletedCounts.materialReturnNote = 0;
     deletedCounts.materialIssueLine = 0;
     deletedCounts.materialIssueNote = 0;
-    deletedCounts.materialAllocation = 0;
+    deletedCounts.materialReturnLine = 0;
+    deletedCounts.materialReturnNote = 0;
+    deletedCounts.materialWastageNote = 0;
     deletedCounts.productionMaterialRequestLine = 0;
     deletedCounts.productionMaterialRequest = 0;
+    deletedCounts.materialAllocation = 0;
     return;
   }
 
@@ -526,25 +570,22 @@ async function deleteProductionRmFlowForWorkOrders(tx, deletedCounts, { workOrde
   }
   const noteWhere = { OR: noteOr };
 
-  await addDeleteCountStep(deletedCounts, "materialReturnLine", () =>
-    tx.materialReturnLine.deleteMany({ where: { materialReturnNote: noteWhere } }),
-  );
-  await addDeleteCountStep(deletedCounts, "materialReturnNote", () => tx.materialReturnNote.deleteMany({ where: noteWhere }));
   await addDeleteCountStep(deletedCounts, "materialIssueLine", () =>
     tx.materialIssueLine.deleteMany({ where: { materialIssueNote: noteWhere } }),
   );
   await addDeleteCountStep(deletedCounts, "materialIssueNote", () => tx.materialIssueNote.deleteMany({ where: noteWhere }));
-
-  const allocationWhere = {
-    OR: [
-      { workOrderId: { in: workOrderIds } },
-      { workOrderLine: { workOrderId: { in: workOrderIds } } },
-      ...(pmrIds.length > 0 ? [{ productionMaterialRequestId: { in: pmrIds } }] : []),
-    ],
-  };
-  await addDeleteCountStep(deletedCounts, "materialAllocation", () =>
-    tx.materialAllocation.deleteMany({ where: allocationWhere }),
+  await addDeleteCountStep(deletedCounts, "materialReturnLine", () =>
+    tx.materialReturnLine.deleteMany({ where: { materialReturnNote: noteWhere } }),
   );
+  await addDeleteCountStep(deletedCounts, "materialReturnNote", () => tx.materialReturnNote.deleteMany({ where: noteWhere }));
+
+  if (await tableExists(tx, ["materialwastagenote", "MaterialWastageNote"])) {
+    await addDeleteCountStep(deletedCounts, "materialWastageNote", () =>
+      tx.materialWastageNote.deleteMany({ where: { workOrderId: { in: workOrderIds } } }),
+    );
+  } else {
+    deletedCounts.materialWastageNote = 0;
+  }
 
   if (pmrIds.length > 0) {
     await addDeleteCountStep(deletedCounts, "productionMaterialRequestLine", () =>
@@ -557,6 +598,17 @@ async function deleteProductionRmFlowForWorkOrders(tx, deletedCounts, { workOrde
     deletedCounts.productionMaterialRequestLine = 0;
     deletedCounts.productionMaterialRequest = 0;
   }
+
+  const allocationWhere = {
+    OR: [
+      { workOrderId: { in: workOrderIds } },
+      { workOrderLine: { workOrderId: { in: workOrderIds } } },
+      ...(pmrIds.length > 0 ? [{ productionMaterialRequestId: { in: pmrIds } }] : []),
+    ],
+  };
+  await addDeleteCountStep(deletedCounts, "materialAllocation", () =>
+    tx.materialAllocation.deleteMany({ where: allocationWhere }),
+  );
 }
 
 /**
@@ -1068,13 +1120,20 @@ async function runFullDemoResetDeletes(tx, deleted) {
     ],
     ["productionEntry", async () => addDeleteCount(deleted, "productionEntry", () => tx.productionEntry.deleteMany({}))],
     ["scrapRecord", async () => addDeleteCount(deleted, "scrapRecord", () => tx.scrapRecord.deleteMany({}))],
+    ["materialIssueLine", async () => addDeleteCount(deleted, "materialIssueLine", () => tx.materialIssueLine.deleteMany({}))],
+    ["materialIssueNote", async () => addDeleteCount(deleted, "materialIssueNote", () => tx.materialIssueNote.deleteMany({}))],
     [
       "materialReturnLine",
       async () => addDeleteCount(deleted, "materialReturnLine", () => tx.materialReturnLine.deleteMany({})),
     ],
     ["materialReturnNote", async () => addDeleteCount(deleted, "materialReturnNote", () => tx.materialReturnNote.deleteMany({}))],
-    ["materialIssueLine", async () => addDeleteCount(deleted, "materialIssueLine", () => tx.materialIssueLine.deleteMany({}))],
-    ["materialIssueNote", async () => addDeleteCount(deleted, "materialIssueNote", () => tx.materialIssueNote.deleteMany({}))],
+    [
+      "materialWastageNote",
+      async () =>
+        tryOptionalTableDelete(tx, deleted, ["materialwastagenote", "MaterialWastageNote"], "materialWastageNote", () =>
+          tx.materialWastageNote.deleteMany({}),
+        ),
+    ],
     [
       "productionMaterialRequestLine",
       async () =>
@@ -1255,6 +1314,7 @@ adminDatabaseCleanupRouter.post(
         return res.json({
           ok: true,
           summary: results,
+          message: RESET_TRANSACTION_OPENING_STOCK_MESSAGE,
           preservedMasterData: [
             "rateContractLine (customer/item billing rates)",
             "customers",
@@ -1262,7 +1322,7 @@ adminDatabaseCleanupRouter.post(
             "suppliers",
             "units",
             "BOM",
-            "opening stock",
+            "opening stock (draft entries only; approved postings reverted to draft)",
             "users",
             "roles",
             "app settings",

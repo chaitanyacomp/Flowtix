@@ -225,7 +225,7 @@ export function ProductionRmReadinessStrip({
 
       {data.gate === "WAITING_STORE_ISSUE" ? (
         <div className="mt-1.5 space-y-1.5 text-amber-950">
-          <p className="font-medium">Waiting for RM — Store must issue material to Production.</p>
+          <p className="font-medium">Waiting for Store RM Issue.</p>
           <div className="flex flex-wrap gap-1.5">
             <Link
               to={`/material-issue?workOrderId=${data.workOrderId}&returnTo=production`}

@@ -143,8 +143,8 @@ export function productionRmOperationalStatus(
   if (g === "WAITING_STORE_ISSUE") {
     return {
       status: "WAITING_RM_ISSUE",
-      label: "Waiting for RM issue",
-      detail: "Store must issue required RM before you can enter production qty.",
+      label: "Waiting for Store RM Issue",
+      detail: "Store must issue RM to production before you can save or approve production.",
     };
   }
   if (g === "PARTIAL_READY" || g === "FULLY_ISSUED_READY") {

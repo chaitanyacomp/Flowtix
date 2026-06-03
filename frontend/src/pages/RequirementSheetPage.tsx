@@ -174,6 +174,18 @@ type SheetLine = {
   colorZone?: "GREEN" | "YELLOW" | "RED" | "EXCESS" | null;
 };
 
+type LockHandoff = {
+  workOrderCreated?: boolean;
+  workOrderId?: number | null;
+  workOrderDocNo?: string | null;
+  productionMaterialRequest?: {
+    id: number;
+    docNo?: string | null;
+    status?: string | null;
+    createdThisLock?: boolean;
+  } | null;
+};
+
 type SheetDetail = {
   id: number;
   salesOrderId: number;
@@ -182,6 +194,10 @@ type SheetDetail = {
   periodKey?: string | null;
   version?: number | null;
   workOrderId?: number | null;
+  productionMaterialRequestId?: number | null;
+  pmrDocNo?: string | null;
+  pmrStatus?: string | null;
+  lockHandoff?: LockHandoff | null;
   sourceReference?: string | null;
   remarks?: string | null;
   customerName?: string | null;
@@ -788,7 +804,19 @@ export function RequirementSheetPage() {
       setNeedsRecalc(false);
 
       const cycleId = locked.cycleId ?? activePlanningCycleId ?? null;
-      toast.showSuccess("Requirement finalized. Work order created/updated. Continue to Production.");
+      const woReady = Boolean(locked.workOrderId ?? locked.lockHandoff?.workOrderId);
+      const pmrReady = Boolean(
+        locked.productionMaterialRequestId ?? locked.lockHandoff?.productionMaterialRequest?.id,
+      );
+      const lockParts = [
+        woReady ? "WO created" : null,
+        pmrReady ? "PMR created" : null,
+      ].filter(Boolean);
+      toast.showSuccess(
+        lockParts.length
+          ? `Requirement finalized. ${lockParts.join(" · ")}. Continue to Production.`
+          : "Requirement finalized. Continue to Production.",
+      );
       if (isZeroPlanning) {
         nav(`/dispatch?source=no_qty_so&salesOrderId=${locked.salesOrderId}`);
         return;
@@ -1538,6 +1566,30 @@ export function RequirementSheetPage() {
         <div className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-800">
           <div className="font-semibold">Requirement sheet is locked and used for planning</div>
           <div className="mt-0.5 text-xs text-slate-600">This sheet is the basis for production planning in this cycle.</div>
+          <div className="mt-1.5 flex flex-wrap items-center gap-2">
+            <Badge variant={existingWorkOrderForSheet ? "success" : "secondary"}>
+              {existingWorkOrderForSheet ? "WO created" : "WO pending"}
+            </Badge>
+            <Badge
+              variant={
+                sheet.productionMaterialRequestId != null && Number(sheet.productionMaterialRequestId) > 0
+                  ? "success"
+                  : "secondary"
+              }
+            >
+              {sheet.productionMaterialRequestId != null && Number(sheet.productionMaterialRequestId) > 0
+                ? "PMR created"
+                : "PMR pending"}
+            </Badge>
+            {sheet.productionMaterialRequestId != null && Number(sheet.productionMaterialRequestId) > 0 ? (
+              <Link
+                to={`/material-issue?pmrId=${sheet.productionMaterialRequestId}`}
+                className="font-medium text-primary underline underline-offset-4"
+              >
+                Issue material
+              </Link>
+            ) : null}
+          </div>
           <div className="mt-1.5 flex flex-wrap gap-2">
             <details className="relative">
               <summary className="cursor-pointer select-none rounded-md border border-slate-200 bg-white px-2 py-1 text-[13px] text-slate-700">
@@ -2208,21 +2260,52 @@ export function RequirementSheetPage() {
                 <>
                   {locked ? (
                     <div className="w-full rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
-                      <div className="font-semibold text-slate-800">Work Order behavior (No Qty SO)</div>
+                      <div className="font-semibold text-slate-800">Store handoff (No Qty SO)</div>
                       <div className="mt-0.5">
-                        When a Requirement Sheet is locked, the system <span className="font-semibold">auto-creates</span> a Work Order for positive Suggested WO qty.
-                        Use “Create Work Order (if missing)” only if a legacy sheet did not create one.
+                        When a Requirement Sheet is locked, the system <span className="font-semibold">auto-creates</span> a Work Order
+                        and a submitted Production Material Request (BOM × planned qty) for store issue.
                       </div>
-                      {existingWorkOrderForSheet ? (
-                        <div className="mt-1">
-                          <Link
-                            to={`${workOrdersFocusHref(Number(sheet.workOrderId))}&source=no_qty_so&salesOrderId=${sheet.salesOrderId}`}
-                            className="font-medium text-primary underline underline-offset-4"
+                      <ul className="mt-2 space-y-1">
+                        <li className="flex items-center gap-2">
+                          <Badge variant={existingWorkOrderForSheet ? "success" : "secondary"}>
+                            {existingWorkOrderForSheet ? "WO created" : "WO pending"}
+                          </Badge>
+                          {existingWorkOrderForSheet ? (
+                            <Link
+                              to={`${workOrdersFocusHref(Number(sheet.workOrderId))}&source=no_qty_so&salesOrderId=${sheet.salesOrderId}`}
+                              className="font-medium text-primary underline underline-offset-4"
+                            >
+                              {sheet.workOrderId != null ? `WO #${sheet.workOrderId}` : "View work order"}
+                            </Link>
+                          ) : (
+                            <span className="text-slate-600">Use “Create Work Order” if a legacy sheet has no WO.</span>
+                          )}
+                        </li>
+                        <li className="flex items-center gap-2">
+                          <Badge
+                            variant={
+                              sheet.productionMaterialRequestId != null && Number(sheet.productionMaterialRequestId) > 0
+                                ? "success"
+                                : "secondary"
+                            }
                           >
-                            View Work Order #{sheet.workOrderId}
-                          </Link>
-                        </div>
-                      ) : null}
+                            {sheet.productionMaterialRequestId != null && Number(sheet.productionMaterialRequestId) > 0
+                              ? "PMR created"
+                              : "PMR pending"}
+                          </Badge>
+                          {sheet.productionMaterialRequestId != null && Number(sheet.productionMaterialRequestId) > 0 ? (
+                            <Link
+                              to={`/material-issue?pmrId=${sheet.productionMaterialRequestId}`}
+                              className="font-medium text-primary underline underline-offset-4"
+                            >
+                              {sheet.pmrDocNo?.trim() || `PMR #${sheet.productionMaterialRequestId}`}
+                              {sheet.pmrStatus ? ` · ${sheet.pmrStatus}` : ""}
+                            </Link>
+                          ) : (
+                            <span className="text-slate-600">Re-lock or ensure PMR if store cannot see RM lines.</span>
+                          )}
+                        </li>
+                      </ul>
                     </div>
                   ) : null}
 

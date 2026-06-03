@@ -86,6 +86,25 @@ describe("productionMaterialRequestService helpers", () => {
 
   it("PMR issue context returns central read-only availability fields without changing legacy aliases", async () => {
     const db = {
+      workOrder: {
+        findUnique: async () => ({
+          id: 22,
+          docNo: "WO-22",
+          status: "PENDING",
+          salesOrder: { orderType: "NO_QTY", id: 1, docNo: "SO-22" },
+          lines: [],
+        }),
+      },
+      productionEntry: {
+        groupBy: async () => [],
+        findMany: async () => [],
+      },
+      materialIssueNote: {
+        findMany: async () => [],
+      },
+      materialReturnNote: {
+        findMany: async () => [],
+      },
       productionMaterialRequest: {
         findUnique: async (query) => {
           if (query.select) {

@@ -1337,7 +1337,7 @@ export function ProductionPage() {
   const [rmReadinessLoading, setRmReadinessLoading] = React.useState(false);
   const isNoQtyProductionFlow =
     fromNoQtySo || productionFlowMode === "NO_QTY" || navigateNoQtyContext;
-  const showRegularRmReadiness = !isNoQtyProductionFlow && wolId > 0;
+  const showRegularRmReadiness = wolId > 0;
   const rmProductionEntryBlocked =
     showRegularRmReadiness && isRegularProductionEntryBlocked(rmReadiness, rmReadinessLoading);
 
@@ -1348,9 +1348,7 @@ export function ProductionPage() {
   }, [woId, selected?.workOrderId, workOrders]);
 
   const woProductionLifecycleBlocked =
-    !isNoQtyProductionFlow &&
-    selectedWoForLifecycle != null &&
-    isWorkOrderProductionBlocked(selectedWoForLifecycle.status);
+    selectedWoForLifecycle != null && isWorkOrderProductionBlocked(selectedWoForLifecycle.status);
   const woProductionLifecycleMessage = selectedWoForLifecycle
     ? workOrderProductionBlockedMessage(selectedWoForLifecycle)
     : null;
@@ -1497,7 +1495,7 @@ export function ProductionPage() {
     if (!selected || !selectedMetrics) return undefined;
     const woRow = workOrders.find((w) => w.id === selected.workOrderId);
     return {
-      flowLabel: "REGULAR FLOW",
+      flowLabel: isNoQtyProductionFlow ? "NO_QTY FLOW" : "REGULAR FLOW",
       soLabel: displaySalesOrderNo(selected.salesOrderId, woRow?.salesOrder?.docNo ?? null),
       woLabel: displayWorkOrderNo(selected.workOrderId, woRow?.docNo ?? null),
       fgName: selected.fgItem.itemName,
@@ -1505,7 +1503,7 @@ export function ProductionPage() {
       produced: selectedMetrics.usedQty,
       remaining: selectedMetrics.remainingQty,
     };
-  }, [selected, selectedMetrics, workOrders]);
+  }, [selected, selectedMetrics, workOrders, isNoQtyProductionFlow]);
 
   const showRegularProductionEntry =
     showRegularRmReadiness && !rmProductionEntryBlocked && !rmReadinessLoading;
@@ -2182,7 +2180,7 @@ export function ProductionPage() {
     if (rmProductionEntryBlocked) {
       setError(
         rmReadiness?.gate === "WAITING_STORE_ISSUE"
-          ? "Production is blocked until Store issues material to the production location."
+          ? "Waiting for Store RM Issue."
           : "Production is blocked until a material request is submitted and Store issues RM.",
       );
       return;
@@ -2228,6 +2226,28 @@ export function ProductionPage() {
     setError(null);
     if (!isValidNumberDraft(editQty) || editQty <= 0) {
       setError("Produced qty is required.");
+      return;
+    }
+    if (woProductionLifecycleBlocked && woProductionLifecycleMessage) {
+      setError(woProductionLifecycleMessage);
+      return;
+    }
+    if (rmProductionEntryBlocked) {
+      setError(
+        rmReadiness?.gate === "WAITING_STORE_ISSUE"
+          ? "Waiting for Store RM Issue."
+          : "Production is blocked until a material request is submitted and Store issues RM.",
+      );
+      return;
+    }
+    if (
+      showRegularRmReadiness &&
+      rmEntryQtyCap != null &&
+      editQty > rmEntryQtyCap + 1e-6
+    ) {
+      setError(
+        `Production entry cannot exceed ${rmEntryQtyCap} based on issued RM at production location.`,
+      );
       return;
     }
     setEditSaving(true);
@@ -2572,7 +2592,7 @@ export function ProductionPage() {
         },
       };
     }
-    if (!navigateNoQtyContext && showRegularRmReadiness && rmReadiness && rmProductionEntryBlocked) {
+    if (showRegularRmReadiness && rmReadiness && rmProductionEntryBlocked) {
       const step = buildRmIssueNextStep(rmReadiness, "production-workspace");
       return {
         variant: "blocked",
@@ -3815,6 +3835,32 @@ export function ProductionPage() {
                         </div>
                       ) : (
                         <>
+                      {showRegularRmReadiness && wolId > 0 ? (
+                        <>
+                          {rmProductionEntryBlocked &&
+                          rmReadiness &&
+                          rmReadiness.gate !== "NO_PMR" &&
+                          rmReadiness.gate !== "PMR_DRAFT_ONLY" ? (
+                            <ProductionRmBlockedBanner
+                              workOrderId={rmReadiness.workOrderId}
+                              workOrderNo={productionMaterialContext?.woLabel ?? null}
+                              gate={rmReadiness.gate}
+                              message={
+                                rmReadiness.gate === "WAITING_STORE_ISSUE"
+                                  ? "Waiting for Store RM Issue."
+                                  : undefined
+                              }
+                            />
+                          ) : null}
+                          <ProductionMaterialWorkflowCard
+                            workOrderLineId={wolId}
+                            refreshKey={liveTick}
+                            context={productionMaterialContext}
+                            onLoaded={onRmReadinessLoaded}
+                            onLoadingChange={onRmReadinessLoadingChange}
+                          />
+                        </>
+                      ) : null}
                       {(() => {
                         if (!selected) {
                           return (
@@ -3824,6 +3870,15 @@ export function ProductionPage() {
                               </div>
                               <p className="text-[11px] text-slate-500">Select a row from the work queue.</p>
                             </div>
+                          );
+                        }
+                        if (rmProductionEntryBlocked) {
+                          return (
+                            <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] font-medium text-amber-950">
+                              {rmReadiness?.gate === "WAITING_STORE_ISSUE"
+                                ? "Waiting for Store RM Issue."
+                                : "Production is blocked until material is issued to production."}
+                            </p>
                           );
                         }
                         const eps = 1e-6;

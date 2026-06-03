@@ -75,7 +75,8 @@ const { evaluateWoPrepareReadiness } = require("../services/materialPlanningServ
 const { computeFgGapLinesForSalesOrder } = require("../services/rmCheckService");
 const {
   buildProductionRmReadiness,
-  assertRegularProductionRmReadiness,
+  assertProductionRmReadiness,
+  issueRmForApprovedProductionFromPmrLocations,
   issueRmStockForProductionBatchAtProductionLocations,
   returnRmStockForProductionBatchFromProductionLocations,
   getWorkOrderProductionLocationIds,
@@ -440,7 +441,7 @@ const PROD_TOLERANCE_PCT = 0.05;
  * @param {import('@prisma/client').Prisma.TransactionClient} tx
  * @param {{ excludeProductionId?: number }} [opts]
  */
-/** REGULAR / REPLACEMENT — Phase 3C RM readiness gate applies; NO_QTY unchanged. */
+/** @deprecated All order types use {@link assertProductionRmReadiness}. */
 async function isRegularProductionWorkOrderLine(tx, workOrderLineId) {
   const wol = await tx.workOrderLine.findUnique({
     where: { id: workOrderLineId },
@@ -1097,9 +1098,6 @@ productionRouter.get(
         err.statusCode = 404;
         throw err;
       }
-      if (wol.workOrder?.salesOrder?.orderType === "NO_QTY") {
-        return res.json({ skipped: true, reason: "NO_QTY", gate: null });
-      }
       const data = await buildProductionRmReadiness(prisma, workOrderLineId);
       return res.json(data);
     } catch (e) {
@@ -1566,12 +1564,10 @@ productionRouter.post(
           throw err;
         }
 
-        if (await isRegularProductionWorkOrderLine(tx, wol.id)) {
-          await assertRegularProductionRmReadiness(tx, {
-            workOrderLineId: wol.id,
-            producedQty: body.producedQty,
-          });
-        }
+        await assertProductionRmReadiness(tx, {
+          workOrderLineId: wol.id,
+          producedQty: body.producedQty,
+        });
 
         const prod = await tx.productionEntry.create({
           data: {
@@ -1665,13 +1661,11 @@ productionRouter.put(
           throw err;
         }
 
-        if (await isRegularProductionWorkOrderLine(tx, wol.id)) {
-          await assertRegularProductionRmReadiness(tx, {
-            workOrderLineId: wol.id,
-            producedQty: body.producedQty,
-            excludeProductionId: id,
-          });
-        }
+        await assertProductionRmReadiness(tx, {
+          workOrderLineId: wol.id,
+          producedQty: body.producedQty,
+          excludeProductionId: id,
+        });
 
         return tx.productionEntry.update({
           where: { id },
@@ -1781,48 +1775,6 @@ productionRouter.post(
       const id = Number(req.params.id);
       const body = approveProductionEntrySchema.parse(req.body ?? {});
 
-      const prodForNoQtyCheck = await prisma.productionEntry.findUnique({
-        where: { id },
-        include: {
-          workOrderLine: {
-            include: {
-              workOrder: {
-                include: {
-                  salesOrder: { select: { id: true, orderType: true } },
-                },
-              },
-            },
-          },
-        },
-      });
-      if (
-        prodForNoQtyCheck?.workflowStatus === PE_DRAFT &&
-        prodForNoQtyCheck.workOrderLine?.workOrder?.salesOrder?.orderType === "NO_QTY"
-      ) {
-        const wol = prodForNoQtyCheck.workOrderLine;
-        const wo = wol.workOrder;
-        const shortages = await computeNoQtyRmShortagesForApproval(prisma, {
-          fgItemId: wol.fgItemId,
-          producedQty: prodForNoQtyCheck.producedQty,
-        });
-        if (shortages.length > 0) {
-          return res.status(400).json({
-            code: "INSUFFICIENT_RM_FOR_NO_QTY_PRODUCTION",
-            message: "Raw material stock is not sufficient for this NO_QTY production.",
-            source: "NO_QTY",
-            context: {
-              salesOrderId: wo.salesOrderId,
-              cycleId: wo.cycleId,
-              workOrderId: wo.id,
-              workOrderLineId: wol.id,
-              itemId: wol.fgItemId,
-            },
-            shortages,
-            actions: { canRaiseRmPurchase: true, returnTo: "production" },
-          });
-        }
-      }
-
       const result = await prisma.$transaction(async (tx) => {
         await lockProductionEntryForUpdate(tx, id);
         const prod = await tx.productionEntry.findUnique({
@@ -1876,13 +1828,11 @@ productionRouter.post(
         const orderType = wol.workOrder?.salesOrder?.orderType;
         const isRegular = orderType != null && orderType !== "NO_QTY";
 
-        if (isRegular) {
-          await assertRegularProductionRmReadiness(tx, {
-            workOrderLineId: wol.id,
-            producedQty: prod.producedQty,
-            excludeProductionId: id,
-          });
-        }
+        await assertProductionRmReadiness(tx, {
+          workOrderLineId: wol.id,
+          producedQty: prod.producedQty,
+          excludeProductionId: id,
+        });
 
         const bomPre = await tx.bom.findFirst({
           where: approvedBomWhere(fgItemId),
@@ -1939,8 +1889,9 @@ productionRouter.post(
           });
           await persistProductionEntryRmConsumption(tx, prod.id, resolved.lines);
         } else {
-          bomFound = await issueRmStockForProductionBatch(tx, {
+          bomFound = await issueRmForApprovedProductionFromPmrLocations(tx, {
             productionId: prod.id,
+            workOrderId: wol.workOrderId,
             fgItemId,
             producedQty: prod.producedQty,
           });
@@ -2162,7 +2113,6 @@ productionRouter.post(
           where: { id: wol.workOrder.salesOrderId },
           select: { orderType: true },
         });
-        const isRegularReverse = soType?.orderType != null && soType.orderType !== "NO_QTY";
         const locIssueCount = await tx.stockTransaction.count({
           where: {
             refId: prod.id,
@@ -2171,7 +2121,7 @@ productionRouter.post(
             qtyOut: { gt: 0 },
           },
         });
-        if (isRegularReverse && locIssueCount > 0) {
+        if (locIssueCount > 0) {
           await returnRmStockForProductionBatchFromProductionLocations(tx, { productionId: prod.id });
         } else {
           await returnRmStockForProductionBatch(tx, {

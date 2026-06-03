@@ -1,6 +1,5 @@
 /**
- * Phase 3C — REGULAR WO production gated on PMR/MIN issued RM at production locations.
- * NO_QTY flows are unchanged.
+ * Phase 3C — Production gated on PMR/MIN issued RM at production locations (REGULAR + NO_QTY).
  */
 
 const { prisma } = require("../utils/prisma");
@@ -315,9 +314,40 @@ async function buildProductionRmReadiness(db, workOrderLineId) {
 }
 
 /**
+ * Issue BOM RM for an approved batch from PMR-linked production locations (not global store).
  * @param {import('@prisma/client').Prisma.TransactionClient} tx
  */
-async function assertRegularProductionRmReadiness(tx, {
+async function issueRmForApprovedProductionFromPmrLocations(
+  tx,
+  { productionId, workOrderId, fgItemId, producedQty },
+) {
+  const qty = n(producedQty);
+  const { rmNeeded, missingChildBoms } = await aggregateRmDemandForFgLines(tx, [
+    { fgItemId, fgQty: qty, bomMissing: false },
+  ]);
+  if (missingChildBoms?.length) {
+    const err = new Error("Approved child BOM missing for SFG components.");
+    err.code = "BOM_CHILD_MISSING";
+    err.statusCode = 400;
+    throw err;
+  }
+  if (!rmNeeded.size) {
+    const err = new Error("BOM_MISSING");
+    err.code = "BOM_MISSING";
+    err.statusCode = 400;
+    throw err;
+  }
+  return issueRmStockForProductionBatchAtProductionLocations(tx, {
+    productionId,
+    workOrderId,
+    actualQtyByItemId: rmNeeded,
+  });
+}
+
+/**
+ * @param {import('@prisma/client').Prisma.TransactionClient} tx
+ */
+async function assertProductionRmReadiness(tx, {
   workOrderLineId,
   producedQty,
   excludeProductionId,
@@ -354,9 +384,7 @@ async function assertRegularProductionRmReadiness(tx, {
   }
 
   if (readiness.gate === "WAITING_STORE_ISSUE") {
-    const err = new Error(
-      "Production blocked: material requested, waiting for Store issue to production location.",
-    );
+    const err = new Error("Production blocked: Waiting for Store RM Issue.");
     err.code = "PRODUCTION_RM_WAITING_ISSUE";
     err.statusCode = 409;
     throw err;
@@ -513,9 +541,7 @@ async function returnRmStockForProductionBatchFromProductionLocations(tx, { prod
  * @param {Array<{ orderType?: string | null, workOrderLineId?: number }>} rows
  */
 async function attachRmReadinessToProductionQueueRows(db, rows) {
-  const targets = rows.filter(
-    (r) => r.orderType !== "NO_QTY" && Number(r.workOrderLineId) > 0,
-  );
+  const targets = rows.filter((r) => Number(r.workOrderLineId) > 0);
   await Promise.all(
     targets.map(async (row) => {
       try {
@@ -542,7 +568,10 @@ module.exports = {
   resolveReadinessGate,
   getWorkOrderProductionLocationIds,
   buildProductionRmReadiness,
-  assertRegularProductionRmReadiness,
+  assertProductionRmReadiness,
+  /** @deprecated alias */
+  assertRegularProductionRmReadiness: assertProductionRmReadiness,
+  issueRmForApprovedProductionFromPmrLocations,
   issueRmStockForProductionBatchAtProductionLocations,
   returnRmStockForProductionBatchFromProductionLocations,
   attachRmReadinessToProductionQueueRows,

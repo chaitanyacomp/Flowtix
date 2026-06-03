@@ -99,7 +99,7 @@ pmrRouter.post("/", requireAuth, requireRole(productionRoles), async (req, res, 
   }
 });
 
-// Ensure a submitted (store-visible) PMR exists for a Regular work order, building RM
+// Ensure a submitted (store-visible) PMR exists for a work order (Regular or NO_QTY), building RM
 // lines from BOM when needed. Lets the Material Issue Workspace load RM lines for a WO
 // that has no PMR yet (the same WO-level RM demand RM Control Center derives from BOM).
 // Idempotent: returns the existing open PMR when one already exists.
@@ -113,16 +113,11 @@ pmrRouter.post("/ensure-for-work-order", requireAuth, requireRole(readRoles), as
     }
     const wo = await prisma.workOrder.findUnique({
       where: { id: workOrderId },
-      include: { salesOrder: { select: { orderType: true } } },
+      select: { id: true },
     });
     if (!wo) {
       const err = new Error("Work order not found");
       err.statusCode = 404;
-      throw err;
-    }
-    if (wo.salesOrder?.orderType === "NO_QTY") {
-      const err = new Error("No Qty work orders request material through Requirement & Cycle Planning.");
-      err.statusCode = 400;
       throw err;
     }
     const pmr = await ensureSubmittedProductionMaterialRequestForWorkOrder(workOrderId, {

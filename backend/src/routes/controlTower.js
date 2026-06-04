@@ -2,6 +2,7 @@ const express = require("express");
 const { requireAuth, requireRole } = require("../middleware/auth");
 const { ALL_APP_ROLES } = require("../constants/erpRoles");
 const { getControlTowerPanelMetrics } = require("../services/controlTowerService");
+const { getNormalizedOperationalRows } = require("../services/controlTowerNormalizedRowsService");
 
 const controlTowerRouter = express.Router();
 
@@ -37,6 +38,27 @@ controlTowerRouter.get("/panel-metrics", requireAuth, controlTowerRoles, async (
     });
   } catch (err) {
     return controlTowerErrorResponse(res, err, "/api/control-tower/panel-metrics");
+  }
+});
+
+/**
+ * GET /api/control-tower/normalized-rows
+ * Developer verification — normalized row samples (Prompt 2). Not for production UI yet.
+ */
+controlTowerRouter.get("/normalized-rows", requireAuth, controlTowerRoles, async (req, res, next) => {
+  try {
+    const rawLimit = Number(req.query.limitPerSource);
+    const limitPerSource =
+      Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(25, Math.floor(rawLimit)) : undefined;
+    const payload = await getNormalizedOperationalRows({ limitPerSource });
+    return res.json({
+      success: true,
+      count: payload.count,
+      rows: payload.rows,
+      meta: payload.meta,
+    });
+  } catch (err) {
+    return controlTowerErrorResponse(res, err, "/api/control-tower/normalized-rows");
   }
 });
 

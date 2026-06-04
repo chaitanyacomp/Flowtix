@@ -3,6 +3,7 @@ const { requireAuth, requireRole } = require("../middleware/auth");
 const { ALL_APP_ROLES } = require("../constants/erpRoles");
 const { getControlTowerPanelMetrics } = require("../services/controlTowerService");
 const { getNormalizedOperationalRows } = require("../services/controlTowerNormalizedRowsService");
+const { getControlTowerBoardRows } = require("../services/controlTowerBoardService");
 
 const controlTowerRouter = express.Router();
 
@@ -59,6 +60,29 @@ controlTowerRouter.get("/normalized-rows", requireAuth, controlTowerRoles, async
     });
   } catch (err) {
     return controlTowerErrorResponse(res, err, "/api/control-tower/normalized-rows");
+  }
+});
+
+/**
+ * GET /api/control-tower/board
+ * Developer verification — grouped board read model (Prompt 5). Not for production UI yet.
+ */
+controlTowerRouter.get("/board", requireAuth, controlTowerRoles, async (req, res, next) => {
+  try {
+    const rawLimit = Number(req.query.limitPerSource);
+    const limitPerSource =
+      Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(25, Math.floor(rawLimit)) : undefined;
+    const payload = await getControlTowerBoardRows({ limitPerSource });
+    return res.json({
+      success: true,
+      data: {
+        groups: payload.groups,
+        ungrouped: payload.ungrouped,
+        meta: payload.meta,
+      },
+    });
+  } catch (err) {
+    return controlTowerErrorResponse(res, err, "/api/control-tower/board");
   }
 });
 

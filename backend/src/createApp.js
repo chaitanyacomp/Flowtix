@@ -17,6 +17,7 @@ const { qcRejectedDispositionsRouter } = require("./routes/qcRejectedDisposition
 const { qcLegacyRejectedClassificationsRouter } = require("./routes/qcLegacyRejectedClassifications");
 const { dispatchRouter } = require("./routes/dispatch");
 const { dashboardRouter } = require("./routes/dashboard");
+const { controlTowerRouter } = require("./routes/controlTower");
 const { planningDashboardRouter } = require("./routes/planningDashboard");
 const { exportHistoryRouter } = require("./routes/exportHistory");
 const { reportsRouter } = require("./routes/reports");
@@ -114,6 +115,7 @@ function createApp() {
   app.use("/api/production", qcLegacyRejectedClassificationsRouter);
   app.use("/api/dispatch", dispatchRouter);
   app.use("/api/dashboard", dashboardRouter);
+  app.use("/api/control-tower", controlTowerRouter);
   app.use("/api/planning-dashboard", planningDashboardRouter);
   app.use("/api/export-history", exportHistoryRouter);
   app.use("/api/reports", reportsRouter);

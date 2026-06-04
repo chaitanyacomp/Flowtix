@@ -80,6 +80,10 @@ const {
   sumActiveQcRejectedQty,
 } = require("../services/reportMetrics");
 const { computeNoQtyCreateNextRsEligibility, computeNoQtyCreateNextRsEligibilityResolved, resolveNoQtyEligibilityCycleId } = require("../services/noQtyCreateNextRsEligibility");
+const {
+  computeNoQtyManualCloseEligibility,
+  assertNoQtyManualCloseEligible,
+} = require("../services/noQtySoManualCloseEligibility");
 const { findNoQtyNextRollingRequirementSheetTarget } = require("../services/noQtyRollingRequirementNav");
 const { resolveNoQtyWorkflowState } = require("../services/noQtyWorkflowEngine");
 const { advanceNoQtyCycleForNextRequirementSheetIfEligible } = require("../services/noQtyCycleLifecycle");
@@ -903,6 +907,24 @@ salesOrderRouter.get(
         );
       }
 
+      /** NO_QTY: manual Close SO eligibility (same rules as POST /:id/close). */
+      /** @type {Map<number, Awaited<ReturnType<typeof computeNoQtyManualCloseEligibility>>>} */
+      const manualCloseEligibilityBySoId = new Map();
+      if (noQtyIds.length) {
+        await Promise.all(
+          staged
+            .filter(
+              (s) =>
+                s.orderType === "NO_QTY" &&
+                !["COMPLETED", "CLOSED", "MANUALLY_CLOSED"].includes(String(s.internalStatus ?? "")),
+            )
+            .map(async (s) => {
+              const r = await computeNoQtyManualCloseEligibility(prisma, s.id);
+              manualCloseEligibilityBySoId.set(s.id, r);
+            }),
+        );
+      }
+
       /** Diagnostic: verbose eligibility audit (DEBUG env only — avoid noisy production logs). */
       const auditNoQtyRsEligibility =
         process.env.DEBUG_NO_QTY_RS_ELIGIBILITY === "1" || process.env.DEBUG_NO_QTY_RS_ELIGIBILITY === "true";
@@ -1273,6 +1295,12 @@ salesOrderRouter.get(
                   noQtyActiveCycleNo: wfPref?.cycleNo ?? null,
                   noQtyWorkflowActiveCycleCount: wfCnt,
                   noQtyIsBetweenCycles: !completedSoRow && wfCnt === 0,
+                  noQtyManualCloseEligible: completedSoRow
+                    ? false
+                    : (manualCloseEligibilityBySoId.get(s.id)?.eligible ?? false),
+                  noQtyManualCloseBlockReason: completedSoRow
+                    ? null
+                    : (manualCloseEligibilityBySoId.get(s.id)?.message ?? null),
                 };
               })()
             : {}),
@@ -1884,6 +1912,8 @@ salesOrderRouter.post(
         if (so.internalStatus === "MANUALLY_CLOSED" || so.internalStatus === "CLOSED") {
           return { snapshotLines: [] };
         }
+
+        await assertNoQtyManualCloseEligible(tx, soId);
 
         const { lines } = await createNoQtyCloseSnapshot(tx, {
           salesOrderId: soId,

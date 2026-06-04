@@ -153,6 +153,10 @@ type SoRow = {
   noQtyStrandedWithoutActiveCycle?: boolean;
   /** NO_QTY: user may add next-cycle RS (server eligibility). */
   noQtyCreateNextRsEligible?: boolean;
+  /** NO_QTY: server allows POST /close (operational gates; billing does not block). */
+  noQtyManualCloseEligible?: boolean;
+  /** NO_QTY: user-facing block reason when manual close is not allowed. */
+  noQtyManualCloseBlockReason?: string | null;
   /** NO_QTY: next-cycle RS already exists (doc no from server). */
   noQtyNextRsAlreadyCreatedDocNo?: string | null;
   /** NO_QTY list: server-built cycle / between-cycles position line (display only). */
@@ -2672,15 +2676,24 @@ export function SalesOrdersPage() {
                                 )
                               ) : null}
                               {so.internalStatus !== "CLOSED" && so.internalStatus !== "MANUALLY_CLOSED" && canCloseNoQtySo ? (
-                                <Button
-                                  type="button"
-                                  size="sm"
-                                  variant="outline"
-                                  className="erp-so-act-secondary"
-                                  onClick={() => setNoQtyCloseDialog({ soId: so.id, docNo: so.docNo })}
-                                >
-                                  Close SO
-                                </Button>
+                                so.noQtyManualCloseEligible === true ? (
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="outline"
+                                    className="erp-so-act-secondary"
+                                    onClick={() => setNoQtyCloseDialog({ soId: so.id, docNo: so.docNo })}
+                                  >
+                                    Close SO
+                                  </Button>
+                                ) : so.noQtyManualCloseBlockReason ? (
+                                  <span
+                                    className="max-w-[14rem] text-[11px] leading-snug text-amber-900"
+                                    title={so.noQtyManualCloseBlockReason}
+                                  >
+                                    {so.noQtyManualCloseBlockReason}
+                                  </span>
+                                ) : null
                               ) : null}
                               {(so.internalStatus === "CLOSED" || so.internalStatus === "MANUALLY_CLOSED") && isAdmin ? (
                                 <Button

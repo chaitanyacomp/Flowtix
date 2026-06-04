@@ -1,80 +1,8 @@
 const auditLog = require("./auditLog");
-const { getApprovedProducedQtyByWorkOrderLineIds } = require("./productionMetrics");
-const {
-  computeSalesOrderDispatchLineStats,
-  getProductionBatchQcPendingQty,
-  getWoLineRemainingProductionQty,
-  sumActiveQcAcceptedQty,
-  sumActiveQcRejectedQty,
-} = require("./reportMetrics");
-const { QC_ENTRY_ACTIVE_WHERE } = require("./qcEntryConstants");
+const { computeSalesOrderDispatchLineStats } = require("./reportMetrics");
+const { hasPendingProductionOrQc, OPEN_QC_REJECTED_DISPOSITION_STATUSES } = require("./noQtySoOperationalGates");
 
-const EPS = 1e-6;
 const CLOSED_STATUSES = new Set(["COMPLETED", "CLOSED", "MANUALLY_CLOSED"]);
-
-/** @type {import("@prisma/client").QcRejectedDispositionStatus[]} */
-const OPEN_QC_REJECTED_DISPOSITION_STATUSES = [
-  "REWORK_PENDING_SUPERVISOR",
-  "REWORK_APPROVED_PENDING_EXECUTION",
-  "REWORK_READY_FOR_QC",
-  "HOLD",
-];
-
-async function hasPendingProductionOrQc(tx, salesOrderId, opts = {}) {
-  const workOrderWhere = { salesOrderId, status: { not: "REJECTED" } };
-  if (opts.orderType === "NO_QTY") {
-    workOrderWhere.cycle = { status: "ACTIVE" };
-  }
-  const workOrders = await tx.workOrder.findMany({
-    where: workOrderWhere,
-    select: { id: true, status: true, lines: { select: { id: true, qty: true } } },
-  });
-  const lineIds = workOrders.flatMap((wo) => (wo.lines || []).map((l) => l.id));
-
-  if (lineIds.length > 0) {
-    const producedByLineId = await getApprovedProducedQtyByWorkOrderLineIds(tx, lineIds);
-    for (const wo of workOrders) {
-      if (wo.status === "CLOSED_WITH_SHORTFALL") continue;
-      for (const line of wo.lines || []) {
-        const produced = producedByLineId.get(line.id) || 0;
-        if (getWoLineRemainingProductionQty(line.qty, produced) > EPS) {
-          return { pending: true, reason: "PENDING_PRODUCTION" };
-        }
-      }
-    }
-  }
-
-  const prodEntries = lineIds.length
-    ? await tx.productionEntry.findMany({
-        where: { workOrderLineId: { in: lineIds }, workflowStatus: "APPROVED" },
-        include: { qcEntries: { where: QC_ENTRY_ACTIVE_WHERE } },
-      })
-    : [];
-  for (const pe of prodEntries) {
-    const producedQty = Number(pe.producedQty ?? 0);
-    const accepted = sumActiveQcAcceptedQty(pe.qcEntries || []);
-    const rejected = sumActiveQcRejectedQty(pe.qcEntries || []);
-    if (getProductionBatchQcPendingQty(producedQty, accepted, rejected) > EPS) {
-      return { pending: true, reason: "PENDING_QC" };
-    }
-  }
-
-  if (workOrders.length > 0) {
-    const openDispositionCount = await tx.qcRejectedDisposition.count({
-      where: {
-        workOrderId: { in: workOrders.map((wo) => wo.id) },
-        status: { in: OPEN_QC_REJECTED_DISPOSITION_STATUSES },
-        remainingQty: { gt: 0 },
-        voidedAt: null,
-      },
-    });
-    if (openDispositionCount > 0) {
-      return { pending: true, reason: "PENDING_QC_DISPOSITION" };
-    }
-  }
-
-  return { pending: false, reason: null };
-}
 
 async function regularDispatchComplete(tx, so) {
   const full = await tx.salesOrder.findUnique({

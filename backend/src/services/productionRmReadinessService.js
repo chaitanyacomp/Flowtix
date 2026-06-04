@@ -337,10 +337,12 @@ async function issueRmForApprovedProductionFromPmrLocations(
     err.statusCode = 400;
     throw err;
   }
+  const { RM_CONSUMPTION_ROUNDING_TOLERANCE_KG } = require("./productionRmConsumptionService");
   return issueRmStockForProductionBatchAtProductionLocations(tx, {
     productionId,
     workOrderId,
     actualQtyByItemId: rmNeeded,
+    roundingToleranceKg: RM_CONSUMPTION_ROUNDING_TOLERANCE_KG,
   });
 }
 

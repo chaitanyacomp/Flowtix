@@ -17,6 +17,7 @@ const {
   normalizeDispatchRow,
   normalizeContinueWorkingRow,
 } = require("./controlTowerRowNormalizer");
+const { dedupeNormalizedRows } = require("./controlTowerRowIdentity");
 
 const DEFAULT_SAMPLE_LIMIT = 8;
 
@@ -48,7 +49,7 @@ async function getNormalizedOperationalRows(opts = {}) {
     getContinueWorkingRows({ limit: Math.max(limitPerSource, 20) }),
   ]);
 
-  const rows = [
+  const merged = [
     ...takeSample(rmRisk, limitPerSource).map(normalizeRmRiskRow),
     ...takeSample(production, limitPerSource).map(normalizeProductionRow),
     ...takeSample(qa, limitPerSource).map(normalizeQaRow),
@@ -56,12 +57,16 @@ async function getNormalizedOperationalRows(opts = {}) {
     ...takeSample(continueWorking, limitPerSource).map(normalizeContinueWorkingRow),
   ];
 
+  const rows = dedupeNormalizedRows(merged);
+
   return {
     count: rows.length,
     rows,
     meta: {
       generatedAt: new Date().toISOString(),
       limitPerSource,
+      rowCountBeforeDedupe: merged.length,
+      rowCountAfterDedupe: rows.length,
       sources: {
         rmRisk: { fetched: rmRisk.length, sampled: Math.min(rmRisk.length, limitPerSource) },
         production: { fetched: production.length, sampled: Math.min(production.length, limitPerSource) },
@@ -72,7 +77,7 @@ async function getNormalizedOperationalRows(opts = {}) {
           sampled: Math.min(continueWorking.length, limitPerSource),
         },
       },
-      note: "Prompt 2 sample aggregator — not deduped; not role-filtered.",
+      note: "Prompt 4 — rows deduped by rowKey; highest sourcePriority wins.",
     },
   };
 }

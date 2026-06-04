@@ -1,7 +1,13 @@
 /**
- * Control Tower normalized operational row contract (Prompt 2).
+ * Control Tower normalized operational row contract (Prompt 2–3).
  * Maps existing dashboard queue DTOs into a single read-model shape — no workflow changes.
  */
+
+const {
+  CONTROL_TOWER_STATUSES,
+  mapSourceToCurrentStatus,
+  buildSourceLineageMetadata,
+} = require("./controlTowerStatusMap");
 
 const ROW_TYPES = Object.freeze({
   RM_RISK: "RM_RISK",
@@ -171,12 +177,24 @@ function normalizeRmRiskRow(raw) {
 
   const currentOwner = ownerForRmRiskRow(raw);
   const purchaseNextOwnerHint = purchaseNextOwnerHintFromRmRisk(raw);
+  const lineage = buildSourceLineageMetadata(raw, {
+    sourceStatus: raw?.status ?? null,
+    sourceQueueType: raw?.queueType ?? null,
+    sourceNextAction: raw?.recommendedAction ?? raw?.blockerReason ?? null,
+  });
+  const currentStatus = mapSourceToCurrentStatus({
+    rowType: ROW_TYPES.RM_RISK,
+    sourceStatus: raw?.status ?? null,
+    sourceQueueType: raw?.queueType ?? null,
+    sourceNextAction: raw?.recommendedAction ?? null,
+    orderType: null,
+  });
 
   return buildNormalizedRow({
     rowType: ROW_TYPES.RM_RISK,
     documentType: DOCUMENT_TYPES.RM_SHORTAGE,
     documentNo: raw?.workOrderNo ?? raw?.salesOrderNo ?? null,
-    currentStatus: raw?.status === "CRITICAL" ? "WAITING_RM" : "RM_LOW_BUFFER",
+    currentStatus,
     currentOwner,
     nextAction: raw?.recommendedAction ?? raw?.blockerReason ?? "Review RM shortage",
     ageHours: null,
@@ -193,6 +211,7 @@ function normalizeRmRiskRow(raw) {
       salesOrderId,
       workOrderId,
       rmItemId,
+      ...lineage,
       ...(purchaseNextOwnerHint && currentOwner === VISIBLE_OWNERS.STORE
         ? { purchaseNextOwnerHint }
         : {}),
@@ -210,13 +229,23 @@ function normalizeProductionRow(raw) {
   const lineId = Number(raw?.workOrderLineId);
   const orderType = raw?.orderType ?? "NORMAL";
   const sourceId = `production:wo:${workOrderId}:line:${lineId}`;
+  const lineage = buildSourceLineageMetadata(raw, {
+    sourceStatus: raw?.status ?? null,
+    sourceNextAction: nextAction,
+  });
+  const currentStatus = mapSourceToCurrentStatus({
+    rowType: ROW_TYPES.PRODUCTION_QUEUE,
+    sourceStatus: raw?.status ?? null,
+    sourceNextAction: nextAction,
+    orderType,
+  });
 
   return buildNormalizedRow({
     rowType: ROW_TYPES.PRODUCTION_QUEUE,
     documentType:
       nextAction === "QC_PENDING" ? DOCUMENT_TYPES.PRODUCTION : DOCUMENT_TYPES.WORK_ORDER,
     documentNo: raw?.workOrderNo ?? raw?.salesOrderNo ?? null,
-    currentStatus: nextAction,
+    currentStatus,
     currentOwner: ownerForProductionNextAction(nextAction),
     nextAction: raw?.actionLabel ?? nextAction,
     ageHours: ageHoursFromTimestamp(raw?.workOrderDate),
@@ -236,6 +265,7 @@ function normalizeProductionRow(raw) {
       rmReadinessGate: raw?.rmReadinessGate ?? null,
       actionHref: raw?.actionHref ?? null,
       lastShortageQty: raw?.lastShortageQty ?? null,
+      ...lineage,
     },
   });
 }
@@ -250,12 +280,19 @@ function normalizeQaRow(raw) {
   const productionId = peMatch ? Number(peMatch[1]) : null;
   const workOrderId = Number(raw?.workOrderId);
   const sourceId = productionId ? `qa:pe:${productionId}` : `qa:wo:${workOrderId}`;
+  const sourceStatus = raw?.status ?? "PENDING_QC";
+  const lineage = buildSourceLineageMetadata(raw, { sourceStatus });
+  const currentStatus = mapSourceToCurrentStatus({
+    rowType: ROW_TYPES.QA_QUEUE,
+    sourceStatus,
+    orderType: raw?.orderType ?? null,
+  });
 
   return buildNormalizedRow({
     rowType: ROW_TYPES.QA_QUEUE,
     documentType: DOCUMENT_TYPES.QA,
     documentNo: qcRef || (raw?.workOrderNo != null ? raw.workOrderNo : null),
-    currentStatus: raw?.status ?? "QA_PENDING",
+    currentStatus,
     currentOwner: VISIBLE_OWNERS.QA,
     nextAction: raw?.status === "PARTIAL_QC" ? "Complete partial QA" : "Complete QA",
     ageHours: ageHoursFromTimestamp(raw?.qcDate),
@@ -272,6 +309,7 @@ function normalizeQaRow(raw) {
       cycleNo: raw?.cycleNo ?? null,
       cycleId: raw?.cycleId ?? null,
       itemName: raw?.itemName ?? null,
+      ...lineage,
     },
   });
 }
@@ -285,12 +323,20 @@ function normalizeDispatchRow(raw) {
   const itemId = Number(raw?.itemId);
   const orderType = raw?.orderType ?? "NORMAL";
   const sourceId = `dispatch:so:${salesOrderId}:item:${itemId}:cycle:${raw?.cycleId ?? 0}`;
+  const lineage = buildSourceLineageMetadata(raw, {
+    sourceStatus: "DISPATCH_PENDING",
+  });
+  const currentStatus = mapSourceToCurrentStatus({
+    rowType: ROW_TYPES.DISPATCH_BACKLOG,
+    sourceStatus: "DISPATCH_PENDING",
+    orderType,
+  });
 
   return buildNormalizedRow({
     rowType: ROW_TYPES.DISPATCH_BACKLOG,
     documentType: DOCUMENT_TYPES.DISPATCH,
     documentNo: raw?.salesOrderNo ?? null,
-    currentStatus: "DISPATCH_PENDING",
+    currentStatus,
     currentOwner: VISIBLE_OWNERS.STORE,
     nextAction: "Dispatch material",
     ageHours: ageHoursFromTimestamp(raw?.salesOrderDate),
@@ -309,6 +355,7 @@ function normalizeDispatchRow(raw) {
       cycleId: raw?.cycleId ?? null,
       internalStatus: raw?.status ?? null,
       dispatchOptional: orderType === "NO_QTY",
+      ...lineage,
     },
   });
 }
@@ -340,12 +387,22 @@ function normalizeContinueWorkingRow(raw) {
   const salesOrderId = Number(raw?.salesOrderId);
   const orderType = raw?.orderType ?? "NORMAL";
   const sourceId = `continue:${raw?.key ?? `so:${salesOrderId}:${stageKey}`}`;
+  const lineage = buildSourceLineageMetadata(raw, {
+    sourceStageKey: stageKey,
+    sourceNextAction: raw?.nextAction ?? raw?.nextStep ?? null,
+  });
+  const currentStatus = mapSourceToCurrentStatus({
+    rowType: ROW_TYPES.CONTINUE_WORKING,
+    sourceStageKey: stageKey,
+    sourceNextAction: raw?.nextAction ?? null,
+    orderType,
+  });
 
   return buildNormalizedRow({
     rowType: ROW_TYPES.CONTINUE_WORKING,
     documentType: documentTypeForOrderType(orderType),
     documentNo: raw?.salesOrderDocNo ?? null,
-    currentStatus: stageKey,
+    currentStatus,
     currentOwner: ownerForContinueWorkingStage(stageKey),
     nextAction: raw?.nextStep ?? nextAction,
     ageHours: null,
@@ -362,6 +419,7 @@ function normalizeContinueWorkingRow(raw) {
       metricQty: raw?.metricQty ?? null,
       href: raw?.href ?? null,
       hasPendingQc: raw?.hasPendingQc ?? null,
+      ...lineage,
     },
   });
 }
@@ -397,6 +455,9 @@ module.exports = {
   RISK_LEVELS,
   VISIBLE_OWNERS,
   SOURCE_MODULES,
+  CONTROL_TOWER_STATUSES,
+  mapSourceToCurrentStatus,
+  buildSourceLineageMetadata,
   buildNormalizedRow,
   ageHoursFromTimestamp,
   ownerForRmRiskRow,

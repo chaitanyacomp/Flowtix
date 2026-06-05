@@ -48,6 +48,7 @@ import {
   FileUp,
   ShieldAlert,
   CalendarRange,
+  Gauge,
 } from "lucide-react";
 import { useFeatureFlags } from "../hooks/useFeatureFlags";
 import {
@@ -105,6 +106,22 @@ const navGroups: NavGroup[] = [
     icon: <LayoutDashboard className="h-4 w-4 shrink-0" />,
     collapsible: false,
     items: [{ to: "/dashboard", navKey: "dash-home", label: "Dashboard", roles: [...allRoles], icon: <LayoutDashboard className="h-4 w-4 shrink-0" /> }],
+  },
+  {
+    key: "control-tower",
+    label: "Control Tower (Beta)",
+    roles: [...allRoles],
+    icon: <Gauge className="h-4 w-4 shrink-0" />,
+    collapsible: false,
+    items: [
+      {
+        to: "/control-tower",
+        navKey: "control-tower",
+        label: "Control Tower (Beta)",
+        roles: [...allRoles],
+        icon: <Gauge className="h-4 w-4 shrink-0" />,
+      },
+    ],
   },
   {
     key: "masters",

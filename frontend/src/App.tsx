@@ -13,6 +13,7 @@ import {
   BRAND_COMPANY_NAME,
 } from "./components/branding/Branding";
 import { DashboardPage as DashboardScreen } from "./pages/DashboardPage";
+import { ControlTowerPage } from "./pages/ControlTowerPage";
 import { CustomersPage } from "./pages/CustomersPage";
 import { ItemsPage } from "./pages/ItemsPage";
 import { OpeningStockPage } from "./pages/OpeningStockPage";
@@ -369,6 +370,14 @@ export default function App() {
           element={
             <ProtectedRoute allowedRoles={[...ALL_APP_ROLES]}>
               <DashboardScreen />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/control-tower"
+          element={
+            <ProtectedRoute allowedRoles={[...ALL_APP_ROLES]}>
+              <ControlTowerPage />
             </ProtectedRoute>
           }
         />

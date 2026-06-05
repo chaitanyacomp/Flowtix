@@ -77,6 +77,36 @@ export type ControlTowerPanelMetricsData = {
 type PanelMetricsResponse = {
   success: boolean;
   data: ControlTowerPanelMetricsData;
+  meta?: {
+    generatedAt?: string;
+    panelOnly?: boolean;
+    commercialIncluded?: boolean;
+  };
+};
+
+export type ControlTowerBoardMeta = {
+  rowCount?: number;
+  groupedCount?: number;
+  ungroupedCount?: number;
+  generatedAt?: string;
+  mode?: string;
+  sampled?: boolean;
+  totalRows?: number;
+  page?: number;
+  pageSize?: number;
+};
+
+export type ControlTowerRoleQueueMeta = {
+  role?: string;
+  mode?: string;
+  sampled?: boolean;
+  page?: number;
+  pageSize?: number;
+  totalRows?: number;
+  totalRowsBeforeRoleFilter?: number;
+  totalRowsAfterRoleFilter?: number;
+  totalRowsAfterRoleDedupe?: number;
+  generatedAt?: string;
 };
 
 type BoardResponse = {
@@ -84,6 +114,7 @@ type BoardResponse = {
   data: {
     groups: ControlTowerBoardGroup[];
     ungrouped: ControlTowerRow[];
+    meta?: ControlTowerBoardMeta;
   };
 };
 
@@ -94,25 +125,55 @@ type RoleQueueResponse = {
     count: number;
     groups: ControlTowerBoardGroup[];
     ungrouped: ControlTowerRow[];
+    meta?: ControlTowerRoleQueueMeta;
   };
 };
 
-export async function fetchControlTowerPanelMetrics(): Promise<ControlTowerPanelMetricsData> {
+export type ControlTowerPanelMetricsResult = {
+  data: ControlTowerPanelMetricsData;
+  meta: PanelMetricsResponse["meta"];
+};
+
+export type ControlTowerBoardResult = {
+  groups: ControlTowerBoardGroup[];
+  ungrouped: ControlTowerRow[];
+  meta: ControlTowerBoardMeta;
+};
+
+export type ControlTowerRoleQueueResult = {
+  role: string;
+  count: number;
+  groups: ControlTowerBoardGroup[];
+  ungrouped: ControlTowerRow[];
+  meta: ControlTowerRoleQueueMeta;
+};
+
+export async function fetchControlTowerPanelMetrics(): Promise<ControlTowerPanelMetricsResult> {
   const res = await apiFetch<PanelMetricsResponse>("/api/control-tower/panel-metrics");
-  return res.data;
+  return { data: res.data, meta: res.meta ?? {} };
 }
 
-export async function fetchControlTowerBoard(): Promise<BoardResponse["data"]> {
+export async function fetchControlTowerBoard(): Promise<ControlTowerBoardResult> {
   const res = await apiFetch<BoardResponse>("/api/control-tower/board");
-  return res.data;
+  return {
+    groups: res.data.groups ?? [],
+    ungrouped: res.data.ungrouped ?? [],
+    meta: res.data.meta ?? {},
+  };
 }
 
-export async function fetchControlTowerRoleQueue(role: string): Promise<RoleQueueResponse["data"]> {
+export async function fetchControlTowerRoleQueue(role: string): Promise<ControlTowerRoleQueueResult> {
   const token = String(role ?? "")
     .trim()
     .toUpperCase();
   const res = await apiFetch<RoleQueueResponse>(`/api/control-tower/role-queue/${encodeURIComponent(token)}`);
-  return res.data;
+  return {
+    role: res.data.role ?? token,
+    count: res.data.count ?? 0,
+    groups: res.data.groups ?? [],
+    ungrouped: res.data.ungrouped ?? [],
+    meta: res.data.meta ?? {},
+  };
 }
 
 /** Sort board groups into the approved swimlane order; unknown groups trail at the end. */

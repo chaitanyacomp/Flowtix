@@ -9,6 +9,12 @@ const {
   CONTROL_TOWER_ROW_MODES,
 } = require("../services/controlTowerNormalizedRowsService");
 const { getControlTowerBoardRows } = require("../services/controlTowerBoardService");
+const {
+  getControlTowerRoleQueue,
+  assertRoleQueueAccess,
+  RoleQueueAccessError,
+  ROLE_QUEUE_ROLES,
+} = require("../services/controlTowerRoleQueueService");
 
 function parseControlTowerReadQuery(query = {}, { defaultMode }) {
   const mode = query.mode != null && String(query.mode).trim() !== ""
@@ -108,4 +114,48 @@ controlTowerRouter.get("/board", requireAuth, controlTowerRoles, async (req, res
   }
 });
 
-module.exports = { controlTowerRouter };
+/**
+ * GET /api/control-tower/role-queue/:role
+ * Role-scoped operational queue (Prompt 6E). Backend verification only.
+ */
+controlTowerRouter.get(
+  "/role-queue/:role",
+  requireAuth,
+  requireRole([...ALL_APP_ROLES], CONTROL_TOWER_ACCESS_DENIED),
+  async (req, res, next) => {
+    try {
+      assertRoleQueueAccess(req.user?.role, req.params.role);
+      const { mode, limitPerSource, page, pageSize } = parseControlTowerReadQuery(req.query, {
+        defaultMode: CONTROL_TOWER_ROW_MODES.FULL,
+      });
+      const payload = await getControlTowerRoleQueue(req.params.role, {
+        mode,
+        limitPerSource,
+        page,
+        pageSize,
+      });
+      return res.json({
+        success: true,
+        data: {
+          role: payload.role,
+          count: payload.count,
+          rows: payload.rows,
+          groups: payload.groups,
+          ungrouped: payload.ungrouped,
+          meta: payload.meta,
+        },
+      });
+    } catch (err) {
+      if (err instanceof RoleQueueAccessError) {
+        return res.status(err.statusCode).json({
+          success: false,
+          message: err.message,
+          endpoint: `/api/control-tower/role-queue/${req.params.role}`,
+        });
+      }
+      return controlTowerErrorResponse(res, err, `/api/control-tower/role-queue/${req.params.role}`);
+    }
+  },
+);
+
+module.exports = { controlTowerRouter, ROLE_QUEUE_ROLES };

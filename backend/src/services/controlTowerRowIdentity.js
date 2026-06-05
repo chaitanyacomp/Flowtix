@@ -167,10 +167,40 @@ function dedupeNormalizedRows(rows) {
   return out;
 }
 
+/**
+ * Role-queue dedupe — collapse only within role + rowKey + currentStatus (Prompt 6E).
+ * @param {object[]} rows
+ * @param {string} role
+ * @returns {object[]}
+ */
+function dedupeRoleQueueRows(rows, role) {
+  const roleKey = String(role ?? "")
+    .trim()
+    .toUpperCase();
+  /** @type {Map<string, object[]>} */
+  const groups = new Map();
+
+  for (const row of rows) {
+    const enriched = row?.rowKey ? row : attachRowIdentity(row);
+    const dedupeKey = `${roleKey}:${enriched.rowKey}:${String(enriched.currentStatus ?? "")}`;
+    const bucket = groups.get(dedupeKey) ?? [];
+    bucket.push(enriched);
+    groups.set(dedupeKey, bucket);
+  }
+
+  const out = [];
+  for (const bucket of groups.values()) {
+    bucket.sort((a, b) => (b.sourcePriority ?? 0) - (a.sourcePriority ?? 0));
+    out.push(bucket[0]);
+  }
+  return out;
+}
+
 module.exports = {
   CONTROL_TOWER_SOURCE_PRIORITY,
   getSourcePriorityForRowType,
   buildControlTowerRowKey,
   attachRowIdentity,
   dedupeNormalizedRows,
+  dedupeRoleQueueRows,
 };

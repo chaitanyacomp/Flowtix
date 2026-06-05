@@ -23,7 +23,7 @@ const {
   normalizeWoPlanningRow,
   normalizeQaReworkRow,
 } = require("./controlTowerRowNormalizer");
-const { dedupeNormalizedRows } = require("./controlTowerRowIdentity");
+const { dedupeNormalizedRows, attachRowIdentity } = require("./controlTowerRowIdentity");
 
 const DEFAULT_SAMPLE_LIMIT = 8;
 const DEFAULT_PAGE = 1;
@@ -264,6 +264,77 @@ async function fetchNormalizedDedupedRows(opts = {}) {
 }
 
 /**
+ * Fetch normalized rows with identity attached — no global dedupe (Prompt 6E role queues).
+ * @param {{ mode?: "sample" | "full"; limitPerSource?: number }} [opts]
+ */
+async function fetchMergedNormalizedRows(opts = {}) {
+  const mode = parseControlTowerRowMode(opts.mode);
+  const limitPerSource = Math.min(
+    25,
+    Math.max(1, Number(opts.limitPerSource) || DEFAULT_SAMPLE_LIMIT),
+  );
+
+  const continueWorkingLimit =
+    mode === CONTROL_TOWER_ROW_MODES.FULL
+      ? CONTINUE_WORKING_FULL_LIMIT
+      : Math.max(limitPerSource, CONTINUE_WORKING_SAMPLE_MIN);
+  const noQtyPlanningLimit =
+    mode === CONTROL_TOWER_ROW_MODES.FULL ? NO_QTY_PLANNING_FULL_LIMIT : limitPerSource;
+  const woPlanningLimit =
+    mode === CONTROL_TOWER_ROW_MODES.FULL ? WO_PLANNING_FULL_LIMIT : limitPerSource;
+  const qaReworkLimit =
+    mode === CONTROL_TOWER_ROW_MODES.FULL ? QA_REWORK_FULL_LIMIT : limitPerSource;
+
+  const [
+    rmRisk,
+    production,
+    qa,
+    dispatch,
+    continueWorking,
+    noQtyPlanning,
+    woPlanning,
+    qaRework,
+  ] = await Promise.all([
+    getRmRiskRows(),
+    getProductionQueueRows(),
+    getQcQueueRows(),
+    getDispatchBacklogRows(),
+    getContinueWorkingRows({ limit: continueWorkingLimit }),
+    getNoQtyPlanningPendingRows({ limit: noQtyPlanningLimit }),
+    getWoPreparePlanningRows({ limit: woPlanningLimit }),
+    getQaReworkQueueRows(undefined, { limit: qaReworkLimit }),
+  ]);
+
+  const built = mergeNormalizedRowsFromSources({
+    rmRisk,
+    production,
+    qa,
+    dispatch,
+    continueWorking,
+    noQtyPlanning,
+    woPlanning,
+    qaRework,
+    mode,
+    limitPerSource,
+  });
+
+  const rows = built.merged.map((row) => attachRowIdentity(row));
+
+  return {
+    rows,
+    meta: {
+      generatedAt: new Date().toISOString(),
+      mode,
+      sampled: mode === CONTROL_TOWER_ROW_MODES.SAMPLE,
+      limitPerSource: mode === CONTROL_TOWER_ROW_MODES.SAMPLE ? limitPerSource : null,
+      rowCountMerged: rows.length,
+      sources: built.sources,
+      note: "Merged normalized rows with rowKey; global dedupe not applied (role queue pipeline).",
+    },
+  };
+}
+
+/**
  * Collect normalized operational rows with optional pagination (Prompt 6B).
  * @param {{
  *   mode?: "sample" | "full";
@@ -303,5 +374,6 @@ module.exports = {
   selectRowsForMode,
   mergeNormalizedRowsFromSources,
   fetchNormalizedDedupedRows,
+  fetchMergedNormalizedRows,
   getNormalizedOperationalRows,
 };

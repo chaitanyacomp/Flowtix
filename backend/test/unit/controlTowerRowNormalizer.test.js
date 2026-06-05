@@ -122,6 +122,30 @@ describe("controlTowerRowNormalizer", () => {
     assert.equal(row.currentStatus, CONTROL_TOWER_STATUSES.PROCUREMENT_IN_PROGRESS);
     assert.equal(row.currentOwner, VISIBLE_OWNERS.PURCHASE);
     assert.equal(row.metadata.sourceQueueType, "WAITING_PURCHASE_ACTION");
+    assert.equal(row.metadata.purchaseHandoff, true);
+  });
+
+  it("normalizeRmRiskRow: APPROVAL_PENDING procurement remains STORE-owned", () => {
+    const row = normalizeRmRiskRow({
+      workOrderId: 10,
+      itemId: 3,
+      status: "CRITICAL",
+      queueType: "APPROVAL_PENDING",
+    });
+    assert.equal(row.currentStatus, CONTROL_TOWER_STATUSES.PROCUREMENT_IN_PROGRESS);
+    assert.equal(row.currentOwner, VISIBLE_OWNERS.STORE);
+    assert.equal(row.metadata.purchaseHandoff, undefined);
+  });
+
+  it("normalizeRmRiskRow: PO_WAITING_GRN procurement remains STORE-owned", () => {
+    const row = normalizeRmRiskRow({
+      workOrderId: 10,
+      itemId: 3,
+      status: "CRITICAL",
+      queueType: "PO_WAITING_GRN",
+    });
+    assert.equal(row.currentStatus, CONTROL_TOWER_STATUSES.PROCUREMENT_IN_PROGRESS);
+    assert.equal(row.currentOwner, VISIBLE_OWNERS.STORE);
   });
 
   it("normalizeProductionRow: QC_PENDING -> QA_PENDING with sourceNextAction preserved", () => {

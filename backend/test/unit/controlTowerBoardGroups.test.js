@@ -36,32 +36,38 @@ function findGroup(result, groupKey) {
 }
 
 describe("CONTROL_TOWER_BOARD_GROUPS", () => {
-  it("defines every approved group with stable order 1..7", () => {
+  it("defines six approved groups without PROCUREMENT_HANDOFF", () => {
     const keys = [
       BOARD_GROUP_KEYS.RM_READINESS,
-      BOARD_GROUP_KEYS.PROCUREMENT_HANDOFF,
       BOARD_GROUP_KEYS.PRODUCTION,
       BOARD_GROUP_KEYS.QUALITY,
       BOARD_GROUP_KEYS.DISPATCH,
       BOARD_GROUP_KEYS.COMMERCIAL_CLOSURE,
       BOARD_GROUP_KEYS.PLANNING,
     ];
-    assert.equal(CONTROL_TOWER_BOARD_GROUPS.length, 7);
+    assert.equal(CONTROL_TOWER_BOARD_GROUPS.length, 6);
+    assert.equal(BOARD_GROUP_KEYS.PROCUREMENT_HANDOFF, undefined);
     assert.deepEqual(
       CONTROL_TOWER_BOARD_GROUPS.map((g) => g.groupKey),
       keys,
     );
     assert.deepEqual(
       CONTROL_TOWER_BOARD_GROUPS.map((g) => g.order),
-      [1, 2, 3, 4, 5, 6, 7],
+      [1, 2, 3, 4, 5, 6],
     );
+  });
+
+  it("includes PROCUREMENT_IN_PROGRESS in RM_READINESS statusList", () => {
+    const rm = CONTROL_TOWER_BOARD_GROUPS.find((g) => g.groupKey === BOARD_GROUP_KEYS.RM_READINESS);
+    assert.ok(rm.statusList.includes(CONTROL_TOWER_STATUSES.PROCUREMENT_IN_PROGRESS));
+    assert.equal(rm.ownerRole, "STORE");
   });
 });
 
 describe("groupControlTowerRows", () => {
   it("includes every approved group even when empty", () => {
     const result = groupControlTowerRows([]);
-    assert.equal(result.groups.length, 7);
+    assert.equal(result.groups.length, 6);
     for (const g of result.groups) {
       assert.equal(g.count, 0);
       assert.deepEqual(g.rows, []);
@@ -77,17 +83,26 @@ describe("groupControlTowerRows", () => {
     assert.equal(group.rows[0].currentStatus, CONTROL_TOWER_STATUSES.WAITING_RM);
   });
 
-  it("places PROCUREMENT_IN_PROGRESS in PROCUREMENT_HANDOFF", () => {
-    const row = normalizeRmRiskRow({
+  it("places PROCUREMENT_IN_PROGRESS in RM_READINESS", () => {
+    const purchaseHandoff = normalizeRmRiskRow({
       workOrderId: 10,
       itemId: 3,
       status: "CRITICAL",
       queueType: "WAITING_PURCHASE_ACTION",
     });
-    const result = groupControlTowerRows([row]);
-    const group = findGroup(result, BOARD_GROUP_KEYS.PROCUREMENT_HANDOFF);
-    assert.equal(group.count, 1);
-    assert.equal(group.rows[0].currentStatus, CONTROL_TOWER_STATUSES.PROCUREMENT_IN_PROGRESS);
+    const storeApproval = normalizeRmRiskRow({
+      workOrderId: 11,
+      itemId: 3,
+      status: "CRITICAL",
+      queueType: "APPROVAL_PENDING",
+    });
+    const result = groupControlTowerRows([purchaseHandoff, storeApproval]);
+    const group = findGroup(result, BOARD_GROUP_KEYS.RM_READINESS);
+    assert.equal(group.count, 2);
+    assert.equal(purchaseHandoff.currentStatus, CONTROL_TOWER_STATUSES.PROCUREMENT_IN_PROGRESS);
+    assert.equal(storeApproval.currentStatus, CONTROL_TOWER_STATUSES.PROCUREMENT_IN_PROGRESS);
+    assert.equal(purchaseHandoff.currentOwner, "PURCHASE");
+    assert.equal(storeApproval.currentOwner, "STORE");
   });
 
   it("places PRODUCTION_PENDING and PRODUCTION_ON_HOLD in PRODUCTION", () => {
@@ -168,7 +183,7 @@ describe("groupControlTowerRows", () => {
     ]);
     assert.deepEqual(
       result.groups.map((g) => g.order),
-      [1, 2, 3, 4, 5, 6, 7],
+      [1, 2, 3, 4, 5, 6],
     );
     assert.deepEqual(
       result.groups.map((g) => g.groupKey),

@@ -134,6 +134,20 @@ function documentTypeForOrderType(orderType) {
   return orderType === "NO_QTY" ? DOCUMENT_TYPES.NO_QTY : DOCUMENT_TYPES.SALES_ORDER;
 }
 
+/** Store-owned procurement phases (Prompt 6C). */
+const STORE_PROCUREMENT_QUEUE_TYPES = Object.freeze([
+  "APPROVAL_PENDING",
+  "PO_WAITING_GRN",
+  "WAITING_GRN",
+  "PARTIAL_RM_RECEIVED",
+  "SHORTAGE_COVERED_BY_INCOMING",
+  "PROCUREMENT_PENDING",
+  "PROCUREMENT_IN_PROGRESS",
+]);
+
+/** Purchase acts only after Store escalation. */
+const PURCHASE_PROCUREMENT_QUEUE_TYPES = Object.freeze(["WAITING_PURCHASE_ACTION"]);
+
 /**
  * RM shortage rows: Store owns validation, allocation, issue, and procurement escalation.
  * Purchase is currentOwner only when material workspace marks an approved MR/PR handoff
@@ -141,11 +155,15 @@ function documentTypeForOrderType(orderType) {
  * @param {object} raw
  */
 function ownerForRmRiskRow(raw) {
-  const queueType = String(raw?.queueType ?? "");
-  if (queueType === "WAITING_PURCHASE_ACTION") {
+  const queueType = String(raw?.queueType ?? "").trim();
+  if (PURCHASE_PROCUREMENT_QUEUE_TYPES.includes(queueType)) {
     return VISIBLE_OWNERS.PURCHASE;
   }
   return VISIBLE_OWNERS.STORE;
+}
+
+function isPurchaseHandoffQueueType(queueType) {
+  return PURCHASE_PROCUREMENT_QUEUE_TYPES.includes(String(queueType ?? "").trim());
 }
 
 function purchaseNextOwnerHintFromRmRisk(raw) {
@@ -175,8 +193,10 @@ function normalizeRmRiskRow(raw) {
       ? `rm-risk:wo:${workOrderId}:rm:${rmItemId}`
       : `rm-risk:so:${salesOrderId}:rm:${rmItemId}`;
 
+  const queueType = String(raw?.queueType ?? "").trim();
   const currentOwner = ownerForRmRiskRow(raw);
   const purchaseNextOwnerHint = purchaseNextOwnerHintFromRmRisk(raw);
+  const purchaseHandoff = isPurchaseHandoffQueueType(queueType);
   const lineage = buildSourceLineageMetadata(raw, {
     sourceStatus: raw?.status ?? null,
     sourceQueueType: raw?.queueType ?? null,
@@ -212,6 +232,7 @@ function normalizeRmRiskRow(raw) {
       workOrderId,
       rmItemId,
       ...lineage,
+      ...(purchaseHandoff ? { purchaseHandoff: true } : {}),
       ...(purchaseNextOwnerHint && currentOwner === VISIBLE_OWNERS.STORE
         ? { purchaseNextOwnerHint }
         : {}),
@@ -454,6 +475,8 @@ module.exports = {
   DOCUMENT_TYPES,
   RISK_LEVELS,
   VISIBLE_OWNERS,
+  STORE_PROCUREMENT_QUEUE_TYPES,
+  PURCHASE_PROCUREMENT_QUEUE_TYPES,
   SOURCE_MODULES,
   CONTROL_TOWER_STATUSES,
   mapSourceToCurrentStatus,
@@ -461,6 +484,7 @@ module.exports = {
   buildNormalizedRow,
   ageHoursFromTimestamp,
   ownerForRmRiskRow,
+  isPurchaseHandoffQueueType,
   normalizeRmRiskRow,
   normalizeProductionRow,
   normalizeQaRow,

@@ -1,5 +1,5 @@
 /**
- * Control Tower operational board groups (Prompt 5).
+ * Control Tower operational board groups (Prompt 5, 6C).
  * Maps normalized currentStatus values into approved swimlanes.
  */
 
@@ -7,7 +7,6 @@ const { CONTROL_TOWER_STATUSES } = require("./controlTowerStatusMap");
 
 const BOARD_GROUP_KEYS = Object.freeze({
   RM_READINESS: "RM_READINESS",
-  PROCUREMENT_HANDOFF: "PROCUREMENT_HANDOFF",
   PRODUCTION: "PRODUCTION",
   QUALITY: "QUALITY",
   DISPATCH: "DISPATCH",
@@ -23,17 +22,11 @@ const CONTROL_TOWER_BOARD_GROUPS = Object.freeze([
     ownerRole: "STORE",
     statusList: Object.freeze([
       CONTROL_TOWER_STATUSES.WAITING_RM,
+      CONTROL_TOWER_STATUSES.PROCUREMENT_IN_PROGRESS,
       CONTROL_TOWER_STATUSES.RM_READY_FOR_ISSUE,
       CONTROL_TOWER_STATUSES.WO_RELEASE_READY,
     ]),
     order: 1,
-  },
-  {
-    groupKey: BOARD_GROUP_KEYS.PROCUREMENT_HANDOFF,
-    label: "Procurement Handoff",
-    ownerRole: "PURCHASE",
-    statusList: Object.freeze([CONTROL_TOWER_STATUSES.PROCUREMENT_IN_PROGRESS]),
-    order: 2,
   },
   {
     groupKey: BOARD_GROUP_KEYS.PRODUCTION,
@@ -43,7 +36,7 @@ const CONTROL_TOWER_BOARD_GROUPS = Object.freeze([
       CONTROL_TOWER_STATUSES.PRODUCTION_PENDING,
       CONTROL_TOWER_STATUSES.PRODUCTION_ON_HOLD,
     ]),
-    order: 3,
+    order: 2,
   },
   {
     groupKey: BOARD_GROUP_KEYS.QUALITY,
@@ -53,7 +46,7 @@ const CONTROL_TOWER_BOARD_GROUPS = Object.freeze([
       CONTROL_TOWER_STATUSES.QA_PENDING,
       CONTROL_TOWER_STATUSES.QA_REWORK_PENDING,
     ]),
-    order: 4,
+    order: 3,
   },
   {
     groupKey: BOARD_GROUP_KEYS.DISPATCH,
@@ -63,7 +56,7 @@ const CONTROL_TOWER_BOARD_GROUPS = Object.freeze([
       CONTROL_TOWER_STATUSES.DISPATCH_PENDING,
       CONTROL_TOWER_STATUSES.DISPATCH_DRAFT_PENDING,
     ]),
-    order: 5,
+    order: 4,
   },
   {
     groupKey: BOARD_GROUP_KEYS.COMMERCIAL_CLOSURE,
@@ -75,7 +68,7 @@ const CONTROL_TOWER_BOARD_GROUPS = Object.freeze([
       CONTROL_TOWER_STATUSES.EXPORT_PENDING,
       CONTROL_TOWER_STATUSES.PAYMENT_PENDING,
     ]),
-    order: 6,
+    order: 5,
   },
   {
     groupKey: BOARD_GROUP_KEYS.PLANNING,
@@ -85,7 +78,7 @@ const CONTROL_TOWER_BOARD_GROUPS = Object.freeze([
       CONTROL_TOWER_STATUSES.PLANNING_PENDING,
       CONTROL_TOWER_STATUSES.WO_PLANNING_PENDING,
     ]),
-    order: 7,
+    order: 6,
   },
 ]);
 

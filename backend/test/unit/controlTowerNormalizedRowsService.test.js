@@ -10,7 +10,7 @@ const {
   mergeNormalizedRowsFromSources,
 } = require("../../src/services/controlTowerNormalizedRowsService");
 const { attachRowIdentity } = require("../../src/services/controlTowerRowIdentity");
-const { normalizeProductionRow } = require("../../src/services/controlTowerRowNormalizer");
+const { normalizeProductionRow, CONTROL_TOWER_STATUSES } = require("../../src/services/controlTowerRowNormalizer");
 
 function productionRow(woId) {
   return normalizeProductionRow({
@@ -136,6 +136,71 @@ describe("mergeNormalizedRowsFromSources", () => {
     const page = paginateRows(deduped.rows, 1, 50);
     assert.equal(page.length, 1);
     assert.equal(page[0].rowKey, "WORK_ORDER:125");
+  });
+});
+
+describe("mergeNormalizedRowsFromSources — high-priority sources", () => {
+  it("includes noQtyPlanning, woPlanning, and qaRework in meta.sources", () => {
+    const result = mergeNormalizedRowsFromSources({
+      rmRisk: [],
+      production: [],
+      qa: [],
+      dispatch: [],
+      continueWorking: [],
+      noQtyPlanning: [
+        {
+          salesOrderId: 1,
+          salesOrderDocNo: "SO-NQ-1",
+          latestRequirementSheetStatus: "DRAFT",
+        },
+      ],
+      woPlanning: [
+        {
+          salesOrderId: 2,
+          salesOrderDocNo: "SO-2",
+          operationalKey: "READY_FOR_WO",
+          nextActionKey: "CREATE_WO",
+        },
+      ],
+      qaRework: [
+        {
+          dispositionId: 3,
+          status: "REWORK_READY_FOR_QC",
+          workOrderId: 8,
+          pendingReworkQcQty: 2,
+        },
+      ],
+      mode: CONTROL_TOWER_ROW_MODES.FULL,
+    });
+    assert.equal(result.sources.noQtyPlanning.selected, 1);
+    assert.equal(result.sources.woPlanning.selected, 1);
+    assert.equal(result.sources.qaRework.selected, 1);
+    assert.equal(result.rows.length, 3);
+    const statuses = result.rows.map((r) => r.currentStatus);
+    assert.ok(statuses.includes(CONTROL_TOWER_STATUSES.PLANNING_PENDING));
+    assert.ok(statuses.includes(CONTROL_TOWER_STATUSES.WO_PLANNING_PENDING));
+    assert.ok(statuses.includes(CONTROL_TOWER_STATUSES.QA_REWORK_PENDING));
+  });
+
+  it("sample mode limits new sources", () => {
+    const noQtyRows = Array.from({ length: 4 }, (_, i) => ({
+      salesOrderId: i + 1,
+      latestRequirementSheetStatus: "DRAFT",
+    }));
+    const result = mergeNormalizedRowsFromSources({
+      rmRisk: [],
+      production: [],
+      qa: [],
+      dispatch: [],
+      continueWorking: [],
+      noQtyPlanning: noQtyRows,
+      woPlanning: [],
+      qaRework: [],
+      mode: CONTROL_TOWER_ROW_MODES.SAMPLE,
+      limitPerSource: 2,
+    });
+    assert.equal(result.sources.noQtyPlanning.fetched, 4);
+    assert.equal(result.sources.noQtyPlanning.selected, 2);
   });
 });
 

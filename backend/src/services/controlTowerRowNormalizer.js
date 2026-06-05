@@ -13,8 +13,11 @@ const ROW_TYPES = Object.freeze({
   RM_RISK: "RM_RISK",
   PRODUCTION_QUEUE: "PRODUCTION_QUEUE",
   QA_QUEUE: "QA_QUEUE",
+  QA_REWORK: "QA_REWORK",
   DISPATCH_BACKLOG: "DISPATCH_BACKLOG",
   CONTINUE_WORKING: "CONTINUE_WORKING",
+  NO_QTY_PLANNING: "NO_QTY_PLANNING",
+  WO_PLANNING: "WO_PLANNING",
 });
 
 const DOCUMENT_TYPES = Object.freeze({
@@ -47,9 +50,14 @@ const SOURCE_MODULES = Object.freeze({
   RM_RISK: "RM_RISK",
   PRODUCTION_QUEUE: "PRODUCTION_QUEUE",
   QC_QUEUE: "QC_QUEUE",
+  QA_REWORK: "QA_REWORK",
   DISPATCH_BACKLOG: "DISPATCH_BACKLOG",
   CONTINUE_WORKING: "CONTINUE_WORKING",
+  NO_QTY_PLANNING: "NO_QTY_PLANNING",
+  WO_PLANNING: "WO_PLANNING",
 });
+
+const WO_PLANNING_STORE_OPERATIONAL_KEYS = Object.freeze(["RM_SHORTAGE", "PURCHASE_GRN_PENDING"]);
 
 /**
  * @typedef {Object} ControlTowerNormalizedRow
@@ -381,6 +389,163 @@ function normalizeDispatchRow(raw) {
   });
 }
 
+function ownerForWoPlanningRow(raw) {
+  const operationalKey = String(raw?.operationalKey ?? "");
+  if (WO_PLANNING_STORE_OPERATIONAL_KEYS.includes(operationalKey)) {
+    return VISIBLE_OWNERS.STORE;
+  }
+  return VISIBLE_OWNERS.PRODUCTION;
+}
+
+function nextActionForWoPlanningRow(raw) {
+  const key = String(raw?.nextActionKey ?? raw?.operationalKey ?? "");
+  if (key === "CREATE_WO") return "Create Work Order";
+  if (key === "OPEN_PURCHASE_PLAN") return "Open purchase / GRN plan";
+  if (key === "RAISE_MR") return "Raise material requisition";
+  if (key === "PREPARE_WO") return "Prepare Work Order";
+  return raw?.operationalLabel ?? "Prepare Work Order";
+}
+
+/**
+ * @param {object} raw — getNoQtyPlanningPendingRows() element
+ * @returns {ControlTowerNormalizedRow}
+ */
+function normalizeNoQtyPlanningRow(raw) {
+  const salesOrderId = Number(raw?.salesOrderId);
+  const cycleId = raw?.cycleId != null ? Number(raw.cycleId) : null;
+  const sourceId = `no-qty-planning:so:${salesOrderId}:cycle:${cycleId ?? 0}`;
+  const rsStatus = String(raw?.latestRequirementSheetStatus ?? "DRAFT");
+  const lineage = buildSourceLineageMetadata(raw, {
+    sourceStatus: rsStatus,
+    sourceStageKey: "NO_QTY_PLANNING",
+    sourceNextAction: rsStatus === "DRAFT" ? "LOCK_RS" : "COMPLETE_RS_PLANNING",
+  });
+  const currentStatus = mapSourceToCurrentStatus({
+    rowType: ROW_TYPES.NO_QTY_PLANNING,
+    sourceStatus: rsStatus,
+    orderType: "NO_QTY",
+  });
+
+  return buildNormalizedRow({
+    rowType: ROW_TYPES.NO_QTY_PLANNING,
+    documentType: DOCUMENT_TYPES.NO_QTY,
+    documentNo: raw?.salesOrderDocNo ?? null,
+    currentStatus,
+    currentOwner: VISIBLE_OWNERS.ADMIN,
+    nextAction: rsStatus === "LOCKED" ? "Review RS" : "Complete requirement sheet planning",
+    ageHours: null,
+    riskLevel: RISK_LEVELS.MEDIUM,
+    sourceModule: SOURCE_MODULES.NO_QTY_PLANNING,
+    sourceId,
+    metadata: {
+      salesOrderId,
+      customerName: raw?.customerName ?? null,
+      cycleId,
+      cycleNo: raw?.cycleNo ?? null,
+      latestRequirementSheetId: raw?.latestRequirementSheetId ?? null,
+      latestRequirementSheetDocNo: raw?.latestRequirementSheetDocNo ?? null,
+      latestRequirementSheetStatus: rsStatus,
+      orderType: "NO_QTY",
+      ...lineage,
+    },
+  });
+}
+
+/**
+ * @param {object} raw — getWoPreparePlanningRows() element
+ * @returns {ControlTowerNormalizedRow}
+ */
+function normalizeWoPlanningRow(raw) {
+  const salesOrderId = Number(raw?.salesOrderId);
+  const operationalKey = String(raw?.operationalKey ?? "WO_PREPARE");
+  const sourceId = `wo-planning:so:${salesOrderId}`;
+  const lineage = buildSourceLineageMetadata(raw, {
+    sourceStatus: operationalKey,
+    sourceStageKey: "WO_PENDING",
+    sourceNextAction: raw?.nextActionKey ?? null,
+  });
+  const currentStatus = mapSourceToCurrentStatus({
+    rowType: ROW_TYPES.WO_PLANNING,
+    sourceStatus: operationalKey,
+    orderType: "NORMAL",
+  });
+
+  return buildNormalizedRow({
+    rowType: ROW_TYPES.WO_PLANNING,
+    documentType: DOCUMENT_TYPES.SALES_ORDER,
+    documentNo: raw?.salesOrderDocNo ?? null,
+    currentStatus,
+    currentOwner: ownerForWoPlanningRow(raw),
+    nextAction: nextActionForWoPlanningRow(raw),
+    ageHours: null,
+    riskLevel: operationalKey === "RM_SHORTAGE" ? RISK_LEVELS.HIGH : RISK_LEVELS.LOW,
+    sourceModule: SOURCE_MODULES.WO_PLANNING,
+    sourceId,
+    metadata: {
+      salesOrderId,
+      customerName: raw?.customerName ?? null,
+      primaryFgName: raw?.primaryFgName ?? null,
+      operationalKey,
+      operationalLabel: raw?.operationalLabel ?? null,
+      nextActionKey: raw?.nextActionKey ?? null,
+      shortageRmCount: raw?.shortageRmCount ?? null,
+      pendingMrRefs: raw?.pendingMrRefs ?? null,
+      canCreateWorkOrder: raw?.canCreateWorkOrder ?? null,
+      woBlockReason: raw?.woBlockReason ?? null,
+      orderType: "NORMAL",
+      ...lineage,
+    },
+  });
+}
+
+/**
+ * @param {object} raw — getQaReworkQueueRows() element
+ * @returns {ControlTowerNormalizedRow}
+ */
+function normalizeQaReworkRow(raw) {
+  const dispositionId = Number(raw?.dispositionId);
+  const workOrderId = raw?.workOrderId != null ? Number(raw.workOrderId) : null;
+  const sourceId = `qa-rework:disp:${dispositionId}`;
+  const sourceStatus = String(raw?.status ?? "REWORK_READY_FOR_QC");
+  const lineage = buildSourceLineageMetadata(raw, {
+    sourceStatus,
+    sourceNextAction: "REWORK_QC_PENDING",
+  });
+  const currentStatus = mapSourceToCurrentStatus({
+    rowType: ROW_TYPES.QA_REWORK,
+    sourceStatus,
+    orderType: raw?.orderType ?? null,
+  });
+
+  return buildNormalizedRow({
+    rowType: ROW_TYPES.QA_REWORK,
+    documentType: DOCUMENT_TYPES.QA,
+    documentNo: raw?.workOrderNo ?? raw?.sourceQcEntryDocNo ?? `QRD-${dispositionId}`,
+    currentStatus,
+    currentOwner: VISIBLE_OWNERS.QA,
+    nextAction: "Complete rework QA",
+    ageHours: ageHoursFromTimestamp(raw?.createdAt),
+    riskLevel: RISK_LEVELS.MEDIUM,
+    sourceModule: SOURCE_MODULES.QA_REWORK,
+    sourceId,
+    metadata: {
+      dispositionId,
+      workOrderId,
+      workOrderNo: raw?.workOrderNo ?? null,
+      salesOrderId: raw?.salesOrderId ?? null,
+      cycleId: raw?.cycleId ?? null,
+      cycleNo: raw?.cycleNo ?? null,
+      itemId: raw?.itemId ?? null,
+      itemName: raw?.itemName ?? null,
+      pendingReworkQcQty: raw?.pendingReworkQcQty ?? null,
+      productionId: raw?.productionId ?? null,
+      sourceQcEntryId: raw?.sourceQcEntryId ?? null,
+      sourceQcEntryDocNo: raw?.sourceQcEntryDocNo ?? null,
+      ...lineage,
+    },
+  });
+}
+
 function ownerForContinueWorkingStage(stageKey) {
   switch (stageKey) {
     case "QC":
@@ -490,5 +655,9 @@ module.exports = {
   normalizeQaRow,
   normalizeDispatchRow,
   normalizeContinueWorkingRow,
+  normalizeNoQtyPlanningRow,
+  normalizeWoPlanningRow,
+  normalizeQaReworkRow,
+  ownerForWoPlanningRow,
   validateNormalizedRowShape,
 };

@@ -1,5 +1,5 @@
 /**
- * Control Tower — normalized operational rows (Prompt 2, 6B).
+ * Control Tower — normalized operational rows (Prompt 2, 6B, 6D).
  * Read-only aggregation over existing dashboard queue services.
  */
 
@@ -9,13 +9,19 @@ const {
   getQcQueueRows,
   getDispatchBacklogRows,
   getContinueWorkingRows,
+  getNoQtyPlanningPendingRows,
+  getQaReworkQueueRows,
 } = require("./dashboardQueueSnapshots");
+const { getWoPreparePlanningRows } = require("./woPrepareOperationalQueue");
 const {
   normalizeRmRiskRow,
   normalizeProductionRow,
   normalizeQaRow,
   normalizeDispatchRow,
   normalizeContinueWorkingRow,
+  normalizeNoQtyPlanningRow,
+  normalizeWoPlanningRow,
+  normalizeQaReworkRow,
 } = require("./controlTowerRowNormalizer");
 const { dedupeNormalizedRows } = require("./controlTowerRowIdentity");
 
@@ -25,6 +31,9 @@ const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 200;
 const CONTINUE_WORKING_SAMPLE_MIN = 20;
 const CONTINUE_WORKING_FULL_LIMIT = 100;
+const NO_QTY_PLANNING_FULL_LIMIT = 50;
+const WO_PLANNING_FULL_LIMIT = 200;
+const QA_REWORK_FULL_LIMIT = 200;
 
 const CONTROL_TOWER_ROW_MODES = Object.freeze({
   SAMPLE: "sample",
@@ -104,6 +113,9 @@ function selectRowsForMode(list, mode, limitPerSource) {
  *   qa?: unknown[];
  *   dispatch?: unknown[];
  *   continueWorking?: unknown[];
+ *   noQtyPlanning?: unknown[];
+ *   woPlanning?: unknown[];
+ *   qaRework?: unknown[];
  *   mode?: "sample" | "full";
  *   limitPerSource?: number;
  * }} input
@@ -122,6 +134,9 @@ function mergeNormalizedRowsFromSources(input) {
   const qa = selectRowsForMode(input.qa, mode, limitPerSource);
   const dispatch = selectRowsForMode(input.dispatch, mode, limitPerSource);
   const continueWorking = selectRowsForMode(input.continueWorking, mode, limitPerSource);
+  const noQtyPlanning = selectRowsForMode(input.noQtyPlanning, mode, limitPerSource);
+  const woPlanning = selectRowsForMode(input.woPlanning, mode, limitPerSource);
+  const qaRework = selectRowsForMode(input.qaRework, mode, limitPerSource);
 
   const merged = [
     ...rmRisk.map(normalizeRmRiskRow),
@@ -129,6 +144,9 @@ function mergeNormalizedRowsFromSources(input) {
     ...qa.map(normalizeQaRow),
     ...dispatch.map(normalizeDispatchRow),
     ...continueWorking.map(normalizeContinueWorkingRow),
+    ...noQtyPlanning.map(normalizeNoQtyPlanningRow),
+    ...woPlanning.map(normalizeWoPlanningRow),
+    ...qaRework.map(normalizeQaReworkRow),
   ];
 
   const rows = dedupeNormalizedRows(merged);
@@ -159,6 +177,18 @@ function mergeNormalizedRowsFromSources(input) {
         fetched: (input.continueWorking || []).length,
         selected: continueWorking.length,
       },
+      noQtyPlanning: {
+        fetched: (input.noQtyPlanning || []).length,
+        selected: noQtyPlanning.length,
+      },
+      woPlanning: {
+        fetched: (input.woPlanning || []).length,
+        selected: woPlanning.length,
+      },
+      qaRework: {
+        fetched: (input.qaRework || []).length,
+        selected: qaRework.length,
+      },
     },
   };
 }
@@ -178,13 +208,31 @@ async function fetchNormalizedDedupedRows(opts = {}) {
     mode === CONTROL_TOWER_ROW_MODES.FULL
       ? CONTINUE_WORKING_FULL_LIMIT
       : Math.max(limitPerSource, CONTINUE_WORKING_SAMPLE_MIN);
+  const noQtyPlanningLimit =
+    mode === CONTROL_TOWER_ROW_MODES.FULL ? NO_QTY_PLANNING_FULL_LIMIT : limitPerSource;
+  const woPlanningLimit =
+    mode === CONTROL_TOWER_ROW_MODES.FULL ? WO_PLANNING_FULL_LIMIT : limitPerSource;
+  const qaReworkLimit =
+    mode === CONTROL_TOWER_ROW_MODES.FULL ? QA_REWORK_FULL_LIMIT : limitPerSource;
 
-  const [rmRisk, production, qa, dispatch, continueWorking] = await Promise.all([
+  const [
+    rmRisk,
+    production,
+    qa,
+    dispatch,
+    continueWorking,
+    noQtyPlanning,
+    woPlanning,
+    qaRework,
+  ] = await Promise.all([
     getRmRiskRows(),
     getProductionQueueRows(),
     getQcQueueRows(),
     getDispatchBacklogRows(),
     getContinueWorkingRows({ limit: continueWorkingLimit }),
+    getNoQtyPlanningPendingRows({ limit: noQtyPlanningLimit }),
+    getWoPreparePlanningRows({ limit: woPlanningLimit }),
+    getQaReworkQueueRows(undefined, { limit: qaReworkLimit }),
   ]);
 
   const built = mergeNormalizedRowsFromSources({
@@ -193,6 +241,9 @@ async function fetchNormalizedDedupedRows(opts = {}) {
     qa,
     dispatch,
     continueWorking,
+    noQtyPlanning,
+    woPlanning,
+    qaRework,
     mode,
     limitPerSource,
   });

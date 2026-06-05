@@ -7,6 +7,9 @@ const {
   normalizeQaRow,
   normalizeDispatchRow,
   normalizeContinueWorkingRow,
+  normalizeNoQtyPlanningRow,
+  normalizeWoPlanningRow,
+  normalizeQaReworkRow,
   validateNormalizedRowShape,
   VISIBLE_OWNERS,
   DOCUMENT_TYPES,
@@ -80,6 +83,21 @@ describe("mapSourceToCurrentStatus", () => {
     assert.equal(
       mapSourceToCurrentStatus({ sourceQueueType: "STORE_ISSUE_PENDING" }),
       CONTROL_TOWER_STATUSES.RM_READY_FOR_ISSUE,
+    );
+  });
+
+  it("maps high-priority planning and rework row types", () => {
+    assert.equal(
+      mapSourceToCurrentStatus({ rowType: "NO_QTY_PLANNING" }),
+      CONTROL_TOWER_STATUSES.PLANNING_PENDING,
+    );
+    assert.equal(
+      mapSourceToCurrentStatus({ rowType: "WO_PLANNING" }),
+      CONTROL_TOWER_STATUSES.WO_PLANNING_PENDING,
+    );
+    assert.equal(
+      mapSourceToCurrentStatus({ rowType: "QA_REWORK", sourceStatus: "REWORK_READY_FOR_QC" }),
+      CONTROL_TOWER_STATUSES.QA_REWORK_PENDING,
     );
   });
 });
@@ -238,5 +256,62 @@ describe("controlTowerRowNormalizer", () => {
     assert.equal(validateNormalizedRowShape(row), true);
     assert.equal(row.documentType, DOCUMENT_TYPES.QA);
     assert.equal(row.riskLevel, RISK_LEVELS.LOW);
+  });
+
+  it("normalizeNoQtyPlanningRow maps to PLANNING_PENDING with ADMIN owner", () => {
+    const row = normalizeNoQtyPlanningRow({
+      salesOrderId: 44,
+      salesOrderDocNo: "SO-NQ-44",
+      cycleId: 2,
+      cycleNo: 2,
+      latestRequirementSheetStatus: "DRAFT",
+      customerName: "Acme",
+    });
+    assert.equal(row.currentStatus, CONTROL_TOWER_STATUSES.PLANNING_PENDING);
+    assert.equal(row.currentOwner, VISIBLE_OWNERS.ADMIN);
+    assert.equal(row.metadata.sourceStageKey, "NO_QTY_PLANNING");
+    assert.equal(row.metadata.orderType, "NO_QTY");
+  });
+
+  it("normalizeWoPlanningRow maps READY_FOR_WO to WO_PLANNING_PENDING with PRODUCTION owner", () => {
+    const row = normalizeWoPlanningRow({
+      salesOrderId: 12,
+      salesOrderDocNo: "SO-12",
+      operationalKey: "READY_FOR_WO",
+      operationalLabel: "Ready for WO",
+      nextActionKey: "CREATE_WO",
+      canCreateWorkOrder: true,
+    });
+    assert.equal(row.currentStatus, CONTROL_TOWER_STATUSES.WO_PLANNING_PENDING);
+    assert.equal(row.currentOwner, VISIBLE_OWNERS.PRODUCTION);
+    assert.equal(row.metadata.sourceStageKey, "WO_PENDING");
+  });
+
+  it("normalizeWoPlanningRow maps RM_SHORTAGE blocker to STORE owner", () => {
+    const row = normalizeWoPlanningRow({
+      salesOrderId: 13,
+      salesOrderDocNo: "SO-13",
+      operationalKey: "RM_SHORTAGE",
+      nextActionKey: "RAISE_MR",
+      shortageRmCount: 2,
+    });
+    assert.equal(row.currentStatus, CONTROL_TOWER_STATUSES.WO_PLANNING_PENDING);
+    assert.equal(row.currentOwner, VISIBLE_OWNERS.STORE);
+  });
+
+  it("normalizeQaReworkRow maps to QA_REWORK_PENDING with QA owner", () => {
+    const row = normalizeQaReworkRow({
+      dispositionId: 9,
+      status: "REWORK_READY_FOR_QC",
+      workOrderId: 77,
+      workOrderNo: "WO-77",
+      pendingReworkQcQty: 12,
+      itemName: "FG-A",
+      createdAt: "2026-01-01T10:00:00.000Z",
+    });
+    assert.equal(row.currentStatus, CONTROL_TOWER_STATUSES.QA_REWORK_PENDING);
+    assert.equal(row.currentOwner, VISIBLE_OWNERS.QA);
+    assert.equal(row.metadata.sourceStatus, "REWORK_READY_FOR_QC");
+    assert.equal(row.metadata.sourceNextAction, "REWORK_QC_PENDING");
   });
 });

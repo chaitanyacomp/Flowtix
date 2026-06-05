@@ -134,6 +134,22 @@ function mapSourceToCurrentStatus(input = {}) {
     return CONTROL_TOWER_STATUSES.QA_PENDING;
   }
 
+  if (rowType === "NO_QTY_PLANNING") {
+    return CONTROL_TOWER_STATUSES.PLANNING_PENDING;
+  }
+
+  if (rowType === "WO_PLANNING") {
+    return CONTROL_TOWER_STATUSES.WO_PLANNING_PENDING;
+  }
+
+  if (rowType === "QA_REWORK") {
+    return CONTROL_TOWER_STATUSES.QA_REWORK_PENDING;
+  }
+
+  if (sourceStatus === "REWORK_READY_FOR_QC" || sourceNextAction === "REWORK_QC_PENDING") {
+    return CONTROL_TOWER_STATUSES.QA_REWORK_PENDING;
+  }
+
   return CONTROL_TOWER_STATUSES.UNKNOWN;
 }
 

@@ -6,9 +6,12 @@
 const CONTROL_TOWER_SOURCE_PRIORITY = Object.freeze({
   RM_RISK: 100,
   PRODUCTION_QUEUE: 90,
+  QA_REWORK: 85,
   QA_QUEUE: 80,
   DISPATCH_BACKLOG: 70,
   CONTINUE_WORKING: 50,
+  NO_QTY_PLANNING: 45,
+  WO_PLANNING: 45,
 });
 
 function positiveId(v) {
@@ -61,6 +64,22 @@ function buildControlTowerRowKey(row) {
 
   m = /^qa:wo:(\d+)$/.exec(sourceId);
   if (m) return `WORK_ORDER:${m[1]}`;
+
+  m = /^qa-rework:disp:(\d+)$/.exec(sourceId);
+  if (m) return `QA_REWORK:${m[1]}`;
+
+  m = /^no-qty-planning:so:(\d+):cycle:(\d+)$/.exec(sourceId);
+  if (m) {
+    const soId = m[1];
+    const cycleId = Number(m[2]);
+    if (orderType === "NO_QTY" && Number.isFinite(cycleId) && cycleId > 0) {
+      return `NO_QTY:${soId}:CYCLE:${cycleId}`;
+    }
+    return `SALES_ORDER:${soId}`;
+  }
+
+  m = /^wo-planning:so:(\d+)$/.exec(sourceId);
+  if (m) return `SALES_ORDER:${m[1]}`;
 
   m = /^dispatch:so:(\d+):item:(\d+):cycle:(\d+)$/.exec(sourceId);
   if (m) {

@@ -2343,6 +2343,104 @@ async function getPausedWorkOrderRows() {
   return rows;
 }
 
+/**
+ * NO_QTY sales orders with RS planning not yet locked (Control Tower read model).
+ * @param {{ limit?: number }} [options]
+ */
+async function getNoQtyPlanningPendingRows(options = {}) {
+  const limitRaw = Number(options.limit);
+  const limit =
+    Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(50, Math.max(1, Math.floor(limitRaw))) : 50;
+  const rows = await getActiveNoQtySalesOrders({ limit });
+  return rows.filter((r) => String(r.latestRequirementSheetStatus ?? "").toUpperCase() !== "LOCKED");
+}
+
+/**
+ * QC rework dispositions ready for final recheck (REWORK_READY_FOR_QC with rework stock).
+ * @param {import('@prisma/client').PrismaClient} [db]
+ * @param {{ limit?: number }} [options]
+ */
+async function getQaReworkQueueRows(db = prisma, options = {}) {
+  const limit = Math.min(200, Math.max(1, Number(options.limit) || 200));
+
+  await db.$transaction(async (tx) => {
+    await reconcileStaleSupervisorReworkDispositions(tx);
+  });
+
+  const dispositions = await db.qcRejectedDisposition.findMany({
+    where: { voidedAt: null, status: "REWORK_READY_FOR_QC" },
+    orderBy: [{ id: "desc" }],
+    take: limit,
+    include: {
+      item: { select: { id: true, itemName: true, unit: true } },
+      workOrder: {
+        select: {
+          id: true,
+          docNo: true,
+          salesOrderId: true,
+          cycleId: true,
+          cycle: { select: { cycleNo: true } },
+        },
+      },
+      sourceQcEntry: { select: { id: true, docNo: true, productionId: true } },
+    },
+  });
+
+  const readyIds = dispositions.map((d) => d.id).filter((id) => typeof id === "number" && id > 0);
+  const reworkQcAvailByDispId = new Map();
+  if (readyIds.length) {
+    const [groupRework, groupLegacyPending] = await Promise.all([
+      db.stockTransaction.groupBy({
+        by: ["qcRejectedDispositionId"],
+        where: { qcRejectedDispositionId: { in: readyIds }, stockBucket: "REWORK", reversedAt: null },
+        _sum: { qtyIn: true, qtyOut: true },
+      }),
+      db.stockTransaction.groupBy({
+        by: ["qcRejectedDispositionId"],
+        where: { qcRejectedDispositionId: { in: readyIds }, stockBucket: "QC_PENDING", reversedAt: null },
+        _sum: { qtyIn: true, qtyOut: true },
+      }),
+    ]);
+    const addNet = (grouped) => {
+      for (const g of grouped) {
+        const dispId = g.qcRejectedDispositionId;
+        if (dispId == null) continue;
+        const net = Number(g._sum.qtyIn || 0) - Number(g._sum.qtyOut || 0);
+        reworkQcAvailByDispId.set(dispId, (reworkQcAvailByDispId.get(dispId) || 0) + net);
+      }
+    };
+    addNet(groupRework);
+    addNet(groupLegacyPending);
+  }
+
+  const out = [];
+  for (const d of dispositions) {
+    const pendingReworkQcQty = Number(reworkQcAvailByDispId.get(d.id) ?? 0);
+    if (pendingReworkQcQty <= QUEUE_EPS) continue;
+    const wo = d.workOrder;
+    out.push({
+      dispositionId: d.id,
+      status: d.status,
+      phase: d.phase,
+      pendingReworkQcQty,
+      dispositionRemainingQty: Number(d.remainingQty),
+      itemId: d.item?.id ?? null,
+      itemName: d.item?.itemName ?? null,
+      workOrderId: wo?.id ?? null,
+      workOrderNo: wo?.docNo ?? null,
+      salesOrderId: wo?.salesOrderId ?? null,
+      cycleId: wo?.cycleId ?? null,
+      cycleNo: wo?.cycle?.cycleNo ?? null,
+      sourceQcEntryId: d.sourceQcEntry?.id ?? null,
+      sourceQcEntryDocNo: d.sourceQcEntry?.docNo ?? null,
+      productionId: d.sourceQcEntry?.productionId ?? null,
+      createdAt: d.createdAt?.toISOString?.() ?? d.createdAt ?? null,
+      quantityMetricContext: QUEUE_SNAPSHOT_ROW_METRIC_CONTEXT.qcQueue,
+    });
+  }
+  return out;
+}
+
 module.exports = {
   QUEUE_SNAPSHOT_ROW_METRIC_CONTEXT,
   DISPATCH_BACKLOG_EPS,
@@ -2364,6 +2462,8 @@ module.exports = {
   getContinueWorkingRows,
   logAuditWo147ContinueWorkingRows,
   getActiveNoQtySalesOrders,
+  getNoQtyPlanningPendingRows,
+  getQaReworkQueueRows,
   getNoQtyDashboardCycleHistory,
   resolveNoQtyDashboardCycleHistoryStatus,
   getNoQtyDispatchPendingRowsForDashboard,

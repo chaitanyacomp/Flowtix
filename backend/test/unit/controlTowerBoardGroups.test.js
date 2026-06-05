@@ -12,6 +12,9 @@ const {
   normalizeQaRow,
   normalizeDispatchRow,
   normalizeContinueWorkingRow,
+  normalizeNoQtyPlanningRow,
+  normalizeWoPlanningRow,
+  normalizeQaReworkRow,
   buildNormalizedRow,
   CONTROL_TOWER_STATUSES,
 } = require("../../src/services/controlTowerRowNormalizer");
@@ -163,6 +166,36 @@ describe("groupControlTowerRows", () => {
     const result = groupControlTowerRows([row]);
     const group = findGroup(result, BOARD_GROUP_KEYS.PLANNING);
     assert.equal(group.count, 1);
+  });
+
+  it("places NO_QTY planning and WO planning rows in PLANNING group", () => {
+    const noQty = normalizeNoQtyPlanningRow({
+      salesOrderId: 44,
+      salesOrderDocNo: "SO-NQ-44",
+      latestRequirementSheetStatus: "DRAFT",
+    });
+    const woPlan = normalizeWoPlanningRow({
+      salesOrderId: 12,
+      salesOrderDocNo: "SO-12",
+      operationalKey: "WO_PREPARE",
+      nextActionKey: "PREPARE_WO",
+    });
+    const result = groupControlTowerRows([noQty, woPlan]);
+    const group = findGroup(result, BOARD_GROUP_KEYS.PLANNING);
+    assert.equal(group.count, 2);
+  });
+
+  it("places QA_REWORK_PENDING in QUALITY group", () => {
+    const row = normalizeQaReworkRow({
+      dispositionId: 5,
+      status: "REWORK_READY_FOR_QC",
+      workOrderId: 3,
+      pendingReworkQcQty: 4,
+    });
+    const result = groupControlTowerRows([row]);
+    const group = findGroup(result, BOARD_GROUP_KEYS.QUALITY);
+    assert.equal(group.count, 1);
+    assert.equal(group.rows[0].currentStatus, CONTROL_TOWER_STATUSES.QA_REWORK_PENDING);
   });
 
   it("places UNKNOWN in ungrouped", () => {

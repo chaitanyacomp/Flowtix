@@ -2,8 +2,30 @@ const express = require("express");
 const { requireAuth, requireRole } = require("../middleware/auth");
 const { ALL_APP_ROLES } = require("../constants/erpRoles");
 const { getControlTowerPanelMetrics } = require("../services/controlTowerService");
-const { getNormalizedOperationalRows } = require("../services/controlTowerNormalizedRowsService");
+const {
+  getNormalizedOperationalRows,
+  parseControlTowerRowMode,
+  parseControlTowerPagination,
+  CONTROL_TOWER_ROW_MODES,
+} = require("../services/controlTowerNormalizedRowsService");
 const { getControlTowerBoardRows } = require("../services/controlTowerBoardService");
+
+function parseControlTowerReadQuery(query = {}, { defaultMode }) {
+  const mode = query.mode != null && String(query.mode).trim() !== ""
+    ? parseControlTowerRowMode(query.mode)
+    : defaultMode;
+
+  const rawLimit = Number(query.limitPerSource);
+  const limitPerSource =
+    Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(25, Math.floor(rawLimit)) : undefined;
+
+  const { page, pageSize } = parseControlTowerPagination({
+    page: query.page,
+    pageSize: query.pageSize,
+  });
+
+  return { mode, limitPerSource, page, pageSize };
+}
 
 const controlTowerRouter = express.Router();
 
@@ -48,10 +70,10 @@ controlTowerRouter.get("/panel-metrics", requireAuth, controlTowerRoles, async (
  */
 controlTowerRouter.get("/normalized-rows", requireAuth, controlTowerRoles, async (req, res, next) => {
   try {
-    const rawLimit = Number(req.query.limitPerSource);
-    const limitPerSource =
-      Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(25, Math.floor(rawLimit)) : undefined;
-    const payload = await getNormalizedOperationalRows({ limitPerSource });
+    const { mode, limitPerSource, page, pageSize } = parseControlTowerReadQuery(req.query, {
+      defaultMode: CONTROL_TOWER_ROW_MODES.SAMPLE,
+    });
+    const payload = await getNormalizedOperationalRows({ mode, limitPerSource, page, pageSize });
     return res.json({
       success: true,
       count: payload.count,
@@ -69,10 +91,10 @@ controlTowerRouter.get("/normalized-rows", requireAuth, controlTowerRoles, async
  */
 controlTowerRouter.get("/board", requireAuth, controlTowerRoles, async (req, res, next) => {
   try {
-    const rawLimit = Number(req.query.limitPerSource);
-    const limitPerSource =
-      Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(25, Math.floor(rawLimit)) : undefined;
-    const payload = await getControlTowerBoardRows({ limitPerSource });
+    const { mode, limitPerSource, page, pageSize } = parseControlTowerReadQuery(req.query, {
+      defaultMode: CONTROL_TOWER_ROW_MODES.FULL,
+    });
+    const payload = await getControlTowerBoardRows({ mode, limitPerSource, page, pageSize });
     return res.json({
       success: true,
       data: {

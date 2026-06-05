@@ -3,6 +3,7 @@
  * Read-only aggregation over existing dashboard queue services.
  */
 
+const { prisma } = require("../utils/prisma");
 const {
   getRmRiskRows,
   getProductionQueueRows,
@@ -231,8 +232,8 @@ async function fetchNormalizedDedupedRows(opts = {}) {
     getDispatchBacklogRows(),
     getContinueWorkingRows({ limit: continueWorkingLimit }),
     getNoQtyPlanningPendingRows({ limit: noQtyPlanningLimit }),
-    getWoPreparePlanningRows({ limit: woPlanningLimit }),
-    getQaReworkQueueRows(undefined, { limit: qaReworkLimit }),
+    getWoPreparePlanningRows(prisma, { limit: woPlanningLimit }),
+    getQaReworkQueueRows(prisma, { limit: qaReworkLimit }),
   ]);
 
   const built = mergeNormalizedRowsFromSources({
@@ -301,8 +302,8 @@ async function fetchMergedNormalizedRows(opts = {}) {
     getDispatchBacklogRows(),
     getContinueWorkingRows({ limit: continueWorkingLimit }),
     getNoQtyPlanningPendingRows({ limit: noQtyPlanningLimit }),
-    getWoPreparePlanningRows({ limit: woPlanningLimit }),
-    getQaReworkQueueRows(undefined, { limit: qaReworkLimit }),
+    getWoPreparePlanningRows(prisma, { limit: woPlanningLimit }),
+    getQaReworkQueueRows(prisma, { limit: qaReworkLimit }),
   ]);
 
   const built = mergeNormalizedRowsFromSources({

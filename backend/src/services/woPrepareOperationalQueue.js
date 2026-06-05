@@ -206,10 +206,60 @@ async function getWoPrepareDashboardQueues(db = prisma, opts = {}) {
   };
 }
 
+/**
+ * Flat WO-prepare rows for Control Tower read model (REGULAR SO, no WO yet).
+ * @param {import('@prisma/client').PrismaClient} [db]
+ * @param {{ limit?: number }} [opts]
+ */
+async function getWoPreparePlanningRows(db = prisma, opts = {}) {
+  const limit = Math.min(200, Math.max(1, Number(opts.limit) || 80));
+  const rows = await db.salesOrder.findMany({
+    where: {
+      orderType: "NORMAL",
+      internalStatus: { notIn: ["DRAFT", "CLOSED", "MANUALLY_CLOSED", "COMPLETED"] },
+      workOrders: { none: { status: { not: "REJECTED" } } },
+    },
+    include: {
+      customer: { select: { name: true } },
+      lines: { include: { item: { select: { itemName: true, itemType: true } } } },
+    },
+    orderBy: { id: "desc" },
+    take: limit,
+  });
+
+  const out = [];
+  for (const so of rows) {
+    if (!salesOrderHasFgLines(so)) continue;
+    try {
+      const op = await resolveWoPrepareOperationalForSalesOrder(
+        { ...so, processStage: { key: "WO_PENDING", label: "WO pending" } },
+        db,
+      );
+      out.push({
+        salesOrderId: so.id,
+        salesOrderDocNo: so.docNo ?? null,
+        customerName: so.customer?.name ?? "—",
+        primaryFgName: op.primaryFgName,
+        shortageRmCount: op.shortageRmCount,
+        pendingMrRefs: op.pendingMrRefs,
+        nextActionKey: op.nextActionKey,
+        operationalKey: op.key,
+        operationalLabel: op.label,
+        canCreateWorkOrder: op.canCreateWorkOrder,
+        woBlockReason: op.woBlockReason ?? null,
+      });
+    } catch {
+      continue;
+    }
+  }
+  return out;
+}
+
 module.exports = {
   WO_PLANNING_SOURCE,
   isRegularWoPrepareCandidate,
   resolveWoPrepareOperationalForSalesOrder,
   enrichSalesOrdersWithWoPrepareOperational,
   getWoPrepareDashboardQueues,
+  getWoPreparePlanningRows,
 };

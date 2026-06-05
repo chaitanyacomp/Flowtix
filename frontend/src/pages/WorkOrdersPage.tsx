@@ -93,11 +93,49 @@ type SoDetail = {
   internalStatus: string;
   orderType?: "NORMAL" | "REPLACEMENT" | "NO_QTY";
   customer?: { name: string } | null;
-  po?: { customer?: { name: string } | null } | null;
+  po?: { customer?: { name?: string | null } | null } | null;
   currentCycle?: { cycleNo?: number | null; status?: string | null } | null;
   processStage?: { key?: string | null } | null;
   lines: { itemId: number; qty: string; item: { itemName: string; itemType: string } }[];
 };
+
+function soDetailToSoListRow(so: SoDetail): SoListRow {
+  return {
+    id: so.id,
+    docNo: so.docNo ?? null,
+    internalStatus: so.internalStatus,
+    customer: so.customer ?? so.po?.customer ?? null,
+    lines: (so.lines ?? []).map((l) => ({ item: { itemType: l.item.itemType } })),
+  };
+}
+
+async function fetchEligibleSalesOrderIdsForWo(includeSalesOrderId?: number): Promise<number[]> {
+  const includeQs =
+    includeSalesOrderId != null && Number.isFinite(includeSalesOrderId) && includeSalesOrderId > 0
+      ? `?includeSalesOrderId=${encodeURIComponent(String(includeSalesOrderId))}`
+      : "";
+  const eligible = await apiFetch<{ ids: number[] }>(`/api/production/eligible-sales-orders-for-wo${includeQs}`);
+  return (eligible?.ids ?? []).map(Number).filter((id) => Number.isFinite(id) && id > 0);
+}
+
+async function hydrateOperationalSoListRows(soIds: number[]): Promise<SoListRow[]> {
+  const uniqueIds = [...new Set(soIds.filter((id) => Number.isFinite(id) && id > 0))];
+  if (!uniqueIds.length) return [];
+  const results = await Promise.allSettled(uniqueIds.map((id) => apiFetch<SoDetail>(`/api/sales-orders/${id}`)));
+  const rows: SoListRow[] = [];
+  for (const result of results) {
+    if (result.status !== "fulfilled") continue;
+    rows.push(soDetailToSoListRow(result.value));
+  }
+  return rows;
+}
+
+function operationalSoHydrationIds(
+  eligibleIds: number[],
+  extraIds: Array<number | undefined | null>,
+): number[] {
+  return [...new Set([...eligibleIds, ...extraIds.filter((id): id is number => Number.isFinite(Number(id)) && Number(id) > 0)])];
+}
 
 type RmCheckResponse = {
   fgLines: {
@@ -1144,15 +1182,71 @@ export function WorkOrdersPage() {
   }, [woStatusFilter, completedPageFromUrl]);
 
   async function refresh() {
+    setError(null);
     try {
-      const includeSalesOrderId = isEditMode && soFromUrl > 0 ? soFromUrl : undefined;
-      const includeQs = includeSalesOrderId ? `?includeSalesOrderId=${includeSalesOrderId}` : "";
-      const [sos, eligible] = await Promise.all([
-        apiFetch<SoListRow[]>("/api/sales-orders"),
-        apiFetch<{ ids: number[] }>(`/api/production/eligible-sales-orders-for-wo${includeQs}`),
-      ]);
-      setSalesOrders(sos);
-      setEligibleSoIds(new Set((eligible?.ids ?? []).map(Number)));
+      const st = loc.state as LocationState | undefined;
+      const includeSalesOrderId =
+        isEditMode && soFromUrl > 0
+          ? soFromUrl
+          : regularSoIdFromUrl > 0
+            ? regularSoIdFromUrl
+            : focusSoIdFromUrl > 0 && !fromNoQtySo
+              ? focusSoIdFromUrl
+              : st?.salesOrderId != null && Number(st.salesOrderId) > 0
+                ? Number(st.salesOrderId)
+                : salesOrderId !== "" && Number(salesOrderId) > 0
+                  ? Number(salesOrderId)
+                  : undefined;
+
+      if (isAdmin) {
+        const includeQs =
+          includeSalesOrderId != null
+            ? `?includeSalesOrderId=${encodeURIComponent(String(includeSalesOrderId))}`
+            : "";
+        const [sosResult, eligibleResult] = await Promise.allSettled([
+          apiFetch<SoListRow[]>("/api/sales-orders"),
+          apiFetch<{ ids: number[] }>(`/api/production/eligible-sales-orders-for-wo${includeQs}`),
+        ]);
+
+        if (eligibleResult.status === "fulfilled") {
+          setEligibleSoIds(new Set((eligibleResult.value?.ids ?? []).map(Number)));
+        } else {
+          setEligibleSoIds(new Set());
+        }
+
+        if (sosResult.status === "fulfilled") {
+          setSalesOrders(sosResult.value);
+        } else {
+          setSalesOrders([]);
+          const reason = sosResult.reason;
+          setError(reason instanceof Error ? reason.message : "Failed to load sales orders");
+        }
+      } else if (canProd) {
+        const eligibleResult = await Promise.allSettled([fetchEligibleSalesOrderIdsForWo(includeSalesOrderId)]);
+        let eligibleIds: number[] = [];
+        let eligibleLoadFailed = false;
+
+        if (eligibleResult[0]?.status === "fulfilled") {
+          eligibleIds = eligibleResult[0].value;
+          setEligibleSoIds(new Set(eligibleIds));
+        } else {
+          eligibleLoadFailed = true;
+          setEligibleSoIds(new Set());
+        }
+
+        const hydrated = await hydrateOperationalSoListRows(
+          operationalSoHydrationIds(eligibleIds, [includeSalesOrderId]),
+        );
+        setSalesOrders(hydrated);
+
+        if (eligibleLoadFailed && hydrated.length === 0) {
+          const reason = eligibleResult[0]?.status === "rejected" ? eligibleResult[0].reason : null;
+          setError(
+            reason instanceof Error ? reason.message : "Failed to load eligible sales orders for work order planning",
+          );
+        }
+      }
+
       await loadWorkOrderList();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed");

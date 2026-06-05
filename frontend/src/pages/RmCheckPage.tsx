@@ -271,14 +271,36 @@ export function RmCheckPage() {
         .catch((e) => setErrorPresentation(presentOperationalError(e)));
       return;
     }
-    apiFetch<SoRow[]>("/api/sales-orders")
-      .then((r) => {
-        const regularOnly = (Array.isArray(r) ? r : []).filter((o) => isRegularSoRow(o));
+    if (isAdmin) {
+      apiFetch<SoRow[]>("/api/sales-orders")
+        .then((r) => {
+          const regularOnly = (Array.isArray(r) ? r : []).filter((o) => isRegularSoRow(o));
+          setOrders(regularOnly);
+          setSoId((cur) => (cur === 0 && regularOnly.length ? regularOnly[0].id : cur));
+        })
+        .catch((e) => setErrorPresentation(presentOperationalError(e)));
+      return;
+    }
+    void (async () => {
+      try {
+        const eligible = await apiFetch<{ ids: number[] }>("/api/production/eligible-sales-orders-for-wo");
+        const eligibleIds = (eligible?.ids ?? []).map(Number).filter((id) => Number.isFinite(id) && id > 0);
+        const results = await Promise.allSettled(
+          eligibleIds.map((id) => apiFetch<SoDetail>(`/api/sales-orders/${id}`)),
+        );
+        const regularOnly: SoRow[] = [];
+        for (const result of results) {
+          if (result.status !== "fulfilled") continue;
+          const row = soDetailToSoRow(result.value);
+          if (isRegularSoRow(row)) regularOnly.push(row);
+        }
         setOrders(regularOnly);
         setSoId((cur) => (cur === 0 && regularOnly.length ? regularOnly[0].id : cur));
-      })
-      .catch((e) => setErrorPresentation(presentOperationalError(e)));
-  }, [searchParams, urlSoId]);
+      } catch (e) {
+        setErrorPresentation(presentOperationalError(e));
+      }
+    })();
+  }, [searchParams, urlSoId, isAdmin]);
 
   async function loadSoContext() {
     if (!soId) return;

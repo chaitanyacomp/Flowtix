@@ -8,7 +8,19 @@ import { Input } from "../components/ui/input";
 import { NativeSelect } from "../components/ui/native-select";
 import { Badge } from "../components/ui/badge";
 import { cn } from "../lib/utils";
-import { CalendarRange, Plus, Trash2, Save, RefreshCw, Lock, X, AlertTriangle } from "lucide-react";
+import {
+  CalendarRange,
+  Plus,
+  Trash2,
+  Save,
+  RefreshCw,
+  Lock,
+  X,
+  AlertTriangle,
+  ChevronDown,
+  ChevronRight,
+  Eye,
+} from "lucide-react";
 
 type PlanStatus = "DRAFT" | "LOCKED";
 type LineSource = "SALES_ORDER" | "REQUIREMENT_SHEET" | "MANUAL" | "CUSTOMER_SCHEDULE";
@@ -131,6 +143,33 @@ type PurchasePlanningResponse = {
 
 type FgItem = { id: number; itemName: string; unit?: string | null; unitName?: string | null };
 
+type RsSuggestionSource = {
+  requirementSheetId: number;
+  requirementSheetDocNo: string | null;
+  salesOrderId: number;
+  salesOrderDocNo: string | null;
+  cycleId: number | null;
+  requirementQty: number;
+  shortfallQtySnapshot: number;
+  suggestedWoQtySnapshot: number;
+};
+
+type RsSuggestionItem = {
+  itemId: number;
+  itemName: string | null;
+  unit: string | null;
+  scheduleQty: number;
+  carryForwardQty: number;
+  productionRequirementQty: number;
+  sources: RsSuggestionSource[];
+};
+
+type RsSuggestionsResponse = {
+  periodKey: string;
+  sheetCount: number;
+  items: RsSuggestionItem[];
+};
+
 type EditRow = {
   key: string;
   id?: number;
@@ -206,6 +245,9 @@ export function MonthlyPlanningWorkspacePage() {
   const [confirmReleaseOpen, setConfirmReleaseOpen] = React.useState(false);
   const [releasing, setReleasing] = React.useState(false);
   const [releaseSummary, setReleaseSummary] = React.useState<ReleaseSummary | null>(null);
+  const [rsSuggestions, setRsSuggestions] = React.useState<RsSuggestionsResponse | null>(null);
+  const [loadingRsSuggestions, setLoadingRsSuggestions] = React.useState(false);
+  const [rsSuggestionsVisible, setRsSuggestionsVisible] = React.useState(false);
 
   const isLocked = plan?.status === "LOCKED";
   const editable = planExists && !isLocked;
@@ -322,6 +364,53 @@ export function MonthlyPlanningWorkspacePage() {
   function removeRow(row: EditRow) {
     setRows((prev) => prev.filter((r) => r.key !== row.key));
     if (row.id) setRemovedIds((prev) => [...prev, row.id as number]);
+  }
+
+  async function loadRsSuggestions() {
+    setLoadingRsSuggestions(true);
+    try {
+      const res = await apiFetch<RsSuggestionsResponse>(
+        `/api/monthly-planning/rs-suggestions?periodKey=${encodeURIComponent(period)}`,
+      );
+      setRsSuggestions(res);
+      setRsSuggestionsVisible(true);
+    } catch (e) {
+      showError(e instanceof ApiRequestError ? e.message : "Failed to load RS suggestions.");
+      setRsSuggestions(null);
+    } finally {
+      setLoadingRsSuggestions(false);
+    }
+  }
+
+  function applyRsSuggestion(item: RsSuggestionItem) {
+    if (!editable) {
+      showError("Plan is locked — RS suggestions are read-only.");
+      return;
+    }
+    const existing = rows.find((r) => r.fgItemId === item.itemId);
+    if (existing) {
+      updateRow(existing.key, {
+        suggestedFgQty: item.productionRequirementQty,
+        source: "REQUIREMENT_SHEET",
+      });
+      showSuccess(`Applied RS suggestion to ${item.itemName ?? `Item ${item.itemId}`} (suggested qty only).`);
+      return;
+    }
+    const fg = fgItems.find((i) => i.id === item.itemId);
+    setRows((prev) => [
+      ...prev,
+      {
+        key: `rs-${item.itemId}-${Date.now()}`,
+        fgItemId: item.itemId,
+        fgItemName: item.itemName ?? fg?.itemName ?? `Item ${item.itemId}`,
+        unit: item.unit ?? fg?.unit ?? fg?.unitName ?? null,
+        suggestedFgQty: item.productionRequirementQty,
+        plannedFgQty: "0",
+        source: "REQUIREMENT_SHEET",
+        remarks: "From locked NO_QTY RS suggestion",
+      },
+    ]);
+    showSuccess(`Added ${item.itemName ?? `Item ${item.itemId}`} with RS suggested qty. Save to persist.`);
   }
 
   function addRow() {
@@ -594,6 +683,13 @@ export function MonthlyPlanningWorkspacePage() {
             rows={rows}
             editable={editable}
             isLocked={isLocked}
+            period={period}
+            rsSuggestions={rsSuggestions}
+            rsSuggestionsVisible={rsSuggestionsVisible}
+            loadingRsSuggestions={loadingRsSuggestions}
+            onLoadRsSuggestions={() => void loadRsSuggestions()}
+            onHideRsSuggestions={() => setRsSuggestionsVisible(false)}
+            onApplyRsSuggestion={applyRsSuggestion}
             onUpdateRow={updateRow}
             onRemoveRow={removeRow}
             availableFgForAdd={availableFgForAdd}
@@ -1118,6 +1214,13 @@ function ProductionPlanTab({
   rows,
   editable,
   isLocked,
+  period,
+  rsSuggestions,
+  rsSuggestionsVisible,
+  loadingRsSuggestions,
+  onLoadRsSuggestions,
+  onHideRsSuggestions,
+  onApplyRsSuggestion,
   onUpdateRow,
   onRemoveRow,
   availableFgForAdd,
@@ -1128,6 +1231,13 @@ function ProductionPlanTab({
   rows: EditRow[];
   editable: boolean;
   isLocked: boolean;
+  period: string;
+  rsSuggestions: RsSuggestionsResponse | null;
+  rsSuggestionsVisible: boolean;
+  loadingRsSuggestions: boolean;
+  onLoadRsSuggestions: () => void;
+  onHideRsSuggestions: () => void;
+  onApplyRsSuggestion: (item: RsSuggestionItem) => void;
   onUpdateRow: (key: string, patch: Partial<EditRow>) => void;
   onRemoveRow: (row: EditRow) => void;
   availableFgForAdd: FgItem[];
@@ -1135,8 +1245,160 @@ function ProductionPlanTab({
   setAddItemId: (v: string) => void;
   onAddRow: () => void;
 }) {
+  const [expandedItemIds, setExpandedItemIds] = React.useState<Set<number>>(new Set());
+
+  function toggleSourceExpand(itemId: number) {
+    setExpandedItemIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(itemId)) next.delete(itemId);
+      else next.add(itemId);
+      return next;
+    });
+  }
+
   return (
     <div className="flex h-full min-h-0 flex-col gap-2">
+      <div className="rounded-lg border border-slate-200 bg-slate-50/80 p-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h3 className="text-[13px] font-semibold text-slate-800">Read-only RS suggestions</h3>
+            <p className="mt-0.5 text-[12px] text-slate-600">
+              Locked NO_QTY Requirement Sheets for <strong>{period}</strong>. MPRS reads schedule + carry forward;
+              Requirement Sheets are never modified here.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            {rsSuggestionsVisible ? (
+              <Button type="button" variant="outline" size="sm" onClick={onHideRsSuggestions} className="h-8">
+                Hide
+              </Button>
+            ) : null}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={onLoadRsSuggestions}
+              disabled={loadingRsSuggestions}
+              className="h-8"
+            >
+              <Eye className={cn("mr-1.5 h-4 w-4", loadingRsSuggestions && "animate-pulse")} />
+              {loadingRsSuggestions ? "Loading…" : "View RS suggestions"}
+            </Button>
+          </div>
+        </div>
+
+        {rsSuggestionsVisible && rsSuggestions ? (
+          <div className="mt-3 overflow-auto rounded-md border border-slate-200 bg-white">
+            <div className="border-b border-slate-100 px-3 py-2 text-[11px] text-slate-500">
+              {rsSuggestions.sheetCount} locked sheet(s) · {rsSuggestions.items.length} FG item(s) · read-only
+            </div>
+            <table className="w-full border-collapse text-[13px]">
+              <thead className="bg-slate-50 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                <tr>
+                  <th className="px-3 py-2 w-8" />
+                  <th className="px-3 py-2">FG item</th>
+                  <th className="px-3 py-2 w-28 text-right">Schedule qty</th>
+                  <th className="px-3 py-2 w-28 text-right">Carry forward</th>
+                  <th className="px-3 py-2 w-32 text-right">Production req.</th>
+                  <th className="px-3 py-2 w-24 text-center">Source RS</th>
+                  {editable ? <th className="px-3 py-2 w-36">Action</th> : null}
+                </tr>
+              </thead>
+              <tbody>
+                {rsSuggestions.items.length === 0 ? (
+                  <tr>
+                    <td
+                      colSpan={editable ? 7 : 6}
+                      className="px-3 py-6 text-center text-sm text-slate-400"
+                    >
+                      No locked NO_QTY Requirement Sheets for this period.
+                    </td>
+                  </tr>
+                ) : (
+                  rsSuggestions.items.map((item) => {
+                    const expanded = expandedItemIds.has(item.itemId);
+                    return (
+                      <React.Fragment key={item.itemId}>
+                        <tr className="border-t border-slate-100 align-middle">
+                          <td className="px-2 py-1.5 text-center">
+                            {item.sources.length > 0 ? (
+                              <button
+                                type="button"
+                                onClick={() => toggleSourceExpand(item.itemId)}
+                                className="text-slate-400 hover:text-slate-700"
+                                title="Show source RS traceability"
+                              >
+                                {expanded ? (
+                                  <ChevronDown className="h-4 w-4" />
+                                ) : (
+                                  <ChevronRight className="h-4 w-4" />
+                                )}
+                              </button>
+                            ) : null}
+                          </td>
+                          <td className="px-3 py-1.5 font-medium text-slate-800">
+                            {item.itemName ?? `Item ${item.itemId}`}
+                          </td>
+                          <td className="px-3 py-1.5 text-right tabular-nums text-slate-800">
+                            {item.scheduleQty.toLocaleString()}
+                          </td>
+                          <td className="px-3 py-1.5 text-right tabular-nums text-slate-600">
+                            {item.carryForwardQty.toLocaleString()}
+                          </td>
+                          <td className="px-3 py-1.5 text-right font-semibold tabular-nums text-slate-900">
+                            {item.productionRequirementQty.toLocaleString()}
+                          </td>
+                          <td className="px-3 py-1.5 text-center tabular-nums text-slate-600">
+                            {item.sources.length}
+                          </td>
+                          {editable ? (
+                            <td className="px-3 py-1.5">
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                className="h-7 text-[12px]"
+                                onClick={() => onApplyRsSuggestion(item)}
+                              >
+                                Use as suggestion
+                              </Button>
+                            </td>
+                          ) : null}
+                        </tr>
+                        {expanded
+                          ? item.sources.map((src) => (
+                              <tr
+                                key={`${item.itemId}-${src.requirementSheetId}-${src.salesOrderId}-${src.cycleId}`}
+                                className="border-t border-slate-50 bg-slate-50/60 text-[12px] text-slate-600"
+                              >
+                                <td />
+                                <td className="px-3 py-1.5 pl-8" colSpan={editable ? 6 : 5}>
+                                  <span className="font-medium text-slate-700">
+                                    {src.requirementSheetDocNo ?? `RS #${src.requirementSheetId}`}
+                                  </span>
+                                  {" · "}
+                                  SO {src.salesOrderDocNo ?? src.salesOrderId}
+                                  {src.cycleId != null ? ` · Cycle ${src.cycleId}` : ""}
+                                  {" · "}
+                                  Schedule {src.requirementQty.toLocaleString()}
+                                  {" · "}
+                                  CF {src.shortfallQtySnapshot.toLocaleString()}
+                                  {" · "}
+                                  Prod req. {src.suggestedWoQtySnapshot.toLocaleString()}
+                                </td>
+                              </tr>
+                            ))
+                          : null}
+                      </React.Fragment>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
+      </div>
+
       {isLocked ? (
         <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] font-medium text-amber-900">
           This plan is locked. Reopen is not implemented in this phase.

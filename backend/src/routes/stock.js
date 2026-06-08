@@ -21,6 +21,7 @@ const {
   STOCK_EPS,
 } = require("../services/stockService");
 const { UNASSIGNED_LOCATION_LABEL } = require("../services/grnLocationService");
+const { resolveDefaultOpeningStockLocationId, resolveAdjustmentLocationId } = require("../services/locationService");
 const auditLog = require("../services/auditLog");
 const { lockItemForUpdate } = require("../services/dispatchWriteLocks");
 const { assertAnyAdminPassword } = require("../services/adminPasswordAuth");
@@ -754,7 +755,10 @@ async function postStockAdjustment(req, res, next) {
     // Do not log password; return 401 on mismatch.
     const approvingAdminUserId = await assertAnyAdminPassword(prisma, { password: body.adminPassword });
 
-    const item = await prisma.item.findUnique({ where: { id: body.itemId } });
+    const item = await prisma.item.findUnique({
+      where: { id: body.itemId },
+      select: { id: true, itemName: true, itemType: true },
+    });
     if (!item) {
       const err = new Error("Item not found");
       err.statusCode = 404;
@@ -762,6 +766,7 @@ async function postStockAdjustment(req, res, next) {
     }
 
     const txn = await prisma.$transaction(async (tx) => {
+      const locationId = await resolveDefaultOpeningStockLocationId(tx, item.itemType);
       const stockBefore = await getItemStockQty(body.itemId, tx, { stockBucket: "USABLE" });
       await assertNonNegativeStockAfterNetChange(
         tx,
@@ -773,6 +778,7 @@ async function postStockAdjustment(req, res, next) {
       const created = await tx.stockTransaction.create({
         data: {
           itemId: body.itemId,
+          locationId,
           transactionType: "ADJUSTMENT",
           refId: 0,
           stockBucket: "USABLE",
@@ -886,9 +892,19 @@ async function postReverseAdjustment(req, res, next) {
 
       const stockBefore = await getItemStockQty(original.itemId, tx, { stockBucket: adjBucket });
 
+      const item = await tx.item.findUnique({
+        where: { id: original.itemId },
+        select: { itemType: true },
+      });
+      const reversalLocationId = await resolveAdjustmentLocationId(tx, {
+        locationId: original.locationId,
+        itemType: item?.itemType || "RM",
+      });
+
       const reversal = await tx.stockTransaction.create({
         data: {
           itemId: original.itemId,
+          locationId: reversalLocationId,
           transactionType: "ADJUSTMENT",
           refId: 0,
           stockBucket: adjBucket,

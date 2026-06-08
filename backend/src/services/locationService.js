@@ -115,6 +115,18 @@ async function resolveDefaultOpeningStockLocationId(db, itemType) {
   return getDefaultRmStoreLocationId(db);
 }
 
+/**
+ * Physical location for ADJUSTMENT ledger rows: preserve original when set, else default store by item type.
+ * @param {import('@prisma/client').PrismaClient | import('@prisma/client').Prisma.TransactionClient} db
+ * @param {{ locationId?: number | null, itemType: string }} input
+ */
+async function resolveAdjustmentLocationId(db, { locationId, itemType }) {
+  if (locationId != null && Number.isFinite(Number(locationId)) && Number(locationId) > 0) {
+    return Number(locationId);
+  }
+  return resolveDefaultOpeningStockLocationId(db, itemType);
+}
+
 async function allocateLocationCode(db = prisma) {
   const customCount = await db.location.count({ where: { isSystem: false } });
   return `LOC-N-${String(customCount + 1).padStart(4, "0")}`;
@@ -163,6 +175,7 @@ module.exports = {
   getDefaultRmStoreLocationId,
   findActiveLocationIdByCode,
   resolveDefaultOpeningStockLocationId,
+  resolveAdjustmentLocationId,
   clearDefaultRmLocationCache,
   resolveLocationReadScope,
   defaultStockTxnLocationData,

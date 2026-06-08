@@ -15,6 +15,13 @@ const { prisma } = require("../../src/utils/prisma");
 const { signAccessToken } = require("../../src/utils/jwt");
 const { setStrictInventoryControl } = require("../../src/services/appSettings");
 const { MSG } = require("../../src/services/stockAdjustmentPolicy");
+const {
+  DEFAULT_RM_STORE_CODE,
+  DEFAULT_FG_STORE_CODE,
+  DEFAULT_CONSUMABLE_STORE_CODE,
+  findActiveLocationIdByCode,
+} = require("../../src/services/locationService");
+const { getAvailableRmAtLocation } = require("../../src/services/materialIssueService");
 
 const d = runIntegration ? describe : describe.skip;
 
@@ -303,6 +310,142 @@ d("Stock adjustment API (immutable + reversal)", () => {
         .set(bearer(ctx.admin))
         .send({ reason: "cleanup after window test" });
       await resetStockAdjustmentPolicyDefaults();
+    }
+  });
+});
+
+d("Stock adjustment location posting", () => {
+  const app = createApp();
+  /** @type {{ admin: import("@prisma/client").User, rmItemId: number, fgItemId: number, consumableItemId: number }} */
+  let ctx;
+
+  before(async () => {
+    await prisma.$queryRaw`SELECT 1`;
+    const hash = await bcrypt.hash("x", 4);
+    const admin = await prisma.user.upsert({
+      where: { email: "stock_adj_loc_admin@test.local" },
+      create: {
+        email: "stock_adj_loc_admin@test.local",
+        name: "SA Loc Admin",
+        role: "ADMIN",
+        passwordHash: hash,
+        isActive: true,
+      },
+      update: { role: "ADMIN" },
+    });
+    const tag = `adjloc_${Date.now()}`;
+    const [rmItem, fgItem, consumableItem] = await Promise.all([
+      prisma.item.create({
+        data: { itemName: `AdjLocRm_${tag}`, itemType: "RM", unit: "KG", minStockLevel: "0" },
+      }),
+      prisma.item.create({
+        data: { itemName: `AdjLocFg_${tag}`, itemType: "FG", unit: "NOS", minStockLevel: "0" },
+      }),
+      prisma.item.create({
+        data: { itemName: `AdjLocCon_${tag}`, itemType: "CONSUMABLE", unit: "NOS", minStockLevel: "0" },
+      }),
+    ]);
+    await setStrictInventoryControl(false);
+    ctx = { admin, rmItemId: rmItem.id, fgItemId: fgItem.id, consumableItemId: consumableItem.id };
+  });
+
+  after(async () => {
+    if (!ctx) return;
+    const ids = [ctx.rmItemId, ctx.fgItemId, ctx.consumableItemId];
+    await prisma.stockTransaction.deleteMany({ where: { itemId: { in: ids } } });
+    await prisma.item.deleteMany({ where: { id: { in: ids } } }).catch(() => {});
+  });
+
+  it("POST adjustment assigns RM Store for RM items", async () => {
+    const rmStoreId = await findActiveLocationIdByCode(prisma, DEFAULT_RM_STORE_CODE);
+    assert.ok(rmStoreId);
+    const res = await request(app)
+      .post("/api/stock/adjustment")
+      .set(bearer(ctx.admin))
+      .send({ itemId: ctx.rmItemId, qtyIn: 12, qtyOut: 0, reason: "rm loc" });
+    assert.equal(res.status, 201);
+    assert.equal(res.body?.locationId, rmStoreId);
+  });
+
+  it("POST adjustment assigns FG Store for FG items", async () => {
+    const fgStoreId = await findActiveLocationIdByCode(prisma, DEFAULT_FG_STORE_CODE);
+    assert.ok(fgStoreId);
+    const res = await request(app)
+      .post("/api/stock/adjustment")
+      .set(bearer(ctx.admin))
+      .send({ itemId: ctx.fgItemId, qtyIn: 4, qtyOut: 0, reason: "fg loc" });
+    assert.equal(res.status, 201);
+    assert.equal(res.body?.locationId, fgStoreId);
+  });
+
+  it("POST adjustment assigns Consumable Store for CONSUMABLE items", async () => {
+    const consumableStoreId = await findActiveLocationIdByCode(prisma, DEFAULT_CONSUMABLE_STORE_CODE);
+    assert.ok(consumableStoreId);
+    const res = await request(app)
+      .post("/api/stock/adjustment")
+      .set(bearer(ctx.admin))
+      .send({ itemId: ctx.consumableItemId, qtyIn: 6, qtyOut: 0, reason: "consumable loc" });
+    assert.equal(res.status, 201);
+    assert.equal(res.body?.locationId, consumableStoreId);
+  });
+
+  it("POST reverse copies forward adjustment locationId", async () => {
+    const rmStoreId = await findActiveLocationIdByCode(prisma, DEFAULT_RM_STORE_CODE);
+    const create = await request(app)
+      .post("/api/stock/adjustment")
+      .set(bearer(ctx.admin))
+      .send({ itemId: ctx.rmItemId, qtyIn: 7, qtyOut: 0, reason: "reverse loc forward" });
+    assert.equal(create.status, 201);
+    assert.equal(create.body?.locationId, rmStoreId);
+    const reverse = await request(app)
+      .post(`/api/stock/adjustments/${create.body.id}/reverse`)
+      .set(bearer(ctx.admin))
+      .send({ reason: "reverse loc" });
+    assert.equal(reverse.status, 201);
+    assert.equal(reverse.body?.reversal?.locationId, rmStoreId);
+  });
+
+  it("POST reverse on legacy null forward resolves default RM Store location", async () => {
+    const rmStoreId = await findActiveLocationIdByCode(prisma, DEFAULT_RM_STORE_CODE);
+    const forward = await prisma.stockTransaction.create({
+      data: {
+        itemId: ctx.rmItemId,
+        locationId: null,
+        transactionType: "ADJUSTMENT",
+        refId: 0,
+        stockBucket: "USABLE",
+        qtyIn: "9",
+        qtyOut: "0",
+        reason: "legacy null forward",
+      },
+    });
+    const reverse = await request(app)
+      .post(`/api/stock/adjustments/${forward.id}/reverse`)
+      .set(bearer(ctx.admin))
+      .send({ reason: "legacy null reverse" });
+    assert.equal(reverse.status, 201);
+    assert.equal(reverse.body?.reversal?.locationId, rmStoreId);
+  });
+
+  it("RM adjustment at RM Store is visible to material issue availability", async () => {
+    const rmStoreId = await findActiveLocationIdByCode(prisma, DEFAULT_RM_STORE_CODE);
+    const tag = `mi_avail_${Date.now()}`;
+    const item = await prisma.item.create({
+      data: { itemName: `AdjMi_${tag}`, itemType: "RM", unit: "KG", minStockLevel: "0" },
+    });
+    try {
+      const create = await request(app)
+        .post("/api/stock/adjustment")
+        .set(bearer(ctx.admin))
+        .send({ itemId: item.id, qtyIn: 18, qtyOut: 0, reason: "mi avail" });
+      assert.equal(create.status, 201);
+      assert.equal(create.body?.locationId, rmStoreId);
+      const availability = await getAvailableRmAtLocation(item.id, rmStoreId, prisma);
+      assert.equal(availability.physicalUsableStockQty, 18);
+      assert.equal(availability.available, 18);
+    } finally {
+      await prisma.stockTransaction.deleteMany({ where: { itemId: item.id } });
+      await prisma.item.delete({ where: { id: item.id } }).catch(() => {});
     }
   });
 });

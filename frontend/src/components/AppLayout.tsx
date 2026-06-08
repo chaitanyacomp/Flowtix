@@ -68,6 +68,8 @@ import {
   MATERIAL_ISSUE_ROLES,
   SUPPLIER_VIEW_ROLES,
   MONTHLY_PLANNING_READ_ROLES,
+  RM_CONTROL_CENTER_ROLES,
+  PLANNING_DASHBOARD_ROLES,
 } from "../config/erpRoles";
 import { isStoreNavItemVisible } from "../lib/storeNavFilter";
 import { isPurchaseNavItemVisible } from "../lib/purchaseNavFilter";
@@ -182,7 +184,7 @@ const navGroups: NavGroup[] = [
         to: "/reports/rm-shortage",
         navKey: "rm-control-center",
         label: "RM Control Center",
-        roles: ["ADMIN", "STORE", "PRODUCTION"],
+        roles: [...RM_CONTROL_CENTER_ROLES],
         icon: <ShieldAlert className="h-4 w-4 shrink-0" />,
       },
       {
@@ -260,7 +262,7 @@ const navGroups: NavGroup[] = [
     icon: <Factory className="h-4 w-4 shrink-0" />,
     collapsible: true,
     items: [
-      { to: "/planning-dashboard", navKey: "plan-dash", label: "Requirement & Cycle Planning", roles: ["ADMIN"], icon: <BarChart3 className="h-4 w-4 shrink-0" /> },
+      { to: "/planning-dashboard", navKey: "plan-dash", label: "Requirement & Cycle Planning", roles: [...PLANNING_DASHBOARD_ROLES], icon: <BarChart3 className="h-4 w-4 shrink-0" /> },
       { to: "/work-orders", navKey: "wo", label: "Work Order", roles: ["ADMIN", "PRODUCTION"], icon: <Factory className="h-4 w-4 shrink-0" /> },
       { to: "/production", navKey: "prod", label: "Production Workspace", roles: ["ADMIN", "PRODUCTION"], icon: <GitBranch className="h-4 w-4 shrink-0" /> },
       {

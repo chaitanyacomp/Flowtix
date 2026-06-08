@@ -5,11 +5,14 @@
 const express = require("express");
 const { z } = require("zod");
 const { requireAuth, requireRole } = require("../middleware/auth");
-const { RM_PO_WRITE_ROLES } = require("../constants/erpRoles");
+const {
+  RM_PO_WRITE_ROLES,
+  RM_PO_READ_ROLES,
+  PROCUREMENT_PLANNING_ROLES,
+} = require("../constants/erpRoles");
 const { buildProcurementPool } = require("../services/procurementPlanningService");
 const { createPurchaseRequestFromPool } = require("../services/purchaseRequestService");
 const { buildProcurementWorkspace } = require("../services/procurementWorkspaceService");
-const { RM_PO_READ_ROLES } = require("../constants/erpRoles");
 const { repairStaleDuplicateWoPlanningProcurement } = require("../services/procurementLifecycleService");
 
 const procurementPlanningRouter = express.Router();
@@ -38,7 +41,7 @@ procurementPlanningRouter.get(
 procurementPlanningRouter.get(
   "/pool",
   requireAuth,
-  requireRole(RM_PO_WRITE_ROLES),
+  requireRole(PROCUREMENT_PLANNING_ROLES),
   async (req, res, next) => {
     try {
       const data = await buildProcurementPool();

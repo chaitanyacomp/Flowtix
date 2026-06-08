@@ -27,6 +27,8 @@ import { ErpKpiLabel, ErpKpiSegment, ErpKpiStrip, ErpKpiValue } from "../compone
 import { PendingMaterialRequestsPanel } from "../components/purchase/PendingMaterialRequestsPanel";
 
 import { displaySalesOrderNo } from "../lib/docNoDisplay";
+import { useAuth } from "../hooks/useAuth";
+import { hasErpRole, PURCHASE_EXECUTION_ROLES } from "../config/erpRoles";
 
 import { PROCUREMENT_TERMS } from "../lib/procurementTerminology";
 import { WoProcurementContinuityStrip } from "../components/erp/WoProcurementContinuityStrip";
@@ -240,14 +242,15 @@ type MrRowAction =
   | { kind: "navigate"; label: string; to: string }
   | { kind: "create-pr"; label: string };
 
-function mrCanCreatePurchaseRequest(row: MrSummary): boolean {
+function mrCanCreatePurchaseRequest(row: MrSummary, canExecutePurchase: boolean): boolean {
+  if (!canExecutePurchase) return false;
   if (row.canCreatePurchaseRequest === false) return false;
   if (row.canCreatePurchaseRequest === true) return true;
   const s = String(row.status ?? "").trim();
   return s === "APPROVED" || s === "SENT_TO_PURCHASE";
 }
 
-function mrPrimaryAction(row: MrSummary): MrRowAction | null {
+function mrPrimaryAction(row: MrSummary, canExecutePurchase: boolean): MrRowAction | null {
   switch (row.nextActionKey) {
     case "CREATE_PO":
       return { kind: "navigate", label: PROCUREMENT_TERMS.PREPARE_RM_PO, to: "/rm-po-grn?focus=pending-requests" };
@@ -268,7 +271,7 @@ function mrPrimaryAction(row: MrSummary): MrRowAction | null {
           : "/rm-po-grn",
       };
     case "CREATE_PR":
-      if (!mrCanCreatePurchaseRequest(row)) return null;
+      if (!mrCanCreatePurchaseRequest(row, canExecutePurchase)) return null;
       return { kind: "create-pr", label: PROCUREMENT_TERMS.CREATE_PURCHASE_REQUEST };
     case "TRACK_IN_RM_CONTROL":
       return {
@@ -281,7 +284,7 @@ function mrPrimaryAction(row: MrSummary): MrRowAction | null {
         }),
       };
     default:
-      if (mrCanCreatePurchaseRequest(row)) {
+      if (mrCanCreatePurchaseRequest(row, canExecutePurchase)) {
         return { kind: "create-pr", label: PROCUREMENT_TERMS.CREATE_PURCHASE_REQUEST };
       }
       return null;
@@ -432,6 +435,8 @@ function PendingMaterialRequirementsTable({
 
   onCreatePurchaseRequest,
 
+  canExecutePurchase,
+
 }: {
 
   rows: MrSummary[];
@@ -443,6 +448,8 @@ function PendingMaterialRequirementsTable({
   focusMaterialRequirementId?: number;
 
   onCreatePurchaseRequest: (mr: MrSummary) => void;
+
+  canExecutePurchase: boolean;
 
 }) {
 
@@ -508,7 +515,7 @@ function PendingMaterialRequirementsTable({
 
           {rows.map((mr) => {
 
-            const action = mrPrimaryAction(mr);
+            const action = mrPrimaryAction(mr, canExecutePurchase);
 
             const lines = mr.lines ?? [];
 
@@ -744,6 +751,8 @@ function PendingMaterialRequirementsTable({
 export function ProcurementPlanningPage() {
 
   const { showSuccess, showError } = useToast();
+  const { user } = useAuth();
+  const canExecutePurchase = hasErpRole(user?.role, PURCHASE_EXECUTION_ROLES);
 
   const [searchParams] = useSearchParams();
 
@@ -799,7 +808,7 @@ export function ProcurementPlanningPage() {
 
       if (creatingPrRef.current) return;
 
-      if (!mrCanCreatePurchaseRequest(mr)) return;
+      if (!mrCanCreatePurchaseRequest(mr, canExecutePurchase)) return;
 
       const payload = buildPurchaseRequestPayloadFromMr(mr);
 
@@ -1110,6 +1119,7 @@ export function ProcurementPlanningPage() {
           creatingMrId={creatingMrId}
           focusMaterialRequirementId={focusMaterialRequirementId}
           onCreatePurchaseRequest={(mr) => void handleCreatePurchaseRequest(mr)}
+          canExecutePurchase={canExecutePurchase}
         />
 
       </section>

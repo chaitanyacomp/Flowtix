@@ -34,7 +34,7 @@ export function useErpRoleUi() {
       isPureAccountsOperator: isPurchase && isOperator,
       isPurePurchaseOperator: isPurchase && isOperator,
 
-      showPlanningWorkflowActions: isAdmin,
+      showPlanningWorkflowActions: isAdmin || isStore,
       showProductionPlanningBreadcrumb: isAdmin || isStore,
       showProductionDispatchHandoff: isAdmin || isStore,
       showDispatchCrossDeptNav: isAdmin,

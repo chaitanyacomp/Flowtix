@@ -1,5 +1,6 @@
 /**
- * STORE (dispatch desk) sidebar visibility — presentation only (Phase 2 UI cleanup).
+ * STORE sidebar visibility — presentation only.
+ * MPRS Phase 1: planning / review workspaces are visible; commercial & shop-floor remain hidden.
  */
 const STORE_HIDDEN_NAV_KEYS = new Set([
   "cust",
@@ -14,19 +15,13 @@ const STORE_HIDDEN_NAV_KEYS = new Set([
   "salebill",
   "cust-track",
   "cust-ret",
-  "mat-plan",
-  "rm-stock-plan",
-  "proc-plan",
   "purbill",
-  "monthly-planning",
-  "plan-dash",
   "wo",
   "prod",
   "qc",
   "qc-report",
   "pmr",
   "mrn",
-  "rm-control-center",
   "rm-ledger",
   "stock-adj",
   "stock-move",

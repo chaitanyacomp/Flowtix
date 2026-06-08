@@ -8,7 +8,7 @@ import { apiFetch } from "../services/api";
 import { useToast } from "../contexts/ToastContext";
 import { useAuth } from "../hooks/useAuth";
 import { useFeatureFlags } from "../hooks/useFeatureFlags";
-import { RM_PO_WRITE_ROLES } from "../config/erpRoles";
+import { RM_ALLOCATION_WRITE_ROLES, RM_PO_WRITE_ROLES } from "../config/erpRoles";
 import { cn } from "../lib/utils";
 import { resolveGuidedWorkflow, type GuidedWorkflowResolution } from "../lib/rmGuidedWorkflow";
 import { resolveRmOperationalContext } from "../lib/rmOperationalActions";
@@ -482,7 +482,8 @@ export function MaterialAvailabilityControlCenterPage() {
   const planningDrivenProcurement = flags.planningDrivenProcurement;
   const { user } = useAuth();
   const role = user?.role ?? "";
-  const canActAsStore = (RM_PO_WRITE_ROLES as readonly string[]).includes(role);
+  const canAllocateAsStore = (RM_ALLOCATION_WRITE_ROLES as readonly string[]).includes(role);
+  const canRaiseProcurementShortageMr = (RM_PO_WRITE_ROLES as readonly string[]).includes(role);
   const [searchParams] = useSearchParams();
   const initialApiFilters = React.useMemo(() => apiFiltersFromSearchParams(searchParams), [searchParams]);
   const returnTo = searchParams.get("returnTo");
@@ -944,7 +945,7 @@ export function MaterialAvailabilityControlCenterPage() {
               type="button"
               size="sm"
               className="mt-2 h-9 w-full text-[13px] font-semibold"
-              disabled={!canActAsStore || creatingShortageMr}
+              disabled={!canRaiseProcurementShortageMr || creatingShortageMr}
               onClick={() => void bulkAddWoShortageCaseLines()}
             >
               {creatingShortageMr ? "Raising…" : "Raise RM Requirement"}
@@ -1190,7 +1191,7 @@ export function MaterialAvailabilityControlCenterPage() {
             <Badge variant={readiness.variant} density="compact">
               {readiness.label}
             </Badge>
-            {!canActAsStore ? (
+            {!canAllocateAsStore ? (
               <Badge variant="default" density="compact">
                 Read-only
               </Badge>
@@ -1443,7 +1444,7 @@ export function MaterialAvailabilityControlCenterPage() {
                           size="sm"
                           className="h-9 w-full text-[13px] font-semibold"
                           disabled={
-                            !canActAsStore ||
+                            !canAllocateAsStore ||
                             allocating ||
                             !selectedLineAllocationContext ||
                             selectedLineAllocationContext.suggested <= 0
@@ -1467,13 +1468,13 @@ export function MaterialAvailabilityControlCenterPage() {
                             placeholder="Custom qty"
                             className="h-9"
                             inputMode="decimal"
-                            disabled={!canActAsStore || allocating || !selectedLineAllocationContext}
+                            disabled={!canAllocateAsStore || allocating || !selectedLineAllocationContext}
                           />
                           <Button
                             type="button"
                             size="sm"
                             className="h-9 shrink-0 text-[13px] font-semibold"
-                            disabled={!canActAsStore || allocating || !selectedLineAllocationContext}
+                            disabled={!canAllocateAsStore || allocating || !selectedLineAllocationContext}
                             onClick={() => {
                               const q = Number(allocationQtyDraft);
                               if (!Number.isFinite(q) || q <= 0) {
@@ -1492,7 +1493,7 @@ export function MaterialAvailabilityControlCenterPage() {
                           onChange={(e) => setAllocationNoteDraft(e.target.value)}
                           placeholder="Note (optional)"
                           className="h-9"
-                          disabled={!canActAsStore || allocating || !selectedLineAllocationContext}
+                          disabled={!canAllocateAsStore || allocating || !selectedLineAllocationContext}
                         />
 
                         <div className="mt-1 rounded-md border border-slate-200 bg-slate-50 px-2 py-1.5 text-[11px] text-slate-700">
@@ -1516,14 +1517,14 @@ export function MaterialAvailabilityControlCenterPage() {
                                 placeholder="Release qty"
                                 className="h-9"
                                 inputMode="decimal"
-                                disabled={!canActAsStore || releasing}
+                                disabled={!canAllocateAsStore || releasing}
                               />
                               <Button
                                 type="button"
                                 size="sm"
                                 variant="outline"
                                 className="h-9 shrink-0 text-[13px] font-semibold"
-                                disabled={!canActAsStore || releasing}
+                                disabled={!canAllocateAsStore || releasing}
                                 onClick={() => {
                                   const q = Number(releaseQtyDraft);
                                   if (!Number.isFinite(q) || q <= 0) {
@@ -1541,7 +1542,7 @@ export function MaterialAvailabilityControlCenterPage() {
                               onChange={(e) => setReleaseReasonDraft(e.target.value)}
                               placeholder="Reason (optional)"
                               className="h-9"
-                              disabled={!canActAsStore || releasing}
+                              disabled={!canAllocateAsStore || releasing}
                             />
                           </div>
                         ) : null}

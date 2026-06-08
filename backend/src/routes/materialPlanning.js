@@ -5,7 +5,7 @@
 const express = require("express");
 const { z } = require("zod");
 const { requireAuth, requireRole } = require("../middleware/auth");
-const { RM_PO_WRITE_ROLES } = require("../constants/erpRoles");
+const { MATERIAL_REQUISITION_WRITE_ROLES } = require("../constants/erpRoles");
 const {
   buildMaterialPlanningPreview,
   createMaterialRequirementDraft,
@@ -43,7 +43,7 @@ const createBodySchema = z
 materialPlanningRouter.get(
   "/sources",
   requireAuth,
-  requireRole(RM_PO_WRITE_ROLES),
+  requireRole(MATERIAL_REQUISITION_WRITE_ROLES),
   async (req, res, next) => {
     try {
       const data = await listMaterialPlanningSources();
@@ -57,7 +57,7 @@ materialPlanningRouter.get(
 materialPlanningRouter.get(
   "/preview",
   requireAuth,
-  requireRole(RM_PO_WRITE_ROLES),
+  requireRole(MATERIAL_REQUISITION_WRITE_ROLES),
   async (req, res, next) => {
     try {
       const q = previewQuerySchema.parse(req.query);
@@ -75,7 +75,7 @@ materialPlanningRouter.get(
 materialPlanningRouter.post(
   "/requirements",
   requireAuth,
-  requireRole(RM_PO_WRITE_ROLES),
+  requireRole(MATERIAL_REQUISITION_WRITE_ROLES),
   blockProcurementDemandWhenPlanningDriven,
   async (req, res, next) => {
     try {
@@ -105,7 +105,7 @@ for (const [path, transition] of [
   materialPlanningRouter.post(
     path,
     requireAuth,
-    requireRole(RM_PO_WRITE_ROLES),
+    requireRole(MATERIAL_REQUISITION_WRITE_ROLES),
     async (req, res, next) => {
       try {
         const body = transitionSchema.parse(req.body || {});

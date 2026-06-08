@@ -1,7 +1,12 @@
 const express = require("express");
 const { z } = require("zod");
 const { requireAuth, requireRole } = require("../middleware/auth");
-const { RM_PO_WRITE_ROLES, STOCK_READ_ROLES } = require("../constants/erpRoles");
+const {
+  RM_PO_WRITE_ROLES,
+  RM_ALLOCATION_WRITE_ROLES,
+  RM_CONTROL_CENTER_ROLES,
+  STOCK_READ_ROLES,
+} = require("../constants/erpRoles");
 const { buildMaterialAvailabilityWorkspace } = require("../services/materialAvailabilityWorkspaceService");
 const { allocateForWorkOrder, releaseForWorkOrder } = require("../services/storeAllocationEngineService");
 const {
@@ -56,7 +61,7 @@ const allocationReleaseSchema = z.object({
 materialAvailabilityRouter.get(
   "/workspace",
   requireAuth,
-  requireRole(STOCK_READ_ROLES),
+  requireRole(RM_CONTROL_CENTER_ROLES),
   async (req, res, next) => {
     try {
       const query = workspaceQuerySchema.parse(req.query);
@@ -71,7 +76,7 @@ materialAvailabilityRouter.get(
 materialAvailabilityRouter.post(
   "/allocations/allocate",
   requireAuth,
-  requireRole(RM_PO_WRITE_ROLES),
+  requireRole(RM_ALLOCATION_WRITE_ROLES),
   async (req, res, next) => {
     try {
       const body = allocationAllocateSchema.parse(req.body);
@@ -86,7 +91,7 @@ materialAvailabilityRouter.post(
 materialAvailabilityRouter.post(
   "/allocations/release",
   requireAuth,
-  requireRole(RM_PO_WRITE_ROLES),
+  requireRole(RM_ALLOCATION_WRITE_ROLES),
   async (req, res, next) => {
     try {
       const body = allocationReleaseSchema.parse(req.body);

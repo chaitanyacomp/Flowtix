@@ -24,17 +24,33 @@ export const SO_WRITE_ROLES = ["ADMIN"] as const;
 export const SO_READ_ROLES = ["ADMIN"] as const;
 export const ENQUIRY_QUOTATION_WRITE_ROLES = ["ADMIN"] as const;
 
-export const RS_WRITE_ROLES = ["ADMIN"] as const;
+/** STORE — NO_QTY requirement sheet / customer schedule planning */
+export const RS_WRITE_ROLES = ["ADMIN", "STORE"] as const;
 export const RS_READ_ROLES = ["ADMIN", "STORE", "PRODUCTION"] as const;
 export const NEXT_RS_WRITE_ROLES = ["ADMIN"] as const;
 
-/** PURCHASE */
+/** PURCHASE — PO execution, GRN, purchase bills (not planning initiation) */
 export const RM_PO_WRITE_ROLES = ["ADMIN", "PURCHASE"] as const;
 export const RM_PO_READ_ROLES = ["ADMIN", "PURCHASE", "STORE"] as const;
 export const SUPPLIER_VIEW_ROLES = ["ADMIN", "PURCHASE"] as const;
 export const SUPPLIER_WRITE_ROLES = ["ADMIN", "PURCHASE"] as const;
 export const PURCHASE_DASHBOARD_ROLES = ["ADMIN", "PURCHASE"] as const;
-export const PROCUREMENT_PLANNING_ROLES = ["ADMIN", "PURCHASE"] as const;
+/** Planning workspace visibility (Store review + Purchase execution context) */
+export const PROCUREMENT_PLANNING_ROLES = ["ADMIN", "STORE", "PURCHASE"] as const;
+/** Purchase Request / PO execution actions in procurement workspace */
+export const PURCHASE_EXECUTION_ROLES = ["ADMIN", "PURCHASE"] as const;
+
+/** STORE — MR / requisition lifecycle */
+export const MATERIAL_REQUISITION_WRITE_ROLES = ["ADMIN", "STORE"] as const;
+
+/** STORE — RM Control Center allocation */
+export const RM_ALLOCATION_WRITE_ROLES = ["ADMIN", "STORE"] as const;
+
+/** RM Control Center workspace */
+export const RM_CONTROL_CENTER_ROLES = ["ADMIN", "STORE", "PRODUCTION"] as const;
+
+/** Dashboard — procurement prepare / review queue */
+export const PROCUREMENT_REVIEW_DASHBOARD_ROLES = ["ADMIN", "STORE", "PURCHASE"] as const;
 
 /** STORE */
 export const STOCK_READ_ROLES = ["ADMIN", "STORE", "PRODUCTION"] as const;
@@ -81,14 +97,16 @@ export const PURCHASE_BILL_WRITE_ROLES = ["ADMIN", "PURCHASE"] as const;
 export const PURCHASE_BILL_DRAFT_ROLES = ["ADMIN", "PURCHASE"] as const;
 export const PURCHASE_BILL_READ_ROLES = ["ADMIN", "PURCHASE"] as const;
 
-export const PLANNING_DASHBOARD_ROLES = ["ADMIN", "PRODUCTION"] as const;
+/** NO_QTY cycle / requirement planning hub */
+export const PLANNING_DASHBOARD_ROLES = ["ADMIN", "STORE", "PRODUCTION"] as const;
 export const REPORTS_ROLES = ["ADMIN"] as const;
 
 /** @deprecated Use REPORTS_ROLES */
 export const REPORTS_WITH_ACCOUNTS_ROLES = REPORTS_ROLES;
 
-export const MONTHLY_PLANNING_READ_ROLES = ["ADMIN"] as const;
-export const MONTHLY_PLANNING_WRITE_ROLES = ["ADMIN", "PURCHASE"] as const;
+/** Monthly planning workspace (MPRS) */
+export const MONTHLY_PLANNING_READ_ROLES = ["ADMIN", "STORE", "PURCHASE"] as const;
+export const MONTHLY_PLANNING_WRITE_ROLES = ["ADMIN", "STORE"] as const;
 
 /** Legacy aliases */
 export const PURCHASE_WITH_ACCOUNTS_ROLES = PURCHASE_BILL_READ_ROLES;

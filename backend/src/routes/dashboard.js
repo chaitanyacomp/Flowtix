@@ -36,6 +36,8 @@ const {
   DISPATCH_READ_ROLES,
   PURCHASE_DASHBOARD_ROLES,
   WO_PREPARE_CREATION_DASHBOARD_ROLES,
+  RM_CONTROL_CENTER_ROLES,
+  PROCUREMENT_REVIEW_DASHBOARD_ROLES,
   ALL_APP_ROLES,
 } = require("../constants/erpRoles");
 const { getAccountsDashboard } = require("../services/accountsDashboardService");
@@ -70,11 +72,11 @@ const continueWorkingRoles = requireRole(["ADMIN", "STORE", "PRODUCTION", "QA"],
 const dispatchBacklogRoles = requireRole([...DISPATCH_READ_ROLES], DISPATCH_BACKLOG_ACCESS_DENIED);
 const productionQueueRoles = requireRole(["ADMIN", "PRODUCTION"], PRODUCTION_QUEUE_ACCESS_DENIED);
 const qcQueueRoles = requireRole(["ADMIN", "QA"], QC_QUEUE_ACCESS_DENIED);
-const rmRiskRoles = requireRole(["ADMIN", "PRODUCTION"], RM_RISK_ACCESS_DENIED);
+const rmRiskRoles = requireRole([...RM_CONTROL_CENTER_ROLES], RM_RISK_ACCESS_DENIED);
 const purchaseSummaryRoles = requireRole(["ADMIN", "PURCHASE", "STORE"], PURCHASE_SUMMARY_ACCESS_DENIED);
 const woPrepareProcurementRoles = requireRole(
-  [...PURCHASE_DASHBOARD_ROLES],
-  "Access denied. Only administrators and purchase staff can view procurement prepare queues.",
+  [...PROCUREMENT_REVIEW_DASHBOARD_ROLES],
+  "Access denied. Only administrators, store, and purchase staff can view procurement prepare queues.",
 );
 const woPrepareQueuesRoles = requireRole(
   [...new Set([...PURCHASE_DASHBOARD_ROLES, ...WO_PREPARE_CREATION_DASHBOARD_ROLES])],

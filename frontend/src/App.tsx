@@ -106,6 +106,7 @@ import {
   MATERIAL_ISSUE_ROLES,
   STOCK_READ_ROLES,
   MONTHLY_PLANNING_READ_ROLES,
+  RM_CONTROL_CENTER_ROLES,
   STOCK_WRITE_ROLES,
 } from "./config/erpRoles";
 import { DatabaseCleanupPage } from "./pages/DatabaseCleanupPage";
@@ -899,7 +900,7 @@ export default function App() {
         <Route
           path="/reports/rm-shortage"
           element={
-            <ProtectedRoute allowedRoles={["ADMIN", "PRODUCTION"]}>
+            <ProtectedRoute allowedRoles={[...RM_CONTROL_CENTER_ROLES]}>
               <MaterialAvailabilityControlCenterPage />
             </ProtectedRoute>
           }

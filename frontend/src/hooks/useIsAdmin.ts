@@ -1,5 +1,5 @@
 import { useAuth } from "./useAuth";
-import { NEXT_RS_WRITE_ROLES, RM_PO_WRITE_ROLES, RS_WRITE_ROLES } from "../config/erpRoles";
+import { MATERIAL_REQUISITION_WRITE_ROLES, NEXT_RS_WRITE_ROLES, RS_WRITE_ROLES } from "../config/erpRoles";
 
 /** Spec: Add/Edit/Delete visible only for Admin (except where role-specific actions apply). */
 export function useIsAdmin() {
@@ -15,7 +15,7 @@ export function useCanPostStockAdjustment() {
 /** Raise material requirement from Prepare Work Order — ADMIN and STORE only (matches API). */
 export function useCanRaiseMaterialRequirement() {
   const role = useAuth().user?.role ?? "";
-  return (RM_PO_WRITE_ROLES as readonly string[]).includes(role);
+  return (MATERIAL_REQUISITION_WRITE_ROLES as readonly string[]).includes(role);
 }
 
 /**
@@ -30,7 +30,7 @@ export function useCanCreateNextRs() {
 /**
  * Role-based UI gate for the "Open Requirement Sheet" / planning workspace CTAs.
  *
- * Requirement sheet authoring is owned by ADMIN + SALES (mirrors backend RS_WRITE_ROLES).
+ * Requirement sheet authoring is owned by ADMIN + STORE (mirrors backend RS_WRITE_ROLES).
  * Other roles see a read-only "Planning Status" chip instead of a deep-link that would 403.
  */
 export function useCanOpenRequirementSheet() {

@@ -27,17 +27,31 @@ const SO_READ_ROLES = Object.freeze(["ADMIN"]);
 const SO_DETAIL_READ_ROLES = Object.freeze(["ADMIN", "PRODUCTION", "STORE", "PURCHASE", "QA"]);
 const ENQUIRY_QUOTATION_WRITE_ROLES = Object.freeze(["ADMIN"]);
 
-const RS_WRITE_ROLES = Object.freeze(["ADMIN"]);
+/** STORE — NO_QTY requirement sheet / customer schedule planning (MPRS Phase 1 ownership). */
+const RS_WRITE_ROLES = Object.freeze(["ADMIN", "STORE"]);
 const RS_READ_ROLES = Object.freeze(["ADMIN", "STORE", "PRODUCTION"]);
 const NEXT_RS_WRITE_ROLES = Object.freeze(["ADMIN"]);
 
-/** PURCHASE — MR/PO/procurement planning + purchase bills + suppliers. */
+/** PURCHASE — PO execution, GRN coordination, purchase bills (not planning initiation). */
 const RM_PO_WRITE_ROLES = Object.freeze(["ADMIN", "PURCHASE"]);
 const RM_PO_READ_ROLES = Object.freeze(["ADMIN", "PURCHASE", "STORE"]);
 const SUPPLIER_VIEW_ROLES = Object.freeze(["ADMIN", "PURCHASE"]);
 const SUPPLIER_WRITE_ROLES = Object.freeze(["ADMIN", "PURCHASE"]);
 const PURCHASE_DASHBOARD_ROLES = Object.freeze(["ADMIN", "PURCHASE"]);
-const PROCUREMENT_PLANNING_ROLES = Object.freeze(["ADMIN", "PURCHASE"]);
+/** Planning workspace visibility (Store review + Purchase execution context). */
+const PROCUREMENT_PLANNING_ROLES = Object.freeze(["ADMIN", "STORE", "PURCHASE"]);
+
+/** STORE — MR / requisition lifecycle (approve, send); not RM PO creation. */
+const MATERIAL_REQUISITION_WRITE_ROLES = Object.freeze(["ADMIN", "STORE"]);
+
+/** STORE — RM Control Center allocation actions. */
+const RM_ALLOCATION_WRITE_ROLES = Object.freeze(["ADMIN", "STORE"]);
+
+/** RM Control Center workspace (read + Store allocation). */
+const RM_CONTROL_CENTER_ROLES = Object.freeze(["ADMIN", "STORE", "PRODUCTION"]);
+
+/** Dashboard — procurement prepare / review queue (Store escalation + Purchase execution). */
+const PROCUREMENT_REVIEW_DASHBOARD_ROLES = Object.freeze(["ADMIN", "STORE", "PURCHASE"]);
 
 /** STORE — GRN execution, stock, material issue, dispatch. */
 const STOCK_READ_ROLES = Object.freeze(["ADMIN", "STORE", "PRODUCTION"]);
@@ -95,12 +109,13 @@ const PURCHASE_BILL_READ_ROLES = Object.freeze(["ADMIN", "PURCHASE"]);
 const ACCOUNTS_COMMERCIAL_ROLES = SALES_BILL_READ_ROLES;
 
 const DASHBOARD_READ_ROLES = ALL_APP_ROLES;
-const PLANNING_DASHBOARD_ROLES = Object.freeze(["ADMIN", "PRODUCTION"]);
+/** NO_QTY cycle / requirement planning hub — Store owns RS planning. */
+const PLANNING_DASHBOARD_ROLES = Object.freeze(["ADMIN", "STORE", "PRODUCTION"]);
 const REPORTS_ROLES = Object.freeze(["ADMIN"]);
 
-/** Monthly planning workspace */
-const MONTHLY_PLANNING_READ_ROLES = Object.freeze(["ADMIN"]);
-const MONTHLY_PLANNING_WRITE_ROLES = Object.freeze(["ADMIN", "PURCHASE"]);
+/** Monthly planning workspace (MPRS) — Store-owned write; Purchase read-only. */
+const MONTHLY_PLANNING_READ_ROLES = Object.freeze(["ADMIN", "STORE", "PURCHASE"]);
+const MONTHLY_PLANNING_WRITE_ROLES = Object.freeze(["ADMIN", "STORE"]);
 
 /** @deprecated Use REPORTS_ROLES */
 const REPORTS_WITH_ACCOUNTS_ROLES = REPORTS_ROLES;
@@ -125,6 +140,10 @@ module.exports = {
   SUPPLIER_WRITE_ROLES,
   PURCHASE_DASHBOARD_ROLES,
   PROCUREMENT_PLANNING_ROLES,
+  MATERIAL_REQUISITION_WRITE_ROLES,
+  RM_ALLOCATION_WRITE_ROLES,
+  RM_CONTROL_CENTER_ROLES,
+  PROCUREMENT_REVIEW_DASHBOARD_ROLES,
   // store
   STOCK_READ_ROLES,
   STOCK_WRITE_ROLES,

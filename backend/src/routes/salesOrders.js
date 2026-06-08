@@ -11,7 +11,7 @@ const {
   NEXT_RS_WRITE_ROLES,
   NO_QTY_FLOW_STATE_READ_ROLES,
   DISPATCH_WRITE_ROLES,
-  RM_PO_WRITE_ROLES,
+  MATERIAL_REQUISITION_WRITE_ROLES,
 } = require("../constants/erpRoles");
 const { createSalesOrderFromPo } = require("../services/salesOrderFromPo");
 const { rmCheckForSalesOrder } = require("../services/rmCheckService");
@@ -1484,7 +1484,7 @@ const raiseMaterialRequirementBodySchema = z.object({
 salesOrderRouter.post(
   "/:id/raise-material-requirement",
   requireAuth,
-  requireRole(RM_PO_WRITE_ROLES, "Only Admin and Store can raise material requirements."),
+  requireRole(MATERIAL_REQUISITION_WRITE_ROLES, "Only Admin and Store can raise material requirements."),
   blockProcurementDemandWhenPlanningDriven,
   async (req, res, next) => {
     try {

@@ -22,6 +22,7 @@ import {
   Eye,
   Layers,
   Calculator,
+  Boxes,
 } from "lucide-react";
 
 type PlanStatus = "DRAFT" | "LOCKED";
@@ -226,6 +227,47 @@ type RequirementCompositionResponse = {
   items: RequirementCompositionItem[];
 };
 
+type RmCompositionFgSource = {
+  fgItemId: number;
+  fgItemName: string | null;
+  suggestedProduction: number;
+  rmDemandQty: number;
+  bomRevision?: string | null;
+  bomDocNo?: string | null;
+  bomMissing?: boolean;
+  planningStatus?: string | null;
+};
+
+type RmRequirementCompositionItem = {
+  rmItemId: number;
+  itemName: string | null;
+  unit: string | null;
+  itemType?: string | null;
+  totalRmDemand: number;
+  physicalStock?: number;
+  freeStock: number;
+  reserved: number;
+  incomingPo: number;
+  netAvailable: number;
+  netGap: number;
+  minimumStock: number;
+  belowMinimumFlag: boolean;
+  fgSources: RmCompositionFgSource[];
+};
+
+type RmRequirementCompositionResponse = {
+  periodKey: string;
+  anchorPeriodKey?: string;
+  summary: {
+    fgItemsPlanned: number;
+    rmItemsRequired: number;
+    rmLinesWithGap: number;
+    missingBomCount: number;
+    missingChildBomCount?: number;
+  };
+  items: RmRequirementCompositionItem[];
+};
+
 type EditRow = {
   key: string;
   id?: number;
@@ -312,6 +354,10 @@ export function MonthlyPlanningWorkspacePage() {
   );
   const [loadingRequirementComposition, setLoadingRequirementComposition] = React.useState(false);
   const [requirementCompositionVisible, setRequirementCompositionVisible] = React.useState(false);
+  const [rmRequirementComposition, setRmRequirementComposition] =
+    React.useState<RmRequirementCompositionResponse | null>(null);
+  const [loadingRmRequirementComposition, setLoadingRmRequirementComposition] = React.useState(false);
+  const [rmRequirementCompositionVisible, setRmRequirementCompositionVisible] = React.useState(false);
 
   const isLocked = plan?.status === "LOCKED";
   const editable = planExists && !isLocked;
@@ -481,6 +527,32 @@ export function MonthlyPlanningWorkspacePage() {
       void loadRequirementComposition();
     }
   }, [period, requirementCompositionVisible, loadRequirementComposition]);
+
+  const loadRmRequirementComposition = React.useCallback(async () => {
+    setLoadingRmRequirementComposition(true);
+    try {
+      const res = await apiFetch<RmRequirementCompositionResponse>(
+        `/api/monthly-planning/rm-requirement-composition?periodKey=${encodeURIComponent(period)}`,
+      );
+      setRmRequirementComposition(res);
+      setRmRequirementCompositionVisible(true);
+    } catch (e) {
+      showError(e instanceof ApiRequestError ? e.message : "Failed to load RM Requirement Composition.");
+      setRmRequirementComposition(null);
+    } finally {
+      setLoadingRmRequirementComposition(false);
+    }
+  }, [period, showError]);
+
+  const rmRequirementCompositionPeriodRef = React.useRef(period);
+  React.useEffect(() => {
+    if (rmRequirementCompositionPeriodRef.current === period) return;
+    rmRequirementCompositionPeriodRef.current = period;
+    setRmRequirementComposition(null);
+    if (rmRequirementCompositionVisible) {
+      void loadRmRequirementComposition();
+    }
+  }, [period, rmRequirementCompositionVisible, loadRmRequirementComposition]);
 
   async function loadRsSuggestions() {
     setLoadingRsSuggestions(true);
@@ -773,6 +845,15 @@ export function MonthlyPlanningWorkspacePage() {
         loading={loadingRequirementComposition}
         onLoad={() => void loadRequirementComposition()}
         onHide={() => setRequirementCompositionVisible(false)}
+      />
+
+      <RmRequirementCompositionSection
+        period={period}
+        data={rmRequirementComposition}
+        visible={rmRequirementCompositionVisible}
+        loading={loadingRmRequirementComposition}
+        onLoad={() => void loadRmRequirementComposition()}
+        onHide={() => setRmRequirementCompositionVisible(false)}
       />
 
       {/* Tabs */}
@@ -1640,6 +1721,203 @@ function RequirementCompositionSection({
                 )}
               </tbody>
             </table>
+          </div>
+        ) : null
+      ) : null}
+    </div>
+  );
+}
+
+function RmRequirementCompositionSection({
+  period,
+  data,
+  visible,
+  loading,
+  onLoad,
+  onHide,
+}: {
+  period: string;
+  data: RmRequirementCompositionResponse | null;
+  visible: boolean;
+  loading: boolean;
+  onLoad: () => void;
+  onHide: () => void;
+}) {
+  const [expandedItemIds, setExpandedItemIds] = React.useState<Set<number>>(new Set());
+  const dataForPeriod = data?.periodKey === period ? data : null;
+
+  function toggleDetails(rmItemId: number) {
+    setExpandedItemIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(rmItemId)) next.delete(rmItemId);
+      else next.add(rmItemId);
+      return next;
+    });
+  }
+
+  return (
+    <div className="rounded-lg border border-amber-200 bg-amber-50/40 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h3 className="text-[13px] font-semibold text-slate-800">RM Requirement Composition</h3>
+          <p className="mt-0.5 text-[12px] text-slate-600">
+            Read-only BOM-derived RM demand from FG <strong>suggested production</strong> for{" "}
+            <strong>{period}</strong>. Stock visibility only — no procurement actions.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          {visible ? (
+            <Button type="button" variant="outline" size="sm" onClick={onHide} className="h-8">
+              Hide
+            </Button>
+          ) : null}
+          <Button type="button" variant="outline" size="sm" onClick={onLoad} disabled={loading} className="h-8">
+            <Boxes className={cn("mr-1.5 h-4 w-4", loading && "animate-pulse")} />
+            {loading ? "Loading…" : "View RM Composition"}
+          </Button>
+        </div>
+      </div>
+
+      {visible && (loading || dataForPeriod) ? (
+        loading ? (
+          <p className="mt-3 text-sm text-slate-500">Loading RM requirement composition for {period}…</p>
+        ) : dataForPeriod ? (
+          <div className="mt-3 space-y-3">
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              <KpiCard label="FG items planned" value={String(dataForPeriod.summary.fgItemsPlanned)} />
+              <KpiCard label="RM items required" value={String(dataForPeriod.summary.rmItemsRequired)} />
+              <KpiCard label="RM lines with gap" value={String(dataForPeriod.summary.rmLinesWithGap)} />
+              <KpiCard label="Missing BOM count" value={String(dataForPeriod.summary.missingBomCount)} />
+            </div>
+            <div className="overflow-auto rounded-md border border-slate-200 bg-white">
+              <div className="border-b border-slate-100 px-3 py-2 text-[11px] text-slate-500">
+                {dataForPeriod.items.length} RM line(s) · read-only · expand row for FG traceability
+              </div>
+              <table className="w-full border-collapse text-[13px]">
+                <thead className="bg-slate-50 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                  <tr>
+                    <th className="px-3 py-2 w-8" />
+                    <th className="px-3 py-2">RM item</th>
+                    <th className="px-3 py-2 w-16">UOM</th>
+                    <th className="px-3 py-2 w-28 text-right">Total demand</th>
+                    <th className="px-3 py-2 w-24 text-right">Free</th>
+                    <th className="px-3 py-2 w-24 text-right">Reserved</th>
+                    <th className="px-3 py-2 w-24 text-right">Incoming PO</th>
+                    <th className="px-3 py-2 w-28 text-right">Net available</th>
+                    <th className="px-3 py-2 w-24 text-right">Net gap</th>
+                    <th className="px-3 py-2 w-28 text-right">Min stock</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {dataForPeriod.items.length === 0 ? (
+                    <tr>
+                      <td colSpan={10} className="px-3 py-6 text-center text-sm text-slate-400">
+                        No RM demand for FG suggested production in this period (check FG composition or missing BOM).
+                      </td>
+                    </tr>
+                  ) : (
+                    dataForPeriod.items.map((item) => {
+                      const expanded = expandedItemIds.has(item.rmItemId);
+                      return (
+                        <React.Fragment key={item.rmItemId}>
+                          <tr className="border-t border-slate-100 align-middle">
+                            <td className="px-2 py-1.5 text-center">
+                              <button
+                                type="button"
+                                onClick={() => toggleDetails(item.rmItemId)}
+                                className="text-slate-400 hover:text-slate-700"
+                                title="Show FG source traceability"
+                                disabled={item.fgSources.length === 0}
+                              >
+                                {item.fgSources.length > 0 ? (
+                                  expanded ? (
+                                    <ChevronDown className="h-4 w-4" />
+                                  ) : (
+                                    <ChevronRight className="h-4 w-4" />
+                                  )
+                                ) : null}
+                              </button>
+                            </td>
+                            <td className="px-3 py-1.5 font-medium text-slate-800">
+                              {item.itemName ?? `Item ${item.rmItemId}`}
+                              {item.belowMinimumFlag ? (
+                                <span className="ml-2 inline-flex rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-amber-800">
+                                  Below min
+                                </span>
+                              ) : null}
+                            </td>
+                            <td className="px-3 py-1.5 text-slate-600">{item.unit ?? "—"}</td>
+                            <td className="px-3 py-1.5 text-right tabular-nums font-medium text-slate-800">
+                              {item.totalRmDemand.toLocaleString()}
+                            </td>
+                            <td className="px-3 py-1.5 text-right tabular-nums text-slate-800">
+                              {item.freeStock.toLocaleString()}
+                            </td>
+                            <td className="px-3 py-1.5 text-right tabular-nums text-slate-800">
+                              {item.reserved.toLocaleString()}
+                            </td>
+                            <td className="px-3 py-1.5 text-right tabular-nums text-slate-800">
+                              {item.incomingPo.toLocaleString()}
+                            </td>
+                            <td className="px-3 py-1.5 text-right tabular-nums text-slate-800">
+                              {item.netAvailable.toLocaleString()}
+                            </td>
+                            <td
+                              className={cn(
+                                "px-3 py-1.5 text-right tabular-nums font-semibold",
+                                item.netGap > 0 ? "text-red-700" : "text-slate-800",
+                              )}
+                            >
+                              {item.netGap.toLocaleString()}
+                            </td>
+                            <td className="px-3 py-1.5 text-right tabular-nums text-slate-600">
+                              {item.minimumStock.toLocaleString()}
+                            </td>
+                          </tr>
+                          {expanded && item.fgSources.length > 0 ? (
+                            <tr className="border-t border-slate-50 bg-slate-50/60">
+                              <td />
+                              <td className="px-3 py-2 pl-8" colSpan={9}>
+                                <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                                  FG sources
+                                </div>
+                                <table className="mt-1 w-full max-w-xl text-[12px]">
+                                  <thead>
+                                    <tr className="text-left text-slate-500">
+                                      <th className="py-1 pr-3 font-medium">FG item</th>
+                                      <th className="py-1 pr-3 text-right font-medium">Suggested prod.</th>
+                                      <th className="py-1 text-right font-medium">RM demand</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {item.fgSources.map((src) => (
+                                      <tr key={src.fgItemId} className="border-t border-slate-100">
+                                        <td className="py-1 pr-3 text-slate-700">
+                                          {src.fgItemName ?? `FG ${src.fgItemId}`}
+                                          {src.bomMissing ? (
+                                            <span className="ml-1 text-amber-700">(missing BOM)</span>
+                                          ) : null}
+                                        </td>
+                                        <td className="py-1 pr-3 text-right tabular-nums">
+                                          {src.suggestedProduction.toLocaleString()}
+                                        </td>
+                                        <td className="py-1 text-right tabular-nums font-medium">
+                                          {src.rmDemandQty.toLocaleString()}
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </td>
+                            </tr>
+                          ) : null}
+                        </React.Fragment>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
         ) : null
       ) : null}

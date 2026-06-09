@@ -1342,6 +1342,8 @@ model MonthlyProductionPlanLine {
   fgItemId       Int
   suggestedFgQty Decimal               @default(0) @db.Decimal(18, 3)
   plannedFgQty   Decimal               @default(0) @db.Decimal(18, 3)
+  /// True when Store manually edited planned qty; auto-fill must not overwrite.
+  plannedQtyOverridden Boolean          @default(false)
   source         MonthlyPlanLineSource @default(MANUAL)
   remarks        String?               @db.Text
   createdAt      DateTime              @default(now())

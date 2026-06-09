@@ -57,15 +57,31 @@ type ProductionLine = {
   unit: string | null;
   suggestedFgQty: string | number;
   plannedFgQty: string | number;
+  plannedQtyOverridden: boolean;
   source: LineSource;
   remarks: string | null;
+  varianceQty?: number;
+  variancePct?: number;
+  greenTarget?: number;
+  freeFgStock?: number;
+  projectedStockAfterPlan?: number;
+  remainingGreenGap?: number;
+};
+
+type LockSummary = {
+  fgItemsWithVariance: number;
+  totalSuggestedQty: number;
+  totalPlannedQty: number;
+  totalVarianceQty: number;
 };
 
 type ProductionLinesResponse = {
   planId: number;
+  periodKey?: string;
   status: PlanStatus;
   editable: boolean;
   lines: ProductionLine[];
+  lockSummary?: LockSummary;
 };
 
 type RmPlanLine = {
@@ -276,13 +292,113 @@ type EditRow = {
   unit: string | null;
   suggestedFgQty: number;
   plannedFgQty: string;
+  plannedQtyOverridden: boolean;
   source: LineSource;
   remarks: string;
 };
 
+type LinePlanningMetrics = {
+  suggested: number;
+  planned: number;
+  varianceQty: number;
+  variancePct: number;
+  greenTarget: number;
+  freeFgStock: number;
+  remainingGreenGap: number;
+};
+
+function round3(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.round(value * 1000) / 1000;
+}
+
+function buildSuggestedProductionMap(data: RequirementCompositionResponse | null): Map<number, number> {
+  const map = new Map<number, number>();
+  for (const item of data?.items ?? []) {
+    map.set(item.itemId, round3(num(item.suggestedProduction)));
+  }
+  return map;
+}
+
+function buildGreenContextMap(
+  data: GreenLevelsResponse | null,
+): Map<number, { greenTarget: number; freeFgStock: number }> {
+  const map = new Map<number, { greenTarget: number; freeFgStock: number }>();
+  for (const item of data?.items ?? []) {
+    map.set(item.itemId, {
+      greenTarget: round3(num(item.greenQty)),
+      freeFgStock: round3(num(item.freeFgStock)),
+    });
+  }
+  return map;
+}
+
+function computeLinePlanningMetrics(
+  fgItemId: number,
+  plannedQty: number,
+  fallbackSuggested: number,
+  suggestedMap: Map<number, number>,
+  greenMap: Map<number, { greenTarget: number; freeFgStock: number }>,
+): LinePlanningMetrics {
+  const suggested = suggestedMap.has(fgItemId) ? suggestedMap.get(fgItemId)! : round3(fallbackSuggested);
+  const planned = round3(plannedQty);
+  const varianceQty = round3(planned - suggested);
+  const variancePct = suggested > 0 ? round3((varianceQty / suggested) * 100) : 0;
+  const green = greenMap.get(fgItemId) ?? { greenTarget: 0, freeFgStock: 0 };
+  const remainingGreenGap = round3(Math.max(0, green.greenTarget - (green.freeFgStock + planned)));
+  return {
+    suggested,
+    planned,
+    varianceQty,
+    variancePct,
+    greenTarget: green.greenTarget,
+    freeFgStock: green.freeFgStock,
+    remainingGreenGap,
+  };
+}
+
+function computeLockSummaryFromRows(
+  rows: EditRow[],
+  suggestedMap: Map<number, number>,
+): LockSummary {
+  let totalSuggestedQty = 0;
+  let totalPlannedQty = 0;
+  let fgItemsWithVariance = 0;
+  for (const row of rows) {
+    const metrics = computeLinePlanningMetrics(
+      row.fgItemId,
+      num(row.plannedFgQty),
+      row.suggestedFgQty,
+      suggestedMap,
+      new Map(),
+    );
+    totalSuggestedQty = round3(totalSuggestedQty + metrics.suggested);
+    totalPlannedQty = round3(totalPlannedQty + metrics.planned);
+    if (Math.abs(metrics.varianceQty) > 1e-9) fgItemsWithVariance += 1;
+  }
+  return {
+    fgItemsWithVariance,
+    totalSuggestedQty,
+    totalPlannedQty,
+    totalVarianceQty: round3(totalPlannedQty - totalSuggestedQty),
+  };
+}
+
+function varianceRowClass(varianceQty: number): string {
+  if (Math.abs(varianceQty) < 1e-9) return "text-slate-600";
+  if (varianceQty < 0) return "text-amber-800";
+  return "text-sky-800";
+}
+
 function currentMonthKey(): string {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+/** Normalize period to YYYY-MM (matches backend normalizePeriodKey). */
+function normalizePeriodKey(period: string): string | null {
+  const key = String(period ?? "").trim();
+  return /^\d{4}-(0[1-9]|1[0-2])$/.test(key) ? key : null;
 }
 
 function num(v: string | number | null | undefined): number {
@@ -322,7 +438,9 @@ export function MonthlyPlanningWorkspacePage() {
   const [searchParams, setSearchParams] = useSearchParams();
 
   const periodFromUrl = searchParams.get("period");
-  const [period, setPeriod] = React.useState<string>(periodFromUrl || currentMonthKey());
+  const [period, setPeriod] = React.useState<string>(
+    normalizePeriodKey(periodFromUrl ?? "") ?? currentMonthKey(),
+  );
   const [activeTab, setActiveTab] = React.useState<TabKey>("production");
 
   const [loading, setLoading] = React.useState(false);
@@ -358,20 +476,48 @@ export function MonthlyPlanningWorkspacePage() {
     React.useState<RmRequirementCompositionResponse | null>(null);
   const [loadingRmRequirementComposition, setLoadingRmRequirementComposition] = React.useState(false);
   const [rmRequirementCompositionVisible, setRmRequirementCompositionVisible] = React.useState(false);
+  const [lockSummary, setLockSummary] = React.useState<LockSummary | null>(null);
 
   const isLocked = plan?.status === "LOCKED";
   const editable = planExists && !isLocked;
+  const suggestedProductionMap = React.useMemo(
+    () => buildSuggestedProductionMap(requirementComposition),
+    [requirementComposition],
+  );
+  const greenContextMap = React.useMemo(() => buildGreenContextMap(greenLevels), [greenLevels]);
 
   const loadPlan = React.useCallback(
     async (p: string) => {
+      const periodKey = normalizePeriodKey(p);
+      if (!periodKey) {
+        showError("Plan period must be in YYYY-MM format.");
+        return;
+      }
+
       setLoading(true);
+      let headerLoaded = false;
       try {
-        const res = await apiFetch<PlanResponse>(`/api/monthly-planning?period=${encodeURIComponent(p)}`);
+        const res = await apiFetch<PlanResponse>(
+          `/api/monthly-planning?period=${encodeURIComponent(periodKey)}`,
+        );
+        headerLoaded = Boolean(res.exists && res.plan);
         setPlanExists(res.exists);
         setPlan(res.plan);
-        if (res.exists && res.plan) {
+        setRemovedIds([]);
+
+        if (!headerLoaded) {
+          setRows([]);
+          setRmPlanning(null);
+          setPurchasePlanning(null);
+          setLockSummary(null);
+          return;
+        }
+
+        const planRef = res.plan!;
+
+        try {
           const lineRes = await apiFetch<ProductionLinesResponse>(
-            `/api/monthly-planning/${res.plan.id}/production-lines`,
+            `/api/monthly-planning/${planRef.id}/production-lines`,
           );
           setRows(
             lineRes.lines.map((l) => ({
@@ -382,40 +528,57 @@ export function MonthlyPlanningWorkspacePage() {
               unit: l.unit,
               suggestedFgQty: num(l.suggestedFgQty),
               plannedFgQty: String(num(l.plannedFgQty)),
+              plannedQtyOverridden: Boolean(l.plannedQtyOverridden),
               source: l.source,
               remarks: l.remarks ?? "",
             })),
           );
-          if (res.plan.status === "LOCKED") {
-            try {
-              const [rm, pp] = await Promise.all([
-                apiFetch<RmPlanningResponse>(`/api/monthly-planning/${res.plan.id}/rm-planning`),
-                apiFetch<PurchasePlanningResponse>(`/api/monthly-planning/${res.plan.id}/purchase-planning`),
-              ]);
-              setRmPlanning(rm);
-              setPurchasePlanning(pp);
-            } catch {
-              setRmPlanning(null);
-              setPurchasePlanning(null);
-            }
-          } else {
+          setLockSummary(lineRes.lockSummary ?? null);
+        } catch (lineErr) {
+          const lineMsg =
+            lineErr instanceof ApiRequestError
+              ? lineErr.message
+              : "Failed to load production plan lines.";
+          showError(`${lineMsg} Plan header is loaded — try Refresh.`);
+          setRows([]);
+          setLockSummary(null);
+        }
+
+        if (planRef.status === "DRAFT") {
+          void ensurePlanningContext().catch(() => {
+            /* variance columns fall back to stored suggested until context loads */
+          });
+        }
+
+        if (planRef.status === "LOCKED") {
+          try {
+            const [rm, pp] = await Promise.all([
+              apiFetch<RmPlanningResponse>(`/api/monthly-planning/${planRef.id}/rm-planning`),
+              apiFetch<PurchasePlanningResponse>(
+                `/api/monthly-planning/${planRef.id}/purchase-planning`,
+              ),
+            ]);
+            setRmPlanning(rm);
+            setPurchasePlanning(pp);
+          } catch {
             setRmPlanning(null);
             setPurchasePlanning(null);
           }
         } else {
-          setRows([]);
           setRmPlanning(null);
           setPurchasePlanning(null);
         }
-        setRemovedIds([]);
       } catch (e) {
         const msg = e instanceof ApiRequestError ? e.message : "Failed to load monthly plan.";
         showError(msg);
-        setPlanExists(false);
-        setPlan(null);
-        setRows([]);
-        setRmPlanning(null);
-        setPurchasePlanning(null);
+        if (!headerLoaded) {
+          setPlanExists(false);
+          setPlan(null);
+          setRows([]);
+          setRmPlanning(null);
+          setPurchasePlanning(null);
+          setLockSummary(null);
+        }
       } finally {
         setLoading(false);
       }
@@ -444,23 +607,66 @@ export function MonthlyPlanningWorkspacePage() {
     void loadPlan(period);
   }, [flags.monthlyPlanning, period, loadPlan]);
 
+  const ensurePlanningContext = React.useCallback(async () => {
+    const needComposition = !requirementComposition || requirementComposition.periodKey !== period;
+    const needGreen = !greenLevels || greenLevels.anchorPeriodKey !== period;
+    const [compositionRes, greenRes] = await Promise.all([
+      needComposition
+        ? apiFetch<RequirementCompositionResponse>(
+            `/api/monthly-planning/requirement-composition?periodKey=${encodeURIComponent(period)}`,
+          )
+        : Promise.resolve(requirementComposition),
+      needGreen
+        ? apiFetch<GreenLevelsResponse>(
+            `/api/monthly-planning/green-levels?periodKey=${encodeURIComponent(period)}`,
+          )
+        : Promise.resolve(greenLevels),
+    ]);
+    if (needComposition && compositionRes) setRequirementComposition(compositionRes);
+    if (needGreen && greenRes) setGreenLevels(greenRes);
+    return {
+      composition: compositionRes,
+      green: greenRes,
+    };
+  }, [period, requirementComposition, greenLevels]);
+
+  function suggestedProductionForFg(
+    fgItemId: number,
+    composition: RequirementCompositionResponse | null,
+  ): number {
+    const map = buildSuggestedProductionMap(composition);
+    return map.get(fgItemId) ?? 0;
+  }
+
   function applyPeriod(next: string) {
-    setPeriod(next);
+    const normalized = normalizePeriodKey(next);
+    if (!normalized) return;
+    setPeriod(normalized);
     const sp = new URLSearchParams(searchParams);
-    sp.set("period", next);
+    sp.set("period", normalized);
     setSearchParams(sp, { replace: true });
   }
 
   async function onCreate() {
+    const periodKey = normalizePeriodKey(period);
+    if (!periodKey) {
+      showError("Plan period must be in YYYY-MM format.");
+      return;
+    }
     setCreating(true);
     try {
       await apiFetch<PlanResponse>("/api/monthly-planning", {
         method: "POST",
-        body: JSON.stringify({ period }),
+        body: JSON.stringify({ period: periodKey }),
       });
-      showSuccess(`Monthly plan created for ${period}.`);
-      await loadPlan(period);
+      showSuccess(`Monthly plan created for ${periodKey}.`);
+      await loadPlan(periodKey);
     } catch (e) {
+      if (e instanceof ApiRequestError && e.code === "DUPLICATE_PERIOD") {
+        showError(`A plan already exists for ${periodKey}. Loading it now.`);
+        await loadPlan(periodKey);
+        return;
+      }
       showError(e instanceof ApiRequestError ? e.message : "Failed to create plan.");
     } finally {
       setCreating(false);
@@ -468,7 +674,16 @@ export function MonthlyPlanningWorkspacePage() {
   }
 
   function updateRow(key: string, patch: Partial<EditRow>) {
-    setRows((prev) => prev.map((r) => (r.key === key ? { ...r, ...patch } : r)));
+    setRows((prev) =>
+      prev.map((r) => {
+        if (r.key !== key) return r;
+        const next = { ...r, ...patch };
+        if (patch.plannedFgQty != null && patch.plannedQtyOverridden == null) {
+          next.plannedQtyOverridden = true;
+        }
+        return next;
+      }),
+    );
   }
 
   function removeRow(row: EditRow) {
@@ -570,18 +785,33 @@ export function MonthlyPlanningWorkspacePage() {
     }
   }
 
-  function applyRsSuggestion(item: RsSuggestionItem) {
+  async function applyRsSuggestion(item: RsSuggestionItem) {
     if (!editable) {
       showError("Plan is locked — RS suggestions are read-only.");
       return;
     }
+    let composition: RequirementCompositionResponse | null = requirementComposition;
+    try {
+      const ctx = await ensurePlanningContext();
+      composition = ctx.composition;
+    } catch {
+      showError("Failed to load suggested production for this period.");
+      return;
+    }
+    const suggested = suggestedProductionForFg(item.itemId, composition);
     const existing = rows.find((r) => r.fgItemId === item.itemId);
     if (existing) {
-      updateRow(existing.key, {
-        suggestedFgQty: item.productionRequirementQty,
+      const patch: Partial<EditRow> = {
+        suggestedFgQty: suggested,
         source: "REQUIREMENT_SHEET",
-      });
-      showSuccess(`Applied RS suggestion to ${item.itemName ?? `Item ${item.itemId}`} (suggested qty only).`);
+      };
+      if (!existing.plannedQtyOverridden) {
+        patch.plannedFgQty = String(suggested);
+      }
+      updateRow(existing.key, patch);
+      showSuccess(
+        `Applied suggested production (${suggested.toLocaleString()}) to ${item.itemName ?? `Item ${item.itemId}`}.`,
+      );
       return;
     }
     const fg = fgItems.find((i) => i.id === item.itemId);
@@ -592,22 +822,32 @@ export function MonthlyPlanningWorkspacePage() {
         fgItemId: item.itemId,
         fgItemName: item.itemName ?? fg?.itemName ?? `Item ${item.itemId}`,
         unit: item.unit ?? fg?.unit ?? fg?.unitName ?? null,
-        suggestedFgQty: item.productionRequirementQty,
-        plannedFgQty: "0",
+        suggestedFgQty: suggested,
+        plannedFgQty: String(suggested),
+        plannedQtyOverridden: false,
         source: "REQUIREMENT_SHEET",
-        remarks: "From locked NO_QTY RS suggestion",
+        remarks: "From suggested production (RS + carry forward + green shortage)",
       },
     ]);
-    showSuccess(`Added ${item.itemName ?? `Item ${item.itemId}`} with RS suggested qty. Save to persist.`);
+    showSuccess(`Added ${item.itemName ?? `Item ${item.itemId}`} with suggested production. Save to persist.`);
   }
 
-  function addRow() {
+  async function addRow() {
     const id = Number(addItemId);
     if (!Number.isFinite(id) || id <= 0) return;
     if (rows.some((r) => r.fgItemId === id)) {
       showError("That FG item is already in the plan.");
       return;
     }
+    let composition: RequirementCompositionResponse | null = requirementComposition;
+    try {
+      const ctx = await ensurePlanningContext();
+      composition = ctx.composition;
+    } catch {
+      showError("Failed to load suggested production for this period.");
+      return;
+    }
+    const suggested = suggestedProductionForFg(id, composition);
     const item = fgItems.find((i) => i.id === id);
     setRows((prev) => [
       ...prev,
@@ -616,8 +856,9 @@ export function MonthlyPlanningWorkspacePage() {
         fgItemId: id,
         fgItemName: item?.itemName ?? `Item ${id}`,
         unit: item?.unit ?? item?.unitName ?? null,
-        suggestedFgQty: 0,
-        plannedFgQty: "0",
+        suggestedFgQty: suggested,
+        plannedFgQty: String(suggested),
+        plannedQtyOverridden: false,
         source: "MANUAL",
         remarks: "",
       },
@@ -632,7 +873,7 @@ export function MonthlyPlanningWorkspacePage() {
       const upserts = rows.map((r) => ({
         fgItemId: r.fgItemId,
         plannedFgQty: num(r.plannedFgQty),
-        suggestedFgQty: r.suggestedFgQty,
+        plannedQtyOverridden: r.plannedQtyOverridden,
         source: r.source === "CUSTOMER_SCHEDULE" ? "MANUAL" : r.source,
         remarks: r.remarks?.trim() ? r.remarks.trim() : null,
       }));
@@ -718,9 +959,14 @@ export function MonthlyPlanningWorkspacePage() {
   }
 
   // KPIs
-  const totalFgPlanned = rows.reduce((acc, r) => acc + num(r.plannedFgQty), 0);
+  const activeLockSummary =
+    rows.length > 0
+      ? computeLockSummaryFromRows(rows, suggestedProductionMap)
+      : lockSummary;
+  const totalFgPlanned = activeLockSummary?.totalPlannedQty ?? rows.reduce((acc, r) => acc + num(r.plannedFgQty), 0);
+  const totalFgSuggested = activeLockSummary?.totalSuggestedQty ?? 0;
   const totalFgItems = rows.length;
-  const manualAdjustments = rows.filter((r) => num(r.plannedFgQty) !== num(r.suggestedFgQty)).length;
+  const fgItemsWithVariance = activeLockSummary?.fgItemsWithVariance ?? 0;
   const canLock = editable && rows.some((r) => num(r.plannedFgQty) > 0);
 
   const availableFgForAdd = fgItems.filter((i) => !rows.some((r) => r.fgItemId === i.id));
@@ -824,8 +1070,8 @@ export function MonthlyPlanningWorkspacePage() {
       {/* KPI strip */}
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
         <KpiCard label="Total FG planned" value={totalFgPlanned.toLocaleString()} />
-        <KpiCard label="Total FG items" value={String(totalFgItems)} />
-        <KpiCard label="Manual adjustments" value={String(manualAdjustments)} />
+        <KpiCard label="Total FG suggested" value={totalFgSuggested.toLocaleString()} />
+        <KpiCard label="FG items with variance" value={String(fgItemsWithVariance)} />
         <KpiCard label="Status" value={plan?.status ?? "—"} />
       </div>
 
@@ -904,20 +1150,22 @@ export function MonthlyPlanningWorkspacePage() {
             loadingRsSuggestions={loadingRsSuggestions}
             onLoadRsSuggestions={() => void loadRsSuggestions()}
             onHideRsSuggestions={() => setRsSuggestionsVisible(false)}
-            onApplyRsSuggestion={applyRsSuggestion}
+            onApplyRsSuggestion={(item) => void applyRsSuggestion(item)}
             onUpdateRow={updateRow}
             onRemoveRow={removeRow}
             availableFgForAdd={availableFgForAdd}
             addItemId={addItemId}
             setAddItemId={setAddItemId}
-            onAddRow={addRow}
+            onAddRow={() => void addRow()}
+            suggestedProductionMap={suggestedProductionMap}
+            greenContextMap={greenContextMap}
           />
         )}
       </div>
 
       {confirmLockOpen ? (
         <LockConfirmModal
-          totalFgPlanned={totalFgPlanned}
+          lockSummary={activeLockSummary}
           totalFgItems={totalFgItems}
           period={period}
           locking={locking}
@@ -996,20 +1244,21 @@ function ReleaseConfirmModal({
 }
 
 function LockConfirmModal({
-  totalFgPlanned,
+  lockSummary,
   totalFgItems,
   period,
   locking,
   onCancel,
   onConfirm,
 }: {
-  totalFgPlanned: number;
+  lockSummary: LockSummary | null;
   totalFgItems: number;
   period: string;
   locking: boolean;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const varianceCount = lockSummary?.fgItemsWithVariance ?? 0;
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4">
       <div className="w-full max-w-md rounded-lg border border-slate-200 bg-white p-5 shadow-xl">
@@ -1027,14 +1276,35 @@ function LockConfirmModal({
 
         <div className="mt-4 grid grid-cols-2 gap-2">
           <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
-            <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Total FG planned</div>
-            <div className="text-lg font-bold tabular-nums text-slate-900">{totalFgPlanned.toLocaleString()}</div>
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Total suggested</div>
+            <div className="text-lg font-bold tabular-nums text-slate-900">
+              {(lockSummary?.totalSuggestedQty ?? 0).toLocaleString()}
+            </div>
+          </div>
+          <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Total planned</div>
+            <div className="text-lg font-bold tabular-nums text-slate-900">
+              {(lockSummary?.totalPlannedQty ?? 0).toLocaleString()}
+            </div>
+          </div>
+          <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Total variance</div>
+            <div className="text-lg font-bold tabular-nums text-slate-900">
+              {(lockSummary?.totalVarianceQty ?? 0).toLocaleString()}
+            </div>
           </div>
           <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
             <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">FG items</div>
             <div className="text-lg font-bold tabular-nums text-slate-900">{totalFgItems}</div>
           </div>
         </div>
+
+        {varianceCount > 0 ? (
+          <p className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-900">
+            Planned quantities differ from recommendations for <strong>{varianceCount}</strong> FG item
+            {varianceCount === 1 ? "" : "s"}. Informational only — lock is not blocked.
+          </p>
+        ) : null}
 
         <p className="mt-3 text-[13px] leading-relaxed text-slate-600">
           Locking <strong>{period}</strong> will freeze the production plan and generate an immutable{" "}
@@ -1967,6 +2237,8 @@ function ProductionPlanTab({
   addItemId,
   setAddItemId,
   onAddRow,
+  suggestedProductionMap,
+  greenContextMap,
 }: {
   rows: EditRow[];
   editable: boolean;
@@ -1984,6 +2256,8 @@ function ProductionPlanTab({
   addItemId: string;
   setAddItemId: (v: string) => void;
   onAddRow: () => void;
+  suggestedProductionMap: Map<number, number>;
+  greenContextMap: Map<number, { greenTarget: number; freeFgStock: number }>;
 }) {
   const [expandedItemIds, setExpandedItemIds] = React.useState<Set<number>>(new Set());
 
@@ -2100,7 +2374,7 @@ function ProductionPlanTab({
                                 className="h-7 text-[12px]"
                                 onClick={() => onApplyRsSuggestion(item)}
                               >
-                                Use as suggestion
+                                Add suggested production
                               </Button>
                             </td>
                           ) : null}
@@ -2170,10 +2444,13 @@ function ProductionPlanTab({
           <thead className="sticky top-0 z-10 bg-slate-50 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500">
             <tr>
               <th className="px-3 py-2">FG item</th>
-              <th className="px-3 py-2 w-20">Unit</th>
+              <th className="px-3 py-2 w-16">Unit</th>
               <th className="px-3 py-2 w-28 text-right">Suggested</th>
-              <th className="px-3 py-2 w-32 text-right">Planned</th>
-              <th className="px-3 py-2 w-36">Source</th>
+              <th className="px-3 py-2 w-28 text-right">Planned</th>
+              <th className="px-3 py-2 w-24 text-right">Variance</th>
+              <th className="px-3 py-2 w-20 text-right">Var %</th>
+              <th className="px-3 py-2 w-32 text-right">Green gap</th>
+              <th className="px-3 py-2 w-28">Source</th>
               <th className="px-3 py-2">Remarks</th>
               {editable ? <th className="px-3 py-2 w-12" /> : null}
             </tr>
@@ -2181,17 +2458,25 @@ function ProductionPlanTab({
           <tbody>
             {rows.length === 0 ? (
               <tr>
-                <td colSpan={editable ? 7 : 6} className="px-3 py-8 text-center text-sm text-slate-400">
+                <td colSpan={editable ? 10 : 9} className="px-3 py-8 text-center text-sm text-slate-400">
                   No FG lines yet. {editable ? "Add an FG item to begin." : ""}
                 </td>
               </tr>
             ) : (
-              rows.map((r) => (
+              rows.map((r) => {
+                const metrics = computeLinePlanningMetrics(
+                  r.fgItemId,
+                  num(r.plannedFgQty),
+                  r.suggestedFgQty,
+                  suggestedProductionMap,
+                  greenContextMap,
+                );
+                return (
                 <tr key={r.key} className="border-t border-slate-100 align-middle">
                   <td className="px-3 py-1.5 font-medium text-slate-800">{r.fgItemName}</td>
                   <td className="px-3 py-1.5 text-slate-500">{r.unit ?? "—"}</td>
-                  <td className="px-3 py-1.5 text-right tabular-nums text-slate-500">
-                    {num(r.suggestedFgQty).toLocaleString()}
+                  <td className="px-3 py-1.5 text-right tabular-nums text-slate-600">
+                    {metrics.suggested.toLocaleString()}
                   </td>
                   <td className="px-3 py-1.5 text-right">
                     {editable ? (
@@ -2204,8 +2489,17 @@ function ProductionPlanTab({
                         className="h-8 w-28 text-right tabular-nums"
                       />
                     ) : (
-                      <span className="tabular-nums text-slate-800">{num(r.plannedFgQty).toLocaleString()}</span>
+                      <span className="tabular-nums text-slate-800">{metrics.planned.toLocaleString()}</span>
                     )}
+                  </td>
+                  <td className={cn("px-3 py-1.5 text-right tabular-nums", varianceRowClass(metrics.varianceQty))}>
+                    {metrics.varianceQty.toLocaleString()}
+                  </td>
+                  <td className={cn("px-3 py-1.5 text-right tabular-nums", varianceRowClass(metrics.varianceQty))}>
+                    {metrics.suggested > 0 ? `${metrics.variancePct.toLocaleString()}%` : "—"}
+                  </td>
+                  <td className="px-3 py-1.5 text-right tabular-nums text-slate-600">
+                    {metrics.remainingGreenGap > 0 ? metrics.remainingGreenGap.toLocaleString() : "0"}
                   </td>
                   <td className="px-3 py-1.5">
                     <Badge variant={sourceBadgeVariant(r.source)}>{sourceLabel(r.source)}</Badge>
@@ -2236,7 +2530,8 @@ function ProductionPlanTab({
                     </td>
                   ) : null}
                 </tr>
-              ))
+                );
+              })
             )}
           </tbody>
         </table>

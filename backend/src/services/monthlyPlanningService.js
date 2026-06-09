@@ -19,6 +19,22 @@ const { allocateDocNo } = require("./docNoService");
 const { aggregateRmDemandForFgLines, loadApprovedBomWithLines } = require("./bomExplosionService");
 const { getMaterialAvailabilityByItems } = require("./materialAvailabilityService");
 const { RM_REQUISITION_ACTIVE_STATUSES } = require("./rmRequisitionLifecycle");
+const {
+  buildPlanningContextMaps,
+  enrichProductionLineMetrics,
+  computeLockSummary,
+  round3: metricsRound3,
+} = require("./monthlyPlanningProductionPlanMetrics");
+
+function resolveRequirementCompositionLoader(loadComposition) {
+  if (loadComposition) return loadComposition;
+  return require("./monthlyPlanningRequirementCompositionService").getRequirementComposition;
+}
+
+function resolveGreenLevelsLoader(loadGreenLevelsFn) {
+  if (loadGreenLevelsFn) return loadGreenLevelsFn;
+  return require("./monthlyPlanningGreenLevelService").getGreenLevels;
+}
 
 const MONTHLY_PLAN_SOURCE = "MONTHLY_PLAN";
 const RELEASE_EPS = 1e-6;
@@ -72,8 +88,41 @@ function toPlanLine(line) {
     fgItemId: line.fgItemId,
     suggestedFgQty: line.suggestedFgQty,
     plannedFgQty: line.plannedFgQty,
+    plannedQtyOverridden: Boolean(line.plannedQtyOverridden),
     source: line.source,
     remarks: line.remarks ?? null,
+  };
+}
+
+function mapProductionLineResponse(line, { suggestedByFgItemId, greenByFgItemId }) {
+  const storedSuggested = metricsRound3(line.suggestedFgQty);
+  const liveSuggested = suggestedByFgItemId.has(line.fgItemId)
+    ? suggestedByFgItemId.get(line.fgItemId)
+    : storedSuggested;
+  const greenCtx = greenByFgItemId.get(line.fgItemId) || { greenTarget: 0, freeFgStock: 0 };
+  const metrics = enrichProductionLineMetrics({
+    suggestedFgQty: liveSuggested,
+    plannedFgQty: line.plannedFgQty,
+    greenTarget: greenCtx.greenTarget,
+    freeFgStock: greenCtx.freeFgStock,
+  });
+
+  return {
+    id: line.id,
+    fgItemId: line.fgItemId,
+    fgItemName: line.fgItem?.itemName ?? null,
+    unit: line.fgItem?.unit ?? null,
+    suggestedFgQty: metrics.suggestedFgQty,
+    plannedFgQty: metrics.plannedFgQty,
+    plannedQtyOverridden: Boolean(line.plannedQtyOverridden),
+    source: line.source,
+    remarks: line.remarks ?? null,
+    varianceQty: metrics.varianceQty,
+    variancePct: metrics.variancePct,
+    greenTarget: metrics.greenTarget,
+    freeFgStock: metrics.freeFgStock,
+    projectedStockAfterPlan: metrics.projectedStockAfterPlan,
+    remainingGreenGap: metrics.remainingGreenGap,
   };
 }
 
@@ -83,10 +132,11 @@ function toPlanLine(line) {
  */
 async function getMonthlyPlanByPeriod({ db = prisma, period } = {}) {
   const periodKey = normalizePeriodKey(period);
+  // Header + revisions only. FG lines are loaded via GET /:id/production-lines so a line-table
+  // schema mismatch cannot block plan discovery (exists / docNo / status).
   const plan = await db.monthlyProductionPlan.findUnique({
     where: { periodKey },
     include: {
-      lines: { orderBy: { id: "asc" } },
       rmPlans: { select: { revision: true, recalculatedAt: true }, orderBy: { revision: "asc" } },
     },
   });
@@ -98,7 +148,7 @@ async function getMonthlyPlanByPeriod({ db = prisma, period } = {}) {
   return {
     exists: true,
     plan: toPlanSummary(plan),
-    lines: (plan.lines || []).map(toPlanLine),
+    lines: [],
     revisions: (plan.rmPlans || []).map((r) => ({
       revision: r.revision,
       recalculatedAt: r.recalculatedAt,
@@ -174,37 +224,56 @@ async function loadPlanForEdit(db, planId) {
   return plan;
 }
 
-/** Load the FG demand lines for a plan (read-only). */
-async function getProductionLines({ db = prisma, planId } = {}) {
+/** Load the FG demand lines for a plan (read-only) with Phase 8A variance / green-gap visibility. */
+async function getProductionLines({
+  db = prisma,
+  planId,
+  loadComposition = null,
+  loadGreenLevelsFn = null,
+} = {}) {
   const plan = await loadPlanForEdit(db, planId);
   const lines = await db.monthlyProductionPlanLine.findMany({
     where: { planId: plan.id },
     orderBy: { id: "asc" },
     include: { fgItem: { select: { id: true, itemName: true, itemType: true, unit: true } } },
   });
+
+  const compositionLoader = resolveRequirementCompositionLoader(loadComposition);
+  const greenLoader = resolveGreenLevelsLoader(loadGreenLevelsFn);
+  const [composition, greenLevels] = await Promise.all([
+    compositionLoader({ db, periodKey: plan.periodKey }),
+    greenLoader({ db, periodKey: plan.periodKey }),
+  ]);
+  const { suggestedByFgItemId, greenByFgItemId } = buildPlanningContextMaps(composition, greenLevels);
+  const mappedLines = lines.map((l) => mapProductionLineResponse(l, { suggestedByFgItemId, greenByFgItemId }));
+
   return {
     planId: plan.id,
+    periodKey: plan.periodKey,
     status: plan.status,
     editable: plan.status === "DRAFT",
-    lines: lines.map((l) => ({
-      id: l.id,
-      fgItemId: l.fgItemId,
-      fgItemName: l.fgItem?.itemName ?? null,
-      unit: l.fgItem?.unit ?? null,
-      suggestedFgQty: l.suggestedFgQty,
-      plannedFgQty: l.plannedFgQty,
-      source: l.source,
-      remarks: l.remarks ?? null,
-    })),
+    lines: mappedLines,
+    lockSummary: computeLockSummary(mappedLines),
   };
 }
 
 /**
  * Upsert / delete FG production-plan lines. DRAFT-only.
  * @param {{ upserts?: Array, deletes?: number[] }} payload
- *   upsert item: { fgItemId, plannedFgQty, suggestedFgQty?, source?, remarks? }
+ *   upsert item: { fgItemId, plannedFgQty, plannedQtyOverridden?, source?, remarks? }
+ *   suggestedFgQty is set server-side from Phase 5 composition (single source of truth).
  */
-async function updateProductionLines({ db = prisma, planId, upserts = [], deletes = [], actorUserId = null } = {}) {
+async function updateProductionLines({
+  db = prisma,
+  planId,
+  upserts = [],
+  deletes = [],
+  actorUserId = null,
+  loadComposition = null,
+  loadGreenLevelsFn = null,
+} = {}) {
+  const compositionLoader = resolveRequirementCompositionLoader(loadComposition);
+  const greenLoader = resolveGreenLevelsLoader(loadGreenLevelsFn);
   const run = async (tx) => {
     const plan = await loadPlanForEdit(tx, planId);
     if (plan.status !== "DRAFT") {
@@ -214,6 +283,9 @@ async function updateProductionLines({ db = prisma, planId, upserts = [], delete
         409,
       );
     }
+
+    const composition = await compositionLoader({ db: tx, periodKey: plan.periodKey });
+    const { suggestedByFgItemId } = buildPlanningContextMaps(composition, { items: [] });
 
     const safeUpserts = Array.isArray(upserts) ? upserts : [];
     const safeDeletes = Array.isArray(deletes) ? deletes.map((n) => Number(n)).filter((n) => Number.isFinite(n) && n > 0) : [];
@@ -235,10 +307,9 @@ async function updateProductionLines({ db = prisma, planId, upserts = [], delete
       if (!(plannedFgQty >= 0)) {
         throw new MonthlyPlanningError("INVALID_QTY", "plannedFgQty must be >= 0.", 422);
       }
-      const suggestedFgQty = round3(raw?.suggestedFgQty ?? 0);
-      if (!(suggestedFgQty >= 0)) {
-        throw new MonthlyPlanningError("INVALID_QTY", "suggestedFgQty must be >= 0.", 422);
-      }
+      const suggestedFgQty = suggestedByFgItemId.has(fgItemId)
+        ? suggestedByFgItemId.get(fgItemId)
+        : round3(raw?.suggestedFgQty ?? 0);
       const source = raw?.source ?? "MANUAL";
       if (!["SALES_ORDER", "REQUIREMENT_SHEET", "MANUAL"].includes(source)) {
         // CUSTOMER_SCHEDULE intentionally not accepted in this phase.
@@ -248,6 +319,7 @@ async function updateProductionLines({ db = prisma, planId, upserts = [], delete
         fgItemId,
         plannedFgQty,
         suggestedFgQty,
+        plannedQtyOverridden: raw?.plannedQtyOverridden === true,
         source,
         remarks: raw?.remarks != null ? String(raw.remarks).slice(0, 2000) : null,
       });
@@ -283,12 +355,14 @@ async function updateProductionLines({ db = prisma, planId, upserts = [], delete
           fgItemId: n.fgItemId,
           plannedFgQty: n.plannedFgQty,
           suggestedFgQty: n.suggestedFgQty,
+          plannedQtyOverridden: n.plannedQtyOverridden,
           source: n.source,
           remarks: n.remarks,
         },
         update: {
           plannedFgQty: n.plannedFgQty,
           suggestedFgQty: n.suggestedFgQty,
+          plannedQtyOverridden: n.plannedQtyOverridden,
           source: n.source,
           remarks: n.remarks,
         },
@@ -299,7 +373,7 @@ async function updateProductionLines({ db = prisma, planId, upserts = [], delete
   };
 
   const plan = typeof db.$transaction === "function" ? await db.$transaction(run) : await run(db);
-  return getProductionLines({ db, planId: plan.id });
+  return getProductionLines({ db, planId: plan.id, loadComposition: compositionLoader, loadGreenLevelsFn: greenLoader });
 }
 
 /**

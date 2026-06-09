@@ -137,8 +137,7 @@ describe("monthlyPlanningService.getMonthlyPlanByPeriod", () => {
     assert.equal(res.exists, true);
     assert.equal(res.plan.status, "LOCKED");
     assert.equal(res.plan.currentRevision, 2);
-    assert.equal(res.lines.length, 1);
-    assert.equal(res.lines[0].fgItemId, 50);
+    assert.deepEqual(res.lines, []);
     assert.equal(res.revisions.length, 2);
     assert.equal(res.revisions[1].revision, 2);
   });
@@ -166,6 +165,7 @@ function createLinesMockDb({ status = "DRAFT", planId = 1, items = [], existingL
           fgItemId: l.fgItemId,
           suggestedFgQty: l.suggestedFgQty ?? 0,
           plannedFgQty: l.plannedFgQty ?? 0,
+          plannedQtyOverridden: Boolean(l.plannedQtyOverridden),
           source: l.source ?? "MANUAL",
           remarks: l.remarks ?? null,
           fgItem: { id: l.fgItemId, itemName: `Item ${l.fgItemId}`, itemType: "FG", unit: "NOS" },
@@ -196,13 +196,21 @@ function createLinesMockDb({ status = "DRAFT", planId = 1, items = [], existingL
   return db;
 }
 
+const emptyCompositionLoader = async () => ({ periodKey: "2026-06", items: [] });
+const emptyGreenLoader = async () => ({ anchorPeriodKey: "2026-06", items: [] });
+
 describe("monthlyPlanningService.getProductionLines", () => {
   it("returns mapped lines + editable flag for DRAFT", async () => {
     const db = createLinesMockDb({
       status: "DRAFT",
       existingLines: [{ id: 11, fgItemId: 50, suggestedFgQty: 10, plannedFgQty: 12, source: "MANUAL" }],
     });
-    const res = await getProductionLines({ db, planId: 1 });
+    const res = await getProductionLines({
+      db,
+      planId: 1,
+      loadComposition: emptyCompositionLoader,
+      loadGreenLevelsFn: emptyGreenLoader,
+    });
     assert.equal(res.editable, true);
     assert.equal(res.status, "DRAFT");
     assert.equal(res.lines.length, 1);
@@ -212,7 +220,12 @@ describe("monthlyPlanningService.getProductionLines", () => {
 
   it("marks LOCKED plans not editable", async () => {
     const db = createLinesMockDb({ status: "LOCKED" });
-    const res = await getProductionLines({ db, planId: 1 });
+    const res = await getProductionLines({
+      db,
+      planId: 1,
+      loadComposition: emptyCompositionLoader,
+      loadGreenLevelsFn: emptyGreenLoader,
+    });
     assert.equal(res.editable, false);
     assert.equal(res.status, "LOCKED");
   });
@@ -234,8 +247,13 @@ describe("monthlyPlanningService.updateProductionLines", () => {
       planId: 1,
       upserts: [
         { fgItemId: 50, plannedFgQty: 100, source: "MANUAL" },
-        { fgItemId: 51, plannedFgQty: 0, suggestedFgQty: 5, source: "SALES_ORDER", remarks: "from SO" },
+        { fgItemId: 51, plannedFgQty: 0, source: "SALES_ORDER", remarks: "from SO" },
       ],
+      loadComposition: async () => ({
+        periodKey: "2026-06",
+        items: [{ itemId: 51, suggestedProduction: 5 }],
+      }),
+      loadGreenLevelsFn: emptyGreenLoader,
     });
     assert.equal(db.__state.upserts.length, 2);
     assert.equal(res.lines.length, 2);
@@ -246,14 +264,26 @@ describe("monthlyPlanningService.updateProductionLines", () => {
       status: "DRAFT",
       existingLines: [{ id: 11, fgItemId: 50, plannedFgQty: 12 }],
     });
-    await updateProductionLines({ db, planId: 1, deletes: [11] });
+    await updateProductionLines({
+      db,
+      planId: 1,
+      deletes: [11],
+      loadComposition: emptyCompositionLoader,
+      loadGreenLevelsFn: emptyGreenLoader,
+    });
     assert.deepEqual(db.__state.deletes, [11]);
   });
 
   it("blocks editing a LOCKED plan (read-only)", async () => {
     const db = createLinesMockDb({ status: "LOCKED", items: [{ id: 50, itemType: "FG" }] });
     await assert.rejects(
-      () => updateProductionLines({ db, planId: 1, upserts: [{ fgItemId: 50, plannedFgQty: 1 }] }),
+      () =>
+        updateProductionLines({
+          db,
+          planId: 1,
+          upserts: [{ fgItemId: 50, plannedFgQty: 1 }],
+          loadComposition: emptyCompositionLoader,
+        }),
       (e) => e instanceof MonthlyPlanningError && e.code === "PLAN_NOT_EDITABLE" && e.httpStatus === 409,
     );
   });
@@ -261,7 +291,13 @@ describe("monthlyPlanningService.updateProductionLines", () => {
   it("rejects negative plannedFgQty", async () => {
     const db = createLinesMockDb({ status: "DRAFT", items: [{ id: 50, itemType: "FG" }] });
     await assert.rejects(
-      () => updateProductionLines({ db, planId: 1, upserts: [{ fgItemId: 50, plannedFgQty: -5 }] }),
+      () =>
+        updateProductionLines({
+          db,
+          planId: 1,
+          upserts: [{ fgItemId: 50, plannedFgQty: -5 }],
+          loadComposition: emptyCompositionLoader,
+        }),
       (e) => e instanceof MonthlyPlanningError && e.code === "INVALID_QTY",
     );
   });
@@ -277,6 +313,7 @@ describe("monthlyPlanningService.updateProductionLines", () => {
             { fgItemId: 50, plannedFgQty: 1 },
             { fgItemId: 50, plannedFgQty: 2 },
           ],
+          loadComposition: emptyCompositionLoader,
         }),
       (e) => e instanceof MonthlyPlanningError && e.code === "DUPLICATE_FG_ITEM",
     );
@@ -285,7 +322,13 @@ describe("monthlyPlanningService.updateProductionLines", () => {
   it("rejects a non-FG item", async () => {
     const db = createLinesMockDb({ status: "DRAFT", items: [{ id: 70, itemType: "RM" }] });
     await assert.rejects(
-      () => updateProductionLines({ db, planId: 1, upserts: [{ fgItemId: 70, plannedFgQty: 1 }] }),
+      () =>
+        updateProductionLines({
+          db,
+          planId: 1,
+          upserts: [{ fgItemId: 70, plannedFgQty: 1 }],
+          loadComposition: emptyCompositionLoader,
+        }),
       (e) => e instanceof MonthlyPlanningError && e.code === "NOT_FG_ITEM",
     );
   });
@@ -293,7 +336,13 @@ describe("monthlyPlanningService.updateProductionLines", () => {
   it("rejects an unknown fgItem", async () => {
     const db = createLinesMockDb({ status: "DRAFT", items: [] });
     await assert.rejects(
-      () => updateProductionLines({ db, planId: 1, upserts: [{ fgItemId: 999, plannedFgQty: 1 }] }),
+      () =>
+        updateProductionLines({
+          db,
+          planId: 1,
+          upserts: [{ fgItemId: 999, plannedFgQty: 1 }],
+          loadComposition: emptyCompositionLoader,
+        }),
       (e) => e instanceof MonthlyPlanningError && e.code === "FG_ITEM_NOT_FOUND",
     );
   });

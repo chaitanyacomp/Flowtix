@@ -21,6 +21,7 @@ import {
   ChevronRight,
   Eye,
   Layers,
+  Calculator,
 } from "lucide-react";
 
 type PlanStatus = "DRAFT" | "LOCKED";
@@ -203,6 +204,28 @@ type GreenLevelsResponse = {
   items: GreenLevelItem[];
 };
 
+type RequirementCompositionItem = {
+  itemId: number;
+  itemName: string | null;
+  unit: string | null;
+  rsRequirement: number;
+  carryForward: number;
+  greenShortage: number;
+  suggestedProduction: number;
+  productionRequirementQty?: number;
+  greenTarget?: number;
+  freeFgStock?: number;
+  status?: GreenLevelStatus | null;
+};
+
+type RequirementCompositionResponse = {
+  periodKey: string;
+  anchorPeriodKey?: string;
+  sheetCount?: number;
+  itemCount: number;
+  items: RequirementCompositionItem[];
+};
+
 type EditRow = {
   key: string;
   id?: number;
@@ -284,6 +307,11 @@ export function MonthlyPlanningWorkspacePage() {
   const [greenLevels, setGreenLevels] = React.useState<GreenLevelsResponse | null>(null);
   const [loadingGreenLevels, setLoadingGreenLevels] = React.useState(false);
   const [greenLevelsVisible, setGreenLevelsVisible] = React.useState(false);
+  const [requirementComposition, setRequirementComposition] = React.useState<RequirementCompositionResponse | null>(
+    null,
+  );
+  const [loadingRequirementComposition, setLoadingRequirementComposition] = React.useState(false);
+  const [requirementCompositionVisible, setRequirementCompositionVisible] = React.useState(false);
 
   const isLocked = plan?.status === "LOCKED";
   const editable = planExists && !isLocked;
@@ -427,6 +455,32 @@ export function MonthlyPlanningWorkspacePage() {
       void loadGreenLevels();
     }
   }, [period, greenLevelsVisible, loadGreenLevels]);
+
+  const loadRequirementComposition = React.useCallback(async () => {
+    setLoadingRequirementComposition(true);
+    try {
+      const res = await apiFetch<RequirementCompositionResponse>(
+        `/api/monthly-planning/requirement-composition?periodKey=${encodeURIComponent(period)}`,
+      );
+      setRequirementComposition(res);
+      setRequirementCompositionVisible(true);
+    } catch (e) {
+      showError(e instanceof ApiRequestError ? e.message : "Failed to load Requirement Composition.");
+      setRequirementComposition(null);
+    } finally {
+      setLoadingRequirementComposition(false);
+    }
+  }, [period, showError]);
+
+  const requirementCompositionPeriodRef = React.useRef(period);
+  React.useEffect(() => {
+    if (requirementCompositionPeriodRef.current === period) return;
+    requirementCompositionPeriodRef.current = period;
+    setRequirementComposition(null);
+    if (requirementCompositionVisible) {
+      void loadRequirementComposition();
+    }
+  }, [period, requirementCompositionVisible, loadRequirementComposition]);
 
   async function loadRsSuggestions() {
     setLoadingRsSuggestions(true);
@@ -710,6 +764,15 @@ export function MonthlyPlanningWorkspacePage() {
         loading={loadingGreenLevels}
         onLoad={() => void loadGreenLevels()}
         onHide={() => setGreenLevelsVisible(false)}
+      />
+
+      <RequirementCompositionSection
+        period={period}
+        data={requirementComposition}
+        visible={requirementCompositionVisible}
+        loading={loadingRequirementComposition}
+        onLoad={() => void loadRequirementComposition()}
+        onHide={() => setRequirementCompositionVisible(false)}
       />
 
       {/* Tabs */}
@@ -1429,6 +1492,155 @@ function GreenLevelSection({
             </tbody>
           </table>
         </div>
+        ) : null
+      ) : null}
+    </div>
+  );
+}
+
+function RequirementCompositionSection({
+  period,
+  data,
+  visible,
+  loading,
+  onLoad,
+  onHide,
+}: {
+  period: string;
+  data: RequirementCompositionResponse | null;
+  visible: boolean;
+  loading: boolean;
+  onLoad: () => void;
+  onHide: () => void;
+}) {
+  const [expandedItemIds, setExpandedItemIds] = React.useState<Set<number>>(new Set());
+  const dataForPeriod = data?.periodKey === period ? data : null;
+
+  function toggleDetails(itemId: number) {
+    setExpandedItemIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(itemId)) next.delete(itemId);
+      else next.add(itemId);
+      return next;
+    });
+  }
+
+  return (
+    <div className="rounded-lg border border-violet-200 bg-violet-50/40 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h3 className="text-[13px] font-semibold text-slate-800">Requirement Composition</h3>
+          <p className="mt-0.5 text-[12px] text-slate-600">
+            Read-only FG production recommendation for <strong>{period}</strong>: RS Requirement + Carry Forward +
+            Green Shortage. Transparency only — no planning actions.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          {visible ? (
+            <Button type="button" variant="outline" size="sm" onClick={onHide} className="h-8">
+              Hide
+            </Button>
+          ) : null}
+          <Button type="button" variant="outline" size="sm" onClick={onLoad} disabled={loading} className="h-8">
+            <Calculator className={cn("mr-1.5 h-4 w-4", loading && "animate-pulse")} />
+            {loading ? "Loading…" : "View Composition"}
+          </Button>
+        </div>
+      </div>
+
+      {visible && (loading || dataForPeriod) ? (
+        loading ? (
+          <p className="mt-3 text-sm text-slate-500">Loading requirement composition for {period}…</p>
+        ) : dataForPeriod ? (
+          <div className="mt-3 overflow-auto rounded-md border border-slate-200 bg-white">
+            <div className="border-b border-slate-100 px-3 py-2 text-[11px] text-slate-500">
+              {dataForPeriod.itemCount} FG item(s) with a non-zero component · read-only
+            </div>
+            <table className="w-full border-collapse text-[13px]">
+              <thead className="bg-slate-50 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                <tr>
+                  <th className="px-3 py-2 w-8" />
+                  <th className="px-3 py-2">FG item</th>
+                  <th className="px-3 py-2 w-28 text-right">RS Requirement</th>
+                  <th className="px-3 py-2 w-28 text-right">Carry Forward</th>
+                  <th className="px-3 py-2 w-28 text-right">Green Shortage</th>
+                  <th className="px-3 py-2 w-32 text-right">Suggested Production</th>
+                </tr>
+              </thead>
+              <tbody>
+                {dataForPeriod.items.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="px-3 py-6 text-center text-sm text-slate-400">
+                      No non-zero RS, carry-forward, or green-shortage components for this period.
+                    </td>
+                  </tr>
+                ) : (
+                  dataForPeriod.items.map((item) => {
+                    const expanded = expandedItemIds.has(item.itemId);
+                    const badge = greenLevelStatusBadge(item.status ?? null);
+                    return (
+                      <React.Fragment key={item.itemId}>
+                        <tr className="border-t border-slate-100 align-middle">
+                          <td className="px-2 py-1.5 text-center">
+                            <button
+                              type="button"
+                              onClick={() => toggleDetails(item.itemId)}
+                              className="text-slate-400 hover:text-slate-700"
+                              title="Show audit reference details"
+                            >
+                              {expanded ? (
+                                <ChevronDown className="h-4 w-4" />
+                              ) : (
+                                <ChevronRight className="h-4 w-4" />
+                              )}
+                            </button>
+                          </td>
+                          <td className="px-3 py-1.5 font-medium text-slate-800">
+                            {item.itemName ?? `Item ${item.itemId}`}
+                          </td>
+                          <td className="px-3 py-1.5 text-right tabular-nums text-slate-800">
+                            {item.rsRequirement.toLocaleString()}
+                          </td>
+                          <td className="px-3 py-1.5 text-right tabular-nums text-slate-800">
+                            {item.carryForward.toLocaleString()}
+                          </td>
+                          <td className="px-3 py-1.5 text-right tabular-nums text-slate-800">
+                            {item.greenShortage.toLocaleString()}
+                          </td>
+                          <td className="px-3 py-1.5 text-right tabular-nums font-semibold text-violet-900">
+                            {item.suggestedProduction.toLocaleString()}
+                          </td>
+                        </tr>
+                        {expanded ? (
+                          <tr className="border-t border-slate-50 bg-slate-50/60 text-[12px] text-slate-600">
+                            <td />
+                            <td className="px-3 py-1.5 pl-8" colSpan={5}>
+                              Production req. (Phase 2):{" "}
+                              {(item.productionRequirementQty ?? 0).toLocaleString()}
+                              {" · "}
+                              Green target: {(item.greenTarget ?? 0).toLocaleString()}
+                              {" · "}
+                              Free FG: {(item.freeFgStock ?? 0).toLocaleString()}
+                              {" · "}
+                              Status:{" "}
+                              <span
+                                className={cn(
+                                  "inline-flex rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+                                  badge.cls,
+                                )}
+                              >
+                                {badge.label}
+                              </span>
+                            </td>
+                          </tr>
+                        ) : null}
+                      </React.Fragment>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
         ) : null
       ) : null}
     </div>

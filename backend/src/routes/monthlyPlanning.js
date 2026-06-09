@@ -28,6 +28,7 @@ const {
 } = require("../services/monthlyPlanningService");
 const { getRsSuggestionsForPeriod } = require("../services/monthlyPlanningRsSuggestionsService");
 const { getGreenLevels } = require("../services/monthlyPlanningGreenLevelService");
+const { getRequirementComposition } = require("../services/monthlyPlanningRequirementCompositionService");
 
 const monthlyPlanningRouter = express.Router();
 
@@ -114,6 +115,26 @@ monthlyPlanningRouter.get(
         });
       }
       const data = await getRsSuggestionsForPeriod({ periodKey: String(periodKey) });
+      return res.json(data);
+    } catch (e) {
+      return handleServiceError(e, res, next);
+    }
+  },
+);
+
+monthlyPlanningRouter.get(
+  "/requirement-composition",
+  requireAuth,
+  requireRole(MONTHLY_PLANNING_READ_ROLES),
+  async (req, res, next) => {
+    try {
+      const periodKey = req.query.periodKey ?? req.query.period;
+      if (!periodKey) {
+        return res.status(422).json({
+          error: { code: "INVALID_PERIOD", message: "periodKey query param is required (YYYY-MM)." },
+        });
+      }
+      const data = await getRequirementComposition({ periodKey: String(periodKey) });
       return res.json(data);
     } catch (e) {
       return handleServiceError(e, res, next);

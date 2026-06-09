@@ -20,6 +20,7 @@ import {
   ChevronDown,
   ChevronRight,
   Eye,
+  Layers,
 } from "lucide-react";
 
 type PlanStatus = "DRAFT" | "LOCKED";
@@ -170,6 +171,38 @@ type RsSuggestionsResponse = {
   items: RsSuggestionItem[];
 };
 
+type GreenLevelStatus = "GREEN" | "YELLOW" | "RED" | "CRITICAL";
+
+type GreenLevelItem = {
+  itemId: number;
+  itemName: string | null;
+  unit: string | null;
+  baseQty: number;
+  greenPercent: number;
+  yellowPercent: number;
+  redPercent: number;
+  greenQty: number;
+  yellowQty: number;
+  redQty: number;
+  monthlyScheduleTotals: Record<string, number>;
+  freeFgStock: number;
+  shortageForGreenTarget: number;
+  status: GreenLevelStatus | null;
+  totalUsableFgStock?: number;
+  reservedNormalDispatchQty?: number;
+  reservedNoQtyDispatchQty?: number;
+};
+
+type GreenLevelsResponse = {
+  anchorPeriodKey: string;
+  historyPeriodKeys: string[];
+  stockScope?: string;
+  itemCount: number;
+  itemsWithHistory: number;
+  itemsWithStatus?: number;
+  items: GreenLevelItem[];
+};
+
 type EditRow = {
   key: string;
   id?: number;
@@ -248,6 +281,9 @@ export function MonthlyPlanningWorkspacePage() {
   const [rsSuggestions, setRsSuggestions] = React.useState<RsSuggestionsResponse | null>(null);
   const [loadingRsSuggestions, setLoadingRsSuggestions] = React.useState(false);
   const [rsSuggestionsVisible, setRsSuggestionsVisible] = React.useState(false);
+  const [greenLevels, setGreenLevels] = React.useState<GreenLevelsResponse | null>(null);
+  const [loadingGreenLevels, setLoadingGreenLevels] = React.useState(false);
+  const [greenLevelsVisible, setGreenLevelsVisible] = React.useState(false);
 
   const isLocked = plan?.status === "LOCKED";
   const editable = planExists && !isLocked;
@@ -365,6 +401,32 @@ export function MonthlyPlanningWorkspacePage() {
     setRows((prev) => prev.filter((r) => r.key !== row.key));
     if (row.id) setRemovedIds((prev) => [...prev, row.id as number]);
   }
+
+  const loadGreenLevels = React.useCallback(async () => {
+    setLoadingGreenLevels(true);
+    try {
+      const res = await apiFetch<GreenLevelsResponse>(
+        `/api/monthly-planning/green-levels?periodKey=${encodeURIComponent(period)}`,
+      );
+      setGreenLevels(res);
+      setGreenLevelsVisible(true);
+    } catch (e) {
+      showError(e instanceof ApiRequestError ? e.message : "Failed to load Green Level data.");
+      setGreenLevels(null);
+    } finally {
+      setLoadingGreenLevels(false);
+    }
+  }, [period, showError]);
+
+  const greenLevelsPeriodRef = React.useRef(period);
+  React.useEffect(() => {
+    if (greenLevelsPeriodRef.current === period) return;
+    greenLevelsPeriodRef.current = period;
+    setGreenLevels(null);
+    if (greenLevelsVisible) {
+      void loadGreenLevels();
+    }
+  }, [period, greenLevelsVisible, loadGreenLevels]);
 
   async function loadRsSuggestions() {
     setLoadingRsSuggestions(true);
@@ -640,6 +702,15 @@ export function MonthlyPlanningWorkspacePage() {
         <KpiCard label="Manual adjustments" value={String(manualAdjustments)} />
         <KpiCard label="Status" value={plan?.status ?? "—"} />
       </div>
+
+      <GreenLevelSection
+        period={period}
+        data={greenLevels}
+        visible={greenLevelsVisible}
+        loading={loadingGreenLevels}
+        onLoad={() => void loadGreenLevels()}
+        onHide={() => setGreenLevelsVisible(false)}
+      />
 
       {/* Tabs */}
       <div className="flex items-center gap-1 border-b border-slate-200">
@@ -1181,6 +1252,185 @@ function PurchasePlanningTab({
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+function greenLevelStatusBadge(status: GreenLevelStatus | null): { label: string; cls: string } {
+  switch (status) {
+    case "GREEN":
+      return { label: "Green", cls: "bg-emerald-100 text-emerald-800" };
+    case "YELLOW":
+      return { label: "Yellow", cls: "bg-amber-100 text-amber-900" };
+    case "RED":
+      return { label: "Red", cls: "bg-orange-100 text-orange-900" };
+    case "CRITICAL":
+      return { label: "Critical", cls: "bg-red-100 text-red-800" };
+    default:
+      return { label: "—", cls: "bg-slate-100 text-slate-500" };
+  }
+}
+
+function GreenLevelSection({
+  period,
+  data,
+  visible,
+  loading,
+  onLoad,
+  onHide,
+}: {
+  period: string;
+  data: GreenLevelsResponse | null;
+  visible: boolean;
+  loading: boolean;
+  onLoad: () => void;
+  onHide: () => void;
+}) {
+  const [showAllFg, setShowAllFg] = React.useState(false);
+  const [expandedItemIds, setExpandedItemIds] = React.useState<Set<number>>(new Set());
+  const dataForPeriod = data?.anchorPeriodKey === period ? data : null;
+  const rows =
+    dataForPeriod?.items.filter((i) => (showAllFg ? true : i.baseQty > 0)) ?? [];
+
+  function toggleDetails(itemId: number) {
+    setExpandedItemIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(itemId)) next.delete(itemId);
+      else next.add(itemId);
+      return next;
+    });
+  }
+
+  return (
+    <div className="rounded-lg border border-emerald-200 bg-emerald-50/40 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h3 className="text-[13px] font-semibold text-slate-800">Read-only Green Level (FG)</h3>
+          <p className="mt-0.5 text-[12px] text-slate-600">
+            Status uses <strong>free FG stock</strong> vs green target from locked RS history before{" "}
+            <strong>{period}</strong>. Validation only — no planning actions.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          {visible ? (
+            <Button type="button" variant="outline" size="sm" onClick={onHide} className="h-8">
+              Hide
+            </Button>
+          ) : null}
+          <Button type="button" variant="outline" size="sm" onClick={onLoad} disabled={loading} className="h-8">
+            <Layers className={cn("mr-1.5 h-4 w-4", loading && "animate-pulse")} />
+            {loading ? "Loading…" : "View Green Levels"}
+          </Button>
+        </div>
+      </div>
+
+      {visible && (loading || dataForPeriod) ? (
+        loading ? (
+          <p className="mt-3 text-sm text-slate-500">Loading green levels for {period}…</p>
+        ) : dataForPeriod ? (
+        <div className="mt-3 overflow-auto rounded-md border border-slate-200 bg-white">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-3 py-2 text-[11px] text-slate-500">
+            <span>
+              History window: {dataForPeriod.historyPeriodKeys[0]} →{" "}
+              {dataForPeriod.historyPeriodKeys[dataForPeriod.historyPeriodKeys.length - 1]}
+              {" · "}
+              {dataForPeriod.itemsWithHistory} FG item(s) with history · read-only
+            </span>
+            <label className="flex items-center gap-1.5 text-[11px] text-slate-600">
+              <input
+                type="checkbox"
+                checked={showAllFg}
+                onChange={(e) => setShowAllFg(e.target.checked)}
+                className="h-3.5 w-3.5 rounded border-slate-300"
+              />
+              Show all FG items
+            </label>
+          </div>
+          <table className="w-full border-collapse text-[13px]">
+            <thead className="bg-slate-50 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              <tr>
+                <th className="px-3 py-2 w-8" />
+                <th className="px-3 py-2">FG item</th>
+                <th className="px-3 py-2 w-28 text-right">Free FG</th>
+                <th className="px-3 py-2 w-28 text-right">Green target</th>
+                <th className="px-3 py-2 w-28 text-right">Shortage (GL)</th>
+                <th className="px-3 py-2 w-24">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="px-3 py-6 text-center text-sm text-slate-400">
+                    No locked NO_QTY RS schedule history in the 6-month window.
+                  </td>
+                </tr>
+              ) : (
+                rows.map((item) => {
+                  const expanded = expandedItemIds.has(item.itemId);
+                  const badge = greenLevelStatusBadge(item.status);
+                  return (
+                    <React.Fragment key={item.itemId}>
+                      <tr className="border-t border-slate-100 align-middle">
+                        <td className="px-2 py-1.5 text-center">
+                          <button
+                            type="button"
+                            onClick={() => toggleDetails(item.itemId)}
+                            className="text-slate-400 hover:text-slate-700"
+                            title="Show base and zone qty details"
+                          >
+                            {expanded ? (
+                              <ChevronDown className="h-4 w-4" />
+                            ) : (
+                              <ChevronRight className="h-4 w-4" />
+                            )}
+                          </button>
+                        </td>
+                        <td className="px-3 py-1.5 font-medium text-slate-800">
+                          {item.itemName ?? `Item ${item.itemId}`}
+                        </td>
+                        <td className="px-3 py-1.5 text-right tabular-nums text-slate-800">
+                          {item.freeFgStock.toLocaleString()}
+                        </td>
+                        <td className="px-3 py-1.5 text-right tabular-nums font-semibold text-emerald-800">
+                          {item.greenQty.toLocaleString()}
+                        </td>
+                        <td className="px-3 py-1.5 text-right tabular-nums text-slate-800">
+                          {item.shortageForGreenTarget.toLocaleString()}
+                        </td>
+                        <td className="px-3 py-1.5">
+                          <span
+                            className={cn(
+                              "inline-flex rounded px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide",
+                              badge.cls,
+                            )}
+                          >
+                            {badge.label}
+                          </span>
+                        </td>
+                      </tr>
+                      {expanded ? (
+                        <tr className="border-t border-slate-50 bg-slate-50/60 text-[12px] text-slate-600">
+                          <td />
+                          <td className="px-3 py-1.5 pl-8" colSpan={5}>
+                            Base {item.baseQty.toLocaleString()} · Green {item.greenPercent}% · Yellow qty{" "}
+                            {item.yellowQty.toLocaleString()} · Red qty {item.redQty.toLocaleString()}
+                            {Object.keys(item.monthlyScheduleTotals).length > 0
+                              ? ` · History: ${Object.entries(item.monthlyScheduleTotals)
+                                  .map(([m, q]) => `${m} ${q.toLocaleString()}`)
+                                  .join(", ")}`
+                              : ""}
+                          </td>
+                        </tr>
+                      ) : null}
+                    </React.Fragment>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+        ) : null
+      ) : null}
     </div>
   );
 }

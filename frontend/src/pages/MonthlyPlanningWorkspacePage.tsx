@@ -11,6 +11,13 @@ import { NativeSelect } from "../components/ui/native-select";
 import { Badge } from "../components/ui/badge";
 import { cn } from "../lib/utils";
 import {
+  getReleaseDeltaDisabledStatusMessage,
+  getReleaseDeltaProcurementBadge,
+  isReleaseDeltaButtonEnabled,
+  resolveAdditionalRequirementTotal,
+  resolvePreviouslyReleasedTotal,
+} from "../lib/monthlyPlanningReleaseDeltaUx";
+import {
   CalendarRange,
   Plus,
   Trash2,
@@ -1193,8 +1200,14 @@ export function MonthlyPlanningWorkspacePage() {
         `Released ${summary.releasedLineCount} line(s) · delta ${summary.totalDeltaQty.toLocaleString()}.`,
       );
       await refreshPurchase();
+      await loadPlan(period);
     } catch (e) {
-      showError(e instanceof ApiRequestError ? e.message : "Failed to release to procurement.");
+      const detail = e instanceof ApiRequestError ? e.message : null;
+      showError(
+        detail
+          ? `Release failed. ${detail} Procurement demand was not created. Please try again.`
+          : "Release failed. Procurement demand was not created. Please try again.",
+      );
     } finally {
       setReleasing(false);
     }
@@ -1208,6 +1221,9 @@ export function MonthlyPlanningWorkspacePage() {
         `/api/monthly-planning/${plan.id}/purchase-planning`,
       );
       setPurchasePlanning(pp);
+      setReleaseSummary((prev) =>
+        prev && pp.revision != null && prev.revision !== pp.revision ? null : prev,
+      );
     } catch (e) {
       showError(e instanceof ApiRequestError ? e.message : "Failed to load Purchase Planning.");
     } finally {
@@ -1327,7 +1343,7 @@ export function MonthlyPlanningWorkspacePage() {
                 className="h-9 bg-amber-700 hover:bg-amber-800"
               >
                 <Lock className="mr-1.5 h-4 w-4" />
-                Lock plan
+                Lock Plan
               </Button>
             ) : null}
             {planExists && isLocked && canMutatePeriod ? (
@@ -1344,7 +1360,7 @@ export function MonthlyPlanningWorkspacePage() {
                 className="h-9 border-amber-300 text-amber-900 hover:bg-amber-50"
               >
                 <Unlock className="mr-1.5 h-4 w-4" />
-                {reopening ? "Reopening…" : "Reopen plan"}
+                {reopening ? "Reopening…" : "Reopen Plan"}
               </Button>
             ) : null}
             {canCancelReopen && canMutatePeriod ? (
@@ -1361,7 +1377,7 @@ export function MonthlyPlanningWorkspacePage() {
                 className="h-9 border-slate-300 text-slate-800 hover:bg-slate-50"
               >
                 <X className="mr-1.5 h-4 w-4" />
-                {cancellingReopen ? "Cancelling…" : "Cancel reopen"}
+                {cancellingReopen ? "Cancelling…" : "Cancel Reopen"}
               </Button>
             ) : null}
           </div>
@@ -1461,6 +1477,7 @@ export function MonthlyPlanningWorkspacePage() {
         {activeTab === "purchase" ? (
           <PurchasePlanningTab
             data={purchasePlanning}
+            plan={plan}
             loading={loadingPurchase}
             onRefresh={() => void refreshPurchase()}
             onRelease={() => setConfirmReleaseOpen(true)}
@@ -1578,10 +1595,8 @@ function ReleaseConfirmModal({
 }) {
   const lines = data?.lines ?? [];
   const totalRmItems = lines.length;
-  const totalAdditional = lines.reduce(
-    (a, l) => a + num(l.additionalRequirementQty ?? l.suggestedPurchaseQty),
-    0,
-  );
+  const totalAdditional = resolveAdditionalRequirementTotal(data?.totals, lines);
+  const canConfirmRelease = isReleaseDeltaButtonEnabled(totalAdditional);
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4">
       <div className="w-full max-w-md rounded-lg border border-slate-200 bg-white p-5 shadow-xl">
@@ -1613,7 +1628,12 @@ function ReleaseConfirmModal({
           <Button type="button" variant="outline" onClick={onCancel} disabled={releasing}>
             Cancel
           </Button>
-          <Button type="button" onClick={onConfirm} disabled={releasing} className="bg-sky-700 hover:bg-sky-800">
+          <Button
+            type="button"
+            onClick={onConfirm}
+            disabled={releasing || !canConfirmRelease}
+            className="bg-sky-700 hover:bg-sky-800"
+          >
             {releasing ? "Releasing…" : "Release Delta to Procurement"}
           </Button>
         </div>
@@ -1721,7 +1741,7 @@ function RmPlanningTab({
     return (
       <div className="flex h-full min-h-[200px] items-center justify-center rounded-lg border border-dashed border-slate-200 bg-slate-50/50">
         <p className="text-sm text-slate-500">
-          Lock the plan to generate the RM Planning snapshot.
+          Lock the production plan to view RM Planning for this period.
         </p>
       </div>
     );
@@ -1773,7 +1793,7 @@ function RmPlanningTab({
             {lines.length === 0 ? (
               <tr>
                 <td colSpan={8} className="px-3 py-8 text-center text-sm text-slate-400">
-                  No RM demand from this plan.
+                  No RM procurement requirement for this locked plan.
                 </td>
               </tr>
             ) : (
@@ -1853,9 +1873,16 @@ function RevisionHistorySection({
         <h3 className="text-[13px] font-semibold text-slate-800">Revision History</h3>
         {loading ? <span className="text-[11px] text-slate-400">Loading…</span> : null}
         {!loading && revisions.length === 0 ? (
-          <span className="text-[11px] text-slate-400">No locked revisions yet.</span>
+          <span className="text-[11px] text-slate-400">Revision history appears after the first plan lock.</span>
         ) : null}
       </div>
+
+      {data?.draftForRevision != null ? (
+        <p className="mb-2 text-[11px] text-slate-600">
+          <strong>Rev {data.currentRevision}</strong> is the current locked revision. Draft edits are preparing{" "}
+          <strong>Rev {data.draftForRevision}</strong>.
+        </p>
+      ) : null}
 
       {revisions.length > 0 ? (
         <div className="overflow-auto rounded-md border border-slate-100">
@@ -1893,13 +1920,13 @@ function RevisionHistorySection({
                       <td className="px-3 py-2">
                         <div className="flex flex-wrap items-center gap-1">
                           {rev.isCurrent ? (
-                            <Badge variant="warning">Current</Badge>
+                            <Badge variant="warning">Current revision</Badge>
                           ) : (
-                            <Badge variant="default">Locked</Badge>
+                            <Badge variant="default">Historical</Badge>
                           )}
                           {rev.released ? <Badge variant="info">Released</Badge> : null}
                           {rev.hasRmSnapshot ? (
-                            <span className="text-[10px] text-slate-400">RM snapshot</span>
+                            <span className="text-[10px] text-slate-400">RM planning snapshot</span>
                           ) : null}
                         </div>
                       </td>
@@ -1907,6 +1934,9 @@ function RevisionHistorySection({
                     {expanded ? (
                       <tr className="border-t border-slate-50 bg-slate-50/50">
                         <td colSpan={6} className="px-3 py-2">
+                          <p className="mb-2 text-[11px] font-medium text-slate-600">
+                            Production plan at lock (Rev {rev.revision})
+                          </p>
                           <table className="w-full border-collapse text-[12px]">
                             <thead className="text-left text-[10px] font-semibold uppercase tracking-wide text-slate-500">
                               <tr>
@@ -1922,7 +1952,7 @@ function RevisionHistorySection({
                               {rev.fgLines.length === 0 ? (
                                 <tr>
                                   <td colSpan={6} className="px-2 py-3 text-center text-slate-400">
-                                    No FG snapshot lines for this revision.
+                                    FG snapshot not available for this historical revision.
                                   </td>
                                 </tr>
                               ) : (
@@ -2010,12 +2040,14 @@ const PURCHASE_STATUS_META: Record<PurchaseStatus, { label: string; cls: string 
 
 function PurchasePlanningTab({
   data,
+  plan,
   loading,
   onRefresh,
   onRelease,
   releaseSummary,
 }: {
   data: PurchasePlanningResponse | null;
+  plan: PlanSummary | null;
   loading: boolean;
   onRefresh: () => void;
   onRelease: () => void;
@@ -2027,7 +2059,7 @@ function PurchasePlanningTab({
   if (!data || !data.locked || !data.exists) {
     return (
       <div className="flex h-full min-h-[200px] items-center justify-center rounded-lg border border-dashed border-slate-200 bg-slate-50/50">
-        <p className="text-sm text-slate-500">Lock the plan to review purchase planning.</p>
+        <p className="text-sm text-slate-500">Lock the production plan to review purchase planning.</p>
       </div>
     );
   }
@@ -2040,15 +2072,24 @@ function PurchasePlanningTab({
   const totalReleased =
     data.totals?.previouslyReleasedTotal ??
     lines.reduce((a, l) => a + num(l.previouslyReleasedQty ?? l.alreadyRequisitionedQty), 0);
-  const totalAdditional =
-    data.totals?.additionalRequirementTotal ??
-    lines.reduce((a, l) => a + num(l.additionalRequirementQty ?? l.suggestedPurchaseQty), 0);
+  const totalAdditional = resolveAdditionalRequirementTotal(data.totals, lines);
+  const totalReleasedFromTotals = resolvePreviouslyReleasedTotal(data.totals, lines);
   const totalReduction =
     data.totals?.reductionTotal ?? lines.reduce((a, l) => a + num(l.reductionQty ?? 0), 0);
   const coveragePct =
     data.totals?.coveragePct ??
     (totalCurrent > 0 ? round3((totalReleased / totalCurrent) * 100) : null);
   const hasReduction = lines.some((l) => num(l.reductionQty) > 0);
+  const canReleaseDelta = isReleaseDeltaButtonEnabled(totalAdditional);
+  const releaseDisabledMessage = getReleaseDeltaDisabledStatusMessage({
+    additionalRequirementTotal: totalAdditional,
+    previouslyReleasedTotal: totalReleasedFromTotals,
+  });
+  const procurementBadge = getReleaseDeltaProcurementBadge({
+    currentRevision: data.currentRevision,
+    releasedRevision: plan?.releasedRevision,
+    materialRequirementDocNo: releaseSummary?.materialRequirementDocNo,
+  });
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-2">
@@ -2086,11 +2127,24 @@ function PurchasePlanningTab({
         />
       </div>
 
-      <div className="flex items-center justify-between">
-        <span className="text-[12px] text-slate-500">
-          Current revision {data.revision} · {lines.length} RM lines (read-only)
-        </span>
-        <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <span className="text-[12px] text-slate-500">
+            Current revision {data.revision} · {lines.length} RM lines (read-only)
+          </span>
+          {procurementBadge ? (
+            <Badge variant="info" className="text-[11px]">
+              Procurement released · Rev {procurementBadge.revision}
+              {procurementBadge.materialRequirementDocNo
+                ? ` · ${procurementBadge.materialRequirementDocNo}`
+                : ""}
+            </Badge>
+          ) : null}
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          {!canReleaseDelta ? (
+            <span className="text-[12px] font-medium text-emerald-700">✓ {releaseDisabledMessage}</span>
+          ) : null}
           <Button type="button" variant="outline" size="sm" onClick={onRefresh} disabled={loading} className="h-8">
             <RefreshCw className={cn("mr-1.5 h-4 w-4", loading && "animate-spin")} />
             Refresh
@@ -2099,8 +2153,8 @@ function PurchasePlanningTab({
             type="button"
             size="sm"
             onClick={onRelease}
-            disabled={loading || lines.every((l) => l.netRequirementQty <= 0)}
-            className="h-8 bg-sky-700 hover:bg-sky-800"
+            disabled={loading || !canReleaseDelta}
+            className="h-8 bg-sky-700 hover:bg-sky-800 disabled:opacity-50"
           >
             Release Delta to Procurement
           </Button>
@@ -2126,7 +2180,7 @@ function PurchasePlanningTab({
             {lines.length === 0 ? (
               <tr>
                 <td colSpan={9} className="px-3 py-8 text-center text-sm text-slate-400">
-                  No RM demand from this plan.
+                  No RM procurement requirement for this locked plan.
                 </td>
               </tr>
             ) : (
@@ -2311,7 +2365,7 @@ function GreenLevelSection({
               {rows.length === 0 ? (
                 <tr>
                   <td colSpan={6} className="px-3 py-6 text-center text-sm text-slate-400">
-                    No locked NO_QTY RS schedule history in the 6-month window.
+                    Insufficient locked RS history available to calculate Green Level.
                   </td>
                 </tr>
               ) : (
@@ -2458,7 +2512,7 @@ function RequirementCompositionSection({
                 {dataForPeriod.items.length === 0 ? (
                   <tr>
                     <td colSpan={6} className="px-3 py-6 text-center text-sm text-slate-400">
-                      No non-zero RS, carry-forward, or green-shortage components for this period.
+                      No suggested production components for this period yet.
                     </td>
                   </tr>
                 ) : (
@@ -2592,8 +2646,8 @@ function RmRequirementCompositionSection({
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
               <KpiCard label="FG items planned" value={String(dataForPeriod.summary.fgItemsPlanned)} />
               <KpiCard label="RM items required" value={String(dataForPeriod.summary.rmItemsRequired)} />
-              <KpiCard label="RM lines with gap" value={String(dataForPeriod.summary.rmLinesWithGap)} />
-              <KpiCard label="Missing BOM count" value={String(dataForPeriod.summary.missingBomCount)} />
+              <KpiCard label="RM shortages" value={String(dataForPeriod.summary.rmLinesWithGap)} />
+              <KpiCard label="FG items without BOM" value={String(dataForPeriod.summary.missingBomCount)} />
             </div>
             <div className="overflow-auto rounded-md border border-slate-200 bg-white">
               <div className="border-b border-slate-100 px-3 py-2 text-[11px] text-slate-500">
@@ -2618,7 +2672,7 @@ function RmRequirementCompositionSection({
                   {dataForPeriod.items.length === 0 ? (
                     <tr>
                       <td colSpan={10} className="px-3 py-6 text-center text-sm text-slate-400">
-                        No RM demand for FG suggested production in this period (check FG composition or missing BOM).
+                        No RM demand from suggested production for this period. Review Requirement Composition or check for missing BOMs.
                       </td>
                     </tr>
                   ) : (
@@ -2701,7 +2755,7 @@ function RmRequirementCompositionSection({
                                         <td className="py-1 pr-3 text-slate-700">
                                           {src.fgItemName ?? `FG ${src.fgItemId}`}
                                           {src.bomMissing ? (
-                                            <span className="ml-1 text-amber-700">(missing BOM)</span>
+                                            <span className="ml-1 text-amber-700">(BOM not available)</span>
                                           ) : null}
                                         </td>
                                         <td className="py-1 pr-3 text-right tabular-nums">
@@ -2802,8 +2856,8 @@ function NoPlanPreviewPanel({
         No production plan created yet for <strong>{period}</strong>.
       </p>
       <p className="mt-2 max-w-lg text-[13px] leading-relaxed text-slate-600">
-        Review Requirement Composition, Green Level, and RM Composition above. Start planning only when you are ready
-        to create a draft — opening this month does not create a database record.
+        Review Requirement Composition, Green Level, and RM Composition above. Start planning when you are ready to
+        create a draft for this period.
       </p>
       {canStartPlanning ? (
         <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
@@ -2943,7 +2997,7 @@ function ProductionPlanTab({
                       colSpan={editable ? 7 : 6}
                       className="px-3 py-6 text-center text-sm text-slate-400"
                     >
-                      No locked NO_QTY Requirement Sheets for this period.
+                      No locked customer schedules for this period.
                     </td>
                   </tr>
                 ) : (
@@ -3033,7 +3087,7 @@ function ProductionPlanTab({
 
       {isLocked ? (
         <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] font-medium text-amber-900">
-          This plan is locked. Use <strong>Reopen plan</strong> in the header to edit the next revision draft.
+          This plan is locked. Use <strong>Reopen Plan</strong> in the header to edit the next revision draft.
         </div>
       ) : (
         <div className="flex flex-wrap items-center gap-2">
@@ -3077,7 +3131,7 @@ function ProductionPlanTab({
             {rows.length === 0 ? (
               <tr>
                 <td colSpan={editable ? 10 : 9} className="px-3 py-8 text-center text-sm text-slate-400">
-                  No FG lines yet. {editable ? "Add an FG item to begin." : ""}
+                  No production plan lines yet. {editable ? "Add an FG item to begin planning." : ""}
                 </td>
               </tr>
             ) : (

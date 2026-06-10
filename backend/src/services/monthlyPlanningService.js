@@ -69,10 +69,18 @@ function getCurrentPeriodKey(now = new Date()) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
 
+const PAST_PERIOD_PLANNING_MESSAGE =
+  "Monthly planning for past periods is read-only. Contact Admin if correction is required.";
+
 /** True when periodKey is strictly before the current calendar month. */
-function isPastPeriod(periodKey, now = new Date()) {
+function isPastPlanningPeriod(periodKey, now = new Date()) {
   const key = normalizePeriodKey(periodKey);
   return key < getCurrentPeriodKey(now);
+}
+
+/** @deprecated Use isPastPlanningPeriod — kept for existing callers/tests. */
+function isPastPeriod(periodKey, now = new Date()) {
+  return isPastPlanningPeriod(periodKey, now);
 }
 
 /**
@@ -86,7 +94,7 @@ function assertPeriodWriteAllowed({
   now = new Date(),
 } = {}) {
   const key = normalizePeriodKey(periodKey);
-  if (!isPastPeriod(key, now)) return key;
+  if (!isPastPlanningPeriod(key, now)) return key;
 
   const role = String(actorRole ?? "").trim().toUpperCase();
   if (role === "ADMIN") {
@@ -98,11 +106,7 @@ function assertPeriodWriteAllowed({
     );
   }
 
-  throw new MonthlyPlanningError(
-    "PAST_PERIOD_NOT_ALLOWED",
-    `Cannot create or edit a Monthly Production Plan for past period ${key}. Only the current month and future months are allowed.`,
-    403,
-  );
+  throw new MonthlyPlanningError("PAST_PERIOD_PLANNING_NOT_ALLOWED", PAST_PERIOD_PLANNING_MESSAGE, 403);
 }
 
 function toPlanSummary(plan) {
@@ -1314,7 +1318,9 @@ module.exports = {
   MonthlyPlanningError,
   normalizePeriodKey,
   getCurrentPeriodKey,
+  isPastPlanningPeriod,
   isPastPeriod,
+  PAST_PERIOD_PLANNING_MESSAGE,
   assertPeriodWriteAllowed,
   getMonthlyPlanByPeriod,
   createMonthlyPlan,

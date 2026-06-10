@@ -555,7 +555,10 @@ export function MonthlyPlanningWorkspacePage() {
   const [addingSuggested, setAddingSuggested] = React.useState(false);
   const [pastPeriodConfirmOpen, setPastPeriodConfirmOpen] = React.useState(false);
   const [confirmingPastPeriod, setConfirmingPastPeriod] = React.useState(false);
+  const [pastPeriodConfirmedKey, setPastPeriodConfirmedKey] = React.useState<string | null>(null);
   const pastPeriodActionRef = React.useRef<(() => Promise<void>) | null>(null);
+
+  const pastPeriodConfirmedSession = periodIsPast && pastPeriodConfirmedKey === period;
 
   const isLocked = plan?.status === "LOCKED";
   const editable = planExists && !isLocked && canMutatePeriod;
@@ -751,13 +754,20 @@ export function MonthlyPlanningWorkspacePage() {
     if (!canMutatePeriod) {
       showError(
         periodIsPast
-          ? "Past periods are view-only for Store users. Contact Admin for backdated planning."
+          ? "Monthly planning for past periods is read-only. Contact Admin if correction is required."
           : "You do not have permission to change monthly plans.",
       );
       return;
     }
     if (periodIsPast && isAdmin) {
-      pastPeriodActionRef.current = action;
+      if (pastPeriodConfirmedSession) {
+        void action();
+        return;
+      }
+      pastPeriodActionRef.current = async () => {
+        setPastPeriodConfirmedKey(period);
+        await action();
+      };
       setPastPeriodConfirmOpen(true);
       return;
     }
@@ -1358,12 +1368,15 @@ export function MonthlyPlanningWorkspacePage() {
         </div>
       </div>
 
-      {periodIsPast ? (
+      {periodIsPast && !isAdmin ? (
         <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-900">
-          <strong>Past period ({period}).</strong>{" "}
-          {canMutatePeriod
-            ? "Creating or editing requires admin confirmation."
-            : "View-only for Store — existing plans and composition panels can be reviewed, but new plans and edits are not allowed."}
+          <strong>Past period.</strong> Planning actions are disabled.
+        </div>
+      ) : null}
+      {periodIsPast && isAdmin ? (
+        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-900">
+          <strong>Past period ({period}).</strong> Changes require admin confirmation and should be used only for
+          audit, correction, or testing.
         </div>
       ) : null}
 
@@ -2737,22 +2750,25 @@ function PastPeriodConfirmModal({
             <span className="flex h-9 w-9 items-center justify-center rounded-full bg-amber-100 text-amber-700">
               <Lock className="h-4 w-4" />
             </span>
-            <h3 className="text-base font-semibold text-slate-900">Confirm backdated planning</h3>
+            <h3 className="text-base font-semibold text-slate-900">Past period confirmation</h3>
           </div>
           <button type="button" onClick={onCancel} className="text-slate-400 hover:text-slate-700">
             <X className="h-5 w-5" />
           </button>
         </div>
         <p className="mt-4 text-[13px] leading-relaxed text-slate-600">
-          <strong>{period}</strong> is a past period. Admin confirmation is required before creating or changing a
-          Monthly Production Plan for this month.
+          You are modifying a past planning period (<strong>{period}</strong>).
         </p>
+        <p className="mt-2 text-[13px] leading-relaxed text-slate-600">
+          This should be used only for audit, correction, or testing.
+        </p>
+        <p className="mt-2 text-[13px] font-medium text-slate-800">Continue?</p>
         <div className="mt-5 flex justify-end gap-2">
           <Button type="button" variant="outline" onClick={onCancel} disabled={confirming}>
             Cancel
           </Button>
           <Button type="button" onClick={onConfirm} disabled={confirming} className="bg-amber-700 hover:bg-amber-800">
-            {confirming ? "Confirming…" : "Confirm backdated action"}
+            {confirming ? "Continuing…" : "Continue"}
           </Button>
         </div>
       </div>
@@ -2813,7 +2829,7 @@ function NoPlanPreviewPanel({
         </div>
       ) : periodIsPast ? (
         <p className="mt-4 text-[12px] text-slate-500">
-          Past periods are view-only for Store. Admin can create backdated plans with confirmation.
+          Past period. Planning actions are disabled.
         </p>
       ) : (
         <p className="mt-4 text-[12px] text-slate-500">Store or Admin can start planning for this period.</p>

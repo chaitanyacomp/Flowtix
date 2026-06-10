@@ -8,11 +8,11 @@ import { buildProcurementWorkspaceHref } from "../../lib/woProcurementContinuity
 import type { RmPoCompanyProfile } from "../../lib/rmPoSupplierDocument";
 import { printRmPoSupplierSection } from "../../lib/rmPoDocumentActions";
 import { buildGrnDetailHref } from "../../lib/grnDocumentActions";
+import { buildPurchaseBillDetailHref, resolvePrimaryPurchaseBill } from "../../lib/procurementNavigation";
 import {
   demandSourceDisplay,
   formatPoDocumentDate,
   formatTraceQty,
-  lineBillStatusLabel,
   lineReceiptStatusLabel,
   traceLineByPoLineId,
   type RmPoTracePayload,
@@ -56,6 +56,21 @@ export type RmPoDocumentViewProps = {
 function SectionHeading({ children }: { children: React.ReactNode }) {
   return (
     <h2 className="text-sm font-bold uppercase tracking-wide text-slate-800">{children}</h2>
+  );
+}
+
+function BillTraceLink({
+  billLines,
+}: {
+  billLines: RmPoTracePayload["lines"][number]["purchaseBillLines"] | undefined;
+}) {
+  const primary = resolvePrimaryPurchaseBill(billLines);
+  if (!primary) return <>Not billed</>;
+  const label = primary.billNo ? primary.billNo : `PB-${primary.id}`;
+  return (
+    <Link to={buildPurchaseBillDetailHref(primary.id)} className="font-medium text-primary underline">
+      {primary.status === "FINALIZED" ? `Billed — ${label}` : `Draft — ${label}`}
+    </Link>
   );
 }
 
@@ -155,9 +170,9 @@ function LineSourceTrace({
             ? "Posted"
             : "Not posted"}
         </span>
-        <span>
+        <span className="inline-flex flex-wrap items-center gap-1">
           <span className="font-semibold text-slate-600">Bill:</span>{" "}
-          {lineBillStatusLabel(traceLine?.purchaseBillLines ?? [])}
+          <BillTraceLink billLines={traceLine?.purchaseBillLines} />
         </span>
       </div>
     </div>
@@ -184,13 +199,17 @@ function GrnHistoryCard({
   const lineDetails = (trace?.lines ?? []).flatMap((tl) =>
     (tl.grnLines ?? [])
       .filter((gl) => gl.grnId === grn.id)
-      .map((gl) => ({
-        itemName: tl.item?.itemName ?? `Line #${tl.id}`,
-        receivedQty: gl.receivedQty,
-        location: gl.location?.name ?? gl.location?.code ?? null,
-        stockPosted: gl.stockTransactions.length > 0,
-        bill: gl.purchaseBillLines[0]?.purchaseBill?.billNo ?? null,
-      })),
+      .map((gl) => {
+        const primaryBill = resolvePrimaryPurchaseBill(gl.purchaseBillLines);
+        return {
+          itemName: tl.item?.itemName ?? `Line #${tl.id}`,
+          receivedQty: gl.receivedQty,
+          location: gl.location?.name ?? gl.location?.code ?? null,
+          stockPosted: gl.stockTransactions.length > 0,
+          billId: primaryBill?.id ?? null,
+          billNo: primaryBill?.billNo ?? null,
+        };
+      }),
   );
 
   if (!lineDetails.length) {
@@ -201,7 +220,8 @@ function GrnHistoryCard({
         receivedQty: Number(gl.receivedQty),
         location: gl.location?.locationName ?? gl.location?.locationCode ?? null,
         stockPosted: false,
-        bill: null,
+        billId: null,
+        billNo: null,
       });
     }
   }
@@ -281,7 +301,15 @@ function GrnHistoryCard({
                   <td className="py-2 text-right tabular-nums font-semibold text-slate-900">{ln.receivedQty.toFixed(3)}</td>
                   <td className="py-2 text-slate-700">{ln.location ?? "—"}</td>
                   <td className="py-2 text-slate-700">{ln.stockPosted ? "Posted" : "Not posted"}</td>
-                  <td className="py-2 text-slate-700">{ln.bill ? ln.bill : "Not billed"}</td>
+                  <td className="py-2 text-slate-700">
+                    {ln.billId ? (
+                      <Link to={buildPurchaseBillDetailHref(ln.billId)} className="text-primary underline">
+                        {ln.billNo ?? `PB-${ln.billId}`}
+                      </Link>
+                    ) : (
+                      "Not billed"
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>

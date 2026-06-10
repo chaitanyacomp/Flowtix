@@ -1,19 +1,32 @@
 import * as React from "react";
-import { useLocation, useParams } from "react-router-dom";
+import { Link, useLocation, useParams } from "react-router-dom";
+import { Printer } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { apiFetch } from "../services/api";
 import { getApiUrl } from "../services/api";
 import { computeLineTaxSplit, sumBillLines } from "../lib/purchaseBillCalc";
+import {
+  buildPurchaseBillDocumentPayload,
+  type PurchaseBillCompanyProfile,
+} from "../lib/purchaseBillDocument";
+import { printPurchaseBillDocumentSection } from "../lib/purchaseBillDocumentActions";
 import { useAuth } from "../hooks/useAuth";
 import { useToast } from "../contexts/ToastContext";
 import { PageContainer, PageSmartBackLink, StickyWorkspaceHead } from "../components/PageHeader";
 import { ActivityHistoryCard } from "../components/ActivityHistoryCard";
 import { BillExportStatusPanel } from "../components/BillExportStatusPanel";
 import { PurchaseBillCommercialPanel } from "../components/purchase/PurchaseBillCommercialPanel";
+import { PurchaseBillDocumentView } from "../components/purchase/PurchaseBillDocumentView";
 import { ErpModal } from "../components/erp/ErpModal";
+import { cn } from "../lib/utils";
 import type { ResolvedSupplierCommercial } from "./rmPurchase/rmPurchaseShared";
+import {
+  buildGrnDocumentHref,
+  buildRmPoGrnDetailHref,
+  tallyExportLabel,
+} from "../lib/procurementNavigation";
 
 const COMMERCIAL_PAYMENT_MODES = ["CASH", "BANK", "UPI", "CHEQUE", "OTHER"] as const;
 
@@ -76,7 +89,7 @@ type Bill = {
   taxIntraState: boolean;
   gstMode?: string | null;
   resolvedSupplierCommercial?: ResolvedSupplierCommercial | null;
-  supplier: { id: number; name: string; state?: string | null };
+  supplier: { id: number; name: string; state?: string | null; contact?: string | null; email?: string | null };
   grn?: { id: number; date: string; rmPo: { id: number } } | null;
   lines: BillLine[];
   payments?: PurchaseBillPaymentRow[];
@@ -100,6 +113,35 @@ function toDateInputValue(value: unknown): string {
 function formatMoney(n: number): string {
   if (!Number.isFinite(n)) return "—";
   return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function collectBillGrnIds(bill: Bill): number[] {
+  const ids = new Set<number>();
+  if (bill.grn?.id) ids.add(bill.grn.id);
+  for (const ln of bill.lines) {
+    if (ln.grnId) ids.add(ln.grnId);
+  }
+  return [...ids].sort((a, b) => a - b);
+}
+
+function GrnRefLinks({ grnIds }: { grnIds: number[] }) {
+  if (!grnIds.length) {
+    return <span className="min-w-0 text-sm text-slate-700">—</span>;
+  }
+  return (
+    <div className="flex min-w-0 flex-wrap gap-x-3 gap-y-1">
+      {grnIds.map((id) => (
+        <Link
+          key={id}
+          to={buildGrnDocumentHref(id)}
+          className="font-mono text-sm font-medium text-primary underline"
+          data-testid={`purchase-bill-grn-link-${id}`}
+        >
+          GRN-{id}
+        </Link>
+      ))}
+    </div>
+  );
 }
 
 function formatEffectiveDate(iso: string | null | undefined): string {
@@ -127,6 +169,8 @@ export function PurchaseBillEditPage() {
   const canEditPaymentTracking = userRole === "ADMIN" || userRole === "PURCHASE";
 
   const [bill, setBill] = React.useState<Bill | null>(null);
+  const [companyProfile, setCompanyProfile] = React.useState<PurchaseBillCompanyProfile | null>(null);
+  const [viewMode, setViewMode] = React.useState<"workspace" | "document">("workspace");
   const [loadError, setLoadError] = React.useState<string | null>(null);
   const [formError, setFormError] = React.useState<string | null>(null);
   const [formInfo, setFormInfo] = React.useState<string | null>(null);
@@ -165,6 +209,10 @@ export function PurchaseBillEditPage() {
   const cancelled = bill?.status === "CANCELLED";
   const editLocked = Boolean(readOnly || cancelled);
   const incomingWarnings = ((location.state as { pbWarnings?: string[] } | null)?.pbWarnings ?? []).filter(Boolean);
+
+  React.useEffect(() => {
+    apiFetch<PurchaseBillCompanyProfile>("/api/company-profile").then(setCompanyProfile).catch(() => setCompanyProfile(null));
+  }, []);
 
   React.useEffect(() => {
     if (!Number.isFinite(billId) || billId <= 0) {
@@ -273,6 +321,49 @@ export function PurchaseBillEditPage() {
   }
 
   const preview = bill ? sumBillLines(previewLines()) : null;
+
+  const documentPayload = React.useMemo(() => {
+    if (!bill) return null;
+    const billDateIso = billDate.trim() ? `${billDate.trim()}T00:00:00.000Z` : bill.billDate;
+    return buildPurchaseBillDocumentPayload(
+      {
+        id: bill.id,
+        billNo: bill.billNo,
+        billDate: bill.billDate,
+        status: bill.status,
+        remarks: bill.remarks,
+        taxIntraState: bill.taxIntraState,
+        totalBasic: bill.totalBasic,
+        totalCgst: bill.totalCgst,
+        totalSgst: bill.totalSgst,
+        totalIgst: bill.totalIgst,
+        totalTax: bill.totalTax,
+        netAmount: bill.netAmount,
+        supplier: bill.supplier,
+        resolvedSupplierCommercial: bill.resolvedSupplierCommercial,
+        lines: bill.lines.map((ln) => ({
+          id: ln.id,
+          itemId: ln.itemId,
+          itemName: ln.item?.itemName ?? `Item #${ln.itemId}`,
+          hsnCodeSnapshot: ln.hsnCodeSnapshot,
+          unitSnapshot: ln.unitSnapshot,
+          qty: ln.qty,
+          rate: ln.rate,
+          gstRate: ln.gstRate,
+          grnId: ln.grnId,
+          rmPoId: ln.rmPoId,
+        })),
+      },
+      {
+        billNo,
+        billDate: billDateIso,
+        remarks,
+        qtys,
+        rates,
+        preview,
+      },
+    );
+  }, [bill, billNo, billDate, remarks, qtys, rates, preview]);
 
   async function saveDraft() {
     if (!bill || editLocked) return;
@@ -688,6 +779,32 @@ export function PurchaseBillEditPage() {
               {cancelled ? "Cancelled purchase bill (read-only)" : readOnly ? "View finalized Purchase Bill" : "Edit Purchase Bill"}
             </p>
           </div>
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
+            <div className="inline-flex rounded-md border border-slate-200 bg-slate-50 p-0.5">
+              <button
+                type="button"
+                className={cn(
+                  "rounded px-3 py-1.5 text-xs font-semibold transition-colors",
+                  viewMode === "workspace" ? "bg-white text-slate-900 shadow-sm" : "text-slate-600 hover:text-slate-900",
+                )}
+                data-testid="pb-view-workspace"
+                onClick={() => setViewMode("workspace")}
+              >
+                Edit workspace
+              </button>
+              <button
+                type="button"
+                className={cn(
+                  "rounded px-3 py-1.5 text-xs font-semibold transition-colors",
+                  viewMode === "document" ? "bg-white text-slate-900 shadow-sm" : "text-slate-600 hover:text-slate-900",
+                )}
+                data-testid="pb-view-document"
+                onClick={() => setViewMode("document")}
+              >
+                Document view
+              </button>
+            </div>
+          </div>
           {!cancelled ? (
             <div className="flex shrink-0 flex-col items-start gap-2">
             <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
@@ -753,6 +870,34 @@ export function PurchaseBillEditPage() {
         </div>
       ) : null}
 
+      {viewMode === "document" && documentPayload ? (
+        <article
+          className="mx-auto max-w-5xl overflow-hidden rounded-lg border border-slate-300 bg-white shadow-md"
+          data-testid="pb-document-article"
+        >
+          <div className="pb-no-print sticky top-0 z-10 flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-white/95 px-4 py-3 backdrop-blur-sm">
+            <p className="text-sm font-bold uppercase tracking-wide text-slate-700">Purchase Bill Document</p>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="gap-1.5"
+                data-testid="pb-print-btn"
+                onClick={() => printPurchaseBillDocumentSection()}
+              >
+                <Printer className="h-4 w-4" />
+                Print / Save as PDF
+              </Button>
+              <Button type="button" variant="outline" size="sm" data-testid="pb-back-workspace-btn" onClick={() => setViewMode("workspace")}>
+                Edit workspace
+              </Button>
+            </div>
+          </div>
+          <PurchaseBillDocumentView bill={documentPayload} companyProfile={companyProfile} />
+        </article>
+      ) : (
+        <>
       <BillExportStatusPanel
         lifecycle={cancelled ? "CANCELLED" : readOnly ? "FINALIZED" : "DRAFT"}
         isExported={Boolean(bill.isExported)}
@@ -780,7 +925,9 @@ export function PurchaseBillEditPage() {
               </div>
               <div className="grid min-w-0 gap-1 sm:col-span-2">
                 <span className="text-xs font-medium text-slate-600">GRN ref</span>
-                <Input value={bill.grn?.id ? `GRN-${bill.grn.id}` : "Multiple GRNs"} readOnly className="min-w-0 bg-slate-50" />
+                <div className="min-h-9 rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+                  <GrnRefLinks grnIds={collectBillGrnIds(bill)} />
+                </div>
               </div>
               <div className="grid min-w-0 gap-1">
                 <span className="text-xs font-medium text-slate-600">GRN date</span>
@@ -907,9 +1054,27 @@ export function PurchaseBillEditPage() {
                         <span className="text-slate-400">|</span> Total:{" "}
                         <span className="tabular-nums font-medium text-slate-900">{formatMoney(p.lineTotal)}</span>{" "}
                         <span className="text-slate-400">|</span> PO:{" "}
-                        <span className="tabular-nums">{ln.rmPoId ? `RMPO-${ln.rmPoId}` : "—"}</span>{" "}
+                        {ln.rmPoId ? (
+                          <Link
+                            to={buildRmPoGrnDetailHref(ln.rmPoId)}
+                            className="tabular-nums font-medium text-primary underline"
+                          >
+                            RMPO-{ln.rmPoId}
+                          </Link>
+                        ) : (
+                          <span className="tabular-nums">—</span>
+                        )}{" "}
                         <span className="text-slate-400">|</span> GRN:{" "}
-                        <span className="tabular-nums">{ln.grnId ? `GRN-${ln.grnId}` : "—"}</span>
+                        {ln.grnId ? (
+                          <Link
+                            to={buildGrnDocumentHref(ln.grnId)}
+                            className="tabular-nums font-medium text-primary underline"
+                          >
+                            GRN-{ln.grnId}
+                          </Link>
+                        ) : (
+                          <span className="tabular-nums">—</span>
+                        )}
                       </div>
                     </div>
                   );
@@ -954,13 +1119,21 @@ export function PurchaseBillEditPage() {
                 <div className="break-words">
                   <span className="font-medium text-slate-800">Supplier:</span> {bill.supplier.name}
                 </div>
-                <div>
-                  <span className="font-medium text-slate-800">GRN ref:</span> {bill.grn?.id ? `GRN-${bill.grn.id}` : "Multiple GRNs"}
+                <div className="flex flex-wrap items-center gap-x-1 gap-y-1">
+                  <span className="font-medium text-slate-800">GRN ref:</span> <GrnRefLinks grnIds={collectBillGrnIds(bill)} />
                 </div>
                 <div>
                   <span className="font-medium text-slate-800">Status:</span>{" "}
                   {readOnly ? <span className="text-emerald-800">Finalized</span> : <span className="text-amber-900">Draft</span>}
                 </div>
+                {readOnly ? (
+                  <div>
+                    <span className="font-medium text-slate-800">Tally export:</span>{" "}
+                    <span className={bill.isExported ? "text-sky-800" : "text-slate-700"}>
+                      {tallyExportLabel(bill.isExported)}
+                    </span>
+                  </div>
+                ) : null}
               </div>
             </CardContent>
           </Card>
@@ -1134,6 +1307,8 @@ export function PurchaseBillEditPage() {
           <ActivityHistoryCard title="History" query={`entityType=PURCHASE_BILL&entityId=${bill.id}&limit=50`} />
         </div>
       ) : null}
+        </>
+      )}
     </PageContainer>
   );
 }

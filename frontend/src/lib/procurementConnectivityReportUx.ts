@@ -1,5 +1,6 @@
 import { buildProcurementWorkspaceHref } from "./woProcurementContinuity";
 import { buildRmPoDetailHref } from "./rmPurchaseWoContinuity";
+import { buildGrnDocumentHref, parseGrnDisplayNo } from "./procurementNavigation";
 
 export type ConnectivityReportRow = {
   rowKey: string;
@@ -34,7 +35,12 @@ export type ConnectivityReportRow = {
   stockPosted: { posted: boolean; label: string };
   purchaseBillLines: Array<{
     purchaseBillId: number;
-    purchaseBill?: { id: number; billNo: string | null; status: string } | null;
+    purchaseBill?: {
+      id: number;
+      billNo: string | null;
+      status: string;
+      isExported?: boolean;
+    } | null;
   }>;
   traceChain: string[];
 };
@@ -107,6 +113,13 @@ export function connectivityGrnHref(row: ConnectivityReportRow): string {
   return `/rm-po-grn/${row.rmPoId}?from=connectivity-report`;
 }
 
+export function connectivityGrnDocumentHref(row: ConnectivityReportRow, returnTo?: string): string | null {
+  const grnNo = row.grnSummary.activeGrnNos[0] ?? row.grnSummary.label;
+  const grnId = parseGrnDisplayNo(grnNo);
+  if (!grnId) return null;
+  return buildGrnDocumentHref(grnId, returnTo ?? "/reports/rm-procurement-connectivity");
+}
+
 export function connectivityBillHref(billId: number): string {
   return `/purchase-bills/${billId}`;
 }
@@ -119,6 +132,16 @@ export function connectivityBillSummary(row: ConnectivityReportRow): string {
   return finalized?.purchaseBill?.billNo
     ? `Bill ${finalized.purchaseBill.billNo}`
     : row.billStatusLabel || "Not billed";
+}
+
+export function connectivityBillExportLabel(row: ConnectivityReportRow): string | null {
+  const bills = row.purchaseBillLines || [];
+  if (!bills.length) return null;
+  const finalized =
+    bills.find((b) => b.purchaseBill?.status === "FINALIZED" && b.purchaseBill?.isExported != null) ??
+    bills.find((b) => b.purchaseBill?.isExported != null);
+  if (!finalized?.purchaseBill || finalized.purchaseBill.isExported == null) return null;
+  return finalized.purchaseBill.isExported ? "Exported" : "Not exported";
 }
 
 export function receiptStatusTone(status: string): string {

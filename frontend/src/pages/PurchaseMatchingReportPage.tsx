@@ -8,6 +8,7 @@ import { useDebouncedUrlStringParam, useUrlQueryState } from "../hooks/useUrlQue
 import { ERP_REPORT_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
 import { cn } from "../lib/utils";
 import { rmPoGrnFocusHref, withReportsReturnContext } from "../lib/drillDownRoutes";
+import { buildGrnDocumentHref } from "../lib/procurementNavigation";
 
 type Supplier = { id: number; name: string };
 type Item = { id: number; itemName: string };
@@ -332,7 +333,18 @@ export function PurchaseMatchingReportPage() {
                       <td className={cn("text-right tabular-nums", r.excessBillQty > 0 ? "font-medium text-red-800" : "text-slate-700")}>
                         {fmtQty(r.excessBillQty)}
                       </td>
-                      <td className="whitespace-nowrap">{r.latestGrnId ? `GRN-${r.latestGrnId}` : "—"}</td>
+                      <td className="whitespace-nowrap">
+                        {r.latestGrnId ? (
+                          <Link
+                            to={withReportsReturnContext(buildGrnDocumentHref(r.latestGrnId, "/reports/purchase-matching"))}
+                            className="text-primary underline"
+                          >
+                            GRN-{r.latestGrnId}
+                          </Link>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
                       <td className="whitespace-nowrap">
                         {r.latestPurchaseBillId ? (
                           <Link

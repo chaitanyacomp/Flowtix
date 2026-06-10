@@ -11,8 +11,10 @@ import { ERP_REPORT_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTic
 import { cn } from "../lib/utils";
 import {
   buildConnectivityReportQuery,
+  connectivityBillExportLabel,
   connectivityBillHref,
   connectivityBillSummary,
+  connectivityGrnDocumentHref,
   connectivityGrnHref,
   connectivityPoHref,
   connectivityProcurementHref,
@@ -48,6 +50,8 @@ function TraceChain({ chain }: { chain: string[] }) {
 
 function RowDetail({ row, returnTo }: { row: ConnectivityReportRow; returnTo: string }) {
   const billLine = row.purchaseBillLines.find((b) => b.purchaseBill?.status === "FINALIZED") ?? row.purchaseBillLines[0];
+  const grnDocumentHref = connectivityGrnDocumentHref(row, returnTo);
+  const billExportLabel = connectivityBillExportLabel(row);
   return (
     <div className="space-y-3 border-t border-slate-100 bg-slate-50/80 px-3 py-3 text-sm">
       <div>
@@ -69,6 +73,7 @@ function RowDetail({ row, returnTo }: { row: ConnectivityReportRow; returnTo: st
         <div>
           <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Purchase bill</p>
           <p>{connectivityBillSummary(row)}</p>
+          {billExportLabel ? <p className="mt-0.5 text-xs text-slate-600">Tally: {billExportLabel}</p> : null}
         </div>
         <div className="flex flex-wrap gap-2">
           <Link to={connectivityPoHref(row)} className="text-xs font-semibold text-primary underline">
@@ -77,6 +82,11 @@ function RowDetail({ row, returnTo }: { row: ConnectivityReportRow; returnTo: st
           {row.mr?.materialRequirementId ? (
             <Link to={connectivityProcurementHref(row, returnTo)} className="text-xs font-semibold text-primary underline">
               Procurement workspace
+            </Link>
+          ) : null}
+          {grnDocumentHref ? (
+            <Link to={grnDocumentHref} className="text-xs font-semibold text-primary underline" data-testid="connectivity-open-grn-document">
+              Open GRN document
             </Link>
           ) : null}
           <Link to={connectivityGrnHref(row)} className="text-xs font-semibold text-primary underline">
@@ -128,6 +138,8 @@ function DesktopTable({
         <tbody>
           {rows.map((row) => {
             const open = expanded.has(row.rowKey);
+            const grnDocumentHref = connectivityGrnDocumentHref(row, returnTo);
+            const billExportLabel = connectivityBillExportLabel(row);
             return (
               <React.Fragment key={row.rowKey}>
                 <tr className="border-b border-slate-100 hover:bg-slate-50/60">
@@ -169,12 +181,21 @@ function DesktopTable({
                     {formatConnectivityQty(row.pendingQty, row.rmItem?.unit)}
                   </td>
                   <td className="px-2 py-2">
-                    <Link to={connectivityGrnHref(row)} className="text-primary underline">
-                      {row.grnSummary.activeGrnNos[0] ?? row.grnSummary.label}
-                    </Link>
+                    {grnDocumentHref ? (
+                      <Link to={grnDocumentHref} className="text-primary underline">
+                        {row.grnSummary.activeGrnNos[0] ?? row.grnSummary.label}
+                      </Link>
+                    ) : (
+                      <Link to={connectivityGrnHref(row)} className="text-primary underline">
+                        {row.grnSummary.activeGrnNos[0] ?? row.grnSummary.label}
+                      </Link>
+                    )}
                   </td>
                   <td className="px-2 py-2">{row.stockPosted.posted ? row.stockPosted.label : "Not posted"}</td>
-                  <td className="px-2 py-2">{connectivityBillSummary(row)}</td>
+                  <td className="px-2 py-2">
+                    <div>{connectivityBillSummary(row)}</div>
+                    {billExportLabel ? <div className="text-xs text-slate-500">{billExportLabel}</div> : null}
+                  </td>
                   <td className="px-2 py-2">
                     <span className={cn("rounded border px-2 py-0.5 text-xs font-semibold", receiptStatusTone(row.receiptStatus))}>
                       {row.receiptStatusLabel}

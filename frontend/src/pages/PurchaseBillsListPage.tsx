@@ -7,6 +7,7 @@ import { apiFetch, ApiRequestError } from "../services/api";
 import { PageContainer, PageSmartBackLink, StickyWorkspaceHead } from "../components/PageHeader";
 import { cn } from "../lib/utils";
 import { withReportsReturnContextIfPresent } from "../lib/drillDownRoutes";
+import { buildGrnDocumentHref } from "../lib/procurementNavigation";
 import { useAuth } from "../hooks/useAuth";
 import { commercialPaymentStatusLabel, isBillAmountOverdue } from "../lib/commercialBillPaymentLabels";
 import { formatCommercialDueDateCell } from "../lib/commercialDueDateDisplay";
@@ -324,7 +325,10 @@ export function PurchaseBillsListPage() {
                             <div className="mt-0.5 text-[10px] text-slate-500">
                               <Link
                                 className="text-sky-700 underline-offset-4 hover:underline"
-                                to={withReportsReturnContextIfPresent("/rm-po-grn", location.search)}
+                                to={withReportsReturnContextIfPresent(
+                                  buildGrnDocumentHref(r.grn.id, "/purchase-bills"),
+                                  location.search,
+                                )}
                               >
                                 GRN-{r.grn.id}
                               </Link>

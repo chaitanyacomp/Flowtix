@@ -21,6 +21,12 @@ import {
   type GrnDocumentPayload,
 } from "../../lib/grnDocument";
 import { VENDOR_ADDRESS_MISSING_WARNING } from "../../lib/rmPoSupplierDocument";
+import {
+  buildPurchaseBillDetailHref,
+  buildPurchaseBillNewHref,
+  purchaseBillIdByBillNo,
+  resolvePrimaryPurchaseBillForGrn,
+} from "../../lib/procurementNavigation";
 
 export type GrnDocumentViewProps = {
   detail: GrnDocumentPayload;
@@ -100,6 +106,15 @@ export function GrnDocumentView({
   const companyHeader = resolveGrnCompanyHeader(companyProfile);
   const vendorAddress = resolveGrnVendorAddressLines(supplier, supplyLocation);
   const billPresentation = resolveGrnBillPresentation(purchaseBillSummary, lines);
+  const primaryBill = resolvePrimaryPurchaseBillForGrn(
+    purchaseBillSummary.bills,
+    lines.flatMap((ln) => ln.purchaseBillLines),
+  );
+  const grnReturnTo = `/grn/${grn.id}`;
+  const createBillHref = buildPurchaseBillNewHref({
+    supplierId: supplier?.id ?? null,
+    returnTo: grnReturnTo,
+  });
   const traceGroups = groupGrnTraceLines(trace?.lines ?? []);
   const logoUrl = companyProfile?.hasLogo ? `${getApiUrl("/api/company-profile/logo/file")}?v=grn` : null;
   const receiptStatus = grnReceiptStatusDisplay(grn.isReversed);
@@ -124,6 +139,25 @@ export function GrnDocumentView({
             <ArrowLeft className="h-4 w-4" />
             Back to PO
           </Link>
+          {!grn.isReversed ? (
+            primaryBill ? (
+              <Link
+                to={buildPurchaseBillDetailHref(primaryBill.id)}
+                data-testid="grn-open-supplier-invoice-btn"
+                className={cn(buttonVariants({ variant: "default", size: "sm" }), "no-underline")}
+              >
+                Open Supplier Invoice
+              </Link>
+            ) : (
+              <Link
+                to={createBillHref}
+                data-testid="grn-create-supplier-invoice-btn"
+                className={cn(buttonVariants({ variant: "default", size: "sm" }), "no-underline")}
+              >
+                Create Supplier Invoice
+              </Link>
+            )
+          ) : null}
           {isAdmin && !grn.isReversed && onReverse ? (
             <Button
               type="button"
@@ -297,16 +331,45 @@ export function GrnDocumentView({
             <div className="grn-section-title text-[11px] font-semibold uppercase tracking-wide text-slate-500">Purchase Bill Status</div>
             <div className="mt-2 grid gap-2 sm:grid-cols-2" data-testid="grn-bill-status-summary">
               <PartyField label="Status" value={billPresentation.statusLabel} />
-              {billPresentation.billNo ? <PartyField label="Bill No." value={billPresentation.billNo} mono /> : null}
+              {billPresentation.billNo ? (
+                <div className="procurement-doc-body-text flex gap-2 leading-snug">
+                  <span className="w-[5.5rem] shrink-0 font-medium text-slate-500 print:w-[4.5rem]">Bill No.</span>
+                  {primaryBill && primaryBill.billNo === billPresentation.billNo ? (
+                    <Link
+                      to={buildPurchaseBillDetailHref(primaryBill.id)}
+                      className="min-w-0 font-mono text-[11px] text-primary underline"
+                      data-testid="grn-bill-no-link"
+                    >
+                      {billPresentation.billNo}
+                    </Link>
+                  ) : (
+                    <span className="min-w-0 font-mono text-[11px] text-slate-800">{billPresentation.billNo}</span>
+                  )}
+                </div>
+              ) : null}
             </div>
             {billPresentation.showLineBreakdown ? (
               <ul className="mt-2 space-y-1 border-t border-slate-100 pt-2 text-sm text-slate-700" data-testid="grn-bill-line-breakdown">
-                {billPresentation.lineBreakdown.map((row) => (
-                  <li key={row.itemName}>
-                    {row.itemName}: {row.statusLabel}
-                    {row.billNo ? ` — ${row.billNo}` : ""}
-                  </li>
-                ))}
+                {billPresentation.lineBreakdown.map((row) => {
+                  const billId = purchaseBillIdByBillNo(purchaseBillSummary.bills, row.billNo);
+                  return (
+                    <li key={row.itemName}>
+                      {row.itemName}: {row.statusLabel}
+                      {row.billNo ? (
+                        <>
+                          {" — "}
+                          {billId ? (
+                            <Link to={buildPurchaseBillDetailHref(billId)} className="text-primary underline">
+                              {row.billNo}
+                            </Link>
+                          ) : (
+                            row.billNo
+                          )}
+                        </>
+                      ) : null}
+                    </li>
+                  );
+                })}
               </ul>
             ) : null}
           </div>

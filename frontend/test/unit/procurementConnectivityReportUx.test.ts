@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   buildConnectivityReportQuery,
+  connectivityBillExportLabel,
   connectivityBillSummary,
+  connectivityGrnDocumentHref,
   connectivityGrnHref,
   connectivityPoHref,
   formatConnectivityQty,
@@ -69,6 +71,26 @@ describe("procurementConnectivityReportUx", () => {
 
   it("connectivityGrnHref points to PO GRN context", () => {
     expect(connectivityGrnHref(sampleRow())).toBe("/rm-po-grn/101?from=connectivity-report");
+  });
+
+  it("connectivityGrnDocumentHref points to GRN document", () => {
+    expect(connectivityGrnDocumentHref(sampleRow())).toBe("/grn/101?returnTo=%2Freports%2Frm-procurement-connectivity");
+  });
+
+  it("connectivityBillExportLabel uses existing isExported when present", () => {
+    expect(
+      connectivityBillExportLabel(
+        sampleRow({
+          purchaseBillLines: [
+            {
+              purchaseBillId: 9,
+              purchaseBill: { id: 9, billNo: "INV-1", status: "FINALIZED", isExported: true },
+            },
+          ],
+        }),
+      ),
+    ).toBe("Exported");
+    expect(connectivityBillExportLabel(sampleRow())).toBeNull();
   });
 
   it("connectivityBillSummary shows not billed when empty", () => {

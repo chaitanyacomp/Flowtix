@@ -20,6 +20,7 @@ export type GrnDocumentLine = {
     status: string;
   } | null;
   purchaseBillLines: Array<{
+    purchaseBillId?: number;
     billNo: string | null;
     status: string | null;
     qty: number;

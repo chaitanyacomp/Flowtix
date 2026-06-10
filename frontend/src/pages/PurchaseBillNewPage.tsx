@@ -1,5 +1,5 @@
 import * as React from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -32,8 +32,9 @@ function formatIsoDate(iso: string): string {
 export function PurchaseBillNewPage() {
   const navigate = useNavigate();
   const location = useLocation();
+  const [searchParams] = useSearchParams();
   const [suppliers, setSuppliers] = React.useState<Supplier[]>([]);
-  const [supplierId, setSupplierId] = React.useState<string>("");
+  const [supplierId, setSupplierId] = React.useState<string>(() => searchParams.get("supplierId")?.trim() ?? "");
   const [billNo, setBillNo] = React.useState("");
   const [billDate, setBillDate] = React.useState("");
   const [remarks, setRemarks] = React.useState("");

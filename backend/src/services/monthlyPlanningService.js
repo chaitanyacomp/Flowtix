@@ -63,6 +63,48 @@ function normalizePeriodKey(period) {
   return key;
 }
 
+/** Current calendar month as YYYY-MM (local timezone, matches workspace UI). */
+function getCurrentPeriodKey(now = new Date()) {
+  const d = now instanceof Date ? now : new Date(now);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+/** True when periodKey is strictly before the current calendar month. */
+function isPastPeriod(periodKey, now = new Date()) {
+  const key = normalizePeriodKey(periodKey);
+  return key < getCurrentPeriodKey(now);
+}
+
+/**
+ * Enforce backdated-plan rules for write actions (create / edit / reopen).
+ * Current and future months: allowed. Past months: STORE blocked; ADMIN needs confirmPastPeriod.
+ */
+function assertPeriodWriteAllowed({
+  periodKey,
+  actorRole = null,
+  confirmPastPeriod = false,
+  now = new Date(),
+} = {}) {
+  const key = normalizePeriodKey(periodKey);
+  if (!isPastPeriod(key, now)) return key;
+
+  const role = String(actorRole ?? "").trim().toUpperCase();
+  if (role === "ADMIN") {
+    if (confirmPastPeriod === true) return key;
+    throw new MonthlyPlanningError(
+      "PAST_PERIOD_CONFIRM_REQUIRED",
+      `Period ${key} is in the past. Admin must confirm backdated planning (confirmPastPeriod: true).`,
+      422,
+    );
+  }
+
+  throw new MonthlyPlanningError(
+    "PAST_PERIOD_NOT_ALLOWED",
+    `Cannot create or edit a Monthly Production Plan for past period ${key}. Only the current month and future months are allowed.`,
+    403,
+  );
+}
+
 function toPlanSummary(plan) {
   if (!plan) return null;
   return {
@@ -161,8 +203,16 @@ async function getMonthlyPlanByPeriod({ db = prisma, period } = {}) {
  * Phase 1: header only (DRAFT, currentRevision 0) with an empty lines structure.
  * Throws DUPLICATE_PERIOD (409) if a plan already exists for the period.
  */
-async function createMonthlyPlan({ db = prisma, period, actorUserId = null, remarks = null } = {}) {
-  const periodKey = normalizePeriodKey(period);
+async function createMonthlyPlan({
+  db = prisma,
+  period,
+  actorUserId = null,
+  actorRole = null,
+  confirmPastPeriod = false,
+  remarks = null,
+  now = new Date(),
+} = {}) {
+  const periodKey = assertPeriodWriteAllowed({ periodKey: period, actorRole, confirmPastPeriod, now });
 
   const run = async (tx) => {
     const existing = await tx.monthlyProductionPlan.findUnique({
@@ -269,6 +319,9 @@ async function updateProductionLines({
   upserts = [],
   deletes = [],
   actorUserId = null,
+  actorRole = null,
+  confirmPastPeriod = false,
+  now = new Date(),
   loadComposition = null,
   loadGreenLevelsFn = null,
 } = {}) {
@@ -276,6 +329,12 @@ async function updateProductionLines({
   const greenLoader = resolveGreenLevelsLoader(loadGreenLevelsFn);
   const run = async (tx) => {
     const plan = await loadPlanForEdit(tx, planId);
+    assertPeriodWriteAllowed({
+      periodKey: plan.periodKey,
+      actorRole,
+      confirmPastPeriod,
+      now,
+    });
     if (plan.status !== "DRAFT") {
       throw new MonthlyPlanningError(
         "PLAN_NOT_EDITABLE",
@@ -383,7 +442,15 @@ async function updateProductionLines({
  *
  * Does NOT create MaterialRequirements / touch procurement (later phase).
  */
-async function lockMonthlyPlan({ db = prisma, planId, actorUserId = null, deps = {} } = {}) {
+async function lockMonthlyPlan({
+  db = prisma,
+  planId,
+  actorUserId = null,
+  actorRole = null,
+  confirmPastPeriod = false,
+  asOf = new Date(),
+  deps = {},
+} = {}) {
   const explodeFn = deps.aggregateRmDemandForFgLines || aggregateRmDemandForFgLines;
   const loadBomFn = deps.loadApprovedBomWithLines || loadApprovedBomWithLines;
   const availabilityFn = deps.getMaterialAvailabilityByItems || getMaterialAvailabilityByItems;
@@ -399,6 +466,12 @@ async function lockMonthlyPlan({ db = prisma, planId, actorUserId = null, deps =
     if (!plan) {
       throw new MonthlyPlanningError("PLAN_NOT_FOUND", "Monthly Production Plan not found.", 404);
     }
+    assertPeriodWriteAllowed({
+      periodKey: plan.periodKey,
+      actorRole,
+      confirmPastPeriod,
+      now: asOf,
+    });
     if (plan.status !== "DRAFT") {
       throw new MonthlyPlanningError("PLAN_NOT_LOCKABLE", "Only DRAFT plans can be locked.", 409);
     }
@@ -539,7 +612,14 @@ async function lockMonthlyPlan({ db = prisma, planId, actorUserId = null, deps =
  * Reopen a LOCKED plan for editing the next revision draft.
  * Does not change currentRevision, delete snapshots, or touch procurement/stock.
  */
-async function reopenMonthlyPlan({ db = prisma, planId, actorUserId = null } = {}) {
+async function reopenMonthlyPlan({
+  db = prisma,
+  planId,
+  actorUserId = null,
+  actorRole = null,
+  confirmPastPeriod = false,
+  asOf = new Date(),
+} = {}) {
   const run = async (tx) => {
     const id = Number(planId);
     if (!Number.isFinite(id) || id <= 0) {
@@ -566,6 +646,12 @@ async function reopenMonthlyPlan({ db = prisma, planId, actorUserId = null } = {
     if (!plan) {
       throw new MonthlyPlanningError("PLAN_NOT_FOUND", "Monthly Production Plan not found.", 404);
     }
+    assertPeriodWriteAllowed({
+      periodKey: plan.periodKey,
+      actorRole,
+      confirmPastPeriod,
+      now: asOf,
+    });
     if (plan.status !== "LOCKED") {
       throw new MonthlyPlanningError(
         "PLAN_NOT_REOPENABLE",
@@ -581,12 +667,12 @@ async function reopenMonthlyPlan({ db = prisma, planId, actorUserId = null } = {
       );
     }
 
-    const now = new Date();
+    const reopenedAt = new Date();
     const updated = await tx.monthlyProductionPlan.update({
       where: { id: plan.id },
       data: {
         status: "DRAFT",
-        reopenedAt: now,
+        reopenedAt,
         reopenedByUserId: actorUserId ?? null,
       },
     });
@@ -596,6 +682,111 @@ async function reopenMonthlyPlan({ db = prisma, planId, actorUserId = null } = {
       status: updated.status,
       currentRevision: plan.currentRevision,
       draftForRevision: plan.currentRevision + 1,
+      plan: toPlanSummary(updated),
+    };
+  };
+
+  return typeof db.$transaction === "function" ? db.$transaction(run) : run(db);
+}
+
+/**
+ * Discard a reopened draft and restore the last locked revision's FG lines.
+ * Does not change currentRevision, RM snapshots, revision history, or procurement.
+ */
+async function cancelReopenMonthlyPlan({
+  db = prisma,
+  planId,
+  actorUserId = null,
+  actorRole = null,
+  confirmPastPeriod = false,
+  now = new Date(),
+} = {}) {
+  const run = async (tx) => {
+    const id = Number(planId);
+    if (!Number.isFinite(id) || id <= 0) {
+      throw new MonthlyPlanningError("INVALID_PLAN_ID", "Invalid plan id.", 422);
+    }
+    const plan = await tx.monthlyProductionPlan.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        status: true,
+        currentRevision: true,
+        periodKey: true,
+        reopenedAt: true,
+      },
+    });
+    if (!plan) {
+      throw new MonthlyPlanningError("PLAN_NOT_FOUND", "Monthly Production Plan not found.", 404);
+    }
+    assertPeriodWriteAllowed({
+      periodKey: plan.periodKey,
+      actorRole,
+      confirmPastPeriod,
+      now,
+    });
+    if (plan.status !== "DRAFT") {
+      throw new MonthlyPlanningError(
+        "PLAN_NOT_CANCELLABLE",
+        "Only a reopened DRAFT plan can cancel reopen.",
+        409,
+      );
+    }
+    if (plan.currentRevision < 1) {
+      throw new MonthlyPlanningError(
+        "PLAN_NOT_CANCELLABLE",
+        "Plan has no locked revision to restore.",
+        409,
+      );
+    }
+    if (!plan.reopenedAt) {
+      throw new MonthlyPlanningError(
+        "PLAN_NOT_CANCELLABLE",
+        "Plan was not reopened — cancel reopen is not available.",
+        409,
+      );
+    }
+
+    const snapshotLines = await tx.monthlyProductionPlanRevisionLine.findMany({
+      where: { planId: plan.id, revision: plan.currentRevision },
+      orderBy: { id: "asc" },
+    });
+    if (!snapshotLines.length) {
+      throw new MonthlyPlanningError(
+        "REVISION_SNAPSHOT_MISSING",
+        `FG revision snapshot missing for revision ${plan.currentRevision}. Cannot restore.`,
+        422,
+      );
+    }
+
+    await tx.monthlyProductionPlanLine.deleteMany({ where: { planId: plan.id } });
+    await tx.monthlyProductionPlanLine.createMany({
+      data: snapshotLines.map((l) => ({
+        planId: plan.id,
+        fgItemId: l.fgItemId,
+        suggestedFgQty: round3(l.suggestedFgQty),
+        plannedFgQty: round3(l.plannedFgQty),
+        plannedQtyOverridden: Boolean(l.plannedQtyOverridden),
+        source: l.source,
+        remarks: l.remarks ?? null,
+      })),
+    });
+
+    const updated = await tx.monthlyProductionPlan.update({
+      where: { id: plan.id },
+      data: {
+        status: "LOCKED",
+        reopenedAt: null,
+        reopenedByUserId: null,
+      },
+    });
+
+    return {
+      planId: plan.id,
+      status: updated.status,
+      currentRevision: plan.currentRevision,
+      restoredRevision: plan.currentRevision,
+      restoredLineCount: snapshotLines.length,
       plan: toPlanSummary(updated),
     };
   };
@@ -1122,12 +1313,16 @@ module.exports = {
   PERIOD_KEY_REGEX,
   MonthlyPlanningError,
   normalizePeriodKey,
+  getCurrentPeriodKey,
+  isPastPeriod,
+  assertPeriodWriteAllowed,
   getMonthlyPlanByPeriod,
   createMonthlyPlan,
   getProductionLines,
   updateProductionLines,
   lockMonthlyPlan,
   reopenMonthlyPlan,
+  cancelReopenMonthlyPlan,
   getPlanRevisions,
   getRmPlanning,
   getPurchasePlanning,

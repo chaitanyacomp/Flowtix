@@ -416,6 +416,12 @@ function currentMonthKey(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
 
+function isPastPeriod(periodKey: string): boolean {
+  const key = normalizePeriodKey(periodKey);
+  if (!key) return false;
+  return key < currentMonthKey();
+}
+
 /** Normalize period to YYYY-MM (matches backend normalizePeriodKey). */
 function normalizePeriodKey(period: string): string | null {
   const key = String(period ?? "").trim();
@@ -492,19 +498,22 @@ export function MonthlyPlanningWorkspacePage() {
   const { flags, loading: flagsLoading } = useFeatureFlags();
   const { showSuccess, showError } = useToast();
   const auth = useAuth();
+  const userRole = auth.user?.role ?? "";
   const canWriteMonthlyPlan = MONTHLY_PLANNING_WRITE_ROLES.includes(
-    (auth.user?.role ?? "") as (typeof MONTHLY_PLANNING_WRITE_ROLES)[number],
+    userRole as (typeof MONTHLY_PLANNING_WRITE_ROLES)[number],
   );
+  const isAdmin = userRole === "ADMIN";
   const [searchParams, setSearchParams] = useSearchParams();
 
   const periodFromUrl = searchParams.get("period");
   const [period, setPeriod] = React.useState<string>(
     normalizePeriodKey(periodFromUrl ?? "") ?? currentMonthKey(),
   );
+  const periodIsPast = isPastPeriod(period);
+  const canMutatePeriod = canWriteMonthlyPlan && (!periodIsPast || isAdmin);
   const [activeTab, setActiveTab] = React.useState<TabKey>("production");
 
   const [loading, setLoading] = React.useState(false);
-  const [creating, setCreating] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
   const [plan, setPlan] = React.useState<PlanSummary | null>(null);
   const [planExists, setPlanExists] = React.useState<boolean>(false);
@@ -541,10 +550,19 @@ export function MonthlyPlanningWorkspacePage() {
   const [loadingRevisions, setLoadingRevisions] = React.useState(false);
   const [expandedRevision, setExpandedRevision] = React.useState<number | null>(null);
   const [reopening, setReopening] = React.useState(false);
+  const [cancellingReopen, setCancellingReopen] = React.useState(false);
+  const [startingPlanning, setStartingPlanning] = React.useState(false);
+  const [addingSuggested, setAddingSuggested] = React.useState(false);
+  const [pastPeriodConfirmOpen, setPastPeriodConfirmOpen] = React.useState(false);
+  const [confirmingPastPeriod, setConfirmingPastPeriod] = React.useState(false);
+  const pastPeriodActionRef = React.useRef<(() => Promise<void>) | null>(null);
 
   const isLocked = plan?.status === "LOCKED";
-  const editable = planExists && !isLocked;
+  const editable = planExists && !isLocked && canMutatePeriod;
   const isDraftForNextRevision = Boolean(plan && plan.status === "DRAFT" && plan.currentRevision >= 1);
+  const canCancelReopen = Boolean(
+    planExists && plan && plan.status === "DRAFT" && plan.currentRevision >= 1 && plan.reopenedAt,
+  );
   const suggestedProductionMap = React.useMemo(
     () => buildSuggestedProductionMap(requirementComposition),
     [requirementComposition],
@@ -729,29 +747,109 @@ export function MonthlyPlanningWorkspacePage() {
     setSearchParams(sp, { replace: true });
   }
 
-  async function onCreate() {
+  function runWithPastPeriodGuard(action: () => Promise<void>) {
+    if (!canMutatePeriod) {
+      showError(
+        periodIsPast
+          ? "Past periods are view-only for Store users. Contact Admin for backdated planning."
+          : "You do not have permission to change monthly plans.",
+      );
+      return;
+    }
+    if (periodIsPast && isAdmin) {
+      pastPeriodActionRef.current = action;
+      setPastPeriodConfirmOpen(true);
+      return;
+    }
+    void action();
+  }
+
+  async function ensurePlanDraft(options?: { confirmPastPeriod?: boolean }): Promise<PlanSummary> {
+    if (plan?.id) return plan;
+    const periodKey = normalizePeriodKey(period);
+    if (!periodKey) {
+      throw new Error("Plan period must be in YYYY-MM format.");
+    }
+    const body: { period: string; confirmPastPeriod?: true } = { period: periodKey };
+    if (options?.confirmPastPeriod) body.confirmPastPeriod = true;
+    const res = await apiFetch<PlanResponse>("/api/monthly-planning", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    if (!res.plan) {
+      throw new Error("Failed to create monthly plan draft.");
+    }
+    setPlanExists(true);
+    setPlan(res.plan);
+    return res.plan;
+  }
+
+  async function onStartPlanning(options?: { confirmPastPeriod?: boolean }) {
     const periodKey = normalizePeriodKey(period);
     if (!periodKey) {
       showError("Plan period must be in YYYY-MM format.");
       return;
     }
-    setCreating(true);
+    setStartingPlanning(true);
     try {
-      await apiFetch<PlanResponse>("/api/monthly-planning", {
-        method: "POST",
-        body: JSON.stringify({ period: periodKey }),
-      });
-      showSuccess(`Monthly plan created for ${periodKey}.`);
+      await ensurePlanDraft(options);
+      setRows([]);
+      setRemovedIds([]);
+      showSuccess(`Draft started for ${periodKey}. Add FG lines or apply suggestions, then save.`);
       await loadPlan(periodKey);
     } catch (e) {
       if (e instanceof ApiRequestError && e.code === "DUPLICATE_PERIOD") {
-        showError(`A plan already exists for ${periodKey}. Loading it now.`);
         await loadPlan(periodKey);
         return;
       }
-      showError(e instanceof ApiRequestError ? e.message : "Failed to create plan.");
+      showError(e instanceof ApiRequestError ? e.message : "Failed to start planning.");
     } finally {
-      setCreating(false);
+      setStartingPlanning(false);
+    }
+  }
+
+  async function onAddSuggestedItemsToPlan(options?: { confirmPastPeriod?: boolean }) {
+    const periodKey = normalizePeriodKey(period);
+    if (!periodKey) {
+      showError("Plan period must be in YYYY-MM format.");
+      return;
+    }
+    setAddingSuggested(true);
+    try {
+      const ctx = await ensurePlanningContext();
+      const composition = ctx.composition;
+      const suggestedItems = (composition?.items ?? []).filter((item) => item.suggestedProduction > 0);
+      if (suggestedItems.length === 0) {
+        showError("No suggested production items for this period. Load Requirement Composition first.");
+        return;
+      }
+      const createdPlan = await ensurePlanDraft(options);
+      const upserts = suggestedItems.map((item) => ({
+        fgItemId: item.itemId,
+        plannedFgQty: round3(item.suggestedProduction),
+        plannedQtyOverridden: false,
+        source: "REQUIREMENT_SHEET" as const,
+        remarks: "From suggested production (RS + carry forward + green shortage)",
+      }));
+      const lineBody: { upserts: typeof upserts; deletes: []; confirmPastPeriod?: true } = {
+        upserts,
+        deletes: [],
+      };
+      if (options?.confirmPastPeriod) lineBody.confirmPastPeriod = true;
+      await apiFetch<ProductionLinesResponse>(`/api/monthly-planning/${createdPlan.id}/production-lines`, {
+        method: "PUT",
+        body: JSON.stringify(lineBody),
+      });
+      showSuccess(`Added ${suggestedItems.length} suggested FG item(s) to the draft plan.`);
+      await loadPlan(periodKey);
+    } catch (e) {
+      if (e instanceof ApiRequestError && e.code === "DUPLICATE_PERIOD") {
+        await loadPlan(periodKey);
+        return;
+      }
+      showError(e instanceof ApiRequestError ? e.message : "Failed to add suggested items.");
+    } finally {
+      setAddingSuggested(false);
     }
   }
 
@@ -868,8 +966,18 @@ export function MonthlyPlanningWorkspacePage() {
   }
 
   async function applyRsSuggestion(item: RsSuggestionItem) {
-    if (!editable) {
-      showError("Plan is locked — RS suggestions are read-only.");
+    if (isLocked || !canMutatePeriod) {
+      showError(
+        isLocked
+          ? "Plan is locked — RS suggestions are read-only."
+          : "Past periods are view-only for Store users.",
+      );
+      return;
+    }
+    try {
+      await ensurePlanDraft();
+    } catch (e) {
+      showError(e instanceof ApiRequestError ? e.message : "Failed to create plan draft.");
       return;
     }
     let composition: RequirementCompositionResponse | null = requirementComposition;
@@ -917,6 +1025,16 @@ export function MonthlyPlanningWorkspacePage() {
   async function addRow() {
     const id = Number(addItemId);
     if (!Number.isFinite(id) || id <= 0) return;
+    if (isLocked || !canMutatePeriod) {
+      showError(isLocked ? "Plan is locked." : "Past periods are view-only for Store users.");
+      return;
+    }
+    try {
+      await ensurePlanDraft();
+    } catch (e) {
+      showError(e instanceof ApiRequestError ? e.message : "Failed to create plan draft.");
+      return;
+    }
     if (rows.some((r) => r.fgItemId === id)) {
       showError("That FG item is already in the plan.");
       return;
@@ -948,10 +1066,11 @@ export function MonthlyPlanningWorkspacePage() {
     setAddItemId("");
   }
 
-  async function onSave() {
-    if (!plan) return;
+  async function onSave(options?: { confirmPastPeriod?: boolean }) {
+    if (isLocked || !canMutatePeriod) return;
     setSaving(true);
     try {
+      const activePlan = await ensurePlanDraft(options);
       const upserts = rows.map((r) => ({
         fgItemId: r.fgItemId,
         plannedFgQty: num(r.plannedFgQty),
@@ -959,9 +1078,15 @@ export function MonthlyPlanningWorkspacePage() {
         source: r.source === "CUSTOMER_SCHEDULE" ? "MANUAL" : r.source,
         remarks: r.remarks?.trim() ? r.remarks.trim() : null,
       }));
-      await apiFetch<ProductionLinesResponse>(`/api/monthly-planning/${plan.id}/production-lines`, {
+      const body: {
+        upserts: typeof upserts;
+        deletes: number[];
+        confirmPastPeriod?: true;
+      } = { upserts, deletes: removedIds };
+      if (options?.confirmPastPeriod) body.confirmPastPeriod = true;
+      await apiFetch<ProductionLinesResponse>(`/api/monthly-planning/${activePlan.id}/production-lines`, {
         method: "PUT",
-        body: JSON.stringify({ upserts, deletes: removedIds }),
+        body: JSON.stringify(body),
       });
       showSuccess("Production plan saved.");
       await loadPlan(period);
@@ -972,12 +1097,14 @@ export function MonthlyPlanningWorkspacePage() {
     }
   }
 
-  async function onConfirmLock() {
-    if (!plan) return;
+  async function onConfirmLock(options?: { confirmPastPeriod?: boolean }) {
     setLocking(true);
     try {
-      const rm = await apiFetch<RmPlanningResponse>(`/api/monthly-planning/${plan.id}/lock`, {
+      const activePlan = await ensurePlanDraft(options);
+      const lockBody = options?.confirmPastPeriod ? { confirmPastPeriod: true as const } : {};
+      const rm = await apiFetch<RmPlanningResponse>(`/api/monthly-planning/${activePlan.id}/lock`, {
         method: "POST",
+        body: JSON.stringify(lockBody),
       });
       setRmPlanning(rm);
       showSuccess("Plan locked. RM Planning snapshot generated.");
@@ -991,13 +1118,32 @@ export function MonthlyPlanningWorkspacePage() {
     }
   }
 
-  async function onReopen() {
+  async function onCancelReopen(options?: { confirmPastPeriod?: boolean }) {
+    if (!plan) return;
+    setCancellingReopen(true);
+    try {
+      const body = options?.confirmPastPeriod ? { confirmPastPeriod: true as const } : {};
+      await apiFetch<{ status: string; currentRevision: number }>(
+        `/api/monthly-planning/${plan.id}/cancel-reopen`,
+        { method: "POST", body: JSON.stringify(body) },
+      );
+      showSuccess(`Draft discarded. Plan restored to LOCKED revision ${plan.currentRevision}.`);
+      await loadPlan(period);
+    } catch (e) {
+      showError(e instanceof ApiRequestError ? e.message : "Failed to cancel reopen.");
+    } finally {
+      setCancellingReopen(false);
+    }
+  }
+
+  async function onReopen(options?: { confirmPastPeriod?: boolean }) {
     if (!plan) return;
     setReopening(true);
     try {
+      const body = options?.confirmPastPeriod ? { confirmPastPeriod: true as const } : {};
       const res = await apiFetch<{ draftForRevision: number; currentRevision: number }>(
         `/api/monthly-planning/${plan.id}/reopen`,
-        { method: "POST" },
+        { method: "POST", body: JSON.stringify(body) },
       );
       showSuccess(
         `Plan reopened — editing draft for revision ${res.draftForRevision}. Revision ${res.currentRevision} remains in history.`,
@@ -1128,7 +1274,7 @@ export function MonthlyPlanningWorkspacePage() {
                 ) : null}
               </>
             ) : (
-              <span className="text-[13px] text-slate-500">No plan for this period yet.</span>
+              <span className="text-[13px] text-slate-500">No production plan created yet.</span>
             )}
           </div>
 
@@ -1145,7 +1291,17 @@ export function MonthlyPlanningWorkspacePage() {
               Refresh
             </Button>
             {planExists && editable ? (
-              <Button type="button" size="sm" onClick={() => void onSave()} disabled={saving} className="h-9">
+              <Button
+                type="button"
+                size="sm"
+                onClick={() =>
+                  runWithPastPeriodGuard(() =>
+                    onSave(periodIsPast && isAdmin ? { confirmPastPeriod: true } : undefined),
+                  )
+                }
+                disabled={saving}
+                className="h-9"
+              >
                 <Save className="mr-1.5 h-4 w-4" />
                 {saving ? "Saving…" : "Save changes"}
               </Button>
@@ -1155,7 +1311,7 @@ export function MonthlyPlanningWorkspacePage() {
                 type="button"
                 size="sm"
                 variant="default"
-                onClick={() => setConfirmLockOpen(true)}
+                onClick={() => runWithPastPeriodGuard(() => Promise.resolve(setConfirmLockOpen(true)))}
                 disabled={!canLock || saving}
                 title={canLock ? "Lock plan and generate RM Planning" : "Add a planned qty > 0 to lock"}
                 className="h-9 bg-amber-700 hover:bg-amber-800"
@@ -1164,12 +1320,16 @@ export function MonthlyPlanningWorkspacePage() {
                 Lock plan
               </Button>
             ) : null}
-            {planExists && isLocked && canWriteMonthlyPlan ? (
+            {planExists && isLocked && canMutatePeriod ? (
               <Button
                 type="button"
                 size="sm"
                 variant="outline"
-                onClick={() => void onReopen()}
+                onClick={() =>
+                  runWithPastPeriodGuard(() =>
+                    onReopen(periodIsPast && isAdmin ? { confirmPastPeriod: true } : undefined),
+                  )
+                }
                 disabled={reopening || loading}
                 className="h-9 border-amber-300 text-amber-900 hover:bg-amber-50"
               >
@@ -1177,9 +1337,35 @@ export function MonthlyPlanningWorkspacePage() {
                 {reopening ? "Reopening…" : "Reopen plan"}
               </Button>
             ) : null}
+            {canCancelReopen && canMutatePeriod ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() =>
+                  runWithPastPeriodGuard(() =>
+                    onCancelReopen(periodIsPast && isAdmin ? { confirmPastPeriod: true } : undefined),
+                  )
+                }
+                disabled={cancellingReopen || loading || saving}
+                className="h-9 border-slate-300 text-slate-800 hover:bg-slate-50"
+              >
+                <X className="mr-1.5 h-4 w-4" />
+                {cancellingReopen ? "Cancelling…" : "Cancel reopen"}
+              </Button>
+            ) : null}
           </div>
         </div>
       </div>
+
+      {periodIsPast ? (
+        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-900">
+          <strong>Past period ({period}).</strong>{" "}
+          {canMutatePeriod
+            ? "Creating or editing requires admin confirmation."
+            : "View-only for Store — existing plans and composition panels can be reviewed, but new plans and edits are not allowed."}
+        </div>
+      ) : null}
 
       {isDraftForNextRevision && plan ? (
         <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-[12px] text-blue-900">
@@ -1270,7 +1456,24 @@ export function MonthlyPlanningWorkspacePage() {
         ) : activeTab === "rm" ? (
           <RmPlanningTab data={rmPlanning} loading={loadingRm} onRefresh={() => void refreshRm()} />
         ) : !planExists ? (
-          <EmptyState onCreate={() => void onCreate()} creating={creating} period={period} loading={loading} />
+          <NoPlanPreviewPanel
+            period={period}
+            loading={loading}
+            canStartPlanning={canMutatePeriod}
+            periodIsPast={periodIsPast}
+            startingPlanning={startingPlanning}
+            addingSuggested={addingSuggested}
+            onStartPlanning={() =>
+              runWithPastPeriodGuard(() =>
+                onStartPlanning(periodIsPast && isAdmin ? { confirmPastPeriod: true } : undefined),
+              )
+            }
+            onAddSuggestedItems={() =>
+              runWithPastPeriodGuard(() =>
+                onAddSuggestedItemsToPlan(periodIsPast && isAdmin ? { confirmPastPeriod: true } : undefined),
+              )
+            }
+          />
         ) : (
           <ProductionPlanTab
             rows={rows}
@@ -1302,7 +1505,35 @@ export function MonthlyPlanningWorkspacePage() {
           period={period}
           locking={locking}
           onCancel={() => setConfirmLockOpen(false)}
-          onConfirm={() => void onConfirmLock()}
+          onConfirm={() => void onConfirmLock(periodIsPast && isAdmin ? { confirmPastPeriod: true } : undefined)}
+        />
+      ) : null}
+
+      {pastPeriodConfirmOpen ? (
+        <PastPeriodConfirmModal
+          period={period}
+          confirming={confirmingPastPeriod}
+          onCancel={() => {
+            setPastPeriodConfirmOpen(false);
+            pastPeriodActionRef.current = null;
+          }}
+          onConfirm={() => {
+            const action = pastPeriodActionRef.current;
+            if (!action) {
+              setPastPeriodConfirmOpen(false);
+              return;
+            }
+            setConfirmingPastPeriod(true);
+            void action()
+              .catch((e) => {
+                showError(e instanceof ApiRequestError ? e.message : "Action failed.");
+              })
+              .finally(() => {
+                setConfirmingPastPeriod(false);
+                setPastPeriodConfirmOpen(false);
+                pastPeriodActionRef.current = null;
+              });
+          }}
         />
       ) : null}
 
@@ -2487,27 +2718,106 @@ function RmRequirementCompositionSection({
   );
 }
 
-function EmptyState({
-  onCreate,
-  creating,
+function PastPeriodConfirmModal({
   period,
-  loading,
+  confirming,
+  onCancel,
+  onConfirm,
 }: {
-  onCreate: () => void;
-  creating: boolean;
   period: string;
-  loading: boolean;
+  confirming: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
 }) {
   return (
-    <div className="flex h-full min-h-[220px] flex-col items-center justify-center rounded-lg border border-slate-200 bg-white p-8 text-center shadow-sm">
-      <CalendarRange className="h-8 w-8 text-slate-400" />
-      <p className="mt-3 text-sm font-medium text-slate-700">
-        Create or select a monthly plan to start production planning.
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4">
+      <div className="w-full max-w-md rounded-lg border border-slate-200 bg-white p-5 shadow-xl">
+        <div className="flex items-start justify-between">
+          <div className="flex items-center gap-2">
+            <span className="flex h-9 w-9 items-center justify-center rounded-full bg-amber-100 text-amber-700">
+              <Lock className="h-4 w-4" />
+            </span>
+            <h3 className="text-base font-semibold text-slate-900">Confirm backdated planning</h3>
+          </div>
+          <button type="button" onClick={onCancel} className="text-slate-400 hover:text-slate-700">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+        <p className="mt-4 text-[13px] leading-relaxed text-slate-600">
+          <strong>{period}</strong> is a past period. Admin confirmation is required before creating or changing a
+          Monthly Production Plan for this month.
+        </p>
+        <div className="mt-5 flex justify-end gap-2">
+          <Button type="button" variant="outline" onClick={onCancel} disabled={confirming}>
+            Cancel
+          </Button>
+          <Button type="button" onClick={onConfirm} disabled={confirming} className="bg-amber-700 hover:bg-amber-800">
+            {confirming ? "Confirming…" : "Confirm backdated action"}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function NoPlanPreviewPanel({
+  period,
+  loading,
+  canStartPlanning,
+  periodIsPast,
+  startingPlanning,
+  addingSuggested,
+  onStartPlanning,
+  onAddSuggestedItems,
+}: {
+  period: string;
+  loading: boolean;
+  canStartPlanning: boolean;
+  periodIsPast: boolean;
+  startingPlanning: boolean;
+  addingSuggested: boolean;
+  onStartPlanning: () => void;
+  onAddSuggestedItems: () => void;
+}) {
+  return (
+    <div className="flex h-full min-h-[220px] flex-col items-center justify-center rounded-lg border border-dashed border-slate-200 bg-slate-50/60 p-8 text-center shadow-sm">
+      <Eye className="h-8 w-8 text-slate-400" />
+      <p className="mt-3 max-w-lg text-sm font-medium text-slate-800">
+        No production plan created yet for <strong>{period}</strong>.
       </p>
-      <Button type="button" className="mt-4" onClick={onCreate} disabled={creating || loading}>
-        <Plus className="mr-1.5 h-4 w-4" />
-        {creating ? "Creating…" : `Create monthly plan for ${period}`}
-      </Button>
+      <p className="mt-2 max-w-lg text-[13px] leading-relaxed text-slate-600">
+        Review Requirement Composition, Green Level, and RM Composition above. Start planning only when you are ready
+        to create a draft — opening this month does not create a database record.
+      </p>
+      {canStartPlanning ? (
+        <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
+          <Button
+            type="button"
+            onClick={onStartPlanning}
+            disabled={startingPlanning || addingSuggested || loading}
+            className="h-9"
+          >
+            <Plus className="mr-1.5 h-4 w-4" />
+            {startingPlanning ? "Starting…" : "Start planning"}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={onAddSuggestedItems}
+            disabled={startingPlanning || addingSuggested || loading}
+            className="h-9"
+          >
+            <Layers className="mr-1.5 h-4 w-4" />
+            {addingSuggested ? "Adding…" : "Add suggested items to plan"}
+          </Button>
+        </div>
+      ) : periodIsPast ? (
+        <p className="mt-4 text-[12px] text-slate-500">
+          Past periods are view-only for Store. Admin can create backdated plans with confirmation.
+        </p>
+      ) : (
+        <p className="mt-4 text-[12px] text-slate-500">Store or Admin can start planning for this period.</p>
+      )}
     </div>
   );
 }

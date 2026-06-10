@@ -22,6 +22,7 @@ const {
   updateProductionLines,
   lockMonthlyPlan,
   reopenMonthlyPlan,
+  cancelReopenMonthlyPlan,
   getPlanRevisions,
   getRmPlanning,
   getPurchasePlanning,
@@ -53,6 +54,11 @@ function actorUserId(req) {
   return Number.isFinite(id) && id > 0 ? id : null;
 }
 
+function actorRole(req) {
+  const role = String(req.user?.role ?? "").trim().toUpperCase();
+  return role || null;
+}
+
 function handleServiceError(e, res, next) {
   if (e instanceof MonthlyPlanningError) {
     return res.status(e.httpStatus || 400).json({ error: { code: e.code, message: e.message } });
@@ -63,6 +69,11 @@ function handleServiceError(e, res, next) {
 const createBodySchema = z.object({
   period: z.string(),
   remarks: z.string().trim().max(2000).optional(),
+  confirmPastPeriod: z.literal(true).optional(),
+});
+
+const pastPeriodConfirmBodySchema = z.object({
+  confirmPastPeriod: z.literal(true).optional(),
 });
 
 monthlyPlanningRouter.get(
@@ -181,6 +192,8 @@ monthlyPlanningRouter.post(
         period: parsed.data.period,
         remarks: parsed.data.remarks ?? null,
         actorUserId: actorUserId(req),
+        actorRole: actorRole(req),
+        confirmPastPeriod: parsed.data.confirmPastPeriod === true,
       });
       return res.status(201).json(data);
     } catch (e) {
@@ -200,6 +213,7 @@ const upsertLineSchema = z.object({
 const updateLinesSchema = z.object({
   upserts: z.array(upsertLineSchema).optional(),
   deletes: z.array(z.coerce.number().int().positive()).optional(),
+  confirmPastPeriod: z.literal(true).optional(),
 });
 
 monthlyPlanningRouter.get(
@@ -233,6 +247,8 @@ monthlyPlanningRouter.put(
         upserts: parsed.data.upserts ?? [],
         deletes: parsed.data.deletes ?? [],
         actorUserId: actorUserId(req),
+        actorRole: actorRole(req),
+        confirmPastPeriod: parsed.data.confirmPastPeriod === true,
       });
       return res.json(data);
     } catch (e) {
@@ -247,7 +263,16 @@ monthlyPlanningRouter.post(
   requireRole(MONTHLY_PLANNING_WRITE_ROLES),
   async (req, res, next) => {
     try {
-      const data = await lockMonthlyPlan({ planId: req.params.id, actorUserId: actorUserId(req) });
+      const parsed = pastPeriodConfirmBodySchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return res.status(422).json({ error: { code: "INVALID_BODY", message: "Invalid lock request body." } });
+      }
+      const data = await lockMonthlyPlan({
+        planId: req.params.id,
+        actorUserId: actorUserId(req),
+        actorRole: actorRole(req),
+        confirmPastPeriod: parsed.data.confirmPastPeriod === true,
+      });
       return res.json(data);
     } catch (e) {
       return handleServiceError(e, res, next);
@@ -261,7 +286,41 @@ monthlyPlanningRouter.post(
   requireRole(MONTHLY_PLANNING_WRITE_ROLES),
   async (req, res, next) => {
     try {
-      const data = await reopenMonthlyPlan({ planId: req.params.id, actorUserId: actorUserId(req) });
+      const parsed = pastPeriodConfirmBodySchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return res.status(422).json({ error: { code: "INVALID_BODY", message: "Invalid reopen request body." } });
+      }
+      const data = await reopenMonthlyPlan({
+        planId: req.params.id,
+        actorUserId: actorUserId(req),
+        actorRole: actorRole(req),
+        confirmPastPeriod: parsed.data.confirmPastPeriod === true,
+      });
+      return res.json(data);
+    } catch (e) {
+      return handleServiceError(e, res, next);
+    }
+  },
+);
+
+monthlyPlanningRouter.post(
+  "/:id/cancel-reopen",
+  requireAuth,
+  requireRole(MONTHLY_PLANNING_WRITE_ROLES),
+  async (req, res, next) => {
+    try {
+      const parsed = pastPeriodConfirmBodySchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return res
+          .status(422)
+          .json({ error: { code: "INVALID_BODY", message: "Invalid cancel-reopen request body." } });
+      }
+      const data = await cancelReopenMonthlyPlan({
+        planId: req.params.id,
+        actorUserId: actorUserId(req),
+        actorRole: actorRole(req),
+        confirmPastPeriod: parsed.data.confirmPastPeriod === true,
+      });
       return res.json(data);
     } catch (e) {
       return handleServiceError(e, res, next);

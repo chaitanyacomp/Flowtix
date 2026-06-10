@@ -50,6 +50,7 @@ const { materialAvailabilityRouter } = require("./routes/materialAvailability");
 const { procurementPlanningRouter } = require("./routes/procurementPlanning");
 const { rmStockPlanningRouter } = require("./routes/rmStockPlanning");
 const { monthlyPlanningRouter } = require("./routes/monthlyPlanning");
+const { procurementTraceRouter } = require("./routes/procurementTrace");
 const { isMonthlyPlanningEnabled, isPlanningDrivenProcurementEnabled } = require("./config/featureFlags");
 
 /**
@@ -126,6 +127,7 @@ function createApp() {
   app.use("/api/material-availability", materialAvailabilityRouter);
   app.use("/api/material-planning", materialPlanningRouter);
   app.use("/api/procurement-planning", procurementPlanningRouter);
+  app.use("/api/procurement-trace", procurementTraceRouter);
   app.use("/api/rm-stock-planning", rmStockPlanningRouter);
   // Monthly Planning Workspace (Phase 1 foundation) — gated behind FEATURE_MONTHLY_PLANNING (default OFF).
   app.use("/api/monthly-planning", monthlyPlanningRouter);

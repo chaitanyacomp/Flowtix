@@ -71,6 +71,7 @@ import { OperationsExceptionReportPage } from "./pages/OperationsExceptionReport
 import { SoDispatchTraceReportPage } from "./pages/SoDispatchTraceReportPage";
 import { StockReconciliationReportPage } from "./pages/StockReconciliationReportPage";
 import { PurchaseMatchingReportPage } from "./pages/PurchaseMatchingReportPage";
+import { RmProcurementConnectivityReportPage } from "./pages/RmProcurementConnectivityReportPage";
 import { SalesMatchingReportPage } from "./pages/SalesMatchingReportPage";
 import { CustomerSoRsReportPage } from "./pages/CustomerSoRsReportPage";
 import { BatchTraceabilityReportPage } from "./pages/BatchTraceabilityReportPage";
@@ -107,6 +108,7 @@ import {
   STOCK_READ_ROLES,
   MONTHLY_PLANNING_READ_ROLES,
   RM_CONTROL_CENTER_ROLES,
+  RM_PO_READ_ROLES,
   STOCK_WRITE_ROLES,
 } from "./config/erpRoles";
 import { DatabaseCleanupPage } from "./pages/DatabaseCleanupPage";
@@ -870,6 +872,14 @@ export default function App() {
           element={
             <ProtectedRoute allowedRoles={[...PURCHASE_BILL_READ_ROLES]}>
               <PurchaseMatchingReportPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/reports/rm-procurement-connectivity"
+          element={
+            <ProtectedRoute allowedRoles={[...RM_PO_READ_ROLES]}>
+              <RmProcurementConnectivityReportPage />
             </ProtectedRoute>
           }
         />

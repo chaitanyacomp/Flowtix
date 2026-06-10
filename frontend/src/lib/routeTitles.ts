@@ -43,6 +43,7 @@ const TITLES: Record<string, string> = {
   "/reports": "Analysis",
   "/reports/stock-reconciliation": "Stock reconciliation",
   "/reports/purchase-matching": "Purchase matching",
+  "/reports/rm-procurement-connectivity": "RM Procurement Connectivity",
   "/reports/sales-matching": "Sales matching",
   "/reports/customer-so-rs": "Customer-wise SO & RS Report",
   "/reports/batch-traceability": "Batch traceability",

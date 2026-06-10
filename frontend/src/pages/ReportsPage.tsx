@@ -289,6 +289,15 @@ const TILES: ReportTile[] = [
     priority: 10,
   },
   {
+    to: "/reports/rm-procurement-connectivity",
+    title: "RM Procurement Connectivity",
+    description: "Line-wise trace from demand source through MR, PR, PO, GRN, stock inward, and purchase bill",
+    roles: ["ADMIN", "PURCHASE", "STORE"],
+    group: "purchase",
+    icon: <Network className="h-4 w-4" />,
+    priority: 15,
+  },
+  {
     to: withReportsReturnContext("/purchase-bills"),
     title: "Purchase Bills",
     description: "Search and review purchase bills",

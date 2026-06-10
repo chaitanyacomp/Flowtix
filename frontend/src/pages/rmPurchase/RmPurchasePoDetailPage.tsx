@@ -25,21 +25,19 @@ import {
   type GrnLineDraft,
   type GrnReceivingContext,
   type GrnReceivingLocation,
-  grnStatusDotClass,
-  grnStatusLabel,
   hasActiveGrnRecord,
   type Item,
   lineItemLocked,
   type PoLineDraft,
   poOrderedReceivedPending,
   poResponseLineToDraft,
-  poStatusLabel,
   receivedForLine,
   type RmPoRow,
   type Supplier,
   type SupplierLocationOption,
 } from "./rmPurchaseShared";
-import { RmPoCommercialSummary } from "../../components/purchase/RmPoCommercialSummary";
+import { RmPoDocumentView } from "../../components/rmPurchase/RmPoDocumentView";
+import type { RmPoTracePayload } from "../../lib/rmPoDocumentTrace";
 import { NO_QTY_TERMS } from "../../lib/flowTerminology";
 import {
   buildRmPoDetailHref,
@@ -134,8 +132,8 @@ export function RmPurchasePoDetailPage() {
   const [savingPo, setSavingPo] = React.useState(false);
 
   const [reversingGrnId, setReversingGrnId] = React.useState(0);
-  const [commercialDetailsOpen, setCommercialDetailsOpen] = React.useState(false);
-  const [traceabilityOpen, setTraceabilityOpen] = React.useState(false);
+  const [poTrace, setPoTrace] = React.useState<RmPoTracePayload | null>(null);
+  const [poTraceError, setPoTraceError] = React.useState<string | null>(null);
 
   const [flowSoOrderType, setFlowSoOrderType] = React.useState<string | null>(null);
 
@@ -184,14 +182,24 @@ export function RmPurchasePoDetailPage() {
       if (!silent) setLoading(true);
       setError(null);
       try {
-        const [p, s, i] = await Promise.all([
+        const [p, s, i, traceResult] = await Promise.all([
           apiFetch<RmPoRow>(`/api/purchase/rm-pos/${poId}`),
           apiFetch<Supplier[]>("/api/suppliers"),
           apiFetch<Item[]>("/api/items?type=RM"),
+          apiFetch<RmPoTracePayload>(`/api/procurement-trace/rm-po/${poId}`).catch((err: unknown) => ({
+            error: err instanceof Error ? err.message : "Failed to load trace",
+          })),
         ]);
         setPo(p);
         setSuppliers(s);
         setItems(i);
+        if (traceResult && "error" in traceResult) {
+          setPoTrace(null);
+          setPoTraceError(String(traceResult.error));
+        } else {
+          setPoTrace(traceResult as RmPoTracePayload);
+          setPoTraceError(null);
+        }
         return p;
       } catch (e) {
         setPo(null);
@@ -358,68 +366,6 @@ export function RmPurchasePoDetailPage() {
       : billingTotals.pendingBilling > 1e-9
         ? "In Progress"
         : "Completed";
-
-  const procurementTraceabilityRows = React.useMemo(() => {
-    if (!po) return [];
-    return po.lines
-      .map((ln) => {
-        const links = (
-          ln as {
-            procurementLinks?: {
-              allocatedQty: string | number;
-              purchaseRequestLine?: {
-                purchaseRequest?: { docNo?: string | null };
-                sourceLinks?: {
-                  allocatedQty: string | number;
-                  materialRequirementLine?: {
-                    materialRequirement?: {
-                      docNo?: string | null;
-                      quotation?: { quotationNo?: string | null };
-                      salesOrder?: { docNo?: string | null };
-                    };
-                  };
-                }[];
-              };
-              materialRequirementLine?: {
-                materialRequirement?: {
-                  docNo?: string | null;
-                  quotation?: { quotationNo?: string | null };
-                  salesOrder?: { docNo?: string | null };
-                };
-              };
-            }[];
-          }
-        ).procurementLinks;
-        if (!links?.length) return null;
-        const summary = links
-          .map((lk) => {
-            const pr = lk.purchaseRequestLine?.purchaseRequest?.docNo;
-            if (pr) {
-              const sources = (lk.purchaseRequestLine?.sourceLinks ?? [])
-                .map((sl) => {
-                  const mr = sl.materialRequirementLine?.materialRequirement;
-                  const ref =
-                    mr?.salesOrder?.docNo ?? mr?.quotation?.quotationNo ?? mr?.docNo ?? "MR";
-                  return `${ref} ${sl.allocatedQty}`;
-                })
-                .join(", ");
-              return `${pr} → ${lk.allocatedQty}${sources ? ` (${sources})` : ""}`;
-            }
-            const mr = lk.materialRequirementLine?.materialRequirement;
-            const ref = mr?.salesOrder?.docNo ?? mr?.quotation?.quotationNo ?? mr?.docNo ?? "requirement";
-            return `${ref} → ${lk.allocatedQty}`;
-          })
-          .join("; ");
-        return {
-          lineId: ln.id,
-          itemName: ln.item?.itemName ?? `Item #${ln.itemId}`,
-          summary,
-        };
-      })
-      .filter((row): row is NonNullable<typeof row> => row != null);
-  }, [po]);
-
-  const hasProcurementTraceability = procurementTraceabilityRows.length > 0;
 
   async function onSavePoEdit() {
     if (!po) return;
@@ -1033,53 +979,7 @@ export function RmPurchasePoDetailPage() {
 
       {!loading && po ? (
         <>
-          {/* Section 1 — Transaction header */}
-          <div className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 shadow-sm ring-1 ring-slate-100/70">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
-                <h1 className="text-base font-bold tracking-tight text-slate-950">{formatRmPoNo(po.id)}</h1>
-                <span className="text-slate-400">·</span>
-                <span className="text-sm font-semibold text-slate-800">{po.supplier.name}</span>
-                {po.remarks ? (
-                  <span className="text-[12px] text-slate-500" title={po.remarks}>
-                    ({po.remarks.length > 40 ? `${po.remarks.slice(0, 40)}…` : po.remarks})
-                  </span>
-                ) : null}
-              </div>
-              <div className="flex shrink-0 flex-wrap gap-1.5">
-                {canEditPo ? (
-                  <Button type="button" variant="outline" size="sm" className="h-7 px-2.5 text-[11px]" onClick={openEditModal}>
-                    Edit order
-                  </Button>
-                ) : null}
-                {showCancel ? (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-7 px-2.5 text-[11px]"
-                    onClick={() => void onCancelPo()}
-                    title="Closes this PO. Stock will not change unless you reverse a GRN."
-                  >
-                    Cancel order
-                  </Button>
-                ) : null}
-              </div>
-            </div>
-            <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[12px] text-slate-700">
-              <span>
-                <span className="font-semibold text-slate-600">Order:</span> {poStatusLabel(po.status)}
-              </span>
-              <span>
-                <span className="font-semibold text-slate-600">Stock:</span> {stockStatusLabel}
-              </span>
-              <span>
-                <span className="font-semibold text-slate-600">Billing:</span> {billingStatusLabel}
-              </span>
-            </div>
-          </div>
-
-          {/* Section 2 — Primary action bar (one workflow state = one banner) */}
+          {/* Workflow next-step strip (unchanged business logic) */}
           {rmPoNextActionStrip ? (
             <div
               {...(rmPoNextActionStrip.flowWorkOrderAttr && flowWorkOrderIdQ
@@ -1113,170 +1013,25 @@ export function RmPurchasePoDetailPage() {
             </div>
           ) : null}
 
-          {/* Section 3 — Procurement KPI summary */}
-          <div className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 shadow-sm ring-1 ring-slate-100/70">
-            <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 sm:grid-cols-4">
-              <div>
-                <div className="text-[12px] font-semibold text-slate-600">Ordered</div>
-                <div className="text-[15px] font-extrabold tabular-nums leading-tight text-slate-950">
-                  {receiveInfo ? receiveInfo.ordered.toFixed(3) : "—"}
-                </div>
-              </div>
-              <div>
-                <div className="text-[12px] font-semibold text-slate-600">Received</div>
-                <div className="text-[15px] font-extrabold tabular-nums leading-tight text-slate-950">
-                  {receiveInfo ? receiveInfo.received.toFixed(3) : "—"}
-                </div>
-              </div>
-              <div>
-                <div className="text-[12px] font-semibold text-slate-600">Pending</div>
-                <div className="text-[15px] font-extrabold tabular-nums leading-tight text-slate-950">
-                  {receiveInfo ? receiveInfo.pending.toFixed(3) : "—"}
-                </div>
-              </div>
-              <div>
-                <div className="text-[12px] font-semibold text-slate-600">Billing pending</div>
-                <div className="text-[15px] font-extrabold tabular-nums leading-tight text-slate-950">
-                  {billingTotals.pendingBilling.toFixed(3)}
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Section 4 — RM line items */}
-          <Card className="overflow-hidden border-slate-200/90 shadow-sm ring-1 ring-slate-100/70">
-            <CardHeader className="border-b border-slate-100 px-2.5 py-1.5">
-              <CardTitle className="text-[11px] font-bold uppercase tracking-wider text-slate-700">RM line items</CardTitle>
-            </CardHeader>
-            <CardContent className="p-0">
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[720px] border-collapse text-[12px]">
-                  <thead>
-                    <tr className="border-b border-slate-200 bg-slate-50/95 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-600">
-                      <th className="px-2 py-1.5">RM</th>
-                      <th className="px-2 py-1.5 text-right">Ordered</th>
-                      <th className="px-2 py-1.5 text-right">Received</th>
-                      <th className="px-2 py-1.5">Unit</th>
-                      <th className="px-2 py-1.5">HSN</th>
-                      <th className="px-2 py-1.5 text-right">GST %</th>
-                      <th className="px-2 py-1.5 text-right">Amount</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {po.lines.map((ln) => {
-                      const amt =
-                        ln.amount != null && String(ln.amount).trim() !== ""
-                          ? Number(ln.amount)
-                          : computeLineAmount(Number(ln.qty), Number(ln.rate ?? 0));
-                      return (
-                        <tr key={ln.id} className="bg-white">
-                          <td className="px-2 py-1.5 font-medium text-slate-900">{ln.item?.itemName ?? `Item #${ln.itemId}`}</td>
-                          <td className="px-2 py-1.5 text-right tabular-nums text-slate-800">{ln.qty}</td>
-                          <td className="px-2 py-1.5 text-right tabular-nums text-slate-800">{receivedForLine(po, ln.id)}</td>
-                          <td className="px-2 py-1.5 text-slate-800">{ln.unit || "—"}</td>
-                          <td className="px-2 py-1.5 font-mono text-[11px] text-slate-700">{ln.hsn || "—"}</td>
-                          <td className="px-2 py-1.5 text-right tabular-nums text-slate-800">
-                            {ln.gstRate != null && String(ln.gstRate).trim() !== "" ? ln.gstRate : "—"}
-                          </td>
-                          <td className="px-2 py-1.5 text-right tabular-nums text-slate-800">{Number.isFinite(amt) ? amt.toFixed(2) : "—"}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Section 5 — Commercial details (collapsed) */}
-          {po.resolvedSupplierCommercial ? (
-            <div className="rounded-lg border border-slate-200 bg-white shadow-sm ring-1 ring-slate-100/70">
-              <button
-                type="button"
-                className="flex w-full items-center justify-between px-2.5 py-1.5 text-left"
-                onClick={() => setCommercialDetailsOpen((open) => !open)}
-                aria-expanded={commercialDetailsOpen}
-              >
-                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-700">Commercial details</span>
-                <span className="text-[12px] font-semibold text-slate-600">
-                  {commercialDetailsOpen ? "Hide" : "Show Commercial Details"}
-                </span>
-              </button>
-              {commercialDetailsOpen ? (
-                <div className="border-t border-slate-100 px-2.5 py-2">
-                  <RmPoCommercialSummary commercial={po.resolvedSupplierCommercial} />
-                </div>
-              ) : null}
-            </div>
-          ) : null}
-
-          {/* Section 6 — Procurement traceability (collapsed) */}
-          {hasProcurementTraceability ? (
-            <div className="rounded-lg border border-slate-200 bg-white shadow-sm ring-1 ring-slate-100/70">
-              <button
-                type="button"
-                className="flex w-full items-center justify-between px-2.5 py-1.5 text-left"
-                onClick={() => setTraceabilityOpen((open) => !open)}
-                aria-expanded={traceabilityOpen}
-              >
-                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-700">Procurement traceability</span>
-                <span className="text-[12px] font-semibold text-slate-600">
-                  {traceabilityOpen ? "Hide" : "Show traceability"}
-                </span>
-              </button>
-              {traceabilityOpen ? (
-                <ul className="space-y-1 border-t border-slate-100 px-2.5 py-2 text-[12px] text-slate-800">
-                  {procurementTraceabilityRows.map((row) => (
-                    <li key={row.lineId}>
-                      <span className="font-semibold">{row.itemName}:</span> {row.summary}
-                    </li>
-                  ))}
-                </ul>
-              ) : null}
-            </div>
-          ) : null}
-
-          {/* Section 7 — GRN history */}
-          <Card className="mb-0 overflow-hidden border-slate-200/90 shadow-sm ring-1 ring-slate-100/70">
-            <CardHeader className="border-b border-slate-100 px-2.5 py-1">
-              <CardTitle className="text-[11px] font-bold uppercase tracking-wider text-slate-700">GRN history</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-1 px-2.5 py-1.5 pb-1">
-              {!po.grns.length ? (
-                <p className="text-[12px] leading-snug text-slate-600">No goods received yet. Use Create GRN when stock arrives.</p>
-              ) : (
-                <ul className="space-y-1">
-                  {po.grns.map((g) => (
-                    <li
-                      key={g.id}
-                      className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-slate-200/90 bg-white px-2.5 py-1.5 text-[12px]"
-                    >
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="font-semibold text-slate-900">GRN-{g.id}</span>
-                        <span className="inline-flex items-center gap-1.5 text-slate-700">
-                          <span className={`inline-block h-1.5 w-1.5 rounded-full ${grnStatusDotClass(g)}`} aria-hidden />
-                          <span className="font-medium">{grnStatusLabel(g)}</span>
-                        </span>
-                      </div>
-                      {isAdmin && !g.reversedAt ? (
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="outline"
-                          className="h-7 px-2.5 text-[11px]"
-                          disabled={reversingGrnId === g.id}
-                          onClick={() => void onReverseGrn(g.id)}
-                          title="Reverses the stock receipt and reduces received stock."
-                        >
-                          {reversingGrnId === g.id ? "Reversing…" : "Reverse GRN"}
-                        </Button>
-                      ) : null}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </CardContent>
-          </Card>
+          <RmPoDocumentView
+            po={po}
+            trace={poTrace}
+            traceError={poTraceError}
+            receiveInfo={receiveInfo}
+            billingTotals={billingTotals}
+            poPrimaryUnit={poPrimaryUnit}
+            stockStatusLabel={stockStatusLabel}
+            billingStatusLabel={billingStatusLabel}
+            canEditPo={Boolean(canEditPo)}
+            showCancel={Boolean(showCancel)}
+            grnAllowed={Boolean(grnAllowed)}
+            isAdmin={isAdmin}
+            reversingGrnId={reversingGrnId}
+            onEdit={openEditModal}
+            onCancel={() => void onCancelPo()}
+            onCreateGrn={() => setGrnModalOpen(true)}
+            onReverseGrn={(id) => void onReverseGrn(id)}
+          />
         </>
       ) : null}
 

@@ -45,9 +45,9 @@ export const PROCUREMENT_TERMS = {
   OPEN_GRN: "Open GRN",
   WAITING_FOR_PURCHASE: "Incoming supply timeline",
   SECTION_PENDING_MR: "Approved Store Requisitions",
-  SECTION_WO_PROCUREMENT_CASES: "WO procurement cases",
+  SECTION_WO_PROCUREMENT_CASES: "Procurement cases",
   SECTION_WO_PROCUREMENT_CASES_HELPER:
-    "Each row is a Store-approved work-order requisition case — WO, FG, and procurement stage come first.",
+    "Store-approved material requisitions from work orders, monthly plans, and other demand sources.",
   SECTION_PURCHASE_PLANNING: "Purchase Planning Pending",
   SECTION_RM_PO_PENDING: "RM PO Pending",
   SECTION_GRN_PENDING: "GRN Pending",

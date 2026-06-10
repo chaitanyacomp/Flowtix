@@ -329,6 +329,10 @@ function MrSourceBadge({ mr }: { mr: MrSummary }) {
 function mrWoPrimaryLabel(row: MrSummary): string {
   if (row.workOrderNo) return row.workOrderNo;
   if (row.workOrderId && row.workOrderId > 0) return `WO-${row.workOrderId}`;
+  if (row.sourceType === "MONTHLY_PLAN" || row.source?.type === "MONTHLY_PLAN") {
+    const period = formatPeriodKey(row.source?.periodKey);
+    return period ? `Monthly plan · ${period}` : "Monthly plan";
+  }
   if (row.sourceType === "STOCK_REPLENISHMENT") return "Stock replenishment";
   return "—";
 }
@@ -339,7 +343,11 @@ function mrBlockageContext(row: MrSummary): string {
   if (row.pendingGrnQty != null && row.pendingGrnQty > 0) {
     parts.push(WO_PROCUREMENT_CONTINUITY.WAITING_GRN_QTY(row.pendingGrnQty.toLocaleString(undefined, { maximumFractionDigits: 3 })));
   }
-  parts.push(`${row.shortageRmLineCount} RM line(s) short`);
+  if (row.sourceType === "MONTHLY_PLAN" || row.source?.type === "MONTHLY_PLAN") {
+    parts.push(`${row.shortageRmLineCount} RM line(s) with requirement`);
+  } else {
+    parts.push(`${row.shortageRmLineCount} RM line(s) short`);
+  }
   return parts.join(" · ");
 }
 
@@ -495,13 +503,13 @@ function PendingMaterialRequirementsTable({
 
             <th className="w-8" />
 
-            <th className="text-left">Work order</th>
+            <th className="text-left">Demand source</th>
 
             <th className="text-left">FG · customer</th>
 
             <th className="text-left">Procurement stage</th>
 
-            <th className="text-right">Short qty</th>
+            <th className="text-right">Procurement requirement</th>
 
             <th className="text-left text-slate-500">MR ref</th>
 
@@ -688,7 +696,7 @@ function PendingMaterialRequirementsTable({
 
                               <th className="text-right">Required qty</th>
 
-                              <th className="text-right">Shortage qty</th>
+                              <th className="text-right">Net requirement</th>
 
                               <th className="text-left">Planning status</th>
 
@@ -1150,7 +1158,7 @@ export function ProcurementPlanningPage() {
 
                     <th className="text-right">Required qty</th>
 
-                    <th className="text-right">Shortage qty</th>
+                    <th className="text-right">Net requirement</th>
 
                     <th className="text-left">Planning status</th>
 

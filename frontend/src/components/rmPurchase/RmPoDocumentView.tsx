@@ -1,10 +1,14 @@
 import * as React from "react";
 import { Link } from "react-router-dom";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronRight, Download, Eye, Printer } from "lucide-react";
 import { Button } from "../ui/button";
-import { RmPoCommercialSummary } from "../purchase/RmPoCommercialSummary";
-import { cn } from "../../lib/utils";
+import { RmPoSupplierDocument } from "./RmPoSupplierDocument";
 import { buildProcurementWorkspaceHref } from "../../lib/woProcurementContinuity";
+import type { RmPoCompanyProfile } from "../../lib/rmPoSupplierDocument";
+import {
+  exportRmPoPdfPlaceholder,
+  printRmPoSupplierSection,
+} from "../../lib/rmPoDocumentActions";
 import {
   demandSourceDisplay,
   formatPoDocumentDate,
@@ -15,12 +19,9 @@ import {
   type RmPoTracePayload,
 } from "../../lib/rmPoDocumentTrace";
 import {
-  computeLineAmount,
   formatRmPoNo,
   grnStatusDotClass,
   grnStatusLabel,
-  poStatusDotClass,
-  poStatusLabel,
   receivedForLine,
   type GrnRow,
   type RmPoRow,
@@ -34,6 +35,7 @@ type GrnExtended = GrnRow & {
 
 export type RmPoDocumentViewProps = {
   po: RmPoRow;
+  companyProfile: RmPoCompanyProfile | null;
   trace: RmPoTracePayload | null;
   traceError: string | null;
   receiveInfo: { ordered: number; received: number; pending: number } | null;
@@ -52,14 +54,28 @@ export type RmPoDocumentViewProps = {
   onReverseGrn: (grnId: number) => void;
 };
 
+function SectionHeading({ children }: { children: React.ReactNode }) {
+  return (
+    <h2 className="text-sm font-bold uppercase tracking-wide text-slate-800">{children}</h2>
+  );
+}
+
+function TraceBadge({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="inline-flex items-center rounded-md border border-slate-200 bg-white px-2.5 py-1 text-sm font-medium text-slate-800 shadow-sm">
+      {children}
+    </span>
+  );
+}
+
 function TraceChainInline({ chain }: { chain: string[] }) {
   if (!chain.length) return null;
   return (
-    <div className="mt-1 flex flex-wrap items-center gap-1 text-[11px] text-slate-600">
+    <div className="mt-2 flex flex-wrap items-center gap-1.5">
       {chain.map((step, i) => (
         <React.Fragment key={`${step}-${i}`}>
-          {i > 0 ? <span className="text-slate-400">→</span> : null}
-          <span className="rounded bg-slate-100 px-1.5 py-0.5 font-medium text-slate-700">{step}</span>
+          {i > 0 ? <span className="text-base text-slate-400">→</span> : null}
+          <TraceBadge>{step}</TraceBadge>
         </React.Fragment>
       ))}
     </div>
@@ -79,11 +95,11 @@ function LineSourceTrace({
   const sources = traceLine?.demandSources ?? [];
 
   if (!sources.length) {
-    return <p className="text-[11px] italic text-slate-500">No source trace found</p>;
+    return <p className="text-sm italic text-slate-600">No source trace found</p>;
   }
 
   return (
-    <div className="space-y-2" data-testid={`po-line-trace-${poLineId}`}>
+    <div className="space-y-3" data-testid={`po-line-trace-${poLineId}`}>
       {sources.map((ds, idx) => {
         const mrId = ds.mr?.materialRequirementId;
         const procHref =
@@ -96,16 +112,16 @@ function LineSourceTrace({
               })
             : null;
         return (
-          <div key={idx} className="rounded border border-slate-100 bg-slate-50/80 px-2 py-1.5">
-            <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-slate-700">
+          <div key={idx} className="rounded-lg border border-violet-100 bg-violet-50/40 px-3 py-2.5">
+            <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-slate-800">
               <span>
-                <span className="font-semibold text-slate-500">Demand:</span> {demandSourceDisplay(ds)}
+                <span className="font-semibold text-slate-600">Demand:</span> {demandSourceDisplay(ds)}
               </span>
               {ds.mr?.docNo ? (
                 <span>
-                  <span className="font-semibold text-slate-500">MR:</span>{" "}
+                  <span className="font-semibold text-slate-600">MR:</span>{" "}
                   {procHref ? (
-                    <Link to={procHref} className="text-primary underline">
+                    <Link to={procHref} className="font-medium text-primary underline">
                       {ds.mr.docNo}
                     </Link>
                   ) : (
@@ -115,17 +131,17 @@ function LineSourceTrace({
               ) : null}
               {ds.pr?.docNo ? (
                 <span>
-                  <span className="font-semibold text-slate-500">PR:</span> {ds.pr.docNo}
+                  <span className="font-semibold text-slate-600">PR:</span> {ds.pr.docNo}
                 </span>
               ) : null}
               {ds.workOrder?.docNo ? (
                 <span>
-                  <span className="font-semibold text-slate-500">WO:</span> {ds.workOrder.docNo}
+                  <span className="font-semibold text-slate-600">WO:</span> {ds.workOrder.docNo}
                 </span>
               ) : null}
               {ds.salesOrder?.docNo ? (
                 <span>
-                  <span className="font-semibold text-slate-500">SO:</span> {ds.salesOrder.docNo}
+                  <span className="font-semibold text-slate-600">SO:</span> {ds.salesOrder.docNo}
                 </span>
               ) : null}
             </div>
@@ -133,15 +149,16 @@ function LineSourceTrace({
         );
       })}
       {traceLine?.traceChain?.length ? <TraceChainInline chain={traceLine.traceChain} /> : null}
-      <div className="flex flex-wrap gap-3 text-[11px] text-slate-600">
+      <div className="flex flex-wrap gap-4 text-sm text-slate-700">
         <span>
-          <span className="font-semibold">Stock:</span>{" "}
+          <span className="font-semibold text-slate-600">Stock:</span>{" "}
           {traceLine?.grnLines?.some((g) => !g.isReversed && g.stockTransactions.length)
             ? "Posted"
             : "Not posted"}
         </span>
         <span>
-          <span className="font-semibold">Bill:</span> {lineBillStatusLabel(traceLine?.purchaseBillLines ?? [])}
+          <span className="font-semibold text-slate-600">Bill:</span>{" "}
+          {lineBillStatusLabel(traceLine?.purchaseBillLines ?? [])}
         </span>
       </div>
     </div>
@@ -193,29 +210,29 @@ function GrnHistoryCard({
   const receivedTotal = lineDetails.reduce((s, l) => s + l.receivedQty, 0);
 
   return (
-    <div className="rounded-md border border-slate-200 bg-white" data-testid={`grn-card-${grn.id}`}>
+    <div className="rounded-lg border border-slate-200 bg-white" data-testid={`grn-card-${grn.id}`}>
       <button
         type="button"
-        className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left"
+        className="flex w-full items-center justify-between gap-2 px-4 py-3 text-left"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
       >
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           {open ? <ChevronDown className="h-4 w-4 shrink-0 text-slate-500" /> : <ChevronRight className="h-4 w-4 shrink-0 text-slate-500" />}
-          <span className="font-semibold text-slate-900">GRN-{grn.id}</span>
-          <span className="inline-flex items-center gap-1.5 text-[12px] text-slate-700">
-            <span className={`inline-block h-1.5 w-1.5 rounded-full ${grnStatusDotClass(grn)}`} aria-hidden />
+          <span className="text-base font-semibold text-slate-900">GRN-{grn.id}</span>
+          <span className="inline-flex items-center gap-1.5 text-sm text-slate-700">
+            <span className={`inline-block h-2 w-2 rounded-full ${grnStatusDotClass(grn)}`} aria-hidden />
             {grnStatusLabel(grn)}
           </span>
           {traceGrn?.date || grn.date ? (
-            <span className="text-[12px] text-slate-500">{formatPoDocumentDate(traceGrn?.date ?? grn.date)}</span>
+            <span className="text-sm text-slate-600">{formatPoDocumentDate(traceGrn?.date ?? grn.date)}</span>
           ) : null}
           {traceGrn?.supplierInvoiceNo || grn.supplierInvoiceNo ? (
-            <span className="text-[12px] text-slate-600">
+            <span className="text-sm text-slate-700">
               Inv: {traceGrn?.supplierInvoiceNo ?? grn.supplierInvoiceNo}
             </span>
           ) : null}
-          <span className="text-[12px] text-slate-500">
+          <span className="text-sm text-slate-600">
             {lineDetails.length} line{lineDetails.length === 1 ? "" : "s"} · {receivedTotal.toFixed(3)} received
           </span>
         </div>
@@ -224,7 +241,7 @@ function GrnHistoryCard({
             type="button"
             size="sm"
             variant="outline"
-            className="h-7 shrink-0 px-2 text-[11px]"
+            className="h-8 shrink-0 px-3 text-sm"
             disabled={reversingGrnId === grn.id}
             onClick={(e) => {
               e.stopPropagation();
@@ -236,25 +253,25 @@ function GrnHistoryCard({
         ) : null}
       </button>
       {open ? (
-        <div className="border-t border-slate-100 px-3 py-2 text-[12px]">
+        <div className="border-t border-slate-100 px-4 py-3 text-sm">
           <table className="w-full text-left">
             <thead>
-              <tr className="text-[10px] font-bold uppercase tracking-wide text-slate-500">
-                <th className="pb-1">Item</th>
-                <th className="pb-1 text-right">Received</th>
-                <th className="pb-1">Location</th>
-                <th className="pb-1">Stock</th>
-                <th className="pb-1">Bill</th>
+              <tr className="text-xs font-bold uppercase tracking-wide text-slate-600">
+                <th className="pb-2">Item</th>
+                <th className="pb-2 text-right">Received</th>
+                <th className="pb-2">Location</th>
+                <th className="pb-2">Stock</th>
+                <th className="pb-2">Bill</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-50">
+            <tbody className="divide-y divide-slate-100">
               {lineDetails.map((ln, i) => (
                 <tr key={i}>
-                  <td className="py-1 font-medium text-slate-800">{ln.itemName}</td>
-                  <td className="py-1 text-right tabular-nums">{ln.receivedQty.toFixed(3)}</td>
-                  <td className="py-1 text-slate-600">{ln.location ?? "—"}</td>
-                  <td className="py-1">{ln.stockPosted ? "Posted" : "Not posted"}</td>
-                  <td className="py-1">{ln.bill ? ln.bill : "Not billed"}</td>
+                  <td className="py-2 font-medium text-slate-900">{ln.itemName}</td>
+                  <td className="py-2 text-right tabular-nums font-semibold text-slate-900">{ln.receivedQty.toFixed(3)}</td>
+                  <td className="py-2 text-slate-700">{ln.location ?? "—"}</td>
+                  <td className="py-2 text-slate-700">{ln.stockPosted ? "Posted" : "Not posted"}</td>
+                  <td className="py-2 text-slate-700">{ln.bill ? ln.bill : "Not billed"}</td>
                 </tr>
               ))}
             </tbody>
@@ -267,6 +284,7 @@ function GrnHistoryCard({
 
 export function RmPoDocumentView({
   po,
+  companyProfile,
   trace,
   traceError,
   receiveInfo,
@@ -285,303 +303,231 @@ export function RmPoDocumentView({
   onReverseGrn,
 }: RmPoDocumentViewProps) {
   const returnTo = `/rm-po-grn/${po.id}`;
-  const commercial = po.resolvedSupplierCommercial;
-  const supplierGst =
-    commercial?.registeredSupplier?.gstin ?? po.supplier.gstin ?? po.supplier.gst ?? "—";
-  const supplierState =
-    commercial?.registeredSupplier?.stateName ??
-    po.supplier.stateName ??
-    po.supplier.state ??
-    "—";
-  const supplyLabel = commercial?.supplyLocation?.label ?? trace?.supplierLocation?.label ?? "—";
-
-  let subtotal = 0;
-  let totalGst = 0;
-  for (const ln of po.lines) {
-    const amt =
-      ln.amount != null && String(ln.amount).trim() !== ""
-        ? Number(ln.amount)
-        : computeLineAmount(Number(ln.qty), Number(ln.rate ?? 0));
-    if (Number.isFinite(amt)) subtotal += amt;
-    const gst = ln.gstRate != null ? Number(ln.gstRate) : 0;
-    if (Number.isFinite(gst) && Number.isFinite(amt)) totalGst += (amt * gst) / 100;
-  }
-  const grandTotal = subtotal + totalGst;
+  const [supplierCopyMode, setSupplierCopyMode] = React.useState(false);
+  const poNo = formatRmPoNo(po.id);
 
   return (
     <article
       className="mx-auto max-w-5xl overflow-hidden rounded-lg border border-slate-300 bg-white shadow-md"
       data-testid="rm-po-document"
     >
-      {/* Sticky document actions */}
-      <div className="sticky top-0 z-10 flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-white/95 px-4 py-2 backdrop-blur-sm">
-        <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-slate-500">RM Purchase Order</p>
-        <div className="flex flex-wrap gap-1.5">
+      {/* Document action bar */}
+      <div className="rm-po-no-print sticky top-0 z-10 flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-white/95 px-4 py-3 backdrop-blur-sm">
+        <p className="text-sm font-bold uppercase tracking-wide text-slate-700">RM Purchase Order</p>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="gap-1.5 text-sm"
+            data-testid="rm-po-print-btn"
+            onClick={() => printRmPoSupplierSection()}
+          >
+            <Printer className="h-4 w-4" />
+            Print
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="gap-1.5 text-sm"
+            data-testid="rm-po-export-pdf-btn"
+            onClick={() => exportRmPoPdfPlaceholder(poNo)}
+          >
+            <Download className="h-4 w-4" />
+            Export PDF
+          </Button>
+          <Button
+            type="button"
+            variant={supplierCopyMode ? "default" : "outline"}
+            size="sm"
+            className="gap-1.5 text-sm"
+            data-testid="rm-po-supplier-copy-btn"
+            onClick={() => setSupplierCopyMode((v) => !v)}
+          >
+            <Eye className="h-4 w-4" />
+            {supplierCopyMode ? "Show full view" : "Supplier copy"}
+          </Button>
           {grnAllowed ? (
-            <Button type="button" size="sm" data-testid="rm-po-create-grn-btn" onClick={onCreateGrn}>
+            <Button type="button" size="sm" className="text-sm" data-testid="rm-po-create-grn-btn" onClick={onCreateGrn}>
               Create GRN
             </Button>
           ) : null}
           {canEditPo ? (
-            <Button type="button" variant="outline" size="sm" data-testid="rm-po-edit-btn" onClick={onEdit}>
+            <Button type="button" variant="outline" size="sm" className="text-sm" data-testid="rm-po-edit-btn" onClick={onEdit}>
               Edit order
             </Button>
           ) : null}
           {showCancel ? (
-            <Button type="button" variant="outline" size="sm" data-testid="rm-po-cancel-btn" onClick={onCancel}>
+            <Button type="button" variant="outline" size="sm" className="text-sm" data-testid="rm-po-cancel-btn" onClick={onCancel}>
               Cancel order
             </Button>
           ) : null}
         </div>
       </div>
 
-      {/* Document header */}
-      <header className="border-b border-slate-200 px-4 py-4 md:px-6" data-testid="rm-po-document-header">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h1 className="text-xl font-bold tracking-tight text-slate-950 md:text-2xl">{formatRmPoNo(po.id)}</h1>
-            <p className="mt-0.5 text-sm text-slate-600">
-              PO date: {formatPoDocumentDate(trace?.rmPo?.createdAt)}
-            </p>
-          </div>
-          <span
-            className={cn(
-              "inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-bold uppercase tracking-wide",
-              po.status === "COMPLETED"
-                ? "border-emerald-200 bg-emerald-50 text-emerald-800"
-                : po.status === "CANCELLED"
-                  ? "border-slate-200 bg-slate-100 text-slate-600"
-                  : "border-amber-200 bg-amber-50 text-amber-900",
-            )}
-          >
-            <span className={`h-2 w-2 rounded-full ${poStatusDotClass(po.status)}`} />
-            {poStatusLabel(po.status)}
-          </span>
+      {supplierCopyMode ? (
+        <div className="rm-po-no-print border-b border-sky-200 bg-sky-50 px-4 py-2 text-sm text-sky-900 md:px-6">
+          Supplier copy view — internal traceability is hidden. Use Print for a supplier-facing document.
         </div>
-      </header>
-
-      {/* Supplier section */}
-      <section className="grid gap-4 border-b border-slate-200 px-4 py-4 md:grid-cols-2 md:px-6" data-testid="rm-po-supplier-section">
-        <div>
-          <h2 className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Supplier</h2>
-          <p className="mt-1 text-base font-semibold text-slate-900">{po.supplier.name}</p>
-          <dl className="mt-2 space-y-1 text-sm text-slate-700">
-            <div className="flex gap-2">
-              <dt className="w-16 shrink-0 font-medium text-slate-500">GSTIN</dt>
-              <dd className="font-mono text-[13px]">{supplierGst}</dd>
-            </div>
-            <div className="flex gap-2">
-              <dt className="w-16 shrink-0 font-medium text-slate-500">State</dt>
-              <dd>{supplierState}</dd>
-            </div>
-          </dl>
-        </div>
-        <div>
-          <h2 className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Supply / receiving</h2>
-          <dl className="mt-2 space-y-1 text-sm text-slate-700">
-            <div className="flex gap-2">
-              <dt className="w-28 shrink-0 font-medium text-slate-500">Supply location</dt>
-              <dd>{supplyLabel}</dd>
-            </div>
-            <div className="flex gap-2">
-              <dt className="w-28 shrink-0 font-medium text-slate-500">Stock status</dt>
-              <dd>{stockStatusLabel}</dd>
-            </div>
-            <div className="flex gap-2">
-              <dt className="w-28 shrink-0 font-medium text-slate-500">Billing</dt>
-              <dd>{billingStatusLabel}</dd>
-            </div>
-          </dl>
-          {po.remarks ? (
-            <p className="mt-3 text-sm text-slate-600">
-              <span className="font-semibold text-slate-500">Remarks:</span> {po.remarks}
-            </p>
-          ) : null}
-        </div>
-        {commercial ? (
-          <div className="md:col-span-2">
-            <RmPoCommercialSummary commercial={commercial} />
-          </div>
-        ) : null}
-      </section>
-
-      {traceError ? (
-        <p className="border-b border-amber-100 bg-amber-50 px-4 py-2 text-xs text-amber-800 md:px-6">
-          Trace data unavailable: {traceError}. Showing PO lines from order data.
-        </p>
       ) : null}
 
-      {/* Line table — desktop */}
-      <section className="hidden border-b border-slate-200 md:block" data-testid="rm-po-lines-table">
-        <table className="w-full border-collapse text-sm">
-          <thead>
-            <tr className="border-b border-slate-200 bg-slate-50 text-left text-[10px] font-bold uppercase tracking-wider text-slate-600">
-              <th className="px-4 py-2">RM item</th>
-              <th className="px-2 py-2">HSN</th>
-              <th className="px-2 py-2 text-right">Ordered</th>
-              <th className="px-2 py-2 text-right">Received</th>
-              <th className="px-2 py-2 text-right">Pending</th>
-              <th className="px-2 py-2">Unit</th>
-              <th className="px-2 py-2 text-right">Rate</th>
-              <th className="px-2 py-2 text-right">GST %</th>
-              <th className="px-2 py-2 text-right">Amount</th>
-              <th className="px-4 py-2">Status</th>
-            </tr>
-          </thead>
-          <tbody>
+      {/* ─── Section A: Supplier Purchase Order Document ─── */}
+      <RmPoSupplierDocument
+        po={po}
+        poDate={trace?.rmPo?.createdAt}
+        companyProfile={companyProfile}
+      />
+
+      {/* ─── Section B: Internal procurement traceability ─── */}
+      {!supplierCopyMode ? (
+        <div
+          className="rm-po-internal-section border-t-4 border-violet-200 bg-violet-50/20"
+          data-testid="rm-po-internal-trace-section"
+        >
+          <div className="border-b border-violet-100 bg-violet-50/60 px-4 py-3 md:px-6">
+            <SectionHeading>Internal procurement traceability</SectionHeading>
+            <p className="mt-1 text-sm text-slate-700">
+              Store / Purchase audit view — demand source, receipt status, GRN, stock, and bill linkage.
+            </p>
+          </div>
+
+          {traceError ? (
+            <p className="border-b border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 md:px-6">
+              Trace data unavailable: {traceError}. Showing receipt data from PO only.
+            </p>
+          ) : null}
+
+          <section className="hidden border-b border-violet-100 md:block" data-testid="rm-po-internal-lines-table">
+            <table className="w-full border-collapse text-base">
+              <thead>
+                <tr className="border-b border-violet-100 bg-violet-50/80 text-left text-xs font-bold uppercase tracking-wide text-slate-700">
+                  <th className="px-4 py-3">RM item</th>
+                  <th className="px-3 py-3 text-right">Ordered</th>
+                  <th className="px-3 py-3 text-right">Received</th>
+                  <th className="px-3 py-3 text-right">Pending</th>
+                  <th className="px-4 py-3">Receipt status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {po.lines.map((ln) => {
+                  const received = traceLineByPoLineId(trace, ln.id)?.receivedQty ?? receivedForLine(po, ln.id);
+                  const ordered = Number(ln.qty);
+                  const pending = Math.max(0, ordered - received);
+                  return (
+                    <React.Fragment key={ln.id}>
+                      <tr className="border-b border-violet-50 bg-white">
+                        <td className="px-4 py-3 font-semibold text-slate-950">{ln.item?.itemName ?? `Item #${ln.itemId}`}</td>
+                        <td className="px-3 py-3 text-right font-bold tabular-nums text-slate-900">{ordered.toFixed(3)}</td>
+                        <td className="px-3 py-3 text-right font-bold tabular-nums text-emerald-800">{received.toFixed(3)}</td>
+                        <td className="px-3 py-3 text-right font-bold tabular-nums text-amber-800">{pending.toFixed(3)}</td>
+                        <td className="px-4 py-3 text-sm font-semibold text-slate-800">
+                          {lineReceiptStatusLabel(ordered, received, pending)}
+                        </td>
+                      </tr>
+                      <tr className="border-b border-violet-100 bg-violet-50/30">
+                        <td colSpan={5} className="px-4 py-4">
+                          <p className="text-xs font-bold uppercase tracking-wide text-violet-800">Source trace</p>
+                          <LineSourceTrace poLineId={ln.id} trace={trace} returnTo={returnTo} />
+                        </td>
+                      </tr>
+                    </React.Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </section>
+
+          <section className="space-y-4 border-b border-violet-100 p-4 md:hidden" data-testid="rm-po-line-cards">
             {po.lines.map((ln) => {
               const received = traceLineByPoLineId(trace, ln.id)?.receivedQty ?? receivedForLine(po, ln.id);
               const ordered = Number(ln.qty);
               const pending = Math.max(0, ordered - received);
-              const amt =
-                ln.amount != null && String(ln.amount).trim() !== ""
-                  ? Number(ln.amount)
-                  : computeLineAmount(ordered, Number(ln.rate ?? 0));
-              const status = lineReceiptStatusLabel(ordered, received, pending);
               return (
-                <React.Fragment key={ln.id}>
-                  <tr className="border-b border-slate-100">
-                    <td className="px-4 py-2 font-medium text-slate-900">{ln.item?.itemName ?? `Item #${ln.itemId}`}</td>
-                    <td className="px-2 py-2 font-mono text-xs">{ln.hsn || "—"}</td>
-                    <td className="px-2 py-2 text-right tabular-nums">{ordered.toFixed(3)}</td>
-                    <td className="px-2 py-2 text-right tabular-nums">{received.toFixed(3)}</td>
-                    <td className="px-2 py-2 text-right tabular-nums">{pending.toFixed(3)}</td>
-                    <td className="px-2 py-2">{ln.unit || "—"}</td>
-                    <td className="px-2 py-2 text-right tabular-nums">{ln.rate ?? "—"}</td>
-                    <td className="px-2 py-2 text-right tabular-nums">{ln.gstRate ?? "—"}</td>
-                    <td className="px-2 py-2 text-right tabular-nums">{Number.isFinite(amt) ? amt.toFixed(2) : "—"}</td>
-                    <td className="px-4 py-2 text-xs font-semibold text-slate-700">{status}</td>
-                  </tr>
-                  <tr className="border-b border-slate-200 bg-slate-50/50">
-                    <td colSpan={10} className="px-4 py-2">
-                      <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Source trace</p>
-                      <LineSourceTrace poLineId={ln.id} trace={trace} returnTo={returnTo} />
-                    </td>
-                  </tr>
-                </React.Fragment>
+                <div key={ln.id} className="rounded-lg border border-violet-200 bg-white p-4">
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="text-base font-semibold text-slate-950">{ln.item?.itemName}</p>
+                    <span className="text-sm font-semibold text-slate-700">
+                      {lineReceiptStatusLabel(ordered, received, pending)}
+                    </span>
+                  </div>
+                  <div className="mt-3 grid grid-cols-3 gap-2 text-sm">
+                    <div>
+                      <span className="block text-xs font-semibold uppercase text-slate-500">Ordered</span>
+                      <span className="text-base font-bold tabular-nums">{formatTraceQty(ordered, ln.unit)}</span>
+                    </div>
+                    <div>
+                      <span className="block text-xs font-semibold uppercase text-slate-500">Received</span>
+                      <span className="text-base font-bold tabular-nums text-emerald-800">{formatTraceQty(received, ln.unit)}</span>
+                    </div>
+                    <div>
+                      <span className="block text-xs font-semibold uppercase text-slate-500">Pending</span>
+                      <span className="text-base font-bold tabular-nums text-amber-800">{formatTraceQty(pending, ln.unit)}</span>
+                    </div>
+                  </div>
+                  <div className="mt-3 border-t border-violet-100 pt-3">
+                    <LineSourceTrace poLineId={ln.id} trace={trace} returnTo={returnTo} />
+                  </div>
+                </div>
               );
             })}
-          </tbody>
-        </table>
-      </section>
+          </section>
 
-      {/* Line cards — mobile/tablet */}
-      <section className="space-y-3 border-b border-slate-200 p-4 md:hidden" data-testid="rm-po-line-cards">
-        {po.lines.map((ln) => {
-          const received = traceLineByPoLineId(trace, ln.id)?.receivedQty ?? receivedForLine(po, ln.id);
-          const ordered = Number(ln.qty);
-          const pending = Math.max(0, ordered - received);
-          const amt =
-            ln.amount != null && String(ln.amount).trim() !== ""
-              ? Number(ln.amount)
-              : computeLineAmount(ordered, Number(ln.rate ?? 0));
-          return (
-            <div key={ln.id} className="rounded-md border border-slate-200 bg-slate-50/30 p-3">
-              <div className="flex items-start justify-between gap-2">
-                <p className="font-semibold text-slate-900">{ln.item?.itemName}</p>
-                <span className="text-xs font-semibold text-slate-600">
-                  {lineReceiptStatusLabel(ordered, received, pending)}
-                </span>
-              </div>
-              <div className="mt-2 grid grid-cols-3 gap-2 text-xs text-slate-700">
-                <div>
-                  <span className="block text-[10px] uppercase text-slate-400">Ordered</span>
-                  {formatTraceQty(ordered, ln.unit)}
-                </div>
-                <div>
-                  <span className="block text-[10px] uppercase text-slate-400">Received</span>
-                  {formatTraceQty(received, ln.unit)}
-                </div>
-                <div>
-                  <span className="block text-[10px] uppercase text-slate-400">Pending</span>
-                  {formatTraceQty(pending, ln.unit)}
-                </div>
-              </div>
-              <p className="mt-2 text-xs text-slate-600">
-                Rate {ln.rate ?? "—"} · GST {ln.gstRate ?? "—"}% · Amount{" "}
-                {Number.isFinite(amt) ? amt.toFixed(2) : "—"}
+          <section className="border-b border-violet-100 px-4 py-5 md:px-6" data-testid="rm-po-grn-history">
+            <SectionHeading>GRN history</SectionHeading>
+            <p className="mt-1 text-sm text-slate-600">
+              Stock: {stockStatusLabel} · Purchase billing: {billingStatusLabel}
+            </p>
+            {!po.grns.length ? (
+              <p className="mt-3 text-base text-slate-700" data-testid="rm-po-no-grn">
+                No GRN posted yet.
               </p>
-              <div className="mt-2 border-t border-slate-200 pt-2">
-                <LineSourceTrace poLineId={ln.id} trace={trace} returnTo={returnTo} />
+            ) : (
+              <div className="mt-4 space-y-3">
+                {po.grns.map((g) => (
+                  <GrnHistoryCard
+                    key={g.id}
+                    grn={g as GrnExtended}
+                    po={po}
+                    trace={trace}
+                    isAdmin={isAdmin}
+                    reversingGrnId={reversingGrnId}
+                    onReverse={onReverseGrn}
+                  />
+                ))}
               </div>
-            </div>
-          );
-        })}
-      </section>
+            )}
+          </section>
 
-      {/* GRN history */}
-      <section className="border-b border-slate-200 px-4 py-4 md:px-6" data-testid="rm-po-grn-history">
-        <h2 className="text-[10px] font-bold uppercase tracking-wider text-slate-500">GRN history</h2>
-        {!po.grns.length ? (
-          <p className="mt-2 text-sm text-slate-600" data-testid="rm-po-no-grn">
-            No GRN posted yet. Use Create GRN when stock arrives.
-          </p>
-        ) : (
-          <div className="mt-3 space-y-2">
-            {po.grns.map((g) => (
-              <GrnHistoryCard
-                key={g.id}
-                grn={g as GrnExtended}
-                po={po}
-                trace={trace}
-                isAdmin={isAdmin}
-                reversingGrnId={reversingGrnId}
-                onReverse={onReverseGrn}
-              />
-            ))}
-          </div>
-        )}
-      </section>
-
-      {/* Summary footer */}
-      <footer className="bg-slate-50 px-4 py-4 md:px-6" data-testid="rm-po-document-footer">
-        <div className="grid gap-4 sm:grid-cols-2">
-          <div>
-            <h2 className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Receipt summary</h2>
-            <dl className="mt-2 space-y-1 text-sm text-slate-800">
+          <footer className="px-4 py-5 md:px-6" data-testid="rm-po-internal-footer">
+            <SectionHeading>Receipt summary (internal)</SectionHeading>
+            <dl className="mt-3 max-w-md space-y-2 text-base text-slate-900">
               <div className="flex justify-between gap-4">
-                <dt>Total ordered</dt>
-                <dd className="tabular-nums font-semibold">
+                <dt className="text-slate-700">Total ordered</dt>
+                <dd className="tabular-nums font-bold">
                   {receiveInfo ? `${receiveInfo.ordered.toFixed(3)}${poPrimaryUnit ? ` ${poPrimaryUnit}` : ""}` : "—"}
                 </dd>
               </div>
               <div className="flex justify-between gap-4">
-                <dt>Total received</dt>
-                <dd className="tabular-nums font-semibold">
+                <dt className="text-slate-700">Total received</dt>
+                <dd className="tabular-nums font-bold text-emerald-800">
                   {receiveInfo ? `${receiveInfo.received.toFixed(3)}${poPrimaryUnit ? ` ${poPrimaryUnit}` : ""}` : "—"}
                 </dd>
               </div>
               <div className="flex justify-between gap-4">
-                <dt>Total pending</dt>
-                <dd className="tabular-nums font-semibold">
+                <dt className="text-slate-700">Total pending</dt>
+                <dd className="tabular-nums font-bold text-amber-800">
                   {receiveInfo ? `${receiveInfo.pending.toFixed(3)}${poPrimaryUnit ? ` ${poPrimaryUnit}` : ""}` : "—"}
                 </dd>
               </div>
-              <div className="flex justify-between gap-4 text-slate-600">
+              <div className="flex justify-between gap-4 text-slate-700">
                 <dt>Billing pending qty</dt>
-                <dd className="tabular-nums">{billingTotals.pendingBilling.toFixed(3)}</dd>
+                <dd className="tabular-nums font-semibold">{billingTotals.pendingBilling.toFixed(3)}</dd>
               </div>
             </dl>
-          </div>
-          <div>
-            <h2 className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Commercial total</h2>
-            <dl className="mt-2 space-y-1 text-sm text-slate-800">
-              <div className="flex justify-between gap-4">
-                <dt>Subtotal</dt>
-                <dd className="tabular-nums">₹ {subtotal.toFixed(2)}</dd>
-              </div>
-              <div className="flex justify-between gap-4">
-                <dt>Tax (est.)</dt>
-                <dd className="tabular-nums">₹ {totalGst.toFixed(2)}</dd>
-              </div>
-              <div className="flex justify-between gap-4 border-t border-slate-200 pt-1 font-bold">
-                <dt>Grand total (est.)</dt>
-                <dd className="tabular-nums">₹ {grandTotal.toFixed(2)}</dd>
-              </div>
-            </dl>
-          </div>
+          </footer>
         </div>
-      </footer>
+      ) : null}
     </article>
   );
 }

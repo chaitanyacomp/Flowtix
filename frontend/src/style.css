@@ -616,6 +616,7 @@
 
   @media print {
     @page {
+      size: A4 portrait;
       margin: 12mm;
     }
     body * {
@@ -668,6 +669,61 @@
     }
     body.sales-bill-invoice-print #sales-bill-invoice-printable table tbody tr {
       page-break-inside: avoid;
+    }
+
+    /* RM PO supplier purchase order document (P4D-B) */
+    body.rm-po-supplier-print * {
+      visibility: hidden;
+    }
+    body.rm-po-supplier-print #rm-po-supplier-section-printable,
+    body.rm-po-supplier-print #rm-po-supplier-section-printable * {
+      visibility: visible;
+    }
+    body.rm-po-supplier-print #rm-po-supplier-section-printable {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 100%;
+      max-width: none !important;
+      box-shadow: none !important;
+      border: none !important;
+      padding: 0 !important;
+      margin: 0 !important;
+      background: #fff !important;
+      color: #111 !important;
+    }
+    body.rm-po-supplier-print .rm-po-no-print,
+    body.rm-po-supplier-print .rm-po-screen-only,
+    body.rm-po-supplier-print .rm-po-internal-section {
+      display: none !important;
+      visibility: hidden !important;
+    }
+    body.rm-po-supplier-print #rm-po-supplier-section-printable .rm-po-supplier-line-cards {
+      display: none !important;
+    }
+    body.rm-po-supplier-print #rm-po-supplier-section-printable table {
+      width: 100% !important;
+      font-size: 9pt;
+      border-collapse: collapse;
+    }
+    body.rm-po-supplier-print #rm-po-supplier-section-printable thead {
+      display: table-header-group;
+    }
+    body.rm-po-supplier-print #rm-po-supplier-section-printable table tbody tr {
+      page-break-inside: avoid;
+    }
+    body.rm-po-supplier-print #rm-po-supplier-section-printable th,
+    body.rm-po-supplier-print #rm-po-supplier-section-printable td {
+      padding: 1px 3px !important;
+    }
+    body.rm-po-supplier-print #rm-po-supplier-section-printable .rm-po-print-only {
+      display: block !important;
+      visibility: visible !important;
+    }
+    body.rm-po-supplier-print #rm-po-supplier-section-printable header,
+    body.rm-po-supplier-print #rm-po-supplier-section-printable section,
+    body.rm-po-supplier-print #rm-po-supplier-section-printable footer {
+      break-inside: avoid;
     }
   }
 

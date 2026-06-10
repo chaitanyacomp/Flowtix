@@ -10,11 +10,25 @@ export type Item = {
 export type Supplier = {
   id: number;
   name: string;
+  contact?: string | null;
+  email?: string | null;
+  address?: string | null;
   state?: string | null;
   stateName?: string | null;
   stateCode?: string | null;
   gst?: string | null;
   gstin?: string | null;
+};
+
+export type RmPoSupplierLocation = {
+  id: number;
+  label: string;
+  address?: string | null;
+  city?: string | null;
+  stateName?: string | null;
+  stateCode?: string | null;
+  contactPerson?: string | null;
+  phone?: string | null;
 };
 
 export type SupplierLocationOption = {
@@ -96,6 +110,7 @@ export type RmPoRow = {
   supplierId: number;
   supplierLocationId?: number | null;
   supplier: Supplier;
+  supplierLocation?: RmPoSupplierLocation | null;
   status: string;
   remarks?: string | null;
   lines: RmPoLine[];

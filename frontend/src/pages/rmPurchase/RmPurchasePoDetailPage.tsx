@@ -48,6 +48,11 @@ import {
   RM_PURCHASE_POST_GRN_MESSAGES,
   type PostGrnNextStep,
 } from "../../lib/rmPurchaseWoContinuity";
+import {
+  isRmPoIrrelevantNextStepText,
+  shouldShowPostGrnStripOnRmPoPage,
+} from "../../lib/rmPoDocumentActions";
+import type { RmPoCompanyProfile } from "../../lib/rmPoSupplierDocument";
 type PurchaseMeta = { testingModeRelaxedTaxFields: boolean };
 
 export function RmPurchasePoDetailPage() {
@@ -134,6 +139,7 @@ export function RmPurchasePoDetailPage() {
   const [reversingGrnId, setReversingGrnId] = React.useState(0);
   const [poTrace, setPoTrace] = React.useState<RmPoTracePayload | null>(null);
   const [poTraceError, setPoTraceError] = React.useState<string | null>(null);
+  const [companyProfile, setCompanyProfile] = React.useState<RmPoCompanyProfile | null>(null);
 
   const [flowSoOrderType, setFlowSoOrderType] = React.useState<string | null>(null);
 
@@ -182,15 +188,17 @@ export function RmPurchasePoDetailPage() {
       if (!silent) setLoading(true);
       setError(null);
       try {
-        const [p, s, i, traceResult] = await Promise.all([
+        const [p, s, i, traceResult, profile] = await Promise.all([
           apiFetch<RmPoRow>(`/api/purchase/rm-pos/${poId}`),
           apiFetch<Supplier[]>("/api/suppliers"),
           apiFetch<Item[]>("/api/items?type=RM"),
           apiFetch<RmPoTracePayload>(`/api/procurement-trace/rm-po/${poId}`).catch((err: unknown) => ({
             error: err instanceof Error ? err.message : "Failed to load trace",
           })),
+          apiFetch<RmPoCompanyProfile>("/api/company-profile").catch(() => null),
         ]);
         setPo(p);
+        setCompanyProfile(profile);
         setSuppliers(s);
         setItems(i);
         if (traceResult && "error" in traceResult) {
@@ -776,13 +784,18 @@ export function RmPurchasePoDetailPage() {
     }
 
     if (showRichProductionNextStep || (showFallbackProductionNextStep && !showShortageNextStep)) {
+      if (postGrnNextStep && !shouldShowPostGrnStripOnRmPoPage(postGrnNextStep)) {
+        return null;
+      }
       const title =
-        postGrnNextStep?.nextStepLine ??
-        (postGrnNextStep?.isWorkflowComplete
-          ? postGrnNextStep.detail
-          : hasEffectiveFlowSalesOrder && flowIsNoQty
-            ? `Continue in ${NO_QTY_TERMS.PLANNING_HUB_TITLE}`
-            : (grnSuccess ?? postGrnFulfilledMessage()));
+        postGrnNextStep?.nextStepLine &&
+        !isRmPoIrrelevantNextStepText(postGrnNextStep.nextStepLine)
+          ? postGrnNextStep.nextStepLine
+          : postGrnNextStep?.isWorkflowComplete
+            ? postGrnNextStep.detail
+            : hasEffectiveFlowSalesOrder && flowIsNoQty
+              ? `Continue in ${NO_QTY_TERMS.PLANNING_HUB_TITLE}`
+              : (grnSuccess ?? postGrnFulfilledMessage());
       const subtitle = shortfallQtyHint > 0 ? `Suggested production qty: ${shortfallQtyHint}` : undefined;
 
       if (hasEffectiveFlowSalesOrder && flowIsNoQty) {
@@ -842,6 +855,13 @@ export function RmPurchasePoDetailPage() {
     }
 
     if (showFlowResumeBannerSlim) {
+      if (postGrnNextStep && !shouldShowPostGrnStripOnRmPoPage(postGrnNextStep)) {
+        return null;
+      }
+      const subtitle =
+        postGrnNextStep?.nextStepLine && !isRmPoIrrelevantNextStepText(postGrnNextStep.nextStepLine)
+          ? postGrnNextStep.nextStepLine
+          : undefined;
       return {
         variant: "success" as const,
         title: flowIsNoQty
@@ -849,7 +869,7 @@ export function RmPurchasePoDetailPage() {
             ? `Material received — ${NO_QTY_TERMS.CONTINUE_NO_QTY_PLANNING}`
             : NO_QTY_TERMS.CONTINUE_NO_QTY_PLANNING
           : (postGrnNextStep?.headline ?? (grnSuccess ? "Material received." : "Continue Work Order")),
-        subtitle: postGrnNextStep?.nextStepLine,
+        subtitle,
         flowWorkOrderAttr: true,
         primary: {
           label: flowIsNoQty
@@ -1015,6 +1035,7 @@ export function RmPurchasePoDetailPage() {
 
           <RmPoDocumentView
             po={po}
+            companyProfile={companyProfile}
             trace={poTrace}
             traceError={poTraceError}
             receiveInfo={receiveInfo}

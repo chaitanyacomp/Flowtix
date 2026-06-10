@@ -31,18 +31,7 @@ function sampleTrace(): RmPoTracePayload {
           },
         ],
         traceChain: ["Monthly Plan Rev 3", "MR-26-0002", "PR-26-0002", "RMPO-101", "GRN-101", "Stock IN"],
-        grnLines: [
-          {
-            id: 501,
-            grnId: 101,
-            grnNo: "GRN-101",
-            receivedQty: 122.31,
-            isReversed: false,
-            location: { name: "RM Store", code: "LOC-RM-STORE" },
-            stockTransactions: [{ qtyIn: 122.31, stockBucket: "USABLE" }],
-            purchaseBillLines: [],
-          },
-        ],
+        grnLines: [],
         purchaseBillLines: [],
       },
       {

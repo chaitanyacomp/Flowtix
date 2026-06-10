@@ -652,6 +652,7 @@ model Item {
   qcLegacyRejectedClassifications QcLegacyRejectedClassification[]
   openingStockEntries             OpeningStockEntry[]
   monthlyProductionPlanLinesAsFg  MonthlyProductionPlanLine[]      @relation("MppLineFgItem")
+  monthlyProductionPlanRevisionLinesAsFg MonthlyProductionPlanRevisionLine[] @relation("MppRevisionLineFgItem")
   rmPlanLinesAsRm                 RmPlanLine[]                     @relation("RmPlanLineRmItem")
 
   @@index([itemType])
@@ -1322,6 +1323,7 @@ model MonthlyProductionPlan {
   updatedAt        DateTime                    @updatedAt
 
   lines                MonthlyProductionPlanLine[]
+  revisionLines        MonthlyProductionPlanRevisionLine[]
   rmPlans              RmPlan[]
   materialRequirements MaterialRequirement[]       @relation("MaterialRequirementMonthlyPlan")
   createdBy            User?                       @relation("MppCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
@@ -1354,6 +1356,29 @@ model MonthlyProductionPlanLine {
 
   @@unique([planId, fgItemId])
   @@index([planId])
+  @@index([fgItemId])
+}
+
+/// Immutable FG Production Plan snapshot for one lock revision (audit / revision history).
+model MonthlyProductionPlanRevisionLine {
+  id                   Int                   @id @default(autoincrement())
+  planId               Int
+  revision             Int
+  fgItemId             Int
+  suggestedFgQty       Decimal               @default(0) @db.Decimal(18, 3)
+  plannedFgQty         Decimal               @default(0) @db.Decimal(18, 3)
+  plannedQtyOverridden Boolean               @default(false)
+  source               MonthlyPlanLineSource @default(MANUAL)
+  remarks              String?               @db.Text
+  unitSnapshot         String?               @db.VarChar(64)
+  itemNameSnapshot     String?               @db.VarChar(255)
+  createdAt            DateTime              @default(now())
+
+  plan   MonthlyProductionPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  fgItem Item                  @relation("MppRevisionLineFgItem", fields: [fgItemId], references: [id], onDelete: Restrict)
+
+  @@unique([planId, revision, fgItemId])
+  @@index([planId, revision])
   @@index([fgItemId])
 }
 

@@ -366,6 +366,7 @@ function createLockMockDb({
     plan: { id: 1, status, currentRevision, periodKey: "2026-06", lockedAt: null },
     rmPlans: [], // { id, planId, revision, totalFgPlannedQty, recalculatedAt }
     rmPlanLines: [], // includes rmPlanId
+    revisionLines: [], // FG snapshot lines
     nextRmPlanId: 500,
   };
   const itemById = new Map(rmItems.map((i) => [i.id, i]));
@@ -383,8 +384,24 @@ function createLockMockDb({
           id: l.id,
           fgItemId: l.fgItemId,
           plannedFgQty: l.plannedFgQty,
-          fgItem: { id: l.fgItemId, itemName: `FG ${l.fgItemId}` },
+          suggestedFgQty: l.suggestedFgQty ?? 0,
+          plannedQtyOverridden: Boolean(l.plannedQtyOverridden),
+          source: l.source ?? "MANUAL",
+          remarks: l.remarks ?? null,
+          fgItem: {
+            id: l.fgItemId,
+            itemName: l.itemName ?? `FG ${l.fgItemId}`,
+            unit: l.unit ?? "NOS",
+          },
         })),
+    },
+    monthlyProductionPlanRevisionLine: {
+      createMany: async ({ data }) => {
+        state.revisionLines.push(...data);
+        return { count: data.length };
+      },
+      findMany: async ({ where }) =>
+        state.revisionLines.filter((r) => !where?.planId || r.planId === where.planId),
     },
     item: {
       findMany: async ({ where }) =>
@@ -599,11 +616,26 @@ describe("monthlyPlanningService.getPurchasePlanning", () => {
     assert.equal(res.revision, 1);
   });
 
-  it("supports an explicit revision query", async () => {
+  it("rejects an explicit revision query (current revision only)", async () => {
     const db = await lockedDb({ net: 10 });
-    const res = await getPurchasePlanning({ db, planId: 1, revision: 1 });
-    assert.equal(res.revision, 1);
-    assert.equal(res.lines.length, 1);
+    await assert.rejects(
+      () => getPurchasePlanning({ db, planId: 1, revision: 1 }),
+      (e) => e instanceof MonthlyPlanningError && e.code === "PURCHASE_REVISION_NOT_SUPPORTED",
+    );
+  });
+
+  it("exposes Phase 8C delta clarity aliases on each line", async () => {
+    const db = await lockedDb({ net: 10 });
+    const res = await getPurchasePlanning({ db, planId: 1 });
+    const line = res.lines[0];
+    assert.equal(line.currentRequirementQty, 10);
+    assert.equal(line.previouslyReleasedQty, 0);
+    assert.equal(line.deltaQty, 10);
+    assert.equal(line.additionalRequirementQty, 10);
+    assert.equal(line.reductionQty, 0);
+    assert.equal(res.usesCurrentRevisionOnly, true);
+    assert.ok(res.totals);
+    assert.equal(res.totals.additionalRequirementTotal, 10);
   });
 
   it("computes PARTIALLY_RELEASED variance when a MONTHLY_PLAN MR partially covers net", async () => {

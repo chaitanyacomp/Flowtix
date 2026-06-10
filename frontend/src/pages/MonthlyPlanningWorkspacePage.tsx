@@ -3,6 +3,8 @@ import { useSearchParams } from "react-router-dom";
 import { apiFetch, ApiRequestError } from "../services/api";
 import { useToast } from "../contexts/ToastContext";
 import { useFeatureFlags } from "../hooks/useFeatureFlags";
+import { useAuth } from "../hooks/useAuth";
+import { MONTHLY_PLANNING_WRITE_ROLES } from "../config/erpRoles";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { NativeSelect } from "../components/ui/native-select";
@@ -15,6 +17,7 @@ import {
   Save,
   RefreshCw,
   Lock,
+  Unlock,
   X,
   AlertTriangle,
   ChevronDown,
@@ -23,6 +26,7 @@ import {
   Layers,
   Calculator,
   Boxes,
+  History,
 } from "lucide-react";
 
 type PlanStatus = "DRAFT" | "LOCKED";
@@ -36,6 +40,7 @@ type PlanSummary = {
   currentRevision: number;
   remarks: string | null;
   lockedAt: string | null;
+  reopenedAt: string | null;
   releasedAt: string | null;
   releasedRevision: number | null;
   createdByUserId: number | null;
@@ -127,11 +132,25 @@ type PurchasePlanLine = {
   alreadyProcuredQty: number;
   varianceQty: number;
   suggestedPurchaseQty: number;
+  currentRequirementQty: number;
+  previouslyReleasedQty: number;
+  additionalRequirementQty: number;
+  reductionQty: number;
+  deltaQty: number;
   procurementStatus: PurchaseStatus;
   vendorSuggestion: string | null;
   belowMinStockFlag: boolean;
   leadTimeRiskFlag: boolean;
   warnings: { code?: string; message?: string }[];
+};
+
+type PurchasePlanningTotals = {
+  rmItemCount: number;
+  currentRequirementTotal: number;
+  previouslyReleasedTotal: number;
+  additionalRequirementTotal: number;
+  reductionTotal: number;
+  coveragePct: number | null;
 };
 
 type ReleaseSummary = {
@@ -155,9 +174,11 @@ type PurchasePlanningResponse = {
   status: PlanStatus;
   currentRevision: number;
   revision: number | null;
+  usesCurrentRevisionOnly?: boolean;
   availableRevisions: number[];
   rmPlan: { id: number; revision: number; totalFgPlannedQty: string | number; recalculatedAt: string } | null;
   lines: PurchasePlanLine[];
+  totals?: PurchasePlanningTotals;
 };
 
 type FgItem = { id: number; itemName: string; unit?: string | null; unitName?: string | null };
@@ -430,11 +451,50 @@ function sourceLabel(source: LineSource): string {
   }
 }
 
+type RevisionFgLine = {
+  fgItemId: number;
+  itemName: string | null;
+  unit: string | null;
+  suggestedFgQty: number;
+  plannedFgQty: number;
+  plannedQtyOverridden: boolean;
+  source: LineSource;
+  remarks: string | null;
+};
+
+type PlanRevisionRow = {
+  revision: number;
+  lockedAt: string;
+  lockedByUserId: number | null;
+  lockedByName: string | null;
+  totalFgPlannedQty: number;
+  released: boolean;
+  status: "CURRENT" | "LOCKED";
+  isCurrent: boolean;
+  hasRmSnapshot: boolean;
+  fgLines: RevisionFgLine[];
+};
+
+type PlanRevisionsResponse = {
+  planId: number;
+  periodKey: string;
+  status: PlanStatus;
+  currentRevision: number;
+  releasedRevision: number | null;
+  draftForRevision: number | null;
+  lastLockedRevision: number | null;
+  revisions: PlanRevisionRow[];
+};
+
 type TabKey = "production" | "rm" | "purchase";
 
 export function MonthlyPlanningWorkspacePage() {
   const { flags, loading: flagsLoading } = useFeatureFlags();
   const { showSuccess, showError } = useToast();
+  const auth = useAuth();
+  const canWriteMonthlyPlan = MONTHLY_PLANNING_WRITE_ROLES.includes(
+    (auth.user?.role ?? "") as (typeof MONTHLY_PLANNING_WRITE_ROLES)[number],
+  );
   const [searchParams, setSearchParams] = useSearchParams();
 
   const periodFromUrl = searchParams.get("period");
@@ -477,14 +537,34 @@ export function MonthlyPlanningWorkspacePage() {
   const [loadingRmRequirementComposition, setLoadingRmRequirementComposition] = React.useState(false);
   const [rmRequirementCompositionVisible, setRmRequirementCompositionVisible] = React.useState(false);
   const [lockSummary, setLockSummary] = React.useState<LockSummary | null>(null);
+  const [planRevisions, setPlanRevisions] = React.useState<PlanRevisionsResponse | null>(null);
+  const [loadingRevisions, setLoadingRevisions] = React.useState(false);
+  const [expandedRevision, setExpandedRevision] = React.useState<number | null>(null);
+  const [reopening, setReopening] = React.useState(false);
 
   const isLocked = plan?.status === "LOCKED";
   const editable = planExists && !isLocked;
+  const isDraftForNextRevision = Boolean(plan && plan.status === "DRAFT" && plan.currentRevision >= 1);
   const suggestedProductionMap = React.useMemo(
     () => buildSuggestedProductionMap(requirementComposition),
     [requirementComposition],
   );
   const greenContextMap = React.useMemo(() => buildGreenContextMap(greenLevels), [greenLevels]);
+
+  const loadRevisions = React.useCallback(async (planId: number) => {
+    setLoadingRevisions(true);
+    try {
+      const res = await apiFetch<PlanRevisionsResponse>(`/api/monthly-planning/${planId}/revisions`);
+      setPlanRevisions(res);
+      if (res.revisions.length > 0) {
+        setExpandedRevision((cur) => cur ?? res.revisions[0].revision);
+      }
+    } catch {
+      setPlanRevisions(null);
+    } finally {
+      setLoadingRevisions(false);
+    }
+  }, []);
 
   const loadPlan = React.useCallback(
     async (p: string) => {
@@ -510,10 +590,12 @@ export function MonthlyPlanningWorkspacePage() {
           setRmPlanning(null);
           setPurchasePlanning(null);
           setLockSummary(null);
+          setPlanRevisions(null);
           return;
         }
 
         const planRef = res.plan!;
+        void loadRevisions(planRef.id);
 
         try {
           const lineRes = await apiFetch<ProductionLinesResponse>(
@@ -583,7 +665,7 @@ export function MonthlyPlanningWorkspacePage() {
         setLoading(false);
       }
     },
-    [showError],
+    [showError, loadRevisions],
   );
 
   // Load FG items once (for the Add row picker).
@@ -909,6 +991,25 @@ export function MonthlyPlanningWorkspacePage() {
     }
   }
 
+  async function onReopen() {
+    if (!plan) return;
+    setReopening(true);
+    try {
+      const res = await apiFetch<{ draftForRevision: number; currentRevision: number }>(
+        `/api/monthly-planning/${plan.id}/reopen`,
+        { method: "POST" },
+      );
+      showSuccess(
+        `Plan reopened — editing draft for revision ${res.draftForRevision}. Revision ${res.currentRevision} remains in history.`,
+      );
+      await loadPlan(period);
+    } catch (e) {
+      showError(e instanceof ApiRequestError ? e.message : "Failed to reopen plan.");
+    } finally {
+      setReopening(false);
+    }
+  }
+
   async function refreshRm() {
     if (!plan) return;
     setLoadingRm(true);
@@ -1063,9 +1164,29 @@ export function MonthlyPlanningWorkspacePage() {
                 Lock plan
               </Button>
             ) : null}
+            {planExists && isLocked && canWriteMonthlyPlan ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => void onReopen()}
+                disabled={reopening || loading}
+                className="h-9 border-amber-300 text-amber-900 hover:bg-amber-50"
+              >
+                <Unlock className="mr-1.5 h-4 w-4" />
+                {reopening ? "Reopening…" : "Reopen plan"}
+              </Button>
+            ) : null}
           </div>
         </div>
       </div>
+
+      {isDraftForNextRevision && plan ? (
+        <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-[12px] text-blue-900">
+          <strong>Editing draft for Revision {plan.currentRevision + 1}.</strong> Last locked revision:{" "}
+          <strong>{plan.currentRevision}</strong> remains in history (view-only).
+        </div>
+      ) : null}
 
       {/* KPI strip */}
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
@@ -1101,6 +1222,17 @@ export function MonthlyPlanningWorkspacePage() {
         onLoad={() => void loadRmRequirementComposition()}
         onHide={() => setRmRequirementCompositionVisible(false)}
       />
+
+      {planExists && plan ? (
+        <RevisionHistorySection
+          data={planRevisions}
+          loading={loadingRevisions}
+          expandedRevision={expandedRevision}
+          onToggleRevision={(rev) =>
+            setExpandedRevision((cur) => (cur === rev ? null : rev))
+          }
+        />
+      ) : null}
 
       {/* Tabs */}
       <div className="flex items-center gap-1 border-b border-slate-200">
@@ -1202,12 +1334,15 @@ function ReleaseConfirmModal({
 }) {
   const lines = data?.lines ?? [];
   const totalRmItems = lines.length;
-  const totalNet = lines.reduce((a, l) => a + l.netRequirementQty, 0);
+  const totalAdditional = lines.reduce(
+    (a, l) => a + num(l.additionalRequirementQty ?? l.suggestedPurchaseQty),
+    0,
+  );
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4">
       <div className="w-full max-w-md rounded-lg border border-slate-200 bg-white p-5 shadow-xl">
         <div className="flex items-start justify-between">
-          <h3 className="text-base font-semibold text-slate-900">Release to Procurement</h3>
+          <h3 className="text-base font-semibold text-slate-900">Release Delta to Procurement</h3>
           <button type="button" onClick={onCancel} className="text-slate-400 hover:text-slate-700">
             <X className="h-5 w-5" />
           </button>
@@ -1222,8 +1357,8 @@ function ReleaseConfirmModal({
             <div className="text-lg font-bold tabular-nums text-slate-900">{totalRmItems}</div>
           </div>
           <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
-            <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Net qty</div>
-            <div className="text-lg font-bold tabular-nums text-slate-900">{totalNet.toLocaleString()}</div>
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Additional qty</div>
+            <div className="text-lg font-bold tabular-nums text-slate-900">{totalAdditional.toLocaleString()}</div>
           </div>
         </div>
         <p className="mt-3 text-[13px] leading-relaxed text-slate-600">
@@ -1235,7 +1370,7 @@ function ReleaseConfirmModal({
             Cancel
           </Button>
           <Button type="button" onClick={onConfirm} disabled={releasing} className="bg-sky-700 hover:bg-sky-800">
-            {releasing ? "Releasing…" : "Release delta"}
+            {releasing ? "Releasing…" : "Release Delta to Procurement"}
           </Button>
         </div>
       </div>
@@ -1454,6 +1589,132 @@ function RmPlanningTab({
   );
 }
 
+function RevisionHistorySection({
+  data,
+  loading,
+  expandedRevision,
+  onToggleRevision,
+}: {
+  data: PlanRevisionsResponse | null;
+  loading: boolean;
+  expandedRevision: number | null;
+  onToggleRevision: (revision: number) => void;
+}) {
+  const revisions = data?.revisions ?? [];
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
+      <div className="mb-2 flex items-center gap-2">
+        <History className="h-4 w-4 text-slate-500" />
+        <h3 className="text-[13px] font-semibold text-slate-800">Revision History</h3>
+        {loading ? <span className="text-[11px] text-slate-400">Loading…</span> : null}
+        {!loading && revisions.length === 0 ? (
+          <span className="text-[11px] text-slate-400">No locked revisions yet.</span>
+        ) : null}
+      </div>
+
+      {revisions.length > 0 ? (
+        <div className="overflow-auto rounded-md border border-slate-100">
+          <table className="w-full border-collapse text-[13px]">
+            <thead className="bg-slate-50 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              <tr>
+                <th className="w-8 px-2 py-2" />
+                <th className="px-3 py-2 w-20">Revision</th>
+                <th className="px-3 py-2">Locked at</th>
+                <th className="px-3 py-2">Locked by</th>
+                <th className="px-3 py-2 w-32 text-right">Total FG planned</th>
+                <th className="px-3 py-2 w-28">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {revisions.map((rev) => {
+                const expanded = expandedRevision === rev.revision;
+                return (
+                  <React.Fragment key={rev.revision}>
+                    <tr
+                      className="cursor-pointer border-t border-slate-100 hover:bg-slate-50/80"
+                      onClick={() => onToggleRevision(rev.revision)}
+                    >
+                      <td className="px-2 py-2 text-slate-400">
+                        {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                      </td>
+                      <td className="px-3 py-2 font-medium text-slate-800">Rev {rev.revision}</td>
+                      <td className="px-3 py-2 text-slate-600">
+                        {rev.lockedAt ? new Date(rev.lockedAt).toLocaleString() : "—"}
+                      </td>
+                      <td className="px-3 py-2 text-slate-600">{rev.lockedByName ?? "—"}</td>
+                      <td className="px-3 py-2 text-right tabular-nums text-slate-800">
+                        {num(rev.totalFgPlannedQty).toLocaleString()}
+                      </td>
+                      <td className="px-3 py-2">
+                        <div className="flex flex-wrap items-center gap-1">
+                          {rev.isCurrent ? (
+                            <Badge variant="warning">Current</Badge>
+                          ) : (
+                            <Badge variant="default">Locked</Badge>
+                          )}
+                          {rev.released ? <Badge variant="info">Released</Badge> : null}
+                          {rev.hasRmSnapshot ? (
+                            <span className="text-[10px] text-slate-400">RM snapshot</span>
+                          ) : null}
+                        </div>
+                      </td>
+                    </tr>
+                    {expanded ? (
+                      <tr className="border-t border-slate-50 bg-slate-50/50">
+                        <td colSpan={6} className="px-3 py-2">
+                          <table className="w-full border-collapse text-[12px]">
+                            <thead className="text-left text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                              <tr>
+                                <th className="px-2 py-1">FG item</th>
+                                <th className="px-2 py-1 w-16">Unit</th>
+                                <th className="px-2 py-1 w-24 text-right">Suggested</th>
+                                <th className="px-2 py-1 w-24 text-right">Planned</th>
+                                <th className="px-2 py-1 w-20">Override</th>
+                                <th className="px-2 py-1">Remarks</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {rev.fgLines.length === 0 ? (
+                                <tr>
+                                  <td colSpan={6} className="px-2 py-3 text-center text-slate-400">
+                                    No FG snapshot lines for this revision.
+                                  </td>
+                                </tr>
+                              ) : (
+                                rev.fgLines.map((line) => (
+                                  <tr key={`${rev.revision}-${line.fgItemId}`} className="border-t border-slate-100">
+                                    <td className="px-2 py-1 font-medium text-slate-800">
+                                      {line.itemName ?? `#${line.fgItemId}`}
+                                    </td>
+                                    <td className="px-2 py-1 text-slate-500">{line.unit ?? "—"}</td>
+                                    <td className="px-2 py-1 text-right tabular-nums">
+                                      {num(line.suggestedFgQty).toLocaleString()}
+                                    </td>
+                                    <td className="px-2 py-1 text-right tabular-nums font-medium">
+                                      {num(line.plannedFgQty).toLocaleString()}
+                                    </td>
+                                    <td className="px-2 py-1">{line.plannedQtyOverridden ? "Yes" : "—"}</td>
+                                    <td className="px-2 py-1 text-slate-600">{line.remarks ?? "—"}</td>
+                                  </tr>
+                                ))
+                              )}
+                            </tbody>
+                          </table>
+                        </td>
+                      </tr>
+                    ) : null}
+                  </React.Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function KpiCard({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-sm">
@@ -1528,12 +1789,22 @@ function PurchasePlanningTab({
   }
 
   const lines = data.lines;
-  const totalRmItems = lines.length;
-  const totalNet = lines.reduce((a, l) => a + l.netRequirementQty, 0);
-  const totalReleased = lines.reduce((a, l) => a + l.alreadyRequisitionedQty, 0);
-  const totalSuggested = lines.reduce((a, l) => a + l.suggestedPurchaseQty, 0);
-  const notReleasedItems = lines.filter((l) => l.procurementStatus === "NOT_RELEASED").length;
-  const overReleasedItems = lines.filter((l) => l.procurementStatus === "OVER_RELEASED").length;
+  const totalRmItems = data.totals?.rmItemCount ?? lines.length;
+  const totalCurrent =
+    data.totals?.currentRequirementTotal ??
+    lines.reduce((a, l) => a + num(l.currentRequirementQty ?? l.netRequirementQty), 0);
+  const totalReleased =
+    data.totals?.previouslyReleasedTotal ??
+    lines.reduce((a, l) => a + num(l.previouslyReleasedQty ?? l.alreadyRequisitionedQty), 0);
+  const totalAdditional =
+    data.totals?.additionalRequirementTotal ??
+    lines.reduce((a, l) => a + num(l.additionalRequirementQty ?? l.suggestedPurchaseQty), 0);
+  const totalReduction =
+    data.totals?.reductionTotal ?? lines.reduce((a, l) => a + num(l.reductionQty ?? 0), 0);
+  const coveragePct =
+    data.totals?.coveragePct ??
+    (totalCurrent > 0 ? round3((totalReleased / totalCurrent) * 100) : null);
+  const hasReduction = lines.some((l) => num(l.reductionQty) > 0);
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-2">
@@ -1547,22 +1818,33 @@ function PurchasePlanningTab({
         </div>
       ) : (
         <div className="rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-[12px] text-sky-800">
-          Releasing emits only the procurement delta into the Material Requirement flow. Full-plan release only.
+          Purchase Planning uses the <strong>current locked revision</strong> only. Additional requirement is the delta
+          over previously released quantity — not full re-procurement.
         </div>
       )}
 
+      {hasReduction ? (
+        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-900">
+          <strong>Reduction</strong> means the latest revision requires less than previously released. The system will
+          reduce open MR quantity where possible. PO-backed quantity will remain as surplus and needs attention.
+        </div>
+      ) : null}
+
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
-        <KpiCard label="Total RM items" value={String(totalRmItems)} />
-        <KpiCard label="Net procurement req." value={totalNet.toLocaleString()} />
-        <KpiCard label="Already released" value={totalReleased.toLocaleString()} />
-        <KpiCard label="Suggested purchase" value={totalSuggested.toLocaleString()} />
-        <KpiCard label="Not released items" value={String(notReleasedItems)} />
-        <KpiCard label="Over released items" value={String(overReleasedItems)} />
+        <KpiCard label="RM items" value={String(totalRmItems)} />
+        <KpiCard label="Current requirement total" value={totalCurrent.toLocaleString()} />
+        <KpiCard label="Previously released total" value={totalReleased.toLocaleString()} />
+        <KpiCard label="Additional requirement total" value={totalAdditional.toLocaleString()} />
+        <KpiCard label="Reduction total" value={totalReduction.toLocaleString()} />
+        <KpiCard
+          label="Coverage %"
+          value={coveragePct != null ? `${coveragePct.toLocaleString()}%` : "—"}
+        />
       </div>
 
       <div className="flex items-center justify-between">
         <span className="text-[12px] text-slate-500">
-          Snapshot revision {data.revision} · {lines.length} RM lines (read-only)
+          Current revision {data.revision} · {lines.length} RM lines (read-only)
         </span>
         <div className="flex items-center gap-2">
           <Button type="button" variant="outline" size="sm" onClick={onRefresh} disabled={loading} className="h-8">
@@ -1576,7 +1858,7 @@ function PurchasePlanningTab({
             disabled={loading || lines.every((l) => l.netRequirementQty <= 0)}
             className="h-8 bg-sky-700 hover:bg-sky-800"
           >
-            Release to Procurement
+            Release Delta to Procurement
           </Button>
         </div>
       </div>
@@ -1587,13 +1869,10 @@ function PurchasePlanningTab({
             <tr>
               <th className="px-3 py-2">RM item</th>
               <th className="px-3 py-2 w-16">Unit</th>
-              <th className="px-3 py-2 w-24 text-right">Gross</th>
-              <th className="px-3 py-2 w-24 text-right">Free</th>
-              <th className="px-3 py-2 w-24 text-right">Reserved</th>
-              <th className="px-3 py-2 w-24 text-right">Incoming</th>
-              <th className="px-3 py-2 w-28 text-right">Net req.</th>
-              <th className="px-3 py-2 w-28 text-right">Released</th>
-              <th className="px-3 py-2 w-24 text-right">Variance</th>
+              <th className="px-3 py-2 w-28 text-right">Current requirement</th>
+              <th className="px-3 py-2 w-28 text-right">Previously released</th>
+              <th className="px-3 py-2 w-28 text-right">Additional requirement</th>
+              <th className="px-3 py-2 w-24 text-right">Reduction</th>
               <th className="px-3 py-2 w-28 text-right">Suggested buy</th>
               <th className="px-3 py-2 w-32">Status</th>
               <th className="px-3 py-2">Warnings</th>
@@ -1602,38 +1881,51 @@ function PurchasePlanningTab({
           <tbody>
             {lines.length === 0 ? (
               <tr>
-                <td colSpan={12} className="px-3 py-8 text-center text-sm text-slate-400">
+                <td colSpan={9} className="px-3 py-8 text-center text-sm text-slate-400">
                   No RM demand from this plan.
                 </td>
               </tr>
             ) : (
               lines.map((l) => {
                 const meta = PURCHASE_STATUS_META[l.procurementStatus];
+                const currentReq = num(l.currentRequirementQty ?? l.netRequirementQty);
+                const prevReleased = num(l.previouslyReleasedQty ?? l.alreadyRequisitionedQty);
+                const additional = num(l.additionalRequirementQty ?? l.suggestedPurchaseQty);
+                const reduction = num(l.reductionQty ?? Math.max(0, -num(l.deltaQty ?? l.varianceQty)));
+                const suggestedBuy = num(l.suggestedPurchaseQty ?? additional);
                 return (
                   <tr key={l.rmItemId} className="border-t border-slate-100 align-middle">
                     <td className="px-3 py-1.5 font-medium text-slate-800">{l.rmItemName ?? `Item ${l.rmItemId}`}</td>
                     <td className="px-3 py-1.5 text-slate-500">{l.unit ?? "—"}</td>
-                    <td className="px-3 py-1.5 text-right tabular-nums text-slate-800">{l.grossDemandQty.toLocaleString()}</td>
-                    <td className="px-3 py-1.5 text-right tabular-nums text-slate-600">{l.freeStockSnapshot.toLocaleString()}</td>
-                    <td className="px-3 py-1.5 text-right tabular-nums text-slate-600">{l.reservedSnapshot.toLocaleString()}</td>
-                    <td className="px-3 py-1.5 text-right tabular-nums text-slate-600">{l.incomingPoSnapshot.toLocaleString()}</td>
-                    <td className="px-3 py-1.5 text-right font-semibold tabular-nums text-slate-800">{l.netRequirementQty.toLocaleString()}</td>
-                    <td className="px-3 py-1.5 text-right tabular-nums text-slate-600">{l.alreadyRequisitionedQty.toLocaleString()}</td>
-                    <td
-                      className={cn(
-                        "px-3 py-1.5 text-right tabular-nums",
-                        l.varianceQty > 0 ? "text-red-700" : l.varianceQty < 0 ? "text-amber-700" : "text-slate-500",
-                      )}
-                    >
-                      {l.varianceQty.toLocaleString()}
+                    <td className="px-3 py-1.5 text-right font-medium tabular-nums text-slate-800">
+                      {currentReq.toLocaleString()}
+                    </td>
+                    <td className="px-3 py-1.5 text-right tabular-nums text-slate-600">
+                      {prevReleased.toLocaleString()}
                     </td>
                     <td
                       className={cn(
                         "px-3 py-1.5 text-right font-semibold tabular-nums",
-                        l.suggestedPurchaseQty > 0 ? "text-sky-700" : "text-slate-400",
+                        additional > 0 ? "text-sky-700" : "text-slate-400",
                       )}
                     >
-                      {l.suggestedPurchaseQty.toLocaleString()}
+                      {additional.toLocaleString()}
+                    </td>
+                    <td
+                      className={cn(
+                        "px-3 py-1.5 text-right tabular-nums",
+                        reduction > 0 ? "text-amber-700 font-semibold" : "text-slate-400",
+                      )}
+                    >
+                      {reduction.toLocaleString()}
+                    </td>
+                    <td
+                      className={cn(
+                        "px-3 py-1.5 text-right font-semibold tabular-nums",
+                        suggestedBuy > 0 ? "text-sky-700" : "text-slate-400",
+                      )}
+                    >
+                      {suggestedBuy.toLocaleString()}
                     </td>
                     <td className="px-3 py-1.5">
                       <span className={cn("inline-flex rounded px-1.5 py-0.5 text-[10px] font-semibold", meta.cls)}>
@@ -2415,7 +2707,7 @@ function ProductionPlanTab({
 
       {isLocked ? (
         <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] font-medium text-amber-900">
-          This plan is locked. Reopen is not implemented in this phase.
+          This plan is locked. Use <strong>Reopen plan</strong> in the header to edit the next revision draft.
         </div>
       ) : (
         <div className="flex flex-wrap items-center gap-2">

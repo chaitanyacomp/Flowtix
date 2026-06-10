@@ -21,6 +21,8 @@ const {
   getProductionLines,
   updateProductionLines,
   lockMonthlyPlan,
+  reopenMonthlyPlan,
+  getPlanRevisions,
   getRmPlanning,
   getPurchasePlanning,
   releaseToProcurement,
@@ -253,6 +255,34 @@ monthlyPlanningRouter.post(
   },
 );
 
+monthlyPlanningRouter.post(
+  "/:id/reopen",
+  requireAuth,
+  requireRole(MONTHLY_PLANNING_WRITE_ROLES),
+  async (req, res, next) => {
+    try {
+      const data = await reopenMonthlyPlan({ planId: req.params.id, actorUserId: actorUserId(req) });
+      return res.json(data);
+    } catch (e) {
+      return handleServiceError(e, res, next);
+    }
+  },
+);
+
+monthlyPlanningRouter.get(
+  "/:id/revisions",
+  requireAuth,
+  requireRole(MONTHLY_PLANNING_READ_ROLES),
+  async (req, res, next) => {
+    try {
+      const data = await getPlanRevisions({ planId: req.params.id });
+      return res.json(data);
+    } catch (e) {
+      return handleServiceError(e, res, next);
+    }
+  },
+);
+
 monthlyPlanningRouter.get(
   "/:id/rm-planning",
   requireAuth,
@@ -277,11 +307,16 @@ monthlyPlanningRouter.get(
   requireRole(MONTHLY_PLANNING_READ_ROLES),
   async (req, res, next) => {
     try {
-      const revision = req.query.revision != null ? Number(req.query.revision) : null;
-      const data = await getPurchasePlanning({
-        planId: req.params.id,
-        revision: Number.isFinite(revision) && revision > 0 ? revision : null,
-      });
+      if (req.query.revision != null) {
+        return res.status(422).json({
+          error: {
+            code: "PURCHASE_REVISION_NOT_SUPPORTED",
+            message:
+              "Purchase Planning always uses the current locked revision. Omit the revision query param.",
+          },
+        });
+      }
+      const data = await getPurchasePlanning({ planId: req.params.id });
       return res.json(data);
     } catch (e) {
       return handleServiceError(e, res, next);

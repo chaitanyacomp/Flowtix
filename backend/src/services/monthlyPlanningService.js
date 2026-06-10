@@ -405,7 +405,7 @@ async function lockMonthlyPlan({ db = prisma, planId, actorUserId = null, deps =
 
     const planLines = await tx.monthlyProductionPlanLine.findMany({
       where: { planId: plan.id },
-      include: { fgItem: { select: { id: true, itemName: true } } },
+      include: { fgItem: { select: { id: true, itemName: true, unit: true } } },
       orderBy: { id: "asc" },
     });
     const activeLines = planLines.filter((l) => Number(l.plannedFgQty) > 0);
@@ -513,11 +513,183 @@ async function lockMonthlyPlan({ db = prisma, planId, actorUserId = null, deps =
       await tx.rmPlanLine.createMany({ data: lineData });
     }
 
+    await tx.monthlyProductionPlanRevisionLine.createMany({
+      data: activeLines.map((l) => ({
+        planId: plan.id,
+        revision: newRevision,
+        fgItemId: l.fgItemId,
+        suggestedFgQty: round3(l.suggestedFgQty),
+        plannedFgQty: round3(l.plannedFgQty),
+        plannedQtyOverridden: Boolean(l.plannedQtyOverridden),
+        source: l.source,
+        remarks: l.remarks ?? null,
+        unitSnapshot: l.fgItem?.unit ?? null,
+        itemNameSnapshot: l.fgItem?.itemName ?? null,
+      })),
+    });
+
     return { planId: plan.id, revision: newRevision };
   };
 
   const result = typeof db.$transaction === "function" ? await db.$transaction(run) : await run(db);
   return getRmPlanning({ db, planId: result.planId, revision: result.revision });
+}
+
+/**
+ * Reopen a LOCKED plan for editing the next revision draft.
+ * Does not change currentRevision, delete snapshots, or touch procurement/stock.
+ */
+async function reopenMonthlyPlan({ db = prisma, planId, actorUserId = null } = {}) {
+  const run = async (tx) => {
+    const id = Number(planId);
+    if (!Number.isFinite(id) || id <= 0) {
+      throw new MonthlyPlanningError("INVALID_PLAN_ID", "Invalid plan id.", 422);
+    }
+    const plan = await tx.monthlyProductionPlan.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        status: true,
+        currentRevision: true,
+        periodKey: true,
+        docNo: true,
+        remarks: true,
+        lockedAt: true,
+        reopenedAt: true,
+        releasedAt: true,
+        releasedRevision: true,
+        createdByUserId: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+    if (!plan) {
+      throw new MonthlyPlanningError("PLAN_NOT_FOUND", "Monthly Production Plan not found.", 404);
+    }
+    if (plan.status !== "LOCKED") {
+      throw new MonthlyPlanningError(
+        "PLAN_NOT_REOPENABLE",
+        "Only LOCKED plans can be reopened.",
+        409,
+      );
+    }
+    if (plan.currentRevision < 1) {
+      throw new MonthlyPlanningError(
+        "PLAN_NOT_REOPENABLE",
+        "Plan has no locked revision to reopen from.",
+        409,
+      );
+    }
+
+    const now = new Date();
+    const updated = await tx.monthlyProductionPlan.update({
+      where: { id: plan.id },
+      data: {
+        status: "DRAFT",
+        reopenedAt: now,
+        reopenedByUserId: actorUserId ?? null,
+      },
+    });
+
+    return {
+      planId: plan.id,
+      status: updated.status,
+      currentRevision: plan.currentRevision,
+      draftForRevision: plan.currentRevision + 1,
+      plan: toPlanSummary(updated),
+    };
+  };
+
+  return typeof db.$transaction === "function" ? db.$transaction(run) : run(db);
+}
+
+function toRevisionFgLine(line) {
+  return {
+    fgItemId: line.fgItemId,
+    itemName: line.itemNameSnapshot ?? line.fgItem?.itemName ?? null,
+    unit: line.unitSnapshot ?? line.fgItem?.unit ?? null,
+    suggestedFgQty: round3(line.suggestedFgQty),
+    plannedFgQty: round3(line.plannedFgQty),
+    plannedQtyOverridden: Boolean(line.plannedQtyOverridden),
+    source: line.source,
+    remarks: line.remarks ?? null,
+  };
+}
+
+/**
+ * Read-only revision history: FG snapshots per revision + RM snapshot metadata.
+ */
+async function getPlanRevisions({ db = prisma, planId } = {}) {
+  const id = Number(planId);
+  if (!Number.isFinite(id) || id <= 0) {
+    throw new MonthlyPlanningError("INVALID_PLAN_ID", "Invalid plan id.", 422);
+  }
+
+  const plan = await db.monthlyProductionPlan.findUnique({
+    where: { id },
+    select: {
+      id: true,
+      periodKey: true,
+      status: true,
+      currentRevision: true,
+      releasedRevision: true,
+      lockedAt: true,
+      lockedByUserId: true,
+      lockedBy: { select: { id: true, name: true, email: true } },
+    },
+  });
+  if (!plan) {
+    throw new MonthlyPlanningError("PLAN_NOT_FOUND", "Monthly Production Plan not found.", 404);
+  }
+
+  const [rmPlans, revisionLines] = await Promise.all([
+    db.rmPlan.findMany({
+      where: { planId: plan.id },
+      orderBy: { revision: "desc" },
+      include: {
+        recalculatedBy: { select: { id: true, name: true, email: true } },
+      },
+    }),
+    db.monthlyProductionPlanRevisionLine.findMany({
+      where: { planId: plan.id },
+      orderBy: [{ revision: "desc" }, { id: "asc" }],
+      include: { fgItem: { select: { id: true, itemName: true, unit: true } } },
+    }),
+  ]);
+
+  const fgLinesByRevision = new Map();
+  for (const line of revisionLines) {
+    if (!fgLinesByRevision.has(line.revision)) fgLinesByRevision.set(line.revision, []);
+    fgLinesByRevision.get(line.revision).push(toRevisionFgLine(line));
+  }
+
+  const revisions = rmPlans.map((rmPlan) => {
+    const isCurrent = plan.status === "LOCKED" && rmPlan.revision === plan.currentRevision;
+    const statusLabel = isCurrent ? "CURRENT" : "LOCKED";
+    return {
+      revision: rmPlan.revision,
+      lockedAt: rmPlan.recalculatedAt,
+      lockedByUserId: rmPlan.recalculatedByUserId ?? null,
+      lockedByName: rmPlan.recalculatedBy?.name ?? rmPlan.recalculatedBy?.email ?? null,
+      totalFgPlannedQty: round3(rmPlan.totalFgPlannedQty),
+      released: plan.releasedRevision != null && plan.releasedRevision === rmPlan.revision,
+      status: statusLabel,
+      isCurrent,
+      hasRmSnapshot: true,
+      fgLines: fgLinesByRevision.get(rmPlan.revision) ?? [],
+    };
+  });
+
+  return {
+    planId: plan.id,
+    periodKey: plan.periodKey,
+    status: plan.status,
+    currentRevision: plan.currentRevision,
+    releasedRevision: plan.releasedRevision ?? null,
+    draftForRevision: plan.status === "DRAFT" && plan.currentRevision >= 1 ? plan.currentRevision + 1 : null,
+    lastLockedRevision: plan.currentRevision >= 1 ? plan.currentRevision : null,
+    revisions,
+  };
 }
 
 /**
@@ -622,6 +794,69 @@ function derivePurchaseStatus(net, alreadyRequisitioned) {
 }
 
 /**
+ * Phase 8C — Map one RM line for Purchase Planning with delta clarity aliases.
+ * Does not alter the underlying delta engine (net − already released).
+ */
+function mapPurchasePlanningLine(line, agg) {
+  const currentRequirementQty = round3(Number(line.netRequirementQty));
+  const previouslyReleasedQty = round3(agg.requisitioned);
+  const alreadyProcuredQty = round3(agg.procured);
+  const deltaQty = round3(currentRequirementQty - previouslyReleasedQty);
+  const additionalRequirementQty = round3(Math.max(0, deltaQty));
+  const reductionQty = round3(Math.max(0, -deltaQty));
+  const varianceQty = deltaQty;
+  const suggestedPurchaseQty = additionalRequirementQty;
+
+  return {
+    rmItemId: line.rmItemId,
+    rmItemName: line.rmItemName,
+    unit: line.unit,
+    grossDemandQty: round3(Number(line.grossDemandQty)),
+    freeStockSnapshot: round3(Number(line.freeStockSnapshot)),
+    reservedSnapshot: round3(Number(line.reservedSnapshot)),
+    incomingPoSnapshot: round3(Number(line.incomingPoSnapshot)),
+    netRequirementQty: currentRequirementQty,
+    alreadyRequisitionedQty: previouslyReleasedQty,
+    alreadyProcuredQty,
+    varianceQty,
+    suggestedPurchaseQty,
+    currentRequirementQty,
+    previouslyReleasedQty,
+    additionalRequirementQty,
+    reductionQty,
+    deltaQty,
+    procurementStatus: derivePurchaseStatus(currentRequirementQty, previouslyReleasedQty),
+    vendorSuggestion: null,
+    belowMinStockFlag: line.belowMinStockFlag,
+    leadTimeRiskFlag: line.leadTimeRiskFlag,
+    warnings: line.warnings,
+  };
+}
+
+function summarizePurchasePlanningLines(lines) {
+  const totals = {
+    rmItemCount: lines.length,
+    currentRequirementTotal: 0,
+    previouslyReleasedTotal: 0,
+    additionalRequirementTotal: 0,
+    reductionTotal: 0,
+  };
+  for (const line of lines) {
+    totals.currentRequirementTotal = round3(totals.currentRequirementTotal + line.currentRequirementQty);
+    totals.previouslyReleasedTotal = round3(totals.previouslyReleasedTotal + line.previouslyReleasedQty);
+    totals.additionalRequirementTotal = round3(
+      totals.additionalRequirementTotal + line.additionalRequirementQty,
+    );
+    totals.reductionTotal = round3(totals.reductionTotal + line.reductionQty);
+  }
+  totals.coveragePct =
+    totals.currentRequirementTotal > 0
+      ? round3((totals.previouslyReleasedTotal / totals.currentRequirementTotal) * 100)
+      : null;
+  return totals;
+}
+
+/**
  * Sum of requiredQty / procuredQty per RM item across non-reversed MONTHLY_PLAN
  * MaterialRequirements linked to this plan. Single source of truth for both the
  * Purchase Planning review and the Release delta calculation.
@@ -650,12 +885,20 @@ async function sumRequisitionedByItem(db, planId) {
 }
 
 /**
- * Phase 4A: read-only Purchase Planning review for a locked plan revision.
- * Computes per-RM variance against any existing MONTHLY_PLAN MaterialRequirements
+ * Phase 4A / 8C: read-only Purchase Planning review for the current locked revision only.
+ * Computes per-RM delta against any existing MONTHLY_PLAN MaterialRequirements
  * linked to this plan. No writes, no release, no MaterialRequirement creation.
  */
 async function getPurchasePlanning({ db = prisma, planId, revision = null } = {}) {
-  const rm = await getRmPlanning({ db, planId, revision });
+  if (revision != null && Number(revision) > 0) {
+    throw new MonthlyPlanningError(
+      "PURCHASE_REVISION_NOT_SUPPORTED",
+      "Purchase Planning always uses the current locked revision. Omit the revision query param.",
+      422,
+    );
+  }
+
+  const rm = await getRmPlanning({ db, planId, revision: null });
   if (!rm.locked || !rm.exists) {
     return {
       locked: rm.locked,
@@ -664,42 +907,19 @@ async function getPurchasePlanning({ db = prisma, planId, revision = null } = {}
       status: rm.status,
       currentRevision: rm.currentRevision,
       revision: rm.revision,
+      usesCurrentRevisionOnly: true,
       availableRevisions: rm.availableRevisions,
       rmPlan: rm.rmPlan,
       lines: [],
+      totals: summarizePurchasePlanningLines([]),
     };
   }
 
-  // Existing MONTHLY_PLAN requisitions linked to this plan (variance anchor).
-  // Reversed MRs are excluded. Empty until a release happens.
   const requisitionedByItem = await sumRequisitionedByItem(db, rm.planId);
 
   const lines = rm.lines.map((l) => {
     const agg = requisitionedByItem.get(l.rmItemId) || { requisitioned: 0, procured: 0 };
-    const net = round3(Number(l.netRequirementQty));
-    const alreadyRequisitionedQty = round3(agg.requisitioned);
-    const alreadyProcuredQty = round3(agg.procured);
-    const varianceQty = round3(net - alreadyRequisitionedQty);
-    const suggestedPurchaseQty = round3(Math.max(0, varianceQty));
-    return {
-      rmItemId: l.rmItemId,
-      rmItemName: l.rmItemName,
-      unit: l.unit,
-      grossDemandQty: round3(Number(l.grossDemandQty)),
-      freeStockSnapshot: round3(Number(l.freeStockSnapshot)),
-      reservedSnapshot: round3(Number(l.reservedSnapshot)),
-      incomingPoSnapshot: round3(Number(l.incomingPoSnapshot)),
-      netRequirementQty: net,
-      alreadyRequisitionedQty,
-      alreadyProcuredQty,
-      varianceQty,
-      suggestedPurchaseQty,
-      procurementStatus: derivePurchaseStatus(net, alreadyRequisitionedQty),
-      vendorSuggestion: null, // Phase 4A: no vendor logic
-      belowMinStockFlag: l.belowMinStockFlag,
-      leadTimeRiskFlag: l.leadTimeRiskFlag,
-      warnings: l.warnings,
-    };
+    return mapPurchasePlanningLine(l, agg);
   });
 
   return {
@@ -709,9 +929,11 @@ async function getPurchasePlanning({ db = prisma, planId, revision = null } = {}
     status: rm.status,
     currentRevision: rm.currentRevision,
     revision: rm.revision,
+    usesCurrentRevisionOnly: true,
     availableRevisions: rm.availableRevisions,
     rmPlan: rm.rmPlan,
     lines,
+    totals: summarizePurchasePlanningLines(lines),
   };
 }
 
@@ -905,7 +1127,11 @@ module.exports = {
   getProductionLines,
   updateProductionLines,
   lockMonthlyPlan,
+  reopenMonthlyPlan,
+  getPlanRevisions,
   getRmPlanning,
   getPurchasePlanning,
+  mapPurchasePlanningLine,
+  summarizePurchasePlanningLines,
   releaseToProcurement,
 };

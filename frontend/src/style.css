@@ -614,10 +614,121 @@
     @apply border-b-0;
   }
 
+  /** GRN print-only table columns hidden on screen (P5D). */
+  .grn-col-print-only {
+    display: none;
+  }
+
+  /** P5G/P5H — shared commercial document grid (PO + GRN). */
+  #rm-po-supplier-section-printable,
+  #grn-document-printable {
+    display: flex;
+    justify-content: center;
+    width: 100%;
+  }
+
+  .procurement-commercial-doc {
+    font-size: 11.5px;
+    line-height: 1.35;
+  }
+
+  .procurement-doc-grid,
+  .procurement-doc-print-inner {
+    box-sizing: border-box;
+    width: 85%;
+    max-width: 85%;
+    margin-left: auto;
+    margin-right: auto;
+    padding-left: 0;
+    padding-right: 0;
+  }
+
+  .procurement-doc-title {
+    font-size: 19px;
+    line-height: 1.2;
+  }
+
+  .procurement-doc-section-heading {
+    font-size: 12px;
+    line-height: 1.3;
+  }
+
+  .procurement-doc-body-text {
+    font-size: 11.5px;
+    line-height: 1.35;
+  }
+
+  .procurement-doc-section {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .procurement-doc-party-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.75rem;
+    align-items: start;
+  }
+
+  .procurement-doc-party-grid > * {
+    min-width: 0;
+  }
+
+  .procurement-doc-table-section {
+    width: 100%;
+    max-width: 100%;
+    overflow: hidden;
+  }
+
+  .procurement-doc-table-section table,
+  .rm-po-doc-table,
+  .grn-doc-table {
+    width: 100%;
+    max-width: 100%;
+    font-size: 11.5px;
+  }
+
+  .procurement-doc-nowrap {
+    white-space: nowrap;
+  }
+
+  .procurement-doc-table-section + .procurement-doc-trailing-section,
+  .procurement-doc-table-section + footer.procurement-doc-trailing-section {
+    margin-top: 0;
+    padding-top: 0.35rem;
+    border-top: none;
+  }
+
+  .procurement-doc-trailing-section {
+    display: flex;
+    justify-content: flex-end;
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .procurement-doc-trailing-section + .procurement-doc-trailing-section {
+    padding-top: 0.35rem;
+  }
+
+  .procurement-doc-trailing-block {
+    width: 100%;
+    max-width: 16rem;
+    min-width: 11rem;
+    flex-shrink: 0;
+  }
+
+  .procurement-doc-totals {
+    font-size: 12px;
+  }
+
+  .procurement-doc-grand-total {
+    font-size: 15px;
+  }
+
   @media print {
     @page {
       size: A4 portrait;
-      margin: 12mm;
+      margin: 12mm 14mm;
     }
     body * {
       visibility: hidden;
@@ -692,6 +803,43 @@
       background: #fff !important;
       color: #111 !important;
     }
+    /** P5I — print uses full A4 printable width; screen keeps 85% in non-print rules. */
+    body.rm-po-supplier-print #rm-po-supplier-section-printable,
+    body.grn-document-print #grn-document-printable {
+      display: flex !important;
+      justify-content: center !important;
+      width: 100% !important;
+    }
+    body.rm-po-supplier-print #rm-po-supplier-section-printable .procurement-doc-grid,
+    body.rm-po-supplier-print #rm-po-supplier-section-printable .procurement-doc-print-inner,
+    body.grn-document-print #grn-document-printable .procurement-doc-grid,
+    body.grn-document-print #grn-document-printable .procurement-doc-print-inner {
+      width: 100% !important;
+      max-width: 182mm !important;
+      margin-left: auto !important;
+      margin-right: auto !important;
+      padding-left: 0 !important;
+      padding-right: 0 !important;
+      box-sizing: border-box !important;
+    }
+    body.rm-po-supplier-print #rm-po-supplier-section-printable .procurement-doc-section,
+    body.grn-document-print #grn-document-printable .procurement-doc-section {
+      width: 100% !important;
+      max-width: 100% !important;
+    }
+    body.rm-po-supplier-print #rm-po-supplier-section-printable .procurement-doc-table-section table,
+    body.grn-document-print #grn-document-printable .procurement-doc-table-section table,
+    body.rm-po-supplier-print #rm-po-supplier-section-printable .rm-po-doc-table,
+    body.grn-document-print #grn-document-printable .grn-doc-table {
+      width: 100% !important;
+      max-width: 100% !important;
+    }
+    body.rm-po-supplier-print #rm-po-supplier-section-printable .procurement-doc-trailing-block,
+    body.grn-document-print #grn-document-printable .procurement-doc-trailing-block {
+      max-width: 38% !important;
+      width: 38% !important;
+      min-width: 11rem !important;
+    }
     body.rm-po-supplier-print .rm-po-no-print,
     body.rm-po-supplier-print .rm-po-screen-only,
     body.rm-po-supplier-print .rm-po-internal-section {
@@ -701,20 +849,80 @@
     body.rm-po-supplier-print #rm-po-supplier-section-printable .rm-po-supplier-line-cards {
       display: none !important;
     }
-    body.rm-po-supplier-print #rm-po-supplier-section-printable table {
+    body.rm-po-supplier-print #rm-po-supplier-section-printable {
+      font-size: 11.5px;
+      line-height: 1.35;
+    }
+    body.rm-po-supplier-print #rm-po-supplier-section-printable .procurement-doc-title {
+      font-size: 19px !important;
+    }
+    body.rm-po-supplier-print #rm-po-supplier-section-printable .procurement-doc-section-heading {
+      font-size: 12px !important;
+    }
+    body.rm-po-supplier-print #rm-po-supplier-section-printable .procurement-doc-body-text {
+      font-size: 11.5px !important;
+    }
+    body.rm-po-supplier-print #rm-po-supplier-section-printable .procurement-doc-totals {
+      font-size: 12px !important;
+    }
+    body.rm-po-supplier-print #rm-po-supplier-section-printable .procurement-doc-grand-total {
+      font-size: 15px !important;
+    }
+    body.rm-po-supplier-print #rm-po-supplier-section-printable header {
+      padding-bottom: 0.35rem !important;
+    }
+    body.rm-po-supplier-print #rm-po-supplier-section-printable .rm-po-party-panel,
+    body.grn-document-print #grn-document-printable .grn-party-panel {
+      padding: 0.5rem 0.75rem !important;
+      border-color: #cbd5e1 !important;
+    }
+    body.grn-document-print #grn-document-printable [data-testid="grn-party-blocks"] {
+      gap: 0.75rem !important;
+    }
+    body.rm-po-supplier-print #rm-po-supplier-section-printable .rm-po-doc-table {
       width: 100% !important;
-      font-size: 9pt;
+      font-size: 11.5px !important;
       border-collapse: collapse;
     }
-    body.rm-po-supplier-print #rm-po-supplier-section-printable thead {
+    body.rm-po-supplier-print #rm-po-supplier-section-printable .rm-po-doc-table thead {
       display: table-header-group;
     }
-    body.rm-po-supplier-print #rm-po-supplier-section-printable table tbody tr {
+    body.rm-po-supplier-print #rm-po-supplier-section-printable .rm-po-doc-table tbody tr {
       page-break-inside: avoid;
     }
-    body.rm-po-supplier-print #rm-po-supplier-section-printable th,
-    body.rm-po-supplier-print #rm-po-supplier-section-printable td {
-      padding: 1px 3px !important;
+    body.rm-po-supplier-print #rm-po-supplier-section-printable .rm-po-doc-table th {
+      font-size: 11.5px !important;
+      font-weight: 700 !important;
+      background: #f1f5f9 !important;
+      border: 1px solid #cbd5e1 !important;
+      padding: 5px 7px !important;
+      vertical-align: middle;
+    }
+    body.rm-po-supplier-print #rm-po-supplier-section-printable .rm-po-doc-table td {
+      font-size: 11.5px !important;
+      border: 1px solid #e2e8f0 !important;
+      padding: 5px 7px !important;
+      vertical-align: top;
+    }
+    body.rm-po-supplier-print #rm-po-supplier-section-printable .procurement-doc-nowrap {
+      white-space: nowrap !important;
+    }
+    body.rm-po-supplier-print #rm-po-supplier-section-printable .rm-po-signatory-block {
+      overflow: visible !important;
+    }
+    body.rm-po-supplier-print #rm-po-supplier-section-printable .rm-po-signatory-company {
+      font-size: 11.5px !important;
+      white-space: normal !important;
+      overflow-wrap: break-word;
+      line-height: 1.35;
+    }
+    body.rm-po-supplier-print #rm-po-supplier-section-printable .rm-po-signatory-line {
+      margin-top: 1rem !important;
+      margin-bottom: 0.5rem !important;
+    }
+    body.rm-po-supplier-print #rm-po-supplier-section-printable .rm-po-signatory-label,
+    body.rm-po-supplier-print #rm-po-supplier-section-printable [data-testid="rm-po-supplier-print-footer"] {
+      font-size: 9.5pt !important;
     }
     body.rm-po-supplier-print #rm-po-supplier-section-printable .rm-po-print-only {
       display: block !important;
@@ -724,6 +932,147 @@
     body.rm-po-supplier-print #rm-po-supplier-section-printable section,
     body.rm-po-supplier-print #rm-po-supplier-section-printable footer {
       break-inside: avoid;
+    }
+
+    /* GRN document (P5B / P5D / P5E) */
+    body.grn-document-print * {
+      visibility: hidden;
+    }
+    body.grn-document-print #grn-document-printable,
+    body.grn-document-print #grn-document-printable * {
+      visibility: visible;
+    }
+    body.grn-document-print #grn-document-printable {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 100%;
+      max-width: none !important;
+      box-shadow: none !important;
+      border: none !important;
+      padding: 0 !important;
+      margin: 0 !important;
+      background: #fff !important;
+      color: #111 !important;
+      font-size: 11.5px;
+      line-height: 1.35;
+    }
+    body.grn-document-print .grn-no-print,
+    body.grn-document-print .grn-screen-only,
+    body.grn-document-print .grn-internal-section {
+      display: none !important;
+      visibility: hidden !important;
+    }
+    body.grn-document-print .grn-col-screen-only {
+      display: none !important;
+      visibility: hidden !important;
+    }
+    body.grn-document-print .grn-col-print-only {
+      display: table-cell !important;
+      visibility: visible !important;
+    }
+    body.grn-document-print #grn-document-printable .grn-document-title,
+    body.grn-document-print #grn-document-printable .procurement-doc-title {
+      font-size: 19px !important;
+      font-weight: 700 !important;
+      letter-spacing: 0.08em;
+      line-height: 1.2;
+    }
+    body.grn-document-print #grn-document-printable .grn-company-name-text {
+      font-size: 12px !important;
+      font-weight: 700 !important;
+      line-height: 1.3;
+    }
+    body.grn-document-print #grn-document-printable .grn-section-title,
+    body.grn-document-print #grn-document-printable .procurement-doc-section-heading {
+      font-size: 12px !important;
+      font-weight: 700 !important;
+      letter-spacing: 0.04em;
+    }
+    body.grn-document-print #grn-document-printable [data-testid="grn-header-meta"] {
+      font-size: 11.5px !important;
+    }
+    body.grn-document-print #grn-document-printable .procurement-doc-body-text {
+      font-size: 11.5px !important;
+    }
+    body.grn-document-print #grn-document-printable header {
+      padding-top: 0.2rem !important;
+      padding-bottom: 0.35rem !important;
+    }
+    body.grn-document-print #grn-document-printable [data-testid="grn-party-blocks"] {
+      padding-top: 0.35rem !important;
+      padding-bottom: 0.35rem !important;
+      gap: 0.45rem !important;
+    }
+    body.grn-document-print #grn-document-printable [data-testid="grn-document-title-block"] {
+      padding-bottom: 0.45rem !important;
+      margin-bottom: 0.15rem !important;
+    }
+    body.grn-document-print #grn-document-printable section:not(header) {
+      padding-top: 0.3rem !important;
+      padding-bottom: 0.3rem !important;
+    }
+    body.grn-document-print #grn-document-printable .grn-doc-table {
+      width: 100% !important;
+      font-size: 11.5px !important;
+      border-collapse: collapse;
+    }
+    body.grn-document-print #grn-document-printable .grn-doc-table thead {
+      display: table-header-group;
+    }
+    body.grn-document-print #grn-document-printable .grn-doc-table tbody tr {
+      page-break-inside: avoid;
+    }
+    body.grn-document-print #grn-document-printable .grn-doc-table th {
+      font-size: 11.5px !important;
+      font-weight: 700 !important;
+      background: #f1f5f9 !important;
+      border: 1px solid #cbd5e1 !important;
+      padding: 5px 7px !important;
+      vertical-align: middle;
+    }
+    body.grn-document-print #grn-document-printable .grn-doc-table td {
+      font-size: 11.5px !important;
+      border: 1px solid #e2e8f0 !important;
+      padding: 5px 7px !important;
+      vertical-align: top;
+    }
+    body.grn-document-print #grn-document-printable .procurement-doc-nowrap {
+      white-space: nowrap !important;
+    }
+    body.grn-document-print #grn-document-printable .grn-doc-table .grn-qty-cell {
+      text-align: right !important;
+      font-variant-numeric: tabular-nums;
+    }
+    body.grn-document-print #grn-document-printable .grn-print-only {
+      display: block !important;
+      visibility: visible !important;
+      font-size: 12px !important;
+    }
+    body.grn-document-print #grn-document-printable header,
+    body.grn-document-print #grn-document-printable section,
+    body.grn-document-print #grn-document-printable footer {
+      break-inside: avoid;
+    }
+    body.grn-document-print #grn-document-printable .grn-signatory-block {
+      overflow: visible !important;
+    }
+    body.grn-document-print #grn-document-printable .grn-signatory-company {
+      font-size: 11.5px !important;
+      font-weight: 500 !important;
+      white-space: normal !important;
+      overflow: visible !important;
+      word-break: normal;
+      overflow-wrap: break-word;
+      line-height: 1.35;
+    }
+    body.grn-document-print #grn-document-printable .grn-signatory-line {
+      margin-top: 1rem !important;
+      margin-bottom: 0.5rem !important;
+    }
+    body.grn-document-print #grn-document-printable .grn-signatory-label,
+    body.grn-document-print #grn-document-printable [data-testid="grn-print-footer"] {
+      font-size: 9.5pt !important;
     }
   }
 

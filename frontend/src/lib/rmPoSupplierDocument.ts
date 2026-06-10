@@ -195,6 +195,12 @@ export function resolveRmPoDeliverToBlock(profile: RmPoCompanyProfile | null | u
 export const VENDOR_ADDRESS_MISSING_WARNING =
   "Supplier address not maintained in supplier master";
 
+/** Shared procurement document signatory prefix (PO + GRN). */
+export function formatProcurementSignatoryForLine(companyName: string): string {
+  const name = (companyName ?? "").trim();
+  return name && name !== "—" ? `For ${name}` : "For";
+}
+
 export function supplierDocumentHasErpOnlyContent(source: string): boolean {
   const erpMarkers = [
     "RmPoCommercialSummary",

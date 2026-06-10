@@ -7,6 +7,7 @@ import {
   resolveRmPoTaxDisplay,
   resolveRmPoVendorBlock,
   supplierDocumentHasErpOnlyContent,
+  formatProcurementSignatoryForLine,
   VENDOR_ADDRESS_MISSING_WARNING,
 } from "../../src/lib/rmPoSupplierDocument";
 import type { RmPoRow } from "../../src/pages/rmPurchase/rmPurchaseShared";
@@ -223,10 +224,42 @@ describe("RmPoSupplierDocument P4D-C", () => {
     expect(supplierDocSource).toContain("rm-po-total-igst");
   });
 
+  it("P5F signatory matches GRN style without personal name", () => {
+    expect(formatProcurementSignatoryForLine("Chaitanya Computer Solutions")).toBe(
+      "For Chaitanya Computer Solutions",
+    );
+    expect(supplierDocSource).toContain("formatProcurementSignatoryForLine");
+    expect(supplierDocSource).toContain('data-testid="rm-po-signatory-for-line"');
+    expect(supplierDocSource).toContain("Authorized Signatory");
+    expect(supplierDocSource).not.toContain("signatoryName");
+  });
+
+  it("P5F hides vendor address warning in print", () => {
+    expect(supplierDocSource).toContain("rm-po-screen-only");
+    expect(supplierDocSource).toContain("VENDOR_ADDRESS_MISSING_WARNING");
+  });
+
   it("remarks use boxed section and print-only footer", () => {
     expect(supplierDocSource).toContain('data-testid="rm-po-supplier-remarks"');
     expect(supplierDocSource).toContain("rm-po-supplier-print-footer");
     expect(supplierDocSource).toContain("system generated purchase order");
     expect(supplierDocSource).toContain("rm-po-print-only");
+  });
+
+  it("P5F hard fix uses shared inner wrapper without print px stripping", () => {
+    expect(supplierDocSource).toContain('data-testid="procurement-doc-grid"');
+    expect(supplierDocSource).toContain("procurement-doc-print-inner");
+    expect(supplierDocSource).not.toContain("print:px-0");
+    expect(supplierDocSource).toContain("print:px-2.5");
+  });
+
+  it("P5G commercial grid aligns sections, party blocks, totals and signatory", () => {
+    expect(supplierDocSource).toContain("procurement-doc-grid");
+    expect(supplierDocSource).toContain("procurement-doc-party-grid");
+    expect(supplierDocSource).toContain("procurement-doc-table-section");
+    expect(supplierDocSource).toContain("procurement-doc-trailing-section");
+    expect(supplierDocSource).toContain("procurement-doc-trailing-block");
+    expect(supplierDocSource).not.toContain("max-w-xs");
+    expect(supplierDocSource).not.toContain("max-w-sm");
   });
 });

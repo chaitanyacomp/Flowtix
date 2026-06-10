@@ -1,14 +1,13 @@
 import * as React from "react";
 import { Link } from "react-router-dom";
-import { ChevronDown, ChevronRight, Download, Eye, Printer } from "lucide-react";
-import { Button } from "../ui/button";
+import { ChevronDown, ChevronRight, Eye, Printer } from "lucide-react";
+import { Button, buttonVariants } from "../ui/button";
+import { cn } from "../../lib/utils";
 import { RmPoSupplierDocument } from "./RmPoSupplierDocument";
 import { buildProcurementWorkspaceHref } from "../../lib/woProcurementContinuity";
 import type { RmPoCompanyProfile } from "../../lib/rmPoSupplierDocument";
-import {
-  exportRmPoPdfPlaceholder,
-  printRmPoSupplierSection,
-} from "../../lib/rmPoDocumentActions";
+import { printRmPoSupplierSection } from "../../lib/rmPoDocumentActions";
+import { buildGrnDetailHref } from "../../lib/grnDocumentActions";
 import {
   demandSourceDisplay,
   formatPoDocumentDate,
@@ -236,21 +235,32 @@ function GrnHistoryCard({
             {lineDetails.length} line{lineDetails.length === 1 ? "" : "s"} · {receivedTotal.toFixed(3)} received
           </span>
         </div>
-        {isAdmin && !grn.reversedAt ? (
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="h-8 shrink-0 px-3 text-sm"
-            disabled={reversingGrnId === grn.id}
-            onClick={(e) => {
-              e.stopPropagation();
-              onReverse(grn.id);
-            }}
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          <Link
+            to={buildGrnDetailHref(grn.id)}
+            data-testid={`grn-open-${grn.id}`}
+            onClick={(e) => e.stopPropagation()}
+            className={cn(buttonVariants({ variant: "outline", size: "sm" }), "h-8 px-3 text-sm no-underline")}
           >
-            {reversingGrnId === grn.id ? "Reversing…" : "Reverse"}
-          </Button>
-        ) : null}
+            <Eye className="h-3.5 w-3.5" />
+            Open GRN
+          </Link>
+          {isAdmin && !grn.reversedAt ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-8 px-3 text-sm"
+              disabled={reversingGrnId === grn.id}
+              onClick={(e) => {
+                e.stopPropagation();
+                onReverse(grn.id);
+              }}
+            >
+              {reversingGrnId === grn.id ? "Reversing…" : "Reverse"}
+            </Button>
+          ) : null}
+        </div>
       </button>
       {open ? (
         <div className="border-t border-slate-100 px-4 py-3 text-sm">
@@ -324,18 +334,7 @@ export function RmPoDocumentView({
             onClick={() => printRmPoSupplierSection()}
           >
             <Printer className="h-4 w-4" />
-            Print
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="gap-1.5 text-sm"
-            data-testid="rm-po-export-pdf-btn"
-            onClick={() => exportRmPoPdfPlaceholder(poNo)}
-          >
-            <Download className="h-4 w-4" />
-            Export PDF
+            Print / Save as PDF
           </Button>
           <Button
             type="button"

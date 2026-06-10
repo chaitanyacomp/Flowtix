@@ -34,6 +34,7 @@ import { QuotationsNewPage } from "./pages/QuotationsNewPage";
 import { RmPoGrnPage } from "./pages/RmPoGrnPage";
 import { RmPurchaseListPage } from "./pages/rmPurchase/RmPurchaseListPage";
 import { RmPurchasePoDetailPage } from "./pages/rmPurchase/RmPurchasePoDetailPage";
+import { GrnDetailPage } from "./pages/rmPurchase/GrnDetailPage";
 import { PurchaseBillsListPage } from "./pages/PurchaseBillsListPage";
 import { PurchaseBillNewPage } from "./pages/PurchaseBillNewPage";
 import { PurchaseBillEditPage } from "./pages/PurchaseBillEditPage";
@@ -534,6 +535,14 @@ export default function App() {
           <Route path="create" element={<RmPurchaseListPage />} />
           <Route path=":poId" element={<RmPurchasePoDetailPage />} />
         </Route>
+        <Route
+          path="/grn/:grnId"
+          element={
+            <ProtectedRoute allowedRoles={["ADMIN", "PURCHASE", "STORE"]}>
+              <GrnDetailPage />
+            </ProtectedRoute>
+          }
+        />
         <Route
           path="/rm-purchase/create"
           element={

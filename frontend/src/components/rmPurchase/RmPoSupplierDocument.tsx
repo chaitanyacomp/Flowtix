@@ -10,6 +10,7 @@ import {
   lineAmount,
   resolveRmPoDeliverToBlock,
   resolveRmPoTaxDisplay,
+  formatProcurementSignatoryForLine,
   resolveRmPoVendorBlock,
   stateDisplay,
   VENDOR_ADDRESS_MISSING_WARNING,
@@ -37,11 +38,11 @@ function PartyBlock({
 }) {
   return (
     <div
-      className="rounded border border-slate-200 bg-white px-3 py-2.5 print:px-2 print:py-1.5"
+      className="rm-po-party-panel min-w-0 rounded border border-slate-300 bg-white px-3 py-2 print:px-2.5 print:py-1.5"
       data-testid={testId}
     >
-      <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">{title}</div>
-      <div className="mt-1.5 space-y-1">{children}</div>
+      <div className="procurement-doc-section-heading font-semibold uppercase tracking-wide text-slate-500">{title}</div>
+      <div className="mt-1 space-y-0.5">{children}</div>
     </div>
   );
 }
@@ -60,7 +61,7 @@ function PartyField({
   const text = (value ?? "").trim();
   if (!text) return null;
   return (
-    <div className="flex gap-2 text-[12px] leading-snug print:text-[10pt]" data-testid={testId}>
+    <div className="procurement-doc-body-text flex gap-2 leading-snug" data-testid={testId}>
       <span className="w-[4.25rem] shrink-0 font-medium text-slate-500">{label}</span>
       <span className={cn("min-w-0 text-slate-800", mono && "font-mono text-[11px]")}>{text}</span>
     </div>
@@ -79,7 +80,7 @@ function AddressBlock({
   if (!lines.length) {
     return (
       <div
-        className="rounded border border-amber-200 bg-amber-50/90 px-2 py-1.5 text-[11px] leading-snug text-amber-900 print:border-amber-300 print:bg-amber-50 print:text-[9pt]"
+        className="rm-po-screen-only rounded border border-amber-200 bg-amber-50/90 px-2 py-1.5 text-[11px] leading-snug text-amber-900"
         data-testid={testId ?? "rm-po-address-missing-warning"}
       >
         {missingWarning}
@@ -87,7 +88,7 @@ function AddressBlock({
     );
   }
   return (
-    <div className="space-y-0.5 text-[12px] leading-snug text-slate-700 print:text-[10pt]" data-testid={testId}>
+    <div className="procurement-doc-body-text space-y-0.5 leading-snug text-slate-700" data-testid={testId}>
       {lines.map((line, i) => (
         <div key={i}>{line}</div>
       ))}
@@ -174,7 +175,6 @@ export function RmPoSupplierDocument({ po, poDate, companyProfile, className }: 
   const totals = computeRmPoCommercialTotals(po.lines);
   const taxDisplay = resolveRmPoTaxDisplay(po, totals);
   const poNo = formatRmPoNo(po.id);
-  const signatoryName = (companyProfile?.companySignatoryName ?? "").trim();
   const companyName = (companyProfile?.companyName ?? "").trim();
 
   const buyerLines: string[] = [];
@@ -194,13 +194,17 @@ export function RmPoSupplierDocument({ po, poDate, companyProfile, className }: 
     <div
       id="rm-po-supplier-section-printable"
       data-testid="rm-po-supplier-section"
-      className={cn("rm-po-supplier-doc bg-white text-slate-900", className)}
+      className={cn("rm-po-supplier-doc procurement-commercial-doc bg-white text-slate-900", className)}
     >
+      <div
+        className="procurement-doc-grid procurement-doc-print-inner"
+        data-testid="procurement-doc-grid"
+      >
       <header
-        className="border-b border-slate-300 px-4 py-3 md:px-6 print:px-0 print:py-1.5"
+        className="procurement-doc-section border-b border-slate-300 py-2.5 md:py-3 print:py-1"
         data-testid="rm-po-document-header"
       >
-        <div className="flex flex-wrap items-start justify-between gap-3 print:gap-2">
+        <div className="flex flex-wrap items-start justify-between gap-5 md:gap-6 print:gap-4">
           <div className="flex min-w-0 items-start gap-3 print:gap-2">
             {logoUrl ? (
               <img
@@ -211,10 +215,10 @@ export function RmPoSupplierDocument({ po, poDate, companyProfile, className }: 
               />
             ) : null}
             <div className="min-w-0">
-              <div className="text-base font-bold text-slate-950 print:text-[11pt]" data-testid="rm-po-company-name">
+              <div className="procurement-doc-section-heading text-[13px] font-bold text-slate-950" data-testid="rm-po-company-name">
                 {companyName || "—"}
               </div>
-              <div className="mt-0.5 space-y-0.5 text-[12px] leading-snug text-slate-700 print:text-[9pt]">
+              <div className="procurement-doc-body-text mt-0.5 space-y-0.5 leading-snug text-slate-700">
                 {buyerLines.length ? (
                   buyerLines.map((line, i) => <div key={i}>{line}</div>)
                 ) : (
@@ -222,7 +226,7 @@ export function RmPoSupplierDocument({ po, poDate, companyProfile, className }: 
                 )}
               </div>
               {(companyProfile?.companyGstin ?? "").trim() ? (
-                <div className="mt-1 text-[12px] text-slate-600 print:text-[9pt]">
+                <div className="procurement-doc-body-text mt-1 text-slate-600">
                   <span className="font-medium text-slate-700">GSTIN:</span>{" "}
                   <span className="font-mono">{(companyProfile?.companyGstin ?? "").trim()}</span>
                 </div>
@@ -230,16 +234,16 @@ export function RmPoSupplierDocument({ po, poDate, companyProfile, className }: 
             </div>
           </div>
           <div className="text-right">
-            <div className="text-sm font-bold uppercase tracking-wider text-slate-800 print:text-[10pt]">
+            <div className="procurement-doc-title font-bold uppercase tracking-wider text-slate-800">
               Purchase Order
             </div>
             <div className="mt-1" data-testid="rm-po-number-block">
-              <div className="text-[11px] font-medium uppercase tracking-wide text-slate-500 print:text-[8pt]">
+              <div className="procurement-doc-section-heading font-medium uppercase tracking-wide text-slate-500">
                 Purchase Order No.
               </div>
-              <div className="text-xl font-bold text-slate-950 print:text-[12pt]">{poNo}</div>
+              <div className="procurement-doc-title text-lg font-bold text-slate-950">{poNo}</div>
             </div>
-            <div className="mt-0.5 text-sm text-slate-600 print:text-[9pt]">
+            <div className="procurement-doc-body-text mt-0.5 text-slate-600">
               Date: {formatPoDocumentDate(poDate)}
             </div>
             <span
@@ -261,7 +265,7 @@ export function RmPoSupplierDocument({ po, poDate, companyProfile, className }: 
       </header>
 
       <section
-        className="grid gap-3 border-b border-slate-200 px-4 py-3 sm:grid-cols-2 md:px-6 print:gap-2 print:px-0 print:py-1.5"
+        className="procurement-doc-section procurement-doc-party-grid border-b border-slate-300 py-2 print:gap-2 print:py-1.5"
         data-testid="rm-po-supplier-details"
       >
         <VendorParty vendor={vendor} />
@@ -269,20 +273,20 @@ export function RmPoSupplierDocument({ po, poDate, companyProfile, className }: 
       </section>
 
       <section
-        className="hidden border-b border-slate-200 md:block print:block"
+        className="procurement-doc-section procurement-doc-table-section hidden border-b border-slate-200 md:block print:block"
         data-testid="rm-po-supplier-lines-table"
       >
-        <table className="w-full border-collapse text-sm print:text-[8.5pt]">
+        <table className="rm-po-doc-table w-full border-collapse">
           <thead>
-            <tr className="border-b border-slate-300 bg-slate-50 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-600 print:bg-transparent print:text-[7.5pt]">
-              <th className="w-9 px-2 py-1.5 print:px-1 print:py-0.5">Sr</th>
-              <th className="px-2 py-1.5 print:px-1 print:py-0.5">Item</th>
-              <th className="px-2 py-1.5 print:px-1 print:py-0.5">HSN</th>
-              <th className="px-2 py-1.5 text-right print:px-1 print:py-0.5">Qty</th>
-              <th className="px-2 py-1.5 print:px-1 print:py-0.5">Unit</th>
-              <th className="px-2 py-1.5 text-right print:px-1 print:py-0.5">Rate</th>
-              <th className="px-2 py-1.5 text-right print:px-1 print:py-0.5">GST %</th>
-              <th className="px-2 py-1.5 text-right print:px-1 print:py-0.5">Amount</th>
+            <tr className="rm-po-doc-table-head border-b border-slate-300 bg-slate-50 text-left procurement-doc-section-heading font-semibold uppercase tracking-wide text-slate-600">
+              <th className="w-9 px-2 py-1.5">Sr</th>
+              <th className="px-2 py-1.5">Item</th>
+              <th className="px-2 py-1.5">HSN</th>
+              <th className="procurement-doc-nowrap px-2 py-1.5 text-right">Qty</th>
+              <th className="px-2 py-1.5">Unit</th>
+              <th className="procurement-doc-nowrap px-2 py-1.5 text-right">Rate</th>
+              <th className="procurement-doc-nowrap px-2 py-1.5 text-right">GST %</th>
+              <th className="procurement-doc-nowrap px-2 py-1.5 text-right">Amount</th>
             </tr>
           </thead>
           <tbody>
@@ -290,19 +294,19 @@ export function RmPoSupplierDocument({ po, poDate, companyProfile, className }: 
               const ordered = Number(ln.qty);
               const amt = lineAmount(ln);
               return (
-                <tr key={ln.id} className="border-b border-slate-100">
-                  <td className="px-2 py-1.5 tabular-nums text-slate-600 print:px-1 print:py-0.5">{idx + 1}</td>
-                  <td className="px-2 py-1.5 font-medium text-slate-900 print:px-1 print:py-0.5">
+                <tr key={ln.id} className="border-b border-slate-200">
+                  <td className="px-2 py-1.5 tabular-nums text-slate-600">{idx + 1}</td>
+                  <td className="px-2 py-1.5 font-medium text-slate-900">
                     {ln.item?.itemName ?? `Item #${ln.itemId}`}
                   </td>
-                  <td className="px-2 py-1.5 font-mono text-xs text-slate-700 print:px-1 print:py-0.5">{ln.hsn || "—"}</td>
-                  <td className="px-2 py-1.5 text-right tabular-nums font-semibold text-slate-900 print:px-1 print:py-0.5">
+                  <td className="px-2 py-1.5 font-mono text-slate-700">{ln.hsn || "—"}</td>
+                  <td className="procurement-doc-nowrap px-2 py-1.5 text-right tabular-nums font-semibold text-slate-900">
                     {ordered.toFixed(3)}
                   </td>
-                  <td className="px-2 py-1.5 text-slate-700 print:px-1 print:py-0.5">{ln.unit || "—"}</td>
-                  <td className="px-2 py-1.5 text-right tabular-nums print:px-1 print:py-0.5">{ln.rate ?? "—"}</td>
-                  <td className="px-2 py-1.5 text-right tabular-nums print:px-1 print:py-0.5">{ln.gstRate ?? "—"}</td>
-                  <td className="px-2 py-1.5 text-right tabular-nums font-semibold text-slate-900 print:px-1 print:py-0.5">
+                  <td className="px-2 py-1.5 text-slate-700">{ln.unit || "—"}</td>
+                  <td className="procurement-doc-nowrap px-2 py-1.5 text-right tabular-nums">{ln.rate ?? "—"}</td>
+                  <td className="procurement-doc-nowrap px-2 py-1.5 text-right tabular-nums">{ln.gstRate ?? "—"}</td>
+                  <td className="procurement-doc-nowrap px-2 py-1.5 text-right tabular-nums font-semibold text-slate-900">
                     {formatPoMoney(amt)}
                   </td>
                 </tr>
@@ -313,7 +317,7 @@ export function RmPoSupplierDocument({ po, poDate, companyProfile, className }: 
       </section>
 
       <section
-        className="space-y-2 border-b border-slate-200 p-4 md:hidden print:hidden"
+        className="procurement-doc-section space-y-2 border-b border-slate-200 py-4 md:hidden print:hidden"
         data-testid="rm-po-supplier-line-cards"
       >
         {po.lines.map((ln, idx) => {
@@ -336,16 +340,16 @@ export function RmPoSupplierDocument({ po, poDate, companyProfile, className }: 
       </section>
 
       <footer
-        className="flex flex-wrap justify-end border-b border-slate-200 px-4 py-3 md:px-6 print:px-0 print:py-1"
+        className="procurement-doc-section procurement-doc-trailing-section border-b border-slate-200 py-1.5 print:py-0.5"
         data-testid="rm-po-supplier-footer"
       >
-        <dl className="w-full max-w-xs space-y-1 text-sm print:max-w-[210px] print:space-y-0.5 print:text-[9pt]">
+        <dl className="procurement-doc-trailing-block procurement-doc-totals space-y-0.5">
           <div className="flex justify-between gap-4">
             <dt className="text-slate-600">Subtotal</dt>
             <dd className="tabular-nums font-semibold text-slate-900">₹ {formatPoMoney(totals.subtotal)}</dd>
           </div>
           <TaxTotalRows taxDisplay={taxDisplay} />
-          <div className="flex justify-between gap-4 border-t border-slate-300 pt-1 text-base font-bold text-slate-950 print:pt-0.5 print:text-[10pt]">
+          <div className="procurement-doc-grand-total flex justify-between gap-4 border-t border-slate-300 pt-0.5 font-bold text-slate-950">
             <dt>Grand Total</dt>
             <dd className="tabular-nums">₹ {formatPoMoney(totals.grandTotal)}</dd>
           </div>
@@ -354,7 +358,7 @@ export function RmPoSupplierDocument({ po, poDate, companyProfile, className }: 
 
       {po.remarks?.trim() ? (
         <section
-          className="border-b border-slate-200 px-4 py-3 md:px-6 print:px-0 print:py-1"
+          className="procurement-doc-section border-b border-slate-200 py-3 print:py-1"
           data-testid="rm-po-supplier-remarks"
         >
           <div className="rounded border border-slate-200 bg-slate-50/80 px-3 py-2.5 print:border-slate-300 print:bg-transparent print:px-2 print:py-1.5">
@@ -365,33 +369,27 @@ export function RmPoSupplierDocument({ po, poDate, companyProfile, className }: 
       ) : null}
 
       <section
-        className="px-4 py-4 md:px-6 print:px-0 print:py-2"
+        className="procurement-doc-section procurement-doc-trailing-section py-1.5 print:py-0.5"
         data-testid="rm-po-supplier-signatory"
       >
-        <div className="flex justify-end">
-          <div className="w-full max-w-xs text-right print:max-w-[180px]">
-            <div className="mb-8 border-b border-slate-400 print:mb-6" aria-hidden />
-            <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 print:text-[8pt]">
-              Authorised Signatory
-            </div>
-            {signatoryName ? (
-              <div className="mt-1 text-sm font-semibold text-slate-900 print:text-[9pt]">{signatoryName}</div>
-            ) : (
-              <div className="mt-1 text-sm text-slate-500 print:text-[9pt]">—</div>
-            )}
-            {companyName ? (
-              <div className="mt-0.5 text-[12px] text-slate-600 print:text-[8pt]">{companyName}</div>
-            ) : null}
+          <div className="procurement-doc-trailing-block rm-po-signatory-block text-right">
+            <p className="rm-po-signatory-company procurement-doc-body-text font-medium leading-snug text-slate-800" data-testid="rm-po-signatory-for-line">
+              {formatProcurementSignatoryForLine(companyName || "—")}
+            </p>
+            <div className="rm-po-signatory-line mb-3 mt-4 border-b border-slate-400" aria-hidden />
+            <p className="rm-po-signatory-label procurement-doc-section-heading font-semibold uppercase tracking-wide text-slate-600">
+              Authorized Signatory
+            </p>
           </div>
-        </div>
       </section>
 
       <footer
-        className="rm-po-print-only hidden border-t border-slate-200 px-4 py-2 text-center text-[10px] italic text-slate-500 print:block print:px-0 print:py-1 print:text-[8pt]"
+        className="procurement-doc-section rm-po-print-only hidden border-t border-slate-200 py-2 text-center text-[10px] italic text-slate-500 print:block print:py-1 print:text-[8pt]"
         data-testid="rm-po-supplier-print-footer"
       >
         This is a system generated purchase order.
       </footer>
+      </div>
     </div>
   );
 }

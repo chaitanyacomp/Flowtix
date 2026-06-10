@@ -80,6 +80,9 @@ export function getPageTitle(pathname: string): string {
   if (pathname.startsWith("/rm-po-grn/") && pathname !== "/rm-po-grn") {
     return "RM Purchase Order";
   }
+  if (pathname.startsWith("/grn/")) {
+    return "Goods Receipt Note";
+  }
   if (pathname.startsWith("/purchase-bills/") && pathname !== "/purchase-bills/new") {
     return "Purchase bill";
   }

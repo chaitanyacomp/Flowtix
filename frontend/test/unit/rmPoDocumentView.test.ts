@@ -27,9 +27,11 @@ describe("RmPoDocumentView P4D-B", () => {
     expect(documentSource).toContain("Internal procurement traceability");
   });
 
-  it("has print export and supplier copy actions", () => {
+  it("has print and supplier copy actions", () => {
     expect(documentSource).toContain('data-testid="rm-po-print-btn"');
-    expect(documentSource).toContain('data-testid="rm-po-export-pdf-btn"');
+    expect(documentSource).toContain("Print / Save as PDF");
+    expect(documentSource).not.toContain('data-testid="rm-po-export-pdf-btn"');
+    expect(documentSource).not.toContain("Export PDF");
     expect(documentSource).toContain('data-testid="rm-po-supplier-copy-btn"');
     expect(documentSource).toContain("printRmPoSupplierSection");
   });
@@ -58,6 +60,12 @@ describe("RmPoDocumentView P4D-B", () => {
   it("GRN history in internal section", () => {
     expect(documentSource).toContain('data-testid="rm-po-grn-history"');
     expect(documentSource).toContain("No GRN posted yet");
+  });
+
+  it("GRN history cards link to dedicated GRN document", () => {
+    expect(documentSource).toContain("buildGrnDetailHref");
+    expect(documentSource).toContain("Open GRN");
+    expect(documentSource).toContain('data-testid={`grn-open-${grn.id}`}');
   });
 
   it("create GRN edit cancel actions preserved", () => {

@@ -43,6 +43,7 @@ const {
 const {
   ensureSubmittedProductionMaterialRequestForWorkOrder,
 } = require("../services/productionMaterialRequestService");
+const { buildGrnDocumentDetail } = require("../services/grnDocumentService");
 
 const purchaseRouter = express.Router();
 
@@ -890,6 +891,27 @@ purchaseRouter.get("/grn-receiving-context", requireAuth, grnWriteRoles, async (
       suggestionsByRmPoLineId[ln.id] = suggestReceivingLocationId(locations, ln.item);
     }
     return res.json({ locations, suggestionsByRmPoLineId });
+  } catch (e) {
+    return next(e);
+  }
+});
+
+/** Read-only GRN document detail (P5B). */
+purchaseRouter.get("/grns/:id", requireAuth, rmPoReadRoles, async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) {
+      const err = new Error("Invalid GRN id");
+      err.statusCode = 400;
+      throw err;
+    }
+    const detail = await buildGrnDocumentDetail(prisma, id);
+    if (!detail) {
+      const err = new Error("GRN not found");
+      err.statusCode = 404;
+      throw err;
+    }
+    return res.json(detail);
   } catch (e) {
     return next(e);
   }

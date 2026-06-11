@@ -1,5 +1,5 @@
 /**
- * Store RM Workspace — operator-facing copy and status helpers (presentation only).
+ * RM Control Center — operator-facing copy and status helpers (presentation only).
  */
 
 export type StoreRmQueueStatus = "ready" | "partial" | "shortage";
@@ -30,6 +30,9 @@ export function sanitizeStoreOperatorCopy(text: string | null | undefined): stri
   if (!raw) return "";
   if (WO_CREATE_PROCUREMENT_COPY.test(raw)) {
     return "RM shortage blocking production";
+  }
+  if (/sent to purchase/i.test(raw)) {
+    return "Awaiting PR";
   }
   if (/create work order first/i.test(raw)) {
     return "RM shortage blocking production";

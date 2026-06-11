@@ -2,10 +2,10 @@ const express = require("express");
 const { z } = require("zod");
 const { requireAuth, requireRole } = require("../middleware/auth");
 const {
-  RM_PO_WRITE_ROLES,
   RM_ALLOCATION_WRITE_ROLES,
   RM_CONTROL_CENTER_ROLES,
   STOCK_READ_ROLES,
+  MATERIAL_REQUISITION_WRITE_ROLES,
 } = require("../constants/erpRoles");
 const { buildMaterialAvailabilityWorkspace } = require("../services/materialAvailabilityWorkspaceService");
 const { allocateForWorkOrder, releaseForWorkOrder } = require("../services/storeAllocationEngineService");
@@ -106,7 +106,7 @@ materialAvailabilityRouter.post(
 materialAvailabilityRouter.post(
   "/production-shortage-mr",
   requireAuth,
-  requireRole(RM_PO_WRITE_ROLES),
+  requireRole(MATERIAL_REQUISITION_WRITE_ROLES),
   blockProcurementDemandWhenPlanningDriven,
   async (req, res, next) => {
     try {
@@ -132,7 +132,7 @@ materialAvailabilityRouter.post(
 materialAvailabilityRouter.post(
   "/production-shortage-mr/bulk",
   requireAuth,
-  requireRole(RM_PO_WRITE_ROLES),
+  requireRole(MATERIAL_REQUISITION_WRITE_ROLES),
   blockProcurementDemandWhenPlanningDriven,
   async (req, res, next) => {
     try {

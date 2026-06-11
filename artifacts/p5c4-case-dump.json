@@ -1,0 +1,547 @@
+﻿{
+    "salesOrder":  {
+                       "id":  162,
+                       "docNo":  "SO-26-0001",
+                       "orderType":  "NO_QTY",
+                       "internalStatus":  "IN_PROCESS"
+                   },
+    "workOrder":  {
+                      "id":  260,
+                      "docNo":  "WO-26-0001",
+                      "status":  "PENDING",
+                      "holdReason":  null
+                  },
+    "fgItem":  {
+                   "itemName":  "Cap, Nozzle"
+               },
+    "customer":  {
+                     "name":  "Abhishek"
+                 },
+    "requirementDate":  null,
+    "pmrStatus":  {
+                      "openPmrs":  [
+                                       {
+                                           "id":  47,
+                                           "docNo":  "PMR-26-0001",
+                                           "status":  "PARTIALLY_ISSUED",
+                                           "requestedAt":  "2026-06-11T09:19:41.174Z",
+                                           "totalRequiredQty":  124.8,
+                                           "totalIssuedQty":  84.45,
+                                           "lines":  [
+                                                         {
+                                                             "rmItemId":  62,
+                                                             "rmItemName":  "HDPE",
+                                                             "requiredQty":  81.54,
+                                                             "issuedQty":  81.54,
+                                                             "pendingQty":  0
+                                                         },
+                                                         {
+                                                             "rmItemId":  63,
+                                                             "rmItemName":  "PP",
+                                                             "requiredQty":  40.35,
+                                                             "issuedQty":  0,
+                                                             "pendingQty":  40.35
+                                                         },
+                                                         {
+                                                             "rmItemId":  64,
+                                                             "rmItemName":  "Powder",
+                                                             "requiredQty":  2.91,
+                                                             "issuedQty":  2.91,
+                                                             "pendingQty":  0
+                                                         }
+                                                     ]
+                                       }
+                                   ],
+                      "latestStatus":  "PARTIALLY_ISSUED"
+                  },
+    "rmLines":  [
+                    {
+                        "rmItemId":  62,
+                        "rmItemName":  "HDPE",
+                        "unit":  "Kg",
+                        "requiredQty":  81.54,
+                        "physicalUsableStockQty":  14.677,
+                        "activeAllocatedQty":  0,
+                        "legacyReservedQty":  0,
+                        "effectiveReservedQty":  0,
+                        "freeStockQty":  14.677,
+                        "incomingQty":  0,
+                        "issuedToProductionQty":  81.54,
+                        "shortageNowQty":  66.863,
+                        "shortageAfterReservationQty":  66.863,
+                        "coveredByIncomingQty":  0,
+                        "netShortageAfterIncomingQty":  66.863,
+                        "allocationCoverageQty":  0,
+                        "allocationShortageQty":  81.54,
+                        "allocationStatus":  "NOT_ALLOCATED",
+                        "reservationBreakdown":  [
+
+                                                 ],
+                        "warnings":  [
+                                         {
+                                             "code":  "STOCK_IN_PRODUCTION_LOCATION",
+                                             "message":  "Stock exists in Production/WIP location and is not store-free stock."
+                                         }
+                                     ],
+                        "blockerReason":  "PMR waiting for store issue",
+                        "recommendedAction":  "Issue material to production",
+                        "procurementTrace":  {
+                                                 "rmItemId":  62,
+                                                 "openMrLines":  [
+                                                                     {
+                                                                         "materialRequirementLineId":  160,
+                                                                         "materialRequirementId":  78,
+                                                                         "materialRequirementDocNo":  "MR-26-0007",
+                                                                         "sourceType":  "MONTHLY_PLAN",
+                                                                         "salesOrderId":  null,
+                                                                         "salesOrderNo":  null,
+                                                                         "workOrderId":  null,
+                                                                         "workOrderNo":  null,
+                                                                         "requiredQty":  9.785,
+                                                                         "shortageQty":  9.785,
+                                                                         "procuredQty":  0,
+                                                                         "status":  "APPROVED",
+                                                                         "procurementStatusLabel":  "RM Requisition pending PR"
+                                                                     },
+                                                                     {
+                                                                         "materialRequirementLineId":  157,
+                                                                         "materialRequirementId":  77,
+                                                                         "materialRequirementDocNo":  "MR-26-0006",
+                                                                         "sourceType":  "MONTHLY_PLAN",
+                                                                         "salesOrderId":  null,
+                                                                         "salesOrderNo":  null,
+                                                                         "workOrderId":  null,
+                                                                         "workOrderNo":  null,
+                                                                         "requiredQty":  42.401,
+                                                                         "shortageQty":  42.401,
+                                                                         "procuredQty":  0,
+                                                                         "status":  "APPROVED",
+                                                                         "procurementStatusLabel":  "RM Requisition pending PR"
+                                                                     },
+                                                                     {
+                                                                         "materialRequirementLineId":  154,
+                                                                         "materialRequirementId":  76,
+                                                                         "materialRequirementDocNo":  "MR-26-0005",
+                                                                         "sourceType":  "MONTHLY_PLAN",
+                                                                         "salesOrderId":  null,
+                                                                         "salesOrderNo":  null,
+                                                                         "workOrderId":  null,
+                                                                         "workOrderNo":  null,
+                                                                         "requiredQty":  66.863,
+                                                                         "shortageQty":  66.863,
+                                                                         "procuredQty":  0,
+                                                                         "status":  "APPROVED",
+                                                                         "procurementStatusLabel":  "RM Requisition pending PR"
+                                                                     },
+                                                                     {
+                                                                         "materialRequirementLineId":  151,
+                                                                         "materialRequirementId":  75,
+                                                                         "materialRequirementDocNo":  "MR-26-0004",
+                                                                         "sourceType":  "MONTHLY_PLAN",
+                                                                         "salesOrderId":  null,
+                                                                         "salesOrderNo":  null,
+                                                                         "workOrderId":  null,
+                                                                         "workOrderNo":  null,
+                                                                         "requiredQty":  1.631,
+                                                                         "shortageQty":  1.631,
+                                                                         "procuredQty":  0,
+                                                                         "status":  "APPROVED",
+                                                                         "procurementStatusLabel":  "RM Requisition pending PR"
+                                                                     },
+                                                                     {
+                                                                         "materialRequirementLineId":  149,
+                                                                         "materialRequirementId":  74,
+                                                                         "materialRequirementDocNo":  "MR-26-0003",
+                                                                         "sourceType":  "MONTHLY_PLAN",
+                                                                         "salesOrderId":  null,
+                                                                         "salesOrderNo":  null,
+                                                                         "workOrderId":  null,
+                                                                         "workOrderNo":  null,
+                                                                         "requiredQty":  50.555,
+                                                                         "shortageQty":  50.555,
+                                                                         "procuredQty":  0,
+                                                                         "status":  "APPROVED",
+                                                                         "procurementStatusLabel":  "RM Requisition pending PR"
+                                                                     },
+                                                                     {
+                                                                         "materialRequirementLineId":  147,
+                                                                         "materialRequirementId":  73,
+                                                                         "materialRequirementDocNo":  "MR-26-0002",
+                                                                         "sourceType":  "MONTHLY_PLAN",
+                                                                         "salesOrderId":  null,
+                                                                         "salesOrderNo":  null,
+                                                                         "workOrderId":  null,
+                                                                         "workOrderNo":  null,
+                                                                         "requiredQty":  26.093,
+                                                                         "shortageQty":  26.093,
+                                                                         "procuredQty":  0,
+                                                                         "status":  "APPROVED",
+                                                                         "procurementStatusLabel":  "RM Requisition pending PR"
+                                                                     }
+                                                                 ],
+                                                 "prLines":  [
+
+                                                             ],
+                                                 "poLines":  [
+
+                                                             ],
+                                                 "summary":  {
+                                                                 "openMrCount":  6,
+                                                                 "prLineCount":  0,
+                                                                 "poLineCount":  0,
+                                                                 "pendingGrnQty":  0,
+                                                                 "receivedGrnQty":  0
+                                                             }
+                                             }
+                    },
+                    {
+                        "rmItemId":  64,
+                        "rmItemName":  "Powder",
+                        "unit":  "Kg",
+                        "requiredQty":  2.91,
+                        "physicalUsableStockQty":  0.212,
+                        "activeAllocatedQty":  0,
+                        "legacyReservedQty":  0,
+                        "effectiveReservedQty":  0,
+                        "freeStockQty":  0.212,
+                        "incomingQty":  0,
+                        "issuedToProductionQty":  2.91,
+                        "shortageNowQty":  2.698,
+                        "shortageAfterReservationQty":  2.698,
+                        "coveredByIncomingQty":  0,
+                        "netShortageAfterIncomingQty":  2.698,
+                        "allocationCoverageQty":  0,
+                        "allocationShortageQty":  2.91,
+                        "allocationStatus":  "NOT_ALLOCATED",
+                        "reservationBreakdown":  [
+
+                                                 ],
+                        "warnings":  [
+                                         {
+                                             "code":  "STOCK_IN_PRODUCTION_LOCATION",
+                                             "message":  "Stock exists in Production/WIP location and is not store-free stock."
+                                         }
+                                     ],
+                        "blockerReason":  "PMR waiting for store issue",
+                        "recommendedAction":  "Issue material to production",
+                        "procurementTrace":  {
+                                                 "rmItemId":  64,
+                                                 "openMrLines":  [
+                                                                     {
+                                                                         "materialRequirementLineId":  161,
+                                                                         "materialRequirementId":  78,
+                                                                         "materialRequirementDocNo":  "MR-26-0007",
+                                                                         "sourceType":  "MONTHLY_PLAN",
+                                                                         "salesOrderId":  null,
+                                                                         "salesOrderNo":  null,
+                                                                         "workOrderId":  null,
+                                                                         "workOrderNo":  null,
+                                                                         "requiredQty":  0.286,
+                                                                         "shortageQty":  0.286,
+                                                                         "procuredQty":  0,
+                                                                         "status":  "APPROVED",
+                                                                         "procurementStatusLabel":  "RM Requisition pending PR"
+                                                                     },
+                                                                     {
+                                                                         "materialRequirementLineId":  159,
+                                                                         "materialRequirementId":  77,
+                                                                         "materialRequirementDocNo":  "MR-26-0006",
+                                                                         "sourceType":  "MONTHLY_PLAN",
+                                                                         "salesOrderId":  null,
+                                                                         "salesOrderNo":  null,
+                                                                         "workOrderId":  null,
+                                                                         "workOrderNo":  null,
+                                                                         "requiredQty":  2.2,
+                                                                         "shortageQty":  2.2,
+                                                                         "procuredQty":  0,
+                                                                         "status":  "APPROVED",
+                                                                         "procurementStatusLabel":  "RM Requisition pending PR"
+                                                                     },
+                                                                     {
+                                                                         "materialRequirementLineId":  156,
+                                                                         "materialRequirementId":  76,
+                                                                         "materialRequirementDocNo":  "MR-26-0005",
+                                                                         "sourceType":  "MONTHLY_PLAN",
+                                                                         "salesOrderId":  null,
+                                                                         "salesOrderNo":  null,
+                                                                         "workOrderId":  null,
+                                                                         "workOrderNo":  null,
+                                                                         "requiredQty":  2.698,
+                                                                         "shortageQty":  2.698,
+                                                                         "procuredQty":  0,
+                                                                         "status":  "APPROVED",
+                                                                         "procurementStatusLabel":  "RM Requisition pending PR"
+                                                                     },
+                                                                     {
+                                                                         "materialRequirementLineId":  153,
+                                                                         "materialRequirementId":  75,
+                                                                         "materialRequirementDocNo":  "MR-26-0004",
+                                                                         "sourceType":  "MONTHLY_PLAN",
+                                                                         "salesOrderId":  null,
+                                                                         "salesOrderNo":  null,
+                                                                         "workOrderId":  null,
+                                                                         "workOrderNo":  null,
+                                                                         "requiredQty":  1.37,
+                                                                         "shortageQty":  1.37,
+                                                                         "procuredQty":  0,
+                                                                         "status":  "APPROVED",
+                                                                         "procurementStatusLabel":  "RM Requisition pending PR"
+                                                                     },
+                                                                     {
+                                                                         "materialRequirementLineId":  150,
+                                                                         "materialRequirementId":  74,
+                                                                         "materialRequirementDocNo":  "MR-26-0003",
+                                                                         "sourceType":  "MONTHLY_PLAN",
+                                                                         "salesOrderId":  null,
+                                                                         "salesOrderNo":  null,
+                                                                         "workOrderId":  null,
+                                                                         "workOrderNo":  null,
+                                                                         "requiredQty":  1.116,
+                                                                         "shortageQty":  1.116,
+                                                                         "procuredQty":  0,
+                                                                         "status":  "APPROVED",
+                                                                         "procurementStatusLabel":  "RM Requisition pending PR"
+                                                                     },
+                                                                     {
+                                                                         "materialRequirementLineId":  148,
+                                                                         "materialRequirementId":  73,
+                                                                         "materialRequirementDocNo":  "MR-26-0002",
+                                                                         "sourceType":  "MONTHLY_PLAN",
+                                                                         "salesOrderId":  null,
+                                                                         "salesOrderNo":  null,
+                                                                         "workOrderId":  null,
+                                                                         "workOrderNo":  null,
+                                                                         "requiredQty":  0.618,
+                                                                         "shortageQty":  0.618,
+                                                                         "procuredQty":  0,
+                                                                         "status":  "APPROVED",
+                                                                         "procurementStatusLabel":  "RM Requisition pending PR"
+                                                                     }
+                                                                 ],
+                                                 "prLines":  [
+
+                                                             ],
+                                                 "poLines":  [
+
+                                                             ],
+                                                 "summary":  {
+                                                                 "openMrCount":  6,
+                                                                 "prLineCount":  0,
+                                                                 "poLineCount":  0,
+                                                                 "pendingGrnQty":  0,
+                                                                 "receivedGrnQty":  0
+                                                             }
+                                             }
+                    },
+                    {
+                        "rmItemId":  63,
+                        "rmItemName":  "PP",
+                        "unit":  "Kg",
+                        "requiredQty":  40.35,
+                        "physicalUsableStockQty":  0,
+                        "activeAllocatedQty":  0,
+                        "legacyReservedQty":  40.35,
+                        "effectiveReservedQty":  40.35,
+                        "freeStockQty":  0,
+                        "incomingQty":  0,
+                        "issuedToProductionQty":  0,
+                        "shortageNowQty":  40.35,
+                        "shortageAfterReservationQty":  40.35,
+                        "coveredByIncomingQty":  0,
+                        "netShortageAfterIncomingQty":  40.35,
+                        "allocationCoverageQty":  0,
+                        "allocationShortageQty":  40.35,
+                        "allocationStatus":  "NOT_ALLOCATED",
+                        "reservationBreakdown":  [
+                                                     {
+                                                         "sourceType":  "PMR",
+                                                         "reservationType":  "LEGACY_PMR",
+                                                         "pmrId":  47,
+                                                         "pmrDocNo":  "PMR-26-0001",
+                                                         "pmrStatus":  "PARTIALLY_ISSUED",
+                                                         "workOrderId":  260,
+                                                         "workOrderNo":  "WO-26-0001",
+                                                         "requiredQty":  40.35,
+                                                         "issuedQty":  0,
+                                                         "reservedQty":  40.35
+                                                     }
+                                                 ],
+                        "warnings":  [
+                                         {
+                                             "code":  "LEGACY_RESERVATION_EXCEEDS_PHYSICAL",
+                                             "message":  "Active allocation or legacy PMR reservation is higher than physical usable stock."
+                                         }
+                                     ],
+                        "blockerReason":  "PMR waiting for store issue",
+                        "recommendedAction":  "Issue material to production",
+                        "procurementTrace":  {
+                                                 "rmItemId":  63,
+                                                 "openMrLines":  [
+                                                                     {
+                                                                         "materialRequirementLineId":  158,
+                                                                         "materialRequirementId":  77,
+                                                                         "materialRequirementDocNo":  "MR-26-0006",
+                                                                         "sourceType":  "MONTHLY_PLAN",
+                                                                         "salesOrderId":  null,
+                                                                         "salesOrderNo":  null,
+                                                                         "workOrderId":  null,
+                                                                         "workOrderNo":  null,
+                                                                         "requiredQty":  40.35,
+                                                                         "shortageQty":  40.35,
+                                                                         "procuredQty":  0,
+                                                                         "status":  "APPROVED",
+                                                                         "procurementStatusLabel":  "RM Requisition pending PR"
+                                                                     },
+                                                                     {
+                                                                         "materialRequirementLineId":  155,
+                                                                         "materialRequirementId":  76,
+                                                                         "materialRequirementDocNo":  "MR-26-0005",
+                                                                         "sourceType":  "MONTHLY_PLAN",
+                                                                         "salesOrderId":  null,
+                                                                         "salesOrderNo":  null,
+                                                                         "workOrderId":  null,
+                                                                         "workOrderNo":  null,
+                                                                         "requiredQty":  40.35,
+                                                                         "shortageQty":  40.35,
+                                                                         "procuredQty":  0,
+                                                                         "status":  "APPROVED",
+                                                                         "procurementStatusLabel":  "RM Requisition pending PR"
+                                                                     },
+                                                                     {
+                                                                         "materialRequirementLineId":  152,
+                                                                         "materialRequirementId":  75,
+                                                                         "materialRequirementDocNo":  "MR-26-0004",
+                                                                         "sourceType":  "MONTHLY_PLAN",
+                                                                         "salesOrderId":  null,
+                                                                         "salesOrderNo":  null,
+                                                                         "workOrderId":  null,
+                                                                         "workOrderNo":  null,
+                                                                         "requiredQty":  40.35,
+                                                                         "shortageQty":  40.35,
+                                                                         "procuredQty":  0,
+                                                                         "status":  "APPROVED",
+                                                                         "procurementStatusLabel":  "RM Requisition pending PR"
+                                                                     }
+                                                                 ],
+                                                 "prLines":  [
+
+                                                             ],
+                                                 "poLines":  [
+
+                                                             ],
+                                                 "summary":  {
+                                                                 "openMrCount":  3,
+                                                                 "prLineCount":  0,
+                                                                 "poLineCount":  0,
+                                                                 "pendingGrnQty":  0,
+                                                                 "receivedGrnQty":  0
+                                                             }
+                                             }
+                    }
+                ],
+    "woShortageCase":  {
+                           "workOrderId":  260,
+                           "workOrderNo":  "WO-26-0001",
+                           "salesOrderId":  162,
+                           "salesOrderNo":  "SO-26-0001",
+                           "customerName":  "Abhishek",
+                           "fgItemName":  "Cap, Nozzle",
+                           "materialRequirement":  null,
+                           "terminalMaterialRequirement":  null,
+                           "requiresReopenConfirm":  false,
+                           "allocationFirstStatus":  {
+                                                         "key":  "READY_FOR_ISSUE",
+                                                         "label":  "Ready for issue",
+                                                         "owner":  "Store Department",
+                                                         "nextAction":  "Issue RM to Production"
+                                                     },
+                           "shortageSummary":  {
+                                                   "rmLineCount":  3,
+                                                   "blockedLineCount":  3,
+                                                   "shortLineCount":  3,
+                                                   "issueableLineCount":  2,
+                                                   "totalRequiredQty":  124.8,
+                                                   "totalNetShortQty":  109.911,
+                                                   "totalShortAfterReservationQty":  109.911
+                                               },
+                           "pmrSummary":  {
+                                              "openCount":  1,
+                                              "waitingIssueCount":  1,
+                                              "latestDocNo":  "PMR-26-0001"
+                                          },
+                           "escalationLifecycle":  {
+                                                       "procurementInitiated":  false,
+                                                       "additionalRmLineCount":  3,
+                                                       "mrLineCountOnCase":  0,
+                                                       "materialRequirementDocNo":  null,
+                                                       "state":  "NOT_ESCALATED",
+                                                       "label":  "Escalation not started",
+                                                       "headline":  "WO shortage not escalated to purchase",
+                                                       "description":  "Store can raise one RM Requisition for this work order."
+                                                   },
+                           "procurementStatusLabel":  "WO shortage not escalated to purchase",
+                           "issueStatusLabel":  "PMR-26-0001 — waiting for store issue",
+                           "nextStoreAction":  {
+                                                   "key":  "ESCALATE",
+                                                   "label":  "Add all shortage lines to case",
+                                                   "description":  "Adds all detectable RM shortage lines into one WO RM Requisition for Store approval."
+                                               },
+                           "rmLines":  [
+                                           {
+                                               "rmItemId":  62,
+                                               "rmItemName":  "HDPE",
+                                               "unit":  "Kg",
+                                               "requiredQty":  81.54,
+                                               "freeStockQty":  14.677,
+                                               "shortageAfterReservationQty":  66.863,
+                                               "netShortageAfterIncomingQty":  66.863,
+                                               "blockerReason":  "PMR waiting for store issue",
+                                               "recommendedAction":  "Issue material to production"
+                                           },
+                                           {
+                                               "rmItemId":  64,
+                                               "rmItemName":  "Powder",
+                                               "unit":  "Kg",
+                                               "requiredQty":  2.91,
+                                               "freeStockQty":  0.212,
+                                               "shortageAfterReservationQty":  2.698,
+                                               "netShortageAfterIncomingQty":  2.698,
+                                               "blockerReason":  "PMR waiting for store issue",
+                                               "recommendedAction":  "Issue material to production"
+                                           },
+                                           {
+                                               "rmItemId":  63,
+                                               "rmItemName":  "PP",
+                                               "unit":  "Kg",
+                                               "requiredQty":  40.35,
+                                               "freeStockQty":  0,
+                                               "shortageAfterReservationQty":  40.35,
+                                               "netShortageAfterIncomingQty":  40.35,
+                                               "blockerReason":  "PMR waiting for store issue",
+                                               "recommendedAction":  "Issue material to production"
+                                           }
+                                       ]
+                       },
+    "caseSupplyPanel":  {
+                            "workOrderId":  260,
+                            "materialRequirementId":  null,
+                            "rmItemId":  null,
+                            "openMrLines":  [
+
+                                            ],
+                            "prLines":  [
+
+                                        ],
+                            "poLines":  [
+
+                                        ],
+                            "summary":  {
+                                            "openMrCount":  0,
+                                            "prLineCount":  0,
+                                            "poLineCount":  0,
+                                            "pendingGrnQty":  0,
+                                            "receivedGrnQty":  0
+                                        }
+                        },
+    "blockerExplanation":  "PMR waiting for store issue"
+}

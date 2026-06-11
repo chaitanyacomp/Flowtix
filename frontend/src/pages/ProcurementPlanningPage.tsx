@@ -1,6 +1,6 @@
 /**
 
- * Purchase Action Center — MR → PR → RM PO → GRN (REGULAR flow).
+ * Procurement Workspace — MR → PR → PO → GRN (MPRS flow).
 
  */
 
@@ -28,7 +28,7 @@ import { PendingMaterialRequestsPanel } from "../components/purchase/PendingMate
 
 import { displaySalesOrderNo } from "../lib/docNoDisplay";
 import { useAuth } from "../hooks/useAuth";
-import { hasErpRole, PURCHASE_EXECUTION_ROLES } from "../config/erpRoles";
+import { hasErpRole, MATERIAL_REQUISITION_WRITE_ROLES, PURCHASE_EXECUTION_ROLES } from "../config/erpRoles";
 
 import { PROCUREMENT_TERMS } from "../lib/procurementTerminology";
 import { WoProcurementContinuityStrip } from "../components/erp/WoProcurementContinuityStrip";
@@ -39,6 +39,13 @@ import {
 } from "../lib/woProcurementContinuity";
 import { GUIDED_WORKFLOW_CTA } from "../lib/rmGuidedWorkflow";
 import { buildRmPoDetailHref } from "../lib/rmPurchaseWoContinuity";
+import {
+  deriveQueueCountsFromMrs,
+  filterMrsByQueueTab,
+  type ProcurementQueueCounts,
+  type ProcurementQueueTabId,
+} from "../lib/procurementWorkspaceQueues";
+import { ProcurementWorkspaceQueueTabs } from "../components/erp/ProcurementWorkspaceQueueTabs";
 
 
 
@@ -155,6 +162,8 @@ type WorkspaceResponse = {
 
     completedCount: number;
 
+    queueCounts?: ProcurementQueueCounts;
+
   };
 
   sections: {
@@ -243,17 +252,22 @@ type MrRowAction =
   | { kind: "navigate"; label: string; to: string }
   | { kind: "create-pr"; label: string };
 
-function mrCanCreatePurchaseRequest(row: MrSummary, canExecutePurchase: boolean): boolean {
-  if (!canExecutePurchase) return false;
+function mrCanCreatePurchaseRequest(row: MrSummary, canCreatePurchaseRequest: boolean): boolean {
+  if (!canCreatePurchaseRequest) return false;
   if (row.canCreatePurchaseRequest === false) return false;
   if (row.canCreatePurchaseRequest === true) return true;
   const s = String(row.status ?? "").trim();
   return s === "APPROVED" || s === "SENT_TO_PURCHASE";
 }
 
-function mrPrimaryAction(row: MrSummary, canExecutePurchase: boolean): MrRowAction | null {
+function mrPrimaryAction(
+  row: MrSummary,
+  canCreatePurchaseRequest: boolean,
+  canExecutePurchase: boolean,
+): MrRowAction | null {
   switch (row.nextActionKey) {
     case "CREATE_PO":
+      if (!canExecutePurchase) return null;
       return { kind: "navigate", label: PROCUREMENT_TERMS.PREPARE_RM_PO, to: "/rm-po-grn?focus=pending-requests" };
     case "OPEN_GRN":
       return {
@@ -272,7 +286,7 @@ function mrPrimaryAction(row: MrSummary, canExecutePurchase: boolean): MrRowActi
           : "/rm-po-grn",
       };
     case "CREATE_PR":
-      if (!mrCanCreatePurchaseRequest(row, canExecutePurchase)) return null;
+      if (!mrCanCreatePurchaseRequest(row, canCreatePurchaseRequest)) return null;
       return { kind: "create-pr", label: PROCUREMENT_TERMS.CREATE_PURCHASE_REQUEST };
     case "TRACK_IN_RM_CONTROL":
       return {
@@ -285,7 +299,7 @@ function mrPrimaryAction(row: MrSummary, canExecutePurchase: boolean): MrRowActi
         }),
       };
     default:
-      if (mrCanCreatePurchaseRequest(row, canExecutePurchase)) {
+      if (mrCanCreatePurchaseRequest(row, canCreatePurchaseRequest)) {
         return { kind: "create-pr", label: PROCUREMENT_TERMS.CREATE_PURCHASE_REQUEST };
       }
       return null;
@@ -457,6 +471,8 @@ function PendingMaterialRequirementsTable({
 
   onCreatePurchaseRequest,
 
+  canCreatePurchaseRequest,
+
   canExecutePurchase,
 
 }: {
@@ -470,6 +486,8 @@ function PendingMaterialRequirementsTable({
   focusMaterialRequirementId?: number;
 
   onCreatePurchaseRequest: (mr: MrSummary) => void;
+
+  canCreatePurchaseRequest: boolean;
 
   canExecutePurchase: boolean;
 
@@ -537,7 +555,7 @@ function PendingMaterialRequirementsTable({
 
           {rows.map((mr) => {
 
-            const action = mrPrimaryAction(mr, canExecutePurchase);
+            const action = mrPrimaryAction(mr, canCreatePurchaseRequest, canExecutePurchase);
 
             const lines = mr.lines ?? [];
 
@@ -774,6 +792,7 @@ export function ProcurementPlanningPage() {
 
   const { showSuccess, showError } = useToast();
   const { user } = useAuth();
+  const canCreatePurchaseRequest = hasErpRole(user?.role, MATERIAL_REQUISITION_WRITE_ROLES);
   const canExecutePurchase = hasErpRole(user?.role, PURCHASE_EXECUTION_ROLES);
 
   const [searchParams] = useSearchParams();
@@ -791,6 +810,8 @@ export function ProcurementPlanningPage() {
   const [error, setError] = React.useState<string | null>(null);
 
   const [creatingMrId, setCreatingMrId] = React.useState<number | null>(null);
+
+  const [queueTab, setQueueTab] = React.useState<ProcurementQueueTabId>("ALL");
 
   const creatingPrRef = React.useRef(false);
 
@@ -830,7 +851,7 @@ export function ProcurementPlanningPage() {
 
       if (creatingPrRef.current) return;
 
-      if (!mrCanCreatePurchaseRequest(mr, canExecutePurchase)) return;
+      if (!mrCanCreatePurchaseRequest(mr, canCreatePurchaseRequest)) return;
 
       const payload = buildPurchaseRequestPayloadFromMr(mr);
 
@@ -874,7 +895,7 @@ export function ProcurementPlanningPage() {
 
     },
 
-    [load, showError, showSuccess],
+    [canCreatePurchaseRequest, load, showError, showSuccess],
 
   );
 
@@ -890,6 +911,7 @@ export function ProcurementPlanningPage() {
 
   const pendingMrs = React.useMemo(() => {
     let all = ws?.sections.pendingMaterialRequirements ?? [];
+    all = filterMrsByQueueTab(all, queueTab);
     if (filterSoId > 0) {
       all = all.filter((m) => m.salesOrderId === filterSoId);
     }
@@ -897,7 +919,7 @@ export function ProcurementPlanningPage() {
       all = all.filter((m) => !m.workOrderId || m.workOrderId === filterWorkOrderId);
     }
     return all;
-  }, [ws, filterSoId, filterWorkOrderId]);
+  }, [ws, filterSoId, filterWorkOrderId, queueTab]);
 
   const focusMrRow = React.useMemo(() => {
     if (focusMaterialRequirementId > 0) {
@@ -916,6 +938,13 @@ export function ProcurementPlanningPage() {
   const grnPendingCount = ws?.sections.grnPending.length ?? 0;
 
   const completedCount = ws?.sections.procurementCompleted.length ?? 0;
+
+  const queueCounts = React.useMemo(
+    () =>
+      ws?.summary.queueCounts ??
+      deriveQueueCountsFromMrs(ws?.sections.pendingMaterialRequirements ?? []),
+    [ws],
+  );
 
 
 
@@ -946,13 +975,6 @@ export function ProcurementPlanningPage() {
             <h1 className="text-xl font-extrabold tracking-tight text-slate-900">{PROCUREMENT_TERMS.WORKSPACE_TITLE}</h1>
 
             <p className="text-xs font-medium text-slate-600">{PROCUREMENT_TERMS.WORKSPACE_SUBTITLE}</p>
-
-            <div className="mt-2 rounded-md border border-amber-200/80 bg-amber-50/70 px-2.5 py-2 text-[11px] text-amber-950">
-              <span className="font-bold">Legacy MR execution</span>{" "}
-              <span className="text-amber-950/90">
-                — use for exceptions during transition. Operational truth for WOs is allocation and issue by Store.
-              </span>
-            </div>
 
             {filterWorkOrderId > 0 || filterSoId > 0 ? (
               <p className="mt-1 text-xs font-medium text-violet-900">
@@ -1051,13 +1073,17 @@ export function ProcurementPlanningPage() {
 
 
       <section className="rounded-lg border border-slate-300 bg-slate-50 px-3 py-2.5 text-sm text-slate-800">
-        <p className="font-bold text-slate-900">Secondary execution page</p>
+        <p className="font-bold text-slate-900">Demand handoff and procurement monitoring</p>
         <p className="mt-1 text-xs leading-relaxed text-slate-600">
-          This page executes PR, PO, and GRN actions. The guided workflow and next step live in{" "}
-          <Link to="/reports/rm-shortage" className="font-bold text-violet-900 underline">
-            RM Control Center
+          Store creates Purchase Requests and posts GRN from this workspace. Purchase executes PO in{" "}
+          <Link to="/rm-po-grn" className="font-bold text-violet-900 underline">
+            {PROCUREMENT_TERMS.NAV_PURCHASE_GRN}
           </Link>
-          — not here.
+          . For RM availability, shortages, and case actions, use{" "}
+          <Link to="/reports/rm-shortage" className="font-bold text-violet-900 underline">
+            {PROCUREMENT_TERMS.NAV_RM_CONTROL_CENTER}
+          </Link>
+          .
         </p>
         {filterWorkOrderId > 0 ? (
           <Link
@@ -1117,22 +1143,22 @@ export function ProcurementPlanningPage() {
 
       <section className="min-w-0 rounded-lg border border-violet-200/70 bg-white shadow-sm ring-1 ring-violet-100/50">
 
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-violet-100/80 bg-violet-50/40 px-3 py-2">
-
-          <div>
-
-            <h2 className="text-sm font-bold text-slate-900">{PROCUREMENT_TERMS.SECTION_WO_PROCUREMENT_CASES}</h2>
-
-            <p className="text-[11px] text-slate-600">{PROCUREMENT_TERMS.SECTION_WO_PROCUREMENT_CASES_HELPER}</p>
-
+        <div className="space-y-2 border-b border-violet-100/80 bg-violet-50/40 px-3 py-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 className="text-sm font-bold text-slate-900">{PROCUREMENT_TERMS.SECTION_WO_PROCUREMENT_CASES}</h2>
+              <p className="text-[11px] text-slate-600">{PROCUREMENT_TERMS.SECTION_WO_PROCUREMENT_CASES_HELPER}</p>
+            </div>
+            <Badge variant={pendingMrs.length > 0 ? "warning" : "default"} className="tabular-nums">
+              {pendingMrs.length}
+            </Badge>
           </div>
-
-          <Badge variant={pendingMrs.length > 0 ? "warning" : "default"} className="tabular-nums">
-
-            {pendingMrs.length}
-
-          </Badge>
-
+          <ProcurementWorkspaceQueueTabs
+            activeTab={queueTab}
+            counts={queueCounts}
+            onChange={setQueueTab}
+            disabled={loading}
+          />
         </div>
 
         <PendingMaterialRequirementsTable
@@ -1141,6 +1167,7 @@ export function ProcurementPlanningPage() {
           creatingMrId={creatingMrId}
           focusMaterialRequirementId={focusMaterialRequirementId}
           onCreatePurchaseRequest={(mr) => void handleCreatePurchaseRequest(mr)}
+          canCreatePurchaseRequest={canCreatePurchaseRequest}
           canExecutePurchase={canExecutePurchase}
         />
 

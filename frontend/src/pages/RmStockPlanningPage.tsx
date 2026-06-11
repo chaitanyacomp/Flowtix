@@ -273,7 +273,7 @@ export function RmStockPlanningPage() {
             <p className="text-[11px] text-slate-600">Current stock plus open replenishment is compared with minimum stock.</p>
           </div>
           <Link to="/procurement-planning" className="text-xs font-semibold text-primary underline underline-offset-4">
-            Open Purchase Action Center
+            Open Procurement Workspace
           </Link>
         </div>
 

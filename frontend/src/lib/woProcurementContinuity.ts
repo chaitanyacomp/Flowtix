@@ -1,18 +1,24 @@
 /** WO shortage procurement visibility — presentation only (Phase A). */
 
+import {
+  PROCUREMENT_STATUS_VOCABULARY,
+  PROCUREMENT_TERMS,
+  PROCUREMENT_WORKFLOW_STAGES,
+} from "./procurementTerminology";
+
 export const WO_PROCUREMENT_CONTINUITY = {
-  PROCUREMENT_INITIATED: "RM Requisition active",
-  PO_CREATED: "PO created",
-  MATERIAL_INCOMING: "Material incoming",
-  WAITING_GRN: "Waiting GRN",
-  READY_FOR_ISSUE: "Ready for issue",
+  PROCUREMENT_INITIATED: PROCUREMENT_STATUS_VOCABULARY.AWAITING_PR,
+  PO_CREATED: PROCUREMENT_STATUS_VOCABULARY.PO_RELEASED,
+  MATERIAL_INCOMING: PROCUREMENT_STATUS_VOCABULARY.GRN_PENDING,
+  WAITING_GRN: PROCUREMENT_STATUS_VOCABULARY.GRN_PENDING,
+  READY_FOR_ISSUE: PROCUREMENT_STATUS_VOCABULARY.RM_READY,
   COVERED_BY_INCOMING: (qty: string) => `${qty} covered by incoming PO`,
-  WAITING_GRN_QTY: (qty: string) => `Waiting GRN: ${qty}`,
+  WAITING_GRN_QTY: (qty: string) => `GRN pending: ${qty}`,
   PARTIAL_COVERAGE: "Procurement partially covering this WO",
-  PENDING_GRN_CASE: "Incoming GRN pending for this WO",
-  PROCUREMENT_ACTIVE: "RM Requisition already raised",
-  TRACK_IN_RM_CONTROL: "Track in Store RM Workspace",
-  OPEN_RM_CONTROL_CENTER: "Open Store RM Workspace",
+  PENDING_GRN_CASE: "GRN pending for this WO",
+  PROCUREMENT_ACTIVE: "Approved MR",
+  TRACK_IN_RM_CONTROL: PROCUREMENT_TERMS.TRACK_PROCUREMENT,
+  OPEN_RM_CONTROL_CENTER: PROCUREMENT_TERMS.OPEN_RM_CONTROL_CENTER,
 } as const;
 
 export function buildRmControlCenterHref(opts: {
@@ -45,18 +51,20 @@ export function formatProcurementQty(n: number, unit?: string): string {
 export function procurementStageLabelForKey(operationalKey: string | null | undefined): string {
   switch (String(operationalKey ?? "").trim()) {
     case "PR_PENDING_PO":
-      return WO_PROCUREMENT_CONTINUITY.PO_CREATED;
+      return PROCUREMENT_STATUS_VOCABULARY.AWAITING_PO;
     case "SUPPLIER_PENDING":
-      return WO_PROCUREMENT_CONTINUITY.MATERIAL_INCOMING;
+      return PROCUREMENT_STATUS_VOCABULARY.PO_RELEASED;
     case "GRN_PENDING":
-      return WO_PROCUREMENT_CONTINUITY.WAITING_GRN;
+      return PROCUREMENT_STATUS_VOCABULARY.GRN_PENDING;
+    case "PARTIAL_RECEIVED":
+      return PROCUREMENT_STATUS_VOCABULARY.PARTIALLY_RECEIVED;
     case "RM_READY":
     case "PROCUREMENT_COMPLETE":
-      return WO_PROCUREMENT_CONTINUITY.READY_FOR_ISSUE;
+      return PROCUREMENT_STATUS_VOCABULARY.RM_READY;
     case "PROCUREMENT_PENDING":
-      return WO_PROCUREMENT_CONTINUITY.PROCUREMENT_INITIATED;
+      return PROCUREMENT_STATUS_VOCABULARY.AWAITING_PR;
     default:
-      return WO_PROCUREMENT_CONTINUITY.PROCUREMENT_INITIATED;
+      return PROCUREMENT_STATUS_VOCABULARY.AWAITING_PR;
   }
 }
 
@@ -71,7 +79,7 @@ export function storeActionButtonLabel(key: string | null | undefined): string {
     case "WAIT_GRN":
       return WO_PROCUREMENT_CONTINUITY.TRACK_IN_RM_CONTROL;
     case "VIEW_PROCUREMENT":
-      return "View requisition progress";
+      return PROCUREMENT_TERMS.TRACK_PROCUREMENT;
     case "ISSUE":
       return WO_PROCUREMENT_CONTINUITY.READY_FOR_ISSUE;
     case "CREATE_WO":
@@ -82,13 +90,7 @@ export function storeActionButtonLabel(key: string | null | undefined): string {
 }
 
 /** WO procurement lifecycle strip (display only). */
-export const WO_PROCUREMENT_WORKFLOW_STAGES = [
-  "RM Requisition",
-  "PR created",
-  "PO created",
-  "GRN pending",
-  "RM ready",
-] as const;
+export const WO_PROCUREMENT_WORKFLOW_STAGES = PROCUREMENT_WORKFLOW_STAGES;
 
 /** Maps backend `operationalKey` to strip index (0–4). */
 export function woProcurementStageIndex(operationalKey: string | null | undefined): number {
@@ -122,15 +124,15 @@ export function prSectionEmptyMessage(opts: {
   switch (opts.escalationState) {
     case "ESCALATION_PENDING":
     case "PARTIALLY_ESCALATED":
-      return "Procurement handoff created — waiting for Purchase Request creation.";
+      return "Approved MR — create the Purchase Request in Procurement Workspace.";
     case "PROCUREMENT_IN_PROGRESS":
-      return "Procurement in progress — Purchase Request pending.";
+      return "Awaiting PR — Purchase Request pending from Store.";
     case "WAITING_GRN":
-      return "Procurement in progress — material incoming (GRN pending).";
+      return "GRN pending — material incoming from released PO.";
     case "PROCUREMENT_COMPLETED":
-      return "Procurement completed for this WO case.";
+      return "RM Ready — procurement completed for this WO case.";
     default:
-      return "Waiting for Purchase Request creation.";
+      return "Awaiting PR — create Purchase Request in Procurement Workspace.";
   }
 }
 
@@ -155,8 +157,8 @@ export function buildProcurementWorkspaceHref(opts: {
 
 export function prStatusLabel(status: string | null | undefined): string {
   const s = String(status ?? "").trim();
-  if (!s) return "Purchase request";
-  if (s === "PENDING_PURCHASE") return "Awaiting PO";
+  if (!s) return "Purchase Request";
+  if (s === "PENDING_PURCHASE") return PROCUREMENT_STATUS_VOCABULARY.AWAITING_PO;
   if (s === "PARTIALLY_ORDERED") return "PO partially created";
   if (s === "ORDERED") return "Fully ordered";
   return s.replaceAll("_", " ");

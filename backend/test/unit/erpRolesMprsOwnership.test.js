@@ -13,6 +13,12 @@ describe("MPRS Phase 1 — Store ownership role constants", () => {
   it("PURCHASE retains PO execution but not monthly planning write", () => {
     assert.ok(roles.RM_PO_WRITE_ROLES.includes("PURCHASE"));
     assert.equal(roles.MONTHLY_PLANNING_WRITE_ROLES.includes("PURCHASE"), false);
+    assert.equal(roles.MATERIAL_REQUISITION_WRITE_ROLES.includes("PURCHASE"), false);
+  });
+
+  it("STORE owns purchase request creation and WO shortage demand", () => {
+    assert.ok(roles.MATERIAL_REQUISITION_WRITE_ROLES.includes("STORE"));
+    assert.equal(roles.RM_PO_WRITE_ROLES.includes("STORE"), false);
   });
 
   it("PURCHASE can read planning workspaces", () => {

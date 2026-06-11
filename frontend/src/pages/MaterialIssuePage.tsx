@@ -1229,14 +1229,14 @@ export function MaterialIssuePage() {
               <p className="mt-0.5 text-xs leading-relaxed text-amber-900">
                 {waitingProcurement
                   ? "Waiting for Store / Purchase stock. RM requirement is raised — issue can start once stock is received (GRN)."
-                  : "Stock is not free for this work order (committed elsewhere or not yet received). Raise / track the RM requirement in the Store RM Workspace."}
+                  : "Stock is not free for this work order (committed elsewhere or not yet received). Raise or track the RM requirement in RM Control Center."}
               </p>
               {resolvedWorkOrderIdForHint ? (
                 <Link
                   to={buildRmControlCenterHref({ workOrderId: resolvedWorkOrderIdForHint, returnTo: "material-issue" })}
                   className="mt-1 inline-block text-[11px] font-bold text-violet-900 underline"
                 >
-                  Open Store RM Workspace
+                  Open RM Control Center
                 </Link>
               ) : null}
             </div>

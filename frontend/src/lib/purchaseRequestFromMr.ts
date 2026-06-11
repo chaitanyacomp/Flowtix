@@ -69,3 +69,38 @@ export function buildPurchaseRequestPayloadFromMr(
     lines,
   };
 }
+
+/** Build PR payload from WO shortage MR lines exposed in RM Control Center. */
+export function buildPurchaseRequestPayloadFromWoMr(mr: {
+  id: number;
+  docNo: string | null;
+  lines?: Array<{
+    id: number;
+    rmItemId: number;
+    rmItemName: string;
+    unit: string;
+    requiredQty: number;
+    shortageQty: number;
+    procuredQty: number;
+  }>;
+}): SendPurchaseRequestBody | null {
+  const eligible = (mr.lines ?? [])
+    .map((ln) => ({
+      lineId: ln.id,
+      rmItemId: ln.rmItemId,
+      itemName: ln.rmItemName,
+      unit: ln.unit,
+      requiredQty: ln.requiredQty,
+      shortageQty: ln.shortageQty,
+      remainingQty: Math.max(0, Number(ln.shortageQty ?? 0) - Number(ln.procuredQty ?? 0)),
+    }))
+    .filter((ln) => ln.remainingQty > QTY_EPS);
+
+  if (!eligible.length) return null;
+
+  return buildPurchaseRequestPayloadFromMr({
+    materialRequirementId: mr.id,
+    docNo: mr.docNo,
+    lines: eligible,
+  });
+}

@@ -8,6 +8,7 @@ import {
   buildRmControlCenterHref,
   WO_PROCUREMENT_WORKFLOW_STAGES,
 } from "./woProcurementContinuity";
+import { PROCUREMENT_TERMS } from "./procurementTerminology";
 import { isStockCommittedElsewhere, stockCommittedElsewhereSummary } from "./stockCommitmentVisibility";
 import { buildRmPoDetailHref } from "./rmPurchaseWoContinuity";
 
@@ -231,26 +232,26 @@ export function resolveGuidedWorkflow(input: GuidedWorkflowInput): GuidedWorkflo
       return {
         ...base,
         phase,
-        phaseTitle: input.mrStatus === "SENT_TO_PURCHASE" ? "Sent to Purchase" : "RM Requisition active",
+        phaseTitle: input.mrStatus === "SENT_TO_PURCHASE" ? "Awaiting PR" : "Approved MR",
         phaseDetail:
           input.mrStatus === "SENT_TO_PURCHASE"
             ? mrDoc
-              ? `Requisition ${mrDoc} is with Purchase. Create the Purchase Request in Procurement Workspace, then PO and GRN.`
-              : "Requisition is with Purchase. Create the Purchase Request in Procurement Workspace."
+              ? `${mrDoc} is approved — create the Purchase Request in Procurement Workspace. Purchase will execute the PO.`
+              : "Approved MR — create the Purchase Request in Procurement Workspace. Purchase will execute the PO."
             : mrDoc
-              ? `Store requisition ${mrDoc} is active on this WO. Approve it and send to Purchase before PR/PO.`
-              : "Store requisition is active. Approve it and send to Purchase before PR/PO.",
+              ? `Store requisition ${mrDoc} is active. Approve it, then create the Purchase Request in Procurement Workspace.`
+              : "Store requisition is active. Approve it, then create the Purchase Request in Procurement Workspace.",
         statusHeadline:
           input.mrStatus === "SENT_TO_PURCHASE"
-            ? "Sent to Purchase"
+            ? "Awaiting PR — Store creates Purchase Request"
             : esc?.headline?.includes("not escalated")
               ? "RM Requisition raised — next: Store approval"
               : esc?.headline ?? "RM Requisition raised",
         primaryAction:
           input.mrStatus === "SENT_TO_PURCHASE"
-            ? { kind: "CREATE_PR", label: "Open Procurement Workspace", href: procHref }
+            ? { kind: "CREATE_PR", label: PROCUREMENT_TERMS.CREATE_PURCHASE_REQUEST, href: procHref }
             : { kind: "CREATE_PR", label: "Open RM Requisition", href: requisitionHref },
-        ownerLabel: input.mrStatus === "SENT_TO_PURCHASE" ? "Purchase" : base.ownerLabel,
+        ownerLabel: input.mrStatus === "SENT_TO_PURCHASE" ? "Store" : base.ownerLabel,
         showMaterialIssueSection: false,
         showProductionLink: false,
         timelineStepIndex: 1,

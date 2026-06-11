@@ -80,7 +80,7 @@ export function mrStatusDisplayLabel(status: string | null | undefined): string 
     case "APPROVED":
       return "Approved by Store";
     case "SENT_TO_PURCHASE":
-      return "Sent to Purchase";
+      return "Awaiting PR";
     case "PROCUREMENT_IN_PROGRESS":
       return "Procurement in Progress";
     case "PARTIALLY_PROCURED":
@@ -287,10 +287,10 @@ export function resolveRmOperationalContext(input: RmOperationalContextInput): R
     } else if (mrStatus === "APPROVED" && hasMr) {
       buttons.push({
         id: "send-purchase",
-        label: "Send to Purchase",
+        label: "Release for Purchase Request",
         kind: "primary",
         action: "send-to-purchase",
-        description: "Release the requisition to Purchase for PR/PO creation.",
+        description: "Approved MR — next step is Purchase Request creation in Procurement Workspace.",
       });
     } else if (input.requiresReopenConfirm && !hasMr) {
       buttons.push({
@@ -357,7 +357,7 @@ export function resolveRmOperationalContext(input: RmOperationalContextInput): R
     nextAction,
     requisitionStatus:
       mrStatus === "SENT_TO_PURCHASE"
-        ? "Sent to Purchase"
+        ? "Awaiting PR"
         : input.requisitionStatus?.trim() || mrStatusDisplayLabel(input.mrStatus),
     procurementStatus:
       input.procurementStatus?.trim() ||

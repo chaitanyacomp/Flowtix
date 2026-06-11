@@ -37,7 +37,7 @@ export const SUPPLIER_WRITE_ROLES = ["ADMIN", "PURCHASE"] as const;
 export const PURCHASE_DASHBOARD_ROLES = ["ADMIN", "PURCHASE"] as const;
 /** Planning workspace visibility (Store review + Purchase execution context) */
 export const PROCUREMENT_PLANNING_ROLES = ["ADMIN", "STORE", "PURCHASE"] as const;
-/** Purchase Request / PO execution actions in procurement workspace */
+/** Purchase Request creation (Store handoff) and PO execution actions in procurement workspace */
 export const PURCHASE_EXECUTION_ROLES = ["ADMIN", "PURCHASE"] as const;
 
 /** STORE — MR / requisition lifecycle */

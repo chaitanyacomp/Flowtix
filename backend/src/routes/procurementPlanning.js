@@ -6,9 +6,9 @@ const express = require("express");
 const { z } = require("zod");
 const { requireAuth, requireRole } = require("../middleware/auth");
 const {
-  RM_PO_WRITE_ROLES,
   RM_PO_READ_ROLES,
   PROCUREMENT_PLANNING_ROLES,
+  MATERIAL_REQUISITION_WRITE_ROLES,
 } = require("../constants/erpRoles");
 const { buildProcurementPool } = require("../services/procurementPlanningService");
 const { createPurchaseRequestFromPool } = require("../services/purchaseRequestService");
@@ -17,19 +17,26 @@ const { repairStaleDuplicateWoPlanningProcurement } = require("../services/procu
 
 const procurementPlanningRouter = express.Router();
 
+const workspaceQuerySchema = z.object({
+  salesOrderId: z.coerce.number().int().positive().optional(),
+  sourceType: z.enum(["MONTHLY_PLAN", "WORK_ORDER_PLANNING", "STOCK_REPLENISHMENT"]).optional(),
+});
+
 procurementPlanningRouter.get(
   "/workspace",
   requireAuth,
   requireRole(RM_PO_READ_ROLES),
   async (req, res, next) => {
     try {
-      const salesOrderId = req.query.salesOrderId != null ? Number(req.query.salesOrderId) : null;
+      const query = workspaceQuerySchema.parse(req.query);
+      const salesOrderId = query.salesOrderId != null ? Number(query.salesOrderId) : null;
       await repairStaleDuplicateWoPlanningProcurement(undefined, {
         userId: req.user?.userId,
         role: req.user?.role,
       });
       const data = await buildProcurementWorkspace(undefined, {
         salesOrderId: Number.isFinite(salesOrderId) && salesOrderId > 0 ? salesOrderId : null,
+        sourceType: query.sourceType ?? null,
       });
       return res.json(data);
     } catch (e) {
@@ -78,7 +85,7 @@ const sendRequirementSchema = z.object({
 procurementPlanningRouter.post(
   "/send-requirement",
   requireAuth,
-  requireRole(RM_PO_WRITE_ROLES),
+  requireRole(MATERIAL_REQUISITION_WRITE_ROLES),
   async (req, res, next) => {
     try {
       const body = sendRequirementSchema.parse(req.body);

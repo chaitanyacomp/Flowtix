@@ -1649,7 +1649,7 @@ export function DashboardPage() {
         actionLabel = "Open Production Workspace";
       } else if ((waitingGate === "NO_PMR" || waitingGate === "PMR_DRAFT_ONLY") && woId > 0) {
         materialHref = rmControlCenterHref({ workOrderId: woId, returnTo: "dashboard" });
-        actionLabel = "Open Store RM Workspace";
+        actionLabel = "Open RM Control Center";
       } else if (woId > 0) {
         const gate =
           waitingGate === "NO_PMR" || waitingGate === "PMR_DRAFT_ONLY" || waitingGate === "WAITING_STORE_ISSUE"

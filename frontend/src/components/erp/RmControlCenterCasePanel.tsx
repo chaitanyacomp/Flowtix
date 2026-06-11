@@ -11,6 +11,7 @@ export type RmCaseLine = {
   activeAllocatedQty?: number;
   freeStockQty: number;
   incomingQty?: number;
+  coveredByIncomingQty?: number;
   issuedToProductionQty?: number;
   effectiveReservedQty?: number;
   legacyReservedQty?: number;
@@ -21,6 +22,7 @@ export type RmCaseLine = {
   procurementStatus?: string | null;
   poStatus?: string | null;
   grnReceivedPercent?: number | null;
+  coveragePercent?: number | null;
 };
 
 type OperationalGuidance = {
@@ -37,6 +39,8 @@ type Props = {
   stageLabel: string;
   allocationFirstLabel?: string | null;
   mrDocNo?: string | null;
+  procurementChipLabel?: string | null;
+  procurementSourceLabel?: string | null;
   operationalGuidance?: OperationalGuidance | null;
   rmLines: RmCaseLine[];
   selectedRmItemId: number | null;
@@ -51,6 +55,8 @@ export function RmControlCenterCasePanel({
   stageLabel,
   allocationFirstLabel,
   mrDocNo,
+  procurementChipLabel,
+  procurementSourceLabel,
   operationalGuidance,
   rmLines,
   selectedRmItemId,
@@ -86,6 +92,20 @@ export function RmControlCenterCasePanel({
           <span className="font-semibold text-slate-900">{rmItemLabel ?? selected?.rmItemName ?? "—"}</span>
         </span>
         <RmOperationalStageChip label={allocationFirstLabel?.trim() || stageLabel} />
+        {procurementChipLabel ? (
+          <span
+            className="inline-flex rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-bold text-violet-950 ring-1 ring-violet-200"
+            data-testid="rm-cc-case-procurement-chip"
+          >
+            {procurementChipLabel}
+          </span>
+        ) : null}
+        {procurementSourceLabel ? (
+          <span className="text-[11px] text-slate-600">
+            <span className="font-bold uppercase tracking-wide text-slate-500">Source</span>{" "}
+            <span className="font-semibold text-slate-900">{procurementSourceLabel}</span>
+          </span>
+        ) : null}
         {mrDocNo ? (
           <span>
             <span className="font-bold uppercase tracking-wide text-slate-500">MR</span>{" "}
@@ -140,17 +160,18 @@ export function RmControlCenterCasePanel({
                 <th className="px-2 py-1.5 text-left">RM item</th>
                 <th className="px-2 py-1.5 text-right">Need</th>
                 <th className="px-2 py-1.5 text-right">Available</th>
-                <th className="px-2 py-1.5 text-right">Allocated</th>
-                <th className="px-2 py-1.5 text-right">Issue ready</th>
+                <th className="px-2 py-1.5 text-right">Incoming</th>
+                <th className="px-2 py-1.5 text-right">Coverage</th>
+                <th className="px-2 py-1.5 text-left">Procurement</th>
               </tr>
             </thead>
             <tbody className="text-[13px] text-slate-600">
               {sortedLines.map((line, idx) => {
                 const active = selectedRmItemId === line.rmItemId;
-                const need = Number(line.requiredQty ?? 0);
-                const available = Number(line.freeStockQty ?? 0);
-                const allocated = Number(line.activeAllocatedQty ?? 0);
-                const issueReady = need > 0 && available + allocated >= need - 1e-6;
+                const coverage =
+                  line.coveragePercent != null && Number.isFinite(line.coveragePercent)
+                    ? `${line.coveragePercent}%`
+                    : "—";
                 return (
                   <tr
                     key={line.rmItemId}
@@ -170,16 +191,12 @@ export function RmControlCenterCasePanel({
                     <td className="px-2 py-2 text-right text-[14px] font-semibold tabular-nums text-emerald-800">
                       {formatQty(line.freeStockQty, line.unit)}
                     </td>
-                    <td className="px-2 py-2 text-right text-[14px] font-semibold tabular-nums text-violet-900">
-                      {formatQty(line.activeAllocatedQty ?? 0, line.unit)}
+                    <td className="px-2 py-2 text-right text-[14px] font-semibold tabular-nums text-blue-900">
+                      {formatQty(line.incomingQty ?? 0, line.unit)}
                     </td>
-                    <td
-                      className={cn(
-                        "px-2 py-2 text-right text-[12px] font-bold tabular-nums",
-                        issueReady ? "text-emerald-800" : "text-slate-500",
-                      )}
-                    >
-                      {issueReady ? "YES" : "NO"}
+                    <td className="px-2 py-2 text-right text-[12px] font-bold tabular-nums text-violet-900">{coverage}</td>
+                    <td className="max-w-[9rem] truncate px-2 py-2 text-[11px] font-medium text-slate-700" title={line.procurementStatus ?? undefined}>
+                      {line.procurementStatus?.trim() || "—"}
                     </td>
                   </tr>
                 );

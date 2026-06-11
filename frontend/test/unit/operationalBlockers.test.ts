@@ -159,7 +159,7 @@ describe("buildOperationalSoActions", () => {
     );
     expect(actions).toHaveLength(1);
     expect(actions[0]?.stageLabel).toBe("RM shortage blocking Work Order");
-    expect(actions[0]?.actionLabel).toBe("Open Store RM Workspace");
+    expect(actions[0]?.actionLabel).toBe("Open RM Control Center");
     expect(actions[0]?.actionTo).toContain("salesOrderId=4");
     expect(actions[0]?.actionTo).toContain("onlyBlocked=true");
     expect(actions[0]?.variant).toBe("blocker");
@@ -203,7 +203,7 @@ describe("buildOperationalSoActions", () => {
     );
     expect(actions).toHaveLength(1);
     expect(actions[0]?.stageLabel).toBe("RM shortage blocking Work Order");
-    expect(actions[0]?.actionLabel).toBe("Open Store RM Workspace");
+    expect(actions[0]?.actionLabel).toBe("Open RM Control Center");
   });
 
   it("dedupes allocation and procurement rows for the same work order", () => {

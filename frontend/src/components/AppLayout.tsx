@@ -9,6 +9,7 @@ import { DemoGuide } from "./demo/DemoGuide";
 import { Button } from "./ui/button";
 import { cn } from "../lib/utils";
 import { getPageTitle } from "../lib/routeTitles";
+import { PROCUREMENT_TERMS } from "../lib/procurementTerminology";
 import { GlobalSearch } from "./GlobalSearch";
 import { CommercialWorkflowOriginTrace } from "./PageHeader";
 import { BrandLogo, BrandMark, BRAND_NAME } from "./branding/Branding";
@@ -82,6 +83,8 @@ type NavItem = {
   roles: string[];
   icon: React.ReactNode;
   navKey: string;
+  /** Tooltip describing screen purpose (procurement navigation clarity). */
+  navHint?: string;
   /** When true, NavLink only matches this path exactly (avoids /stock highlighting on /stock/rm-ledger). */
   end?: boolean;
   /** When set, the item is only shown if this runtime feature flag is enabled. */
@@ -183,7 +186,8 @@ const navGroups: NavGroup[] = [
       {
         to: "/reports/rm-shortage",
         navKey: "rm-control-center",
-        label: "RM Control Center",
+        label: PROCUREMENT_TERMS.NAV_RM_CONTROL_CENTER,
+        navHint: PROCUREMENT_TERMS.NAV_RM_CONTROL_CENTER_HINT,
         roles: [...RM_CONTROL_CENTER_ROLES],
         icon: <ShieldAlert className="h-4 w-4 shrink-0" />,
       },
@@ -204,7 +208,8 @@ const navGroups: NavGroup[] = [
       {
         to: "/procurement-planning",
         navKey: "proc-plan",
-        label: "Procurement Workspace",
+        label: PROCUREMENT_TERMS.WORKSPACE_TITLE,
+        navHint: PROCUREMENT_TERMS.NAV_PROCUREMENT_WORKSPACE_HINT,
         roles: [...PROCUREMENT_PLANNING_ROLES],
         icon: <ClipboardList className="h-4 w-4 shrink-0" />,
       },
@@ -216,7 +221,14 @@ const navGroups: NavGroup[] = [
         icon: <Truck className="h-4 w-4 shrink-0" />,
       },
       { to: "/dispatch", navKey: "disp", label: "Dispatch Workspace", roles: [...DISPATCH_READ_ROLES], icon: <Truck className="h-4 w-4 shrink-0" /> },
-      { to: "/rm-po-grn", navKey: "grn", label: "Purchase & GRN Workspace", roles: ["ADMIN", "PURCHASE", "STORE"], icon: <ShoppingCart className="h-4 w-4 shrink-0" /> },
+      {
+        to: "/rm-po-grn",
+        navKey: "grn",
+        label: PROCUREMENT_TERMS.NAV_PURCHASE_GRN,
+        navHint: PROCUREMENT_TERMS.NAV_PURCHASE_GRN_HINT,
+        roles: ["ADMIN", "PURCHASE", "STORE"],
+        icon: <ShoppingCart className="h-4 w-4 shrink-0" />,
+      },
       {
         to: "/purchase-bills",
         navKey: "purbill",
@@ -489,7 +501,7 @@ export function AppLayout() {
                   <DemoGatedNavLink
                     to={item.to}
                     end={item.end === true}
-                    title={sidebarCollapsed ? item.label : undefined}
+                    title={item.navHint ?? (sidebarCollapsed ? item.label : undefined)}
                     className={({ isActive }) => cn("erp-nav-link", isActive ? "erp-nav-link-active" : "")}
                   >
                     {group.icon}
@@ -528,7 +540,7 @@ export function AppLayout() {
                       key={item.navKey}
                       to={item.to}
                       end={item.end === true}
-                      title={sidebarCollapsed ? item.label : undefined}
+                      title={item.navHint ?? (sidebarCollapsed ? item.label : undefined)}
                       className={({ isActive }) => cn("erp-nav-link text-[13px] leading-snug", isActive ? "erp-nav-link-active" : "")}
                     >
                       {item.icon}

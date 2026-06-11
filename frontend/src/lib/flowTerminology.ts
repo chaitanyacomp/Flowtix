@@ -22,12 +22,12 @@ export const REGULAR_TERMS = {
   RM_STATUS_CARD_TITLE: "Raw material status",
   SIDEBAR_BACK_TO_SALES_ORDERS: "Back to Sales Orders",
   RM_SHORTAGE_REFRESH_HINT:
-    "RM shortage — raise a Store RM Requisition, approve it, then send it to Purchase.",
+    "RM shortage — raise and approve a Store RM Requisition, then create the Purchase Request in Procurement Workspace.",
   RM_SHORTAGE_RESOLVE_FIRST:
     "Raw material shortage. Raise Store RM Requisition before creating Work Order.",
   RAISE_MATERIAL_REQUIREMENT: "Raise Store Requisition",
   /** Sales Order / Prepare WO — navigate to Store execution desk (no MR raise here). */
-  OPEN_RM_CONTROL_CENTER: "Open Store RM Workspace",
+  OPEN_RM_CONTROL_CENTER: "Open RM Control Center",
   CONTINUE_IN_RM_CONTROL_CENTER: "Continue in RM Control Center",
   MATERIAL_REQUIREMENT_RAISED_SUCCESS: "RM Requisition raised successfully",
   OPEN_MATERIAL_REQUIREMENT: "Open RM Requisition",

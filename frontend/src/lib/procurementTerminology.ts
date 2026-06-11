@@ -1,67 +1,101 @@
-/** Purchase / procurement operational copy (RM Requisition -> PR -> PO -> GRN). */
+/**
+ * MPRS procurement copy — single source for labels, status vocabulary, and nav hints.
+ * MR → PR → PO → GRN → RM Ready (Store: PR + GRN · Purchase: PO).
+ */
 
 export const PROCUREMENT_TERMS = {
   WORKSPACE_TITLE: "Procurement Workspace",
   WORKSPACE_SUBTITLE:
-    "Legacy MR execution: continue approved Store RM Requisitions through PR, PO, and GRN (use for exceptions during transition).",
-  KPI_PENDING_MR: "Approved requisitions",
-  KPI_PURCHASE_PLANNING: "Purchase Planning",
-  KPI_OPEN_PO: "Open PO",
+    "Monitor demand handoff and procurement progress. Store creates Purchase Requests and posts GRN; Purchase executes PO.",
+  KPI_PENDING_MR: "Approved MR",
+  KPI_PURCHASE_PLANNING: "Awaiting PR",
+  KPI_OPEN_PO: "Awaiting PO",
   KPI_GRN_PENDING: "GRN Pending",
-  PROCUREMENT_PENDING: "Procurement Pending",
-  DASHBOARD_SECTION_TITLE: "Supply timeline (legacy)",
+  PROCUREMENT_PENDING: "Awaiting PR",
+  DASHBOARD_SECTION_TITLE: "Procurement in progress",
   DASHBOARD_SECTION_DETAIL:
-    "Incoming PO/GRN visibility for open requisitions. Operational next action remains allocation and issue by Store.",
-  DASHBOARD_EMPTY_TITLE: "No supply timeline items",
+    "Open MR cases moving through PR, PO, and GRN. Store tracks PR and GRN; Purchase handles PO execution.",
+  DASHBOARD_EMPTY_TITLE: "No open procurement cases",
   DASHBOARD_EMPTY_DETAIL:
-    "No requisitions are currently awaiting PO/GRN. Store allocation and issue remain the operational truth for WOs.",
+    "Approved material requirements will appear here as they move through PR, PO, and GRN.",
   PROCUREMENT_REQUIRED_HEADLINE: "Procurement required",
   PROCUREMENT_QUEUE_SECTION: "Procurement queue",
-  OPEN_PROCUREMENT_PLANNING: "Open Procurement Planning",
-  OPEN_PURCHASE_QUEUE: "Open Purchase Queue",
+  OPEN_PROCUREMENT_PLANNING: "Open Procurement Workspace",
+  OPEN_PROCUREMENT_WORKSPACE: "Open Procurement Workspace",
+  OPEN_PURCHASE_QUEUE: "Open Approved Requisitions",
   CREATE_PURCHASE_REQUEST: "Create Purchase Request",
   PR_CREATE_SUCCESS: "Purchase Request created successfully.",
   PREPARE_RM_PO: "Prepare RM PO",
   CREATE_RM_PO: "Create RM PO",
   SECTION_PENDING_MR_HELPER:
-    "Create one purchase request per MR (parent document). RM lines below are planning detail only — no separate PR per item.",
+    "Create one Purchase Request per approved MR. RM lines below are planning detail — not separate PR documents.",
   SECTION_PURCHASE_PLANNING_DETAIL:
-    "Consolidated RM demand from open MRs. Purchase request is created once per MR using the action in the table above.",
+    "Consolidated RM demand awaiting PR. Use the MR action above to create the Purchase Request.",
   PLANNING_STATUS_MR_ACTION: "Use MR action above",
-  SECTION_EMPTY_PENDING_MR: "No open material requirements",
+  SECTION_EMPTY_PENDING_MR: "No approved material requirements",
   SECTION_EMPTY_PENDING_MR_DETAIL:
-    "When Store raises an MR for a REGULAR sales order, it will appear here for purchase follow-up.",
-  SECTION_EMPTY_PURCHASE_PLANNING: "No purchase planning pending",
-  SECTION_EMPTY_PURCHASE_PLANNING_DETAIL: "RM pool demand is allocated or not yet approved by Store.",
+    "When Store raises and approves an MR, it appears here for Purchase Request creation.",
+  SECTION_EMPTY_PURCHASE_PLANNING: "No MR awaiting PR",
+  SECTION_EMPTY_PURCHASE_PLANNING_DETAIL: "Approved MRs ready for Store to create a Purchase Request will list here.",
   SECTION_EMPTY_PR: "No purchase requests awaiting PO",
-  SECTION_EMPTY_PR_DETAIL: "Consolidated PR lines from Store will appear here — select lines to create an RM PO.",
+  SECTION_EMPTY_PR_DETAIL: "PR lines from Store appear here — Purchase selects lines to create an RM PO.",
   SECTION_EMPTY_PO: "No open purchase orders",
-  SECTION_EMPTY_PO_DETAIL: "Approved or partial RM POs awaiting goods receipt will list here.",
+  SECTION_EMPTY_PO_DETAIL: "Released RM POs awaiting goods receipt will list here.",
   SECTION_EMPTY_GRN: "No GRN pending",
-  SECTION_EMPTY_GRN_DETAIL: "PO lines with pending receipt quantity will appear here.",
+  SECTION_EMPTY_GRN_DETAIL: "PO lines with pending receipt quantity appear here for Store GRN posting.",
   SECTION_EMPTY_COMPLETED: "No completed procurement yet",
-  SECTION_EMPTY_COMPLETED_DETAIL: "RM Requisitions completed after full RM coverage.",
+  SECTION_EMPTY_COMPLETED_DETAIL: "MRs with full RM coverage after GRN completion.",
   OPEN_PO: "Open PO",
   OPEN_GRN: "Open GRN",
-  WAITING_FOR_PURCHASE: "Incoming supply timeline",
-  SECTION_PENDING_MR: "Approved Store Requisitions",
+  TRACK_PROCUREMENT: "Track procurement",
+  WAITING_FOR_PURCHASE: "Procurement pipeline",
+  SECTION_PENDING_MR: "Approved MR",
   SECTION_WO_PROCUREMENT_CASES: "Procurement cases",
   SECTION_WO_PROCUREMENT_CASES_HELPER:
-    "Store-approved material requisitions from work orders, monthly plans, and other demand sources.",
-  SECTION_PURCHASE_PLANNING: "Purchase Planning Pending",
-  SECTION_RM_PO_PENDING: "RM PO Pending",
+    "Approved material requirements from work orders, monthly plans, and replenishment sources.",
+  SECTION_PURCHASE_PLANNING: "Awaiting PR",
+  SECTION_RM_PO_PENDING: "Awaiting PO",
   SECTION_GRN_PENDING: "GRN Pending",
-  SECTION_COMPLETED: "Procurement Completed",
+  SECTION_COMPLETED: "RM Ready",
+  /** Navigation — routes unchanged; hints clarify screen purpose. */
+  NAV_RM_CONTROL_CENTER: "RM Control Center",
+  NAV_RM_CONTROL_CENTER_HINT: "Operational RM availability and shortages.",
+  NAV_PROCUREMENT_WORKSPACE_HINT: "Demand handoff and procurement monitoring.",
+  NAV_PURCHASE_GRN: "Purchase & GRN",
+  NAV_PURCHASE_GRN_HINT: "Commercial PO execution and GRN receipt processing.",
+  OPEN_RM_CONTROL_CENTER: "Open RM Control Center",
+  RM_CONTROL_CENTER_TITLE: "RM Control Center",
+  RM_CONTROL_CENTER_SUBTITLE:
+    "Operational RM availability, shortages, allocation, and procurement progress for open cases.",
+  PURCHASE_GRN_PAGE_TITLE: "Purchase & GRN",
+  PURCHASE_GRN_PAGE_SUBTITLE:
+    "Commercial PO execution and GRN receipt processing. Purchase creates PO; Store posts GRN.",
+  STORE_PULSE_TITLE: "Procurement pulse",
+  STORE_PULSE_SUBTITLE: "Store-owned PR and GRN work — Purchase handles PO creation separately.",
+  LOADING_PROCUREMENT: "Loading procurement cases…",
+  MORE_IN_WORKSPACE: "more in Procurement Workspace",
 } as const;
 
-/** Ordered procurement pipeline shown on MR rows. */
+/** Approved lifecycle strip — MR → PR → PO → GRN → RM Ready. */
 export const PROCUREMENT_WORKFLOW_STAGES = [
-  "Store requisition approved",
-  "Purchase request pending",
-  "PO pending",
+  "Approved MR",
+  "PR created",
+  "PO released",
   "GRN pending",
-  "RM ready",
+  "RM Ready",
 ] as const;
+
+/** Standard procurement chip / row status labels. */
+export const PROCUREMENT_STATUS_VOCABULARY = {
+  APPROVED_MR: "Approved MR",
+  AWAITING_PR: "Awaiting PR",
+  AWAITING_PO: "Awaiting PO",
+  PO_RELEASED: "PO Released",
+  GRN_PENDING: "GRN Pending",
+  PARTIALLY_RECEIVED: "Partially Received",
+  FULLY_RECEIVED: "Fully Received",
+  RM_READY: "RM Ready",
+} as const;
 
 /** Maps backend `operationalKey` to active workflow stage index (0–4). */
 export function procurementWorkflowStageIndex(operationalKey: string): number {
@@ -83,11 +117,11 @@ export function procurementWorkflowStageIndex(operationalKey: string): number {
 }
 
 export const PROCUREMENT_STATUS_LABELS: Record<string, string> = {
-  PROCUREMENT_PENDING: "Store requisition approved",
-  PR_PENDING_PO: "PO pending",
-  SUPPLIER_PENDING: "PO pending",
-  GRN_PENDING: "GRN pending",
-  PARTIAL_RECEIVED: "GRN pending",
-  RM_READY: "RM ready",
-  PROCUREMENT_COMPLETE: "RM ready",
+  PROCUREMENT_PENDING: PROCUREMENT_STATUS_VOCABULARY.AWAITING_PR,
+  PR_PENDING_PO: PROCUREMENT_STATUS_VOCABULARY.AWAITING_PO,
+  SUPPLIER_PENDING: PROCUREMENT_STATUS_VOCABULARY.PO_RELEASED,
+  GRN_PENDING: PROCUREMENT_STATUS_VOCABULARY.GRN_PENDING,
+  PARTIAL_RECEIVED: PROCUREMENT_STATUS_VOCABULARY.PARTIALLY_RECEIVED,
+  RM_READY: PROCUREMENT_STATUS_VOCABULARY.RM_READY,
+  PROCUREMENT_COMPLETE: PROCUREMENT_STATUS_VOCABULARY.RM_READY,
 };

@@ -588,10 +588,8 @@ export function RmPurchaseListPage() {
       <StickyWorkspaceHead lead={<PageBackLink to={rmPurchaseBackNav.backRoute} label={rmPurchaseBackNav.backLabel} />}>
         <div className="erp-page-title-row flex min-w-0 flex-wrap items-start justify-between gap-2">
           <div className="min-w-0 flex-1 space-y-0.5">
-            <h1 className="erp-type-page-title">Purchase & GRN</h1>
-            <p className="erp-type-helper text-slate-500">
-              Manage supplier purchase orders, GRN tracking, and raw material receipts.
-            </p>
+            <h1 className="erp-type-page-title">{PROCUREMENT_TERMS.PURCHASE_GRN_PAGE_TITLE}</h1>
+            <p className="erp-type-helper text-slate-500">{PROCUREMENT_TERMS.PURCHASE_GRN_PAGE_SUBTITLE}</p>
           </div>
           <div className="erp-page-header-actions shrink-0 pt-0.5">
             <Button type="button" size="sm" className="h-8 font-semibold shadow-sm" disabled title={DIRECT_PO_DISABLED_MESSAGE}>
@@ -629,9 +627,9 @@ export function RmPurchaseListPage() {
                 : ""}
           </p>
           <p className="text-amber-900/90">
-            Direct PO creation is blocked until Store approves and sends an RM Requisition
+            Direct PO creation is blocked until Store creates a Purchase Request from the approved MR
             {navSearchParams.get("shortageQty") ? ` (qty ${navSearchParams.get("shortageQty")})` : ""}
-            . Use the pending approved requisitions queue.
+            . Use the approved requisitions queue below.
           </p>
         </div>
       ) : null}

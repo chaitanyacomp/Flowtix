@@ -97,7 +97,7 @@ describe("woPrepareWorkflowGuidance", () => {
       onResumeWo: noop,
       onRefreshAvailability: noop,
     });
-    expect(noMr?.primaryLabel).toBe("Open Store RM Workspace");
+    expect(noMr?.primaryLabel).toBe("Open RM Control Center");
     expect(noMr?.primaryKind).toBe("link");
     expect(noMr?.primaryHref).toContain("/reports/rm-shortage");
     expect(noMr?.tertiaryLabel).toBe("Refresh Status");
@@ -117,7 +117,7 @@ describe("woPrepareWorkflowGuidance", () => {
       onResumeWo: noop,
       onRefreshAvailability: noop,
     });
-    expect(proc?.primaryLabel).toBe("Open Store RM Workspace");
+    expect(proc?.primaryLabel).toBe("Open RM Control Center");
     expect(proc?.secondaryLabel).toBeUndefined();
   });
 
@@ -140,7 +140,7 @@ describe("woPrepareWorkflowGuidance", () => {
     });
     expect(card.title).toBe("Work Order Creation Blocked");
     expect(card.reason).toContain("not available in Store");
-    expect(card.nextAction).toContain("Store RM Workspace");
+    expect(card.nextAction).toContain("RM Control Center");
     expect(card.rmWorkspaceHref).toContain("salesOrderId=42");
 
     const checklist = buildWoPrepareReadinessChecklist({

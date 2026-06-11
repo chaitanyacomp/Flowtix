@@ -45,7 +45,7 @@ export function ProcurementPendingDashboardCard({ rows, loading }: Props) {
   if (loading) {
     return (
       <Card className="border-violet-200/80 shadow-sm">
-        <CardContent className="py-3 text-sm text-slate-600">Loading supply timeline…</CardContent>
+        <CardContent className="py-3 text-sm text-slate-600">{PROCUREMENT_TERMS.LOADING_PROCUREMENT}</CardContent>
       </Card>
     );
   }
@@ -111,7 +111,7 @@ export function ProcurementPendingDashboardCard({ rows, loading }: Props) {
                     {fmtQty(row.totalShortageQty)}
                   </div>
                   <div className="text-[11px] font-semibold text-violet-900">
-                    Supply timeline · {stage}
+                    Procurement · {stage}
                     {pendingGrn > 0 ? (
                       <span className="font-bold text-blue-900">
                         {" "}
@@ -138,7 +138,7 @@ export function ProcurementPendingDashboardCard({ rows, loading }: Props) {
           })}
         </ul>
         {list.length > 12 ? (
-          <p className="text-center text-[11px] text-slate-500">+{list.length - 12} more in Purchase Action Center</p>
+          <p className="text-center text-[11px] text-slate-500">+{list.length - 12} {PROCUREMENT_TERMS.MORE_IN_WORKSPACE}</p>
         ) : null}
       </CardContent>
     </Card>

@@ -125,7 +125,7 @@ const WORKFLOW_STEPS = [
   { id: "source", label: "Sales order / Quotation" },
   { id: "planning", label: "RM Planning" },
   { id: "requirement", label: "RM Requisition" },
-  { id: "procurement", label: "Procurement Planning" },
+  { id: "procurement", label: "Procurement Workspace" },
   { id: "purchase", label: "Purchase & GRN" },
 ] as const;
 
@@ -463,9 +463,9 @@ export function MaterialPlanningPage() {
               buttonVariants({ variant: "default", size: "sm" }),
               "h-7 px-3 text-[11px] font-bold no-underline",
             )}
-            title="Open Store RM Workspace"
+            title="Open RM Control Center"
           >
-            Open Store RM Workspace
+            Open RM Control Center
           </Link>
           <Button
             type="button"

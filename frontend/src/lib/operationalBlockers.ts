@@ -138,7 +138,7 @@ export function buildOperationalSoActions(
             ? "Open Production Workspace"
             : row.operationalKey === "PARTIALLY_ALLOCATED"
               ? "Review Allocation"
-              : "Open Store RM Workspace";
+              : "Open RM Control Center";
     const action: OperationalSoAction = {
       key: rowKey,
       salesOrderId: soId,
@@ -257,7 +257,7 @@ export function buildOperationalSoActions(
         stageLabel: "RM shortage blocking Work Order",
         detailLine,
         statusLine: "Store Department · Raise RM Requirement",
-        actionLabel: "Open Store RM Workspace",
+        actionLabel: "Open RM Control Center",
         actionTo: buildRmControlCenterHref({
           salesOrderId: soId,
           onlyBlocked: true,

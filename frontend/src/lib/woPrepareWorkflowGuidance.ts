@@ -104,7 +104,7 @@ export function buildWoPrepareBlockedCardModel(args: {
       currentStatus: args.stepLabel,
       owner: "Store Department",
       nextAction:
-        "Track requisition, PO, and GRN in Store RM Workspace. Work Order creation will become available after RM is received and validated by Store.",
+        "Track PR, PO, and GRN in RM Control Center and Procurement Workspace. Work Order creation unlocks after Store receives and validates RM.",
       rmWorkspaceHref,
       showRefresh: true,
     };
@@ -116,7 +116,7 @@ export function buildWoPrepareBlockedCardModel(args: {
     currentStatus: args.stepLabel,
     owner: "Store Department",
     nextAction:
-      "Review RM shortage and raise procurement requirement from Store RM Workspace. Work Order creation will become available automatically after RM is received and validated by Store.",
+      "Review RM shortage in RM Control Center and raise procurement demand. Work Order creation unlocks after Store receives and validates RM.",
     rmWorkspaceHref,
     showRefresh: true,
   };
@@ -262,8 +262,8 @@ export function buildWoPrepareGuidedStripModel(args: {
         headline: "Work Order Creation Blocked",
         owner: "Store Department",
         nextActionText:
-          "Review RM shortage and raise procurement requirement from Store RM Workspace. Work Order creation will become available automatically after RM is received and validated by Store.",
-        primaryLabel: "Open Store RM Workspace",
+          "Review RM shortage in RM Control Center and raise procurement demand. Work Order creation unlocks after Store receives and validates RM.",
+        primaryLabel: REGULAR_TERMS.OPEN_RM_CONTROL_CENTER,
         primaryKind: "link",
         primaryHref: rmControlCenterHref({
           salesOrderId: so,
@@ -281,8 +281,8 @@ export function buildWoPrepareGuidedStripModel(args: {
         headline: "Work Order Creation Blocked",
         owner: "Store Department",
         nextActionText:
-          "Track requisition, PO, and GRN in Store RM Workspace. Work Order creation will become available after RM is received and validated by Store.",
-        primaryLabel: "Open Store RM Workspace",
+          "Track PR, PO, and GRN in RM Control Center and Procurement Workspace. Work Order creation unlocks after Store receives and validates RM.",
+        primaryLabel: REGULAR_TERMS.OPEN_RM_CONTROL_CENTER,
         primaryKind: "link",
         primaryHref: rmControlCenterHref({
           salesOrderId: so,
@@ -300,8 +300,8 @@ export function buildWoPrepareGuidedStripModel(args: {
         headline: "Work Order Creation Blocked",
         owner: "Store Department",
         nextActionText:
-          "Track requisition, PO, and GRN in Store RM Workspace. Work Order creation will become available after RM is received and validated by Store.",
-        primaryLabel: "Open Store RM Workspace",
+          "Track PR, PO, and GRN in RM Control Center and Procurement Workspace. Work Order creation unlocks after Store receives and validates RM.",
+        primaryLabel: REGULAR_TERMS.OPEN_RM_CONTROL_CENTER,
         primaryKind: "link",
         primaryHref: rmControlCenterHref({
           salesOrderId: so,

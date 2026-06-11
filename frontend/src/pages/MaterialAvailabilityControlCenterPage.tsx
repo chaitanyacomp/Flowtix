@@ -8,11 +8,12 @@ import { apiFetch } from "../services/api";
 import { useToast } from "../contexts/ToastContext";
 import { useAuth } from "../hooks/useAuth";
 import { useFeatureFlags } from "../hooks/useFeatureFlags";
-import { RM_ALLOCATION_WRITE_ROLES, RM_PO_WRITE_ROLES } from "../config/erpRoles";
+import { MATERIAL_REQUISITION_WRITE_ROLES, RM_ALLOCATION_WRITE_ROLES, hasErpRole } from "../config/erpRoles";
 import { cn } from "../lib/utils";
 import { resolveGuidedWorkflow, type GuidedWorkflowResolution } from "../lib/rmGuidedWorkflow";
 import { resolveRmOperationalContext } from "../lib/rmOperationalActions";
 import { RmControlCenterCasePanel } from "../components/erp/RmControlCenterCasePanel";
+import { RmControlCenterProcurementPanel } from "../components/erp/RmControlCenterProcurementPanel";
 import { ErpModal } from "../components/erp/ErpModal";
 import { buildProcurementWorkspaceHref } from "../lib/woProcurementContinuity";
 import { buildRmPoDetailHref } from "../lib/rmPurchaseWoContinuity";
@@ -20,6 +21,15 @@ import { buttonVariants } from "../components/ui/button";
 import { woPreparePrepareHref } from "../lib/woPrepareOperationalStage";
 import { presentOperationalError } from "../lib/operationalErrorPresentation";
 import { formatRmQty } from "../lib/rmQtyDisplay";
+import { buildPurchaseRequestPayloadFromWoMr } from "../lib/purchaseRequestFromMr";
+import { PROCUREMENT_TERMS } from "../lib/procurementTerminology";
+import {
+  deriveProcurementChip,
+  deriveProcurementWarnings,
+  lineCoveragePercent,
+  procurementSourceLabel,
+  procurementTimelineStepIndex,
+} from "../lib/rmControlCenterProcurementVisibility";
 import {
   caseHasPhysicalButNoFreeStock,
   caseHasZeroAllocatableStock,
@@ -483,7 +493,8 @@ export function MaterialAvailabilityControlCenterPage() {
   const { user } = useAuth();
   const role = user?.role ?? "";
   const canAllocateAsStore = (RM_ALLOCATION_WRITE_ROLES as readonly string[]).includes(role);
-  const canRaiseProcurementShortageMr = (RM_PO_WRITE_ROLES as readonly string[]).includes(role);
+  const canCreatePurchaseRequest = hasErpRole(role, MATERIAL_REQUISITION_WRITE_ROLES);
+  const canRaiseProcurementShortageMr = canCreatePurchaseRequest;
   const [searchParams] = useSearchParams();
   const initialApiFilters = React.useMemo(() => apiFiltersFromSearchParams(searchParams), [searchParams]);
   const returnTo = searchParams.get("returnTo");
@@ -496,6 +507,7 @@ export function MaterialAvailabilityControlCenterPage() {
   const [selectedRmItemId, setSelectedRmItemId] = React.useState<number | null>(null);
   const [selectedQueueKey, setSelectedQueueKey] = React.useState<QueueSelection | null>(null);
   const [creatingShortageMr, setCreatingShortageMr] = React.useState(false);
+  const [creatingPurchaseRequest, setCreatingPurchaseRequest] = React.useState(false);
   const [allocating, setAllocating] = React.useState(false);
   const [releasing, setReleasing] = React.useState(false);
   const [allocationQtyDraft, setAllocationQtyDraft] = React.useState("");
@@ -815,6 +827,12 @@ export function MaterialAvailabilityControlCenterPage() {
         procurementStatus: q?.procurementStatus ?? woCase?.procurementStatusLabel ?? null,
         poStatus: q?.poStatus ?? null,
         grnReceivedPercent: q?.grnReceivedPercent ?? null,
+        coveragePercent: lineCoveragePercent({
+          requiredQty: line.requiredQty,
+          shortageAfterReservationQty: line.shortageAfterReservationQty,
+          coveredByIncomingQty: line.coveredByIncomingQty,
+          grnReceivedPercent: q?.grnReceivedPercent ?? null,
+        }),
       };
     });
   }, [detail, data?.actionQueue, woCase?.procurementStatusLabel]);
@@ -898,6 +916,85 @@ export function MaterialAvailabilityControlCenterPage() {
       ),
     [rmCaseLines],
   );
+
+  const procurementVisibility = React.useMemo(() => {
+    if (!detail || !operational) return null;
+    const mr = woCase?.materialRequirement;
+    const summary = caseSupply?.summary;
+    const chip = deriveProcurementChip({
+      anyShortage: anyShortageOnCase,
+      hasMr: Boolean(mr?.id),
+      mrStatus: mr?.status ?? null,
+      prLineCount: summary?.prLineCount ?? 0,
+      poLineCount: summary?.poLineCount ?? 0,
+      pendingGrnQty: summary?.pendingGrnQty ?? 0,
+      receivedGrnQty: summary?.receivedGrnQty ?? 0,
+      procurementCompleted: procurementCompletedForCase,
+      notEscalated,
+    });
+    const sourceType = mr?.sourceType ?? caseSupply?.openMrLines?.[0]?.sourceType ?? null;
+    const sourceLabel = procurementSourceLabel(
+      sourceType,
+      detail.workOrder?.docNo ?? woCase?.workOrderNo ?? woCase?.salesOrderNo,
+    );
+    const lineWarnings = rmCaseLines.flatMap((l) => (l as RmLine).warnings ?? []);
+    const incomingLineCount = rmCaseLines.filter((l) => Number(l.incomingQty ?? 0) > 0).length;
+    const warnings = deriveProcurementWarnings({
+      chip,
+      sourceType,
+      pendingGrnQty: summary?.pendingGrnQty ?? 0,
+      incomingLineCount,
+      lineWarnings,
+    });
+    const timelineStepIndex = procurementTimelineStepIndex({
+      prLineCount: summary?.prLineCount ?? 0,
+      poLineCount: summary?.poLineCount ?? 0,
+      pendingGrnQty: summary?.pendingGrnQty ?? 0,
+      receivedGrnQty: summary?.receivedGrnQty ?? 0,
+      procurementCompleted: procurementCompletedForCase,
+      hasMr: Boolean(mr?.id),
+    });
+    const primaryPoId = caseSupply?.poLines?.[0]?.purchaseOrderId ?? null;
+    const grnHref =
+      primaryPoId && primaryPoId > 0
+        ? buildRmPoDetailHref(primaryPoId, {
+            salesOrderId: detail.salesOrder?.id ?? woCase?.salesOrderId ?? undefined,
+            from: "rm-purchase",
+          })
+        : "/rm-po-grn?focus=pending-requests";
+    const procurementWorkspaceHref = buildProcurementWorkspaceHref({
+      workOrderId: detail.workOrder?.id ?? null,
+      salesOrderId: detail.salesOrder?.id ?? woCase?.salesOrderId ?? null,
+      rmItemId: selectedRmItemId,
+      materialRequirementId: mr?.id ?? null,
+      returnTo: "rm-control-center",
+    });
+    return {
+      chip,
+      sourceLabel,
+      warnings,
+      timelineStepIndex,
+      grnHref,
+      procurementWorkspaceHref,
+      mrDocNo: mr?.docNo ?? escalation?.materialRequirementDocNo ?? null,
+      prLineCount: summary?.prLineCount ?? 0,
+      poLineCount: summary?.poLineCount ?? 0,
+      pendingGrnQty: summary?.pendingGrnQty ?? 0,
+      receivedGrnQty: summary?.receivedGrnQty ?? 0,
+    };
+  }, [
+    detail,
+    operational,
+    woCase,
+    caseSupply,
+    anyShortageOnCase,
+    procurementCompletedForCase,
+    notEscalated,
+    rmCaseLines,
+    escalation?.materialRequirementDocNo,
+    selectedRmItemId,
+  ]);
+
   const activeMaterialRequirement = woCase?.materialRequirement ?? null;
   const requirementRaised =
     Boolean(activeMaterialRequirement?.id) &&
@@ -915,7 +1012,7 @@ export function MaterialAvailabilityControlCenterPage() {
       <div className="rounded-md border border-emerald-300 bg-emerald-50 px-2.5 py-2">
         <p className="text-[12px] font-bold text-emerald-900">RM requirement raised</p>
         <p className="mt-0.5 text-[11px] leading-relaxed text-emerald-800">
-          {requirementDocNo ? `${requirementDocNo} · ` : ""}Waiting for stock / purchase planning.
+          {requirementDocNo ? `${requirementDocNo} · ` : ""}Track PR → PO → GRN in Procurement Workspace.
         </p>
         <Link
           to={requirementProcurementHref}
@@ -924,7 +1021,7 @@ export function MaterialAvailabilityControlCenterPage() {
             "mt-2 h-8 w-full justify-center text-[12px] font-semibold no-underline",
           )}
         >
-          View in Procurement Planning
+          Open Procurement Workspace
         </Link>
       </div>
     ) : (
@@ -1024,6 +1121,32 @@ export function MaterialAvailabilityControlCenterPage() {
     reopenConfirmPendingRef.current = true;
     await bulkAddWoShortageCaseLines(true);
     reopenConfirmPendingRef.current = false;
+  }
+
+  async function handleCreatePurchaseRequestFromCase() {
+    const mr = woCase?.materialRequirement;
+    if (!mr?.id || creatingPurchaseRequest || !canCreatePurchaseRequest) return;
+    const payload = buildPurchaseRequestPayloadFromWoMr(mr);
+    if (!payload) {
+      showError("No RM lines are eligible for a purchase request on this case.");
+      return;
+    }
+    setCreatingPurchaseRequest(true);
+    setError(null);
+    try {
+      await apiFetch("/api/procurement-planning/send-requirement", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      showSuccess(PROCUREMENT_TERMS.PR_CREATE_SUCCESS);
+      await load(filters);
+    } catch (e) {
+      const presented = presentOperationalError(e);
+      setError(presented.userMessage);
+      showError(presented.userMessage);
+    } finally {
+      setCreatingPurchaseRequest(false);
+    }
   }
 
   function selectQueueRow(row: QueueRow) {
@@ -1184,18 +1307,21 @@ export function MaterialAvailabilityControlCenterPage() {
     <div className="rm-cc-page">
       <header className="rm-cc-head">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-            <h1 className="text-[20px] font-bold tracking-tight text-slate-900">
-              Store RM Workspace
-            </h1>
-            <Badge variant={readiness.variant} density="compact">
-              {readiness.label}
-            </Badge>
-            {!canAllocateAsStore ? (
-              <Badge variant="default" density="compact">
-                Read-only
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <h1 className="text-[20px] font-bold tracking-tight text-slate-900">RM Control Center</h1>
+              <Badge variant={readiness.variant} density="compact">
+                {readiness.label}
               </Badge>
-            ) : null}
+              {!canAllocateAsStore ? (
+                <Badge variant="default" density="compact">
+                  Read-only
+                </Badge>
+              ) : null}
+            </div>
+            <p className="mt-0.5 text-[11px] font-medium text-slate-600">
+              Operational RM availability, shortages, and procurement progress.
+            </p>
           </div>
           <div className="flex items-center gap-1.5">
             {returnTo === "dashboard" ? (
@@ -1251,11 +1377,11 @@ export function MaterialAvailabilityControlCenterPage() {
               onChange={(e) => setDraftFilters((f) => ({ ...f, status: e.target.value }))}
             >
               <option value="">All</option>
-              <option value="APPROVAL_PENDING">Approval Pending</option>
-              <option value="WAITING_PURCHASE">Waiting Purchase Action</option>
-              <option value="WAITING_GRN">PO Created / Waiting GRN</option>
-              <option value="PARTIAL_RECEIVED">Partial RM Received</option>
-              <option value="READY_ISSUE">RM Ready for Issue</option>
+              <option value="APPROVAL_PENDING">Awaiting Store Approval</option>
+              <option value="WAITING_PURCHASE">Awaiting PR</option>
+              <option value="WAITING_GRN">GRN Pending</option>
+              <option value="PARTIAL_RECEIVED">Partially Received</option>
+              <option value="READY_ISSUE">RM Ready</option>
               <option value="READY_RELEASE">Ready to Release WO</option>
               <option value="BLOCKED">Blocked</option>
               <option value="PARTIAL">Partial</option>
@@ -1373,6 +1499,8 @@ export function MaterialAvailabilityControlCenterPage() {
                 stageLabel={operatorStageLabelText}
                 allocationFirstLabel={woCase?.allocationFirstStatus?.label ?? null}
                 mrDocNo={woCase?.materialRequirement?.docNo ?? escalation?.materialRequirementDocNo}
+                procurementChipLabel={procurementVisibility?.chip.label ?? null}
+                procurementSourceLabel={procurementVisibility?.sourceLabel ?? null}
                 operationalGuidance={storeOperationalGuidance}
                 rmLines={rmCaseLines}
                 selectedRmItemId={selectedRmItemId}
@@ -1395,6 +1523,25 @@ export function MaterialAvailabilityControlCenterPage() {
               </div>
             ) : (
               <div className="flex min-h-0 flex-1 flex-col gap-2">
+                {procurementVisibility ? (
+                  <RmControlCenterProcurementPanel
+                    chip={procurementVisibility.chip}
+                    sourceLabel={procurementVisibility.sourceLabel}
+                    mrDocNo={procurementVisibility.mrDocNo}
+                    timelineStepIndex={procurementVisibility.timelineStepIndex}
+                    prLineCount={procurementVisibility.prLineCount}
+                    poLineCount={procurementVisibility.poLineCount}
+                    pendingGrnQty={procurementVisibility.pendingGrnQty}
+                    receivedGrnQty={procurementVisibility.receivedGrnQty}
+                    warnings={procurementVisibility.warnings}
+                    procurementWorkspaceHref={procurementVisibility.procurementWorkspaceHref}
+                    grnHref={procurementVisibility.grnHref}
+                    canCreatePurchaseRequest={canCreatePurchaseRequest}
+                    creatingPr={creatingPurchaseRequest}
+                    onCreatePurchaseRequest={() => void handleCreatePurchaseRequestFromCase()}
+                  />
+                ) : null}
+
                 <div className="rounded-md border border-slate-200 bg-white px-2.5 py-2">
                   <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Primary operational action</p>
                   <p className="mt-0.5 text-[12px] font-semibold text-slate-900">

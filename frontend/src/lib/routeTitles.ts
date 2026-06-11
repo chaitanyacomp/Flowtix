@@ -30,7 +30,7 @@ const TITLES: Record<string, string> = {
   "/rm-stock-planning": "RM Stock Planning",
   "/procurement-planning": "Procurement Workspace",
   "/material-issue": "Material Issue Workspace",
-  "/rm-po-grn": "Purchase & GRN Workspace",
+  "/rm-po-grn": "Purchase & GRN",
   "/purchase-bills": "Purchase bills",
   "/purchase-bills/new": "New purchase bill",
   "/work-orders": "Work order",

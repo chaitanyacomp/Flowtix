@@ -639,42 +639,89 @@ async function buildProcurementCompletedSection(db = prisma) {
   return rows;
 }
 
+const PROCUREMENT_QUEUE_SOURCE_TYPES = Object.freeze([
+  "MONTHLY_PLAN",
+  "WORK_ORDER_PLANNING",
+  "STOCK_REPLENISHMENT",
+]);
+
+function computeQueueCounts(pendingMrs) {
+  const counts = {
+    all: pendingMrs.length,
+    monthlyPlan: 0,
+    woShortage: 0,
+    minStock: 0,
+  };
+  for (const mr of pendingMrs) {
+    switch (mr.sourceType) {
+      case "MONTHLY_PLAN":
+        counts.monthlyPlan += 1;
+        break;
+      case "WORK_ORDER_PLANNING":
+        counts.woShortage += 1;
+        break;
+      case "STOCK_REPLENISHMENT":
+        counts.minStock += 1;
+        break;
+      default:
+        break;
+    }
+  }
+  return counts;
+}
+
+function filterPendingMrsBySourceType(pendingMrs, sourceType) {
+  if (!sourceType || !PROCUREMENT_QUEUE_SOURCE_TYPES.includes(sourceType)) return pendingMrs;
+  return pendingMrs.filter((mr) => mr.sourceType === sourceType);
+}
+
+async function buildPendingMaterialRequirementSummaries(db, mrs) {
+  const pendingByMr = await loadPendingRequestAllocByMrLineId(db);
+  const sourceTypesByRmItem = buildSourceTypesByRmItem(mrs);
+  const out = [];
+  for (const mr of mrs) {
+    const summary = await summarizeMaterialRequirement(mr, pendingByMr, db);
+    const multiSourceItemIds = [];
+    summary.lines = (summary.lines || []).map((line) => {
+      const types = sourceTypesByRmItem.get(line.rmItemId);
+      const multiSourceDemand = (types?.size ?? 0) > 1;
+      if (multiSourceDemand) multiSourceItemIds.push(line.rmItemId);
+      return {
+        ...line,
+        multiSourceDemand,
+        demandSourceTypes: types ? [...types] : [line.sourceType ?? summary.sourceType].filter(Boolean),
+      };
+    });
+    summary.hasMultiSourceDemand = multiSourceItemIds.length > 0;
+    summary.multiSourceRmItemCount = multiSourceItemIds.length;
+    out.push(summary);
+  }
+  return out;
+}
+
 /**
  * Full Purchase execution workspace payload.
  */
 async function buildProcurementWorkspace(db = prisma, opts = {}) {
   const salesOrderId = opts.salesOrderId != null ? Number(opts.salesOrderId) : null;
-  const [pool, pendingMrs, pendingPrs, grnPending, completed] = await Promise.all([
+  const sourceTypeFilter =
+    opts.sourceType && PROCUREMENT_QUEUE_SOURCE_TYPES.includes(String(opts.sourceType))
+      ? String(opts.sourceType)
+      : null;
+
+  const [pool, pendingMrsAll, pendingPrs, grnPending, completed] = await Promise.all([
     buildProcurementPool(db),
     (async () => {
       const mrs = await loadOpenMaterialRequirements(db, { salesOrderId });
-      const pendingByMr = await loadPendingRequestAllocByMrLineId(db);
-      // Read-only cross-source detection: RM items demanded by >1 source type.
-      const sourceTypesByRmItem = buildSourceTypesByRmItem(mrs);
-      const out = [];
-      for (const mr of mrs) {
-        const summary = await summarizeMaterialRequirement(mr, pendingByMr, db);
-        const multiSourceItemIds = [];
-        summary.lines = (summary.lines || []).map((line) => {
-          const types = sourceTypesByRmItem.get(line.rmItemId);
-          const multiSourceDemand = (types?.size ?? 0) > 1;
-          if (multiSourceDemand) multiSourceItemIds.push(line.rmItemId);
-          return {
-            ...line,
-            multiSourceDemand,
-            demandSourceTypes: types ? [...types] : [line.sourceType ?? summary.sourceType].filter(Boolean),
-          };
-        });
-        summary.hasMultiSourceDemand = multiSourceItemIds.length > 0;
-        summary.multiSourceRmItemCount = multiSourceItemIds.length;
-        out.push(summary);
-      }
-      return out;
+      return buildPendingMaterialRequirementSummaries(db, mrs);
     })(),
     listPendingPurchaseRequests(db),
     buildGrnPendingSection(db),
     buildProcurementCompletedSection(db),
   ]);
+
+  const queueCounts = computeQueueCounts(pendingMrsAll);
+  const pendingMrs = filterPendingMrsBySourceType(pendingMrsAll, sourceTypeFilter);
 
   const supplierAllocationPending = (pool.items || [])
     .filter((i) => i.purchaseRequired && i.netRequiredQty > QUEUE_EPS)
@@ -714,19 +761,24 @@ async function buildProcurementWorkspace(db = prisma, opts = {}) {
     salesOrderId,
     woPlanningOnly: false,
   });
+  const procurementPendingFiltered = filterPendingMrsBySourceType(
+    procurementPendingDashboard,
+    sourceTypeFilter,
+  );
 
   return {
     pool,
     summary: {
       /** Open MRs still awaiting first purchase request (not PR/PO/GRN in flight). */
-      pendingMrCount: pendingMrs.filter((m) => m.operationalKey === "PROCUREMENT_PENDING").length,
-      openMrCount: pendingMrs.length,
+      pendingMrCount: pendingMrsAll.filter((m) => m.operationalKey === "PROCUREMENT_PENDING").length,
+      openMrCount: pendingMrsAll.length,
+      queueCounts,
       supplierAllocationItemCount: supplierAllocationPending.length,
       purchaseRequestCount: pendingPrs.length,
       poPendingCount: poPending.length,
       grnPendingLineCount: grnPending.length,
       completedCount: completed.length,
-      procurementPendingCount: procurementPendingDashboard.length,
+      procurementPendingCount: procurementPendingFiltered.length,
     },
     sections: {
       pendingMaterialRequirements: pendingMrs,
@@ -737,7 +789,7 @@ async function buildProcurementWorkspace(db = prisma, opts = {}) {
       procurementCompleted: completed,
       archivedMaterialRequirements: pendingMrs.flatMap((row) => row.archivedMaterialRequirements || []),
     },
-    procurementPending: procurementPendingDashboard,
+    procurementPending: procurementPendingFiltered,
   };
 }
 
@@ -753,4 +805,7 @@ module.exports = {
   mrSourceDescriptor,
   sourceRefForMr,
   buildSourceTypesByRmItem,
+  computeQueueCounts,
+  filterPendingMrsBySourceType,
+  PROCUREMENT_QUEUE_SOURCE_TYPES,
 };

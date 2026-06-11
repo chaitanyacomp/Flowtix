@@ -13,6 +13,7 @@ import { dashboardShell } from "../../lib/dashboardShell";
 import { REGULAR_TERMS } from "../../lib/flowTerminology";
 import { purchaseGrnExecutionHref } from "../../lib/woPrepareOperationalStage";
 import { DashboardOpsClearStrip, DashboardWorkspaceHeader } from "../../components/erp/foundation";
+import { StoreProcurementPulse } from "../../components/erp/StoreProcurementPulse";
 import { erpKpi } from "../../lib/erpFoundationTokens";
 import { apiFetch } from "../../services/api";
 import { ERP_DASHBOARD_POLL_MS, useErpRefreshTick } from "../../hooks/useErpRefreshTick";
@@ -164,6 +165,8 @@ export function StoreDispatchDashboard({
           </div>
 
           {allQuiet ? <DashboardOpsClearStrip role="STORE" /> : null}
+
+          <StoreProcurementPulse />
 
           <div className="grid gap-1.5 lg:grid-cols-2">
             <Card className={cn(dispatchReadyCount > 0 ? DASH_CARD_PRIMARY : DASH_CARD)}>

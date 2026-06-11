@@ -1,24 +1,17 @@
 import * as React from "react";
 import { Link, useLocation, useParams } from "react-router-dom";
-import { Printer } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { apiFetch } from "../services/api";
 import { getApiUrl } from "../services/api";
 import { computeLineTaxSplit, sumBillLines } from "../lib/purchaseBillCalc";
-import {
-  buildPurchaseBillDocumentPayload,
-  type PurchaseBillCompanyProfile,
-} from "../lib/purchaseBillDocument";
-import { printPurchaseBillDocumentSection } from "../lib/purchaseBillDocumentActions";
 import { useAuth } from "../hooks/useAuth";
 import { useToast } from "../contexts/ToastContext";
 import { PageContainer, PageSmartBackLink, StickyWorkspaceHead } from "../components/PageHeader";
 import { ActivityHistoryCard } from "../components/ActivityHistoryCard";
 import { BillExportStatusPanel } from "../components/BillExportStatusPanel";
 import { PurchaseBillCommercialPanel } from "../components/purchase/PurchaseBillCommercialPanel";
-import { PurchaseBillDocumentView } from "../components/purchase/PurchaseBillDocumentView";
 import { ErpModal } from "../components/erp/ErpModal";
 import { cn } from "../lib/utils";
 import type { ResolvedSupplierCommercial } from "./rmPurchase/rmPurchaseShared";
@@ -29,6 +22,43 @@ import {
 } from "../lib/procurementNavigation";
 
 const COMMERCIAL_PAYMENT_MODES = ["CASH", "BANK", "UPI", "CHEQUE", "OTHER"] as const;
+
+type SupplierInvoiceTab = "matching" | "tally" | "payment" | "history";
+
+const SUPPLIER_INVOICE_TABS: Array<{ id: SupplierInvoiceTab; label: string }> = [
+  { id: "matching", label: "Invoice Matching" },
+  { id: "tally", label: "Tally Export" },
+  { id: "payment", label: "Payment Follow-up" },
+  { id: "history", label: "History" },
+];
+
+function formatQty3(n: number | null | undefined): string {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return "—";
+  return String(Math.round(x * 1000) / 1000);
+}
+
+function lineMatchPresentation(qty: number, received: number): { status: string; difference: string; statusClass: string } {
+  if (!Number.isFinite(received)) {
+    return { status: "—", difference: "—", statusClass: "text-slate-600" };
+  }
+  const delta = received - qty;
+  if (qty > received + 1e-6) {
+    return {
+      status: "Over GRN",
+      difference: `+${formatQty3(qty - received)} over`,
+      statusClass: "text-red-800",
+    };
+  }
+  if (delta > 1e-6) {
+    return {
+      status: "Partial",
+      difference: `${formatQty3(delta)} remaining`,
+      statusClass: "text-amber-800",
+    };
+  }
+  return { status: "Matched", difference: "—", statusClass: "text-emerald-800" };
+}
 
 type PurchaseBillPaymentRow = {
   id: number;
@@ -169,8 +199,7 @@ export function PurchaseBillEditPage() {
   const canEditPaymentTracking = userRole === "ADMIN" || userRole === "PURCHASE";
 
   const [bill, setBill] = React.useState<Bill | null>(null);
-  const [companyProfile, setCompanyProfile] = React.useState<PurchaseBillCompanyProfile | null>(null);
-  const [viewMode, setViewMode] = React.useState<"workspace" | "document">("workspace");
+  const [activeTab, setActiveTab] = React.useState<SupplierInvoiceTab>("matching");
   const [loadError, setLoadError] = React.useState<string | null>(null);
   const [formError, setFormError] = React.useState<string | null>(null);
   const [formInfo, setFormInfo] = React.useState<string | null>(null);
@@ -209,10 +238,6 @@ export function PurchaseBillEditPage() {
   const cancelled = bill?.status === "CANCELLED";
   const editLocked = Boolean(readOnly || cancelled);
   const incomingWarnings = ((location.state as { pbWarnings?: string[] } | null)?.pbWarnings ?? []).filter(Boolean);
-
-  React.useEffect(() => {
-    apiFetch<PurchaseBillCompanyProfile>("/api/company-profile").then(setCompanyProfile).catch(() => setCompanyProfile(null));
-  }, []);
 
   React.useEffect(() => {
     if (!Number.isFinite(billId) || billId <= 0) {
@@ -321,49 +346,6 @@ export function PurchaseBillEditPage() {
   }
 
   const preview = bill ? sumBillLines(previewLines()) : null;
-
-  const documentPayload = React.useMemo(() => {
-    if (!bill) return null;
-    const billDateIso = billDate.trim() ? `${billDate.trim()}T00:00:00.000Z` : bill.billDate;
-    return buildPurchaseBillDocumentPayload(
-      {
-        id: bill.id,
-        billNo: bill.billNo,
-        billDate: bill.billDate,
-        status: bill.status,
-        remarks: bill.remarks,
-        taxIntraState: bill.taxIntraState,
-        totalBasic: bill.totalBasic,
-        totalCgst: bill.totalCgst,
-        totalSgst: bill.totalSgst,
-        totalIgst: bill.totalIgst,
-        totalTax: bill.totalTax,
-        netAmount: bill.netAmount,
-        supplier: bill.supplier,
-        resolvedSupplierCommercial: bill.resolvedSupplierCommercial,
-        lines: bill.lines.map((ln) => ({
-          id: ln.id,
-          itemId: ln.itemId,
-          itemName: ln.item?.itemName ?? `Item #${ln.itemId}`,
-          hsnCodeSnapshot: ln.hsnCodeSnapshot,
-          unitSnapshot: ln.unitSnapshot,
-          qty: ln.qty,
-          rate: ln.rate,
-          gstRate: ln.gstRate,
-          grnId: ln.grnId,
-          rmPoId: ln.rmPoId,
-        })),
-      },
-      {
-        billNo,
-        billDate: billDateIso,
-        remarks,
-        qtys,
-        rates,
-        preview,
-      },
-    );
-  }, [bill, billNo, billDate, remarks, qtys, rates, preview]);
 
   async function saveDraft() {
     if (!bill || editLocked) return;
@@ -748,116 +730,105 @@ export function PurchaseBillEditPage() {
           ⚠ This bill contains temporary tax values (testing mode).
         </div>
       ) : null}
-      <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="rounded-full bg-slate-100 px-2 py-0.5 font-medium text-slate-700" title="GRN affects stock received">
-            Stock status: Goods received via GRN
-          </span>
-          <span
-            className={
-              bill.status === "CANCELLED"
-                ? "rounded-full bg-rose-50 px-2 py-0.5 font-medium text-rose-800"
-                : bill.status === "FINALIZED"
-                  ? "rounded-full bg-emerald-50 px-2 py-0.5 font-medium text-emerald-800"
-                  : "rounded-full bg-amber-50 px-2 py-0.5 font-medium text-amber-900"
-            }
-          >
-            Billing status: {billingStatusBadge}
-          </span>
-        </div>
-        {bill.status === "CANCELLED" ? (
-          <div className="mt-1 text-rose-800">
-            This bill is cancelled. Goods remain received in stock. The cancelled quantity is available for re-billing.
-          </div>
-        ) : null}
-      </div>
       <StickyWorkspaceHead lead={<PageSmartBackLink defaultTo="/purchase-bills" defaultLabel="Back to purchase bills" />}>
-        <div className="flex min-w-0 flex-col gap-4 lg:flex-row lg:items-start lg:justify-between lg:gap-6">
+        <div className="flex min-w-0 flex-col gap-3">
           <div className="min-w-0 space-y-1">
             <h1 className="text-lg font-semibold leading-snug text-slate-900">Purchase bill</h1>
             <p className="text-sm leading-relaxed text-slate-600">
-              {cancelled ? "Cancelled purchase bill (read-only)" : readOnly ? "View finalized Purchase Bill" : "Edit Purchase Bill"}
+              {cancelled
+                ? "Cancelled purchase bill (read-only)"
+                : readOnly
+                  ? "View finalized Purchase Bill"
+                  : "Match supplier invoice to GRN receipts"}
             </p>
           </div>
-          <div className="flex shrink-0 flex-wrap items-center gap-2">
-            <div className="inline-flex rounded-md border border-slate-200 bg-slate-50 p-0.5">
-              <button
-                type="button"
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <span className="rounded-full bg-slate-100 px-2 py-0.5 font-medium text-slate-700">GRN received</span>
+            <span
+              className={cn(
+                "rounded-full px-2 py-0.5 font-medium",
+                bill.status === "CANCELLED"
+                  ? "bg-rose-50 text-rose-800"
+                  : bill.status === "FINALIZED"
+                    ? "bg-emerald-50 text-emerald-800"
+                    : "bg-amber-50 text-amber-900",
+              )}
+            >
+              {billingStatusBadge}
+            </span>
+            {readOnly ? (
+              <span
                 className={cn(
-                  "rounded px-3 py-1.5 text-xs font-semibold transition-colors",
-                  viewMode === "workspace" ? "bg-white text-slate-900 shadow-sm" : "text-slate-600 hover:text-slate-900",
+                  "rounded-full px-2 py-0.5 font-medium",
+                  bill.isExported ? "bg-sky-50 text-sky-800" : "bg-slate-100 text-slate-700",
                 )}
-                data-testid="pb-view-workspace"
-                onClick={() => setViewMode("workspace")}
               >
-                Edit workspace
-              </button>
-              <button
-                type="button"
-                className={cn(
-                  "rounded px-3 py-1.5 text-xs font-semibold transition-colors",
-                  viewMode === "document" ? "bg-white text-slate-900 shadow-sm" : "text-slate-600 hover:text-slate-900",
-                )}
-                data-testid="pb-view-document"
-                onClick={() => setViewMode("document")}
-              >
-                Document view
-              </button>
-            </div>
+                Tally: {tallyExportLabel(bill.isExported)}
+              </span>
+            ) : null}
+            {bill.status === "FINALIZED" && !bill.cancelledAt ? (
+              <span className="rounded-full bg-slate-100 px-2 py-0.5 font-medium text-slate-700">
+                Payment: {bill.paymentStatus ?? "—"}
+              </span>
+            ) : null}
           </div>
-          {!cancelled ? (
-            <div className="flex shrink-0 flex-col items-start gap-2">
-            <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
-              <div className="font-medium text-slate-800">What this action does</div>
-              <div className="mt-0.5">
-                <span className="font-medium">Cancel Bill (invoice only)</span>: cancels supplier invoice effect.{" "}
-                <span className="font-medium">Stock will NOT change.</span>
-              </div>
-              <div className="mt-0.5">
-                <span className="font-medium">Reverse GRN</span>: undo goods receipt (stock change). Use only when receipt itself is wrong.
-              </div>
-            </div>
-
-            <div className="flex flex-wrap gap-3">
-              <div className="flex flex-col gap-1">
-                <div className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Billing actions</div>
-
-                {bill.status === "DRAFT" ? (
-                  <div className="flex flex-wrap gap-2">
-                    <Button type="button" variant="outline" disabled={editLocked || saving} onClick={() => void saveDraft()}>
-                      Save Draft
-                    </Button>
-                    <Button type="button" disabled={editLocked || saving} onClick={() => void finalize()}>
-                      Finalize
-                    </Button>
-                  </div>
-                ) : null}
-
-                {isAdmin && bill.status === "FINALIZED" ? (
-                  <div className="flex flex-col gap-1">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      disabled={saving}
-                      onClick={() => void cancelFinalized()}
-                      title={
-                        bill.isExported ? "Exported bills require admin authorization to cancel." : "Cancels the supplier invoice. Stock will NOT change."
-                      }
-                    >
-                      Cancel Bill (invoice only)
-                    </Button>
-                    {bill.isExported ? (
-                      <div className="text-xs text-slate-600">Exported to Tally: cancelling requires Admin password.</div>
-                    ) : null}
-                  </div>
-                ) : null}
-              </div>
-
-            </div>
-          </div>
-        ) : null}
         </div>
       </StickyWorkspaceHead>
+
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="rounded-lg border border-slate-200 bg-white px-3 py-2.5">
+          <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Net amount</div>
+          <div className="mt-0.5 text-lg font-semibold tabular-nums text-slate-900">
+            {preview ? formatMoney(preview.netAmount) : formatMoney(Number(bill.netAmount))}
+          </div>
+        </div>
+        <div className="rounded-lg border border-slate-200 bg-white px-3 py-2.5">
+          <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Total basic</div>
+          <div className="mt-0.5 text-base font-semibold tabular-nums text-slate-800">
+            {preview ? formatMoney(preview.totalBasic) : formatMoney(Number(bill.totalBasic))}
+          </div>
+        </div>
+        <div className="rounded-lg border border-slate-200 bg-white px-3 py-2.5">
+          <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Total tax</div>
+          <div className="mt-0.5 text-base font-semibold tabular-nums text-slate-800">
+            {preview ? formatMoney(preview.totalTax) : formatMoney(Number(bill.totalTax))}
+          </div>
+        </div>
+        <div className="rounded-lg border border-slate-200 bg-white px-3 py-2.5">
+          <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Lines</div>
+          <div className="mt-0.5 text-base font-semibold text-slate-800">{bill.lines.length}</div>
+          <div className="truncate text-xs text-slate-600">{bill.supplier.name}</div>
+        </div>
+      </div>
+
+      {bill.status === "CANCELLED" ? (
+        <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-900">
+          This bill is cancelled. Goods remain received in stock. The cancelled quantity is available for re-billing.
+        </div>
+      ) : null}
+
+      <div
+        className="inline-flex w-full flex-wrap gap-1 rounded-lg border border-slate-200 bg-slate-50 p-1"
+        role="tablist"
+        aria-label="Supplier invoice sections"
+      >
+        {SUPPLIER_INVOICE_TABS.map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            role="tab"
+            aria-selected={activeTab === tab.id}
+            data-testid={`pb-tab-${tab.id}`}
+            className={cn(
+              "rounded-md px-3 py-2 text-xs font-semibold transition-colors",
+              activeTab === tab.id ? "bg-white text-slate-900 shadow-sm" : "text-slate-600 hover:text-slate-900",
+            )}
+            onClick={() => setActiveTab(tab.id)}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
 
       {formError ? (
         <div className="min-w-0 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm leading-relaxed text-amber-950 break-words">
@@ -870,51 +841,39 @@ export function PurchaseBillEditPage() {
         </div>
       ) : null}
 
-      {viewMode === "document" && documentPayload ? (
-        <article
-          className="mx-auto max-w-5xl overflow-hidden rounded-lg border border-slate-300 bg-white shadow-md"
-          data-testid="pb-document-article"
-        >
-          <div className="pb-no-print sticky top-0 z-10 flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-white/95 px-4 py-3 backdrop-blur-sm">
-            <p className="text-sm font-bold uppercase tracking-wide text-slate-700">Purchase Bill Document</p>
-            <div className="flex flex-wrap gap-2">
+      {activeTab === "matching" ? (
+        <div className="min-w-0 space-y-4" data-testid="pb-tab-panel-matching">
+          {!cancelled && bill.status === "DRAFT" ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <Button type="button" variant="outline" disabled={editLocked || saving} onClick={() => void saveDraft()}>
+                Save Draft
+              </Button>
+              <Button type="button" disabled={editLocked || saving} onClick={() => void finalize()}>
+                Finalize
+              </Button>
+            </div>
+          ) : null}
+          {!cancelled && isAdmin && bill.status === "FINALIZED" ? (
+            <div className="flex flex-wrap items-center gap-2">
               <Button
                 type="button"
                 variant="outline"
-                size="sm"
-                className="gap-1.5"
-                data-testid="pb-print-btn"
-                onClick={() => printPurchaseBillDocumentSection()}
+                disabled={saving}
+                onClick={() => void cancelFinalized()}
+                title={
+                  bill.isExported
+                    ? "Exported bills require admin authorization to cancel."
+                    : "Cancels the supplier invoice. Stock will NOT change."
+                }
               >
-                <Printer className="h-4 w-4" />
-                Print / Save as PDF
+                Cancel Bill (invoice only)
               </Button>
-              <Button type="button" variant="outline" size="sm" data-testid="pb-back-workspace-btn" onClick={() => setViewMode("workspace")}>
-                Edit workspace
-              </Button>
+              {bill.isExported ? (
+                <span className="text-xs text-slate-600">Exported to Tally: cancelling requires Admin password.</span>
+              ) : null}
             </div>
-          </div>
-          <PurchaseBillDocumentView bill={documentPayload} companyProfile={companyProfile} />
-        </article>
-      ) : (
-        <>
-      <BillExportStatusPanel
-        lifecycle={cancelled ? "CANCELLED" : readOnly ? "FINALIZED" : "DRAFT"}
-        isExported={Boolean(bill.isExported)}
-        exportedAt={bill.exportedAt}
-        exportedByName={null}
-        exportBlockedReason={exportBlockedReason}
-        exportAttemptError={exportError}
-        exportResetAt={bill.exportResetAt ?? null}
-        isAdmin={isAdmin}
-        exporting={exporting}
-        resetting={resetting}
-        onExport={exportToTally}
-        onResetExport={resetExport}
-      />
+          ) : null}
 
-      <div className="grid min-w-0 gap-6 lg:grid-cols-[minmax(0,1fr)_280px] lg:items-start lg:gap-6">
-        <div className="min-w-0 space-y-6">
           <Card className="min-w-0 overflow-hidden">
             <CardHeader className="pb-3">
               <CardTitle className="text-base">GRN + bill details</CardTitle>
@@ -956,10 +915,12 @@ export function PurchaseBillEditPage() {
                 <span className="text-xs font-medium text-slate-600">Bill date</span>
                 <Input type="date" value={billDate} onChange={(e) => setBillDate(e.target.value)} disabled={editLocked} className="min-w-0" />
               </div>
-              <div className="grid min-w-0 gap-1">
-                <span className="text-xs font-medium text-slate-600">Due date (optional)</span>
-                <Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} disabled={editLocked} className="min-w-0" />
-              </div>
+              {bill.status === "DRAFT" ? (
+                <div className="grid min-w-0 gap-1">
+                  <span className="text-xs font-medium text-slate-600">Due date (optional)</span>
+                  <Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} disabled={editLocked} className="min-w-0" />
+                </div>
+              ) : null}
               <div className="grid min-w-0 gap-1 sm:col-span-2">
                 <span className="text-xs font-medium text-slate-600">Remarks (optional)</span>
                 <Input value={remarks} onChange={(e) => setRemarks(e.target.value)} disabled={editLocked} placeholder="Notes for this bill" className="min-w-0" />
@@ -969,208 +930,176 @@ export function PurchaseBillEditPage() {
 
           <Card className="min-w-0 overflow-hidden">
             <CardHeader className="pb-3">
-              <CardTitle className="text-base">Items</CardTitle>
+              <CardTitle className="text-base">Line matching</CardTitle>
             </CardHeader>
             <CardContent className="min-w-0 p-0 sm:p-6 sm:pt-0">
-              <div className="space-y-2 px-3 pb-4 sm:px-0 sm:pb-0">
-                {bill.lines.map((ln, idx) => {
-                  const qty = qtys[ln.id] ?? Number(ln.qty);
-                  const rate = rates[ln.id] ?? Number(ln.rate);
-                  const received = ln.grnLine ? Number(ln.grnLine.receivedQty) : NaN;
-                  const alreadyBilled = Number(ln.qty);
-                  const remaining = Number.isFinite(received) ? Math.max(0, received - alreadyBilled) : NaN;
-                  const gst = Number(ln.gstRate);
-                  const p = computeLineTaxSplit(qty * rate, gst, bill.taxIntraState);
-                  const gstAmt = p.cgstAmount + p.sgstAmount + p.igstAmount;
+              <div className="erp-table-wrap overflow-x-auto px-3 pb-4 sm:px-0 sm:pb-0">
+                <table className="erp-table erp-table-dense min-w-[960px] w-full text-xs">
+                  <thead>
+                    <tr>
+                      <th className="text-left">Item</th>
+                      <th className="text-left">PO</th>
+                      <th className="text-left">GRN</th>
+                      <th className="text-right">PO Qty</th>
+                      <th className="text-right">GRN Qty</th>
+                      <th className="text-right">Invoice Qty</th>
+                      <th className="text-right">Rate</th>
+                      <th className="text-right">Amount</th>
+                      <th className="text-left">Match status</th>
+                      <th className="text-left">Difference</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {bill.lines.map((ln, idx) => {
+                      const qty = qtys[ln.id] ?? Number(ln.qty);
+                      const rate = rates[ln.id] ?? Number(ln.rate);
+                      const received = ln.grnLine ? Number(ln.grnLine.receivedQty) : NaN;
+                      const gst = Number(ln.gstRate);
+                      const p = computeLineTaxSplit(qty * rate, gst, bill.taxIntraState);
+                      const match = lineMatchPresentation(qty, received);
+                      const qtyOk = Number.isFinite(qty) && qty > 0;
+                      const rateOk = Number.isFinite(rate) && rate > 0;
+                      const showQtyErr = shouldShowErr(ln.id, "qty") && !qtyOk;
+                      const showRateErr = shouldShowErr(ln.id, "rate") && !rateOk;
 
-                  const qtyOk = Number.isFinite(qty) && qty > 0;
-                  const rateOk = Number.isFinite(rate) && rate > 0;
-                  const showQtyErr = shouldShowErr(ln.id, "qty") && !qtyOk;
-                  const showRateErr = shouldShowErr(ln.id, "rate") && !rateOk;
-
-                  return (
-                    <div key={ln.id} className="rounded-md border border-slate-200 bg-white p-2">
-                      <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_110px_130px] sm:items-start">
-                        <div className="min-w-0">
-                          <div className="text-sm font-medium text-slate-900 break-words">{ln.item.itemName}</div>
-                          <div className="mt-1 text-xs text-slate-600">
-                            Unit: <span className="tabular-nums">{ln.unitSnapshot || ln.item.unit || "—"}</span>{" "}
-                            <span className="text-slate-400">|</span> HSN:{" "}
-                            <span className="font-mono">{ln.hsnCodeSnapshot?.trim() ? ln.hsnCodeSnapshot : "—"}</span>{" "}
-                            <span className="text-slate-400">|</span> GST: <span className="tabular-nums">{Number.isFinite(gst) ? `${gst}%` : "—"}</span>
-                          </div>
-                          <div className="mt-1 text-xs text-slate-600">
-                            Received: <span className="tabular-nums">{Number.isFinite(received) ? received : "—"}</span>{" "}
-                            <span className="text-slate-400">|</span> Billed: <span className="tabular-nums">{Number.isFinite(alreadyBilled) ? alreadyBilled : "—"}</span>{" "}
-                            <span className="text-slate-400">|</span> Remaining:{" "}
-                            <span className="tabular-nums font-medium text-amber-800">{Number.isFinite(remaining) ? remaining : "—"}</span>
-                          </div>
-                        </div>
-
-                        <label className="grid gap-1 text-xs font-medium text-slate-600">
-                          Qty
-                          <Input
-                            ref={(el) => {
-                              qtyRefs.current[idx] = el;
-                            }}
-                            className="h-9 text-right tabular-nums"
-                            type="number"
-                            step="any"
-                            min={0}
-                            disabled={editLocked}
-                            value={Number.isFinite(qty) ? String(qty) : ""}
-                            onBlur={() => setTouched(ln.id, "qty")}
-                            onKeyDown={(e) => onQtyKeyDown(idx, e)}
-                            onChange={(e) => setQty(ln.id, Number(e.target.value))}
-                            onFocus={(e) => e.target.select()}
-                          />
-                          {showQtyErr ? <div className="text-[11px] font-normal text-red-700">Must be &gt; 0</div> : null}
-                        </label>
-
-                        <label className="grid gap-1 text-xs font-medium text-slate-600">
-                          Rate
-                          <Input
-                            ref={(el) => {
-                              rateRefs.current[idx] = el;
-                            }}
-                            className="h-9 text-right tabular-nums"
-                            type="number"
-                            step="any"
-                            min={0}
-                            disabled={editLocked}
-                            value={Number.isFinite(rate) ? String(rate) : ""}
-                            onBlur={() => setTouched(ln.id, "rate")}
-                            onChange={(e) => setRate(ln.id, Number(e.target.value))}
-                            onFocus={(e) => e.target.select()}
-                            onKeyDown={(e) => onRateKeyDown(idx, e)}
-                          />
-                          {showRateErr ? <div className="text-[11px] font-normal text-red-700">Must be &gt; 0</div> : null}
-                        </label>
-                      </div>
-
-                      <div className="mt-2 text-xs text-slate-600">
-                        Basic: <span className="tabular-nums text-slate-800">{formatMoney(p.basicAmount)}</span>{" "}
-                        <span className="text-slate-400">|</span> GST amt: <span className="tabular-nums text-slate-800">{formatMoney(gstAmt)}</span>{" "}
-                        <span className="text-slate-400">|</span> Total:{" "}
-                        <span className="tabular-nums font-medium text-slate-900">{formatMoney(p.lineTotal)}</span>{" "}
-                        <span className="text-slate-400">|</span> PO:{" "}
-                        {ln.rmPoId ? (
-                          <Link
-                            to={buildRmPoGrnDetailHref(ln.rmPoId)}
-                            className="tabular-nums font-medium text-primary underline"
-                          >
-                            RMPO-{ln.rmPoId}
-                          </Link>
-                        ) : (
-                          <span className="tabular-nums">—</span>
-                        )}{" "}
-                        <span className="text-slate-400">|</span> GRN:{" "}
-                        {ln.grnId ? (
-                          <Link
-                            to={buildGrnDocumentHref(ln.grnId)}
-                            className="tabular-nums font-medium text-primary underline"
-                          >
-                            GRN-{ln.grnId}
-                          </Link>
-                        ) : (
-                          <span className="tabular-nums">—</span>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
+                      return (
+                        <tr key={ln.id} className="align-top">
+                          <td className="min-w-[10rem]">
+                            <div className="font-medium text-slate-900">{ln.item.itemName}</div>
+                            <div className="text-[10px] text-slate-500">
+                              {ln.unitSnapshot || ln.item.unit || "—"}
+                              {ln.hsnCodeSnapshot?.trim() ? ` · HSN ${ln.hsnCodeSnapshot}` : ""}
+                              {Number.isFinite(gst) ? ` · GST ${gst}%` : ""}
+                            </div>
+                          </td>
+                          <td className="whitespace-nowrap">
+                            {ln.rmPoId ? (
+                              <Link to={buildRmPoGrnDetailHref(ln.rmPoId)} className="font-medium text-primary underline">
+                                RMPO-{ln.rmPoId}
+                              </Link>
+                            ) : (
+                              "—"
+                            )}
+                          </td>
+                          <td className="whitespace-nowrap">
+                            {ln.grnId ? (
+                              <Link to={buildGrnDocumentHref(ln.grnId)} className="font-medium text-primary underline">
+                                GRN-{ln.grnId}
+                              </Link>
+                            ) : (
+                              "—"
+                            )}
+                          </td>
+                          <td className="text-right tabular-nums text-slate-500">—</td>
+                          <td className="text-right tabular-nums text-slate-800">{formatQty3(received)}</td>
+                          <td className="text-right">
+                            <Input
+                              ref={(el) => {
+                                qtyRefs.current[idx] = el;
+                              }}
+                              className="h-8 w-[5.5rem] text-right tabular-nums"
+                              type="number"
+                              step="any"
+                              min={0}
+                              disabled={editLocked}
+                              value={Number.isFinite(qty) ? String(qty) : ""}
+                              onBlur={() => setTouched(ln.id, "qty")}
+                              onKeyDown={(e) => onQtyKeyDown(idx, e)}
+                              onChange={(e) => setQty(ln.id, Number(e.target.value))}
+                              onFocus={(e) => e.target.select()}
+                            />
+                            {showQtyErr ? <div className="text-[10px] text-red-700">Must be &gt; 0</div> : null}
+                          </td>
+                          <td className="text-right">
+                            <Input
+                              ref={(el) => {
+                                rateRefs.current[idx] = el;
+                              }}
+                              className="h-8 w-[5.5rem] text-right tabular-nums"
+                              type="number"
+                              step="any"
+                              min={0}
+                              disabled={editLocked}
+                              value={Number.isFinite(rate) ? String(rate) : ""}
+                              onBlur={() => setTouched(ln.id, "rate")}
+                              onChange={(e) => setRate(ln.id, Number(e.target.value))}
+                              onFocus={(e) => e.target.select()}
+                              onKeyDown={(e) => onRateKeyDown(idx, e)}
+                            />
+                            {showRateErr ? <div className="text-[10px] text-red-700">Must be &gt; 0</div> : null}
+                          </td>
+                          <td className="text-right tabular-nums font-medium text-slate-900">{formatMoney(p.lineTotal)}</td>
+                          <td className={cn("font-medium", match.statusClass)}>{match.status}</td>
+                          <td className={cn("tabular-nums", match.statusClass)}>{match.difference}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
             </CardContent>
           </Card>
         </div>
+      ) : null}
 
-        <div className="min-w-0 lg:sticky lg:top-6 lg:z-10 lg:self-start">
-          <Card className="min-w-0 overflow-hidden">
-            <CardHeader className="pb-3">
-              <CardTitle className="text-base">Summary</CardTitle>
-            </CardHeader>
-            <CardContent className="grid gap-3 text-sm">
-              <div className="flex min-w-0 items-baseline justify-between gap-3 border-b border-slate-100 pb-2">
-                <span className="min-w-0 shrink text-slate-600">Total basic</span>
-                <span className="shrink-0 tabular-nums font-medium text-slate-900">{preview ? formatMoney(preview.totalBasic) : "—"}</span>
-              </div>
-              <div className="flex min-w-0 items-baseline justify-between gap-3">
-                <span className="min-w-0 shrink text-slate-600">CGST</span>
-                <span className="shrink-0 tabular-nums text-slate-800">{preview ? formatMoney(preview.totalCgst) : "—"}</span>
-              </div>
-              <div className="flex min-w-0 items-baseline justify-between gap-3">
-                <span className="min-w-0 shrink text-slate-600">SGST</span>
-                <span className="shrink-0 tabular-nums text-slate-800">{preview ? formatMoney(preview.totalSgst) : "—"}</span>
-              </div>
-              <div className="flex min-w-0 items-baseline justify-between gap-3 border-b border-slate-100 pb-2">
-                <span className="min-w-0 shrink text-slate-600">IGST</span>
-                <span className="shrink-0 tabular-nums text-slate-800">{preview ? formatMoney(preview.totalIgst) : "—"}</span>
-              </div>
-              <div className="flex min-w-0 items-baseline justify-between gap-3 border-b border-slate-100 pb-2">
-                <span className="min-w-0 shrink text-slate-600">Total tax</span>
-                <span className="shrink-0 tabular-nums font-medium text-slate-900">{preview ? formatMoney(preview.totalTax) : "—"}</span>
-              </div>
-              <div className="flex min-w-0 items-baseline justify-between gap-3 font-semibold">
-                <span className="min-w-0 shrink text-slate-800">Net amount</span>
-                <span className="shrink-0 tabular-nums text-slate-900">{preview ? formatMoney(preview.netAmount) : "—"}</span>
-              </div>
+      {activeTab === "tally" ? (
+        <div data-testid="pb-tab-panel-tally">
+          <p className="mb-3 text-xs text-slate-600">
+            Accounting books are maintained in Tally. Export transfers this matched supplier invoice for posting.
+          </p>
+          <BillExportStatusPanel
+            lifecycle={cancelled ? "CANCELLED" : readOnly ? "FINALIZED" : "DRAFT"}
+            isExported={Boolean(bill.isExported)}
+            exportedAt={bill.exportedAt}
+            exportedByName={null}
+            exportBlockedReason={exportBlockedReason}
+            exportAttemptError={exportError}
+            exportResetAt={bill.exportResetAt ?? null}
+            isAdmin={isAdmin}
+            exporting={exporting}
+            resetting={resetting}
+            onExport={exportToTally}
+            onResetExport={resetExport}
+          />
+        </div>
+      ) : null}
 
-              <div className="mt-2 min-w-0 rounded-md border border-slate-100 bg-slate-50/80 p-3 text-xs leading-relaxed text-slate-700">
-                <div className="break-words">
-                  <span className="font-medium text-slate-800">Supplier:</span> {bill.supplier.name}
-                </div>
-                <div className="flex flex-wrap items-center gap-x-1 gap-y-1">
-                  <span className="font-medium text-slate-800">GRN ref:</span> <GrnRefLinks grnIds={collectBillGrnIds(bill)} />
-                </div>
-                <div>
-                  <span className="font-medium text-slate-800">Status:</span>{" "}
-                  {readOnly ? <span className="text-emerald-800">Finalized</span> : <span className="text-amber-900">Draft</span>}
-                </div>
-                {readOnly ? (
-                  <div>
-                    <span className="font-medium text-slate-800">Tally export:</span>{" "}
-                    <span className={bill.isExported ? "text-sky-800" : "text-slate-700"}>
-                      {tallyExportLabel(bill.isExported)}
-                    </span>
-                  </div>
-                ) : null}
-              </div>
-            </CardContent>
-          </Card>
-
+      {activeTab === "payment" ? (
+        <div data-testid="pb-tab-panel-payment">
           {bill.status === "FINALIZED" && !bill.cancelledAt ? (
-            <Card className="mt-4 min-w-0 overflow-hidden">
+            <Card className="min-w-0 overflow-hidden">
               <CardHeader className="pb-3">
                 <CardTitle className="text-base">Payment tracking</CardTitle>
                 <p className="text-[11px] leading-snug text-slate-500">
                   Commercial follow-up only — not statutory accounting. Status updates from paid vs net.
                 </p>
               </CardHeader>
-              <CardContent className="grid gap-3 text-sm">
-                <div className="flex flex-wrap gap-3 text-[12px]">
-                  <span className="text-slate-600">
-                    Status:{" "}
-                    <span className="font-semibold tabular-nums text-slate-900">{bill.paymentStatus ?? "—"}</span>
-                  </span>
-                  <span className="text-slate-600">
-                    Net: <span className="font-semibold tabular-nums text-slate-900">{formatMoney(Number(bill.netAmount))}</span>
-                  </span>
-                  <span className="text-slate-600">
-                    Paid:{" "}
-                    <span className="font-semibold tabular-nums text-slate-900">
+              <CardContent className="grid gap-4 text-sm">
+                <div className="grid gap-3 sm:grid-cols-4">
+                  <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+                    <div className="text-[10px] font-semibold uppercase text-slate-500">Status</div>
+                    <div className="mt-0.5 font-semibold text-slate-900">{bill.paymentStatus ?? "—"}</div>
+                  </div>
+                  <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+                    <div className="text-[10px] font-semibold uppercase text-slate-500">Net</div>
+                    <div className="mt-0.5 font-semibold tabular-nums text-slate-900">{formatMoney(Number(bill.netAmount))}</div>
+                  </div>
+                  <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+                    <div className="text-[10px] font-semibold uppercase text-slate-500">Paid</div>
+                    <div className="mt-0.5 font-semibold tabular-nums text-slate-900">
                       {bill.paidAmount != null ? formatMoney(Number(bill.paidAmount)) : "—"}
-                    </span>
-                  </span>
-                  <span className="text-slate-600">
-                    Pending:{" "}
-                    <span className="font-semibold tabular-nums text-slate-900">
+                    </div>
+                  </div>
+                  <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+                    <div className="text-[10px] font-semibold uppercase text-slate-500">Pending</div>
+                    <div className="mt-0.5 font-semibold tabular-nums text-slate-900">
                       {bill.pendingAmount != null ? formatMoney(Number(bill.pendingAmount)) : formatMoney(Number(bill.netAmount))}
-                    </span>
-                  </span>
+                    </div>
+                  </div>
                 </div>
 
-                <div className="overflow-x-auto rounded-md border border-slate-100">
-                  <table className="erp-table erp-table-dense w-full min-w-[520px] text-[11px] [&_td]:py-1 [&_th]:py-1">
+                <div className="erp-table-wrap overflow-x-auto rounded-md border border-slate-100">
+                  <table className="erp-table erp-table-dense w-full min-w-[640px] text-xs">
                     <thead>
                       <tr>
                         <th className="text-left">Date</th>
@@ -1194,10 +1123,10 @@ export function PurchaseBillEditPage() {
                             <td className="whitespace-nowrap">{formatEffectiveDate(r.paymentDate)}</td>
                             <td className="text-right tabular-nums font-medium">{formatMoney(Number(r.amount))}</td>
                             <td>{r.mode}</td>
-                            <td className="max-w-[6rem] truncate" title={r.referenceNo ?? ""}>
+                            <td className="max-w-[8rem] truncate" title={r.referenceNo ?? ""}>
                               {r.referenceNo ?? "—"}
                             </td>
-                            <td className="max-w-[8rem] truncate" title={r.remarks ?? ""}>
+                            <td className="max-w-[10rem] truncate" title={r.remarks ?? ""}>
                               {r.remarks ?? "—"}
                             </td>
                             <td className="text-right">
@@ -1222,14 +1151,14 @@ export function PurchaseBillEditPage() {
                 </div>
 
                 {canEditPaymentTracking ? (
-                  <div className="grid gap-2 rounded-md border border-slate-100 bg-slate-50/50 p-2">
-                    <div className="text-[11px] font-medium text-slate-700">Add payment</div>
-                    <div className="grid gap-2 sm:grid-cols-2">
-                      <label className="grid gap-0.5 text-[11px] text-slate-600">
+                  <div className="grid gap-3 rounded-md border border-slate-200 bg-slate-50/60 p-3">
+                    <div className="text-xs font-semibold text-slate-800">Record payment</div>
+                    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                      <label className="grid gap-1 text-xs font-medium text-slate-600">
                         Date
                         <Input type="date" value={pvDate} onChange={(e) => setPvDate(e.target.value)} disabled={pvSaving} />
                       </label>
-                      <label className="grid gap-0.5 text-[11px] text-slate-600">
+                      <label className="grid gap-1 text-xs font-medium text-slate-600">
                         Amount
                         <Input
                           type="number"
@@ -1240,7 +1169,7 @@ export function PurchaseBillEditPage() {
                           disabled={pvSaving}
                         />
                       </label>
-                      <label className="grid gap-0.5 text-[11px] text-slate-600">
+                      <label className="grid gap-1 text-xs font-medium text-slate-600">
                         Mode
                         <select
                           className="flex h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm"
@@ -1255,16 +1184,16 @@ export function PurchaseBillEditPage() {
                           ))}
                         </select>
                       </label>
-                      <label className="grid gap-0.5 text-[11px] text-slate-600">
+                      <label className="grid gap-1 text-xs font-medium text-slate-600">
                         Reference no.
                         <Input value={pvRef} onChange={(e) => setPvRef(e.target.value)} disabled={pvSaving} />
                       </label>
                     </div>
-                    <label className="grid gap-0.5 text-[11px] text-slate-600">
-                      Line remarks
+                    <label className="grid gap-1 text-xs font-medium text-slate-600">
+                      Remarks
                       <Input value={pvRemarks} onChange={(e) => setPvRemarks(e.target.value)} disabled={pvSaving} />
                     </label>
-                    <label className="grid gap-0.5 text-[11px] text-slate-600">
+                    <label className="grid max-w-md gap-1 text-xs font-medium text-slate-600">
                       Admin password (only if the system asks for confirmation)
                       <Input
                         type="password"
@@ -1274,13 +1203,15 @@ export function PurchaseBillEditPage() {
                         disabled={pvSaving}
                       />
                     </label>
-                    <Button type="button" size="sm" disabled={pvSaving} onClick={() => void addPayment()}>
-                      {pvSaving ? "Adding…" : "Add payment"}
-                    </Button>
+                    <div>
+                      <Button type="button" size="sm" disabled={pvSaving} onClick={() => void addPayment()}>
+                        {pvSaving ? "Adding…" : "Add payment"}
+                      </Button>
+                    </div>
                   </div>
                 ) : null}
 
-                <div className="grid gap-2 border-t border-slate-100 pt-3">
+                <div className="grid max-w-xs gap-2 border-t border-slate-100 pt-3">
                   <label className="grid gap-1 text-xs font-medium text-slate-600">
                     Due date
                     <Input
@@ -1298,17 +1229,17 @@ export function PurchaseBillEditPage() {
                 </div>
               </CardContent>
             </Card>
-          ) : null}
+          ) : (
+            <p className="text-sm text-slate-600">Payment follow-up is available after the supplier invoice is finalized.</p>
+          )}
         </div>
-      </div>
+      ) : null}
 
-      {bill ? (
-        <div className="mt-4 max-w-3xl">
+      {activeTab === "history" ? (
+        <div data-testid="pb-tab-panel-history">
           <ActivityHistoryCard title="History" query={`entityType=PURCHASE_BILL&entityId=${bill.id}&limit=50`} />
         </div>
       ) : null}
-        </>
-      )}
     </PageContainer>
   );
 }

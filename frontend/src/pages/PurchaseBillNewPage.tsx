@@ -1,11 +1,13 @@
 import * as React from "react";
-import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { apiFetch } from "../services/api";
 import { PageContainer, PageSmartBackLink, StickyWorkspaceHead } from "../components/PageHeader";
 import { withReportsReturnContextIfPresent } from "../lib/drillDownRoutes";
+import { buildGrnDocumentHref, buildRmPoGrnDetailHref } from "../lib/procurementNavigation";
+import { cn } from "../lib/utils";
 
 type Supplier = { id: number; name: string };
 type EligibleLine = {
@@ -206,58 +208,87 @@ export function PurchaseBillNewPage() {
             </div>
           ) : null}
           {supplierId && flatEligibleLines.length > 0 ? (
-            <div className="space-y-2">
-              {flatEligibleLines.map((ln, i) => (
-                <div key={ln.grnLineId} className="rounded-md border border-slate-200 bg-white p-3">
-                  <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_140px] sm:items-start">
-                    <div className="min-w-0">
-                      <div className="text-sm font-medium text-slate-900">{ln.itemName}</div>
-                      <div className="mt-1 text-xs text-slate-600">
-                        GRN: <span className="font-medium">GRN-{ln.grnId}</span>{" "}
-                        <span className="text-slate-400">|</span> Date: {formatIsoDate(ln.grnDate)}
-                        {ln.rmPoId != null ? (
-                          <>
-                            {" "}
-                            <span className="text-slate-400">|</span> RMPO-{ln.rmPoId}
-                          </>
-                        ) : null}{" "}
-                        <span className="text-slate-400">|</span> Rate: <span className="tabular-nums">{String(ln.rateSnapshot ?? "—")}</span>
-                      </div>
-                      <div className="mt-1 text-xs text-slate-600">
-                        Received: <span className="tabular-nums">{ln.receivedQty}</span> <span className="text-slate-400">|</span> Billed:{" "}
-                        <span className="tabular-nums">{ln.alreadyBilledQty}</span> <span className="text-slate-400">|</span> Remaining:{" "}
-                        <span className="tabular-nums font-medium text-amber-800">{ln.remainingQty}</span>{" "}
-                        <span className="text-slate-500">
-                          (Received {ln.receivedQty} − Finalized billed {ln.alreadyBilledQty})
-                        </span>
-                      </div>
-                    </div>
-
-                    <label className="grid gap-1 text-xs font-medium text-slate-600">
-                      Bill qty
-                      <Input
-                        ref={(el) => {
-                          qtyRefs.current[i] = el;
-                        }}
-                        type="number"
-                        className="h-9 w-full"
-                        min={0}
-                        step="any"
-                        value={Number.isFinite(qtyByGrnLineId[ln.grnLineId]) ? String(qtyByGrnLineId[ln.grnLineId]) : ""}
-                        onFocus={(e) => e.target.select()}
-                        onKeyDown={(e) => onQtyKeyDown(i, e)}
-                        onChange={(e) => {
-                          const raw = (e.target as HTMLInputElement).value;
-                          const v = raw.trim() === "" ? Number.NaN : Number(raw);
-                          const safe = Number.isFinite(v) ? Math.max(0, Math.min(ln.remainingQty, v)) : Number.NaN;
-                          setQtyByGrnLineId((prev) => ({ ...prev, [ln.grnLineId]: safe }));
-                        }}
-                      />
-                      <div className="text-[11px] font-normal text-slate-500">Enter bill quantity</div>
-                    </label>
-                  </div>
-                </div>
-              ))}
+            <div className="erp-table-wrap overflow-x-auto">
+              <table className="erp-table erp-table-dense min-w-[880px] w-full text-xs">
+                <thead>
+                  <tr>
+                    <th className="text-left">Item</th>
+                    <th className="text-left">PO</th>
+                    <th className="text-left">GRN</th>
+                    <th className="text-right">GRN Qty</th>
+                    <th className="text-right">Already billed</th>
+                    <th className="text-right">Invoice Qty</th>
+                    <th className="text-right">Rate</th>
+                    <th className="text-left">Match status</th>
+                    <th className="text-left">Difference</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {flatEligibleLines.map((ln, i) => {
+                    const billQty = qtyByGrnLineId[ln.grnLineId];
+                    const qty = Number.isFinite(billQty) ? billQty : 0;
+                    const status =
+                      qty <= 0 ? "—" : qty > ln.remainingQty + 1e-6 ? "Over remaining" : qty < ln.remainingQty - 1e-6 ? "Partial" : "Full match";
+                    const statusClass =
+                      status === "Over remaining"
+                        ? "text-red-800"
+                        : status === "Partial"
+                          ? "text-amber-800"
+                          : status === "Full match"
+                            ? "text-emerald-800"
+                            : "text-slate-600";
+                    return (
+                      <tr key={ln.grnLineId} className="align-top">
+                        <td>
+                          <div className="font-medium text-slate-900">{ln.itemName}</div>
+                          <div className="text-[10px] text-slate-500">{formatIsoDate(ln.grnDate)}</div>
+                        </td>
+                        <td className="whitespace-nowrap">
+                          {ln.rmPoId != null ? (
+                            <Link to={buildRmPoGrnDetailHref(ln.rmPoId)} className="font-medium text-primary underline">
+                              RMPO-{ln.rmPoId}
+                            </Link>
+                          ) : (
+                            "—"
+                          )}
+                        </td>
+                        <td className="whitespace-nowrap">
+                          <Link to={buildGrnDocumentHref(ln.grnId)} className="font-medium text-primary underline">
+                            GRN-{ln.grnId}
+                          </Link>
+                        </td>
+                        <td className="text-right tabular-nums">{ln.receivedQty}</td>
+                        <td className="text-right tabular-nums">{ln.alreadyBilledQty}</td>
+                        <td className="text-right">
+                          <Input
+                            ref={(el) => {
+                              qtyRefs.current[i] = el;
+                            }}
+                            type="number"
+                            className="h-8 w-[5.5rem] text-right tabular-nums"
+                            min={0}
+                            step="any"
+                            value={Number.isFinite(qtyByGrnLineId[ln.grnLineId]) ? String(qtyByGrnLineId[ln.grnLineId]) : ""}
+                            onFocus={(e) => e.target.select()}
+                            onKeyDown={(e) => onQtyKeyDown(i, e)}
+                            onChange={(e) => {
+                              const raw = (e.target as HTMLInputElement).value;
+                              const v = raw.trim() === "" ? Number.NaN : Number(raw);
+                              const safe = Number.isFinite(v) ? Math.max(0, Math.min(ln.remainingQty, v)) : Number.NaN;
+                              setQtyByGrnLineId((prev) => ({ ...prev, [ln.grnLineId]: safe }));
+                            }}
+                          />
+                        </td>
+                        <td className="text-right tabular-nums">{String(ln.rateSnapshot ?? "—")}</td>
+                        <td className={cn("font-medium", statusClass)}>{status}</td>
+                        <td className="tabular-nums text-slate-600">
+                          {qty > 0 ? `${Math.max(0, ln.remainingQty - qty)} remaining` : `${ln.remainingQty} available`}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
           ) : null}
 

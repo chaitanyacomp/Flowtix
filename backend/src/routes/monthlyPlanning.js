@@ -33,6 +33,7 @@ const { getRsSuggestionsForPeriod } = require("../services/monthlyPlanningRsSugg
 const { getGreenLevels } = require("../services/monthlyPlanningGreenLevelService");
 const { getRequirementComposition } = require("../services/monthlyPlanningRequirementCompositionService");
 const { getRmRequirementComposition } = require("../services/monthlyPlanningRmRequirementCompositionService");
+const { getPeriodRequirementCoverage } = require("../services/monthlyPlanningCoverageService");
 
 const monthlyPlanningRouter = express.Router();
 
@@ -175,6 +176,20 @@ monthlyPlanningRouter.get(
         });
       }
       const data = await getRmRequirementComposition({ periodKey: String(periodKey) });
+      return res.json(data);
+    } catch (e) {
+      return handleServiceError(e, res, next);
+    }
+  },
+);
+
+monthlyPlanningRouter.get(
+  "/periods/:periodKey/coverage",
+  requireAuth,
+  requireRole(MONTHLY_PLANNING_READ_ROLES),
+  async (req, res, next) => {
+    try {
+      const data = await getPeriodRequirementCoverage({ periodKey: String(req.params.periodKey) });
       return res.json(data);
     } catch (e) {
       return handleServiceError(e, res, next);

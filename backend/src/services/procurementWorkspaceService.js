@@ -18,6 +18,19 @@ const {
   RM_REQUISITION_PURCHASE_VISIBLE_STATUSES,
   RM_REQUISITION_PURCHASE_REQUEST_ALLOWED_STATUSES,
 } = require("./rmRequisitionLifecycle");
+const { buildPlanDisplayLabel } = require("./monthlyPlanningPlanLifecycleService");
+
+function isApprovedPlanDocument(plan) {
+  return String(plan?.status ?? "") === "APPROVED";
+}
+
+function monthlyPlanDocumentLabel(plan) {
+  if (!plan) return null;
+  if (isApprovedPlanDocument(plan) || Number(plan.currentRevision ?? 0) === 0) {
+    return buildPlanDisplayLabel(plan);
+  }
+  return null;
+}
 
 function procurementBlockerReasonForOperationalKey(key) {
   if (key === "REOPEN_REQUIRED") return "RM Requisition closed while shortage remains";
@@ -44,6 +57,12 @@ function primaryFgNameForSalesOrder(so) {
 }
 
 function sourceRefForMr(mr) {
+  if (mr?.sourceType === "MONTHLY_PLAN") {
+    const planLabel = monthlyPlanDocumentLabel(mr?.monthlyProductionPlan);
+    if (planLabel) return planLabel;
+    if (mr?.sourceRevision != null) return `Monthly Plan Rev ${mr.sourceRevision}`;
+    if (mr?.monthlyProductionPlan?.periodKey) return mr.monthlyProductionPlan.periodKey;
+  }
   if (mr?.sourceType === "STOCK_REPLENISHMENT") return "Stock Replenishment";
   if (mr.salesOrder?.docNo) return mr.salesOrder.docNo;
   if (mr.salesOrderId) return `SO-${mr.salesOrderId}`;
@@ -63,11 +82,14 @@ function sourceContextForMr(mr) {
 function mrSourceDescriptor(mr) {
   const type = mr?.sourceType ?? null;
   if (type === "MONTHLY_PLAN") {
+    const plan = mr?.monthlyProductionPlan ?? null;
+    const planDocumentLabel = monthlyPlanDocumentLabel(plan);
     return {
       type,
-      label: "Monthly Plan",
+      label: planDocumentLabel ?? "Monthly Plan",
+      planDocumentLabel,
       monthlyProductionPlanId: mr?.monthlyProductionPlanId ?? null,
-      periodKey: mr?.monthlyProductionPlan?.periodKey ?? null,
+      periodKey: plan?.periodKey ?? null,
       sourceRevision: mr?.sourceRevision ?? null,
     };
   }
@@ -501,7 +523,16 @@ async function loadOpenMaterialRequirements(db = prisma, { salesOrderId = null, 
       },
       workOrder: { select: { id: true, docNo: true } },
       quotation: { select: { id: true, quotationNo: true } },
-      monthlyProductionPlan: { select: { id: true, periodKey: true } },
+      monthlyProductionPlan: {
+        select: {
+          id: true,
+          periodKey: true,
+          status: true,
+          planSequenceNo: true,
+          planKind: true,
+          currentRevision: true,
+        },
+      },
       createdBy: { select: { name: true, email: true } },
       lines: { include: { rmItem: { select: { id: true, itemName: true, unit: true } } } },
     },
@@ -720,5 +751,6 @@ module.exports = {
   buildGrnPendingSection,
   groupMaterialRequirementsByCase,
   mrSourceDescriptor,
+  sourceRefForMr,
   buildSourceTypesByRmItem,
 };

@@ -83,6 +83,11 @@ const createBodySchema = z.object({
   confirmPastPeriod: z.literal(true).optional(),
 });
 
+const additionalPlanBodySchema = z.object({
+  remarks: z.string().trim().max(2000).optional(),
+  confirmPastPeriod: z.literal(true).optional(),
+});
+
 const pastPeriodConfirmBodySchema = z.object({
   confirmPastPeriod: z.literal(true).optional(),
 });
@@ -221,7 +226,7 @@ monthlyPlanningRouter.post(
   requireRole(MONTHLY_PLANNING_WRITE_ROLES),
   async (req, res, next) => {
     try {
-      const parsed = createBodySchema.safeParse(req.body ?? {});
+      const parsed = additionalPlanBodySchema.safeParse(req.body ?? {});
       if (!parsed.success) {
         return res.status(422).json({
           error: { code: "INVALID_BODY", message: "Invalid additional plan request body." },

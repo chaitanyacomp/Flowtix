@@ -53,6 +53,7 @@ type MrSummary = {
   source?: {
     type: string | null;
     label: string;
+    planDocumentLabel?: string | null;
     monthlyProductionPlanId: number | null;
     periodKey: string | null;
     sourceRevision: number | null;
@@ -306,6 +307,17 @@ function MrSourceBadge({ mr }: { mr: MrSummary }) {
   const src = mr.source;
   const type = src?.type ?? mr.sourceType ?? null;
   if (type === "MONTHLY_PLAN") {
+    const planLabel = src?.planDocumentLabel?.trim() || (src?.label !== "Monthly Plan" ? src?.label : null);
+    if (planLabel) {
+      return (
+        <span
+          className="inline-flex items-center gap-1 rounded bg-indigo-100 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-800"
+          title={planLabel}
+        >
+          {planLabel}
+        </span>
+      );
+    }
     const period = formatPeriodKey(src?.periodKey);
     const rev = src?.sourceRevision != null ? `Rev ${src.sourceRevision}` : null;
     return (
@@ -330,6 +342,8 @@ function mrWoPrimaryLabel(row: MrSummary): string {
   if (row.workOrderNo) return row.workOrderNo;
   if (row.workOrderId && row.workOrderId > 0) return `WO-${row.workOrderId}`;
   if (row.sourceType === "MONTHLY_PLAN" || row.source?.type === "MONTHLY_PLAN") {
+    const planLabel = row.source?.planDocumentLabel?.trim() || (row.source?.label !== "Monthly Plan" ? row.source?.label : null);
+    if (planLabel) return planLabel;
     const period = formatPeriodKey(row.source?.periodKey);
     return period ? `Monthly plan · ${period}` : "Monthly plan";
   }

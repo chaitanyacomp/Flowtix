@@ -11,12 +11,27 @@ const {
   remainingAfterPurchaseRequests,
 } = require("./purchaseRequestService");
 const { RM_REQUISITION_PURCHASE_VISIBLE_STATUSES } = require("./rmRequisitionLifecycle");
+const { buildPlanDisplayLabel } = require("./monthlyPlanningPlanLifecycleService");
+
+function monthlyPlanDocumentLabel(plan) {
+  if (!plan) return null;
+  if (String(plan.status ?? "") === "APPROVED" || Number(plan.currentRevision ?? 0) === 0) {
+    return buildPlanDisplayLabel(plan);
+  }
+  return null;
+}
 
 function computeNetToBuy(totalRequired, openPoQty) {
   return Math.max(0, totalRequired - openPoQty);
 }
 
 function sourceRefForRequirement(mr) {
+  if (mr?.sourceType === "MONTHLY_PLAN") {
+    const planLabel = monthlyPlanDocumentLabel(mr?.monthlyProductionPlan);
+    if (planLabel) return planLabel;
+    if (mr?.sourceRevision != null) return `Monthly Plan Rev ${mr.sourceRevision}`;
+    if (mr?.monthlyProductionPlan?.periodKey) return mr.monthlyProductionPlan.periodKey;
+  }
   if (mr?.sourceType === "STOCK_REPLENISHMENT") return "Stock Replenishment";
   if (!mr) return "—";
   if (mr.salesOrder?.docNo) return mr.salesOrder.docNo;
@@ -73,6 +88,16 @@ async function loadOpenMaterialRequirementLines(db = prisma) {
         include: {
           quotation: { select: { id: true, quotationNo: true } },
           salesOrder: { select: { id: true, docNo: true } },
+          monthlyProductionPlan: {
+            select: {
+              id: true,
+              periodKey: true,
+              status: true,
+              planSequenceNo: true,
+              planKind: true,
+              currentRevision: true,
+            },
+          },
         },
       },
     },
@@ -140,4 +165,5 @@ module.exports = {
   buildProcurementPool,
   loadOpenMaterialRequirementLines,
   loadOpenPoQtyByItemId,
+  sourceRefForRequirement,
 };

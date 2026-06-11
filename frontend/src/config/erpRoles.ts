@@ -107,6 +107,7 @@ export const REPORTS_WITH_ACCOUNTS_ROLES = REPORTS_ROLES;
 /** Monthly planning workspace (MPRS) */
 export const MONTHLY_PLANNING_READ_ROLES = ["ADMIN", "STORE", "PURCHASE"] as const;
 export const MONTHLY_PLANNING_WRITE_ROLES = ["ADMIN", "STORE"] as const;
+export const MONTHLY_PLANNING_PURCHASE_REVIEW_ROLES = ["ADMIN", "PURCHASE"] as const;
 
 /** Legacy aliases */
 export const PURCHASE_WITH_ACCOUNTS_ROLES = PURCHASE_BILL_READ_ROLES;

@@ -4,7 +4,25 @@ import { apiFetch, ApiRequestError } from "../services/api";
 import { useToast } from "../contexts/ToastContext";
 import { useFeatureFlags } from "../hooks/useFeatureFlags";
 import { useAuth } from "../hooks/useAuth";
-import { MONTHLY_PLANNING_WRITE_ROLES } from "../config/erpRoles";
+import {
+  MONTHLY_PLANNING_PURCHASE_REVIEW_ROLES,
+  MONTHLY_PLANNING_WRITE_ROLES,
+} from "../config/erpRoles";
+import {
+  canLoadRmPurchaseTabs,
+  canShowAdditionalPlanEntry,
+  formatPlanKindLabel,
+  formatPlanStatusLabel,
+  isLegacyPlanDocument,
+  isPlanEditable,
+  planStatusBadgeVariant,
+  resolvePlanDisplayLabel,
+  resolveWorkflowActionVisibility,
+  rmPurchaseEmptyMessage,
+  shouldShowPlanSelector,
+  type MonthlyPlanKind,
+  type MonthlyPlanStatus,
+} from "../lib/monthlyPlanningWorkflowUx";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { NativeSelect } from "../components/ui/native-select";
@@ -26,6 +44,10 @@ import {
   Lock,
   Unlock,
   X,
+  Send,
+  CheckCircle,
+  XCircle,
+  PackagePlus,
   AlertTriangle,
   ChevronDown,
   ChevronRight,
@@ -36,18 +58,22 @@ import {
   History,
 } from "lucide-react";
 
-type PlanStatus = "DRAFT" | "LOCKED";
+type PlanStatus = MonthlyPlanStatus;
 type LineSource = "SALES_ORDER" | "REQUIREMENT_SHEET" | "MANUAL" | "CUSTOMER_SCHEDULE";
 
 type PlanSummary = {
   id: number;
   docNo: string | null;
   periodKey: string;
+  planSequenceNo?: number;
+  planKind?: MonthlyPlanKind;
+  displayLabel?: string | null;
   status: PlanStatus;
   currentRevision: number;
   remarks: string | null;
   lockedAt: string | null;
   reopenedAt: string | null;
+  purchaseRejectReason?: string | null;
   releasedAt: string | null;
   releasedRevision: number | null;
   createdByUserId: number | null;
@@ -58,8 +84,24 @@ type PlanSummary = {
 type PlanResponse = {
   exists: boolean;
   plan: PlanSummary | null;
+  plans?: PlanSummary[];
   lines: unknown[];
   revisions: { revision: number; recalculatedAt: string }[];
+};
+
+type AdditionalPlanPreview = {
+  periodKey: string;
+  nextPlanSequenceNo: number;
+  nextPlanLabel: string;
+  nextPlanKind: MonthlyPlanKind;
+  canCreate: boolean;
+  blockingCode: string | null;
+  blockingReason: string | null;
+  approvedPlanCount: number;
+  totals: {
+    totalAdditionalRequirementQty: number;
+    additionalItemCount: number;
+  };
 };
 
 type ProductionLine = {
@@ -509,6 +551,9 @@ export function MonthlyPlanningWorkspacePage() {
   const canWriteMonthlyPlan = MONTHLY_PLANNING_WRITE_ROLES.includes(
     userRole as (typeof MONTHLY_PLANNING_WRITE_ROLES)[number],
   );
+  const canPurchaseReview = MONTHLY_PLANNING_PURCHASE_REVIEW_ROLES.includes(
+    userRole as (typeof MONTHLY_PLANNING_PURCHASE_REVIEW_ROLES)[number],
+  );
   const isAdmin = userRole === "ADMIN";
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -523,6 +568,8 @@ export function MonthlyPlanningWorkspacePage() {
   const [loading, setLoading] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
   const [plan, setPlan] = React.useState<PlanSummary | null>(null);
+  const [periodPlans, setPeriodPlans] = React.useState<PlanSummary[]>([]);
+  const [selectedPlanId, setSelectedPlanId] = React.useState<number | null>(null);
   const [planExists, setPlanExists] = React.useState<boolean>(false);
   const [rows, setRows] = React.useState<EditRow[]>([]);
   const [removedIds, setRemovedIds] = React.useState<number[]>([]);
@@ -560,6 +607,15 @@ export function MonthlyPlanningWorkspacePage() {
   const [cancellingReopen, setCancellingReopen] = React.useState(false);
   const [startingPlanning, setStartingPlanning] = React.useState(false);
   const [addingSuggested, setAddingSuggested] = React.useState(false);
+  const [submittingForReview, setSubmittingForReview] = React.useState(false);
+  const [approvingPlan, setApprovingPlan] = React.useState(false);
+  const [rejectModalOpen, setRejectModalOpen] = React.useState(false);
+  const [rejectReason, setRejectReason] = React.useState("");
+  const [rejectingPlan, setRejectingPlan] = React.useState(false);
+  const [additionalPreview, setAdditionalPreview] = React.useState<AdditionalPlanPreview | null>(null);
+  const [loadingAdditionalPreview, setLoadingAdditionalPreview] = React.useState(false);
+  const [additionalPanelOpen, setAdditionalPanelOpen] = React.useState(false);
+  const [creatingAdditionalPlan, setCreatingAdditionalPlan] = React.useState(false);
   const [pastPeriodConfirmOpen, setPastPeriodConfirmOpen] = React.useState(false);
   const [confirmingPastPeriod, setConfirmingPastPeriod] = React.useState(false);
   const [pastPeriodConfirmedKey, setPastPeriodConfirmedKey] = React.useState<string | null>(null);
@@ -567,155 +623,25 @@ export function MonthlyPlanningWorkspacePage() {
 
   const pastPeriodConfirmedSession = periodIsPast && pastPeriodConfirmedKey === period;
 
-  const isLocked = plan?.status === "LOCKED";
-  const editable = planExists && !isLocked && canMutatePeriod;
-  const isDraftForNextRevision = Boolean(plan && plan.status === "DRAFT" && plan.currentRevision >= 1);
-  const canCancelReopen = Boolean(
-    planExists && plan && plan.status === "DRAFT" && plan.currentRevision >= 1 && plan.reopenedAt,
+  const isLegacyPlan = Boolean(plan && isLegacyPlanDocument(plan));
+  const editable = Boolean(plan && isPlanEditable(plan, canMutatePeriod));
+  const workflowActions = resolveWorkflowActionVisibility({
+    plan,
+    planExists,
+    canMutatePeriod,
+    canPurchaseReview,
+    hasSaveableLines: rows.some((r) => num(r.plannedFgQty) > 0),
+  });
+  const rmPurchaseTabsEnabled = canLoadRmPurchaseTabs(plan?.status);
+  const isDraftForNextRevision = Boolean(
+    isLegacyPlan && plan && plan.status === "DRAFT" && plan.currentRevision >= 1,
   );
+  const showAdditionalPlanEntry = canShowAdditionalPlanEntry({ canMutatePeriod, periodPlans });
   const suggestedProductionMap = React.useMemo(
     () => buildSuggestedProductionMap(requirementComposition),
     [requirementComposition],
   );
   const greenContextMap = React.useMemo(() => buildGreenContextMap(greenLevels), [greenLevels]);
-
-  const loadRevisions = React.useCallback(async (planId: number) => {
-    setLoadingRevisions(true);
-    try {
-      const res = await apiFetch<PlanRevisionsResponse>(`/api/monthly-planning/${planId}/revisions`);
-      setPlanRevisions(res);
-      if (res.revisions.length > 0) {
-        setExpandedRevision((cur) => cur ?? res.revisions[0].revision);
-      }
-    } catch {
-      setPlanRevisions(null);
-    } finally {
-      setLoadingRevisions(false);
-    }
-  }, []);
-
-  const loadPlan = React.useCallback(
-    async (p: string) => {
-      const periodKey = normalizePeriodKey(p);
-      if (!periodKey) {
-        showError("Plan period must be in YYYY-MM format.");
-        return;
-      }
-
-      setLoading(true);
-      let headerLoaded = false;
-      try {
-        const res = await apiFetch<PlanResponse>(
-          `/api/monthly-planning?period=${encodeURIComponent(periodKey)}`,
-        );
-        headerLoaded = Boolean(res.exists && res.plan);
-        setPlanExists(res.exists);
-        setPlan(res.plan);
-        setRemovedIds([]);
-
-        if (!headerLoaded) {
-          setRows([]);
-          setRmPlanning(null);
-          setPurchasePlanning(null);
-          setLockSummary(null);
-          setPlanRevisions(null);
-          return;
-        }
-
-        const planRef = res.plan!;
-        void loadRevisions(planRef.id);
-
-        try {
-          const lineRes = await apiFetch<ProductionLinesResponse>(
-            `/api/monthly-planning/${planRef.id}/production-lines`,
-          );
-          setRows(
-            lineRes.lines.map((l) => ({
-              key: `srv-${l.id}`,
-              id: l.id,
-              fgItemId: l.fgItemId,
-              fgItemName: l.fgItemName,
-              unit: l.unit,
-              suggestedFgQty: num(l.suggestedFgQty),
-              plannedFgQty: String(num(l.plannedFgQty)),
-              plannedQtyOverridden: Boolean(l.plannedQtyOverridden),
-              source: l.source,
-              remarks: l.remarks ?? "",
-            })),
-          );
-          setLockSummary(lineRes.lockSummary ?? null);
-        } catch (lineErr) {
-          const lineMsg =
-            lineErr instanceof ApiRequestError
-              ? lineErr.message
-              : "Failed to load production plan lines.";
-          showError(`${lineMsg} Plan header is loaded — try Refresh.`);
-          setRows([]);
-          setLockSummary(null);
-        }
-
-        if (planRef.status === "DRAFT") {
-          void ensurePlanningContext().catch(() => {
-            /* variance columns fall back to stored suggested until context loads */
-          });
-        }
-
-        if (planRef.status === "LOCKED") {
-          try {
-            const [rm, pp] = await Promise.all([
-              apiFetch<RmPlanningResponse>(`/api/monthly-planning/${planRef.id}/rm-planning`),
-              apiFetch<PurchasePlanningResponse>(
-                `/api/monthly-planning/${planRef.id}/purchase-planning`,
-              ),
-            ]);
-            setRmPlanning(rm);
-            setPurchasePlanning(pp);
-          } catch {
-            setRmPlanning(null);
-            setPurchasePlanning(null);
-          }
-        } else {
-          setRmPlanning(null);
-          setPurchasePlanning(null);
-        }
-      } catch (e) {
-        const msg = e instanceof ApiRequestError ? e.message : "Failed to load monthly plan.";
-        showError(msg);
-        if (!headerLoaded) {
-          setPlanExists(false);
-          setPlan(null);
-          setRows([]);
-          setRmPlanning(null);
-          setPurchasePlanning(null);
-          setLockSummary(null);
-        }
-      } finally {
-        setLoading(false);
-      }
-    },
-    [showError, loadRevisions],
-  );
-
-  // Load FG items once (for the Add row picker).
-  React.useEffect(() => {
-    if (!flags.monthlyPlanning) return;
-    let active = true;
-    void apiFetch<FgItem[]>("/api/items?type=FG")
-      .then((items) => {
-        if (active) setFgItems(items ?? []);
-      })
-      .catch(() => {
-        /* picker just stays empty */
-      });
-    return () => {
-      active = false;
-    };
-  }, [flags.monthlyPlanning]);
-
-  React.useEffect(() => {
-    if (!flags.monthlyPlanning) return;
-    void loadPlan(period);
-  }, [flags.monthlyPlanning, period, loadPlan]);
 
   const ensurePlanningContext = React.useCallback(async () => {
     const needComposition = !requirementComposition || requirementComposition.periodKey !== period;
@@ -739,6 +665,177 @@ export function MonthlyPlanningWorkspacePage() {
       green: greenRes,
     };
   }, [period, requirementComposition, greenLevels]);
+
+  const loadRevisions = React.useCallback(async (planId: number) => {
+    setLoadingRevisions(true);
+    try {
+      const res = await apiFetch<PlanRevisionsResponse>(`/api/monthly-planning/${planId}/revisions`);
+      setPlanRevisions(res);
+      if (res.revisions.length > 0) {
+        setExpandedRevision((cur) => cur ?? res.revisions[0].revision);
+      }
+    } catch {
+      setPlanRevisions(null);
+    } finally {
+      setLoadingRevisions(false);
+    }
+  }, []);
+
+  const loadPlanDetails = React.useCallback(
+    async (planRef: PlanSummary) => {
+      setPlan(planRef);
+      setSelectedPlanId(planRef.id);
+      setRemovedIds([]);
+
+      if (isLegacyPlanDocument(planRef)) {
+        void loadRevisions(planRef.id);
+      } else {
+        setPlanRevisions(null);
+      }
+
+      try {
+        const lineRes = await apiFetch<ProductionLinesResponse>(
+          `/api/monthly-planning/${planRef.id}/production-lines`,
+        );
+        setRows(
+          lineRes.lines.map((l) => ({
+            key: `srv-${l.id}`,
+            id: l.id,
+            fgItemId: l.fgItemId,
+            fgItemName: l.fgItemName,
+            unit: l.unit,
+            suggestedFgQty: num(l.suggestedFgQty),
+            plannedFgQty: String(num(l.plannedFgQty)),
+            plannedQtyOverridden: Boolean(l.plannedQtyOverridden),
+            source: l.source,
+            remarks: l.remarks ?? "",
+          })),
+        );
+        setLockSummary(lineRes.lockSummary ?? null);
+      } catch (lineErr) {
+        const lineMsg =
+          lineErr instanceof ApiRequestError
+            ? lineErr.message
+            : "Failed to load production plan lines.";
+        showError(`${lineMsg} Plan header is loaded — try Refresh.`);
+        setRows([]);
+        setLockSummary(null);
+      }
+
+      if (planRef.status === "DRAFT") {
+        void ensurePlanningContext().catch(() => {
+          /* variance columns fall back to stored suggested until context loads */
+        });
+      }
+
+      if (canLoadRmPurchaseTabs(planRef.status)) {
+        try {
+          const [rm, pp] = await Promise.all([
+            apiFetch<RmPlanningResponse>(`/api/monthly-planning/${planRef.id}/rm-planning`),
+            apiFetch<PurchasePlanningResponse>(
+              `/api/monthly-planning/${planRef.id}/purchase-planning`,
+            ),
+          ]);
+          setRmPlanning(rm);
+          setPurchasePlanning(pp);
+        } catch {
+          setRmPlanning(null);
+          setPurchasePlanning(null);
+        }
+      } else {
+        setRmPlanning(null);
+        setPurchasePlanning(null);
+      }
+    },
+    [loadRevisions, showError, ensurePlanningContext],
+  );
+
+  const loadPlan = React.useCallback(
+    async (p: string, preferredPlanId?: number | null) => {
+      const periodKey = normalizePeriodKey(p);
+      if (!periodKey) {
+        showError("Plan period must be in YYYY-MM format.");
+        return;
+      }
+
+      setLoading(true);
+      let headerLoaded = false;
+      try {
+        const res = await apiFetch<PlanResponse>(
+          `/api/monthly-planning?period=${encodeURIComponent(periodKey)}`,
+        );
+        const plans = res.plans ?? (res.plan ? [res.plan] : []);
+        setPeriodPlans(plans);
+        headerLoaded = Boolean(res.exists && plans.length > 0);
+        setPlanExists(res.exists && plans.length > 0);
+
+        if (!headerLoaded) {
+          setPlan(null);
+          setSelectedPlanId(null);
+          setRows([]);
+          setRmPlanning(null);
+          setPurchasePlanning(null);
+          setLockSummary(null);
+          setPlanRevisions(null);
+          setAdditionalPreview(null);
+          return;
+        }
+
+        const planRef =
+          (preferredPlanId != null ? plans.find((pl) => pl.id === preferredPlanId) : null) ??
+          res.plan ??
+          plans[plans.length - 1];
+        await loadPlanDetails(planRef);
+      } catch (e) {
+        const msg = e instanceof ApiRequestError ? e.message : "Failed to load monthly plan.";
+        showError(msg);
+        if (!headerLoaded) {
+          setPlanExists(false);
+          setPlan(null);
+          setPeriodPlans([]);
+          setSelectedPlanId(null);
+          setRows([]);
+          setRmPlanning(null);
+          setPurchasePlanning(null);
+          setLockSummary(null);
+        }
+      } finally {
+        setLoading(false);
+      }
+    },
+    [showError, loadPlanDetails],
+  );
+
+  const onSelectPlan = React.useCallback(
+    (planId: number) => {
+      const target = periodPlans.find((p) => p.id === planId);
+      if (!target) return;
+      setLoading(true);
+      void loadPlanDetails(target).finally(() => setLoading(false));
+    },
+    [periodPlans, loadPlanDetails],
+  );
+
+  // Load FG items once (for the Add row picker).
+  React.useEffect(() => {
+    if (!flags.monthlyPlanning) return;
+    let active = true;
+    void apiFetch<FgItem[]>("/api/items?type=FG")
+      .then((items) => {
+        if (active) setFgItems(items ?? []);
+      })
+      .catch(() => {
+        /* picker just stays empty */
+      });
+    return () => {
+      active = false;
+    };
+  }, [flags.monthlyPlanning]);
+
+  React.useEffect(() => {
+    if (!flags.monthlyPlanning) return;
+    void loadPlan(period);
+  }, [flags.monthlyPlanning, period, loadPlan]);
 
   function suggestedProductionForFg(
     fgItemId: number,
@@ -989,10 +1086,10 @@ export function MonthlyPlanningWorkspacePage() {
   }
 
   async function applyRsSuggestion(item: RsSuggestionItem) {
-    if (isLocked || !canMutatePeriod) {
+    if (!editable || !canMutatePeriod) {
       showError(
-        isLocked
-          ? "Plan is locked — RS suggestions are read-only."
+        !editable
+          ? "Plan is read-only — RS suggestions cannot be applied."
           : "Past periods are view-only for Store users.",
       );
       return;
@@ -1048,8 +1145,8 @@ export function MonthlyPlanningWorkspacePage() {
   async function addRow() {
     const id = Number(addItemId);
     if (!Number.isFinite(id) || id <= 0) return;
-    if (isLocked || !canMutatePeriod) {
-      showError(isLocked ? "Plan is locked." : "Past periods are view-only for Store users.");
+    if (!editable || !canMutatePeriod) {
+      showError(!editable ? "Plan is read-only." : "Past periods are view-only for Store users.");
       return;
     }
     try {
@@ -1090,7 +1187,7 @@ export function MonthlyPlanningWorkspacePage() {
   }
 
   async function onSave(options?: { confirmPastPeriod?: boolean }) {
-    if (isLocked || !canMutatePeriod) return;
+    if (!editable || !canMutatePeriod) return;
     setSaving(true);
     try {
       const activePlan = await ensurePlanDraft(options);
@@ -1237,6 +1334,106 @@ export function MonthlyPlanningWorkspacePage() {
     }
   }
 
+  async function onSubmitForReview(options?: { confirmPastPeriod?: boolean }) {
+    if (!plan) return;
+    setSubmittingForReview(true);
+    try {
+      const body = options?.confirmPastPeriod ? { confirmPastPeriod: true as const } : {};
+      await apiFetch(`/api/monthly-planning/${plan.id}/submit-for-review`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      showSuccess("Plan submitted for Purchase review.");
+      await loadPlan(period, plan.id);
+    } catch (e) {
+      showError(e instanceof ApiRequestError ? e.message : "Failed to submit plan for review.");
+    } finally {
+      setSubmittingForReview(false);
+    }
+  }
+
+  async function onPurchaseApprove(options?: { confirmPastPeriod?: boolean }) {
+    if (!plan) return;
+    setApprovingPlan(true);
+    try {
+      const body = options?.confirmPastPeriod ? { confirmPastPeriod: true as const } : {};
+      await apiFetch(`/api/monthly-planning/${plan.id}/purchase/approve`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      showSuccess("Plan approved.");
+      await loadPlan(period, plan.id);
+    } catch (e) {
+      showError(e instanceof ApiRequestError ? e.message : "Failed to approve plan.");
+    } finally {
+      setApprovingPlan(false);
+    }
+  }
+
+  async function onPurchaseReject(options?: { confirmPastPeriod?: boolean }) {
+    if (!plan) return;
+    const reason = rejectReason.trim();
+    if (!reason) {
+      showError("Reject reason is required.");
+      return;
+    }
+    setRejectingPlan(true);
+    try {
+      const body: { reason: string; confirmPastPeriod?: true } = { reason };
+      if (options?.confirmPastPeriod) body.confirmPastPeriod = true;
+      await apiFetch(`/api/monthly-planning/${plan.id}/purchase/reject`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      showSuccess("Plan rejected and returned to draft.");
+      setRejectModalOpen(false);
+      setRejectReason("");
+      await loadPlan(period, plan.id);
+    } catch (e) {
+      showError(e instanceof ApiRequestError ? e.message : "Failed to reject plan.");
+    } finally {
+      setRejectingPlan(false);
+    }
+  }
+
+  async function loadAdditionalPlanPreview() {
+    const periodKey = normalizePeriodKey(period);
+    if (!periodKey) return;
+    setLoadingAdditionalPreview(true);
+    try {
+      const preview = await apiFetch<AdditionalPlanPreview>(
+        `/api/monthly-planning/periods/${encodeURIComponent(periodKey)}/additional-plan/preview`,
+      );
+      setAdditionalPreview(preview);
+      setAdditionalPanelOpen(true);
+    } catch (e) {
+      showError(e instanceof ApiRequestError ? e.message : "Failed to load additional plan preview.");
+    } finally {
+      setLoadingAdditionalPreview(false);
+    }
+  }
+
+  async function onCreateAdditionalPlan(options?: { confirmPastPeriod?: boolean }) {
+    const periodKey = normalizePeriodKey(period);
+    if (!periodKey) return;
+    setCreatingAdditionalPlan(true);
+    try {
+      const body = options?.confirmPastPeriod ? { confirmPastPeriod: true as const } : {};
+      const created = await apiFetch<{ plan: PlanSummary }>(
+        `/api/monthly-planning/periods/${encodeURIComponent(periodKey)}/additional-plan`,
+        { method: "POST", body: JSON.stringify(body) },
+      );
+      showSuccess(`Created ${created.plan.displayLabel ?? "additional plan"}.`);
+      setAdditionalPanelOpen(false);
+      setAdditionalPreview(null);
+      await loadPlan(periodKey, created.plan.id);
+    } catch (e) {
+      showError(e instanceof ApiRequestError ? e.message : "Failed to create additional plan.");
+    } finally {
+      setCreatingAdditionalPlan(false);
+    }
+  }
+
   // KPIs
   const activeLockSummary =
     rows.length > 0
@@ -1246,7 +1443,7 @@ export function MonthlyPlanningWorkspacePage() {
   const totalFgSuggested = activeLockSummary?.totalSuggestedQty ?? 0;
   const totalFgItems = rows.length;
   const fgItemsWithVariance = activeLockSummary?.fgItemsWithVariance ?? 0;
-  const canLock = editable && rows.some((r) => num(r.plannedFgQty) > 0);
+  const canLock = workflowActions.lock;
 
   const availableFgForAdd = fgItems.filter((i) => !rows.some((r) => r.fgItemId === i.id));
 
@@ -1287,16 +1484,46 @@ export function MonthlyPlanningWorkspacePage() {
           </div>
 
           <div className="flex flex-1 flex-wrap items-center gap-2">
+            {shouldShowPlanSelector(periodPlans) ? (
+              <div className="flex min-w-[200px] flex-col gap-1">
+                <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                  Plan document
+                </label>
+                <NativeSelect
+                  value={String(selectedPlanId ?? plan?.id ?? "")}
+                  onChange={(e) => onSelectPlan(Number(e.target.value))}
+                  className="h-9 min-w-[220px]"
+                  disabled={loading || periodPlans.length <= 1}
+                >
+                  {periodPlans.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {resolvePlanDisplayLabel(p)} · {formatPlanKindLabel(p.planKind)} ·{" "}
+                      {formatPlanStatusLabel(p.status)}
+                    </option>
+                  ))}
+                </NativeSelect>
+              </div>
+            ) : null}
             {planExists && plan ? (
               <>
-                <Badge variant={isLocked ? "warning" : "info"}>{plan.status}</Badge>
-                {plan.docNo ? (
-                  <span className="text-[13px] font-semibold text-slate-800">{plan.docNo}</span>
+                <Badge variant={planStatusBadgeVariant(plan.status)}>
+                  {formatPlanStatusLabel(plan.status)}
+                </Badge>
+                <span className="text-[13px] font-semibold text-slate-800">
+                  {resolvePlanDisplayLabel(plan)}
+                </span>
+                {plan.planKind ? (
+                  <Badge variant="default">{formatPlanKindLabel(plan.planKind)}</Badge>
                 ) : null}
-                <span className="text-[12px] text-slate-500">Revision {plan.currentRevision}</span>
+                {plan.docNo ? (
+                  <span className="text-[12px] text-slate-500">{plan.docNo}</span>
+                ) : null}
+                {isLegacyPlan ? (
+                  <span className="text-[12px] text-slate-500">Revision {plan.currentRevision}</span>
+                ) : null}
                 {plan.lockedAt ? (
                   <span className="text-[12px] text-slate-500">
-                    · Locked {new Date(plan.lockedAt).toLocaleDateString()}
+                    · Submitted {new Date(plan.lockedAt).toLocaleDateString()}
                   </span>
                 ) : null}
                 {plan.createdAt ? (
@@ -1322,7 +1549,7 @@ export function MonthlyPlanningWorkspacePage() {
               <RefreshCw className={cn("mr-1.5 h-4 w-4", loading && "animate-spin")} />
               Refresh
             </Button>
-            {planExists && editable ? (
+            {workflowActions.save ? (
               <Button
                 type="button"
                 size="sm"
@@ -1338,21 +1565,79 @@ export function MonthlyPlanningWorkspacePage() {
                 {saving ? "Saving…" : "Save changes"}
               </Button>
             ) : null}
-            {planExists && editable ? (
+            {workflowActions.submitForReview ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="default"
+                onClick={() =>
+                  runWithPastPeriodGuard(() =>
+                    onSubmitForReview(periodIsPast && isAdmin ? { confirmPastPeriod: true } : undefined),
+                  )
+                }
+                disabled={submittingForReview || saving}
+                className="h-9 bg-indigo-700 hover:bg-indigo-800"
+              >
+                <Send className="mr-1.5 h-4 w-4" />
+                {submittingForReview ? "Submitting…" : "Submit For Purchase Review"}
+              </Button>
+            ) : null}
+            {workflowActions.approve ? (
+              <Button
+                type="button"
+                size="sm"
+                onClick={() =>
+                  runWithPastPeriodGuard(() =>
+                    onPurchaseApprove(periodIsPast && isAdmin ? { confirmPastPeriod: true } : undefined),
+                  )
+                }
+                disabled={approvingPlan || loading}
+                className="h-9 bg-emerald-700 hover:bg-emerald-800"
+              >
+                <CheckCircle className="mr-1.5 h-4 w-4" />
+                {approvingPlan ? "Approving…" : "Approve"}
+              </Button>
+            ) : null}
+            {workflowActions.reject ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => setRejectModalOpen(true)}
+                disabled={rejectingPlan || loading}
+                className="h-9 border-red-300 text-red-800 hover:bg-red-50"
+              >
+                <XCircle className="mr-1.5 h-4 w-4" />
+                Reject
+              </Button>
+            ) : null}
+            {workflowActions.release ? (
+              <Button
+                type="button"
+                size="sm"
+                onClick={() => setConfirmReleaseOpen(true)}
+                disabled={releasing || loading}
+                className="h-9 bg-sky-700 hover:bg-sky-800"
+              >
+                <PackagePlus className="mr-1.5 h-4 w-4" />
+                Release To Procurement
+              </Button>
+            ) : null}
+            {workflowActions.lock ? (
               <Button
                 type="button"
                 size="sm"
                 variant="default"
                 onClick={() => runWithPastPeriodGuard(() => Promise.resolve(setConfirmLockOpen(true)))}
                 disabled={!canLock || saving}
-                title={canLock ? "Lock plan and generate RM Planning" : "Add a planned qty > 0 to lock"}
+                title={canLock ? "Lock plan and generate RM Planning (legacy)" : "Add a planned qty > 0 to lock"}
                 className="h-9 bg-amber-700 hover:bg-amber-800"
               >
                 <Lock className="mr-1.5 h-4 w-4" />
                 Lock Plan
               </Button>
             ) : null}
-            {planExists && isLocked && canMutatePeriod ? (
+            {workflowActions.reopen ? (
               <Button
                 type="button"
                 size="sm"
@@ -1369,7 +1654,7 @@ export function MonthlyPlanningWorkspacePage() {
                 {reopening ? "Reopening…" : "Reopen Plan"}
               </Button>
             ) : null}
-            {canCancelReopen && canMutatePeriod ? (
+            {workflowActions.cancelReopen ? (
               <Button
                 type="button"
                 size="sm"
@@ -1384,6 +1669,19 @@ export function MonthlyPlanningWorkspacePage() {
               >
                 <X className="mr-1.5 h-4 w-4" />
                 {cancellingReopen ? "Cancelling…" : "Cancel Reopen"}
+              </Button>
+            ) : null}
+            {showAdditionalPlanEntry ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => void loadAdditionalPlanPreview()}
+                disabled={loadingAdditionalPreview}
+                className="h-9"
+              >
+                <Plus className="mr-1.5 h-4 w-4" />
+                {loadingAdditionalPreview ? "Loading…" : "Additional Plan"}
               </Button>
             ) : null}
           </div>
@@ -1409,12 +1707,32 @@ export function MonthlyPlanningWorkspacePage() {
         </div>
       ) : null}
 
+      {plan?.status === "AWAITING_PURCHASE_REVIEW" ? (
+        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-900">
+          <strong>Awaiting Purchase review.</strong> FG lines are read-only until Purchase approves or rejects this
+          plan.
+        </div>
+      ) : null}
+
+      {plan?.status === "APPROVED" ? (
+        <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-[12px] text-emerald-900">
+          <strong>Approved plan document.</strong> FG lines are frozen. Release procurement demand when RM planning is
+          ready.
+        </div>
+      ) : null}
+
+      {plan?.status === "DRAFT" && plan.purchaseRejectReason ? (
+        <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-[12px] text-red-900">
+          <strong>Purchase rejected:</strong> {plan.purchaseRejectReason}
+        </div>
+      ) : null}
+
       {/* KPI strip */}
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
         <KpiCard label="Total FG planned" value={totalFgPlanned.toLocaleString()} />
         <KpiCard label="Total FG suggested" value={totalFgSuggested.toLocaleString()} />
         <KpiCard label="FG items with variance" value={String(fgItemsWithVariance)} />
-        <KpiCard label="Status" value={plan?.status ?? "—"} />
+        <KpiCard label="Status" value={formatPlanStatusLabel(plan?.status)} />
       </div>
 
       <GreenLevelSection
@@ -1444,7 +1762,7 @@ export function MonthlyPlanningWorkspacePage() {
         onHide={() => setRmRequirementCompositionVisible(false)}
       />
 
-      {planExists && plan ? (
+      {planExists && plan && isLegacyPlan ? (
         <RevisionHistorySection
           data={planRevisions}
           loading={loadingRevisions}
@@ -1462,16 +1780,24 @@ export function MonthlyPlanningWorkspacePage() {
         </TabButton>
         <TabButton
           active={activeTab === "rm"}
-          disabled={!isLocked}
-          title={isLocked ? undefined : "Lock the plan to generate RM Planning"}
+          disabled={!rmPurchaseTabsEnabled}
+          title={
+            rmPurchaseTabsEnabled
+              ? undefined
+              : rmPurchaseEmptyMessage(plan?.status, "rm")
+          }
           onClick={() => setActiveTab("rm")}
         >
           RM Planning
         </TabButton>
         <TabButton
           active={activeTab === "purchase"}
-          disabled={!isLocked}
-          title={isLocked ? undefined : "Lock the plan to review purchase planning"}
+          disabled={!rmPurchaseTabsEnabled}
+          title={
+            rmPurchaseTabsEnabled
+              ? undefined
+              : rmPurchaseEmptyMessage(plan?.status, "purchase")
+          }
           onClick={() => setActiveTab("purchase")}
         >
           Purchase Planning
@@ -1488,9 +1814,16 @@ export function MonthlyPlanningWorkspacePage() {
             onRefresh={() => void refreshPurchase()}
             onRelease={() => setConfirmReleaseOpen(true)}
             releaseSummary={releaseSummary}
+            showReleaseButton={workflowActions.release}
+            planStatus={plan?.status}
           />
         ) : activeTab === "rm" ? (
-          <RmPlanningTab data={rmPlanning} loading={loadingRm} onRefresh={() => void refreshRm()} />
+          <RmPlanningTab
+            data={rmPlanning}
+            loading={loadingRm}
+            onRefresh={() => void refreshRm()}
+            planStatus={plan?.status}
+          />
         ) : !planExists ? (
           <NoPlanPreviewPanel
             period={period}
@@ -1514,7 +1847,7 @@ export function MonthlyPlanningWorkspacePage() {
           <ProductionPlanTab
             rows={rows}
             editable={editable}
-            isLocked={isLocked}
+            isLocked={!editable}
             period={period}
             rsSuggestions={rsSuggestions}
             rsSuggestionsVisible={rsSuggestionsVisible}
@@ -1582,6 +1915,146 @@ export function MonthlyPlanningWorkspacePage() {
           onConfirm={() => void onConfirmRelease()}
         />
       ) : null}
+
+      {rejectModalOpen ? (
+        <PurchaseRejectModal
+          reason={rejectReason}
+          rejecting={rejectingPlan}
+          onReasonChange={setRejectReason}
+          onCancel={() => {
+            setRejectModalOpen(false);
+            setRejectReason("");
+          }}
+          onConfirm={() =>
+            runWithPastPeriodGuard(() =>
+              onPurchaseReject(periodIsPast && isAdmin ? { confirmPastPeriod: true } : undefined),
+            )
+          }
+        />
+      ) : null}
+
+      {additionalPanelOpen && additionalPreview ? (
+        <AdditionalPlanPreviewModal
+          preview={additionalPreview}
+          creating={creatingAdditionalPlan}
+          onClose={() => {
+            setAdditionalPanelOpen(false);
+            setAdditionalPreview(null);
+          }}
+          onCreate={() =>
+            runWithPastPeriodGuard(() =>
+              onCreateAdditionalPlan(periodIsPast && isAdmin ? { confirmPastPeriod: true } : undefined),
+            )
+          }
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function PurchaseRejectModal({
+  reason,
+  rejecting,
+  onReasonChange,
+  onCancel,
+  onConfirm,
+}: {
+  reason: string;
+  rejecting: boolean;
+  onReasonChange: (value: string) => void;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4">
+      <div className="w-full max-w-md rounded-lg border border-slate-200 bg-white p-5 shadow-xl">
+        <h3 className="text-base font-semibold text-slate-900">Reject Plan</h3>
+        <p className="mt-2 text-[13px] text-slate-600">
+          Return this plan to draft for Store correction. A reason is required.
+        </p>
+        <textarea
+          value={reason}
+          onChange={(e) => onReasonChange(e.target.value)}
+          rows={4}
+          className="mt-3 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+          placeholder="Explain what Store should correct…"
+        />
+        <div className="mt-4 flex justify-end gap-2">
+          <Button type="button" variant="outline" size="sm" onClick={onCancel} disabled={rejecting}>
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            onClick={onConfirm}
+            disabled={rejecting || !reason.trim()}
+            className="bg-red-700 hover:bg-red-800"
+          >
+            {rejecting ? "Rejecting…" : "Reject Plan"}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AdditionalPlanPreviewModal({
+  preview,
+  creating,
+  onClose,
+  onCreate,
+}: {
+  preview: AdditionalPlanPreview;
+  creating: boolean;
+  onClose: () => void;
+  onCreate: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4">
+      <div className="w-full max-w-lg rounded-lg border border-slate-200 bg-white p-5 shadow-xl">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h3 className="text-base font-semibold text-slate-900">Additional Plan Preview</h3>
+            <p className="mt-1 text-[13px] text-slate-600">
+              Next document: <strong>{preview.nextPlanLabel}</strong> ({preview.nextPlanKind})
+            </p>
+          </div>
+          <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-700">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+        <div className="mt-4 grid grid-cols-2 gap-2 text-[13px]">
+          <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+            <div className="text-[11px] font-semibold uppercase text-slate-500">Additional qty</div>
+            <div className="text-lg font-bold tabular-nums">
+              {preview.totals.totalAdditionalRequirementQty.toLocaleString()}
+            </div>
+          </div>
+          <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+            <div className="text-[11px] font-semibold uppercase text-slate-500">FG items</div>
+            <div className="text-lg font-bold tabular-nums">{preview.totals.additionalItemCount}</div>
+          </div>
+        </div>
+        {!preview.canCreate && preview.blockingReason ? (
+          <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-900">
+            <strong>{preview.blockingCode ?? "BLOCKED"}:</strong> {preview.blockingReason}
+          </div>
+        ) : null}
+        <div className="mt-4 flex justify-end gap-2">
+          <Button type="button" variant="outline" size="sm" onClick={onClose} disabled={creating}>
+            Close
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            onClick={onCreate}
+            disabled={creating || !preview.canCreate}
+            className="bg-indigo-700 hover:bg-indigo-800"
+          >
+            {creating ? "Creating…" : `Create ${preview.nextPlanLabel}`}
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1735,10 +2208,12 @@ function RmPlanningTab({
   data,
   loading,
   onRefresh,
+  planStatus,
 }: {
   data: RmPlanningResponse | null;
   loading: boolean;
   onRefresh: () => void;
+  planStatus?: PlanStatus;
 }) {
   if (loading && !data) {
     return <div className="p-6 text-sm text-slate-500">Loading RM Planning…</div>;
@@ -1746,9 +2221,7 @@ function RmPlanningTab({
   if (!data || !data.locked || !data.exists) {
     return (
       <div className="flex h-full min-h-[200px] items-center justify-center rounded-lg border border-dashed border-slate-200 bg-slate-50/50">
-        <p className="text-sm text-slate-500">
-          Lock the production plan to view RM Planning for this period.
-        </p>
+        <p className="text-sm text-slate-500">{rmPurchaseEmptyMessage(planStatus, "rm")}</p>
       </div>
     );
   }
@@ -2051,6 +2524,8 @@ function PurchasePlanningTab({
   onRefresh,
   onRelease,
   releaseSummary,
+  showReleaseButton,
+  planStatus,
 }: {
   data: PurchasePlanningResponse | null;
   plan: PlanSummary | null;
@@ -2058,6 +2533,8 @@ function PurchasePlanningTab({
   onRefresh: () => void;
   onRelease: () => void;
   releaseSummary: ReleaseSummary | null;
+  showReleaseButton: boolean;
+  planStatus?: PlanStatus;
 }) {
   if (loading && !data) {
     return <div className="p-6 text-sm text-slate-500">Loading Purchase Planning…</div>;
@@ -2065,7 +2542,7 @@ function PurchasePlanningTab({
   if (!data || !data.locked || !data.exists) {
     return (
       <div className="flex h-full min-h-[200px] items-center justify-center rounded-lg border border-dashed border-slate-200 bg-slate-50/50">
-        <p className="text-sm text-slate-500">Lock the production plan to review purchase planning.</p>
+        <p className="text-sm text-slate-500">{rmPurchaseEmptyMessage(planStatus, "purchase")}</p>
       </div>
     );
   }
@@ -2155,15 +2632,17 @@ function PurchasePlanningTab({
             <RefreshCw className={cn("mr-1.5 h-4 w-4", loading && "animate-spin")} />
             Refresh
           </Button>
-          <Button
-            type="button"
-            size="sm"
-            onClick={onRelease}
-            disabled={loading || !canReleaseDelta}
-            className="h-8 bg-sky-700 hover:bg-sky-800 disabled:opacity-50"
-          >
-            Release Delta to Procurement
-          </Button>
+          {showReleaseButton ? (
+            <Button
+              type="button"
+              size="sm"
+              onClick={onRelease}
+              disabled={loading || !canReleaseDelta}
+              className="h-8 bg-sky-700 hover:bg-sky-800 disabled:opacity-50"
+            >
+              Release Delta to Procurement
+            </Button>
+          ) : null}
         </div>
       </div>
 

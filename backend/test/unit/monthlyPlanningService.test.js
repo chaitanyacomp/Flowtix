@@ -21,20 +21,37 @@ const { readBoolEnv, isMonthlyPlanningEnabled } = require("../../src/config/feat
  *  - docSequence.upsert (used by allocateDocNo)
  *  - $transaction(fn) → fn(self)
  */
-function createMockDb({ existingPlan = null, nextDocSeq = 1 } = {}) {
-  const state = { created: null, planById: existingPlan };
+function createMockDb({ existingPlan = null, existingPlans = null, nextDocSeq = 1 } = {}) {
+  const plans = existingPlans ?? (existingPlan ? [existingPlan] : []);
+  const state = { created: null, plans };
   const db = {
     monthlyProductionPlan: {
       findUnique: async ({ where }) => {
-        if (where.periodKey && state.planById && state.planById.periodKey === where.periodKey) {
-          return state.planById;
+        if (where.id != null) return state.plans.find((p) => p.id === where.id) ?? null;
+        if (where.periodKey) return state.plans.find((p) => p.periodKey === where.periodKey) ?? null;
+        return state.plans[0] ?? null;
+      },
+      findMany: async ({ where, orderBy }) => {
+        let rows = [...state.plans];
+        if (where?.periodKey) rows = rows.filter((p) => p.periodKey === where.periodKey);
+        if (where?.status?.in) rows = rows.filter((p) => where.status.in.includes(p.status));
+        if (orderBy?.planSequenceNo === "asc") {
+          rows.sort((a, b) => Number(a.planSequenceNo ?? 1) - Number(b.planSequenceNo ?? 1));
         }
-        return state.planById && !where.periodKey ? state.planById : (where.periodKey ? null : state.planById);
+        return rows;
+      },
+      aggregate: async ({ where }) => {
+        let rows = state.plans;
+        if (where?.periodKey) rows = rows.filter((p) => p.periodKey === where.periodKey);
+        const maxSeq = rows.reduce((m, p) => Math.max(m, Number(p.planSequenceNo ?? 0)), 0);
+        return { _max: { planSequenceNo: maxSeq > 0 ? maxSeq : null } };
       },
       create: async ({ data }) => {
         state.created = {
           id: 101,
           lines: [],
+          planSequenceNo: 1,
+          planKind: "INITIAL",
           createdAt: new Date("2026-06-01T00:00:00Z"),
           updatedAt: new Date("2026-06-01T00:00:00Z"),
           lockedAt: null,
@@ -43,6 +60,7 @@ function createMockDb({ existingPlan = null, nextDocSeq = 1 } = {}) {
           releasedRevision: null,
           ...data,
         };
+        state.plans.push(state.created);
         return state.created;
       },
     },
@@ -81,11 +99,13 @@ describe("monthlyPlanningService.createMonthlyPlan", () => {
     assert.deepEqual(res.revisions, []);
   });
 
-  it("blocks a duplicate period (one plan per month)", async () => {
-    const db = createMockDb({ existingPlan: { id: 5, periodKey: "2026-06" } });
+  it("blocks create when the period already has an active draft", async () => {
+    const db = createMockDb({
+      existingPlans: [{ id: 5, periodKey: "2026-06", status: "DRAFT", planSequenceNo: 1 }],
+    });
     await assert.rejects(
       () => createMonthlyPlan({ db, period: "2026-06", actorUserId: 7 }),
-      (e) => e instanceof MonthlyPlanningError && e.code === "DUPLICATE_PERIOD" && e.httpStatus === 409,
+      (e) => e instanceof MonthlyPlanningError && e.code === "ACTIVE_PLAN_EXISTS" && e.httpStatus === 409,
     );
   });
 
@@ -110,10 +130,12 @@ describe("monthlyPlanningService.getMonthlyPlanByPeriod", () => {
 
   it("returns the plan with mapped lines and revisions", async () => {
     const db = createMockDb({
-      existingPlan: {
+      existingPlans: [{
         id: 9,
         docNo: "MPP-26-0001",
         periodKey: "2026-06",
+        planSequenceNo: 1,
+        planKind: "INITIAL",
         status: "LOCKED",
         currentRevision: 2,
         remarks: null,
@@ -131,7 +153,7 @@ describe("monthlyPlanningService.getMonthlyPlanByPeriod", () => {
           { revision: 1, recalculatedAt: new Date() },
           { revision: 2, recalculatedAt: new Date() },
         ],
-      },
+      }],
     });
     const res = await getMonthlyPlanByPeriod({ db, period: "2026-06" });
     assert.equal(res.exists, true);

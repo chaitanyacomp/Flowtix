@@ -116,6 +116,8 @@ const REPORTS_ROLES = Object.freeze(["ADMIN"]);
 /** Monthly planning workspace (MPRS) — Store-owned write; Purchase read-only. */
 const MONTHLY_PLANNING_READ_ROLES = Object.freeze(["ADMIN", "STORE", "PURCHASE"]);
 const MONTHLY_PLANNING_WRITE_ROLES = Object.freeze(["ADMIN", "STORE"]);
+/** Plan-document P1: Purchase approve / reject after Store submit-for-review. */
+const MONTHLY_PLANNING_PURCHASE_REVIEW_ROLES = Object.freeze(["ADMIN", "PURCHASE"]);
 
 /** @deprecated Use REPORTS_ROLES */
 const REPORTS_WITH_ACCOUNTS_ROLES = REPORTS_ROLES;
@@ -192,4 +194,5 @@ module.exports = {
   REPORTS_WITH_ACCOUNTS_ROLES,
   MONTHLY_PLANNING_READ_ROLES,
   MONTHLY_PLANNING_WRITE_ROLES,
+  MONTHLY_PLANNING_PURCHASE_REVIEW_ROLES,
 };

@@ -815,7 +815,10 @@ export function MonthlyPlanningWorkspacePage() {
       showSuccess(`Draft started for ${periodKey}. Add FG lines or apply suggestions, then save.`);
       await loadPlan(periodKey);
     } catch (e) {
-      if (e instanceof ApiRequestError && e.code === "DUPLICATE_PERIOD") {
+      if (
+        e instanceof ApiRequestError &&
+        (e.code === "DUPLICATE_PERIOD" || e.code === "ACTIVE_PLAN_EXISTS")
+      ) {
         await loadPlan(periodKey);
         return;
       }
@@ -860,7 +863,10 @@ export function MonthlyPlanningWorkspacePage() {
       showSuccess(`Added ${suggestedItems.length} suggested FG item(s) to the draft plan.`);
       await loadPlan(periodKey);
     } catch (e) {
-      if (e instanceof ApiRequestError && e.code === "DUPLICATE_PERIOD") {
+      if (
+        e instanceof ApiRequestError &&
+        (e.code === "DUPLICATE_PERIOD" || e.code === "ACTIVE_PLAN_EXISTS")
+      ) {
         await loadPlan(periodKey);
         return;
       }

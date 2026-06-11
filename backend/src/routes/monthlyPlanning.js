@@ -39,7 +39,13 @@ const monthlyPlanningRouter = express.Router();
 const {
   MONTHLY_PLANNING_READ_ROLES,
   MONTHLY_PLANNING_WRITE_ROLES,
+  MONTHLY_PLANNING_PURCHASE_REVIEW_ROLES,
 } = require("../constants/erpRoles");
+const {
+  submitPlanForPurchaseReview,
+  purchaseApprovePlan,
+  purchaseRejectPlan,
+} = require("../services/monthlyPlanningPlanLifecycleService");
 
 /** Feature-flag gate: hide the whole router when the flag is OFF. */
 monthlyPlanningRouter.use((req, res, next) => {
@@ -246,6 +252,87 @@ monthlyPlanningRouter.put(
         planId: req.params.id,
         upserts: parsed.data.upserts ?? [],
         deletes: parsed.data.deletes ?? [],
+        actorUserId: actorUserId(req),
+        actorRole: actorRole(req),
+        confirmPastPeriod: parsed.data.confirmPastPeriod === true,
+      });
+      return res.json(data);
+    } catch (e) {
+      return handleServiceError(e, res, next);
+    }
+  },
+);
+
+const purchaseRejectBodySchema = z.object({
+  reason: z.string().trim().min(1).max(2000),
+  confirmPastPeriod: z.literal(true).optional(),
+});
+
+monthlyPlanningRouter.post(
+  "/:id/submit-for-review",
+  requireAuth,
+  requireRole(MONTHLY_PLANNING_WRITE_ROLES),
+  async (req, res, next) => {
+    try {
+      const parsed = pastPeriodConfirmBodySchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return res
+          .status(422)
+          .json({ error: { code: "INVALID_BODY", message: "Invalid submit-for-review request body." } });
+      }
+      const data = await submitPlanForPurchaseReview({
+        planId: req.params.id,
+        actorUserId: actorUserId(req),
+        actorRole: actorRole(req),
+        confirmPastPeriod: parsed.data.confirmPastPeriod === true,
+      });
+      return res.json(data);
+    } catch (e) {
+      return handleServiceError(e, res, next);
+    }
+  },
+);
+
+monthlyPlanningRouter.post(
+  "/:id/purchase/approve",
+  requireAuth,
+  requireRole(MONTHLY_PLANNING_PURCHASE_REVIEW_ROLES),
+  async (req, res, next) => {
+    try {
+      const parsed = pastPeriodConfirmBodySchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return res
+          .status(422)
+          .json({ error: { code: "INVALID_BODY", message: "Invalid purchase approve request body." } });
+      }
+      const data = await purchaseApprovePlan({
+        planId: req.params.id,
+        actorUserId: actorUserId(req),
+        actorRole: actorRole(req),
+        confirmPastPeriod: parsed.data.confirmPastPeriod === true,
+      });
+      return res.json(data);
+    } catch (e) {
+      return handleServiceError(e, res, next);
+    }
+  },
+);
+
+monthlyPlanningRouter.post(
+  "/:id/purchase/reject",
+  requireAuth,
+  requireRole(MONTHLY_PLANNING_PURCHASE_REVIEW_ROLES),
+  async (req, res, next) => {
+    try {
+      const parsed = purchaseRejectBodySchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return res
+          .status(422)
+          .json({ error: { code: "INVALID_BODY", message: "reason is required for purchase reject." } });
+      }
+      const data = await purchaseRejectPlan({
+        planId: req.params.id,
+        reason: parsed.data.reason,
         actorUserId: actorUserId(req),
         actorRole: actorRole(req),
         confirmPastPeriod: parsed.data.confirmPastPeriod === true,

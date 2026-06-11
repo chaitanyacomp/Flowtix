@@ -25,6 +25,14 @@ const {
   computeLockSummary,
   round3: metricsRound3,
 } = require("./monthlyPlanningProductionPlanMetrics");
+const {
+  assertNoOtherActivePlanInPeriod,
+  getNextPlanSequenceNo,
+  resolvePlanKindForSequence,
+  isPlanEditableStatus,
+  buildPlanDisplayLabel,
+  selectPrimaryPlanForPeriod,
+} = require("./monthlyPlanningPlanLifecycleService");
 
 function resolveRequirementCompositionLoader(loadComposition) {
   if (loadComposition) return loadComposition;
@@ -115,12 +123,23 @@ function toPlanSummary(plan) {
     id: plan.id,
     docNo: plan.docNo ?? null,
     periodKey: plan.periodKey,
+    planSequenceNo: Number(plan.planSequenceNo) > 0 ? Number(plan.planSequenceNo) : 1,
+    planKind: plan.planKind ?? "INITIAL",
+    displayLabel: buildPlanDisplayLabel(plan),
     status: plan.status,
+    /** @deprecated Revision model — legacy field only. */
     currentRevision: plan.currentRevision,
     remarks: plan.remarks ?? null,
     lockedAt: plan.lockedAt ?? null,
+    /** @deprecated Reopen model — scheduled for removal. */
     reopenedAt: plan.reopenedAt ?? null,
+    purchaseReviewedAt: plan.purchaseReviewedAt ?? null,
+    purchaseReviewedByUserId: plan.purchaseReviewedByUserId ?? null,
+    approvedAt: plan.approvedAt ?? null,
+    approvedByUserId: plan.approvedByUserId ?? null,
+    purchaseRejectReason: plan.purchaseRejectReason ?? null,
     releasedAt: plan.releasedAt ?? null,
+    /** @deprecated Revision model — scheduled for removal. */
     releasedRevision: plan.releasedRevision ?? null,
     createdByUserId: plan.createdByUserId ?? null,
     createdAt: plan.createdAt ?? null,
@@ -180,20 +199,23 @@ async function getMonthlyPlanByPeriod({ db = prisma, period } = {}) {
   const periodKey = normalizePeriodKey(period);
   // Header + revisions only. FG lines are loaded via GET /:id/production-lines so a line-table
   // schema mismatch cannot block plan discovery (exists / docNo / status).
-  const plan = await db.monthlyProductionPlan.findUnique({
+  const plans = await db.monthlyProductionPlan.findMany({
     where: { periodKey },
     include: {
       rmPlans: { select: { revision: true, recalculatedAt: true }, orderBy: { revision: "asc" } },
     },
+    orderBy: { planSequenceNo: "asc" },
   });
 
+  const plan = selectPrimaryPlanForPeriod(plans);
   if (!plan) {
-    return { exists: false, plan: null, lines: [], revisions: [] };
+    return { exists: false, plan: null, plans: [], lines: [], revisions: [] };
   }
 
   return {
     exists: true,
     plan: toPlanSummary(plan),
+    plans: plans.map(toPlanSummary),
     lines: [],
     revisions: (plan.rmPlans || []).map((r) => ({
       revision: r.revision,
@@ -205,7 +227,7 @@ async function getMonthlyPlanByPeriod({ db = prisma, period } = {}) {
 /**
  * Create/init a Monthly Production Plan header for a period.
  * Phase 1: header only (DRAFT, currentRevision 0) with an empty lines structure.
- * Throws DUPLICATE_PERIOD (409) if a plan already exists for the period.
+ * Throws ACTIVE_PLAN_EXISTS (409) if the period already has an open DRAFT / AWAITING_PURCHASE_REVIEW plan.
  */
 async function createMonthlyPlan({
   db = prisma,
@@ -219,23 +241,17 @@ async function createMonthlyPlan({
   const periodKey = assertPeriodWriteAllowed({ periodKey: period, actorRole, confirmPastPeriod, now });
 
   const run = async (tx) => {
-    const existing = await tx.monthlyProductionPlan.findUnique({
-      where: { periodKey },
-      select: { id: true },
-    });
-    if (existing) {
-      throw new MonthlyPlanningError(
-        "DUPLICATE_PERIOD",
-        `A Monthly Production Plan already exists for ${periodKey}.`,
-        409,
-      );
-    }
+    await assertNoOtherActivePlanInPeriod(tx, periodKey);
+    const planSequenceNo = await getNextPlanSequenceNo(tx, periodKey);
+    const planKind = resolvePlanKindForSequence(planSequenceNo);
 
     const docNo = await allocateDocNo(tx, { docType: DocType.MONTHLY_PRODUCTION_PLAN });
     const created = await tx.monthlyProductionPlan.create({
       data: {
         docNo,
         periodKey,
+        planSequenceNo,
+        planKind,
         status: "DRAFT",
         currentRevision: 0,
         remarks: remarks ?? null,
@@ -305,7 +321,7 @@ async function getProductionLines({
     planId: plan.id,
     periodKey: plan.periodKey,
     status: plan.status,
-    editable: plan.status === "DRAFT",
+    editable: isPlanEditableStatus(plan.status),
     lines: mappedLines,
     lockSummary: computeLockSummary(mappedLines),
   };
@@ -339,10 +355,10 @@ async function updateProductionLines({
       confirmPastPeriod,
       now,
     });
-    if (plan.status !== "DRAFT") {
+    if (!isPlanEditableStatus(plan.status)) {
       throw new MonthlyPlanningError(
         "PLAN_NOT_EDITABLE",
-        "Only DRAFT plans can be edited. This plan is locked.",
+        "Only DRAFT plans can be edited. Approved or submitted plans are frozen.",
         409,
       );
     }
@@ -613,6 +629,7 @@ async function lockMonthlyPlan({
 }
 
 /**
+ * @deprecated Plan-document model (P1+). Use additional plan documents instead of reopen.
  * Reopen a LOCKED plan for editing the next revision draft.
  * Does not change currentRevision, delete snapshots, or touch procurement/stock.
  */
@@ -694,6 +711,7 @@ async function reopenMonthlyPlan({
 }
 
 /**
+ * @deprecated Plan-document model (P1+). Scheduled for removal with revision model.
  * Discard a reopened draft and restore the last locked revision's FG lines.
  * Does not change currentRevision, RM snapshots, revision history, or procurement.
  */
@@ -812,6 +830,7 @@ function toRevisionFgLine(line) {
 }
 
 /**
+ * @deprecated Plan-document model (P1+). Use period plan list; revision history scheduled for removal.
  * Read-only revision history: FG snapshots per revision + RM snapshot metadata.
  */
 async function getPlanRevisions({ db = prisma, planId } = {}) {

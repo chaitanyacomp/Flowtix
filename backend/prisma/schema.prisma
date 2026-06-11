@@ -428,6 +428,8 @@ model User {
   monthlyProductionPlansLocked            MonthlyProductionPlan[]         @relation("MppLockedBy")
   monthlyProductionPlansReopened          MonthlyProductionPlan[]         @relation("MppReopenedBy")
   monthlyProductionPlansReleased          MonthlyProductionPlan[]         @relation("MppReleasedBy")
+  monthlyProductionPlansPurchaseReviewed  MonthlyProductionPlan[]         @relation("MppPurchaseReviewedBy")
+  monthlyProductionPlansApproved          MonthlyProductionPlan[]         @relation("MppApprovedBy")
   rmPlansRecalculated                     RmPlan[]                        @relation("RmPlanRecalcBy")
 }
 
@@ -1283,11 +1285,18 @@ enum MaterialPlanningSourceType {
   MONTHLY_PLAN
 }
 
-/// Monthly Planning Workspace (Phase 1 foundation). Status is intentionally minimal:
-/// DRAFT (editable) and LOCKED (frozen; revisable). "Released" is a flag, not a status.
+/// Monthly Planning Workspace plan-document lifecycle.
+/// LOCKED is legacy (revision model); retained for backward compatibility until migration completes.
 enum MonthlyProductionPlanStatus {
   DRAFT
+  AWAITING_PURCHASE_REVIEW
+  APPROVED
   LOCKED
+}
+
+enum MonthlyProductionPlanKind {
+  INITIAL
+  ADDITIONAL
 }
 
 /// Provenance of a Monthly Production Plan FG line's suggested quantity.
@@ -1299,23 +1308,34 @@ enum MonthlyPlanLineSource {
   MANUAL
 }
 
-/// Monthly Production Plan — master planning document (one per month). Store-owned.
+/// Monthly Production Plan — plan-document model (multiple per period). Store-owned.
 model MonthlyProductionPlan {
   id               Int                         @id @default(autoincrement())
   docNo            String?                     @unique @db.VarChar(32)
   periodKey        String                      @db.VarChar(16) // e.g. "2026-06"
+  /// Per-period sequence: Plan 1, Plan 2, …
+  planSequenceNo   Int                         @default(1)
+  planKind         MonthlyProductionPlanKind   @default(INITIAL)
   status           MonthlyProductionPlanStatus @default(DRAFT)
-  /// 0 while never locked; increments on each lock.
+  /// @deprecated Revision model — retained for legacy plans; do not use for new plan documents.
   currentRevision  Int                         @default(0)
   remarks          String?                     @db.Text
 
   lockedAt         DateTime?
   lockedByUserId   Int?
+  /// @deprecated Reopen model — scheduled for removal.
   reopenedAt       DateTime?
+  /// @deprecated Reopen model — scheduled for removal.
   reopenedByUserId Int?
-  /// "Released to procurement" is a flag on a LOCKED plan, not a separate status.
+  purchaseReviewedAt       DateTime?
+  purchaseReviewedByUserId Int?
+  approvedAt       DateTime?
+  approvedByUserId Int?
+  purchaseRejectReason String?                 @db.Text
+  /// "Released to procurement" is a flag, not a status.
   releasedAt       DateTime?
   releasedByUserId Int?
+  /// @deprecated Revision model — scheduled for removal.
   releasedRevision Int?
 
   createdByUserId  Int?
@@ -1330,11 +1350,14 @@ model MonthlyProductionPlan {
   lockedBy             User?                       @relation("MppLockedBy", fields: [lockedByUserId], references: [id], onDelete: SetNull)
   reopenedBy           User?                       @relation("MppReopenedBy", fields: [reopenedByUserId], references: [id], onDelete: SetNull)
   releasedBy           User?                       @relation("MppReleasedBy", fields: [releasedByUserId], references: [id], onDelete: SetNull)
+  purchaseReviewedBy   User?                       @relation("MppPurchaseReviewedBy", fields: [purchaseReviewedByUserId], references: [id], onDelete: SetNull)
+  approvedBy           User?                       @relation("MppApprovedBy", fields: [approvedByUserId], references: [id], onDelete: SetNull)
 
-  @@unique([periodKey])
+  @@unique([periodKey, planSequenceNo])
   @@index([status])
   @@index([periodKey])
   @@index([releasedAt])
+  @@index([periodKey, status])
 }
 
 /// Monthly Production Plan FG demand line. Aggregate per FG per plan (no SO/RS scalar FK by design).

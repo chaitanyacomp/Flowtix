@@ -9,6 +9,7 @@
  */
 
 const { prisma } = require("../utils/prisma");
+const { ensureApprovedPlanRmSnapshot } = require("./monthlyPlanningRmSnapshotService");
 
 /** Lazy bind to avoid circular import with monthlyPlanningService. */
 function planningCore() {
@@ -217,6 +218,7 @@ async function purchaseApprovePlan({
   actorRole = null,
   confirmPastPeriod = false,
   now = new Date(),
+  deps = {},
 } = {}) {
   const run = async (tx) => {
     const { MonthlyPlanningError, assertPeriodWriteAllowed } = planningCore();
@@ -247,6 +249,14 @@ async function purchaseApprovePlan({
       },
     });
 
+    const snapshot = await ensureApprovedPlanRmSnapshot({
+      db: tx,
+      planId: updated.id,
+      actorUserId,
+      asOf: now,
+      deps,
+    });
+
     return {
       planId: updated.id,
       status: updated.status,
@@ -255,6 +265,12 @@ async function purchaseApprovePlan({
       planKind: updated.planKind,
       displayLabel: buildPlanDisplayLabel(updated),
       approvedAt: updated.approvedAt,
+      rmSnapshot: {
+        revision: snapshot.revision,
+        rmPlanId: snapshot.rmPlanId,
+        created: snapshot.created,
+        lineCount: snapshot.lineCount,
+      },
     };
   };
 

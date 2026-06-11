@@ -48,6 +48,7 @@ function emptyGreenLoader() {
 
 function depsFor({ rmNeeded = new Map([[80, 100]]), bomByFg = null } = {}) {
   return {
+    allowLegacyLock: true,
     loadApprovedBomWithLines: async (_tx, fgItemId) => {
       if (bomByFg && Object.prototype.hasOwnProperty.call(bomByFg, fgItemId)) return bomByFg[fgItemId];
       return { id: 1, lines: [{ id: 1 }] };
@@ -183,6 +184,11 @@ function createRevisionMockDb({
           rows = rows.map((r) => ({ ...r, recalculatedBy: r.recalculatedBy ?? null }));
         }
         return rows;
+      },
+      findFirst: async ({ where, orderBy }) => {
+        let rows = state.rmPlans.filter((r) => r.planId === where.planId);
+        if (orderBy?.revision === "desc") rows = [...rows].sort((a, b) => b.revision - a.revision);
+        return rows[0] ? { revision: rows[0].revision } : null;
       },
       findUnique: async ({ where, include }) => {
         const r = state.rmPlans.find(

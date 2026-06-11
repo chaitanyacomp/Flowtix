@@ -33,6 +33,14 @@ const {
   buildPlanDisplayLabel,
   selectPrimaryPlanForPeriod,
 } = require("./monthlyPlanningPlanLifecycleService");
+const {
+  APPROVED_PLAN_SNAPSHOT_REVISION,
+  canReadRmPlanningStatus,
+  canReleasePlanStatus,
+  resolveRmSnapshotRevision,
+  buildMonthlyPlanReleaseLabel,
+  createRmPlanSnapshot,
+} = require("./monthlyPlanningRmSnapshotService");
 
 function resolveRequirementCompositionLoader(loadComposition) {
   if (loadComposition) return loadComposition;
@@ -471,9 +479,6 @@ async function lockMonthlyPlan({
   asOf = new Date(),
   deps = {},
 } = {}) {
-  const explodeFn = deps.aggregateRmDemandForFgLines || aggregateRmDemandForFgLines;
-  const loadBomFn = deps.loadApprovedBomWithLines || loadApprovedBomWithLines;
-  const availabilityFn = deps.getMaterialAvailabilityByItems || getMaterialAvailabilityByItems;
   const run = async (tx) => {
     const id = Number(planId);
     if (!Number.isFinite(id) || id <= 0) {
@@ -495,65 +500,26 @@ async function lockMonthlyPlan({
     if (plan.status !== "DRAFT") {
       throw new MonthlyPlanningError("PLAN_NOT_LOCKABLE", "Only DRAFT plans can be locked.", 409);
     }
-
-    const planLines = await tx.monthlyProductionPlanLine.findMany({
-      where: { planId: plan.id },
-      include: { fgItem: { select: { id: true, itemName: true, unit: true } } },
-      orderBy: { id: "asc" },
-    });
-    const activeLines = planLines.filter((l) => Number(l.plannedFgQty) > 0);
-    if (activeLines.length === 0) {
+    if (plan.currentRevision === 0 && !deps.allowLegacyLock) {
       throw new MonthlyPlanningError(
-        "EMPTY_PLAN",
-        "Plan must have at least one Production Plan line with planned qty > 0.",
-        422,
+        "PLAN_USE_PURCHASE_APPROVAL",
+        "New plan documents must use Submit for Purchase Review and approval instead of Lock.",
+        409,
       );
     }
 
-    // Every FG must have an approved BOM with lines, else block the lock.
-    for (const line of activeLines) {
-      const bom = await loadBomFn(tx, line.fgItemId);
-      if (!bom || !bom.lines || bom.lines.length === 0) {
-        throw new MonthlyPlanningError(
-          "MISSING_BOM",
-          `BOM missing for FG item: ${line.fgItem?.itemName ?? line.fgItemId}`,
-          422,
-        );
-      }
-    }
-
-    const fgLines = activeLines.map((l) => ({ fgItemId: l.fgItemId, fgQty: round3(l.plannedFgQty) }));
-    const { rmNeeded, missingChildBoms } = await explodeFn(tx, fgLines);
-    if (missingChildBoms.length > 0) {
-      const names = missingChildBoms.map((m) => m.sfgName ?? m.sfgItemId).join(", ");
-      throw new MonthlyPlanningError(
-        "MISSING_CHILD_BOM",
-        `BOM missing for component (SFG): ${names}`,
-        422,
-      );
-    }
-
-    const rmItemIds = [...rmNeeded.keys()];
-    const requiredQtyByItemId = {};
-    for (const [itemId, qty] of rmNeeded.entries()) requiredQtyByItemId[itemId] = qty;
-
-    const [availability, rmItems] = await Promise.all([
-      rmItemIds.length
-        ? availabilityFn({ itemIds: rmItemIds, requiredQtyByItemId, db: tx })
-        : Promise.resolve([]),
-      rmItemIds.length
-        ? tx.item.findMany({
-            where: { id: { in: rmItemIds } },
-            select: { id: true, itemName: true, unit: true, minimumStockQty: true },
-          })
-        : Promise.resolve([]),
-    ]);
-    const availabilityById = new Map(availability.map((a) => [a.itemId, a]));
-    const itemMetaById = new Map(rmItems.map((i) => [i.id, i]));
-
-    const totalFgPlannedQty = round3(activeLines.reduce((acc, l) => acc + Number(l.plannedFgQty), 0));
     const newRevision = plan.currentRevision + 1;
     const now = new Date();
+
+    await createRmPlanSnapshot({
+      db: tx,
+      planId: plan.id,
+      revision: newRevision,
+      actorUserId,
+      asOf: now,
+      writeRevisionLines: true,
+      deps,
+    });
 
     await tx.monthlyProductionPlan.update({
       where: { id: plan.id },
@@ -563,62 +529,6 @@ async function lockMonthlyPlan({
         lockedAt: now,
         lockedByUserId: actorUserId ?? null,
       },
-    });
-
-    const rmPlan = await tx.rmPlan.create({
-      data: {
-        planId: plan.id,
-        revision: newRevision,
-        totalFgPlannedQty,
-        recalculatedAt: now,
-        recalculatedByUserId: actorUserId ?? null,
-      },
-    });
-
-    const lineData = rmItemIds.map((rmItemId) => {
-      const gross = round3(rmNeeded.get(rmItemId) || 0);
-      const avail = availabilityById.get(rmItemId) || {};
-      const meta = itemMetaById.get(rmItemId) || {};
-      const freeStock = round3(avail.freeStockQty ?? 0);
-      const reserved = round3(avail.effectiveReservedQty ?? 0);
-      const incoming = round3(avail.incomingQty ?? 0);
-      const net = round3(avail.netShortageAfterIncomingQty ?? Math.max(0, gross - freeStock - incoming));
-      const minStock = meta.minimumStockQty != null ? Number(meta.minimumStockQty) : null;
-      const belowMinStockFlag = minStock != null && freeStock < minStock;
-      const warnings = Array.isArray(avail.warnings) ? avail.warnings : [];
-      return {
-        rmPlanId: rmPlan.id,
-        rmItemId,
-        grossDemandQty: gross,
-        freeStockSnapshot: freeStock,
-        reservedSnapshot: reserved,
-        incomingPoSnapshot: incoming,
-        minStockTopUpQty: 0, // advisory only in this phase
-        netRequirementQty: net,
-        unitSnapshot: meta.unit ?? null,
-        leadTimeRiskFlag: false, // lead-time data not available yet
-        belowMinStockFlag,
-        warningsJson: warnings.length ? warnings : null,
-      };
-    });
-
-    if (lineData.length) {
-      await tx.rmPlanLine.createMany({ data: lineData });
-    }
-
-    await tx.monthlyProductionPlanRevisionLine.createMany({
-      data: activeLines.map((l) => ({
-        planId: plan.id,
-        revision: newRevision,
-        fgItemId: l.fgItemId,
-        suggestedFgQty: round3(l.suggestedFgQty),
-        plannedFgQty: round3(l.plannedFgQty),
-        plannedQtyOverridden: Boolean(l.plannedQtyOverridden),
-        source: l.source,
-        remarks: l.remarks ?? null,
-        unitSnapshot: l.fgItem?.unit ?? null,
-        itemNameSnapshot: l.fgItem?.itemName ?? null,
-      })),
     });
 
     return { planId: plan.id, revision: newRevision };
@@ -917,27 +827,48 @@ async function getRmPlanning({ db = prisma, planId, revision = null } = {}) {
   }
   const plan = await db.monthlyProductionPlan.findUnique({
     where: { id },
-    select: { id: true, status: true, currentRevision: true, periodKey: true, lockedAt: true },
+    select: {
+      id: true,
+      status: true,
+      currentRevision: true,
+      periodKey: true,
+      lockedAt: true,
+      planSequenceNo: true,
+      planKind: true,
+    },
   });
   if (!plan) {
     throw new MonthlyPlanningError("PLAN_NOT_FOUND", "Monthly Production Plan not found.", 404);
   }
 
-  if (plan.status !== "LOCKED" || plan.currentRevision < 1) {
-    return {
-      locked: false,
-      exists: false,
-      planId: plan.id,
-      status: plan.status,
-      currentRevision: plan.currentRevision,
-      revision: null,
-      rmPlan: null,
-      lines: [],
-      availableRevisions: [],
-    };
+  const emptySnapshot = {
+    locked: false,
+    exists: false,
+    planId: plan.id,
+    status: plan.status,
+    currentRevision: plan.currentRevision,
+    revision: null,
+    rmPlan: null,
+    lines: [],
+    availableRevisions: [],
+  };
+
+  if (!canReadRmPlanningStatus(plan.status)) {
+    return emptySnapshot;
   }
 
-  const wanted = revision != null && Number(revision) > 0 ? Number(revision) : plan.currentRevision;
+  const existingRmPlan = await db.rmPlan.findFirst({
+    where: { planId: plan.id },
+    orderBy: { revision: "desc" },
+    select: { revision: true },
+  });
+  const defaultRevision = resolveRmSnapshotRevision(plan, existingRmPlan);
+  if (defaultRevision == null || defaultRevision <= 0) {
+    return { ...emptySnapshot, locked: true };
+  }
+
+  const wanted =
+    revision != null && Number(revision) > 0 ? Number(revision) : defaultRevision;
   const allRevisions = await db.rmPlan.findMany({
     where: { planId: plan.id },
     select: { revision: true, recalculatedAt: true },
@@ -1172,22 +1103,44 @@ async function releaseToProcurement({ db = prisma, planId, revision = null, conf
     }
     const plan = await tx.monthlyProductionPlan.findUnique({
       where: { id },
-      select: { id: true, status: true, currentRevision: true, periodKey: true },
+      select: {
+        id: true,
+        status: true,
+        currentRevision: true,
+        periodKey: true,
+        planSequenceNo: true,
+        planKind: true,
+      },
     });
     if (!plan) {
       throw new MonthlyPlanningError("PLAN_NOT_FOUND", "Monthly Production Plan not found.", 404);
     }
-    if (plan.status !== "LOCKED") {
-      throw new MonthlyPlanningError("PLAN_NOT_LOCKED", "Only a LOCKED plan can be released.", 409);
-    }
-    if (revision != null && Number(revision) !== plan.currentRevision) {
+    if (!canReleasePlanStatus(plan.status)) {
       throw new MonthlyPlanningError(
-        "REVISION_MISMATCH",
-        `Release revision must equal the current revision (${plan.currentRevision}).`,
+        "PLAN_NOT_RELEASABLE",
+        "Only APPROVED or legacy LOCKED plans can be released to procurement.",
         409,
       );
     }
-    const rev = plan.currentRevision;
+
+    const existingRmPlan = await tx.rmPlan.findFirst({
+      where: { planId: plan.id },
+      orderBy: { revision: "desc" },
+      select: { revision: true },
+    });
+    const snapshotRevision = resolveRmSnapshotRevision(plan, existingRmPlan);
+    if (snapshotRevision == null || snapshotRevision <= 0) {
+      throw new MonthlyPlanningError("SNAPSHOT_NOT_FOUND", "RM Planning snapshot not found for this plan.", 404);
+    }
+    if (revision != null && Number(revision) !== snapshotRevision) {
+      throw new MonthlyPlanningError(
+        "REVISION_MISMATCH",
+        `Release revision must equal the active snapshot revision (${snapshotRevision}).`,
+        409,
+      );
+    }
+    const rev = snapshotRevision;
+    const releaseLabel = buildMonthlyPlanReleaseLabel(plan, rev);
 
     const rmPlan = await tx.rmPlan.findUnique({
       where: { planId_revision: { planId: plan.id, revision: rev } },
@@ -1231,14 +1184,14 @@ async function releaseToProcurement({ db = prisma, planId, revision = null, conf
           status: "APPROVED",
           approvedByUserId: actorUserId ?? null,
           approvedAt: now,
-          approvalRemarks: `Released from Monthly Production Plan ${plan.periodKey} (rev ${rev}).`,
+          approvalRemarks: `Released from ${releaseLabel}.`,
           sourceType: MONTHLY_PLAN_SOURCE,
           monthlyProductionPlanId: plan.id,
           sourceRevision: rev,
           createdByUserId: actorUserId ?? null,
           raisedByUserId: actorUserId ?? null,
-          requisitionRemarks: `Monthly planning release for ${plan.periodKey} (rev ${rev}).`,
-          remarks: `Monthly planning release for ${plan.periodKey} (rev ${rev}).`,
+          requisitionRemarks: `Monthly planning release for ${releaseLabel}.`,
+          remarks: `Monthly planning release for ${releaseLabel}.`,
         },
         include: { lines: true },
       });

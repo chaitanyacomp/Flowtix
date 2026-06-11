@@ -435,6 +435,11 @@ function createLockMockDb({
         state.rmPlans.push(row);
         return row;
       },
+      findFirst: async ({ where, orderBy }) => {
+        let rows = state.rmPlans.filter((x) => x.planId === where.planId);
+        if (orderBy?.revision === "desc") rows.sort((a, b) => b.revision - a.revision);
+        return rows[0] ? { revision: rows[0].revision } : null;
+      },
       findMany: async () => state.rmPlans.map((r) => ({ revision: r.revision, recalculatedAt: r.recalculatedAt })),
       findUnique: async ({ where }) => {
         const r = state.rmPlans.find(
@@ -476,8 +481,9 @@ function createLockMockDb({
   return db;
 }
 
-function depsFor({ rmNeeded = new Map(), missingChildBoms = [], bomByFg = null, availability = [], availabilityThrows = false } = {}) {
+function depsFor({ rmNeeded = new Map(), missingChildBoms = [], bomByFg = null, availability = [], availabilityThrows = false, allowLegacyLock = true } = {}) {
   return {
+    allowLegacyLock,
     loadApprovedBomWithLines: async (_tx, fgItemId) => {
       if (bomByFg && Object.prototype.hasOwnProperty.call(bomByFg, fgItemId)) return bomByFg[fgItemId];
       return { id: 9, lines: [{ id: 1 }] }; // default: BOM present
@@ -550,6 +556,14 @@ describe("monthlyPlanningService.lockMonthlyPlan", () => {
     await assert.rejects(
       () => lockMonthlyPlan({ db, planId: 1, deps: depsFor({}) }),
       (e) => e instanceof MonthlyPlanningError && e.code === "PLAN_NOT_LOCKABLE",
+    );
+  });
+
+  it("blocks legacy lock on new DRAFT rev 0 without allowLegacyLock", async () => {
+    const db = createLockMockDb({ planLines: [{ id: 1, fgItemId: 50, plannedFgQty: 5 }] });
+    await assert.rejects(
+      () => lockMonthlyPlan({ db, planId: 1, deps: depsFor({ allowLegacyLock: false }) }),
+      (e) => e instanceof MonthlyPlanningError && e.code === "PLAN_USE_PURCHASE_APPROVAL",
     );
   });
 
@@ -689,11 +703,21 @@ describe("monthlyPlanningService.getPurchasePlanning", () => {
 function createReleaseMockDb({
   status = "LOCKED",
   currentRevision = 1,
+  planSequenceNo = 1,
+  planKind = "INITIAL",
   rmPlanLines = [],
   existingMr = null,
 } = {}) {
+  const snapshotRevision = currentRevision >= 1 ? currentRevision : 1;
   const state = {
-    plan: { id: 1, status, currentRevision, periodKey: "2026-06" },
+    plan: {
+      id: 1,
+      status,
+      currentRevision,
+      periodKey: "2026-06",
+      planSequenceNo,
+      planKind,
+    },
     mrs: [],
     nextMrId: 800,
     nextLineId: 9000,
@@ -728,12 +752,13 @@ function createReleaseMockDb({
       },
     },
     rmPlan: {
+      findFirst: async () => ({ revision: snapshotRevision }),
       findUnique: async ({ where }) => {
-        if (where.planId_revision.revision !== state.plan.currentRevision) return null;
+        if (where.planId_revision.revision !== snapshotRevision) return null;
         return {
           id: 1,
           planId: 1,
-          revision: state.plan.currentRevision,
+          revision: snapshotRevision,
           lines: rmPlanLines.map((l, i) => ({
             id: 100 + i,
             rmItemId: l.rmItemId,
@@ -761,6 +786,9 @@ function createReleaseMockDb({
           monthlyProductionPlanId: data.monthlyProductionPlanId,
           reversedAt: null,
           sourceRevision: data.sourceRevision ?? null,
+          remarks: data.remarks ?? null,
+          requisitionRemarks: data.requisitionRemarks ?? null,
+          approvalRemarks: data.approvalRemarks ?? null,
           lines: [],
         };
         state.mrs.push(m);
@@ -820,20 +848,44 @@ describe("monthlyPlanningService.releaseToProcurement", () => {
     );
   });
 
-  it("requires a LOCKED plan", async () => {
+  it("requires an APPROVED or LOCKED plan", async () => {
     const db = createReleaseMockDb({ status: "DRAFT", rmPlanLines: [{ rmItemId: 70, netRequirementQty: 10 }] });
     await assert.rejects(
       () => releaseToProcurement({ db, planId: 1, confirm: true }),
-      (e) => e instanceof MonthlyPlanningError && e.code === "PLAN_NOT_LOCKED",
+      (e) => e instanceof MonthlyPlanningError && e.code === "PLAN_NOT_RELEASABLE",
     );
   });
 
-  it("requires the revision to match currentRevision", async () => {
+  it("blocks AWAITING_PURCHASE_REVIEW", async () => {
+    const db = createReleaseMockDb({
+      status: "AWAITING_PURCHASE_REVIEW",
+      rmPlanLines: [{ rmItemId: 70, netRequirementQty: 10 }],
+    });
+    await assert.rejects(
+      () => releaseToProcurement({ db, planId: 1, confirm: true }),
+      (e) => e instanceof MonthlyPlanningError && e.code === "PLAN_NOT_RELEASABLE",
+    );
+  });
+
+  it("requires the revision to match active snapshot revision", async () => {
     const db = createReleaseMockDb({ currentRevision: 1, rmPlanLines: [{ rmItemId: 70, netRequirementQty: 10 }] });
     await assert.rejects(
       () => releaseToProcurement({ db, planId: 1, revision: 99, confirm: true }),
       (e) => e instanceof MonthlyPlanningError && e.code === "REVISION_MISMATCH",
     );
+  });
+
+  it("releases APPROVED plan documents with plan label in MR remarks", async () => {
+    const db = createReleaseMockDb({
+      status: "APPROVED",
+      currentRevision: 0,
+      planSequenceNo: 2,
+      planKind: "ADDITIONAL",
+      rmPlanLines: [{ rmItemId: 70, netRequirementQty: 8 }],
+    });
+    const res = await releaseToProcurement({ db, planId: 1, confirm: true });
+    assert.equal(res.releasedLineCount, 1);
+    assert.match(db.__state.mrs[0].remarks, /June Plan 2/);
   });
 
   it("first release creates demand; second release creates zero (idempotent)", async () => {

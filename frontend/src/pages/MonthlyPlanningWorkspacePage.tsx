@@ -1293,9 +1293,13 @@ export function MonthlyPlanningWorkspacePage() {
     if (!plan) return;
     setReleasing(true);
     try {
+      const releaseBody: { confirm: true; revision?: number } = { confirm: true };
+      if (plan.currentRevision > 0) {
+        releaseBody.revision = plan.currentRevision;
+      }
       const summary = await apiFetch<ReleaseSummary>(`/api/monthly-planning/${plan.id}/release`, {
         method: "POST",
-        body: JSON.stringify({ revision: plan.currentRevision, confirm: true }),
+        body: JSON.stringify(releaseBody),
       });
       setReleaseSummary(summary);
       setConfirmReleaseOpen(false);

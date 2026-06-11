@@ -37,7 +37,15 @@ const RM_PO_INCLUDE = {
                           salesOrder: { select: { id: true, docNo: true } },
                           workOrder: { select: { id: true, docNo: true } },
                           monthlyProductionPlan: {
-                            select: { id: true, docNo: true, periodKey: true, currentRevision: true },
+                            select: {
+                              id: true,
+                              docNo: true,
+                              periodKey: true,
+                              currentRevision: true,
+                              status: true,
+                              planSequenceNo: true,
+                              planKind: true,
+                            },
                           },
                         },
                       },
@@ -55,7 +63,15 @@ const RM_PO_INCLUDE = {
                   salesOrder: { select: { id: true, docNo: true } },
                   workOrder: { select: { id: true, docNo: true } },
                   monthlyProductionPlan: {
-                    select: { id: true, docNo: true, periodKey: true, currentRevision: true },
+                    select: {
+                      id: true,
+                      docNo: true,
+                      periodKey: true,
+                      currentRevision: true,
+                      status: true,
+                      planSequenceNo: true,
+                      planKind: true,
+                    },
                   },
                 },
               },
@@ -78,6 +94,9 @@ const RM_PO_INCLUDE = {
   },
 };
 
+const { buildPlanDisplayLabel } = require("./monthlyPlanningPlanLifecycleService");
+const { buildMonthlyPlanReleaseLabel } = require("./monthlyPlanningRmSnapshotService");
+
 function rmPoDisplayNo(id) {
   return `RMPO-${id}`;
 }
@@ -90,16 +109,21 @@ function mapMonthlyPlanContext(mr) {
   if (!mr?.monthlyProductionPlan) return null;
   const plan = mr.monthlyProductionPlan;
   const revision = mr.sourceRevision != null ? Number(mr.sourceRevision) : null;
+  const usePlanDocumentLabel =
+    plan.status === "APPROVED" ||
+    (plan.planSequenceNo != null && Number(plan.currentRevision ?? 0) === 0);
+  const label = usePlanDocumentLabel
+    ? buildMonthlyPlanReleaseLabel(plan, revision ?? 1)
+    : revision != null && Number.isFinite(revision)
+      ? `Monthly Plan Rev ${revision}`
+      : plan.docNo || plan.periodKey || `Plan #${plan.id}`;
   return {
     planId: plan.id,
     docNo: plan.docNo,
     periodKey: plan.periodKey,
     currentRevision: plan.currentRevision,
     sourceRevision: Number.isFinite(revision) ? revision : null,
-    label:
-      revision != null && Number.isFinite(revision)
-        ? `Monthly Plan Rev ${revision}`
-        : plan.docNo || plan.periodKey || `Plan #${plan.id}`,
+    label,
   };
 }
 
@@ -479,6 +503,7 @@ module.exports = {
   assembleRmPoProcurementTrace,
   buildDemandSourcesForPoLine,
   buildRmPoProcurementTrace,
+  mapMonthlyPlanContext,
   grnDisplayNo,
   rmPoDisplayNo,
 };

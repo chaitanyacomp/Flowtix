@@ -118,6 +118,21 @@ function createPlanDocumentDb(initialPlans = []) {
     item: {
       findMany: async () => [{ id: 65, itemType: "FG" }],
     },
+    rmPlan: {
+      findUnique: async () => null,
+      create: async ({ data }) => {
+        const row = { id: 501, ...data };
+        if (!state.rmPlans) state.rmPlans = [];
+        state.rmPlans.push(row);
+        return row;
+      },
+    },
+    rmPlanLine: {
+      createMany: async () => ({ count: 0 }),
+    },
+    monthlyProductionPlanRevisionLine: {
+      createMany: async () => ({ count: 0 }),
+    },
     docSequence: {
       upsert: async () => ({ nextNumber: 2, year2: 26, docType: "MONTHLY_PRODUCTION_PLAN" }),
     },
@@ -219,9 +234,17 @@ describe("monthlyPlanningPlanDocumentP1.purchase review transitions", () => {
         periodKey: "2026-07",
         planSequenceNo: 1,
         status: "AWAITING_PURCHASE_REVIEW",
+        lines: [{ id: 1, fgItemId: 65, plannedFgQty: "100", suggestedFgQty: "0", plannedQtyOverridden: false, source: "MANUAL" }],
       },
     ]);
-    const res = await purchaseApprovePlan({ db, planId: 11, actorUserId: 3 });
+    const deps = {
+      loadApprovedBomWithLines: async () => ({ id: 1, lines: [{ id: 1 }] }),
+      aggregateRmDemandForFgLines: async () => ({ rmNeeded: new Map([[70, 5]]), missingChildBoms: [] }),
+      getMaterialAvailabilityByItems: async () => [
+        { itemId: 70, freeStockQty: 0, effectiveReservedQty: 0, incomingQty: 0, netShortageAfterIncomingQty: 5, warnings: [] },
+      ],
+    };
+    const res = await purchaseApprovePlan({ db, planId: 11, actorUserId: 3, deps });
     assert.equal(res.status, "APPROVED");
     assert.ok(res.approvedAt);
   });

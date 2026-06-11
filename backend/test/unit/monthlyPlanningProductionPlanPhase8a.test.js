@@ -248,7 +248,21 @@ describe("Phase 8A — read-only verification (no workflow changes)", () => {
           return state.rmPlan;
         },
         findMany: async () => [{ revision: 1, recalculatedAt: state.rmPlan.recalculatedAt }],
-        findUnique: async () => state.rmPlan,
+        findFirst: async ({ where, orderBy }) => {
+          if (!state.rmPlan || state.rmPlan.planId !== where.planId) return null;
+          return { revision: state.rmPlan.revision };
+        },
+        findUnique: async ({ where }) => {
+          if (!where?.planId_revision) return null;
+          const { planId, revision } = where.planId_revision;
+          if (state.rmPlan && state.rmPlan.planId === planId && state.rmPlan.revision === revision) {
+            return state.rmPlan;
+          }
+          return null;
+        },
+      },
+      monthlyProductionPlanRevisionLine: {
+        createMany: async () => ({ count: 1 }),
       },
       rmPlanLine: { createMany: async () => ({ count: 1 }) },
       item: {
@@ -260,6 +274,7 @@ describe("Phase 8A — read-only verification (no workflow changes)", () => {
       db,
       planId: 5,
       deps: {
+        allowLegacyLock: true,
         aggregateRmDemandForFgLines: async (_tx, fgLines) => {
           exploded.push(...fgLines);
           return { rmNeeded: new Map([[201, 5]]), missingChildBoms: [] };

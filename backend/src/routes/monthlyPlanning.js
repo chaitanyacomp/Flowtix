@@ -34,6 +34,10 @@ const { getGreenLevels } = require("../services/monthlyPlanningGreenLevelService
 const { getRequirementComposition } = require("../services/monthlyPlanningRequirementCompositionService");
 const { getRmRequirementComposition } = require("../services/monthlyPlanningRmRequirementCompositionService");
 const { getPeriodRequirementCoverage } = require("../services/monthlyPlanningCoverageService");
+const {
+  previewAdditionalPlan,
+  createAdditionalPlan,
+} = require("../services/monthlyPlanningAdditionalPlanService");
 
 const monthlyPlanningRouter = express.Router();
 
@@ -191,6 +195,46 @@ monthlyPlanningRouter.get(
     try {
       const data = await getPeriodRequirementCoverage({ periodKey: String(req.params.periodKey) });
       return res.json(data);
+    } catch (e) {
+      return handleServiceError(e, res, next);
+    }
+  },
+);
+
+monthlyPlanningRouter.get(
+  "/periods/:periodKey/additional-plan/preview",
+  requireAuth,
+  requireRole(MONTHLY_PLANNING_READ_ROLES),
+  async (req, res, next) => {
+    try {
+      const data = await previewAdditionalPlan({ periodKey: String(req.params.periodKey) });
+      return res.json(data);
+    } catch (e) {
+      return handleServiceError(e, res, next);
+    }
+  },
+);
+
+monthlyPlanningRouter.post(
+  "/periods/:periodKey/additional-plan",
+  requireAuth,
+  requireRole(MONTHLY_PLANNING_WRITE_ROLES),
+  async (req, res, next) => {
+    try {
+      const parsed = createBodySchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return res.status(422).json({
+          error: { code: "INVALID_BODY", message: "Invalid additional plan request body." },
+        });
+      }
+      const data = await createAdditionalPlan({
+        periodKey: String(req.params.periodKey),
+        remarks: parsed.data.remarks ?? null,
+        actorUserId: actorUserId(req),
+        actorRole: actorRole(req),
+        confirmPastPeriod: parsed.data.confirmPastPeriod === true,
+      });
+      return res.status(201).json(data);
     } catch (e) {
       return handleServiceError(e, res, next);
     }

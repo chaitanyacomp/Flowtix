@@ -83,6 +83,7 @@ const SOURCE_LABELS: Record<string, string> = {
 
 export function demandSourceDisplay(ds: RmPoTraceDemandSource): string {
   if (ds.monthlyPlan?.label) return ds.monthlyPlan.label;
+  if (ds.demandSourceLabel?.trim()) return ds.demandSourceLabel.trim();
   if (ds.monthlyPlanRevision != null) return `Monthly Plan Rev ${ds.monthlyPlanRevision}`;
   if (ds.demandSourceType && SOURCE_LABELS[ds.demandSourceType]) return SOURCE_LABELS[ds.demandSourceType];
   if (ds.workOrder?.docNo) return `WO ${ds.workOrder.docNo}`;

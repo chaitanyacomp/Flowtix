@@ -65,6 +65,31 @@ describe("rmPoDocumentTrace", () => {
     expect(demandSourceDisplay(ds)).toBe("Monthly Plan Rev 3");
   });
 
+  it("demandSourceDisplay prefers plan document label", () => {
+    expect(
+      demandSourceDisplay({
+        demandSourceType: "MONTHLY_PLAN",
+        monthlyPlanRevision: 1,
+        monthlyPlan: { label: "June Plan 2", periodKey: "2026-06", sourceRevision: 1 },
+        mr: null,
+        pr: null,
+      }),
+    ).toBe("June Plan 2");
+  });
+
+  it("demandSourceDisplay falls back to demandSourceLabel", () => {
+    expect(
+      demandSourceDisplay({
+        demandSourceType: "MONTHLY_PLAN",
+        demandSourceLabel: "June Plan 1",
+        monthlyPlanRevision: 1,
+        monthlyPlan: null,
+        mr: null,
+        pr: null,
+      }),
+    ).toBe("June Plan 1");
+  });
+
   it("traceLineByPoLineId finds line by id", () => {
     const line = traceLineByPoLineId(sampleTrace(), 142);
     expect(line?.demandSources[0]?.mr?.docNo).toBe("MR-26-0002");

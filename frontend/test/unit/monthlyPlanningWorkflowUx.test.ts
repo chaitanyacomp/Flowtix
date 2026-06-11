@@ -3,12 +3,17 @@ import {
   canLoadRmPurchaseTabs,
   canShowAdditionalPlanEntry,
   formatPlanStatusLabel,
+  formatReleaseSuccessSummary,
+  formatRmSnapshotContextLabel,
   isLegacyPlanDocument,
   isPlanEditable,
   planStatusBadgeVariant,
+  purchasePlanningIntroMessage,
+  productionPlanReadOnlyMessage,
   resolvePlanDisplayLabel,
   resolveWorkflowActionVisibility,
   shouldShowPlanSelector,
+  usesPlanDocumentProcurementUx,
   type MonthlyPlanHeader,
 } from "../../src/lib/monthlyPlanningWorkflowUx";
 
@@ -188,5 +193,51 @@ describe("monthlyPlanningWorkflowUx.labels", () => {
     expect(resolvePlanDisplayLabel(plan({ status: "DRAFT", displayLabel: "June Plan 2" }))).toBe(
       "June Plan 2",
     );
+  });
+
+  it("uses plan document labels instead of revision wording on APPROVED plans", () => {
+    const approved = plan({ status: "APPROVED", displayLabel: "June Plan 1" });
+    expect(usesPlanDocumentProcurementUx(approved)).toBe(true);
+    expect(
+      formatRmSnapshotContextLabel({ plan: approved, snapshotRevision: 1, lineCount: 4 }),
+    ).toBe("June Plan 1 · 4 RM lines (read-only)");
+    expect(purchasePlanningIntroMessage(approved)).toContain("approved plan RM snapshot");
+    expect(
+      formatReleaseSuccessSummary({
+        plan: approved,
+        releaseRevision: 1,
+        materialRequirementDocNo: "MR-26-0001",
+        releasedLineCount: 2,
+        totalDeltaQty: 50,
+        skippedLineCount: 0,
+        surplusLineCount: 0,
+      }),
+    ).toContain("Released June Plan 1");
+    expect(
+      formatReleaseSuccessSummary({
+        plan: approved,
+        releaseRevision: 1,
+        materialRequirementDocNo: "MR-26-0001",
+        releasedLineCount: 2,
+        totalDeltaQty: 50,
+        skippedLineCount: 0,
+        surplusLineCount: 0,
+      }),
+    ).not.toContain("revision");
+  });
+
+  it("keeps revision wording for legacy LOCKED plans", () => {
+    const legacy = plan({ status: "LOCKED", currentRevision: 2, displayLabel: "June Plan 1" });
+    expect(usesPlanDocumentProcurementUx(legacy)).toBe(false);
+    expect(
+      formatRmSnapshotContextLabel({ plan: legacy, snapshotRevision: 2, lineCount: 3 }),
+    ).toBe("Snapshot revision 2 · 3 RM lines (read-only)");
+    expect(productionPlanReadOnlyMessage(legacy)).toContain("Reopen Plan");
+  });
+
+  it("avoids reopen wording on APPROVED production tab", () => {
+    const approved = plan({ status: "APPROVED", displayLabel: "June Plan 1" });
+    expect(productionPlanReadOnlyMessage(approved)).toContain("Additional Plan");
+    expect(productionPlanReadOnlyMessage(approved)).not.toContain("Reopen");
   });
 });

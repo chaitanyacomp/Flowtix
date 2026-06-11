@@ -13,13 +13,21 @@ import {
   canShowAdditionalPlanEntry,
   formatPlanKindLabel,
   formatPlanStatusLabel,
+  formatPurchasePlanningContextLabel,
+  formatReleaseSuccessSummary,
+  formatRmSnapshotContextLabel,
   isLegacyPlanDocument,
   isPlanEditable,
   planStatusBadgeVariant,
+  purchasePlanningIntroMessage,
+  purchasePlanningReductionMessage,
+  productionPlanReadOnlyMessage,
   resolvePlanDisplayLabel,
   resolveWorkflowActionVisibility,
+  rmPlanningEmptyTableMessage,
   rmPurchaseEmptyMessage,
   shouldShowPlanSelector,
+  usesPlanDocumentProcurementUx,
   type MonthlyPlanKind,
   type MonthlyPlanStatus,
 } from "../lib/monthlyPlanningWorkflowUx";
@@ -1304,7 +1312,24 @@ export function MonthlyPlanningWorkspacePage() {
       setReleaseSummary(summary);
       setConfirmReleaseOpen(false);
       showSuccess(
-        `Released ${summary.releasedLineCount} line(s) · delta ${summary.totalDeltaQty.toLocaleString()}.`,
+        formatReleaseSuccessSummary({
+          plan: plan
+            ? {
+                id: plan.id,
+                status: plan.status,
+                currentRevision: plan.currentRevision,
+                planSequenceNo: plan.planSequenceNo,
+                planKind: plan.planKind,
+                displayLabel: plan.displayLabel,
+              }
+            : null,
+          releaseRevision: summary.revision,
+          materialRequirementDocNo: summary.materialRequirementDocNo,
+          releasedLineCount: summary.releasedLineCount,
+          totalDeltaQty: summary.totalDeltaQty,
+          skippedLineCount: summary.skippedLineCount,
+          surplusLineCount: summary.surplusLineCount,
+        }),
       );
       await refreshPurchase();
       await loadPlan(period);
@@ -1711,6 +1736,13 @@ export function MonthlyPlanningWorkspacePage() {
         </div>
       ) : null}
 
+      {plan?.status === "DRAFT" && !plan.purchaseRejectReason ? (
+        <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-[12px] text-blue-900">
+          <strong>Draft plan document.</strong> Store owns FG line edits until this plan is submitted for Purchase
+          review.
+        </div>
+      ) : null}
+
       {plan?.status === "AWAITING_PURCHASE_REVIEW" ? (
         <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-900">
           <strong>Awaiting Purchase review.</strong> FG lines are read-only until Purchase approves or rejects this
@@ -1728,6 +1760,9 @@ export function MonthlyPlanningWorkspacePage() {
       {plan?.status === "DRAFT" && plan.purchaseRejectReason ? (
         <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-[12px] text-red-900">
           <strong>Purchase rejected:</strong> {plan.purchaseRejectReason}
+          <span className="mt-1 block text-red-800">
+            Store can edit FG lines and resubmit for Purchase review.
+          </span>
         </div>
       ) : null}
 
@@ -1826,6 +1861,7 @@ export function MonthlyPlanningWorkspacePage() {
             data={rmPlanning}
             loading={loadingRm}
             onRefresh={() => void refreshRm()}
+            plan={plan}
             planStatus={plan?.status}
           />
         ) : !planExists ? (
@@ -1851,7 +1887,7 @@ export function MonthlyPlanningWorkspacePage() {
           <ProductionPlanTab
             rows={rows}
             editable={editable}
-            isLocked={!editable}
+            readOnlyMessage={productionPlanReadOnlyMessage(plan)}
             period={period}
             rsSuggestions={rsSuggestions}
             rsSuggestionsVisible={rsSuggestionsVisible}
@@ -1912,7 +1948,8 @@ export function MonthlyPlanningWorkspacePage() {
 
       {confirmReleaseOpen ? (
         <ReleaseConfirmModal
-          revision={plan?.currentRevision ?? 0}
+          plan={plan}
+          snapshotRevision={purchasePlanning?.revision ?? null}
           data={purchasePlanning}
           releasing={releasing}
           onCancel={() => setConfirmReleaseOpen(false)}
@@ -2022,6 +2059,11 @@ function AdditionalPlanPreviewModal({
             <p className="mt-1 text-[13px] text-slate-600">
               Next document: <strong>{preview.nextPlanLabel}</strong> ({preview.nextPlanKind})
             </p>
+            <p className="mt-1 text-[12px] text-slate-500">
+              Covers the remaining requirement gap after {preview.approvedPlanCount} approved plan
+              {preview.approvedPlanCount === 1 ? "" : "s"} in this period. Only delta FG quantities are stored in the
+              new plan document.
+            </p>
           </div>
           <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-700">
             <X className="h-5 w-5" />
@@ -2064,13 +2106,15 @@ function AdditionalPlanPreviewModal({
 }
 
 function ReleaseConfirmModal({
-  revision,
+  plan,
+  snapshotRevision,
   data,
   releasing,
   onCancel,
   onConfirm,
 }: {
-  revision: number;
+  plan: PlanSummary | null;
+  snapshotRevision: number | null;
   data: PurchasePlanningResponse | null;
   releasing: boolean;
   onCancel: () => void;
@@ -2080,6 +2124,24 @@ function ReleaseConfirmModal({
   const totalRmItems = lines.length;
   const totalAdditional = resolveAdditionalRequirementTotal(data?.totals, lines);
   const canConfirmRelease = isReleaseDeltaButtonEnabled(totalAdditional);
+  const planHeader = plan
+    ? {
+        id: plan.id,
+        status: plan.status,
+        currentRevision: plan.currentRevision,
+        planSequenceNo: plan.planSequenceNo,
+        planKind: plan.planKind,
+        displayLabel: plan.displayLabel,
+      }
+    : null;
+  const releaseContextLabel =
+    planHeader && usesPlanDocumentProcurementUx(planHeader)
+      ? resolvePlanDisplayLabel(planHeader)
+      : snapshotRevision != null && snapshotRevision > 0
+        ? `Revision ${snapshotRevision}`
+        : "—";
+  const releaseContextCaption =
+    planHeader && usesPlanDocumentProcurementUx(planHeader) ? "Plan document" : "Revision";
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4">
       <div className="w-full max-w-md rounded-lg border border-slate-200 bg-white p-5 shadow-xl">
@@ -2091,8 +2153,10 @@ function ReleaseConfirmModal({
         </div>
         <div className="mt-4 grid grid-cols-3 gap-2">
           <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
-            <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Revision</div>
-            <div className="text-lg font-bold tabular-nums text-slate-900">{revision}</div>
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              {releaseContextCaption}
+            </div>
+            <div className="text-lg font-bold tabular-nums text-slate-900">{releaseContextLabel}</div>
           </div>
           <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
             <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">RM items</div>
@@ -2212,11 +2276,13 @@ function RmPlanningTab({
   data,
   loading,
   onRefresh,
+  plan,
   planStatus,
 }: {
   data: RmPlanningResponse | null;
   loading: boolean;
   onRefresh: () => void;
+  plan: PlanSummary | null;
   planStatus?: PlanStatus;
 }) {
   if (loading && !data) {
@@ -2238,6 +2304,17 @@ function RmPlanningTab({
   const coveredItems = lines.filter((l) => num(l.netRequirementQty) <= 0).length;
   const coveragePct = totalRmItems > 0 ? Math.round((coveredItems / totalRmItems) * 100) : 0;
 
+  const planHeader = plan
+    ? {
+        id: plan.id,
+        status: plan.status,
+        currentRevision: plan.currentRevision,
+        planSequenceNo: plan.planSequenceNo,
+        planKind: plan.planKind,
+        displayLabel: plan.displayLabel,
+      }
+    : null;
+
   return (
     <div className="flex h-full min-h-0 flex-col gap-2">
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
@@ -2250,7 +2327,11 @@ function RmPlanningTab({
 
       <div className="flex items-center justify-between">
         <span className="text-[12px] text-slate-500">
-          Snapshot revision {data.revision} · {lines.length} RM lines (read-only)
+          {formatRmSnapshotContextLabel({
+            plan: planHeader,
+            snapshotRevision: data.revision,
+            lineCount: lines.length,
+          })}
         </span>
         <Button type="button" variant="outline" size="sm" onClick={onRefresh} disabled={loading} className="h-8">
           <RefreshCw className={cn("mr-1.5 h-4 w-4", loading && "animate-spin")} />
@@ -2276,7 +2357,7 @@ function RmPlanningTab({
             {lines.length === 0 ? (
               <tr>
                 <td colSpan={8} className="px-3 py-8 text-center text-sm text-slate-400">
-                  No RM procurement requirement for this locked plan.
+                  {rmPlanningEmptyTableMessage(planHeader)}
                 </td>
               </tr>
             ) : (
@@ -2568,37 +2649,54 @@ function PurchasePlanningTab({
     (totalCurrent > 0 ? round3((totalReleased / totalCurrent) * 100) : null);
   const hasReduction = lines.some((l) => num(l.reductionQty) > 0);
   const canReleaseDelta = isReleaseDeltaButtonEnabled(totalAdditional);
+  const planHeader = plan
+    ? {
+        id: plan.id,
+        status: plan.status,
+        currentRevision: plan.currentRevision,
+        planSequenceNo: plan.planSequenceNo,
+        planKind: plan.planKind,
+        displayLabel: plan.displayLabel,
+      }
+    : null;
+  const usesPlanDocumentUx = usesPlanDocumentProcurementUx(planHeader);
   const releaseDisabledMessage = getReleaseDeltaDisabledStatusMessage({
     additionalRequirementTotal: totalAdditional,
     previouslyReleasedTotal: totalReleasedFromTotals,
+    usesPlanDocumentUx,
   });
   const procurementBadge = getReleaseDeltaProcurementBadge({
+    planStatus: plan?.status,
     currentRevision: data.currentRevision,
+    snapshotRevision: data.revision,
     releasedRevision: plan?.releasedRevision,
     materialRequirementDocNo: releaseSummary?.materialRequirementDocNo,
+    planDisplayLabel: planHeader ? resolvePlanDisplayLabel(planHeader) : null,
   });
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-2">
       {releaseSummary ? (
         <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-[12px] text-emerald-800">
-          Released revision {releaseSummary.revision}
-          {releaseSummary.materialRequirementDocNo ? ` → MR ${releaseSummary.materialRequirementDocNo}` : ""}: {" "}
-          <strong>{releaseSummary.releasedLineCount}</strong> line(s) released (delta{" "}
-          {releaseSummary.totalDeltaQty.toLocaleString()}), <strong>{releaseSummary.skippedLineCount}</strong> skipped,{" "}
-          <strong>{releaseSummary.surplusLineCount}</strong> surplus.
+          {formatReleaseSuccessSummary({
+            plan: planHeader,
+            releaseRevision: releaseSummary.revision,
+            materialRequirementDocNo: releaseSummary.materialRequirementDocNo,
+            releasedLineCount: releaseSummary.releasedLineCount,
+            totalDeltaQty: releaseSummary.totalDeltaQty,
+            skippedLineCount: releaseSummary.skippedLineCount,
+            surplusLineCount: releaseSummary.surplusLineCount,
+          })}
         </div>
       ) : (
         <div className="rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-[12px] text-sky-800">
-          Purchase Planning uses the <strong>current locked revision</strong> only. Additional requirement is the delta
-          over previously released quantity — not full re-procurement.
+          {purchasePlanningIntroMessage(planHeader)}
         </div>
       )}
 
       {hasReduction ? (
         <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-900">
-          <strong>Reduction</strong> means the latest revision requires less than previously released. The system will
-          reduce open MR quantity where possible. PO-backed quantity will remain as surplus and needs attention.
+          <strong>Reduction.</strong> {purchasePlanningReductionMessage(planHeader)}
         </div>
       ) : null}
 
@@ -2617,11 +2715,15 @@ function PurchasePlanningTab({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           <span className="text-[12px] text-slate-500">
-            Current revision {data.revision} · {lines.length} RM lines (read-only)
+            {formatPurchasePlanningContextLabel({
+              plan: planHeader,
+              snapshotRevision: data.revision,
+              lineCount: lines.length,
+            })}
           </span>
           {procurementBadge ? (
             <Badge variant="info" className="text-[11px]">
-              Procurement released · Rev {procurementBadge.revision}
+              Procurement released · {procurementBadge.label}
               {procurementBadge.materialRequirementDocNo
                 ? ` · ${procurementBadge.materialRequirementDocNo}`
                 : ""}
@@ -2669,7 +2771,7 @@ function PurchasePlanningTab({
             {lines.length === 0 ? (
               <tr>
                 <td colSpan={9} className="px-3 py-8 text-center text-sm text-slate-400">
-                  No RM procurement requirement for this locked plan.
+                  {rmPlanningEmptyTableMessage(planHeader)}
                 </td>
               </tr>
             ) : (
@@ -3384,7 +3486,7 @@ function NoPlanPreviewPanel({
 function ProductionPlanTab({
   rows,
   editable,
-  isLocked,
+  readOnlyMessage,
   period,
   rsSuggestions,
   rsSuggestionsVisible,
@@ -3403,7 +3505,7 @@ function ProductionPlanTab({
 }: {
   rows: EditRow[];
   editable: boolean;
-  isLocked: boolean;
+  readOnlyMessage: string | null;
   period: string;
   rsSuggestions: RsSuggestionsResponse | null;
   rsSuggestionsVisible: boolean;
@@ -3574,9 +3676,9 @@ function ProductionPlanTab({
         ) : null}
       </div>
 
-      {isLocked ? (
+      {readOnlyMessage ? (
         <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] font-medium text-amber-900">
-          This plan is locked. Use <strong>Reopen Plan</strong> in the header to edit the next revision draft.
+          {readOnlyMessage}
         </div>
       ) : (
         <div className="flex flex-wrap items-center gap-2">

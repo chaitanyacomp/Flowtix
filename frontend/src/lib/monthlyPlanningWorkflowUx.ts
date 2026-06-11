@@ -83,6 +83,100 @@ export function resolvePlanDisplayLabel(plan: MonthlyPlanHeader): string {
   return `Plan ${seq}`;
 }
 
+/** New plan-document workflow uses approval, not lock/revision UX. */
+export function usesPlanDocumentProcurementUx(plan: MonthlyPlanHeader | null | undefined): boolean {
+  if (!plan) return false;
+  return !isLegacyPlanDocument(plan);
+}
+
+export function formatRmSnapshotContextLabel(params: {
+  plan: MonthlyPlanHeader | null | undefined;
+  snapshotRevision: number | null | undefined;
+  lineCount: number;
+}): string {
+  const { plan, snapshotRevision, lineCount } = params;
+  if (plan && usesPlanDocumentProcurementUx(plan)) {
+    return `${resolvePlanDisplayLabel(plan)} · ${lineCount} RM lines (read-only)`;
+  }
+  return `Snapshot revision ${snapshotRevision ?? "—"} · ${lineCount} RM lines (read-only)`;
+}
+
+export function formatPurchasePlanningContextLabel(params: {
+  plan: MonthlyPlanHeader | null | undefined;
+  snapshotRevision: number | null | undefined;
+  lineCount: number;
+}): string {
+  const { plan, snapshotRevision, lineCount } = params;
+  if (plan && usesPlanDocumentProcurementUx(plan)) {
+    return `${resolvePlanDisplayLabel(plan)} · ${lineCount} RM lines (read-only)`;
+  }
+  return `Current revision ${snapshotRevision ?? "—"} · ${lineCount} RM lines (read-only)`;
+}
+
+export function formatReleaseSuccessSummary(params: {
+  plan: MonthlyPlanHeader | null | undefined;
+  releaseRevision: number;
+  materialRequirementDocNo?: string | null;
+  releasedLineCount: number;
+  totalDeltaQty: number;
+  skippedLineCount: number;
+  surplusLineCount: number;
+}): string {
+  const {
+    plan,
+    releaseRevision,
+    materialRequirementDocNo,
+    releasedLineCount,
+    totalDeltaQty,
+    skippedLineCount,
+    surplusLineCount,
+  } = params;
+  const source =
+    plan && usesPlanDocumentProcurementUx(plan)
+      ? resolvePlanDisplayLabel(plan)
+      : `revision ${releaseRevision}`;
+  const mrPart = materialRequirementDocNo ? ` → MR ${materialRequirementDocNo}` : "";
+  return `Released ${source}${mrPart}: ${releasedLineCount} line(s) released (delta ${totalDeltaQty.toLocaleString()}), ${skippedLineCount} skipped, ${surplusLineCount} surplus.`;
+}
+
+export function purchasePlanningIntroMessage(plan: MonthlyPlanHeader | null | undefined): string {
+  if (plan && usesPlanDocumentProcurementUx(plan)) {
+    return "Purchase Planning uses the approved plan RM snapshot. Additional requirement is the delta over previously released quantity — not full re-procurement.";
+  }
+  return "Purchase Planning uses the current locked revision only. Additional requirement is the delta over previously released quantity — not full re-procurement.";
+}
+
+export function purchasePlanningReductionMessage(plan: MonthlyPlanHeader | null | undefined): string {
+  if (plan && usesPlanDocumentProcurementUx(plan)) {
+    return "This plan requires less RM than previously released. The system will reduce open MR quantity where possible. PO-backed quantity will remain as surplus and needs attention.";
+  }
+  return "The latest revision requires less than previously released. The system will reduce open MR quantity where possible. PO-backed quantity will remain as surplus and needs attention.";
+}
+
+export function productionPlanReadOnlyMessage(plan: MonthlyPlanHeader | null | undefined): string | null {
+  if (!plan || plan.status === "DRAFT") return null;
+  if (plan.status === "AWAITING_PURCHASE_REVIEW") {
+    return "This plan is awaiting Purchase review. FG lines are read-only until Purchase approves or rejects.";
+  }
+  if (plan.status === "APPROVED") {
+    return "This approved plan document is frozen. Use Additional Plan if requirements increase in this period.";
+  }
+  if (plan.status === "LOCKED" && isLegacyPlanDocument(plan)) {
+    return "This plan is locked. Use Reopen Plan in the header to edit the next revision draft.";
+  }
+  if (plan.status === "DRAFT" && isLegacyPlanDocument(plan)) {
+    return "Editing draft for the next legacy revision. Use Cancel Reopen to restore the locked revision.";
+  }
+  return "This plan is read-only.";
+}
+
+export function rmPlanningEmptyTableMessage(plan: MonthlyPlanHeader | null | undefined): string {
+  if (plan && usesPlanDocumentProcurementUx(plan)) {
+    return "No RM procurement requirement for this approved plan.";
+  }
+  return "No RM procurement requirement for this locked plan.";
+}
+
 export function resolveWorkflowActionVisibility(params: {
   plan: MonthlyPlanHeader | null;
   planExists: boolean;

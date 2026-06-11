@@ -51,35 +51,67 @@ export function isReleaseDeltaButtonEnabled(additionalRequirementTotal: number):
 export function getReleaseDeltaDisabledStatusMessage({
   additionalRequirementTotal,
   previouslyReleasedTotal = 0,
+  usesPlanDocumentUx = false,
 }: {
   additionalRequirementTotal: number;
   previouslyReleasedTotal?: number;
+  usesPlanDocumentUx?: boolean;
 }): string {
   if (isReleaseDeltaButtonEnabled(additionalRequirementTotal)) return "";
   if (previouslyReleasedTotal > RELEASE_DELTA_EPS) {
-    return "Procurement already released for current revision.";
+    return usesPlanDocumentUx
+      ? "Procurement already released for this plan."
+      : "Procurement already released for current revision.";
   }
   return "No additional procurement requirement.";
 }
 
 export type ReleaseDeltaProcurementBadge = {
   revision: number;
+  label: string;
   materialRequirementDocNo?: string | null;
 };
 
-/** Optional badge when current revision already has a release recorded on the plan. */
+function resolveActiveSnapshotRevision(params: {
+  planStatus?: string | null;
+  currentRevision: number;
+  snapshotRevision?: number | null;
+}): number | null {
+  const { planStatus, currentRevision, snapshotRevision } = params;
+  if (planStatus === "APPROVED") {
+    return snapshotRevision != null && snapshotRevision > 0 ? snapshotRevision : 1;
+  }
+  if (currentRevision >= 1) return currentRevision;
+  if (snapshotRevision != null && snapshotRevision > 0) return snapshotRevision;
+  return null;
+}
+
+/** Badge when the active snapshot for this plan already has procurement released. */
 export function getReleaseDeltaProcurementBadge({
+  planStatus,
   currentRevision,
+  snapshotRevision,
   releasedRevision,
   materialRequirementDocNo,
+  planDisplayLabel,
 }: {
+  planStatus?: string | null;
   currentRevision: number;
+  snapshotRevision?: number | null;
   releasedRevision: number | null | undefined;
   materialRequirementDocNo?: string | null;
+  planDisplayLabel?: string | null;
 }): ReleaseDeltaProcurementBadge | null {
-  if (releasedRevision == null || releasedRevision !== currentRevision) return null;
+  const activeRevision = resolveActiveSnapshotRevision({ planStatus, currentRevision, snapshotRevision });
+  if (releasedRevision == null || activeRevision == null) return null;
+  if (releasedRevision !== activeRevision) return null;
+  const label =
+    planStatus === "APPROVED" && planDisplayLabel?.trim()
+      ? planDisplayLabel.trim()
+      : `Rev ${releasedRevision}`;
   return {
     revision: releasedRevision,
+    label,
     materialRequirementDocNo: materialRequirementDocNo ?? null,
   };
 }

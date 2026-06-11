@@ -72,7 +72,34 @@ describe("monthlyPlanningReleaseDeltaUx", () => {
         releasedRevision: 3,
         materialRequirementDocNo: "MR-26-0002",
       }),
-    ).toEqual({ revision: 3, materialRequirementDocNo: "MR-26-0002" });
+    ).toEqual({ revision: 3, label: "Rev 3", materialRequirementDocNo: "MR-26-0002" });
+  });
+
+  it("shows plan label badge for APPROVED plan documents", () => {
+    expect(
+      getReleaseDeltaProcurementBadge({
+        planStatus: "APPROVED",
+        currentRevision: 0,
+        snapshotRevision: 1,
+        releasedRevision: 1,
+        planDisplayLabel: "June Plan 2",
+        materialRequirementDocNo: "MR-26-0010",
+      }),
+    ).toEqual({
+      revision: 1,
+      label: "June Plan 2",
+      materialRequirementDocNo: "MR-26-0010",
+    });
+  });
+
+  it("uses plan-document disabled message after release", () => {
+    expect(
+      getReleaseDeltaDisabledStatusMessage({
+        additionalRequirementTotal: 0,
+        previouslyReleasedTotal: 50,
+        usesPlanDocumentUx: true,
+      }),
+    ).toBe("Procurement already released for this plan.");
   });
 
   it("falls back to line sums when totals missing", () => {

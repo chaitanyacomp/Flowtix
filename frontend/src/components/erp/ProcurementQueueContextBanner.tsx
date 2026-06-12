@@ -2,6 +2,9 @@ import * as React from "react";
 import { apiFetch } from "../../services/api";
 import { displaySalesOrderNo } from "../../lib/docNoDisplay";
 import { PROCUREMENT_TERMS } from "../../lib/procurementTerminology";
+import {
+  DEFAULT_PROCUREMENT_DEMAND_POOL,
+} from "../../lib/procurementWorkspaceQueues";
 
 type MrSummary = {
   materialRequirementId: number;
@@ -36,10 +39,14 @@ export function ProcurementQueueContextBanner({ salesOrderId, materialRequiremen
       return;
     }
     setLoading(true);
-    const qs =
-      salesOrderId && salesOrderId > 0
-        ? `salesOrderId=${encodeURIComponent(String(salesOrderId))}`
-        : "";
+    const params = new URLSearchParams();
+    if (salesOrderId && salesOrderId > 0) {
+      params.set("salesOrderId", String(salesOrderId));
+      params.set("demandPool", DEFAULT_PROCUREMENT_DEMAND_POOL);
+    } else if (materialRequirementId && materialRequirementId > 0) {
+      params.set("demandPool", DEFAULT_PROCUREMENT_DEMAND_POOL);
+    }
+    const qs = params.toString();
     apiFetch<WorkspaceResponse>(`/api/procurement-planning/workspace${qs ? `?${qs}` : ""}`)
       .then((data) => {
         const rows = data.sections?.pendingMaterialRequirements ?? [];

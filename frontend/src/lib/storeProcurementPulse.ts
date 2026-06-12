@@ -15,6 +15,7 @@ export type StoreProcurementMrLineLike = {
 export type StoreProcurementMrLike = {
   materialRequirementId: number;
   docNo: string | null;
+  sourceType?: string | null;
   sourceRef?: string;
   source?: { label?: string; type?: string | null; planDocumentLabel?: string | null } | null;
   operationalKey: string;
@@ -31,10 +32,17 @@ export type StoreProcurementWorkspaceLike = {
     pendingMrCount: number;
     purchaseRequestCount: number;
     grnPendingLineCount: number;
+    queueCounts?: { byDemandPool?: Partial<Record<"REGULAR_SO" | "MPRS" | "STOCK_REPLENISHMENT", number>> };
   };
   sections: {
     pendingMaterialRequirements: StoreProcurementMrLike[];
   };
+  pools?: Partial<
+    Record<
+      "REGULAR_SO" | "MPRS" | "STOCK_REPLENISHMENT",
+      { items?: Array<{ origins?: Array<{ materialRequirementId?: number }> }> }
+    >
+  >;
 };
 
 export type StoreProcurementPulseMetrics = {

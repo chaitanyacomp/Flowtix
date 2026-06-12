@@ -10,6 +10,14 @@ import { ERP_DASHBOARD_POLL_MS, useErpRefreshTick } from "../../hooks/useErpRefr
 import { ErpKpiLabel, ErpKpiSegment, ErpKpiStrip, ErpKpiValue } from "./foundation";
 import { erpKpi } from "../../lib/erpFoundationTokens";
 import { PROCUREMENT_TERMS } from "../../lib/procurementTerminology";
+import {
+  DEFAULT_PROCUREMENT_DEMAND_POOL,
+  deriveDemandPoolCountsFromWorkspace,
+  mrMatchesDemandPool,
+  workspaceQueryForDemandPool,
+  type ProcurementDemandPoolKey,
+} from "../../lib/procurementWorkspaceQueues";
+import { ProcurementWorkspaceQueueTabs } from "./ProcurementWorkspaceQueueTabs";
 import { buildPurchaseRequestPayloadFromMr } from "../../lib/purchaseRequestFromMr";
 import { buildRmPoDetailHref } from "../../lib/rmPurchaseWoContinuity";
 import { purchaseGrnExecutionHref } from "../../lib/woPrepareOperationalStage";
@@ -48,12 +56,15 @@ export function StoreProcurementPulse() {
   const [workspace, setWorkspace] = React.useState<WorkspaceResponse | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [creatingMrId, setCreatingMrId] = React.useState<number | null>(null);
+  const [demandPool, setDemandPool] = React.useState<ProcurementDemandPoolKey>(DEFAULT_PROCUREMENT_DEMAND_POOL);
   const creatingRef = React.useRef(false);
 
-  const load = React.useCallback(async (opts?: { silent?: boolean }) => {
+  const load = React.useCallback(async (opts?: { silent?: boolean; pool?: ProcurementDemandPoolKey }) => {
+    const activePool = opts?.pool ?? demandPool;
     if (!opts?.silent) setLoading(true);
     try {
-      const data = await apiFetch<WorkspaceResponse>("/api/procurement-planning/workspace");
+      const q = workspaceQueryForDemandPool(activePool);
+      const data = await apiFetch<WorkspaceResponse>(`/api/procurement-planning/workspace${q}`);
       setWorkspace(data);
     } catch (e) {
       if (!opts?.silent) {
@@ -63,11 +74,21 @@ export function StoreProcurementPulse() {
     } finally {
       if (!opts?.silent) setLoading(false);
     }
-  }, [showError]);
+  }, [demandPool, showError]);
 
   React.useEffect(() => {
     void load();
   }, [load, liveTick]);
+
+  const handleDemandPoolChange = React.useCallback(
+    (pool: ProcurementDemandPoolKey) => {
+      setDemandPool(pool);
+      void load({ silent: false, pool });
+    },
+    [load],
+  );
+
+  const queueCounts = React.useMemo(() => deriveDemandPoolCountsFromWorkspace(workspace), [workspace]);
 
   const metrics = computeStoreProcurementPulseMetrics(workspace);
   const previewRows = buildStoreProcurementPreviewRows(workspace, 8);
@@ -75,19 +96,26 @@ export function StoreProcurementPulse() {
   const handleCreatePurchaseRequest = React.useCallback(
     async (row: (typeof previewRows)[number]) => {
       if (creatingRef.current || !row.canCreatePurchaseRequest) return;
-      const payload = buildPurchaseRequestPayloadFromMr({
-        materialRequirementId: row.materialRequirementId,
-        docNo: row.mr.docNo,
-        lines: row.mr.lines?.map((ln) => ({
-          lineId: ln.lineId ?? 0,
-          rmItemId: ln.rmItemId,
-          itemName: ln.itemName,
-          unit: ln.unit,
-          requiredQty: ln.requiredQty ?? ln.remainingQty,
-          shortageQty: ln.shortageQty ?? ln.remainingQty,
-          remainingQty: ln.remainingQty,
-        })),
-      });
+      if (!mrMatchesDemandPool(row.mr, demandPool)) {
+        showError("This material requirement is not in the selected demand pool.");
+        return;
+      }
+      const payload = buildPurchaseRequestPayloadFromMr(
+        {
+          materialRequirementId: row.materialRequirementId,
+          docNo: row.mr.docNo,
+          lines: row.mr.lines?.map((ln) => ({
+            lineId: ln.lineId ?? 0,
+            rmItemId: ln.rmItemId,
+            itemName: ln.itemName,
+            unit: ln.unit,
+            requiredQty: ln.requiredQty ?? ln.remainingQty,
+            shortageQty: ln.shortageQty ?? ln.remainingQty,
+            remainingQty: ln.remainingQty,
+          })),
+        },
+        { demandPool },
+      );
       if (!payload) {
         showError("No RM lines are eligible for a purchase request on this MR.");
         return;
@@ -108,10 +136,10 @@ export function StoreProcurementPulse() {
         setCreatingMrId(null);
       }
     },
-    [load, showError, showSuccess],
+    [demandPool, load, showError, showSuccess],
   );
 
-  const workspaceHref = "/procurement-planning?returnTo=dashboard";
+  const workspaceHref = `/procurement-planning?demandPool=${encodeURIComponent(demandPool)}&returnTo=dashboard`;
   const grnHref = purchaseGrnExecutionHref({ source: "dashboard" });
 
   const clickTo = (to: string) => ({
@@ -155,6 +183,12 @@ export function StoreProcurementPulse() {
       </CardHeader>
 
       <CardContent className="space-y-2.5 p-2.5 pt-2">
+        <ProcurementWorkspaceQueueTabs
+          activeTab={demandPool}
+          counts={queueCounts}
+          onChange={handleDemandPoolChange}
+          disabled={loading}
+        />
         <div className="max-w-full overflow-x-auto pb-0.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           <ErpKpiStrip className={erpKpi.stripCompact} aria-label="Store procurement metrics">
             <ErpKpiSegment type="button" {...clickTo(workspaceHref)} aria-label="Awaiting PR">
@@ -188,7 +222,13 @@ export function StoreProcurementPulse() {
           <p className="text-xs text-slate-600">Loading procurement queue…</p>
         ) : previewRows.length === 0 ? (
           <div className="rounded-md border border-slate-200/90 bg-slate-50/70 px-3 py-2 text-xs text-slate-600">
-            No open procurement cases need Store action right now.
+            No open procurement cases in{" "}
+            {demandPool === "REGULAR_SO"
+              ? PROCUREMENT_TERMS.DEMAND_POOL_REGULAR_SO
+              : demandPool === "MPRS"
+                ? PROCUREMENT_TERMS.DEMAND_POOL_MPRS
+                : PROCUREMENT_TERMS.DEMAND_POOL_STOCK_REPLENISHMENT}{" "}
+            need Store action right now.
           </div>
         ) : (
           <div className="min-w-0 overflow-x-auto rounded-md border border-slate-200/90">
@@ -209,9 +249,9 @@ export function StoreProcurementPulse() {
                     row.primaryPoId && row.primaryPoId > 0
                       ? buildRmPoDetailHref(row.primaryPoId, { from: "dashboard" })
                       : grnHref;
-                  const workspaceRowHref = `/procurement-planning?materialRequirementId=${encodeURIComponent(
-                    String(row.materialRequirementId),
-                  )}&returnTo=dashboard`;
+                  const workspaceRowHref = `/procurement-planning?demandPool=${encodeURIComponent(
+                    demandPool,
+                  )}&materialRequirementId=${encodeURIComponent(String(row.materialRequirementId))}&returnTo=dashboard`;
                   const isCreating = creatingMrId === row.materialRequirementId;
 
                   return (

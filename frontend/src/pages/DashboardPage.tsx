@@ -1221,7 +1221,7 @@ export function DashboardPage() {
     }
     if (role === "PURCHASE") {
       return [
-        { label: "Procurement workspace", href: "/procurement-planning?source=dashboard" },
+        { label: "Procurement workspace", href: "/procurement-planning?demandPool=REGULAR_SO&source=dashboard" },
         { label: "RM purchase", href: "/rm-po-grn?source=dashboard" },
         { label: "Purchase bills", href: "/purchase-bills?source=dashboard" },
       ];

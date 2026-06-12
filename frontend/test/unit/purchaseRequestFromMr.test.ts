@@ -46,4 +46,27 @@ describe("buildPurchaseRequestPayloadFromMr", () => {
       }),
     ).toBeNull();
   });
+
+  it("includes demandPool on PR payload when provided", () => {
+    const payload = buildPurchaseRequestPayloadFromMr(
+      {
+        materialRequirementId: 3,
+        docNo: "MR-26-0003",
+        lines: [
+          {
+            lineId: 20,
+            rmItemId: 200,
+            itemName: "Cap",
+            unit: "NOS",
+            requiredQty: 10,
+            shortageQty: 10,
+            remainingQty: 10,
+          },
+        ],
+      },
+      { demandPool: "MPRS" },
+    );
+    expect(payload?.demandPool).toBe("MPRS");
+    expect(payload?.remarks).toContain("MPRS");
+  });
 });

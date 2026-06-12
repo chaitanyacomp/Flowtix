@@ -1,29 +1,29 @@
 import { cn } from "../../lib/utils";
 import {
-  emptyProcurementQueueCounts,
-  PROCUREMENT_QUEUE_TABS,
-  type ProcurementQueueCounts,
-  type ProcurementQueueTabId,
+  emptyProcurementDemandPoolCounts,
+  PROCUREMENT_DEMAND_POOL_TABS,
+  type ProcurementDemandPoolCounts,
+  type ProcurementDemandPoolKey,
 } from "../../lib/procurementWorkspaceQueues";
 
 type Props = {
-  activeTab: ProcurementQueueTabId;
-  counts?: ProcurementQueueCounts | null;
-  onChange: (tabId: ProcurementQueueTabId) => void;
+  activeTab: ProcurementDemandPoolKey;
+  counts?: ProcurementDemandPoolCounts | null;
+  onChange: (tabId: ProcurementDemandPoolKey) => void;
   disabled?: boolean;
 };
 
 export function ProcurementWorkspaceQueueTabs({ activeTab, counts, onChange, disabled }: Props) {
-  const c = counts ?? emptyProcurementQueueCounts();
+  const c = counts ?? emptyProcurementDemandPoolCounts();
 
   return (
     <div
       className="flex flex-wrap gap-1 rounded-lg border border-violet-200/70 bg-violet-50/30 p-1"
       role="tablist"
-      aria-label="Procurement demand class queues"
+      aria-label="Procurement demand pools"
       data-testid="procurement-workspace-queue-tabs"
     >
-      {PROCUREMENT_QUEUE_TABS.map((tab) => {
+      {PROCUREMENT_DEMAND_POOL_TABS.map((tab) => {
         const count = c[tab.countKey];
         const active = activeTab === tab.id;
         return (

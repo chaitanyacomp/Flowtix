@@ -58,7 +58,7 @@ export function ProcurementPendingDashboardCard({ rows, loading }: Props) {
         </CardHeader>
         <CardContent className="pt-0 pb-3">
           <Link
-            to="/procurement-planning"
+            to="/procurement-planning?demandPool=REGULAR_SO"
             className={cn(buttonVariants({ variant: "outline", size: "sm" }), "h-8 text-[11px] no-underline")}
           >
             {PROCUREMENT_TERMS.WORKSPACE_TITLE}

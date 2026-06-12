@@ -30,7 +30,7 @@ import { displaySalesOrderNo } from "../lib/docNoDisplay";
 import { useAuth } from "../hooks/useAuth";
 import { hasErpRole, MATERIAL_REQUISITION_WRITE_ROLES, PURCHASE_EXECUTION_ROLES } from "../config/erpRoles";
 
-import { PROCUREMENT_TERMS } from "../lib/procurementTerminology";
+import { PROCUREMENT_TERMS, procurementDemandPoolSectionCopy } from "../lib/procurementTerminology";
 import { WoProcurementContinuityStrip } from "../components/erp/WoProcurementContinuityStrip";
 import {
   buildRmControlCenterHref,
@@ -40,10 +40,13 @@ import {
 import { GUIDED_WORKFLOW_CTA } from "../lib/rmGuidedWorkflow";
 import { buildRmPoDetailHref } from "../lib/rmPurchaseWoContinuity";
 import {
-  deriveQueueCountsFromMrs,
-  filterMrsByQueueTab,
-  type ProcurementQueueCounts,
-  type ProcurementQueueTabId,
+  DEFAULT_PROCUREMENT_DEMAND_POOL,
+  deriveDemandPoolCountsFromWorkspace,
+  mrMatchesDemandPool,
+  parseDemandPoolParam,
+  workspaceQueryForDemandPool,
+  type ProcurementDemandPoolCounts,
+  type ProcurementDemandPoolKey,
 } from "../lib/procurementWorkspaceQueues";
 import { ProcurementWorkspaceQueueTabs } from "../components/erp/ProcurementWorkspaceQueueTabs";
 
@@ -146,6 +149,8 @@ type MrSummary = {
 
 type WorkspaceResponse = {
 
+  demandPool?: ProcurementDemandPoolKey | null;
+
   summary: {
 
     pendingMrCount: number;
@@ -162,7 +167,9 @@ type WorkspaceResponse = {
 
     completedCount: number;
 
-    queueCounts?: ProcurementQueueCounts;
+    queueCounts?: {
+      byDemandPool?: Partial<ProcurementDemandPoolCounts>;
+    };
 
   };
 
@@ -232,7 +239,14 @@ type WorkspaceResponse = {
 
   };
 
-  pool: { summary?: { itemCount: number; originCount: number } };
+  pool: { summary?: { itemCount: number; originCount: number }; demandPool?: ProcurementDemandPoolKey | null };
+
+  pools?: Partial<
+    Record<
+      ProcurementDemandPoolKey,
+      { items?: Array<{ origins?: Array<{ materialRequirementId?: number }> }> }
+    >
+  >;
 
 };
 
@@ -320,6 +334,16 @@ function formatPeriodKey(periodKey: string | null | undefined): string | null {
 function MrSourceBadge({ mr }: { mr: MrSummary }) {
   const src = mr.source;
   const type = src?.type ?? mr.sourceType ?? null;
+  if (type === "SALES_ORDER") {
+    const soLabel = mr.salesOrderId
+      ? displaySalesOrderNo(mr.salesOrderId, mr.salesOrderDocNo)
+      : "Regular SO";
+    return (
+      <span className="inline-flex items-center rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-900">
+        {soLabel}
+      </span>
+    );
+  }
   if (type === "MONTHLY_PLAN") {
     const planLabel = src?.planDocumentLabel?.trim() || (src?.label !== "Monthly Plan" ? src?.label : null);
     if (planLabel) {
@@ -355,6 +379,10 @@ function MrSourceBadge({ mr }: { mr: MrSummary }) {
 function mrWoPrimaryLabel(row: MrSummary): string {
   if (row.workOrderNo) return row.workOrderNo;
   if (row.workOrderId && row.workOrderId > 0) return `WO-${row.workOrderId}`;
+  if (row.sourceType === "SALES_ORDER" || row.source?.type === "SALES_ORDER") {
+    if (row.salesOrderId) return displaySalesOrderNo(row.salesOrderId, row.salesOrderDocNo);
+    return "Regular sales order";
+  }
   if (row.sourceType === "MONTHLY_PLAN" || row.source?.type === "MONTHLY_PLAN") {
     const planLabel = row.source?.planDocumentLabel?.trim() || (row.source?.label !== "Monthly Plan" ? row.source?.label : null);
     if (planLabel) return planLabel;
@@ -475,6 +503,10 @@ function PendingMaterialRequirementsTable({
 
   canExecutePurchase,
 
+  emptyTitle,
+
+  emptyDetail,
+
 }: {
 
   rows: MrSummary[];
@@ -490,6 +522,10 @@ function PendingMaterialRequirementsTable({
   canCreatePurchaseRequest: boolean;
 
   canExecutePurchase: boolean;
+
+  emptyTitle?: string;
+
+  emptyDetail?: string;
 
 }) {
 
@@ -511,9 +547,9 @@ function PendingMaterialRequirementsTable({
 
       <div className="px-3 py-4 text-center">
 
-        <p className="text-sm font-medium text-slate-800">{PROCUREMENT_TERMS.SECTION_EMPTY_PENDING_MR}</p>
+        <p className="text-sm font-medium text-slate-800">{emptyTitle ?? PROCUREMENT_TERMS.SECTION_EMPTY_PENDING_MR}</p>
 
-        <p className="mt-1 text-xs text-slate-500">{PROCUREMENT_TERMS.SECTION_EMPTY_PENDING_MR_DETAIL}</p>
+        <p className="mt-1 text-xs text-slate-500">{emptyDetail ?? PROCUREMENT_TERMS.SECTION_EMPTY_PENDING_MR_DETAIL}</p>
 
       </div>
 
@@ -795,13 +831,26 @@ export function ProcurementPlanningPage() {
   const canCreatePurchaseRequest = hasErpRole(user?.role, MATERIAL_REQUISITION_WRITE_ROLES);
   const canExecutePurchase = hasErpRole(user?.role, PURCHASE_EXECUTION_ROLES);
 
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const filterSoId = Number(searchParams.get("salesOrderId") ?? 0);
   const filterWorkOrderId = Number(searchParams.get("workOrderId") ?? 0);
   const focusRmItemId = Number(searchParams.get("rmItemId") ?? 0);
   const focusMaterialRequirementId = Number(searchParams.get("materialRequirementId") ?? 0);
   const returnTo = searchParams.get("returnTo");
+  const demandPool =
+    parseDemandPoolParam(searchParams.get("demandPool")) ?? DEFAULT_PROCUREMENT_DEMAND_POOL;
+
+  const setDemandPool = React.useCallback(
+    (pool: ProcurementDemandPoolKey) => {
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        next.set("demandPool", pool);
+        return next;
+      });
+    },
+    [setSearchParams],
+  );
 
   const [ws, setWs] = React.useState<WorkspaceResponse | null>(null);
 
@@ -810,8 +859,6 @@ export function ProcurementPlanningPage() {
   const [error, setError] = React.useState<string | null>(null);
 
   const [creatingMrId, setCreatingMrId] = React.useState<number | null>(null);
-
-  const [queueTab, setQueueTab] = React.useState<ProcurementQueueTabId>("ALL");
 
   const creatingPrRef = React.useRef(false);
 
@@ -825,7 +872,9 @@ export function ProcurementPlanningPage() {
 
     try {
 
-      const q = filterSoId > 0 ? `?salesOrderId=${encodeURIComponent(String(filterSoId))}` : "";
+      const q = workspaceQueryForDemandPool(demandPool, {
+        salesOrderId: filterSoId > 0 ? filterSoId : null,
+      });
 
       const data = await apiFetch<WorkspaceResponse>(`/api/procurement-planning/workspace${q}`);
 
@@ -841,7 +890,7 @@ export function ProcurementPlanningPage() {
 
     }
 
-  }, [filterSoId]);
+  }, [demandPool, filterSoId]);
 
 
 
@@ -853,7 +902,12 @@ export function ProcurementPlanningPage() {
 
       if (!mrCanCreatePurchaseRequest(mr, canCreatePurchaseRequest)) return;
 
-      const payload = buildPurchaseRequestPayloadFromMr(mr);
+      if (!mrMatchesDemandPool(mr, demandPool)) {
+        showError("This material requirement is not in the selected demand pool.");
+        return;
+      }
+
+      const payload = buildPurchaseRequestPayloadFromMr(mr, { demandPool });
 
       if (!payload) {
 
@@ -895,11 +949,24 @@ export function ProcurementPlanningPage() {
 
     },
 
-    [canCreatePurchaseRequest, load, showError, showSuccess],
+    [canCreatePurchaseRequest, demandPool, load, showError, showSuccess],
 
   );
 
 
+
+  React.useEffect(() => {
+    if (!parseDemandPoolParam(searchParams.get("demandPool"))) {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          next.set("demandPool", DEFAULT_PROCUREMENT_DEMAND_POOL);
+          return next;
+        },
+        { replace: true },
+      );
+    }
+  }, [searchParams, setSearchParams]);
 
   React.useEffect(() => {
 
@@ -911,7 +978,6 @@ export function ProcurementPlanningPage() {
 
   const pendingMrs = React.useMemo(() => {
     let all = ws?.sections.pendingMaterialRequirements ?? [];
-    all = filterMrsByQueueTab(all, queueTab);
     if (filterSoId > 0) {
       all = all.filter((m) => m.salesOrderId === filterSoId);
     }
@@ -919,7 +985,9 @@ export function ProcurementPlanningPage() {
       all = all.filter((m) => !m.workOrderId || m.workOrderId === filterWorkOrderId);
     }
     return all;
-  }, [ws, filterSoId, filterWorkOrderId, queueTab]);
+  }, [ws, filterSoId, filterWorkOrderId]);
+
+  const poolSectionCopy = procurementDemandPoolSectionCopy(demandPool);
 
   const focusMrRow = React.useMemo(() => {
     if (focusMaterialRequirementId > 0) {
@@ -939,12 +1007,7 @@ export function ProcurementPlanningPage() {
 
   const completedCount = ws?.sections.procurementCompleted.length ?? 0;
 
-  const queueCounts = React.useMemo(
-    () =>
-      ws?.summary.queueCounts ??
-      deriveQueueCountsFromMrs(ws?.sections.pendingMaterialRequirements ?? []),
-    [ws],
-  );
+  const queueCounts = React.useMemo(() => deriveDemandPoolCountsFromWorkspace(ws), [ws]);
 
 
 
@@ -976,6 +1039,15 @@ export function ProcurementPlanningPage() {
 
             <p className="text-xs font-medium text-slate-600">{PROCUREMENT_TERMS.WORKSPACE_SUBTITLE}</p>
 
+            <p className="mt-1 text-xs font-bold text-violet-900">
+              {PROCUREMENT_TERMS.DEMAND_POOL_SELECTOR_LABEL}:{" "}
+              {demandPool === "REGULAR_SO"
+                ? PROCUREMENT_TERMS.DEMAND_POOL_REGULAR_SO
+                : demandPool === "MPRS"
+                  ? PROCUREMENT_TERMS.DEMAND_POOL_MPRS
+                  : PROCUREMENT_TERMS.DEMAND_POOL_STOCK_REPLENISHMENT}
+            </p>
+
             {filterWorkOrderId > 0 || filterSoId > 0 ? (
               <p className="mt-1 text-xs font-medium text-violet-900">
                 {filterWorkOrderId > 0 ? (
@@ -986,7 +1058,10 @@ export function ProcurementPlanningPage() {
                 ) : (
                   <>Filtered to SO #{filterSoId}</>
                 )}
-                <Link to="/procurement-planning" className="ml-2 text-primary underline">
+                <Link
+                  to={`/procurement-planning?demandPool=${encodeURIComponent(demandPool)}`}
+                  className="ml-2 text-primary underline"
+                >
                   Clear filter
                 </Link>
               </p>
@@ -1146,17 +1221,17 @@ export function ProcurementPlanningPage() {
         <div className="space-y-2 border-b border-violet-100/80 bg-violet-50/40 px-3 py-2">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
-              <h2 className="text-sm font-bold text-slate-900">{PROCUREMENT_TERMS.SECTION_WO_PROCUREMENT_CASES}</h2>
-              <p className="text-[11px] text-slate-600">{PROCUREMENT_TERMS.SECTION_WO_PROCUREMENT_CASES_HELPER}</p>
+              <h2 className="text-sm font-bold text-slate-900">{poolSectionCopy.title}</h2>
+              <p className="text-[11px] text-slate-600">{poolSectionCopy.helper}</p>
             </div>
             <Badge variant={pendingMrs.length > 0 ? "warning" : "default"} className="tabular-nums">
               {pendingMrs.length}
             </Badge>
           </div>
           <ProcurementWorkspaceQueueTabs
-            activeTab={queueTab}
+            activeTab={demandPool}
             counts={queueCounts}
-            onChange={setQueueTab}
+            onChange={setDemandPool}
             disabled={loading}
           />
         </div>
@@ -1169,6 +1244,8 @@ export function ProcurementPlanningPage() {
           onCreatePurchaseRequest={(mr) => void handleCreatePurchaseRequest(mr)}
           canCreatePurchaseRequest={canCreatePurchaseRequest}
           canExecutePurchase={canExecutePurchase}
+          emptyTitle={poolSectionCopy.emptyTitle}
+          emptyDetail={poolSectionCopy.emptyDetail}
         />
 
       </section>
@@ -1183,7 +1260,7 @@ export function ProcurementPlanningPage() {
 
           {purchasePlanningCount === 0 ? (
 
-            <SectionEmpty message={PROCUREMENT_TERMS.SECTION_EMPTY_PURCHASE_PLANNING} />
+            <SectionEmpty message={PROCUREMENT_TERMS.SECTION_EMPTY_PURCHASE_PLANNING_POOL} />
 
           ) : (
 

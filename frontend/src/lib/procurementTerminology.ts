@@ -74,7 +74,71 @@ export const PROCUREMENT_TERMS = {
   STORE_PULSE_SUBTITLE: "Store-owned PR and GRN work — Purchase handles PO creation separately.",
   LOADING_PROCUREMENT: "Loading procurement cases…",
   MORE_IN_WORKSPACE: "more in Procurement Workspace",
+  DEMAND_POOL_REGULAR_SO: "REGULAR SO Demand",
+  DEMAND_POOL_MPRS: "MPRS Demand",
+  DEMAND_POOL_STOCK_REPLENISHMENT: "Stock Replenishment",
+  DEMAND_POOL_SELECTOR_LABEL: "Demand pool",
+  SECTION_PROCUREMENT_CASES_REGULAR_SO: "Regular sales order procurement",
+  SECTION_PROCUREMENT_CASES_REGULAR_SO_HELPER:
+    "Approved material requirements linked to sales orders — one demand pool at a time.",
+  SECTION_PROCUREMENT_CASES_MPRS: "Monthly plan (MPRS) procurement",
+  SECTION_PROCUREMENT_CASES_MPRS_HELPER:
+    "Approved material requirements from monthly production planning (MPRS).",
+  SECTION_PROCUREMENT_CASES_STOCK: "Stock replenishment procurement",
+  SECTION_PROCUREMENT_CASES_STOCK_HELPER:
+    "Minimum-stock and replenishment material requirements awaiting purchase handoff.",
+  SECTION_EMPTY_PENDING_MR_REGULAR_SO: "No regular SO material requirements",
+  SECTION_EMPTY_PENDING_MR_REGULAR_SO_DETAIL:
+    "Sales-order-linked MRs approved for purchase will appear in this pool.",
+  SECTION_EMPTY_PENDING_MR_MPRS: "No MPRS material requirements",
+  SECTION_EMPTY_PENDING_MR_MPRS_DETAIL:
+    "Monthly plan MRs approved for purchase will appear in this pool.",
+  SECTION_EMPTY_PENDING_MR_STOCK: "No stock replenishment requirements",
+  SECTION_EMPTY_PENDING_MR_STOCK_DETAIL:
+    "Stock replenishment MRs approved for purchase will appear in this pool.",
+  SECTION_EMPTY_PURCHASE_PLANNING_POOL:
+    "No consolidated RM demand in this pool awaiting PR.",
 } as const;
+
+export type ProcurementDemandPoolKey = "REGULAR_SO" | "MPRS" | "STOCK_REPLENISHMENT";
+
+export function procurementDemandPoolSectionCopy(pool: ProcurementDemandPoolKey): {
+  title: string;
+  helper: string;
+  emptyTitle: string;
+  emptyDetail: string;
+} {
+  switch (pool) {
+    case "REGULAR_SO":
+      return {
+        title: PROCUREMENT_TERMS.SECTION_PROCUREMENT_CASES_REGULAR_SO,
+        helper: PROCUREMENT_TERMS.SECTION_PROCUREMENT_CASES_REGULAR_SO_HELPER,
+        emptyTitle: PROCUREMENT_TERMS.SECTION_EMPTY_PENDING_MR_REGULAR_SO,
+        emptyDetail: PROCUREMENT_TERMS.SECTION_EMPTY_PENDING_MR_REGULAR_SO_DETAIL,
+      };
+    case "MPRS":
+      return {
+        title: PROCUREMENT_TERMS.SECTION_PROCUREMENT_CASES_MPRS,
+        helper: PROCUREMENT_TERMS.SECTION_PROCUREMENT_CASES_MPRS_HELPER,
+        emptyTitle: PROCUREMENT_TERMS.SECTION_EMPTY_PENDING_MR_MPRS,
+        emptyDetail: PROCUREMENT_TERMS.SECTION_EMPTY_PENDING_MR_MPRS_DETAIL,
+      };
+    case "STOCK_REPLENISHMENT":
+      return {
+        title: PROCUREMENT_TERMS.SECTION_PROCUREMENT_CASES_STOCK,
+        helper: PROCUREMENT_TERMS.SECTION_PROCUREMENT_CASES_STOCK_HELPER,
+        emptyTitle: PROCUREMENT_TERMS.SECTION_EMPTY_PENDING_MR_STOCK,
+        emptyDetail: PROCUREMENT_TERMS.SECTION_EMPTY_PENDING_MR_STOCK_DETAIL,
+      };
+    default:
+      return {
+        title: PROCUREMENT_TERMS.SECTION_WO_PROCUREMENT_CASES,
+        helper: PROCUREMENT_TERMS.SECTION_WO_PROCUREMENT_CASES_HELPER,
+        emptyTitle: PROCUREMENT_TERMS.SECTION_EMPTY_PENDING_MR,
+        emptyDetail: PROCUREMENT_TERMS.SECTION_EMPTY_PENDING_MR_DETAIL,
+      };
+  }
+}
 
 /** Approved lifecycle strip — MR → PR → PO → GRN → RM Ready. */
 export const PROCUREMENT_WORKFLOW_STAGES = [

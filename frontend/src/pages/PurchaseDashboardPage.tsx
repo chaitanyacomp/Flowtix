@@ -138,7 +138,7 @@ export function PurchaseDashboardPage() {
         <DashboardWorkspaceHeader role="PURCHASE" />
 
         <div className="mb-2 flex flex-wrap gap-1.5">
-          <ErpActionButton tier="primary" className="gap-1.5" onClick={() => navigate("/procurement-planning?source=dashboard")}>
+          <ErpActionButton tier="primary" className="gap-1.5" onClick={() => navigate("/procurement-planning?demandPool=REGULAR_SO&source=dashboard")}>
             <ClipboardList className="h-3.5 w-3.5" aria-hidden />
             Procurement workspace
           </ErpActionButton>
@@ -157,7 +157,7 @@ export function PurchaseDashboardPage() {
             <div className="text-[10px] font-bold uppercase tracking-wide text-slate-500">PO lines pending GRN</div>
             <div className="mt-1 text-xl font-bold tabular-nums text-slate-900">{pendingPoLines}</div>
           </Link>
-          <Link to="/procurement-planning?source=dashboard" className={cn(card, "block p-3 no-underline hover:border-sky-300")}>
+          <Link to="/procurement-planning?demandPool=REGULAR_SO&source=dashboard" className={cn(card, "block p-3 no-underline hover:border-sky-300")}>
             <div className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Procurement queue</div>
             <div className="mt-1 text-xl font-bold tabular-nums text-slate-900">{procurementCount}</div>
           </Link>

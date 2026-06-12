@@ -206,7 +206,7 @@ const navGroups: NavGroup[] = [
         icon: <Boxes className="h-4 w-4 shrink-0" />,
       },
       {
-        to: "/procurement-planning",
+        to: "/procurement-planning?demandPool=REGULAR_SO",
         navKey: "proc-plan",
         label: PROCUREMENT_TERMS.WORKSPACE_TITLE,
         navHint: PROCUREMENT_TERMS.NAV_PROCUREMENT_WORKSPACE_HINT,

@@ -1,5 +1,7 @@
 /** Build POST /api/procurement-planning/send-requirement body from one open MR (no navigation). */
 
+import type { ProcurementDemandPoolKey } from "./procurementWorkspaceQueues";
+
 const QTY_EPS = 1e-6;
 
 export type MrLineForPr = {
@@ -24,6 +26,7 @@ export type SendPurchaseRequestLine = {
 export type SendPurchaseRequestBody = {
   remarks: string | null;
   lines: SendPurchaseRequestLine[];
+  demandPool?: ProcurementDemandPoolKey;
 };
 
 export function buildPurchaseRequestPayloadFromMr(
@@ -32,6 +35,7 @@ export function buildPurchaseRequestPayloadFromMr(
     docNo: string | null;
     lines?: MrLineForPr[];
   },
+  opts?: { demandPool?: ProcurementDemandPoolKey | null },
 ): SendPurchaseRequestBody | null {
   const eligible = (mr.lines ?? []).filter((ln) => ln.remainingQty > QTY_EPS);
   if (!eligible.length) return null;
@@ -62,11 +66,15 @@ export function buildPurchaseRequestPayloadFromMr(
   const lines = [...byItem.values()];
   if (!lines.length) return null;
 
+  const demandPool = opts?.demandPool ?? undefined;
+  const baseRemark = mr.docNo
+    ? `Purchase request for ${mr.docNo}`
+    : `Purchase request for MR-${mr.materialRequirementId}`;
+
   return {
-    remarks: mr.docNo
-      ? `Purchase request for ${mr.docNo}`
-      : `Purchase request for MR-${mr.materialRequirementId}`,
+    remarks: demandPool ? `${baseRemark} · ${demandPool}` : baseRemark,
     lines,
+    ...(demandPool ? { demandPool } : {}),
   };
 }
 

@@ -520,7 +520,7 @@ describe("monthlyPlanningService.lockMonthlyPlan", () => {
     assert.equal(res.revision, 1);
     assert.equal(res.lines[0].rmItemId, 70);
     assert.equal(num(res.lines[0].grossDemandQty), 25);
-    assert.equal(num(res.lines[0].netRequirementQty), 10);
+    assert.equal(num(res.lines[0].netRequirementQty), 20);
     assert.equal(res.lines[0].belowMinStockFlag, true); // free 5 < min 100
   });
 
@@ -605,7 +605,7 @@ describe("monthlyPlanningService.getRmPlanning", () => {
 });
 
 describe("monthlyPlanningService.getPurchasePlanning", () => {
-  async function lockedDb({ monthlyPlanMrLines = [], net = 10 } = {}) {
+  async function lockedDb({ monthlyPlanMrLines = [], net = 20 } = {}) {
     const db = createLockMockDb({
       status: "DRAFT",
       currentRevision: 0,
@@ -632,7 +632,7 @@ describe("monthlyPlanningService.getPurchasePlanning", () => {
   });
 
   it("returns lines from RmPlanLine with NOT_RELEASED when no MONTHLY_PLAN MR exists", async () => {
-    const db = await lockedDb({ net: 10 });
+    const db = await lockedDb({ net: 20 });
     const res = await getPurchasePlanning({ db, planId: 1 });
     assert.equal(res.locked, true);
     assert.equal(res.exists, true);
@@ -640,8 +640,8 @@ describe("monthlyPlanningService.getPurchasePlanning", () => {
     const line = res.lines[0];
     assert.equal(line.rmItemId, 70);
     assert.equal(num(line.alreadyRequisitionedQty), 0);
-    assert.equal(num(line.varianceQty), 10);
-    assert.equal(num(line.suggestedPurchaseQty), 10);
+    assert.equal(num(line.varianceQty), 20);
+    assert.equal(num(line.suggestedPurchaseQty), 20);
     assert.equal(line.procurementStatus, "NOT_RELEASED");
     assert.equal(line.vendorSuggestion, null);
   });
@@ -661,34 +661,34 @@ describe("monthlyPlanningService.getPurchasePlanning", () => {
   });
 
   it("exposes Phase 8C delta clarity aliases on each line", async () => {
-    const db = await lockedDb({ net: 10 });
+    const db = await lockedDb({ net: 20 });
     const res = await getPurchasePlanning({ db, planId: 1 });
     const line = res.lines[0];
-    assert.equal(line.currentRequirementQty, 10);
+    assert.equal(line.currentRequirementQty, 20);
     assert.equal(line.previouslyReleasedQty, 0);
-    assert.equal(line.deltaQty, 10);
-    assert.equal(line.additionalRequirementQty, 10);
+    assert.equal(line.deltaQty, 20);
+    assert.equal(line.additionalRequirementQty, 20);
     assert.equal(line.reductionQty, 0);
     assert.equal(res.usesCurrentRevisionOnly, true);
     assert.ok(res.totals);
-    assert.equal(res.totals.additionalRequirementTotal, 10);
+    assert.equal(res.totals.additionalRequirementTotal, 20);
   });
 
   it("computes PARTIALLY_RELEASED variance when a MONTHLY_PLAN MR partially covers net", async () => {
-    const db = await lockedDb({ net: 10, monthlyPlanMrLines: [{ rmItemId: 70, requiredQty: 4, procuredQty: 1 }] });
+    const db = await lockedDb({ net: 20, monthlyPlanMrLines: [{ rmItemId: 70, requiredQty: 4, procuredQty: 1 }] });
     const line = (await getPurchasePlanning({ db, planId: 1 })).lines[0];
     assert.equal(num(line.alreadyRequisitionedQty), 4);
     assert.equal(num(line.alreadyProcuredQty), 1);
-    assert.equal(num(line.varianceQty), 6);
-    assert.equal(num(line.suggestedPurchaseQty), 6);
+    assert.equal(num(line.varianceQty), 16);
+    assert.equal(num(line.suggestedPurchaseQty), 16);
     assert.equal(line.procurementStatus, "PARTIALLY_RELEASED");
   });
 
   it("marks FULLY_RELEASED and OVER_RELEASED correctly", async () => {
-    const full = await lockedDb({ net: 10, monthlyPlanMrLines: [{ rmItemId: 70, requiredQty: 10 }] });
+    const full = await lockedDb({ net: 20, monthlyPlanMrLines: [{ rmItemId: 70, requiredQty: 20 }] });
     assert.equal((await getPurchasePlanning({ db: full, planId: 1 })).lines[0].procurementStatus, "FULLY_RELEASED");
 
-    const over = await lockedDb({ net: 10, monthlyPlanMrLines: [{ rmItemId: 70, requiredQty: 13 }] });
+    const over = await lockedDb({ net: 20, monthlyPlanMrLines: [{ rmItemId: 70, requiredQty: 23 }] });
     const overLine = (await getPurchasePlanning({ db: over, planId: 1 })).lines[0];
     assert.equal(overLine.procurementStatus, "OVER_RELEASED");
     assert.equal(num(overLine.varianceQty), -3);

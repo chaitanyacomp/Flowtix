@@ -67,14 +67,19 @@ function fgComposition(items, overrides = {}) {
 }
 
 function availabilityRow(itemId, overrides = {}) {
+  const free = overrides.free ?? 0;
+  const required = overrides.requiredQty ?? 0;
+  const shortageAfterReservationQty =
+    overrides.shortageAfterReservationQty ?? Math.max(0, required - free);
   return {
     itemId,
-    requiredQty: overrides.requiredQty ?? 0,
+    requiredQty: required,
     physicalUsableStockQty: overrides.physical ?? 0,
-    freeStockQty: overrides.free ?? 0,
+    freeStockQty: free,
     effectiveReservedQty: overrides.reserved ?? 0,
     incomingQty: overrides.incoming ?? 0,
-    netShortageAfterIncomingQty: overrides.netGap ?? 0,
+    shortageAfterReservationQty,
+    netShortageAfterIncomingQty: overrides.netGap ?? shortageAfterReservationQty,
     warnings: overrides.warnings ?? [],
   };
 }
@@ -156,7 +161,7 @@ describe("monthlyPlanningRmRequirementCompositionService.getRmRequirementComposi
     assert.equal(traceTotal, 500);
   });
 
-  it("reuses netShortageAfterIncomingQty for net gap", async () => {
+  it("uses shortageAfterReservation for net gap without deducting incoming PO", async () => {
     const res = await getRmRequirementComposition({
       periodKey: "2026-07",
       loadFgComposition: async () =>
@@ -173,7 +178,8 @@ describe("monthlyPlanningRmRequirementCompositionService.getRmRequirementComposi
           requiredQty: 500,
           free: 200,
           incoming: 100,
-          netGap: 200,
+          shortageAfterReservationQty: 300,
+          netGap: 300,
         }),
       ],
     });
@@ -181,8 +187,8 @@ describe("monthlyPlanningRmRequirementCompositionService.getRmRequirementComposi
     const row = res.items[0];
     assert.equal(row.freeStock, 200);
     assert.equal(row.incomingPo, 100);
-    assert.equal(row.netAvailable, 300);
-    assert.equal(row.netGap, 200);
+    assert.equal(row.netAvailable, 200);
+    assert.equal(row.netGap, 300);
   });
 
   it("shows minimum stock visibility without adding to demand or gap", async () => {

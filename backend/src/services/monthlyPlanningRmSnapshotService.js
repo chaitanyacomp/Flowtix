@@ -201,7 +201,7 @@ async function createRmPlanSnapshot({
     const freeStock = round3(avail.freeStockQty ?? 0);
     const reserved = round3(avail.effectiveReservedQty ?? 0);
     const incoming = round3(avail.incomingQty ?? 0);
-    const net = round3(avail.netShortageAfterIncomingQty ?? Math.max(0, gross - freeStock - incoming));
+    const net = round3(Math.max(0, gross - freeStock));
     const minStock = meta.minimumStockQty != null ? Number(meta.minimumStockQty) : null;
     const belowMinStockFlag = minStock != null && freeStock < minStock;
     const warnings = Array.isArray(avail.warnings) ? avail.warnings : [];

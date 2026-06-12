@@ -136,8 +136,8 @@ describe("material planning RM status", () => {
         shortageNowQty: 100,
         shortageAfterReservationQty: 100,
         coveredByIncomingQty: 100,
-        netShortageAfterIncomingQty: 0,
-        warnings: [{ code: "SHORTAGE_COVERED_BY_INCOMING", message: "Covered by incoming." }],
+        netShortageAfterIncomingQty: 100,
+        warnings: [{ code: "INCOMING_PO_INFORMATIONAL", message: "Open PO / incoming qty is shown for reference only and does not reduce calculated RM shortage." }],
       },
     });
 
@@ -145,7 +145,7 @@ describe("material planning RM status", () => {
     assert.equal(line.incomingQty, 100);
     assert.equal(line.shortageQty, 100);
     assert.equal(line.status, "SHORTAGE");
-    assert.equal(line.netShortageAfterIncomingQty, 0);
+    assert.equal(line.netShortageAfterIncomingQty, 100);
   });
 });
 

@@ -174,15 +174,15 @@ describe("materialAvailabilityService calculations", () => {
         shortageNowQty: 20,
         shortageAfterReservationQty: 50,
         coveredByIncomingQty: 25,
-        netShortageAfterIncomingQty: 25,
+        netShortageAfterIncomingQty: 50,
         allocationCoverageQty: 0,
         allocationShortageQty: 100,
         allocationStatus: "NOT_ALLOCATED",
         reservationBreakdown: [],
         warnings: [
           {
-            code: "SHORTAGE_COVERED_BY_INCOMING",
-            message: "Current shortage is covered only by incoming procurement; stock is not physically available yet.",
+            code: "INCOMING_PO_INFORMATIONAL",
+            message: "Open PO / incoming qty is shown for reference only and does not reduce calculated RM shortage.",
           },
         ],
       },
@@ -269,7 +269,7 @@ describe("materialAvailabilityService calculations", () => {
       shortageNowQty: 0,
       shortageAfterReservationQty: 35,
       coveredByIncomingQty: 35,
-      netShortageAfterIncomingQty: 0,
+      netShortageAfterIncomingQty: 35,
       allocationCoverageQty: 0,
       allocationShortageQty: 100,
       allocationStatus: "NOT_ALLOCATED",
@@ -309,8 +309,8 @@ describe("materialAvailabilityService calculations", () => {
           message: "Stock exists in Production/WIP location and is not store-free stock.",
         },
         {
-          code: "SHORTAGE_COVERED_BY_INCOMING",
-          message: "Current shortage is covered only by incoming procurement; stock is not physically available yet.",
+          code: "INCOMING_PO_INFORMATIONAL",
+          message: "Open PO / incoming qty is shown for reference only and does not reduce calculated RM shortage.",
         },
       ],
     });
@@ -328,7 +328,7 @@ describe("materialAvailabilityService calculations", () => {
       shortageNowQty: 10,
       shortageAfterReservationQty: 20,
       coveredByIncomingQty: 10,
-      netShortageAfterIncomingQty: 10,
+      netShortageAfterIncomingQty: 20,
       allocationCoverageQty: 0,
       allocationShortageQty: 20,
       allocationStatus: "NOT_ALLOCATED",
@@ -356,8 +356,8 @@ describe("materialAvailabilityService calculations", () => {
           message: "Active allocation or legacy PMR reservation is higher than physical usable stock.",
         },
         {
-          code: "SHORTAGE_COVERED_BY_INCOMING",
-          message: "Current shortage is covered only by incoming procurement; stock is not physically available yet.",
+          code: "INCOMING_PO_INFORMATIONAL",
+          message: "Open PO / incoming qty is shown for reference only and does not reduce calculated RM shortage.",
         },
       ],
     });

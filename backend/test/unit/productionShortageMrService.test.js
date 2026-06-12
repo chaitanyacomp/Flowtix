@@ -6,6 +6,7 @@ const {
   loadWoRmShortageCandidates,
   isShortRmLine,
 } = require("../../src/services/productionShortageMrService");
+const { NO_QTY_PROCUREMENT_DEMAND_CODE } = require("../../src/services/procurementPipelineFirewall");
 
 function availabilityLine(itemId, overrides = {}) {
   const requiredQty = overrides.requiredQty ?? 100;
@@ -53,7 +54,17 @@ function createBulkMockDb() {
 
   const db = {
     workOrder: {
-      findUnique: async ({ where }) => (where.id === workOrder.id ? workOrder : null),
+      findUnique: async ({ where, select }) => {
+        if (where.id !== workOrder.id) return null;
+        if (select?.salesOrder) {
+          return {
+            id: workOrder.id,
+            salesOrderId: workOrder.salesOrderId,
+            salesOrder: { id: workOrder.salesOrderId, orderType: workOrder.orderType ?? "NORMAL" },
+          };
+        }
+        return workOrder;
+      },
     },
     item: {
       findUnique: async ({ where }) => items.get(where.id) || null,
@@ -229,6 +240,37 @@ describe("productionShortageMrService", () => {
     assert.equal(out.lineCreated, true);
     assert.equal(out.line?.rmItemId, 10);
     assert.equal(out.materialRequirement.lineCount, 1);
+  });
+
+  it("blocks NO_QTY work orders from WO-based procurement MR", async () => {
+    const { db } = createBulkMockDb();
+    const originalFind = db.workOrder.findUnique;
+    db.workOrder.findUnique = async ({ where, select }) => {
+      if (where.id !== 1) return null;
+      if (select?.salesOrder) {
+        return {
+          id: 1,
+          salesOrderId: 10,
+          salesOrder: { id: 10, orderType: "NO_QTY" },
+        };
+      }
+      return originalFind({ where, select });
+    };
+
+    await assert.rejects(
+      () =>
+        createOrReuseProductionShortageMr(
+          { workOrderId: 1, rmItemId: 10, shortageQty: 50, freeStockQty: 0 },
+          { userId: 1 },
+          db,
+        ),
+      (e) => e && e.code === NO_QTY_PROCUREMENT_DEMAND_CODE,
+    );
+
+    await assert.rejects(
+      () => bulkAddProductionShortageMrLines({ workOrderId: 1, deps: mockAvailabilityDeps() }, { userId: 1 }, db),
+      (e) => e && e.code === NO_QTY_PROCUREMENT_DEMAND_CODE,
+    );
   });
 
   it("requires explicit confirmation to re-raise after terminal close", async () => {

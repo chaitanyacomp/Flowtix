@@ -83,7 +83,8 @@ function calculateAvailabilityLine({
   const shortageNow = round3(Math.max(0, required - physical));
   const shortageAfterReservation = round3(Math.max(0, required - free));
   const coveredByIncoming = round3(Math.min(shortageAfterReservation, incoming));
-  const netShortageAfterIncoming = round3(Math.max(0, shortageAfterReservation - incoming));
+  // Incoming/open PO is informational until explicit allocation — do not reduce operational shortage.
+  const netShortageAfterIncoming = shortageAfterReservation;
   const allocationCoverage = round3(Math.min(required, activeAllocated));
   const allocationShortage = round3(Math.max(0, required - activeAllocated));
   const nextWarnings = [...warnings];
@@ -94,10 +95,10 @@ function calculateAvailabilityLine({
       message: "Active allocation or legacy PMR reservation is higher than physical usable stock.",
     });
   }
-  if (shortageAfterReservation > STOCK_EPS && coveredByIncoming > STOCK_EPS) {
+  if (shortageAfterReservation > STOCK_EPS && incoming > STOCK_EPS) {
     nextWarnings.push({
-      code: "SHORTAGE_COVERED_BY_INCOMING",
-      message: "Current shortage is covered only by incoming procurement; stock is not physically available yet.",
+      code: "INCOMING_PO_INFORMATIONAL",
+      message: "Open PO / incoming qty is shown for reference only and does not reduce calculated RM shortage.",
     });
   }
 

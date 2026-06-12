@@ -5,6 +5,7 @@ const { qtyToNumber } = require("./rmPurchaseHelpers");
 const { aggregateRmDemandForFgLines, round3 } = require("./bomExplosionService");
 const { getMaterialAvailabilityByItems } = require("./materialAvailabilityService");
 const { RM_REQUISITION_ACTIVE_STATUSES } = require("./rmRequisitionLifecycle");
+const { assertWorkOrderProcurementDemandAllowed } = require("./procurementPipelineFirewall");
 
 const WO_PLANNING_SOURCE = "WORK_ORDER_PLANNING";
 const EPS = 1e-6;
@@ -48,6 +49,8 @@ function mapMrHeader(materialRequirement) {
 async function loadWoRmShortageCandidates(db, workOrderId, deps = {}) {
   const aggregateRmDemand = deps.aggregateRmDemandForFgLines || aggregateRmDemandForFgLines;
   const getAvailability = deps.getMaterialAvailabilityByItems || getMaterialAvailabilityByItems;
+
+  await assertWorkOrderProcurementDemandAllowed(db, workOrderId);
 
   const workOrder = await db.workOrder.findUnique({
     where: { id: workOrderId },
@@ -231,6 +234,8 @@ async function createOrReuseProductionShortageMr(input, actor = {}, db = prisma)
   }
 
   return db.$transaction(async (tx) => {
+    await assertWorkOrderProcurementDemandAllowed(tx, workOrderId);
+
     const [workOrder, item] = await Promise.all([
       tx.workOrder.findUnique({
         where: { id: workOrderId },
@@ -309,6 +314,8 @@ async function bulkAddProductionShortageMrLines(input, actor = {}, db = prisma) 
     err.statusCode = 400;
     throw err;
   }
+
+  await assertWorkOrderProcurementDemandAllowed(db, workOrderId);
 
   const candidates = await loadWoRmShortageCandidates(db, workOrderId, input.deps);
   if (!candidates.length) {

@@ -5,9 +5,9 @@ const { remainingAfterPurchaseRequests } = require("../../src/services/purchaseR
 const { qtyToNumber } = require("../../src/services/rmPurchaseHelpers");
 
 describe("procurementPlanningService helpers", () => {
-  it("computeNetToBuy subtracts open PO qty", () => {
-    assert.equal(computeNetToBuy(6000, 2000), 4000);
-    assert.equal(computeNetToBuy(1000, 1500), 0);
+  it("computeNetToBuy ignores open PO qty until allocation exists", () => {
+    assert.equal(computeNetToBuy(6000, 2000), 6000);
+    assert.equal(computeNetToBuy(1000, 1500), 1000);
   });
 
   it("QUEUE_EPS is small positive", () => {

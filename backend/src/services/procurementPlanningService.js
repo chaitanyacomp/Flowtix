@@ -21,8 +21,12 @@ function monthlyPlanDocumentLabel(plan) {
   return null;
 }
 
-function computeNetToBuy(totalRequired, openPoQty) {
-  return Math.max(0, totalRequired - openPoQty);
+/**
+ * Net procurement qty for MR pool rows.
+ * Open PO qty is informational only until explicit PO-to-demand allocation exists.
+ */
+function computeNetToBuy(totalRequired, _openPoQty) {
+  return Math.max(0, totalRequired);
 }
 
 function sourceRefForRequirement(mr) {

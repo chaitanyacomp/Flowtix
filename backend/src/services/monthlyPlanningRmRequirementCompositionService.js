@@ -174,8 +174,10 @@ async function getRmRequirementComposition({
     const freeStock = round3(n(availability?.freeStockQty ?? 0));
     const reserved = round3(n(availability?.effectiveReservedQty ?? 0));
     const incomingPo = round3(n(availability?.incomingQty ?? 0));
-    const netAvailable = round3(freeStock + incomingPo);
-    const netGap = round3(n(availability?.netShortageAfterIncomingQty ?? Math.max(0, totalRmDemand - netAvailable)));
+    const netAvailable = round3(freeStock);
+    const netGap = round3(
+      n(availability?.shortageAfterReservationQty ?? Math.max(0, totalRmDemand - freeStock)),
+    );
     const minimumStock =
       item?.minimumStockQty != null ? round3(n(item.minimumStockQty)) : 0;
     const belowMinimumFlag = minimumStock > 0 && freeStock < minimumStock;

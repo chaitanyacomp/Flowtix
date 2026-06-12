@@ -12,6 +12,14 @@ const {
 } = require("./purchaseRequestService");
 const { RM_REQUISITION_PURCHASE_VISIBLE_STATUSES } = require("./rmRequisitionLifecycle");
 const { buildPlanDisplayLabel } = require("./monthlyPlanningPlanLifecycleService");
+const {
+  PROCUREMENT_DEMAND_POOL,
+  ALL_DEMAND_POOL_KEYS,
+  normalizeDemandPoolKey,
+  sourceTypesForDemandPool,
+  resolveDemandPoolForSourceType,
+  demandPoolLabel,
+} = require("./procurementDemandPoolService");
 
 function monthlyPlanDocumentLabel(plan) {
   if (!plan) return null;
@@ -53,6 +61,7 @@ function mapOrigin(line, pendingByMr) {
     materialRequirementId: line.materialRequirementId,
     requirementDocNo: mr?.docNo ?? null,
     sourceType: mr?.sourceType ?? null,
+    demandPool: resolveDemandPoolForSourceType(mr?.sourceType),
     sourceRef: sourceRefForRequirement(mr),
     requiredQty: qtyToNumber(line.requiredQty),
     shortageQty: qtyToNumber(line.shortageQty),
@@ -80,10 +89,15 @@ async function loadOpenPoQtyByItemId(db = prisma) {
   return byItem;
 }
 
-async function loadOpenMaterialRequirementLines(db = prisma) {
+async function loadOpenMaterialRequirementLines(db = prisma, { demandPool = null, sourceTypes = null } = {}) {
+  const poolKey = normalizeDemandPoolKey(demandPool);
+  const types = sourceTypes?.length ? sourceTypes : poolKey ? sourceTypesForDemandPool(poolKey) : null;
   return db.materialRequirementLine.findMany({
     where: {
-      materialRequirement: { status: { in: RM_REQUISITION_PURCHASE_VISIBLE_STATUSES } },
+      materialRequirement: {
+        status: { in: RM_REQUISITION_PURCHASE_VISIBLE_STATUSES },
+        ...(types?.length ? { sourceType: { in: types } } : {}),
+      },
       shortageQty: { gt: 0 },
     },
     include: {
@@ -109,8 +123,9 @@ async function loadOpenMaterialRequirementLines(db = prisma) {
   });
 }
 
-async function buildProcurementPool(db = prisma) {
-  const rawLines = await loadOpenMaterialRequirementLines(db);
+async function buildProcurementPool(db = prisma, { demandPool = null } = {}) {
+  const poolKey = normalizeDemandPoolKey(demandPool);
+  const rawLines = await loadOpenMaterialRequirementLines(db, { demandPool: poolKey });
   const pendingByMr = await loadPendingRequestAllocByMrLineId(db);
   const openLines = rawLines.filter((l) => remainingAfterPurchaseRequests(l, pendingByMr) > QUEUE_EPS);
   const stockMap = await loadStockByItemIdUsableMap(db);
@@ -147,12 +162,15 @@ async function buildProcurementPool(db = prisma) {
         netToBuy: netRequiredQty,
         coveredByStock,
         purchaseRequired: netRequiredQty > QUEUE_EPS,
+        demandPool: poolKey,
         origins: b.origins.sort((a, c) => String(a.sourceRef).localeCompare(String(c.sourceRef))),
       };
     })
     .sort((a, b) => a.itemName.localeCompare(b.itemName));
 
   const summary = {
+    demandPool: poolKey,
+    demandPoolLabel: poolKey ? demandPoolLabel(poolKey) : null,
     itemCount: items.length,
     originCount: openLines.length,
     totalNetRequired: items.reduce((s, i) => s + i.netRequiredQty, 0),
@@ -160,13 +178,23 @@ async function buildProcurementPool(db = prisma) {
     itemsNeedingPurchase: items.filter((i) => i.purchaseRequired).length,
   };
 
-  return { items, summary };
+  return { demandPool: poolKey, items, summary };
+}
+
+async function buildAllProcurementDemandPools(db = prisma) {
+  /** @type {Record<string, Awaited<ReturnType<typeof buildProcurementPool>>>} */
+  const pools = {};
+  for (const key of ALL_DEMAND_POOL_KEYS) {
+    pools[key] = await buildProcurementPool(db, { demandPool: key });
+  }
+  return pools;
 }
 
 module.exports = {
   QUEUE_EPS,
   computeNetToBuy,
   buildProcurementPool,
+  buildAllProcurementDemandPools,
   loadOpenMaterialRequirementLines,
   loadOpenPoQtyByItemId,
   sourceRefForRequirement,

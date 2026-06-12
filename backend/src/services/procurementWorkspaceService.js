@@ -11,9 +11,15 @@ const {
   listPendingPurchaseRequests,
   purchaseRequestStatusLabel,
 } = require("./purchaseRequestService");
-const { buildProcurementPool } = require("./procurementPlanningService");
+const { buildProcurementPool, buildAllProcurementDemandPools } = require("./procurementPlanningService");
+const {
+  PROCUREMENT_DEMAND_POOL,
+  normalizeDemandPoolKey,
+  sourceTypesForDemandPool,
+  filterMrsByDemandPool,
+  resolveDemandPoolForSourceType,
+} = require("./procurementDemandPoolService");
 const { computeFgGapLinesForSalesOrder } = require("./rmCheckService");
-const { regularSoProcurementSourceTypes } = require("./regularSoProcurementSource");
 const { isMaterialRequirementFullyReceived } = require("./procurementLifecycleService");
 const {
   RM_REQUISITION_PURCHASE_VISIBLE_STATUSES,
@@ -554,7 +560,7 @@ async function buildProcurementPendingQueue(db = prisma, opts = {}) {
   const mrs = await loadOpenMaterialRequirements(db, {
     salesOrderId: opts.salesOrderId,
     sourceType: regularSoOnly ? null : opts.sourceType ?? null,
-    sourceTypes: regularSoOnly ? regularSoProcurementSourceTypes() : null,
+    sourceTypes: regularSoOnly ? sourceTypesForDemandPool(PROCUREMENT_DEMAND_POOL.REGULAR_SO) : null,
   });
   const pendingByMr = await loadPendingRequestAllocByMrLineId(db);
   const rows = [];
@@ -653,6 +659,8 @@ const PROCUREMENT_QUEUE_SOURCE_TYPES = Object.freeze([
   "STOCK_REPLENISHMENT",
 ]);
 
+const DEMAND_POOL_QUEUE_KEYS = Object.freeze(Object.values(PROCUREMENT_DEMAND_POOL));
+
 function computeQueueCounts(pendingMrs) {
   const counts = {
     all: pendingMrs.length,
@@ -660,8 +668,15 @@ function computeQueueCounts(pendingMrs) {
     woShortage: 0,
     regularSo: 0,
     minStock: 0,
+    byDemandPool: {
+      [PROCUREMENT_DEMAND_POOL.REGULAR_SO]: 0,
+      [PROCUREMENT_DEMAND_POOL.MPRS]: 0,
+      [PROCUREMENT_DEMAND_POOL.STOCK_REPLENISHMENT]: 0,
+    },
   };
   for (const mr of pendingMrs) {
+    const pool = resolveDemandPoolForSourceType(mr.sourceType);
+    if (pool) counts.byDemandPool[pool] = (counts.byDemandPool[pool] || 0) + 1;
     switch (mr.sourceType) {
       case "MONTHLY_PLAN":
         counts.monthlyPlan += 1;
@@ -681,6 +696,12 @@ function computeQueueCounts(pendingMrs) {
     }
   }
   return counts;
+}
+
+function filterPendingMrsByDemandPool(pendingMrs, demandPool) {
+  const key = normalizeDemandPoolKey(demandPool);
+  if (!key) return pendingMrs;
+  return filterMrsByDemandPool(pendingMrs, key);
 }
 
 function filterPendingMrsBySourceType(pendingMrs, sourceType) {
@@ -717,15 +738,22 @@ async function buildPendingMaterialRequirementSummaries(db, mrs) {
  */
 async function buildProcurementWorkspace(db = prisma, opts = {}) {
   const salesOrderId = opts.salesOrderId != null ? Number(opts.salesOrderId) : null;
+  const demandPoolFilter = normalizeDemandPoolKey(opts.demandPool ?? opts.sourceType);
   const sourceTypeFilter =
-    opts.sourceType && PROCUREMENT_QUEUE_SOURCE_TYPES.includes(String(opts.sourceType))
+    !demandPoolFilter &&
+    opts.sourceType &&
+    PROCUREMENT_QUEUE_SOURCE_TYPES.includes(String(opts.sourceType))
       ? String(opts.sourceType)
       : null;
 
-  const [pool, pendingMrsAll, pendingPrs, grnPending, completed] = await Promise.all([
-    buildProcurementPool(db),
+  const [allPools, pendingMrsAll, pendingPrs, grnPending, completed] = await Promise.all([
+    buildAllProcurementDemandPools(db),
     (async () => {
-      const mrs = await loadOpenMaterialRequirements(db, { salesOrderId });
+      const poolTypes = demandPoolFilter ? sourceTypesForDemandPool(demandPoolFilter) : null;
+      const mrs = await loadOpenMaterialRequirements(db, {
+        salesOrderId,
+        sourceTypes: poolTypes,
+      });
       return buildPendingMaterialRequirementSummaries(db, mrs);
     })(),
     listPendingPurchaseRequests(db),
@@ -733,10 +761,16 @@ async function buildProcurementWorkspace(db = prisma, opts = {}) {
     buildProcurementCompletedSection(db),
   ]);
 
-  const queueCounts = computeQueueCounts(pendingMrsAll);
-  const pendingMrs = filterPendingMrsBySourceType(pendingMrsAll, sourceTypeFilter);
+  const activePool = demandPoolFilter
+    ? allPools[demandPoolFilter]
+    : { demandPool: null, items: [], summary: { itemCount: 0, originCount: 0, totalNetRequired: 0, totalNetToBuy: 0, itemsNeedingPurchase: 0 } };
 
-  const supplierAllocationPending = (pool.items || [])
+  const queueCounts = computeQueueCounts(pendingMrsAll);
+  const pendingMrs = demandPoolFilter
+    ? filterPendingMrsByDemandPool(pendingMrsAll, demandPoolFilter)
+    : filterPendingMrsBySourceType(pendingMrsAll, sourceTypeFilter);
+
+  const supplierAllocationPending = (activePool.items || [])
     .filter((i) => i.purchaseRequired && i.netRequiredQty > QUEUE_EPS)
     .map((i) => {
       const shortageQty = (i.origins || []).reduce((s, o) => s + qtyToNumber(o.shortageQty), 0);
@@ -780,7 +814,9 @@ async function buildProcurementWorkspace(db = prisma, opts = {}) {
   );
 
   return {
-    pool,
+    demandPool: demandPoolFilter,
+    pool: activePool,
+    pools: allPools,
     summary: {
       /** Open MRs still awaiting first purchase request (not PR/PO/GRN in flight). */
       pendingMrCount: pendingMrsAll.filter((m) => m.operationalKey === "PROCUREMENT_PENDING").length,
@@ -820,5 +856,7 @@ module.exports = {
   buildSourceTypesByRmItem,
   computeQueueCounts,
   filterPendingMrsBySourceType,
+  filterPendingMrsByDemandPool,
+  DEMAND_POOL_QUEUE_KEYS,
   PROCUREMENT_QUEUE_SOURCE_TYPES,
 };

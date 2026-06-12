@@ -18,6 +18,7 @@ const {
   assertRmRequisitionCanCreatePurchaseRequest,
   assertRmRequisitionPurchaseVisible,
 } = require("./rmRequisitionLifecycle");
+const { assertSingleDemandPoolFromSourceTypes } = require("./procurementDemandPoolService");
 
 const OPEN_PURCHASE_REQUEST_STATUSES = ["PENDING_PURCHASE", "PARTIALLY_ORDERED"];
 
@@ -156,9 +157,10 @@ async function assertPurchaseRequestAllocationsValid(tx, lines) {
 
   const mrLines = await tx.materialRequirementLine.findMany({
     where: { id: { in: uniqIds } },
-    include: { materialRequirement: { select: { id: true, status: true, docNo: true } } },
+    include: { materialRequirement: { select: { id: true, status: true, docNo: true, sourceType: true } } },
   });
   const byId = new Map(mrLines.map((r) => [r.id, r]));
+  const allocationSourceTypes = [];
 
   for (const prLine of lines) {
     const allocs = prLine.allocations || [];
@@ -176,6 +178,7 @@ async function assertPurchaseRequestAllocationsValid(tx, lines) {
         throw err;
       }
       assertRmRequisitionCanCreatePurchaseRequest(row.materialRequirement);
+      allocationSourceTypes.push(row.materialRequirement?.sourceType);
       if (row.rmItemId !== prLine.itemId) {
         const err = new Error("Allocation item must match request line item.");
         err.statusCode = 400;
@@ -205,6 +208,8 @@ async function assertPurchaseRequestAllocationsValid(tx, lines) {
       throw err;
     }
   }
+
+  assertSingleDemandPoolFromSourceTypes(allocationSourceTypes, "purchase request");
 }
 
 /**
@@ -424,7 +429,7 @@ async function createRmPoFromPurchaseRequestLines(input, actor = {}) {
         sourceLinks: {
           include: {
             materialRequirementLine: {
-              include: { materialRequirement: { select: { id: true, docNo: true, status: true } } },
+              include: { materialRequirement: { select: { id: true, docNo: true, status: true, sourceType: true } } },
             },
           },
         },
@@ -437,6 +442,7 @@ async function createRmPoFromPurchaseRequestLines(input, actor = {}) {
     }
 
     const warn = [];
+    const poSourceTypes = [];
 
     const commercial = await freezeRmPurchaseOrderCommercialSnapshots(tx, {
       supplierId: input.supplierId,
@@ -450,6 +456,7 @@ async function createRmPoFromPurchaseRequestLines(input, actor = {}) {
     for (const prLine of prLines) {
       for (const source of prLine.sourceLinks || []) {
         assertRmRequisitionPurchaseVisible(source.materialRequirementLine?.materialRequirement);
+        poSourceTypes.push(source.materialRequirementLine?.materialRequirement?.sourceType);
       }
       const prHeader = prLine.purchaseRequest;
       const block = purchaseRequestOrderingBlockReason(prHeader);
@@ -488,6 +495,8 @@ async function createRmPoFromPurchaseRequestLines(input, actor = {}) {
       });
       poLineMeta.push({ purchaseRequestLineId: prLine.id, qty, purchaseRequestId: prLine.purchaseRequestId });
     }
+
+    assertSingleDemandPoolFromSourceTypes(poSourceTypes, "RM purchase order");
 
     const created = await tx.rmPurchaseOrder.create({
       data: {

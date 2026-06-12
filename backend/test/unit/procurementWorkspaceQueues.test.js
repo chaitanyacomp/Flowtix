@@ -22,6 +22,11 @@ describe("P5C-3 — procurement workspace queue separation", () => {
       woShortage: 1,
       regularSo: 1,
       minStock: 1,
+      byDemandPool: {
+        REGULAR_SO: 1,
+        MPRS: 2,
+        STOCK_REPLENISHMENT: 1,
+      },
     });
   });
 
@@ -50,6 +55,7 @@ describe("P5C-3 — workspace route sourceType query", () => {
     const { z } = require("zod");
     const schema = z.object({
       sourceType: z.enum(["MONTHLY_PLAN", "SALES_ORDER", "WORK_ORDER_PLANNING", "STOCK_REPLENISHMENT"]).optional(),
+      demandPool: z.enum(["REGULAR_SO", "MPRS", "STOCK_REPLENISHMENT"]).optional(),
     });
     assert.equal(schema.parse({ sourceType: "MONTHLY_PLAN" }).sourceType, "MONTHLY_PLAN");
     assert.throws(() => schema.parse({ sourceType: "EMERGENCY" }));

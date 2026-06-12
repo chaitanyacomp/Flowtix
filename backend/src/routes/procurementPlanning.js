@@ -10,7 +10,8 @@ const {
   PROCUREMENT_PLANNING_ROLES,
   MATERIAL_REQUISITION_WRITE_ROLES,
 } = require("../constants/erpRoles");
-const { buildProcurementPool } = require("../services/procurementPlanningService");
+const { buildProcurementPool, buildAllProcurementDemandPools } = require("../services/procurementPlanningService");
+const { normalizeDemandPoolKey, ALL_DEMAND_POOL_KEYS } = require("../services/procurementDemandPoolService");
 const { createPurchaseRequestFromPool } = require("../services/purchaseRequestService");
 const { buildProcurementWorkspace } = require("../services/procurementWorkspaceService");
 const { repairStaleDuplicateWoPlanningProcurement } = require("../services/procurementLifecycleService");
@@ -19,7 +20,12 @@ const procurementPlanningRouter = express.Router();
 
 const workspaceQuerySchema = z.object({
   salesOrderId: z.coerce.number().int().positive().optional(),
+  demandPool: z.enum(["REGULAR_SO", "MPRS", "STOCK_REPLENISHMENT"]).optional(),
   sourceType: z.enum(["MONTHLY_PLAN", "SALES_ORDER", "WORK_ORDER_PLANNING", "STOCK_REPLENISHMENT"]).optional(),
+});
+
+const poolQuerySchema = z.object({
+  demandPool: z.enum(["REGULAR_SO", "MPRS", "STOCK_REPLENISHMENT"]).optional(),
 });
 
 procurementPlanningRouter.get(
@@ -36,6 +42,7 @@ procurementPlanningRouter.get(
       });
       const data = await buildProcurementWorkspace(undefined, {
         salesOrderId: Number.isFinite(salesOrderId) && salesOrderId > 0 ? salesOrderId : null,
+        demandPool: query.demandPool ?? null,
         sourceType: query.sourceType ?? null,
       });
       return res.json(data);
@@ -51,8 +58,14 @@ procurementPlanningRouter.get(
   requireRole(PROCUREMENT_PLANNING_ROLES),
   async (req, res, next) => {
     try {
-      const data = await buildProcurementPool();
-      return res.json(data);
+      const query = poolQuerySchema.parse(req.query);
+      const demandPool = normalizeDemandPoolKey(query.demandPool);
+      if (demandPool) {
+        const data = await buildProcurementPool(undefined, { demandPool });
+        return res.json(data);
+      }
+      const pools = await buildAllProcurementDemandPools();
+      return res.json({ demandPool: null, pools, poolKeys: ALL_DEMAND_POOL_KEYS });
     } catch (e) {
       return next(e);
     }

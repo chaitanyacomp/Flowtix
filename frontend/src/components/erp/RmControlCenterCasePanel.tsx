@@ -1,4 +1,5 @@
 import * as React from "react";
+import { PROCUREMENT_TERMS } from "../../lib/procurementTerminology";
 import { cn } from "../../lib/utils";
 import { RmOperationalStageChip } from "./RmOperationalActionsPanel";
 
@@ -40,6 +41,9 @@ type Props = {
   allocationFirstLabel?: string | null;
   mrDocNo?: string | null;
   procurementChipLabel?: string | null;
+  procurementAnchorLabel?: string | null;
+  procurementExecutionWoLabel?: string | null;
+  /** @deprecated Use procurementAnchorLabel */
   procurementSourceLabel?: string | null;
   operationalGuidance?: OperationalGuidance | null;
   rmLines: RmCaseLine[];
@@ -56,6 +60,8 @@ export function RmControlCenterCasePanel({
   allocationFirstLabel,
   mrDocNo,
   procurementChipLabel,
+  procurementAnchorLabel,
+  procurementExecutionWoLabel,
   procurementSourceLabel,
   operationalGuidance,
   rmLines,
@@ -100,10 +106,16 @@ export function RmControlCenterCasePanel({
             {procurementChipLabel}
           </span>
         ) : null}
-        {procurementSourceLabel ? (
+        {procurementAnchorLabel ?? procurementSourceLabel ? (
           <span className="text-[11px] text-slate-600">
-            <span className="font-bold uppercase tracking-wide text-slate-500">Source</span>{" "}
-            <span className="font-semibold text-slate-900">{procurementSourceLabel}</span>
+            <span className="font-bold uppercase tracking-wide text-slate-500">{PROCUREMENT_TERMS.PROCUREMENT_SOURCE_LABEL}</span>{" "}
+            <span className="font-semibold text-slate-900">{procurementAnchorLabel ?? procurementSourceLabel}</span>
+          </span>
+        ) : null}
+        {procurementExecutionWoLabel ? (
+          <span className="text-[11px] text-slate-600">
+            <span className="font-bold uppercase tracking-wide text-slate-500">{PROCUREMENT_TERMS.EXECUTION_LABEL}</span>{" "}
+            <span className="font-semibold text-slate-900">{procurementExecutionWoLabel}</span>
           </span>
         ) : null}
         {mrDocNo ? (

@@ -63,8 +63,9 @@ describe("rmControlCenterProcurementVisibility", () => {
 
   it("procurementSourceLabel maps source types for trace display", () => {
     expect(procurementSourceLabel("MONTHLY_PLAN", "December Plan 1")).toBe("December Plan 1");
-    expect(procurementSourceLabel("WORK_ORDER_PLANNING", "WO-26-0032")).toBe("WO-26-0032");
-    expect(procurementSourceLabel("STOCK_REPLENISHMENT")).toBe("Min Stock Replenishment");
+    expect(procurementSourceLabel("WORK_ORDER_PLANNING", "WO-26-0032")).toBe("Legacy / Historical Demand");
+    expect(procurementSourceLabel("STOCK_REPLENISHMENT")).toBe("Stock Replenishment");
+    expect(procurementSourceLabel("SALES_ORDER", "SO-26-0001")).toBe("SO-26-0001");
   });
 
   it("lineCoveragePercent prefers GRN percent when present", () => {

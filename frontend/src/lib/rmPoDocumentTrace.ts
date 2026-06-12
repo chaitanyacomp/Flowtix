@@ -73,11 +73,18 @@ export type RmPoTracePayload = {
   lines: RmPoTraceLine[];
 };
 
+import {
+  demandPoolKeyForSourceType,
+  demandPoolLabelForSourceType,
+  LEGACY_WO_PLANNING_RECORD_LABEL,
+  poTraceChainSummary,
+} from "./procurementTraceTerminology";
+
 const SOURCE_LABELS: Record<string, string> = {
-  MONTHLY_PLAN: "Monthly Plan",
-  WORK_ORDER_PLANNING: "Work Order Planning",
+  MONTHLY_PLAN: "Monthly Planning",
+  WORK_ORDER_PLANNING: LEGACY_WO_PLANNING_RECORD_LABEL,
   STOCK_REPLENISHMENT: "Stock Replenishment",
-  SALES_ORDER: "Sales Order",
+  SALES_ORDER: "Sales Orders",
   QUOTATION: "Quotation",
 };
 
@@ -85,11 +92,15 @@ export function demandSourceDisplay(ds: RmPoTraceDemandSource): string {
   if (ds.monthlyPlan?.label) return ds.monthlyPlan.label;
   if (ds.demandSourceLabel?.trim()) return ds.demandSourceLabel.trim();
   if (ds.monthlyPlanRevision != null) return `Monthly Plan Rev ${ds.monthlyPlanRevision}`;
+  const poolLabel = demandPoolLabelForSourceType(ds.demandSourceType);
+  if (poolLabel) return poolLabel;
   if (ds.demandSourceType && SOURCE_LABELS[ds.demandSourceType]) return SOURCE_LABELS[ds.demandSourceType];
-  if (ds.workOrder?.docNo) return `WO ${ds.workOrder.docNo}`;
-  if (ds.salesOrder?.docNo) return `SO ${ds.salesOrder.docNo}`;
+  if (ds.salesOrder?.docNo) return ds.salesOrder.docNo;
+  if (ds.workOrder?.docNo) return LEGACY_WO_PLANNING_RECORD_LABEL;
   return "Demand source";
 }
+
+export { demandPoolKeyForSourceType, poTraceChainSummary };
 
 export function lineReceiptStatusLabel(ordered: number, received: number, pending: number): string {
   if (received <= 1e-6) return "Pending receipt";

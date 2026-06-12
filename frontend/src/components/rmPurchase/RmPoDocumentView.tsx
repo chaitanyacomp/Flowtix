@@ -9,11 +9,15 @@ import type { RmPoCompanyProfile } from "../../lib/rmPoSupplierDocument";
 import { printRmPoSupplierSection } from "../../lib/rmPoDocumentActions";
 import { buildGrnDetailHref } from "../../lib/grnDocumentActions";
 import { buildPurchaseBillDetailHref, resolvePrimaryPurchaseBill } from "../../lib/procurementNavigation";
+import { PROCUREMENT_TERMS } from "../../lib/procurementTerminology";
+import { demandPoolLabelForSourceType } from "../../lib/procurementTraceTerminology";
 import {
+  demandPoolKeyForSourceType,
   demandSourceDisplay,
   formatPoDocumentDate,
   formatTraceQty,
   lineReceiptStatusLabel,
+  poTraceChainSummary,
   traceLineByPoLineId,
   type RmPoTracePayload,
 } from "../../lib/rmPoDocumentTrace";
@@ -116,20 +120,33 @@ function LineSourceTrace({
     <div className="space-y-3" data-testid={`po-line-trace-${poLineId}`}>
       {sources.map((ds, idx) => {
         const mrId = ds.mr?.materialRequirementId;
+        const poolKey = demandPoolKeyForSourceType(ds.demandSourceType);
         const procHref =
           mrId && mrId > 0
             ? buildProcurementWorkspaceHref({
                 materialRequirementId: mrId,
                 workOrderId: ds.workOrder?.id ?? ds.mr?.workOrder?.id,
                 salesOrderId: ds.salesOrder?.id ?? ds.mr?.salesOrder?.id,
+                demandPool: poolKey ?? undefined,
                 returnTo,
               })
             : null;
+        const poolLabel = demandPoolLabelForSourceType(ds.demandSourceType);
+        const traceSummary = poTraceChainSummary(ds.demandSourceType);
         return (
           <div key={idx} className="rounded-lg border border-violet-100 bg-violet-50/40 px-3 py-2.5">
-            <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-slate-800">
+            <div className="flex flex-wrap items-center gap-2">
+              {poolLabel ? (
+                <span className="inline-flex rounded-md bg-violet-100 px-2 py-0.5 text-[11px] font-bold text-violet-950 ring-1 ring-violet-200">
+                  {poolLabel}
+                </span>
+              ) : null}
+              <span className="text-[11px] font-medium text-slate-600">{traceSummary}</span>
+            </div>
+            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm text-slate-800">
               <span>
-                <span className="font-semibold text-slate-600">Demand:</span> {demandSourceDisplay(ds)}
+                <span className="font-semibold text-slate-600">{PROCUREMENT_TERMS.PROCUREMENT_SOURCE_LABEL}:</span>{" "}
+                {demandSourceDisplay(ds)}
               </span>
               {ds.mr?.docNo ? (
                 <span>
@@ -150,12 +167,12 @@ function LineSourceTrace({
               ) : null}
               {ds.workOrder?.docNo ? (
                 <span>
-                  <span className="font-semibold text-slate-600">WO:</span> {ds.workOrder.docNo}
+                  <span className="font-semibold text-slate-600">Execution:</span> {ds.workOrder.docNo}
                 </span>
               ) : null}
               {ds.salesOrder?.docNo ? (
                 <span>
-                  <span className="font-semibold text-slate-600">SO:</span> {ds.salesOrder.docNo}
+                  <span className="font-semibold text-slate-600">Sales order:</span> {ds.salesOrder.docNo}
                 </span>
               ) : null}
             </div>

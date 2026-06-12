@@ -15,8 +15,8 @@ export type ProcurementQueueTabDef = {
 };
 
 export const PROCUREMENT_DEMAND_POOL_TABS: ProcurementQueueTabDef[] = [
-  { id: "REGULAR_SO", label: "REGULAR SO Demand", countKey: "REGULAR_SO" },
-  { id: "MPRS", label: "MPRS Demand", countKey: "MPRS" },
+  { id: "REGULAR_SO", label: "Sales Orders", countKey: "REGULAR_SO" },
+  { id: "MPRS", label: "Monthly Planning", countKey: "MPRS" },
   { id: "STOCK_REPLENISHMENT", label: "Stock Replenishment", countKey: "STOCK_REPLENISHMENT" },
 ];
 

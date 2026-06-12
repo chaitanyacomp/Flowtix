@@ -8,7 +8,10 @@ import type { ProcurementChip, ProcurementWarning } from "../../lib/rmControlCen
 
 type Props = {
   chip: ProcurementChip;
-  sourceLabel: string | null;
+  anchorLabel: string | null;
+  executionWoLabel?: string | null;
+  /** @deprecated Use anchorLabel */
+  sourceLabel?: string | null;
   mrDocNo?: string | null;
   timelineStepIndex: number;
   prLineCount: number;
@@ -33,6 +36,8 @@ const CHIP_VARIANT: Record<ProcurementChip["variant"], string> = {
 
 export function RmControlCenterProcurementPanel({
   chip,
+  anchorLabel,
+  executionWoLabel,
   sourceLabel,
   mrDocNo,
   timelineStepIndex,
@@ -50,6 +55,8 @@ export function RmControlCenterProcurementPanel({
   const showCreatePr = canCreatePurchaseRequest && chip.key === "AWAITING_PR";
   const showOpenGrn = chip.key === "GRN_PENDING" || chip.key === "PARTIALLY_RECEIVED";
 
+  const resolvedAnchor = anchorLabel ?? sourceLabel ?? null;
+
   return (
     <div className="space-y-2" data-testid="rm-cc-procurement-panel">
       <div className="rounded-md border border-violet-200/80 bg-violet-50/40 px-2.5 py-2">
@@ -64,9 +71,16 @@ export function RmControlCenterProcurementPanel({
           >
             {chip.label}
           </span>
-          {sourceLabel ? (
+          {resolvedAnchor ? (
             <span className="text-[11px] font-medium text-slate-700">
-              Source: <span className="font-semibold text-slate-900">{sourceLabel}</span>
+              {PROCUREMENT_TERMS.PROCUREMENT_SOURCE_LABEL}:{" "}
+              <span className="font-semibold text-slate-900">{resolvedAnchor}</span>
+            </span>
+          ) : null}
+          {executionWoLabel ? (
+            <span className="text-[11px] font-medium text-slate-700">
+              {PROCUREMENT_TERMS.EXECUTION_LABEL}:{" "}
+              <span className="font-semibold text-slate-900">{executionWoLabel}</span>
             </span>
           ) : null}
         </div>

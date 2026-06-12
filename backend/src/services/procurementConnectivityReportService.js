@@ -27,13 +27,11 @@ const BILL_STATUS_LABELS = Object.freeze({
   BILLED: "Billed",
 });
 
-const SOURCE_TYPE_LABELS = Object.freeze({
-  MONTHLY_PLAN: "Monthly Plan",
-  WORK_ORDER_PLANNING: "Work Order Planning",
-  STOCK_REPLENISHMENT: "Stock Replenishment",
-  SALES_ORDER: "Sales Order",
-  QUOTATION: "Quotation",
-});
+const {
+  formatDemandSourceLabel,
+  LEGACY_HISTORICAL_DEMAND,
+  SOURCE_CATEGORY_LABELS,
+} = require("./procurementDemandSourcePresentation");
 
 function parsePositiveInt(value) {
   const n = Number(value);
@@ -72,14 +70,7 @@ function deriveBillStatus(purchaseBillLines) {
 }
 
 function demandSourceLabel(ds) {
-  if (!ds) return "Unknown demand";
-  if (ds.monthlyPlan?.label) return ds.monthlyPlan.label;
-  if (ds.demandSourceType && SOURCE_TYPE_LABELS[ds.demandSourceType]) {
-    return SOURCE_TYPE_LABELS[ds.demandSourceType];
-  }
-  if (ds.workOrder?.docNo) return `WO ${ds.workOrder.docNo}`;
-  if (ds.salesOrder?.docNo) return `SO ${ds.salesOrder.docNo}`;
-  return "Demand source";
+  return formatDemandSourceLabel(ds);
 }
 
 function buildStockPostedSummary(grnLines) {
@@ -329,7 +320,8 @@ module.exports = {
   BILL_STATUS_LABELS,
   RECEIPT_STATUSES,
   RECEIPT_STATUS_LABELS,
-  SOURCE_TYPE_LABELS,
+  SOURCE_TYPE_LABELS: SOURCE_CATEGORY_LABELS,
+  LEGACY_HISTORICAL_DEMAND,
   applyRowFilters,
   buildGrnSummary,
   buildProcurementConnectivityReport,

@@ -74,30 +74,39 @@ export const PROCUREMENT_TERMS = {
   STORE_PULSE_SUBTITLE: "Store-owned PR and GRN work — Purchase handles PO creation separately.",
   LOADING_PROCUREMENT: "Loading procurement cases…",
   MORE_IN_WORKSPACE: "more in Procurement Workspace",
-  DEMAND_POOL_REGULAR_SO: "REGULAR SO Demand",
-  DEMAND_POOL_MPRS: "MPRS Demand",
+  DEMAND_POOL_REGULAR_SO: "Sales Orders",
+  DEMAND_POOL_MPRS: "Monthly Planning",
   DEMAND_POOL_STOCK_REPLENISHMENT: "Stock Replenishment",
-  DEMAND_POOL_SELECTOR_LABEL: "Demand pool",
-  SECTION_PROCUREMENT_CASES_REGULAR_SO: "Regular sales order procurement",
+  PROCUREMENT_SOURCE_SALES_ORDERS: "Sales Orders",
+  PROCUREMENT_SOURCE_MONTHLY_PLANNING: "Monthly Planning",
+  PROCUREMENT_SOURCE_STOCK_REPLENISHMENT: "Stock Replenishment",
+  DEMAND_POOL_SELECTOR_LABEL: "Procurement source",
+  PROCUREMENT_SOURCE_LABEL: "Demand Source",
+  EXECUTION_LABEL: "Execution",
+  SECTION_PROCUREMENT_DEMAND_POOLS: "Procurement Sources",
+  SECTION_PROCUREMENT_CASES_REGULAR_SO: "Procurement Sources",
   SECTION_PROCUREMENT_CASES_REGULAR_SO_HELPER:
-    "Approved material requirements linked to sales orders — one demand pool at a time.",
-  SECTION_PROCUREMENT_CASES_MPRS: "Monthly plan (MPRS) procurement",
+    "Approved material requirements linked to sales orders.",
+  SECTION_PROCUREMENT_CASES_MPRS: "Procurement Sources",
   SECTION_PROCUREMENT_CASES_MPRS_HELPER:
-    "Approved material requirements from monthly production planning (MPRS).",
-  SECTION_PROCUREMENT_CASES_STOCK: "Stock replenishment procurement",
+    "Approved material requirements from monthly production planning.",
+  SECTION_PROCUREMENT_CASES_STOCK: "Procurement Sources",
   SECTION_PROCUREMENT_CASES_STOCK_HELPER:
     "Minimum-stock and replenishment material requirements awaiting purchase handoff.",
-  SECTION_EMPTY_PENDING_MR_REGULAR_SO: "No regular SO material requirements",
+  SECTION_EMPTY_PENDING_MR_REGULAR_SO: "No sales order procurement requirements",
   SECTION_EMPTY_PENDING_MR_REGULAR_SO_DETAIL:
-    "Sales-order-linked MRs approved for purchase will appear in this pool.",
-  SECTION_EMPTY_PENDING_MR_MPRS: "No MPRS material requirements",
+    "Sales-order procurement requirements approved for purchase will appear here.",
+  SECTION_EMPTY_PENDING_MR_MPRS: "No monthly planning procurement requirements",
   SECTION_EMPTY_PENDING_MR_MPRS_DETAIL:
-    "Monthly plan MRs approved for purchase will appear in this pool.",
+    "Monthly planning procurement requirements approved for purchase will appear here.",
   SECTION_EMPTY_PENDING_MR_STOCK: "No stock replenishment requirements",
   SECTION_EMPTY_PENDING_MR_STOCK_DETAIL:
-    "Stock replenishment MRs approved for purchase will appear in this pool.",
+    "Stock replenishment requirements approved for purchase will appear here.",
   SECTION_EMPTY_PURCHASE_PLANNING_POOL:
-    "No consolidated RM demand in this pool awaiting PR.",
+    "No consolidated RM demand from this procurement source awaiting PR.",
+  PROCUREMENT_QUEUE_POOL_HINT:
+    "Purchase Request lines show procurement source context. Create RM PO from one source at a time.",
+  INCOMING_PO_INFORMATIONAL: "Incoming PO quantity is informational until GRN is posted.",
 } as const;
 
 export type ProcurementDemandPoolKey = "REGULAR_SO" | "MPRS" | "STOCK_REPLENISHMENT";

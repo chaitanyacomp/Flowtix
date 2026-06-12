@@ -30,8 +30,30 @@ const {
   REGULAR_SO_PROCUREMENT_SOURCE,
   regularSoProcurementSourceTypes,
 } = require("./regularSoProcurementSource");
+const {
+  formatDemandSourceLabel,
+} = require("./procurementDemandSourcePresentation");
+const { buildPlanDisplayLabel } = require("./monthlyPlanningPlanLifecycleService");
 const WO_PLANNING_SOURCE = "WORK_ORDER_PLANNING";
 const OPEN_PO_STATUSES = ["PENDING", "PARTIAL"];
+
+function monthlyPlanLabelFromMr(mr) {
+  const plan = mr?.monthlyProductionPlan;
+  if (!plan) return null;
+  return buildPlanDisplayLabel(plan) || null;
+}
+
+function mrProcurementSourceLabel(mr) {
+  if (!mr) return null;
+  const planLabel = monthlyPlanLabelFromMr(mr);
+  return formatDemandSourceLabel({
+    demandSourceType: mr.sourceType,
+    salesOrder: mr.salesOrder ? { docNo: mr.salesOrder.docNo } : null,
+    monthlyPlan: planLabel ? { label: planLabel } : null,
+    mr: { docNo: mr.docNo },
+    workOrder: mr.workOrder ? { docNo: mr.workOrder.docNo } : null,
+  });
+}
 
 function n(v) {
   return qtyToNumber(v);
@@ -430,6 +452,8 @@ const SO_PLANNING_MR_INCLUDE = {
       lines: { include: { item: { select: { id: true, itemName: true, itemType: true, unit: true } } } },
     },
   },
+  monthlyProductionPlan: true,
+  workOrder: { select: { id: true, docNo: true } },
   lines: { include: { rmItem: { select: { id: true, itemName: true, unit: true } } } },
 };
 
@@ -773,6 +797,9 @@ async function loadSoProcurementMrByWorkOrder(db, workOrderIds) {
       lines: {
         include: { rmItem: { select: { id: true, itemName: true, unit: true } } },
       },
+      salesOrder: { select: { id: true, docNo: true } },
+      monthlyProductionPlan: true,
+      workOrder: { select: { id: true, docNo: true } },
     },
     orderBy: { id: "desc" },
   });
@@ -865,6 +892,7 @@ function mapWoMrHeader(mr) {
     status: mr.status,
     sourceType: mr.sourceType,
     workOrderId: mr.workOrderId,
+    procurementSourceLabel: mrProcurementSourceLabel(mr),
     lineCount: lines.length,
     totalShortageQty: round3(lines.reduce((sum, ln) => sum + n(ln.shortageQty), 0)),
     lines: lines.map((ln) => ({

@@ -490,6 +490,8 @@ export function PendingMaterialRequestsPanel({ embedded = false }: Props) {
 
             </th>
 
+            <th className="text-left">Procurement source</th>
+
             <th className="text-left">Request No.</th>
 
             <th className="text-left">RM item</th>
@@ -529,6 +531,8 @@ export function PendingMaterialRequestsPanel({ embedded = false }: Props) {
                 />
 
               </td>
+
+              <td className="text-[11px] font-semibold text-violet-900">{ln.demandPoolLabel ?? "—"}</td>
 
               <td className="font-medium text-slate-800">
 

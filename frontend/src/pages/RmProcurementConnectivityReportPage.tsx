@@ -24,6 +24,7 @@ import {
   receiptStatusTone,
   type ConnectivityReportRow,
 } from "../lib/procurementConnectivityReportUx";
+import { resolveConnectivityDemandSourceLabel } from "../lib/procurementTraceTerminology";
 
 type Supplier = { id: number; name: string };
 type RmItem = { id: number; itemName: string; unit?: string | null };
@@ -153,7 +154,7 @@ function DesktopTable({
                       {open ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
                     </button>
                   </td>
-                  <td className="px-2 py-2 font-medium text-slate-900">{row.demandSourceLabel}</td>
+                  <td className="px-2 py-2 font-medium text-slate-900">{resolveConnectivityDemandSourceLabel(row)}</td>
                   <td className="px-2 py-2">
                     {row.mr?.docNo ? (
                       <Link to={connectivityProcurementHref(row, returnTo)} className="text-primary underline">
@@ -244,7 +245,7 @@ function MobileCards({
                 <div className="flex items-start justify-between gap-2">
                   <div>
                     <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Demand source</p>
-                    <p className="font-semibold text-slate-900">{row.demandSourceLabel}</p>
+                    <p className="font-semibold text-slate-900">{resolveConnectivityDemandSourceLabel(row)}</p>
                     <p className="mt-1 text-sm text-slate-700">
                       {row.mr?.docNo ?? "—"} → {row.pr?.docNo ?? "—"} →{" "}
                       <span className="font-semibold">{row.rmPoDisplayNo}</span>

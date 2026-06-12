@@ -1,3 +1,4 @@
+import { demandPoolKeyForSourceType } from "./procurementTraceTerminology";
 import { buildProcurementWorkspaceHref } from "./woProcurementContinuity";
 import { buildRmPoDetailHref } from "./rmPurchaseWoContinuity";
 import { buildGrnDocumentHref, parseGrnDisplayNo } from "./procurementNavigation";
@@ -20,6 +21,7 @@ export type ConnectivityReportRow = {
   demandSourceType: string | null;
   demandSourceLabel: string;
   monthlyPlanRevision: number | null;
+  monthlyPlan?: { label?: string | null } | null;
   mr: {
     materialRequirementId: number;
     docNo: string | null;
@@ -57,10 +59,10 @@ export type ConnectivityReportFilters = {
 
 export const CONNECTIVITY_SOURCE_TYPES = [
   { value: "", label: "All sources" },
-  { value: "MONTHLY_PLAN", label: "Monthly Plan" },
-  { value: "WORK_ORDER_PLANNING", label: "Work Order Planning" },
+  { value: "SALES_ORDER", label: "Sales Orders" },
+  { value: "MONTHLY_PLAN", label: "Monthly Planning" },
   { value: "STOCK_REPLENISHMENT", label: "Stock Replenishment" },
-  { value: "SALES_ORDER", label: "Sales Order" },
+  { value: "WORK_ORDER_PLANNING", label: "Legacy / Historical Demand" },
   { value: "QUOTATION", label: "Quotation" },
 ] as const;
 
@@ -106,6 +108,8 @@ export function connectivityProcurementHref(row: ConnectivityReportRow, returnTo
     salesOrderId: row.mr?.salesOrder?.id,
     rmItemId: row.rmItem?.id,
     returnTo,
+    demandPool: demandPoolKeyForSourceType(row.demandSourceType) ?? undefined,
+    sourceType: row.demandSourceType,
   });
 }
 

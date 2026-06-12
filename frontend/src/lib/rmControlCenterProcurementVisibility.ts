@@ -1,7 +1,10 @@
-/**
- * P5C-4 — RM Control Center procurement visibility (read-only radar + Store actions).
- * Reuses caseSupply / MR lifecycle signals; no new backend logic.
- */
+import {
+  demandPoolLabelForSourceType,
+  formatProcurementDemandSourceLabel,
+  incomingPoQtyInformationalMessage,
+  LEGACY_HISTORICAL_DEMAND_LABEL,
+} from "./procurementTraceTerminology";
+import { formatOperationalWarningMessage } from "./operationalWarningPresentation";
 
 const EPS = 1e-6;
 
@@ -68,21 +71,22 @@ export function deriveProcurementChip(input: ProcurementVisibilityInput): Procur
 }
 
 export function procurementSourceLabel(sourceType: string | null | undefined, fallback?: string | null): string | null {
-  switch (String(sourceType ?? "").trim()) {
-    case "MONTHLY_PLAN":
-      return fallback?.trim() || "Monthly Plan";
-    case "WORK_ORDER_PLANNING":
-      return fallback?.trim() || "Work Order Shortage";
-    case "STOCK_REPLENISHMENT":
-      return "Min Stock Replenishment";
-    case "SALES_ORDER":
-      return fallback?.trim() || "Sales Order";
-    case "QUOTATION":
-      return fallback?.trim() || "Quotation";
-    default:
-      return fallback?.trim() || null;
-  }
+  const st = String(sourceType ?? "").trim();
+  if (st === "QUOTATION") return fallback?.trim() || "Quotation";
+  const anchor = formatProcurementDemandSourceLabel({
+    sourceType: st,
+    salesOrderDocNo: st === "SALES_ORDER" ? fallback : null,
+    monthlyPlanLabel: st === "MONTHLY_PLAN" ? fallback : null,
+    materialRequirementDocNo: fallback,
+  });
+  if (anchor) return anchor;
+  if (st === "WORK_ORDER_PLANNING") return LEGACY_HISTORICAL_DEMAND_LABEL;
+  const pool = demandPoolLabelForSourceType(st);
+  if (pool) return pool;
+  return fallback?.trim() || null;
 }
+
+export { formatProcurementDemandSourceLabel, formatProcurementExecutionWoLabel } from "./procurementTraceTerminology";
 
 export function procurementTimelineStepIndex(input: {
   prLineCount: number;
@@ -125,7 +129,7 @@ export function deriveProcurementWarnings(input: {
   };
 
   for (const w of input.lineWarnings ?? []) {
-    if (w?.code && w?.message) push(w.code, w.message, "info");
+    if (w?.code || w?.message) push(w.code ?? "LINE_WARNING", formatOperationalWarningMessage(w), "info");
   }
 
   if (input.chip.key === "AWAITING_PO") {
@@ -135,7 +139,7 @@ export function deriveProcurementWarnings(input: {
     push("GRN_PENDING", "Goods receipt pending — material is ordered but not yet available in Store.");
   }
   if (input.incomingLineCount > 0) {
-    push("INCOMING_QTY", "Incoming PO quantity covers part of this shortage until GRN is posted.");
+    push("INCOMING_PO_INFORMATIONAL", incomingPoQtyInformationalMessage(), "info");
   }
   if (input.sourceType === "MONTHLY_PLAN" && input.incomingLineCount > 0) {
     push("MONTHLY_PLAN_INCOMING", "Monthly Plan demand — incoming purchase quantity is already on order.");

@@ -97,7 +97,7 @@ export function StoreProcurementPulse() {
     async (row: (typeof previewRows)[number]) => {
       if (creatingRef.current || !row.canCreatePurchaseRequest) return;
       if (!mrMatchesDemandPool(row.mr, demandPool)) {
-        showError("This material requirement is not in the selected demand pool.");
+        showError("This material requirement is not in the selected procurement source.");
         return;
       }
       const payload = buildPurchaseRequestPayloadFromMr(

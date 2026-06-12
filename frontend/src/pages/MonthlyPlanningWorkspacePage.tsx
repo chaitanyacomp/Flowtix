@@ -1,5 +1,5 @@
 import * as React from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { apiFetch, ApiRequestError } from "../services/api";
 import { useToast } from "../contexts/ToastContext";
 import { useFeatureFlags } from "../hooks/useFeatureFlags";
@@ -36,6 +36,7 @@ import { Input } from "../components/ui/input";
 import { NativeSelect } from "../components/ui/native-select";
 import { Badge } from "../components/ui/badge";
 import { cn } from "../lib/utils";
+import { formatOperationalWarningMessage } from "../lib/operationalWarningPresentation";
 import {
   getReleaseDeltaDisabledStatusMessage,
   getReleaseDeltaProcurementBadge,
@@ -2394,11 +2395,11 @@ function RmPlanningTab({
                         {(l.warnings ?? []).map((w, i) => (
                           <span
                             key={i}
-                            title={w.message ?? w.code}
+                            title={formatOperationalWarningMessage(w)}
                             className="inline-flex items-center gap-1 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-800"
                           >
                             <AlertTriangle className="h-3 w-3" />
-                            {w.code ?? "Warning"}
+                            {formatOperationalWarningMessage(w)}
                           </span>
                         ))}
                         {!l.belowMinStockFlag && !l.leadTimeRiskFlag && (l.warnings ?? []).length === 0 ? (
@@ -2723,10 +2724,28 @@ function PurchasePlanningTab({
           </span>
           {procurementBadge ? (
             <Badge variant="info" className="text-[11px]">
-              Procurement released · {procurementBadge.label}
-              {procurementBadge.materialRequirementDocNo
-                ? ` · ${procurementBadge.materialRequirementDocNo}`
-                : ""}
+              Procurement Source: {procurementBadge.label}
+              {procurementBadge.materialRequirementDocNo ? (
+                <>
+                  {" · "}
+                  <Link
+                    to="/procurement-planning?demandPool=MPRS"
+                    className="font-semibold text-violet-900 underline"
+                  >
+                    {procurementBadge.materialRequirementDocNo}
+                  </Link>
+                </>
+              ) : (
+                <>
+                  {" · "}
+                  <Link
+                    to="/procurement-planning?demandPool=MPRS"
+                    className="font-semibold text-violet-900 underline"
+                  >
+                    Open Monthly Planning workspace
+                  </Link>
+                </>
+              )}
             </Badge>
           ) : null}
         </div>
@@ -2828,11 +2847,11 @@ function PurchasePlanningTab({
                         {(l.warnings ?? []).map((w, i) => (
                           <span
                             key={i}
-                            title={w.message ?? w.code}
+                            title={formatOperationalWarningMessage(w)}
                             className="inline-flex items-center gap-1 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-800"
                           >
                             <AlertTriangle className="h-3 w-3" />
-                            {w.code ?? "Warning"}
+                            {formatOperationalWarningMessage(w)}
                           </span>
                         ))}
                         {!l.belowMinStockFlag && !l.leadTimeRiskFlag && (l.warnings ?? []).length === 0 ? (

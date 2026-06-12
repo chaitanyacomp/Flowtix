@@ -499,7 +499,7 @@ export function MaterialPlanningPage() {
               }
               onClick={() => void onCreateRequirement()}
             >
-              {raising ? "Sending…" : `Legacy: ${REGULAR_TERMS.SEND_TO_PROCUREMENT}`}
+              {raising ? "Sending…" : REGULAR_TERMS.SEND_TO_PROCUREMENT}
             </Button>
           ) : null}
         </div>

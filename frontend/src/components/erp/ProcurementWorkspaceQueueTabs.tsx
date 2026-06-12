@@ -20,7 +20,7 @@ export function ProcurementWorkspaceQueueTabs({ activeTab, counts, onChange, dis
     <div
       className="flex flex-wrap gap-1 rounded-lg border border-violet-200/70 bg-violet-50/30 p-1"
       role="tablist"
-      aria-label="Procurement demand pools"
+      aria-label="Procurement sources"
       data-testid="procurement-workspace-queue-tabs"
     >
       {PROCUREMENT_DEMAND_POOL_TABS.map((tab) => {

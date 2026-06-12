@@ -3,6 +3,7 @@ import {
   demandSourceDisplay,
   lineBillStatusLabel,
   lineReceiptStatusLabel,
+  poTraceChainSummary,
   traceLineByPoLineId,
   type RmPoTracePayload,
 } from "../../src/lib/rmPoDocumentTrace";
@@ -77,6 +78,19 @@ describe("rmPoDocumentTrace", () => {
     ).toBe("June Plan 2");
   });
 
+  it("demandSourceDisplay labels legacy WO planning records", () => {
+    expect(
+      demandSourceDisplay({
+        demandSourceType: "WORK_ORDER_PLANNING",
+        monthlyPlanRevision: null,
+        monthlyPlan: null,
+        mr: { materialRequirementId: 71, docNo: "MR-26-0004", workOrder: { id: 7, docNo: "WO-7" } },
+        pr: { purchaseRequestId: 31, docNo: "PR-26-0003" },
+        workOrder: { id: 7, docNo: "WO-7" },
+      }),
+    ).toBe("Legacy / Historical Demand");
+  });
+
   it("demandSourceDisplay falls back to demandSourceLabel", () => {
     expect(
       demandSourceDisplay({
@@ -88,6 +102,11 @@ describe("rmPoDocumentTrace", () => {
         pr: null,
       }),
     ).toBe("June Plan 1");
+  });
+
+  it("poTraceChainSummary describes trace paths", () => {
+    expect(poTraceChainSummary("SALES_ORDER")).toBe("PO → MR → Sales Order");
+    expect(poTraceChainSummary("MONTHLY_PLAN")).toBe("PO → MR → Monthly Planning");
   });
 
   it("traceLineByPoLineId finds line by id", () => {

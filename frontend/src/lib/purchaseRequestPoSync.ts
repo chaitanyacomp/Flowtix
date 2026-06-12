@@ -1,5 +1,7 @@
 /** Pending PR lines from GET /api/purchase/purchase-requests/pending */
 
+import { demandPoolLabelFromRemarks } from "./procurementTraceTerminology";
+
 export type PendingPurchaseRequestLine = {
   id: number;
   purchaseRequestId: number;
@@ -28,6 +30,7 @@ export type PendingPurchaseRequestLineRow = PendingPurchaseRequestLine & {
   requestDocNo: string;
   requestStatus: string;
   requestStatusLabel: string;
+  demandPoolLabel?: string | null;
 };
 
 export function flattenOrderablePurchaseRequestLines(
@@ -43,6 +46,7 @@ export function flattenOrderablePurchaseRequestLines(
         requestDocNo: doc,
         requestStatus: pr.status,
         requestStatusLabel: pr.statusLabel,
+        demandPoolLabel: demandPoolLabelFromRemarks(pr.remarks),
       });
     }
   }

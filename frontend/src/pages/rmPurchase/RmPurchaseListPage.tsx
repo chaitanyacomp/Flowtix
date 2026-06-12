@@ -606,6 +606,7 @@ export function RmPurchaseListPage() {
 
       <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-sm">
         <p className="text-[13px] font-bold text-slate-950">{PROCUREMENT_TERMS.PROCUREMENT_QUEUE_SECTION}</p>
+        <p className="mt-0.5 text-[11px] text-slate-600">{PROCUREMENT_TERMS.PROCUREMENT_QUEUE_POOL_HINT}</p>
         <PendingMaterialRequestsPanel embedded />
       </div>
 
@@ -742,6 +743,7 @@ export function RmPurchaseListPage() {
                 <tr>
                   <th className="whitespace-nowrap">PO number</th>
                   <th className="min-w-[8rem]">Supplier</th>
+                  <th className="min-w-[7rem]">Demand source</th>
                   <th className="min-w-[7rem]">Supply from</th>
                   <th className="whitespace-nowrap">Status</th>
                   <th className="whitespace-nowrap text-right">PO date</th>
@@ -771,6 +773,12 @@ export function RmPurchaseListPage() {
                       <td className="whitespace-nowrap font-semibold text-slate-900">{formatRmPoNo(r.id)}</td>
                       <td className="max-w-[14rem] truncate text-slate-800" title={r.supplier.name}>
                         {r.supplier.name}
+                      </td>
+                      <td
+                        className="max-w-[12rem] truncate text-slate-700"
+                        title={r.procurementSourceSummary ?? undefined}
+                      >
+                        {r.procurementSourceSummary?.trim() || "—"}
                       </td>
                       <td className="max-w-[10rem] truncate text-slate-600" title={r.resolvedSupplierCommercial?.supplyLocation?.label ?? ""}>
                         {r.resolvedSupplierCommercial?.supplyLocation?.label ?? "—"}

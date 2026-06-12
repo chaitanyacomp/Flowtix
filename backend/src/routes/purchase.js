@@ -23,6 +23,8 @@ const {
   computeLineAmount,
   assertPositiveRate,
 } = require("../services/rmPoTaxFields");
+const { assembleRmPoProcurementTrace, RM_PO_INCLUDE } = require("../services/procurementTraceService");
+const { summarizePoProcurementSourceFromTrace } = require("../services/procurementDemandSourcePresentation");
 const {
   freezeRmPurchaseOrderCommercialSnapshots,
   enrichRmPurchaseOrderCommercial,
@@ -154,17 +156,27 @@ purchaseRouter.get("/rm-pos", requireAuth, requireRole([...RM_PO_READ_ROLES]), a
       include: {
         supplier: { include: { stateRef: { select: { stateName: true, stateCode: true } } } },
         supplierLocation: { include: { stateRef: { select: { stateName: true, stateCode: true } } } },
-        lines: { include: { item: true }, orderBy: { id: "asc" } },
+        lines: {
+          include: {
+            item: true,
+            procurementLinks: RM_PO_INCLUDE.lines.include.procurementLinks,
+          },
+          orderBy: { id: "asc" },
+        },
         grns: { include: { lines: true }, orderBy: { id: "desc" } },
       },
     });
     const companyStateCode = await getCompanyStateCode(prisma);
     const enriched = await Promise.all(
       rows.map(async (row) => {
+        const procurementSourceSummary = summarizePoProcurementSourceFromTrace(
+          assembleRmPoProcurementTrace(row, [], []),
+        );
         const resolvedSupplierCommercial = commercialSnapshotsPresent(row)
           ? mapCommercialViewFromPoRow(row, companyStateCode)
           : await resolveSupplierCommercialView(prisma, row, { companyStateCode });
-        return { ...row, resolvedSupplierCommercial };
+        const lines = (row.lines || []).map(({ procurementLinks: _links, ...line }) => line);
+        return { ...row, lines, procurementSourceSummary, resolvedSupplierCommercial };
       }),
     );
     return res.json(enriched);

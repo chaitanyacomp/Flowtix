@@ -24,8 +24,8 @@ describe("procurementWorkspaceQueues", () => {
       "STOCK_REPLENISHMENT",
     ]);
     expect(PROCUREMENT_DEMAND_POOL_TABS.map((t) => t.label)).toEqual([
-      "REGULAR SO Demand",
-      "MPRS Demand",
+      "Sales Orders",
+      "Monthly Planning",
       "Stock Replenishment",
     ]);
   });

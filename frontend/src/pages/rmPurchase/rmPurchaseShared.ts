@@ -116,6 +116,7 @@ export type RmPoRow = {
   lines: RmPoLine[];
   grns: GrnRow[];
   resolvedSupplierCommercial?: ResolvedSupplierCommercial | null;
+  procurementSourceSummary?: string | null;
   billingSummary?: {
     finalizedBilledQtyByPoLineId?: Record<number, number>;
     cancelledBilledQtyByPoLineId?: Record<number, number>;

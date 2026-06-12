@@ -26,6 +26,8 @@ import { PROCUREMENT_TERMS } from "../lib/procurementTerminology";
 import {
   deriveProcurementChip,
   deriveProcurementWarnings,
+  formatProcurementDemandSourceLabel,
+  formatProcurementExecutionWoLabel,
   lineCoveragePercent,
   procurementSourceLabel,
   procurementTimelineStepIndex,
@@ -160,6 +162,7 @@ type WoShortageCase = {
     status: string;
     sourceType: string;
     workOrderId: number | null;
+    procurementSourceLabel?: string | null;
     lineCount: number;
     totalShortageQty: number;
     lines: Array<{
@@ -933,10 +936,23 @@ export function MaterialAvailabilityControlCenterPage() {
       notEscalated,
     });
     const sourceType = mr?.sourceType ?? caseSupply?.openMrLines?.[0]?.sourceType ?? null;
-    const sourceLabel = procurementSourceLabel(
-      sourceType,
-      detail.workOrder?.docNo ?? woCase?.workOrderNo ?? woCase?.salesOrderNo,
-    );
+    const demandSourceFallback =
+      mr?.procurementSourceLabel?.trim() ||
+      (sourceType === "SALES_ORDER"
+        ? detail.salesOrder?.docNo ?? woCase?.salesOrderNo ?? null
+        : null);
+    const demandSourceLabel =
+      formatProcurementDemandSourceLabel({
+        sourceType,
+        salesOrderDocNo: sourceType === "SALES_ORDER" ? demandSourceFallback : null,
+        salesOrderId: sourceType === "SALES_ORDER" ? detail.salesOrder?.id ?? woCase?.salesOrderId ?? null : null,
+        monthlyPlanLabel: sourceType === "MONTHLY_PLAN" ? demandSourceFallback : null,
+        materialRequirementDocNo: mr?.docNo ?? null,
+      }) ?? procurementSourceLabel(sourceType, demandSourceFallback);
+    const executionWoLabel = formatProcurementExecutionWoLabel({
+      workOrderDocNo: detail.workOrder?.docNo ?? woCase?.workOrderNo ?? null,
+      workOrderId: detail.workOrder?.id ?? null,
+    });
     const lineWarnings = rmCaseLines.flatMap((l) => (l as RmLine).warnings ?? []);
     const incomingLineCount = rmCaseLines.filter((l) => Number(l.incomingQty ?? 0) > 0).length;
     const warnings = deriveProcurementWarnings({
@@ -971,7 +987,9 @@ export function MaterialAvailabilityControlCenterPage() {
     });
     return {
       chip,
-      sourceLabel,
+      anchorLabel: demandSourceLabel,
+      demandSourceLabel,
+      executionWoLabel,
       warnings,
       timelineStepIndex,
       grnHref,
@@ -1267,7 +1285,7 @@ export function MaterialAvailabilityControlCenterPage() {
           body: JSON.stringify({
             workOrderId,
             confirmReopenClosed: confirm,
-            remarks: `WO shortage case bulk add for ${detail?.workOrder?.docNo || `WO-${workOrderId}`}.`,
+            remarks: `SO-linked case bulk add for ${detail?.workOrder?.docNo || `WO-${workOrderId}`} (execution WO).`,
           }),
         });
       let out;
@@ -1285,19 +1303,19 @@ export function MaterialAvailabilityControlCenterPage() {
       const mr = out.materialRequirement;
       const added = out.linesAdded ?? 0;
       if (out.status === "ALREADY_UP_TO_DATE") {
-        showSuccess("WO shortage case already up to date");
+        showSuccess("SO-linked case already up to date");
       } else if (added > 0) {
         if (out.created) {
           showSuccess(`All detected shortage lines added to this WO RM Requisition — ${mr?.docNo || "requisition"} created.`);
         } else {
-          showSuccess(`All detected shortage lines added to this WO case (${added} line${added === 1 ? "" : "s"}).`);
+          showSuccess(`All detected shortage lines added to this case (${added} line${added === 1 ? "" : "s"}).`);
         }
       } else {
-        showSuccess(out.message || "WO shortage case updated.");
+        showSuccess(out.message || "SO-linked case updated.");
       }
       await load(filters);
     } catch (e) {
-      showError(e instanceof Error ? e.message : "Failed to update WO shortage case");
+      showError(e instanceof Error ? e.message : "Failed to update SO-linked case");
     } finally {
       setCreatingShortageMr(false);
     }
@@ -1500,7 +1518,8 @@ export function MaterialAvailabilityControlCenterPage() {
                 allocationFirstLabel={woCase?.allocationFirstStatus?.label ?? null}
                 mrDocNo={woCase?.materialRequirement?.docNo ?? escalation?.materialRequirementDocNo}
                 procurementChipLabel={procurementVisibility?.chip.label ?? null}
-                procurementSourceLabel={procurementVisibility?.sourceLabel ?? null}
+                procurementAnchorLabel={procurementVisibility?.anchorLabel ?? null}
+                procurementExecutionWoLabel={procurementVisibility?.executionWoLabel ?? null}
                 operationalGuidance={storeOperationalGuidance}
                 rmLines={rmCaseLines}
                 selectedRmItemId={selectedRmItemId}
@@ -1526,7 +1545,8 @@ export function MaterialAvailabilityControlCenterPage() {
                 {procurementVisibility ? (
                   <RmControlCenterProcurementPanel
                     chip={procurementVisibility.chip}
-                    sourceLabel={procurementVisibility.sourceLabel}
+                    anchorLabel={procurementVisibility.anchorLabel}
+                    executionWoLabel={procurementVisibility.executionWoLabel}
                     mrDocNo={procurementVisibility.mrDocNo}
                     timelineStepIndex={procurementVisibility.timelineStepIndex}
                     prLineCount={procurementVisibility.prLineCount}

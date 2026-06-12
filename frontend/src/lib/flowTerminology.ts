@@ -25,7 +25,7 @@ export const REGULAR_TERMS = {
     "RM shortage — raise and approve a Store RM Requisition, then create the Purchase Request in Procurement Workspace.",
   RM_SHORTAGE_RESOLVE_FIRST:
     "Raw material shortage. Raise Store RM Requisition before creating Work Order.",
-  RAISE_MATERIAL_REQUIREMENT: "Raise Store Requisition",
+  RAISE_MATERIAL_REQUIREMENT: "Create SO-linked material request",
   /** Sales Order / Prepare WO — navigate to Store execution desk (no MR raise here). */
   OPEN_RM_CONTROL_CENTER: "Open RM Control Center",
   CONTINUE_IN_RM_CONTROL_CENTER: "Continue in RM Control Center",
@@ -34,7 +34,7 @@ export const REGULAR_TERMS = {
   OPEN_PURCHASE_PLAN: "Open Purchase Plan",
   /** RM PO / GRN execution workspace (`/rm-po-grn`). */
   OPEN_PURCHASE_AND_GRN: "Open Purchase & GRN",
-  SEND_TO_PROCUREMENT: "Raise Store Requisition",
+  SEND_TO_PROCUREMENT: "Create SO-linked material request",
   OPEN_PURCHASE_QUEUE: "Open Approved Requisitions",
   /** RM requirement & shortage review (`/material-planning`) — not PO execution. */
   OPEN_RM_PLANNING: "Open RM Planning",

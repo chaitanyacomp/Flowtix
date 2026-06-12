@@ -143,14 +143,20 @@ export function buildProcurementWorkspaceHref(opts: {
   materialRequirementId?: number | null;
   returnTo?: string | null;
   demandPool?: "REGULAR_SO" | "MPRS" | "STOCK_REPLENISHMENT" | null;
+  sourceType?: string | null;
 }): string {
   const q = new URLSearchParams();
   const demandPool =
     opts.demandPool ??
-    ((opts.salesOrderId != null && opts.salesOrderId > 0) ||
-    (opts.workOrderId != null && opts.workOrderId > 0)
-      ? "REGULAR_SO"
-      : null);
+    (opts.sourceType === "MONTHLY_PLAN"
+      ? "MPRS"
+      : opts.sourceType === "STOCK_REPLENISHMENT"
+        ? "STOCK_REPLENISHMENT"
+        : (opts.salesOrderId != null && opts.salesOrderId > 0) ||
+            (opts.workOrderId != null && opts.workOrderId > 0) ||
+            opts.sourceType === "SALES_ORDER"
+          ? "REGULAR_SO"
+          : null);
   if (demandPool) q.set("demandPool", demandPool);
   if (opts.salesOrderId != null && opts.salesOrderId > 0) q.set("salesOrderId", String(opts.salesOrderId));
   if (opts.workOrderId != null && opts.workOrderId > 0) q.set("workOrderId", String(opts.workOrderId));

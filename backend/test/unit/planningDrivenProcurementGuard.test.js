@@ -129,7 +129,7 @@ describe("mrSourceDescriptor — Monthly Plan source badge data", () => {
   });
 
   it("labels other sources without plan fields", () => {
-    assert.equal(mrSourceDescriptor({ sourceType: "WORK_ORDER_PLANNING" }).label, "Work Order");
+    assert.equal(mrSourceDescriptor({ sourceType: "SALES_ORDER" }).label, "Sales Order");
     assert.equal(mrSourceDescriptor({ sourceType: "STOCK_REPLENISHMENT" }).label, "Stock Replenishment");
     assert.equal(mrSourceDescriptor({ sourceType: "MONTHLY_PLAN" }).periodKey, null);
   });
@@ -139,11 +139,11 @@ describe("buildSourceTypesByRmItem — duplicate-source detection", () => {
   it("flags RM items demanded by more than one source type", () => {
     const map = buildSourceTypesByRmItem([
       { sourceType: "MONTHLY_PLAN", lines: [{ rmItemId: 70 }, { rmItemId: 71 }] },
-      { sourceType: "WORK_ORDER_PLANNING", lines: [{ rmItemId: 70 }] },
+      { sourceType: "SALES_ORDER", lines: [{ rmItemId: 70 }] },
     ]);
     assert.equal(map.get(70).size, 2); // multiple sources
     assert.equal(map.get(71).size, 1); // single source
     assert.ok(map.get(70).has("MONTHLY_PLAN"));
-    assert.ok(map.get(70).has("WORK_ORDER_PLANNING"));
+    assert.ok(map.get(70).has("SALES_ORDER"));
   });
 });

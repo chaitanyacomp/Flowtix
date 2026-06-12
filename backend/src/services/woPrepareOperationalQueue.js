@@ -9,6 +9,7 @@ const { evaluateWoPrepareReadiness } = require("./materialPlanningService");
 const { summarizeMaterialRequirement } = require("./procurementWorkspaceService");
 const { loadPendingRequestAllocByMrLineId } = require("./purchaseRequestService");
 const { RM_REQUISITION_ACTIVE_STATUSES } = require("./rmRequisitionLifecycle");
+const { regularSoProcurementSourceTypes } = require("./regularSoProcurementSource");
 
 const WO_PLANNING_SOURCE = "WORK_ORDER_PLANNING";
 
@@ -176,7 +177,7 @@ async function getWoPrepareDashboardQueues(db = prisma, opts = {}) {
         where: {
           salesOrderId: so.id,
           status: { in: RM_REQUISITION_ACTIVE_STATUSES },
-          sourceType: WO_PLANNING_SOURCE,
+          sourceType: { in: regularSoProcurementSourceTypes() },
         },
         include: {
           lines: { include: { rmItem: true } },

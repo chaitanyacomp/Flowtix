@@ -19,7 +19,7 @@ const procurementPlanningRouter = express.Router();
 
 const workspaceQuerySchema = z.object({
   salesOrderId: z.coerce.number().int().positive().optional(),
-  sourceType: z.enum(["MONTHLY_PLAN", "WORK_ORDER_PLANNING", "STOCK_REPLENISHMENT"]).optional(),
+  sourceType: z.enum(["MONTHLY_PLAN", "SALES_ORDER", "WORK_ORDER_PLANNING", "STOCK_REPLENISHMENT"]).optional(),
 });
 
 procurementPlanningRouter.get(

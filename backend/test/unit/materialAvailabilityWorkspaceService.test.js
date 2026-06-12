@@ -86,8 +86,21 @@ function createMockDb() {
     workOrder: {
       findMany: async (query) => {
         let rows = workOrders;
-        if (query.where.id) rows = rows.filter((wo) => wo.id === query.where.id);
+        if (query.where?.id?.in) {
+          rows = rows.filter((wo) => query.where.id.in.includes(wo.id));
+        } else if (query.where.id) {
+          rows = rows.filter((wo) => wo.id === query.where.id);
+        }
         if (query.where.salesOrderId) rows = rows.filter((wo) => wo.salesOrderId === query.where.salesOrderId);
+        if (query.select) {
+          return rows.map((wo) => {
+            const out = {};
+            for (const key of Object.keys(query.select)) {
+              if (query.select[key]) out[key] = wo[key];
+            }
+            return out;
+          });
+        }
         return rows;
       },
     },
@@ -155,7 +168,7 @@ function createMockDb() {
               id: 700 + rmItemId,
               docNo: `MR-${rmItemId}`,
               status: "DRAFT",
-              sourceType: "WORK_ORDER_PLANNING",
+              sourceType: "SALES_ORDER",
               salesOrderId: rmItemId,
               salesOrder: { id: rmItemId, docNo: `SO-${rmItemId}` },
               quotation: null,
@@ -358,27 +371,30 @@ describe("materialAvailabilityWorkspaceService", () => {
   it("derives escalation pending when WO MR exists without PR/PO", async () => {
     const db = createMockDb();
     db.materialRequirement.findMany = async (query) => {
-      const woIds = query?.where?.workOrderId?.in || [];
-      if (!woIds.includes(1)) return [];
-      return [
-        {
-          id: 701,
-          docNo: "MR-WO-1",
-          status: "APPROVED",
-          sourceType: "WORK_ORDER_PLANNING",
-          workOrderId: 1,
-          lines: [
-            {
-              id: 1,
-              rmItemId: 10,
-              requiredQty: 100,
-              shortageQty: 100,
-              procuredQty: 0,
-              rmItem: { itemName: "RM 10", unit: "KG" },
-            },
-          ],
-        },
-      ];
+      const soIds = query?.where?.salesOrderId?.in || [];
+      if (soIds.includes(1)) {
+        return [
+          {
+            id: 701,
+            docNo: "MR-WO-1",
+            status: "APPROVED",
+            sourceType: "SALES_ORDER",
+            salesOrderId: 1,
+            workOrderId: 1,
+            lines: [
+              {
+                id: 1,
+                rmItemId: 10,
+                requiredQty: 100,
+                shortageQty: 100,
+                procuredQty: 0,
+                rmItem: { itemName: "RM 10", unit: "KG" },
+              },
+            ],
+          },
+        ];
+      }
+      return [];
     };
     const data = await buildMaterialAvailabilityWorkspace(db, { workOrderId: 1 }, createDeps());
     assert.equal(data.selectedWoShortageCase.escalationLifecycle.state, "ESCALATION_PENDING");
@@ -421,7 +437,7 @@ describe("materialAvailabilityWorkspaceService", () => {
             id: 710,
             docNo: "MR-WO-1",
             status: "SENT_TO_PURCHASE",
-            sourceType: "WORK_ORDER_PLANNING",
+            sourceType: "SALES_ORDER",
             salesOrderId: 1,
             salesOrder: { id: 1, docNo: "SO-1" },
             workOrder: { id: 1, docNo: "WO-1" },
@@ -464,7 +480,7 @@ describe("materialAvailabilityWorkspaceService", () => {
       id: 880,
       docNo: "MR-SO-80",
       status: "APPROVED",
-      sourceType: "WORK_ORDER_PLANNING",
+      sourceType: "SALES_ORDER",
       salesOrderId: 80,
       workOrderId: null,
       salesOrder: {
@@ -490,8 +506,12 @@ describe("materialAvailabilityWorkspaceService", () => {
     db.materialRequirement.findMany = async (query) => {
       if (query?.where?.id && query.where.id !== 880) return [];
       if (query?.where?.salesOrderId && query.where.salesOrderId !== 80) return [];
-      if (query?.where?.workOrderId !== null) return [];
-      return [soMr];
+      const soIds = query?.where?.salesOrderId?.in;
+      if (Array.isArray(soIds) && !soIds.includes(80)) return [];
+      if (query?.where?.salesOrderId === 80 || soIds?.includes(80) || query?.where?.id === 880) {
+        return [soMr];
+      }
+      return [];
     };
     db.materialRequirementLine.findMany = async (query) => {
       if (query.where.rmItemId !== 80) return [];
@@ -508,7 +528,7 @@ describe("materialAvailabilityWorkspaceService", () => {
             id: 880,
             docNo: "MR-SO-80",
             status: "APPROVED",
-            sourceType: "WORK_ORDER_PLANNING",
+            sourceType: "SALES_ORDER",
             salesOrderId: 80,
             salesOrder: { id: 80, docNo: "SO-80" },
             workOrder: null,
@@ -698,7 +718,7 @@ describe("post-GRN SO planning MR (FULLY_PROCURED, no WO)", () => {
       id: 58,
       docNo: "MR-26-0003",
       status: "FULLY_PROCURED",
-      sourceType: "WORK_ORDER_PLANNING",
+      sourceType: "SALES_ORDER",
       salesOrderId: 139,
       workOrderId: null,
       salesOrder: {

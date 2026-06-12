@@ -13,6 +13,7 @@ const {
 } = require("./purchaseRequestService");
 const { buildProcurementPool } = require("./procurementPlanningService");
 const { computeFgGapLinesForSalesOrder } = require("./rmCheckService");
+const { regularSoProcurementSourceTypes } = require("./regularSoProcurementSource");
 const { isMaterialRequirementFullyReceived } = require("./procurementLifecycleService");
 const {
   RM_REQUISITION_PURCHASE_VISIBLE_STATUSES,
@@ -501,7 +502,7 @@ async function summarizeMaterialRequirement(mr, pendingByMr, db = prisma) {
   };
 }
 
-async function loadOpenMaterialRequirements(db = prisma, { salesOrderId = null, sourceType = null } = {}) {
+async function loadOpenMaterialRequirements(db = prisma, { salesOrderId = null, sourceType = null, sourceTypes = null } = {}) {
   /**
    * Purchase execution workspace should only include requisitions that are
    * operationally visible to Purchase (Store-approved or later).
@@ -509,7 +510,11 @@ async function loadOpenMaterialRequirements(db = prisma, { salesOrderId = null, 
    * CLOSED/CANCELLED are terminal and must not remain in active procurement loops.
    */
   const where = { status: { in: RM_REQUISITION_PURCHASE_VISIBLE_STATUSES } };
-  if (sourceType) where.sourceType = sourceType;
+  if (Array.isArray(sourceTypes) && sourceTypes.length) {
+    where.sourceType = { in: sourceTypes };
+  } else if (sourceType) {
+    where.sourceType = sourceType;
+  }
   if (salesOrderId != null && Number(salesOrderId) > 0) where.salesOrderId = Number(salesOrderId);
 
   return db.materialRequirement.findMany({
@@ -545,9 +550,11 @@ async function loadOpenMaterialRequirements(db = prisma, { salesOrderId = null, 
  * Dashboard + workspace: MR-centric procurement pending rows (WO planning SOs).
  */
 async function buildProcurementPendingQueue(db = prisma, opts = {}) {
+  const regularSoOnly = Boolean(opts.regularSoProcurementOnly || opts.woPlanningOnly);
   const mrs = await loadOpenMaterialRequirements(db, {
     salesOrderId: opts.salesOrderId,
-    sourceType: opts.woPlanningOnly ? "WORK_ORDER_PLANNING" : null,
+    sourceType: regularSoOnly ? null : opts.sourceType ?? null,
+    sourceTypes: regularSoOnly ? regularSoProcurementSourceTypes() : null,
   });
   const pendingByMr = await loadPendingRequestAllocByMrLineId(db);
   const rows = [];
@@ -641,6 +648,7 @@ async function buildProcurementCompletedSection(db = prisma) {
 
 const PROCUREMENT_QUEUE_SOURCE_TYPES = Object.freeze([
   "MONTHLY_PLAN",
+  "SALES_ORDER",
   "WORK_ORDER_PLANNING",
   "STOCK_REPLENISHMENT",
 ]);
@@ -650,12 +658,17 @@ function computeQueueCounts(pendingMrs) {
     all: pendingMrs.length,
     monthlyPlan: 0,
     woShortage: 0,
+    regularSo: 0,
     minStock: 0,
   };
   for (const mr of pendingMrs) {
     switch (mr.sourceType) {
       case "MONTHLY_PLAN":
         counts.monthlyPlan += 1;
+        break;
+      case "SALES_ORDER":
+        counts.regularSo += 1;
+        counts.woShortage += 1;
         break;
       case "WORK_ORDER_PLANNING":
         counts.woShortage += 1;

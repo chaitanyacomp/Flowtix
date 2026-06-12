@@ -294,6 +294,12 @@ function resolveWoPrepareBlockReason(readiness, { pendingMaterialRequirements = 
   return null;
 }
 
+const {
+  REGULAR_SO_PROCUREMENT_SOURCE,
+  regularSoProcurementSourceTypes,
+} = require("./regularSoProcurementSource");
+
+/** @deprecated Legacy MR source; new REGULAR SO demand uses SALES_ORDER. */
 const WO_PLANNING_SOURCE = "WORK_ORDER_PLANNING";
 
 function roundForCaseSignature(value) {
@@ -325,21 +331,12 @@ async function findReusableWoPlanningMaterialRequirement({
   plannedProductionQty = 0,
   shortageLines = [],
 }, db = prisma) {
-  const woId = workOrderId != null && Number(workOrderId) > 0 ? Number(workOrderId) : null;
-  const workOrderFilter =
-    woId != null
-      ? {
-          OR: [{ workOrderId: woId }, { workOrderId: null }],
-        }
-      : { workOrderId: null };
-
   const candidates = await db.materialRequirement.findMany({
     where: {
       salesOrderId,
-      sourceType: WO_PLANNING_SOURCE,
+      sourceType: { in: regularSoProcurementSourceTypes() },
       // CLOSED/CANCELLED are terminal; they do not participate in active loops or reuse.
       status: { notIn: ["CANCELLED", "CLOSED"] },
-      ...workOrderFilter,
     },
     include: {
       lines: {
@@ -399,21 +396,13 @@ async function findReusableWoPlanningMaterialRequirement({
 /**
  * Active RM Requisitions raised from Prepare Work Order for this SO (optional WO scope).
  */
-async function findPendingWoPlanningMaterialRequirements(salesOrderId, { workOrderId = null } = {}, db = prisma) {
-  const woId = workOrderId != null && Number(workOrderId) > 0 ? Number(workOrderId) : null;
-  const workOrderFilter =
-    woId != null
-      ? {
-          OR: [{ workOrderId: woId }, { workOrderId: null }],
-        }
-      : { workOrderId: null };
+async function findPendingWoPlanningMaterialRequirements(salesOrderId, _opts = {}, db = prisma) {
   const rows = await db.materialRequirement.findMany({
     where: {
       salesOrderId,
       // CLOSED/CANCELLED are terminal for operational loops; keep them in history only.
       status: { notIn: ["CANCELLED", "CLOSED"] },
-      sourceType: WO_PLANNING_SOURCE,
-      ...workOrderFilter,
+      sourceType: { in: regularSoProcurementSourceTypes() },
     },
     include: {
       lines: {
@@ -905,9 +894,8 @@ async function createMaterialRequirementFromWoPlanning(input, db = prisma) {
   const existingTerminal = await db.materialRequirement.findFirst({
     where: {
       salesOrderId,
-      sourceType: WO_PLANNING_SOURCE,
+      sourceType: { in: regularSoProcurementSourceTypes() },
       status: { in: ["CLOSED", "CANCELLED"] },
-      ...(workOrderId != null ? { OR: [{ workOrderId }, { workOrderId: null }] } : { workOrderId: null }),
     },
     orderBy: { closedAt: "desc" },
     select: { id: true, docNo: true, status: true, closedAt: true },
@@ -952,6 +940,7 @@ async function createMaterialRequirementFromWoPlanning(input, db = prisma) {
           ...row,
         })),
       });
+      const executionRef = workOrderId != null ? ` (execution ref WO #${workOrderId})` : "";
       await tx.materialRequirement.update({
         where: { id: existing.id },
         data: {
@@ -964,12 +953,15 @@ async function createMaterialRequirementFromWoPlanning(input, db = prisma) {
             ? { plannedProductionQty: primaryFgLine.plannedProductionQty }
             : {}),
           updatedAt: new Date(),
+          requisitionRemarks: `Raised from Store RM Check${executionRef}`,
+          remarks: `Raised from Store RM Check${executionRef}`,
           ...(input.createdByUserId
             ? { createdByUserId: input.createdByUserId, raisedByUserId: input.createdByUserId }
             : {}),
         },
       });
     } else {
+      const executionRef = workOrderId != null ? ` (execution ref WO #${workOrderId})` : "";
       const docNo = await allocateDocNo(tx, {
         docType: DocType.MATERIAL_REQUIREMENT,
         date: new Date(),
@@ -978,9 +970,9 @@ async function createMaterialRequirementFromWoPlanning(input, db = prisma) {
         data: {
           docNo,
           status: "APPROVED",
-          sourceType: WO_PLANNING_SOURCE,
+          sourceType: REGULAR_SO_PROCUREMENT_SOURCE,
           salesOrderId,
-          workOrderId,
+          workOrderId: workOrderId ?? null,
           fgItemId: primaryFgLine?.fgItemId ?? null,
           plannedProductionQty: primaryFgLine?.plannedProductionQty ?? null,
           quotationId: null,
@@ -988,12 +980,8 @@ async function createMaterialRequirementFromWoPlanning(input, db = prisma) {
           raisedByUserId: input.createdByUserId ?? null,
           approvedAt,
           approvedByUserId,
-          requisitionRemarks: workOrderId
-            ? `Raised from Prepare Work Order (WO #${workOrderId})`
-            : "Raised from Prepare Work Order",
-          remarks: workOrderId
-            ? `Raised from Prepare Work Order (WO #${workOrderId})`
-            : "Raised from Prepare Work Order",
+          requisitionRemarks: `Raised from Store RM Check${executionRef}`,
+          remarks: `Raised from Store RM Check${executionRef}`,
         },
       });
       await tx.materialRequirementLine.createMany({
@@ -1148,4 +1136,5 @@ module.exports = {
   materialPlanningOperationalState,
   isSalesOrderCompleted,
   WO_PLANNING_SOURCE,
+  REGULAR_SO_PROCUREMENT_SOURCE,
 };

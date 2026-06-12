@@ -298,6 +298,9 @@ function buildTraceChainLabels(demandSources, rmPoId, grnLines, stockTransaction
   const primary = demandSources[0];
   if (primary?.monthlyPlan?.label) labels.push(primary.monthlyPlan.label);
   else if (primary?.monthlyPlanRevision != null) labels.push(`Monthly Plan Rev ${primary.monthlyPlanRevision}`);
+  if (primary?.salesOrder?.docNo && primary?.demandSourceType === "SALES_ORDER") {
+    labels.push(primary.salesOrder.docNo);
+  }
   if (primary?.mr?.docNo) labels.push(primary.mr.docNo);
   if (primary?.pr?.docNo) labels.push(primary.pr.docNo);
   labels.push(rmPoDisplayNo(rmPoId));

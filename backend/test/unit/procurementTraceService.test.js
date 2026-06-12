@@ -93,7 +93,7 @@ describe("procurementTraceService — demand source assembly", () => {
       materialRequirement: mrRequirement({
         id: 3,
         docNo: "MR-26-0003",
-        sourceType: "WORK_ORDER_PLANNING",
+        sourceType: "SALES_ORDER",
         sourceRevision: null,
         workOrder: { id: 7, docNo: "WO-7" },
         salesOrder: { id: 8, docNo: "SO-8" },

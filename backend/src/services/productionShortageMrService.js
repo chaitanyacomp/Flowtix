@@ -6,7 +6,12 @@ const { aggregateRmDemandForFgLines, round3 } = require("./bomExplosionService")
 const { getMaterialAvailabilityByItems } = require("./materialAvailabilityService");
 const { RM_REQUISITION_ACTIVE_STATUSES } = require("./rmRequisitionLifecycle");
 const { assertWorkOrderProcurementDemandAllowed } = require("./procurementPipelineFirewall");
+const {
+  REGULAR_SO_PROCUREMENT_SOURCE,
+  regularSoProcurementSourceTypes,
+} = require("./regularSoProcurementSource");
 
+/** Legacy WO-anchored MR source (read-only compatibility). */
 const WO_PLANNING_SOURCE = "WORK_ORDER_PLANNING";
 const EPS = 1e-6;
 
@@ -106,24 +111,26 @@ async function loadWoRmShortageCandidates(db, workOrderId, deps = {}) {
     .filter((line) => line.shortageQty > EPS);
 }
 
-async function findOpenWoShortageMr(tx, workOrderId) {
+async function findOpenSoProcurementMr(tx, salesOrderId) {
+  if (!salesOrderId) return null;
   return tx.materialRequirement.findFirst({
     where: {
-      sourceType: WO_PLANNING_SOURCE,
+      salesOrderId,
+      sourceType: { in: regularSoProcurementSourceTypes() },
       status: { in: RM_REQUISITION_ACTIVE_STATUSES },
-      workOrderId,
     },
     include: { lines: true },
     orderBy: { id: "desc" },
   });
 }
 
-async function findLatestTerminalWoShortageMr(tx, workOrderId) {
+async function findLatestTerminalSoProcurementMr(tx, salesOrderId) {
+  if (!salesOrderId) return null;
   return tx.materialRequirement.findFirst({
     where: {
-      sourceType: WO_PLANNING_SOURCE,
+      salesOrderId,
+      sourceType: { in: regularSoProcurementSourceTypes() },
       status: { in: ["CLOSED", "CANCELLED"] },
-      workOrderId,
     },
     orderBy: [{ closedAt: "desc" }, { id: "desc" }],
     select: { id: true, docNo: true, status: true, closedAt: true },
@@ -151,13 +158,20 @@ async function addShortageLineToMr(tx, { materialRequirement, rmItemId, shortage
   return { lineCreated: true, materialRequirement: refreshed };
 }
 
-async function ensureWoShortageMrHeader(tx, { workOrder, actor, remarks, firstLine }) {
-  let materialRequirement = await findOpenWoShortageMr(tx, workOrder.id);
+async function ensureSoProcurementMrHeader(tx, { workOrder, actor, remarks, firstLine }) {
+  let materialRequirement = await findOpenSoProcurementMr(tx, workOrder.salesOrderId);
   if (materialRequirement) {
+    if (workOrder.id && materialRequirement.workOrderId !== workOrder.id) {
+      materialRequirement = await tx.materialRequirement.update({
+        where: { id: materialRequirement.id },
+        data: { workOrderId: workOrder.id },
+        include: { lines: true },
+      });
+    }
     return { materialRequirement, created: false };
   }
 
-  const terminal = await findLatestTerminalWoShortageMr(tx, workOrder.id);
+  const terminal = await findLatestTerminalSoProcurementMr(tx, workOrder.salesOrderId);
   if (terminal && !actor?.confirmReopenClosed) {
     const err = new Error(
       `Previous RM Requisition ${terminal.docNo || terminal.id} was ${terminal.status}. ` +
@@ -182,7 +196,7 @@ async function ensureWoShortageMrHeader(tx, { workOrder, actor, remarks, firstLi
       approvedByUserId: actor.userId ?? null,
       approvedAt: now,
       approvalRemarks: "Store-approved on RM requirement raise (RM Control Center).",
-      sourceType: WO_PLANNING_SOURCE,
+      sourceType: REGULAR_SO_PROCUREMENT_SOURCE,
       salesOrderId: workOrder.salesOrderId ?? null,
       workOrderId: workOrder.id,
       quotationId: null,
@@ -257,12 +271,12 @@ async function createOrReuseProductionShortageMr(input, actor = {}, db = prisma)
       throw err;
     }
 
-    let materialRequirement = await findOpenWoShortageMr(tx, workOrderId);
+    let materialRequirement = await findOpenSoProcurementMr(tx, workOrder.salesOrderId);
     let created = false;
     let lineCreated = false;
 
     if (!materialRequirement) {
-      const ensured = await ensureWoShortageMrHeader(tx, {
+      const ensured = await ensureSoProcurementMrHeader(tx, {
         workOrder,
         actor: { ...actor, confirmReopenClosed: Boolean(input.confirmReopenClosed) },
         remarks: input.remarks,
@@ -335,7 +349,7 @@ async function bulkAddProductionShortageMrLines(input, actor = {}, db = prisma) 
       throw err;
     }
 
-    let materialRequirement = await findOpenWoShortageMr(tx, workOrderId);
+    let materialRequirement = await findOpenSoProcurementMr(tx, workOrder.salesOrderId);
     const onCase = new Set((materialRequirement?.lines || []).map((ln) => ln.rmItemId));
     const toAdd = candidates.filter((c) => !onCase.has(c.rmItemId));
 
@@ -382,7 +396,7 @@ async function bulkAddProductionShortageMrLines(input, actor = {}, db = prisma) 
       }
 
       if (!materialRequirement) {
-        const ensured = await ensureWoShortageMrHeader(tx, {
+        const ensured = await ensureSoProcurementMrHeader(tx, {
           workOrder,
           actor: { ...actor, confirmReopenClosed: Boolean(input.confirmReopenClosed) },
           remarks: input.remarks,
@@ -461,6 +475,7 @@ async function bulkAddProductionShortageMrLines(input, actor = {}, db = prisma) 
 
 module.exports = {
   WO_PLANNING_SOURCE,
+  REGULAR_SO_PROCUREMENT_SOURCE,
   EPS,
   isShortRmLine,
   shortageQtyForMrLine,

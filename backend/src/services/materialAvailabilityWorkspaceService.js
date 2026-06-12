@@ -26,6 +26,10 @@ const PURCHASE_VISIBLE_MR_STATUSES = [
 const PROCURED_MR_STATUSES = ["FULLY_PROCURED"];
 const POST_GRN_INELIGIBLE_SO_STATUSES = ["COMPLETED", "CLOSED", "MANUALLY_CLOSED"];
 const OPEN_MR_STATUSES = PURCHASE_VISIBLE_MR_STATUSES;
+const {
+  REGULAR_SO_PROCUREMENT_SOURCE,
+  regularSoProcurementSourceTypes,
+} = require("./regularSoProcurementSource");
 const WO_PLANNING_SOURCE = "WORK_ORDER_PLANNING";
 const OPEN_PO_STATUSES = ["PENDING", "PARTIAL"];
 
@@ -432,9 +436,8 @@ const SO_PLANNING_MR_INCLUDE = {
 async function loadCandidateSoPlanningMrs(db, filters) {
   if (filters.workOrderId) return [];
   const where = {
-    sourceType: WO_PLANNING_SOURCE,
+    sourceType: { in: regularSoProcurementSourceTypes() },
     status: { in: OPEN_MR_STATUSES },
-    workOrderId: null,
     salesOrderId: { not: null },
   };
   if (filters.materialRequirementId) where.id = filters.materialRequirementId;
@@ -497,9 +500,8 @@ async function assessPostGrnCreateWoEligibility(db, mr, deps = {}) {
 async function loadProcuredSoPlanningMrs(db, filters, deps = {}) {
   if (filters.workOrderId) return [];
   const where = {
-    sourceType: WO_PLANNING_SOURCE,
+    sourceType: { in: regularSoProcurementSourceTypes() },
     status: { in: PROCURED_MR_STATUSES },
-    workOrderId: null,
     salesOrderId: { not: null },
     salesOrder: {
       orderType: "NORMAL",
@@ -752,13 +754,19 @@ function emptySupplySummary() {
   return { openMrCount: 0, prLineCount: 0, poLineCount: 0, pendingGrnQty: 0, receivedGrnQty: 0 };
 }
 
-async function loadWoShortageMrByWorkOrder(db, workOrderIds) {
+async function loadSoProcurementMrByWorkOrder(db, workOrderIds) {
   const ids = [...new Set(workOrderIds.filter(Boolean))];
   if (!ids.length) return new Map();
+  const workOrders = await db.workOrder.findMany({
+    where: { id: { in: ids } },
+    select: { id: true, salesOrderId: true },
+  });
+  const soIds = [...new Set(workOrders.map((wo) => wo.salesOrderId).filter(Boolean))];
+  if (!soIds.length) return new Map();
   const rows = await db.materialRequirement.findMany({
     where: {
-      workOrderId: { in: ids },
-      sourceType: WO_PLANNING_SOURCE,
+      salesOrderId: { in: soIds },
+      sourceType: { in: regularSoProcurementSourceTypes() },
       status: { in: OPEN_MR_STATUSES },
     },
     include: {
@@ -768,28 +776,44 @@ async function loadWoShortageMrByWorkOrder(db, workOrderIds) {
     },
     orderBy: { id: "desc" },
   });
-  const out = new Map();
+  const mrBySalesOrder = new Map();
   for (const mr of rows || []) {
-    if (!out.has(mr.workOrderId)) out.set(mr.workOrderId, mr);
+    if (!mrBySalesOrder.has(mr.salesOrderId)) mrBySalesOrder.set(mr.salesOrderId, mr);
+  }
+  const out = new Map();
+  for (const wo of workOrders) {
+    const mr = mrBySalesOrder.get(wo.salesOrderId);
+    if (mr) out.set(wo.id, mr);
   }
   return out;
 }
 
-async function loadTerminalWoMrByWorkOrder(db, workOrderIds) {
+async function loadTerminalSoProcurementMrByWorkOrder(db, workOrderIds) {
   const ids = [...new Set(workOrderIds.filter(Boolean))];
   if (!ids.length) return new Map();
+  const workOrders = await db.workOrder.findMany({
+    where: { id: { in: ids } },
+    select: { id: true, salesOrderId: true },
+  });
+  const soIds = [...new Set(workOrders.map((wo) => wo.salesOrderId).filter(Boolean))];
+  if (!soIds.length) return new Map();
   const rows = await db.materialRequirement.findMany({
     where: {
-      workOrderId: { in: ids },
-      sourceType: WO_PLANNING_SOURCE,
+      salesOrderId: { in: soIds },
+      sourceType: { in: regularSoProcurementSourceTypes() },
       status: { in: ["CLOSED", "CANCELLED"] },
     },
-    select: { id: true, docNo: true, status: true, workOrderId: true, closedAt: true },
+    select: { id: true, docNo: true, status: true, salesOrderId: true, workOrderId: true, closedAt: true },
     orderBy: { id: "desc" },
   });
-  const out = new Map();
+  const terminalBySo = new Map();
   for (const mr of rows || []) {
-    if (!out.has(mr.workOrderId)) out.set(mr.workOrderId, mr);
+    if (!terminalBySo.has(mr.salesOrderId)) terminalBySo.set(mr.salesOrderId, mr);
+  }
+  const out = new Map();
+  for (const wo of workOrders) {
+    const mr = terminalBySo.get(wo.salesOrderId);
+    if (mr) out.set(wo.id, mr);
   }
   return out;
 }
@@ -800,8 +824,7 @@ async function loadTerminalSoPlanningMrBySalesOrder(db, salesOrderIds) {
   const rows = await db.materialRequirement.findMany({
     where: {
       salesOrderId: { in: ids },
-      workOrderId: null,
-      sourceType: WO_PLANNING_SOURCE,
+      sourceType: { in: regularSoProcurementSourceTypes() },
       status: { in: ["CLOSED", "CANCELLED"] },
     },
     select: { id: true, docNo: true, status: true, salesOrderId: true, closedAt: true },
@@ -986,7 +1009,7 @@ function rmLinesNotOnWoMr(rmLines, woMr) {
 function woMrCaseLinesFullyProcured(woMr, caseSupply) {
   const lines = woMr?.lines?.length
     ? woMr.lines
-    : (caseSupply?.openMrLines || []).filter((ln) => ln.sourceType === WO_PLANNING_SOURCE);
+    : (caseSupply?.openMrLines || []).filter((ln) => regularSoProcurementSourceTypes().includes(ln.sourceType));
   if (!lines.length) return false;
   return lines.every((ln) => {
     const shortage = n(ln.shortageQty ?? ln.requiredQty);
@@ -1529,8 +1552,8 @@ async function buildMaterialAvailabilityWorkspace(db = prisma, filtersInput = {}
     deps,
   );
   const pmrByWorkOrder = await loadPmrStatusByWorkOrder(db, workOrders.map((wo) => wo.id));
-  const woMrByWorkOrder = await loadWoShortageMrByWorkOrder(db, workOrders.map((wo) => wo.id));
-  const terminalMrByWorkOrder = await loadTerminalWoMrByWorkOrder(db, workOrders.map((wo) => wo.id));
+  const woMrByWorkOrder = await loadSoProcurementMrByWorkOrder(db, workOrders.map((wo) => wo.id));
+  const terminalMrByWorkOrder = await loadTerminalSoProcurementMrByWorkOrder(db, workOrders.map((wo) => wo.id));
   const soIdsForTerminal = [
     ...soPlanningSalesOrders.map((so) => so.id),
     ...soPlanningMrs.map((mr) => mr.salesOrderId).filter(Boolean),
@@ -1752,7 +1775,7 @@ async function buildMaterialAvailabilityWorkspace(db = prisma, filtersInput = {}
           id: null,
           docNo: null,
           status: null,
-          sourceType: WO_PLANNING_SOURCE,
+          sourceType: REGULAR_SO_PROCUREMENT_SOURCE,
           salesOrderId: row.so.id,
           workOrderId: null,
           salesOrder: row.so,

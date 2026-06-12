@@ -35,7 +35,9 @@ function createBulkMockDb() {
   const state = {
     nextMrId: 900,
     nextLineId: 9000,
+    mrBySo: new Map(),
     mrByWo: new Map(),
+    terminalMrBySo: new Map(),
     terminalMrByWo: new Map(),
     linesByMr: new Map(),
   };
@@ -51,6 +53,13 @@ function createBulkMockDb() {
     [10, { id: 10, itemName: "RM 10", itemType: "RM", unit: "KG" }],
     [20, { id: 20, itemName: "RM 20", itemType: "RM", unit: "KG" }],
   ]);
+
+  function activeMrForWhere(where) {
+    const soId = where?.salesOrderId;
+    if (soId != null) return state.mrBySo.get(soId) || null;
+    if (where?.workOrderId != null) return state.mrByWo.get(where.workOrderId) || null;
+    return null;
+  }
 
   const db = {
     workOrder: {
@@ -76,21 +85,34 @@ function createBulkMockDb() {
         const wantsTerminal = Array.isArray(statuses) && statuses.some((s) => ["CLOSED", "CANCELLED"].includes(String(s)));
         const wantsActive = Array.isArray(statuses) && statuses.some((s) => ["DRAFT", "PENDING_APPROVAL", "APPROVED", "SENT_TO_PURCHASE"].includes(String(s)));
         if (wantsTerminal) {
+          if (where.salesOrderId != null) return state.terminalMrBySo.get(where.salesOrderId) || null;
           return state.terminalMrByWo.get(where.workOrderId) || null;
         }
-        if (wantsActive) {
-          const mr = state.mrByWo.get(where.workOrderId);
+        if (wantsActive || where.salesOrderId != null || where.workOrderId != null) {
+          const mr = activeMrForWhere(where);
           if (!mr) return null;
           return { ...mr, lines: state.linesByMr.get(mr.id) || [] };
         }
-        const mr = state.mrByWo.get(where.workOrderId);
-        if (!mr) return null;
-        return { ...mr, lines: state.linesByMr.get(mr.id) || [] };
+        return null;
       },
-      findUnique: async ({ where }) => {
-        for (const mr of state.mrByWo.values()) {
+      findUnique: async ({ where, include }) => {
+        for (const mr of state.mrBySo.values()) {
           if (mr.id === where.id) {
-            return { ...mr, lines: state.linesByMr.get(mr.id) || [] };
+            const row = { ...mr, lines: state.linesByMr.get(mr.id) || [] };
+            if (include?.lines) return row;
+            return row;
+          }
+        }
+        return null;
+      },
+      update: async ({ where, data, include }) => {
+        for (const [soId, mr] of state.mrBySo.entries()) {
+          if (mr.id === where.id) {
+            const updated = { ...mr, ...data, workOrderId: data.workOrderId ?? mr.workOrderId };
+            state.mrBySo.set(soId, updated);
+            if (updated.workOrderId) state.mrByWo.set(updated.workOrderId, updated);
+            const row = { ...updated, lines: state.linesByMr.get(mr.id) || [] };
+            return include?.lines ? row : row;
           }
         }
         return null;
@@ -105,7 +127,8 @@ function createBulkMockDb() {
           workOrderId: data.workOrderId,
           salesOrderId: data.salesOrderId,
         };
-        state.mrByWo.set(data.workOrderId, mr);
+        if (data.salesOrderId) state.mrBySo.set(data.salesOrderId, mr);
+        if (data.workOrderId) state.mrByWo.set(data.workOrderId, mr);
         const lines = (data.lines?.create || []).map((ln) => {
           const lineId = state.nextLineId++;
           return {
@@ -194,8 +217,11 @@ describe("productionShortageMrService", () => {
     assert.equal(out.linesAdded, 2);
     assert.equal(out.caseSummary.detectedShortLineCount, 2);
     assert.equal(out.caseSummary.linesOnCaseAfter, 2);
-    const mr = state.mrByWo.get(1);
+    const mr = state.mrBySo.get(10);
     assert.ok(mr);
+    assert.equal(mr.sourceType, "SALES_ORDER");
+    assert.equal(mr.salesOrderId, 10);
+    assert.equal(mr.workOrderId, 1);
     assert.equal((state.linesByMr.get(mr.id) || []).length, 2);
   });
 
@@ -209,7 +235,7 @@ describe("productionShortageMrService", () => {
     assert.equal(second.status, "ALREADY_UP_TO_DATE");
     assert.equal(second.message, "All shortage lines already on WO case");
     assert.equal(second.linesAdded, 0);
-    assert.equal((state.linesByMr.get(state.mrByWo.get(1).id) || []).length, 2);
+    assert.equal((state.linesByMr.get(state.mrBySo.get(10).id) || []).length, 2);
   });
 
   it("bulkAddProductionShortageMrLines adds only missing lines when case is partial", async () => {
@@ -226,7 +252,7 @@ describe("productionShortageMrService", () => {
     assert.equal(out.linesAdded, 1);
     assert.equal(out.caseSummary.linesSkippedDuplicate, 1);
     assert.equal(out.caseSummary.linesOnCaseAfter, 2);
-    assert.equal((state.linesByMr.get(state.mrByWo.get(1).id) || []).map((l) => l.rmItemId).sort()[1], 20);
+    assert.equal((state.linesByMr.get(state.mrBySo.get(10).id) || []).map((l) => l.rmItemId).sort()[1], 20);
   });
 
   it("createOrReuseProductionShortageMr remains backward compatible for single line", async () => {
@@ -275,7 +301,7 @@ describe("productionShortageMrService", () => {
 
   it("requires explicit confirmation to re-raise after terminal close", async () => {
     const { db, state } = createBulkMockDb();
-    state.terminalMrByWo.set(1, { id: 111, docNo: "MR-26-0001", status: "CLOSED", closedAt: new Date() });
+    state.terminalMrBySo.set(10, { id: 111, docNo: "MR-26-0001", status: "CLOSED", closedAt: new Date() });
     await assert.rejects(
       () =>
         bulkAddProductionShortageMrLines(

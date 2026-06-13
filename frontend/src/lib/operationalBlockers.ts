@@ -103,6 +103,7 @@ export function buildOperationalSoActions(
     operationalKey?: string;
     operationalLabel?: string;
     nextActionKey?: string;
+    orderType?: string | null;
   }> | null,
 ): OperationalSoAction[] {
   const q = queues ?? { rmShortageBlocking: [], purchaseGrnPending: [], readyForWoCreation: [] };
@@ -129,7 +130,10 @@ export function buildOperationalSoActions(
             ? "Partially allocated"
             : "Waiting RM";
     const issueHref = `/material-issue?workOrderId=${woId}&returnTo=dashboard`;
-    const productionHref = productionWorkspaceHref(woId);
+    const productionHref = productionWorkspaceHref(woId, undefined, {
+      salesOrderId: soId > 0 ? soId : undefined,
+      orderType: row.orderType,
+    });
     const actionLabel =
       row.operationalKey === "READY_FOR_ISSUE"
         ? "Issue RM to Production"
@@ -310,6 +314,7 @@ export function buildOperationalBlockerRows(
     operationalKey?: string;
     operationalLabel?: string;
     nextActionKey?: string;
+    orderType?: string | null;
   }> | null,
 ): { blockers: OperationalBlockerRow[]; readyForWo: OperationalBlockerReadyRow[] } {
   const actions = buildOperationalSoActions(procurement, queues, storeIssuePending, allocationFirstPending);

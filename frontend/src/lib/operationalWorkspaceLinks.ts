@@ -1,6 +1,6 @@
 import { DRILL_QUERY } from "./drillDownRoutes";
 import { buildNoQtyGuidedHref } from "./noQtyFlowState";
-import { PRODUCTION_FLOW_REGULAR } from "./productionFlowContract";
+import { buildProductionScopedHref } from "./productionNavigation";
 
 /** Production / WO list opened from left-menu Work Order Workspace (navigation only). */
 export const FROM_WORK_ORDER_WORKSPACE = "work-order-workspace";
@@ -28,25 +28,14 @@ export type ProductionQueueRowLink = {
 
 /** Deep-link into scoped production (prefer server-built actionHref). */
 export function productionHrefFromDashboardRow(row: ProductionQueueRowLink): string {
-  if (row.actionHref) return row.actionHref;
-  const sid = Number(row.salesOrderId ?? 0);
-  if (row.orderType === "NO_QTY" && sid > 0) {
-    return buildNoQtyGuidedHref({
-      to: "/production",
-      salesOrderId: sid,
-      cycleId: row.cycleId ?? undefined,
-      fromStep: "production",
-    });
-  }
-  const qs = new URLSearchParams();
-  qs.set("flow", PRODUCTION_FLOW_REGULAR);
-  if (sid > 0) qs.set("salesOrderId", String(sid));
-  if (row.workOrderId > 0) qs.set("workOrderId", String(row.workOrderId));
-  if (row.workOrderLineId != null && row.workOrderLineId > 0) {
-    qs.set("workOrderLineId", String(row.workOrderLineId));
-  }
-  const q = qs.toString();
-  return q ? `/production?${q}` : "/production";
+  return buildProductionScopedHref({
+    actionHref: row.actionHref,
+    orderType: row.orderType,
+    salesOrderId: row.salesOrderId,
+    cycleId: row.cycleId ?? undefined,
+    workOrderId: row.workOrderId,
+    workOrderLineId: row.workOrderLineId,
+  });
 }
 
 /** Production deep-link from Work Order Workspace — preserves back navigation to `/work-orders`. */

@@ -65,6 +65,8 @@ export type GuidedWorkflowInput = {
   hasWaitingPmr: boolean;
   workOrderId: number;
   salesOrderId?: number | null;
+  orderType?: string | null;
+  cycleId?: number | null;
   materialRequirementId?: number | null;
   rmItemId?: number | null;
   mrStatus?: string | null;
@@ -140,7 +142,11 @@ export function resolveGuidedWorkflow(input: GuidedWorkflowInput): GuidedWorkflo
   const issueHref = input.materialRequirementId
     ? `/material-issue?workOrderId=${input.workOrderId}&returnTo=rm-control-center`
     : `/material-issue?workOrderId=${input.workOrderId}&returnTo=rm-control-center`;
-  const productionHref = productionWorkspaceHref(input.workOrderId);
+  const productionHref = productionWorkspaceHref(input.workOrderId, undefined, {
+    salesOrderId: input.salesOrderId ?? undefined,
+    orderType: input.orderType,
+    cycleId: input.cycleId ?? undefined,
+  });
 
   let phase: GuidedWorkflowPhase = "IDLE";
   let timelineStepIndex = 0;

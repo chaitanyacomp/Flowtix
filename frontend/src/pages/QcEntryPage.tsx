@@ -46,6 +46,7 @@ import { ErpEmptyState } from "../components/erp/foundation/ErpEmptyState";
 import { NoQtyCycleContextBar } from "../components/erp/foundation/NoQtyCycleContextBar";
 import { displaySalesOrderNo } from "../lib/docNoDisplay";
 import { buildNoQtyGuidedHref, useNoQtyFlowState } from "../lib/noQtyFlowState";
+import { buildProductionScopedHref } from "../lib/productionNavigation";
 import { noQtySoListHref } from "../lib/noQtyRsActionLabels";
 import { useToast } from "../contexts/ToastContext";
 import { pauseWorkOrderProductionApi } from "../lib/workOrderLifecycle";
@@ -1834,7 +1835,12 @@ export function QcEntryPage() {
       await pauseWorkOrderProductionApi(workOrderId);
       toast.showSuccess("Work order paused. Accepted FG remains reserved for this sales order.");
       navigate(
-        `/production?flow=REGULAR_SO&workOrderId=${workOrderId}&salesOrderId=${focusSoId}&from=qc-entry`,
+        buildProductionScopedHref({
+          workOrderId,
+          salesOrderId: focusSoId,
+          orderType: fromNoQtySo ? "NO_QTY" : "NORMAL",
+          from: "qc-entry",
+        }),
       );
     } catch (e) {
       toast.showError(e instanceof Error ? e.message : "Could not pause work order");

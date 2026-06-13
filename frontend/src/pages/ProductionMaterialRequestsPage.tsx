@@ -16,6 +16,7 @@ import {
   materialIssueWorkspaceHref,
   productionWorkspaceHref,
 } from "../lib/materialWorkflowLinks";
+import { buildProductionScopedHref } from "../lib/productionNavigation";
 
 type PmrLine = {
   id: number;
@@ -171,10 +172,8 @@ export function ProductionMaterialRequestsPage() {
       });
       await apiFetch(`/api/production-material-requests/${created.id}/submit`, { method: "POST" });
       showSuccess(`Request submitted — ${created.docNo || "PMR"}`);
-      const prodQs = new URLSearchParams();
-      prodQs.set("workOrderId", String(workOrderId));
-      if (urlWorkOrderLineId > 0) prodQs.set("workOrderLineId", String(urlWorkOrderLineId));
-      navigate(`/production?${prodQs.toString()}`);
+      const prodHref = buildProductionScopedHref({ workOrderId });
+      navigate(prodHref);
     } catch (e) {
       showError(e instanceof Error ? e.message : "Failed to save request");
     } finally {

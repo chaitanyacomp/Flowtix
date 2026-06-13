@@ -1,4 +1,7 @@
-import { PRODUCTION_FLOW_REGULAR } from "./productionFlowContract";
+import { buildProductionScopedHref, productionWorkspaceHref } from "./productionNavigation";
+
+export { buildProductionScopedHref, productionWorkspaceHref };
+export type { ProductionScopedNavInput } from "./productionNavigation";
 
 /** Deep links for Production → PMR → Material Issue operational flow (UX only). */
 
@@ -28,15 +31,6 @@ export function materialIssueWorkspaceHref(opts: {
   if (opts.workOrderId && opts.workOrderId > 0) q.set("workOrderId", String(opts.workOrderId));
   if (opts.returnTo) q.set("returnTo", opts.returnTo);
   return `/material-issue?${q.toString()}`;
-}
-
-export function productionWorkspaceHref(workOrderId: number, workOrderLineId?: number): string {
-  const q = new URLSearchParams({
-    flow: PRODUCTION_FLOW_REGULAR,
-    workOrderId: String(workOrderId),
-  });
-  if (workOrderLineId && workOrderLineId > 0) q.set("workOrderLineId", String(workOrderLineId));
-  return `/production?${q.toString()}`;
 }
 
 /** RM Control Center — read-only diagnosis for Production; Store executes from here. */

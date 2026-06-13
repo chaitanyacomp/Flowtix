@@ -1635,7 +1635,11 @@ export function DashboardPage() {
 
     if (isProductionRole) {
       if (waitingGate === "WAITING_STORE_ISSUE" && woId > 0) {
-        materialHref = productionWorkspaceHref(woId);
+        materialHref = productionWorkspaceHref(woId, undefined, {
+          salesOrderId: firstWaitingWo?.salesOrderId,
+          orderType: firstWaitingWo?.orderType,
+          cycleId: firstWaitingWo?.cycleId ?? undefined,
+        });
         actionLabel = "Open Production Workspace";
       } else if ((waitingGate === "NO_PMR" || waitingGate === "PMR_DRAFT_ONLY") && woId > 0) {
         materialHref = rmControlCenterHref({ workOrderId: woId, returnTo: "dashboard" });

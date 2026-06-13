@@ -50,6 +50,7 @@ import { useCanCreateNextRs } from "../hooks/useIsAdmin";
 import { getRoleEmptyState } from "../lib/erpRoleEmptyStates";
 import { isProductionWorkspaceEntry } from "../lib/operationalPageEntry";
 import { productionHrefFromDashboardRow } from "../lib/operationalWorkspaceLinks";
+import { buildProductionScopedHref } from "../lib/productionNavigation";
 import {
   materialRequestsQueueHref,
   rmControlCenterHref,
@@ -905,6 +906,58 @@ export function ProductionPage() {
     return woScopedNoQtyCycleId ?? cycleIdFromUrl ?? noQtyFlowState?.cycleId ?? null;
   }, [navigateNoQtyContext, woScopedNoQtyCycleId, cycleIdFromUrl, noQtyFlowState?.cycleId]);
 
+  /** P7E — auto-correct URL when `flow=REGULAR_SO` (or other) disagrees with SO order type. */
+  React.useEffect(() => {
+    if (!flowMismatchMessage) return;
+    const soId =
+      flowResolutionSoId > 0
+        ? flowResolutionSoId
+        : focusSoIdValid
+          ? focusSoId
+          : 0;
+    if (!(soId > 0) || !Object.prototype.hasOwnProperty.call(soOrderTypeById, soId)) return;
+    const orderType = soOrderTypeById[soId];
+    const targetWoId = woId > 0 ? woId : woIdFromUrlValid ? woIdFromUrlPick : 0;
+    const targetWolId =
+      wolId > 0 ? wolId : workOrderLineIdFromUrlValid ? workOrderLineIdFromUrl : undefined;
+    const woRow = targetWoId > 0 ? workOrders.find((w) => w.id === targetWoId) : null;
+    const cycleId =
+      orderType === "NO_QTY"
+        ? (woRow?.cycleId ?? woRow?.cycle?.id ?? effectiveNoQtyCycleId ?? cycleIdFromUrl ?? null)
+        : null;
+
+    const corrected = buildProductionScopedHref({
+      workOrderId: targetWoId > 0 ? targetWoId : undefined,
+      workOrderLineId: targetWolId,
+      salesOrderId: soId,
+      orderType,
+      cycleId: cycleId ?? undefined,
+      from: fromParam || undefined,
+    });
+
+    const current = `${window.location.pathname}${window.location.search}`;
+    if (corrected !== current) {
+      navigate(corrected, { replace: true });
+    }
+  }, [
+    flowMismatchMessage,
+    flowResolutionSoId,
+    focusSoIdValid,
+    focusSoId,
+    soOrderTypeById,
+    woId,
+    woIdFromUrlValid,
+    woIdFromUrlPick,
+    wolId,
+    workOrderLineIdFromUrlValid,
+    workOrderLineIdFromUrl,
+    effectiveNoQtyCycleId,
+    cycleIdFromUrl,
+    workOrders,
+    fromParam,
+    navigate,
+  ]);
+
   const noQtyCycleNoFromWorkOrders = React.useMemo((): number | null => {
     if (effectiveNoQtyCycleId == null) return null;
     const match = workOrders.find((w) => Number(w.cycleId ?? w.cycle?.id ?? 0) === Number(effectiveNoQtyCycleId));
@@ -1552,7 +1605,8 @@ export function ProductionPage() {
   ]);
 
   const createFormCanSubmit = Boolean(
-    wolId > 0 &&
+    !flowMismatchMessage &&
+      wolId > 0 &&
       flatLines.some((l) => l.id === wolId) &&
       producedQtyValid &&
       producedQtyWithinCaps &&
@@ -1582,7 +1636,7 @@ export function ProductionPage() {
   }, [showRegularRmReadiness, showNoQtyRmStatus, wolId]);
 
   const showRegularProductionEntry =
-    showRegularRmReadiness && !rmProductionEntryBlocked && !rmReadinessLoading;
+    !flowMismatchMessage && showRegularRmReadiness && !rmProductionEntryBlocked && !rmReadinessLoading;
 
   React.useEffect(() => {
     if (!regularCreateFormLockedByDraft) return;

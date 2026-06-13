@@ -5,11 +5,9 @@
 
 import type { ProductionRmReadiness } from "../components/erp/ProductionRmReadinessStrip";
 import { isProductionBlockedByRmReadiness } from "../components/erp/ProductionRmReadinessStrip";
-import {
-  materialIssueWorkspaceHref,
-  materialRequestsQueueHref,
-  productionWorkspaceHref,
-} from "./materialWorkflowLinks";
+import { productionWorkspaceHref } from "./productionNavigation";
+import type { ProductionScopedNavInput } from "./productionNavigation";
+import { materialIssueWorkspaceHref, materialRequestsQueueHref } from "./materialWorkflowLinks";
 
 export type RegularSoNextStepAction = {
   label: string;
@@ -81,13 +79,14 @@ export function buildRmIssueNextStep(
 export function buildRmReadyProductionNextStep(
   workOrderId: number,
   workOrderLineId?: number,
+  navCtx?: Pick<ProductionScopedNavInput, "salesOrderId" | "orderType" | "cycleId">,
 ): RegularSoNextStepModel {
   return {
     statusTitle: "RM Ready – Enter Production",
     statusSubtitle: "Material is issued. Record the next production batch.",
     primaryAction: {
       label: "Enter Production",
-      href: productionWorkspaceHref(workOrderId, workOrderLineId),
+      href: productionWorkspaceHref(workOrderId, workOrderLineId, navCtx),
       testId: "next-enter-production",
     },
   };

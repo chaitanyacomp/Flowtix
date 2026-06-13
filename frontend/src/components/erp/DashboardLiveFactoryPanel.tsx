@@ -6,6 +6,7 @@ import type { ProcurementPendingRow } from "./ProcurementPendingDashboardCard";
 import type { DashboardProductionStatusSource } from "../../lib/dashboardProductionStatus";
 import { buildDashboardProductionStatusRows } from "../../lib/dashboardProductionStatus";
 import { buildRmControlCenterHref } from "../../lib/woProcurementContinuity";
+import { productionHrefFromDashboardRow } from "../../lib/operationalWorkspaceLinks";
 import { displaySalesOrderNo } from "../../lib/docNoDisplay";
 import { REGULAR_TERMS } from "../../lib/flowTerminology";
 
@@ -170,7 +171,16 @@ export function DashboardLiveFactoryPanel({
     primary: r.workOrderNo ?? `WO #${r.workOrderId}`,
     secondary: r.itemName ?? r.customerName ?? undefined,
     meta: r.operationalStatus.label,
-    to: r.workOrderId ? `/production?workOrderId=${r.workOrderId}` : "/production",
+    to: r.workOrderId
+      ? productionHrefFromDashboardRow({
+          workOrderId: r.workOrderId,
+          workOrderLineId: r.workOrderLineId,
+          salesOrderId: r.salesOrderId,
+          orderType: r.orderType,
+          cycleId: r.cycleId,
+          actionHref: r.actionHref,
+        })
+      : "/production",
   }));
 
   const blockedRows = React.useMemo(() => {

@@ -46,6 +46,7 @@ import { NextStepStrip } from "../components/erp/NextStepStrip";
 import type { ProductionRmReadiness } from "../components/erp/ProductionRmReadinessStrip";
 import { isProductionBlockedByRmReadiness } from "../components/erp/ProductionRmReadinessStrip";
 import { buildRmIssueNextStep } from "../lib/regularSoOperationalGuidance";
+import { buildProductionScopedHref } from "../lib/productionNavigation";
 import { displaySalesOrderNo, displayWorkOrderNo } from "../lib/docNoDisplay";
 import { NoQtyCycleContextBar } from "../components/erp/foundation/NoQtyCycleContextBar";
 import { buildNoQtyGuidedHref, useNoQtyFlowState } from "../lib/noQtyFlowState";
@@ -864,12 +865,12 @@ export function WorkOrdersPage() {
 
   const productionEntryHref =
     showProductionNextStepEffective && salesOrderId !== "" && openWoForPrimaryFg.woId != null
-      ? `/production?${new URLSearchParams({
-          flow: "REGULAR_SO",
-          salesOrderId: String(salesOrderId),
-          woId: String(openWoForPrimaryFg.woId),
+      ? buildProductionScopedHref({
+          orderType: soDetail?.orderType ?? "NORMAL",
+          salesOrderId: Number(salesOrderId),
+          workOrderId: openWoForPrimaryFg.woId,
           from: showWoWorkspace ? "work-order-workspace" : "work-orders",
-        }).toString()}`
+        })
       : null;
 
   useDependentFieldFocus({

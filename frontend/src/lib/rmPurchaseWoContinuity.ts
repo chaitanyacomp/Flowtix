@@ -1,13 +1,14 @@
 import { apiFetch } from "../services/api";
 
 import { DRILL_QUERY } from "./drillDownRoutes";
-import { PRODUCTION_FLOW_REGULAR } from "./productionFlowContract";
 
 import type { ProductionRmReadiness } from "../components/erp/ProductionRmReadinessStrip";
 
 import { isProductionBlockedByRmReadiness } from "../components/erp/ProductionRmReadinessStrip";
 
 import { buildRmIssueNextStep } from "./regularSoOperationalGuidance";
+
+import { buildProductionScopedHref } from "./productionNavigation";
 
 import type { RmPoRow } from "../pages/rmPurchase/rmPurchaseShared";
 
@@ -125,21 +126,23 @@ export function buildViewWorkOrderHref(salesOrderId: number, workOrderId?: numbe
 
 function buildProductionHref(snapshot: PostGrnContinuitySnapshot): string {
 
-  const q = new URLSearchParams({
-    flow: PRODUCTION_FLOW_REGULAR,
-    salesOrderId: String(snapshot.salesOrderId),
-    from: "rm-purchase",
-  });
-
   const woId = Number(snapshot.workOrderId ?? 0);
-
-  if (woId > 0) q.set("woId", String(woId));
 
   const wolId = Number(snapshot.workOrderLineId ?? 0);
 
-  if (wolId > 0) q.set("workOrderLineId", String(wolId));
+  return buildProductionScopedHref({
 
-  return `/production?${q.toString()}`;
+    orderType: snapshot.orderType,
+
+    salesOrderId: snapshot.salesOrderId,
+
+    workOrderId: woId > 0 ? woId : undefined,
+
+    workOrderLineId: wolId > 0 ? wolId : undefined,
+
+    from: "rm-purchase",
+
+  });
 
 }
 

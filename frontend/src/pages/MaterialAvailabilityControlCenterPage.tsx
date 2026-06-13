@@ -17,6 +17,7 @@ import { RmControlCenterProcurementPanel } from "../components/erp/RmControlCent
 import { ErpModal } from "../components/erp/ErpModal";
 import { buildProcurementWorkspaceHref } from "../lib/woProcurementContinuity";
 import { buildRmPoDetailHref } from "../lib/rmPurchaseWoContinuity";
+import { buildProductionScopedHref } from "../lib/productionNavigation";
 import { buttonVariants } from "../components/ui/button";
 import { woPreparePrepareHref } from "../lib/woPrepareOperationalStage";
 import { presentOperationalError } from "../lib/operationalErrorPresentation";
@@ -123,8 +124,20 @@ type RmLine = {
 };
 
 type Detail = {
-  salesOrder: { id: number; docNo: string | null; orderType?: string | null; internalStatus?: string | null } | null;
-  workOrder: { id: number | null; docNo: string | null; status: string | null; holdReason?: string | null } | null;
+  salesOrder: {
+    id: number;
+    docNo: string | null;
+    orderType?: string | null;
+    internalStatus?: string | null;
+    currentCycleId?: number | null;
+  } | null;
+  workOrder: {
+    id: number | null;
+    docNo: string | null;
+    status: string | null;
+    holdReason?: string | null;
+    cycleId?: number | null;
+  } | null;
   fgItem: { itemName: string | null } | null;
   customer: { name: string | null } | null;
   requirementDate: string | null;
@@ -662,6 +675,8 @@ export function MaterialAvailabilityControlCenterPage() {
       hasWaitingPmr,
       workOrderId: detail.workOrder.id,
       salesOrderId: detail.salesOrder?.id ?? null,
+      orderType: detail.salesOrder?.orderType ?? null,
+      cycleId: detail.workOrder?.cycleId ?? detail.salesOrder?.currentCycleId ?? null,
       materialRequirementId: woCase?.materialRequirement?.id ?? null,
       rmItemId: selectedRmItemId,
       mrStatus: woCase?.materialRequirement?.status ?? null,
@@ -729,7 +744,15 @@ export function MaterialAvailabilityControlCenterPage() {
         ? buildRmPoDetailHref(primaryPoId, { salesOrderId, from: "rm-purchase" })
         : "/rm-po-grn?focus=pending-requests";
     const issueHref = workOrderId ? `/material-issue?workOrderId=${workOrderId}&returnTo=rm-control-center` : "";
-    const productionHref = workOrderId ? `/production?workOrderId=${workOrderId}` : "";
+    const productionHref = workOrderId
+      ? buildProductionScopedHref({
+          workOrderId,
+          salesOrderId: salesOrderId ?? undefined,
+          orderType: detail.salesOrder?.orderType ?? null,
+          cycleId: detail.workOrder?.cycleId ?? detail.salesOrder?.currentCycleId ?? undefined,
+          from: "rm-control-center",
+        })
+      : "";
     const procurementWorkspaceHref = buildProcurementWorkspaceHref({
       workOrderId,
       salesOrderId,
@@ -1596,7 +1619,17 @@ export function MaterialAvailabilityControlCenterPage() {
                       </Link>
                     ) : woCase?.allocationFirstStatus?.key === "READY_FOR_PRODUCTION" ? (
                       <Link
-                        to={detail.workOrder?.id ? `/production?workOrderId=${detail.workOrder.id}` : "/production"}
+                        to={
+                          detail.workOrder?.id
+                            ? buildProductionScopedHref({
+                                workOrderId: detail.workOrder.id,
+                                salesOrderId: detail.salesOrder?.id,
+                                orderType: detail.salesOrder?.orderType,
+                                cycleId: detail.workOrder?.cycleId ?? detail.salesOrder?.currentCycleId ?? undefined,
+                                from: "rm-control-center",
+                              })
+                            : "/production"
+                        }
                         className={cn(
                           buttonVariants({ size: "sm" }),
                           "h-9 w-full justify-center text-[13px] font-semibold no-underline",

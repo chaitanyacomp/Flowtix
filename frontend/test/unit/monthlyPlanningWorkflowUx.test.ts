@@ -1,14 +1,19 @@
 import { describe, expect, it } from "vitest";
 import {
+  APPROVED_PLAN_GUIDANCE,
+  approvedPlanGuidanceMessage,
   canLoadRmPurchaseTabs,
   canShowAdditionalPlanEntry,
   formatPlanStatusLabel,
   formatReleaseSuccessSummary,
   formatRmSnapshotContextLabel,
+  historicalApprovedPlanBannerMessage,
+  isHistoricalPlanDocument,
   isLegacyPlanDocument,
   isPlanEditable,
+  legacyPlanWorkflowBannerMessage,
+  LEGACY_PLAN_INFO_TOOLTIP,
   planStatusBadgeVariant,
-  purchasePlanningOperationalStatus,
   productionPlanReadOnlyMessage,
   resolvePlanDisplayLabel,
   resolveWorkflowActionVisibility,
@@ -200,9 +205,7 @@ describe("monthlyPlanningWorkflowUx.labels", () => {
     expect(usesPlanDocumentProcurementUx(approved)).toBe(true);
     expect(
       formatRmSnapshotContextLabel({ plan: approved, snapshotRevision: 1, lineCount: 4 }),
-    ).toBe("June Plan 1 · 4 RM lines (read-only)");
-    expect(purchasePlanningOperationalStatus(0, 100)).toContain("Procurement released for current plan");
-    expect(purchasePlanningOperationalStatus(50, 100)).toContain("Additional procurement required");
+    ).toBe("June Plan 1 · 4 RM lines (audit snapshot)");
     expect(
       formatReleaseSuccessSummary({
         plan: approved,
@@ -213,7 +216,7 @@ describe("monthlyPlanningWorkflowUx.labels", () => {
         skippedLineCount: 0,
         surplusLineCount: 0,
       }),
-    ).toContain("Released June Plan 1");
+    ).toContain("Demand Released from June Plan 1");
     expect(
       formatReleaseSuccessSummary({
         plan: approved,
@@ -227,18 +230,48 @@ describe("monthlyPlanningWorkflowUx.labels", () => {
     ).not.toContain("revision");
   });
 
-  it("keeps revision wording for legacy LOCKED plans", () => {
+  it("uses legacy snapshot wording for legacy LOCKED plans", () => {
     const legacy = plan({ status: "LOCKED", currentRevision: 2, displayLabel: "June Plan 1" });
     expect(usesPlanDocumentProcurementUx(legacy)).toBe(false);
     expect(
       formatRmSnapshotContextLabel({ plan: legacy, snapshotRevision: 2, lineCount: 3 }),
-    ).toBe("Snapshot revision 2 · 3 RM lines (read-only)");
+    ).toBe("Legacy lock snapshot 2 · 3 RM lines (read-only)");
+    expect(productionPlanReadOnlyMessage(legacy)).toContain("Legacy plan");
     expect(productionPlanReadOnlyMessage(legacy)).toContain("Reopen Plan");
   });
 
-  it("avoids reopen wording on APPROVED production tab", () => {
-    const approved = plan({ status: "APPROVED", displayLabel: "June Plan 1" });
-    expect(productionPlanReadOnlyMessage(approved)).toContain("Additional Plan");
+  it("guides APPROVED plans toward Additional Plan without reopen wording", () => {
+    const approved = plan({ status: "APPROVED", displayLabel: "June Plan 1", planSequenceNo: 1 });
+    expect(approvedPlanGuidanceMessage()).toBe(APPROVED_PLAN_GUIDANCE);
+    expect(approvedPlanGuidanceMessage({ canCreateAdditionalPlan: true })).toContain(
+      "Create Additional Plan",
+    );
+    expect(productionPlanReadOnlyMessage(approved, { canCreateAdditionalPlan: true })).toContain(
+      APPROVED_PLAN_GUIDANCE,
+    );
     expect(productionPlanReadOnlyMessage(approved)).not.toContain("Reopen");
+    expect(productionPlanReadOnlyMessage(approved)).not.toContain("revision");
+  });
+
+  it("identifies historical approved plan documents in a period", () => {
+    const plan1 = plan({ id: 1, status: "APPROVED", displayLabel: "June Plan 1", planSequenceNo: 1 });
+    const plan2 = plan({
+      id: 2,
+      status: "DRAFT",
+      displayLabel: "June Plan 2",
+      planSequenceNo: 2,
+      planKind: "ADDITIONAL",
+    });
+    const periodPlans = [plan1, plan2];
+    expect(isHistoricalPlanDocument(plan1, periodPlans)).toBe(true);
+    expect(isHistoricalPlanDocument(plan2, periodPlans)).toBe(false);
+    expect(historicalApprovedPlanBannerMessage(plan1, periodPlans)).toContain("June Plan 2");
+    expect(historicalApprovedPlanBannerMessage(plan1, periodPlans)).toContain("not modified");
+  });
+
+  it("legacy workflow banner explains isolation from modern plan documents", () => {
+    expect(legacyPlanWorkflowBannerMessage()).toContain("Legacy plan");
+    expect(legacyPlanWorkflowBannerMessage()).toContain("Create Additional Plan");
+    expect(LEGACY_PLAN_INFO_TOOLTIP).toBe(legacyPlanWorkflowBannerMessage());
   });
 });

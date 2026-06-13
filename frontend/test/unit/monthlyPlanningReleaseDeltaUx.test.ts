@@ -36,7 +36,7 @@ describe("monthlyPlanningReleaseDeltaUx", () => {
         additionalRequirementTotal: afterRelease,
         previouslyReleasedTotal: 125.675,
       }),
-    ).toBe("Procurement already released for current revision.");
+    ).toBe("Demand Released complete for this legacy plan snapshot.");
   });
 
   it("release failure → additional unchanged → remains enabled", () => {
@@ -72,7 +72,7 @@ describe("monthlyPlanningReleaseDeltaUx", () => {
         releasedRevision: 3,
         materialRequirementDocNo: "MR-26-0002",
       }),
-    ).toEqual({ revision: 3, label: "Rev 3", materialRequirementDocNo: "MR-26-0002" });
+    ).toEqual({ revision: 3, label: "Legacy snapshot 3", materialRequirementDocNo: "MR-26-0002" });
   });
 
   it("shows plan label badge for APPROVED plan documents", () => {
@@ -99,7 +99,7 @@ describe("monthlyPlanningReleaseDeltaUx", () => {
         previouslyReleasedTotal: 50,
         usesPlanDocumentUx: true,
       }),
-    ).toBe("Procurement already released for this plan.");
+    ).toBe("Demand Released complete — no additional release required.");
   });
 
   it("falls back to line sums when totals missing", () => {

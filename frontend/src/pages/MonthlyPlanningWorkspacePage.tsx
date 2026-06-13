@@ -9,6 +9,7 @@ import {
   MONTHLY_PLANNING_WRITE_ROLES,
 } from "../config/erpRoles";
 import {
+  approvedPlanGuidanceMessage,
   canLoadRmPurchaseTabs,
   canShowAdditionalPlanEntry,
   formatPlanKindLabel,
@@ -16,8 +17,18 @@ import {
   formatPurchasePlanningContextLabel,
   formatReleaseSuccessSummary,
   formatRmSnapshotContextLabel,
+  historicalApprovedPlanBannerMessage,
+  isHistoricalPlanDocument,
   isLegacyPlanDocument,
   isPlanEditable,
+  LEGACY_PLAN_BADGE_LABEL,
+  LEGACY_PLAN_INFO_TOOLTIP,
+  LEGACY_REVISION_WORKFLOW_LABEL,
+  PURCHASE_FROZEN_SNAPSHOT_SECTION,
+  PURCHASE_LIVE_PROCUREMENT_SECTION,
+  PURCHASE_LINE_TABLE_NOTE,
+  RM_REQUIREMENT_SNAPSHOT_TAB_LABEL,
+  RM_SNAPSHOT_BANNER,
   planStatusBadgeVariant,
   purchasePlanningOperationalStatus,
   purchasePlanningReductionMessage,
@@ -34,6 +45,8 @@ import {
 import { buildReportHref } from "../lib/rmPlanningVsReceivedReportUx";
 import {
   formatPhysicalCoveragePct,
+  formatPendingReceiptQtyDisplay,
+  formatReceiptStatusLabel,
   lookupReceiptCoverageForLine,
   physicalReceiptCoverageBannerLine,
   physicalReceiptCoverageDetailMessage,
@@ -55,6 +68,11 @@ import {
   resolvePreviouslyReleasedTotal,
 } from "../lib/monthlyPlanningReleaseDeltaUx";
 import {
+  MP_PROCUREMENT,
+  MP_RELEASE_STATUS_META,
+  procurementProgressModelLine,
+} from "../lib/monthlyPlanningProcurementLabels";
+import {
   CalendarRange,
   Plus,
   Trash2,
@@ -75,6 +93,7 @@ import {
   Calculator,
   Boxes,
   History,
+  CircleHelp,
 } from "lucide-react";
 
 type PlanStatus = MonthlyPlanStatus;
@@ -679,6 +698,11 @@ export function MonthlyPlanningWorkspacePage() {
     isLegacyPlan && plan && plan.status === "DRAFT" && plan.currentRevision >= 1,
   );
   const showAdditionalPlanEntry = canShowAdditionalPlanEntry({ canMutatePeriod, periodPlans });
+  const historicalPlanBanner =
+    plan && periodPlans.length > 0 ? historicalApprovedPlanBannerMessage(plan, periodPlans) : null;
+  const showLegacyWorkflowActions = Boolean(
+    workflowActions.lock || workflowActions.reopen || workflowActions.cancelReopen,
+  );
   const suggestedProductionMap = React.useMemo(
     () => buildSuggestedProductionMap(requirementComposition),
     [requirementComposition],
@@ -1266,7 +1290,7 @@ export function MonthlyPlanningWorkspacePage() {
         body: JSON.stringify(lockBody),
       });
       setRmPlanning(rm);
-      showSuccess("Plan locked. RM Planning snapshot generated.");
+      showSuccess("Legacy plan locked. RM Planning snapshot generated.");
       setConfirmLockOpen(false);
       await loadPlan(period);
       setActiveTab("rm");
@@ -1286,7 +1310,7 @@ export function MonthlyPlanningWorkspacePage() {
         `/api/monthly-planning/${plan.id}/cancel-reopen`,
         { method: "POST", body: JSON.stringify(body) },
       );
-      showSuccess(`Draft discarded. Plan restored to LOCKED revision ${plan.currentRevision}.`);
+      showSuccess(`Legacy plan restored to locked snapshot ${plan.currentRevision}.`);
       await loadPlan(period);
     } catch (e) {
       showError(e instanceof ApiRequestError ? e.message : "Failed to cancel reopen.");
@@ -1305,7 +1329,7 @@ export function MonthlyPlanningWorkspacePage() {
         { method: "POST", body: JSON.stringify(body) },
       );
       showSuccess(
-        `Plan reopened — editing draft for revision ${res.draftForRevision}. Revision ${res.currentRevision} remains in history.`,
+        `Legacy plan reopened — editing draft for lock snapshot ${res.draftForRevision}. Snapshot ${res.currentRevision} remains in history.`,
       );
       await loadPlan(period);
     } catch (e) {
@@ -1564,86 +1588,104 @@ export function MonthlyPlanningWorkspacePage() {
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-3 p-3 sm:p-4">
+    <div className="flex min-h-0 flex-1 flex-col gap-1.5 p-2 sm:p-3">
       {/* Header */}
-      <div className="rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
-        <div className="flex flex-wrap items-end gap-x-4 gap-y-3">
-          <div>
-            <label className="block text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+      <div className="rounded-md border border-slate-200 bg-white p-2 shadow-sm">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+          <div className="flex items-center gap-2">
+            <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
               Plan period
             </label>
             <Input
               type="month"
               value={period}
               onChange={(e) => applyPeriod(e.target.value)}
-              className="mt-1 h-9 w-[170px]"
+              className="h-8 w-[160px]"
             />
           </div>
 
-          <div className="flex flex-1 flex-wrap items-center gap-2">
-            {shouldShowPlanSelector(periodPlans) ? (
-              <div className="flex min-w-[200px] flex-col gap-1">
-                <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                  Plan document
-                </label>
-                <NativeSelect
-                  value={String(selectedPlanId ?? plan?.id ?? "")}
-                  onChange={(e) => onSelectPlan(Number(e.target.value))}
-                  className="h-9 min-w-[220px]"
-                  disabled={loading || periodPlans.length <= 1}
-                >
-                  {periodPlans.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {resolvePlanDisplayLabel(p)} · {formatPlanKindLabel(p.planKind)} ·{" "}
-                      {formatPlanStatusLabel(p.status)}
-                    </option>
-                  ))}
-                </NativeSelect>
-              </div>
-            ) : null}
-            {planExists && plan ? (
-              <>
-                <Badge variant={planStatusBadgeVariant(plan.status)}>
-                  {formatPlanStatusLabel(plan.status)}
-                </Badge>
-                <span className="text-[13px] font-semibold text-slate-800">
+          {shouldShowPlanSelector(periodPlans) ? (
+            <div className="flex items-center gap-2">
+              <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                Plan document
+              </label>
+              <NativeSelect
+                value={String(selectedPlanId ?? plan?.id ?? "")}
+                onChange={(e) => onSelectPlan(Number(e.target.value))}
+                className="h-8 min-w-[200px]"
+                disabled={loading || periodPlans.length <= 1}
+              >
+                {periodPlans.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {resolvePlanDisplayLabel(p)} · {formatPlanKindLabel(p.planKind)} ·{" "}
+                    {formatPlanStatusLabel(p.status)}
+                  </option>
+                ))}
+              </NativeSelect>
+            </div>
+          ) : null}
+
+          {planExists && plan ? (
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+              <Badge variant={planStatusBadgeVariant(plan.status)} className="text-[11px]">
+                {formatPlanStatusLabel(plan.status)}
+              </Badge>
+              {!shouldShowPlanSelector(periodPlans) ? (
+                <span className="text-[12px] font-semibold text-slate-800">
                   {resolvePlanDisplayLabel(plan)}
                 </span>
-                {plan.planKind ? (
-                  <Badge variant="default">{formatPlanKindLabel(plan.planKind)}</Badge>
-                ) : null}
-                {plan.docNo ? (
-                  <span className="text-[12px] text-slate-500">{plan.docNo}</span>
-                ) : null}
-                {isLegacyPlan ? (
-                  <span className="text-[12px] text-slate-500">Revision {plan.currentRevision}</span>
-                ) : null}
-                {plan.lockedAt ? (
-                  <span className="text-[12px] text-slate-500">
-                    · Submitted {new Date(plan.lockedAt).toLocaleDateString()}
-                  </span>
-                ) : null}
-                {plan.createdAt ? (
-                  <span className="text-[12px] text-slate-400">
-                    · Created {new Date(plan.createdAt).toLocaleDateString()}
-                  </span>
-                ) : null}
-              </>
-            ) : (
-              <span className="text-[13px] text-slate-500">No production plan created yet.</span>
-            )}
-          </div>
+              ) : null}
+              {isLegacyPlan ? (
+                <span className="inline-flex items-center gap-0.5" title={LEGACY_PLAN_INFO_TOOLTIP}>
+                  <Badge variant="warning" className="text-[11px]">
+                    {LEGACY_PLAN_BADGE_LABEL}
+                  </Badge>
+                  <CircleHelp className="h-3.5 w-3.5 shrink-0 text-amber-700" aria-hidden="true" />
+                  <span className="sr-only">{LEGACY_PLAN_INFO_TOOLTIP}</span>
+                </span>
+              ) : null}
+              {plan.planKind ? (
+                <Badge variant="default" className="text-[11px]">
+                  {formatPlanKindLabel(plan.planKind)}
+                </Badge>
+              ) : null}
+              {isHistoricalPlanDocument(plan, periodPlans) ? (
+                <Badge variant="default" className="text-[11px]">
+                  Historical
+                </Badge>
+              ) : null}
+              {isDraftForNextRevision ? (
+                <span className="text-[11px] text-blue-800">
+                  Draft for snapshot {plan.currentRevision + 1}
+                </span>
+              ) : null}
+              <span className="text-[11px] text-slate-500">
+                {[
+                  plan.docNo,
+                  isLegacyPlan ? `Snapshot ${plan.currentRevision}` : null,
+                  plan.lockedAt
+                    ? `Submitted ${new Date(plan.lockedAt).toLocaleDateString()}`
+                    : null,
+                  plan.createdAt ? `Created ${new Date(plan.createdAt).toLocaleDateString()}` : null,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </span>
+            </div>
+          ) : (
+            <span className="text-[12px] text-slate-500">No production plan created yet.</span>
+          )}
 
-          <div className="flex items-center gap-2">
+          <div className="ml-auto flex flex-wrap items-center gap-1.5">
             <Button
               type="button"
               variant="outline"
               size="sm"
               onClick={() => void loadPlan(period)}
               disabled={loading}
-              className="h-9"
+              className="h-8 px-2.5"
             >
-              <RefreshCw className={cn("mr-1.5 h-4 w-4", loading && "animate-spin")} />
+              <RefreshCw className={cn("mr-1 h-3.5 w-3.5", loading && "animate-spin")} />
               Refresh
             </Button>
             {workflowActions.save ? (
@@ -1656,9 +1698,9 @@ export function MonthlyPlanningWorkspacePage() {
                   )
                 }
                 disabled={saving}
-                className="h-9"
+                className="h-8 px-2.5"
               >
-                <Save className="mr-1.5 h-4 w-4" />
+                <Save className="mr-1 h-3.5 w-3.5" />
                 {saving ? "Saving…" : "Save changes"}
               </Button>
             ) : null}
@@ -1673,9 +1715,9 @@ export function MonthlyPlanningWorkspacePage() {
                   )
                 }
                 disabled={submittingForReview || saving}
-                className="h-9 bg-indigo-700 hover:bg-indigo-800"
+                className="h-8 bg-indigo-700 px-2.5 hover:bg-indigo-800"
               >
-                <Send className="mr-1.5 h-4 w-4" />
+                <Send className="mr-1 h-3.5 w-3.5" />
                 {submittingForReview ? "Submitting…" : "Submit For Purchase Review"}
               </Button>
             ) : null}
@@ -1689,9 +1731,9 @@ export function MonthlyPlanningWorkspacePage() {
                   )
                 }
                 disabled={approvingPlan || loading}
-                className="h-9 bg-emerald-700 hover:bg-emerald-800"
+                className="h-8 bg-emerald-700 px-2.5 hover:bg-emerald-800"
               >
-                <CheckCircle className="mr-1.5 h-4 w-4" />
+                <CheckCircle className="mr-1 h-3.5 w-3.5" />
                 {approvingPlan ? "Approving…" : "Approve"}
               </Button>
             ) : null}
@@ -1702,9 +1744,9 @@ export function MonthlyPlanningWorkspacePage() {
                 variant="outline"
                 onClick={() => setRejectModalOpen(true)}
                 disabled={rejectingPlan || loading}
-                className="h-9 border-red-300 text-red-800 hover:bg-red-50"
+                className="h-8 border-red-300 px-2.5 text-red-800 hover:bg-red-50"
               >
-                <XCircle className="mr-1.5 h-4 w-4" />
+                <XCircle className="mr-1 h-3.5 w-3.5" />
                 Reject
               </Button>
             ) : null}
@@ -1714,59 +1756,71 @@ export function MonthlyPlanningWorkspacePage() {
                 size="sm"
                 onClick={() => setConfirmReleaseOpen(true)}
                 disabled={releasing || loading}
-                className="h-9 bg-sky-700 hover:bg-sky-800"
+                className="h-8 bg-sky-700 px-2.5 hover:bg-sky-800"
               >
-                <PackagePlus className="mr-1.5 h-4 w-4" />
+                <PackagePlus className="mr-1 h-3.5 w-3.5" />
                 Release To Procurement
               </Button>
             ) : null}
-            {workflowActions.lock ? (
-              <Button
-                type="button"
-                size="sm"
-                variant="default"
-                onClick={() => runWithPastPeriodGuard(() => Promise.resolve(setConfirmLockOpen(true)))}
-                disabled={!canLock || saving}
-                title={canLock ? "Lock plan and generate RM Planning (legacy)" : "Add a planned qty > 0 to lock"}
-                className="h-9 bg-amber-700 hover:bg-amber-800"
+            {showLegacyWorkflowActions ? (
+              <div
+                className="flex flex-wrap items-center gap-1 rounded border border-amber-200 bg-amber-50/50 px-1.5 py-0.5"
+                title={LEGACY_PLAN_INFO_TOOLTIP}
               >
-                <Lock className="mr-1.5 h-4 w-4" />
-                Lock Plan
-              </Button>
-            ) : null}
-            {workflowActions.reopen ? (
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                onClick={() =>
-                  runWithPastPeriodGuard(() =>
-                    onReopen(periodIsPast && isAdmin ? { confirmPastPeriod: true } : undefined),
-                  )
-                }
-                disabled={reopening || loading}
-                className="h-9 border-amber-300 text-amber-900 hover:bg-amber-50"
-              >
-                <Unlock className="mr-1.5 h-4 w-4" />
-                {reopening ? "Reopening…" : "Reopen Plan"}
-              </Button>
-            ) : null}
-            {workflowActions.cancelReopen ? (
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                onClick={() =>
-                  runWithPastPeriodGuard(() =>
-                    onCancelReopen(periodIsPast && isAdmin ? { confirmPastPeriod: true } : undefined),
-                  )
-                }
-                disabled={cancellingReopen || loading || saving}
-                className="h-9 border-slate-300 text-slate-800 hover:bg-slate-50"
-              >
-                <X className="mr-1.5 h-4 w-4" />
-                {cancellingReopen ? "Cancelling…" : "Cancel Reopen"}
-              </Button>
+                <span className="text-[9px] font-bold uppercase tracking-wide text-amber-900">Legacy</span>
+                {workflowActions.lock ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="default"
+                    onClick={() => runWithPastPeriodGuard(() => Promise.resolve(setConfirmLockOpen(true)))}
+                    disabled={!canLock || saving}
+                    title={
+                      canLock
+                        ? "Lock legacy plan and generate RM Planning snapshot"
+                        : "Add a planned qty > 0 to lock"
+                    }
+                    className="h-8 bg-amber-700 px-2 hover:bg-amber-800"
+                  >
+                    <Lock className="mr-1 h-3.5 w-3.5" />
+                    Lock Plan
+                  </Button>
+                ) : null}
+                {workflowActions.reopen ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() =>
+                      runWithPastPeriodGuard(() =>
+                        onReopen(periodIsPast && isAdmin ? { confirmPastPeriod: true } : undefined),
+                      )
+                    }
+                    disabled={reopening || loading}
+                    className="h-8 border-amber-400 px-2 text-amber-950 hover:bg-amber-100"
+                  >
+                    <Unlock className="mr-1 h-3.5 w-3.5" />
+                    {reopening ? "Reopening…" : "Reopen Plan"}
+                  </Button>
+                ) : null}
+                {workflowActions.cancelReopen ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() =>
+                      runWithPastPeriodGuard(() =>
+                        onCancelReopen(periodIsPast && isAdmin ? { confirmPastPeriod: true } : undefined),
+                      )
+                    }
+                    disabled={cancellingReopen || loading || saving}
+                    className="h-8 border-slate-300 px-2 text-slate-800 hover:bg-slate-50"
+                  >
+                    <X className="mr-1 h-3.5 w-3.5" />
+                    {cancellingReopen ? "Cancelling…" : "Cancel Reopen"}
+                  </Button>
+                ) : null}
+              </div>
             ) : null}
             {showAdditionalPlanEntry ? (
               <Button
@@ -1775,9 +1829,9 @@ export function MonthlyPlanningWorkspacePage() {
                 variant="outline"
                 onClick={() => void loadAdditionalPlanPreview()}
                 disabled={loadingAdditionalPreview}
-                className="h-9"
+                className="h-8 px-2.5"
               >
-                <Plus className="mr-1.5 h-4 w-4" />
+                <Plus className="mr-1 h-3.5 w-3.5" />
                 {loadingAdditionalPreview ? "Loading…" : "Additional Plan"}
               </Button>
             ) : null}
@@ -1786,51 +1840,56 @@ export function MonthlyPlanningWorkspacePage() {
       </div>
 
       {periodIsPast && !isAdmin ? (
-        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-900">
+        <div className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] leading-snug text-amber-900">
           <strong>Past period.</strong> Planning actions are disabled.
         </div>
       ) : null}
       {periodIsPast && isAdmin ? (
-        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-900">
-          <strong>Past period ({period}).</strong> Changes require admin confirmation and should be used only for
-          audit, correction, or testing.
+        <div className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] leading-snug text-amber-900">
+          <strong>Past period ({period}).</strong> Admin confirmation required for changes.
         </div>
       ) : null}
 
-      {isDraftForNextRevision && plan ? (
-        <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-[12px] text-blue-900">
-          <strong>Editing draft for Revision {plan.currentRevision + 1}.</strong> Last locked revision:{" "}
-          <strong>{plan.currentRevision}</strong> remains in history (view-only).
-        </div>
-      ) : null}
-
-      {plan?.status === "DRAFT" && !plan.purchaseRejectReason ? (
-        <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-[12px] text-blue-900">
-          <strong>Draft plan document.</strong> Store owns FG line edits until this plan is submitted for Purchase
-          review.
+      {plan?.status === "DRAFT" && !plan.purchaseRejectReason && !isLegacyPlan ? (
+        <div className="rounded border border-blue-200 bg-blue-50 px-2 py-1 text-[11px] leading-snug text-blue-900">
+          <strong>Draft plan document.</strong> Store owns FG edits until Purchase review.
         </div>
       ) : null}
 
       {plan?.status === "AWAITING_PURCHASE_REVIEW" ? (
-        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-900">
-          <strong>Awaiting Purchase review.</strong> FG lines are read-only until Purchase approves or rejects this
-          plan.
+        <div className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] leading-snug text-amber-900">
+          <strong>Awaiting Purchase review.</strong> FG lines are read-only until approved or rejected.
         </div>
       ) : null}
 
-      {plan?.status === "APPROVED" ? (
-        <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-[12px] text-emerald-900">
-          <strong>Approved plan document.</strong> FG lines are frozen. Release procurement demand when RM planning is
-          ready.
+      {historicalPlanBanner ? (
+        <div className="rounded border border-slate-300 bg-slate-50 px-2 py-1 text-[11px] leading-snug text-slate-800">
+          {historicalPlanBanner}
+        </div>
+      ) : null}
+
+      {plan?.status === "APPROVED" && !isLegacyPlan ? (
+        <div className="rounded border border-emerald-200 bg-emerald-50 px-2 py-1 text-[11px] leading-snug text-emerald-900">
+          <strong>Approved plan document.</strong>{" "}
+          {approvedPlanGuidanceMessage({ canCreateAdditionalPlan: showAdditionalPlanEntry })}
+          {plan.releasedAt ? (
+            <span className="text-emerald-800">
+              {" "}
+              · Demand released — review under Purchase Planning.
+            </span>
+          ) : (
+            <span className="text-emerald-800">
+              {" "}
+              · Release procurement demand from Purchase Planning when ready.
+            </span>
+          )}
         </div>
       ) : null}
 
       {plan?.status === "DRAFT" && plan.purchaseRejectReason ? (
-        <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-[12px] text-red-900">
+        <div className="rounded border border-red-200 bg-red-50 px-2 py-1 text-[11px] leading-snug text-red-900">
           <strong>Purchase rejected:</strong> {plan.purchaseRejectReason}
-          <span className="mt-1 block text-red-800">
-            Store can edit FG lines and resubmit for Purchase review.
-          </span>
+          <span className="text-red-800"> · Store can edit and resubmit.</span>
         </div>
       ) : null}
 
@@ -1848,7 +1907,7 @@ export function MonthlyPlanningWorkspacePage() {
       </div>
 
       {/* Tabs */}
-      <div className="flex items-center gap-1 border-b border-slate-200">
+      <div className="-mt-0.5 flex items-center gap-0.5 border-b border-slate-200">
         <TabButton active={activeTab === "production"} onClick={() => setActiveTab("production")}>
           Production Plan
         </TabButton>
@@ -1862,7 +1921,7 @@ export function MonthlyPlanningWorkspacePage() {
           }
           onClick={() => setActiveTab("rm")}
         >
-          RM Planning
+          {RM_REQUIREMENT_SNAPSHOT_TAB_LABEL}
         </TabButton>
         <TabButton
           active={activeTab === "purchase"}
@@ -1922,7 +1981,10 @@ export function MonthlyPlanningWorkspacePage() {
           <ProductionPlanTab
             rows={rows}
             editable={editable}
-            readOnlyMessage={productionPlanReadOnlyMessage(plan)}
+            readOnlyMessage={productionPlanReadOnlyMessage(plan, {
+              periodPlans,
+              canCreateAdditionalPlan: showAdditionalPlanEntry,
+            })}
             period={period}
             rsSuggestions={rsSuggestions}
             rsSuggestionsVisible={rsSuggestionsVisible}
@@ -2236,10 +2298,10 @@ function ReleaseConfirmModal({
     planHeader && usesPlanDocumentProcurementUx(planHeader)
       ? resolvePlanDisplayLabel(planHeader)
       : snapshotRevision != null && snapshotRevision > 0
-        ? `Revision ${snapshotRevision}`
+        ? `Legacy snapshot ${snapshotRevision}`
         : "—";
   const releaseContextCaption =
-    planHeader && usesPlanDocumentProcurementUx(planHeader) ? "Plan document" : "Revision";
+    planHeader && usesPlanDocumentProcurementUx(planHeader) ? "Plan document" : "Legacy snapshot";
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4">
       <div className="w-full max-w-md rounded-lg border border-slate-200 bg-white p-5 shadow-xl">
@@ -2266,8 +2328,10 @@ function ReleaseConfirmModal({
           </div>
         </div>
         <p className="mt-3 text-[13px] leading-relaxed text-slate-600">
-          Only the procurement <strong>delta</strong> will be released into the Material Requirement flow
-          (previously released quantities are not duplicated). Releasing again with no new demand emits nothing.
+          Only the procurement <strong>delta</strong> will be released as new{" "}
+          {MP_PROCUREMENT.DEMAND_RELEASED.toLowerCase()} into the Material Requirement flow (existing{" "}
+          {MP_PROCUREMENT.DEMAND_RELEASED.toLowerCase()} is not duplicated). Releasing again with no new demand
+          emits nothing.
         </p>
         <div className="mt-5 flex justify-end gap-2">
           <Button type="button" variant="outline" onClick={onCancel} disabled={releasing}>
@@ -2311,7 +2375,7 @@ function LockConfirmModal({
             <span className="flex h-9 w-9 items-center justify-center rounded-full bg-amber-100 text-amber-700">
               <Lock className="h-4 w-4" />
             </span>
-            <h3 className="text-base font-semibold text-slate-900">Lock monthly plan</h3>
+            <h3 className="text-base font-semibold text-slate-900">Lock legacy monthly plan</h3>
           </div>
           <button type="button" onClick={onCancel} className="text-slate-400 hover:text-slate-700">
             <X className="h-5 w-5" />
@@ -2351,9 +2415,11 @@ function LockConfirmModal({
         ) : null}
 
         <p className="mt-3 text-[13px] leading-relaxed text-slate-600">
-          Locking <strong>{period}</strong> will freeze the production plan and generate an immutable{" "}
-          <strong>RM Planning snapshot</strong> (BOM explosion + current stock position) for a new revision. The
-          Production Plan becomes read-only. This does not create any purchase or procurement records.
+          <strong>{LEGACY_REVISION_WORKFLOW_LABEL}.</strong> Locking <strong>{period}</strong> will freeze the
+          production plan and generate an immutable RM Planning snapshot (BOM explosion + stock position at lock).
+          The production plan becomes read-only under this legacy workflow. This does not create purchase or
+          procurement records. For new planning periods, use plan documents (Plan 1, Plan 2, …) instead of lock
+          snapshots.
         </p>
 
         <div className="mt-5 flex justify-end gap-2">
@@ -2384,7 +2450,7 @@ function RmPlanningTab({
   planStatus?: PlanStatus;
 }) {
   if (loading && !data) {
-    return <div className="p-6 text-sm text-slate-500">Loading RM Planning…</div>;
+    return <div className="p-6 text-sm text-slate-500">Loading {RM_REQUIREMENT_SNAPSHOT_TAB_LABEL}…</div>;
   }
   if (!data || !data.locked || !data.exists) {
     return (
@@ -2415,13 +2481,24 @@ function RmPlanningTab({
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-2">
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
-        <KpiCard label="Total RM items" value={String(totalRmItems)} />
-        <KpiCard label="Total gross demand" value={totalGross.toLocaleString()} />
-        <KpiCard label="Net procurement req." value={totalNet.toLocaleString()} />
-        <KpiCard label="Critical shortages" value={String(criticalShortage)} />
-        <KpiCard label="Coverage %" value={`${coveragePct}%`} />
+      <div className="rounded-md border border-slate-300 bg-slate-50 px-3 py-2 text-[12px] text-slate-800">
+        <strong>{RM_SNAPSHOT_BANNER.title}.</strong> {RM_SNAPSHOT_BANNER.body}
       </div>
+
+      <MonthlyPlanningMetricSection
+        title={RM_SNAPSHOT_BANNER.title}
+        subtitle="Stock position and net requirement captured at plan approval — not live inventory."
+        traceLabel="Frozen snapshot"
+        variant="snapshot"
+      >
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+          <KpiCard label="Total RM items" value={String(totalRmItems)} />
+          <KpiCard label="Snapshot gross demand" value={totalGross.toLocaleString()} />
+          <KpiCard label={MP_PROCUREMENT.REQUIREMENT_SNAPSHOT} value={totalNet.toLocaleString()} tier="primary" />
+          <KpiCard label="Snapshot shortages" value={String(criticalShortage)} />
+          <KpiCard label="Snapshot coverage %" value={`${coveragePct}%`} />
+        </div>
+      </MonthlyPlanningMetricSection>
 
       <div className="flex items-center justify-between">
         <span className="text-[12px] text-slate-500">
@@ -2443,11 +2520,11 @@ function RmPlanningTab({
             <tr>
               <th className="px-3 py-2">RM item</th>
               <th className="px-3 py-2 w-20">Unit</th>
-              <th className="px-3 py-2 w-28 text-right">Gross demand</th>
-              <th className="px-3 py-2 w-24 text-right">Free stock</th>
-              <th className="px-3 py-2 w-24 text-right">Reserved</th>
-              <th className="px-3 py-2 w-28 text-right">Incoming PO</th>
-              <th className="px-3 py-2 w-28 text-right">Net requirement</th>
+              <th className="px-3 py-2 w-28 text-right">Snapshot gross demand</th>
+              <th className="px-3 py-2 w-24 text-right">Snapshot free stock</th>
+              <th className="px-3 py-2 w-24 text-right">Snapshot reserved</th>
+              <th className="px-3 py-2 w-28 text-right">Snapshot incoming PO</th>
+              <th className="px-3 py-2 w-28 text-right">Snapshot net requirement</th>
               <th className="px-3 py-2">Warnings</th>
             </tr>
           </thead>
@@ -2533,12 +2610,15 @@ function RevisionHistorySection({
   const revisions = data?.revisions ?? [];
 
   return (
-    <div className="rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <History className="h-4 w-4 text-slate-500" />
-          <h3 className="text-[13px] font-semibold text-slate-800">
-            Revision History{revisions.length > 0 ? ` (${revisions.length})` : ""}
+    <div className="rounded-md border border-amber-300 bg-amber-50/40 p-2 shadow-sm">
+      <div className="mb-1 text-[10px] font-bold uppercase tracking-wide text-amber-950">
+        {LEGACY_REVISION_WORKFLOW_LABEL}
+      </div>
+      <div className="flex flex-wrap items-center justify-between gap-1.5">
+        <div className="flex items-center gap-1.5">
+          <History className="h-3.5 w-3.5 text-slate-500" />
+          <h3 className="text-[12px] font-semibold text-slate-800">
+            Legacy lock history{revisions.length > 0 ? ` (${revisions.length})` : ""}
           </h3>
           {loading ? <span className="text-[11px] text-slate-400">Loading…</span> : null}
         </div>
@@ -2547,25 +2627,27 @@ function RevisionHistorySection({
             {panelExpanded ? "Hide Details" : "Expand"}
           </Button>
         ) : !loading ? (
-          <span className="text-[11px] text-slate-400">Revision history appears after the first plan lock.</span>
+          <span className="text-[11px] text-slate-500">
+            Legacy lock history appears after the first plan lock.
+          </span>
         ) : null}
       </div>
 
       {panelExpanded && revisions.length > 0 ? (
         <>
       {data?.draftForRevision != null ? (
-        <p className="mb-2 mt-2 text-[11px] text-slate-600">
-          <strong>Rev {data.currentRevision}</strong> is the current locked revision. Draft edits are preparing{" "}
-          <strong>Rev {data.draftForRevision}</strong>.
+        <p className="mb-1 mt-1 text-[10px] leading-tight text-slate-600">
+          <strong>Snapshot {data.currentRevision}</strong> is the current legacy lock. Draft edits are preparing{" "}
+          <strong>snapshot {data.draftForRevision}</strong>.
         </p>
       ) : null}
 
-        <div className="mt-2 overflow-auto rounded-md border border-slate-100">
+        <div className="mt-1 overflow-auto rounded border border-slate-100 bg-white">
           <table className="w-full border-collapse text-[13px]">
             <thead className="bg-slate-50 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500">
               <tr>
                 <th className="w-8 px-2 py-2" />
-                <th className="px-3 py-2 w-20">Revision</th>
+                <th className="px-3 py-2 w-24">Snapshot</th>
                 <th className="px-3 py-2">Locked at</th>
                 <th className="px-3 py-2">Locked by</th>
                 <th className="px-3 py-2 w-32 text-right">Total FG planned</th>
@@ -2584,7 +2666,7 @@ function RevisionHistorySection({
                       <td className="px-2 py-2 text-slate-400">
                         {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
                       </td>
-                      <td className="px-3 py-2 font-medium text-slate-800">Rev {rev.revision}</td>
+                      <td className="px-3 py-2 font-medium text-slate-800">Snapshot {rev.revision}</td>
                       <td className="px-3 py-2 text-slate-600">
                         {rev.lockedAt ? new Date(rev.lockedAt).toLocaleString() : "—"}
                       </td>
@@ -2595,7 +2677,7 @@ function RevisionHistorySection({
                       <td className="px-3 py-2">
                         <div className="flex flex-wrap items-center gap-1">
                           {rev.isCurrent ? (
-                            <Badge variant="warning">Current revision</Badge>
+                            <Badge variant="warning">Current legacy snapshot</Badge>
                           ) : (
                             <Badge variant="default">Historical</Badge>
                           )}
@@ -2610,7 +2692,7 @@ function RevisionHistorySection({
                       <tr className="border-t border-slate-50 bg-slate-50/50">
                         <td colSpan={6} className="px-3 py-2">
                           <p className="mb-2 text-[11px] font-medium text-slate-600">
-                            Production plan at lock (Rev {rev.revision})
+                            Production plan at legacy lock (snapshot {rev.revision})
                           </p>
                           <table className="w-full border-collapse text-[12px]">
                             <thead className="text-left text-[10px] font-semibold uppercase tracking-wide text-slate-500">
@@ -2627,7 +2709,7 @@ function RevisionHistorySection({
                               {rev.fgLines.length === 0 ? (
                                 <tr>
                                   <td colSpan={6} className="px-2 py-3 text-center text-slate-400">
-                                    FG snapshot not available for this historical revision.
+                                    FG snapshot not available for this legacy lock snapshot.
                                   </td>
                                 </tr>
                               ) : (
@@ -2665,12 +2747,67 @@ function RevisionHistorySection({
   );
 }
 
-function KpiCard({ label, value }: { label: string; value: string }) {
+function KpiCard({
+  label,
+  value,
+  tier = "secondary",
+}: {
+  label: string;
+  value: string;
+  tier?: "primary" | "secondary";
+}) {
+  if (tier === "primary") {
+    return (
+      <div className="rounded-md border-2 border-slate-300 bg-white px-2.5 py-1.5 shadow-sm">
+        <div className="text-[10px] font-bold uppercase tracking-wide text-slate-700">{label}</div>
+        <div className="mt-0.5 text-lg font-extrabold tabular-nums text-slate-950">{value}</div>
+      </div>
+    );
+  }
   return (
-    <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-sm">
-      <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">{label}</div>
-      <div className="mt-0.5 text-lg font-bold tabular-nums text-slate-900">{value}</div>
+    <div className="rounded-md border border-slate-200 bg-white/90 px-2.5 py-1 shadow-sm">
+      <div className="text-[10px] font-bold uppercase tracking-wide text-slate-600">{label}</div>
+      <div className="mt-0.5 text-sm font-semibold tabular-nums text-slate-800">{value}</div>
     </div>
+  );
+}
+
+function MonthlyPlanningMetricSection({
+  title,
+  subtitle,
+  traceLabel,
+  variant,
+  children,
+  compact,
+}: {
+  title: string;
+  subtitle: string;
+  traceLabel: "Frozen snapshot" | "Live procurement";
+  variant: "snapshot" | "live";
+  children: React.ReactNode;
+  compact?: boolean;
+}) {
+  const shell =
+    variant === "snapshot"
+      ? "border-slate-300 bg-slate-50/70"
+      : "border-sky-300 bg-sky-50/50";
+  const badgeCls =
+    variant === "snapshot" ? "bg-slate-200 text-slate-800" : "bg-sky-200 text-sky-900";
+  return (
+    <section className={cn("rounded-md border", compact ? "p-2" : "p-3", shell)}>
+      <div className={compact ? "mb-1" : "mb-2"}>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <h3 className={cn("font-bold text-slate-900", compact ? "text-[12px]" : "text-[13px]")}>{title}</h3>
+          <span className={cn("rounded px-1 py-0.5 text-[9px] font-bold uppercase tracking-wide", badgeCls)}>
+            {traceLabel}
+          </span>
+        </div>
+        <p className={cn("text-slate-600", compact ? "mt-0.5 text-[10px] leading-tight" : "mt-1 text-[11px] leading-snug")}>
+          {subtitle}
+        </p>
+      </div>
+      {children}
+    </section>
   );
 }
 
@@ -2694,7 +2831,7 @@ function TabButton({
       disabled={disabled}
       title={title}
       className={cn(
-        "-mb-px border-b-2 px-3 py-2 text-[13px] font-semibold transition-colors",
+        "-mb-px border-b-2 px-2.5 py-1.5 text-[12px] font-semibold transition-colors",
         active
           ? "border-blue-700 text-blue-800"
           : disabled
@@ -2707,12 +2844,7 @@ function TabButton({
   );
 }
 
-const PURCHASE_STATUS_META: Record<PurchaseStatus, { label: string; cls: string }> = {
-  NOT_RELEASED: { label: "Not released", cls: "bg-slate-100 text-slate-600" },
-  PARTIALLY_RELEASED: { label: "Partial", cls: "bg-amber-100 text-amber-800" },
-  FULLY_RELEASED: { label: "Released", cls: "bg-emerald-100 text-emerald-800" },
-  OVER_RELEASED: { label: "Over released", cls: "bg-red-100 text-red-800" },
-};
+const PURCHASE_STATUS_META = MP_RELEASE_STATUS_META;
 
 function PurchasePlanningTab({
   data,
@@ -2788,11 +2920,21 @@ function PurchasePlanningTab({
     materialRequirementDocNo: releaseSummary?.materialRequirementDocNo,
     planDisplayLabel: planHeader ? resolvePlanDisplayLabel(planHeader) : null,
   });
+  const pendingReceiptDisplay = receiptTotals
+    ? formatPendingReceiptQtyDisplay(receiptTotals.pendingReceiptQty)
+    : null;
+  const receiptBannerSuffix = receiptTotals
+    ? `${physicalReceiptCoverageBannerLine(physicalCoveragePct)}${physicalCoverageDetail ? ` · ${physicalCoverageDetail}` : ""}`
+    : null;
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-2">
+    <div className="flex h-full min-h-0 flex-col gap-1">
+      <p className="rounded border border-slate-200 bg-slate-50 px-2 py-1 text-[10px] leading-tight text-slate-600">
+        <span className="font-semibold text-slate-700">Progress:</span> {procurementProgressModelLine()}
+      </p>
+
       {releaseSummary ? (
-        <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-[12px] text-emerald-800">
+        <div className="rounded border border-emerald-200 bg-emerald-50 px-2 py-1 text-[11px] leading-snug text-emerald-800">
           {formatReleaseSuccessSummary({
             plan: planHeader,
             releaseRevision: releaseSummary.revision,
@@ -2802,58 +2944,99 @@ function PurchasePlanningTab({
             skippedLineCount: releaseSummary.skippedLineCount,
             surplusLineCount: releaseSummary.surplusLineCount,
           })}
-          {receiptTotals ? (
-            <p className="mt-1 border-t border-emerald-200/80 pt-1 text-emerald-900">
-              {physicalReceiptCoverageBannerLine(physicalCoveragePct)}
-              {physicalCoverageDetail ? ` — ${physicalCoverageDetail}` : ""}
-            </p>
+          {receiptBannerSuffix ? (
+            <span className="text-emerald-900"> · {receiptBannerSuffix}</span>
           ) : null}
         </div>
       ) : (
-        <div className="rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-[12px] text-sky-800">
-          <p>{purchasePlanningOperationalStatus(totalAdditional, totalReleasedFromTotals)}</p>
-          {receiptTotals ? (
-            <p className="mt-1 border-t border-sky-200/80 pt-1 text-sky-900">
-              {physicalReceiptCoverageBannerLine(physicalCoveragePct)}
-              {physicalCoverageDetail ? ` — ${physicalCoverageDetail}` : ""}
-            </p>
-          ) : null}
+        <div className="rounded border border-sky-200 bg-sky-50 px-2 py-1 text-[11px] leading-snug text-sky-800">
+          {purchasePlanningOperationalStatus(totalAdditional, totalReleasedFromTotals)}
+          {receiptBannerSuffix ? <span className="text-sky-900"> · {receiptBannerSuffix}</span> : null}
         </div>
       )}
 
       {hasReduction ? (
-        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-900">
+        <div className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] leading-snug text-amber-900">
           {purchasePlanningReductionMessage(planHeader)}
         </div>
       ) : null}
 
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
-        <KpiCard label="RM items" value={String(totalRmItems)} />
-        <KpiCard label="Current requirement total" value={totalCurrent.toLocaleString()} />
-        <KpiCard label="Previously released total" value={totalReleased.toLocaleString()} />
-        <KpiCard label="Additional requirement total" value={totalAdditional.toLocaleString()} />
-        <KpiCard label="Reduction total" value={totalReduction.toLocaleString()} />
-        <KpiCard
-          label="Release coverage %"
-          value={coveragePct != null ? `${coveragePct.toLocaleString()}%` : "—"}
-        />
-      </div>
-
-      {receiptTotals ? (
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
-          <KpiCard label="Total requirement" value={receiptTotals.requirementQty.toLocaleString()} />
-          <KpiCard label="Released qty" value={receiptTotals.releasedQty.toLocaleString()} />
-          <KpiCard label="PO qty" value={receiptTotals.poQty.toLocaleString()} />
-          <KpiCard label="Received qty" value={receiptTotals.receivedQty.toLocaleString()} />
-          <KpiCard label="Pending receipt qty" value={receiptTotals.pendingReceiptQty.toLocaleString()} />
+      <MonthlyPlanningMetricSection
+        title={PURCHASE_FROZEN_SNAPSHOT_SECTION.title}
+        subtitle={PURCHASE_FROZEN_SNAPSHOT_SECTION.subtitle}
+        traceLabel="Frozen snapshot"
+        variant="snapshot"
+        compact
+      >
+        <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
           <KpiCard
-            label="Physical coverage %"
-            value={formatPhysicalCoveragePct(receiptTotals.physicalCoveragePct)}
+            label={MP_PROCUREMENT.REQUIREMENT_SNAPSHOT}
+            value={totalCurrent.toLocaleString()}
+            tier="primary"
+          />
+          <KpiCard
+            label={MP_PROCUREMENT.DEMAND_RELEASED}
+            value={totalReleased.toLocaleString()}
+            tier="primary"
+          />
+          <KpiCard label={MP_PROCUREMENT.ADDITIONAL_REQUIREMENT} value={totalAdditional.toLocaleString()} />
+          <KpiCard label={MP_PROCUREMENT.REDUCTION_TOTAL} value={totalReduction.toLocaleString()} />
+        </div>
+        <div className="mt-1.5 grid grid-cols-2 gap-1.5 sm:grid-cols-3">
+          <KpiCard label="RM items" value={String(totalRmItems)} />
+          <KpiCard
+            label={MP_PROCUREMENT.RELEASE_COVERAGE_PCT}
+            value={coveragePct != null ? `${coveragePct.toLocaleString()}%` : "—"}
           />
         </div>
+      </MonthlyPlanningMetricSection>
+
+      {receiptTotals ? (
+        <MonthlyPlanningMetricSection
+          title={PURCHASE_LIVE_PROCUREMENT_SECTION.title}
+          subtitle={PURCHASE_LIVE_PROCUREMENT_SECTION.subtitle}
+          traceLabel="Live procurement"
+          variant="live"
+          compact
+        >
+          <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+            <KpiCard
+              label={MP_PROCUREMENT.ORDERED_QTY}
+              value={receiptTotals.poQty.toLocaleString()}
+              tier="primary"
+            />
+            <KpiCard
+              label={MP_PROCUREMENT.RECEIVED_QTY}
+              value={receiptTotals.receivedQty.toLocaleString()}
+              tier="primary"
+            />
+            <KpiCard
+              label={`${MP_PROCUREMENT.REQUIREMENT_SNAPSHOT} (ref.)`}
+              value={receiptTotals.requirementQty.toLocaleString()}
+            />
+            <KpiCard
+              label={`${MP_PROCUREMENT.DEMAND_RELEASED} (ref.)`}
+              value={receiptTotals.releasedQty.toLocaleString()}
+            />
+          </div>
+          <div className="mt-1.5 grid grid-cols-2 gap-1.5 sm:grid-cols-3">
+            <KpiCard
+              label={MP_PROCUREMENT.PHYSICAL_RECEIPT_COVERAGE_PCT}
+              value={formatPhysicalCoveragePct(receiptTotals.physicalCoveragePct)}
+            />
+            {pendingReceiptDisplay ? (
+              <KpiCard label={pendingReceiptDisplay.label} value={pendingReceiptDisplay.value} />
+            ) : null}
+            {pendingReceiptDisplay?.hint ? (
+              <div className="rounded border border-sky-200 bg-white/80 px-2 py-1 text-[10px] leading-tight text-sky-950">
+                {pendingReceiptDisplay.hint}
+              </div>
+            ) : null}
+          </div>
+        </MonthlyPlanningMetricSection>
       ) : null}
 
-      <div className="flex flex-wrap items-center justify-between gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-1.5 py-0.5">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           <span className="text-[12px] text-slate-500">
             {formatPurchasePlanningContextLabel({
@@ -2919,30 +3102,44 @@ function PurchasePlanningTab({
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-slate-200 bg-white shadow-sm">
+      <p className="text-[10px] leading-tight text-slate-500">
+        <span className="font-semibold text-slate-600">Line table:</span> {PURCHASE_LINE_TABLE_NOTE}
+      </p>
+
+      <div className="min-h-0 flex-1 overflow-auto rounded-md border border-slate-200 bg-white shadow-sm">
         <table className="w-full border-collapse text-[13px]">
-          <thead className="sticky top-0 z-10 bg-slate-50 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+          <thead className="sticky top-0 z-10 bg-slate-50 text-left text-[10px] font-semibold uppercase tracking-wide text-slate-600">
+            <tr className="border-b border-slate-200 text-[9px]">
+              <th className="px-2 py-0.5" colSpan={2} />
+              <th className="px-2 py-0.5 text-center text-slate-700" colSpan={5}>
+                Frozen snapshot
+              </th>
+              <th className="px-2 py-0.5 text-center text-sky-800" colSpan={5}>
+                Live procurement
+              </th>
+              <th className="px-2 py-0.5" colSpan={2} />
+            </tr>
             <tr>
-              <th className="px-3 py-2">RM item</th>
-              <th className="px-3 py-2 w-16">Unit</th>
-              <th className="px-3 py-2 w-28 text-right">Current requirement</th>
-              <th className="px-3 py-2 w-28 text-right">Previously released</th>
-              <th className="px-3 py-2 w-28 text-right">Additional requirement</th>
-              <th className="px-3 py-2 w-24 text-right">Reduction</th>
-              <th className="px-3 py-2 w-28 text-right">Suggested buy</th>
-              <th className="px-3 py-2 w-24 text-right">PO qty</th>
-              <th className="px-3 py-2 w-24 text-right">Received qty</th>
-              <th className="px-3 py-2 w-24 text-right">Pending qty</th>
-              <th className="px-3 py-2 w-24 text-right">Coverage %</th>
-              <th className="px-3 py-2 w-32">Receipt status</th>
-              <th className="px-3 py-2 w-32">Release status</th>
-              <th className="px-3 py-2">Warnings</th>
+              <th className="px-2 py-1.5">RM item</th>
+              <th className="px-2 py-1.5 w-16">Unit</th>
+              <th className="px-2 py-1.5 w-28 text-right">{MP_PROCUREMENT.REQUIREMENT_SNAPSHOT}</th>
+              <th className="px-2 py-1.5 w-28 text-right">{MP_PROCUREMENT.DEMAND_RELEASED}</th>
+              <th className="px-2 py-1.5 w-28 text-right">{MP_PROCUREMENT.ADDITIONAL_REQUIREMENT}</th>
+              <th className="px-2 py-1.5 w-24 text-right">Reduction</th>
+              <th className="px-2 py-1.5 w-28 text-right text-slate-500">{MP_PROCUREMENT.SUGGESTED_BUY_QTY}</th>
+              <th className="px-2 py-1.5 w-24 text-right">{MP_PROCUREMENT.ORDERED_QTY}</th>
+              <th className="px-2 py-1.5 w-24 text-right">{MP_PROCUREMENT.RECEIVED_QTY}</th>
+              <th className="px-2 py-1.5 w-28 text-right">{MP_PROCUREMENT.PENDING_OR_OVER_RECEIPT_QTY}</th>
+              <th className="px-2 py-1.5 w-28 text-right">{MP_PROCUREMENT.LINE_RECEIPT_COVERAGE_PCT}</th>
+              <th className="px-2 py-1.5 w-32">Receipt Status</th>
+              <th className="px-2 py-1.5 w-32">Release Status</th>
+              <th className="px-2 py-1.5">Warnings</th>
             </tr>
           </thead>
           <tbody>
             {lines.length === 0 ? (
               <tr>
-                <td colSpan={13} className="px-3 py-8 text-center text-sm text-slate-400">
+                <td colSpan={14} className="px-3 py-8 text-center text-sm text-slate-400">
                   {rmPlanningEmptyTableMessage(planHeader)}
                 </td>
               </tr>
@@ -2958,6 +3155,7 @@ function PurchasePlanningTab({
                 const receiptMeta =
                   RECEIPT_COVERAGE_STATUS_META[receipt.receiptCoverageStatus as keyof typeof RECEIPT_COVERAGE_STATUS_META] ??
                   RECEIPT_COVERAGE_STATUS_META.NOT_RECEIVED;
+                const pendingDisplay = formatPendingReceiptQtyDisplay(receipt.pendingReceiptQty);
                 return (
                   <tr key={l.rmItemId} className="border-t border-slate-100 align-middle">
                     <td className="px-3 py-1.5 font-medium text-slate-800">{l.rmItemName ?? `Item ${l.rmItemId}`}</td>
@@ -2986,8 +3184,8 @@ function PurchasePlanningTab({
                     </td>
                     <td
                       className={cn(
-                        "px-3 py-1.5 text-right font-semibold tabular-nums",
-                        suggestedBuy > 0 ? "text-sky-700" : "text-slate-400",
+                        "px-3 py-1.5 text-right tabular-nums text-slate-500",
+                        suggestedBuy > 0 ? "font-medium text-slate-600" : "text-slate-400",
                       )}
                     >
                       {suggestedBuy.toLocaleString()}
@@ -2998,15 +3196,25 @@ function PurchasePlanningTab({
                     <td className="px-3 py-1.5 text-right tabular-nums text-slate-700">
                       {receipt.receivedQty.toLocaleString()}
                     </td>
-                    <td className="px-3 py-1.5 text-right tabular-nums text-slate-700">
-                      {receipt.pendingReceiptQty.toLocaleString()}
+                    <td
+                      className={cn(
+                        "px-2 py-1 text-right tabular-nums",
+                        pendingDisplay.overReceived ? "font-medium text-sky-800" : "text-slate-700",
+                      )}
+                    >
+                      <span title={pendingDisplay.hint ?? undefined}>{pendingDisplay.value}</span>
+                      {pendingDisplay.overReceived ? (
+                        <span className="mt-0.5 block text-[9px] font-semibold uppercase tracking-wide text-sky-700">
+                          {MP_PROCUREMENT.OVER_RECEIVED_QTY}
+                        </span>
+                      ) : null}
                     </td>
                     <td className="px-3 py-1.5 text-right tabular-nums font-medium text-slate-800">
                       {formatPhysicalCoveragePct(receipt.physicalCoveragePct)}
                     </td>
                     <td className="px-3 py-1.5">
                       <span className={cn("inline-flex rounded px-1.5 py-0.5 text-[10px] font-semibold", receiptMeta.cls)}>
-                        {receipt.receiptCoverageStatusLabel}
+                        {formatReceiptStatusLabel(receipt.receiptCoverageStatus)}
                       </span>
                     </td>
                     <td className="px-3 py-1.5">

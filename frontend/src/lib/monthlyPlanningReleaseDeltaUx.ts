@@ -1,4 +1,5 @@
 /** Aligns with backend release delta epsilon — UI enable/disable only. */
+import { releaseDeltaDisabledStatusMessage } from "./monthlyPlanningProcurementLabels";
 export const RELEASE_DELTA_EPS = 1e-6;
 
 export type ReleaseDeltaLineInput = {
@@ -57,13 +58,11 @@ export function getReleaseDeltaDisabledStatusMessage({
   previouslyReleasedTotal?: number;
   usesPlanDocumentUx?: boolean;
 }): string {
-  if (isReleaseDeltaButtonEnabled(additionalRequirementTotal)) return "";
-  if (previouslyReleasedTotal > RELEASE_DELTA_EPS) {
-    return usesPlanDocumentUx
-      ? "Procurement already released for this plan."
-      : "Procurement already released for current revision.";
-  }
-  return "No additional procurement requirement.";
+  return releaseDeltaDisabledStatusMessage(
+    additionalRequirementTotal,
+    previouslyReleasedTotal,
+    usesPlanDocumentUx,
+  );
 }
 
 export type ReleaseDeltaProcurementBadge = {
@@ -108,7 +107,7 @@ export function getReleaseDeltaProcurementBadge({
   const label =
     planStatus === "APPROVED" && planDisplayLabel?.trim()
       ? planDisplayLabel.trim()
-      : `Rev ${releasedRevision}`;
+      : `Legacy snapshot ${releasedRevision}`;
   return {
     revision: releasedRevision,
     label,

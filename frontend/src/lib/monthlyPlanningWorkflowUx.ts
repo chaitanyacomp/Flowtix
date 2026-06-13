@@ -3,6 +3,12 @@
  * Pure helpers for edit gates, action visibility, and legacy detection.
  */
 
+import {
+  formatReleaseSuccessSummaryMessage,
+  purchasePlanningOperationalStatusMessage,
+  purchasePlanningReductionMessageText,
+} from "./monthlyPlanningProcurementLabels";
+
 export type MonthlyPlanStatus = "DRAFT" | "AWAITING_PURCHASE_REVIEW" | "APPROVED" | "LOCKED";
 export type MonthlyPlanKind = "INITIAL" | "ADDITIONAL";
 
@@ -26,6 +32,20 @@ export type WorkflowActionVisibility = {
   lock: boolean;
   reopen: boolean;
   cancelReopen: boolean;
+};
+
+/** User-facing label for migrated lock/revision records (P7F-A). */
+export const LEGACY_PLAN_BADGE_LABEL = "Legacy plan";
+
+/** Section title for legacy-only workflow surfaces. */
+export const LEGACY_REVISION_WORKFLOW_LABEL = "Legacy revision workflow";
+
+export const APPROVED_PLAN_GUIDANCE =
+  "This plan is finalized and retained for audit history. Additional demand must be raised through a new Monthly Plan for the same period.";
+
+export type ProductionPlanReadOnlyContext = {
+  periodPlans?: MonthlyPlanHeader[];
+  canCreateAdditionalPlan?: boolean;
 };
 
 /** Legacy revision / lock workflow — not used for new plan documents. */
@@ -83,6 +103,64 @@ export function resolvePlanDisplayLabel(plan: MonthlyPlanHeader): string {
   return `Plan ${seq}`;
 }
 
+export function resolvePlanSequenceNo(plan: MonthlyPlanHeader): number {
+  return plan.planSequenceNo && plan.planSequenceNo > 0 ? plan.planSequenceNo : 1;
+}
+
+export function hasLaterPlanDocumentsInPeriod(
+  plan: MonthlyPlanHeader,
+  periodPlans: MonthlyPlanHeader[],
+): boolean {
+  const seq = resolvePlanSequenceNo(plan);
+  return periodPlans.some((p) => p.id !== plan.id && resolvePlanSequenceNo(p) > seq);
+}
+
+export function listLaterPlanLabels(plan: MonthlyPlanHeader, periodPlans: MonthlyPlanHeader[]): string[] {
+  const seq = resolvePlanSequenceNo(plan);
+  return periodPlans
+    .filter((p) => p.id !== plan.id && resolvePlanSequenceNo(p) > seq)
+    .sort((a, b) => resolvePlanSequenceNo(a) - resolvePlanSequenceNo(b))
+    .map(resolvePlanDisplayLabel);
+}
+
+/** True when viewing an earlier plan document in a period that already has Plan N+1. */
+export function isHistoricalPlanDocument(
+  plan: MonthlyPlanHeader,
+  periodPlans: MonthlyPlanHeader[],
+): boolean {
+  if (!usesPlanDocumentProcurementUx(plan)) return false;
+  if (plan.status !== "APPROVED") return false;
+  return hasLaterPlanDocumentsInPeriod(plan, periodPlans);
+}
+
+export function approvedPlanGuidanceMessage(options?: { canCreateAdditionalPlan?: boolean }): string {
+  let msg = APPROVED_PLAN_GUIDANCE;
+  if (options?.canCreateAdditionalPlan) {
+    msg += " Use Create Additional Plan in the header to start the next plan document.";
+  }
+  return msg;
+}
+
+export function historicalApprovedPlanBannerMessage(
+  plan: MonthlyPlanHeader,
+  periodPlans: MonthlyPlanHeader[],
+): string | null {
+  if (!isHistoricalPlanDocument(plan, periodPlans)) return null;
+  const later = listLaterPlanLabels(plan, periodPlans);
+  const laterText =
+    later.length > 0 ? later.join(", ") : "a later plan document in this period";
+  return `Historical plan document (${resolvePlanDisplayLabel(plan)}). Later plan${
+    later.length === 1 ? "" : "s"
+  } in this period: ${laterText}. This document is not modified by later plans and remains an audit record.`;
+}
+
+export function legacyPlanWorkflowBannerMessage(): string {
+  return `${LEGACY_PLAN_BADGE_LABEL} — this record uses the older lock-and-revision workflow from before plan documents (Plan 1, Plan 2, …). For new planning, use Draft → Awaiting Purchase Review → Approved → Create Additional Plan. The actions below apply only to this legacy record.`;
+}
+
+/** Tooltip copy when the full-width legacy banner is omitted (P7F-CA1). */
+export const LEGACY_PLAN_INFO_TOOLTIP = legacyPlanWorkflowBannerMessage();
+
 /** New plan-document workflow uses approval, not lock/revision UX. */
 export function usesPlanDocumentProcurementUx(plan: MonthlyPlanHeader | null | undefined): boolean {
   if (!plan) return false;
@@ -96,9 +174,9 @@ export function formatRmSnapshotContextLabel(params: {
 }): string {
   const { plan, snapshotRevision, lineCount } = params;
   if (plan && usesPlanDocumentProcurementUx(plan)) {
-    return `${resolvePlanDisplayLabel(plan)} · ${lineCount} RM lines (read-only)`;
+    return `${resolvePlanDisplayLabel(plan)} · ${lineCount} RM lines (audit snapshot)`;
   }
-  return `Snapshot revision ${snapshotRevision ?? "—"} · ${lineCount} RM lines (read-only)`;
+  return `Legacy lock snapshot ${snapshotRevision ?? "—"} · ${lineCount} RM lines (read-only)`;
 }
 
 export function formatPurchasePlanningContextLabel(params: {
@@ -108,9 +186,9 @@ export function formatPurchasePlanningContextLabel(params: {
 }): string {
   const { plan, snapshotRevision, lineCount } = params;
   if (plan && usesPlanDocumentProcurementUx(plan)) {
-    return `${resolvePlanDisplayLabel(plan)} · ${lineCount} RM lines (read-only)`;
+    return `${resolvePlanDisplayLabel(plan)} · ${lineCount} RM lines (audit snapshot)`;
   }
-  return `Current revision ${snapshotRevision ?? "—"} · ${lineCount} RM lines (read-only)`;
+  return `Legacy lock snapshot ${snapshotRevision ?? "—"} · ${lineCount} RM lines (read-only)`;
 }
 
 export function formatReleaseSuccessSummary(params: {
@@ -131,25 +209,25 @@ export function formatReleaseSuccessSummary(params: {
     skippedLineCount,
     surplusLineCount,
   } = params;
-  const source =
+  const planLabel =
     plan && usesPlanDocumentProcurementUx(plan)
       ? resolvePlanDisplayLabel(plan)
-      : `revision ${releaseRevision}`;
-  const mrPart = materialRequirementDocNo ? ` → MR ${materialRequirementDocNo}` : "";
-  return `Released ${source}${mrPart}: ${releasedLineCount} line(s) released (delta ${totalDeltaQty.toLocaleString()}), ${skippedLineCount} skipped, ${surplusLineCount} surplus.`;
+      : `legacy lock snapshot ${releaseRevision}`;
+  return formatReleaseSuccessSummaryMessage({
+    planLabel,
+    materialRequirementDocNo,
+    releasedLineCount,
+    totalDeltaQty,
+    skippedLineCount,
+    surplusLineCount,
+  });
 }
 
 export function purchasePlanningOperationalStatus(
   additionalRequirementTotal: number,
-  previouslyReleasedTotal = 0,
+  demandReleasedTotal = 0,
 ): string {
-  if (additionalRequirementTotal > 1e-9) {
-    return "Additional procurement required. Release Delta to Procurement available.";
-  }
-  if (previouslyReleasedTotal > 1e-9) {
-    return "Procurement released for current plan. No additional procurement required.";
-  }
-  return "Review RM requirements and release procurement when the plan is approved.";
+  return purchasePlanningOperationalStatusMessage(additionalRequirementTotal, demandReleasedTotal);
 }
 
 export function purchasePlanningIntroMessage(_plan: MonthlyPlanHeader | null | undefined): string {
@@ -157,22 +235,34 @@ export function purchasePlanningIntroMessage(_plan: MonthlyPlanHeader | null | u
 }
 
 export function purchasePlanningReductionMessage(_plan: MonthlyPlanHeader | null | undefined): string {
-  return "Plan requires less RM than previously released. Open MR quantity will be reduced where possible.";
+  return purchasePlanningReductionMessageText();
 }
 
-export function productionPlanReadOnlyMessage(plan: MonthlyPlanHeader | null | undefined): string | null {
+export function productionPlanReadOnlyMessage(
+  plan: MonthlyPlanHeader | null | undefined,
+  ctx?: ProductionPlanReadOnlyContext,
+): string | null {
   if (!plan || plan.status === "DRAFT") return null;
   if (plan.status === "AWAITING_PURCHASE_REVIEW") {
     return "This plan is awaiting Purchase review. FG lines are read-only until Purchase approves or rejects.";
   }
   if (plan.status === "APPROVED") {
-    return "This approved plan document is frozen. Use Additional Plan if requirements increase in this period.";
+    const parts: string[] = [];
+    const periodPlans = ctx?.periodPlans ?? [];
+    if (periodPlans.length > 0) {
+      const historical = historicalApprovedPlanBannerMessage(plan, periodPlans);
+      if (historical) parts.push(historical);
+    }
+    parts.push(
+      approvedPlanGuidanceMessage({ canCreateAdditionalPlan: ctx?.canCreateAdditionalPlan }),
+    );
+    return parts.join(" ");
   }
   if (plan.status === "LOCKED" && isLegacyPlanDocument(plan)) {
-    return "This plan is locked. Use Reopen Plan in the header to edit the next revision draft.";
+    return `${LEGACY_PLAN_BADGE_LABEL}: this plan is locked under the legacy revision workflow. Reopen Plan (legacy only) prepares the next lock snapshot — use Create Additional Plan on modern plan documents instead.`;
   }
   if (plan.status === "DRAFT" && isLegacyPlanDocument(plan)) {
-    return "Editing draft for the next legacy revision. Use Cancel Reopen to restore the locked revision.";
+    return `${LEGACY_REVISION_WORKFLOW_LABEL}: editing draft for the next legacy lock snapshot. Use Cancel Reopen (legacy only) to restore the locked plan.`;
   }
   return "This plan is read-only.";
 }
@@ -240,18 +330,39 @@ export function rmPurchaseEmptyMessage(
 ): string {
   if (status === "APPROVED") {
     return tab === "rm"
-      ? "RM Planning snapshot is not available yet for this approved plan."
+      ? "RM Requirement Snapshot is not available yet for this approved plan."
       : "Purchase Planning is not available yet for this approved plan.";
   }
   if (status === "AWAITING_PURCHASE_REVIEW") {
-    return "Plan is awaiting Purchase review. RM and Purchase Planning unlock after approval.";
+    return "Plan is awaiting Purchase review. RM Requirement Snapshot and Purchase Planning unlock after approval.";
   }
   if (status === "DRAFT") {
     return tab === "rm"
-      ? "Submit the plan for Purchase review and approval to generate RM Planning."
+      ? "Submit the plan for Purchase review and approval to generate the RM Requirement Snapshot."
       : "Submit the plan for Purchase review and approval to review purchase planning.";
   }
   return tab === "rm"
-    ? "Lock the production plan to view RM Planning for this period."
+    ? "Lock the production plan to view the RM Requirement Snapshot for this period."
     : "Lock the production plan to review purchase planning.";
 }
+
+/** P7F-B — RM tab and snapshot presentation (copy only). */
+export const RM_REQUIREMENT_SNAPSHOT_TAB_LABEL = "RM Requirement Snapshot";
+
+export const RM_SNAPSHOT_BANNER = {
+  title: "Approved RM Requirement Snapshot",
+  body: "Frozen when this plan was approved and retained for planning audit. Values in this section do not change after purchase orders or goods receipts.",
+} as const;
+
+export const PURCHASE_FROZEN_SNAPSHOT_SECTION = {
+  title: "Frozen Snapshot",
+  subtitle: "Planning baseline captured at approval.",
+} as const;
+
+export const PURCHASE_LIVE_PROCUREMENT_SECTION = {
+  title: "Live Procurement",
+  subtitle: "Updated from PO and GRN activity.",
+} as const;
+
+export const PURCHASE_LINE_TABLE_NOTE =
+  "Frozen columns = approval snapshot. Live columns = procurement execution.";

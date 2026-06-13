@@ -1,6 +1,8 @@
 /**
- * P7A — Purchase Planning physical receipt coverage UX helpers.
+ * P7A / P7F-B — Purchase Planning physical receipt coverage UX helpers.
  */
+
+import { MP_PROCUREMENT } from "./monthlyPlanningProcurementLabels";
 
 export type ReceiptCoverageStatus =
   | "FULLY_COVERED"
@@ -27,11 +29,15 @@ export const RECEIPT_COVERAGE_STATUS_META: Record<
   ReceiptCoverageStatus,
   { label: string; cls: string }
 > = {
-  FULLY_COVERED: { label: "Fully Covered", cls: "bg-emerald-100 text-emerald-800" },
-  PARTIALLY_COVERED: { label: "Partially Covered", cls: "bg-amber-100 text-amber-800" },
-  NOT_RECEIVED: { label: "Not Received", cls: "bg-slate-100 text-slate-600" },
-  OVER_COVERED: { label: "Over Covered", cls: "bg-sky-100 text-sky-800" },
+  NOT_RECEIVED: { label: "Pending Receipt", cls: "bg-slate-100 text-slate-600" },
+  PARTIALLY_COVERED: { label: "Partially Received", cls: "bg-amber-100 text-amber-800" },
+  FULLY_COVERED: { label: "Fully Received", cls: "bg-emerald-100 text-emerald-800" },
+  OVER_COVERED: { label: "Over Received", cls: "bg-sky-100 text-sky-800" },
 };
+
+export function formatReceiptStatusLabel(status: ReceiptCoverageStatus): string {
+  return RECEIPT_COVERAGE_STATUS_META[status]?.label ?? "Pending Receipt";
+}
 
 export function formatPhysicalCoveragePct(pct: number | null | undefined): string {
   if (pct == null || !Number.isFinite(Number(pct))) return "—";
@@ -40,7 +46,11 @@ export function formatPhysicalCoveragePct(pct: number | null | undefined): strin
 
 export function physicalReceiptCoverageBannerLine(physicalCoveragePct: number | null | undefined): string {
   const label = formatPhysicalCoveragePct(physicalCoveragePct);
-  return `Physical receipt coverage: ${label}`;
+  return `${MP_PROCUREMENT.PHYSICAL_RECEIPT_COVERAGE_PCT}: ${label}`;
+}
+
+export function physicalReceiptCoverageSectionIntro(): string {
+  return `Tracks ${MP_PROCUREMENT.RECEIVED_QTY.toLowerCase()} through GRN against the ${MP_PROCUREMENT.REQUIREMENT_SNAPSHOT.toLowerCase()}.`;
 }
 
 export function physicalReceiptCoverageDetailMessage(
@@ -48,17 +58,63 @@ export function physicalReceiptCoverageDetailMessage(
 ): string | null {
   if (physicalCoveragePct == null || !Number.isFinite(Number(physicalCoveragePct))) return null;
   const pct = Number(physicalCoveragePct);
+  if (pct > 100 + 1e-6) {
+    return "Received quantity exceeds approved requirement snapshot.";
+  }
   if (pct >= 100 - 1e-6) {
-    return "All planned procurement has been received.";
+    return `${MP_PROCUREMENT.RECEIVED_QTY} meets or exceeds the ${MP_PROCUREMENT.REQUIREMENT_SNAPSHOT.toLowerCase()}.`;
   }
   if (pct <= 1e-9) {
-    return "Procurement released but no receipts recorded.";
+    return `${MP_PROCUREMENT.DEMAND_RELEASED} — no ${MP_PROCUREMENT.RECEIVED_QTY.toLowerCase()} recorded yet.`;
   }
-  return "Procurement released. Physical receipts are partially completed.";
+  return `${MP_PROCUREMENT.RECEIVED_QTY} in progress against the ${MP_PROCUREMENT.REQUIREMENT_SNAPSHOT.toLowerCase()}.`;
+}
+
+export type PendingReceiptQtyDisplay = {
+  value: string;
+  /** User-facing KPI/column label for this row. */
+  label: string;
+  overReceived: boolean;
+  hint: string | null;
+};
+
+/** Clarifies negative pending qty (over-receipt) without changing underlying values. */
+export function formatPendingReceiptQtyDisplay(pendingQty: number): PendingReceiptQtyDisplay {
+  const n = Number(pendingQty);
+  if (!Number.isFinite(n)) {
+    return {
+      value: "—",
+      label: MP_PROCUREMENT.PENDING_RECEIPT_QTY,
+      overReceived: false,
+      hint: null,
+    };
+  }
+  if (n < -1e-6) {
+    return {
+      value: Math.abs(n).toLocaleString(undefined, { maximumFractionDigits: 3 }),
+      label: MP_PROCUREMENT.OVER_RECEIVED_QTY,
+      overReceived: true,
+      hint: "Received quantity exceeds approved requirement snapshot.",
+    };
+  }
+  return {
+    value: n.toLocaleString(undefined, { maximumFractionDigits: 3 }),
+    label: MP_PROCUREMENT.PENDING_RECEIPT_QTY,
+    overReceived: false,
+    hint: null,
+  };
 }
 
 export function lookupReceiptCoverageForLine(
-  line: { rmItemId: number; poQty?: number; receivedQty?: number; pendingReceiptQty?: number; physicalCoveragePct?: number | null; receiptCoverageStatus?: ReceiptCoverageStatus; receiptCoverageStatusLabel?: string },
+  line: {
+    rmItemId: number;
+    poQty?: number;
+    receivedQty?: number;
+    pendingReceiptQty?: number;
+    physicalCoveragePct?: number | null;
+    receiptCoverageStatus?: ReceiptCoverageStatus;
+    receiptCoverageStatusLabel?: string;
+  },
   byRmItemId?: Record<number, ReceiptCoverageLine>,
 ): Pick<
   ReceiptCoverageLine,
@@ -72,7 +128,9 @@ export function lookupReceiptCoverageForLine(
           pendingReceiptQty: line.pendingReceiptQty ?? 0,
           physicalCoveragePct: line.physicalCoveragePct ?? null,
           receiptCoverageStatus: line.receiptCoverageStatus ?? "NOT_RECEIVED",
-          receiptCoverageStatusLabel: line.receiptCoverageStatusLabel ?? "Not Received",
+          receiptCoverageStatusLabel:
+            line.receiptCoverageStatusLabel ??
+            formatReceiptStatusLabel(line.receiptCoverageStatus ?? "NOT_RECEIVED"),
         }
       : null;
   const fromMap = byRmItemId?.[line.rmItemId];
@@ -93,6 +151,6 @@ export function lookupReceiptCoverageForLine(
     pendingReceiptQty: 0,
     physicalCoveragePct: null,
     receiptCoverageStatus: "NOT_RECEIVED",
-    receiptCoverageStatusLabel: "Not Received",
+    receiptCoverageStatusLabel: formatReceiptStatusLabel("NOT_RECEIVED"),
   };
 }

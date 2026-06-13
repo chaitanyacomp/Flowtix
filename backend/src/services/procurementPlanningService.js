@@ -8,6 +8,7 @@ const { usableStockDisplayQty, loadStockByItemIdUsableMap } = require("./stockSe
 const { QUEUE_EPS, qtyToNumber, sumReceivedByRmPoLineFromGrns } = require("./rmPurchaseHelpers");
 const {
   loadPendingRequestAllocByMrLineId,
+  loadTotalPurchaseRequestAllocByMrLineId,
   remainingAfterPurchaseRequests,
 } = require("./purchaseRequestService");
 const { RM_REQUISITION_PURCHASE_VISIBLE_STATUSES } = require("./rmRequisitionLifecycle");
@@ -126,7 +127,7 @@ async function loadOpenMaterialRequirementLines(db = prisma, { demandPool = null
 async function buildProcurementPool(db = prisma, { demandPool = null } = {}) {
   const poolKey = normalizeDemandPoolKey(demandPool);
   const rawLines = await loadOpenMaterialRequirementLines(db, { demandPool: poolKey });
-  const pendingByMr = await loadPendingRequestAllocByMrLineId(db);
+  const pendingByMr = await loadTotalPurchaseRequestAllocByMrLineId(db);
   const openLines = rawLines.filter((l) => remainingAfterPurchaseRequests(l, pendingByMr) > QUEUE_EPS);
   const stockMap = await loadStockByItemIdUsableMap(db);
   const openPoByItem = await loadOpenPoQtyByItemId(db);

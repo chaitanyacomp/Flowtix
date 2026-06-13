@@ -16,10 +16,22 @@ describe("procurementPlanningService helpers", () => {
 });
 
 describe("remainingAfterPurchaseRequests", () => {
-  it("subtracts procured and pending purchase request alloc", () => {
-    const line = { id: 1, shortageQty: 5000, procuredQty: 1000 };
-    const pending = new Map([[1, 1500]]);
-    assert.equal(remainingAfterPurchaseRequests(line, pending), 2500);
+  it("returns qty not yet allocated to any purchase request", () => {
+    const line = { id: 1, shortageQty: 5000, requiredQty: 5000 };
+    const totalPr = new Map([[1, 1500]]);
+    assert.equal(remainingAfterPurchaseRequests(line, totalPr), 3500);
+  });
+
+  it("June 2026 rev5 PP delta not on PR", () => {
+    const line = { id: 1, shortageQty: 330.87, requiredQty: 330.87 };
+    const totalPr = new Map([[1, 185.61]]);
+    assert.equal(remainingAfterPurchaseRequests(line, totalPr), 145.26);
+  });
+
+  it("June 2026 rev5 Powder delta not on PR", () => {
+    const line = { id: 2, shortageQty: 10.25, requiredQty: 10.25 };
+    const totalPr = new Map([[2, 5.75]]);
+    assert.equal(remainingAfterPurchaseRequests(line, totalPr), 4.5);
   });
 
   it("qtyToNumber handles strings", () => {

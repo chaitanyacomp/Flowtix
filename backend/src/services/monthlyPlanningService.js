@@ -19,6 +19,7 @@ const { allocateDocNo } = require("./docNoService");
 const { aggregateRmDemandForFgLines, loadApprovedBomWithLines } = require("./bomExplosionService");
 const { getMaterialAvailabilityByItems } = require("./materialAvailabilityService");
 const { RM_REQUISITION_ACTIVE_STATUSES } = require("./rmRequisitionLifecycle");
+const { recalculateMaterialRequirementClosure } = require("./procurementLifecycleService");
 const {
   buildPlanningContextMaps,
   enrichProductionLineMetrics,
@@ -1282,7 +1283,11 @@ async function releaseToProcurement({ db = prisma, planId, revision = null, conf
     };
   };
 
-  return typeof db.$transaction === "function" ? db.$transaction(run) : run(db);
+  const result = typeof db.$transaction === "function" ? await db.$transaction(run) : await run(db);
+  if (result?.materialRequirementId) {
+    await recalculateMaterialRequirementClosure(db, [result.materialRequirementId]);
+  }
+  return result;
 }
 
 module.exports = {

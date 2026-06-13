@@ -33,6 +33,10 @@ const { getRsSuggestionsForPeriod } = require("../services/monthlyPlanningRsSugg
 const { getGreenLevels } = require("../services/monthlyPlanningGreenLevelService");
 const { getRequirementComposition } = require("../services/monthlyPlanningRequirementCompositionService");
 const { getRmRequirementComposition } = require("../services/monthlyPlanningRmRequirementCompositionService");
+const {
+  buildPurchasePlanningReceiptCoverage,
+  enrichPurchasePlanningWithReceiptCoverage,
+} = require("../services/monthlyPlanningReceiptCoverageService");
 const { getPeriodRequirementCoverage } = require("../services/monthlyPlanningCoverageService");
 const {
   previewAdditionalPlan,
@@ -527,6 +531,13 @@ monthlyPlanningRouter.get(
         });
       }
       const data = await getPurchasePlanning({ planId: req.params.id });
+      if (data.locked && data.exists && Array.isArray(data.lines) && data.lines.length) {
+        const receiptCoverage = await buildPurchasePlanningReceiptCoverage({
+          planId: data.planId,
+          lines: data.lines,
+        });
+        return res.json(enrichPurchasePlanningWithReceiptCoverage(data, receiptCoverage));
+      }
       return res.json(data);
     } catch (e) {
       return handleServiceError(e, res, next);

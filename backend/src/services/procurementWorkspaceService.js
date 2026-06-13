@@ -6,7 +6,7 @@
 const { prisma } = require("../utils/prisma");
 const { QUEUE_EPS, qtyToNumber, sumReceivedByRmPoLineFromGrns } = require("./rmPurchaseHelpers");
 const {
-  loadPendingRequestAllocByMrLineId,
+  loadTotalPurchaseRequestAllocByMrLineId,
   remainingAfterPurchaseRequests,
   listPendingPurchaseRequests,
   purchaseRequestStatusLabel,
@@ -20,7 +20,10 @@ const {
   resolveDemandPoolForSourceType,
 } = require("./procurementDemandPoolService");
 const { computeFgGapLinesForSalesOrder } = require("./rmCheckService");
-const { isMaterialRequirementFullyReceived } = require("./procurementLifecycleService");
+const {
+  isMaterialRequirementFullyReceived,
+  healStaleMonthlyPlanProcurementHandoff,
+} = require("./procurementLifecycleService");
 const {
   RM_REQUISITION_PURCHASE_VISIBLE_STATUSES,
   RM_REQUISITION_PURCHASE_REQUEST_ALLOWED_STATUSES,
@@ -275,26 +278,14 @@ function deriveMrProcurementOperationalStatus(mr, pendingByMr, linkage) {
     };
   }
 
-  if (shortageLineCount > 0) {
-    let allShortageProcured = true;
-    for (const line of lines) {
-      const shortage = qtyToNumber(line.shortageQty);
-      if (shortage <= QUEUE_EPS) continue;
-      const procured = qtyToNumber(line.procuredQty);
-      if (procured + QUEUE_EPS < shortage) {
-        allShortageProcured = false;
-        break;
-      }
-    }
-    if (allShortageProcured) {
-      return {
-        key: "RM_READY",
-        label: "RM Ready",
-        pendingPoStatus: "Complete",
-        pendingGrnStatus: "Complete",
-        supplierPendingStatus: "Complete",
-      };
-    }
+  if (shortageLineCount > 0 && !unresolvedShortage) {
+    return {
+      key: "RM_READY",
+      label: "RM Ready",
+      pendingPoStatus: "Complete",
+      pendingGrnStatus: "Complete",
+      supplierPendingStatus: "Complete",
+    };
   }
 
   return {
@@ -562,7 +553,7 @@ async function buildProcurementPendingQueue(db = prisma, opts = {}) {
     sourceType: regularSoOnly ? null : opts.sourceType ?? null,
     sourceTypes: regularSoOnly ? sourceTypesForDemandPool(PROCUREMENT_DEMAND_POOL.REGULAR_SO) : null,
   });
-  const pendingByMr = await loadPendingRequestAllocByMrLineId(db);
+  const pendingByMr = await loadTotalPurchaseRequestAllocByMrLineId(db);
   const rows = [];
   const grouped = await groupMaterialRequirementsByCase(mrs, db);
   for (const group of grouped) {
@@ -710,7 +701,7 @@ function filterPendingMrsBySourceType(pendingMrs, sourceType) {
 }
 
 async function buildPendingMaterialRequirementSummaries(db, mrs) {
-  const pendingByMr = await loadPendingRequestAllocByMrLineId(db);
+  const pendingByMr = await loadTotalPurchaseRequestAllocByMrLineId(db);
   const sourceTypesByRmItem = buildSourceTypesByRmItem(mrs);
   const out = [];
   for (const mr of mrs) {
@@ -737,6 +728,8 @@ async function buildPendingMaterialRequirementSummaries(db, mrs) {
  * Full Purchase execution workspace payload.
  */
 async function buildProcurementWorkspace(db = prisma, opts = {}) {
+  await healStaleMonthlyPlanProcurementHandoff(db);
+
   const salesOrderId = opts.salesOrderId != null ? Number(opts.salesOrderId) : null;
   const demandPoolFilter = normalizeDemandPoolKey(opts.demandPool ?? opts.sourceType);
   const sourceTypeFilter =

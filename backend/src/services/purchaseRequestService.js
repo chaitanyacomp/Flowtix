@@ -123,7 +123,7 @@ function sourceRefForPurchaseRequestSource(mr) {
   );
 }
 
-/** Qty still available to send on open purchase requests for an MR line. */
+/** Qty still on open (not fully ordered) purchase requests for an MR line. */
 async function loadPendingRequestAllocByMrLineId(db = prisma) {
   const links = await db.purchaseRequestLineSourceLink.findMany({
     where: {
@@ -141,11 +141,50 @@ async function loadPendingRequestAllocByMrLineId(db = prisma) {
   return byMr;
 }
 
-function remainingAfterPurchaseRequests(line, pendingByMrLine) {
+/** Total MR line qty allocated on any non-cancelled purchase request (all PR statuses). */
+async function loadTotalPurchaseRequestAllocByMrLineId(db = prisma) {
+  const links = await db.purchaseRequestLineSourceLink.findMany({
+    where: {
+      purchaseRequestLine: {
+        purchaseRequest: { status: { not: "CANCELLED" } },
+      },
+    },
+    select: { materialRequirementLineId: true, allocatedQty: true },
+  });
+  const byMr = new Map();
+  for (const lk of links) {
+    const q = qtyToNumber(lk.allocatedQty);
+    byMr.set(lk.materialRequirementLineId, (byMr.get(lk.materialRequirementLineId) || 0) + q);
+  }
+  return byMr;
+}
+
+function mrLineTargetQty(line) {
   const shortage = qtyToNumber(line.shortageQty);
-  const procured = qtyToNumber(line.procuredQty);
-  const pendingPr = pendingByMrLine.get(line.id) || 0;
-  return Math.max(0, shortage - procured - pendingPr);
+  if (shortage > QUEUE_EPS) return shortage;
+  return qtyToNumber(line.requiredQty);
+}
+
+function totalPrAllocFromEmbeddedLinks(line) {
+  return (line.purchaseRequestSourceLinks || []).reduce((sum, sl) => sum + qtyToNumber(sl.allocatedQty), 0);
+}
+
+/**
+ * Qty on an MR line not yet handed off to any purchase request.
+ * Uses total PR allocation (including ORDERED PRs), not PO procured qty.
+ */
+function remainingAfterPurchaseRequests(line, allocByMrLine) {
+  const target = mrLineTargetQty(line);
+  const fromMap = allocByMrLine?.get?.(line.id);
+  const totalPr =
+    fromMap != null && Number.isFinite(fromMap) ? fromMap : totalPrAllocFromEmbeddedLinks(line);
+  return Math.max(0, round3(target - totalPr));
+}
+
+function round3(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return 0;
+  return Math.round(num * 1000) / 1000;
 }
 
 async function recalcPurchaseRequestStatus(tx, purchaseRequestId) {
@@ -176,7 +215,7 @@ async function recalcPurchaseRequestStatus(tx, purchaseRequestId) {
 }
 
 async function assertPurchaseRequestAllocationsValid(tx, lines) {
-  const pendingByMr = await loadPendingRequestAllocByMrLineId(tx);
+  const pendingByMr = await loadTotalPurchaseRequestAllocByMrLineId(tx);
   const lineIds = [];
   for (const l of lines) {
     for (const a of l.allocations || []) lineIds.push(a.materialRequirementLineId);
@@ -649,6 +688,8 @@ module.exports = {
   OPEN_PURCHASE_REQUEST_STATUSES,
   purchaseRequestStatusLabel,
   loadPendingRequestAllocByMrLineId,
+  loadTotalPurchaseRequestAllocByMrLineId,
+  mrLineTargetQty,
   remainingAfterPurchaseRequests,
   createPurchaseRequestFromPool,
   listPendingPurchaseRequests,

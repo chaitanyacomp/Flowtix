@@ -86,6 +86,61 @@ describe("procurement lifecycle closure", () => {
     assert.equal(db.updates[0].data.status, "FULLY_PROCURED");
   });
 
+  it("reopens FULLY_PROCURED MR when revision delta is not on any purchase request", async () => {
+    const mr = {
+      id: 82,
+      status: "FULLY_PROCURED",
+      sentToPurchaseAt: new Date("2026-06-13"),
+      lines: [
+        {
+          id: 1,
+          rmItemId: 1,
+          requiredQty: 330.87,
+          shortageQty: 330.87,
+          purchaseRequestSourceLinks: [
+            {
+              allocatedQty: 185.61,
+              purchaseRequestLine: {
+                sourceLinks: [{ allocatedQty: 185.61 }],
+                poLinks: [
+                  {
+                    allocatedQty: 200,
+                    rmPoLine: {
+                      qty: 200,
+                      rmPo: { id: 106, status: "COMPLETED" },
+                      grnLines: [{ receivedQty: 200, grn: { id: 1, reversedAt: null } }],
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+          procurementLinks: [],
+        },
+        {
+          id: 2,
+          rmItemId: 2,
+          requiredQty: 10.25,
+          shortageQty: 10.25,
+          purchaseRequestSourceLinks: [
+            {
+              allocatedQty: 5.75,
+              purchaseRequestLine: {
+                sourceLinks: [{ allocatedQty: 5.75 }],
+                poLinks: [],
+              },
+            },
+          ],
+          procurementLinks: [],
+        },
+      ],
+    };
+    const db = fakeDbForRecalc(mr);
+    const changes = await recalculateMaterialRequirementClosure(db, [82]);
+    assert.deepEqual(changes, [{ id: 82, from: "FULLY_PROCURED", to: "SENT_TO_PURCHASE" }]);
+    assert.equal(db.updates[0].data.closedAt, null);
+  });
+
   it("GRN reversal reopens a closed RM Requisition back to procurement in progress", async () => {
     const db = fakeDbForRecalc(mrWithReceipt({ status: "CLOSED", received: 100, reversed: true }));
 

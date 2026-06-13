@@ -7,7 +7,7 @@ const { prisma } = require("../utils/prisma");
 const { computeFgGapLinesForSalesOrder } = require("./rmCheckService");
 const { evaluateWoPrepareReadiness } = require("./materialPlanningService");
 const { summarizeMaterialRequirement } = require("./procurementWorkspaceService");
-const { loadPendingRequestAllocByMrLineId } = require("./purchaseRequestService");
+const { loadTotalPurchaseRequestAllocByMrLineId } = require("./purchaseRequestService");
 const { RM_REQUISITION_ACTIVE_STATUSES } = require("./rmRequisitionLifecycle");
 const { regularSoProcurementSourceTypes } = require("./regularSoProcurementSource");
 
@@ -189,7 +189,7 @@ async function getWoPrepareDashboardQueues(db = prisma, opts = {}) {
         orderBy: { id: "desc" },
       });
       if (mr) {
-        const pendingByMr = await loadPendingRequestAllocByMrLineId(db);
+        const pendingByMr = await loadTotalPurchaseRequestAllocByMrLineId(db);
         const proc = await summarizeMaterialRequirement(mr, pendingByMr, db);
         row.procurementOperationalLabel = proc.operationalLabel;
         row.pendingPoStatus = proc.pendingPoStatus;

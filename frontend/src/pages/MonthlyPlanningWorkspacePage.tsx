@@ -32,6 +32,13 @@ import {
   type MonthlyPlanStatus,
 } from "../lib/monthlyPlanningWorkflowUx";
 import { buildReportHref } from "../lib/rmPlanningVsReceivedReportUx";
+import {
+  formatPhysicalCoveragePct,
+  lookupReceiptCoverageForLine,
+  physicalReceiptCoverageBannerLine,
+  physicalReceiptCoverageDetailMessage,
+  RECEIPT_COVERAGE_STATUS_META,
+} from "../lib/monthlyPlanningReceiptCoverageUx";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { NativeSelect } from "../components/ui/native-select";
@@ -203,6 +210,12 @@ type PurchasePlanLine = {
   belowMinStockFlag: boolean;
   leadTimeRiskFlag: boolean;
   warnings: { code?: string; message?: string }[];
+  poQty?: number;
+  receivedQty?: number;
+  pendingReceiptQty?: number;
+  physicalCoveragePct?: number | null;
+  receiptCoverageStatus?: ReceiptCoverageStatus;
+  receiptCoverageStatusLabel?: string;
 };
 
 type PurchasePlanningTotals = {
@@ -213,6 +226,17 @@ type PurchasePlanningTotals = {
   reductionTotal: number;
   coveragePct: number | null;
 };
+
+type ReceiptCoverageTotals = {
+  requirementQty: number;
+  releasedQty: number;
+  poQty: number;
+  receivedQty: number;
+  pendingReceiptQty: number;
+  physicalCoveragePct: number | null;
+};
+
+type ReceiptCoverageStatus = "FULLY_COVERED" | "PARTIALLY_COVERED" | "NOT_RECEIVED" | "OVER_COVERED";
 
 type ReleaseSummary = {
   planId: number;
@@ -240,6 +264,7 @@ type PurchasePlanningResponse = {
   rmPlan: { id: number; revision: number; totalFgPlannedQty: string | number; recalculatedAt: string } | null;
   lines: PurchasePlanLine[];
   totals?: PurchasePlanningTotals;
+  receiptCoverage?: { totals: ReceiptCoverageTotals };
 };
 
 type FgItem = { id: number; itemName: string; unit?: string | null; unitName?: string | null };
@@ -2734,6 +2759,9 @@ function PurchasePlanningTab({
   const coveragePct =
     data.totals?.coveragePct ??
     (totalCurrent > 0 ? round3((totalReleased / totalCurrent) * 100) : null);
+  const receiptTotals = data.receiptCoverage?.totals;
+  const physicalCoveragePct = receiptTotals?.physicalCoveragePct ?? null;
+  const physicalCoverageDetail = physicalReceiptCoverageDetailMessage(physicalCoveragePct);
   const hasReduction = lines.some((l) => num(l.reductionQty) > 0);
   const canReleaseDelta = isReleaseDeltaButtonEnabled(totalAdditional);
   const planHeader = plan
@@ -2774,10 +2802,22 @@ function PurchasePlanningTab({
             skippedLineCount: releaseSummary.skippedLineCount,
             surplusLineCount: releaseSummary.surplusLineCount,
           })}
+          {receiptTotals ? (
+            <p className="mt-1 border-t border-emerald-200/80 pt-1 text-emerald-900">
+              {physicalReceiptCoverageBannerLine(physicalCoveragePct)}
+              {physicalCoverageDetail ? ` — ${physicalCoverageDetail}` : ""}
+            </p>
+          ) : null}
         </div>
       ) : (
         <div className="rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-[12px] text-sky-800">
-          {purchasePlanningOperationalStatus(totalAdditional, totalReleasedFromTotals)}
+          <p>{purchasePlanningOperationalStatus(totalAdditional, totalReleasedFromTotals)}</p>
+          {receiptTotals ? (
+            <p className="mt-1 border-t border-sky-200/80 pt-1 text-sky-900">
+              {physicalReceiptCoverageBannerLine(physicalCoveragePct)}
+              {physicalCoverageDetail ? ` — ${physicalCoverageDetail}` : ""}
+            </p>
+          ) : null}
         </div>
       )}
 
@@ -2794,10 +2834,24 @@ function PurchasePlanningTab({
         <KpiCard label="Additional requirement total" value={totalAdditional.toLocaleString()} />
         <KpiCard label="Reduction total" value={totalReduction.toLocaleString()} />
         <KpiCard
-          label="Coverage %"
+          label="Release coverage %"
           value={coveragePct != null ? `${coveragePct.toLocaleString()}%` : "—"}
         />
       </div>
+
+      {receiptTotals ? (
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+          <KpiCard label="Total requirement" value={receiptTotals.requirementQty.toLocaleString()} />
+          <KpiCard label="Released qty" value={receiptTotals.releasedQty.toLocaleString()} />
+          <KpiCard label="PO qty" value={receiptTotals.poQty.toLocaleString()} />
+          <KpiCard label="Received qty" value={receiptTotals.receivedQty.toLocaleString()} />
+          <KpiCard label="Pending receipt qty" value={receiptTotals.pendingReceiptQty.toLocaleString()} />
+          <KpiCard
+            label="Physical coverage %"
+            value={formatPhysicalCoveragePct(receiptTotals.physicalCoveragePct)}
+          />
+        </div>
+      ) : null}
 
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
@@ -2876,14 +2930,19 @@ function PurchasePlanningTab({
               <th className="px-3 py-2 w-28 text-right">Additional requirement</th>
               <th className="px-3 py-2 w-24 text-right">Reduction</th>
               <th className="px-3 py-2 w-28 text-right">Suggested buy</th>
-              <th className="px-3 py-2 w-32">Status</th>
+              <th className="px-3 py-2 w-24 text-right">PO qty</th>
+              <th className="px-3 py-2 w-24 text-right">Received qty</th>
+              <th className="px-3 py-2 w-24 text-right">Pending qty</th>
+              <th className="px-3 py-2 w-24 text-right">Coverage %</th>
+              <th className="px-3 py-2 w-32">Receipt status</th>
+              <th className="px-3 py-2 w-32">Release status</th>
               <th className="px-3 py-2">Warnings</th>
             </tr>
           </thead>
           <tbody>
             {lines.length === 0 ? (
               <tr>
-                <td colSpan={9} className="px-3 py-8 text-center text-sm text-slate-400">
+                <td colSpan={13} className="px-3 py-8 text-center text-sm text-slate-400">
                   {rmPlanningEmptyTableMessage(planHeader)}
                 </td>
               </tr>
@@ -2895,6 +2954,10 @@ function PurchasePlanningTab({
                 const additional = num(l.additionalRequirementQty ?? l.suggestedPurchaseQty);
                 const reduction = num(l.reductionQty ?? Math.max(0, -num(l.deltaQty ?? l.varianceQty)));
                 const suggestedBuy = num(l.suggestedPurchaseQty ?? additional);
+                const receipt = lookupReceiptCoverageForLine(l);
+                const receiptMeta =
+                  RECEIPT_COVERAGE_STATUS_META[receipt.receiptCoverageStatus as keyof typeof RECEIPT_COVERAGE_STATUS_META] ??
+                  RECEIPT_COVERAGE_STATUS_META.NOT_RECEIVED;
                 return (
                   <tr key={l.rmItemId} className="border-t border-slate-100 align-middle">
                     <td className="px-3 py-1.5 font-medium text-slate-800">{l.rmItemName ?? `Item ${l.rmItemId}`}</td>
@@ -2928,6 +2991,23 @@ function PurchasePlanningTab({
                       )}
                     >
                       {suggestedBuy.toLocaleString()}
+                    </td>
+                    <td className="px-3 py-1.5 text-right tabular-nums text-slate-700">
+                      {receipt.poQty.toLocaleString()}
+                    </td>
+                    <td className="px-3 py-1.5 text-right tabular-nums text-slate-700">
+                      {receipt.receivedQty.toLocaleString()}
+                    </td>
+                    <td className="px-3 py-1.5 text-right tabular-nums text-slate-700">
+                      {receipt.pendingReceiptQty.toLocaleString()}
+                    </td>
+                    <td className="px-3 py-1.5 text-right tabular-nums font-medium text-slate-800">
+                      {formatPhysicalCoveragePct(receipt.physicalCoveragePct)}
+                    </td>
+                    <td className="px-3 py-1.5">
+                      <span className={cn("inline-flex rounded px-1.5 py-0.5 text-[10px] font-semibold", receiptMeta.cls)}>
+                        {receipt.receiptCoverageStatusLabel}
+                      </span>
                     </td>
                     <td className="px-3 py-1.5">
                       <span className={cn("inline-flex rounded px-1.5 py-0.5 text-[10px] font-semibold", meta.cls)}>

@@ -143,6 +143,17 @@ async function loadMaterialRequirementIdsForRmPo(db, rmPoId) {
   return [...ids];
 }
 
+function hasOpenPurchaseHandoff(mr) {
+  return (mr.lines || []).some((line) => {
+    const target = targetQtyForMrLine(line);
+    const totalPr = (line.purchaseRequestSourceLinks || []).reduce(
+      (sum, sl) => sum + qtyToNumber(sl.allocatedQty),
+      0,
+    );
+    return target - totalPr > QUEUE_EPS;
+  });
+}
+
 async function recalculateMaterialRequirementClosure(db, materialRequirementIds) {
   const mrs = await loadMaterialRequirementsForLifecycle(db, materialRequirementIds);
   const changes = [];
@@ -150,26 +161,62 @@ async function recalculateMaterialRequirementClosure(db, materialRequirementIds)
     const fullyReceived = isMaterialRequirementFullyReceived(mr);
     const partiallyReceived = isMaterialRequirementPartiallyReceived(mr);
     const hasPo = hasMaterialRequirementPoLink(mr);
-    const next = fullyReceived
-      ? "FULLY_PROCURED"
-      : partiallyReceived
-        ? "PARTIALLY_PROCURED"
-        : hasPo
-          ? "PROCUREMENT_IN_PROGRESS"
-          : mr.status === "CANCELLED" || mr.status === "CLOSED"
-            ? mr.status
-            : mr.status === "DRAFT" || mr.status === "PENDING_APPROVAL"
-              ? mr.status
-              : "SENT_TO_PURCHASE";
+    const openHandoff = hasOpenPurchaseHandoff(mr);
+    let next;
+    if (fullyReceived && !openHandoff) {
+      next = "FULLY_PROCURED";
+    } else if (openHandoff && mr.sentToPurchaseAt) {
+      next = "SENT_TO_PURCHASE";
+    } else if (openHandoff && (mr.status === "APPROVED" || mr.status === "SENT_TO_PURCHASE")) {
+      next = mr.status;
+    } else if (partiallyReceived) {
+      next = "PARTIALLY_PROCURED";
+    } else if (hasPo) {
+      next = "PROCUREMENT_IN_PROGRESS";
+    } else if (mr.status === "CANCELLED" || mr.status === "CLOSED") {
+      next = mr.status;
+    } else if (mr.status === "DRAFT" || mr.status === "PENDING_APPROVAL") {
+      next = mr.status;
+    } else {
+      next = "SENT_TO_PURCHASE";
+    }
+
+    const reopeningFromClosedProcurement =
+      (mr.status === "FULLY_PROCURED" || mr.status === "CLOSED") && next !== "FULLY_PROCURED" && next !== "CLOSED";
+
     if (mr.status !== next) {
       await db.materialRequirement.update({
         where: { id: mr.id },
-        data: { status: next, ...(next === "FULLY_PROCURED" ? { closedAt: new Date() } : {}) },
+        data: {
+          status: next,
+          ...(next === "FULLY_PROCURED" ? { closedAt: new Date() } : {}),
+          ...(reopeningFromClosedProcurement ? { closedAt: null } : {}),
+        },
       });
       changes.push({ id: mr.id, from: mr.status, to: next });
     }
   }
   return changes;
+}
+
+/**
+ * Reopen monthly-plan MRs that were marked fully procured before a later revision delta
+ * increased required qty without a matching purchase-request handoff.
+ */
+async function healStaleMonthlyPlanProcurementHandoff(db = prisma) {
+  const candidates = await db.materialRequirement.findMany({
+    where: {
+      sourceType: "MONTHLY_PLAN",
+      reversedAt: null,
+      status: { in: ["FULLY_PROCURED", "CLOSED", "PARTIALLY_PROCURED"] },
+    },
+    select: { id: true },
+  });
+  if (!candidates.length) return [];
+  return recalculateMaterialRequirementClosure(
+    db,
+    candidates.map((row) => row.id),
+  );
 }
 
 async function recalculateMaterialRequirementClosureForRmPo(db, rmPoId) {
@@ -325,5 +372,6 @@ module.exports = {
   loadMaterialRequirementIdsForRmPo,
   recalculateMaterialRequirementClosure,
   recalculateMaterialRequirementClosureForRmPo,
+  healStaleMonthlyPlanProcurementHandoff,
   repairStaleDuplicateWoPlanningProcurement,
 };

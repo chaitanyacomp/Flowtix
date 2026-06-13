@@ -298,6 +298,16 @@ const TILES: ReportTile[] = [
     priority: 15,
   },
   {
+    to: "/reports/rm-planning-vs-actual",
+    title: "RM Planning vs Actual Received",
+    description:
+      "Month-wise RM planned requirement vs procurement release, PO quantity, and GRN received quantity with variance",
+    roles: ["ADMIN", "PURCHASE", "STORE"],
+    group: "purchase",
+    icon: <FileSearch className="h-4 w-4" />,
+    priority: 16,
+  },
+  {
     to: withReportsReturnContext("/purchase-bills"),
     title: "Purchase Bills",
     description: "Search and review purchase bills",

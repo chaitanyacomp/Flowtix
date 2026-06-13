@@ -19,7 +19,7 @@ import {
   isLegacyPlanDocument,
   isPlanEditable,
   planStatusBadgeVariant,
-  purchasePlanningIntroMessage,
+  purchasePlanningOperationalStatus,
   purchasePlanningReductionMessage,
   productionPlanReadOnlyMessage,
   resolvePlanDisplayLabel,
@@ -31,6 +31,7 @@ import {
   type MonthlyPlanKind,
   type MonthlyPlanStatus,
 } from "../lib/monthlyPlanningWorkflowUx";
+import { buildReportHref } from "../lib/rmPlanningVsReceivedReportUx";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { NativeSelect } from "../components/ui/native-select";
@@ -615,6 +616,10 @@ export function MonthlyPlanningWorkspacePage() {
   const [planRevisions, setPlanRevisions] = React.useState<PlanRevisionsResponse | null>(null);
   const [loadingRevisions, setLoadingRevisions] = React.useState(false);
   const [expandedRevision, setExpandedRevision] = React.useState<number | null>(null);
+  const [revisionHistoryExpanded, setRevisionHistoryExpanded] = React.useState(false);
+  const [planningAuditExpanded, setPlanningAuditExpanded] = React.useState(false);
+  const [greenLevelAuditExpanded, setGreenLevelAuditExpanded] = React.useState(false);
+  const [rmAuditExpanded, setRmAuditExpanded] = React.useState(false);
   const [reopening, setReopening] = React.useState(false);
   const [cancellingReopen, setCancellingReopen] = React.useState(false);
   const [startingPlanning, setStartingPlanning] = React.useState(false);
@@ -683,9 +688,6 @@ export function MonthlyPlanningWorkspacePage() {
     try {
       const res = await apiFetch<PlanRevisionsResponse>(`/api/monthly-planning/${planId}/revisions`);
       setPlanRevisions(res);
-      if (res.revisions.length > 0) {
-        setExpandedRevision((cur) => cur ?? res.revisions[0].revision);
-      }
     } catch {
       setPlanRevisions(null);
     } finally {
@@ -1480,6 +1482,43 @@ export function MonthlyPlanningWorkspacePage() {
 
   const availableFgForAdd = fgItems.filter((i) => !rows.some((r) => r.fgItemId === i.id));
 
+  const fgRequirementBreakdown = React.useMemo(
+    () =>
+      computeProductionRequirementBreakdown(period, requirementComposition, rsSuggestions, totalFgPlanned),
+    [period, requirementComposition, rsSuggestions, totalFgPlanned],
+  );
+
+  React.useEffect(() => {
+    if (!planExists) return;
+    let cancelled = false;
+    void apiFetch<RequirementCompositionResponse>(
+      `/api/monthly-planning/requirement-composition?periodKey=${encodeURIComponent(period)}`,
+    )
+      .then((res) => {
+        if (!cancelled) setRequirementComposition(res);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [planExists, period]);
+
+  React.useEffect(() => {
+    if (activeTab !== "production" || !planExists) return;
+    if (rsSuggestions?.periodKey === period) return;
+    let cancelled = false;
+    void apiFetch<RsSuggestionsResponse>(
+      `/api/monthly-planning/rs-suggestions?periodKey=${encodeURIComponent(period)}`,
+    )
+      .then((res) => {
+        if (!cancelled) setRsSuggestions(res);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, planExists, period, rsSuggestions?.periodKey]);
+
   if (flagsLoading) {
     return <div className="p-6 text-sm text-slate-500">Loading…</div>;
   }
@@ -1770,6 +1809,11 @@ export function MonthlyPlanningWorkspacePage() {
         </div>
       ) : null}
 
+      {/* Production requirement summary */}
+      {planExists ? (
+        <ProductionRequirementBreakdownCard breakdown={fgRequirementBreakdown} period={period} />
+      ) : null}
+
       {/* KPI strip */}
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
         <KpiCard label="Total FG planned" value={totalFgPlanned.toLocaleString()} />
@@ -1777,44 +1821,6 @@ export function MonthlyPlanningWorkspacePage() {
         <KpiCard label="FG items with variance" value={String(fgItemsWithVariance)} />
         <KpiCard label="Status" value={formatPlanStatusLabel(plan?.status)} />
       </div>
-
-      <GreenLevelSection
-        period={period}
-        data={greenLevels}
-        visible={greenLevelsVisible}
-        loading={loadingGreenLevels}
-        onLoad={() => void loadGreenLevels()}
-        onHide={() => setGreenLevelsVisible(false)}
-      />
-
-      <RequirementCompositionSection
-        period={period}
-        data={requirementComposition}
-        visible={requirementCompositionVisible}
-        loading={loadingRequirementComposition}
-        onLoad={() => void loadRequirementComposition()}
-        onHide={() => setRequirementCompositionVisible(false)}
-      />
-
-      <RmRequirementCompositionSection
-        period={period}
-        data={rmRequirementComposition}
-        visible={rmRequirementCompositionVisible}
-        loading={loadingRmRequirementComposition}
-        onLoad={() => void loadRmRequirementComposition()}
-        onHide={() => setRmRequirementCompositionVisible(false)}
-      />
-
-      {planExists && plan && isLegacyPlan ? (
-        <RevisionHistorySection
-          data={planRevisions}
-          loading={loadingRevisions}
-          expandedRevision={expandedRevision}
-          onToggleRevision={(rev) =>
-            setExpandedRevision((cur) => (cur === rev ? null : rev))
-          }
-        />
-      ) : null}
 
       {/* Tabs */}
       <div className="flex items-center gap-1 border-b border-slate-200">
@@ -1910,6 +1916,69 @@ export function MonthlyPlanningWorkspacePage() {
           />
         )}
       </div>
+
+      <GreenLevelSection
+        period={period}
+        data={greenLevels}
+        panelExpanded={greenLevelAuditExpanded}
+        visible={greenLevelsVisible}
+        loading={loadingGreenLevels}
+        onTogglePanel={() => {
+          setGreenLevelAuditExpanded((open) => {
+            const next = !open;
+            if (next && !greenLevels && !loadingGreenLevels) void loadGreenLevels();
+            return next;
+          });
+        }}
+        onLoad={() => void loadGreenLevels()}
+      />
+
+      <RequirementCompositionSection
+        period={period}
+        data={requirementComposition}
+        panelExpanded={planningAuditExpanded}
+        visible={requirementCompositionVisible}
+        loading={loadingRequirementComposition}
+        onTogglePanel={() => {
+          setPlanningAuditExpanded((open) => {
+            const next = !open;
+            if (next && !requirementCompositionVisible && !loadingRequirementComposition) {
+              void loadRequirementComposition();
+            }
+            return next;
+          });
+        }}
+        onLoad={() => void loadRequirementComposition()}
+      />
+
+      <RmRequirementCompositionSection
+        period={period}
+        data={rmRequirementComposition}
+        panelExpanded={rmAuditExpanded}
+        visible={rmRequirementCompositionVisible}
+        loading={loadingRmRequirementComposition}
+        onTogglePanel={() => {
+          setRmAuditExpanded((open) => {
+            const next = !open;
+            if (next && !rmRequirementCompositionVisible && !loadingRmRequirementComposition) {
+              void loadRmRequirementComposition();
+            }
+            return next;
+          });
+        }}
+        onLoad={() => void loadRmRequirementComposition()}
+      />
+
+      {planExists && plan && isLegacyPlan ? (
+        <RevisionHistorySection
+          data={planRevisions}
+          loading={loadingRevisions}
+          panelExpanded={revisionHistoryExpanded}
+          onTogglePanel={() => setRevisionHistoryExpanded((open) => !open)}
+          expandedRevision={expandedRevision}
+          onToggleRevision={(rev) => setExpandedRevision((cur) => (cur === rev ? null : rev))}
+        />
+      ) : null}
 
       {confirmLockOpen ? (
         <LockConfirmModal
@@ -2424,11 +2493,15 @@ function RmPlanningTab({
 function RevisionHistorySection({
   data,
   loading,
+  panelExpanded,
+  onTogglePanel,
   expandedRevision,
   onToggleRevision,
 }: {
   data: PlanRevisionsResponse | null;
   loading: boolean;
+  panelExpanded: boolean;
+  onTogglePanel: () => void;
   expandedRevision: number | null;
   onToggleRevision: (revision: number) => void;
 }) {
@@ -2436,24 +2509,33 @@ function RevisionHistorySection({
 
   return (
     <div className="rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
-      <div className="mb-2 flex items-center gap-2">
-        <History className="h-4 w-4 text-slate-500" />
-        <h3 className="text-[13px] font-semibold text-slate-800">Revision History</h3>
-        {loading ? <span className="text-[11px] text-slate-400">Loading…</span> : null}
-        {!loading && revisions.length === 0 ? (
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <History className="h-4 w-4 text-slate-500" />
+          <h3 className="text-[13px] font-semibold text-slate-800">
+            Revision History{revisions.length > 0 ? ` (${revisions.length})` : ""}
+          </h3>
+          {loading ? <span className="text-[11px] text-slate-400">Loading…</span> : null}
+        </div>
+        {revisions.length > 0 ? (
+          <Button type="button" variant="outline" size="sm" onClick={onTogglePanel} className="h-8">
+            {panelExpanded ? "Hide Details" : "Expand"}
+          </Button>
+        ) : !loading ? (
           <span className="text-[11px] text-slate-400">Revision history appears after the first plan lock.</span>
         ) : null}
       </div>
 
+      {panelExpanded && revisions.length > 0 ? (
+        <>
       {data?.draftForRevision != null ? (
-        <p className="mb-2 text-[11px] text-slate-600">
+        <p className="mb-2 mt-2 text-[11px] text-slate-600">
           <strong>Rev {data.currentRevision}</strong> is the current locked revision. Draft edits are preparing{" "}
           <strong>Rev {data.draftForRevision}</strong>.
         </p>
       ) : null}
 
-      {revisions.length > 0 ? (
-        <div className="overflow-auto rounded-md border border-slate-100">
+        <div className="mt-2 overflow-auto rounded-md border border-slate-100">
           <table className="w-full border-collapse text-[13px]">
             <thead className="bg-slate-50 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500">
               <tr>
@@ -2552,6 +2634,7 @@ function RevisionHistorySection({
             </tbody>
           </table>
         </div>
+        </>
       ) : null}
     </div>
   );
@@ -2694,13 +2777,13 @@ function PurchasePlanningTab({
         </div>
       ) : (
         <div className="rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-[12px] text-sky-800">
-          {purchasePlanningIntroMessage(planHeader)}
+          {purchasePlanningOperationalStatus(totalAdditional, totalReleasedFromTotals)}
         </div>
       )}
 
       {hasReduction ? (
         <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-900">
-          <strong>Reduction.</strong> {purchasePlanningReductionMessage(planHeader)}
+          {purchasePlanningReductionMessage(planHeader)}
         </div>
       ) : null}
 
@@ -2753,6 +2836,14 @@ function PurchasePlanningTab({
           ) : null}
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          {plan?.periodKey ? (
+            <Link
+              to={buildReportHref(plan.periodKey, "MONTHLY_PLAN")}
+              className="text-[12px] font-semibold text-primary underline"
+            >
+              RM Planning vs Received
+            </Link>
+          ) : null}
           {!canReleaseDelta ? (
             <span className="text-[12px] font-medium text-emerald-700">✓ {releaseDisabledMessage}</span>
           ) : null}
@@ -2873,6 +2964,75 @@ function PurchasePlanningTab({
   );
 }
 
+function computeProductionRequirementBreakdown(
+  period: string,
+  composition: RequirementCompositionResponse | null,
+  rsSuggestions: RsSuggestionsResponse | null,
+  totalFgPlanned: number,
+): {
+  customerRsDemand: number | null;
+  greenLevelRequirement: number | null;
+  totalFgPlanned: number;
+} {
+  let customerRsDemand: number | null = null;
+  let greenLevelRequirement: number | null = null;
+
+  if (composition?.periodKey === period) {
+    customerRsDemand = composition.items.reduce((sum, item) => sum + item.rsRequirement, 0);
+    greenLevelRequirement = composition.items.reduce((sum, item) => sum + item.greenShortage, 0);
+  } else if (rsSuggestions?.periodKey === period) {
+    customerRsDemand = rsSuggestions.items.reduce((sum, item) => sum + item.scheduleQty, 0);
+  }
+
+  return { customerRsDemand, greenLevelRequirement, totalFgPlanned };
+}
+
+function ProductionRequirementBreakdownCard({
+  breakdown,
+  period,
+}: {
+  breakdown: ReturnType<typeof computeProductionRequirementBreakdown>;
+  period: string;
+}) {
+  const fmt = (value: number | null) =>
+    value != null ? value.toLocaleString(undefined, { maximumFractionDigits: 3 }) : "—";
+
+  return (
+    <div className="rounded-lg border border-blue-200 bg-blue-50/40 p-3 shadow-sm">
+      <h3 className="text-[13px] font-semibold text-slate-900">Production Requirement Breakdown</h3>
+      <p className="mt-0.5 text-[11px] text-slate-600">Read-only summary for {period}</p>
+      <div className="mt-3 overflow-hidden rounded-md border border-slate-200 bg-white">
+        <table className="w-full border-collapse text-[13px]">
+          <thead className="bg-slate-50 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            <tr>
+              <th className="px-3 py-2">Component</th>
+              <th className="px-3 py-2 w-36 text-right">Qty</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr className="border-t border-slate-100">
+              <td className="px-3 py-2 font-medium text-slate-800">Customer RS Demand</td>
+              <td className="px-3 py-2 text-right tabular-nums text-slate-900">{fmt(breakdown.customerRsDemand)}</td>
+            </tr>
+            <tr className="border-t border-slate-100">
+              <td className="px-3 py-2 font-medium text-slate-800">Green Level Requirement</td>
+              <td className="px-3 py-2 text-right tabular-nums text-slate-900">
+                {fmt(breakdown.greenLevelRequirement)}
+              </td>
+            </tr>
+            <tr className="border-t border-slate-100 bg-slate-50/60">
+              <td className="px-3 py-2 font-semibold text-slate-900">Total FG Planned</td>
+              <td className="px-3 py-2 text-right tabular-nums font-semibold text-slate-900">
+                {breakdown.totalFgPlanned.toLocaleString(undefined, { maximumFractionDigits: 3 })}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function greenLevelStatusBadge(status: GreenLevelStatus | null): { label: string; cls: string } {
   switch (status) {
     case "GREEN":
@@ -2891,17 +3051,19 @@ function greenLevelStatusBadge(status: GreenLevelStatus | null): { label: string
 function GreenLevelSection({
   period,
   data,
+  panelExpanded,
   visible,
   loading,
+  onTogglePanel,
   onLoad,
-  onHide,
 }: {
   period: string;
   data: GreenLevelsResponse | null;
+  panelExpanded: boolean;
   visible: boolean;
   loading: boolean;
+  onTogglePanel: () => void;
   onLoad: () => void;
-  onHide: () => void;
 }) {
   const [showAllFg, setShowAllFg] = React.useState(false);
   const [expandedItemIds, setExpandedItemIds] = React.useState<Set<number>>(new Set());
@@ -2919,32 +3081,28 @@ function GreenLevelSection({
   }
 
   return (
-    <div className="rounded-lg border border-emerald-200 bg-emerald-50/40 p-3">
+    <div className="rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <h3 className="text-[13px] font-semibold text-slate-800">Read-only Green Level (FG)</h3>
-          <p className="mt-0.5 text-[12px] text-slate-600">
-            Status uses <strong>free FG stock</strong> vs green target from locked RS history before{" "}
-            <strong>{period}</strong>. Validation only — no planning actions.
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          {visible ? (
-            <Button type="button" variant="outline" size="sm" onClick={onHide} className="h-8">
-              Hide
-            </Button>
-          ) : null}
-          <Button type="button" variant="outline" size="sm" onClick={onLoad} disabled={loading} className="h-8">
-            <Layers className={cn("mr-1.5 h-4 w-4", loading && "animate-pulse")} />
-            {loading ? "Loading…" : "View Green Levels"}
-          </Button>
-        </div>
+        <h3 className="text-[13px] font-semibold text-slate-800">Green Level Audit</h3>
+        <Button type="button" variant="outline" size="sm" onClick={onTogglePanel} className="h-8">
+          {panelExpanded ? "Hide Details" : "View Details"}
+        </Button>
       </div>
 
-      {visible && (loading || dataForPeriod) ? (
-        loading ? (
-          <p className="mt-3 text-sm text-slate-500">Loading green levels for {period}…</p>
-        ) : dataForPeriod ? (
+      {panelExpanded ? (
+        <>
+          {loading && !dataForPeriod ? (
+            <p className="mt-3 text-sm text-slate-500">Loading green levels for {period}…</p>
+          ) : null}
+          {!visible && !loading ? (
+            <div className="mt-3 flex justify-end">
+              <Button type="button" variant="outline" size="sm" onClick={onLoad} disabled={loading} className="h-8">
+                <Layers className={cn("mr-1.5 h-4 w-4", loading && "animate-pulse")} />
+                {loading ? "Loading…" : "Load green level audit"}
+              </Button>
+            </div>
+          ) : null}
+          {visible && dataForPeriod ? (
         <div className="mt-3 overflow-auto rounded-md border border-slate-200 bg-white">
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-3 py-2 text-[11px] text-slate-500">
             <span>
@@ -3046,7 +3204,8 @@ function GreenLevelSection({
             </tbody>
           </table>
         </div>
-        ) : null
+          ) : null}
+        </>
       ) : null}
     </div>
   );
@@ -3055,17 +3214,19 @@ function GreenLevelSection({
 function RequirementCompositionSection({
   period,
   data,
+  panelExpanded,
   visible,
   loading,
+  onTogglePanel,
   onLoad,
-  onHide,
 }: {
   period: string;
   data: RequirementCompositionResponse | null;
+  panelExpanded: boolean;
   visible: boolean;
   loading: boolean;
+  onTogglePanel: () => void;
   onLoad: () => void;
-  onHide: () => void;
 }) {
   const [expandedItemIds, setExpandedItemIds] = React.useState<Set<number>>(new Set());
   const dataForPeriod = data?.periodKey === period ? data : null;
@@ -3080,32 +3241,28 @@ function RequirementCompositionSection({
   }
 
   return (
-    <div className="rounded-lg border border-violet-200 bg-violet-50/40 p-3">
+    <div className="rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <h3 className="text-[13px] font-semibold text-slate-800">Requirement Composition</h3>
-          <p className="mt-0.5 text-[12px] text-slate-600">
-            Read-only FG production recommendation for <strong>{period}</strong>: RS Requirement + Carry Forward +
-            Green Shortage. Transparency only — no planning actions.
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          {visible ? (
-            <Button type="button" variant="outline" size="sm" onClick={onHide} className="h-8">
-              Hide
-            </Button>
-          ) : null}
-          <Button type="button" variant="outline" size="sm" onClick={onLoad} disabled={loading} className="h-8">
-            <Calculator className={cn("mr-1.5 h-4 w-4", loading && "animate-pulse")} />
-            {loading ? "Loading…" : "View Composition"}
-          </Button>
-        </div>
+        <h3 className="text-[13px] font-semibold text-slate-800">Planning Audit</h3>
+        <Button type="button" variant="outline" size="sm" onClick={onTogglePanel} className="h-8">
+          {panelExpanded ? "Hide Details" : "View Details"}
+        </Button>
       </div>
 
-      {visible && (loading || dataForPeriod) ? (
-        loading ? (
-          <p className="mt-3 text-sm text-slate-500">Loading requirement composition for {period}…</p>
-        ) : dataForPeriod ? (
+      {panelExpanded ? (
+        <>
+          {loading && !dataForPeriod ? (
+            <p className="mt-3 text-sm text-slate-500">Loading planning audit for {period}…</p>
+          ) : null}
+          {!dataForPeriod && !loading ? (
+            <div className="mt-3 flex justify-end">
+              <Button type="button" variant="outline" size="sm" onClick={onLoad} disabled={loading} className="h-8">
+                <Calculator className={cn("mr-1.5 h-4 w-4", loading && "animate-pulse")} />
+                {loading ? "Loading…" : "Load planning audit"}
+              </Button>
+            </div>
+          ) : null}
+          {dataForPeriod ? (
           <div className="mt-3 overflow-auto rounded-md border border-slate-200 bg-white">
             <div className="border-b border-slate-100 px-3 py-2 text-[11px] text-slate-500">
               {dataForPeriod.sheetCount ?? 0} locked RS sheet(s) · {dataForPeriod.itemCount} FG item(s) with a non-zero
@@ -3201,7 +3358,8 @@ function RequirementCompositionSection({
               </tbody>
             </table>
           </div>
-        ) : null
+          ) : null}
+        </>
       ) : null}
     </div>
   );
@@ -3210,17 +3368,19 @@ function RequirementCompositionSection({
 function RmRequirementCompositionSection({
   period,
   data,
+  panelExpanded,
   visible,
   loading,
+  onTogglePanel,
   onLoad,
-  onHide,
 }: {
   period: string;
   data: RmRequirementCompositionResponse | null;
+  panelExpanded: boolean;
   visible: boolean;
   loading: boolean;
+  onTogglePanel: () => void;
   onLoad: () => void;
-  onHide: () => void;
 }) {
   const [expandedItemIds, setExpandedItemIds] = React.useState<Set<number>>(new Set());
   const dataForPeriod = data?.periodKey === period ? data : null;
@@ -3235,32 +3395,28 @@ function RmRequirementCompositionSection({
   }
 
   return (
-    <div className="rounded-lg border border-amber-200 bg-amber-50/40 p-3">
+    <div className="rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <h3 className="text-[13px] font-semibold text-slate-800">RM Requirement Composition</h3>
-          <p className="mt-0.5 text-[12px] text-slate-600">
-            Read-only BOM-derived RM demand from FG <strong>suggested production</strong> for{" "}
-            <strong>{period}</strong>. Stock visibility only — no procurement actions.
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          {visible ? (
-            <Button type="button" variant="outline" size="sm" onClick={onHide} className="h-8">
-              Hide
-            </Button>
-          ) : null}
-          <Button type="button" variant="outline" size="sm" onClick={onLoad} disabled={loading} className="h-8">
-            <Boxes className={cn("mr-1.5 h-4 w-4", loading && "animate-pulse")} />
-            {loading ? "Loading…" : "View RM Composition"}
-          </Button>
-        </div>
+        <h3 className="text-[13px] font-semibold text-slate-800">RM Audit</h3>
+        <Button type="button" variant="outline" size="sm" onClick={onTogglePanel} className="h-8">
+          {panelExpanded ? "Hide Details" : "View Details"}
+        </Button>
       </div>
 
-      {visible && (loading || dataForPeriod) ? (
-        loading ? (
-          <p className="mt-3 text-sm text-slate-500">Loading RM requirement composition for {period}…</p>
-        ) : dataForPeriod ? (
+      {panelExpanded ? (
+        <>
+          {loading && !dataForPeriod ? (
+            <p className="mt-3 text-sm text-slate-500">Loading RM audit for {period}…</p>
+          ) : null}
+          {!visible && !loading ? (
+            <div className="mt-3 flex justify-end">
+              <Button type="button" variant="outline" size="sm" onClick={onLoad} disabled={loading} className="h-8">
+                <Boxes className={cn("mr-1.5 h-4 w-4", loading && "animate-pulse")} />
+                {loading ? "Loading…" : "Load RM audit"}
+              </Button>
+            </div>
+          ) : null}
+          {visible && dataForPeriod ? (
           <div className="mt-3 space-y-3">
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
               <KpiCard label="FG items planned" value={String(dataForPeriod.summary.fgItemsPlanned)} />
@@ -3398,7 +3554,8 @@ function RmRequirementCompositionSection({
               </table>
             </div>
           </div>
-        ) : null
+          ) : null}
+        </>
       ) : null}
     </div>
   );
@@ -3475,9 +3632,8 @@ function NoPlanPreviewPanel({
         No production plan created yet for <strong>{period}</strong>.
       </p>
       <p className="mt-2 max-w-lg text-[13px] leading-relaxed text-slate-600">
-        Review Requirement Composition, Green Level, and RM Composition above — use <strong>View Composition</strong> to
-        see locked NO_QTY RS cycles for this period. Start planning when you are ready to create a draft for this
-        period.
+        Start planning when you are ready to create a draft for this period. Use audit panels below for detailed
+        traceability.
       </p>
       {canStartPlanning ? (
         <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
@@ -3588,18 +3744,12 @@ function ProductionPlanTab({
       <div className="rounded-lg border border-slate-200 bg-slate-50/80 p-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
-            <h3 className="text-[13px] font-semibold text-slate-800">Read-only RS suggestions</h3>
+            <h3 className="text-[13px] font-semibold text-slate-800">Customer Requirement Summary</h3>
             <p className="mt-0.5 text-[12px] text-slate-600">
-              Locked NO_QTY Requirement Sheets for <strong>{period}</strong>. Consolidates cycle-wise RS demand
-              (additive). Requirement Sheets are never modified here.
+              Customer demand received through Requirement Sheets for <strong>{period}</strong>.
             </p>
           </div>
           <div className="flex items-center gap-2">
-            {rsSuggestionsVisible ? (
-              <Button type="button" variant="outline" size="sm" onClick={onHideRsSuggestions} className="h-8">
-                Hide
-              </Button>
-            ) : null}
             <Button
               type="button"
               variant="outline"
@@ -3609,15 +3759,15 @@ function ProductionPlanTab({
               className="h-8"
             >
               <Eye className={cn("mr-1.5 h-4 w-4", loadingRsSuggestions && "animate-pulse")} />
-              {loadingRsSuggestions ? "Loading…" : "View RS suggestions"}
+              {loadingRsSuggestions ? "Loading…" : "Refresh summary"}
             </Button>
           </div>
         </div>
 
-        {rsSuggestionsVisible && rsSuggestions ? (
+        {rsSuggestions ? (
           <div className="mt-3 overflow-auto rounded-md border border-slate-200 bg-white">
             <div className="border-b border-slate-100 px-3 py-2 text-[11px] text-slate-500">
-              {rsSuggestions.sheetCount} locked sheet(s) · {rsSuggestions.items.length} FG item(s) · read-only
+              {rsSuggestions.sheetCount} locked sheet(s) · {rsSuggestions.items.length} FG item(s)
             </div>
             <table className="w-full border-collapse text-[13px]">
               <thead className="bg-slate-50 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500">
@@ -3625,7 +3775,7 @@ function ProductionPlanTab({
                   <th className="px-3 py-2 w-8" />
                   <th className="px-3 py-2">FG item</th>
                   <th className="px-3 py-2 w-36 text-right">Total RS requirement</th>
-                  <th className="px-3 py-2 w-24 text-center">Source RS</th>
+                  <th className="px-3 py-2 w-24 text-center">RS count</th>
                   {editable ? <th className="px-3 py-2 w-36">Action</th> : null}
                 </tr>
               </thead>
@@ -3704,13 +3854,15 @@ function ProductionPlanTab({
                         {expanded ? (
                           <tr className="border-t border-slate-50 bg-slate-50/60">
                             <td colSpan={editable ? 5 : 4} className="px-3 py-2 pl-8">
+                              <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                                Requirement Sheet Details
+                              </div>
                               <table className="w-full max-w-xl border-collapse text-[12px]">
                                 <thead>
                                   <tr className="text-left text-[10px] font-semibold uppercase tracking-wide text-slate-500">
                                     <th className="py-1 pr-3">Cycle</th>
                                     <th className="py-1 pr-3">RS</th>
                                     <th className="py-1 pr-3 text-right">Qty</th>
-                                    <th className="py-1 text-right">Production req.</th>
                                   </tr>
                                 </thead>
                                 <tbody>
@@ -3731,15 +3883,9 @@ function ProductionPlanTab({
                                         >
                                           {src.requirementSheetDocNo ?? `RS #${src.requirementSheetId}`}
                                         </Link>
-                                        <div className="text-[10px] text-slate-500">
-                                          SO {src.salesOrderDocNo ?? src.salesOrderId}
-                                        </div>
                                       </td>
                                       <td className="py-1 pr-3 text-right font-semibold tabular-nums">
                                         {src.requirementQty.toLocaleString()}
-                                      </td>
-                                      <td className="py-1 text-right tabular-nums text-slate-600">
-                                        {src.suggestedWoQtySnapshot.toLocaleString()}
                                       </td>
                                     </tr>
                                   ))}
@@ -3750,7 +3896,6 @@ function ProductionPlanTab({
                                     <td className="pt-1.5 pr-3 text-right tabular-nums">
                                       {totalRsRequirementQty(item).toLocaleString()}
                                     </td>
-                                    <td className="pt-1.5" />
                                   </tr>
                                 </tbody>
                               </table>
@@ -3764,7 +3909,11 @@ function ProductionPlanTab({
               </tbody>
             </table>
           </div>
-        ) : null}
+        ) : loadingRsSuggestions ? (
+          <p className="mt-3 text-sm text-slate-500">Loading customer requirement summary…</p>
+        ) : (
+          <p className="mt-3 text-sm text-slate-500">Customer requirement summary will load when this tab opens.</p>
+        )}
       </div>
 
       {readOnlyMessage ? (

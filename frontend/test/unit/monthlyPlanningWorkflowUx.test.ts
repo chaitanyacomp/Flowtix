@@ -8,7 +8,7 @@ import {
   isLegacyPlanDocument,
   isPlanEditable,
   planStatusBadgeVariant,
-  purchasePlanningIntroMessage,
+  purchasePlanningOperationalStatus,
   productionPlanReadOnlyMessage,
   resolvePlanDisplayLabel,
   resolveWorkflowActionVisibility,
@@ -201,7 +201,8 @@ describe("monthlyPlanningWorkflowUx.labels", () => {
     expect(
       formatRmSnapshotContextLabel({ plan: approved, snapshotRevision: 1, lineCount: 4 }),
     ).toBe("June Plan 1 · 4 RM lines (read-only)");
-    expect(purchasePlanningIntroMessage(approved)).toContain("approved plan RM snapshot");
+    expect(purchasePlanningOperationalStatus(0, 100)).toContain("Procurement released for current plan");
+    expect(purchasePlanningOperationalStatus(50, 100)).toContain("Additional procurement required");
     expect(
       formatReleaseSuccessSummary({
         plan: approved,

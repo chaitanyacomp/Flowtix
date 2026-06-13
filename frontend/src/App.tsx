@@ -73,6 +73,7 @@ import { SoDispatchTraceReportPage } from "./pages/SoDispatchTraceReportPage";
 import { StockReconciliationReportPage } from "./pages/StockReconciliationReportPage";
 import { PurchaseMatchingReportPage } from "./pages/PurchaseMatchingReportPage";
 import { RmProcurementConnectivityReportPage } from "./pages/RmProcurementConnectivityReportPage";
+import { RmPlanningVsReceivedReportPage } from "./pages/RmPlanningVsReceivedReportPage";
 import { SalesMatchingReportPage } from "./pages/SalesMatchingReportPage";
 import { CustomerSoRsReportPage } from "./pages/CustomerSoRsReportPage";
 import { BatchTraceabilityReportPage } from "./pages/BatchTraceabilityReportPage";
@@ -889,6 +890,14 @@ export default function App() {
           element={
             <ProtectedRoute allowedRoles={[...RM_PO_READ_ROLES]}>
               <RmProcurementConnectivityReportPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/reports/rm-planning-vs-actual"
+          element={
+            <ProtectedRoute allowedRoles={["ADMIN", "PURCHASE", "STORE"]}>
+              <RmPlanningVsReceivedReportPage />
             </ProtectedRoute>
           }
         />

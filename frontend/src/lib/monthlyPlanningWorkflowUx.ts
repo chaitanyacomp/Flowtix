@@ -139,18 +139,25 @@ export function formatReleaseSuccessSummary(params: {
   return `Released ${source}${mrPart}: ${releasedLineCount} line(s) released (delta ${totalDeltaQty.toLocaleString()}), ${skippedLineCount} skipped, ${surplusLineCount} surplus.`;
 }
 
-export function purchasePlanningIntroMessage(plan: MonthlyPlanHeader | null | undefined): string {
-  if (plan && usesPlanDocumentProcurementUx(plan)) {
-    return "Purchase Planning uses the approved plan RM snapshot. Additional requirement is the delta over previously released quantity — not full re-procurement.";
+export function purchasePlanningOperationalStatus(
+  additionalRequirementTotal: number,
+  previouslyReleasedTotal = 0,
+): string {
+  if (additionalRequirementTotal > 1e-9) {
+    return "Additional procurement required. Release Delta to Procurement available.";
   }
-  return "Purchase Planning uses the current locked revision only. Additional requirement is the delta over previously released quantity — not full re-procurement.";
+  if (previouslyReleasedTotal > 1e-9) {
+    return "Procurement released for current plan. No additional procurement required.";
+  }
+  return "Review RM requirements and release procurement when the plan is approved.";
 }
 
-export function purchasePlanningReductionMessage(plan: MonthlyPlanHeader | null | undefined): string {
-  if (plan && usesPlanDocumentProcurementUx(plan)) {
-    return "This plan requires less RM than previously released. The system will reduce open MR quantity where possible. PO-backed quantity will remain as surplus and needs attention.";
-  }
-  return "The latest revision requires less than previously released. The system will reduce open MR quantity where possible. PO-backed quantity will remain as surplus and needs attention.";
+export function purchasePlanningIntroMessage(_plan: MonthlyPlanHeader | null | undefined): string {
+  return purchasePlanningOperationalStatus(0, 0);
+}
+
+export function purchasePlanningReductionMessage(_plan: MonthlyPlanHeader | null | undefined): string {
+  return "Plan requires less RM than previously released. Open MR quantity will be reduced where possible.";
 }
 
 export function productionPlanReadOnlyMessage(plan: MonthlyPlanHeader | null | undefined): string | null {

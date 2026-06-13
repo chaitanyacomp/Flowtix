@@ -19,6 +19,10 @@ export type NoQtyCycleContextBarProps = {
   lastShortageQty?: number | null;
   erpAdjustedPlanningQty?: number | null;
   currentRequirementQty?: number | null;
+  /** Override label for current requirement metric (RS page uses cycle-wise wording). */
+  currentRequirementLabel?: string;
+  /** Hide admin carry-forward audit strip (RS page uses cycle summary instead). */
+  hideErpPlanningAudit?: boolean;
   totalToProduceQty?: number | null;
   qcPassedQty?: number | null;
   dispatchPendingQty?: number | null;
@@ -36,6 +40,8 @@ export function NoQtyCycleContextBar({
   erpAdjustedPlanningQty,
   lastShortageQty,
   currentRequirementQty,
+  currentRequirementLabel = "New requirement",
+  hideErpPlanningAudit = false,
   totalToProduceQty,
   qcPassedQty,
   dispatchPendingQty,
@@ -103,7 +109,7 @@ export function NoQtyCycleContextBar({
           ) : null}
           {newReq ? (
             <span>
-              <span className="text-slate-500">New requirement</span>{" "}
+              <span className="text-slate-500">{currentRequirementLabel}</span>{" "}
               <span className="font-semibold tabular-nums text-slate-900">{newReq}</span>
             </span>
           ) : null}
@@ -127,7 +133,7 @@ export function NoQtyCycleContextBar({
           ) : null}
         </Metrics>
       </Panel>
-      <NoQtyErpPlanningAuditDetail qty={erpQty} />
+      {hideErpPlanningAudit ? null : <NoQtyErpPlanningAuditDetail qty={erpQty} />}
     </Outer>
   );
 }

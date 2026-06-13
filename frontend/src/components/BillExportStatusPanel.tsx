@@ -78,8 +78,8 @@ export function BillExportStatusPanel({
     exportBadge = { text: "Not Exported", variant: "warning" };
     help = exportBlockedReason;
   } else if (lifecycle === "FINALIZED") {
-    statusLabel = "Not Exported";
-    exportBadge = { text: "Not Exported", variant: "info" };
+    statusLabel = "Tally Export Pending";
+    exportBadge = { text: "Not Exported", variant: "warning" };
     help = "This bill is finalized but not yet exported to Tally.";
   }
 

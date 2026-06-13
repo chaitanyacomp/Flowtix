@@ -1,5 +1,6 @@
 import type { ProcurementPendingRow } from "../components/erp/ProcurementPendingDashboardCard";
 import type { WoPrepareDashboardQueues } from "../components/erp/WoPrepareOperationalQueuesCard";
+import { productionWorkspaceHref } from "./materialWorkflowLinks";
 import { GUIDED_WORKFLOW_CTA } from "./rmGuidedWorkflow";
 import { buildRmControlCenterHref } from "./woProcurementContinuity";
 import { woPreparePrepareHref } from "./woPrepareOperationalStage";
@@ -128,7 +129,7 @@ export function buildOperationalSoActions(
             ? "Partially allocated"
             : "Waiting RM";
     const issueHref = `/material-issue?workOrderId=${woId}&returnTo=dashboard`;
-    const productionHref = `/production?workOrderId=${woId}`;
+    const productionHref = productionWorkspaceHref(woId);
     const actionLabel =
       row.operationalKey === "READY_FOR_ISSUE"
         ? "Issue RM to Production"

@@ -28,6 +28,39 @@ function linePendingPoQty(line) {
   return Math.max(0, net - ordered);
 }
 
+/** Qty ordered above net requirement (pack size / MOQ excess becomes stock). */
+function lineExcessOrderedQty(line) {
+  const net = qtyToNumber(line.netRequiredQty);
+  const ordered = qtyToNumber(line.orderedQty);
+  return Math.max(0, ordered - net);
+}
+
+/**
+ * PO qty must be positive. Requirement is a planning floor, not a ceiling — excess becomes RM stock.
+ * Rejects only zero/negative qty or lines with no remaining open quantity to order.
+ */
+function validatePurchaseRequestPoLineQty(prLine, qty) {
+  const qtyN = qtyToNumber(qty);
+  const itemLabel = prLine.rmItem?.itemName || prLine.rmItemId || "item";
+  if (qtyN <= QUEUE_EPS) {
+    const err = new Error(`Invalid PO qty for ${itemLabel}. Enter a positive quantity.`);
+    err.statusCode = 400;
+    err.code = "PR_LINE_QTY_INVALID";
+    throw err;
+  }
+  const pending = linePendingPoQty(prLine);
+  if (pending <= QUEUE_EPS) {
+    const prHeader = prLine.purchaseRequest;
+    const err = new Error(
+      `PO already created for ${itemLabel} on ${prHeader?.docNo || "this PR"}. Refresh pending requests.`,
+    );
+    err.statusCode = 400;
+    err.code = "PR_LINE_ALREADY_ORDERED";
+    throw err;
+  }
+  return qtyN;
+}
+
 /** Line-level gate aligned with createRmPoFromPurchaseRequestLines (header status + pending qty). */
 function canOrderPurchaseRequestLine(pr, line) {
   if (!pr || !OPEN_PURCHASE_REQUEST_STATUSES.includes(pr.status)) return false;
@@ -323,6 +356,7 @@ function mapPendingRequestRow(pr) {
       const net = qtyToNumber(ln.netRequiredQty);
       const ordered = qtyToNumber(ln.orderedQty);
       const pending = linePendingPoQty(ln);
+      const excessOrderedQty = lineExcessOrderedQty(ln);
       const canOrder = canOrderPurchaseRequestLine(pr, ln);
       return {
         id: ln.id,
@@ -335,6 +369,7 @@ function mapPendingRequestRow(pr) {
         netRequiredQty: net,
         orderedQty: ordered,
         pendingQty: pending,
+        excessOrderedQty,
         canOrder,
         orderBlockReason: canOrder
           ? null
@@ -467,19 +502,7 @@ async function createRmPoFromPurchaseRequestLines(input, actor = {}) {
         throw err;
       }
       const spec = inputByPrLineId.get(prLine.id);
-      const qty = qtyToNumber(spec.qty);
-      const pending = linePendingPoQty(prLine);
-      if (qty <= QUEUE_EPS || qty > pending + QUEUE_EPS) {
-        const itemLabel = prLine.rmItem?.itemName || prLine.rmItemId;
-        const err = new Error(
-          pending <= QUEUE_EPS
-            ? `PO already created for ${itemLabel} on ${prHeader?.docNo || "this PR"}. Refresh pending requests.`
-            : `Invalid PO qty for ${itemLabel} (pending ${pending}).`,
-        );
-        err.statusCode = 400;
-        err.code = pending <= QUEUE_EPS ? "PR_LINE_ALREADY_ORDERED" : "PR_LINE_QTY_INVALID";
-        throw err;
-      }
+      const qty = validatePurchaseRequestPoLineQty(prLine, spec.qty);
       assertPositiveRate(spec.rate);
       const resolved = resolveLineTaxFromItem(prLine.rmItem, { relaxed });
       warn.push(...resolved.warnings);
@@ -631,4 +654,7 @@ module.exports = {
   listPendingPurchaseRequests,
   createRmPoFromPurchaseRequestLines,
   recalcPurchaseRequestStatus,
+  linePendingPoQty,
+  lineExcessOrderedQty,
+  validatePurchaseRequestPoLineQty,
 };

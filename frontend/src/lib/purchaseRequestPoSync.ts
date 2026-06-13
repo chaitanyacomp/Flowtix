@@ -13,6 +13,8 @@ export type PendingPurchaseRequestLine = {
   netRequiredQty: number;
   orderedQty: number;
   pendingQty: number;
+  /** Qty ordered above net requirement (pack/MOQ excess → stock). */
+  excessOrderedQty: number;
   canOrder: boolean;
   orderBlockReason?: string | null;
 };
@@ -51,6 +53,18 @@ export function flattenOrderablePurchaseRequestLines(
     }
   }
   return out;
+}
+
+/** Excess from this PO line qty above net requirement (informational in create-PO modal). */
+export function purchaseRequestPoExcessToStock(
+  line: Pick<PendingPurchaseRequestLine, "netRequiredQty" | "orderedQty">,
+  orderQty: number,
+): number {
+  const net = Number(line.netRequiredQty) || 0;
+  const ordered = Number(line.orderedQty) || 0;
+  const order = Number(orderQty) || 0;
+  if (!Number.isFinite(order) || order <= 0) return 0;
+  return Math.max(0, ordered + order - net);
 }
 
 /** User-facing message for create-po failures (uses backend code when present). */

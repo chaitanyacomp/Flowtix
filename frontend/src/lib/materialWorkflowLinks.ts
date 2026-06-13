@@ -1,3 +1,5 @@
+import { PRODUCTION_FLOW_REGULAR } from "./productionFlowContract";
+
 /** Deep links for Production → PMR → Material Issue operational flow (UX only). */
 
 export function materialRequestsQueueHref(opts: {
@@ -29,7 +31,10 @@ export function materialIssueWorkspaceHref(opts: {
 }
 
 export function productionWorkspaceHref(workOrderId: number, workOrderLineId?: number): string {
-  const q = new URLSearchParams({ workOrderId: String(workOrderId) });
+  const q = new URLSearchParams({
+    flow: PRODUCTION_FLOW_REGULAR,
+    workOrderId: String(workOrderId),
+  });
   if (workOrderLineId && workOrderLineId > 0) q.set("workOrderLineId", String(workOrderLineId));
   return `/production?${q.toString()}`;
 }

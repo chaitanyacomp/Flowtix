@@ -1,4 +1,5 @@
 import * as React from "react";
+import { Link } from "react-router-dom";
 import { PageContainer, PageHeader, StickyWorkspaceHead } from "../components/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { ErpKpiLabel, ErpKpiSegment, ErpKpiStrip, ErpKpiValue } from "../components/erp/foundation";
@@ -22,6 +23,8 @@ import {
   formatControlTowerStatus,
 } from "../lib/controlTowerDisplay";
 import { cn } from "../lib/utils";
+import { noQtySoListHref } from "../lib/noQtyRsActionLabels";
+import { NO_QTY_TERMS } from "../lib/flowTerminology";
 
 type EndpointDebug = {
   status: "ok" | "error" | "skipped";
@@ -480,6 +483,23 @@ export function ControlTowerPage() {
           title="Control Tower (Beta)"
           subtitle="Read-only verification view — panel metrics, process board, and role queue."
         />
+        <div className="flex flex-wrap items-center gap-3 px-1 pb-2 text-[12px]">
+          <Link
+            to={noQtySoListHref()}
+            className="font-semibold text-sky-800 underline underline-offset-2"
+          >
+            Open NO_QTY Agreements
+          </Link>
+          <span className="text-slate-300" aria-hidden>
+            ·
+          </span>
+          <Link
+            to="/planning-dashboard"
+            className="font-semibold text-sky-800 underline underline-offset-2"
+          >
+            {NO_QTY_TERMS.PLANNING_HUB_TITLE}
+          </Link>
+        </div>
       </StickyWorkspaceHead>
 
       {loading && !panelMetrics && !panelError ? (

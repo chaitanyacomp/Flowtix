@@ -13,8 +13,10 @@ export function parseGrnDisplayNo(displayNo: string | null | undefined): number 
   return Number.isFinite(id) && id > 0 ? id : null;
 }
 
-export function buildPurchaseBillDetailHref(billId: number): string {
-  return `/purchase-bills/${billId}`;
+export function buildPurchaseBillDetailHref(billId: number, options?: { tab?: "tally" }): string {
+  const base = `/purchase-bills/${billId}`;
+  if (options?.tab === "tally") return `${base}?tab=tally`;
+  return base;
 }
 
 export function buildPurchaseBillNewHref(options: {

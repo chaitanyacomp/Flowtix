@@ -31,6 +31,8 @@ import {
 
   formatPurchaseRequestPoError,
 
+  purchaseRequestPoExcessToStock,
+
   type PendingPurchaseRequest,
 
 } from "../../lib/purchaseRequestPoSync";
@@ -365,12 +367,6 @@ export function PendingMaterialRequestsPanel({ embedded = false }: Props) {
 
         if (!Number.isFinite(rate) || rate <= 0) throw new Error(`Enter rate for ${ln.itemName}`);
 
-        if (qty > ln.pendingQty + 1e-9) {
-
-          throw new Error(`Qty for ${ln.itemName} exceeds pending ${ln.pendingQty}`);
-
-        }
-
         return { purchaseRequestLineId: ln.id, qty, rate };
 
       });
@@ -500,7 +496,9 @@ export function PendingMaterialRequestsPanel({ embedded = false }: Props) {
 
             <th className="text-right">Ordered</th>
 
-            <th className="text-right">Pending PO qty</th>
+            <th className="text-right">Still to order</th>
+
+            <th className="text-right">Excess ordered</th>
 
           </tr>
 
@@ -552,7 +550,13 @@ export function PendingMaterialRequestsPanel({ embedded = false }: Props) {
 
               <td className="text-right tabular-nums text-slate-600">{fmtQty(ln.orderedQty, ln.unit)}</td>
 
-              <td className="text-right tabular-nums font-semibold text-amber-950">{fmtQty(ln.pendingQty, ln.unit)}</td>
+              <td className="text-right tabular-nums font-semibold text-amber-950">
+                {ln.pendingQty > 1e-9 ? fmtQty(ln.pendingQty, ln.unit) : "—"}
+              </td>
+
+              <td className="text-right tabular-nums text-emerald-900">
+                {ln.excessOrderedQty > 1e-9 ? fmtQty(ln.excessOrderedQty, ln.unit) : "—"}
+              </td>
 
             </tr>
 
@@ -772,11 +776,38 @@ export function PendingMaterialRequestsPanel({ embedded = false }: Props) {
 
                   <div className="text-xs text-slate-500">{ln.requestDocNo}</div>
 
+                  {(() => {
+                    const orderQty = Number(poQty[ln.id]);
+                    const excess = purchaseRequestPoExcessToStock(ln, orderQty);
+                    return (
+                      <dl className="mt-2 grid grid-cols-3 gap-2 text-[11px] text-slate-600">
+                        <div>
+                          <dt className="font-medium text-slate-500">Required qty</dt>
+                          <dd className="tabular-nums text-slate-800">{fmtQty(ln.netRequiredQty, ln.unit)}</dd>
+                        </div>
+                        <div>
+                          <dt className="font-medium text-slate-500">Order qty</dt>
+                          <dd className="tabular-nums text-slate-800">
+                            {Number.isFinite(orderQty) && orderQty > 0
+                              ? fmtQty(orderQty, ln.unit)
+                              : "—"}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="font-medium text-slate-500">Excess to stock</dt>
+                          <dd className="tabular-nums text-emerald-900">
+                            {excess > 1e-9 ? fmtQty(excess, ln.unit) : "—"}
+                          </dd>
+                        </div>
+                      </dl>
+                    );
+                  })()}
+
                   <div className="mt-2 grid grid-cols-2 gap-2">
 
                     <label className="text-xs text-slate-600">
 
-                      Qty
+                      Order qty
 
                       <Input
 

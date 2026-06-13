@@ -78,7 +78,7 @@ export const REGULAR_TERMS = {
  * department wording instead of technical jargon ("Requirement Pending", etc.).
  */
 export const WORKFLOW_STATUS_COPY = {
-  PLANNING_PENDING: "Planning Pending",
+  PLANNING_PENDING: "Cycle review pending",
   WAITING_FOR_PLANNING_TEAM: "Waiting for Planning Team",
   WITH_PLANNING_TEAM: "With Planning Team",
   REQUIREMENT_READY_WITH_PLANNING: "Requirement Ready · With Planning",
@@ -101,11 +101,11 @@ export const NO_QTY_TERMS = {
   PLANNING_HELPER: "Requirement cycle-based planning",
   /** Matches sidebar / route title capitalization. */
   PLANNING_HUB_TITLE: "Requirement & Cycle Planning",
-  PLANNING_HUB_SUBTITLE: "Review requirement sheets, shortages, and cycle-driven production signals.",
+  PLANNING_HUB_SUBTITLE: "Daily planner inbox for active NO_QTY agreements — cycle status, next RS eligibility, and shortage signals.",
   /** Explicit CTA — use instead of generic “planning” or “production planning”. */
   OPEN_REQUIREMENT_AND_CYCLE_PLANNING: "Open Requirement & Cycle Planning",
   CONTINUE_NO_QTY_PLANNING: "Continue NO_QTY Planning",
-  REQUIREMENT_SHEET_LINK: "Requirement Sheet",
+  REQUIREMENT_SHEET_LINK: "Current RS",
   CONTINUE_PLANNING_SHORT: "Continue Planning",
   /** From NO_QTY planning hub — RM resolution is purchase/stock, not REGULAR WO prep (`/work-orders/prepare`). */
   /** @deprecated Prefer REGULAR_TERMS.OPEN_RM_PLANNING — kept for NO_QTY planning hub compatibility. */

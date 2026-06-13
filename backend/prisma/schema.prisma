@@ -431,6 +431,7 @@ model User {
   monthlyProductionPlansPurchaseReviewed  MonthlyProductionPlan[]         @relation("MppPurchaseReviewedBy")
   monthlyProductionPlansApproved          MonthlyProductionPlan[]         @relation("MppApprovedBy")
   rmPlansRecalculated                     RmPlan[]                        @relation("RmPlanRecalcBy")
+  requirementSheetsCancelled              RequirementSheet[]            @relation("RequirementSheetCancelledBy")
 }
 
 /// Full-database SQL backup row (see admin backup routes). `filePath` is server-only; never return to clients.
@@ -1167,6 +1168,7 @@ enum DispatchWorkflowStatus {
 enum RequirementSheetStatus {
   DRAFT
   LOCKED
+  CANCELLED
 }
 
 enum RequirementSheetColorZone {
@@ -1220,11 +1222,15 @@ model RequirementSheet {
   status         RequirementSheetStatus @default(DRAFT)
   remarks        String?
   recalculatedAt DateTime?
+  cancelledAt         DateTime?
+  cancelledByUserId   Int?
+  cancellationReason  String?                @db.Text
   createdAt      DateTime               @default(now())
   updatedAt      DateTime               @updatedAt
 
   salesOrder SalesOrder             @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
   cycle      SalesOrderCycle?       @relation(fields: [cycleId], references: [id], onDelete: SetNull)
+  cancelledBy User?                 @relation("RequirementSheetCancelledBy", fields: [cancelledByUserId], references: [id], onDelete: SetNull)
   lines      RequirementSheetLine[]
   workOrders WorkOrder[]
 

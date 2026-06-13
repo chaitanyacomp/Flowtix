@@ -399,7 +399,7 @@ export function PageNoQtyFlowBackLink({
     cycleIdRaw != null && cycleIdRaw !== "" && Number.isFinite(Number(cycleIdRaw)) && Number(cycleIdRaw) > 0
       ? String(Number(cycleIdRaw))
       : null;
-  const baseCtx = `source=no_qty_so${ctx.soId != null ? `&salesOrderId=${ctx.soId}` : ""}${cycleId ? `&cycleId=${encodeURIComponent(cycleId)}` : ""}`;
+  const baseCtx = `flow=NO_QTY&source=no_qty_so${ctx.soId != null ? `&salesOrderId=${ctx.soId}` : ""}${cycleId ? `&cycleId=${encodeURIComponent(cycleId)}` : ""}`;
 
   // Role-safe back target for any step whose canonical "back" lives inside the planning workspace.
   // Non-planning roles (SALES / PRODUCTION / QC / ACCOUNTS) are routed up to the SO list/detail
@@ -437,7 +437,7 @@ export function PageNoQtyFlowBackLink({
   if (ctx.soId == null) {
     chain.WORK_ORDER.to = "/sales-orders?soType=NO_QTY";
     chain.PRODUCTION.to = "/sales-orders?soType=NO_QTY";
-    chain.QC.to = "/production?source=no_qty_so";
+    chain.QC.to = "/production?flow=NO_QTY&source=no_qty_so";
     chain.DISPATCH.to = "/qc-entry?source=no_qty_so";
     chain.SALES_BILL.to = "/dispatch?source=no_qty_so";
   }

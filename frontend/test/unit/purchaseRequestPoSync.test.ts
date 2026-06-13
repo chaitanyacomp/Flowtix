@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { flattenOrderablePurchaseRequestLines, formatPurchaseRequestPoError } from "../../src/lib/purchaseRequestPoSync";
+import {
+  flattenOrderablePurchaseRequestLines,
+  formatPurchaseRequestPoError,
+  purchaseRequestPoExcessToStock,
+} from "../../src/lib/purchaseRequestPoSync";
 
 describe("flattenOrderablePurchaseRequestLines", () => {
   it("only includes lines with canOrder true", () => {
@@ -22,6 +26,7 @@ describe("flattenOrderablePurchaseRequestLines", () => {
             netRequiredQty: 100,
             orderedQty: 100,
             pendingQty: 0,
+            excessOrderedQty: 0,
             canOrder: false,
             orderBlockReason: "PO already created for this line",
           },
@@ -36,6 +41,7 @@ describe("flattenOrderablePurchaseRequestLines", () => {
             netRequiredQty: 50,
             orderedQty: 0,
             pendingQty: 50,
+            excessOrderedQty: 0,
             canOrder: true,
           },
         ],
@@ -43,6 +49,16 @@ describe("flattenOrderablePurchaseRequestLines", () => {
     ]);
     expect(rows).toHaveLength(1);
     expect(rows[0]?.id).toBe(11);
+  });
+});
+
+describe("purchaseRequestPoExcessToStock", () => {
+  it("computes pack-size excess for 185.61 required and 200 ordered", () => {
+    const excess = purchaseRequestPoExcessToStock(
+      { netRequiredQty: 185.61, orderedQty: 0 },
+      200,
+    );
+    expect(excess).toBeCloseTo(14.39, 2);
   });
 });
 

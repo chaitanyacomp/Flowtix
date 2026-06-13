@@ -23,6 +23,8 @@ type Props = {
   context?: ContextStrip;
   onLoaded?: (data: ProductionRmReadiness | null) => void;
   onLoadingChange?: (loading: boolean) => void;
+  /** P6B-1 — Production workspace never executes Store issue; read-only + RM Control Center link. */
+  hideStoreExecution?: boolean;
 };
 
 function fmtQty(n: number, unit?: string): string {
@@ -37,6 +39,7 @@ export function ProductionMaterialWorkflowCard({
   context,
   onLoaded,
   onLoadingChange,
+  hideStoreExecution = false,
 }: Props) {
   const navigate = useNavigate();
   const [data, setData] = React.useState<ProductionRmReadiness | null>(null);
@@ -168,7 +171,9 @@ export function ProductionMaterialWorkflowCard({
           ) : null}
           <div className="mt-3">
             <div className="flex flex-wrap gap-2">
-              {rmIssueStep ? (
+              {hideStoreExecution ? (
+                <p className="text-sm font-semibold text-amber-950">Waiting for Store RM Issue.</p>
+              ) : rmIssueStep ? (
                 <Link
                   to={rmIssueStep.primaryAction.href ?? "#"}
                   className={cn(

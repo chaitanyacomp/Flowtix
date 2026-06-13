@@ -380,5 +380,40 @@ function buildPurchaseBillTallyXml(payload) {
   return xml;
 }
 
-module.exports = { buildPurchaseBillTallyXml, buildCommercialVoucherXml };
+function extractTallyMessageBody(xml) {
+  const m = String(xml).match(/<TALLYMESSAGE>([\s\S]*?)<\/TALLYMESSAGE>/i);
+  if (!m) throw new Error("Invalid Tally XML structure");
+  return m[1];
+}
+
+/** Combine multiple purchase bill vouchers into one Tally import envelope. */
+function buildPurchaseBillTallyBulkXml(payloads) {
+  if (!Array.isArray(payloads) || !payloads.length) {
+    throw new Error("No purchase bills to export");
+  }
+  if (payloads.length === 1) {
+    return buildPurchaseBillTallyXml(payloads[0]);
+  }
+  const bodies = payloads.map((p) => extractTallyMessageBody(buildPurchaseBillTallyXml(p)));
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    "<ENVELOPE>",
+    "<HEADER>",
+    "<TALLYREQUEST>Import Data</TALLYREQUEST>",
+    "</HEADER>",
+    "<BODY>",
+    "<IMPORTDATA>",
+    "<REQUESTDESC>",
+    "<REPORTNAME>Vouchers</REPORTNAME>",
+    "</REQUESTDESC>",
+    "<REQUESTDATA>",
+    ...bodies.map((b) => `<TALLYMESSAGE>${b}</TALLYMESSAGE>`),
+    "</REQUESTDATA>",
+    "</IMPORTDATA>",
+    "</BODY>",
+    "</ENVELOPE>",
+  ].join("");
+}
+
+module.exports = { buildPurchaseBillTallyXml, buildCommercialVoucherXml, buildPurchaseBillTallyBulkXml };
 

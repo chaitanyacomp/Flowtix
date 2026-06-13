@@ -166,7 +166,7 @@ describe("dashboardActionQueue", () => {
 
     expect(g.production).toHaveLength(0);
 
-    expect(g.noQtyPlanning[0]?.buttonLabel).toBe("Create Next RS");
+    expect(g.noQtyPlanning[0]?.buttonLabel).toBe("Open NO_QTY SO");
 
   });
 
@@ -364,7 +364,7 @@ describe("dashboardActionQueue", () => {
 
     expect(enriched.noQtyPlanning).toHaveLength(1);
 
-    expect(enriched.noQtyPlanning[0]?.buttonLabel).toBe("Create Next RS");
+    expect(enriched.noQtyPlanning[0]?.buttonLabel).toBe("Open NO_QTY SO");
 
 
 

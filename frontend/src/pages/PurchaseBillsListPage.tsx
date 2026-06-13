@@ -7,8 +7,14 @@ import { apiFetch, ApiRequestError } from "../services/api";
 import { PageContainer, PageSmartBackLink, StickyWorkspaceHead } from "../components/PageHeader";
 import { cn } from "../lib/utils";
 import { withReportsReturnContextIfPresent } from "../lib/drillDownRoutes";
-import { buildGrnDocumentHref } from "../lib/procurementNavigation";
+import { buildGrnDocumentHref, buildPurchaseBillDetailHref } from "../lib/procurementNavigation";
 import { useAuth } from "../hooks/useAuth";
+import { useBulkSelection } from "../hooks/useBulkSelection";
+import {
+  downloadPurchaseBillsTallyExport,
+  isPurchaseBillTallyBulkExportEligible,
+} from "../lib/purchaseBillTallyExport";
+import { useToast } from "../contexts/ToastContext";
 import { commercialPaymentStatusLabel, isBillAmountOverdue } from "../lib/commercialBillPaymentLabels";
 import { formatCommercialDueDateCell } from "../lib/commercialDueDateDisplay";
 import { NativeSelect } from "../components/ui/native-select";
@@ -85,6 +91,16 @@ export function PurchaseBillsListPage() {
   const [paymentFilter, setPaymentFilter] = React.useState<"" | "pending" | "overdue" | "partial" | "paid">("");
   const [exportBillFilter, setExportBillFilter] = React.useState<"" | "exported" | "not_exported">("");
   const [loading, setLoading] = React.useState(false);
+  const [bulkExporting, setBulkExporting] = React.useState(false);
+  const { showSuccess, showError } = useToast();
+
+  const canTallyExport = role === "ADMIN" || role === "PURCHASE";
+
+  const exportEligibleIds = React.useMemo(
+    () => rows.filter(isPurchaseBillTallyBulkExportEligible).map((r) => r.id),
+    [rows],
+  );
+  const bulk = useBulkSelection(exportEligibleIds);
 
   React.useEffect(() => {
     const q = new URLSearchParams(location.search);
@@ -167,6 +183,24 @@ export function PurchaseBillsListPage() {
     if (status !== "ALL") next.set("status", status);
     else next.delete("status");
     navigate({ pathname: location.pathname, search: next.toString() }, { replace: true });
+  }
+
+  async function bulkExportToTally() {
+    if (!canTallyExport || bulkExporting) return;
+    const ids = bulk.getSelectedIdsArray();
+    if (!ids.length) return;
+    setBulkExporting(true);
+    try {
+      const out = await downloadPurchaseBillsTallyExport(ids);
+      showSuccess(`Exported ${out.count} bill(s) to Tally (${out.filename})`);
+      bulk.clear();
+      await load();
+    } catch (e) {
+      showError(e instanceof Error ? e.message : "Could not export to Tally");
+      await load();
+    } finally {
+      setBulkExporting(false);
+    }
   }
 
   return (
@@ -275,13 +309,40 @@ export function PurchaseBillsListPage() {
 
       <Card className="min-w-0 overflow-hidden">
         <CardHeader className="pb-3">
-          <CardTitle className="text-base">Bills</CardTitle>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <CardTitle className="text-base">Bills</CardTitle>
+            {canTallyExport && bulk.selectedCount > 0 ? (
+              <div className="flex flex-wrap items-center gap-2 text-sm">
+                <span className="text-slate-600">
+                  Selected: <span className="font-semibold text-slate-900">{bulk.selectedCount}</span> bill
+                  {bulk.selectedCount === 1 ? "" : "s"}
+                </span>
+                <Button type="button" size="sm" disabled={bulkExporting} onClick={() => void bulkExportToTally()}>
+                  {bulkExporting ? "Exporting…" : "Export to Tally"}
+                </Button>
+              </div>
+            ) : null}
+          </div>
         </CardHeader>
         <CardContent className="min-w-0 p-0 sm:p-6 sm:pt-0">
           <div className="min-w-0 overflow-x-auto px-3 pb-4 sm:px-0 sm:pb-0">
             <table className="w-full min-w-[1024px] border-collapse text-sm">
               <thead>
                 <tr className="border-b border-slate-200 text-left text-xs font-medium uppercase text-slate-500">
+                  {canTallyExport ? (
+                    <th className="w-10 px-4 py-2">
+                      <input
+                        ref={bulk.selectAllRef}
+                        type="checkbox"
+                        className="h-4 w-4 rounded border-slate-300"
+                        checked={bulk.allSelected}
+                        disabled={!exportEligibleIds.length || bulkExporting}
+                        onChange={(e) => bulk.toggleSelectAll(e.target.checked)}
+                        title="Select all bills eligible for Tally export"
+                        aria-label="Select all bills eligible for Tally export"
+                      />
+                    </th>
+                  ) : null}
                   <th className="px-4 py-2">Bill no.</th>
                   <th className="px-4 py-2">Bill date</th>
                   <th className="min-w-[8rem] px-4 py-2">Supplier</th>
@@ -297,7 +358,7 @@ export function PurchaseBillsListPage() {
               <tbody>
                 {rows.length === 0 ? (
                   <tr>
-                    <td colSpan={10} className="px-4 py-8 text-center text-slate-500">
+                    <td colSpan={canTallyExport ? 11 : 10} className="px-4 py-8 text-center text-slate-500">
                       <div className="mx-auto max-w-[30rem] space-y-1">
                         <div className="text-base font-semibold text-slate-900">No purchase bills match these filters</div>
                         <div className="text-sm text-slate-600">Adjust filters or create a bill from received goods (GRN).</div>
@@ -312,12 +373,38 @@ export function PurchaseBillsListPage() {
                       payLabel !== "—" &&
                       isBillAmountOverdue(r.dueDate ?? null, pendAmt, r.status, r.cancelledAt ?? null);
                     const fin = r.status === "FINALIZED";
+                    const exportEligible = isPurchaseBillTallyBulkExportEligible(r);
                     return (
                       <tr key={r.id} className="border-b border-slate-100 hover:bg-slate-50/80">
+                        {canTallyExport ? (
+                          <td className="w-10 px-4 py-2">
+                            <input
+                              type="checkbox"
+                              className="h-4 w-4 rounded border-slate-300"
+                              checked={bulk.selectedIds.has(r.id)}
+                              disabled={!exportEligible || bulkExporting}
+                              onChange={(e) => bulk.toggleOne(r.id, e.target.checked)}
+                              aria-label={
+                                exportEligible
+                                  ? `Select ${r.billNo?.trim() || `PB-${r.id}`} for Tally export`
+                                  : `Not eligible for Tally export`
+                              }
+                              title={
+                                exportEligible
+                                  ? "Select for bulk Tally export"
+                                  : r.status !== "FINALIZED"
+                                    ? "Draft bills cannot be exported"
+                                    : r.isExported
+                                      ? "Already exported"
+                                      : "Not eligible"
+                              }
+                            />
+                          </td>
+                        ) : null}
                         <td className="px-4 py-2 font-medium text-slate-900">
                           <Link
                             className="text-sky-700 underline-offset-4 hover:underline"
-                            to={withReportsReturnContextIfPresent(`/purchase-bills/${r.id}`, location.search)}
+                            to={withReportsReturnContextIfPresent(buildPurchaseBillDetailHref(r.id), location.search)}
                           >
                             {r.billNo?.trim() ? r.billNo : `PB-${r.id} (draft)`}
                           </Link>
@@ -362,21 +449,37 @@ export function PurchaseBillsListPage() {
                           </div>
                         </td>
                         <td className="px-4 py-2">
-                          <span
-                            className={
-                              r.isExported
-                                ? "rounded-full bg-sky-50 px-2 py-0.5 text-xs font-medium text-sky-800"
-                                : "rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-700"
-                            }
-                            title={r.isExported ? "Exported to Tally" : "Not exported to Tally"}
-                          >
-                            {r.isExported ? "Exported" : "Not exported"}
-                          </span>
+                          {r.isExported ? (
+                            <span
+                              className="rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-800"
+                              title="Exported to Tally"
+                            >
+                              Exported
+                            </span>
+                          ) : fin && !r.cancelledAt ? (
+                            <Link
+                              className="inline-flex rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-900 underline-offset-2 hover:underline"
+                              title="Open Tally Export tab"
+                              to={withReportsReturnContextIfPresent(
+                                buildPurchaseBillDetailHref(r.id, { tab: "tally" }),
+                                location.search,
+                              )}
+                            >
+                              Not exported
+                            </Link>
+                          ) : (
+                            <span
+                              className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600"
+                              title={r.status === "DRAFT" ? "Finalize before export" : "Not eligible for export"}
+                            >
+                              Not exported
+                            </span>
+                          )}
                         </td>
                         <td className="px-4 py-2 text-right">
                           <Link
                             className="text-sm font-medium text-sky-700 underline-offset-4 hover:underline"
-                            to={withReportsReturnContextIfPresent(`/purchase-bills/${r.id}`, location.search)}
+                            to={withReportsReturnContextIfPresent(buildPurchaseBillDetailHref(r.id), location.search)}
                           >
                             Open
                           </Link>

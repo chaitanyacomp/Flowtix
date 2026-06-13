@@ -1,6 +1,9 @@
 import { ROW_NUM_EPS } from "./dispatchBacklog";
 import { buildNoQtyGuidedHref } from "./noQtyFlowState";
+import { noQtySoListHref } from "./noQtyRsActionLabels";
 import { PRODUCTION_QA_TERMS } from "./productionQaTerminology";
+
+const DASHBOARD_OPEN_NO_QTY_SO_LABEL = "Open NO_QTY SO";
 
 /** Canonical continue-working / action-required priority (lower = higher). */
 export const CONTINUE_WORKING_STAGE_PRIORITY: Record<string, number> = {
@@ -217,8 +220,8 @@ function pushNoQtyPlanningRow(
     cycleId: r.cycleId ?? null,
     metricQty: mq,
     metricLabel: mq > ROW_NUM_EPS ? (r.metricLabel ?? "Last shortage Qty") : "Ready to plan",
-    buttonLabel: "Create Next RS",
-    href: r.href,
+    buttonLabel: DASHBOARD_OPEN_NO_QTY_SO_LABEL,
+    href: noQtySoListHref(r.salesOrderId),
     group: "NO_QTY_PLANNING",
   });
 }
@@ -308,7 +311,8 @@ export function partitionContinueWorkingForActions(
         group: "NEXT_RS",
         metricQty: mq,
         metricLabel: r.metricLabel ?? "Last shortage Qty",
-        buttonLabel: "Create Next RS",
+        buttonLabel: DASHBOARD_OPEN_NO_QTY_SO_LABEL,
+        href: noQtySoListHref(r.salesOrderId),
       });
     } else if (r.stageKey === "PRODUCTION") {
       if (r.orderType === "NO_QTY" && role !== "ADMIN") continue;
@@ -520,13 +524,8 @@ export function enrichActionRequiredWithNoQtyPlanning(
       cycleId: e.cycleId ?? null,
       metricQty: mq > ROW_NUM_EPS ? mq : 1,
       metricLabel: mq > ROW_NUM_EPS ? "Last shortage Qty" : "Ready to plan",
-      buttonLabel: "Create Next RS",
-      href: buildNoQtyGuidedHref({
-        to: `/sales-orders/${e.salesOrderId}/requirement-sheets`,
-        salesOrderId: e.salesOrderId,
-        cycleId: e.cycleId ?? null,
-        fromStep: "requirement",
-      }),
+      buttonLabel: DASHBOARD_OPEN_NO_QTY_SO_LABEL,
+      href: noQtySoListHref(e.salesOrderId),
       group: "NO_QTY_PLANNING",
     });
     seen.add(e.salesOrderId);
@@ -826,9 +825,9 @@ export function buildActionRequiredFromQueues(
         orderType: "NO_QTY",
         metricQty: a.bestProdMetric,
         metricLabel: a.nextRsMetricLabel ?? "Last shortage Qty",
-        href: a.hrefProd,
+        href: noQtySoListHref(soId),
         group: "NO_QTY_PLANNING",
-        buttonLabel: "Create Next RS",
+        buttonLabel: DASHBOARD_OPEN_NO_QTY_SO_LABEL,
         cycleId: a.bestProdCycleId ?? null,
       });
     } else if (
@@ -850,9 +849,9 @@ export function buildActionRequiredFromQueues(
         ...common,
         metricQty: a.bestProdMetric,
         metricLabel: a.nextRsMetricLabel ?? "Last shortage Qty",
-        href: a.hrefProd,
+        href: noQtySoListHref(soId),
         group: "NEXT_RS",
-        buttonLabel: "Create Next RS",
+        buttonLabel: DASHBOARD_OPEN_NO_QTY_SO_LABEL,
       });
     }
   }

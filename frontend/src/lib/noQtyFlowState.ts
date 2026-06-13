@@ -64,6 +64,9 @@ export type NoQtyFlowState = {
   activeStep: 1 | 2 | 3 | 4 | 5 | 6;
   /** True when current-cycle RS is locked, no RS exists on a later cycle, and SO is open (rolling — not gated on QC/WO completion). */
   createNextRsEligible?: boolean;
+  createNextRsBlockReason?: string | null;
+  createNextRsBlockingPmrDocNo?: string | null;
+  createNextRsBlockingPmrStatus?: string | null;
   /** When a later-cycle RS already exists, its document number (Create Next RS hidden). */
   nextRsAlreadyCreatedDocNo?: string | null;
 };
@@ -149,6 +152,8 @@ export function lockedNoQtyPrimaryStep(
   return { mode: "action", action: clampNoQtyNextActionForLockedRs(flow) };
 }
 
+import { PRODUCTION_FLOW_NO_QTY } from "./productionFlowContract";
+
 export function buildNoQtyGuidedHref(args: {
   to: string;
   salesOrderId: number;
@@ -159,7 +164,7 @@ export function buildNoQtyGuidedHref(args: {
 }): string {
   const { to, salesOrderId, cycleId, requirementSheetId, fromStep } = args;
   const hasQuery = to.includes("?");
-  const q: string[] = [`source=no_qty_so`, `salesOrderId=${salesOrderId}`];
+  const q: string[] = [`flow=${PRODUCTION_FLOW_NO_QTY}`, `source=no_qty_so`, `salesOrderId=${salesOrderId}`];
   if (cycleId != null && Number.isFinite(cycleId) && cycleId > 0) q.push(`cycleId=${cycleId}`);
   const rsId =
     requirementSheetId != null && Number.isFinite(Number(requirementSheetId)) && Number(requirementSheetId) > 0

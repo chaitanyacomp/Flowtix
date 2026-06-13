@@ -6,7 +6,7 @@ import { Button, buttonVariants } from "../components/ui/button";
 import { cn } from "../lib/utils";
 import { type NoQtyFlowState } from "../lib/noQtyFlowState";
 import { resolveNoQtyDashboardContinuation } from "../lib/noQtyDashboardContinuation";
-import { prepareNoQtyNextRequirementSheetAndNavigate } from "../lib/noQtyPrepareNextRsNavigate";
+import { noQtySoListHref } from "../lib/noQtyRsActionLabels";
 import { useToast } from "../contexts/ToastContext";
 import { useDemoMode } from "../contexts/DemoModeContext";
 import { ApiRequestError } from "../services/api";
@@ -627,7 +627,6 @@ export function DashboardPage() {
   const [dispQueues, setDispQueues] = React.useState<DashboardDispQueues | null>(null);
   const [continueWorking, setContinueWorking] = React.useState<ContinueWorkingRow[] | null>(null);
   const [continueWorkingError, setContinueWorkingError] = React.useState<string | null>(null);
-  const [dashboardRsPrepareSoId, setDashboardRsPrepareSoId] = React.useState<number | null>(null);
   const [noQtyCycleHistoryTarget, setNoQtyCycleHistoryTarget] = React.useState<OpenNoQtyContinuationRow | null>(
     null,
   );
@@ -1150,10 +1149,9 @@ export function DashboardPage() {
    *
    *   ? we resolve in `commercialContinuation: true` mode ? SALES/ADMIN
    *     always land on a planning action;
-   *   ? we do **not** gate on `createNextRsEligible` here ? the actual
-   *     eligibility check is deferred to `prepareNoQtyNextRsAndNavigate`
-   *     at click time so the row remains visible across the entire
-   *     between-cycles / planning-pending lifetime of the SO.
+   *   ? we do **not** gate on `createNextRsEligible` here ? the row stays
+   *     visible across the between-cycles lifetime; RS creation lives on
+   *     the NO_QTY Agreements page (primary action opens that workspace).
    *
    * Non-planning viewers (STORE / PRODUCTION / QC / DISPATCH) still see
    * only rows whose resolved action is relevant to their role.
@@ -1179,7 +1177,12 @@ export function DashboardPage() {
       });
       if (role !== "ADMIN" && !isNoQtyResolvedRelevantForRole(role, resolved)) return false;
       if (!isNoQtyDashboardPlanningRow(flow, resolved)) return false;
-      const label = resolved.kind === "prepare_next_rs" ? "Next RS" : resolved.label;
+      const label =
+        resolved.kind === "prepare_next_rs"
+          ? "Open NO_QTY SO"
+          : resolved.kind === "navigate" && String(row.lastRsStatus ?? "").toUpperCase() === "DRAFT"
+            ? "Open Draft RS"
+            : resolved.label;
       if (shouldHideOpenNoQtyForActionRequired(row.salesOrderId, label, primaryActionBySo)) return false;
       return true;
     });
@@ -1527,19 +1530,6 @@ export function DashboardPage() {
 
   const qcRejMetricTone: "muted" | "warn" | "crit" =
     data == null || data.qcRejectionPct <= 0 ? "muted" : data.qcRejectionPct >= 12 ? "crit" : "warn";
-
-  async function prepareNoQtyNextRsAndNavigate(salesOrderId: number) {
-    setDashboardRsPrepareSoId(salesOrderId);
-    try {
-      await prepareNoQtyNextRequirementSheetAndNavigate({
-        salesOrderId,
-        navigate,
-        toast,
-      });
-    } finally {
-      setDashboardRsPrepareSoId(null);
-    }
-  }
 
   const showOperationalLeftPanel =
     !demo.enabled && (hasOperationalQueueAttention || hasVisibleNoQtyContinuation);
@@ -2061,10 +2051,12 @@ export function DashboardPage() {
                     viewerRole: role,
                     commercialContinuation: true,
                   });
-                  const busy =
-                    resolved.kind === "prepare_next_rs" && dashboardRsPrepareSoId === row.salesOrderId;
-                  const prepareLocked =
-                    resolved.kind === "prepare_next_rs" && dashboardRsPrepareSoId != null;
+                  const continuationLabel =
+                    resolved.kind === "prepare_next_rs"
+                      ? "Open NO_QTY SO"
+                      : resolved.kind === "navigate" && String(row.lastRsStatus ?? "").toUpperCase() === "DRAFT"
+                        ? "Open Draft RS"
+                        : resolved.label;
                   const appendFromDashboard = (to: string) => {
                     const sep = to.includes("?") ? "&" : "?";
                     return `${to}${sep}fromDashboard=1`;
@@ -2126,7 +2118,7 @@ export function DashboardPage() {
                       ? "Draft RS"
                       : planningState === "between"
                         ? "Between cycles"
-                        : "Planning pending";
+                        : "Cycle review pending";
                   const planningStateChipClass =
                     planningState === "draft"
                       ? "bg-amber-100 text-amber-900 ring-amber-200"
@@ -2205,11 +2197,12 @@ export function DashboardPage() {
                               variant="default"
                               size="sm"
                               className={cn("h-8 rounded-md px-3 text-xs font-semibold", DASH_BTN_PRIMARY, "border-0")}
-                              disabled={prepareLocked}
                               data-testid={`dashboard-no-qty-continue-${row.salesOrderId}`}
                               onClick={() => {
                                 if (resolved.kind === "prepare_next_rs") {
-                                  void prepareNoQtyNextRsAndNavigate(row.salesOrderId);
+                                  navigate(appendFromDashboard(noQtySoListHref(row.salesOrderId)), {
+                                    state: { from: "dashboard" },
+                                  });
                                 } else {
                                   navigate(appendFromDashboard(resolved.to), {
                                     state: { from: "dashboard" },
@@ -2217,7 +2210,7 @@ export function DashboardPage() {
                                 }
                               }}
                             >
-                              {busy ? "?" : planningState === "draft" ? "Open Draft RS" : "Next RS"}
+                              {continuationLabel}
                             </Button>
                             {showContinueProduction && continueProductionAction ? (
                               <Button

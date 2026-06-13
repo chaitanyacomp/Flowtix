@@ -38,7 +38,6 @@ import { NoQtyCycleContextBar } from "../components/erp/foundation/NoQtyCycleCon
 import { OperationalContextBar, OperationalContextSticky, OpCtxSep } from "../components/erp/OperationalWorkspaceChrome";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { buildNoQtyGuidedHref, buildQcEntryHref, useNoQtyFlowState } from "../lib/noQtyFlowState";
-import { prepareNoQtyNextRequirementSheetAndNavigate } from "../lib/noQtyPrepareNextRsNavigate";
 import { useToast } from "../contexts/ToastContext";
 import { DemoFlowBanner } from "../components/demo/DemoFlowBanner";
 import { DemoSafeNoQtyContinue } from "../components/demo/DemoSafeNoQtyContinue";
@@ -56,10 +55,6 @@ import {
   rmControlCenterHref,
 } from "../lib/materialWorkflowLinks";
 import { OperationalProductionWorkspace } from "../components/erp/OperationalProductionWorkspace";
-import {
-  ProductionMaterialWorkflowCard,
-} from "../components/erp/ProductionMaterialWorkflowCard";
-import { ProductionRmBlockedBanner } from "../components/erp/ProductionRmBlockedBanner";
 import {
   isRegularProductionEntryBlocked,
   resolveRegularRmAllowedNowQty,
@@ -91,6 +86,18 @@ import {
   resolveProductionStickyContext,
   resolveProductionStickyMetrics,
 } from "../lib/regularSoOperationalGuidance";
+import {
+  inferProductionFlowFromLegacy,
+  parseProductionFlowParam,
+  PRODUCTION_FLOW_NO_QTY,
+  PRODUCTION_FLOW_REGULAR,
+  validateProductionFlowVsOrderType,
+  type ProductionFlowParam,
+} from "../lib/productionFlowContract";
+import { ProductionFlowIdentityBar } from "../components/erp/production/ProductionFlowIdentityBar";
+import { ProductionConciseRmStatus } from "../components/erp/production/ProductionConciseRmStatus";
+import { NoQtyMacroLifecycleStrip } from "../components/erp/production/NoQtyMacroLifecycleStrip";
+import { deriveProductionConciseRmLabel } from "../lib/productionRmConciseStatus";
 
 type WoLine = {
   id: number;
@@ -403,7 +410,8 @@ export function ProductionPage() {
 
   const source = searchParams.get("source") ?? "";
   const fromParam = searchParams.get("from") ?? "";
-  const fromNoQtySo = source === "no_qty_so";
+  const flowParam = parseProductionFlowParam(searchParams.get("flow"));
+  const fromNoQtySo = source === "no_qty_so" || flowParam === PRODUCTION_FLOW_NO_QTY;
   const focusSoId = Number(searchParams.get("salesOrderId") ?? 0);
   const focusSoIdValid = Number.isFinite(focusSoId) && focusSoId > 0;
   const cycleIdQs = searchParams.get("cycleId");
@@ -703,6 +711,8 @@ export function ProductionPage() {
   }, [focusSoIdValid, focusSoId, woId, wolId, flatLines, workOrders, woIdFromUrlValid, woIdFromUrlPick]);
 
   const productionFlowMode = React.useMemo((): ProductionFlowMode => {
+    if (flowParam === PRODUCTION_FLOW_NO_QTY) return "NO_QTY";
+    if (flowParam === PRODUCTION_FLOW_REGULAR) return "REGULAR";
     if (userLockedFlowMode) return userLockedFlowMode;
     if (fromNoQtySo) return "NO_QTY";
     if (noQtyContinueProductionIntent) return "NO_QTY";
@@ -724,6 +734,7 @@ export function ProductionPage() {
 
     return "REGULAR";
   }, [
+    flowParam,
     userLockedFlowMode,
     fromNoQtySo,
     noQtyContinueProductionIntent,
@@ -735,6 +746,81 @@ export function ProductionPage() {
     woIdFromUrlValid,
     woId,
     wolId,
+  ]);
+
+  const resolvedProductionFlow: ProductionFlowParam | null =
+    productionFlowMode === "NO_QTY"
+      ? PRODUCTION_FLOW_NO_QTY
+      : productionFlowMode === "REGULAR"
+        ? PRODUCTION_FLOW_REGULAR
+        : null;
+
+  const isNoQtyFlow = productionFlowMode === "NO_QTY";
+  const isRegularFlow = productionFlowMode === "REGULAR";
+
+  const flowMismatchMessage = React.useMemo(() => {
+    if (!resolvedProductionFlow) return null;
+    const soId =
+      flowResolutionSoId > 0
+        ? flowResolutionSoId
+        : focusSoIdValid
+          ? focusSoId
+          : 0;
+    if (!(soId > 0) || !Object.prototype.hasOwnProperty.call(soOrderTypeById, soId)) return null;
+    const v = validateProductionFlowVsOrderType(resolvedProductionFlow, soOrderTypeById[soId]);
+    if (!v.ok) {
+      console.warn("[production] flow param disagrees with sales order type", {
+        flow: resolvedProductionFlow,
+        orderType: soOrderTypeById[soId],
+      });
+      return v.message;
+    }
+    return null;
+  }, [resolvedProductionFlow, flowResolutionSoId, focusSoIdValid, focusSoId, soOrderTypeById]);
+
+  React.useEffect(() => {
+    if (flowParam) return;
+    if (
+      !isProductionWorkspaceEntry({
+        fromNoQtySo,
+        focusSoIdValid,
+        woIdFromUrlValid,
+        workOrderLineIdFromUrlValid,
+        fromDashboardWithTarget: noQtyContinueProductionIntent,
+      })
+    ) {
+      return;
+    }
+    const soId = flowResolutionSoId;
+    const inferred =
+      inferProductionFlowFromLegacy({
+        fromNoQtySo,
+        orderType: soId > 0 ? soOrderTypeById[soId] : undefined,
+      }) ??
+      (productionFlowMode === "NO_QTY"
+        ? PRODUCTION_FLOW_NO_QTY
+        : productionFlowMode === "REGULAR"
+          ? PRODUCTION_FLOW_REGULAR
+          : null);
+    if (!inferred) return;
+    const next = new URLSearchParams(searchParams);
+    next.set("flow", inferred);
+    if (inferred === PRODUCTION_FLOW_NO_QTY && !next.get("source")) {
+      next.set("source", "no_qty_so");
+    }
+    navigate({ pathname: "/production", search: `?${next.toString()}` }, { replace: true });
+  }, [
+    flowParam,
+    fromNoQtySo,
+    focusSoIdValid,
+    woIdFromUrlValid,
+    workOrderLineIdFromUrlValid,
+    noQtyContinueProductionIntent,
+    flowResolutionSoId,
+    soOrderTypeById,
+    productionFlowMode,
+    searchParams,
+    navigate,
   ]);
 
   const navigateNoQtyContext = productionFlowMode === "NO_QTY";
@@ -1337,9 +1423,11 @@ export function ProductionPage() {
   const [rmReadinessLoading, setRmReadinessLoading] = React.useState(false);
   const isNoQtyProductionFlow =
     fromNoQtySo || productionFlowMode === "NO_QTY" || navigateNoQtyContext;
-  const showRegularRmReadiness = wolId > 0;
+  const showRegularRmReadiness = wolId > 0 && isRegularFlow;
+  const showNoQtyRmStatus = wolId > 0 && isNoQtyFlow;
   const rmProductionEntryBlocked =
-    showRegularRmReadiness && isRegularProductionEntryBlocked(rmReadiness, rmReadinessLoading);
+    (showRegularRmReadiness || showNoQtyRmStatus) &&
+    isRegularProductionEntryBlocked(rmReadiness, rmReadinessLoading);
 
   const selectedWoForLifecycle = React.useMemo(() => {
     const id = woId > 0 ? woId : selected?.workOrderId ?? 0;
@@ -1481,29 +1569,17 @@ export function ProductionPage() {
     setRmReadinessLoading(loading);
   }, []);
 
+  const conciseRmLabel = React.useMemo(() => deriveProductionConciseRmLabel(rmReadiness), [rmReadiness]);
+
   React.useEffect(() => {
-    if (!showRegularRmReadiness) {
+    if (!showRegularRmReadiness && !showNoQtyRmStatus) {
       setRmReadiness(null);
       setRmReadinessLoading(false);
       return;
     }
     setRmReadiness(null);
     setRmReadinessLoading(true);
-  }, [showRegularRmReadiness, wolId]);
-
-  const productionMaterialContext = React.useMemo(() => {
-    if (!selected || !selectedMetrics) return undefined;
-    const woRow = workOrders.find((w) => w.id === selected.workOrderId);
-    return {
-      flowLabel: isNoQtyProductionFlow ? "NO_QTY FLOW" : "REGULAR FLOW",
-      soLabel: displaySalesOrderNo(selected.salesOrderId, woRow?.salesOrder?.docNo ?? null),
-      woLabel: displayWorkOrderNo(selected.workOrderId, woRow?.docNo ?? null),
-      fgName: selected.fgItem.itemName,
-      planned: selectedMetrics.woLineQty,
-      produced: selectedMetrics.usedQty,
-      remaining: selectedMetrics.remainingQty,
-    };
-  }, [selected, selectedMetrics, workOrders, isNoQtyProductionFlow]);
+  }, [showRegularRmReadiness, showNoQtyRmStatus, wolId]);
 
   const showRegularProductionEntry =
     showRegularRmReadiness && !rmProductionEntryBlocked && !rmReadinessLoading;
@@ -2682,40 +2758,14 @@ export function ProductionPage() {
       }
     }
     if (navigateNoQtyContext && showNoQtyScopedProductionCard) {
-      if (
-        roleUi.showPlanningWorkflowActions &&
-        canCreateNextRs &&
-        noQtyNextRsReady &&
-        noQtyFlowState?.primaryActionForCurrentUser === "CREATE_NEXT_RS"
-      ) {
-        return {
-          variant: "action",
-          title: "Next RS",
-          subtitle: noQtyFlowState?.workflowSummary ?? "Create the next requirement sheet.",
-          primaryAction: {
-            label: "Next RS",
-            onClick: () =>
-              prepareNoQtyNextRequirementSheetAndNavigate({
-                salesOrderId: focusSoId,
-                navigate,
-                toast,
-                navigateState: { from: "production_screen" },
-              }),
-          },
-        };
-      }
-      if (
-        roleUi.showPlanningWorkflowActions &&
-        noQtyNextRsReady &&
-        noQtyFlowState?.primaryActionForCurrentUser !== "CREATE_NEXT_RS"
-      ) {
+      if (noQtyNextRsReady) {
         return {
           variant: "success",
-          title: "Cycle ready for Next RS",
+          title: "Next RS Ready",
           subtitle:
             noQtyCarryForwardQtyFromEngine > 1e-6
-              ? `Includes previous cycle shortage (${fmtProdQty(noQtyCarryForwardQtyFromEngine)}).`
-              : noQtyFlowState?.message ?? "Waiting for Sales to create Next RS.",
+              ? `Cycle review complete — includes previous cycle shortage (${fmtProdQty(noQtyCarryForwardQtyFromEngine)}). Continue on the NO_QTY agreement page.`
+              : noQtyFlowState?.message ?? "Cycle review complete — continue on the NO_QTY agreement page when ready.",
         };
       }
       if (
@@ -2915,68 +2965,6 @@ export function ProductionPage() {
     productionPrimaryStripCoversRmReady ||
     productionPrimaryStrip?.title === "Unused RM at production";
 
-  /**
-   * Parallel "Create Next RS" strip for NO_QTY production screen.
-   *
-   * Renders independently of {@link productionPrimaryStrip}: NO_QTY rolling planning is
-   * parallel to shop-floor work. When QC is pending and Next RS is eligible, ADMIN/SALES
-   * see both "Go to QC" (primary) AND "Create Next RS" (this strip). De-duplicates when
-   * the primary strip is already the Next RS action.
-   *
-   * SO id resolution does **not** require `?source=no_qty_so` in the URL — when Admin opens
-   * Production from the left menu and selects a NO_QTY work order line, the workbench SO id
-   * is derived from `noQtyWorkbenchSoId` / `noQtyFlowSoId`. This is the same identity the
-   * `noQtyFlowState` hook uses, so eligibility, action, and CTA all act on the same SO.
-   *
-   * Visibility: ADMIN + SALES only ({@link useCanCreateNextRs}); NO_QTY context with
-   * `createNextRsEligible` and no existing later RS. Other roles never see this strip.
-   */
-  const productionNextRsParallelStrip = React.useMemo((): {
-    subtitle: string;
-    onClick: () => void;
-  } | null => {
-    if (!navigateNoQtyContext) return null;
-    if (!roleUi.showPlanningWorkflowActions || !canCreateNextRs) return null;
-    if (!noQtyFlowState?.createNextRsEligible) return null;
-    if (noQtyFlowState?.nextRsAlreadyCreatedDocNo) return null;
-    const targetSoId =
-      noQtyWorkbenchSoId > 0
-        ? noQtyWorkbenchSoId
-        : noQtyFlowSoId != null && noQtyFlowSoId > 0
-          ? noQtyFlowSoId
-          : 0;
-    if (targetSoId <= 0) return null;
-    if (
-      productionPrimaryStrip?.title === "Next RS" ||
-      productionPrimaryStrip?.title === "Cycle ready for Next RS"
-    ) {
-      return null;
-    }
-    const subtitle = noQtyFlowState.qcPendingForCycle
-      ? "Planning runs in parallel — start the next requirement sheet while QC clears this cycle."
-      : "Planning runs in parallel — start the next requirement sheet now.";
-    return {
-      subtitle,
-      onClick: () =>
-        prepareNoQtyNextRequirementSheetAndNavigate({
-          salesOrderId: targetSoId,
-          navigate,
-          toast,
-          navigateState: { from: "production_screen" },
-        }),
-    };
-  }, [
-    navigateNoQtyContext,
-    roleUi.showPlanningWorkflowActions,
-    canCreateNextRs,
-    noQtyFlowState,
-    productionPrimaryStrip,
-    noQtyWorkbenchSoId,
-    noQtyFlowSoId,
-    navigate,
-    toast,
-  ]);
-
   const renderDraftProductionBanner = (opts?: { compact?: boolean }) => {
     if (!latestDraftForSelectedWo) return null;
     const { latest, producedQty } = latestDraftForSelectedWo;
@@ -3165,52 +3153,13 @@ export function ProductionPage() {
     source,
   ]);
 
-  /** REGULAR render branch only: NO_QTY WOs can appear here when URL omits `source=no_qty_so` — align chrome with SO/WO type. */
+  /** REGULAR-only WO context for chrome (no hybrid NO_QTY shell). */
   const activeWoForRegularShell = React.useMemo(() => {
+    if (!isRegularFlow) return null;
     if (woId > 0) return workOrders.find((w) => w.id === woId) ?? null;
     if (selected && selected.workOrderId > 0) return workOrders.find((w) => w.id === selected.workOrderId) ?? null;
     return null;
-  }, [woId, selected, workOrders]);
-
-  const regularShellOrderType = React.useMemo(() => {
-    const sid =
-      selected && selected.salesOrderId > 0
-        ? selected.salesOrderId
-        : activeWoForRegularShell && activeWoForRegularShell.salesOrderId > 0
-          ? activeWoForRegularShell.salesOrderId
-          : 0;
-    if (sid > 0) {
-      const fromMap = String(soOrderTypeById[sid] ?? "").trim();
-      if (fromMap) return fromMap;
-    }
-    const fromWoSo = String(activeWoForRegularShell?.salesOrder?.orderType ?? "").trim();
-    if (fromWoSo) return fromWoSo;
-    return "";
-  }, [selected, activeWoForRegularShell, soOrderTypeById]);
-
-  const isRegularShellNoQtyUi = productionFlowMode === "REGULAR" && regularShellOrderType === "NO_QTY";
-
-  const regularShellRsHref = React.useMemo(() => {
-    if (!isRegularShellNoQtyUi) return null;
-    const sid =
-      selected && selected.salesOrderId > 0
-        ? selected.salesOrderId
-        : activeWoForRegularShell?.salesOrderId ?? 0;
-    if (!(sid > 0)) return null;
-    const rsId = activeWoForRegularShell?.requirementSheetId;
-    const cyc = activeWoForRegularShell?.cycleId ?? activeWoForRegularShell?.cycle?.id ?? null;
-    const base = `/sales-orders/${encodeURIComponent(String(sid))}/requirement-sheets`;
-    const qs = new URLSearchParams();
-    if (rsId != null && Number.isFinite(Number(rsId)) && Number(rsId) > 0) {
-      qs.set("requirementSheetId", String(rsId));
-    }
-    if (cyc != null && Number.isFinite(Number(cyc)) && Number(cyc) > 0) {
-      qs.set("cycleId", String(cyc));
-    }
-    qs.set("source", "no_qty_so");
-    const q = qs.toString();
-    return q ? `${base}?${q}` : base;
-  }, [isRegularShellNoQtyUi, selected, activeWoForRegularShell]);
+  }, [isRegularFlow, woId, selected, workOrders]);
 
   const regularWorkflowStageLabel = React.useMemo(() => {
     if (navigateNoQtyContext) return "";
@@ -3247,9 +3196,12 @@ export function ProductionPage() {
     productionStickyContext,
   ]);
 
-  /** Single SO/WO/Item context — rendered below the primary action strip (not duplicated in form). */
+  /** Single SO/WO/Item context — hidden when flow identity bar already covers it. */
   const productionCompactContextBar =
-    !navigateNoQtyContext && !showProductionWorkspace && (selected || productionStickyContext) ? (
+    !navigateNoQtyContext &&
+    !showProductionWorkspace &&
+    (selected || productionStickyContext) &&
+    !(isRegularFlow && selected && Number(selected.salesOrderId) > 0) ? (
       <OperationalContextBar className="rounded-md border border-slate-200 bg-gradient-to-r from-slate-50 to-white px-2 py-1 text-[11px] shadow-sm">
         <span className="font-semibold text-slate-600">SO</span>
         <span className="rounded border border-sky-200 bg-sky-50 px-1.5 py-0.5 font-mono text-[11px] font-semibold tabular-nums text-sky-900">
@@ -3263,25 +3215,6 @@ export function ProductionPage() {
             return displaySalesOrderNo(soId, soDoc);
           })()}
         </span>
-        {isRegularShellNoQtyUi ? (
-          <>
-            <OpCtxSep />
-            <span className="text-slate-500">Cycle</span>
-            <span className="font-semibold tabular-nums text-slate-900">
-              {activeWoForRegularShell?.cycle?.cycleNo != null
-                ? Number(activeWoForRegularShell.cycle.cycleNo)
-                : "—"}
-            </span>
-            <OpCtxSep />
-            <span className="text-slate-500">RS</span>
-            <span className="rounded border border-violet-200 bg-violet-50/80 px-1.5 py-0.5 font-mono text-[11px] font-semibold tabular-nums text-violet-950">
-              {activeWoForRegularShell?.requirementSheetId != null &&
-              Number(activeWoForRegularShell.requirementSheetId) > 0
-                ? displayRequirementSheetNo(Number(activeWoForRegularShell.requirementSheetId), null)
-                : "—"}
-            </span>
-          </>
-        ) : null}
         <OpCtxSep />
         <span className="font-semibold text-slate-600">WO</span>
         <span className="font-mono text-[11px] font-semibold tabular-nums text-slate-900">
@@ -3311,9 +3244,7 @@ export function ProductionPage() {
           Status
         </span>
         <span className="font-semibold text-slate-900">
-          {isRegularShellNoQtyUi && noQtyCycleDisplayStatus
-            ? noQtyCycleDisplayStatus.label
-            : regularWorkflowStageLabel}
+          {regularWorkflowStageLabel}
         </span>
         {displayHeaderMetrics && (selected || productionStickyContext) ? (
           <>
@@ -3496,20 +3427,6 @@ export function ProductionPage() {
         />
       ) : null}
       {productionCompactContextBar}
-      {productionNextRsParallelStrip ? (
-        <NextStepStrip
-          visible
-          variant="action"
-          title="Create Next RS"
-          subtitle={productionNextRsParallelStrip.subtitle}
-          className="gap-1.5 rounded-md px-2 py-1.5"
-          primaryAction={{
-            label: "Create Next RS",
-            onClick: productionNextRsParallelStrip.onClick,
-            testId: "production-next-rs-parallel-cta",
-          }}
-        />
-      ) : null}
       {showProductionWorkspace ? (
         <OperationalProductionWorkspace onOpenRow={openProductionFromWorkspace} />
       ) : showNoQtyScopedProductionCard ? (
@@ -3835,31 +3752,13 @@ export function ProductionPage() {
                         </div>
                       ) : (
                         <>
-                      {showRegularRmReadiness && wolId > 0 ? (
-                        <>
-                          {rmProductionEntryBlocked &&
-                          rmReadiness &&
-                          rmReadiness.gate !== "NO_PMR" &&
-                          rmReadiness.gate !== "PMR_DRAFT_ONLY" ? (
-                            <ProductionRmBlockedBanner
-                              workOrderId={rmReadiness.workOrderId}
-                              workOrderNo={productionMaterialContext?.woLabel ?? null}
-                              gate={rmReadiness.gate}
-                              message={
-                                rmReadiness.gate === "WAITING_STORE_ISSUE"
-                                  ? "Waiting for Store RM Issue."
-                                  : undefined
-                              }
-                            />
-                          ) : null}
-                          <ProductionMaterialWorkflowCard
-                            workOrderLineId={wolId}
-                            refreshKey={liveTick}
-                            context={productionMaterialContext}
-                            onLoaded={onRmReadinessLoaded}
-                            onLoadingChange={onRmReadinessLoadingChange}
-                          />
-                        </>
+                      {showNoQtyRmStatus && wolId > 0 ? (
+                        <ProductionConciseRmStatus
+                          workOrderLineId={wolId}
+                          refreshKey={liveTick}
+                          onLoaded={onRmReadinessLoaded}
+                          onLoadingChange={onRmReadinessLoadingChange}
+                        />
                       ) : null}
                       {(() => {
                         if (!selected) {
@@ -3875,9 +3774,7 @@ export function ProductionPage() {
                         if (rmProductionEntryBlocked) {
                           return (
                             <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] font-medium text-amber-950">
-                              {rmReadiness?.gate === "WAITING_STORE_ISSUE"
-                                ? "Waiting for Store RM Issue."
-                                : "Production is blocked until material is issued to production."}
+                              Production entry is blocked until material status is READY.
                             </p>
                           );
                         }
@@ -4278,37 +4175,13 @@ export function ProductionPage() {
           {!fromNoQtySo ? (
             <>
               {showRegularRmReadiness && !draftApprovalPendingRegular ? (
-                <>
-                  {rmProductionEntryBlocked &&
-                  rmReadiness &&
-                  rmReadiness.gate !== "NO_PMR" &&
-                  rmReadiness.gate !== "PMR_DRAFT_ONLY" &&
-                  !productionPrimaryStripCoversRmIssue ? (
-                    <ProductionRmBlockedBanner
-                      workOrderId={rmReadiness.workOrderId}
-                      workOrderNo={productionMaterialContext?.woLabel ?? null}
-                      gate={rmReadiness.gate}
-                    />
-                  ) : null}
-                  <div
-                    className={cn(
-                      ((rmProductionEntryBlocked &&
-                        rmReadiness &&
-                        rmReadiness.gate !== "NO_PMR" &&
-                        rmReadiness.gate !== "PMR_DRAFT_ONLY") ||
-                        productionPrimaryStripCoversMaterialCard) &&
-                        "sr-only",
-                    )}
-                  >
-                    <ProductionMaterialWorkflowCard
-                      workOrderLineId={wolId}
-                      refreshKey={liveTick}
-                      context={productionMaterialContext}
-                      onLoaded={onRmReadinessLoaded}
-                      onLoadingChange={onRmReadinessLoadingChange}
-                    />
-                  </div>
-                </>
+                <ProductionConciseRmStatus
+                  workOrderLineId={wolId}
+                  refreshKey={liveTick}
+                  onLoaded={onRmReadinessLoaded}
+                  onLoadingChange={onRmReadinessLoadingChange}
+                  className={productionPrimaryStripCoversMaterialCard ? "sr-only" : undefined}
+                />
               ) : null}
               {showRegularProductionEntry ? (
               <Card
@@ -5386,23 +5259,6 @@ export function ProductionPage() {
               <span className="text-slate-300" aria-hidden>
                 /
               </span>
-              {isRegularShellNoQtyUi && roleUi.showProductionPlanningBreadcrumb && !openedFromWorkOrderWorkspace ? (
-                <>
-                  {regularShellRsHref ? (
-                    <Link
-                      to={regularShellRsHref}
-                      className="text-sky-900 underline decoration-sky-700/40 underline-offset-2 hover:decoration-sky-800"
-                    >
-                      Requirement Sheet
-                    </Link>
-                  ) : (
-                    <span className="font-semibold text-slate-800">Requirement Sheet</span>
-                  )}
-                  <span className="text-slate-300" aria-hidden>
-                    /
-                  </span>
-                </>
-              ) : null}
               <span className="font-mono font-semibold tabular-nums text-slate-900">
                 {(() => {
                   const id = woId > 0 ? woId : activeWoForRegularShell?.id ?? 0;
@@ -5429,59 +5285,35 @@ export function ProductionPage() {
               </Button>
             ) : null}
           </div>
-          {roleUi.showProductionWorkflowTrail ? (
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] font-semibold uppercase tracking-wide text-slate-600">
-            {isRegularShellNoQtyUi ? (
-              <span className="rounded border border-violet-300 bg-violet-100 px-1.5 py-0.5 font-semibold uppercase tracking-wide text-violet-950">
-                NO_QTY FLOW
-              </span>
-            ) : (
-              <span className="rounded bg-slate-900 px-1.5 py-0.5 text-white">Regular flow</span>
-            )}
-            <span className="font-normal normal-case tracking-normal text-slate-500">
-              {isRegularShellNoQtyUi ? (
-                <>
-                  Requirement Sheet → Work Order → <span className="font-semibold text-slate-800">Production</span>
-                </>
-              ) : (
-                <>
-                  Sales Order → Work Order → <span className="font-semibold text-slate-800">Production</span>
-                </>
+          {flowMismatchMessage ? (
+            <div
+              className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-[13px] font-medium text-red-950"
+              role="alert"
+              data-testid="production-flow-mismatch"
+            >
+              {flowMismatchMessage}
+            </div>
+          ) : null}
+          {isRegularFlow && selected && Number(selected.salesOrderId) > 0 ? (
+            <ProductionFlowIdentityBar
+              flow={PRODUCTION_FLOW_REGULAR}
+              soLabel={displaySalesOrderNo(
+                selected.salesOrderId,
+                selected.salesOrderId === focusSoId ? focusSo?.docNo ?? null : null,
               )}
+              woLabel={
+                woId > 0
+                  ? displayWorkOrderNo(woId, activeWoForRegularShell?.docNo ?? null)
+                  : displayWorkOrderNo(selected.workOrderId, null)
+              }
+              itemName={selected.fgItem.itemName}
+            />
+          ) : (
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] font-semibold uppercase tracking-wide text-slate-600">
+            <span className="rounded bg-slate-900 px-1.5 py-0.5 text-white">Regular Sales Order</span>
+            <span className="font-normal normal-case tracking-normal text-slate-500">
+              Sales Order → Work Order → <span className="font-semibold text-slate-800">Production</span>
             </span>
-            {isRegularShellNoQtyUi ? (
-              <>
-                <span className="hidden sm:inline text-slate-300" aria-hidden>
-                  ·
-                </span>
-                <span className="font-normal normal-case tracking-normal text-slate-500">
-                  Cycle{" "}
-                  <span className="font-mono font-semibold tabular-nums text-slate-800">
-                    {activeWoForRegularShell?.cycle?.cycleNo != null
-                      ? Number(activeWoForRegularShell.cycle.cycleNo)
-                      : "—"}
-                  </span>
-                  {" · RS "}
-                  <span className="font-mono font-semibold tabular-nums text-slate-800">
-                    {activeWoForRegularShell?.requirementSheetId != null &&
-                    Number(activeWoForRegularShell.requirementSheetId) > 0
-                      ? displayRequirementSheetNo(
-                          Number(activeWoForRegularShell.requirementSheetId),
-                          null,
-                        )
-                      : "—"}
-                  </span>
-                  {" · "}
-                  <span className="font-mono font-semibold tabular-nums text-slate-800">
-                    {(() => {
-                      const id = woId > 0 ? woId : activeWoForRegularShell?.id ?? 0;
-                      if (!(id > 0)) return "—";
-                      return displayWorkOrderNo(id, activeWoForRegularShell?.docNo ?? null);
-                    })()}
-                  </span>
-                </span>
-              </>
-            ) : null}
             <span className="hidden sm:inline text-slate-300" aria-hidden>
               ·
             </span>
@@ -5489,7 +5321,7 @@ export function ProductionPage() {
               Current stage: {regularWorkflowStageLabel}
             </span>
           </div>
-          ) : null}
+          )}
           {selected && Number(selected.salesOrderId) > 0 ? (
             <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] font-semibold">
               <Link
@@ -5498,18 +5330,12 @@ export function ProductionPage() {
               >
                 View WO list
               </Link>
-              {isRegularShellNoQtyUi && regularShellRsHref && roleUi.showProductionPlanningBreadcrumb ? (
-                <Link className="text-sky-900 underline-offset-2 hover:underline" to={regularShellRsHref}>
-                  Requirement Sheet
-                </Link>
-              ) : !isRegularShellNoQtyUi ? (
-                <Link
-                  className="text-sky-900 underline-offset-2 hover:underline"
-                  to={`/sales-orders?salesOrderId=${encodeURIComponent(String(selected.salesOrderId))}`}
-                >
-                  Sales Order
-                </Link>
-              ) : null}
+              <Link
+                className="text-sky-900 underline-offset-2 hover:underline"
+                to={`/sales-orders?salesOrderId=${encodeURIComponent(String(selected.salesOrderId))}`}
+              >
+                Sales Order
+              </Link>
               {regularQcBannerHref && !showTopQcNextStrip && selectedLineQcPending ? (
                 /*
                  * Breadcrumb "Open QC" link. Hidden when the page-level top QC strip already
@@ -5518,18 +5344,13 @@ export function ProductionPage() {
                 <Link className="text-sky-900 underline-offset-2 hover:underline" to={regularQcBannerHref}>
                   {PRODUCTION_QA_TERMS.OPEN_PRODUCTION_QA}
                 </Link>
-              ) : qcBannerHref && !showTopQcNextStrip && navigateNoQtyContext ? (
-                <Link className="text-sky-900 underline-offset-2 hover:underline" to={qcBannerHref}>
-                  {PRODUCTION_QA_TERMS.OPEN_PRODUCTION_QA}
-                </Link>
               ) : null}
               {selectedMetrics &&
               selectedMetrics.remainingQty > 1e-6 &&
               !latestDraftForSelectedWo &&
               !draftApprovalPendingRegular &&
               canProd &&
-              !rmProductionEntryBlocked &&
-              !(isRegularShellNoQtyUi && noQtyNextRsReady) ? (
+              !rmProductionEntryBlocked ? (
                 <button
                   type="button"
                   className="text-left text-sky-900 underline-offset-2 hover:underline"
@@ -5544,6 +5365,7 @@ export function ProductionPage() {
             </div>
           ) : null}
           {navigateNoQtyContext || showProductionWorkspace ? (
+            !(isRegularFlow && selected && Number(selected.salesOrderId) > 0) ? (
           <OperationalContextBar className="rounded-md border border-slate-200 bg-gradient-to-r from-slate-50 to-white px-2 py-1 shadow-sm">
             <span className="font-semibold text-slate-600">SO</span>
             <span className="rounded border border-sky-200 bg-sky-50 px-1.5 py-0.5 font-mono text-[11px] font-semibold tabular-nums text-sky-900">
@@ -5560,25 +5382,6 @@ export function ProductionPage() {
                 return displaySalesOrderNo(soId, soDoc);
               })()}
             </span>
-            {isRegularShellNoQtyUi ? (
-              <>
-                <OpCtxSep />
-                <span className="text-slate-500">Cycle</span>
-                <span className="font-semibold tabular-nums text-slate-900">
-                  {activeWoForRegularShell?.cycle?.cycleNo != null
-                    ? Number(activeWoForRegularShell.cycle.cycleNo)
-                    : "—"}
-                </span>
-                <OpCtxSep />
-                <span className="text-slate-500">RS</span>
-                <span className="rounded border border-violet-200 bg-violet-50/80 px-1.5 py-0.5 font-mono text-[11px] font-semibold tabular-nums text-violet-950">
-                  {activeWoForRegularShell?.requirementSheetId != null &&
-                  Number(activeWoForRegularShell.requirementSheetId) > 0
-                    ? displayRequirementSheetNo(Number(activeWoForRegularShell.requirementSheetId), null)
-                    : "—"}
-                </span>
-              </>
-            ) : null}
             <OpCtxSep />
             <span className="font-semibold text-slate-600">WO</span>
             <span className="font-mono text-[11px] font-semibold tabular-nums text-slate-900">
@@ -5609,11 +5412,7 @@ export function ProductionPage() {
             <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">
               Status
             </span>
-            <span className="font-semibold text-slate-900">
-              {isRegularShellNoQtyUi && noQtyCycleDisplayStatus
-                ? noQtyCycleDisplayStatus.label
-                : regularWorkflowStageLabel}
-            </span>
+            <span className="font-semibold text-slate-900">{regularWorkflowStageLabel}</span>
             {displayHeaderMetrics && (selected || productionStickyContext) ? (
               <>
                 <OpCtxSep />
@@ -5628,6 +5427,7 @@ export function ProductionPage() {
               </>
             ) : null}
           </OperationalContextBar>
+            ) : null
           ) : null}
         </OperationalContextSticky>
         {main}
@@ -5674,6 +5474,15 @@ export function ProductionPage() {
       ) : null}
       <OperationalContextSticky className="space-y-1">
         <PageNoQtyFlowBackLink step="PRODUCTION" />
+        {flowMismatchMessage ? (
+          <div
+            className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-[13px] font-medium text-red-950"
+            role="alert"
+            data-testid="production-flow-mismatch"
+          >
+            {flowMismatchMessage}
+          </div>
+        ) : null}
         <div className="flex flex-wrap items-end justify-between gap-2">
           <div className="min-w-0 space-y-0.5">
             <h1 className="text-sm font-semibold leading-tight tracking-tight text-slate-900">Production</h1>
@@ -5691,7 +5500,30 @@ export function ProductionPage() {
             </Button>
           ) : null}
         </div>
-        {showNoQtyScopedProductionCard ? (
+        {showNoQtyScopedProductionCard && noQtyWorkbenchSoId > 0 ? (
+          <>
+            <ProductionFlowIdentityBar
+              flow={PRODUCTION_FLOW_NO_QTY}
+              soLabel={displaySalesOrderNo(noQtyWorkbenchSoId, focusSo?.docNo ?? null)}
+              cycleNo={noQtyCycleNoForDisplay}
+              rsLabel={
+                selectedWoForNoQtyChrome?.requirementSheetId != null &&
+                Number(selectedWoForNoQtyChrome.requirementSheetId) > 0
+                  ? displayRequirementSheetNo(Number(selectedWoForNoQtyChrome.requirementSheetId), null)
+                  : null
+              }
+              woLabel={
+                woId > 0 ? displayWorkOrderNo(woId, selectedWoForNoQtyChrome?.docNo ?? null) : null
+              }
+              itemName={selected?.fgItem.itemName ?? null}
+            />
+            <NoQtyMacroLifecycleStrip
+              flow={noQtyFlowState}
+              rmLabel={conciseRmLabel}
+              cycleNo={noQtyCycleNoForDisplay}
+            />
+          </>
+        ) : showNoQtyScopedProductionCard ? (
           <OperationalContextBar className="rounded-md border border-slate-200/90 bg-gradient-to-r from-slate-50 to-white px-2.5 py-1.5 text-[11px] text-slate-800 shadow-sm">
             <span className="font-mono font-semibold tabular-nums text-slate-900">
               {displaySalesOrderNo(noQtyWorkbenchSoId, focusSo?.docNo ?? null)}

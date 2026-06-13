@@ -865,6 +865,7 @@ export function WorkOrdersPage() {
   const productionEntryHref =
     showProductionNextStepEffective && salesOrderId !== "" && openWoForPrimaryFg.woId != null
       ? `/production?${new URLSearchParams({
+          flow: "REGULAR_SO",
           salesOrderId: String(salesOrderId),
           woId: String(openWoForPrimaryFg.woId),
           from: showWoWorkspace ? "work-order-workspace" : "work-orders",
@@ -2127,7 +2128,7 @@ export function WorkOrdersPage() {
                             );
                           }}
                         >
-                          Open Requirement Sheet
+                          Open Current RS
                         </Button>
                       ) : (
                         <PlanningStatusChip inline label="Planned in Requirement Sheet" />
@@ -2245,7 +2246,7 @@ export function WorkOrdersPage() {
                           className="h-8"
                           onClick={() => nav(`/sales-orders/${Number(salesOrderId)}/requirement-sheets`)}
                         >
-                          Open Requirement Sheet
+                          Open Current RS
                         </Button>
                       ) : (
                         <PlanningStatusChip inline label="Waiting for Planning Team" />

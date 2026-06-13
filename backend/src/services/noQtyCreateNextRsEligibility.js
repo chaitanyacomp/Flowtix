@@ -1,19 +1,19 @@
 /**
  * NO_QTY: When operators may create the next cycle's requirement sheet — rolling / demand-driven planning.
- * Independent of dispatch, billing, export, QC completion, and WO line completion.
+ *
+ * P6B-4B: Next RS is demand-driven. Execution progress on the current cycle (PMR, WO, production,
+ * QA, dispatch, MPRS) must NOT block creating the next cycle RS while the NO_QTY agreement is OPEN.
  *
  * Cycle scope: evaluate using a concrete `SalesOrderCycle` row that belongs to the SO (`cycleId` + `salesOrderId`).
  * Callers resolve the evaluation cycle via {@link resolveNoQtyEligibilityCycleId} (ACTIVE, pointer, or latest CLOSED
- * when between cycles). Do not require `SalesOrder.currentCycleId` to match — stale / null pointers must not alone
- * yield `NO_CYCLE` for eligibility reads.
+ * when between cycles).
  *
  * Eligible when (evaluated cycle):
- * 1) Current cycle has a LOCKED requirement sheet
+ * 1) Latest requirement sheet on the cycle is LOCKED or CANCELLED
  * 2) No LOCKED requirement sheet exists on any non-CLOSED cycle with cycleNo strictly greater than current
- *    (DRAFT-only rows do not block advancing — stale drafts must not prevent closing the active cycle;
- *     LOCKED sheets on CLOSED higher cycles are historical artifacts and do not block rolling planning.)
+ * 3) No DRAFT requirement sheet exists on any non-CLOSED later cycle (open draft must be finished first)
  *
- * Not eligible: NOT_NO_QTY, SO closed, invalid cycle, no locked RS on that cycle, or a non-closed later cycle already has a LOCKED RS.
+ * Not eligible: NOT_NO_QTY, SO closed, invalid cycle, latest RS is DRAFT / missing, later LOCKED or DRAFT RS exists.
  */
 
 /**
@@ -55,8 +55,6 @@ async function resolveNoQtyEligibilityCycleId(db, salesOrderId) {
     }
   }
 
-  // Between cycles: no ACTIVE row; SO pointer often null after maybeAutoCloseNoQtyCycle (cycle CLOSED, bill finalized).
-  // Evaluate Create Next RS eligibility against the latest CLOSED cycle — read-only interpretation (no writes).
   if (
     so?.orderType === "NO_QTY" &&
     !["COMPLETED", "CLOSED", "MANUALLY_CLOSED"].includes(String(so.internalStatus ?? ""))
@@ -134,11 +132,23 @@ async function computeNoQtyCreateNextRsEligibility(db, input) {
     return { eligible: false, reason: "CYCLE_NOT_FOUND", existingNextRsDocNo: null, existingNextRsId: null };
   }
 
-  const lockedRs = await db.requirementSheet.findFirst({
-    where: { salesOrderId, cycleId, status: "LOCKED" },
-    select: { id: true },
+  const latestOnCycle = await db.requirementSheet.findFirst({
+    where: { salesOrderId, cycleId },
+    orderBy: [{ version: "desc" }, { id: "desc" }],
+    select: { id: true, status: true },
   });
-  if (!lockedRs) {
+  if (!latestOnCycle) {
+    return { eligible: false, reason: "NO_LOCKED_RS", existingNextRsDocNo: null, existingNextRsId: null };
+  }
+  if (latestOnCycle.status === "DRAFT") {
+    return {
+      eligible: false,
+      reason: "DRAFT_RS_ON_CYCLE",
+      existingNextRsDocNo: null,
+      existingNextRsId: latestOnCycle.id,
+    };
+  }
+  if (latestOnCycle.status !== "LOCKED" && latestOnCycle.status !== "CANCELLED") {
     return { eligible: false, reason: "NO_LOCKED_RS", existingNextRsDocNo: null, existingNextRsId: null };
   }
 
@@ -149,7 +159,6 @@ async function computeNoQtyCreateNextRsEligibility(db, input) {
       cycle: {
         salesOrderId,
         cycleNo: { gt: currentCycle.cycleNo },
-        /** Rolling cycles: dispatch/stock may remain open on older cycles; CLOSED higher cycles must not gate next RS. */
         status: { not: "CLOSED" },
       },
     },
@@ -167,42 +176,26 @@ async function computeNoQtyCreateNextRsEligibility(db, input) {
     };
   }
 
-  const pendingDispositionCount = await db.qcRejectedDisposition.count({
+  const draftAhead = await db.requirementSheet.findFirst({
     where: {
-      voidedAt: null,
-      closedAt: null,
-      remainingQty: { gt: 0 },
-      status: {
-        in: ["REWORK_PENDING_SUPERVISOR", "REWORK_APPROVED_PENDING_EXECUTION", "REWORK_READY_FOR_QC", "HOLD"],
+      salesOrderId,
+      status: "DRAFT",
+      cycle: {
+        salesOrderId,
+        cycleNo: { gt: currentCycle.cycleNo },
+        status: { not: "CLOSED" },
       },
-      workOrder: { salesOrderId, cycleId },
     },
+    orderBy: [{ version: "desc" }, { id: "desc" }],
+    select: { id: true, docNo: true },
   });
-  if (pendingDispositionCount > 0) {
+  if (draftAhead) {
+    const doc = draftAhead.docNo?.trim() || `RS-${draftAhead.id}`;
     return {
       eligible: false,
-      reason: "DISPOSITION_PENDING",
-      existingNextRsDocNo: null,
-      existingNextRsId: null,
-    };
-  }
-
-  const openPmr = await db.productionMaterialRequest.findFirst({
-    where: {
-      workOrder: { salesOrderId, cycleId },
-      status: { in: ["REQUESTED", "PARTIALLY_ISSUED"] },
-    },
-    orderBy: { id: "desc" },
-    select: { id: true, docNo: true, status: true },
-  });
-  if (openPmr) {
-    return {
-      eligible: false,
-      reason: openPmr.status === "REQUESTED" ? "PMR_WAITING_STORE_ISSUE" : "PMR_PARTIALLY_ISSUED",
-      existingNextRsDocNo: null,
-      existingNextRsId: null,
-      blockingPmrDocNo: openPmr.docNo ?? null,
-      blockingPmrStatus: openPmr.status,
+      reason: "DRAFT_RS_EXISTS",
+      existingNextRsDocNo: doc,
+      existingNextRsId: draftAhead.id,
     };
   }
 

@@ -22,6 +22,13 @@ const {
 } = require("../constants/activityLogConstants");
 const { displayRequirementSheetNo, displaySalesOrderNo } = require("../utils/docNoLabels");
 const { normalizePositiveCycleId } = require("../utils/cycleIds");
+const {
+  assertNoLockedOrCancelledSheetForCyclePeriod,
+  cancelLockedRequirementSheet,
+  evaluateRequirementSheetCancellation,
+  RequirementSheetLifecycleError,
+  RS_LIFECYCLE_MESSAGES,
+} = require("../services/requirementSheetLifecycleService");
 const { QC_ENTRY_ACTIVE_WHERE } = require("../services/qcEntryConstants");
 const {
   loadNoQtyPostCycleApprovalQtyByItem,
@@ -60,8 +67,8 @@ function computeNoQtyOperatorCarryForwardQty(plannedQty, approvedProducedQty) {
 }
 
 /**
- * Multiple LOCKED requirement sheets can exist for the same NO_QTY cycle (e.g. v1 then v2).
- * Carry-forward must count each cycle once — use the latest RS document only.
+ * P6B-1B: one terminal RS per NO_QTY cycle+period (LOCKED or CANCELLED). MPRS still dedupes
+ * legacy multi-version LOCKED rows by highest version until data is migrated.
  * Tie-break: periodKey (desc), version (desc), createdAt (desc), id (desc).
  *
  * @param {{ id: number; periodKey: string | null; version: number | null; createdAt: Date }} a
@@ -947,6 +954,8 @@ async function mapSheetDetail(sheet) {
     status: sheet.status,
     periodKey: sheet.periodKey,
     version: sheet.version,
+    cancelledAt: sheet.cancelledAt ?? null,
+    cancellationReason: sheet.cancellationReason ?? null,
     workOrderId: existingWo?.id ?? null,
     productionMaterialRequestId: openPmr?.id ?? null,
     pmrDocNo: openPmr?.docNo ?? null,
@@ -1026,6 +1035,12 @@ requirementSheetsRouter.post(
         await advanceNoQtyCycleForNextRequirementSheetIfEligible(tx, soId, req.user?.userId ?? null);
         const cycleId = await resolveNoQtyActiveCycleIdForPlanning(tx, soId);
 
+        await assertNoLockedOrCancelledSheetForCyclePeriod(tx, {
+          salesOrderId: soId,
+          cycleId,
+          periodKey,
+        });
+
         const maxV = await tx.requirementSheet.aggregate({
           where: { salesOrderId: soId, cycleId, periodKey },
           _max: { version: true },
@@ -1076,6 +1091,13 @@ requirementSheetsRouter.post(
 
       return res.status(201).json({ id: created.id });
     } catch (e) {
+      if (e instanceof RequirementSheetLifecycleError) {
+        return res.status(e.statusCode).json({
+          message: e.message,
+          code: e.code,
+          details: e.details ?? undefined,
+        });
+      }
       return next(e);
     }
   },
@@ -1365,7 +1387,13 @@ requirementSheetsRouter.put(
         select: { id: true, status: true },
       });
       if (!sheet) return res.status(404).json(friendly400("Requirement sheet not found."));
-      if (sheet.status !== "DRAFT") return res.status(409).json(friendly400("Locked sheets cannot be edited."));
+      if (sheet.status !== "DRAFT") {
+        const msg =
+          sheet.status === "CANCELLED"
+            ? "Cancelled requirement sheets cannot be edited."
+            : "Locked sheets cannot be edited.";
+        return res.status(409).json(friendly400(msg));
+      }
 
       await prisma.requirementSheet.update({
         where: { id },
@@ -1404,7 +1432,11 @@ requirementSheetsRouter.put(
           throw err;
         }
         if (sheet.status !== "DRAFT") {
-          const err = new Error("Locked sheets cannot be edited.");
+          const err = new Error(
+            sheet.status === "CANCELLED"
+              ? "Cancelled requirement sheets cannot be edited."
+              : "Locked sheets cannot be edited.",
+          );
           err.statusCode = 409;
           throw err;
         }
@@ -1577,7 +1609,11 @@ requirementSheetsRouter.post(
           throw err;
         }
         if (existing.status !== "DRAFT") {
-          const err = new Error("Sheet is already locked.");
+          const err = new Error(
+            existing.status === "CANCELLED"
+              ? "Cancelled requirement sheets cannot be locked."
+              : "Sheet is already locked.",
+          );
           err.statusCode = 409;
           throw err;
         }
@@ -1881,8 +1917,86 @@ requirementSheetsRouter.post(
   },
 );
 
+// GET /api/requirement-sheets/:id/cancel-eligibility
+requirementSheetsRouter.get(
+  "/requirement-sheets/:id/cancel-eligibility",
+  requireAuth,
+  requireRole(RS_READ_ROLES),
+  async (req, res, next) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id) || id <= 0) return res.status(400).json(friendly400("Invalid requirement sheet id."));
+      const evaluation = await evaluateRequirementSheetCancellation(prisma, id);
+      return res.json(evaluation);
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
+// POST /api/requirement-sheets/:id/cancel — retain audit trail (P6B-1B)
+requirementSheetsRouter.post(
+  "/requirement-sheets/:id/cancel",
+  requireAuth,
+  requireRole(RS_WRITE_ROLES),
+  async (req, res, next) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id) || id <= 0) return res.status(400).json(friendly400("Invalid requirement sheet id."));
+      const body = z.object({ reason: z.string().optional().nullable() }).parse(req.body ?? {});
+
+      const result = await prisma.$transaction(async (tx) => {
+        const { sheet } = await cancelLockedRequirementSheet(tx, {
+          sheetId: id,
+          actorUserId: req.user?.userId ?? null,
+          reason: body.reason ?? null,
+        });
+
+        const rsDoc = displayRequirementSheetNo(sheet.id, sheet.docNo);
+        const soDoc = displaySalesOrderNo(sheet.salesOrder?.id ?? sheet.salesOrderId, sheet.salesOrder?.docNo);
+        await logActivity({
+          tx,
+          user: req.user,
+          module: ACTIVITY_MODULES.REQUIREMENT_SHEET,
+          entityType: ACTIVITY_ENTITY_TYPES.REQUIREMENT_SHEET,
+          entityId: sheet.id,
+          docNo: rsDoc,
+          action: ACTIVITY_ACTIONS.CANCELLED,
+          message: `Requirement Sheet ${rsDoc} cancelled`,
+          reason: body.reason?.trim() || null,
+          metadata: {
+            salesOrderId: sheet.salesOrderId,
+            salesOrderDocNo: soDoc,
+            cycleId: sheet.cycleId ?? undefined,
+            cycleNo: sheet.cycle?.cycleNo ?? undefined,
+            periodKey: sheet.periodKey,
+          },
+        });
+
+        return sheet;
+      });
+
+      return res.json({
+        ok: true,
+        id: result.id,
+        status: result.status,
+        message: RS_LIFECYCLE_MESSAGES.CANCEL_SUCCESS,
+      });
+    } catch (e) {
+      if (e instanceof RequirementSheetLifecycleError) {
+        return res.status(e.statusCode).json({
+          message: e.message,
+          code: e.code,
+          details: e.details ?? undefined,
+        });
+      }
+      return next(e);
+    }
+  },
+);
+
 // POST /api/requirement-sheets/:id/void
-// Admin-safe correction: delete a wrongly locked NO_QTY Requirement Sheet (and its WO) only if unused.
+// Deprecated: diagnostic hard-delete only (ADMIN). Normal workflow uses POST /cancel.
 requirementSheetsRouter.post(
   "/requirement-sheets/:id/void",
   requireAuth,
@@ -1891,6 +2005,20 @@ requirementSheetsRouter.post(
     try {
       const id = Number(req.params.id);
       if (!Number.isFinite(id) || id <= 0) return res.status(400).json(friendly400("Invalid requirement sheet id."));
+      const body = z
+        .object({
+          diagnosticDelete: z.boolean().optional(),
+          confirm: z.boolean().optional(),
+        })
+        .parse(req.body ?? {});
+
+      if (body.diagnosticDelete !== true || body.confirm !== true) {
+        return res.status(410).json({
+          message:
+            "Void (hard delete) is deprecated. Use Cancel Requirement Sheet instead. Diagnostic delete requires diagnosticDelete and confirm flags.",
+          code: "VOID_DEPRECATED",
+        });
+      }
 
       const result = await prisma.$transaction(async (tx) => {
         const sheet = await tx.requirementSheet.findUnique({

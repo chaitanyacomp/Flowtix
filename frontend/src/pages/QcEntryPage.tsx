@@ -46,7 +46,7 @@ import { ErpEmptyState } from "../components/erp/foundation/ErpEmptyState";
 import { NoQtyCycleContextBar } from "../components/erp/foundation/NoQtyCycleContextBar";
 import { displaySalesOrderNo } from "../lib/docNoDisplay";
 import { buildNoQtyGuidedHref, useNoQtyFlowState } from "../lib/noQtyFlowState";
-import { prepareNoQtyNextRequirementSheetAndNavigate } from "../lib/noQtyPrepareNextRsNavigate";
+import { noQtySoListHref } from "../lib/noQtyRsActionLabels";
 import { useToast } from "../contexts/ToastContext";
 import { pauseWorkOrderProductionApi } from "../lib/workOrderLifecycle";
 import { ErpModal } from "../components/erp/ErpModal";
@@ -1833,7 +1833,9 @@ export function QcEntryPage() {
     try {
       await pauseWorkOrderProductionApi(workOrderId);
       toast.showSuccess("Work order paused. Accepted FG remains reserved for this sales order.");
-      navigate(`/production?workOrderId=${workOrderId}&salesOrderId=${focusSoId}&from=qc-entry`);
+      navigate(
+        `/production?flow=REGULAR_SO&workOrderId=${workOrderId}&salesOrderId=${focusSoId}&from=qc-entry`,
+      );
     } catch (e) {
       toast.showError(e instanceof Error ? e.message : "Could not pause work order");
     } finally {
@@ -2230,28 +2232,19 @@ export function QcEntryPage() {
               {qcGuidance.kind === "NEXT_RS" ? (
                 <div className="erp-next-action-bar justify-between gap-2 border-sky-200/90 bg-sky-50/95">
                   <span className="min-w-0 text-[12px] leading-snug text-sky-950">
-                    <span className="font-semibold">Next:</span>{" "}
-                    {canCreateNextRs
-                      ? noQtyFlowState?.workflowSummary ?? "Cycle completed. Ready for Next RS."
-                      : noQtyFlowState?.message ?? "Waiting for Sales/Planning to create Next RS."}
+                    <span className="font-semibold">Next RS Ready.</span>{" "}
+                    {noQtyFlowState?.workflowSummary ??
+                      "Continue on the NO_QTY agreement page when the next cycle RS is needed."}
                   </span>
-                  {canCreateNextRs ? (
-                    <Button
-                      type="button"
-                      size="sm"
-                      className="h-8 shrink-0"
-                      onClick={() =>
-                        prepareNoQtyNextRequirementSheetAndNavigate({
-                          salesOrderId: focusSoId,
-                          navigate,
-                          toast,
-                          navigateState: { from: "qc" },
-                        })
-                      }
-                    >
-                      Next RS
+                  <Link
+                    to={noQtySoListHref(focusSoId)}
+                    className="inline-flex shrink-0"
+                    data-testid="no-qty-qc-open-so"
+                  >
+                    <Button type="button" size="sm" variant="outline" className="h-8">
+                      Open NO_QTY SO
                     </Button>
-                  ) : null}
+                  </Link>
                 </div>
               ) : null}
               {qcGuidance.kind === "WAIT_NEXT_DEPARTMENT" ? (
@@ -2544,31 +2537,9 @@ export function QcEntryPage() {
               </summary>
               <div className="border-t border-slate-200 px-2.5 py-1.5 text-[12px] text-slate-800">
                 <div className="mt-1 space-y-2">
-                  {noQtyQcNextAction.primaryActionForCurrentUser === "CREATE_NEXT_RS" && canCreateNextRs ? (
-                    <>
-                      <p className="text-[12px] leading-snug text-slate-800">
-                        {noQtyQcNextAction.workflowSummary ?? "Cycle completed. Ready for Next RS."}
-                      </p>
-                      <div className="flex flex-wrap gap-2">
-                        <Button
-                          type="button"
-                          size="sm"
-                          onClick={() =>
-                            prepareNoQtyNextRequirementSheetAndNavigate({
-                              salesOrderId: focusSoId,
-                              navigate,
-                              toast,
-                              navigateState: { from: "qc" },
-                            })
-                          }
-                        >
-                          Next RS
-                        </Button>
-                      </div>
-                    </>
-                  ) : noQtyQcNextAction.primaryActionForCurrentUser === "CREATE_NEXT_RS" && !canCreateNextRs ? (
+                  {noQtyQcNextAction.primaryActionForCurrentUser === "CREATE_NEXT_RS" ? (
                     <p className="text-[12px] leading-snug text-slate-700">
-                      {noQtyQcNextAction.message ?? "Waiting for Sales/Planning to create Next RS."}
+                      {noQtyQcNextAction.workflowSummary ?? "Next RS Ready — continue on the NO_QTY agreement page."}
                     </p>
                   ) : noQtyQcNextAction.nextAction === "NEXT_RS" || noQtyQcNextAction.primaryAction === "NEXT_RS" ? (
                     <p className="text-[12px] leading-snug text-slate-700">
@@ -2586,6 +2557,7 @@ export function QcEntryPage() {
                         <Link
                           to={((): string => {
                             const q = new URLSearchParams();
+                            q.set("flow", "NO_QTY");
                             q.set("source", "no_qty_so");
                             q.set("salesOrderId", String(focusSoId));
                             if (noQtyCycleId != null) q.set("cycleId", String(noQtyCycleId));

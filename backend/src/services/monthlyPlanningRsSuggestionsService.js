@@ -57,6 +57,7 @@ function toSourceEntry(sheet, ln) {
     salesOrderId: sheet.salesOrderId,
     salesOrderDocNo: sheet.salesOrder?.docNo ?? null,
     cycleId: sheet.cycleId ?? null,
+    cycleNo: sheet.cycle?.cycleNo ?? null,
     requirementQty: scheduleQty,
     shortfallQtySnapshot: carryForwardQty,
     suggestedWoQtySnapshot: productionRequirementQty,
@@ -78,6 +79,7 @@ async function getRsSuggestionsForPeriod({ db = prisma, periodKey } = {}) {
     },
     include: {
       salesOrder: { select: { id: true, docNo: true, orderType: true } },
+      cycle: { select: { id: true, cycleNo: true } },
       lines: {
         include: {
           item: { select: { id: true, itemName: true, itemType: true, unit: true } },

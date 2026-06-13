@@ -174,7 +174,7 @@ function syntheticNoQtyActionHref(row: DashboardProductionStatusSource): string 
     row.cycleId != null && Number.isFinite(Number(row.cycleId)) && Number(row.cycleId) > 0
       ? `&cycleId=${encodeURIComponent(String(row.cycleId))}`
       : "";
-  const noQtyBase = `source=no_qty_so&salesOrderId=${encodeURIComponent(String(sid))}${cyc}`;
+  const noQtyBase = `flow=NO_QTY&source=no_qty_so&salesOrderId=${encodeURIComponent(String(sid))}${cyc}`;
   if (next === "QC_PENDING") return `/qc-entry?${noQtyBase}`;
   if (next === "DISPATCH_PENDING") return `/dispatch?${noQtyBase}`;
   if (next === "SALES_BILL_PENDING") return `/sales-bills?${noQtyBase}`;

@@ -1,6 +1,7 @@
 import { apiFetch } from "../services/api";
 
 import { DRILL_QUERY } from "./drillDownRoutes";
+import { PRODUCTION_FLOW_REGULAR } from "./productionFlowContract";
 
 import type { ProductionRmReadiness } from "../components/erp/ProductionRmReadinessStrip";
 
@@ -125,11 +126,9 @@ export function buildViewWorkOrderHref(salesOrderId: number, workOrderId?: numbe
 function buildProductionHref(snapshot: PostGrnContinuitySnapshot): string {
 
   const q = new URLSearchParams({
-
+    flow: PRODUCTION_FLOW_REGULAR,
     salesOrderId: String(snapshot.salesOrderId),
-
     from: "rm-purchase",
-
   });
 
   const woId = Number(snapshot.workOrderId ?? 0);

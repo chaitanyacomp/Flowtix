@@ -46,6 +46,8 @@ import {
   resolveProductWisePlanningPhase,
 } from "../lib/planningItemLifecycleStatus";
 import type { RmRequirementRow } from "./rmPurchase/rmPurchaseShared";
+import { NoQtyPlannerInboxSection } from "../components/erp/planning/NoQtyPlannerInboxSection";
+import { useNoQtyPlannerInbox } from "../hooks/useNoQtyPlannerInbox";
 
 type WoLifecycleRow = {
   status: string;
@@ -169,6 +171,11 @@ export function PlanningDashboardPage() {
   const liveTick = useErpRefreshTick(["reports", "requirement", "dashboard", "stock"], {
     pollIntervalMs: ERP_REPORT_POLL_MS,
   });
+  const {
+    rows: plannerInboxRows,
+    loading: plannerInboxLoading,
+    error: plannerInboxError,
+  } = useNoQtyPlannerInbox(liveTick);
 
   React.useEffect(() => {
     setBusy(true);
@@ -426,6 +433,12 @@ export function PlanningDashboardPage() {
           </Button>
         </div>
       ) : null}
+
+      <NoQtyPlannerInboxSection
+        rows={plannerInboxRows}
+        loading={plannerInboxLoading}
+        error={plannerInboxError}
+      />
 
       {canSeeRmRequirements ? (
         <>

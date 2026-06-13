@@ -1,5 +1,6 @@
 import { DRILL_QUERY } from "./drillDownRoutes";
 import { buildNoQtyGuidedHref } from "./noQtyFlowState";
+import { PRODUCTION_FLOW_REGULAR } from "./productionFlowContract";
 
 /** Production / WO list opened from left-menu Work Order Workspace (navigation only). */
 export const FROM_WORK_ORDER_WORKSPACE = "work-order-workspace";
@@ -38,6 +39,7 @@ export function productionHrefFromDashboardRow(row: ProductionQueueRowLink): str
     });
   }
   const qs = new URLSearchParams();
+  qs.set("flow", PRODUCTION_FLOW_REGULAR);
   if (sid > 0) qs.set("salesOrderId", String(sid));
   if (row.workOrderId > 0) qs.set("workOrderId", String(row.workOrderId));
   if (row.workOrderLineId != null && row.workOrderLineId > 0) {

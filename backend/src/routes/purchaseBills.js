@@ -34,6 +34,12 @@ const PURCHASE_BILL_FULL_OPS_ROLES = PURCHASE_BILL_DRAFT_ROLES;
 const PURCHASE_BILL_ACCOUNTS_READ_ROLES = PURCHASE_BILL_READ_ROLES;
 const { mapPurchaseBillToTallyExportPayload } = require("../services/purchaseBillTallyExportPayload");
 const { buildPurchaseBillTallyXml } = require("../services/purchaseBillTallyXml");
+const {
+  validateTallyExportEligibility,
+  exportSinglePurchaseBillToTally,
+  exportPurchaseBillsToTallyBulk,
+  preparePurchaseBillTallyExport,
+} = require("../services/purchaseBillTallyExportActions");
 const { logActivity } = require("../services/activityLogService");
 const {
   ACTIVITY_MODULES,
@@ -56,62 +62,6 @@ function isNonEmptyStr(v) {
 function toNum(v) {
   const n = typeof v === "number" ? v : Number(v);
   return Number.isFinite(n) ? n : NaN;
-}
-
-function validateTallyExportEligibility({ bill, payload }) {
-  if (!bill) return "Purchase bill not found.";
-  if (bill.status !== "FINALIZED") return "Only finalized purchase bills can be exported.";
-  if (bill.status === "CANCELLED") return "Cancelled purchase bills cannot be exported.";
-  if (bill.hasTemporaryTaxData) {
-    return "Cannot export to Tally: bill contains temporary tax values from testing mode.";
-  }
-  if (!bill.supplier) return "Cannot export purchase bill because supplier is missing.";
-
-  const supplierStateCode =
-    (payload?.purchaseSource?.stateCode ?? null) ||
-    (payload?.supplierStateCodeSnapshot ?? null) ||
-    bill.purchaseSourceStateCodeSnapshot ||
-    bill.supplierStateCodeSnapshot ||
-    bill.supplier.stateCode ||
-    bill.supplier.stateRef?.stateCode ||
-    null;
-  if (!isNonEmptyStr(supplierStateCode)) {
-    return "Cannot export purchase bill because supplier state is missing.";
-  }
-
-  const lines = Array.isArray(bill.lines) ? bill.lines : [];
-  if (!lines.length) return "Cannot export purchase bill because it has no line items.";
-  for (const ln of lines) {
-    const q = toNum(ln.qty);
-    if (!Number.isFinite(q) || q <= 0) return "Purchase Bill has no valid quantity to export.";
-    const r = toNum(ln.rate);
-    if (!Number.isFinite(r) || r <= 0) return "Purchase Bill has no valid rate to export.";
-    if (!isNonEmptyStr(ln.itemNameSnapshot) || !isNonEmptyStr(ln.hsnCodeSnapshot)) {
-      return "Cannot export purchase bill because tax data is incomplete.";
-    }
-    if (String(ln.hsnCodeSnapshot || "").trim() === "0000") {
-      return "Cannot export purchase bill because HSN is not valid for production export.";
-    }
-    const g = toNum(ln.gstRate);
-    if (!Number.isFinite(g) || g < 0 || g > 100) {
-      return "Cannot export purchase bill because tax data is incomplete.";
-    }
-    if (g <= 0) {
-      return "Cannot export purchase bill because GST rate is not valid for production export.";
-    }
-  }
-
-  const tax = payload?.tax ?? null;
-  const net = toNum(tax?.totalAmount);
-  if (!Number.isFinite(net) || net <= 0) {
-    return "Cannot export purchase bill because totals are invalid.";
-  }
-  // Current export mode supports only one GST rate across the whole purchase bill.
-  const distinctRates = Array.from(new Set(lines.map((l) => String(l?.gstRate ?? "").trim()).filter(Boolean)));
-  if (distinctRates.length > 1) {
-    return "Cannot export purchase bill because it contains multiple GST rates. Export currently supports single-rate bills only.";
-  }
-  return null;
 }
 
 purchaseBillsRouter.get("/", requireAuth, requireRole(PURCHASE_BILL_ACCOUNTS_READ_ROLES), async (req, res, next) => {
@@ -309,6 +259,33 @@ purchaseBillsRouter.get("/:id/export-xml", requireAuth, requireRole(["ADMIN"]), 
   }
 });
 
+purchaseBillsRouter.post(
+  "/export/tally-bulk",
+  requireAuth,
+  requireRole(PURCHASE_BILL_WRITE_ROLES),
+  async (req, res, next) => {
+    try {
+      const body = z
+        .object({
+          ids: z.array(z.number().int().positive()).min(1, "Select at least one purchase bill"),
+        })
+        .parse(req.body ?? {});
+
+      const out = await exportPurchaseBillsToTallyBulk(prisma, body.ids, {
+        userId: req.user?.userId,
+        role: req.user?.role,
+        user: req.user,
+      });
+
+      res.setHeader("Content-Type", "application/xml; charset=utf-8");
+      res.setHeader("Content-Disposition", `attachment; filename=\"${out.filename}\"`);
+      return res.status(200).send(out.xml);
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
 purchaseBillsRouter.get("/:id/export/tally.xml", requireAuth, requireRole(PURCHASE_BILL_WRITE_ROLES), async (req, res, next) => {
   try {
     const id = Number(req.params.id);
@@ -316,95 +293,15 @@ purchaseBillsRouter.get("/:id/export/tally.xml", requireAuth, requireRole(PURCHA
       return res.status(400).json(friendly400("Invalid purchase bill id"));
     }
 
-    const bill = await prisma.purchaseBill.findUnique({
-      where: { id },
-      include: {
-        supplier: { include: { stateRef: { select: { id: true, stateName: true, stateCode: true } } } },
-        grn: { select: { id: true, date: true } },
-        lines: {
-          orderBy: { id: "asc" },
-          include: { item: { include: { unitRef: { select: { id: true, unitName: true } } } } },
-        },
-      },
-    });
-    if (!bill) {
-      return res.status(404).json(friendly400("Purchase bill not found"));
-    }
-    if (bill.isExported) {
-      return res.status(400).json(
-        friendly400("This purchase bill has already been exported. Reset export to export again."),
-      );
-    }
-
-    const companyState = await prisma.appSetting.findUnique({
-      where: { id: 1 },
-      select: {
-        companyGstin: true,
-        companyState: true,
-        companyStateRef: { select: { id: true, stateName: true, stateCode: true } },
-      },
-    });
-
-    const payload = mapPurchaseBillToTallyExportPayload({ bill, companyState });
-
-    const errMsg = validateTallyExportEligibility({ bill, payload });
-    if (errMsg) {
-      const pbDoc = displayPurchaseBillNo(bill.id, bill.billNo);
-      await logActivity({
-        user: req.user,
-        module: ACTIVITY_MODULES.PURCHASE_BILL,
-        entityType: ACTIVITY_ENTITY_TYPES.PURCHASE_BILL,
-        entityId: bill.id,
-        docNo: pbDoc,
-        action: ACTIVITY_ACTIONS.EXPORT_FAILED,
-        message: `Purchase Bill ${pbDoc} Tally export failed`,
-        metadata: { error: String(errMsg).slice(0, 240) },
-      });
-      return res.status(400).json(friendly400(errMsg));
-    }
-
-    const xml = buildPurchaseBillTallyXml(payload);
-    const safeNo = String(bill.billNo || `PB-${bill.id}`).replace(/[^\w\-\.]+/g, "-");
-    const filename = `purchase-bill-${safeNo}.xml`;
-
-    await prisma.purchaseBill.update({
-      where: { id: bill.id },
-      data: {
-        isExported: true,
-        exportedAt: new Date(),
-        exportedFileName: filename,
-      },
-    });
-    const pbDocOk = displayPurchaseBillNo(bill.id, bill.billNo);
-    await logActivity({
+    const out = await exportSinglePurchaseBillToTally(prisma, id, {
+      userId: req.user?.userId,
+      role: req.user?.role,
       user: req.user,
-      module: ACTIVITY_MODULES.PURCHASE_BILL,
-      entityType: ACTIVITY_ENTITY_TYPES.PURCHASE_BILL,
-      entityId: bill.id,
-      docNo: pbDocOk,
-      action: ACTIVITY_ACTIONS.EXPORTED,
-      message: `Purchase Bill ${pbDocOk} exported to Tally`,
-      metadata: { fileName: filename },
     });
-    if (req.user?.userId) {
-      await auditLog.write(prisma, {
-        action: auditLog.AuditAction.UPDATE,
-        entityType: auditLog.AuditEntityType.SETTINGS,
-        entityId: `PURCHASE_BILL:${bill.id}`,
-        actorUserId: req.user.userId,
-        actorRole: req.user.role,
-        summary: `Purchase bill ${bill.billNo || `PB-${bill.id}`} exported to Tally XML`,
-        payload: {
-          module: "REPORTS",
-          actionLabel: "EXPORT",
-          ref: { type: "TALLY_EXPORT", id: String(bill.id), no: filename },
-          snapshot: { purchaseBillId: bill.id, fileName: filename },
-        },
-      });
-    }
+
     res.setHeader("Content-Type", "application/xml; charset=utf-8");
-    res.setHeader("Content-Disposition", `attachment; filename=\"${filename}\"`);
-    return res.status(200).send(xml);
+    res.setHeader("Content-Disposition", `attachment; filename=\"${out.filename}\"`);
+    return res.status(200).send(out.xml);
   } catch (e) {
     return next(e);
   }
@@ -423,31 +320,10 @@ purchaseBillsRouter.get("/:id/download/tally.xml", requireAuth, requireRole(PURC
       return res.status(400).json(friendly400("Invalid purchase bill id"));
     }
 
-    const bill = await prisma.purchaseBill.findUnique({
-      where: { id },
-      include: {
-        supplier: { include: { stateRef: { select: { id: true, stateName: true, stateCode: true } } } },
-        grn: { select: { id: true, date: true } },
-        lines: {
-          orderBy: { id: "asc" },
-          include: { item: { include: { unitRef: { select: { id: true, unitName: true } } } } },
-        },
-      },
-    });
-    if (!bill) return res.status(404).json(friendly400("Purchase bill not found"));
+    const { bill, payload } = await preparePurchaseBillTallyExport(prisma, id);
     if (bill.status === "CANCELLED") return res.status(400).json(friendly400("Cancelled purchase bills cannot be downloaded."));
     if (!bill.isExported) return res.status(400).json(friendly400("This purchase bill is not exported yet."));
 
-    const companyState = await prisma.appSetting.findUnique({
-      where: { id: 1 },
-      select: {
-        companyGstin: true,
-        companyState: true,
-        companyStateRef: { select: { id: true, stateName: true, stateCode: true } },
-      },
-    });
-
-    const payload = mapPurchaseBillToTallyExportPayload({ bill, companyState });
     const errMsg = validateTallyExportEligibility({ bill, payload });
     if (errMsg) return res.status(400).json(friendly400(errMsg));
 

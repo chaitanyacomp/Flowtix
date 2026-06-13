@@ -45,7 +45,7 @@ import { Link, useLocation, useNavigate, useSearchParams } from "react-router-do
 import { displayDispatchNo, displaySalesOrderNo } from "../lib/docNoDisplay";
 import { ActivityHistoryCard } from "../components/ActivityHistoryCard";
 import { buildNoQtyGuidedHref, useNoQtyFlowState } from "../lib/noQtyFlowState";
-import { prepareNoQtyNextRequirementSheetAndNavigate } from "../lib/noQtyPrepareNextRsNavigate";
+import { openCurrentRsButtonLabel } from "../lib/noQtyRsActionLabels";
 import { useToast } from "../contexts/ToastContext";
 import { DemoFlowBanner } from "../components/demo/DemoFlowBanner";
 import { DemoSafeNoQtyContinue } from "../components/demo/DemoSafeNoQtyContinue";
@@ -4114,25 +4114,7 @@ export function DispatchPage() {
                 )}
                 <div className="erp-next-action-bar mt-1 border-slate-200/90 bg-white/80 py-0.5">
                   <div className="flex min-w-0 flex-wrap items-center gap-1">
-                    {isNoQty && canOpenRs && noQtyFlowState?.primaryActionForCurrentUser === "CREATE_NEXT_RS" && soIdValid ? (
-                      <Button
-                        type="button"
-                        size="sm"
-                        className="h-7 px-2 text-[11px] font-semibold"
-                        onClick={() =>
-                          prepareNoQtyNextRequirementSheetAndNavigate({
-                            salesOrderId: soId,
-                            navigate,
-                            toast,
-                            navigateState: { from: "dispatch" },
-                          })
-                        }
-                      >
-                        Next RS
-                      </Button>
-                    ) : isNoQty && canOpenRs ? (
-                      stepBtn("RS", "Next RS", rsHref, soIdValid)
-                    ) : null}
+                    {isNoQty && canOpenRs ? stepBtn("RS", openCurrentRsButtonLabel(), rsHref, soIdValid) : null}
                     {stepBtn("DISPATCH", "Dispatch", dispatchHref, true)}
                     {roleUi.showDispatchBillingNav ? stepBtn("BILL", "Sales Bill", billHref, soIdValid) : null}
                     {roleUi.showDispatchCrossDeptNav ? (
@@ -4154,7 +4136,7 @@ export function DispatchPage() {
                   <div className="flex min-w-0 flex-wrap items-center gap-1.5">
                     {roleUi.showDispatchCrossDeptNav && isNoQty && noQtyFlowState?.overallWorkflowState === "NEXT_RS_READY" ? (
                       <span className="inline-flex items-center gap-1 rounded border border-sky-200 bg-sky-50 px-1.5 py-0.5 text-[10px] font-semibold text-sky-950">
-                        {noQtyFlowState.message ?? noQtyFlowState.workflowSummary ?? "Ready for Next RS"}
+                        {noQtyFlowState.message ?? noQtyFlowState.workflowSummary ?? "Next RS Ready"}
                       </span>
                     ) : null}
                     {isNoQty && dispatchable > eps && !showPreparedDispatchActionCard ? (

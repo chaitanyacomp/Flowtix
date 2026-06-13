@@ -60,6 +60,21 @@ import { displaySalesOrderNo } from "../lib/docNoDisplay";
 import { prefersFinePointer } from "../lib/erpFocus";
 import { ActivityHistoryCard } from "../components/ActivityHistoryCard";
 import { buildNoQtyGuidedHref } from "../lib/noQtyFlowState";
+import {
+  NoQtyAgreementActionLink,
+  NoQtyAgreementAdminDeleteButton,
+  NoQtyAgreementCard,
+  PlanningStatusChip as NoQtyPlanningStatusChip,
+} from "../components/erp/sales/NoQtyAgreementCard";
+import {
+  createCycleRsButtonLabel,
+  createNextRsButtonLabel,
+  noQtyBusinessWorkflowStage,
+  noQtyNextCycleLabel,
+  openCurrentRsButtonLabel,
+  openDraftRsButtonLabel,
+  resolveCreateRsButtonLabel,
+} from "../lib/noQtyRsActionLabels";
 import { DemoFlowBanner } from "../components/demo/DemoFlowBanner";
 import { useDemoMode } from "../contexts/DemoModeContext";
 import { demoHighlightKey } from "../lib/demoFlowConfig";
@@ -153,6 +168,10 @@ type SoRow = {
   noQtyStrandedWithoutActiveCycle?: boolean;
   /** NO_QTY: user may add next-cycle RS (server eligibility). */
   noQtyCreateNextRsEligible?: boolean;
+  /** NO_QTY: machine reason when createNextRsEligible is false. */
+  noQtyCreateNextRsBlockReason?: string | null;
+  /** @deprecated P6B-4B — PMR no longer blocks Next RS; field may be null. */
+  noQtyCreateNextRsBlockingPmrDocNo?: string | null;
   /** NO_QTY: server allows POST /close (operational gates; billing does not block). */
   noQtyManualCloseEligible?: boolean;
   /** NO_QTY: user-facing block reason when manual close is not allowed. */
@@ -479,9 +498,9 @@ function noQtyProgressSummary(stage: NoQtyStage, so: SoRow): string {
   const fgCount = Array.isArray(so.lines) ? so.lines.length : 0;
   const disp = Number(so.dispatchSummary?.totalDispatched ?? 0) || 0;
   const pend = Number(so.dispatchSummary?.totalPending ?? 0) || 0;
-  if (stage === "COMPLETED") return "Current cycle closed";
-  if (stage === "DRAFT") return "Planning Pending";
-  if (stage === "REQUIREMENT READY") return "Requirement prepared";
+  if (stage === "COMPLETED") return "Agreement closed";
+  if (stage === "DRAFT") return "Requirement Sheet pending";
+  if (stage === "REQUIREMENT READY") return "RS locked";
   if (stage === "WORK ORDER") return "Work order ready";
   if (stage === "IN PRODUCTION") return "Production / QC in progress";
   if (stage === "BILLING COMPLETE") {
@@ -2366,34 +2385,8 @@ export function SalesOrdersPage() {
           </div>
           <div className="space-y-2 px-2.5 pb-0.5 pt-0">
             {soTypeFilter === "NO_QTY" && visibleRows.length > 0 ? (
-              <div className="erp-table-wrap border-x-0 border-t-0">
-                <table className="erp-table sales-orders-so-table w-full min-w-[1000px]">
-                  <colgroup>
-                    <col style={{ width: "7.25rem" }} />
-                    <col style={{ width: "5.75rem" }} />
-                    <col style={{ width: "16%" }} />
-                    <col style={{ width: "9rem" }} />
-                    <col style={{ width: "9rem" }} />
-                    <col style={{ width: "17%" }} />
-                    <col style={{ width: "19%" }} />
-                    <col style={{ width: "8.5rem" }} />
-                    <col style={{ width: "11rem" }} />
-                  </colgroup>
-                  <thead>
-                    <tr>
-                      <th className={cn(sortKey === "id" && "bg-slate-300/80")}>SO No.</th>
-                      <th className={cn(sortKey === "date" && "bg-slate-300/80")}>Date</th>
-                      <th>Customer</th>
-                      <th>PO Ref</th>
-                      <th>Type</th>
-                      <th>Current position</th>
-                      <th>Commercial status</th>
-                      <th className="text-right">Next action</th>
-                      <th className="erp-table-action-col erp-so-th-num">Actions</th>
-                    </tr>
-                  </thead>
-                <tbody>
-                  {visibleRows.map((so) => {
+              <div className="flex flex-col gap-2 pb-0.5" data-testid="no-qty-agreements-list">
+                {visibleRows.map((so) => {
                     const meta = getNoQtySoStageMeta(so, { isAdmin });
                     const isClosed =
                       so.internalStatus === "MANUALLY_CLOSED" ||
@@ -2406,29 +2399,53 @@ export function SalesOrdersPage() {
                       so.internalStatus === "CLOSED" || so.internalStatus === "MANUALLY_CLOSED" ? "CLOSED" : "OPEN";
                     const progress = isClosed ? "Sales order closed" : noQtyProgressSummary(stage, so);
                     const customer = so.customer?.name ?? so.po?.customer?.name ?? "—";
-                    const dateStr = new Date(so.createdAt).toLocaleDateString();
                     const guidedCycleId =
                       so.noQtyGuidedCycleId != null &&
                       Number.isFinite(Number(so.noQtyGuidedCycleId)) &&
                       Number(so.noQtyGuidedCycleId) > 0
                         ? Number(so.noQtyGuidedCycleId)
                         : null;
-                    const positionLabel =
-                      (so.noQtyListPositionLabel && String(so.noQtyListPositionLabel).trim()) || (isClosed ? "Closed" : "—");
                     const commercialDisplay =
                       (so.commercialStatusLabel && String(so.commercialStatusLabel).trim()) ||
                       (so.noQtyCommercialCaption && String(so.noQtyCommercialCaption).trim()) ||
                       (isClosed ? "—" : progress);
 
+                    const guidedCycleNo =
+                      so.noQtyActualActiveCycleNo ??
+                      so.currentCycle?.cycleNo ??
+                      null;
+                    const nextCycleNo =
+                      so.noQtyNextPossibleCycleNo ??
+                      (guidedCycleNo != null ? guidedCycleNo + 1 : null);
+                    const rsStatusLabel = hasDraftRequirementSheet
+                      ? "Draft"
+                      : so.hasCurrentCycleRequirementSheet
+                        ? "Locked"
+                        : "No RS";
+                    const workflowStageLabel = noQtyBusinessWorkflowStage({
+                      processStageKey: so.processStage?.key,
+                      processStageLabel: so.processStage?.label,
+                      rsStatus: rsStatusLabel,
+                      hasRs: so.hasCurrentCycleRequirementSheet === true || hasDraftRequirementSheet,
+                    });
+
                     const noQtySoGuided = (() => {
                       const next = so.noQtyNextAction ?? null;
                       const cycleId = guidedCycleId;
                       const ctx = { salesOrderId: so.id, cycleId };
+                      const openRsLabel = openCurrentRsButtonLabel();
+                      const createRsLabel = resolveCreateRsButtonLabel({
+                        hasRs: so.hasCurrentCycleRequirementSheet || hasDraftRequirementSheet,
+                        rsStatus: rsStatusLabel,
+                        currentCycleNo: guidedCycleNo,
+                        nextCycleNo,
+                        createNextRsEligible: so.noQtyCreateNextRsEligible,
+                      });
                       switch (next) {
                         case "CREATE_NEXT_RS":
                           return {
-                            nextStep: "Create next RS",
-                            label: "Create next RS",
+                            nextStep: "Next RS Ready",
+                            label: createNextRsButtonLabel(nextCycleNo),
                             to: buildNoQtyGuidedHref({
                               to: `/sales-orders/${so.id}/requirement-sheets?intent=add`,
                               salesOrderId: so.id,
@@ -2436,7 +2453,7 @@ export function SalesOrdersPage() {
                               fromStep: "requirement",
                             }),
                             isPlanningAction: true as const,
-                            waitingLabel: "Create next RS",
+                            waitingLabel: "Next RS Ready",
                           };
                         case "COMPLETED":
                           return {
@@ -2449,13 +2466,11 @@ export function SalesOrdersPage() {
                           };
                         case "WORK_ORDER":
                           return {
-                            // NO_QTY rule: do not route operators to WO as the primary step.
-                            // Requirement Sheet remains the canonical "flow hub" for WO readiness and next-step guidance.
-                            nextStep: "Requirement Ready · With Planning",
-                            label: "Open Requirement Sheet",
+                            nextStep: "RS locked · Monthly Planning pending",
+                            label: openRsLabel,
                             to: buildNoQtyGuidedHref({ to: `/sales-orders/${so.id}/requirement-sheets`, ...ctx, fromStep: "requirement" }),
                             isPlanningAction: true as const,
-                            waitingLabel: "Requirement Ready · With Planning",
+                            waitingLabel: "RS locked · With Planning",
                           };
                         case "PRODUCTION":
                           if (!hasErpRole(role, PRODUCTION_WRITE_ROLES)) {
@@ -2550,188 +2565,195 @@ export function SalesOrdersPage() {
                         case "REQUIREMENT":
                         default:
                           return {
-                            nextStep: "Planning Pending",
-                            label: "Open Requirement Sheet",
+                            nextStep: rsStatusLabel === "No RS" ? "Requirement Sheet pending" : "Requirement Sheet",
+                            label: rsStatusLabel === "No RS" ? createRsLabel : openRsLabel,
                             to: buildNoQtyGuidedHref({ to: `/sales-orders/${so.id}/requirement-sheets`, ...ctx }),
                             isPlanningAction: true as const,
-                            waitingLabel: "Waiting for Planning Team",
+                            waitingLabel: "Requirement Sheet · With Planning",
                           };
                       }
                     })();
 
                     const noQtySurfaceChip = (noQtySoGuided as { surfaceChip?: string }).surfaceChip;
 
-                    // NO_QTY: primary CTAs in Actions column; next action is informational only.
-
-                    // STRICT: derive Next Step text + CTA label + href from the SAME source: `so.noQtyNextAction`.
-                    const nextStep: NoQtyNextStep = isClosed ? null : (noQtySoGuided.nextStep as NoQtyNextStep);
-                    const nextStepDisplay =
+                    const noQtyLinkCtx = { salesOrderId: so.id, cycleId: guidedCycleId };
+                    const noQtyRsHref = buildNoQtyGuidedHref({
+                      to: `/sales-orders/${so.id}/requirement-sheets`,
+                      ...noQtyLinkCtx,
+                      fromStep: "requirement",
+                    });
+                    const noQtyProdHref = buildNoQtyGuidedHref({
+                      to: `/production`,
+                      ...noQtyLinkCtx,
+                      fromStep: "requirement",
+                    });
+                    const noQtyCreateNextHref = buildNoQtyGuidedHref({
+                      to: `/sales-orders/${so.id}/requirement-sheets?intent=add`,
+                      ...noQtyLinkCtx,
+                      fromStep: "requirement",
+                    });
+                    const openRsLabel = openCurrentRsButtonLabel();
+                    const primaryActionLabel = noQtySoGuided.label;
+                    const executionStageKeys = new Set([
+                      "WORK_ORDER",
+                      "PRODUCTION",
+                      "QC",
+                      "DISPATCH",
+                      "SALES_BILL",
+                      "CLOSE_SO",
+                    ]);
+                    const showOpenCurrentRsSecondary =
                       !isClosed &&
-                      so.noQtyNextActionLabel &&
-                      String(so.noQtyNextActionLabel).trim() &&
-                      so.noQtyNextActionLabel !== "—"
-                        ? so.noQtyNextActionLabel
-                        : nextStep ?? "—";
-                    return (
-                      <tr key={so.id} {...{ [DRILL_DATA.salesOrderId]: so.id }}>
-                        <td className="erp-so-td-mono whitespace-nowrap">
-                          {displaySalesOrderNo(so.id, so.docNo)}
-                        </td>
-                        <td className="whitespace-nowrap tabular-nums text-[12px] text-slate-700">{dateStr}</td>
-                        <td className="min-w-0 max-w-0 truncate text-[12.5px] text-slate-900" title={customer}>
-                          {customer}
-                        </td>
-                        <td
-                          className="min-w-0 max-w-0 truncate font-mono text-[11px] text-slate-700"
-                          title={so.customerPoReference ?? ""}
+                      (so.hasCurrentCycleRequirementSheet || hasDraftRequirementSheet) &&
+                      primaryActionLabel !== openRsLabel &&
+                      !primaryActionLabel.startsWith("Create Cycle") &&
+                      !primaryActionLabel.startsWith("Open Draft");
+                    const showOpenProductionSecondary =
+                      !isClosed &&
+                      so.hasCurrentCycleRequirementSheet &&
+                      primaryActionLabel !== "Open Production" &&
+                      executionStageKeys.has(String(so.noQtyNextAction ?? ""));
+
+                    const agreementActions: React.ReactNode[] = [];
+                    if (!isClosed) {
+                      if (noQtySurfaceChip) {
+                        agreementActions.push(<NoQtyPlanningStatusChip inline label={noQtySurfaceChip} />);
+                      } else if (hasDraftRequirementSheet) {
+                        if (canOpenRs) {
+                          agreementActions.push(
+                            <NoQtyAgreementActionLink
+                              key="draft-rs"
+                              to={noQtyRsHref}
+                              label={openDraftRsButtonLabel(guidedCycleNo)}
+                              variant="primary"
+                            />,
+                          );
+                        } else {
+                          agreementActions.push(
+                            <NoQtyPlanningStatusChip inline label="Draft Requirement Sheet · With Planning" />,
+                          );
+                        }
+                      } else {
+                        if (noQtySoGuided.isPlanningAction && !canOpenRs) {
+                          agreementActions.push(
+                            <NoQtyPlanningStatusChip inline label={noQtySoGuided.waitingLabel} />,
+                          );
+                        } else {
+                          agreementActions.push(
+                            <NoQtyAgreementActionLink
+                              key="primary"
+                              to={noQtySoGuided.to}
+                              label={primaryActionLabel}
+                              variant="primary"
+                            />,
+                          );
+                        }
+                        if (showOpenCurrentRsSecondary) {
+                          agreementActions.push(
+                            <NoQtyAgreementActionLink
+                              key="open-rs"
+                              to={noQtyRsHref}
+                              label={openRsLabel}
+                              variant="secondary"
+                            />,
+                          );
+                        }
+                        if (showOpenProductionSecondary) {
+                          agreementActions.push(
+                            <NoQtyAgreementActionLink
+                              key="open-prod"
+                              to={noQtyProdHref}
+                              label="Open Production"
+                              variant="secondary"
+                            />,
+                          );
+                        }
+                        if (
+                          so.noQtyCreateNextRsEligible &&
+                          canCreateNextRs &&
+                          so.noQtyNextAction !== "CREATE_NEXT_RS"
+                        ) {
+                          agreementActions.push(
+                            <NoQtyAgreementActionLink
+                              key="create-next-rs"
+                              to={noQtyCreateNextHref}
+                              label={createNextRsButtonLabel(nextCycleNo)}
+                              variant="secondary"
+                            />,
+                          );
+                        }
+                      }
+                    }
+
+                    const agreementAdminActions: React.ReactNode[] = [];
+                    if (so.internalStatus !== "CLOSED" && so.internalStatus !== "MANUALLY_CLOSED" && canCloseNoQtySo) {
+                      if (so.noQtyManualCloseEligible === true) {
+                        agreementAdminActions.push(
+                          <Button
+                            key="close-so"
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="erp-so-act-secondary"
+                            onClick={() => setNoQtyCloseDialog({ soId: so.id, docNo: so.docNo })}
+                          >
+                            Close SO
+                          </Button>,
+                        );
+                      } else if (so.noQtyManualCloseBlockReason) {
+                        agreementAdminActions.push(
+                          <span
+                            key="close-block"
+                            className="text-[11px] leading-snug text-amber-900"
+                            title={so.noQtyManualCloseBlockReason}
+                          >
+                            {so.noQtyManualCloseBlockReason}
+                          </span>,
+                        );
+                      }
+                    }
+                    if ((so.internalStatus === "CLOSED" || so.internalStatus === "MANUALLY_CLOSED") && isAdmin) {
+                      agreementAdminActions.push(
+                        <Button
+                          key="reopen-so"
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="erp-so-act-secondary"
+                          onClick={() => setNoQtyReopenDialog({ soId: so.id, docNo: so.docNo })}
                         >
-                          {so.customerPoReference ?? "—"}
-                        </td>
-                        <td className="whitespace-nowrap">
-                          <div className="flex flex-col items-start gap-0.5">
-                            <Badge variant="info" className="w-fit px-1.5 py-0 text-[10px] leading-tight">
-                              NO_QTY
-                            </Badge>
-                            <span
-                              title={
-                                isClosed
-                                  ? "This cycle is finished. Admin Reopen starts the next cycle on this same No Qty SO; past cycles stay in history."
-                                  : stage === "DRAFT"
-                                    ? "Waiting for first Requirement Sheet of this cycle."
-                                    : undefined
-                              }
-                            >
-                              <Badge variant={statusBadgeVariant(displayStage)} className="w-fit px-1.5 py-0 text-[10px] leading-tight">
-                                {displayStage}
-                              </Badge>
-                            </span>
-                          </div>
-                        </td>
-                        <td className="min-w-0 text-[12px] leading-snug text-slate-800">{positionLabel}</td>
-                        <td className="min-w-0 text-[12px] leading-snug text-slate-700">{commercialDisplay}</td>
-                        <td className="text-right">
-                          <span className="text-[12px] font-semibold text-slate-800">{nextStepDisplay}</span>
-                        </td>
-                        <td className="erp-table-action-col">
-                          <div className="erp-table-actions">
-                            {!isClosed ? (
-                                noQtySurfaceChip ? (
-                                  <PlanningStatusChip inline label={noQtySurfaceChip} />
-                                ) : hasDraftRequirementSheet ? (
-                                  canOpenRs ? (
-                                    <Link
-                                      className={cn(
-                                        buttonVariants({ variant: "outline", size: "sm" }),
-                                        "erp-so-act-secondary",
-                                      )}
-                                      to={buildNoQtyGuidedHref({
-                                        to: `/sales-orders/${so.id}/requirement-sheets`,
-                                        salesOrderId: so.id,
-                                        cycleId: guidedCycleId,
-                                        fromStep: "requirement",
-                                      })}
-                                    >
-                                      Open Draft Requirement Sheet
-                                    </Link>
-                                  ) : (
-                                    <PlanningStatusChip
-                                      inline
-                                      label="Draft Requirement Sheet · With Planning"
-                                    />
-                                  )
-                                ) : (
-                                  <>
-                                    {noQtySoGuided.isPlanningAction && !canOpenRs ? (
-                                      <PlanningStatusChip
-                                        inline
-                                        label={noQtySoGuided.waitingLabel}
-                                      />
-                                    ) : (
-                                      <Link
-                                        className={cn(buttonVariants({ size: "sm" }), "erp-so-act-primary")}
-                                        to={noQtySoGuided.to}
-                                      >
-                                        {noQtySoGuided.label}
-                                      </Link>
-                                    )}
-                                    {so.noQtyCreateNextRsEligible &&
-                                    canCreateNextRs &&
-                                    so.noQtyNextAction !== "CREATE_NEXT_RS" ? (
-                                      <Link
-                                        className={cn(
-                                          buttonVariants({ variant: "outline", size: "sm" }),
-                                          "erp-so-act-secondary",
-                                        )}
-                                        to={buildNoQtyGuidedHref({
-                                          to: `/sales-orders/${so.id}/requirement-sheets?intent=add`,
-                                          salesOrderId: so.id,
-                                          cycleId: guidedCycleId,
-                                          fromStep: "requirement",
-                                        })}
-                                      >
-                                        Create Next RS
-                                      </Link>
-                                    ) : null}
-                                  </>
-                                )
-                              ) : null}
-                              {so.internalStatus !== "CLOSED" && so.internalStatus !== "MANUALLY_CLOSED" && canCloseNoQtySo ? (
-                                so.noQtyManualCloseEligible === true ? (
-                                  <Button
-                                    type="button"
-                                    size="sm"
-                                    variant="outline"
-                                    className="erp-so-act-secondary"
-                                    onClick={() => setNoQtyCloseDialog({ soId: so.id, docNo: so.docNo })}
-                                  >
-                                    Close SO
-                                  </Button>
-                                ) : so.noQtyManualCloseBlockReason ? (
-                                  <span
-                                    className="max-w-[14rem] text-[11px] leading-snug text-amber-900"
-                                    title={so.noQtyManualCloseBlockReason}
-                                  >
-                                    {so.noQtyManualCloseBlockReason}
-                                  </span>
-                                ) : null
-                              ) : null}
-                              {(so.internalStatus === "CLOSED" || so.internalStatus === "MANUALLY_CLOSED") && isAdmin ? (
-                                <Button
-                                  type="button"
-                                  size="sm"
-                                  variant="outline"
-                                  className="erp-so-act-secondary"
-                                  onClick={() => setNoQtyReopenDialog({ soId: so.id, docNo: so.docNo })}
-                                >
-                                  Reopen SO
-                                </Button>
-                              ) : null}
-                              {isAdmin && so.deleteAllowed === true ? (
-                                <Button
-                                  type="button"
-                                  size="sm"
-                                  variant="destructive"
-                                  className="h-7 px-2"
-                                  onClick={() => onDelete(so.id)}
-                                >
-                                  <Trash2 className="h-3.5 w-3.5" />
-                                </Button>
-                              ) : null}
-                            </div>
-                            {!isClosed &&
-                            !hasDraftRequirementSheet &&
-                            !so.noQtyCreateNextRsEligible &&
-                            so.noQtyNextRsAlreadyCreatedDocNo ? (
-                              <p className="mt-0.5 max-w-[18rem] text-right text-[11px] leading-snug text-slate-500">
-                                Next RS already created: {so.noQtyNextRsAlreadyCreatedDocNo}
-                              </p>
-                            ) : null}
-                        </td>
-                      </tr>
+                          Reopen SO
+                        </Button>,
+                      );
+                    }
+                    if (isAdmin && so.deleteAllowed === true) {
+                      agreementAdminActions.push(
+                        <NoQtyAgreementAdminDeleteButton key="delete-so" onClick={() => onDelete(so.id)} />,
+                      );
+                    }
+
+                    return (
+                      <NoQtyAgreementCard
+                        key={so.id}
+                        salesOrderId={so.id}
+                        docNo={so.docNo}
+                        customerName={customer}
+                        agreementStatus={displayStage as "OPEN" | "CLOSED"}
+                        currentCycleNo={guidedCycleNo}
+                        currentStage={workflowStageLabel}
+                        currentRsStatus={rsStatusLabel}
+                        nextCycleNo={nextCycleNo}
+                        nextRsEligible={so.noQtyCreateNextRsEligible}
+                        nextRsBlockReason={so.noQtyCreateNextRsBlockReason}
+                        nextRsAlreadyExists={Boolean(so.noQtyNextRsAlreadyCreatedDocNo)}
+                        commercialCaption={commercialDisplay !== progress ? commercialDisplay : null}
+                        drillAttrs={{ [DRILL_DATA.salesOrderId]: so.id }}
+                        adminActions={agreementAdminActions.length > 0 ? agreementAdminActions : undefined}
+                      >
+                        {agreementActions}
+                      </NoQtyAgreementCard>
                     );
                   })}
-                </tbody>
-              </table>
               </div>
             ) : null}
             {soTypeFilter === "REGULAR" && visibleRows.length > 0 ? (

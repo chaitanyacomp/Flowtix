@@ -1284,6 +1284,8 @@ salesOrderRouter.get(
                   noQtyFinalizedBillingComplete: finalizedBillExists,
                   noQtyBillingExported: billingExportedDisplay || billingExportedForCycle,
                   noQtyCreateNextRsEligible: createNextRsEligible,
+                  noQtyCreateNextRsBlockReason: elig?.reason ?? null,
+                  noQtyCreateNextRsBlockingPmrDocNo: elig?.blockingPmrDocNo ?? null,
                   noQtyNextRsAlreadyCreatedDocNo: elig?.existingNextRsDocNo ?? null,
                   noQtyListPositionLabel,
                   noQtyCommercialCaption,

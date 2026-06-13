@@ -4,7 +4,7 @@ const {
   mapPurchaseBillToTallyExportPayload,
   resolvePurchaseBillCommercialForTallyExport,
 } = require("../../src/services/purchaseBillTallyExportPayload");
-const { buildPurchaseBillTallyXml, buildCommercialVoucherXml } = require("../../src/services/purchaseBillTallyXml");
+const { buildPurchaseBillTallyXml, buildCommercialVoucherXml, buildPurchaseBillTallyBulkXml } = require("../../src/services/purchaseBillTallyXml");
 
 const companyState = {
   companyGstin: "27AABCD1234E1Z5",
@@ -240,4 +240,17 @@ test("buildPurchaseBillTallyXml — legacy bill without new snapshots still expo
   assert.equal(payload.supplier.supplierGstin, "27LIVEGST0000");
   const xml = buildPurchaseBillTallyXml(payload);
   assert.match(xml, /<PARTYLEDGERNAME>Acme Live Supplier Name<\/PARTYLEDGERNAME>/);
+});
+
+test("buildPurchaseBillTallyBulkXml — combines multiple vouchers in one envelope", () => {
+  const payloadA = mapPurchaseBillToTallyExportPayload({ bill: baseBill({ id: 501, billNo: "INV-A" }), companyState });
+  const payloadB = mapPurchaseBillToTallyExportPayload({
+    bill: baseBill({ id: 502, billNo: "INV-B", lines: [baseLine({ itemNameSnapshot: "RM Copper", item: { itemName: "RM Copper", hsnCode: "7208", unit: "Kg" } })] }),
+    companyState,
+  });
+  const xml = buildPurchaseBillTallyBulkXml([payloadA, payloadB]);
+  assert.match(xml, /<TALLYMESSAGE>/);
+  assert.equal((xml.match(/<TALLYMESSAGE>/g) || []).length, 2);
+  assert.match(xml, /INV-A/);
+  assert.match(xml, /INV-B/);
 });

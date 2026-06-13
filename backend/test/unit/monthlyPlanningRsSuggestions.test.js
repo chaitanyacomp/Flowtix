@@ -40,11 +40,14 @@ function fgLine(overrides = {}) {
 }
 
 function lockedSheet(overrides = {}) {
+  const cycleId = overrides.cycleId ?? 3;
+  const cycleNo = overrides.cycleNo ?? cycleId;
   return {
     id: overrides.id ?? 12,
     docNo: overrides.docNo ?? "RS-26-0012",
     salesOrderId: overrides.salesOrderId ?? 45,
-    cycleId: overrides.cycleId ?? 3,
+    cycleId,
+    cycle: overrides.cycle ?? { id: cycleId, cycleNo },
     periodKey: overrides.periodKey ?? "2026-07",
     version: overrides.version ?? 1,
     status: "LOCKED",
@@ -161,6 +164,40 @@ describe("monthlyPlanningRsSuggestionsService.getRsSuggestionsForPeriod", () => 
     assert.equal(res.items[0].sources.length, 2);
   });
 
+  it("aggregates multiple locked RS cycles on the same NO_QTY sales order for the period", async () => {
+    const db = createReadOnlyMockDb([
+      lockedSheet({
+        id: 12,
+        salesOrderId: 45,
+        cycleId: 10,
+        cycleNo: 1,
+        docNo: "RS-26-0001",
+        lines: [fgLine({ requirementQty: 5000, shortfallQtySnapshot: 0, suggestedWoQtySnapshot: 5000 })],
+      }),
+      lockedSheet({
+        id: 20,
+        salesOrderId: 45,
+        cycleId: 11,
+        cycleNo: 2,
+        docNo: "RS-26-0002",
+        lines: [fgLine({ requirementQty: 8000, shortfallQtySnapshot: 0, suggestedWoQtySnapshot: 8000 })],
+      }),
+    ]);
+    const res = await getRsSuggestionsForPeriod({ db, periodKey: "2026-07" });
+    assert.equal(res.sheetCount, 2);
+    assert.equal(res.items.length, 1);
+    assert.equal(res.items[0].scheduleQty, 13000);
+    assert.equal(res.items[0].productionRequirementQty, 13000);
+    assert.equal(res.items[0].sources.length, 2);
+    const cycleIds = res.items[0].sources.map((s) => s.cycleId).sort();
+    assert.deepEqual(cycleIds, [10, 11]);
+    const byDoc = Object.fromEntries(res.items[0].sources.map((s) => [s.requirementSheetDocNo, s]));
+    assert.equal(byDoc["RS-26-0001"].cycleNo, 1);
+    assert.equal(byDoc["RS-26-0001"].requirementQty, 5000);
+    assert.equal(byDoc["RS-26-0002"].cycleNo, 2);
+    assert.equal(byDoc["RS-26-0002"].requirementQty, 8000);
+  });
+
   it("includes traceability fields on each source", async () => {
     const db = createReadOnlyMockDb([lockedSheet()]);
     const res = await getRsSuggestionsForPeriod({ db, periodKey: "2026-07" });
@@ -168,6 +205,7 @@ describe("monthlyPlanningRsSuggestionsService.getRsSuggestionsForPeriod", () => 
     assert.equal(src.requirementSheetId, 12);
     assert.equal(src.salesOrderId, 45);
     assert.equal(src.cycleId, 3);
+    assert.equal(src.cycleNo, 3);
     assert.equal(src.requirementQty, 20000);
     assert.equal(src.shortfallQtySnapshot, 1000);
     assert.equal(src.suggestedWoQtySnapshot, 21000);
@@ -195,10 +233,21 @@ describe("monthlyPlanningRsSuggestionsService.getRsSuggestionsForPeriod", () => 
     assert.equal(res.items[0].itemId, 101);
   });
 
-  it("performs no write operations (read-only)", async () => {
-    const db = createReadOnlyMockDb([lockedSheet()]);
-    await getRsSuggestionsForPeriod({ db, periodKey: "2026-07" });
-    assert.ok(true, "no write methods invoked");
+  it("ignores CANCELLED sheets in MPRS reads", async () => {
+    const db = createReadOnlyMockDb([
+      lockedSheet({ id: 12, cycleId: 3, lines: [fgLine({ requirementQty: 5000 })], version: 1 }),
+      lockedSheet({
+        id: 13,
+        status: "CANCELLED",
+        cycleId: 3,
+        lines: [fgLine({ requirementQty: 9999 })],
+        version: 2,
+      }),
+      lockedSheet({ id: 20, cycleId: 4, lines: [fgLine({ requirementQty: 3000 })], version: 1 }),
+    ]);
+    const res = await getRsSuggestionsForPeriod({ db, periodKey: "2026-07" });
+    assert.equal(res.sheetCount, 2);
+    assert.equal(res.items[0].scheduleQty, 8000);
   });
 
   it("rejects invalid period keys", async () => {

@@ -11,6 +11,7 @@ import {
 import { PROCUREMENT_TERMS } from "./procurementTerminology";
 import { isStockCommittedElsewhere, stockCommittedElsewhereSummary } from "./stockCommitmentVisibility";
 import { buildRmPoDetailHref } from "./rmPurchaseWoContinuity";
+import { productionWorkspaceHref } from "./materialWorkflowLinks";
 
 const EPS = 1e-6;
 
@@ -139,7 +140,7 @@ export function resolveGuidedWorkflow(input: GuidedWorkflowInput): GuidedWorkflo
   const issueHref = input.materialRequirementId
     ? `/material-issue?workOrderId=${input.workOrderId}&returnTo=rm-control-center`
     : `/material-issue?workOrderId=${input.workOrderId}&returnTo=rm-control-center`;
-  const productionHref = `/production?workOrderId=${input.workOrderId}`;
+  const productionHref = productionWorkspaceHref(input.workOrderId);
 
   let phase: GuidedWorkflowPhase = "IDLE";
   let timelineStepIndex = 0;

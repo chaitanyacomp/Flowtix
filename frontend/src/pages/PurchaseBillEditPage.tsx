@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Link, useLocation, useParams } from "react-router-dom";
+import { Link, useLocation, useParams, useSearchParams } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -14,9 +14,11 @@ import { BillExportStatusPanel } from "../components/BillExportStatusPanel";
 import { PurchaseBillCommercialPanel } from "../components/purchase/PurchaseBillCommercialPanel";
 import { ErpModal } from "../components/erp/ErpModal";
 import { cn } from "../lib/utils";
+import { withReportsReturnContextIfPresent } from "../lib/drillDownRoutes";
 import type { ResolvedSupplierCommercial } from "./rmPurchase/rmPurchaseShared";
 import {
   buildGrnDocumentHref,
+  buildPurchaseBillNewHref,
   buildRmPoGrnDetailHref,
   tallyExportLabel,
 } from "../lib/procurementNavigation";
@@ -192,10 +194,12 @@ function todayDateInput(): string {
 export function PurchaseBillEditPage() {
   const { id: idParam } = useParams<{ id: string }>();
   const location = useLocation();
+  const [searchParams] = useSearchParams();
   const billId = Number(idParam);
   const userRole = useAuth().user?.role;
   const toast = useToast();
   const isAdmin = userRole === "ADMIN";
+  const canCreatePurchaseBill = userRole !== "PURCHASE";
   const canEditPaymentTracking = userRole === "ADMIN" || userRole === "PURCHASE";
 
   const [bill, setBill] = React.useState<Bill | null>(null);
@@ -230,6 +234,7 @@ export function PurchaseBillEditPage() {
     reason: string;
     password: string;
   } | null>(null);
+  const [hasUnbilledGrns, setHasUnbilledGrns] = React.useState<boolean | null>(null);
   const qtyRefs = React.useRef<Array<HTMLInputElement | null>>([]);
   const rateRefs = React.useRef<Array<HTMLInputElement | null>>([]);
   const didFocusRates = React.useRef(false);
@@ -275,6 +280,30 @@ export function PurchaseBillEditPage() {
         }
       });
   }, [billId]);
+
+  React.useEffect(() => {
+    if (searchParams.get("tab") === "tally") {
+      setActiveTab("tally");
+    }
+  }, [billId, searchParams]);
+
+  React.useEffect(() => {
+    if (!canCreatePurchaseBill) {
+      setHasUnbilledGrns(false);
+      return;
+    }
+    let cancelled = false;
+    apiFetch<unknown[]>("/api/purchase-bills/unbilled-grns")
+      .then((rows) => {
+        if (!cancelled) setHasUnbilledGrns(Array.isArray(rows) && rows.length > 0);
+      })
+      .catch(() => {
+        if (!cancelled) setHasUnbilledGrns(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [canCreatePurchaseBill, bill?.status]);
 
   React.useEffect(() => {
     if (!bill || bill.status !== "FINALIZED") return;
@@ -582,6 +611,8 @@ export function PurchaseBillEditPage() {
   const billingStatusBadge =
     bill?.status === "CANCELLED" ? "Cancelled" : bill?.status === "FINALIZED" ? "Finalized" : "Draft";
 
+  const tallyPending = bill?.status === "FINALIZED" && !bill.cancelledAt && !bill.isExported;
+
   async function cancelFinalized() {
     if (!bill || bill.status !== "FINALIZED" || !isAdmin) return;
     const ok = window.confirm("Cancel this bill? This removes the billing effect only. Stock will remain received.");
@@ -757,14 +788,25 @@ export function PurchaseBillEditPage() {
               {billingStatusBadge}
             </span>
             {readOnly ? (
-              <span
-                className={cn(
-                  "rounded-full px-2 py-0.5 font-medium",
-                  bill.isExported ? "bg-sky-50 text-sky-800" : "bg-slate-100 text-slate-700",
-                )}
-              >
-                Tally: {tallyExportLabel(bill.isExported)}
-              </span>
+              tallyPending ? (
+                <button
+                  type="button"
+                  className="rounded-full bg-amber-50 px-2 py-0.5 font-medium text-amber-900 underline-offset-2 hover:underline"
+                  title="Open Tally Export tab"
+                  onClick={() => setActiveTab("tally")}
+                >
+                  Tally Export Pending
+                </button>
+              ) : (
+                <span
+                  className={cn(
+                    "rounded-full px-2 py-0.5 font-medium",
+                    bill.isExported ? "bg-emerald-50 text-emerald-800" : "bg-slate-100 text-slate-700",
+                  )}
+                >
+                  Tally: {tallyExportLabel(bill.isExported)}
+                </span>
+              )
             ) : null}
             {bill.status === "FINALIZED" && !bill.cancelledAt ? (
               <span className="rounded-full bg-slate-100 px-2 py-0.5 font-medium text-slate-700">
@@ -807,12 +849,36 @@ export function PurchaseBillEditPage() {
         </div>
       ) : null}
 
+      {readOnly && !cancelled && canCreatePurchaseBill ? (
+        <div className="rounded-lg border border-slate-200 bg-white px-4 py-3">
+          {hasUnbilledGrns === true ? (
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <p className="text-sm text-slate-700">Continue with another supplier invoice against received GRNs.</p>
+              <Link
+                to={withReportsReturnContextIfPresent(
+                  buildPurchaseBillNewHref({ supplierId: bill.supplierId, returnTo: location.pathname }),
+                  location.search,
+                )}
+              >
+                <Button type="button" variant="outline">
+                  Create another Purchase Bill
+                </Button>
+              </Link>
+            </div>
+          ) : hasUnbilledGrns === false ? (
+            <p className="text-sm text-slate-600">No pending GRNs available for new purchase bill.</p>
+          ) : null}
+        </div>
+      ) : null}
+
       <div
         className="inline-flex w-full flex-wrap gap-1 rounded-lg border border-slate-200 bg-slate-50 p-1"
         role="tablist"
         aria-label="Supplier invoice sections"
       >
-        {SUPPLIER_INVOICE_TABS.map((tab) => (
+        {SUPPLIER_INVOICE_TABS.map((tab) => {
+          const tallyTabPending = tab.id === "tally" && tallyPending;
+          return (
           <button
             key={tab.id}
             type="button"
@@ -822,12 +888,14 @@ export function PurchaseBillEditPage() {
             className={cn(
               "rounded-md px-3 py-2 text-xs font-semibold transition-colors",
               activeTab === tab.id ? "bg-white text-slate-900 shadow-sm" : "text-slate-600 hover:text-slate-900",
+              tallyTabPending && activeTab !== tab.id ? "text-amber-900" : "",
             )}
             onClick={() => setActiveTab(tab.id)}
           >
-            {tab.label}
+            {tallyTabPending ? "Tally Export ⚠" : tab.label}
           </button>
-        ))}
+          );
+        })}
       </div>
 
       {formError ? (

@@ -35,8 +35,10 @@ import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { NativeSelect } from "../components/ui/native-select";
 import { Badge } from "../components/ui/badge";
-import { cn } from "../lib/utils";
+import { buildNoQtyGuidedHref } from "../lib/noQtyFlowState";
+import { noQtySoListHref } from "../lib/noQtyRsActionLabels";
 import { formatOperationalWarningMessage } from "../lib/operationalWarningPresentation";
+import { cn } from "../lib/utils";
 import {
   getReleaseDeltaDisabledStatusMessage,
   getReleaseDeltaProcurementBadge,
@@ -247,6 +249,7 @@ type RsSuggestionSource = {
   salesOrderId: number;
   salesOrderDocNo: string | null;
   cycleId: number | null;
+  cycleNo?: number | null;
   requirementQty: number;
   shortfallQtySnapshot: number;
   suggestedWoQtySnapshot: number;
@@ -3105,7 +3108,8 @@ function RequirementCompositionSection({
         ) : dataForPeriod ? (
           <div className="mt-3 overflow-auto rounded-md border border-slate-200 bg-white">
             <div className="border-b border-slate-100 px-3 py-2 text-[11px] text-slate-500">
-              {dataForPeriod.itemCount} FG item(s) with a non-zero component · read-only
+              {dataForPeriod.sheetCount ?? 0} locked RS sheet(s) · {dataForPeriod.itemCount} FG item(s) with a non-zero
+              component · read-only
             </div>
             <table className="w-full border-collapse text-[13px]">
               <thead className="bg-slate-50 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500">
@@ -3121,8 +3125,13 @@ function RequirementCompositionSection({
               <tbody>
                 {dataForPeriod.items.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="px-3 py-6 text-center text-sm text-slate-400">
-                      No suggested production components for this period yet.
+                    <td colSpan={6} className="px-3 py-6 text-center text-sm text-slate-500">
+                      <p>No suggested production components for this period yet.</p>
+                      <p className="mt-1 text-[12px] text-slate-400">
+                        {(dataForPeriod.sheetCount ?? 0) === 0
+                          ? `No LOCKED NO_QTY Requirement Sheets use period ${period}. Switch the planning month if RS cycles were locked under a different month.`
+                          : `${dataForPeriod.sheetCount} locked RS sheet(s) found for ${period}, but no FG lines with non-zero requirement, carry forward, or green shortage.`}
+                      </p>
                     </td>
                   </tr>
                 ) : (
@@ -3466,8 +3475,9 @@ function NoPlanPreviewPanel({
         No production plan created yet for <strong>{period}</strong>.
       </p>
       <p className="mt-2 max-w-lg text-[13px] leading-relaxed text-slate-600">
-        Review Requirement Composition, Green Level, and RM Composition above. Start planning when you are ready to
-        create a draft for this period.
+        Review Requirement Composition, Green Level, and RM Composition above — use <strong>View Composition</strong> to
+        see locked NO_QTY RS cycles for this period. Start planning when you are ready to create a draft for this
+        period.
       </p>
       {canStartPlanning ? (
         <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
@@ -3500,6 +3510,27 @@ function NoPlanPreviewPanel({
       )}
     </div>
   );
+}
+
+function formatRsSuggestionCycleLabel(cycleNo?: number | null, cycleId?: number | null): string {
+  if (cycleNo != null && Number.isFinite(Number(cycleNo)) && Number(cycleNo) > 0) {
+    return `Cycle ${Number(cycleNo)}`;
+  }
+  if (cycleId != null && Number.isFinite(Number(cycleId))) return `Cycle #${cycleId}`;
+  return "Cycle —";
+}
+
+/** Consolidated locked RS demand for MPRS — sum of cycle-wise schedule qty (additive across cycles). */
+function totalRsRequirementQty(item: RsSuggestionItem): number {
+  return item.scheduleQty;
+}
+
+function sortRsSuggestionSources(sources: RsSuggestionSource[]): RsSuggestionSource[] {
+  return [...sources].sort((a, b) => {
+    const na = a.cycleNo ?? a.cycleId ?? 0;
+    const nb = b.cycleNo ?? b.cycleId ?? 0;
+    return Number(na) - Number(nb) || String(a.requirementSheetDocNo ?? "").localeCompare(String(b.requirementSheetDocNo ?? ""));
+  });
 }
 
 function ProductionPlanTab({
@@ -3559,8 +3590,8 @@ function ProductionPlanTab({
           <div>
             <h3 className="text-[13px] font-semibold text-slate-800">Read-only RS suggestions</h3>
             <p className="mt-0.5 text-[12px] text-slate-600">
-              Locked NO_QTY Requirement Sheets for <strong>{period}</strong>. MPRS reads schedule + carry forward;
-              Requirement Sheets are never modified here.
+              Locked NO_QTY Requirement Sheets for <strong>{period}</strong>. Consolidates cycle-wise RS demand
+              (additive). Requirement Sheets are never modified here.
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -3593,9 +3624,7 @@ function ProductionPlanTab({
                 <tr>
                   <th className="px-3 py-2 w-8" />
                   <th className="px-3 py-2">FG item</th>
-                  <th className="px-3 py-2 w-28 text-right">Schedule qty</th>
-                  <th className="px-3 py-2 w-28 text-right">Carry forward</th>
-                  <th className="px-3 py-2 w-32 text-right">Production req.</th>
+                  <th className="px-3 py-2 w-36 text-right">Total RS requirement</th>
                   <th className="px-3 py-2 w-24 text-center">Source RS</th>
                   {editable ? <th className="px-3 py-2 w-36">Action</th> : null}
                 </tr>
@@ -3604,10 +3633,27 @@ function ProductionPlanTab({
                 {rsSuggestions.items.length === 0 ? (
                   <tr>
                     <td
-                      colSpan={editable ? 7 : 6}
-                      className="px-3 py-6 text-center text-sm text-slate-400"
+                      colSpan={editable ? 5 : 4}
+                      className="px-3 py-6 text-center text-sm text-slate-500"
                     >
-                      No locked customer schedules for this period.
+                      {rsSuggestions.sheetCount === 0 ? (
+                        <>
+                          <p>No LOCKED NO_QTY Requirement Sheets for period {period}.</p>
+                          <p className="mt-1 text-[12px] text-slate-400">
+                            Each RS cycle stores its own period key — switch the planning month if cycles were locked
+                            under a different month, or confirm sheets are LOCKED (not draft).
+                          </p>
+                        </>
+                      ) : (
+                        <>
+                          <p>
+                            {rsSuggestions.sheetCount} locked sheet(s) found for {period}, but no FG lines with qty.
+                          </p>
+                          <p className="mt-1 text-[12px] text-slate-400">
+                            Check that locked RS lines include FG items with requirement quantities.
+                          </p>
+                        </>
+                      )}
                     </td>
                   </tr>
                 ) : (
@@ -3635,14 +3681,8 @@ function ProductionPlanTab({
                           <td className="px-3 py-1.5 font-medium text-slate-800">
                             {item.itemName ?? `Item ${item.itemId}`}
                           </td>
-                          <td className="px-3 py-1.5 text-right tabular-nums text-slate-800">
-                            {item.scheduleQty.toLocaleString()}
-                          </td>
-                          <td className="px-3 py-1.5 text-right tabular-nums text-slate-600">
-                            {item.carryForwardQty.toLocaleString()}
-                          </td>
                           <td className="px-3 py-1.5 text-right font-semibold tabular-nums text-slate-900">
-                            {item.productionRequirementQty.toLocaleString()}
+                            {totalRsRequirementQty(item).toLocaleString()}
                           </td>
                           <td className="px-3 py-1.5 text-center tabular-nums text-slate-600">
                             {item.sources.length}
@@ -3661,30 +3701,62 @@ function ProductionPlanTab({
                             </td>
                           ) : null}
                         </tr>
-                        {expanded
-                          ? item.sources.map((src) => (
-                              <tr
-                                key={`${item.itemId}-${src.requirementSheetId}-${src.salesOrderId}-${src.cycleId}`}
-                                className="border-t border-slate-50 bg-slate-50/60 text-[12px] text-slate-600"
-                              >
-                                <td />
-                                <td className="px-3 py-1.5 pl-8" colSpan={editable ? 6 : 5}>
-                                  <span className="font-medium text-slate-700">
-                                    {src.requirementSheetDocNo ?? `RS #${src.requirementSheetId}`}
-                                  </span>
-                                  {" · "}
-                                  SO {src.salesOrderDocNo ?? src.salesOrderId}
-                                  {src.cycleId != null ? ` · Cycle ${src.cycleId}` : ""}
-                                  {" · "}
-                                  Schedule {src.requirementQty.toLocaleString()}
-                                  {" · "}
-                                  CF {src.shortfallQtySnapshot.toLocaleString()}
-                                  {" · "}
-                                  Prod req. {src.suggestedWoQtySnapshot.toLocaleString()}
-                                </td>
-                              </tr>
-                            ))
-                          : null}
+                        {expanded ? (
+                          <tr className="border-t border-slate-50 bg-slate-50/60">
+                            <td colSpan={editable ? 5 : 4} className="px-3 py-2 pl-8">
+                              <table className="w-full max-w-xl border-collapse text-[12px]">
+                                <thead>
+                                  <tr className="text-left text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                                    <th className="py-1 pr-3">Cycle</th>
+                                    <th className="py-1 pr-3">RS</th>
+                                    <th className="py-1 pr-3 text-right">Qty</th>
+                                    <th className="py-1 text-right">Production req.</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {sortRsSuggestionSources(item.sources).map((src) => (
+                                    <tr key={`${item.itemId}-${src.requirementSheetId}-${src.cycleId}`} className="text-slate-700">
+                                      <td className="py-1 pr-3 font-medium tabular-nums">
+                                        {formatRsSuggestionCycleLabel(src.cycleNo, src.cycleId)}
+                                      </td>
+                                      <td className="py-1 pr-3">
+                                        <Link
+                                          to={buildNoQtyGuidedHref({
+                                            to: `/sales-orders/${src.salesOrderId}/requirement-sheets`,
+                                            salesOrderId: src.salesOrderId,
+                                            cycleId: src.cycleId,
+                                            fromStep: "monthly_planning",
+                                          })}
+                                          className="font-medium text-sky-800 underline underline-offset-2"
+                                        >
+                                          {src.requirementSheetDocNo ?? `RS #${src.requirementSheetId}`}
+                                        </Link>
+                                        <div className="text-[10px] text-slate-500">
+                                          SO {src.salesOrderDocNo ?? src.salesOrderId}
+                                        </div>
+                                      </td>
+                                      <td className="py-1 pr-3 text-right font-semibold tabular-nums">
+                                        {src.requirementQty.toLocaleString()}
+                                      </td>
+                                      <td className="py-1 text-right tabular-nums text-slate-600">
+                                        {src.suggestedWoQtySnapshot.toLocaleString()}
+                                      </td>
+                                    </tr>
+                                  ))}
+                                  <tr className="border-t border-slate-200 font-semibold text-slate-900">
+                                    <td className="pt-1.5 pr-3" colSpan={2}>
+                                      Total RS requirement
+                                    </td>
+                                    <td className="pt-1.5 pr-3 text-right tabular-nums">
+                                      {totalRsRequirementQty(item).toLocaleString()}
+                                    </td>
+                                    <td className="pt-1.5" />
+                                  </tr>
+                                </tbody>
+                              </table>
+                            </td>
+                          </tr>
+                        ) : null}
                       </React.Fragment>
                     );
                   })

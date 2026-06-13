@@ -23,6 +23,7 @@ import {
   isPlanEditable,
   LEGACY_PLAN_BADGE_LABEL,
   LEGACY_PLAN_INFO_TOOLTIP,
+  LEGACY_REOPEN_DRAFT_PRODUCTION_GUIDANCE,
   LEGACY_REVISION_WORKFLOW_LABEL,
   PURCHASE_FROZEN_SNAPSHOT_SECTION,
   PURCHASE_LIVE_PROCUREMENT_SECTION,
@@ -1847,6 +1848,15 @@ export function MonthlyPlanningWorkspacePage() {
       {periodIsPast && isAdmin ? (
         <div className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] leading-snug text-amber-900">
           <strong>Past period ({period}).</strong> Admin confirmation required for changes.
+        </div>
+      ) : null}
+
+      {isDraftForNextRevision ? (
+        <div
+          className="rounded-md border-2 border-blue-400 bg-blue-50 px-3 py-2 text-[12px] font-medium leading-snug text-blue-950 shadow-sm"
+          role="status"
+        >
+          {LEGACY_REOPEN_DRAFT_PRODUCTION_GUIDANCE}
         </div>
       ) : null}
 

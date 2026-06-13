@@ -161,6 +161,10 @@ export function legacyPlanWorkflowBannerMessage(): string {
 /** Tooltip copy when the full-width legacy banner is omitted (P7F-CA1). */
 export const LEGACY_PLAN_INFO_TOOLTIP = legacyPlanWorkflowBannerMessage();
 
+/** Shown when a legacy plan is reopened and editing the next lock snapshot (P7F-CA3). */
+export const LEGACY_REOPEN_DRAFT_PRODUCTION_GUIDANCE =
+  "Requirement Sheet updates do not automatically change the Production Plan. Review suggested production, update planned quantities, save changes, then lock.";
+
 /** New plan-document workflow uses approval, not lock/revision UX. */
 export function usesPlanDocumentProcurementUx(plan: MonthlyPlanHeader | null | undefined): boolean {
   if (!plan) return false;

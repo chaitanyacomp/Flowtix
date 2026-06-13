@@ -13,6 +13,7 @@ import {
   isPlanEditable,
   legacyPlanWorkflowBannerMessage,
   LEGACY_PLAN_INFO_TOOLTIP,
+  LEGACY_REOPEN_DRAFT_PRODUCTION_GUIDANCE,
   planStatusBadgeVariant,
   productionPlanReadOnlyMessage,
   resolvePlanDisplayLabel,
@@ -267,6 +268,11 @@ describe("monthlyPlanningWorkflowUx.labels", () => {
     expect(isHistoricalPlanDocument(plan2, periodPlans)).toBe(false);
     expect(historicalApprovedPlanBannerMessage(plan1, periodPlans)).toContain("June Plan 2");
     expect(historicalApprovedPlanBannerMessage(plan1, periodPlans)).toContain("not modified");
+  });
+
+  it("legacy reopen draft guidance explains RS does not auto-update production plan", () => {
+    expect(LEGACY_REOPEN_DRAFT_PRODUCTION_GUIDANCE).toContain("Requirement Sheet updates do not automatically");
+    expect(LEGACY_REOPEN_DRAFT_PRODUCTION_GUIDANCE).toContain("save changes, then lock");
   });
 
   it("legacy workflow banner explains isolation from modern plan documents", () => {

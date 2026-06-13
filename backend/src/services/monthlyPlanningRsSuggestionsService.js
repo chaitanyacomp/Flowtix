@@ -49,6 +49,44 @@ function lineProductionRequirement(ln) {
   return { scheduleQty, carryForwardQty, productionRequirementQty };
 }
 
+function sourceCycleRank(src) {
+  const cycleNo = n(src?.cycleNo);
+  if (cycleNo > 0) return cycleNo;
+  return n(src?.cycleId);
+}
+
+/**
+ * NO_QTY production need for MPRS: latest locked RS per sales order (carry-forward is already
+ * embedded in later cycles via shortfallQtySnapshot). Summing schedule + carry across all cycles
+ * double-counts prior unmet demand — see requirementSheets.js carry-forward notes.
+ *
+ * @param {Array<{ salesOrderId?: number; cycleId?: number | null; cycleNo?: number | null; requirementQty?: number; shortfallQtySnapshot?: number; suggestedWoQtySnapshot?: number }>} sources
+ */
+function computeEffectiveProductionDemandFromSources(sources) {
+  /** @type {Map<number, { rank: number; productionRequirementQty: number }>} */
+  const latestBySo = new Map();
+  for (const src of sources || []) {
+    const soId = n(src.salesOrderId);
+    if (!Number.isFinite(soId) || soId <= 0) continue;
+    const rank = sourceCycleRank(src);
+    const fromSnapshot =
+      src.suggestedWoQtySnapshot != null ? round3(n(src.suggestedWoQtySnapshot)) : null;
+    const prodReq =
+      fromSnapshot != null
+        ? fromSnapshot
+        : round3(n(src.requirementQty ?? 0) + n(src.shortfallQtySnapshot ?? 0));
+    const prev = latestBySo.get(soId);
+    if (!prev || rank > prev.rank) {
+      latestBySo.set(soId, { rank, productionRequirementQty: prodReq });
+    }
+  }
+  let total = 0;
+  for (const entry of latestBySo.values()) {
+    total = round3(total + entry.productionRequirementQty);
+  }
+  return total;
+}
+
 function toSourceEntry(sheet, ln) {
   const { scheduleQty, carryForwardQty, productionRequirementQty } = lineProductionRequirement(ln);
   return {
@@ -118,6 +156,10 @@ async function getRsSuggestionsForPeriod({ db = prisma, periodKey } = {}) {
     }
   }
 
+  for (const bucket of byItem.values()) {
+    bucket.effectiveProductionDemandQty = computeEffectiveProductionDemandFromSources(bucket.sources);
+  }
+
   const items = [...byItem.values()].sort((a, b) =>
     String(a.itemName ?? "").localeCompare(String(b.itemName ?? "")),
   );
@@ -133,6 +175,8 @@ module.exports = {
   getRsSuggestionsForPeriod,
   pickLatestLockedSheets,
   lineProductionRequirement,
+  computeEffectiveProductionDemandFromSources,
+  sourceCycleRank,
   sheetDedupeKey,
   MonthlyPlanningError,
 };

@@ -5,6 +5,7 @@ const {
   getRequirementComposition,
   computeSuggestedProduction,
 } = require("../../src/services/monthlyPlanningRequirementCompositionService");
+const { getRsSuggestionsForPeriod } = require("../../src/services/monthlyPlanningRsSuggestionsService");
 
 const WRITE_METHODS = [
   "create",
@@ -64,9 +65,10 @@ function greenResponse(items, overrides = {}) {
 }
 
 describe("monthlyPlanningRequirementCompositionService.computeSuggestedProduction", () => {
-  it("adds three components (no MAX)", () => {
-    assert.equal(computeSuggestedProduction(100, 50, 25), 175);
-    assert.equal(computeSuggestedProduction(0, 0, 11750), 11750);
+  it("adds effective RS demand and green shortage (no additive carry across cycles)", () => {
+    assert.equal(computeSuggestedProduction(100, 25), 125);
+    assert.equal(computeSuggestedProduction(0, 11750), 11750);
+    assert.equal(computeSuggestedProduction(20000, 4800), 24800);
   });
 });
 
@@ -311,5 +313,212 @@ describe("monthlyPlanningRequirementCompositionService.getRequirementComposition
         }),
       (e) => e.code === "INVALID_PERIOD",
     );
+  });
+
+  it("Scenario A — multi-cycle same SO with carry-forward does not double-count (20k not 30k)", async () => {
+    const res = await getRequirementComposition({
+      periodKey: "2026-07",
+      loadRsSuggestions: async () =>
+        rsResponse([
+          {
+            itemId: 101,
+            itemName: "Part A",
+            unit: "NOS",
+            scheduleQty: 20000,
+            carryForwardQty: 10000,
+            productionRequirementQty: 30000,
+            effectiveProductionDemandQty: 20000,
+            sources: [
+              {
+                salesOrderId: 45,
+                cycleId: 10,
+                cycleNo: 1,
+                requirementQty: 10000,
+                shortfallQtySnapshot: 0,
+                suggestedWoQtySnapshot: 10000,
+              },
+              {
+                salesOrderId: 45,
+                cycleId: 11,
+                cycleNo: 2,
+                requirementQty: 10000,
+                shortfallQtySnapshot: 10000,
+                suggestedWoQtySnapshot: 20000,
+              },
+            ],
+          },
+        ]),
+      loadGreenLevels: async () => greenResponse([]),
+    });
+    assert.equal(res.items.length, 1);
+    assert.equal(res.items[0].rsRequirement, 20000);
+    assert.equal(res.items[0].carryForward, 10000);
+    assert.equal(res.items[0].greenShortage, 0);
+    assert.equal(res.items[0].suggestedProduction, 20000);
+    assert.equal(res.items[0].productionRequirementQty, 20000);
+  });
+
+  it("Scenario B — single-cycle behavior unchanged (schedule + carry + green)", async () => {
+    const res = await getRequirementComposition({
+      periodKey: "2026-07",
+      loadRsSuggestions: async () =>
+        rsResponse([
+          {
+            itemId: 101,
+            itemName: "Part A",
+            unit: "NOS",
+            scheduleQty: 20000,
+            carryForwardQty: 1000,
+            productionRequirementQty: 21000,
+            sources: [],
+          },
+        ]),
+      loadGreenLevels: async () =>
+        greenResponse([
+          {
+            itemId: 101,
+            itemName: "Part A",
+            unit: "NOS",
+            greenQty: 5000,
+            shortageForGreenTarget: 4800,
+            freeFgStock: 200,
+            status: "CRITICAL",
+          },
+        ]),
+    });
+    assert.equal(res.items[0].rsRequirement, 20000);
+    assert.equal(res.items[0].carryForward, 1000);
+    assert.equal(res.items[0].greenShortage, 4800);
+    assert.equal(res.items[0].suggestedProduction, 25800);
+  });
+
+  it("Scenario C — multi-cycle with partial production reduces effective demand to latest cycle target", async () => {
+    const res = await getRequirementComposition({
+      periodKey: "2026-07",
+      loadRsSuggestions: async () =>
+        rsResponse([
+          {
+            itemId: 101,
+            itemName: "Part A",
+            unit: "NOS",
+            scheduleQty: 20000,
+            carryForwardQty: 4000,
+            productionRequirementQty: 24000,
+            effectiveProductionDemandQty: 14000,
+            sources: [
+              {
+                salesOrderId: 45,
+                cycleId: 10,
+                cycleNo: 1,
+                requirementQty: 10000,
+                shortfallQtySnapshot: 0,
+                suggestedWoQtySnapshot: 10000,
+              },
+              {
+                salesOrderId: 45,
+                cycleId: 11,
+                cycleNo: 2,
+                requirementQty: 10000,
+                shortfallQtySnapshot: 4000,
+                suggestedWoQtySnapshot: 14000,
+              },
+            ],
+          },
+        ]),
+      loadGreenLevels: async () => greenResponse([]),
+    });
+    assert.equal(res.items[0].rsRequirement, 20000);
+    assert.equal(res.items[0].carryForward, 4000);
+    assert.equal(res.items[0].suggestedProduction, 14000);
+  });
+
+  it("Scenario D — green shortage adds on top of effective RS demand for multi-cycle", async () => {
+    const res = await getRequirementComposition({
+      periodKey: "2026-07",
+      loadRsSuggestions: async () =>
+        rsResponse([
+          {
+            itemId: 101,
+            itemName: "Part A",
+            unit: "NOS",
+            scheduleQty: 20000,
+            carryForwardQty: 10000,
+            productionRequirementQty: 30000,
+            effectiveProductionDemandQty: 20000,
+            sources: [],
+          },
+        ]),
+      loadGreenLevels: async () =>
+        greenResponse([
+          {
+            itemId: 101,
+            itemName: "Part A",
+            unit: "NOS",
+            greenQty: 5000,
+            shortageForGreenTarget: 2500,
+            freeFgStock: 2500,
+            status: "YELLOW",
+          },
+        ]),
+    });
+    assert.equal(res.items[0].suggestedProduction, 22500);
+  });
+
+  it("P7F-CA9 — end-to-end RS suggestions feed composition without double-counting", async () => {
+    function fgLine(overrides = {}) {
+      return {
+        itemId: 101,
+        requirementQty: overrides.requirementQty ?? 10000,
+        shortfallQtySnapshot: overrides.shortfallQtySnapshot ?? 0,
+        suggestedWoQtySnapshot: overrides.suggestedWoQtySnapshot ?? 10000,
+        item: { id: 101, itemName: "Part A", itemType: "FG", unit: "NOS" },
+      };
+    }
+    function lockedSheet(overrides = {}) {
+      const cycleId = overrides.cycleId ?? 10;
+      return {
+        id: overrides.id ?? 12,
+        docNo: overrides.docNo ?? "RS-26-0012",
+        salesOrderId: overrides.salesOrderId ?? 45,
+        cycleId,
+        cycle: { id: cycleId, cycleNo: overrides.cycleNo ?? cycleId },
+        periodKey: "2026-07",
+        version: 1,
+        status: "LOCKED",
+        salesOrder: { id: 45, docNo: "SO-26-0045", orderType: "NO_QTY" },
+        lines: overrides.lines ?? [fgLine()],
+      };
+    }
+    const db = {
+      requirementSheet: {
+        findMany: async () => [
+          lockedSheet({
+            id: 12,
+            cycleId: 10,
+            cycleNo: 1,
+            lines: [fgLine({ requirementQty: 10000, shortfallQtySnapshot: 0, suggestedWoQtySnapshot: 10000 })],
+          }),
+          lockedSheet({
+            id: 20,
+            cycleId: 11,
+            cycleNo: 2,
+            docNo: "RS-26-0020",
+            lines: [
+              fgLine({ requirementQty: 10000, shortfallQtySnapshot: 10000, suggestedWoQtySnapshot: 20000 }),
+            ],
+          }),
+        ],
+      },
+    };
+    const res = await getRequirementComposition({
+      db,
+      periodKey: "2026-07",
+      loadRsSuggestions: (opts) => getRsSuggestionsForPeriod(opts),
+      loadGreenLevels: async () => greenResponse([]),
+    });
+    assert.equal(res.items.length, 1);
+    assert.equal(res.items[0].rsRequirement, 20000);
+    assert.equal(res.items[0].carryForward, 10000);
+    assert.equal(res.items[0].suggestedProduction, 20000);
   });
 });

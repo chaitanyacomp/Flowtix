@@ -1,9 +1,13 @@
 /**
  * Phase 5 — Read-only MPRS Requirement Composition.
  *
- * Suggested Production = RS Requirement (scheduleQty)
- *                      + Carry Forward (carryForwardQty)
- *                      + Green Level Shortage (shortageForGreenTarget)
+ * Display:
+ *   RS Requirement = SUM(scheduleQty) across locked RS
+ *   Carry Forward  = SUM(carryForwardQty) across locked RS (audit visibility only)
+ *
+ * Suggested Production = Effective RS production demand + Green Level Shortage
+ *   Effective RS demand = latest locked RS production target per sales order, summed across SOs
+ *   (NO_QTY carry-forward is already embedded in later cycles — not added again)
  *
  * Composes existing Phase 2 + Phase 4B services only. Never writes operational data.
  */
@@ -24,12 +28,18 @@ function n(value) {
 }
 
 /**
- * @param {number} rsRequirement
- * @param {number} carryForward
+ * @param {number} effectiveRsDemand Latest-cycle production need per SO, summed (see Phase 2 bridge)
  * @param {number} greenShortage
  */
-function computeSuggestedProduction(rsRequirement, carryForward, greenShortage) {
-  return round3(n(rsRequirement) + n(carryForward) + n(greenShortage));
+function computeSuggestedProduction(effectiveRsDemand, greenShortage) {
+  return round3(n(effectiveRsDemand) + n(greenShortage));
+}
+
+function resolveEffectiveRsDemand(rsItem) {
+  if (rsItem?.effectiveProductionDemandQty != null) {
+    return round3(n(rsItem.effectiveProductionDemandQty));
+  }
+  return round3(n(rsItem?.scheduleQty ?? 0) + n(rsItem?.carryForwardQty ?? 0));
 }
 
 /**
@@ -62,7 +72,8 @@ async function getRequirementComposition({
     const rsRequirement = round3(n(rsItem?.scheduleQty ?? 0));
     const carryForward = round3(n(rsItem?.carryForwardQty ?? 0));
     const greenShortage = round3(n(greenItem?.shortageForGreenTarget ?? 0));
-    const suggestedProduction = computeSuggestedProduction(rsRequirement, carryForward, greenShortage);
+    const effectiveRsDemand = resolveEffectiveRsDemand(rsItem);
+    const suggestedProduction = computeSuggestedProduction(effectiveRsDemand, greenShortage);
 
     if (!(rsRequirement > 0 || carryForward > 0 || greenShortage > 0)) continue;
 
@@ -74,7 +85,7 @@ async function getRequirementComposition({
       carryForward,
       greenShortage,
       suggestedProduction,
-      productionRequirementQty: round3(n(rsItem?.productionRequirementQty ?? 0)),
+      productionRequirementQty: effectiveRsDemand,
       greenTarget: round3(n(greenItem?.greenQty ?? 0)),
       freeFgStock: round3(n(greenItem?.freeFgStock ?? 0)),
       status: greenItem?.status ?? null,
@@ -94,6 +105,7 @@ async function getRequirementComposition({
 
 module.exports = {
   computeSuggestedProduction,
+  resolveEffectiveRsDemand,
   getRequirementComposition,
   MonthlyPlanningError,
 };

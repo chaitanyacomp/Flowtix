@@ -81,6 +81,7 @@ function mapCoverageItem(fgItemId, compositionItem, alreadyApprovedQty, periodKe
   const greenShortage = round3(n(compositionItem?.greenShortage));
   const currentRequirementQty = round3(
     n(compositionItem?.suggestedProduction) ||
+      round3(n(compositionItem?.productionRequirementQty) + greenShortage) ||
       rsRequirement + carryForward + greenShortage,
   );
   const approved = round3(alreadyApprovedQty);

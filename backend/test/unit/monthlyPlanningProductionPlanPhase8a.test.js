@@ -133,10 +133,10 @@ describe("monthlyPlanningProductionPlanMetrics", () => {
 });
 
 describe("Phase 8A — suggested production alignment", () => {
-  it("uses Phase 5 formula RS + carry forward + green shortage", () => {
-    assert.equal(computeSuggestedProduction(9300, 0, 0), 9300);
-    assert.equal(computeSuggestedProduction(0, 0, 11750), 11750);
-    assert.equal(computeSuggestedProduction(500, 200, 300), 1000);
+  it("uses effective RS demand + green shortage (carry embedded per SO cycle)", () => {
+    assert.equal(computeSuggestedProduction(9300, 0), 9300);
+    assert.equal(computeSuggestedProduction(0, 11750), 11750);
+    assert.equal(computeSuggestedProduction(700, 300), 1000);
   });
 
   it("getProductionLines returns Phase 5 suggested and variance fields", async () => {

@@ -5,6 +5,7 @@ const {
   getRsSuggestionsForPeriod,
   pickLatestLockedSheets,
   lineProductionRequirement,
+  computeEffectiveProductionDemandFromSources,
 } = require("../../src/services/monthlyPlanningRsSuggestionsService");
 
 const WRITE_METHODS = [
@@ -90,6 +91,65 @@ function createReadOnlyMockDb(sheets) {
   return db;
 }
 
+describe("monthlyPlanningRsSuggestionsService.computeEffectiveProductionDemandFromSources", () => {
+  it("uses latest cycle production target per sales order (Scenario A)", () => {
+    const effective = computeEffectiveProductionDemandFromSources([
+      {
+        salesOrderId: 45,
+        cycleId: 10,
+        cycleNo: 1,
+        requirementQty: 10000,
+        shortfallQtySnapshot: 0,
+        suggestedWoQtySnapshot: 10000,
+      },
+      {
+        salesOrderId: 45,
+        cycleId: 11,
+        cycleNo: 2,
+        requirementQty: 10000,
+        shortfallQtySnapshot: 10000,
+        suggestedWoQtySnapshot: 20000,
+      },
+    ]);
+    assert.equal(effective, 20000);
+  });
+
+  it("sums latest cycle targets across different sales orders", () => {
+    const effective = computeEffectiveProductionDemandFromSources([
+      {
+        salesOrderId: 45,
+        cycleNo: 1,
+        requirementQty: 10000,
+        shortfallQtySnapshot: 500,
+        suggestedWoQtySnapshot: 10500,
+      },
+      {
+        salesOrderId: 50,
+        cycleNo: 1,
+        requirementQty: 8000,
+        shortfallQtySnapshot: 200,
+        suggestedWoQtySnapshot: 8200,
+      },
+    ]);
+    assert.equal(effective, 18700);
+  });
+
+  it("Scenario C — partial production reflected in latest cycle snapshot", () => {
+    const effective = computeEffectiveProductionDemandFromSources([
+      {
+        salesOrderId: 45,
+        cycleNo: 1,
+        suggestedWoQtySnapshot: 10000,
+      },
+      {
+        salesOrderId: 45,
+        cycleNo: 2,
+        suggestedWoQtySnapshot: 14000,
+      },
+    ]);
+    assert.equal(effective, 14000);
+  });
+});
 describe("monthlyPlanningRsSuggestionsService.lineProductionRequirement", () => {
   it("derives production requirement as schedule + carry forward when snapshot missing", () => {
     const res = lineProductionRequirement({
@@ -139,6 +199,7 @@ describe("monthlyPlanningRsSuggestionsService.getRsSuggestionsForPeriod", () => 
     assert.equal(res.items[0].scheduleQty, 20000);
     assert.equal(res.items[0].carryForwardQty, 1000);
     assert.equal(res.items[0].productionRequirementQty, 21000);
+    assert.equal(res.items[0].effectiveProductionDemandQty, 21000);
   });
 
   it("aggregates multiple locked RS for the same FG item", async () => {
@@ -161,6 +222,7 @@ describe("monthlyPlanningRsSuggestionsService.getRsSuggestionsForPeriod", () => 
     assert.equal(res.items[0].scheduleQty, 18000);
     assert.equal(res.items[0].carryForwardQty, 700);
     assert.equal(res.items[0].productionRequirementQty, 18700);
+    assert.equal(res.items[0].effectiveProductionDemandQty, 18700);
     assert.equal(res.items[0].sources.length, 2);
   });
 
@@ -188,6 +250,7 @@ describe("monthlyPlanningRsSuggestionsService.getRsSuggestionsForPeriod", () => 
     assert.equal(res.items.length, 1);
     assert.equal(res.items[0].scheduleQty, 13000);
     assert.equal(res.items[0].productionRequirementQty, 13000);
+    assert.equal(res.items[0].effectiveProductionDemandQty, 8000);
     assert.equal(res.items[0].sources.length, 2);
     const cycleIds = res.items[0].sources.map((s) => s.cycleId).sort();
     assert.deepEqual(cycleIds, [10, 11]);
@@ -196,6 +259,34 @@ describe("monthlyPlanningRsSuggestionsService.getRsSuggestionsForPeriod", () => 
     assert.equal(byDoc["RS-26-0001"].requirementQty, 5000);
     assert.equal(byDoc["RS-26-0002"].cycleNo, 2);
     assert.equal(byDoc["RS-26-0002"].requirementQty, 8000);
+  });
+
+  it("P7F-CA9 — multi-cycle same SO with carry-forward uses latest cycle for effective demand", async () => {
+    const db = createReadOnlyMockDb([
+      lockedSheet({
+        id: 12,
+        salesOrderId: 45,
+        cycleId: 10,
+        cycleNo: 1,
+        docNo: "RS-26-0001",
+        lines: [fgLine({ requirementQty: 10000, shortfallQtySnapshot: 0, suggestedWoQtySnapshot: 10000 })],
+      }),
+      lockedSheet({
+        id: 20,
+        salesOrderId: 45,
+        cycleId: 11,
+        cycleNo: 2,
+        docNo: "RS-26-0002",
+        lines: [
+          fgLine({ requirementQty: 10000, shortfallQtySnapshot: 10000, suggestedWoQtySnapshot: 20000 }),
+        ],
+      }),
+    ]);
+    const res = await getRsSuggestionsForPeriod({ db, periodKey: "2026-07" });
+    assert.equal(res.items[0].scheduleQty, 20000);
+    assert.equal(res.items[0].carryForwardQty, 10000);
+    assert.equal(res.items[0].productionRequirementQty, 30000);
+    assert.equal(res.items[0].effectiveProductionDemandQty, 20000);
   });
 
   it("includes traceability fields on each source", async () => {

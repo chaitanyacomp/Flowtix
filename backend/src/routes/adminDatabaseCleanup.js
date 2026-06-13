@@ -3,6 +3,11 @@ const { z } = require("zod");
 const { prisma } = require("../utils/prisma");
 const { requireAuth, requireRole } = require("../middleware/auth");
 const { DocType } = require("../prismaClientPackage");
+const {
+  MPRS_RESET_CONFIRM_TEXT,
+  MprsResetStepError,
+  runMprsTestReset,
+} = require("../services/mprsTestResetService");
 
 const adminDatabaseCleanupRouter = express.Router();
 
@@ -15,6 +20,10 @@ const fullDemoResetSchema = z.object({
 });
 
 const noQtyResetSchema = z.object({
+  confirmText: z.string().optional(),
+});
+
+const mprsResetSchema = z.object({
   confirmText: z.string().optional(),
 });
 
@@ -1407,6 +1416,55 @@ adminDatabaseCleanupRouter.post(
       } catch (e) {
         if (e instanceof CleanupStepError) {
           return res.status(500).json({ message: "Full demo reset failed", step: e.step, error: e.error });
+        }
+        throw e;
+      }
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
+/**
+ * Admin-only: MPRS / Monthly Planning test reset — clears plans, snapshots, RS, and monthly-plan procurement.
+ * Does not alter Reset Transaction Data or Full Demo Reset behavior.
+ * POST body must include `{ "confirmText": "RESET MPRS" }`.
+ */
+adminDatabaseCleanupRouter.post(
+  "/database-cleanup/reset-mprs-test-data",
+  requireAuth,
+  requireRole(["ADMIN"], "Only Admin can run MPRS test reset."),
+  async (req, res, next) => {
+    try {
+      const body = mprsResetSchema.parse(req.body ?? {});
+      if ((body.confirmText ?? "").trim().toUpperCase() !== MPRS_RESET_CONFIRM_TEXT) {
+        return res.status(400).json({
+          error: { message: `Confirmation text must be ${MPRS_RESET_CONFIRM_TEXT}. No changes were made.` },
+        });
+      }
+
+      try {
+        const result = await prisma.$transaction(async (tx) => runMprsTestReset(tx), { timeout: 120_000 });
+        return res.json({
+          ok: true,
+          message: "MPRS test reset completed.",
+          counts: result.counts,
+          deleted: result.deleted,
+          preservedMasterData: [
+            "items",
+            "BOM",
+            "customers",
+            "suppliers",
+            "locations",
+            "users",
+            "roles",
+            "app settings",
+            "non-monthly-plan material requirements and procurement",
+          ],
+        });
+      } catch (e) {
+        if (e instanceof MprsResetStepError) {
+          return res.status(500).json({ message: "MPRS test reset failed", step: e.step, error: e.error });
         }
         throw e;
       }

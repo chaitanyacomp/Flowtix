@@ -27,6 +27,20 @@ type NoQtyResetResponse = {
   deletedCounts: Record<string, number>;
 };
 
+type MprsCountRow = {
+  key: string;
+  label: string;
+  before: number;
+  after: number;
+};
+
+type MprsResetResponse = {
+  ok: true;
+  message: string;
+  counts: MprsCountRow[];
+  deleted: Record<string, number>;
+};
+
 function formatInt(n: number): string {
   if (!Number.isFinite(n)) return "0";
   return new Intl.NumberFormat("en-IN").format(Math.trunc(n));
@@ -368,6 +382,130 @@ function NoQtyResetModal({
   );
 }
 
+function BeforeAfterCountTable({ rows }: { rows: MprsCountRow[] }) {
+  if (!rows.length) return null;
+  return (
+    <div className="overflow-hidden rounded-md border border-slate-200 bg-white">
+      <table className="w-full text-sm">
+        <thead className="bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">
+          <tr>
+            <th className="px-3 py-2">Metric</th>
+            <th className="px-3 py-2 text-right">Before</th>
+            <th className="px-3 py-2 text-right">After</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.key} className="border-t border-slate-100">
+              <td className="px-3 py-2 font-medium text-slate-800">{r.label}</td>
+              <td className="px-3 py-2 text-right tabular-nums text-slate-600">{formatInt(r.before)}</td>
+              <td className="px-3 py-2 text-right tabular-nums font-medium text-slate-900">{formatInt(r.after)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function MprsResetModal({
+  open,
+  onClose,
+  onConfirm,
+  confirmText,
+  setConfirmText,
+  submitting,
+  error,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+  confirmText: string;
+  setConfirmText: (v: string) => void;
+  submitting: boolean;
+  error: string | null;
+}) {
+  const inputRef = React.useRef<HTMLInputElement>(null);
+
+  React.useEffect(() => {
+    if (!open) return;
+    const t = window.setTimeout(() => {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    }, 0);
+    return () => window.clearTimeout(t);
+  }, [open]);
+
+  React.useEffect(() => {
+    if (!open) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Enter") onConfirm();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose, onConfirm]);
+
+  if (!open) return null;
+
+  const typedOk = confirmText.trim().toUpperCase() === "RESET MPRS";
+  const confirmDisabled = submitting || !typedOk;
+
+  return (
+    <ErpModal open={open} onClose={onClose} closeOnBackdropClick aria-labelledby="mprs-reset-modal-title">
+      <Card className="erp-modal-shell max-w-lg">
+        <CardHeader className="flex flex-row items-center justify-between space-y-0 border-b border-slate-200 pb-3">
+          <CardTitle id="mprs-reset-modal-title" className="text-lg font-semibold tracking-tight">
+            Confirm MPRS Test Reset
+          </CardTitle>
+          <Button type="button" variant="ghost" size="icon" className="h-8 w-8 shrink-0" aria-label="Close" onClick={onClose}>
+            <X className="h-4 w-4" />
+          </Button>
+        </CardHeader>
+        <CardContent className="space-y-4 pt-4">
+          <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+            <div className="flex items-start gap-2">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" />
+              <div className="space-y-1">
+                <div className="font-semibold">This will permanently delete Monthly Planning test data.</div>
+                <div className="text-amber-950/80">
+                  Monthly Planning plans, RM snapshots, Requirement Sheets, and monthly-planning procurement records will
+                  be removed. Master data (items, BOM, customers, suppliers, locations, users) will not be affected.
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-2 text-sm text-slate-700">
+            <div className="font-medium text-slate-900">
+              Type <code className="rounded bg-slate-100 px-1 py-0.5">RESET MPRS</code> to enable the button.
+            </div>
+            <Input
+              ref={inputRef}
+              value={confirmText}
+              onChange={(e) => setConfirmText(e.target.value)}
+              placeholder="Type RESET MPRS"
+              autoComplete="off"
+            />
+          </div>
+
+          {error ? (
+            <div className="whitespace-pre-line rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{error}</div>
+          ) : null}
+
+          <div className="flex flex-wrap justify-end gap-2 pt-1">
+            <Button type="button" variant="outline" onClick={onClose} disabled={submitting}>
+              Cancel
+            </Button>
+            <Button type="button" onClick={onConfirm} disabled={confirmDisabled}>
+              {submitting ? "Resetting…" : "MPRS Test Reset"}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+    </ErpModal>
+  );
+}
+
 export function DatabaseCleanupPage() {
   const toast = useToast();
   const [modalOpen, setModalOpen] = React.useState(false);
@@ -386,6 +524,12 @@ export function DatabaseCleanupPage() {
   const [noQtyConfirmText, setNoQtyConfirmText] = React.useState("");
   const [noQtySubmitting, setNoQtySubmitting] = React.useState(false);
   const [noQtyError, setNoQtyError] = React.useState<string | null>(null);
+
+  const [mprsModalOpen, setMprsModalOpen] = React.useState(false);
+  const [mprsConfirmText, setMprsConfirmText] = React.useState("");
+  const [mprsSubmitting, setMprsSubmitting] = React.useState(false);
+  const [mprsError, setMprsError] = React.useState<string | null>(null);
+  const [mprsCounts, setMprsCounts] = React.useState<MprsCountRow[]>([]);
 
   function openModal() {
     setModalOpen(true);
@@ -421,6 +565,18 @@ export function DatabaseCleanupPage() {
     if (noQtySubmitting) return;
     setNoQtyModalOpen(false);
     setNoQtyError(null);
+  }
+
+  function openMprsModal() {
+    setMprsModalOpen(true);
+    setMprsConfirmText("");
+    setMprsError(null);
+  }
+
+  function closeMprsModal() {
+    if (mprsSubmitting) return;
+    setMprsModalOpen(false);
+    setMprsError(null);
   }
 
   async function runReset() {
@@ -518,6 +674,37 @@ export function DatabaseCleanupPage() {
     }
   }
 
+  async function runMprsReset() {
+    if (mprsSubmitting) return;
+    if (mprsConfirmText.trim().toUpperCase() !== "RESET MPRS") {
+      setMprsError("Type RESET MPRS to enable this action.");
+      return;
+    }
+    setMprsSubmitting(true);
+    setMprsError(null);
+    try {
+      const res = await apiFetch<MprsResetResponse>("/api/admin/database-cleanup/reset-mprs-test-data", {
+        method: "POST",
+        body: JSON.stringify({ confirmText: mprsConfirmText }),
+      });
+      setMprsCounts(res.counts ?? []);
+      toast.showSuccess(res.message ?? "MPRS test reset completed.");
+      setMprsModalOpen(false);
+    } catch (e) {
+      if (e instanceof ApiRequestError && e.step) {
+        const msg = `MPRS reset failed at: ${e.step}\n${e.backendError ?? e.message}`;
+        setMprsError(msg);
+        toast.showError(`MPRS reset failed at: ${e.step}`);
+      } else {
+        const msg = e instanceof ApiRequestError ? e.message : e instanceof Error ? e.message : "Request failed";
+        setMprsError(msg);
+        toast.showError(msg);
+      }
+    } finally {
+      setMprsSubmitting(false);
+    }
+  }
+
   const fullSummaryRows: SummaryRow[] = React.useMemo(() => {
     if (!fullDeleted) return [];
     return Object.entries(fullDeleted).map(([table, deleted]) => ({ table, deleted }));
@@ -571,6 +758,29 @@ export function DatabaseCleanupPage() {
           </div>
 
           <div className="border-t border-slate-200 pt-4">
+            <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+              <div className="font-semibold text-slate-900">MPRS Test Reset</div>
+              <div className="mt-1 text-slate-700/90">
+                Clears Monthly Planning plans, RM snapshots, Requirement Sheets, and monthly-plan procurement (MR → PR → PO →
+                GRN) for a clean RS → plan → lock → release test cycle. Does not delete items, BOM, customers, suppliers, or
+                non-monthly-plan procurement.
+              </div>
+            </div>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <Button
+                type="button"
+                onClick={openMprsModal}
+                disabled={submitting || fullSubmitting || noQtySubmitting || mprsSubmitting}
+              >
+                MPRS Test Reset
+              </Button>
+              <div className="text-xs text-slate-500">
+                Confirmation phrase: <code className="rounded bg-slate-100 px-1 py-0.5">RESET MPRS</code>
+              </div>
+            </div>
+          </div>
+
+          <div className="border-t border-slate-200 pt-4">
             <div className="rounded-md border border-red-200 bg-red-50/60 px-3 py-2 text-sm text-red-950">
               <div className="font-semibold text-red-950">Full Demo Reset</div>
               <div className="mt-1 text-red-950/90">
@@ -598,6 +808,17 @@ export function DatabaseCleanupPage() {
           </CardHeader>
           <CardContent className="space-y-3">
             <SummaryTable rows={summary} />
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {mprsCounts.length ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>MPRS test reset — before / after counts</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <BeforeAfterCountTable rows={mprsCounts} />
           </CardContent>
         </Card>
       ) : null}
@@ -641,6 +862,16 @@ export function DatabaseCleanupPage() {
         setConfirmText={setNoQtyConfirmText}
         submitting={noQtySubmitting}
         error={noQtyError}
+      />
+
+      <MprsResetModal
+        open={mprsModalOpen}
+        onClose={closeMprsModal}
+        onConfirm={() => void runMprsReset()}
+        confirmText={mprsConfirmText}
+        setConfirmText={setMprsConfirmText}
+        submitting={mprsSubmitting}
+        error={mprsError}
       />
     </div>
   );

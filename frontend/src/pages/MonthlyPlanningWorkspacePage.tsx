@@ -78,6 +78,14 @@ import {
   type ProductionPlanSavedBaseline,
 } from "../lib/monthlyPlanningProductionPlanDirty";
 import {
+  APPLY_SUGGESTED_ADDED_SUCCESS_TOAST,
+  APPLY_SUGGESTED_CANCEL_INFO_TOAST,
+  APPLY_SUGGESTED_PLANNED_SUCCESS_TOAST,
+  buildApplySuggestedExistingRowPatch,
+  formatApplySuggestedOverrideConfirmMessage,
+  shouldConfirmOverrideReplace,
+} from "../lib/monthlyPlanningApplySuggestedProduction";
+import {
   MP_PROCUREMENT,
   MP_RELEASE_STATUS_META,
   procurementProgressModelLine,
@@ -612,7 +620,7 @@ type TabKey = "production" | "rm" | "purchase";
 
 export function MonthlyPlanningWorkspacePage() {
   const { flags, loading: flagsLoading } = useFeatureFlags();
-  const { showSuccess, showError } = useToast();
+  const { showSuccess, showError, showInfo } = useToast();
   const auth = useAuth();
   const userRole = auth.user?.role ?? "";
   const canWriteMonthlyPlan = MONTHLY_PLANNING_WRITE_ROLES.includes(
@@ -649,6 +657,12 @@ export function MonthlyPlanningWorkspacePage() {
   const [purchasePlanning, setPurchasePlanning] = React.useState<PurchasePlanningResponse | null>(null);
   const [loadingPurchase, setLoadingPurchase] = React.useState(false);
   const [confirmLockOpen, setConfirmLockOpen] = React.useState(false);
+  const [applySuggestedOverrideConfirm, setApplySuggestedOverrideConfirm] = React.useState<{
+    rowKey: string;
+    itemName: string;
+    plannedQty: number;
+    suggestedQty: number;
+  } | null>(null);
   const [locking, setLocking] = React.useState(false);
   const [confirmReleaseOpen, setConfirmReleaseOpen] = React.useState(false);
   const [releasing, setReleasing] = React.useState(false);
@@ -1189,18 +1203,19 @@ export function MonthlyPlanningWorkspacePage() {
     }
     const suggested = suggestedProductionForFg(item.itemId, composition);
     const existing = rows.find((r) => r.fgItemId === item.itemId);
+    const itemLabel = item.itemName ?? `Item ${item.itemId}`;
     if (existing) {
-      const patch: Partial<EditRow> = {
-        suggestedFgQty: suggested,
-        source: "REQUIREMENT_SHEET",
-      };
-      if (!existing.plannedQtyOverridden) {
-        patch.plannedFgQty = String(suggested);
+      if (shouldConfirmOverrideReplace(existing.plannedQtyOverridden)) {
+        setApplySuggestedOverrideConfirm({
+          rowKey: existing.key,
+          itemName: itemLabel,
+          plannedQty: num(existing.plannedFgQty),
+          suggestedQty: suggested,
+        });
+        return;
       }
-      updateRow(existing.key, patch);
-      showSuccess(
-        `Applied suggested production (${suggested.toLocaleString()}) to ${item.itemName ?? `Item ${item.itemId}`}.`,
-      );
+      updateRow(existing.key, buildApplySuggestedExistingRowPatch(suggested));
+      showSuccess(APPLY_SUGGESTED_PLANNED_SUCCESS_TOAST);
       return;
     }
     const fg = fgItems.find((i) => i.id === item.itemId);
@@ -1209,7 +1224,7 @@ export function MonthlyPlanningWorkspacePage() {
       {
         key: `rs-${item.itemId}-${Date.now()}`,
         fgItemId: item.itemId,
-        fgItemName: item.itemName ?? fg?.itemName ?? `Item ${item.itemId}`,
+        fgItemName: itemLabel,
         unit: item.unit ?? fg?.unit ?? fg?.unitName ?? null,
         suggestedFgQty: suggested,
         plannedFgQty: String(suggested),
@@ -1218,7 +1233,22 @@ export function MonthlyPlanningWorkspacePage() {
         remarks: "From suggested production (RS + carry forward + green shortage)",
       },
     ]);
-    showSuccess(`Added ${item.itemName ?? `Item ${item.itemId}`} with suggested production. Save to persist.`);
+    showSuccess(APPLY_SUGGESTED_ADDED_SUCCESS_TOAST);
+  }
+
+  function confirmApplySuggestedOverrideReplace() {
+    if (!applySuggestedOverrideConfirm) return;
+    updateRow(
+      applySuggestedOverrideConfirm.rowKey,
+      buildApplySuggestedExistingRowPatch(applySuggestedOverrideConfirm.suggestedQty),
+    );
+    setApplySuggestedOverrideConfirm(null);
+    showSuccess(APPLY_SUGGESTED_PLANNED_SUCCESS_TOAST);
+  }
+
+  function cancelApplySuggestedOverrideReplace() {
+    setApplySuggestedOverrideConfirm(null);
+    showInfo(APPLY_SUGGESTED_CANCEL_INFO_TOAST);
   }
 
   async function addRow() {
@@ -2119,6 +2149,18 @@ export function MonthlyPlanningWorkspacePage() {
           plannedSuggestedMismatch={plannedSuggestedMismatch}
           onCancel={() => setConfirmLockOpen(false)}
           onConfirm={() => void onConfirmLock(periodIsPast && isAdmin ? { confirmPastPeriod: true } : undefined)}
+        />
+      ) : null}
+
+      {applySuggestedOverrideConfirm ? (
+        <ApplySuggestedOverrideConfirmModal
+          itemName={applySuggestedOverrideConfirm.itemName}
+          message={formatApplySuggestedOverrideConfirmMessage(
+            applySuggestedOverrideConfirm.plannedQty,
+            applySuggestedOverrideConfirm.suggestedQty,
+          )}
+          onCancel={cancelApplySuggestedOverrideReplace}
+          onConfirm={confirmApplySuggestedOverrideReplace}
         />
       ) : null}
 
@@ -3931,6 +3973,43 @@ function RmRequirementCompositionSection({
           ) : null}
         </>
       ) : null}
+    </div>
+  );
+}
+
+function ApplySuggestedOverrideConfirmModal({
+  itemName,
+  message,
+  onCancel,
+  onConfirm,
+}: {
+  itemName: string;
+  message: string;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4">
+      <div className="w-full max-w-md rounded-lg border border-slate-200 bg-white p-5 shadow-xl">
+        <div className="flex items-start justify-between">
+          <div>
+            <h3 className="text-base font-semibold text-slate-900">Replace planned quantity?</h3>
+            <p className="mt-0.5 text-[12px] text-slate-500">{itemName}</p>
+          </div>
+          <button type="button" onClick={onCancel} className="text-slate-400 hover:text-slate-700">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+        <p className="mt-4 whitespace-pre-line text-[13px] leading-relaxed text-slate-700">{message}</p>
+        <div className="mt-5 flex justify-end gap-2">
+          <Button type="button" variant="outline" onClick={onCancel}>
+            Cancel
+          </Button>
+          <Button type="button" onClick={onConfirm} className="bg-amber-700 hover:bg-amber-800">
+            Replace planned quantity
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }

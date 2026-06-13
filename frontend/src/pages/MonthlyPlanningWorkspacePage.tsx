@@ -69,6 +69,15 @@ import {
   resolvePreviouslyReleasedTotal,
 } from "../lib/monthlyPlanningReleaseDeltaUx";
 import {
+  captureProductionPlanBaseline,
+  formatLockSnapshotSuccessMessage,
+  formatPlannedSuggestedLockWarning,
+  hasPlannedSuggestedMismatch,
+  hasUnsavedProductionChanges as detectUnsavedProductionChanges,
+  UNSAVED_PRODUCTION_PLAN_LOCK_MESSAGE,
+  type ProductionPlanSavedBaseline,
+} from "../lib/monthlyPlanningProductionPlanDirty";
+import {
   MP_PROCUREMENT,
   MP_RELEASE_STATUS_META,
   procurementProgressModelLine,
@@ -631,6 +640,8 @@ export function MonthlyPlanningWorkspacePage() {
   const [planExists, setPlanExists] = React.useState<boolean>(false);
   const [rows, setRows] = React.useState<EditRow[]>([]);
   const [removedIds, setRemovedIds] = React.useState<number[]>([]);
+  const [savedProductionBaseline, setSavedProductionBaseline] =
+    React.useState<ProductionPlanSavedBaseline | null>(null);
   const [fgItems, setFgItems] = React.useState<FgItem[]>([]);
   const [addItemId, setAddItemId] = React.useState<string>("");
   const [rmPlanning, setRmPlanning] = React.useState<RmPlanningResponse | null>(null);
@@ -761,20 +772,20 @@ export function MonthlyPlanningWorkspacePage() {
         const lineRes = await apiFetch<ProductionLinesResponse>(
           `/api/monthly-planning/${planRef.id}/production-lines`,
         );
-        setRows(
-          lineRes.lines.map((l) => ({
-            key: `srv-${l.id}`,
-            id: l.id,
-            fgItemId: l.fgItemId,
-            fgItemName: l.fgItemName,
-            unit: l.unit,
-            suggestedFgQty: num(l.suggestedFgQty),
-            plannedFgQty: String(num(l.plannedFgQty)),
-            plannedQtyOverridden: Boolean(l.plannedQtyOverridden),
-            source: l.source,
-            remarks: l.remarks ?? "",
-          })),
-        );
+        const mappedRows = lineRes.lines.map((l) => ({
+          key: `srv-${l.id}`,
+          id: l.id,
+          fgItemId: l.fgItemId,
+          fgItemName: l.fgItemName,
+          unit: l.unit,
+          suggestedFgQty: num(l.suggestedFgQty),
+          plannedFgQty: String(num(l.plannedFgQty)),
+          plannedQtyOverridden: Boolean(l.plannedQtyOverridden),
+          source: l.source,
+          remarks: l.remarks ?? "",
+        }));
+        setRows(mappedRows);
+        setSavedProductionBaseline(captureProductionPlanBaseline(mappedRows));
         setLockSummary(lineRes.lockSummary ?? null);
       } catch (lineErr) {
         const lineMsg =
@@ -783,6 +794,7 @@ export function MonthlyPlanningWorkspacePage() {
             : "Failed to load production plan lines.";
         showError(`${lineMsg} Plan header is loaded — try Refresh.`);
         setRows([]);
+        setSavedProductionBaseline(null);
         setLockSummary(null);
       }
 
@@ -837,6 +849,7 @@ export function MonthlyPlanningWorkspacePage() {
           setPlan(null);
           setSelectedPlanId(null);
           setRows([]);
+          setSavedProductionBaseline(null);
           setRmPlanning(null);
           setPurchasePlanning(null);
           setLockSummary(null);
@@ -859,6 +872,7 @@ export function MonthlyPlanningWorkspacePage() {
           setPeriodPlans([]);
           setSelectedPlanId(null);
           setRows([]);
+          setSavedProductionBaseline(null);
           setRmPlanning(null);
           setPurchasePlanning(null);
           setLockSummary(null);
@@ -973,6 +987,7 @@ export function MonthlyPlanningWorkspacePage() {
       await ensurePlanDraft(options);
       setRows([]);
       setRemovedIds([]);
+      setSavedProductionBaseline(null);
       showSuccess(`Draft started for ${periodKey}. Add FG lines or apply suggestions, then save.`);
       await loadPlan(periodKey);
     } catch (e) {
@@ -1282,6 +1297,10 @@ export function MonthlyPlanningWorkspacePage() {
   }
 
   async function onConfirmLock(options?: { confirmPastPeriod?: boolean }) {
+    if (hasUnsavedProductionChanges) {
+      showError(UNSAVED_PRODUCTION_PLAN_LOCK_MESSAGE);
+      return;
+    }
     setLocking(true);
     try {
       const activePlan = await ensurePlanDraft(options);
@@ -1291,7 +1310,13 @@ export function MonthlyPlanningWorkspacePage() {
         body: JSON.stringify(lockBody),
       });
       setRmPlanning(rm);
-      showSuccess("Legacy plan locked. RM Planning snapshot generated.");
+      showSuccess(
+        formatLockSnapshotSuccessMessage({
+          revision: rm.revision ?? rm.rmPlan?.revision,
+          totalFgPlannedQty: rm.rmPlan?.totalFgPlannedQty,
+          rmLines: rm.lines,
+        }),
+      );
       setConfirmLockOpen(false);
       await loadPlan(period);
       setActiveTab("rm");
@@ -1529,6 +1554,11 @@ export function MonthlyPlanningWorkspacePage() {
   const totalFgItems = rows.length;
   const fgItemsWithVariance = activeLockSummary?.fgItemsWithVariance ?? 0;
   const canLock = workflowActions.lock;
+  const hasUnsavedProductionChanges = React.useMemo(
+    () => detectUnsavedProductionChanges(rows, removedIds, savedProductionBaseline),
+    [rows, removedIds, savedProductionBaseline],
+  );
+  const plannedSuggestedMismatch = hasPlannedSuggestedMismatch(totalFgPlanned, totalFgSuggested);
 
   const availableFgForAdd = fgItems.filter((i) => !rows.some((r) => r.fgItemId === i.id));
 
@@ -1775,11 +1805,13 @@ export function MonthlyPlanningWorkspacePage() {
                     size="sm"
                     variant="default"
                     onClick={() => runWithPastPeriodGuard(() => Promise.resolve(setConfirmLockOpen(true)))}
-                    disabled={!canLock || saving}
+                    disabled={!canLock || saving || hasUnsavedProductionChanges}
                     title={
-                      canLock
-                        ? "Lock legacy plan and generate RM Planning snapshot"
-                        : "Add a planned qty > 0 to lock"
+                      hasUnsavedProductionChanges
+                        ? UNSAVED_PRODUCTION_PLAN_LOCK_MESSAGE
+                        : canLock
+                          ? "Lock legacy plan and generate RM Planning snapshot"
+                          : "Add a planned qty > 0 to lock"
                     }
                     className="h-8 bg-amber-700 px-2 hover:bg-amber-800"
                   >
@@ -2083,6 +2115,8 @@ export function MonthlyPlanningWorkspacePage() {
           totalFgItems={totalFgItems}
           period={period}
           locking={locking}
+          hasUnsavedProductionChanges={hasUnsavedProductionChanges}
+          plannedSuggestedMismatch={plannedSuggestedMismatch}
           onCancel={() => setConfirmLockOpen(false)}
           onConfirm={() => void onConfirmLock(periodIsPast && isAdmin ? { confirmPastPeriod: true } : undefined)}
         />
@@ -2366,6 +2400,8 @@ function LockConfirmModal({
   totalFgItems,
   period,
   locking,
+  hasUnsavedProductionChanges,
+  plannedSuggestedMismatch,
   onCancel,
   onConfirm,
 }: {
@@ -2373,10 +2409,24 @@ function LockConfirmModal({
   totalFgItems: number;
   period: string;
   locking: boolean;
+  hasUnsavedProductionChanges: boolean;
+  plannedSuggestedMismatch: boolean;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const [plannedMismatchAcknowledged, setPlannedMismatchAcknowledged] = React.useState(false);
+  React.useEffect(() => {
+    setPlannedMismatchAcknowledged(false);
+  }, [period, plannedSuggestedMismatch, hasUnsavedProductionChanges]);
+
+  const totalPlannedQty = lockSummary?.totalPlannedQty ?? 0;
+  const totalSuggestedQty = lockSummary?.totalSuggestedQty ?? 0;
   const varianceCount = lockSummary?.fgItemsWithVariance ?? 0;
+  const confirmDisabled =
+    locking ||
+    hasUnsavedProductionChanges ||
+    (plannedSuggestedMismatch && !plannedMismatchAcknowledged);
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4">
       <div className="w-full max-w-md rounded-lg border border-slate-200 bg-white p-5 shadow-xl">
@@ -2417,10 +2467,31 @@ function LockConfirmModal({
           </div>
         </div>
 
-        {varianceCount > 0 ? (
-          <p className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-900">
+        {hasUnsavedProductionChanges ? (
+          <p className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-[12px] text-red-900">
+            {UNSAVED_PRODUCTION_PLAN_LOCK_MESSAGE}
+          </p>
+        ) : null}
+
+        {!hasUnsavedProductionChanges && plannedSuggestedMismatch ? (
+          <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-900">
+            <p>{formatPlannedSuggestedLockWarning(totalPlannedQty, totalSuggestedQty)} Continue?</p>
+            <label className="mt-2 flex cursor-pointer items-start gap-2">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={plannedMismatchAcknowledged}
+                onChange={(e) => setPlannedMismatchAcknowledged(e.target.checked)}
+              />
+              <span>I understand — lock using planned production totals.</span>
+            </label>
+          </div>
+        ) : null}
+
+        {!hasUnsavedProductionChanges && !plannedSuggestedMismatch && varianceCount > 0 ? (
+          <p className="mt-3 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-[12px] text-slate-700">
             Planned quantities differ from recommendations for <strong>{varianceCount}</strong> FG item
-            {varianceCount === 1 ? "" : "s"}. Informational only — lock is not blocked.
+            {varianceCount === 1 ? "" : "s"} at line level, but total planned matches total suggested.
           </p>
         ) : null}
 
@@ -2436,7 +2507,12 @@ function LockConfirmModal({
           <Button type="button" variant="outline" onClick={onCancel} disabled={locking}>
             Cancel
           </Button>
-          <Button type="button" onClick={onConfirm} disabled={locking} className="bg-amber-700 hover:bg-amber-800">
+          <Button
+            type="button"
+            onClick={onConfirm}
+            disabled={confirmDisabled}
+            className="bg-amber-700 hover:bg-amber-800"
+          >
             <Lock className="mr-1.5 h-4 w-4" />
             {locking ? "Locking…" : "Lock & generate"}
           </Button>

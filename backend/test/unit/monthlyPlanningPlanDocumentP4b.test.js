@@ -183,6 +183,23 @@ function createP4bDb(initialPlans = []) {
     },
     materialRequirement: {
       findFirst: async () => null,
+      findMany: async ({ where } = {}) => {
+        const ids = where?.id?.in ?? [];
+        return state.mrs
+          .filter((mr) => ids.includes(mr.id) && String(mr.status ?? "") !== "CANCELLED")
+          .map((mr) => ({
+            ...mr,
+            sentToPurchaseAt: mr.sentToPurchaseAt ?? null,
+            lines: (mr.lines ?? []).map((line) => ({
+              ...line,
+              requiredQty: line.requiredQty,
+              shortageQty: line.shortageQty ?? line.requiredQty,
+              procuredQty: line.procuredQty ?? "0",
+              procurementLinks: line.procurementLinks ?? [],
+              purchaseRequestSourceLinks: line.purchaseRequestSourceLinks ?? [],
+            })),
+          }));
+      },
       create: async ({ data }) => {
         const mr = { id: ++state.nextMrId, ...data, lines: [] };
         state.mrs.push(mr);

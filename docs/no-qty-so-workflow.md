@@ -73,12 +73,22 @@ adjustedShortfall = \max(0,\ shortfall - usableQcPassedStock)
 \]
 - `usableQcPassedStock`: usable FG stock for the SKU (USABLE bucket)
 
-#### 3) Total WO qty (per Requirement Sheet row / per cycle)
+#### 3) Total to Produce (planning / procurement / dispatch cap)
 \[
-totalWoQty = shortfallQty + newWoQty
+totalToProduce = shortfallQty + newWoQty
 \]
-- `shortfallQty`: read-only (auto)
-- `newWoQty`: operator-entered (editable)
+- `shortfallQty`: read-only carry-forward from prior cycle (auto)
+- `newWoQty`: operator-entered new requirement for this cycle
+- Persisted as `RequirementSheetLine.suggestedWoQtySnapshot` at lock
+- Used by MPRS, period coverage, and per-cycle dispatch caps — **not** copied into WO line qty
+
+#### 3b) WO executable qty (this cycle — production only)
+\[
+woExecutableQty = newWoQty
+\]
+- Persisted as `RequirementSheetLine.requirementQty`
+- `WorkOrderLine.qty` is set from `requirementQty` only at RS lock / create-wo
+- Prior-cycle unmet demand stays on the prior-cycle WO; new cycles get incremental WO qty
 
 #### 4) Dispatchable qty (NO_QTY; per item; current cycle only)
 \[

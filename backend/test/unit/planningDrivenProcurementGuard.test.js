@@ -122,7 +122,8 @@ describe("mrSourceDescriptor — Monthly Plan source badge data", () => {
       monthlyProductionPlan: { periodKey: "2026-06" },
     });
     assert.equal(d.type, "MONTHLY_PLAN");
-    assert.equal(d.label, "Monthly Plan");
+    assert.equal(d.label, "June Plan 1");
+    assert.equal(d.planDocumentLabel, "June Plan 1");
     assert.equal(d.periodKey, "2026-06");
     assert.equal(d.sourceRevision, 3);
     assert.equal(d.monthlyProductionPlanId, 10);
@@ -131,7 +132,24 @@ describe("mrSourceDescriptor — Monthly Plan source badge data", () => {
   it("labels other sources without plan fields", () => {
     assert.equal(mrSourceDescriptor({ sourceType: "SALES_ORDER" }).label, "Sales Order");
     assert.equal(mrSourceDescriptor({ sourceType: "STOCK_REPLENISHMENT" }).label, "Stock Replenishment");
-    assert.equal(mrSourceDescriptor({ sourceType: "MONTHLY_PLAN" }).periodKey, null);
+    const noPlan = mrSourceDescriptor({ sourceType: "MONTHLY_PLAN" });
+    assert.equal(noPlan.periodKey, null);
+    assert.equal(noPlan.label, "Monthly Plan");
+  });
+
+  it("uses Monthly Plan fallback for legacy LOCKED revision without document label", () => {
+    const d = mrSourceDescriptor({
+      sourceType: "MONTHLY_PLAN",
+      sourceRevision: 2,
+      monthlyProductionPlan: {
+        periodKey: "2026-06",
+        status: "LOCKED",
+        currentRevision: 2,
+        planSequenceNo: 1,
+      },
+    });
+    assert.equal(d.label, "Monthly Plan");
+    assert.equal(d.planDocumentLabel, null);
   });
 });
 

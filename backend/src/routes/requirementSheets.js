@@ -42,6 +42,7 @@ const {
 } = require("./dispatch");
 const { loadEffectiveNoQtyCarryForwardShortfallByItem } = require("../services/noQtySoCloseSnapshotService");
 const { ensureSubmittedProductionMaterialRequestForWorkOrder } = require("../services/productionMaterialRequestService");
+const { resolveNoQtyWoExecutableQty } = require("../services/noQtyWoQtyService");
 
 const requirementSheetsRouter = express.Router();
 
@@ -1759,15 +1760,15 @@ requirementSheetsRouter.post(
 
           const lockedLines = await tx.requirementSheetLine.findMany({
             where: { sheetId: locked.id },
-            select: { itemId: true, suggestedWoQtySnapshot: true, availableStockQtySnapshot: true },
+            select: { itemId: true, requirementQty: true, availableStockQtySnapshot: true },
             orderBy: { id: "asc" },
           });
-          // WO should only be created for the portion that needs production.
-          // In NO_QTY, we snapshot production-required qty into suggestedWoQtySnapshot at lock time.
+          // WO qty = this cycle new requirement only (requirementQty). Cumulative Total to Produce
+          // remains on suggestedWoQtySnapshot for MPRS / dispatch caps — not copied into WO lines.
           const positiveLines = (lockedLines || [])
             .map((ln) => {
-              const toProduce = n(ln.suggestedWoQtySnapshot);
-              return { fgItemId: ln.itemId, qty: round3(toProduce) };
+              const toProduce = resolveNoQtyWoExecutableQty(ln);
+              return { fgItemId: ln.itemId, qty: toProduce };
             })
             .filter((x) => Number.isFinite(x.qty) && x.qty > 0);
 
@@ -2093,7 +2094,7 @@ requirementSheetsRouter.get(
       const lines = (sheet.lines || [])
         .map((ln) => {
           if (sheet.status === "LOCKED") {
-            const q = n(ln.suggestedWoQtySnapshot);
+            const q = resolveNoQtyWoExecutableQty(ln);
             return { fgItemId: ln.itemId, qty: q };
           }
           const req = n(ln.requirementQty);
@@ -2189,17 +2190,17 @@ requirementSheetsRouter.post(
         }
 
         // Manual WO creation is a repair/fallback action. Mirror lock behavior:
-        // create WO only for the production-required qty snapshot (not the fulfillment cap).
+        // create WO only for this cycle new requirement (requirementQty), not cumulative Total to Produce.
         const positiveLines = (sheet.lines || [])
           .map((ln) => {
-            const toProduce = n(ln.suggestedWoQtySnapshot);
-            return { fgItemId: ln.itemId, qty: round3(toProduce) };
+            const toProduce = resolveNoQtyWoExecutableQty(ln);
+            return { fgItemId: ln.itemId, qty: toProduce };
           })
           .filter((x) => Number.isFinite(x.qty) && x.qty > 0);
 
         if (!positiveLines.length) {
           const err = new Error(
-            "No production-required lines on this sheet (fulfillment is already covered — e.g. by post-cycle approvals or zero suggested production at lock).",
+            "No executable WO lines on this sheet (new requirement qty is zero on all lines — carry-forward is covered by prior-cycle work orders).",
           );
           err.statusCode = 409;
           throw err;

@@ -496,12 +496,14 @@ async function assertWorkOrderLinesAgainstSalesOrder(tx, { salesOrderId, lineReq
       throw err;
     }
 
-    /** NO_QTY: remaining WO headroom = RS total-to-produce snapshot − qty on other open WOs (no global QC/stock adjustment). */
+    /** NO_QTY: cumulative headroom from RS Total to Produce, capped per cycle by requirementQty. */
     let allowed;
     if (so.orderType === "NO_QTY") {
       const snap = ctx.noQtyRsSuggestedSnapshotByItem?.get(itemId) ?? 0;
       const woPlanned = ctx.allocatedByItem.get(itemId) || 0;
-      allowed = Math.max(0, snap - woPlanned);
+      const cumulativeHeadroom = Math.max(0, snap - woPlanned);
+      const cycleExecutableCeiling = ctx.noQtyRsRequirementQtyByItem?.get(itemId) ?? 0;
+      allowed = Math.min(cumulativeHeadroom, cycleExecutableCeiling);
     } else {
       allowed = remainingOpenQtyForItem(ctx, itemId);
     }

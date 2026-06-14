@@ -777,6 +777,23 @@ function createReleaseMockDb({
         const m = [...state.mrs].reverse().find((x) => x.reversedAt == null);
         return m ? { ...m, lines: m.lines.map((l) => ({ ...l })) } : null;
       },
+      findMany: async ({ where } = {}) => {
+        const ids = where?.id?.in ?? [];
+        return state.mrs
+          .filter((mr) => ids.includes(mr.id) && String(mr.status ?? "") !== "CANCELLED")
+          .map((mr) => ({
+            ...mr,
+            sentToPurchaseAt: mr.sentToPurchaseAt ?? null,
+            lines: (mr.lines ?? []).map((line) => ({
+              ...line,
+              requiredQty: line.requiredQty,
+              shortageQty: line.shortageQty ?? line.requiredQty,
+              procuredQty: line.procuredQty ?? "0",
+              procurementLinks: line.procurementLinks ?? [],
+              purchaseRequestSourceLinks: line.purchaseRequestSourceLinks ?? [],
+            })),
+          }));
+      },
       create: async ({ data }) => {
         const m = {
           id: state.nextMrId++,

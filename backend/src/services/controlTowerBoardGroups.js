@@ -73,7 +73,7 @@ const CONTROL_TOWER_BOARD_GROUPS = Object.freeze([
   {
     groupKey: BOARD_GROUP_KEYS.PLANNING,
     label: "Planning",
-    ownerRole: "ADMIN",
+    ownerRole: "STORE",
     statusList: Object.freeze([
       CONTROL_TOWER_STATUSES.PLANNING_PENDING,
       CONTROL_TOWER_STATUSES.WO_PLANNING_PENDING,

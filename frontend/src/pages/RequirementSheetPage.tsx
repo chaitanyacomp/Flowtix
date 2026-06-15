@@ -199,6 +199,7 @@ type LockHandoff = {
     status?: string | null;
     createdThisLock?: boolean;
   } | null;
+  executionStartsAt?: "MONTHLY_PLAN_RELEASE" | null;
 };
 
 type SheetDetail = {
@@ -839,7 +840,9 @@ export function RequirementSheetPage() {
           sheetDisplayCycleNo ??
           cycleNo;
         toast.showSuccess(
-          `Requirement Sheet locked for ${noQtyCurrentCycleLabel(lockedCycleNo)}.`,
+          locked.lockHandoff?.executionStartsAt === "MONTHLY_PLAN_RELEASE"
+            ? `Requirement Sheet locked for ${noQtyCurrentCycleLabel(lockedCycleNo)}. Work orders and material requests start when the monthly plan is released.`
+            : `Requirement Sheet locked for ${noQtyCurrentCycleLabel(lockedCycleNo)}.`,
         );
         await loadSoAndSheets();
         await refreshNoQtyFlowState();

@@ -3,6 +3,7 @@
  */
 
 const { prisma } = require("../utils/prisma");
+const { filterNoQtyExecutionReleasedWorkOrders, assertNoQtyWorkOrderExecutionReleased } = require("./noQtyExecutionBoundaryService");
 const { DocType } = require("../prismaClientPackage");
 const { allocateDocNo } = require("./docNoService");
 const { aggregateRmDemandForFgLines, loadApprovedBomWithLines } = require("./bomExplosionService");
@@ -356,12 +357,32 @@ async function listProductionMaterialRequests(db = prisma, { status, pendingForS
     orderBy: { id: "desc" },
     take: limit,
     include: {
-      workOrder: { select: { docNo: true, salesOrder: { select: { docNo: true } } } },
+      workOrder: {
+        select: {
+          id: true,
+          docNo: true,
+          salesOrderId: true,
+          cycleId: true,
+          requirementSheetId: true,
+          salesOrder: { select: { docNo: true, orderType: true } },
+        },
+      },
       lines: { include: { item: { select: { id: true, itemName: true, unit: true } } } },
       materialIssueNotes: { select: { id: true, docNo: true, createdAt: true }, orderBy: { id: "desc" } },
     },
   });
-  return rows.map(mapPmrRow);
+  const mapped = rows.map(mapPmrRow);
+  const woRows = rows.map((r) => ({
+    id: r.workOrderId,
+    salesOrderId: r.workOrder?.salesOrderId,
+    cycleId: r.workOrder?.cycleId,
+    requirementSheetId: r.workOrder?.requirementSheetId,
+    salesOrder: r.workOrder?.salesOrder,
+  }));
+  const visibleWoIds = new Set(
+    (await filterNoQtyExecutionReleasedWorkOrders(db, woRows)).map((wo) => wo.id),
+  );
+  return mapped.filter((pmr) => visibleWoIds.has(pmr.workOrderId));
 }
 
 async function getProductionMaterialRequestById(id, db = prisma) {
@@ -386,12 +407,16 @@ async function getProductionMaterialRequestById(id, db = prisma) {
  */
 async function createProductionMaterialRequest(input, actor = {}, db = prisma) {
   return runInTransaction(db, async (tx) => {
-    const wo = await tx.workOrder.findUnique({ where: { id: input.workOrderId } });
+    const wo = await tx.workOrder.findUnique({
+      where: { id: input.workOrderId },
+      include: { salesOrder: { select: { orderType: true } } },
+    });
     if (!wo) {
       const err = new Error("Work order not found");
       err.statusCode = 404;
       throw err;
     }
+    await assertNoQtyWorkOrderExecutionReleased(tx, input.workOrderId, "Material request");
     if (!["PENDING", "IN_PROGRESS"].includes(wo.status)) {
       const err = new Error("Work order must be pending or in progress to request material.");
       err.statusCode = 400;
@@ -552,6 +577,7 @@ async function cancelProductionMaterialRequest(pmrId, actor = {}, db = prisma) {
  * Reuses an existing draft/submitted request where possible.
  */
 async function ensureSubmittedProductionMaterialRequestForWorkOrder(workOrderId, actor = {}, db = prisma) {
+  await assertNoQtyWorkOrderExecutionReleased(db, workOrderId, "Material request");
   const woId = Number(workOrderId);
   if (!Number.isFinite(woId) || woId <= 0) {
     const err = new Error("Work order id is required.");

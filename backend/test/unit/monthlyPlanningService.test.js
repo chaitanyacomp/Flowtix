@@ -850,6 +850,16 @@ function createReleaseMockDb({
         }));
       },
     },
+    requirementSheet: {
+      findMany: async () => [],
+    },
+    workOrder: {
+      findMany: async () => [],
+      findFirst: async () => null,
+    },
+    salesOrderLine: {
+      findMany: async () => [],
+    },
     $transaction: async (fn) => fn(db),
     __state: state,
   };

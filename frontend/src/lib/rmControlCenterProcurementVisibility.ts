@@ -43,7 +43,11 @@ export function deriveProcurementChip(input: ProcurementVisibilityInput): Procur
   const hasMr = input.hasMr;
   const mrStatus = String(input.mrStatus ?? "").trim();
 
-  if (input.procurementCompleted || (poCount > 0 && pendingGrn <= EPS && receivedGrn > EPS)) {
+  if (
+    input.procurementCompleted ||
+    mrStatus === "FULLY_PROCURED" ||
+    (poCount > 0 && pendingGrn <= EPS && receivedGrn > EPS)
+  ) {
     return { key: "FULLY_RECEIVED", label: "Fully Received", variant: "success" };
   }
   if (poCount > 0 && pendingGrn > EPS && receivedGrn > EPS) {
@@ -64,7 +68,7 @@ export function deriveProcurementChip(input: ProcurementVisibilityInput): Procur
   if (!input.anyShortage && !hasMr) {
     return { key: "NOT_REQUIRED", label: "Not Required", variant: "muted" };
   }
-  if (input.notEscalated && input.anyShortage) {
+  if (input.notEscalated && input.anyShortage && !input.procurementCompleted && mrStatus !== "FULLY_PROCURED" && receivedGrn <= EPS) {
     return { key: "AWAITING_PR", label: "Awaiting PR", variant: "warning" };
   }
   return { key: "NOT_REQUIRED", label: "Not Required", variant: "muted" };
@@ -166,7 +170,13 @@ export function lineCoveragePercent(line: {
   return Math.min(100, Math.round((total / required) * 1000) / 10);
 }
 
-export function storeMayCreatePurchaseRequest(chip: ProcurementChip, canCreatePurchaseRequest: boolean): boolean {
+export function storeMayCreatePurchaseRequest(chip: ProcurementChip, canCreatePurchaseRequest: boolean, opts?: {
+  procurementCompleted?: boolean;
+  mrStatus?: string | null;
+  receivedGrnQty?: number;
+}): boolean {
+  if (opts?.procurementCompleted || String(opts?.mrStatus ?? "").trim() === "FULLY_PROCURED") return false;
+  if (n(opts?.receivedGrnQty) > EPS) return false;
   return canCreatePurchaseRequest && chip.key === "AWAITING_PR";
 }
 

@@ -214,18 +214,6 @@ export function resolveRmOperationalContext(input: RmOperationalContextInput): R
       href: input.issueHref,
       description: "Free store stock is available — issue RM against the open material request.",
     });
-  } else if (
-    (input.stockReadyForIssue || input.procurementCompletedForCase) &&
-    input.workOrderId &&
-    input.issueHref
-  ) {
-    buttons.push({
-      id: "issue-to-production",
-      label: "Issue RM to Production",
-      kind: "primary",
-      href: input.issueHref,
-      description: "RM is in Store after procurement — issue to Production before starting the work order.",
-    });
   } else if (partial) {
     buttons.push({
       id: "partial-grn",
@@ -243,6 +231,15 @@ export function resolveRmOperationalContext(input: RmOperationalContextInput): R
       disabled: true,
       description: "Purchase order exists — record goods receipt when material arrives.",
       href: input.grnHref ?? undefined,
+    });
+  } else if (input.prLineCount > 0 && input.poLineCount === 0) {
+    buttons.push({
+      id: "wait-po",
+      label: "Waiting for Purchase to prepare RM PO",
+      kind: "info",
+      disabled: true,
+      description: "Purchase Request exists — waiting for Purchase to create and release the RM PO.",
+      href: input.procurementWorkspaceHref ?? undefined,
     });
   } else if (
     hasMr &&

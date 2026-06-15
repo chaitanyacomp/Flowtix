@@ -27,6 +27,10 @@ const {
   round3: metricsRound3,
 } = require("./monthlyPlanningProductionPlanMetrics");
 const {
+  createWorkOrdersForPeriodRelease,
+  ensurePmrsForPeriodExecution,
+} = require("./noQtyExecutionReleaseService");
+const {
   assertNoOtherActivePlanInPeriod,
   getNextPlanSequenceNo,
   resolvePlanKindForSequence,
@@ -1268,6 +1272,10 @@ async function releaseToProcurement({ db = prisma, planId, revision = null, conf
       data: { releasedAt: now, releasedByUserId: actorUserId ?? null, releasedRevision: rev },
     });
 
+    const executionWorkOrders = await createWorkOrdersForPeriodRelease(tx, {
+      periodKey: plan.periodKey,
+    });
+
     return {
       planId: plan.id,
       revision: rev,
@@ -1280,12 +1288,25 @@ async function releaseToProcurement({ db = prisma, planId, revision = null, conf
       released,
       skipped,
       surplus,
+      executionWorkOrders,
     };
   };
 
   const result = typeof db.$transaction === "function" ? await db.$transaction(run) : await run(db);
   if (result?.materialRequirementId) {
     await recalculateMaterialRequirementClosure(db, [result.materialRequirementId]);
+  }
+  if (result?.planId) {
+    const planRow = await db.monthlyProductionPlan.findUnique({
+      where: { id: result.planId },
+      select: { periodKey: true },
+    });
+    if (planRow?.periodKey) {
+      result.executionPmrs = await ensurePmrsForPeriodExecution(db, {
+        periodKey: planRow.periodKey,
+        actor: { userId: actorUserId ?? null, role: null },
+      });
+    }
   }
   return result;
 }

@@ -69,6 +69,10 @@ const productionRouter = express.Router();
 const { DocType } = require("../prismaClientPackage");
 const { allocateDocNo } = require("../services/docNoService");
 const { normalizePositiveCycleId } = require("../utils/cycleIds");
+const {
+  assertNoQtyWorkOrderExecutionReleased,
+  filterNoQtyExecutionReleasedWorkOrders,
+} = require("../services/noQtyExecutionBoundaryService");
 const { maybeAutoCloseSalesOrderOperationally } = require("../services/salesOrderOperationalAutoClose");
 const { approvedBomWhere, approvedBomOrderBy } = require("../services/bomStatus");
 const { evaluateWoPrepareReadiness } = require("../services/materialPlanningService");
@@ -146,6 +150,7 @@ async function assertNoQtyWorkOrderInActiveCycleOrThrow(tx, workOrderId, message
     err.statusCode = 409;
     throw err;
   }
+  await assertNoQtyWorkOrderExecutionReleased(tx, workOrderId, "Production");
   return { wo, so };
 }
 
@@ -196,6 +201,7 @@ async function assertNoQtyWorkOrderEligibleForQcOrThrow(tx, workOrderId) {
     err.statusCode = 409;
     throw err;
   }
+  await assertNoQtyWorkOrderExecutionReleased(tx, workOrderId, "QC");
 }
 
 /**
@@ -231,7 +237,7 @@ async function filterNoQtyWorkOrdersForActiveLockedCycle(prisma, rowsRaw) {
         })
       : [];
   const lockedKeySet = new Set(lockedSheets.map((s) => `${Number(s.salesOrderId)}:${Number(s.cycleId)}`));
-  return (rowsRaw || []).filter((wo) => {
+  const filtered = (rowsRaw || []).filter((wo) => {
     const so = wo.salesOrder;
     if (!so || so.orderType !== "NO_QTY") return true;
     if (so.internalStatus === "COMPLETED" || so.internalStatus === "MANUALLY_CLOSED" || so.internalStatus === "CLOSED") {
@@ -247,6 +253,7 @@ async function filterNoQtyWorkOrdersForActiveLockedCycle(prisma, rowsRaw) {
     if (wo.requirementSheetId != null) return true;
     return wo.cycle?.status === "ACTIVE";
   });
+  return filterNoQtyExecutionReleasedWorkOrders(prisma, filtered);
 }
 
 const NO_QTY_RS_RECON_EPS = 1e-6;

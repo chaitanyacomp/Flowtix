@@ -203,6 +203,8 @@ export function formatReleaseSuccessSummary(params: {
   totalDeltaQty: number;
   skippedLineCount: number;
   surplusLineCount: number;
+  executionWorkOrders?: { workOrderId?: number | null }[] | null;
+  executionPmrs?: { pmrId?: number | null }[] | null;
 }): string {
   const {
     plan,
@@ -212,6 +214,8 @@ export function formatReleaseSuccessSummary(params: {
     totalDeltaQty,
     skippedLineCount,
     surplusLineCount,
+    executionWorkOrders,
+    executionPmrs,
   } = params;
   const planLabel =
     plan && usesPlanDocumentProcurementUx(plan)
@@ -224,6 +228,8 @@ export function formatReleaseSuccessSummary(params: {
     totalDeltaQty,
     skippedLineCount,
     surplusLineCount,
+    executionWorkOrderCount: executionWorkOrders?.length ?? 0,
+    executionPmrCount: executionPmrs?.filter((p) => p.pmrId != null).length ?? 0,
   });
 }
 
@@ -314,6 +320,47 @@ export function resolveWorkflowActionVisibility(params: {
     reopen: plan.status === "LOCKED" && legacy && canMutatePeriod,
     cancelReopen: legacyReopenDraft && canMutatePeriod,
   };
+}
+
+export const MONTHLY_PLAN_NO_WRITE_PERMISSION_MESSAGE =
+  "You do not have permission to change monthly plans.";
+export const MONTHLY_PLAN_NO_REVIEW_PERMISSION_MESSAGE =
+  "You do not have permission to review monthly plans.";
+export const MONTHLY_PLAN_PAST_PERIOD_READ_ONLY_MESSAGE =
+  "Monthly planning for past periods is read-only. Contact Admin if correction is required.";
+
+export type PlanActionBlockedReason = "no_permission" | "past_period_read_only";
+
+/** Store/Admin monthly-plan write actions (save, submit, release, …). */
+export function planMutationActionBlockedReason(params: {
+  canMutatePeriod: boolean;
+  periodIsPast: boolean;
+}): PlanActionBlockedReason | null {
+  if (params.canMutatePeriod) return null;
+  return params.periodIsPast ? "past_period_read_only" : "no_permission";
+}
+
+export function planMutationActionBlockedMessage(reason: PlanActionBlockedReason): string {
+  return reason === "past_period_read_only"
+    ? MONTHLY_PLAN_PAST_PERIOD_READ_ONLY_MESSAGE
+    : MONTHLY_PLAN_NO_WRITE_PERMISSION_MESSAGE;
+}
+
+/** Purchase approve/reject — separate from Store write gate (P8F-A1). */
+export function purchaseReviewActionBlockedReason(params: {
+  canPurchaseReview: boolean;
+  periodIsPast: boolean;
+  isAdmin: boolean;
+}): PlanActionBlockedReason | null {
+  if (!params.canPurchaseReview) return "no_permission";
+  if (params.periodIsPast && !params.isAdmin) return "past_period_read_only";
+  return null;
+}
+
+export function purchaseReviewActionBlockedMessage(reason: PlanActionBlockedReason): string {
+  return reason === "past_period_read_only"
+    ? MONTHLY_PLAN_PAST_PERIOD_READ_ONLY_MESSAGE
+    : MONTHLY_PLAN_NO_REVIEW_PERMISSION_MESSAGE;
 }
 
 export function canShowAdditionalPlanEntry(params: {

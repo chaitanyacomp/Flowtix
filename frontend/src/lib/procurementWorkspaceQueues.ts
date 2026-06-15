@@ -133,12 +133,15 @@ export function filterMrsByQueueTab<T extends { sourceType?: string | null; sour
 
 export function workspaceQueryForDemandPool(
   demandPool: ProcurementDemandPoolKey,
-  opts?: { salesOrderId?: number | null },
+  opts?: { salesOrderId?: number | null; materialRequirementId?: number | null },
 ): string {
   const params = new URLSearchParams();
   params.set("demandPool", demandPool);
-  if (opts?.salesOrderId != null && opts.salesOrderId > 0) {
+  if (demandPool === "REGULAR_SO" && opts?.salesOrderId != null && opts.salesOrderId > 0) {
     params.set("salesOrderId", String(opts.salesOrderId));
+  }
+  if (demandPool === "MPRS" && opts?.materialRequirementId != null && opts.materialRequirementId > 0) {
+    params.set("materialRequirementId", String(opts.materialRequirementId));
   }
   return `?${params.toString()}`;
 }

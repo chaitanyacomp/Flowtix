@@ -14,6 +14,7 @@ import {
 } from "./components/branding/Branding";
 import { DashboardPage as DashboardScreen } from "./pages/DashboardPage";
 import { ControlTowerPage } from "./pages/ControlTowerPage";
+import { PendingActionsPage } from "./pages/PendingActionsPage";
 import { CustomersPage } from "./pages/CustomersPage";
 import { ItemsPage } from "./pages/ItemsPage";
 import { OpeningStockPage } from "./pages/OpeningStockPage";
@@ -375,6 +376,14 @@ export default function App() {
           element={
             <ProtectedRoute allowedRoles={[...ALL_APP_ROLES]}>
               <DashboardScreen />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/pending-actions"
+          element={
+            <ProtectedRoute allowedRoles={[...ALL_APP_ROLES]}>
+              <PendingActionsPage />
             </ProtectedRoute>
           }
         />

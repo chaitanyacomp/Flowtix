@@ -7,6 +7,8 @@ import { apiFetch } from "../../services/api";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { useAuth } from "../../hooks/useAuth";
+import { GRN_WRITE_ROLES, hasErpRole, RM_PO_WRITE_ROLES } from "../../config/erpRoles";
+import { PROCUREMENT_TERMS } from "../../lib/procurementTerminology";
 import { useShortcutHints } from "../../hooks/useShortcutHints";
 import { FieldShortcutHint } from "../../components/ui/FieldShortcutHint";
 import {
@@ -61,7 +63,9 @@ export function RmPurchasePoDetailPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const [searchParams] = useSearchParams();
-  const isAdmin = useAuth().user?.role === "ADMIN";
+  const { user } = useAuth();
+  const isAdmin = user?.role === "ADMIN";
+  const canWritePo = hasErpRole(user?.role, RM_PO_WRITE_ROLES);
 
   const rmPurchaseBackNav = React.useMemo(
     () =>
@@ -354,12 +358,16 @@ export function RmPurchasePoDetailPage() {
     }
     return { billed, pendingBilling, rebillable };
   }, [po, billingByLine, cancelledByLine]);
-  const grnAllowed =
+  const canPostGrn = hasErpRole(user?.role, GRN_WRITE_ROLES);
+  const grnReceiptPending = Boolean(
     po &&
-    po.status !== "CANCELLED" &&
-    po.status !== "COMPLETED" &&
-    receiveInfo &&
-    receiveInfo.pending > 1e-6;
+      po.status !== "CANCELLED" &&
+      po.status !== "COMPLETED" &&
+      receiveInfo &&
+      receiveInfo.pending > 1e-6,
+  );
+  const grnAllowed = grnReceiptPending && canPostGrn;
+  const grnPendingReadOnlyForViewer = grnReceiptPending && !canPostGrn;
 
   const poPrimaryUnit = po?.lines[0]?.unit?.trim() ?? "";
   const stockStatusLabel =
@@ -670,7 +678,7 @@ export function RmPurchasePoDetailPage() {
     void onGrnPost();
   }
 
-  const canEditPo = po && (po.status === "PENDING" || po.status === "PARTIAL");
+  const canEditPo = canWritePo && po && (po.status === "PENDING" || po.status === "PARTIAL");
   const showCancel = isAdmin && po && (po.status === "PENDING" || po.status === "PARTIAL");
 
   const hasAnyActiveGrn = Boolean(po?.grns?.some((g) => !g.reversedAt));
@@ -745,6 +753,18 @@ export function RmPurchasePoDetailPage() {
   const rmPoNextActionStrip = React.useMemo(() => {
     if (loading || !po) return null;
 
+    if (!hasActiveGrnRecord(po) && grnPendingReadOnlyForViewer) {
+      return {
+        variant: "info" as const,
+        title: PROCUREMENT_TERMS.GRN_PENDING_STORE_POSTS_RECEIPT,
+        subtitle: receiveInfo
+          ? `${receiveInfo.pending.toFixed(3)}${poPrimaryUnit ? ` ${poPrimaryUnit}` : ""} pending receipt`
+          : "Pending receipt",
+        flowWorkOrderAttr: false,
+        stripTestId: "rm-po-grn-pending-readonly",
+      };
+    }
+
     if (!hasActiveGrnRecord(po) && grnAllowed) {
       return {
         variant: "info" as const,
@@ -753,6 +773,7 @@ export function RmPurchasePoDetailPage() {
           ? `${receiveInfo.pending.toFixed(3)}${poPrimaryUnit ? ` ${poPrimaryUnit}` : ""} pending receipt`
           : "Pending receipt",
         flowWorkOrderAttr: false,
+        stripTestId: "rm-po-create-grn-banner",
         primary: {
           label: "Create GRN",
           testId: "rm-po-create-grn-btn",
@@ -907,6 +928,7 @@ export function RmPurchasePoDetailPage() {
     loading,
     po,
     grnAllowed,
+    grnPendingReadOnlyForViewer,
     receiveInfo,
     poPrimaryUnit,
     showShortageNextStep,
@@ -1006,13 +1028,14 @@ export function RmPurchasePoDetailPage() {
                 ? { "data-flow-work-order-id": flowWorkOrderIdQ }
                 : {})}
               data-testid={
-                showShortageNextStep
+                rmPoNextActionStrip.stripTestId ??
+                (showShortageNextStep
                   ? "rm-purchase-post-grn-next-step-shortage"
                   : showFlowResumeBannerSlim
                     ? "grn-flow-resume-banner"
                     : showRichProductionNextStep || showFallbackProductionNextStep
                       ? "rm-purchase-post-grn-next-step"
-                      : undefined
+                      : undefined)
               }
             >
               <NextStepStrip

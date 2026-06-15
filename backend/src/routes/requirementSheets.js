@@ -41,6 +41,8 @@ const {
   netNoQtyCycleDispatchedByItemId,
 } = require("./dispatch");
 const { loadEffectiveNoQtyCarryForwardShortfallByItem } = require("../services/noQtySoCloseSnapshotService");
+const { assertNoQtyRequirementSheetPeriodReleased } = require("../services/noQtyExecutionBoundaryService");
+const { createNoQtyWorkOrderFromLockedSheet } = require("../services/noQtyExecutionReleaseService");
 const { ensureSubmittedProductionMaterialRequestForWorkOrder } = require("../services/productionMaterialRequestService");
 const { resolveNoQtyWoExecutableQty } = require("../services/noQtyWoQtyService");
 
@@ -1725,100 +1727,6 @@ requirementSheetsRouter.post(
           include: { salesOrder: { include: { customer: true, po: { include: { customer: true } } } }, lines: { include: { item: true }, orderBy: { id: "asc" } } },
         });
 
-        // Auto-create Work Order for NO_QTY on lock (idempotent).
-        // This is required for production to start immediately after locking the sheet.
-        let workOrderCreatedThisLock = false;
-        const already = await tx.workOrder.findFirst({
-          where: { requirementSheetId: locked.id },
-          select: { id: true, cycleId: true, salesOrderId: true },
-        });
-        if (already) {
-          // Repair linkage for pre-existing WO created before cycle linkage was enforced.
-          // (No extra cycles; just align the WO to the active cycle that the sheet was locked under.)
-          const woCycleId = already.cycleId == null ? null : Number(already.cycleId);
-          if (!woCycleId || woCycleId !== Number(activeCycleId)) {
-            await tx.workOrder.update({
-              where: { id: already.id },
-              data: { cycleId: activeCycleId },
-            });
-          }
-        } else {
-          const soHead = locked.salesOrder;
-          if (soHead?.orderType === "REPLACEMENT" || soHead?.customerReturnId != null) {
-            const err = new Error(
-              "Work orders cannot be created for customer-return replacement sales orders. Production does not apply to this order type.",
-            );
-            err.statusCode = 409;
-            err.code = "NO_WO_ON_CUSTOMER_RETURN_REPLACEMENT_SO";
-            throw err;
-          }
-          const soLines = await tx.salesOrderLine.findMany({
-            where: { soId: locked.salesOrderId },
-            select: { itemId: true, item: { select: { itemType: true } } },
-          });
-          const allowedFgItemIds = new Set((soLines || []).filter((l) => l.item?.itemType === "FG").map((l) => l.itemId));
-
-          const lockedLines = await tx.requirementSheetLine.findMany({
-            where: { sheetId: locked.id },
-            select: { itemId: true, requirementQty: true, availableStockQtySnapshot: true },
-            orderBy: { id: "asc" },
-          });
-          // WO qty = this cycle new requirement only (requirementQty). Cumulative Total to Produce
-          // remains on suggestedWoQtySnapshot for MPRS / dispatch caps — not copied into WO lines.
-          const positiveLines = (lockedLines || [])
-            .map((ln) => {
-              const toProduce = resolveNoQtyWoExecutableQty(ln);
-              return { fgItemId: ln.itemId, qty: toProduce };
-            })
-            .filter((x) => Number.isFinite(x.qty) && x.qty > 0);
-
-          if (positiveLines.length) {
-            // NO_QTY planning: do NOT block locking a new Requirement Sheet due to an existing active WO.
-            // Each RS is a fresh planning cycle; any remaining from the previous WO is captured as shortfall.
-            // Recommended behavior: auto-complete the previous active WO for this cycle (if any) before creating the new one.
-            const activeWo = await tx.workOrder.findFirst({
-              where: {
-                salesOrderId: locked.salesOrderId,
-                cycleId: activeCycleId,
-                status: { in: ["PENDING", "IN_PROGRESS"] },
-              },
-              select: { id: true },
-            });
-            if (activeWo) {
-              await tx.workOrder.update({
-                where: { id: activeWo.id },
-                data: { status: "COMPLETED" },
-              });
-            }
-
-            for (const l of positiveLines) {
-              if (!allowedFgItemIds.has(l.fgItemId)) {
-                const err = new Error("Requirement sheet contains an item that is not a finished good on the sales order.");
-                err.statusCode = 409;
-                throw err;
-              }
-            }
-            await tx.workOrder.create({
-              data: {
-                salesOrderId: locked.salesOrderId,
-                requirementSheetId: locked.id,
-                cycleId: activeCycleId,
-                status: "PENDING",
-                docNo: await allocateDocNo(tx, { docType: DocType.WORK_ORDER, date: new Date() }),
-                lines: {
-                  create: positiveLines.map((l) => ({
-                    fgItemId: l.fgItemId,
-                    qty: String(l.qty),
-                    plannedQty: String(l.qty),
-                  })),
-                },
-              },
-              select: { id: true },
-            });
-            workOrderCreatedThisLock = true;
-          }
-        }
-
         const cyc =
           locked.cycleId != null
             ? await tx.salesOrderCycle.findUnique({
@@ -1854,62 +1762,20 @@ requirementSheetsRouter.post(
           },
         });
 
-        return { locked, workOrderCreatedThisLock };
+        return { locked };
       });
 
       const lockedSheet = sheet.locked;
       const detail = await mapSheetDetail(lockedSheet);
-      const wo = detail.workOrderId
-        ? await prisma.workOrder.findUnique({
-            where: { id: Number(detail.workOrderId) },
-            select: { id: true, docNo: true },
-          })
-        : null;
-
-      let productionMaterialRequest = null;
-      if (wo?.id) {
-        try {
-          const pmr = await ensureSubmittedProductionMaterialRequestForWorkOrder(wo.id, {
-            userId: req.user?.userId,
-            role: req.user?.role,
-          });
-          productionMaterialRequest = {
-            id: pmr.id,
-            docNo: pmr.docNo ?? null,
-            status: pmr.status ?? null,
-            createdThisLock: true,
-          };
-        } catch (pmrErr) {
-          console.warn(
-            `[NO_QTY_RS_LOCK] Auto-ensure PMR after lock for WO ${wo.id} failed:`,
-            pmrErr?.message || pmrErr,
-          );
-          const existingPmr = await prisma.productionMaterialRequest.findFirst({
-            where: {
-              workOrderId: wo.id,
-              status: { in: ["REQUESTED", "PARTIALLY_ISSUED", "FULLY_ISSUED", "DRAFT"] },
-            },
-            orderBy: { id: "desc" },
-            select: { id: true, docNo: true, status: true },
-          });
-          if (existingPmr) {
-            productionMaterialRequest = {
-              id: existingPmr.id,
-              docNo: existingPmr.docNo ?? null,
-              status: existingPmr.status ?? null,
-              createdThisLock: false,
-            };
-          }
-        }
-      }
 
       return res.json({
         ...detail,
         lockHandoff: {
-          workOrderCreated: Boolean(sheet.workOrderCreatedThisLock),
-          workOrderId: wo?.id ?? detail.workOrderId ?? null,
-          workOrderDocNo: wo?.docNo ?? null,
-          productionMaterialRequest,
+          workOrderCreated: false,
+          workOrderId: detail.workOrderId ?? null,
+          workOrderDocNo: null,
+          productionMaterialRequest: null,
+          executionStartsAt: "MONTHLY_PLAN_RELEASE",
         },
       });
     } catch (e) {
@@ -2174,81 +2040,44 @@ requirementSheetsRouter.post(
           throw err;
         }
 
-        const existing = await tx.workOrder.findFirst({
-          where: { requirementSheetId: sheet.id },
-          select: { id: true, cycleId: true, docNo: true },
-        });
-        if (existing) {
-          const woCycleId = existing.cycleId == null ? null : Number(existing.cycleId);
-          if (!woCycleId || woCycleId !== Number(activeCycleId)) {
-            await tx.workOrder.update({ where: { id: existing.id }, data: { cycleId: activeCycleId } });
-          }
-          const woLabel = existing.docNo?.trim() || `WO-${existing.id}`;
+        await assertNoQtyRequirementSheetPeriodReleased(tx, sheet);
+
+        if (!sheet.cycleId || Number(sheet.cycleId) !== Number(activeCycleId)) {
+          sheet.cycleId = activeCycleId;
+        }
+
+        const woResult = await createNoQtyWorkOrderFromLockedSheet(tx, sheet);
+        if (!woResult.workOrderId) {
+          const err = new Error(
+            woResult.skippedReason === "ZERO_EXECUTABLE_QTY"
+              ? "No executable WO lines on this sheet (new requirement qty is zero on all lines — carry-forward is covered by prior-cycle work orders)."
+              : "Work order could not be created from this requirement sheet.",
+          );
+          err.statusCode = 409;
+          throw err;
+        }
+        if (!woResult.created && woResult.skippedReason === "ALREADY_EXISTS") {
+          const existing = await tx.workOrder.findUnique({
+            where: { id: woResult.workOrderId },
+            select: { id: true, salesOrderId: true, docNo: true },
+          });
+          const woLabel = existing?.docNo?.trim() || `WO-${woResult.workOrderId}`;
           const err = new Error(`Work Order ${woLabel} was already created from this requirement sheet.`);
           err.statusCode = 409;
           throw err;
         }
 
-        // Manual WO creation is a repair/fallback action. Mirror lock behavior:
-        // create WO only for this cycle new requirement (requirementQty), not cumulative Total to Produce.
-        const positiveLines = (sheet.lines || [])
-          .map((ln) => {
-            const toProduce = resolveNoQtyWoExecutableQty(ln);
-            return { fgItemId: ln.itemId, qty: toProduce };
-          })
-          .filter((x) => Number.isFinite(x.qty) && x.qty > 0);
-
-        if (!positiveLines.length) {
-          const err = new Error(
-            "No executable WO lines on this sheet (new requirement qty is zero on all lines — carry-forward is covered by prior-cycle work orders).",
-          );
-          err.statusCode = 409;
-          throw err;
-        }
-
-        // NO_QTY planning: do NOT block WO creation due to an existing active WO.
-        // Mirror lock behavior: auto-complete the existing active WO for this cycle, then create a new one.
-        const activeWo = await tx.workOrder.findFirst({
-          where: { salesOrderId: sheet.salesOrderId, cycleId: activeCycleId, status: { in: ["PENDING", "IN_PROGRESS"] } },
-          select: { id: true },
-        });
-        if (activeWo) {
-          await tx.workOrder.update({ where: { id: activeWo.id }, data: { status: "COMPLETED" } });
-        }
-
-        // Strict validation: ensure each fgItemId exists on the SO as an FG item.
-        const allowedFgItemIds = new Set(
-          (sheet.salesOrder?.lines || [])
-            .filter((sl) => sl.item?.itemType === "FG")
-            .map((sl) => sl.itemId),
-        );
-        for (const l of positiveLines) {
-          if (!allowedFgItemIds.has(l.fgItemId)) {
-            const err = new Error("Requirement sheet contains an item that is not a finished good on the sales order.");
-            err.statusCode = 409;
-            throw err;
-          }
-        }
-
-        const wo = await tx.workOrder.create({
-          data: {
-            salesOrderId: sheet.salesOrderId,
-            requirementSheetId: sheet.id,
-            cycleId: activeCycleId,
-            status: "PENDING",
-            docNo: await allocateDocNo(tx, { docType: DocType.WORK_ORDER, date: new Date() }),
-            lines: {
-              create: positiveLines.map((l) => ({
-                fgItemId: l.fgItemId,
-                qty: String(l.qty),
-                plannedQty: String(l.qty),
-              })),
-            },
-          },
-          select: { id: true, salesOrderId: true },
-        });
-        return wo;
+        return { id: woResult.workOrderId, salesOrderId: sheet.salesOrderId };
       });
+
+      try {
+        await ensureSubmittedProductionMaterialRequestForWorkOrder(result.id, {
+          userId: req.user?.userId,
+          role: req.user?.role,
+        });
+      } catch (pmrErr) {
+        console.warn(`[NO_QTY_CREATE_WO] Auto-ensure PMR for WO ${result.id} failed:`, pmrErr?.message || pmrErr);
+      }
 
       return res.status(201).json({ workOrderId: result.id, salesOrderId: result.salesOrderId });
     } catch (e) {

@@ -114,6 +114,44 @@ describe("rmControlCenterProcurementVisibility", () => {
     expect(storeMayCreatePurchaseRequest(chip, false)).toBe(false);
   });
 
+  it("storeMayCreatePurchaseRequest hides after FULLY_PROCURED MPRS procurement", () => {
+    const chip = deriveProcurementChip({
+      anyShortage: true,
+      hasMr: true,
+      mrStatus: "FULLY_PROCURED",
+      prLineCount: 1,
+      poLineCount: 1,
+      pendingGrnQty: 0,
+      receivedGrnQty: 55,
+      procurementCompleted: true,
+      notEscalated: true,
+    });
+    expect(chip.label).toBe("Fully Received");
+    expect(
+      storeMayCreatePurchaseRequest(chip, true, {
+        procurementCompleted: true,
+        mrStatus: "FULLY_PROCURED",
+        receivedGrnQty: 55,
+      }),
+    ).toBe(false);
+  });
+
+  it("deriveProcurementChip does not fall back to Awaiting PR when notEscalated but procurement completed", () => {
+    const chip = deriveProcurementChip({
+      anyShortage: true,
+      hasMr: false,
+      mrStatus: "FULLY_PROCURED",
+      prLineCount: 1,
+      poLineCount: 1,
+      pendingGrnQty: 0,
+      receivedGrnQty: 55,
+      procurementCompleted: true,
+      notEscalated: true,
+    });
+    expect(chip.key).not.toBe("AWAITING_PR");
+    expect(chip.label).toBe("Fully Received");
+  });
+
   it("deriveProcurementWarnings surfaces awaiting PO and GRN notes", () => {
     const chip = deriveProcurementChip({
       anyShortage: true,

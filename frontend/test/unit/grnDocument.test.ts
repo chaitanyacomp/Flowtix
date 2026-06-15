@@ -9,6 +9,7 @@ import {
   grnBillStatusSummaryLabel,
   grnReceiptStatusDisplay,
   groupGrnTraceLines,
+  procurementCaseTraceChain,
   resolveGrnBillPresentation,
   resolveGrnCompanyHeader,
   resolveGrnVendorAddressLines,
@@ -125,6 +126,88 @@ describe("grnDocument helpers", () => {
     expect(groups).toHaveLength(1);
     expect(groups[0].itemNames).toEqual(["HDPE", "Powder"]);
     expect(groups[0].mrDocNo).toBe("MR-26-0002");
+  });
+
+  it("groupGrnTraceLines merges same procurement case when per-line trace suffix differs", () => {
+    const demandSources = [
+      {
+        demandSourceType: "MONTHLY_PLAN",
+        monthlyPlan: { label: "June Plan 1", periodKey: "2026-06" },
+        mr: { materialRequirementId: 1, docNo: "MR-26-0001" },
+        pr: { purchaseRequestId: 1, docNo: "PR-26-0001" },
+      },
+    ];
+    const groups = groupGrnTraceLines([
+      {
+        id: 1,
+        item: { itemName: "PP" },
+        demandSources,
+        traceChain: ["June Plan 1", "MR-26-0001", "PR-26-0001", "RMPO-112", "GRN-112", "StockTransaction IN"],
+      },
+      {
+        id: 2,
+        item: { itemName: "Powder" },
+        demandSources: [
+          {
+            ...demandSources[0],
+            monthlyPlanRevision: 1,
+            monthlyPlan: { periodKey: "2026-06", sourceRevision: 1 },
+          },
+        ],
+        traceChain: ["Monthly Plan Rev 1", "MR-26-0001", "PR-26-0001", "RMPO-112", "GRN-112", "StockTransaction IN"],
+      },
+    ] as never);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].itemNames).toEqual(["PP", "Powder"]);
+    expect(groups[0].traceChain).toEqual(["June Plan 1", "MR-26-0001", "PR-26-0001", "RMPO-112"]);
+  });
+
+  it("groupGrnTraceLines keeps Regular SO cases separate by sales order", () => {
+    const groups = groupGrnTraceLines([
+      {
+        id: 1,
+        item: { itemName: "RM-A" },
+        demandSources: [
+          {
+            demandSourceType: "SALES_ORDER",
+            salesOrder: { id: 10, docNo: "SO-26-0001" },
+            mr: { docNo: "MR-26-0010" },
+            pr: { docNo: "PR-26-0010" },
+          },
+        ],
+        traceChain: ["SO-26-0001", "MR-26-0010", "PR-26-0010", "RMPO-200"],
+      },
+      {
+        id: 2,
+        item: { itemName: "RM-B" },
+        demandSources: [
+          {
+            demandSourceType: "SALES_ORDER",
+            salesOrder: { id: 10, docNo: "SO-26-0001" },
+            mr: { docNo: "MR-26-0010" },
+            pr: { docNo: "PR-26-0010" },
+          },
+        ],
+        traceChain: ["SO-26-0001", "MR-26-0010", "PR-26-0010", "RMPO-200", "GRN-201"],
+      },
+    ] as never);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].itemNames).toEqual(["RM-A", "RM-B"]);
+    expect(groups[0].soDocNo).toBe("SO-26-0001");
+    expect(groups[0].traceChain).toEqual(["SO-26-0001", "MR-26-0010", "PR-26-0010", "RMPO-200"]);
+  });
+
+  it("procurementCaseTraceChain strips GRN and stock suffixes", () => {
+    expect(
+      procurementCaseTraceChain([
+        "June Plan 1",
+        "MR-26-0001",
+        "PR-26-0001",
+        "RMPO-112",
+        "GRN-112",
+        "StockTransaction IN",
+      ]),
+    ).toEqual(["June Plan 1", "MR-26-0001", "PR-26-0001", "RMPO-112"]);
   });
 
   it("resolveGrnVendorAddressLines prefers supply location address", () => {
@@ -460,5 +543,40 @@ describe("GrnDetailPage P5B", () => {
   it("registers /grn/:grnId route", () => {
     expect(appSource).toContain('path="/grn/:grnId"');
     expect(appSource).toContain("GrnDetailPage");
+  });
+});
+
+describe("GrnDocumentView P8F-A9 supplier invoice role gate", () => {
+  it("GrnDetailPage passes purchase bill draft permission to document view", () => {
+    expect(pageSource).toContain("PURCHASE_BILL_DRAFT_ROLES");
+    expect(pageSource).toContain("canCreatePurchaseBill = hasErpRole(user?.role, PURCHASE_BILL_DRAFT_ROLES)");
+    expect(pageSource).toContain("canCreatePurchaseBill={canCreatePurchaseBill}");
+  });
+
+  it("gates supplier invoice actions on canCreatePurchaseBill", () => {
+    expect(viewSource).toContain("canCreatePurchaseBill");
+    expect(viewSource).toContain("!grn.isReversed && canCreatePurchaseBill");
+    expect(viewSource).toContain('data-testid="grn-create-supplier-invoice-btn"');
+    expect(viewSource).toContain('data-testid="grn-open-supplier-invoice-btn"');
+  });
+
+  it("shows read-only supplier invoice pending message for non-Purchase viewers", () => {
+    expect(viewSource).toContain('data-testid="grn-supplier-invoice-pending-readonly"');
+    expect(viewSource).toContain("PROCUREMENT_TERMS.SUPPLIER_INVOICE_PENDING_PURCHASE_POSTS");
+    expect(viewSource).toContain("!canCreatePurchaseBill && !primaryBill");
+  });
+
+  it("renders trace groups once with item list under shared chain", () => {
+    expect(viewSource).toContain('data-testid="grn-trace-group-items"');
+    expect(viewSource).toContain("group.itemNames.map");
+  });
+});
+
+describe("grnDocument P8F-A9 role constants", () => {
+  it("Store cannot draft purchase bills", async () => {
+    const { hasErpRole, PURCHASE_BILL_DRAFT_ROLES } = await import("../../src/config/erpRoles");
+    expect(hasErpRole("STORE", PURCHASE_BILL_DRAFT_ROLES)).toBe(false);
+    expect(hasErpRole("PURCHASE", PURCHASE_BILL_DRAFT_ROLES)).toBe(true);
+    expect(hasErpRole("ADMIN", PURCHASE_BILL_DRAFT_ROLES)).toBe(true);
   });
 });

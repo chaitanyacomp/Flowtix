@@ -26,6 +26,9 @@ export const PROCUREMENT_TERMS = {
   CREATE_PURCHASE_REQUEST: "Create Purchase Request",
   PR_CREATE_SUCCESS: "Purchase Request created successfully.",
   PREPARE_RM_PO: "Prepare RM PO",
+  WAITING_FOR_PURCHASE_RM_PO: "Waiting for Purchase to prepare RM PO.",
+  GRN_PENDING_STORE_POSTS_RECEIPT: "GRN pending — Store posts receipt.",
+  SUPPLIER_INVOICE_PENDING_PURCHASE_POSTS: "Supplier invoice pending — Purchase posts bill.",
   CREATE_RM_PO: "Create RM PO",
   SECTION_PENDING_MR_HELPER:
     "Create one Purchase Request per approved MR. RM lines below are planning detail — not separate PR documents.",

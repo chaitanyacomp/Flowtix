@@ -129,17 +129,36 @@ describe("controlTowerRowNormalizer", () => {
     assert.equal(row.metadata.purchaseNextOwnerHint, "Open purchase plan");
   });
 
-  it("normalizeRmRiskRow: PURCHASE only for WAITING_PURCHASE_ACTION", () => {
+  it("normalizeRmRiskRow: pre-PR WAITING_PURCHASE_ACTION remains STORE-owned", () => {
+    const row = normalizeRmRiskRow({
+      workOrderId: 10,
+      itemId: 3,
+      status: "CRITICAL",
+      queueType: "WAITING_PURCHASE_ACTION",
+      recommendedAction: "Create Purchase Request",
+      prLineCount: 0,
+      operationalKey: "PROCUREMENT_PENDING",
+    });
+    assert.equal(row.currentStatus, CONTROL_TOWER_STATUSES.PROCUREMENT_IN_PROGRESS);
+    assert.equal(row.currentOwner, VISIBLE_OWNERS.STORE);
+    assert.equal(row.metadata.sourceQueueType, "WAITING_PURCHASE_ACTION");
+    assert.equal(row.metadata.purchaseHandoff, undefined);
+  });
+
+  it("normalizeRmRiskRow: PR_PENDING_PO is PURCHASE-owned", () => {
     const row = normalizeRmRiskRow({
       workOrderId: 10,
       itemId: 3,
       status: "CRITICAL",
       queueType: "WAITING_PURCHASE_ACTION",
       recommendedAction: "Follow up Purchase Order",
+      prLineCount: 1,
+      poLineCount: 0,
+      operationalKey: "PR_PENDING_PO",
+      nextActionKey: "CREATE_PO",
     });
     assert.equal(row.currentStatus, CONTROL_TOWER_STATUSES.PROCUREMENT_IN_PROGRESS);
     assert.equal(row.currentOwner, VISIBLE_OWNERS.PURCHASE);
-    assert.equal(row.metadata.sourceQueueType, "WAITING_PURCHASE_ACTION");
     assert.equal(row.metadata.purchaseHandoff, true);
   });
 
@@ -151,6 +170,22 @@ describe("controlTowerRowNormalizer", () => {
       queueType: "APPROVAL_PENDING",
     });
     assert.equal(row.currentStatus, CONTROL_TOWER_STATUSES.PROCUREMENT_IN_PROGRESS);
+    assert.equal(row.currentOwner, VISIBLE_OWNERS.STORE);
+    assert.equal(row.metadata.purchaseHandoff, undefined);
+  });
+
+  it("normalizeRmRiskRow: stale PR_PENDING_PO with poLineCount > 0 stays Store-owned", () => {
+    const row = normalizeRmRiskRow({
+      workOrderId: 10,
+      itemId: 3,
+      status: "CRITICAL",
+      queueType: "WAITING_PURCHASE_ACTION",
+      prLineCount: 1,
+      poLineCount: 1,
+      pendingGrnQty: 0,
+      operationalKey: "PR_PENDING_PO",
+      nextActionKey: "CREATE_PO",
+    });
     assert.equal(row.currentOwner, VISIBLE_OWNERS.STORE);
     assert.equal(row.metadata.purchaseHandoff, undefined);
   });
@@ -258,7 +293,7 @@ describe("controlTowerRowNormalizer", () => {
     assert.equal(row.riskLevel, RISK_LEVELS.LOW);
   });
 
-  it("normalizeNoQtyPlanningRow maps to PLANNING_PENDING with ADMIN owner", () => {
+  it("normalizeNoQtyPlanningRow maps to PLANNING_PENDING with STORE owner", () => {
     const row = normalizeNoQtyPlanningRow({
       salesOrderId: 44,
       salesOrderDocNo: "SO-NQ-44",
@@ -268,7 +303,8 @@ describe("controlTowerRowNormalizer", () => {
       customerName: "Acme",
     });
     assert.equal(row.currentStatus, CONTROL_TOWER_STATUSES.PLANNING_PENDING);
-    assert.equal(row.currentOwner, VISIBLE_OWNERS.ADMIN);
+    assert.equal(row.currentOwner, VISIBLE_OWNERS.STORE);
+    assert.equal(row.nextAction, "Lock RS Cycle 2");
     assert.equal(row.metadata.sourceStageKey, "NO_QTY_PLANNING");
     assert.equal(row.metadata.orderType, "NO_QTY");
   });

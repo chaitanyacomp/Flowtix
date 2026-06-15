@@ -6,6 +6,10 @@ const {
   deriveLineBlocker,
   deriveRecommendedAction,
   assessPostGrnCreateWoEligibility,
+  deriveWoEscalationLifecycle,
+  enrichQueueRowFromCaseSupply,
+  summarizeMergedCaseSupply,
+  buildProcurementChainFromSupply,
 } = require("../../src/services/materialAvailabilityWorkspaceService");
 
 function availabilityLine(itemId, overrides = {}) {
@@ -347,6 +351,30 @@ describe("materialAvailabilityWorkspaceService", () => {
     const data = await buildMaterialAvailabilityWorkspace(createMockDb(), { workOrderId: 6 }, createDeps());
     assert.equal(data.actionQueue[0].queueType, "PMR_WAITING_ISSUE");
     assert.equal(data.actionQueue[0].recommendedAction, "Issue material to production");
+  });
+
+  it("store issue pending dashboard skips PMR-waiting zero-stock WOs", async () => {
+    const data = await buildMaterialAvailabilityWorkspace(createMockDb(), { onlyBlocked: true }, createDeps());
+    const pmrWaiting = data.actionQueue.find((r) => r.workOrderId === 6);
+    assert.equal(pmrWaiting?.queueType, "PMR_WAITING_ISSUE");
+    const issueCandidates = data.actionQueue.filter(
+      (row) =>
+        row.queueType === "RM_READY_FOR_ISSUE" &&
+        row.workOrderId &&
+        Number(row.freeStockQty) > 1e-6,
+    );
+    assert.equal(issueCandidates.some((r) => r.workOrderId === 6), false);
+  });
+
+  it("store issue pending dashboard includes RM-ready WOs with stock", async () => {
+    const data = await buildMaterialAvailabilityWorkspace(createMockDb(), { onlyBlocked: true }, createDeps());
+    const issueCandidates = data.actionQueue.filter(
+      (row) =>
+        row.queueType === "RM_READY_FOR_ISSUE" &&
+        row.workOrderId &&
+        Number(row.freeStockQty) > 1e-6,
+    );
+    assert.ok(issueCandidates.some((r) => r.workOrderId === 7));
   });
 
   it("selected workspace detail returns RM lines", async () => {
@@ -896,5 +924,181 @@ describe("post-GRN SO planning MR (FULLY_PROCURED, no WO)", () => {
     );
     assert.match(blocker, /create Work Order/i);
     assert.notEqual(blocker, "Ready for material issue");
+  });
+});
+
+describe("MPRS WO case — completed procurement read model", () => {
+  const mprsMr = {
+    id: 1,
+    docNo: "MR-26-0001",
+    status: "FULLY_PROCURED",
+    sourceType: "MONTHLY_PLAN",
+    workOrderId: null,
+    lines: [
+      {
+        id: 11,
+        rmItemId: 301,
+        requiredQty: 40.35,
+        shortageQty: 40.35,
+        procuredQty: 40.35,
+        purchaseRequestSourceLinks: [
+          {
+            purchaseRequestLine: {
+              id: 501,
+              requiredQty: 50,
+              netRequiredQty: 50,
+              orderedQty: 50,
+              purchaseRequest: { id: 50, docNo: "PR-26-0001", status: "COMPLETED" },
+            },
+          },
+        ],
+      },
+      {
+        id: 12,
+        rmItemId: 302,
+        requiredQty: 1.25,
+        shortageQty: 1.25,
+        procuredQty: 1.25,
+        purchaseRequestSourceLinks: [
+          {
+            purchaseRequestLine: {
+              id: 502,
+              requiredQty: 5,
+              netRequiredQty: 5,
+              orderedQty: 5,
+              purchaseRequest: { id: 50, docNo: "PR-26-0001", status: "COMPLETED" },
+            },
+          },
+        ],
+      },
+    ],
+  };
+
+  const caseSupply = {
+    openMrLines: [],
+    prLines: [{ purchaseRequestLineId: 501, purchaseRequestDocNo: "PR-26-0001" }],
+    poLines: [
+      {
+        rmPoLineId: 901,
+        purchaseOrderNo: "RMPO-112",
+        pendingGrnQty: 0,
+        receivedGrnQty: 55,
+        grnRefs: [{ displayNo: "GRN-112", receivedQty: 55 }],
+        purchaseRequestRefs: [{ id: 50, docNo: "PR-26-0001" }],
+      },
+    ],
+    summary: {
+      prLineCount: 1,
+      poLineCount: 1,
+      pendingGrnQty: 0,
+      receivedGrnQty: 55,
+      procurementCompletedForCase: true,
+    },
+    boundMaterialRequirement: { id: 1, docNo: "MR-26-0001", status: "FULLY_PROCURED", sourceType: "MONTHLY_PLAN" },
+    procurementChain: {
+      mrDocNo: "MR-26-0001",
+      prDocNos: ["PR-26-0001"],
+      poDocNos: ["RMPO-112"],
+      grnDocNos: ["GRN-112"],
+    },
+  };
+
+  it("deriveWoEscalationLifecycle returns PROCUREMENT_COMPLETED for MPRS MR + GRN", () => {
+    const esc = deriveWoEscalationLifecycle({
+      woMr: mprsMr,
+      caseSupply,
+      rmLines: [{ rmItemId: 301, netShortageAfterIncomingQty: 0, shortageAfterReservationQty: 0 }],
+    });
+    assert.equal(esc.state, "PROCUREMENT_COMPLETED");
+    assert.notEqual(esc.state, "NOT_ESCALATED");
+  });
+
+  it("deriveCaseStoreAction opens Production when PMR fully issued after GRN", () => {
+    const action = deriveCaseStoreAction({
+      rmLines: [{ requiredQty: 40.35, freeStockQty: 0, shortageAfterReservationQty: 0, netShortageAfterIncomingQty: 0 }],
+      pmrStatus: {
+        openPmrs: [
+          {
+            status: "FULLY_ISSUED",
+            docNo: "PMR-26-0001",
+            lines: [{ rmItemId: 301, requiredQty: 40.35, issuedQty: 40.35, pendingQty: 0 }],
+          },
+        ],
+      },
+      woMr: mprsMr,
+      terminalMr: null,
+      caseSupply,
+      escalation: { state: "PROCUREMENT_COMPLETED", procurementInitiated: true },
+      shortageSummary: { blockedLineCount: 0, totalNetShortQty: 0 },
+      workOrderId: 1,
+    });
+    assert.equal(action.key, "OPEN_PRODUCTION");
+  });
+
+  it("enrichQueueRowFromCaseSupply sets READY_TO_RELEASE_WO when PMR fully issued", () => {
+    const row = enrichQueueRowFromCaseSupply(
+      { queueType: "WO_BLOCKED_RM_SHORTAGE", freeStockQty: 0 },
+      {
+        woMr: mprsMr,
+        caseSupply,
+        pmrStatus: {
+          openPmrs: [
+            {
+              status: "FULLY_ISSUED",
+              lines: [{ rmItemId: 301, requiredQty: 40.35, issuedQty: 40.35, pendingQty: 0 }],
+            },
+          ],
+        },
+      },
+    );
+    assert.equal(row.procurementCompletedForCase, true);
+    assert.equal(row.queueType, "READY_TO_RELEASE_WO");
+    assert.equal(row.mrStatus, "FULLY_PROCURED");
+  });
+
+  it("deriveLineBlocker prefers RM issued over WIP stock warning when PMR fully issued", () => {
+    const blocker = deriveLineBlocker(
+      availabilityLine(301, {
+        requiredQty: 40.35,
+        freeStockQty: 0,
+        shortageAfterReservationQty: 0,
+        warnings: [{ code: "STOCK_IN_PRODUCTION_LOCATION" }],
+      }),
+      {
+        pmrStatus: {
+          openPmrs: [
+            {
+              status: "FULLY_ISSUED",
+              lines: [{ rmItemId: 301, requiredQty: 40.35, issuedQty: 40.35, pendingQty: 0 }],
+            },
+          ],
+        },
+      },
+    );
+    assert.equal(blocker, "RM issued to production");
+    assert.equal(deriveRecommendedAction({}, blocker), "Start production");
+  });
+
+  it("summarizeMergedCaseSupply marks procurementCompletedForCase", () => {
+    const summary = summarizeMergedCaseSupply({
+      prLines: caseSupply.prLines,
+      poLines: caseSupply.poLines,
+      boundMr: mprsMr,
+      openMrCount: 0,
+    });
+    assert.equal(summary.procurementCompletedForCase, true);
+    assert.equal(summary.completedMrDocNo, "MR-26-0001");
+  });
+
+  it("buildProcurementChainFromSupply exposes MR → PR → PO → GRN doc nos", () => {
+    const chain = buildProcurementChainFromSupply({
+      boundMr: mprsMr,
+      prLines: caseSupply.prLines,
+      poLines: caseSupply.poLines,
+    });
+    assert.equal(chain.mrDocNo, "MR-26-0001");
+    assert.deepEqual(chain.prDocNos, ["PR-26-0001"]);
+    assert.deepEqual(chain.poDocNos, ["RMPO-112"]);
+    assert.deepEqual(chain.grnDocNos, ["GRN-112"]);
   });
 });

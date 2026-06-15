@@ -154,20 +154,20 @@ export function resolveGuidedWorkflow(input: GuidedWorkflowInput): GuidedWorkflo
   if (input.anyIssueable) {
     phase = "E_READY_TO_ISSUE";
     timelineStepIndex = 4;
-  } else if (
-    esc?.state === "PROCUREMENT_COMPLETED" ||
-    input.storeActionKey === "ISSUE" ||
-    input.rmLines.some((l) => l.blockerReason === "Ready for material issue")
-  ) {
-    phase = "E_READY_TO_ISSUE";
-    timelineStepIndex = 4;
   } else if (pendingGrn > EPS || input.storeActionKey === "WAIT_GRN" || esc?.state === "WAITING_GRN") {
     phase = "D_PO_GRN_PENDING";
     timelineStepIndex = 3;
-  } else if (poCount > 0 && pendingGrn <= EPS && esc?.state === "PROCUREMENT_COMPLETED") {
+  } else if (poCount > 0 && pendingGrn <= EPS && esc?.state === "PROCUREMENT_COMPLETED" && input.anyIssueable) {
     phase = input.hasWaitingPmr ? "E_READY_TO_ISSUE" : "F_ISSUED_OPEN_PRODUCTION";
     timelineStepIndex = 4;
-  } else if (prCount > 0 && pendingPo > EPS) {
+  } else if (
+    prCount > 0 &&
+    poCount === 0 &&
+    (input.storeActionKey === "WAIT_PO" || pendingPo > EPS || input.storeActionKey === "CONTINUE_PROCUREMENT")
+  ) {
+    phase = "C_PR_CREATED";
+    timelineStepIndex = 2;
+  } else if (prCount > 0 && poCount === 0) {
     phase = "C_PR_CREATED";
     timelineStepIndex = 2;
   } else if (
@@ -268,10 +268,14 @@ export function resolveGuidedWorkflow(input: GuidedWorkflowInput): GuidedWorkflo
       return {
         ...base,
         phase,
-        phaseTitle: "Purchase request created",
-        phaseDetail: `PR is on this case${pendingPo > EPS ? ` · ${pendingPo.toLocaleString()} qty still needs a PO` : ""}.`,
-        statusHeadline: "Procurement in progress — create the purchase order.",
-        primaryAction: { kind: "CREATE_PO", label: "Create Purchase Order", href: "/rm-po-grn?focus=pending-requests" },
+        phaseTitle: "Awaiting PO",
+        phaseDetail: `PR is on this case${pendingPo > EPS ? ` · ${pendingPo.toLocaleString()} qty still needs a PO` : ""}. Purchase will create the RM PO.`,
+        statusHeadline: PROCUREMENT_TERMS.WAITING_FOR_PURCHASE_RM_PO,
+        primaryAction: {
+          kind: "NONE",
+          label: PROCUREMENT_TERMS.WAITING_FOR_PURCHASE_RM_PO,
+          href: procHref,
+        },
         showMaterialIssueSection: false,
         showProductionLink: false,
         timelineStepIndex: 2,

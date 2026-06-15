@@ -56,8 +56,10 @@ describe("P5C-3 — workspace route sourceType query", () => {
     const schema = z.object({
       sourceType: z.enum(["MONTHLY_PLAN", "SALES_ORDER", "WORK_ORDER_PLANNING", "STOCK_REPLENISHMENT"]).optional(),
       demandPool: z.enum(["REGULAR_SO", "MPRS", "STOCK_REPLENISHMENT"]).optional(),
+      materialRequirementId: z.coerce.number().int().positive().optional(),
     });
     assert.equal(schema.parse({ sourceType: "MONTHLY_PLAN" }).sourceType, "MONTHLY_PLAN");
+    assert.equal(schema.parse({ materialRequirementId: "101" }).materialRequirementId, 101);
     assert.throws(() => schema.parse({ sourceType: "EMERGENCY" }));
   });
 });

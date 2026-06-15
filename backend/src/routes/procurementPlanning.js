@@ -20,6 +20,7 @@ const procurementPlanningRouter = express.Router();
 
 const workspaceQuerySchema = z.object({
   salesOrderId: z.coerce.number().int().positive().optional(),
+  materialRequirementId: z.coerce.number().int().positive().optional(),
   demandPool: z.enum(["REGULAR_SO", "MPRS", "STOCK_REPLENISHMENT"]).optional(),
   sourceType: z.enum(["MONTHLY_PLAN", "SALES_ORDER", "WORK_ORDER_PLANNING", "STOCK_REPLENISHMENT"]).optional(),
 });
@@ -36,12 +37,16 @@ procurementPlanningRouter.get(
     try {
       const query = workspaceQuerySchema.parse(req.query);
       const salesOrderId = query.salesOrderId != null ? Number(query.salesOrderId) : null;
+      const materialRequirementId =
+        query.materialRequirementId != null ? Number(query.materialRequirementId) : null;
       await repairStaleDuplicateWoPlanningProcurement(undefined, {
         userId: req.user?.userId,
         role: req.user?.role,
       });
       const data = await buildProcurementWorkspace(undefined, {
         salesOrderId: Number.isFinite(salesOrderId) && salesOrderId > 0 ? salesOrderId : null,
+        materialRequirementId:
+          Number.isFinite(materialRequirementId) && materialRequirementId > 0 ? materialRequirementId : null,
         demandPool: query.demandPool ?? null,
         sourceType: query.sourceType ?? null,
       });

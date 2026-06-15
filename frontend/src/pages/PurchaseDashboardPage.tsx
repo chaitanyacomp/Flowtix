@@ -8,6 +8,8 @@ import { PageContainer } from "../components/PageHeader";
 import { ERP_DASHBOARD_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
 import { ProcurementPendingDashboardCard, type ProcurementPendingRow } from "../components/erp/ProcurementPendingDashboardCard";
 import { DashboardOpsClearStrip, DashboardWorkspaceHeader } from "../components/erp/foundation";
+import { PendingActionsDashboardCard } from "./PendingActionsPage";
+import type { PendingActionsDashboardProps } from "../lib/pendingActionsApi";
 import { ErpActionButton } from "../components/erp/foundation/ErpActionButton";
 import { ErpEmptyState } from "../components/erp/foundation/ErpEmptyState";
 import { dashboardShell } from "../lib/dashboardShell";
@@ -70,7 +72,11 @@ const shell = dashboardShell.page;
 const max = dashboardShell.max;
 const card = dashboardShell.card;
 
-export function PurchaseDashboardPage() {
+export function PurchaseDashboardPage({
+  pendingActions,
+}: {
+  pendingActions?: PendingActionsDashboardProps;
+} = {}) {
   const navigate = useNavigate();
   const liveTick = useErpRefreshTick(["dashboard"], { pollIntervalMs: ERP_DASHBOARD_POLL_MS });
   const [purchaseSummary, setPurchaseSummary] = React.useState<PurchaseSummaryRow[] | null>(null);
@@ -114,6 +120,15 @@ export function PurchaseDashboardPage() {
     return (
       <div className={shell}>
         <PageContainer className={max}>
+          {pendingActions ? (
+            <div className="mb-3">
+              <PendingActionsDashboardCard
+                count={pendingActions.count}
+                loading={pendingActions.loading}
+                error={pendingActions.error}
+              />
+            </div>
+          ) : null}
           <p className="text-sm text-slate-600">Loading purchase desk…</p>
         </PageContainer>
       </div>
@@ -124,6 +139,15 @@ export function PurchaseDashboardPage() {
     return (
       <div className={shell}>
         <PageContainer className={max}>
+          {pendingActions ? (
+            <div className="mb-3">
+              <PendingActionsDashboardCard
+                count={pendingActions.count}
+                loading={pendingActions.loading}
+                error={pendingActions.error}
+              />
+            </div>
+          ) : null}
           <p className="text-sm text-red-700">{err}</p>
         </PageContainer>
       </div>
@@ -136,6 +160,16 @@ export function PurchaseDashboardPage() {
     <div className={shell}>
       <PageContainer className={max}>
         <DashboardWorkspaceHeader role="PURCHASE" />
+
+        {pendingActions ? (
+          <div className="mb-2">
+            <PendingActionsDashboardCard
+              count={pendingActions.count}
+              loading={pendingActions.loading}
+              error={pendingActions.error}
+            />
+          </div>
+        ) : null}
 
         <div className="mb-2 flex flex-wrap gap-1.5">
           <ErpActionButton tier="primary" className="gap-1.5" onClick={() => navigate("/procurement-planning?demandPool=REGULAR_SO&source=dashboard")}>

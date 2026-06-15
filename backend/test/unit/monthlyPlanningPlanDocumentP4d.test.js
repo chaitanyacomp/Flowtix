@@ -250,6 +250,16 @@ function createP4dDb(initialPlans = []) {
     docSequence: {
       upsert: async () => ({ nextNumber: ++state.seq, year2: 26, docType: "MATERIAL_REQUIREMENT" }),
     },
+    requirementSheet: {
+      findMany: async () => [],
+    },
+    workOrder: {
+      findMany: async () => [],
+      findFirst: async () => null,
+    },
+    salesOrderLine: {
+      findMany: async () => [],
+    },
     $transaction: async (fn) => fn(db),
   };
   return db;

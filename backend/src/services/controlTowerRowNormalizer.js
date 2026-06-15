@@ -157,21 +157,39 @@ const STORE_PROCUREMENT_QUEUE_TYPES = Object.freeze([
 const PURCHASE_PROCUREMENT_QUEUE_TYPES = Object.freeze(["WAITING_PURCHASE_ACTION"]);
 
 /**
- * RM shortage rows: Store owns validation, allocation, issue, and procurement escalation.
- * Purchase is currentOwner only when material workspace marks an approved MR/PR handoff
- * (WAITING_PURCHASE_ACTION). Purchase-related recommendedAction text stays in metadata only.
+ * RM shortage rows: Store owns validation, allocation, issue, and PR creation.
+ * Purchase is currentOwner only after PR exists and PO prep is pending.
  * @param {object} raw
  */
 function ownerForRmRiskRow(raw) {
   const queueType = String(raw?.queueType ?? "").trim();
-  if (PURCHASE_PROCUREMENT_QUEUE_TYPES.includes(queueType)) {
+  const operationalKey = String(raw?.operationalKey ?? "").trim().toUpperCase();
+  const nextActionKey = String(raw?.nextActionKey ?? "").trim().toUpperCase();
+  const prLineCount = Number(raw?.prLineCount ?? 0);
+  const poLineCount = Number(raw?.poLineCount ?? 0);
+  const pendingGrnQty = Number(raw?.pendingGrnQty ?? 0);
+
+  if (
+    queueType === "PO_WAITING_GRN" ||
+    pendingGrnQty > 0 ||
+    operationalKey === "GRN_PENDING"
+  ) {
+    return VISIBLE_OWNERS.STORE;
+  }
+
+  if (
+    (operationalKey === "PR_PENDING_PO" && poLineCount === 0) ||
+    (nextActionKey === "CREATE_PO" && poLineCount === 0) ||
+    (prLineCount > 0 && poLineCount === 0)
+  ) {
     return VISIBLE_OWNERS.PURCHASE;
   }
+
   return VISIBLE_OWNERS.STORE;
 }
 
-function isPurchaseHandoffQueueType(queueType) {
-  return PURCHASE_PROCUREMENT_QUEUE_TYPES.includes(String(queueType ?? "").trim());
+function isPurchaseHandoffQueueType(queueType, raw = {}) {
+  return ownerForRmRiskRow({ queueType, ...raw }) === VISIBLE_OWNERS.PURCHASE;
 }
 
 function purchaseNextOwnerHintFromRmRisk(raw) {
@@ -204,7 +222,7 @@ function normalizeRmRiskRow(raw) {
   const queueType = String(raw?.queueType ?? "").trim();
   const currentOwner = ownerForRmRiskRow(raw);
   const purchaseNextOwnerHint = purchaseNextOwnerHintFromRmRisk(raw);
-  const purchaseHandoff = isPurchaseHandoffQueueType(queueType);
+  const purchaseHandoff = isPurchaseHandoffQueueType(queueType, raw);
   const lineage = buildSourceLineageMetadata(raw, {
     sourceStatus: raw?.status ?? null,
     sourceQueueType: raw?.queueType ?? null,
@@ -239,6 +257,21 @@ function normalizeRmRiskRow(raw) {
       salesOrderId,
       workOrderId,
       rmItemId,
+      materialRequirementId: raw?.materialRequirementId != null ? Number(raw.materialRequirementId) : null,
+      sourceType: raw?.sourceType ?? null,
+      freeStockQty: raw?.freeStockQty ?? null,
+      netShortageAfterIncomingQty: raw?.netShortageAfterIncomingQty ?? null,
+      prLineCount: raw?.prLineCount ?? null,
+      poLineCount: raw?.poLineCount ?? null,
+      pendingGrnQty: raw?.pendingGrnQty ?? null,
+      operationalKey: raw?.operationalKey ?? null,
+      nextActionKey: raw?.nextActionKey ?? null,
+      procurementDemandPool: raw?.procurementDemandPool ?? null,
+      hasOpenMr: raw?.hasOpenMr ?? null,
+      primaryPoId: raw?.primaryPoId ?? null,
+      procurementCompletedForCase: raw?.procurementCompletedForCase ?? null,
+      mrStatus: raw?.mrStatus ?? raw?.requisitionStatus ?? null,
+      receivedGrnQty: raw?.receivedGrnQty ?? null,
       ...lineage,
       ...(purchaseHandoff ? { purchaseHandoff: true } : {}),
       ...(purchaseNextOwnerHint && currentOwner === VISIBLE_OWNERS.STORE
@@ -397,6 +430,30 @@ function ownerForWoPlanningRow(raw) {
   return VISIBLE_OWNERS.PRODUCTION;
 }
 
+function nextActionForNoQtyPlanningRow(raw) {
+  const rsStatus = normalizeNoQtyRsStatusToken(raw?.latestRequirementSheetStatus);
+  const hasSheet =
+    raw?.latestRequirementSheetId != null && Number.isFinite(Number(raw.latestRequirementSheetId)) && Number(raw.latestRequirementSheetId) > 0;
+  const cycleNo =
+    raw?.cycleNo != null && Number.isFinite(Number(raw.cycleNo)) && Number(raw.cycleNo) > 0
+      ? Number(raw.cycleNo)
+      : raw?.planningPointerCycleNo != null && Number.isFinite(Number(raw.planningPointerCycleNo))
+        ? Number(raw.planningPointerCycleNo)
+        : 1;
+  if (!hasSheet && !rsStatus) {
+    return `Create RS Cycle ${cycleNo}`;
+  }
+  if (rsStatus === "DRAFT") {
+    return `Lock RS Cycle ${cycleNo}`;
+  }
+  return "Complete requirement sheet planning";
+}
+
+function normalizeNoQtyRsStatusToken(status) {
+  if (status == null || String(status).trim() === "") return "";
+  return String(status).trim().toUpperCase();
+}
+
 function nextActionForWoPlanningRow(raw) {
   const key = String(raw?.nextActionKey ?? raw?.operationalKey ?? "");
   if (key === "CREATE_WO") return "Create Work Order";
@@ -414,11 +471,13 @@ function normalizeNoQtyPlanningRow(raw) {
   const salesOrderId = Number(raw?.salesOrderId);
   const cycleId = raw?.cycleId != null ? Number(raw.cycleId) : null;
   const sourceId = `no-qty-planning:so:${salesOrderId}:cycle:${cycleId ?? 0}`;
-  const rsStatus = String(raw?.latestRequirementSheetStatus ?? "DRAFT");
+  const rsStatus = normalizeNoQtyRsStatusToken(raw?.latestRequirementSheetStatus);
+  const hasSheet =
+    raw?.latestRequirementSheetId != null && Number.isFinite(Number(raw.latestRequirementSheetId)) && Number(raw.latestRequirementSheetId) > 0;
   const lineage = buildSourceLineageMetadata(raw, {
-    sourceStatus: rsStatus,
+    sourceStatus: rsStatus || (hasSheet ? "DRAFT" : "NO_RS"),
     sourceStageKey: "NO_QTY_PLANNING",
-    sourceNextAction: rsStatus === "DRAFT" ? "LOCK_RS" : "COMPLETE_RS_PLANNING",
+    sourceNextAction: !hasSheet && !rsStatus ? "CREATE_RS" : rsStatus === "DRAFT" ? "LOCK_RS" : "COMPLETE_RS_PLANNING",
   });
   const currentStatus = mapSourceToCurrentStatus({
     rowType: ROW_TYPES.NO_QTY_PLANNING,
@@ -431,10 +490,10 @@ function normalizeNoQtyPlanningRow(raw) {
     documentType: DOCUMENT_TYPES.NO_QTY,
     documentNo: raw?.salesOrderDocNo ?? null,
     currentStatus,
-    currentOwner: VISIBLE_OWNERS.ADMIN,
-    nextAction: rsStatus === "LOCKED" ? "Review RS" : "Complete requirement sheet planning",
+    currentOwner: VISIBLE_OWNERS.STORE,
+    nextAction: nextActionForNoQtyPlanningRow(raw),
     ageHours: null,
-    riskLevel: RISK_LEVELS.MEDIUM,
+    riskLevel: !hasSheet && !rsStatus ? RISK_LEVELS.HIGH : RISK_LEVELS.MEDIUM,
     sourceModule: SOURCE_MODULES.NO_QTY_PLANNING,
     sourceId,
     metadata: {
@@ -557,7 +616,7 @@ function ownerForContinueWorkingStage(stageKey) {
     case "PRODUCTION":
       return VISIBLE_OWNERS.PRODUCTION;
     case "NEXT_RS":
-      return VISIBLE_OWNERS.ADMIN;
+      return VISIBLE_OWNERS.STORE;
     default:
       return VISIBLE_OWNERS.ADMIN;
   }

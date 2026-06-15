@@ -27,12 +27,14 @@ import {
   purchaseBillIdByBillNo,
   resolvePrimaryPurchaseBillForGrn,
 } from "../../lib/procurementNavigation";
+import { PROCUREMENT_TERMS } from "../../lib/procurementTerminology";
 
 export type GrnDocumentViewProps = {
   detail: GrnDocumentPayload;
   companyProfile: GrnCompanyProfile | null;
   poHref: string;
   isAdmin: boolean;
+  canCreatePurchaseBill: boolean;
   reversing: boolean;
   onReverse?: () => void;
 };
@@ -99,6 +101,7 @@ export function GrnDocumentView({
   companyProfile,
   poHref,
   isAdmin,
+  canCreatePurchaseBill,
   reversing,
   onReverse,
 }: GrnDocumentViewProps) {
@@ -139,7 +142,7 @@ export function GrnDocumentView({
             <ArrowLeft className="h-4 w-4" />
             Back to PO
           </Link>
-          {!grn.isReversed ? (
+          {!grn.isReversed && canCreatePurchaseBill ? (
             primaryBill ? (
               <Link
                 to={buildPurchaseBillDetailHref(primaryBill.id)}
@@ -157,6 +160,14 @@ export function GrnDocumentView({
                 Create Supplier Invoice
               </Link>
             )
+          ) : null}
+          {!grn.isReversed && !canCreatePurchaseBill && !primaryBill ? (
+            <span
+              className="inline-flex items-center rounded-md border border-slate-200 bg-slate-50 px-3 py-1.5 text-sm text-slate-700"
+              data-testid="grn-supplier-invoice-pending-readonly"
+            >
+              {PROCUREMENT_TERMS.SUPPLIER_INVOICE_PENDING_PURCHASE_POSTS}
+            </span>
           ) : null}
           {isAdmin && !grn.isReversed && onReverse ? (
             <Button
@@ -455,9 +466,14 @@ export function GrnDocumentView({
                   ))}
                 </div>
               ) : null}
-              <p className="mt-2 text-sm text-slate-700">
-                <span className="font-semibold text-slate-600">Items:</span> {group.itemNames.join(", ")}
-              </p>
+              <div className="mt-2 text-sm text-slate-700" data-testid="grn-trace-group-items">
+                <span className="font-semibold text-slate-600">Items:</span>
+                <ul className="mt-1 list-inside list-disc space-y-0.5">
+                  {group.itemNames.map((itemName) => (
+                    <li key={itemName}>{itemName}</li>
+                  ))}
+                </ul>
+              </div>
             </div>
           ))}
         </div>

@@ -68,10 +68,13 @@ describe("RmPoDocumentView P4D-B", () => {
     expect(documentSource).toContain('data-testid={`grn-open-${grn.id}`}');
   });
 
-  it("create GRN edit cancel actions preserved", () => {
-    expect(documentSource).toContain("rm-po-create-grn-btn");
+  it("create GRN edit cancel actions preserved with GRN gated by grnAllowed prop", () => {
+    expect(documentSource).toContain("{grnAllowed ? (");
+    expect(documentSource).toContain('data-testid="rm-po-create-grn-btn"');
     expect(documentSource).toContain("rm-po-edit-btn");
     expect(documentSource).toContain("rm-po-cancel-btn");
+    expect(documentSource).toContain('data-testid="rm-po-print-btn"');
+    expect(documentSource).toContain('data-testid="rm-po-supplier-copy-btn"');
   });
 });
 

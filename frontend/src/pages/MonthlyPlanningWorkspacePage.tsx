@@ -31,8 +31,12 @@ import {
   RM_REQUIREMENT_SNAPSHOT_TAB_LABEL,
   RM_SNAPSHOT_BANNER,
   planStatusBadgeVariant,
+  planMutationActionBlockedMessage,
+  planMutationActionBlockedReason,
   purchasePlanningOperationalStatus,
   purchasePlanningReductionMessage,
+  purchaseReviewActionBlockedMessage,
+  purchaseReviewActionBlockedReason,
   productionPlanReadOnlyMessage,
   resolvePlanDisplayLabel,
   resolveWorkflowActionVisibility,
@@ -287,6 +291,19 @@ type ReleaseSummary = {
   released: { rmItemId: number; deltaQty: number; netRequirementQty: number }[];
   skipped: { rmItemId: number; netRequirementQty: number }[];
   surplus: { rmItemId: number; reducedQty: number; surplusQty: number; netRequirementQty: number }[];
+  executionWorkOrders?: {
+    workOrderId: number;
+    workOrderDocNo?: string | null;
+    requirementSheetId?: number;
+    salesOrderId?: number;
+    created?: boolean;
+  }[];
+  executionPmrs?: {
+    workOrderId: number;
+    pmrId?: number | null;
+    pmrDocNo?: string | null;
+    status?: string | null;
+  }[];
 };
 
 type PurchasePlanningResponse = {
@@ -947,12 +964,30 @@ export function MonthlyPlanningWorkspacePage() {
   }
 
   function runWithPastPeriodGuard(action: () => Promise<void>) {
-    if (!canMutatePeriod) {
-      showError(
-        periodIsPast
-          ? "Monthly planning for past periods is read-only. Contact Admin if correction is required."
-          : "You do not have permission to change monthly plans.",
-      );
+    const blocked = planMutationActionBlockedReason({ canMutatePeriod, periodIsPast });
+    if (blocked) {
+      showError(planMutationActionBlockedMessage(blocked));
+      return;
+    }
+    if (periodIsPast && isAdmin) {
+      if (pastPeriodConfirmedSession) {
+        void action();
+        return;
+      }
+      pastPeriodActionRef.current = async () => {
+        setPastPeriodConfirmedKey(period);
+        await action();
+      };
+      setPastPeriodConfirmOpen(true);
+      return;
+    }
+    void action();
+  }
+
+  function runWithPurchaseReviewPastPeriodGuard(action: () => Promise<void>) {
+    const blocked = purchaseReviewActionBlockedReason({ canPurchaseReview, periodIsPast, isAdmin });
+    if (blocked) {
+      showError(purchaseReviewActionBlockedMessage(blocked));
       return;
     }
     if (periodIsPast && isAdmin) {
@@ -1440,6 +1475,8 @@ export function MonthlyPlanningWorkspacePage() {
           totalDeltaQty: summary.totalDeltaQty,
           skippedLineCount: summary.skippedLineCount,
           surplusLineCount: summary.surplusLineCount,
+          executionWorkOrders: summary.executionWorkOrders,
+          executionPmrs: summary.executionPmrs,
         }),
       );
       await refreshPurchase();
@@ -1787,7 +1824,7 @@ export function MonthlyPlanningWorkspacePage() {
                 type="button"
                 size="sm"
                 onClick={() =>
-                  runWithPastPeriodGuard(() =>
+                  runWithPurchaseReviewPastPeriodGuard(() =>
                     onPurchaseApprove(periodIsPast && isAdmin ? { confirmPastPeriod: true } : undefined),
                   )
                 }
@@ -2213,7 +2250,7 @@ export function MonthlyPlanningWorkspacePage() {
             setRejectReason("");
           }}
           onConfirm={() =>
-            runWithPastPeriodGuard(() =>
+            runWithPurchaseReviewPastPeriodGuard(() =>
               onPurchaseReject(periodIsPast && isAdmin ? { confirmPastPeriod: true } : undefined),
             )
           }

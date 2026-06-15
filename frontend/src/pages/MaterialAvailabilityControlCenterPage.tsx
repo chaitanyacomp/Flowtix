@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { ArrowDownToLine, Boxes, Filter, PackageCheck, RefreshCw } from "lucide-react";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
@@ -23,6 +23,10 @@ import { woPreparePrepareHref } from "../lib/woPrepareOperationalStage";
 import { presentOperationalError } from "../lib/operationalErrorPresentation";
 import { formatRmQty } from "../lib/rmQtyDisplay";
 import { buildPurchaseRequestPayloadFromWoMr } from "../lib/purchaseRequestFromMr";
+import {
+  prefersProcurementWorkspaceNavigation,
+  resolveCaseProcurementMr,
+} from "../lib/rmControlCenterProcurementHandoff";
 import { PROCUREMENT_TERMS } from "../lib/procurementTerminology";
 import {
   deriveProcurementChip,
@@ -32,6 +36,7 @@ import {
   lineCoveragePercent,
   procurementSourceLabel,
   procurementTimelineStepIndex,
+  storeMayCreatePurchaseRequest,
 } from "../lib/rmControlCenterProcurementVisibility";
 import {
   caseHasPhysicalButNoFreeStock,
@@ -249,6 +254,18 @@ type WoStoreAction = {
 type CaseSupplyPanel = SupplyPanel & {
   workOrderId: number | null;
   materialRequirementId: number | null;
+  boundMaterialRequirement?: {
+    id: number;
+    docNo: string | null;
+    status: string | null;
+    sourceType: string | null;
+  } | null;
+  procurementChain?: {
+    mrDocNo: string | null;
+    prDocNos: string[];
+    poDocNos: string[];
+    grnDocNos: string[];
+  } | null;
 };
 
 type SupplyPanel = {
@@ -292,6 +309,8 @@ type SupplyPanel = {
     poLineCount: number;
     pendingGrnQty: number;
     receivedGrnQty: number;
+    procurementCompletedForCase?: boolean;
+    completedMrDocNo?: string | null;
   };
 };
 
@@ -511,6 +530,7 @@ export function MaterialAvailabilityControlCenterPage() {
   const canAllocateAsStore = (RM_ALLOCATION_WRITE_ROLES as readonly string[]).includes(role);
   const canCreatePurchaseRequest = hasErpRole(role, MATERIAL_REQUISITION_WRITE_ROLES);
   const canRaiseProcurementShortageMr = canCreatePurchaseRequest;
+  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const initialApiFilters = React.useMemo(() => apiFiltersFromSearchParams(searchParams), [searchParams]);
   const returnTo = searchParams.get("returnTo");
@@ -661,7 +681,10 @@ export function MaterialAvailabilityControlCenterPage() {
     });
   }, [detail, hasWaitingPmr]);
   const requiresReopenConfirm = Boolean(woCase?.requiresReopenConfirm);
-  const procurementCompletedForCase = escalation?.state === "PROCUREMENT_COMPLETED";
+  const procurementCompletedForCase =
+    escalation?.state === "PROCUREMENT_COMPLETED" ||
+    Boolean(caseSupply?.summary?.procurementCompletedForCase) ||
+    woCase?.materialRequirement?.status === "FULLY_PROCURED";
   const guided = React.useMemo(() => {
     if (!detail?.workOrder?.id) {
       return null;
@@ -700,7 +723,10 @@ export function MaterialAvailabilityControlCenterPage() {
 
   const selectedQueueRow = React.useMemo(() => {
     const woId = detail?.workOrder?.id ?? null;
-    const mrId = woCase?.materialRequirement?.id ?? null;
+    const mrId =
+      woCase?.materialRequirement?.id ??
+      (caseSupply?.openMrLines?.find((ln) => ln.sourceType === "MONTHLY_PLAN")?.materialRequirementId ?? null) ??
+      null;
     const soId = detail?.salesOrder?.id ?? woCase?.salesOrderId ?? null;
     if (!woId && !mrId && !soId) return null;
     const rmId = selectedRmItemId ?? detail?.rmLines[0]?.rmItemId;
@@ -715,7 +741,27 @@ export function MaterialAvailabilityControlCenterPage() {
       ) ??
       null
     );
-  }, [data?.actionQueue, detail, selectedRmItemId, woCase?.materialRequirement?.id, woCase?.salesOrderId]);
+  }, [data?.actionQueue, detail, selectedRmItemId, woCase?.materialRequirement?.id, woCase?.salesOrderId, caseSupply?.openMrLines]);
+
+  const resolvedProcurementMr = React.useMemo(
+    () =>
+      resolveCaseProcurementMr({
+        woCaseMr: woCase?.materialRequirement ?? null,
+        boundMaterialRequirement: caseSupply?.boundMaterialRequirement ?? null,
+        queueRowMrId: selectedQueueRow?.materialRequirementId ?? null,
+        openMrLines: caseSupply?.openMrLines ?? [],
+        workOrderId: detail?.workOrder?.id ?? null,
+        planningDrivenProcurement,
+      }),
+    [
+      woCase?.materialRequirement,
+      caseSupply?.boundMaterialRequirement,
+      selectedQueueRow?.materialRequirementId,
+      caseSupply?.openMrLines,
+      detail?.workOrder?.id,
+      planningDrivenProcurement,
+    ],
+  );
 
   const readyToRelease = selectedQueueRow?.queueType === "READY_TO_RELEASE_WO";
   const stockReadyForIssue = React.useMemo(() => {
@@ -731,7 +777,7 @@ export function MaterialAvailabilityControlCenterPage() {
     );
   }, [detail, readyToRelease]);
   const notEscalated =
-    escalation?.state === "NOT_ESCALATED" || !woCase?.materialRequirement?.id;
+    (escalation?.state === "NOT_ESCALATED" || !woCase?.materialRequirement?.id) && !procurementCompletedForCase;
 
   const operational = React.useMemo(() => {
     if (!detail) return null;
@@ -757,7 +803,8 @@ export function MaterialAvailabilityControlCenterPage() {
       workOrderId,
       salesOrderId,
       rmItemId: selectedRmItemId,
-      materialRequirementId: mr?.id ?? null,
+      materialRequirementId: resolvedProcurementMr?.materialRequirementId ?? mr?.id ?? null,
+      sourceType: resolvedProcurementMr?.sourceType ?? mr?.sourceType ?? null,
       returnTo: "rm-control-center",
     });
 
@@ -805,6 +852,7 @@ export function MaterialAvailabilityControlCenterPage() {
     selectedRmItemId,
     stockReadyForIssue,
     procurementCompletedForCase,
+    resolvedProcurementMr,
   ]);
 
   const displayGuided = React.useMemo((): GuidedWorkflowResolution | null => {
@@ -946,11 +994,12 @@ export function MaterialAvailabilityControlCenterPage() {
   const procurementVisibility = React.useMemo(() => {
     if (!detail || !operational) return null;
     const mr = woCase?.materialRequirement;
+    const procMr = resolvedProcurementMr;
     const summary = caseSupply?.summary;
     const chip = deriveProcurementChip({
       anyShortage: anyShortageOnCase,
-      hasMr: Boolean(mr?.id),
-      mrStatus: mr?.status ?? null,
+      hasMr: Boolean(procMr?.materialRequirementId ?? mr?.id),
+      mrStatus: mr?.status ?? procMr?.status ?? null,
       prLineCount: summary?.prLineCount ?? 0,
       poLineCount: summary?.poLineCount ?? 0,
       pendingGrnQty: summary?.pendingGrnQty ?? 0,
@@ -958,7 +1007,7 @@ export function MaterialAvailabilityControlCenterPage() {
       procurementCompleted: procurementCompletedForCase,
       notEscalated,
     });
-    const sourceType = mr?.sourceType ?? caseSupply?.openMrLines?.[0]?.sourceType ?? null;
+    const sourceType = procMr?.sourceType ?? mr?.sourceType ?? caseSupply?.openMrLines?.[0]?.sourceType ?? null;
     const demandSourceFallback =
       mr?.procurementSourceLabel?.trim() ||
       (sourceType === "SALES_ORDER"
@@ -970,7 +1019,7 @@ export function MaterialAvailabilityControlCenterPage() {
         salesOrderDocNo: sourceType === "SALES_ORDER" ? demandSourceFallback : null,
         salesOrderId: sourceType === "SALES_ORDER" ? detail.salesOrder?.id ?? woCase?.salesOrderId ?? null : null,
         monthlyPlanLabel: sourceType === "MONTHLY_PLAN" ? demandSourceFallback : null,
-        materialRequirementDocNo: mr?.docNo ?? null,
+        materialRequirementDocNo: procMr?.docNo ?? mr?.docNo ?? null,
       }) ?? procurementSourceLabel(sourceType, demandSourceFallback);
     const executionWoLabel = formatProcurementExecutionWoLabel({
       workOrderDocNo: detail.workOrder?.docNo ?? woCase?.workOrderNo ?? null,
@@ -1005,7 +1054,8 @@ export function MaterialAvailabilityControlCenterPage() {
       workOrderId: detail.workOrder?.id ?? null,
       salesOrderId: detail.salesOrder?.id ?? woCase?.salesOrderId ?? null,
       rmItemId: selectedRmItemId,
-      materialRequirementId: mr?.id ?? null,
+      materialRequirementId: procMr?.materialRequirementId ?? mr?.id ?? null,
+      sourceType: procMr?.sourceType ?? mr?.sourceType ?? null,
       returnTo: "rm-control-center",
     });
     return {
@@ -1017,7 +1067,7 @@ export function MaterialAvailabilityControlCenterPage() {
       timelineStepIndex,
       grnHref,
       procurementWorkspaceHref,
-      mrDocNo: mr?.docNo ?? escalation?.materialRequirementDocNo ?? null,
+      mrDocNo: procMr?.docNo ?? mr?.docNo ?? escalation?.materialRequirementDocNo ?? null,
       prLineCount: summary?.prLineCount ?? 0,
       poLineCount: summary?.poLineCount ?? 0,
       pendingGrnQty: summary?.pendingGrnQty ?? 0,
@@ -1034,18 +1084,29 @@ export function MaterialAvailabilityControlCenterPage() {
     rmCaseLines,
     escalation?.materialRequirementDocNo,
     selectedRmItemId,
+    resolvedProcurementMr,
   ]);
 
   const activeMaterialRequirement = woCase?.materialRequirement ?? null;
+  const requirementStatus =
+    resolvedProcurementMr?.status ??
+    activeMaterialRequirement?.status ??
+    selectedQueueRow?.requisitionStatus ??
+    "";
   const requirementRaised =
-    Boolean(activeMaterialRequirement?.id) &&
-    PURCHASE_VISIBLE_MR_STATUSES.has(String(activeMaterialRequirement?.status ?? ""));
+    Boolean(resolvedProcurementMr?.materialRequirementId ?? activeMaterialRequirement?.id) &&
+    (PURCHASE_VISIBLE_MR_STATUSES.has(String(requirementStatus)) ||
+      (planningDrivenProcurement &&
+        resolvedProcurementMr?.sourceType === "MONTHLY_PLAN" &&
+        Boolean(resolvedProcurementMr?.materialRequirementId)));
   const requirementDocNo =
-    requirementRaised ? activeMaterialRequirement?.docNo ?? null : null;
+    requirementRaised ? resolvedProcurementMr?.docNo ?? activeMaterialRequirement?.docNo ?? null : null;
   const requirementProcurementHref = buildProcurementWorkspaceHref({
     workOrderId: detail?.workOrder?.id ?? null,
     salesOrderId: detail?.salesOrder?.id ?? woCase?.salesOrderId ?? null,
-    materialRequirementId: requirementRaised ? activeMaterialRequirement?.id ?? null : null,
+    materialRequirementId:
+      requirementRaised ? resolvedProcurementMr?.materialRequirementId ?? activeMaterialRequirement?.id ?? null : null,
+    sourceType: resolvedProcurementMr?.sourceType ?? activeMaterialRequirement?.sourceType ?? null,
     returnTo: "rm-control-center",
   });
   const requirementActionBlock = anyShortageOnCase ? (
@@ -1095,8 +1156,8 @@ export function MaterialAvailabilityControlCenterPage() {
   ) : null;
 
   const operatorStageLabelText = operatorStageLabel({
-    allocationFirstLabel: woCase?.allocationFirstStatus?.label,
-    guidedPhaseTitle: displayGuided?.phaseTitle,
+    allocationFirstLabel: anyIssueable ? woCase?.allocationFirstStatus?.label : null,
+    guidedPhaseTitle: displayGuided?.phaseTitle ?? displayGuided?.statusHeadline,
     nextAction: woCase?.nextStoreAction?.label,
     hasWorkOrder,
   });
@@ -1165,8 +1226,39 @@ export function MaterialAvailabilityControlCenterPage() {
   }
 
   async function handleCreatePurchaseRequestFromCase() {
+    if (creatingPurchaseRequest || !canCreatePurchaseRequest) return;
+
+    const procMr = resolvedProcurementMr;
+    if (
+      prefersProcurementWorkspaceNavigation(procMr, {
+        planningDrivenProcurement,
+        woCaseMrId: woCase?.materialRequirement?.id ?? null,
+      })
+    ) {
+      if (!procMr?.materialRequirementId) {
+        showError(
+          "Cannot open Procurement Workspace — monthly planning material requirement was not found for this work order.",
+        );
+        return;
+      }
+      navigate(
+        buildProcurementWorkspaceHref({
+          materialRequirementId: procMr.materialRequirementId,
+          sourceType: procMr.sourceType,
+          workOrderId: detail?.workOrder?.id ?? null,
+          salesOrderId: detail?.salesOrder?.id ?? woCase?.salesOrderId ?? null,
+          rmItemId: selectedRmItemId,
+          returnTo: "rm-control-center",
+        }),
+      );
+      return;
+    }
+
     const mr = woCase?.materialRequirement;
-    if (!mr?.id || creatingPurchaseRequest || !canCreatePurchaseRequest) return;
+    if (!mr?.id) {
+      showError("Cannot create purchase request — material requirement was not found for this case.");
+      return;
+    }
     const payload = buildPurchaseRequestPayloadFromWoMr(mr);
     if (!payload) {
       showError("No RM lines are eligible for a purchase request on this case.");
@@ -1571,6 +1663,7 @@ export function MaterialAvailabilityControlCenterPage() {
                     anchorLabel={procurementVisibility.anchorLabel}
                     executionWoLabel={procurementVisibility.executionWoLabel}
                     mrDocNo={procurementVisibility.mrDocNo}
+                    procurementChain={caseSupply?.procurementChain ?? null}
                     timelineStepIndex={procurementVisibility.timelineStepIndex}
                     prLineCount={procurementVisibility.prLineCount}
                     poLineCount={procurementVisibility.poLineCount}
@@ -1579,7 +1672,18 @@ export function MaterialAvailabilityControlCenterPage() {
                     warnings={procurementVisibility.warnings}
                     procurementWorkspaceHref={procurementVisibility.procurementWorkspaceHref}
                     grnHref={procurementVisibility.grnHref}
-                    canCreatePurchaseRequest={canCreatePurchaseRequest}
+                    canCreatePurchaseRequest={storeMayCreatePurchaseRequest(
+                      procurementVisibility.chip,
+                      canCreatePurchaseRequest,
+                      {
+                        procurementCompleted: procurementCompletedForCase,
+                        mrStatus:
+                          resolvedProcurementMr?.status ??
+                          woCase?.materialRequirement?.status ??
+                          null,
+                        receivedGrnQty: caseSupply?.summary?.receivedGrnQty ?? 0,
+                      },
+                    )}
                     creatingPr={creatingPurchaseRequest}
                     onCreatePurchaseRequest={() => void handleCreatePurchaseRequestFromCase()}
                   />
@@ -1607,7 +1711,7 @@ export function MaterialAvailabilityControlCenterPage() {
                       >
                         Create Work Order
                       </Link>
-                    ) : woCase?.allocationFirstStatus?.key === "READY_FOR_ISSUE" ? (
+                    ) : woCase?.allocationFirstStatus?.key === "READY_FOR_ISSUE" && anyIssueable ? (
                       <Link
                         to={detail.workOrder?.id ? `/material-issue?workOrderId=${detail.workOrder.id}&returnTo=rm-control-center` : "/material-issue"}
                         className={cn(
@@ -1616,6 +1720,32 @@ export function MaterialAvailabilityControlCenterPage() {
                         )}
                       >
                         Issue RM to Production
+                      </Link>
+                    ) : storeAction?.key === "WAIT_PO" ||
+                      (Number(caseSupply?.summary?.prLineCount ?? 0) > 0 &&
+                        Number(caseSupply?.summary?.poLineCount ?? 0) === 0 &&
+                        !anyIssueable) ? (
+                      <p className="rounded-md border border-amber-200 bg-amber-50 px-2.5 py-2 text-[12px] font-medium text-amber-950">
+                        {PROCUREMENT_TERMS.WAITING_FOR_PURCHASE_RM_PO}
+                      </p>
+                    ) : storeAction?.key === "WAIT_GRN" ||
+                      Number(caseSupply?.summary?.pendingGrnQty ?? 0) > 0 ||
+                      Number(caseSupply?.summary?.poLineCount ?? 0) > 0 ? (
+                      <Link
+                        to={
+                          caseSupply?.poLines?.[0]?.purchaseOrderId
+                            ? buildRmPoDetailHref(caseSupply.poLines[0].purchaseOrderId, {
+                                salesOrderId: detail.salesOrder?.id ?? woCase?.salesOrderId ?? undefined,
+                                from: "rm-control-center",
+                              })
+                            : "/rm-po-grn?focus=pending-requests"
+                        }
+                        className={cn(
+                          buttonVariants({ variant: "outline", size: "sm" }),
+                          "h-9 w-full justify-center text-[13px] font-semibold no-underline",
+                        )}
+                      >
+                        {anyIssueable ? "Record GRN" : "Waiting for GRN"}
                       </Link>
                     ) : woCase?.allocationFirstStatus?.key === "READY_FOR_PRODUCTION" ? (
                       <Link

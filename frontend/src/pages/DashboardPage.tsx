@@ -14,6 +14,8 @@ import { type DispatchBacklogRow, ROW_NUM_EPS } from "../lib/dispatchBacklog";
 import { displaySalesOrderNo } from "../lib/docNoDisplay";
 import { salesOrdersFocusHref } from "../lib/drillDownRoutes";
 import { useAuth } from "../hooks/useAuth";
+import { PendingActionsDashboardCard } from "./PendingActionsPage";
+import { fetchPendingActions } from "../lib/pendingActionsApi";
 import { PurchaseDashboardPage } from "./PurchaseDashboardPage";
 import { QaDashboardPage } from "./QaDashboardPage";
 import { StoreDispatchDashboard, type StoreDispatchActionRow } from "./store/StoreDispatchDashboard";
@@ -627,6 +629,9 @@ export function DashboardPage() {
   const [dispQueues, setDispQueues] = React.useState<DashboardDispQueues | null>(null);
   const [continueWorking, setContinueWorking] = React.useState<ContinueWorkingRow[] | null>(null);
   const [continueWorkingError, setContinueWorkingError] = React.useState<string | null>(null);
+  const [pendingActionsCount, setPendingActionsCount] = React.useState(0);
+  const [pendingActionsLoading, setPendingActionsLoading] = React.useState(true);
+  const [pendingActionsError, setPendingActionsError] = React.useState<string | null>(null);
   const [noQtyCycleHistoryTarget, setNoQtyCycleHistoryTarget] = React.useState<OpenNoQtyContinuationRow | null>(
     null,
   );
@@ -926,6 +931,34 @@ export function DashboardPage() {
     canViewQuotationsPendingSo,
     liveTick,
   ]);
+
+  React.useEffect(() => {
+    if (demo.enabled) {
+      setPendingActionsCount(0);
+      setPendingActionsLoading(false);
+      setPendingActionsError(null);
+      return;
+    }
+    let mounted = true;
+    setPendingActionsLoading(true);
+    fetchPendingActions()
+      .then((res) => {
+        if (!mounted) return;
+        setPendingActionsCount(Number(res.count ?? res.actions?.length ?? 0));
+        setPendingActionsError(null);
+      })
+      .catch((e) => {
+        if (!mounted) return;
+        setPendingActionsCount(0);
+        setPendingActionsError(e instanceof Error ? e.message : "Could not load pending actions");
+      })
+      .finally(() => {
+        if (mounted) setPendingActionsLoading(false);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [demo.enabled, liveTick, role]);
 
   React.useEffect(() => {
     if (!canUseOpenNoQtyContinuation || demo.enabled) {
@@ -1363,12 +1396,20 @@ export function DashboardPage() {
     );
   }
 
+  const pendingActionsDeskProps = !demo.enabled
+    ? {
+        count: pendingActionsCount,
+        loading: pendingActionsLoading,
+        error: pendingActionsError,
+      }
+    : undefined;
+
   if (role === "PURCHASE") {
-    return <PurchaseDashboardPage />;
+    return <PurchaseDashboardPage pendingActions={pendingActionsDeskProps} />;
   }
 
   if (role === "QA") {
-    return <QaDashboardPage />;
+    return <QaDashboardPage pendingActions={pendingActionsDeskProps} />;
   }
 
   if (!hasAnyWidget) {
@@ -2006,6 +2047,7 @@ export function DashboardPage() {
         backlogPreview={backlog ?? []}
         fgStockTotal={fgStockTotal}
         dispatchBacklogCount={backlog?.length ?? 0}
+        pendingActions={pendingActionsDeskProps}
       />
     );
   }
@@ -2356,6 +2398,13 @@ export function DashboardPage() {
                 Exit Demo
               </Button>
             </div>
+          ) : null}
+          {!demo.enabled && pendingActionsDeskProps ? (
+            <PendingActionsDashboardCard
+              count={pendingActionsDeskProps.count}
+              loading={pendingActionsDeskProps.loading}
+              error={pendingActionsDeskProps.error}
+            />
           ) : null}
           {!demo.enabled && continueWorkingError ? (
             <ErpWorkflowBanner tone="warning" className="text-[12px] leading-snug" role="alert">

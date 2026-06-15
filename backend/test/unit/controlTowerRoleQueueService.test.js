@@ -61,11 +61,25 @@ describe("rowMatchesRoleQueue", () => {
         itemId: 1,
         status: "CRITICAL",
         queueType: "WAITING_PURCHASE_ACTION",
+        prLineCount: 1,
+        poLineCount: 0,
+        operationalKey: "PR_PENDING_PO",
+        nextActionKey: "CREATE_PO",
+      }),
+    );
+    const storePrePr = withIdentity(
+      normalizeRmRiskRow({
+        workOrderId: 2,
+        itemId: 1,
+        status: "CRITICAL",
+        queueType: "WAITING_PURCHASE_ACTION",
+        prLineCount: 0,
+        operationalKey: "PROCUREMENT_PENDING",
       }),
     );
     const storeProc = withIdentity(
       normalizeRmRiskRow({
-        workOrderId: 2,
+        workOrderId: 3,
         itemId: 1,
         status: "CRITICAL",
         queueType: "APPROVAL_PENDING",
@@ -73,6 +87,7 @@ describe("rowMatchesRoleQueue", () => {
     );
     assert.equal(rowMatchesRoleQueue(purchase, "PURCHASE"), true);
     assert.equal(purchase.metadata.purchaseHandoff, true);
+    assert.equal(rowMatchesRoleQueue(storePrePr, "PURCHASE"), false);
     assert.equal(rowMatchesRoleQueue(storeProc, "PURCHASE"), false);
   });
 
@@ -99,6 +114,19 @@ describe("rowMatchesRoleQueue", () => {
     assert.equal(rowMatchesRoleQueue(rework, "QA"), true);
     assert.equal(qa.currentStatus, CONTROL_TOWER_STATUSES.QA_PENDING);
     assert.equal(rework.currentStatus, CONTROL_TOWER_STATUSES.QA_REWORK_PENDING);
+  });
+
+  it("STORE gets NO_QTY planning rows after ownership alignment", () => {
+    const planning = withIdentity(
+      normalizeNoQtyPlanningRow({
+        salesOrderId: 99,
+        salesOrderDocNo: "SO-99",
+        latestRequirementSheetStatus: null,
+        cycleNo: 1,
+      }),
+    );
+    assert.equal(planning.currentOwner, "STORE");
+    assert.equal(rowMatchesRoleQueue(planning, "STORE"), true);
   });
 
   it("ADMIN gets planning, commercial, and ADMIN-owned rows", () => {
@@ -154,6 +182,10 @@ describe("filterRowsForRoleQueue and board placement", () => {
         itemId: 1,
         status: "CRITICAL",
         queueType: "WAITING_PURCHASE_ACTION",
+        prLineCount: 1,
+        poLineCount: 0,
+        operationalKey: "PR_PENDING_PO",
+        nextActionKey: "CREATE_PO",
       }),
     );
     const purchaseRows = filterRowsForRoleQueue([row], "PURCHASE");

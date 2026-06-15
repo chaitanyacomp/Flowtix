@@ -24,6 +24,7 @@ const { mapSoLinesToDispatchFifoInputs, dispatchFifoQtyForSoLine } = require("./
 const { getApprovedProducedQtyByWorkOrderLineIds } = require("./productionMetrics");
 const { buildQcAcceptedMap, buildReplacementReturnQcGrossBySoItemKey } = require("./dispatchQcCap");
 const { normalizePositiveCycleId } = require("../utils/cycleIds");
+const { filterNoQtyExecutionReleasedWorkOrders } = require("./noQtyExecutionBoundaryService");
 const { netDispatchedByItemId, DISPATCH_ALLOC_MODE: SO_DISPATCH_ALLOC_MODE } = require("./salesOrderDispatchAllocation");
 const {
   loadNoQtyCycleQcAcceptedMap,
@@ -222,7 +223,7 @@ async function filterDashboardActionableWorkOrders(workOrders, db = prisma) {
     }
   }
 
-  return (workOrders || []).filter((wo) => {
+  const included = (workOrders || []).filter((wo) => {
     const so = wo.salesOrder;
     if (!so || so.orderType !== "NO_QTY") {
       if (auditWo147(wo)) {
@@ -305,6 +306,7 @@ async function filterDashboardActionableWorkOrders(workOrders, db = prisma) {
     }
     return include;
   });
+  return filterNoQtyExecutionReleasedWorkOrders(db, included);
 }
 
 async function getActionableWorkOrderCount(db = prisma) {
@@ -2011,6 +2013,19 @@ async function getRmRiskRows() {
     allocationStatus: row.allocationStatus ?? "NOT_ALLOCATED",
     blockerReason: row.blockerReason,
     recommendedAction: row.recommendedAction,
+    materialRequirementId: row.materialRequirementId ?? null,
+    sourceType: row.sourceType ?? null,
+    prLineCount: row.prLineCount ?? 0,
+    poLineCount: row.poLineCount ?? 0,
+    pendingGrnQty: row.pendingGrnQty ?? 0,
+    operationalKey: row.operationalKey ?? null,
+    nextActionKey: row.nextActionKey ?? null,
+    procurementDemandPool: row.procurementDemandPool ?? null,
+    hasOpenMr: row.hasOpenMr ?? false,
+    primaryPoId: row.primaryPoId ?? null,
+    procurementCompletedForCase: row.procurementCompletedForCase ?? false,
+    mrStatus: row.mrStatus ?? row.requisitionStatus ?? null,
+    receivedGrnQty: row.receivedGrnQty ?? 0,
     href:
       row.workOrderId && row.workOrderId > 0
         ? `/reports/rm-shortage?workOrderId=${row.workOrderId}&rmItemId=${row.rmItemId}&onlyBlocked=true&returnTo=dashboard`

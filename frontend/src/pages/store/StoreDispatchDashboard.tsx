@@ -13,6 +13,8 @@ import { dashboardShell } from "../../lib/dashboardShell";
 import { REGULAR_TERMS } from "../../lib/flowTerminology";
 import { purchaseGrnExecutionHref } from "../../lib/woPrepareOperationalStage";
 import { DashboardOpsClearStrip, DashboardWorkspaceHeader } from "../../components/erp/foundation";
+import { PendingActionsDashboardCard } from "../PendingActionsPage";
+import type { PendingActionsDashboardProps } from "../../lib/pendingActionsApi";
 import { StoreProcurementPulse } from "../../components/erp/StoreProcurementPulse";
 import { erpKpi } from "../../lib/erpFoundationTokens";
 import { apiFetch } from "../../services/api";
@@ -85,6 +87,7 @@ export type StoreDispatchDashboardProps = {
   backlogPreview: DispatchBacklogRow[];
   fgStockTotal?: number;
   dispatchBacklogCount?: number;
+  pendingActions?: PendingActionsDashboardProps;
 };
 
 export function StoreDispatchDashboard({
@@ -92,6 +95,7 @@ export function StoreDispatchDashboard({
   backlogPreview,
   fgStockTotal = 0,
   dispatchBacklogCount = 0,
+  pendingActions,
 }: StoreDispatchDashboardProps) {
   const navigate = useNavigate();
   const liveTick = useErpRefreshTick(["dashboard"], { pollIntervalMs: ERP_DASHBOARD_POLL_MS });
@@ -123,6 +127,14 @@ export function StoreDispatchDashboard({
       <div className={DASH_MAX}>
         <div className={dashboardShell.grid}>
           <DashboardWorkspaceHeader role="STORE" />
+
+          {pendingActions ? (
+            <PendingActionsDashboardCard
+              count={pendingActions.count}
+              loading={pendingActions.loading}
+              error={pendingActions.error}
+            />
+          ) : null}
 
           <div className="erp-op-workspace-primary erp-card-surface flex flex-wrap items-center gap-1.5 rounded-lg border border-slate-200/90 px-2.5 py-1.5 shadow-sm">
             <ErpActionButton tier="primary" className="gap-1.5" onClick={() => navigate("/dispatch?source=dashboard")}>

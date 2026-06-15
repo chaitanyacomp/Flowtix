@@ -22,6 +22,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { useToast } from "../../contexts/ToastContext";
 
 import { PROCUREMENT_TERMS } from "../../lib/procurementTerminology";
+import { resolvePendingPrPoPrepUi } from "../../lib/pendingMaterialRequestsPanelUx";
 
 import { useBulkSelection } from "../../hooks/useBulkSelection";
 
@@ -83,11 +84,17 @@ type Props = {
 
   embedded?: boolean;
 
+  /** Purchase/Admin — select PR lines and create RM PO. Store sees read-only rows. */
+
+  canPrepareRmPo?: boolean;
+
 };
 
 
 
-export function PendingMaterialRequestsPanel({ embedded = false }: Props) {
+export function PendingMaterialRequestsPanel({ embedded = false, canPrepareRmPo = false }: Props) {
+
+  const poPrepUi = resolvePendingPrPoPrepUi(canPrepareRmPo);
 
   const navigate = useNavigate();
 
@@ -247,7 +254,7 @@ export function PendingMaterialRequestsPanel({ embedded = false }: Props) {
 
   const openPoModal = async () => {
 
-    if (!selectedLines.length || creating) return;
+    if (!canPrepareRmPo || !selectedLines.length || creating) return;
 
     const fresh = await load();
 
@@ -313,7 +320,7 @@ export function PendingMaterialRequestsPanel({ embedded = false }: Props) {
 
   const submitPo = async () => {
 
-    if (creating) return;
+    if (!canPrepareRmPo || creating) return;
 
     if (!supplierId) {
 
@@ -462,29 +469,20 @@ export function PendingMaterialRequestsPanel({ embedded = false }: Props) {
 
           <tr>
 
-            <th className="w-10 px-2 text-left">
-
-              <input
-
-                ref={bulk.selectAllRef}
-
-                type="checkbox"
-
-                className="h-4 w-4 rounded border-slate-300"
-
-                checked={bulk.allSelected}
-
-                disabled={!orderableLineIds.length || creating}
-
-                onChange={(e) => bulk.toggleSelectAll(e.target.checked)}
-
-                title="Select all pending request lines"
-
-                aria-label="Select all pending request lines"
-
-              />
-
-            </th>
+            {poPrepUi.showCheckboxes ? (
+              <th className="w-10 px-2 text-left">
+                <input
+                  ref={bulk.selectAllRef}
+                  type="checkbox"
+                  className="h-4 w-4 rounded border-slate-300"
+                  checked={bulk.allSelected}
+                  disabled={!orderableLineIds.length || creating}
+                  onChange={(e) => bulk.toggleSelectAll(e.target.checked)}
+                  title="Select all pending request lines"
+                  aria-label="Select all pending request lines"
+                />
+              </th>
+            ) : null}
 
             <th className="text-left">Procurement source</th>
 
@@ -510,25 +508,18 @@ export function PendingMaterialRequestsPanel({ embedded = false }: Props) {
 
             <tr key={ln.id}>
 
-              <td className="w-10 px-2">
-
-                <input
-
-                  type="checkbox"
-
-                  className="h-4 w-4 rounded border-slate-300"
-
-                  checked={bulk.selectedIds.has(ln.id)}
-
-                  disabled={creating}
-
-                  onChange={(e) => bulk.toggleOne(ln.id, e.target.checked)}
-
-                  aria-label={`Select ${ln.itemName} for RM PO`}
-
-                />
-
-              </td>
+              {poPrepUi.showCheckboxes ? (
+                <td className="w-10 px-2">
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4 rounded border-slate-300"
+                    checked={bulk.selectedIds.has(ln.id)}
+                    disabled={creating}
+                    onChange={(e) => bulk.toggleOne(ln.id, e.target.checked)}
+                    aria-label={`Select ${ln.itemName} for RM PO`}
+                  />
+                </td>
+              ) : null}
 
               <td className="text-[11px] font-semibold text-violet-900">{ln.demandPoolLabel ?? "—"}</td>
 
@@ -572,34 +563,33 @@ export function PendingMaterialRequestsPanel({ embedded = false }: Props) {
 
 
 
-  const footer = (
+  const readOnlyBanner =
+    poPrepUi.readOnlyMessage && !empty && !loading ? (
+      <p className="border-t border-slate-100 py-2 text-[11px] font-medium text-slate-600" data-testid="pr-po-readonly-hint">
+        {poPrepUi.readOnlyMessage}
+      </p>
+    ) : null;
 
+  const footer = poPrepUi.showPrepareButton ? (
     <div className="flex flex-wrap items-center justify-end gap-2 border-t border-slate-100 py-2">
-
       <Button type="button" variant="outline" size="sm" onClick={() => void load()} disabled={loading || creating}>
-
         Refresh
-
       </Button>
-
       <Button
-
         type="button"
-
         size="sm"
-
         disabled={!selectedLines.length || creating}
-
         onClick={() => void openPoModal()}
-
       >
-
         {PROCUREMENT_TERMS.PREPARE_RM_PO}
-
       </Button>
-
     </div>
-
+  ) : (
+    <div className="flex flex-wrap items-center justify-end gap-2 border-t border-slate-100 py-2">
+      <Button type="button" variant="outline" size="sm" onClick={() => void load()} disabled={loading || creating}>
+        Refresh
+      </Button>
+    </div>
   );
 
 
@@ -613,6 +603,8 @@ export function PendingMaterialRequestsPanel({ embedded = false }: Props) {
         <div className="min-w-0">
 
           {tableBody}
+
+          {!empty && !loading ? readOnlyBanner : null}
 
           {!empty && !loading ? footer : null}
 
@@ -634,7 +626,9 @@ export function PendingMaterialRequestsPanel({ embedded = false }: Props) {
 
             <p className="text-xs font-normal text-slate-600">
 
-              Select PR lines from Store, then create RM PO with supplier and rate.
+              {canPrepareRmPo
+                ? "Select PR lines from Store, then create RM PO with supplier and rate."
+                : poPrepUi.readOnlyMessage}
 
             </p>
 
@@ -643,6 +637,8 @@ export function PendingMaterialRequestsPanel({ embedded = false }: Props) {
           <CardContent className="px-3 py-0">
 
             {tableBody}
+
+            {!empty && !loading ? readOnlyBanner : null}
 
             {!empty && !loading ? footer : null}
 
@@ -654,7 +650,7 @@ export function PendingMaterialRequestsPanel({ embedded = false }: Props) {
 
 
 
-      {poOpen ? (
+      {canPrepareRmPo && poOpen ? (
         <ErpModal
           onClose={() => {
             if (creating) return;

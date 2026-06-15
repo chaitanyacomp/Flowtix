@@ -14,14 +14,20 @@ import {
   legacyPlanWorkflowBannerMessage,
   LEGACY_PLAN_INFO_TOOLTIP,
   LEGACY_REOPEN_DRAFT_PRODUCTION_GUIDANCE,
+  planMutationActionBlockedReason,
   planStatusBadgeVariant,
   productionPlanReadOnlyMessage,
+  purchaseReviewActionBlockedReason,
   resolvePlanDisplayLabel,
   resolveWorkflowActionVisibility,
   shouldShowPlanSelector,
   usesPlanDocumentProcurementUx,
   type MonthlyPlanHeader,
 } from "../../src/lib/monthlyPlanningWorkflowUx";
+import {
+  MONTHLY_PLANNING_PURCHASE_REVIEW_ROLES,
+  MONTHLY_PLANNING_WRITE_ROLES,
+} from "../../src/config/erpRoles";
 
 function plan(overrides: Partial<MonthlyPlanHeader> & Pick<MonthlyPlanHeader, "status">): MonthlyPlanHeader {
   return {
@@ -147,6 +153,152 @@ describe("monthlyPlanningWorkflowUx.resolveWorkflowActionVisibility", () => {
     });
     expect(actions.submitForReview).toBe(false);
     expect(actions.lock).toBe(true);
+  });
+});
+
+function roleWorkspaceFlags(role: string, periodIsPast = false) {
+  const canWriteMonthlyPlan = MONTHLY_PLANNING_WRITE_ROLES.includes(
+    role as (typeof MONTHLY_PLANNING_WRITE_ROLES)[number],
+  );
+  const canPurchaseReview = MONTHLY_PLANNING_PURCHASE_REVIEW_ROLES.includes(
+    role as (typeof MONTHLY_PLANNING_PURCHASE_REVIEW_ROLES)[number],
+  );
+  const isAdmin = role === "ADMIN";
+  return {
+    canMutatePeriod: canWriteMonthlyPlan && (!periodIsPast || isAdmin),
+    canPurchaseReview,
+    isAdmin,
+    periodIsPast,
+  };
+}
+
+describe("monthlyPlanningWorkflowUx P8F-A1 action guards by role", () => {
+  const awaiting = plan({ status: "AWAITING_PURCHASE_REVIEW" });
+  const draft = plan({ status: "DRAFT" });
+  const approved = plan({ status: "APPROVED" });
+  const hasLines = true;
+
+  it("Purchase can execute approve/reject on current period", () => {
+    const flags = roleWorkspaceFlags("PURCHASE");
+    expect(
+      purchaseReviewActionBlockedReason({
+        canPurchaseReview: flags.canPurchaseReview,
+        periodIsPast: flags.periodIsPast,
+        isAdmin: flags.isAdmin,
+      }),
+    ).toBeNull();
+    const actions = resolveWorkflowActionVisibility({
+      planExists: true,
+      plan: awaiting,
+      canMutatePeriod: flags.canMutatePeriod,
+      canPurchaseReview: flags.canPurchaseReview,
+      hasSaveableLines: hasLines,
+    });
+    expect(actions.approve).toBe(true);
+    expect(actions.reject).toBe(true);
+  });
+
+  it("Purchase cannot edit/save/submit/release", () => {
+    const flags = roleWorkspaceFlags("PURCHASE");
+    expect(flags.canMutatePeriod).toBe(false);
+    expect(
+      planMutationActionBlockedReason({
+        canMutatePeriod: flags.canMutatePeriod,
+        periodIsPast: flags.periodIsPast,
+      }),
+    ).toBe("no_permission");
+    const draftActions = resolveWorkflowActionVisibility({
+      planExists: true,
+      plan: draft,
+      canMutatePeriod: flags.canMutatePeriod,
+      canPurchaseReview: flags.canPurchaseReview,
+      hasSaveableLines: hasLines,
+    });
+    expect(draftActions.save).toBe(false);
+    expect(draftActions.submitForReview).toBe(false);
+    const approvedActions = resolveWorkflowActionVisibility({
+      planExists: true,
+      plan: approved,
+      canMutatePeriod: flags.canMutatePeriod,
+      canPurchaseReview: flags.canPurchaseReview,
+      hasSaveableLines: hasLines,
+    });
+    expect(approvedActions.release).toBe(false);
+    expect(isPlanEditable(draft, flags.canMutatePeriod)).toBe(false);
+  });
+
+  it("Store cannot approve/reject but can submit and release", () => {
+    const flags = roleWorkspaceFlags("STORE");
+    expect(flags.canPurchaseReview).toBe(false);
+    expect(
+      purchaseReviewActionBlockedReason({
+        canPurchaseReview: flags.canPurchaseReview,
+        periodIsPast: flags.periodIsPast,
+        isAdmin: flags.isAdmin,
+      }),
+    ).toBe("no_permission");
+    const awaitingActions = resolveWorkflowActionVisibility({
+      planExists: true,
+      plan: awaiting,
+      canMutatePeriod: flags.canMutatePeriod,
+      canPurchaseReview: flags.canPurchaseReview,
+      hasSaveableLines: hasLines,
+    });
+    expect(awaitingActions.approve).toBe(false);
+    expect(awaitingActions.reject).toBe(false);
+    const draftActions = resolveWorkflowActionVisibility({
+      planExists: true,
+      plan: draft,
+      canMutatePeriod: flags.canMutatePeriod,
+      canPurchaseReview: flags.canPurchaseReview,
+      hasSaveableLines: hasLines,
+    });
+    expect(draftActions.submitForReview).toBe(true);
+    const approvedActions = resolveWorkflowActionVisibility({
+      planExists: true,
+      plan: approved,
+      canMutatePeriod: flags.canMutatePeriod,
+      canPurchaseReview: flags.canPurchaseReview,
+      hasSaveableLines: hasLines,
+    });
+    expect(approvedActions.release).toBe(true);
+  });
+
+  it("Admin can approve/reject and mutate on current period", () => {
+    const flags = roleWorkspaceFlags("ADMIN");
+    expect(
+      purchaseReviewActionBlockedReason({
+        canPurchaseReview: flags.canPurchaseReview,
+        periodIsPast: flags.periodIsPast,
+        isAdmin: flags.isAdmin,
+      }),
+    ).toBeNull();
+    expect(
+      planMutationActionBlockedReason({
+        canMutatePeriod: flags.canMutatePeriod,
+        periodIsPast: flags.periodIsPast,
+      }),
+    ).toBeNull();
+    const awaitingActions = resolveWorkflowActionVisibility({
+      planExists: true,
+      plan: awaiting,
+      canMutatePeriod: flags.canMutatePeriod,
+      canPurchaseReview: flags.canPurchaseReview,
+      hasSaveableLines: hasLines,
+    });
+    expect(awaitingActions.approve).toBe(true);
+    expect(awaitingActions.reject).toBe(true);
+  });
+
+  it("Purchase is blocked from review on past periods", () => {
+    const flags = roleWorkspaceFlags("PURCHASE", true);
+    expect(
+      purchaseReviewActionBlockedReason({
+        canPurchaseReview: flags.canPurchaseReview,
+        periodIsPast: flags.periodIsPast,
+        isAdmin: flags.isAdmin,
+      }),
+    ).toBe("past_period_read_only");
   });
 });
 

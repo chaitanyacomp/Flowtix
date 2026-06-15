@@ -6,6 +6,9 @@ import { formatProcurementQty } from "../../lib/woProcurementContinuity";
 type Props = {
   activeStepIndex: number;
   mrDocNo?: string | null;
+  prDocNos?: string[];
+  poDocNos?: string[];
+  grnDocNos?: string[];
   prLineCount?: number;
   poLineCount?: number;
   pendingGrnQty?: number;
@@ -17,6 +20,9 @@ type Props = {
 export function RmProcurementTimeline({
   activeStepIndex,
   mrDocNo,
+  prDocNos,
+  poDocNos,
+  grnDocNos,
   prLineCount = 0,
   poLineCount = 0,
   pendingGrnQty = 0,
@@ -24,6 +30,12 @@ export function RmProcurementTimeline({
   className,
 }: Props) {
   const steps = timelineStepsForPhase(activeStepIndex);
+  const chainParts = [
+    mrDocNo ? `MR ${mrDocNo}` : null,
+    ...(prDocNos?.length ? prDocNos.map((d) => `PR ${d}`) : prLineCount > 0 ? [`PR (${prLineCount} line${prLineCount === 1 ? "" : "s"})`] : []),
+    ...(poDocNos?.length ? poDocNos.map((d) => d) : poLineCount > 0 ? [`PO (${poLineCount} line${poLineCount === 1 ? "" : "s"})`] : []),
+    ...(grnDocNos?.length ? grnDocNos : receivedGrnQty > 0 ? [`GRN received ${formatProcurementQty(receivedGrnQty)}`] : []),
+  ].filter(Boolean);
 
   return (
     <div className={cn("rounded-md border border-slate-200 bg-slate-50/80 px-3 py-2.5", className)}>
@@ -46,6 +58,9 @@ export function RmProcurementTimeline({
           </React.Fragment>
         ))}
       </div>
+      {chainParts.length > 0 ? (
+        <p className="mt-2 text-[11px] font-semibold text-slate-700">{chainParts.join(" → ")}</p>
+      ) : null}
       <ul className="mt-2 space-y-0.5 text-[11px] font-medium text-slate-600">
         {mrDocNo ? <li>MR: {mrDocNo}</li> : null}
         {prLineCount > 0 ? <li>PR lines on case: {prLineCount}</li> : null}

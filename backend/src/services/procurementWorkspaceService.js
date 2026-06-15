@@ -499,7 +499,33 @@ async function summarizeMaterialRequirement(mr, pendingByMr, db = prisma) {
   };
 }
 
-async function loadOpenMaterialRequirements(db = prisma, { salesOrderId = null, sourceType = null, sourceTypes = null } = {}) {
+const MATERIAL_REQUIREMENT_WORKSPACE_INCLUDE = {
+  salesOrder: {
+    include: {
+      customer: { select: { name: true } },
+      lines: { include: { item: { select: { itemName: true, itemType: true } } } },
+    },
+  },
+  workOrder: { select: { id: true, docNo: true } },
+  quotation: { select: { id: true, quotationNo: true } },
+  monthlyProductionPlan: {
+    select: {
+      id: true,
+      periodKey: true,
+      status: true,
+      planSequenceNo: true,
+      planKind: true,
+      currentRevision: true,
+    },
+  },
+  createdBy: { select: { name: true, email: true } },
+  lines: { include: { rmItem: { select: { id: true, itemName: true, unit: true } } } },
+};
+
+async function loadOpenMaterialRequirements(
+  db = prisma,
+  { salesOrderId = null, sourceType = null, sourceTypes = null, ensureMaterialRequirementId = null } = {},
+) {
   /**
    * Purchase execution workspace should only include requisitions that are
    * operationally visible to Purchase (Store-approved or later).
@@ -514,33 +540,32 @@ async function loadOpenMaterialRequirements(db = prisma, { salesOrderId = null, 
   }
   if (salesOrderId != null && Number(salesOrderId) > 0) where.salesOrderId = Number(salesOrderId);
 
-  return db.materialRequirement.findMany({
+  const mrs = await db.materialRequirement.findMany({
     where,
-    include: {
-      salesOrder: {
-        include: {
-          customer: { select: { name: true } },
-          lines: { include: { item: { select: { itemName: true, itemType: true } } } },
-        },
-      },
-      workOrder: { select: { id: true, docNo: true } },
-      quotation: { select: { id: true, quotationNo: true } },
-      monthlyProductionPlan: {
-        select: {
-          id: true,
-          periodKey: true,
-          status: true,
-          planSequenceNo: true,
-          planKind: true,
-          currentRevision: true,
-        },
-      },
-      createdBy: { select: { name: true, email: true } },
-      lines: { include: { rmItem: { select: { id: true, itemName: true, unit: true } } } },
-    },
+    include: MATERIAL_REQUIREMENT_WORKSPACE_INCLUDE,
     orderBy: { id: "desc" },
     take: 150,
   });
+
+  const ensureId = Number(ensureMaterialRequirementId ?? 0);
+  if (ensureId > 0 && !mrs.some((mr) => mr.id === ensureId)) {
+    const focusWhere = {
+      id: ensureId,
+      status: { in: RM_REQUISITION_PURCHASE_VISIBLE_STATUSES },
+    };
+    if (Array.isArray(sourceTypes) && sourceTypes.length) {
+      focusWhere.sourceType = { in: sourceTypes };
+    } else if (sourceType) {
+      focusWhere.sourceType = sourceType;
+    }
+    const focus = await db.materialRequirement.findFirst({
+      where: focusWhere,
+      include: MATERIAL_REQUIREMENT_WORKSPACE_INCLUDE,
+    });
+    if (focus) mrs.unshift(focus);
+  }
+
+  return mrs;
 }
 
 /**
@@ -731,7 +756,10 @@ async function buildProcurementWorkspace(db = prisma, opts = {}) {
   await healStaleMonthlyPlanProcurementHandoff(db);
 
   const salesOrderId = opts.salesOrderId != null ? Number(opts.salesOrderId) : null;
+  const materialRequirementId =
+    opts.materialRequirementId != null ? Number(opts.materialRequirementId) : null;
   const demandPoolFilter = normalizeDemandPoolKey(opts.demandPool ?? opts.sourceType);
+  const isMprsPool = demandPoolFilter === PROCUREMENT_DEMAND_POOL.MPRS;
   const sourceTypeFilter =
     !demandPoolFilter &&
     opts.sourceType &&
@@ -744,8 +772,10 @@ async function buildProcurementWorkspace(db = prisma, opts = {}) {
     (async () => {
       const poolTypes = demandPoolFilter ? sourceTypesForDemandPool(demandPoolFilter) : null;
       const mrs = await loadOpenMaterialRequirements(db, {
-        salesOrderId,
+        salesOrderId: isMprsPool ? null : salesOrderId,
         sourceTypes: poolTypes,
+        ensureMaterialRequirementId:
+          isMprsPool && materialRequirementId > 0 ? materialRequirementId : null,
       });
       return buildPendingMaterialRequirementSummaries(db, mrs);
     })(),
@@ -842,6 +872,7 @@ module.exports = {
   summarizeMaterialRequirement,
   buildProcurementPendingQueue,
   buildProcurementWorkspace,
+  loadOpenMaterialRequirements,
   buildGrnPendingSection,
   groupMaterialRequirementsByCase,
   mrSourceDescriptor,

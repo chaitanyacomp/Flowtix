@@ -186,6 +186,15 @@ describe("productionMaterialRequestService helpers", () => {
   it("ensures an existing draft PMR using a transaction client without starting a nested transaction", async () => {
     const calls = { updated: 0 };
     const tx = {
+      workOrder: {
+        findUnique: async () => ({
+          id: 22,
+          salesOrderId: 1,
+          cycleId: 1,
+          requirementSheetId: null,
+          salesOrder: { orderType: "REGULAR" },
+        }),
+      },
       productionMaterialRequest: {
         findFirst: async (query) => {
           if (query.where.status === "DRAFT") return { id: 7 };
@@ -224,6 +233,15 @@ describe("productionMaterialRequestService helpers", () => {
   it("is idempotent — returns the existing submitted PMR without creating or submitting another", async () => {
     const calls = { created: 0, updated: 0 };
     const db = {
+      workOrder: {
+        findUnique: async () => ({
+          id: 22,
+          salesOrderId: 1,
+          cycleId: 1,
+          requirementSheetId: null,
+          salesOrder: { orderType: "REGULAR" },
+        }),
+      },
       productionMaterialRequest: {
         findFirst: async (query) => {
           // First lookup is for an already-submitted (store-visible) PMR.

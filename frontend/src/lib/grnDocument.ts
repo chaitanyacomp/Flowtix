@@ -235,17 +235,37 @@ export function resolveGrnBillPresentation(
   return { statusLabel, billNo, showLineBreakdown, lineBreakdown };
 }
 
+/** Procurement header chain only — excludes per-line GRN, stock, and bill suffixes. */
+export function procurementCaseTraceChain(chain: string[]): string[] {
+  const out: string[] = [];
+  for (const label of chain) {
+    if (/^GRN-/i.test(label)) break;
+    if (label === "StockTransaction IN") break;
+    if (/^Purchase Bill/i.test(label)) break;
+    out.push(label);
+  }
+  return out;
+}
+
 function traceGroupKey(line: GrnTraceLine): string {
-  const chain = (line.traceChain ?? []).join("→");
   const ds = line.demandSources?.[0];
-  const demandKey = [
-    ds ? demandSourceDisplay(ds) : "",
-    ds?.mr?.docNo ?? "",
-    ds?.pr?.docNo ?? "",
-    ds?.workOrder?.docNo ?? "",
-    ds?.salesOrder?.docNo ?? "",
+  if (!ds) return `line-${line.id}`;
+  const planIdentity =
+    (ds.monthlyPlan?.periodKey ?? "").trim() ||
+    (ds.monthlyPlan?.label ?? "").trim() ||
+    (ds.monthlyPlanRevision != null ? `rev-${ds.monthlyPlanRevision}` : "");
+  return [
+    ds.demandSourceType ?? "",
+    planIdentity,
+    String(ds.salesOrder?.id ?? ds.mr?.salesOrder?.id ?? ""),
+    ds.salesOrder?.docNo ?? ds.mr?.salesOrder?.docNo ?? "",
+    String(ds.mr?.materialRequirementId ?? ""),
+    ds.mr?.docNo ?? "",
+    String(ds.pr?.purchaseRequestId ?? ""),
+    ds.pr?.docNo ?? "",
+    String(ds.workOrder?.id ?? ds.mr?.workOrder?.id ?? ""),
+    ds.workOrder?.docNo ?? ds.mr?.workOrder?.docNo ?? "",
   ].join("|");
-  return chain ? `${chain}::${demandKey}` : `line-${line.id}::${demandKey}`;
 }
 
 /** Group trace lines that share the same procurement chain (display only). */
@@ -262,7 +282,7 @@ export function groupGrnTraceLines(lines: GrnTraceLine[]): GrnTraceGroupedRow[] 
     }
     map.set(key, {
       key,
-      traceChain: tl.traceChain ?? [],
+      traceChain: procurementCaseTraceChain(tl.traceChain ?? []),
       demandLabel: ds ? demandSourceDisplay(ds) : "Demand source",
       mrDocNo: ds?.mr?.docNo ?? null,
       prDocNo: ds?.pr?.docNo ?? null,

@@ -12,6 +12,7 @@ const { prisma } = require("../../src/utils/prisma");
 const { signAccessToken } = require("../../src/utils/jwt");
 const { getRequirementComposition } = require("../../src/services/monthlyPlanningRequirementCompositionService");
 const { getRsSuggestionsForPeriod } = require("../../src/services/monthlyPlanningRsSuggestionsService");
+const { createWorkOrdersForPeriodRelease } = require("../../src/services/noQtyExecutionReleaseService");
 
 const d = runIntegration ? describe : describe.skip;
 
@@ -74,11 +75,28 @@ d("NO_QTY WO cycle-wise executable qty boundary", () => {
 
     await request(app).post(`/api/requirement-sheets/${c1SheetId}/lock`).set(auth).expect(200);
 
+    const c1WoBeforeRelease = await prisma.workOrder.findFirst({
+      where: { salesOrderId: so.id, cycleId: c1.id, requirementSheetId: c1SheetId },
+    });
+    assert.equal(c1WoBeforeRelease, null, "no WO at RS lock before plan release");
+
+    await prisma.monthlyProductionPlan.create({
+      data: {
+        periodKey: "2026-07",
+        planSequenceNo: 1,
+        status: "APPROVED",
+        currentRevision: 1,
+        releasedAt: new Date(),
+      },
+    });
+
+    await prisma.$transaction(async (tx) => createWorkOrdersForPeriodRelease(tx, { periodKey: "2026-07" }));
+
     const c1Wo = await prisma.workOrder.findFirst({
       where: { salesOrderId: so.id, cycleId: c1.id, requirementSheetId: c1SheetId },
       include: { lines: true },
     });
-    assert.ok(c1Wo, "cycle 1 WO auto-created on lock");
+    assert.ok(c1Wo, "cycle 1 WO created at plan release");
     assert.equal(Number(c1Wo.lines[0].qty), 10000);
 
     const c1Line = await prisma.requirementSheetLine.findFirst({
@@ -113,6 +131,13 @@ d("NO_QTY WO cycle-wise executable qty boundary", () => {
 
     await request(app).post(`/api/requirement-sheets/${c2SheetId}/lock`).set(auth).expect(200);
 
+    await prisma.$transaction(async (tx) => createWorkOrdersForPeriodRelease(tx, { periodKey: "2026-07" }));
+
+    const c2WoCheck = await prisma.workOrder.findFirst({
+      where: { salesOrderId: so.id, cycleId: c2.id, requirementSheetId: c2SheetId },
+    });
+    assert.ok(c2WoCheck, "cycle 2 WO created at plan release");
+
     ctx = {
       customerId: customer.id,
       fgId: fg.id,
@@ -127,6 +152,7 @@ d("NO_QTY WO cycle-wise executable qty boundary", () => {
 
   after(async () => {
     if (!ctx) return;
+    await prisma.monthlyProductionPlan.deleteMany({ where: { periodKey: "2026-07" } }).catch(() => {});
     await prisma.workOrderLine.deleteMany({
       where: { workOrder: { salesOrderId: ctx.soId } },
     });
@@ -141,7 +167,7 @@ d("NO_QTY WO cycle-wise executable qty boundary", () => {
     await prisma.customer.delete({ where: { id: ctx.customerId } }).catch(() => {});
   });
 
-  it("Cycle 1 WO = 10,000 after lock", async () => {
+  it("Cycle 1 WO = 10,000 after plan release", async () => {
     const wo = await prisma.workOrder.findUnique({
       where: { id: ctx.c1WoId },
       include: { lines: true },
@@ -178,7 +204,7 @@ d("NO_QTY WO cycle-wise executable qty boundary", () => {
     assert.equal(Number(line.qty), 10000);
   });
 
-  it("manual create-wo would use 10k — blocked when WO already exists from lock", async () => {
+  it("manual create-wo is blocked when WO already exists from release", async () => {
     const res = await request(app)
       .post(`/api/requirement-sheets/${ctx.c2SheetId}/create-wo`)
       .set(auth)

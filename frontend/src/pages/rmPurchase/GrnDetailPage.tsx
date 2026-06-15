@@ -3,6 +3,7 @@ import { useParams, useSearchParams } from "react-router-dom";
 import { PageContainer } from "../../components/PageHeader";
 import { apiFetch } from "../../services/api";
 import { useAuth } from "../../hooks/useAuth";
+import { PURCHASE_BILL_DRAFT_ROLES, hasErpRole } from "../../config/erpRoles";
 import { GrnDocumentView } from "../../components/rmPurchase/GrnDocumentView";
 import type { GrnCompanyProfile, GrnDocumentPayload } from "../../lib/grnDocument";
 import { buildRmPoDetailHref } from "../../lib/rmPurchaseWoContinuity";
@@ -11,7 +12,9 @@ export function GrnDetailPage() {
   const { grnId: grnIdParam } = useParams();
   const grnId = Number(grnIdParam);
   const [searchParams] = useSearchParams();
-  const isAdmin = useAuth().user?.role === "ADMIN";
+  const user = useAuth().user;
+  const isAdmin = user?.role === "ADMIN";
+  const canCreatePurchaseBill = hasErpRole(user?.role, PURCHASE_BILL_DRAFT_ROLES);
 
   const [detail, setDetail] = React.useState<GrnDocumentPayload | null>(null);
   const [companyProfile, setCompanyProfile] = React.useState<GrnCompanyProfile | null>(null);
@@ -90,6 +93,7 @@ export function GrnDetailPage() {
           companyProfile={companyProfile}
           poHref={poHref}
           isAdmin={isAdmin}
+          canCreatePurchaseBill={canCreatePurchaseBill}
           reversing={reversing}
           onReverse={() => void onReverseGrn()}
         />

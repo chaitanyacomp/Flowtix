@@ -43,6 +43,8 @@ import { useModalFocusRestore } from "../../hooks/useModalFocusRestore";
 import { ProcurementQueueContextBanner } from "../../components/erp/ProcurementQueueContextBanner";
 import { PROCUREMENT_TERMS } from "../../lib/procurementTerminology";
 import { PendingMaterialRequestsPanel } from "../../components/purchase/PendingMaterialRequestsPanel";
+import { useAuth } from "../../hooks/useAuth";
+import { hasErpRole, PURCHASE_EXECUTION_ROLES } from "../../config/erpRoles";
 
 type PurchaseMeta = { testingModeRelaxedTaxFields: boolean };
 
@@ -80,6 +82,8 @@ function poStatusBadgeClass(status: string): string {
 export function RmPurchaseListPage() {
   const navigate = useNavigate();
   const location = useLocation();
+  const { user } = useAuth();
+  const canPrepareRmPo = hasErpRole(user?.role, PURCHASE_EXECUTION_ROLES);
   const [navSearchParams] = useSearchParams();
 
   const rmPurchaseBackNav = React.useMemo(
@@ -607,7 +611,7 @@ export function RmPurchaseListPage() {
       <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-sm">
         <p className="text-[13px] font-bold text-slate-950">{PROCUREMENT_TERMS.PROCUREMENT_QUEUE_SECTION}</p>
         <p className="mt-0.5 text-[11px] text-slate-600">{PROCUREMENT_TERMS.PROCUREMENT_QUEUE_POOL_HINT}</p>
-        <PendingMaterialRequestsPanel embedded />
+        <PendingMaterialRequestsPanel embedded canPrepareRmPo={canPrepareRmPo} />
       </div>
 
       {navSearchParams.get("source") === "no_qty_production_shortage" ? (

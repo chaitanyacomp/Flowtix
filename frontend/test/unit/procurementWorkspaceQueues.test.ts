@@ -55,6 +55,15 @@ describe("procurementWorkspaceQueues", () => {
     );
   });
 
+  it("workspaceQueryForDemandPool passes materialRequirementId for MPRS but not salesOrderId", () => {
+    expect(workspaceQueryForDemandPool("MPRS", { salesOrderId: 1, materialRequirementId: 101 })).toBe(
+      "?demandPool=MPRS&materialRequirementId=101",
+    );
+    expect(workspaceQueryForDemandPool("REGULAR_SO", { salesOrderId: 1, materialRequirementId: 101 })).toBe(
+      "?demandPool=REGULAR_SO&salesOrderId=1",
+    );
+  });
+
   it("deriveDemandPoolCountsFromPools counts unique MR ids per pool", () => {
     const counts = deriveDemandPoolCountsFromPools({
       REGULAR_SO: {

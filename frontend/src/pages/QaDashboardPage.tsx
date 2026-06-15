@@ -5,6 +5,8 @@ import { apiFetch } from "../services/api";
 import { PageContainer } from "../components/PageHeader";
 import { ERP_DASHBOARD_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
 import { DashboardOpsClearStrip, DashboardWorkspaceHeader } from "../components/erp/foundation";
+import { PendingActionsDashboardCard } from "./PendingActionsPage";
+import type { PendingActionsDashboardProps } from "../lib/pendingActionsApi";
 import { ErpActionButton } from "../components/erp/foundation/ErpActionButton";
 import { ErpKpiLabel, ErpKpiSegment, ErpKpiStrip, ErpKpiValue } from "../components/erp/foundation/ErpKpiStrip";
 import { ErpEmptyState } from "../components/erp/foundation/ErpEmptyState";
@@ -27,7 +29,11 @@ const shell = dashboardShell.page;
 const max = dashboardShell.max;
 const card = dashboardShell.card;
 
-export function QaDashboardPage() {
+export function QaDashboardPage({
+  pendingActions,
+}: {
+  pendingActions?: PendingActionsDashboardProps;
+} = {}) {
   const navigate = useNavigate();
   const liveTick = useErpRefreshTick(["dashboard"], { pollIntervalMs: ERP_DASHBOARD_POLL_MS });
   const [qcQueue, setQcQueue] = React.useState<QcQueueRow[] | null>(null);
@@ -65,6 +71,15 @@ export function QaDashboardPage() {
     return (
       <div className={shell}>
         <PageContainer className={max}>
+          {pendingActions ? (
+            <div className="mb-3">
+              <PendingActionsDashboardCard
+                count={pendingActions.count}
+                loading={pendingActions.loading}
+                error={pendingActions.error}
+              />
+            </div>
+          ) : null}
           <p className="text-sm text-slate-600">Loading QA desk…</p>
         </PageContainer>
       </div>
@@ -75,6 +90,15 @@ export function QaDashboardPage() {
     return (
       <div className={shell}>
         <PageContainer className={max}>
+          {pendingActions ? (
+            <div className="mb-3">
+              <PendingActionsDashboardCard
+                count={pendingActions.count}
+                loading={pendingActions.loading}
+                error={pendingActions.error}
+              />
+            </div>
+          ) : null}
           <p className="text-sm text-red-700">{err}</p>
         </PageContainer>
       </div>
@@ -87,6 +111,16 @@ export function QaDashboardPage() {
     <div className={shell}>
       <PageContainer className={max}>
         <DashboardWorkspaceHeader role="QA" />
+
+        {pendingActions ? (
+          <div className="mb-2">
+            <PendingActionsDashboardCard
+              count={pendingActions.count}
+              loading={pendingActions.loading}
+              error={pendingActions.error}
+            />
+          </div>
+        ) : null}
 
         <div className="mb-2 flex flex-wrap gap-1.5">
           <ErpActionButton tier="primary" className="gap-1.5" onClick={() => navigate("/qc-entry?source=dashboard")}>

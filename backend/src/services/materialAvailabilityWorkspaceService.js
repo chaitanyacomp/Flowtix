@@ -4,6 +4,7 @@
  */
 
 const { prisma } = require("../utils/prisma");
+const { filterNoQtyExecutionReleasedWorkOrders } = require("./noQtyExecutionBoundaryService");
 const { aggregateRmDemandForFgLines, round3 } = require("./bomExplosionService");
 const { getMaterialAvailabilityByItems } = require("./materialAvailabilityService");
 const { qtyToNumber } = require("./rmPurchaseHelpers");
@@ -14,6 +15,7 @@ const {
 const { computeFgGapLinesForSalesOrder } = require("./rmCheckService");
 const { evaluateWoPrepareReadiness } = require("./materialPlanningService");
 const { computeSalesOrderDispatchLineStats } = require("./reportMetrics");
+const { summarizeProcurementStageFromTrace } = require("./rmProcurementStageSignals");
 const QUEUE_EPS = 1e-6;
 const PMR_WAITING_ISSUE_STATUSES = ["REQUESTED", "PARTIALLY_ISSUED"];
 const PURCHASE_VISIBLE_MR_STATUSES = [
@@ -36,6 +38,9 @@ const {
 const { buildPlanDisplayLabel } = require("./monthlyPlanningPlanLifecycleService");
 const WO_PLANNING_SOURCE = "WORK_ORDER_PLANNING";
 const OPEN_PO_STATUSES = ["PENDING", "PARTIAL"];
+/** Include completed PO rows in WO case supply history (read-model only). */
+const CASE_SUPPLY_PO_STATUSES = ["PENDING", "PARTIAL", "COMPLETED"];
+const MPRS_WO_PROCUREMENT_MR_STATUSES = ["FULLY_PROCURED", "PARTIALLY_PROCURED", "PROCUREMENT_IN_PROGRESS"];
 
 function monthlyPlanLabelFromMr(mr) {
   const plan = mr?.monthlyProductionPlan;
@@ -111,6 +116,29 @@ function hasFullyIssuedPmr(pmrStatus) {
   return (pmrStatus?.openPmrs || []).some((p) => p.status === "FULLY_ISSUED");
 }
 
+function pmrIssuedQtyForRm(pmrStatus, rmItemId) {
+  for (const pmr of pmrStatus?.openPmrs || []) {
+    const ln = (pmr.lines || []).find((l) => l.rmItemId === rmItemId);
+    if (ln) return n(ln.issuedQty);
+  }
+  return 0;
+}
+
+function pmrFullyIssuedForRm(pmrStatus, rmItemId) {
+  for (const pmr of pmrStatus?.openPmrs || []) {
+    if (pmr.status !== "FULLY_ISSUED") continue;
+    const ln = (pmr.lines || []).find((l) => l.rmItemId === rmItemId);
+    if (ln && n(ln.pendingQty) <= QUEUE_EPS && n(ln.issuedQty) > QUEUE_EPS) return true;
+  }
+  return false;
+}
+
+function resolveActiveWoMr(woMr) {
+  if (!woMr?.id) return null;
+  if (isPurchaseVisibleMaterialRequirement(woMr) || isProcuredMaterialRequirement(woMr)) return woMr;
+  return null;
+}
+
 /**
  * Phase A (derived only): allocation-first operational status for a WO case.
  * Does NOT depend on MR/PR/PO/GRN status; uses stock/allocation/issue readiness only.
@@ -139,12 +167,17 @@ function deriveAllocationFirstWoStatus({ rmLines, pmrStatus, procuredAwaitingWo 
 
   const waitingPmr = hasWaitingPmr(pmrStatus);
   if (waitingPmr && hasWorkOrder) {
-    return {
-      key: "READY_FOR_ISSUE",
-      label: "Ready for issue",
-      owner: "Store Department",
-      nextAction: "Issue RM to Production",
-    };
+    const issueable = lines.some(
+      (line) => pmrPendingQtyForRm(pmrStatus, line.rmItemId) > QUEUE_EPS && n(line.freeStockQty) > QUEUE_EPS,
+    );
+    if (issueable) {
+      return {
+        key: "READY_FOR_ISSUE",
+        label: "Ready for issue",
+        owner: "Store Department",
+        nextAction: "Issue RM to Production",
+      };
+    }
   }
 
   const anyIssueReady =
@@ -241,15 +274,42 @@ function hasPartialReceipt(trace) {
 
 function deriveLineBlocker(line, { pmrStatus = null, trace = null, bomIssue = false, procuredAwaitingWo = false, hasWorkOrder = true } = {}) {
   const codes = warningCodes(line);
+  const rmItemId = line.itemId ?? line.rmItemId;
   if (bomIssue) return "No approved BOM / BOM issue";
   if (procuredAwaitingWo) return "RM received in Store — create Work Order";
+  if (
+    pmrFullyIssuedForRm(pmrStatus, rmItemId) &&
+    pmrIssuedQtyForRm(pmrStatus, rmItemId) + QUEUE_EPS >= n(line.requiredQty)
+  ) {
+    return "RM issued to production";
+  }
   if (line.legacyReservedQty > QUEUE_EPS && line.freeStockQty <= QUEUE_EPS && line.physicalUsableStockQty > QUEUE_EPS) {
     return "Stock exists but reserved for other PMR";
   }
   if (line.activeAllocatedQty > QUEUE_EPS && line.freeStockQty <= QUEUE_EPS) {
     return "Stock reserved by allocation";
   }
+  if (n(line.freeStockQty) <= QUEUE_EPS) {
+    if (codes.has("STOCK_IN_PRODUCTION_LOCATION")) return "Stock exists in production/WIP, not store";
+    if (hasPartialReceipt(trace) && line.shortageAfterReservationQty > QUEUE_EPS) return "Partial RM received";
+    if (line.shortageAfterReservationQty > QUEUE_EPS && line.coveredByIncomingQty > QUEUE_EPS) {
+      return "Stock available only after incoming PO/GRN";
+    }
+    if (hasOpenPo(trace) && line.shortageAfterReservationQty > QUEUE_EPS) return "PO created, GRN pending";
+    if ((trace?.prLines || []).length > 0 && line.shortageAfterReservationQty > QUEUE_EPS) {
+      return "RM Requisition sent, PR/PO pending";
+    }
+    if (hasMrStatus(trace, ["DRAFT", "PENDING_APPROVAL"])) return "RM Requisition pending Store approval";
+    if (hasMrStatus(trace, ["APPROVED", "SENT_TO_PURCHASE"])) return "RM Requisition sent, PR/PO pending";
+    if (hasOpenMr(trace) && line.shortageAfterReservationQty > QUEUE_EPS) return "RM Requisition sent, PR/PO pending";
+  }
   if (hasWaitingPmr(pmrStatus)) return "PMR waiting for store issue";
+  if (
+    pmrFullyIssuedForRm(pmrStatus, rmItemId) &&
+    pmrIssuedQtyForRm(pmrStatus, rmItemId) + QUEUE_EPS >= n(line.requiredQty)
+  ) {
+    return "RM issued to production";
+  }
   if (codes.has("STOCK_IN_PRODUCTION_LOCATION")) return "Stock exists in production/WIP, not store";
   if (hasPartialReceipt(trace) && line.shortageAfterReservationQty > QUEUE_EPS) return "Partial RM received";
   if (line.shortageAfterReservationQty > QUEUE_EPS && line.coveredByIncomingQty > QUEUE_EPS) {
@@ -277,7 +337,10 @@ function deriveRecommendedAction(line, blockerReason, { trace = null, procuredAw
   if (blockerReason === "Stock available only after incoming PO/GRN") return "Wait for GRN";
   if (blockerReason === "Partial RM received") return "Issue partial RM / wait for balance GRN";
   if (blockerReason === "PO created, GRN pending") return "Wait for GRN";
-  if (blockerReason === "PMR waiting for store issue") return "Issue material to production";
+  if (blockerReason === "PMR waiting for store issue") {
+    return line.freeStockQty > QUEUE_EPS ? "Issue material to production" : "Wait for RM in Store";
+  }
+  if (blockerReason === "RM issued to production") return "Start production";
   if (blockerReason === "Stock exists in production/WIP, not store") return "Review material location";
   if (blockerReason === "No approved BOM / BOM issue") return "Review BOM";
   if (
@@ -381,6 +444,7 @@ function queueTypeForLine(line, blockerReason, pmrStatus, { procuredAwaitingWo =
   if (blockerReason === "PO created, GRN pending") return "PO_WAITING_GRN";
   if (blockerReason === "Partial RM received") return "PARTIAL_RM_RECEIVED";
   if (blockerReason === "PMR waiting for store issue" || hasWaitingPmr(pmrStatus)) return "PMR_WAITING_ISSUE";
+  if (blockerReason === "RM issued to production" && hasFullyIssuedPmr(pmrStatus)) return "READY_TO_RELEASE_WO";
   if (blockerReason === "Ready for material issue" && hasWorkOrder) return "RM_READY_FOR_ISSUE";
   if (blockerReason === "No blocker" && hasFullyIssuedPmr(pmrStatus)) return "READY_TO_RELEASE_WO";
   if (line.freeStockQty > QUEUE_EPS && line.shortageAfterReservationQty > QUEUE_EPS) return "WO_PARTIALLY_COVERED";
@@ -775,7 +839,269 @@ async function buildSupplyPanel(db, rmItemId) {
 }
 
 function emptySupplySummary() {
-  return { openMrCount: 0, prLineCount: 0, poLineCount: 0, pendingGrnQty: 0, receivedGrnQty: 0 };
+  return {
+    openMrCount: 0,
+    prLineCount: 0,
+    poLineCount: 0,
+    pendingGrnQty: 0,
+    receivedGrnQty: 0,
+    procurementCompletedForCase: false,
+    completedMrCount: 0,
+  };
+}
+
+const MPRS_MR_INCLUDE = {
+  lines: {
+    include: {
+      rmItem: { select: { id: true, itemName: true, unit: true } },
+      purchaseRequestSourceLinks: {
+        include: {
+          purchaseRequestLine: {
+            include: { purchaseRequest: { select: { id: true, docNo: true, status: true } } },
+          },
+        },
+      },
+    },
+  },
+  monthlyProductionPlan: true,
+  salesOrder: { select: { id: true, docNo: true } },
+  workOrder: { select: { id: true, docNo: true } },
+};
+
+function mergeUniqueRows(existingRows, extraRows, keyFn) {
+  const map = new Map();
+  for (const row of [...(existingRows || []), ...(extraRows || [])]) {
+    map.set(keyFn(row), row);
+  }
+  return [...map.values()];
+}
+
+function mapPoLineForSupply(line) {
+  const orderedQty = n(line.qty);
+  const receivedQty = receivedQtyForPoLine(line);
+  const pendingGrnQty = Math.max(0, orderedQty - receivedQty);
+  const grnRefs = [];
+  for (const gl of line.grnLines || []) {
+    if (gl.grn?.reversedAt) continue;
+    grnRefs.push({
+      id: gl.grnId ?? gl.grn?.id ?? null,
+      displayNo: gl.grnId ? `GRN-${gl.grnId}` : null,
+      receivedQty: n(gl.receivedQty),
+    });
+  }
+  return {
+    rmPoLineId: line.id,
+    purchaseOrderId: line.rmPoId,
+    purchaseOrderNo: docNoOrId("RMPO", line.rmPo),
+    supplierName: line.rmPo?.supplier?.name ?? null,
+    orderedQty,
+    receivedGrnQty: round3(receivedQty),
+    pendingGrnQty: round3(pendingGrnQty),
+    expectedDate: null,
+    status: line.rmPo?.status ?? null,
+    procurementStatusLabel: pendingGrnQty > QUEUE_EPS ? "PO created, GRN pending" : "Received",
+    purchaseRequestRefs: (line.procurementLinks || [])
+      .map((lk) => lk.purchaseRequestLine?.purchaseRequest)
+      .filter(Boolean)
+      .map((pr) => ({ id: pr.id, docNo: pr.docNo, status: pr.status })),
+    grnRefs,
+  };
+}
+
+function collectPrLinesFromMr(mr, rmItemIds) {
+  const prById = new Map();
+  const rmSet = new Set(rmItemIds || []);
+  for (const line of mr?.lines || []) {
+    if (rmSet.size && !rmSet.has(line.rmItemId)) continue;
+    for (const lk of line.purchaseRequestSourceLinks || []) {
+      const prLine = lk.purchaseRequestLine;
+      const pr = prLine?.purchaseRequest;
+      if (!prLine || !pr) continue;
+      prById.set(prLine.id, {
+        purchaseRequestLineId: prLine.id,
+        purchaseRequestId: pr.id,
+        purchaseRequestDocNo: pr.docNo,
+        status: pr.status,
+        requiredQty: n(prLine.requiredQty),
+        netRequiredQty: n(prLine.netRequiredQty),
+        orderedQty: n(prLine.orderedQty),
+        pendingPoQty: Math.max(0, n(prLine.netRequiredQty) - n(prLine.orderedQty)),
+      });
+    }
+  }
+  return [...prById.values()];
+}
+
+function buildProcurementChainFromSupply({ boundMr, prLines, poLines }) {
+  const prDocNos = [...new Set((prLines || []).map((p) => p.purchaseRequestDocNo).filter(Boolean))];
+  const poDocNos = [...new Set((poLines || []).map((p) => p.purchaseOrderNo).filter(Boolean))];
+  const grnDocNos = [
+    ...new Set((poLines || []).flatMap((p) => (p.grnRefs || []).map((g) => g.displayNo).filter(Boolean))),
+  ];
+  return {
+    mrDocNo: boundMr?.docNo ?? null,
+    mrId: boundMr?.id ?? null,
+    prDocNos,
+    poDocNos,
+    grnDocNos,
+  };
+}
+
+function summarizeMergedCaseSupply({ prLines, poLines, boundMr, openMrCount }) {
+  const pendingGrnQty = round3((poLines || []).reduce((sum, l) => sum + n(l.pendingGrnQty), 0));
+  const receivedGrnQty = round3((poLines || []).reduce((sum, l) => sum + n(l.receivedGrnQty), 0));
+  const procurementCompletedForCase = Boolean(
+    isProcuredMaterialRequirement(boundMr) && pendingGrnQty <= QUEUE_EPS && receivedGrnQty > QUEUE_EPS,
+  );
+  return {
+    openMrCount,
+    prLineCount: (prLines || []).length,
+    poLineCount: (poLines || []).length,
+    pendingGrnQty,
+    receivedGrnQty,
+    procurementCompletedForCase,
+    completedMrCount: isProcuredMaterialRequirement(boundMr) ? 1 : 0,
+    completedMrDocNo: boundMr?.docNo ?? null,
+    completedMrId: boundMr?.id ?? null,
+  };
+}
+
+async function loadCompletedPoLinesForRmItems(db, rmItemIds) {
+  if (!rmItemIds?.length) return [];
+  const poLines = await db.rmPurchaseOrderLine.findMany({
+    where: { itemId: { in: rmItemIds }, rmPo: { status: { in: CASE_SUPPLY_PO_STATUSES } } },
+    include: {
+      item: { select: { id: true, itemName: true, unit: true } },
+      rmPo: { include: { supplier: { select: { id: true, name: true } } } },
+      grnLines: { include: { grn: { select: { id: true, date: true, reversedAt: true } } } },
+      procurementLinks: {
+        include: {
+          purchaseRequestLine: { include: { purchaseRequest: { select: { id: true, docNo: true, status: true } } } },
+        },
+      },
+    },
+    orderBy: { id: "desc" },
+    take: 80,
+  });
+  return (poLines || []).map(mapPoLineForSupply);
+}
+
+async function loadMprsProcurementMrByWorkOrder(db, entries) {
+  const rmItemIds = [...new Set((entries || []).flatMap((e) => e.rmItemIds || []))];
+  if (!rmItemIds.length) return new Map();
+
+  const mrs = await db.materialRequirement.findMany({
+    where: {
+      sourceType: "MONTHLY_PLAN",
+      status: { in: MPRS_WO_PROCUREMENT_MR_STATUSES },
+      lines: { some: { rmItemId: { in: rmItemIds } } },
+    },
+    include: MPRS_MR_INCLUDE,
+    orderBy: { id: "desc" },
+    take: 40,
+  });
+
+  const candidates = (mrs || []).map((mr) => {
+    const matchedRmIds = new Set(
+      (mr.lines || []).map((l) => l.rmItemId).filter((id) => rmItemIds.includes(id)),
+    );
+    const hasPr = (mr.lines || []).some((l) => (l.purchaseRequestSourceLinks || []).length > 0);
+    return { mr, matchedRmIds, hasPr };
+  });
+
+  const out = new Map();
+  for (const entry of entries || []) {
+    const woRmSet = new Set(entry.rmItemIds || []);
+    let best = null;
+    let bestScore = -1;
+    for (const cand of candidates) {
+      let overlap = 0;
+      for (const id of woRmSet) {
+        if (cand.matchedRmIds.has(id)) overlap += 1;
+      }
+      if (overlap === 0) continue;
+      let score = overlap;
+      if (isProcuredMaterialRequirement(cand.mr)) score += 100;
+      if (cand.hasPr) score += 50;
+      if (score > bestScore) {
+        bestScore = score;
+        best = cand.mr;
+      }
+    }
+    if (best) out.set(entry.woId, best);
+  }
+  return out;
+}
+
+function filterPoLinesForBoundMr(poLines, boundMr, rmItemIds) {
+  if (!boundMr?.lines?.length) return poLines || [];
+  const prIds = new Set();
+  const rmSet = new Set(rmItemIds || []);
+  for (const line of boundMr.lines || []) {
+    if (rmSet.size && !rmSet.has(line.rmItemId)) continue;
+    for (const lk of line.purchaseRequestSourceLinks || []) {
+      const pr = lk.purchaseRequestLine?.purchaseRequest;
+      if (pr?.id) prIds.add(pr.id);
+    }
+  }
+  if (!prIds.size) return poLines || [];
+  return (poLines || []).filter((pl) =>
+    (pl.purchaseRequestRefs || []).some((pr) => pr?.id && prIds.has(pr.id)),
+  );
+}
+
+async function buildCompletedProcurementSupply(db, rmItemIds, boundMr = null) {
+  if (!rmItemIds?.length && !boundMr) {
+    return { prLines: [], poLines: [], boundMr: null, procurementChain: null, summary: emptySupplySummary() };
+  }
+  const allPoLines = await loadCompletedPoLinesForRmItems(db, rmItemIds);
+  const poLines = filterPoLinesForBoundMr(allPoLines, boundMr, rmItemIds);
+  const prLines = boundMr ? collectPrLinesFromMr(boundMr, rmItemIds) : [];
+  const procurementChain = buildProcurementChainFromSupply({ boundMr, prLines, poLines });
+  const summary = summarizeMergedCaseSupply({
+    prLines,
+    poLines,
+    boundMr,
+    openMrCount: boundMr ? (boundMr.lines || []).filter((l) => rmItemIds.includes(l.rmItemId)).length : 0,
+  });
+  return { prLines, poLines, boundMr, procurementChain, summary };
+}
+
+function enrichQueueRowFromCaseSupply(row, { woMr, caseSupply, pmrStatus }) {
+  const summary = caseSupply?.summary || emptySupplySummary();
+  const boundMr = resolveActiveWoMr(woMr);
+  if (boundMr?.id) {
+    row.materialRequirementId = boundMr.id;
+    row.requisitionDocNo = boundMr.docNo ?? row.requisitionDocNo;
+    row.requisitionStatus = boundMr.status ?? row.requisitionStatus;
+    row.sourceType = boundMr.sourceType ?? row.sourceType;
+  }
+  row.prLineCount = summary.prLineCount ?? row.prLineCount;
+  row.poLineCount = summary.poLineCount ?? row.poLineCount;
+  row.pendingGrnQty = summary.pendingGrnQty ?? row.pendingGrnQty;
+  row.receivedGrnQty = summary.receivedGrnQty ?? row.receivedGrnQty;
+  row.procurementCompletedForCase = Boolean(summary.procurementCompletedForCase);
+  row.mrStatus = boundMr?.status ?? row.requisitionStatus ?? null;
+
+  if (summary.procurementCompletedForCase) {
+    row.operationalKey = "PROCUREMENT_COMPLETED";
+    row.nextActionKey = hasFullyIssuedPmr(pmrStatus) ? "OPEN_PRODUCTION" : row.nextActionKey;
+    if (hasFullyIssuedPmr(pmrStatus)) {
+      row.queueType = "READY_TO_RELEASE_WO";
+      row.recommendedAction = "Start production";
+      row.nextAction = "Start production";
+    } else if (row.queueType === "WO_BLOCKED_RM_SHORTAGE" || row.queueType === "WO_PARTIALLY_COVERED") {
+      const issueable =
+        (pmrStatus?.openPmrs || []).some((p) => PMR_WAITING_ISSUE_STATUSES.includes(p.status)) &&
+        n(row.freeStockQty) > QUEUE_EPS;
+      if (issueable) {
+        row.queueType = "PMR_WAITING_ISSUE";
+        row.recommendedAction = "Issue material to production";
+        row.nextAction = "Issue material to production";
+      }
+    }
+  }
+  return row;
 }
 
 async function loadSoProcurementMrByWorkOrder(db, workOrderIds) {
@@ -978,26 +1304,43 @@ function mergeSupplyPanels(panels) {
 async function buildWoCaseSupplyPanel(db, workOrderId, rmItemIds, woMr, wo) {
   const panels = await Promise.all(rmItemIds.map((rmItemId) => buildSupplyPanel(db, rmItemId)));
   const merged = mergeSupplyPanels(panels);
-  const woMrLines = mapWoMrToOpenMrLines(woMr, wo);
+  const boundMr = resolveActiveWoMr(woMr);
+  const completed = await buildCompletedProcurementSupply(db, rmItemIds, boundMr);
+  const prLines = mergeUniqueRows(merged.prLines, completed.prLines, (r) => r.purchaseRequestLineId);
+  const poLines = mergeUniqueRows(merged.poLines, completed.poLines, (r) => r.rmPoLineId);
+  const woMrLines = mapWoMrToOpenMrLines(boundMr, wo);
   const openMrLines = woMrLines.length
     ? woMrLines
     : merged.openMrLines.filter((ln) =>
-        workOrderId != null ? ln.workOrderId === workOrderId : ln.materialRequirementId === woMr?.id,
+        workOrderId != null
+          ? ln.workOrderId === workOrderId ||
+            (ln.sourceType === "MONTHLY_PLAN" && (ln.workOrderId == null || ln.workOrderId === workOrderId))
+          : ln.materialRequirementId === boundMr?.id,
       );
+  const panelMrId =
+    boundMr?.id ??
+    openMrLines.find((ln) => ln.sourceType === "MONTHLY_PLAN")?.materialRequirementId ??
+    openMrLines[0]?.materialRequirementId ??
+    null;
+  const summary = summarizeMergedCaseSupply({
+    prLines,
+    poLines,
+    boundMr,
+    openMrCount: openMrLines.length,
+  });
+  const procurementChain =
+    completed.procurementChain ??
+    buildProcurementChainFromSupply({ boundMr, prLines, poLines });
   return {
     workOrderId,
-    materialRequirementId: woMr?.id ?? null,
+    materialRequirementId: panelMrId,
     rmItemId: null,
     openMrLines,
-    prLines: merged.prLines,
-    poLines: merged.poLines,
-    summary: {
-      openMrCount: openMrLines.length,
-      prLineCount: merged.prLines.length,
-      poLineCount: merged.poLines.length,
-      pendingGrnQty: merged.summary.pendingGrnQty,
-      receivedGrnQty: merged.summary.receivedGrnQty,
-    },
+    prLines,
+    poLines,
+    procurementChain,
+    boundMaterialRequirement: boundMr ? mapWoMrHeader(boundMr) : null,
+    summary,
   };
 }
 
@@ -1051,16 +1394,34 @@ function woMrCaseLinesFullyProcured(woMr, caseSupply) {
  * Does not alter shortage or procurement quantities.
  */
 function deriveWoEscalationLifecycle({ woMr, caseSupply, rmLines }) {
-  const activeWoMr = isPurchaseVisibleMaterialRequirement(woMr) ? woMr : null;
+  const activeWoMr = resolveActiveWoMr(woMr);
   const summary = caseSupply?.summary || emptySupplySummary();
+  const openMrLines = caseSupply?.openMrLines || [];
   const pendingGrn = n(summary.pendingGrnQty);
   const prCount = summary.prLineCount ?? 0;
   const poCount = summary.poLineCount ?? 0;
-  const mrHeader = mapWoMrHeader(activeWoMr);
+  const receivedGrn = n(summary.receivedGrnQty);
+  const mrHeader = activeWoMr
+    ? mapWoMrHeader(activeWoMr)
+    : caseSupply?.boundMaterialRequirement ??
+      (openMrLines[0]
+        ? {
+            docNo: openMrLines[0].materialRequirementDocNo ?? null,
+            lineCount: openMrLines.length,
+          }
+        : null);
   const additionalRmLines = rmLinesNotOnWoMr(rmLines, activeWoMr);
   const additionalRmLineCount = additionalRmLines.length;
-  const mrLineCountOnCase = mrHeader?.lineCount ?? 0;
-  const procurementInitiated = Boolean(activeWoMr || mrHeader);
+  const mrLineCountOnCase = mrHeader?.lineCount ?? openMrLines.length ?? 0;
+  const procurementInitiated = Boolean(
+    activeWoMr ||
+      summary.procurementCompletedForCase ||
+      openMrLines.length > 0 ||
+      prCount > 0 ||
+      poCount > 0 ||
+      receivedGrn > QUEUE_EPS ||
+      mrHeader,
+  );
 
   const base = {
     procurementInitiated,
@@ -1086,6 +1447,22 @@ function deriveWoEscalationLifecycle({ woMr, caseSupply, rmLines }) {
       label: "Waiting for GRN",
       headline: "WO requisition under procurement — waiting GRN",
       description: `Purchase/GRN is active. Pending GRN qty ${round3(pendingGrn)} — not yet available for Store issue.`,
+    };
+  }
+
+  if (
+    summary.procurementCompletedForCase ||
+    (isProcuredMaterialRequirement(activeWoMr) && receivedGrn > QUEUE_EPS && pendingGrn <= QUEUE_EPS)
+  ) {
+    const awaitingWo = isProcuredMaterialRequirement(activeWoMr) && !activeWoMr?.workOrderId;
+    return {
+      ...base,
+      state: "PROCUREMENT_COMPLETED",
+      label: awaitingWo ? "RM received in Store" : "RM ready in Store",
+      headline: awaitingWo ? "RM received in Store" : "RM ready in Store",
+      description: awaitingWo
+        ? "GRN complete — create Work Order in Prepare WO before material issue."
+        : "Procurement and GRN are complete for this case. Store must issue RM to Production before production can start.",
     };
   }
 
@@ -1148,16 +1525,16 @@ function deriveCaseIssueStatusLabel(pmrStatus, rmLines) {
   return `${docNos.join(", ") || "PMR"} — waiting for store issue`;
 }
 
-function deriveCaseStoreAction({ rmLines, pmrStatus, woMr, terminalMr, caseSupply, escalation, shortageSummary }) {
+function deriveCaseStoreAction({ rmLines, pmrStatus, woMr, terminalMr, caseSupply, escalation, shortageSummary, workOrderId = null }) {
   const waitingPmr = hasWaitingPmr(pmrStatus);
   const anyIssueable =
     waitingPmr &&
     rmLines.some((line) => pmrPendingQtyForRm(pmrStatus, line.rmItemId) > QUEUE_EPS && line.freeStockQty > QUEUE_EPS);
 
-  const activeWoMr =
-    isPurchaseVisibleMaterialRequirement(woMr) || isProcuredMaterialRequirement(woMr) ? woMr : null;
+  const activeWoMr = resolveActiveWoMr(woMr);
+  const caseHasWorkOrder = Number(workOrderId) > 0;
 
-  if (isProcuredMaterialRequirement(activeWoMr) && !activeWoMr.workOrderId) {
+  if (isProcuredMaterialRequirement(activeWoMr) && !activeWoMr.workOrderId && !caseHasWorkOrder) {
     return {
       key: "CREATE_WO",
       label: "Create Work Order",
@@ -1182,18 +1559,51 @@ function deriveCaseStoreAction({ rmLines, pmrStatus, woMr, terminalMr, caseSuppl
     };
   }
 
+  if (
+    hasFullyIssuedPmr(pmrStatus) &&
+    (escalation?.state === "PROCUREMENT_COMPLETED" || caseSupply?.summary?.procurementCompletedForCase)
+  ) {
+    return {
+      key: "OPEN_PRODUCTION",
+      label: "Open Production Workspace",
+      description: "RM issued to production for this work order — continue in Production.",
+    };
+  }
+
   const esc = escalation || deriveWoEscalationLifecycle({ woMr: activeWoMr, caseSupply, rmLines });
 
   if (esc.state === "WAITING_GRN") {
     return {
       key: "WAIT_GRN",
-      label: "Waiting for Purchase / GRN",
+      label: "Waiting for GRN",
       description: esc.description,
     };
   }
 
-  if (esc.state === "PROCUREMENT_COMPLETED" || caseHasStockReadyForIssue(rmLines, pmrStatus)) {
-    if (!activeWoMr?.workOrderId && activeWoMr && isProcuredMaterialRequirement(activeWoMr)) {
+  const summary = caseSupply?.summary || emptySupplySummary();
+  const prCount = summary.prLineCount ?? 0;
+  const poCount = summary.poLineCount ?? 0;
+  const pendingGrn = n(summary.pendingGrnQty);
+
+  if (waitingPmr && !anyIssueable) {
+    if (pendingGrn > QUEUE_EPS || poCount > 0) {
+      return {
+        key: "WAIT_GRN",
+        label: "Waiting for GRN",
+        description: "Purchase order is active — record goods receipt when material arrives at Store.",
+      };
+    }
+    if (prCount > 0) {
+      return {
+        key: "WAIT_PO",
+        label: "Waiting for Purchase to prepare RM PO",
+        description: "Purchase Request exists — waiting for Purchase to create and release the RM PO.",
+      };
+    }
+  }
+
+  if ((esc.state === "PROCUREMENT_COMPLETED" || caseHasStockReadyForIssue(rmLines, pmrStatus)) && anyIssueable) {
+    if (!caseHasWorkOrder && !activeWoMr?.workOrderId && activeWoMr && isProcuredMaterialRequirement(activeWoMr)) {
       return {
         key: "CREATE_WO",
         label: "Create Work Order",
@@ -1211,6 +1621,13 @@ function deriveCaseStoreAction({ rmLines, pmrStatus, woMr, terminalMr, caseSuppl
   }
 
   if (esc.state === "PROCUREMENT_IN_PROGRESS") {
+    if (prCount > 0 && poCount === 0) {
+      return {
+        key: "WAIT_PO",
+        label: "Waiting for Purchase to prepare RM PO",
+        description: "Purchase Request exists — waiting for Purchase to create and release the RM PO.",
+      };
+    }
     return {
       key: "CONTINUE_PROCUREMENT",
       label: "Continue requisition",
@@ -1247,9 +1664,9 @@ function deriveCaseStoreAction({ rmLines, pmrStatus, woMr, terminalMr, caseSuppl
 
   if (waitingPmr) {
     return {
-      key: "ISSUE",
-      label: "Issue material to production",
-      description: "PMR is waiting for store issue.",
+      key: "REVIEW",
+      label: "Waiting for RM in Store",
+      description: "PMR is open — issue is available only after goods receipt and free store stock.",
     };
   }
 
@@ -1261,7 +1678,7 @@ function deriveCaseStoreAction({ rmLines, pmrStatus, woMr, terminalMr, caseSuppl
 }
 
 function buildWoShortageCase({ wo, fgName, rmLines, pmrStatus, woMr, terminalMr, caseSupply }) {
-  const activeWoMr = isPurchaseVisibleMaterialRequirement(woMr) ? woMr : null;
+  const activeWoMr = resolveActiveWoMr(woMr);
   const shortageSummary = summarizeRmLinesForCase(rmLines);
   const openPmrs = pmrStatus?.openPmrs || [];
   const escalationLifecycle = deriveWoEscalationLifecycle({ woMr: activeWoMr, caseSupply, rmLines });
@@ -1274,6 +1691,7 @@ function buildWoShortageCase({ wo, fgName, rmLines, pmrStatus, woMr, terminalMr,
     caseSupply,
     escalation: escalationLifecycle,
     shortageSummary,
+    workOrderId: wo.id,
   });
   const requiresReopenConfirm =
     !activeWoMr && Boolean(terminalMr) && caseHasUnresolvedShortage(rmLines, shortageSummary);
@@ -1284,7 +1702,7 @@ function buildWoShortageCase({ wo, fgName, rmLines, pmrStatus, woMr, terminalMr,
     salesOrderNo: wo.salesOrder?.docNo ?? null,
     customerName: customerNameForSalesOrder(wo.salesOrder),
     fgItemName: fgName,
-    materialRequirement: mapWoMrHeader(activeWoMr),
+    materialRequirement: mapWoMrHeader(activeWoMr) || caseSupply?.boundMaterialRequirement || null,
     terminalMaterialRequirement: mapTerminalMrHeader(terminalMr),
     requiresReopenConfirm,
     allocationFirstStatus,
@@ -1409,6 +1827,8 @@ function buildQueueRow({
   const queueType = queueTypeForLine(line, line.blockerReason, pmrStatus, { procuredAwaitingWo, hasWorkOrder });
   const trace = line.procurementTrace || null;
   const mrLine = firstOpenMrLine(trace);
+  const sourceType = mrLine?.sourceType ?? materialRequirement?.sourceType ?? null;
+  const procurementStage = summarizeProcurementStageFromTrace(trace, sourceType);
   const noWorkOrder = !wo.id;
   const row = {
     queueType,
@@ -1440,6 +1860,10 @@ function buildQueueRow({
     requisitionStatus: mrLine?.status ?? materialRequirement?.status ?? null,
     requisitionDocNo: mrLine?.materialRequirementDocNo ?? materialRequirement?.docNo ?? null,
     materialRequirementId: mrLine?.materialRequirementId ?? materialRequirement?.id ?? null,
+    sourceType,
+    ...procurementStage,
+    hasOpenMr: (trace?.openMrLines || []).length > 0,
+    primaryPoId: (trace?.poLines || [])[0]?.purchaseOrderId ?? null,
     procurementStatus: procurementStatusForLine(line, queueType, trace),
     poStatus: poStatusForTrace(trace),
     grnReceivedPercent: grnReceivedPercentForTrace(trace),
@@ -1457,11 +1881,11 @@ function buildQueueRow({
   return row;
 }
 
-function pushCaseQueueRowFromLines(actionQueue, { wo, fgName, rmLines, pmrStatus, materialRequirement = null, procuredAwaitingWo = false, hasWorkOrder = true, filters }) {
+function pushCaseQueueRowFromLines(actionQueue, { wo, fgName, rmLines, pmrStatus, materialRequirement = null, caseSupply = null, procuredAwaitingWo = false, hasWorkOrder = true, filters }) {
   const rep = pickRepresentativeRmLine(rmLines, pmrStatus);
   if (!rep) return;
   if (filters.rmItemId && rep.rmItemId !== filters.rmItemId) return;
-  const q = buildQueueRow({
+  let q = buildQueueRow({
     wo,
     fgName,
     line: rep,
@@ -1470,6 +1894,9 @@ function pushCaseQueueRowFromLines(actionQueue, { wo, fgName, rmLines, pmrStatus
     procuredAwaitingWo,
     hasWorkOrder,
   });
+  if (caseSupply || materialRequirement) {
+    q = enrichQueueRowFromCaseSupply(q, { woMr: materialRequirement, caseSupply, pmrStatus });
+  }
   if (filters.onlyBlocked && q.queueType === "INFO" && q.blockerReason === "No blocker") return;
   if (!statusMatches(q, filters.status)) return;
   if (q.queueType !== "INFO" || !filters.onlyBlocked) pushCaseQueueRow(actionQueue, q);
@@ -1567,7 +1994,8 @@ async function buildMaterialAvailabilityWorkspace(db = prisma, filtersInput = {}
     evaluateWoPrepareReadiness,
     ...depsInput,
   };
-  const workOrders = await loadCandidateWorkOrders(db, filters);
+  const workOrdersRaw = await loadCandidateWorkOrders(db, filters);
+  const workOrders = await filterNoQtyExecutionReleasedWorkOrders(db, workOrdersRaw);
   const soPlanningMrs = await loadCandidateSoPlanningMrs(db, filters);
   const procuredSoPlanningMrs = await loadProcuredSoPlanningMrs(db, filters, deps);
   const coveredSoIds = new Set(
@@ -1608,6 +2036,11 @@ async function buildMaterialAvailabilityWorkspace(db = prisma, filtersInput = {}
     soRaw.push({ so, ...built });
   }
 
+  const mprsMrByWorkOrder = await loadMprsProcurementMrByWorkOrder(
+    db,
+    raw.map((row) => ({ woId: row.wo.id, rmItemIds: row.availability.map((line) => line.itemId) })),
+  );
+
   const [itemById, traceByRmItemId] = await Promise.all([
     loadItemsById(db, [...allRmIds]),
     buildTraceByRmItemId(db, [...allRmIds]),
@@ -1625,19 +2058,21 @@ async function buildMaterialAvailabilityWorkspace(db = prisma, filtersInput = {}
         hasWorkOrder: true,
       }),
     );
-    pushCaseQueueRowFromLines(actionQueue, {
-      wo: row.wo,
-      fgName: row.fgName,
-      rmLines: allRmLines,
-      pmrStatus,
-      filters,
-      hasWorkOrder: true,
-    });
     if (allRmLines.length) {
-      const woMr = woMrByWorkOrder.get(row.wo.id) || null;
+      const woMr = woMrByWorkOrder.get(row.wo.id) || mprsMrByWorkOrder.get(row.wo.id) || null;
       const terminalMr = woMr ? null : terminalMrByWorkOrder.get(row.wo.id) || null;
       const rmItemIds = allRmLines.map((l) => l.rmItemId);
       const caseSupplyPanel = await buildWoCaseSupplyPanel(db, row.wo.id, rmItemIds, woMr, row.wo);
+      pushCaseQueueRowFromLines(actionQueue, {
+        wo: row.wo,
+        fgName: row.fgName,
+        rmLines: allRmLines,
+        pmrStatus,
+        materialRequirement: woMr,
+        caseSupply: caseSupplyPanel,
+        filters,
+        hasWorkOrder: true,
+      });
       const woShortageCase = buildWoShortageCase({
         wo: row.wo,
         fgName: row.fgName,
@@ -1890,8 +2325,9 @@ async function buildStoreIssuePendingDashboardRows(db = prisma, opts = {}) {
   const workspace = await buildMaterialAvailabilityWorkspace(db, { onlyBlocked: true });
   const byCase = new Map();
   for (const row of workspace.actionQueue || []) {
-    if (!["RM_READY_FOR_ISSUE", "PMR_WAITING_ISSUE"].includes(row.queueType)) continue;
+    if (row.queueType !== "RM_READY_FOR_ISSUE") continue;
     if (!row.workOrderId || Number(row.workOrderId) <= 0) continue;
+    if (n(row.freeStockQty) <= QUEUE_EPS) continue;
     const caseKey = `wo-${row.workOrderId}`;
     if (byCase.has(caseKey)) continue;
     byCase.set(caseKey, {
@@ -2003,4 +2439,10 @@ module.exports = {
   deriveRecommendedAction,
   parseWorkspaceFilters,
   rmLinesNotOnWoMr,
+  loadMprsProcurementMrByWorkOrder,
+  buildCompletedProcurementSupply,
+  summarizeMergedCaseSupply,
+  enrichQueueRowFromCaseSupply,
+  resolveActiveWoMr,
+  buildProcurementChainFromSupply,
 };

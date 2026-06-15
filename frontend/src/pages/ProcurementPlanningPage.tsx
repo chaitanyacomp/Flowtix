@@ -873,7 +873,9 @@ export function ProcurementPlanningPage() {
     try {
 
       const q = workspaceQueryForDemandPool(demandPool, {
-        salesOrderId: filterSoId > 0 ? filterSoId : null,
+        salesOrderId: demandPool === "REGULAR_SO" && filterSoId > 0 ? filterSoId : null,
+        materialRequirementId:
+          demandPool === "MPRS" && focusMaterialRequirementId > 0 ? focusMaterialRequirementId : null,
       });
 
       const data = await apiFetch<WorkspaceResponse>(`/api/procurement-planning/workspace${q}`);
@@ -890,7 +892,7 @@ export function ProcurementPlanningPage() {
 
     }
 
-  }, [demandPool, filterSoId]);
+  }, [demandPool, filterSoId, focusMaterialRequirementId]);
 
 
 
@@ -978,14 +980,16 @@ export function ProcurementPlanningPage() {
 
   const pendingMrs = React.useMemo(() => {
     let all = ws?.sections.pendingMaterialRequirements ?? [];
-    if (filterSoId > 0) {
-      all = all.filter((m) => m.salesOrderId === filterSoId);
-    }
-    if (filterWorkOrderId > 0) {
-      all = all.filter((m) => !m.workOrderId || m.workOrderId === filterWorkOrderId);
+    if (demandPool !== "MPRS") {
+      if (filterSoId > 0) {
+        all = all.filter((m) => m.salesOrderId === filterSoId);
+      }
+      if (filterWorkOrderId > 0) {
+        all = all.filter((m) => !m.workOrderId || m.workOrderId === filterWorkOrderId);
+      }
     }
     return all;
-  }, [ws, filterSoId, filterWorkOrderId]);
+  }, [ws, filterSoId, filterWorkOrderId, demandPool]);
 
   const poolSectionCopy = procurementDemandPoolSectionCopy(demandPool);
 
@@ -1338,6 +1342,7 @@ export function ProcurementPlanningPage() {
 
                 <PendingMaterialRequestsPanel
                   embedded
+                  canPrepareRmPo={canExecutePurchase}
                   key={`pr-pending-${ws?.summary.purchaseRequestCount ?? 0}-${ws?.summary.poPendingCount ?? 0}`}
                 />
 

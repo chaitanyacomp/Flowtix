@@ -13,6 +13,12 @@ type Props = {
   /** @deprecated Use anchorLabel */
   sourceLabel?: string | null;
   mrDocNo?: string | null;
+  procurementChain?: {
+    mrDocNo?: string | null;
+    prDocNos?: string[];
+    poDocNos?: string[];
+    grnDocNos?: string[];
+  } | null;
   timelineStepIndex: number;
   prLineCount: number;
   poLineCount: number;
@@ -40,6 +46,7 @@ export function RmControlCenterProcurementPanel({
   executionWoLabel,
   sourceLabel,
   mrDocNo,
+  procurementChain,
   timelineStepIndex,
   prLineCount,
   poLineCount,
@@ -88,7 +95,10 @@ export function RmControlCenterProcurementPanel({
 
       <RmProcurementTimeline
         activeStepIndex={timelineStepIndex}
-        mrDocNo={mrDocNo}
+        mrDocNo={procurementChain?.mrDocNo ?? mrDocNo}
+        prDocNos={procurementChain?.prDocNos}
+        poDocNos={procurementChain?.poDocNos}
+        grnDocNos={procurementChain?.grnDocNos}
         prLineCount={prLineCount}
         poLineCount={poLineCount}
         pendingGrnQty={pendingGrnQty}

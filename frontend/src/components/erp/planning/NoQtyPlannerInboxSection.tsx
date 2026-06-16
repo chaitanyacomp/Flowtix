@@ -15,8 +15,9 @@ import {
   noQtyBusinessWorkflowStage,
   noQtyCurrentCycleLabel,
   noQtyNextCycleLabel,
-  noQtySoListHref,
+  noQtyPlanningHubHref,
   openCurrentRsButtonLabel,
+  createCycleRequirementSheetButtonLabel,
 } from "../../../lib/noQtyRsActionLabels";
 import { useCanOpenRequirementSheet } from "../../../hooks/useIsAdmin";
 import type { NoQtyPlannerInboxRow } from "../../../hooks/useNoQtyPlannerInbox";
@@ -60,7 +61,7 @@ function InboxRowCard({ row }: { row: NoQtyPlannerInboxRow }) {
     cycleId: guidedCycleId,
     fromStep: "requirement",
   });
-  const soHref = noQtySoListHref(so.id);
+  const soHref = noQtyPlanningHubHref(so.id);
   const nextCycleNo =
     (so as { noQtyNextPossibleCycleNo?: number | null }).noQtyNextPossibleCycleNo ??
     (cycleNo != null ? cycleNo + 1 : null);
@@ -86,7 +87,7 @@ function InboxRowCard({ row }: { row: NoQtyPlannerInboxRow }) {
         </div>
         <div className="flex shrink-0 flex-wrap justify-end gap-1">
           <Link to={soHref} className={cn(buttonVariants({ size: "sm" }), "h-8 text-[11px] font-semibold")}>
-            Open NO_QTY SO
+            Open Planning Dashboard
           </Link>
           {canOpenRs ? (
             <Link to={rsHref} className={cn(buttonVariants({ size: "sm", variant: "outline" }), "h-8 text-[11px]")}>

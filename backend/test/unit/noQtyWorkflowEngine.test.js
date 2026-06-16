@@ -4,7 +4,7 @@ const assert = require("node:assert/strict");
 const { _test } = require("../../src/services/noQtyWorkflowEngine");
 
 describe("noQtyWorkflowEngine role-aware actions", () => {
-  it("keeps NEXT_RS_READY overall but gives CREATE_NEXT_RS only to Admin commercial owners", () => {
+  it("keeps NEXT_RS_READY overall and gives CREATE_NEXT_RS to Admin and Store planning owners", () => {
     const base = {
       overallAction: "NEXT_RS",
       secondaryActions: ["DISPATCH"],
@@ -21,8 +21,8 @@ describe("noQtyWorkflowEngine role-aware actions", () => {
 
     const store = _test.roleAwareActionPayload({ ...base, role: "STORE" });
     assert.equal(store.overallWorkflowState, "NEXT_RS_READY");
-    assert.equal(store.primaryActionForCurrentUser, "DISPATCH");
-    assert.equal(store.nextDepartmentAction, "CREATE_NEXT_RS");
+    assert.equal(store.primaryActionForCurrentUser, "CREATE_NEXT_RS");
+    assert.equal(store.nextDepartmentAction, "NONE");
     assert.deepEqual(store.roleAllowedSecondaryActions, ["DISPATCH"]);
 
     const production = _test.roleAwareActionPayload({ ...base, role: "PRODUCTION" });
@@ -55,6 +55,20 @@ describe("noQtyWorkflowEngine role-aware actions", () => {
     });
     assert.equal(qaViewingDispatch.primaryActionForCurrentUser, "NONE");
     assert.equal(qaViewingDispatch.nextDepartmentAction, "DISPATCH");
+  });
+
+  it("lets Store see CREATE_NEXT_RS as secondary when dispatch is the overall action", () => {
+    const store = _test.roleAwareActionPayload({
+      role: "STORE",
+      overallAction: "DISPATCH",
+      secondaryActions: ["NEXT_RS"],
+      optionalActions: [],
+      salesOrderId: 10,
+      cycleId: 20,
+      displaySummary: "QC-accepted quantity is ready for dispatch.",
+    });
+    assert.equal(store.primaryActionForCurrentUser, "DISPATCH");
+    assert.deepEqual(store.roleAllowedSecondaryActions, ["CREATE_NEXT_RS"]);
   });
 
   it("lets Admin see QC as primary while Create Next RS stays in secondary actions", () => {

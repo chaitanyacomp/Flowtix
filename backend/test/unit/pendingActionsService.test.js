@@ -11,6 +11,7 @@ const {
   dedupeProductionPendingActions,
   fetchPurchaseProcurementPendingActions,
   fetchStoreGrnPendingActions,
+  filterNoQtyStoreHandoffSupersededByLaterRs,
   PENDING_PRIORITY,
 } = require("../../src/services/pendingActionsService");
 const { PREPARE_RM_PO, READY_TO_START_PRODUCTION } = require("../../src/services/rmProcurementStageSignals");
@@ -402,5 +403,69 @@ describe("pendingActionsService", () => {
     });
     const action = mapNormalizedRowToPendingAction(row, "PRODUCTION");
     assert.equal(action.action, "Production Pending");
+  });
+
+  it("filterNoQtyStoreHandoffSupersededByLaterRs drops Cycle 1 handoff when Cycle 2 RS exists", async () => {
+    const db = {
+      workOrder: {
+        findMany: async () => [
+          {
+            id: 10,
+            salesOrderId: 168,
+            salesOrder: { orderType: "NO_QTY" },
+            cycle: { cycleNo: 1 },
+          },
+        ],
+      },
+      requirementSheet: {
+        findMany: async () => [{ salesOrderId: 168, cycle: { cycleNo: 2 } }],
+      },
+    };
+    const filtered = await filterNoQtyStoreHandoffSupersededByLaterRs(db, [
+      { workOrderId: 10, salesOrderId: 168 },
+    ]);
+    assert.equal(filtered.length, 0);
+  });
+
+  it("filterNoQtyStoreHandoffSupersededByLaterRs keeps handoff when no later-cycle RS exists", async () => {
+    const db = {
+      workOrder: {
+        findMany: async () => [
+          {
+            id: 11,
+            salesOrderId: 168,
+            salesOrder: { orderType: "NO_QTY" },
+            cycle: { cycleNo: 1 },
+          },
+        ],
+      },
+      requirementSheet: {
+        findMany: async () => [{ salesOrderId: 168, cycle: { cycleNo: 1 } }],
+      },
+    };
+    const filtered = await filterNoQtyStoreHandoffSupersededByLaterRs(db, [
+      { workOrderId: 11, salesOrderId: 168 },
+    ]);
+    assert.equal(filtered.length, 1);
+  });
+
+  it("filterNoQtyStoreHandoffSupersededByLaterRs does not affect regular SO handoff rows", async () => {
+    const db = {
+      workOrder: {
+        findMany: async () => [
+          {
+            id: 12,
+            salesOrderId: 50,
+            salesOrder: { orderType: "NORMAL" },
+            cycle: { cycleNo: 1 },
+          },
+        ],
+      },
+      requirementSheet: { findMany: async () => [] },
+    };
+    const filtered = await filterNoQtyStoreHandoffSupersededByLaterRs(db, [
+      { workOrderId: 12, salesOrderId: 50 },
+    ]);
+    assert.equal(filtered.length, 1);
   });
 });

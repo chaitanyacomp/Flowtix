@@ -124,6 +124,46 @@ describe("resolveNoQtyDashboardContinuation — commercial continuation", () => 
     expect(resolved.kind).toBe("prepare_next_rs");
   });
 
+  it("returns prepare_next_rs for STORE on the commercial continuation dashboard", () => {
+    const flow: NoQtyFlowState = {
+      ...baseFlow,
+      createNextRsEligible: true,
+      hasQcDispatchPending: true,
+      nextAction: "DISPATCH",
+      primaryActionForCurrentUser: "DISPATCH",
+      roleAllowedSecondaryActions: ["CREATE_NEXT_RS"],
+    };
+    const resolved = resolveNoQtyDashboardContinuation({
+      salesOrderId: 1,
+      cycleId: 10,
+      latestRequirementSheetId: 99,
+      lastRsStatus: "LOCKED",
+      flow,
+      viewerRole: "STORE",
+      commercialContinuation: true,
+    });
+    expect(resolved.kind).toBe("prepare_next_rs");
+  });
+
+  it("returns prepare_next_rs for STORE when createNextRsEligible even with dispatch pending (non-commercial path)", () => {
+    const flow: NoQtyFlowState = {
+      ...baseFlow,
+      createNextRsEligible: true,
+      hasQcDispatchPending: true,
+      nextAction: "DISPATCH",
+      primaryActionForCurrentUser: "CREATE_NEXT_RS",
+    };
+    const resolved = resolveNoQtyDashboardContinuation({
+      salesOrderId: 1,
+      cycleId: 10,
+      latestRequirementSheetId: 99,
+      lastRsStatus: "LOCKED",
+      flow,
+      viewerRole: "STORE",
+    });
+    expect(resolved.kind).toBe("prepare_next_rs");
+  });
+
   it("does not override operational resolution when commercialContinuation is false (legacy callers retain QC/Dispatch routing)", () => {
     const flow: NoQtyFlowState = {
       ...baseFlow,

@@ -1,6 +1,6 @@
 import { ROW_NUM_EPS } from "./dispatchBacklog";
 import { buildNoQtyGuidedHref } from "./noQtyFlowState";
-import { noQtySoListHref } from "./noQtyRsActionLabels";
+import { createCycleRequirementSheetButtonLabel, noQtyAgreementWorkspaceHref, noQtySoListHref } from "./noQtyRsActionLabels";
 import { PRODUCTION_QA_TERMS } from "./productionQaTerminology";
 
 const DASHBOARD_OPEN_NO_QTY_SO_LABEL = "Open NO_QTY SO";
@@ -204,6 +204,12 @@ export function enforceUniqueSalesOrdersAcrossGroups(groups: ActionRequiredGroup
   return { qc: groups.qc, dispatch, production, salesBill, nextRs, noQtyPlanning };
 }
 
+function noQtyPlanningButtonLabel(cycleNo?: number | null): string {
+  const next = cycleNo != null && Number(cycleNo) > 0 ? Number(cycleNo) + 1 : null;
+  if (next != null && next > 0) return createCycleRequirementSheetButtonLabel(next);
+  return "Create Next Requirement Sheet";
+}
+
 function pushNoQtyPlanningRow(
   target: ActionRequiredRow[],
   r: ContinueWorkingRow,
@@ -220,8 +226,8 @@ function pushNoQtyPlanningRow(
     cycleId: r.cycleId ?? null,
     metricQty: mq,
     metricLabel: mq > ROW_NUM_EPS ? (r.metricLabel ?? "Last shortage Qty") : "Ready to plan",
-    buttonLabel: DASHBOARD_OPEN_NO_QTY_SO_LABEL,
-    href: noQtySoListHref(r.salesOrderId),
+    buttonLabel: noQtyPlanningButtonLabel(r.cycleNo),
+    href: noQtyAgreementWorkspaceHref(r.salesOrderId, { intent: "add", from: "dashboard" }),
     group: "NO_QTY_PLANNING",
   });
 }
@@ -299,7 +305,7 @@ export function partitionContinueWorkingForActions(
       });
     } else if (r.stageKey === "NEXT_RS") {
       if (r.orderType === "NO_QTY") {
-        if (role !== "ADMIN") continue;
+        if (role !== "ADMIN" && role !== "STORE") continue;
         const mq = Number(r.lastShortageQty ?? r.metricQty ?? 0);
         pushNoQtyPlanningRow(noQtyPlanning, r, mq > ROW_NUM_EPS ? mq : 1);
         continue;
@@ -501,7 +507,7 @@ export function enrichActionRequiredWithNoQtyPlanning(
   opts?: { role?: string },
 ): ActionRequiredGroups {
   const role = String(opts?.role ?? "").trim().toUpperCase();
-  if (role !== "ADMIN") {
+  if (role !== "ADMIN" && role !== "STORE") {
     return { ...EMPTY_GROUPS, ...groups, noQtyPlanning: groups.noQtyPlanning ?? [] };
   }
 
@@ -524,8 +530,8 @@ export function enrichActionRequiredWithNoQtyPlanning(
       cycleId: e.cycleId ?? null,
       metricQty: mq > ROW_NUM_EPS ? mq : 1,
       metricLabel: mq > ROW_NUM_EPS ? "Last shortage Qty" : "Ready to plan",
-      buttonLabel: DASHBOARD_OPEN_NO_QTY_SO_LABEL,
-      href: noQtySoListHref(e.salesOrderId),
+      buttonLabel: noQtyPlanningButtonLabel(e.cycleNo),
+      href: noQtyAgreementWorkspaceHref(e.salesOrderId, { intent: "add", from: "dashboard" }),
       group: "NO_QTY_PLANNING",
     });
     seen.add(e.salesOrderId);
@@ -762,7 +768,7 @@ export function buildActionRequiredFromQueues(
     }
   }
 
-  const showNoQtyPlanning = role === "ADMIN";
+  const showNoQtyPlanning = role === "ADMIN" || role === "STORE";
 
   for (const soId of [...bySo.keys()].sort((x, y) => x - y)) {
     const a = bySo.get(soId)!;
@@ -825,9 +831,9 @@ export function buildActionRequiredFromQueues(
         orderType: "NO_QTY",
         metricQty: a.bestProdMetric,
         metricLabel: a.nextRsMetricLabel ?? "Last shortage Qty",
-        href: noQtySoListHref(soId),
+        href: noQtyAgreementWorkspaceHref(soId, { intent: "add", from: "dashboard" }),
         group: "NO_QTY_PLANNING",
-        buttonLabel: DASHBOARD_OPEN_NO_QTY_SO_LABEL,
+        buttonLabel: noQtyPlanningButtonLabel(null),
         cycleId: a.bestProdCycleId ?? null,
       });
     } else if (

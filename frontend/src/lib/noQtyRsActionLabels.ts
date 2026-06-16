@@ -85,12 +85,33 @@ export function createCycleRsButtonLabel(cycleNo: number): string {
   return `Create Cycle ${cycleNo} RS`;
 }
 
+/** P8F-A14 — Store-owned cycle continuation CTA (full business label). */
+export function createCycleRequirementSheetButtonLabel(cycleNo: number): string {
+  return `Create Cycle ${cycleNo} Requirement Sheet`;
+}
+
 /** When next cycle number unknown, use generic label. */
 export function createNextRsButtonLabel(nextCycleNo?: number | null): string {
   if (nextCycleNo != null && Number(nextCycleNo) > 0) {
-    return createCycleRsButtonLabel(Number(nextCycleNo));
+    return createCycleRequirementSheetButtonLabel(Number(nextCycleNo));
   }
-  return "Create Next RS";
+  return "Create Next Requirement Sheet";
+}
+
+export function noQtyCreateNextCycleContinuationLabel(opts: {
+  nextCycleNo?: number | null;
+  currentCycleNo?: number | null;
+}): string {
+  const next =
+    opts.nextCycleNo != null && Number(opts.nextCycleNo) > 0
+      ? Number(opts.nextCycleNo)
+      : opts.currentCycleNo != null && Number(opts.currentCycleNo) > 0
+        ? Number(opts.currentCycleNo) + 1
+        : null;
+  if (next != null && next > 0) {
+    return createCycleRequirementSheetButtonLabel(next);
+  }
+  return "Create Next Requirement Sheet";
 }
 
 export function resolveCreateRsButtonLabel(ctx: {
@@ -106,9 +127,28 @@ export function resolveCreateRsButtonLabel(ctx: {
     return createCycleRsButtonLabel(Math.max(1, Number(n) || 1));
   }
   if (ctx.createNextRsEligible && ctx.nextCycleNo != null && ctx.nextCycleNo > 0) {
-    return createCycleRsButtonLabel(ctx.nextCycleNo);
+    return createCycleRequirementSheetButtonLabel(ctx.nextCycleNo);
   }
   return createNextRsButtonLabel(ctx.nextCycleNo);
+}
+
+export function noQtyAgreementWorkspaceHref(
+  salesOrderId: number,
+  opts?: { intent?: "add"; from?: string },
+): string {
+  const params = new URLSearchParams();
+  params.set("source", "no_qty_so");
+  params.set("salesOrderId", String(salesOrderId));
+  if (opts?.intent === "add") params.set("intent", "add");
+  if (opts?.from) params.set("from", opts.from);
+  return `/sales-orders/${salesOrderId}/requirement-sheets?${params.toString()}`;
+}
+
+export function noQtyPlanningHubHref(salesOrderId?: number): string {
+  if (salesOrderId != null && salesOrderId > 0) {
+    return `/planning-dashboard?salesOrderId=${encodeURIComponent(String(salesOrderId))}&source=no_qty_planning`;
+  }
+  return "/planning-dashboard";
 }
 
 export function noQtyNextRsStatusHeadline(eligible: boolean, nextRsAlreadyExists?: boolean): string {

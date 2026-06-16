@@ -90,7 +90,7 @@ function userOwnsAction(role, action) {
   switch (action) {
     case "CREATE_NEXT_RS":
     case "REQUIREMENT":
-      return r === "ADMIN";
+      return r === "ADMIN" || r === "STORE";
     case "WORK_ORDER":
     case "PRODUCTION":
       return r === "PRODUCTION";

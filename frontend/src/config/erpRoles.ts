@@ -27,7 +27,7 @@ export const ENQUIRY_QUOTATION_WRITE_ROLES = ["ADMIN"] as const;
 /** STORE — NO_QTY requirement sheet / customer schedule planning */
 export const RS_WRITE_ROLES = ["ADMIN", "STORE"] as const;
 export const RS_READ_ROLES = ["ADMIN", "STORE", "PRODUCTION"] as const;
-export const NEXT_RS_WRITE_ROLES = ["ADMIN"] as const;
+export const NEXT_RS_WRITE_ROLES = ["ADMIN", "STORE"] as const;
 
 /** PURCHASE — PO execution, GRN, purchase bills (not planning initiation) */
 export const RM_PO_WRITE_ROLES = ["ADMIN", "PURCHASE"] as const;

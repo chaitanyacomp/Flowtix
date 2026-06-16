@@ -54,10 +54,10 @@ import {
 } from "../lib/noQtyFlowState";
 import { prepareNoQtyNextRequirementSheetAndNavigate } from "../lib/noQtyPrepareNextRsNavigate";
 import {
-  createNextRsButtonLabel,
+  createCycleRequirementSheetButtonLabel,
   noQtyCurrentCycleLabel,
   noQtyNextCycleLabel,
-  noQtySoListHref,
+  noQtyPlanningHubHref,
 } from "../lib/noQtyRsActionLabels";
 import {
   allCyclesQtyForItem,
@@ -850,7 +850,6 @@ export function RequirementSheetPage() {
           nav(`/dispatch?source=no_qty_so&salesOrderId=${locked.salesOrderId}`);
           return;
         }
-        nav(noQtySoListHref(locked.salesOrderId));
         return;
       }
 
@@ -1087,6 +1086,10 @@ export function RequirementSheetPage() {
     isNoQty && Boolean(sheet) && sheetOnActiveCycle && draftUi && isLatestForPeriod;
 
   const primaryMode: "DRAFT" | "EMPTY" | "LOCKED" = draftUi ? "DRAFT" : lockedUi ? "LOCKED" : "EMPTY";
+
+  /** P8F-A18 — locked-cycle continuation lives in the success panel; avoid duplicate Next RS banner above. */
+  const showNoQtyLockedRsContextPanel =
+    isNoQty && lockedUi && Boolean(sheet) && !addRequirementIntent && !showCreatePanel;
 
   const safeLines: SheetLine[] = Array.isArray(sheet?.lines) ? sheet!.lines : [];
   /** True when no suggested WO remains on any line (includes carry-forward covered by operational stock). */
@@ -1370,7 +1373,7 @@ export function RequirementSheetPage() {
               {noQtyFlowState ? (
                 <NoQtyMacroLifecycleStrip flow={noQtyFlowState} cycleNo={cycleNo} />
               ) : null}
-              {sheet && Number(sheet.salesOrderId) > 0 && noQtyFlowState ? (
+              {sheet && Number(sheet.salesOrderId) > 0 && noQtyFlowState && !showNoQtyLockedRsContextPanel ? (
                 <div className="space-y-1">
                   <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-700">
                     <span>
@@ -1385,10 +1388,10 @@ export function RequirementSheetPage() {
                       <span className="font-semibold text-slate-900">{noQtyNextCycleLabel(nextCycleNoForRs)}</span>
                     </span>
                     <Link
-                      to={noQtySoListHref(sheet.salesOrderId)}
+                      to={noQtyPlanningHubHref(sheet.salesOrderId)}
                       className="font-semibold text-sky-800 underline underline-offset-2"
                     >
-                      Open NO_QTY SO
+                      Open Planning Dashboard
                     </Link>
                   </div>
                   <NoQtyNextRsStatusPanel
@@ -1408,7 +1411,11 @@ export function RequirementSheetPage() {
                       existingNextRsDocNo: noQtyFlowState.nextRsAlreadyCreatedDocNo,
                       nextCycleNo: nextCycleNoForRs,
                     }}
-                    createButtonLabel={createNextRsButtonLabel(nextCycleNoForRs)}
+                    createButtonLabel={
+                      nextCycleNoForRs != null && nextCycleNoForRs > 0
+                        ? createCycleRequirementSheetButtonLabel(nextCycleNoForRs)
+                        : "Create Next Requirement Sheet"
+                    }
                     onPrepareNext={
                       canCreateNextRs && noQtyFlowState.createNextRsEligible
                         ? () => void prepareNextRsFromLockedFooter()
@@ -1657,18 +1664,30 @@ export function RequirementSheetPage() {
             Locked cycle cannot be revised. Create the next cycle instead.
           </div>
         </div>
-      ) : isNoQty && lockedUi && sheet && !addRequirementIntent && !showCreatePanel ? (
+      ) : showNoQtyLockedRsContextPanel && sheet ? (
         <div className="rounded-md border border-emerald-200 bg-emerald-50/70 px-2 py-1.5 text-xs text-emerald-950">
           <div className="font-semibold">
             Requirement Sheet locked for {noQtyCurrentCycleLabel(sheetDisplayCycleNo)}.
           </div>
           <div className="mt-0.5 text-xs text-emerald-900">
-            Return to NO_QTY Sales Order to review next cycle status.
+            Continue planning on the next cycle when ready — execution on this cycle can run in parallel.
           </div>
           <div className="mt-1.5 flex flex-wrap items-center gap-2">
-            <Link to={noQtySoListHref(sheet.salesOrderId)}>
-              <Button type="button" size="sm">
-                Back to NO_QTY Sales Orders
+            {canCreateNextRs && noQtyFlowState?.createNextRsEligible ? (
+              <Button
+                type="button"
+                size="sm"
+                disabled={nextRsPrepareBusy}
+                onClick={() => void prepareNextRsFromLockedFooter()}
+              >
+                {nextRsPrepareBusy
+                  ? "…"
+                  : createCycleRequirementSheetButtonLabel(nextCycleNoForRs ?? (sheetDisplayCycleNo != null ? sheetDisplayCycleNo + 1 : 2))}
+              </Button>
+            ) : null}
+            <Link to={noQtyPlanningHubHref(sheet.salesOrderId)}>
+              <Button type="button" size="sm" variant="outline">
+                Open Planning Dashboard
               </Button>
             </Link>
             <details className="relative">

@@ -20,6 +20,10 @@ const {
 const { buildProcurementPendingQueue, buildGrnPendingSection } = require("./procurementWorkspaceService");
 const { buildStoreIssuePendingDashboardRows, buildStoreProductionHandoffDashboardRows } = require("./materialAvailabilityWorkspaceService");
 const {
+  computeNoQtyCreateNextRsEligibilityResolved,
+  resolveNoQtyEligibilityCycleId,
+} = require("./noQtyCreateNextRsEligibility");
+const {
   WAITING_FOR_PURCHASE_RM_PO,
   PREPARE_RM_PO,
   RM_ISSUED_WAITING_FOR_PRODUCTION,
@@ -374,8 +378,77 @@ async function fetchStoreIssuePendingActions(db = prisma) {
   });
 }
 
+/**
+ * P8F-A19 — Hide old-cycle NO_QTY RM handoff from Store pending actions once a later-cycle RS exists.
+ * Execution remains visible in Production / WO / RM CC; this is pending-action presentation only.
+ *
+ * @param {import('@prisma/client').PrismaClient | import('@prisma/client').Prisma.TransactionClient} db
+ * @param {Array<{ workOrderId?: number | null; salesOrderId?: number | null }>} rows
+ */
+async function filterNoQtyStoreHandoffSupersededByLaterRs(db, rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  const woIds = [...new Set(list.map((r) => Number(r.workOrderId ?? 0)).filter((id) => id > 0))];
+  if (!woIds.length) return list;
+
+  const workOrders = await db.workOrder.findMany({
+    where: { id: { in: woIds } },
+    select: {
+      id: true,
+      salesOrderId: true,
+      salesOrder: { select: { orderType: true } },
+      cycle: { select: { cycleNo: true } },
+    },
+  });
+  const woById = new Map(workOrders.map((wo) => [Number(wo.id), wo]));
+
+  const noQtySoIds = [
+    ...new Set(
+      workOrders
+        .filter((wo) => wo.salesOrder?.orderType === "NO_QTY" && wo.salesOrderId != null)
+        .map((wo) => Number(wo.salesOrderId))
+        .filter((id) => id > 0),
+    ),
+  ];
+
+  /** @type {Map<number, number>} salesOrderId → highest cycleNo with DRAFT/LOCKED RS */
+  const maxRsCycleNoBySo = new Map();
+  if (noQtySoIds.length) {
+    const laterRsRows = await db.requirementSheet.findMany({
+      where: {
+        salesOrderId: { in: noQtySoIds },
+        status: { in: ["DRAFT", "LOCKED"] },
+        cycleId: { not: null },
+      },
+      select: {
+        salesOrderId: true,
+        cycle: { select: { cycleNo: true } },
+      },
+    });
+    for (const rs of laterRsRows) {
+      const soId = Number(rs.salesOrderId);
+      const cycleNo = Number(rs.cycle?.cycleNo ?? 0);
+      if (!Number.isFinite(soId) || soId <= 0 || !Number.isFinite(cycleNo) || cycleNo <= 0) continue;
+      maxRsCycleNoBySo.set(soId, Math.max(maxRsCycleNoBySo.get(soId) ?? 0, cycleNo));
+    }
+  }
+
+  return list.filter((row) => {
+    const woId = Number(row.workOrderId ?? 0);
+    const wo = woById.get(woId);
+    if (!wo || wo.salesOrder?.orderType !== "NO_QTY") return true;
+
+    const woCycleNo = Number(wo.cycle?.cycleNo ?? 0);
+    if (!Number.isFinite(woCycleNo) || woCycleNo <= 0) return true;
+
+    const maxRsCycleNo = maxRsCycleNoBySo.get(Number(wo.salesOrderId)) ?? 0;
+    if (maxRsCycleNo > woCycleNo) return false;
+    return true;
+  });
+}
+
 async function fetchStoreProductionHandoffPendingActions(db = prisma) {
-  const rows = await buildStoreProductionHandoffDashboardRows(db);
+  const rawRows = await buildStoreProductionHandoffDashboardRows(db);
+  const rows = await filterNoQtyStoreHandoffSupersededByLaterRs(db, rawRows);
   return rows.map((row) => {
     const woId = Number(row.workOrderId ?? 0);
     const params = new URLSearchParams({ returnTo: "pending-actions", onlyBlocked: "1" });
@@ -394,6 +467,64 @@ async function fetchStoreProductionHandoffPendingActions(db = prisma) {
       currentStatus: "HANDOFF_TO_PRODUCTION",
     };
   });
+}
+
+/**
+ * P8F-A14 — Store-owned NO_QTY cycle continuation when current-cycle RS is locked and next RS is eligible.
+ */
+async function fetchStoreNoQtyCreateNextRsPendingActions(db = prisma) {
+  const openSoRows = await db.salesOrder.findMany({
+    where: {
+      orderType: "NO_QTY",
+      internalStatus: { notIn: ["COMPLETED", "CLOSED", "MANUALLY_CLOSED"] },
+    },
+    select: { id: true, docNo: true, updatedAt: true },
+    orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
+    take: 50,
+  });
+
+  const actions = [];
+  for (const so of openSoRows) {
+    const soId = Number(so.id);
+    const eligibility = await computeNoQtyCreateNextRsEligibilityResolved(db, soId);
+    if (!eligibility.eligible) continue;
+
+    const { cycleId } = await resolveNoQtyEligibilityCycleId(db, soId);
+    if (!cycleId) continue;
+
+    const [cycle, lockedRs] = await Promise.all([
+      db.salesOrderCycle.findFirst({
+        where: { id: cycleId, salesOrderId: soId },
+        select: { cycleNo: true },
+      }),
+      db.requirementSheet.findFirst({
+        where: { salesOrderId: soId, cycleId, status: "LOCKED" },
+        orderBy: [{ version: "desc" }, { id: "desc" }],
+        select: { updatedAt: true },
+      }),
+    ]);
+    if (!lockedRs) continue;
+
+    const nextCycleNo =
+      cycle?.cycleNo != null && Number(cycle.cycleNo) > 0 ? Number(cycle.cycleNo) + 1 : null;
+    const label =
+      nextCycleNo != null && nextCycleNo > 0
+        ? `Create Cycle ${nextCycleNo} Requirement Sheet`
+        : "Create Next Requirement Sheet";
+
+    actions.push({
+      id: `no-qty-create-next-rs:${soId}`,
+      priority: PENDING_PRIORITY.MEDIUM,
+      action: label,
+      documentNo: so.docNo ?? null,
+      ownerRole: "STORE",
+      ageHours: ageHoursFromTimestamp(lockedRs.updatedAt ?? so.updatedAt),
+      href: `/sales-orders/${soId}/requirement-sheets?intent=add&from=pending-actions&source=no_qty_so&salesOrderId=${soId}`,
+      sourceModule: "NO_QTY_PLANNING",
+      currentStatus: "NEXT_RS_READY",
+    });
+  }
+  return actions;
 }
 
 function filterNormalizedRowsByOwner(rows, role) {
@@ -665,6 +796,7 @@ async function getPendingActions(opts = {}) {
     supplemental.push(...(await fetchStoreIssuePendingActions(db)));
     supplemental.push(...(await fetchStoreGrnPendingActions(db)));
     supplemental.push(...(await fetchStoreProductionHandoffPendingActions(db)));
+    supplemental.push(...(await fetchStoreNoQtyCreateNextRsPendingActions(db)));
   }
 
   const combined = [...normalizedActions, ...supplemental];
@@ -719,6 +851,8 @@ module.exports = {
   fetchMonthlyPlanPendingActions,
   fetchPurchaseProcurementPendingActions,
   fetchStoreGrnPendingActions,
+  fetchStoreNoQtyCreateNextRsPendingActions,
+  filterNoQtyStoreHandoffSupersededByLaterRs,
   sortPendingActions,
   filterNormalizedRowsByOwner,
   dedupePendingActionsByWorkOrder,

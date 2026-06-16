@@ -6,7 +6,8 @@ import { Button, buttonVariants } from "../components/ui/button";
 import { cn } from "../lib/utils";
 import { type NoQtyFlowState } from "../lib/noQtyFlowState";
 import { resolveNoQtyDashboardContinuation } from "../lib/noQtyDashboardContinuation";
-import { noQtySoListHref } from "../lib/noQtyRsActionLabels";
+import { noQtyCreateNextCycleContinuationLabel } from "../lib/noQtyRsActionLabels";
+import { prepareNoQtyNextRequirementSheetAndNavigate } from "../lib/noQtyPrepareNextRsNavigate";
 import { useToast } from "../contexts/ToastContext";
 import { useDemoMode } from "../contexts/DemoModeContext";
 import { ApiRequestError } from "../services/api";
@@ -106,7 +107,7 @@ function dashboardWidgetFlags(role: string) {
     canViewWoPrepareCreation: isAdmin || isProduction,
     canViewWoPrepareQueues: isAdmin || isPurchase || isProduction,
     canViewContinueWorking: isAdmin || isProduction || isStore,
-    canUseOpenNoQtyContinuation: isAdmin,
+    canUseOpenNoQtyContinuation: isAdmin || isStore,
     canViewQuotationsPendingSo: isAdmin,
   };
 }
@@ -121,8 +122,8 @@ function dashboardWidgetFlags(role: string) {
  *
  * Role intent (per ERP philosophy):
  *  - STORE     ? RM shortage, material planning / purchase receipts, stock alerts,
- *                and dispatch-ready FG lines (same backlog snapshot as Dispatch).
- *                NOT production / QC / sales-bill / NO_QTY RS or SO planning CTAs.
+ *                dispatch-ready FG lines, and NO_QTY cycle planning continuation.
+ *                NOT production / QC / sales-bill CTAs.
  *  - PRODUCTION? production cards (and shortage visibility, view-only).
  *                NOT responsible for creating RM POs.
  *  - QC        ? QC cards only.
@@ -154,12 +155,15 @@ function dashboardActionVisibility(role: string) {
 
 /**
  * Per-row gate for the NO_QTY continuation list: which primary actions a role may see.
- * STORE: none (dispatch backlog cards cover FG-ready work).
- * SALES: customer / RS / planning and billing handoffs ? not shop-floor Production or QC.
+ * STORE: planning continuation (next cycle RS) only — dispatch backlog cards cover FG-ready work.
  */
-function isNoQtyResolvedRelevantForRole(role: string, _resolved: ResolvedNoQtyContinuation): boolean {
+function isNoQtyResolvedRelevantForRole(role: string, resolved: ResolvedNoQtyContinuation): boolean {
   if (role === "ADMIN") return true;
-  if (role === "STORE") return false;
+  if (role === "STORE") {
+    if (resolved.kind === "prepare_next_rs") return true;
+    if (resolved.kind === "navigate" && String(resolved.to ?? "").includes("/requirement-sheets")) return true;
+    return false;
+  }
   return false;
 }
 
@@ -1212,7 +1216,9 @@ export function DashboardPage() {
       if (!isNoQtyDashboardPlanningRow(flow, resolved)) return false;
       const label =
         resolved.kind === "prepare_next_rs"
-          ? "Open NO_QTY SO"
+          ? noQtyCreateNextCycleContinuationLabel({
+              currentCycleNo: row.cycleNo,
+            })
           : resolved.kind === "navigate" && String(row.lastRsStatus ?? "").toUpperCase() === "DRAFT"
             ? "Open Draft RS"
             : resolved.label;
@@ -2099,7 +2105,12 @@ export function DashboardPage() {
                   });
                   const continuationLabel =
                     resolved.kind === "prepare_next_rs"
-                      ? "Open NO_QTY SO"
+                      ? noQtyCreateNextCycleContinuationLabel({
+                          currentCycleNo:
+                            row.noQtyPlanningPointerAhead && row.planningPointerCycleNo != null
+                              ? Number(row.planningPointerCycleNo)
+                              : row.cycleNo,
+                        })
                       : resolved.kind === "navigate" && String(row.lastRsStatus ?? "").toUpperCase() === "DRAFT"
                         ? "Open Draft RS"
                         : resolved.label;
@@ -2246,8 +2257,11 @@ export function DashboardPage() {
                               data-testid={`dashboard-no-qty-continue-${row.salesOrderId}`}
                               onClick={() => {
                                 if (resolved.kind === "prepare_next_rs") {
-                                  navigate(appendFromDashboard(noQtySoListHref(row.salesOrderId)), {
-                                    state: { from: "dashboard" },
+                                  void prepareNoQtyNextRequirementSheetAndNavigate({
+                                    salesOrderId: row.salesOrderId,
+                                    navigate,
+                                    toast,
+                                    navigateState: { from: "dashboard" },
                                   });
                                 } else {
                                   navigate(appendFromDashboard(resolved.to), {

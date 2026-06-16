@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  createCycleRequirementSheetButtonLabel,
   createCycleRsButtonLabel,
   createNextRsButtonLabel,
+  noQtyAgreementWorkspaceHref,
   noQtyBusinessNextRsBlockReason,
   noQtyBusinessWorkflowStage,
+  noQtyCreateNextCycleContinuationLabel,
   noQtyNextRsStatusHeadline,
+  noQtyPlanningHubHref,
   noQtySoListHref,
   openCurrentRsButtonLabel,
   resolveCreateRsButtonLabel,
@@ -28,8 +32,8 @@ describe("noQtyRsActionLabels", () => {
   it("uses standard button labels", () => {
     expect(openCurrentRsButtonLabel()).toBe("Open Current RS");
     expect(createCycleRsButtonLabel(2)).toBe("Create Cycle 2 RS");
-    expect(createNextRsButtonLabel(null)).toBe("Create Next RS");
-    expect(createNextRsButtonLabel(3)).toBe("Create Cycle 3 RS");
+    expect(createNextRsButtonLabel(null)).toBe("Create Next Requirement Sheet");
+    expect(createNextRsButtonLabel(3)).toBe("Create Cycle 3 Requirement Sheet");
   });
 
   it("resolves create labels from context", () => {
@@ -45,7 +49,7 @@ describe("noQtyRsActionLabels", () => {
         createNextRsEligible: true,
         nextCycleNo: 2,
       }),
-    ).toBe("Create Cycle 2 RS");
+    ).toBe("Create Cycle 2 Requirement Sheet");
   });
 
   it("uses standard Next RS status headlines", () => {
@@ -56,5 +60,17 @@ describe("noQtyRsActionLabels", () => {
   it("builds NO_QTY SO list href with optional focus", () => {
     expect(noQtySoListHref()).toBe("/sales-orders?soType=NO_QTY");
     expect(noQtySoListHref(42)).toBe("/sales-orders?soType=NO_QTY&salesOrderId=42");
+  });
+
+  it("builds Store-safe planning navigation hrefs", () => {
+    expect(noQtyAgreementWorkspaceHref(42, { intent: "add", from: "dashboard" })).toBe(
+      "/sales-orders/42/requirement-sheets?source=no_qty_so&salesOrderId=42&intent=add&from=dashboard",
+    );
+    expect(noQtyPlanningHubHref(42)).toBe("/planning-dashboard?salesOrderId=42&source=no_qty_planning");
+    expect(noQtyPlanningHubHref()).toBe("/planning-dashboard");
+    expect(createCycleRequirementSheetButtonLabel(2)).toBe("Create Cycle 2 Requirement Sheet");
+    expect(noQtyCreateNextCycleContinuationLabel({ currentCycleNo: 1 })).toBe(
+      "Create Cycle 2 Requirement Sheet",
+    );
   });
 });

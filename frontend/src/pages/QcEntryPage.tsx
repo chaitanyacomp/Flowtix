@@ -47,7 +47,7 @@ import { NoQtyCycleContextBar } from "../components/erp/foundation/NoQtyCycleCon
 import { displaySalesOrderNo } from "../lib/docNoDisplay";
 import { buildNoQtyGuidedHref, useNoQtyFlowState } from "../lib/noQtyFlowState";
 import { buildProductionScopedHref } from "../lib/productionNavigation";
-import { noQtySoListHref } from "../lib/noQtyRsActionLabels";
+import { noQtyAgreementWorkspaceHref } from "../lib/noQtyRsActionLabels";
 import { useToast } from "../contexts/ToastContext";
 import { pauseWorkOrderProductionApi } from "../lib/workOrderLifecycle";
 import { ErpModal } from "../components/erp/ErpModal";
@@ -2243,12 +2243,12 @@ export function QcEntryPage() {
                       "Continue on the NO_QTY agreement page when the next cycle RS is needed."}
                   </span>
                   <Link
-                    to={noQtySoListHref(focusSoId)}
+                    to={noQtyAgreementWorkspaceHref(focusSoId, { intent: "add" })}
                     className="inline-flex shrink-0"
                     data-testid="no-qty-qc-open-so"
                   >
                     <Button type="button" size="sm" variant="outline" className="h-8">
-                      Open NO_QTY SO
+                      Open Requirement Sheets
                     </Button>
                   </Link>
                 </div>

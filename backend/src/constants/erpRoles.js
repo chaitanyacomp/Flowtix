@@ -30,7 +30,7 @@ const ENQUIRY_QUOTATION_WRITE_ROLES = Object.freeze(["ADMIN"]);
 /** STORE — NO_QTY requirement sheet / customer schedule planning (MPRS Phase 1 ownership). */
 const RS_WRITE_ROLES = Object.freeze(["ADMIN", "STORE"]);
 const RS_READ_ROLES = Object.freeze(["ADMIN", "STORE", "PRODUCTION"]);
-const NEXT_RS_WRITE_ROLES = Object.freeze(["ADMIN"]);
+const NEXT_RS_WRITE_ROLES = Object.freeze(["ADMIN", "STORE"]);
 
 /** PURCHASE — PO execution, GRN coordination, purchase bills (not planning initiation). */
 const RM_PO_WRITE_ROLES = Object.freeze(["ADMIN", "PURCHASE"]);

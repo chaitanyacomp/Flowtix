@@ -61,7 +61,7 @@ export function resolveNoQtyDashboardContinuation(args: {
   } = args;
   const effCycleId = flow?.cycleId ?? cycleId ?? null;
   const viewer = String(viewerRole ?? "").trim().toUpperCase();
-  const isPlanningViewer = viewer === "ADMIN";
+  const isPlanningViewer = viewer === "ADMIN" || viewer === "STORE";
 
   const rollingSheetId =
     flow?.nextRollingRequirementSheetId != null && Number(flow.nextRollingRequirementSheetId) > 0
@@ -179,8 +179,8 @@ export function resolveNoQtyDashboardContinuation(args: {
       }),
     });
 
-  /** Planning (SALES/ADMIN) is independent of shop-floor production balance. */
-  if (userCanCreateNextRs && viewer === "ADMIN") {
+  /** Planning (Store/Admin) is independent of shop-floor production balance. */
+  if (userCanCreateNextRs && (viewer === "ADMIN" || viewer === "STORE")) {
     return { kind: "prepare_next_rs", label: "Next RS" };
   }
 

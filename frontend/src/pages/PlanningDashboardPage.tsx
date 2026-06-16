@@ -31,7 +31,7 @@ import { Badge } from "../components/ui/badge";
 import { apiFetch } from "../services/api";
 import { cn } from "../lib/utils";
 import { NO_QTY_TERMS, REGULAR_TERMS } from "../lib/flowTerminology";
-import { materialPlanningReviewHref } from "../lib/woPrepareOperationalStage";
+import { noQtyRmShortagePlanningHref } from "../lib/woPrepareOperationalStage";
 import { useAuth } from "../hooks/useAuth";
 import { useDemoMode } from "../contexts/DemoModeContext";
 import { demoHighlightKey } from "../lib/demoFlowConfig";
@@ -297,12 +297,12 @@ export function PlanningDashboardPage() {
     };
   }, [planningSalesOrderIdFromUrl]);
 
-  const rmPlanningFromShortageHref = React.useMemo(() => {
+  const noQtyRmShortageHref = React.useMemo(() => {
     const soId =
       Number.isFinite(planningSalesOrderIdFromUrl) && planningSalesOrderIdFromUrl > 0
         ? planningSalesOrderIdFromUrl
         : undefined;
-    return materialPlanningReviewHref({ salesOrderId: soId, source: "planning_dashboard" });
+    return noQtyRmShortagePlanningHref({ salesOrderId: soId, source: "planning_dashboard" });
   }, [planningSalesOrderIdFromUrl]);
 
   /** When NO_QTY demo is on planning step and the table would be empty, show one mock requirement (no API). */
@@ -462,13 +462,13 @@ export function PlanningDashboardPage() {
                   <p className="text-xs text-amber-900/90">Material purchase required before production.</p>
                 </div>
                 <Link
-                  to={rmPlanningFromShortageHref}
+                  to={noQtyRmShortageHref}
                   className={cn(
                     buttonVariants({ variant: "outline", size: "sm" }),
                     "h-8 shrink-0 border-amber-300 bg-white text-xs text-amber-950 hover:bg-amber-50",
                   )}
                 >
-                  {NO_QTY_TERMS.OPEN_RM_PURCHASE_FROM_SHORTAGE}
+                  {NO_QTY_TERMS.OPEN_RM_SHORTAGE_MONTHLY_PLANNING}
                 </Link>
               </div>
               <div className="mt-2 overflow-x-auto rounded border border-amber-100 bg-white/80">

@@ -27,7 +27,7 @@ const TITLES: Record<string, string> = {
   "/stock/rm-ledger": "RM Movement",
   "/stock/adjustment": "Stock Adjustment",
   "/monthly-planning": "Monthly Planning",
-  "/material-planning": "Material Planning",
+  "/material-planning": "Order RM Planning",
   "/rm-stock-planning": "RM Stock Planning",
   "/procurement-planning": "Procurement Workspace",
   "/material-issue": "Material Issue Workspace",

@@ -8,12 +8,18 @@ const {
   sortPendingActions,
   dedupePendingActionsByWorkOrder,
   dedupePendingActionsByProcurementCase,
+  dedupeProductionPendingActions,
   fetchPurchaseProcurementPendingActions,
   fetchStoreGrnPendingActions,
   PENDING_PRIORITY,
 } = require("../../src/services/pendingActionsService");
-const { PREPARE_RM_PO } = require("../../src/services/rmProcurementStageSignals");
-const { normalizeNoQtyPlanningRow, normalizeRmRiskRow, VISIBLE_OWNERS } = require("../../src/services/controlTowerRowNormalizer");
+const { PREPARE_RM_PO, READY_TO_START_PRODUCTION } = require("../../src/services/rmProcurementStageSignals");
+const {
+  normalizeNoQtyPlanningRow,
+  normalizeRmRiskRow,
+  normalizeProductionRow,
+  VISIBLE_OWNERS,
+} = require("../../src/services/controlTowerRowNormalizer");
 
 describe("pendingActionsService", () => {
   it("maps NO_QTY planning row to Create RS Cycle action for Store", () => {
@@ -342,5 +348,59 @@ describe("pendingActionsService", () => {
     assert.equal(action.ownerRole, "STORE");
     assert.equal(action.currentStatus, "GRN_PENDING");
     assert.match(action.href, /\/rm-po-grn\/112/);
+  });
+
+  it("dedupes Production pending actions by WO, preferring Ready to Start Production", () => {
+    const deduped = dedupeProductionPendingActions([
+      {
+        id: "production:wo:1:line:10",
+        priority: PENDING_PRIORITY.LOW,
+        action: "Production Pending",
+        documentNo: "WO-26-0001",
+        ownerRole: "PRODUCTION",
+        ageHours: 5,
+        href: "/production?workOrderId=1&from=pending-actions",
+      },
+      {
+        id: "rm-risk:wo:1:rm:10",
+        priority: PENDING_PRIORITY.LOW,
+        action: READY_TO_START_PRODUCTION,
+        documentNo: "WO-26-0001",
+        ownerRole: "PRODUCTION",
+        ageHours: 1,
+        href: "/production?workOrderId=1&returnTo=pending-actions",
+      },
+    ]);
+    assert.equal(deduped.length, 1);
+    assert.equal(deduped[0].action, READY_TO_START_PRODUCTION);
+    assert.equal(deduped[0].id, "rm-risk:wo:1:rm:10");
+  });
+
+  it("maps READY_TO_RELEASE_WO RM risk row to Ready to Start Production for Production role", () => {
+    const row = normalizeRmRiskRow({
+      workOrderId: 1,
+      workOrderNo: "WO-26-0001",
+      itemId: 10,
+      queueType: "READY_TO_RELEASE_WO",
+      procurementCompletedForCase: true,
+      mrStatus: "FULLY_PROCURED",
+    });
+    assert.equal(row.currentOwner, VISIBLE_OWNERS.PRODUCTION);
+    const action = mapNormalizedRowToPendingAction(row, "PRODUCTION");
+    assert.equal(action.action, READY_TO_START_PRODUCTION);
+    assert.match(action.href, /\/production/);
+  });
+
+  it("maps production queue row to Production Pending", () => {
+    const row = normalizeProductionRow({
+      workOrderId: 1,
+      workOrderLineId: 10,
+      workOrderNo: "WO-26-0001",
+      salesOrderId: 5,
+      nextAction: "PRODUCTION_PENDING",
+      status: "OPEN",
+    });
+    const action = mapNormalizedRowToPendingAction(row, "PRODUCTION");
+    assert.equal(action.action, "Production Pending");
   });
 });

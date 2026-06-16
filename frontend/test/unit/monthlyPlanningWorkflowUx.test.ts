@@ -20,6 +20,8 @@ import {
   purchaseReviewActionBlockedReason,
   resolvePlanDisplayLabel,
   resolveWorkflowActionVisibility,
+  RM_REQUIREMENT_SNAPSHOT_TAB_LABEL,
+  rmPurchaseEmptyMessage,
   shouldShowPlanSelector,
   usesPlanDocumentProcurementUx,
   type MonthlyPlanHeader,
@@ -431,5 +433,12 @@ describe("monthlyPlanningWorkflowUx.labels", () => {
     expect(legacyPlanWorkflowBannerMessage()).toContain("Legacy plan");
     expect(legacyPlanWorkflowBannerMessage()).toContain("Create Additional Plan");
     expect(LEGACY_PLAN_INFO_TOOLTIP).toBe(legacyPlanWorkflowBannerMessage());
+  });
+
+  it("disambiguates Plan RM Snapshot from Order RM Planning in tab and empty states", () => {
+    expect(RM_REQUIREMENT_SNAPSHOT_TAB_LABEL).toBe("Plan RM Snapshot");
+    expect(rmPurchaseEmptyMessage("DRAFT", "rm")).toContain("Plan RM Snapshot");
+    expect(rmPurchaseEmptyMessage("APPROVED", "rm")).toContain("Plan RM Snapshot");
+    expect(rmPurchaseEmptyMessage("AWAITING_PURCHASE_REVIEW", "rm")).toContain("Plan RM Snapshot");
   });
 });

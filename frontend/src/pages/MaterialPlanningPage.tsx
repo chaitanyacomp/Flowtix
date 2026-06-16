@@ -1,6 +1,6 @@
 /**
- * REGULAR flow — RM Planning (quotation or sales order → Store RM Requisition).
- * Operational workflow screen: calculates need, creates store-facing MR draft (not PO, not stock reserve).
+ * REGULAR flow — Order RM Planning (quotation or sales order → Store RM Requisition).
+ * Live BOM explosion and shortage simulation; optional MR draft (not PO, not stock reserve).
  */
 import * as React from "react";
 import { Link, useSearchParams } from "react-router-dom";
@@ -123,7 +123,7 @@ type PlanningPreview = {
 
 const WORKFLOW_STEPS = [
   { id: "source", label: "Sales order / Quotation" },
-  { id: "planning", label: "RM Planning" },
+  { id: "planning", label: "Order RM calculation" },
   { id: "requirement", label: "RM Requisition" },
   { id: "procurement", label: "Procurement Workspace" },
   { id: "purchase", label: "Purchase & GRN" },
@@ -177,7 +177,7 @@ function rmPlanningCurrentStage(preview: PlanningPreview): string {
     return "Supply timeline in progress";
   }
   if (preview.allRmAvailable) return "RM ready";
-  return "RM Planning";
+  return "Order RM calculation";
 }
 
 function rmOperationalLabel(status: string) {
@@ -450,10 +450,11 @@ export function MaterialPlanningPage() {
             <ArrowLeft className="h-4 w-4" strokeWidth={2.5} aria-hidden />
           </Link>
           <div className="min-w-0">
-            <h1 className="mp-vp-title">RM Planning</h1>
-            {!activeRequirement ? (
-              <p className="mp-vp-sub">Calculate raw material need and send shortages to Store</p>
-            ) : null}
+            <h1 className="mp-vp-title">{REGULAR_TERMS.ORDER_RM_PLANNING_TITLE}</h1>
+            <p className="mp-vp-sub">{REGULAR_TERMS.ORDER_RM_PLANNING_SUBTITLE}</p>
+            <p className="mt-0.5 text-[11px] leading-snug text-slate-500">
+              {REGULAR_TERMS.ORDER_RM_PLANNING_SCOPE_HINT}
+            </p>
           </div>
         </div>
         <div className="mp-vp-toolbar">
@@ -490,7 +491,7 @@ export function MaterialPlanningPage() {
                   : preview?.existingMaterialRequirement
                   ? "An RM Requisition already exists for this source."
                   : preview?.operationalState?.sourceCompleted
-                    ? "Sales Order completed - no further RM planning required."
+                    ? "Sales Order completed — no further order RM planning required."
                     : preview?.operationalState?.procurementCompleted
                       ? "Procurement completed through GRN."
                       : !preview?.canRaiseRequirement
@@ -506,7 +507,7 @@ export function MaterialPlanningPage() {
       </header>
 
       {!activeRequirement ? (
-      <nav className="mp-vp-workflow" aria-label="Material workflow">
+      <nav className="mp-vp-workflow" aria-label="Order RM planning workflow">
         {WORKFLOW_STEPS.map((step, i) => {
           const isActive = step.id === workflowStepId;
           const isPast =
@@ -593,7 +594,9 @@ export function MaterialPlanningPage() {
         <div className="mp-vp-purpose">
           <Info className="h-3.5 w-3.5 shrink-0 text-sky-700" aria-hidden />
           <p className="min-w-0 text-[10px] leading-snug text-slate-700">
-            <span className="font-semibold text-slate-900">RM need calculator</span> — raises Store requisitions only; no PO, GRN, or stock posting here.
+            <span className="font-semibold text-slate-900">Order-level RM calculator</span> — live BOM
+            explosion and shortage simulation for one sales order or quotation. Raises Store requisitions only;
+            no PO, GRN, or stock posting here. For period procurement, use Monthly Planning.
           </p>
         </div>
       ) : null}
@@ -756,7 +759,7 @@ export function MaterialPlanningPage() {
               </section>
 
               <section className="mp-vp-panel mp-vp-panel--summary">
-                <div className="mp-vp-panel-head">Planning snapshot</div>
+                <div className="mp-vp-panel-head">Order calculation summary</div>
                 <div className="mp-vp-summary-grid">
                   <div>
                     <div className="mp-vp-stat-label">FG items</div>
@@ -836,8 +839,9 @@ export function MaterialPlanningPage() {
           </section>
         </div>
       ) : (
-        <div className="flex flex-1 items-center justify-center text-sm text-slate-500">
-          Select a regular sales order, or a quotation if no sales order is available.
+        <div className="flex flex-1 flex-col items-center justify-center gap-1 px-4 text-center text-sm text-slate-500">
+          <p>{REGULAR_TERMS.ORDER_RM_PLANNING_EMPTY_STATE}</p>
+          <p className="text-[12px] text-slate-400">{REGULAR_TERMS.ORDER_RM_PLANNING_SCOPE_HINT}</p>
         </div>
       )}
 

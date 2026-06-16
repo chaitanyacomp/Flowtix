@@ -169,7 +169,7 @@ describe("rmProcurementStageSignals", () => {
     assert.notEqual(resolved.action, "Create Purchase Request");
   });
 
-  it("PMR fully issued after completed procurement routes to Production", () => {
+  it("PMR fully issued after completed procurement routes Store to waiting handoff", () => {
     const resolved = resolveRmRiskStorePendingAction(
       {
         materialRequirementId: 1,
@@ -179,7 +179,23 @@ describe("rmProcurementStageSignals", () => {
       },
       { queueType: "READY_TO_RELEASE_WO" },
     );
-    assert.equal(resolved.action, "Open Production Workspace");
+    assert.equal(resolved.action, "RM issued — waiting for Production");
+    assert.doesNotMatch(resolved.href, /\/production/);
+    assert.match(resolved.href, /rm-shortage/);
+  });
+
+  it("PMR fully issued after completed procurement routes Production to workspace", () => {
+    const resolved = resolveRmRiskPendingAction(
+      {
+        materialRequirementId: 1,
+        workOrderId: 1,
+        procurementCompletedForCase: true,
+        mrStatus: "FULLY_PROCURED",
+      },
+      { queueType: "READY_TO_RELEASE_WO" },
+      "PRODUCTION",
+    );
+    assert.equal(resolved.action, "Ready to Start Production");
     assert.match(resolved.href, /\/production/);
   });
 });

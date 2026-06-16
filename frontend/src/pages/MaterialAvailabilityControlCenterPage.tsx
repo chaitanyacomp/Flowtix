@@ -21,6 +21,14 @@ import { buildProductionScopedHref } from "../lib/productionNavigation";
 import { buttonVariants } from "../components/ui/button";
 import { woPreparePrepareHref } from "../lib/woPrepareOperationalStage";
 import { presentOperationalError } from "../lib/operationalErrorPresentation";
+import {
+  isPostIssueStoreHandoff,
+  STORE_HANDOFF_ACTION_LABEL,
+  STORE_HANDOFF_COMPLETE_LABEL,
+  STORE_HANDOFF_NO_ACTION_LABEL,
+  STORE_HANDOFF_STATUS_LABEL,
+  STORE_PRODUCTION_HANDOFF_LABEL,
+} from "../lib/rmControlCenterPostIssueHandoff";
 import { formatRmQty } from "../lib/rmQtyDisplay";
 import { buildPurchaseRequestPayloadFromWoMr } from "../lib/purchaseRequestFromMr";
 import {
@@ -39,12 +47,14 @@ import {
   storeMayCreatePurchaseRequest,
 } from "../lib/rmControlCenterProcurementVisibility";
 import {
+  buildCaseRmMetricsFromDetails,
   caseHasPhysicalButNoFreeStock,
   caseHasZeroAllocatableStock,
   groupRmQueueByCase,
   operatorNextActionHint,
   operatorQueueStatus,
   operatorStageLabel,
+  resolveQueueCaseDisplayMetrics,
   sanitizeStoreOperatorCopy,
 } from "../lib/storeRmWorkspaceUx";
 
@@ -764,6 +774,11 @@ export function MaterialAvailabilityControlCenterPage() {
   );
 
   const readyToRelease = selectedQueueRow?.queueType === "READY_TO_RELEASE_WO";
+  const postIssueHandoff = isPostIssueStoreHandoff({
+    queueType: selectedQueueRow?.queueType,
+    storeActionKey: storeAction?.key,
+    allocationFirstKey: woCase?.allocationFirstStatus?.key,
+  });
   const stockReadyForIssue = React.useMemo(() => {
     if (!detail?.workOrder?.id || !detail?.rmLines?.length || readyToRelease) return false;
     const waitingPmr = detail.pmrStatus?.openPmrs?.some((p) =>
@@ -873,6 +888,7 @@ export function MaterialAvailabilityControlCenterPage() {
       allocationFirstLabel: woCase?.allocationFirstStatus?.label,
       nextAction: operational.nextAction,
       hasWorkOrder: Boolean(detail.workOrder?.id),
+      postIssueHandoff,
     });
     return {
       phase: "A_BLOCKED",
@@ -881,12 +897,12 @@ export function MaterialAvailabilityControlCenterPage() {
       ownerLabel: operational.owner,
       statusHeadline: title,
       primaryAction: { kind: "NONE", label: operational.nextAction },
-      showMaterialIssueSection: Boolean(detail.workOrder?.id),
-      showProductionLink: Boolean(detail.workOrder?.id),
+      showMaterialIssueSection: Boolean(detail.workOrder?.id) && !postIssueHandoff,
+      showProductionLink: false,
       timelineStepIndex: activeIdx >= 0 ? activeIdx : 0,
       hideProcurementExecutionNav: false,
     };
-  }, [guided, detail, operational, selectedLine, woCase?.allocationFirstStatus?.label]);
+  }, [guided, detail, operational, selectedLine, woCase?.allocationFirstStatus?.label, postIssueHandoff]);
 
   const rmCaseLines = React.useMemo(() => {
     if (!detail) return [];
@@ -898,18 +914,20 @@ export function MaterialAvailabilityControlCenterPage() {
       );
       return {
         ...line,
-        procurementStatus: q?.procurementStatus ?? woCase?.procurementStatusLabel ?? null,
-        poStatus: q?.poStatus ?? null,
-        grnReceivedPercent: q?.grnReceivedPercent ?? null,
-        coveragePercent: lineCoveragePercent({
-          requiredQty: line.requiredQty,
-          shortageAfterReservationQty: line.shortageAfterReservationQty,
-          coveredByIncomingQty: line.coveredByIncomingQty,
-          grnReceivedPercent: q?.grnReceivedPercent ?? null,
-        }),
+        procurementStatus: postIssueHandoff ? null : q?.procurementStatus ?? woCase?.procurementStatusLabel ?? null,
+        poStatus: postIssueHandoff ? null : q?.poStatus ?? null,
+        grnReceivedPercent: postIssueHandoff ? null : q?.grnReceivedPercent ?? null,
+        coveragePercent: postIssueHandoff
+          ? null
+          : lineCoveragePercent({
+              requiredQty: line.requiredQty,
+              shortageAfterReservationQty: line.shortageAfterReservationQty,
+              coveredByIncomingQty: line.coveredByIncomingQty,
+              grnReceivedPercent: q?.grnReceivedPercent ?? null,
+            }),
       };
     });
-  }, [detail, data?.actionQueue, woCase?.procurementStatusLabel]);
+  }, [detail, data?.actionQueue, woCase?.procurementStatusLabel, postIssueHandoff]);
 
   // Phase E: keep action queue operator-simple; RM units are shown in the center table.
 
@@ -949,7 +967,7 @@ export function MaterialAvailabilityControlCenterPage() {
   }, [detail?.workOrder?.id, selectedLine]);
 
   const storeOperationalGuidance = React.useMemo(() => {
-    if (!detail) return null;
+    if (!detail || postIssueHandoff) return null;
     if (zeroAllocatableStock) {
       return {
         headline: "No RM stock available",
@@ -975,10 +993,10 @@ export function MaterialAvailabilityControlCenterPage() {
       };
     }
     return null;
-  }, [detail, zeroAllocatableStock, physicalButNoFree, rmCaseLines, selectedQueueRow, woCase?.nextStoreAction]);
+  }, [detail, postIssueHandoff, zeroAllocatableStock, physicalButNoFree, rmCaseLines, selectedQueueRow, woCase?.nextStoreAction]);
 
   const canShowAllocationControls =
-    hasWorkOrder && !zeroAllocatableStock && Boolean(selectedLineAllocationContext);
+    hasWorkOrder && !postIssueHandoff && !zeroAllocatableStock && Boolean(selectedLineAllocationContext);
 
   // Continuity: shortage exists → Store raises one RM requirement → waiting for stock/purchase.
   const anyShortageOnCase = React.useMemo(
@@ -992,7 +1010,7 @@ export function MaterialAvailabilityControlCenterPage() {
   );
 
   const procurementVisibility = React.useMemo(() => {
-    if (!detail || !operational) return null;
+    if (postIssueHandoff || !detail || !operational) return null;
     const mr = woCase?.materialRequirement;
     const procMr = resolvedProcurementMr;
     const summary = caseSupply?.summary;
@@ -1074,6 +1092,7 @@ export function MaterialAvailabilityControlCenterPage() {
       receivedGrnQty: summary?.receivedGrnQty ?? 0,
     };
   }, [
+    postIssueHandoff,
     detail,
     operational,
     woCase,
@@ -1109,8 +1128,8 @@ export function MaterialAvailabilityControlCenterPage() {
     sourceType: resolvedProcurementMr?.sourceType ?? activeMaterialRequirement?.sourceType ?? null,
     returnTo: "rm-control-center",
   });
-  const requirementActionBlock = anyShortageOnCase ? (
-    requirementRaised ? (
+  const requirementActionBlock =
+    postIssueHandoff || !anyShortageOnCase ? null : requirementRaised ? (
       <div className="rounded-md border border-emerald-300 bg-emerald-50 px-2.5 py-2">
         <p className="text-[12px] font-bold text-emerald-900">RM requirement raised</p>
         <p className="mt-0.5 text-[11px] leading-relaxed text-emerald-800">
@@ -1152,14 +1171,14 @@ export function MaterialAvailabilityControlCenterPage() {
           </>
         )}
       </div>
-    )
-  ) : null;
+    );
 
   const operatorStageLabelText = operatorStageLabel({
-    allocationFirstLabel: anyIssueable ? woCase?.allocationFirstStatus?.label : null,
+    allocationFirstLabel: postIssueHandoff ? STORE_HANDOFF_STATUS_LABEL : anyIssueable ? woCase?.allocationFirstStatus?.label : null,
     guidedPhaseTitle: displayGuided?.phaseTitle ?? displayGuided?.statusHeadline,
-    nextAction: woCase?.nextStoreAction?.label,
+    nextAction: postIssueHandoff ? STORE_HANDOFF_ACTION_LABEL : woCase?.nextStoreAction?.label,
     hasWorkOrder,
+    postIssueHandoff,
   });
 
   async function allocateQty(qty: number, note?: string) {
@@ -1314,9 +1333,6 @@ export function MaterialAvailabilityControlCenterPage() {
     } else if (woCase?.materialRequirement?.id) {
       setSelectedQueueKey({ materialRequirementId: woCase.materialRequirement.id, rmItemId: line.rmItemId });
     }
-    const next: ApiFilters = { ...filters, rmItemId: String(line.rmItemId) };
-    setDraftFilters((d) => ({ ...d, rmItemQuery: line.rmItemName?.trim() || d.rmItemQuery }));
-    setFilters(next);
   }
 
   // One card per work order (else material requirement), with its RM lines rolled up —
@@ -1325,6 +1341,21 @@ export function MaterialAvailabilityControlCenterPage() {
     () => groupRmQueueByCase<QueueRow>(data?.actionQueue ?? []),
     [data?.actionQueue],
   );
+
+  const caseRmMetricsByKey = React.useMemo(
+    () => buildCaseRmMetricsFromDetails(data?.details ?? []),
+    [data?.details],
+  );
+
+  const activeRmItemFilterLabel = React.useMemo(() => {
+    if (!filters.rmItemId.trim() || !detail) return null;
+    return (
+      draftFilters.rmItemQuery.trim() ||
+      data?.actionQueue.find((row) => String(row.rmItemId) === filters.rmItemId.trim())?.rmItemName?.trim() ||
+      selectedLine?.rmItemName?.trim() ||
+      null
+    );
+  }, [filters.rmItemId, detail, draftFilters.rmItemQuery, data?.actionQueue, selectedLine?.rmItemName]);
 
   function isQueueCaseSelected(group: { workOrderId: number | null; materialRequirementId: number | null }): boolean {
     if (group.workOrderId != null) return selectedQueueKey?.workOrderId === group.workOrderId;
@@ -1443,9 +1474,11 @@ export function MaterialAvailabilityControlCenterPage() {
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-1.5">
               <h1 className="text-[20px] font-bold tracking-tight text-slate-900">RM Control Center</h1>
-              <Badge variant={readiness.variant} density="compact">
-                {readiness.label}
-              </Badge>
+              {!detail || !operational ? (
+                <Badge variant={readiness.variant} density="compact">
+                  {readiness.label}
+                </Badge>
+              ) : null}
               {!canAllocateAsStore ? (
                 <Badge variant="default" density="compact">
                   Read-only
@@ -1559,6 +1592,8 @@ export function MaterialAvailabilityControlCenterPage() {
             ) : queueCases.length ? (
               queueCases.map((group) => {
                 const row = group.representative;
+                const displayMetrics = resolveQueueCaseDisplayMetrics(group, caseRmMetricsByKey);
+                const groupPostIssue = isPostIssueStoreHandoff({ queueType: row.queueType });
                 const qStatus = operatorQueueStatus(row);
                 const nextHint = operatorNextActionHint(row);
                 const selected = isQueueCaseSelected(group);
@@ -1590,15 +1625,25 @@ export function MaterialAvailabilityControlCenterPage() {
                     </p>
                   ) : null}
                   <p className="mt-1 truncate text-[12px] font-medium text-slate-800">
-                    RM lines: {group.rmLineCount}
+                    RM lines: {displayMetrics.rmLineCount}
                   </p>
-                  {group.shortageLineCount > 0 ? (
-                    <p className="mt-1 text-[11px] font-semibold tabular-nums text-red-800">
-                      Shortage on {group.shortageLineCount} of {group.rmLineCount}{" "}
-                      {group.rmLineCount === 1 ? "line" : "lines"}
-                    </p>
-                  ) : null}
-                  <p className="mt-1 text-[10px] font-medium text-slate-600">Next: {nextHint}</p>
+                  {groupPostIssue ? (
+                    <>
+                      <p className="mt-1 text-[11px] font-semibold text-emerald-800">{STORE_HANDOFF_COMPLETE_LABEL}</p>
+                      <p className="mt-0.5 text-[11px] font-medium text-emerald-900">{STORE_PRODUCTION_HANDOFF_LABEL}</p>
+                      <p className="mt-0.5 text-[10px] text-slate-600">{STORE_HANDOFF_NO_ACTION_LABEL}</p>
+                    </>
+                  ) : (
+                    <>
+                      {displayMetrics.shortageLineCount > 0 ? (
+                        <p className="mt-1 text-[11px] font-semibold tabular-nums text-red-800">
+                          Shortage on {displayMetrics.shortageLineCount} of {displayMetrics.rmLineCount}{" "}
+                          {displayMetrics.rmLineCount === 1 ? "line" : "lines"}
+                        </p>
+                      ) : null}
+                      <p className="mt-1 text-[10px] font-medium text-slate-600">Next: {nextHint}</p>
+                    </>
+                  )}
                 </button>
               );
               })
@@ -1628,13 +1673,16 @@ export function MaterialAvailabilityControlCenterPage() {
               <RmControlCenterCasePanel
                 salesOrderLabel={detail.salesOrder?.docNo ?? woCase?.salesOrderNo}
                 fgLabel={detail.fgItem?.itemName ?? woCase?.fgItemName}
-                rmItemLabel={selectedLine?.rmItemName}
                 stageLabel={operatorStageLabelText}
-                allocationFirstLabel={woCase?.allocationFirstStatus?.label ?? null}
+                allocationFirstLabel={
+                  postIssueHandoff ? STORE_HANDOFF_STATUS_LABEL : woCase?.allocationFirstStatus?.label ?? null
+                }
+                postIssueHandoff={postIssueHandoff}
+                rmItemFilterLabel={activeRmItemFilterLabel}
                 mrDocNo={woCase?.materialRequirement?.docNo ?? escalation?.materialRequirementDocNo}
-                procurementChipLabel={procurementVisibility?.chip.label ?? null}
-                procurementAnchorLabel={procurementVisibility?.anchorLabel ?? null}
-                procurementExecutionWoLabel={procurementVisibility?.executionWoLabel ?? null}
+                procurementChipLabel={postIssueHandoff ? null : procurementVisibility?.chip.label ?? null}
+                procurementAnchorLabel={postIssueHandoff ? null : procurementVisibility?.anchorLabel ?? null}
+                procurementExecutionWoLabel={postIssueHandoff ? null : procurementVisibility?.executionWoLabel ?? null}
                 operationalGuidance={storeOperationalGuidance}
                 rmLines={rmCaseLines}
                 selectedRmItemId={selectedRmItemId}
@@ -1645,18 +1693,28 @@ export function MaterialAvailabilityControlCenterPage() {
           </div>
         </section>
 
-        <section className="rm-cc-col rm-cc-actions flex min-w-0 flex-col overflow-hidden rounded-lg bg-slate-50/80 ring-1 ring-slate-200/90">
+        <section className="rm-cc-col rm-cc-actions flex h-full min-h-0 flex-col overflow-hidden rounded-lg bg-slate-50/80 ring-1 ring-slate-200/90">
           <div className="shrink-0 border-b border-slate-200/80 bg-white/90 px-2.5 py-1.5">
             <h2 className="text-[12px] font-bold uppercase tracking-wide text-slate-500">Next action</h2>
           </div>
-          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-2 pb-3">
+          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain p-2 pb-3">
             {!detail || !operational ? (
               <div className="grid flex-1 place-items-center text-center">
                 <ArrowDownToLine className="mx-auto h-8 w-8 text-slate-400" />
                 <p className="mt-2 text-[13px] font-semibold text-slate-900">Select a case</p>
               </div>
+            ) : postIssueHandoff ? (
+              <div className="shrink-0 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-4">
+                <p className="text-[11px] font-bold uppercase tracking-wide text-emerald-800">Store handoff complete</p>
+                <p className="mt-2 text-[14px] font-semibold leading-snug text-emerald-900">
+                  {STORE_PRODUCTION_HANDOFF_LABEL}
+                </p>
+                <p className="mt-1.5 text-[12px] leading-relaxed text-emerald-800">
+                  {STORE_HANDOFF_NO_ACTION_LABEL}
+                </p>
+              </div>
             ) : (
-              <div className="flex min-h-0 flex-1 flex-col gap-2">
+              <div className="flex min-h-0 flex-col gap-2">
                 {procurementVisibility ? (
                   <RmControlCenterProcurementPanel
                     chip={procurementVisibility.chip}
@@ -1692,7 +1750,7 @@ export function MaterialAvailabilityControlCenterPage() {
                 <div className="rounded-md border border-slate-200 bg-white px-2.5 py-2">
                   <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Primary operational action</p>
                   <p className="mt-0.5 text-[12px] font-semibold text-slate-900">
-                    {operatorStageLabelText}
+                    {postIssueHandoff ? STORE_HANDOFF_ACTION_LABEL : operatorStageLabelText}
                   </p>
                   <div className="mt-2 flex flex-col gap-2">
                     {woCase?.allocationFirstStatus?.key === "RM_RECEIVED" ? (
@@ -1746,26 +1804,6 @@ export function MaterialAvailabilityControlCenterPage() {
                         )}
                       >
                         {anyIssueable ? "Record GRN" : "Waiting for GRN"}
-                      </Link>
-                    ) : woCase?.allocationFirstStatus?.key === "READY_FOR_PRODUCTION" ? (
-                      <Link
-                        to={
-                          detail.workOrder?.id
-                            ? buildProductionScopedHref({
-                                workOrderId: detail.workOrder.id,
-                                salesOrderId: detail.salesOrder?.id,
-                                orderType: detail.salesOrder?.orderType,
-                                cycleId: detail.workOrder?.cycleId ?? detail.salesOrder?.currentCycleId ?? undefined,
-                                from: "rm-control-center",
-                              })
-                            : "/production"
-                        }
-                        className={cn(
-                          buttonVariants({ size: "sm" }),
-                          "h-9 w-full justify-center text-[13px] font-semibold no-underline",
-                        )}
-                      >
-                        Open Production Workspace
                       </Link>
                     ) : canShowAllocationControls ? (
                       <div className="flex flex-col gap-2">

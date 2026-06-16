@@ -36,7 +36,7 @@ export function woPreparePrepareHref(salesOrderId: number): string {
   return `/work-orders/prepare?salesOrderId=${encodeURIComponent(String(salesOrderId))}`;
 }
 
-/** RM Planning — review requirements, stock, and shortages (not PO/GRN execution). */
+/** Order RM Planning — live SO/quotation requirement review (not PO/GRN execution). */
 export function materialPlanningReviewHref(opts: {
   salesOrderId?: number;
   quotationId?: number;
@@ -52,6 +52,20 @@ export function materialPlanningReviewHref(opts: {
   }
   const q = p.toString();
   return q ? `/material-planning?${q}` : "/material-planning";
+}
+
+/** NO_QTY planning hub shortage CTA — Monthly Planning workspace (not Order RM Planning). */
+export function noQtyRmShortagePlanningHref(opts?: {
+  salesOrderId?: number;
+  source?: string;
+}): string {
+  const p = new URLSearchParams();
+  if (opts?.source) p.set("source", opts.source);
+  if (opts?.salesOrderId != null && opts.salesOrderId > 0) {
+    p.set("salesOrderId", String(opts.salesOrderId));
+  }
+  const q = p.toString();
+  return q ? `/monthly-planning?${q}` : "/monthly-planning";
 }
 
 /** True when PO exists and GRN/receipt is the next procurement step (read-only heuristic). */

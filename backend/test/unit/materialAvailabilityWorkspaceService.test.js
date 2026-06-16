@@ -1013,7 +1013,7 @@ describe("MPRS WO case — completed procurement read model", () => {
     assert.notEqual(esc.state, "NOT_ESCALATED");
   });
 
-  it("deriveCaseStoreAction opens Production when PMR fully issued after GRN", () => {
+  it("deriveCaseStoreAction handoffs to Production when PMR fully issued after GRN", () => {
     const action = deriveCaseStoreAction({
       rmLines: [{ requiredQty: 40.35, freeStockQty: 0, shortageAfterReservationQty: 0, netShortageAfterIncomingQty: 0 }],
       pmrStatus: {
@@ -1032,7 +1032,8 @@ describe("MPRS WO case — completed procurement read model", () => {
       shortageSummary: { blockedLineCount: 0, totalNetShortQty: 0 },
       workOrderId: 1,
     });
-    assert.equal(action.key, "OPEN_PRODUCTION");
+    assert.equal(action.key, "HANDOFF_TO_PRODUCTION");
+    assert.match(action.label, /waiting for Production/i);
   });
 
   it("enrichQueueRowFromCaseSupply sets READY_TO_RELEASE_WO when PMR fully issued", () => {

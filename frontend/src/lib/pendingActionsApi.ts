@@ -24,6 +24,8 @@ export type PendingActionsDashboardProps = {
   count: number;
   loading?: boolean;
   error?: string | null;
+  /** Optional subtitle clarifying the inbox purpose (e.g. Production vs Store). */
+  description?: string;
 };
 
 export async function fetchPendingActions(): Promise<PendingActionsResponse> {

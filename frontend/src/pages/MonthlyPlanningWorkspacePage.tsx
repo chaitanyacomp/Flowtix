@@ -51,11 +51,9 @@ import { buildReportHref } from "../lib/rmPlanningVsReceivedReportUx";
 import {
   formatPhysicalCoveragePct,
   formatPendingReceiptQtyDisplay,
-  formatReceiptStatusLabel,
   lookupReceiptCoverageForLine,
   physicalReceiptCoverageBannerLine,
   physicalReceiptCoverageDetailMessage,
-  RECEIPT_COVERAGE_STATUS_META,
 } from "../lib/monthlyPlanningReceiptCoverageUx";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -94,6 +92,12 @@ import {
   MP_RELEASE_STATUS_META,
   procurementProgressModelLine,
 } from "../lib/monthlyPlanningProcurementLabels";
+import {
+  purchasePlanningAuditTableHeaders,
+  purchasePlanningDefaultTableHeaders,
+  purchasePlanningLineOperationalStatus,
+  purchasePlanningTableColumnCount,
+} from "../lib/monthlyPlanningPurchaseTableUx";
 import {
   CalendarRange,
   Plus,
@@ -1437,7 +1441,7 @@ export function MonthlyPlanningWorkspacePage() {
       const rm = await apiFetch<RmPlanningResponse>(`/api/monthly-planning/${plan.id}/rm-planning`);
       setRmPlanning(rm);
     } catch (e) {
-      showError(e instanceof ApiRequestError ? e.message : "Failed to load RM Planning.");
+      showError(e instanceof ApiRequestError ? e.message : "Failed to load Plan RM Snapshot.");
     } finally {
       setLoadingRm(false);
     }
@@ -1877,7 +1881,7 @@ export function MonthlyPlanningWorkspacePage() {
                       hasUnsavedProductionChanges
                         ? UNSAVED_PRODUCTION_PLAN_LOCK_MESSAGE
                         : canLock
-                          ? "Lock legacy plan and generate RM Planning snapshot"
+                          ? "Lock legacy plan and generate Plan RM Snapshot"
                           : "Add a planned qty > 0 to lock"
                     }
                     className="h-8 bg-amber-700 px-2 hover:bg-amber-800"
@@ -2002,18 +2006,20 @@ export function MonthlyPlanningWorkspacePage() {
         </div>
       ) : null}
 
-      {/* Production requirement summary */}
-      {planExists ? (
+      {/* Production requirement summary — hidden on Purchase Planning (procurement-first) */}
+      {planExists && activeTab !== "purchase" ? (
         <ProductionRequirementBreakdownCard breakdown={fgRequirementBreakdown} period={period} />
       ) : null}
 
-      {/* KPI strip */}
+      {/* KPI strip — hidden on Purchase Planning tab */}
+      {activeTab !== "purchase" ? (
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
         <KpiCard label="Total FG planned" value={totalFgPlanned.toLocaleString()} />
         <KpiCard label="Total FG suggested" value={totalFgSuggested.toLocaleString()} />
         <KpiCard label="FG items with variance" value={String(fgItemsWithVariance)} />
         <KpiCard label="Status" value={formatPlanStatusLabel(plan?.status)} />
       </div>
+      ) : null}
 
       {/* Tabs */}
       <div className="-mt-0.5 flex items-center gap-0.5 border-b border-slate-200">
@@ -2576,7 +2582,7 @@ function LockConfirmModal({
 
         <p className="mt-3 text-[13px] leading-relaxed text-slate-600">
           <strong>{LEGACY_REVISION_WORKFLOW_LABEL}.</strong> Locking <strong>{period}</strong> will freeze the
-          production plan and generate an immutable RM Planning snapshot (BOM explosion + stock position at lock).
+          production plan and generate an immutable Plan RM Snapshot (BOM explosion + stock position at lock).
           The production plan becomes read-only under this legacy workflow. This does not create purchase or
           procurement records. For new planning periods, use plan documents (Plan 1, Plan 2, …) instead of lock
           snapshots.
@@ -3011,6 +3017,34 @@ function TabButton({
 
 const PURCHASE_STATUS_META = MP_RELEASE_STATUS_META;
 
+function PurchasePlanningAuditPanel({
+  expanded,
+  onToggle,
+  children,
+}: {
+  expanded: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="shrink-0 rounded-md border border-slate-200 bg-white p-2 shadow-sm">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="flex w-full items-center justify-between gap-2 text-left"
+      >
+        <span className="text-[12px] font-semibold text-slate-800">Audit &amp; procurement traceability</span>
+        {expanded ? (
+          <ChevronDown className="h-4 w-4 shrink-0 text-slate-500" />
+        ) : (
+          <ChevronRight className="h-4 w-4 shrink-0 text-slate-500" />
+        )}
+      </button>
+      {expanded ? <div className="mt-2 space-y-2 border-t border-slate-100 pt-2">{children}</div> : null}
+    </div>
+  );
+}
+
 function PurchasePlanningTab({
   data,
   plan,
@@ -3030,6 +3064,9 @@ function PurchasePlanningTab({
   showReleaseButton: boolean;
   planStatus?: PlanStatus;
 }) {
+  const [auditExpanded, setAuditExpanded] = React.useState(false);
+  const [showAuditColumns, setShowAuditColumns] = React.useState(false);
+
   if (loading && !data) {
     return <div className="p-6 text-sm text-slate-500">Loading Purchase Planning…</div>;
   }
@@ -3091,15 +3128,40 @@ function PurchasePlanningTab({
   const receiptBannerSuffix = receiptTotals
     ? `${physicalReceiptCoverageBannerLine(physicalCoveragePct)}${physicalCoverageDetail ? ` · ${physicalCoverageDetail}` : ""}`
     : null;
+  const summaryPendingDisplay = receiptTotals
+    ? formatPendingReceiptQtyDisplay(receiptTotals.pendingReceiptQty)
+    : null;
+  const summaryCoverage =
+    receiptTotals != null
+      ? formatPhysicalCoveragePct(receiptTotals.physicalCoveragePct)
+      : coveragePct != null
+        ? `${coveragePct.toLocaleString()}%`
+        : "—";
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-1">
-      <p className="rounded border border-slate-200 bg-slate-50 px-2 py-1 text-[10px] leading-tight text-slate-600">
-        <span className="font-semibold text-slate-700">Progress:</span> {procurementProgressModelLine()}
-      </p>
+      <section className="shrink-0 rounded-md border border-slate-300 bg-slate-50/80 p-2">
+        <h3 className="text-[12px] font-bold text-slate-900">Procurement Summary</h3>
+        <div className="mt-1 grid grid-cols-2 gap-1.5 sm:grid-cols-3 lg:grid-cols-6">
+          <KpiCard label="Required" value={totalCurrent.toLocaleString()} tier="primary" />
+          <KpiCard label="Released" value={totalReleased.toLocaleString()} tier="primary" />
+          <KpiCard
+            label="Ordered"
+            value={(receiptTotals?.poQty ?? 0).toLocaleString()}
+            tier="primary"
+          />
+          <KpiCard
+            label="Received"
+            value={(receiptTotals?.receivedQty ?? 0).toLocaleString()}
+            tier="primary"
+          />
+          <KpiCard label="Pending" value={summaryPendingDisplay?.value ?? "—"} />
+          <KpiCard label="Coverage" value={summaryCoverage} />
+        </div>
+      </section>
 
       {releaseSummary ? (
-        <div className="rounded border border-emerald-200 bg-emerald-50 px-2 py-1 text-[11px] leading-snug text-emerald-800">
+        <div className="shrink-0 rounded border border-emerald-200 bg-emerald-50 px-2 py-1 text-[11px] leading-snug text-emerald-800">
           {formatReleaseSuccessSummary({
             plan: planHeader,
             releaseRevision: releaseSummary.revision,
@@ -3109,107 +3171,15 @@ function PurchasePlanningTab({
             skippedLineCount: releaseSummary.skippedLineCount,
             surplusLineCount: releaseSummary.surplusLineCount,
           })}
-          {receiptBannerSuffix ? (
-            <span className="text-emerald-900"> · {receiptBannerSuffix}</span>
-          ) : null}
         </div>
       ) : (
-        <div className="rounded border border-sky-200 bg-sky-50 px-2 py-1 text-[11px] leading-snug text-sky-800">
+        <div className="shrink-0 rounded border border-sky-200 bg-sky-50 px-2 py-1 text-[11px] leading-snug text-sky-800">
           {purchasePlanningOperationalStatus(totalAdditional, totalReleasedFromTotals)}
-          {receiptBannerSuffix ? <span className="text-sky-900"> · {receiptBannerSuffix}</span> : null}
         </div>
       )}
 
-      {hasReduction ? (
-        <div className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] leading-snug text-amber-900">
-          {purchasePlanningReductionMessage(planHeader)}
-        </div>
-      ) : null}
-
-      <MonthlyPlanningMetricSection
-        title={PURCHASE_FROZEN_SNAPSHOT_SECTION.title}
-        subtitle={PURCHASE_FROZEN_SNAPSHOT_SECTION.subtitle}
-        traceLabel="Frozen snapshot"
-        variant="snapshot"
-        compact
-      >
-        <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
-          <KpiCard
-            label={MP_PROCUREMENT.REQUIREMENT_SNAPSHOT}
-            value={totalCurrent.toLocaleString()}
-            tier="primary"
-          />
-          <KpiCard
-            label={MP_PROCUREMENT.DEMAND_RELEASED}
-            value={totalReleased.toLocaleString()}
-            tier="primary"
-          />
-          <KpiCard label={MP_PROCUREMENT.ADDITIONAL_REQUIREMENT} value={totalAdditional.toLocaleString()} />
-          <KpiCard label={MP_PROCUREMENT.REDUCTION_TOTAL} value={totalReduction.toLocaleString()} />
-        </div>
-        <div className="mt-1.5 grid grid-cols-2 gap-1.5 sm:grid-cols-3">
-          <KpiCard label="RM items" value={String(totalRmItems)} />
-          <KpiCard
-            label={MP_PROCUREMENT.RELEASE_COVERAGE_PCT}
-            value={coveragePct != null ? `${coveragePct.toLocaleString()}%` : "—"}
-          />
-        </div>
-      </MonthlyPlanningMetricSection>
-
-      {receiptTotals ? (
-        <MonthlyPlanningMetricSection
-          title={PURCHASE_LIVE_PROCUREMENT_SECTION.title}
-          subtitle={PURCHASE_LIVE_PROCUREMENT_SECTION.subtitle}
-          traceLabel="Live procurement"
-          variant="live"
-          compact
-        >
-          <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
-            <KpiCard
-              label={MP_PROCUREMENT.ORDERED_QTY}
-              value={receiptTotals.poQty.toLocaleString()}
-              tier="primary"
-            />
-            <KpiCard
-              label={MP_PROCUREMENT.RECEIVED_QTY}
-              value={receiptTotals.receivedQty.toLocaleString()}
-              tier="primary"
-            />
-            <KpiCard
-              label={`${MP_PROCUREMENT.REQUIREMENT_SNAPSHOT} (ref.)`}
-              value={receiptTotals.requirementQty.toLocaleString()}
-            />
-            <KpiCard
-              label={`${MP_PROCUREMENT.DEMAND_RELEASED} (ref.)`}
-              value={receiptTotals.releasedQty.toLocaleString()}
-            />
-          </div>
-          <div className="mt-1.5 grid grid-cols-2 gap-1.5 sm:grid-cols-3">
-            <KpiCard
-              label={MP_PROCUREMENT.PHYSICAL_RECEIPT_COVERAGE_PCT}
-              value={formatPhysicalCoveragePct(receiptTotals.physicalCoveragePct)}
-            />
-            {pendingReceiptDisplay ? (
-              <KpiCard label={pendingReceiptDisplay.label} value={pendingReceiptDisplay.value} />
-            ) : null}
-            {pendingReceiptDisplay?.hint ? (
-              <div className="rounded border border-sky-200 bg-white/80 px-2 py-1 text-[10px] leading-tight text-sky-950">
-                {pendingReceiptDisplay.hint}
-              </div>
-            ) : null}
-          </div>
-        </MonthlyPlanningMetricSection>
-      ) : null}
-
-      <div className="flex flex-wrap items-center justify-between gap-1.5 py-0.5">
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-1.5 py-0.5">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <span className="text-[12px] text-slate-500">
-            {formatPurchasePlanningContextLabel({
-              plan: planHeader,
-              snapshotRevision: data.revision,
-              lineCount: lines.length,
-            })}
-          </span>
           {procurementBadge ? (
             <Badge variant="info" className="text-[11px]">
               Procurement Source: {procurementBadge.label}
@@ -3238,14 +3208,6 @@ function PurchasePlanningTab({
           ) : null}
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          {plan?.periodKey ? (
-            <Link
-              to={buildReportHref(plan.periodKey, "MONTHLY_PLAN")}
-              className="text-[12px] font-semibold text-primary underline"
-            >
-              RM Planning vs Received
-            </Link>
-          ) : null}
           {!canReleaseDelta ? (
             <span className="text-[12px] font-medium text-emerald-700">✓ {releaseDisabledMessage}</span>
           ) : null}
@@ -3267,60 +3229,85 @@ function PurchasePlanningTab({
         </div>
       </div>
 
-      <p className="text-[10px] leading-tight text-slate-500">
-        <span className="font-semibold text-slate-600">Line table:</span> {PURCHASE_LINE_TABLE_NOTE}
-      </p>
+      <div className="flex shrink-0 items-center justify-end gap-2 px-0.5">
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="h-8 text-[12px]"
+          onClick={() => setShowAuditColumns((open) => !open)}
+          data-testid="purchase-planning-audit-columns-toggle"
+        >
+          {showAuditColumns ? "Hide audit columns" : "Show audit columns"}
+        </Button>
+      </div>
 
       <div className="min-h-0 flex-1 overflow-auto rounded-md border border-slate-200 bg-white shadow-sm">
-        <table className="w-full border-collapse text-[13px]">
+        <table
+          className="w-full min-w-[52rem] border-collapse text-[13px]"
+          data-testid="purchase-planning-rm-table"
+          data-audit-columns={showAuditColumns ? "visible" : "hidden"}
+        >
           <thead className="sticky top-0 z-10 bg-slate-50 text-left text-[10px] font-semibold uppercase tracking-wide text-slate-600">
-            <tr className="border-b border-slate-200 text-[9px]">
-              <th className="px-2 py-0.5" colSpan={2} />
-              <th className="px-2 py-0.5 text-center text-slate-700" colSpan={5}>
-                Frozen snapshot
-              </th>
-              <th className="px-2 py-0.5 text-center text-sky-800" colSpan={5}>
-                Live procurement
-              </th>
-              <th className="px-2 py-0.5" colSpan={2} />
-            </tr>
             <tr>
-              <th className="px-2 py-1.5">RM item</th>
-              <th className="px-2 py-1.5 w-16">Unit</th>
-              <th className="px-2 py-1.5 w-28 text-right">{MP_PROCUREMENT.REQUIREMENT_SNAPSHOT}</th>
-              <th className="px-2 py-1.5 w-28 text-right">{MP_PROCUREMENT.DEMAND_RELEASED}</th>
-              <th className="px-2 py-1.5 w-28 text-right">{MP_PROCUREMENT.ADDITIONAL_REQUIREMENT}</th>
-              <th className="px-2 py-1.5 w-24 text-right">Reduction</th>
-              <th className="px-2 py-1.5 w-28 text-right text-slate-500">{MP_PROCUREMENT.SUGGESTED_BUY_QTY}</th>
-              <th className="px-2 py-1.5 w-24 text-right">{MP_PROCUREMENT.ORDERED_QTY}</th>
-              <th className="px-2 py-1.5 w-24 text-right">{MP_PROCUREMENT.RECEIVED_QTY}</th>
-              <th className="px-2 py-1.5 w-28 text-right">{MP_PROCUREMENT.PENDING_OR_OVER_RECEIPT_QTY}</th>
-              <th className="px-2 py-1.5 w-28 text-right">{MP_PROCUREMENT.LINE_RECEIPT_COVERAGE_PCT}</th>
-              <th className="px-2 py-1.5 w-32">Receipt Status</th>
-              <th className="px-2 py-1.5 w-32">Release Status</th>
-              <th className="px-2 py-1.5">Warnings</th>
+              {purchasePlanningDefaultTableHeaders().map((header) => (
+                <th
+                  key={header}
+                  className={cn(
+                    "px-2 py-1.5",
+                    header === "RM Item" || header === "Status" ? "text-left" : "text-right",
+                    header === "Unit" && "w-16",
+                    (header === "Required" ||
+                      header === "Released" ||
+                      header === "Ordered" ||
+                      header === "Received" ||
+                      header === "Pending / Over") &&
+                      "w-24",
+                  )}
+                >
+                  {header}
+                </th>
+              ))}
+              {showAuditColumns
+                ? purchasePlanningAuditTableHeaders().map((header) => (
+                    <th
+                      key={header}
+                      className={cn(
+                        "px-2 py-1.5",
+                        header === "Release Status" || header === "Warnings" ? "text-left" : "text-right",
+                        header === "Line Receipt Coverage %" && "w-28",
+                        header === "Warnings" && "min-w-[12rem]",
+                      )}
+                    >
+                      {header}
+                    </th>
+                  ))
+                : null}
             </tr>
           </thead>
           <tbody>
             {lines.length === 0 ? (
               <tr>
-                <td colSpan={14} className="px-3 py-8 text-center text-sm text-slate-400">
+                <td colSpan={purchasePlanningTableColumnCount(showAuditColumns)} className="px-3 py-8 text-center text-sm text-slate-400">
                   {rmPlanningEmptyTableMessage(planHeader)}
                 </td>
               </tr>
             ) : (
               lines.map((l) => {
-                const meta = PURCHASE_STATUS_META[l.procurementStatus];
+                const releaseMeta = PURCHASE_STATUS_META[l.procurementStatus];
                 const currentReq = num(l.currentRequirementQty ?? l.netRequirementQty);
                 const prevReleased = num(l.previouslyReleasedQty ?? l.alreadyRequisitionedQty);
                 const additional = num(l.additionalRequirementQty ?? l.suggestedPurchaseQty);
                 const reduction = num(l.reductionQty ?? Math.max(0, -num(l.deltaQty ?? l.varianceQty)));
                 const suggestedBuy = num(l.suggestedPurchaseQty ?? additional);
                 const receipt = lookupReceiptCoverageForLine(l);
-                const receiptMeta =
-                  RECEIPT_COVERAGE_STATUS_META[receipt.receiptCoverageStatus as keyof typeof RECEIPT_COVERAGE_STATUS_META] ??
-                  RECEIPT_COVERAGE_STATUS_META.NOT_RECEIVED;
                 const pendingDisplay = formatPendingReceiptQtyDisplay(receipt.pendingReceiptQty);
+                const operationalStatus = purchasePlanningLineOperationalStatus({
+                  procurementStatus: l.procurementStatus,
+                  receiptCoverageStatus: receipt.receiptCoverageStatus,
+                  additionalRequirementQty: additional,
+                  poQty: receipt.poQty,
+                });
                 return (
                   <tr key={l.rmItemId} className="border-t border-slate-100 align-middle">
                     <td className="px-3 py-1.5 font-medium text-slate-800">{l.rmItemName ?? `Item ${l.rmItemId}`}</td>
@@ -3330,30 +3317,6 @@ function PurchasePlanningTab({
                     </td>
                     <td className="px-3 py-1.5 text-right tabular-nums text-slate-600">
                       {prevReleased.toLocaleString()}
-                    </td>
-                    <td
-                      className={cn(
-                        "px-3 py-1.5 text-right font-semibold tabular-nums",
-                        additional > 0 ? "text-sky-700" : "text-slate-400",
-                      )}
-                    >
-                      {additional.toLocaleString()}
-                    </td>
-                    <td
-                      className={cn(
-                        "px-3 py-1.5 text-right tabular-nums",
-                        reduction > 0 ? "text-amber-700 font-semibold" : "text-slate-400",
-                      )}
-                    >
-                      {reduction.toLocaleString()}
-                    </td>
-                    <td
-                      className={cn(
-                        "px-3 py-1.5 text-right tabular-nums text-slate-500",
-                        suggestedBuy > 0 ? "font-medium text-slate-600" : "text-slate-400",
-                      )}
-                    >
-                      {suggestedBuy.toLocaleString()}
                     </td>
                     <td className="px-3 py-1.5 text-right tabular-nums text-slate-700">
                       {receipt.poQty.toLocaleString()}
@@ -3368,44 +3331,72 @@ function PurchasePlanningTab({
                       )}
                     >
                       <span title={pendingDisplay.hint ?? undefined}>{pendingDisplay.value}</span>
-                      {pendingDisplay.overReceived ? (
-                        <span className="mt-0.5 block text-[9px] font-semibold uppercase tracking-wide text-sky-700">
-                          {MP_PROCUREMENT.OVER_RECEIVED_QTY}
-                        </span>
-                      ) : null}
-                    </td>
-                    <td className="px-3 py-1.5 text-right tabular-nums font-medium text-slate-800">
-                      {formatPhysicalCoveragePct(receipt.physicalCoveragePct)}
                     </td>
                     <td className="px-3 py-1.5">
-                      <span className={cn("inline-flex rounded px-1.5 py-0.5 text-[10px] font-semibold", receiptMeta.cls)}>
-                        {formatReceiptStatusLabel(receipt.receiptCoverageStatus)}
+                      <span
+                        className={cn(
+                          "inline-flex rounded px-1.5 py-0.5 text-[10px] font-semibold",
+                          operationalStatus.cls,
+                        )}
+                      >
+                        {operationalStatus.label}
                       </span>
                     </td>
-                    <td className="px-3 py-1.5">
-                      <span className={cn("inline-flex rounded px-1.5 py-0.5 text-[10px] font-semibold", meta.cls)}>
-                        {meta.label}
-                      </span>
-                    </td>
-                    <td className="px-3 py-1.5">
-                      <div className="flex flex-wrap items-center gap-1">
-                        {l.belowMinStockFlag ? <Badge variant="warning">Below min stock</Badge> : null}
-                        {l.leadTimeRiskFlag ? <Badge variant="warning">Lead-time risk</Badge> : null}
-                        {(l.warnings ?? []).map((w, i) => (
-                          <span
-                            key={i}
-                            title={formatOperationalWarningMessage(w)}
-                            className="inline-flex items-center gap-1 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-800"
-                          >
-                            <AlertTriangle className="h-3 w-3" />
-                            {formatOperationalWarningMessage(w)}
+                    {showAuditColumns ? (
+                      <>
+                        <td
+                          className={cn(
+                            "px-3 py-1.5 text-right font-semibold tabular-nums",
+                            additional > 0 ? "text-sky-700" : "text-slate-400",
+                          )}
+                        >
+                          {additional.toLocaleString()}
+                        </td>
+                        <td
+                          className={cn(
+                            "px-3 py-1.5 text-right tabular-nums",
+                            reduction > 0 ? "font-semibold text-amber-700" : "text-slate-400",
+                          )}
+                        >
+                          {reduction.toLocaleString()}
+                        </td>
+                        <td
+                          className={cn(
+                            "px-3 py-1.5 text-right tabular-nums text-slate-500",
+                            suggestedBuy > 0 ? "font-medium text-slate-600" : "text-slate-400",
+                          )}
+                        >
+                          {suggestedBuy.toLocaleString()}
+                        </td>
+                        <td className="px-3 py-1.5 text-right tabular-nums font-medium text-slate-800">
+                          {formatPhysicalCoveragePct(receipt.physicalCoveragePct)}
+                        </td>
+                        <td className="px-3 py-1.5">
+                          <span className={cn("inline-flex rounded px-1.5 py-0.5 text-[10px] font-semibold", releaseMeta.cls)}>
+                            {releaseMeta.label}
                           </span>
-                        ))}
-                        {!l.belowMinStockFlag && !l.leadTimeRiskFlag && (l.warnings ?? []).length === 0 ? (
-                          <span className="text-[12px] text-slate-400">—</span>
-                        ) : null}
-                      </div>
-                    </td>
+                        </td>
+                        <td className="px-3 py-1.5" data-testid="purchase-planning-audit-warnings-cell">
+                          <div className="flex flex-wrap items-center gap-1">
+                            {l.belowMinStockFlag ? <Badge variant="warning">Below min stock</Badge> : null}
+                            {l.leadTimeRiskFlag ? <Badge variant="warning">Lead-time risk</Badge> : null}
+                            {(l.warnings ?? []).map((w, i) => (
+                              <span
+                                key={i}
+                                title={formatOperationalWarningMessage(w)}
+                                className="inline-flex items-center gap-1 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-800"
+                              >
+                                <AlertTriangle className="h-3 w-3" />
+                                {formatOperationalWarningMessage(w)}
+                              </span>
+                            ))}
+                            {!l.belowMinStockFlag && !l.leadTimeRiskFlag && (l.warnings ?? []).length === 0 ? (
+                              <span className="text-[12px] text-slate-400">—</span>
+                            ) : null}
+                          </div>
+                        </td>
+                      </>
+                    ) : null}
                   </tr>
                 );
               })
@@ -3413,6 +3404,118 @@ function PurchasePlanningTab({
           </tbody>
         </table>
       </div>
+
+      <PurchasePlanningAuditPanel expanded={auditExpanded} onToggle={() => setAuditExpanded((open) => !open)}>
+        <p className="rounded border border-slate-200 bg-slate-50 px-2 py-1 text-[10px] leading-tight text-slate-600">
+          <span className="font-semibold text-slate-700">Progress:</span> {procurementProgressModelLine()}
+        </p>
+
+        <p className="text-[12px] text-slate-500">
+          {formatPurchasePlanningContextLabel({
+            plan: planHeader,
+            snapshotRevision: data.revision,
+            lineCount: lines.length,
+          })}
+        </p>
+
+        {plan?.periodKey ? (
+          <Link
+            to={buildReportHref(plan.periodKey, "MONTHLY_PLAN")}
+            className="inline-block text-[12px] font-semibold text-primary underline"
+          >
+            RM Planning vs Received
+          </Link>
+        ) : null}
+
+        {hasReduction ? (
+          <div className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] leading-snug text-amber-900">
+            {purchasePlanningReductionMessage(planHeader)}
+          </div>
+        ) : null}
+
+        {receiptBannerSuffix ? (
+          <div className="rounded border border-sky-200 bg-sky-50 px-2 py-1 text-[11px] leading-snug text-sky-800">
+            {receiptBannerSuffix}
+            {pendingReceiptDisplay?.hint ? (
+              <p className="mt-1 text-[10px] leading-tight text-sky-950">{pendingReceiptDisplay.hint}</p>
+            ) : null}
+          </div>
+        ) : null}
+
+        <MonthlyPlanningMetricSection
+          title={PURCHASE_FROZEN_SNAPSHOT_SECTION.title}
+          subtitle={PURCHASE_FROZEN_SNAPSHOT_SECTION.subtitle}
+          traceLabel="Frozen snapshot"
+          variant="snapshot"
+          compact
+        >
+          <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+            <KpiCard
+              label={MP_PROCUREMENT.REQUIREMENT_SNAPSHOT}
+              value={totalCurrent.toLocaleString()}
+              tier="primary"
+            />
+            <KpiCard
+              label={MP_PROCUREMENT.DEMAND_RELEASED}
+              value={totalReleased.toLocaleString()}
+              tier="primary"
+            />
+            <KpiCard label={MP_PROCUREMENT.ADDITIONAL_REQUIREMENT} value={totalAdditional.toLocaleString()} />
+            <KpiCard label={MP_PROCUREMENT.REDUCTION_TOTAL} value={totalReduction.toLocaleString()} />
+          </div>
+          <div className="mt-1.5 grid grid-cols-2 gap-1.5 sm:grid-cols-3">
+            <KpiCard label="RM items" value={String(totalRmItems)} />
+            <KpiCard
+              label={MP_PROCUREMENT.RELEASE_COVERAGE_PCT}
+              value={coveragePct != null ? `${coveragePct.toLocaleString()}%` : "—"}
+            />
+          </div>
+        </MonthlyPlanningMetricSection>
+
+        {receiptTotals ? (
+          <MonthlyPlanningMetricSection
+            title={PURCHASE_LIVE_PROCUREMENT_SECTION.title}
+            subtitle={PURCHASE_LIVE_PROCUREMENT_SECTION.subtitle}
+            traceLabel="Live procurement"
+            variant="live"
+            compact
+          >
+            <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+              <KpiCard
+                label={MP_PROCUREMENT.ORDERED_QTY}
+                value={receiptTotals.poQty.toLocaleString()}
+                tier="primary"
+              />
+              <KpiCard
+                label={MP_PROCUREMENT.RECEIVED_QTY}
+                value={receiptTotals.receivedQty.toLocaleString()}
+                tier="primary"
+              />
+              <KpiCard
+                label={`${MP_PROCUREMENT.REQUIREMENT_SNAPSHOT} (ref.)`}
+                value={receiptTotals.requirementQty.toLocaleString()}
+              />
+              <KpiCard
+                label={`${MP_PROCUREMENT.DEMAND_RELEASED} (ref.)`}
+                value={receiptTotals.releasedQty.toLocaleString()}
+              />
+            </div>
+            <div className="mt-1.5 grid grid-cols-2 gap-1.5 sm:grid-cols-3">
+              <KpiCard
+                label={MP_PROCUREMENT.PHYSICAL_RECEIPT_COVERAGE_PCT}
+                value={formatPhysicalCoveragePct(receiptTotals.physicalCoveragePct)}
+              />
+              {pendingReceiptDisplay ? (
+                <KpiCard label={pendingReceiptDisplay.label} value={pendingReceiptDisplay.value} />
+              ) : null}
+            </div>
+          </MonthlyPlanningMetricSection>
+        ) : null}
+
+        <p className="text-[10px] leading-tight text-slate-500">
+          <span className="font-semibold text-slate-600">Line table:</span> {PURCHASE_LINE_TABLE_NOTE}
+        </p>
+      </PurchasePlanningAuditPanel>
     </div>
   );
 }

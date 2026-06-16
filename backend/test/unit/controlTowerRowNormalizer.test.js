@@ -129,6 +129,19 @@ describe("controlTowerRowNormalizer", () => {
     assert.equal(row.metadata.purchaseNextOwnerHint, "Open purchase plan");
   });
 
+  it("normalizeRmRiskRow: READY_TO_RELEASE_WO -> WO_RELEASE_READY owned by Production", () => {
+    const row = normalizeRmRiskRow({
+      workOrderId: 10,
+      itemId: 3,
+      status: "LOW_BUFFER",
+      queueType: "READY_TO_RELEASE_WO",
+      recommendedAction: "Start production",
+      procurementCompletedForCase: true,
+    });
+    assert.equal(row.currentStatus, CONTROL_TOWER_STATUSES.WO_RELEASE_READY);
+    assert.equal(row.currentOwner, VISIBLE_OWNERS.PRODUCTION);
+  });
+
   it("normalizeRmRiskRow: pre-PR WAITING_PURCHASE_ACTION remains STORE-owned", () => {
     const row = normalizeRmRiskRow({
       workOrderId: 10,

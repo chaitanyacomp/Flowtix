@@ -1,5 +1,12 @@
 import * as React from "react";
 import { PROCUREMENT_TERMS } from "../../lib/procurementTerminology";
+import {
+  POST_ISSUE_RM_TABLE_HEADERS,
+  POST_ISSUE_RM_TABLE_HELPER_TEXT,
+  PRE_ISSUE_RM_TABLE_HEADERS,
+  storeHandoffLineStatusLabel,
+} from "../../lib/rmControlCenterPostIssueHandoff";
+import { rmItemFilterTableHelperText } from "../../lib/storeRmWorkspaceUx";
 import { cn } from "../../lib/utils";
 import { RmOperationalStageChip } from "./RmOperationalActionsPanel";
 
@@ -36,7 +43,6 @@ type OperationalGuidance = {
 type Props = {
   salesOrderLabel?: string | null;
   fgLabel?: string | null;
-  rmItemLabel?: string | null;
   stageLabel: string;
   allocationFirstLabel?: string | null;
   mrDocNo?: string | null;
@@ -46,16 +52,148 @@ type Props = {
   /** @deprecated Use procurementAnchorLabel */
   procurementSourceLabel?: string | null;
   operationalGuidance?: OperationalGuidance | null;
+  postIssueHandoff?: boolean;
+  rmItemFilterLabel?: string | null;
   rmLines: RmCaseLine[];
   selectedRmItemId: number | null;
   onSelectLine: (line: RmCaseLine) => void;
   formatQty: (v: number | null | undefined, unit?: string | null) => string;
 };
 
+function PostIssueRmLinesTable({
+  lines,
+  selectedRmItemId,
+  onSelectLine,
+  formatQty,
+}: {
+  lines: RmCaseLine[];
+  selectedRmItemId: number | null;
+  onSelectLine: (line: RmCaseLine) => void;
+  formatQty: (v: number | null | undefined, unit?: string | null) => string;
+}) {
+  return (
+    <table className="w-full min-w-[36rem]" data-testid="rm-cc-post-issue-lines-table">
+      <thead className="sticky top-0 z-[1] bg-slate-50 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+        <tr>
+          {POST_ISSUE_RM_TABLE_HEADERS.map((header, idx) => (
+            <th
+              key={header}
+              className={cn("px-2 py-1.5", idx === 0 ? "text-left" : idx === POST_ISSUE_RM_TABLE_HEADERS.length - 1 ? "text-left" : "text-right")}
+            >
+              {header}
+            </th>
+          ))}
+        </tr>
+      </thead>
+      <tbody className="text-[13px] text-slate-600">
+        {lines.map((line, idx) => {
+          const active = selectedRmItemId === line.rmItemId;
+          const statusLabel = storeHandoffLineStatusLabel(line);
+          return (
+            <tr
+              key={line.rmItemId}
+              className={cn(
+                "cursor-pointer border-t border-slate-100/80 hover:bg-slate-50/80",
+                idx % 2 === 1 && !active && "bg-slate-50/40",
+                active && "bg-blue-50/90",
+              )}
+              onClick={() => onSelectLine(line)}
+            >
+              <td className="max-w-[12rem] truncate px-2 py-2 font-semibold text-slate-900" title={line.rmItemName}>
+                {line.rmItemName}
+              </td>
+              <td className="px-2 py-2 text-right text-[14px] font-semibold tabular-nums text-slate-900">
+                {formatQty(line.requiredQty, line.unit)}
+              </td>
+              <td className="px-2 py-2 text-right text-[14px] font-semibold tabular-nums text-emerald-800">
+                {formatQty(line.issuedToProductionQty ?? 0, line.unit)}
+              </td>
+              <td
+                className="px-2 py-2 text-right text-[14px] font-medium tabular-nums text-slate-600"
+                title="Free Store stock remaining after issue — not reserved for this WO"
+              >
+                {formatQty(line.freeStockQty, line.unit)}
+              </td>
+              <td className="max-w-[11rem] truncate px-2 py-2 text-[11px] font-medium text-emerald-800" title={statusLabel}>
+                {statusLabel}
+              </td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
+function PreIssueRmLinesTable({
+  lines,
+  selectedRmItemId,
+  onSelectLine,
+  formatQty,
+}: {
+  lines: RmCaseLine[];
+  selectedRmItemId: number | null;
+  onSelectLine: (line: RmCaseLine) => void;
+  formatQty: (v: number | null | undefined, unit?: string | null) => string;
+}) {
+  return (
+    <table className="w-full min-w-[32rem]" data-testid="rm-cc-pre-issue-lines-table">
+      <thead className="sticky top-0 z-[1] bg-slate-50 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+        <tr>
+          {PRE_ISSUE_RM_TABLE_HEADERS.map((header, idx) => (
+            <th
+              key={header}
+              className={cn("px-2 py-1.5", idx === 0 || idx === PRE_ISSUE_RM_TABLE_HEADERS.length - 1 ? "text-left" : "text-right")}
+            >
+              {header}
+            </th>
+          ))}
+        </tr>
+      </thead>
+      <tbody className="text-[13px] text-slate-600">
+        {lines.map((line, idx) => {
+          const active = selectedRmItemId === line.rmItemId;
+          const coverage =
+            line.coveragePercent != null && Number.isFinite(line.coveragePercent)
+              ? `${line.coveragePercent}%`
+              : "—";
+          return (
+            <tr
+              key={line.rmItemId}
+              className={cn(
+                "cursor-pointer border-t border-slate-100/80 hover:bg-slate-50/80",
+                idx % 2 === 1 && !active && "bg-slate-50/40",
+                active && "bg-blue-50/90",
+              )}
+              onClick={() => onSelectLine(line)}
+            >
+              <td className="max-w-[12rem] truncate px-2 py-2 font-semibold text-slate-900" title={line.rmItemName}>
+                {line.rmItemName}
+              </td>
+              <td className="px-2 py-2 text-right text-[14px] font-bold tabular-nums text-slate-900">
+                {formatQty(line.requiredQty, line.unit)}
+              </td>
+              <td className="px-2 py-2 text-right text-[14px] font-semibold tabular-nums text-emerald-800">
+                {formatQty(line.freeStockQty, line.unit)}
+              </td>
+              <td className="px-2 py-2 text-right text-[14px] font-semibold tabular-nums text-blue-900">
+                {formatQty(line.incomingQty ?? 0, line.unit)}
+              </td>
+              <td className="px-2 py-2 text-right text-[12px] font-bold tabular-nums text-violet-900">{coverage}</td>
+              <td className="max-w-[9rem] truncate px-2 py-2 text-[11px] font-medium text-slate-700" title={line.procurementStatus ?? undefined}>
+                {line.procurementStatus?.trim() || "—"}
+              </td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
 export function RmControlCenterCasePanel({
   salesOrderLabel,
   fgLabel,
-  rmItemLabel,
   stageLabel,
   allocationFirstLabel,
   mrDocNo,
@@ -64,23 +202,24 @@ export function RmControlCenterCasePanel({
   procurementExecutionWoLabel,
   procurementSourceLabel,
   operationalGuidance,
+  postIssueHandoff = false,
+  rmItemFilterLabel,
   rmLines,
   selectedRmItemId,
   onSelectLine,
   formatQty,
 }: Props) {
-  const selected =
-    rmLines.find((l) => l.rmItemId === selectedRmItemId) ??
-    [...rmLines].sort((a, b) => b.shortageAfterReservationQty - a.shortageAfterReservationQty)[0] ??
-    null;
+  const sortedLines = React.useMemo(() => {
+    const copy = [...rmLines];
+    if (postIssueHandoff) {
+      return copy.sort((a, b) => a.rmItemName.localeCompare(b.rmItemName));
+    }
+    return copy.sort(
+      (a, b) => b.shortageAfterReservationQty - a.shortageAfterReservationQty || b.requiredQty - a.requiredQty,
+    );
+  }, [rmLines, postIssueHandoff]);
 
-  const sortedLines = React.useMemo(
-    () =>
-      [...rmLines].sort(
-        (a, b) => b.shortageAfterReservationQty - a.shortageAfterReservationQty || b.requiredQty - a.requiredQty,
-      ),
-    [rmLines],
-  );
+  const rmItemFilterHelper = rmItemFilterTableHelperText(rmItemFilterLabel);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-hidden">
@@ -92,10 +231,6 @@ export function RmControlCenterCasePanel({
         <span>
           <span className="font-bold uppercase tracking-wide text-slate-500">FG</span>{" "}
           <span className="font-semibold text-slate-900">{fgLabel ?? "—"}</span>
-        </span>
-        <span>
-          <span className="font-bold uppercase tracking-wide text-slate-500">RM</span>{" "}
-          <span className="font-semibold text-slate-900">{rmItemLabel ?? selected?.rmItemName ?? "—"}</span>
         </span>
         <RmOperationalStageChip label={allocationFirstLabel?.trim() || stageLabel} />
         {procurementChipLabel ? (
@@ -164,57 +299,29 @@ export function RmControlCenterCasePanel({
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg bg-white ring-1 ring-slate-200/80">
         <div className="shrink-0 bg-slate-50/80 px-2.5 py-1">
           <h3 className="text-[11px] font-bold uppercase tracking-wide text-slate-500">RM lines</h3>
+          {rmItemFilterHelper ? (
+            <p className="text-[10px] leading-snug text-blue-800">{rmItemFilterHelper}</p>
+          ) : null}
+          {postIssueHandoff ? (
+            <p className="text-[10px] leading-snug text-slate-500">{POST_ISSUE_RM_TABLE_HELPER_TEXT}</p>
+          ) : null}
         </div>
         <div className="min-h-0 flex-1 overflow-x-auto">
-          <table className="w-full min-w-[32rem]">
-            <thead className="sticky top-0 z-[1] bg-slate-50 text-[10px] font-bold uppercase tracking-wide text-slate-500">
-              <tr>
-                <th className="px-2 py-1.5 text-left">RM item</th>
-                <th className="px-2 py-1.5 text-right">Need</th>
-                <th className="px-2 py-1.5 text-right">Available</th>
-                <th className="px-2 py-1.5 text-right">Incoming</th>
-                <th className="px-2 py-1.5 text-right">Coverage</th>
-                <th className="px-2 py-1.5 text-left">Procurement</th>
-              </tr>
-            </thead>
-            <tbody className="text-[13px] text-slate-600">
-              {sortedLines.map((line, idx) => {
-                const active = selectedRmItemId === line.rmItemId;
-                const coverage =
-                  line.coveragePercent != null && Number.isFinite(line.coveragePercent)
-                    ? `${line.coveragePercent}%`
-                    : "—";
-                return (
-                  <tr
-                    key={line.rmItemId}
-                    className={cn(
-                      "cursor-pointer border-t border-slate-100/80 hover:bg-slate-50/80",
-                      idx % 2 === 1 && !active && "bg-slate-50/40",
-                      active && "bg-blue-50/90",
-                    )}
-                    onClick={() => onSelectLine(line)}
-                  >
-                    <td className="max-w-[12rem] truncate px-2 py-2 font-semibold text-slate-900" title={line.rmItemName}>
-                      {line.rmItemName}
-                    </td>
-                    <td className="px-2 py-2 text-right text-[14px] font-bold tabular-nums text-slate-900">
-                      {formatQty(line.requiredQty, line.unit)}
-                    </td>
-                    <td className="px-2 py-2 text-right text-[14px] font-semibold tabular-nums text-emerald-800">
-                      {formatQty(line.freeStockQty, line.unit)}
-                    </td>
-                    <td className="px-2 py-2 text-right text-[14px] font-semibold tabular-nums text-blue-900">
-                      {formatQty(line.incomingQty ?? 0, line.unit)}
-                    </td>
-                    <td className="px-2 py-2 text-right text-[12px] font-bold tabular-nums text-violet-900">{coverage}</td>
-                    <td className="max-w-[9rem] truncate px-2 py-2 text-[11px] font-medium text-slate-700" title={line.procurementStatus ?? undefined}>
-                      {line.procurementStatus?.trim() || "—"}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+          {postIssueHandoff ? (
+            <PostIssueRmLinesTable
+              lines={sortedLines}
+              selectedRmItemId={selectedRmItemId}
+              onSelectLine={onSelectLine}
+              formatQty={formatQty}
+            />
+          ) : (
+            <PreIssueRmLinesTable
+              lines={sortedLines}
+              selectedRmItemId={selectedRmItemId}
+              onSelectLine={onSelectLine}
+              formatQty={formatQty}
+            />
+          )}
         </div>
       </div>
     </div>

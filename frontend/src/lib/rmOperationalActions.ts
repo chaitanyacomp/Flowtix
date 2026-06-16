@@ -3,6 +3,11 @@
  * Reuses MR lifecycle statuses and workspace supply signals; no stock/PO/GRN math changes.
  */
 
+import {
+  STORE_HANDOFF_ACTION_LABEL,
+  STORE_HANDOFF_COMPLETE_LABEL,
+} from "./rmControlCenterPostIssueHandoff";
+
 const EPS = 1e-6;
 
 function n(v: unknown): number {
@@ -180,11 +185,11 @@ export function resolveRmOperationalContext(input: RmOperationalContextInput): R
 
   if (input.readyToRelease) {
     buttons.push({
-      id: "release-wo",
-      label: "Release WO for Production",
-      kind: "primary",
-      href: input.productionHref,
-      description: "Material issued — production can continue on this work order.",
+      id: "handoff-production",
+      label: "RM issued — waiting for Production",
+      kind: "info",
+      disabled: true,
+      description: "Store issue is complete. Production owns the next action on this work order.",
     });
   } else if (
     mrStatus === "FULLY_PROCURED" &&
@@ -341,11 +346,12 @@ export function resolveRmOperationalContext(input: RmOperationalContextInput): R
       ? "Purchase Department"
       : "Store Department");
 
-  const nextAction =
-    input.nextAction?.trim() ||
-    buttons.find((b) => b.kind === "primary" && !b.disabled)?.label ||
-    buttons[0]?.label ||
-    "Review case";
+  const nextAction = input.readyToRelease
+    ? STORE_HANDOFF_ACTION_LABEL
+    : input.nextAction?.trim() ||
+      buttons.find((b) => b.kind === "primary" && !b.disabled)?.label ||
+      buttons[0]?.label ||
+      "Review case";
 
   return {
     traceSteps,
@@ -359,7 +365,7 @@ export function resolveRmOperationalContext(input: RmOperationalContextInput): R
     procurementStatus:
       input.procurementStatus?.trim() ||
       (input.readyToRelease
-        ? "Material issued / release ready"
+        ? STORE_HANDOFF_COMPLETE_LABEL
         : input.anyIssueable
           ? "Stock available for issue"
           : partial

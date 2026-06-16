@@ -381,27 +381,27 @@ export function rmPurchaseEmptyMessage(
 ): string {
   if (status === "APPROVED") {
     return tab === "rm"
-      ? "RM Requirement Snapshot is not available yet for this approved plan."
+      ? "Plan RM Snapshot is not available yet for this approved plan."
       : "Purchase Planning is not available yet for this approved plan.";
   }
   if (status === "AWAITING_PURCHASE_REVIEW") {
-    return "Plan is awaiting Purchase review. RM Requirement Snapshot and Purchase Planning unlock after approval.";
+    return "Plan is awaiting Purchase review. Plan RM Snapshot and Purchase Planning unlock after approval.";
   }
   if (status === "DRAFT") {
     return tab === "rm"
-      ? "Submit the plan for Purchase review and approval to generate the RM Requirement Snapshot."
+      ? "Submit the plan for Purchase review and approval to generate the Plan RM Snapshot."
       : "Submit the plan for Purchase review and approval to review purchase planning.";
   }
   return tab === "rm"
-    ? "Lock the production plan to view the RM Requirement Snapshot for this period."
+    ? "Lock the production plan to view the Plan RM Snapshot for this period."
     : "Lock the production plan to review purchase planning.";
 }
 
 /** P7F-B — RM tab and snapshot presentation (copy only). */
-export const RM_REQUIREMENT_SNAPSHOT_TAB_LABEL = "RM Requirement Snapshot";
+export const RM_REQUIREMENT_SNAPSHOT_TAB_LABEL = "Plan RM Snapshot";
 
 export const RM_SNAPSHOT_BANNER = {
-  title: "Approved RM Requirement Snapshot",
+  title: "Approved Plan RM Snapshot",
   body: "Frozen when this plan was approved and retained for planning audit. Values in this section do not change after purchase orders or goods receipts.",
 } as const;
 

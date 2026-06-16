@@ -128,8 +128,10 @@ export function resolveGuidedWorkflow(input: GuidedWorkflowInput): GuidedWorkflo
     materialRequirementId: input.materialRequirementId,
     returnTo: "rm-control-center",
   });
-  const requisitionHref =
-    input.salesOrderId && input.salesOrderId > 0
+  const isNoQtyOrder = String(input.orderType ?? "").trim() === "NO_QTY";
+  const requisitionHref = isNoQtyOrder
+    ? rmHref
+    : input.salesOrderId && input.salesOrderId > 0
       ? `/material-planning?salesOrderId=${input.salesOrderId}`
       : procHref;
   const grnHref =
@@ -153,6 +155,9 @@ export function resolveGuidedWorkflow(input: GuidedWorkflowInput): GuidedWorkflo
 
   if (input.anyIssueable) {
     phase = "E_READY_TO_ISSUE";
+    timelineStepIndex = 4;
+  } else if (input.storeActionKey === "HANDOFF_TO_PRODUCTION") {
+    phase = "F_ISSUED_OPEN_PRODUCTION";
     timelineStepIndex = 4;
   } else if (pendingGrn > EPS || input.storeActionKey === "WAIT_GRN" || esc?.state === "WAITING_GRN") {
     phase = "D_PO_GRN_PENDING";
@@ -203,7 +208,7 @@ export function resolveGuidedWorkflow(input: GuidedWorkflowInput): GuidedWorkflo
   const base = {
     ownerLabel: "Store",
     showMaterialIssueSection: phase === "E_READY_TO_ISSUE",
-    showProductionLink: phase === "F_ISSUED_OPEN_PRODUCTION",
+    showProductionLink: false,
     timelineStepIndex,
     hideProcurementExecutionNav: phase === "A_BLOCKED" || phase === "E_READY_TO_ISSUE" || phase === "F_ISSUED_OPEN_PRODUCTION",
   };
@@ -314,12 +319,12 @@ export function resolveGuidedWorkflow(input: GuidedWorkflowInput): GuidedWorkflo
       return {
         ...base,
         phase,
-        phaseTitle: "RM issued — production can continue",
-        phaseDetail: "Store issue is complete for this step. Production owns the next action.",
-        statusHeadline: "Material issued — open production when ready.",
-        primaryAction: { kind: "OPEN_PRODUCTION", label: "Open Production", href: productionHref },
+        phaseTitle: "RM issued — waiting for Production",
+        phaseDetail: "Store issue is complete for this work order. Production owns the next action.",
+        statusHeadline: "RM issued — waiting for Production",
+        primaryAction: { kind: "NONE", label: "Waiting for Production" },
         showMaterialIssueSection: false,
-        showProductionLink: true,
+        showProductionLink: false,
         timelineStepIndex: 4,
         hideProcurementExecutionNav: true,
       };

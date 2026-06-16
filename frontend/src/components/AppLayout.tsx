@@ -9,6 +9,7 @@ import { DemoGuide } from "./demo/DemoGuide";
 import { Button } from "./ui/button";
 import { cn } from "../lib/utils";
 import { getPageTitle } from "../lib/routeTitles";
+import { REGULAR_TERMS } from "../lib/flowTerminology";
 import { PROCUREMENT_TERMS } from "../lib/procurementTerminology";
 import { GlobalSearch } from "./GlobalSearch";
 import { CommercialWorkflowOriginTrace } from "./PageHeader";
@@ -194,7 +195,8 @@ const navGroups: NavGroup[] = [
       {
         to: "/material-planning",
         navKey: "mat-plan",
-        label: "Material Planning",
+        label: REGULAR_TERMS.ORDER_RM_PLANNING_TITLE,
+        navHint: REGULAR_TERMS.ORDER_RM_PLANNING_SCOPE_HINT,
         roles: [...PROCUREMENT_PLANNING_ROLES],
         icon: <Package className="h-4 w-4 shrink-0" />,
       },

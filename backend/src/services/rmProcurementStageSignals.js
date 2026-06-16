@@ -8,12 +8,21 @@ const { resolveDemandPoolForSourceType } = require("./procurementDemandPoolServi
 
 const WAITING_FOR_PURCHASE_RM_PO = "Waiting for Purchase to prepare RM PO.";
 const PREPARE_RM_PO = "Prepare RM PO";
+const RM_ISSUED_WAITING_FOR_PRODUCTION = "RM issued — waiting for Production";
+const READY_TO_START_PRODUCTION = "Ready to Start Production";
 
 function isPurchaseRole(role) {
   const r = String(role ?? "")
     .trim()
     .toUpperCase();
   return r === "PURCHASE" || r === "ADMIN";
+}
+
+function isProductionRole(role) {
+  const r = String(role ?? "")
+    .trim()
+    .toUpperCase();
+  return r === "PRODUCTION" || r === "ADMIN";
 }
 
 function n(v) {
@@ -154,9 +163,15 @@ function resolveRmRiskPendingAction(meta, queueHints = {}, role = "STORE") {
     Boolean(meta?.procurementCompletedForCase) || String(meta?.mrStatus ?? "").trim() === "FULLY_PROCURED";
 
   if (procurementDone && queueType === "READY_TO_RELEASE_WO") {
-    const params = new URLSearchParams({ returnTo: "pending-actions" });
-    if (stage.workOrderId > 0) params.set("workOrderId", String(stage.workOrderId));
-    return { action: "Open Production Workspace", href: `/production?${params.toString()}` };
+    if (isProductionRole(role)) {
+      const params = new URLSearchParams({ returnTo: "pending-actions" });
+      if (stage.workOrderId > 0) params.set("workOrderId", String(stage.workOrderId));
+      return { action: READY_TO_START_PRODUCTION, href: `/production?${params.toString()}` };
+    }
+    return {
+      action: RM_ISSUED_WAITING_FOR_PRODUCTION,
+      href: buildRmControlCenterHref(stage, rmItemId),
+    };
   }
 
   if (procurementDone) {
@@ -222,6 +237,8 @@ function resolveRmRiskStorePendingAction(meta, queueHints = {}) {
 module.exports = {
   WAITING_FOR_PURCHASE_RM_PO,
   PREPARE_RM_PO,
+  RM_ISSUED_WAITING_FOR_PRODUCTION,
+  READY_TO_START_PRODUCTION,
   deriveOperationalKeyFromCounts,
   summarizeProcurementStageFromTrace,
   summarizeProcurementStageFromMeta,

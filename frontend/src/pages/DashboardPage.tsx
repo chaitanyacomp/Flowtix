@@ -14,7 +14,7 @@ import { type DispatchBacklogRow, ROW_NUM_EPS } from "../lib/dispatchBacklog";
 import { displaySalesOrderNo } from "../lib/docNoDisplay";
 import { salesOrdersFocusHref } from "../lib/drillDownRoutes";
 import { useAuth } from "../hooks/useAuth";
-import { PendingActionsDashboardCard } from "./PendingActionsPage";
+import { PendingActionsDashboardCard, PENDING_ACTIONS_PRODUCTION_HELPER } from "./PendingActionsPage";
 import { fetchPendingActions } from "../lib/pendingActionsApi";
 import { PurchaseDashboardPage } from "./PurchaseDashboardPage";
 import { QaDashboardPage } from "./QaDashboardPage";
@@ -2404,6 +2404,7 @@ export function DashboardPage() {
               count={pendingActionsDeskProps.count}
               loading={pendingActionsDeskProps.loading}
               error={pendingActionsDeskProps.error}
+              description={role === "PRODUCTION" ? PENDING_ACTIONS_PRODUCTION_HELPER : undefined}
             />
           ) : null}
           {!demo.enabled && continueWorkingError ? (

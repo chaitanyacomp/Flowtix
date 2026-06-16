@@ -36,8 +36,15 @@ export const REGULAR_TERMS = {
   OPEN_PURCHASE_AND_GRN: "Open Purchase & GRN",
   SEND_TO_PROCUREMENT: "Create SO-linked material request",
   OPEN_PURCHASE_QUEUE: "Open Approved Requisitions",
-  /** RM requirement & shortage review (`/material-planning`) — not PO execution. */
-  OPEN_RM_PLANNING: "Open RM Planning",
+  /** Order-level RM calculator (`/material-planning`) — REGULAR SO / quotation; not Monthly Planning. */
+  ORDER_RM_PLANNING_TITLE: "Order RM Planning",
+  ORDER_RM_PLANNING_SUBTITLE: "Live RM requirement calculation for Sales Orders and Quotations.",
+  ORDER_RM_PLANNING_SCOPE_HINT:
+    "Used for REGULAR order planning. Not part of Monthly Planning procurement.",
+  ORDER_RM_PLANNING_EMPTY_STATE:
+    "Select a Sales Order or approved Quotation to calculate RM requirements.",
+  /** @deprecated Prefer ORDER_RM_PLANNING_TITLE — kept for stable analytics keys. */
+  OPEN_RM_PLANNING: "Open Order RM Planning",
   REFRESH_STOCK: "Refresh Stock",
   MR_RAISED_SUCCESS_SUFFIX: "raised successfully.",
   MR_WAITING_PURCHASE_GRN_BEFORE_WO: "Waiting for Purchase/GRN before Work Order can be created.",
@@ -107,9 +114,10 @@ export const NO_QTY_TERMS = {
   CONTINUE_NO_QTY_PLANNING: "Continue NO_QTY Planning",
   REQUIREMENT_SHEET_LINK: "Current RS",
   CONTINUE_PLANNING_SHORT: "Continue Planning",
-  /** From NO_QTY planning hub — RM resolution is purchase/stock, not REGULAR WO prep (`/work-orders/prepare`). */
-  /** @deprecated Prefer REGULAR_TERMS.OPEN_RM_PLANNING — kept for NO_QTY planning hub compatibility. */
-  OPEN_RM_PURCHASE_FROM_SHORTAGE: "Open RM Planning",
+  /** From NO_QTY planning hub — routes to Monthly Planning (period RM snapshot), not Order RM Planning. */
+  OPEN_RM_SHORTAGE_MONTHLY_PLANNING: "Open Monthly Planning",
+  /** @deprecated Use OPEN_RM_SHORTAGE_MONTHLY_PLANNING */
+  OPEN_RM_PURCHASE_FROM_SHORTAGE: "Open Monthly Planning",
   WRONG_FLOW_REGULAR_SO_TITLE: "Regular sales order",
   WRONG_FLOW_REGULAR_SO_BODY:
     "This sales order uses the fixed-quantity work-order path (RM check → work order), not requirement-sheet planning.",

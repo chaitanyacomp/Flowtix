@@ -185,6 +185,10 @@ function ownerForRmRiskRow(raw) {
     return VISIBLE_OWNERS.PURCHASE;
   }
 
+  if (queueType === "READY_TO_RELEASE_WO") {
+    return VISIBLE_OWNERS.PRODUCTION;
+  }
+
   return VISIBLE_OWNERS.STORE;
 }
 

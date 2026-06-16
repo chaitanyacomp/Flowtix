@@ -18,10 +18,12 @@ const {
   getQuotationsPendingSalesOrderRows,
 } = require("./dashboardQueueSnapshots");
 const { buildProcurementPendingQueue, buildGrnPendingSection } = require("./procurementWorkspaceService");
-const { buildStoreIssuePendingDashboardRows } = require("./materialAvailabilityWorkspaceService");
+const { buildStoreIssuePendingDashboardRows, buildStoreProductionHandoffDashboardRows } = require("./materialAvailabilityWorkspaceService");
 const {
   WAITING_FOR_PURCHASE_RM_PO,
   PREPARE_RM_PO,
+  RM_ISSUED_WAITING_FOR_PRODUCTION,
+  READY_TO_START_PRODUCTION,
   resolveRmRiskPendingAction,
   resolveProcurementDemandPool,
 } = require("./rmProcurementStageSignals");
@@ -372,6 +374,28 @@ async function fetchStoreIssuePendingActions(db = prisma) {
   });
 }
 
+async function fetchStoreProductionHandoffPendingActions(db = prisma) {
+  const rows = await buildStoreProductionHandoffDashboardRows(db);
+  return rows.map((row) => {
+    const woId = Number(row.workOrderId ?? 0);
+    const params = new URLSearchParams({ returnTo: "pending-actions", onlyBlocked: "1" });
+    if (woId > 0) params.set("workOrderId", String(woId));
+    if (row.salesOrderId) params.set("salesOrderId", String(row.salesOrderId));
+    if (row.materialRequirementId) params.set("materialRequirementId", String(row.materialRequirementId));
+    return {
+      id: `store-handoff:wo:${woId}`,
+      priority: PENDING_PRIORITY.LOW,
+      action: RM_ISSUED_WAITING_FOR_PRODUCTION,
+      documentNo: row.workOrderNo ?? row.salesOrderDocNo ?? null,
+      ownerRole: "STORE",
+      ageHours: null,
+      href: `/reports/rm-shortage?${params.toString()}`,
+      sourceModule: "RM_HANDOFF",
+      currentStatus: "HANDOFF_TO_PRODUCTION",
+    };
+  });
+}
+
 function filterNormalizedRowsByOwner(rows, role) {
   const parsed = parseUserRole(role);
   return (Array.isArray(rows) ? rows : []).filter(
@@ -495,6 +519,69 @@ function extractWorkOrderIdFromPendingAction(action) {
   return null;
 }
 
+function extractSalesOrderIdFromPendingAction(action) {
+  const href = String(action?.href ?? "");
+  const fromHref = href.match(/[?&]salesOrderId=(\d+)/);
+  if (fromHref) return Number(fromHref[1]);
+  return null;
+}
+
+function isProductionExecutionPendingAction(action) {
+  const label = String(action?.action ?? "");
+  return (
+    label === READY_TO_START_PRODUCTION ||
+    label === "Production Pending" ||
+    label === "Production On Hold"
+  );
+}
+
+function productionExecutionDedupeKey(action) {
+  const woId = extractWorkOrderIdFromPendingAction(action);
+  if (woId > 0) return `wo:${woId}`;
+  const soId = extractSalesOrderIdFromPendingAction(action);
+  if (soId > 0) return `so:${soId}`;
+  return null;
+}
+
+function productionPendingActionRank(action) {
+  const label = String(action?.action ?? "");
+  if (label === READY_TO_START_PRODUCTION) return 0;
+  if (label === "Production On Hold") return 1;
+  if (label === "Production Pending") return 2;
+  return 99;
+}
+
+function preferProductionExecutionPendingAction(existing, candidate) {
+  const ra = productionPendingActionRank(existing);
+  const rb = productionPendingActionRank(candidate);
+  if (ra !== rb) return ra <= rb ? existing : candidate;
+  const pa = PRIORITY_SORT[existing.priority] ?? 99;
+  const pb = PRIORITY_SORT[candidate.priority] ?? 99;
+  if (pa !== pb) return pa <= pb ? existing : candidate;
+  const aa = existing.ageHours != null ? Number(existing.ageHours) : -1;
+  const ab = candidate.ageHours != null ? Number(candidate.ageHours) : -1;
+  return ab <= aa ? candidate : existing;
+}
+
+function dedupeProductionPendingActions(actions) {
+  const withoutKey = [];
+  const byKey = new Map();
+  for (const action of actions) {
+    if (!isProductionExecutionPendingAction(action)) {
+      withoutKey.push(action);
+      continue;
+    }
+    const key = productionExecutionDedupeKey(action);
+    if (!key) {
+      withoutKey.push(action);
+      continue;
+    }
+    const prev = byKey.get(key);
+    byKey.set(key, prev ? preferProductionExecutionPendingAction(prev, action) : action);
+  }
+  return [...withoutKey, ...byKey.values()];
+}
+
 function preferStorePendingAction(existing, candidate) {
   const existingIssue = existing.action === STORE_ISSUE_PENDING_ACTION;
   const candidateIssue = candidate.action === STORE_ISSUE_PENDING_ACTION;
@@ -577,6 +664,7 @@ async function getPendingActions(opts = {}) {
   if (role === "STORE") {
     supplemental.push(...(await fetchStoreIssuePendingActions(db)));
     supplemental.push(...(await fetchStoreGrnPendingActions(db)));
+    supplemental.push(...(await fetchStoreProductionHandoffPendingActions(db)));
   }
 
   const combined = [...normalizedActions, ...supplemental];
@@ -595,6 +683,9 @@ async function getPendingActions(opts = {}) {
   }
   if (role === "PURCHASE" || role === "ADMIN") {
     merged = dedupePendingActionsByProcurementCase(merged);
+  }
+  if (role === "PRODUCTION" || role === "ADMIN") {
+    merged = dedupeProductionPendingActions(merged);
   }
 
   const actions = sortPendingActions(merged);
@@ -638,4 +729,7 @@ module.exports = {
   preferStorePendingAction,
   preferPurchasePendingAction,
   preferProcurementCaseAction,
+  dedupeProductionPendingActions,
+  preferProductionExecutionPendingAction,
+  extractSalesOrderIdFromPendingAction,
 };

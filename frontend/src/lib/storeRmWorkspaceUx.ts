@@ -2,6 +2,14 @@
  * RM Control Center — operator-facing copy and status helpers (presentation only).
  */
 
+import {
+  STORE_HANDOFF_ACTION_LABEL,
+  STORE_HANDOFF_STATUS_LABEL,
+  STORE_PRODUCTION_HANDOFF_LABEL,
+  isPostIssueQueueType,
+  sanitizeStoreHandoffOperatorCopy,
+} from "./rmControlCenterPostIssueHandoff";
+
 export type StoreRmQueueStatus = "ready" | "partial" | "shortage";
 
 export type StoreRmQueueStatusPresentation = {
@@ -28,6 +36,8 @@ const WO_CREATE_PROCUREMENT_COPY = /complete procurement,\s*then create work ord
 export function sanitizeStoreOperatorCopy(text: string | null | undefined): string {
   const raw = String(text ?? "").trim();
   if (!raw) return "";
+  const handoff = sanitizeStoreHandoffOperatorCopy(raw);
+  if (handoff !== raw) return handoff;
   if (WO_CREATE_PROCUREMENT_COPY.test(raw)) {
     return "RM shortage blocking production";
   }
@@ -62,12 +72,21 @@ export function operatorQueueStatus(row: {
   if (
     shortage <= 0 ||
     qt === "RM_READY_FOR_ISSUE" ||
-    qt === "READY_TO_RELEASE_WO" ||
     qt === "READY_ISSUE"
   ) {
     return {
       status: "ready",
       label: "Ready for issue",
+      badgeVariant: "success",
+      cardRingClass: "ring-emerald-300/90",
+      cardBgClass: "bg-emerald-50/40",
+    };
+  }
+
+  if (qt === "READY_TO_RELEASE_WO") {
+    return {
+      status: "ready",
+      label: STORE_PRODUCTION_HANDOFF_LABEL,
       badgeVariant: "success",
       cardRingClass: "ring-emerald-300/90",
       cardBgClass: "bg-emerald-50/40",
@@ -171,16 +190,95 @@ export function groupRmQueueByCase<T extends RmQueueCaseRow>(rows: T[]): RmQueue
       (Object.keys(QUEUE_STATUS_RANK) as StoreRmQueueStatus[]).find(
         (k) => QUEUE_STATUS_RANK[k] === worstRank,
       ) ?? "ready";
+    const displayShortageLineCount = isPostIssueQueueType(representative.queueType) ? 0 : shortageLineCount;
     return {
       caseKey: key,
       representative,
       workOrderId: representative.workOrderId ?? null,
       materialRequirementId: representative.materialRequirementId ?? null,
       rmLineCount: group.length,
-      shortageLineCount,
+      shortageLineCount: displayShortageLineCount,
       status,
     };
   });
+}
+
+export type CaseRmMetrics = {
+  rmLineCount: number;
+  shortageLineCount: number;
+};
+
+export function caseKeyForDetail(input: {
+  workOrderId?: number | null;
+  materialRequirementId?: number | null;
+  salesOrderId?: number | null;
+  rmItemId?: number | null;
+}): string {
+  if (input.workOrderId != null && Number(input.workOrderId) > 0) return `wo-${input.workOrderId}`;
+  if (input.materialRequirementId != null && Number(input.materialRequirementId) > 0) {
+    return `mr-${input.materialRequirementId}`;
+  }
+  if (input.salesOrderId != null && Number(input.salesOrderId) > 0) return `so-${input.salesOrderId}`;
+  return `rm-${input.rmItemId ?? "x"}`;
+}
+
+/** Total RM line counts per case from workspace detail payloads (full BOM lines, not queue rows). */
+export function buildCaseRmMetricsFromDetails(
+  details: Array<{
+    workOrder?: { id?: number | null } | null;
+    woShortageCase?: {
+      materialRequirement?: { id?: number } | null;
+      shortageSummary?: { rmLineCount?: number; shortLineCount?: number } | null;
+    } | null;
+    salesOrder?: { id?: number | null } | null;
+    rmLines?: Array<{ shortageAfterReservationQty?: number }>;
+  }>,
+): Map<string, CaseRmMetrics> {
+  const metrics = new Map<string, CaseRmMetrics>();
+  for (const detail of details) {
+    const rmLines = detail.rmLines ?? [];
+    const rmLineCount = rmLines.length || detail.woShortageCase?.shortageSummary?.rmLineCount || 0;
+    if (rmLineCount <= 0) continue;
+    let shortageLineCount = detail.woShortageCase?.shortageSummary?.shortLineCount;
+    if (shortageLineCount == null) {
+      shortageLineCount = rmLines.filter(
+        (line) => Math.max(0, Number(line.shortageAfterReservationQty ?? 0)) > 0,
+      ).length;
+    }
+    metrics.set(
+      caseKeyForDetail({
+        workOrderId: detail.workOrder?.id,
+        materialRequirementId: detail.woShortageCase?.materialRequirement?.id,
+        salesOrderId: detail.salesOrder?.id,
+      }),
+      { rmLineCount, shortageLineCount },
+    );
+  }
+  return metrics;
+}
+
+/** Prefer full-case RM metrics from detail payloads over per-queue-row counts. */
+export function resolveQueueCaseDisplayMetrics<T extends RmQueueCaseRow>(
+  group: RmQueueCaseGroup<T>,
+  metricsByKey: Map<string, CaseRmMetrics>,
+): CaseRmMetrics {
+  const fromDetails = metricsByKey.get(group.caseKey);
+  if (fromDetails) {
+    return {
+      rmLineCount: fromDetails.rmLineCount,
+      shortageLineCount: isPostIssueQueueType(group.representative.queueType) ? 0 : fromDetails.shortageLineCount,
+    };
+  }
+  return {
+    rmLineCount: group.rmLineCount,
+    shortageLineCount: group.shortageLineCount,
+  };
+}
+
+export function rmItemFilterTableHelperText(rmItemLabel: string | null | undefined): string | null {
+  const label = String(rmItemLabel ?? "").trim();
+  if (!label) return null;
+  return `Filtered by ${label}. Showing all RM lines for selected work order.`;
 }
 
 /** True when no RM line has free stock available to allocate. */
@@ -201,7 +299,11 @@ export function operatorStageLabel(input: {
   guidedPhaseTitle?: string | null;
   nextAction?: string | null;
   hasWorkOrder?: boolean;
+  postIssueHandoff?: boolean;
 }): string {
+  if (input.postIssueHandoff) {
+    return STORE_HANDOFF_STATUS_LABEL;
+  }
   const alloc = sanitizeStoreOperatorCopy(input.allocationFirstLabel);
   if (alloc) return alloc;
   const guided = sanitizeStoreOperatorCopy(input.guidedPhaseTitle);
@@ -217,6 +319,9 @@ export function operatorNextActionHint(row: {
   blockerReason?: string | null;
   queueType?: string;
 }): string {
+  if (isPostIssueQueueType(row.queueType)) {
+    return STORE_HANDOFF_ACTION_LABEL;
+  }
   const next = sanitizeStoreOperatorCopy(row.nextAction ?? row.recommendedAction);
   if (next) return next;
   const status = operatorQueueStatus(row);

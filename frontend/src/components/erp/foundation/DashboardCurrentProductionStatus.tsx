@@ -34,6 +34,11 @@ const PROGRESS_TONE_CLASS: Record<ProductionOperationalStatusTone, string> = {
   idle: "bg-slate-400",
 };
 
+export const ACTIVE_PRODUCTION_STATUS_TITLE = "Active Production Status";
+
+export const ACTIVE_PRODUCTION_STATUS_HELPER =
+  "Live status of work orders already opened or in progress.";
+
 export function DashboardCurrentProductionStatus({
   rows,
   loading,
@@ -61,23 +66,24 @@ export function DashboardCurrentProductionStatus({
 
   return (
     <section
-      aria-label="Current Production Status"
+      aria-label={ACTIVE_PRODUCTION_STATUS_TITLE}
       className={cn(
-        "erp-dash-production-status rounded-lg border border-slate-200/80 bg-white shadow-sm",
+        "erp-dash-production-status rounded-lg border border-slate-200/70 bg-slate-50/40 shadow-none",
         className,
       )}
     >
-      <header className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200/70 px-2.5 py-1">
+      <header className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200/60 px-2.5 py-1.5">
         <div className="min-w-0">
-          <h2 className="text-[13px] font-extrabold tracking-tight text-slate-950">Current Production Status</h2>
+          <h2 className="text-[13px] font-semibold tracking-tight text-slate-800">{ACTIVE_PRODUCTION_STATUS_TITLE}</h2>
+          <p className="mt-0.5 text-[11px] leading-snug text-slate-500">{ACTIVE_PRODUCTION_STATUS_HELPER}</p>
         </div>
         {totalInQueue > 0 ? (
           <div className="flex shrink-0 flex-wrap items-center gap-1.5">
-            <span className="rounded-md bg-slate-100 px-2 py-0.5 text-[12px] font-bold tabular-nums text-slate-800">
+            <span className="rounded-md bg-white/80 px-2 py-0.5 text-[11px] font-medium tabular-nums text-slate-600 ring-1 ring-slate-200/80">
               {activeCount} active
             </span>
             {carriedForwardCount > 0 ? (
-              <span className="rounded-md bg-slate-50 px-2 py-0.5 text-[11px] font-semibold tabular-nums text-slate-600 ring-1 ring-slate-200/80">
+              <span className="rounded-md bg-white/60 px-2 py-0.5 text-[11px] font-medium tabular-nums text-slate-500 ring-1 ring-slate-200/70">
                 {carriedForwardCount} carried
               </span>
             ) : null}
@@ -98,10 +104,10 @@ export function DashboardCurrentProductionStatus({
           <p className="py-1 text-[12px] font-medium text-slate-600">No active production lines</p>
         ) : null}
         {!loading && rows !== null && visible.length > 0 && activeCount === 0 ? (
-          <p className="mb-0.5 text-[11px] text-slate-600">No shop-floor actions pending</p>
+          <p className="mb-0.5 text-[11px] text-slate-500">Monitoring only — no shop-floor actions in this list</p>
         ) : null}
         {visible.length > 0 ? (
-          <ul className="divide-y divide-slate-200/80">
+          <ul className="divide-y divide-slate-200/60" role="list">
             {visible.map((row) => {
               const href = productionHrefFromDashboardRow({
                 orderType: row.orderType,
@@ -127,33 +133,34 @@ export function DashboardCurrentProductionStatus({
                 row.orderType === "NO_QTY"
                   ? resolveNoQtyCycleDisplayStatus({ ...row, allQueueRows: rows ?? [] }).label
                   : row.operationalStatus.label;
+              const woLabel = displayWorkOrderTraceNo(row.workOrderId);
               return (
-                <li key={key} className={cn(isCarried && "bg-slate-50/50")}>
+                <li key={key} className={cn(isCarried && "bg-white/40")}>
                   <Link
                     to={href}
                     state={{ from: "dashboard" }}
-                    className="group grid grid-cols-1 gap-2 rounded-md px-1.5 py-1.5 no-underline transition-colors hover:bg-slate-50/90 sm:grid-cols-[minmax(0,1fr)_minmax(10.5rem,auto)_minmax(7.5rem,auto)] sm:items-center sm:gap-3"
+                    aria-label={`View ${woLabel} production detail`}
+                    title="View production detail"
+                    className="group grid grid-cols-1 gap-2 rounded-md px-1.5 py-1.5 no-underline transition-colors hover:bg-white/70 sm:grid-cols-[minmax(0,1fr)_minmax(10.5rem,auto)_minmax(7.5rem,auto)] sm:items-center sm:gap-3"
                   >
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                        <span className="text-[13px] font-bold tabular-nums text-slate-950">
-                          {displayWorkOrderTraceNo(row.workOrderId)}
+                        <span className="text-[13px] font-medium tabular-nums text-slate-800">{woLabel}</span>
+                        <span className="text-slate-300" aria-hidden>
+                          ·
+                        </span>
+                        <span className="max-w-[10rem] truncate text-[13px] font-normal text-slate-600">
+                          {row.customerName ?? "—"}
+                        </span>
+                      </div>
+                      <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[12px] text-slate-600">
+                        <span className="max-w-[14rem] truncate font-normal" title={row.itemName}>
+                          {row.itemName}
                         </span>
                         <span className="text-slate-300" aria-hidden>
                           ·
                         </span>
-                        <span className="max-w-[10rem] truncate text-[13px] font-semibold text-slate-800">
-                          {row.customerName ?? "—"}
-                        </span>
-                      </div>
-                      <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[12px] text-slate-700">
-                        <span className="max-w-[14rem] truncate font-medium" title={row.itemName}>
-                          {row.itemName}
-                        </span>
-                        <span className="text-slate-400" aria-hidden>
-                          ·
-                        </span>
-                        <span className="font-semibold text-slate-600">{row.flowLabel}</span>
+                        <span className="text-slate-500">{row.flowLabel}</span>
                       </div>
                       {row.operationalStatus.contextHint ? (
                         <p className="mt-0.5 text-[11px] leading-snug text-slate-500">{row.operationalStatus.contextHint}</p>
@@ -161,30 +168,30 @@ export function DashboardCurrentProductionStatus({
                     </div>
 
                     <div className="min-w-[10.5rem] shrink-0 sm:text-right">
-                      <div className="text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                      <div className="text-[10px] font-medium uppercase tracking-wide text-slate-400">
                         {row.orderType === "NO_QTY" ? "Planned / Prod / Pending" : "Planned / Prod / Rem"}
                       </div>
-                      <div className="whitespace-nowrap text-[12px] font-bold tabular-nums text-slate-900">
+                      <div className="whitespace-nowrap text-[12px] font-medium tabular-nums text-slate-700">
                         {formatProductionQty(row.requiredQty)} / {formatProductionQty(row.producedQty)} /{" "}
                         {formatProductionQty(thirdQty)}
                       </div>
                     </div>
 
-                    <div className="flex shrink-0 items-start justify-end gap-1.5 sm:items-center">
+                    <div className="flex shrink-0 items-start justify-end gap-1 sm:items-center">
                       <div className="flex min-w-[7.25rem] max-w-[8.5rem] flex-col items-end gap-0.5">
                         <span
                           className={cn(
-                            "inline-flex max-w-full shrink-0 whitespace-nowrap rounded-md px-1.5 py-0.5 text-[10px] font-bold leading-tight ring-1 sm:text-[11px]",
+                            "inline-flex max-w-full shrink-0 whitespace-nowrap rounded-md px-1.5 py-0.5 text-[10px] font-medium leading-tight ring-1 sm:text-[11px]",
                             STATUS_TONE_CLASS[row.operationalStatus.tone],
                           )}
                         >
                           {statusLabel}
                         </span>
                         {row.showProgressBar ? (
-                          <div className="h-1.5 w-full min-w-[4.5rem] overflow-hidden rounded-full bg-slate-100">
+                          <div className="h-1 w-full min-w-[4.5rem] overflow-hidden rounded-full bg-slate-200/80">
                             <div
                               className={cn(
-                                "h-full rounded-full transition-all",
+                                "h-full rounded-full opacity-80 transition-all",
                                 PROGRESS_TONE_CLASS[row.operationalStatus.tone],
                               )}
                               style={{ width: `${row.progressPct}%` }}
@@ -193,7 +200,7 @@ export function DashboardCurrentProductionStatus({
                         ) : null}
                       </div>
                       <ChevronRight
-                        className="mt-0.5 h-4 w-4 shrink-0 text-slate-400 transition-transform group-hover:translate-x-0.5 group-hover:text-slate-700 sm:mt-0"
+                        className="mt-0.5 h-3.5 w-3.5 shrink-0 text-slate-300 group-hover:text-slate-500 sm:mt-0"
                         aria-hidden
                       />
                     </div>
@@ -204,8 +211,8 @@ export function DashboardCurrentProductionStatus({
           </ul>
         ) : null}
         {totalInQueue > rowLimit ? (
-          <footer className="mt-1 border-t border-slate-100 pt-1">
-            <DashboardViewAllLink href="/production?source=dashboard" label={`View all ${totalInQueue} lines`} />
+          <footer className="mt-1 border-t border-slate-200/60 pt-1">
+            <DashboardViewAllLink href="/production?source=dashboard" label={`Browse all ${totalInQueue} lines`} />
           </footer>
         ) : null}
       </div>

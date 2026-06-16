@@ -1085,7 +1085,7 @@ function enrichQueueRowFromCaseSupply(row, { woMr, caseSupply, pmrStatus }) {
 
   if (summary.procurementCompletedForCase) {
     row.operationalKey = "PROCUREMENT_COMPLETED";
-    row.nextActionKey = hasFullyIssuedPmr(pmrStatus) ? "OPEN_PRODUCTION" : row.nextActionKey;
+    row.nextActionKey = hasFullyIssuedPmr(pmrStatus) ? "HANDOFF_TO_PRODUCTION" : row.nextActionKey;
     if (hasFullyIssuedPmr(pmrStatus)) {
       row.queueType = "READY_TO_RELEASE_WO";
       row.recommendedAction = "Start production";
@@ -1564,9 +1564,9 @@ function deriveCaseStoreAction({ rmLines, pmrStatus, woMr, terminalMr, caseSuppl
     (escalation?.state === "PROCUREMENT_COMPLETED" || caseSupply?.summary?.procurementCompletedForCase)
   ) {
     return {
-      key: "OPEN_PRODUCTION",
-      label: "Open Production Workspace",
-      description: "RM issued to production for this work order — continue in Production.",
+      key: "HANDOFF_TO_PRODUCTION",
+      label: "RM issued — waiting for Production",
+      description: "Store issue is complete. Production owns the next action on this work order.",
     };
   }
 
@@ -2356,6 +2356,33 @@ async function buildStoreIssuePendingDashboardRows(db = prisma, opts = {}) {
   return rows;
 }
 
+/**
+ * Dashboard / pending actions — one row per WO where RM is fully issued and Production owns next step.
+ */
+async function buildStoreProductionHandoffDashboardRows(db = prisma, opts = {}) {
+  const workspace = await buildMaterialAvailabilityWorkspace(db, { onlyBlocked: true });
+  const byCase = new Map();
+  for (const row of workspace.actionQueue || []) {
+    if (row.queueType !== "READY_TO_RELEASE_WO") continue;
+    if (!row.workOrderId || Number(row.workOrderId) <= 0) continue;
+    const caseKey = `wo-${row.workOrderId}`;
+    if (byCase.has(caseKey)) continue;
+    byCase.set(caseKey, row);
+  }
+  const rows = [...byCase.values()].map((row) => ({
+    workOrderId: row.workOrderId,
+    workOrderNo: row.workOrderNo,
+    salesOrderId: row.salesOrderId,
+    salesOrderDocNo: row.salesOrderNo,
+    materialRequirementId: row.materialRequirementId ?? null,
+    primaryFgName: row.fgItemName,
+    operationalKey: "HANDOFF_TO_PRODUCTION",
+    operationalLabel: "RM issued — waiting for Production",
+  }));
+  if (opts.limit > 0) return rows.slice(0, opts.limit);
+  return rows;
+}
+
 async function buildPostGrnCreateWoDashboardRows(db = prisma, opts = {}) {
   const workspace = await buildMaterialAvailabilityWorkspace(db, { onlyBlocked: true });
   const out = [];
@@ -2428,6 +2455,7 @@ module.exports = {
   assessPostGrnCreateWoEligibility,
   buildMaterialAvailabilityWorkspace,
   buildStoreIssuePendingDashboardRows,
+  buildStoreProductionHandoffDashboardRows,
   buildAllocationFirstDashboardRows,
   buildPostGrnCreateWoDashboardRows,
   buildSupplyPanel,

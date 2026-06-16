@@ -1241,7 +1241,7 @@
   }
 
   /** BOM — viewport-fit operational workspace (no page-level scroll) */
-  /** Material Planning — viewport-fit store workspace */
+  /** Order Planning — viewport-fit store workspace */
   /** RM Control Center — viewport-fit operational desk (queue scrolls only) */
   .rm-cc-page {
     @apply flex h-[calc(100dvh-5.25rem)] min-h-0 max-h-[calc(100dvh-5.25rem)] flex-col gap-1.5 overflow-hidden;
@@ -1260,7 +1260,7 @@
   }
 
   .rm-cc-actions {
-    @apply lg:sticky lg:top-0 lg:self-start;
+    @apply min-h-0;
   }
 
   .mp-vp-page {

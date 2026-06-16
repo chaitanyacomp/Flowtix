@@ -210,14 +210,20 @@ export function PendingActionsPage() {
 }
 
 /** Compact dashboard card — single entry point to the operational inbox. */
+export const PENDING_ACTIONS_DEFAULT_HELPER = "Click to open your operational inbox";
+
+export const PENDING_ACTIONS_PRODUCTION_HELPER = "Work you need to start or continue now.";
+
 export function PendingActionsDashboardCard({
   count,
   loading,
   error,
+  description,
 }: PendingActionsDashboardProps) {
   const navigate = useNavigate();
   const displayCount = loading ? "…" : String(count);
   const tone = count > 0 ? "warn" : "muted";
+  const helperText = description?.trim() || PENDING_ACTIONS_DEFAULT_HELPER;
 
   return (
     <button
@@ -239,9 +245,7 @@ export function PendingActionsDashboardCard({
         </ErpKpiValue>
       </div>
       {error ? <p className="mt-1.5 text-sm text-red-700">{error}</p> : null}
-      {!error ? (
-        <p className="mt-1.5 text-sm text-slate-500">Click to open your operational inbox</p>
-      ) : null}
+      {!error ? <p className="mt-1.5 text-sm text-slate-500">{helperText}</p> : null}
     </button>
   );
 }

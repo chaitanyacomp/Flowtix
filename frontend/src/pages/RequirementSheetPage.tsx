@@ -47,6 +47,7 @@ import { PageNoQtyFlowBackLink } from "../components/PageHeader";
 import { NoQtyMacroLifecycleStrip } from "../components/erp/production/NoQtyMacroLifecycleStrip";
 import { NoQtyNextRsStatusPanel } from "../components/erp/production/NoQtyNextRsStatusPanel";
 import { NoQtyRsCycleSummaryPanel } from "../components/erp/production/NoQtyRsCycleSummaryPanel";
+import { RequirementSheetExecutionPanel } from "../components/erp/production/RequirementSheetExecutionPanel";
 import { ProductionFlowTypeBadge } from "../components/erp/production/ProductionFlowTypeBadge";
 import { PRODUCTION_FLOW_NO_QTY } from "../lib/productionFlowContract";
 import {
@@ -841,7 +842,7 @@ export function RequirementSheetPage() {
           cycleNo;
         toast.showSuccess(
           locked.lockHandoff?.executionStartsAt === "MONTHLY_PLAN_RELEASE"
-            ? `Requirement Sheet locked for ${noQtyCurrentCycleLabel(lockedCycleNo)}. Work orders and material requests start when the monthly plan is released.`
+            ? `Requirement Sheet locked for ${noQtyCurrentCycleLabel(lockedCycleNo)}. Release creates Monthly Plan MR for procurement; Store will place WO batches after RM readiness is reviewed.`
             : `Requirement Sheet locked for ${noQtyCurrentCycleLabel(lockedCycleNo)}.`,
         );
         await loadSoAndSheets();
@@ -2202,13 +2203,17 @@ export function RequirementSheetPage() {
               ) : null}
               {sheet ? (
                 <>
-                  {locked ? (
+                  {locked && isNoQty ? (
+                    <RequirementSheetExecutionPanel
+                      sheetId={sheet.id}
+                      salesOrderId={sheet.salesOrderId}
+                      className="w-full"
+                    />
+                  ) : null}
+
+                  {locked && !isNoQty ? (
                     <div className="w-full rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
-                      <div className="font-semibold text-slate-800">Store handoff (No Qty SO)</div>
-                      <div className="mt-0.5">
-                        When a Requirement Sheet is locked, the system <span className="font-semibold">auto-creates</span> a Work Order
-                        and a submitted Production Material Request (BOM × planned qty) for store issue.
-                      </div>
+                      <div className="font-semibold text-slate-800">Store handoff</div>
                       <ul className="mt-2 space-y-1">
                         <li className="flex items-center gap-2">
                           <Badge variant={existingWorkOrderForSheet ? "success" : "secondary"}>
@@ -2221,39 +2226,13 @@ export function RequirementSheetPage() {
                             >
                               {sheet.workOrderId != null ? `WO #${sheet.workOrderId}` : "View work order"}
                             </Link>
-                          ) : (
-                            <span className="text-slate-600">Use “Create Work Order” if a legacy sheet has no WO.</span>
-                          )}
-                        </li>
-                        <li className="flex items-center gap-2">
-                          <Badge
-                            variant={
-                              sheet.productionMaterialRequestId != null && Number(sheet.productionMaterialRequestId) > 0
-                                ? "success"
-                                : "secondary"
-                            }
-                          >
-                            {sheet.productionMaterialRequestId != null && Number(sheet.productionMaterialRequestId) > 0
-                              ? "PMR created"
-                              : "PMR pending"}
-                          </Badge>
-                          {sheet.productionMaterialRequestId != null && Number(sheet.productionMaterialRequestId) > 0 ? (
-                            <Link
-                              to={`/material-issue?pmrId=${sheet.productionMaterialRequestId}`}
-                              className="font-medium text-primary underline underline-offset-4"
-                            >
-                              {sheet.pmrDocNo?.trim() || `PMR #${sheet.productionMaterialRequestId}`}
-                              {sheet.pmrStatus ? ` · ${sheet.pmrStatus}` : ""}
-                            </Link>
-                          ) : (
-                            <span className="text-slate-600">Re-lock or ensure PMR if store cannot see RM lines.</span>
-                          )}
+                          ) : null}
                         </li>
                       </ul>
                     </div>
                   ) : null}
 
-                  {locked ? (
+                  {locked && !isNoQty ? (
                     <Button type="button" disabled={!canCreateWorkOrderDirect} onClick={() => void createWorkOrderDirect()}>
                       {busy ? "Working…" : existingWorkOrderForSheet ? "Work Order ready" : "Create Work Order"}
                     </Button>

@@ -45,6 +45,7 @@ const { assertNoQtyRequirementSheetPeriodReleased } = require("../services/noQty
 const { createNoQtyWorkOrderFromLockedSheet } = require("../services/noQtyExecutionReleaseService");
 const { ensureSubmittedProductionMaterialRequestForWorkOrder } = require("../services/productionMaterialRequestService");
 const { resolveNoQtyWoExecutableQty } = require("../services/noQtyWoQtyService");
+const { getRequirementSheetExecutionSummary } = require("../services/requirementSheetExecutionService");
 
 const requirementSheetsRouter = express.Router();
 
@@ -1933,6 +1934,25 @@ requirementSheetsRouter.post(
 
       return res.status(200).json(result);
     } catch (e) {
+      return next(e);
+    }
+  },
+);
+
+// GET /api/requirement-sheets/:id/execution — read-only RS execution workspace (P10-A2A)
+requirementSheetsRouter.get(
+  "/requirement-sheets/:id/execution",
+  requireAuth,
+  requireRole(RS_READ_ROLES),
+  async (req, res, next) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id) || id <= 0) return res.status(400).json(friendly400("Invalid requirement sheet id."));
+      const data = await getRequirementSheetExecutionSummary(prisma, id);
+      return res.json(data);
+    } catch (e) {
+      if (e.statusCode === 404) return res.status(404).json(friendly400(e.message));
+      if (e.statusCode === 409) return res.status(409).json(friendly400(e.message));
       return next(e);
     }
   },

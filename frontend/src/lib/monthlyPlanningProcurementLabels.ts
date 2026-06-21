@@ -76,19 +76,9 @@ export function formatReleaseSuccessSummaryMessage(params: {
   totalDeltaQty: number;
   skippedLineCount: number;
   surplusLineCount: number;
-  executionWorkOrderCount?: number;
-  executionPmrCount?: number;
 }): string {
   const mrPart = params.materialRequirementDocNo ? ` → MR ${params.materialRequirementDocNo}` : "";
-  const executionParts: string[] = [];
-  if (params.executionWorkOrderCount != null && params.executionWorkOrderCount > 0) {
-    executionParts.push(`${params.executionWorkOrderCount} WO(s)`);
-  }
-  if (params.executionPmrCount != null && params.executionPmrCount > 0) {
-    executionParts.push(`${params.executionPmrCount} PMR(s)`);
-  }
-  const executionPart = executionParts.length ? ` · Execution: ${executionParts.join(", ")}.` : "";
-  return `${MP_PROCUREMENT.DEMAND_RELEASED} from ${params.planLabel}${mrPart}: ${params.releasedLineCount} line(s) (${params.totalDeltaQty.toLocaleString()} qty), ${params.skippedLineCount} skipped, ${params.surplusLineCount} surplus.${executionPart} Next: Ordered → Received.`;
+  return `${MP_PROCUREMENT.DEMAND_RELEASED} from ${params.planLabel}${mrPart}: ${params.releasedLineCount} line(s) (${params.totalDeltaQty.toLocaleString()} qty), ${params.skippedLineCount} skipped, ${params.surplusLineCount} surplus. Next: Ordered → Received. Store places work orders from each requirement sheet after RM is ready.`;
 }
 
 export function physicalReceiptProgressBannerLine(physicalCoveragePct: number | null | undefined): string {

@@ -1,5 +1,6 @@
 /**
  * NO_QTY WO qty boundary: cycle-wise executable qty (requirementQty) vs cumulative planning (suggestedWoQtySnapshot).
+ * Work orders are placed from the requirement sheet after plan release — not at release.
  */
 const { runIntegration } = require("./_integrationEnv");
 
@@ -12,7 +13,6 @@ const { prisma } = require("../../src/utils/prisma");
 const { signAccessToken } = require("../../src/utils/jwt");
 const { getRequirementComposition } = require("../../src/services/monthlyPlanningRequirementCompositionService");
 const { getRsSuggestionsForPeriod } = require("../../src/services/monthlyPlanningRsSuggestionsService");
-const { createWorkOrdersForPeriodRelease } = require("../../src/services/noQtyExecutionReleaseService");
 
 const d = runIntegration ? describe : describe.skip;
 
@@ -24,6 +24,11 @@ function adminAuth() {
     name: "NO_QTY WO Boundary Admin",
   });
   return { Authorization: `Bearer ${token}` };
+}
+
+async function createWoFromSheet(app, auth, sheetId) {
+  const res = await request(app).post(`/api/requirement-sheets/${sheetId}/create-wo`).set(auth).expect(201);
+  return Number(res.body?.workOrderId);
 }
 
 d("NO_QTY WO cycle-wise executable qty boundary", () => {
@@ -90,13 +95,18 @@ d("NO_QTY WO cycle-wise executable qty boundary", () => {
       },
     });
 
-    await prisma.$transaction(async (tx) => createWorkOrdersForPeriodRelease(tx, { periodKey: "2026-07" }));
-
-    const c1Wo = await prisma.workOrder.findFirst({
+    const c1WoAfterReleaseOnly = await prisma.workOrder.findFirst({
       where: { salesOrderId: so.id, cycleId: c1.id, requirementSheetId: c1SheetId },
+    });
+    assert.equal(c1WoAfterReleaseOnly, null, "no WO at plan release (Store placement)");
+
+    const c1WoId = await createWoFromSheet(app, auth, c1SheetId);
+
+    const c1Wo = await prisma.workOrder.findUnique({
+      where: { id: c1WoId },
       include: { lines: true },
     });
-    assert.ok(c1Wo, "cycle 1 WO created at plan release");
+    assert.ok(c1Wo, "cycle 1 WO created from requirement sheet");
     assert.equal(Number(c1Wo.lines[0].qty), 10000);
 
     const c1Line = await prisma.requirementSheetLine.findFirst({
@@ -131,12 +141,12 @@ d("NO_QTY WO cycle-wise executable qty boundary", () => {
 
     await request(app).post(`/api/requirement-sheets/${c2SheetId}/lock`).set(auth).expect(200);
 
-    await prisma.$transaction(async (tx) => createWorkOrdersForPeriodRelease(tx, { periodKey: "2026-07" }));
+    await createWoFromSheet(app, auth, c2SheetId);
 
     const c2WoCheck = await prisma.workOrder.findFirst({
       where: { salesOrderId: so.id, cycleId: c2.id, requirementSheetId: c2SheetId },
     });
-    assert.ok(c2WoCheck, "cycle 2 WO created at plan release");
+    assert.ok(c2WoCheck, "cycle 2 WO created from requirement sheet");
 
     ctx = {
       customerId: customer.id,
@@ -145,7 +155,7 @@ d("NO_QTY WO cycle-wise executable qty boundary", () => {
       c1Id: c1.id,
       c2Id: c2.id,
       c1SheetId,
-      c1WoId: c1Wo.id,
+      c1WoId,
       c2SheetId,
     };
   });
@@ -167,7 +177,7 @@ d("NO_QTY WO cycle-wise executable qty boundary", () => {
     await prisma.customer.delete({ where: { id: ctx.customerId } }).catch(() => {});
   });
 
-  it("Cycle 1 WO = 10,000 after plan release", async () => {
+  it("Cycle 1 WO = 10,000 after Store placement from RS", async () => {
     const wo = await prisma.workOrder.findUnique({
       where: { id: ctx.c1WoId },
       include: { lines: true },
@@ -204,7 +214,7 @@ d("NO_QTY WO cycle-wise executable qty boundary", () => {
     assert.equal(Number(line.qty), 10000);
   });
 
-  it("manual create-wo is blocked when WO already exists from release", async () => {
+  it("manual create-wo is blocked when WO already exists from RS placement", async () => {
     const res = await request(app)
       .post(`/api/requirement-sheets/${ctx.c2SheetId}/create-wo`)
       .set(auth)

@@ -55,6 +55,13 @@ import {
   physicalReceiptCoverageBannerLine,
   physicalReceiptCoverageDetailMessage,
 } from "../lib/monthlyPlanningReceiptCoverageUx";
+import {
+  GREEN_LEVEL_BASIS_TOOLTIP,
+  buildFgGreenPlanningRowMap,
+  formatGreenPlanningQty,
+  greenLevelQtyCellContent,
+  resolveFgGreenPlanningRow,
+} from "../lib/monthlyPlanningGreenLevelRowUx";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { NativeSelect } from "../components/ui/native-select";
@@ -295,19 +302,6 @@ type ReleaseSummary = {
   released: { rmItemId: number; deltaQty: number; netRequirementQty: number }[];
   skipped: { rmItemId: number; netRequirementQty: number }[];
   surplus: { rmItemId: number; reducedQty: number; surplusQty: number; netRequirementQty: number }[];
-  executionWorkOrders?: {
-    workOrderId: number;
-    workOrderDocNo?: string | null;
-    requirementSheetId?: number;
-    salesOrderId?: number;
-    created?: boolean;
-  }[];
-  executionPmrs?: {
-    workOrderId: number;
-    pmrId?: number | null;
-    pmrDocNo?: string | null;
-    status?: string | null;
-  }[];
 };
 
 type PurchasePlanningResponse = {
@@ -699,6 +693,7 @@ export function MonthlyPlanningWorkspacePage() {
   );
   const [loadingRequirementComposition, setLoadingRequirementComposition] = React.useState(false);
   const [requirementCompositionVisible, setRequirementCompositionVisible] = React.useState(false);
+  const [greenPlanningContextLoading, setGreenPlanningContextLoading] = React.useState(false);
   const [rmRequirementComposition, setRmRequirementComposition] =
     React.useState<RmRequirementCompositionResponse | null>(null);
   const [loadingRmRequirementComposition, setLoadingRmRequirementComposition] = React.useState(false);
@@ -755,6 +750,22 @@ export function MonthlyPlanningWorkspacePage() {
     [requirementComposition],
   );
   const greenContextMap = React.useMemo(() => buildGreenContextMap(greenLevels), [greenLevels]);
+  const greenPlanningContextReady =
+    !greenPlanningContextLoading &&
+    requirementComposition?.periodKey === period &&
+    greenLevels?.anchorPeriodKey === period;
+  const fgGreenPlanningMap = React.useMemo(
+    () =>
+      buildFgGreenPlanningRowMap({
+        period,
+        compositionPeriodKey: requirementComposition?.periodKey,
+        compositionItems: requirementComposition?.items,
+        greenAnchorPeriodKey: greenLevels?.anchorPeriodKey,
+        greenItems: greenLevels?.items,
+        extraFgItemIds: rows.map((r) => r.fgItemId),
+      }),
+    [period, requirementComposition, greenLevels, rows],
+  );
 
   const ensurePlanningContext = React.useCallback(async () => {
     const needComposition = !requirementComposition || requirementComposition.periodKey !== period;
@@ -1479,8 +1490,6 @@ export function MonthlyPlanningWorkspacePage() {
           totalDeltaQty: summary.totalDeltaQty,
           skippedLineCount: summary.skippedLineCount,
           surplusLineCount: summary.surplusLineCount,
-          executionWorkOrders: summary.executionWorkOrders,
-          executionPmrs: summary.executionPmrs,
         }),
       );
       await refreshPurchase();
@@ -1642,13 +1651,25 @@ export function MonthlyPlanningWorkspacePage() {
   React.useEffect(() => {
     if (!planExists) return;
     let cancelled = false;
-    void apiFetch<RequirementCompositionResponse>(
-      `/api/monthly-planning/requirement-composition?periodKey=${encodeURIComponent(period)}`,
-    )
-      .then((res) => {
-        if (!cancelled) setRequirementComposition(res);
+    setGreenPlanningContextLoading(true);
+    void Promise.all([
+      apiFetch<RequirementCompositionResponse>(
+        `/api/monthly-planning/requirement-composition?periodKey=${encodeURIComponent(period)}`,
+      ),
+      apiFetch<GreenLevelsResponse>(
+        `/api/monthly-planning/green-levels?periodKey=${encodeURIComponent(period)}`,
+      ),
+    ])
+      .then(([compositionRes, greenRes]) => {
+        if (!cancelled) {
+          setRequirementComposition(compositionRes);
+          setGreenLevels(greenRes);
+        }
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setGreenPlanningContextLoading(false);
+      });
     return () => {
       cancelled = true;
     };
@@ -2115,6 +2136,8 @@ export function MonthlyPlanningWorkspacePage() {
             onAddRow={() => void addRow()}
             suggestedProductionMap={suggestedProductionMap}
             greenContextMap={greenContextMap}
+            fgGreenPlanningMap={fgGreenPlanningMap}
+            greenPlanningContextReady={greenPlanningContextReady}
           />
         )}
       </div>
@@ -4301,6 +4324,8 @@ function ProductionPlanTab({
   onAddRow,
   suggestedProductionMap,
   greenContextMap,
+  fgGreenPlanningMap,
+  greenPlanningContextReady,
 }: {
   rows: EditRow[];
   editable: boolean;
@@ -4320,6 +4345,17 @@ function ProductionPlanTab({
   onAddRow: () => void;
   suggestedProductionMap: Map<number, number>;
   greenContextMap: Map<number, { greenTarget: number; freeFgStock: number }>;
+  fgGreenPlanningMap: Map<
+    number,
+    {
+      greenLevelQty: number;
+      freeFgStock: number;
+      greenShortage: number;
+      suggestedProduction: number;
+      hasRsHistory: boolean;
+    }
+  >;
+  greenPlanningContextReady: boolean;
 }) {
   const [expandedItemIds, setExpandedItemIds] = React.useState<Set<number>>(new Set());
 
@@ -4541,11 +4577,24 @@ function ProductionPlanTab({
             <tr>
               <th className="px-3 py-2">FG item</th>
               <th className="px-3 py-2 w-16">Unit</th>
+              <th
+                className="px-3 py-2 w-28 text-right"
+                title={GREEN_LEVEL_BASIS_TOOLTIP}
+              >
+                <span className="cursor-help border-b border-dotted border-slate-400">Green Level</span>
+              </th>
+              <th className="px-3 py-2 w-24 text-right">Free FG</th>
+              <th className="px-3 py-2 w-24 text-right">Green Short.</th>
               <th className="px-3 py-2 w-28 text-right">Suggested</th>
               <th className="px-3 py-2 w-28 text-right">Planned</th>
               <th className="px-3 py-2 w-24 text-right">Variance</th>
               <th className="px-3 py-2 w-20 text-right">Var %</th>
-              <th className="px-3 py-2 w-32 text-right">Green gap</th>
+              <th
+                className="px-3 py-2 w-28 text-right"
+                title="Remaining gap to Green Level after planned production (FG planning buffer)"
+              >
+                <span className="cursor-help border-b border-dotted border-slate-400">Green gap</span>
+              </th>
               <th className="px-3 py-2 w-28">Source</th>
               <th className="px-3 py-2">Remarks</th>
               {editable ? <th className="px-3 py-2 w-12" /> : null}
@@ -4554,7 +4603,7 @@ function ProductionPlanTab({
           <tbody>
             {rows.length === 0 ? (
               <tr>
-                <td colSpan={editable ? 10 : 9} className="px-3 py-8 text-center text-sm text-slate-400">
+                <td colSpan={editable ? 13 : 12} className="px-3 py-8 text-center text-sm text-slate-400">
                   No production plan lines yet. {editable ? "Add an FG item to begin planning." : ""}
                 </td>
               </tr>
@@ -4567,12 +4616,34 @@ function ProductionPlanTab({
                   suggestedProductionMap,
                   greenContextMap,
                 );
+                const greenRow = resolveFgGreenPlanningRow(
+                  r.fgItemId,
+                  fgGreenPlanningMap,
+                  greenPlanningContextReady,
+                );
+                const greenLevelCell = greenLevelQtyCellContent(greenRow);
                 return (
                 <tr key={r.key} className="border-t border-slate-100 align-middle">
                   <td className="px-3 py-1.5 font-medium text-slate-800">{r.fgItemName}</td>
                   <td className="px-3 py-1.5 text-slate-500">{r.unit ?? "—"}</td>
+                  <td className="px-3 py-1.5 text-right tabular-nums text-slate-700">
+                    <div>{greenRow.loading ? "…" : greenLevelCell.display}</div>
+                    {greenLevelCell.helper ? (
+                      <div className="mt-0.5 text-[10px] font-normal normal-case leading-tight text-slate-400">
+                        {greenLevelCell.helper}
+                      </div>
+                    ) : null}
+                  </td>
                   <td className="px-3 py-1.5 text-right tabular-nums text-slate-600">
-                    {metrics.suggested.toLocaleString()}
+                    {formatGreenPlanningQty(greenRow.freeFgStock, greenRow.loading)}
+                  </td>
+                  <td className="px-3 py-1.5 text-right tabular-nums text-slate-600">
+                    {formatGreenPlanningQty(greenRow.greenShortage, greenRow.loading)}
+                  </td>
+                  <td className="px-3 py-1.5 text-right tabular-nums font-medium text-violet-900">
+                    {greenRow.loading
+                      ? "…"
+                      : metrics.suggested.toLocaleString(undefined, { maximumFractionDigits: 3 })}
                   </td>
                   <td className="px-3 py-1.5 text-right">
                     {editable ? (

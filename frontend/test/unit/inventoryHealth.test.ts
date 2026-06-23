@@ -5,16 +5,23 @@ import {
   computeDerivedLowStockLevel,
   countRmInventoryHealthAlerts,
   formatRmStockAlertBanner,
+  inventoryHealthToRmAlertBand,
 } from "../../src/lib/inventoryHealth";
 
 describe("inventoryHealth", () => {
-  it("classifies validation cases 1–4", () => {
+  it("P10-A6B policy cases A–D", () => {
     const min = 100;
     const low = 125;
+    // A
+    expect(classifyInventoryHealth({ currentQty: 0, minimumStock: 0, lowStockLevel: 0 })).toBe("HEALTHY");
+    expect(inventoryHealthToRmAlertBand(classifyInventoryHealth({ currentQty: 0, minimumStock: 0 }))).toBeNull();
+    // B
+    expect(classifyInventoryHealth({ currentQty: 0, minimumStock: min, lowStockLevel: low })).toBe("CRITICAL");
+    // C
+    expect(classifyInventoryHealth({ currentQty: 50, minimumStock: min, lowStockLevel: low })).toBe("CRITICAL");
+    // D
+    expect(classifyInventoryHealth({ currentQty: 120, minimumStock: min, lowStockLevel: low })).toBe("LOW");
     expect(classifyInventoryHealth({ currentQty: 130, minimumStock: min, lowStockLevel: low })).toBe("HEALTHY");
-    expect(classifyInventoryHealth({ currentQty: 110, minimumStock: min, lowStockLevel: low })).toBe("LOW");
-    expect(classifyInventoryHealth({ currentQty: 90, minimumStock: min, lowStockLevel: low })).toBe("CRITICAL");
-    expect(classifyInventoryHealth({ currentQty: 0, minimumStock: min, lowStockLevel: low })).toBe("OUT_OF_STOCK");
   });
 
   it("buffer 0 derives low level equal to minimum", () => {

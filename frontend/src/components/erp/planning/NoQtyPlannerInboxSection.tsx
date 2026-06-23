@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { Badge } from "../../ui/badge";
 import { Button, buttonVariants } from "../../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../../ui/card";
@@ -13,9 +13,8 @@ import {
 } from "../../../lib/planningInboxPresentation";
 import {
   noQtyBusinessWorkflowStage,
-  noQtyCurrentCycleLabel,
   noQtyNextCycleLabel,
-  noQtyPlanningHubHref,
+  resolveNoQtyInboxPlanningCta,
   openCurrentRsButtonLabel,
   createCycleRequirementSheetButtonLabel,
 } from "../../../lib/noQtyRsActionLabels";
@@ -47,7 +46,7 @@ function nextRsToneClass(tone: ReturnType<typeof formatPlanningInboxNextRsLine>[
 function InboxRowCard({ row }: { row: NoQtyPlannerInboxRow }) {
   const canOpenRs = useCanOpenRequirementSheet();
 
-  const { so, rsStatus, flowState, guidedCycleId, cycleNo } = row;
+  const { so, rsStatus, lockedPeriodKey, flowState, guidedCycleId, cycleNo } = row;
   const nextRs = formatPlanningInboxNextRsLine(so);
   const workflowStage = noQtyBusinessWorkflowStage({
     processStageKey: so.processStage?.key,
@@ -61,7 +60,14 @@ function InboxRowCard({ row }: { row: NoQtyPlannerInboxRow }) {
     cycleId: guidedCycleId,
     fromStep: "requirement",
   });
-  const soHref = noQtyPlanningHubHref(so.id);
+  const planningCta = resolveNoQtyInboxPlanningCta({
+    processStageKey: so.processStage?.key,
+    salesOrderId: so.id,
+    lockedPeriodKey,
+    cycleId: guidedCycleId,
+    requirementSheetId: (so as { noQtyPlacementRequirementSheetId?: number | null }).noQtyPlacementRequirementSheetId ?? null,
+    readyToPlaceWo: (so as { noQtyReadyToPlaceWo?: boolean | null }).noQtyReadyToPlaceWo ?? false,
+  });
   const nextCycleNo =
     (so as { noQtyNextPossibleCycleNo?: number | null }).noQtyNextPossibleCycleNo ??
     (cycleNo != null ? cycleNo + 1 : null);
@@ -86,8 +92,11 @@ function InboxRowCard({ row }: { row: NoQtyPlannerInboxRow }) {
           </p>
         </div>
         <div className="flex shrink-0 flex-wrap justify-end gap-1">
-          <Link to={soHref} className={cn(buttonVariants({ size: "sm" }), "h-8 text-[11px] font-semibold")}>
-            Open Planning Dashboard
+          <Link
+            to={planningCta.href}
+            className={cn(buttonVariants({ size: "sm" }), "h-8 text-[11px] font-semibold")}
+          >
+            {planningCta.label}
           </Link>
           {canOpenRs ? (
             <Link to={rsHref} className={cn(buttonVariants({ size: "sm", variant: "outline" }), "h-8 text-[11px]")}>
@@ -159,7 +168,7 @@ export function NoQtyPlannerInboxSection({ rows, loading, error, className }: Pr
           ) : null}
         </div>
         <p className="text-[11px] leading-snug text-slate-600">
-          Planner signals only — open the NO_QTY Agreement to create or edit cycle Requirement Sheets.
+          Planner signals only — open NO_QTY Execution or Requirement & Cycle Planning to create or edit cycle Requirement Sheets.
         </p>
       </CardHeader>
       <CardContent className="space-y-2 px-2.5 py-2.5">

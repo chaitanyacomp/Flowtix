@@ -23,6 +23,7 @@ const {
   computeNoQtyCreateNextRsEligibilityResolved,
   resolveNoQtyEligibilityCycleId,
 } = require("./noQtyCreateNextRsEligibility");
+const { assessNoQtyPlacementStageForCycle } = require("./requirementSheetExecutionService");
 const {
   WAITING_FOR_PURCHASE_RM_PO,
   PREPARE_RM_PO,
@@ -94,6 +95,51 @@ function priorityFromOperationalKey(key) {
   return PENDING_PRIORITY.LOW;
 }
 
+/** Requirement Sheet Creation Workspace — first RS or draft continuation (not execution / Place WO). */
+function buildNoQtyRsCreationWorkspaceHref(salesOrderId, opts = {}) {
+  const sid = Number(salesOrderId);
+  if (!Number.isFinite(sid) || sid <= 0) return "/sales-orders?soType=NO_QTY";
+  const params = new URLSearchParams();
+  params.set("intent", "add");
+  params.set("source", "no_qty_so");
+  params.set("salesOrderId", String(sid));
+  const cycleId = opts.cycleId != null ? Number(opts.cycleId) : 0;
+  if (Number.isFinite(cycleId) && cycleId > 0) params.set("cycleId", String(cycleId));
+  const from = opts.from != null ? String(opts.from).trim() : "pending-actions";
+  if (from) params.set("from", from);
+  return `/sales-orders/${sid}/requirement-sheets?${params.toString()}`;
+}
+
+function resolveNoQtyPlanningWorkspaceHref(row) {
+  const meta = row?.metadata && typeof row.metadata === "object" ? row.metadata : {};
+  const salesOrderId = Number(meta.salesOrderId ?? 0);
+  if (salesOrderId <= 0) return "/sales-orders?soType=NO_QTY";
+  const rsStatus = String(meta.latestRequirementSheetStatus ?? meta.sourceStatus ?? "")
+    .trim()
+    .toUpperCase();
+  const hasSheet =
+    meta.latestRequirementSheetId != null &&
+    Number.isFinite(Number(meta.latestRequirementSheetId)) &&
+    Number(meta.latestRequirementSheetId) > 0;
+  const sourceNext = String(meta.sourceNextAction ?? "").trim().toUpperCase();
+  const nextAction = String(row?.nextAction ?? "").trim();
+  const isCreateRs =
+    sourceNext === "CREATE_RS" ||
+    (!hasSheet && (!rsStatus || rsStatus === "NO_RS")) ||
+    /^Create RS/i.test(nextAction);
+  if (isCreateRs || rsStatus === "DRAFT") {
+    return buildNoQtyRsCreationWorkspaceHref(salesOrderId, {
+      cycleId: meta.cycleId ?? null,
+      from: "pending-actions",
+    });
+  }
+  const params = new URLSearchParams();
+  params.set("source", "no_qty_so");
+  params.set("salesOrderId", String(salesOrderId));
+  if (meta.cycleId != null && Number(meta.cycleId) > 0) params.set("cycleId", String(meta.cycleId));
+  return `/sales-orders/${salesOrderId}/requirement-sheets?${params.toString()}`;
+}
+
 function resolveHrefForNormalizedRow(row, role = "STORE") {
   const meta = row?.metadata && typeof row.metadata === "object" ? row.metadata : {};
   const rowType = String(row?.rowType ?? "");
@@ -112,7 +158,7 @@ function resolveHrefForNormalizedRow(row, role = "STORE") {
   const workOrderId = Number(meta.workOrderId ?? 0);
 
   if (rowType === ROW_TYPES.NO_QTY_PLANNING && salesOrderId > 0) {
-    return `/sales-orders/${salesOrderId}/requirement-sheets`;
+    return resolveNoQtyPlanningWorkspaceHref(row);
   }
   if (rowType === ROW_TYPES.WO_PLANNING && salesOrderId > 0) {
     return `/work-orders/prepare?salesOrderId=${salesOrderId}&from=pending-actions`;
@@ -128,7 +174,12 @@ function resolveHrefForNormalizedRow(row, role = "STORE") {
       if (stage === "QC") return `/qc-entry?salesOrderId=${salesOrderId}&source=pending-actions`;
       if (stage === "PRODUCTION") return `/production?salesOrderId=${salesOrderId}&from=pending-actions`;
       if (stage === "SALES_BILL") return `/sales-bills/new?salesOrderId=${salesOrderId}&from=pending-actions`;
-      if (stage === "NEXT_RS") return `/sales-orders/${salesOrderId}/requirement-sheets`;
+      if (stage === "NEXT_RS") {
+        return buildNoQtyRsCreationWorkspaceHref(salesOrderId, {
+          cycleId: meta.cycleId ?? null,
+          from: "pending-actions",
+        });
+      }
     }
   }
   if (rowType === ROW_TYPES.PRODUCTION_QUEUE && workOrderId > 0) {
@@ -143,7 +194,7 @@ function resolveHrefForNormalizedRow(row, role = "STORE") {
     if (workOrderId > 0) return `/qc-entry?workOrderId=${workOrderId}&source=pending-actions`;
   }
   if (workOrderId > 0) return `/work-orders?highlight=${workOrderId}&from=pending-actions`;
-  if (salesOrderId > 0) return `/sales-orders/${salesOrderId}/requirement-sheets`;
+  if (salesOrderId > 0) return resolveNoQtyPlanningWorkspaceHref(row);
   return "/dashboard";
 }
 
@@ -470,6 +521,66 @@ async function fetchStoreProductionHandoffPendingActions(db = prisma) {
 }
 
 /**
+ * P10-A7D — After Cycle 1 RS lock (no WO yet), Store next step is monthly planning for the locked period.
+ */
+async function fetchStoreNoQtyMonthlyPlanningPendingActions(db = prisma) {
+  const openSoRows = await db.salesOrder.findMany({
+    where: {
+      orderType: "NO_QTY",
+      internalStatus: { notIn: ["COMPLETED", "CLOSED", "MANUALLY_CLOSED"] },
+    },
+    select: { id: true, docNo: true, updatedAt: true, currentCycleId: true },
+    orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
+    take: 50,
+  });
+
+  const actions = [];
+  for (const so of openSoRows) {
+    const soId = Number(so.id);
+    const lockedRs = await db.requirementSheet.findFirst({
+      where: { salesOrderId: soId, status: "LOCKED", cycleId: { not: null } },
+      orderBy: [{ cycle: { cycleNo: "desc" } }, { version: "desc" }, { id: "desc" }],
+      select: {
+        id: true,
+        cycleId: true,
+        periodKey: true,
+        updatedAt: true,
+        cycle: { select: { cycleNo: true } },
+      },
+    });
+    if (!lockedRs?.cycleId) continue;
+
+    const rsCycleId = Number(lockedRs.cycleId);
+    const woOnRsCycle = await db.workOrder.findFirst({
+      where: { salesOrderId: soId, cycleId: rsCycleId, status: { not: "REJECTED" } },
+      select: { id: true },
+    });
+    if (woOnRsCycle?.id) continue;
+
+    const placement = await assessNoQtyPlacementStageForCycle(db, { salesOrderId: soId, cycleId: rsCycleId });
+    if (placement.processStageKey !== "NO_QTY_REQUIREMENT_READY" || placement.readyToPlaceWo) continue;
+
+    const periodKey = String(lockedRs.periodKey ?? "").trim();
+    const href = periodKey
+      ? `/monthly-planning?period=${encodeURIComponent(periodKey)}&from=pending-actions`
+      : "/monthly-planning?from=pending-actions";
+
+    actions.push({
+      id: `no-qty-monthly-plan:${soId}:${rsCycleId}`,
+      priority: PENDING_PRIORITY.MEDIUM,
+      action: "Monthly Planning Pending",
+      documentNo: so.docNo ?? null,
+      ownerRole: "STORE",
+      ageHours: ageHoursFromTimestamp(lockedRs.updatedAt ?? so.updatedAt),
+      href,
+      sourceModule: "MONTHLY_PLANNING",
+      currentStatus: "MONTHLY_PLANNING_PENDING",
+    });
+  }
+  return actions;
+}
+
+/**
  * P8F-A14 — Store-owned NO_QTY cycle continuation when current-cycle RS is locked and next RS is eligible.
  */
 async function fetchStoreNoQtyCreateNextRsPendingActions(db = prisma) {
@@ -522,6 +633,54 @@ async function fetchStoreNoQtyCreateNextRsPendingActions(db = prisma) {
       href: `/sales-orders/${soId}/requirement-sheets?intent=add&from=pending-actions&source=no_qty_so&salesOrderId=${soId}`,
       sourceModule: "NO_QTY_PLANNING",
       currentStatus: "NEXT_RS_READY",
+    });
+  }
+  return actions;
+}
+
+/**
+ * P10-A5 — Store-owned WO placement when NO_QTY RM is ready and no WO exists yet.
+ */
+async function fetchStoreNoQtyPlaceWoPendingActions(db = prisma) {
+  const openSoRows = await db.salesOrder.findMany({
+    where: {
+      orderType: "NO_QTY",
+      internalStatus: { notIn: ["COMPLETED", "CLOSED", "MANUALLY_CLOSED"] },
+    },
+    select: { id: true, docNo: true, updatedAt: true, currentCycleId: true },
+    orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
+    take: 50,
+  });
+
+  const actions = [];
+  for (const so of openSoRows) {
+    const soId = Number(so.id);
+    const { cycleId } = await resolveNoQtyEligibilityCycleId(db, soId);
+    const effCycleId = cycleId ?? (so.currentCycleId != null ? Number(so.currentCycleId) : null);
+    if (!effCycleId) continue;
+
+    const placement = await assessNoQtyPlacementStageForCycle(db, { salesOrderId: soId, cycleId: effCycleId });
+    if (!placement.readyToPlaceWo) continue;
+
+    const params = new URLSearchParams({
+      source: "no_qty_so",
+      salesOrderId: String(soId),
+      cycleId: String(effCycleId),
+      focus: "execution",
+      from: "pending-actions",
+    });
+    if (placement.requirementSheetId) params.set("sheetId", String(placement.requirementSheetId));
+
+    actions.push({
+      id: `no-qty-place-wo:${soId}:${effCycleId}`,
+      priority: PENDING_PRIORITY.MEDIUM,
+      action: "Place WO",
+      documentNo: so.docNo ?? null,
+      ownerRole: "STORE",
+      ageHours: ageHoursFromTimestamp(so.updatedAt),
+      href: `/sales-orders/${soId}/requirement-sheets?${params.toString()}`,
+      sourceModule: "NO_QTY_EXECUTION",
+      currentStatus: "READY_TO_PLACE_WO",
     });
   }
   return actions;
@@ -796,7 +955,9 @@ async function getPendingActions(opts = {}) {
     supplemental.push(...(await fetchStoreIssuePendingActions(db)));
     supplemental.push(...(await fetchStoreGrnPendingActions(db)));
     supplemental.push(...(await fetchStoreProductionHandoffPendingActions(db)));
+    supplemental.push(...(await fetchStoreNoQtyMonthlyPlanningPendingActions(db)));
     supplemental.push(...(await fetchStoreNoQtyCreateNextRsPendingActions(db)));
+    supplemental.push(...(await fetchStoreNoQtyPlaceWoPendingActions(db)));
   }
 
   const combined = [...normalizedActions, ...supplemental];
@@ -851,7 +1012,9 @@ module.exports = {
   fetchMonthlyPlanPendingActions,
   fetchPurchaseProcurementPendingActions,
   fetchStoreGrnPendingActions,
+  fetchStoreNoQtyMonthlyPlanningPendingActions,
   fetchStoreNoQtyCreateNextRsPendingActions,
+  fetchStoreNoQtyPlaceWoPendingActions,
   filterNoQtyStoreHandoffSupersededByLaterRs,
   sortPendingActions,
   filterNormalizedRowsByOwner,

@@ -18,8 +18,14 @@ import { ErpModal } from "../components/erp/ErpModal";
 import { buildProcurementWorkspaceHref } from "../lib/woProcurementContinuity";
 import { buildRmPoDetailHref } from "../lib/rmPurchaseWoContinuity";
 import { buildProductionScopedHref } from "../lib/productionNavigation";
-import { buttonVariants } from "../components/ui/button";
 import { woPreparePrepareHref } from "../lib/woPrepareOperationalStage";
+import { buttonVariants } from "../components/ui/button";
+import { noQtyRsExecutionWorkspaceHref } from "../lib/noQtyRsActionLabels";
+import {
+  NO_QTY_PLANNING_HUB_HREF,
+  noQtyPlanningHubOrAgreementsHref,
+} from "../lib/noQtyStoreNavigation";
+import { NO_QTY_TERMS } from "../lib/flowTerminology";
 import { presentOperationalError } from "../lib/operationalErrorPresentation";
 import {
   isPostIssueStoreHandoff,
@@ -181,6 +187,7 @@ type WoShortageCase = {
   workOrderNo: string | null;
   salesOrderId: number | null;
   salesOrderNo: string | null;
+  salesOrderOrderType?: string | null;
   customerName: string;
   fgItemName: string;
   allocationFirstStatus?: { key: string; label: string; owner: string; nextAction: string } | null;
@@ -1650,8 +1657,25 @@ export function MaterialAvailabilityControlCenterPage() {
             ) : (
               <div className="flex h-full min-h-[13rem] flex-col items-center justify-center px-4 text-center">
                 <PackageCheck className="h-8 w-8 text-emerald-600" />
-                <p className="mt-2 text-sm font-bold text-slate-900">No active RM case found</p>
-                <p className="mt-1 text-xs text-slate-500">The current filters have no Store-owned RM tracking case.</p>
+                <p className="mt-2 text-sm font-bold text-slate-900">No active RM issue case found</p>
+                <p className="mt-2 max-w-md text-xs leading-relaxed text-slate-600">
+                  For NO_QTY monthly-plan demand, create WO from Requirement Sheet Execution Workspace first. RM Control
+                  Center will show cases after WO / PMR is created.
+                </p>
+                <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
+                  <Link
+                    to={noQtyPlanningHubOrAgreementsHref(role)}
+                    className={cn(buttonVariants({ variant: "outline", size: "sm" }), "h-8 text-xs")}
+                  >
+                    Open NO_QTY Execution
+                  </Link>
+                  <Link
+                    to={NO_QTY_PLANNING_HUB_HREF}
+                    className={cn(buttonVariants({ variant: "outline", size: "sm" }), "h-8 text-xs")}
+                  >
+                    {NO_QTY_TERMS.OPEN_REQUIREMENT_AND_CYCLE_PLANNING}
+                  </Link>
+                </div>
               </div>
             )}
           </div>
@@ -1756,18 +1780,27 @@ export function MaterialAvailabilityControlCenterPage() {
                     {woCase?.allocationFirstStatus?.key === "RM_RECEIVED" ? (
                       <Link
                         to={
-                          detail.salesOrder?.id
-                            ? woPreparePrepareHref(detail.salesOrder.id)
-                            : woCase?.salesOrderId
-                              ? woPreparePrepareHref(woCase.salesOrderId)
-                              : "/production/prepare-wo"
+                          detail.salesOrder?.orderType === "NO_QTY" || woCase?.salesOrderOrderType === "NO_QTY"
+                            ? noQtyRsExecutionWorkspaceHref({
+                                salesOrderId: detail.salesOrder?.id ?? woCase?.salesOrderId ?? 0,
+                                cycleId: detail.salesOrder?.currentCycleId ?? null,
+                                source: "rm_control_center",
+                                from: "rm-control-center",
+                              })
+                            : detail.salesOrder?.id
+                              ? woPreparePrepareHref(detail.salesOrder.id)
+                              : woCase?.salesOrderId
+                                ? woPreparePrepareHref(woCase.salesOrderId)
+                                : "/production/prepare-wo"
                         }
                         className={cn(
                           buttonVariants({ size: "sm" }),
                           "h-9 w-full justify-center text-[13px] font-semibold no-underline",
                         )}
                       >
-                        Create Work Order
+                        {detail.salesOrder?.orderType === "NO_QTY" || woCase?.salesOrderOrderType === "NO_QTY"
+                          ? "Place WO"
+                          : "Create Work Order"}
                       </Link>
                     ) : woCase?.allocationFirstStatus?.key === "READY_FOR_ISSUE" && anyIssueable ? (
                       <Link

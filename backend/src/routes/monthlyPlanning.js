@@ -94,6 +94,7 @@ const additionalPlanBodySchema = z.object({
 
 const pastPeriodConfirmBodySchema = z.object({
   confirmPastPeriod: z.literal(true).optional(),
+  confirmPlannedBelowSuggested: z.literal(true).optional(),
 });
 
 monthlyPlanningRouter.get(
@@ -353,6 +354,7 @@ monthlyPlanningRouter.post(
         actorUserId: actorUserId(req),
         actorRole: actorRole(req),
         confirmPastPeriod: parsed.data.confirmPastPeriod === true,
+        confirmPlannedBelowSuggested: parsed.data.confirmPlannedBelowSuggested === true,
       });
       return res.json(data);
     } catch (e) {
@@ -378,6 +380,7 @@ monthlyPlanningRouter.post(
         actorUserId: actorUserId(req),
         actorRole: actorRole(req),
         confirmPastPeriod: parsed.data.confirmPastPeriod === true,
+        confirmPlannedBelowSuggested: parsed.data.confirmPlannedBelowSuggested === true,
       });
       return res.json(data);
     } catch (e) {

@@ -68,27 +68,24 @@ function fgComposition(items, overrides = {}) {
 
 function availabilityRow(itemId, overrides = {}) {
   const free = overrides.free ?? 0;
+  const physical = overrides.physical ?? free;
   const required = overrides.requiredQty ?? 0;
-  const shortageAfterReservationQty =
-    overrides.shortageAfterReservationQty ?? Math.max(0, required - free);
   return {
     itemId,
     requiredQty: required,
-    physicalUsableStockQty: overrides.physical ?? 0,
+    physicalUsableStockQty: physical,
     freeStockQty: free,
     effectiveReservedQty: overrides.reserved ?? 0,
     incomingQty: overrides.incoming ?? 0,
-    shortageAfterReservationQty,
-    netShortageAfterIncomingQty: overrides.netGap ?? shortageAfterReservationQty,
+    shortageAfterReservationQty: overrides.shortageAfterReservationQty,
+    netShortageAfterIncomingQty: overrides.netGap,
     warnings: overrides.warnings ?? [],
   };
 }
 
 describe("monthlyPlanningRmRequirementCompositionService.getRmRequirementComposition", () => {
-  it("generates RM demand from suggestedProduction only", async () => {
-    const db = createWriteGuardDb([
-      { id: 201, itemName: "RM-1", unit: "Kg", itemType: "RM", minimumStockQty: 50 },
-    ]);
+  it("P11: generates RM demand from greenShortage only (not suggestedProduction)", async () => {
+    const db = createWriteGuardDb([{ id: 201, itemName: "RM-1", unit: "Kg", itemType: "RM" }]);
     const res = await getRmRequirementComposition({
       db,
       periodKey: "2026-07",
@@ -98,7 +95,11 @@ describe("monthlyPlanningRmRequirementCompositionService.getRmRequirementComposi
             itemId: 10,
             itemName: "FG-A",
             unit: "Nos",
-            suggestedProduction: 10000,
+            greenShortage: 5000,
+            greenTarget: 5000,
+            freeFgStock: 0,
+            suggestedProduction: 15000,
+            productionRequirementQty: 10000,
           },
         ]),
       loadFgBomMeta: async () => ({
@@ -109,30 +110,72 @@ describe("monthlyPlanningRmRequirementCompositionService.getRmRequirementComposi
       }),
       aggregateRmDemand: async (_db, fgLines) => {
         assert.equal(fgLines.length, 1);
-        assert.equal(fgLines[0].fgQty, 10000);
-        return { rmNeeded: new Map([[201, 250]]), missingChildBoms: [] };
+        assert.equal(fgLines[0].fgQty, 5000);
+        return { rmNeeded: new Map([[201, 600]]), missingChildBoms: [] };
       },
       loadAvailability: async ({ requiredQtyByItemId }) => {
-        assert.equal(requiredQtyByItemId[201], 250);
-        return [availabilityRow(201, { requiredQty: 250, free: 200, incoming: 100, netGap: 0 })];
+        assert.equal(requiredQtyByItemId[201], 600);
+        return [availabilityRow(201, { requiredQty: 600, physical: 200, free: 200 })];
       },
     });
 
-    assert.equal(res.summary.fgItemsPlanned, 1);
+    assert.equal(res.demandDriver, "FG_GREEN_SHORTAGE");
+    assert.equal(res.summary.fgItemsWithGreenShortage, 1);
     assert.equal(res.items.length, 1);
-    assert.equal(res.items[0].totalRmDemand, 250);
-    assert.equal(res.items[0].fgSources[0].suggestedProduction, 10000);
-    assert.equal(res.items[0].fgSources[0].rmDemandQty, 250);
+    assert.equal(res.items[0].rmRequirement, 600);
+    assert.equal(res.items[0].availableRmStock, 200);
+    assert.equal(res.items[0].netRmRequirement, 400);
+    assert.equal(res.items[0].fgSources[0].greenShortage, 5000);
+    assert.equal(res.items[0].fgSources[0].rmDemandQty, 600);
   });
 
-  it("consolidates multiple FG into same RM total", async () => {
+  it("P11: skips FG with RS demand but zero green shortage", async () => {
+    const res = await getRmRequirementComposition({
+      periodKey: "2026-07",
+      loadFgComposition: async () =>
+        fgComposition([
+          {
+            itemId: 10,
+            itemName: "FG-A",
+            unit: "Nos",
+            greenShortage: 0,
+            suggestedProduction: 10000,
+          },
+          {
+            itemId: 11,
+            itemName: "FG-B",
+            unit: "Nos",
+            greenShortage: 1000,
+            suggestedProduction: 1000,
+          },
+        ]),
+      loadFgBomMeta: async () => ({
+        planningStatus: "READY",
+        bomRevision: "R1",
+        bom: { docNo: "BOM-1" },
+        missingChildBomNames: [],
+      }),
+      aggregateRmDemand: async (_db, fgLines) => {
+        assert.equal(fgLines.length, 1);
+        assert.equal(fgLines[0].fgItemId, 11);
+        assert.equal(fgLines[0].fgQty, 1000);
+        return { rmNeeded: new Map([[201, 100]]), missingChildBoms: [] };
+      },
+      loadAvailability: async () => [availabilityRow(201, { requiredQty: 100, physical: 0 })],
+    });
+
+    assert.equal(res.summary.fgItemsWithGreenShortage, 1);
+    assert.equal(res.items[0].rmRequirement, 100);
+  });
+
+  it("consolidates multiple FG green shortages into same RM total", async () => {
     let explodeCall = 0;
     const res = await getRmRequirementComposition({
       periodKey: "2026-07",
       loadFgComposition: async () =>
         fgComposition([
-          { itemId: 10, itemName: "FG-A", unit: "Nos", suggestedProduction: 1000 },
-          { itemId: 11, itemName: "FG-B", unit: "Nos", suggestedProduction: 2000 },
+          { itemId: 10, itemName: "FG-A", unit: "Nos", greenShortage: 1000, suggestedProduction: 5000 },
+          { itemId: 11, itemName: "FG-B", unit: "Nos", greenShortage: 2000, suggestedProduction: 8000 },
         ]),
       loadFgBomMeta: async () => ({
         planningStatus: "READY",
@@ -150,22 +193,22 @@ describe("monthlyPlanningRmRequirementCompositionService.getRmRequirementComposi
         }
         return { rmNeeded: new Map([[201, 300]]), missingChildBoms: [] };
       },
-      loadAvailability: async () => [availabilityRow(201, { requiredQty: 500, netGap: 200 })],
+      loadAvailability: async () => [availabilityRow(201, { requiredQty: 500, physical: 300 })],
     });
 
     assert.equal(explodeCall, 3);
-    assert.equal(res.summary.fgItemsPlanned, 2);
-    assert.equal(res.items[0].totalRmDemand, 500);
-    assert.equal(res.items[0].fgSources.length, 2);
+    assert.equal(res.summary.fgItemsWithGreenShortage, 2);
+    assert.equal(res.items[0].rmRequirement, 500);
+    assert.equal(res.items[0].netRmRequirement, 200);
     const traceTotal = res.items[0].fgSources.reduce((sum, s) => sum + s.rmDemandQty, 0);
     assert.equal(traceTotal, 500);
   });
 
-  it("uses shortageAfterReservation for net gap without deducting incoming PO", async () => {
+  it("net RM uses total available stock (physical usable) minus RM requirement", async () => {
     const res = await getRmRequirementComposition({
       periodKey: "2026-07",
       loadFgComposition: async () =>
-        fgComposition([{ itemId: 10, itemName: "FG-A", unit: "Nos", suggestedProduction: 5000 }]),
+        fgComposition([{ itemId: 10, itemName: "FG-A", unit: "Nos", greenShortage: 5000 }]),
       loadFgBomMeta: async () => ({
         planningStatus: "READY",
         bomRevision: "R1",
@@ -176,22 +219,21 @@ describe("monthlyPlanningRmRequirementCompositionService.getRmRequirementComposi
       loadAvailability: async () => [
         availabilityRow(201, {
           requiredQty: 500,
+          physical: 350,
           free: 200,
           incoming: 100,
-          shortageAfterReservationQty: 300,
-          netGap: 300,
         }),
       ],
     });
 
     const row = res.items[0];
-    assert.equal(row.freeStock, 200);
+    assert.equal(row.rmRequirement, 500);
+    assert.equal(row.availableRmStock, 350);
+    assert.equal(row.netRmRequirement, 150);
     assert.equal(row.incomingPo, 100);
-    assert.equal(row.netAvailable, 200);
-    assert.equal(row.netGap, 300);
   });
 
-  it("shows minimum stock visibility without adding to demand or gap", async () => {
+  it("does not surface RM minimum stock on MPRS green planning path", async () => {
     const db = createWriteGuardDb([
       { id: 201, itemName: "RM-1", unit: "Kg", itemType: "RM", minimumStockQty: 400 },
     ]);
@@ -199,7 +241,7 @@ describe("monthlyPlanningRmRequirementCompositionService.getRmRequirementComposi
       db,
       periodKey: "2026-07",
       loadFgComposition: async () =>
-        fgComposition([{ itemId: 10, itemName: "FG-A", unit: "Nos", suggestedProduction: 1000 }]),
+        fgComposition([{ itemId: 10, itemName: "FG-A", unit: "Nos", greenShortage: 1000 }]),
       loadFgBomMeta: async () => ({
         planningStatus: "READY",
         bomRevision: "R1",
@@ -207,15 +249,12 @@ describe("monthlyPlanningRmRequirementCompositionService.getRmRequirementComposi
         missingChildBomNames: [],
       }),
       aggregateRmDemand: async () => ({ rmNeeded: new Map([[201, 100]]), missingChildBoms: [] }),
-      loadAvailability: async () => [
-        availabilityRow(201, { requiredQty: 100, free: 150, incoming: 0, netGap: 0 }),
-      ],
+      loadAvailability: async () => [availabilityRow(201, { requiredQty: 100, physical: 150 })],
     });
 
-    assert.equal(res.items[0].minimumStock, 400);
-    assert.equal(res.items[0].belowMinimumFlag, true);
-    assert.equal(res.items[0].totalRmDemand, 100);
-    assert.equal(res.items[0].netGap, 0);
+    assert.equal(res.items[0].minimumStock, undefined);
+    assert.equal(res.items[0].belowMinimumFlag, undefined);
+    assert.equal(res.items[0].netRmRequirement, 0);
   });
 
   it("handles missing BOM FG in summary without RM demand from that FG", async () => {
@@ -223,8 +262,8 @@ describe("monthlyPlanningRmRequirementCompositionService.getRmRequirementComposi
       periodKey: "2026-07",
       loadFgComposition: async () =>
         fgComposition([
-          { itemId: 10, itemName: "FG-A", unit: "Nos", suggestedProduction: 1000 },
-          { itemId: 11, itemName: "FG-B", unit: "Nos", suggestedProduction: 2000 },
+          { itemId: 10, itemName: "FG-A", unit: "Nos", greenShortage: 1000 },
+          { itemId: 11, itemName: "FG-B", unit: "Nos", greenShortage: 2000 },
         ]),
       loadFgBomMeta: async (_db, fgItemId) => {
         if (fgItemId === 11) {
@@ -248,98 +287,16 @@ describe("monthlyPlanningRmRequirementCompositionService.getRmRequirementComposi
           return { rmNeeded: new Map([[201, 200]]), missingChildBoms: [] };
         };
       })(),
-      loadAvailability: async () => [availabilityRow(201, { requiredQty: 200, netGap: 50 })],
+      loadAvailability: async () => [availabilityRow(201, { requiredQty: 200, physical: 150 })],
     });
 
     assert.equal(res.summary.missingBomCount, 1);
-    assert.equal(res.summary.fgItemsPlanned, 2);
-    assert.equal(res.items[0].totalRmDemand, 200);
+    assert.equal(res.summary.fgItemsWithGreenShortage, 2);
     assert.equal(res.items[0].fgSources.length, 1);
     assert.equal(res.items[0].fgSources[0].fgItemId, 10);
   });
 
-  it("traceability fg source totals equal consolidated RM total", async () => {
-    const res = await getRmRequirementComposition({
-      periodKey: "2026-07",
-      loadFgComposition: async () =>
-        fgComposition([
-          { itemId: 10, itemName: "FG-A", unit: "Nos", suggestedProduction: 4000 },
-          { itemId: 11, itemName: "FG-B", unit: "Nos", suggestedProduction: 3000 },
-          { itemId: 12, itemName: "FG-C", unit: "Nos", suggestedProduction: 3000 },
-        ]),
-      loadFgBomMeta: async () => ({
-        planningStatus: "READY",
-        bomRevision: "R1",
-        bom: { docNo: "BOM-1" },
-        missingChildBomNames: [],
-      }),
-      aggregateRmDemand: async (_db, fgLines) => {
-        if (fgLines.length === 3) {
-          return { rmNeeded: new Map([[201, 500]]), missingChildBoms: [] };
-        }
-        const map = {
-          10: 200,
-          11: 150,
-          12: 150,
-        };
-        return {
-          rmNeeded: new Map([[201, map[fgLines[0].fgItemId]]]),
-          missingChildBoms: [],
-        };
-      },
-      loadAvailability: async () => [availabilityRow(201, { requiredQty: 500, netGap: 200 })],
-    });
-
-    const row = res.items[0];
-    const traceSum = row.fgSources.reduce((sum, s) => sum + s.rmDemandQty, 0);
-    assert.equal(traceSum, row.totalRmDemand);
-    assert.equal(traceSum, 500);
-  });
-
-  it("skips FG with zero suggestedProduction", async () => {
-    const res = await getRmRequirementComposition({
-      periodKey: "2026-07",
-      loadFgComposition: async () =>
-        fgComposition([
-          { itemId: 10, itemName: "FG-A", unit: "Nos", suggestedProduction: 0 },
-          { itemId: 11, itemName: "FG-B", unit: "Nos", suggestedProduction: 1000 },
-        ]),
-      loadFgBomMeta: async () => ({
-        planningStatus: "READY",
-        bomRevision: "R1",
-        bom: { docNo: "BOM-1" },
-        missingChildBomNames: [],
-      }),
-      aggregateRmDemand: async (_db, fgLines) => {
-        assert.equal(fgLines.length, 1);
-        assert.equal(fgLines[0].fgItemId, 11);
-        return { rmNeeded: new Map([[201, 100]]), missingChildBoms: [] };
-      },
-      loadAvailability: async () => [availabilityRow(201, { requiredQty: 100, netGap: 0 })],
-    });
-
-    assert.equal(res.summary.fgItemsPlanned, 1);
-  });
-
-  it("performs no stock writes", async () => {
-    const db = createWriteGuardDb();
-    await getRmRequirementComposition({
-      db,
-      periodKey: "2026-07",
-      loadFgComposition: async () => fgComposition([]),
-      loadFgBomMeta: async () => ({
-        planningStatus: "READY",
-        bomRevision: "R1",
-        bom: { docNo: "BOM-1" },
-        missingChildBomNames: [],
-      }),
-      aggregateRmDemand: async () => ({ rmNeeded: new Map(), missingChildBoms: [] }),
-      loadAvailability: async () => [],
-    });
-    assert.ok(true);
-  });
-
-  it("performs no procurement writes", async () => {
+  it("performs no stock or procurement writes", async () => {
     const db = createWriteGuardDb();
     await getRmRequirementComposition({
       db,
@@ -377,17 +334,18 @@ describe("monthlyPlanningRmRequirementCompositionService.buildFgSourcesForRm", (
       {
         fgItemId: 10,
         fgItemName: "A",
-        suggestedProduction: 100,
+        greenShortage: 100,
         rmByItem: new Map([[201, 200]]),
       },
       {
         fgItemId: 11,
         fgItemName: "B",
-        suggestedProduction: 100,
+        greenShortage: 50,
         rmByItem: new Map([[202, 50]]),
       },
     ]);
     assert.equal(sources.length, 1);
     assert.equal(sources[0].rmDemandQty, 200);
+    assert.equal(sources[0].greenShortage, 100);
   });
 });

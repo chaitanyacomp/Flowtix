@@ -69,6 +69,10 @@ export type NoQtyFlowState = {
   createNextRsBlockingPmrStatus?: string | null;
   /** When a later-cycle RS already exists, its document number (Create Next RS hidden). */
   nextRsAlreadyCreatedDocNo?: string | null;
+  /** P10-A5 — Store WO placement readiness for locked RS without WO. */
+  readyToPlaceWo?: boolean;
+  placementProcessStageKey?: string | null;
+  placementRequirementSheetId?: number | null;
 };
 
 export type UseNoQtyFlowStateOpts = {

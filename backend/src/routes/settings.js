@@ -13,6 +13,10 @@ const {
   setCompanyGstDetails,
   getMaxRegularSoBufferPercent,
   setMaxRegularSoBufferPercent,
+  getGreenLevelHistoryMonths,
+  setGreenLevelHistoryMonths,
+  getGreenLevelSource,
+  setGreenLevelSource,
 } = require("../services/appSettings");
 
 const settingsRouter = express.Router();
@@ -50,6 +54,54 @@ settingsRouter.put(
         .parse(req.body);
       const nextVal = await setMaxRegularSoBufferPercent(maxRegularSoBufferPercent);
       return res.json({ maxRegularSoBufferPercent: nextVal });
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
+/** FG Green Level planning settings — history window and MANUAL/AUTOMATIC source. */
+settingsRouter.get(
+  "/green-level-history",
+  requireAuth,
+  requireRole(["ADMIN", "STORE", "PRODUCTION", "QA"]),
+  async (req, res, next) => {
+    try {
+      const [greenLevelHistoryMonths, greenLevelSource] = await Promise.all([
+        getGreenLevelHistoryMonths(),
+        getGreenLevelSource(),
+      ]);
+      return res.json({ greenLevelHistoryMonths, greenLevelSource });
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
+settingsRouter.put(
+  "/green-level-history",
+  requireAuth,
+  requireRole(["ADMIN"]),
+  async (req, res, next) => {
+    try {
+      const body = z
+        .object({
+          greenLevelHistoryMonths: z.union([z.literal(3), z.literal(6), z.literal(12)]).optional(),
+          greenLevelSource: z.enum(["MANUAL", "AUTOMATIC"]).optional(),
+        })
+        .parse(req.body);
+      if (body.greenLevelHistoryMonths == null && body.greenLevelSource == null) {
+        const err = new Error("At least one of greenLevelHistoryMonths or greenLevelSource is required");
+        err.statusCode = 400;
+        throw err;
+      }
+      const [greenLevelHistoryMonths, greenLevelSource] = await Promise.all([
+        body.greenLevelHistoryMonths != null
+          ? setGreenLevelHistoryMonths(body.greenLevelHistoryMonths)
+          : getGreenLevelHistoryMonths(),
+        body.greenLevelSource != null ? setGreenLevelSource(body.greenLevelSource) : getGreenLevelSource(),
+      ]);
+      return res.json({ greenLevelHistoryMonths, greenLevelSource });
     } catch (e) {
       return next(e);
     }

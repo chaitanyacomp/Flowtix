@@ -32,7 +32,10 @@ export function dashboardWorkspaceHeadline(role: string): { title: string; subti
     case "PURCHASE":
       return { title: "Purchase desk", subtitle: "Procurement · RM PO · purchase bills" };
     case "STORE":
-      return { title: "Dispatch desk", subtitle: "Ship readiness · FG · billing handoff" };
+      return {
+        title: "Store Operations",
+        subtitle: "RS · monthly planning · GRN · WO · material issue · stock · dispatch",
+      };
     case "ADMIN":
       return {
         title: "Dual Control Center",

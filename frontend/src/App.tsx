@@ -1,5 +1,5 @@
 import { Navigate, Route, Routes, useLocation, useNavigate, useSearchParams } from "react-router-dom";
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import { Button } from "./components/ui/button";
 import { Card, CardContent } from "./components/ui/card";
 import { Input } from "./components/ui/input";
@@ -8,6 +8,7 @@ import { consumeSessionExpiredMessage, describeApiOrigin, getApiUrl } from "./se
 import { AppLayout } from "./components/AppLayout";
 import {
   BrandBanner,
+  BrandSplash,
   CompanyLogo,
   BRAND_PRODUCT_NAME,
   BRAND_COMPANY_NAME,
@@ -59,7 +60,6 @@ import { MaterialPlanningPage } from "./pages/MaterialPlanningPage";
 import { RmStockPlanningPage } from "./pages/RmStockPlanningPage";
 import { ProcurementPlanningPage } from "./pages/ProcurementPlanningPage";
 import { MaterialIssuePage } from "./pages/MaterialIssuePage";
-import { MonthlyPlanningWorkspacePage } from "./pages/MonthlyPlanningWorkspacePage";
 import { ProductionMaterialRequestsPage } from "./pages/ProductionMaterialRequestsPage";
 import { ProductionRmReturnsPage } from "./pages/ProductionRmReturnsPage";
 import { ProductionRmVarianceReportPage } from "./pages/ProductionRmVarianceReportPage";
@@ -85,6 +85,7 @@ import { AdminSettingsPage } from "./pages/AdminSettingsPage";
 import { CompanyProfilePage } from "./pages/CompanyProfilePage";
 import { ActivityPage } from "./pages/ActivityPage";
 import { PlanningDashboardPage } from "./pages/PlanningDashboardPage";
+import { NoQtyAgreementsPage } from "./pages/NoQtyAgreementsPage";
 import { ExportHistoryPage } from "./pages/ExportHistoryPage";
 import { ProtectedRoute } from "./components/ProtectedRoute";
 import {
@@ -119,6 +120,10 @@ import { BackupRestorePage } from "./pages/BackupRestorePage";
 import { TallyMasterImportPage } from "./pages/TallyMasterImportPage";
 import { RateContractsPage } from "./pages/RateContractsPage";
 import { AccountPage } from "./pages/AccountPage";
+
+const MonthlyPlanningWorkspacePage = lazy(() =>
+  import("./pages/MonthlyPlanningWorkspacePage").then((m) => ({ default: m.MonthlyPlanningWorkspacePage })),
+);
 
 /** Legacy `/planning-dashboard/production` → single planning hub (preserve query string). */
 function PlanningProductionPathRedirect() {
@@ -412,6 +417,14 @@ export default function App() {
           }
         />
         <Route
+          path="/no-qty-agreements"
+          element={
+            <ProtectedRoute allowedRoles={[...PLANNING_DASHBOARD_ROLES]}>
+              <NoQtyAgreementsPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
           path="/planning-dashboard/production"
           element={
             <ProtectedRoute allowedRoles={[...PLANNING_DASHBOARD_ROLES]}>
@@ -497,7 +510,9 @@ export default function App() {
           path="/monthly-planning"
           element={
             <ProtectedRoute allowedRoles={[...MONTHLY_PLANNING_READ_ROLES]}>
-              <MonthlyPlanningWorkspacePage />
+              <Suspense fallback={<BrandSplash hint="Loading Monthly Planning…" className="min-h-[50vh]" />}>
+                <MonthlyPlanningWorkspacePage />
+              </Suspense>
             </ProtectedRoute>
           }
         />
@@ -787,14 +802,6 @@ export default function App() {
           }
         />
         <Route
-          path="/sales-orders"
-          element={
-            <ProtectedRoute allowedRoles={[...SO_READ_ROLES]}>
-              <SalesOrdersPage />
-            </ProtectedRoute>
-          }
-        />
-        <Route
           path="/sales-orders/no-qty/from-quotation"
           element={
             <ProtectedRoute allowedRoles={[...SO_WRITE_ROLES]}>
@@ -811,6 +818,14 @@ export default function App() {
             // instead of partial-page Forbidden errors mid-render.
             <ProtectedRoute allowedRoles={[...RS_WRITE_ROLES]}>
               <RequirementSheetPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/sales-orders"
+          element={
+            <ProtectedRoute allowedRoles={[...SO_READ_ROLES]}>
+              <SalesOrdersPage />
             </ProtectedRoute>
           }
         />

@@ -9,7 +9,18 @@
  */
 
 const { prisma } = require("../utils/prisma");
-const { ensureApprovedPlanRmSnapshot } = require("./monthlyPlanningRmSnapshotService");
+
+function rmSnapshotService() {
+  return require("./monthlyPlanningRmSnapshotService");
+}
+
+function compositionService() {
+  return require("./monthlyPlanningRequirementCompositionService");
+}
+
+function plannedQtyGuards() {
+  return require("./monthlyPlanningProductionLinePlannedQty");
+}
 
 /** Lazy bind to avoid circular import with monthlyPlanningService. */
 function planningCore() {
@@ -157,8 +168,11 @@ async function submitPlanForPurchaseReview({
   actorUserId = null,
   actorRole = null,
   confirmPastPeriod = false,
+  confirmPlannedBelowSuggested = false,
   now = new Date(),
+  loadComposition,
 } = {}) {
+  const loadCompositionFn = loadComposition ?? compositionService().getRequirementComposition;
   const run = async (tx) => {
     const { MonthlyPlanningError, assertPeriodWriteAllowed } = planningCore();
     const plan = await loadPlanHeader(tx, planId);
@@ -176,11 +190,34 @@ async function submitPlanForPurchaseReview({
       );
     }
 
+    const composition = await loadCompositionFn({ db: tx, periodKey: plan.periodKey });
+    const { syncNonOverriddenPlanLinesToSuggested, findGreenShortagePlannedBelowSuggested } =
+      plannedQtyGuards();
+    await syncNonOverriddenPlanLinesToSuggested(tx, plan.id, composition);
+
     const planLines = await tx.monthlyProductionPlanLine.findMany({
       where: { planId: plan.id },
-      select: { plannedFgQty: true },
+      select: { fgItemId: true, plannedFgQty: true, plannedQtyOverridden: true },
     });
     assertPlanHasProductionLines(planLines);
+
+    const violations = findGreenShortagePlannedBelowSuggested({ lines: planLines, composition });
+    const staleViolations = violations.filter((v) => !v.plannedQtyOverridden);
+    if (staleViolations.length > 0) {
+      throw new MonthlyPlanningError(
+        "PLANNED_BELOW_SUGGESTED",
+        "One or more FG lines are below suggested production including Green Shortage. Save the plan or remove manual overrides before submitting.",
+        422,
+      );
+    }
+    const overriddenViolations = violations.filter((v) => v.plannedQtyOverridden);
+    if (overriddenViolations.length > 0 && !confirmPlannedBelowSuggested) {
+      throw new MonthlyPlanningError(
+        "PLANNED_BELOW_SUGGESTED_CONFIRM_REQUIRED",
+        "Planned quantity is below suggested production for one or more FG items with Green Shortage. Confirm to submit with the lower planned qty.",
+        422,
+      );
+    }
 
     await assertNoOtherActivePlanInPeriod(tx, plan.periodKey, plan.id);
 
@@ -217,9 +254,12 @@ async function purchaseApprovePlan({
   actorUserId = null,
   actorRole = null,
   confirmPastPeriod = false,
+  confirmPlannedBelowSuggested = false,
   now = new Date(),
   deps = {},
+  loadComposition,
 } = {}) {
+  const loadCompositionFn = loadComposition ?? compositionService().getRequirementComposition;
   const run = async (tx) => {
     const { MonthlyPlanningError, assertPeriodWriteAllowed } = planningCore();
     const plan = await loadPlanHeader(tx, planId);
@@ -237,6 +277,32 @@ async function purchaseApprovePlan({
       );
     }
 
+    const composition = await loadCompositionFn({ db: tx, periodKey: plan.periodKey });
+    const { syncNonOverriddenPlanLinesToSuggested, findGreenShortagePlannedBelowSuggested } =
+      plannedQtyGuards();
+    await syncNonOverriddenPlanLinesToSuggested(tx, plan.id, composition);
+
+    const planLines = await tx.monthlyProductionPlanLine.findMany({
+      where: { planId: plan.id },
+      select: { fgItemId: true, plannedFgQty: true, plannedQtyOverridden: true },
+    });
+    const violations = findGreenShortagePlannedBelowSuggested({ lines: planLines, composition });
+    const staleViolations = violations.filter((v) => !v.plannedQtyOverridden);
+    if (staleViolations.length > 0) {
+      throw new MonthlyPlanningError(
+        "PLANNED_BELOW_SUGGESTED",
+        "One or more FG lines are below suggested production including Green Shortage after sync. Reject the plan so Store can resubmit.",
+        409,
+      );
+    }
+    if (violations.length > 0 && !confirmPlannedBelowSuggested) {
+      throw new MonthlyPlanningError(
+        "PLANNED_BELOW_SUGGESTED_CONFIRM_REQUIRED",
+        "Planned quantity is below suggested production for FG items with Green Shortage. Confirm approval with the lower planned qty.",
+        422,
+      );
+    }
+
     const updated = await tx.monthlyProductionPlan.update({
       where: { id: plan.id },
       data: {
@@ -249,7 +315,7 @@ async function purchaseApprovePlan({
       },
     });
 
-    const snapshot = await ensureApprovedPlanRmSnapshot({
+    const snapshot = await rmSnapshotService().ensureApprovedPlanRmSnapshot({
       db: tx,
       planId: updated.id,
       actorUserId,

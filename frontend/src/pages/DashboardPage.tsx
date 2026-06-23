@@ -6,14 +6,13 @@ import { Button, buttonVariants } from "../components/ui/button";
 import { cn } from "../lib/utils";
 import { type NoQtyFlowState } from "../lib/noQtyFlowState";
 import { resolveNoQtyDashboardContinuation } from "../lib/noQtyDashboardContinuation";
-import { noQtyCreateNextCycleContinuationLabel } from "../lib/noQtyRsActionLabels";
+import { resolveNoQtyDashboardActionLabel } from "../lib/noQtyDashboardPresentation";
 import { prepareNoQtyNextRequirementSheetAndNavigate } from "../lib/noQtyPrepareNextRsNavigate";
 import { useToast } from "../contexts/ToastContext";
 import { useDemoMode } from "../contexts/DemoModeContext";
 import { ApiRequestError } from "../services/api";
 import { type DispatchBacklogRow, ROW_NUM_EPS } from "../lib/dispatchBacklog";
 import { displaySalesOrderNo } from "../lib/docNoDisplay";
-import { salesOrdersFocusHref } from "../lib/drillDownRoutes";
 import { useAuth } from "../hooks/useAuth";
 import { PendingActionsDashboardCard, PENDING_ACTIONS_PRODUCTION_HELPER } from "./PendingActionsPage";
 import { fetchPendingActions } from "../lib/pendingActionsApi";
@@ -57,11 +56,9 @@ import {
 } from "../lib/dashboardOperationalDedup";
 import {
   buildActionRequiredFromQueues,
-  buildDashboardDispatchHref,
   dedupeContinueWorkingBySalesOrder,
   enrichActionRequiredWithNoQtyPlanning,
   enforceUniqueSalesOrdersAcrossGroups,
-  findNoQtyContinueProductionForLauncher,
   isNoQtyDashboardPlanningRow,
   partitionContinueWorkingForActions,
   primaryActionStageBySalesOrder,
@@ -70,16 +67,11 @@ import {
   type ContinueWorkingRow,
 } from "../lib/dashboardActionQueue";
 import {
-  aggregateNoQtyOptionalDispatchBySo,
-  shouldShowNoQtyOptionalDispatchChip,
-} from "../lib/noQtyDashboardOptionalDispatch";
-import {
   flowLabelForQuotationPendingSo,
   normalizeQuotationPendingSoRow,
   type QuotationPendingSoRow,
 } from "../lib/dashboardCommercialWorkflow";
-import { buildNoQtyDashboardTraceLine } from "../lib/noQtyDashboardCycleTrace";
-import { NoQtyDashboardCycleHistoryDialog } from "../components/erp/NoQtyDashboardCycleHistoryDialog";
+import { NoQtyDashboardCompactPanel } from "../components/erp/planning/NoQtyDashboardCompactPanel";
 import { formatRmStockAlertBanner } from "../lib/inventoryHealth";
 import { hasSoWoRmBlockerAttention } from "../lib/dashboardRmClassification";
 import {
@@ -343,7 +335,6 @@ const DASH_MAX = dashboardShell.max;
 /** Row caps keep the dashboard within ~90vh without page scroll. */
 const DASH_NO_QTY_CONTINUATION_CAP = 5;
 const DASH_COMMERCIAL_QUOTE_CAP = 5;
-const DASH_BTN_PRIMARY = dashboardShell.btnPrimary;
 
 type RmStockHealthRow = {
   itemId: number;
@@ -636,9 +627,6 @@ export function DashboardPage() {
   const [pendingActionsCount, setPendingActionsCount] = React.useState(0);
   const [pendingActionsLoading, setPendingActionsLoading] = React.useState(true);
   const [pendingActionsError, setPendingActionsError] = React.useState<string | null>(null);
-  const [noQtyCycleHistoryTarget, setNoQtyCycleHistoryTarget] = React.useState<OpenNoQtyContinuationRow | null>(
-    null,
-  );
   const [salesOrdersForDashboard, setSalesOrdersForDashboard] = React.useState<DashboardSalesOrderHead[] | null>(null);
   const [quotationsPendingSo, setQuotationsPendingSo] = React.useState<QuotationPendingSoRow[] | null>(null);
   const [quotationsPendingSoError, setQuotationsPendingSoError] = React.useState<string | null>(null);
@@ -1168,12 +1156,6 @@ export function DashboardPage() {
     [actionRequiredGroups],
   );
 
-  /** QC-backed optional dispatch headroom per NO_QTY SO (informational chip only ? not Action Required). */
-  const noQtyOptionalDispatchBySo = React.useMemo(
-    () => aggregateNoQtyOptionalDispatchBySo(prodQueue),
-    [prodQueue],
-  );
-
   /**
    * Commercial continuation rows visible on the Planning Dashboard.
    *
@@ -1214,14 +1196,18 @@ export function DashboardPage() {
       });
       if (role !== "ADMIN" && !isNoQtyResolvedRelevantForRole(role, resolved)) return false;
       if (!isNoQtyDashboardPlanningRow(flow, resolved)) return false;
-      const label =
-        resolved.kind === "prepare_next_rs"
-          ? noQtyCreateNextCycleContinuationLabel({
-              currentCycleNo: row.cycleNo,
-            })
-          : resolved.kind === "navigate" && String(row.lastRsStatus ?? "").toUpperCase() === "DRAFT"
-            ? "Open Draft RS"
-            : resolved.label;
+      const hasRs =
+        (row.latestRequirementSheetId != null && Number(row.latestRequirementSheetId) > 0) ||
+        ["DRAFT", "LOCKED", "CANCELLED"].includes(String(row.lastRsStatus ?? "").trim().toUpperCase()) ||
+        Boolean(flow?.requirementExists);
+      const label = resolveNoQtyDashboardActionLabel({
+        resolved,
+        currentCycleNo: row.cycleNo,
+        planningPointerCycleNo: row.planningPointerCycleNo,
+        noQtyPlanningPointerAhead: row.noQtyPlanningPointerAhead,
+        lastRsStatus: row.lastRsStatus,
+        hasRs,
+      });
       if (shouldHideOpenNoQtyForActionRequired(row.salesOrderId, label, primaryActionBySo)) return false;
       return true;
     });
@@ -2064,11 +2050,6 @@ export function DashboardPage() {
       variant="operational"
       title="Operational Control"
       subtitle="Factory execution ? production QA ? dispatch ? production"
-      footer={
-        noQtyContinuationTruncated ? (
-          <DashboardViewAllLink href="/sales-orders?soType=NO_QTY&source=dashboard" label="View all NO_QTY orders" />
-        ) : null
-      }
     >
           {neutralDashAlertNodes.length > 0 ? (
             <div className={dashActionGrid}>{neutralDashAlertNodes}</div>
@@ -2081,256 +2062,38 @@ export function DashboardPage() {
           ) : null}
 
           {hasVisibleNoQtyContinuation ? (
-            <div className="overflow-hidden rounded-md border border-slate-200/95 bg-slate-50/90 ring-1 ring-slate-900/[0.04]">
-              <div className="border-b border-blue-900/10 bg-gradient-to-r from-blue-50/80 to-slate-50/90 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-slate-900">
-                NO_QTY ({visibleOpenNoQtyContinuationRows.length})
-              </div>
-              <ul className="divide-y divide-slate-200/90">
-                {noQtyContinuationRowsCapped.map((row) => {
-                  const flow = noQtyFlowBySo[row.salesOrderId];
-                  const planCycleId =
-                    row.noQtyPlanningPointerAhead &&
-                    row.planningPointerCycleId != null &&
-                    Number(row.planningPointerCycleId) > 0
-                      ? Number(row.planningPointerCycleId)
-                      : row.cycleId;
-                  const resolved = resolveNoQtyDashboardContinuation({
+            <NoQtyDashboardCompactPanel
+              rows={noQtyContinuationRowsCapped}
+              allRows={visibleOpenNoQtyContinuationRows}
+              flowBySo={noQtyFlowBySo}
+              viewerRole={role}
+              dispatchReadyCount={dispatchDashNoQty.length}
+              truncated={noQtyContinuationTruncated}
+              maxVisible={DASH_NO_QTY_CONTINUATION_CAP}
+              viewAllHref={
+                role === "STORE"
+                  ? "/no-qty-agreements?source=dashboard"
+                  : "/sales-orders?soType=NO_QTY&source=dashboard"
+              }
+              onPrimaryAction={({ row, resolved }) => {
+                const appendFromDashboard = (to: string) => {
+                  const sep = to.includes("?") ? "&" : "?";
+                  return `${to}${sep}fromDashboard=1`;
+                };
+                if (resolved.kind === "prepare_next_rs") {
+                  void prepareNoQtyNextRequirementSheetAndNavigate({
                     salesOrderId: row.salesOrderId,
-                    cycleId: planCycleId,
-                    latestRequirementSheetId: row.latestRequirementSheetId,
-                    lastRsStatus: row.lastRsStatus,
-                    flow: flow ?? null,
-                    viewerRole: role,
-                    commercialContinuation: true,
+                    navigate,
+                    toast,
+                    navigateState: { from: "dashboard" },
                   });
-                  const continuationLabel =
-                    resolved.kind === "prepare_next_rs"
-                      ? noQtyCreateNextCycleContinuationLabel({
-                          currentCycleNo:
-                            row.noQtyPlanningPointerAhead && row.planningPointerCycleNo != null
-                              ? Number(row.planningPointerCycleNo)
-                              : row.cycleNo,
-                        })
-                      : resolved.kind === "navigate" && String(row.lastRsStatus ?? "").toUpperCase() === "DRAFT"
-                        ? "Open Draft RS"
-                        : resolved.label;
-                  const appendFromDashboard = (to: string) => {
-                    const sep = to.includes("?") ? "&" : "?";
-                    return `${to}${sep}fromDashboard=1`;
-                  };
-                  const cycleShown =
-                    row.noQtyPlanningPointerAhead &&
-                    row.planningPointerCycleNo != null &&
-                    Number.isFinite(Number(row.planningPointerCycleNo))
-                      ? String(row.planningPointerCycleNo)
-                      : row.cycleNo != null && Number.isFinite(Number(row.cycleNo))
-                        ? String(row.cycleNo)
-                        : planCycleId != null && planCycleId > 0
-                          ? `#${planCycleId}`
-                          : "?";
-                  const traceLine = buildNoQtyDashboardTraceLine({
-                    cycleNo: row.cycleNo,
-                    planningPointerCycleNo: row.planningPointerCycleNo,
-                    noQtyPlanningPointerAhead: row.noQtyPlanningPointerAhead,
-                    lastRsStatus: row.lastRsStatus,
+                } else {
+                  navigate(appendFromDashboard(resolved.to), {
+                    state: { from: "dashboard" },
                   });
-                  const evalCycleId =
-                    row.cycleId != null && Number(row.cycleId) > 0 ? Number(row.cycleId) : null;
-                  const showContinueProduction =
-                    actionVisibility.canActOnNoQtyProductionCta &&
-                    shouldShowNoQtyDashboardContinueProduction(flow, row);
-                  const continueProductionAction = showContinueProduction
-                    ? findNoQtyContinueProductionForLauncher({
-                        salesOrderId: row.salesOrderId,
-                        evalCycleId,
-                        prodQueue: canViewProductionQueue ? prodQueue : null,
-                        continueWorking: canViewContinueWorking ? continueWorking : null,
-                      })
-                    : null;
-                  const headerCycleShown =
-                    !row.noQtyPlanningPointerAhead &&
-                    row.cycleNo != null &&
-                    Number.isFinite(Number(row.cycleNo))
-                      ? String(row.cycleNo)
-                      : cycleShown;
-                  /**
-                   * Commercial state badge ? independent of operational queues.
-                   * Mirrors the labels shown on the Sales Order screen so the
-                   * dashboard reads consistently with that workspace:
-                   *   ? Draft RS         ? `lastRsStatus === "DRAFT"`
-                   *   ? Between cycles   ? planning pointer ahead of doc cycle
-                   *                        (current cycle CLOSED, no active RS)
-                   *   ? Planning pending ? default while SO is OPEN and
-                   *                        commercial continuation is needed
-                   */
-                  const upperRsStatus = String(row.lastRsStatus ?? "").toUpperCase();
-                  const planningState: "draft" | "between" | "pending" =
-                    upperRsStatus === "DRAFT"
-                      ? "draft"
-                      : row.noQtyPlanningPointerAhead
-                        ? "between"
-                        : "pending";
-                  const planningStateLabel =
-                    planningState === "draft"
-                      ? "Draft RS"
-                      : planningState === "between"
-                        ? "Between cycles"
-                        : "Cycle review pending";
-                  const planningStateChipClass =
-                    planningState === "draft"
-                      ? "bg-amber-100 text-amber-900 ring-amber-200"
-                      : planningState === "between"
-                        ? "bg-blue-100 text-blue-900 ring-blue-200"
-                        : "bg-slate-100 text-slate-700 ring-slate-200";
-                  const closeSoHref = salesOrdersFocusHref(row.salesOrderId);
-                  const optionalDispatch = shouldShowNoQtyOptionalDispatchChip(
-                    row.salesOrderId,
-                    noQtyOptionalDispatchBySo,
-                    actionRequiredGroups,
-                    continueWorking,
-                  );
-                  const optionalDispatchHref = optionalDispatch
-                    ? buildDashboardDispatchHref({
-                        salesOrderId: row.salesOrderId,
-                        orderType: "NO_QTY",
-                        itemId: optionalDispatch.itemId,
-                      })
-                    : null;
-                  return (
-                    <li
-                      key={`no-qty-cycle-${row.salesOrderId}-${planCycleId ?? "c"}-${cycleShown}`}
-                      title={row.customerName}
-                      className="border-b border-slate-200/70 border-l-[3px] border-l-blue-700/80 bg-gradient-to-r from-blue-50/40 to-transparent px-2 py-1.5 text-[12px] text-slate-800 last:border-b-0"
-                    >
-                      <div className="flex flex-col gap-1">
-                        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                          <span className="font-bold tabular-nums text-slate-950">
-                            {displaySalesOrderNo(row.salesOrderId, row.salesOrderDocNo)}
-                          </span>
-                          <span className="text-slate-400" aria-hidden>
-                            ?
-                          </span>
-                          {!traceLine ? (
-                            <>
-                              <span className="font-semibold text-slate-800">Cycle {headerCycleShown}</span>
-                              <span className="text-slate-400" aria-hidden>
-                                ?
-                              </span>
-                            </>
-                          ) : null}
-                          <span
-                            className={cn(
-                              "inline-flex items-center rounded-full px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide ring-1",
-                              planningStateChipClass,
-                            )}
-                            data-testid={`dashboard-no-qty-state-${row.salesOrderId}`}
-                          >
-                            {planningStateLabel}
-                          </span>
-                        </div>
-                        {traceLine ? (
-                          <p
-                            className="text-[11px] leading-snug text-slate-600"
-                            data-testid={`dashboard-no-qty-trace-${row.salesOrderId}`}
-                          >
-                            <span>{traceLine.positionText}</span>
-                            <span className="text-slate-400" aria-hidden>
-                              {" "}
-                              ?{" "}
-                            </span>
-                            <button
-                              type="button"
-                              className="font-semibold text-blue-800 underline-offset-2 hover:underline"
-                              data-testid={`dashboard-no-qty-cycle-history-${row.salesOrderId}`}
-                              onClick={() => setNoQtyCycleHistoryTarget(row)}
-                            >
-                              View cycle history
-                            </button>
-                          </p>
-                        ) : null}
-                        <div className="flex flex-wrap items-center gap-1">
-                            <Button
-                              type="button"
-                              variant="default"
-                              size="sm"
-                              className={cn("h-8 rounded-md px-3 text-xs font-semibold", DASH_BTN_PRIMARY, "border-0")}
-                              data-testid={`dashboard-no-qty-continue-${row.salesOrderId}`}
-                              onClick={() => {
-                                if (resolved.kind === "prepare_next_rs") {
-                                  void prepareNoQtyNextRequirementSheetAndNavigate({
-                                    salesOrderId: row.salesOrderId,
-                                    navigate,
-                                    toast,
-                                    navigateState: { from: "dashboard" },
-                                  });
-                                } else {
-                                  navigate(appendFromDashboard(resolved.to), {
-                                    state: { from: "dashboard" },
-                                  });
-                                }
-                              }}
-                            >
-                              {continuationLabel}
-                            </Button>
-                            {showContinueProduction && continueProductionAction ? (
-                              <Button
-                                type="button"
-                                variant="outline"
-                                size="sm"
-                                className="h-8 rounded-md border-slate-200 bg-white px-3 text-xs font-semibold text-slate-800 shadow-none"
-                                data-testid={`dashboard-no-qty-prod-${row.salesOrderId}`}
-                                onClick={() => {
-                                  navigate(appendFromDashboard(continueProductionAction.href), {
-                                    state: { from: "dashboard" },
-                                  });
-                                }}
-                              >
-                                Open Production Workspace
-                              </Button>
-                            ) : null}
-                            {optionalDispatch && optionalDispatchHref ? (
-                              <button
-                                type="button"
-                                className="inline-flex h-8 max-w-full items-center rounded-full border border-slate-200/90 bg-slate-50/95 px-2.5 text-[10px] font-medium tabular-nums text-slate-700 ring-1 ring-slate-200/80 transition-colors hover:border-slate-300 hover:bg-slate-100"
-                                title="Usable FG stock ? optional dispatch only (not mandatory on dashboard)"
-                                data-testid={`dashboard-no-qty-opt-dispatch-${row.salesOrderId}`}
-                                onClick={() => {
-                                  navigate(appendFromDashboard(optionalDispatchHref), {
-                                    state: { from: "dashboard" },
-                                  });
-                                }}
-                              >
-                                Optional dispatch available: {formatDashDispatchMetricQty(optionalDispatch.qty)}
-                              </button>
-                            ) : null}
-                            {/*
-                              Close SO ? quiet secondary link that navigates
-                              to the Sales Orders workspace focused on this
-                              SO. The actual close action (with confirmation
-                              dialog and carry-forward freeze) lives there;
-                              we never duplicate that flow on the dashboard.
-                            */}
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              className="ml-auto h-8 rounded-md px-2 text-xs font-medium text-slate-500 hover:text-slate-900"
-                              data-testid={`dashboard-no-qty-close-${row.salesOrderId}`}
-                              onClick={() => {
-                                navigate(appendFromDashboard(closeSoHref), {
-                                  state: { from: "dashboard" },
-                                });
-                              }}
-                            >
-                              Close SO
-                            </Button>
-                        </div>
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
-            </div>
+                }
+              }}
+            />
           ) : null}
         </DashboardControlColumn>
   ) : null;
@@ -2643,13 +2406,6 @@ export function DashboardPage() {
         {liveFactorySection}
       </div>
 
-      <NoQtyDashboardCycleHistoryDialog
-        open={noQtyCycleHistoryTarget != null}
-        onClose={() => setNoQtyCycleHistoryTarget(null)}
-        salesOrderId={noQtyCycleHistoryTarget?.salesOrderId ?? 0}
-        salesOrderDocNo={noQtyCycleHistoryTarget?.salesOrderDocNo}
-        customerName={noQtyCycleHistoryTarget?.customerName}
-      />
     </div>
   );
 }

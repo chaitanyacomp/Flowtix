@@ -14,10 +14,13 @@ const {
 const { APPROVED_PLAN_SNAPSHOT_REVISION } = require("../../src/services/monthlyPlanningRmSnapshotService");
 const { mapMonthlyPlanContext } = require("../../src/services/procurementTraceService");
 
-function depsFor({ rmNeeded = new Map([[70, 12]]), fgItemId = 65 } = {}) {
+function depsFor({ rmNeeded = new Map([[70, 12]]), fgItemId = 65, greenShortage = 700 } = {}) {
   return {
     allowLegacyLock: true,
     loadApprovedBomWithLines: async () => ({ id: 1, lines: [{ id: 1 }] }),
+    loadFgGreenShortageInputs: async () => [
+      { fgItemId, fgItemName: "Nozzle", greenShortage },
+    ],
     aggregateRmDemandForFgLines: async (_tx, fgLines) => {
       const map = new Map();
       for (const fg of fgLines) {
@@ -30,6 +33,7 @@ function depsFor({ rmNeeded = new Map([[70, 12]]), fgItemId = 65 } = {}) {
     getMaterialAvailabilityByItems: async () => [
       {
         itemId: 70,
+        physicalUsableStockQty: 2,
         freeStockQty: 2,
         effectiveReservedQty: 0,
         incomingQty: 0,

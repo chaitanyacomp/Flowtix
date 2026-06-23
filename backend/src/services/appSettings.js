@@ -1,5 +1,11 @@
 const { prisma } = require("../utils/prisma");
 const { normalizeStockAdjustmentPolicy } = require("./stockAdjustmentPolicy");
+const {
+  clampGreenLevelHistoryMonths,
+  DEFAULT_GREEN_LEVEL_HISTORY_MONTHS,
+  normalizeGreenLevelSource,
+  DEFAULT_GREEN_LEVEL_SOURCE,
+} = require("./greenLevelPlanningSettings");
 
 async function ensureAppSettings() {
   await prisma.appSetting.upsert({
@@ -7,6 +13,8 @@ async function ensureAppSettings() {
     create: {
       id: 1,
       maxRegularSoBufferPercent: 10,
+      greenLevelHistoryMonths: DEFAULT_GREEN_LEVEL_HISTORY_MONTHS,
+      greenLevelSource: DEFAULT_GREEN_LEVEL_SOURCE,
       strictInventoryControl: false,
       stockAdjustmentReverseRoles: "ADMIN_ONLY",
       stockAdjustmentReverseWindowType: "HOURS",
@@ -190,10 +198,58 @@ async function setMaxRegularSoBufferPercent(pct) {
   return v;
 }
 
+async function getGreenLevelHistoryMonths() {
+  await ensureAppSettings();
+  const row = await prisma.appSetting.findUnique({
+    where: { id: 1 },
+    select: { greenLevelHistoryMonths: true },
+  });
+  return clampGreenLevelHistoryMonths(row?.greenLevelHistoryMonths);
+}
+
+/**
+ * @param {number} months
+ */
+async function setGreenLevelHistoryMonths(months) {
+  await ensureAppSettings();
+  const v = clampGreenLevelHistoryMonths(months);
+  await prisma.appSetting.update({
+    where: { id: 1 },
+    data: { greenLevelHistoryMonths: v },
+  });
+  return v;
+}
+
+async function getGreenLevelSource() {
+  await ensureAppSettings();
+  const row = await prisma.appSetting.findUnique({
+    where: { id: 1 },
+    select: { greenLevelSource: true },
+  });
+  return normalizeGreenLevelSource(row?.greenLevelSource);
+}
+
+/**
+ * @param {"MANUAL"|"AUTOMATIC"} source
+ */
+async function setGreenLevelSource(source) {
+  await ensureAppSettings();
+  const v = normalizeGreenLevelSource(source);
+  await prisma.appSetting.update({
+    where: { id: 1 },
+    data: { greenLevelSource: v },
+  });
+  return v;
+}
+
 module.exports = {
   ensureAppSettings,
   getMaxRegularSoBufferPercent,
   setMaxRegularSoBufferPercent,
+  getGreenLevelHistoryMonths,
+  setGreenLevelHistoryMonths,
+  getGreenLevelSource,
+  setGreenLevelSource,
   getStrictInventoryControl,
   setStrictInventoryControl,
   getStockAdjustmentPolicy,

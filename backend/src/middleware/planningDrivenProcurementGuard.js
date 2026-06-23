@@ -3,7 +3,8 @@
  *
  * When FEATURE_PLANNING_DRIVEN_PROCUREMENT is ON, legacy/operational procurement
  * DEMAND creation paths are blocked so Monthly Planning is the single planning-driven
- * source. This only blocks procurement-demand creation — allocation, material issue,
+ * source for green-level RM. Additional RM requisition (RM Stock Planning) remains
+ * available. This only blocks procurement-demand creation — allocation, material issue,
  * RM shortage visibility, and RM Control Center operational actions are unaffected.
  *
  * Default OFF → no behavior change.

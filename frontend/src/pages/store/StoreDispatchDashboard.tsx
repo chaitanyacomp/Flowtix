@@ -156,7 +156,7 @@ export function StoreDispatchDashboard({
           </div>
 
           <div className="max-w-full overflow-x-auto pb-0.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-            <ErpKpiStrip className={erpKpi.stripCompact} role="toolbar" aria-label="Dispatch desk metrics">
+            <ErpKpiStrip className={erpKpi.stripCompact} role="toolbar" aria-label="Store operations metrics">
               <ErpKpiSegment type="button" {...clickTo("/dispatch")} aria-label="Ready to dispatch">
                 <ErpKpiLabel>Ready to dispatch</ErpKpiLabel>
                 <ErpKpiValue tone={dispatchReadyCount > 0 ? "warn" : "muted"}>{dispatchReadyCount}</ErpKpiValue>

@@ -105,7 +105,7 @@ describe("noQtyExecutionReleaseService.createNoQtyWorkOrderFromLockedSheet", () 
         upsert: async () => ({ nextNumber: 1, year2: 26, docType: "WORK_ORDER" }),
       },
       workOrder: {
-        findFirst: async () => null,
+        findMany: async () => [],
         create: async ({ data }) => {
           created = data;
           return { id: 99, docNo: "WO-26-0099" };
@@ -127,5 +127,164 @@ describe("noQtyExecutionReleaseService.createNoQtyWorkOrderFromLockedSheet", () 
     assert.equal(res.created, true);
     assert.equal(res.workOrderId, 99);
     assert.equal(Number(created.lines.create[0].qty), 5000);
+  });
+
+  it("creates only remaining RS balance when linked WOs already exist", async () => {
+    let created = null;
+    const tx = {
+      docSequence: {
+        upsert: async () => ({ nextNumber: 2, year2: 26, docType: "WORK_ORDER" }),
+      },
+      workOrder: {
+        findMany: async () => [
+          {
+            id: 90,
+            cycleId: 3,
+            status: "PENDING",
+            lines: [{ fgItemId: 65, qty: "4000", plannedQty: "4000" }],
+          },
+          {
+            id: 91,
+            cycleId: 3,
+            status: "REJECTED",
+            lines: [{ fgItemId: 65, qty: "2000", plannedQty: "2000" }],
+          },
+        ],
+        create: async ({ data }) => {
+          created = data;
+          return { id: 100, docNo: "WO-26-0100" };
+        },
+        update: async () => ({}),
+      },
+      salesOrderLine: {
+        findMany: async () => [{ itemId: 65, item: { itemType: "FG" } }],
+      },
+    };
+    const sheet = {
+      id: 1,
+      salesOrderId: 10,
+      cycleId: 3,
+      salesOrder: { orderType: "NO_QTY", customerReturnId: null },
+      lines: [{ itemId: 65, requirementQty: "10000", suggestedWoQtySnapshot: "25000" }],
+    };
+
+    const res = await createNoQtyWorkOrderFromLockedSheet(tx, sheet);
+
+    assert.equal(res.created, true);
+    assert.equal(res.workOrderId, 100);
+    assert.equal(Number(created.lines.create[0].qty), 6000);
+  });
+
+  it("skips creation when counted linked WOs already cover RS demand", async () => {
+    const tx = {
+      workOrder: {
+        findMany: async () => [
+          {
+            id: 90,
+            cycleId: 3,
+            status: "PENDING",
+            lines: [{ fgItemId: 65, qty: "5000", plannedQty: "5000" }],
+          },
+        ],
+        update: async () => ({}),
+      },
+      salesOrderLine: {
+        findMany: async () => [{ itemId: 65, item: { itemType: "FG" } }],
+      },
+    };
+    const sheet = {
+      id: 1,
+      salesOrderId: 10,
+      cycleId: 3,
+      salesOrder: { orderType: "NO_QTY", customerReturnId: null },
+      lines: [{ itemId: 65, requirementQty: "5000", suggestedWoQtySnapshot: "15000" }],
+    };
+
+    const res = await createNoQtyWorkOrderFromLockedSheet(tx, sheet);
+
+    assert.equal(res.created, false);
+    assert.equal(res.workOrderId, null);
+    assert.equal(res.skippedReason, "ZERO_EXECUTABLE_QTY");
+  });
+
+  it("serializes concurrent placements so total WO qty never exceeds RS demand", async () => {
+    const workOrders = [];
+    let nextWoId = 200;
+    let lockTail = Promise.resolve();
+    let unlockCurrent = null;
+
+    const tx = {
+      $queryRaw: async (_strings, sheetId) => {
+        let unlock;
+        const previous = lockTail;
+        lockTail = new Promise((resolve) => {
+          unlock = resolve;
+        });
+        await previous;
+        unlockCurrent = unlock;
+        return [{ id: sheetId }];
+      },
+      docSequence: {
+        upsert: async () => ({ nextNumber: nextWoId, year2: 26, docType: "WORK_ORDER" }),
+      },
+      workOrder: {
+        findMany: async () =>
+          workOrders.map((wo) => ({
+            id: wo.id,
+            cycleId: wo.cycleId,
+            status: wo.status,
+            lines: wo.lines.map((line) => ({ ...line })),
+          })),
+        create: async ({ data }) => {
+          await new Promise((resolve) => setImmediate(resolve));
+          const id = nextWoId++;
+          workOrders.push({
+            id,
+            cycleId: data.cycleId,
+            status: data.status,
+            lines: data.lines.create.map((line) => ({
+              fgItemId: line.fgItemId,
+              qty: line.qty,
+              plannedQty: line.plannedQty,
+            })),
+          });
+          return { id, docNo: `WO-26-${String(id).padStart(4, "0")}` };
+        },
+        update: async () => ({}),
+      },
+      salesOrderLine: {
+        findMany: async () => [{ itemId: 65, item: { itemType: "FG" } }],
+      },
+    };
+    const sheet = {
+      id: 1,
+      salesOrderId: 10,
+      cycleId: 3,
+      salesOrder: { orderType: "NO_QTY", customerReturnId: null },
+      lines: [{ itemId: 65, requirementQty: "10000", suggestedWoQtySnapshot: "25000" }],
+    };
+
+    async function placeWithCommit() {
+      try {
+        return await createNoQtyWorkOrderFromLockedSheet(tx, sheet);
+      } finally {
+        const unlock = unlockCurrent;
+        unlockCurrent = null;
+        if (unlock) unlock();
+      }
+    }
+
+    const [a, b] = await Promise.all([placeWithCommit(), placeWithCommit()]);
+    const totalPlaced = workOrders.reduce(
+      (sum, wo) => sum + wo.lines.reduce((lineSum, line) => lineSum + Number(line.plannedQty), 0),
+      0,
+    );
+
+    assert.equal(totalPlaced, 10000);
+    assert.equal(workOrders.length, 1);
+    assert.deepEqual(
+      [a.created, b.created].sort(),
+      [false, true],
+    );
   });
 });

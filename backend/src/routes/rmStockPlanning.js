@@ -7,7 +7,6 @@ const { allocateDocNo } = require("../services/docNoService");
 const { loadStockByItemIdUsableMap, usableStockDisplayQty } = require("../services/stockService");
 const { QUEUE_EPS, qtyToNumber, sumReceivedByRmPoLineFromGrns } = require("../services/rmPurchaseHelpers");
 const auditLog = require("../services/auditLog");
-const { blockProcurementDemandWhenPlanningDriven } = require("../middleware/planningDrivenProcurementGuard");
 
 const rmStockPlanningRouter = express.Router();
 const ACCESS_ROLES = ["ADMIN", "STORE"];
@@ -236,7 +235,6 @@ rmStockPlanningRouter.post(
   "/replenishment-mrs",
   requireAuth,
   requireRole(ACCESS_ROLES),
-  blockProcurementDemandWhenPlanningDriven,
   async (req, res, next) => {
     try {
       const body = createSchema.parse(req.body);

@@ -42,7 +42,10 @@ const {
 } = require("./dispatch");
 const { loadEffectiveNoQtyCarryForwardShortfallByItem } = require("../services/noQtySoCloseSnapshotService");
 const { assertNoQtyRequirementSheetPeriodReleased } = require("../services/noQtyExecutionBoundaryService");
-const { createNoQtyWorkOrderFromLockedSheet } = require("../services/noQtyExecutionReleaseService");
+const {
+  createNoQtyWorkOrderFromLockedSheet,
+  NO_QTY_WO_PLACED_COUNT_STATUSES,
+} = require("../services/noQtyExecutionReleaseService");
 const { ensureSubmittedProductionMaterialRequestForWorkOrder } = require("../services/productionMaterialRequestService");
 const { resolveNoQtyWoExecutableQty } = require("../services/noQtyWoQtyService");
 const { getRequirementSheetExecutionSummary } = require("../services/requirementSheetExecutionService");
@@ -690,21 +693,35 @@ async function assertSoNoQtyOrThrow(tx, soId) {
 async function mapSheetDetail(sheet) {
   const customerName = sheet?.salesOrder?.customer?.name ?? sheet?.salesOrder?.po?.customer?.name ?? sheet?.customerNameSnapshot ?? null;
 
-  const existingWo = await prisma.workOrder.findFirst({
+  const linkedWorkOrders = await prisma.workOrder.findMany({
     where: { requirementSheetId: sheet.id },
-    select: { id: true },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    select: {
+      id: true,
+      docNo: true,
+      status: true,
+      createdAt: true,
+      productionMaterialRequests: {
+        orderBy: { id: "desc" },
+        take: 1,
+        select: { id: true, docNo: true, status: true },
+      },
+    },
   });
-  const openPmr =
-    existingWo?.id != null
-      ? await prisma.productionMaterialRequest.findFirst({
-          where: {
-            workOrderId: existingWo.id,
-            status: { in: ["REQUESTED", "PARTIALLY_ISSUED", "FULLY_ISSUED"] },
-          },
-          orderBy: { id: "desc" },
-          select: { id: true, docNo: true, status: true },
-        })
-      : null;
+  const existingWo = linkedWorkOrders[0] ?? null;
+  const openPmr = existingWo?.productionMaterialRequests?.[0] ?? null;
+  const workOrders = linkedWorkOrders.map((wo) => {
+    const pmr = wo.productionMaterialRequests?.[0] ?? null;
+    return {
+      id: wo.id,
+      docNo: wo.docNo ?? null,
+      status: wo.status,
+      createdAt: wo.createdAt?.toISOString?.() ?? wo.createdAt ?? null,
+      pmrId: pmr?.id ?? null,
+      pmrDocNo: pmr?.docNo ?? null,
+      pmrStatus: pmr?.status ?? null,
+    };
+  });
 
   const stockMap = await stockByItemIdUsable();
   const reservedUnlockedDraftByItem =
@@ -960,10 +977,13 @@ async function mapSheetDetail(sheet) {
     version: sheet.version,
     cancelledAt: sheet.cancelledAt ?? null,
     cancellationReason: sheet.cancellationReason ?? null,
+    // Legacy compatibility: first linked WO only. Multi-WO consumers must use `workOrders`.
     workOrderId: existingWo?.id ?? null,
     productionMaterialRequestId: openPmr?.id ?? null,
     pmrDocNo: openPmr?.docNo ?? null,
     pmrStatus: openPmr?.status ?? null,
+    workOrders,
+    workOrderIds: workOrders.map((wo) => wo.id),
     sourceReference: null,
     remarks: sheet.remarks ?? null,
     customerName,
@@ -1909,14 +1929,15 @@ requirementSheetsRouter.post(
           throw err;
         }
 
-        const wo = await tx.workOrder.findFirst({
-          where: { requirementSheetId: sheet.id },
+        const activeWos = await tx.workOrder.findMany({
+          where: { requirementSheetId: sheet.id, status: { in: [...NO_QTY_WO_PLACED_COUNT_STATUSES] } },
           select: { id: true },
         });
 
-        if (wo) {
+        if (activeWos.length) {
+          const woIds = activeWos.map((wo) => wo.id);
           const prodCount = await tx.productionEntry.count({
-            where: { workOrderLine: { workOrderId: wo.id } },
+            where: { workOrderLine: { workOrderId: { in: woIds } } },
           });
           if (prodCount > 0) {
             const err = new Error(
@@ -1925,11 +1946,13 @@ requirementSheetsRouter.post(
             err.statusCode = 409;
             throw err;
           }
-          await tx.workOrder.delete({ where: { id: wo.id } });
+          const err = new Error("Cannot void this requirement sheet because active Work Orders already exist.");
+          err.statusCode = 409;
+          throw err;
         }
 
         await tx.requirementSheet.delete({ where: { id: sheet.id } });
-        return { deletedRequirementSheetId: sheet.id, deletedWorkOrderId: wo?.id ?? null };
+        return { deletedRequirementSheetId: sheet.id, deletedWorkOrderId: null };
       });
 
       return res.status(200).json(result);
@@ -1999,16 +2022,50 @@ requirementSheetsRouter.get(
   },
 );
 
+async function ensurePmrsForCreatedWorkOrders(tx, { createdWorkOrders, actor = {}, ensurePmr = ensureSubmittedProductionMaterialRequestForWorkOrder }) {
+  const pmrs = [];
+  for (const wo of createdWorkOrders ?? []) {
+    const pmr = await ensurePmr(
+      wo.workOrderId,
+      {
+        userId: actor.userId,
+        role: actor.role,
+      },
+      tx,
+    );
+    pmrs.push({
+      workOrderId: wo.workOrderId,
+      pmrId: pmr?.id ?? null,
+      pmrDocNo: pmr?.docNo ?? null,
+      status: pmr?.status ?? null,
+    });
+  }
+  return pmrs;
+}
+
 // POST /api/requirement-sheets/:id/create-wo
 // One-click WO creation for NO_QTY sales orders from a LOCKED, latest requirement sheet version.
 requirementSheetsRouter.post(
   "/requirement-sheets/:id/create-wo",
   requireAuth,
-  requireRole(["ADMIN", "PRODUCTION"]),
+  requireRole(RS_WRITE_ROLES),
   async (req, res, next) => {
     try {
       const id = Number(req.params.id);
       if (!Number.isFinite(id) || id <= 0) return res.status(400).json(friendly400("Invalid requirement sheet id."));
+      const body = z
+        .object({
+          lines: z
+            .array(
+              z.object({
+                itemId: z.coerce.number().int().positive(),
+                qty: z.coerce.number(),
+              }),
+            )
+            .optional()
+            .nullable(),
+        })
+        .parse(req.body ?? {});
 
       const result = await prisma.$transaction(async (tx) => {
         const sheet = await tx.requirementSheet.findUnique({
@@ -2034,9 +2091,11 @@ requirementSheetsRouter.post(
           throw err;
         }
 
-        const activeCycleId = await resolveNoQtyActiveCycleIdForPlanning(tx, sheet.salesOrderId);
-        if (!sheet.cycleId || Number(sheet.cycleId) !== Number(activeCycleId)) {
-          await tx.requirementSheet.update({ where: { id: sheet.id }, data: { cycleId: activeCycleId } });
+        const sheetCycleId = sheet.cycleId != null ? Number(sheet.cycleId) : null;
+        if (!sheetCycleId || !Number.isFinite(sheetCycleId) || sheetCycleId <= 0) {
+          const err = new Error("Requirement sheet is not linked to a planning cycle.");
+          err.statusCode = 409;
+          throw err;
         }
 
         const periodKey = sheet.periodKey ?? null;
@@ -2048,13 +2107,13 @@ requirementSheetsRouter.post(
         }
 
         const maxV = await tx.requirementSheet.aggregate({
-          where: { salesOrderId: sheet.salesOrderId, periodKey, cycleId: activeCycleId },
+          where: { salesOrderId: sheet.salesOrderId, periodKey, cycleId: sheetCycleId },
           _max: { version: true },
         });
         const latest = Number(maxV._max.version ?? versionNum);
         if (versionNum < latest) {
           const err = new Error(
-            "Work Order can be created only from the latest requirement sheet version for this period and active cycle.",
+            "Work Order can be created only from the latest requirement sheet version for this period and cycle.",
           );
           err.statusCode = 409;
           throw err;
@@ -2062,44 +2121,46 @@ requirementSheetsRouter.post(
 
         await assertNoQtyRequirementSheetPeriodReleased(tx, sheet);
 
-        if (!sheet.cycleId || Number(sheet.cycleId) !== Number(activeCycleId)) {
-          sheet.cycleId = activeCycleId;
-        }
-
-        const woResult = await createNoQtyWorkOrderFromLockedSheet(tx, sheet);
+        const woResult = await createNoQtyWorkOrderFromLockedSheet(tx, sheet, {
+          requestedLines: Array.isArray(body.lines) ? body.lines : undefined,
+        });
         if (!woResult.workOrderId) {
           const err = new Error(
             woResult.skippedReason === "ZERO_EXECUTABLE_QTY"
-              ? "No executable WO lines on this sheet (new requirement qty is zero on all lines — carry-forward is covered by prior-cycle work orders)."
+              ? "No RS Balance remains for Work Order creation on this requirement sheet."
               : "Work order could not be created from this requirement sheet.",
           );
           err.statusCode = 409;
           throw err;
         }
-        if (!woResult.created && woResult.skippedReason === "ALREADY_EXISTS") {
-          const existing = await tx.workOrder.findUnique({
-            where: { id: woResult.workOrderId },
-            select: { id: true, salesOrderId: true, docNo: true },
-          });
-          const woLabel = existing?.docNo?.trim() || `WO-${woResult.workOrderId}`;
-          const err = new Error(`Work Order ${woLabel} was already created from this requirement sheet.`);
-          err.statusCode = 409;
-          throw err;
-        }
 
-        return { id: woResult.workOrderId, salesOrderId: sheet.salesOrderId };
+        const createdWorkOrders = Array.isArray(woResult.workOrders) && woResult.workOrders.length > 0
+          ? woResult.workOrders
+          : [{ workOrderId: woResult.workOrderId, workOrderDocNo: woResult.workOrderDocNo ?? null }];
+        const pmrs = await ensurePmrsForCreatedWorkOrders(tx, {
+          createdWorkOrders,
+          actor: { userId: req.user?.userId, role: req.user?.role },
+        });
+
+        return {
+          id: woResult.workOrderId,
+          workOrderId: woResult.workOrderId,
+          workOrderDocNo: woResult.workOrderDocNo ?? null,
+          workOrderIds: createdWorkOrders.map((wo) => wo.workOrderId),
+          workOrders: createdWorkOrders,
+          pmrs,
+          salesOrderId: sheet.salesOrderId,
+        };
       });
 
-      try {
-        await ensureSubmittedProductionMaterialRequestForWorkOrder(result.id, {
-          userId: req.user?.userId,
-          role: req.user?.role,
-        });
-      } catch (pmrErr) {
-        console.warn(`[NO_QTY_CREATE_WO] Auto-ensure PMR for WO ${result.id} failed:`, pmrErr?.message || pmrErr);
-      }
-
-      return res.status(201).json({ workOrderId: result.id, salesOrderId: result.salesOrderId });
+      return res.status(201).json({
+        workOrderId: result.workOrderId,
+        workOrderDocNo: result.workOrderDocNo ?? null,
+        workOrderIds: result.workOrderIds ?? [result.workOrderId].filter(Boolean),
+        workOrders: result.workOrders ?? [],
+        pmrs: result.pmrs ?? [],
+        salesOrderId: result.salesOrderId,
+      });
     } catch (e) {
       return next(e);
     }
@@ -2108,6 +2169,7 @@ requirementSheetsRouter.post(
 
 module.exports = {
   requirementSheetsRouter,
+  ensurePmrsForCreatedWorkOrders,
   loadNoQtyCarryForwardShortfallByItem,
   plannedNewRequirementAndQcAcceptedByItemForSingleCycle,
   loadEffectiveNoQtyCarryForwardShortfallByItem,

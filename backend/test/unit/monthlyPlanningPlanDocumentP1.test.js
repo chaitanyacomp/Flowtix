@@ -110,7 +110,22 @@ function createPlanDocumentDb(initialPlans = []) {
     monthlyProductionPlanLine: {
       findMany: async ({ where }) => {
         const plan = state.plans.find((p) => p.id === where.planId);
-        return plan?.lines ?? [];
+        return (plan?.lines ?? []).map((l, idx) => ({
+          id: l.id ?? idx + 1,
+          fgItemId: l.fgItemId ?? 65,
+          plannedFgQty: l.plannedFgQty,
+          plannedQtyOverridden: Boolean(l.plannedQtyOverridden),
+          suggestedFgQty: l.suggestedFgQty ?? l.plannedFgQty,
+          source: l.source ?? "MANUAL",
+          remarks: l.remarks ?? null,
+        }));
+      },
+      update: async ({ where, data }) => {
+        for (const plan of state.plans) {
+          const line = (plan.lines ?? []).find((l, idx) => (l.id ?? idx + 1) === where.id);
+          if (line) Object.assign(line, data);
+        }
+        return {};
       },
       upsert: async () => ({}),
       deleteMany: async () => ({ count: 0 }),
@@ -210,6 +225,13 @@ describe("monthlyPlanningPlanDocumentP1.multiple plans per period", () => {
   });
 });
 
+function compositionForFg(fgItemId, suggestedProduction, greenShortage = 0) {
+  return async () => ({
+    periodKey: "2026-07",
+    items: [{ itemId: fgItemId, suggestedProduction, greenShortage }],
+  });
+}
+
 describe("monthlyPlanningPlanDocumentP1.purchase review transitions", () => {
   it("submit for review moves DRAFT to AWAITING_PURCHASE_REVIEW", async () => {
     const db = createPlanDocumentDb([
@@ -218,10 +240,15 @@ describe("monthlyPlanningPlanDocumentP1.purchase review transitions", () => {
         periodKey: "2026-07",
         planSequenceNo: 1,
         status: "DRAFT",
-        lines: [{ plannedFgQty: "100" }],
+        lines: [{ id: 1, fgItemId: 65, plannedFgQty: "100", plannedQtyOverridden: false }],
       },
     ]);
-    const res = await submitPlanForPurchaseReview({ db, planId: 10, actorUserId: 2 });
+    const res = await submitPlanForPurchaseReview({
+      db,
+      planId: 10,
+      actorUserId: 2,
+      loadComposition: compositionForFg(65, 100),
+    });
     assert.equal(res.status, "AWAITING_PURCHASE_REVIEW");
     assert.ok(res.lockedAt);
     assert.equal(db.__state.plans[0].status, "AWAITING_PURCHASE_REVIEW");
@@ -243,8 +270,15 @@ describe("monthlyPlanningPlanDocumentP1.purchase review transitions", () => {
       getMaterialAvailabilityByItems: async () => [
         { itemId: 70, freeStockQty: 0, effectiveReservedQty: 0, incomingQty: 0, netShortageAfterIncomingQty: 5, warnings: [] },
       ],
+      loadFgGreenShortageInputs: async () => [{ fgItemId: 65, fgItemName: "FG 65", greenShortage: 10 }],
     };
-    const res = await purchaseApprovePlan({ db, planId: 11, actorUserId: 3, deps });
+    const res = await purchaseApprovePlan({
+      db,
+      planId: 11,
+      actorUserId: 3,
+      deps,
+      loadComposition: compositionForFg(65, 100),
+    });
     assert.equal(res.status, "APPROVED");
     assert.ok(res.approvedAt);
   });
@@ -298,11 +332,20 @@ describe("monthlyPlanningPlanDocumentP1.one active plan rule", () => {
 
   it("submit blocks when another active plan exists in the period", async () => {
     const db = createPlanDocumentDb([
-      { id: 21, periodKey: "2026-08", planSequenceNo: 1, status: "DRAFT", lines: [{ plannedFgQty: 10 }] },
-      { id: 22, periodKey: "2026-08", planSequenceNo: 2, status: "DRAFT", lines: [{ plannedFgQty: 5 }] },
+      { id: 21, periodKey: "2026-08", planSequenceNo: 1, status: "DRAFT", lines: [{ id: 1, fgItemId: 65, plannedFgQty: 10, plannedQtyOverridden: false }] },
+      { id: 22, periodKey: "2026-08", planSequenceNo: 2, status: "DRAFT", lines: [{ id: 2, fgItemId: 65, plannedFgQty: 5, plannedQtyOverridden: false }] },
     ]);
     await assert.rejects(
-      () => submitPlanForPurchaseReview({ db, planId: 22, actorUserId: 2 }),
+      () =>
+        submitPlanForPurchaseReview({
+          db,
+          planId: 22,
+          actorUserId: 2,
+          loadComposition: async () => ({
+            periodKey: "2026-08",
+            items: [{ itemId: 65, suggestedProduction: 5, greenShortage: 0 }],
+          }),
+        }),
       (e) => e instanceof MonthlyPlanningError && e.code === "ACTIVE_PLAN_EXISTS",
     );
   });

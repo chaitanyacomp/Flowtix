@@ -183,6 +183,7 @@ itemRouter.post("/", requireAuth, requireRole(["ADMIN", "STORE"]), async (req, r
       planningBufferPercent: z.union([z.number(), z.string(), z.null()]).optional(),
       minimumStockQty: z.union([z.number(), z.string(), z.null()]).optional(),
       reorderQty: z.union([z.number(), z.string(), z.null()]).optional(),
+      fgManualGreenLevelQty: z.union([z.number(), z.string(), z.null()]).optional(),
     });
     const body = schema.parse(req.body);
     body.itemName = normalizeMasterNameDisplay(body.itemName);
@@ -253,6 +254,14 @@ itemRouter.post("/", requireAuth, requireRole(["ADMIN", "STORE"]), async (req, r
           const q = normalizeOptionalQty(body.reorderQty);
           return q != null ? String(q) : null;
         })(),
+        ...(body.itemType === "FG"
+          ? {
+              fgManualGreenLevelQty: (() => {
+                const q = normalizeOptionalQty(body.fgManualGreenLevelQty);
+                return q != null ? String(q) : null;
+              })(),
+            }
+          : {}),
       },
       include: { unitRef: { select: { id: true, unitName: true } } },
     });
@@ -282,6 +291,7 @@ itemRouter.put("/:id", requireAuth, requireRole(["ADMIN", "STORE"]), async (req,
       planningBufferPercent: z.union([z.number(), z.string(), z.null()]).optional(),
       minimumStockQty: z.union([z.number(), z.string(), z.null()]).optional(),
       reorderQty: z.union([z.number(), z.string(), z.null()]).optional(),
+      fgManualGreenLevelQty: z.union([z.number(), z.string(), z.null()]).optional(),
     });
     const body = schema.parse(req.body);
 
@@ -405,6 +415,16 @@ itemRouter.put("/:id", requireAuth, requireRole(["ADMIN", "STORE"]), async (req,
     if (body.reorderQty !== undefined) {
       const q = normalizeOptionalQty(body.reorderQty);
       patch.reorderQty = q != null ? String(q) : null;
+    }
+    if (body.fgManualGreenLevelQty !== undefined) {
+      const effectiveType = body.itemType ?? existing.itemType;
+      if (effectiveType !== "FG") {
+        const err = new Error("Manual Green Level applies to FG items only");
+        err.statusCode = 400;
+        throw err;
+      }
+      const q = normalizeOptionalQty(body.fgManualGreenLevelQty);
+      patch.fgManualGreenLevelQty = q != null ? String(q) : null;
     }
     const updated = await prisma.item.update({
       where: { id },

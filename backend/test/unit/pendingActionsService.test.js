@@ -35,7 +35,9 @@ describe("pendingActionsService", () => {
     assert.equal(action.action, "Create RS Cycle 1");
     assert.equal(action.documentNo, "SO-26-0001");
     assert.equal(action.ownerRole, "STORE");
-    assert.equal(action.href, "/sales-orders/1/requirement-sheets");
+    assert.match(action.href, /\/sales-orders\/1\/requirement-sheets\?/);
+    assert.match(action.href, /intent=add/);
+    assert.match(action.href, /source=no_qty_so/);
     assert.equal(action.priority, PENDING_PRIORITY.HIGH);
   });
 
@@ -256,7 +258,7 @@ describe("pendingActionsService", () => {
     });
     const action = mapNormalizedRowToPendingAction(row);
     assert.equal(action.action, "Create RS Cycle 1");
-    assert.equal(action.href, "/sales-orders/1/requirement-sheets");
+    assert.match(action.href, /intent=add/);
   });
 
   it("fetchStoreGrnPendingActions collapses multiple PO lines to one Store action per PO", async () => {

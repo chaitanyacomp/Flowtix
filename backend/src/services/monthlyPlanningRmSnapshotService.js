@@ -1,12 +1,15 @@
 /**
- * Phase P4B — RM Planning snapshot for plan-document approval (and shared lock path).
+ * Phase P4B / P11 — RM Planning snapshot for plan-document approval (and shared lock path).
  *
  * APPROVED plan documents use a fixed snapshot revision per planId (revision 1).
  * Legacy LOCKED plans continue to use currentRevision increments from lockMonthlyPlan.
+ *
+ * RM gross demand = BOM(FG Green Shortage) frozen at snapshot time — not plannedFgQty.
  */
 
 const { aggregateRmDemandForFgLines, loadApprovedBomWithLines } = require("./bomExplosionService");
 const { getMaterialAvailabilityByItems } = require("./materialAvailabilityService");
+const { getRequirementComposition } = require("./monthlyPlanningRequirementCompositionService");
 
 /** Snapshot revision for APPROVED plan documents (one immutable snapshot per planId). */
 const APPROVED_PLAN_SNAPSHOT_REVISION = 1;
@@ -19,6 +22,11 @@ function round3(value) {
   const num = Number(value);
   if (!Number.isFinite(num)) return 0;
   return Math.round(num * 1000) / 1000;
+}
+
+function n(value) {
+  const x = Number(value);
+  return Number.isFinite(x) ? x : 0;
 }
 
 function canReadRmPlanningStatus(status) {
@@ -79,7 +87,23 @@ function buildMonthlyPlanReleaseLabel(plan, revision) {
 }
 
 /**
- * Create (or return existing) RM snapshot from the plan document FG lines.
+ * @param {object} db
+ * @param {string} periodKey
+ * @param {typeof getRequirementComposition} [loadFgComposition]
+ */
+async function loadFgGreenShortageInputs(db, periodKey, loadFgComposition = getRequirementComposition) {
+  const composition = await loadFgComposition({ db, periodKey });
+  return (composition.items || [])
+    .filter((item) => n(item.greenShortage) > 0)
+    .map((item) => ({
+      fgItemId: item.itemId,
+      fgItemName: item.itemName ?? null,
+      greenShortage: round3(n(item.greenShortage)),
+    }));
+}
+
+/**
+ * Create (or return existing) RM snapshot from FG Green Shortage → BOM.
  *
  * @param {{
  *   db: object;
@@ -104,6 +128,9 @@ async function createRmPlanSnapshot({
   const explodeFn = deps.aggregateRmDemandForFgLines || aggregateRmDemandForFgLines;
   const loadBomFn = deps.loadApprovedBomWithLines || loadApprovedBomWithLines;
   const availabilityFn = deps.getMaterialAvailabilityByItems || getMaterialAvailabilityByItems;
+  const loadGreenShortages =
+    deps.loadFgGreenShortageInputs ||
+    ((tx, periodKey) => loadFgGreenShortageInputs(tx, periodKey, deps.loadFgComposition));
 
   const id = Number(planId);
   const rev = Number(revision);
@@ -141,19 +168,26 @@ async function createRmPlanSnapshot({
     );
   }
 
-  for (const line of activeLines) {
-    const bom = await loadBomFn(db, line.fgItemId);
+  const greenShortageInputs = await loadGreenShortages(db, plan.periodKey);
+
+  for (const fg of greenShortageInputs) {
+    const bom = await loadBomFn(db, fg.fgItemId);
     if (!bom || !bom.lines || bom.lines.length === 0) {
       throw new MonthlyPlanningError(
         "MISSING_BOM",
-        `BOM missing for FG item: ${line.fgItem?.itemName ?? line.fgItemId}`,
+        `BOM missing for FG item with green shortage: ${fg.fgItemName ?? fg.fgItemId}`,
         422,
       );
     }
   }
 
-  const fgLines = activeLines.map((l) => ({ fgItemId: l.fgItemId, fgQty: round3(l.plannedFgQty) }));
-  const { rmNeeded, missingChildBoms } = await explodeFn(db, fgLines);
+  const fgLines = greenShortageInputs.map((fg) => ({
+    fgItemId: fg.fgItemId,
+    fgQty: round3(fg.greenShortage),
+  }));
+  const { rmNeeded, missingChildBoms } = fgLines.length
+    ? await explodeFn(db, fgLines)
+    : { rmNeeded: new Map(), missingChildBoms: [] };
   if (missingChildBoms.length > 0) {
     const names = missingChildBoms.map((m) => m.sfgName ?? m.sfgItemId).join(", ");
     throw new MonthlyPlanningError(
@@ -167,20 +201,24 @@ async function createRmPlanSnapshot({
   const requiredQtyByItemId = {};
   for (const [itemId, qty] of rmNeeded.entries()) requiredQtyByItemId[itemId] = qty;
 
-  const [availability, rmItems] = await Promise.all([
-    rmItemIds.length
-      ? availabilityFn({ itemIds: rmItemIds, requiredQtyByItemId, db })
-      : Promise.resolve([]),
-    rmItemIds.length
-      ? db.item.findMany({
-          where: { id: { in: rmItemIds } },
-          select: { id: true, itemName: true, unit: true, minimumStockQty: true },
-        })
-      : Promise.resolve([]),
-  ]);
+  const availability =
+    rmItemIds.length > 0
+      ? await availabilityFn({ itemIds: rmItemIds, requiredQtyByItemId, db })
+      : [];
   const availabilityById = new Map(availability.map((a) => [a.itemId, a]));
+
+  const rmItems =
+    rmItemIds.length > 0
+      ? await db.item.findMany({
+          where: { id: { in: rmItemIds } },
+          select: { id: true, itemName: true, unit: true },
+        })
+      : [];
   const itemMetaById = new Map(rmItems.map((i) => [i.id, i]));
 
+  const totalFgGreenShortageQty = round3(
+    greenShortageInputs.reduce((acc, fg) => acc + n(fg.greenShortage), 0),
+  );
   const totalFgPlannedQty = round3(activeLines.reduce((acc, l) => acc + Number(l.plannedFgQty), 0));
   const now = asOf instanceof Date ? asOf : new Date();
 
@@ -198,12 +236,11 @@ async function createRmPlanSnapshot({
     const gross = round3(rmNeeded.get(rmItemId) || 0);
     const avail = availabilityById.get(rmItemId) || {};
     const meta = itemMetaById.get(rmItemId) || {};
+    const availableRmStock = round3(n(avail.physicalUsableStockQty ?? avail.freeStockQty ?? 0));
     const freeStock = round3(avail.freeStockQty ?? 0);
     const reserved = round3(avail.effectiveReservedQty ?? 0);
     const incoming = round3(avail.incomingQty ?? 0);
-    const net = round3(Math.max(0, gross - freeStock));
-    const minStock = meta.minimumStockQty != null ? Number(meta.minimumStockQty) : null;
-    const belowMinStockFlag = minStock != null && freeStock < minStock;
+    const net = round3(Math.max(0, gross - availableRmStock));
     const warnings = Array.isArray(avail.warnings) ? avail.warnings : [];
     return {
       rmPlanId: rmPlan.id,
@@ -216,7 +253,7 @@ async function createRmPlanSnapshot({
       netRequirementQty: net,
       unitSnapshot: meta.unit ?? null,
       leadTimeRiskFlag: false,
-      belowMinStockFlag,
+      belowMinStockFlag: false,
       warningsJson: warnings.length ? warnings : null,
     };
   });
@@ -242,7 +279,14 @@ async function createRmPlanSnapshot({
     });
   }
 
-  return { planId: id, revision: rev, rmPlanId: rmPlan.id, created: true, lineCount: lineData.length };
+  return {
+    planId: id,
+    revision: rev,
+    rmPlanId: rmPlan.id,
+    created: true,
+    lineCount: lineData.length,
+    totalFgGreenShortageQty,
+  };
 }
 
 /**
@@ -275,6 +319,7 @@ module.exports = {
   resolveRmSnapshotRevision,
   findExistingRmPlanSnapshot,
   buildMonthlyPlanReleaseLabel,
+  loadFgGreenShortageInputs,
   createRmPlanSnapshot,
   ensureApprovedPlanRmSnapshot,
 };

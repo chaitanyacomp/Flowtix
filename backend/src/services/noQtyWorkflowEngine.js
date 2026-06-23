@@ -23,12 +23,14 @@ const { loadNoQtyCycleQcAcceptedMap } = require("../routes/dispatch");
 
 const NO_QTY_WORKFLOW_EPS = 1e-6;
 
+const { assessNoQtyPlacementStageForCycle } = require("./requirementSheetExecutionService");
+
 const ACTION_LABELS = Object.freeze({
   NONE: "No action",
   CREATE_NEXT_RS: "Next RS",
   NEXT_RS: "Next RS",
   REQUIREMENT: "Requirement Sheet",
-  WORK_ORDER: "Work Order",
+  WORK_ORDER: "Place WO",
   PRODUCTION: "Continue Production",
   QC: "Open QC",
   DISPATCH: "Open Dispatch",
@@ -38,13 +40,13 @@ const ACTION_LABELS = Object.freeze({
 });
 
 const ACTION_OWNERS = Object.freeze({
-  CREATE_NEXT_RS: "SALES_PLANNING",
-  REQUIREMENT: "SALES_PLANNING",
-  WORK_ORDER: "PRODUCTION",
+  CREATE_NEXT_RS: "STORE",
+  REQUIREMENT: "STORE",
+  WORK_ORDER: "STORE",
   PRODUCTION: "PRODUCTION",
-  QC: "QC",
-  DISPATCH: "STORE_DISPATCH",
-  SALES_BILL: "ACCOUNTS",
+  QC: "QA",
+  DISPATCH: "STORE",
+  SALES_BILL: "ADMIN",
   DONE: "SYSTEM",
   BLOCKED: "SYSTEM",
 });
@@ -66,7 +68,7 @@ function actionHref(action, salesOrderId, cycleId) {
     case "REQUIREMENT":
       return buildNoQtyGuidedHref(`/sales-orders/${salesOrderId}/requirement-sheets`, salesOrderId, cycleId, "requirement");
     case "WORK_ORDER":
-      return buildNoQtyGuidedHref("/work-orders?soMode=NO_QTY", salesOrderId, cycleId, "requirement");
+      return `${buildNoQtyGuidedHref(`/sales-orders/${salesOrderId}/requirement-sheets`, salesOrderId, cycleId, "requirement")}&focus=execution`;
     case "PRODUCTION":
       return buildNoQtyGuidedHref("/production", salesOrderId, cycleId, "work_order");
     case "QC":
@@ -92,6 +94,7 @@ function userOwnsAction(role, action) {
     case "REQUIREMENT":
       return r === "ADMIN" || r === "STORE";
     case "WORK_ORDER":
+      return r === "ADMIN" || r === "STORE";
     case "PRODUCTION":
       return r === "PRODUCTION";
     case "QC":
@@ -129,9 +132,13 @@ function departmentMessageFor(role, nextDepartmentAction, overallAction) {
   const owner = ACTION_OWNERS[nextDepartmentAction] ?? "another department";
   const label = ACTION_LABELS[nextDepartmentAction] ?? nextDepartmentAction;
   if (overallAction === "CREATE_NEXT_RS") {
-    return "Dispatch completed. Waiting for Sales/Planning to create Next RS.";
+    return "Cycle completed. Waiting for Store to create the next Requirement Sheet.";
   }
-  return `Waiting for ${owner.replace("_", " ").toLowerCase()} to complete ${label}.`;
+  if (nextDepartmentAction === "WORK_ORDER") {
+    return "Waiting for Store to place Work Order(s) from the Requirement Sheet Execution Workspace.";
+  }
+  const ownerLabel = owner === "STORE" ? "Store" : owner === "QA" ? "QA" : owner.replace(/_/g, " ").toLowerCase();
+  return `Waiting for ${ownerLabel} to complete ${label}.`;
 }
 
 function roleAwareActionPayload({ role, overallAction, secondaryActions, optionalActions, salesOrderId, cycleId, displaySummary }) {
@@ -547,10 +554,14 @@ async function resolveNoQtyWorkflowState(db, input) {
     primaryAction = "REQUIREMENT";
   }
 
-  // NO_QTY planning is allowed in parallel: Sales/Admin can prepare the next RS
-  // even while QC/rework/dispatch-owned work remains visible to those departments.
+  // NO_QTY next-cycle planning is Store-owned and may run parallel to shop-floor work.
   if (createNextRs.eligible && primaryAction !== "NEXT_RS") {
     secondary.push("NEXT_RS");
+  }
+
+  let placementStage = null;
+  if (requirementLocked && !workOrderExists && cycleId) {
+    placementStage = await assessNoQtyPlacementStageForCycle(db, { salesOrderId: soId, cycleId });
   }
 
   const legacyNextAction = primaryAction === "NEXT_RS" ? "REQUIREMENT" : primaryAction;
@@ -563,11 +574,17 @@ async function resolveNoQtyWorkflowState(db, input) {
           ? "QC-accepted quantity is ready for dispatch."
           : primaryAction === "PRODUCTION"
             ? "Production is still available for this cycle."
-            : primaryAction === "SALES_BILL"
-              ? "Dispatch is ready for billing."
-              : primaryAction === "DONE"
-                ? "NO_QTY workflow is complete."
-              : "NO_QTY planning is pending.";
+            : primaryAction === "WORK_ORDER"
+              ? placementStage?.readyToPlaceWo
+                ? "RM available. Ready for Store to place Work Order(s)."
+                : placementStage?.released
+                  ? "Procurement in progress. Store will place Work Order(s) when RM is ready."
+                  : "Monthly planning release is pending before Work Order placement."
+              : primaryAction === "SALES_BILL"
+                ? "Dispatch is ready for billing."
+                : primaryAction === "DONE"
+                  ? "NO_QTY workflow is complete."
+                  : "NO_QTY Requirement Sheet planning is pending.";
   const rolePayload = roleAwareActionPayload({
     role: userRole,
     overallAction: primaryAction,
@@ -612,6 +629,9 @@ async function resolveNoQtyWorkflowState(db, input) {
     createNextRsBlockReason: createNextRs.eligible ? null : createNextRs.reason ?? null,
     createNextRsBlockingPmrDocNo: createNextRs.blockingPmrDocNo ?? null,
     createNextRsBlockingPmrStatus: createNextRs.blockingPmrStatus ?? null,
+    readyToPlaceWo: placementStage?.readyToPlaceWo ?? false,
+    placementProcessStageKey: placementStage?.processStageKey ?? null,
+    placementRequirementSheetId: placementStage?.requirementSheetId ?? null,
     primaryAction,
     ...rolePayload,
     secondaryActions: uniqActions(secondary),
@@ -627,7 +647,13 @@ async function resolveNoQtyWorkflowState(db, input) {
 module.exports = {
   NO_QTY_WORKFLOW_EPS,
   resolveNoQtyWorkflowState,
+  ACTION_OWNERS,
+  ACTION_LABELS,
+  userOwnsAction,
+  actionHref,
   _test: {
     roleAwareActionPayload,
+    userOwnsAction,
+    departmentMessageFor,
   },
 };

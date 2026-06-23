@@ -133,7 +133,7 @@ function riskFromRmStatus(status) {
 function ownerForProductionNextAction(nextAction) {
   if (nextAction === "QC_PENDING") return VISIBLE_OWNERS.QA;
   if (nextAction === "DISPATCH_PENDING") return VISIBLE_OWNERS.STORE;
-  if (nextAction === "NEXT_RS_REQUIRED") return VISIBLE_OWNERS.ADMIN;
+  if (nextAction === "NEXT_RS_REQUIRED") return VISIBLE_OWNERS.STORE;
   if (nextAction === "ON_HOLD") return VISIBLE_OWNERS.PRODUCTION;
   return VISIBLE_OWNERS.PRODUCTION;
 }
@@ -187,6 +187,10 @@ function ownerForRmRiskRow(raw) {
 
   if (queueType === "READY_TO_RELEASE_WO") {
     return VISIBLE_OWNERS.PRODUCTION;
+  }
+
+  if (queueType === "RM_RECEIVED_CREATE_WO" || operationalKey === "RM_RECEIVED_CREATE_WO") {
+    return VISIBLE_OWNERS.STORE;
   }
 
   return VISIBLE_OWNERS.STORE;
@@ -439,11 +443,16 @@ function nextActionForNoQtyPlanningRow(raw) {
   const hasSheet =
     raw?.latestRequirementSheetId != null && Number.isFinite(Number(raw.latestRequirementSheetId)) && Number(raw.latestRequirementSheetId) > 0;
   const cycleNo =
-    raw?.cycleNo != null && Number.isFinite(Number(raw.cycleNo)) && Number(raw.cycleNo) > 0
-      ? Number(raw.cycleNo)
-      : raw?.planningPointerCycleNo != null && Number.isFinite(Number(raw.planningPointerCycleNo))
-        ? Number(raw.planningPointerCycleNo)
-        : 1;
+    rsStatus === "DRAFT" &&
+    raw?.latestRequirementSheetCycleNo != null &&
+    Number.isFinite(Number(raw.latestRequirementSheetCycleNo)) &&
+    Number(raw.latestRequirementSheetCycleNo) > 0
+      ? Number(raw.latestRequirementSheetCycleNo)
+      : raw?.cycleNo != null && Number.isFinite(Number(raw.cycleNo)) && Number(raw.cycleNo) > 0
+        ? Number(raw.cycleNo)
+        : raw?.planningPointerCycleNo != null && Number.isFinite(Number(raw.planningPointerCycleNo))
+          ? Number(raw.planningPointerCycleNo)
+          : 1;
   if (!hasSheet && !rsStatus) {
     return `Create RS Cycle ${cycleNo}`;
   }

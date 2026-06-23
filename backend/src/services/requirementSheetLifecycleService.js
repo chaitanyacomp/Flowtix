@@ -3,6 +3,7 @@
  */
 
 const { isPlanImmutableStatus } = require("./monthlyPlanningPlanLifecycleService");
+const { NO_QTY_WO_PLACED_COUNT_STATUSES } = require("./noQtyExecutionReleaseService");
 
 const MONTHLY_PLAN_SOURCE = "MONTHLY_PLAN";
 
@@ -23,6 +24,7 @@ const RS_LIFECYCLE_MESSAGES = Object.freeze({
   PO_EXISTS: "Cannot cancel. A purchase order already exists for this planning period.",
   GRN_POSTED: "Cannot cancel. Goods receipt has already been posted for this planning period.",
   PMR_ISSUED: "Cannot cancel. Store has already issued material for this work order.",
+  WORK_ORDER_EXISTS: "Cannot cancel. Active Work Orders already exist for this Requirement Sheet.",
   DISPATCH_EXISTS: "Cannot cancel. Dispatch records exist for this cycle.",
   SALES_BILL_EXISTS: "Cannot cancel. A sales bill exists for this cycle.",
 });
@@ -238,21 +240,22 @@ async function evaluateRequirementSheetCancellation(db, sheetId) {
     return { allowed: false, code: "NOT_LOCKED", message: RS_LIFECYCLE_MESSAGES.NOT_LOCKED };
   }
 
-  const wo = await db.workOrder.findFirst({
-    where: { requirementSheetId: sheet.id },
+  const activeWos = await db.workOrder.findMany({
+    where: { requirementSheetId: sheet.id, status: { in: [...NO_QTY_WO_PLACED_COUNT_STATUSES] } },
     select: { id: true, cycleId: true },
   });
 
-  if (wo) {
+  if (activeWos.length) {
+    const woIds = activeWos.map((wo) => wo.id);
     const prodAnyCount = await db.productionEntry.count({
-      where: { workOrderLine: { workOrderId: wo.id } },
+      where: { workOrderLine: { workOrderId: { in: woIds } } },
     });
     if (prodAnyCount > 0) {
       return { allowed: false, code: "PRODUCTION_STARTED", message: RS_LIFECYCLE_MESSAGES.PRODUCTION_STARTED };
     }
 
     const prodApprovedCount = await db.productionEntry.count({
-      where: { workOrderLine: { workOrderId: wo.id }, workflowStatus: "APPROVED" },
+      where: { workOrderLine: { workOrderId: { in: woIds } }, workflowStatus: "APPROVED" },
     });
     if (prodApprovedCount > 0) {
       return { allowed: false, code: "PRODUCTION_COMPLETED", message: RS_LIFECYCLE_MESSAGES.PRODUCTION_COMPLETED };
@@ -260,7 +263,7 @@ async function evaluateRequirementSheetCancellation(db, sheetId) {
 
     const pmrActive = await db.productionMaterialRequest.findFirst({
       where: {
-        workOrderId: wo.id,
+        workOrderId: { in: woIds },
         status: { in: ["REQUESTED", "PARTIALLY_ISSUED", "ISSUED"] },
       },
       select: { id: true, docNo: true, status: true },
@@ -275,14 +278,21 @@ async function evaluateRequirementSheetCancellation(db, sheetId) {
     }
 
     const issueNoteCount = await db.materialIssueNote.count({
-      where: { productionMaterialRequest: { workOrderId: wo.id } },
+      where: { productionMaterialRequest: { workOrderId: { in: woIds } } },
     });
     if (issueNoteCount > 0) {
       return { allowed: false, code: "PMR_ISSUED", message: RS_LIFECYCLE_MESSAGES.PMR_ISSUED };
     }
+
+    return {
+      allowed: false,
+      code: "WORK_ORDER_EXISTS",
+      message: RS_LIFECYCLE_MESSAGES.WORK_ORDER_EXISTS,
+      details: { workOrderIds: woIds },
+    };
   }
 
-  const cycleId = sheet.cycleId != null ? Number(sheet.cycleId) : wo?.cycleId ?? null;
+  const cycleId = sheet.cycleId != null ? Number(sheet.cycleId) : null;
   if (cycleId != null && Number.isFinite(Number(cycleId))) {
     const dispatchCount = await db.dispatch.count({
       where: { soId: sheet.salesOrderId, cycleId: Number(cycleId), reversalOfId: null },

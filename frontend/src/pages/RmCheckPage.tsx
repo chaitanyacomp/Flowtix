@@ -3,14 +3,14 @@
  *
  * Flow:
  * Enquiry
- * â†’ Quotation
- * â†’ Regular Sales Order
- * â†’ RM Check
- * â†’ Work Order
- * â†’ Production
- * â†’ QC
- * â†’ Dispatch
- * â†’ Sales Bill
+ * → Quotation
+ * → Regular Sales Order
+ * → RM Check
+ * → Work Order
+ * → Production
+ * → QC
+ * → Dispatch
+ * → Sales Bill
  *
  * This flow is:
  * - fixed quantity
@@ -26,7 +26,7 @@
  * - NO_QTY dashboard widgets
  *
  * Routes: `/rm-check` (legacy alias), `/work-orders/prepare` (canonical).
- * APIs: SO list/detail, `GET /api/sales-orders/:id/rm-check` (material planning engine), `/api/production/work-orders` â€” never `/api/planning-dashboard`.
+ * APIs: SO list/detail, `GET /api/sales-orders/:id/rm-check` (material planning engine), `/api/production/work-orders` — never `/api/planning-dashboard`.
  */
 import * as React from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
@@ -853,7 +853,7 @@ export function RmCheckPage() {
   if (noQtyGate === "loading" && urlSoId > 0) {
     return (
       <div className="mx-auto max-w-lg p-4 text-sm text-slate-600" aria-live="polite">
-        Loading sales orderâ€¦
+        Loading sales order…
       </div>
     );
   }

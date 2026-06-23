@@ -18,10 +18,17 @@ describe("stock summary / dashboard inventory health alignment", () => {
     );
   });
 
-  it("zero qty is OUT_OF_STOCK even when minimum is set", () => {
+  it("zero qty below configured minimum is CRITICAL", () => {
     assert.equal(
       classifyInventoryHealth({ currentQty: 0, minimumStock: 100, lowStockLevel: 125 }),
-      "OUT_OF_STOCK",
+      "CRITICAL",
+    );
+  });
+
+  it("zero qty with no minimum is HEALTHY", () => {
+    assert.equal(
+      classifyInventoryHealth({ currentQty: 0, minimumStock: 0, lowStockLevel: 0 }),
+      "HEALTHY",
     );
   });
 });

@@ -2064,6 +2064,26 @@
     flex-direction: column;
   }
 
+  .erp-dash-no-qty-panel {
+    flex-shrink: 0;
+    max-height: min(15rem, 30vh);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .erp-dash-no-qty-panel__scroll {
+    flex: 1 1 auto;
+    min-height: 0;
+    max-height: min(9.5rem, 18vh);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .erp-dash-ops-col {
+    min-height: 0;
+  }
+
   .erp-dash-history-panel {
     margin-top: 0.125rem;
     flex-shrink: 0;

@@ -5,7 +5,7 @@
  */
 
 const { prisma } = require("../utils/prisma");
-const { normalizePeriodKey, MonthlyPlanningError } = require("./monthlyPlanningService");
+const { normalizePeriodKey, MonthlyPlanningError } = require("./monthlyPlanningPeriodUtils");
 
 function round3(value) {
   const num = Number(value);

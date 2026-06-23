@@ -7,6 +7,7 @@ function mockDb(overrides = {}) {
   const latestSheet = overrides.latestSheet ?? { id: 1, status: "LOCKED" };
   const sheetAhead = overrides.sheetAhead ?? null;
   const draftAhead = overrides.draftAhead ?? null;
+  const woOnCycle = Object.prototype.hasOwnProperty.call(overrides, "woOnCycle") ? overrides.woOnCycle : { id: 1 };
 
   return {
     salesOrder: {
@@ -26,6 +27,9 @@ function mockDb(overrides = {}) {
         if (args.orderBy) return latestSheet;
         return null;
       },
+    },
+    workOrder: {
+      findFirst: async () => woOnCycle,
     },
     productionMaterialRequest: {
       findFirst: async () => openPmr,
@@ -67,7 +71,16 @@ describe("noQtyCreateNextRsEligibility P6B-4B rolling demand", () => {
     assert.equal(result.reason, "DRAFT_RS_ON_CYCLE");
   });
 
-  it("allows when latest RS on cycle is CANCELLED", async () => {
+  it("blocks when locked RS exists but no WO has been placed on the cycle (monthly planning first)", async () => {
+    const result = await computeNoQtyCreateNextRsEligibility(
+      mockDb({ woOnCycle: null }),
+      { salesOrderId: 1, cycleId: 10 },
+    );
+    assert.equal(result.eligible, false);
+    assert.equal(result.reason, "NO_NEXT_CYCLE_DEMAND");
+  });
+
+  it("allows when latest RS on cycle is CANCELLED even without WO", async () => {
     const result = await computeNoQtyCreateNextRsEligibility(
       mockDb({ latestSheet: { id: 3, status: "CANCELLED" } }),
       { salesOrderId: 1, cycleId: 10 },

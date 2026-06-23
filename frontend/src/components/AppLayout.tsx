@@ -277,6 +277,13 @@ const navGroups: NavGroup[] = [
     collapsible: true,
     items: [
       { to: "/planning-dashboard", navKey: "plan-dash", label: "Requirement & Cycle Planning", roles: [...PLANNING_DASHBOARD_ROLES], icon: <BarChart3 className="h-4 w-4 shrink-0" /> },
+      {
+        to: "/no-qty-agreements",
+        navKey: "no-qty-agreements",
+        label: "NO_QTY Execution",
+        roles: [...PLANNING_DASHBOARD_ROLES],
+        icon: <FileSpreadsheet className="h-4 w-4 shrink-0" />,
+      },
       { to: "/work-orders", navKey: "wo", label: "Work Order", roles: ["ADMIN", "PRODUCTION"], icon: <Factory className="h-4 w-4 shrink-0" /> },
       { to: "/production", navKey: "prod", label: "Production Workspace", roles: ["ADMIN", "PRODUCTION"], icon: <GitBranch className="h-4 w-4 shrink-0" /> },
       {
@@ -418,7 +425,7 @@ export function AppLayout() {
     pathname === "/dashboard" && role === "PURCHASE"
       ? "Purchase desk"
       : pathname === "/dashboard" && role === "STORE"
-        ? "Dispatch desk"
+        ? "Store Operations"
         : pathname === "/dashboard" && role === "PRODUCTION"
           ? "Production desk"
           : pathname === "/dashboard" && role === "QA"

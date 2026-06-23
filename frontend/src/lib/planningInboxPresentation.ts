@@ -2,6 +2,7 @@ import { formatNoQtyNextRsBlockReason } from "./noQtyNextRsBlockerPresentation";
 
 export type PlanningInboxSheetRow = {
   id: number;
+  periodKey?: string | null;
   cycleId?: number | null;
   version?: number | null;
   status: "DRAFT" | "LOCKED" | "CANCELLED" | string;
@@ -70,6 +71,27 @@ export function resolvePlanningInboxRsStatus(
   if (st === "DRAFT") return "Draft";
   if (st === "CANCELLED") return "Cancelled";
   return st || "—";
+}
+
+/** Latest locked RS period on the guided cycle (for Monthly Planning navigation). */
+export function resolvePlanningInboxLockedPeriodKey(
+  sheets: PlanningInboxSheetRow[],
+  cycleId: number | null,
+): string | null {
+  if (!Array.isArray(sheets) || sheets.length === 0) return null;
+  const cid = cycleId != null && Number.isFinite(Number(cycleId)) && Number(cycleId) > 0 ? Number(cycleId) : null;
+  const scoped = cid != null ? sheets.filter((s) => Number(s.cycleId ?? 0) === cid) : sheets;
+  const pool = scoped.length > 0 ? scoped : sheets;
+  const locked = pool.filter((s) => String(s.status ?? "").toUpperCase() === "LOCKED");
+  const sorted = [...(locked.length > 0 ? locked : pool)].sort((a, b) => {
+    const va = Number(a.version ?? 1);
+    const vb = Number(b.version ?? 1);
+    if (vb !== va) return vb - va;
+    return Number(b.id) - Number(a.id);
+  });
+  const top = sorted[0];
+  const pk = String(top?.periodKey ?? "").trim();
+  return pk || null;
 }
 
 export function formatPlanningInboxNextRsLine(so: PlanningInboxSoSummary): {

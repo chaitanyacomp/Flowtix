@@ -318,7 +318,7 @@ export function partitionContinueWorkingForActions(
         metricQty: mq,
         metricLabel: r.metricLabel ?? "Last shortage Qty",
         buttonLabel: DASHBOARD_OPEN_NO_QTY_SO_LABEL,
-        href: noQtySoListHref(r.salesOrderId),
+        href: noQtySoListHref(r.salesOrderId, role),
       });
     } else if (r.stageKey === "PRODUCTION") {
       if (r.orderType === "NO_QTY" && role !== "ADMIN") continue;
@@ -855,7 +855,7 @@ export function buildActionRequiredFromQueues(
         ...common,
         metricQty: a.bestProdMetric,
         metricLabel: a.nextRsMetricLabel ?? "Last shortage Qty",
-        href: noQtySoListHref(soId),
+        href: noQtySoListHref(soId, role),
         group: "NEXT_RS",
         buttonLabel: DASHBOARD_OPEN_NO_QTY_SO_LABEL,
       });

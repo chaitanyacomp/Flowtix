@@ -26,9 +26,9 @@ export function computeDerivedLowStockLevel(minimumStock: number, bufferPercent:
 }
 
 /**
- * Classify on-hand qty vs Item master thresholds.
+ * Policy-driven RM health: critical only when Minimum Stock is configured and breached.
  *
- * Order: OUT_OF_STOCK → CRITICAL → LOW → HEALTHY.
+ * Order: CRITICAL (below minimum) → LOW (below low alert) → HEALTHY.
  */
 export function classifyInventoryHealth(args: {
   currentQty: number;
@@ -40,7 +40,6 @@ export function classifyInventoryHealth(args: {
     args.minimumStock != null && Number.isFinite(args.minimumStock) ? args.minimumStock : 0;
   const low =
     args.lowStockLevel != null && Number.isFinite(args.lowStockLevel) ? args.lowStockLevel : 0;
-  if (cur <= 0) return "OUT_OF_STOCK";
   if (min > 0 && cur < min) return "CRITICAL";
   if (low > 0 && cur < low) return "LOW";
   return "HEALTHY";
@@ -48,10 +47,11 @@ export function classifyInventoryHealth(args: {
 
 export type RmInventoryAlertBand = "critical" | "warning";
 
+/** Dashboard KPI bands — critical is minimum-stock policy only (not bare zero stock). */
 export function inventoryHealthToRmAlertBand(
   status: InventoryHealthStatus,
 ): RmInventoryAlertBand | null {
-  if (status === "OUT_OF_STOCK" || status === "CRITICAL") return "critical";
+  if (status === "CRITICAL") return "critical";
   if (status === "LOW") return "warning";
   return null;
 }

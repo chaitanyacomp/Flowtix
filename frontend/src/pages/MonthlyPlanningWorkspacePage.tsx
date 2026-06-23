@@ -56,11 +56,14 @@ import {
   physicalReceiptCoverageDetailMessage,
 } from "../lib/monthlyPlanningReceiptCoverageUx";
 import {
-  GREEN_LEVEL_BASIS_TOOLTIP,
+  greenLevelBasisTooltip,
   buildFgGreenPlanningRowMap,
   formatGreenPlanningQty,
   greenLevelQtyCellContent,
+  greenLevelPlanningSubtext,
+  formatGreenLevelSourceLabel,
   resolveFgGreenPlanningRow,
+  type GreenLevelSource,
 } from "../lib/monthlyPlanningGreenLevelRowUx";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -86,6 +89,13 @@ import {
   UNSAVED_PRODUCTION_PLAN_LOCK_MESSAGE,
   type ProductionPlanSavedBaseline,
 } from "../lib/monthlyPlanningProductionPlanDirty";
+import {
+  GREEN_SHORTAGE_PLANNING_MESSAGE,
+  formatPlannedBelowSuggestedApproveMessage,
+  formatPlannedBelowSuggestedSubmitMessage,
+  isPlannedBelowSuggestedConfirmError,
+  rowHasGreenShortagePlannedGap,
+} from "../lib/monthlyPlanningPlannedQtyGuards";
 import {
   APPLY_SUGGESTED_ADDED_SUCCESS_TOAST,
   APPLY_SUGGESTED_CANCEL_INFO_TOAST,
@@ -362,6 +372,10 @@ type GreenLevelItem = {
   greenQty: number;
   yellowQty: number;
   redQty: number;
+  manualGreenLevelQty?: number;
+  autoSuggestedBaseQty?: number;
+  autoSuggestedGreenLevelQty?: number;
+  activeGreenLevelQty?: number;
   monthlyScheduleTotals: Record<string, number>;
   freeFgStock: number;
   shortageForGreenTarget: number;
@@ -373,10 +387,13 @@ type GreenLevelItem = {
 
 type GreenLevelsResponse = {
   anchorPeriodKey: string;
+  historyMonthCount?: number;
+  greenLevelSource?: GreenLevelSource;
   historyPeriodKeys: string[];
   stockScope?: string;
   itemCount: number;
   itemsWithHistory: number;
+  itemsWithManualGreenLevel?: number;
   itemsWithStatus?: number;
   items: GreenLevelItem[];
 };
@@ -406,7 +423,7 @@ type RequirementCompositionResponse = {
 type RmCompositionFgSource = {
   fgItemId: number;
   fgItemName: string | null;
-  suggestedProduction: number;
+  greenShortage: number;
   rmDemandQty: number;
   bomRevision?: string | null;
   bomDocNo?: string | null;
@@ -419,22 +436,25 @@ type RmRequirementCompositionItem = {
   itemName: string | null;
   unit: string | null;
   itemType?: string | null;
+  rmRequirement?: number;
   totalRmDemand: number;
+  availableRmStock?: number;
   physicalStock?: number;
   freeStock: number;
   reserved: number;
   incomingPo: number;
+  netRmRequirement?: number;
   netAvailable: number;
   netGap: number;
-  minimumStock: number;
-  belowMinimumFlag: boolean;
   fgSources: RmCompositionFgSource[];
 };
 
 type RmRequirementCompositionResponse = {
   periodKey: string;
   anchorPeriodKey?: string;
+  demandDriver?: string;
   summary: {
+    fgItemsWithGreenShortage?: number;
     fgItemsPlanned: number;
     rmItemsRequired: number;
     rmLinesWithGap: number;
@@ -678,6 +698,10 @@ export function MonthlyPlanningWorkspacePage() {
     plannedQty: number;
     suggestedQty: number;
   } | null>(null);
+  const [plannedBelowSuggestedConfirm, setPlannedBelowSuggestedConfirm] = React.useState<{
+    action: "submit" | "approve";
+    confirmPastPeriod?: boolean;
+  } | null>(null);
   const [locking, setLocking] = React.useState(false);
   const [confirmReleaseOpen, setConfirmReleaseOpen] = React.useState(false);
   const [releasing, setReleasing] = React.useState(false);
@@ -762,6 +786,7 @@ export function MonthlyPlanningWorkspacePage() {
         compositionItems: requirementComposition?.items,
         greenAnchorPeriodKey: greenLevels?.anchorPeriodKey,
         greenItems: greenLevels?.items,
+        greenLevelSource: greenLevels?.greenLevelSource,
         extraFgItemIds: rows.map((r) => r.fgItemId),
       }),
     [period, requirementComposition, greenLevels, rows],
@@ -1524,36 +1549,62 @@ export function MonthlyPlanningWorkspacePage() {
     }
   }
 
-  async function onSubmitForReview(options?: { confirmPastPeriod?: boolean }) {
+  async function onSubmitForReview(options?: {
+    confirmPastPeriod?: boolean;
+    confirmPlannedBelowSuggested?: boolean;
+  }) {
     if (!plan) return;
     setSubmittingForReview(true);
     try {
-      const body = options?.confirmPastPeriod ? { confirmPastPeriod: true as const } : {};
+      const body: { confirmPastPeriod?: true; confirmPlannedBelowSuggested?: true } = {};
+      if (options?.confirmPastPeriod) body.confirmPastPeriod = true;
+      if (options?.confirmPlannedBelowSuggested) body.confirmPlannedBelowSuggested = true;
       await apiFetch(`/api/monthly-planning/${plan.id}/submit-for-review`, {
         method: "POST",
         body: JSON.stringify(body),
       });
+      setPlannedBelowSuggestedConfirm(null);
       showSuccess("Plan submitted for Purchase review.");
       await loadPlan(period, plan.id);
     } catch (e) {
+      if (e instanceof ApiRequestError && isPlannedBelowSuggestedConfirmError(e.code)) {
+        setPlannedBelowSuggestedConfirm({
+          action: "submit",
+          confirmPastPeriod: options?.confirmPastPeriod,
+        });
+        return;
+      }
       showError(e instanceof ApiRequestError ? e.message : "Failed to submit plan for review.");
     } finally {
       setSubmittingForReview(false);
     }
   }
 
-  async function onPurchaseApprove(options?: { confirmPastPeriod?: boolean }) {
+  async function onPurchaseApprove(options?: {
+    confirmPastPeriod?: boolean;
+    confirmPlannedBelowSuggested?: boolean;
+  }) {
     if (!plan) return;
     setApprovingPlan(true);
     try {
-      const body = options?.confirmPastPeriod ? { confirmPastPeriod: true as const } : {};
+      const body: { confirmPastPeriod?: true; confirmPlannedBelowSuggested?: true } = {};
+      if (options?.confirmPastPeriod) body.confirmPastPeriod = true;
+      if (options?.confirmPlannedBelowSuggested) body.confirmPlannedBelowSuggested = true;
       await apiFetch(`/api/monthly-planning/${plan.id}/purchase/approve`, {
         method: "POST",
         body: JSON.stringify(body),
       });
+      setPlannedBelowSuggestedConfirm(null);
       showSuccess("Plan approved.");
       await loadPlan(period, plan.id);
     } catch (e) {
+      if (e instanceof ApiRequestError && isPlannedBelowSuggestedConfirmError(e.code)) {
+        setPlannedBelowSuggestedConfirm({
+          action: "approve",
+          confirmPastPeriod: options?.confirmPastPeriod,
+        });
+        return;
+      }
       showError(e instanceof ApiRequestError ? e.message : "Failed to approve plan.");
     } finally {
       setApprovingPlan(false);
@@ -2138,6 +2189,8 @@ export function MonthlyPlanningWorkspacePage() {
             greenContextMap={greenContextMap}
             fgGreenPlanningMap={fgGreenPlanningMap}
             greenPlanningContextReady={greenPlanningContextReady}
+            greenLevelHistoryMonths={greenLevels?.historyMonthCount ?? 6}
+            greenLevelSource={greenLevels?.greenLevelSource ?? "MANUAL"}
           />
         )}
       </div>
@@ -2227,6 +2280,33 @@ export function MonthlyPlanningWorkspacePage() {
           )}
           onCancel={cancelApplySuggestedOverrideReplace}
           onConfirm={confirmApplySuggestedOverrideReplace}
+        />
+      ) : null}
+
+      {plannedBelowSuggestedConfirm ? (
+        <ApplySuggestedOverrideConfirmModal
+          itemName="Production plan"
+          message={
+            plannedBelowSuggestedConfirm.action === "approve"
+              ? formatPlannedBelowSuggestedApproveMessage()
+              : formatPlannedBelowSuggestedSubmitMessage()
+          }
+          onCancel={() => setPlannedBelowSuggestedConfirm(null)}
+          onConfirm={() => {
+            const ctx = plannedBelowSuggestedConfirm;
+            setPlannedBelowSuggestedConfirm(null);
+            if (ctx.action === "approve") {
+              void onPurchaseApprove({
+                confirmPastPeriod: ctx.confirmPastPeriod,
+                confirmPlannedBelowSuggested: true,
+              });
+            } else {
+              void onSubmitForReview({
+                confirmPastPeriod: ctx.confirmPastPeriod,
+                confirmPlannedBelowSuggested: true,
+              });
+            }
+          }}
         />
       ) : null}
 
@@ -3647,8 +3727,15 @@ function GreenLevelSection({
   const [showAllFg, setShowAllFg] = React.useState(false);
   const [expandedItemIds, setExpandedItemIds] = React.useState<Set<number>>(new Set());
   const dataForPeriod = data?.anchorPeriodKey === period ? data : null;
+  const source = dataForPeriod?.greenLevelSource ?? "MANUAL";
   const rows =
-    dataForPeriod?.items.filter((i) => (showAllFg ? true : i.baseQty > 0)) ?? [];
+    dataForPeriod?.items.filter((i) =>
+      showAllFg
+        ? true
+        : (i.manualGreenLevelQty ?? 0) > 0 ||
+          (i.autoSuggestedGreenLevelQty ?? 0) > 0 ||
+          (i.activeGreenLevelQty ?? i.greenQty) > 0,
+    ) ?? [];
 
   function toggleDetails(itemId: number) {
     setExpandedItemIds((prev) => {
@@ -3685,10 +3772,14 @@ function GreenLevelSection({
         <div className="mt-3 overflow-auto rounded-md border border-slate-200 bg-white">
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-3 py-2 text-[11px] text-slate-500">
             <span>
-              History window: {dataForPeriod.historyPeriodKeys[0]} →{" "}
+              Source: <strong>{formatGreenLevelSourceLabel(source)}</strong>
+              {" · "}
+              History window ({dataForPeriod.historyMonthCount ?? dataForPeriod.historyPeriodKeys.length}{" "}
+              months): {dataForPeriod.historyPeriodKeys[0]} →{" "}
               {dataForPeriod.historyPeriodKeys[dataForPeriod.historyPeriodKeys.length - 1]}
               {" · "}
-              {dataForPeriod.itemsWithHistory} FG item(s) with history · read-only
+              {dataForPeriod.itemsWithManualGreenLevel ?? 0} FG with manual qty ·{" "}
+              {dataForPeriod.itemsWithHistory} FG with RS auto-suggest · read-only
             </span>
             <label className="flex items-center gap-1.5 text-[11px] text-slate-600">
               <input
@@ -3706,7 +3797,9 @@ function GreenLevelSection({
                 <th className="px-3 py-2 w-8" />
                 <th className="px-3 py-2">FG item</th>
                 <th className="px-3 py-2 w-28 text-right">Free FG</th>
-                <th className="px-3 py-2 w-28 text-right">Green target</th>
+                <th className="px-3 py-2 w-28 text-right">Manual GL</th>
+                <th className="px-3 py-2 w-28 text-right">Auto suggested</th>
+                <th className="px-3 py-2 w-28 text-right">Active used</th>
                 <th className="px-3 py-2 w-28 text-right">Shortage (GL)</th>
                 <th className="px-3 py-2 w-24">Status</th>
               </tr>
@@ -3714,8 +3807,8 @@ function GreenLevelSection({
             <tbody>
               {rows.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-3 py-6 text-center text-sm text-slate-400">
-                    Insufficient locked RS history available to calculate Green Level.
+                  <td colSpan={8} className="px-3 py-6 text-center text-sm text-slate-400">
+                    No FG items with manual Green Level or RS history for this period.
                   </td>
                 </tr>
               ) : (
@@ -3745,8 +3838,14 @@ function GreenLevelSection({
                         <td className="px-3 py-1.5 text-right tabular-nums text-slate-800">
                           {item.freeFgStock.toLocaleString()}
                         </td>
+                        <td className="px-3 py-1.5 text-right tabular-nums text-slate-700">
+                          {(item.manualGreenLevelQty ?? 0).toLocaleString()}
+                        </td>
+                        <td className="px-3 py-1.5 text-right tabular-nums text-slate-600">
+                          {(item.autoSuggestedGreenLevelQty ?? 0).toLocaleString()}
+                        </td>
                         <td className="px-3 py-1.5 text-right tabular-nums font-semibold text-emerald-800">
-                          {item.greenQty.toLocaleString()}
+                          {(item.activeGreenLevelQty ?? item.greenQty).toLocaleString()}
                         </td>
                         <td className="px-3 py-1.5 text-right tabular-nums text-slate-800">
                           {item.shortageForGreenTarget.toLocaleString()}
@@ -3765,7 +3864,7 @@ function GreenLevelSection({
                       {expanded ? (
                         <tr className="border-t border-slate-50 bg-slate-50/60 text-[12px] text-slate-600">
                           <td />
-                          <td className="px-3 py-1.5 pl-8" colSpan={5}>
+                          <td className="px-3 py-1.5 pl-8" colSpan={7}>
                             Base {item.baseQty.toLocaleString()} · Green {item.greenPercent}% · Yellow qty{" "}
                             {item.yellowQty.toLocaleString()} · Red qty {item.redQty.toLocaleString()}
                             {Object.keys(item.monthlyScheduleTotals).length > 0
@@ -3976,7 +4075,7 @@ function RmRequirementCompositionSection({
   return (
     <div className="rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h3 className="text-[13px] font-semibold text-slate-800">RM Audit</h3>
+        <h3 className="text-[13px] font-semibold text-slate-800">RM Green Shortage Planning</h3>
         <Button type="button" variant="outline" size="sm" onClick={onTogglePanel} className="h-8">
           {panelExpanded ? "Hide Details" : "View Details"}
         </Button>
@@ -3985,27 +4084,35 @@ function RmRequirementCompositionSection({
       {panelExpanded ? (
         <>
           {loading && !dataForPeriod ? (
-            <p className="mt-3 text-sm text-slate-500">Loading RM audit for {period}…</p>
+            <p className="mt-3 text-sm text-slate-500">Loading RM planning for {period}…</p>
           ) : null}
           {!visible && !loading ? (
             <div className="mt-3 flex justify-end">
               <Button type="button" variant="outline" size="sm" onClick={onLoad} disabled={loading} className="h-8">
                 <Boxes className={cn("mr-1.5 h-4 w-4", loading && "animate-pulse")} />
-                {loading ? "Loading…" : "Load RM audit"}
+                {loading ? "Loading…" : "Load RM planning"}
               </Button>
             </div>
           ) : null}
           {visible && dataForPeriod ? (
           <div className="mt-3 space-y-3">
+            <p className="text-[11px] text-slate-600">
+              Verification chain: FG Green Level → Available FG → Green Shortage → BOM → RM Requirement →
+              Available RM → Net RM
+            </p>
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-              <KpiCard label="FG items planned" value={String(dataForPeriod.summary.fgItemsPlanned)} />
+              <KpiCard
+                label="FG with green shortage"
+                value={String(dataForPeriod.summary.fgItemsWithGreenShortage ?? dataForPeriod.summary.fgItemsPlanned)}
+              />
               <KpiCard label="RM items required" value={String(dataForPeriod.summary.rmItemsRequired)} />
               <KpiCard label="RM shortages" value={String(dataForPeriod.summary.rmLinesWithGap)} />
               <KpiCard label="FG items without BOM" value={String(dataForPeriod.summary.missingBomCount)} />
             </div>
             <div className="overflow-auto rounded-md border border-slate-200 bg-white">
               <div className="border-b border-slate-100 px-3 py-2 text-[11px] text-slate-500">
-                {dataForPeriod.items.length} RM line(s) · read-only · expand row for FG traceability
+                {dataForPeriod.items.length} RM line(s) · BOM(Green Shortage) · read-only · expand row for FG
+                traceability
               </div>
               <table className="w-full border-collapse text-[13px]">
                 <thead className="bg-slate-50 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500">
@@ -4013,24 +4120,27 @@ function RmRequirementCompositionSection({
                     <th className="px-3 py-2 w-8" />
                     <th className="px-3 py-2">RM item</th>
                     <th className="px-3 py-2 w-16">UOM</th>
-                    <th className="px-3 py-2 w-28 text-right">Total demand</th>
+                    <th className="px-3 py-2 w-28 text-right">RM requirement</th>
+                    <th className="px-3 py-2 w-28 text-right">Available RM</th>
                     <th className="px-3 py-2 w-24 text-right">Free</th>
                     <th className="px-3 py-2 w-24 text-right">Reserved</th>
                     <th className="px-3 py-2 w-24 text-right">Incoming PO</th>
-                    <th className="px-3 py-2 w-28 text-right">Net available</th>
-                    <th className="px-3 py-2 w-24 text-right">Net gap</th>
-                    <th className="px-3 py-2 w-28 text-right">Min stock</th>
+                    <th className="px-3 py-2 w-24 text-right">Net RM</th>
                   </tr>
                 </thead>
                 <tbody>
                   {dataForPeriod.items.length === 0 ? (
                     <tr>
-                      <td colSpan={10} className="px-3 py-6 text-center text-sm text-slate-400">
-                        No RM demand from suggested production for this period. Review Requirement Composition or check for missing BOMs.
+                      <td colSpan={9} className="px-3 py-6 text-center text-sm text-slate-400">
+                        No RM requirement from FG green shortage for this period. RS-only demand is excluded; use
+                        Additional RM requisition for ad-hoc needs.
                       </td>
                     </tr>
                   ) : (
                     dataForPeriod.items.map((item) => {
+                      const rmReq = item.rmRequirement ?? item.totalRmDemand;
+                      const availableRm = item.availableRmStock ?? item.netAvailable;
+                      const netRm = item.netRmRequirement ?? item.netGap;
                       const expanded = expandedItemIds.has(item.rmItemId);
                       return (
                         <React.Fragment key={item.rmItemId}>
@@ -4040,7 +4150,7 @@ function RmRequirementCompositionSection({
                                 type="button"
                                 onClick={() => toggleDetails(item.rmItemId)}
                                 className="text-slate-400 hover:text-slate-700"
-                                title="Show FG source traceability"
+                                title="Show FG green shortage traceability"
                                 disabled={item.fgSources.length === 0}
                               >
                                 {item.fgSources.length > 0 ? (
@@ -4054,53 +4164,45 @@ function RmRequirementCompositionSection({
                             </td>
                             <td className="px-3 py-1.5 font-medium text-slate-800">
                               {item.itemName ?? `Item ${item.rmItemId}`}
-                              {item.belowMinimumFlag ? (
-                                <span className="ml-2 inline-flex rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-amber-800">
-                                  Below min
-                                </span>
-                              ) : null}
                             </td>
                             <td className="px-3 py-1.5 text-slate-600">{item.unit ?? "—"}</td>
                             <td className="px-3 py-1.5 text-right tabular-nums font-medium text-slate-800">
-                              {item.totalRmDemand.toLocaleString()}
+                              {rmReq.toLocaleString()}
                             </td>
                             <td className="px-3 py-1.5 text-right tabular-nums text-slate-800">
+                              {availableRm.toLocaleString()}
+                            </td>
+                            <td className="px-3 py-1.5 text-right tabular-nums text-slate-600">
                               {item.freeStock.toLocaleString()}
                             </td>
-                            <td className="px-3 py-1.5 text-right tabular-nums text-slate-800">
+                            <td className="px-3 py-1.5 text-right tabular-nums text-slate-600">
                               {item.reserved.toLocaleString()}
                             </td>
-                            <td className="px-3 py-1.5 text-right tabular-nums text-slate-800">
+                            <td className="px-3 py-1.5 text-right tabular-nums text-slate-600">
                               {item.incomingPo.toLocaleString()}
-                            </td>
-                            <td className="px-3 py-1.5 text-right tabular-nums text-slate-800">
-                              {item.netAvailable.toLocaleString()}
                             </td>
                             <td
                               className={cn(
                                 "px-3 py-1.5 text-right tabular-nums font-semibold",
-                                item.netGap > 0 ? "text-red-700" : "text-slate-800",
+                                netRm > 0 ? "text-red-700" : "text-slate-800",
                               )}
                             >
-                              {item.netGap.toLocaleString()}
-                            </td>
-                            <td className="px-3 py-1.5 text-right tabular-nums text-slate-600">
-                              {item.minimumStock.toLocaleString()}
+                              {netRm.toLocaleString()}
                             </td>
                           </tr>
                           {expanded && item.fgSources.length > 0 ? (
                             <tr className="border-t border-slate-50 bg-slate-50/60">
                               <td />
-                              <td className="px-3 py-2 pl-8" colSpan={9}>
+                              <td className="px-3 py-2 pl-8" colSpan={8}>
                                 <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                                  FG sources
+                                  FG green shortage → BOM
                                 </div>
                                 <table className="mt-1 w-full max-w-xl text-[12px]">
                                   <thead>
                                     <tr className="text-left text-slate-500">
                                       <th className="py-1 pr-3 font-medium">FG item</th>
-                                      <th className="py-1 pr-3 text-right font-medium">Suggested prod.</th>
-                                      <th className="py-1 text-right font-medium">RM demand</th>
+                                      <th className="py-1 pr-3 text-right font-medium">Green shortage</th>
+                                      <th className="py-1 text-right font-medium">RM from BOM</th>
                                     </tr>
                                   </thead>
                                   <tbody>
@@ -4113,7 +4215,7 @@ function RmRequirementCompositionSection({
                                           ) : null}
                                         </td>
                                         <td className="py-1 pr-3 text-right tabular-nums">
-                                          {src.suggestedProduction.toLocaleString()}
+                                          {src.greenShortage.toLocaleString()}
                                         </td>
                                         <td className="py-1 text-right tabular-nums font-medium">
                                           {src.rmDemandQty.toLocaleString()}
@@ -4326,6 +4428,8 @@ function ProductionPlanTab({
   greenContextMap,
   fgGreenPlanningMap,
   greenPlanningContextReady,
+  greenLevelHistoryMonths,
+  greenLevelSource,
 }: {
   rows: EditRow[];
   editable: boolean;
@@ -4356,6 +4460,8 @@ function ProductionPlanTab({
     }
   >;
   greenPlanningContextReady: boolean;
+  greenLevelHistoryMonths: number;
+  greenLevelSource: GreenLevelSource;
 }) {
   const [expandedItemIds, setExpandedItemIds] = React.useState<Set<number>>(new Set());
 
@@ -4376,6 +4482,8 @@ function ProductionPlanTab({
             <h3 className="text-[13px] font-semibold text-slate-800">Customer Requirement Summary</h3>
             <p className="mt-0.5 text-[12px] text-slate-600">
               Customer demand received through Requirement Sheets for <strong>{period}</strong>.
+              {" "}
+              <span className="text-slate-500">{GREEN_SHORTAGE_PLANNING_MESSAGE}</span>
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -4403,7 +4511,13 @@ function ProductionPlanTab({
                 <tr>
                   <th className="px-3 py-2 w-8" />
                   <th className="px-3 py-2">FG item</th>
-                  <th className="px-3 py-2 w-36 text-right">Total RS requirement</th>
+                  <th className="px-3 py-2 w-32 text-right">RS demand</th>
+                  <th
+                    className="px-3 py-2 w-36 text-right"
+                    title="RS effective demand + carry forward + Green Shortage"
+                  >
+                    <span className="cursor-help border-b border-dotted border-slate-400">Suggested production</span>
+                  </th>
                   <th className="px-3 py-2 w-24 text-center">RS count</th>
                   {editable ? <th className="px-3 py-2 w-36">Action</th> : null}
                 </tr>
@@ -4412,7 +4526,7 @@ function ProductionPlanTab({
                 {rsSuggestions.items.length === 0 ? (
                   <tr>
                     <td
-                      colSpan={editable ? 5 : 4}
+                      colSpan={editable ? 6 : 5}
                       className="px-3 py-6 text-center text-sm text-slate-500"
                     >
                       {rsSuggestions.sheetCount === 0 ? (
@@ -4463,6 +4577,11 @@ function ProductionPlanTab({
                           <td className="px-3 py-1.5 text-right font-semibold tabular-nums text-slate-900">
                             {totalRsRequirementQty(item).toLocaleString()}
                           </td>
+                          <td className="px-3 py-1.5 text-right font-semibold tabular-nums text-violet-900">
+                            {(suggestedProductionMap.get(item.itemId) ?? 0).toLocaleString(undefined, {
+                              maximumFractionDigits: 3,
+                            })}
+                          </td>
                           <td className="px-3 py-1.5 text-center tabular-nums text-slate-600">
                             {item.sources.length}
                           </td>
@@ -4482,7 +4601,7 @@ function ProductionPlanTab({
                         </tr>
                         {expanded ? (
                           <tr className="border-t border-slate-50 bg-slate-50/60">
-                            <td colSpan={editable ? 5 : 4} className="px-3 py-2 pl-8">
+                            <td colSpan={editable ? 6 : 5} className="px-3 py-2 pl-8">
                               <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
                                 Requirement Sheet Details
                               </div>
@@ -4550,25 +4669,30 @@ function ProductionPlanTab({
           {readOnlyMessage}
         </div>
       ) : (
-        <div className="flex flex-wrap items-center gap-2">
-          <NativeSelect
-            value={addItemId}
-            onChange={(e) => setAddItemId(e.target.value)}
-            className="h-9 w-[260px]"
-            aria-label="Select FG item to add"
-          >
-            <option value="">Add FG item…</option>
-            {availableFgForAdd.map((i) => (
-              <option key={i.id} value={i.id}>
-                {i.itemName}
-              </option>
-            ))}
-          </NativeSelect>
-          <Button type="button" size="sm" variant="outline" onClick={onAddRow} disabled={!addItemId} className="h-9">
-            <Plus className="mr-1.5 h-4 w-4" />
-            Add row
-          </Button>
-        </div>
+        <>
+          <div className="flex flex-wrap items-center gap-2">
+            <NativeSelect
+              value={addItemId}
+              onChange={(e) => setAddItemId(e.target.value)}
+              className="h-9 w-[260px]"
+              aria-label="Select FG item to add"
+            >
+              <option value="">Add FG item…</option>
+              {availableFgForAdd.map((i) => (
+                <option key={i.id} value={i.id}>
+                  {i.itemName}
+                </option>
+              ))}
+            </NativeSelect>
+            <Button type="button" size="sm" variant="outline" onClick={onAddRow} disabled={!addItemId} className="h-9">
+              <Plus className="mr-1.5 h-4 w-4" />
+              Add row
+            </Button>
+          </div>
+          <div className="rounded-md border border-emerald-200 bg-emerald-50/70 px-3 py-2 text-[12px] text-emerald-900">
+            {GREEN_SHORTAGE_PLANNING_MESSAGE} Planned qty defaults to suggested production unless you edit it manually.
+          </div>
+        </>
       )}
 
       <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-slate-200 bg-white shadow-sm">
@@ -4578,10 +4702,10 @@ function ProductionPlanTab({
               <th className="px-3 py-2">FG item</th>
               <th className="px-3 py-2 w-16">Unit</th>
               <th
-                className="px-3 py-2 w-28 text-right"
-                title={GREEN_LEVEL_BASIS_TOOLTIP}
+                className="px-3 py-2 w-32 text-right"
+                title={greenLevelBasisTooltip(greenLevelHistoryMonths, greenLevelSource)}
               >
-                <span className="cursor-help border-b border-dotted border-slate-400">Green Level</span>
+                <span className="cursor-help border-b border-dotted border-slate-400">Active GL</span>
               </th>
               <th className="px-3 py-2 w-24 text-right">Free FG</th>
               <th className="px-3 py-2 w-24 text-right">Green Short.</th>
@@ -4621,9 +4745,20 @@ function ProductionPlanTab({
                   fgGreenPlanningMap,
                   greenPlanningContextReady,
                 );
-                const greenLevelCell = greenLevelQtyCellContent(greenRow);
+                const greenLevelCell = greenLevelQtyCellContent(greenRow, greenLevelHistoryMonths);
+                const belowSuggestedGap = rowHasGreenShortagePlannedGap({
+                  greenShortage: greenRow.greenShortage,
+                  plannedQty: metrics.planned,
+                  suggestedQty: metrics.suggested,
+                });
                 return (
-                <tr key={r.key} className="border-t border-slate-100 align-middle">
+                <tr
+                  key={r.key}
+                  className={cn(
+                    "border-t border-slate-100 align-middle",
+                    belowSuggestedGap && "bg-amber-50/90",
+                  )}
+                >
                   <td className="px-3 py-1.5 font-medium text-slate-800">{r.fgItemName}</td>
                   <td className="px-3 py-1.5 text-slate-500">{r.unit ?? "—"}</td>
                   <td className="px-3 py-1.5 text-right tabular-nums text-slate-700">
@@ -4632,7 +4767,11 @@ function ProductionPlanTab({
                       <div className="mt-0.5 text-[10px] font-normal normal-case leading-tight text-slate-400">
                         {greenLevelCell.helper}
                       </div>
-                    ) : null}
+                    ) : (
+                      <div className="mt-0.5 text-[10px] font-normal normal-case leading-tight text-slate-400">
+                        {greenLevelPlanningSubtext(greenRow)}
+                      </div>
+                    )}
                   </td>
                   <td className="px-3 py-1.5 text-right tabular-nums text-slate-600">
                     {formatGreenPlanningQty(greenRow.freeFgStock, greenRow.loading)}

@@ -214,12 +214,12 @@ d("NO_QTY WO cycle-wise executable qty boundary", () => {
     assert.equal(Number(line.qty), 10000);
   });
 
-  it("manual create-wo is blocked when WO already exists from RS placement", async () => {
+  it("manual create-wo is capped by remaining RS balance after RS placement", async () => {
     const res = await request(app)
       .post(`/api/requirement-sheets/${ctx.c2SheetId}/create-wo`)
       .set(auth)
       .expect(409);
-    assert.match(String(res.body?.error?.message ?? res.body?.message ?? ""), /already created/i);
+    assert.match(String(res.body?.error?.message ?? res.body?.message ?? ""), /No RS Balance remains/i);
 
     const woCount = await prisma.workOrder.count({
       where: { salesOrderId: ctx.soId, cycleId: ctx.c2Id, requirementSheetId: ctx.c2SheetId },

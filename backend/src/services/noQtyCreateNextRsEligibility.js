@@ -12,8 +12,10 @@
  * 1) Latest requirement sheet on the cycle is LOCKED or CANCELLED
  * 2) No LOCKED requirement sheet exists on any non-CLOSED cycle with cycleNo strictly greater than current
  * 3) No DRAFT requirement sheet exists on any non-CLOSED later cycle (open draft must be finished first)
+ * 4) P10-A7D: LOCKED terminal RS with no WO on that cycle is not next-cycle demand — monthly planning / WO placement first
  *
- * Not eligible: NOT_NO_QTY, SO closed, invalid cycle, latest RS is DRAFT / missing, later LOCKED or DRAFT RS exists.
+ * Not eligible: NOT_NO_QTY, SO closed, invalid cycle, latest RS is DRAFT / missing, later LOCKED or DRAFT RS exists,
+ * NO_NEXT_CYCLE_DEMAND (locked RS but execution not started on cycle).
  */
 
 /**
@@ -197,6 +199,25 @@ async function computeNoQtyCreateNextRsEligibility(db, input) {
       existingNextRsDocNo: doc,
       existingNextRsId: draftAhead.id,
     };
+  }
+
+  /**
+   * P10-A7D — Cycle 2+ RS is demand-driven. A freshly locked Cycle 1 RS (no WO yet) must route
+   * to monthly planning / MPRS for the locked period, not to Create/Lock next-cycle RS actions.
+   */
+  if (latestOnCycle.status === "LOCKED") {
+    const woOnCycle = await db.workOrder.findFirst({
+      where: { salesOrderId, cycleId, status: { not: "REJECTED" } },
+      select: { id: true },
+    });
+    if (!woOnCycle?.id) {
+      return {
+        eligible: false,
+        reason: "NO_NEXT_CYCLE_DEMAND",
+        existingNextRsDocNo: null,
+        existingNextRsId: null,
+      };
+    }
   }
 
   return { eligible: true, reason: "OK", existingNextRsDocNo: null, existingNextRsId: null };

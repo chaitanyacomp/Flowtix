@@ -5,29 +5,11 @@ import { isNoQtyDashboardPlanningRow } from "../../src/lib/dashboardActionQueue"
 import type { NoQtyFlowState } from "../../src/lib/noQtyFlowState";
 
 /**
- * The Planning Dashboard renders a *commercial continuation* list of OPEN
- * NO_QTY sales orders for ADMIN. This list lives parallel to the
- * shop-floor queues (Production / QC / Dispatch / RM) on the same
- * operational column but encodes a different business intent: it is the
- * planning continuation surface (Next RS / Open Draft RS / Close SO),
- * not an operational action queue.
- *
- * These tests pin down two invariants that protect that separation:
- *
- *  1. `resolveNoQtyDashboardContinuation` with `commercialContinuation:
- *     true` ALWAYS lands on a planning action for ADMIN — never
- *     on "Open QC" / "Open Production" / "Open Dispatch" / "Open Sales
- *     Bill" — even when the flow state advertises pending QC / dispatch
- *     and reports `createNextRsEligible: false`. (The actual Next RS
- *     eligibility check is deferred to click time.)
- *
- *  2. `isNoQtyDashboardPlanningRow` accepts the resulting `prepare_next_rs`
- *     resolution so the dashboard does not silently drop the row.
- *
- * If either invariant breaks, the dashboard regresses to the previous
- * bug where the NO_QTY continuation row disappears as soon as operational
- * queues clear (showing "Operations clear" while the SO is still OPEN
- * between cycles).
+ * Commercial continuation on the Planning Dashboard must stay planning-only
+ * (never QC / Production / Dispatch) while using correct cycle labels:
+ *   - no RS → creation workspace (Cycle 1)
+ *   - draft → open draft sheet
+ *   - locked + createNextRsEligible → prepare next RS
  */
 
 const baseFlow: NoQtyFlowState = {
@@ -48,7 +30,7 @@ const baseFlow: NoQtyFlowState = {
 };
 
 describe("resolveNoQtyDashboardContinuation — commercial continuation", () => {
-  it("always returns prepare_next_rs for ADMIN on the dashboard even when createNextRsEligible is false and QC is pending", () => {
+  it("opens current RS workspace for ADMIN when createNextRsEligible is false (not prepare_next_rs)", () => {
     const flow: NoQtyFlowState = {
       ...baseFlow,
       createNextRsEligible: false,
@@ -65,14 +47,17 @@ describe("resolveNoQtyDashboardContinuation — commercial continuation", () => 
       viewerRole: "ADMIN",
       commercialContinuation: true,
     });
-    expect(resolved.kind).toBe("prepare_next_rs");
-    expect(resolved.label).toBe("Next RS");
+    expect(resolved.kind).toBe("navigate");
+    if (resolved.kind === "navigate") {
+      expect(resolved.to).toContain("/sales-orders/1/requirement-sheets");
+      expect(resolved.label).toBe("Open Requirement Sheet");
+    }
   });
 
-  it("always returns prepare_next_rs for ADMIN on the dashboard even when nextAction is DISPATCH", () => {
+  it("returns prepare_next_rs for ADMIN when createNextRsEligible is true", () => {
     const flow: NoQtyFlowState = {
       ...baseFlow,
-      createNextRsEligible: false,
+      createNextRsEligible: true,
       hasQcDispatchPending: true,
       nextAction: "DISPATCH",
     };
@@ -88,7 +73,7 @@ describe("resolveNoQtyDashboardContinuation — commercial continuation", () => 
     expect(resolved.kind).toBe("prepare_next_rs");
   });
 
-  it("still navigates to the draft RS workspace when lastRsStatus is DRAFT (operators must open and finalize the draft)", () => {
+  it("still navigates to the draft RS workspace when lastRsStatus is DRAFT", () => {
     const flow: NoQtyFlowState = {
       ...baseFlow,
       requirementLocked: false,
@@ -104,14 +89,13 @@ describe("resolveNoQtyDashboardContinuation — commercial continuation", () => 
       commercialContinuation: true,
     });
     expect(resolved.kind).toBe("navigate");
-    expect(resolved.label).toBe("Next RS");
     if (resolved.kind === "navigate") {
       expect(resolved.to).toContain("/sales-orders/1/requirement-sheets");
       expect(resolved.to).toContain("sheetId=42");
     }
   });
 
-  it("falls back to prepare_next_rs for ADMIN even when flow has not loaded yet (commercial continuation never blanks the row mid-fetch)", () => {
+  it("navigates to RS creation workspace when flow has not loaded and no RS exists", () => {
     const resolved = resolveNoQtyDashboardContinuation({
       salesOrderId: 1,
       cycleId: 10,
@@ -121,10 +105,14 @@ describe("resolveNoQtyDashboardContinuation — commercial continuation", () => 
       viewerRole: "ADMIN",
       commercialContinuation: true,
     });
-    expect(resolved.kind).toBe("prepare_next_rs");
+    expect(resolved.kind).toBe("navigate");
+    if (resolved.kind === "navigate") {
+      expect(resolved.to).toContain("intent=add");
+      expect(resolved.to).toContain("/sales-orders/1/requirement-sheets");
+    }
   });
 
-  it("returns prepare_next_rs for STORE on the commercial continuation dashboard", () => {
+  it("returns prepare_next_rs for STORE when createNextRsEligible is true", () => {
     const flow: NoQtyFlowState = {
       ...baseFlow,
       createNextRsEligible: true,
@@ -180,7 +168,6 @@ describe("resolveNoQtyDashboardContinuation — commercial continuation", () => 
       flow,
       viewerRole: "ADMIN",
     });
-    // ADMIN with QC pending and no planning eligibility → legacy resolver routes to QC.
     expect(resolved.kind).toBe("navigate");
     if (resolved.kind === "navigate") {
       expect(resolved.label).toBe("Complete QA");
@@ -189,12 +176,9 @@ describe("resolveNoQtyDashboardContinuation — commercial continuation", () => 
 });
 
 describe("isNoQtyDashboardPlanningRow", () => {
-  it("accepts prepare_next_rs resolutions regardless of createNextRsEligible (the gate is deferred to click time)", () => {
+  it("accepts prepare_next_rs resolutions regardless of createNextRsEligible", () => {
     expect(
-      isNoQtyDashboardPlanningRow(
-        { createNextRsEligible: false },
-        { kind: "prepare_next_rs" },
-      ),
+      isNoQtyDashboardPlanningRow({ createNextRsEligible: false }, { kind: "prepare_next_rs" }),
     ).toBe(true);
   });
 

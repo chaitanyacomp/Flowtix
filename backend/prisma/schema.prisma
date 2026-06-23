@@ -619,6 +619,8 @@ model Item {
   minimumStockQty                   Decimal? @db.Decimal(18, 3)
   /// Optional reorder quantity (future use).
   reorderQty                        Decimal? @db.Decimal(18, 3)
+  /// P11 — manually entered FG Green Level qty (used when greenLevelSource = MANUAL).
+  fgManualGreenLevelQty             Decimal? @db.Decimal(18, 3)
   createdAt                         DateTime @default(now())
   updatedAt                         DateTime @updatedAt
 
@@ -918,6 +920,10 @@ model AppSetting {
   id                                Int     @id @default(1)
   /// Max allowed rejection buffer % on NORMAL sales order lines (0–100). Admin-configurable.
   maxRegularSoBufferPercent         Decimal @default(10) @db.Decimal(18, 2)
+  /// FG Green Level history window (months): 3, 6, or 12 — locked RS lookback before anchor period.
+  greenLevelHistoryMonths           Int     @default(6)
+  /// FG Green Level source: MANUAL (item master qty) or AUTOMATIC (MAX locked RS over history window).
+  greenLevelSource                  String  @default("MANUAL") @db.VarChar(16)
   strictInventoryControl            Boolean @default(false)
   /// ADMIN_ONLY | ADMIN_AND_STORE — who may reverse stock adjustments
   stockAdjustmentReverseRoles       String  @default("ADMIN_ONLY")
@@ -2186,8 +2192,8 @@ model WorkOrder {
   salesOrderId            Int
   /// NO_QTY: workflow cycle isolation (null for legacy / regular flows).
   cycleId                 Int?
-  /// NO_QTY flow: when created from a locked requirement sheet version, link to prevent duplicates.
-  requirementSheetId      Int?         @unique
+  /// NO_QTY flow: links WOs created from a locked requirement sheet version; multiple WOs may share one RS.
+  requirementSheetId      Int?
   status                  SimpleStatus @default(PENDING)
   /// REGULAR: operational hold (does not change line qty or produced qty).
   holdReason              WoHoldReason?
@@ -2226,6 +2232,8 @@ model WorkOrder {
   @@index([status])
   @@index([salesOrderId])
   @@index([cycleId])
+  @@index([requirementSheetId])
+  @@index([requirementSheetId, status])
   @@index([fgStockOverrideByUserId])
 }
 

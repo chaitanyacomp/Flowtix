@@ -2066,7 +2066,7 @@ export function QcEntryPage() {
       return { kind: "NEXT_RS", nextStepLabel: "Next RS" };
     }
     if (noQtyFlowState?.overallWorkflowState === "NEXT_RS_READY") {
-      return { kind: "WAIT_NEXT_DEPARTMENT", nextStepLabel: "Waiting for Sales/Planning" };
+      return { kind: "WAIT_NEXT_DEPARTMENT", nextStepLabel: "Waiting for Store" };
     }
     if (
       noQtyFlowState?.hasQcDispatchPending ||
@@ -2256,7 +2256,7 @@ export function QcEntryPage() {
               {qcGuidance.kind === "WAIT_NEXT_DEPARTMENT" ? (
                 <div className="erp-next-action-bar justify-between gap-2 border-slate-200/90 bg-slate-50/95">
                   <span className="min-w-0 text-[12px] leading-snug text-slate-700">
-                    {noQtyFlowState?.message ?? "QC completed. Waiting for Sales/Planning to create Next RS."}
+                    {noQtyFlowState?.message ?? "QC completed. Waiting for Store to create the next Requirement Sheet."}
                   </span>
                 </div>
               ) : null}
@@ -2549,7 +2549,7 @@ export function QcEntryPage() {
                     </p>
                   ) : noQtyQcNextAction.nextAction === "NEXT_RS" || noQtyQcNextAction.primaryAction === "NEXT_RS" ? (
                     <p className="text-[12px] leading-snug text-slate-700">
-                      {noQtyQcNextAction.message ?? "QC completed. Waiting for Sales/Planning to create Next RS."}
+                      {noQtyQcNextAction.message ?? "QC completed. Waiting for Store to create the next Requirement Sheet."}
                     </p>
                   ) : noQtyQcNextAction.nextAction === "DISPATCH" && noQtyQcNextAction.dispatchableQty <= 1e-6 ? (
                     <p className="text-[12px] leading-snug text-slate-700">No dispatchable quantity for this cycle yet.</p>

@@ -1,12 +1,27 @@
 import { buildNoQtyGuidedHref, buildQcEntryHref, type NoQtyFlowState } from "./noQtyFlowState";
+import { noQtyRsCreationWorkspaceHref } from "./noQtyRsActionLabels";
+import { noQtyDashboardRowHasRs } from "./noQtyDashboardPresentation";
 
 export type ResolvedNoQtyContinuation =
   | { kind: "navigate"; label: string; to: string }
   | { kind: "prepare_next_rs"; label: string };
 
+function openCurrentRsNavigate(salesOrderId: number, effCycleId: number | null): ResolvedNoQtyContinuation {
+  return {
+    kind: "navigate",
+    label: "Open Requirement Sheet",
+    to: buildNoQtyGuidedHref({
+      to: `/sales-orders/${salesOrderId}/requirement-sheets`,
+      salesOrderId,
+      cycleId: effCycleId,
+      fromStep: "requirement",
+    }),
+  };
+}
+
 /**
  * Maps NO_QTY flow state + dashboard row hints to the primary continuation action
- * for the **Sales / Admin planning launcher** (not Store dispatch ownership).
+ * for the **Store / Admin planning launcher** (not shop-floor dispatch ownership).
  *
  * **Dashboard → Next RS (rolling / continue planning):** always `prepare_next_rs` so the client runs
  * `prepareNoQtyNextRequirementSheetAndNavigate` — never a direct `navigate` with stale `sheetId` /
@@ -20,19 +35,17 @@ export type ResolvedNoQtyContinuation =
  *
  * The Planning Dashboard renders a **commercial continuation** list for OPEN
  * NO_QTY sales orders — this list is intentionally separate from the
- * operational queues (Production / QC / Dispatch). For ADMIN / SALES it must
+ * operational queues (Production / QC / Dispatch). For ADMIN / STORE it must
  * **always** surface a planning action (Open Draft RS or Prepare Next RS),
  * never an operational step like "Open QC" / "Open Production" / "Open
  * Dispatch". Operational steps still live in their own cards on the same
  * dashboard column.
  *
- * Concretely, when `commercialContinuation: true` and viewer is SALES/ADMIN:
+ * Concretely, when `commercialContinuation: true` and viewer is ADMIN/STORE:
  *   - a `DRAFT` RS still wins (operators need to open and finalize it),
- *   - otherwise we always return `prepare_next_rs` regardless of
- *     `createNextRsEligible` / `primaryAction` / pending QC / pending
- *     dispatch / cycle pointer state. The actual eligibility check
- *     happens **at click time** in `prepareNoQtyNextRsAndNavigate` so the
- *     dashboard can show planning continuation as long as the SO is OPEN.
+ *   - no RS on the current cycle → navigate to RS creation workspace (Cycle 1, not cycle+1),
+ *   - locked RS with `createNextRsEligible` → `prepare_next_rs` for the next cycle,
+ *   - otherwise → open the current RS workspace (never shop-floor QC / dispatch).
  */
 export function resolveNoQtyDashboardContinuation(args: {
   salesOrderId: number;
@@ -43,7 +56,7 @@ export function resolveNoQtyDashboardContinuation(args: {
   /** Dashboard viewer — blocking QC step applies only for roles that own the QC floor. */
   viewerRole?: string | null;
   /**
-   * When `true`, force a planning-oriented resolution for SALES/ADMIN even
+   * When `true`, force a planning-oriented resolution for ADMIN/STORE even
    * if operational steps are pending. See doc block above. The Planning
    * Dashboard's NO_QTY continuation list passes this flag; deep-link
    * navigations from operational cards do not.
@@ -96,44 +109,55 @@ export function resolveNoQtyDashboardContinuation(args: {
     return { kind: "navigate", label: "Next RS", to: withSheet };
   }
 
-  /** Flow not loaded yet but row shows locked RS — POST prepare (same as eligible path); never deep-link stale sheetId. */
+  /** Flow not loaded yet — infer from row hints; never prepare-next when no RS exists. */
   if (!flow) {
+    const hasRs = noQtyDashboardRowHasRs({ lastRsStatus, latestRequirementSheetId, flow: null });
+    if (!hasRs) {
+      return {
+        kind: "navigate",
+        label: "Create RS",
+        to: noQtyRsCreationWorkspaceHref({ salesOrderId, cycleId: effCycleId, from: "dashboard" }),
+      };
+    }
     const lockedNoFlow = String(lastRsStatus ?? "").toUpperCase() === "LOCKED";
+    if (lockedNoFlow && commercialContinuation && isPlanningViewer) {
+      return openCurrentRsNavigate(salesOrderId, effCycleId);
+    }
     if (lockedNoFlow) {
       return { kind: "prepare_next_rs", label: "Next RS" };
     }
-    /**
-     * Commercial continuation: SALES/ADMIN must see a planning action even
-     * before flow state has resolved — fall back to prepare_next_rs so the
-     * row never disappears between fetches.
-     */
     if (commercialContinuation && isPlanningViewer) {
-      return { kind: "prepare_next_rs", label: "Next RS" };
+      return openCurrentRsNavigate(salesOrderId, effCycleId);
     }
     return {
       kind: "navigate",
-      label: "Next RS",
-      to: buildNoQtyGuidedHref({
-        to: `/sales-orders/${salesOrderId}/requirement-sheets`,
-        salesOrderId,
-        cycleId: effCycleId,
-        fromStep: "requirement",
-      }),
+      label: "Create RS",
+      to: noQtyRsCreationWorkspaceHref({ salesOrderId, cycleId: effCycleId, from: "dashboard" }),
     };
   }
 
   /**
-   * Commercial continuation (SALES/ADMIN): always plan. We never surface
-   * shop-floor steps in this lane — those have their own dashboard cards.
-   * Eligibility is re-checked at click time, so the row stays visible for
-   * the entire lifetime of an OPEN NO_QTY sales order.
+   * Commercial continuation (ADMIN/STORE): planning-only lane on the dashboard.
+   * Case A — no RS → creation workspace (current cycle, not cycle+1).
+   * Case B — draft → handled above via rsDraft navigate.
+   * Case C — next RS only when createNextRsEligible is true.
    */
   if (commercialContinuation && isPlanningViewer) {
-    return { kind: "prepare_next_rs", label: "Next RS" };
+    const hasRs = noQtyDashboardRowHasRs({ lastRsStatus, latestRequirementSheetId, flow });
+    if (!hasRs) {
+      return {
+        kind: "navigate",
+        label: "Create RS",
+        to: noQtyRsCreationWorkspaceHref({ salesOrderId, cycleId: effCycleId, from: "dashboard" }),
+      };
+    }
+    if (flow.createNextRsEligible) {
+      return { kind: "prepare_next_rs", label: "Next RS" };
+    }
+    return openCurrentRsNavigate(salesOrderId, effCycleId);
   }
 
   const na = flow.nextAction;
-  const hasQcDispatchTail = Boolean(flow.hasQcDispatchPending);
 
   const userCanCreateNextRs =
     flow.primaryActionForCurrentUser != null
@@ -202,8 +226,17 @@ export function resolveNoQtyDashboardContinuation(args: {
     return { kind: "prepare_next_rs", label: "Next RS" };
   }
 
-  if (na === "WORK_ORDER" && !hasQcDispatchTail) {
-    return { kind: "prepare_next_rs", label: "Next RS" };
+  if (na === "WORK_ORDER" && (viewer === "ADMIN" || viewer === "STORE")) {
+    return {
+      kind: "navigate",
+      label: "Place WO",
+      to: `${buildNoQtyGuidedHref({
+        to: `/sales-orders/${salesOrderId}/requirement-sheets`,
+        salesOrderId,
+        cycleId: effCycleId,
+        fromStep: "requirement",
+      })}&focus=execution`,
+    };
   }
   if (na === "QC") {
     return openQc();

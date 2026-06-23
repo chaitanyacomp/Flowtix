@@ -61,7 +61,7 @@ export const REGULAR_TERMS = {
   DASHBOARD_RM_WARNING_LABEL: "Replenishment low",
   /** KPI tooltip — minimum stock alerts vs order blockers. */
   DASHBOARD_STOCK_REPLENISHMENT_TOOLTIP:
-    "Critical RM means stock below minimum level. It does not necessarily block current Work Orders.",
+    "Stock Critical counts RM items whose usable stock is below configured Minimum Stock. If no Minimum Stock is configured, the item does not appear as Stock Critical.",
   /** Role KPI / factory panel: active SO/WO material shortage blockers (rm-risk queue). */
   DASHBOARD_WO_RM_BLOCKED_LABEL: "WO RM blocked",
   /** Live factory micro-queue when no order-level RM blockers exist. */

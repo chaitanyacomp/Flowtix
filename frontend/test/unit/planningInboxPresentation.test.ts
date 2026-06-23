@@ -3,6 +3,7 @@ import {
   formatPlanningInboxNextRsLine,
   isNoQtyAgreementClosed,
   planningInboxAttentionScore,
+  resolvePlanningInboxLockedPeriodKey,
   resolvePlanningInboxRsStatus,
   sortPlanningInboxRows,
 } from "../../src/lib/planningInboxPresentation";
@@ -23,6 +24,18 @@ describe("planningInboxPresentation", () => {
         10,
       ),
     ).toBe("Locked");
+  });
+
+  it("resolves locked RS period key from cycle-scoped sheets", () => {
+    expect(
+      resolvePlanningInboxLockedPeriodKey(
+        [
+          { id: 1, cycleId: 10, version: 1, status: "DRAFT", periodKey: "2026-05" },
+          { id: 2, cycleId: 10, version: 2, status: "LOCKED", periodKey: "2026-06" },
+        ],
+        10,
+      ),
+    ).toBe("2026-06");
   });
 
   it("formats next RS blocked line with reason", () => {

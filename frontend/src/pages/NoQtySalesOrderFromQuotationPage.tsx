@@ -13,8 +13,8 @@ import { Input } from "../components/ui/input";
 import { Badge } from "../components/ui/badge";
 import { ApiRequestError, apiFetch } from "../services/api";
 import { useToast } from "../contexts/ToastContext";
-import { buildNoQtyGuidedHref } from "../lib/noQtyFlowState";
 import { buildNoQtySoCreatedBannerState } from "../lib/noQtySoCreatedNavState";
+import { noQtyRsCreationWorkspaceHref } from "../lib/noQtyRsActionLabels";
 import { CommercialWorkflowStrip, commercialWorkflowStripFramedClassName } from "../components/erp/CommercialWorkflowStrip";
 import { cn } from "../lib/utils";
 
@@ -93,12 +93,11 @@ export function NoQtySalesOrderFromQuotationPage() {
         body: JSON.stringify({ customerPoReference: po, remarks: remarks.trim() || null }),
       });
       toast.showSuccess("Sales Order created — continuing to requirement planning");
-      const cycleId = so.currentCycle?.id ?? (so as any).currentCycleId ?? null;
-      const to = buildNoQtyGuidedHref({
-        to: `/sales-orders/${so.id}/requirement-sheets?intent=add`,
+      const cycleId = so.currentCycle?.id ?? (so as { currentCycleId?: number | null }).currentCycleId ?? null;
+      const to = noQtyRsCreationWorkspaceHref({
         salesOrderId: so.id,
         cycleId,
-        fromStep: "requirement",
+        from: "so_created",
       });
       navigate(to, {
         state: buildNoQtySoCreatedBannerState({

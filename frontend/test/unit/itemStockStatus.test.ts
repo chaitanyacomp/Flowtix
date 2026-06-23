@@ -16,8 +16,12 @@ describe("itemStockStatus", () => {
     ).toBe("HEALTHY");
   });
 
-  it("returns OUT_OF_STOCK when qty is zero", () => {
-    expect(computeItemStockStatus({ currentQty: 0, minimumStock: 10, lowStockAlert: 20 })).toBe("OUT_OF_STOCK");
+  it("returns CRITICAL when qty is zero but minimum is configured", () => {
+    expect(computeItemStockStatus({ currentQty: 0, minimumStock: 10, lowStockAlert: 20 })).toBe("CRITICAL");
+  });
+
+  it("returns HEALTHY when qty is zero and no minimum configured", () => {
+    expect(computeItemStockStatus({ currentQty: 0, minimumStock: 0, lowStockAlert: 0 })).toBe("HEALTHY");
   });
 
   it("returns CRITICAL when below minimum floor", () => {

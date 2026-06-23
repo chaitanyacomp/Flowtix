@@ -21,11 +21,22 @@ const { getMaterialAvailabilityByItems } = require("./materialAvailabilityServic
 const { RM_REQUISITION_ACTIVE_STATUSES } = require("./rmRequisitionLifecycle");
 const { recalculateMaterialRequirementClosure } = require("./procurementLifecycleService");
 const {
+  PERIOD_KEY_REGEX,
+  MonthlyPlanningError,
+  normalizePeriodKey,
+  getCurrentPeriodKey,
+  isPastPlanningPeriod,
+  isPastPeriod,
+  PAST_PERIOD_PLANNING_MESSAGE,
+  assertPeriodWriteAllowed,
+} = require("./monthlyPlanningPeriodUtils");
+const {
   buildPlanningContextMaps,
   enrichProductionLineMetrics,
   computeLockSummary,
   round3: metricsRound3,
 } = require("./monthlyPlanningProductionPlanMetrics");
+const { resolvePlannedFgQtyForSave } = require("./monthlyPlanningProductionLinePlannedQty");
 const {
   assertNoOtherActivePlanInPeriod,
   getNextPlanSequenceNo,
@@ -55,76 +66,6 @@ function resolveGreenLevelsLoader(loadGreenLevelsFn) {
 
 const MONTHLY_PLAN_SOURCE = "MONTHLY_PLAN";
 const RELEASE_EPS = 1e-6;
-
-const PERIOD_KEY_REGEX = /^\d{4}-(0[1-9]|1[0-2])$/;
-
-class MonthlyPlanningError extends Error {
-  constructor(code, message, httpStatus = 400) {
-    super(message);
-    this.name = "MonthlyPlanningError";
-    this.code = code;
-    this.httpStatus = httpStatus;
-  }
-}
-
-/** Validate a period key of the form YYYY-MM. Returns the normalized key or throws. */
-function normalizePeriodKey(period) {
-  const key = String(period ?? "").trim();
-  if (!PERIOD_KEY_REGEX.test(key)) {
-    throw new MonthlyPlanningError(
-      "INVALID_PERIOD",
-      "period must be in YYYY-MM format (e.g. 2026-06).",
-      422,
-    );
-  }
-  return key;
-}
-
-/** Current calendar month as YYYY-MM (local timezone, matches workspace UI). */
-function getCurrentPeriodKey(now = new Date()) {
-  const d = now instanceof Date ? now : new Date(now);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-}
-
-const PAST_PERIOD_PLANNING_MESSAGE =
-  "Monthly planning for past periods is read-only. Contact Admin if correction is required.";
-
-/** True when periodKey is strictly before the current calendar month. */
-function isPastPlanningPeriod(periodKey, now = new Date()) {
-  const key = normalizePeriodKey(periodKey);
-  return key < getCurrentPeriodKey(now);
-}
-
-/** @deprecated Use isPastPlanningPeriod — kept for existing callers/tests. */
-function isPastPeriod(periodKey, now = new Date()) {
-  return isPastPlanningPeriod(periodKey, now);
-}
-
-/**
- * Enforce backdated-plan rules for write actions (create / edit / reopen).
- * Current and future months: allowed. Past months: STORE blocked; ADMIN needs confirmPastPeriod.
- */
-function assertPeriodWriteAllowed({
-  periodKey,
-  actorRole = null,
-  confirmPastPeriod = false,
-  now = new Date(),
-} = {}) {
-  const key = normalizePeriodKey(periodKey);
-  if (!isPastPlanningPeriod(key, now)) return key;
-
-  const role = String(actorRole ?? "").trim().toUpperCase();
-  if (role === "ADMIN") {
-    if (confirmPastPeriod === true) return key;
-    throw new MonthlyPlanningError(
-      "PAST_PERIOD_CONFIRM_REQUIRED",
-      `Period ${key} is in the past. Admin must confirm backdated planning (confirmPastPeriod: true).`,
-      422,
-    );
-  }
-
-  throw new MonthlyPlanningError("PAST_PERIOD_PLANNING_NOT_ALLOWED", PAST_PERIOD_PLANNING_MESSAGE, 403);
-}
 
 function toPlanSummary(plan) {
   if (!plan) return null;
@@ -391,13 +332,15 @@ async function updateProductionLines({
       }
       seen.add(fgItemId);
 
-      const plannedFgQty = round3(raw?.plannedFgQty ?? 0);
-      if (!(plannedFgQty >= 0)) {
-        throw new MonthlyPlanningError("INVALID_QTY", "plannedFgQty must be >= 0.", 422);
-      }
       const suggestedFgQty = suggestedByFgItemId.has(fgItemId)
         ? suggestedByFgItemId.get(fgItemId)
         : round3(raw?.suggestedFgQty ?? 0);
+      const plannedQtyOverridden = raw?.plannedQtyOverridden === true;
+      const plannedFgQty = resolvePlannedFgQtyForSave({
+        clientPlannedFgQty: raw?.plannedFgQty ?? 0,
+        plannedQtyOverridden,
+        suggestedFgQty,
+      });
       const source = raw?.source ?? "MANUAL";
       if (!["SALES_ORDER", "REQUIREMENT_SHEET", "MANUAL"].includes(source)) {
         // CUSTOMER_SCHEDULE intentionally not accepted in this phase.
@@ -407,10 +350,16 @@ async function updateProductionLines({
         fgItemId,
         plannedFgQty,
         suggestedFgQty,
-        plannedQtyOverridden: raw?.plannedQtyOverridden === true,
+        plannedQtyOverridden,
         source,
         remarks: raw?.remarks != null ? String(raw.remarks).slice(0, 2000) : null,
       });
+    }
+
+    for (const n of normalized) {
+      if (!(n.plannedFgQty >= 0)) {
+        throw new MonthlyPlanningError("INVALID_QTY", "plannedFgQty must be >= 0.", 422);
+      }
     }
 
     if (normalized.length > 0) {
@@ -925,7 +874,7 @@ async function getRmPlanning({ db = prisma, planId, revision = null } = {}) {
       incomingPoSnapshot: l.incomingPoSnapshot,
       minStockTopUpQty: l.minStockTopUpQty,
       netRequirementQty: l.netRequirementQty,
-      belowMinStockFlag: l.belowMinStockFlag,
+      unitSnapshot: l.unitSnapshot ?? l.rmItem?.unit ?? null,
       leadTimeRiskFlag: l.leadTimeRiskFlag,
       warnings: Array.isArray(l.warningsJson) ? l.warningsJson : [],
     })),

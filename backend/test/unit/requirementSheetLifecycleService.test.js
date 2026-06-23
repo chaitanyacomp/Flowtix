@@ -123,7 +123,7 @@ describe("requirementSheetLifecycleService.evaluateRequirementSheetCancellation"
           salesOrder: { orderType: "NO_QTY" },
         }),
       },
-      workOrder: { findFirst: async () => null },
+      workOrder: { findMany: async () => [] },
       dispatch: { count: async () => 0 },
       salesBill: { count: async () => 0 },
       monthlyProductionPlan: { findMany: async () => [] },
@@ -147,7 +147,7 @@ describe("requirementSheetLifecycleService.evaluateRequirementSheetCancellation"
           salesOrder: { orderType: "NO_QTY" },
         }),
       },
-      workOrder: { findFirst: async () => null },
+      workOrder: { findMany: async () => [] },
       dispatch: { count: async () => 0 },
       salesBill: { count: async () => 0 },
       monthlyProductionPlan: {
@@ -173,7 +173,7 @@ describe("requirementSheetLifecycleService.evaluateRequirementSheetCancellation"
           salesOrder: { orderType: "NO_QTY" },
         }),
       },
-      workOrder: { findFirst: async () => ({ id: 50, cycleId: 10 }) },
+      workOrder: { findMany: async () => [{ id: 50, cycleId: 10 }] },
       productionEntry: { count: async () => 1 },
       productionMaterialRequest: { findFirst: async () => null },
       materialIssueNote: { count: async () => 0 },
@@ -186,5 +186,33 @@ describe("requirementSheetLifecycleService.evaluateRequirementSheetCancellation"
     const res = await evaluateRequirementSheetCancellation(db, 1);
     assert.equal(res.allowed, false);
     assert.equal(res.code, "PRODUCTION_STARTED");
+  });
+
+  it("blocks cancellation when any active linked WO exists even without production", async () => {
+    const db = {
+      requirementSheet: {
+        findUnique: async () => ({
+          id: 1,
+          status: "LOCKED",
+          salesOrderId: 5,
+          periodKey: "2026-06",
+          cycleId: 10,
+          salesOrder: { orderType: "NO_QTY" },
+        }),
+      },
+      workOrder: { findMany: async () => [{ id: 50, cycleId: 10 }, { id: 51, cycleId: 10 }] },
+      productionEntry: { count: async () => 0 },
+      productionMaterialRequest: { findFirst: async () => null },
+      materialIssueNote: { count: async () => 0 },
+      dispatch: { count: async () => 0 },
+      salesBill: { count: async () => 0 },
+      monthlyProductionPlan: { findMany: async () => [] },
+      rmPoLineProcurementLink: { findFirst: async () => null },
+      grn: { count: async () => 0 },
+    };
+    const res = await evaluateRequirementSheetCancellation(db, 1);
+    assert.equal(res.allowed, false);
+    assert.equal(res.code, "WORK_ORDER_EXISTS");
+    assert.deepEqual(res.details.workOrderIds, [50, 51]);
   });
 });

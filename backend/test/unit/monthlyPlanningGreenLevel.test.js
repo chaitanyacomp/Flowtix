@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 
 const {
   getGreenLevels,
+  getHistoryPeriodKeysBefore,
   getLast6PeriodKeysBefore,
   aggregateMonthlyScheduleTotals,
   computeGreenBaseByItem,
@@ -90,8 +91,8 @@ function createReadOnlyMockDb({ sheets = [], fgItems = [] } = {}) {
   return db;
 }
 
-describe("monthlyPlanningGreenLevelService.getLast6PeriodKeysBefore", () => {
-  it("T1: returns six months immediately before anchor (anchor excluded)", () => {
+describe("monthlyPlanningGreenLevelService.getHistoryPeriodKeysBefore", () => {
+  it("returns six months immediately before anchor (anchor excluded)", () => {
     const keys = getLast6PeriodKeysBefore("2026-07");
     assert.deepEqual(keys, [
       "2026-01",
@@ -101,6 +102,12 @@ describe("monthlyPlanningGreenLevelService.getLast6PeriodKeysBefore", () => {
       "2026-05",
       "2026-06",
     ]);
+  });
+
+  it("supports configurable 3- and 12-month windows", () => {
+    assert.deepEqual(getHistoryPeriodKeysBefore("2026-07", 3), ["2026-04", "2026-05", "2026-06"]);
+    assert.equal(getHistoryPeriodKeysBefore("2026-07", 12).length, 12);
+    assert.equal(getHistoryPeriodKeysBefore("2026-07", 12)[0], "2025-07");
   });
 });
 
@@ -185,6 +192,7 @@ describe("monthlyPlanningGreenLevelService.getGreenLevels", () => {
     const res = await getGreenLevels({
       db,
       periodKey: "2026-07",
+      ...automaticGreenOpts,
       loadGlobalStockBreakdown: emptyStockBreakdown,
     });
     assert.equal(res.anchorPeriodKey, "2026-07");
@@ -234,6 +242,7 @@ describe("monthlyPlanningGreenLevelService.getGreenLevels", () => {
     const res = await getGreenLevels({
       db,
       periodKey: "2026-07",
+      ...automaticGreenOpts,
       loadGlobalStockBreakdown: emptyStockBreakdown,
     });
     const row = res.items.find((i) => i.itemId === 101);
@@ -257,6 +266,7 @@ describe("monthlyPlanningGreenLevelService.getGreenLevels", () => {
     await getGreenLevels({
       db,
       periodKey: "2026-07",
+      ...automaticGreenOpts,
       loadGlobalStockBreakdown: emptyStockBreakdown,
     });
     assert.ok(true, "no write methods invoked");
@@ -283,6 +293,7 @@ describe("monthlyPlanningGreenLevelService.getGreenLevels", () => {
     await getGreenLevels({
       db,
       periodKey: "2026-07",
+      ...automaticGreenOpts,
       loadGlobalStockBreakdown: emptyStockBreakdown,
     });
     assert.equal(updateCalled, false);
@@ -307,6 +318,9 @@ function mockStockBreakdown(overrides = {}) {
 }
 
 const emptyStockBreakdown = mockStockBreakdown();
+
+/** Existing RS-history tests target AUTOMATIC mode (pre-P11 follow-up behaviour). */
+const automaticGreenOpts = { greenLevelSource: "AUTOMATIC" };
 
 describe("monthlyPlanningGreenLevelService.classifyGreenLevelStatus", () => {
   const green = 21000;
@@ -360,6 +374,7 @@ describe("monthlyPlanningGreenLevelService.getGreenLevels status integration", (
     const res = await getGreenLevels({
       db,
       periodKey: "2026-07",
+      ...automaticGreenOpts,
       loadGlobalStockBreakdown: mockStockBreakdown({
         byItem: new Map([
           [
@@ -399,6 +414,7 @@ describe("monthlyPlanningGreenLevelService.getGreenLevels status integration", (
       const res = await getGreenLevels({
         db,
         periodKey: "2026-07",
+        ...automaticGreenOpts,
         loadGlobalStockBreakdown: mockStockBreakdown({
           byItem: new Map([[101, { freeSurplusUsableQty: c.free }]]),
         }),
@@ -419,10 +435,90 @@ describe("monthlyPlanningGreenLevelService.getGreenLevels status integration", (
     await getGreenLevels({
       db,
       periodKey: "2026-07",
+      ...automaticGreenOpts,
       loadGlobalStockBreakdown: mockStockBreakdown({
         byItem: new Map([[101, { freeSurplusUsableQty: 5000 }]]),
       }),
     });
     assert.equal(stockWrite, false);
+  });
+});
+
+describe("monthlyPlanningGreenLevelService MANUAL vs AUTOMATIC source", () => {
+  const fgWithManual = {
+    id: 101,
+    itemName: "Part A",
+    unit: "NOS",
+    redThresholdPercent: 40,
+    yellowThresholdPercent: 70,
+    fgManualGreenLevelQty: 18000,
+  };
+
+  it("MANUAL: uses item master qty; auto suggested from RS for reference", async () => {
+    const db = createReadOnlyMockDb({
+      sheets: [lockedSheet({ periodKey: "2026-03", lines: [fgLine({ requirementQty: 21000 })] })],
+      fgItems: [fgWithManual],
+    });
+    const res = await getGreenLevels({
+      db,
+      periodKey: "2026-07",
+      greenLevelSource: "MANUAL",
+      loadGlobalStockBreakdown: mockStockBreakdown({
+        byItem: new Map([[101, { freeSurplusUsableQty: 15000 }]]),
+      }),
+    });
+    assert.equal(res.greenLevelSource, "MANUAL");
+    const row = res.items.find((i) => i.itemId === 101);
+    assert.equal(row.manualGreenLevelQty, 18000);
+    assert.equal(row.autoSuggestedGreenLevelQty, 21000);
+    assert.equal(row.activeGreenLevelQty, 18000);
+    assert.equal(row.greenQty, 18000);
+    assert.equal(row.baseQty, 18000);
+    assert.equal(row.shortageForGreenTarget, 3000);
+  });
+
+  it("AUTOMATIC: ignores manual qty for active green level", async () => {
+    const db = createReadOnlyMockDb({
+      sheets: [lockedSheet({ periodKey: "2026-03", lines: [fgLine({ requirementQty: 21000 })] })],
+      fgItems: [fgWithManual],
+    });
+    const res = await getGreenLevels({
+      db,
+      periodKey: "2026-07",
+      greenLevelSource: "AUTOMATIC",
+      loadGlobalStockBreakdown: emptyStockBreakdown,
+    });
+    const row = res.items.find((i) => i.itemId === 101);
+    assert.equal(row.manualGreenLevelQty, 18000);
+    assert.equal(row.autoSuggestedGreenLevelQty, 21000);
+    assert.equal(row.activeGreenLevelQty, 21000);
+    assert.equal(row.greenQty, 21000);
+  });
+
+  it("MANUAL with no manual qty yields zero active green level", async () => {
+    const db = createReadOnlyMockDb({
+      sheets: [lockedSheet({ periodKey: "2026-03", lines: [fgLine({ requirementQty: 21000 })] })],
+      fgItems: [
+        {
+          id: 101,
+          itemName: "Part A",
+          unit: "NOS",
+          redThresholdPercent: 40,
+          yellowThresholdPercent: 70,
+          fgManualGreenLevelQty: null,
+        },
+      ],
+    });
+    const res = await getGreenLevels({
+      db,
+      periodKey: "2026-07",
+      greenLevelSource: "MANUAL",
+      loadGlobalStockBreakdown: emptyStockBreakdown,
+    });
+    const row = res.items.find((i) => i.itemId === 101);
+    assert.equal(row.activeGreenLevelQty, 0);
+    assert.equal(row.autoSuggestedGreenLevelQty, 21000);
+    assert.equal(row.shortageForGreenTarget, 0);
+    assert.equal(row.status, null);
   });
 });

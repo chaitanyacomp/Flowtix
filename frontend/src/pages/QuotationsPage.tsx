@@ -123,7 +123,7 @@ function QuotationNextStepCell({ r }: { r: QRow }) {
     );
   }
   if (r.workflowStatus === "REJECTED") {
-    return <span className="text-sm font-medium text-slate-400">â€”</span>;
+    return <span className="text-sm font-medium text-slate-400">—</span>;
   }
   if (isApproved(r.workflowStatus)) {
     return (
@@ -443,7 +443,7 @@ export function QuotationsPage() {
         <div className="rounded-t-lg border border-b-0 border-blue-200/80 bg-gradient-to-r from-blue-50/95 to-sky-50/90 px-3 py-2.5 text-[13px] leading-snug text-slate-800 shadow-sm">
           <p className="font-semibold text-slate-900">Approved quotations are ready for Sales Order creation.</p>
           <p className="mt-0.5 text-slate-700">
-            Select a quotation and use <span className="font-medium text-blue-900">Create Sales Order â†’</span> in the
+            Select a quotation and use <span className="font-medium text-blue-900">Create Sales Order →</span> in the
             operator panel.
           </p>
         </div>
@@ -768,7 +768,7 @@ export function QuotationsPage() {
                     Cancel
                   </Button>
                   <Button type="submit" disabled={saving}>
-                    {saving ? "Savingâ€¦" : "Save"}
+                    {saving ? "Saving…" : "Save"}
                   </Button>
                 </div>
               </form>

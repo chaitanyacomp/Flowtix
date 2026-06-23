@@ -39,7 +39,7 @@ function emptyNoQtyCommercial(): NoQtyCommercialDraft {
   };
 }
 
-/** Single `terms` field on quotation â€” grouped labels for NO_QTY commercial UX only. */
+/** Single `terms` field on quotation — grouped labels for NO_QTY commercial UX only. */
 function buildNoQtyTermsPayload(c: NoQtyCommercialDraft): string | undefined {
   const blocks: string[] = [];
   const push = (heading: string, body: string) => {
@@ -63,7 +63,7 @@ const noQtyCommercialTextareaMedium =
 
 function contractStatusLabel(raw: string): string {
   const s = raw.trim();
-  if (!s) return "â€”";
+  if (!s) return "—";
   return s
     .split("_")
     .map((w) => w.charAt(0) + w.slice(1).toLowerCase())
@@ -260,7 +260,7 @@ export function QuotationsNewPage() {
       const n = previewNum(l.gstPct);
       if (Number.isFinite(n)) pcts.add(String(n));
     }
-    if (pcts.size === 0) return "â€”";
+    if (pcts.size === 0) return "—";
     if (pcts.size === 1) return `${[...pcts][0]}%`;
     return "Mixed";
   }, [quoteLines]);
@@ -340,7 +340,7 @@ export function QuotationsNewPage() {
   if (loading) {
     return (
       <div className="flex flex-col gap-3 p-1 text-sm text-slate-600" aria-busy="true">
-        Loadingâ€¦
+        Loading…
       </div>
     );
   }
@@ -381,11 +381,11 @@ export function QuotationsNewPage() {
   const validationMessage = error
     ? error
     : isNoQty && !noQtyHasEnquiryLines
-      ? "No enquiry lines â€” update the enquiry first."
+      ? "No enquiry lines — update the enquiry first."
       : isNoQty && noQtyRatesIncomplete
         ? "Complete rate contracts for every item before saving."
         : isNoQty && noQtyRatesLoading
-          ? "Resolving rate contractsâ€¦"
+          ? "Resolving rate contracts…"
           : null;
   const saveDisabled = creating || !createEnquiryId || noQtySaveBlocked;
 
@@ -420,14 +420,14 @@ export function QuotationsNewPage() {
           <span>
             <span className="text-slate-500">Customer </span>
             <span className="font-semibold text-slate-900">
-              {selectedEnquiry?.customer.name ?? "â€”"}
+              {selectedEnquiry?.customer.name ?? "—"}
             </span>
           </span>
           <span className="text-slate-300">|</span>
           <span>
             <span className="text-slate-500">Enquiry </span>
             <span className="font-mono font-semibold text-slate-800">
-              #{selectedEnquiry?.id ?? "â€”"}
+              #{selectedEnquiry?.id ?? "—"}
             </span>
           </span>
           <span className="text-slate-300">|</span>
@@ -440,7 +440,7 @@ export function QuotationsNewPage() {
               <span className="text-slate-300">|</span>
               {noQtyRatesLoading ? (
                 <span className="text-slate-500" aria-live="polite">
-                  Resolving ratesâ€¦
+                  Resolving rates…
                 </span>
               ) : noQtyRatesIncomplete ? (
                 <Badge variant="warning" className="text-[10px]">
@@ -464,7 +464,7 @@ export function QuotationsNewPage() {
               >
                 {feasibleEnquiries.map((e) => (
                   <option key={e.id} value={e.id}>
-                    #{e.id} â€” {e.customer.name}
+                    #{e.id} — {e.customer.name}
                   </option>
                 ))}
               </select>
@@ -480,7 +480,7 @@ export function QuotationsNewPage() {
             >
               {feasibleEnquiries.map((e) => (
                 <option key={e.id} value={e.id}>
-                  #{e.id} â€” {e.customer.name}
+                  #{e.id} — {e.customer.name}
                 </option>
               ))}
             </select>
@@ -497,7 +497,7 @@ export function QuotationsNewPage() {
               Items &amp; rates
             </span>
             <span className="text-[11px] text-slate-500">
-              {isNoQty ? "From enquiry Â· contract-linked Â· read-only" : `${quoteLines.length} line${quoteLines.length === 1 ? "" : "s"}`}
+              {isNoQty ? "From enquiry · contract-linked · read-only" : `${quoteLines.length} line${quoteLines.length === 1 ? "" : "s"}`}
             </span>
           </div>
 
@@ -548,7 +548,7 @@ export function QuotationsNewPage() {
               <div className="text-[12px] font-semibold text-slate-800">
                 Grand total{" "}
                 <span className="ml-1 tabular-nums text-slate-900">
-                  â‚¹{formatInrAmount(sumPreview)}
+                  ₹{formatInrAmount(sumPreview)}
                 </span>
               </div>
             </div>
@@ -568,7 +568,7 @@ export function QuotationsNewPage() {
             </div>
             <div className="mt-0.5 text-[11px] text-slate-600">
               {isNoQty
-                ? "Rate contract-linked Â· qty managed later"
+                ? "Rate contract-linked · qty managed later"
                 : "Set payment / delivery and review totals"}
             </div>
           </div>
@@ -678,7 +678,7 @@ export function QuotationsNewPage() {
                           commercialConditions: e.target.value,
                         }))
                       }
-                      placeholder="Incoterms, price basis, escalationâ€¦"
+                      placeholder="Incoterms, price basis, escalation…"
                     />
                   </label>
                 </div>
@@ -726,7 +726,7 @@ export function QuotationsNewPage() {
               <span className="text-[12px] text-slate-500">
                 {isNoQty
                   ? "Ready to save commercial framework"
-                  : `Grand total â‚¹${formatInrAmount(sumPreview)}`}
+                  : `Grand total ₹${formatInrAmount(sumPreview)}`}
               </span>
             )}
           </div>
@@ -744,7 +744,7 @@ export function QuotationsNewPage() {
             onClick={() => void onCreateQuotation()}
             disabled={saveDisabled}
           >
-            {creating ? "Savingâ€¦" : "Save quotation â†’"}
+            {creating ? "Saving…" : "Save quotation →"}
           </Button>
         </div>
       </footer>
@@ -767,7 +767,7 @@ function NoQtyItemsView(props: {
   if (!lines.length) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-1.5 px-6 py-10 text-center">
-        <p className="text-[13px] text-amber-900">No enquiry lines â€” update the enquiry first.</p>
+        <p className="text-[13px] text-amber-900">No enquiry lines — update the enquiry first.</p>
       </div>
     );
   }
@@ -791,21 +791,21 @@ function NoQtyItemsView(props: {
             ? null
             : loading && !rateOk
               ? null
-              : (statusByLine[i] ?? "â€”");
+              : (statusByLine[i] ?? "—");
           return (
             <tr key={`${ln.itemId}-${i}`}>
               <td className="max-w-[14rem] truncate font-medium">{ln.item.itemName}</td>
               <td className="text-right tabular-nums">
                 {missing ? (
-                  <span className="text-amber-800">â€”</span>
+                  <span className="text-amber-800">—</span>
                 ) : loading && !rateOk ? (
-                  <span className="text-slate-400">â€¦</span>
+                  <span className="text-slate-400">…</span>
                 ) : (
-                  <>â‚¹{formatInrAmount(previewNum(draft?.rate ?? "0"))}</>
+                  <>₹{formatInrAmount(previewNum(draft?.rate ?? "0"))}</>
                 )}
               </td>
               <td className="text-right tabular-nums">
-                {missing ? "â€”" : loading && gstTxt === "" ? "â€¦" : `${previewNum(gstTxt || "0")}%`}
+                {missing ? "—" : loading && gstTxt === "" ? "…" : `${previewNum(gstTxt || "0")}%`}
               </td>
               <td className="text-right">
                 {missing ? (
@@ -813,7 +813,7 @@ function NoQtyItemsView(props: {
                     Missing
                   </span>
                 ) : loading && !rateOk ? (
-                  <span className="text-slate-400">â€¦</span>
+                  <span className="text-slate-400">…</span>
                 ) : (
                   <span className="text-[11px] font-medium text-slate-800">{statusDisp}</span>
                 )}
@@ -839,7 +839,7 @@ function QuotationDraftSummaryCards(props: {
       <div className="erp-kpi-segment !border-0 !bg-transparent px-2.5 py-1.5">
         <span className="erp-kpi-label">Rate contract</span>
         <span className={cn("erp-kpi-value text-[12px]", rcLinked ? "text-emerald-800" : "text-amber-800")}>
-          {isNoQty ? (rcLoading ? "â€¦" : rcLinked ? "Linked" : "Missing") : "N/A"}
+          {isNoQty ? (rcLoading ? "…" : rcLinked ? "Linked" : "Missing") : "N/A"}
         </span>
       </div>
       <div className="erp-kpi-segment !border-0 !bg-transparent px-2.5 py-1.5">

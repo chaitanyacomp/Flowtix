@@ -23,6 +23,9 @@ export function AdminSettingsPage() {
   const [legacyCompanyState, setLegacyCompanyState] = React.useState<string | null>(null);
   const [companyGstin, setCompanyGstin] = React.useState("");
   const [savingCompanyState, setSavingCompanyState] = React.useState(false);
+  const [greenLevelHistoryMonths, setGreenLevelHistoryMonths] = React.useState<3 | 6 | 12>(6);
+  const [greenLevelSource, setGreenLevelSource] = React.useState<"MANUAL" | "AUTOMATIC">("MANUAL");
+  const [savingGreenLevelHistory, setSavingGreenLevelHistory] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
   const [sa, setSa] = React.useState<StockAdjustmentPolicyDto>({
@@ -45,14 +48,18 @@ export function AdminSettingsPage() {
         companyGstin: string | null;
       }>("/api/settings/company-state"),
       apiFetch<StateRow[]>("/api/states"),
+      apiFetch<{ greenLevelHistoryMonths: number; greenLevelSource?: string }>("/api/settings/green-level-history"),
     ])
-      .then(([inv, ctrl, co, st]) => {
+      .then(([inv, ctrl, co, st, greenHist]) => {
         setStrict(Boolean(inv.strictInventoryControl));
         setSa(ctrl);
         setStates(st);
         setCompanyStateId(co.companyStateId ?? "");
         setLegacyCompanyState(co.companyState?.trim() ? co.companyState : null);
         setCompanyGstin(co.companyGstin?.trim() ? co.companyGstin : "");
+        const m = Number(greenHist.greenLevelHistoryMonths);
+        setGreenLevelHistoryMonths(m === 3 || m === 12 ? m : 6);
+        setGreenLevelSource(greenHist.greenLevelSource === "AUTOMATIC" ? "AUTOMATIC" : "MANUAL");
       })
       .catch((e) => setError(e instanceof Error ? e.message : "Failed to load settings"))
       .finally(() => setLoading(false));
@@ -130,6 +137,30 @@ export function AdminSettingsPage() {
     }
   }
 
+  async function onSaveGreenLevelHistory() {
+    setSavingGreenLevelHistory(true);
+    setError(null);
+    try {
+      const saved = await apiFetch<{ greenLevelHistoryMonths: number; greenLevelSource?: string }>(
+        "/api/settings/green-level-history",
+        {
+        method: "PUT",
+        body: JSON.stringify({ greenLevelHistoryMonths, greenLevelSource }),
+      },
+      );
+      const m = Number(saved.greenLevelHistoryMonths);
+      setGreenLevelHistoryMonths(m === 3 || m === 12 ? m : 6);
+      setGreenLevelSource(saved.greenLevelSource === "AUTOMATIC" ? "AUTOMATIC" : "MANUAL");
+      toast.showSuccess("Green Level planning settings saved");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Save failed";
+      setError(msg);
+      toast.showError(msg);
+    } finally {
+      setSavingGreenLevelHistory(false);
+    }
+  }
+
   const showWindowValue = sa.stockAdjustmentReverseWindowType === "HOURS" || sa.stockAdjustmentReverseWindowType === "DAYS";
 
   return (
@@ -188,6 +219,52 @@ export function AdminSettingsPage() {
 
           <Button type="button" disabled={loading || savingCompanyState} onClick={() => void onSaveCompanyGstDetails()}>
             {savingCompanyState ? "Saving…" : "Save company GST details"}
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card className="border-slate-200 shadow-sm">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base">FG Green Level planning</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4 text-sm text-slate-700">
+          <p>
+            Choose whether Monthly Planning uses manually entered FG Green Level quantities (go-live from Excel) or
+            automatic calculation from locked RS history. Green Shortage and RM requirements always follow the active
+            Green Level.
+          </p>
+          <label className="grid max-w-xs gap-1">
+            <span className="font-medium text-slate-800">Green Level source</span>
+            <select
+              className="h-9 rounded-md border border-slate-200 bg-white px-2 text-sm"
+              disabled={loading}
+              value={greenLevelSource}
+              onChange={(e) =>
+                setGreenLevelSource(e.target.value === "AUTOMATIC" ? "AUTOMATIC" : "MANUAL")
+              }
+            >
+              <option value="MANUAL">Manual (Item Master qty)</option>
+              <option value="AUTOMATIC">Automatic (MAX locked RS)</option>
+            </select>
+          </label>
+          <label className="grid max-w-xs gap-1">
+            <span className="font-medium text-slate-800">History months (automatic mode)</span>
+            <select
+              className="h-9 rounded-md border border-slate-200 bg-white px-2 text-sm"
+              disabled={loading}
+              value={greenLevelHistoryMonths}
+              onChange={(e) => {
+                const v = Number(e.target.value);
+                setGreenLevelHistoryMonths(v === 3 ? 3 : v === 12 ? 12 : 6);
+              }}
+            >
+              <option value={3}>3 months</option>
+              <option value={6}>6 months</option>
+              <option value={12}>12 months</option>
+            </select>
+          </label>
+          <Button type="button" disabled={loading || savingGreenLevelHistory} onClick={() => void onSaveGreenLevelHistory()}>
+            {savingGreenLevelHistory ? "Saving…" : "Save Green Level settings"}
           </Button>
         </CardContent>
       </Card>

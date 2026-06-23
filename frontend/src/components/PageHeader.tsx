@@ -8,6 +8,23 @@ import { isReportsReturnContext } from "../lib/drillDownRoutes";
 import { displaySalesOrderNo } from "../lib/docNoDisplay";
 import { NO_QTY_TERMS } from "../lib/flowTerminology";
 import { useCanOpenRequirementSheet } from "../hooks/useIsAdmin";
+import { useAuth } from "../hooks/useAuth";
+import { isStoreLikePlanningRole, noQtyAgreementListHref } from "../lib/noQtyStoreNavigation";
+
+function noQtySoBackTarget(
+  role: string | undefined | null,
+  salesOrderId?: number | null,
+): { to: string; label: string } {
+  const storeLike = isStoreLikePlanningRole(role);
+  const to = noQtyAgreementListHref(role, salesOrderId ?? undefined);
+  if (storeLike) {
+    return { to, label: "Back to NO_QTY Execution" };
+  }
+  if (salesOrderId != null && salesOrderId > 0) {
+    return { to, label: "Back to No Qty Sales Order" };
+  }
+  return { to, label: "Back to No Qty Sales Orders" };
+}
 
 /** Row below the shell title bar: primary actions (e.g. Add), right-aligned. */
 export function PageActions({ children, className }: { children: React.ReactNode; className?: string }) {
@@ -179,6 +196,7 @@ export function PageSmartBackLink({
   workflowSessionFallback?: boolean;
 }) {
   const location = useLocation();
+  const { role } = useAuth();
   const searchParams = React.useMemo(() => new URLSearchParams(location.search), [location.search]);
   const state = (location.state ?? {}) as unknown as {
     backTo?: unknown;
@@ -225,11 +243,23 @@ export function PageSmartBackLink({
     to = stateBackTo;
     label = stateBackLabel ?? "Back";
   } else if (stateFromKey) {
-    to = SMART_BACK_MAP[stateFromKey].to;
-    label = SMART_BACK_MAP[stateFromKey].label;
+    if (stateFromKey === "no_qty_so") {
+      const back = noQtySoBackTarget(role);
+      to = back.to;
+      label = back.label;
+    } else {
+      to = SMART_BACK_MAP[stateFromKey].to;
+      label = SMART_BACK_MAP[stateFromKey].label;
+    }
   } else if (querySourceKey) {
-    to = SMART_BACK_MAP[querySourceKey].to;
-    label = SMART_BACK_MAP[querySourceKey].label;
+    if (querySourceKey === "no_qty_so") {
+      const back = noQtySoBackTarget(role);
+      to = back.to;
+      label = back.label;
+    } else {
+      to = SMART_BACK_MAP[querySourceKey].to;
+      label = SMART_BACK_MAP[querySourceKey].label;
+    }
   } else if (sessionWorkflowBack) {
     to = sessionWorkflowBack.to;
     label = sessionWorkflowBack.label;
@@ -240,8 +270,9 @@ export function PageSmartBackLink({
     // If NO_QTY context exists, return to NO_QTY Sales Orders list (never a blank flow route).
     const ctx = readNoQtyContext(location);
     if (ctx.active && ctx.soId != null) {
-      to = "/sales-orders?soType=NO_QTY";
-      label = "Back to No Qty Sales Orders";
+      const back = noQtySoBackTarget(role, ctx.soId);
+      to = back.to;
+      label = back.label;
     } else {
       to = "/dashboard";
       label = "Back to Dashboard";
@@ -390,8 +421,11 @@ export function PageNoQtyFlowBackLink({
   className?: string;
 }) {
   const location = useLocation();
+  const { role } = useAuth();
   const ctx = React.useMemo(() => readNoQtyContext(location), [location]);
   const canOpenRs = useCanOpenRequirementSheet();
+  const listBack = noQtySoBackTarget(role);
+  const soScopedBack = noQtySoBackTarget(role, ctx.soId);
   if (!ctx.active) return null;
 
   const cycleIdRaw = ctx.qs.get("cycleId");
@@ -407,16 +441,14 @@ export function PageNoQtyFlowBackLink({
   const rsBackTarget =
     canOpenRs && ctx.soId != null
       ? { to: `/sales-orders/${ctx.soId}/requirement-sheets?${baseCtx}`, label: "Back to Requirement Sheet" }
-      : ctx.soId != null
-        ? { to: `/sales-orders?soType=NO_QTY&salesOrderId=${ctx.soId}`, label: "Back to No Qty Sales Order" }
-        : { to: "/sales-orders?soType=NO_QTY", label: "Back to No Qty Sales Orders" };
+      : soScopedBack;
 
   const chain: Record<NoQtyFlowStep, { to: string; label: string }> = {
     REQUIREMENT: ctx.fromDashboard
       ? { to: "/dashboard", label: "Back to Dashboard" }
-      : { to: "/sales-orders?soType=NO_QTY", label: "Back to No Qty Sales Orders" },
+      : listBack,
     // Back-compat: legacy "PLANNING" step behaves like Requirement list back.
-    PLANNING: { to: "/sales-orders?soType=NO_QTY", label: "Back to No Qty Sales Orders" },
+    PLANNING: listBack,
     WORK_ORDER: rsBackTarget,
     // NO_QTY flow is cycle-driven; Production returns to Requirement Sheet context (planning authority)
     // — but only for users who can actually open it.
@@ -435,8 +467,8 @@ export function PageNoQtyFlowBackLink({
 
   // Small safety: if salesOrderId is missing, still keep a safe step-to-step route (drops so scope).
   if (ctx.soId == null) {
-    chain.WORK_ORDER.to = "/sales-orders?soType=NO_QTY";
-    chain.PRODUCTION.to = "/sales-orders?soType=NO_QTY";
+    chain.WORK_ORDER.to = listBack.to;
+    chain.PRODUCTION.to = listBack.to;
     chain.QC.to = "/production?flow=NO_QTY&source=no_qty_so";
     chain.DISPATCH.to = "/qc-entry?source=no_qty_so";
     chain.SALES_BILL.to = "/dispatch?source=no_qty_so";
@@ -448,7 +480,8 @@ export function PageNoQtyFlowBackLink({
 
   const next = chain[step];
   // Avoid self-linking: if already at the computed target, fall back to NO_QTY list.
-  const to = next.to === `${location.pathname}${location.search}` || next.to === location.pathname ? "/sales-orders?soType=NO_QTY" : next.to;
+  const to =
+    next.to === `${location.pathname}${location.search}` || next.to === location.pathname ? listBack.to : next.to;
 
   return <PageBackLink to={to} label={next.label} className={className} />;
 }

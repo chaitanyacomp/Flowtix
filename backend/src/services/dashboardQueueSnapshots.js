@@ -1683,23 +1683,25 @@ async function getActiveNoQtySalesOrders(options = {}) {
     const planningPointerAhead =
       ptrNo != null && opCycleNo != null && ptrNo > opCycleNo && (primaryActiveSheet != null || fallbackSheet != null);
 
+    const sheetForMetadata = primaryActiveSheet ?? fallbackSheet;
+
     return {
       salesOrderId: sid,
       salesOrderDocNo: so.docNo ?? null,
       customerName: customerNameForSalesOrder(so),
       internalStatus: so.internalStatus ?? null,
-      /** Operator-facing: document-linked cycle (locked RS preferred). */
-      cycleId: opCycleId,
-      cycleNo: opCycleNo,
+      /** Operator-facing: document-linked cycle when an RS exists; else ACTIVE planning pointer. */
+      cycleId: sheetForMetadata?.cycleId ?? opCycleId,
+      cycleNo: sheetForMetadata?.cycle?.cycleNo ?? opCycleNo,
       /** SO planning pointer — may point at an empty next cycle; do not merge with RS doc for display. */
       planningPointerCycleId: ptrId,
       planningPointerCycleNo: ptrNo,
       noQtyPlanningPointerAhead: planningPointerAhead,
-      latestRequirementSheetId: fallbackSheet?.id ?? null,
-      latestRequirementSheetDocNo: fallbackSheet?.docNo ?? null,
-      latestRequirementSheetStatus: fallbackSheet?.status ?? null,
-      latestRequirementSheetCycleId: opCycleId,
-      latestRequirementSheetCycleNo: opCycleNo,
+      latestRequirementSheetId: sheetForMetadata?.id ?? null,
+      latestRequirementSheetDocNo: sheetForMetadata?.docNo ?? null,
+      latestRequirementSheetStatus: sheetForMetadata?.status ?? null,
+      latestRequirementSheetCycleId: sheetForMetadata?.cycleId ?? null,
+      latestRequirementSheetCycleNo: sheetForMetadata?.cycle?.cycleNo ?? null,
     };
   });
 }
@@ -2359,7 +2361,16 @@ async function getPausedWorkOrderRows() {
 }
 
 /**
- * NO_QTY sales orders with RS planning not yet locked (Control Tower read model).
+ * NO_QTY sales orders needing Store RS planning work (Control Tower / Pending Actions read model).
+ *
+ * Includes:
+ *  - no RS on active cycle → Create RS Cycle 1
+ *  - DRAFT RS on active cycle → Lock / open draft
+ *
+ * Excludes:
+ *  - LOCKED RS (monthly planning / WO placement supplemental actions)
+ *  - DRAFT on a non-active cycle (orphan pointer / stale cycle)
+ *
  * @param {{ limit?: number }} [options]
  */
 async function getNoQtyPlanningPendingRows(options = {}) {
@@ -2367,7 +2378,35 @@ async function getNoQtyPlanningPendingRows(options = {}) {
   const limit =
     Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(50, Math.max(1, Math.floor(limitRaw))) : 50;
   const rows = await getActiveNoQtySalesOrders({ limit });
-  return rows.filter((r) => String(r.latestRequirementSheetStatus ?? "").toUpperCase() !== "LOCKED");
+  return rows.filter((r) => {
+    const status = String(r.latestRequirementSheetStatus ?? "").trim().toUpperCase();
+    const hasSheet =
+      r.latestRequirementSheetId != null &&
+      Number.isFinite(Number(r.latestRequirementSheetId)) &&
+      Number(r.latestRequirementSheetId) > 0;
+
+    if (status === "LOCKED") return false;
+
+    if (status === "DRAFT" && hasSheet) {
+      const draftCycleId =
+        r.latestRequirementSheetCycleId != null && Number(r.latestRequirementSheetCycleId) > 0
+          ? Number(r.latestRequirementSheetCycleId)
+          : null;
+      const activeCycleId =
+        r.planningPointerCycleId != null && Number(r.planningPointerCycleId) > 0
+          ? Number(r.planningPointerCycleId)
+          : r.cycleId != null && Number(r.cycleId) > 0
+            ? Number(r.cycleId)
+            : null;
+      if (draftCycleId != null && activeCycleId != null && draftCycleId !== activeCycleId) return false;
+      return true;
+    }
+
+    /** First-cycle RS creation — no sheet row yet on this OPEN NO_QTY SO. */
+    if (!hasSheet && (!status || status === "NO_RS")) return true;
+
+    return false;
+  });
 }
 
 /**

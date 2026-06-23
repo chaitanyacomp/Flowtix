@@ -4,6 +4,7 @@ const TITLES: Record<string, string> = {
   "/control-tower": "Control Tower (Beta)",
   "/account": "Account",
   "/planning-dashboard": "Requirement & Cycle Planning",
+  "/no-qty-agreements": "NO_QTY Execution",
   "/export-history": "Export history",
   "/customers": "Customers",
   "/items": "Items",

@@ -86,6 +86,7 @@ const {
 } = require("../services/noQtySoManualCloseEligibility");
 const { findNoQtyNextRollingRequirementSheetTarget } = require("../services/noQtyRollingRequirementNav");
 const { resolveNoQtyWorkflowState } = require("../services/noQtyWorkflowEngine");
+const { batchAssessNoQtyPlacementStages } = require("../services/requirementSheetExecutionService");
 const { advanceNoQtyCycleForNextRequirementSheetIfEligible } = require("../services/noQtyCycleLifecycle");
 const { assertAnyAdminPassword } = require("../services/adminPasswordAuth");
 const { getUsableItemStockQty } = require("../services/stockService");
@@ -857,6 +858,26 @@ salesOrderRouter.get(
         }
       }
 
+      /** Pre-WO placement stage (Store-owned WO placement readiness). */
+      /** @type {Map<string, Awaited<ReturnType<typeof batchAssessNoQtyPlacementStages>> extends Map<string, infer V> ? V : never>} */
+      const noQtyPlacementBySoCycleKey = new Map();
+      if (noQtyIds.length && noQtyCycleIds.length) {
+        const placementPairs = [];
+        for (const key of noQtyLockedReqBySoCycleKey) {
+          if (noQtyWorkOrderBySoCycleKey.has(key)) continue;
+          const parts = String(key).split(":");
+          const soId = Number(parts[0]);
+          const cycleId = Number(parts[1]);
+          if (Number.isFinite(soId) && soId > 0 && Number.isFinite(cycleId) && cycleId > 0) {
+            placementPairs.push({ salesOrderId: soId, cycleId });
+          }
+        }
+        if (placementPairs.length) {
+          const assessed = await batchAssessNoQtyPlacementStages(prisma, placementPairs);
+          for (const [k, v] of assessed.entries()) noQtyPlacementBySoCycleKey.set(k, v);
+        }
+      }
+
       /** NO_QTY: server-side Create Next RS eligibility (ACTIVE cycle; same resolution as prepare-next RS). */
       /** @type {Map<number, Awaited<ReturnType<typeof computeNoQtyCreateNextRsEligibility>>>} */
       const createNextRsEligibilityBySoId = new Map();
@@ -1182,8 +1203,17 @@ salesOrderRouter.get(
                   stageKey = "NO_QTY_WORK_ORDER";
                   stageLabel = "Work order";
                 } else if (requirementExists) {
-                  stageKey = "NO_QTY_REQUIREMENT_READY";
-                  stageLabel = "Requirement ready";
+                  const placement = c > 0 ? noQtyPlacementBySoCycleKey.get(key) : null;
+                  if (placement?.processStageKey === "NO_QTY_READY_TO_PLACE_WO") {
+                    stageKey = "NO_QTY_READY_TO_PLACE_WO";
+                    stageLabel = "Ready to place WO";
+                  } else if (placement?.processStageKey === "NO_QTY_PROCUREMENT_IN_PROGRESS") {
+                    stageKey = "NO_QTY_PROCUREMENT_IN_PROGRESS";
+                    stageLabel = "Procurement in progress";
+                  } else {
+                    stageKey = "NO_QTY_REQUIREMENT_READY";
+                    stageLabel = "Monthly planning pending";
+                  }
                 } else {
                   stageKey = "NO_QTY_DRAFT";
                   stageLabel = "Draft";
@@ -1265,7 +1295,7 @@ salesOrderRouter.get(
                     case "PRODUCTION":
                       return "Production";
                     case "WORK_ORDER":
-                      return "Work order";
+                      return "Place WO";
                     case "REQUIREMENT":
                       return "Requirement";
                     case "COMPLETED":
@@ -1291,6 +1321,17 @@ salesOrderRouter.get(
                   noQtyCommercialCaption,
                   commercialStatusLabel: noQtyCommercialCaption,
                   noQtyGuidedCycleId,
+                  noQtyReadyToPlaceWo: (() => {
+                    const cid = wfCnt > 0 && wfPref ? wfPref.id : null;
+                    if (!cid) return false;
+                    return noQtyPlacementBySoCycleKey.get(`${s.id}:${cid}`)?.readyToPlaceWo === true;
+                  })(),
+                  noQtyPlacementRequirementSheetId: (() => {
+                    const cid = wfCnt > 0 && wfPref ? wfPref.id : null;
+                    if (!cid) return null;
+                    const sheetId = noQtyPlacementBySoCycleKey.get(`${s.id}:${cid}`)?.requirementSheetId;
+                    return sheetId != null ? Number(sheetId) : null;
+                  })(),
                   noQtyLatestBilledCycleNo: commercialCycleNoForCaption,
                   noQtyActualActiveCycleNo: wfPref?.cycleNo ?? null,
                   noQtyLatestCompletedCycleNo: wfCnt === 0 ? commercialCycleNoForCaption ?? null : null,

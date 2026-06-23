@@ -310,18 +310,33 @@ describe("monthlyPlanningService.updateProductionLines", () => {
     );
   });
 
-  it("rejects negative plannedFgQty", async () => {
+  it("rejects negative plannedFgQty when manually overridden", async () => {
     const db = createLinesMockDb({ status: "DRAFT", items: [{ id: 50, itemType: "FG" }] });
     await assert.rejects(
       () =>
         updateProductionLines({
           db,
           planId: 1,
-          upserts: [{ fgItemId: 50, plannedFgQty: -5 }],
+          upserts: [{ fgItemId: 50, plannedFgQty: -5, plannedQtyOverridden: true }],
           loadComposition: emptyCompositionLoader,
         }),
       (e) => e instanceof MonthlyPlanningError && e.code === "INVALID_QTY",
     );
+  });
+
+  it("defaults non-overridden negative client qty to suggested production", async () => {
+    const db = createLinesMockDb({ status: "DRAFT", items: [{ id: 50, itemType: "FG" }] });
+    const res = await updateProductionLines({
+      db,
+      planId: 1,
+      upserts: [{ fgItemId: 50, plannedFgQty: -5, plannedQtyOverridden: false }],
+      loadComposition: async () => ({
+        periodKey: "2026-06",
+        items: [{ itemId: 50, suggestedProduction: 120 }],
+      }),
+      loadGreenLevelsFn: emptyGreenLoader,
+    });
+    assert.equal(res.lines[0].plannedFgQty, 120);
   });
 
   it("blocks duplicate fgItemId within a request", async () => {
@@ -481,7 +496,7 @@ function createLockMockDb({
   return db;
 }
 
-function depsFor({ rmNeeded = new Map(), missingChildBoms = [], bomByFg = null, availability = [], availabilityThrows = false, allowLegacyLock = true } = {}) {
+function depsFor({ rmNeeded = new Map(), missingChildBoms = [], bomByFg = null, availability = [], availabilityThrows = false, allowLegacyLock = true, greenShortageFgItemId = 50, greenShortageQty = 10 } = {}) {
   return {
     allowLegacyLock,
     loadApprovedBomWithLines: async (_tx, fgItemId) => {
@@ -493,6 +508,10 @@ function depsFor({ rmNeeded = new Map(), missingChildBoms = [], bomByFg = null, 
       if (availabilityThrows) throw new Error("availability boom");
       return availability;
     },
+    loadFgGreenShortageInputs: async () =>
+      greenShortageQty > 0
+        ? [{ fgItemId: greenShortageFgItemId, fgItemName: `FG ${greenShortageFgItemId}`, greenShortage: greenShortageQty }]
+        : [],
   };
 }
 
@@ -521,7 +540,7 @@ describe("monthlyPlanningService.lockMonthlyPlan", () => {
     assert.equal(res.lines[0].rmItemId, 70);
     assert.equal(num(res.lines[0].grossDemandQty), 25);
     assert.equal(num(res.lines[0].netRequirementQty), 20);
-    assert.equal(res.lines[0].belowMinStockFlag, true); // free 5 < min 100
+    assert.equal(db.__state.rmPlanLines[0].belowMinStockFlag, false);
   });
 
   it("blocks an empty plan (no planned qty > 0)", async () => {

@@ -87,4 +87,38 @@ describe("noQtyWorkflowEngine role-aware actions", () => {
     assert.equal(admin.nextDepartmentAction, "NONE");
     assert.deepEqual(admin.roleAllowedSecondaryActions, ["CREATE_NEXT_RS"]);
   });
+
+  it("assigns WORK_ORDER to Store and not Production", () => {
+    const store = _test.roleAwareActionPayload({
+      role: "STORE",
+      overallAction: "WORK_ORDER",
+      secondaryActions: [],
+      optionalActions: [],
+      salesOrderId: 10,
+      cycleId: 20,
+      displaySummary: "RM available. Ready for Store to place Work Order(s).",
+    });
+    assert.equal(store.primaryActionForCurrentUser, "WORK_ORDER");
+    assert.equal(store.nextDepartmentAction, "NONE");
+    assert.equal(store.actionOwner, "STORE");
+
+    const production = _test.roleAwareActionPayload({
+      role: "PRODUCTION",
+      overallAction: "WORK_ORDER",
+      secondaryActions: [],
+      optionalActions: [],
+      salesOrderId: 10,
+      cycleId: 20,
+      displaySummary: "RM available. Ready for Store to place Work Order(s).",
+    });
+    assert.equal(production.primaryActionForCurrentUser, "NONE");
+    assert.equal(production.nextDepartmentAction, "WORK_ORDER");
+    assert.match(_test.departmentMessageFor("PRODUCTION", "WORK_ORDER", "WORK_ORDER"), /Store/i);
+  });
+
+  it("uses Store wording for Next RS department message", () => {
+    const msg = _test.departmentMessageFor("PRODUCTION", "CREATE_NEXT_RS", "CREATE_NEXT_RS");
+    assert.match(msg, /Store/i);
+    assert.doesNotMatch(msg, /Sales/i);
+  });
 });

@@ -37,6 +37,7 @@ type Item = {
   planningBufferPercent?: string | null;
   minimumStockQty?: string | null;
   reorderQty?: string | null;
+  fgManualGreenLevelQty?: string | null;
 };
 
 type UnitRow = { id: number; unitName: string; unitCode?: string | null };
@@ -118,6 +119,7 @@ export function ItemsPage() {
   const [gstRateStr, setGstRateStr] = React.useState("");
   const [taxOpen, setTaxOpen] = React.useState(false);
   const [planningOpen, setPlanningOpen] = React.useState(false);
+  const [fgManualGreenLevel, setFgManualGreenLevel] = React.useState("");
 
   const itemFormRef = React.useRef<HTMLFormElement | null>(null);
   const itemFormScrollRef = React.useRef<HTMLDivElement | null>(null);
@@ -235,6 +237,7 @@ export function ItemsPage() {
     setWarningCoveragePct("80");
     setHsnCode("");
     setGstRateStr("");
+    setFgManualGreenLevel("");
     // New item: keep tax fields visible by default.
     setTaxOpen(true);
     setPlanningOpen(false);
@@ -265,6 +268,11 @@ export function ItemsPage() {
     setTargetStock(i.reorderQty != null && String(i.reorderQty).trim() !== "" ? String(i.reorderQty) : "");
     setCriticalCoveragePct(i.redThresholdPercent != null && String(i.redThresholdPercent).trim() !== "" ? String(i.redThresholdPercent) : "50");
     setWarningCoveragePct(i.yellowThresholdPercent != null && String(i.yellowThresholdPercent).trim() !== "" ? String(i.yellowThresholdPercent) : "80");
+    setFgManualGreenLevel(
+      i.fgManualGreenLevelQty != null && String(i.fgManualGreenLevelQty).trim() !== ""
+        ? String(i.fgManualGreenLevelQty)
+        : "",
+    );
     // Editing: collapse only when tax info already exists; otherwise keep it open so it’s discoverable.
     const hasTaxInfo = Boolean((i.hsnCode ?? "").trim()) && Boolean(String(i.gstRate ?? "").trim());
     setTaxOpen(!hasTaxInfo);
@@ -334,6 +342,7 @@ export function ItemsPage() {
     let planningBufferPayload: number | null | undefined;
     let criticalPctPayload: number | null | undefined;
     let warningPctPayload: number | null | undefined;
+    let fgManualGreenLevelPayload: number | null | undefined;
     try {
       minimumStockQtyPayload = parseOptionalQty(minimumStock);
       if (isRmStockForm) {
@@ -350,6 +359,9 @@ export function ItemsPage() {
       }
       criticalPctPayload = parseCoveragePercent(criticalCoveragePct, "Critical coverage %");
       warningPctPayload = parseCoveragePercent(warningCoveragePct, "Warning coverage %");
+      if (creatingType === "FG") {
+        fgManualGreenLevelPayload = parseOptionalQty(fgManualGreenLevel);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Invalid stock control fields");
       return;
@@ -385,6 +397,9 @@ export function ItemsPage() {
               : {}),
             ...(criticalPctPayload !== undefined ? { redThresholdPercent: criticalPctPayload } : {}),
             ...(warningPctPayload !== undefined ? { yellowThresholdPercent: warningPctPayload } : {}),
+            ...(fgManualGreenLevelPayload !== undefined
+              ? { fgManualGreenLevelQty: fgManualGreenLevelPayload }
+              : {}),
             ...unitPatch,
           }),
         });
@@ -411,6 +426,9 @@ export function ItemsPage() {
               : {}),
             ...(criticalPctPayload !== undefined ? { redThresholdPercent: criticalPctPayload } : {}),
             ...(warningPctPayload !== undefined ? { yellowThresholdPercent: warningPctPayload } : {}),
+            ...(creatingType === "FG" && fgManualGreenLevelPayload !== undefined
+              ? { fgManualGreenLevelQty: fgManualGreenLevelPayload }
+              : {}),
           }),
         });
       }
@@ -831,10 +849,29 @@ export function ItemsPage() {
                                 </div>
                               </div>
                             ) : (
-                              <p className="text-xs text-slate-500">
-                                Finished goods use simple on-hand thresholds only — RM buffer % and purchase
-                                alerts do not apply.
-                              </p>
+                              <div className="space-y-2.5">
+                                <p className="text-xs text-slate-500">
+                                  Finished goods use simple on-hand thresholds — RM buffer % and purchase alerts do
+                                  not apply.
+                                </p>
+                                {creatingType === "FG" ? (
+                                  <div className="erp-form-field max-w-xs">
+                                    <span className="erp-form-label">Manual Green Level qty</span>
+                                    <Input
+                                      type="number"
+                                      min={0}
+                                      step="any"
+                                      value={fgManualGreenLevel}
+                                      onChange={(e) => setFgManualGreenLevel(e.target.value)}
+                                      placeholder="From Excel at go-live"
+                                    />
+                                    <p className="mt-1 text-xs text-slate-500">
+                                      Used when Admin Green Level source is Manual. Monthly Planning still shows
+                                      auto-suggested RS history for reference.
+                                    </p>
+                                  </div>
+                                ) : null}
+                              </div>
                             )}
                           </div>
                         </div>

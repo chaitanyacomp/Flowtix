@@ -14,7 +14,7 @@
 
 const { getRsSuggestionsForPeriod } = require("./monthlyPlanningRsSuggestionsService");
 const { getGreenLevels } = require("./monthlyPlanningGreenLevelService");
-const { normalizePeriodKey, MonthlyPlanningError } = require("./monthlyPlanningService");
+const { normalizePeriodKey, MonthlyPlanningError } = require("./monthlyPlanningPeriodUtils");
 
 function round3(value) {
   const num = Number(value);

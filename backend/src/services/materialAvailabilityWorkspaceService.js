@@ -614,6 +614,42 @@ async function loadProcuredSoPlanningMrs(db, filters, deps = {}) {
   return out;
 }
 
+/** NO_QTY MONTHLY_PLAN MR fully procured — Store places WO from RS Execution Workspace. */
+async function loadProcuredNoQtyMonthlyPlanMrs(db, filters) {
+  if (filters.workOrderId) return [];
+  const where = {
+    sourceType: "MONTHLY_PLAN",
+    status: { in: PROCURED_MR_STATUSES },
+    salesOrderId: { not: null },
+    salesOrder: {
+      orderType: "NO_QTY",
+      internalStatus: { notIn: POST_GRN_INELIGIBLE_SO_STATUSES },
+    },
+  };
+  if (filters.materialRequirementId) where.id = filters.materialRequirementId;
+  if (filters.salesOrderId) where.salesOrderId = filters.salesOrderId;
+
+  const rows = await db.materialRequirement.findMany({
+    where,
+    orderBy: { id: "desc" },
+    take: 100,
+    include: SO_PLANNING_MR_INCLUDE,
+  });
+
+  const out = [];
+  for (const mr of rows) {
+    const soId = Number(mr.salesOrderId ?? 0);
+    if (!(soId > 0)) continue;
+    const existingWo = await db.workOrder.findFirst({
+      where: { salesOrderId: soId, status: { not: "REJECTED" } },
+      select: { id: true },
+    });
+    if (existingWo) continue;
+    out.push(mr);
+  }
+  return out;
+}
+
 const SO_PLANNING_SHORTAGE_INCLUDE = {
   customer: true,
   lines: { include: { item: { select: { id: true, itemName: true, itemType: true, unit: true } } } },
@@ -1731,6 +1767,7 @@ function buildWoShortageCase({ wo, fgName, rmLines, pmrStatus, woMr, terminalMr,
 }
 
 function buildSoPlanningShortageCase({ mr, terminalMr, fgName, rmLines, caseSupply }) {
+  const isNoQty = mr?.salesOrder?.orderType === "NO_QTY";
   const procuredAwaitingWo = isProcuredMaterialRequirement(mr) && !mr.workOrderId;
   const activeMr =
     isPurchaseVisibleMaterialRequirement(mr) || isProcuredMaterialRequirement(mr) ? mr : null;
@@ -1745,16 +1782,20 @@ function buildSoPlanningShortageCase({ mr, terminalMr, fgName, rmLines, caseSupp
   const noWoEscalation = procuredAwaitingWo
     ? {
         ...escalationLifecycle,
-        label: "RM received in Store",
-        headline: "RM received in Store",
-        description: "Create Work Order in Prepare WO — material issue starts only after WO and PMR exist.",
+        label: isNoQty ? "RM available in Store" : "RM received in Store",
+        headline: isNoQty ? "Procurement complete — ready for WO placement" : "RM received in Store",
+        description: isNoQty
+          ? "Open the Requirement Sheet Execution Workspace to place Work Order batch(es)."
+          : "Create Work Order in Prepare WO — material issue starts only after WO and PMR exist.",
       }
     : escalationLifecycle.state === "PROCUREMENT_COMPLETED"
       ? {
           ...escalationLifecycle,
-          label: "Ready for WO creation",
-          headline: "RM ready for Prepare WO",
-          description: "Complete the Prepare WO step, then issue material after the work order exists.",
+          label: isNoQty ? "Ready for WO placement" : "Ready for WO creation",
+          headline: isNoQty ? "RM ready for WO placement" : "RM ready for Prepare WO",
+          description: isNoQty
+            ? "Open the Requirement Sheet Execution Workspace when Store is ready to place Work Orders."
+            : "Complete the Prepare WO step, then issue material after the work order exists.",
         }
       : escalationLifecycle;
   const allocationFirstStatus = deriveAllocationFirstWoStatus({
@@ -1768,6 +1809,7 @@ function buildSoPlanningShortageCase({ mr, terminalMr, fgName, rmLines, caseSupp
     workOrderNo: null,
     salesOrderId: mr.salesOrderId ?? null,
     salesOrderNo: mr.salesOrder?.docNo ?? null,
+    salesOrderOrderType: mr.salesOrder?.orderType ?? null,
     customerName: customerNameForSalesOrder(mr.salesOrder),
     fgItemName: fgName,
     materialRequirement: mapWoMrHeader(activeMr),
@@ -1781,11 +1823,13 @@ function buildSoPlanningShortageCase({ mr, terminalMr, fgName, rmLines, caseSupp
     issueStatusLabel: procuredAwaitingWo ? "WO not created yet — PMR pending WO" : "WO not created yet",
     nextStoreAction: procuredAwaitingWo || noWoEscalation.state === "PROCUREMENT_COMPLETED"
       ? {
-          key: "CREATE_WO",
-          label: "Create Work Order",
-          description: procuredAwaitingWo
-            ? "RM received in Store after GRN. Create the work order to open PMR and material issue."
-            : "RM is available for this SO. Return to Prepare WO to create the work order.",
+          key: isNoQty ? "PLACE_WO" : "CREATE_WO",
+          label: isNoQty ? "Place WO" : "Create Work Order",
+          description: isNoQty
+            ? "RM is available. Open the Requirement Sheet Execution Workspace to place Work Order batch(es)."
+            : procuredAwaitingWo
+              ? "RM received in Store after GRN. Create the work order to open PMR and material issue."
+              : "RM is available for this SO. Return to Prepare WO to create the work order.",
         }
       : {
           key: "CONTINUE_PROCUREMENT",
@@ -1998,8 +2042,11 @@ async function buildMaterialAvailabilityWorkspace(db = prisma, filtersInput = {}
   const workOrders = await filterNoQtyExecutionReleasedWorkOrders(db, workOrdersRaw);
   const soPlanningMrs = await loadCandidateSoPlanningMrs(db, filters);
   const procuredSoPlanningMrs = await loadProcuredSoPlanningMrs(db, filters, deps);
+  const procuredNoQtyMonthlyPlanMrs = await loadProcuredNoQtyMonthlyPlanMrs(db, filters);
   const coveredSoIds = new Set(
-    [...soPlanningMrs, ...procuredSoPlanningMrs].map((mr) => mr.salesOrderId).filter(Boolean),
+    [...soPlanningMrs, ...procuredSoPlanningMrs, ...procuredNoQtyMonthlyPlanMrs]
+      .map((mr) => mr.salesOrderId)
+      .filter(Boolean),
   );
   const soPlanningSalesOrders = await loadCandidateSoPlanningShortageSalesOrders(
     db,
@@ -2027,6 +2074,9 @@ async function buildMaterialAvailabilityWorkspace(db = prisma, filtersInput = {}
     for (const line of mr.lines || []) allRmIds.add(line.rmItemId);
   }
   for (const mr of procuredSoPlanningMrs) {
+    for (const line of mr.lines || []) allRmIds.add(line.rmItemId);
+  }
+  for (const mr of procuredNoQtyMonthlyPlanMrs) {
     for (const line of mr.lines || []) allRmIds.add(line.rmItemId);
   }
   const soRaw = [];
@@ -2150,6 +2200,62 @@ async function buildMaterialAvailabilityWorkspace(db = prisma, filtersInput = {}
   }
 
   for (const mr of procuredSoPlanningMrs) {
+    const rmLinesOnMr = filters.rmItemId ? (mr.lines || []).filter((line) => line.rmItemId === filters.rmItemId) : mr.lines || [];
+    if (!rmLinesOnMr.length) continue;
+    const requiredQtyByItemId = new Map();
+    for (const line of rmLinesOnMr) {
+      requiredQtyByItemId.set(line.rmItemId, round3((requiredQtyByItemId.get(line.rmItemId) || 0) + n(line.requiredQty || line.shortageQty)));
+    }
+    const availability = await deps.getMaterialAvailabilityByItems({
+      db,
+      itemIds: [...requiredQtyByItemId.keys()],
+      requiredQtyByItemId,
+    });
+    const pmrStatus = { openPmrs: [], latestStatus: null };
+    const virtualWo = virtualWoForSoPlanningMr(mr);
+    const fgName = fgNameForSalesOrder(mr.salesOrder);
+    const allRmLines = availability.map((line) =>
+      mapAvailabilityLine(line, itemById, {
+        pmrStatus,
+        traceByRmItemId,
+        bomIssue: false,
+        procuredAwaitingWo: true,
+        hasWorkOrder: false,
+      }),
+    );
+    pushCaseQueueRowFromLines(actionQueue, {
+      wo: virtualWo,
+      fgName,
+      rmLines: allRmLines,
+      pmrStatus,
+      materialRequirement: mr,
+      procuredAwaitingWo: true,
+      hasWorkOrder: false,
+      filters,
+    });
+    if (allRmLines.length) {
+      const caseSupplyPanel = await buildWoCaseSupplyPanel(db, null, allRmLines.map((l) => l.rmItemId), mr, virtualWo);
+      const soShortageCase = buildSoPlanningShortageCase({
+        mr,
+        terminalMr: null,
+        fgName,
+        rmLines: allRmLines,
+        caseSupply: caseSupplyPanel,
+      });
+      details.push(
+        buildDetail({
+          wo: virtualWo,
+          fgName,
+          rmLines: allRmLines,
+          pmrStatus,
+          woShortageCase: soShortageCase,
+          caseSupplyPanel,
+        }),
+      );
+    }
+  }
+
+  for (const mr of procuredNoQtyMonthlyPlanMrs) {
     const rmLinesOnMr = filters.rmItemId ? (mr.lines || []).filter((line) => line.rmItemId === filters.rmItemId) : mr.lines || [];
     if (!rmLinesOnMr.length) continue;
     const requiredQtyByItemId = new Map();

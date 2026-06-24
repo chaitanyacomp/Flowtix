@@ -7,7 +7,17 @@ import { apiFetch, ApiRequestError } from "../../../services/api";
 import { workOrdersFocusHref } from "../../../lib/drillDownRoutes";
 import { cn } from "../../../lib/utils";
 import { useToast } from "../../../contexts/ToastContext";
-import { formatPriorCycleExecutionBanner } from "../../../lib/requirementSheetExecutionWorkspaceUx";
+import {
+  EXECUTION_WO_HISTORY_MAX_ROWS,
+  executionWoHistoryVisibleCount,
+  formatExecutionQty,
+  formatPriorCycleExecutionBanner,
+  placementInlineReadinessMessage,
+  procurementCollapsedSummary,
+  rmCoverageChipClassName,
+  rmCoverageLabelFromPlacement,
+  rmDetailCollapsedSummary,
+} from "../../../lib/requirementSheetExecutionWorkspaceUx";
 
 type ProgressStatus = "NOT_STARTED" | "IN_PROGRESS" | "PARTIAL" | "COMPLETE" | "BLOCKED";
 type ReadinessDecision =
@@ -168,24 +178,11 @@ export type RsExecutionSummary = {
 };
 
 function fmtQty(n: number): string {
-  const v = Number(n);
-  if (!Number.isFinite(v)) return "0";
-  const r = Math.round(v * 1000) / 1000;
-  return Math.abs(r - Math.round(r)) < 1e-9
-    ? String(Math.round(r))
-    : r.toLocaleString(undefined, { maximumFractionDigits: 3 });
+  return formatExecutionQty(n);
 }
 
 function statusLabel(status: string): string {
   return String(status || "UNKNOWN").replace(/_/g, " ");
-}
-
-function decisionTone(status: ReadinessDecision): string {
-  if (status === "READY_TO_PLACE_WO") return "border-emerald-200 bg-emerald-50 text-emerald-900";
-  if (status === "PARTIALLY_READY") return "border-amber-200 bg-amber-50 text-amber-900";
-  if (status === "AWAITING_PROCUREMENT") return "border-sky-200 bg-sky-50 text-sky-900";
-  if (status === "EXISTING_WO_RUNNING") return "border-indigo-200 bg-indigo-50 text-indigo-900";
-  return "border-red-200 bg-red-50 text-red-900";
 }
 
 function statusBadgeClass(status: string): string {
@@ -202,11 +199,23 @@ function statusBadgeClass(status: string): string {
   return "border-slate-200 bg-slate-50 text-slate-600";
 }
 
-function KpiTile({ label, value, className }: { label: string; value: string; className?: string }) {
+function HeroKpiTile({ label, value, className }: { label: string; value: string; className?: string }) {
   return (
-    <div className={cn("rounded-md border border-slate-200 bg-white px-3 py-2", className)}>
+    <div
+      className={cn("rounded-md border border-slate-300 bg-white px-3 py-2.5 shadow-sm", className)}
+      data-testid={`execution-kpi-${label.toLowerCase().replace(/\s+/g, "-")}`}
+    >
       <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">{label}</div>
-      <div className="mt-0.5 text-lg font-semibold tabular-nums text-slate-900">{value}</div>
+      <div className="mt-0.5 text-xl font-semibold tabular-nums text-slate-900">{value}</div>
+    </div>
+  );
+}
+
+function ContextKpiTile({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border border-slate-200 bg-slate-50/80 px-2.5 py-1.5">
+      <div className="text-[10px] font-medium uppercase tracking-wide text-slate-500">{label}</div>
+      <div className="mt-0.5 text-sm font-semibold tabular-nums text-slate-800">{value}</div>
     </div>
   );
 }
@@ -219,18 +228,55 @@ function TinyStatus({ status }: { status: string }) {
   );
 }
 
+function CollapsibleWorkspaceSection({
+  title,
+  summary,
+  testId,
+  defaultOpen = false,
+  children,
+}: {
+  title: string;
+  summary: string;
+  testId: string;
+  defaultOpen?: boolean;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = React.useState(defaultOpen);
+  return (
+    <div className="mt-4 rounded-md border border-slate-200 bg-white" data-testid={testId} data-collapsed={open ? "false" : "true"}>
+      <button
+        type="button"
+        className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left"
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+      >
+        <div className="min-w-0">
+          <div className="text-xs font-semibold text-slate-800">{title}</div>
+          {!open ? <div className="mt-0.5 truncate text-[11px] text-slate-500">{summary}</div> : null}
+        </div>
+        <span className="shrink-0 text-sm text-slate-400" aria-hidden>
+          {open ? "−" : "+"}
+        </span>
+      </button>
+      {open ? <div className="border-t border-slate-100 px-3 py-2">{children}</div> : null}
+    </div>
+  );
+}
+
 export function RequirementSheetExecutionPanel({
   sheetId,
   salesOrderId,
   className,
   canPlaceWoBatch = false,
   priorCycleExecution = null,
+  executionMode = false,
 }: {
   sheetId: number;
   salesOrderId: number;
   className?: string;
   canPlaceWoBatch?: boolean;
   priorCycleExecution?: { viewingCycleNo: number | null; isPriorCycle: true } | null;
+  executionMode?: boolean;
 }) {
   const [data, setData] = React.useState<RsExecutionSummary | null>(null);
   const [loading, setLoading] = React.useState(true);
@@ -239,6 +285,7 @@ export function RequirementSheetExecutionPanel({
   const [draftQtyByItem, setDraftQtyByItem] = React.useState<Record<number, string>>({});
   const [submitBusy, setSubmitBusy] = React.useState(false);
   const [submitError, setSubmitError] = React.useState<string | null>(null);
+  const [woHistoryExpanded, setWoHistoryExpanded] = React.useState(false);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -267,7 +314,7 @@ export function RequirementSheetExecutionPanel({
     if (!data?.placement?.lines) return;
     const next: Record<number, string> = {};
     for (const line of data.placement.lines) {
-      next[line.itemId] = String(Math.max(0, Math.round(line.suggestedExecutableQty * 1000) / 1000)).replace(/\.000$/, "");
+      next[line.itemId] = fmtQty(Math.max(0, line.suggestedExecutableQty));
     }
     setDraftQtyByItem(next);
   }, [data?.placement?.lines]);
@@ -312,19 +359,46 @@ export function RequirementSheetExecutionPanel({
     [data?.placement?.lines, draftQtyByItem],
   );
 
-  const canSubmit = canPlaceWoBatch && !submitBusy && requestedLines.length > 0 && validationByItem.size === 0 && Boolean(data?.placement?.canPlace || data?.placement?.status === "PARTIALLY_READY" || data?.placement?.status === "READY");
+  const suggestedLines = React.useMemo(
+    () =>
+      (data?.placement?.lines ?? [])
+        .filter((line) => line.suggestedExecutableQty > 0)
+        .map((line) => ({ itemId: line.itemId, qty: line.suggestedExecutableQty })),
+    [data?.placement?.lines],
+  );
+
+  const placementAllowsSubmit = Boolean(
+    data?.placement?.canPlace ||
+      data?.placement?.status === "PARTIALLY_READY" ||
+      data?.placement?.status === "READY",
+  );
+
+  const canSubmitSuggested =
+    canPlaceWoBatch && !submitBusy && suggestedLines.length > 0 && placementAllowsSubmit;
+
+  const canSubmitCustom =
+    canPlaceWoBatch &&
+    !submitBusy &&
+    requestedLines.length > 0 &&
+    validationByItem.size === 0 &&
+    placementAllowsSubmit;
 
   function resetDrafts() {
     const next: Record<number, string> = {};
     for (const line of data?.placement?.lines ?? []) {
-      next[line.itemId] = String(Math.max(0, Math.round(line.suggestedExecutableQty * 1000) / 1000)).replace(/\.000$/, "");
+      next[line.itemId] = fmtQty(Math.max(0, line.suggestedExecutableQty));
     }
     setDraftQtyByItem(next);
     setSubmitError(null);
   }
 
-  async function submitPlacement() {
-    if (!data || !canSubmit) return;
+  async function submitPlacement(mode: "suggested" | "custom") {
+    if (!data) return;
+    const lines = mode === "suggested" ? suggestedLines : requestedLines;
+    if (mode === "suggested" && !canSubmitSuggested) return;
+    if (mode === "custom" && !canSubmitCustom) return;
+    if (!lines.length) return;
+
     setSubmitBusy(true);
     setSubmitError(null);
     try {
@@ -335,9 +409,7 @@ export function RequirementSheetExecutionPanel({
         workOrders?: Array<{ workOrderId: number; workOrderDocNo?: string | null }>;
       }>(`/api/requirement-sheets/${sheetId}/create-wo`, {
         method: "POST",
-        body: JSON.stringify({
-          lines: requestedLines,
-        }),
+        body: JSON.stringify({ lines }),
       });
       const createdLabels =
         res.workOrders?.length
@@ -383,6 +455,22 @@ export function RequirementSheetExecutionPanel({
         })
       : null;
 
+  const rmCoverageLabel = rmCoverageLabelFromPlacement({
+    placementStatus: data.placement.status,
+    rsBalanceQty: data.totals.rsBalanceQty,
+  });
+
+  const placementMessage = placementInlineReadinessMessage({
+    placementStatus: data.placement.status,
+    totalExecutableQty: data.placement.summary.totalExecutableQty,
+    rsBalanceQty: data.totals.rsBalanceQty,
+    placementReason: data.placement.reason,
+  });
+
+  const woRows = data.existingWoSummary;
+  const visibleWoCount = executionWoHistoryVisibleCount(woRows.length, woHistoryExpanded);
+  const visibleWoRows = woRows.slice(0, visibleWoCount);
+
   return (
     <div
       id="rs-execution-workspace"
@@ -398,54 +486,186 @@ export function RequirementSheetExecutionPanel({
           <div className="mt-0.5 text-xs text-violet-900">{priorCycleBanner.detail}</div>
         </div>
       ) : null}
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div>
+
+      {!executionMode ? (
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <div className="text-sm font-semibold text-slate-900">Execution Workspace</div>
-          <p className="mt-1 max-w-prose text-xs leading-relaxed text-slate-600">
-            Release creates Monthly Plan MR for procurement. Store reviews readiness here before future WO placement.
-          </p>
+          <Badge variant={data.release.released ? "success" : "default"}>
+            {data.release.released ? "Released to Procurement" : "Not Released"}
+          </Badge>
         </div>
-        <Badge variant={data.release.released ? "success" : "default"}>
-          {data.release.released ? "Released to Procurement" : "Not Released"}
-        </Badge>
-      </div>
+      ) : null}
 
-      <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-        <KpiTile label="RS Demand" value={fmtQty(data.totals.rsDemandQty)} />
-        <KpiTile label="WO Placed" value={fmtQty(data.totals.woPlacedQty)} />
-        <KpiTile label="RS Balance" value={fmtQty(data.totals.rsBalanceQty)} />
-        <KpiTile label="Procurement" value={data.procurement.summaryLabel} className="sm:col-span-2 lg:col-span-1" />
-      </div>
-
-      <div className="mt-4">
-        <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Execution Readiness</div>
-        <div className={cn("mt-1 rounded-md border px-3 py-2", decisionTone(data.readiness.status))}>
-          <div className="text-sm font-semibold">{data.readiness.label}</div>
-          <div className="mt-0.5 text-xs">{data.readiness.reason}</div>
+      <div data-testid="execution-hero-kpis" className="grid gap-2 sm:grid-cols-3">
+        <HeroKpiTile label="RS Balance" value={fmtQty(data.totals.rsBalanceQty)} />
+        <HeroKpiTile label="Suggested WO" value={fmtQty(data.placement.summary.totalExecutableQty)} />
+        <div
+          className={cn(
+            "flex flex-col justify-center rounded-md border px-3 py-2.5 shadow-sm",
+            rmCoverageChipClassName(rmCoverageLabel),
+          )}
+          data-testid="execution-kpi-rm-coverage"
+        >
+          <div className="text-[10px] font-semibold uppercase tracking-wide opacity-80">RM Coverage</div>
+          <div className="mt-0.5 text-xl font-semibold">{rmCoverageLabel}</div>
         </div>
       </div>
 
-      <div className="mt-4">
-        <div className="text-xs font-semibold text-slate-800">Procurement Progress</div>
-        <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
-          {data.procurementProgress.steps.map((step) => (
-            <div key={step.key} className="rounded-md border border-slate-200 bg-white px-2 py-2">
-              <div className="truncate text-[11px] font-medium text-slate-700">{step.label}</div>
-              <div className="mt-1">
-                <TinyStatus status={step.status} />
-              </div>
-            </div>
-          ))}
-        </div>
+      <div data-testid="execution-context-kpis" className="mt-2 grid max-w-md gap-2 sm:grid-cols-2">
+        <ContextKpiTile label="RS Demand" value={fmtQty(data.totals.rsDemandQty)} />
+        <ContextKpiTile label="WO Placed" value={fmtQty(data.totals.woPlacedQty)} />
       </div>
 
-      <div className="mt-4">
+      <div
+        className="mt-4 rounded-md border border-slate-200 bg-white px-3 py-3"
+        data-testid="execution-place-wo-block"
+      >
+        <div className="text-xs font-semibold text-slate-800">Place WO</div>
+        <p className="mt-1 text-[11px] leading-relaxed text-slate-600" data-testid="execution-placement-readiness">
+          {placementMessage}
+        </p>
+
+        {!canPlaceWoBatch ? (
+          <div className="mt-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+            Read-only role. WO placement is available to Store and Admin only.
+          </div>
+        ) : null}
+
+        {data.placement.lines.length === 0 ? (
+          <div className="mt-3 text-xs text-slate-600">No FG balance remains for WO placement.</div>
+        ) : (
+          <div className="mt-3 overflow-x-auto">
+            <table className="w-full min-w-[36rem] border-collapse text-xs" data-testid="execution-placement-grid">
+              <thead>
+                <tr className="border-b border-slate-200 text-left text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                  <th className="py-1.5 pr-2">FG Item</th>
+                  <th className="py-1.5 pr-2 text-right">RS Balance</th>
+                  <th className="py-1.5 pr-2 text-right">Suggested Qty</th>
+                  <th className="py-1.5 pr-2 text-right">Enter Qty</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.placement.lines.map((line) => {
+                  const draft = draftQtyByItem[line.itemId] ?? "";
+                  const lineError = validationByItem.get(line.itemId) ?? null;
+                  const disabledInput =
+                    !canPlaceWoBatch || line.rsBalanceQty <= 0 || line.suggestedExecutableQty <= 0;
+                  return (
+                    <tr key={line.itemId} className="border-b border-slate-100 text-slate-800">
+                      <td className="py-1.5 pr-2 font-medium">{line.itemName}</td>
+                      <td className="py-1.5 pr-2 text-right tabular-nums font-semibold">
+                        {fmtQty(line.rsBalanceQty)}
+                      </td>
+                      <td className="py-1.5 pr-2 text-right tabular-nums">{fmtQty(line.suggestedExecutableQty)}</td>
+                      <td className="py-1.5 pr-2 text-right">
+                        <Input
+                          className={cn("h-8 w-28 text-right tabular-nums", lineError && "border-red-300 bg-red-50")}
+                          value={draft}
+                          disabled={disabledInput}
+                          onChange={(e) => {
+                            setDraftQtyByItem((prev) => ({ ...prev, [line.itemId]: e.target.value }));
+                            setSubmitError(null);
+                          }}
+                        />
+                        {lineError ? <div className="mt-1 text-[10px] text-red-700">{lineError}</div> : null}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
+          <Button type="button" variant="outline" disabled={!canPlaceWoBatch || submitBusy} onClick={resetDrafts}>
+            Reset
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={!canSubmitSuggested}
+            data-testid="execution-create-suggested-wo"
+            onClick={() => void submitPlacement("suggested")}
+          >
+            {submitBusy ? "Placing..." : "Create Suggested WO"}
+          </Button>
+          <Button
+            type="button"
+            disabled={!canSubmitCustom}
+            data-testid="execution-create-custom-wo"
+            onClick={() => void submitPlacement("custom")}
+          >
+            {submitBusy ? "Placing..." : "Create Custom WO"}
+          </Button>
+        </div>
+
+        {submitError ? <div className="mt-2 text-xs text-red-700">{submitError}</div> : null}
+      </div>
+
+      <div className="mt-4 rounded-md border border-slate-200 bg-white px-3 py-2" data-testid="execution-wo-history">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="text-xs font-semibold text-slate-800">RM Readiness</div>
-          <div className="text-[11px] text-slate-500">Basis: RS Balance</div>
+          <div className="text-xs font-semibold text-slate-800">WO History</div>
+          {woRows.length > EXECUTION_WO_HISTORY_MAX_ROWS ? (
+            <button
+              type="button"
+              className="text-[11px] font-medium text-primary underline underline-offset-2"
+              data-testid="execution-wo-history-view-all"
+              onClick={() => setWoHistoryExpanded((value) => !value)}
+            >
+              {woHistoryExpanded ? "Show less" : `View all (${woRows.length})`}
+            </button>
+          ) : null}
         </div>
+        {woRows.length === 0 ? (
+          <p className="mt-1 text-xs text-slate-600">No WO placed yet for this Requirement Sheet.</p>
+        ) : (
+          <div className="mt-2 overflow-x-auto">
+            <table className="w-full min-w-[24rem] border-collapse text-xs" data-testid="execution-wo-history-table">
+              <thead>
+                <tr className="border-b border-slate-200 text-left text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                  <th className="py-1.5 pr-2">WO Number</th>
+                  <th className="py-1.5 pr-2 text-right">Qty</th>
+                  <th className="py-1.5 pr-2">Status</th>
+                  <th className="py-1.5 text-right">Details</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleWoRows.map((wo) => (
+                  <tr key={wo.workOrderId} className="border-b border-slate-100 text-slate-800">
+                    <td className="py-1.5 pr-2 font-medium">{wo.docNo?.trim() || `WO-${wo.workOrderId}`}</td>
+                    <td className="py-1.5 pr-2 text-right tabular-nums">{fmtQty(wo.woQty)}</td>
+                    <td className="py-1.5 pr-2">{statusLabel(wo.woStatus)}</td>
+                    <td className="py-1.5 text-right">
+                      <Link
+                        to={`${workOrdersFocusHref(wo.workOrderId)}&source=no_qty_so&salesOrderId=${salesOrderId}`}
+                        className="font-medium text-primary underline underline-offset-2"
+                      >
+                        Details
+                      </Link>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <CollapsibleWorkspaceSection
+        title="RM Detail"
+        testId="execution-rm-detail"
+        defaultOpen={false}
+        summary={rmDetailCollapsedSummary({
+          lineCount: data.rmReadiness.lines.length,
+          readyLineCount: data.rmReadiness.summary.readyLineCount,
+          partialLineCount: data.rmReadiness.summary.partialLineCount,
+          shortageQty: data.rmReadiness.summary.shortageQty,
+          missingBomCount: data.rmReadiness.summary.missingBomCount,
+        })}
+      >
         {data.rmReadiness.missingBoms.length > 0 ? (
-          <div className="mt-1 space-y-1 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
+          <div className="space-y-1 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
             {data.rmReadiness.missingBoms.map((m, index) => {
               const itemName = m.fgItemName || m.sfgName || (m.fgItemId ? `FG-${m.fgItemId}` : `SFG-${m.sfgItemId}`);
               return (
@@ -458,13 +678,13 @@ export function RequirementSheetExecutionPanel({
             })}
           </div>
         ) : data.rmReadiness.lines.length === 0 ? (
-          <p className="mt-1 text-xs text-slate-600">
+          <p className="text-xs text-slate-600">
             {data.totals.rsBalanceQty <= 0
               ? "No remaining RS balance."
               : "No RM requirement to preview for the current RS Balance."}
           </p>
         ) : (
-          <div className="mt-1 overflow-x-auto">
+          <div className="overflow-x-auto">
             <table className="w-full min-w-[42rem] border-collapse text-xs">
               <thead>
                 <tr className="border-b border-slate-200 text-left text-[10px] font-semibold uppercase tracking-wide text-slate-500">
@@ -493,196 +713,112 @@ export function RequirementSheetExecutionPanel({
             </table>
           </div>
         )}
-      </div>
+      </CollapsibleWorkspaceSection>
 
-      <div className="mt-4 rounded-md border border-slate-200 bg-white px-3 py-3">
-        <div className="flex flex-wrap items-start justify-between gap-2">
+      <CollapsibleWorkspaceSection
+        title="Procurement Progress"
+        testId="execution-procurement-progress"
+        defaultOpen={false}
+        summary={procurementCollapsedSummary({
+          steps: data.procurementProgress.steps,
+          summaryLabel: data.procurement.summaryLabel,
+        })}
+      >
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+          {data.procurementProgress.steps.map((step) => (
+            <div key={step.key} className="rounded-md border border-slate-200 bg-slate-50 px-2 py-2">
+              <div className="truncate text-[11px] font-medium text-slate-700">{step.label}</div>
+              <div className="mt-1">
+                <TinyStatus status={step.status} />
+              </div>
+            </div>
+          ))}
+        </div>
+      </CollapsibleWorkspaceSection>
+
+      <CollapsibleWorkspaceSection
+        title="Coverage Calculations"
+        testId="execution-coverage-calculations"
+        defaultOpen={false}
+        summary={`${data.placement.lines.length} FG line${data.placement.lines.length === 1 ? "" : "s"} · placement preview`}
+      >
+        <div className="space-y-3">
+          {data.placement.lines.map((line) => (
+            <div key={line.itemId} className="rounded-md border border-slate-100 bg-slate-50 px-2 py-2 text-xs">
+              <div className="font-semibold text-slate-800">{line.itemName}</div>
+              <div className="mt-1 text-slate-600">{line.reason}</div>
+              {line.rmLines.length > 0 ? (
+                <ul className="mt-1 space-y-0.5 text-[11px] text-slate-600">
+                  {line.rmLines.map((rm) => (
+                    <li key={rm.rmItemId}>
+                      {rm.rmItemName}: req {fmtQty(rm.requiredQty)}, avail {fmtQty(rm.availableQty)}, short{" "}
+                      {fmtQty(rm.shortageQty)} ({statusLabel(rm.status)})
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      </CollapsibleWorkspaceSection>
+
+      <CollapsibleWorkspaceSection
+        title="Audit / History"
+        testId="execution-audit-history"
+        defaultOpen={false}
+        summary={`${data.existingWoSummary.length} WO${data.existingWoSummary.length === 1 ? "" : "s"} · readiness ${statusLabel(data.readiness.status)}`}
+      >
+        <div className="space-y-3 text-xs text-slate-700">
           <div>
-            <div className="text-xs font-semibold text-slate-800">WO Batch Placement</div>
-            <p className="mt-0.5 text-[11px] leading-relaxed text-slate-600">
-              Place one WO at a time from the current RS Balance. Store can reduce the quantity per FG line before
-              submitting.
-            </p>
+            <div className="font-semibold text-slate-800">Execution readiness</div>
+            <div className="mt-0.5">{data.readiness.label}</div>
+            <div className="mt-0.5 text-slate-600">{data.readiness.reason}</div>
           </div>
-          <Badge
-            variant={
-              data.placement.status === "READY"
-                ? "success"
-                : data.placement.status === "PARTIALLY_READY"
-                  ? "warning"
-                  : "rejected"
-            }
-          >
-            {statusLabel(data.placement.status)}
-          </Badge>
-        </div>
-
-        <div className="mt-2 text-xs text-slate-600">{data.placement.reason}</div>
-        {!canPlaceWoBatch ? (
-          <div className="mt-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-            Read-only role. WO placement is available to Store and Admin only.
-          </div>
-        ) : null}
-
-        {data.placement.lines.length === 0 ? (
-          <div className="mt-3 text-xs text-slate-600">No FG balance remains for WO placement.</div>
-        ) : (
-          <div className="mt-3 overflow-x-auto">
-            <table className="w-full min-w-[62rem] border-collapse text-xs">
-              <thead>
-                <tr className="border-b border-slate-200 text-left text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                  <th className="py-1.5 pr-2">FG Item</th>
-                  <th className="py-1.5 pr-2 text-right">RS Demand</th>
-                  <th className="py-1.5 pr-2 text-right">WO Placed</th>
-                  <th className="py-1.5 pr-2 text-right">Remaining Balance</th>
-                  <th className="py-1.5 pr-2 text-right">Suggested Executable Qty</th>
-                  <th className="py-1.5 pr-2 text-right">Enter WO Qty</th>
-                  <th className="py-1.5">RM Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.placement.lines.map((line) => {
-                  const draft = draftQtyByItem[line.itemId] ?? "";
-                  const lineError = validationByItem.get(line.itemId) ?? null;
-                  const disabledInput = !canPlaceWoBatch || line.rsBalanceQty <= 0 || line.suggestedExecutableQty <= 0;
-                  return (
-                    <tr key={line.itemId} className="border-b border-slate-100 text-slate-800">
-                      <td className="py-1.5 pr-2 font-medium">{line.itemName}</td>
-                      <td className="py-1.5 pr-2 text-right tabular-nums">{fmtQty(line.rsDemandQty)}</td>
-                      <td className="py-1.5 pr-2 text-right tabular-nums">{fmtQty(line.woPlacedQty)}</td>
-                      <td className="py-1.5 pr-2 text-right tabular-nums font-semibold">{fmtQty(line.rsBalanceQty)}</td>
-                      <td className="py-1.5 pr-2 text-right tabular-nums">{fmtQty(line.suggestedExecutableQty)}</td>
-                      <td className="py-1.5 pr-2 text-right">
-                        <Input
-                          className={cn("h-8 w-28 text-right tabular-nums", lineError && "border-red-300 bg-red-50")}
-                          value={draft}
-                          disabled={disabledInput}
-                          onChange={(e) => {
-                            const value = e.target.value;
-                            setDraftQtyByItem((prev) => ({ ...prev, [line.itemId]: value }));
-                            setSubmitError(null);
-                          }}
-                        />
-                        {lineError ? <div className="mt-1 text-[10px] text-red-700">{lineError}</div> : null}
-                      </td>
-                      <td className="py-1.5">
-                        <div className="space-y-1">
-                          <TinyStatus status={line.status} />
-                          <div className="text-[10px] text-slate-500">{line.reason}</div>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-
-        <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-          <div className="text-[11px] text-slate-600">
-            Suggested total:{" "}
-            <span className="font-semibold tabular-nums text-slate-900">{fmtQty(data.placement.summary.totalExecutableQty)}</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <Button type="button" variant="outline" disabled={!canPlaceWoBatch || submitBusy} onClick={resetDrafts}>
-              Cancel
-            </Button>
-            <Button type="button" disabled={!canSubmit} onClick={() => void submitPlacement()}>
-              {submitBusy ? "Placing..." : "Place WO"}
-            </Button>
-          </div>
-        </div>
-
-        {submitError ? <div className="mt-2 text-xs text-red-700">{submitError}</div> : null}
-      </div>
-
-      <div className="mt-4">
-        <div className="text-xs font-semibold text-slate-800">Existing WO Summary</div>
-        {data.existingWoSummary.length === 0 ? (
-          <p className="mt-1 text-xs text-slate-600">No WO placed yet for this Requirement Sheet.</p>
-        ) : (
-          <div className="mt-1 overflow-x-auto">
-            <table className="w-full min-w-[48rem] border-collapse text-xs">
-              <thead>
-                <tr className="border-b border-slate-200 text-left text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                  <th className="py-1.5 pr-2">WO No</th>
-                  <th className="py-1.5 pr-2 text-right">WO Qty</th>
-                  <th className="py-1.5 pr-2">WO Status</th>
-                  <th className="py-1.5 pr-2">PMR Status</th>
-                  <th className="py-1.5 pr-2">RM Issue Status</th>
-                  <th className="py-1.5 pr-2">Production Status</th>
-                  <th className="py-1.5 text-right">Open</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.existingWoSummary.map((wo) => (
-                  <tr key={wo.workOrderId} className="border-b border-slate-100 text-slate-800">
-                    <td className="py-1.5 pr-2 font-medium">{wo.docNo?.trim() || `WO-${wo.workOrderId}`}</td>
-                    <td className="py-1.5 pr-2 text-right tabular-nums">{fmtQty(wo.woQty)}</td>
-                    <td className="py-1.5 pr-2">{statusLabel(wo.woStatus)}</td>
-                    <td className="py-1.5 pr-2">
-                      {wo.pmrId ? (
-                        <Link
-                          to={`/material-issue?pmrId=${wo.pmrId}`}
-                          className="font-medium text-primary underline underline-offset-2"
-                        >
-                          {wo.pmrDocNo?.trim() || `PMR-${wo.pmrId}`} ({statusLabel(wo.pmrStatus ?? "")})
-                        </Link>
-                      ) : (
-                        <span className="text-slate-500">None</span>
-                      )}
-                    </td>
-                    <td className="py-1.5 pr-2">
-                      <TinyStatus status={wo.rmIssueStatus} />
-                    </td>
-                    <td className="py-1.5 pr-2">{statusLabel(wo.productionStatus)}</td>
-                    <td className="py-1.5 text-right">
-                      <Link
-                        to={`${workOrdersFocusHref(wo.workOrderId)}&source=no_qty_so&salesOrderId=${salesOrderId}`}
-                        className="font-medium text-primary underline underline-offset-2"
-                      >
-                        Open WO
-                      </Link>
-                    </td>
+          {data.existingWoSummary.length > 0 ? (
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[48rem] border-collapse text-xs">
+                <thead>
+                  <tr className="border-b border-slate-200 text-left text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                    <th className="py-1.5 pr-2">WO No</th>
+                    <th className="py-1.5 pr-2 text-right">WO Qty</th>
+                    <th className="py-1.5 pr-2">PMR</th>
+                    <th className="py-1.5 pr-2">RM Issue</th>
+                    <th className="py-1.5 pr-2">Production</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-
-      <div className="mt-4">
-        <div className="text-xs font-semibold text-slate-800">Line Balance</div>
-        <div className="mt-1 overflow-x-auto">
-          <table className="w-full min-w-[28rem] border-collapse text-xs">
-            <thead>
-              <tr className="border-b border-slate-200 text-left text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                <th className="py-1.5 pr-2">FG Item</th>
-                <th className="py-1.5 pr-2 text-right">RS Demand</th>
-                <th className="py-1.5 pr-2 text-right">WO Placed</th>
-                <th className="py-1.5 text-right">RS Balance</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.lines.map((line) => (
-                <tr key={line.itemId} className="border-b border-slate-100 text-slate-800">
-                  <td className="py-1.5 pr-2 font-medium">{line.itemName}</td>
-                  <td className="py-1.5 pr-2 text-right tabular-nums">{fmtQty(line.rsDemandQty)}</td>
-                  <td className="py-1.5 pr-2 text-right tabular-nums">{fmtQty(line.woPlacedQty)}</td>
-                  <td className="py-1.5 text-right tabular-nums font-semibold">{fmtQty(line.rsBalanceQty)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                </thead>
+                <tbody>
+                  {data.existingWoSummary.map((wo) => (
+                    <tr key={wo.workOrderId} className="border-b border-slate-100 text-slate-800">
+                      <td className="py-1.5 pr-2 font-medium">{wo.docNo?.trim() || `WO-${wo.workOrderId}`}</td>
+                      <td className="py-1.5 pr-2 text-right tabular-nums">{fmtQty(wo.woQty)}</td>
+                      <td className="py-1.5 pr-2">
+                        {wo.pmrId ? (
+                          <Link
+                            to={`/material-issue?pmrId=${wo.pmrId}`}
+                            className="font-medium text-primary underline underline-offset-2"
+                          >
+                            {wo.pmrDocNo?.trim() || `PMR-${wo.pmrId}`}
+                          </Link>
+                        ) : (
+                          <span className="text-slate-500">None</span>
+                        )}
+                      </td>
+                      <td className="py-1.5 pr-2">
+                        <TinyStatus status={wo.rmIssueStatus} />
+                      </td>
+                      <td className="py-1.5 pr-2">{statusLabel(wo.productionStatus)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+          <p className="leading-relaxed text-slate-600">
+            RS Balance represents demand not yet placed on Work Orders. Production, QA, Dispatch, Carry Forward and
+            suggested production snapshots do not reduce RS Balance.
+          </p>
         </div>
-      </div>
-
-      <div className="mt-4 rounded-md border border-slate-200 bg-white px-3 py-2 text-xs leading-relaxed text-slate-600">
-        RS Balance represents demand not yet placed on Work Orders. Production, QA, Dispatch, Carry Forward and
-        suggested production snapshots do not reduce RS Balance.
-      </div>
+      </CollapsibleWorkspaceSection>
     </div>
   );
 }

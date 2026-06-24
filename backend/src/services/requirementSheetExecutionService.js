@@ -90,6 +90,99 @@ function rmLineStatus({ requiredQty, availableQty, shortageQty, incomingQty }) {
   return "AWAITING_PROCUREMENT";
 }
 
+/**
+ * WO placement totals for one locked RS (One RS → many WOs).
+ * @param {import("@prisma/client").PrismaClient | import("@prisma/client").Prisma.TransactionClient} db
+ * @param {number} requirementSheetId
+ */
+async function loadWoPlacementContextForSheet(db, requirementSheetId) {
+  const sheetId = Number(requirementSheetId);
+  const workOrdersRaw = await db.workOrder.findMany({
+    where: { requirementSheetId: sheetId },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    include: {
+      lines: { select: { id: true, fgItemId: true, qty: true, plannedQty: true } },
+      productionMaterialRequests: {
+        orderBy: { id: "desc" },
+        take: 1,
+        select: {
+          id: true,
+          docNo: true,
+          status: true,
+          lines: { select: { requiredQty: true, issuedQty: true } },
+        },
+      },
+    },
+  });
+
+  /** @type {Map<number, number>} */
+  const woPlacedByItem = new Map();
+  for (const wo of workOrdersRaw) {
+    if (!isNoQtyWoPlacedStatusCounted(wo.status)) continue;
+    for (const line of wo.lines ?? []) {
+      const itemId = Number(line.fgItemId);
+      if (!(itemId > 0)) continue;
+      const placed = woLinePlacedQty(line);
+      woPlacedByItem.set(itemId, round3((woPlacedByItem.get(itemId) ?? 0) + placed));
+    }
+  }
+
+  const existingWoSummary = workOrdersRaw.map((wo) => {
+    const pmr = wo.productionMaterialRequests?.[0] ?? null;
+    const woQty = round3((wo.lines ?? []).reduce((s, line) => s + woLinePlacedQty(line), 0));
+    const rmRequiredQty = round3((pmr?.lines ?? []).reduce((s, line) => s + dec(line.requiredQty), 0));
+    const rmIssuedQty = round3((pmr?.lines ?? []).reduce((s, line) => s + dec(line.issuedQty), 0));
+    return {
+      workOrderId: wo.id,
+      docNo: wo.docNo ?? null,
+      woQty,
+      woStatus: wo.status,
+      pmrId: pmr?.id ?? null,
+      pmrDocNo: pmr?.docNo ?? null,
+      pmrStatus: pmr?.status ?? null,
+      rmRequiredQty,
+      rmIssuedQty,
+      rmPendingIssueQty: round3(Math.max(0, rmRequiredQty - rmIssuedQty)),
+      rmIssueStatus: pmrIssueStatus(pmr),
+      productionStatus: productionStatusFromWorkOrder(wo),
+    };
+  });
+
+  return { workOrdersRaw, woPlacedByItem, existingWoSummary };
+}
+
+function buildRsBalanceLinesFromSheet(sheet, woPlacedByItem) {
+  const lines = (sheet.lines ?? []).map((ln) => {
+    const itemId = Number(ln.itemId);
+    const rsDemandQty = round3(dec(ln.requirementQty));
+    const woPlacedQty = round3(woPlacedByItem.get(itemId) ?? 0);
+    const rsBalanceQty = round3(Math.max(0, rsDemandQty - woPlacedQty));
+    return {
+      itemId,
+      itemName: ln.item?.itemName ?? `Item ${itemId}`,
+      rsDemandQty,
+      woPlacedQty,
+      rsBalanceQty,
+    };
+  });
+
+  const totals = {
+    rsDemandQty: round3(lines.reduce((s, l) => s + l.rsDemandQty, 0)),
+    woPlacedQty: round3(lines.reduce((s, l) => s + l.woPlacedQty, 0)),
+    rsBalanceQty: round3(lines.reduce((s, l) => s + l.rsBalanceQty, 0)),
+  };
+
+  return { lines, totals };
+}
+
+function deriveReadyToPlaceWo(totals, placement) {
+  const suggestedExecutableQty = round3(n(placement?.summary?.totalExecutableQty));
+  return (
+    totals.rsBalanceQty > EPS &&
+    (placement?.canPlace === true || suggestedExecutableQty > EPS)
+  );
+}
+
 async function loadProcurementProgress(db, { released, materialRequirement }) {
   const mrLines = materialRequirement?.lines ?? [];
   const mrLineIds = mrLines.map((line) => Number(line.id)).filter((id) => id > 0);
@@ -440,55 +533,8 @@ async function getRequirementSheetExecutionSummary(db, requirementSheetId, deps 
     });
   }
 
-  const workOrdersRaw = await db.workOrder.findMany({
-    where: { requirementSheetId: sheet.id },
-    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-    include: {
-      lines: { select: { id: true, fgItemId: true, qty: true, plannedQty: true } },
-      productionMaterialRequests: {
-        orderBy: { id: "desc" },
-        take: 1,
-        select: {
-          id: true,
-          docNo: true,
-          status: true,
-          lines: { select: { requiredQty: true, issuedQty: true } },
-        },
-      },
-    },
-  });
-
-  /** @type {Map<number, number>} */
-  const woPlacedByItem = new Map();
-  for (const wo of workOrdersRaw) {
-    if (!isNoQtyWoPlacedStatusCounted(wo.status)) continue;
-    for (const line of wo.lines ?? []) {
-      const itemId = Number(line.fgItemId);
-      if (!(itemId > 0)) continue;
-      const placed = woLinePlacedQty(line);
-      woPlacedByItem.set(itemId, round3((woPlacedByItem.get(itemId) ?? 0) + placed));
-    }
-  }
-
-  const lines = (sheet.lines ?? []).map((ln) => {
-    const itemId = Number(ln.itemId);
-    const rsDemandQty = round3(dec(ln.requirementQty));
-    const woPlacedQty = round3(woPlacedByItem.get(itemId) ?? 0);
-    const rsBalanceQty = round3(Math.max(0, rsDemandQty - woPlacedQty));
-    return {
-      itemId,
-      itemName: ln.item?.itemName ?? `Item ${itemId}`,
-      rsDemandQty,
-      woPlacedQty,
-      rsBalanceQty,
-    };
-  });
-
-  const totals = {
-    rsDemandQty: round3(lines.reduce((s, l) => s + l.rsDemandQty, 0)),
-    woPlacedQty: round3(lines.reduce((s, l) => s + l.woPlacedQty, 0)),
-    rsBalanceQty: round3(lines.reduce((s, l) => s + l.rsBalanceQty, 0)),
-  };
+  const { workOrdersRaw, woPlacedByItem, existingWoSummary } = await loadWoPlacementContextForSheet(db, sheet.id);
+  const { lines, totals } = buildRsBalanceLinesFromSheet(sheet, woPlacedByItem);
 
   const workOrders = workOrdersRaw.map((wo) => {
     const pmr = wo.productionMaterialRequests?.[0] ?? null;
@@ -502,27 +548,6 @@ async function getRequirementSheetExecutionSummary(db, requirementSheetId, deps 
       pmrId: pmr?.id ?? null,
       pmrDocNo: pmr?.docNo ?? null,
       pmrStatus: pmr?.status ?? null,
-    };
-  });
-
-  const existingWoSummary = workOrdersRaw.map((wo) => {
-    const pmr = wo.productionMaterialRequests?.[0] ?? null;
-    const woQty = round3((wo.lines ?? []).reduce((s, line) => s + woLinePlacedQty(line), 0));
-    const rmRequiredQty = round3((pmr?.lines ?? []).reduce((s, line) => s + dec(line.requiredQty), 0));
-    const rmIssuedQty = round3((pmr?.lines ?? []).reduce((s, line) => s + dec(line.issuedQty), 0));
-    return {
-      workOrderId: wo.id,
-      docNo: wo.docNo ?? null,
-      woQty,
-      woStatus: wo.status,
-      pmrId: pmr?.id ?? null,
-      pmrDocNo: pmr?.docNo ?? null,
-      pmrStatus: pmr?.status ?? null,
-      rmRequiredQty,
-      rmIssuedQty,
-      rmPendingIssueQty: round3(Math.max(0, rmRequiredQty - rmIssuedQty)),
-      rmIssueStatus: pmrIssueStatus(pmr),
-      productionStatus: productionStatusFromWorkOrder(wo),
     };
   });
 
@@ -592,54 +617,44 @@ const NO_QTY_PLACEMENT_STAGE_LABELS = Object.freeze({
   [NO_QTY_PLACEMENT_STAGE.MONTHLY_PLANNING_PENDING]: "Monthly planning pending",
 });
 
+function emptyNoQtyPlacementAssessment(overrides = {}) {
+  return {
+    processStageKey: null,
+    processStageLabel: null,
+    readyToPlaceWo: false,
+    requirementSheetId: null,
+    readinessStatus: null,
+    rsBalanceQty: 0,
+    suggestedWoQty: 0,
+    placementStatus: null,
+    existingWoSummary: [],
+    cycleId: null,
+    requirementSheetDocNo: null,
+    ...overrides,
+  };
+}
+
 /**
- * Lightweight placement stage for NO_QTY list / workflow / pending actions (no full execution payload).
+ * Lightweight placement stage for a single locked NO_QTY requirement sheet.
  *
  * @param {import("@prisma/client").PrismaClient | import("@prisma/client").Prisma.TransactionClient} db
- * @param {{ salesOrderId: number, cycleId: number }} input
+ * @param {number} requirementSheetId
  */
-async function assessNoQtyPlacementStageForCycle(db, input, deps = {}) {
-  const salesOrderId = Number(input?.salesOrderId);
-  const cycleId = Number(input?.cycleId);
-  if (!Number.isFinite(salesOrderId) || salesOrderId <= 0 || !Number.isFinite(cycleId) || cycleId <= 0) {
-    return {
-      processStageKey: null,
-      processStageLabel: null,
-      readyToPlaceWo: false,
-      requirementSheetId: null,
-      readinessStatus: null,
-    };
+async function assessNoQtyPlacementStageForSheet(db, requirementSheetId, deps = {}) {
+  const sheetId = Number(requirementSheetId);
+  if (!Number.isFinite(sheetId) || sheetId <= 0) {
+    return emptyNoQtyPlacementAssessment();
   }
 
-  const sheet = await db.requirementSheet.findFirst({
-    where: { salesOrderId, cycleId, status: "LOCKED" },
-    orderBy: [{ version: "desc" }, { id: "desc" }],
+  const sheet = await db.requirementSheet.findUnique({
+    where: { id: sheetId },
     include: {
+      salesOrder: { select: { id: true, orderType: true } },
       lines: { include: { item: { select: { id: true, itemName: true, itemType: true } } }, orderBy: { id: "asc" } },
     },
   });
-  if (!sheet) {
-    return {
-      processStageKey: null,
-      processStageLabel: null,
-      readyToPlaceWo: false,
-      requirementSheetId: null,
-      readinessStatus: null,
-    };
-  }
-
-  const existingWo = await db.workOrder.findFirst({
-    where: { salesOrderId, cycleId, status: { not: "REJECTED" } },
-    select: { id: true },
-  });
-  if (existingWo?.id) {
-    return {
-      processStageKey: null,
-      processStageLabel: null,
-      readyToPlaceWo: false,
-      requirementSheetId: Number(sheet.id),
-      readinessStatus: null,
-    };
+  if (!sheet || String(sheet.status ?? "").toUpperCase() !== "LOCKED" || sheet.salesOrder?.orderType !== "NO_QTY") {
+    return emptyNoQtyPlacementAssessment({ requirementSheetId: sheetId });
   }
 
   const periodKey = String(sheet.periodKey ?? "").trim();
@@ -664,53 +679,72 @@ async function assessNoQtyPlacementStageForCycle(db, input, deps = {}) {
     });
   }
 
-  const woPlacedByItem = new Map();
-  const lines = (sheet.lines ?? []).map((ln) => {
-    const itemId = Number(ln.itemId);
-    const rsDemandQty = round3(dec(ln.requirementQty));
-    const woPlacedQty = round3(woPlacedByItem.get(itemId) ?? 0);
-    const rsBalanceQty = round3(Math.max(0, rsDemandQty - woPlacedQty));
-    return {
-      itemId,
-      itemName: ln.item?.itemName ?? `Item ${itemId}`,
-      rsDemandQty,
-      woPlacedQty,
-      rsBalanceQty,
-    };
-  });
-  const totals = {
-    rsDemandQty: round3(lines.reduce((s, l) => s + l.rsDemandQty, 0)),
-    woPlacedQty: round3(lines.reduce((s, l) => s + l.woPlacedQty, 0)),
-    rsBalanceQty: round3(lines.reduce((s, l) => s + l.rsBalanceQty, 0)),
-  };
+  const { woPlacedByItem, existingWoSummary } = await loadWoPlacementContextForSheet(db, sheet.id);
+  const { lines, totals } = buildRsBalanceLinesFromSheet(sheet, woPlacedByItem);
 
   const rmReadiness = await buildRmReadiness(db, lines, deps);
+  const buildPlacementPreview = deps.buildNoQtyWoBatchPlacementPreview || buildNoQtyWoBatchPlacementPreview;
+  const placement = await buildPlacementPreview(db, sheet);
   const readiness = buildReadinessDecision({
     totals,
     rmReadiness,
-    existingWoSummary: [],
+    existingWoSummary,
     released,
     materialRequirement,
   });
 
-  const readyToPlaceWo = readiness.status === "READY_TO_PLACE_WO";
+  const suggestedWoQty = round3(n(placement?.summary?.totalExecutableQty));
+  const readyToPlaceWo = deriveReadyToPlaceWo(totals, placement);
   let processStageKey = NO_QTY_PLACEMENT_STAGE.MONTHLY_PLANNING_PENDING;
   if (readyToPlaceWo) {
     processStageKey = NO_QTY_PLACEMENT_STAGE.READY_TO_PLACE_WO;
+  } else if (totals.rsBalanceQty <= EPS) {
+    processStageKey = null;
   } else if (released && materialRequirement) {
     processStageKey = NO_QTY_PLACEMENT_STAGE.PROCUREMENT_IN_PROGRESS;
   }
 
   return {
     processStageKey,
-    processStageLabel: NO_QTY_PLACEMENT_STAGE_LABELS[processStageKey] ?? null,
+    processStageLabel: processStageKey ? NO_QTY_PLACEMENT_STAGE_LABELS[processStageKey] ?? null : null,
     readyToPlaceWo,
     requirementSheetId: Number(sheet.id),
     readinessStatus: readiness.status,
     periodKey: periodKey || null,
     released,
     materialRequirementId: materialRequirement?.id ?? null,
+    rsBalanceQty: totals.rsBalanceQty,
+    suggestedWoQty,
+    placementStatus: placement?.status ?? null,
+    existingWoSummary,
+    cycleId: sheet.cycleId != null ? Number(sheet.cycleId) : null,
+    requirementSheetDocNo: sheet.docNo ?? null,
   };
+}
+
+/**
+ * Lightweight placement stage for NO_QTY list / workflow / pending actions (no full execution payload).
+ *
+ * @param {import("@prisma/client").PrismaClient | import("@prisma/client").Prisma.TransactionClient} db
+ * @param {{ salesOrderId: number, cycleId: number }} input
+ */
+async function assessNoQtyPlacementStageForCycle(db, input, deps = {}) {
+  const salesOrderId = Number(input?.salesOrderId);
+  const cycleId = Number(input?.cycleId);
+  if (!Number.isFinite(salesOrderId) || salesOrderId <= 0 || !Number.isFinite(cycleId) || cycleId <= 0) {
+    return emptyNoQtyPlacementAssessment();
+  }
+
+  const sheet = await db.requirementSheet.findFirst({
+    where: { salesOrderId, cycleId, status: "LOCKED" },
+    orderBy: [{ version: "desc" }, { id: "desc" }],
+    select: { id: true },
+  });
+  if (!sheet) {
+    return emptyNoQtyPlacementAssessment();
+  }
+
+  return assessNoQtyPlacementStageForSheet(db, sheet.id, deps);
 }
 
 /**
@@ -736,11 +770,16 @@ async function batchAssessNoQtyPlacementStages(db, pairs, deps = {}) {
 
 module.exports = {
   getRequirementSheetExecutionSummary,
+  assessNoQtyPlacementStageForSheet,
   assessNoQtyPlacementStageForCycle,
   batchAssessNoQtyPlacementStages,
+  emptyNoQtyPlacementAssessment,
   NO_QTY_PLACEMENT_STAGE,
   NO_QTY_PLACEMENT_STAGE_LABELS,
   buildReadinessDecision,
+  deriveReadyToPlaceWo,
+  loadWoPlacementContextForSheet,
+  buildRsBalanceLinesFromSheet,
   woLinePlacedQty,
   procurementSummaryLabel,
 };

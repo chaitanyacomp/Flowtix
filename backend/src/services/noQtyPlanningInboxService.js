@@ -7,6 +7,11 @@ const { enrichSalesOrdersWithProcessStage } = require("./salesOrderProcessStage"
 const { enrichSalesOrderWithDispatchStats } = require("./salesOrderDispatchHelpers");
 const { resolveNoQtyWorkflowState } = require("./noQtyWorkflowEngine");
 const { qtyToNumber } = require("./rmPurchaseHelpers");
+const { buildRequirementSheetHref } = require("./noQtyRequirementSheetHref");
+const {
+  buildExecutionRegisterForSo,
+  executionRegisterSortPriority,
+} = require("./noQtyExecutionRegisterService");
 
 const CLOSED_SO_STATUSES = Object.freeze(["COMPLETED", "CLOSED", "MANUALLY_CLOSED"]);
 
@@ -62,6 +67,14 @@ function inboxAttentionScore(row) {
 
 function sortInboxRows(rows) {
   return [...rows].sort((a, b) => {
+    const aExec = executionRegisterSortPriority(a);
+    const bExec = executionRegisterSortPriority(b);
+    if (aExec != null && bExec != null) {
+      if (aExec !== bExec) return aExec - bExec;
+      const balDiff = Number(b.rsBalanceQty ?? 0) - Number(a.rsBalanceQty ?? 0);
+      if (balDiff !== 0) return balDiff;
+    }
+
     const ds = inboxAttentionScore(b) - inboxAttentionScore(a);
     if (ds !== 0) return ds;
     const ca = a.cycleNo ?? a.so?.noQtyActualActiveCycleNo ?? 0;
@@ -69,19 +82,6 @@ function sortInboxRows(rows) {
     if (cb !== ca) return Number(cb) - Number(ca);
     return Number(b.salesOrderId) - Number(a.salesOrderId);
   });
-}
-
-function buildRequirementSheetHref(salesOrderId, { sheetId, cycleId, focusExecution = false } = {}) {
-  const params = new URLSearchParams();
-  params.set("source", "no_qty_so");
-  params.set("salesOrderId", String(salesOrderId));
-  if (sheetId != null && Number(sheetId) > 0) params.set("sheetId", String(sheetId));
-  if (cycleId != null && Number(cycleId) > 0) params.set("cycleId", String(cycleId));
-  if (focusExecution) params.set("focus", "execution");
-  const qs = params.toString();
-  return qs
-    ? `/sales-orders/${salesOrderId}/requirement-sheets?${qs}`
-    : `/sales-orders/${salesOrderId}/requirement-sheets`;
 }
 
 async function sumOpenExecutionBalanceForSo(db, salesOrderId) {
@@ -154,7 +154,7 @@ async function getNoQtyPlanningInbox(db = prisma, options = {}) {
   if (!sos.length) return [];
 
   const soIds = sos.map((s) => s.id);
-  const [stagedRows, activeMetaRows, allSheets] = await Promise.all([
+  const [stagedRows, activeMetaRows, allSheets, lockedSheetsWithLines] = await Promise.all([
     enrichSalesOrdersWithProcessStage(
       db,
       sos.map((s) => enrichSalesOrderWithDispatchStats(s)),
@@ -173,6 +173,16 @@ async function getNoQtyPlanningInbox(db = prisma, options = {}) {
       },
       orderBy: [{ periodKey: "desc" }, { version: "desc" }, { id: "desc" }],
     }),
+    db.requirementSheet.findMany({
+      where: { salesOrderId: { in: soIds }, status: "LOCKED" },
+      include: {
+        lines: {
+          include: { item: { select: { id: true, itemName: true, itemType: true } } },
+          orderBy: { id: "asc" },
+        },
+      },
+      orderBy: [{ id: "desc" }],
+    }),
   ]);
 
   const stagedById = new Map(stagedRows.map((s) => [s.id, s]));
@@ -183,6 +193,13 @@ async function getNoQtyPlanningInbox(db = prisma, options = {}) {
     const arr = sheetsBySoId.get(sid) ?? [];
     arr.push(sh);
     sheetsBySoId.set(sid, arr);
+  }
+  const lockedSheetsBySoId = new Map();
+  for (const sh of lockedSheetsWithLines) {
+    const sid = sh.salesOrderId;
+    const arr = lockedSheetsBySoId.get(sid) ?? [];
+    arr.push(sh);
+    lockedSheetsBySoId.set(sid, arr);
   }
 
   const balanceBySoId = new Map();
@@ -230,6 +247,14 @@ async function getNoQtyPlanningInbox(db = prisma, options = {}) {
         cycleId: guidedCycleId,
         focusExecution,
       });
+
+      const executionRegister = await buildExecutionRegisterForSo(
+        db,
+        so.id,
+        guidedCycleId,
+        lockedSheetsBySoId.get(so.id) ?? [],
+        options.placementAssessorDeps ?? {},
+      );
 
       const soSummary = {
         id: so.id,
@@ -285,6 +310,7 @@ async function getNoQtyPlanningInbox(db = prisma, options = {}) {
         flowState,
         guidedCycleId,
         cycleNo,
+        ...executionRegister,
       };
     }),
   );
@@ -298,4 +324,5 @@ module.exports = {
   resolveRsStatus,
   resolveLockedPeriodKey,
   sumOpenExecutionBalanceForSo,
+  sortInboxRows,
 };

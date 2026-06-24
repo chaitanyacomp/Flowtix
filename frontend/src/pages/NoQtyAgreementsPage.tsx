@@ -1,7 +1,6 @@
 import * as React from "react";
 import { Link } from "react-router-dom";
 import { PageContainer, PageHeader } from "../components/PageHeader";
-import { NoQtyPlannerInboxSection } from "../components/erp/planning/NoQtyPlannerInboxSection";
 import { useNoQtyPlannerInbox } from "../hooks/useNoQtyPlannerInbox";
 import { useErpRefreshTick, ERP_REPORT_POLL_MS } from "../hooks/useErpRefreshTick";
 import { NO_QTY_PLANNING_HUB_HREF } from "../lib/noQtyStoreNavigation";
@@ -9,19 +8,14 @@ import { NO_QTY_TERMS } from "../lib/flowTerminology";
 import { buttonVariants } from "../components/ui/button";
 import { cn } from "../lib/utils";
 import { displaySalesOrderNo } from "../lib/docNoDisplay";
-import { Badge } from "../components/ui/badge";
-import { buildNoQtyGuidedHref } from "../lib/noQtyFlowState";
-import {
-  openCurrentRsButtonLabel,
-  resolveNoQtyInboxPlanningCta,
-} from "../lib/noQtyRsActionLabels";
 import { planningInboxCustomerName } from "../lib/planningInboxPresentation";
 import { useCanOpenRequirementSheet } from "../hooks/useIsAdmin";
-
-function fmtQty(n: number | null | undefined): string {
-  if (n == null || !Number.isFinite(n)) return "—";
-  return n.toFixed(3).replace(/\.000$/, "");
-}
+import {
+  formatNoQtyExecutionRegisterQty,
+  NO_QTY_OPEN_EXECUTION_WORKSPACE_LABEL,
+  noQtyExecutionActionNeededClassName,
+  resolveNoQtyExecutionWorkspaceHref,
+} from "../lib/noQtyRsActionLabels";
 
 export function NoQtyAgreementsPage() {
   const liveTick = useErpRefreshTick(["requirement", "dashboard", "reports"], {
@@ -29,12 +23,16 @@ export function NoQtyAgreementsPage() {
   });
   const { rows, loading, error } = useNoQtyPlannerInbox(liveTick);
   const canOpenRs = useCanOpenRequirementSheet();
+  const executionRows = React.useMemo(
+    () => rows.filter((row) => row.executionRegisterEnabled === true),
+    [rows],
+  );
 
   return (
     <PageContainer>
       <PageHeader
         title="NO_QTY Execution"
-        subtitle="Read-only agreement context for Store planning and execution. Commercial Sales Order editing stays with Admin."
+        subtitle="Track locked requirement sheets, remaining RS balance, RM coverage, and WO placement actions."
         actions={
           <Link
             to={NO_QTY_PLANNING_HUB_HREF}
@@ -45,95 +43,121 @@ export function NoQtyAgreementsPage() {
         }
       />
 
-      <NoQtyPlannerInboxSection rows={rows} loading={loading} error={error} className="mb-4" />
+      {error ? (
+        <div
+          className="mb-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800"
+          data-testid="no-qty-execution-error"
+        >
+          {error}
+        </div>
+      ) : null}
 
-      <div className="rounded-md border border-slate-200 bg-white shadow-sm">
+      <div
+        className="rounded-md border border-slate-200 bg-white shadow-sm"
+        data-testid="no-qty-execution-register"
+      >
         <div className="border-b border-slate-100 px-3 py-2">
-          <h2 className="text-sm font-semibold text-slate-900">Agreement register</h2>
+          <h2 className="text-sm font-semibold text-slate-900">Execution register</h2>
           <p className="mt-0.5 text-[11px] text-slate-600">
-            Open Requirement Sheet or Execution Workspace without using the commercial Sales Orders page.
+            Locked RS balance, RM coverage, and the next Store execution action per agreement.
           </p>
         </div>
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[52rem] border-collapse text-xs">
+          <table className="w-full min-w-[56rem] border-collapse text-xs">
             <thead>
               <tr className="border-b border-slate-200 bg-slate-50 text-left text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                <th className="px-3 py-2">Agreement</th>
+                <th className="px-3 py-2">SO</th>
                 <th className="px-3 py-2">Customer</th>
                 <th className="px-3 py-2">Cycle</th>
-                <th className="px-3 py-2">Latest RS</th>
-                <th className="px-3 py-2">RS status</th>
-                <th className="px-3 py-2 text-right">Open balance</th>
-                <th className="px-3 py-2">Next action</th>
+                <th className="px-3 py-2">RS</th>
+                <th className="px-3 py-2 text-right">RS Balance</th>
+                <th className="px-3 py-2 text-right">Suggested WO</th>
+                <th className="px-3 py-2">RM Coverage</th>
+                <th className="px-3 py-2">Action Needed</th>
                 <th className="px-3 py-2">Open</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan={8} className="px-3 py-4 text-slate-600">
-                    Loading agreements…
+                  <td colSpan={9} className="px-3 py-4 text-slate-600">
+                    Loading execution register…
                   </td>
                 </tr>
-              ) : rows.length === 0 ? (
+              ) : executionRows.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="px-3 py-4 text-slate-600">
-                    No active NO_QTY agreements right now.
+                  <td
+                    colSpan={9}
+                    className="px-3 py-4 text-slate-600"
+                    data-testid="no-qty-execution-empty"
+                  >
+                    No NO_QTY execution work is currently pending.
                   </td>
                 </tr>
               ) : (
-                rows.map((row) => {
-                  const { so, rsStatus, lockedPeriodKey, guidedCycleId, cycleNo } = row;
-                  const rsHref =
-                    row.requirementSheetHref ??
-                    buildNoQtyGuidedHref({
-                      to: `/sales-orders/${so.id}/requirement-sheets`,
-                      salesOrderId: so.id,
-                      cycleId: guidedCycleId,
-                      fromStep: "requirement",
-                    });
-                  const planningCta = resolveNoQtyInboxPlanningCta({
-                    processStageKey: so.processStage?.key,
+                executionRows.map((row) => {
+                  const { so, cycleNo, guidedCycleId } = row;
+                  const workspaceHref = resolveNoQtyExecutionWorkspaceHref({
                     salesOrderId: so.id,
-                    lockedPeriodKey,
-                    cycleId: guidedCycleId,
-                    requirementSheetId: so.noQtyPlacementRequirementSheetId ?? null,
-                    readyToPlaceWo: so.noQtyReadyToPlaceWo ?? false,
+                    executionWorkspaceHref: row.executionWorkspaceHref,
+                    placementRequirementSheetId: row.placementRequirementSheetId,
+                    guidedCycleId,
                   });
+                  const rsLabel =
+                    row.placementRequirementSheetNo?.trim() ||
+                    (row.placementRequirementSheetId != null
+                      ? `RS #${row.placementRequirementSheetId}`
+                      : "—");
+
                   return (
-                    <tr key={so.id} className="border-b border-slate-100 text-slate-800">
+                    <tr
+                      key={so.id}
+                      className="border-b border-slate-100 text-slate-800"
+                      data-testid={`no-qty-execution-row-${so.id}`}
+                    >
                       <td className="px-3 py-2 font-mono font-semibold tabular-nums">
                         {displaySalesOrderNo(so.id, so.docNo ?? null)}
                       </td>
                       <td className="px-3 py-2">{planningInboxCustomerName(so)}</td>
-                      <td className="px-3 py-2 tabular-nums">{cycleNo != null ? `Cycle ${cycleNo}` : "—"}</td>
-                      <td className="px-3 py-2 font-mono tabular-nums">
-                        {row.latestRsNo ?? (row.latestRsId != null ? `RS #${row.latestRsId}` : "—")}
+                      <td className="px-3 py-2 tabular-nums">
+                        {cycleNo != null ? `Cycle ${cycleNo}` : "—"}
+                      </td>
+                      <td className="px-3 py-2 font-mono tabular-nums" data-testid="execution-rs">
+                        {rsLabel}
+                      </td>
+                      <td
+                        className="px-3 py-2 text-right tabular-nums"
+                        data-testid="execution-rs-balance"
+                      >
+                        {formatNoQtyExecutionRegisterQty(row.rsBalanceQty)}
+                      </td>
+                      <td
+                        className="px-3 py-2 text-right tabular-nums"
+                        data-testid="execution-suggested-wo"
+                      >
+                        {formatNoQtyExecutionRegisterQty(row.suggestedWoQty)}
+                      </td>
+                      <td className="px-3 py-2" data-testid="execution-rm-coverage">
+                        {row.rmCoverageLabel ?? "—"}
+                      </td>
+                      <td
+                        className={cn("px-3 py-2", noQtyExecutionActionNeededClassName(row.actionNeededKey))}
+                        data-testid="execution-action-needed"
+                      >
+                        {row.actionNeededLabel ?? "—"}
                       </td>
                       <td className="px-3 py-2">
-                        <Badge variant={rsStatus === "Locked" ? "success" : rsStatus === "Draft" ? "warning" : "default"}>
-                          {rsStatus}
-                        </Badge>
-                      </td>
-                      <td className="px-3 py-2 text-right tabular-nums">{fmtQty(row.openExecutionBalanceQty)}</td>
-                      <td className="px-3 py-2">{row.pendingPlanningAction ?? "—"}</td>
-                      <td className="px-3 py-2">
-                        <div className="flex flex-wrap gap-1">
-                          {canOpenRs ? (
-                            <Link
-                              to={rsHref}
-                              className={cn(buttonVariants({ size: "sm", variant: "outline" }), "h-7 text-[11px]")}
-                            >
-                              {openCurrentRsButtonLabel()}
-                            </Link>
-                          ) : null}
+                        {canOpenRs && workspaceHref ? (
                           <Link
-                            to={planningCta.href}
+                            to={workspaceHref}
                             className={cn(buttonVariants({ size: "sm" }), "h-7 text-[11px]")}
+                            data-testid="execution-workspace-cta"
                           >
-                            {planningCta.label}
+                            {NO_QTY_OPEN_EXECUTION_WORKSPACE_LABEL}
                           </Link>
-                        </div>
+                        ) : (
+                          <span className="text-slate-400">—</span>
+                        )}
                       </td>
                     </tr>
                   );

@@ -1,5 +1,5 @@
 import { buildNoQtyGuidedHref, buildQcEntryHref, type NoQtyFlowState } from "./noQtyFlowState";
-import { noQtyRsCreationWorkspaceHref } from "./noQtyRsActionLabels";
+import { noQtyRsCreationWorkspaceHref, noQtyRsExecutionWorkspaceHref } from "./noQtyRsActionLabels";
 import { noQtyDashboardRowHasRs } from "./noQtyDashboardPresentation";
 
 export type ResolvedNoQtyContinuation =
@@ -15,6 +15,30 @@ function openCurrentRsNavigate(salesOrderId: number, effCycleId: number | null):
       salesOrderId,
       cycleId: effCycleId,
       fromStep: "requirement",
+    }),
+  };
+}
+
+function openExecutionWorkspaceNavigate(
+  salesOrderId: number,
+  cycleId: number | null,
+  requirementSheetId: number | null | undefined,
+  label = "Place WO",
+): ResolvedNoQtyContinuation {
+  const sheetId =
+    requirementSheetId != null && Number(requirementSheetId) > 0 ? Number(requirementSheetId) : null;
+  if (!sheetId) {
+    return openCurrentRsNavigate(salesOrderId, cycleId);
+  }
+  return {
+    kind: "navigate",
+    label,
+    to: noQtyRsExecutionWorkspaceHref({
+      salesOrderId,
+      cycleId,
+      requirementSheetId: sheetId,
+      source: "no_qty_dashboard",
+      from: "dashboard",
     }),
   };
 }
@@ -154,6 +178,9 @@ export function resolveNoQtyDashboardContinuation(args: {
     if (flow.createNextRsEligible) {
       return { kind: "prepare_next_rs", label: "Next RS" };
     }
+    if (flow.readyToPlaceWo) {
+      return openExecutionWorkspaceNavigate(salesOrderId, effCycleId, latestRequirementSheetId, "Place WO");
+    }
     return openCurrentRsNavigate(salesOrderId, effCycleId);
   }
 
@@ -227,16 +254,7 @@ export function resolveNoQtyDashboardContinuation(args: {
   }
 
   if (na === "WORK_ORDER" && (viewer === "ADMIN" || viewer === "STORE")) {
-    return {
-      kind: "navigate",
-      label: "Place WO",
-      to: `${buildNoQtyGuidedHref({
-        to: `/sales-orders/${salesOrderId}/requirement-sheets`,
-        salesOrderId,
-        cycleId: effCycleId,
-        fromStep: "requirement",
-      })}&focus=execution`,
-    };
+    return openExecutionWorkspaceNavigate(salesOrderId, effCycleId, latestRequirementSheetId, "Place WO");
   }
   if (na === "QC") {
     return openQc();

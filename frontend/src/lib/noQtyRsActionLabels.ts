@@ -586,4 +586,83 @@ export function noQtySoListHref(salesOrderId?: number, role?: string | null): st
   return noQtyAgreementListHref(role, salesOrderId);
 }
 
+/** P10-A4 — Execution register primary CTA label. */
+export const NO_QTY_OPEN_EXECUTION_WORKSPACE_LABEL = "Open Execution Workspace";
+
+export type NoQtyExecutionActionNeededKey =
+  | "PLACE_WO"
+  | "ISSUE_RM"
+  | "AWAIT_PROCUREMENT"
+  | "BLOCKED"
+  | "MONITOR_WO"
+  | "COMPLETE"
+  | string;
+
+/** Resolve execution workspace href from inbox row fields (API href preferred). */
+export function resolveNoQtyExecutionWorkspaceHref(input: {
+  salesOrderId: number;
+  executionWorkspaceHref?: string | null;
+  placementRequirementSheetId?: number | null;
+  guidedCycleId?: number | null;
+}): string | null {
+  const href = String(input.executionWorkspaceHref ?? "").trim();
+  if (href) return href;
+  const sheetId = input.placementRequirementSheetId;
+  if (sheetId == null || !Number.isFinite(Number(sheetId)) || Number(sheetId) <= 0) return null;
+  return noQtyRsExecutionWorkspaceHref({
+    salesOrderId: input.salesOrderId,
+    cycleId: input.guidedCycleId,
+    requirementSheetId: Number(sheetId),
+    source: "no_qty_execution",
+    from: "execution-register",
+  });
+}
+
+/** Prefer execution workspace when sheet id is known; otherwise NO_QTY Execution register. */
+export function noQtyExecutionEntryHref(input: {
+  salesOrderId: number;
+  placementRequirementSheetId?: number | null;
+  guidedCycleId?: number | null;
+  executionWorkspaceHref?: string | null;
+  role?: string | null;
+  source?: string;
+}): string {
+  const workspace = resolveNoQtyExecutionWorkspaceHref({
+    salesOrderId: input.salesOrderId,
+    executionWorkspaceHref: input.executionWorkspaceHref,
+    placementRequirementSheetId: input.placementRequirementSheetId,
+    guidedCycleId: input.guidedCycleId,
+  });
+  if (workspace) return workspace;
+  const base = noQtyAgreementListHref(input.role, input.salesOrderId);
+  if (!input.source) return base;
+  const sep = base.includes("?") ? "&" : "?";
+  return `${base}${sep}source=${encodeURIComponent(input.source)}`;
+}
+
+/** Compact tone classes for execution register Action Needed column. */
+export function noQtyExecutionActionNeededClassName(actionNeededKey?: string | null): string {
+  const key = String(actionNeededKey ?? "").toUpperCase();
+  switch (key) {
+    case "PLACE_WO":
+      return "font-semibold text-slate-900";
+    case "ISSUE_RM":
+      return "font-medium text-amber-800";
+    case "AWAIT_PROCUREMENT":
+      return "text-slate-500";
+    case "BLOCKED":
+      return "font-medium text-red-700";
+    case "MONITOR_WO":
+      return "text-slate-700";
+    case "COMPLETE":
+      return "text-emerald-700";
+    default:
+      return "text-slate-600";
+  }
+}
+
+export function formatNoQtyExecutionRegisterQty(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(n)) return "—";
+  return n.toFixed(3).replace(/\.000$/, "");
+}
 

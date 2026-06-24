@@ -152,22 +152,17 @@ export function deriveProcurementWarnings(input: {
   return out;
 }
 
+/** Store RM Control Center — free stock available for issue vs required qty (not GRN %). */
 export function lineCoveragePercent(line: {
   requiredQty: number;
-  shortageAfterReservationQty?: number;
-  coveredByIncomingQty?: number;
-  grnReceivedPercent?: number | null;
+  freeStockQty?: number;
+  availableQty?: number;
 }): number | null {
-  if (line.grnReceivedPercent != null && Number.isFinite(Number(line.grnReceivedPercent))) {
-    return Math.min(100, Math.max(0, Number(line.grnReceivedPercent)));
-  }
   const required = n(line.requiredQty);
   if (required <= EPS) return 100;
-  const shortage = n(line.shortageAfterReservationQty);
-  const stockCovered = Math.max(0, required - shortage);
-  const incoming = n(line.coveredByIncomingQty);
-  const total = Math.min(required, stockCovered + incoming);
-  return Math.min(100, Math.round((total / required) * 1000) / 10);
+  const available = Math.max(0, n(line.freeStockQty ?? line.availableQty));
+  const pct = (available / required) * 100;
+  return Math.min(100, Math.max(0, Math.round(pct)));
 }
 
 export function storeMayCreatePurchaseRequest(chip: ProcurementChip, canCreatePurchaseRequest: boolean, opts?: {

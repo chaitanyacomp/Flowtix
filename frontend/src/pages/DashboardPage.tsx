@@ -153,7 +153,12 @@ function isNoQtyResolvedRelevantForRole(role: string, resolved: ResolvedNoQtyCon
   if (role === "ADMIN") return true;
   if (role === "STORE") {
     if (resolved.kind === "prepare_next_rs") return true;
-    if (resolved.kind === "navigate" && String(resolved.to ?? "").includes("/requirement-sheets")) return true;
+    if (resolved.kind === "navigate") {
+      const to = String(resolved.to ?? "");
+      if (to.includes("/requirement-sheets") || to.includes("/no-qty-agreements") || to.includes("focus=execution")) {
+        return true;
+      }
+    }
     return false;
   }
   return false;

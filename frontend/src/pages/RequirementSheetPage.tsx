@@ -41,13 +41,14 @@ import {
   OpCtxSep,
 } from "../components/erp/OperationalWorkspaceChrome";
 import { ArrowLeft, CircleHelp } from "lucide-react";
-import { displaySalesOrderNo } from "../lib/docNoDisplay";
+import { displaySalesOrderNo, displayRequirementSheetNo } from "../lib/docNoDisplay";
 import { ActivityHistoryCard } from "../components/ActivityHistoryCard";
 import { PageNoQtyFlowBackLink } from "../components/PageHeader";
 import { NoQtyMacroLifecycleStrip } from "../components/erp/production/NoQtyMacroLifecycleStrip";
 import { NoQtyNextRsStatusPanel } from "../components/erp/production/NoQtyNextRsStatusPanel";
 import { NoQtyRsCycleSummaryPanel } from "../components/erp/production/NoQtyRsCycleSummaryPanel";
 import { RequirementSheetExecutionPanel } from "../components/erp/production/RequirementSheetExecutionPanel";
+import { ExecutionWorkspaceContextHeader } from "../components/erp/production/ExecutionWorkspaceContextHeader";
 import { ProductionFlowTypeBadge } from "../components/erp/production/ProductionFlowTypeBadge";
 import { PRODUCTION_FLOW_NO_QTY } from "../lib/productionFlowContract";
 import {
@@ -75,7 +76,11 @@ import { DemoFlowBanner } from "../components/demo/DemoFlowBanner";
 import { useCanCreateNextRs, useCanOpenRequirementSheet } from "../hooks/useIsAdmin";
 import { useAuth } from "../hooks/useAuth";
 import { noQtyAgreementListHref, isStoreLikePlanningRole } from "../lib/noQtyStoreNavigation";
-import { shouldRenderNoQtyExecutionWorkspace } from "../lib/requirementSheetExecutionWorkspaceUx";
+import {
+  isExecutionModeRequested,
+  shouldRenderNoQtyExecutionWorkspace,
+  shouldUseNoQtyExecutionModeShell,
+} from "../lib/requirementSheetExecutionWorkspaceUx";
 import { resolveRequirementSheetFlowStateCycleId } from "../lib/requirementSheetFlowCycle";
 
 class RequirementSheetErrorBoundary extends React.Component<
@@ -1215,6 +1220,19 @@ export function RequirementSheetPage() {
     canOpenRs,
   });
 
+  const executionModeRequested = isExecutionModeRequested(searchParams);
+  const useExecutionModeShell = shouldUseNoQtyExecutionModeShell({
+    executionModeRequested,
+    isNoQty,
+    soLoaded: so != null,
+  });
+  const executionRsLabel =
+    sheet != null
+      ? displayRequirementSheetNo(sheet.id, sheet.docNo)
+      : sheetIdFromUrl != null
+        ? displayRequirementSheetNo(sheetIdFromUrl, null)
+        : "RS —";
+
   const priorCycleExecutionContext = React.useMemo(
     () =>
       showNoQtyExecutionWorkspace && locked && !sheetOnActiveCycle
@@ -1224,12 +1242,13 @@ export function RequirementSheetPage() {
   );
 
   React.useEffect(() => {
+    if (useExecutionModeShell) return;
     if (searchParams.get("focus") !== "execution" || !showNoQtyExecutionWorkspace) return;
     const timer = window.setTimeout(() => {
       document.getElementById("rs-execution-workspace")?.scrollIntoView({ behavior: "smooth", block: "start" });
     }, 150);
     return () => window.clearTimeout(timer);
-  }, [searchParams, showNoQtyExecutionWorkspace, sheet?.id]);
+  }, [useExecutionModeShell, searchParams, showNoQtyExecutionWorkspace, sheet?.id]);
 
   const suppressDraftWarningBanner =
     justCreatedSheetId != null && sheet?.id != null && Number(sheet.id) === Number(justCreatedSheetId) && sheet.status === "DRAFT";
@@ -1312,6 +1331,63 @@ export function RequirementSheetPage() {
     return (
       <PageContainer>
         <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-900">Invalid sales order.</div>
+      </PageContainer>
+    );
+  }
+
+  if (useExecutionModeShell) {
+    return (
+      <PageContainer data-testid="no-qty-execution-mode-page">
+        <RequirementSheetErrorBoundary>
+          <OperationalContextSticky className="space-y-2">
+            <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-7 gap-1 px-2 text-slate-600"
+                onClick={() => nav(noQtyAgreementListHref(viewerRole))}
+              >
+                <ArrowLeft className="h-3.5 w-3.5 shrink-0" />
+                {isStoreLikePlanningRole(viewerRole) ? "NO_QTY Execution" : "No Qty SOs"}
+              </Button>
+            </div>
+            <ExecutionWorkspaceContextHeader
+              soLabel={displaySalesOrderNo(soId, so?.docNo)}
+              customerName={customerName}
+              cycleNo={sheetDisplayCycleNo}
+              rsLabel={executionRsLabel}
+              rsStatus={sheet?.status}
+            />
+          </OperationalContextSticky>
+
+          {error ? (
+            <div className="mt-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{error}</div>
+          ) : null}
+
+          {!sheet && !error ? (
+            <div className="mt-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+              Loading execution workspace…
+            </div>
+          ) : null}
+
+          {!showNoQtyExecutionWorkspace && sheet ? (
+            <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+              Execution workspace is available only for locked requirement sheets.
+            </div>
+          ) : null}
+
+          {showNoQtyExecutionWorkspace && sheet ? (
+            <RequirementSheetExecutionPanel
+              sheetId={sheet.id}
+              salesOrderId={sheet.salesOrderId}
+              canPlaceWoBatch={canOpenRs}
+              priorCycleExecution={priorCycleExecutionContext}
+              executionMode
+              className="mt-2 w-full"
+            />
+          ) : null}
+        </RequirementSheetErrorBoundary>
       </PageContainer>
     );
   }

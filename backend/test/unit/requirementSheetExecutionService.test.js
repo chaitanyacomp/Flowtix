@@ -2,6 +2,8 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const {
   getRequirementSheetExecutionSummary,
+  assessNoQtyPlacementStageForCycle,
+  deriveReadyToPlaceWo,
   woLinePlacedQty,
 } = require("../../src/services/requirementSheetExecutionService");
 
@@ -59,6 +61,7 @@ function readinessDeps({
   availabilityRows = [],
   onFgLines = null,
   loadApprovedBomWithLines = async () => ({ id: 1, lines: [{ id: 1 }] }),
+  buildNoQtyWoBatchPlacementPreview = null,
 } = {}) {
   return {
     loadApprovedBomWithLines,
@@ -67,8 +70,101 @@ function readinessDeps({
       return { rmNeeded, missingChildBoms };
     },
     getMaterialAvailabilityByItems: async () => availabilityRows,
+    ...(buildNoQtyWoBatchPlacementPreview ? { buildNoQtyWoBatchPlacementPreview } : {}),
   };
 }
+
+function createAssessorMockDb(state) {
+  const enrichSheet = (top) => {
+    if (!top) return null;
+    return {
+      ...top,
+      salesOrder: top.salesOrder ?? { id: top.salesOrderId, orderType: "NO_QTY" },
+      lines: (top.lines ?? []).map((ln) => ({
+        ...ln,
+        item: ln.item ?? { id: ln.itemId, itemName: ln.itemName ?? `Item ${ln.itemId}`, itemType: "FG" },
+      })),
+    };
+  };
+  const base = createMockDb(state);
+  return {
+    ...base,
+    requirementSheet: {
+      findUnique: async ({ where }) => enrichSheet(state.sheets.find((s) => s.id === where.id) ?? null),
+      findFirst: async ({ where, orderBy, select }) => {
+        let rows = state.sheets.filter((s) => {
+          if (where.salesOrderId != null && s.salesOrderId !== where.salesOrderId) return false;
+          if (where.cycleId != null && s.cycleId !== where.cycleId) return false;
+          if (where.status != null && s.status !== where.status) return false;
+          return true;
+        });
+        if (orderBy) {
+          rows = [...rows].sort((a, b) => {
+            const va = Number(a.version ?? 1);
+            const vb = Number(b.version ?? 1);
+            if (vb !== va) return vb - va;
+            return Number(b.id) - Number(a.id);
+          });
+        }
+        const top = rows[0] ?? null;
+        if (!top) return null;
+        if (select?.id) return { id: top.id };
+        return enrichSheet(top);
+      },
+    },
+  };
+}
+
+function placementPreviewDeps({
+  canPlace = true,
+  totalExecutableQty = 7000,
+  totalRsBalanceQty = 7000,
+  status = "PARTIALLY_READY",
+} = {}) {
+  return readinessDeps({
+    rmNeeded: new Map([[700, 0.5]]),
+    availabilityRows: [
+      {
+        itemId: 700,
+        itemName: "RM-A",
+        requiredQty: 5000,
+        freeStockQty: 10000,
+        shortageAfterReservationQty: 0,
+        incomingQty: 0,
+      },
+    ],
+    buildNoQtyWoBatchPlacementPreview: async () => ({
+      canPlace,
+      status,
+      reason: "test",
+      summary: {
+        totalRsBalanceQty,
+        totalExecutableQty,
+        totalWoPlacedQty: 3000,
+        totalRsDemandQty: 10000,
+      },
+      lines: [],
+    }),
+  });
+}
+
+const lockedSheetFixture = {
+  id: 1,
+  salesOrderId: 10,
+  cycleId: 2,
+  periodKey: "2026-06",
+  status: "LOCKED",
+  version: 1,
+  docNo: "RS-26-0001",
+  salesOrder: { id: 10, orderType: "NO_QTY" },
+  lines: [
+    {
+      itemId: 100,
+      requirementQty: 10000,
+      item: { id: 100, itemName: "FG-A", itemType: "FG" },
+    },
+  ],
+};
 
 describe("requirementSheetExecutionService", () => {
   it("balance uses requirementQty not suggestedWoQtySnapshot", async () => {
@@ -492,5 +588,143 @@ describe("requirementSheetExecutionService", () => {
     assert.equal(res.procurementProgress.counts.grnCount, 1);
     assert.equal(res.procurementProgress.counts.grnReceivedQty, 5000);
     assert.equal(res.readiness.status, "READY_TO_PLACE_WO");
+  });
+});
+
+describe("assessNoQtyPlacementStageForCycle", () => {
+  it("returns readyToPlaceWo true when no WO exists and RM allows placement", async () => {
+    const db = createAssessorMockDb({
+      sheets: [lockedSheetFixture],
+      plans: [{ id: 5, periodKey: "2026-06", releasedAt: new Date("2026-06-01"), releasedRevision: 1, planSequenceNo: 1 }],
+      mrs: [{ id: 9, monthlyProductionPlanId: 5, sourceType: "MONTHLY_PLAN", reversedAt: null, docNo: "MR-26-0001", status: "APPROVED" }],
+      workOrders: [],
+      pmrs: [],
+    });
+
+    const res = await assessNoQtyPlacementStageForCycle(
+      db,
+      { salesOrderId: 10, cycleId: 2 },
+      placementPreviewDeps({ canPlace: true, totalExecutableQty: 10000, totalRsBalanceQty: 10000, status: "READY" }),
+    );
+
+    assert.equal(res.readyToPlaceWo, true);
+    assert.equal(res.rsBalanceQty, 10000);
+    assert.equal(res.suggestedWoQty, 10000);
+    assert.equal(res.processStageKey, "NO_QTY_READY_TO_PLACE_WO");
+  });
+
+  it("returns readyToPlaceWo true after first WO when RS balance remains and RM is ready", async () => {
+    const db = createAssessorMockDb({
+      sheets: [lockedSheetFixture],
+      plans: [{ id: 5, periodKey: "2026-06", releasedAt: new Date("2026-06-01"), releasedRevision: 1, planSequenceNo: 1 }],
+      mrs: [{ id: 9, monthlyProductionPlanId: 5, sourceType: "MONTHLY_PLAN", reversedAt: null, docNo: "MR-26-0001", status: "APPROVED" }],
+      workOrders: [
+        {
+          id: 50,
+          requirementSheetId: 1,
+          docNo: "WO-26-0001",
+          status: "PENDING",
+          createdAt: new Date("2026-06-02"),
+          lines: [{ fgItemId: 100, qty: 3000, plannedQty: 3000 }],
+        },
+      ],
+      pmrs: [{ id: 60, workOrderId: 50, docNo: "PMR-26-0001", status: "REQUESTED", lines: [{ requiredQty: 1500, issuedQty: 0 }] }],
+    });
+
+    const res = await assessNoQtyPlacementStageForCycle(
+      db,
+      { salesOrderId: 10, cycleId: 2 },
+      placementPreviewDeps({ canPlace: true, totalExecutableQty: 7000, totalRsBalanceQty: 7000 }),
+    );
+
+    assert.equal(res.rsBalanceQty, 7000);
+    assert.equal(res.readyToPlaceWo, true);
+    assert.equal(res.suggestedWoQty, 7000);
+    assert.equal(res.processStageKey, "NO_QTY_READY_TO_PLACE_WO");
+  });
+
+  it("returns readyToPlaceWo true with partial RM when suggested executable qty is positive", async () => {
+    const db = createAssessorMockDb({
+      sheets: [lockedSheetFixture],
+      plans: [{ id: 5, periodKey: "2026-06", releasedAt: new Date("2026-06-01"), releasedRevision: 1, planSequenceNo: 1 }],
+      mrs: [{ id: 9, monthlyProductionPlanId: 5, sourceType: "MONTHLY_PLAN", reversedAt: null, docNo: "MR-26-0001", status: "APPROVED" }],
+      workOrders: [
+        {
+          id: 51,
+          requirementSheetId: 1,
+          docNo: "WO-26-0001",
+          status: "PENDING",
+          createdAt: new Date("2026-06-02"),
+          lines: [{ fgItemId: 100, qty: 3000, plannedQty: 3000 }],
+        },
+      ],
+      pmrs: [],
+    });
+
+    const res = await assessNoQtyPlacementStageForCycle(
+      db,
+      { salesOrderId: 10, cycleId: 2 },
+      placementPreviewDeps({ canPlace: true, totalExecutableQty: 2500, totalRsBalanceQty: 7000, status: "PARTIALLY_READY" }),
+    );
+
+    assert.equal(res.rsBalanceQty, 7000);
+    assert.equal(res.suggestedWoQty, 2500);
+    assert.equal(res.readyToPlaceWo, true);
+    assert.equal(res.placementStatus, "PARTIALLY_READY");
+  });
+
+  it("returns readyToPlaceWo false when RS balance is zero", async () => {
+    const db = createAssessorMockDb({
+      sheets: [
+        {
+          ...lockedSheetFixture,
+          lines: [{ itemId: 100, requirementQty: 3000, item: { id: 100, itemName: "FG-A", itemType: "FG" } }],
+        },
+      ],
+      plans: [{ id: 5, periodKey: "2026-06", releasedAt: new Date("2026-06-01"), releasedRevision: 1, planSequenceNo: 1 }],
+      mrs: [{ id: 9, monthlyProductionPlanId: 5, sourceType: "MONTHLY_PLAN", reversedAt: null, docNo: "MR-26-0001", status: "APPROVED" }],
+      workOrders: [
+        {
+          id: 52,
+          requirementSheetId: 1,
+          docNo: "WO-26-0001",
+          status: "PENDING",
+          createdAt: new Date("2026-06-02"),
+          lines: [{ fgItemId: 100, qty: 3000, plannedQty: 3000 }],
+        },
+      ],
+      pmrs: [],
+    });
+
+    const res = await assessNoQtyPlacementStageForCycle(
+      db,
+      { salesOrderId: 10, cycleId: 2 },
+      placementPreviewDeps({ canPlace: false, totalExecutableQty: 0, totalRsBalanceQty: 0, status: "ZERO_BALANCE" }),
+    );
+
+    assert.equal(res.rsBalanceQty, 0);
+    assert.equal(res.readyToPlaceWo, false);
+    assert.equal(res.processStageKey, null);
+  });
+});
+
+describe("deriveReadyToPlaceWo", () => {
+  it("requires positive balance and placement capability", () => {
+    assert.equal(
+      deriveReadyToPlaceWo({ rsBalanceQty: 1000 }, { canPlace: true, summary: { totalExecutableQty: 500 } }),
+      true,
+    );
+    assert.equal(
+      deriveReadyToPlaceWo({ rsBalanceQty: 1000 }, { canPlace: false, summary: { totalExecutableQty: 500 } }),
+      true,
+    );
+    assert.equal(
+      deriveReadyToPlaceWo({ rsBalanceQty: 0 }, { canPlace: true, summary: { totalExecutableQty: 500 } }),
+      false,
+    );
+    assert.equal(
+      deriveReadyToPlaceWo({ rsBalanceQty: 1000 }, { canPlace: false, summary: { totalExecutableQty: 0 } }),
+      false,
+    );
   });
 });

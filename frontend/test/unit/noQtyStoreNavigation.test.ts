@@ -5,6 +5,7 @@ import {
   isStoreLikePlanningRole,
   noQtyAgreementListHref,
   noQtyPlanningHubOrAgreementsHref,
+  noQtyExecutionRegisterHref,
 } from "../../src/lib/noQtyStoreNavigation";
 
 describe("noQtyStoreNavigation", () => {
@@ -26,5 +27,10 @@ describe("noQtyStoreNavigation", () => {
   it("picks planning hub vs agreements for Store-like roles", () => {
     expect(noQtyPlanningHubOrAgreementsHref("ADMIN")).toBe(NO_QTY_PLANNING_HUB_HREF);
     expect(noQtyPlanningHubOrAgreementsHref("STORE")).toBe(NO_QTY_AGREEMENTS_HREF);
+  });
+
+  it("builds execution register href for Store handoff without sheet id", () => {
+    expect(noQtyExecutionRegisterHref(42)).toBe(`${NO_QTY_AGREEMENTS_HREF}?salesOrderId=42`);
+    expect(noQtyExecutionRegisterHref(42, "dashboard")).toContain("source=dashboard");
   });
 });

@@ -560,7 +560,7 @@ async function resolveNoQtyWorkflowState(db, input) {
   }
 
   let placementStage = null;
-  if (requirementLocked && !workOrderExists && cycleId) {
+  if (requirementLocked && cycleId) {
     placementStage = await assessNoQtyPlacementStageForCycle(db, { salesOrderId: soId, cycleId });
   }
 
@@ -573,7 +573,9 @@ async function resolveNoQtyWorkflowState(db, input) {
         : primaryAction === "DISPATCH"
           ? "QC-accepted quantity is ready for dispatch."
           : primaryAction === "PRODUCTION"
-            ? "Production is still available for this cycle."
+            ? placementStage?.readyToPlaceWo
+              ? "Remaining RS balance can be placed on Work Order(s). Production is still available for this cycle."
+              : "Production is still available for this cycle."
             : primaryAction === "WORK_ORDER"
               ? placementStage?.readyToPlaceWo
                 ? "RM available. Ready for Store to place Work Order(s)."

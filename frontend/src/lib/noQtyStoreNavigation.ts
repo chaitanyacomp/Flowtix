@@ -23,3 +23,11 @@ export function noQtyAgreementListHref(role?: string | null, salesOrderId?: numb
 export function noQtyPlanningHubOrAgreementsHref(role?: string | null): string {
   return isStoreLikePlanningRole(role) ? NO_QTY_AGREEMENTS_HREF : NO_QTY_PLANNING_HUB_HREF;
 }
+
+/** Store execution entry when sheet id is unknown — lands on NO_QTY Execution register for the SO. */
+export function noQtyExecutionRegisterHref(salesOrderId: number, source?: string): string {
+  const base = noQtyAgreementListHref("STORE", salesOrderId);
+  if (!source) return base;
+  const sep = base.includes("?") ? "&" : "?";
+  return `${base}${sep}source=${encodeURIComponent(source)}`;
+}

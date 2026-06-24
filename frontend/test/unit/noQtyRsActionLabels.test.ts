@@ -21,6 +21,10 @@ import {
   noQtyNextRsStatusHeadline,
   noQtySoListHref,
   resolveCreateRsButtonLabel,
+  resolveNoQtyExecutionWorkspaceHref,
+  NO_QTY_OPEN_EXECUTION_WORKSPACE_LABEL,
+  noQtyExecutionActionNeededClassName,
+  noQtyExecutionEntryHref,
 } from "../../src/lib/noQtyRsActionLabels";
 
 describe("noQtyRsActionLabels", () => {
@@ -195,5 +199,57 @@ describe("noQtyRsActionLabels", () => {
     });
     expect(cta?.label).toBe("Open Monthly Planning");
     expect(cta?.href).toBe("/monthly-planning?source=no_qty_rs&salesOrderId=9&period=2026-05");
+  });
+
+  it("resolveNoQtyExecutionWorkspaceHref prefers API href", () => {
+    const href = resolveNoQtyExecutionWorkspaceHref({
+      salesOrderId: 171,
+      executionWorkspaceHref:
+        "/sales-orders/171/requirement-sheets?source=no_qty_so&salesOrderId=171&sheetId=261&cycleId=301&focus=execution",
+      placementRequirementSheetId: 261,
+    });
+    expect(href).toContain("sheetId=261");
+    expect(href).toContain("focus=execution");
+    expect(NO_QTY_OPEN_EXECUTION_WORKSPACE_LABEL).toBe("Open Execution Workspace");
+  });
+
+  it("resolveNoQtyExecutionWorkspaceHref falls back to placement sheet id", () => {
+    const href = resolveNoQtyExecutionWorkspaceHref({
+      salesOrderId: 15,
+      placementRequirementSheetId: 260,
+      guidedCycleId: 301,
+    });
+    expect(href).toContain("/sales-orders/15/requirement-sheets");
+    expect(href).toContain("sheetId=260");
+    expect(href).toContain("focus=execution");
+  });
+
+  it("noQtyExecutionActionNeededClassName maps execution action keys", () => {
+    expect(noQtyExecutionActionNeededClassName("PLACE_WO")).toContain("font-semibold");
+    expect(noQtyExecutionActionNeededClassName("ISSUE_RM")).toContain("amber");
+    expect(noQtyExecutionActionNeededClassName("BLOCKED")).toContain("red");
+    expect(noQtyExecutionActionNeededClassName("COMPLETE")).toContain("emerald");
+  });
+
+  it("noQtyExecutionEntryHref falls back to execution register without sheet id", () => {
+    const href = noQtyExecutionEntryHref({
+      salesOrderId: 42,
+      role: "STORE",
+      source: "rm_control_center",
+    });
+    expect(href).toContain("/no-qty-agreements");
+    expect(href).toContain("salesOrderId=42");
+    expect(href).toContain("source=rm_control_center");
+  });
+
+  it("noQtyExecutionEntryHref prefers execution workspace when sheet id is known", () => {
+    const href = noQtyExecutionEntryHref({
+      salesOrderId: 15,
+      placementRequirementSheetId: 260,
+      guidedCycleId: 301,
+      role: "STORE",
+    });
+    expect(href).toContain("focus=execution");
+    expect(href).toContain("sheetId=260");
   });
 });

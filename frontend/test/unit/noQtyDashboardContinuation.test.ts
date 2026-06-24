@@ -173,6 +173,46 @@ describe("resolveNoQtyDashboardContinuation — commercial continuation", () => 
       expect(resolved.label).toBe("Complete QA");
     }
   });
+
+  it("routes STORE commercial continuation to execution workspace when readyToPlaceWo", () => {
+    const flow: NoQtyFlowState = {
+      ...baseFlow,
+      createNextRsEligible: false,
+      readyToPlaceWo: true,
+      nextAction: "WORK_ORDER",
+    };
+    const resolved = resolveNoQtyDashboardContinuation({
+      salesOrderId: 1,
+      cycleId: 10,
+      latestRequirementSheetId: 99,
+      lastRsStatus: "LOCKED",
+      flow,
+      viewerRole: "STORE",
+      commercialContinuation: true,
+    });
+    expect(resolved.kind).toBe("navigate");
+    if (resolved.kind === "navigate") {
+      expect(resolved.label).toBe("Place WO");
+      expect(resolved.to).toContain("focus=execution");
+      expect(resolved.to).toContain("sheetId=99");
+    }
+  });
+
+  it("routes WORK_ORDER next action to execution workspace with sheet id", () => {
+    const resolved = resolveNoQtyDashboardContinuation({
+      salesOrderId: 1,
+      cycleId: 10,
+      latestRequirementSheetId: 88,
+      lastRsStatus: "LOCKED",
+      flow: { ...baseFlow, nextAction: "WORK_ORDER" },
+      viewerRole: "STORE",
+    });
+    expect(resolved.kind).toBe("navigate");
+    if (resolved.kind === "navigate") {
+      expect(resolved.to).toContain("sheetId=88");
+      expect(resolved.to).toContain("focus=execution");
+    }
+  });
 });
 
 describe("isNoQtyDashboardPlanningRow", () => {

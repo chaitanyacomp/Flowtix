@@ -20,7 +20,7 @@ import { buildRmPoDetailHref } from "../lib/rmPurchaseWoContinuity";
 import { buildProductionScopedHref } from "../lib/productionNavigation";
 import { woPreparePrepareHref } from "../lib/woPrepareOperationalStage";
 import { buttonVariants } from "../components/ui/button";
-import { noQtyRsExecutionWorkspaceHref } from "../lib/noQtyRsActionLabels";
+import { noQtyExecutionEntryHref } from "../lib/noQtyRsActionLabels";
 import {
   NO_QTY_PLANNING_HUB_HREF,
   noQtyPlanningHubOrAgreementsHref,
@@ -63,6 +63,19 @@ import {
   resolveQueueCaseDisplayMetrics,
   sanitizeStoreOperatorCopy,
 } from "../lib/storeRmWorkspaceUx";
+import {
+  buildPageSearchParams,
+  buildQueueApiQuery,
+  EMPTY_QUEUE_SEARCH_FILTERS,
+  isCaseGroupSelected,
+  reconcileSelectionAfterLoad,
+  resolveDetailFromWorkspace,
+  resolveRmItemIdForDetail,
+  selectionFromQueueRow,
+  splitSearchParams,
+  type CaseSelection,
+  type QueueSearchFilters,
+} from "../lib/rmControlCenterSelection";
 
 type WarningRow = { code: string; message: string };
 type ReservationBreakdownRow = {
@@ -354,16 +367,7 @@ type WorkspacePayload = {
   };
 };
 
-type QueueSelection = { workOrderId?: number | null; materialRequirementId?: number | null; rmItemId: number };
-
-type ApiFilters = {
-  salesOrderId: string;
-  workOrderId: string;
-  materialRequirementId: string;
-  rmItemId: string;
-  status: string;
-  onlyBlocked: boolean;
-};
+type ApiFilters = QueueSearchFilters;
 
 type FilterDraft = {
   salesOrderQuery: string;
@@ -373,14 +377,7 @@ type FilterDraft = {
   onlyBlocked: boolean;
 };
 
-const EMPTY_API_FILTERS: ApiFilters = {
-  salesOrderId: "",
-  workOrderId: "",
-  materialRequirementId: "",
-  rmItemId: "",
-  status: "",
-  onlyBlocked: false,
-};
+const EMPTY_API_FILTERS: ApiFilters = EMPTY_QUEUE_SEARCH_FILTERS;
 
 const EMPTY_FILTER_DRAFT: FilterDraft = {
   salesOrderQuery: "",
@@ -397,16 +394,6 @@ const PURCHASE_VISIBLE_MR_STATUSES = new Set([
   "PARTIALLY_PROCURED",
 ]);
 
-function apiFiltersFromSearchParams(params: URLSearchParams): ApiFilters {
-  return {
-    salesOrderId: params.get("salesOrderId") ?? "",
-    workOrderId: params.get("workOrderId") ?? "",
-    materialRequirementId: params.get("materialRequirementId") ?? "",
-    rmItemId: params.get("rmItemId") ?? "",
-    status: params.get("status") ?? "",
-    onlyBlocked: params.get("onlyBlocked") === "true",
-  };
-}
 
 function normQuery(s: string): string {
   return s.trim().toLowerCase();
@@ -484,18 +471,6 @@ function readinessFromDetail(detail: Detail | null): { label: string; variant: "
   return { label: "READY", variant: "success" };
 }
 
-function buildQuery(filters: ApiFilters): string {
-  const q = new URLSearchParams();
-  if (filters.salesOrderId.trim()) q.set("salesOrderId", filters.salesOrderId.trim());
-  if (filters.workOrderId.trim()) q.set("workOrderId", filters.workOrderId.trim());
-  if (filters.materialRequirementId.trim()) q.set("materialRequirementId", filters.materialRequirementId.trim());
-  if (filters.rmItemId.trim()) q.set("rmItemId", filters.rmItemId.trim());
-  if (filters.status) q.set("status", filters.status);
-  if (filters.onlyBlocked) q.set("onlyBlocked", "true");
-  const s = q.toString();
-  return s ? `?${s}` : "";
-}
-
 type BlockerRowLike = Pick<
   QueueRow,
   | "rmItemName"
@@ -549,16 +524,28 @@ export function MaterialAvailabilityControlCenterPage() {
   const canRaiseProcurementShortageMr = canCreatePurchaseRequest;
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const initialApiFilters = React.useMemo(() => apiFiltersFromSearchParams(searchParams), [searchParams]);
+  const { queueFilters: initialQueueFilters, initialSelection } = React.useMemo(
+    () => splitSearchParams(searchParams),
+    [searchParams],
+  );
   const returnTo = searchParams.get("returnTo");
-  const [filters, setFilters] = React.useState<ApiFilters>(initialApiFilters);
+  const [filters, setFilters] = React.useState<ApiFilters>(initialQueueFilters);
+  const [caseSelection, setCaseSelection] = React.useState<CaseSelection | null>(initialSelection);
+  const caseSelectionRef = React.useRef<CaseSelection | null>(initialSelection);
+  const setCaseSelectionState = React.useCallback((next: CaseSelection | null) => {
+    caseSelectionRef.current = next;
+    setCaseSelection(next);
+  }, []);
   const [draftFilters, setDraftFilters] = React.useState<FilterDraft>(EMPTY_FILTER_DRAFT);
   const rmUnitByItemIdRef = React.useRef(new Map<number, string>());
   const [data, setData] = React.useState<WorkspacePayload | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
-  const [selectedRmItemId, setSelectedRmItemId] = React.useState<number | null>(null);
-  const [selectedQueueKey, setSelectedQueueKey] = React.useState<QueueSelection | null>(null);
+  const [selectedRmItemId, setSelectedRmItemId] = React.useState<number | null>(initialSelection?.rmItemId ?? null);
+  const selectedRmItemIdRef = React.useRef<number | null>(initialSelection?.rmItemId ?? null);
+  React.useEffect(() => {
+    selectedRmItemIdRef.current = selectedRmItemId;
+  }, [selectedRmItemId]);
   const [creatingShortageMr, setCreatingShortageMr] = React.useState(false);
   const [creatingPurchaseRequest, setCreatingPurchaseRequest] = React.useState(false);
   const [allocating, setAllocating] = React.useState(false);
@@ -569,9 +556,7 @@ export function MaterialAvailabilityControlCenterPage() {
   const [releaseReasonDraft, setReleaseReasonDraft] = React.useState("");
   const [reopenModalOpen, setReopenModalOpen] = React.useState(false);
   const reopenConfirmPendingRef = React.useRef(false);
-  const autoSelectPending = React.useRef(
-    !initialApiFilters.workOrderId && !initialApiFilters.materialRequirementId && !initialApiFilters.rmItemId,
-  );
+  const autoSelectPending = React.useRef(initialSelection == null);
 
   const load = React.useCallback(async (nextFilters: ApiFilters) => {
     setLoading(true);
@@ -579,7 +564,7 @@ export function MaterialAvailabilityControlCenterPage() {
     try {
       let effectiveFilters = nextFilters;
       let payload = await apiFetch<WorkspacePayload>(
-        `/api/material-availability/workspace${buildQuery(effectiveFilters)}`,
+        `/api/material-availability/workspace${buildQueueApiQuery(effectiveFilters)}`,
       );
 
       const woFromFilter = effectiveFilters.workOrderId ? Number(effectiveFilters.workOrderId) : null;
@@ -587,7 +572,7 @@ export function MaterialAvailabilityControlCenterPage() {
       if (woId && !payload.selectedDetail && effectiveFilters.onlyBlocked) {
         effectiveFilters = { ...effectiveFilters, onlyBlocked: false };
         payload = await apiFetch<WorkspacePayload>(
-          `/api/material-availability/workspace${buildQuery(effectiveFilters)}`,
+          `/api/material-availability/workspace${buildQueueApiQuery(effectiveFilters)}`,
         );
         if (effectiveFilters.onlyBlocked !== nextFilters.onlyBlocked) {
           setFilters(effectiveFilters);
@@ -595,60 +580,23 @@ export function MaterialAvailabilityControlCenterPage() {
       }
 
       setData(payload);
-      const rmFromFilter = effectiveFilters.rmItemId ? Number(effectiveFilters.rmItemId) : null;
-      const validFilterRm = rmFromFilter != null && Number.isFinite(rmFromFilter) && rmFromFilter > 0 ? rmFromFilter : null;
-      const mrFromFilter = effectiveFilters.materialRequirementId ? Number(effectiveFilters.materialRequirementId) : null;
-      const mrId = mrFromFilter != null && Number.isFinite(mrFromFilter) && mrFromFilter > 0 ? mrFromFilter : null;
-      const queueForWo = woId
-        ? payload.actionQueue.find((r) => r.workOrderId === woId) ?? payload.actionQueue[0]
-        : mrId
-          ? payload.actionQueue.find((r) => r.materialRequirementId === mrId) ?? payload.actionQueue[0]
-          : payload.actionQueue[0];
-      const resolvedRm =
-        validFilterRm ??
-        queueForWo?.rmItemId ??
-        payload.selectedRmItemId ??
-        payload.selectedDetail?.rmLines?.find((l) => l.shortageAfterReservationQty > 0)?.rmItemId ??
-        payload.selectedDetail?.rmLines?.[0]?.rmItemId ??
-        null;
-      setSelectedRmItemId(resolvedRm);
-      const queueWoId = woId ?? queueForWo?.workOrderId ?? payload.selectedDetail?.workOrder?.id ?? null;
-      if (queueWoId && resolvedRm) {
-        setSelectedQueueKey({ workOrderId: queueWoId, rmItemId: resolvedRm });
-      } else if ((mrId || queueForWo?.materialRequirementId) && resolvedRm) {
-        setSelectedQueueKey({ materialRequirementId: mrId ?? queueForWo?.materialRequirementId, rmItemId: resolvedRm });
-      } else if (queueForWo?.workOrderId && queueForWo.rmItemId) {
-        setSelectedQueueKey({
-          workOrderId: queueForWo.workOrderId,
-          rmItemId: queueForWo.rmItemId,
-        });
-      }
 
-      const hasCaseFilter =
-        Boolean(effectiveFilters.workOrderId && Number(effectiveFilters.workOrderId) > 0) ||
-        Boolean(
-          effectiveFilters.materialRequirementId && Number(effectiveFilters.materialRequirementId) > 0,
-        );
-      if (
-        autoSelectPending.current &&
-        !hasCaseFilter &&
-        payload.actionQueue.length > 0 &&
-        !payload.selectedDetail
-      ) {
-        autoSelectPending.current = false;
-        const first = payload.actionQueue[0];
-        const autoFilters: ApiFilters = {
-          ...effectiveFilters,
-          salesOrderId: first.salesOrderId ? String(first.salesOrderId) : "",
-          workOrderId: first.workOrderId ? String(first.workOrderId) : "",
-          materialRequirementId: first.materialRequirementId ? String(first.materialRequirementId) : "",
-          rmItemId: String(first.rmItemId),
-          status: "",
-        };
-        setDraftFilters(draftLabelsFromQueue(autoFilters, payload.actionQueue));
-        setFilters(autoFilters);
-        setLoading(false);
-        return;
+      const reconciled = reconcileSelectionAfterLoad(
+        caseSelectionRef.current,
+        payload.actionQueue,
+        autoSelectPending.current,
+      );
+      autoSelectPending.current = false;
+      setCaseSelectionState(reconciled);
+
+      const resolvedDetail = resolveDetailFromWorkspace(payload.details ?? [], reconciled);
+      const resolvedRm = resolveRmItemIdForDetail(
+        resolvedDetail,
+        reconciled,
+        selectedRmItemIdRef.current,
+      );
+      if (resolvedRm != null) {
+        setSelectedRmItemId(resolvedRm);
       }
     } catch (e) {
       setData(null);
@@ -656,11 +604,20 @@ export function MaterialAvailabilityControlCenterPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [setCaseSelectionState]);
 
   React.useEffect(() => {
     void load(filters);
   }, [filters, load]);
+
+  React.useEffect(() => {
+    if (!data) return;
+    const resolvedDetail = resolveDetailFromWorkspace(data.details ?? [], caseSelection);
+    const resolvedRm = resolveRmItemIdForDetail(resolvedDetail, caseSelection, selectedRmItemIdRef.current);
+    if (resolvedRm != null && resolvedRm !== selectedRmItemIdRef.current) {
+      setSelectedRmItemId(resolvedRm);
+    }
+  }, [caseSelection, data]);
 
   React.useEffect(() => {
     if (!data?.actionQueue.length) return;
@@ -676,9 +633,12 @@ export function MaterialAvailabilityControlCenterPage() {
     });
   }, [data?.actionQueue, filters]);
 
-  const detail = data?.selectedDetail ?? null;
-  const woCase = data?.selectedWoShortageCase ?? detail?.woShortageCase ?? null;
-  const caseSupply = data?.caseSupplyPanel ?? detail?.caseSupplyPanel ?? null;
+  const detail = React.useMemo(
+    () => (data ? resolveDetailFromWorkspace(data.details ?? [], caseSelection) : null),
+    [data, caseSelection],
+  );
+  const woCase = detail?.woShortageCase ?? null;
+  const caseSupply = detail?.caseSupplyPanel ?? null;
   const escalation = woCase?.escalationLifecycle;
   const readiness = readinessFromDetail(detail);
   const selectedLine =
@@ -928,9 +888,7 @@ export function MaterialAvailabilityControlCenterPage() {
           ? null
           : lineCoveragePercent({
               requiredQty: line.requiredQty,
-              shortageAfterReservationQty: line.shortageAfterReservationQty,
-              coveredByIncomingQty: line.coveredByIncomingQty,
-              grnReceivedPercent: q?.grnReceivedPercent ?? null,
+              freeStockQty: line.freeStockQty,
             }),
       };
     });
@@ -1309,37 +1267,28 @@ export function MaterialAvailabilityControlCenterPage() {
   }
 
   function selectQueueRow(row: QueueRow) {
-    const next: ApiFilters = {
-      ...filters,
-      salesOrderId: row.salesOrderId ? String(row.salesOrderId) : "",
-      workOrderId: row.workOrderId ? String(row.workOrderId) : "",
-      materialRequirementId: row.materialRequirementId ? String(row.materialRequirementId) : "",
-      rmItemId: row.rmItemId ? String(row.rmItemId) : "",
-      status: "",
-    };
-    setDraftFilters({
-      salesOrderQuery: row.salesOrderNo?.trim() || "",
-      workOrderQuery: row.workOrderNo?.trim() || "",
-      rmItemQuery: row.rmItemName?.trim() || "",
-      status: "",
-      onlyBlocked: filters.onlyBlocked,
-    });
-    setFilters(next);
+    const next = selectionFromQueueRow(row);
+    setCaseSelectionState(next);
     setSelectedRmItemId(row.rmItemId);
-    if (row.workOrderId) {
-      setSelectedQueueKey({ workOrderId: row.workOrderId, rmItemId: row.rmItemId });
-    } else if (row.materialRequirementId) {
-      setSelectedQueueKey({ materialRequirementId: row.materialRequirementId, rmItemId: row.rmItemId });
-    }
+    navigate(
+      {
+        search: buildPageSearchParams(filters, next, returnTo).replace(/^\?/, ""),
+      },
+      { replace: true },
+    );
   }
 
   function selectRmLine(line: RmLine) {
     setSelectedRmItemId(line.rmItemId);
-    if (detail?.workOrder?.id) {
-      setSelectedQueueKey({ workOrderId: detail.workOrder.id, rmItemId: line.rmItemId });
-    } else if (woCase?.materialRequirement?.id) {
-      setSelectedQueueKey({ materialRequirementId: woCase.materialRequirement.id, rmItemId: line.rmItemId });
-    }
+    setCaseSelectionState(
+      caseSelectionRef.current
+        ? { ...caseSelectionRef.current, rmItemId: line.rmItemId }
+        : {
+            workOrderId: detail?.workOrder?.id ?? null,
+            materialRequirementId: woCase?.materialRequirement?.id ?? null,
+            rmItemId: line.rmItemId,
+          },
+    );
   }
 
   // One card per work order (else material requirement), with its RM lines rolled up —
@@ -1355,28 +1304,37 @@ export function MaterialAvailabilityControlCenterPage() {
   );
 
   const activeRmItemFilterLabel = React.useMemo(() => {
-    if (!filters.rmItemId.trim() || !detail) return null;
+    if (!draftFilters.rmItemQuery.trim() || !detail) return null;
     return (
       draftFilters.rmItemQuery.trim() ||
-      data?.actionQueue.find((row) => String(row.rmItemId) === filters.rmItemId.trim())?.rmItemName?.trim() ||
+      data?.actionQueue.find((row) => normQuery(row.rmItemName ?? "") === normQuery(draftFilters.rmItemQuery))
+        ?.rmItemName?.trim() ||
       selectedLine?.rmItemName?.trim() ||
       null
     );
-  }, [filters.rmItemId, detail, draftFilters.rmItemQuery, data?.actionQueue, selectedLine?.rmItemName]);
+  }, [draftFilters.rmItemQuery, detail, data?.actionQueue, selectedLine?.rmItemName]);
 
   function isQueueCaseSelected(group: { workOrderId: number | null; materialRequirementId: number | null }): boolean {
-    if (group.workOrderId != null) return selectedQueueKey?.workOrderId === group.workOrderId;
-    if (group.materialRequirementId != null) {
-      return selectedQueueKey?.materialRequirementId === group.materialRequirementId;
-    }
-    return false;
+    return isCaseGroupSelected(caseSelection, group);
   }
 
   // const summary = data?.summary; // hidden KPIs (Phase E)
 
   function applyFilters() {
     const queue = data?.actionQueue ?? [];
-    setFilters(resolveApiFiltersFromDraft(draftFilters, queue));
+    const next = resolveApiFiltersFromDraft(draftFilters, queue);
+    setFilters(next);
+    if (next.workOrderId.trim()) {
+      const row = queue.find((r) => r.workOrderId != null && String(r.workOrderId) === next.workOrderId.trim());
+      if (row) {
+        setCaseSelectionState(selectionFromQueueRow(row));
+      }
+    } else if (next.rmItemId.trim()) {
+      const row = queue.find((r) => String(r.rmItemId) === next.rmItemId.trim());
+      if (row) {
+        setCaseSelectionState(selectionFromQueueRow(row));
+      }
+    }
   }
 
   function clearFilters() {
@@ -1781,11 +1739,11 @@ export function MaterialAvailabilityControlCenterPage() {
                       <Link
                         to={
                           detail.salesOrder?.orderType === "NO_QTY" || woCase?.salesOrderOrderType === "NO_QTY"
-                            ? noQtyRsExecutionWorkspaceHref({
+                            ? noQtyExecutionEntryHref({
                                 salesOrderId: detail.salesOrder?.id ?? woCase?.salesOrderId ?? 0,
-                                cycleId: detail.salesOrder?.currentCycleId ?? null,
+                                guidedCycleId: detail.salesOrder?.currentCycleId ?? null,
+                                role: role ?? "STORE",
                                 source: "rm_control_center",
-                                from: "rm-control-center",
                               })
                             : detail.salesOrder?.id
                               ? woPreparePrepareHref(detail.salesOrder.id)

@@ -122,3 +122,100 @@ describe("noQtyWorkflowEngine role-aware actions", () => {
     assert.doesNotMatch(msg, /Sales/i);
   });
 });
+
+describe("resolveNoQtyWorkflowState placement assessor after first WO", () => {
+  it("keeps readyToPlaceWo when assessor allows another batch after workOrderExists", async () => {
+    const executionService = require("../../src/services/requirementSheetExecutionService");
+    const workflowPath = require.resolve("../../src/services/noQtyWorkflowEngine");
+
+    const originalAssess = executionService.assessNoQtyPlacementStageForCycle;
+    let assessorInvoked = false;
+    executionService.assessNoQtyPlacementStageForCycle = async () => {
+      assessorInvoked = true;
+      return {
+        readyToPlaceWo: true,
+        processStageKey: "NO_QTY_READY_TO_PLACE_WO",
+        processStageLabel: "Ready to place WO",
+        requirementSheetId: 42,
+        readinessStatus: "PARTIALLY_READY",
+        released: true,
+        rsBalanceQty: 7000,
+        suggestedWoQty: 2500,
+      };
+    };
+
+    delete require.cache[workflowPath];
+    const { resolveNoQtyWorkflowState } = require("../../src/services/noQtyWorkflowEngine");
+
+    const soId = 101;
+    const cycleId = 2;
+    const db = {
+      salesOrder: {
+        findUnique: async () => ({
+          id: soId,
+          orderType: "NO_QTY",
+          currentCycleId: cycleId,
+          internalStatus: "OPEN",
+        }),
+        findMany: async () => [],
+      },
+      salesOrderCycle: {
+        findFirst: async ({ where }) => {
+          if (where.id === cycleId && where.salesOrderId === soId) {
+            return { id: cycleId, cycleNo: 1, status: "ACTIVE", noQtyTreatFgAsOptionalStoreStock: false };
+          }
+          return null;
+        },
+        findMany: async () => [],
+      },
+      requirementSheet: {
+        findMany: async () => [{ id: 42, status: "LOCKED" }],
+        findFirst: async ({ where, orderBy }) => {
+          if (where.salesOrderId === soId && where.cycleId === cycleId) {
+            return { id: 42, status: "LOCKED" };
+          }
+          if (where.cycle?.cycleNo?.gt != null) return null;
+          return null;
+        },
+        findUnique: async () => null,
+      },
+      workOrder: {
+        findMany: async ({ where }) => {
+          if (where.salesOrderId === soId && where.cycleId === cycleId) {
+            return [
+              {
+                id: 50,
+                status: "PENDING",
+                lines: [{ plannedQty: 3000, qty: 3000 }],
+              },
+            ];
+          }
+          return [];
+        },
+        findFirst: async ({ where }) => {
+          if (where.salesOrderId === soId && where.cycleId === cycleId) {
+            return { id: 50 };
+          }
+          return null;
+        },
+      },
+      productionEntry: { findFirst: async () => null, findMany: async () => [] },
+      qcEntry: { findFirst: async () => null, findMany: async () => [] },
+      dispatch: { findMany: async () => [] },
+      salesBill: { findFirst: async () => null },
+      qcRejectedDisposition: { count: async () => 0 },
+    };
+
+    try {
+      const state = await resolveNoQtyWorkflowState(db, { salesOrderId: soId, cycleId, userRole: "STORE" });
+      assert.equal(assessorInvoked, true);
+      assert.equal(state.workOrderExists, true);
+      assert.equal(state.readyToPlaceWo, true);
+      assert.equal(state.placementRequirementSheetId, 42);
+      assert.match(state.displaySummary, /Remaining RS balance can be placed/i);
+    } finally {
+      executionService.assessNoQtyPlacementStageForCycle = originalAssess;
+      delete require.cache[workflowPath];
+    }
+  });
+});

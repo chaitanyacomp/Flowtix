@@ -68,15 +68,16 @@ describe("rmControlCenterProcurementVisibility", () => {
     expect(procurementSourceLabel("SALES_ORDER", "SO-26-0001")).toBe("SO-26-0001");
   });
 
-  it("lineCoveragePercent prefers GRN percent when present", () => {
-    expect(lineCoveragePercent({ requiredQty: 100, grnReceivedPercent: 62.5 })).toBe(62.5);
-    expect(
-      lineCoveragePercent({
-        requiredQty: 100,
-        shortageAfterReservationQty: 40,
-        coveredByIncomingQty: 20,
-      }),
-    ).toBe(80);
+  it("lineCoveragePercent uses available stock over required (Store issue coverage)", () => {
+    expect(lineCoveragePercent({ requiredQty: 42, freeStockQty: 21 })).toBe(50);
+    expect(lineCoveragePercent({ requiredQty: 63, freeStockQty: 21 })).toBe(33);
+    expect(lineCoveragePercent({ requiredQty: 10, freeStockQty: 0 })).toBe(0);
+    expect(lineCoveragePercent({ requiredQty: 10, freeStockQty: 15 })).toBe(100);
+    expect(lineCoveragePercent({ requiredQty: 0, freeStockQty: 0 })).toBe(100);
+  });
+
+  it("lineCoveragePercent ignores GRN percent for Store RM Control Center view", () => {
+    expect(lineCoveragePercent({ requiredQty: 63, freeStockQty: 21 })).toBe(33);
   });
 
   it("procurementTimelineStepIndex advances with PR/PO/GRN", () => {

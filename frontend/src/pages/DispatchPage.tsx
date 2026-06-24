@@ -11,6 +11,11 @@ import { prefersFinePointer } from "../lib/erpFocus";
 import { useMandatoryPositiveQtyDraft } from "../hooks/useMandatoryPositiveQtyDraft";
 import { useIsAdmin, useCanOpenRequirementSheet } from "../hooks/useIsAdmin";
 import { useErpRoleUi } from "../hooks/useErpRoleUi";
+import { DispatchBillingStatusBadge } from "../components/erp/DispatchBillingStatusBadge";
+import {
+  DISPATCH_BILLING_ADMIN_HANDOFF,
+  DISPATCH_FINALIZED_READY_LABEL,
+} from "../lib/dispatchBillingStatus";
 import { useAuth } from "../hooks/useAuth";
 import { PlanningStatusChip } from "../components/erp/PlanningStatusChip";
 import { useShortcutHints } from "../hooks/useShortcutHints";
@@ -32,6 +37,11 @@ import {
   operatorTableRowClass,
 } from "../components/erp/OperatorWorkbench";
 import { PageContainer } from "../components/PageHeader";
+import { ErpWorkflowTrail } from "../components/erp/foundation/ErpWorkflowTrail";
+import { useStoreExecutionNavContext } from "../hooks/useStoreExecutionNavContext";
+import {
+  augmentDispatchNavContextWithSalesOrder,
+} from "../lib/erpNavContext";
 import { NoQtyCycleContextBar } from "../components/erp/foundation/NoQtyCycleContextBar";
 import { Settings } from "lucide-react";
 import {
@@ -243,6 +253,25 @@ function customerDisplayName(so: SoRow): string {
 
 function fmtDispatchQty(n: number): string {
   return Number.isInteger(n) ? String(n) : n.toFixed(3);
+}
+
+function dispatchSoContextLabel(
+  so: { id: number; docNo?: string | null } | null | undefined,
+  focusSoIdValid: boolean,
+  focusSoId: number,
+): string | null {
+  if (so && so.id > 0) return displaySalesOrderNo(so.id, so.docNo);
+  if (focusSoIdValid) return `SO-${focusSoId}`;
+  return null;
+}
+
+function dispatchItemContextLabel(line: { itemName?: string | null } | null | undefined): string | null {
+  const name = line?.itemName?.trim();
+  return name ? name : null;
+}
+
+function dispatchNoQtyCycleNoValid(cycleNo: number | null | undefined): boolean {
+  return cycleNo != null && Number.isFinite(Number(cycleNo));
 }
 
 function safeNum(v: unknown): number {
@@ -1272,6 +1301,7 @@ export function DispatchPage() {
 
   const isAdmin = useIsAdmin();
   const roleUi = useErpRoleUi();
+  const canCreateSalesBill = roleUi.canCreateSalesBill;
   const { user } = useAuth();
   const canDispatchWrite = (DISPATCH_WRITE_ROLES as readonly string[]).includes(user?.role ?? "");
   const canOpenRs = useCanOpenRequirementSheet();
@@ -1633,6 +1663,18 @@ export function DispatchPage() {
   }, [fromNoQtySo, fromGlobalSearch, fromDashboard, focusSoIdValid, focusSoId, rows]);
 
   const selectedSo = React.useMemo(() => displayRows.find((r) => r.id === soId), [displayRows, soId]);
+
+  const baseDispatchNavContext = useStoreExecutionNavContext("dispatch");
+  const dispatchNavContext = React.useMemo(() => {
+    if (source === "sales_orders" && selectedSo) {
+      return augmentDispatchNavContextWithSalesOrder(
+        baseDispatchNavContext,
+        selectedSo.id,
+        displaySalesOrderNo(selectedSo.id, selectedSo.docNo),
+      );
+    }
+    return baseDispatchNavContext;
+  }, [baseDispatchNavContext, source, selectedSo]);
 
   const noQtyFlowTargetId = React.useMemo(() => {
     if (selectedSo != null) {
@@ -3311,8 +3353,12 @@ export function DispatchPage() {
   const dispatchCompletedSubtitle =
     billingTargetDispatchId != null
       ? isRegularNormalSalesOrder(selectedSo)
-        ? "Dispatch completed. Create sales bill for this dispatch."
-        : `${dispatchCompletedDocLabel} for ${dispatchCompletedQtyLabel} qty is finalized.`
+        ? canCreateSalesBill
+          ? "Dispatch completed. Create sales bill for this dispatch."
+          : DISPATCH_BILLING_ADMIN_HANDOFF
+        : canCreateSalesBill
+          ? `${dispatchCompletedDocLabel} for ${dispatchCompletedQtyLabel} qty is finalized.`
+          : DISPATCH_BILLING_ADMIN_HANDOFF
       : "";
 
   const primaryDraftLedgerRow = React.useMemo(
@@ -3342,7 +3388,8 @@ export function DispatchPage() {
 
   const dispatchGuidedBillActions =
     Boolean(
-      stripShowGuidedBill &&
+      canCreateSalesBill &&
+        stripShowGuidedBill &&
         guidedBillAction &&
         (guidedBillAction.kind === "CREATE" || guidedBillAction.kind === "OPEN") &&
         !showDispatchCompletedBillingCard &&
@@ -3519,12 +3566,14 @@ export function DispatchPage() {
         >
           Dispatch
         </Link>
-        <Link
-          to={billHref}
-          className={cn(buttonVariants({ size: "sm", variant: "outline" }), "h-7 px-2 text-[11px] font-semibold")}
-        >
-          Sales Bill
-        </Link>
+        {canCreateSalesBill ? (
+          <Link
+            to={billHref}
+            className={cn(buttonVariants({ size: "sm", variant: "outline" }), "h-7 px-2 text-[11px] font-semibold")}
+          >
+            Sales Bill
+          </Link>
+        ) : null}
         <Link to="/qc-report" className="text-[11px] font-semibold text-sky-800 hover:underline">
           QC Report
         </Link>
@@ -3610,7 +3659,6 @@ export function DispatchPage() {
     } else if (
       topStripSalesBillNext &&
       focusSoIdValid &&
-      salesBillFlowHref &&
       salesBillStepDispatchId == null &&
       !showDispatchCompletedBillingCard &&
       !showDispatchCompletedBillingFallback &&
@@ -3619,7 +3667,7 @@ export function DispatchPage() {
       sections.push({
         key: "next",
         title: "Next action",
-        children: (
+        children: canCreateSalesBill ? (
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-[12px] text-slate-700">Sales billing pending</span>
             <Button
@@ -3627,10 +3675,18 @@ export function DispatchPage() {
               size="sm"
               className="font-semibold"
               data-testid="next-create-sales-bill"
-              onClick={() => navigate(salesBillFlowHref)}
+              onClick={() => salesBillFlowHref && navigate(salesBillFlowHref)}
             >
               Go to Sales Bill
             </Button>
+          </div>
+        ) : (
+          <div className="flex flex-wrap items-center gap-2 text-[12px] text-slate-700">
+            <DispatchBillingStatusBadge
+              row={{ workflowStatus: "LOCKED", dispatchedQty: 1, salesBillExists: false }}
+              compact
+            />
+            <span>{DISPATCH_BILLING_ADMIN_HANDOFF}</span>
           </div>
         ),
       });
@@ -3645,7 +3701,7 @@ export function DispatchPage() {
       sections.push({
         key: "next",
         title: "Next action",
-        children: (
+        children: canCreateSalesBill ? (
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-[12px] text-slate-700">Billing pending after dispatch</span>
             <Button
@@ -3660,6 +3716,14 @@ export function DispatchPage() {
             >
               Create Sales Bill
             </Button>
+          </div>
+        ) : (
+          <div className="flex flex-wrap items-center gap-2 text-[12px] text-slate-700">
+            <DispatchBillingStatusBadge
+              row={{ workflowStatus: "LOCKED", dispatchedQty: 1, salesBillExists: false }}
+              compact
+            />
+            <span>{DISPATCH_BILLING_ADMIN_HANDOFF}</span>
           </div>
         ),
       });
@@ -3734,6 +3798,7 @@ export function DispatchPage() {
     onFinalizeDraftDispatch,
     billingTargetDispatchId,
     canContinueRegularPartialDispatch,
+    canCreateSalesBill,
     primaryFinalizeDraftId,
     regularPartialContinuationMetrics,
     salesBillFlowHref,
@@ -3886,15 +3951,19 @@ export function DispatchPage() {
                       {isLockedForward &&
                       qty > 0 &&
                       !(billingTargetDispatchId != null && d.id === billingTargetDispatchId) ? (
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          className={actionBtnCls}
-                          onClick={() => void onCreateSalesBillFromDispatch(d.id)}
-                        >
-                          Create bill
-                        </Button>
+                        canCreateSalesBill ? (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className={actionBtnCls}
+                            onClick={() => void onCreateSalesBillFromDispatch(d.id)}
+                          >
+                            Create bill
+                          </Button>
+                        ) : (
+                          <DispatchBillingStatusBadge row={d} compact />
+                        )
                       ) : null}
                     </div>
                   </td>
@@ -3973,13 +4042,6 @@ export function DispatchPage() {
     );
   }
 
-  const dispatchBreadcrumbRoot = React.useMemo(() => {
-    const st = (location.state as { from?: string } | null)?.from;
-    if (st === "dashboard" || fromDashboard) return { to: "/dashboard", label: "Dashboard" as const };
-    if (st === "sales-orders") return { to: "/sales-orders", label: "Sales Orders" as const };
-    return { to: "/sales-orders", label: "Sales Orders" as const };
-  }, [location.state, fromDashboard]);
-
   return (
     <PageContainer className="erp-flow-page pb-3">
       <div className="mb-1">
@@ -3987,21 +4049,7 @@ export function DispatchPage() {
       </div>
       <div className="grid gap-1.5">
         <OperationalContextSticky>
-          <nav className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-slate-600">
-            <Link to={dispatchBreadcrumbRoot.to} className="font-medium text-sky-900 hover:underline">
-              {dispatchBreadcrumbRoot.label}
-            </Link>
-            <span className="text-slate-300" aria-hidden>
-              /
-            </span>
-            <span className="font-mono font-semibold text-slate-900">
-              {selectedSo ? displaySalesOrderNo(selectedSo.id, selectedSo.docNo) : focusSoIdValid ? `SO-${focusSoId}` : "—"}
-            </span>
-            <span className="text-slate-300" aria-hidden>
-              /
-            </span>
-            <span className="font-semibold text-slate-800">Dispatch</span>
-          </nav>
+          <ErpWorkflowTrail navContext={dispatchNavContext} />
           {(() => {
             const eps = 1e-9;
             const so = selectedSo;
@@ -4013,7 +4061,14 @@ export function DispatchPage() {
 
             const suggest: "RS" | "PROD" | "QC" | "DISPATCH" | "BILL" = (() => {
               if (isNoQty && noQtyFlowState?.primaryActionForCurrentUser === "CREATE_NEXT_RS") return "RS";
-              if (noQtyPreviousDispatchBillWarning || showDispatchCompletedBillingCard || showDispatchCompletedBillingFallback) return "BILL";
+              if (
+                canCreateSalesBill &&
+                (noQtyPreviousDispatchBillWarning ||
+                  showDispatchCompletedBillingCard ||
+                  showDispatchCompletedBillingFallback)
+              ) {
+                return "BILL";
+              }
               if (dispatchable > eps || usable > eps) return "DISPATCH";
               if (qcPending > eps) return "QC";
               if (pending > eps) return "PROD";
@@ -4076,7 +4131,9 @@ export function DispatchPage() {
               : showPreparedDispatchActionCard
                 ? "Draft open"
                 : showDispatchCompletedBillingCard || showDispatchCompletedBillingFallback
-                  ? "Bill next"
+                  ? canCreateSalesBill
+                    ? "Bill next"
+                    : "Ready for Sales Bill"
                   : dispatchBlockedStripVisible
                     ? "Blocked"
                     : "Operational";
@@ -4088,30 +4145,41 @@ export function DispatchPage() {
                   ? Number(so.noQtyDispatchContext.cycleNo)
                   : null;
 
+            const soContextLabel = dispatchSoContextLabel(so, focusSoIdValid, focusSoId);
+            const itemContextLabel = dispatchItemContextLabel(currentLine);
+            const showNoQtyCycleBar =
+              isNoQty && soIdValid && so != null && dispatchNoQtyCycleNoValid(noQtyCycleNo);
+            const showOperationalContextBar = Boolean(soContextLabel || itemContextLabel);
+
             return (
               <>
-                {isNoQty && soIdValid && so ? (
+                {showNoQtyCycleBar && so ? (
                   <NoQtyCycleContextBar
                     compact
                     className="mt-0.5"
                     soId={so.id}
                     soDocNo={so.docNo ?? null}
-                    itemName={currentLine?.itemName ?? null}
+                    itemName={itemContextLabel}
                     cycleNo={noQtyCycleNo}
                   />
-                ) : (
+                ) : showOperationalContextBar ? (
                   <OperationalContextBar className="mt-1">
-                    <span className="font-mono font-semibold tabular-nums text-slate-900">
-                      {so ? displaySalesOrderNo(so.id, so.docNo) : focusSoIdValid ? `SO-${focusSoId}` : "—"}
-                    </span>
-                    <OpCtxSep />
-                    <span className="max-w-[14rem] truncate font-medium text-slate-800" title={currentLine?.itemName ?? ""}>
-                      {currentLine?.itemName ?? "—"}
-                    </span>
+                    {soContextLabel ? (
+                      <span className="font-mono font-semibold tabular-nums text-slate-900">{soContextLabel}</span>
+                    ) : null}
+                    {soContextLabel && itemContextLabel ? <OpCtxSep /> : null}
+                    {itemContextLabel ? (
+                      <span
+                        className="max-w-[14rem] truncate font-medium text-slate-800"
+                        title={itemContextLabel}
+                      >
+                        {itemContextLabel}
+                      </span>
+                    ) : null}
                     <OpCtxSep />
                     <span className="text-[11px] font-semibold text-slate-700">{statusSeg}</span>
                   </OperationalContextBar>
-                )}
+                ) : null}
                 <div className="erp-next-action-bar mt-1 border-slate-200/90 bg-white/80 py-0.5">
                   <div className="flex min-w-0 flex-wrap items-center gap-1">
                     {isNoQty && canOpenRs ? stepBtn("RS", openCurrentRsButtonLabel(), rsHref, soIdValid) : null}
@@ -4194,38 +4262,45 @@ export function DispatchPage() {
           <div className="min-w-0 overflow-hidden rounded-md border border-emerald-200/90 bg-emerald-50/80 px-2.5 py-2">
             <div className="flex min-w-0 flex-wrap items-start justify-between gap-2">
               <div className="min-w-0 text-[12px] leading-snug text-slate-800">
-                <div className="font-semibold text-emerald-950">Dispatch finalized · bill next</div>
+                <div className="font-semibold text-emerald-950">{DISPATCH_FINALIZED_READY_LABEL}</div>
                 <div className="mt-0.5 text-[11px] text-slate-700">{dispatchCompletedSubtitle}</div>
+                {!canCreateSalesBill && billingTargetLedgerRow ? (
+                  <div className="mt-1.5">
+                    <DispatchBillingStatusBadge row={billingTargetLedgerRow} compact />
+                  </div>
+                ) : null}
               </div>
               <div className="flex shrink-0 flex-col items-stretch gap-2 sm:flex-row sm:items-center">
-                {isRegularNormalSalesOrder(selectedSo) && billingTargetDispatchId != null ? (
-                  <Link
-                    to={`/sales-bills/new?dispatchId=${billingTargetDispatchId}&from=dispatch`}
-                    data-testid="dispatch-next-create-sales-bill-card"
-                    className={cn(
-                      buttonVariants({ size: "sm", variant: "default" }),
-                      "justify-center font-semibold no-underline",
-                      dispatchReadOnly ? "pointer-events-none opacity-50" : "",
-                    )}
-                    aria-disabled={dispatchReadOnly}
-                    onClick={(e) => {
-                      if (dispatchReadOnly) e.preventDefault();
-                    }}
-                  >
-                    Create Sales Bill
-                  </Link>
-                ) : (
-                  <Button
-                    type="button"
-                    size="sm"
-                    className="font-semibold"
-                    data-testid="dispatch-next-create-sales-bill-card"
-                    disabled={dispatchReadOnly}
-                    onClick={() => void onCreateSalesBillFromDispatch(billingTargetDispatchId)}
-                  >
-                    Create Sales Bill
-                  </Button>
-                )}
+                {canCreateSalesBill ? (
+                  isRegularNormalSalesOrder(selectedSo) && billingTargetDispatchId != null ? (
+                    <Link
+                      to={`/sales-bills/new?dispatchId=${billingTargetDispatchId}&from=dispatch`}
+                      data-testid="dispatch-next-create-sales-bill-card"
+                      className={cn(
+                        buttonVariants({ size: "sm", variant: "default" }),
+                        "justify-center font-semibold no-underline",
+                        dispatchReadOnly ? "pointer-events-none opacity-50" : "",
+                      )}
+                      aria-disabled={dispatchReadOnly}
+                      onClick={(e) => {
+                        if (dispatchReadOnly) e.preventDefault();
+                      }}
+                    >
+                      Create Sales Bill
+                    </Link>
+                  ) : (
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="font-semibold"
+                      data-testid="dispatch-next-create-sales-bill-card"
+                      disabled={dispatchReadOnly}
+                      onClick={() => void onCreateSalesBillFromDispatch(billingTargetDispatchId)}
+                    >
+                      Create Sales Bill
+                    </Button>
+                  )
+                ) : null}
                 <Button
                   type="button"
                   variant="outline"
@@ -4244,9 +4319,11 @@ export function DispatchPage() {
 
         {showDispatchCompletedBillingFallback ? (
           <div className="min-w-0 overflow-hidden rounded-md border border-emerald-200/90 bg-emerald-50/80 px-2.5 py-2">
-            <div className="text-[12px] font-semibold text-emerald-950">Dispatch finalized</div>
+            <div className="text-[12px] font-semibold text-emerald-950">{DISPATCH_FINALIZED_READY_LABEL}</div>
             <p className="mt-0.5 text-[11px] leading-snug text-slate-700">
-              Select sales order or open dispatch history to create bill.
+              {canCreateSalesBill
+                ? "Select sales order or open dispatch history to create bill."
+                : DISPATCH_BILLING_ADMIN_HANDOFF}
             </p>
             <div className="mt-2 flex flex-wrap items-center gap-2">
               <Button
@@ -4275,7 +4352,7 @@ export function DispatchPage() {
         ) : null}
 
         <DemoSafeNoQtyContinue
-          visible={showDemoNoQtyDispatchContinue}
+          visible={showDemoNoQtyDispatchContinue && canCreateSalesBill}
           body="Demo mode: Dispatch is not saved in Safe Demo. Complete this step to finish the NO_QTY demo path."
           actionLabel="Continue Demo → Sales Bill"
         />
@@ -4317,25 +4394,36 @@ export function DispatchPage() {
               <div className="font-semibold">✔ Dispatch complete</div>
               {!fromNoQtySo && latestRegularUnbilledDispatchId != null ? (
                 <div className="mt-1 space-y-2 text-emerald-900">
-                  <p className="text-[13px] font-medium leading-snug text-emerald-950">
-                    Dispatch completed. Create sales bill for this dispatch.
-                  </p>
-                  <Link
-                    to={`/sales-bills/new?dispatchId=${latestRegularUnbilledDispatchId}&from=dispatch`}
-                    className={cn(
-                      buttonVariants({ size: "default", variant: "default" }),
-                      "inline-flex no-underline",
-                    )}
-                    data-testid="dispatch-complete-global-create-bill"
-                  >
-                    Create Sales Bill
-                  </Link>
+                  {canCreateSalesBill ? (
+                    <>
+                      <p className="text-[13px] font-medium leading-snug text-emerald-950">
+                        Dispatch completed. Create sales bill for this dispatch.
+                      </p>
+                      <Link
+                        to={`/sales-bills/new?dispatchId=${latestRegularUnbilledDispatchId}&from=dispatch`}
+                        className={cn(
+                          buttonVariants({ size: "default", variant: "default" }),
+                          "inline-flex no-underline",
+                        )}
+                        data-testid="dispatch-complete-global-create-bill"
+                      >
+                        Create Sales Bill
+                      </Link>
+                    </>
+                  ) : (
+                    <>
+                      <p className="text-[13px] font-medium leading-snug text-emerald-950">
+                        {DISPATCH_FINALIZED_READY_LABEL}
+                      </p>
+                      <p className="text-[12px] text-emerald-900/90">{DISPATCH_BILLING_ADMIN_HANDOFF}</p>
+                    </>
+                  )}
                   <p className="text-[12px] text-emerald-900/90">You can review past dispatches below.</p>
                 </div>
               ) : (
                 <>
                   <div className="mt-0.5 text-emerald-900">All sales orders are fully dispatched or completed.</div>
-                  {hasUnexportedSalesBillsInHistory ? (
+                  {hasUnexportedSalesBillsInHistory && canCreateSalesBill ? (
                     <div className="mt-1 text-emerald-900/90">Some finalized dispatches still have Sales Bill export pending.</div>
                   ) : null}
                   <div className="mt-1 text-emerald-900/90">You can review past dispatches below.</div>
@@ -4412,8 +4500,15 @@ export function DispatchPage() {
                             <div className="mt-0.5 text-[11px] text-emerald-900">
                               {guidedLedgerContext?.latestFinalized?.salesBillIsExported === true
                                 ? "Dispatch finalized — stock posted."
-                                : "Dispatch finalized — stock posted. Create a sales bill when you are ready."}
+                                : canCreateSalesBill
+                                  ? "Dispatch finalized — stock posted. Create a sales bill when you are ready."
+                                  : `${DISPATCH_FINALIZED_READY_LABEL}. ${DISPATCH_BILLING_ADMIN_HANDOFF}`}
                             </div>
+                            {!canCreateSalesBill && guidedLedgerContext?.latestFinalized ? (
+                              <div className="mt-1.5">
+                                <DispatchBillingStatusBadge row={guidedLedgerContext.latestFinalized} compact />
+                              </div>
+                            ) : null}
                           </>
                         ) : (
                           <>
@@ -5415,7 +5510,7 @@ export function DispatchPage() {
                           >
                             Continue Dispatch
                           </Button>
-                          {billingTargetDispatchId != null ? (
+                          {canCreateSalesBill && billingTargetDispatchId != null ? (
                             <Link
                               to={`/sales-bills/new?dispatchId=${billingTargetDispatchId}&from=dispatch`}
                               data-testid="dispatch-partial-create-sales-bill"
@@ -5427,7 +5522,7 @@ export function DispatchPage() {
                             >
                               Create Sales Bill
                             </Link>
-                          ) : latestRegularUnbilledDispatchId != null ? (
+                          ) : canCreateSalesBill && latestRegularUnbilledDispatchId != null ? (
                             <Link
                               to={`/sales-bills/new?dispatchId=${latestRegularUnbilledDispatchId}&from=dispatch`}
                               className={cn(buttonVariants({ size: "sm", variant: "outline" }), "font-medium no-underline")}
@@ -5450,29 +5545,33 @@ export function DispatchPage() {
                           </Button>
                         </>
                       ) : showDispatchCompletedBillingCardEffective && billingTargetDispatchId != null ? (
-                        <>
-                          <Link
-                            to={`/sales-bills/new?dispatchId=${billingTargetDispatchId}&from=dispatch`}
-                            data-testid="dispatch-next-create-sales-bill-card"
-                            className={cn(
-                              buttonVariants({ size: "sm", variant: "outline" }),
-                              "font-medium no-underline",
-                            )}
-                          >
-                            Create Sales Bill
-                          </Link>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            className="font-medium text-slate-700"
-                            onClick={() =>
-                              dispatchHistoryAnchorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
-                            }
-                          >
-                            View History
-                          </Button>
-                        </>
+                        canCreateSalesBill ? (
+                          <>
+                            <Link
+                              to={`/sales-bills/new?dispatchId=${billingTargetDispatchId}&from=dispatch`}
+                              data-testid="dispatch-next-create-sales-bill-card"
+                              className={cn(
+                                buttonVariants({ size: "sm", variant: "outline" }),
+                                "font-medium no-underline",
+                              )}
+                            >
+                              Create Sales Bill
+                            </Link>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="font-medium text-slate-700"
+                              onClick={() =>
+                                dispatchHistoryAnchorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
+                              }
+                            >
+                              View History
+                            </Button>
+                          </>
+                        ) : billingTargetLedgerRow ? (
+                          <DispatchBillingStatusBadge row={billingTargetLedgerRow} compact />
+                        ) : null
                       ) : null}
                         </>
                     ) : null}
@@ -6456,13 +6555,15 @@ export function DispatchPage() {
                                       >
                                         View Sales Bill
                                       </Link>
-                                    ) : (
+                                    ) : canCreateSalesBill ? (
                                       <Link
                                         to={`/sales-bills/new?dispatchId=${d.id}&from=dispatch`}
                                         className="erp-table-act erp-table-act--link"
                                       >
                                         Create Sales Bill
                                       </Link>
+                                    ) : (
+                                      <DispatchBillingStatusBadge row={d} compact />
                                     )
                                   ) : (
                                     <span className="text-[11px] text-slate-500">—</span>

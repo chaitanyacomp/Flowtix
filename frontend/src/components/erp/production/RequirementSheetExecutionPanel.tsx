@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { Button } from "../../ui/button";
 import { Input } from "../../ui/input";
 import { Badge } from "../../ui/badge";
@@ -7,6 +7,8 @@ import { apiFetch, ApiRequestError } from "../../../services/api";
 import { workOrdersFocusHref } from "../../../lib/drillDownRoutes";
 import { cn } from "../../../lib/utils";
 import { useToast } from "../../../contexts/ToastContext";
+import { useStoreExecutionNavContext } from "../../../hooks/useStoreExecutionNavContext";
+import { navContextMaterialIssueFromExecutionWorkspace, navStateWithNavContext } from "../../../lib/erpNavContext";
 import {
   EXECUTION_WO_HISTORY_MAX_ROWS,
   executionWoHistoryVisibleCount,
@@ -278,6 +280,16 @@ export function RequirementSheetExecutionPanel({
   priorCycleExecution?: { viewingCycleNo: number | null; isPriorCycle: true } | null;
   executionMode?: boolean;
 }) {
+  const location = useLocation();
+  const executionNavContext = useStoreExecutionNavContext("execution-workspace");
+  const workspaceHref = `${location.pathname}${location.search}`;
+  const materialIssueFromWorkspaceState = React.useMemo(
+    () =>
+      navStateWithNavContext(
+        navContextMaterialIssueFromExecutionWorkspace(workspaceHref, executionNavContext.origin),
+      ),
+    [workspaceHref, executionNavContext.origin],
+  );
   const [data, setData] = React.useState<RsExecutionSummary | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
@@ -794,7 +806,8 @@ export function RequirementSheetExecutionPanel({
                       <td className="py-1.5 pr-2">
                         {wo.pmrId ? (
                           <Link
-                            to={`/material-issue?pmrId=${wo.pmrId}`}
+                            to={`/material-issue?pmrId=${wo.pmrId}&returnTo=rm-control-center`}
+                            state={executionMode ? materialIssueFromWorkspaceState : undefined}
                             className="font-medium text-primary underline underline-offset-2"
                           >
                             {wo.pmrDocNo?.trim() || `PMR-${wo.pmrId}`}

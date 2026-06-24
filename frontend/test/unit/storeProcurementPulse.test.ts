@@ -5,7 +5,7 @@ import {
   type StoreProcurementWorkspaceLike,
 } from "../../src/lib/storeProcurementPulse";
 
-function sampleWorkspace(overrides: Partial<StoreProcurementWorkspaceLike> = {}): StoreProcurementWorkspaceLike {
+export function sampleWorkspace(overrides: Partial<StoreProcurementWorkspaceLike> = {}): StoreProcurementWorkspaceLike {
   return {
     summary: {
       pendingMrCount: 1,

@@ -3,11 +3,11 @@
  * Presentation only; no queue or business logic.
  */
 export const dashboardShell = {
-  /** Laptop-first dual control center — fixed viewport band, inner columns scroll. */
+  /** Laptop-first dual control center — sections stack; scroll via .erp-main */
   page: "bg-gradient-to-b from-slate-50 via-slate-50 to-slate-100/90",
-  dualRoot: "erp-dash-dual-root flex min-h-0 flex-col",
-  dualInner: "erp-dash-dual-inner mx-auto flex w-full max-w-[min(100%,92rem)] min-h-0 flex-1 flex-col px-3 py-1 md:px-4 md:py-1.5",
-  dualGrid: "erp-dash-dual-grid grid min-h-0 flex-1 gap-2 lg:grid-cols-[minmax(0,1.86fr)_minmax(0,1fr)]",
+  dualRoot: "erp-dash-dual-root flex flex-col",
+  dualInner: "erp-dash-dual-inner mx-auto flex w-full max-w-[min(100%,92rem)] flex-col px-3 py-1 md:px-4 md:py-1.5",
+  dualGrid: "erp-dash-dual-grid grid gap-2 lg:grid-cols-[minmax(0,1.86fr)_minmax(0,1fr)]",
   dualGridSingle: "erp-dash-dual-grid erp-dash-dual-grid--single lg:grid-cols-1",
   max: "mx-auto w-full max-w-[min(100%,90rem)] px-3 pt-0.5 pb-3 md:px-5 md:pb-4",
   grid: "grid max-w-full gap-1.5",
@@ -34,7 +34,7 @@ export function dashboardWorkspaceHeadline(role: string): { title: string; subti
     case "STORE":
       return {
         title: "Store Operations",
-        subtitle: "RS · monthly planning · GRN · WO · material issue · stock · dispatch",
+        subtitle: "Place WO · Issue RM · Dispatch · monitor procurement & GRN",
       };
     case "ADMIN":
       return {

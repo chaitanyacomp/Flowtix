@@ -38,7 +38,9 @@ export function useErpRoleUi() {
       showProductionPlanningBreadcrumb: isAdmin || isStore,
       showProductionDispatchHandoff: isAdmin || isStore,
       showDispatchCrossDeptNav: isAdmin,
-      showDispatchBillingNav: isAdmin || isStore,
+      /** Sales bill creation / BILL workflow step — ADMIN only (STORE views status read-only). */
+      showDispatchBillingNav: isAdmin,
+      canCreateSalesBill: isAdmin,
       showQcDispatchHandoff: isAdmin || isStore || isQa,
       quietNoQtyExplanations: isOperator && !isAdmin,
       showWoNoQtyQcHandoffStrip: isAdmin || isQa || isProduction,

@@ -75,6 +75,8 @@ export const PROCUREMENT_TERMS = {
     "Commercial PO execution and GRN receipt processing. Purchase creates PO; Store posts GRN.",
   STORE_PULSE_TITLE: "Procurement pulse",
   STORE_PULSE_SUBTITLE: "Store-owned PR and GRN work — Purchase handles PO creation separately.",
+  STORE_MONITOR_TITLE: "Procurement monitor",
+  STORE_MONITOR_SUBTITLE: "Monitor procurement readiness — open workspace or GRN for drill-down. No execution on dashboard.",
   LOADING_PROCUREMENT: "Loading procurement cases…",
   MORE_IN_WORKSPACE: "more in Procurement Workspace",
   DEMAND_POOL_REGULAR_SO: "Sales Orders",

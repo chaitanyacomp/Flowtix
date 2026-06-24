@@ -1,6 +1,6 @@
 import * as React from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { Boxes, ChevronRight, PackageMinus, Truck } from "lucide-react";
+import { Boxes, ChevronRight, ClipboardList, PackageMinus, PackageSearch, Truck } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "../../components/ui/card";
 import { buttonVariants } from "../../components/ui/button";
 import { cn } from "../../lib/utils";
@@ -10,15 +10,31 @@ import { ErpKpiStrip, ErpKpiSegment, ErpKpiLabel, ErpKpiValue } from "../../comp
 import { ErpActionButton } from "../../components/erp/foundation/ErpActionButton";
 import type { DispatchBacklogRow } from "../../lib/dispatchBacklog";
 import { dashboardShell } from "../../lib/dashboardShell";
-import { REGULAR_TERMS } from "../../lib/flowTerminology";
 import { purchaseGrnExecutionHref } from "../../lib/woPrepareOperationalStage";
 import { DashboardOpsClearStrip, DashboardWorkspaceHeader } from "../../components/erp/foundation";
 import { PendingActionsDashboardCard } from "../PendingActionsPage";
 import type { PendingActionsDashboardProps } from "../../lib/pendingActionsApi";
-import { StoreProcurementPulse } from "../../components/erp/StoreProcurementPulse";
 import { erpKpi } from "../../lib/erpFoundationTokens";
-import { apiFetch } from "../../services/api";
 import { ERP_DASHBOARD_POLL_MS, useErpRefreshTick } from "../../hooks/useErpRefreshTick";
+import { useStoreDashboardOperationalData } from "../../hooks/useStoreDashboardOperationalData";
+import {
+  computeNoQtyExecutionSummaryMetrics,
+  computeStoreDashboardKpiMetrics,
+  computeStoreProcurementMonitorMetrics,
+  computeStoreRmccSummaryMetrics,
+} from "../../lib/storeDashboardMetrics";
+import { NO_QTY_AGREEMENTS_HREF } from "../../lib/noQtyStoreNavigation";
+import { rmControlCenterHref } from "../../lib/materialWorkflowLinks";
+import {
+  navContextDispatchFromDashboard,
+  navContextMaterialIssueFromDashboard,
+  navContextNoQtyExecutionRegister,
+  navContextRmControlCenterFromDashboard,
+  navStateWithNavContext,
+} from "../../lib/erpNavContext";
+import { StoreNoQtyExecutionSummaryCard } from "../../components/erp/StoreNoQtyExecutionSummaryCard";
+import { StoreRmccSummaryCard } from "../../components/erp/StoreRmccSummaryCard";
+import { StoreProcurementMonitor } from "../../components/erp/StoreProcurementMonitor";
 
 const DASH_SHELL = dashboardShell.page;
 const DASH_MAX = dashboardShell.max;
@@ -36,8 +52,6 @@ export type StoreDispatchActionRow = {
   href: string;
 };
 
-type PurchaseSummaryRow = { purchaseOrderId: number; itemId: number; pendingQty: number };
-
 function formatQty(q: number): string {
   const n = Number(q);
   if (!Number.isFinite(n)) return "—";
@@ -50,17 +64,19 @@ function StoreDashCard({
   actionLabel,
   href,
   icon,
+  navState,
 }: {
   title: string;
   detail: string;
   actionLabel: string;
   href: string;
   icon?: React.ReactNode;
+  navState?: ReturnType<typeof navStateWithNavContext>;
 }) {
   return (
     <Link
       to={href}
-      state={{ from: "dashboard" }}
+      state={navState ?? { from: "dashboard" }}
       className={cn(
         "group block rounded-lg border border-slate-200/95 bg-white px-3 py-2.5 shadow-sm transition-colors hover:border-slate-300 hover:shadow-md border-l-[3px] border-l-blue-600",
       )}
@@ -99,31 +115,63 @@ export function StoreDispatchDashboard({
 }: StoreDispatchDashboardProps) {
   const navigate = useNavigate();
   const liveTick = useErpRefreshTick(["dashboard"], { pollIntervalMs: ERP_DASHBOARD_POLL_MS });
-  const [grnPendingLines, setGrnPendingLines] = React.useState(0);
+  const operational = useStoreDashboardOperationalData(liveTick);
 
-  React.useEffect(() => {
-    let cancelled = false;
-    apiFetch<PurchaseSummaryRow[]>("/api/dashboard/purchase-summary")
-      .then((rows) => {
-        if (!cancelled) setGrnPendingLines(Array.isArray(rows) ? rows.length : 0);
-      })
-      .catch(() => {
-        if (!cancelled) setGrnPendingLines(0);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [liveTick]);
+  const executionMetrics = React.useMemo(
+    () => computeNoQtyExecutionSummaryMetrics(operational.inboxRows),
+    [operational.inboxRows],
+  );
+  const kpiMetrics = React.useMemo(
+    () =>
+      computeStoreDashboardKpiMetrics({
+        inboxRows: operational.inboxRows,
+        materialIssuePendingCount: operational.materialIssuePendingCount,
+        rmccSummary: operational.rmccSummary,
+        procurementWorkspace: operational.procurementWorkspace,
+      }),
+    [
+      operational.inboxRows,
+      operational.materialIssuePendingCount,
+      operational.rmccSummary,
+      operational.procurementWorkspace,
+    ],
+  );
+  const rmccMetrics = React.useMemo(
+    () => computeStoreRmccSummaryMetrics(operational.rmccSummary),
+    [operational.rmccSummary],
+  );
+  const procurementMonitorMetrics = React.useMemo(
+    () => computeStoreProcurementMonitorMetrics(operational.procurementWorkspace, operational.inboxRows),
+    [operational.procurementWorkspace, operational.inboxRows],
+  );
 
-  const clickTo = (to: string) => ({
-    onClick: () => navigate(to, { state: { from: "dashboard" } }),
+  const clickTo = (to: string, navContext?: ReturnType<typeof navStateWithNavContext>) => ({
+    onClick: () =>
+      navigate(to, navContext ? { state: navContext } : { state: { from: "dashboard" } }),
   });
 
   const dispatchReadyCount = dispatchReady.length;
-  const allQuiet = dispatchReadyCount === 0 && grnPendingLines === 0 && dispatchBacklogCount === 0;
+  const executionRegisterHref = NO_QTY_AGREEMENTS_HREF;
+  const rmccHref = rmControlCenterHref({ returnTo: "dashboard" });
+  const materialIssueHref = "/material-issue?source=dashboard";
+  const procurementAwaitHref = "/procurement-planning?returnTo=dashboard";
+  const dashboardNav = navStateWithNavContext(navContextNoQtyExecutionRegister("dashboard"));
+  const dashboardRmccNav = navStateWithNavContext(navContextRmControlCenterFromDashboard());
+  const dashboardMaterialIssueNav = navStateWithNavContext(navContextMaterialIssueFromDashboard());
+  const dashboardDispatchNav = navStateWithNavContext(navContextDispatchFromDashboard());
+
+  const allQuiet =
+    !operational.loading &&
+    kpiMetrics.readyForWo === 0 &&
+    kpiMetrics.materialIssuePending === 0 &&
+    kpiMetrics.rmccCases === 0 &&
+    kpiMetrics.awaitProcurement === 0 &&
+    dispatchReadyCount === 0 &&
+    dispatchBacklogCount === 0 &&
+    procurementMonitorMetrics.grnPending === 0;
 
   return (
-    <div className={DASH_SHELL}>
+    <div className={DASH_SHELL} data-testid="store-dispatch-dashboard">
       <div className={DASH_MAX}>
         <div className={dashboardShell.grid}>
           <DashboardWorkspaceHeader role="STORE" />
@@ -137,51 +185,120 @@ export function StoreDispatchDashboard({
           ) : null}
 
           <div className="erp-op-workspace-primary erp-card-surface flex flex-wrap items-center gap-1.5 rounded-lg border border-slate-200/90 px-2.5 py-1.5 shadow-sm">
-            <ErpActionButton tier="primary" className="gap-1.5" onClick={() => navigate("/dispatch?source=dashboard")}>
+            <ErpActionButton
+              tier="primary"
+              className="gap-1.5"
+              data-testid="store-quick-no-qty-execution"
+              onClick={() => navigate(executionRegisterHref, dashboardNav)}
+            >
+              <ClipboardList className="h-3.5 w-3.5" aria-hidden />
+              NO_QTY Execution
+            </ErpActionButton>
+            <ErpActionButton
+              tier="primary"
+              className="gap-1.5"
+              data-testid="store-quick-rmcc"
+              onClick={() => navigate(rmccHref, dashboardRmccNav)}
+            >
+              <PackageSearch className="h-3.5 w-3.5" aria-hidden />
+              RM Control Center
+            </ErpActionButton>
+            <ErpActionButton
+              tier="primary"
+              className="gap-1.5"
+              data-testid="store-quick-material-issue"
+              onClick={() => navigate(materialIssueHref, dashboardMaterialIssueNav)}
+            >
+              <PackageMinus className="h-3.5 w-3.5" aria-hidden />
+              Material Issue
+            </ErpActionButton>
+            <ErpActionButton
+              tier="primary"
+              className="gap-1.5"
+              data-testid="store-quick-dispatch"
+              onClick={() => navigate("/dispatch?source=dashboard", dashboardDispatchNav)}
+            >
               <Truck className="h-3.5 w-3.5" aria-hidden />
               Dispatch
             </ErpActionButton>
-            <ErpActionButton tier="secondary" className="gap-1.5" onClick={() => navigate("/material-issue?source=dashboard")}>
-              <PackageMinus className="h-3.5 w-3.5" aria-hidden />
-              Material issue
-            </ErpActionButton>
-            <ErpActionButton tier="secondary" className="gap-1.5" onClick={() => navigate("/rm-po-grn?source=dashboard")}>
+            <span className="mx-0.5 hidden h-5 w-px bg-slate-200 sm:inline-block" aria-hidden />
+            <ErpActionButton
+              tier="tertiary"
+              className="gap-1.5"
+              data-testid="store-quick-grn"
+              onClick={() => navigate(purchaseGrnExecutionHref({ source: "dashboard" }))}
+            >
               <Boxes className="h-3.5 w-3.5" aria-hidden />
-              GRN workspace
+              GRN Workspace
             </ErpActionButton>
-            <ErpActionButton tier="secondary" className="gap-1.5" onClick={() => navigate("/stock?source=dashboard")}>
+            <ErpActionButton
+              tier="tertiary"
+              className="gap-1.5"
+              data-testid="store-quick-stock"
+              onClick={() => navigate("/stock?source=dashboard")}
+            >
               <Boxes className="h-3.5 w-3.5" aria-hidden />
               Stock
             </ErpActionButton>
           </div>
 
           <div className="max-w-full overflow-x-auto pb-0.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-            <ErpKpiStrip className={erpKpi.stripCompact} role="toolbar" aria-label="Store operations metrics">
-              <ErpKpiSegment type="button" {...clickTo("/dispatch")} aria-label="Ready to dispatch">
-                <ErpKpiLabel>Ready to dispatch</ErpKpiLabel>
-                <ErpKpiValue tone={dispatchReadyCount > 0 ? "warn" : "muted"}>{dispatchReadyCount}</ErpKpiValue>
+            <ErpKpiStrip
+              className={erpKpi.stripCompact}
+              role="toolbar"
+              aria-label="Store execution metrics"
+              data-testid="store-kpi-execution"
+            >
+              <ErpKpiSegment type="button" {...clickTo(executionRegisterHref, dashboardNav)} aria-label="Ready for WO">
+                <ErpKpiLabel>Ready for WO</ErpKpiLabel>
+                <ErpKpiValue tone={kpiMetrics.readyForWo > 0 ? "warn" : "muted"}>{kpiMetrics.readyForWo}</ErpKpiValue>
               </ErpKpiSegment>
-              <ErpKpiSegment type="button" {...clickTo("/rm-po-grn?source=dashboard")} aria-label="GRN pending">
-                <ErpKpiLabel>GRN pending</ErpKpiLabel>
-                <ErpKpiValue tone={grnPendingLines > 0 ? "warn" : "muted"}>{grnPendingLines}</ErpKpiValue>
+              <ErpKpiSegment type="button" {...clickTo(materialIssueHref, dashboardMaterialIssueNav)} aria-label="Material issue pending">
+                <ErpKpiLabel>Material issue pending</ErpKpiLabel>
+                <ErpKpiValue tone={kpiMetrics.materialIssuePending > 0 ? "warn" : "muted"}>
+                  {kpiMetrics.materialIssuePending}
+                </ErpKpiValue>
+              </ErpKpiSegment>
+              <ErpKpiSegment type="button" {...clickTo(rmccHref, dashboardRmccNav)} aria-label="RMCC cases">
+                <ErpKpiLabel>RMCC cases</ErpKpiLabel>
+                <ErpKpiValue tone={kpiMetrics.rmccCases > 0 ? "warn" : "muted"}>{kpiMetrics.rmccCases}</ErpKpiValue>
+              </ErpKpiSegment>
+              <ErpKpiSegment type="button" {...clickTo(procurementAwaitHref)} aria-label="Await procurement">
+                <ErpKpiLabel>Await procurement</ErpKpiLabel>
+                <ErpKpiValue tone={kpiMetrics.awaitProcurement > 0 ? "warn" : "muted"}>
+                  {kpiMetrics.awaitProcurement}
+                </ErpKpiValue>
+              </ErpKpiSegment>
+            </ErpKpiStrip>
+          </div>
+
+          <div className="max-w-full overflow-x-auto pb-0.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            <ErpKpiStrip
+              className={cn(erpKpi.stripCompact, "opacity-90")}
+              role="toolbar"
+              aria-label="Store informational metrics"
+              data-testid="store-kpi-secondary"
+            >
+              <ErpKpiSegment type="button" {...clickTo("/dispatch?source=dashboard", dashboardDispatchNav)} aria-label="Dispatch ready">
+                <ErpKpiLabel>Dispatch ready</ErpKpiLabel>
+                <ErpKpiValue tone={dispatchReadyCount > 0 ? "warn" : "muted"}>{dispatchReadyCount}</ErpKpiValue>
               </ErpKpiSegment>
               <ErpKpiSegment type="button" {...clickTo("/stock")} aria-label="FG usable">
                 <ErpKpiLabel>FG usable</ErpKpiLabel>
                 <ErpKpiValue>{fgStockTotal.toFixed(2)}</ErpKpiValue>
-              </ErpKpiSegment>
-              <ErpKpiSegment type="button" {...clickTo("/dispatch?source=dashboard")} aria-label="Dispatch backlog">
-                <ErpKpiLabel>Dispatch backlog</ErpKpiLabel>
-                <ErpKpiValue tone={dispatchBacklogCount > 0 ? "warn" : "muted"}>{dispatchBacklogCount}</ErpKpiValue>
               </ErpKpiSegment>
             </ErpKpiStrip>
           </div>
 
           {allQuiet ? <DashboardOpsClearStrip role="STORE" /> : null}
 
-          <StoreProcurementPulse />
+          <StoreNoQtyExecutionSummaryCard metrics={executionMetrics} loading={operational.loading} />
+          <StoreRmccSummaryCard metrics={rmccMetrics} loading={operational.loading} />
+
+          <StoreProcurementMonitor metrics={procurementMonitorMetrics} loading={operational.loading} />
 
           <div className="grid gap-1.5 lg:grid-cols-2">
-            <Card className={cn(dispatchReadyCount > 0 ? DASH_CARD_PRIMARY : DASH_CARD)}>
+            <Card className={cn(dispatchReadyCount > 0 ? DASH_CARD_PRIMARY : DASH_CARD)} data-testid="store-dispatch-ready">
               <CardHeader className="border-b border-slate-100 p-2 pb-1.5">
                 <CardTitle className="flex items-center gap-2 text-[13px] font-extrabold text-slate-950">
                   <Truck className="h-4 w-4 text-blue-700" aria-hidden />
@@ -199,52 +316,49 @@ export function StoreDispatchDashboard({
                       detail={`${displaySalesOrderNo(d.salesOrderId, d.salesOrderDocNo)} · ${d.customerName} · ${d.itemName} · ${formatQty(d.metricQty)}`}
                       actionLabel="Open dispatch"
                       href={d.href}
+                      navState={d.href.includes("/dispatch") ? dashboardDispatchNav : undefined}
                     />
                   ))
                 )}
               </CardContent>
             </Card>
 
-            <Card className={DASH_CARD}>
+            <Card className={DASH_CARD} data-testid="store-dispatch-backlog">
               <CardHeader className="border-b border-slate-100 p-2.5 pb-2">
                 <CardTitle className="flex items-center gap-2 text-[14px] font-bold text-slate-900">
-                  <Boxes className="h-4 w-4 text-emerald-700" aria-hidden />
-                  Store queues
+                  <Truck className="h-4 w-4 text-slate-600" aria-hidden />
+                  Dispatch backlog
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-2 p-2.5 pt-2">
-                {grnPendingLines > 0 ? (
-                  <StoreDashCard
-                    title="Material receipts pending"
-                    detail={`${grnPendingLines} PO line(s) awaiting GRN`}
-                    actionLabel={REGULAR_TERMS.OPEN_PURCHASE_AND_GRN}
-                    href={purchaseGrnExecutionHref({ source: "dashboard" })}
-                  />
-                ) : null}
-                {dispatchBacklogCount > 0 ? (
-                  <StoreDashCard
-                    title="Dispatch backlog"
-                    detail={`${dispatchBacklogCount} line(s) in dispatch prep`}
-                    actionLabel="Open dispatch"
-                    href="/dispatch?source=dashboard"
-                  />
-                ) : null}
-                {backlogPreview.length > 0 ? (
-                  <div className="erp-op-workspace-secondary rounded-md border border-slate-200/90 bg-slate-50/80 px-2 py-1.5">
-                    <div className="text-[10px] font-semibold text-slate-600">Recent dispatch-ready lines</div>
-                    <ul className="mt-1 space-y-1 text-[11px] text-slate-800">
-                      {backlogPreview.slice(0, 5).map((r) => (
-                        <li key={`${r.salesOrderId}-${r.salesOrderLineId}`} className="truncate">
-                          {displaySalesOrderNo(r.salesOrderId, r.salesOrderNo)} · {r.itemName} ·{" "}
-                          <span className="tabular-nums font-medium">{formatQty(Number(r.dispatchableNow ?? 0))}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                ) : null}
-                {grnPendingLines === 0 && dispatchBacklogCount === 0 && backlogPreview.length === 0 ? (
-                  <ErpEmptyState variant="inline" title="Store operations are clear" body="GRN, issue, and dispatch queues are quiet." />
-                ) : null}
+                {dispatchBacklogCount === 0 && backlogPreview.length === 0 ? (
+                  <ErpEmptyState variant="inline" title="No dispatch backlog" body="Lines in dispatch prep will appear here." />
+                ) : (
+                  <>
+                    {dispatchBacklogCount > 0 ? (
+                      <StoreDashCard
+                        title="Dispatch backlog"
+                        detail={`${dispatchBacklogCount} line(s) in dispatch prep`}
+                        actionLabel="Open dispatch"
+                        href="/dispatch?source=dashboard"
+                        navState={dashboardDispatchNav}
+                      />
+                    ) : null}
+                    {backlogPreview.length > 0 ? (
+                      <div className="erp-op-workspace-secondary rounded-md border border-slate-200/90 bg-slate-50/80 px-2 py-1.5">
+                        <div className="text-[10px] font-semibold text-slate-600">Recent dispatch-ready lines</div>
+                        <ul className="mt-1 space-y-1 text-[11px] text-slate-800">
+                          {backlogPreview.slice(0, 5).map((r) => (
+                            <li key={`${r.salesOrderId}-${r.salesOrderLineId}`} className="truncate">
+                              {displaySalesOrderNo(r.salesOrderId, r.salesOrderNo)} · {r.itemName} ·{" "}
+                              <span className="tabular-nums font-medium">{formatQty(Number(r.dispatchableNow ?? 0))}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
+                  </>
+                )}
               </CardContent>
             </Card>
           </div>

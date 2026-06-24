@@ -364,8 +364,8 @@ function BomPageHeader({
         <div className="min-w-0">
           <h1 className="bom-vp-title">BOM</h1>
           <p className="bom-vp-sub">Factory recipe for material planning</p>
-        </div>
-      </div>
+          </div>
+          </div>
       {showToolbar ? (
         <div className="bom-vp-toolbar">
           <Button type="button" variant="outline" size="sm" className="h-7 px-2 text-[11px] font-semibold" onClick={onNewDraft}>
@@ -398,7 +398,7 @@ function BomPageHeader({
 }
 
 function BomEmptyState({ onCreate, disabled }: { onCreate: () => void; disabled?: boolean }) {
-  return (
+              return (
     <div className="bom-op-card flex flex-1 flex-col items-center justify-center px-4 py-6 text-center">
       <h2 className="text-[15px] font-bold text-slate-900">Create new BOM</h2>
       <ol className="mt-3 max-w-sm space-y-1.5 text-left text-[12px] text-slate-600">
@@ -410,7 +410,7 @@ function BomEmptyState({ onCreate, disabled }: { onCreate: () => void; disabled?
       <Button type="button" size="sm" className="mt-4 h-8 px-4 text-xs font-bold" disabled={disabled} onClick={onCreate}>
         Create new BOM
       </Button>
-    </div>
+        </div>
   );
 }
 
@@ -419,7 +419,7 @@ function BomSummaryRow({ label, value }: { label: string; value: string }) {
     <div className="bom-summary-row">
       <span className="bom-summary-row__label">{label}</span>
       <span className="bom-summary-row__value">{value}</span>
-    </div>
+        </div>
   );
 }
 
@@ -457,7 +457,7 @@ function BomSummaryPanel({
   const summarySfg = componentSummary?.sfgCount ?? lineSummaries.filter((row) => lineComponentType(row.item) === "SFG").length;
   const childLinked = componentSummary?.childBomsLinked ?? 0;
 
-  return (
+                return (
     <BomSectionCard title="Planning summary" tone="insights">
       <div className="bom-summary-list">
         {!summary.weightConfigured ? (
@@ -645,7 +645,7 @@ function BomCompactForm({
             placeholder="Optional"
           />
         </BomCell>
-      </div>
+        </div>
     </BomSectionCard>
   );
 }
@@ -727,10 +727,10 @@ function BomRmWorkspaceTable({
               <th className="bom-col-qty bom-col-num">RM Weight</th>
               <th className="bom-col-eff bom-col-num">Effective RM</th>
               <th className="bom-col-act" />
-            </tr>
-          </thead>
-          <tbody>
-            {lines.map((l, i) => {
+          </tr>
+        </thead>
+        <tbody>
+          {lines.map((l, i) => {
               const item = itemsById.get(l.rmItemId);
               const ct = lineComponentType(item);
               const mix = l.mixPercent === "" ? NaN : Number(l.mixPercent);
@@ -739,27 +739,27 @@ function BomRmWorkspaceTable({
                   ? bomLineQuantitiesFromMixPercent(nums.fgWeight, weightUnit, mix, nums.processLossPercent, nums.qcLossPercent)
                   : { rmWeightGm: null, internalQtyKg: null, effectiveQtyKg: null };
               const mixErr = mixPercentError(l, false);
-              return (
+            return (
                 <tr key={`bom-line-${i}`}>
                   <td className="bom-col-rm">
-                    <select
+                  <select
                       ref={(el) => {
                         lineSelectRefs.current[i] = el;
                       }}
                       className={cn(opSelectClass, "w-full font-semibold text-slate-900")}
-                      value={l.rmItemId}
+                    value={l.rmItemId}
                       disabled={readOnly}
-                      onChange={(e) => {
-                        const v = Number(e.target.value);
-                        setLines((p) => p.map((x, j) => (j === i ? { ...x, rmItemId: v } : x)));
-                      }}
-                    >
+                    onChange={(e) => {
+                      const v = Number(e.target.value);
+                      setLines((p) => p.map((x, j) => (j === i ? { ...x, rmItemId: v } : x)));
+                    }}
+                  >
                       {components.map((x) => (
-                        <option key={x.id} value={x.id}>
-                          {x.itemName}
-                        </option>
-                      ))}
-                    </select>
+                      <option key={x.id} value={x.id}>
+                        {x.itemName}
+                      </option>
+                    ))}
+                  </select>
                     {item ? (
                       <SfgChildBomHint
                         itemId={l.rmItemId}
@@ -767,7 +767,7 @@ function BomRmWorkspaceTable({
                         approvedChildFgIds={approvedChildFgIds}
                       />
                     ) : null}
-                  </td>
+                </td>
                   <td>
                     <BomComponentTypeChip type={ct} />
                   </td>
@@ -775,8 +775,8 @@ function BomRmWorkspaceTable({
                     {itemDisplayCode(l.rmItemId)}
                   </td>
                   <td className="bom-col-qty text-right">
-                    <Input
-                      type="number"
+                  <Input
+                    type="number"
                       className={cn(
                         opInputClass,
                         "ml-auto w-full max-w-[5rem] text-right font-bold",
@@ -786,14 +786,14 @@ function BomRmWorkspaceTable({
                       inputMode="decimal"
                       value={l.mixPercent === "" ? "" : l.mixPercent}
                       readOnly={readOnly}
-                      onChange={(e) => {
-                        const raw = e.target.value;
-                        if (raw === "") {
+                    onChange={(e) => {
+                      const raw = e.target.value;
+                      if (raw === "") {
                           setLines((p) => p.map((x, j) => (j === i ? { ...x, mixPercent: "" } : x)));
-                          return;
-                        }
+                        return;
+                      }
                         const v = Number(raw);
-                        setLines((p) =>
+                      setLines((p) =>
                           p.map((x, j) =>
                             j === i
                               ? {
@@ -802,41 +802,41 @@ function BomRmWorkspaceTable({
                                 }
                               : x,
                           ),
-                        );
-                      }}
-                    />
+                      );
+                    }}
+                  />
                     {mixErr && !readOnly ? (
                       <div className="mt-1 max-w-[5rem] text-[10px] font-medium leading-tight text-red-700">
                         {mixErr}
                       </div>
                     ) : null}
-                  </td>
+                </td>
                   <td className="bom-col-qty text-right text-[11px] font-extrabold tabular-nums text-slate-900">
                     {Number.isFinite(Number(qty.rmWeightGm)) ? `${fmt3(Number(qty.rmWeightGm))} gm` : "—"}
-                  </td>
+                </td>
                   <td className="bom-col-eff text-right text-[11px] font-extrabold tabular-nums text-slate-900">
                     {Number.isFinite(Number(qty.effectiveQtyKg)) ? `${fmt3(Number(qty.effectiveQtyKg) * 1000)} gm` : "—"}
-                  </td>
+                </td>
                   <td className="bom-col-act text-center">
                     {!readOnly && lines.length > 1 ? (
-                      <Button
-                        type="button"
-                        size="icon"
-                        variant="ghost"
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="ghost"
                         className="h-6 w-6 text-slate-400 hover:bg-red-50 hover:text-red-700"
-                        aria-label="Remove line"
-                        onClick={() => setLines((p) => p.filter((_, j) => j !== i))}
-                      >
+                      aria-label="Remove line"
+                      onClick={() => setLines((p) => p.filter((_, j) => j !== i))}
+                    >
                         <X className="h-3.5 w-3.5" />
-                      </Button>
+                    </Button>
                     ) : null}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
       {formId ? <span className="sr-only" data-form-hint={formId} /> : null}
     </BomSectionCard>
   );
@@ -1475,8 +1475,8 @@ export function BomsPage() {
     }
     try {
       if (workspaceMode === "create") {
-        await apiFetch("/api/boms", {
-          method: "POST",
+      await apiFetch("/api/boms", {
+        method: "POST",
           body: JSON.stringify({ fgItemId: fgId, ...bomPayload(header, lines) }),
         });
         const refreshed = await load();
@@ -1551,18 +1551,18 @@ export function BomsPage() {
     }
     setError(null);
     if (adminGate.mode === "edit") {
-      void (async () => {
-        try {
+    void (async () => {
+      try {
           const newBom = await apiFetch<BomRow>(`/api/boms/${adminGate.bom.id}/revise`, {
             method: "POST",
             body: JSON.stringify({ adminPassword: pwd }),
           });
-          closeAdminGate();
-          await load();
+        closeAdminGate();
+        await load();
           beginEditInline(newBom);
           toast.showSuccess(`Draft revision ${newBom.revisionLabel ?? bomRevisionLabel(newBom.revisionNo ?? 2)} created`);
-        } catch (err) {
-          setError(bomApiError(err));
+      } catch (err) {
+        setError(bomApiError(err));
           if (err instanceof ApiRequestError && (err.status === 401 || err.code === "ADMIN_PASSWORD_REQUIRED")) {
             focusAdminGatePassword();
           }
@@ -1574,14 +1574,14 @@ export function BomsPage() {
       try {
         await deleteBomRequest(adminGate.bom.id, pwd);
         closeAdminGate();
-        await load();
+      await load();
         if (editingBomId === adminGate.bom.id || selectedBomId === adminGate.bom.id) resetWorkspaceToIdle();
         toast.showSuccess("BOM deleted");
-      } catch (err) {
-        setError(bomApiError(err));
+    } catch (err) {
+      setError(bomApiError(err));
         if (err instanceof ApiRequestError && err.status === 401) {
           focusAdminGatePassword();
-        }
+    }
       }
     })();
   }
@@ -1613,7 +1613,7 @@ export function BomsPage() {
           <div className="bom-op-card-head flex items-center justify-between gap-2">
             <h2 className="bom-op-card-head-title">Saved BOMs ({visibleRows.length})</h2>
             <button
-              type="button"
+                      type="button"
               className="inline-flex items-center gap-2 rounded border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-50"
               onClick={() => setShowInactiveRevisions((v) => !v)}
             >
@@ -1625,7 +1625,7 @@ export function BomsPage() {
               />
               Show inactive revisions
             </button>
-          </div>
+                      </div>
           <div className="bom-vp-list-scroll bom-list-table">
             <table className={cn(erpTable.standard, erpTable.queue, "min-w-[640px] w-full text-[11px]")}>
               <thead className="sticky top-0 z-[1] bg-slate-50/95">
@@ -1682,7 +1682,7 @@ export function BomsPage() {
                       b.status === "INACTIVE" || b.status === "ARCHIVED"
                         ? "bg-slate-50/70 text-slate-500"
                         : "";
-                    return (
+                      return (
                       <tr
                         key={b.id}
                         className={cn(rowClass, rowSelected && "bg-sky-50/80", isAdmin && "cursor-pointer hover:bg-slate-50/80")}
@@ -1695,8 +1695,8 @@ export function BomsPage() {
                           {bomDisplayRevision(b.docNo ?? `BOM-${b.id}`, b.revisionNo)}
                         </td>
                         <td className="max-w-[10rem] truncate text-[11px] font-semibold text-slate-900">
-                          {b.fgItem.itemName}
-                        </td>
+                              {b.fgItem.itemName}
+                            </td>
                         <td className="text-[11px] text-slate-600">{bomTypeLabel(b.bomType)}</td>
                         <td className="text-right tabular-nums text-[12px] text-slate-800">{fgWt}</td>
                         <td className="text-right tabular-nums text-[12px] text-slate-700">{pl > 0 ? `${pl}%` : "—"}</td>
@@ -1705,7 +1705,7 @@ export function BomsPage() {
                           {b.componentSummary
                             ? `${b.componentSummary.rmCount}R/${b.componentSummary.sfgCount}S`
                             : b.lines.length}
-                        </td>
+                          </td>
                         <td className="text-center">
                           {b.status === "INACTIVE" ? (
                             <Badge variant="default" className="px-1.5 py-0 text-[10px] font-bold uppercase tracking-wide">
@@ -1718,12 +1718,12 @@ export function BomsPage() {
                           ) : b.status === "APPROVED" || bomAppearsLocked(b) ? (
                             <Badge variant="success" className="px-1.5 py-0 text-[10px] font-bold uppercase tracking-wide">
                               Approved
-                            </Badge>
-                          ) : (
+                                </Badge>
+                              ) : (
                             <Badge variant="info" className="px-1.5 py-0 text-[10px] font-bold uppercase tracking-wide">
                               Draft
-                            </Badge>
-                          )}
+                                </Badge>
+                              )}
                         </td>
                         <td className="text-[11px] text-slate-600">{fmtDate(b.updatedAt)}</td>
                         {isAdmin ? (
@@ -1739,8 +1739,8 @@ export function BomsPage() {
                               canDuplicate={!!fgWithoutBom}
                               canDelete={b.status === "DRAFT"}
                             />
-                          </td>
-                        ) : null}
+                            </td>
+                          ) : null}
                       </tr>
                     );
                   })
@@ -1777,31 +1777,31 @@ export function BomsPage() {
                           {workspaceMode === "view" ? "View only" : bomStatusLabel(displayBom.status)}
                         </Badge>
                         {workspaceMode === "view" ? (
-                          <Button
+                                <Button
                             type="button"
-                            size="sm"
-                            variant="outline"
+                                  size="sm"
+                                  variant="outline"
                             className="ml-auto h-7 px-2.5 text-[11px] font-semibold"
                             onClick={() => startEdit(displayBom)}
-                          >
-                            Edit
-                          </Button>
+                                >
+                                  Edit
+                                </Button>
                         ) : displayBom.status === "DRAFT" ? (
-                          <Button
+                                <Button
                             type="button"
-                            size="sm"
+                                  size="sm"
                             className="ml-auto h-7 bg-emerald-700 px-2.5 text-[11px] font-bold hover:bg-emerald-800"
                             onClick={() => void approveBom(displayBom.id)}
-                          >
+                                >
                             Approve
-                          </Button>
-                        ) : null}
+                                </Button>
+                          ) : null}
                       </>
                     ) : (
                       <span className="text-[11px] font-semibold text-slate-700">Select FG and RM lines, then save draft</span>
                     )}
-                  </div>
-                </div>
+          </div>
+          </div>
                 <BomWorkspaceBody
                   formId="bom-workspace-form"
                   header={header}

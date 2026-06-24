@@ -19,6 +19,7 @@ import {
   CommercialFilterField,
   CommercialFilterGrid,
 } from "../components/erp/CommercialFilterLayout";
+import { useErpRoleUi } from "../hooks/useErpRoleUi";
 
 type Customer = { id: number; name: string };
 
@@ -77,6 +78,7 @@ export function SalesBillsListPage() {
   const focusSoIdValid = Number.isFinite(focusSoId) && focusSoId > 0;
 
   const demo = useDemoMode();
+  const { canCreateSalesBill } = useErpRoleUi();
   const showNoQtyFinalStepPreview = demo.enabled && demo.flow === "no_qty" && demo.step === 7;
   const billDemoHl =
     demoHighlightKey(demo.enabled, demo.flow, demo.step, "regular", 6) ??
@@ -239,15 +241,17 @@ export function SalesBillsListPage() {
               </p>
             )}
           </div>
-          <Link to={newBillHref} className="shrink-0 sm:pt-0.5">
-            <Button
-              type="button"
-              data-testid="create-sales-bill-btn"
-              {...(billDemoHl ? { "data-demo-highlight": billDemoHl } : {})}
-            >
-              New sales bill
-            </Button>
-          </Link>
+          {canCreateSalesBill ? (
+            <Link to={newBillHref} className="shrink-0 sm:pt-0.5">
+              <Button
+                type="button"
+                data-testid="create-sales-bill-btn"
+                {...(billDemoHl ? { "data-demo-highlight": billDemoHl } : {})}
+              >
+                New sales bill
+              </Button>
+            </Link>
+          ) : null}
         </div>
       </StickyWorkspaceHead>
 

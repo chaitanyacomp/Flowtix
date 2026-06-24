@@ -79,6 +79,8 @@ export function productionMaterialBlockedHref(opts: {
 
 export function materialWorkflowBackHref(returnTo: string | null, workOrderId?: number): string {
   if (returnTo === "dashboard") return "/dashboard";
+  if (returnTo === "rm-control-center") return "/reports/rm-shortage";
+  if (returnTo === "pending-actions") return "/pending-actions";
   if (returnTo === "production-workspace" && workOrderId && workOrderId > 0) {
     return productionWorkspaceHref(workOrderId);
   }

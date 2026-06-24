@@ -133,7 +133,7 @@ function dashboardActionVisibility(role: string) {
     canShowProductionQaCards: isAdmin || isProduction,
     canShowDispatchCards: isAdmin || isStore,
     canShowProductionCards: isAdmin || isProduction,
-    canShowSalesBillCards: isAdmin || isStore,
+    canShowSalesBillCards: isAdmin,
     canSeeRmShortageOperational: isAdmin || isStore || isProduction,
     canActOnRmShortageProcurement: isAdmin || isPurchase,
     canShowPurchaseCards: isAdmin || isPurchase,

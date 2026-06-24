@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { ArrowDownToLine, Boxes, Filter, PackageCheck, RefreshCw } from "lucide-react";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
@@ -41,7 +41,9 @@ import {
   prefersProcurementWorkspaceNavigation,
   resolveCaseProcurementMr,
 } from "../lib/rmControlCenterProcurementHandoff";
-import { PROCUREMENT_TERMS } from "../lib/procurementTerminology";
+import { ErpWorkflowTrail } from "../components/erp/foundation/ErpWorkflowTrail";
+import { useStoreExecutionNavContext } from "../hooks/useStoreExecutionNavContext";
+import { navContextMaterialIssueFromRmcc, navStateWithNavContext } from "../lib/erpNavContext";
 import {
   deriveProcurementChip,
   deriveProcurementWarnings,
@@ -523,6 +525,14 @@ export function MaterialAvailabilityControlCenterPage() {
   const canCreatePurchaseRequest = hasErpRole(role, MATERIAL_REQUISITION_WRITE_ROLES);
   const canRaiseProcurementShortageMr = canCreatePurchaseRequest;
   const navigate = useNavigate();
+  const location = useLocation();
+  const rmccNavContext = useStoreExecutionNavContext("rm-control-center");
+  const rmccSelfHref = `${location.pathname}${location.search}`;
+  const materialIssueLinkState = React.useCallback(
+    (workOrderId: number) =>
+      navStateWithNavContext(navContextMaterialIssueFromRmcc(rmccNavContext, rmccSelfHref)),
+    [rmccNavContext, rmccSelfHref],
+  );
   const [searchParams] = useSearchParams();
   const { queueFilters: initialQueueFilters, initialSelection } = React.useMemo(
     () => splitSearchParams(searchParams),
@@ -1435,6 +1445,7 @@ export function MaterialAvailabilityControlCenterPage() {
   return (
     <div className="rm-cc-page">
       <header className="rm-cc-head">
+        <ErpWorkflowTrail navContext={rmccNavContext} className="mb-2" />
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-1.5">
@@ -1455,14 +1466,6 @@ export function MaterialAvailabilityControlCenterPage() {
             </p>
           </div>
           <div className="flex items-center gap-1.5">
-            {returnTo === "dashboard" ? (
-              <Link
-                to="/dashboard"
-                className="inline-flex h-7 items-center rounded-md border border-slate-200 bg-white px-2 text-[11px] font-semibold text-slate-700 no-underline hover:bg-slate-50"
-              >
-                Dashboard
-              </Link>
-            ) : null}
             <Button type="button" variant="outline" size="sm" className="h-7 gap-1 px-2 text-[11px]" onClick={() => void load(filters)} disabled={loading}>
               <RefreshCw className={cn("h-3 w-3", loading && "animate-spin")} />
               Refresh
@@ -1762,7 +1765,12 @@ export function MaterialAvailabilityControlCenterPage() {
                       </Link>
                     ) : woCase?.allocationFirstStatus?.key === "READY_FOR_ISSUE" && anyIssueable ? (
                       <Link
-                        to={detail.workOrder?.id ? `/material-issue?workOrderId=${detail.workOrder.id}&returnTo=rm-control-center` : "/material-issue"}
+                        to={
+                          detail.workOrder?.id
+                            ? `/material-issue?workOrderId=${detail.workOrder.id}&returnTo=rm-control-center`
+                            : "/material-issue"
+                        }
+                        state={detail.workOrder?.id ? materialIssueLinkState(detail.workOrder.id) : undefined}
                         className={cn(
                           buttonVariants({ size: "sm" }),
                           "h-9 w-full justify-center text-[13px] font-semibold no-underline",

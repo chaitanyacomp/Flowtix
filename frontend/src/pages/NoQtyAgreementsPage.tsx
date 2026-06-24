@@ -1,6 +1,9 @@
 import * as React from "react";
 import { Link } from "react-router-dom";
-import { PageContainer, PageHeader } from "../components/PageHeader";
+import { PageContainer, PageHeader, StickyWorkspaceHead } from "../components/PageHeader";
+import { ErpWorkflowTrail } from "../components/erp/foundation/ErpWorkflowTrail";
+import { useStoreExecutionNavContext } from "../hooks/useStoreExecutionNavContext";
+import { navContextExecutionWorkspace, navStateWithNavContext } from "../lib/erpNavContext";
 import { useNoQtyPlannerInbox } from "../hooks/useNoQtyPlannerInbox";
 import { useErpRefreshTick, ERP_REPORT_POLL_MS } from "../hooks/useErpRefreshTick";
 import { NO_QTY_PLANNING_HUB_HREF } from "../lib/noQtyStoreNavigation";
@@ -21,6 +24,7 @@ export function NoQtyAgreementsPage() {
   const liveTick = useErpRefreshTick(["requirement", "dashboard", "reports"], {
     pollIntervalMs: ERP_REPORT_POLL_MS,
   });
+  const navContext = useStoreExecutionNavContext("no-qty-execution");
   const { rows, loading, error } = useNoQtyPlannerInbox(liveTick);
   const canOpenRs = useCanOpenRequirementSheet();
   const executionRows = React.useMemo(
@@ -30,18 +34,20 @@ export function NoQtyAgreementsPage() {
 
   return (
     <PageContainer>
-      <PageHeader
-        title="NO_QTY Execution"
-        subtitle="Track locked requirement sheets, remaining RS balance, RM coverage, and WO placement actions."
-        actions={
-          <Link
-            to={NO_QTY_PLANNING_HUB_HREF}
-            className={cn(buttonVariants({ variant: "outline", size: "sm" }), "h-8")}
-          >
-            {NO_QTY_TERMS.OPEN_REQUIREMENT_AND_CYCLE_PLANNING}
-          </Link>
-        }
-      />
+      <StickyWorkspaceHead lead={<ErpWorkflowTrail navContext={navContext} />}>
+        <PageHeader
+          title="NO_QTY Execution"
+          subtitle="Track locked requirement sheets, remaining RS balance, RM coverage, and WO placement actions."
+          actions={
+            <Link
+              to={NO_QTY_PLANNING_HUB_HREF}
+              className={cn(buttonVariants({ variant: "outline", size: "sm" }), "h-8")}
+            >
+              {NO_QTY_TERMS.OPEN_REQUIREMENT_AND_CYCLE_PLANNING}
+            </Link>
+          }
+        />
+      </StickyWorkspaceHead>
 
       {error ? (
         <div
@@ -150,6 +156,9 @@ export function NoQtyAgreementsPage() {
                         {canOpenRs && workspaceHref ? (
                           <Link
                             to={workspaceHref}
+                            state={navStateWithNavContext(
+                              navContextExecutionWorkspace(navContext.origin ?? "sidebar"),
+                            )}
                             className={cn(buttonVariants({ size: "sm" }), "h-7 text-[11px]")}
                             data-testid="execution-workspace-cta"
                           >

@@ -3,13 +3,15 @@
  */
 import * as React from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { ArrowLeft, ArrowRightLeft, Plus, Send, Trash2 } from "lucide-react";
+import { ArrowRightLeft, Plus, Send, Trash2 } from "lucide-react";
 import { apiFetch } from "../services/api";
 import { Button, buttonVariants } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { cn } from "../lib/utils";
 import { useToast } from "../contexts/ToastContext";
 import { PageContainer, StickyWorkspaceHead } from "../components/PageHeader";
+import { ErpWorkflowTrail } from "../components/erp/foundation/ErpWorkflowTrail";
+import { useStoreExecutionNavContext } from "../hooks/useStoreExecutionNavContext";
 import { NextStepStrip } from "../components/erp/NextStepStrip";
 import { buildRmReadyProductionNextStep } from "../lib/regularSoOperationalGuidance";
 import { ErpKpiLabel, ErpKpiSegment, ErpKpiStrip, ErpKpiValue } from "../components/erp/foundation";
@@ -20,7 +22,6 @@ import {
 } from "../lib/materialIssueUx";
 import {
   materialRequestsQueueHref,
-  materialWorkflowBackHref,
 } from "../lib/materialWorkflowLinks";
 import { buildRmControlCenterHref } from "../lib/woProcurementContinuity";
 import { MaterialIssuePmrQueuePanel } from "../components/erp/MaterialIssuePmrQueuePanel";
@@ -326,6 +327,7 @@ export function MaterialIssuePage() {
   const urlPmrId = Number(searchParams.get("pmrId")) || 0;
   const urlWorkOrderId = Number(searchParams.get("workOrderId")) || 0;
   const returnTo = searchParams.get("returnTo");
+  const materialIssueNavContext = useStoreExecutionNavContext("material-issue");
 
   const selectPmr = React.useCallback(
     (pmrId: number, woId?: number) => {
@@ -628,13 +630,6 @@ export function MaterialIssuePage() {
   const executionReady = woPmrMode && Boolean(activePmr && activePmrId);
   const pmrContextReady = Boolean(activePmr && lines.some((ln) => ln.pmrLineId));
   const showPartialAutofillHint = Boolean(activePmrId) && hasPartialStoreAutofill(lines);
-  const backHref = materialWorkflowBackHref(returnTo, urlWorkOrderId || issueSuccess?.workOrderId);
-  const backLabel =
-    returnTo === "production-workspace"
-      ? "Production"
-      : returnTo === "dashboard"
-        ? "Dashboard"
-        : "Material Requests";
   const pmrShortageCount = lines.filter((ln) => {
     const pending = ln.pmrPendingQty ?? ln.pendingQty ?? 0;
     return ln.pmrLineId && isMaterialIssueLineStockBlocked(pending, ln.available);
@@ -779,17 +774,7 @@ export function MaterialIssuePage() {
 
   return (
     <PageContainer className="erp-txn-workspace erp-mat-plan-workspace">
-      <StickyWorkspaceHead
-        lead={
-          <Link
-            to={backHref}
-            className="inline-flex items-center gap-1 text-[12px] font-medium text-primary hover:underline"
-          >
-            <ArrowLeft className="h-3.5 w-3.5" />
-            {backLabel}
-          </Link>
-        }
-      >
+      <StickyWorkspaceHead lead={<ErpWorkflowTrail navContext={materialIssueNavContext} />}>
         <div>
           <h1 className="erp-type-page-title text-[15px] leading-tight">Material Issue Workspace</h1>
           <p className="mt-0.5 text-[11px] leading-snug text-slate-600">
@@ -900,27 +885,6 @@ export function MaterialIssuePage() {
               </Link>
             ) : null}
           </div>
-
-          {returnTo === "dashboard" || returnTo === "material-requests" ? (
-            <div className="mt-2 flex flex-wrap gap-2">
-              {returnTo === "dashboard" ? (
-                <Link
-                  to="/dashboard"
-                  className={cn(buttonVariants({ variant: "outline", size: "sm" }), "h-8 text-[11px] no-underline")}
-                >
-                  Back to Dashboard
-                </Link>
-              ) : null}
-              {returnTo === "material-requests" ? (
-                <Link
-                  to={materialRequestsQueueHref({})}
-                  className={cn(buttonVariants({ variant: "outline", size: "sm" }), "h-8 text-[11px] no-underline")}
-                >
-                  Back to Material Requests
-                </Link>
-              ) : null}
-            </div>
-          ) : null}
         </section>
       ) : (
         <>

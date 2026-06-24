@@ -32,7 +32,8 @@ import { Badge } from "../components/ui/badge";
 import { apiFetch, ApiRequestError } from "../services/api";
 import { PageContainer } from "../components/PageHeader";
 import { NoQtyCycleContextBar } from "../components/erp/foundation/NoQtyCycleContextBar";
-import { ErpWorkflowBanner } from "../components/erp/foundation/ErpWorkflowBanner";
+import { ErpWorkflowTrail } from "../components/erp/foundation/ErpWorkflowTrail";
+import { useStoreExecutionNavContext } from "../hooks/useStoreExecutionNavContext";
 import { readNoQtySoCreatedBannerState, type NoQtySoCreatedBannerState } from "../lib/noQtySoCreatedNavState";
 import {
   OperationalContextBar,
@@ -308,6 +309,7 @@ export function RequirementSheetPage() {
   const soId = Number(soIdParam);
   const nav = useNavigate();
   const location = useLocation();
+  const executionNavContext = useStoreExecutionNavContext("execution-workspace");
   const [searchParams] = useSearchParams();
   const fromNoQtySo = (searchParams.get("source") || searchParams.get("from") || "").toLowerCase() === "no_qty_so";
   const addRequirementIntent = searchParams.get("intent") === "add";
@@ -1340,18 +1342,7 @@ export function RequirementSheetPage() {
       <PageContainer data-testid="no-qty-execution-mode-page">
         <RequirementSheetErrorBoundary>
           <OperationalContextSticky className="space-y-2">
-            <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="h-7 gap-1 px-2 text-slate-600"
-                onClick={() => nav(noQtyAgreementListHref(viewerRole))}
-              >
-                <ArrowLeft className="h-3.5 w-3.5 shrink-0" />
-                {isStoreLikePlanningRole(viewerRole) ? "NO_QTY Execution" : "No Qty SOs"}
-              </Button>
-            </div>
+            <ErpWorkflowTrail navContext={executionNavContext} />
             <ExecutionWorkspaceContextHeader
               soLabel={displaySalesOrderNo(soId, so?.docNo)}
               customerName={customerName}

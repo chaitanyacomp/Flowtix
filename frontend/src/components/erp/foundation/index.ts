@@ -10,6 +10,7 @@ export { ErpWorkflowBanner } from "./ErpWorkflowBanner";
 export { ErpSectionCard } from "./ErpSectionCard";
 export { ErpStandardWorkspaceHeader } from "./ErpStandardWorkspaceHeader";
 export { ErpActionButton } from "./ErpActionButton";
+export { ErpWorkflowTrail } from "./ErpWorkflowTrail";
 export { ErpStatusChip } from "./ErpStatusChip";
 export { ErpEmptyState } from "./ErpEmptyState";
 export { NoQtyCycleContextBar } from "./NoQtyCycleContextBar";

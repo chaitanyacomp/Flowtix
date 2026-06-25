@@ -94,6 +94,30 @@ describe("buildStoreProcurementPreviewRows", () => {
     expect(rows.map((r) => r.materialRequirementId)).not.toContain(13);
   });
 
+  it("hides Create PR on Store pulse preview for MPRS monthly-plan MRs", () => {
+    const rows = buildStoreProcurementPreviewRows(
+      sampleWorkspace({
+        sections: {
+          pendingMaterialRequirements: [
+            {
+              materialRequirementId: 99,
+              docNo: "MR-26-0001",
+              sourceType: "MONTHLY_PLAN",
+              sourceRef: "MP-26-0001",
+              operationalKey: "PROCUREMENT_PENDING",
+              nextActionKey: "CREATE_PR",
+              totalRemainingQty: 166.032,
+              canCreatePurchaseRequest: true,
+              lines: [{ lineId: 200, rmItemId: 4, itemName: "PP", unit: "Kg", remainingQty: 159.792 }],
+            },
+          ],
+        },
+      }),
+      8,
+    );
+    expect(rows[0].canCreatePurchaseRequest).toBe(false);
+  });
+
   it("uses MR doc no and primary RM line in preview", () => {
     const rows = buildStoreProcurementPreviewRows(sampleWorkspace(), 1);
     expect(rows[0].mrDocNo).toBe("MR-26-0010");

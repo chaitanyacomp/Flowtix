@@ -25,6 +25,7 @@ const {
   cancelReopenMonthlyPlan,
   getPlanRevisions,
   getRmPlanning,
+  getRmPlanningEstimate,
   getPurchasePlanning,
   releaseToProcurement,
   MonthlyPlanningError,
@@ -54,6 +55,7 @@ const {
   submitPlanForPurchaseReview,
   purchaseApprovePlan,
   purchaseRejectPlan,
+  discardMonthlyPlanDraft,
 } = require("../services/monthlyPlanningPlanLifecycleService");
 
 /** Feature-flag gate: hide the whole router when the flag is OFF. */
@@ -338,6 +340,30 @@ const purchaseRejectBodySchema = z.object({
 });
 
 monthlyPlanningRouter.post(
+  "/:id/discard",
+  requireAuth,
+  requireRole(MONTHLY_PLANNING_WRITE_ROLES),
+  async (req, res, next) => {
+    try {
+      const parsed = pastPeriodConfirmBodySchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return res
+          .status(422)
+          .json({ error: { code: "INVALID_BODY", message: "Invalid discard request body." } });
+      }
+      const data = await discardMonthlyPlanDraft({
+        planId: req.params.id,
+        actorRole: actorRole(req),
+        confirmPastPeriod: parsed.data.confirmPastPeriod === true,
+      });
+      return res.json(data);
+    } catch (e) {
+      return handleServiceError(e, res, next);
+    }
+  },
+);
+
+monthlyPlanningRouter.post(
   "/:id/submit-for-review",
   requireAuth,
   requireRole(MONTHLY_PLANNING_WRITE_ROLES),
@@ -511,6 +537,20 @@ monthlyPlanningRouter.get(
         planId: req.params.id,
         revision: Number.isFinite(revision) && revision > 0 ? revision : null,
       });
+      return res.json(data);
+    } catch (e) {
+      return handleServiceError(e, res, next);
+    }
+  },
+);
+
+monthlyPlanningRouter.get(
+  "/:id/rm-planning-estimate",
+  requireAuth,
+  requireRole(MONTHLY_PLANNING_READ_ROLES),
+  async (req, res, next) => {
+    try {
+      const data = await getRmPlanningEstimate({ planId: req.params.id });
       return res.json(data);
     } catch (e) {
       return handleServiceError(e, res, next);

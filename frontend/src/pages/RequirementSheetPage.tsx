@@ -32,6 +32,7 @@ import { Badge } from "../components/ui/badge";
 import { apiFetch, ApiRequestError } from "../services/api";
 import { PageContainer } from "../components/PageHeader";
 import { NoQtyCycleContextBar } from "../components/erp/foundation/NoQtyCycleContextBar";
+import { ErpWorkflowBanner } from "../components/erp/foundation/ErpWorkflowBanner";
 import { ErpWorkflowTrail } from "../components/erp/foundation/ErpWorkflowTrail";
 import { useStoreExecutionNavContext } from "../hooks/useStoreExecutionNavContext";
 import { readNoQtySoCreatedBannerState, type NoQtySoCreatedBannerState } from "../lib/noQtySoCreatedNavState";
@@ -622,6 +623,13 @@ export function RequirementSheetPage() {
       setShowCreatePanel(false);
       return;
     }
+    const lockedRows = scoped.filter((s) => s.status === "LOCKED").sort((a, b) => sortKey(b) - sortKey(a));
+    const lockedId = lockedRows.length ? Number(lockedRows[0].id) : null;
+    if (lockedId != null && Number.isFinite(lockedId) && lockedId > 0) {
+      setSelectedSheetId(lockedId);
+      setShowCreatePanel(false);
+      return;
+    }
     setSelectedSheetId(null);
     setShowCreatePanel(true);
   }, [addRequirementIntent, isNoQty, sheets, so?.currentCycle?.id, so?.currentCycleId]);
@@ -681,6 +689,14 @@ export function RequirementSheetPage() {
     if (!periodKey.trim()) {
       setError("Period is required (e.g. 2026-04).");
       return;
+    }
+    if (isNoQty && activePlanningCycleId != null) {
+      const ac = Number(activePlanningCycleId);
+      const onActiveCycle = sheets.filter((s) => Number(s.cycleId ?? 0) === ac);
+      if (onActiveCycle.some((s) => s.status === "LOCKED") && !onActiveCycle.some((s) => s.status === "DRAFT")) {
+        setError("This cycle already has a locked Requirement Sheet. Continue with Monthly Planning.");
+        return;
+      }
     }
     if (createSelectedItemIds.length === 0) {
       setError("Select at least one FG item for this cycle.");
@@ -849,19 +865,17 @@ export function RequirementSheetPage() {
       setNeedsRecalc(false);
 
       if (isNoQty) {
-        const lockedCycleNo =
-          sheets.find((s) => Number(s.id) === Number(locked.id))?.cycleNo ??
-          sheetDisplayCycleNo ??
-          cycleNo;
-        toast.showSuccess(
-          locked.lockHandoff?.executionStartsAt === "MONTHLY_PLAN_RELEASE"
-            ? `Requirement Sheet locked for ${noQtyCurrentCycleLabel(lockedCycleNo)}. Release creates Monthly Plan MR for procurement; Store will place WO batches after RM readiness is reviewed.`
-            : `Requirement Sheet locked for ${noQtyCurrentCycleLabel(lockedCycleNo)}.`,
-        );
+        toast.showSuccess("Requirement Sheet locked successfully.");
         await loadSoAndSheets();
         await refreshNoQtyFlowState();
         if (isZeroPlanning) {
-          nav(`/dispatch?source=no_qty_so&salesOrderId=${locked.salesOrderId}`);
+          nav(`/dispatch?source=no_qty_so&salesOrderId=${locked.salesOrderId}`, { replace: true });
+          return;
+        }
+        const isStoreRole = String(viewerRole ?? "").toUpperCase() === "STORE";
+        if (isStoreRole) {
+          setShowCreatePanel(false);
+          nav("/dashboard", { replace: true });
           return;
         }
         return;
@@ -1092,6 +1106,15 @@ export function RequirementSheetPage() {
     () => cycleScopedSheets.filter((r) => r.status === "DRAFT"),
     [cycleScopedSheets],
   );
+  /** Active cycle already has a locked RS and no draft — RS creation is complete for this cycle. */
+  const activeCycleHasLockedRsOnly = React.useMemo(
+    () =>
+      isNoQty &&
+      hasAnySheets &&
+      draftRowsInCycle.length === 0 &&
+      cycleScopedSheets.some((r) => r.status === "LOCKED"),
+    [isNoQty, hasAnySheets, draftRowsInCycle.length, cycleScopedSheets],
+  );
   /** Another DRAFT row exists in this cycle besides the sheet currently loaded. */
   const hasOtherUnfinishedDraft =
     draftUi && sheet?.id != null && draftRowsInCycle.some((r) => Number(r.id) !== Number(sheet.id));
@@ -1106,7 +1129,8 @@ export function RequirementSheetPage() {
 
   /** P10-A7 — always surface creation workspace when active cycle has no RS rows yet. */
   const showNoQtyCreateWorkspace =
-    showCreatePanel || showNoQtyEmptyCycleCreateWorkspace || (isNoQty && noSheetsUi);
+    !activeCycleHasLockedRsOnly &&
+    (showCreatePanel || showNoQtyEmptyCycleCreateWorkspace || (isNoQty && noSheetsUi));
 
   const showNoQtyFinalizeActions =
     isNoQty && Boolean(sheet) && sheetOnActiveCycle && draftUi && isLatestForPeriod;
@@ -1115,7 +1139,7 @@ export function RequirementSheetPage() {
 
   /** P8F-A18 — locked-cycle continuation lives in the success panel; avoid duplicate Next RS banner above. */
   const showNoQtyLockedRsContextPanel =
-    isNoQty && lockedUi && Boolean(sheet) && !addRequirementIntent && !showCreatePanel;
+    isNoQty && lockedUi && Boolean(sheet) && sheetOnActiveCycle && !showCreatePanel;
 
   const flowStateCycleIdForApi = React.useMemo(
     () =>
@@ -1785,12 +1809,14 @@ export function RequirementSheetPage() {
       ) : showNoQtyLockedRsContextPanel && sheet ? (
         <div className="rounded-md border border-emerald-200 bg-emerald-50/70 px-2 py-1.5 text-xs text-emerald-950">
           <div className="font-semibold">
-            Requirement Sheet locked for {noQtyCurrentCycleLabel(sheetDisplayCycleNo)}.
+            {noQtyFlowState?.readyToPlaceWo
+              ? `Requirement Sheet locked for ${noQtyCurrentCycleLabel(sheetDisplayCycleNo)}.`
+              : "Requirement Sheet locked. Next step: Monthly Planning."}
           </div>
           <div className="mt-0.5 text-xs text-emerald-900">
             {noQtyFlowState?.readyToPlaceWo
               ? "RM is available. Place Work Order batch(es) from the Execution Workspace below."
-              : "Continue monthly planning when ready — execution on this cycle can run in parallel."}
+              : `Cycle ${sheetDisplayCycleNo ?? cycleNo ?? "—"} RS is read-only. Open Monthly Planning to continue procurement planning.`}
           </div>
           <div className="mt-1.5 flex flex-wrap items-center gap-2">
             {canCreateNextRs && noQtyFlowState?.createNextRsEligible ? (

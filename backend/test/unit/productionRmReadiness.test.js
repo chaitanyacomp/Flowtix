@@ -5,6 +5,8 @@ const {
   productionQtyExceedsRmAllowed,
   resolveReadinessGate,
   SUBMITTED_PMR_STATUSES,
+  aggregatePmrRequiredByItem,
+  computeMaxProducibleFromPmrBasis,
 } = require("../../src/services/productionRmReadinessService");
 
 describe("productionRmReadinessService", () => {
@@ -77,5 +79,127 @@ describe("productionRmReadinessService", () => {
   it("resolveReadinessGate - fully issued when all PMRs FULLY_ISSUED", () => {
     const g = resolveReadinessGate([{ status: "FULLY_ISSUED" }, { status: "FULLY_ISSUED" }], 500);
     assert.equal(g.gate, "FULLY_ISSUED_READY");
+  });
+
+  it("aggregatePmrRequiredByItem sums submitted PMR lines", () => {
+    const map = aggregatePmrRequiredByItem([
+      {
+        lines: [
+          { itemId: 10, requiredQty: "3.9" },
+          { itemId: 10, requiredQty: 0 },
+        ],
+      },
+      {
+        lines: [{ itemId: 20, requiredQty: 2.34 }],
+      },
+    ]);
+    assert.equal(map.get(10), 3.9);
+    assert.equal(map.get(20), 2.34);
+  });
+
+  it("Dummy Plug — full PMR issue allows full WO production (1500)", () => {
+    const max = computeMaxProducibleFromPmrBasis({
+      woQty: 1500,
+      totalWoQty: 1500,
+      pmrRequiredByItem: new Map([[101, 3.9]]),
+      availableByItem: new Map([[101, 3.9]]),
+    });
+    assert.equal(max, 1500);
+    assert.equal(
+      productionQtyExceedsRmAllowed({
+        producedQty: 1500,
+        productionAllowedNowQty: max,
+      }),
+      false,
+    );
+  });
+
+  it("Square Box — full PMR issue allows full WO production (500)", () => {
+    const max = computeMaxProducibleFromPmrBasis({
+      woQty: 500,
+      totalWoQty: 500,
+      pmrRequiredByItem: new Map([[102, 2.34]]),
+      availableByItem: new Map([[102, 2.34]]),
+    });
+    assert.equal(max, 500);
+    assert.equal(
+      productionQtyExceedsRmAllowed({
+        producedQty: 500,
+        productionAllowedNowQty: max,
+      }),
+      false,
+    );
+  });
+
+  it("partial PMR issue limits production proportionally", () => {
+    const max = computeMaxProducibleFromPmrBasis({
+      woQty: 1500,
+      totalWoQty: 1500,
+      pmrRequiredByItem: new Map([[101, 3.9]]),
+      availableByItem: new Map([[101, 1.95]]),
+    });
+    assert.equal(max, 750);
+    assert.equal(
+      productionQtyExceedsRmAllowed({
+        producedQty: 751,
+        productionAllowedNowQty: max,
+      }),
+      true,
+    );
+    assert.equal(
+      productionQtyExceedsRmAllowed({
+        producedQty: 750,
+        productionAllowedNowQty: max,
+      }),
+      false,
+    );
+  });
+
+  it("PMR basis uses scarcest RM when multiple PMR lines exist", () => {
+    const max = computeMaxProducibleFromPmrBasis({
+      woQty: 1000,
+      totalWoQty: 1000,
+      pmrRequiredByItem: new Map([
+        [10, 4000],
+        [11, 3000],
+      ]),
+      availableByItem: new Map([
+        [10, 4000],
+        [11, 1500],
+      ]),
+    });
+    assert.equal(max, 500);
+  });
+
+  it("BOM per-unit would under-count vs PMR — PMR basis restores full WO qty", () => {
+    const issuedKg = 3.9;
+    const woQty = 1500;
+    const pmrRequiredKg = 3.9;
+    const bomPerFgKg = 0.003;
+    const bomCap = floorFgQty(issuedKg, bomPerFgKg);
+    const pmrCap = computeMaxProducibleFromPmrBasis({
+      woQty,
+      totalWoQty: woQty,
+      pmrRequiredByItem: new Map([[101, pmrRequiredKg]]),
+      availableByItem: new Map([[101, issuedKg]]),
+    });
+    assert.equal(bomCap, 1300);
+    assert.equal(pmrCap, 1500);
+  });
+
+  it("Square Box — BOM per-unit 5g would cap at 468; PMR basis allows 500", () => {
+    const issuedKg = 2.34;
+    const woQty = 500;
+    const pmrRequiredKg = 2.34;
+    const bomPerFgKg = 0.005;
+    const bomCap = floorFgQty(issuedKg, bomPerFgKg);
+    const pmrCap = computeMaxProducibleFromPmrBasis({
+      woQty,
+      totalWoQty: woQty,
+      pmrRequiredByItem: new Map([[102, pmrRequiredKg]]),
+      availableByItem: new Map([[102, issuedKg]]),
+    });
+    assert.equal(bomCap, 468);
+    assert.equal(pmrCap, 500);
   });
 });

@@ -21,6 +21,19 @@ export const MP_PROCUREMENT = {
   LINE_RECEIPT_COVERAGE_PCT: "Line Receipt Coverage %",
 } as const;
 
+export const MP_RELEASE_CTA = {
+  PRIMARY: "Release RM Requirement to Procurement",
+  MODAL_TITLE: "Release RM Requirement to Procurement",
+  MODAL_CONFIRM: "Release RM Requirement",
+  RELEASING: "Releasing…",
+} as const;
+
+export type MpPlanKind = "INITIAL" | "ADDITIONAL" | string | null | undefined;
+
+function isAdditionalMonthlyPlan(planKind: MpPlanKind): boolean {
+  return planKind === "ADDITIONAL";
+}
+
 export type MpReleaseStatus =
   | "NOT_RELEASED"
   | "PARTIALLY_RELEASED"
@@ -41,14 +54,20 @@ export function procurementProgressModelLine(): string {
 export function purchasePlanningOperationalStatusMessage(
   additionalRequirementTotal: number,
   demandReleasedTotal = 0,
+  planKind: MpPlanKind = null,
 ): string {
+  const additionalPlan = isAdditionalMonthlyPlan(planKind);
   if (additionalRequirementTotal > 1e-9) {
-    return `Additional requirement pending — release delta to create new ${MP_PROCUREMENT.DEMAND_RELEASED.toLowerCase()}.`;
+    return additionalPlan
+      ? "Additional RM requirement pending release to procurement."
+      : "RM requirement pending release to procurement.";
   }
   if (demandReleasedTotal > 1e-9) {
-    return `${MP_PROCUREMENT.DEMAND_RELEASED} complete for this plan. Track Ordered → Received below.`;
+    return additionalPlan
+      ? "Additional RM requirement released to procurement. Track Ordered → Received below."
+      : "RM requirement released to procurement. Track Ordered → Received below.";
   }
-  return `Review requirement snapshot and release demand when the plan is approved (${procurementProgressModelLine()}).`;
+  return `Review requirement snapshot and release when the plan is approved (${procurementProgressModelLine()}).`;
 }
 
 export function purchasePlanningReductionMessageText(): string {
@@ -59,14 +78,26 @@ export function releaseDeltaDisabledStatusMessage(
   additionalRequirementTotal: number,
   demandReleasedTotal: number,
   usesPlanDocumentUx: boolean,
+  planKind: MpPlanKind = null,
 ): string {
   if (additionalRequirementTotal > 1e-9) return "";
+  const additionalPlan = isAdditionalMonthlyPlan(planKind);
   if (demandReleasedTotal > 1e-9) {
-    return usesPlanDocumentUx
-      ? `${MP_PROCUREMENT.DEMAND_RELEASED} complete — no additional release required.`
-      : `${MP_PROCUREMENT.DEMAND_RELEASED} complete for this legacy plan snapshot.`;
+    if (usesPlanDocumentUx) {
+      return additionalPlan
+        ? "Additional RM requirement released — no further release required."
+        : "RM requirement released — no further release required.";
+    }
+    return `${MP_PROCUREMENT.DEMAND_RELEASED} complete for this legacy plan snapshot.`;
   }
-  return "No additional requirement to release.";
+  return additionalPlan ? "No additional RM requirement to release." : "No RM requirement to release.";
+}
+
+export function releaseConfirmModalBodyMessage(planKind: MpPlanKind = null): string {
+  if (isAdditionalMonthlyPlan(planKind)) {
+    return "Release creates procurement demand for the additional RM requirement on this additional plan document. Existing released demand is not duplicated.";
+  }
+  return "Release creates procurement demand for the net RM requirement shown below. Existing released demand is not duplicated.";
 }
 
 export function formatReleaseSuccessSummaryMessage(params: {

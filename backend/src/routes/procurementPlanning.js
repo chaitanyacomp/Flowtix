@@ -9,6 +9,7 @@ const {
   RM_PO_READ_ROLES,
   PROCUREMENT_PLANNING_ROLES,
   MATERIAL_REQUISITION_WRITE_ROLES,
+  PURCHASE_EXECUTION_ROLES,
 } = require("../constants/erpRoles");
 const { buildProcurementPool, buildAllProcurementDemandPools } = require("../services/procurementPlanningService");
 const { normalizeDemandPoolKey, ALL_DEMAND_POOL_KEYS } = require("../services/procurementDemandPoolService");
@@ -103,7 +104,7 @@ const sendRequirementSchema = z.object({
 procurementPlanningRouter.post(
   "/send-requirement",
   requireAuth,
-  requireRole(MATERIAL_REQUISITION_WRITE_ROLES),
+  requireRole([...MATERIAL_REQUISITION_WRITE_ROLES, ...PURCHASE_EXECUTION_ROLES]),
   async (req, res, next) => {
     try {
       const body = sendRequirementSchema.parse(req.body);

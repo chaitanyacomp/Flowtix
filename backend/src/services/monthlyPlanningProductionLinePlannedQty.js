@@ -1,6 +1,6 @@
 /**
  * P11 — Planned FG qty defaults from requirement composition (RS + green shortage).
- * RM snapshot remains BOM(Green Shortage) — independent of planned FG qty.
+ * RM procurement snapshot uses BOM(plannedFgQty) at approval — planned qty is the source of truth.
  */
 
 const { buildPlanningContextMaps, round3 } = require("./monthlyPlanningProductionPlanMetrics");

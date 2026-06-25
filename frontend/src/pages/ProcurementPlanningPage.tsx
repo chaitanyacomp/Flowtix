@@ -28,7 +28,8 @@ import { PendingMaterialRequestsPanel } from "../components/purchase/PendingMate
 
 import { displaySalesOrderNo } from "../lib/docNoDisplay";
 import { useAuth } from "../hooks/useAuth";
-import { hasErpRole, MATERIAL_REQUISITION_WRITE_ROLES, PURCHASE_EXECUTION_ROLES } from "../config/erpRoles";
+import { hasErpRole, PURCHASE_EXECUTION_ROLES } from "../config/erpRoles";
+import { canRoleCreatePurchaseRequestForMr } from "../lib/procurementPurchaseRequestOwnership";
 
 import { PROCUREMENT_TERMS, procurementDemandPoolSectionCopy } from "../lib/procurementTerminology";
 import { WoProcurementContinuityStrip } from "../components/erp/WoProcurementContinuityStrip";
@@ -266,8 +267,12 @@ type MrRowAction =
   | { kind: "navigate"; label: string; to: string }
   | { kind: "create-pr"; label: string };
 
-function mrCanCreatePurchaseRequest(row: MrSummary, canCreatePurchaseRequest: boolean): boolean {
-  if (!canCreatePurchaseRequest) return false;
+function mrCanCreatePurchaseRequest(
+  row: MrSummary,
+  role: string | undefined,
+  demandPool: ProcurementDemandPoolKey,
+): boolean {
+  if (!canRoleCreatePurchaseRequestForMr(role, row, demandPool)) return false;
   if (row.canCreatePurchaseRequest === false) return false;
   if (row.canCreatePurchaseRequest === true) return true;
   const s = String(row.status ?? "").trim();
@@ -276,7 +281,8 @@ function mrCanCreatePurchaseRequest(row: MrSummary, canCreatePurchaseRequest: bo
 
 function mrPrimaryAction(
   row: MrSummary,
-  canCreatePurchaseRequest: boolean,
+  role: string | undefined,
+  demandPool: ProcurementDemandPoolKey,
   canExecutePurchase: boolean,
 ): MrRowAction | null {
   switch (row.nextActionKey) {
@@ -300,7 +306,7 @@ function mrPrimaryAction(
           : "/rm-po-grn",
       };
     case "CREATE_PR":
-      if (!mrCanCreatePurchaseRequest(row, canCreatePurchaseRequest)) return null;
+      if (!mrCanCreatePurchaseRequest(row, role, demandPool)) return null;
       return { kind: "create-pr", label: PROCUREMENT_TERMS.CREATE_PURCHASE_REQUEST };
     case "TRACK_IN_RM_CONTROL":
       return {
@@ -313,7 +319,7 @@ function mrPrimaryAction(
         }),
       };
     default:
-      if (mrCanCreatePurchaseRequest(row, canCreatePurchaseRequest)) {
+      if (mrCanCreatePurchaseRequest(row, role, demandPool)) {
         return { kind: "create-pr", label: PROCUREMENT_TERMS.CREATE_PURCHASE_REQUEST };
       }
       return null;
@@ -499,7 +505,9 @@ function PendingMaterialRequirementsTable({
 
   onCreatePurchaseRequest,
 
-  canCreatePurchaseRequest,
+  userRole,
+
+  demandPool,
 
   canExecutePurchase,
 
@@ -519,7 +527,9 @@ function PendingMaterialRequirementsTable({
 
   onCreatePurchaseRequest: (mr: MrSummary) => void;
 
-  canCreatePurchaseRequest: boolean;
+  userRole: string | undefined;
+
+  demandPool: ProcurementDemandPoolKey;
 
   canExecutePurchase: boolean;
 
@@ -591,7 +601,7 @@ function PendingMaterialRequirementsTable({
 
           {rows.map((mr) => {
 
-            const action = mrPrimaryAction(mr, canCreatePurchaseRequest, canExecutePurchase);
+            const action = mrPrimaryAction(mr, userRole, demandPool, canExecutePurchase);
 
             const lines = mr.lines ?? [];
 
@@ -828,7 +838,6 @@ export function ProcurementPlanningPage() {
 
   const { showSuccess, showError } = useToast();
   const { user } = useAuth();
-  const canCreatePurchaseRequest = hasErpRole(user?.role, MATERIAL_REQUISITION_WRITE_ROLES);
   const canExecutePurchase = hasErpRole(user?.role, PURCHASE_EXECUTION_ROLES);
 
   const [searchParams, setSearchParams] = useSearchParams();
@@ -902,7 +911,7 @@ export function ProcurementPlanningPage() {
 
       if (creatingPrRef.current) return;
 
-      if (!mrCanCreatePurchaseRequest(mr, canCreatePurchaseRequest)) return;
+      if (!mrCanCreatePurchaseRequest(mr, user?.role, demandPool)) return;
 
       if (!mrMatchesDemandPool(mr, demandPool)) {
         showError("This material requirement is not in the selected procurement source.");
@@ -951,7 +960,7 @@ export function ProcurementPlanningPage() {
 
     },
 
-    [canCreatePurchaseRequest, demandPool, load, showError, showSuccess],
+    [user?.role, demandPool, load, showError, showSuccess],
 
   );
 
@@ -1246,7 +1255,8 @@ export function ProcurementPlanningPage() {
           creatingMrId={creatingMrId}
           focusMaterialRequirementId={focusMaterialRequirementId}
           onCreatePurchaseRequest={(mr) => void handleCreatePurchaseRequest(mr)}
-          canCreatePurchaseRequest={canCreatePurchaseRequest}
+          userRole={user?.role}
+          demandPool={demandPool}
           canExecutePurchase={canExecutePurchase}
           emptyTitle={poolSectionCopy.emptyTitle}
           emptyDetail={poolSectionCopy.emptyDetail}

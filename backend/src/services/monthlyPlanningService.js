@@ -53,6 +53,7 @@ const {
   buildMonthlyPlanReleaseLabel,
   createRmPlanSnapshot,
 } = require("./monthlyPlanningRmSnapshotService");
+const { getRmPlanningEstimate } = require("./monthlyPlanningRmEstimateService");
 
 function resolveRequirementCompositionLoader(loadComposition) {
   if (loadComposition) return loadComposition;
@@ -852,6 +853,7 @@ async function getRmPlanning({ db = prisma, planId, revision = null } = {}) {
   return {
     locked: true,
     exists: true,
+    mode: "SNAPSHOT",
     planId: plan.id,
     status: plan.status,
     currentRevision: plan.currentRevision,
@@ -1257,6 +1259,7 @@ module.exports = {
   cancelReopenMonthlyPlan,
   getPlanRevisions,
   getRmPlanning,
+  getRmPlanningEstimate,
   getPurchasePlanning,
   mapPurchasePlanningLine,
   summarizePurchasePlanningLines,

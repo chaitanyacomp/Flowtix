@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   formatReleaseSuccessSummaryMessage,
   MP_PROCUREMENT,
+  MP_RELEASE_CTA,
   MP_RELEASE_STATUS_META,
   procurementProgressModelLine,
   purchasePlanningOperationalStatusMessage,
+  releaseConfirmModalBodyMessage,
   releaseDeltaDisabledStatusMessage,
 } from "../../src/lib/monthlyPlanningProcurementLabels";
 
@@ -22,15 +24,34 @@ describe("monthlyPlanningProcurementLabels", () => {
     );
   });
 
-  it("purchasePlanningOperationalStatusMessage uses standard vocabulary", () => {
-    expect(purchasePlanningOperationalStatusMessage(10, 0)).toContain("Additional requirement");
-    expect(purchasePlanningOperationalStatusMessage(0, 50)).toContain("Demand Released");
+  it("defines release CTA labels without delta wording for initial plans", () => {
+    expect(MP_RELEASE_CTA.PRIMARY).toBe("Release RM Requirement to Procurement");
+    expect(MP_RELEASE_CTA.MODAL_CONFIRM).toBe("Release RM Requirement");
+  });
+
+  it("purchasePlanningOperationalStatusMessage uses clear RM requirement wording", () => {
+    expect(purchasePlanningOperationalStatusMessage(10, 0)).toBe(
+      "RM requirement pending release to procurement.",
+    );
+    expect(purchasePlanningOperationalStatusMessage(10, 0, "ADDITIONAL")).toContain("Additional RM");
+    expect(purchasePlanningOperationalStatusMessage(0, 50)).toBe(
+      "RM requirement released to procurement. Track Ordered → Received below.",
+    );
     expect(purchasePlanningOperationalStatusMessage(0, 0)).toContain("Requirement Snapshot");
   });
 
-  it("releaseDeltaDisabledStatusMessage uses demand released wording", () => {
-    expect(releaseDeltaDisabledStatusMessage(0, 50, true)).toContain("Demand Released");
-    expect(releaseDeltaDisabledStatusMessage(0, 0, false)).toBe("No additional requirement to release.");
+  it("releaseDeltaDisabledStatusMessage uses RM requirement wording for plan documents", () => {
+    expect(releaseDeltaDisabledStatusMessage(0, 50, true)).toBe(
+      "RM requirement released — no further release required.",
+    );
+    expect(releaseDeltaDisabledStatusMessage(0, 50, true, "ADDITIONAL")).toContain("Additional RM");
+    expect(releaseDeltaDisabledStatusMessage(0, 0, false)).toBe("No RM requirement to release.");
+  });
+
+  it("releaseConfirmModalBodyMessage avoids delta for initial plans", () => {
+    expect(releaseConfirmModalBodyMessage("INITIAL")).toContain("net RM requirement");
+    expect(releaseConfirmModalBodyMessage("INITIAL")).not.toContain("delta");
+    expect(releaseConfirmModalBodyMessage("ADDITIONAL")).toContain("additional RM requirement");
   });
 
   it("formatReleaseSuccessSummaryMessage references demand released", () => {

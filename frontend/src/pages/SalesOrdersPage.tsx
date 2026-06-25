@@ -69,6 +69,9 @@ import {
 import {
   createCycleRsButtonLabel,
   createNextRsButtonLabel,
+  isNoQtyStoreOwnedRsCreatePrimaryAction,
+  NO_QTY_RS_ADMIN_OVERRIDE_LINK_LABEL,
+  NO_QTY_RS_STORE_HANDOFF_LABEL,
   noQtyBusinessWorkflowStage,
   noQtyNextCycleLabel,
   openCurrentRsButtonLabel,
@@ -2594,6 +2597,14 @@ export function SalesOrdersPage() {
                     });
                     const openRsLabel = openCurrentRsButtonLabel();
                     const primaryActionLabel = noQtySoGuided.label;
+                    const adminRsCreateHandoff =
+                      isAdmin &&
+                      isNoQtyStoreOwnedRsCreatePrimaryAction({
+                        primaryActionLabel,
+                        noQtyNextAction: so.noQtyNextAction,
+                        rsStatusLabel,
+                        hasDraftRequirementSheet,
+                      });
                     const executionStageKeys = new Set([
                       "WORK_ORDER",
                       "PRODUCTION",
@@ -2634,7 +2645,21 @@ export function SalesOrdersPage() {
                           );
                         }
                       } else {
-                        if (noQtySoGuided.isPlanningAction && !canOpenRs) {
+                        if (adminRsCreateHandoff) {
+                          agreementActions.push(
+                            <NoQtyPlanningStatusChip inline label={NO_QTY_RS_STORE_HANDOFF_LABEL} />,
+                          );
+                          if (canOpenRs) {
+                            agreementActions.push(
+                              <NoQtyAgreementActionLink
+                                key="admin-rs-override"
+                                to={noQtySoGuided.to}
+                                label={NO_QTY_RS_ADMIN_OVERRIDE_LINK_LABEL}
+                                variant="secondary"
+                              />,
+                            );
+                          }
+                        } else if (noQtySoGuided.isPlanningAction && !canOpenRs) {
                           agreementActions.push(
                             <NoQtyPlanningStatusChip inline label={noQtySoGuided.waitingLabel} />,
                           );
@@ -2671,6 +2696,7 @@ export function SalesOrdersPage() {
                         if (
                           so.noQtyCreateNextRsEligible &&
                           canCreateNextRs &&
+                          !isAdmin &&
                           so.noQtyNextAction !== "CREATE_NEXT_RS"
                         ) {
                           agreementActions.push(

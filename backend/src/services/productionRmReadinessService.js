@@ -28,6 +28,62 @@ function floorFgQty(rmAvailable, perUnitFg) {
   return Math.floor((Math.max(0, rmAvailable) + STOCK_EPS) / perUnitFg);
 }
 
+/**
+ * Sum frozen PMR required qty by RM item across submitted requests on a work order.
+ * @param {Array<{ lines?: Array<{ itemId: number, requiredQty: unknown }> }>} submittedPmrs
+ * @returns {Map<number, number>}
+ */
+function aggregatePmrRequiredByItem(submittedPmrs) {
+  const byItem = new Map();
+  for (const pmr of submittedPmrs || []) {
+    for (const line of pmr.lines || []) {
+      const itemId = Number(line.itemId);
+      if (!Number.isFinite(itemId) || itemId <= 0) continue;
+      const req = n(line.requiredQty);
+      if (req <= STOCK_EPS) continue;
+      byItem.set(itemId, round3((byItem.get(itemId) || 0) + req));
+    }
+  }
+  return byItem;
+}
+
+/**
+ * Max FG qty supportable from issued RM using PMR frozen required qty (not live BOM).
+ * Partial issue scales proportionally: floor(available / linePmrRequired × woQty).
+ */
+function computeMaxProducibleFromPmrBasis({
+  woQty,
+  totalWoQty,
+  pmrRequiredByItem,
+  availableByItem,
+}) {
+  const fgQty = n(woQty);
+  const totalFg = n(totalWoQty);
+  if (fgQty <= STOCK_EPS || !pmrRequiredByItem?.size) return null;
+
+  const lineShare = totalFg > STOCK_EPS ? fgQty / totalFg : 1;
+  let maxProducible = fgQty;
+  let hasPmrItems = false;
+
+  for (const [itemId, pmrRequiredTotal] of pmrRequiredByItem) {
+    const linePmrRequired = round3(n(pmrRequiredTotal) * lineShare);
+    if (linePmrRequired <= STOCK_EPS) continue;
+    hasPmrItems = true;
+    const available = n(availableByItem?.get(itemId));
+    const canSupport = Math.floor((Math.max(0, available) * fgQty) / linePmrRequired + STOCK_EPS);
+    if (canSupport < maxProducible) maxProducible = canSupport;
+  }
+
+  if (!hasPmrItems) return null;
+  return Math.max(0, maxProducible);
+}
+
+function resolveWorkOrderLinePlannedQty(line) {
+  const planned = n(line?.plannedQty);
+  const qty = n(line?.qty);
+  return planned > STOCK_EPS ? planned : qty;
+}
+
 function productionQtyExceedsRmAllowed({ producedQty, productionAllowedNowQty, otherUnapprovedQty = 0 }) {
   const qty = n(producedQty);
   const allowed = n(productionAllowedNowQty);
@@ -158,6 +214,12 @@ async function buildProductionRmReadiness(db, workOrderLineId) {
   const fgName = wol.fgItem?.itemName ?? `Item #${fgItemId}`;
   const fgUnit = wol.fgItem?.unit ?? "";
 
+  const siblingLines = await db.workOrderLine.findMany({
+    where: { workOrderId: wo.id },
+    select: { id: true, qty: true, plannedQty: true },
+  });
+  const totalWoQty = siblingLines.reduce((sum, ln) => sum + resolveWorkOrderLinePlannedQty(ln), 0);
+
   const draftPmrs = await db.productionMaterialRequest.count({
     where: { workOrderId: wo.id, status: "DRAFT" },
   });
@@ -191,11 +253,15 @@ async function buildProductionRmReadiness(db, workOrderLineId) {
   const stockLocIds = prodLocIdsForStock.length ? prodLocIdsForStock : prodLocIds;
   const consumedMap = await loadConsumedRmAtProductionForWorkOrder(db, wo.id, stockLocIds);
   const returnedMap = await loadReturnedByWorkOrder(db, wo.id);
+  const pmrRequiredByItem = aggregatePmrRequiredByItem(submittedPmrs);
+  const usePmrBasis = submittedPmrs.length > 0 && pmrRequiredByItem.size > 0;
+  const lineShare = totalWoQty > STOCK_EPS ? woQty / totalWoQty : 1;
 
   const itemIds = new Set([
     ...requiredForWo.keys(),
     ...issuedByItem.keys(),
     ...perUnit.keys(),
+    ...pmrRequiredByItem.keys(),
   ]);
 
   const items = itemIds.size
@@ -210,12 +276,17 @@ async function buildProductionRmReadiness(db, workOrderLineId) {
   const rmLines = [];
   let maxProducibleQty = woQty;
   let hasRmRows = false;
+  /** @type {Map<number, number>} */
+  const availableByItem = new Map();
 
   for (const itemId of [...itemIds].sort((a, b) => a - b)) {
-    const perFg = n(perUnit.get(itemId));
-    if (!(perFg > STOCK_EPS)) continue;
+    const pmrRequiredTotal = n(pmrRequiredByItem.get(itemId));
+    const linePmrRequired = usePmrBasis ? round3(pmrRequiredTotal * lineShare) : 0;
+    const pmrPerFg = usePmrBasis && woQty > STOCK_EPS ? round3(linePmrRequired / woQty) : 0;
+    const perFg = usePmrBasis && pmrPerFg > STOCK_EPS ? pmrPerFg : n(perUnit.get(itemId));
+    if (!(perFg > STOCK_EPS) && !(usePmrBasis && linePmrRequired > STOCK_EPS)) continue;
     hasRmRows = true;
-    const required = n(requiredForWo.get(itemId));
+    const required = usePmrBasis && linePmrRequired > STOCK_EPS ? linePmrRequired : n(requiredForWo.get(itemId));
     const grossIssued = n(issuedByItem.get(itemId));
     const returned = n(returnedMap.get(itemId));
     const netIssued = round3(Math.max(0, grossIssued - returned));
@@ -223,9 +294,13 @@ async function buildProductionRmReadiness(db, workOrderLineId) {
     const alreadyConsumed = n(consumedMap.get(itemId));
     const logicalAvailable = round3(Math.max(0, grossIssued - alreadyConsumed - returned));
     const available = round3(Math.min(onHand, logicalAvailable > STOCK_EPS ? logicalAvailable : onHand));
+    availableByItem.set(itemId, available);
     const returnableQty = round3(Math.max(0, Math.min(grossIssued - alreadyConsumed - returned, onHand)));
-    const canSupport = floorFgQty(available, perFg);
-    if (canSupport < maxProducibleQty) maxProducibleQty = canSupport;
+    const canSupport =
+      usePmrBasis && linePmrRequired > STOCK_EPS
+        ? Math.floor((Math.max(0, available) * woQty) / linePmrRequired + STOCK_EPS)
+        : floorFgQty(available, perFg);
+    if (!usePmrBasis && canSupport < maxProducibleQty) maxProducibleQty = canSupport;
 
     let status = "OK";
     if (grossIssued <= STOCK_EPS) status = "NOT_ISSUED";
@@ -247,10 +322,21 @@ async function buildProductionRmReadiness(db, workOrderLineId) {
       canSupportFgQty: canSupport === Infinity ? 0 : canSupport,
       status,
       perUnitRm: round3(perFg),
+      pmrRequiredForLine: usePmrBasis ? round3(linePmrRequired) : null,
     });
   }
 
-  if (!hasRmRows || bomMissing || perUnitBomMissing) {
+  if (usePmrBasis) {
+    const pmrMax = computeMaxProducibleFromPmrBasis({
+      woQty,
+      totalWoQty,
+      pmrRequiredByItem,
+      availableByItem,
+    });
+    if (pmrMax != null) maxProducibleQty = pmrMax;
+  }
+
+  if (!hasRmRows || (!usePmrBasis && (bomMissing || perUnitBomMissing))) {
     maxProducibleQty = 0;
   }
 
@@ -566,6 +652,9 @@ async function attachRmReadinessToProductionQueueRows(db, rows) {
 module.exports = {
   SUBMITTED_PMR_STATUSES,
   floorFgQty,
+  aggregatePmrRequiredByItem,
+  computeMaxProducibleFromPmrBasis,
+  resolveWorkOrderLinePlannedQty,
   productionQtyExceedsRmAllowed,
   resolveReadinessGate,
   getWorkOrderProductionLocationIds,

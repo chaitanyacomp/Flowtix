@@ -14,6 +14,13 @@ const {
 const { APPROVED_PLAN_SNAPSHOT_REVISION } = require("../../src/services/monthlyPlanningRmSnapshotService");
 const { mapMonthlyPlanContext } = require("../../src/services/procurementTraceService");
 
+function compositionForFg(fgItemId, suggestedProduction, greenShortage = 0) {
+  return async () => ({
+    periodKey: "2026-06",
+    items: [{ itemId: fgItemId, suggestedProduction, greenShortage }],
+  });
+}
+
 function depsFor({ rmNeeded = new Map([[70, 12]]), fgItemId = 65, greenShortage = 700 } = {}) {
   return {
     allowLegacyLock: true,
@@ -103,11 +110,34 @@ function createP4bDb(initialPlans = []) {
       },
     },
     monthlyProductionPlanLine: {
-      findMany: async ({ where, include }) => {
+      findMany: async ({ where, include, select }) => {
         const plan = state.plans.find((p) => p.id === where.planId);
         const lines = plan?.lines ?? [];
+        const mapped = lines.map((l) => ({
+          ...l,
+          fgItem: l.fgItem ?? { id: l.fgItemId, itemName: "FG", unit: "Pcs" },
+        }));
+        if (select) {
+          return mapped.map((l) => {
+            const out = {};
+            for (const key of Object.keys(select)) {
+              if (select[key] === true) out[key] = l[key];
+            }
+            return out;
+          });
+        }
         if (!include?.fgItem) return lines;
-        return lines.map((l) => ({ ...l, fgItem: l.fgItem ?? { id: l.fgItemId, itemName: "FG", unit: "Pcs" } }));
+        return mapped;
+      },
+      update: async ({ where, data }) => {
+        for (const plan of state.plans) {
+          const line = plan.lines?.find((l) => l.id === where.id);
+          if (line) {
+            Object.assign(line, data);
+            return { ...line };
+          }
+        }
+        return null;
       },
     },
     monthlyProductionPlanRevisionLine: {
@@ -228,7 +258,13 @@ describe("monthlyPlanningPlanDocumentP4b.approve RM snapshot", () => {
     const db = createP4bDb([
       { id: 11, status: "AWAITING_PURCHASE_REVIEW", planSequenceNo: 1, planKind: "INITIAL" },
     ]);
-    const res = await purchaseApprovePlan({ db, planId: 11, actorUserId: 3, deps: depsFor() });
+    const res = await purchaseApprovePlan({
+      db,
+      planId: 11,
+      actorUserId: 3,
+      deps: depsFor(),
+      loadComposition: compositionForFg(65, 10000),
+    });
     assert.equal(res.status, "APPROVED");
     assert.equal(res.rmSnapshot.revision, APPROVED_PLAN_SNAPSHOT_REVISION);
     assert.equal(res.rmSnapshot.created, true);
@@ -242,7 +278,12 @@ describe("monthlyPlanningPlanDocumentP4b.approve RM snapshot", () => {
       { id: 12, status: "AWAITING_PURCHASE_REVIEW", planSequenceNo: 2, planKind: "ADDITIONAL" },
     ]);
     const deps = depsFor({ rmNeeded: new Map([[70, 5]]) });
-    const first = await purchaseApprovePlan({ db, planId: 12, deps });
+    const first = await purchaseApprovePlan({
+      db,
+      planId: 12,
+      deps,
+      loadComposition: compositionForFg(65, 10000),
+    });
     assert.equal(first.rmSnapshot.created, true);
     const { ensureApprovedPlanRmSnapshot } = require("../../src/services/monthlyPlanningRmSnapshotService");
     const second = await ensureApprovedPlanRmSnapshot({ db, planId: 12, deps });
@@ -252,7 +293,12 @@ describe("monthlyPlanningPlanDocumentP4b.approve RM snapshot", () => {
 
   it("submit does not create RM snapshot", async () => {
     const db = createP4bDb([{ id: 13, status: "DRAFT", planSequenceNo: 1 }]);
-    await submitPlanForPurchaseReview({ db, planId: 13, actorUserId: 2 });
+    await submitPlanForPurchaseReview({
+      db,
+      planId: 13,
+      actorUserId: 2,
+      loadComposition: compositionForFg(65, 10000),
+    });
     assert.equal(db.__state.rmPlans.length, 0);
     assert.equal(db.__state.plans[0].status, "AWAITING_PURCHASE_REVIEW");
   });
@@ -268,7 +314,12 @@ describe("monthlyPlanningPlanDocumentP4b.approve RM snapshot", () => {
 describe("monthlyPlanningPlanDocumentP4b.read planning on APPROVED", () => {
   it("getRmPlanning works for APPROVED", async () => {
     const db = createP4bDb([{ id: 20, status: "AWAITING_PURCHASE_REVIEW", planSequenceNo: 1 }]);
-    await purchaseApprovePlan({ db, planId: 20, deps: depsFor() });
+    await purchaseApprovePlan({
+      db,
+      planId: 20,
+      deps: depsFor(),
+      loadComposition: compositionForFg(65, 10000),
+    });
     const rm = await getRmPlanning({ db, planId: 20 });
     assert.equal(rm.locked, true);
     assert.equal(rm.exists, true);
@@ -279,7 +330,12 @@ describe("monthlyPlanningPlanDocumentP4b.read planning on APPROVED", () => {
 
   it("getPurchasePlanning works for APPROVED", async () => {
     const db = createP4bDb([{ id: 21, status: "AWAITING_PURCHASE_REVIEW", planSequenceNo: 1 }]);
-    await purchaseApprovePlan({ db, planId: 21, deps: depsFor() });
+    await purchaseApprovePlan({
+      db,
+      planId: 21,
+      deps: depsFor(),
+      loadComposition: compositionForFg(65, 10000),
+    });
     const pp = await getPurchasePlanning({ db, planId: 21 });
     assert.equal(pp.locked, true);
     assert.equal(pp.exists, true);
@@ -301,7 +357,12 @@ describe("monthlyPlanningPlanDocumentP4b.read planning on APPROVED", () => {
 describe("monthlyPlanningPlanDocumentP4b.release on APPROVED", () => {
   it("releaseToProcurement works for APPROVED plan documents", async () => {
     const db = createP4bDb([{ id: 30, status: "AWAITING_PURCHASE_REVIEW", planSequenceNo: 2, planKind: "ADDITIONAL" }]);
-    await purchaseApprovePlan({ db, planId: 30, deps: depsFor() });
+    await purchaseApprovePlan({
+      db,
+      planId: 30,
+      deps: depsFor(),
+      loadComposition: compositionForFg(65, 10000),
+    });
     const res = await releaseToProcurement({ db, planId: 30, confirm: true, actorUserId: 2 });
     assert.equal(res.releasedLineCount, 1);
     assert.equal(db.__state.mrs.length, 1);
@@ -329,8 +390,18 @@ describe("monthlyPlanningPlanDocumentP4b.multi-plan isolation", () => {
       { id: 40, status: "AWAITING_PURCHASE_REVIEW", planSequenceNo: 1, planKind: "INITIAL", lines: [{ id: 1, fgItemId: 65, plannedFgQty: "10000", suggestedFgQty: "10000", plannedQtyOverridden: false, source: "REQUIREMENT_SHEET", fgItem: { id: 65, itemName: "Cap", unit: "Pcs" } }] },
       { id: 41, status: "AWAITING_PURCHASE_REVIEW", planSequenceNo: 2, planKind: "ADDITIONAL", lines: [{ id: 2, fgItemId: 65, plannedFgQty: "700", suggestedFgQty: "10000", plannedQtyOverridden: false, source: "REQUIREMENT_SHEET", fgItem: { id: 65, itemName: "Nozzle", unit: "Pcs" } }] },
     ]);
-    await purchaseApprovePlan({ db, planId: 40, deps: depsFor({ rmNeeded: new Map([[70, 100]]) }) });
-    await purchaseApprovePlan({ db, planId: 41, deps: depsFor({ rmNeeded: new Map([[70, 7]]) }) });
+    await purchaseApprovePlan({
+      db,
+      planId: 40,
+      deps: depsFor({ rmNeeded: new Map([[70, 100]]) }),
+      loadComposition: compositionForFg(65, 10000),
+    });
+    await purchaseApprovePlan({
+      db,
+      planId: 41,
+      deps: depsFor({ rmNeeded: new Map([[70, 7]]) }),
+      loadComposition: compositionForFg(65, 10000),
+    });
     assert.equal(db.__state.rmPlans.length, 2);
     const plan1Rm = await getRmPlanning({ db, planId: 40 });
     const plan2Rm = await getRmPlanning({ db, planId: 41 });

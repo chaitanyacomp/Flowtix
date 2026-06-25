@@ -1,5 +1,6 @@
 /** Aligns with backend release delta epsilon — UI enable/disable only. */
 import { releaseDeltaDisabledStatusMessage } from "./monthlyPlanningProcurementLabels";
+import type { MpPlanKind } from "./monthlyPlanningProcurementLabels";
 export const RELEASE_DELTA_EPS = 1e-6;
 
 export type ReleaseDeltaLineInput = {
@@ -53,15 +54,18 @@ export function getReleaseDeltaDisabledStatusMessage({
   additionalRequirementTotal,
   previouslyReleasedTotal = 0,
   usesPlanDocumentUx = false,
+  planKind = null,
 }: {
   additionalRequirementTotal: number;
   previouslyReleasedTotal?: number;
   usesPlanDocumentUx?: boolean;
+  planKind?: MpPlanKind;
 }): string {
   return releaseDeltaDisabledStatusMessage(
     additionalRequirementTotal,
     previouslyReleasedTotal,
     usesPlanDocumentUx,
+    planKind,
   );
 }
 

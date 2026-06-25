@@ -19,6 +19,7 @@ const {
   assertRmRequisitionPurchaseVisible,
 } = require("./rmRequisitionLifecycle");
 const { assertSingleDemandPoolFromSourceTypes } = require("./procurementDemandPoolService");
+const { assertActorMayCreatePurchaseRequest } = require("./procurementPurchaseRequestOwnership");
 
 const OPEN_PURCHASE_REQUEST_STATUSES = ["PENDING_PURCHASE", "PARTIALLY_ORDERED"];
 
@@ -282,6 +283,7 @@ async function assertPurchaseRequestAllocationsValid(tx, lines) {
   }
 
   assertSingleDemandPoolFromSourceTypes(allocationSourceTypes, "purchase request");
+  return allocationSourceTypes;
 }
 
 /**
@@ -289,7 +291,8 @@ async function assertPurchaseRequestAllocationsValid(tx, lines) {
  */
 async function createPurchaseRequestFromPool(input, actor = {}) {
   return prisma.$transaction(async (tx) => {
-    await assertPurchaseRequestAllocationsValid(tx, input.lines);
+    const allocationSourceTypes = await assertPurchaseRequestAllocationsValid(tx, input.lines);
+    assertActorMayCreatePurchaseRequest(actor, allocationSourceTypes);
     await assertAllItemsAreRm(
       tx,
       input.lines.map((l) => l.itemId),

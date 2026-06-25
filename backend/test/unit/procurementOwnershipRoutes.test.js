@@ -6,6 +6,7 @@ const { signAccessToken } = require("../../src/utils/jwt");
 const {
   MATERIAL_REQUISITION_WRITE_ROLES,
   RM_PO_WRITE_ROLES,
+  PURCHASE_EXECUTION_ROLES,
 } = require("../../src/constants/erpRoles");
 
 function bearerForRole(role) {
@@ -28,13 +29,18 @@ describe("P5C-1 — procurement ownership route authorization", () => {
     assert.equal(RM_PO_WRITE_ROLES.includes("STORE"), false);
   });
 
-  it("POST /api/procurement-planning/send-requirement rejects PURCHASE (403)", async () => {
+  it("PURCHASE is in PURCHASE_EXECUTION_ROLES for MPRS PR creation", () => {
+    assert.ok(PURCHASE_EXECUTION_ROLES.includes("PURCHASE"));
+    assert.equal(PURCHASE_EXECUTION_ROLES.includes("STORE"), false);
+  });
+
+  it("POST /api/procurement-planning/send-requirement allows PURCHASE past role gate", async () => {
     const app = createApp();
     const res = await request(app)
       .post("/api/procurement-planning/send-requirement")
       .set("Authorization", bearerForRole("PURCHASE"))
       .send({ lines: [] });
-    assert.equal(res.status, 403);
+    assert.notEqual(res.status, 403);
   });
 
   it("POST /api/procurement-planning/send-requirement allows STORE past role gate", async () => {

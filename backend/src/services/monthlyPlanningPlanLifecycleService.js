@@ -405,6 +405,64 @@ async function purchaseRejectPlan({
 }
 
 /**
+ * Permanently remove a DRAFT plan document (Store-owned). Returns period to no-plan state.
+ * Legacy reopen drafts must use cancelReopenMonthlyPlan instead.
+ */
+async function discardMonthlyPlanDraft({
+  db = prisma,
+  planId,
+  actorRole = null,
+  confirmPastPeriod = false,
+  now = new Date(),
+} = {}) {
+  const run = async (tx) => {
+    const { MonthlyPlanningError, assertPeriodWriteAllowed } = planningCore();
+    const plan = await loadPlanHeader(tx, planId);
+    assertPeriodWriteAllowed({
+      periodKey: plan.periodKey,
+      actorRole,
+      confirmPastPeriod,
+      now,
+    });
+    if (!isPlanEditableStatus(plan.status)) {
+      throw new MonthlyPlanningError(
+        "PLAN_NOT_DISCARDABLE",
+        "Only DRAFT plans can be discarded. Submitted or approved plans cannot be deleted.",
+        409,
+      );
+    }
+    if (plan.reopenedAt != null && Number(plan.currentRevision) >= 1) {
+      throw new MonthlyPlanningError(
+        "USE_CANCEL_REOPEN",
+        "This is a legacy reopened draft. Use Cancel Reopen to restore the locked plan instead of discarding.",
+        409,
+      );
+    }
+
+    const linkedMr = await tx.materialRequirement.findFirst({
+      where: { monthlyProductionPlanId: plan.id },
+      select: { id: true },
+    });
+    if (linkedMr?.id) {
+      throw new MonthlyPlanningError(
+        "PLAN_NOT_DISCARDABLE",
+        "This draft is linked to procurement records and cannot be discarded.",
+        409,
+      );
+    }
+
+    await tx.monthlyProductionPlan.delete({ where: { id: plan.id } });
+    return {
+      discarded: true,
+      planId: plan.id,
+      periodKey: plan.periodKey,
+    };
+  };
+
+  return typeof db.$transaction === "function" ? db.$transaction(run) : run(db);
+}
+
+/**
  * Pick the plan the legacy period workspace should load by default.
  * Prefers an active plan; otherwise highest planSequenceNo.
  */
@@ -431,5 +489,6 @@ module.exports = {
   submitPlanForPurchaseReview,
   purchaseApprovePlan,
   purchaseRejectPlan,
+  discardMonthlyPlanDraft,
   selectPrimaryPlanForPeriod,
 };

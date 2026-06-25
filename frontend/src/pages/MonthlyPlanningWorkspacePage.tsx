@@ -11,6 +11,9 @@ import {
 import {
   approvedPlanGuidanceMessage,
   canLoadRmPurchaseTabs,
+  canLoadLiveRmEstimate,
+  canLoadRmPlanningTab,
+  resolveRmPlanningTabLabel,
   canShowAdditionalPlanEntry,
   formatPlanKindLabel,
   formatPlanStatusLabel,
@@ -29,6 +32,7 @@ import {
   PURCHASE_LIVE_PROCUREMENT_SECTION,
   PURCHASE_LINE_TABLE_NOTE,
   RM_REQUIREMENT_SNAPSHOT_TAB_LABEL,
+  LIVE_RM_ESTIMATE_BANNER,
   RM_SNAPSHOT_BANNER,
   planStatusBadgeVariant,
   planMutationActionBlockedMessage,
@@ -40,6 +44,7 @@ import {
   productionPlanReadOnlyMessage,
   resolvePlanDisplayLabel,
   resolveWorkflowActionVisibility,
+  MONTHLY_PLAN_DISCARD_DRAFT_CONFIRM_MESSAGE,
   rmPlanningEmptyTableMessage,
   rmPurchaseEmptyMessage,
   shouldShowPlanSelector,
@@ -69,7 +74,14 @@ import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { NativeSelect } from "../components/ui/native-select";
 import { Badge } from "../components/ui/badge";
-import { buildNoQtyGuidedHref } from "../lib/noQtyFlowState";
+import {
+  hasPlannedFgQtyInRows,
+  liveRmEstimatePanelMessage,
+  LIVE_RM_ESTIMATE_SAVE_AND_REFRESH_LABEL,
+  resolveLiveRmEstimatePanelState,
+  shouldOfferSaveAndRefreshEstimate,
+  type LiveRmEstimatePanelState,
+} from "../lib/monthlyPlanningLiveRmEstimateUx";
 import { noQtySoListHref } from "../lib/noQtyRsActionLabels";
 import { formatOperationalWarningMessage } from "../lib/operationalWarningPresentation";
 import { cn } from "../lib/utils";
@@ -106,8 +118,10 @@ import {
 } from "../lib/monthlyPlanningApplySuggestedProduction";
 import {
   MP_PROCUREMENT,
+  MP_RELEASE_CTA,
   MP_RELEASE_STATUS_META,
   procurementProgressModelLine,
+  releaseConfirmModalBodyMessage,
 } from "../lib/monthlyPlanningProcurementLabels";
 import {
   purchasePlanningAuditTableHeaders,
@@ -219,6 +233,24 @@ type ProductionLinesResponse = {
   lockSummary?: LockSummary;
 };
 
+type RmPlanningMode = "SNAPSHOT" | "LIVE_ESTIMATE";
+
+type RmPlanningTotals = {
+  rmItemCount: number;
+  grossDemandTotal: number;
+  freeStockTotal: number;
+  reservedTotal: number;
+  incomingPoTotal: number;
+  availableRmTotal: number;
+  netRequirementTotal: number;
+  totalFgPlannedQty?: number;
+};
+
+type RmPlanWarnings = {
+  missingFgBoms: { fgItemId: number; fgItemName: string | null }[];
+  missingChildBoms: { sfgItemId: number; sfgName: string | null }[];
+};
+
 type RmPlanLine = {
   id: number;
   rmItemId: number;
@@ -228,6 +260,7 @@ type RmPlanLine = {
   freeStockSnapshot: string | number;
   reservedSnapshot: string | number;
   incomingPoSnapshot: string | number;
+  availableRmQty?: string | number;
   minStockTopUpQty: string | number;
   netRequirementQty: string | number;
   belowMinStockFlag: boolean;
@@ -236,12 +269,17 @@ type RmPlanLine = {
 };
 
 type RmPlanningResponse = {
+  mode?: RmPlanningMode;
   locked: boolean;
   exists: boolean;
   planId: number;
   status: PlanStatus;
   currentRevision: number;
   revision: number | null;
+  estimatedAt?: string | null;
+  totalFgPlannedQty?: number;
+  planWarnings?: RmPlanWarnings;
+  totals?: RmPlanningTotals;
   rmPlan: { id: number; revision: number; totalFgPlannedQty: string | number; recalculatedAt: string } | null;
   availableRevisions: number[];
   lines: RmPlanLine[];
@@ -734,6 +772,8 @@ export function MonthlyPlanningWorkspacePage() {
   const [cancellingReopen, setCancellingReopen] = React.useState(false);
   const [startingPlanning, setStartingPlanning] = React.useState(false);
   const [addingSuggested, setAddingSuggested] = React.useState(false);
+  const [discarding, setDiscarding] = React.useState(false);
+  const [confirmDiscardOpen, setConfirmDiscardOpen] = React.useState(false);
   const [submittingForReview, setSubmittingForReview] = React.useState(false);
   const [approvingPlan, setApprovingPlan] = React.useState(false);
   const [rejectModalOpen, setRejectModalOpen] = React.useState(false);
@@ -760,6 +800,8 @@ export function MonthlyPlanningWorkspacePage() {
     hasSaveableLines: rows.some((r) => num(r.plannedFgQty) > 0),
   });
   const rmPurchaseTabsEnabled = canLoadRmPurchaseTabs(plan?.status);
+  const rmPlanningTabEnabled = canLoadRmPlanningTab(plan?.status);
+  const rmPlanningTabLabel = resolveRmPlanningTabLabel(plan?.status);
   const isDraftForNextRevision = Boolean(
     isLegacyPlan && plan && plan.status === "DRAFT" && plan.currentRevision >= 1,
   );
@@ -769,6 +811,26 @@ export function MonthlyPlanningWorkspacePage() {
   const showLegacyWorkflowActions = Boolean(
     workflowActions.lock || workflowActions.reopen || workflowActions.cancelReopen,
   );
+  const releasePendingTotal =
+    purchasePlanning?.locked && purchasePlanning.exists
+      ? resolveAdditionalRequirementTotal(purchasePlanning.totals, purchasePlanning.lines)
+      : null;
+  const canReleaseRmRequirement =
+    workflowActions.release &&
+    releasePendingTotal != null &&
+    isReleaseDeltaButtonEnabled(releasePendingTotal);
+  const releaseDisabledTooltip =
+    workflowActions.release && releasePendingTotal != null && !isReleaseDeltaButtonEnabled(releasePendingTotal)
+      ? getReleaseDeltaDisabledStatusMessage({
+          additionalRequirementTotal: releasePendingTotal,
+          previouslyReleasedTotal: resolvePreviouslyReleasedTotal(
+            purchasePlanning?.totals,
+            purchasePlanning?.lines,
+          ),
+          usesPlanDocumentUx: plan ? usesPlanDocumentProcurementUx(plan) : false,
+          planKind: plan?.planKind,
+        })
+      : undefined;
   const suggestedProductionMap = React.useMemo(
     () => buildSuggestedProductionMap(requirementComposition),
     [requirementComposition],
@@ -889,6 +951,19 @@ export function MonthlyPlanningWorkspacePage() {
           setRmPlanning(null);
           setPurchasePlanning(null);
         }
+      } else if (canLoadLiveRmEstimate(planRef.status)) {
+        try {
+          const estimate = await apiFetch<RmPlanningResponse>(
+            `/api/monthly-planning/${planRef.id}/rm-planning-estimate`,
+          );
+          setRmPlanning(estimate);
+        } catch (e) {
+          setRmPlanning(null);
+          showError(
+            e instanceof ApiRequestError ? e.message : "Failed to load Live RM Estimate.",
+          );
+        }
+        setPurchasePlanning(null);
       } else {
         setRmPlanning(null);
         setPurchasePlanning(null);
@@ -1125,8 +1200,9 @@ export function MonthlyPlanningWorkspacePage() {
         method: "PUT",
         body: JSON.stringify(lineBody),
       });
-      showSuccess(`Added ${suggestedItems.length} suggested FG item(s) to the draft plan.`);
-      await loadPlan(periodKey);
+      showSuccess(`Monthly plan draft created with ${suggestedItems.length} suggested FG item(s).`);
+      await loadPlan(periodKey, createdPlan.id);
+      await refreshRm(createdPlan);
     } catch (e) {
       if (
         e instanceof ApiRequestError &&
@@ -1393,7 +1469,10 @@ export function MonthlyPlanningWorkspacePage() {
         body: JSON.stringify(body),
       });
       showSuccess("Production plan saved.");
-      await loadPlan(period);
+      await loadPlan(period, activePlan.id);
+      if (canLoadLiveRmEstimate(activePlan.status)) {
+        await refreshRm(activePlan);
+      }
     } catch (e) {
       showError(e instanceof ApiRequestError ? e.message : "Failed to save production plan.");
     } finally {
@@ -1470,14 +1549,24 @@ export function MonthlyPlanningWorkspacePage() {
     }
   }
 
-  async function refreshRm() {
-    if (!plan) return;
+  async function refreshRm(planOverride?: PlanSummary | null) {
+    const targetPlan = planOverride ?? plan;
+    if (!targetPlan) return;
     setLoadingRm(true);
     try {
-      const rm = await apiFetch<RmPlanningResponse>(`/api/monthly-planning/${plan.id}/rm-planning`);
+      const path = canLoadLiveRmEstimate(targetPlan.status)
+        ? `/api/monthly-planning/${targetPlan.id}/rm-planning-estimate`
+        : `/api/monthly-planning/${targetPlan.id}/rm-planning`;
+      const rm = await apiFetch<RmPlanningResponse>(path);
       setRmPlanning(rm);
     } catch (e) {
-      showError(e instanceof ApiRequestError ? e.message : "Failed to load Plan RM Snapshot.");
+      showError(
+        e instanceof ApiRequestError
+          ? e.message
+          : canLoadLiveRmEstimate(targetPlan.status)
+            ? "Failed to load Live RM Estimate."
+            : "Failed to load Plan RM Snapshot.",
+      );
     } finally {
       setLoadingRm(false);
     }
@@ -1546,6 +1635,36 @@ export function MonthlyPlanningWorkspacePage() {
       showError(e instanceof ApiRequestError ? e.message : "Failed to load Purchase Planning.");
     } finally {
       setLoadingPurchase(false);
+    }
+  }
+
+  async function onConfirmDiscardDraft() {
+    if (!plan) return;
+    setDiscarding(true);
+    try {
+      const body: { confirmPastPeriod?: true } = {};
+      if (periodIsPast && isAdmin) body.confirmPastPeriod = true;
+      await apiFetch(`/api/monthly-planning/${plan.id}/discard`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      setConfirmDiscardOpen(false);
+      setPlan(null);
+      setPlanExists(false);
+      setSelectedPlanId(null);
+      setRows([]);
+      setRemovedIds([]);
+      setSavedProductionBaseline(null);
+      setRmPlanning(null);
+      setPurchasePlanning(null);
+      setLockSummary(null);
+      setPlanRevisions(null);
+      showSuccess("Draft monthly plan discarded.");
+      await loadPlan(period);
+    } catch (e) {
+      showError(e instanceof ApiRequestError ? e.message : "Failed to discard draft plan.");
+    } finally {
+      setDiscarding(false);
     }
   }
 
@@ -1691,6 +1810,23 @@ export function MonthlyPlanningWorkspacePage() {
   );
   const plannedSuggestedMismatch = hasPlannedSuggestedMismatch(totalFgPlanned, totalFgSuggested);
 
+  const hasPlannedFgInUi = hasPlannedFgQtyInRows(rows);
+  const liveEstimateState = resolveLiveRmEstimatePanelState({
+    loading: loadingRm,
+    hasUnsavedChanges: hasUnsavedProductionChanges,
+    hasPlannedFgInUi,
+    estimateExists: Boolean(rmPlanning?.exists),
+    hasEstimateData: Boolean(rmPlanning),
+  });
+  const liveEstimateMessage = liveRmEstimatePanelMessage(liveEstimateState);
+  const showSaveAndRefreshEstimate =
+    shouldOfferSaveAndRefreshEstimate(liveEstimateState) && editable && canMutatePeriod;
+
+  async function onSaveAndRefreshEstimate(options?: { confirmPastPeriod?: boolean }) {
+    if (!editable || !canMutatePeriod) return;
+    await onSave(options);
+  }
+
   const availableFgForAdd = fgItems.filter((i) => !rows.some((r) => r.fgItemId === i.id));
 
   const fgRequirementBreakdown = React.useMemo(
@@ -1698,6 +1834,29 @@ export function MonthlyPlanningWorkspacePage() {
       computeProductionRequirementBreakdown(period, requirementComposition, rsSuggestions, totalFgPlanned),
     [period, requirementComposition, rsSuggestions, totalFgPlanned],
   );
+
+  React.useEffect(() => {
+    if (planExists || !flags.monthlyPlanning) return;
+    const periodKey = normalizePeriodKey(period);
+    if (!periodKey) return;
+    let cancelled = false;
+    setLoadingRequirementComposition(true);
+    void apiFetch<RequirementCompositionResponse>(
+      `/api/monthly-planning/requirement-composition?periodKey=${encodeURIComponent(periodKey)}`,
+    )
+      .then((res) => {
+        if (!cancelled) setRequirementComposition(res);
+      })
+      .catch(() => {
+        if (!cancelled) setRequirementComposition(null);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingRequirementComposition(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [planExists, period, flags.monthlyPlanning]);
 
   React.useEffect(() => {
     if (!planExists) return;
@@ -1741,6 +1900,15 @@ export function MonthlyPlanningWorkspacePage() {
       cancelled = true;
     };
   }, [activeTab, planExists, period, rsSuggestions?.periodKey]);
+
+  const emptyStateSuggestedItemCount = React.useMemo(() => {
+    if (planExists) return 0;
+    const periodKey = normalizePeriodKey(period);
+    if (!periodKey || requirementComposition?.periodKey !== periodKey) return 0;
+    return (requirementComposition.items ?? []).filter((item) => num(item.suggestedProduction) > 0).length;
+  }, [planExists, period, requirementComposition]);
+
+  const draftFgItemIds = React.useMemo(() => new Set(rows.map((r) => r.fgItemId)), [rows]);
 
   if (flagsLoading) {
     return <div className="p-6 text-sm text-slate-500">Loading…</div>;
@@ -1878,6 +2046,19 @@ export function MonthlyPlanningWorkspacePage() {
                 {saving ? "Saving…" : "Save changes"}
               </Button>
             ) : null}
+            {workflowActions.discardDraft ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => setConfirmDiscardOpen(true)}
+                disabled={discarding || saving || submittingForReview}
+                className="h-8 border-red-300 px-2.5 text-red-800 hover:bg-red-50"
+              >
+                <Trash2 className="mr-1 h-3.5 w-3.5" />
+                {discarding ? "Discarding…" : "Discard Draft"}
+              </Button>
+            ) : null}
             {workflowActions.submitForReview ? (
               <Button
                 type="button"
@@ -1929,11 +2110,12 @@ export function MonthlyPlanningWorkspacePage() {
                 type="button"
                 size="sm"
                 onClick={() => setConfirmReleaseOpen(true)}
-                disabled={releasing || loading}
-                className="h-8 bg-sky-700 px-2.5 hover:bg-sky-800"
+                disabled={releasing || loading || !canReleaseRmRequirement}
+                title={releaseDisabledTooltip}
+                className="h-8 bg-sky-700 px-2.5 hover:bg-sky-800 disabled:opacity-50"
               >
                 <PackagePlus className="mr-1 h-3.5 w-3.5" />
-                Release To Procurement
+                {MP_RELEASE_CTA.PRIMARY}
               </Button>
             ) : null}
             {showLegacyWorkflowActions ? (
@@ -2060,12 +2242,12 @@ export function MonthlyPlanningWorkspacePage() {
           {plan.releasedAt ? (
             <span className="text-emerald-800">
               {" "}
-              · Demand released — review under Purchase Planning.
+              · RM requirement released to procurement — review status under Purchase Planning.
             </span>
           ) : (
             <span className="text-emerald-800">
               {" "}
-              · Release procurement demand from Purchase Planning when ready.
+              · RM requirement pending release — use the header action when ready.
             </span>
           )}
         </div>
@@ -2085,12 +2267,117 @@ export function MonthlyPlanningWorkspacePage() {
 
       {/* KPI strip — hidden on Purchase Planning tab */}
       {activeTab !== "purchase" ? (
+      <>
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
         <KpiCard label="Total FG planned" value={totalFgPlanned.toLocaleString()} />
         <KpiCard label="Total FG suggested" value={totalFgSuggested.toLocaleString()} />
         <KpiCard label="FG items with variance" value={String(fgItemsWithVariance)} />
         <KpiCard label="Status" value={formatPlanStatusLabel(plan?.status)} />
       </div>
+      {canLoadLiveRmEstimate(plan?.status) ? (
+        <div className="rounded-md border border-sky-200 bg-sky-50/80 px-2 py-2">
+          <div className="text-[11px] font-semibold text-sky-900">{LIVE_RM_ESTIMATE_BANNER.title}</div>
+          <div className="mt-0.5 text-[10px] leading-snug text-sky-800">{LIVE_RM_ESTIMATE_BANNER.body}</div>
+          {liveEstimateState === "loading" ? (
+            <p className="mt-2 text-[11px] text-sky-800">Loading live RM estimate…</p>
+          ) : liveEstimateState === "ready" || liveEstimateState === "stale" ? (
+            <>
+              {liveEstimateState === "stale" ? (
+                <p className="mt-2 text-[11px] font-medium text-amber-800">{liveEstimateMessage}</p>
+              ) : null}
+              <div
+                className={cn(
+                  "mt-2 grid grid-cols-2 gap-1.5 sm:grid-cols-3 lg:grid-cols-6",
+                  liveEstimateState === "stale" && "opacity-70",
+                )}
+              >
+                <KpiCard
+                  label="Est. RM items"
+                  value={String(rmPlanning?.totals?.rmItemCount ?? rmPlanning?.lines.length ?? 0)}
+                />
+                <KpiCard
+                  label="Gross RM requirement"
+                  value={(
+                    rmPlanning?.totals?.grossDemandTotal ??
+                    rmPlanning?.lines.reduce((a, l) => a + num(l.grossDemandQty), 0) ??
+                    0
+                  ).toLocaleString()}
+                />
+                <KpiCard
+                  label="Available RM"
+                  value={(
+                    rmPlanning?.totals?.availableRmTotal ??
+                    rmPlanning?.lines.reduce((a, l) => a + num(l.availableRmQty ?? l.freeStockSnapshot), 0) ??
+                    0
+                  ).toLocaleString()}
+                />
+                <KpiCard
+                  label="Reserved RM"
+                  value={(
+                    rmPlanning?.totals?.reservedTotal ??
+                    rmPlanning?.lines.reduce((a, l) => a + num(l.reservedSnapshot), 0) ??
+                    0
+                  ).toLocaleString()}
+                />
+                <KpiCard
+                  label="Incoming PO"
+                  value={(
+                    rmPlanning?.totals?.incomingPoTotal ??
+                    rmPlanning?.lines.reduce((a, l) => a + num(l.incomingPoSnapshot), 0) ??
+                    0
+                  ).toLocaleString()}
+                />
+                <KpiCard
+                  label="Est. net RM requirement"
+                  value={(
+                    rmPlanning?.totals?.netRequirementTotal ??
+                    rmPlanning?.lines.reduce((a, l) => a + num(l.netRequirementQty), 0) ??
+                    0
+                  ).toLocaleString()}
+                  tier="primary"
+                />
+              </div>
+              {liveEstimateState === "stale" && showSaveAndRefreshEstimate ? (
+                <div className="mt-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="h-8"
+                    disabled={saving || loadingRm}
+                    onClick={() =>
+                      runWithPastPeriodGuard(() =>
+                        onSaveAndRefreshEstimate(periodIsPast && isAdmin ? { confirmPastPeriod: true } : undefined),
+                      )
+                    }
+                  >
+                    {saving ? "Saving…" : LIVE_RM_ESTIMATE_SAVE_AND_REFRESH_LABEL}
+                  </Button>
+                </div>
+              ) : null}
+            </>
+          ) : (
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <p className="text-[11px] text-sky-800">{liveEstimateMessage}</p>
+              {showSaveAndRefreshEstimate ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  className="h-8"
+                  disabled={saving || loadingRm}
+                  onClick={() =>
+                    runWithPastPeriodGuard(() =>
+                      onSaveAndRefreshEstimate(periodIsPast && isAdmin ? { confirmPastPeriod: true } : undefined),
+                    )
+                  }
+                >
+                  {saving ? "Saving…" : LIVE_RM_ESTIMATE_SAVE_AND_REFRESH_LABEL}
+                </Button>
+              ) : null}
+            </div>
+          )}
+        </div>
+      ) : null}
+      </>
       ) : null}
 
       {/* Tabs */}
@@ -2100,15 +2387,15 @@ export function MonthlyPlanningWorkspacePage() {
         </TabButton>
         <TabButton
           active={activeTab === "rm"}
-          disabled={!rmPurchaseTabsEnabled}
+          disabled={!rmPlanningTabEnabled}
           title={
-            rmPurchaseTabsEnabled
+            rmPlanningTabEnabled
               ? undefined
               : rmPurchaseEmptyMessage(plan?.status, "rm")
           }
           onClick={() => setActiveTab("rm")}
         >
-          {RM_REQUIREMENT_SNAPSHOT_TAB_LABEL}
+          {rmPlanningTabLabel}
         </TabButton>
         <TabButton
           active={activeTab === "purchase"}
@@ -2132,9 +2419,7 @@ export function MonthlyPlanningWorkspacePage() {
             plan={plan}
             loading={loadingPurchase}
             onRefresh={() => void refreshPurchase()}
-            onRelease={() => setConfirmReleaseOpen(true)}
             releaseSummary={releaseSummary}
-            showReleaseButton={workflowActions.release}
             planStatus={plan?.status}
           />
         ) : activeTab === "rm" ? (
@@ -2144,6 +2429,15 @@ export function MonthlyPlanningWorkspacePage() {
             onRefresh={() => void refreshRm()}
             plan={plan}
             planStatus={plan?.status}
+            liveEstimateState={liveEstimateState}
+            liveEstimateMessage={liveEstimateMessage}
+            showSaveAndRefreshEstimate={showSaveAndRefreshEstimate}
+            saving={saving}
+            onSaveAndRefresh={() =>
+              runWithPastPeriodGuard(() =>
+                onSaveAndRefreshEstimate(periodIsPast && isAdmin ? { confirmPastPeriod: true } : undefined),
+              )
+            }
           />
         ) : !planExists ? (
           <NoPlanPreviewPanel
@@ -2153,6 +2447,8 @@ export function MonthlyPlanningWorkspacePage() {
             periodIsPast={periodIsPast}
             startingPlanning={startingPlanning}
             addingSuggested={addingSuggested}
+            suggestedItemCount={emptyStateSuggestedItemCount}
+            loadingSuggestions={loadingRequirementComposition}
             onStartPlanning={() =>
               runWithPastPeriodGuard(() =>
                 onStartPlanning(periodIsPast && isAdmin ? { confirmPastPeriod: true } : undefined),
@@ -2179,6 +2475,7 @@ export function MonthlyPlanningWorkspacePage() {
             onLoadRsSuggestions={() => void loadRsSuggestions()}
             onHideRsSuggestions={() => setRsSuggestionsVisible(false)}
             onApplyRsSuggestion={(item) => void applyRsSuggestion(item)}
+            draftFgItemIds={draftFgItemIds}
             onUpdateRow={updateRow}
             onRemoveRow={removeRow}
             availableFgForAdd={availableFgForAdd}
@@ -2255,6 +2552,15 @@ export function MonthlyPlanningWorkspacePage() {
           onTogglePanel={() => setRevisionHistoryExpanded((open) => !open)}
           expandedRevision={expandedRevision}
           onToggleRevision={(rev) => setExpandedRevision((cur) => (cur === rev ? null : rev))}
+        />
+      ) : null}
+
+      {confirmDiscardOpen ? (
+        <ApplySuggestedOverrideConfirmModal
+          itemName="Monthly plan draft"
+          message={MONTHLY_PLAN_DISCARD_DRAFT_CONFIRM_MESSAGE}
+          onCancel={() => setConfirmDiscardOpen(false)}
+          onConfirm={() => void onConfirmDiscardDraft()}
         />
       ) : null}
 
@@ -2514,8 +2820,13 @@ function ReleaseConfirmModal({
 }) {
   const lines = data?.lines ?? [];
   const totalRmItems = lines.length;
-  const totalAdditional = resolveAdditionalRequirementTotal(data?.totals, lines);
-  const canConfirmRelease = isReleaseDeltaButtonEnabled(totalAdditional);
+  const totalRequirement =
+    data?.totals?.currentRequirementTotal ??
+    lines.reduce((acc, line) => acc + num(line.currentRequirementQty ?? line.netRequirementQty), 0);
+  const totalReleased = resolvePreviouslyReleasedTotal(data?.totals, lines);
+  const netToRelease = resolveAdditionalRequirementTotal(data?.totals, lines);
+  const pendingRelease = round3(Math.max(0, num(totalRequirement) - num(totalReleased)));
+  const canConfirmRelease = isReleaseDeltaButtonEnabled(netToRelease);
   const planHeader = plan
     ? {
         id: plan.id,
@@ -2536,34 +2847,59 @@ function ReleaseConfirmModal({
     planHeader && usesPlanDocumentProcurementUx(planHeader) ? "Plan document" : "Legacy snapshot";
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4">
-      <div className="w-full max-w-md rounded-lg border border-slate-200 bg-white p-5 shadow-xl">
+      <div className="w-full max-w-lg rounded-lg border border-slate-200 bg-white p-5 shadow-xl">
         <div className="flex items-start justify-between">
-          <h3 className="text-base font-semibold text-slate-900">Release Delta to Procurement</h3>
+          <h3 className="text-base font-semibold text-slate-900">{MP_RELEASE_CTA.MODAL_TITLE}</h3>
           <button type="button" onClick={onCancel} className="text-slate-400 hover:text-slate-700">
             <X className="h-5 w-5" />
           </button>
         </div>
-        <div className="mt-4 grid grid-cols-3 gap-2">
+        <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3">
           <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
             <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
               {releaseContextCaption}
             </div>
-            <div className="text-lg font-bold tabular-nums text-slate-900">{releaseContextLabel}</div>
+            <div className="text-sm font-bold leading-snug text-slate-900">{releaseContextLabel}</div>
           </div>
           <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
             <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">RM items</div>
             <div className="text-lg font-bold tabular-nums text-slate-900">{totalRmItems}</div>
           </div>
           <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
-            <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Additional qty</div>
-            <div className="text-lg font-bold tabular-nums text-slate-900">{totalAdditional.toLocaleString()}</div>
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              Total RM requirement
+            </div>
+            <div className="text-lg font-bold tabular-nums text-slate-900">
+              {num(totalRequirement).toLocaleString()}
+            </div>
+          </div>
+          <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              Already released
+            </div>
+            <div className="text-lg font-bold tabular-nums text-slate-900">
+              {num(totalReleased).toLocaleString()}
+            </div>
+          </div>
+          <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              Pending release
+            </div>
+            <div className="text-lg font-bold tabular-nums text-slate-900">
+              {pendingRelease.toLocaleString()}
+            </div>
+          </div>
+          <div className="rounded-md border border-slate-200 bg-sky-50 px-3 py-2">
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-sky-800">
+              Net RM to release
+            </div>
+            <div className="text-lg font-bold tabular-nums text-sky-900">
+              {netToRelease.toLocaleString()}
+            </div>
           </div>
         </div>
         <p className="mt-3 text-[13px] leading-relaxed text-slate-600">
-          Only the procurement <strong>delta</strong> will be released as new{" "}
-          {MP_PROCUREMENT.DEMAND_RELEASED.toLowerCase()} into the Material Requirement flow (existing{" "}
-          {MP_PROCUREMENT.DEMAND_RELEASED.toLowerCase()} is not duplicated). Releasing again with no new demand
-          emits nothing.
+          {releaseConfirmModalBodyMessage(plan?.planKind)}
         </p>
         <div className="mt-5 flex justify-end gap-2">
           <Button type="button" variant="outline" onClick={onCancel} disabled={releasing}>
@@ -2575,7 +2911,7 @@ function ReleaseConfirmModal({
             disabled={releasing || !canConfirmRelease}
             className="bg-sky-700 hover:bg-sky-800"
           >
-            {releasing ? "Releasing…" : "Release Delta to Procurement"}
+            {releasing ? MP_RELEASE_CTA.RELEASING : MP_RELEASE_CTA.MODAL_CONFIRM}
           </Button>
         </div>
       </div>
@@ -2716,17 +3052,64 @@ function RmPlanningTab({
   onRefresh,
   plan,
   planStatus,
+  liveEstimateState,
+  liveEstimateMessage,
+  showSaveAndRefreshEstimate,
+  saving,
+  onSaveAndRefresh,
 }: {
   data: RmPlanningResponse | null;
   loading: boolean;
   onRefresh: () => void;
   plan: PlanSummary | null;
   planStatus?: PlanStatus;
+  liveEstimateState?: LiveRmEstimatePanelState;
+  liveEstimateMessage?: string;
+  showSaveAndRefreshEstimate?: boolean;
+  saving?: boolean;
+  onSaveAndRefresh?: () => void;
 }) {
+  const tabLabel = resolveRmPlanningTabLabel(planStatus);
+  const isEstimate = data?.mode === "LIVE_ESTIMATE" || canLoadLiveRmEstimate(planStatus);
+  const estimatePanelState =
+    liveEstimateState ??
+    resolveLiveRmEstimatePanelState({
+      loading,
+      hasUnsavedChanges: false,
+      hasPlannedFgInUi: false,
+      estimateExists: Boolean(data?.exists),
+      hasEstimateData: Boolean(data),
+    });
+  const estimateMessage =
+    liveEstimateMessage ?? liveRmEstimatePanelMessage(estimatePanelState);
+
   if (loading && !data) {
-    return <div className="p-6 text-sm text-slate-500">Loading {RM_REQUIREMENT_SNAPSHOT_TAB_LABEL}…</div>;
+    return <div className="p-6 text-sm text-slate-500">Loading {tabLabel}…</div>;
   }
-  if (!data || !data.locked || !data.exists) {
+
+  const hasSnapshot = Boolean(data?.locked && data.exists);
+  const hasEstimate = Boolean(
+    isEstimate &&
+      data &&
+      (data.exists ||
+        (data.planWarnings?.missingFgBoms?.length ?? 0) > 0 ||
+        estimatePanelState === "ready" ||
+        estimatePanelState === "stale"),
+  );
+
+  if (!data || (!hasSnapshot && !hasEstimate)) {
+    if (isEstimate && estimateMessage) {
+      return (
+        <div className="flex h-full min-h-[200px] flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-sky-200 bg-sky-50/50 p-6">
+          <p className="max-w-md text-center text-sm text-sky-900">{estimateMessage}</p>
+          {showSaveAndRefreshEstimate ? (
+            <Button type="button" size="sm" disabled={saving || loading} onClick={onSaveAndRefresh}>
+              {saving ? "Saving…" : LIVE_RM_ESTIMATE_SAVE_AND_REFRESH_LABEL}
+            </Button>
+          ) : null}
+        </div>
+      );
+    }
     return (
       <div className="flex h-full min-h-[200px] items-center justify-center rounded-lg border border-dashed border-slate-200 bg-slate-50/50">
         <p className="text-sm text-slate-500">{rmPurchaseEmptyMessage(planStatus, "rm")}</p>
@@ -2735,12 +3118,19 @@ function RmPlanningTab({
   }
 
   const lines = data.lines;
-  const totalRmItems = lines.length;
-  const totalGross = lines.reduce((a, l) => a + num(l.grossDemandQty), 0);
-  const totalNet = lines.reduce((a, l) => a + num(l.netRequirementQty), 0);
+  const totalRmItems = data.totals?.rmItemCount ?? lines.length;
+  const totalGross = data.totals?.grossDemandTotal ?? lines.reduce((a, l) => a + num(l.grossDemandQty), 0);
+  const totalAvailable =
+    data.totals?.availableRmTotal ??
+    lines.reduce((a, l) => a + num(l.availableRmQty ?? l.freeStockSnapshot), 0);
+  const totalReserved = data.totals?.reservedTotal ?? lines.reduce((a, l) => a + num(l.reservedSnapshot), 0);
+  const totalIncoming = data.totals?.incomingPoTotal ?? lines.reduce((a, l) => a + num(l.incomingPoSnapshot), 0);
+  const totalNet = data.totals?.netRequirementTotal ?? lines.reduce((a, l) => a + num(l.netRequirementQty), 0);
   const criticalShortage = lines.filter((l) => num(l.netRequirementQty) > 0).length;
   const coveredItems = lines.filter((l) => num(l.netRequirementQty) <= 0).length;
   const coveragePct = totalRmItems > 0 ? Math.round((coveredItems / totalRmItems) * 100) : 0;
+  const missingFgBoms = data.planWarnings?.missingFgBoms ?? [];
+  const missingChildBoms = data.planWarnings?.missingChildBoms ?? [];
 
   const planHeader = plan
     ? {
@@ -2753,34 +3143,89 @@ function RmPlanningTab({
       }
     : null;
 
+  const grossLabel = isEstimate ? "Gross RM requirement" : "Snapshot gross demand";
+  const freeLabel = isEstimate ? "Available RM" : "Snapshot free stock";
+  const reservedLabel = isEstimate ? "Reserved RM" : "Snapshot reserved";
+  const incomingLabel = isEstimate ? "Incoming PO" : "Snapshot incoming PO";
+  const netLabel = isEstimate ? "Est. net RM requirement" : "Snapshot net requirement";
+
   return (
     <div className="flex h-full min-h-0 flex-col gap-2">
-      <div className="rounded-md border border-slate-300 bg-slate-50 px-3 py-2 text-[12px] text-slate-800">
-        <strong>{RM_SNAPSHOT_BANNER.title}.</strong> {RM_SNAPSHOT_BANNER.body}
+      <div
+        className={cn(
+          "rounded-md border px-3 py-2 text-[12px]",
+          isEstimate ? "border-sky-200 bg-sky-50 text-sky-900" : "border-slate-300 bg-slate-50 text-slate-800",
+        )}
+      >
+        <strong>{isEstimate ? LIVE_RM_ESTIMATE_BANNER.title : RM_SNAPSHOT_BANNER.title}.</strong>{" "}
+        {isEstimate ? LIVE_RM_ESTIMATE_BANNER.body : RM_SNAPSHOT_BANNER.body}
       </div>
 
-      <MonthlyPlanningMetricSection
-        title={RM_SNAPSHOT_BANNER.title}
-        subtitle="Stock position and net requirement captured at plan approval — not live inventory."
-        traceLabel="Frozen snapshot"
-        variant="snapshot"
-      >
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
-          <KpiCard label="Total RM items" value={String(totalRmItems)} />
-          <KpiCard label="Snapshot gross demand" value={totalGross.toLocaleString()} />
-          <KpiCard label={MP_PROCUREMENT.REQUIREMENT_SNAPSHOT} value={totalNet.toLocaleString()} tier="primary" />
-          <KpiCard label="Snapshot shortages" value={String(criticalShortage)} />
-          <KpiCard label="Snapshot coverage %" value={`${coveragePct}%`} />
+      {isEstimate && estimatePanelState === "stale" && estimateMessage ? (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-900">
+          <span>{estimateMessage}</span>
+          {showSaveAndRefreshEstimate ? (
+            <Button type="button" size="sm" variant="outline" disabled={saving || loading} onClick={onSaveAndRefresh}>
+              {saving ? "Saving…" : LIVE_RM_ESTIMATE_SAVE_AND_REFRESH_LABEL}
+            </Button>
+          ) : null}
         </div>
+      ) : null}
+
+      {missingFgBoms.length > 0 || missingChildBoms.length > 0 ? (
+        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-900">
+          {missingFgBoms.length > 0 ? (
+            <p>
+              <strong>Missing FG BOM:</strong>{" "}
+              {missingFgBoms.map((fg) => fg.fgItemName ?? `FG ${fg.fgItemId}`).join(", ")}
+            </p>
+          ) : null}
+          {missingChildBoms.length > 0 ? (
+            <p className={missingFgBoms.length > 0 ? "mt-1" : undefined}>
+              <strong>Missing child BOM (SFG):</strong>{" "}
+              {missingChildBoms.map((sfg) => sfg.sfgName ?? `SFG ${sfg.sfgItemId}`).join(", ")}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
+      <MonthlyPlanningMetricSection
+        title={isEstimate ? LIVE_RM_ESTIMATE_BANNER.title : RM_SNAPSHOT_BANNER.title}
+        subtitle={
+          isEstimate
+            ? "Calculated from saved draft planned FG quantities and current stock visibility."
+            : "Stock position and net requirement captured at plan approval — not live inventory."
+        }
+        traceLabel={isEstimate ? "Live estimate" : "Frozen snapshot"}
+        variant={isEstimate ? "estimate" : "snapshot"}
+      >
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+          <KpiCard label="Total RM items" value={String(totalRmItems)} />
+          <KpiCard label={grossLabel} value={totalGross.toLocaleString()} />
+          <KpiCard label={freeLabel} value={totalAvailable.toLocaleString()} />
+          <KpiCard label={reservedLabel} value={totalReserved.toLocaleString()} />
+          <KpiCard label={incomingLabel} value={totalIncoming.toLocaleString()} />
+          <KpiCard label={netLabel} value={totalNet.toLocaleString()} tier="primary" />
+        </div>
+        {!isEstimate ? (
+          <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-2">
+            <KpiCard label="Snapshot shortages" value={String(criticalShortage)} />
+            <KpiCard label="Snapshot coverage %" value={`${coveragePct}%`} />
+          </div>
+        ) : null}
       </MonthlyPlanningMetricSection>
 
       <div className="flex items-center justify-between">
         <span className="text-[12px] text-slate-500">
-          {formatRmSnapshotContextLabel({
-            plan: planHeader,
-            snapshotRevision: data.revision,
-            lineCount: lines.length,
-          })}
+          {isEstimate
+            ? `${planHeader ? resolvePlanDisplayLabel(planHeader) : "Draft plan"} · ${lines.length} RM lines (live estimate)${
+                data.estimatedAt ? ` · refreshed ${new Date(data.estimatedAt).toLocaleString()}` : ""
+              }`
+            : formatRmSnapshotContextLabel({
+                plan: planHeader,
+                snapshotRevision: data.revision,
+                lineCount: lines.length,
+              })}
         </span>
         <Button type="button" variant="outline" size="sm" onClick={onRefresh} disabled={loading} className="h-8">
           <RefreshCw className={cn("mr-1.5 h-4 w-4", loading && "animate-spin")} />
@@ -2794,11 +3239,11 @@ function RmPlanningTab({
             <tr>
               <th className="px-3 py-2">RM item</th>
               <th className="px-3 py-2 w-20">Unit</th>
-              <th className="px-3 py-2 w-28 text-right">Snapshot gross demand</th>
-              <th className="px-3 py-2 w-24 text-right">Snapshot free stock</th>
-              <th className="px-3 py-2 w-24 text-right">Snapshot reserved</th>
-              <th className="px-3 py-2 w-28 text-right">Snapshot incoming PO</th>
-              <th className="px-3 py-2 w-28 text-right">Snapshot net requirement</th>
+              <th className="px-3 py-2 w-28 text-right">{grossLabel}</th>
+              <th className="px-3 py-2 w-24 text-right">{freeLabel}</th>
+              <th className="px-3 py-2 w-24 text-right">{reservedLabel}</th>
+              <th className="px-3 py-2 w-28 text-right">{incomingLabel}</th>
+              <th className="px-3 py-2 w-28 text-right">{netLabel}</th>
               <th className="px-3 py-2">Warnings</th>
             </tr>
           </thead>
@@ -2820,7 +3265,7 @@ function RmPlanningTab({
                       {num(l.grossDemandQty).toLocaleString()}
                     </td>
                     <td className="px-3 py-1.5 text-right tabular-nums text-slate-600">
-                      {num(l.freeStockSnapshot).toLocaleString()}
+                      {num(isEstimate ? (l.availableRmQty ?? l.freeStockSnapshot) : l.freeStockSnapshot).toLocaleString()}
                     </td>
                     <td className="px-3 py-1.5 text-right tabular-nums text-slate-600">
                       {num(l.reservedSnapshot).toLocaleString()}
@@ -3056,8 +3501,8 @@ function MonthlyPlanningMetricSection({
 }: {
   title: string;
   subtitle: string;
-  traceLabel: "Frozen snapshot" | "Live procurement";
-  variant: "snapshot" | "live";
+  traceLabel: "Frozen snapshot" | "Live procurement" | "Live estimate";
+  variant: "snapshot" | "live" | "estimate";
   children: React.ReactNode;
   compact?: boolean;
 }) {
@@ -3153,18 +3598,14 @@ function PurchasePlanningTab({
   plan,
   loading,
   onRefresh,
-  onRelease,
   releaseSummary,
-  showReleaseButton,
   planStatus,
 }: {
   data: PurchasePlanningResponse | null;
   plan: PlanSummary | null;
   loading: boolean;
   onRefresh: () => void;
-  onRelease: () => void;
   releaseSummary: ReleaseSummary | null;
-  showReleaseButton: boolean;
   planStatus?: PlanStatus;
 }) {
   const [auditExpanded, setAuditExpanded] = React.useState(false);
@@ -3216,6 +3657,7 @@ function PurchasePlanningTab({
     additionalRequirementTotal: totalAdditional,
     previouslyReleasedTotal: totalReleasedFromTotals,
     usesPlanDocumentUx,
+    planKind: plan?.planKind,
   });
   const procurementBadge = getReleaseDeltaProcurementBadge({
     planStatus: plan?.status,
@@ -3277,7 +3719,7 @@ function PurchasePlanningTab({
         </div>
       ) : (
         <div className="shrink-0 rounded border border-sky-200 bg-sky-50 px-2 py-1 text-[11px] leading-snug text-sky-800">
-          {purchasePlanningOperationalStatus(totalAdditional, totalReleasedFromTotals)}
+          {purchasePlanningOperationalStatus(totalAdditional, totalReleasedFromTotals, plan?.planKind)}
         </div>
       )}
 
@@ -3313,22 +3755,15 @@ function PurchasePlanningTab({
         <div className="flex flex-wrap items-center gap-2">
           {!canReleaseDelta ? (
             <span className="text-[12px] font-medium text-emerald-700">✓ {releaseDisabledMessage}</span>
-          ) : null}
+          ) : (
+            <span className="text-[12px] font-medium text-sky-800">
+              RM requirement pending release — use the header action.
+            </span>
+          )}
           <Button type="button" variant="outline" size="sm" onClick={onRefresh} disabled={loading} className="h-8">
             <RefreshCw className={cn("mr-1.5 h-4 w-4", loading && "animate-spin")} />
             Refresh
           </Button>
-          {showReleaseButton ? (
-            <Button
-              type="button"
-              size="sm"
-              onClick={onRelease}
-              disabled={loading || !canReleaseDelta}
-              className="h-8 bg-sky-700 hover:bg-sky-800 disabled:opacity-50"
-            >
-              Release Delta to Procurement
-            </Button>
-          ) : null}
         </div>
       </div>
 
@@ -4331,6 +4766,8 @@ function NoPlanPreviewPanel({
   periodIsPast,
   startingPlanning,
   addingSuggested,
+  suggestedItemCount,
+  loadingSuggestions,
   onStartPlanning,
   onAddSuggestedItems,
 }: {
@@ -4340,45 +4777,55 @@ function NoPlanPreviewPanel({
   periodIsPast: boolean;
   startingPlanning: boolean;
   addingSuggested: boolean;
+  suggestedItemCount: number;
+  loadingSuggestions: boolean;
   onStartPlanning: () => void;
   onAddSuggestedItems: () => void;
 }) {
+  const busy = startingPlanning || addingSuggested || loading || loadingSuggestions;
+  const hasSuggestions = suggestedItemCount > 0;
+
   return (
     <div className="flex h-full min-h-[220px] flex-col items-center justify-center rounded-lg border border-dashed border-slate-200 bg-slate-50/60 p-8 text-center shadow-sm">
       <Eye className="h-8 w-8 text-slate-400" />
       <p className="mt-3 max-w-lg text-sm font-medium text-slate-800">
         No production plan created yet for <strong>{period}</strong>.
       </p>
-      <p className="mt-2 max-w-lg text-[13px] leading-relaxed text-slate-600">
-        Start planning when you are ready to create a draft for this period. Use audit panels below for detailed
-        traceability.
-      </p>
+      {hasSuggestions ? (
+        <p className="mt-2 max-w-lg text-[13px] leading-relaxed text-slate-600">
+          Locked Requirement Sheets and Green Level provide <strong>{suggestedItemCount}</strong> suggested FG line
+          {suggestedItemCount === 1 ? "" : "s"} for this period. Start Monthly Planning to create the draft plan with
+          those suggestions included.
+        </p>
+      ) : (
+        <p className="mt-2 max-w-lg text-[13px] leading-relaxed text-slate-600">
+          {loadingSuggestions
+            ? "Checking locked RS and Green Level suggestions for this period…"
+            : "Start planning when you are ready to create a draft for this period. Use audit panels below for detailed traceability."}
+        </p>
+      )}
       {canStartPlanning ? (
         <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
-          <Button
-            type="button"
-            onClick={onStartPlanning}
-            disabled={startingPlanning || addingSuggested || loading}
-            className="h-9"
-          >
-            <Plus className="mr-1.5 h-4 w-4" />
-            {startingPlanning ? "Starting…" : "Start planning"}
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={onAddSuggestedItems}
-            disabled={startingPlanning || addingSuggested || loading}
-            className="h-9"
-          >
-            <Layers className="mr-1.5 h-4 w-4" />
-            {addingSuggested ? "Adding…" : "Add suggested items to plan"}
-          </Button>
+          {hasSuggestions ? (
+            <>
+              <Button type="button" onClick={onAddSuggestedItems} disabled={busy} className="h-9">
+                <Layers className="mr-1.5 h-4 w-4" />
+                {addingSuggested ? "Creating…" : "Create Monthly Plan from Suggestions"}
+              </Button>
+              <Button type="button" variant="outline" onClick={onStartPlanning} disabled={busy} className="h-9">
+                <Plus className="mr-1.5 h-4 w-4" />
+                {startingPlanning ? "Creating…" : "Create Blank Draft"}
+              </Button>
+            </>
+          ) : (
+            <Button type="button" onClick={onStartPlanning} disabled={busy} className="h-9">
+              <Plus className="mr-1.5 h-4 w-4" />
+              {startingPlanning ? "Starting…" : "Start planning"}
+            </Button>
+          )}
         </div>
       ) : periodIsPast ? (
-        <p className="mt-4 text-[12px] text-slate-500">
-          Past period. Planning actions are disabled.
-        </p>
+        <p className="mt-4 text-[12px] text-slate-500">Past period. Planning actions are disabled.</p>
       ) : (
         <p className="mt-4 text-[12px] text-slate-500">Store or Admin can start planning for this period.</p>
       )}
@@ -4418,6 +4865,7 @@ function ProductionPlanTab({
   onLoadRsSuggestions,
   onHideRsSuggestions,
   onApplyRsSuggestion,
+  draftFgItemIds,
   onUpdateRow,
   onRemoveRow,
   availableFgForAdd,
@@ -4441,6 +4889,7 @@ function ProductionPlanTab({
   onLoadRsSuggestions: () => void;
   onHideRsSuggestions: () => void;
   onApplyRsSuggestion: (item: RsSuggestionItem) => void;
+  draftFgItemIds: Set<number>;
   onUpdateRow: (key: string, patch: Partial<EditRow>) => void;
   onRemoveRow: (row: EditRow) => void;
   availableFgForAdd: FgItem[];
@@ -4552,6 +5001,7 @@ function ProductionPlanTab({
                 ) : (
                   rsSuggestions.items.map((item) => {
                     const expanded = expandedItemIds.has(item.itemId);
+                    const alreadyInDraft = draftFgItemIds.has(item.itemId);
                     return (
                       <React.Fragment key={item.itemId}>
                         <tr className="border-t border-slate-100 align-middle">
@@ -4587,15 +5037,19 @@ function ProductionPlanTab({
                           </td>
                           {editable ? (
                             <td className="px-3 py-1.5">
-                              <Button
-                                type="button"
-                                variant="outline"
-                                size="sm"
-                                className="h-7 text-[12px]"
-                                onClick={() => onApplyRsSuggestion(item)}
-                              >
-                                Add suggested production
-                              </Button>
+                              {alreadyInDraft ? (
+                                <span className="text-[12px] font-semibold text-emerald-800">Added</span>
+                              ) : (
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  className="h-7 text-[12px]"
+                                  onClick={() => onApplyRsSuggestion(item)}
+                                >
+                                  Add suggested production
+                                </Button>
+                              )}
                             </td>
                           ) : null}
                         </tr>

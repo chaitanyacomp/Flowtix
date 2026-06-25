@@ -7,6 +7,7 @@ import {
   formatReleaseSuccessSummaryMessage,
   purchasePlanningOperationalStatusMessage,
   purchasePlanningReductionMessageText,
+  type MpPlanKind,
 } from "./monthlyPlanningProcurementLabels";
 
 export type MonthlyPlanStatus = "DRAFT" | "AWAITING_PURCHASE_REVIEW" | "APPROVED" | "LOCKED";
@@ -32,6 +33,7 @@ export type WorkflowActionVisibility = {
   lock: boolean;
   reopen: boolean;
   cancelReopen: boolean;
+  discardDraft: boolean;
 };
 
 /** User-facing label for migrated lock/revision records (P7F-A). */
@@ -66,6 +68,18 @@ export function isPlanEditable(
 
 export function canLoadRmPurchaseTabs(status: MonthlyPlanStatus | undefined): boolean {
   return status === "APPROVED" || status === "LOCKED";
+}
+
+export function canLoadLiveRmEstimate(status: MonthlyPlanStatus | undefined): boolean {
+  return status === "DRAFT" || status === "AWAITING_PURCHASE_REVIEW";
+}
+
+export function canLoadRmPlanningTab(status: MonthlyPlanStatus | undefined): boolean {
+  return canLoadRmPurchaseTabs(status) || canLoadLiveRmEstimate(status);
+}
+
+export function resolveRmPlanningTabLabel(status: MonthlyPlanStatus | undefined): string {
+  return canLoadLiveRmEstimate(status) ? LIVE_RM_ESTIMATE_TAB_LABEL : RM_REQUIREMENT_SNAPSHOT_TAB_LABEL;
 }
 
 export function planStatusBadgeVariant(
@@ -236,8 +250,13 @@ export function formatReleaseSuccessSummary(params: {
 export function purchasePlanningOperationalStatus(
   additionalRequirementTotal: number,
   demandReleasedTotal = 0,
+  planKind: MpPlanKind = null,
 ): string {
-  return purchasePlanningOperationalStatusMessage(additionalRequirementTotal, demandReleasedTotal);
+  return purchasePlanningOperationalStatusMessage(
+    additionalRequirementTotal,
+    demandReleasedTotal,
+    planKind,
+  );
 }
 
 export function purchasePlanningIntroMessage(_plan: MonthlyPlanHeader | null | undefined): string {
@@ -284,6 +303,9 @@ export function rmPlanningEmptyTableMessage(plan: MonthlyPlanHeader | null | und
   return "No RM procurement requirement for this locked plan.";
 }
 
+export const MONTHLY_PLAN_DISCARD_DRAFT_CONFIRM_MESSAGE =
+  "Discard this draft monthly plan? Suggested items can be recreated from locked Requirement Sheets.";
+
 export function resolveWorkflowActionVisibility(params: {
   plan: MonthlyPlanHeader | null;
   planExists: boolean;
@@ -300,6 +322,7 @@ export function resolveWorkflowActionVisibility(params: {
     lock: false,
     reopen: false,
     cancelReopen: false,
+    discardDraft: false,
   };
   const { plan, planExists, canMutatePeriod, canPurchaseReview, hasSaveableLines } = params;
   if (!planExists || !plan) return empty;
@@ -319,6 +342,7 @@ export function resolveWorkflowActionVisibility(params: {
     lock: editable && legacy && hasSaveableLines,
     reopen: plan.status === "LOCKED" && legacy && canMutatePeriod,
     cancelReopen: legacyReopenDraft && canMutatePeriod,
+    discardDraft: editable && !legacy && canMutatePeriod,
   };
 }
 
@@ -385,11 +409,13 @@ export function rmPurchaseEmptyMessage(
       : "Purchase Planning is not available yet for this approved plan.";
   }
   if (status === "AWAITING_PURCHASE_REVIEW") {
-    return "Plan is awaiting Purchase review. Plan RM Snapshot and Purchase Planning unlock after approval.";
+    return tab === "rm"
+      ? "Live RM Estimate is available on the RM tab while awaiting Purchase review."
+      : "Purchase Planning unlocks after Purchase approval.";
   }
   if (status === "DRAFT") {
     return tab === "rm"
-      ? "Submit the plan for Purchase review and approval to generate the Plan RM Snapshot."
+      ? "Add planned FG quantities to view the live RM estimate."
       : "Submit the plan for Purchase review and approval to review purchase planning.";
   }
   return tab === "rm"
@@ -399,10 +425,16 @@ export function rmPurchaseEmptyMessage(
 
 /** P7F-B — RM tab and snapshot presentation (copy only). */
 export const RM_REQUIREMENT_SNAPSHOT_TAB_LABEL = "Plan RM Snapshot";
+export const LIVE_RM_ESTIMATE_TAB_LABEL = "Live RM Estimate";
 
 export const RM_SNAPSHOT_BANNER = {
   title: "Approved Plan RM Snapshot",
   body: "Frozen when this plan was approved and retained for planning audit. Values in this section do not change after purchase orders or goods receipts.",
+} as const;
+
+export const LIVE_RM_ESTIMATE_BANNER = {
+  title: "Estimated RM Requirement",
+  body: "Live estimate only — frozen RM snapshot is created after Purchase approval.",
 } as const;
 
 export const PURCHASE_FROZEN_SNAPSHOT_SECTION = {

@@ -3,6 +3,10 @@ import {
   createCycleRequirementSheetButtonLabel,
   createCycleRsButtonLabel,
   createNextRsButtonLabel,
+  isNoQtyStoreOwnedRsCreateLabel,
+  isNoQtyStoreOwnedRsCreatePrimaryAction,
+  NO_QTY_RS_ADMIN_OVERRIDE_LINK_LABEL,
+  NO_QTY_RS_STORE_HANDOFF_LABEL,
   noQtyCurrentCycleLabel,
   noQtyNextCycleLabel,
   noQtyPlanningHubHref,
@@ -69,6 +73,48 @@ describe("noQtyRsActionLabels", () => {
         nextCycleNo: 2,
       }),
     ).toBe("Create Cycle 2 Requirement Sheet");
+  });
+
+  it("detects Store-owned RS create CTAs for Admin handoff", () => {
+    expect(isNoQtyStoreOwnedRsCreateLabel("Create Cycle 1 RS")).toBe(true);
+    expect(isNoQtyStoreOwnedRsCreateLabel("Create Cycle 2 Requirement Sheet")).toBe(true);
+    expect(isNoQtyStoreOwnedRsCreateLabel("Open Current RS")).toBe(false);
+
+    expect(
+      isNoQtyStoreOwnedRsCreatePrimaryAction({
+        primaryActionLabel: "Create Cycle 1 RS",
+        noQtyNextAction: "REQUIREMENT",
+        rsStatusLabel: "No RS",
+        hasDraftRequirementSheet: false,
+      }),
+    ).toBe(true);
+    expect(
+      isNoQtyStoreOwnedRsCreatePrimaryAction({
+        primaryActionLabel: "Create Cycle 2 Requirement Sheet",
+        noQtyNextAction: "CREATE_NEXT_RS",
+        rsStatusLabel: "Locked",
+        hasDraftRequirementSheet: false,
+      }),
+    ).toBe(true);
+    expect(
+      isNoQtyStoreOwnedRsCreatePrimaryAction({
+        primaryActionLabel: "Open Current RS",
+        noQtyNextAction: "WORK_ORDER",
+        rsStatusLabel: "Locked",
+        hasDraftRequirementSheet: false,
+      }),
+    ).toBe(false);
+    expect(
+      isNoQtyStoreOwnedRsCreatePrimaryAction({
+        primaryActionLabel: "Create Cycle 1 RS",
+        noQtyNextAction: "REQUIREMENT",
+        rsStatusLabel: "No RS",
+        hasDraftRequirementSheet: true,
+      }),
+    ).toBe(false);
+
+    expect(NO_QTY_RS_STORE_HANDOFF_LABEL).toContain("Owner: Store");
+    expect(NO_QTY_RS_ADMIN_OVERRIDE_LINK_LABEL).toContain("Admin override");
   });
 
   it("uses standard Next RS status headlines", () => {

@@ -3,6 +3,9 @@ import {
   APPROVED_PLAN_GUIDANCE,
   approvedPlanGuidanceMessage,
   canLoadRmPurchaseTabs,
+  canLoadLiveRmEstimate,
+  canLoadRmPlanningTab,
+  resolveRmPlanningTabLabel,
   canShowAdditionalPlanEntry,
   formatPlanStatusLabel,
   formatReleaseSuccessSummary,
@@ -20,6 +23,8 @@ import {
   purchaseReviewActionBlockedReason,
   resolvePlanDisplayLabel,
   resolveWorkflowActionVisibility,
+  LIVE_RM_ESTIMATE_TAB_LABEL,
+  LIVE_RM_ESTIMATE_BANNER,
   RM_REQUIREMENT_SNAPSHOT_TAB_LABEL,
   rmPurchaseEmptyMessage,
   shouldShowPlanSelector,
@@ -90,13 +95,14 @@ describe("monthlyPlanningWorkflowUx.resolveWorkflowActionVisibility", () => {
     hasSaveableLines: true,
   };
 
-  it("DRAFT shows save and submit, hides purchase actions and release", () => {
+  it("DRAFT shows save, submit, and discard, hides purchase actions and release", () => {
     const actions = resolveWorkflowActionVisibility({
       ...base,
       plan: plan({ status: "DRAFT" }),
     });
     expect(actions.save).toBe(true);
     expect(actions.submitForReview).toBe(true);
+    expect(actions.discardDraft).toBe(true);
     expect(actions.approve).toBe(false);
     expect(actions.reject).toBe(false);
     expect(actions.release).toBe(false);
@@ -110,6 +116,7 @@ describe("monthlyPlanningWorkflowUx.resolveWorkflowActionVisibility", () => {
     });
     expect(actions.save).toBe(false);
     expect(actions.submitForReview).toBe(false);
+    expect(actions.discardDraft).toBe(false);
     expect(actions.approve).toBe(true);
     expect(actions.reject).toBe(true);
     expect(actions.release).toBe(false);
@@ -312,6 +319,17 @@ describe("monthlyPlanningWorkflowUx.tabs and selectors", () => {
     expect(canLoadRmPurchaseTabs("AWAITING_PURCHASE_REVIEW")).toBe(false);
   });
 
+  it("live RM estimate tab is available for draft and awaiting review", () => {
+    expect(canLoadLiveRmEstimate("DRAFT")).toBe(true);
+    expect(canLoadLiveRmEstimate("AWAITING_PURCHASE_REVIEW")).toBe(true);
+    expect(canLoadLiveRmEstimate("APPROVED")).toBe(false);
+    expect(canLoadRmPlanningTab("DRAFT")).toBe(true);
+    expect(canLoadRmPlanningTab("APPROVED")).toBe(true);
+    expect(resolveRmPlanningTabLabel("DRAFT")).toBe(LIVE_RM_ESTIMATE_TAB_LABEL);
+    expect(resolveRmPlanningTabLabel("APPROVED")).toBe("Plan RM Snapshot");
+    expect(LIVE_RM_ESTIMATE_BANNER.body).toContain("frozen RM snapshot");
+  });
+
   it("plan selector visible when plans exist", () => {
     expect(shouldShowPlanSelector([])).toBe(false);
     expect(shouldShowPlanSelector([plan({ status: "DRAFT" })])).toBe(true);
@@ -437,8 +455,8 @@ describe("monthlyPlanningWorkflowUx.labels", () => {
 
   it("disambiguates Plan RM Snapshot from Order RM Planning in tab and empty states", () => {
     expect(RM_REQUIREMENT_SNAPSHOT_TAB_LABEL).toBe("Plan RM Snapshot");
-    expect(rmPurchaseEmptyMessage("DRAFT", "rm")).toContain("Plan RM Snapshot");
+    expect(rmPurchaseEmptyMessage("DRAFT", "rm")).toContain("live RM estimate");
     expect(rmPurchaseEmptyMessage("APPROVED", "rm")).toContain("Plan RM Snapshot");
-    expect(rmPurchaseEmptyMessage("AWAITING_PURCHASE_REVIEW", "rm")).toContain("Plan RM Snapshot");
+    expect(rmPurchaseEmptyMessage("AWAITING_PURCHASE_REVIEW", "rm")).toContain("Live RM Estimate");
   });
 });

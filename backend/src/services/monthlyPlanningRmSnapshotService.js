@@ -4,7 +4,8 @@
  * APPROVED plan documents use a fixed snapshot revision per planId (revision 1).
  * Legacy LOCKED plans continue to use currentRevision increments from lockMonthlyPlan.
  *
- * RM gross demand = BOM(FG Green Shortage) frozen at snapshot time — not plannedFgQty.
+ * RM gross demand = BOM(plannedFgQty) frozen at snapshot time — planned qty already
+ * includes RS + carry forward + green shortage; do not explode green shortage again.
  */
 
 const { aggregateRmDemandForFgLines, loadApprovedBomWithLines } = require("./bomExplosionService");
@@ -103,7 +104,7 @@ async function loadFgGreenShortageInputs(db, periodKey, loadFgComposition = getR
 }
 
 /**
- * Create (or return existing) RM snapshot from FG Green Shortage → BOM.
+ * Create (or return existing) RM snapshot from approved plan FG lines → BOM.
  *
  * @param {{
  *   db: object;
@@ -128,9 +129,6 @@ async function createRmPlanSnapshot({
   const explodeFn = deps.aggregateRmDemandForFgLines || aggregateRmDemandForFgLines;
   const loadBomFn = deps.loadApprovedBomWithLines || loadApprovedBomWithLines;
   const availabilityFn = deps.getMaterialAvailabilityByItems || getMaterialAvailabilityByItems;
-  const loadGreenShortages =
-    deps.loadFgGreenShortageInputs ||
-    ((tx, periodKey) => loadFgGreenShortageInputs(tx, periodKey, deps.loadFgComposition));
 
   const id = Number(planId);
   const rev = Number(revision);
@@ -168,26 +166,22 @@ async function createRmPlanSnapshot({
     );
   }
 
-  const greenShortageInputs = await loadGreenShortages(db, plan.periodKey);
-
-  for (const fg of greenShortageInputs) {
-    const bom = await loadBomFn(db, fg.fgItemId);
+  for (const line of activeLines) {
+    const bom = await loadBomFn(db, line.fgItemId);
     if (!bom || !bom.lines || bom.lines.length === 0) {
       throw new MonthlyPlanningError(
         "MISSING_BOM",
-        `BOM missing for FG item with green shortage: ${fg.fgItemName ?? fg.fgItemId}`,
+        `BOM missing for planned FG item: ${line.fgItem?.itemName ?? line.fgItemId}`,
         422,
       );
     }
   }
 
-  const fgLines = greenShortageInputs.map((fg) => ({
-    fgItemId: fg.fgItemId,
-    fgQty: round3(fg.greenShortage),
+  const fgLines = activeLines.map((line) => ({
+    fgItemId: line.fgItemId,
+    fgQty: round3(Number(line.plannedFgQty)),
   }));
-  const { rmNeeded, missingChildBoms } = fgLines.length
-    ? await explodeFn(db, fgLines)
-    : { rmNeeded: new Map(), missingChildBoms: [] };
+  const { rmNeeded, missingChildBoms } = await explodeFn(db, fgLines);
   if (missingChildBoms.length > 0) {
     const names = missingChildBoms.map((m) => m.sfgName ?? m.sfgItemId).join(", ");
     throw new MonthlyPlanningError(
@@ -216,9 +210,6 @@ async function createRmPlanSnapshot({
       : [];
   const itemMetaById = new Map(rmItems.map((i) => [i.id, i]));
 
-  const totalFgGreenShortageQty = round3(
-    greenShortageInputs.reduce((acc, fg) => acc + n(fg.greenShortage), 0),
-  );
   const totalFgPlannedQty = round3(activeLines.reduce((acc, l) => acc + Number(l.plannedFgQty), 0));
   const now = asOf instanceof Date ? asOf : new Date();
 
@@ -285,7 +276,7 @@ async function createRmPlanSnapshot({
     rmPlanId: rmPlan.id,
     created: true,
     lineCount: lineData.length,
-    totalFgGreenShortageQty,
+    totalFgPlannedQty,
   };
 }
 

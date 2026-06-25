@@ -99,7 +99,7 @@ describe("monthlyPlanningReleaseDeltaUx", () => {
         previouslyReleasedTotal: 50,
         usesPlanDocumentUx: true,
       }),
-    ).toBe("Demand Released complete — no additional release required.");
+    ).toBe("RM requirement released — no further release required.");
   });
 
   it("falls back to line sums when totals missing", () => {

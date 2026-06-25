@@ -297,9 +297,9 @@ async function fetchMonthlyPlanPendingActions(db = prisma) {
 
     if (plan.status === "DRAFT") {
       actions.push({
-        id: `monthly-plan:submit:${plan.id}`,
+        id: `monthly-plan:draft:${plan.id}`,
         priority: PENDING_PRIORITY.MEDIUM,
-        action: `Submit ${displayLabel}`,
+        action: "Complete Monthly Plan Draft",
         documentNo: docNo,
         ownerRole: "STORE",
         ageHours,
@@ -561,6 +561,14 @@ async function fetchStoreNoQtyMonthlyPlanningPendingActions(db = prisma) {
     if (placement.processStageKey !== "NO_QTY_REQUIREMENT_READY" || placement.readyToPlaceWo) continue;
 
     const periodKey = String(lockedRs.periodKey ?? "").trim();
+    if (periodKey) {
+      const existingPlan = await db.monthlyProductionPlan.findFirst({
+        where: { periodKey },
+        select: { id: true, status: true },
+      });
+      if (existingPlan) continue;
+    }
+
     const href = periodKey
       ? `/monthly-planning?period=${encodeURIComponent(periodKey)}&from=pending-actions`
       : "/monthly-planning?from=pending-actions";

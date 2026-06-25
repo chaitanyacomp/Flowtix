@@ -1,4 +1,5 @@
 import { procurementStageLabelForKey } from "./woProcurementContinuity";
+import { isMprsMaterialRequirement } from "./procurementPurchaseRequestOwnership";
 
 const QTY_EPS = 1e-6;
 
@@ -154,7 +155,10 @@ export function buildStoreProcurementPreviewRows(
         mr.operationalKey,
       nextActionKey: mr.nextActionKey,
       primaryPoId: mr.primaryPoId ?? null,
-      canCreatePurchaseRequest: mr.canCreatePurchaseRequest !== false && mr.nextActionKey === "CREATE_PR",
+      canCreatePurchaseRequest:
+        mr.canCreatePurchaseRequest !== false &&
+        mr.nextActionKey === "CREATE_PR" &&
+        !isMprsMaterialRequirement(mr),
       mr,
     };
   });

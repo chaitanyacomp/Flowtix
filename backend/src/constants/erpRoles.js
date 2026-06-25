@@ -41,6 +41,9 @@ const PURCHASE_DASHBOARD_ROLES = Object.freeze(["ADMIN", "PURCHASE"]);
 /** Planning workspace visibility (Store review + Purchase execution context). */
 const PROCUREMENT_PLANNING_ROLES = Object.freeze(["ADMIN", "STORE", "PURCHASE"]);
 
+/** PURCHASE — PR creation for MPRS + PO execution in procurement workspace. */
+const PURCHASE_EXECUTION_ROLES = Object.freeze(["ADMIN", "PURCHASE"]);
+
 /** STORE — MR / requisition lifecycle (approve, send); not RM PO creation. */
 const MATERIAL_REQUISITION_WRITE_ROLES = Object.freeze(["ADMIN", "STORE"]);
 
@@ -142,6 +145,7 @@ module.exports = {
   SUPPLIER_WRITE_ROLES,
   PURCHASE_DASHBOARD_ROLES,
   PROCUREMENT_PLANNING_ROLES,
+  PURCHASE_EXECUTION_ROLES,
   MATERIAL_REQUISITION_WRITE_ROLES,
   RM_ALLOCATION_WRITE_ROLES,
   RM_CONTROL_CENTER_ROLES,

@@ -1,7 +1,8 @@
 /**
  * NO_QTY FLOW ONLY
  *
- * Creates a NO_QTY sales order from quotation — entry into requirement-sheet / cycle planning, not REGULAR SO RM check.
+ * Creates a NO_QTY sales order from an approved quotation (Admin commercial workflow).
+ * Requirement Sheet creation is Store-owned — this page completes at Sales Order creation.
  *
  * DO NOT route operators here for fixed-qty (NORMAL) customer orders.
  */
@@ -13,8 +14,7 @@ import { Input } from "../components/ui/input";
 import { Badge } from "../components/ui/badge";
 import { ApiRequestError, apiFetch } from "../services/api";
 import { useToast } from "../contexts/ToastContext";
-import { buildNoQtySoCreatedBannerState } from "../lib/noQtySoCreatedNavState";
-import { noQtyRsCreationWorkspaceHref } from "../lib/noQtyRsActionLabels";
+import { noQtyAgreementListHref } from "../lib/noQtyStoreNavigation";
 import { CommercialWorkflowStrip, commercialWorkflowStripFramedClassName } from "../components/erp/CommercialWorkflowStrip";
 import { cn } from "../lib/utils";
 
@@ -92,21 +92,8 @@ export function NoQtySalesOrderFromQuotationPage() {
         method: "POST",
         body: JSON.stringify({ customerPoReference: po, remarks: remarks.trim() || null }),
       });
-      toast.showSuccess("Sales Order created — continuing to requirement planning");
-      const cycleId = so.currentCycle?.id ?? (so as { currentCycleId?: number | null }).currentCycleId ?? null;
-      const to = noQtyRsCreationWorkspaceHref({
-        salesOrderId: so.id,
-        cycleId,
-        from: "so_created",
-      });
-      navigate(to, {
-        state: buildNoQtySoCreatedBannerState({
-          salesOrderId: so.id,
-          docNo: so.docNo,
-          customerName: q.enquiry.customer.name,
-          cycleNo: so.currentCycle?.cycleNo ?? 1,
-        }),
-      });
+      toast.showSuccess("Sales Order created successfully. Commercial workflow completed.");
+      navigate(noQtyAgreementListHref("ADMIN", so.id), { replace: true });
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Failed to create sales order";
       setError(msg);
@@ -210,7 +197,8 @@ export function NoQtySalesOrderFromQuotationPage() {
             </span>
           </div>
           <p className="text-[12px] leading-snug text-slate-600">
-            Same NO_QTY agreement — confirm reference below, then continue to Requirement Sheets for quantities and cycles.
+            Same NO_QTY agreement — confirm reference below to complete the commercial workflow. Store will create the
+            Requirement Sheet from their dashboard.
           </p>
         </div>
 
@@ -280,7 +268,7 @@ export function NoQtySalesOrderFromQuotationPage() {
 
           <div className="sticky bottom-0 z-10 flex justify-end border-t border-slate-200 bg-white/95 px-0 py-2.5 backdrop-blur-sm">
             <Button type="button" className={cn("min-w-[12rem] font-semibold shadow-md")} onClick={() => void onCreate()} disabled={creating}>
-              {creating ? "Creating…" : "Create Sales Order & continue"}
+              {creating ? "Creating…" : "Create Sales Order"}
             </Button>
           </div>
         </div>

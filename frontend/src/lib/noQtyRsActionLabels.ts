@@ -260,6 +260,35 @@ export function createNextRsButtonLabel(nextCycleNo?: number | null): string {
 
 
 
+/** Admin NO_QTY list — Store owns RS creation; Admin sees handoff instead of primary create CTA. */
+export const NO_QTY_RS_STORE_HANDOFF_LABEL = "Requirement Sheet pending — Owner: Store" as const;
+
+export const NO_QTY_RS_ADMIN_OVERRIDE_LINK_LABEL = "Open RS workspace as Admin override" as const;
+
+export function isNoQtyStoreOwnedRsCreateLabel(label: string): boolean {
+  const token = String(label ?? "").trim();
+  if (!token) return false;
+  if (token === "Create Next Requirement Sheet") return true;
+  if (/^Create Cycle \d+ RS$/.test(token)) return true;
+  if (/^Create Cycle \d+ Requirement Sheet$/.test(token)) return true;
+  return false;
+}
+
+export function isNoQtyStoreOwnedRsCreatePrimaryAction(input: {
+  primaryActionLabel: string;
+  noQtyNextAction?: string | null;
+  rsStatusLabel: string;
+  hasDraftRequirementSheet: boolean;
+}): boolean {
+  if (input.hasDraftRequirementSheet) return false;
+  const next = String(input.noQtyNextAction ?? "REQUIREMENT");
+  if (next === "CREATE_NEXT_RS") return true;
+  if ((next === "REQUIREMENT" || next === "") && input.rsStatusLabel === "No RS") return true;
+  return isNoQtyStoreOwnedRsCreateLabel(input.primaryActionLabel);
+}
+
+
+
 export function noQtyCreateNextCycleContinuationLabel(opts: {
 
   nextCycleNo?: number | null;

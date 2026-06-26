@@ -50,6 +50,16 @@ import type { DashboardShortcut } from "../components/erp/foundation/DashboardRo
 import { ERP_DASHBOARD_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
 import { summarizeDashboardProductionAttention } from "../lib/dashboardProductionStatus";
 import {
+  DISPATCH_READ_ROLES,
+  PROCUREMENT_REVIEW_DASHBOARD_ROLES,
+  PRODUCTION_DASHBOARD_ROLES,
+  PURCHASE_DASHBOARD_ROLES,
+  QA_PAGE_ROLES,
+  RM_CONTROL_CENTER_ROLES,
+  WO_PREPARE_CREATION_DASHBOARD_ROLES,
+  hasErpRole,
+} from "../config/erpRoles";
+import {
   coverageFromOperationalBlockers,
   operationalControlColumnHasContent,
   shouldShowProductionPendingRegularControlCard,
@@ -80,27 +90,28 @@ import {
   rmControlCenterHref,
 } from "../lib/materialWorkflowLinks";
 
-/** Role-based access to dashboard API sections (aligns with future backend requireRole). */
+/** Role-based access to dashboard API sections — mirrors backend requireRole guards. */
 function dashboardWidgetFlags(role: string) {
-  const isAdmin = role === "ADMIN";
-  const isProduction = role === "PRODUCTION";
-  const isStore = role === "STORE";
-  const isPurchase = role === "PURCHASE";
-
   return {
-    canViewOverallSummary: isAdmin,
-    canViewDispatchBacklog: isAdmin || isStore,
-    canViewProductionQueue: isAdmin || isProduction,
-    canViewProductionQaQueue: isAdmin || isProduction,
-    canViewRmRisk: isAdmin || isStore || isProduction,
-    canViewPurchaseSummary: isAdmin || isPurchase,
-    canViewGrnPendingSummary: isAdmin || isStore || isPurchase,
-    canViewWoPrepareProcurement: isAdmin || isStore || isPurchase,
-    canViewWoPrepareCreation: isAdmin || isProduction,
-    canViewWoPrepareQueues: isAdmin || isPurchase || isProduction,
-    canViewContinueWorking: isAdmin || isProduction || isStore,
-    canUseOpenNoQtyContinuation: isAdmin || isStore,
-    canViewQuotationsPendingSo: isAdmin,
+    canViewOverallSummary: role === "ADMIN",
+    canViewDispatchBacklog: hasErpRole(role, DISPATCH_READ_ROLES),
+    canViewProductionQueue: hasErpRole(role, PRODUCTION_DASHBOARD_ROLES),
+    /** GET /api/dashboard/qc-queue — ADMIN + QA only */
+    canViewProductionQaQueue: hasErpRole(role, QA_PAGE_ROLES),
+    /** GET /api/production/qc-rejected-dispositions/queues — ADMIN + QA only */
+    canViewQcRejectedDispositionQueues: hasErpRole(role, QA_PAGE_ROLES),
+    canViewRmRisk: hasErpRole(role, RM_CONTROL_CENTER_ROLES),
+    canViewPurchaseSummary: role === "ADMIN" || role === "PURCHASE",
+    canViewGrnPendingSummary: role === "ADMIN" || role === "STORE" || role === "PURCHASE",
+    /** GET /api/dashboard/procurement-pending — ADMIN + STORE + PURCHASE */
+    canViewWoPrepareProcurement: hasErpRole(role, PROCUREMENT_REVIEW_DASHBOARD_ROLES),
+    canViewWoPrepareCreation: hasErpRole(role, WO_PREPARE_CREATION_DASHBOARD_ROLES),
+    /** GET /api/dashboard/wo-prepare-queues — ADMIN + PURCHASE + PRODUCTION */
+    canViewWoPrepareQueues:
+      hasErpRole(role, PURCHASE_DASHBOARD_ROLES) || hasErpRole(role, WO_PREPARE_CREATION_DASHBOARD_ROLES),
+    canViewContinueWorking: role === "ADMIN" || role === "PRODUCTION" || role === "STORE",
+    canUseOpenNoQtyContinuation: role === "ADMIN" || role === "STORE",
+    canViewQuotationsPendingSo: role === "ADMIN",
   };
 }
 
@@ -578,13 +589,17 @@ export function DashboardPage() {
     canViewDispatchBacklog,
     canViewProductionQueue,
     canViewProductionQaQueue,
+    canViewQcRejectedDispositionQueues,
     canViewRmRisk,
     canViewPurchaseSummary,
+    canViewWoPrepareProcurement,
     canViewWoPrepareQueues,
     canViewContinueWorking,
     canUseOpenNoQtyContinuation,
     canViewQuotationsPendingSo,
   } = React.useMemo(() => dashboardWidgetFlags(role), [role]);
+
+  const canViewOperationalBlockers = canViewWoPrepareProcurement || canViewWoPrepareQueues;
 
   /**
    * Role-based action card visibility.
@@ -606,7 +621,9 @@ export function DashboardPage() {
     canViewRmRisk ||
     canViewPurchaseSummary ||
     canViewContinueWorking ||
-    canViewQuotationsPendingSo;
+    canViewQuotationsPendingSo ||
+    canViewWoPrepareProcurement ||
+    canViewWoPrepareQueues;
 
   const [data, setData] = React.useState<DashboardDto | null>(null);
   const [error, setError] = React.useState<string | null>(null);
@@ -649,11 +666,15 @@ export function DashboardPage() {
     if (!canViewProductionQaQueue) setQcQueue([]);
     if (!canViewRmRisk) setRmRisk([]);
     if (!canViewPurchaseSummary) setPurchaseSummary([]);
+    if (!canViewWoPrepareProcurement) {
+      setProcurementPending(null);
+      setStoreIssuePending(null);
+      setAllocationFirstPending(null);
+    }
     if (!canViewWoPrepareQueues) {
       setWoPrepareQueues(null);
-      setProcurementPending(null);
     }
-    if (!canViewProductionQaQueue)
+    if (!canViewQcRejectedDispositionQueues)
       setDispQueues({
         reworkPendingSupervisor: [],
         reworkApprovedPendingExecution: [],
@@ -665,8 +686,10 @@ export function DashboardPage() {
     canViewDispatchBacklog,
     canViewProductionQueue,
     canViewProductionQaQueue,
+    canViewQcRejectedDispositionQueues,
     canViewRmRisk,
     canViewPurchaseSummary,
+    canViewWoPrepareProcurement,
     canViewWoPrepareQueues,
     canViewContinueWorking,
     canViewQuotationsPendingSo,
@@ -793,6 +816,9 @@ export function DashboardPage() {
           }
         });
 
+    }
+
+    if (canViewQcRejectedDispositionQueues) {
       apiFetch<unknown>("/api/production/qc-rejected-dispositions/queues")
         .then((q) => {
           if (mounted) setDispQueues(normalizeDashboardDispQueues(q));
@@ -841,7 +867,7 @@ export function DashboardPage() {
         });
     }
 
-    if (canViewWoPrepareQueues) {
+    if (canViewWoPrepareProcurement) {
       apiFetch<{
         rows: ProcurementPendingRow[];
         storeIssuePending?: ProcurementPendingRow[];
@@ -855,9 +881,7 @@ export function DashboardPage() {
           operationalLabel?: string;
           nextActionKey?: string;
         }>;
-      }>(
-        "/api/dashboard/procurement-pending",
-      )
+      }>("/api/dashboard/procurement-pending")
         .then((res) => {
           if (mounted) {
             setProcurementPending(res.rows ?? []);
@@ -873,6 +897,9 @@ export function DashboardPage() {
             setAllocationFirstPending([]);
           }
         });
+    }
+
+    if (canViewWoPrepareQueues) {
       apiFetch<WoPrepareDashboardQueues>("/api/dashboard/wo-prepare-queues")
         .then((rows) => {
           if (mounted) setWoPrepareQueues(rows);
@@ -921,8 +948,10 @@ export function DashboardPage() {
     canViewDispatchBacklog,
     canViewProductionQueue,
     canViewProductionQaQueue,
+    canViewQcRejectedDispositionQueues,
     canViewRmRisk,
     canViewPurchaseSummary,
+    canViewWoPrepareProcurement,
     canViewWoPrepareQueues,
     canViewContinueWorking,
     canViewQuotationsPendingSo,
@@ -1301,22 +1330,23 @@ export function DashboardPage() {
   }, [procurementPending, allocationFirstWoIds]);
 
   const operationalBlockersReady =
-    !canViewWoPrepareQueues ||
-    (procurementPending !== null &&
-      storeIssuePending !== null &&
-      allocationFirstPending !== null &&
-      woPrepareQueues !== null);
+    !canViewOperationalBlockers ||
+    ((canViewWoPrepareProcurement
+      ? procurementPending !== null && storeIssuePending !== null && allocationFirstPending !== null
+      : true) &&
+      (canViewWoPrepareQueues ? woPrepareQueues !== null : true));
 
   const operationalSoActions = React.useMemo(() => {
-    if (!canViewWoPrepareQueues || !operationalBlockersReady) return [];
+    if (!canViewOperationalBlockers || !operationalBlockersReady) return [];
     return buildOperationalSoActions(
-      procurementPendingSecondary,
+      canViewWoPrepareProcurement ? procurementPendingSecondary : [],
       woPrepareQueues,
-      storeIssuePending,
-      allocationFirstPending,
+      canViewWoPrepareProcurement ? storeIssuePending : [],
+      canViewWoPrepareProcurement ? allocationFirstPending : [],
     );
   }, [
-    canViewWoPrepareQueues,
+    canViewOperationalBlockers,
+    canViewWoPrepareProcurement,
     operationalBlockersReady,
     procurementPendingSecondary,
     woPrepareQueues,
@@ -1481,7 +1511,7 @@ export function DashboardPage() {
   // on it. Without this filter, a STORE user with a pending PRODUCTION
   // queue would see "operations not clear" yet have no visible action card.
   const hasOperationalQueueAttention =
-    (canViewWoPrepareQueues && hasOperationalBlockerCards) ||
+    (canViewOperationalBlockers && hasOperationalBlockerCards) ||
     hasSoWoRmBlockerAttention(rmRiskCount, actionVisibility.canSeeRmShortageOperational) ||
     (actionVisibility.canShowProductionQaCards && canViewProductionQaQueue && qcWqHold > 0) ||
     (actionVisibility.canShowProductionQaCards && canViewProductionQaQueue && qcWqLegacy > 0) ||
@@ -1551,9 +1581,9 @@ export function DashboardPage() {
     noOperationalFetchErrors &&
     opsAttentionClear &&
     // Phase B: Operations are not "clear" while any allocation/issue blockers exist.
-    (allocationFirstPending?.length ?? 0) === 0 &&
-    (storeIssuePending?.length ?? 0) === 0 &&
-    (!canViewWoPrepareQueues || (operationalBlockersReady && !hasOperationalBlockerCards));
+    (!canViewWoPrepareProcurement || (allocationFirstPending?.length ?? 0) === 0) &&
+    (!canViewWoPrepareProcurement || (storeIssuePending?.length ?? 0) === 0) &&
+    (!canViewOperationalBlockers || (operationalBlockersReady && !hasOperationalBlockerCards));
 
   const prodWoNeedsActionCount =
     canViewProductionQueue && prodQueue != null ? prodAttention.activeWorkOrderCount : 0;
@@ -1588,7 +1618,7 @@ export function DashboardPage() {
 
   if (!phaseEOperatorFlow && actionVisibility.canSeeRmShortageOperational && canViewRmRisk && rmRisk != null && rmRisk.length > 0) {
     // Avoid duplicate RM shortage CTAs: Store/admin see the deduped Operational Blockers list.
-    const showRmBlockedWoCard = !canViewWoPrepareQueues;
+    const showRmBlockedWoCard = !canViewWoPrepareProcurement;
     const blockedWoLines = rmRisk.length;
     const affectedItemCount = new Set(rmRisk.map((r) => r.itemId)).size;
     const rmSeverity: "blocker" | "approval" = blockedWoLines >= 3 ? "blocker" : "approval";
@@ -2347,17 +2377,18 @@ export function DashboardPage() {
               </ErpKpiStrip>
             </div>
           ) : null}
-            {canViewWoPrepareQueues && !demo.enabled ? (
+            {canViewOperationalBlockers && !demo.enabled ? (
               <OperationalBlockersCard
-        procurementPending={role === "PRODUCTION" ? [] : procurementPendingSecondary}
-                storeIssuePending={storeIssuePending}
-                allocationFirstPending={allocationFirstPending as any}
+                procurementPending={canViewWoPrepareProcurement ? procurementPendingSecondary : []}
+                storeIssuePending={canViewWoPrepareProcurement ? storeIssuePending : []}
+                allocationFirstPending={canViewWoPrepareProcurement ? allocationFirstPending : []}
                 woPrepareQueues={woPrepareQueues}
                 loading={
-                  procurementPending === null ||
-                  storeIssuePending === null ||
-                  allocationFirstPending === null ||
-                  woPrepareQueues === null
+                  (canViewWoPrepareProcurement &&
+                    (procurementPending === null ||
+                      storeIssuePending === null ||
+                      allocationFirstPending === null)) ||
+                  (canViewWoPrepareQueues && woPrepareQueues === null)
                 }
               />
             ) : null}

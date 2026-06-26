@@ -190,6 +190,46 @@ enum WoHoldReason {
   OTHER
 }
 
+/// NO_QTY: shop-floor production execution pacing (orthogonal to WorkOrder.status).
+enum ProductionExecutionStatus {
+  RUNNING
+  BLOCKED
+  COMPLETED
+}
+
+enum ProductionExecutionBlockReason {
+  MACHINE_BREAKDOWN
+  WAITING_FOR_RM
+  TOOL_MOULD_MAINTENANCE
+  QUALITY_CONCERN
+  EMERGENCY_PRIORITY_PRODUCTION
+  POWER_UTILITY_FAILURE
+  MANAGEMENT_HOLD
+  OTHER
+}
+
+enum ProductionShortfallResolutionType {
+  BLOCKED
+  CARRY_FORWARD
+  WAIVE_BALANCE
+}
+
+enum ProductionShortfallResolutionReason {
+  MACHINE_BREAKDOWN
+  CAPACITY_CONSTRAINT
+  WAITING_FOR_RM
+  TOOL_MAINTENANCE
+  CUSTOMER_PRIORITY_CHANGE
+  MANAGEMENT_DECISION
+  QUALITY_CONCERN
+  OTHER
+}
+
+enum CarryForwardPendingStatus {
+  PENDING
+  CONSUMED
+}
+
 /// No Qty SO internal workflow cycles (reopen creates a new active cycle; history is locked per cycle).
 enum SalesOrderCycleStatus {
   ACTIVE
@@ -432,6 +472,11 @@ model User {
   monthlyProductionPlansApproved          MonthlyProductionPlan[]         @relation("MppApprovedBy")
   rmPlansRecalculated                     RmPlan[]                        @relation("RmPlanRecalcBy")
   requirementSheetsCancelled              RequirementSheet[]            @relation("RequirementSheetCancelledBy")
+  woExecBlocked                             WorkOrderProductionExecution[] @relation("WoExecBlockedBy")
+  woExecResumed                             WorkOrderProductionExecution[] @relation("WoExecResumedBy")
+  woExecCompleted                           WorkOrderProductionExecution[] @relation("WoExecCompletedBy")
+  carryForwardPendingCreated                CarryForwardPending[]          @relation("CfPendingCreatedBy")
+  shortfallResolutionsCreated               ProductionShortfallResolution[] @relation("ShortfallResolutionCreatedBy")
 }
 
 /// Full-database SQL backup row (see admin backup routes). `filePath` is server-only; never return to clients.
@@ -635,6 +680,7 @@ model Item {
   soLines                         SalesOrderLine[]
   rmPoLines                       RmPurchaseOrderLine[]
   workOrderLines                  WorkOrderLine[]                  @relation("WoLineFg")
+  carryForwardPending             CarryForwardPending[]
   materialRequirementsAsFg        MaterialRequirement[]            @relation("MaterialRequirementFgItem")
   salesBillLines                  SalesBillLine[]
   requirementSheetLines           RequirementSheetLine[]
@@ -1045,6 +1091,7 @@ model SalesOrder {
   currentCycle SalesOrderCycle?  @relation("SalesOrderCurrentCycle", fields: [currentCycleId], references: [id], onDelete: SetNull)
   noQtyCloseSnapshots NoQtySoCloseSnapshot[]
   noQtyClosedShortageLines NoQtySoClosedShortageLine[]
+  carryForwardPending CarryForwardPending[]
 
   @@index([customerId])
   @@index([shipToAddressId])
@@ -1239,6 +1286,8 @@ model RequirementSheet {
   cancelledBy User?                 @relation("RequirementSheetCancelledBy", fields: [cancelledByUserId], references: [id], onDelete: SetNull)
   lines      RequirementSheetLine[]
   workOrders WorkOrder[]
+  carryForwardPendingSources CarryForwardPending[] @relation("CfPendingSourceRs")
+  carryForwardPendingTargets CarryForwardPending[] @relation("CfPendingTargetRs")
 
   @@unique([salesOrderId, cycleId, periodKey, version])
   @@index([salesOrderId])
@@ -2228,6 +2277,9 @@ model WorkOrder {
   materialReturnNotes             MaterialReturnNote[]
   materialWastageNotes            MaterialWastageNote[]
   materialRequirements            MaterialRequirement[]
+  productionExecution             WorkOrderProductionExecution?
+  productionShortfallResolutions  ProductionShortfallResolution[]
+  carryForwardPendingSources      CarryForwardPending[]           @relation("CfPendingSourceWo")
 
   @@index([status])
   @@index([salesOrderId])
@@ -2235,6 +2287,92 @@ model WorkOrder {
   @@index([requirementSheetId])
   @@index([requirementSheetId, status])
   @@index([fgStockOverrideByUserId])
+}
+
+/// NO_QTY: Production-owned execution status; Work Order lifecycle updated only by workflow engine.
+model WorkOrderProductionExecution {
+  id               Int                        @id @default(autoincrement())
+  workOrderId      Int                        @unique
+  executionStatus  ProductionExecutionStatus  @default(RUNNING)
+  blockReason      ProductionExecutionBlockReason?
+  blockRemarks     String?                    @db.Text
+  blockedAt        DateTime?
+  blockedByUserId  Int?
+  resumedAt        DateTime?
+  resumedByUserId  Int?
+  completedAt      DateTime?
+  completedByUserId Int?
+  lastResolutionType ProductionShortfallResolutionType?
+  createdAt        DateTime                   @default(now())
+  updatedAt        DateTime                   @updatedAt
+
+  workOrder   WorkOrder @relation(fields: [workOrderId], references: [id], onDelete: Cascade)
+  blockedBy   User?     @relation("WoExecBlockedBy", fields: [blockedByUserId], references: [id], onDelete: SetNull)
+  resumedBy   User?     @relation("WoExecResumedBy", fields: [resumedByUserId], references: [id], onDelete: SetNull)
+  completedBy User?     @relation("WoExecCompletedBy", fields: [completedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([executionStatus])
+}
+
+/// NO_QTY: interim holder between Close & Carry Forward and next Requirement Sheet.
+model CarryForwardPending {
+  id                         Int                              @id @default(autoincrement())
+  itemId                     Int
+  salesOrderId               Int
+  sourceRequirementSheetId   Int?
+  sourceWorkOrderId          Int
+  cycleId                    Int?
+  remainingQty               Decimal                          @db.Decimal(18, 3)
+  resolutionReason           ProductionShortfallResolutionReason
+  resolutionReasonOther      String?                          @db.Text
+  remarks                    String?                          @db.Text
+  status                     CarryForwardPendingStatus        @default(PENDING)
+  createdByUserId            Int?
+  createdAt                  DateTime                         @default(now())
+  consumedAt                 DateTime?
+  targetRequirementSheetId   Int?
+  plannedNextRsHint          String?                          @db.VarChar(128)
+  productionShortfallResolutionId Int?                        @unique
+
+  item                   Item                        @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  salesOrder             SalesOrder                  @relation(fields: [salesOrderId], references: [id], onDelete: Restrict)
+  sourceRequirementSheet RequirementSheet?           @relation("CfPendingSourceRs", fields: [sourceRequirementSheetId], references: [id], onDelete: SetNull)
+  sourceWorkOrder        WorkOrder                   @relation("CfPendingSourceWo", fields: [sourceWorkOrderId], references: [id], onDelete: Restrict)
+  cycle                  SalesOrderCycle?            @relation(fields: [cycleId], references: [id], onDelete: SetNull)
+  createdBy              User?                       @relation("CfPendingCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  targetRequirementSheet RequirementSheet?           @relation("CfPendingTargetRs", fields: [targetRequirementSheetId], references: [id], onDelete: SetNull)
+  shortfallResolution    ProductionShortfallResolution? @relation(fields: [productionShortfallResolutionId], references: [id], onDelete: SetNull)
+
+  @@index([salesOrderId, status])
+  @@index([itemId, status])
+  @@index([sourceWorkOrderId])
+  @@index([status])
+}
+
+/// NO_QTY: immutable audit of Production execution shortfall decisions.
+model ProductionShortfallResolution {
+  id                    Int                               @id @default(autoincrement())
+  workOrderId           Int
+  workOrderLineId       Int?
+  plannedQty            Decimal                           @db.Decimal(18, 3)
+  producedQty           Decimal                           @db.Decimal(18, 3)
+  remainderQty          Decimal                           @db.Decimal(18, 3)
+  resolutionType        ProductionShortfallResolutionType
+  resolutionReason      ProductionShortfallResolutionReason?
+  blockReason           ProductionExecutionBlockReason?
+  resolutionReasonOther String?                           @db.Text
+  remarks               String?                           @db.Text
+  createdByUserId       Int?
+  createdAt             DateTime                          @default(now())
+
+  workOrder           WorkOrder            @relation(fields: [workOrderId], references: [id], onDelete: Cascade)
+  workOrderLine       WorkOrderLine?       @relation(fields: [workOrderLineId], references: [id], onDelete: SetNull)
+  createdBy           User?                @relation("ShortfallResolutionCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  carryForwardPending CarryForwardPending?
+
+  @@index([workOrderId])
+  @@index([workOrderLineId])
+  @@index([resolutionType])
 }
 
 model SalesOrderCycle {
@@ -2260,6 +2398,7 @@ model SalesOrderCycle {
   requirementSheets RequirementSheet[]
   workOrders        WorkOrder[]
   salesBills        SalesBill[]
+  carryForwardPending CarryForwardPending[]
 
   @@unique([salesOrderId, cycleNo])
   @@index([salesOrderId])
@@ -2276,11 +2415,14 @@ model WorkOrderLine {
   plannedQty  Decimal @db.Decimal(18, 3)
   /// Set when WO is CLOSED_WITH_SHORTFALL: max(0, qty − approved produced) at close time.
   shortfallQty Decimal? @db.Decimal(18, 3)
+  /// NO_QTY: qty waived when Production finishes execution with Waive Balance.
+  executionWaivedQty Decimal? @db.Decimal(18, 3)
 
   workOrder   WorkOrder         @relation(fields: [workOrderId], references: [id], onDelete: Cascade)
   fgItem      Item              @relation("WoLineFg", fields: [fgItemId], references: [id], onDelete: Restrict)
   productions ProductionEntry[]
   materialAllocations MaterialAllocation[]
+  productionShortfallResolutions ProductionShortfallResolution[]
 
   @@index([workOrderId])
   @@index([fgItemId])

@@ -1,0 +1,574 @@
+# FT ERP Glossary & Standard Terminology
+
+| Field | Value |
+|-------|-------|
+| **Document ID** | FT-PD-013 |
+| **Volume** | 1 — Product Foundation |
+| **Chapter** | 3 — FT ERP Glossary & Standard Terminology |
+| **Title** | FT ERP Glossary & Standard Terminology |
+| **Version** | 1.0.0 |
+| **Status** | Draft — Architecture Review |
+| **Effective date** | 2026-05-29 |
+| **Author** | FT ERP Product Team |
+| **Owner** | FT ERP Product Architecture |
+| **Audience** | Product, engineering, implementation, documentation authors, partners |
+| **Classification** | Product — Terminology |
+
+**Parent documents:**
+
+- [Volume 0 — Product Vision & Strategy](../00_Product_Vision_and_Strategy/Volume_0_Product_Vision_and_Strategy.md)
+- [Chapter 2 — FT ERP Constitution](./Chapter_02_FT_ERP_Constitution.md)
+
+---
+
+## 1. Document Control
+
+| Version | Date | Author | Summary |
+|---------|------|--------|---------|
+| 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial glossary — controlled vocabulary for FT ERP Product Documentation |
+
+**Supersedes:** None (first glossary release).
+
+**Change authority:** Product Architecture. New terms, definition changes, or deprecations require Architecture Review and change log entry.
+
+**Related documents:**
+
+| ID | Document | Relationship |
+|----|----------|--------------|
+| FT-PD-012 | FT ERP Constitution | Terms here must not contradict constitutional Articles |
+| FT-PD-020+ | Volume 2 — Business Architecture | Uses vocabulary defined here |
+| FT-PD-040+ | Volume 4 — Workflow Engine | Defines engine objects referenced in Section 5 |
+
+---
+
+## 2. Purpose
+
+This document is the **official vocabulary of FT ERP**.
+
+It establishes one authoritative meaning for each product concept so that:
+
+- All future volumes use the same language.
+- Implementation, training, and partner materials stay aligned with product architecture.
+- Workflow objects are not renamed informally across modules or screens.
+
+**No future product document may redefine terms listed here.** Documents may elaborate behavior; they may not assign conflicting definitions.
+
+---
+
+## 3. Scope
+
+### 3.1 In scope
+
+- Official names and definitions for FT ERP product concepts
+- Abbreviations and acronyms used in documentation
+- UX label vs. official terminology guidance
+- Commonly misused terms and corrections
+- Rules for introducing or deprecating terminology
+
+### 3.2 Out of scope
+
+- Implementation code, database table names, API field names
+- UI layout and component specifications
+- Customer-specific local language translations
+- General dictionary definitions unrelated to FT ERP
+
+---
+
+## 4. How to Use This Glossary
+
+### 4.1 One term, one meaning
+
+Every concept in FT ERP has **exactly one official term** in Product Documentation. If two words refer to the same thing, one is official; the other is listed as deprecated or as an permitted **UI label** only.
+
+### 4.2 Reference, do not redefine
+
+When writing Volume 2–10, training material, or release notes:
+
+- **Link or cite** this glossary for defined terms.
+- Do not copy definitions with altered wording unless proposing a constitutional/glossary amendment.
+
+### 4.3 Avoid synonyms in specifications
+
+Workflow specifications, domain chapters, and test plans must use official terms (e.g. **Internal Sales Order**, not “Sales Order”; **Material Issue**, not “RM Issue”).
+
+### 4.4 User-facing labels
+
+Operator screens may use shorter or friendlier labels (e.g. “Purchase Request” on a button) provided:
+
+- Documentation and architecture use the **official term**.
+- UI copy does not imply a different workflow object (e.g. Customer PO must never appear as if it were an ERP document type).
+
+### 4.5 Abbreviations
+
+Use abbreviations only **after** the full official term is introduced, or where this glossary explicitly lists the abbreviation as standard (e.g. **PMR**, **MPRS**, **GRN**).
+
+### 4.6 Conflicts
+
+If a term conflicts with the [Constitution](./Chapter_02_FT_ERP_Constitution.md), the Constitution prevails until both are reconciled through versioning.
+
+---
+
+## 5. Core Product Terminology
+
+### FT ERP
+
+Commercial **workflow-driven manufacturing ERP** for discrete, BOM-driven factories. FT ERP drives planning, material accountability, production, quality, and dispatch—not merely financial recording.
+
+### Workflow Engine
+
+The product subsystem that owns **workflow state**, **ownership**, **valid transitions**, and **Pending Action** generation. Screens and reports consume engine output; they do not replace it.
+
+### Business Workflow
+
+An end-to-end manufacturing or commercial process modeled as states, owners, gates, and documents (e.g. REGULAR order-to-dispatch, NO_QTY cycle planning-to-dispatch).
+
+### Workflow State
+
+The current position of a document or case in a Business Workflow (e.g. *Awaiting Purchase Review*, *Fully Issued*, *QA Pending*). Workflow State is engine-controlled.
+
+### Pending Action
+
+A **role-owned task** generated by the Workflow Engine representing the next valid step for a document or case. Pending Actions are the sole source for Dashboard task queues.
+
+### Business Event
+
+A significant, auditable occurrence that may trigger workflow evaluation (e.g. plan approved, material issued, production approved). Business Events are not synonymous with UI clicks.
+
+### Workflow Transition
+
+An allowed move from one Workflow State to another, subject to Business Rules and Validation Rules. Invalid transitions are blocked by FT ERP.
+
+### Business Rule
+
+A manufacturing or commercial policy enforced by the product (e.g. Business Model inheritance, planning does not auto-start execution). Business Rules are product-level; they are not customer Configuration unless explicitly designed as such.
+
+### Validation Rule
+
+A deterministic check applied at save or transition (e.g. positive quantity, issued RM before production). Validation Rules support Business Rules; they do not replace workflow ownership.
+
+### Factory
+
+The operational manufacturing entity served by FT ERP: roles, locations, documents, and material flow. “Factory” means shop-floor reality, not a database tenant (multi-factory is a future Optional Module concern).
+
+### Manufacturing Cycle
+
+In **NO_QTY Agreement** flow, a bounded planning and execution period linked to a **Requirement Sheet** cycle—plan → procure → produce → dispatch → continue planning. Contrasts with one-shot REGULAR order fulfillment.
+
+### Execution Pipeline
+
+The **common post–Work Order** manufacturing path: **PMR → Material Issue → Production Entry → QA Inspection → Dispatch**. Shared by all Business Models after Work Order creation.
+
+---
+
+## 6. Commercial Documents
+
+### Enquiry
+
+First controlled commercial document. Captures customer interest and **selects Business Model** (REGULAR Order or NO_QTY Agreement). Enquiry is the root of Business Model inheritance.
+
+### Feasibility
+
+Commercial assessment document between Enquiry and Quotation. Confirms technical/commercial viability while **inheriting Business Model** from Enquiry. Feasibility does not create manufacturing demand.
+
+### Quotation
+
+Commercial offer document inheriting Business Model. May reference quantities (REGULAR) or commercial terms without fixed manufacturing quantity (NO_QTY). Precedes Internal Sales Order.
+
+### Customer Purchase Order (Reference only)
+
+**Not an ERP workflow document.** Customer’s external PO number or file stored as **reference metadata** on Internal Sales Order for matching and dispatch alignment. It does not have workflow state, ownership, or Pending Actions in FT ERP.
+
+### Internal Sales Order
+
+ERP-controlled commercial commitment document created from Quotation. **Official term**—not “Sales Order” alone. Inherits Business Model. Drives planning and, for REGULAR, order-quantity manufacturing preparation. Customer PO reference may be recorded here.
+
+### Business Model
+
+Immutable classification selected at Enquiry: **REGULAR Order** or **NO_QTY Agreement**. Determines planning pipeline and inherited behavior on all downstream controlled documents.
+
+### REGULAR Order
+
+Business Model for **fixed-quantity** customer orders. Planning is order-driven (RM readiness, work order preparation). Procurement demand primarily enters via **REGULAR_SO** procurement pool.
+
+### NO_QTY Agreement
+
+Business Model for **non-fixed-quantity** supply agreements. Planning is cycle- and period-driven (Requirement Sheet, Monthly Production Planning). Procurement demand from monthly release enters via **MPRS** procurement pool.
+
+---
+
+## 7. Planning Terminology
+
+### Requirement Sheet (RS)
+
+NO_QTY controlled planning document defining customer schedule / requirement lines for a **Planning Cycle**. Basis for cycle execution and work order placement after release conditions are met.
+
+### Requirement Line
+
+A line on Requirement Sheet identifying FG item and schedule quantity (or planning quantity) for the cycle. Drives explosion into manufacturing preparation—not a commercial invoice line.
+
+### Monthly Production Planning Sheet (MPRS)
+
+**Official name** for the period-based monthly Planning Workspace and **Monthly Production Plan** document family (FG planned quantities, RM estimate, purchase review, approval, release to procurement). Abbreviation **MPRS** refers to this planning system and its documents—not to generic “production planning.”
+
+*Related:* **Monthly Planning RM Snapshot** — frozen RM requirement created upon plan purchase approval; released demand appears in procurement as **MPRS** demand pool material.
+
+### Planning Cycle
+
+In NO_QTY flow, the repeating interval (linked to RS versions) in which plan → execute → dispatch → replan occurs. Distinct from calendar month though often aligned.
+
+### Initial Plan
+
+First **Monthly Production Plan** document in a period sequence (`planKind = INITIAL`). Establishes baseline FG and frozen RM Snapshot for the period.
+
+### Additional Plan
+
+Supplemental **Monthly Production Plan** in the same period (`planKind = ADDITIONAL`) for incremental FG/RM demand after Initial Plan approval. Release semantics apply to delta RM requirement.
+
+### Green Level
+
+FG **planning buffer** quantity (manual or historically derived) representing minimum FG coverage intent on an item. Used in monthly planning suggestions—not RM minimum stock and not shop-floor safety stock.
+
+### Green Level Shortage
+
+FG quantity below Green Level target for planning purposes. Drives suggested production in monthly planning composition; RM explosion for planning uses approved shortage logic per Volume 10.
+
+### Carry Forward
+
+Planning quantity or shortage **rolled from a prior cycle or period** into current planning view. Carry forward preserves continuity in NO_QTY agreements; it is not duplicate demand creation.
+
+### Planning Freeze
+
+Point at which planning output becomes **immutable** for execution reference (e.g. purchase-approved monthly plan, released RM Snapshot). Execution must use frozen values, not live replanning.
+
+---
+
+## 8. Procurement Terminology
+
+### Purchase Review
+
+Workflow stage where **Purchase** role reviews a submitted **Monthly Production Plan** before approval (`AWAITING_PURCHASE_REVIEW`). Purchase Review is planning governance—not PO creation.
+
+### Purchase Requisition
+
+**Official procurement document** created from consolidated RM demand (Material Requirement lines) requesting Purchase to execute supply. **UI label** often *Purchase Request*; abbreviation **PR**. Store or Purchase may create PR depending on demand source per ownership rules.
+
+### Material Requirement (MR)
+
+**Official term** for RM procurement requisition document (e.g. `MR-26-0001`) consolidating shortage/planning demand for PR/PO. **Operational synonym:** *RM Requisition*—permitted in UI copy but documentation prefers **Material Requirement** for specifications.
+
+### Purchase Order
+
+**Official term** for RM purchase order to supplier (RM PO). Created by Purchase from PR lines. Distinct from sales-side commercial orders.
+
+### Goods Receipt Note (GRN)
+
+Store-controlled receipt document posting supplier material into stock from Purchase Order. GRN is execution of inbound material—not Purchase’s accountability.
+
+### Material Availability
+
+Read Model of RM position: on-hand, reserved, incoming, free, and shortage relative to demand. Informs planning and issue; does not replace Material Requirement or PMR.
+
+### Procurement Pipeline
+
+End-to-end RM supply path: **Material Requirement → Purchase Requisition → Purchase Order → GRN → stock available for issue**. Segregated by **demand pool** (REGULAR_SO, MPRS, STOCK_REPLENISHMENT).
+
+### ARR (Additional RM Requisition)
+
+Ad-hoc RM procurement need **outside** the primary monthly plan freeze—typically from **RM Stock Planning** / replenishment or explicit additional RM request. ARR uses procurement paths exempt from planning-driven Guards where product policy allows; not a substitute for monthly plan release for NO_QTY base demand.
+
+---
+
+## 9. Manufacturing Terminology
+
+### Work Order (WO)
+
+Controlled manufacturing order to produce specified FG quantity on one or more lines. **Convergence point** where REGULAR and NO_QTY planning paths enter the common **Execution Pipeline**.
+
+### WO Batch
+
+A **placement group** of work orders created together from a Requirement Sheet execution wave in NO_QTY flow. WO Batch expresses serialized placement intent—not a separate manufacturing method from Work Order.
+
+### WO Placement
+
+The controlled act of creating Work Order(s) from released Requirement Sheet balance when material and policy conditions are satisfied. WO Placement does not issue material by itself.
+
+### PMR (Production Material Request)
+
+**Frozen RM requirement** for a Work Order requesting Store to issue material to production. PMR is planning/control layer; stock moves only via **Material Issue**. Production gates on issued PMR coverage.
+
+### Material Issue
+
+Store-controlled document and stock transaction moving RM from store to **production location** against PMR (or approved issue plan). **Official term**—not “RM Issue.”
+
+### Production Entry
+
+Shop-floor record of FG quantity produced against a Work Order line for a batch. Production Entry is draft until approved; approval triggers RM consumption and FG receipt per product rules.
+
+### Production Batch
+
+The quantity and traceability unit associated with an approved Production Entry (batch/lot identity for QA and dispatch). One Work Order line may have multiple Production Entries over time.
+
+### QA Inspection
+
+Quality Assurance controlled inspection of Production Batch before release to dispatch. **Official term**—not “QC” in documentation (legacy data labels may retain QC in statuses).
+
+### Accepted Quantity
+
+FG quantity passing QA Inspection and eligible for dispatch allocation.
+
+### Rejected Quantity
+
+FG quantity failing QA Inspection—routed to rework or scrap per disposition rules.
+
+### Rework
+
+QA disposition requiring correction or reprocessing before acceptance. Rework retains traceability to originating Production Batch.
+
+### Scrap
+
+QA or production disposition writing off non-salable FG (or material) with audit trail. Scrap reduces effective good output.
+
+---
+
+## 10. Inventory Terminology
+
+### Raw Material (RM)
+
+Items consumed in production (including compounds and packaging where modeled as RM item type). Subject to BOM explosion, procurement, issue, and consumption.
+
+### Semi-Finished Goods (SFG)
+
+Items produced and consumed within multi-level BOM. Optional depth in BOM explosion; child BOM required for SFG components.
+
+### Finished Goods (FG)
+
+Manufactured items sold or dispatched to customer. Subject to Green Level planning, production, QA, and dispatch.
+
+### Stock Ledger
+
+Authoritative quantity record by item, location, and bucket (usable, etc.) derived from **Stock Transactions**. Ledger is system of record for on-hand—not spreadsheet parallel.
+
+### Stock Transaction
+
+Immutable movement record (receipt, issue, adjustment, transfer) affecting Stock Ledger. Transactions carry reference to source document (GRN, Material Issue, production consumption, etc.).
+
+### Reserved Stock
+
+RM quantity allocated to open demand (PMR, Material Requirement, allocations) not free for other use. Reserved Stock reduces **Available Stock**.
+
+### Available Stock
+
+RM quantity physically on hand minus reservations and policy holds, relevant to issue and planning availability displays.
+
+### Material Accountability
+
+Constitutional principle (Article 9): every RM unit in production is traceable requirement → PMR → issue → consumption/return. Term also used in audits describing compliance to that chain.
+
+---
+
+## 11. Dispatch & Billing Terminology
+
+### Dispatch
+
+Store-controlled shipment of Accepted Quantity FG to customer against Internal Sales Order / schedule. Dispatch requires QA-released stock.
+
+### Dispatch Note
+
+ERP-controlled dispatch document recording quantities, batch trace references, and shipment metadata. Dispatch Note is workflow document—not Customer PO.
+
+### Sales Bill
+
+Commercial invoice document for billing FG shipments or contract terms per ADMIN/commercial configuration. Sales Bill is financial-commercial artifact linked to dispatch/commercial completion.
+
+### Billing Export
+
+Structured export (e.g. external accounting format) of Sales Bill or purchase bill data. Export is integration output—not a manufacturing workflow stage.
+
+### Commercial Completion
+
+Commercial lifecycle milestone when contractual/documentary obligations for an order or cycle are satisfied per product rules (may include dispatch and billing thresholds). Distinct from manufacturing order closure.
+
+---
+
+## 12. User Experience Terminology
+
+### Dashboard
+
+**My Work** surface for logged-in role. Shows **Pending Actions** and role KPIs only. Does not show factory-wide execution buttons for other roles’ ownership.
+
+### Workspace
+
+**Do Work** surface for executing tasks in document context (e.g. Procurement Workspace, Monthly Production Planning Sheet, Production entry). Dashboard routes into Workspace.
+
+### Control Tower
+
+**Factory Work** monitoring surface: cross-role visibility, risk, age, and ownership. Read/monitor primary; escalation deep-links to Workspace. Not a personal task list.
+
+### Quick Action
+
+Dashboard or Workspace shortcut into a defined workflow entry point. Quick Actions must map to engine-valid routes—not ad hoc bypass.
+
+### Operational Register
+
+Role-specific operational queue view (e.g. NO_QTY **Execution Register** on Store Dashboard). Subordinate to Pending Actions/Workspace; not a second Workflow Engine.
+
+### KPI
+
+Role-scoped metric on Dashboard summarizing queue depth or urgency. KPIs inform prioritization; they do not replace Pending Actions.
+
+### Workflow Trail
+
+Chronological display of Business Events and transitions for a document (audit-oriented UX). Workflow Trail is read-only history.
+
+### Pending Action Card
+
+Dashboard UI element rendering one Pending Action with document reference, label, and deep link. Cards are views—not sources—of engine tasks.
+
+### Exception Queue
+
+Control Tower or monitor grouping of cases breaching SLA, policy, or material readiness thresholds. Exception Queue escalates; it does not assign unofficial ownership.
+
+---
+
+## 13. Architecture Terminology
+
+### Core Layer
+
+Mandatory FT ERP capabilities every customer receives. Must not be broken for single-customer needs. See Constitution Article 16.
+
+### Optional Module
+
+Licensed extension (e.g. **Subcontract Manufacturing**) integrating via defined contracts without altering Core workflow semantics.
+
+### Configuration Layer
+
+Customer parameterization without code (roles, thresholds, locations, feature flags, sequences). Upgrade-safe.
+
+### Custom Layer
+
+Partner- or customer-specific extensions via **Extension Points**. Last resort after Configuration and Optional Modules.
+
+### Extension Point
+
+Published integration boundary (API, event, UI slot) where Custom Layer attaches. Core workflow states are not extension points.
+
+### Product Standard
+
+Default FT ERP behavior and ownership out of box, defined by Constitution and Volumes 2–4.
+
+### Product Configuration
+
+Named set of Configuration Layer values applied to a deployment without code change.
+
+### Customization
+
+Any Custom Layer code or integration outside Product Standard. Subject to upgrade retest.
+
+---
+
+## 14. General Rules
+
+1. **One concept = one official term** in specifications and architecture documents.
+2. **Do not invent parallel names** for workflow documents (e.g. do not introduce “Material Request” for PMR).
+3. **UI labels may differ**; documentation and tests use official terms.
+4. **New terminology** requires Architecture Review and glossary amendment before first use in Approved volumes.
+5. **Deprecated terms** remain in Section 15 with pointer to replacement—never silently deleted.
+6. **Abbreviations** must not collide (MR = Material Requirement; PMR = Production Material Request; PR = Purchase Requisition).
+7. **Business Model names** are proper nouns: REGULAR Order, NO_QTY Agreement (not “No Qty SO” in specifications).
+8. **Customer PO** must never be documented as a workflow document type.
+9. **Procurement pools** use official keys: REGULAR_SO, MPRS, STOCK_REPLENISHMENT.
+10. **Glossary changes** that alter meaning require MINOR or MAJOR version bump per impact.
+
+---
+
+## 15. Commonly Misused Terms
+
+| Incorrect (avoid in specs) | Correct official term | Notes |
+|----------------------------|----------------------|-------|
+| Sales Order | **Internal Sales Order** | Distinguishes ERP document from customer PO |
+| Customer PO (as ERP doc) | **Customer Purchase Order (Reference only)** | Reference field only |
+| PO (ambiguous) | **Purchase Order** or **Customer Purchase Order (Reference)** | Disambiguate procurement vs customer |
+| Production Plan | **Monthly Production Planning Sheet (MPRS)** | Period planning—not WO production |
+| RM Issue | **Material Issue** | Store execution document |
+| RM Request (production) | **PMR (Production Material Request)** | Production material—not PR |
+| RM Request (procurement) | **Material Requirement (MR)** | Procurement requisition |
+| Purchase Request (in specs) | **Purchase Requisition** | “Purchase Request” OK as UI label |
+| Requisition (ambiguous) | **Purchase Requisition** or **Material Requirement** | Qualify domain |
+| Factory Dashboard | **Control Tower** | Factory-wide monitor |
+| My Dashboard / Home | **Dashboard** | Role work surface |
+| Planning Dashboard (NO_QTY) | **Requirement & Cycle Planning** hub | UI route name; cycle planning entry |
+| RM Control Center (as tower) | **RM Control Center** workspace | REGULAR RM case workspace—not Control Tower |
+| QC (in docs) | **QA Inspection** | QA is official role/stage |
+| QC Hold | **QA Hold** | Align with QA Inspection |
+| NO_QTY SO | **NO_QTY Agreement** | Business Model proper noun |
+| Normal SO | **REGULAR Order** | Business Model proper noun |
+| Monthly Plan (ambiguous) | **Monthly Production Plan** / **MPRS** | Use document type precision |
+| Snapshot (ambiguous) | **Monthly Planning RM Snapshot** | Frozen RM after approval |
+| Delta release | **RM Requirement Release** (to procurement) | Avoid informal “delta” in specs |
+| Open procurement | **Procurement Workspace** | Official workspace name |
+| Shop floor entry | **Production Entry** | |
+| Invoice | **Sales Bill** (sales side) | Commercial billing document |
+| GRN entry | **Goods Receipt Note (GRN)** | |
+| WO | **Work Order** | Spell out on first use in external docs |
+| Issue note | **Material Issue** | |
+| Additional plan requisition | **ARR (Additional RM Requisition)** | Ad-hoc RM outside main freeze |
+| Stock | **Stock Ledger** / on-hand quantity | Be precise in accounting contexts |
+| Free stock | **Available Stock** | Respects reservations |
+| Blocked production | **Production RM readiness gate** | Not arbitrary UI block |
+| Pending task (generic) | **Pending Action** | Engine-generated only |
+| Workflow status (UI only) | **Workflow State** | Engine-owned |
+| Extension / plugin (ambiguous) | **Optional Module** or **Custom Layer** | Classify per Volume 0 |
+| Subcontracting (custom) | **Subcontract Manufacturing (Optional Module)** | Productized—not bespoke |
+| Enquiry type | **Business Model** | Selected at Enquiry |
+| Feasibility study (generic) | **Feasibility** | ERP document |
+| Agreement SO | **NO_QTY Agreement** | |
+
+---
+
+## 16. Review Checklist
+
+- [ ] Each defined term has a single meaning; no duplicate entries with different definitions
+- [ ] No generic ERP definitions without FT ERP manufacturing context
+- [ ] Terms align with [Constitution](./Chapter_02_FT_ERP_Constitution.md) Articles 4–15
+- [ ] REGULAR vs NO_QTY naming matches Business Model rules
+- [ ] Customer PO documented as reference only—not workflow document
+- [ ] Dashboard / Workspace / Control Tower definitions match UX Articles 13–14
+- [ ] PMR vs MR vs PR abbreviations are distinct
+- [ ] MPRS defined as Monthly Production Planning Sheet with related snapshot note
+- [ ] Section 15 covers frequent codebase/UI label mismatches
+- [ ] No client names, code, schema, or API fields
+- [ ] Volumes 2–10 can link to this file without redefining terms
+- [ ] Deprecated terms policy stated (Section 14)
+
+---
+
+## 17. Change Log
+
+| Version | Date | Author | Summary |
+|---------|------|--------|---------|
+| 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial glossary — Sections 5–15, review checklist |
+
+---
+
+## 18. Approval Block
+
+| Role | Name | Signature | Date |
+|------|------|-----------|------|
+| Product Owner | | | |
+| Product Architecture | | | |
+| Engineering Lead | | | |
+| Documentation Lead | | | |
+
+**Status after approval:** Change from *Draft — Architecture Review* to *Approved*; subsequent edits via version increment only.
+
+---
+
+## Document navigation
+
+| | Link |
+|--|------|
+| **Previous** | [FT ERP Constitution](./Chapter_02_FT_ERP_Constitution.md) (FT-PD-012) |
+| **Next** | [FT ERP Product Design Principles](./Chapter_04_FT_ERP_Product_Design_Principles.md) (FT-PD-014) |
+| **Volume** | [Product Foundation](./README.md) |
+| **Product** | [Product Documentation Index](../README.md) |
+

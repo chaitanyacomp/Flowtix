@@ -56,6 +56,7 @@ import {
   rmControlCenterHref,
 } from "../lib/materialWorkflowLinks";
 import { OperationalProductionWorkspace } from "../components/erp/OperationalProductionWorkspace";
+import { ProductionExecutionPanel } from "../components/erp/production/ProductionExecutionPanel";
 import {
   isRegularProductionEntryBlocked,
   resolveRegularRmAllowedNowQty,
@@ -435,15 +436,25 @@ export function ProductionPage() {
   const woIdFromUrlValid = woIdFromUrlPick > 0;
   const workOrderLineIdFromUrlValid =
     Number.isFinite(workOrderLineIdFromUrl) && workOrderLineIdFromUrl > 0;
+  /** Deep-link WO/line in URL — authoritative; auto-pick and clear effects must not override. */
+  const urlWoSelectionAuthority = woIdFromUrlValid || workOrderLineIdFromUrlValid;
   /** Dashboard Continue Production / deep-link with WO identity — not bare sidebar entry. */
   const noQtyContinueProductionIntent =
     searchParams.get("fromDashboard") === "1" ||
+    urlWoSelectionAuthority ||
     (focusSoIdValid && (woIdFromUrlValid || workOrderLineIdFromUrlValid));
 
   const [workOrders, setWorkOrders] = React.useState<WoRow[]>([]);
   const [entries, setEntries] = React.useState<ProdEntryRow[]>([]);
   const [woId, setWoId] = React.useState(0);
   const [wolId, setWolId] = React.useState(0);
+  const woIdRef = React.useRef(0);
+  const wolIdRef = React.useRef(0);
+  woIdRef.current = woId;
+  wolIdRef.current = wolId;
+  const urlWoSelectionAuthorityRef = React.useRef(urlWoSelectionAuthority);
+  urlWoSelectionAuthorityRef.current = urlWoSelectionAuthority;
+  const urlSelectionAppliedRef = React.useRef(false);
   /** Locked when operator picks a work-queue row (menu entry); prevents NO_QTY/REGULAR layout oscillation. */
   const [userLockedFlowMode, setUserLockedFlowMode] = React.useState<ProductionFlowMode | null>(null);
   const [soOrderTypeById, setSoOrderTypeById] = React.useState<Record<number, string>>({});
@@ -625,9 +636,11 @@ export function ProductionPage() {
 
   React.useEffect(() => {
     noQtyContinueAutoPickDoneRef.current = false;
+    urlSelectionAppliedRef.current = false;
   }, [focusSoId, woIdFromUrlPick, workOrderLineIdFromUrl]);
 
-  const clearWoLineSelection = React.useCallback(() => {
+  const clearWoLineSelection = React.useCallback((opts?: { force?: boolean }) => {
+    if (!opts?.force && urlWoSelectionAuthorityRef.current) return;
     setWoId((prev) => (prev !== 0 ? 0 : prev));
     setWolId((prev) => (prev !== 0 ? 0 : prev));
     setUserLockedFlowMode(null);
@@ -691,6 +704,19 @@ export function ProductionPage() {
       ),
     [workOrders],
   );
+
+  /** WO/line identity from URL or operator selection — URL wins until state catches up. */
+  const effectiveScopedWoId = React.useMemo(() => {
+    if (woId > 0) return woId;
+    if (woIdFromUrlValid) return woIdFromUrlPick;
+    return 0;
+  }, [woId, woIdFromUrlValid, woIdFromUrlPick]);
+
+  const effectiveScopedWolId = React.useMemo(() => {
+    if (wolId > 0) return wolId;
+    if (workOrderLineIdFromUrlValid) return workOrderLineIdFromUrl;
+    return 0;
+  }, [wolId, workOrderLineIdFromUrlValid, workOrderLineIdFromUrl]);
 
   const sortedFlatLines = React.useMemo(() => sortFlatByPriority(flatLines), [flatLines]);
 
@@ -805,11 +831,14 @@ export function ProductionPage() {
           : null);
     if (!inferred) return;
     const next = new URLSearchParams(searchParams);
+    if (next.get("flow") === inferred) return;
     next.set("flow", inferred);
     if (inferred === PRODUCTION_FLOW_NO_QTY && !next.get("source")) {
       next.set("source", "no_qty_so");
     }
-    navigate({ pathname: "/production", search: `?${next.toString()}` }, { replace: true });
+    const nextSearch = next.toString();
+    if (nextSearch === searchParams.toString()) return;
+    navigate({ pathname: "/production", search: `?${nextSearch}` }, { replace: true });
   }, [
     flowParam,
     fromNoQtySo,
@@ -935,9 +964,21 @@ export function ProductionPage() {
       from: fromParam || undefined,
     });
 
+    const merged = new URLSearchParams(corrected.includes("?") ? corrected.split("?")[1]?.split("#")[0] ?? "" : "");
+    for (const [key, value] of searchParams.entries()) {
+      if (key === "flow" || key === "source") continue;
+      if (!merged.has(key)) merged.set(key, value);
+    }
+    const hashIdx = corrected.indexOf("#");
+    const hash = hashIdx >= 0 ? corrected.slice(hashIdx) : "";
+    const path = hashIdx >= 0 ? corrected.slice(0, hashIdx) : corrected;
+    const qIdx = path.indexOf("?");
+    const pathname = qIdx >= 0 ? path.slice(0, qIdx) : path;
+    const mergedHref = `${pathname}?${merged.toString()}${hash}`;
+
     const current = `${window.location.pathname}${window.location.search}`;
-    if (corrected !== current) {
-      navigate(corrected, { replace: true });
+    if (mergedHref !== current) {
+      navigate(mergedHref, { replace: true });
     }
   }, [
     flowMismatchMessage,
@@ -999,30 +1040,30 @@ export function ProductionPage() {
     return s;
   }, [entries]);
 
-  const ensureSoOrderType = React.useCallback(
-    async (soId: number): Promise<string> => {
-      if (!Number.isFinite(soId) || soId <= 0) return "";
-      const cached = soOrderTypeById[soId];
-      if (cached) return cached;
-      try {
-        const so = await apiFetch<any>(`/api/sales-orders/${soId}`);
-        const t = String(so?.orderType ?? "");
-        setSoOrderTypeById((prev) => (prev[soId] ? prev : { ...prev, [soId]: t }));
-        return t;
-      } catch {
-        /**
-         * Mark the key as attempted (empty value). The `productionIdentityUnresolved` guard uses
-         * key presence (`soId in soOrderTypeById`) to know that the SO master fetch has settled,
-         * so a transient API failure must not leave the page stuck in "Resolving…" forever.
-         */
-        setSoOrderTypeById((prev) =>
-          Object.prototype.hasOwnProperty.call(prev, soId) ? prev : { ...prev, [soId]: "" },
-        );
-        return "";
-      }
-    },
-    [soOrderTypeById],
-  );
+  const soOrderTypeByIdRef = React.useRef(soOrderTypeById);
+  soOrderTypeByIdRef.current = soOrderTypeById;
+
+  const ensureSoOrderType = React.useCallback(async (soId: number): Promise<string> => {
+    if (!Number.isFinite(soId) || soId <= 0) return "";
+    const cached = soOrderTypeByIdRef.current[soId];
+    if (cached) return cached;
+    try {
+      const so = await apiFetch<any>(`/api/sales-orders/${soId}`);
+      const t = String(so?.orderType ?? "");
+      setSoOrderTypeById((prev) => (prev[soId] ? prev : { ...prev, [soId]: t }));
+      return t;
+    } catch {
+      /**
+       * Mark the key as attempted (empty value). The `productionIdentityUnresolved` guard uses
+       * key presence (`soId in soOrderTypeById`) to know that the SO master fetch has settled,
+       * so a transient API failure must not leave the page stuck in "Resolving…" forever.
+       */
+      setSoOrderTypeById((prev) =>
+        Object.prototype.hasOwnProperty.call(prev, soId) ? prev : { ...prev, [soId]: "" },
+      );
+      return "";
+    }
+  }, []);
 
   React.useEffect(() => {
     if (!focusSoIdValid) return;
@@ -1068,22 +1109,35 @@ export function ProductionPage() {
   const noQtyWorkbenchSoId = React.useMemo(() => {
     if (productionFlowMode !== "NO_QTY") return 0;
     if (focusSoIdValid) return focusSoId;
+    if (woIdFromUrlValid) {
+      const w = workOrders.find((x) => x.id === woIdFromUrlPick);
+      if (w && w.salesOrderId > 0) return w.salesOrderId;
+    }
     if (selected && selected.salesOrderId > 0) return selected.salesOrderId;
     if (woId > 0) {
       const w = workOrders.find((x) => x.id === woId);
       if (w && w.salesOrderId > 0) return w.salesOrderId;
     }
     return 0;
-  }, [productionFlowMode, focusSoIdValid, focusSoId, selected, woId, workOrders]);
+  }, [
+    productionFlowMode,
+    focusSoIdValid,
+    focusSoId,
+    woIdFromUrlValid,
+    woIdFromUrlPick,
+    selected,
+    woId,
+    workOrders,
+  ]);
 
   const showNoQtyScopedProductionCard = productionFlowMode === "NO_QTY" && noQtyWorkbenchSoId > 0;
   const noQtyQcPendingStable = showNoQtyScopedProductionCard && entries.some((e) => qcPendingEntry(e));
 
   const selectedWoForNoQtyChrome = React.useMemo(() => {
-    const id = woId > 0 ? woId : selected?.workOrderId ?? 0;
+    const id = effectiveScopedWoId > 0 ? effectiveScopedWoId : selected?.workOrderId ?? 0;
     if (!(id > 0)) return null;
     return workOrders.find((w) => w.id === id) ?? null;
-  }, [woId, selected?.workOrderId, workOrders]);
+  }, [effectiveScopedWoId, selected?.workOrderId, workOrders]);
 
   const noQtyCarryForwardLines = React.useMemo(() => {
     if (!showNoQtyScopedProductionCard) return [];
@@ -1101,7 +1155,14 @@ export function ProductionPage() {
   const noQtyWorkQueueRows = React.useMemo((): NoQtyWorkQueueRow[] => {
     if (!showNoQtyScopedProductionCard) return [];
     const eps = 1e-6;
-    return sortFlatByPriority(sortedFlatLines.filter((l) => l.salesOrderId === noQtyWorkbenchSoId)).map((l) => {
+    let rows = sortedFlatLines.filter((l) => l.salesOrderId === noQtyWorkbenchSoId);
+    if (
+      effectiveScopedWoId > 0 &&
+      (woIdFromUrlValid || noQtyContinueProductionIntent || woId > 0)
+    ) {
+      rows = rows.filter((l) => l.workOrderId === effectiveScopedWoId);
+    }
+    return sortFlatByPriority(rows).map((l) => {
       const approved = l.approvedProducedQty ?? 0;
       const qcPending = noQtyQcPendingByWolId.get(l.id) ?? 0;
       const carryForward = approved > eps && qcPending <= eps && noQtyHasApprovedByWolId.has(l.id);
@@ -1118,6 +1179,10 @@ export function ProductionPage() {
     showNoQtyScopedProductionCard,
     sortedFlatLines,
     noQtyWorkbenchSoId,
+    effectiveScopedWoId,
+    woIdFromUrlValid,
+    noQtyContinueProductionIntent,
+    woId,
     workOrders,
     noQtyQcPendingByWolId,
     noQtyHasApprovedByWolId,
@@ -1431,8 +1496,11 @@ export function ProductionPage() {
 
   const applyLine = React.useCallback(
     (l: FlatLine) => {
+      const sameSelection =
+        woIdRef.current === l.workOrderId && wolIdRef.current === l.id;
       setWoId((prev) => (prev === l.workOrderId ? prev : l.workOrderId));
       setWolId((prev) => (prev === l.id ? prev : l.id));
+      if (sameSelection) return;
       const rem = lineRemaining(l);
       resetProducedQtyField();
       const woRow = workOrders.find((w) => w.id === l.workOrderId);
@@ -1465,6 +1533,53 @@ export function ProductionPage() {
       setProducedQtyStr,
     ],
   );
+
+  /** Deep-link: apply WO/line from URL — authoritative; never fight auto-pick heuristics. */
+  React.useEffect(() => {
+    if (!canProd || workOrders.length === 0 || flatLines.length === 0) return;
+    if (!urlWoSelectionAuthority) return;
+
+    if (workOrderLineIdFromUrlValid) {
+      const byUrl = flatLines.find((l) => l.id === workOrderLineIdFromUrl);
+      if (!byUrl) return;
+      if (woIdRef.current === byUrl.workOrderId && wolIdRef.current === byUrl.id) {
+        urlSelectionAppliedRef.current = true;
+        return;
+      }
+      applyLine(byUrl);
+      urlSelectionAppliedRef.current = true;
+      return;
+    }
+
+    if (!woIdFromUrlValid) return;
+
+    const woExists = workOrders.some((w) => w.id === woIdFromUrlPick);
+    if (!woExists) return;
+
+    const forWo = sortFlatByPriority(flatLines.filter((l) => l.workOrderId === woIdFromUrlPick));
+    if (forWo.length === 0) {
+      if (woIdRef.current !== woIdFromUrlPick) setWoId(woIdFromUrlPick);
+      return;
+    }
+    const eps = 1e-6;
+    const pick = forWo.find((l) => lineRemaining(l) > eps) ?? forWo[0];
+    if (woIdRef.current === pick.workOrderId && wolIdRef.current === pick.id) {
+      urlSelectionAppliedRef.current = true;
+      return;
+    }
+    applyLine(pick);
+    urlSelectionAppliedRef.current = true;
+  }, [
+    canProd,
+    workOrders,
+    flatLines,
+    urlWoSelectionAuthority,
+    woIdFromUrlValid,
+    woIdFromUrlPick,
+    workOrderLineIdFromUrlValid,
+    workOrderLineIdFromUrl,
+    applyLine,
+  ]);
 
   useDependentFieldFocus({
     targetRef: producedQtyRef,
@@ -1854,13 +1969,13 @@ export function ProductionPage() {
     () =>
       resolveProductionStickyContext({
         selected: selected ?? null,
-        woId,
-        wolId,
+        woId: effectiveScopedWoId,
+        wolId: effectiveScopedWolId,
         workOrders,
         entries: visibleEntries,
         focusSo,
       }),
-    [selected, woId, wolId, workOrders, visibleEntries, focusSo],
+    [selected, effectiveScopedWoId, effectiveScopedWolId, workOrders, visibleEntries, focusSo],
   );
 
   const showQcCompletedStrip = React.useMemo(() => {
@@ -1920,8 +2035,8 @@ export function ProductionPage() {
   const suppressDuplicateQcWorkflowUi = showTopQcNextStrip;
 
   const displayHeaderMetrics = React.useMemo(
-    () => resolveProductionStickyMetrics({ selectedMetrics, wolId, flatLines }),
-    [selectedMetrics, wolId, flatLines],
+    () => resolveProductionStickyMetrics({ selectedMetrics, wolId: effectiveScopedWolId, flatLines }),
+    [selectedMetrics, effectiveScopedWolId, flatLines],
   );
 
   const qcEntryHrefForEntry = React.useCallback(
@@ -1979,8 +2094,13 @@ export function ProductionPage() {
   async function refresh(): Promise<FlatLine[]> {
     const includeWorkOrderLineId = editing?.workOrderLine?.id ?? 0;
     const includeQs = includeWorkOrderLineId > 0 ? `&includeWorkOrderLineId=${includeWorkOrderLineId}` : "";
-    /** When `salesOrderId` is in the URL, scope pending WOs to that SO (regular + NO_QTY). */
-    const soScopeQs = focusSoIdValid ? `&salesOrderId=${focusSoId}` : "";
+    /** When `salesOrderId` is in the URL — or derivable from URL WO — scope pending WOs to that SO. */
+    let soScopeId = focusSoIdValid ? focusSoId : 0;
+    if (!(soScopeId > 0) && woIdFromUrlValid) {
+      const fromState = workOrders.find((w) => w.id === woIdFromUrlPick)?.salesOrderId ?? 0;
+      if (fromState > 0) soScopeId = fromState;
+    }
+    const soScopeQs = soScopeId > 0 ? `&salesOrderId=${soScopeId}` : "";
     const [w, e] = await Promise.all([
       apiFetch<WoRow[]>(`/api/production/work-orders?pendingOnly=1${includeQs}${soScopeQs}`),
       apiFetch<ProdEntryRow[]>(
@@ -1995,8 +2115,24 @@ export function ProductionPage() {
         }`,
       ),
     ]);
-    setWorkOrders(w);
-    setEntries(e);
+    setWorkOrders((prev) => {
+      if (
+        prev.length === w.length &&
+        prev.every((row, idx) => row.id === w[idx]?.id && row.lines?.length === w[idx]?.lines?.length)
+      ) {
+        return prev;
+      }
+      return w;
+    });
+    setEntries((prev) => {
+      if (
+        prev.length === e.length &&
+        prev.every((row, idx) => row.id === e[idx]?.id && String(row.producedQty) === String(e[idx]?.producedQty))
+      ) {
+        return prev;
+      }
+      return e;
+    });
     return w.flatMap((wo) =>
       wo.lines.map((l) => ({
         ...l,
@@ -2104,27 +2240,36 @@ export function ProductionPage() {
   // If previously selected WO is no longer present, clear selection and hide the entry form.
   React.useEffect(() => {
     if (woId !== 0 && !workOrders.some((w) => w.id === woId)) {
-      clearWoLineSelection();
+      clearWoLineSelection({ force: true });
       setError(null);
     }
   }, [workOrders, woId, clearWoLineSelection]);
 
   React.useEffect(() => {
     if (wolId === 0) return;
-    if (!flatLines.some((l) => l.id === wolId)) {
-      clearWoLineSelection();
+    if (flatLines.some((l) => l.id === wolId)) return;
+    if (urlWoSelectionAuthorityRef.current) {
+      const woStillPending =
+        woIdFromUrlValid && workOrders.some((w) => w.id === woIdFromUrlPick);
+      if (woStillPending) return;
     }
-  }, [flatLines, wolId, clearWoLineSelection]);
+    clearWoLineSelection();
+  }, [flatLines, wolId, woIdFromUrlValid, woIdFromUrlPick, workOrders, clearWoLineSelection]);
 
   React.useEffect(() => {
     if (!canProd || flatLines.length === 0 || wolId !== 0) return;
     if (productionFlowMode === "NONE") return;
     if (showProductionWorkspace) return;
+    /** URL deep-link owns WO/line selection — handled by dedicated effect above. */
+    if (urlWoSelectionAuthority) return;
+    if (urlSelectionAppliedRef.current) return;
 
     if (productionFlowMode === "NO_QTY") {
       if (!showNoQtyScopedProductionCard) return;
       if (noQtyQcPendingStable) {
-        return;
+        if (!(woIdFromUrlValid || workOrderLineIdFromUrlValid)) {
+          return;
+        }
       }
       if (noQtyNextRsReady && !noQtyAllowShopFloorContinue) {
         if (woId !== 0 || wolId !== 0) {
@@ -2215,6 +2360,7 @@ export function ProductionPage() {
     ensureSoOrderType,
     isCarryForwardLine,
     workOrderLineIdFromUrl,
+    urlWoSelectionAuthority,
   ]);
 
   React.useEffect(() => {
@@ -2226,6 +2372,7 @@ export function ProductionPage() {
   React.useEffect(() => {
     if (productionFlowMode !== "NO_QTY" || !showNoQtyScopedProductionCard) return;
     if (!noQtyNextRsReady || noQtyAllowShopFloorContinue) return;
+    if (urlWoSelectionAuthorityRef.current) return;
     if (woId === 0 && wolId === 0) return;
     clearWoLineSelection();
   }, [
@@ -2246,6 +2393,7 @@ export function ProductionPage() {
   /** After QC completes on produced qty, WO remainder is carry-forward — drop selection so the entry form is not the default view. */
   React.useEffect(() => {
     if (productionFlowMode !== "NO_QTY" || !showNoQtyScopedProductionCard || noQtyAllowShopFloorContinue) return;
+    if (urlWoSelectionAuthorityRef.current) return;
     const sel = flatLines.find((x) => x.id === wolId);
     if (!sel) return;
     if ((noQtyQcPendingByWolId.get(sel.id) ?? 0) > 1e-6) return;
@@ -5441,8 +5589,8 @@ export function ProductionPage() {
             <span className="font-mono text-[11px] font-semibold tabular-nums text-slate-900">
               {(() => {
                 const id =
-                  woId > 0
-                    ? woId
+                  effectiveScopedWoId > 0
+                    ? effectiveScopedWoId
                     : selected?.workOrderId ??
                       productionStickyContext?.workOrderId ??
                       activeWoForRegularShell?.id ??
@@ -5567,7 +5715,9 @@ export function ProductionPage() {
                   : null
               }
               woLabel={
-                woId > 0 ? displayWorkOrderNo(woId, selectedWoForNoQtyChrome?.docNo ?? null) : null
+                effectiveScopedWoId > 0
+                  ? displayWorkOrderNo(effectiveScopedWoId, selectedWoForNoQtyChrome?.docNo ?? null)
+                  : null
               }
               itemName={selected?.fgItem.itemName ?? null}
             />
@@ -5601,7 +5751,9 @@ export function ProductionPage() {
             </span>
             <OpCtxSep />
             <span className="font-mono font-semibold tabular-nums">
-              {woId > 0 ? displayWorkOrderNo(woId, selectedWoForNoQtyChrome?.docNo ?? null) : "—"}
+              {effectiveScopedWoId > 0
+                ? displayWorkOrderNo(effectiveScopedWoId, selectedWoForNoQtyChrome?.docNo ?? null)
+                : "—"}
             </span>
             <OpCtxSep />
             <span className="max-w-[10rem] truncate font-semibold text-slate-900" title={selected?.fgItem.itemName ?? ""}>
@@ -5691,6 +5843,16 @@ export function ProductionPage() {
             </span>
             <span className="font-semibold text-slate-900">{noQtyCycleDisplayStatus.label}</span>
           </div>
+        ) : null}
+        {navigateNoQtyContext && effectiveScopedWoId > 0 && canProd ? (
+          <ProductionExecutionPanel
+            workOrderId={effectiveScopedWoId}
+            orderType="NO_QTY"
+            canOperate={canProd}
+            onChanged={() => {
+              void refresh();
+            }}
+          />
         ) : null}
       </OperationalContextSticky>
       {/*

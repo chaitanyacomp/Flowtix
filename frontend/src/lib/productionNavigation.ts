@@ -39,11 +39,19 @@ function appendQueryParams(href: string, extra: Record<string, string | undefine
  * - Unknown order type → omit `flow` (Production page infers from SO master)
  */
 export function buildProductionScopedHref(input: ProductionScopedNavInput = {}): string {
-  const rawAction = input.actionHref?.trim();
-  if (rawAction) return rawAction;
-
   const woId = Number(input.workOrderId ?? 0);
   const wolId = Number(input.workOrderLineId ?? 0);
+  const rawAction = input.actionHref?.trim();
+  if (rawAction) {
+    let href = rawAction;
+    if (woId > 0 && !/[?&]workOrderId=\d+/i.test(href)) {
+      href = appendQueryParams(href, { workOrderId: String(woId) });
+    }
+    if (wolId > 0 && !/[?&]workOrderLineId=\d+/i.test(href)) {
+      href = appendQueryParams(href, { workOrderLineId: String(wolId) });
+    }
+    return href;
+  }
   const sid = Number(input.salesOrderId ?? 0);
   const orderType = String(input.orderType ?? "").trim().toUpperCase();
 

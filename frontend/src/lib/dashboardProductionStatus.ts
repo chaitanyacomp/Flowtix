@@ -22,6 +22,10 @@ export type DashboardProductionStatusSource = {
   balanceQty: number;
   status?: string;
   holdReason?: string | null;
+  productionExecutionStatus?: string | null;
+  productionBlockReason?: string | null;
+  productionBlockReasonLabel?: string | null;
+  productionBlockRemarks?: string | null;
   orderType?: string | null;
   nextAction?: string | null;
   hasPendingQc?: boolean;
@@ -273,6 +277,13 @@ function operationalStatusFromNoQtyRow(
   const shortage = lineShortageQty(row);
   const absorbed = noQtyShortageAbsorbedByLaterRow(row, ctx);
   const route = inferProductionHrefRoute(effectiveProductionHref(row));
+
+  if (row.productionExecutionStatus === "BLOCKED") {
+    const blocker =
+      row.productionBlockReasonLabel ??
+      (row.productionBlockReason ? row.productionBlockReason.replace(/_/g, " ") : "Blocked");
+    return { label: blocker, tone: "partial" };
+  }
 
   if (woStatus === "HOLD" || next === "ON_HOLD") {
     return {

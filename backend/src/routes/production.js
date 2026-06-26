@@ -100,6 +100,18 @@ const {
   assertWorkOrderAllowsProduction,
   shouldFreezeStatusSync,
 } = require("../services/workOrderLifecycleService");
+const {
+  BLOCK_REASONS,
+  RESOLUTION_REASONS,
+  computeExecutionSummary,
+  getProductionExecutionSummary,
+  assertNoQtyProductionExecutionAllowsProduction,
+  blockProductionExecution,
+  resumeProductionExecution,
+  finishProductionExecution,
+  ensureProductionExecutionRecord,
+  blockReasonLabel,
+} = require("../services/productionExecutionService");
 
 async function assertNoQtyWorkOrderInActiveCycleOrThrow(tx, workOrderId, messagePrefix) {
   const wo = await tx.workOrder.findUnique({
@@ -603,10 +615,24 @@ function normalizeWorkOrderLinePayloads(lines) {
 async function syncWorkOrderStatusFromProduction(tx, workOrderId) {
   const wo = await tx.workOrder.findUnique({
     where: { id: workOrderId },
-    include: { lines: { select: { id: true, qty: true } } },
+    include: {
+      lines: { select: { id: true, qty: true } },
+      salesOrder: { select: { orderType: true } },
+      productionExecution: { select: { executionStatus: true } },
+    },
   });
   if (!wo || wo.status === "REJECTED" || !wo.lines.length) return;
   if (shouldFreezeStatusSync(wo.status)) return;
+
+  if (
+    wo.salesOrder?.orderType === "NO_QTY" &&
+    wo.productionExecution?.executionStatus === "COMPLETED"
+  ) {
+    if (wo.status !== "COMPLETED") {
+      await tx.workOrder.update({ where: { id: workOrderId }, data: { status: "COMPLETED" } });
+    }
+    return;
+  }
 
   const lineIds = wo.lines.map((l) => l.id);
   const producedByLineId = await getApprovedProducedQtyByWorkOrderLineIds(tx, lineIds);
@@ -1076,6 +1102,120 @@ productionRouter.post(
       });
       return res.json(result);
     } catch (e) {
+      return next(e);
+    }
+  },
+);
+
+/** NO_QTY — Production execution status (orthogonal to Work Order lifecycle). */
+productionRouter.get(
+  "/work-orders/:id/production-execution",
+  requireAuth,
+  requireRole(["ADMIN", "PRODUCTION", "STORE"]),
+  async (req, res, next) => {
+    try {
+      const id = Number(req.params.id);
+      const summary = await getProductionExecutionSummary(prisma, id);
+      return res.json({
+        ...summary,
+        blockReasonLabel: summary.blockReason ? blockReasonLabel(summary.blockReason) : null,
+        blockReasons: BLOCK_REASONS,
+        resolutionReasons: RESOLUTION_REASONS,
+      });
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
+productionRouter.post(
+  "/work-orders/:id/production-execution/block",
+  requireAuth,
+  requireRole(["ADMIN", "PRODUCTION"]),
+  async (req, res, next) => {
+    try {
+      const id = Number(req.params.id);
+      const body = z
+        .object({
+          blockReason: z.enum(BLOCK_REASONS),
+          remarks: z.string().max(500).optional().nullable(),
+        })
+        .parse(req.body ?? {});
+      const result = await prisma.$transaction(async (tx) => {
+        await lockWorkOrderForUpdate(tx, id);
+        return blockProductionExecution(tx, id, {
+          blockReason: body.blockReason,
+          remarks: body.remarks,
+          actorUserId: req.user?.userId,
+          actorRole: req.user?.role,
+        });
+      });
+      return res.json(result);
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
+productionRouter.post(
+  "/work-orders/:id/production-execution/resume",
+  requireAuth,
+  requireRole(["ADMIN", "PRODUCTION"]),
+  async (req, res, next) => {
+    try {
+      const id = Number(req.params.id);
+      const result = await prisma.$transaction(async (tx) => {
+        await lockWorkOrderForUpdate(tx, id);
+        return resumeProductionExecution(tx, id, {
+          actorUserId: req.user?.userId,
+          actorRole: req.user?.role,
+        });
+      });
+      return res.json(result);
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
+productionRouter.post(
+  "/work-orders/:id/production-execution/finish",
+  requireAuth,
+  requireRole(["ADMIN", "PRODUCTION"]),
+  async (req, res, next) => {
+    try {
+      const id = Number(req.params.id);
+      const body = z
+        .object({
+          shortfallOutcome: z.enum(["BLOCK", "CARRY_FORWARD", "WAIVE_BALANCE"]).optional(),
+          blockReason: z.enum(BLOCK_REASONS).optional(),
+          resolutionReason: z.enum(RESOLUTION_REASONS).optional(),
+          remarks: z.string().max(500).optional().nullable(),
+        })
+        .parse(req.body ?? {});
+      const result = await prisma.$transaction(async (tx) => {
+        await lockWorkOrderForUpdate(tx, id);
+        return finishProductionExecution(
+          tx,
+          id,
+          {
+            shortfallOutcome: body.shortfallOutcome,
+            blockReason: body.blockReason,
+            resolutionReason: body.resolutionReason,
+            remarks: body.remarks,
+          },
+          { actorUserId: req.user?.userId, actorRole: req.user?.role },
+        );
+      });
+      return res.json(result);
+    } catch (e) {
+      if (e.code === "WO_EXEC_SHORTFALL_REQUIRED" && e.shortfall) {
+        return res.status(409).json({
+          message: e.message,
+          code: e.code,
+          shortfall: e.shortfall,
+        });
+      }
       return next(e);
     }
   },
@@ -1557,6 +1697,7 @@ productionRouter.post(
         // NO_QTY: production allowed only for the active cycle and only after RS is locked.
         await assertNoQtyWorkOrderInActiveCycleOrThrow(tx, wol.workOrderId, "This work order");
         await assertWorkOrderAllowsProduction(tx, wol.workOrderId);
+        await assertNoQtyProductionExecutionAllowsProduction(tx, wol.workOrderId);
 
         const alreadyProduced = await sumProducedQtyOnLine(tx, wol.id);
         const lineQty = Number(wol.qty);
@@ -1654,6 +1795,7 @@ productionRouter.put(
 
         await assertNoQtyWorkOrderInActiveCycleOrThrow(tx, wol.workOrderId, "This work order");
         await assertWorkOrderAllowsProduction(tx, wol.workOrderId);
+        await assertNoQtyProductionExecutionAllowsProduction(tx, wol.workOrderId);
 
         const others = await sumProducedQtyOnLine(tx, wol.id, { excludeProductionId: id });
         const lineQty = Number(wol.qty);
@@ -1817,6 +1959,7 @@ productionRouter.post(
         const wol = prod.workOrderLine;
         await assertNoQtyWorkOrderInActiveCycleOrThrow(tx, wol.workOrderId, "This work order");
         await assertWorkOrderAllowsProduction(tx, wol.workOrderId);
+        await assertNoQtyProductionExecutionAllowsProduction(tx, wol.workOrderId);
         await lockWorkOrderLineForUpdate(tx, wol.id);
 
         const others = await sumProducedQtyOnLine(tx, wol.id, { excludeProductionId: id });
@@ -1927,6 +2070,9 @@ productionRouter.post(
           select: { status: true, salesOrderId: true },
         });
         await lockWorkOrderForUpdate(tx, wol.workOrderId);
+        if (!isRegular) {
+          await ensureProductionExecutionRecord(tx, wol.workOrderId);
+        }
         await syncWorkOrderStatusFromProduction(tx, wol.workOrderId);
         const woAfter = await tx.workOrder.findUnique({
           where: { id: wol.workOrderId },

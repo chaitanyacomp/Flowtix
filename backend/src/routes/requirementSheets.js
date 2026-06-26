@@ -41,6 +41,10 @@ const {
   netNoQtyCycleDispatchedByItemId,
 } = require("./dispatch");
 const { loadEffectiveNoQtyCarryForwardShortfallByItem } = require("../services/noQtySoCloseSnapshotService");
+const {
+  consumeCarryForwardPendingForRequirementSheet,
+  loadPendingCarryForwardQtyByItem,
+} = require("../services/carryForwardPendingService");
 const { assertNoQtyRequirementSheetPeriodReleased } = require("../services/noQtyExecutionBoundaryService");
 const {
   createNoQtyWorkOrderFromLockedSheet,
@@ -71,6 +75,58 @@ function round3(v) {
 
 function computeNoQtyOperatorCarryForwardQty(plannedQty, approvedProducedQty) {
   return round3(Math.max(0, round3(plannedQty) - round3(approvedProducedQty)));
+}
+
+/**
+ * Next-cycle RS demand qty: PENDING carry-forward pool first; waived/completed-without-CF → zero;
+ * legacy cycles without production execution resolution fall back to operator shortfall.
+ */
+function resolveNoQtyCarryForwardDemandQty({
+  cfPendingQty,
+  operatorShortfall,
+  executionCompleted,
+  hadCarryForwardResolution,
+}) {
+  const cf = round3(n(cfPendingQty));
+  const op = round3(n(operatorShortfall));
+  if (cf > EPS) return cf;
+  if (op <= EPS) return 0;
+  if (executionCompleted && !hadCarryForwardResolution) return 0;
+  return op;
+}
+
+/**
+ * @returns {Promise<Map<number, { executionCompleted: boolean; hadCarryForwardResolution: boolean }>>}
+ */
+async function loadNoQtyExecutionResolutionByItemForCycle(db, salesOrderId, cycleId) {
+  const cid = Number(cycleId);
+  const soId = Number(salesOrderId);
+  if (!Number.isFinite(soId) || soId <= 0 || !Number.isFinite(cid) || cid <= 0) return new Map();
+
+  const wos = await db.workOrder.findMany({
+    where: { salesOrderId: soId, cycleId: cid, status: { not: "REJECTED" } },
+    include: {
+      lines: { select: { fgItemId: true } },
+      productionExecution: { select: { executionStatus: true, lastResolutionType: true } },
+    },
+  });
+
+  /** @type {Map<number, { executionCompleted: boolean; hadCarryForwardResolution: boolean }>} */
+  const out = new Map();
+  for (const wo of wos) {
+    const exec = wo.productionExecution;
+    const completed = exec?.executionStatus === "COMPLETED";
+    const hadCf = exec?.lastResolutionType === "CARRY_FORWARD";
+    for (const line of wo.lines || []) {
+      const itemId = Number(line.fgItemId);
+      if (!Number.isFinite(itemId) || itemId <= 0) continue;
+      const prev = out.get(itemId) ?? { executionCompleted: false, hadCarryForwardResolution: false };
+      if (completed) prev.executionCompleted = true;
+      if (hadCf) prev.hadCarryForwardResolution = true;
+      out.set(itemId, prev);
+    }
+  }
+  return out;
 }
 
 /**
@@ -570,17 +626,38 @@ async function loadNoQtyCarryForwardShortfallByItem(input) {
 
   /** @type {Map<number, { rawShortfall: number; planned: number; produced: number }>} */
   const out = new Map();
-  if (lastCyclePerItem) {
-    for (const [itemId, v] of lastCyclePerItem) {
-      const planned = n(v.planned);
-      const approvedProduced = n(v.qcAccepted);
-      const cycleShortfall = computeNoQtyOperatorCarryForwardQty(planned, approvedProduced);
-      out.set(itemId, {
-        rawShortfall: cycleShortfall,
-        planned,
-        produced: approvedProduced,
-      });
-    }
+
+  const lastPriorCycleId =
+    prevCycleRows.length > 0 ? Number(prevCycleRows[prevCycleRows.length - 1].id) : null;
+  const [pendingCfByItem, executionByItem] = await Promise.all([
+    loadPendingCarryForwardQtyByItem(prisma, { salesOrderId: soId, currentCycleId }),
+    lastPriorCycleId
+      ? loadNoQtyExecutionResolutionByItemForCycle(prisma, soId, lastPriorCycleId)
+      : Promise.resolve(new Map()),
+  ]);
+
+  const itemIds = new Set([
+    ...(lastCyclePerItem ? [...lastCyclePerItem.keys()] : []),
+    ...pendingCfByItem.keys(),
+  ]);
+
+  for (const itemId of itemIds) {
+    const v = lastCyclePerItem?.get(itemId);
+    const planned = n(v?.planned);
+    const approvedProduced = n(v?.qcAccepted);
+    const operatorShortfall = computeNoQtyOperatorCarryForwardQty(planned, approvedProduced);
+    const exec = executionByItem.get(itemId);
+    const rawShortfall = resolveNoQtyCarryForwardDemandQty({
+      cfPendingQty: pendingCfByItem.get(itemId) ?? 0,
+      operatorShortfall,
+      executionCompleted: exec?.executionCompleted ?? false,
+      hadCarryForwardResolution: exec?.hadCarryForwardResolution ?? false,
+    });
+    out.set(itemId, {
+      rawShortfall,
+      planned,
+      produced: approvedProduced,
+    });
   }
 
   const filtered = new Map();
@@ -856,10 +933,11 @@ async function mapSheetDetail(sheet) {
       draftUsableStockForSuggest = round3(stock);
       availableStockQty = draftUsableStockForSuggest;
       const rawCarryShortfall = shortfallByItem.get(ln.itemId)?.rawShortfall ?? 0;
+      const poolCarrySnap = ln.shortfallQtySnapshot != null ? round3(n(ln.shortfallQtySnapshot)) : 0;
       // NO_QTY: API `shortfallQty` = last shortage from prior cycle (planned qty - approved produced qty); stock/QC fields are separate.
       shortfallQty =
         sheet?.salesOrder?.orderType === "NO_QTY"
-          ? round3(Math.max(0, rawCarryShortfall))
+          ? round3(Math.max(0, poolCarrySnap > EPS ? poolCarrySnap : rawCarryShortfall))
           : round3(rawCarryShortfall);
       // Draft: gross fulfillment uses raw carry + new (same-cycle messaging); NO_QTY Total to Produce = shortfallQty + new (usable surplus informational only).
       const grossFulfillment = round3(round3(rawCarryShortfall) + round3(newWoQty));
@@ -1110,6 +1188,16 @@ requirementSheetsRouter.post(
           },
           select: { id: true },
         });
+
+        await consumeCarryForwardPendingForRequirementSheet(tx, {
+          salesOrderId: soId,
+          cycleId,
+          requirementSheetId: sheet.id,
+          itemIds: selectedItemIds,
+          actorUserId: req.user?.userId ?? null,
+          actorRole: req.user?.role,
+        });
+
         return sheet;
       });
 
@@ -2176,4 +2264,6 @@ module.exports = {
   getNoQtyLastShortageQtyForCycleItem,
   loadNoQtyPriorCycleUndispatchedAcceptedByItem,
   computeNoQtyOperatorCarryForwardQty,
+  resolveNoQtyCarryForwardDemandQty,
+  loadNoQtyExecutionResolutionByItemForCycle,
 };

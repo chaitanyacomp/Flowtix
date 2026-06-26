@@ -47,6 +47,7 @@ import {
 } from "../lib/planningItemLifecycleStatus";
 import type { RmRequirementRow } from "./rmPurchase/rmPurchaseShared";
 import { NoQtyPlannerInboxSection } from "../components/erp/planning/NoQtyPlannerInboxSection";
+import { CarryForwardPendingSection } from "../components/erp/planning/CarryForwardPendingSection";
 import { useNoQtyPlannerInbox } from "../hooks/useNoQtyPlannerInbox";
 
 type WoLifecycleRow = {
@@ -439,6 +440,15 @@ export function PlanningDashboardPage() {
         loading={plannerInboxLoading}
         error={plannerInboxError}
       />
+
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base">Carry Forward Pending</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <CarryForwardPendingSection />
+        </CardContent>
+      </Card>
 
       {canSeeRmRequirements ? (
         <>

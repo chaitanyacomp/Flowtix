@@ -38,12 +38,16 @@ describe("productionNavigation", () => {
     expect(href).not.toContain("flow=NO_QTY");
   });
 
-  it("prefers server actionHref when provided", () => {
+  it("prefers server actionHref when provided and merges missing workOrderId", () => {
     const href = buildProductionScopedHref({
       actionHref: "/production?source=no_qty_so&salesOrderId=1",
       orderType: "NORMAL",
       workOrderId: 9,
+      workOrderLineId: 12,
     });
-    expect(href).toBe("/production?source=no_qty_so&salesOrderId=1");
+    expect(href).toContain("source=no_qty_so");
+    expect(href).toContain("salesOrderId=1");
+    expect(href).toContain("workOrderId=9");
+    expect(href).toContain("workOrderLineId=12");
   });
 });

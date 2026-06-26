@@ -1,5 +1,6 @@
 import { ROW_NUM_EPS } from "./dispatchBacklog";
 import { buildNoQtyGuidedHref } from "./noQtyFlowState";
+import { buildProductionScopedHref } from "./productionNavigation";
 import { createCycleRequirementSheetButtonLabel, noQtyAgreementWorkspaceHref, noQtySoListHref } from "./noQtyRsActionLabels";
 import { PRODUCTION_QA_TERMS } from "./productionQaTerminology";
 
@@ -639,6 +640,8 @@ export function buildActionRequiredFromQueues(
     nextRsMetricLabel?: string;
     orderType?: string;
     bestProdCycleId?: number | null;
+    bestWorkOrderId?: number;
+    bestWorkOrderLineId?: number;
     bestBacklogLineId?: number;
     bestBacklogItemId?: number;
   };
@@ -656,7 +659,7 @@ export function buildActionRequiredFromQueues(
         customerName: "",
         itemName: "",
         hrefQc: `/qc-entry?salesOrderId=${sid}&source=dashboard`,
-        hrefProd: `/production?salesOrderId=${sid}&from=dashboard`,
+        hrefProd: buildProductionScopedHref({ salesOrderId: soId, from: "dashboard" }),
         bestProdRank: 99,
         bestProdMetric: 0,
       };
@@ -752,16 +755,17 @@ export function buildActionRequiredFromQueues(
         a.bestProdCycleId = p.cycleId ?? null;
         a.nextRsMetricLabel =
           p.nextAction === "NEXT_RS_REQUIRED" ? (p.qtyLabel ?? "Last shortage Qty") : undefined;
-        if (p.actionHref) {
-          a.hrefProd = p.actionHref;
-        } else if (p.orderType === "NO_QTY") {
-          a.hrefProd = buildNoQtyGuidedHref({
-            to: "/production",
-            salesOrderId: a.salesOrderId,
-            cycleId: p.cycleId ?? null,
-            fromStep: "work_order",
-          });
-        }
+        a.bestWorkOrderId = p.workOrderId;
+        a.bestWorkOrderLineId = p.workOrderLineId;
+        a.hrefProd = buildProductionScopedHref({
+          actionHref: p.actionHref,
+          orderType: p.orderType,
+          salesOrderId: p.salesOrderId ?? a.salesOrderId,
+          cycleId: p.cycleId ?? null,
+          workOrderId: p.workOrderId,
+          workOrderLineId: p.workOrderLineId,
+          from: "dashboard",
+        });
         if (p.customerName) a.customerName = p.customerName;
         a.itemName = p.itemName;
       }

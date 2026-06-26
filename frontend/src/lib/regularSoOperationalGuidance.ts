@@ -195,7 +195,18 @@ export function resolveProductionStickyContext(args: {
     woFromUrl?.salesOrderId ??
     Number(wol?.workOrder?.salesOrderId ?? 0) ??
     0;
-  if (!(woId > 0) || !(soId > 0)) return null;
+  if (!(woId > 0) || !(soId > 0)) {
+    if (args.woId > 0 && args.focusSo?.id && args.focusSo.id > 0) {
+      return {
+        salesOrderId: args.focusSo.id,
+        workOrderId: args.woId,
+        itemName: "—",
+        woDocNo: woFromUrl?.docNo ?? null,
+        soDocNo: args.focusSo.docNo ?? null,
+      };
+    }
+    return null;
+  }
   const lineFromWo = woFromUrl?.lines?.find((l) => l.id === args.wolId) ?? woFromUrl?.lines?.[0];
   const itemName = wol?.fgItem?.itemName ?? lineFromWo?.fgItem?.itemName ?? "—";
   return {

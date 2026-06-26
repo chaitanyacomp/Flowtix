@@ -36,6 +36,7 @@ const {
   buildNoQtyDispatchLineStatsForAllCycles,
 } = require("../routes/dispatch");
 const { loadEffectiveNoQtyCarryForwardShortfallByItem } = require("./noQtySoCloseSnapshotService");
+const { blockReasonLabel, getEffectiveProductionPendingQty } = require("./productionExecutionService");
 const {
   plannedNewRequirementAndQcAcceptedByItemForSingleCycle,
   computeNoQtyOperatorCarryForwardQty,
@@ -688,6 +689,14 @@ async function getProductionQueueRows() {
       status: true,
       createdAt: true,
       cycle: true,
+      productionExecution: {
+        select: {
+          executionStatus: true,
+          blockReason: true,
+          blockRemarks: true,
+          blockedAt: true,
+        },
+      },
       lines: {
         orderBy: { id: "asc" },
         select: {
@@ -879,6 +888,12 @@ async function getProductionQueueRows() {
     const orderType = so?.orderType ?? "NORMAL";
     if (
       orderType === "NO_QTY" &&
+      wo.productionExecution?.executionStatus === "COMPLETED"
+    ) {
+      continue;
+    }
+    if (
+      orderType === "NO_QTY" &&
       ["MANUALLY_CLOSED", "CLOSED", "COMPLETED"].includes(String(so?.internalStatus ?? ""))
     ) {
       if (auditWo147(wo)) {
@@ -896,9 +911,10 @@ async function getProductionQueueRows() {
     const woLines = Array.isArray(wo?.lines) ? wo.lines : [];
     for (const line of woLines) {
       const requiredQty = Number(line.qty);
-      const plannedQty = Number(line.plannedQty);
+      const plannedQty = Number(line.plannedQty ?? line.qty);
       const approvedProduced = producedByLineId.get(line.id) ?? 0;
-      const balanceQty = getWoLineRemainingProductionQty(requiredQty, approvedProduced);
+      const execStatus = wo.productionExecution?.executionStatus ?? "RUNNING";
+      const balanceQty = getEffectiveProductionPendingQty(plannedQty, approvedProduced, execStatus);
       if (auditWo147(wo) && balanceQty <= QUEUE_EPS) {
         console.info("[AUDIT_WO147_QUEUE]", {
           woId: wo.id,
@@ -1092,6 +1108,12 @@ async function getProductionQueueRows() {
         balanceQty,
         status: wo.status,
         holdReason: wo.holdReason ?? null,
+        productionExecutionStatus: execStatus,
+        productionBlockReason: wo.productionExecution?.blockReason ?? null,
+        productionBlockReasonLabel: wo.productionExecution?.blockReason
+          ? blockReasonLabel(wo.productionExecution.blockReason)
+          : null,
+        productionBlockRemarks: wo.productionExecution?.blockRemarks ?? null,
         workOrderDate: wo.createdAt.toISOString(),
         quantityMetricContext: QUEUE_SNAPSHOT_ROW_METRIC_CONTEXT.productionQueue,
         orderType,

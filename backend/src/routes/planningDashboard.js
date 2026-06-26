@@ -4,9 +4,11 @@
  */
 const express = require("express");
 const { requireAuth, requireRole } = require("../middleware/auth");
+const { prisma } = require("../utils/prisma");
 const { getPlanningDashboard } = require("../services/planningDashboardService");
 const { getProductionPlanningDashboard } = require("../services/productionPlanningDashboardService");
 const { getNoQtyPlanningInbox } = require("../services/noQtyPlanningInboxService");
+const { listCarryForwardPending, updatePlannedNextRsHint } = require("../services/carryForwardPendingService");
 
 const { PLANNING_DASHBOARD_ROLES } = require("../constants/erpRoles");
 
@@ -48,6 +50,44 @@ planningDashboardRouter.get("/no-qty-inbox", requireAuth, planningDashboardRoles
     return next(e);
   }
 });
+
+/** NO_QTY Carry Forward Pending pool — Store planning visibility (Production creates; Store consumes on RS create). */
+planningDashboardRouter.get(
+  "/carry-forward-pending",
+  requireAuth,
+  requireRole(["ADMIN", "STORE"], "Access denied. Only administrators and store staff can view carry forward pending."),
+  async (req, res, next) => {
+    try {
+      const salesOrderId = req.query.salesOrderId != null ? Number(req.query.salesOrderId) : undefined;
+      const rows = await listCarryForwardPending(prisma, {
+        salesOrderId: Number.isFinite(salesOrderId) ? salesOrderId : undefined,
+      });
+      return res.json({ rows });
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
+planningDashboardRouter.patch(
+  "/carry-forward-pending/:id/planned-next-rs",
+  requireAuth,
+  requireRole(["ADMIN", "STORE"], "Access denied."),
+  async (req, res, next) => {
+    try {
+      const id = Number(req.params.id);
+      const { plannedNextRsHint } = req.body ?? {};
+      const updated = await updatePlannedNextRsHint(prisma, id, {
+        plannedNextRsHint: typeof plannedNextRsHint === "string" ? plannedNextRsHint : null,
+        actorUserId: req.user?.userId,
+        actorRole: req.user?.role,
+      });
+      return res.json(updated);
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
 
 module.exports = { planningDashboardRouter };
 

@@ -192,7 +192,9 @@ enum WoHoldReason {
 
 /// NO_QTY: shop-floor production execution pacing (orthogonal to WorkOrder.status).
 enum ProductionExecutionStatus {
+  NOT_STARTED
   RUNNING
+  SHORTFALL_PENDING
   BLOCKED
   COMPLETED
 }
@@ -212,6 +214,7 @@ enum ProductionShortfallResolutionType {
   BLOCKED
   CARRY_FORWARD
   WAIVE_BALANCE
+  SURPLUS_PRODUCTION
 }
 
 enum ProductionShortfallResolutionReason {
@@ -2417,6 +2420,8 @@ model WorkOrderLine {
   shortfallQty Decimal? @db.Decimal(18, 3)
   /// NO_QTY: qty waived when Production finishes execution with Waive Balance.
   executionWaivedQty Decimal? @db.Decimal(18, 3)
+  /// NO_QTY: qty produced above WO planned qty at execution completion (reduces next RS demand).
+  executionSurplusQty Decimal? @db.Decimal(18, 3)
 
   workOrder   WorkOrder         @relation(fields: [workOrderId], references: [id], onDelete: Cascade)
   fgItem      Item              @relation("WoLineFg", fields: [fgItemId], references: [id], onDelete: Restrict)

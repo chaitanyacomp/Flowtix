@@ -40,17 +40,19 @@ export function MaterialIssuePmrQueuePanel({
   }
 
   return (
-    <div className="rounded-lg border border-slate-200 bg-slate-50/80 p-4">
-      <div className="mb-3 flex items-center justify-between gap-2">
-        <h3 className="text-sm font-semibold text-slate-800">Work orders waiting for issue</h3>
-        <Link to="/production/material-requests" className="text-xs font-medium text-primary hover:underline">
-          All requests
+    <div className="rounded-md border border-slate-200 bg-slate-50/80 px-2.5 py-2">
+      <div className="mb-1.5 flex items-center justify-between gap-2">
+        <h3 className="text-[11px] font-semibold uppercase tracking-wide text-slate-700">
+          Work orders waiting for issue
+        </h3>
+        <Link to="/production/material-requests" className="text-[10px] font-medium text-primary hover:underline">
+          All
         </Link>
       </div>
 
-      <ul className="max-h-[min(520px,50vh)] space-y-2 overflow-y-auto">
+      <ul className="max-h-[min(420px,45vh)] space-y-1 overflow-y-auto">
         {groups.length === 0 ? (
-          <li className="text-xs text-slate-500">No pending material requests for store issue.</li>
+          <li className="text-[11px] text-slate-500">No pending material requests.</li>
         ) : (
           groups.map((g) => (
             <WoGroupCard
@@ -96,9 +98,9 @@ function WoGroupCard({
       <button
         type="button"
         className={cn(
-          "w-full rounded-lg border px-3 py-2.5 text-left transition-colors",
+          "w-full rounded border px-2 py-1.5 text-left transition-colors",
           isActiveWo
-            ? "border-violet-400 bg-violet-50/90 ring-1 ring-violet-200"
+            ? "border-violet-500 bg-violet-50 ring-2 ring-violet-300/80"
             : "border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50/80",
         )}
         onClick={() => {
@@ -106,50 +108,47 @@ function WoGroupCard({
           onSelectPmr(g.latestPmr.id, g.workOrderId);
         }}
       >
-        <p className="text-sm font-extrabold text-slate-950">
-          {g.workOrderNo ?? `WO-${g.workOrderId}`}
-          {g.salesOrderNo ? <span className="font-semibold text-slate-600"> · {g.salesOrderNo}</span> : null}
-        </p>
         {g.productionItemName ? (
-          <p className="mt-0.5 truncate text-[11px] text-slate-600">{g.productionItemName}</p>
+          <p className="truncate text-[11px] font-semibold text-slate-900">{g.productionItemName}</p>
         ) : null}
-        <p className="mt-1.5 text-xs text-slate-700">
-          <span className="font-bold">Latest PMR:</span> {g.latestPmr.docNo ?? `PMR-${g.latestPmr.id}`}
+        <p className={cn("text-[11px] font-bold text-slate-950", g.productionItemName && "mt-0.5")}>
+          {g.workOrderNo ?? `WO-${g.workOrderId}`}
+          {g.salesOrderNo ? <span className="font-medium text-slate-500"> · {g.salesOrderNo}</span> : null}
         </p>
-        <p className="mt-0.5 text-xs font-semibold text-amber-900">
-          {g.pendingLineCount} RM line{g.pendingLineCount === 1 ? "" : "s"} pending · Total pending:{" "}
-          <span className="tabular-nums">{fmtQty(g.totalPending)}</span>
+        <p className="mt-0.5 text-[10px] font-semibold tabular-nums text-amber-900">
+          Pending {fmtQty(g.totalPending)}
+          {g.pendingLineCount > 1 ? ` · ${g.pendingLineCount} lines` : ""}
         </p>
       </button>
 
       {hasOlder ? (
-        <div className="mt-1 pl-1">
+        <div className="mt-0.5 pl-1">
           <button
             type="button"
-            className="flex items-center gap-1 text-[10px] font-bold text-slate-600 hover:text-slate-900"
+            className="flex items-center gap-0.5 text-[10px] font-semibold text-slate-600 hover:text-slate-900"
             onClick={(e) => {
               e.stopPropagation();
               onToggleExpand();
             }}
           >
             {expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-            {g.allPmrs.length - 1} older request{g.allPmrs.length - 1 === 1 ? "" : "s"}
+            {g.allPmrs.length - 1} older
           </button>
           {expanded ? (
-            <ul className="mt-1 space-y-1 border-l-2 border-slate-200 pl-2">
+            <ul className="mt-0.5 space-y-0.5 border-l-2 border-slate-200 pl-1.5">
               {g.allPmrs.slice(1).map((p) => (
                 <li key={p.id}>
                   <button
                     type="button"
                     className={cn(
-                      "w-full rounded border px-2 py-1 text-left text-[11px]",
+                      "w-full rounded border px-1.5 py-0.5 text-left text-[10px]",
                       activePmrId === p.id
                         ? "border-primary bg-white font-semibold"
                         : "border-slate-200 bg-white hover:bg-slate-50",
                     )}
                     onClick={() => onSelectPmr(p.id, g.workOrderId)}
                   >
-                    {p.docNo ?? `PMR-${p.id}`} · pending {fmtQty(p.totalPending)}
+                    {p.docNo ?? `PMR-${p.id}`} · {fmtQty(p.totalPending)}
                   </button>
                 </li>
               ))}

@@ -20,7 +20,7 @@ export const RM_PURCHASE_POST_GRN_MESSAGES = {
 
   fulfilledDetail: "RM requirement for this sales order has been fulfilled.",
 
-  fulfilledNextStep: "Next step: Create Work Order when RM is available in Store.",
+  fulfilledNextStep: "Next step: Create Work Order.",
 
   partialHeadline:
 

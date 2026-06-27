@@ -107,6 +107,28 @@ function createMockDb() {
         }
         return rows;
       },
+      findFirst: async (query) => {
+        let rows = workOrders;
+        if (query.where?.id) {
+          rows = rows.filter((wo) => wo.id === query.where.id);
+        }
+        if (query.where?.salesOrderId) {
+          rows = rows.filter((wo) => wo.salesOrderId === query.where.salesOrderId);
+        }
+        if (query.where?.status?.not) {
+          rows = rows.filter((wo) => wo.status !== query.where.status.not);
+        }
+        const wo = rows[0] ?? null;
+        if (!wo) return null;
+        if (query.select) {
+          const out = {};
+          for (const key of Object.keys(query.select)) {
+            if (query.select[key]) out[key] = wo[key];
+          }
+          return out;
+        }
+        return wo;
+      },
     },
     salesOrder: {
       findMany: async (query) => {
@@ -1078,6 +1100,26 @@ describe("MPRS WO case — completed procurement read model", () => {
     );
     assert.equal(blocker, "RM issued to production");
     assert.equal(deriveRecommendedAction({}, blocker), "Start production");
+  });
+
+  it("deriveLineBlocker does not emit ready-for-issue when WO PMR is fully issued but free stock remains", () => {
+    const pmrStatus = {
+      openPmrs: [
+        {
+          status: "FULLY_ISSUED",
+          lines: [{ rmItemId: 301, requiredQty: 40.35, issuedQty: 40.35, pendingQty: 0 }],
+        },
+      ],
+    };
+    const blocker = deriveLineBlocker(
+      availabilityLine(301, {
+        requiredQty: 40.35,
+        freeStockQty: 100,
+        shortageAfterReservationQty: 0,
+      }),
+      { pmrStatus, hasWorkOrder: true },
+    );
+    assert.equal(blocker, "RM issued to production");
   });
 
   it("summarizeMergedCaseSupply marks procurementCompletedForCase", () => {

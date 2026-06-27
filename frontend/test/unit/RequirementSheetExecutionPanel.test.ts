@@ -61,6 +61,10 @@ describe("RequirementSheetExecutionPanel layout", () => {
     expect(panelSource).toContain('submitPlacement("suggested")');
     expect(panelSource).toContain('submitPlacement("custom")');
     expect(panelSource).toContain("/create-wo");
+    expect(panelSource).toContain("postWoMaterialIssueHref");
+    expect(panelSource).toContain("formatPostWoCreateSuccessMessage");
+    expect(panelSource).toContain("placementQuantitiesMatchSuggested");
+    expect(panelSource).toContain('variant={useSuggestedAsPrimary ? "default" : "outline"}');
   });
 
   it("removes duplicate above-fold sections", () => {

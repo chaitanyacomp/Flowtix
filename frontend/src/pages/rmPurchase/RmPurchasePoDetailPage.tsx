@@ -864,13 +864,18 @@ export function RmPurchasePoDetailPage() {
 
       return {
         variant: "success" as const,
-        title,
-        subtitle,
+        title: grnSuccess ?? "RM Available",
+        subtitle: RM_PURCHASE_POST_GRN_MESSAGES.fulfilledNextStep,
         flowWorkOrderAttr: false,
         primary: {
-          label: "Go to Work Orders",
-          testId: "rm-purchase-next-work-orders-list",
-          onClick: () => navigate("/work-orders"),
+          label: "Open RM Control Center",
+          testId: "rm-purchase-next-rm-control-center",
+          onClick: () => navigate("/reports/rm-shortage?returnTo=rm-purchase"),
+        },
+        secondary: {
+          label: "Create Work Order",
+          testId: "rm-purchase-next-create-work-order",
+          onClick: () => navigate("/reports/rm-shortage?returnTo=rm-purchase&onlyBlocked=1"),
         },
       };
     }

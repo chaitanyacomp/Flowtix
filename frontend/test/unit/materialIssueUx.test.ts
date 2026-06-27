@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  assessMaterialIssueQty,
+  computeMaxAllowedRmIssueQty,
+  computeRmIssueToleranceQty,
+  formatIssueToleranceExceededMessage,
+  formatOverIssueToleranceWarning,
   formatSuggestedIssueQty,
   hasPartialStoreAutofill,
   isMaterialIssueLineStockBlocked,
@@ -8,6 +13,28 @@ import {
 } from "../../src/lib/materialIssueUx";
 
 describe("materialIssueUx", () => {
+  it("computes RM issue tolerance band", () => {
+    expect(computeRmIssueToleranceQty(12.792)).toBe(0.64);
+    expect(computeRmIssueToleranceQty(2.34)).toBe(0.5);
+    expect(computeMaxAllowedRmIssueQty(12.792)).toBe(13.432);
+  });
+
+  it("allows 13 Kg issue for 12.792 pending with tolerance warning", () => {
+    const result = assessMaterialIssueQty(13, 12.792);
+    expect(result.allowed).toBe(true);
+    expect(result.withinTolerance).toBe(true);
+    expect(result.overIssueQty).toBe(0.208);
+    expect(formatOverIssueToleranceWarning(result.overIssueQty, "Kg")).toBe(
+      "Over issue by 0.208 Kg — allowed within tolerance.",
+    );
+  });
+
+  it("blocks issue above tolerance", () => {
+    const result = assessMaterialIssueQty(20, 12.792);
+    expect(result.allowed).toBe(false);
+    expect(formatIssueToleranceExceededMessage()).toBe("Issue exceeds allowed tolerance.");
+  });
+
   it("computes still required from original and issued", () => {
     expect(stillRequiredMaterialIssueQty(5200, 3120)).toBe(2080);
     expect(stillRequiredMaterialIssueQty(5200, 5200)).toBe(0);

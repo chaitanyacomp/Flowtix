@@ -78,6 +78,40 @@ function computeNoQtyOperatorCarryForwardQty(plannedQty, approvedProducedQty) {
 }
 
 /**
+ * Sum execution surplus from the immediately prior NO_QTY cycle (reduces next RS production demand).
+ * @param {import('@prisma/client').PrismaClient | import('@prisma/client').Prisma.TransactionClient} db
+ */
+async function loadNoQtyProductionSurplusByItemForPriorCycle(db, salesOrderId, currentCycleId) {
+  const current = await db.salesOrderCycle.findUnique({
+    where: { id: currentCycleId },
+    select: { salesOrderId: true, cycleNo: true },
+  });
+  if (!current || current.salesOrderId !== salesOrderId) return new Map();
+  const prev = await db.salesOrderCycle.findFirst({
+    where: { salesOrderId, cycleNo: { lt: current.cycleNo } },
+    orderBy: { cycleNo: "desc" },
+    select: { id: true },
+  });
+  if (!prev) return new Map();
+
+  const lines = await db.workOrderLine.findMany({
+    where: {
+      workOrder: { salesOrderId, cycleId: prev.id },
+      executionSurplusQty: { not: null },
+    },
+    select: { fgItemId: true, executionSurplusQty: true },
+  });
+  /** @type {Map<number, number>} */
+  const out = new Map();
+  for (const ln of lines) {
+    const surplus = round3(n(ln.executionSurplusQty));
+    if (surplus <= EPS) continue;
+    out.set(ln.fgItemId, round3((out.get(ln.fgItemId) ?? 0) + surplus));
+  }
+  return out;
+}
+
+/**
  * Next-cycle RS demand qty: PENDING carry-forward pool first; waived/completed-without-CF → zero;
  * legacy cycles without production execution resolution fall back to operator shortfall.
  */
@@ -825,6 +859,10 @@ async function mapSheetDetail(sheet) {
     salesOrderId: sheet.salesOrderId,
     currentCycleId: effCycleIdForPost,
   });
+  const productionSurplusByItem =
+    sheet?.salesOrder?.orderType === "NO_QTY" && effCycleIdForPost != null && Number(effCycleIdForPost) > 0
+      ? await loadNoQtyProductionSurplusByItemForPriorCycle(prisma, sheet.salesOrderId, Number(effCycleIdForPost))
+      : new Map();
   const postCycleByItem =
     sheet?.salesOrder?.orderType === "NO_QTY" && effCycleIdForPost != null && Number(effCycleIdForPost) > 0
       ? await loadNoQtyPostCycleApprovalQtyByItem(prisma, sheet.salesOrderId, Number(effCycleIdForPost))
@@ -946,7 +984,14 @@ async function mapSheetDetail(sheet) {
         sheet?.salesOrder?.orderType === "NO_QTY" ? 0 : round3(Math.min(grossFulfillment, stock));
       productionRequiredQty =
         sheet?.salesOrder?.orderType === "NO_QTY"
-          ? round3(Math.max(0, round3(shortfallQty) + round3(newWoQty)))
+          ? round3(
+              Math.max(
+                0,
+                round3(shortfallQty) +
+                  round3(newWoQty) -
+                  round3(productionSurplusByItem.get(ln.itemId) ?? 0),
+              ),
+            )
           : round3(Math.max(0, grossFulfillment - postCycleQty - stock));
       gapPercent = computeGapPercent(grossFulfillment, stock);
       zone = computeZone(gapPercent, greenTh, yellowTh);
@@ -2264,6 +2309,7 @@ module.exports = {
   getNoQtyLastShortageQtyForCycleItem,
   loadNoQtyPriorCycleUndispatchedAcceptedByItem,
   computeNoQtyOperatorCarryForwardQty,
+  loadNoQtyProductionSurplusByItemForPriorCycle,
   resolveNoQtyCarryForwardDemandQty,
   loadNoQtyExecutionResolutionByItemForCycle,
 };

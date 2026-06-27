@@ -2,6 +2,107 @@
 
 const EPS = 1e-6;
 
+/** Pilot default: max(0.5 Kg, 5% of pending). Mirrors backend rmIssueToleranceService. */
+export const RM_ISSUE_TOLERANCE_MIN_KG = 0.5;
+export const RM_ISSUE_TOLERANCE_PERCENT = 0.05;
+
+function round3(v: number): number {
+  return Math.round(v * 1000) / 1000;
+}
+
+export function computeRmIssueToleranceQty(pendingQty: number | null | undefined): number {
+  const pending = round3(Math.max(0, Number(pendingQty ?? 0)));
+  if (!Number.isFinite(pending) || pending <= EPS) return 0;
+  return round3(Math.max(RM_ISSUE_TOLERANCE_MIN_KG, pending * RM_ISSUE_TOLERANCE_PERCENT));
+}
+
+export function computeMaxAllowedRmIssueQty(
+  pendingQty: number | null | undefined,
+  woStillRequiredQty?: number | null,
+): number {
+  const pending = round3(Math.max(0, Number(pendingQty ?? 0)));
+  const maxFromPmr = round3(pending + computeRmIssueToleranceQty(pending));
+  if (woStillRequiredQty == null) return maxFromPmr;
+  const woPending = round3(Math.max(0, Number(woStillRequiredQty)));
+  const maxFromWo = round3(woPending + computeRmIssueToleranceQty(woPending));
+  return round3(Math.min(maxFromPmr, maxFromWo));
+}
+
+export type MaterialIssueQtyAssessment = {
+  allowed: boolean;
+  withinTolerance: boolean;
+  overIssueQty: number;
+  maxAllowedQty: number;
+  toleranceQty: number;
+  pendingQty: number;
+};
+
+export function assessMaterialIssueQty(
+  issueQty: number | string | null | undefined,
+  pendingQty: number | null | undefined,
+  options?: { woStillRequiredQty?: number | null; maxAllowedIssueQty?: number | null },
+): MaterialIssueQtyAssessment {
+  const qty = round3(Number(issueQty ?? 0));
+  const pending = round3(Math.max(0, Number(pendingQty ?? 0)));
+  const toleranceQty = computeRmIssueToleranceQty(pending);
+  const maxAllowedQty =
+    options?.maxAllowedIssueQty != null
+      ? round3(Number(options.maxAllowedIssueQty))
+      : computeMaxAllowedRmIssueQty(pending, options?.woStillRequiredQty);
+
+  if (!Number.isFinite(qty) || qty <= EPS) {
+    return {
+      allowed: false,
+      withinTolerance: false,
+      overIssueQty: 0,
+      maxAllowedQty,
+      toleranceQty,
+      pendingQty: pending,
+    };
+  }
+  if (qty <= pending + EPS) {
+    return {
+      allowed: true,
+      withinTolerance: false,
+      overIssueQty: 0,
+      maxAllowedQty,
+      toleranceQty,
+      pendingQty: pending,
+    };
+  }
+
+  const overIssueQty = round3(qty - pending);
+  if (qty > maxAllowedQty + EPS) {
+    return {
+      allowed: false,
+      withinTolerance: false,
+      overIssueQty,
+      maxAllowedQty,
+      toleranceQty,
+      pendingQty: pending,
+    };
+  }
+
+  return {
+    allowed: true,
+    withinTolerance: true,
+    overIssueQty,
+    maxAllowedQty,
+    toleranceQty,
+    pendingQty: pending,
+  };
+}
+
+export function formatOverIssueToleranceWarning(overIssueQty: number, unit?: string): string {
+  const u = unit?.trim() ? ` ${unit}` : "";
+  const qty = round3(Math.max(0, overIssueQty));
+  return `Over issue by ${qty.toLocaleString(undefined, { maximumFractionDigits: 3 })}${u} — allowed within tolerance.`;
+}
+
+export function formatIssueToleranceExceededMessage(): string {
+  return "Issue exceeds allowed tolerance.";
+}
+
 /** Still required on PMR line: max(0, original request − already issued). */
 export function stillRequiredMaterialIssueQty(
   originalRequest: number | null | undefined,

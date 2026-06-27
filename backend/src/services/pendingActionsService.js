@@ -24,6 +24,7 @@ const {
   resolveNoQtyEligibilityCycleId,
 } = require("./noQtyCreateNextRsEligibility");
 const { assessNoQtyPlacementStageForCycle } = require("./requirementSheetExecutionService");
+const { isNoQtyCycleStoreExecutionIncomplete } = require("./noQtyCycleStoreExecutionGate");
 const {
   WAITING_FOR_PURCHASE_RM_PO,
   PREPARE_RM_PO,
@@ -32,8 +33,12 @@ const {
   resolveRmRiskPendingAction,
   resolveProcurementDemandPool,
 } = require("./rmProcurementStageSignals");
+const {
+  productionExecutionPendingActionLabel,
+  PRODUCTION_EXECUTION_PENDING_LABELS,
+} = require("./productionExecutionService");
 
-const STORE_ISSUE_PENDING_ACTION = "Material Issue Pending";
+const STORE_ISSUE_PENDING_ACTION = "Issue Material";
 const GRN_PENDING_ACTION = "GRN Pending";
 const PURCHASE_PO_PREP_ACTIONS = new Set([PREPARE_RM_PO, "Create PO"]);
 const PROCUREMENT_PENDING_ACTIONS = new Set([
@@ -205,8 +210,21 @@ function friendlyActionForNormalizedRow(row, role = "STORE") {
   const status = String(row?.currentStatus ?? "").toUpperCase();
 
   if (rowType === ROW_TYPES.PRODUCTION_QUEUE) {
+    const execStatus =
+      meta.productionExecutionStatus ??
+      (nextAction === "PRODUCTION_EXECUTION_BLOCKED"
+        ? "BLOCKED"
+        : nextAction === "PRODUCTION_SHORTFALL_DECISION"
+          ? "SHORTFALL_PENDING"
+          : null);
+    if (execStatus === "BLOCKED" || execStatus === "SHORTFALL_PENDING") {
+      const label = productionExecutionPendingActionLabel(execStatus);
+      if (label) return label;
+    }
     if (status.includes("ON_HOLD")) return "Production On Hold";
-    return "Production Pending";
+    const label = productionExecutionPendingActionLabel(execStatus);
+    if (label) return label;
+    return PRODUCTION_EXECUTION_PENDING_LABELS.RUNNING;
   }
   if (rowType === ROW_TYPES.QA_QUEUE) return "QC Pending";
   if (rowType === ROW_TYPES.QA_REWORK) return "Rework Pending";
@@ -411,14 +429,16 @@ async function fetchStoreIssuePendingActions(db = prisma) {
   const rows = await buildStoreIssuePendingDashboardRows(db);
   return rows.map((row) => {
     const woId = Number(row.workOrderId ?? 0);
+    const pmrId = row.pmrId != null ? Number(row.pmrId) : 0;
     const params = new URLSearchParams({ returnTo: "pending-actions", onlyBlocked: "1" });
     if (woId > 0) params.set("workOrderId", String(woId));
+    if (pmrId > 0) params.set("pmrId", String(pmrId));
     if (row.salesOrderId) params.set("salesOrderId", String(row.salesOrderId));
     if (row.materialRequirementId) params.set("materialRequirementId", String(row.materialRequirementId));
     return {
       id: `store-issue:wo:${woId}`,
       priority: PENDING_PRIORITY.MEDIUM,
-      action: "Material Issue Pending",
+      action: STORE_ISSUE_PENDING_ACTION,
       documentNo: row.workOrderNo ?? row.salesOrderDocNo ?? null,
       ownerRole: "STORE",
       ageHours: null,
@@ -624,6 +644,10 @@ async function fetchStoreNoQtyCreateNextRsPendingActions(db = prisma) {
     ]);
     if (!lockedRs) continue;
 
+    if (await isNoQtyCycleStoreExecutionIncomplete(db, { salesOrderId: soId, cycleId })) {
+      continue;
+    }
+
     const nextCycleNo =
       cycle?.cycleNo != null && Number(cycle.cycleNo) > 0 ? Number(cycle.cycleNo) + 1 : null;
     const label =
@@ -828,6 +852,10 @@ function isProductionExecutionPendingAction(action) {
   const label = String(action?.action ?? "");
   return (
     label === READY_TO_START_PRODUCTION ||
+    label === PRODUCTION_EXECUTION_PENDING_LABELS.RUNNING ||
+    label === PRODUCTION_EXECUTION_PENDING_LABELS.SHORTFALL_PENDING ||
+    label === PRODUCTION_EXECUTION_PENDING_LABELS.BLOCKED ||
+    label === "Resume Production" ||
     label === "Production Pending" ||
     label === "Production On Hold"
   );
@@ -843,9 +871,12 @@ function productionExecutionDedupeKey(action) {
 
 function productionPendingActionRank(action) {
   const label = String(action?.action ?? "");
-  if (label === READY_TO_START_PRODUCTION) return 0;
+  if (label === PRODUCTION_EXECUTION_PENDING_LABELS.BLOCKED || label === "Resume Production") return 0;
+  if (label === PRODUCTION_EXECUTION_PENDING_LABELS.SHORTFALL_PENDING) return 0;
   if (label === "Production On Hold") return 1;
-  if (label === "Production Pending") return 2;
+  if (label === PRODUCTION_EXECUTION_PENDING_LABELS.RUNNING) return 2;
+  if (label === READY_TO_START_PRODUCTION) return 3;
+  if (label === "Production Pending") return 4;
   return 99;
 }
 
@@ -1034,6 +1065,8 @@ module.exports = {
   preferStorePendingAction,
   preferPurchasePendingAction,
   preferProcurementCaseAction,
+  productionExecutionPendingActionLabel,
+  PRODUCTION_EXECUTION_PENDING_LABELS,
   dedupeProductionPendingActions,
   preferProductionExecutionPendingAction,
   extractSalesOrderIdFromPendingAction,

@@ -182,6 +182,7 @@ function deriveAllocationFirstWoStatus({ rmLines, pmrStatus, procuredAwaitingWo 
 
   const anyIssueReady =
     hasWorkOrder &&
+    !hasFullyIssuedPmr(pmrStatus) &&
     lines.some(
       (l) =>
         l.blockerReason === "Ready for material issue" ||
@@ -277,6 +278,9 @@ function deriveLineBlocker(line, { pmrStatus = null, trace = null, bomIssue = fa
   const rmItemId = line.itemId ?? line.rmItemId;
   if (bomIssue) return "No approved BOM / BOM issue";
   if (procuredAwaitingWo) return "RM received in Store — create Work Order";
+  if (hasWorkOrder && hasFullyIssuedPmr(pmrStatus)) {
+    return "RM issued to production";
+  }
   if (
     pmrFullyIssuedForRm(pmrStatus, rmItemId) &&
     pmrIssuedQtyForRm(pmrStatus, rmItemId) + QUEUE_EPS >= n(line.requiredQty)
@@ -322,7 +326,10 @@ function deriveLineBlocker(line, { pmrStatus = null, trace = null, bomIssue = fa
   if (!hasWorkOrder && line.freeStockQty + QUEUE_EPS >= line.requiredQty && line.requiredQty > QUEUE_EPS) {
     return "RM received in Store — create Work Order";
   }
-  if (line.freeStockQty + QUEUE_EPS >= line.requiredQty && line.requiredQty > QUEUE_EPS) return "Ready for material issue";
+  if (line.freeStockQty + QUEUE_EPS >= line.requiredQty && line.requiredQty > QUEUE_EPS) {
+    if (hasWorkOrder && hasFullyIssuedPmr(pmrStatus)) return "RM issued to production";
+    return "Ready for material issue";
+  }
   if (line.shortageAfterReservationQty > QUEUE_EPS) return "RM not available in store";
   return "No blocker";
 }
@@ -429,6 +436,7 @@ function priorityRankForLine(line, blockerReason, pmrStatus) {
   if (line.shortageAfterReservationQty > QUEUE_EPS && line.coveredByIncomingQty > QUEUE_EPS) return 30;
   if (line.freeStockQty > QUEUE_EPS && line.shortageAfterReservationQty > QUEUE_EPS) return 40;
   if (blockerReason === "RM received in Store — create Work Order") return 42;
+  if (blockerReason === "RM issued to production") return 55;
   if (blockerReason === "Ready for material issue") return 45;
   return 90;
 }
@@ -443,6 +451,7 @@ function queueTypeForLine(line, blockerReason, pmrStatus, { procuredAwaitingWo =
   }
   if (blockerReason === "PO created, GRN pending") return "PO_WAITING_GRN";
   if (blockerReason === "Partial RM received") return "PARTIAL_RM_RECEIVED";
+  if (hasFullyIssuedPmr(pmrStatus) && hasWorkOrder) return "READY_TO_RELEASE_WO";
   if (blockerReason === "PMR waiting for store issue" || hasWaitingPmr(pmrStatus)) return "PMR_WAITING_ISSUE";
   if (blockerReason === "RM issued to production" && hasFullyIssuedPmr(pmrStatus)) return "READY_TO_RELEASE_WO";
   if (blockerReason === "Ready for material issue" && hasWorkOrder) return "RM_READY_FOR_ISSUE";
@@ -1137,7 +1146,7 @@ function enrichQueueRowFromCaseSupply(row, { woMr, caseSupply, pmrStatus }) {
       }
     }
   }
-  return row;
+  return applyFullyIssuedQueueOverride(row, pmrStatus, Boolean(row.workOrderId));
 }
 
 async function loadSoProcurementMrByWorkOrder(db, workOrderIds) {
@@ -1925,6 +1934,19 @@ function buildQueueRow({
   return row;
 }
 
+function applyFullyIssuedQueueOverride(row, pmrStatus, hasWorkOrder = true) {
+  if (!hasWorkOrder || !hasFullyIssuedPmr(pmrStatus)) return row;
+  return {
+    ...row,
+    queueType: "READY_TO_RELEASE_WO",
+    blockerReason: "RM issued to production",
+    recommendedAction: "Start production",
+    nextAction: "Start production",
+    operationalKey: "HANDOFF_TO_PRODUCTION",
+    operationalLabel: "RM issued — waiting for Production",
+  };
+}
+
 function pushCaseQueueRowFromLines(actionQueue, { wo, fgName, rmLines, pmrStatus, materialRequirement = null, caseSupply = null, procuredAwaitingWo = false, hasWorkOrder = true, filters }) {
   const rep = pickRepresentativeRmLine(rmLines, pmrStatus);
   if (!rep) return;
@@ -1941,6 +1963,7 @@ function pushCaseQueueRowFromLines(actionQueue, { wo, fgName, rmLines, pmrStatus
   if (caseSupply || materialRequirement) {
     q = enrichQueueRowFromCaseSupply(q, { woMr: materialRequirement, caseSupply, pmrStatus });
   }
+  q = applyFullyIssuedQueueOverride(q, pmrStatus, hasWorkOrder);
   if (filters.onlyBlocked && q.queueType === "INFO" && q.blockerReason === "No blocker") return;
   if (!statusMatches(q, filters.status)) return;
   if (q.queueType !== "INFO" || !filters.onlyBlocked) pushCaseQueueRow(actionQueue, q);
@@ -2430,19 +2453,31 @@ async function buildMaterialAvailabilityWorkspace(db = prisma, filtersInput = {}
 async function buildStoreIssuePendingDashboardRows(db = prisma, opts = {}) {
   const workspace = await buildMaterialAvailabilityWorkspace(db, { onlyBlocked: true });
   const byCase = new Map();
+  const woIds = [];
   for (const row of workspace.actionQueue || []) {
-    if (row.queueType !== "RM_READY_FOR_ISSUE") continue;
+    if (!["RM_READY_FOR_ISSUE", "PMR_WAITING_ISSUE"].includes(row.queueType)) continue;
     if (!row.workOrderId || Number(row.workOrderId) <= 0) continue;
-    if (n(row.freeStockQty) <= QUEUE_EPS) continue;
+    if (n(row.freeStockQty) <= QUEUE_EPS && row.queueType === "RM_READY_FOR_ISSUE") continue;
     const caseKey = `wo-${row.workOrderId}`;
     if (byCase.has(caseKey)) continue;
-    byCase.set(caseKey, {
+    woIds.push(Number(row.workOrderId));
+    byCase.set(caseKey, row);
+  }
+  const pmrByWorkOrder = woIds.length ? await loadPmrStatusByWorkOrder(db, woIds) : new Map();
+  const rows = [];
+  for (const row of byCase.values()) {
+    const woId = Number(row.workOrderId);
+    const waitingPmr = (pmrByWorkOrder.get(woId)?.openPmrs || []).find((p) =>
+      PMR_WAITING_ISSUE_STATUSES.includes(p.status),
+    );
+    rows.push({
       materialRequirementId: row.materialRequirementId ?? 0,
       docNo: row.requisitionDocNo ?? null,
       workOrderId: row.workOrderId,
       workOrderNo: row.workOrderNo,
       salesOrderId: row.salesOrderId,
       salesOrderDocNo: row.salesOrderNo,
+      pmrId: waitingPmr?.id ?? null,
       primaryFgName: row.fgItemName,
       shortageRmLineCount: 0,
       totalShortageQty: 0,
@@ -2457,7 +2492,6 @@ async function buildStoreIssuePendingDashboardRows(db = prisma, opts = {}) {
       totalRemainingQty: 0,
     });
   }
-  const rows = [...byCase.values()];
   if (opts.limit > 0) return rows.slice(0, opts.limit);
   return rows;
 }

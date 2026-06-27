@@ -36,7 +36,11 @@ const {
   buildNoQtyDispatchLineStatsForAllCycles,
 } = require("../routes/dispatch");
 const { loadEffectiveNoQtyCarryForwardShortfallByItem } = require("./noQtySoCloseSnapshotService");
-const { blockReasonLabel, getEffectiveProductionPendingQty } = require("./productionExecutionService");
+const {
+  blockReasonLabel,
+  getEffectiveProductionPendingQty,
+  deriveProductionQueueActionLabel,
+} = require("./productionExecutionService");
 const {
   plannedNewRequirementAndQcAcceptedByItemForSingleCycle,
   computeNoQtyOperatorCarryForwardQty,
@@ -561,6 +565,8 @@ function dashboardNextActionRank(nextAction) {
   if (nextAction === "DISPATCH_PENDING") return 1;
   if (nextAction === "SALES_BILL_PENDING") return 2;
   if (nextAction === "ON_HOLD") return 3;
+  if (nextAction === "PRODUCTION_EXECUTION_BLOCKED") return 3;
+  if (nextAction === "PRODUCTION_SHORTFALL_DECISION") return 2;
   if (nextAction === "PRODUCTION_PENDING") return 4;
   if (nextAction === "NEXT_RS_REQUIRED") return 4;
   return 99;
@@ -608,6 +614,14 @@ function buildDashboardProductionHref({
   if (nextAction === "ON_HOLD") {
     return `/work-orders?from=dashboard&workOrderId=${encodeURIComponent(String(workOrderId ?? ""))}`;
   }
+  if (nextAction === "PRODUCTION_EXECUTION_BLOCKED") {
+    if (orderType === "NO_QTY") return `/production?${noQtyBase}${wo}${wol}`;
+    return `/production?salesOrderId=${encodeURIComponent(String(salesOrderId))}${wo}${wol}`;
+  }
+  if (nextAction === "PRODUCTION_SHORTFALL_DECISION") {
+    if (orderType === "NO_QTY") return `/production?${noQtyBase}${wo}${wol}&from=pending-actions`;
+    return `/production?salesOrderId=${encodeURIComponent(String(salesOrderId))}${wo}${wol}&from=pending-actions`;
+  }
   if (nextAction === "PRODUCTION_PENDING") {
     if (orderType === "NO_QTY") return `/production?${noQtyBase}${wo}${wol}`;
     return `/production?salesOrderId=${encodeURIComponent(String(salesOrderId))}${wo}${wol}`;
@@ -621,6 +635,8 @@ function buildDashboardActionLabel(nextAction) {
   if (nextAction === "SALES_BILL_PENDING") return "Create Sales Bill";
   if (nextAction === "NEXT_RS_REQUIRED") return "Create Next RS";
   if (nextAction === "ON_HOLD") return "Review Hold";
+  if (nextAction === "PRODUCTION_EXECUTION_BLOCKED") return "Resume Production";
+  if (nextAction === "PRODUCTION_SHORTFALL_DECISION") return "Resolve Production Shortfall";
   if (nextAction === "PRODUCTION_PENDING") return "Go to Production";
   return "Open";
 }
@@ -913,9 +929,12 @@ async function getProductionQueueRows() {
       const requiredQty = Number(line.qty);
       const plannedQty = Number(line.plannedQty ?? line.qty);
       const approvedProduced = producedByLineId.get(line.id) ?? 0;
-      const execStatus = wo.productionExecution?.executionStatus ?? "RUNNING";
-      const balanceQty = getEffectiveProductionPendingQty(plannedQty, approvedProduced, execStatus);
-      if (auditWo147(wo) && balanceQty <= QUEUE_EPS) {
+      const execStatus = wo.productionExecution?.executionStatus ?? "NOT_STARTED";
+      const shortfallDecisionPending = execStatus === "SHORTFALL_PENDING";
+      const balanceQty = shortfallDecisionPending
+        ? getWoLineRemainingProductionQty(plannedQty, approvedProduced)
+        : getEffectiveProductionPendingQty(plannedQty, approvedProduced, execStatus);
+      if (auditWo147(wo) && balanceQty <= QUEUE_EPS && !shortfallDecisionPending) {
         console.info("[AUDIT_WO147_QUEUE]", {
           woId: wo.id,
           workOrderLineId: line.id,
@@ -929,7 +948,7 @@ async function getProductionQueueRows() {
           skipReason: "SKIP_LINE_ZERO_BALANCE",
         });
       }
-      if (balanceQty <= QUEUE_EPS) continue;
+      if (balanceQty <= QUEUE_EPS && !shortfallDecisionPending) continue;
 
       const linePendingQc = pendingQcByLineId.get(line.id) ?? 0;
       const productionIdForQc = firstPendingProdIdByLineId.get(line.id) ?? null;
@@ -1038,6 +1057,12 @@ async function getProductionQueueRows() {
       if (isDashboardHoldWorkOrderStatus(wo.status)) {
         nextAction = "ON_HOLD";
         hasPendingQc = false;
+      } else if (orderType === "NO_QTY" && execStatus === "BLOCKED") {
+        nextAction = "PRODUCTION_EXECUTION_BLOCKED";
+        hasPendingQc = false;
+      } else if (orderType === "NO_QTY" && execStatus === "SHORTFALL_PENDING") {
+        nextAction = "PRODUCTION_SHORTFALL_DECISION";
+        hasPendingQc = false;
       }
 
       /** Operator-facing cycle = WO line cycle (document-linked). Do not substitute SO.currentCycleId (planning pointer). */
@@ -1072,6 +1097,8 @@ async function getProductionQueueRows() {
           pendingDispQty > QUEUE_EPS && ls > QUEUE_EPS && ls <= pendingDispQty + QUEUE_EPS
             ? "Pending QC Disposition Qty"
             : "Last shortage Qty";
+      } else if (nextAction === "PRODUCTION_SHORTFALL_DECISION") {
+        qtyLabel = "Shortfall decision";
       } else {
         qtyLabel = undefined;
       }
@@ -1127,7 +1154,7 @@ async function getProductionQueueRows() {
         displayQty,
         qtyLabel,
         actionHref: href,
-        actionLabel: buildDashboardActionLabel(nextAction),
+        actionLabel: deriveProductionQueueActionLabel({ nextAction, execStatus }),
       });
     }
   }
@@ -1379,6 +1406,8 @@ async function getContinueWorkingRows(options = {}) {
     if (nextAction === "SALES_BILL_PENDING") return "SALES_BILL";
     if (nextAction === "NEXT_RS_REQUIRED") return "NEXT_RS";
     if (nextAction === "ON_HOLD") return "WORK_ORDER";
+    if (nextAction === "PRODUCTION_EXECUTION_BLOCKED") return "PRODUCTION";
+    if (nextAction === "PRODUCTION_SHORTFALL_DECISION") return "PRODUCTION";
     if (nextAction === "PRODUCTION_PENDING") return "PRODUCTION";
     return "DONE";
   }

@@ -110,6 +110,7 @@ const {
   resumeProductionExecution,
   finishProductionExecution,
   ensureProductionExecutionRecord,
+  syncShortfallPendingAfterProductionApprove,
   blockReasonLabel,
 } = require("../services/productionExecutionService");
 
@@ -455,6 +456,21 @@ const PE_APPROVED = "APPROVED";
 const PE_DRAFT = "DRAFT";
 const PROD_TOLERANCE_PCT = 0.05;
 
+function rejectIfProductionQtyExceedsWoTolerance({
+  lineQty,
+  totalProducedQty,
+  allowOverproduction,
+  messageBuilder,
+}) {
+  if (allowOverproduction) return;
+  const allowedMaxQty = lineQty * (1 + PROD_TOLERANCE_PCT);
+  if (totalProducedQty > allowedMaxQty + WO_SO_EPS) {
+    const err = new Error(messageBuilder({ lineQty, allowedMaxQty, totalProducedQty }));
+    err.statusCode = 409;
+    throw err;
+  }
+}
+
 /**
  * Sum produced qty on a WO line (draft + approved) for plan-cap checks.
  * @param {import('@prisma/client').Prisma.TransactionClient} tx
@@ -624,12 +640,25 @@ async function syncWorkOrderStatusFromProduction(tx, workOrderId) {
   if (!wo || wo.status === "REJECTED" || !wo.lines.length) return;
   if (shouldFreezeStatusSync(wo.status)) return;
 
-  if (
-    wo.salesOrder?.orderType === "NO_QTY" &&
-    wo.productionExecution?.executionStatus === "COMPLETED"
-  ) {
-    if (wo.status !== "COMPLETED") {
-      await tx.workOrder.update({ where: { id: workOrderId }, data: { status: "COMPLETED" } });
+  const isNoQty = wo.salesOrder?.orderType === "NO_QTY";
+
+  if (isNoQty) {
+    if (wo.productionExecution?.executionStatus === "COMPLETED") {
+      if (wo.status !== "COMPLETED") {
+        await tx.workOrder.update({ where: { id: workOrderId }, data: { status: "COMPLETED" } });
+      }
+      return;
+    }
+    const lineIds = wo.lines.map((l) => l.id);
+    const producedByLineId = await getApprovedProducedQtyByWorkOrderLineIds(tx, lineIds);
+    let anyProgress = false;
+    for (const line of wo.lines) {
+      const produced = producedByLineId.get(line.id) ?? 0;
+      if (produced > WO_SO_EPS) anyProgress = true;
+    }
+    const nextStatus = anyProgress ? "IN_PROGRESS" : "PENDING";
+    if (nextStatus !== wo.status && wo.status !== "COMPLETED") {
+      await tx.workOrder.update({ where: { id: workOrderId }, data: { status: nextStatus } });
     }
     return;
   }
@@ -1674,7 +1703,7 @@ productionRouter.post(
 
         const wol = await tx.workOrderLine.findUnique({
           where: { id: body.workOrderLineId },
-          include: { workOrder: true, fgItem: true },
+          include: { workOrder: { include: { salesOrder: { select: { orderType: true } } } }, fgItem: true },
         });
         if (!wol) {
           const err = new Error("Work order line not found");
@@ -1701,16 +1730,17 @@ productionRouter.post(
 
         const alreadyProduced = await sumProducedQtyOnLine(tx, wol.id);
         const lineQty = Number(wol.qty);
-        const allowedMaxQty = lineQty * (1 + PROD_TOLERANCE_PCT);
-        const remainingProducible = Math.max(0, allowedMaxQty - alreadyProduced);
-        if (body.producedQty > remainingProducible + WO_SO_EPS) {
-          const fmt = (n) => (Number.isInteger(n) ? String(n) : Number(n).toFixed(3));
-          const err = new Error(
-            `Total produced quantity cannot exceed the allowed tolerance for this WO line (WO Qty + 5%). WO Qty: ${fmt(lineQty)}. Already recorded (draft + approved): ${fmt(alreadyProduced)}. Maximum additional quantity now: ${fmt(remainingProducible)}.`,
-          );
-          err.statusCode = 409;
-          throw err;
-        }
+        const allowOverproduction = (wol.workOrder?.salesOrder?.orderType ?? "NORMAL") === "NO_QTY";
+        rejectIfProductionQtyExceedsWoTolerance({
+          lineQty,
+          totalProducedQty: alreadyProduced + body.producedQty,
+          allowOverproduction,
+          messageBuilder: ({ lineQty: lq, allowedMaxQty, totalProducedQty }) => {
+            const fmt = (n) => (Number.isInteger(n) ? String(n) : Number(n).toFixed(3));
+            const remainingProducible = Math.max(0, allowedMaxQty - alreadyProduced);
+            return `Total produced quantity cannot exceed the allowed tolerance for this WO line (WO Qty + 5%). WO Qty: ${fmt(lq)}. Already recorded (draft + approved): ${fmt(alreadyProduced)}. Maximum additional quantity now: ${fmt(remainingProducible)}.`;
+          },
+        });
 
         await assertProductionRmReadiness(tx, {
           workOrderLineId: wol.id,
@@ -1785,7 +1815,7 @@ productionRouter.put(
         await lockWorkOrderLineForUpdate(tx, existing.workOrderLineId);
         const wol = await tx.workOrderLine.findUnique({
           where: { id: existing.workOrderLineId },
-          include: { workOrder: true },
+          include: { workOrder: { include: { salesOrder: { select: { orderType: true } } } } },
         });
         if (!wol?.workOrder) {
           const err = new Error("Work order line not found");
@@ -1799,16 +1829,17 @@ productionRouter.put(
 
         const others = await sumProducedQtyOnLine(tx, wol.id, { excludeProductionId: id });
         const lineQty = Number(wol.qty);
-        const allowedMaxQty = lineQty * (1 + PROD_TOLERANCE_PCT);
-        const remaining = Math.max(0, allowedMaxQty - others);
-        if (body.producedQty > remaining + WO_SO_EPS) {
-          const fmt = (n) => (Number.isInteger(n) ? String(n) : Number(n).toFixed(3));
-          const err = new Error(
-            `Produced quantity cannot exceed the allowed tolerance for this WO line (WO Qty + 5%). WO Qty: ${fmt(lineQty)}. Other batches on this line: ${fmt(others)}. Maximum for this batch: ${fmt(remaining)}.`,
-          );
-          err.statusCode = 409;
-          throw err;
-        }
+        const allowOverproduction = (wol.workOrder?.salesOrder?.orderType ?? "NORMAL") === "NO_QTY";
+        rejectIfProductionQtyExceedsWoTolerance({
+          lineQty,
+          totalProducedQty: others + body.producedQty,
+          allowOverproduction,
+          messageBuilder: ({ lineQty: lq, allowedMaxQty }) => {
+            const fmt = (n) => (Number.isInteger(n) ? String(n) : Number(n).toFixed(3));
+            const remaining = Math.max(0, allowedMaxQty - others);
+            return `Produced quantity cannot exceed the allowed tolerance for this WO line (WO Qty + 5%). WO Qty: ${fmt(lq)}. Other batches on this line: ${fmt(others)}. Maximum for this batch: ${fmt(remaining)}.`;
+          },
+        });
 
         await assertProductionRmReadiness(tx, {
           workOrderLineId: wol.id,
@@ -1957,6 +1988,8 @@ productionRouter.post(
         }
 
         const wol = prod.workOrderLine;
+        const orderType = wol.workOrder?.salesOrder?.orderType;
+        const isRegular = orderType != null && orderType !== "NO_QTY";
         await assertNoQtyWorkOrderInActiveCycleOrThrow(tx, wol.workOrderId, "This work order");
         await assertWorkOrderAllowsProduction(tx, wol.workOrderId);
         await assertNoQtyProductionExecutionAllowsProduction(tx, wol.workOrderId);
@@ -1964,19 +1997,17 @@ productionRouter.post(
 
         const others = await sumProducedQtyOnLine(tx, wol.id, { excludeProductionId: id });
         const woQty = Number(wol.qty);
-        const allowedMaxQty = woQty * (1 + PROD_TOLERANCE_PCT);
-        if (others + Number(prod.producedQty) > allowedMaxQty + WO_SO_EPS) {
-          const err = new Error(
+        const allowOverproduction = orderType === "NO_QTY";
+        rejectIfProductionQtyExceedsWoTolerance({
+          lineQty: woQty,
+          totalProducedQty: others + Number(prod.producedQty),
+          allowOverproduction,
+          messageBuilder: () =>
             "Cannot approve: total produced quantity would exceed the allowed tolerance for this WO line (WO Qty + 5%). Edit the draft quantity first.",
-          );
-          err.statusCode = 409;
-          throw err;
-        }
+        });
 
         const fgItemId = wol.fgItemId;
         const producedQtyNum = Number(prod.producedQty);
-        const orderType = wol.workOrder?.salesOrder?.orderType;
-        const isRegular = orderType != null && orderType !== "NO_QTY";
 
         await assertProductionRmReadiness(tx, {
           workOrderLineId: wol.id,
@@ -2072,6 +2103,7 @@ productionRouter.post(
         await lockWorkOrderForUpdate(tx, wol.workOrderId);
         if (!isRegular) {
           await ensureProductionExecutionRecord(tx, wol.workOrderId);
+          await syncShortfallPendingAfterProductionApprove(tx, wol.workOrderId, producedQtyNum);
         }
         await syncWorkOrderStatusFromProduction(tx, wol.workOrderId);
         const woAfter = await tx.workOrder.findUnique({

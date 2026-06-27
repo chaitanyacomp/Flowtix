@@ -11,8 +11,11 @@ const {
   dedupeProductionPendingActions,
   fetchPurchaseProcurementPendingActions,
   fetchStoreGrnPendingActions,
+  fetchStoreNoQtyCreateNextRsPendingActions,
   filterNoQtyStoreHandoffSupersededByLaterRs,
   PENDING_PRIORITY,
+  productionExecutionPendingActionLabel,
+  PRODUCTION_EXECUTION_PENDING_LABELS,
 } = require("../../src/services/pendingActionsService");
 const { PREPARE_RM_PO, READY_TO_START_PRODUCTION } = require("../../src/services/rmProcurementStageSignals");
 const {
@@ -80,6 +83,37 @@ describe("pendingActionsService", () => {
       nextAction: "Dispatch FG",
     });
     assert.equal(label, "Dispatch Ready");
+  });
+
+  it("friendlyAction maps blocked production execution to Production Paused", () => {
+    const label = friendlyActionForNormalizedRow({
+      rowType: "PRODUCTION_QUEUE",
+      currentStatus: "PRODUCTION_ON_HOLD",
+      nextAction: "PRODUCTION_EXECUTION_BLOCKED",
+      metadata: { productionExecutionStatus: "BLOCKED", workOrderId: 4 },
+    });
+    assert.equal(label, PRODUCTION_EXECUTION_PENDING_LABELS.BLOCKED);
+  });
+
+  it("friendlyAction maps production queue rows from execution status", () => {
+    const cases = [
+      ["NOT_STARTED", PRODUCTION_EXECUTION_PENDING_LABELS.NOT_STARTED],
+      ["RUNNING", PRODUCTION_EXECUTION_PENDING_LABELS.RUNNING],
+      ["SHORTFALL_PENDING", PRODUCTION_EXECUTION_PENDING_LABELS.SHORTFALL_PENDING],
+      ["BLOCKED", PRODUCTION_EXECUTION_PENDING_LABELS.BLOCKED],
+    ];
+    for (const [executionStatus, expected] of cases) {
+      const label = friendlyActionForNormalizedRow({
+        rowType: "PRODUCTION_QUEUE",
+        nextAction: "PRODUCTION_PENDING",
+        metadata: { productionExecutionStatus: executionStatus, workOrderId: 1 },
+      });
+      assert.equal(label, expected, `executionStatus=${executionStatus}`);
+    }
+  });
+
+  it("productionExecutionPendingActionLabel returns null for COMPLETED", () => {
+    assert.equal(productionExecutionPendingActionLabel("COMPLETED"), null);
   });
 
   it("MPRS shortage with zero stock and no PR maps to Create Purchase Request", () => {
@@ -200,7 +234,7 @@ describe("pendingActionsService", () => {
     assert.equal(deduped[0].id, "procurement:create-po:mr:99");
   });
 
-  it("RM ready queue maps to Material Issue Pending with material-issue href", () => {
+  it("RM ready queue maps to Issue Material with material-issue href", () => {
     const row = normalizeRmRiskRow({
       workOrderId: 2,
       workOrderNo: "WO-26-0002",
@@ -211,7 +245,7 @@ describe("pendingActionsService", () => {
       sourceType: "SALES_ORDER",
     });
     const action = mapNormalizedRowToPendingAction(row);
-    assert.equal(action.action, "Material Issue Pending");
+    assert.equal(action.action, "Issue Material");
     assert.match(action.href, /^\/material-issue\?/);
   });
 
@@ -220,7 +254,7 @@ describe("pendingActionsService", () => {
       {
         id: "store-issue:wo:1",
         priority: PENDING_PRIORITY.MEDIUM,
-        action: "Material Issue Pending",
+        action: "Issue Material",
         documentNo: "WO-1",
         ownerRole: "STORE",
         ageHours: null,
@@ -353,7 +387,33 @@ describe("pendingActionsService", () => {
     assert.match(action.href, /\/rm-po-grn\/112/);
   });
 
-  it("dedupes Production pending actions by WO, preferring Ready to Start Production", () => {
+  it("dedupes Production pending actions by WO, preferring execution-state label over Ready to Start", () => {
+    const deduped = dedupeProductionPendingActions([
+      {
+        id: "rm-risk:wo:1:rm:10",
+        priority: PENDING_PRIORITY.LOW,
+        action: READY_TO_START_PRODUCTION,
+        documentNo: "WO-26-0001",
+        ownerRole: "PRODUCTION",
+        ageHours: 1,
+        href: "/production?workOrderId=1&returnTo=pending-actions",
+      },
+      {
+        id: "production:wo:1:line:10",
+        priority: PENDING_PRIORITY.LOW,
+        action: PRODUCTION_EXECUTION_PENDING_LABELS.BLOCKED,
+        documentNo: "WO-26-0001",
+        ownerRole: "PRODUCTION",
+        ageHours: 5,
+        href: "/production?workOrderId=1&from=pending-actions",
+      },
+    ]);
+    assert.equal(deduped.length, 1);
+    assert.equal(deduped[0].action, PRODUCTION_EXECUTION_PENDING_LABELS.BLOCKED);
+    assert.equal(deduped[0].id, "production:wo:1:line:10");
+  });
+
+  it("dedupes Production pending actions by WO, preferring Ready to Start over legacy Production Pending", () => {
     const deduped = dedupeProductionPendingActions([
       {
         id: "production:wo:1:line:10",
@@ -379,7 +439,7 @@ describe("pendingActionsService", () => {
     assert.equal(deduped[0].id, "rm-risk:wo:1:rm:10");
   });
 
-  it("maps READY_TO_RELEASE_WO RM risk row to Ready to Start Production for Production role", () => {
+  it("maps READY_TO_RELEASE_WO RM risk row to Ready to Start Production when execution not started", () => {
     const row = normalizeRmRiskRow({
       workOrderId: 1,
       workOrderNo: "WO-26-0001",
@@ -387,6 +447,7 @@ describe("pendingActionsService", () => {
       queueType: "READY_TO_RELEASE_WO",
       procurementCompletedForCase: true,
       mrStatus: "FULLY_PROCURED",
+      productionExecutionStatus: "NOT_STARTED",
     });
     assert.equal(row.currentOwner, VISIBLE_OWNERS.PRODUCTION);
     const action = mapNormalizedRowToPendingAction(row, "PRODUCTION");
@@ -394,17 +455,33 @@ describe("pendingActionsService", () => {
     assert.match(action.href, /\/production/);
   });
 
-  it("maps production queue row to Production Pending", () => {
+  it("maps READY_TO_RELEASE_WO RM risk row to Production Paused when execution is blocked", () => {
+    const row = normalizeRmRiskRow({
+      workOrderId: 1,
+      workOrderNo: "WO-26-0001",
+      itemId: 10,
+      queueType: "READY_TO_RELEASE_WO",
+      procurementCompletedForCase: true,
+      mrStatus: "FULLY_PROCURED",
+      productionExecutionStatus: "BLOCKED",
+    });
+    const action = mapNormalizedRowToPendingAction(row, "PRODUCTION");
+    assert.equal(action.action, PRODUCTION_EXECUTION_PENDING_LABELS.BLOCKED);
+  });
+
+  it("maps production queue row to Continue Production when execution is RUNNING", () => {
     const row = normalizeProductionRow({
       workOrderId: 1,
       workOrderLineId: 10,
       workOrderNo: "WO-26-0001",
       salesOrderId: 5,
       nextAction: "PRODUCTION_PENDING",
+      productionExecutionStatus: "RUNNING",
       status: "OPEN",
     });
     const action = mapNormalizedRowToPendingAction(row, "PRODUCTION");
-    assert.equal(action.action, "Production Pending");
+    assert.equal(action.action, PRODUCTION_EXECUTION_PENDING_LABELS.RUNNING);
+    assert.match(action.href, /workOrderId=1/);
   });
 
   it("filterNoQtyStoreHandoffSupersededByLaterRs drops Cycle 1 handoff when Cycle 2 RS exists", async () => {
@@ -469,5 +546,52 @@ describe("pendingActionsService", () => {
       { workOrderId: 12, salesOrderId: 50 },
     ]);
     assert.equal(filtered.length, 1);
+  });
+
+  it("fetchStoreNoQtyCreateNextRsPendingActions skips next-cycle RS while cycle execution is open", async () => {
+    const eligibilityPath = require.resolve("../../src/services/noQtyCreateNextRsEligibility");
+    const gatePath = require.resolve("../../src/services/noQtyCycleStoreExecutionGate");
+    const pendingPath = require.resolve("../../src/services/pendingActionsService");
+    const origEligibility = require(eligibilityPath);
+    const origGate = require(gatePath);
+    const origCompute = origEligibility.computeNoQtyCreateNextRsEligibilityResolved;
+    const origResolve = origEligibility.resolveNoQtyEligibilityCycleId;
+    const origIncomplete = origGate.isNoQtyCycleStoreExecutionIncomplete;
+
+    require(eligibilityPath).computeNoQtyCreateNextRsEligibilityResolved = async () => ({
+      eligible: true,
+      reason: "OK",
+    });
+    require(eligibilityPath).resolveNoQtyEligibilityCycleId = async () => ({
+      cycleId: 5,
+      source: "ACTIVE",
+    });
+    require(gatePath).isNoQtyCycleStoreExecutionIncomplete = async () => true;
+
+    delete require.cache[pendingPath];
+    const { fetchStoreNoQtyCreateNextRsPendingActions: fetchNextRs } = require(pendingPath);
+
+    const db = {
+      salesOrder: {
+        findMany: async () => [{ id: 10, docNo: "SO-26-0001", updatedAt: new Date() }],
+      },
+      salesOrderCycle: {
+        findFirst: async () => ({ cycleNo: 1 }),
+      },
+      requirementSheet: {
+        findFirst: async () => ({ updatedAt: new Date() }),
+      },
+    };
+
+    try {
+      const actions = await fetchNextRs(db);
+      assert.equal(actions.length, 0);
+    } finally {
+      require(eligibilityPath).computeNoQtyCreateNextRsEligibilityResolved = origCompute;
+      require(eligibilityPath).resolveNoQtyEligibilityCycleId = origResolve;
+      require(gatePath).isNoQtyCycleStoreExecutionIncomplete = origIncomplete;
+      delete require.cache[pendingPath];
+      require(pendingPath);
+    }
   });
 });

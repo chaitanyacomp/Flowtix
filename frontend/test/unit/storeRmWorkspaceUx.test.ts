@@ -2,9 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   buildCaseRmMetricsFromDetails,
   groupRmQueueByCase,
+  operatorNextActionHint,
+  operatorQueueStatus,
   resolveQueueCaseDisplayMetrics,
   rmItemFilterTableHelperText,
 } from "../../src/lib/storeRmWorkspaceUx";
+import { STORE_PRODUCTION_HANDOFF_LABEL } from "../../src/lib/rmControlCenterPostIssueHandoff";
 
 describe("storeRmWorkspaceUx case RM metrics", () => {
   it("builds total RM line counts from workspace detail payloads", () => {
@@ -47,5 +50,20 @@ describe("storeRmWorkspaceUx case RM metrics", () => {
       "Filtered by PP. Showing all RM lines for selected work order.",
     );
     expect(rmItemFilterTableHelperText("")).toBeNull();
+  });
+});
+
+describe("storeRmWorkspaceUx post-issue queue status", () => {
+  it("maps READY_TO_RELEASE_WO to production handoff label", () => {
+    const status = operatorQueueStatus({
+      queueType: "READY_TO_RELEASE_WO",
+      shortageAfterReservationQty: 0,
+      freeStockQty: 100,
+    });
+    expect(status.label).toBe(STORE_PRODUCTION_HANDOFF_LABEL);
+    expect(status.label).not.toBe("Ready for issue");
+    expect(operatorNextActionHint({ queueType: "READY_TO_RELEASE_WO", recommendedAction: "Start production" })).not.toBe(
+      "Issue RM to Production",
+    );
   });
 });

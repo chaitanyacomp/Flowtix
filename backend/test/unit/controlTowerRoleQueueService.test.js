@@ -67,7 +67,7 @@ describe("rowMatchesRoleQueue", () => {
         nextActionKey: "CREATE_PO",
       }),
     );
-    const storePrePr = withIdentity(
+    const purchasePrePr = withIdentity(
       normalizeRmRiskRow({
         workOrderId: 2,
         itemId: 1,
@@ -87,7 +87,8 @@ describe("rowMatchesRoleQueue", () => {
     );
     assert.equal(rowMatchesRoleQueue(purchase, "PURCHASE"), true);
     assert.equal(purchase.metadata.purchaseHandoff, true);
-    assert.equal(rowMatchesRoleQueue(storePrePr, "PURCHASE"), false);
+    assert.equal(rowMatchesRoleQueue(purchasePrePr, "PURCHASE"), true);
+    assert.equal(purchasePrePr.metadata.purchaseHandoff, true);
     assert.equal(rowMatchesRoleQueue(storeProc, "PURCHASE"), false);
   });
 

@@ -25,6 +25,8 @@
 import * as React from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { workOrdersFocusHref } from "../lib/drillDownRoutes";
+import { formatPostWoCreateSuccessMessage, postWoMaterialIssueHref } from "../lib/materialWorkflowLinks";
+import { ensureSubmittedPmrForWorkOrderHandoff } from "../lib/postWoMaterialIssueHandoff";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -929,7 +931,11 @@ export function RequirementSheetPage() {
     setError(null);
     setSuccess(null);
     try {
-      const out = await apiFetch<{ workOrderId: number }>(`/api/requirement-sheets/${sheet.id}/create-wo`, {
+      const out = await apiFetch<{
+        workOrderId: number;
+        workOrderDocNo?: string | null;
+        pmrs?: Array<{ workOrderId: number; pmrId: number | null; pmrDocNo?: string | null }>;
+      }>(`/api/requirement-sheets/${sheet.id}/create-wo`, {
         method: "POST",
         body: JSON.stringify({}),
       });
@@ -939,15 +945,25 @@ export function RequirementSheetPage() {
         nav("/work-orders");
         return;
       }
-      setSuccess(`Work Order #${woId} created.`);
-      nav(workOrdersFocusHref(woId), {
-        state: {
-          source: "requirementSheet",
-          fromRequirementSheet: true,
-          salesOrderId: sheet.salesOrderId,
+      const pmrRow = out.pmrs?.find((p) => Number(p.workOrderId) === woId) ?? out.pmrs?.[0] ?? null;
+      let pmrId = pmrRow?.pmrId ?? null;
+      let pmrDocNo = pmrRow?.pmrDocNo ?? null;
+      if (!pmrId) {
+        const ensured = await ensureSubmittedPmrForWorkOrderHandoff(woId);
+        pmrId = ensured.pmrId;
+        pmrDocNo = ensured.pmrDocNo ?? pmrDocNo;
+      }
+      const woLabel = out.workOrderDocNo?.trim() || `WO-${woId}`;
+      toast.showSuccess(formatPostWoCreateSuccessMessage(`Work Order ${woLabel}`, pmrDocNo));
+      nav(
+        postWoMaterialIssueHref({
+          workOrderId: woId,
+          pmrId,
+          returnTo: "requirement-sheet",
           requirementSheetId: sheet.id,
-        },
-      });
+          salesOrderId: sheet.salesOrderId,
+        }),
+      );
     } catch (e) {
       const msg = e instanceof ApiRequestError ? e.message : e instanceof Error ? e.message : "Failed to create work order.";
       setError(msg);

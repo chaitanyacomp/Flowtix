@@ -27,6 +27,11 @@ const {
   syncAllocationsForPmrIssueStatus,
 } = require("./materialAllocationService");
 const auditLog = require("./auditLog");
+const {
+  assessRmIssueQty,
+  computeMaxAllowedRmIssueQty,
+  computeRmIssueToleranceQty,
+} = require("./rmIssueToleranceService");
 
 const STORE_ISSUE_STATUSES = ["REQUESTED", "PARTIALLY_ISSUED"];
 
@@ -101,7 +106,9 @@ function mapPmrRow(row) {
     remarks: row.remarks,
     workOrderId: row.workOrderId,
     workOrderNo: row.workOrder?.docNo ?? null,
+    salesOrderId: row.workOrder?.salesOrderId ?? null,
     salesOrderNo: row.workOrder?.salesOrder?.docNo ?? null,
+    requirementSheetId: row.workOrder?.requirementSheetId ?? null,
     requestedAt: row.requestedAt,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -644,6 +651,7 @@ async function issueMaterialAgainstPmr(pmrId, input, actor = {}) {
   const issueAvailabilityByItem = new Map(issueAvailabilityRows.map((row) => [row.itemId, row]));
   const woIssueSnapshot = await buildWorkOrderMaterialIssueSnapshot(prisma, pmr.workOrderId, input.fromLocationId);
   const issueLines = [];
+  const overIssueAuditLines = [];
   for (const row of input.lines) {
     const pl = lineById.get(row.pmrLineId);
     if (!pl) {
@@ -654,17 +662,18 @@ async function issueMaterialAgainstPmr(pmrId, input, actor = {}) {
     const qty = n(row.issueQty);
     if (qty <= STOCK_EPS) continue;
     const pend = pendingQty(pl);
-    if (qty > pend + STOCK_EPS) {
-      const err = new Error(`Issue qty exceeds pending qty for line #${row.pmrLineId}.`);
-      err.statusCode = 400;
-      throw err;
-    }
     const woLine = woIssueSnapshot?.linesByItemId?.get(pl.itemId);
-    if (woLine && qty > n(woLine.stillRequiredQty) + STOCK_EPS) {
+    const issueAssessment = assessRmIssueQty(qty, pend, {
+      woStillRequiredQty: woLine ? n(woLine.stillRequiredQty) : null,
+    });
+    if (!issueAssessment.allowed) {
       const err = new Error(
-        `Issue qty exceeds WO balance requirement for ${woLine.itemName || `item #${pl.itemId}`}.`,
+        issueAssessment.overIssueQty > STOCK_EPS
+          ? `Issue qty exceeds allowed tolerance for line #${row.pmrLineId}. Max allowed: ${round3(issueAssessment.maxAllowedQty)}.`
+          : `Issue qty exceeds pending qty for line #${row.pmrLineId}.`,
       );
       err.statusCode = 400;
+      err.code = issueAssessment.overIssueQty > STOCK_EPS ? "PMR_ISSUE_TOLERANCE_EXCEEDED" : "PMR_ISSUE_PENDING_EXCEEDED";
       throw err;
     }
     const availability = issueAvailabilityByItem.get(pl.itemId);
@@ -678,12 +687,30 @@ async function issueMaterialAgainstPmr(pmrId, input, actor = {}) {
       throw err;
     }
     issueLines.push({ itemId: pl.itemId, issueQty: qty, pmrLineId: pl.id });
+    if (issueAssessment.withinTolerance) {
+      overIssueAuditLines.push({
+        pmrLineId: pl.id,
+        itemId: pl.itemId,
+        pendingQty: pend,
+        issueQty: qty,
+        overIssueQty: issueAssessment.overIssueQty,
+        toleranceQty: issueAssessment.toleranceQty,
+      });
+    }
   }
   if (!issueLines.length) {
     const err = new Error("Add at least one positive issue quantity.");
     err.statusCode = 400;
     throw err;
   }
+
+  const overIssueRemark =
+    overIssueAuditLines.length > 0
+      ? ` Over-issue within tolerance: ${overIssueAuditLines
+          .map((l) => `item #${l.itemId} +${round3(l.overIssueQty)}`)
+          .join("; ")}.`
+      : "";
+  const baseRemarks = input.remarks?.trim() || `Issue against ${pmr.docNo || `PMR-${pmrId}`}`;
 
   const note = await prisma.$transaction(async (tx) => {
     const created = await createMaterialIssueNote(
@@ -692,7 +719,7 @@ async function issueMaterialAgainstPmr(pmrId, input, actor = {}) {
         toLocationId: input.toLocationId,
         workOrderId: pmr.workOrderId,
         productionMaterialRequestId: pmrId,
-        remarks: input.remarks?.trim() || `Issue against ${pmr.docNo || `PMR-${pmrId}`}`,
+        remarks: `${baseRemarks}${overIssueRemark}`,
         lines: issueLines.map((l) => ({ itemId: l.itemId, issueQty: l.issueQty })),
       },
       actor,
@@ -708,6 +735,27 @@ async function issueMaterialAgainstPmr(pmrId, input, actor = {}) {
       });
     }
     await recalcPmrStatus(tx, pmrId);
+
+    const userId = actor.userId;
+    if (overIssueAuditLines.length && typeof userId === "number" && Number.isFinite(userId)) {
+      await auditLog.write(tx, {
+        action: auditLog.AuditAction.UPDATE,
+        entityType: auditLog.AuditEntityType.WORK_ORDER,
+        entityId: String(pmr.workOrderId),
+        actorUserId: userId,
+        actorRole: actor.role,
+        summary: `RM over-issue within tolerance on ${pmr.docNo || `PMR-${pmrId}`}`,
+        payload: {
+          module: "MATERIAL_ISSUE",
+          actionLabel: "RM_OVER_ISSUE_TOLERANCE",
+          ref: { type: "PMR", id: String(pmrId), no: pmr.docNo },
+          materialIssueNoteId: created.id,
+          materialIssueDocNo: created.docNo,
+          lines: overIssueAuditLines,
+        },
+      });
+    }
+
     return created;
   });
 
@@ -717,6 +765,7 @@ async function issueMaterialAgainstPmr(pmrId, input, actor = {}) {
       docNo: note.docNo,
       toLocation: note.toLocation,
     },
+    overIssueLines: overIssueAuditLines,
     pmr: await getProductionMaterialRequestById(pmrId),
   };
 }
@@ -798,6 +847,9 @@ async function buildPmrIssueContext(pmrId, fromLocationId, db = prisma) {
     const woLine = woIssueSnapshot?.linesByItemId?.get(l.itemId) ?? null;
     const pendingQty = n(l.pendingQty);
     const issueCapQty = woLine ? Math.min(pendingQty, n(woLine.stillRequiredQty)) : pendingQty;
+    const woStillRequired = woLine ? n(woLine.stillRequiredQty) : null;
+    const rmIssueToleranceQty = computeRmIssueToleranceQty(pendingQty);
+    const maxAllowedIssueQty = computeMaxAllowedRmIssueQty(pendingQty, woStillRequired);
     const suggestedIssueQty =
       freeStoreStock == null
         ? 0
@@ -847,6 +899,8 @@ async function buildPmrIssueContext(pmrId, fromLocationId, db = prisma) {
       requiredForBalanceQty: woLine?.requiredForBalanceQty ?? pendingQty,
       stillRequiredQty: issueCapQty,
       issueCapQty,
+      rmIssueToleranceQty,
+      maxAllowedIssueQty,
       suggestedIssueQty,
     };
   }

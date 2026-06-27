@@ -81,6 +81,35 @@ describe("productionRmReadinessService", () => {
     assert.equal(g.gate, "FULLY_ISSUED_READY");
   });
 
+  it("resolveReadinessGate - FULLY_ISSUED_READY when lines meet required qty even if PMR status is PARTIALLY_ISSUED", () => {
+    const g = resolveReadinessGate(
+      [
+        {
+          status: "PARTIALLY_ISSUED",
+          lines: [
+            { requiredQty: "12.792", issuedQty: "12.792" },
+            { requiredQty: "5", issuedQty: "5.1" },
+          ],
+        },
+      ],
+      17.892,
+    );
+    assert.equal(g.gate, "FULLY_ISSUED_READY");
+  });
+
+  it("resolveReadinessGate - PARTIAL_READY when a line is still short", () => {
+    const g = resolveReadinessGate(
+      [
+        {
+          status: "PARTIALLY_ISSUED",
+          lines: [{ requiredQty: "10", issuedQty: "8" }],
+        },
+      ],
+      8,
+    );
+    assert.equal(g.gate, "PARTIAL_READY");
+  });
+
   it("aggregatePmrRequiredByItem sums submitted PMR lines", () => {
     const map = aggregatePmrRequiredByItem([
       {
@@ -153,6 +182,35 @@ describe("productionRmReadinessService", () => {
       }),
       false,
     );
+  });
+
+  it("NO_QTY surplus: PMR basis can exceed WO qty when extra RM is issued", () => {
+    const max = computeMaxProducibleFromPmrBasis({
+      woQty: 4000,
+      totalWoQty: 4000,
+      pmrRequiredByItem: new Map([[10, 100]]),
+      availableByItem: new Map([[10, 105]]),
+      allowSurplus: true,
+    });
+    assert.equal(max, 4200);
+    assert.equal(
+      productionQtyExceedsRmAllowed({
+        producedQty: 4200,
+        productionAllowedNowQty: max,
+      }),
+      false,
+    );
+  });
+
+  it("REGULAR PMR basis stays capped at WO qty without allowSurplus", () => {
+    const max = computeMaxProducibleFromPmrBasis({
+      woQty: 4000,
+      totalWoQty: 4000,
+      pmrRequiredByItem: new Map([[10, 100]]),
+      availableByItem: new Map([[10, 105]]),
+      allowSurplus: false,
+    });
+    assert.equal(max, 4000);
   });
 
   it("PMR basis uses scarcest RM when multiple PMR lines exist", () => {

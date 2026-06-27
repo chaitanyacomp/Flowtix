@@ -48,6 +48,9 @@ import { isProductionBlockedByRmReadiness } from "../components/erp/ProductionRm
 import { buildRmIssueNextStep } from "../lib/regularSoOperationalGuidance";
 import { buildProductionScopedHref } from "../lib/productionNavigation";
 import { displaySalesOrderNo, displayWorkOrderNo } from "../lib/docNoDisplay";
+import { formatPostWoCreateSuccessMessage, postWoMaterialIssueHref } from "../lib/materialWorkflowLinks";
+import { ensureSubmittedPmrForWorkOrderHandoff } from "../lib/postWoMaterialIssueHandoff";
+import { useToast } from "../contexts/ToastContext";
 import { NoQtyCycleContextBar } from "../components/erp/foundation/NoQtyCycleContextBar";
 import { buildNoQtyGuidedHref, useNoQtyFlowState } from "../lib/noQtyFlowState";
 import { isWorkOrderWorkspaceEntry } from "../lib/operationalPageEntry";
@@ -387,6 +390,7 @@ export function WorkOrdersPage() {
   );
 
   const nav = useNavigate();
+  const toast = useToast();
   const demo = useDemoMode();
   const woDemoHl =
     demoHighlightKey(demo.enabled, demo.flow, demo.step, "regular", 2) ??
@@ -1460,6 +1464,27 @@ export function WorkOrdersPage() {
     });
   }, [listLoaded, approvedSos, regularSoIdFromUrl, fromNoQtySo, soFromUrl, patch]);
 
+  async function handoffToMaterialIssueAfterWoCreate(workOrderId: number, workOrderLabel?: string | null) {
+    const woId = Number(workOrderId);
+    if (!Number.isFinite(woId) || woId <= 0) return;
+    const { pmrId, pmrDocNo } = await ensureSubmittedPmrForWorkOrderHandoff(woId);
+    const returnTo = fromRmPurchase
+      ? "rm-purchase"
+      : showWoWorkspace
+        ? "production-workspace"
+        : "work-orders";
+    const label = workOrderLabel?.trim() || `WO-${woId}`;
+    toast.showSuccess(formatPostWoCreateSuccessMessage(label, pmrDocNo));
+    nav(
+      postWoMaterialIssueHref({
+        workOrderId: woId,
+        pmrId,
+        returnTo,
+        salesOrderId: salesOrderId !== "" ? Number(salesOrderId) : null,
+      }),
+    );
+  }
+
   async function createWo(opts?: { override: boolean; reason?: string }) {
     setError(null);
     if (salesOrderId === "") {
@@ -1520,11 +1545,12 @@ export function WorkOrdersPage() {
           : {}),
         ...(sendShortfallWoBufferToApi ? { shortfallMode: true, shortfallBufferPercent: shortfallBufferPercentForCalc } : {}),
       };
-      await apiFetch("/api/production/work-orders", {
+      const wo = await apiFetch<{ id: number; docNo?: string | null }>("/api/production/work-orders", {
         method: "POST",
         body: JSON.stringify(payload),
       });
       await refresh();
+      await handoffToMaterialIssueAfterWoCreate(wo.id, wo.docNo?.trim() || `WO-${wo.id}`);
     } catch (e) {
       if (e instanceof ApiRequestError && e.code === "FG_STOCK_SUFFICIENT_ADMIN_OVERRIDE_REQUIRED" && isAdmin) {
         setOverridePayload({ salesOrderId: Number(salesOrderId), lines: woLines.map((x) => ({ ...x })) });
@@ -1586,7 +1612,7 @@ export function WorkOrdersPage() {
       // Use the saved payload snapshot so the override always applies to the same lines the user attempted.
       setSalesOrderId(overridePayload.salesOrderId);
       setWoLines(overridePayload.lines);
-      await apiFetch("/api/production/work-orders", {
+      const wo = await apiFetch<{ id: number; docNo?: string | null }>("/api/production/work-orders", {
         method: "POST",
         body: JSON.stringify({
           salesOrderId: overridePayload.salesOrderId,
@@ -1597,6 +1623,7 @@ export function WorkOrdersPage() {
       });
       closeOverrideModal();
       await refresh();
+      await handoffToMaterialIssueAfterWoCreate(wo.id, wo.docNo?.trim() || `WO-${wo.id}`);
     } catch (e) {
       const raw = e instanceof Error ? e.message : "Failed";
       setError(friendlyErrorMessage(raw));

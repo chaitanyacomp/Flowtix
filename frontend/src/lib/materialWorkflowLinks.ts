@@ -81,9 +81,44 @@ export function materialWorkflowBackHref(returnTo: string | null, workOrderId?: 
   if (returnTo === "dashboard") return "/dashboard";
   if (returnTo === "rm-control-center") return "/reports/rm-shortage";
   if (returnTo === "pending-actions") return "/pending-actions";
+  if (returnTo === "work-orders") return "/work-orders";
+  if (returnTo === "rm-purchase") return "/rm-po-grn";
+  if (returnTo === "requirement-sheet" || returnTo === "requirement-sheet-execution") {
+    return "/sales-orders";
+  }
   if (returnTo === "production-workspace" && workOrderId && workOrderId > 0) {
     return productionWorkspaceHref(workOrderId);
   }
   if (returnTo === "material-requests") return materialRequestsQueueHref({});
   return "/production/material-requests";
+}
+
+/** Deep link to Material Issue immediately after Store creates a WO (UX only). */
+export function postWoMaterialIssueHref(opts: {
+  workOrderId: number;
+  pmrId?: number | null;
+  returnTo?: string;
+  requirementSheetId?: number | null;
+  salesOrderId?: number | null;
+}): string {
+  const woId = Number(opts.workOrderId);
+  if (!(woId > 0)) return "/material-issue";
+  const returnTo = opts.returnTo ?? "work-orders";
+  const pmrId = opts.pmrId != null ? Number(opts.pmrId) : 0;
+  const q = new URLSearchParams();
+  if (pmrId > 0) q.set("pmrId", String(pmrId));
+  q.set("workOrderId", String(woId));
+  q.set("returnTo", returnTo);
+  const rsId = opts.requirementSheetId != null ? Number(opts.requirementSheetId) : 0;
+  if (rsId > 0) q.set("requirementSheetId", String(rsId));
+  const soId = opts.salesOrderId != null ? Number(opts.salesOrderId) : 0;
+  if (soId > 0) q.set("salesOrderId", String(soId));
+  return `/material-issue?${q.toString()}`;
+}
+
+export function formatPostWoCreateSuccessMessage(workOrderLabel: string, pmrDocNo?: string | null): string {
+  const pmrPart = pmrDocNo?.trim()
+    ? ` PMR ${pmrDocNo.trim()} is ready.`
+    : " Production material request is ready.";
+  return `${workOrderLabel} created.${pmrPart} Continue to issue material.`;
 }

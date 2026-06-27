@@ -58,6 +58,16 @@ import {
 import { OperationalProductionWorkspace } from "../components/erp/OperationalProductionWorkspace";
 import { ProductionExecutionPanel } from "../components/erp/production/ProductionExecutionPanel";
 import {
+  formatNoQtyProductionAdvanceMessage,
+  formatNoQtyProductionQueueCompleteMessage,
+  hasPendingShortfallDecision,
+  hasPausedShortfallDecision,
+  selectNextNoQtyProductionReadyLine,
+  shouldBlockNoQtyProductionEntry,
+  type ProductionExecutionClosedOutcome,
+} from "../lib/productionCompletionUx";
+import type { ProductionExecutionSummary } from "../lib/productionExecutionApi";
+import {
   isRegularProductionEntryBlocked,
   resolveRegularRmAllowedNowQty,
   resolveRegularRmEntryQtyCap,
@@ -465,6 +475,14 @@ export function ProductionPage() {
    * URL references a completed/non-pending WO id.
    */
   const [initialRefreshDone, setInitialRefreshDone] = React.useState(false);
+  const [executionPanelRefreshTick, setExecutionPanelRefreshTick] = React.useState(0);
+  const [noQtyExecutionSummary, setNoQtyExecutionSummary] = React.useState<ProductionExecutionSummary | null>(null);
+  const noQtyPendingShortfallDecision = hasPendingShortfallDecision(noQtyExecutionSummary);
+  const noQtyPausedShortfallDecision = hasPausedShortfallDecision(noQtyExecutionSummary);
+  const noQtyBlockProductionEntry = shouldBlockNoQtyProductionEntry(noQtyExecutionSummary);
+  const [completionEvaluateTick, setCompletionEvaluateTick] = React.useState(0);
+  const [completionEvaluateBatchQty, setCompletionEvaluateBatchQty] = React.useState(0);
+  const [noQtyExecutionClosedNotice, setNoQtyExecutionClosedNotice] = React.useState<string | null>(null);
 
   /**
    * NO_QTY identity recovery from currently loaded production entries.
@@ -1437,6 +1455,7 @@ export function ProductionPage() {
    * “ready to produce” bucket — next step is QC, dispatch, or carry-forward remainder only.
    */
   const hideNoQtyAddProductionEntry = React.useMemo(() => {
+    if (noQtyBlockProductionEntry) return true;
     if (noQtyNextRsReady && !noQtyAllowShopFloorContinue) return true;
     if (!navigateNoQtyContext || noQtyAllowShopFloorContinue || !showNoQtyScopedProductionCard) return false;
     const approvedForSo = entries.some(
@@ -1453,6 +1472,8 @@ export function ProductionPage() {
     noQtyWorkbenchSoId,
     noQtyAutoPickLines.length,
     noQtyNextRsReady,
+    noQtyBlockProductionEntry,
+    noQtyPendingShortfallDecision,
   ]);
 
   const pickNoQtyContinueProductionLine = React.useCallback((): FlatLine | null => {
@@ -1531,6 +1552,92 @@ export function ProductionPage() {
       noQtyAllowShopFloorContinue,
       resetProducedQtyField,
       setProducedQtyStr,
+    ],
+  );
+
+  const navigateToNoQtyProductionLine = React.useCallback(
+    (l: FlatLine) => {
+      setNoQtyExecutionClosedNotice(null);
+      applyLine(l);
+      const params = new URLSearchParams();
+      params.set("workOrderId", String(l.workOrderId));
+      params.set("workOrderLineId", String(l.id));
+      params.set("source", "no_qty_so");
+      const soId = focusSoIdValid ? focusSoId : l.salesOrderId;
+      if (soId > 0) params.set("salesOrderId", String(soId));
+      if (effectiveNoQtyCycleId != null && Number(effectiveNoQtyCycleId) > 0) {
+        params.set("cycleId", String(effectiveNoQtyCycleId));
+      }
+      navigate(`/production?${params.toString()}`, { replace: true });
+    },
+    [applyLine, focusSoIdValid, focusSoId, effectiveNoQtyCycleId, navigate],
+  );
+
+  const handleProductionExecutionClosed = React.useCallback(
+    async (payload: { workOrderId: number; outcome: ProductionExecutionClosedOutcome }) => {
+      const closedWoId = payload.workOrderId;
+      const closedWoRow = workOrders.find((w) => w.id === closedWoId);
+      const closedLabel = displayWorkOrderNo(closedWoId, closedWoRow?.docNo ?? null);
+
+      const { flatLines: nextFlat, entries: nextEntries } = await refresh();
+      setExecutionPanelRefreshTick((t) => t + 1);
+      setCompletionEvaluateTick(0);
+      setCompletionEvaluateBatchQty(0);
+
+      if (!navigateNoQtyContext) return;
+
+      const qcMap = new Map<number, number>();
+      const approvedWols = new Set<number>();
+      for (const entry of nextEntries) {
+        if (!isApproved(entry)) continue;
+        const lineId = Number(entry.workOrderLine?.id ?? 0);
+        if (!(lineId > 0)) continue;
+        approvedWols.add(lineId);
+        const pending = Number(entry.qcPendingQty ?? 0) || 0;
+        qcMap.set(lineId, (qcMap.get(lineId) ?? 0) + Math.max(0, pending));
+      }
+
+      const soId = noQtyWorkbenchSoId > 0 ? noQtyWorkbenchSoId : focusSoIdValid ? focusSoId : 0;
+      const next = selectNextNoQtyProductionReadyLine({
+        lines: nextFlat,
+        salesOrderId: soId,
+        excludeWorkOrderId: closedWoId,
+        qcPendingByWolId: qcMap,
+        approvedWolIds: approvedWols,
+      });
+
+      if (next) {
+        const nextWoRow = nextFlat.find((l) => l.id === next.id) ?? next;
+        toast.showSuccess(
+          formatNoQtyProductionAdvanceMessage(
+            displayWorkOrderNo(next.workOrderId, workOrders.find((w) => w.id === next.workOrderId)?.docNo ?? null),
+            nextWoRow.fgItem?.itemName ?? null,
+          ),
+        );
+        navigateToNoQtyProductionLine(next);
+        return;
+      }
+
+      clearWoLineSelection({ force: true });
+      setNoQtyExecutionClosedNotice(formatNoQtyProductionQueueCompleteMessage(closedLabel));
+      const params = new URLSearchParams();
+      params.set("source", "no_qty_so");
+      if (soId > 0) params.set("salesOrderId", String(soId));
+      if (effectiveNoQtyCycleId != null && Number(effectiveNoQtyCycleId) > 0) {
+        params.set("cycleId", String(effectiveNoQtyCycleId));
+      }
+      navigate(`/production?${params.toString()}`, { replace: true });
+    },
+    [
+      workOrders,
+      navigateNoQtyContext,
+      noQtyWorkbenchSoId,
+      focusSoIdValid,
+      focusSoId,
+      effectiveNoQtyCycleId,
+      navigateToNoQtyProductionLine,
+      clearWoLineSelection,
+      toast,
     ],
   );
 
@@ -1700,7 +1807,9 @@ export function ProductionPage() {
 
   const producedQtyWithinCaps = React.useMemo(() => {
     if (!producedQtyValid || producedQtyParsed == null) return false;
-    if (selectedMetrics && producedQtyParsed > selectedMetrics.remainingQty + 1e-6) return false;
+    if (!fromNoQtySo && selectedMetrics && producedQtyParsed > selectedMetrics.remainingQty + 1e-6) {
+      return false;
+    }
     if (
       showRegularRmReadiness &&
       rmEntryQtyCap != null &&
@@ -1727,7 +1836,8 @@ export function ProductionPage() {
       producedQtyWithinCaps &&
       !rmProductionEntryBlocked &&
       !woProductionLifecycleBlocked &&
-      !regularCreateFormLockedByDraft,
+      !regularCreateFormLockedByDraft &&
+      !(navigateNoQtyContext && noQtyBlockProductionEntry),
   );
 
   const onRmReadinessLoaded = React.useCallback((data: ProductionRmReadiness | null) => {
@@ -2062,6 +2172,7 @@ export function ProductionPage() {
     const w: string[] = [];
     if (!fromNoQtySo && selectedMetrics.remainingQty <= 0) w.push("No remaining quantity on this line.");
     if (
+      !fromNoQtySo &&
       producedQtyValid &&
       producedQtyParsed != null &&
       selectedMetrics.remainingQty > 0 &&
@@ -2091,7 +2202,7 @@ export function ProductionPage() {
     rmReadinessLoading,
   ]);
 
-  async function refresh(): Promise<FlatLine[]> {
+  async function refresh(): Promise<{ flatLines: FlatLine[]; entries: ProdEntryRow[] }> {
     const includeWorkOrderLineId = editing?.workOrderLine?.id ?? 0;
     const includeQs = includeWorkOrderLineId > 0 ? `&includeWorkOrderLineId=${includeWorkOrderLineId}` : "";
     /** When `salesOrderId` is in the URL — or derivable from URL WO — scope pending WOs to that SO. */
@@ -2116,30 +2227,38 @@ export function ProductionPage() {
       ),
     ]);
     setWorkOrders((prev) => {
-      if (
-        prev.length === w.length &&
-        prev.every((row, idx) => row.id === w[idx]?.id && row.lines?.length === w[idx]?.lines?.length)
-      ) {
-        return prev;
-      }
+      const prevSig = prev
+        .flatMap((wo) =>
+          (wo.lines ?? []).map(
+            (l) => `${wo.id}:${l.id}:${Number(l.approvedProducedQty ?? 0)}:${Number(l.remainingQty ?? 0)}`,
+          ),
+        )
+        .join("|");
+      const nextSig = w
+        .flatMap((wo) =>
+          (wo.lines ?? []).map(
+            (l) => `${wo.id}:${l.id}:${Number(l.approvedProducedQty ?? 0)}:${Number(l.remainingQty ?? 0)}`,
+          ),
+        )
+        .join("|");
+      if (prevSig === nextSig) return prev;
       return w;
     });
     setEntries((prev) => {
-      if (
-        prev.length === e.length &&
-        prev.every((row, idx) => row.id === e[idx]?.id && String(row.producedQty) === String(e[idx]?.producedQty))
-      ) {
-        return prev;
-      }
+      const prevSig = prev.map((r) => `${r.id}:${r.producedQty ?? 0}:${r.workflowStatus ?? ""}`).join("|");
+      const nextSig = e.map((r) => `${r.id}:${r.producedQty ?? 0}:${r.workflowStatus ?? ""}`).join("|");
+      if (prevSig === nextSig) return prev;
       return e;
     });
-    return w.flatMap((wo) =>
+    setExecutionPanelRefreshTick((t) => t + 1);
+    const flatLines = w.flatMap((wo) =>
       wo.lines.map((l) => ({
         ...l,
         workOrderId: wo.id,
         salesOrderId: wo.salesOrderId,
       })),
     );
+    return { flatLines, entries: e };
   }
 
   React.useEffect(() => {
@@ -2486,7 +2605,7 @@ export function ProductionPage() {
       });
       setEditing(null);
       resetProducedQtyField();
-      const nextFlat = await refresh();
+      const { flatLines: nextFlat } = await refresh();
       // NO_QTY: do not auto-advance / push operators to complete production.
       // Keep the current selection stable; partial production is a valid state.
       if (!showNoQtyScopedProductionCard) {
@@ -2550,7 +2669,13 @@ export function ProductionPage() {
   ) {
     setEditing(null);
     setNoQtyRmShortage(null);
+    const approvedBatchQty = Number(approvedRow?.producedQty ?? 0);
     await refresh();
+    setExecutionPanelRefreshTick((t) => t + 1);
+    if (navigateNoQtyContext) {
+      setCompletionEvaluateBatchQty(approvedBatchQty);
+      setCompletionEvaluateTick((t) => t + 1);
+    }
     const woIdNav = approvedRow ? Number(approvedRow.workOrderLine?.workOrder?.id ?? 0) : 0;
     if (navigateNoQtyContext && Number.isFinite(woIdNav) && woIdNav > 0) {
       const replaceParams = new URLSearchParams();
@@ -2575,7 +2700,7 @@ export function ProductionPage() {
     }
     if (consumptionWarnings?.length) {
       toast.showSuccess(`Production approved. ${consumptionWarnings.join(" ")}`);
-    } else if (navigateNoQtyContext && focusSoIdValid) {
+    } else if (!navigateNoQtyContext && !focusSoIdValid) {
       toast.showSuccess("Production approved.");
     } else if (!navigateNoQtyContext) {
       toast.showSuccess("Production approved.");
@@ -3473,8 +3598,8 @@ export function ProductionPage() {
         // Use dvh to avoid scrollbar flicker from classic vh behavior on Windows/browser chrome.
         // Desktop workbench: REGULAR shell adds a taller sticky header — reserve slightly more vertical space.
         navigateNoQtyContext
-          ? "lg:h-[calc(100dvh-11.25rem)]"
-          : "lg:h-[calc(100dvh-13.25rem)]",
+          ? "lg:flex lg:min-h-0 lg:flex-1 lg:flex-col lg:overflow-hidden lg:h-[calc(100dvh-11.25rem)]"
+          : "lg:flex lg:min-h-0 lg:flex-1 lg:flex-col lg:overflow-hidden lg:h-[calc(100dvh-13.25rem)]",
       )}
     >
       {fromNoQtySo ? (
@@ -3489,6 +3614,21 @@ export function ProductionPage() {
         </div>
       ) : null}
       {error ? <div className="rounded border border-red-200 bg-red-50 px-2 py-1 text-[13px] text-red-800">{error}</div> : null}
+      {navigateNoQtyContext && noQtyExecutionClosedNotice ? (
+        <div
+          className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-[13px] text-emerald-950"
+          data-testid="no-qty-production-queue-complete"
+        >
+          <span>{noQtyExecutionClosedNotice}</span>
+          <button
+            type="button"
+            className="shrink-0 text-[12px] font-semibold text-emerald-900 underline underline-offset-2"
+            onClick={() => setNoQtyExecutionClosedNotice(null)}
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : null}
       {woProductionLifecycleBlocked && woProductionLifecycleMessage && !productionPrimaryStripCoversPause && !draftApprovalPendingRegular ? (
         <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-[13px] text-amber-950">
           {selectedWoPaused ? (
@@ -3920,7 +4060,38 @@ export function ProductionPage() {
                   <div className="min-w-0 space-y-2 lg:order-1 lg:min-h-0">
                     <div className="space-y-2 lg:min-h-0">
                       {hideNoQtyAddProductionEntry ? (
-                        <div className="flex min-h-[10rem] flex-col justify-center rounded-md border border-indigo-200 bg-indigo-50/90 px-3 py-3 text-sm text-indigo-950">
+                        <div
+                          className="flex min-h-[10rem] flex-col justify-center rounded-md border border-indigo-200 bg-indigo-50/90 px-3 py-3 text-sm text-indigo-950"
+                          data-testid={
+                            noQtyPendingShortfallDecision
+                              ? "no-qty-shortfall-decision-hold"
+                              : noQtyPausedShortfallDecision
+                                ? "no-qty-paused-shortfall-hold"
+                                : undefined
+                          }
+                        >
+                          {noQtyPendingShortfallDecision ? (
+                            <>
+                              <div className="text-[14px] font-semibold tracking-tight text-violet-950">
+                                Shortfall decision required
+                              </div>
+                              <p className="mt-2 text-[12px] leading-snug text-slate-700">
+                                Produced qty is below the WO qty. Choose Waive, Carry Forward, or Pause in the
+                                production status panel above — more production entry is blocked until you decide.
+                              </p>
+                            </>
+                          ) : noQtyPausedShortfallDecision ? (
+                            <>
+                              <div className="text-[14px] font-semibold tracking-tight text-amber-950">
+                                Production paused with remaining qty
+                              </div>
+                              <p className="mt-2 text-[12px] leading-snug text-slate-700">
+                                Use the production status panel above to Resume, Waive, or Carry Forward the
+                                remainder — production entry stays blocked until you choose.
+                              </p>
+                            </>
+                          ) : (
+                            <>
                           <div className="text-[14px] font-semibold tracking-tight text-slate-900">
                             {noQtyNextRsReady ? "Cycle ready for Next RS" : "Production entry completed for this cycle"}
                           </div>
@@ -3951,6 +4122,8 @@ export function ProductionPage() {
                               Continue producing more in same cycle
                             </Button>
                           </div>
+                            </>
+                          )}
                         </div>
                       ) : (
                         <>
@@ -4299,7 +4472,9 @@ export function ProductionPage() {
                                   variant="outline"
                                   size="sm"
                                   className="h-9 shrink-0 text-[13px]"
-                                  disabled={posting || !selectedMetrics || selectedMetrics.remainingQty <= 0}
+                                  disabled={
+                                    posting || !selectedMetrics || (!fromNoQtySo && selectedMetrics.remainingQty <= 0)
+                                  }
                                   onClick={() => {
                                     producedQtyUserTouchedRef.current = true;
                                     setProducedQtyStr(fmtProdQty(selectedMetrics?.remainingQty ?? 0));
@@ -4464,7 +4639,7 @@ export function ProductionPage() {
                           disabled={
                             posting ||
                             !selectedMetrics ||
-                            selectedMetrics.remainingQty <= 0 ||
+                            (!fromNoQtySo && selectedMetrics.remainingQty <= 0) ||
                             rmProductionEntryBlocked
                           }
                           onClick={() => {
@@ -4829,7 +5004,9 @@ export function ProductionPage() {
                         variant="outline"
                         size="sm"
                         className={cn("h-10 shrink-0 text-[13px]", operatorInputClass)}
-                        disabled={posting || !selectedMetrics || selectedMetrics.remainingQty <= 0}
+                        disabled={
+                          posting || !selectedMetrics || (!fromNoQtySo && selectedMetrics.remainingQty <= 0)
+                        }
                         onClick={() => {
                           producedQtyUserTouchedRef.current = true;
                           setProducedQtyStr(fmtProdQty(selectedMetrics?.remainingQty ?? 0));
@@ -4883,6 +5060,7 @@ export function ProductionPage() {
       <Card
         className={cn(
           "erp-op-workspace-secondary min-w-0 overflow-hidden",
+          navigateNoQtyContext && "flex min-h-0 flex-1 flex-col",
           !fromNoQtySo && flatLines.length > 0 && "mt-1",
         )}
       >
@@ -4896,7 +5074,13 @@ export function ProductionPage() {
             {showProductionWorkspace ? "Recent Production Entries" : "Production entries"}
           </CardTitle>
         </CardHeader>
-        <CardContent className={cn("space-y-2 px-3 py-2", !navigateNoQtyContext && "px-0 pb-2 pt-0")}>
+        <CardContent
+          className={cn(
+            "space-y-2 px-3 py-2",
+            navigateNoQtyContext && "flex min-h-0 flex-1 flex-col overflow-hidden",
+            !navigateNoQtyContext && "px-0 pb-2 pt-0",
+          )}
+        >
           <div
             className={cn(
               "flex flex-wrap items-end gap-2 border-b border-slate-100 bg-white px-3 py-1.5",
@@ -5134,7 +5318,7 @@ export function ProductionPage() {
             };
 
             return (
-              <div className={cn("space-y-2", !navigateNoQtyContext && "px-3")}>
+              <div className={cn("space-y-2", !navigateNoQtyContext && "px-3", navigateNoQtyContext && "min-h-0 flex-1 overflow-y-auto")}>
                 {fromNoQtySo && focusSoIdValid ? (
                   <div className="text-[11px] font-semibold text-slate-600">Current cycle work</div>
                 ) : null}
@@ -5849,9 +6033,14 @@ export function ProductionPage() {
             workOrderId={effectiveScopedWoId}
             orderType="NO_QTY"
             canOperate={canProd}
+            refreshKey={executionPanelRefreshTick}
+            evaluateTick={completionEvaluateTick}
+            evaluateBatchQty={completionEvaluateBatchQty}
             onChanged={() => {
               void refresh();
             }}
+            onSummaryChange={setNoQtyExecutionSummary}
+            onExecutionClosed={handleProductionExecutionClosed}
           />
         ) : null}
       </OperationalContextSticky>

@@ -69,11 +69,27 @@ export function operatorQueueStatus(row: {
     };
   }
 
-  if (
-    shortage <= 0 ||
-    qt === "RM_READY_FOR_ISSUE" ||
-    qt === "READY_ISSUE"
-  ) {
+  if (isPostIssueQueueType(qt)) {
+    return {
+      status: "ready",
+      label: STORE_PRODUCTION_HANDOFF_LABEL,
+      badgeVariant: "success",
+      cardRingClass: "ring-emerald-300/90",
+      cardBgClass: "bg-emerald-50/40",
+    };
+  }
+
+  if (qt === "PMR_WAITING_ISSUE") {
+    return {
+      status: "partial",
+      label: "Waiting for issue",
+      badgeVariant: "default",
+      cardRingClass: "ring-amber-300/90",
+      cardBgClass: "bg-amber-50/50",
+    };
+  }
+
+  if (qt === "RM_READY_FOR_ISSUE" || qt === "READY_ISSUE") {
     return {
       status: "ready",
       label: "Ready for issue",
@@ -83,10 +99,10 @@ export function operatorQueueStatus(row: {
     };
   }
 
-  if (qt === "READY_TO_RELEASE_WO") {
+  if (shortage <= 0) {
     return {
       status: "ready",
-      label: STORE_PRODUCTION_HANDOFF_LABEL,
+      label: "Ready for issue",
       badgeVariant: "success",
       cardRingClass: "ring-emerald-300/90",
       cardBgClass: "bg-emerald-50/40",

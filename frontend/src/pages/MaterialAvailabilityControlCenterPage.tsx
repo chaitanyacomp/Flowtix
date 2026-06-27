@@ -1561,7 +1561,10 @@ export function MaterialAvailabilityControlCenterPage() {
               queueCases.map((group) => {
                 const row = group.representative;
                 const displayMetrics = resolveQueueCaseDisplayMetrics(group, caseRmMetricsByKey);
-                const groupPostIssue = isPostIssueStoreHandoff({ queueType: row.queueType });
+                const groupPostIssue = isPostIssueStoreHandoff({
+                  queueType: row.queueType,
+                  storeActionKey: row.operationalKey === "HANDOFF_TO_PRODUCTION" ? "HANDOFF_TO_PRODUCTION" : null,
+                });
                 const qStatus = operatorQueueStatus(row);
                 const nextHint = operatorNextActionHint(row);
                 const selected = isQueueCaseSelected(group);

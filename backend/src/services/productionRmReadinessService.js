@@ -56,13 +56,14 @@ function computeMaxProducibleFromPmrBasis({
   totalWoQty,
   pmrRequiredByItem,
   availableByItem,
+  allowSurplus = false,
 }) {
   const fgQty = n(woQty);
   const totalFg = n(totalWoQty);
   if (fgQty <= STOCK_EPS || !pmrRequiredByItem?.size) return null;
 
   const lineShare = totalFg > STOCK_EPS ? fgQty / totalFg : 1;
-  let maxProducible = fgQty;
+  let maxProducible = allowSurplus ? Infinity : fgQty;
   let hasPmrItems = false;
 
   for (const [itemId, pmrRequiredTotal] of pmrRequiredByItem) {
@@ -75,6 +76,7 @@ function computeMaxProducibleFromPmrBasis({
   }
 
   if (!hasPmrItems) return null;
+  if (!Number.isFinite(maxProducible)) return Math.max(0, fgQty);
   return Math.max(0, maxProducible);
 }
 
@@ -175,6 +177,20 @@ async function loadSubmittedPmrsForWorkOrder(db, workOrderId) {
   });
 }
 
+function isPmrLineIssueComplete(line) {
+  const req = n(line?.requiredQty);
+  if (req <= STOCK_EPS) return true;
+  return n(line?.issuedQty) + STOCK_EPS >= req;
+}
+
+/** PMR is store-issue-complete when status is FULLY_ISSUED or every line meets required qty. */
+function isPmrStoreIssueComplete(pmr) {
+  if (pmr?.status === "FULLY_ISSUED") return true;
+  const lines = pmr?.lines ?? [];
+  if (!lines.length) return false;
+  return lines.every(isPmrLineIssueComplete);
+}
+
 function resolveReadinessGate(pmrs, totalIssued) {
   if (!pmrs.length) {
     return { gate: /** @type {ReadinessGate} */ ("NO_PMR"), hasDraftOnly: false };
@@ -182,7 +198,7 @@ function resolveReadinessGate(pmrs, totalIssued) {
   if (totalIssued <= STOCK_EPS) {
     return { gate: "WAITING_STORE_ISSUE", hasDraftOnly: false };
   }
-  const allFull = pmrs.every((p) => p.status === "FULLY_ISSUED");
+  const allFull = pmrs.every(isPmrStoreIssueComplete);
   return {
     gate: allFull ? "FULLY_ISSUED_READY" : "PARTIAL_READY",
     hasDraftOnly: false,
@@ -209,6 +225,7 @@ async function buildProductionRmReadiness(db, workOrderLineId) {
   }
 
   const wo = wol.workOrder;
+  const isNoQty = wo.salesOrder?.orderType === "NO_QTY";
   const woQty = n(wol.qty);
   const fgItemId = wol.fgItemId;
   const fgName = wol.fgItem?.itemName ?? `Item #${fgItemId}`;
@@ -274,7 +291,7 @@ async function buildProductionRmReadiness(db, workOrderLineId) {
 
   /** @type {Array<Record<string, unknown>>} */
   const rmLines = [];
-  let maxProducibleQty = woQty;
+  let maxProducibleQty = isNoQty ? Infinity : woQty;
   let hasRmRows = false;
   /** @type {Map<number, number>} */
   const availableByItem = new Map();
@@ -332,12 +349,17 @@ async function buildProductionRmReadiness(db, workOrderLineId) {
       totalWoQty,
       pmrRequiredByItem,
       availableByItem,
+      allowSurplus: isNoQty,
     });
     if (pmrMax != null) maxProducibleQty = pmrMax;
   }
 
   if (!hasRmRows || (!usePmrBasis && (bomMissing || perUnitBomMissing))) {
     maxProducibleQty = 0;
+  }
+
+  if (!Number.isFinite(maxProducibleQty)) {
+    maxProducibleQty = isNoQty ? 0 : woQty;
   }
 
   maxProducibleQty = Math.max(0, Math.floor(maxProducibleQty));
@@ -358,7 +380,9 @@ async function buildProductionRmReadiness(db, workOrderLineId) {
   });
   const approvedProduced = n(approvedAgg._sum.producedQty);
   const woRemaining = Math.max(0, woQty - approvedProduced);
-  const maxAdditionalQty = Math.max(0, Math.min(woRemaining, maxProducibleQty - unapprovedProduced));
+  const maxAdditionalQty = isNoQty
+    ? Math.max(0, maxProducibleQty - draftAndApproved)
+    : Math.max(0, Math.min(woRemaining, maxProducibleQty - unapprovedProduced));
 
   const latestPmr = submittedPmrs[0] ?? null;
 
@@ -371,6 +395,7 @@ async function buildProductionRmReadiness(db, workOrderLineId) {
     fgItemName: fgName,
     fgUnit,
     woQty,
+    orderType: wo.salesOrder?.orderType ?? "NORMAL",
     woRemainingQty: round3(woRemaining),
     approvedProducedQty: round3(approvedProduced),
     draftAndApprovedQty: round3(draftAndApproved),
@@ -480,11 +505,15 @@ async function assertProductionRmReadiness(tx, {
 
   const otherUnapprovedQty = await loadOtherUnapprovedProductionQty(tx, workOrderLineId, excludeProductionId);
   const maxAllowed = readiness.productionAllowedNowQty;
+  const isNoQty = readiness.orderType === "NO_QTY";
+  const qtyToCheck = isNoQty
+    ? n(readiness.approvedProducedQty) + otherUnapprovedQty + qty
+    : qty;
   if (
     productionQtyExceedsRmAllowed({
-      producedQty: qty,
+      producedQty: qtyToCheck,
       productionAllowedNowQty: maxAllowed,
-      otherUnapprovedQty,
+      otherUnapprovedQty: isNoQty ? 0 : otherUnapprovedQty,
     })
   ) {
     const fmt = (x) => (Number.isInteger(x) ? String(x) : Number(x).toFixed(3));
@@ -656,6 +685,7 @@ module.exports = {
   computeMaxProducibleFromPmrBasis,
   resolveWorkOrderLinePlannedQty,
   productionQtyExceedsRmAllowed,
+  isPmrStoreIssueComplete,
   resolveReadinessGate,
   getWorkOrderProductionLocationIds,
   buildProductionRmReadiness,

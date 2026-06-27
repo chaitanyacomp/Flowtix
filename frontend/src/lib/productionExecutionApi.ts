@@ -1,6 +1,6 @@
 import { apiFetch } from "../services/api";
 
-export type ProductionExecutionStatus = "RUNNING" | "BLOCKED" | "COMPLETED";
+export type ProductionExecutionStatus = "RUNNING" | "SHORTFALL_PENDING" | "BLOCKED" | "COMPLETED";
 
 export type ProductionBlockReason =
   | "MACHINE_BREAKDOWN"
@@ -35,8 +35,11 @@ export interface ProductionExecutionSummary {
   plannedQty: number;
   producedQty: number;
   remainderQty: number;
+  surplusQty?: number;
   productionPendingQty: number;
   hasShortfall: boolean;
+  hasSurplus?: boolean;
+  pendingShortfallResolution?: boolean;
   blockReasons: ProductionBlockReason[];
   resolutionReasons: ProductionResolutionReason[];
   lines: Array<{

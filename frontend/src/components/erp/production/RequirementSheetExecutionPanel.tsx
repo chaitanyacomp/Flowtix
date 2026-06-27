@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Link, useLocation } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Button } from "../../ui/button";
 import { Input } from "../../ui/input";
 import { Badge } from "../../ui/badge";
@@ -9,6 +9,11 @@ import { cn } from "../../../lib/utils";
 import { useToast } from "../../../contexts/ToastContext";
 import { useStoreExecutionNavContext } from "../../../hooks/useStoreExecutionNavContext";
 import { navContextMaterialIssueFromExecutionWorkspace, navStateWithNavContext } from "../../../lib/erpNavContext";
+import {
+  formatPostWoCreateSuccessMessage,
+  postWoMaterialIssueHref,
+} from "../../../lib/materialWorkflowLinks";
+import { placementQuantitiesMatchSuggested } from "../../../lib/materialIssueContinuousSession";
 import {
   EXECUTION_WO_HISTORY_MAX_ROWS,
   executionWoHistoryVisibleCount,
@@ -281,6 +286,7 @@ export function RequirementSheetExecutionPanel({
   executionMode?: boolean;
 }) {
   const location = useLocation();
+  const navigate = useNavigate();
   const executionNavContext = useStoreExecutionNavContext("execution-workspace");
   const workspaceHref = `${location.pathname}${location.search}`;
   const materialIssueFromWorkspaceState = React.useMemo(
@@ -395,6 +401,11 @@ export function RequirementSheetExecutionPanel({
     validationByItem.size === 0 &&
     placementAllowsSubmit;
 
+  const useSuggestedAsPrimary = React.useMemo(
+    () => placementQuantitiesMatchSuggested(data?.placement?.lines ?? [], draftQtyByItem),
+    [data?.placement?.lines, draftQtyByItem],
+  );
+
   function resetDrafts() {
     const next: Record<number, string> = {};
     for (const line of data?.placement?.lines ?? []) {
@@ -419,19 +430,45 @@ export function RequirementSheetExecutionPanel({
         workOrderDocNo?: string | null;
         workOrderIds?: number[];
         workOrders?: Array<{ workOrderId: number; workOrderDocNo?: string | null }>;
+        pmrs?: Array<{
+          workOrderId: number;
+          pmrId: number | null;
+          pmrDocNo?: string | null;
+          status?: string | null;
+        }>;
       }>(`/api/requirement-sheets/${sheetId}/create-wo`, {
         method: "POST",
         body: JSON.stringify({ lines }),
       });
+      const primaryWoId = Number(res.workOrders?.[0]?.workOrderId ?? res.workOrderId);
+      const pmrRow =
+        res.pmrs?.find((p) => Number(p.workOrderId) === primaryWoId) ?? res.pmrs?.[0] ?? null;
       const createdLabels =
         res.workOrders?.length
           ? res.workOrders.map((wo) => wo.workOrderDocNo?.trim() || `WO-${wo.workOrderId}`)
           : [res.workOrderDocNo?.trim() || `WO-${res.workOrderId}`];
-      toast.showSuccess(
-        createdLabels.length > 1
-          ? `Successfully created: ${createdLabels.join(", ")}`
-          : `Work Order ${createdLabels[0]} created.`,
-      );
+      const woLabel =
+        createdLabels.length > 1 ? `Work orders ${createdLabels.join(", ")}` : `Work Order ${createdLabels[0]}`;
+      toast.showSuccess(formatPostWoCreateSuccessMessage(woLabel, pmrRow?.pmrDocNo ?? null));
+      if (Number.isFinite(primaryWoId) && primaryWoId > 0) {
+        const returnTo =
+          executionNavContext.origin === "pending-actions"
+            ? "pending-actions"
+            : executionNavContext.origin === "dashboard"
+              ? "dashboard"
+              : "requirement-sheet-execution";
+        navigate(
+          postWoMaterialIssueHref({
+            workOrderId: primaryWoId,
+            pmrId: pmrRow?.pmrId ?? null,
+            returnTo,
+            requirementSheetId: sheetId,
+            salesOrderId,
+          }),
+          { state: materialIssueFromWorkspaceState },
+        );
+        return;
+      }
       const next = await apiFetch<RsExecutionSummary>(`/api/requirement-sheets/${sheetId}/execution`);
       setData(next);
     } catch (e) {
@@ -595,7 +632,7 @@ export function RequirementSheetExecutionPanel({
           </Button>
           <Button
             type="button"
-            variant="outline"
+            variant={useSuggestedAsPrimary ? "default" : "outline"}
             disabled={!canSubmitSuggested}
             data-testid="execution-create-suggested-wo"
             onClick={() => void submitPlacement("suggested")}
@@ -604,6 +641,7 @@ export function RequirementSheetExecutionPanel({
           </Button>
           <Button
             type="button"
+            variant={useSuggestedAsPrimary ? "outline" : "default"}
             disabled={!canSubmitCustom}
             data-testid="execution-create-custom-wo"
             onClick={() => void submitPlacement("custom")}

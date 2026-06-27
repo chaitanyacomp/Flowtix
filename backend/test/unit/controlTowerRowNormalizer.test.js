@@ -142,7 +142,7 @@ describe("controlTowerRowNormalizer", () => {
     assert.equal(row.currentOwner, VISIBLE_OWNERS.PRODUCTION);
   });
 
-  it("normalizeRmRiskRow: pre-PR WAITING_PURCHASE_ACTION remains STORE-owned", () => {
+  it("normalizeRmRiskRow: WAITING_PURCHASE_ACTION is PURCHASE-owned before PR exists", () => {
     const row = normalizeRmRiskRow({
       workOrderId: 10,
       itemId: 3,
@@ -153,9 +153,9 @@ describe("controlTowerRowNormalizer", () => {
       operationalKey: "PROCUREMENT_PENDING",
     });
     assert.equal(row.currentStatus, CONTROL_TOWER_STATUSES.PROCUREMENT_IN_PROGRESS);
-    assert.equal(row.currentOwner, VISIBLE_OWNERS.STORE);
+    assert.equal(row.currentOwner, VISIBLE_OWNERS.PURCHASE);
     assert.equal(row.metadata.sourceQueueType, "WAITING_PURCHASE_ACTION");
-    assert.equal(row.metadata.purchaseHandoff, undefined);
+    assert.equal(row.metadata.purchaseHandoff, true);
   });
 
   it("normalizeRmRiskRow: PR_PENDING_PO is PURCHASE-owned", () => {

@@ -5,9 +5,11 @@
 
 const { QUEUE_EPS, qtyToNumber } = require("./rmPurchaseHelpers");
 const { resolveDemandPoolForSourceType } = require("./procurementDemandPoolService");
+const { productionExecutionPendingActionLabel } = require("./productionExecutionService");
 
 const WAITING_FOR_PURCHASE_RM_PO = "Waiting for Purchase to prepare RM PO.";
 const PREPARE_RM_PO = "Prepare RM PO";
+const STORE_ISSUE_PENDING_ACTION = "Issue Material";
 const RM_ISSUED_WAITING_FOR_PRODUCTION = "RM issued — waiting for Production";
 const READY_TO_START_PRODUCTION = "Ready to Start Production";
 
@@ -156,7 +158,7 @@ function resolveRmRiskPendingAction(meta, queueHints = {}, role = "STORE") {
     if (stage.workOrderId > 0) params.set("workOrderId", String(stage.workOrderId));
     if (stage.salesOrderId > 0) params.set("salesOrderId", String(stage.salesOrderId));
     if (stage.materialRequirementId > 0) params.set("materialRequirementId", String(stage.materialRequirementId));
-    return { action: "Material Issue Pending", href: `/material-issue?${params.toString()}` };
+    return { action: STORE_ISSUE_PENDING_ACTION, href: `/material-issue?${params.toString()}` };
   }
 
   const procurementDone =
@@ -166,7 +168,9 @@ function resolveRmRiskPendingAction(meta, queueHints = {}, role = "STORE") {
     if (isProductionRole(role)) {
       const params = new URLSearchParams({ returnTo: "pending-actions" });
       if (stage.workOrderId > 0) params.set("workOrderId", String(stage.workOrderId));
-      return { action: READY_TO_START_PRODUCTION, href: `/production?${params.toString()}` };
+      const execStatus = meta?.productionExecutionStatus ?? "NOT_STARTED";
+      const action = productionExecutionPendingActionLabel(execStatus) ?? READY_TO_START_PRODUCTION;
+      return { action, href: `/production?${params.toString()}` };
     }
     return {
       action: RM_ISSUED_WAITING_FOR_PRODUCTION,

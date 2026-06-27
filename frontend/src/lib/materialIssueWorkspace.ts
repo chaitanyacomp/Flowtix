@@ -10,7 +10,9 @@ export type PendingPmrSummary = {
   status: string;
   workOrderId?: number;
   workOrderNo: string | null;
+  salesOrderId?: number | null;
   salesOrderNo?: string | null;
+  requirementSheetId?: number | null;
   productionItemName?: string | null;
   totalPending: number;
   lineCount?: number;

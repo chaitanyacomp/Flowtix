@@ -9,6 +9,44 @@ const { getWoLineRemainingProductionQty } = require("./reportMetrics");
 
 const EPS = 1e-6;
 
+/** Operator-facing Pending Actions / production queue labels keyed by execution status. */
+const PRODUCTION_EXECUTION_PENDING_LABELS = Object.freeze({
+  NOT_STARTED: "Ready to Start Production",
+  RUNNING: "Continue Production",
+  SHORTFALL_PENDING: "Resolve Production Shortfall",
+  BLOCKED: "Production Paused",
+});
+
+/**
+ * Pending Actions label from NO_QTY production execution status.
+ * @param {string | null | undefined} executionStatus
+ * @returns {string | null} null when COMPLETED (row should not appear in pending actions)
+ */
+function productionExecutionPendingActionLabel(executionStatus) {
+  const status = String(executionStatus ?? "NOT_STARTED")
+    .trim()
+    .toUpperCase();
+  if (status === "COMPLETED") return null;
+  return PRODUCTION_EXECUTION_PENDING_LABELS[status] ?? PRODUCTION_EXECUTION_PENDING_LABELS.RUNNING;
+}
+
+/**
+ * Production queue row action label — defers to execution status for production work,
+ * keeps dashboard routing labels for QC / dispatch / billing / next RS.
+ * @param {{ nextAction?: string | null; execStatus?: string | null }} params
+ */
+function deriveProductionQueueActionLabel({ nextAction, execStatus }) {
+  const na = String(nextAction ?? "");
+  if (na === "QC_PENDING") return "Complete QA";
+  if (na === "DISPATCH_PENDING") return "Go to Dispatch";
+  if (na === "ON_HOLD") return "Review Hold";
+  if (na === "NEXT_RS_REQUIRED") return "Create Next RS";
+  if (na === "SALES_BILL_PENDING") return "Create Sales Bill";
+  if (na === "PRODUCTION_EXECUTION_BLOCKED") return PRODUCTION_EXECUTION_PENDING_LABELS.BLOCKED;
+  if (na === "PRODUCTION_SHORTFALL_DECISION") return PRODUCTION_EXECUTION_PENDING_LABELS.SHORTFALL_PENDING;
+  return productionExecutionPendingActionLabel(execStatus);
+}
+
 const BLOCK_REASONS = Object.freeze([
   "MACHINE_BREAKDOWN",
   "WAITING_FOR_RM",
@@ -53,6 +91,25 @@ function blockReasonLabel(reason) {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+function buildFinishSuccessMessage(woDocNo, workOrderId, outcome, remainderQty, surplusQty = 0) {
+  const label = (woDocNo && String(woDocNo).trim()) || `WO-${workOrderId}`;
+  const rem = round3(remainderQty);
+  const surplus = round3(surplusQty);
+  if (outcome === "WAIVE_BALANCE") {
+    return `${label} closed. Remaining ${rem} qty waived/cancelled.`;
+  }
+  if (outcome === "CARRY_FORWARD") {
+    return `${label} closed. Remaining ${rem} qty carried forward.`;
+  }
+  if (outcome === "FULL_COMPLETE") {
+    if (surplus > EPS) {
+      return `Production completed successfully. Extra Production: ${surplus} Qty. Work Order ${label} closed.`;
+    }
+    return `Production completed successfully. Work Order ${label} closed.`;
+  }
+  return null;
+}
+
 async function loadNoQtyExecutionContext(db, workOrderId) {
   const wo = await db.workOrder.findUnique({
     where: { id: workOrderId },
@@ -91,6 +148,7 @@ async function computeExecutionSummary(tx, wo) {
     const plannedQty = round3(n(line.plannedQty ?? line.qty));
     const producedQty = round3(producedByLineId.get(line.id) ?? 0);
     const remainderQty = round3(Math.max(0, plannedQty - producedQty));
+    const surplusQty = round3(Math.max(0, producedQty - plannedQty));
     const productionPendingQty =
       wo.productionExecution?.executionStatus === "COMPLETED"
         ? 0
@@ -102,13 +160,16 @@ async function computeExecutionSummary(tx, wo) {
       plannedQty,
       producedQty,
       remainderQty,
+      surplusQty,
       productionPendingQty: round3(productionPendingQty),
       executionWaivedQty: line.executionWaivedQty != null ? round3(n(line.executionWaivedQty)) : null,
+      executionSurplusQty: line.executionSurplusQty != null ? round3(n(line.executionSurplusQty)) : null,
     };
   });
   const plannedQty = round3(lines.reduce((s, l) => s + l.plannedQty, 0));
   const producedQty = round3(lines.reduce((s, l) => s + l.producedQty, 0));
   const remainderQty = round3(lines.reduce((s, l) => s + l.remainderQty, 0));
+  const surplusQty = round3(lines.reduce((s, l) => s + l.surplusQty, 0));
   const productionPendingQty = round3(lines.reduce((s, l) => s + l.productionPendingQty, 0));
   return {
     workOrderId: wo.id,
@@ -121,8 +182,11 @@ async function computeExecutionSummary(tx, wo) {
     plannedQty,
     producedQty,
     remainderQty,
+    surplusQty,
     productionPendingQty,
     hasShortfall: remainderQty > EPS && wo.productionExecution?.executionStatus !== "COMPLETED",
+    hasSurplus: surplusQty > EPS && wo.productionExecution?.executionStatus !== "COMPLETED",
+    pendingShortfallResolution: wo.productionExecution?.executionStatus === "SHORTFALL_PENDING",
     lines,
   };
 }
@@ -153,6 +217,14 @@ async function assertNoQtyProductionExecutionAllowsProduction(tx, workOrderId) {
     );
     err.statusCode = 409;
     err.code = "WO_EXEC_BLOCKED";
+    throw err;
+  }
+  if (exec.executionStatus === "SHORTFALL_PENDING") {
+    const err = new Error(
+      "Production shortfall decision is pending. Choose Waive, Carry Forward, or Pause before recording more production.",
+    );
+    err.statusCode = 409;
+    err.code = "WO_EXEC_SHORTFALL_DECISION_REQUIRED";
     throw err;
   }
   if (exec.executionStatus === "COMPLETED") {
@@ -379,6 +451,64 @@ async function resumeProductionExecution(tx, workOrderId, { actorUserId, actorRo
   return { execution, summary: await computeExecutionSummary(tx, { ...wo, productionExecution: execution }) };
 }
 
+/**
+ * After an approved NO_QTY batch: mark execution SHORTFALL_PENDING when the batch triggers
+ * the less-than-WO shortfall decision (same rule as frontend completion evaluate).
+ */
+async function syncShortfallPendingAfterProductionApprove(tx, workOrderId, approvedBatchQty) {
+  const wo = await loadNoQtyExecutionContext(tx, workOrderId);
+  const exec = wo.productionExecution ?? (await ensureProductionExecutionRecord(tx, workOrderId));
+  if (exec.executionStatus === "COMPLETED" || exec.executionStatus === "BLOCKED") return exec;
+
+  const summary = await computeExecutionSummary(tx, { ...wo, productionExecution: exec });
+  if (summary.producedQty <= EPS || summary.remainderQty <= EPS || (summary.surplusQty ?? 0) > EPS) {
+    return exec;
+  }
+
+  const batchQty = round3(n(approvedBatchQty));
+  if (!(batchQty + EPS >= summary.remainderQty)) return exec;
+
+  if (exec.executionStatus === "SHORTFALL_PENDING") return exec;
+
+  return tx.workOrderProductionExecution.update({
+    where: { workOrderId },
+    data: { executionStatus: "SHORTFALL_PENDING" },
+  });
+}
+
+/**
+ * Repair legacy RUNNING executions that already have an unresolved shortfall decision.
+ */
+async function reconcileShortfallPendingStatus(tx, wo) {
+  const exec = wo.productionExecution;
+  if (!exec || exec.executionStatus === "COMPLETED" || exec.executionStatus === "BLOCKED") return exec;
+  if (exec.executionStatus === "SHORTFALL_PENDING") return exec;
+
+  // Operator resumed after Pause — keep RUNNING until the next shortfall-triggering approve.
+  if (exec.executionStatus === "RUNNING" && exec.resumedAt != null) {
+    return exec;
+  }
+
+  const summary = await computeExecutionSummary(tx, wo);
+  if (summary.producedQty <= EPS || summary.remainderQty <= EPS) return exec;
+
+  const lastEntry = await tx.productionEntry.findFirst({
+    where: {
+      workflowStatus: "APPROVED",
+      workOrderLine: { workOrderId: wo.id },
+    },
+    orderBy: { id: "desc" },
+    select: { producedQty: true },
+  });
+  const batchQty = round3(n(lastEntry?.producedQty));
+  if (!(batchQty + EPS >= summary.remainderQty)) return exec;
+
+  return tx.workOrderProductionExecution.update({
+    where: { workOrderId: wo.id },
+    data: { executionStatus: "SHORTFALL_PENDING" },
+  });
+}
+
 async function createCarryForwardPendingFromLine(tx, {
   wo,
   line,
@@ -419,7 +549,24 @@ async function finishProductionExecution(tx, workOrderId, input, { actorUserId, 
   }
 
   await ensureProductionExecutionRecord(tx, workOrderId);
-  const summary = await computeExecutionSummary(tx, wo);
+  const summaryPreview = await computeExecutionSummary(tx, wo);
+
+  if (wo.productionExecution?.executionStatus === "BLOCKED") {
+    const allowPausedShortfallClose =
+      shortfallOutcome &&
+      FINISH_OUTCOMES.includes(shortfallOutcome) &&
+      summaryPreview.remainderQty > EPS &&
+      summaryPreview.producedQty > EPS;
+    if (!allowPausedShortfallClose) {
+      const err = new Error("Production execution is blocked. Resume production before finishing.");
+      err.statusCode = 409;
+      err.code = "WO_EXEC_BLOCKED";
+      throw err;
+    }
+  }
+
+  const summary = summaryPreview;
+  const shortfallRemainderQty = summary.remainderQty;
 
   if (summary.producedQty <= EPS) {
     const err = new Error("Record at least one approved production batch before finishing execution.");
@@ -427,9 +574,32 @@ async function finishProductionExecution(tx, workOrderId, input, { actorUserId, 
     throw err;
   }
 
-  // Full production — no shortfall
+  // Full production or surplus — no shortfall remainder
   if (summary.remainderQty <= EPS) {
     const now = new Date();
+    const totalSurplusQty = summary.surplusQty ?? 0;
+
+    if (totalSurplusQty > EPS) {
+      for (const line of summary.lines) {
+        if (line.surplusQty <= EPS) continue;
+        await writeShortfallResolutionAudit(tx, {
+          workOrderId,
+          workOrderLineId: line.workOrderLineId,
+          plannedQty: line.plannedQty,
+          producedQty: line.producedQty,
+          remainderQty: line.surplusQty,
+          resolutionType: "SURPLUS_PRODUCTION",
+          resolutionReason: input?.surplusReason ?? null,
+          remarks: input?.remarks?.trim() || null,
+          actorUserId,
+        });
+        await tx.workOrderLine.update({
+          where: { id: line.workOrderLineId },
+          data: { executionSurplusQty: String(round3(line.surplusQty)) },
+        });
+      }
+    }
+
     await applyWorkOrderExecutionOutcome(tx, workOrderId, {
       outcome: "FULL_COMPLETE",
       actorUserId,
@@ -441,7 +611,7 @@ async function finishProductionExecution(tx, workOrderId, input, { actorUserId, 
         executionStatus: "COMPLETED",
         completedAt: now,
         completedByUserId: actorUserId ?? null,
-        lastResolutionType: null,
+        lastResolutionType: totalSurplusQty > EPS ? "SURPLUS_PRODUCTION" : null,
       },
     });
 
@@ -452,8 +622,15 @@ async function finishProductionExecution(tx, workOrderId, input, { actorUserId, 
         entityId: `WORK_ORDER:${workOrderId}`,
         actorUserId,
         actorRole,
-        summary: `Production execution completed (full qty) on WO ${wo.docNo || workOrderId}`,
-        payload: { module: "PRODUCTION_EXECUTION", action: "FINISH_FULL" },
+        summary:
+          totalSurplusQty > EPS
+            ? `Production execution completed with surplus ${round3(totalSurplusQty)} on WO ${wo.docNo || workOrderId}`
+            : `Production execution completed (full qty) on WO ${wo.docNo || workOrderId}`,
+        payload: {
+          module: "PRODUCTION_EXECUTION",
+          action: totalSurplusQty > EPS ? "FINISH_SURPLUS" : "FINISH_FULL",
+          surplusQty: totalSurplusQty > EPS ? round3(totalSurplusQty) : undefined,
+        },
       });
     }
 
@@ -461,6 +638,14 @@ async function finishProductionExecution(tx, workOrderId, input, { actorUserId, 
       execution,
       summary: await computeExecutionSummary(tx, { ...wo, productionExecution: execution, status: "COMPLETED" }),
       outcome: "FULL_COMPLETE",
+      surplusQty: totalSurplusQty > EPS ? round3(totalSurplusQty) : 0,
+      successMessage: buildFinishSuccessMessage(
+        wo.docNo,
+        workOrderId,
+        "FULL_COMPLETE",
+        0,
+        totalSurplusQty,
+      ),
     };
   }
 
@@ -582,6 +767,12 @@ async function finishProductionExecution(tx, workOrderId, input, { actorUserId, 
     }),
     outcome: shortfallOutcome,
     carryForwardPending: carryForwardRecords,
+    successMessage: buildFinishSuccessMessage(
+      wo.docNo,
+      workOrderId,
+      shortfallOutcome,
+      shortfallRemainderQty,
+    ),
   };
 }
 
@@ -590,6 +781,7 @@ async function finishProductionExecution(tx, workOrderId, input, { actorUserId, 
  */
 function getEffectiveProductionPendingQty(plannedQty, producedQty, executionStatus) {
   if (executionStatus === "COMPLETED") return 0;
+  if (executionStatus === "SHORTFALL_PENDING") return 0;
   return getWoLineRemainingProductionQty(plannedQty, producedQty);
 }
 
@@ -620,6 +812,19 @@ async function getProductionExecutionSummary(db, workOrderId) {
       },
     });
   }
+  if (isNoQtyWorkOrder(wo, wo.salesOrder) && wo.productionExecution) {
+    await db.$transaction(async (tx) => {
+      await reconcileShortfallPendingStatus(tx, wo);
+    });
+    wo = await db.workOrder.findUnique({
+      where: { id: workOrderId },
+      include: {
+        lines: { include: { fgItem: { select: { id: true, itemName: true } } } },
+        salesOrder: { select: { id: true, docNo: true, orderType: true, customerId: true } },
+        productionExecution: true,
+      },
+    });
+  }
   return computeExecutionSummary(db, wo);
 }
 
@@ -628,6 +833,7 @@ module.exports = {
   RESOLUTION_REASONS,
   FINISH_OUTCOMES,
   blockReasonLabel,
+  buildFinishSuccessMessage,
   loadNoQtyExecutionContext,
   ensureProductionExecutionRecord,
   computeExecutionSummary,
@@ -638,4 +844,9 @@ module.exports = {
   finishProductionExecution,
   applyWorkOrderExecutionOutcome,
   getEffectiveProductionPendingQty,
+  syncShortfallPendingAfterProductionApprove,
+  reconcileShortfallPendingStatus,
+  productionExecutionPendingActionLabel,
+  deriveProductionQueueActionLabel,
+  PRODUCTION_EXECUTION_PENDING_LABELS,
 };

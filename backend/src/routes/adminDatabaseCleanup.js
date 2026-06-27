@@ -261,6 +261,9 @@ const RESET_TRANSACTION_VERIFY_TABLES = [
   "productionMaterialRequestLine",
   "productionMaterialRequest",
   "materialAllocation",
+  "carryForwardPending",
+  "productionShortfallResolution",
+  "workOrderProductionExecution",
   "workOrderLine",
   "workOrder",
   "requirementSheetLine",
@@ -373,6 +376,7 @@ function buildResetTransactionDataCleanupSteps(tx) {
     },
     { table: "productionEntry", delete: () => tx.productionEntry.deleteMany({}), count: () => tx.productionEntry.count() },
     ...buildProductionRmFlowCleanupSteps(tx),
+    ...buildProductionExecutionCleanupSteps(tx),
     { table: "workOrderLine", delete: () => tx.workOrderLine.deleteMany({}), count: () => tx.workOrderLine.count() },
     { table: "workOrder", delete: () => tx.workOrder.deleteMany({}), count: () => tx.workOrder.count() },
     {
@@ -543,6 +547,80 @@ function buildProductionRmFlowCleanupSteps(tx) {
       count: () => tx.materialAllocation.count(),
     },
   ];
+}
+
+/**
+ * P16 Production Execution shortfall tables.
+ * CarryForwardPending.sourceWorkOrderId → WorkOrder (Restrict) must be cleared before workOrder.deleteMany.
+ *
+ * @param {import("@prisma/client").Prisma.TransactionClient} tx
+ * @returns {Array<{ table: string; delete: () => Promise<{ count?: number }>; count: () => Promise<number> }>}
+ */
+function buildProductionExecutionCleanupSteps(tx) {
+  return [
+    {
+      table: "carryForwardPending",
+      delete: () => tx.carryForwardPending.deleteMany({}),
+      count: () => tx.carryForwardPending.count(),
+    },
+    {
+      table: "productionShortfallResolution",
+      delete: () => tx.productionShortfallResolution.deleteMany({}),
+      count: () => tx.productionShortfallResolution.count(),
+    },
+    {
+      table: "workOrderProductionExecution",
+      delete: () => tx.workOrderProductionExecution.deleteMany({}),
+      count: () => tx.workOrderProductionExecution.count(),
+    },
+  ];
+}
+
+/**
+ * Scoped P16 deletes for NO_QTY reset (same order as buildProductionExecutionCleanupSteps).
+ *
+ * @param {import("@prisma/client").Prisma.TransactionClient} tx
+ * @param {Record<string, number>} deletedCounts
+ * @param {{ salesOrderIds: number[]; workOrderIds: number[] }} scope
+ */
+async function deleteProductionExecutionForScope(tx, deletedCounts, { salesOrderIds, workOrderIds }) {
+  const soIds = (salesOrderIds || []).filter((id) => Number.isFinite(id) && id > 0);
+  const woIds = (workOrderIds || []).filter((id) => Number.isFinite(id) && id > 0);
+
+  if (!(await tableExists(tx, ["carryforwardpending", "CarryForwardPending"]))) {
+    deletedCounts.carryForwardPending = 0;
+    deletedCounts.productionShortfallResolution = 0;
+    deletedCounts.workOrderProductionExecution = 0;
+    return;
+  }
+
+  if (soIds.length > 0) {
+    await addDeleteCountStep(deletedCounts, "carryForwardPending", () =>
+      tx.carryForwardPending.deleteMany({ where: { salesOrderId: { in: soIds } } }),
+    );
+  } else {
+    deletedCounts.carryForwardPending = 0;
+  }
+
+  if (!(await tableExists(tx, ["productionshortfallresolution", "ProductionShortfallResolution"]))) {
+    deletedCounts.productionShortfallResolution = 0;
+  } else if (woIds.length > 0) {
+    await addDeleteCountStep(deletedCounts, "productionShortfallResolution", () =>
+      tx.productionShortfallResolution.deleteMany({ where: { workOrderId: { in: woIds } } }),
+    );
+  } else {
+    deletedCounts.productionShortfallResolution = 0;
+  }
+
+  if (!(await tableExists(tx, ["workorderproductionexecution", "WorkOrderProductionExecution"]))) {
+    deletedCounts.workOrderProductionExecution = 0;
+  } else if (woIds.length > 0) {
+    await addDeleteCountStep(deletedCounts, "workOrderProductionExecution", () =>
+      tx.workOrderProductionExecution.deleteMany({ where: { workOrderId: { in: woIds } } }),
+    );
+  } else {
+    deletedCounts.workOrderProductionExecution = 0;
+  }
 }
 
 /**
@@ -953,6 +1031,11 @@ async function runResetNoQtyTransactionalDeletes(tx) {
     tx.materialAllocation.deleteMany({ where: { salesOrderId: { in: noQtySoIds } } }),
   );
 
+  await deleteProductionExecutionForScope(tx, deletedCounts, {
+    salesOrderIds: noQtySoIds,
+    workOrderIds: woIds,
+  });
+
   if (woIds.length > 0) {
     await deleteProductionRmFlowForWorkOrders(tx, deletedCounts, { workOrderIds: woIds });
     await addDeleteCount(deletedCounts, "workOrderLine", () =>
@@ -1175,6 +1258,35 @@ async function runFullDemoResetDeletes(tx, deleted) {
       async () => addDeleteCount(deleted, "purchaseRequestLine", () => tx.purchaseRequestLine.deleteMany({})),
     ],
     ["purchaseRequest", async () => addDeleteCount(deleted, "purchaseRequest", () => tx.purchaseRequest.deleteMany({}))],
+    [
+      "carryForwardPending",
+      async () =>
+        tryOptionalTableDelete(tx, deleted, ["carryforwardpending", "CarryForwardPending"], "carryForwardPending", () =>
+          tx.carryForwardPending.deleteMany({}),
+        ),
+    ],
+    [
+      "productionShortfallResolution",
+      async () =>
+        tryOptionalTableDelete(
+          tx,
+          deleted,
+          ["productionshortfallresolution", "ProductionShortfallResolution"],
+          "productionShortfallResolution",
+          () => tx.productionShortfallResolution.deleteMany({}),
+        ),
+    ],
+    [
+      "workOrderProductionExecution",
+      async () =>
+        tryOptionalTableDelete(
+          tx,
+          deleted,
+          ["workorderproductionexecution", "WorkOrderProductionExecution"],
+          "workOrderProductionExecution",
+          () => tx.workOrderProductionExecution.deleteMany({}),
+        ),
+    ],
     ["workOrderLine", async () => addDeleteCount(deleted, "workOrderLine", () => tx.workOrderLine.deleteMany({}))],
     ["workOrder", async () => addDeleteCount(deleted, "workOrder", () => tx.workOrder.deleteMany({}))],
     ["requirementSheetLine", async () => addDeleteCount(deleted, "requirementSheetLine", () => tx.requirementSheetLine.deleteMany({}))],
@@ -1474,4 +1586,9 @@ adminDatabaseCleanupRouter.post(
   },
 );
 
-module.exports = { adminDatabaseCleanupRouter };
+module.exports = {
+  adminDatabaseCleanupRouter,
+  buildProductionExecutionCleanupSteps,
+  buildResetTransactionDataCleanupSteps,
+  deleteProductionExecutionForScope,
+};

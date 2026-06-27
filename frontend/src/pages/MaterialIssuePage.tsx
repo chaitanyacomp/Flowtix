@@ -2,8 +2,8 @@
  * Phase 3A — Store material issue (transfer RM to production location). Stock movement only.
  */
 import * as React from "react";
-import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { ArrowRightLeft, Plus, Send, Trash2 } from "lucide-react";
+import { Link, useSearchParams } from "react-router-dom";
+import { Plus, Send, Trash2 } from "lucide-react";
 import { apiFetch } from "../services/api";
 import { Button, buttonVariants } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -12,24 +12,30 @@ import { useToast } from "../contexts/ToastContext";
 import { PageContainer, StickyWorkspaceHead } from "../components/PageHeader";
 import { ErpWorkflowTrail } from "../components/erp/foundation/ErpWorkflowTrail";
 import { useStoreExecutionNavContext } from "../hooks/useStoreExecutionNavContext";
-import { NextStepStrip } from "../components/erp/NextStepStrip";
-import { buildRmReadyProductionNextStep } from "../lib/regularSoOperationalGuidance";
-import { ErpKpiLabel, ErpKpiSegment, ErpKpiStrip, ErpKpiValue } from "../components/erp/foundation";
 import {
+  assessMaterialIssueQty,
+  formatIssueToleranceExceededMessage,
+  formatOverIssueToleranceWarning,
   formatSuggestedIssueQty,
   hasPartialStoreAutofill,
   isMaterialIssueLineStockBlocked,
 } from "../lib/materialIssueUx";
-import {
-  materialRequestsQueueHref,
-} from "../lib/materialWorkflowLinks";
 import { buildRmControlCenterHref } from "../lib/woProcurementContinuity";
 import { MaterialIssuePmrQueuePanel } from "../components/erp/MaterialIssuePmrQueuePanel";
 import {
   pickActionablePmrForWorkOrder,
-  pmrNextActionLabel,
   resolveMaterialIssueLineStatus,
 } from "../lib/materialIssueWorkspace";
+import {
+  filterPendingPmrsForSessionScope,
+  formatMaterialIssueInlineStatus,
+  formatMaterialIssueSuccessMessage,
+  materialIssueSessionCompleteMessage,
+  materialIssueSessionCompleteTitle,
+  parseMaterialIssueSessionScope,
+  pickNextPendingPmrInScope,
+  type MaterialIssueSessionComplete,
+} from "../lib/materialIssueContinuousSession";
 
 type LocationRow = {
   id: number;
@@ -76,6 +82,8 @@ type IssueLineDraft = {
   pmrPendingQty?: number;
   /** @deprecated alias — validation uses still required balance. */
   pendingQty?: number;
+  rmIssueToleranceQty?: number;
+  maxAllowedIssueQty?: number;
   issueQty: string;
   /** When false, availability refresh may update issueQty from store stock. */
   issueQtyTouched: boolean;
@@ -97,7 +105,9 @@ type PendingPmr = {
   status: string;
   workOrderId?: number;
   workOrderNo: string | null;
+  salesOrderId?: number | null;
   salesOrderNo?: string | null;
+  requirementSheetId?: number | null;
   productionItemName?: string | null;
   totalPending: number;
   lineCount?: number;
@@ -126,6 +136,8 @@ type PmrIssueLine = {
   suggestedIssueQty?: number;
   issueCapQty?: number;
   stillRequiredQty?: number;
+  rmIssueToleranceQty?: number;
+  maxAllowedIssueQty?: number;
 };
 
 type PmrIssueContext = {
@@ -174,12 +186,6 @@ function newLineKey() {
   return `ln-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-const PMR_STATUS_LABEL: Record<string, string> = {
-  REQUESTED: "Pending Issue",
-  PARTIALLY_ISSUED: "Partial Issue",
-  FULLY_ISSUED: "Fully Issued",
-};
-
 function pmrLineToDraft(pl: PmrIssueLine): IssueLineDraft {
   const issueCap = pl.issueCapQty ?? pl.stillRequiredQty ?? pl.pendingQty;
   const storeQty = pl.freeStoreStock ?? pl.availableStoreQty ?? pl.available ?? null;
@@ -199,6 +205,8 @@ function pmrLineToDraft(pl: PmrIssueLine): IssueLineDraft {
     issueCapQty: issueCap,
     pmrPendingQty: pl.pendingQty,
     pendingQty: pl.pendingQty,
+    rmIssueToleranceQty: pl.rmIssueToleranceQty,
+    maxAllowedIssueQty: pl.maxAllowedIssueQty,
     totalStoreStock: pl.totalStoreStock ?? null,
     reservedForOtherOrdersQty: pl.reservedForOtherOrdersQty ?? null,
     totalReservedQty: pl.totalReservedQty ?? pl.reservedForOtherOrdersQty ?? null,
@@ -221,9 +229,16 @@ function suggestedMaterialIssueQtyFromLib(
   return Number(formatSuggestedIssueQty(pendingQty, availableInStore)) || 0;
 }
 
+function assessIssueLineDraft(ln: IssueLineDraft) {
+  const pending = ln.pmrPendingQty ?? ln.pendingQty ?? 0;
+  return assessMaterialIssueQty(ln.issueQty, pending, {
+    woStillRequiredQty: ln.issueCapQty ?? ln.stillRequiredQty,
+    maxAllowedIssueQty: ln.maxAllowedIssueQty,
+  });
+}
+
 export function MaterialIssuePage() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const navigate = useNavigate();
   const { showSuccess, showError } = useToast();
   const [ctx, setCtx] = React.useState<ContextResponse | null>(null);
   const [recent, setRecent] = React.useState<RecentIssue[]>([]);
@@ -232,13 +247,8 @@ export function MaterialIssuePage() {
   const [activePmr, setActivePmr] = React.useState<PmrIssueContext["pmr"] | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [submitting, setSubmitting] = React.useState(false);
-  const [issueSuccess, setIssueSuccess] = React.useState<{
-    workOrderId: number;
-    workOrderNo: string | null;
-    salesOrderNo: string | null;
-    pmrDocNo: string | null;
-    issuedLines: Array<{ itemName: string; issueQty: number; unit: string }>;
-  } | null>(null);
+  const [sessionComplete, setSessionComplete] = React.useState<MaterialIssueSessionComplete | null>(null);
+  const [sessionBanner, setSessionBanner] = React.useState<string | null>(null);
   const [pmrLoading, setPmrLoading] = React.useState(false);
   const [pmrLoadError, setPmrLoadError] = React.useState<string | null>(null);
   const [procurementHint, setProcurementHint] = React.useState<{
@@ -265,13 +275,20 @@ export function MaterialIssuePage() {
   const [lines, setLines] = React.useState<IssueLineDraft[]>([]);
   const [issueMode, setIssueMode] = React.useState<IssueMode>("wo-pmr");
 
-  async function loadPendingPmrs() {
+  async function refreshPendingPmrsList(): Promise<PendingPmr[]> {
     try {
       const data = await apiFetch<PendingPmr[]>("/api/production-material-requests?pendingForStore=1");
-      setPendingPmrs(Array.isArray(data) ? data : []);
+      const list = Array.isArray(data) ? data : [];
+      setPendingPmrs(list);
+      return list;
     } catch {
       setPendingPmrs([]);
+      return [];
     }
+  }
+
+  async function loadPendingPmrs() {
+    await refreshPendingPmrsList();
   }
 
   async function loadPmrIntoForm(pmrId: number, fromId?: number) {
@@ -327,6 +344,18 @@ export function MaterialIssuePage() {
   const urlPmrId = Number(searchParams.get("pmrId")) || 0;
   const urlWorkOrderId = Number(searchParams.get("workOrderId")) || 0;
   const returnTo = searchParams.get("returnTo");
+  const sessionScope = React.useMemo(
+    () =>
+      parseMaterialIssueSessionScope({
+        requirementSheetId: searchParams.get("requirementSheetId"),
+        salesOrderId: searchParams.get("salesOrderId"),
+      }),
+    [searchParams],
+  );
+  const scopedPendingPmrs = React.useMemo(
+    () => filterPendingPmrsForSessionScope(pendingPmrs, sessionScope),
+    [pendingPmrs, sessionScope],
+  );
   const materialIssueNavContext = useStoreExecutionNavContext("material-issue");
 
   const selectPmr = React.useCallback(
@@ -515,6 +544,51 @@ export function MaterialIssuePage() {
     setLines((prev) => (prev.length <= 1 ? prev : prev.filter((ln) => ln.key !== key)));
   }
 
+  async function finalizeAfterSuccessfulIssue(issued: {
+    workOrderId: number;
+    workOrderNo: string | null;
+    salesOrderId?: number | null;
+  }) {
+    setRemarks("");
+    setActivePmrId(null);
+    setActivePmr(null);
+    setWorkOrderId("");
+    setLines([emptyLine()]);
+    const nextParams = new URLSearchParams(searchParams);
+    nextParams.delete("pmrId");
+    nextParams.delete("workOrderId");
+    if (returnTo) nextParams.set("returnTo", returnTo);
+    setSearchParams(nextParams, { replace: true });
+
+    const [freshPending] = await Promise.all([
+      refreshPendingPmrsList(),
+      apiFetch<RecentIssue[]>("/api/material-issues/")
+        .then((list) => setRecent(Array.isArray(list) ? list : []))
+        .catch(() => undefined),
+    ]);
+    const scopedRemaining = filterPendingPmrsForSessionScope(freshPending, sessionScope);
+    const woLabel = issued.workOrderNo?.trim() || (issued.workOrderId > 0 ? `WO-${issued.workOrderId}` : "work order");
+    showSuccess(formatMaterialIssueSuccessMessage(woLabel));
+
+    if (scopedRemaining.length === 0) {
+      setSessionBanner(null);
+      setSessionComplete({
+        requirementSheetId: sessionScope.requirementSheetId,
+        salesOrderId: sessionScope.salesOrderId ?? issued.salesOrderId ?? null,
+        lastWorkOrderId: issued.workOrderId,
+        lastWorkOrderNo: issued.workOrderNo,
+      });
+      return;
+    }
+
+    setSessionComplete(null);
+    setSessionBanner("Next pending work orders remain available for selection.");
+    const nextPmr = pickNextPendingPmrInScope(freshPending, sessionScope, issued.workOrderId);
+    if (nextPmr?.id) {
+      selectPmr(nextPmr.id, nextPmr.workOrderId);
+    }
+  }
+
   async function submitIssue() {
     if (typeof fromLocationId !== "number" || typeof toLocationId !== "number") {
       showError("Select from and to locations.");
@@ -534,9 +608,13 @@ export function MaterialIssuePage() {
     for (const ln of lines) {
       if (typeof ln.itemId !== "number" || !ln.issueQty) continue;
       const qty = Number(ln.issueQty);
-      const capRequired = ln.issueCapQty ?? ln.stillRequiredQty ?? ln.pendingQty;
-      if (capRequired != null && qty > capRequired + 1e-6) {
-        showError("Issue quantity cannot exceed still required qty.");
+      const assessment = assessIssueLineDraft(ln);
+      if (!assessment.allowed) {
+        showError(
+          assessment.overIssueQty > 1e-6
+            ? formatIssueToleranceExceededMessage()
+            : "Issue quantity cannot exceed still required qty.",
+        );
         return;
       }
       if (ln.available != null && qty > ln.available + 1e-6) {
@@ -556,7 +634,7 @@ export function MaterialIssuePage() {
           setSubmitting(false);
           return;
         }
-        const res = await apiFetch<{ materialIssue: { docNo: string } }>(
+        await apiFetch<{ materialIssue: { docNo: string } }>(
           `/api/production-material-requests/${activePmrId}/issue`,
           {
             method: "POST",
@@ -568,30 +646,12 @@ export function MaterialIssuePage() {
             }),
           },
         );
-        const issuedSnapshot = lines
-          .filter((ln) => ln.pmrLineId && Number(ln.issueQty) > 0)
-          .map((ln) => ({
-            itemName: ln.itemName ?? "RM",
-            issueQty: Number(ln.issueQty),
-            unit: ln.unit ?? "",
-          }));
-        showSuccess(`Issued against PMR — ${res.materialIssue?.docNo || "MIN"}`);
-        setIssueSuccess({
-          workOrderId: activePmr?.workOrderId ?? 0,
+        await finalizeAfterSuccessfulIssue({
+          workOrderId: Number(activePmr?.workOrderId ?? 0),
           workOrderNo: activePmr?.workOrderNo ?? null,
-          salesOrderNo: activePmr?.salesOrderNo ?? null,
-          pmrDocNo: activePmr?.docNo ?? null,
-          issuedLines: issuedSnapshot,
+          salesOrderId:
+            pendingPmrs.find((p) => p.id === activePmrId)?.salesOrderId ?? sessionScope.salesOrderId ?? null,
         });
-        setRemarks("");
-        setActivePmrId(null);
-        setActivePmr(null);
-        setSearchParams(
-          postIssueSearchParams(returnTo, activePmr?.workOrderId ?? (typeof workOrderId === "number" ? workOrderId : undefined)),
-        );
-        setLines([emptyLine()]);
-        await loadAll();
-        await loadPendingPmrs();
         setSubmitting(false);
         return;
       } else {
@@ -693,6 +753,11 @@ export function MaterialIssuePage() {
         procurementHint.coveredByIncomingQty > 0),
   );
 
+  const hasToleranceBlockedLine = lines.some((ln) => {
+    if (!ln.pmrLineId || !ln.issueQty) return false;
+    return !assessIssueLineDraft(ln).allowed;
+  });
+
   const canSubmitIssue =
     (woPmrMode
       ? executionReady && pmrContextReady
@@ -701,224 +766,149 @@ export function MaterialIssuePage() {
     typeof toLocationId === "number" &&
     canIssueAnyLine &&
     hasPositiveIssueQty &&
+    !hasToleranceBlockedLine &&
     !submitting &&
     !loading &&
     !pmrLoading;
 
   const materialIssuePrimaryStrip = React.useMemo(() => {
-    if (issueSuccess) return null;
-    if (!executionReady && !activePmr) return null;
+    if (sessionComplete || !executionReady || !activePmr || !activePmrId) return null;
+    const pendingCount = lines.filter((ln) => {
+      const pending = ln.pmrPendingQty ?? ln.pendingQty ?? ln.stillRequiredQty ?? 0;
+      return Number(pending) > 0;
+    }).length;
+    if (pendingCount <= 0) return null;
+    return formatMaterialIssueInlineStatus({
+      pmrDocNo: activePmr.docNo,
+      pmrId: activePmrId,
+      pendingLineCount: pendingCount,
+    });
+  }, [sessionComplete, executionReady, activePmr, activePmrId, lines]);
 
-    const pendingCount =
-      activePmr && activePmrId
-        ? lines.filter((ln) => {
-            const pending = ln.pmrPendingQty ?? ln.pendingQty ?? ln.stillRequiredQty ?? 0;
-            return Number(pending) > 0;
-          }).length
-        : 0;
+  const hideWorkflowTrail =
+    returnTo === "pending-actions" || materialIssueNavContext.origin === "pending-actions";
 
-    const title =
-      pendingCount > 0
-        ? "Current Status: Waiting for RM Issue"
-        : activePmr
-          ? [activePmr.docNo ?? `PMR-${activePmrId}`, activePmr.workOrderNo].filter(Boolean).join(" · ")
-          : "Issue material to production";
-    const subtitle =
-      pendingCount > 0 && activePmr
-        ? `${activePmr.docNo || `PMR-${activePmrId}`} · ${pendingCount} line(s) pending issue to production`
-        : undefined;
-
-    if (canSubmitIssue) {
-      return {
-        variant: "action" as const,
-        title,
-        subtitle,
-        primaryAction: {
-          label: "Issue Material",
-          testId: "material-issue-primary-submit",
-          submit: true as const,
-        },
-      };
-    }
-
-    if (pendingCount > 0) {
-      return {
-        variant: "action" as const,
-        title,
-        subtitle,
-        primaryAction: {
-          label: "Issue RM to Production",
-          testId: "material-issue-primary-scroll",
-          scrollToForm: true as const,
-        },
-      };
-    }
-
-    return {
-      variant: "action" as const,
-      title,
-      subtitle,
-      primaryAction: {
-        label: "Issue Material",
-        testId: "material-issue-primary-submit",
-        submit: true as const,
-        disabled: true,
-      },
-    };
-  }, [issueSuccess, executionReady, activePmr, activePmrId, lines, canSubmitIssue]);
-
-  const productionNextAfterIssue = React.useMemo(() => {
-    if (!issueSuccess || !(issueSuccess.workOrderId > 0)) return null;
-    return buildRmReadyProductionNextStep(issueSuccess.workOrderId);
-  }, [issueSuccess]);
+  const sessionCompleteRmccHref = React.useMemo(() => {
+    if (!sessionComplete) return "/reports/rm-shortage";
+    const woId = Number(sessionComplete.lastWorkOrderId ?? 0);
+    return buildRmControlCenterHref({
+      workOrderId: woId > 0 ? woId : undefined,
+      salesOrderId: sessionComplete.salesOrderId,
+      returnTo: "material-issue",
+    });
+  }, [sessionComplete]);
 
   return (
-    <PageContainer className="erp-txn-workspace erp-mat-plan-workspace">
-      <StickyWorkspaceHead lead={<ErpWorkflowTrail navContext={materialIssueNavContext} />}>
-        <div>
-          <h1 className="erp-type-page-title text-[15px] leading-tight">Material Issue Workspace</h1>
-          <p className="mt-0.5 text-[11px] leading-snug text-slate-600">
-            Issue RM to production for the selected work order or material request.
-          </p>
-        </div>
+    <PageContainer className="erp-txn-workspace erp-mat-plan-workspace space-y-2">
+      <StickyWorkspaceHead
+        lead={
+          hideWorkflowTrail ? (
+            <Link
+              to="/pending-actions"
+              className="inline-flex text-[10px] font-medium text-slate-600 hover:text-slate-900"
+            >
+              ← Pending Actions
+            </Link>
+          ) : (
+            <ErpWorkflowTrail navContext={materialIssueNavContext} />
+          )
+        }
+      >
+        <h1 className="text-[13px] font-semibold leading-tight text-slate-900">Material Issue</h1>
       </StickyWorkspaceHead>
 
-      {materialIssuePrimaryStrip ? (
-        <NextStepStrip
-          visible
-          density="compact"
-          variant={materialIssuePrimaryStrip.variant}
-          title={materialIssuePrimaryStrip.title}
-          subtitle={materialIssuePrimaryStrip.subtitle}
-          primaryAction={{
-            label: materialIssuePrimaryStrip.primaryAction.label,
-            testId: materialIssuePrimaryStrip.primaryAction.testId,
-            disabled: "disabled" in materialIssuePrimaryStrip.primaryAction ? materialIssuePrimaryStrip.primaryAction.disabled : false,
-            onClick: () => {
-              const action = materialIssuePrimaryStrip.primaryAction;
-              const href = "href" in action ? action.href : undefined;
-              if (href) {
-                navigate(href);
-                return;
-              }
-              if ("submit" in action && action.submit) {
-                void submitIssue();
-                return;
-              }
-              if ("scrollToForm" in action && action.scrollToForm) {
-                document.getElementById("material-issue-execution")?.scrollIntoView({ behavior: "smooth", block: "start" });
-              }
-            },
-          }}
-        />
-      ) : null}
-
-      {!issueSuccess ? (
-      <p className="rounded border border-slate-200 bg-slate-50/80 px-2.5 py-1 text-[11px] leading-snug text-slate-700">
-        <span className="font-semibold text-slate-900">RM issue only</span>
-        {" · "}
-        Blockers live in{" "}
-        <Link to="/reports/rm-shortage" className="font-semibold text-violet-900 underline">
-          RM Control Center
-        </Link>
-        .
-      </p>
-      ) : null}
-
-      {issueSuccess ? (
-        <section
-          className="rounded-lg border border-emerald-300/90 bg-emerald-50/80 px-3 py-3 shadow-sm ring-1 ring-emerald-200/70"
-          data-testid="material-issue-success-card"
+      {sessionBanner && !sessionComplete ? (
+        <div
+          className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-[12px] font-medium text-emerald-950"
+          data-testid="material-issue-session-banner"
         >
-          <h2 className="flex items-center gap-2 text-[15px] font-bold text-emerald-950">
-            <span className="text-emerald-700" aria-hidden>
-              ✓
-            </span>
-            Material Issued Successfully
-          </h2>
+          <span className="text-emerald-700" aria-hidden>
+            ✔{" "}
+          </span>
+          {sessionBanner}
+        </div>
+      ) : null}
 
-          <dl className="mt-2 grid gap-x-4 gap-y-1 text-[12px] sm:grid-cols-[auto_1fr]">
-            {(issueSuccess.workOrderNo || issueSuccess.workOrderId > 0) ? (
-              <>
-                <dt className="font-semibold text-slate-600">WO Number</dt>
-                <dd className="font-mono font-semibold text-slate-900">
-                  {issueSuccess.workOrderNo ?? `WO-${issueSuccess.workOrderId}`}
-                </dd>
-              </>
-            ) : null}
-            {issueSuccess.salesOrderNo ? (
-              <>
-                <dt className="font-semibold text-slate-600">SO Number</dt>
-                <dd className="font-mono font-semibold text-slate-900">{issueSuccess.salesOrderNo}</dd>
-              </>
-            ) : null}
-          </dl>
-
-          {issueSuccess.issuedLines.length > 0 ? (
-            <div className="mt-2.5">
-              <p className="text-[11px] font-bold uppercase tracking-wider text-emerald-900">Issued Materials</p>
-              <ul className="mt-1 space-y-0.5 text-[12px] text-emerald-950">
-                {issueSuccess.issuedLines.map((ln, i) => (
-                  <li key={i} className="flex flex-wrap gap-x-1.5">
-                    <span className="font-medium">{ln.itemName}</span>
-                    <span className="text-slate-500">·</span>
-                    <span className="tabular-nums font-semibold">{fmtQty(ln.issueQty, ln.unit)}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ) : null}
-
-          <div className="mt-3 border-t border-emerald-200/80 pt-2.5">
-            <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-900">Next Step</p>
-            <p className="mt-0.5 text-[13px] font-semibold text-slate-800">Start Production Entry</p>
-            {productionNextAfterIssue?.primaryAction.href ? (
-              <Link
-                to={productionNextAfterIssue.primaryAction.href}
-                className={cn(
-                  buttonVariants({ size: "default" }),
-                  "mt-2 inline-flex h-9 bg-slate-900 px-4 text-[12px] font-semibold text-white hover:bg-slate-800 no-underline",
-                )}
-                data-testid={productionNextAfterIssue.primaryAction.testId ?? "next-enter-production"}
-              >
-                {productionNextAfterIssue.primaryAction.label}
-              </Link>
-            ) : null}
+      {sessionComplete ? (
+        <section
+          className="rounded-md border border-emerald-300/90 bg-emerald-50/90 px-3 py-2.5 shadow-sm"
+          data-testid="material-issue-session-complete"
+        >
+          <h2 className="text-[13px] font-bold text-emerald-950">{materialIssueSessionCompleteTitle()}</h2>
+          <p className="mt-1 text-[11px] leading-snug text-emerald-900">{materialIssueSessionCompleteMessage()}</p>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            <Link
+              to="/dashboard"
+              className={cn(
+                buttonVariants({ size: "sm" }),
+                "inline-flex h-8 bg-slate-900 px-3 text-[11px] font-semibold text-white hover:bg-slate-800 no-underline",
+              )}
+              data-testid="material-issue-back-dashboard"
+            >
+              Back to Dashboard
+            </Link>
+            <Link
+              to={sessionCompleteRmccHref}
+              className={cn(
+                buttonVariants({ variant: "outline", size: "sm" }),
+                "h-8 px-3 text-[11px] no-underline",
+              )}
+              data-testid="material-issue-open-rmcc"
+            >
+              Open RM Control Center
+            </Link>
+            <Link
+              to="/pending-actions"
+              className={cn(buttonVariants({ variant: "outline", size: "sm" }), "h-8 px-3 text-[11px] no-underline")}
+              data-testid="material-issue-back-pending-actions"
+            >
+              Back to Pending Actions
+            </Link>
           </div>
         </section>
       ) : (
         <>
-      <ErpKpiStrip className="mb-1.5 py-1">
-        <ErpKpiSegment>
-          <ErpKpiLabel>From (store)</ErpKpiLabel>
-          <ErpKpiValue>{fromLoc?.locationName ?? "—"}</ErpKpiValue>
-        </ErpKpiSegment>
-        <ErpKpiSegment>
-          <ErpKpiLabel>To (production)</ErpKpiLabel>
-          <ErpKpiValue>{toLoc?.locationName ?? "—"}</ErpKpiValue>
-        </ErpKpiSegment>
-        <ErpKpiSegment>
-          <ErpKpiLabel>Pending PMRs</ErpKpiLabel>
-          <ErpKpiValue>{pendingPmrs.length}</ErpKpiValue>
-        </ErpKpiSegment>
-        <ErpKpiSegment>
-          <ErpKpiLabel>Recent issues</ErpKpiLabel>
-          <ErpKpiValue>{recent.length}</ErpKpiValue>
-        </ErpKpiSegment>
-      </ErpKpiStrip>
+      <div className={cn("grid gap-2 lg:grid-cols-[minmax(0,1fr)_minmax(240px,300px)]")}>
+        <div id="material-issue-execution" className="rounded-md border border-slate-200 bg-white p-2 shadow-sm">
+          <div className="mb-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-slate-600">
+            <span>
+              <span className="font-semibold text-slate-700">From:</span> {fromLoc?.locationName ?? "—"}
+            </span>
+            <span aria-hidden>·</span>
+            <span>
+              <span className="font-semibold text-slate-700">To:</span> {toLoc?.locationName ?? "—"}
+            </span>
+            <span aria-hidden>·</span>
+            <span>
+              <span className="font-semibold text-slate-700">Pending PMRs:</span>{" "}
+              {sessionScope.requirementSheetId || sessionScope.salesOrderId
+                ? `${scopedPendingPmrs.length}${scopedPendingPmrs.length !== pendingPmrs.length ? ` / ${pendingPmrs.length}` : ""}`
+                : pendingPmrs.length}
+            </span>
+            <span aria-hidden>·</span>
+            <span>
+              <span className="font-semibold text-slate-700">Recent:</span> {recent.length}
+            </span>
+          </div>
 
-      <div className={cn("grid gap-2.5 lg:grid-cols-[minmax(0,1fr)_minmax(280px,360px)]")}>
-        <div id="material-issue-execution" className="rounded-lg border border-slate-200 bg-white p-2.5 shadow-sm">
-          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-            <div className="flex items-center gap-1.5 text-slate-800">
-              <ArrowRightLeft className="h-4 w-4 text-primary" />
-              <h2 className="text-sm font-semibold">Issue material to production</h2>
+          <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              {materialIssuePrimaryStrip ? (
+                <span
+                  className="inline-flex max-w-full items-center rounded-full border border-amber-300/80 bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-950"
+                  data-testid="material-issue-inline-status"
+                >
+                  {materialIssuePrimaryStrip}
+                </span>
+              ) : (
+                <span className="text-[11px] font-semibold text-slate-800">Issue material to production</span>
+              )}
             </div>
-            <div className="flex rounded-md border border-slate-200 p-0.5 text-xs">
+            <div className="flex shrink-0 rounded border border-slate-200 p-0.5 text-[10px]">
               <button
                 type="button"
                 className={cn(
-                  "rounded px-2.5 py-1 font-bold",
+                  "rounded px-2 py-0.5 font-bold",
                   woPmrMode ? "bg-slate-900 text-white" : "text-slate-600",
                 )}
                 onClick={() => {
@@ -926,12 +916,12 @@ export function MaterialIssuePage() {
                   if (!activePmrId) setLines([]);
                 }}
               >
-                WO / PMR issue
+                WO / PMR
               </button>
               <button
                 type="button"
                 className={cn(
-                  "rounded px-2.5 py-1 font-bold",
+                  "rounded px-2 py-0.5 font-bold",
                   !woPmrMode ? "bg-slate-900 text-white" : "text-slate-600",
                 )}
                 onClick={() => {
@@ -940,44 +930,27 @@ export function MaterialIssuePage() {
                   setLines([emptyLine()]);
                 }}
               >
-                Manual issue
+                Manual
               </button>
             </div>
           </div>
 
-          {woPmrMode && activePmr ? (
-            <section className="mb-2 rounded-md border border-violet-200 bg-violet-50/60 px-2.5 py-1.5">
-              <p className="text-[12px] font-bold text-slate-950">
-                {activePmr.docNo ?? `PMR-${activePmrId}`}
-                {activePmr.workOrderNo ? ` · ${activePmr.workOrderNo}` : ""}
-                {activePmr.salesOrderNo ? ` · ${activePmr.salesOrderNo}` : ""}
-              </p>
-              <p className="mt-1 text-xs text-slate-700">
-                Status: {PMR_STATUS_LABEL[activePmr.status] ?? activePmr.status}
-                {" · "}
-                Next action:{" "}
-                <span className="font-bold">
-                  {pmrNextActionLabel({ canIssueAny: canIssueAnyLine, waitingProcurement })}
-                </span>
-              </p>
-              {resolvedWorkOrderIdForHint && !canIssueAnyLine ? (
-                <Link
-                  to={buildRmControlCenterHref({ workOrderId: resolvedWorkOrderIdForHint })}
-                  className="mt-1 inline-block text-[11px] font-bold text-violet-900 underline"
-                >
-                  View allocation in RM Control Center
-                </Link>
-              ) : null}
-            </section>
+          {woPmrMode && activePmr && executionReady && !canIssueAnyLine && resolvedWorkOrderIdForHint ? (
+            <Link
+              to={buildRmControlCenterHref({ workOrderId: resolvedWorkOrderIdForHint })}
+              className="mb-1.5 inline-block text-[10px] font-semibold text-violet-900 underline"
+            >
+              View allocation in RM Control Center
+            </Link>
           ) : null}
 
           {pmrLoading ? (
-            <p className="mb-3 text-sm text-slate-600">Loading material request lines…</p>
+            <p className="mb-1 text-[11px] text-slate-600">Loading material request lines…</p>
           ) : pmrLoadError ? (
-            <p className="mb-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{pmrLoadError}</p>
+            <p className="mb-1 rounded border border-red-200 bg-red-50 px-2 py-1 text-[11px] text-red-800">{pmrLoadError}</p>
           ) : null}
 
-          <div className="grid gap-2 sm:grid-cols-2">
+          <div className="grid gap-1.5 sm:grid-cols-2">
             <label className="erp-form-field block">
               <span className="text-xs font-medium text-slate-600">From location (store)</span>
               <select
@@ -1057,11 +1030,10 @@ export function MaterialIssuePage() {
           </div>
 
           {woPmrMode && !executionReady && !pmrLoading ? (
-            <div className="mt-4 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center">
-              <p className="text-sm font-semibold text-slate-800">
-                Select a work order or material request to load required RM lines.
+            <div className="mt-2 rounded border border-dashed border-slate-300 bg-slate-50 px-3 py-4 text-center">
+              <p className="text-[12px] font-semibold text-slate-800">
+                Select a work order from the queue to load RM lines.
               </p>
-              <p className="mt-1 text-xs text-slate-600">Use the queue on the right, or pick a work order above.</p>
             </div>
           ) : (
             <div className="mt-2 overflow-x-auto rounded border border-slate-200">
@@ -1096,6 +1068,7 @@ export function MaterialIssuePage() {
                       issueQty: ln.issueQty,
                       woWaitingProcurement: waitingProcurement,
                     });
+                    const issueAssessment = assessIssueLineDraft(ln);
                     const noIssue = isMaterialIssueLineStockBlocked(pending, avail);
                     return (
                       <tr key={ln.key} className={cn("border-b border-slate-100", noIssue && "bg-amber-50/50")}>
@@ -1137,7 +1110,11 @@ export function MaterialIssuePage() {
                             type="number"
                             min={0}
                             step="any"
-                            className="h-8 text-right tabular-nums font-bold"
+                            className={cn(
+                              "h-8 text-right tabular-nums font-bold",
+                              issueAssessment.withinTolerance && "border-amber-400",
+                              !issueAssessment.allowed && issueAssessment.overIssueQty > 1e-6 && "border-red-500",
+                            )}
                             value={ln.issueQty}
                             onChange={(e) =>
                               setLines((prev) =>
@@ -1151,6 +1128,16 @@ export function MaterialIssuePage() {
                             disabled={woPmrMode ? noIssue || pmrLoading : !ln.itemId || noIssue}
                             placeholder="0"
                           />
+                          {issueAssessment.withinTolerance ? (
+                            <p className="mt-0.5 text-right text-[10px] font-medium leading-snug text-amber-900">
+                              {formatOverIssueToleranceWarning(issueAssessment.overIssueQty, unit)}
+                            </p>
+                          ) : null}
+                          {!issueAssessment.allowed && issueAssessment.overIssueQty > 1e-6 ? (
+                            <p className="mt-0.5 text-right text-[10px] font-medium leading-snug text-red-700">
+                              {formatIssueToleranceExceededMessage()}
+                            </p>
+                          ) : null}
                         </td>
                         <td className="align-top">
                           {woPmrMode ? (
@@ -1237,46 +1224,36 @@ export function MaterialIssuePage() {
         <div className="space-y-2.5">
           {woPmrMode ? (
             <MaterialIssuePmrQueuePanel
-              pendingPmrs={pendingPmrs}
+              pendingPmrs={scopedPendingPmrs}
               activePmrId={activePmrId}
               activeWorkOrderId={typeof workOrderId === "number" ? workOrderId : undefined}
-              onSelectPmr={(id, woId) => selectPmr(id, woId)}
-              onSelectWorkOrder={(woId) => onWorkOrderSelect(woId)}
+              onSelectPmr={(id, woId) => {
+                setSessionBanner(null);
+                selectPmr(id, woId);
+              }}
+              onSelectWorkOrder={(woId) => {
+                setSessionBanner(null);
+                onWorkOrderSelect(woId);
+              }}
             />
           ) : null}
-          <div className="rounded-lg border border-slate-200 bg-slate-50/80 p-2.5">
-          <h3 className="text-[12px] font-semibold text-slate-800">Recent transfers</h3>
-          <p className="mt-0.5 text-[10px] text-slate-600">Stock is available in production locations after issue.</p>
-          <ul className="mt-2 max-h-[360px] space-y-1.5 overflow-y-auto">
+          <div className="rounded-md border border-slate-200 bg-slate-50/80 px-2 py-1.5">
+          <h3 className="text-[10px] font-semibold uppercase tracking-wide text-slate-700">Recent transfers</h3>
+          <ul className="mt-1 max-h-[200px] space-y-1 overflow-y-auto">
             {recent.length === 0 ? (
-              <li className="text-sm text-slate-500">No material issues yet.</li>
+              <li className="text-[10px] text-slate-500">None yet.</li>
             ) : (
-              recent.slice(0, 20).map((r) => (
-                <li key={r.id} className="rounded border border-slate-200 bg-white px-3 py-2 text-sm">
+              recent.slice(0, 8).map((r) => (
+                <li key={r.id} className="rounded border border-slate-200 bg-white px-2 py-1 text-[10px]">
                   <div className="font-semibold text-slate-900">{r.docNo ?? `MIN #${r.id}`}</div>
-                  <div className="text-xs text-slate-600">
+                  <div className="text-slate-600">
                     {r.fromLocation.locationName} → {r.toLocation.locationName}
+                    {r.workOrderNo ? ` · ${r.workOrderNo}` : ""}
                   </div>
-                  {r.workOrderNo ? (
-                    <div className="text-xs text-slate-500">WO {r.workOrderNo}</div>
-                  ) : null}
-                  <ul className="mt-1 text-xs text-slate-700">
-                    {r.lines.map((ln, i) => (
-                      <li key={i}>
-                        {ln.itemName}: {fmtQty(ln.issueQty, ln.unit)}
-                      </li>
-                    ))}
-                  </ul>
                 </li>
               ))
             )}
           </ul>
-          <Link
-            to="/stock"
-            className="mt-3 inline-block text-xs font-medium text-primary underline underline-offset-2"
-          >
-            View stock by location
-          </Link>
           </div>
         </div>
       </div>

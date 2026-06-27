@@ -177,6 +177,13 @@ function ownerForRmRiskRow(raw) {
     return VISIBLE_OWNERS.STORE;
   }
 
+  if (PURCHASE_PROCUREMENT_QUEUE_TYPES.includes(queueType)) {
+    if (poLineCount > 0) {
+      return VISIBLE_OWNERS.STORE;
+    }
+    return VISIBLE_OWNERS.PURCHASE;
+  }
+
   if (
     (operationalKey === "PR_PENDING_PO" && poLineCount === 0) ||
     (nextActionKey === "CREATE_PO" && poLineCount === 0) ||
@@ -280,6 +287,7 @@ function normalizeRmRiskRow(raw) {
       procurementCompletedForCase: raw?.procurementCompletedForCase ?? null,
       mrStatus: raw?.mrStatus ?? raw?.requisitionStatus ?? null,
       receivedGrnQty: raw?.receivedGrnQty ?? null,
+      productionExecutionStatus: raw?.productionExecutionStatus ?? null,
       ...lineage,
       ...(purchaseHandoff ? { purchaseHandoff: true } : {}),
       ...(purchaseNextOwnerHint && currentOwner === VISIBLE_OWNERS.STORE
@@ -333,6 +341,7 @@ function normalizeProductionRow(raw) {
       cycleNo: raw?.cycleNo ?? null,
       cycleId: raw?.cycleId ?? null,
       rmReadinessGate: raw?.rmReadinessGate ?? null,
+      productionExecutionStatus: raw?.productionExecutionStatus ?? null,
       actionHref: raw?.actionHref ?? null,
       lastShortageQty: raw?.lastShortageQty ?? null,
       ...lineage,

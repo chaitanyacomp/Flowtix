@@ -136,7 +136,7 @@ describe("rmProcurementStageSignals", () => {
     assert.match(resolved.href, /rm-po-grn/);
   });
 
-  it("after GRN with stock emits Material Issue Pending", () => {
+  it("after GRN with stock emits Issue Material", () => {
     const resolved = resolveRmRiskStorePendingAction(
       {
         materialRequirementId: 99,
@@ -147,7 +147,7 @@ describe("rmProcurementStageSignals", () => {
       },
       { queueType: "RM_READY_FOR_ISSUE", freeStockQty: 100 },
     );
-    assert.equal(resolved.action, "Material Issue Pending");
+    assert.equal(resolved.action, "Issue Material");
     assert.match(resolved.href, /material-issue/);
   });
 

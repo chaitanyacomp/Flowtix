@@ -98,6 +98,18 @@ function mapSourceToCurrentStatus(input = {}) {
     return CONTROL_TOWER_STATUSES.PRODUCTION_ON_HOLD;
   }
   if (
+    sourceNextAction === "PRODUCTION_EXECUTION_BLOCKED" ||
+    sourceStatus === "PRODUCTION_EXECUTION_BLOCKED"
+  ) {
+    return CONTROL_TOWER_STATUSES.PRODUCTION_ON_HOLD;
+  }
+  if (
+    sourceNextAction === "PRODUCTION_SHORTFALL_DECISION" ||
+    sourceStatus === "PRODUCTION_SHORTFALL_DECISION"
+  ) {
+    return CONTROL_TOWER_STATUSES.PRODUCTION_ON_HOLD;
+  }
+  if (
     sourceNextAction === "QC_PENDING" ||
     sourceStatus === "QC_PENDING" ||
     sourceStatus === "PENDING_QC" ||

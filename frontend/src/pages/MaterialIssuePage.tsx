@@ -23,6 +23,9 @@ import {
 import { buildRmControlCenterHref } from "../lib/woProcurementContinuity";
 import { MaterialIssuePmrQueuePanel } from "../components/erp/MaterialIssuePmrQueuePanel";
 import {
+  buildActionableWorkOrderDropdownOptions,
+  buildIssuedWorkOrderInfoRows,
+  filterPmrsWithPendingIssue,
   pickActionablePmrForWorkOrder,
   resolveMaterialIssueLineStatus,
 } from "../lib/materialIssueWorkspace";
@@ -33,7 +36,6 @@ import {
   materialIssueSessionCompleteMessage,
   materialIssueSessionCompleteTitle,
   parseMaterialIssueSessionScope,
-  pickNextPendingPmrInScope,
   type MaterialIssueSessionComplete,
 } from "../lib/materialIssueContinuousSession";
 
@@ -356,6 +358,26 @@ export function MaterialIssuePage() {
     () => filterPendingPmrsForSessionScope(pendingPmrs, sessionScope),
     [pendingPmrs, sessionScope],
   );
+  const actionablePendingPmrs = React.useMemo(
+    () => filterPmrsWithPendingIssue(scopedPendingPmrs),
+    [scopedPendingPmrs],
+  );
+  const actionableWorkOrderOptions = React.useMemo(
+    () => buildActionableWorkOrderDropdownOptions(scopedPendingPmrs),
+    [scopedPendingPmrs],
+  );
+  const actionableWorkOrderIds = React.useMemo(
+    () => new Set(actionableWorkOrderOptions.map((wo) => wo.id)),
+    [actionableWorkOrderOptions],
+  );
+  const issuedWorkOrderInfoRows = React.useMemo(
+    () =>
+      buildIssuedWorkOrderInfoRows({
+        recentIssues: recent,
+        actionableWorkOrderIds,
+      }),
+    [recent, actionableWorkOrderIds],
+  );
   const materialIssueNavContext = useStoreExecutionNavContext("material-issue");
 
   const selectPmr = React.useCallback(
@@ -426,7 +448,7 @@ export function MaterialIssuePage() {
       return;
     }
     setWorkOrderId(woId);
-    const pmr = pickActionablePmrForWorkOrder(woId, pendingPmrs);
+    const pmr = pickActionablePmrForWorkOrder(woId, scopedPendingPmrs);
     if (pmr) {
       selectPmr(pmr.id, woId);
       return;
@@ -444,7 +466,7 @@ export function MaterialIssuePage() {
   React.useEffect(() => {
     if (urlPmrId > 0 || activePmrId || !ctx || issueMode === "manual") return;
     if (!Number.isFinite(urlWorkOrderId) || urlWorkOrderId <= 0) return;
-    const pmr = pickActionablePmrForWorkOrder(urlWorkOrderId, pendingPmrs);
+    const pmr = pickActionablePmrForWorkOrder(urlWorkOrderId, scopedPendingPmrs);
     if (pmr) {
       selectPmr(pmr.id, urlWorkOrderId);
       return;
@@ -455,7 +477,7 @@ export function MaterialIssuePage() {
     if (!ensuredWoRef.current.has(urlWorkOrderId)) {
       void ensurePmrAndSelect(urlWorkOrderId);
     }
-  }, [activePmrId, ctx, issueMode, pendingPmrs, urlPmrId, urlWorkOrderId, workOrderId, selectPmr, ensurePmrAndSelect]);
+  }, [activePmrId, ctx, issueMode, scopedPendingPmrs, urlPmrId, urlWorkOrderId, workOrderId, selectPmr, ensurePmrAndSelect]);
 
   const prevFromLocationRef = React.useRef<number | "">("");
   React.useEffect(() => {
@@ -566,7 +588,9 @@ export function MaterialIssuePage() {
         .then((list) => setRecent(Array.isArray(list) ? list : []))
         .catch(() => undefined),
     ]);
-    const scopedRemaining = filterPendingPmrsForSessionScope(freshPending, sessionScope);
+    const scopedRemaining = filterPmrsWithPendingIssue(
+      filterPendingPmrsForSessionScope(freshPending, sessionScope),
+    );
     const woLabel = issued.workOrderNo?.trim() || (issued.workOrderId > 0 ? `WO-${issued.workOrderId}` : "work order");
     showSuccess(formatMaterialIssueSuccessMessage(woLabel));
 
@@ -582,11 +606,7 @@ export function MaterialIssuePage() {
     }
 
     setSessionComplete(null);
-    setSessionBanner("Next pending work orders remain available for selection.");
-    const nextPmr = pickNextPendingPmrInScope(freshPending, sessionScope, issued.workOrderId);
-    if (nextPmr?.id) {
-      selectPmr(nextPmr.id, nextPmr.workOrderId);
-    }
+    setSessionBanner("Select the next work order from the queue when ready.");
   }
 
   async function submitIssue() {
@@ -993,7 +1013,7 @@ export function MaterialIssuePage() {
                   disabled={loading || pmrLoading}
                 >
                   <option value="">Select work order…</option>
-                  {ctx?.workOrders.map((wo) => (
+                  {actionableWorkOrderOptions.map((wo) => (
                     <option key={wo.id} value={wo.id}>
                       {wo.label}
                     </option>
@@ -1224,7 +1244,7 @@ export function MaterialIssuePage() {
         <div className="space-y-2.5">
           {woPmrMode ? (
             <MaterialIssuePmrQueuePanel
-              pendingPmrs={scopedPendingPmrs}
+              pendingPmrs={actionablePendingPmrs}
               activePmrId={activePmrId}
               activeWorkOrderId={typeof workOrderId === "number" ? workOrderId : undefined}
               onSelectPmr={(id, woId) => {
@@ -1236,6 +1256,23 @@ export function MaterialIssuePage() {
                 onWorkOrderSelect(woId);
               }}
             />
+          ) : null}
+          {woPmrMode && issuedWorkOrderInfoRows.length > 0 ? (
+            <div className="rounded-md border border-slate-200 bg-white px-2.5 py-2">
+              <h3 className="text-[11px] font-semibold uppercase tracking-wide text-slate-600">
+                RM issued — waiting for Production
+              </h3>
+              <ul className="mt-1 space-y-1">
+                {issuedWorkOrderInfoRows.map((row) => (
+                  <li
+                    key={row.workOrderId}
+                    className="rounded border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] text-slate-700"
+                  >
+                    {row.label}
+                  </li>
+                ))}
+              </ul>
+            </div>
           ) : null}
           <div className="rounded-md border border-slate-200 bg-slate-50/80 px-2 py-1.5">
           <h3 className="text-[10px] font-semibold uppercase tracking-wide text-slate-700">Recent transfers</h3>

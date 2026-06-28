@@ -58,11 +58,9 @@ import {
 import { OperationalProductionWorkspace } from "../components/erp/OperationalProductionWorkspace";
 import { ProductionExecutionPanel } from "../components/erp/production/ProductionExecutionPanel";
 import {
-  formatNoQtyProductionAdvanceMessage,
   formatNoQtyProductionQueueCompleteMessage,
   hasPendingShortfallDecision,
   hasPausedShortfallDecision,
-  selectNextNoQtyProductionReadyLine,
   shouldBlockNoQtyProductionEntry,
   type ProductionExecutionClosedOutcome,
 } from "../lib/productionCompletionUx";
@@ -1579,65 +1577,39 @@ export function ProductionPage() {
       const closedWoRow = workOrders.find((w) => w.id === closedWoId);
       const closedLabel = displayWorkOrderNo(closedWoId, closedWoRow?.docNo ?? null);
 
-      const { flatLines: nextFlat, entries: nextEntries } = await refresh();
+      await refresh();
       setExecutionPanelRefreshTick((t) => t + 1);
       setCompletionEvaluateTick(0);
       setCompletionEvaluateBatchQty(0);
 
-      if (!navigateNoQtyContext) return;
-
-      const qcMap = new Map<number, number>();
-      const approvedWols = new Set<number>();
-      for (const entry of nextEntries) {
-        if (!isApproved(entry)) continue;
-        const lineId = Number(entry.workOrderLine?.id ?? 0);
-        if (!(lineId > 0)) continue;
-        approvedWols.add(lineId);
-        const pending = Number(entry.qcPendingQty ?? 0) || 0;
-        qcMap.set(lineId, (qcMap.get(lineId) ?? 0) + Math.max(0, pending));
-      }
-
-      const soId = noQtyWorkbenchSoId > 0 ? noQtyWorkbenchSoId : focusSoIdValid ? focusSoId : 0;
-      const next = selectNextNoQtyProductionReadyLine({
-        lines: nextFlat,
-        salesOrderId: soId,
-        excludeWorkOrderId: closedWoId,
-        qcPendingByWolId: qcMap,
-        approvedWolIds: approvedWols,
-      });
-
-      if (next) {
-        const nextWoRow = nextFlat.find((l) => l.id === next.id) ?? next;
-        toast.showSuccess(
-          formatNoQtyProductionAdvanceMessage(
-            displayWorkOrderNo(next.workOrderId, workOrders.find((w) => w.id === next.workOrderId)?.docNo ?? null),
-            nextWoRow.fgItem?.itemName ?? null,
-          ),
-        );
-        navigateToNoQtyProductionLine(next);
-        return;
-      }
-
       clearWoLineSelection({ force: true });
+      urlSelectionAppliedRef.current = false;
       setNoQtyExecutionClosedNotice(formatNoQtyProductionQueueCompleteMessage(closedLabel));
-      const params = new URLSearchParams();
-      params.set("source", "no_qty_so");
-      if (soId > 0) params.set("salesOrderId", String(soId));
-      if (effectiveNoQtyCycleId != null && Number(effectiveNoQtyCycleId) > 0) {
-        params.set("cycleId", String(effectiveNoQtyCycleId));
+
+      const params = new URLSearchParams(searchParams);
+      params.delete("workOrderId");
+      params.delete("woId");
+      params.delete("workOrderLineId");
+      if (navigateNoQtyContext) {
+        params.set("source", "no_qty_so");
+        const soId = noQtyWorkbenchSoId > 0 ? noQtyWorkbenchSoId : focusSoIdValid ? focusSoId : 0;
+        if (soId > 0) params.set("salesOrderId", String(soId));
+        if (effectiveNoQtyCycleId != null && Number(effectiveNoQtyCycleId) > 0) {
+          params.set("cycleId", String(effectiveNoQtyCycleId));
+        }
       }
       navigate(`/production?${params.toString()}`, { replace: true });
     },
     [
       workOrders,
+      searchParams,
       navigateNoQtyContext,
       noQtyWorkbenchSoId,
       focusSoIdValid,
       focusSoId,
       effectiveNoQtyCycleId,
-      navigateToNoQtyProductionLine,
       clearWoLineSelection,
-      toast,
+      navigate,
     ],
   );
 
@@ -2412,7 +2384,6 @@ export function ProductionPage() {
         }
       }
       if (noQtyAutoPickLines.length > 0) {
-        applyLine(noQtyAutoPickLines[0]);
         return;
       }
       if (!noQtyContinueProductionIntent && (woId !== 0 || wolId !== 0)) {
@@ -2423,7 +2394,7 @@ export function ProductionPage() {
 
     if (productionFlowMode !== "REGULAR") return;
 
-    // Regular flow: default WO/line — URL woId, else latest WO (highest id), else best line globally.
+    // Regular flow: apply WO/line only when URL deep-link provides workOrderId.
     if (woIdFromUrlValid && workOrders.some((w) => w.id === woIdFromUrlPick)) {
       const forWo = sortFlatByPriority(flatLines.filter((l) => l.workOrderId === woIdFromUrlPick));
       if (forWo.length > 0) {
@@ -2431,30 +2402,9 @@ export function ProductionPage() {
         return;
       }
     }
-    if (workOrders.length > 0) {
-      const latestWoId = Math.max(...workOrders.map((w) => w.id));
-      const forLatest = sortFlatByPriority(flatLines.filter((l) => l.workOrderId === latestWoId));
-      if (forLatest.length > 0) {
-        applyLine(forLatest[0]);
-        return;
-      }
+    if (woId !== 0 || wolId !== 0) {
+      clearWoLineSelection();
     }
-    // Final fallback: pick first NON carry-forward line (so /production doesn't force old NO_QTY balance).
-    let cancelled = false;
-    void (async () => {
-      const eps = 1e-6;
-      const candidates = sortFlatByPriority(flatLines).filter((l) => lineRemaining(l) > eps);
-      for (const l of candidates) {
-        const t = await ensureSoOrderType(l.salesOrderId);
-        if (cancelled) return;
-        if (isCarryForwardLine(l, t)) continue;
-        applyLine(l);
-        return;
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
   }, [
     canProd,
     flatLines,

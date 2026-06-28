@@ -68,9 +68,11 @@ export function groupPendingPmrsByWorkOrder(pmrs: PendingPmrSummary[]): WoPmrGro
   const groups: WoPmrGroup[] = [];
   for (const [workOrderId, list] of byWo) {
     const sorted = [...list].sort((a, b) => b.id - a.id);
-    const actionable = sorted.filter((p) => isActionablePmrStatus(p.status));
-    const latestPmr = actionable[0] ?? sorted[0];
-    if (!latestPmr) continue;
+    const actionable = sorted.filter(
+      (p) => isActionablePmrStatus(p.status) && n(p.totalPending) > EPS,
+    );
+    if (actionable.length === 0) continue;
+    const latestPmr = actionable[0];
     const pendingLineCount = actionable.reduce((s, p) => s + Math.max(0, Number(p.lineCount ?? 1)), 0);
     groups.push({
       workOrderId,
@@ -85,6 +87,52 @@ export function groupPendingPmrsByWorkOrder(pmrs: PendingPmrSummary[]): WoPmrGro
   }
 
   return groups.sort((a, b) => b.totalPending - a.totalPending);
+}
+
+/** PMRs with store-actionable pending issue quantity. */
+export function filterPmrsWithPendingIssue(pmrs: PendingPmrSummary[]): PendingPmrSummary[] {
+  return pmrs.filter((p) => isActionablePmrStatus(p.status) && n(p.totalPending) > EPS);
+}
+
+/** Work order dropdown options — only WOs that still have RM to issue. */
+export function buildActionableWorkOrderDropdownOptions(
+  pmrs: PendingPmrSummary[],
+): Array<{ id: number; label: string }> {
+  const filtered = filterPmrsWithPendingIssue(pmrs);
+  const byWo = new Map<number, PendingPmrSummary>();
+  for (const p of filtered) {
+    const woId = Number(p.workOrderId ?? 0);
+    if (woId <= 0) continue;
+    const existing = byWo.get(woId);
+    if (!existing || p.id > existing.id) byWo.set(woId, p);
+  }
+  return [...byWo.values()]
+    .map((p) => ({
+      id: Number(p.workOrderId),
+      label: `${p.workOrderNo ?? `WO-${p.workOrderId}`}${
+        p.salesOrderNo ? ` · ${p.salesOrderNo}` : ""
+      }${p.productionItemName ? ` · ${p.productionItemName}` : ""}`,
+    }))
+    .sort((a, b) => b.id - a.id);
+}
+
+/** Informational rows for fully issued WOs (monitoring only, not actionable). */
+export function buildIssuedWorkOrderInfoRows(input: {
+  recentIssues: Array<{ workOrderId?: number | null; workOrderNo?: string | null }>;
+  actionableWorkOrderIds: Set<number>;
+}): Array<{ workOrderId: number; label: string }> {
+  const seen = new Set<number>();
+  const rows: Array<{ workOrderId: number; label: string }> = [];
+  for (const issue of input.recentIssues) {
+    const woId = Number(issue.workOrderId ?? 0);
+    if (woId <= 0 || input.actionableWorkOrderIds.has(woId) || seen.has(woId)) continue;
+    seen.add(woId);
+    rows.push({
+      workOrderId: woId,
+      label: issue.workOrderNo?.trim() || `WO-${woId}`,
+    });
+  }
+  return rows;
 }
 
 /** Prefer latest actionable PMR for a work order. */

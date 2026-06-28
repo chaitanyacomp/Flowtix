@@ -430,10 +430,13 @@ async function buildWorkOrderListPayload(db, rows, { pendingOnly, includeWorkOrd
   }
 
   const mapped = rows.map((wo) => {
+    const woTerminal = isTerminalWorkOrderStatus(wo.status);
+    const execClosed = isProductionExecutionClosed(wo.productionExecution?.executionStatus);
+    const productionClosed = woTerminal || execClosed;
     const linesWithMetrics = (wo.lines || []).map((l) => {
       const required = Number(l.qty);
       const usedQty = producedByLineId.get(l.id) ?? 0;
-      const remainingQty = Math.max(0, required - usedQty);
+      const remainingQty = productionClosed ? 0 : Math.max(0, required - usedQty);
       const qcPendingQty = pendingQcByLineId.get(l.id) ?? 0;
       return {
         ...l,
@@ -444,7 +447,12 @@ async function buildWorkOrderListPayload(db, rows, { pendingOnly, includeWorkOrd
       };
     });
     const lines = pendingOnly
-      ? linesWithMetrics.filter((l) => l.remainingQty > REPORT_QUEUE_EPS || l.id === includeWorkOrderLineId)
+      ? linesWithMetrics.filter((l) => {
+          if (l.id === includeWorkOrderLineId) return true;
+          if (l.remainingQty <= REPORT_QUEUE_EPS) return false;
+          if (l.qcPendingQty > REPORT_QUEUE_EPS && l.remainingQty <= REPORT_QUEUE_EPS) return false;
+          return true;
+        })
       : linesWithMetrics;
     return { ...wo, lines };
   });
@@ -455,6 +463,15 @@ async function buildWorkOrderListPayload(db, rows, { pendingOnly, includeWorkOrd
 const PE_APPROVED = "APPROVED";
 const PE_DRAFT = "DRAFT";
 const PROD_TOLERANCE_PCT = 0.05;
+const TERMINAL_WO_STATUSES = Object.freeze(["COMPLETED", "REJECTED", "CLOSED_WITH_SHORTFALL"]);
+
+function isTerminalWorkOrderStatus(status) {
+  return TERMINAL_WO_STATUSES.includes(String(status ?? "").toUpperCase());
+}
+
+function isProductionExecutionClosed(executionStatus) {
+  return String(executionStatus ?? "").toUpperCase() === "COMPLETED";
+}
 
 function rejectIfProductionQtyExceedsWoTolerance({
   lineQty,
@@ -1452,6 +1469,7 @@ productionRouter.get(
         lines: { include: { fgItem: true } },
         salesOrder: true,
         cycle: { select: { id: true, cycleNo: true, status: true } },
+        productionExecution: { select: { executionStatus: true } },
       };
 
       const completedPageRaw = Number(req.query.completedPage ?? req.query.page ?? 1);
@@ -1462,9 +1480,17 @@ productionRouter.get(
 
       /** Legacy + Production page: full list (optional pendingOnly trim). */
       if (!listScope) {
+        /** @type {import("@prisma/client").Prisma.WorkOrderWhereInput} */
+        const where = {};
+        if (salesOrderId && Number.isFinite(salesOrderId) && salesOrderId > 0) {
+          where.salesOrderId = salesOrderId;
+        }
+        if (pendingOnly) {
+          where.status = { notIn: [...TERMINAL_WO_STATUSES] };
+        }
         const rowsRaw = await prisma.workOrder.findMany({
-          ...(salesOrderId && Number.isFinite(salesOrderId) && salesOrderId > 0 ? { where: { salesOrderId } } : {}),
-          orderBy: { id: "desc" },
+          ...(Object.keys(where).length ? { where } : {}),
+          orderBy: { id: "asc" },
           include: woInclude,
         });
 

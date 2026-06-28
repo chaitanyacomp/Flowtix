@@ -91,12 +91,14 @@ import {
   workOrderStatusDisplayLabel,
 } from "../lib/workOrderLifecycle";
 import {
-  buildCompleteQaNextStep,
+  buildProductionQaHandoffStep,
   buildRmIssueNextStep,
   buildRmReadyProductionNextStep,
+  productionRoleCanOpenQaWorkspace,
   resolveProductionStickyContext,
   resolveProductionStickyMetrics,
 } from "../lib/regularSoOperationalGuidance";
+import { pickFirstExecutableProductionLine, sortProductionLinesFifo } from "../lib/productionWorkspaceQueue";
 import {
   inferProductionFlowFromLegacy,
   parseProductionFlowParam,
@@ -118,6 +120,7 @@ type WoLine = {
   approvedProducedQty?: number;
   /** max(0, WO line qty − approved produced); lines with 0 are omitted when pendingOnly=1. */
   remainingQty?: number;
+  qcPendingQty?: number;
   fgItem: { itemName: string };
 };
 type WoRow = {
@@ -408,6 +411,8 @@ export function ProductionPage() {
   const roleUi = useErpRoleUi();
   const canCreateNextRs = useCanCreateNextRs();
   const canProd = auth.user?.role === "ADMIN" || auth.user?.role === "PRODUCTION";
+  const operatorRole = auth.user?.role ?? "";
+  const canOpenQaFromProduction = productionRoleCanOpenQaWorkspace(operatorRole);
   const isAdmin = auth.user?.role === "ADMIN";
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
@@ -1436,7 +1441,7 @@ export function ProductionPage() {
       const carryForward = produced > eps && qcPending <= eps && noQtyHasApprovedByWolId.has(l.id);
       return !carryForward && qcPending <= eps;
     });
-    return sortFlatByPriority(ready);
+    return sortProductionLinesFifo(ready);
   }, [
     flatLines,
     noQtyWorkbenchSoId,
@@ -1568,6 +1573,34 @@ export function ProductionPage() {
       navigate(`/production?${params.toString()}`, { replace: true });
     },
     [applyLine, focusSoIdValid, focusSoId, effectiveNoQtyCycleId, navigate],
+  );
+
+  const openExecutableProductionLine = React.useCallback(
+    (l: FlatLine) => {
+      const woRow = workOrders.find((w) => w.id === l.workOrderId);
+      const orderType = String(
+        woRow?.salesOrder?.orderType ?? soOrderTypeById[l.salesOrderId] ?? "",
+      ).trim();
+      if (orderType === "NO_QTY" || navigateNoQtyContext) {
+        navigateToNoQtyProductionLine(l);
+        return;
+      }
+      applyLine(l);
+      const params = new URLSearchParams(searchParams);
+      params.set("workOrderId", String(l.workOrderId));
+      params.set("workOrderLineId", String(l.id));
+      params.set("flow", PRODUCTION_FLOW_REGULAR);
+      navigate(`/production?${params.toString()}`, { replace: true });
+    },
+    [
+      workOrders,
+      soOrderTypeById,
+      navigateNoQtyContext,
+      navigateToNoQtyProductionLine,
+      applyLine,
+      searchParams,
+      navigate,
+    ],
   );
 
   const handleProductionExecutionClosed = React.useCallback(
@@ -1770,12 +1803,12 @@ export function ProductionPage() {
 
   /** Max qty for save/approve/clamp — same readiness payload, WO balance from API when present. */
   const rmEntryQtyCap = React.useMemo(() => {
-    if (!showRegularRmReadiness || !selectedMetrics) return null;
+    if ((!showRegularRmReadiness && !showNoQtyRmStatus) || !selectedMetrics) return null;
     return resolveRegularRmEntryQtyCap(rmReadiness, {
       lineWoRemaining: selectedMetrics.remainingQty,
       excludeProductionQty: editing?.workOrderLine?.id === wolId ? Number(editing.producedQty) : undefined,
     });
-  }, [showRegularRmReadiness, rmReadiness, selectedMetrics, editing, wolId]);
+  }, [showRegularRmReadiness, showNoQtyRmStatus, rmReadiness, selectedMetrics, editing, wolId]);
 
   const producedQtyWithinCaps = React.useMemo(() => {
     if (!producedQtyValid || producedQtyParsed == null) return false;
@@ -1783,7 +1816,7 @@ export function ProductionPage() {
       return false;
     }
     if (
-      showRegularRmReadiness &&
+      (showRegularRmReadiness || showNoQtyRmStatus) &&
       rmEntryQtyCap != null &&
       !rmReadinessLoading &&
       producedQtyParsed > rmEntryQtyCap + 1e-6
@@ -1795,7 +1828,9 @@ export function ProductionPage() {
     producedQtyValid,
     producedQtyParsed,
     selectedMetrics,
+    fromNoQtySo,
     showRegularRmReadiness,
+    showNoQtyRmStatus,
     rmEntryQtyCap,
     rmReadinessLoading,
   ]);
@@ -2011,37 +2046,39 @@ export function ProductionPage() {
     [entries, qcBannerSoId],
   );
 
-  /** REGULAR: QC next step is scoped to the selected WO line (not every pending batch on the SO). */
-  const selectedLineQcPending = React.useMemo(() => {
+  /** REGULAR: QC next step when the selected WO has any batch awaiting QC. */
+  const selectedWoQcPending = React.useMemo(() => {
     if (navigateNoQtyContext || !selected) return false;
     return entries.some(
-      (e) => Number(e.workOrderLine?.id ?? 0) === Number(selected.id) && qcPendingEntry(e),
+      (e) =>
+        Number(e.workOrderLine?.workOrder?.id ?? 0) === Number(selected.workOrderId) && qcPendingEntry(e),
     );
   }, [navigateNoQtyContext, selected, entries]);
 
-  const selectedLinePendingProductionId = React.useMemo(() => {
+  const selectedWoPendingProductionId = React.useMemo(() => {
     if (!selected) return 0;
     const pending = entries.find(
-      (e) => Number(e.workOrderLine?.id ?? 0) === Number(selected.id) && qcPendingEntry(e),
+      (e) =>
+        Number(e.workOrderLine?.workOrder?.id ?? 0) === Number(selected.workOrderId) && qcPendingEntry(e),
     );
     return pending?.id ?? 0;
   }, [selected, entries]);
 
   const regularQcBannerHref = React.useMemo(() => {
-    if (!selected || !selectedLineQcPending) return "";
+    if (!selected || !selectedWoQcPending) return "";
     const ot =
       String(soOrderTypeById[selected.salesOrderId] ?? "").trim() ||
       (fromNoQtySo && selected.salesOrderId === focusSoId ? "NO_QTY" : "NORMAL");
     return buildQcEntryHref({
       salesOrderId: selected.salesOrderId,
-      productionId: selectedLinePendingProductionId > 0 ? selectedLinePendingProductionId : null,
+      productionId: selectedWoPendingProductionId > 0 ? selectedWoPendingProductionId : null,
       orderType: ot,
       fromStep: "production",
     });
   }, [
     selected,
-    selectedLineQcPending,
-    selectedLinePendingProductionId,
+    selectedWoQcPending,
+    selectedWoPendingProductionId,
     soOrderTypeById,
     fromNoQtySo,
     focusSoId,
@@ -2108,10 +2145,13 @@ export function ProductionPage() {
 
   /** One primary QC / dispatch CTA surface — suppress in-card duplicates when the top strip is shown. */
   const showRegularQcNextStrip = Boolean(
-    !navigateNoQtyContext && selectedLineQcPending && regularQcBannerHref,
+    !navigateNoQtyContext && selectedWoQcPending && (regularQcBannerHref || !canOpenQaFromProduction),
   );
   const showNoQtyQcNextStrip = Boolean(
-    navigateNoQtyContext && showQcNextBanner && qcBannerHref && !hideTopQcNextStrip,
+    navigateNoQtyContext &&
+      showQcNextBanner &&
+      (qcBannerHref || !canOpenQaFromProduction) &&
+      !hideTopQcNextStrip,
   );
   const showTopQcNextStrip = showRegularQcNextStrip || showNoQtyQcNextStrip;
   const suppressDuplicateQcWorkflowUi = showTopQcNextStrip;
@@ -2153,15 +2193,23 @@ export function ProductionPage() {
       w.push("Entered quantity exceeds remaining capacity.");
     }
     if (
-      !fromNoQtySo &&
-      producedQtyValid &&
-      producedQtyParsed != null &&
+      showRegularRmReadiness &&
       rmEntryQtyCap != null &&
       !rmReadinessLoading &&
       producedQtyParsed > rmEntryQtyCap + 1e-6
     ) {
       const capLabel = rmAllowedNowQty != null ? rmAllowedNowQty : rmEntryQtyCap;
       w.push(`Entered quantity exceeds production allowed now (${fmtProdQty(capLabel ?? 0)}).`);
+    }
+    if (
+      showNoQtyRmStatus &&
+      rmEntryQtyCap != null &&
+      !rmReadinessLoading &&
+      producedQtyValid &&
+      producedQtyParsed != null &&
+      producedQtyParsed > rmEntryQtyCap + 1e-6
+    ) {
+      w.push(`Entered quantity exceeds issued RM capacity (${fmtProdQty(rmEntryQtyCap)}).`);
     }
     return w;
   }, [
@@ -2349,11 +2397,19 @@ export function ProductionPage() {
 
   React.useEffect(() => {
     if (!canProd || flatLines.length === 0 || wolId !== 0) return;
+    if (!initialRefreshDone) return;
     if (productionFlowMode === "NONE") return;
-    if (showProductionWorkspace) return;
     /** URL deep-link owns WO/line selection — handled by dedicated effect above. */
     if (urlWoSelectionAuthority) return;
     if (urlSelectionAppliedRef.current) return;
+
+    const autoPickTarget = pickFirstExecutableProductionLine(flatLines);
+    if (!autoPickTarget) return;
+
+    if (showProductionWorkspace) {
+      openExecutableProductionLine(autoPickTarget);
+      return;
+    }
 
     if (productionFlowMode === "NO_QTY") {
       if (!showNoQtyScopedProductionCard) return;
@@ -2372,7 +2428,7 @@ export function ProductionPage() {
         const target = pickNoQtyContinueProductionLine();
         if (target) {
           noQtyContinueAutoPickDoneRef.current = true;
-          applyLine(target);
+          openExecutableProductionLine(target);
           return;
         }
       }
@@ -2383,7 +2439,12 @@ export function ProductionPage() {
           return;
         }
       }
-      if (noQtyAutoPickLines.length > 0) {
+      const fifoReady =
+        noQtyAutoPickLines.length > 0
+          ? pickFirstExecutableProductionLine(noQtyAutoPickLines) ?? noQtyAutoPickLines[0]
+          : autoPickTarget;
+      if (fifoReady) {
+        openExecutableProductionLine(fifoReady);
         return;
       }
       if (!noQtyContinueProductionIntent && (woId !== 0 || wolId !== 0)) {
@@ -2394,7 +2455,6 @@ export function ProductionPage() {
 
     if (productionFlowMode !== "REGULAR") return;
 
-    // Regular flow: apply WO/line only when URL deep-link provides workOrderId.
     if (woIdFromUrlValid && workOrders.some((w) => w.id === woIdFromUrlPick)) {
       const forWo = sortFlatByPriority(flatLines.filter((l) => l.workOrderId === woIdFromUrlPick));
       if (forWo.length > 0) {
@@ -2402,9 +2462,7 @@ export function ProductionPage() {
         return;
       }
     }
-    if (woId !== 0 || wolId !== 0) {
-      clearWoLineSelection();
-    }
+    openExecutableProductionLine(autoPickTarget);
   }, [
     canProd,
     flatLines,
@@ -2430,6 +2488,8 @@ export function ProductionPage() {
     isCarryForwardLine,
     workOrderLineIdFromUrl,
     urlWoSelectionAuthority,
+    openExecutableProductionLine,
+    initialRefreshDone,
   ]);
 
   React.useEffect(() => {
@@ -2527,12 +2587,14 @@ export function ProductionPage() {
       return;
     }
     if (
-      showRegularRmReadiness &&
+      (showRegularRmReadiness || showNoQtyRmStatus) &&
       rmEntryQtyCap != null &&
       producedQtyParsed > rmEntryQtyCap + 1e-6
     ) {
       setError(
-        `Production entry cannot exceed ${rmEntryQtyCap} based on issued RM at production location.`,
+        showNoQtyRmStatus
+          ? `Production entry cannot exceed ${rmEntryQtyCap} based on issued RM capacity.`
+          : `Production entry cannot exceed ${rmEntryQtyCap} based on issued RM at production location.`,
       );
       return;
     }
@@ -3000,31 +3062,40 @@ export function ProductionPage() {
       if (qcHref) {
         if (!navigateNoQtyContext) {
           const qaSoId = selected?.salesOrderId ?? qcBannerSoId;
-          const step = buildCompleteQaNextStep(
+          const step = buildProductionQaHandoffStep(
+            operatorRole,
             qaSoId,
-            selectedLinePendingProductionId > 0 ? selectedLinePendingProductionId : null,
+            selectedWoPendingProductionId > 0 ? selectedWoPendingProductionId : null,
+            qcHref,
           );
           return {
-            variant: "action",
+            variant: canOpenQaFromProduction && qcHref ? "action" : "info",
             title: step.statusTitle,
             subtitle: step.statusSubtitle,
-            primaryAction: {
-              label: step.primaryAction.label,
-              testId: step.primaryAction.testId,
-              onClick: () => navigate(qcHref),
-            },
+            primaryAction: canOpenQaFromProduction && qcHref
+              ? {
+                  label: step.primaryAction.label,
+                  testId: step.primaryAction.testId,
+                  onClick: () => navigate(qcHref),
+                }
+              : undefined,
           };
         }
         return {
-          variant: "action",
+          variant: canOpenQaFromProduction && qcHref ? "action" : "info",
           title: navigateNoQtyContext ? PRODUCTION_QA_TERMS.QA_PENDING_STRIP : PRODUCTION_QA_TERMS.NEXT_STEP_COMPLETE_QA,
           subtitle: navigateNoQtyContext
-            ? "Production is approved."
+            ? canOpenQaFromProduction
+              ? "Production is approved."
+              : PRODUCTION_QA_TERMS.WAITING_FOR_QA
             : PRODUCTION_QA_TERMS.NEXT_STEP_COMPLETE_QA_NO_QTY,
-          primaryAction: {
-            label: PRODUCTION_QA_TERMS.COMPLETE_QA,
-            onClick: () => navigate(qcHref),
-          },
+          primaryAction:
+            canOpenQaFromProduction && qcHref
+              ? {
+                  label: PRODUCTION_QA_TERMS.COMPLETE_QA,
+                  onClick: () => navigate(qcHref),
+                }
+              : undefined,
         };
       }
     }
@@ -3190,8 +3261,8 @@ export function ProductionPage() {
     qcBannerHref,
     regularQcBannerHref,
     qcBannerSoId,
-    selectedLinePendingProductionId,
-    selectedLineQcPending,
+    selectedWoPendingProductionId,
+    selectedWoQcPending,
     firstPendingProductionEntryId,
     navigateNoQtyContext,
     showNoQtyScopedProductionCard,
@@ -3435,7 +3506,7 @@ export function ProductionPage() {
   const regularWorkflowStageLabel = React.useMemo(() => {
     if (navigateNoQtyContext) return "";
     if (draftApprovalPendingRegular) return "Draft approval pending";
-    if (selectedLineQcPending && regularQcBannerHref) return "QC pending";
+    if (selectedWoQcPending && (regularQcBannerHref || !canOpenQaFromProduction)) return "QC pending";
     if (woProductionLifecycleBlocked && isWorkOrderPausedStatus(selectedWoForLifecycle?.status)) return "Paused";
     if (rmProductionEntryBlocked && showRegularRmReadiness) return "Waiting for RM issue";
     if (selectedMetrics && selectedMetrics.remainingQty > 1e-6) return "In progress";
@@ -3453,7 +3524,7 @@ export function ProductionPage() {
     navigateNoQtyContext,
     draftApprovalPendingRegular,
     latestDraftForSelectedWoLine,
-    selectedLineQcPending,
+    selectedWoQcPending,
     regularQcBannerHref,
     woProductionLifecycleBlocked,
     selectedWoForLifecycle?.status,
@@ -4117,15 +4188,21 @@ export function ProductionPage() {
                                     </span>
                                   </div>
                                 </div>
-                                <Button
-                                  type="button"
-                                  size="sm"
-                                  variant="default"
-                                  className="h-8 px-3 text-[11px] font-semibold shadow-sm"
-                                  onClick={() => navigate(qcHref)}
-                                >
-                                  {PRODUCTION_QA_TERMS.COMPLETE_QA}
-                                </Button>
+                                {canOpenQaFromProduction ? (
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="default"
+                                    className="h-8 px-3 text-[11px] font-semibold shadow-sm"
+                                    onClick={() => navigate(qcHref)}
+                                  >
+                                    {PRODUCTION_QA_TERMS.COMPLETE_QA}
+                                  </Button>
+                                ) : (
+                                  <span className="text-[11px] font-semibold text-emerald-900">
+                                    {PRODUCTION_QA_TERMS.WAITING_FOR_QA}
+                                  </span>
+                                )}
                               </div>
                             </div>
                           );
@@ -4191,9 +4268,15 @@ export function ProductionPage() {
                               </div>
                             </div>
                             <div className="mt-2 flex flex-wrap justify-end gap-2">
-                              <Button type="button" size="sm" variant="default" className="font-semibold shadow-sm" onClick={() => navigate(qcHref)}>
-                                Move to QC
-                              </Button>
+                              {canOpenQaFromProduction ? (
+                                <Button type="button" size="sm" variant="default" className="font-semibold shadow-sm" onClick={() => navigate(qcHref)}>
+                                  Move to QC
+                                </Button>
+                              ) : (
+                                <span className="text-[11px] font-semibold text-slate-700">
+                                  {PRODUCTION_QA_TERMS.WAITING_FOR_QA}
+                                </span>
+                              )}
                             </div>
                           </div>
                         );
@@ -4262,15 +4345,21 @@ export function ProductionPage() {
                                     </div>
                                   </div>
                                 </div>
-                                <Button
-                                  type="button"
-                                  size="sm"
-                                  variant="default"
-                                  className="h-8 px-3 text-[11px] font-semibold shadow-sm"
-                                  onClick={() => navigate(qcHref)}
-                                >
-                                  {PRODUCTION_QA_TERMS.COMPLETE_QA}
-                                </Button>
+                                {canOpenQaFromProduction ? (
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="default"
+                                    className="h-8 px-3 text-[11px] font-semibold shadow-sm"
+                                    onClick={() => navigate(qcHref)}
+                                  >
+                                    {PRODUCTION_QA_TERMS.COMPLETE_QA}
+                                  </Button>
+                                ) : (
+                                  <span className="text-[11px] font-semibold text-emerald-900">
+                                    {PRODUCTION_QA_TERMS.WAITING_FOR_QA}
+                                  </span>
+                                )}
                               </div>
                             </div>
                           );
@@ -5215,7 +5304,7 @@ export function ProductionPage() {
                                  * surfaces the same action — operators only see one canonical
                                  * QC CTA per screen state, never two.
                                  */}
-                                {!suppressDuplicateQcWorkflowUi ? (
+                                {!suppressDuplicateQcWorkflowUi && canOpenQaFromProduction ? (
                                   <Link
                                     to={qcEntryHrefForEntry(r)}
                                     className={cn(
@@ -5225,6 +5314,10 @@ export function ProductionPage() {
                                   >
                                     {PRODUCTION_QA_TERMS.COMPLETE_QA}
                                   </Link>
+                                ) : !suppressDuplicateQcWorkflowUi ? (
+                                  <span className="text-[10px] font-medium text-slate-600">
+                                    {PRODUCTION_QA_TERMS.WAITING_FOR_QA}
+                                  </span>
                                 ) : null}
                                 {canOfferProductionReverse(r, isAdmin) ? (
                                   <Button
@@ -5658,7 +5751,7 @@ export function ProductionPage() {
               >
                 Sales Order
               </Link>
-              {regularQcBannerHref && !showTopQcNextStrip && selectedLineQcPending ? (
+              {regularQcBannerHref && !showTopQcNextStrip && selectedWoQcPending && canOpenQaFromProduction ? (
                 /*
                  * Breadcrumb "Open QC" link. Hidden when the page-level top QC strip already
                  * exposes the same action — keeps a single canonical QC CTA per screen state.

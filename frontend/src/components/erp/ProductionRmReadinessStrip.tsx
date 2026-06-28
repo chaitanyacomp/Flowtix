@@ -86,6 +86,10 @@ export function resolveRegularRmEntryQtyCap(
   options: RegularRmQtyCapOptions,
 ): number | null {
   if (!data || isProductionBlockedByRmReadiness(data)) return null;
+  const isNoQty = String(data.orderType ?? "").toUpperCase() === "NO_QTY";
+  if (isNoQty) {
+    return Math.max(0, safeRmQty(data.maxAdditionalQty));
+  }
   const woRem = resolveRegularRmWoRemaining(data, options.lineWoRemaining);
   const rmBatchCeiling = safeRmQty(data.productionAllowedNowQty);
   const exclude = safeRmQty(options.excludeProductionQty);

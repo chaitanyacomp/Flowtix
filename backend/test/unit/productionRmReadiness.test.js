@@ -213,6 +213,46 @@ describe("productionRmReadinessService", () => {
     assert.equal(max, 4000);
   });
 
+  it("incremental batch validation allows remaining WO qty when RM headroom is higher", () => {
+    const batchAllowed = 350;
+    assert.equal(
+      productionQtyExceedsRmAllowed({
+        producedQty: 350,
+        productionAllowedNowQty: batchAllowed,
+        otherUnapprovedQty: 0,
+      }),
+      false,
+    );
+    assert.equal(
+      productionQtyExceedsRmAllowed({
+        producedQty: 351,
+        productionAllowedNowQty: batchAllowed,
+        otherUnapprovedQty: 0,
+      }),
+      true,
+    );
+  });
+
+  it("rejects cumulative NO_QTY misuse — batch cap is not lifetime produced total", () => {
+    const batchAllowed = 350;
+    assert.equal(
+      productionQtyExceedsRmAllowed({
+        producedQty: 350,
+        productionAllowedNowQty: batchAllowed,
+        otherUnapprovedQty: 0,
+      }),
+      false,
+    );
+    assert.equal(
+      productionQtyExceedsRmAllowed({
+        producedQty: 3500,
+        productionAllowedNowQty: 482,
+        otherUnapprovedQty: 0,
+      }),
+      true,
+    );
+  });
+
   it("PMR basis uses scarcest RM when multiple PMR lines exist", () => {
     const max = computeMaxProducibleFromPmrBasis({
       woQty: 1000,

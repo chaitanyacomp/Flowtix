@@ -380,9 +380,10 @@ async function buildProductionRmReadiness(db, workOrderLineId) {
   });
   const approvedProduced = n(approvedAgg._sum.producedQty);
   const woRemaining = Math.max(0, woQty - approvedProduced);
-  const maxAdditionalQty = isNoQty
-    ? Math.max(0, maxProducibleQty - draftAndApproved)
-    : Math.max(0, Math.min(woRemaining, maxProducibleQty - unapprovedProduced));
+  const maxAdditionalQty = Math.max(
+    0,
+    Math.min(woRemaining, maxProducibleQty) - unapprovedProduced,
+  );
 
   const latestPmr = submittedPmrs[0] ?? null;
 
@@ -506,19 +507,21 @@ async function assertProductionRmReadiness(tx, {
   const otherUnapprovedQty = await loadOtherUnapprovedProductionQty(tx, workOrderLineId, excludeProductionId);
   const maxAllowed = readiness.productionAllowedNowQty;
   const isNoQty = readiness.orderType === "NO_QTY";
-  const qtyToCheck = isNoQty
-    ? n(readiness.approvedProducedQty) + otherUnapprovedQty + qty
-    : qty;
+  const batchAllowed = isNoQty ? readiness.maxAdditionalQty : maxAllowed;
+  const qtyToCheck = qty;
   if (
     productionQtyExceedsRmAllowed({
       producedQty: qtyToCheck,
-      productionAllowedNowQty: maxAllowed,
-      otherUnapprovedQty: isNoQty ? 0 : otherUnapprovedQty,
+      productionAllowedNowQty: batchAllowed,
+      otherUnapprovedQty,
     })
   ) {
     const fmt = (x) => (Number.isInteger(x) ? String(x) : Number(x).toFixed(3));
+    const displayCap = isNoQty
+      ? Math.max(0, batchAllowed)
+      : maxAllowed;
     const err = new Error(
-      `Production blocked: issued RM can support only ${fmt(maxAllowed)} qty for this work order.`,
+      `Production blocked: issued RM can support only ${fmt(displayCap)} qty for this work order.`,
     );
     err.code = "PRODUCTION_RM_INSUFFICIENT";
     err.statusCode = 409;

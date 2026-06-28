@@ -106,6 +106,42 @@ export function buildCompleteQaNextStep(salesOrderId: number, productionId?: num
   };
 }
 
+/** Production-operator handoff when QA is owned by the QA role. */
+export function buildProductionWaitingForQaStep(): RegularSoNextStepModel {
+  return {
+    statusTitle: "Waiting for QA",
+    statusSubtitle: "Production is complete. Quality Inspection will be performed by QA.",
+    primaryAction: {
+      label: "Waiting for QA",
+      testId: "production-waiting-for-qa",
+    },
+  };
+}
+
+export function buildProductionQaHandoffStep(
+  role: string,
+  salesOrderId: number,
+  productionId?: number | null,
+  qcHref?: string,
+): RegularSoNextStepModel {
+  const canPerformQa = role === "QA" || role === "ADMIN";
+  if (canPerformQa && qcHref) {
+    return {
+      ...buildCompleteQaNextStep(salesOrderId, productionId),
+      primaryAction: {
+        label: "Complete QA",
+        href: qcHref,
+        testId: "next-complete-qa",
+      },
+    };
+  }
+  return buildProductionWaitingForQaStep();
+}
+
+export function productionRoleCanOpenQaWorkspace(role: string): boolean {
+  return role === "QA" || role === "ADMIN";
+}
+
 export function buildCreateSalesBillNextStep(dispatchId: number): RegularSoNextStepModel {
   return {
     statusTitle: "Dispatch Finalized – Create Sales Bill",

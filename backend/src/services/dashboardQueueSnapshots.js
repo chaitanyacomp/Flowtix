@@ -902,11 +902,13 @@ async function getProductionQueueRows() {
   for (const wo of actionableWorkOrders) {
     const so = wo.salesOrder;
     const orderType = so?.orderType ?? "NORMAL";
+    const woLines = Array.isArray(wo?.lines) ? wo.lines : [];
     if (
       orderType === "NO_QTY" &&
       wo.productionExecution?.executionStatus === "COMPLETED"
     ) {
-      continue;
+      const hasQcPending = woLines.some((line) => (pendingQcByLineId.get(line.id) ?? 0) > QUEUE_EPS);
+      if (!hasQcPending) continue;
     }
     if (
       orderType === "NO_QTY" &&
@@ -924,7 +926,6 @@ async function getProductionQueueRows() {
     }
     const customerName = so ? customerNameForSalesOrder(so) : "Unknown Customer";
 
-    const woLines = Array.isArray(wo?.lines) ? wo.lines : [];
     for (const line of woLines) {
       const requiredQty = Number(line.qty);
       const plannedQty = Number(line.plannedQty ?? line.qty);

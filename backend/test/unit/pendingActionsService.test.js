@@ -76,13 +76,85 @@ describe("pendingActionsService", () => {
     assert.equal(href, "/dispatch?salesOrderId=5");
   });
 
-  it("friendlyAction maps dispatch backlog to Dispatch Ready", () => {
+  it("friendlyAction maps dispatch backlog to Dispatch", () => {
     const label = friendlyActionForNormalizedRow({
       rowType: "DISPATCH_BACKLOG",
       currentStatus: "DISPATCH_PENDING",
       nextAction: "Dispatch FG",
     });
-    assert.equal(label, "Dispatch Ready");
+    assert.equal(label, "Dispatch");
+  });
+
+  it("friendlyAction maps production queue QC_PENDING to QC Pending", () => {
+    const label = friendlyActionForNormalizedRow({
+      rowType: "PRODUCTION_QUEUE",
+      currentStatus: "QA_PENDING",
+      nextAction: "Complete QA",
+      metadata: {
+        productionExecutionStatus: "RUNNING",
+        sourceNextAction: "QC_PENDING",
+        workOrderId: 3,
+      },
+    });
+    assert.equal(label, "QC Pending");
+  });
+
+  it("fetchStoreProductionHandoffPendingActions returns no Store inbox rows", async () => {
+    const { fetchStoreProductionHandoffPendingActions } = require("../../src/services/pendingActionsService");
+    const rows = await fetchStoreProductionHandoffPendingActions();
+    assert.equal(rows.length, 0);
+  });
+
+  it("fetchAdminSalesBillPendingActions maps eligible dispatch to Create Sales Bill", async () => {
+    const { fetchAdminSalesBillPendingActions } = require("../../src/services/pendingActionsService");
+    const actions = await fetchAdminSalesBillPendingActions({
+      dispatch: {
+        findMany: async () => [
+          {
+            id: 55,
+            docNo: "D-55",
+            date: new Date("2026-05-01"),
+            soId: 10,
+            dispatchedQty: 100,
+            salesOrder: {
+              docNo: "SO-10",
+              orderType: "NO_QTY",
+              customer: { name: "Acme" },
+              po: null,
+              lines: [],
+            },
+            item: { itemName: "Widget" },
+          },
+        ],
+      },
+      salesBill: {
+        findMany: async () => [],
+      },
+    });
+    assert.equal(actions.length, 1);
+    assert.equal(actions[0].action, "Create Sales Bill");
+    assert.match(actions[0].href, /dispatchId=55/);
+    assert.equal(actions[0].ownerRole, "ADMIN");
+  });
+
+  it("fetchAdminTallyExportPendingActions maps finalized unexported bills", async () => {
+    const { fetchAdminTallyExportPendingActions } = require("../../src/services/pendingActionsService");
+    const actions = await fetchAdminTallyExportPendingActions({
+      salesBill: {
+        findMany: async () => [
+          {
+            id: 77,
+            docNo: "SB-77",
+            billNo: "INV-77",
+            billDate: new Date("2026-05-02"),
+            customerNameSnapshot: "Acme",
+          },
+        ],
+      },
+    });
+    assert.equal(actions.length, 1);
+    assert.equal(actions[0].action, "Export to Tally");
+    assert.equal(actions[0].href, "/sales-bills/77?from=pending-actions");
   });
 
   it("friendlyAction maps blocked production execution to Production Paused", () => {

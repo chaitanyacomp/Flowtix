@@ -934,7 +934,10 @@ async function getProductionQueueRows() {
       const balanceQty = shortfallDecisionPending
         ? getWoLineRemainingProductionQty(plannedQty, approvedProduced)
         : getEffectiveProductionPendingQty(plannedQty, approvedProduced, execStatus);
-      if (auditWo147(wo) && balanceQty <= QUEUE_EPS && !shortfallDecisionPending) {
+      const linePendingQc = pendingQcByLineId.get(line.id) ?? 0;
+      const productionIdForQc = firstPendingProdIdByLineId.get(line.id) ?? null;
+
+      if (auditWo147(wo) && balanceQty <= QUEUE_EPS && !shortfallDecisionPending && linePendingQc <= QUEUE_EPS) {
         console.info("[AUDIT_WO147_QUEUE]", {
           woId: wo.id,
           workOrderLineId: line.id,
@@ -948,10 +951,7 @@ async function getProductionQueueRows() {
           skipReason: "SKIP_LINE_ZERO_BALANCE",
         });
       }
-      if (balanceQty <= QUEUE_EPS && !shortfallDecisionPending) continue;
-
-      const linePendingQc = pendingQcByLineId.get(line.id) ?? 0;
-      const productionIdForQc = firstPendingProdIdByLineId.get(line.id) ?? null;
+      if (balanceQty <= QUEUE_EPS && !shortfallDecisionPending && linePendingQc <= QUEUE_EPS) continue;
 
       let nextAction = "PRODUCTION_PENDING";
       /** Primary classification before NO_QTY CLOSED / RS dashboard overrides. */
@@ -2040,7 +2040,33 @@ async function getNoQtyDashboardCycleHistory(soId) {
 
 async function getRmRiskRows() {
   const workspace = await buildMaterialAvailabilityWorkspace(prisma, { onlyBlocked: true });
-  const rows = (workspace.actionQueue || []).map((row) => ({
+  const rawQueue = workspace.actionQueue || [];
+
+  const releaseWoIds = [
+    ...new Set(
+      rawQueue
+        .filter((row) => row.queueType === "READY_TO_RELEASE_WO" && row.workOrderId > 0)
+        .map((row) => Number(row.workOrderId)),
+    ),
+  ];
+  const execByWoId = new Map();
+  if (releaseWoIds.length > 0) {
+    const execRows = await prisma.workOrderProductionExecution.findMany({
+      where: { workOrderId: { in: releaseWoIds } },
+      select: { workOrderId: true, executionStatus: true },
+    });
+    for (const exec of execRows) {
+      execByWoId.set(exec.workOrderId, exec.executionStatus);
+    }
+  }
+
+  const rows = rawQueue
+    .filter((row) => {
+      if (row.queueType !== "READY_TO_RELEASE_WO" || !row.workOrderId) return true;
+      const execStatus = execByWoId.get(Number(row.workOrderId)) ?? "NOT_STARTED";
+      return execStatus === "NOT_STARTED";
+    })
+    .map((row) => ({
     itemId: row.rmItemId,
     itemCode: row.rmItemName,
     itemName: row.rmItemName,
@@ -2085,6 +2111,8 @@ async function getRmRiskRows() {
         : `/reports/rm-shortage?salesOrderId=${row.salesOrderId || ""}&materialRequirementId=${row.materialRequirementId || ""}&rmItemId=${row.rmItemId}&onlyBlocked=true&returnTo=dashboard`,
     status: row.netShortageAfterIncomingQty > QUEUE_EPS ? "CRITICAL" : "LOW_BUFFER",
     queueType: row.queueType,
+    productionExecutionStatus:
+      row.workOrderId > 0 ? (execByWoId.get(Number(row.workOrderId)) ?? "NOT_STARTED") : null,
     quantityMetricContext: QUEUE_SNAPSHOT_ROW_METRIC_CONTEXT.rmRisk,
   }));
 
@@ -2546,6 +2574,85 @@ async function getQaReworkQueueRows(db = prisma, options = {}) {
   return out;
 }
 
+/**
+ * QA follow-up dispositions (hold decisions, rework supervisor approval) with stock still awaiting action.
+ * @param {import('@prisma/client').PrismaClient} [db]
+ * @param {{ limit?: number }} [options]
+ */
+async function getQaDispositionFollowUpQueueRows(db = prisma, options = {}) {
+  const limit = Math.min(200, Math.max(1, Number(options.limit) || 200));
+
+  const dispositions = await db.qcRejectedDisposition.findMany({
+    where: {
+      voidedAt: null,
+      status: { in: ["HOLD", "REWORK_PENDING_SUPERVISOR"] },
+      remainingQty: { gt: 0 },
+    },
+    orderBy: [{ id: "desc" }],
+    take: limit,
+    include: {
+      item: { select: { id: true, itemName: true, unit: true } },
+      workOrder: {
+        select: {
+          id: true,
+          docNo: true,
+          salesOrderId: true,
+          cycleId: true,
+          cycle: { select: { cycleNo: true } },
+        },
+      },
+      sourceQcEntry: { select: { id: true, docNo: true, productionId: true } },
+    },
+  });
+
+  const dispIds = dispositions.map((d) => d.id).filter((id) => typeof id === "number" && id > 0);
+  const holdStockByDispId = new Map();
+  if (dispIds.length) {
+    const grouped = await db.stockTransaction.groupBy({
+      by: ["qcRejectedDispositionId"],
+      where: {
+        qcRejectedDispositionId: { in: dispIds },
+        stockBucket: "QC_HOLD",
+        reversedAt: null,
+      },
+      _sum: { qtyIn: true, qtyOut: true },
+    });
+    for (const g of grouped) {
+      const dispId = g.qcRejectedDispositionId;
+      if (dispId == null) continue;
+      const net = Number(g._sum.qtyIn || 0) - Number(g._sum.qtyOut || 0);
+      if (net > QUEUE_EPS) holdStockByDispId.set(dispId, net);
+    }
+  }
+
+  const out = [];
+  for (const d of dispositions) {
+    const pendingQty = Number(holdStockByDispId.get(d.id) ?? d.remainingQty ?? 0);
+    if (pendingQty <= QUEUE_EPS) continue;
+    const wo = d.workOrder;
+    out.push({
+      dispositionId: d.id,
+      status: d.status,
+      phase: d.phase,
+      pendingFollowUpQty: pendingQty,
+      dispositionRemainingQty: Number(d.remainingQty),
+      itemId: d.item?.id ?? null,
+      itemName: d.item?.itemName ?? null,
+      workOrderId: wo?.id ?? null,
+      workOrderNo: wo?.docNo ?? null,
+      salesOrderId: wo?.salesOrderId ?? null,
+      cycleId: wo?.cycleId ?? null,
+      cycleNo: wo?.cycle?.cycleNo ?? null,
+      sourceQcEntryId: d.sourceQcEntry?.id ?? null,
+      sourceQcEntryDocNo: d.sourceQcEntry?.docNo ?? null,
+      productionId: d.sourceQcEntry?.productionId ?? null,
+      createdAt: d.createdAt?.toISOString?.() ?? d.createdAt ?? null,
+      quantityMetricContext: QUEUE_SNAPSHOT_ROW_METRIC_CONTEXT.qcQueue,
+    });
+  }
+  return out;
+}
+
 module.exports = {
   QUEUE_SNAPSHOT_ROW_METRIC_CONTEXT,
   DISPATCH_BACKLOG_EPS,
@@ -2569,6 +2676,7 @@ module.exports = {
   getActiveNoQtySalesOrders,
   getNoQtyPlanningPendingRows,
   getQaReworkQueueRows,
+  getQaDispositionFollowUpQueueRows,
   getNoQtyDashboardCycleHistory,
   resolveNoQtyDashboardCycleHistoryStatus,
   getNoQtyDispatchPendingRowsForDashboard,

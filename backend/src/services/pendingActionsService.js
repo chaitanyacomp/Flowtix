@@ -14,6 +14,7 @@ const { RISK_LEVELS, ROW_TYPES } = require("./controlTowerRowNormalizer");
 const EPS = 1e-6;
 
 const { buildPlanDisplayLabel } = require("./monthlyPlanningPlanLifecycleService");
+const { getEligibleDispatches } = require("./salesBillService");
 const {
   getQuotationsPendingSalesOrderRows,
 } = require("./dashboardQueueSnapshots");
@@ -169,7 +170,10 @@ function resolveHrefForNormalizedRow(row, role = "STORE") {
     return `/work-orders/prepare?salesOrderId=${salesOrderId}&from=pending-actions`;
   }
   if (rowType === ROW_TYPES.DISPATCH_BACKLOG && salesOrderId > 0) {
-    return `/dispatch?salesOrderId=${salesOrderId}&source=pending-actions`;
+    const params = new URLSearchParams({ salesOrderId: String(salesOrderId), source: "pending-actions" });
+    if (meta.itemId != null && Number(meta.itemId) > 0) params.set("itemId", String(meta.itemId));
+    if (meta.cycleId != null && Number(meta.cycleId) > 0) params.set("cycleId", String(meta.cycleId));
+    return `/dispatch?${params.toString()}`;
   }
   if (rowType === ROW_TYPES.CONTINUE_WORKING) {
     if (meta.href) return String(meta.href);
@@ -190,13 +194,25 @@ function resolveHrefForNormalizedRow(row, role = "STORE") {
   if (rowType === ROW_TYPES.PRODUCTION_QUEUE && workOrderId > 0) {
     return `/production?workOrderId=${workOrderId}&from=pending-actions`;
   }
-  if (rowType === ROW_TYPES.QA_QUEUE && workOrderId > 0) {
-    return `/qc-entry?workOrderId=${workOrderId}&source=pending-actions`;
+  if (rowType === ROW_TYPES.QA_QUEUE) {
+    const params = new URLSearchParams({ source: "pending-actions" });
+    if (salesOrderId > 0) params.set("salesOrderId", String(salesOrderId));
+    if (workOrderId > 0) params.set("workOrderId", String(workOrderId));
+    const productionId = Number(meta.productionId ?? 0);
+    if (productionId > 0) params.set("productionId", String(productionId));
+    return `/qc-entry?${params.toString()}#qc-production-pending`;
   }
   if (rowType === ROW_TYPES.QA_REWORK) {
     const dispId = Number(meta.dispositionId ?? 0);
-    if (dispId > 0) return `/qc-entry?source=pending-actions#qc-rework-pending`;
-    if (workOrderId > 0) return `/qc-entry?workOrderId=${workOrderId}&source=pending-actions`;
+    const sourceStatus = String(meta.sourceStatus ?? "").trim().toUpperCase();
+    const hash =
+      sourceStatus === "HOLD"
+        ? "#qc-hold-decisions"
+        : sourceStatus === "REWORK_PENDING_SUPERVISOR"
+          ? "#qc-rework-supervisor"
+          : "#qc-rework-pending";
+    if (dispId > 0) return `/qc-entry?source=pending-actions${hash}`;
+    if (workOrderId > 0) return `/qc-entry?workOrderId=${workOrderId}&source=pending-actions${hash}`;
   }
   if (workOrderId > 0) return `/work-orders?highlight=${workOrderId}&from=pending-actions`;
   if (salesOrderId > 0) return resolveNoQtyPlanningWorkspaceHref(row);
@@ -210,6 +226,15 @@ function friendlyActionForNormalizedRow(row, role = "STORE") {
   const status = String(row?.currentStatus ?? "").toUpperCase();
 
   if (rowType === ROW_TYPES.PRODUCTION_QUEUE) {
+    const sourceNextAction = String(meta.sourceNextAction ?? "").trim();
+    if (
+      nextAction === "Complete QA" ||
+      nextAction === "QC_PENDING" ||
+      sourceNextAction === "QC_PENDING" ||
+      status === "QA_PENDING"
+    ) {
+      return "QC Pending";
+    }
     const execStatus =
       meta.productionExecutionStatus ??
       (nextAction === "PRODUCTION_EXECUTION_BLOCKED"
@@ -227,14 +252,19 @@ function friendlyActionForNormalizedRow(row, role = "STORE") {
     return PRODUCTION_EXECUTION_PENDING_LABELS.RUNNING;
   }
   if (rowType === ROW_TYPES.QA_QUEUE) return "QC Pending";
-  if (rowType === ROW_TYPES.QA_REWORK) return "Rework Pending";
-  if (rowType === ROW_TYPES.DISPATCH_BACKLOG || status === "DISPATCH_PENDING") return "Dispatch Ready";
+  if (rowType === ROW_TYPES.QA_REWORK) {
+    const sourceStatus = String(meta.sourceStatus ?? "").trim().toUpperCase();
+    if (sourceStatus === "HOLD") return "Hold Decision Pending";
+    if (sourceStatus === "REWORK_PENDING_SUPERVISOR") return "Rework Approval Pending";
+    return "Rework Pending";
+  }
+  if (rowType === ROW_TYPES.DISPATCH_BACKLOG || status === "DISPATCH_PENDING") return "Dispatch";
   if (rowType === ROW_TYPES.CONTINUE_WORKING) {
     const stage = String(meta.sourceStageKey ?? "").toUpperCase();
-    if (stage === "DISPATCH") return "Dispatch Ready";
+    if (stage === "DISPATCH") return "Dispatch";
     if (stage === "QC") return "QC Pending";
     if (stage === "PRODUCTION") return "Production Pending";
-    if (stage === "SALES_BILL") return "Sales Bill Pending";
+    if (stage === "SALES_BILL") return "Create Sales Bill";
     if (stage === "NEXT_RS") {
       const cycleNo = meta.cycleNo != null ? Number(meta.cycleNo) : 1;
       return Number.isFinite(cycleNo) && cycleNo > 0 ? `Create RS Cycle ${cycleNo}` : "Create RS Cycle";
@@ -354,9 +384,13 @@ async function fetchMonthlyPlanPendingActions(db = prisma) {
   return actions;
 }
 
-async function fetchAdminCommercialPendingActions() {
-  const quotations = await getQuotationsPendingSalesOrderRows({ limit: 50 });
-  return quotations.map((q) => ({
+async function fetchAdminCommercialPendingActions(db = prisma) {
+  const [quotations, salesBillActions, tallyExportActions] = await Promise.all([
+    getQuotationsPendingSalesOrderRows({ limit: 50 }),
+    fetchAdminSalesBillPendingActions(db),
+    fetchAdminTallyExportPendingActions(db),
+  ]);
+  const quotationActions = quotations.map((q) => ({
     id: q.key ?? `quotation-pending-so-${q.quotationId}`,
     priority: PENDING_PRIORITY.MEDIUM,
     action: "Create Sales Order from Quotation",
@@ -366,6 +400,58 @@ async function fetchAdminCommercialPendingActions() {
     href: q.href ?? `/sales-orders?quotationId=${q.quotationId}`,
     sourceModule: "QUOTATION",
     currentStatus: "QUOTATION_APPROVED",
+  }));
+  return [...quotationActions, ...salesBillActions, ...tallyExportActions];
+}
+
+async function fetchAdminSalesBillPendingActions(db = prisma) {
+  const eligible = await getEligibleDispatches(db);
+  return eligible.slice(0, 50).map((d) => {
+    const dispatchNo = d.dispatchNo ?? `D-${d.dispatchId}`;
+    const soDoc = d.salesOrderDocNo ?? (d.salesOrderId ? `SO-${d.salesOrderId}` : null);
+    const customer = d.customerName ? String(d.customerName).trim() : "";
+    const documentNo = [dispatchNo, soDoc, customer].filter(Boolean).join(" · ");
+    const href =
+      d.hasDraftBill && d.draftBillId
+        ? `/sales-bills/${d.draftBillId}?from=pending-actions`
+        : `/sales-bills/new?dispatchId=${d.dispatchId}&from=pending-actions`;
+    return {
+      id: `admin:sales-bill:dispatch:${d.dispatchId}`,
+      priority: PENDING_PRIORITY.MEDIUM,
+      action: "Create Sales Bill",
+      documentNo: documentNo || dispatchNo,
+      ownerRole: "ADMIN",
+      ageHours: d.dispatchDate ? ageHoursFromTimestamp(d.dispatchDate) : null,
+      href,
+      sourceModule: "SALES_BILL",
+      currentStatus: "SALES_BILL_PENDING",
+    };
+  });
+}
+
+async function fetchAdminTallyExportPendingActions(db = prisma) {
+  const bills = await db.salesBill.findMany({
+    where: { status: "FINALIZED", cancelledAt: null, isExported: false },
+    select: {
+      id: true,
+      docNo: true,
+      billNo: true,
+      billDate: true,
+      customerNameSnapshot: true,
+    },
+    orderBy: [{ billDate: "desc" }, { id: "desc" }],
+    take: 50,
+  });
+  return bills.map((bill) => ({
+    id: `admin:tally-export:sb:${bill.id}`,
+    priority: PENDING_PRIORITY.MEDIUM,
+    action: "Export to Tally",
+    documentNo: bill.docNo?.trim() || bill.billNo?.trim() || `SB-${bill.id}`,
+    ownerRole: "ADMIN",
+    ageHours: ageHoursFromTimestamp(bill.billDate),
+    href: `/sales-bills/${bill.id}?from=pending-actions`,
+    sourceModule: "SALES_BILL_EXPORT",
+    currentStatus: "EXPORT_PENDING",
   }));
 }
 
@@ -517,27 +603,10 @@ async function filterNoQtyStoreHandoffSupersededByLaterRs(db, rows) {
   });
 }
 
-async function fetchStoreProductionHandoffPendingActions(db = prisma) {
-  const rawRows = await buildStoreProductionHandoffDashboardRows(db);
-  const rows = await filterNoQtyStoreHandoffSupersededByLaterRs(db, rawRows);
-  return rows.map((row) => {
-    const woId = Number(row.workOrderId ?? 0);
-    const params = new URLSearchParams({ returnTo: "pending-actions", onlyBlocked: "1" });
-    if (woId > 0) params.set("workOrderId", String(woId));
-    if (row.salesOrderId) params.set("salesOrderId", String(row.salesOrderId));
-    if (row.materialRequirementId) params.set("materialRequirementId", String(row.materialRequirementId));
-    return {
-      id: `store-handoff:wo:${woId}`,
-      priority: PENDING_PRIORITY.LOW,
-      action: RM_ISSUED_WAITING_FOR_PRODUCTION,
-      documentNo: row.workOrderNo ?? row.salesOrderDocNo ?? null,
-      ownerRole: "STORE",
-      ageHours: null,
-      href: `/reports/rm-shortage?${params.toString()}`,
-      sourceModule: "RM_HANDOFF",
-      currentStatus: "HANDOFF_TO_PRODUCTION",
-    };
-  });
+async function fetchStoreProductionHandoffPendingActions(_db = prisma) {
+  // RM issued → Production is owned by PRODUCTION (normalized RM_RISK / production queue).
+  // Do not emit Store inbox actions for monitoring-only handoff states.
+  return [];
 }
 
 /**
@@ -1054,6 +1123,10 @@ module.exports = {
   fetchStoreNoQtyMonthlyPlanningPendingActions,
   fetchStoreNoQtyCreateNextRsPendingActions,
   fetchStoreNoQtyPlaceWoPendingActions,
+  fetchAdminCommercialPendingActions,
+  fetchAdminSalesBillPendingActions,
+  fetchAdminTallyExportPendingActions,
+  fetchStoreProductionHandoffPendingActions,
   filterNoQtyStoreHandoffSupersededByLaterRs,
   sortPendingActions,
   filterNormalizedRowsByOwner,

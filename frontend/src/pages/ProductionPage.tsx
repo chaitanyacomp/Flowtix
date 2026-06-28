@@ -58,10 +58,11 @@ import {
 import { OperationalProductionWorkspace } from "../components/erp/OperationalProductionWorkspace";
 import { ProductionExecutionPanel } from "../components/erp/production/ProductionExecutionPanel";
 import {
-  formatNoQtyProductionQueueCompleteMessage,
+  formatProductionExecutionQueueNotice,
   hasPendingShortfallDecision,
   hasPausedShortfallDecision,
   shouldBlockNoQtyProductionEntry,
+  shouldShowNoQtyContinueProductionCta,
   type ProductionExecutionClosedOutcome,
 } from "../lib/productionCompletionUx";
 import type { ProductionExecutionSummary } from "../lib/productionExecutionApi";
@@ -478,6 +479,8 @@ export function ProductionPage() {
   const noQtyPendingShortfallDecision = hasPendingShortfallDecision(noQtyExecutionSummary);
   const noQtyPausedShortfallDecision = hasPausedShortfallDecision(noQtyExecutionSummary);
   const noQtyBlockProductionEntry = shouldBlockNoQtyProductionEntry(noQtyExecutionSummary);
+  const noQtyShowContinueProductionCta = shouldShowNoQtyContinueProductionCta(noQtyExecutionSummary);
+  const noQtyAllowShopFloorContinue = noQtyExecutionSummary?.executionStatus === "RUNNING";
   const [completionEvaluateTick, setCompletionEvaluateTick] = React.useState(0);
   const [completionEvaluateBatchQty, setCompletionEvaluateBatchQty] = React.useState(0);
   const [noQtyExecutionClosedNotice, setNoQtyExecutionClosedNotice] = React.useState<string | null>(null);
@@ -644,10 +647,6 @@ export function ProductionPage() {
   const [reverseModalError, setReverseModalError] = React.useState<string | null>(null);
   const [entryFilter, setEntryFilter] = React.useState<"ALL" | "DRAFT" | "APPROVED">("ALL");
   const [noQtyRmShortage, setNoQtyRmShortage] = React.useState<NoQtyRmShortagePayload | null>(null);
-  const [noQtyManualContinue, setNoQtyManualContinue] = React.useState(
-    () => noQtyContinueProductionIntent,
-  );
-  const noQtyAllowShopFloorContinue = noQtyManualContinue || noQtyContinueProductionIntent;
   const noQtyContinueAutoPickDoneRef = React.useRef(false);
 
   React.useEffect(() => {
@@ -1584,7 +1583,8 @@ export function ProductionPage() {
 
       clearWoLineSelection({ force: true });
       urlSelectionAppliedRef.current = false;
-      setNoQtyExecutionClosedNotice(formatNoQtyProductionQueueCompleteMessage(closedLabel));
+      setNoQtyExecutionSummary(null);
+      setNoQtyExecutionClosedNotice(formatProductionExecutionQueueNotice(payload.outcome, closedLabel));
 
       const params = new URLSearchParams(searchParams);
       params.delete("workOrderId");
@@ -2434,12 +2434,6 @@ export function ProductionPage() {
 
   React.useEffect(() => {
     if (productionFlowMode !== "NO_QTY" || !showNoQtyScopedProductionCard) return;
-    if (noQtyContinueProductionIntent) return;
-    if (noQtyManualContinue) setNoQtyManualContinue(false);
-  }, [productionFlowMode, showNoQtyScopedProductionCard, wolId, noQtyContinueProductionIntent, noQtyManualContinue]);
-
-  React.useEffect(() => {
-    if (productionFlowMode !== "NO_QTY" || !showNoQtyScopedProductionCard) return;
     if (!noQtyNextRsReady || noQtyAllowShopFloorContinue) return;
     if (urlWoSelectionAuthorityRef.current) return;
     if (woId === 0 && wolId === 0) return;
@@ -3070,6 +3064,7 @@ export function ProductionPage() {
         };
       }
       if (
+        noQtyShowContinueProductionCta &&
         selectedMetrics &&
         selectedMetrics.remainingQty > 1e-6 &&
         canProd &&
@@ -3081,13 +3076,12 @@ export function ProductionPage() {
       ) {
         return {
           variant: "info",
-          title: "Continue production",
-          subtitle: `Unresolved qty: ${fmtProdQty(selectedMetrics.remainingQty)}.`,
+          title: "Production paused",
+          subtitle: `Remaining qty: ${fmtProdQty(selectedMetrics.remainingQty)}. Resume to continue on this Work Order.`,
           primaryAction: {
             label: "Continue Production",
             onClick: () => {
               document.getElementById("regular-production-entry")?.scrollIntoView({ behavior: "smooth", block: "start" });
-              window.setTimeout(() => producedQtyRef.current?.focus(), 120);
             },
           },
         };
@@ -4055,23 +4049,10 @@ export function ProductionPage() {
                                   : "Includes previous cycle shortage when applicable."}
                               </p>
                               <p className="mt-1 text-[11px] leading-snug text-slate-600">
-                                More production this cycle is optional.
+                                Pick the next work order from the queue when ready.
                               </p>
                             </>
                           )}
-                          <div className="mt-3">
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              onClick={() => {
-                                setNoQtyManualContinue(true);
-                                window.setTimeout(() => woSelectRef.current?.focus(), 0);
-                              }}
-                            >
-                              Continue producing more in same cycle
-                            </Button>
-                          </div>
                             </>
                           )}
                         </div>
@@ -4090,7 +4071,7 @@ export function ProductionPage() {
                           return (
                             <div className="space-y-1">
                               <div className="text-[12px] font-semibold tracking-tight text-slate-700">
-                                Continue Production
+                                Production queue
                               </div>
                               <p className="text-[11px] text-slate-500">Select a row from the work queue.</p>
                             </div>
@@ -4152,17 +4133,20 @@ export function ProductionPage() {
                         const noQtyCarryForwardIdle =
                           navigateNoQtyContext &&
                           isCarryForwardLine(selected, "NO_QTY") &&
-                          !noQtyManualContinue;
+                          !noQtyAllowShopFloorContinue;
                         const needsNextActionChoice =
                           produced > eps &&
                           rem > eps &&
                           noQtyHasApprovedByWolId.has(selected.id) &&
                           !noQtyCarryForwardIdle;
-                        if (!needsNextActionChoice || noQtyManualContinue) {
+                        const entrySectionTitle = noQtyShowContinueProductionCta
+                          ? "Continue Production"
+                          : "Log production";
+                        if (!needsNextActionChoice || noQtyAllowShopFloorContinue) {
                           return (
                             <div className="space-y-1">
                               <div className="text-[12px] font-semibold tracking-tight text-slate-700">
-                                Continue Production
+                                {entrySectionTitle}
                               </div>
                               {noQtyEntryContextLine ? (
                                 <p className="text-[11px] leading-snug text-slate-600">{noQtyEntryContextLine}</p>
@@ -4184,7 +4168,7 @@ export function ProductionPage() {
                           return (
                             <div className="space-y-1">
                               <div className="text-[12px] font-semibold tracking-tight text-slate-700">
-                                Continue Production
+                                {noQtyShowContinueProductionCta ? "Continue Production" : "Log production"}
                               </div>
                               {noQtyEntryContextLine ? (
                                 <p className="text-[11px] leading-snug text-slate-600">{noQtyEntryContextLine}</p>
@@ -4232,10 +4216,10 @@ export function ProductionPage() {
                         const noQtyCfBlockForm =
                           navigateNoQtyContext &&
                           isCarryForwardLine(selected, "NO_QTY") &&
-                          !noQtyManualContinue;
+                          !noQtyAllowShopFloorContinue;
                         const needsDecisionForm =
                           produced > eps && rem > eps && noQtyHasApprovedByWolId.has(selected.id);
-                        if ((needsDecisionForm || noQtyCfBlockForm) && !noQtyManualContinue) return null;
+                        if ((needsDecisionForm || noQtyCfBlockForm) && !noQtyAllowShopFloorContinue) return null;
                         const approvedOnLine = navigateNoQtyContext && noQtyHasApprovedByWolId.has(selected.id);
                         const remainingUi = selectedMetrics?.remainingQty ?? rem;
                         const noRemaining = Number.isFinite(Number(remainingUi)) && Number(remainingUi) <= eps;
@@ -4856,7 +4840,9 @@ export function ProductionPage() {
                 <div className="min-w-0 rounded-md border border-slate-200 bg-white p-3 shadow-sm">
                   <div className="space-y-3">
                     <div className="text-[12px] font-semibold tracking-tight text-slate-700">
-                      {navigateNoQtyContext ? "Continue Production" : "Log production"}
+                      {navigateNoQtyContext && noQtyShowContinueProductionCta
+                        ? "Continue Production"
+                        : "Log production"}
                     </div>
                     {fromNoQtySo && selected ? (
                       <p className="text-[12px] text-slate-600">

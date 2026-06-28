@@ -92,20 +92,18 @@ function blockReasonLabel(reason) {
 }
 
 function buildFinishSuccessMessage(woDocNo, workOrderId, outcome, remainderQty, surplusQty = 0) {
-  const label = (woDocNo && String(woDocNo).trim()) || `WO-${workOrderId}`;
-  const rem = round3(remainderQty);
   const surplus = round3(surplusQty);
   if (outcome === "WAIVE_BALANCE") {
-    return `${label} closed. Remaining ${rem} qty waived/cancelled.`;
+    return "Production completed. Remaining quantity has been waived.";
   }
   if (outcome === "CARRY_FORWARD") {
-    return `${label} closed. Remaining ${rem} qty carried forward.`;
+    return "Production completed. Remaining quantity has been carried forward to the next Requirement Sheet.";
   }
   if (outcome === "FULL_COMPLETE") {
     if (surplus > EPS) {
-      return `Production completed successfully. Extra Production: ${surplus} Qty. Work Order ${label} closed.`;
+      return "Production completed. Surplus production has been recorded.";
     }
-    return `Production completed successfully. Work Order ${label} closed.`;
+    return "Production completed successfully. Work Order sent for Quality Inspection.";
   }
   return null;
 }

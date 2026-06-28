@@ -36,19 +36,6 @@ export function shouldAutoEvaluateProductionCompletion(
   return scenario === "SHORTFALL" || scenario === "COMPLETE" || scenario === "SURPLUS";
 }
 
-export function formatProductionCompletionSuccessMessage(
-  summary: ProductionExecutionSummary,
-  serverMessage?: string | null,
-): string {
-  if (serverMessage?.trim()) return serverMessage.trim();
-  const label = summary.workOrderDocNo?.trim() || `WO-${summary.workOrderId}`;
-  const surplus = Number(summary.surplusQty ?? 0);
-  if (surplus > EPS) {
-    return `Production completed successfully. Extra Production: ${surplus} Qty. Work Order ${label} closed.`;
-  }
-  return `Production completed successfully. Work Order ${label} closed.`;
-}
-
 export const WAIVE_REASON_OPTIONS = [
   "MANAGEMENT_DECISION",
   "CUSTOMER_PRIORITY_CHANGE",
@@ -118,7 +105,7 @@ export function hasPendingShortfallDecision(
   return summary.executionStatus === "SHORTFALL_PENDING";
 }
 
-/** Hide NO_QTY production qty entry while shortfall decision is unresolved or paused after shortfall. */
+/** Hide NO_QTY production qty entry while shortfall decision is unresolved. */
 export function hasPausedShortfallDecision(
   summary: ProductionExecutionSummary | null | undefined,
 ): boolean {
@@ -128,16 +115,31 @@ export function hasPausedShortfallDecision(
   return Number(summary.remainderQty ?? 0) > EPS;
 }
 
+export function isProductionExecutionCompleted(
+  summary: ProductionExecutionSummary | null | undefined,
+): boolean {
+  return summary?.executionStatus === "COMPLETED";
+}
+
+/** Explicit Continue Production CTA — only when production is paused (same WO, same cycle). */
+export function shouldShowNoQtyContinueProductionCta(
+  summary: ProductionExecutionSummary | null | undefined,
+): boolean {
+  return hasPausedShortfallDecision(summary);
+}
+
 export function shouldShowShortfallResolutionPanel(
   summary: ProductionExecutionSummary | null | undefined,
 ): boolean {
   return hasPendingShortfallDecision(summary) || hasPausedShortfallDecision(summary);
 }
 
-/** Hide NO_QTY production qty entry while shortfall decision is unresolved. */
+/** Hide NO_QTY production qty entry while shortfall decision is unresolved or WO execution closed. */
 export function shouldBlockNoQtyProductionEntry(
   summary: ProductionExecutionSummary | null | undefined,
 ): boolean {
+  if (!summary) return false;
+  if (isProductionExecutionCompleted(summary)) return true;
   return shouldShowShortfallResolutionPanel(summary);
 }
 
@@ -149,23 +151,19 @@ export function allowsNoQtyProductionEntry(
 }
 
 export function formatWaiveSuccessMessage(
-  workOrderDocNo: string | null | undefined,
-  workOrderId: number,
-  remainderQty: number,
+  _workOrderDocNo?: string | null,
+  _workOrderId?: number,
+  _remainderQty?: number,
 ): string {
-  const label = (workOrderDocNo && String(workOrderDocNo).trim()) || `WO-${workOrderId}`;
-  const rem = Math.round(Number(remainderQty) * 1000) / 1000;
-  return `${label} closed. Remaining ${rem} qty waived/cancelled.`;
+  return "Production completed. Remaining quantity has been waived.";
 }
 
 export function formatCarryForwardSuccessMessage(
-  workOrderDocNo: string | null | undefined,
-  workOrderId: number,
-  remainderQty: number,
+  _workOrderDocNo?: string | null,
+  _workOrderId?: number,
+  _remainderQty?: number,
 ): string {
-  const label = (workOrderDocNo && String(workOrderDocNo).trim()) || `WO-${workOrderId}`;
-  const rem = Math.round(Number(remainderQty) * 1000) / 1000;
-  return `${label} closed. Remaining ${rem} qty carried forward.`;
+  return "Production completed. Remaining quantity has been carried forward to the next Requirement Sheet.";
 }
 
 export function formatProductionExecutionFinishSuccessMessage(
@@ -181,6 +179,136 @@ export function formatProductionExecutionFinishSuccessMessage(
     return formatCarryForwardSuccessMessage(workOrderDocNo, workOrderId, remainderQty);
   }
   return null;
+}
+
+export function formatProductionWorkflowSuccessMessage(
+  outcome: ProductionExecutionClosedOutcome | "PAUSE",
+  summary?: ProductionExecutionSummary | null,
+  serverMessage?: string | null,
+): string {
+  if (serverMessage?.trim()) return serverMessage.trim();
+  if (outcome === "PAUSE") {
+    return "Production paused. You can resume this Work Order later.";
+  }
+  if (outcome === "CARRY_FORWARD") {
+    return formatCarryForwardSuccessMessage(summary?.workOrderDocNo, summary?.workOrderId);
+  }
+  if (outcome === "WAIVE_BALANCE") {
+    return formatWaiveSuccessMessage(summary?.workOrderDocNo, summary?.workOrderId);
+  }
+  if (outcome === "SURPLUS") {
+    return "Production completed. Surplus production has been recorded.";
+  }
+  return "Production completed successfully. Work Order sent for Quality Inspection.";
+}
+
+export function formatProductionCompletionSuccessMessage(
+  summary: ProductionExecutionSummary,
+  serverMessage?: string | null,
+): string {
+  if (serverMessage?.trim()) return serverMessage.trim();
+  const surplus = Number(summary.surplusQty ?? 0);
+  if (surplus > EPS) {
+    return formatProductionWorkflowSuccessMessage("SURPLUS", summary, serverMessage);
+  }
+  return formatProductionWorkflowSuccessMessage("COMPLETE", summary, serverMessage);
+}
+
+export function formatProductionExecutionQueueNotice(
+  outcome: ProductionExecutionClosedOutcome,
+  workOrderLabel: string,
+): string {
+  const label = workOrderLabel.trim() || "Work order";
+  switch (outcome) {
+    case "CARRY_FORWARD":
+      return `${label} closed. Remaining qty carried forward — pick the next work order from the queue.`;
+    case "WAIVE_BALANCE":
+      return `${label} closed. Remaining qty waived — pick another work order from the queue when ready.`;
+    case "SURPLUS":
+      return `${label} completed with surplus recorded — proceed to Quality Inspection.`;
+    case "COMPLETE":
+    default:
+      return formatNoQtyProductionQueueCompleteMessage(label);
+  }
+}
+
+export type ProductionDecisionConfirmKind =
+  | "pause"
+  | "carry"
+  | "waive"
+  | "surplus"
+  | "finish"
+  | "resume_carry"
+  | "resume_waive";
+
+function formatQtyForConfirm(qty: number): string {
+  const rounded = Math.round(Number(qty) * 1000) / 1000;
+  return rounded.toLocaleString(undefined, { maximumFractionDigits: 3 });
+}
+
+export function buildProductionDecisionConfirmDialog(
+  kind: ProductionDecisionConfirmKind,
+  summary: ProductionExecutionSummary,
+): { title: string; lines: string[]; confirmLabel: string } {
+  const rem = Number(summary.remainderQty ?? 0);
+  const remFmt = formatQtyForConfirm(rem);
+  const surplus = Number(summary.surplusQty ?? 0);
+  const surplusFmt = formatQtyForConfirm(surplus);
+
+  switch (kind) {
+    case "pause":
+      return {
+        title: "Pause Production?",
+        lines: [
+          `Remaining Qty: ${remFmt}`,
+          "Production will pause on this Work Order in the current cycle.",
+          "You can resume later and continue producing the remainder.",
+        ],
+        confirmLabel: "Confirm",
+      };
+    case "carry":
+    case "resume_carry":
+      return {
+        title: "Carry Forward Remaining Quantity?",
+        lines: [
+          `Remaining Qty: ${remFmt}`,
+          "Current Work Order will close.",
+          `${remFmt} Qty will move to next Requirement Sheet.`,
+        ],
+        confirmLabel: "Confirm",
+      };
+    case "waive":
+    case "resume_waive":
+      return {
+        title: "Waive Remaining Quantity?",
+        lines: [
+          `Remaining Qty: ${remFmt}`,
+          "Current Work Order will close.",
+          "Remaining quantity will be permanently waived.",
+        ],
+        confirmLabel: "Confirm",
+      };
+    case "surplus":
+      return {
+        title: "Record Surplus Production?",
+        lines: [
+          `Extra Production: ${surplusFmt}`,
+          "Current Work Order will finish.",
+          "Surplus will be recorded and the Work Order will proceed to Quality Inspection.",
+        ],
+        confirmLabel: "Confirm",
+      };
+    case "finish":
+    default:
+      return {
+        title: "Finish Production?",
+        lines: [
+          "Current Work Order will close.",
+          "Work Order will proceed to Quality Inspection.",
+        ],
+        confirmLabel: "Confirm",
+      };
+  }
 }
 
 export function workOrderLinesMetricsSignature(

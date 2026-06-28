@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 import type { ProductionExecutionSummary } from "../../src/lib/productionExecutionApi";
 import {
+  buildProductionDecisionConfirmDialog,
   CARRY_FORWARD_REASON_OPTIONS,
   formatCarryForwardSuccessMessage,
   formatNoQtyProductionAdvanceMessage,
   formatNoQtyProductionQueueCompleteMessage,
   formatProductionCompletionSuccessMessage,
   formatProductionExecutionFinishSuccessMessage,
+  formatProductionExecutionQueueNotice,
+  formatProductionWorkflowSuccessMessage,
   formatWaiveSuccessMessage,
   PAUSE_REASON_OPTIONS,
   productionEntriesRefreshSignature,
@@ -19,6 +22,7 @@ import {
   hasPausedShortfallDecision,
   allowsNoQtyProductionEntry,
   shouldBlockNoQtyProductionEntry,
+  shouldShowNoQtyContinueProductionCta,
   shouldShowShortfallResolutionPanel,
   PAUSED_SHORTFALL_DECISION_CHOICES,
   shouldShowProductionExecutionPanel,
@@ -65,14 +69,41 @@ describe("productionCompletionUx", () => {
   });
 
   it("formats completion success messages", () => {
-    expect(formatWaiveSuccessMessage("WO-26-0004", 4, 150)).toContain("waived/cancelled");
+    expect(formatWaiveSuccessMessage("WO-26-0004", 4, 150)).toContain("waived");
     expect(formatCarryForwardSuccessMessage("WO-26-0004", 4, 150)).toContain("carried forward");
     expect(
       formatProductionCompletionSuccessMessage(summary({ workOrderDocNo: "WO-26-0004", surplusQty: 100 })),
-    ).toContain("Extra Production: 100");
-    expect(formatProductionExecutionFinishSuccessMessage("WO-26-0004", 4, "WAIVE_BALANCE", 150)).toContain(
-      "waived/cancelled",
+    ).toContain("Surplus");
+    expect(formatProductionExecutionFinishSuccessMessage("WO-26-0004", 4, "WAIVE_BALANCE", 150)).toContain("waived");
+    expect(formatProductionWorkflowSuccessMessage("PAUSE")).toContain("paused");
+    expect(formatProductionWorkflowSuccessMessage("COMPLETE")).toContain("Quality Inspection");
+    expect(formatProductionExecutionQueueNotice("CARRY_FORWARD", "WO-26-0001")).toContain("carried forward");
+  });
+
+  it("shows Continue Production CTA only when production is paused", () => {
+    const paused = summary({ executionStatus: "BLOCKED", producedQty: 2800, remainderQty: 200 });
+    const running = summary({ executionStatus: "RUNNING", producedQty: 2800, remainderQty: 200 });
+    const completed = summary({ executionStatus: "COMPLETED", producedQty: 2800, remainderQty: 200 });
+    expect(shouldShowNoQtyContinueProductionCta(paused)).toBe(true);
+    expect(shouldShowNoQtyContinueProductionCta(running)).toBe(false);
+    expect(shouldShowNoQtyContinueProductionCta(completed)).toBe(false);
+    expect(shouldBlockNoQtyProductionEntry(completed)).toBe(true);
+    expect(allowsNoQtyProductionEntry(completed)).toBe(false);
+  });
+
+  it("builds confirmation dialog copy for carry forward and finish", () => {
+    const dialog = buildProductionDecisionConfirmDialog(
+      "carry",
+      summary({ producedQty: 3550, remainderQty: 450, plannedQty: 4000 }),
     );
+    expect(dialog.title).toContain("Carry Forward");
+    expect(dialog.lines.join(" ")).toContain("450");
+    expect(dialog.lines.join(" ")).toContain("next Requirement Sheet");
+    const finishDialog = buildProductionDecisionConfirmDialog(
+      "finish",
+      summary({ producedQty: 4000, remainderQty: 0, plannedQty: 4000 }),
+    );
+    expect(finishDialog.title).toContain("Finish Production");
   });
 
   it("shows panel when shortfall action is required or production is paused", () => {

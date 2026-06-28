@@ -220,7 +220,10 @@ describe("productionExecutionService", () => {
     );
 
     assert.equal(result.outcome, "CARRY_FORWARD");
-    assert.equal(result.successMessage, "WO-280 closed. Remaining 300 qty carried forward.");
+    assert.equal(
+      result.successMessage,
+      "Production completed. Remaining quantity has been carried forward to the next Requirement Sheet.",
+    );
     assert.equal(getExecutionStatus(), "COMPLETED");
     assert.equal(getWoStatus(), "COMPLETED");
     assert.equal(carryForwardRows.length, 1);
@@ -248,7 +251,7 @@ describe("productionExecutionService", () => {
     );
 
     assert.equal(result.outcome, "WAIVE_BALANCE");
-    assert.equal(result.successMessage, "WO-280 closed. Remaining 300 qty waived/cancelled.");
+    assert.equal(result.successMessage, "Production completed. Remaining quantity has been waived.");
     assert.equal(getExecutionStatus(), "COMPLETED");
     assert.equal(getWoStatus(), "COMPLETED");
     assert.equal(carryForwardRows.length, 0);
@@ -297,7 +300,7 @@ describe("productionExecutionService", () => {
     assert.equal(getExecutionStatus(), "COMPLETED");
     assert.equal(getWoStatus(), "COMPLETED");
     assert.equal(carryForwardRows.length, 0);
-    assert.equal(result.successMessage, "WO-280 closed. Remaining 300 qty waived/cancelled.");
+    assert.equal(result.successMessage, "Production completed. Remaining quantity has been waived.");
   });
 
   test("finishProductionExecution rejects when execution is blocked", async () => {
@@ -318,11 +321,11 @@ describe("productionExecutionService", () => {
   test("buildFinishSuccessMessage formats waive and carry-forward confirmations", () => {
     assert.equal(
       buildFinishSuccessMessage("WO-26-0004", 4, "WAIVE_BALANCE", 150),
-      "WO-26-0004 closed. Remaining 150 qty waived/cancelled.",
+      "Production completed. Remaining quantity has been waived.",
     );
     assert.equal(
       buildFinishSuccessMessage("WO-26-0004", 4, "CARRY_FORWARD", 150),
-      "WO-26-0004 closed. Remaining 150 qty carried forward.",
+      "Production completed. Remaining quantity has been carried forward to the next Requirement Sheet.",
     );
   });
 
@@ -344,7 +347,7 @@ describe("productionExecutionService", () => {
 
     assert.equal(result.outcome, "FULL_COMPLETE");
     assert.equal(result.surplusQty, 100);
-    assert.equal(result.successMessage, "Production completed successfully. Extra Production: 100 Qty. Work Order WO-280 closed.");
+    assert.equal(result.successMessage, "Production completed. Surplus production has been recorded.");
     assert.equal(getExecutionStatus(), "COMPLETED");
     assert.equal(getWoStatus(), "COMPLETED");
     assert.equal(auditRows.length, 1);

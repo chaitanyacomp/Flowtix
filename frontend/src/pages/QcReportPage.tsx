@@ -11,6 +11,7 @@ import { salesOrdersFocusHref, workOrdersFocusHref } from "../lib/drillDownRoute
 import { cn } from "../lib/utils";
 import { useErpReportLiveLoad } from "../hooks/useErpReportLiveLoad";
 import { ErpModal } from "../components/erp/ErpModal";
+import { PRODUCTION_QA_TERMS } from "../lib/productionQaTerminology";
 
 type CustomerOpt = { id: number; name: string };
 type ItemOpt = { id: number; itemName: string };
@@ -339,7 +340,7 @@ export function QcReportPage() {
 
   return (
     <PageContainer className="erp-flow-page -mt-2 max-w-[min(110rem,calc(100vw-2rem))] space-y-2.5 pb-6">
-      <StickyWorkspaceHead lead={<PageBackLink to="/qc-entry" label="Back to Production QA" />}>
+      <StickyWorkspaceHead lead={<PageBackLink to="/qc-entry" label="Back to Quality Inspection Workspace" />}>
         <div className="min-w-0 space-y-0.5">
           <h1 className="text-base font-semibold leading-tight tracking-tight text-slate-900">QC Report</h1>
           <p className="text-xs leading-snug text-slate-600">
@@ -720,7 +721,7 @@ export function QcReportPage() {
                   ) : null}
                   <Link to="/qc-entry">
                     <Button type="button" size="sm" variant="default">
-                      Open Production QA
+                      {PRODUCTION_QA_TERMS.OPEN_PRODUCTION_QA}
                     </Button>
                   </Link>
                 </div>

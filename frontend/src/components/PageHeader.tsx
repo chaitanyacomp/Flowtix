@@ -455,8 +455,8 @@ export function PageNoQtyFlowBackLink({
     PRODUCTION: rsBackTarget,
     QC: ctx.fromDashboard
       ? { to: "/dashboard", label: "Back to Dashboard" }
-      : { to: `/production?${baseCtx}`, label: "Back to Production" },
-    DISPATCH: { to: `/qc-entry?${baseCtx}`, label: "Back to Production QA" },
+      : { to: `/production?${baseCtx}`, label: "Back to Production Workspace" },
+    DISPATCH: { to: `/qc-entry?${baseCtx}`, label: "Back to Quality Inspection Workspace" },
     SALES_BILL: { to: `/dispatch?${baseCtx}`, label: "Back to Dispatch" },
   };
 

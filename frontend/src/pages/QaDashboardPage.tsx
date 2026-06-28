@@ -50,7 +50,7 @@ export function QaDashboardPage({
         if (cancelled) return;
         setQcQueue(Array.isArray(queue) ? queue : []);
       } catch (e) {
-        if (!cancelled) setErr(e instanceof Error ? e.message : "Failed to load QA desk");
+        if (!cancelled) setErr(e instanceof Error ? e.message : "Failed to load quality dashboard");
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -80,7 +80,7 @@ export function QaDashboardPage({
               />
             </div>
           ) : null}
-          <p className="text-sm text-slate-600">Loading QA desk…</p>
+          <p className="text-sm text-slate-600">Loading quality dashboard…</p>
         </PageContainer>
       </div>
     );
@@ -134,7 +134,7 @@ export function QaDashboardPage({
         </div>
 
         <div className="mb-3 max-w-full overflow-x-auto pb-0.5">
-          <ErpKpiStrip className={erpKpi.stripCompact} role="toolbar" aria-label="QA desk metrics">
+          <ErpKpiStrip className={erpKpi.stripCompact} role="toolbar" aria-label="Quality dashboard metrics">
             <ErpKpiSegment type="button" {...clickTo("/qc-entry?source=dashboard")} aria-label={PRODUCTION_QA_TERMS.QA_BATCHES_KPI}>
               <ErpKpiLabel>Batches</ErpKpiLabel>
               <ErpKpiValue tone={batchCount > 0 ? "warn" : "muted"}>{batchCount}</ErpKpiValue>

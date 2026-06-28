@@ -2318,7 +2318,7 @@ export function DashboardPage() {
           
           {!demo.enabled && showRoleKpiStrip ? (
             <div className="erp-dash-ops-metrics max-w-full overflow-x-auto pb-0.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-              <ErpKpiStrip className={erpKpi.stripCompact} role="toolbar" aria-label="Desk metrics">
+              <ErpKpiStrip className={erpKpi.stripCompact} role="toolbar" aria-label="Dashboard metrics">
                 {role === "PRODUCTION" ? (
                   <>
                     <ErpKpiSegment

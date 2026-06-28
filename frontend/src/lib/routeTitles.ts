@@ -39,7 +39,7 @@ const TITLES: Record<string, string> = {
   "/production": "Production Workspace",
   "/production/material-requests": "Material Requests (queue)",
   "/production/rm-returns": "RM Returns",
-  "/qc-entry": "Production QA",
+  "/qc-entry": "Quality Inspection Workspace",
   "/qc-report": "QC Report",
   "/scrap-report": "Scrap report",
   "/reports": "Analysis",

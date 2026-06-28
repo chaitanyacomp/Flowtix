@@ -57,6 +57,17 @@ import { useDemoMode } from "../contexts/DemoModeContext";
 import { demoHighlightKey } from "../lib/demoFlowConfig";
 import { NextStepStrip } from "../components/erp/NextStepStrip";
 import { PRODUCTION_QA_TERMS } from "../lib/productionQaTerminology";
+import { QualityInspectionQueuePanel } from "../components/erp/quality/QualityInspectionQueuePanel";
+import {
+  buildQcBackLink,
+  buildQcEmbeddedStageSteps,
+  buildQcWorkspaceBreadcrumb,
+  buildQualityQueueRows,
+  formatQcCompletionMessage,
+  qcCompletionPostActionHash,
+  resolveQcCompletionOutcome,
+  type QualityQueueRow,
+} from "../lib/qcWorkspaceUx";
 
 type ReworkQcQueueRow = {
   itemId: number;
@@ -426,8 +437,25 @@ export function QcEntryPage() {
   const showDemoNoQtyQcContinue = demo.enabled && demo.flow === "no_qty" && demo.step === 5;
 
   const source = sp.get("source") ?? "";
+  const fromParam = sp.get("from") ?? "";
   const fromNoQtySo = source === "no_qty_so";
-  const fromCustomerTracking = sp.get("from") === "customer-tracking";
+  const role = auth.user?.role ?? "";
+  const showEmbeddedQaChrome = role === "PRODUCTION" || fromParam === "production" || fromParam === "production_screen";
+  const qcBackLink = React.useMemo(
+    () => buildQcBackLink({ fromNoQtySo, source, from: fromParam, role }),
+    [fromNoQtySo, source, fromParam, role],
+  );
+  const qcEmbeddedStages = React.useMemo(() => buildQcEmbeddedStageSteps(showEmbeddedQaChrome), [showEmbeddedQaChrome]);
+  const qcBreadcrumb = React.useMemo(
+    () =>
+      buildQcWorkspaceBreadcrumb({
+        showEmbedded: showEmbeddedQaChrome,
+        fromDashboard: source === "dashboard" || fromParam === "dashboard",
+        role,
+      }),
+    [showEmbeddedQaChrome, source, fromParam, role],
+  );
+  const fromCustomerTracking = fromParam === "customer-tracking";
   const focusSoId = Number(sp.get("salesOrderId") ?? 0);
   const focusSoIdValid = Number.isFinite(focusSoId) && focusSoId > 0;
   const {
@@ -1026,7 +1054,6 @@ export function QcEntryPage() {
     if (!Number.isFinite(rej) || rej <= 1e-6) setRecheckRejectedBucket(null);
   }, [recheckRejectedQty]);
 
-  const role = auth.user?.role ?? "";
   const isAdminUser = role === "ADMIN";
   /**
    * Phase 1 (corrected): rework approval / "Send For Rework" belongs to PRODUCTION
@@ -1579,20 +1606,19 @@ export function QcEntryPage() {
       setRejSplitRework("");
       setRejSplitHold("");
       setRejSplitScrap("");
+      const completionOutcome = resolveQcCompletionOutcome({
+        acceptedQty: Math.max(0, acceptedQty),
+        rejectedQty: Math.max(0, rejectedNum),
+        reworkQty: Math.max(0, splitRework),
+        holdQty: Math.max(0, splitHold),
+        scrapQty: Math.max(0, splitScrap),
+      });
+      toast.showSuccess(formatQcCompletionMessage(completionOutcome));
+      const postHash = qcCompletionPostActionHash(completionOutcome);
+      if (postHash) {
+        navigate({ hash: postHash }, { replace: true });
+      }
       const list = await refresh();
-      if (!fromNoQtySo && rejectedNum > 1e-6) {
-        const rw = Number(rejSplitRework || 0);
-        const hd = Number(rejSplitHold || 0);
-        const sc = Number(rejSplitScrap || 0);
-        const parts: string[] = [];
-        if (rw > 1e-6) parts.push(`${fmtQcQty(rw)} sent to rework`);
-        if (hd > 1e-6) parts.push(`${fmtQcQty(hd)} put on hold`);
-        if (sc > 1e-6) parts.push(`${fmtQcQty(sc)} scrapped`);
-        if (parts.length) toast.showSuccess(`QC saved: ${parts.join(", ")}.`);
-      }
-      if (fromNoQtySo && focusSoIdValid) {
-        toast.showSuccess("QC saved. Stock is available for dispatch whenever you choose.");
-      }
       const sorted = [...list].sort((a, b) => safeQcRollupsForRow(b).pending - safeQcRollupsForRow(a).pending);
       if (sorted.length === 0) {
         setProductionId(0);
@@ -2035,6 +2061,81 @@ export function QcEntryPage() {
     };
   }, [dispQueues, dispQueuesScoped, focusSoDispQueues, fromNoQtySo, focusSoIdValid, noQtyCycleId]);
 
+  const qualityQueueRows = React.useMemo(() => {
+    const disp = fromNoQtySo && focusSoIdValid && noQtyCycleId != null ? dispQueuesScoped : dispQueues;
+    const dispositions = [
+      ...(disp?.reworkPendingSupervisor ?? []).map((r) => ({
+        id: r.id,
+        kind: "REWORK_SUPERVISOR" as const,
+        itemName: r.item.itemName,
+        qty: Number(r.remainingQty ?? 0),
+        workOrderLabel: r.workOrder.docNo ?? `WO #${r.workOrder.id}`,
+        qcDocNo: r.sourceQcEntry.docNo,
+      })),
+      ...(disp?.readyForQcRecheck ?? []).map((r) => ({
+        id: r.id,
+        kind: "REWORK_PENDING" as const,
+        itemName: r.item.itemName,
+        qty: Number(r.remainingQty ?? 0),
+        workOrderLabel: r.workOrder.docNo ?? `WO #${r.workOrder.id}`,
+        qcDocNo: r.sourceQcEntry.docNo,
+      })),
+      ...(disp?.holdStock ?? []).map((r) => ({
+        id: r.id,
+        kind: "HOLD_DECISION" as const,
+        itemName: r.item.itemName,
+        qty: Number(r.remainingQty ?? r.qty ?? 0),
+        workOrderLabel: r.workOrder.docNo ?? `WO #${r.workOrder.id}`,
+        qcDocNo: r.sourceQcEntry?.docNo ?? null,
+      })),
+    ];
+    return buildQualityQueueRows({
+      pendingQc: qcQueueRows.map(({ r, q }) => ({
+        productionId: r.id,
+        itemName: r.workOrderLine?.fgItem?.itemName ?? "Batch",
+        workOrderLabel: `WO #${r.workOrderLine?.workOrder?.id ?? "—"}`,
+        pendingQty: q.pending,
+      })),
+      dispositions,
+      customerReturns: custReturnQcRows.map((r) => ({
+        id: r.id,
+        returnNo: r.returnNo,
+        itemName: r.item?.name ?? null,
+        qty: Number(r.qty ?? 0),
+      })),
+      fmtQty: fmtQcQty,
+    });
+  }, [
+    custReturnQcRows,
+    dispQueues,
+    dispQueuesScoped,
+    focusSoIdValid,
+    fromNoQtySo,
+    noQtyCycleId,
+    qcQueueRows,
+  ]);
+
+  const [activeQualityQueueRowId, setActiveQualityQueueRowId] = React.useState<string | null>(null);
+
+  const handleQualityQueueSelect = React.useCallback(
+    (row: QualityQueueRow) => {
+      setActiveQualityQueueRowId(row.id);
+      if (row.kind === "PENDING_QC" && row.productionId) {
+        setProductionId(row.productionId);
+        patch({ [DRILL_QUERY.productionId]: String(row.productionId) });
+      }
+      if (row.kind === "REWORK_PENDING" && row.dispositionId) {
+        setRecheckDispId(row.dispositionId);
+      }
+      const hash = row.anchor.replace(/^#/, "");
+      navigate({ hash }, { replace: true });
+      window.setTimeout(() => {
+        document.getElementById(hash)?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 80);
+    },
+    [navigate, patch],
+  );
+
   const hideNoQtyQcWorkbenchForDispatchFlow = noQtyDispatchReadyForHeaderEffective;
 
   type QcGuidance =
@@ -2175,10 +2276,32 @@ export function QcEntryPage() {
             </p>
           ) : null}
           <div className="flex flex-wrap items-center gap-2">
-            {fromNoQtySo ? <PageNoQtyFlowBackLink step="QC" /> : <PageBackLink to="/production" label="Back to Production" />}
-            <h1 className="text-sm font-semibold leading-tight tracking-tight text-slate-900">
-              {PRODUCTION_QA_TERMS.PRODUCTION_QA_QUEUE}
-            </h1>
+            {fromNoQtySo ? (
+              <PageNoQtyFlowBackLink step="QC" />
+            ) : qcBackLink ? (
+              <PageBackLink to={qcBackLink.to} label={qcBackLink.label} />
+            ) : null}
+            <div className="min-w-0">
+              {qcBreadcrumb.length > 0 ? (
+                <nav aria-label="Breadcrumb" className="mb-0.5 flex flex-wrap items-center gap-1 text-[10px] text-slate-500">
+                  {qcBreadcrumb.map((crumb, idx) => (
+                    <React.Fragment key={`${crumb.label}-${idx}`}>
+                      {idx > 0 ? <span aria-hidden className="text-slate-300">›</span> : null}
+                      {crumb.href ? (
+                        <Link to={crumb.href} className="font-medium text-slate-600 hover:text-slate-900">
+                          {crumb.label}
+                        </Link>
+                      ) : (
+                        <span className="font-semibold text-slate-800">{crumb.label}</span>
+                      )}
+                    </React.Fragment>
+                  ))}
+                </nav>
+              ) : null}
+              <h1 className="text-sm font-semibold leading-tight tracking-tight text-slate-900">
+                {PRODUCTION_QA_TERMS.WORKSPACE_TITLE}
+              </h1>
+            </div>
             <div className="flex w-full flex-wrap items-center gap-2 sm:ml-auto sm:w-auto sm:justify-end">
               <label className="flex cursor-pointer select-none items-center gap-1.5 text-[11px] text-slate-600">
                 <input
@@ -2196,6 +2319,41 @@ export function QcEntryPage() {
               </Link>
             </div>
           </div>
+          {qcEmbeddedStages.length > 0 ? (
+            <nav aria-label="Workflow stage" className="flex flex-wrap items-center gap-1.5 text-[10px]">
+              {qcEmbeddedStages.map((step, idx) => (
+                <React.Fragment key={step.label}>
+                  {idx > 0 ? <span className="text-slate-300" aria-hidden>→</span> : null}
+                  {step.href && !step.active ? (
+                    <Link
+                      to={step.href}
+                      className={cn(
+                        "rounded px-1.5 py-0.5 font-medium",
+                        step.done ? "bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200" : "text-slate-500 hover:text-slate-800",
+                      )}
+                    >
+                      {step.label}
+                      {step.done ? " ✓" : ""}
+                    </Link>
+                  ) : (
+                    <span
+                      className={cn(
+                        "rounded px-1.5 py-0.5 font-semibold",
+                        step.active
+                          ? "bg-violet-100 text-violet-950 ring-1 ring-violet-300"
+                          : step.done
+                            ? "bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200"
+                            : "text-slate-400",
+                      )}
+                    >
+                      {step.label}
+                      {step.active ? " ← Active" : step.done ? " ✓" : ""}
+                    </span>
+                  )}
+                </React.Fragment>
+              ))}
+            </nav>
+          ) : null}
           {focusSoIdValid && focusSo ? (
             fromNoQtySo ? (
               <NoQtyCycleContextBar
@@ -2222,7 +2380,7 @@ export function QcEntryPage() {
                 </span>
                 <OpCtxSep />
                 <span className="rounded bg-violet-50 px-1.5 py-0.5 text-[11px] font-semibold text-violet-900 ring-1 ring-violet-200">
-                  Production QA
+                  {PRODUCTION_QA_TERMS.WORKSPACE_NAV}
                 </span>
               </OperationalContextBar>
             )
@@ -2296,7 +2454,7 @@ export function QcEntryPage() {
                 to={`${qcChipBaseTo}#qc-production-pending`}
                 className="inline-flex items-center gap-1 rounded border border-slate-200/90 bg-white px-1.5 py-0 text-[10px] font-medium text-slate-700 hover:bg-slate-50"
               >
-                Prod QC
+                {PRODUCTION_QA_TERMS.PENDING_QC}
                 <span className="tabular-nums font-semibold text-slate-900">{qcQueueRows.length}</span>
               </Link>
               <Link
@@ -2345,6 +2503,12 @@ export function QcEntryPage() {
           </div>
         ) : null}
         <OperatorPageBody className="gap-1.5">
+          <QualityInspectionQueuePanel
+            rows={qualityQueueRows}
+            activeRowId={activeQualityQueueRowId}
+            onSelectRow={handleQualityQueueSelect}
+            loading={!listReady}
+          />
           {!fromNoQtySo &&
           !roleUi.isPureQcOperator &&
           focusSoIdValid &&
@@ -2529,7 +2693,7 @@ export function QcEntryPage() {
       >
         <CardHeader className="border-b border-slate-100 bg-slate-50/50 px-2 py-0.5">
           <CardTitle className="text-[11px] font-semibold leading-none tracking-tight text-slate-900">
-            Pending Production QC
+            {PRODUCTION_QA_TERMS.PENDING_QC}
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-0.5 px-2 py-0.5">
@@ -3315,105 +3479,8 @@ export function QcEntryPage() {
         </CardContent>
       </Card>
 
-      <details className="rounded-md border border-slate-200 bg-slate-50/50">
-        <summary className="cursor-pointer select-none list-none px-2 py-0.5 text-[10px] font-semibold text-slate-600 [&::-webkit-details-marker]:hidden">
-          <span className="text-slate-400" aria-hidden>
-            ▸{" "}
-          </span>
-          Rework / scrap (adjustment, approvals, hold, scrap register, internal rework)
-        </summary>
-        <div className="space-y-1 border-t border-slate-200 bg-white px-1 py-1">
-      {!listReady || adjRows.length > 0 ? (
-        <Card className="border-slate-200 shadow-sm">
-          <CardHeader className="border-b border-slate-100 bg-slate-50/40 px-3 py-2 pb-2">
-            <CardTitle className="text-sm font-semibold text-slate-900">Adjustment QC</CardTitle>
-          </CardHeader>
-          <CardContent className="px-3 py-2">
-            {!listReady ? (
-              <p className="text-[12px] text-slate-600">Loading…</p>
-            ) : (
-              <div className="erp-form max-w-md">
-                <div className="erp-form-field">
-                  <span className="erp-form-label">Stock adjustment (FG stock-in)</span>
-                  <select className="erp-select" value={adjTxnId} onChange={(e) => setAdjTxnId(Number(e.target.value))}>
-                    {adjRows.map((r) => (
-                      <option key={r.stockTransactionId} value={r.stockTransactionId}>
-                        ST #{r.stockTransactionId} · {r.itemName} · awaiting QC: {fmtQcQty(r.qcPendingQty)}
-                      </option>
-                    ))}
-                  </select>
-                  {selectedAdj ? (
-                    <p className="mt-1 text-xs text-slate-600">
-                      Qty in: <span className="tabular-nums font-medium">{fmtQcQty(selectedAdj.qtyIn)}</span> · QC used:{" "}
-                      <span className="tabular-nums font-medium">{fmtQcQty(selectedAdj.qcUsedQty)}</span> · {PRODUCTION_QA_TERMS.AWAITING_QA}:{" "}
-                      <span className="tabular-nums font-medium">{fmtQcQty(selectedAdj.qcPendingQty)}</span>
-                    </p>
-                  ) : null}
-                </div>
-                <div className="erp-form-field">
-                  <span className="erp-form-label">Select sales order</span>
-                  {adjSoLoading ? (
-                    <p className="text-sm text-slate-600">Loading sales orders…</p>
-                  ) : adjEligibleSos.length === 0 ? (
-                    <p className="text-sm text-amber-800">No eligible sales orders for this item.</p>
-                  ) : (
-                    <select
-                      className="erp-select"
-                      value={adjSelectedSoId || ""}
-                      onChange={(e) => setAdjSelectedSoId(Number(e.target.value))}
-                    >
-                      <option value="">— Select —</option>
-                      {adjEligibleSos.map((r) => (
-                        <option key={r.salesOrderId} value={r.salesOrderId}>
-                          {r.salesOrderNo}
-                          {r.customerName ? ` · ${r.customerName}` : ""}
-                          {r.pendingDispatchQty > 1e-6 ? ` · backlog ${fmtQcQty(r.pendingDispatchQty)}` : ""}
-                        </option>
-                      ))}
-                    </select>
-                  )}
-                  <p className="mt-0.5 text-xs text-slate-500">
-                    Approved or in-process sales orders that include this FG. Orders with dispatch backlog are listed first.
-                  </p>
-                </div>
-                <div className="erp-form-row-2">
-                  <div className="erp-form-field">
-                    <span className="erp-form-label">Checked qty</span>
-                    <Input type="number" min={0} step="any" value={adjCheckedQty} onChange={(e) => setAdjCheckedQty(toNumberDraft(e.target.value))} />
-                  </div>
-                  <div className="erp-form-field">
-                    <span className="erp-form-label">Rejected qty</span>
-                    <Input type="number" min={0} step="any" value={adjRejectedQty} onChange={(e) => setAdjRejectedQty(toNumberDraft(e.target.value))} />
-                  </div>
-                </div>
-                <div className="erp-form-field">
-                  <span className="erp-form-label">Reason</span>
-                  <Input value={adjReason} onChange={(e) => setAdjReason(e.target.value)} placeholder="Optional" />
-                </div>
-                <Button
-                  type="button"
-                  onClick={submitAdjQc}
-                  disabled={
-                    adjSaving ||
-                    !selectedAdj ||
-                    (selectedAdj.qcPendingQty ?? 0) <= 1e-6 ||
-                    adjSoLoading ||
-                    adjEligibleSos.length === 0 ||
-                    adjSelectedSoId <= 0
-                  }
-                >
-                  {adjSaving ? "Saving..." : "Save QC (adjusted stock)"}
-                </Button>
-                <p className="text-xs text-slate-500">
-                  This QC does not link to a production batch. It is meant for stock-adjusted / legacy FG stock so dispatch can remain QC-controlled.
-                </p>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      ) : null}
-
-      {showAdvancedQcTools && (!listReady || (dispQueues && dispQueues.reworkPendingSupervisor.length > 0)) ? (
+      {/* Actionable QA sections — always visible when queue data exists */}
+      {(!listReady || (dispQueues && dispQueues.reworkPendingSupervisor.length > 0)) ? (
         <Card id="qc-rework-supervisor" className="border-slate-200 shadow-sm">
           <CardHeader className="border-b border-slate-100 bg-slate-50/40 px-3 py-2 pb-2">
             <CardTitle className="text-sm font-semibold text-slate-900">
@@ -3505,7 +3572,7 @@ export function QcEntryPage() {
       {!listReady || (dispQueues && dispQueues.readyForQcRecheck.length > 0) ? (
         <Card id="qc-rework-pending" className="border-slate-200 shadow-sm">
           <CardHeader className="border-b border-slate-100 bg-slate-50/40 px-3 py-2 pb-2">
-            <CardTitle className="text-sm font-semibold text-slate-900">Rework QC pending</CardTitle>
+            <CardTitle className="text-sm font-semibold text-slate-900">Rework Pending</CardTitle>
           </CardHeader>
           <CardContent className="px-3 py-2">
             {!listReady || !dispQueues ? (
@@ -3636,7 +3703,7 @@ export function QcEntryPage() {
       {!listReady || (dispQueues && dispQueues.holdStock.length > 0) ? (
         <Card id="qc-hold-decisions" className="border-slate-200 shadow-sm">
           <CardHeader className="border-b border-slate-100 bg-slate-50/40 px-3 py-2 pb-2">
-            <CardTitle className="text-sm font-semibold text-slate-900">Hold decisions pending</CardTitle>
+            <CardTitle className="text-sm font-semibold text-slate-900">{PRODUCTION_QA_TERMS.HOLD_DECISION}</CardTitle>
           </CardHeader>
           <CardContent className="px-3 py-2">
             {!listReady || !dispQueues ? (
@@ -3654,6 +3721,104 @@ export function QcEntryPage() {
                 />
               ))}
             </div>
+            )}
+          </CardContent>
+        </Card>
+      ) : null}
+
+      <details className="rounded-md border border-slate-200 bg-slate-50/50">
+        <summary className="cursor-pointer select-none list-none px-2 py-0.5 text-[10px] font-semibold text-slate-600 [&::-webkit-details-marker]:hidden">
+          <span className="text-slate-400" aria-hidden>
+            ▸{" "}
+          </span>
+          Advanced / informational (adjustment QC, scrap register, internal rework)
+        </summary>
+        <div className="space-y-1 border-t border-slate-200 bg-white px-1 py-1">
+      {!listReady || adjRows.length > 0 ? (
+        <Card className="border-slate-200 shadow-sm">
+          <CardHeader className="border-b border-slate-100 bg-slate-50/40 px-3 py-2 pb-2">
+            <CardTitle className="text-sm font-semibold text-slate-900">Adjustment QC</CardTitle>
+          </CardHeader>
+          <CardContent className="px-3 py-2">
+            {!listReady ? (
+              <p className="text-[12px] text-slate-600">Loading…</p>
+            ) : (
+              <div className="erp-form max-w-md">
+                <div className="erp-form-field">
+                  <span className="erp-form-label">Stock adjustment (FG stock-in)</span>
+                  <select className="erp-select" value={adjTxnId} onChange={(e) => setAdjTxnId(Number(e.target.value))}>
+                    {adjRows.map((r) => (
+                      <option key={r.stockTransactionId} value={r.stockTransactionId}>
+                        ST #{r.stockTransactionId} · {r.itemName} · awaiting QC: {fmtQcQty(r.qcPendingQty)}
+                      </option>
+                    ))}
+                  </select>
+                  {selectedAdj ? (
+                    <p className="mt-1 text-xs text-slate-600">
+                      Qty in: <span className="tabular-nums font-medium">{fmtQcQty(selectedAdj.qtyIn)}</span> · QC used:{" "}
+                      <span className="tabular-nums font-medium">{fmtQcQty(selectedAdj.qcUsedQty)}</span> · {PRODUCTION_QA_TERMS.AWAITING_QA}:{" "}
+                      <span className="tabular-nums font-medium">{fmtQcQty(selectedAdj.qcPendingQty)}</span>
+                    </p>
+                  ) : null}
+                </div>
+                <div className="erp-form-field">
+                  <span className="erp-form-label">Select sales order</span>
+                  {adjSoLoading ? (
+                    <p className="text-sm text-slate-600">Loading sales orders…</p>
+                  ) : adjEligibleSos.length === 0 ? (
+                    <p className="text-sm text-amber-800">No eligible sales orders for this item.</p>
+                  ) : (
+                    <select
+                      className="erp-select"
+                      value={adjSelectedSoId || ""}
+                      onChange={(e) => setAdjSelectedSoId(Number(e.target.value))}
+                    >
+                      <option value="">— Select —</option>
+                      {adjEligibleSos.map((r) => (
+                        <option key={r.salesOrderId} value={r.salesOrderId}>
+                          {r.salesOrderNo}
+                          {r.customerName ? ` · ${r.customerName}` : ""}
+                          {r.pendingDispatchQty > 1e-6 ? ` · backlog ${fmtQcQty(r.pendingDispatchQty)}` : ""}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                  <p className="mt-0.5 text-xs text-slate-500">
+                    Approved or in-process sales orders that include this FG. Orders with dispatch backlog are listed first.
+                  </p>
+                </div>
+                <div className="erp-form-row-2">
+                  <div className="erp-form-field">
+                    <span className="erp-form-label">Checked qty</span>
+                    <Input type="number" min={0} step="any" value={adjCheckedQty} onChange={(e) => setAdjCheckedQty(toNumberDraft(e.target.value))} />
+                  </div>
+                  <div className="erp-form-field">
+                    <span className="erp-form-label">Rejected qty</span>
+                    <Input type="number" min={0} step="any" value={adjRejectedQty} onChange={(e) => setAdjRejectedQty(toNumberDraft(e.target.value))} />
+                  </div>
+                </div>
+                <div className="erp-form-field">
+                  <span className="erp-form-label">Reason</span>
+                  <Input value={adjReason} onChange={(e) => setAdjReason(e.target.value)} placeholder="Optional" />
+                </div>
+                <Button
+                  type="button"
+                  onClick={submitAdjQc}
+                  disabled={
+                    adjSaving ||
+                    !selectedAdj ||
+                    (selectedAdj.qcPendingQty ?? 0) <= 1e-6 ||
+                    adjSoLoading ||
+                    adjEligibleSos.length === 0 ||
+                    adjSelectedSoId <= 0
+                  }
+                >
+                  {adjSaving ? "Saving..." : "Save QC (adjusted stock)"}
+                </Button>
+                <p className="text-xs text-slate-500">
+                  This QC does not link to a production batch. It is meant for stock-adjusted / legacy FG stock so dispatch can remain QC-controlled.
+                </p>
+              </div>
             )}
           </CardContent>
         </Card>
@@ -3815,27 +3980,19 @@ export function QcEntryPage() {
           </CardContent>
         </Card>
       ) : null}
-
         </div>
       </details>
 
-      <details className="rounded-md border border-slate-200 bg-slate-50/50">
-        <summary className="cursor-pointer select-none list-none px-2 py-0.5 text-[10px] font-semibold text-slate-600 [&::-webkit-details-marker]:hidden">
-          <span className="text-slate-400" aria-hidden>
-            ▸{" "}
-          </span>
-          Customer Return QC
-        </summary>
-        <div className="border-t border-slate-200 bg-white px-1 py-0.5">
-      <Card className="min-w-0 overflow-hidden border-0 border-slate-200 shadow-none sm:rounded-md sm:border sm:shadow-sm">
+      {!listReady || custReturnQcRows.length > 0 ? (
+      <Card id="qc-customer-returns" className="min-w-0 overflow-hidden border-slate-200 shadow-sm">
         <CardHeader className="border-b border-slate-100 bg-slate-50/50 px-2 py-1.5">
-          <CardTitle className="text-[13px] font-semibold tracking-tight text-slate-900">Returns queue</CardTitle>
+          <CardTitle className="text-[13px] font-semibold tracking-tight text-slate-900">
+            {PRODUCTION_QA_TERMS.CUSTOMER_RETURN_INSPECTION}
+          </CardTitle>
         </CardHeader>
         <CardContent className="space-y-2 px-3 py-2">
           {!listReady ? (
             <p className="text-[12px] text-slate-600">Loading…</p>
-          ) : custReturnQcRows.length === 0 ? (
-            <p className="text-[12px] leading-snug text-slate-600">No customer returns waiting for QC.</p>
           ) : (
             <div className="overflow-auto rounded-md border border-slate-200">
               <table className="w-full min-w-[980px] border-collapse text-[12px]">
@@ -3930,8 +4087,7 @@ export function QcEntryPage() {
           )}
         </CardContent>
       </Card>
-        </div>
-      </details>
+      ) : null}
 
       {showAdvancedQcTools ? (
       <details className="rounded-md border border-dashed border-slate-200/90 bg-slate-50/40">

@@ -303,7 +303,7 @@ const navGroups: NavGroup[] = [
       {
         to: "/qc-entry",
         navKey: "qc",
-        label: "Production QA",
+        label: "Quality Inspection",
         roles: [...QA_PAGE_ROLES],
         icon: <ClipboardCheck className="h-4 w-4 shrink-0" />,
       },
@@ -427,9 +427,9 @@ export function AppLayout() {
       : pathname === "/dashboard" && role === "STORE"
         ? "Store Operations"
         : pathname === "/dashboard" && role === "PRODUCTION"
-          ? "Production desk"
+          ? "Production Dashboard"
           : pathname === "/dashboard" && role === "QA"
-            ? "Production QA desk"
+            ? "Quality Inspection Dashboard"
             : pathname === "/dashboard" && role === "ADMIN"
               ? "Operations"
               : getPageTitle(pathname);

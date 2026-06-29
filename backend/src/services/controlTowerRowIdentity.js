@@ -97,6 +97,18 @@ function buildControlTowerRowKey(row) {
     if (woIdContinue != null) return `WORK_ORDER:${woIdContinue}`;
     const soId = positiveId(meta.salesOrderId);
     const cycleId = positiveId(meta.cycleId);
+    const itemId = positiveId(meta.itemId);
+    const stageKey = String(meta.sourceStageKey ?? "").trim().toUpperCase();
+    if (soId != null && itemId != null && stageKey === "DISPATCH") {
+      if (orderType === "NO_QTY" && cycleId != null) {
+        return `NO_QTY:${soId}:CYCLE:${cycleId}:ITEM:${itemId}`;
+      }
+      return `DISPATCH:${soId}:ITEM:${itemId}`;
+    }
+    if (soId != null && stageKey === "SALES_BILL") {
+      const dispatchId = positiveId(meta.dispatchId);
+      if (dispatchId != null) return `BILLING:DISPATCH:${dispatchId}`;
+    }
     if (soId != null && orderType === "NO_QTY" && cycleId != null) {
       return `NO_QTY:${soId}:CYCLE:${cycleId}`;
     }
@@ -168,6 +180,31 @@ function dedupeNormalizedRows(rows) {
 }
 
 /**
+ * Lifecycle-aware winner when multiple queue feeds share rowKey + currentStatus.
+ * Prefer executable workspace rows (QA queue, dispatch backlog) over monitoring mirrors.
+ * @param {object} row
+ * @returns {number}
+ */
+function lifecycleQueuePreference(row) {
+  const status = String(row?.currentStatus ?? "").trim().toUpperCase();
+  const rowType = String(row?.rowType ?? "").trim().toUpperCase();
+  if (status === "QA_PENDING") {
+    if (rowType === "QA_QUEUE") return 100;
+    if (rowType === "CONTINUE_WORKING") return 60;
+    if (rowType === "PRODUCTION_QUEUE") return 40;
+  }
+  if (status === "DISPATCH_PENDING") {
+    if (rowType === "DISPATCH_BACKLOG") return 100;
+    if (rowType === "CONTINUE_WORKING") return 70;
+    if (rowType === "PRODUCTION_QUEUE") return 30;
+  }
+  if (status === "BILLING_PENDING") {
+    if (rowType === "CONTINUE_WORKING") return 50;
+  }
+  return row?.sourcePriority ?? 0;
+}
+
+/**
  * Role-queue dedupe — collapse only within role + rowKey + currentStatus (Prompt 6E).
  * @param {object[]} rows
  * @param {string} role
@@ -190,7 +227,7 @@ function dedupeRoleQueueRows(rows, role) {
 
   const out = [];
   for (const bucket of groups.values()) {
-    bucket.sort((a, b) => (b.sourcePriority ?? 0) - (a.sourcePriority ?? 0));
+    bucket.sort((a, b) => lifecycleQueuePreference(b) - lifecycleQueuePreference(a));
     out.push(bucket[0]);
   }
   return out;
@@ -203,4 +240,5 @@ module.exports = {
   attachRowIdentity,
   dedupeNormalizedRows,
   dedupeRoleQueueRows,
+  lifecycleQueuePreference,
 };

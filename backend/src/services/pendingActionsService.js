@@ -180,9 +180,23 @@ function resolveHrefForNormalizedRow(row, role = "STORE") {
     if (salesOrderId > 0) {
       const stage = String(meta.sourceStageKey ?? "").toUpperCase();
       if (stage === "DISPATCH") return `/dispatch?salesOrderId=${salesOrderId}&source=pending-actions`;
-      if (stage === "QC") return `/qc-entry?salesOrderId=${salesOrderId}&source=pending-actions`;
+      if (stage === "QC") {
+        const params = new URLSearchParams({ source: "pending-actions" });
+        params.set("salesOrderId", String(salesOrderId));
+        const woId = Number(meta.workOrderId ?? 0);
+        if (woId > 0) params.set("workOrderId", String(woId));
+        const productionId = Number(meta.productionId ?? 0);
+        if (productionId > 0) params.set("productionId", String(productionId));
+        return `/qc-entry?${params.toString()}#qc-production-pending`;
+      }
       if (stage === "PRODUCTION") return `/production?salesOrderId=${salesOrderId}&from=pending-actions`;
-      if (stage === "SALES_BILL") return `/sales-bills/new?salesOrderId=${salesOrderId}&from=pending-actions`;
+      if (stage === "SALES_BILL") {
+        const dispatchId = Number(meta.dispatchId ?? 0);
+        if (dispatchId > 0) {
+          return `/sales-bills/new?dispatchId=${dispatchId}&from=pending-actions`;
+        }
+        return `/sales-bills/new?salesOrderId=${salesOrderId}&from=pending-actions`;
+      }
       if (stage === "NEXT_RS") {
         return buildNoQtyRsCreationWorkspaceHref(salesOrderId, {
           cycleId: meta.cycleId ?? null,
@@ -192,6 +206,15 @@ function resolveHrefForNormalizedRow(row, role = "STORE") {
     }
   }
   if (rowType === ROW_TYPES.PRODUCTION_QUEUE && workOrderId > 0) {
+    const sourceNext = String(meta.sourceNextAction ?? "").trim().toUpperCase();
+    const productionId = Number(meta.productionId ?? 0);
+    if (sourceNext === "QC_PENDING" || row?.currentStatus === "QA_PENDING") {
+      const params = new URLSearchParams({ source: "pending-actions" });
+      if (salesOrderId > 0) params.set("salesOrderId", String(salesOrderId));
+      params.set("workOrderId", String(workOrderId));
+      if (productionId > 0) params.set("productionId", String(productionId));
+      return `/qc-entry?${params.toString()}#qc-production-pending`;
+    }
     return `/production?workOrderId=${workOrderId}&from=pending-actions`;
   }
   if (rowType === ROW_TYPES.QA_QUEUE) {
@@ -789,9 +812,27 @@ async function fetchStoreNoQtyPlaceWoPendingActions(db = prisma) {
 
 function filterNormalizedRowsByOwner(rows, role) {
   const parsed = parseUserRole(role);
-  return (Array.isArray(rows) ? rows : []).filter(
-    (row) => String(row?.currentOwner ?? "").toUpperCase() === parsed,
+  const list = Array.isArray(rows) ? rows : [];
+  const qaQueueWoIds = new Set(
+    list
+      .filter((row) => String(row?.rowType ?? "") === ROW_TYPES.QA_QUEUE)
+      .map((row) => Number(row?.metadata?.workOrderId ?? 0))
+      .filter((id) => id > 0),
   );
+
+  return list.filter((row) => {
+    if (String(row?.currentOwner ?? "").toUpperCase() !== parsed) return false;
+    const rowType = String(row?.rowType ?? "");
+    const status = String(row?.currentStatus ?? "").toUpperCase();
+    const woId = Number(row?.metadata?.workOrderId ?? 0);
+
+    if (parsed === "QA" && status === "QA_PENDING" && woId > 0 && qaQueueWoIds.has(woId)) {
+      if (rowType === ROW_TYPES.PRODUCTION_QUEUE || rowType === ROW_TYPES.CONTINUE_WORKING) {
+        return false;
+      }
+    }
+    return true;
+  });
 }
 
 function extractMaterialRequirementIdFromPendingAction(action) {
@@ -1018,6 +1059,73 @@ function dedupePendingActionsByWorkOrder(actions) {
   return [...withoutWo, ...byWo.values()];
 }
 
+const LIFECYCLE_ACTION_RANK = Object.freeze({
+  "QC Pending": 0,
+  Dispatch: 1,
+  "Create Sales Bill": 2,
+  "Export to Tally": 3,
+});
+
+function lifecycleActionRank(action) {
+  const label = String(action?.action ?? "");
+  if (label in LIFECYCLE_ACTION_RANK) return LIFECYCLE_ACTION_RANK[label];
+  return 99;
+}
+
+function preferLifecyclePendingAction(existing, candidate) {
+  const ra = lifecycleActionRank(existing);
+  const rb = lifecycleActionRank(candidate);
+  if (ra !== rb) return rb < ra ? candidate : existing;
+  const pa = PRIORITY_SORT[existing.priority] ?? 99;
+  const pb = PRIORITY_SORT[candidate.priority] ?? 99;
+  if (pa !== pb) return pa <= pb ? existing : candidate;
+  const aa = existing.ageHours != null ? Number(existing.ageHours) : -1;
+  const ab = candidate.ageHours != null ? Number(candidate.ageHours) : -1;
+  return ab <= aa ? candidate : existing;
+}
+
+function dedupeLifecyclePendingActions(actions) {
+  const withoutKey = [];
+  const byDispatch = new Map();
+  const bySo = new Map();
+  const byWo = new Map();
+
+  for (const action of actions) {
+    const href = String(action?.href ?? "");
+    const dispatchFromHref = href.match(/[?&]dispatchId=(\d+)/);
+    const dispatchFromId = String(action?.id ?? "").match(/dispatch:(\d+)/);
+    const dispatchId = dispatchFromHref
+      ? Number(dispatchFromHref[1])
+      : dispatchFromId
+        ? Number(dispatchFromId[1])
+        : null;
+
+    if (dispatchId != null && dispatchId > 0) {
+      const prev = byDispatch.get(dispatchId);
+      byDispatch.set(dispatchId, prev ? preferLifecyclePendingAction(prev, action) : action);
+      continue;
+    }
+
+    const woId = extractWorkOrderIdFromPendingAction(action);
+    if (woId > 0 && action.action === "QC Pending") {
+      const prev = byWo.get(woId);
+      byWo.set(woId, prev ? preferLifecyclePendingAction(prev, action) : action);
+      continue;
+    }
+
+    const soId = extractSalesOrderIdFromPendingAction(action);
+    if (soId > 0 && (action.action === "Dispatch" || action.action === "Create Sales Bill")) {
+      const prev = bySo.get(soId);
+      bySo.set(soId, prev ? preferLifecyclePendingAction(prev, action) : action);
+      continue;
+    }
+
+    withoutKey.push(action);
+  }
+
+  return [...withoutKey, ...byDispatch.values(), ...bySo.values(), ...byWo.values()];
+}
+
 function sortPendingActions(actions) {
   return [...actions].sort((a, b) => {
     const pa = PRIORITY_SORT[a.priority] ?? 99;
@@ -1088,6 +1196,9 @@ async function getPendingActions(opts = {}) {
   if (role === "PRODUCTION" || role === "ADMIN") {
     merged = dedupeProductionPendingActions(merged);
   }
+  if (role === "QA" || role === "ADMIN" || role === "STORE") {
+    merged = dedupeLifecyclePendingActions(merged);
+  }
 
   const actions = sortPendingActions(merged);
 
@@ -1143,4 +1254,6 @@ module.exports = {
   dedupeProductionPendingActions,
   preferProductionExecutionPendingAction,
   extractSalesOrderIdFromPendingAction,
+  dedupeLifecyclePendingActions,
+  preferLifecyclePendingAction,
 };

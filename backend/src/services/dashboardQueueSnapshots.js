@@ -50,6 +50,7 @@ const { reconcileStaleSupervisorReworkDispositions } = require("./qcDispositionR
 const { attachRmReadinessToProductionQueueRows } = require("./productionRmReadinessService");
 const { buildMaterialAvailabilityWorkspace } = require("./materialAvailabilityWorkspaceService");
 const { getSalesOrderFgWorkOrderBalances } = require("./workOrderSoValidation");
+const { getEligibleDispatches } = require("./salesBillService");
 
 /** Single map for tests and docs — each queue row type must set quantityMetricContext from here */
 const QUEUE_SNAPSHOT_ROW_METRIC_CONTEXT = {
@@ -1308,11 +1309,12 @@ async function getDraftFinalizeDispatchCandidates() {
 async function getContinueWorkingRows(options = {}) {
   const limit = Math.min(100, Math.max(5, Number(options.limit) || 50));
 
-  const [prodRows, qcRows, dispRows] = await Promise.all([
+  const [prodRows, qcRows, dispRows, billingEligible] = await Promise.all([
     getProductionQueueRows(),
     /** Same eligibility as `/api/dashboard/qc-queue` and global `withoutQc=1` production entries (includes NO_QTY). */
     getQcQueueRows(),
     getDispatchBacklogRows(),
+    getEligibleDispatches(prisma),
   ]);
 
   /** Prefer lowest pipeline rank; tie-break by larger urgency qty. */
@@ -1362,11 +1364,23 @@ async function getContinueWorkingRows(options = {}) {
     if (!prev || dispNow > prev.dispatchableNow) dispBySo.set(r.salesOrderId, r);
   }
 
+  /** LOCKED dispatches without a finalized bill — billing continuation for dashboard / pending actions. */
+  const billingBySo = new Map();
+  for (const b of billingEligible) {
+    const soId = Number(b.salesOrderId);
+    if (!Number.isFinite(soId) || soId <= 0) continue;
+    const prev = billingBySo.get(soId);
+    const billTs = b.dispatchDate ? new Date(b.dispatchDate).getTime() : 0;
+    const prevTs = prev?.dispatchDate ? new Date(prev.dispatchDate).getTime() : 0;
+    if (!prev || billTs >= prevTs) billingBySo.set(soId, b);
+  }
+
   const soIds = new Set([
     ...prodBestBySo.keys(),
     ...qcBySo.keys(),
     ...dispBySo.keys(),
     ...noQtyDispatchExtrasBySo.keys(),
+    ...billingBySo.keys(),
   ]);
   if (soIds.size === 0) return [];
 
@@ -1457,6 +1471,8 @@ async function getContinueWorkingRows(options = {}) {
         orderType: so.orderType,
         cycleNo: cycleNoResolved,
         cycleId,
+        workOrderId: qc.workOrderId ?? null,
+        productionId,
         stageKey: "QC",
         awaitingQcQty,
         hasPendingQc: true,
@@ -1505,7 +1521,15 @@ async function getContinueWorkingRows(options = {}) {
     const skipProdPickDupGlobalQc =
       prodPick && awaitingQcQty > QUEUE_EPS && prodPick.nextAction === "QC_PENDING";
 
-    if (prodPick && !skipProdPickDupDispatch && !skipProdPickDupGlobalQc) {
+    const prodPickBalance = Number(prodPick?.balanceQty ?? prodPick?.displayQty ?? 0);
+    const skipProdPickStaleProduction =
+      prodPick &&
+      prodPick.nextAction === "PRODUCTION_PENDING" &&
+      prodPickBalance <= QUEUE_EPS &&
+      disp &&
+      Number(disp.dispatchableNow) > QUEUE_EPS;
+
+    if (prodPick && !skipProdPickDupDispatch && !skipProdPickDupGlobalQc && !skipProdPickStaleProduction) {
       const nextStep =
         prodPick.nextAction === "NEXT_RS_REQUIRED"
           ? "Create Next Requirement Sheet"
@@ -1547,6 +1571,9 @@ async function getContinueWorkingRows(options = {}) {
         orderType: so.orderType,
         cycleNo: cycleNoOut,
         cycleId: cycleIdOut,
+        workOrderId: prodPick.workOrderId ?? null,
+        productionId: prodPick.productionId ?? null,
+        itemId: prodPick.itemId ?? null,
         stageKey,
         awaitingQcQty: undefined,
         dispatchableNow: stageKey === "DISPATCH" ? metricQty : undefined,
@@ -1593,6 +1620,7 @@ async function getContinueWorkingRows(options = {}) {
         orderType: so.orderType,
         cycleNo: cycleNoOut,
         cycleId: so.orderType === "NO_QTY" ? cycleId : null,
+        itemId: disp.itemId ?? null,
         stageKey: "DISPATCH",
         dispatchableNow: metricQty,
         dispatchableQty: metricQty,
@@ -1603,6 +1631,31 @@ async function getContinueWorkingRows(options = {}) {
         nextStep: "Go to Dispatch",
         href: route,
       });
+    } else {
+      const bill = billingBySo.get(soId) ?? null;
+      if (bill) {
+        const href =
+          bill.hasDraftBill && bill.draftBillId
+            ? `/sales-bills/${bill.draftBillId}?from=dashboard`
+            : `/sales-bills/new?dispatchId=${bill.dispatchId}&from=dashboard`;
+        out.push({
+          key: `so-${soId}-bill-${bill.dispatchId}`,
+          salesOrderId: soId,
+          salesOrderDocNo: so.docNo ?? null,
+          customerName: customerNameForSalesOrder(so),
+          itemName: bill.itemName ?? disp?.itemName ?? prodPick?.itemName ?? null,
+          orderType: so.orderType,
+          cycleNo: null,
+          cycleId: null,
+          dispatchId: bill.dispatchId,
+          stageKey: "SALES_BILL",
+          nextAction: "SALES_BILL_PENDING",
+          metricLabel: "Sales bill pending",
+          metricQty: Number(bill.dispatchedQty ?? 0),
+          nextStep: "Create Sales Bill",
+          href,
+        });
+      }
     }
   }
 

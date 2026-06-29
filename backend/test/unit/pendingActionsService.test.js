@@ -9,6 +9,8 @@ const {
   dedupePendingActionsByWorkOrder,
   dedupePendingActionsByProcurementCase,
   dedupeProductionPendingActions,
+  dedupeLifecyclePendingActions,
+  filterNormalizedRowsByOwner,
   fetchPurchaseProcurementPendingActions,
   fetchStoreGrnPendingActions,
   fetchStoreNoQtyCreateNextRsPendingActions,
@@ -22,6 +24,8 @@ const {
   normalizeNoQtyPlanningRow,
   normalizeRmRiskRow,
   normalizeProductionRow,
+  normalizeQaRow,
+  normalizeContinueWorkingRow,
   VISIBLE_OWNERS,
 } = require("../../src/services/controlTowerRowNormalizer");
 
@@ -97,6 +101,70 @@ describe("pendingActionsService", () => {
       },
     });
     assert.equal(label, "QC Pending");
+  });
+
+  it("resolveHref routes production queue QC_PENDING to qc-entry with productionId", () => {
+    const href = resolveHrefForNormalizedRow({
+      rowType: "PRODUCTION_QUEUE",
+      currentStatus: "QA_PENDING",
+      metadata: {
+        workOrderId: 3,
+        salesOrderId: 9,
+        productionId: 44,
+        sourceNextAction: "QC_PENDING",
+      },
+    });
+    assert.match(href, /\/qc-entry\?/);
+    assert.match(href, /workOrderId=3/);
+    assert.match(href, /productionId=44/);
+    assert.match(href, /#qc-production-pending/);
+  });
+
+  it("filterNormalizedRowsByOwner suppresses production mirror when QA queue row exists", () => {
+    const qa = normalizeQaRow({
+      workOrderId: 5,
+      qcRef: "PE-1",
+      status: "PENDING_QC",
+      orderType: "NORMAL",
+    });
+    const prod = normalizeProductionRow({
+      workOrderId: 5,
+      workOrderLineId: 1,
+      nextAction: "QC_PENDING",
+      orderType: "NORMAL",
+    });
+    const cont = normalizeContinueWorkingRow({
+      key: "so-1-qc",
+      salesOrderId: 1,
+      workOrderId: 5,
+      stageKey: "QC",
+      nextAction: "QC_PENDING",
+      orderType: "NORMAL",
+    });
+    const filtered = filterNormalizedRowsByOwner([qa, prod, cont], "QA");
+    assert.equal(filtered.length, 1);
+    assert.equal(filtered[0].rowType, "QA_QUEUE");
+  });
+
+  it("dedupeLifecyclePendingActions collapses billing duplicates for same dispatch", () => {
+    const merged = dedupeLifecyclePendingActions([
+      {
+        id: "BILLING:DISPATCH:55",
+        action: "Create Sales Bill",
+        href: "/sales-bills/new?dispatchId=55&from=dashboard",
+        priority: PENDING_PRIORITY.MEDIUM,
+        ownerRole: "ADMIN",
+      },
+      {
+        id: "admin:sales-bill:dispatch:55",
+        action: "Create Sales Bill",
+        href: "/sales-bills/new?dispatchId=55&from=pending-actions",
+        priority: PENDING_PRIORITY.MEDIUM,
+        ownerRole: "ADMIN",
+      },
+    ]);
+    assert.equal(merged.length, 1);
+    assert.match(merged[0].href, /dispatchId=55/);
   });
 
   it("fetchStoreProductionHandoffPendingActions returns no Store inbox rows", async () => {

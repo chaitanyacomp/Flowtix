@@ -681,6 +681,10 @@ function normalizeContinueWorkingRow(raw) {
     metadata: {
       key: raw?.key ?? null,
       salesOrderId,
+      workOrderId: raw?.workOrderId != null ? Number(raw.workOrderId) : null,
+      productionId: raw?.productionId != null ? Number(raw.productionId) : null,
+      itemId: raw?.itemId != null ? Number(raw.itemId) : null,
+      dispatchId: raw?.dispatchId != null ? Number(raw.dispatchId) : null,
       orderType,
       cycleNo: raw?.cycleNo ?? null,
       cycleId: raw?.cycleId ?? null,

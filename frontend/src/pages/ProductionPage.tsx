@@ -57,6 +57,7 @@ import {
 } from "../lib/materialWorkflowLinks";
 import { OperationalProductionWorkspace } from "../components/erp/OperationalProductionWorkspace";
 import { ProductionExecutionPanel } from "../components/erp/production/ProductionExecutionPanel";
+import { ProductionReportPanel } from "../components/erp/production/ProductionReportPanel";
 import {
   formatProductionExecutionQueueNotice,
   hasPendingShortfallDecision,
@@ -2107,6 +2108,17 @@ export function ProductionPage() {
     if (!rows.some((e) => isApproved(e))) return false;
     return !rows.some((e) => qcPendingEntry(e));
   }, [navigateNoQtyContext, canProd, selected, entries]);
+
+  /** Approved production exists — show RM consumption / production report for audit. */
+  const showProductionReport = React.useMemo(() => {
+    if (effectiveScopedWoId <= 0) return false;
+    const hasApprovedOnWo = entries.some(
+      (e) => Number(e.workOrderLine?.workOrder?.id ?? 0) === effectiveScopedWoId && isApproved(e),
+    );
+    if (hasApprovedOnWo) return true;
+    if (navigateNoQtyContext && noQtyExecutionSummary?.executionStatus === "COMPLETED") return true;
+    return false;
+  }, [effectiveScopedWoId, entries, navigateNoQtyContext, noQtyExecutionSummary]);
 
   const qcBannerHref = React.useMemo(() => {
     if (qcBannerSoId <= 0) return "";
@@ -5080,6 +5092,14 @@ export function ProductionPage() {
       !productionPrimaryStripCoversDraft &&
       !(fromNoQtySo && !showNoQtyScopedProductionCard && flatLines.length > 0 && canProd) ? (
         <div className="mb-1.5">{renderDraftProductionBanner({ compact: true })}</div>
+      ) : null}
+
+      {showProductionReport ? (
+        <ProductionReportPanel
+          workOrderId={effectiveScopedWoId}
+          refreshKey={liveTick}
+          className={cn(!fromNoQtySo && flatLines.length > 0 && "mt-1")}
+        />
       ) : null}
 
       <Card

@@ -92,6 +92,7 @@ const {
   persistProductionEntryRmConsumption,
   RM_CONSUMPTION_ROUNDING_TOLERANCE_KG,
 } = require("../services/productionRmConsumptionService");
+const { buildWorkOrderProductionReport } = require("../services/productionWorkOrderReportService");
 const {
   HOLD_REASONS,
   holdWorkOrder,
@@ -1147,6 +1148,25 @@ productionRouter.post(
         });
       });
       return res.json(result);
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
+/**
+ * Read-only production report / RM consumption authority for a work order.
+ * Visible after approved production batches exist (REGULAR + NO_QTY).
+ */
+productionRouter.get(
+  "/work-orders/:id/production-report",
+  requireAuth,
+  requireRole(["ADMIN", "PRODUCTION", "STORE", "QA"]),
+  async (req, res, next) => {
+    try {
+      const id = Number(req.params.id);
+      const report = await buildWorkOrderProductionReport(prisma, id);
+      return res.json(report);
     } catch (e) {
       return next(e);
     }

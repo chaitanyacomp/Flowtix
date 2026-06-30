@@ -5,6 +5,7 @@ import {
   PROCUREMENT_TERMS,
   PROCUREMENT_WORKFLOW_STAGES,
 } from "./procurementTerminology";
+import { procurementSourceAliasForDemandPool } from "./procurementWorkspaceQueues";
 
 export const WO_PROCUREMENT_CONTINUITY = {
   PROCUREMENT_INITIATED: PROCUREMENT_STATUS_VOCABULARY.AWAITING_PR,
@@ -157,7 +158,11 @@ export function buildProcurementWorkspaceHref(opts: {
             opts.sourceType === "SALES_ORDER"
           ? "REGULAR_SO"
           : null);
-  if (demandPool) q.set("demandPool", demandPool);
+  if (demandPool) {
+    q.set("demandPool", demandPool);
+    const alias = procurementSourceAliasForDemandPool(demandPool);
+    if (alias) q.set("source", alias);
+  }
   if (opts.salesOrderId != null && opts.salesOrderId > 0) q.set("salesOrderId", String(opts.salesOrderId));
   if (opts.workOrderId != null && opts.workOrderId > 0) q.set("workOrderId", String(opts.workOrderId));
   if (opts.rmItemId != null && opts.rmItemId > 0) q.set("rmItemId", String(opts.rmItemId));

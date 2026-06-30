@@ -936,18 +936,18 @@ export function StockPage() {
                           >
                             Movements
                           </Button>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
                             className="h-7 px-2 text-[11px]"
-                            onClick={(e) => {
-                              e.stopPropagation();
+                          onClick={(e) => {
+                            e.stopPropagation();
                               openByLocationForItem(r.item.itemName, r.item.itemType);
                             }}
                           >
                             By Location
-                          </Button>
+                        </Button>
                         </div>
                       </td>
                     </tr>

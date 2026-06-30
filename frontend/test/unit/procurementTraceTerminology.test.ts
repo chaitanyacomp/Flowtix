@@ -66,19 +66,19 @@ describe("procurementTraceTerminology", () => {
 describe("buildProcurementWorkspaceHref deep links", () => {
   it("opens REGULAR_SO pool from SO / RM Control Center context", () => {
     expect(buildProcurementWorkspaceHref({ salesOrderId: 12, returnTo: "rm-control-center" })).toBe(
-      "/procurement-planning?demandPool=REGULAR_SO&salesOrderId=12&returnTo=rm-control-center",
+      "/procurement-planning?demandPool=REGULAR_SO&source=sales-orders&salesOrderId=12&returnTo=rm-control-center",
     );
   });
 
   it("opens MPRS pool from monthly planning source type", () => {
     expect(buildProcurementWorkspaceHref({ sourceType: "MONTHLY_PLAN" })).toBe(
-      "/procurement-planning?demandPool=MPRS",
+      "/procurement-planning?demandPool=MPRS&source=monthly-planning",
     );
   });
 
   it("opens STOCK_REPLENISHMENT pool when explicitly requested", () => {
     expect(buildProcurementWorkspaceHref({ demandPool: "STOCK_REPLENISHMENT" })).toBe(
-      "/procurement-planning?demandPool=STOCK_REPLENISHMENT",
+      "/procurement-planning?demandPool=STOCK_REPLENISHMENT&source=stock-replenishment",
     );
   });
 });

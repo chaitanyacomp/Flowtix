@@ -4,7 +4,7 @@
  */
 
 const { QUEUE_EPS, qtyToNumber } = require("./rmPurchaseHelpers");
-const { resolveDemandPoolForSourceType } = require("./procurementDemandPoolService");
+const { resolveDemandPoolForSourceType, normalizeDemandPoolKey } = require("./procurementDemandPoolService");
 const { productionExecutionPendingActionLabel } = require("./productionExecutionService");
 
 const WAITING_FOR_PURCHASE_RM_PO = "Waiting for Purchase to prepare RM PO.";
@@ -108,7 +108,9 @@ function summarizeProcurementStageFromMeta(meta) {
     pendingGrnQty,
     operationalKey: operationalKey || null,
     nextActionKey: nextActionKey || null,
-    procurementDemandPool: resolveProcurementDemandPool(meta?.sourceType),
+    procurementDemandPool:
+      normalizeDemandPoolKey(meta?.procurementDemandPool) ??
+      resolveProcurementDemandPool(meta?.sourceType),
     materialRequirementId: meta?.materialRequirementId != null ? Number(meta.materialRequirementId) : null,
     sourceType: meta?.sourceType ?? null,
     workOrderId: meta?.workOrderId != null ? Number(meta.workOrderId) : null,

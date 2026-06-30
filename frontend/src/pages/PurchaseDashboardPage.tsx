@@ -7,6 +7,7 @@ import { apiFetch } from "../services/api";
 import { PageContainer } from "../components/PageHeader";
 import { ERP_DASHBOARD_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
 import { ProcurementPendingDashboardCard, type ProcurementPendingRow } from "../components/erp/ProcurementPendingDashboardCard";
+import { buildProcurementWorkspaceEntryHref, deriveQueueCountsFromMrs } from "../lib/procurementWorkspaceQueues";
 import { DashboardOpsClearStrip, DashboardWorkspaceHeader } from "../components/erp/foundation";
 import { PendingActionsDashboardCard } from "./PendingActionsPage";
 import type { PendingActionsDashboardProps } from "../lib/pendingActionsApi";
@@ -115,6 +116,15 @@ export function PurchaseDashboardPage({
   const procurementCount = procurementPending?.length ?? 0;
   const payablesCount = payables?.payablesFollowUp?.length ?? 0;
   const exportCount = payables?.stats?.exportPurchaseCount ?? payables?.exportPending?.purchaseBills?.length ?? 0;
+  const procurementWorkspaceHref = React.useMemo(
+    () =>
+      buildProcurementWorkspaceEntryHref({
+        source: "dashboard",
+        rows: procurementPending ?? [],
+        queueCounts: deriveQueueCountsFromMrs(procurementPending ?? []),
+      }),
+    [procurementPending],
+  );
 
   if (loading) {
     return (
@@ -172,7 +182,7 @@ export function PurchaseDashboardPage({
         ) : null}
 
         <div className="mb-2 flex flex-wrap gap-1.5">
-          <ErpActionButton tier="primary" className="gap-1.5" onClick={() => navigate("/procurement-planning?demandPool=REGULAR_SO&source=dashboard")}>
+          <ErpActionButton tier="primary" className="gap-1.5" onClick={() => navigate(procurementWorkspaceHref)}>
             <ClipboardList className="h-3.5 w-3.5" aria-hidden />
             Procurement workspace
           </ErpActionButton>
@@ -191,7 +201,7 @@ export function PurchaseDashboardPage({
             <div className="text-[10px] font-bold uppercase tracking-wide text-slate-500">PO lines pending GRN</div>
             <div className="mt-1 text-xl font-bold tabular-nums text-slate-900">{pendingPoLines}</div>
           </Link>
-          <Link to="/procurement-planning?demandPool=REGULAR_SO&source=dashboard" className={cn(card, "block p-3 no-underline hover:border-sky-300")}>
+          <Link to={procurementWorkspaceHref} className={cn(card, "block p-3 no-underline hover:border-sky-300")}>
             <div className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Procurement queue</div>
             <div className="mt-1 text-xl font-bold tabular-nums text-slate-900">{procurementCount}</div>
           </Link>
@@ -208,7 +218,7 @@ export function PurchaseDashboardPage({
         {allQuiet ? <DashboardOpsClearStrip role="PURCHASE" className="mb-3" /> : null}
 
         <div className="grid gap-3 lg:grid-cols-2">
-          <ProcurementPendingDashboardCard rows={procurementPending} loading={false} />
+          <ProcurementPendingDashboardCard rows={procurementPending} loading={false} workspaceHref={procurementWorkspaceHref} />
 
           <Card className={card}>
             <CardHeader className="border-b border-slate-100 p-2.5 pb-2">

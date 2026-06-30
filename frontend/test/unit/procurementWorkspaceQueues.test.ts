@@ -1,11 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildProcurementWorkspaceEntryHref,
   deriveDemandPoolCountsFromPools,
   deriveDemandPoolCountsFromWorkspace,
+  deriveQueueCountsFromMrs,
   filterMrsByQueueTab,
   mrMatchesDemandPool,
   parseDemandPoolParam,
+  parseProcurementWorkspaceDemandPool,
+  preferProcurementDemandPoolFromCounts,
   PROCUREMENT_DEMAND_POOL_TABS,
+  resolveDemandPoolForMaterialRequirementInWorkspace,
   workspaceQueryForDemandPool,
 } from "../../src/lib/procurementWorkspaceQueues";
 
@@ -48,20 +53,95 @@ describe("procurementWorkspaceQueues", () => {
     expect(mrMatchesDemandPool(rows[3], "REGULAR_SO")).toBe(false);
   });
 
-  it("workspaceQueryForDemandPool always includes demandPool", () => {
-    expect(workspaceQueryForDemandPool("MPRS")).toBe("?demandPool=MPRS");
+  it("workspaceQueryForDemandPool always includes demandPool and source alias", () => {
+    expect(workspaceQueryForDemandPool("MPRS")).toBe("?demandPool=MPRS&source=monthly-planning");
     expect(workspaceQueryForDemandPool("REGULAR_SO", { salesOrderId: 42 })).toBe(
-      "?demandPool=REGULAR_SO&salesOrderId=42",
+      "?demandPool=REGULAR_SO&source=sales-orders&salesOrderId=42",
+    );
+    expect(workspaceQueryForDemandPool("STOCK_REPLENISHMENT")).toBe(
+      "?demandPool=STOCK_REPLENISHMENT&source=stock-replenishment",
     );
   });
 
   it("workspaceQueryForDemandPool passes materialRequirementId for MPRS but not salesOrderId", () => {
     expect(workspaceQueryForDemandPool("MPRS", { salesOrderId: 1, materialRequirementId: 101 })).toBe(
-      "?demandPool=MPRS&materialRequirementId=101",
+      "?demandPool=MPRS&source=monthly-planning&materialRequirementId=101",
     );
     expect(workspaceQueryForDemandPool("REGULAR_SO", { salesOrderId: 1, materialRequirementId: 101 })).toBe(
-      "?demandPool=REGULAR_SO&salesOrderId=1",
+      "?demandPool=REGULAR_SO&source=sales-orders&salesOrderId=1",
     );
+  });
+
+  it("parseProcurementWorkspaceDemandPool reads demandPool and source aliases", () => {
+    expect(parseProcurementWorkspaceDemandPool(new URLSearchParams("demandPool=MPRS"))).toBe("MPRS");
+    expect(parseProcurementWorkspaceDemandPool(new URLSearchParams("source=monthly-planning"))).toBe("MPRS");
+    expect(parseProcurementWorkspaceDemandPool(new URLSearchParams("source=sales-orders"))).toBe("REGULAR_SO");
+    expect(
+      parseProcurementWorkspaceDemandPool(new URLSearchParams("source=stock-replenishment")),
+    ).toBe("STOCK_REPLENISHMENT");
+  });
+
+  it("preferProcurementDemandPoolFromCounts picks first non-empty pool", () => {
+    expect(
+      preferProcurementDemandPoolFromCounts({ REGULAR_SO: 0, MPRS: 2, STOCK_REPLENISHMENT: 0 }),
+    ).toBe("MPRS");
+    expect(
+      preferProcurementDemandPoolFromCounts({ REGULAR_SO: 0, MPRS: 0, STOCK_REPLENISHMENT: 3 }),
+    ).toBe("STOCK_REPLENISHMENT");
+    expect(preferProcurementDemandPoolFromCounts({ REGULAR_SO: 0, MPRS: 0, STOCK_REPLENISHMENT: 0 })).toBe(
+      "REGULAR_SO",
+    );
+  });
+
+  it("buildProcurementWorkspaceEntryHref opens correct tab for each demand pool", () => {
+    expect(
+      buildProcurementWorkspaceEntryHref({
+        demandPool: "MPRS",
+        materialRequirementId: 201,
+        returnTo: "pending-actions",
+      }),
+    ).toContain("demandPool=MPRS");
+    expect(
+      buildProcurementWorkspaceEntryHref({
+        demandPool: "MPRS",
+        materialRequirementId: 201,
+        returnTo: "pending-actions",
+      }),
+    ).toContain("source=monthly-planning");
+    expect(
+      buildProcurementWorkspaceEntryHref({
+        demandPool: "REGULAR_SO",
+        salesOrderId: 12,
+      }),
+    ).toContain("demandPool=REGULAR_SO");
+    expect(
+      buildProcurementWorkspaceEntryHref({
+        demandPool: "STOCK_REPLENISHMENT",
+      }),
+    ).toContain("demandPool=STOCK_REPLENISHMENT");
+  });
+
+  it("buildProcurementWorkspaceEntryHref infers MPRS from monthly planning rows", () => {
+    const href = buildProcurementWorkspaceEntryHref({
+      rows: [{ materialRequirementId: 55, sourceType: "MONTHLY_PLAN" }],
+      queueCounts: deriveQueueCountsFromMrs([{ materialRequirementId: 55, sourceType: "MONTHLY_PLAN" }]),
+    });
+    expect(href).toContain("demandPool=MPRS");
+    expect(href).toContain("source=monthly-planning");
+  });
+
+  it("resolveDemandPoolForMaterialRequirementInWorkspace finds MR pool from workspace pools", () => {
+    const pool = resolveDemandPoolForMaterialRequirementInWorkspace(
+      {
+        pools: {
+          REGULAR_SO: { items: [] },
+          MPRS: { items: [{ origins: [{ materialRequirementId: 77 }] }] },
+          STOCK_REPLENISHMENT: { items: [] },
+        },
+      },
+      77,
+    );
+    expect(pool).toBe("MPRS");
   });
 
   it("deriveDemandPoolCountsFromPools counts unique MR ids per pool", () => {

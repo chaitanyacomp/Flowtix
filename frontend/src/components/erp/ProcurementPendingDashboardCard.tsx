@@ -9,10 +9,12 @@ import {
   procurementStageLabelForKey,
   WO_PROCUREMENT_CONTINUITY,
 } from "../../lib/woProcurementContinuity";
+import { buildProcurementWorkspaceEntryHref } from "../../lib/procurementWorkspaceQueues";
 
 export type ProcurementPendingRow = {
   materialRequirementId: number;
   docNo: string | null;
+  sourceType?: string | null;
   workOrderId?: number | null;
   workOrderNo?: string | null;
   salesOrderId: number | null;
@@ -34,14 +36,21 @@ export type ProcurementPendingRow = {
 type Props = {
   rows: ProcurementPendingRow[] | null;
   loading?: boolean;
+  workspaceHref?: string | null;
 };
 
 function fmtQty(n: number) {
   return n.toLocaleString(undefined, { maximumFractionDigits: 3 });
 }
 
-export function ProcurementPendingDashboardCard({ rows, loading }: Props) {
+export function ProcurementPendingDashboardCard({ rows, loading, workspaceHref }: Props) {
   const list = rows ?? [];
+  const defaultWorkspaceHref =
+    workspaceHref ??
+    buildProcurementWorkspaceEntryHref({
+      source: "dashboard",
+      rows: list,
+    });
   if (loading) {
     return (
       <Card className="border-violet-200/80 shadow-sm">
@@ -58,7 +67,7 @@ export function ProcurementPendingDashboardCard({ rows, loading }: Props) {
         </CardHeader>
         <CardContent className="pt-0 pb-3">
           <Link
-            to="/procurement-planning?demandPool=REGULAR_SO"
+            to={defaultWorkspaceHref}
             className={cn(buttonVariants({ variant: "outline", size: "sm" }), "h-8 text-[11px] no-underline")}
           >
             {PROCUREMENT_TERMS.WORKSPACE_TITLE}

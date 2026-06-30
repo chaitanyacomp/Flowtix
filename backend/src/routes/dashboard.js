@@ -155,7 +155,8 @@ dashboardRouter.get("/procurement-pending", requireAuth, woPrepareProcurementRol
       buildAllocationFirstDashboardRows,
     } = require("../services/materialAvailabilityWorkspaceService");
     const [rows, storeIssuePending] = await Promise.all([
-      buildProcurementPendingQueue(prisma, { woPlanningOnly: true }),
+      /** Match Procurement Workspace — all demand pools (REGULAR_SO, MPRS, replenishment). */
+      buildProcurementPendingQueue(prisma),
       buildStoreIssuePendingDashboardRows(prisma),
     ]);
     const allocationFirstPending = await buildAllocationFirstDashboardRows(prisma);

@@ -57,6 +57,50 @@ export function parseDemandPoolParam(value: string | null | undefined): Procurem
     : null;
 }
 
+/** Human-friendly `source` query aliases → demand pool tab keys. */
+export const PROCUREMENT_SOURCE_TAB_ALIASES: Record<string, ProcurementDemandPoolKey> = {
+  "monthly-planning": "MPRS",
+  monthly_planning: "MPRS",
+  mprs: "MPRS",
+  "sales-orders": "REGULAR_SO",
+  sales_orders: "REGULAR_SO",
+  regular_so: "REGULAR_SO",
+  "stock-replenishment": "STOCK_REPLENISHMENT",
+  stock_replenishment: "STOCK_REPLENISHMENT",
+};
+
+type SearchParamsLike = { get: (key: string) => string | null };
+
+/** Resolve active procurement tab from `demandPool` or legacy `source` navigation hints. */
+export function parseProcurementWorkspaceDemandPool(
+  params: SearchParamsLike,
+): ProcurementDemandPoolKey | null {
+  const fromPool = parseDemandPoolParam(params.get("demandPool"));
+  if (fromPool) return fromPool;
+  const sourceKey = String(params.get("source") ?? "")
+    .trim()
+    .toLowerCase();
+  if (sourceKey && PROCUREMENT_SOURCE_TAB_ALIASES[sourceKey]) {
+    return PROCUREMENT_SOURCE_TAB_ALIASES[sourceKey];
+  }
+  return null;
+}
+
+export function procurementSourceAliasForDemandPool(
+  demandPool: ProcurementDemandPoolKey,
+): string | null {
+  switch (demandPool) {
+    case "MPRS":
+      return "monthly-planning";
+    case "REGULAR_SO":
+      return "sales-orders";
+    case "STOCK_REPLENISHMENT":
+      return "stock-replenishment";
+    default:
+      return null;
+  }
+}
+
 export function resolveMrDemandPool(mr: {
   sourceType?: string | null;
   source?: { type?: string | null } | null;
@@ -137,6 +181,8 @@ export function workspaceQueryForDemandPool(
 ): string {
   const params = new URLSearchParams();
   params.set("demandPool", demandPool);
+  const sourceAlias = procurementSourceAliasForDemandPool(demandPool);
+  if (sourceAlias) params.set("source", sourceAlias);
   if (demandPool === "REGULAR_SO" && opts?.salesOrderId != null && opts.salesOrderId > 0) {
     params.set("salesOrderId", String(opts.salesOrderId));
   }
@@ -144,6 +190,122 @@ export function workspaceQueryForDemandPool(
     params.set("materialRequirementId", String(opts.materialRequirementId));
   }
   return `?${params.toString()}`;
+}
+
+/** Workspace API query — omit demandPool when bootstrapping tab from a focused MR. */
+export function workspaceBootstrapQuery(opts: {
+  demandPool?: ProcurementDemandPoolKey | null;
+  salesOrderId?: number | null;
+  materialRequirementId?: number | null;
+}): string {
+  const params = new URLSearchParams();
+  if (opts.demandPool) {
+    params.set("demandPool", opts.demandPool);
+    const sourceAlias = procurementSourceAliasForDemandPool(opts.demandPool);
+    if (sourceAlias) params.set("source", sourceAlias);
+  }
+  if (opts.salesOrderId != null && opts.salesOrderId > 0) {
+    params.set("salesOrderId", String(opts.salesOrderId));
+  }
+  if (opts.materialRequirementId != null && opts.materialRequirementId > 0) {
+    params.set("materialRequirementId", String(opts.materialRequirementId));
+  }
+  const s = params.toString();
+  return s ? `?${s}` : "";
+}
+
+export function resolveDemandPoolForMaterialRequirementInWorkspace(
+  ws: {
+    pools?: PoolsMapLike | null;
+    sections?: {
+      pendingMaterialRequirements?: Array<{
+        materialRequirementId?: number | null;
+        sourceType?: string | null;
+        source?: { type?: string | null } | null;
+      }> | null;
+    } | null;
+  } | null,
+  materialRequirementId: number,
+): ProcurementDemandPoolKey | null {
+  const mrId = Number(materialRequirementId);
+  if (!Number.isFinite(mrId) || mrId <= 0 || !ws) return null;
+
+  for (const row of ws.sections?.pendingMaterialRequirements ?? []) {
+    if (Number(row.materialRequirementId ?? 0) === mrId) {
+      return resolveMrDemandPool(row);
+    }
+  }
+
+  for (const poolKey of PROCUREMENT_DEMAND_POOL_KEYS) {
+    const items = ws.pools?.[poolKey]?.items ?? [];
+    for (const item of items) {
+      for (const origin of item.origins ?? []) {
+        if (Number(origin.materialRequirementId ?? 0) === mrId) return poolKey;
+      }
+    }
+  }
+  return null;
+}
+
+/** Pick the first non-empty demand pool for dashboard deep-links (MPRS before REGULAR_SO). */
+export function preferProcurementDemandPoolFromCounts(
+  counts: Partial<ProcurementDemandPoolCounts>,
+  opts?: {
+    materialRequirementId?: number | null;
+    rows?: ReadonlyArray<{
+      materialRequirementId?: number | null;
+      sourceType?: string | null;
+      source?: { type?: string | null } | null;
+    }>;
+  },
+): ProcurementDemandPoolKey {
+  const focusMrId = Number(opts?.materialRequirementId ?? 0);
+  if (focusMrId > 0 && opts?.rows?.length) {
+    const row = opts.rows.find((r) => Number(r.materialRequirementId ?? 0) === focusMrId);
+    const pool = row ? resolveMrDemandPool(row) : null;
+    if (pool) return pool;
+  }
+  for (const key of PROCUREMENT_DEMAND_POOL_KEYS) {
+    if (Number(counts[key] ?? 0) > 0) return key;
+  }
+  return DEFAULT_PROCUREMENT_DEMAND_POOL;
+}
+
+export function buildProcurementWorkspaceEntryHref(opts?: {
+  demandPool?: ProcurementDemandPoolKey | null;
+  materialRequirementId?: number | null;
+  salesOrderId?: number | null;
+  workOrderId?: number | null;
+  returnTo?: string | null;
+  source?: string | null;
+  rows?: ReadonlyArray<{
+    materialRequirementId?: number | null;
+    sourceType?: string | null;
+    source?: { type?: string | null } | null;
+  }>;
+  queueCounts?: Partial<ProcurementDemandPoolCounts> | null;
+}): string {
+  const pool =
+    opts?.demandPool ??
+    preferProcurementDemandPoolFromCounts(opts?.queueCounts ?? {}, {
+      materialRequirementId: opts?.materialRequirementId,
+      rows: opts?.rows,
+    });
+  const params = new URLSearchParams();
+  params.set("demandPool", pool);
+  const sourceAlias = opts?.source?.trim() || procurementSourceAliasForDemandPool(pool);
+  if (sourceAlias) params.set("source", sourceAlias);
+  if (opts?.returnTo) params.set("returnTo", opts.returnTo);
+  if (opts?.salesOrderId != null && opts.salesOrderId > 0) {
+    params.set("salesOrderId", String(opts.salesOrderId));
+  }
+  if (opts?.workOrderId != null && opts.workOrderId > 0) {
+    params.set("workOrderId", String(opts.workOrderId));
+  }
+  if (opts?.materialRequirementId != null && opts.materialRequirementId > 0) {
+    params.set("materialRequirementId", String(opts.materialRequirementId));
+  }
+  return `/procurement-planning?${params.toString()}`;
 }
 
 /** @deprecated Use workspaceQueryForDemandPool */

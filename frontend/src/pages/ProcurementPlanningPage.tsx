@@ -44,7 +44,9 @@ import {
   DEFAULT_PROCUREMENT_DEMAND_POOL,
   deriveDemandPoolCountsFromWorkspace,
   mrMatchesDemandPool,
-  parseDemandPoolParam,
+  parseProcurementWorkspaceDemandPool,
+  resolveDemandPoolForMaterialRequirementInWorkspace,
+  workspaceBootstrapQuery,
   workspaceQueryForDemandPool,
   type ProcurementDemandPoolCounts,
   type ProcurementDemandPoolKey,
@@ -847,8 +849,10 @@ export function ProcurementPlanningPage() {
   const focusRmItemId = Number(searchParams.get("rmItemId") ?? 0);
   const focusMaterialRequirementId = Number(searchParams.get("materialRequirementId") ?? 0);
   const returnTo = searchParams.get("returnTo");
-  const demandPool =
-    parseDemandPoolParam(searchParams.get("demandPool")) ?? DEFAULT_PROCUREMENT_DEMAND_POOL;
+  const explicitDemandPool = parseProcurementWorkspaceDemandPool(searchParams);
+  const demandPool = explicitDemandPool ?? DEFAULT_PROCUREMENT_DEMAND_POOL;
+  const focusPoolBootstrapRef = React.useRef(false);
+  const focusPoolAlignedRef = React.useRef(false);
 
   const setDemandPool = React.useCallback(
     (pool: ProcurementDemandPoolKey) => {
@@ -881,13 +885,28 @@ export function ProcurementPlanningPage() {
 
     try {
 
-      const q = workspaceQueryForDemandPool(demandPool, {
-        salesOrderId: demandPool === "REGULAR_SO" && filterSoId > 0 ? filterSoId : null,
-        materialRequirementId:
-          demandPool === "MPRS" && focusMaterialRequirementId > 0 ? focusMaterialRequirementId : null,
-      });
+      const bootstrapFromFocusMr =
+        focusMaterialRequirementId > 0 &&
+        !explicitDemandPool &&
+        !focusPoolBootstrapRef.current;
+
+      const q = bootstrapFromFocusMr
+        ? workspaceBootstrapQuery({ materialRequirementId: focusMaterialRequirementId })
+        : workspaceQueryForDemandPool(demandPool, {
+            salesOrderId: demandPool === "REGULAR_SO" && filterSoId > 0 ? filterSoId : null,
+            materialRequirementId:
+              demandPool === "MPRS" && focusMaterialRequirementId > 0 ? focusMaterialRequirementId : null,
+          });
 
       const data = await apiFetch<WorkspaceResponse>(`/api/procurement-planning/workspace${q}`);
+
+      if (bootstrapFromFocusMr && focusMaterialRequirementId > 0) {
+        const resolved = resolveDemandPoolForMaterialRequirementInWorkspace(data, focusMaterialRequirementId);
+        if (resolved) {
+          focusPoolBootstrapRef.current = true;
+          if (resolved !== demandPool) setDemandPool(resolved);
+        }
+      }
 
       setWs(data);
 
@@ -901,7 +920,7 @@ export function ProcurementPlanningPage() {
 
     }
 
-  }, [demandPool, filterSoId, focusMaterialRequirementId]);
+  }, [demandPool, filterSoId, focusMaterialRequirementId, explicitDemandPool, setDemandPool]);
 
 
 
@@ -967,7 +986,8 @@ export function ProcurementPlanningPage() {
 
 
   React.useEffect(() => {
-    if (!parseDemandPoolParam(searchParams.get("demandPool"))) {
+    if (focusMaterialRequirementId > 0) return;
+    if (!explicitDemandPool) {
       setSearchParams(
         (prev) => {
           const next = new URLSearchParams(prev);
@@ -977,7 +997,23 @@ export function ProcurementPlanningPage() {
         { replace: true },
       );
     }
-  }, [searchParams, setSearchParams]);
+  }, [explicitDemandPool, focusMaterialRequirementId, setSearchParams]);
+
+  React.useEffect(() => {
+    if (!ws || focusMaterialRequirementId <= 0 || focusPoolAlignedRef.current) return;
+    const resolved = resolveDemandPoolForMaterialRequirementInWorkspace(ws, focusMaterialRequirementId);
+    if (!resolved || resolved === demandPool) {
+      focusPoolAlignedRef.current = true;
+      return;
+    }
+    const mrVisible = (ws.sections?.pendingMaterialRequirements ?? []).some(
+      (m) => Number(m.materialRequirementId ?? 0) === focusMaterialRequirementId,
+    );
+    if (!mrVisible) {
+      focusPoolAlignedRef.current = true;
+      setDemandPool(resolved);
+    }
+  }, [ws, focusMaterialRequirementId, demandPool, setDemandPool]);
 
   React.useEffect(() => {
 

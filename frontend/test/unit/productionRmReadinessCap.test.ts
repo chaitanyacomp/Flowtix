@@ -88,4 +88,31 @@ describe("resolveRegularRmProductionQtyCap", () => {
     expect(resolveRegularRmAllowedNowQty(blocked)).toBeNull();
     expect(resolveRegularRmEntryQtyCap(blocked, { lineWoRemaining: 5000 })).toBeNull();
   });
+
+  it("NO_QTY allows approving full draft when RM supports planned WO qty", () => {
+    const data = ready({
+      orderType: "NO_QTY",
+      woQty: 2500,
+      woRemainingQty: 2500,
+      productionAllowedNowQty: 2500,
+      unapprovedProducedQty: 2500,
+      maxAdditionalQty: 0,
+    });
+    expect(resolveRegularRmEntryQtyCap(data, {
+      lineWoRemaining: 2500,
+      excludeProductionQty: 2500,
+    })).toBe(2500);
+  });
+
+  it("NO_QTY partial issue caps entry qty to RM-supported amount", () => {
+    const data = ready({
+      orderType: "NO_QTY",
+      woQty: 2500,
+      woRemainingQty: 2500,
+      productionAllowedNowQty: 1000,
+      unapprovedProducedQty: 0,
+      maxAdditionalQty: 0,
+    });
+    expect(resolveRegularRmEntryQtyCap(data, { lineWoRemaining: 2500 })).toBe(1000);
+  });
 });

@@ -1125,7 +1125,7 @@ async function getProductionQueueRows() {
 
       rows.push({
         workOrderId: wo.id,
-        workOrderNo: `WO-${wo.id}`,
+        workOrderNo: wo.docNo ?? `WO-${wo.id}`,
         workOrderLineId: line.id,
         salesOrderId: wo.salesOrderId,
         salesOrderNo: `SO-${wo.salesOrderId}`,
@@ -1213,6 +1213,7 @@ async function getQcQueueRows(options = {}) {
             select: {
               id: true,
               salesOrderId: true,
+              docNo: true,
               cycleId: true,
               salesOrder: { select: { orderType: true } },
               cycle: { select: { id: true, cycleNo: true } },
@@ -1246,7 +1247,7 @@ async function getQcQueueRows(options = {}) {
     rows.push({
       qcRef: `PE-${prod.id}`,
       workOrderId: wo.id,
-      workOrderNo: `WO-${wo.id}`,
+      workOrderNo: wo.docNo ?? `WO-${wo.id}`,
       salesOrderId: wo.salesOrderId,
       salesOrderNo: `SO-${wo.salesOrderId}`,
       itemId: wol.fgItemId,
@@ -1571,6 +1572,7 @@ async function getContinueWorkingRows(options = {}) {
         orderType: so.orderType,
         cycleNo: cycleNoOut,
         cycleId: cycleIdOut,
+        workOrderNo: prodPick.workOrderNo ?? null,
         workOrderId: prodPick.workOrderId ?? null,
         productionId: prodPick.productionId ?? null,
         itemId: prodPick.itemId ?? null,

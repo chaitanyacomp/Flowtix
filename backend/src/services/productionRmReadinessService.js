@@ -226,7 +226,7 @@ async function buildProductionRmReadiness(db, workOrderLineId) {
 
   const wo = wol.workOrder;
   const isNoQty = wo.salesOrder?.orderType === "NO_QTY";
-  const woQty = n(wol.qty);
+  const woQty = resolveWorkOrderLinePlannedQty(wol);
   const fgItemId = wol.fgItemId;
   const fgName = wol.fgItem?.itemName ?? `Item #${fgItemId}`;
   const fgUnit = wol.fgItem?.unit ?? "";
@@ -458,6 +458,14 @@ async function issueRmForApprovedProductionFromPmrLocations(
   });
 }
 
+function resolveProductionBatchRmCap(readiness, otherUnapprovedQty = 0) {
+  const rmCap = n(readiness?.productionAllowedNowQty);
+  const isNoQty = String(readiness?.orderType ?? "").toUpperCase() === "NO_QTY";
+  if (!isNoQty) return rmCap;
+  const woCap = Math.max(0, n(readiness?.woRemainingQty ?? readiness?.woQty));
+  return Math.max(0, Math.min(woCap, rmCap) - n(otherUnapprovedQty));
+}
+
 /**
  * @param {import('@prisma/client').Prisma.TransactionClient} tx
  */
@@ -507,7 +515,7 @@ async function assertProductionRmReadiness(tx, {
   const otherUnapprovedQty = await loadOtherUnapprovedProductionQty(tx, workOrderLineId, excludeProductionId);
   const maxAllowed = readiness.productionAllowedNowQty;
   const isNoQty = readiness.orderType === "NO_QTY";
-  const batchAllowed = isNoQty ? readiness.maxAdditionalQty : maxAllowed;
+  const batchAllowed = resolveProductionBatchRmCap(readiness, otherUnapprovedQty);
   const qtyToCheck = qty;
   if (
     productionQtyExceedsRmAllowed({
@@ -687,6 +695,7 @@ module.exports = {
   aggregatePmrRequiredByItem,
   computeMaxProducibleFromPmrBasis,
   resolveWorkOrderLinePlannedQty,
+  resolveProductionBatchRmCap,
   productionQtyExceedsRmAllowed,
   isPmrStoreIssueComplete,
   resolveReadinessGate,

@@ -670,7 +670,7 @@ function normalizeContinueWorkingRow(raw) {
   return buildNormalizedRow({
     rowType: ROW_TYPES.CONTINUE_WORKING,
     documentType: documentTypeForOrderType(orderType),
-    documentNo: raw?.salesOrderDocNo ?? null,
+    documentNo: stageKey === "PRODUCTION" ? raw?.workOrderNo ?? raw?.salesOrderDocNo ?? null : raw?.salesOrderDocNo ?? null,
     currentStatus,
     currentOwner: ownerForContinueWorkingStage(stageKey),
     nextAction: raw?.nextStep ?? nextAction,
@@ -682,6 +682,7 @@ function normalizeContinueWorkingRow(raw) {
       key: raw?.key ?? null,
       salesOrderId,
       workOrderId: raw?.workOrderId != null ? Number(raw.workOrderId) : null,
+      workOrderNo: raw?.workOrderNo ?? null,
       productionId: raw?.productionId != null ? Number(raw.productionId) : null,
       itemId: raw?.itemId != null ? Number(raw.itemId) : null,
       dispatchId: raw?.dispatchId != null ? Number(raw.dispatchId) : null,

@@ -4,6 +4,8 @@ const {
   floorFgQty,
   productionQtyExceedsRmAllowed,
   resolveReadinessGate,
+  resolveWorkOrderLinePlannedQty,
+  resolveProductionBatchRmCap,
   SUBMITTED_PMR_STATUSES,
   aggregatePmrRequiredByItem,
   computeMaxProducibleFromPmrBasis,
@@ -299,5 +301,117 @@ describe("productionRmReadinessService", () => {
     });
     assert.equal(bomCap, 468);
     assert.equal(pmrCap, 500);
+  });
+
+  it("resolveWorkOrderLinePlannedQty prefers plannedQty over zero qty", () => {
+    assert.equal(resolveWorkOrderLinePlannedQty({ qty: 0, plannedQty: 2500 }), 2500);
+    assert.equal(resolveWorkOrderLinePlannedQty({ qty: 1500, plannedQty: null }), 1500);
+    assert.equal(resolveWorkOrderLinePlannedQty({ qty: 0, plannedQty: 0 }), 0);
+  });
+
+  it("NO_QTY PMR basis allows full planned WO qty when issued RM matches PMR", () => {
+    const woQty = 2500;
+    const max = computeMaxProducibleFromPmrBasis({
+      woQty,
+      totalWoQty: woQty,
+      pmrRequiredByItem: new Map([[101, 12.5]]),
+      availableByItem: new Map([[101, 12.5]]),
+      allowSurplus: true,
+    });
+    assert.equal(max, 2500);
+  });
+
+  it("computeMaxProducibleFromPmrBasis returns null when woQty is zero (planned qty must be used upstream)", () => {
+    const max = computeMaxProducibleFromPmrBasis({
+      woQty: 0,
+      totalWoQty: 2500,
+      pmrRequiredByItem: new Map([[101, 12.5]]),
+      availableByItem: new Map([[101, 12.5]]),
+      allowSurplus: true,
+    });
+    assert.equal(max, null);
+  });
+
+  it("resolveProductionBatchRmCap allows approving draft when RM supports full WO qty", () => {
+    const readiness = {
+      orderType: "NO_QTY",
+      woQty: 2500,
+      woRemainingQty: 2500,
+      productionAllowedNowQty: 2500,
+      maxAdditionalQty: 0,
+    };
+    const cap = resolveProductionBatchRmCap(readiness, 0);
+    assert.equal(cap, 2500);
+    assert.equal(
+      productionQtyExceedsRmAllowed({
+        producedQty: 2500,
+        productionAllowedNowQty: cap,
+        otherUnapprovedQty: 0,
+      }),
+      false,
+    );
+  });
+
+  it("resolveProductionBatchRmCap excludes other unapproved drafts but not the entry being approved", () => {
+    const readiness = {
+      orderType: "NO_QTY",
+      woQty: 2500,
+      woRemainingQty: 2500,
+      productionAllowedNowQty: 2500,
+      maxAdditionalQty: 0,
+    };
+    const capWhenApprovingOwnDraft = resolveProductionBatchRmCap(readiness, 0);
+    assert.equal(capWhenApprovingOwnDraft, 2500);
+    const capWithOtherDraft = resolveProductionBatchRmCap(readiness, 500);
+    assert.equal(capWithOtherDraft, 2000);
+  });
+
+  it("resolveProductionBatchRmCap partial issue caps supported qty", () => {
+    const readiness = {
+      orderType: "NO_QTY",
+      woQty: 2500,
+      woRemainingQty: 2500,
+      productionAllowedNowQty: 1000,
+      maxAdditionalQty: 0,
+    };
+    assert.equal(resolveProductionBatchRmCap(readiness, 0), 1000);
+    assert.equal(
+      productionQtyExceedsRmAllowed({
+        producedQty: 1001,
+        productionAllowedNowQty: 1000,
+        otherUnapprovedQty: 0,
+      }),
+      true,
+    );
+  });
+
+  it("REGULAR WO resolveProductionBatchRmCap uses RM ceiling only", () => {
+    const readiness = {
+      orderType: "NORMAL",
+      woQty: 2500,
+      woRemainingQty: 2500,
+      productionAllowedNowQty: 2000,
+      maxAdditionalQty: 1500,
+    };
+    assert.equal(resolveProductionBatchRmCap(readiness, 500), 2000);
+  });
+
+  it("no RM issue blocks approval via zero productionAllowedNowQty", () => {
+    const readiness = {
+      orderType: "NO_QTY",
+      woQty: 2500,
+      woRemainingQty: 2500,
+      productionAllowedNowQty: 0,
+      gate: "WAITING_STORE_ISSUE",
+    };
+    assert.equal(resolveProductionBatchRmCap(readiness, 0), 0);
+    assert.equal(
+      productionQtyExceedsRmAllowed({
+        producedQty: 1,
+        productionAllowedNowQty: 0,
+        otherUnapprovedQty: 0,
+      }),
+      true,
+    );
   });
 });

@@ -9,9 +9,11 @@ const {
   dedupePendingActionsByWorkOrder,
   dedupePendingActionsByProcurementCase,
   dedupeProductionPendingActions,
+  filterExecutableProductionPendingActions,
   dedupeLifecyclePendingActions,
   filterNormalizedRowsByOwner,
   fetchPurchaseProcurementPendingActions,
+  mapProcurementQueueRowToPurchasePendingAction,
   fetchStoreGrnPendingActions,
   fetchStoreNoQtyCreateNextRsPendingActions,
   filterNoQtyStoreHandoffSupersededByLaterRs,
@@ -473,6 +475,159 @@ describe("pendingActionsService", () => {
     assert.equal(actions.filter((a) => a.action === "GRN Pending").length, 0);
   });
 
+  it("mapProcurementQueueRowToPurchasePendingAction maps Monthly Planning approved MR to Create Purchase Request", () => {
+    const action = mapProcurementQueueRowToPurchasePendingAction({
+      materialRequirementId: 201,
+      docNo: "MR-26-0201",
+      workOrderId: 10,
+      salesOrderId: null,
+      sourceType: "MONTHLY_PLAN",
+      procurementDemandPool: "MPRS",
+      operationalKey: "PROCUREMENT_PENDING",
+      nextActionKey: "CREATE_PR",
+      createdAt: "2026-05-01T10:00:00.000Z",
+    });
+    assert.ok(action);
+    assert.equal(action.action, "Create Purchase Request");
+    assert.equal(action.ownerRole, "PURCHASE");
+    assert.equal(action.id, "procurement:create-pr:mr:201");
+    assert.equal(action.currentStatus, "PROCUREMENT_PENDING");
+    assert.match(action.href, /demandPool=MPRS/);
+    assert.match(action.href, /materialRequirementId=201/);
+    assert.match(action.href, /returnTo=pending-actions/);
+  });
+
+  it("mapProcurementQueueRowToPurchasePendingAction maps PR pending PO to Prepare RM PO", () => {
+    const action = mapProcurementQueueRowToPurchasePendingAction({
+      materialRequirementId: 99,
+      docNo: "MR-26-0099",
+      sourceType: "MONTHLY_PLAN",
+      procurementDemandPool: "MPRS",
+      operationalKey: "PR_PENDING_PO",
+      nextActionKey: "CREATE_PO",
+      createdAt: "2026-05-02T10:00:00.000Z",
+    });
+    assert.ok(action);
+    assert.equal(action.action, PREPARE_RM_PO);
+    assert.equal(action.id, "procurement:create-po:mr:99");
+    assert.equal(action.currentStatus, "PR_PENDING_PO");
+    assert.match(action.href, /demandPool=MPRS/);
+  });
+
+  it("mapProcurementQueueRowToPurchasePendingAction excludes GRN pending rows", () => {
+    const action = mapProcurementQueueRowToPurchasePendingAction({
+      materialRequirementId: 88,
+      operationalKey: "GRN_PENDING",
+      nextActionKey: "OPEN_GRN",
+      primaryPoId: 112,
+    });
+    assert.equal(action, null);
+  });
+
+  it("procurement queue projection count matches actionable Purchase rows", () => {
+    const queueRows = [
+      {
+        materialRequirementId: 201,
+        docNo: "MR-26-0201",
+        sourceType: "MONTHLY_PLAN",
+        procurementDemandPool: "MPRS",
+        operationalKey: "PROCUREMENT_PENDING",
+        nextActionKey: "CREATE_PR",
+        createdAt: "2026-05-01T10:00:00.000Z",
+      },
+      {
+        materialRequirementId: 202,
+        docNo: "MR-26-0202",
+        sourceType: "SALES_ORDER",
+        procurementDemandPool: "REGULAR_SO",
+        operationalKey: "PROCUREMENT_PENDING",
+        nextActionKey: "CREATE_PR",
+        createdAt: "2026-05-01T11:00:00.000Z",
+      },
+      {
+        materialRequirementId: 203,
+        docNo: "MR-26-0203",
+        sourceType: "MONTHLY_PLAN",
+        procurementDemandPool: "MPRS",
+        operationalKey: "PR_PENDING_PO",
+        nextActionKey: "CREATE_PO",
+        createdAt: "2026-05-01T12:00:00.000Z",
+      },
+      {
+        materialRequirementId: 204,
+        docNo: "MR-26-0204",
+        operationalKey: "GRN_PENDING",
+        nextActionKey: "OPEN_GRN",
+        primaryPoId: 50,
+      },
+    ];
+    const purchaseActions = queueRows
+      .map((row) => mapProcurementQueueRowToPurchasePendingAction(row))
+      .filter(Boolean);
+    assert.equal(purchaseActions.length, 3);
+    assert.equal(
+      purchaseActions.filter((a) => a.action === "Create Purchase Request").length,
+      2,
+    );
+    assert.equal(
+      purchaseActions.filter((a) => a.action === PREPARE_RM_PO).length,
+      1,
+    );
+  });
+
+  it("after PR creation projection shifts from Create Purchase Request to Prepare RM PO", () => {
+    const beforePr = mapProcurementQueueRowToPurchasePendingAction({
+      materialRequirementId: 301,
+      docNo: "MR-26-0301",
+      sourceType: "MONTHLY_PLAN",
+      procurementDemandPool: "MPRS",
+      operationalKey: "PROCUREMENT_PENDING",
+      nextActionKey: "CREATE_PR",
+    });
+    const afterPr = mapProcurementQueueRowToPurchasePendingAction({
+      materialRequirementId: 301,
+      docNo: "MR-26-0301",
+      sourceType: "MONTHLY_PLAN",
+      procurementDemandPool: "MPRS",
+      operationalKey: "PR_PENDING_PO",
+      nextActionKey: "CREATE_PO",
+    });
+    assert.equal(beforePr.action, "Create Purchase Request");
+    assert.equal(afterPr.action, PREPARE_RM_PO);
+    assert.notEqual(beforePr.id, afterPr.id);
+    assert.equal(beforePr.materialRequirementId, afterPr.materialRequirementId);
+  });
+
+  it("dedupes Purchase CREATE_PR supplemental with normalized RM_RISK row for same MR", () => {
+    const deduped = dedupePendingActionsByProcurementCase([
+      {
+        id: "rm-risk:wo:1:rm:10",
+        priority: PENDING_PRIORITY.LOW,
+        action: "Create Purchase Request",
+        documentNo: "WO-26-0001",
+        ownerRole: "PURCHASE",
+        ageHours: 2,
+        href: "/procurement-planning?returnTo=pending-actions&demandPool=MPRS&materialRequirementId=401&workOrderId=1",
+        currentStatus: "PROCUREMENT_PENDING",
+        materialRequirementId: 401,
+      },
+      {
+        id: "procurement:create-pr:mr:401",
+        priority: PENDING_PRIORITY.LOW,
+        action: "Create Purchase Request",
+        documentNo: "MR-26-0401",
+        ownerRole: "PURCHASE",
+        ageHours: 1,
+        href: "/procurement-planning?returnTo=pending-actions&demandPool=MPRS&materialRequirementId=401",
+        currentStatus: "PROCUREMENT_PENDING",
+        materialRequirementId: 401,
+      },
+    ]);
+    assert.equal(deduped.length, 1);
+    assert.equal(deduped[0].id, "procurement:create-pr:mr:401");
+    assert.equal(deduped[0].documentNo, "MR-26-0401");
+  });
+
   it("dedupes Store GRN pending actions by PO, preferring supplemental PO doc over RM_RISK WO doc", () => {
     const deduped = dedupePendingActionsByProcurementCase([
       {
@@ -624,6 +779,96 @@ describe("pendingActionsService", () => {
     assert.match(action.href, /workOrderId=1/);
   });
 
+  it("production pending document label uses business WO number, not internal id", () => {
+    const row = normalizeProductionRow({
+      workOrderId: 307,
+      workOrderLineId: 10,
+      workOrderNo: "WO-26-0001",
+      salesOrderId: 5,
+      nextAction: "PRODUCTION_PENDING",
+      productionExecutionStatus: "NOT_STARTED",
+      status: "PENDING",
+    });
+    const action = mapNormalizedRowToPendingAction(row, "PRODUCTION");
+    assert.equal(action.documentNo, "WO-26-0001");
+    assert.notEqual(action.documentNo, "WO-307");
+    assert.match(action.href, /workOrderId=307/);
+  });
+
+  it("Continue Production row displays business WO number and routes by internal id", () => {
+    const row = normalizeContinueWorkingRow({
+      key: "so-5",
+      salesOrderId: 5,
+      salesOrderDocNo: "SO-26-0001",
+      workOrderId: 307,
+      workOrderNo: "WO-26-0001",
+      stageKey: "PRODUCTION",
+      nextAction: "PRODUCTION_PENDING",
+      nextStep: "Continue Production",
+      href: "/production?workOrderId=307&from=dashboard",
+      orderType: "NORMAL",
+    });
+    const action = mapNormalizedRowToPendingAction(row, "PRODUCTION");
+    assert.equal(action.action, PRODUCTION_EXECUTION_PENDING_LABELS.RUNNING);
+    assert.equal(action.documentNo, "WO-26-0001");
+    assert.match(action.href, /workOrderId=307/);
+  });
+
+  it("filters terminal completed WOs from Production pending actions", async () => {
+    const actions = [
+      {
+        id: "production:wo:307:line:10",
+        priority: PENDING_PRIORITY.LOW,
+        action: PRODUCTION_EXECUTION_PENDING_LABELS.RUNNING,
+        documentNo: "WO-26-0001",
+        ownerRole: "PRODUCTION",
+        href: "/production?workOrderId=307&from=pending-actions",
+      },
+    ];
+    const filtered = await filterExecutableProductionPendingActions({
+      workOrder: {
+        findMany: async () => [{ id: 307, status: "COMPLETED", productionExecution: { executionStatus: "COMPLETED" } }],
+      },
+      materialIssueNote: {
+        findMany: async () => [{ workOrderId: 307 }],
+      },
+    }, actions);
+    assert.equal(filtered.length, 0);
+  });
+
+  it("keeps only executable Production WOs with issued RM", async () => {
+    const actions = [
+      {
+        id: "production:wo:307:line:10",
+        priority: PENDING_PRIORITY.LOW,
+        action: READY_TO_START_PRODUCTION,
+        documentNo: "WO-26-0001",
+        ownerRole: "PRODUCTION",
+        href: "/production?workOrderId=307&returnTo=pending-actions",
+      },
+      {
+        id: "production:wo:308:line:11",
+        priority: PENDING_PRIORITY.LOW,
+        action: READY_TO_START_PRODUCTION,
+        documentNo: "WO-26-0002",
+        ownerRole: "PRODUCTION",
+        href: "/production?workOrderId=308&returnTo=pending-actions",
+      },
+    ];
+    const filtered = await filterExecutableProductionPendingActions({
+      workOrder: {
+        findMany: async () => [
+          { id: 307, status: "PENDING", productionExecution: { executionStatus: "NOT_STARTED" } },
+          { id: 308, status: "PENDING", productionExecution: { executionStatus: "NOT_STARTED" } },
+        ],
+      },
+      materialIssueNote: {
+        findMany: async () => [{ workOrderId: 307 }],
+      },
+    }, actions);
+    assert.equal(filtered.length, 1);
+    assert.equal(filtered[0].documentNo, "WO-26-0001");
+  });
   it("filterNoQtyStoreHandoffSupersededByLaterRs drops Cycle 1 handoff when Cycle 2 RS exists", async () => {
     const db = {
       workOrder: {

@@ -286,7 +286,7 @@ function friendlyActionForNormalizedRow(row, role = "STORE") {
     const stage = String(meta.sourceStageKey ?? "").toUpperCase();
     if (stage === "DISPATCH") return "Dispatch";
     if (stage === "QC") return "QC Pending";
-    if (stage === "PRODUCTION") return "Production Pending";
+    if (stage === "PRODUCTION") return PRODUCTION_EXECUTION_PENDING_LABELS.RUNNING;
     if (stage === "SALES_BILL") return "Create Sales Bill";
     if (stage === "NEXT_RS") {
       const cycleNo = meta.cycleNo != null ? Number(meta.cycleNo) : 1;
@@ -478,33 +478,98 @@ async function fetchAdminTallyExportPendingActions(db = prisma) {
   }));
 }
 
+function buildProcurementPlanningHrefForRow(row, demandPool) {
+  const mrId = Number(row.materialRequirementId ?? 0);
+  const params = new URLSearchParams({ returnTo: "pending-actions", demandPool });
+  if (mrId > 0) params.set("materialRequirementId", String(mrId));
+  if (row.workOrderId) params.set("workOrderId", String(row.workOrderId));
+  if (row.salesOrderId) params.set("salesOrderId", String(row.salesOrderId));
+  return `/procurement-planning?${params.toString()}`;
+}
+
+/**
+ * Map procurement workspace queue row → Purchase pending action (read-model projection).
+ * @param {object} row — buildProcurementPendingQueue() element
+ * @returns {object | null}
+ */
+function mapProcurementQueueRowToPurchasePendingAction(row) {
+  const nextKey = String(row.nextActionKey ?? "").trim().toUpperCase();
+  const opKey = String(row.operationalKey ?? "").trim().toUpperCase();
+  if (opKey === "GRN_PENDING" || nextKey === "OPEN_GRN") return null;
+  if (opKey === "RM_READY" || opKey === "REOPEN_REQUIRED") return null;
+
+  const purchaseActionable =
+    nextKey === "CREATE_PR" ||
+    nextKey === "CREATE_PO" ||
+    nextKey === "OPEN_PO" ||
+    opKey === "PROCUREMENT_PENDING" ||
+    opKey === "PR_PENDING_PO" ||
+    opKey === "SUPPLIER_PENDING";
+  if (!purchaseActionable) return null;
+
+  const mrId = Number(row.materialRequirementId ?? 0);
+  const idSuffix = mrId || Number(row.workOrderId ?? 0) || Number(row.salesOrderId ?? 0);
+  if (!idSuffix) return null;
+  const docNo = row.docNo?.trim() || (mrId > 0 ? `MR-${mrId}` : null);
+  const demandPool =
+    row.procurementDemandPool?.trim() || resolveProcurementDemandPool(row.sourceType);
+  const planningHref = buildProcurementPlanningHrefForRow(row, demandPool);
+  const base = {
+    documentNo: docNo,
+    ownerRole: "PURCHASE",
+    ageHours: ageHoursFromTimestamp(row.createdAt),
+    sourceModule: "PROCUREMENT",
+    materialRequirementId: mrId > 0 ? mrId : null,
+  };
+
+  if (nextKey === "CREATE_PO" || opKey === "PR_PENDING_PO") {
+    return {
+      ...base,
+      id: `procurement:create-po:mr:${idSuffix}`,
+      priority: priorityFromOperationalKey("CREATE_PO"),
+      action: PREPARE_RM_PO,
+      href: planningHref,
+      currentStatus: "PR_PENDING_PO",
+    };
+  }
+
+  if (nextKey === "CREATE_PR" || opKey === "PROCUREMENT_PENDING") {
+    return {
+      ...base,
+      id: `procurement:create-pr:mr:${idSuffix}`,
+      priority: priorityFromOperationalKey("CREATE_PR"),
+      action: "Create Purchase Request",
+      href: planningHref,
+      currentStatus: "PROCUREMENT_PENDING",
+    };
+  }
+
+  const poId = Number(row.primaryPoId ?? 0);
+  return {
+    ...base,
+    id: poId > 0 ? `procurement:open-po:${poId}` : `procurement:supplier-pending:mr:${idSuffix}`,
+    priority: priorityFromOperationalKey("OPEN_PO"),
+    action: "Follow up Purchase Order",
+    href: poId > 0 ? `/rm-po-grn/${poId}?from=pending-actions` : planningHref,
+    currentStatus: "SUPPLIER_PENDING",
+    purchaseOrderId: poId > 0 ? poId : null,
+  };
+}
+
 async function fetchPurchaseProcurementPendingActions(db = prisma) {
   const procurementPending = await buildProcurementPendingQueue(db);
   const actions = [];
+  const seenMr = new Set();
 
   for (const row of procurementPending) {
-    const nextKey = String(row.nextActionKey ?? row.operationalKey ?? "").toUpperCase();
-    if (nextKey !== "CREATE_PO" && row.operationalKey !== "PR_PENDING_PO") continue;
+    const action = mapProcurementQueueRowToPurchasePendingAction(row);
+    if (!action) continue;
     const mrId = Number(row.materialRequirementId ?? 0);
-    const docNo = row.docNo?.trim() || (mrId > 0 ? `MR-${mrId}` : null);
-    const demandPool =
-      row.procurementDemandPool?.trim() ||
-      resolveProcurementDemandPool(row.sourceType);
-    const params = new URLSearchParams({ returnTo: "pending-actions", demandPool });
-    if (mrId > 0) params.set("materialRequirementId", String(mrId));
-    if (row.workOrderId) params.set("workOrderId", String(row.workOrderId));
-    if (row.salesOrderId) params.set("salesOrderId", String(row.salesOrderId));
-    actions.push({
-      id: `procurement:create-po:mr:${mrId || row.workOrderId || row.salesOrderId}`,
-      priority: priorityFromOperationalKey("CREATE_PO"),
-      action: PREPARE_RM_PO,
-      documentNo: docNo,
-      ownerRole: "PURCHASE",
-      ageHours: ageHoursFromTimestamp(row.createdAt),
-      href: `/procurement-planning?${params.toString()}`,
-      sourceModule: "PROCUREMENT",
-      currentStatus: row.operationalKey ?? "PR_PENDING_PO",
-    });
+    if (mrId > 0) {
+      if (seenMr.has(mrId)) continue;
+      seenMr.add(mrId);
+    }
+    actions.push(action);
   }
 
   return actions;
@@ -862,14 +927,24 @@ function extractOperationalKeyFromPendingAction(action) {
   const status = String(action?.currentStatus ?? "").trim().toUpperCase();
   if (status === "GRN_PENDING") return "GRN_PENDING";
   if (action?.action === GRN_PENDING_ACTION) return "GRN_PENDING";
+  if (status === "SUPPLIER_PENDING") return "SUPPLIER_PENDING";
+  if (status === "PROCUREMENT_PENDING") return "PROCUREMENT_PENDING";
   if (status === "PR_PENDING_PO") return "PR_PENDING_PO";
+  if (action?.action === "Create Purchase Request") return "PROCUREMENT_PENDING";
+  if (action?.action === "Follow up Purchase Order") return "SUPPLIER_PENDING";
   if (PURCHASE_PO_PREP_ACTIONS.has(action?.action)) return "PR_PENDING_PO";
   if (action?.action === WAITING_FOR_PURCHASE_RM_PO) return "PR_PENDING_PO";
   return null;
 }
 
 function isProcurementSupplementalAction(action) {
-  return String(action?.id ?? "").startsWith("procurement:create-po:");
+  const id = String(action?.id ?? "");
+  return (
+    id.startsWith("procurement:create-po:") ||
+    id.startsWith("procurement:create-pr:") ||
+    id.startsWith("procurement:supplier-pending:") ||
+    id.startsWith("procurement:open-po:")
+  );
 }
 
 function isProcurementGrnSupplementalAction(action) {
@@ -914,6 +989,9 @@ function preferProcurementCaseAction(existing, candidate) {
 
   if (existing.action === PREPARE_RM_PO && candidate.action === "Create PO") return existing;
   if (candidate.action === PREPARE_RM_PO && existing.action === "Create PO") return candidate;
+
+  if (existing.action === "Create Purchase Request" && candidatePrepare) return candidate;
+  if (candidate.action === "Create Purchase Request" && existingPrepare) return existing;
 
   const pa = PRIORITY_SORT[existing.priority] ?? 99;
   const pb = PRIORITY_SORT[candidate.priority] ?? 99;
@@ -1126,6 +1204,61 @@ function dedupeLifecyclePendingActions(actions) {
   return [...withoutKey, ...byDispatch.values(), ...bySo.values(), ...byWo.values()];
 }
 
+const PRODUCTION_TERMINAL_WORK_ORDER_STATUSES = new Set([
+  "COMPLETED",
+  "REJECTED",
+  "CLOSED",
+  "CANCELLED",
+  "CLOSED_WITH_SHORTFALL",
+]);
+
+function isTerminalProductionWorkOrderStatus(status) {
+  return PRODUCTION_TERMINAL_WORK_ORDER_STATUSES.has(String(status ?? "").trim().toUpperCase());
+}
+
+async function filterExecutableProductionPendingActions(db, actions) {
+  const list = Array.isArray(actions) ? actions : [];
+  const productionActions = list.filter(isProductionExecutionPendingAction);
+  const woIds = [
+    ...new Set(
+      productionActions
+        .map((action) => extractWorkOrderIdFromPendingAction(action))
+        .filter((id) => Number.isFinite(id) && id > 0),
+    ),
+  ];
+  if (!woIds.length) return list;
+
+  const workOrders = await db.workOrder.findMany({
+    where: { id: { in: woIds } },
+    select: {
+      id: true,
+      status: true,
+      productionExecution: { select: { executionStatus: true } },
+    },
+  });
+  const woById = new Map(workOrders.map((wo) => [Number(wo.id), wo]));
+
+  const issueRows = await db.materialIssueNote.findMany({
+    where: {
+      workOrderId: { in: woIds },
+      productionMaterialRequestId: { not: null },
+      lines: { some: { issueQty: { gt: 0 } } },
+    },
+    select: { workOrderId: true },
+  });
+  const issuedWoIds = new Set(issueRows.map((row) => Number(row.workOrderId)).filter((id) => id > 0));
+
+  return list.filter((action) => {
+    if (!isProductionExecutionPendingAction(action)) return true;
+    const woId = extractWorkOrderIdFromPendingAction(action);
+    if (!(woId > 0)) return true;
+    const wo = woById.get(woId);
+    if (!wo) return false;
+    if (isTerminalProductionWorkOrderStatus(wo.status)) return false;
+    if (String(wo.productionExecution?.executionStatus ?? "").trim().toUpperCase() === "COMPLETED") return false;
+    return issuedWoIds.has(woId);
+  });
+}
 function sortPendingActions(actions) {
   return [...actions].sort((a, b) => {
     const pa = PRIORITY_SORT[a.priority] ?? 99;
@@ -1195,6 +1328,7 @@ async function getPendingActions(opts = {}) {
   }
   if (role === "PRODUCTION" || role === "ADMIN") {
     merged = dedupeProductionPendingActions(merged);
+    merged = await filterExecutableProductionPendingActions(db, merged);
   }
   if (role === "QA" || role === "ADMIN" || role === "STORE") {
     merged = dedupeLifecyclePendingActions(merged);
@@ -1230,6 +1364,7 @@ module.exports = {
   resolveHrefForNormalizedRow,
   fetchMonthlyPlanPendingActions,
   fetchPurchaseProcurementPendingActions,
+  mapProcurementQueueRowToPurchasePendingAction,
   fetchStoreGrnPendingActions,
   fetchStoreNoQtyMonthlyPlanningPendingActions,
   fetchStoreNoQtyCreateNextRsPendingActions,
@@ -1253,6 +1388,7 @@ module.exports = {
   PRODUCTION_EXECUTION_PENDING_LABELS,
   dedupeProductionPendingActions,
   preferProductionExecutionPendingAction,
+  filterExecutableProductionPendingActions,
   extractSalesOrderIdFromPendingAction,
   dedupeLifecyclePendingActions,
   preferLifecyclePendingAction,

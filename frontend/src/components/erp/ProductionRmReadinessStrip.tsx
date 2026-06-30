@@ -30,6 +30,8 @@ export type ProductionRmReadiness = {
   draftAndApprovedQty?: number;
   productionAllowedNowQty: number;
   maxAdditionalQty: number;
+  orderType?: string | null;
+  unapprovedProducedQty?: number;
   latestPmrId: number | null;
   latestPmrDocNo: string | null;
   workOrderId: number;
@@ -88,7 +90,12 @@ export function resolveRegularRmEntryQtyCap(
   if (!data || isProductionBlockedByRmReadiness(data)) return null;
   const isNoQty = String(data.orderType ?? "").toUpperCase() === "NO_QTY";
   if (isNoQty) {
-    return Math.max(0, safeRmQty(data.maxAdditionalQty));
+    const woRem = resolveRegularRmWoRemaining(data, options.lineWoRemaining);
+    const rmCap = safeRmQty(data.productionAllowedNowQty);
+    const exclude = safeRmQty(options.excludeProductionQty);
+    const unapprovedOnLine = safeRmQty(data.unapprovedProducedQty);
+    const others = exclude > 1e-6 ? Math.max(0, unapprovedOnLine - exclude) : unapprovedOnLine;
+    return Math.max(0, Math.min(woRem, rmCap) - others);
   }
   const woRem = resolveRegularRmWoRemaining(data, options.lineWoRemaining);
   const rmBatchCeiling = safeRmQty(data.productionAllowedNowQty);

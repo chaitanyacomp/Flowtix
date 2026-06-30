@@ -53,6 +53,7 @@ import {
   type MonthlyPlanStatus,
 } from "../lib/monthlyPlanningWorkflowUx";
 import { buildReportHref } from "../lib/rmPlanningVsReceivedReportUx";
+import { requestedMonthlyPlanId } from "../lib/monthlyPlanningRouteParams";
 import {
   formatPhysicalCoveragePct,
   formatPendingReceiptQtyDisplay,
@@ -706,6 +707,7 @@ export function MonthlyPlanningWorkspacePage() {
   const [searchParams, setSearchParams] = useSearchParams();
 
   const periodFromUrl = searchParams.get("period");
+  const requestedPlanId = requestedMonthlyPlanId(searchParams);
   const [period, setPeriod] = React.useState<string>(
     normalizePeriodKey(periodFromUrl ?? "") ?? currentMonthKey(),
   );
@@ -1034,10 +1036,15 @@ export function MonthlyPlanningWorkspacePage() {
     (planId: number) => {
       const target = periodPlans.find((p) => p.id === planId);
       if (!target) return;
+      const sp = new URLSearchParams(searchParams);
+      sp.set("period", target.periodKey ?? period);
+      sp.set("planId", String(planId));
+      sp.set("monthlyPlanId", String(planId));
+      setSearchParams(sp, { replace: true });
       setLoading(true);
       void loadPlanDetails(target).finally(() => setLoading(false));
     },
-    [periodPlans, loadPlanDetails],
+    [periodPlans, period, searchParams, setSearchParams, loadPlanDetails],
   );
 
   // Load FG items once (for the Add row picker).
@@ -1058,8 +1065,13 @@ export function MonthlyPlanningWorkspacePage() {
 
   React.useEffect(() => {
     if (!flags.monthlyPlanning) return;
-    void loadPlan(period);
-  }, [flags.monthlyPlanning, period, loadPlan]);
+    const normalized = normalizePeriodKey(periodFromUrl ?? "");
+    if (normalized && normalized !== period) {
+      setPeriod(normalized);
+      return;
+    }
+    void loadPlan(period, requestedPlanId);
+  }, [flags.monthlyPlanning, period, periodFromUrl, requestedPlanId, loadPlan]);
 
   function suggestedProductionForFg(
     fgItemId: number,
@@ -1075,6 +1087,8 @@ export function MonthlyPlanningWorkspacePage() {
     setPeriod(normalized);
     const sp = new URLSearchParams(searchParams);
     sp.set("period", normalized);
+    sp.delete("planId");
+    sp.delete("monthlyPlanId");
     setSearchParams(sp, { replace: true });
   }
 
@@ -1502,7 +1516,7 @@ export function MonthlyPlanningWorkspacePage() {
         }),
       );
       setConfirmLockOpen(false);
-      await loadPlan(period);
+      await loadPlan(period, activePlan.id);
       setActiveTab("rm");
     } catch (e) {
       showError(e instanceof ApiRequestError ? e.message : "Failed to lock plan.");
@@ -1607,7 +1621,7 @@ export function MonthlyPlanningWorkspacePage() {
         }),
       );
       await refreshPurchase();
-      await loadPlan(period);
+      await loadPlan(period, plan.id);
     } catch (e) {
       const detail = e instanceof ApiRequestError ? e.message : null;
       showError(

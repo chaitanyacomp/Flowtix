@@ -71,4 +71,50 @@ describe("fetchMonthlyPlanPendingActions", () => {
     const actions = await fetchMonthlyPlanPendingActions(db);
     assert.ok(actions.every((a) => a.action !== "Submit July Plan 1"));
   });
+
+  it("emits separate release actions with plan-specific hrefs and ids", async () => {
+    const db = {
+      monthlyProductionPlan: {
+        findMany: async () => [
+          {
+            id: 11,
+            docNo: "MPP-26-0011",
+            periodKey: "2026-06",
+            planSequenceNo: 1,
+            status: "APPROVED",
+            updatedAt: new Date("2026-06-11T10:00:00Z"),
+            createdAt: new Date("2026-06-11T09:00:00Z"),
+            releasedAt: null,
+          },
+          {
+            id: 12,
+            docNo: "MPP-26-0012",
+            periodKey: "2026-06",
+            planSequenceNo: 2,
+            status: "APPROVED",
+            updatedAt: new Date("2026-06-12T10:00:00Z"),
+            createdAt: new Date("2026-06-12T09:00:00Z"),
+            releasedAt: null,
+          },
+        ],
+      },
+    };
+
+    const actions = await fetchMonthlyPlanPendingActions(db);
+    const releaseActions = actions.filter((a) => a.action.startsWith("Release "));
+    assert.equal(releaseActions.length, 2);
+
+    const plan1 = releaseActions.find((a) => a.action === "Release June Plan 1");
+    const plan2 = releaseActions.find((a) => a.action === "Release June Plan 2");
+    assert.ok(plan1);
+    assert.ok(plan2);
+    assert.equal(plan1.planId, 11);
+    assert.equal(plan1.monthlyPlanId, 11);
+    assert.match(plan1.href, /planId=11/);
+    assert.match(plan1.href, /monthlyPlanId=11/);
+    assert.equal(plan2.planId, 12);
+    assert.equal(plan2.monthlyPlanId, 12);
+    assert.match(plan2.href, /planId=12/);
+    assert.match(plan2.href, /monthlyPlanId=12/);
+  });
 });

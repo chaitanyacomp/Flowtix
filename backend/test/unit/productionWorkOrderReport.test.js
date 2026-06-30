@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 
 const {
   buildWorkOrderProductionReport,
+  confirmProductionWorkOrderReport,
   sumQcForProduction,
 } = require("../../src/services/productionWorkOrderReportService");
 
@@ -225,6 +226,113 @@ describe("productionWorkOrderReportService", () => {
       assert.equal(new Set(report.batches.map((b) => b.productionEntryId)).size, 1);
     } finally {
       require("../../src/services/materialReturnService").buildReturnableLinesForWorkOrder = orig;
+    }
+  });
+
+  it("confirmProductionWorkOrderReport creates Store pending return without posting stock", async () => {
+    const returnPath = require.resolve("../../src/services/materialReturnService");
+    const reportPath = require.resolve("../../src/services/productionWorkOrderReportService");
+    const origReturn = require(returnPath).buildReturnableLinesForWorkOrder;
+    require(returnPath).buildReturnableLinesForWorkOrder = async () => ({
+      lines: [
+        {
+          itemId: 7,
+          itemName: "PP",
+          unit: "Kg",
+          grossIssuedQty: 12,
+          consumedQty: 8,
+          returnedQty: 0,
+          returnableQty: 4,
+          unusedQty: 4,
+        },
+      ],
+    });
+    delete require.cache[reportPath];
+    const { confirmProductionWorkOrderReport: confirmReport } = require(reportPath);
+
+    const createdReports = [];
+    const pendingReturns = [];
+    const stockTransactions = [];
+    const db = {
+      workOrder: {
+        findUnique: async () => ({
+          id: 15,
+          docNo: "WO-26-0001",
+          status: "IN_PROGRESS",
+          lines: [{ id: 150, fgItemId: 5, qty: 10, plannedQty: 10, fgItem: { id: 5, itemName: "FG", unit: "Nos" } }],
+          salesOrder: { id: 1, docNo: "SO-1", orderType: "NORMAL", customer: { name: "Acme" } },
+          requirementSheet: null,
+          cycle: null,
+          productionExecution: null,
+        }),
+        update: async ({ data }) => ({ id: 15, ...data }),
+      },
+      productionEntry: {
+        findMany: async () => [
+          {
+            id: 501,
+            docNo: "PE-501",
+            date: new Date("2026-06-01"),
+            producedQty: 10,
+            workOrderLine: { id: 150, fgItemId: 5, fgItem: { id: 5, itemName: "FG", unit: "Nos" } },
+            qcEntries: [],
+            rmConsumptions: [
+              {
+                itemId: 7,
+                standardQty: 8,
+                actualQty: 8,
+                varianceQty: 0,
+                variancePercent: 0,
+                consumptionType: "NORMAL",
+                remarks: null,
+                item: { id: 7, itemName: "PP", unit: "Kg" },
+              },
+            ],
+          },
+        ],
+        groupBy: async () => [{ workOrderLineId: 150, _sum: { producedQty: 10 } }],
+      },
+      productionWorkOrderReport: {
+        findUnique: async () => null,
+        create: async ({ data }) => {
+          const row = { id: 701, ...data };
+          createdReports.push(row);
+          return row;
+        },
+      },
+      productionRmReturnPending: {
+        create: async ({ data }) => {
+          const row = { id: pendingReturns.length + 1, ...data };
+          pendingReturns.push(row);
+          return row;
+        },
+      },
+      stockTransaction: {
+        create: async ({ data }) => {
+          stockTransactions.push(data);
+          return data;
+        },
+      },
+      auditLog: { findMany: async () => [], create: async () => ({ id: 1 }) },
+    };
+
+    try {
+      const result = await confirmReport(
+        db,
+        15,
+        { lines: [{ itemId: 7, rmConsumedQty: 8, rmReturnQty: 4, scrapWasteQty: 0 }] },
+        { userId: 9, role: "PRODUCTION" },
+      );
+      assert.equal(createdReports.length, 1);
+      assert.equal(createdReports[0].workOrderId, 15);
+      assert.equal(pendingReturns.length, 1);
+      assert.equal(Number(pendingReturns[0].requestedQty), 4);
+      assert.equal(pendingReturns[0].status, "PENDING");
+      assert.equal(stockTransactions.length, 0);
+      assert.equal(result.returnPendingCount, 1);
+    } finally {
+      require(returnPath).buildReturnableLinesForWorkOrder = origReturn;
+      delete require.cache[reportPath];
     }
   });
 });

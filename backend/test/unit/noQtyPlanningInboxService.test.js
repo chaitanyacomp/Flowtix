@@ -150,6 +150,29 @@ describe("noQtyExecutionRegisterService", () => {
     });
     assert.equal(blockedAction.key, "BLOCKED");
   });
+  it("positive executable qty does not become PLACE_WO until monthly planning release is ready", () => {
+    const action = deriveActionNeeded({
+      rsBalanceQty: 5000,
+      suggestedWoQty: 2500,
+      placementStatus: "READY",
+      readinessStatus: "AWAITING_PROCUREMENT",
+      existingWoSummary: [],
+    });
+    assert.equal(action.key, "AWAIT_PROCUREMENT");
+
+    const fields = buildExecutionRegisterFieldsFromPick(15, {
+      sheet: { id: 6, cycleId: 5, docNo: "RS-26-0006" },
+      assessment: assessment({
+        requirementSheetId: 6,
+        rsBalanceQty: 5000,
+        suggestedWoQty: 2500,
+        placementStatus: "READY",
+        readinessStatus: "AWAITING_PROCUREMENT",
+      }),
+    });
+    assert.equal(fields.actionNeededKey, "AWAIT_PROCUREMENT");
+    assert.equal(fields.actionNeededLabel, "Await Procurement");
+  });
 
   it("4 — balance = 0 + open WO pending RM issue → ISSUE_RM", () => {
     const action = deriveActionNeeded({

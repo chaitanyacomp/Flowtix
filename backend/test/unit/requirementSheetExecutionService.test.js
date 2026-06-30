@@ -62,6 +62,7 @@ function readinessDeps({
   onFgLines = null,
   loadApprovedBomWithLines = async () => ({ id: 1, lines: [{ id: 1 }] }),
   buildNoQtyWoBatchPlacementPreview = null,
+  assessNoQtyMonthlyPlanningGate = async () => ({ gate: "READY_FOR_EXECUTION" }),
 } = {}) {
   return {
     loadApprovedBomWithLines,
@@ -70,6 +71,7 @@ function readinessDeps({
       return { rmNeeded, missingChildBoms };
     },
     getMaterialAvailabilityByItems: async () => availabilityRows,
+    assessNoQtyMonthlyPlanningGate,
     ...(buildNoQtyWoBatchPlacementPreview ? { buildNoQtyWoBatchPlacementPreview } : {}),
   };
 }
@@ -120,6 +122,7 @@ function placementPreviewDeps({
   totalExecutableQty = 7000,
   totalRsBalanceQty = 7000,
   status = "PARTIALLY_READY",
+  assessNoQtyMonthlyPlanningGate,
 } = {}) {
   return readinessDeps({
     rmNeeded: new Map([[700, 0.5]]),
@@ -133,6 +136,7 @@ function placementPreviewDeps({
         incomingQty: 0,
       },
     ],
+    assessNoQtyMonthlyPlanningGate,
     buildNoQtyWoBatchPlacementPreview: async () => ({
       canPlace,
       status,
@@ -613,7 +617,7 @@ describe("assessNoQtyPlacementStageForCycle", () => {
     assert.equal(res.processStageKey, "NO_QTY_READY_TO_PLACE_WO");
   });
 
-  it("returns readyToPlaceWo true after first WO when RS balance remains and RM is ready", async () => {
+  it("does not unlock Place WO after first WO while Store RM issue is still pending", async () => {
     const db = createAssessorMockDb({
       sheets: [lockedSheetFixture],
       plans: [{ id: 5, periodKey: "2026-06", releasedAt: new Date("2026-06-01"), releasedRevision: 1, planSequenceNo: 1 }],
@@ -638,9 +642,10 @@ describe("assessNoQtyPlacementStageForCycle", () => {
     );
 
     assert.equal(res.rsBalanceQty, 7000);
-    assert.equal(res.readyToPlaceWo, true);
+    assert.equal(res.readyToPlaceWo, false);
     assert.equal(res.suggestedWoQty, 7000);
-    assert.equal(res.processStageKey, "NO_QTY_READY_TO_PLACE_WO");
+    assert.equal(res.readinessStatus, "EXISTING_WO_PENDING_RM_ISSUE");
+    assert.equal(res.processStageKey, "NO_QTY_PROCUREMENT_IN_PROGRESS");
   });
 
   it("returns readyToPlaceWo true with partial RM when suggested executable qty is positive", async () => {
@@ -671,6 +676,74 @@ describe("assessNoQtyPlacementStageForCycle", () => {
     assert.equal(res.suggestedWoQty, 2500);
     assert.equal(res.readyToPlaceWo, true);
     assert.equal(res.placementStatus, "PARTIALLY_READY");
+  });
+
+  it("does not unlock Place WO when locked RS has no released Monthly Plan", async () => {
+    const db = createAssessorMockDb({
+      sheets: [lockedSheetFixture],
+      plans: [],
+      mrs: [],
+      workOrders: [],
+      pmrs: [],
+    });
+
+    const res = await assessNoQtyPlacementStageForCycle(
+      db,
+      { salesOrderId: 10, cycleId: 2 },
+      placementPreviewDeps({ canPlace: true, totalExecutableQty: 10000, totalRsBalanceQty: 10000, status: "READY" }),
+    );
+
+    assert.equal(res.readyToPlaceWo, false);
+    assert.equal(res.readinessStatus, "AWAITING_PROCUREMENT");
+    assert.equal(res.processStageKey, "NO_QTY_REQUIREMENT_READY");
+  });
+
+  it("does not unlock Place WO when Monthly Plan is draft or approved but unreleased", async () => {
+    for (const status of ["DRAFT", "APPROVED"]) {
+      const db = createAssessorMockDb({
+        sheets: [lockedSheetFixture],
+        plans: [{ id: 5, periodKey: "2026-06", status, releasedAt: null, planSequenceNo: 1 }],
+        mrs: [],
+        workOrders: [],
+        pmrs: [],
+      });
+
+      const res = await assessNoQtyPlacementStageForCycle(
+        db,
+        { salesOrderId: 10, cycleId: 2 },
+        placementPreviewDeps({ canPlace: true, totalExecutableQty: 10000, totalRsBalanceQty: 10000, status: "READY" }),
+      );
+
+      assert.equal(res.readyToPlaceWo, false);
+      assert.equal(res.processStageKey, "NO_QTY_REQUIREMENT_READY");
+    }
+  });
+
+  it("does not unlock Place WO when approved Plan 1 exists but additional planning is required", async () => {
+    const db = createAssessorMockDb({
+      sheets: [lockedSheetFixture],
+      plans: [{ id: 5, periodKey: "2026-06", releasedAt: new Date("2026-06-01"), releasedRevision: 1, planSequenceNo: 1 }],
+      mrs: [{ id: 9, monthlyProductionPlanId: 5, sourceType: "MONTHLY_PLAN", reversedAt: null, docNo: "MR-26-0001", status: "APPROVED" }],
+      workOrders: [],
+      pmrs: [],
+    });
+
+    const res = await assessNoQtyPlacementStageForCycle(
+      db,
+      { salesOrderId: 10, cycleId: 2 },
+      placementPreviewDeps({
+        canPlace: true,
+        totalExecutableQty: 10000,
+        totalRsBalanceQty: 10000,
+        status: "READY",
+        assessNoQtyMonthlyPlanningGate: async () => ({ gate: "ADDITIONAL_PLAN_REQUIRED" }),
+      }),
+    );
+
+    assert.equal(res.readyToPlaceWo, false);
+    assert.equal(res.released, false);
+    assert.equal(res.materialRequirementId, null);
+    assert.equal(res.processStageKey, "NO_QTY_REQUIREMENT_READY");
   });
 
   it("returns readyToPlaceWo false when RS balance is zero", async () => {
@@ -709,21 +782,25 @@ describe("assessNoQtyPlacementStageForCycle", () => {
 });
 
 describe("deriveReadyToPlaceWo", () => {
-  it("requires positive balance and placement capability", () => {
+  it("requires positive balance, placement capability, and released-plan readiness", () => {
     assert.equal(
-      deriveReadyToPlaceWo({ rsBalanceQty: 1000 }, { canPlace: true, summary: { totalExecutableQty: 500 } }),
+      deriveReadyToPlaceWo({ rsBalanceQty: 1000 }, { canPlace: true, summary: { totalExecutableQty: 500 } }, "READY_TO_PLACE_WO"),
       true,
     );
     assert.equal(
-      deriveReadyToPlaceWo({ rsBalanceQty: 1000 }, { canPlace: false, summary: { totalExecutableQty: 500 } }),
+      deriveReadyToPlaceWo({ rsBalanceQty: 1000 }, { canPlace: false, summary: { totalExecutableQty: 500 } }, "READY_TO_PLACE_WO"),
       true,
     );
     assert.equal(
-      deriveReadyToPlaceWo({ rsBalanceQty: 0 }, { canPlace: true, summary: { totalExecutableQty: 500 } }),
+      deriveReadyToPlaceWo({ rsBalanceQty: 0 }, { canPlace: true, summary: { totalExecutableQty: 500 } }, "READY_TO_PLACE_WO"),
       false,
     );
     assert.equal(
-      deriveReadyToPlaceWo({ rsBalanceQty: 1000 }, { canPlace: false, summary: { totalExecutableQty: 0 } }),
+      deriveReadyToPlaceWo({ rsBalanceQty: 1000 }, { canPlace: false, summary: { totalExecutableQty: 0 } }, "READY_TO_PLACE_WO"),
+      false,
+    );
+    assert.equal(
+      deriveReadyToPlaceWo({ rsBalanceQty: 1000 }, { canPlace: true, summary: { totalExecutableQty: 500 } }, "AWAITING_PROCUREMENT"),
       false,
     );
   });

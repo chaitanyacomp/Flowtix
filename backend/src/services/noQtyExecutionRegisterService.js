@@ -93,13 +93,14 @@ function deriveActionNeeded({
   const balance = Number(rsBalanceQty ?? 0);
   const suggested = Number(suggestedWoQty ?? 0);
 
-  if (balance > EPS && suggested > EPS) {
+  const readiness = String(readinessStatus ?? "").toUpperCase();
+
+  if (balance > EPS && suggested > EPS && readiness === "READY_TO_PLACE_WO") {
     return ACTION_NEEDED.PLACE_WO;
   }
 
   if (balance > EPS) {
     const placement = String(placementStatus ?? "").toUpperCase();
-    const readiness = String(readinessStatus ?? "").toUpperCase();
     if (placement === "MISSING_BOM" || readiness === "BLOCKED") {
       return ACTION_NEEDED.BLOCKED;
     }

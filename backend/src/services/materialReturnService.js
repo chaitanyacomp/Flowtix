@@ -483,7 +483,7 @@ async function getMaterialReturnNoteById(id, db = prisma) {
  * @param {{ fromLocationId: number, toLocationId: number, workOrderId?: number | null, productionMaterialRequestId?: number | null, remarks?: string | null, lines: Array<{ itemId: number, returnQty: number, remarks?: string | null }> }} input
  * @param {{ userId?: number, role?: string }} actor
  */
-async function createMaterialReturnNote(input, actor = {}) {
+async function createMaterialReturnNote(input, actor = {}, db = prisma) {
   if (!input.lines?.length) {
     const err = new Error("Add at least one RM line to return.");
     err.statusCode = 400;
@@ -670,7 +670,7 @@ async function createMaterialReturnNote(input, actor = {}) {
     return note;
   };
 
-  return prisma.$transaction(run);
+  return typeof db.$transaction === "function" ? db.$transaction(run) : run(db);
 }
 
 module.exports = {

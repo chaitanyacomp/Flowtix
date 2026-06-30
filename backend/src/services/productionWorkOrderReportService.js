@@ -9,8 +9,9 @@ const { AuditAction, AuditEntityType } = require("../prismaClientPackage");
 const { qtyToNumber } = require("./rmPurchaseHelpers");
 const { round3 } = require("./bomExplosionService");
 const { computeExecutionSummary } = require("./productionExecutionService");
-const { buildReturnableLinesForWorkOrder } = require("./materialReturnService");
+const { buildReturnableLinesForWorkOrder, createMaterialReturnNote } = require("./materialReturnService");
 const { QC_ENTRY_ACTIVE_WHERE } = require("./qcEntryConstants");
+const auditLog = require("./auditLog");
 
 const EPS = 1e-6;
 
@@ -106,6 +107,139 @@ function aggregateRmAuthorityLines(batches) {
     }
   }
   return [...byItem.values()].sort((a, b) => a.itemId - b.itemId);
+}
+
+function buildReportRequiredError() {
+  const err = new Error("Confirm Production Report before closing the work order.");
+  err.statusCode = 409;
+  err.code = "PRODUCTION_REPORT_REQUIRED";
+  return err;
+}
+
+function cleanRemarks(value) {
+  const text = String(value ?? "").trim();
+  return text || null;
+}
+
+function normalizeInputLines(lines) {
+  const byItem = new Map();
+  for (const line of Array.isArray(lines) ? lines : []) {
+    const itemId = Number(line?.itemId);
+    if (!Number.isFinite(itemId) || itemId <= 0) continue;
+    byItem.set(itemId, {
+      itemId,
+      rmConsumedQty: line.rmConsumedQty == null ? null : round3(n(line.rmConsumedQty)),
+      rmReturnQty: line.rmReturnQty == null ? 0 : round3(n(line.rmReturnQty)),
+      scrapWasteQty: line.scrapWasteQty == null ? 0 : round3(n(line.scrapWasteQty)),
+      varianceQty: line.varianceQty == null ? null : round3(n(line.varianceQty)),
+      remarks: cleanRemarks(line.remarks),
+    });
+  }
+  return byItem;
+}
+
+function mapConfirmedReportRow(row) {
+  if (!row) {
+    return {
+      confirmed: false,
+      reportId: null,
+      status: null,
+      confirmedAt: null,
+      confirmedByUserId: null,
+      confirmedByName: null,
+      remarks: null,
+      lines: [],
+      returnPendings: [],
+    };
+  }
+  return {
+    confirmed: row.status === "CONFIRMED",
+    reportId: row.id,
+    status: row.status,
+    confirmedAt: row.confirmedAt,
+    confirmedByUserId: row.confirmedByUserId ?? null,
+    confirmedByName: row.confirmedBy?.name ?? null,
+    remarks: row.remarks ?? null,
+    plannedQty: round3(n(row.plannedQty)),
+    producedQty: round3(n(row.producedQty)),
+    remainingQty: round3(n(row.remainingQty)),
+    lines: (row.lines || []).map((ln) => ({
+      id: ln.id,
+      itemId: ln.itemId,
+      itemName: ln.item?.itemName ?? `Item #${ln.itemId}`,
+      unit: ln.item?.unit ?? "",
+      rmIssuedQty: round3(n(ln.rmIssuedQty)),
+      rmConsumedQty: round3(n(ln.rmConsumedQty)),
+      rmReturnQty: round3(n(ln.rmReturnQty)),
+      scrapWasteQty: round3(n(ln.scrapWasteQty)),
+      varianceQty: round3(n(ln.varianceQty)),
+      remarks: ln.remarks ?? null,
+    })),
+    returnPendings: (row.returnPendings || []).map((p) => ({
+      id: p.id,
+      workOrderId: p.workOrderId,
+      workOrderNo: p.workOrder?.docNo ?? null,
+      itemId: p.itemId,
+      itemName: p.item?.itemName ?? `Item #${p.itemId}`,
+      unit: p.item?.unit ?? "",
+      requestedQty: round3(n(p.requestedQty)),
+      status: p.status,
+      materialReturnNoteId: p.materialReturnNoteId ?? null,
+      materialReturnNoteNo: p.materialReturnNote?.docNo ?? null,
+      receivedAt: p.receivedAt ?? null,
+      receivedByName: p.receivedBy?.name ?? null,
+      remarks: p.remarks ?? null,
+      createdAt: p.createdAt,
+    })),
+  };
+}
+
+async function loadConfirmedReport(db, workOrderId) {
+  if (!db.productionWorkOrderReport?.findUnique) return null;
+  const row = await db.productionWorkOrderReport.findUnique({
+    where: { workOrderId },
+    include: {
+      confirmedBy: { select: { id: true, name: true } },
+      lines: { include: { item: { select: { id: true, itemName: true, unit: true } } }, orderBy: { itemId: "asc" } },
+      returnPendings: {
+        include: {
+          item: { select: { id: true, itemName: true, unit: true } },
+          workOrder: { select: { id: true, docNo: true } },
+          materialReturnNote: { select: { id: true, docNo: true } },
+          receivedBy: { select: { id: true, name: true } },
+        },
+        orderBy: { id: "asc" },
+      },
+    },
+  });
+  return row;
+}
+
+async function assertProductionReportConfirmed(db, workOrderId) {
+  const row = await db.productionWorkOrderReport.findUnique({
+    where: { workOrderId },
+    select: { id: true, status: true },
+  });
+  if (!row || row.status !== "CONFIRMED") throw buildReportRequiredError();
+  return row;
+}
+
+async function countOpenProductionRmReturnPending(db, workOrderId) {
+  return db.productionRmReturnPending.count({
+    where: { workOrderId, status: "PENDING" },
+  });
+}
+
+async function assertNoOpenProductionRmReturnPending(db, workOrderId) {
+  const count = await countOpenProductionRmReturnPending(db, workOrderId);
+  if (count > 0) {
+    const err = new Error("Store must acknowledge pending RM returns before closing the work order.");
+    err.statusCode = 409;
+    err.code = "RM_RETURN_PENDING_STORE_ACK_REQUIRED";
+    err.pendingReturnCount = count;
+    throw err;
+  }
+  return true;
 }
 
 /**
@@ -223,6 +357,7 @@ async function buildWorkOrderProductionReport(db = prisma, workOrderId) {
   rmLines.sort((a, b) => a.itemId - b.itemId);
 
   const primaryLine = wo.lines[0] ?? null;
+  const confirmedReport = await loadConfirmedReport(db, id);
 
   return {
     workOrderId: wo.id,
@@ -262,12 +397,295 @@ async function buildWorkOrderProductionReport(db = prisma, workOrderId) {
     },
     batches,
     rmLines,
+    confirmation: mapConfirmedReportRow(confirmedReport),
     generatedAt: new Date().toISOString(),
   };
 }
 
+async function confirmProductionWorkOrderReport(db, workOrderId, input = {}, actor = {}) {
+  const id = Number(workOrderId);
+  if (!Number.isFinite(id) || id <= 0) {
+    const err = new Error("Invalid work order id");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const existing = await loadConfirmedReport(db, id);
+  if (existing) {
+    return {
+      report: await buildWorkOrderProductionReport(db, id),
+      confirmation: mapConfirmedReportRow(existing),
+      alreadyConfirmed: true,
+      requiresShortfallDecision: round3(n(existing.remainingQty)) > EPS,
+    };
+  }
+
+  const report = await buildWorkOrderProductionReport(db, id);
+  if (!report.hasApprovedProduction || report.summary.producedQty <= EPS) {
+    const err = new Error("Record at least one approved production batch before confirming Production Report.");
+    err.statusCode = 409;
+    throw err;
+  }
+
+  const inputByItem = normalizeInputLines(input.lines);
+  const lineCreates = [];
+  for (const rm of report.rmLines || []) {
+    const issuedQty = rm.issuedQty == null ? 0 : round3(n(rm.issuedQty));
+    const inputLine = inputByItem.get(rm.itemId) || {};
+    const consumedQty =
+      inputLine.rmConsumedQty != null
+        ? inputLine.rmConsumedQty
+        : round3(n(rm.reportedConsumedQty ?? rm.ledgerConsumedQty ?? 0));
+    const returnQty = round3(n(inputLine.rmReturnQty ?? 0));
+    const scrapWasteQty = round3(n(inputLine.scrapWasteQty ?? 0));
+    const varianceQty =
+      inputLine.varianceQty != null
+        ? inputLine.varianceQty
+        : round3(issuedQty - consumedQty - returnQty - scrapWasteQty);
+
+    if (consumedQty < -EPS || returnQty < -EPS || scrapWasteQty < -EPS) {
+      const err = new Error("Production Report quantities cannot be negative.");
+      err.statusCode = 400;
+      throw err;
+    }
+    if (rm.returnableQty != null && returnQty > round3(n(rm.returnableQty)) + EPS) {
+      const err = new Error(`RM return qty exceeds returnable qty for ${rm.itemName || rm.itemId}.`);
+      err.statusCode = 400;
+      throw err;
+    }
+    if (issuedQty > EPS && consumedQty + returnQty + scrapWasteQty > issuedQty + EPS) {
+      const err = new Error(`Consumed + return + scrap exceeds issued qty for ${rm.itemName || rm.itemId}.`);
+      err.statusCode = 400;
+      throw err;
+    }
+
+    lineCreates.push({
+      itemId: rm.itemId,
+      rmIssuedQty: String(issuedQty),
+      rmConsumedQty: String(round3(consumedQty)),
+      rmReturnQty: String(returnQty),
+      scrapWasteQty: String(scrapWasteQty),
+      varianceQty: String(varianceQty),
+      remarks: inputLine.remarks ?? null,
+      itemName: rm.itemName,
+      unit: rm.unit,
+    });
+  }
+
+  const created = await db.productionWorkOrderReport.create({
+    data: {
+      workOrderId: id,
+      status: "CONFIRMED",
+      plannedQty: String(report.summary.plannedQty),
+      producedQty: String(report.summary.producedQty),
+      remainingQty: String(report.summary.remainderQty),
+      remarks: cleanRemarks(input.remarks),
+      confirmedByUserId: actor.userId ?? actor.actorUserId ?? null,
+      lines: {
+        create: lineCreates.map((ln) => ({
+          itemId: ln.itemId,
+          rmIssuedQty: ln.rmIssuedQty,
+          rmConsumedQty: ln.rmConsumedQty,
+          rmReturnQty: ln.rmReturnQty,
+          scrapWasteQty: ln.scrapWasteQty,
+          varianceQty: ln.varianceQty,
+          remarks: ln.remarks,
+        })),
+      },
+    },
+  });
+
+  let returnPendingCount = 0;
+  for (const line of lineCreates) {
+    const qty = round3(n(line.rmReturnQty));
+    if (qty <= EPS) continue;
+    returnPendingCount += 1;
+    await db.productionRmReturnPending.create({
+      data: {
+        productionReportId: created.id,
+        workOrderId: id,
+        itemId: line.itemId,
+        requestedQty: String(qty),
+        status: "PENDING",
+        remarks: line.remarks,
+      },
+    });
+  }
+
+  if (report.summary.remainderQty <= EPS && returnPendingCount === 0) {
+    await db.workOrder.update({
+      where: { id },
+      data: {
+        status: "COMPLETED",
+        holdReason: null,
+        heldAt: null,
+        heldByUserId: null,
+        holdRemarks: null,
+      },
+    });
+    if (!report.isRegular && db.workOrderProductionExecution?.update) {
+      try {
+        await db.workOrderProductionExecution.update({
+          where: { workOrderId: id },
+          data: {
+            executionStatus: "COMPLETED",
+            completedAt: new Date(),
+            completedByUserId: actor.userId ?? actor.actorUserId ?? null,
+          },
+        });
+      } catch {
+        // Existing NO_QTY records can be absent in migrated data; WO closure remains WorkOrder-owned.
+      }
+    }
+  }
+
+  const actorUserId = actor.userId ?? actor.actorUserId;
+  if (typeof actorUserId === "number") {
+    await auditLog.write(db, {
+      action: auditLog.AuditAction.APPROVE,
+      entityType: auditLog.AuditEntityType.WORK_ORDER,
+      entityId: String(id),
+      actorUserId,
+      actorRole: actor.role ?? actor.actorRole,
+      summary: `Production Report confirmed for ${report.workOrderNo}`,
+      payload: {
+        module: "PRODUCTION_REPORT",
+        actionLabel: "CONFIRM",
+        plannedQty: report.summary.plannedQty,
+        producedQty: report.summary.producedQty,
+        remainingQty: report.summary.remainderQty,
+        returnPendingCount: lineCreates.filter((ln) => n(ln.rmReturnQty) > EPS).length,
+      },
+    });
+  }
+
+  const confirmed = await loadConfirmedReport(db, id);
+  return {
+    report: await buildWorkOrderProductionReport(db, id),
+    confirmation: mapConfirmedReportRow(confirmed),
+    alreadyConfirmed: false,
+    requiresShortfallDecision: report.summary.remainderQty > EPS,
+    returnPendingCount,
+  };
+}
+
+async function listProductionRmReturnPending(db = prisma, { status = "PENDING", limit = 100 } = {}) {
+  if (!db.productionRmReturnPending?.findMany) return [];
+  const where = status ? { status } : {};
+  const rows = await db.productionRmReturnPending.findMany({
+    where,
+    orderBy: [{ status: "asc" }, { id: "desc" }],
+    take: limit,
+    include: {
+      productionReport: { select: { id: true, confirmedAt: true } },
+      workOrder: { select: { id: true, docNo: true } },
+      item: { select: { id: true, itemName: true, unit: true } },
+      materialReturnNote: { select: { id: true, docNo: true } },
+      receivedBy: { select: { id: true, name: true } },
+    },
+  });
+  return rows.map((p) => ({
+    id: p.id,
+    productionReportId: p.productionReportId,
+    workOrderId: p.workOrderId,
+    workOrderNo: p.workOrder?.docNo ?? `WO-${p.workOrderId}`,
+    itemId: p.itemId,
+    itemName: p.item?.itemName ?? `Item #${p.itemId}`,
+    unit: p.item?.unit ?? "",
+    requestedQty: round3(n(p.requestedQty)),
+    status: p.status,
+    materialReturnNoteId: p.materialReturnNoteId ?? null,
+    materialReturnNoteNo: p.materialReturnNote?.docNo ?? null,
+    confirmedAt: p.productionReport?.confirmedAt ?? null,
+    createdAt: p.createdAt,
+    receivedAt: p.receivedAt ?? null,
+    receivedByName: p.receivedBy?.name ?? null,
+    remarks: p.remarks ?? null,
+  }));
+}
+
+async function receiveProductionRmReturnPending(input, actor = {}, db = prisma) {
+  const pendingId = Number(input?.pendingId ?? input?.id);
+  if (!Number.isFinite(pendingId) || pendingId <= 0) {
+    const err = new Error("Invalid pending return id");
+    err.statusCode = 400;
+    throw err;
+  }
+  const run = async (tx) => {
+    const pending = await tx.productionRmReturnPending.findUnique({
+      where: { id: pendingId },
+      include: {
+        item: { select: { id: true, itemName: true } },
+      },
+    });
+    if (!pending) {
+      const err = new Error("RM Return Pending row not found");
+      err.statusCode = 404;
+      throw err;
+    }
+    if (pending.status !== "PENDING") {
+      const err = new Error("RM Return Pending row is already processed.");
+      err.statusCode = 409;
+      throw err;
+    }
+
+    const note = await createMaterialReturnNote(
+      {
+        fromLocationId: input.fromLocationId,
+        toLocationId: input.toLocationId,
+        workOrderId: pending.workOrderId,
+        productionMaterialRequestId: null,
+        remarks: cleanRemarks(input.remarks) || `Received pending RM return #${pending.id}`,
+        lines: [
+          {
+            itemId: pending.itemId,
+            returnQty: round3(n(pending.requestedQty)),
+            remarks: pending.remarks,
+          },
+        ],
+      },
+      actor,
+      tx,
+    );
+
+    const updated = await tx.productionRmReturnPending.update({
+      where: { id: pending.id },
+      data: {
+        status: "RECEIVED",
+        materialReturnNoteId: note.id,
+        receivedAt: new Date(),
+        receivedByUserId: actor.userId ?? actor.actorUserId ?? null,
+      },
+    });
+    const openCount = await countOpenProductionRmReturnPending(tx, pending.workOrderId);
+    const report = await tx.productionWorkOrderReport.findUnique({
+      where: { workOrderId: pending.workOrderId },
+      select: { remainingQty: true, status: true },
+    });
+    if (openCount === 0 && report?.status === "CONFIRMED" && round3(n(report.remainingQty)) <= EPS) {
+      await tx.workOrder.update({
+        where: { id: pending.workOrderId },
+        data: {
+          status: "COMPLETED",
+          holdReason: null,
+          heldAt: null,
+          heldByUserId: null,
+          holdRemarks: null,
+        },
+      });
+    }
+    return { pending: updated, materialReturnNote: { id: note.id, docNo: note.docNo } };
+  };
+  return typeof db.$transaction === "function" ? db.$transaction(run) : run(db);
+}
+
 module.exports = {
   buildWorkOrderProductionReport,
+  confirmProductionWorkOrderReport,
+  assertProductionReportConfirmed,
+  assertNoOpenProductionRmReturnPending,
+  listProductionRmReturnPending,
+  receiveProductionRmReturnPending,
   loadApprovedByMap,
   sumQcForProduction,
 };

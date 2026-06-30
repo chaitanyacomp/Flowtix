@@ -8,6 +8,8 @@ export type PendingAction = {
   ownerRole: string;
   ageHours: number | null;
   href: string;
+  planId?: number;
+  monthlyPlanId?: number;
 };
 
 export type PendingActionsResponse = {

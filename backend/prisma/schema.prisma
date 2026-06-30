@@ -233,6 +233,16 @@ enum CarryForwardPendingStatus {
   CONSUMED
 }
 
+enum ProductionWorkOrderReportStatus {
+  CONFIRMED
+}
+
+enum ProductionRmReturnPendingStatus {
+  PENDING
+  RECEIVED
+  CANCELLED
+}
+
 /// No Qty SO internal workflow cycles (reopen creates a new active cycle; history is locked per cycle).
 enum SalesOrderCycleStatus {
   ACTIVE
@@ -463,6 +473,8 @@ model User {
   materialIssueNotesCreated               MaterialIssueNote[]             @relation("MaterialIssueCreatedBy")
   materialReturnNotesCreated               MaterialReturnNote[]            @relation("MaterialReturnCreatedBy")
   materialWastageNotesCreated              MaterialWastageNote[]           @relation("MaterialWastageCreatedBy")
+  productionReportsConfirmed               ProductionWorkOrderReport[]     @relation("ProductionReportConfirmedBy")
+  productionRmReturnsReceived              ProductionRmReturnPending[]     @relation("ProductionRmReturnReceivedBy")
   productionMaterialRequestsCreated       ProductionMaterialRequest[]     @relation("PmrCreatedBy")
   productionMaterialRequestsRequested     ProductionMaterialRequest[]     @relation("PmrRequestedBy")
   materialAllocationsCreated              MaterialAllocation[]            @relation("MaterialAllocationCreatedBy")
@@ -693,6 +705,8 @@ model Item {
   materialReturnLines             MaterialReturnLine[]
   materialWastageNotes            MaterialWastageNote[]
   productionEntryRmConsumptions   ProductionEntryRmConsumption[]
+  productionReportLines           ProductionWorkOrderReportLine[]
+  productionRmReturnPendings      ProductionRmReturnPending[]
   pmrLines                        ProductionMaterialRequestLine[]
   materialAllocations             MaterialAllocation[]            @relation("MaterialAllocationRmItem")
   noQtyClosedShortageLines        NoQtySoClosedShortageLine[]
@@ -1802,6 +1816,7 @@ model MaterialReturnNote {
   productionMaterialRequest ProductionMaterialRequest? @relation(fields: [productionMaterialRequestId], references: [id], onDelete: SetNull)
   createdBy                 User?                      @relation("MaterialReturnCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
   lines                     MaterialReturnLine[]
+  productionRmReturnPendings ProductionRmReturnPending[]
 
   @@index([fromLocationId])
   @@index([toLocationId])
@@ -2281,6 +2296,8 @@ model WorkOrder {
   materialWastageNotes            MaterialWastageNote[]
   materialRequirements            MaterialRequirement[]
   productionExecution             WorkOrderProductionExecution?
+  productionReports               ProductionWorkOrderReport[]
+  productionRmReturnPendings      ProductionRmReturnPending[]
   productionShortfallResolutions  ProductionShortfallResolution[]
   carryForwardPendingSources      CarryForwardPending[]           @relation("CfPendingSourceWo")
 
@@ -2431,6 +2448,76 @@ model WorkOrderLine {
 
   @@index([workOrderId])
   @@index([fgItemId])
+}
+
+
+/// Production-certified WO report before any WO closure or shortfall decision.
+model ProductionWorkOrderReport {
+  id                Int                             @id @default(autoincrement())
+  workOrderId       Int                             @unique
+  status            ProductionWorkOrderReportStatus @default(CONFIRMED)
+  plannedQty        Decimal                         @db.Decimal(18, 3)
+  producedQty       Decimal                         @db.Decimal(18, 3)
+  remainingQty      Decimal                         @db.Decimal(18, 3)
+  remarks           String?                         @db.Text
+  confirmedAt       DateTime                        @default(now())
+  confirmedByUserId Int?
+  createdAt         DateTime                        @default(now())
+  updatedAt         DateTime                        @updatedAt
+
+  workOrder   WorkOrder @relation(fields: [workOrderId], references: [id], onDelete: Restrict)
+  confirmedBy User?     @relation("ProductionReportConfirmedBy", fields: [confirmedByUserId], references: [id], onDelete: SetNull)
+  lines       ProductionWorkOrderReportLine[]
+  returnPendings ProductionRmReturnPending[]
+
+  @@index([status])
+  @@index([confirmedAt])
+  @@index([confirmedByUserId])
+}
+
+model ProductionWorkOrderReportLine {
+  id                 Int     @id @default(autoincrement())
+  productionReportId Int
+  itemId             Int
+  rmIssuedQty        Decimal @default(0) @db.Decimal(18, 3)
+  rmConsumedQty      Decimal @default(0) @db.Decimal(18, 3)
+  rmReturnQty        Decimal @default(0) @db.Decimal(18, 3)
+  scrapWasteQty      Decimal @default(0) @db.Decimal(18, 3)
+  varianceQty        Decimal @default(0) @db.Decimal(18, 3)
+  remarks            String? @db.Text
+
+  productionReport ProductionWorkOrderReport @relation(fields: [productionReportId], references: [id], onDelete: Cascade)
+  item             Item                      @relation(fields: [itemId], references: [id], onDelete: Restrict)
+
+  @@unique([productionReportId, itemId])
+  @@index([itemId])
+}
+
+model ProductionRmReturnPending {
+  id                   Int                             @id @default(autoincrement())
+  productionReportId   Int
+  workOrderId          Int
+  itemId               Int
+  requestedQty         Decimal                         @db.Decimal(18, 3)
+  status               ProductionRmReturnPendingStatus @default(PENDING)
+  materialReturnNoteId Int?
+  remarks              String?                         @db.Text
+  createdAt            DateTime                        @default(now())
+  receivedAt           DateTime?
+  receivedByUserId     Int?
+
+  productionReport  ProductionWorkOrderReport @relation(fields: [productionReportId], references: [id], onDelete: Cascade)
+  workOrder         WorkOrder                 @relation(fields: [workOrderId], references: [id], onDelete: Restrict)
+  item              Item                      @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  materialReturnNote MaterialReturnNote?      @relation(fields: [materialReturnNoteId], references: [id], onDelete: SetNull)
+  receivedBy        User?                     @relation("ProductionRmReturnReceivedBy", fields: [receivedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([productionReportId])
+  @@index([workOrderId])
+  @@index([itemId])
+  @@index([status])
+  @@index([materialReturnNoteId])
+  @@index([receivedByUserId])
 }
 
 model ProductionEntry {

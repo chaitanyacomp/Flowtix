@@ -84,9 +84,75 @@ export type ProductionWorkOrderReport = {
     reportedConsumedQty: number | null;
     varianceQty: number | null;
   }>;
+  confirmation: {
+    confirmed: boolean;
+    reportId: number | null;
+    status: string | null;
+    confirmedAt: string | null;
+    confirmedByName: string | null;
+    remarks: string | null;
+    plannedQty?: number;
+    producedQty?: number;
+    remainingQty?: number;
+    lines: Array<{
+      id: number;
+      itemId: number;
+      itemName: string;
+      unit: string;
+      rmIssuedQty: number;
+      rmConsumedQty: number;
+      rmReturnQty: number;
+      scrapWasteQty: number;
+      varianceQty: number;
+      remarks: string | null;
+    }>;
+    returnPendings: Array<{
+      id: number;
+      workOrderId: number;
+      workOrderNo: string | null;
+      itemId: number;
+      itemName: string;
+      unit: string;
+      requestedQty: number;
+      status: string;
+      materialReturnNoteId: number | null;
+      materialReturnNoteNo: string | null;
+      receivedAt: string | null;
+      receivedByName: string | null;
+      remarks: string | null;
+      createdAt: string;
+    }>;
+  };
   generatedAt: string;
 };
 
 export function fetchProductionWorkOrderReport(workOrderId: number): Promise<ProductionWorkOrderReport> {
   return apiFetch<ProductionWorkOrderReport>(`/api/production/work-orders/${workOrderId}/production-report`);
+}
+
+export type ConfirmProductionWorkOrderReportInput = {
+  remarks?: string | null;
+  lines: Array<{
+    itemId: number;
+    rmConsumedQty?: number | null;
+    rmReturnQty?: number | null;
+    scrapWasteQty?: number | null;
+    varianceQty?: number | null;
+    remarks?: string | null;
+  }>;
+};
+
+export function confirmProductionWorkOrderReport(
+  workOrderId: number,
+  body: ConfirmProductionWorkOrderReportInput,
+): Promise<{
+  report: ProductionWorkOrderReport;
+  confirmation: ProductionWorkOrderReport["confirmation"];
+  alreadyConfirmed: boolean;
+  requiresShortfallDecision: boolean;
+}> {
+  return apiFetch(`/api/production/work-orders/${workOrderId}/production-report/confirm`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
 }

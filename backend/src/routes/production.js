@@ -92,7 +92,10 @@ const {
   persistProductionEntryRmConsumption,
   RM_CONSUMPTION_ROUNDING_TOLERANCE_KG,
 } = require("../services/productionRmConsumptionService");
-const { buildWorkOrderProductionReport } = require("../services/productionWorkOrderReportService");
+const {
+  buildWorkOrderProductionReport,
+  confirmProductionWorkOrderReport,
+} = require("../services/productionWorkOrderReportService");
 const {
   HOLD_REASONS,
   holdWorkOrder,
@@ -659,9 +662,18 @@ async function syncWorkOrderStatusFromProduction(tx, workOrderId) {
   if (shouldFreezeStatusSync(wo.status)) return;
 
   const isNoQty = wo.salesOrder?.orderType === "NO_QTY";
+  const confirmedReport = await tx.productionWorkOrderReport.findUnique({
+    where: { workOrderId },
+    select: { id: true, status: true },
+  });
+  const hasConfirmedProductionReport = confirmedReport?.status === "CONFIRMED";
+  const openRmReturnPendingCount = hasConfirmedProductionReport
+    ? await tx.productionRmReturnPending.count({ where: { workOrderId, status: "PENDING" } })
+    : 0;
+  const rmReturnsSettled = openRmReturnPendingCount === 0;
 
   if (isNoQty) {
-    if (wo.productionExecution?.executionStatus === "COMPLETED") {
+    if (wo.productionExecution?.executionStatus === "COMPLETED" && hasConfirmedProductionReport && rmReturnsSettled) {
       if (wo.status !== "COMPLETED") {
         await tx.workOrder.update({ where: { id: workOrderId }, data: { status: "COMPLETED" } });
       }
@@ -693,7 +705,7 @@ async function syncWorkOrderStatusFromProduction(tx, workOrderId) {
     if (produced + WO_SO_EPS < required) allComplete = false;
   }
 
-  const nextStatus = allComplete ? "COMPLETED" : anyProgress ? "IN_PROGRESS" : "PENDING";
+  const nextStatus = allComplete && hasConfirmedProductionReport && rmReturnsSettled ? "COMPLETED" : anyProgress ? "IN_PROGRESS" : "PENDING";
   if (nextStatus !== wo.status) {
     await tx.workOrder.update({ where: { id: workOrderId }, data: { status: nextStatus } });
   }
@@ -1174,6 +1186,47 @@ productionRouter.get(
 );
 
 /** NO_QTY — Production execution status (orthogonal to Work Order lifecycle). */
+const confirmProductionReportSchema = z.object({
+  remarks: z.string().max(4000).optional().nullable(),
+  lines: z
+    .array(
+      z.object({
+        itemId: z.number().int().positive(),
+        rmConsumedQty: z.number().nonnegative().optional().nullable(),
+        rmReturnQty: z.number().nonnegative().optional().nullable(),
+        scrapWasteQty: z.number().nonnegative().optional().nullable(),
+        varianceQty: z.number().optional().nullable(),
+        remarks: z.string().max(500).optional().nullable(),
+      }),
+    )
+    .optional()
+    .default([]),
+});
+
+productionRouter.post(
+  "/work-orders/:id/production-report/confirm",
+  requireAuth,
+  requireRole(["ADMIN", "PRODUCTION"]),
+  async (req, res, next) => {
+    try {
+      const id = Number(req.params.id);
+      const body = confirmProductionReportSchema.parse(req.body ?? {});
+      const result = await prisma.$transaction(async (tx) => {
+        await lockWorkOrderForUpdate(tx, id);
+        return confirmProductionWorkOrderReport(
+          tx,
+          id,
+          { remarks: body.remarks, lines: body.lines },
+          { userId: req.user?.userId, role: req.user?.role },
+        );
+      });
+      return res.status(result.alreadyConfirmed ? 200 : 201).json(result);
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
 productionRouter.get(
   "/work-orders/:id/production-execution",
   requireAuth,
@@ -1280,6 +1333,16 @@ productionRouter.post(
           message: e.message,
           code: e.code,
           shortfall: e.shortfall,
+        });
+      }
+      if (e.code === "PRODUCTION_REPORT_REQUIRED") {
+        return res.status(409).json({ message: e.message, code: e.code, reportRequired: true });
+      }
+      if (e.code === "RM_RETURN_PENDING_STORE_ACK_REQUIRED") {
+        return res.status(409).json({
+          message: e.message,
+          code: e.code,
+          pendingReturnCount: e.pendingReturnCount ?? null,
         });
       }
       return next(e);

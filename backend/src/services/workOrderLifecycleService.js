@@ -221,7 +221,22 @@ async function resumeWorkOrder(tx, workOrderId, { actorUserId, actorRole }) {
     if (produced > EPS) anyProgress = true;
     if (produced + EPS < required) allComplete = false;
   }
-  const nextStatus = allComplete ? "COMPLETED" : anyProgress ? "IN_PROGRESS" : "PENDING";
+  let reportConfirmed = false;
+  let rmReturnsSettled = true;
+  if (allComplete) {
+    const report = await tx.productionWorkOrderReport.findUnique({
+      where: { workOrderId },
+      select: { id: true, status: true },
+    });
+    reportConfirmed = report?.status === "CONFIRMED";
+    if (reportConfirmed) {
+      const pendingReturns = await tx.productionRmReturnPending.count({
+        where: { workOrderId, status: "PENDING" },
+      });
+      rmReturnsSettled = pendingReturns === 0;
+    }
+  }
+  const nextStatus = allComplete && reportConfirmed && rmReturnsSettled ? "COMPLETED" : anyProgress ? "IN_PROGRESS" : "PENDING";
 
   const updated = await tx.workOrder.update({
     where: { id: workOrderId },
@@ -250,6 +265,34 @@ async function resumeWorkOrder(tx, workOrderId, { actorUserId, actorRole }) {
   return updated;
 }
 
+async function assertProductionReportConfirmedForWorkOrder(tx, workOrderId) {
+  const report = await tx.productionWorkOrderReport.findUnique({
+    where: { workOrderId },
+    select: { id: true, status: true },
+  });
+  if (!report || report.status !== "CONFIRMED") {
+    const err = new Error("Confirm Production Report before closing the work order.");
+    err.statusCode = 409;
+    err.code = "PRODUCTION_REPORT_REQUIRED";
+    throw err;
+  }
+  return report;
+}
+
+async function assertNoOpenProductionRmReturnPendingForWorkOrder(tx, workOrderId) {
+  const count = await tx.productionRmReturnPending.count({
+    where: { workOrderId, status: "PENDING" },
+  });
+  if (count > 0) {
+    const err = new Error("Store must acknowledge pending RM returns before closing the work order.");
+    err.statusCode = 409;
+    err.code = "RM_RETURN_PENDING_STORE_ACK_REQUIRED";
+    err.pendingReturnCount = count;
+    throw err;
+  }
+  return true;
+}
+
 /**
  * @param {import('@prisma/client').Prisma.TransactionClient} tx
  */
@@ -272,6 +315,8 @@ async function closeWorkOrderWithShortfall(tx, workOrderId, { closureReason, act
     err.statusCode = 409;
     throw err;
   }
+  await assertProductionReportConfirmedForWorkOrder(tx, workOrderId);
+  await assertNoOpenProductionRmReturnPendingForWorkOrder(tx, workOrderId);
 
   const reason = String(closureReason || "").trim();
   if (reason.length < 3) {

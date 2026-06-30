@@ -14,6 +14,10 @@ const {
   getMaterialReturnNoteById,
 } = require("../services/materialReturnService");
 const {
+  listProductionRmReturnPending,
+  receiveProductionRmReturnPending,
+} = require("../services/productionWorkOrderReportService");
+const {
   WASTAGE_REASON_LABELS,
   buildWastageContextForLine,
   createMaterialWastageNote,
@@ -22,6 +26,48 @@ const {
 
 const productionMaterialReturnRouter = express.Router();
 const mrnRoles = ["ADMIN", "STORE", "PRODUCTION"];
+
+productionMaterialReturnRouter.get(
+  "/pending",
+  requireAuth,
+  requireRole(mrnRoles),
+  async (req, res, next) => {
+    try {
+      const status = req.query.status ? String(req.query.status) : "PENDING";
+      const rows = await listProductionRmReturnPending(prisma, {
+        status: status === "ALL" ? null : status,
+      });
+      return res.json(rows);
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
+const receivePendingSchema = z.object({
+  fromLocationId: z.number().int().positive(),
+  toLocationId: z.number().int().positive(),
+  remarks: z.string().max(4000).optional().nullable(),
+});
+
+productionMaterialReturnRouter.post(
+  "/pending/:id/receive",
+  requireAuth,
+  requireRole(["ADMIN", "STORE"]),
+  async (req, res, next) => {
+    try {
+      const id = Number(req.params.id);
+      const body = receivePendingSchema.parse(req.body ?? {});
+      const result = await receiveProductionRmReturnPending(
+        { pendingId: id, ...body },
+        { userId: req.user?.userId, role: req.user?.role },
+      );
+      return res.status(201).json(result);
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
 
 productionMaterialReturnRouter.get(
   "/context",

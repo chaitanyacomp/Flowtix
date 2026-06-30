@@ -14,6 +14,11 @@ const { RISK_LEVELS, ROW_TYPES } = require("./controlTowerRowNormalizer");
 const EPS = 1e-6;
 
 const { buildPlanDisplayLabel } = require("./monthlyPlanningPlanLifecycleService");
+const {
+  NO_QTY_MONTHLY_PLANNING_GATE,
+  assessNoQtyMonthlyPlanningGate,
+  isNoQtyMonthlyPlanningGateExecutionReady,
+} = require("./noQtyMonthlyPlanningGateService");
 const { getEligibleDispatches } = require("./salesBillService");
 const {
   getQuotationsPendingSalesOrderRows,
@@ -38,6 +43,7 @@ const {
   productionExecutionPendingActionLabel,
   PRODUCTION_EXECUTION_PENDING_LABELS,
 } = require("./productionExecutionService");
+const { listProductionRmReturnPending } = require("./productionWorkOrderReportService");
 
 const STORE_ISSUE_PENDING_ACTION = "Issue Material";
 const GRN_PENDING_ACTION = "GRN Pending";
@@ -75,6 +81,26 @@ function ageHoursFromTimestamp(ts) {
   const diff = Date.now() - ms;
   if (diff < 0) return 0;
   return Math.floor(diff / (60 * 60 * 1000));
+}
+
+function timestampMs(value) {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  const ms = date.getTime();
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function isRequirementSheetNewerThanPlan(sheet, plan) {
+  if (!plan) return true;
+  const planMs =
+    timestampMs(plan.releasedAt) ??
+    timestampMs(plan.approvedAt) ??
+    timestampMs(plan.updatedAt) ??
+    timestampMs(plan.createdAt);
+  if (planMs == null) return true;
+  const sheetMs = timestampMs(sheet?.updatedAt) ?? timestampMs(sheet?.createdAt);
+  if (sheetMs == null) return true;
+  return sheetMs > planMs;
 }
 
 function priorityFromRiskLevel(riskLevel) {
@@ -363,7 +389,7 @@ async function fetchMonthlyPlanPendingActions(db = prisma) {
     const displayLabel = buildPlanDisplayLabel(plan);
     const docNo = plan.docNo?.trim() || displayLabel || `Plan-${plan.id}`;
     const periodKey = plan.periodKey;
-    const href = `/monthly-planning?period=${encodeURIComponent(periodKey)}&planId=${plan.id}&from=pending-actions`;
+    const href = `/monthly-planning?period=${encodeURIComponent(periodKey)}&planId=${plan.id}&monthlyPlanId=${plan.id}&from=pending-actions`;
     const ageHours = ageHoursFromTimestamp(plan.updatedAt ?? plan.createdAt);
 
     if (plan.status === "DRAFT") {
@@ -377,6 +403,8 @@ async function fetchMonthlyPlanPendingActions(db = prisma) {
         href,
         sourceModule: "MONTHLY_PLANNING",
         currentStatus: "DRAFT",
+        planId: plan.id,
+        monthlyPlanId: plan.id,
       });
     } else if (plan.status === "AWAITING_PURCHASE_REVIEW") {
       actions.push({
@@ -389,6 +417,8 @@ async function fetchMonthlyPlanPendingActions(db = prisma) {
         href,
         sourceModule: "MONTHLY_PLANNING",
         currentStatus: "AWAITING_PURCHASE_REVIEW",
+        planId: plan.id,
+        monthlyPlanId: plan.id,
       });
     } else if (plan.status === "APPROVED" && plan.releasedAt == null) {
       actions.push({
@@ -401,6 +431,8 @@ async function fetchMonthlyPlanPendingActions(db = prisma) {
         href,
         sourceModule: "MONTHLY_PLANNING",
         currentStatus: "APPROVED",
+        planId: plan.id,
+        monthlyPlanId: plan.id,
       });
     }
   }
@@ -623,6 +655,34 @@ async function fetchStoreIssuePendingActions(db = prisma) {
   });
 }
 
+async function fetchStoreProductionRmReturnPendingActions(db = prisma) {
+  const rows = await listProductionRmReturnPending(db, { status: "PENDING", limit: 100 });
+  return rows.map((row) => {
+    const params = new URLSearchParams({ from: "pending-actions", pendingId: String(row.id) });
+    if (row.workOrderId) params.set("workOrderId", String(row.workOrderId));
+    return {
+      id: `production-rm-return-pending:${row.id}`,
+      priority: PENDING_PRIORITY.MEDIUM,
+      action: "RM Return Pending",
+      documentNo: row.workOrderNo ?? `WO-${row.workOrderId}`,
+      ownerRole: "STORE",
+      ageHours: ageHoursFromTimestamp(row.createdAt),
+      href: `/production-rm-returns?${params.toString()}`,
+      sourceModule: "MATERIAL_RETURN",
+      currentStatus: "RM_RETURN_PENDING",
+      workOrderId: row.workOrderId,
+      itemId: row.itemId,
+      quantity: row.requestedQty,
+      unit: row.unit,
+      metadata: {
+        productionReportId: row.productionReportId,
+        pendingId: row.id,
+        itemName: row.itemName,
+      },
+    };
+  });
+}
+
 /**
  * P8F-A19 — Hide old-cycle NO_QTY RM handoff from Store pending actions once a later-cycle RS exists.
  * Execution remains visible in Production / WO / RM CC; this is pending-action presentation only.
@@ -721,6 +781,7 @@ async function fetchStoreNoQtyMonthlyPlanningPendingActions(db = prisma) {
         id: true,
         cycleId: true,
         periodKey: true,
+        createdAt: true,
         updatedAt: true,
         cycle: { select: { cycleNo: true } },
       },
@@ -738,28 +799,42 @@ async function fetchStoreNoQtyMonthlyPlanningPendingActions(db = prisma) {
     if (placement.processStageKey !== "NO_QTY_REQUIREMENT_READY" || placement.readyToPlaceWo) continue;
 
     const periodKey = String(lockedRs.periodKey ?? "").trim();
-    if (periodKey) {
-      const existingPlan = await db.monthlyProductionPlan.findFirst({
-        where: { periodKey },
-        select: { id: true, status: true },
-      });
-      if (existingPlan) continue;
+    const planningGate = periodKey ? await assessNoQtyMonthlyPlanningGate(db, periodKey) : null;
+    if (
+      planningGate &&
+      ![
+        NO_QTY_MONTHLY_PLANNING_GATE.INITIAL_PLAN_REQUIRED,
+        NO_QTY_MONTHLY_PLANNING_GATE.ADDITIONAL_PLAN_REQUIRED,
+      ].includes(planningGate.gate)
+    ) {
+      continue;
+    }
+    if (
+      planningGate?.gate === NO_QTY_MONTHLY_PLANNING_GATE.ADDITIONAL_PLAN_REQUIRED &&
+      !isRequirementSheetNewerThanPlan(lockedRs, planningGate.plan)
+    ) {
+      continue;
     }
 
     const href = periodKey
       ? `/monthly-planning?period=${encodeURIComponent(periodKey)}&from=pending-actions`
       : "/monthly-planning?from=pending-actions";
+    const action = planningGate?.action ?? "Monthly Planning Pending";
+    const currentStatus =
+      planningGate?.gate === NO_QTY_MONTHLY_PLANNING_GATE.ADDITIONAL_PLAN_REQUIRED
+        ? "ADDITIONAL_MONTHLY_PLANNING_PENDING"
+        : "MONTHLY_PLANNING_PENDING";
 
     actions.push({
-      id: `no-qty-monthly-plan:${soId}:${rsCycleId}`,
+      id: `no-qty-monthly-plan:${soId}:${rsCycleId}:${periodKey || "no-period"}`,
       priority: PENDING_PRIORITY.MEDIUM,
-      action: "Monthly Planning Pending",
+      action,
       documentNo: so.docNo ?? null,
       ownerRole: "STORE",
       ageHours: ageHoursFromTimestamp(lockedRs.updatedAt ?? so.updatedAt),
       href,
       sourceModule: "MONTHLY_PLANNING",
-      currentStatus: "MONTHLY_PLANNING_PENDING",
+      currentStatus,
     });
   }
   return actions;
@@ -850,6 +925,10 @@ async function fetchStoreNoQtyPlaceWoPendingActions(db = prisma) {
 
     const placement = await assessNoQtyPlacementStageForCycle(db, { salesOrderId: soId, cycleId: effCycleId });
     if (!placement.readyToPlaceWo) continue;
+    if (placement.periodKey) {
+      const planningGate = await assessNoQtyMonthlyPlanningGate(db, placement.periodKey);
+      if (!isNoQtyMonthlyPlanningGateExecutionReady(planningGate)) continue;
+    }
 
     const params = new URLSearchParams({
       source: "no_qty_so",
@@ -1302,6 +1381,7 @@ async function getPendingActions(opts = {}) {
   }
   if (role === "STORE") {
     supplemental.push(...(await fetchStoreIssuePendingActions(db)));
+    supplemental.push(...(await fetchStoreProductionRmReturnPendingActions(db)));
     supplemental.push(...(await fetchStoreGrnPendingActions(db)));
     supplemental.push(...(await fetchStoreProductionHandoffPendingActions(db)));
     supplemental.push(...(await fetchStoreNoQtyMonthlyPlanningPendingActions(db)));
@@ -1338,7 +1418,7 @@ async function getPendingActions(opts = {}) {
 
   return {
     count: actions.length,
-    actions: actions.map(({ id, priority, action, documentNo, ownerRole, ageHours, href }) => ({
+    actions: actions.map(({ id, priority, action, documentNo, ownerRole, ageHours, href, planId, monthlyPlanId }) => ({
       id,
       priority,
       action,
@@ -1346,6 +1426,8 @@ async function getPendingActions(opts = {}) {
       ownerRole,
       ageHours,
       href,
+      ...(planId != null ? { planId } : {}),
+      ...(monthlyPlanId != null ? { monthlyPlanId } : {}),
     })),
     meta: {
       role,
@@ -1366,6 +1448,7 @@ module.exports = {
   fetchPurchaseProcurementPendingActions,
   mapProcurementQueueRowToPurchasePendingAction,
   fetchStoreGrnPendingActions,
+  fetchStoreProductionRmReturnPendingActions,
   fetchStoreNoQtyMonthlyPlanningPendingActions,
   fetchStoreNoQtyCreateNextRsPendingActions,
   fetchStoreNoQtyPlaceWoPendingActions,

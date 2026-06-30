@@ -534,6 +534,34 @@ async function createCarryForwardPendingFromLine(tx, {
   });
 }
 
+async function assertProductionReportConfirmedForExecution(tx, workOrderId) {
+  const row = await tx.productionWorkOrderReport.findUnique({
+    where: { workOrderId },
+    select: { id: true, status: true },
+  });
+  if (!row || row.status !== "CONFIRMED") {
+    const err = new Error("Confirm Production Report before finishing production.");
+    err.statusCode = 409;
+    err.code = "PRODUCTION_REPORT_REQUIRED";
+    throw err;
+  }
+  return row;
+}
+
+async function assertNoOpenProductionRmReturnPendingForExecution(tx, workOrderId) {
+  const count = await tx.productionRmReturnPending.count({
+    where: { workOrderId, status: "PENDING" },
+  });
+  if (count > 0) {
+    const err = new Error("Store must acknowledge pending RM returns before finishing production.");
+    err.statusCode = 409;
+    err.code = "RM_RETURN_PENDING_STORE_ACK_REQUIRED";
+    err.pendingReturnCount = count;
+    throw err;
+  }
+  return true;
+}
+
 /**
  * Finish Production Execution — full qty, carry forward, or waive balance.
  */
@@ -573,6 +601,9 @@ async function finishProductionExecution(tx, workOrderId, input, { actorUserId, 
   }
 
   // Full production or surplus — no shortfall remainder
+  await assertProductionReportConfirmedForExecution(tx, workOrderId);
+  await assertNoOpenProductionRmReturnPendingForExecution(tx, workOrderId);
+
   if (summary.remainderQty <= EPS) {
     const now = new Date();
     const totalSurplusQty = summary.surplusQty ?? 0;

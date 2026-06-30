@@ -22,7 +22,13 @@ const {
 } = require("../../src/services/productionExecutionService");
 const { getWoLineRemainingProductionQty } = require("../../src/services/reportMetrics");
 
-function createFinishMockTx({ workOrderId = 280, plannedQty = 1500, producedQty = 1200 } = {}) {
+function createFinishMockTx({
+  workOrderId = 280,
+  plannedQty = 1500,
+  producedQty = 1200,
+  reportConfirmed = true,
+  openReturnPendingCount = 0,
+} = {}) {
   const opOrder = [];
   const lineId = 1001;
   const fgItemId = 501;
@@ -122,6 +128,12 @@ function createFinishMockTx({ workOrderId = 280, plannedQty = 1500, producedQty 
     },
     workOrderLine: {
       update: async ({ data }) => ({ executionWaivedQty: data.executionWaivedQty }),
+    },
+    productionWorkOrderReport: {
+      findUnique: async () => (reportConfirmed ? { id: 901, status: "CONFIRMED" } : null),
+    },
+    productionRmReturnPending: {
+      count: async () => openReturnPendingCount,
     },
   };
 
@@ -238,6 +250,34 @@ describe("productionExecutionService", () => {
     assert.ok(auditIdx >= 0 && cfIdx > auditIdx, "audit before carry forward");
     assert.ok(woIdx > cfIdx, "WO completion after carry forward");
     assert.ok(execIdx > woIdx, "execution COMPLETED after WO completion");
+  });
+
+  test("finishProductionExecution requires confirmed Production Report", async () => {
+    const { tx } = createFinishMockTx({ reportConfirmed: false });
+    await assert.rejects(
+      () =>
+        finishProductionExecution(
+          tx,
+          280,
+          { shortfallOutcome: "CARRY_FORWARD", resolutionReason: "CAPACITY_CONSTRAINT" },
+          { actorUserId: null, actorRole: null },
+        ),
+      (err) => err.code === "PRODUCTION_REPORT_REQUIRED" && err.statusCode === 409,
+    );
+  });
+
+  test("finishProductionExecution waits for Store RM return acknowledgement", async () => {
+    const { tx } = createFinishMockTx({ openReturnPendingCount: 1 });
+    await assert.rejects(
+      () =>
+        finishProductionExecution(
+          tx,
+          280,
+          { shortfallOutcome: "WAIVE_BALANCE", resolutionReason: "MANAGEMENT_DECISION" },
+          { actorUserId: null, actorRole: null },
+        ),
+      (err) => err.code === "RM_RETURN_PENDING_STORE_ACK_REQUIRED" && err.statusCode === 409,
+    );
   });
 
   test("finishProductionExecution WAIVE_BALANCE closes WO without CarryForwardPending", async () => {

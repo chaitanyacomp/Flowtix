@@ -10,6 +10,10 @@ const {
   isNoQtyWoPlacedStatusCounted,
   buildNoQtyWoBatchPlacementPreview,
 } = require("./noQtyExecutionReleaseService");
+const {
+  assessNoQtyMonthlyPlanningGate,
+  isNoQtyMonthlyPlanningGateExecutionReady,
+} = require("./noQtyMonthlyPlanningGateService");
 
 const EPS = 1e-6;
 
@@ -175,10 +179,12 @@ function buildRsBalanceLinesFromSheet(sheet, woPlacedByItem) {
   return { lines, totals };
 }
 
-function deriveReadyToPlaceWo(totals, placement) {
+function deriveReadyToPlaceWo(totals, placement, readinessStatus = null) {
   const suggestedExecutableQty = round3(n(placement?.summary?.totalExecutableQty));
+  const ready = String(readinessStatus ?? "").toUpperCase() === "READY_TO_PLACE_WO";
   return (
     totals.rsBalanceQty > EPS &&
+    ready &&
     (placement?.canPlace === true || suggestedExecutableQty > EPS)
   );
 }
@@ -507,6 +513,8 @@ async function getRequirementSheetExecutionSummary(db, requirementSheetId, deps 
   }
 
   const periodKey = String(sheet.periodKey ?? "").trim();
+  const assessPlanningGate = deps.assessNoQtyMonthlyPlanningGate || assessNoQtyMonthlyPlanningGate;
+  const planningGate = periodKey ? await assessPlanningGate(db, periodKey) : null;
   const releasedPlan = periodKey
     ? await db.monthlyProductionPlan.findFirst({
         where: { periodKey, releasedAt: { not: null } },
@@ -514,9 +522,10 @@ async function getRequirementSheetExecutionSummary(db, requirementSheetId, deps 
       })
     : null;
   const released = Boolean(releasedPlan?.releasedAt);
+  const executionPlanReady = released && (!planningGate || isNoQtyMonthlyPlanningGateExecutionReady(planningGate));
 
   let materialRequirement = null;
-  if (releasedPlan?.id) {
+  if (executionPlanReady && releasedPlan?.id) {
     materialRequirement = await db.materialRequirement.findFirst({
       where: {
         monthlyProductionPlanId: releasedPlan.id,
@@ -554,7 +563,7 @@ async function getRequirementSheetExecutionSummary(db, requirementSheetId, deps 
   const mrDocNo = materialRequirement?.docNo ?? null;
   const mrStatus = materialRequirement?.status ?? null;
   const [procurementProgress, rmReadiness] = await Promise.all([
-    loadProcurementProgress(db, { released, materialRequirement }),
+    loadProcurementProgress(db, { released: executionPlanReady, materialRequirement }),
     buildRmReadiness(db, lines, deps),
   ]);
   const placement = await buildNoQtyWoBatchPlacementPreview(db, sheet);
@@ -562,7 +571,7 @@ async function getRequirementSheetExecutionSummary(db, requirementSheetId, deps 
     totals,
     rmReadiness,
     existingWoSummary,
-    released,
+    released: executionPlanReady,
     materialRequirement,
   });
 
@@ -574,7 +583,7 @@ async function getRequirementSheetExecutionSummary(db, requirementSheetId, deps 
     status: sheet.status,
     release: {
       monthlyPlanId: releasedPlan?.id ?? null,
-      released,
+      released: executionPlanReady,
       releasedAt: releasedPlan?.releasedAt?.toISOString?.() ?? releasedPlan?.releasedAt ?? null,
       releasedRevision: releasedPlan?.releasedRevision ?? null,
       label: releasedPlan ? buildPlanDisplayLabel(releasedPlan) : null,
@@ -588,11 +597,11 @@ async function getRequirementSheetExecutionSummary(db, requirementSheetId, deps 
     existingWoSummary,
     placement,
     procurement: {
-      status: released ? (mrStatus ?? "RELEASED") : "NOT_RELEASED",
+      status: executionPlanReady ? (mrStatus ?? "RELEASED") : "NOT_RELEASED",
       materialRequirementId: materialRequirement?.id ?? null,
       materialRequirementDocNo: mrDocNo,
       summaryLabel: procurementSummaryLabel({
-        released,
+        released: executionPlanReady,
         materialRequirementDocNo: mrDocNo,
         mrStatus,
       }),
@@ -658,6 +667,8 @@ async function assessNoQtyPlacementStageForSheet(db, requirementSheetId, deps = 
   }
 
   const periodKey = String(sheet.periodKey ?? "").trim();
+  const assessPlanningGate = deps.assessNoQtyMonthlyPlanningGate || assessNoQtyMonthlyPlanningGate;
+  const planningGate = periodKey ? await assessPlanningGate(db, periodKey) : null;
   const releasedPlan = periodKey
     ? await db.monthlyProductionPlan.findFirst({
         where: { periodKey, releasedAt: { not: null } },
@@ -665,9 +676,10 @@ async function assessNoQtyPlacementStageForSheet(db, requirementSheetId, deps = 
       })
     : null;
   const released = Boolean(releasedPlan?.releasedAt);
+  const executionPlanReady = released && (!planningGate || isNoQtyMonthlyPlanningGateExecutionReady(planningGate));
 
   let materialRequirement = null;
-  if (releasedPlan?.id) {
+  if (executionPlanReady && releasedPlan?.id) {
     materialRequirement = await db.materialRequirement.findFirst({
       where: {
         monthlyProductionPlanId: releasedPlan.id,
@@ -689,18 +701,18 @@ async function assessNoQtyPlacementStageForSheet(db, requirementSheetId, deps = 
     totals,
     rmReadiness,
     existingWoSummary,
-    released,
+    released: executionPlanReady,
     materialRequirement,
   });
 
   const suggestedWoQty = round3(n(placement?.summary?.totalExecutableQty));
-  const readyToPlaceWo = deriveReadyToPlaceWo(totals, placement);
+  const readyToPlaceWo = deriveReadyToPlaceWo(totals, placement, readiness.status);
   let processStageKey = NO_QTY_PLACEMENT_STAGE.MONTHLY_PLANNING_PENDING;
   if (readyToPlaceWo) {
     processStageKey = NO_QTY_PLACEMENT_STAGE.READY_TO_PLACE_WO;
   } else if (totals.rsBalanceQty <= EPS) {
     processStageKey = null;
-  } else if (released && materialRequirement) {
+  } else if (executionPlanReady && materialRequirement) {
     processStageKey = NO_QTY_PLACEMENT_STAGE.PROCUREMENT_IN_PROGRESS;
   }
 
@@ -711,7 +723,7 @@ async function assessNoQtyPlacementStageForSheet(db, requirementSheetId, deps = 
     requirementSheetId: Number(sheet.id),
     readinessStatus: readiness.status,
     periodKey: periodKey || null,
-    released,
+    released: executionPlanReady,
     materialRequirementId: materialRequirement?.id ?? null,
     rsBalanceQty: totals.rsBalanceQty,
     suggestedWoQty,

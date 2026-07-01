@@ -8,7 +8,7 @@ import {
 
 function ready(partial: Partial<ProductionRmReadiness> = {}): ProductionRmReadiness {
   return {
-    gate: "FULLY_ISSUED_READY",
+    gate: "READY_FOR_PRODUCTION",
     fgItemName: "Widget",
     fgUnit: "Nos",
     woQty: 10000,
@@ -87,6 +87,17 @@ describe("resolveRegularRmProductionQtyCap", () => {
     expect(isProductionBlockedByRmReadiness(blocked)).toBe(true);
     expect(resolveRegularRmAllowedNowQty(blocked)).toBeNull();
     expect(resolveRegularRmEntryQtyCap(blocked, { lineWoRemaining: 5000 })).toBeNull();
+  });
+
+  it("does not block READY_FOR_PRODUCTION when RM line status remains partial after store waiver", () => {
+    const data = ready({
+      productionAllowedNowQty: 4487,
+      maxAdditionalQty: 4487,
+      rmLines: [{ status: "PARTIAL" } as never],
+    });
+    expect(isProductionBlockedByRmReadiness(data)).toBe(false);
+    expect(resolveRegularRmAllowedNowQty(data)).toBe(4487);
+    expect(resolveRegularRmEntryQtyCap(data, { lineWoRemaining: 5000 })).toBe(4487);
   });
 
   it("NO_QTY allows approving full draft when RM supports planned WO qty", () => {

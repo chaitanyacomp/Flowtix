@@ -5,8 +5,11 @@ import {
   buildQualityQueueRows,
   formatQcCompletionMessage,
   qcCompletionPostActionHash,
+  resolvePostQcSaveAdvance,
   resolveQcCompletionOutcome,
+  sortPendingQcByProductionFifo,
 } from "../../src/lib/qcWorkspaceUx";
+import { erpRefreshScopesForMutation } from "../../src/lib/erpRefresh";
 
 describe("qcWorkspaceUx", () => {
   it("resolves QC completion outcomes from split quantities", () => {
@@ -76,5 +79,83 @@ describe("qcWorkspaceUx", () => {
   it("builds embedded stage steps for production-embedded QA", () => {
     expect(buildQcEmbeddedStageSteps(false)).toEqual([]);
     expect(buildQcEmbeddedStageSteps(true).find((s) => s.active)?.label).toBe("Quality Inspection");
+  });
+
+  it("auto-loads the next FIFO pending QC item after a completed save", () => {
+    const rows = [
+      { productionId: 12, pendingQty: 4487, date: "2026-06-04T09:00:00.000Z", itemName: "Square Box" },
+      { productionId: 10, pendingQty: 2448, date: "2026-06-02T09:00:00.000Z", itemName: "PVC Angle" },
+      { productionId: 11, pendingQty: 2658, date: "2026-06-03T09:00:00.000Z", itemName: "Round Plate" },
+    ];
+
+    const advance = resolvePostQcSaveAdvance({ savedProductionId: 9, freshPending: rows });
+
+    expect(advance).toEqual({ kind: "advance", productionId: 10 });
+  });
+
+  it("keeps partial QC on the same production entry when pending qty remains", () => {
+    const advance = resolvePostQcSaveAdvance({
+      savedProductionId: 9,
+      freshPending: [
+        { productionId: 9, pendingQty: 500, date: "2026-06-01T09:00:00.000Z" },
+        { productionId: 10, pendingQty: 2448, date: "2026-06-02T09:00:00.000Z" },
+      ],
+    });
+
+    expect(advance).toEqual({ kind: "stay", productionId: 9 });
+  });
+
+  it("returns an empty advance after the final QC item is completed", () => {
+    expect(resolvePostQcSaveAdvance({ savedProductionId: 12, freshPending: [] })).toEqual({
+      kind: "advance",
+      productionId: null,
+    });
+  });
+
+  it("orders pending production entries FIFO, not by quantity", () => {
+    const fifo = sortPendingQcByProductionFifo([
+      { productionId: 4, pendingQty: 4487, date: "2026-06-04T09:00:00.000Z", itemName: "Square Box" },
+      { productionId: 1, pendingQty: 2000, date: "2026-06-01T09:00:00.000Z", itemName: "Dummy Plug" },
+      { productionId: 3, pendingQty: 2658, date: "2026-06-03T09:00:00.000Z", itemName: "Round Plate" },
+      { productionId: 2, pendingQty: 2448, date: "2026-06-02T09:00:00.000Z", itemName: "PVC Angle" },
+    ]);
+
+    expect(fifo.map((r) => `${r.itemName} - ${r.pendingQty}`)).toEqual([
+      "Dummy Plug - 2000",
+      "PVC Angle - 2448",
+      "Round Plate - 2658",
+      "Square Box - 4487",
+    ]);
+  });
+
+  it("does not use a Pending Actions redirect after accepted QC save", () => {
+    expect(qcCompletionPostActionHash("ACCEPTED")).toBeNull();
+    expect(qcCompletionPostActionHash("REJECTED")).toBeNull();
+  });
+
+  it("keeps queue rows directly selectable without requiring a separate open button", () => {
+    const rows = buildQualityQueueRows({
+      pendingQc: [
+        { productionId: 10, itemName: "PVC Angle", workOrderLabel: "WO-2", pendingQty: 2448 },
+      ],
+      dispositions: [],
+      customerReturns: [],
+    });
+
+    expect(rows[0]).toMatchObject({
+      kind: "PENDING_QC",
+      productionId: 10,
+      anchor: "#qc-production-pending",
+    });
+  });
+
+  it("refreshes dashboard, dispatch, stock, and pending actions after QC mutations", () => {
+    const scopes = erpRefreshScopesForMutation("/api/production/qc-entries", "POST");
+
+    expect(scopes).toContain("dashboard");
+    expect(scopes).toContain("pending-actions");
+    expect(scopes).toContain("qc");
+    expect(scopes).toContain("dispatch");
+    expect(scopes).toContain("stock");
   });
 });

@@ -18,6 +18,12 @@ function n(value) {
   return Number.isFinite(x) ? x : 0;
 }
 
+function resolveAppliedCarryForwardQty(scheduleQty, carryForwardQty) {
+  const req = round3(n(scheduleQty));
+  if (!(req > 0)) return 0;
+  return round3(Math.max(0, n(carryForwardQty)));
+}
+
 function sheetDedupeKey(sheet) {
   const soId = sheet.salesOrderId;
   const cycleId = sheet.cycleId == null ? "null" : String(sheet.cycleId);
@@ -45,7 +51,11 @@ function lineProductionRequirement(ln) {
   const fromSnapshot =
     ln.suggestedWoQtySnapshot != null ? round3(n(ln.suggestedWoQtySnapshot)) : null;
   const productionRequirementQty =
-    fromSnapshot != null ? fromSnapshot : round3(scheduleQty + carryForwardQty);
+    scheduleQty > 0
+      ? fromSnapshot != null
+        ? fromSnapshot
+        : round3(scheduleQty + resolveAppliedCarryForwardQty(scheduleQty, carryForwardQty))
+      : 0;
   return { scheduleQty, carryForwardQty, productionRequirementQty };
 }
 
@@ -72,9 +82,16 @@ function computeEffectiveProductionDemandFromSources(sources) {
     const fromSnapshot =
       src.suggestedWoQtySnapshot != null ? round3(n(src.suggestedWoQtySnapshot)) : null;
     const prodReq =
-      fromSnapshot != null
-        ? fromSnapshot
-        : round3(n(src.requirementQty ?? 0) + n(src.shortfallQtySnapshot ?? 0));
+      n(src.requirementQty ?? 0) > 0
+        ? fromSnapshot != null
+          ? fromSnapshot
+          : round3(
+              n(src.requirementQty ?? 0) +
+                resolveAppliedCarryForwardQty(src.requirementQty ?? 0, src.shortfallQtySnapshot ?? 0),
+            )
+        : round3(
+            0,
+          );
     const prev = latestBySo.get(soId);
     if (!prev || rank > prev.rank) {
       latestBySo.set(soId, { rank, productionRequirementQty: prodReq });

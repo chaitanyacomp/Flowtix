@@ -167,12 +167,29 @@ function resolveRmRiskPendingAction(meta, queueHints = {}, role = "STORE") {
     Boolean(meta?.procurementCompletedForCase) || String(meta?.mrStatus ?? "").trim() === "FULLY_PROCURED";
 
   if (procurementDone && queueType === "READY_TO_RELEASE_WO") {
-    if (isProductionRole(role)) {
+    const released = Boolean(meta?.materialReleasedToProduction);
+    if (isProductionRole(role) && released) {
       const params = new URLSearchParams({ returnTo: "pending-actions" });
       if (stage.workOrderId > 0) params.set("workOrderId", String(stage.workOrderId));
       const execStatus = meta?.productionExecutionStatus ?? "NOT_STARTED";
       const action = productionExecutionPendingActionLabel(execStatus) ?? READY_TO_START_PRODUCTION;
       return { action, href: `/production?${params.toString()}` };
+    }
+    if (isProductionRole(role) && !released) {
+      return {
+        action: RM_ISSUED_WAITING_FOR_PRODUCTION,
+        href: buildRmControlCenterHref(stage, rmItemId),
+      };
+    }
+    if (!isProductionRole(role)) {
+      return {
+        action: "Release to Production",
+        href: (() => {
+          const params = new URLSearchParams({ returnTo: "pending-actions" });
+          if (stage.workOrderId > 0) params.set("workOrderId", String(stage.workOrderId));
+          return `/material-issue?${params.toString()}`;
+        })(),
+      };
     }
     return {
       action: RM_ISSUED_WAITING_FOR_PRODUCTION,

@@ -4,6 +4,7 @@
  */
 
 const auditLog = require("./auditLog");
+const { assertNoOpenProductionRmReturnPending } = require("./productionRmReturnPendingGuard");
 const { getApprovedProducedQtyByWorkOrderLineIds } = require("./productionMetrics");
 const { getWoLineRemainingProductionQty } = require("./reportMetrics");
 
@@ -549,17 +550,7 @@ async function assertProductionReportConfirmedForExecution(tx, workOrderId) {
 }
 
 async function assertNoOpenProductionRmReturnPendingForExecution(tx, workOrderId) {
-  const count = await tx.productionRmReturnPending.count({
-    where: { workOrderId, status: "PENDING" },
-  });
-  if (count > 0) {
-    const err = new Error("Store must acknowledge pending RM returns before finishing production.");
-    err.statusCode = 409;
-    err.code = "RM_RETURN_PENDING_STORE_ACK_REQUIRED";
-    err.pendingReturnCount = count;
-    throw err;
-  }
-  return true;
+  return assertNoOpenProductionRmReturnPending(tx, workOrderId);
 }
 
 /**

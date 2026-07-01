@@ -350,6 +350,31 @@ function getNoQtyUnlockedDraftQtyForItem(so, itemId) {
     .reduce((s, d) => s + num(d.dispatchedQty), 0);
 }
 
+/** Replaceable UNLOCKED draft qty for one NO_QTY cycle + FG item (same draft row can be updated in place). */
+function getNoQtyUnlockedDraftQtyForItemCycle(so, cycleId, itemId) {
+  const want = normalizePositiveCycleId(cycleId);
+  if (want == null) return 0;
+  return (so.dispatch || [])
+    .filter(
+      (d) =>
+        d.reversalOfId == null &&
+        d.workflowStatus === "UNLOCKED" &&
+        Number(d.itemId) === Number(itemId) &&
+        normalizePositiveCycleId(d.cycleId) === want,
+    )
+    .reduce((s, d) => s + num(d.dispatchedQty), 0);
+}
+
+/**
+ * QC-backed headroom for prepare, treating replaceable open draft as available (not double-reserved).
+ */
+function getNoQtyCycleDispatchHeadroomForPrepare(so, cycleId, itemId, qcMap, recheckMap, postCycleMap) {
+  const replaceable = getNoQtyUnlockedDraftQtyForItemCycle(so, cycleId, itemId);
+  return (
+    getNoQtyCycleDispatchHeadroomForItem(so, cycleId, itemId, qcMap, recheckMap, postCycleMap) + replaceable
+  );
+}
+
 /**
  * FIFO across sales-order cycles (cycleNo ascending) for one FG item: oldest cycle pool first, then next.
  *
@@ -372,14 +397,14 @@ function computeNoQtyFifoPrepareSlicesForItem({
   const slices = [];
   let cycleHeadroomTotal = 0;
   for (const c of cyclesSorted) {
-    cycleHeadroomTotal += getNoQtyCycleDispatchHeadroomForItem(so, c.id, itemId, qcMap, recheckMap, postCycleMap);
+    cycleHeadroomTotal += getNoQtyCycleDispatchHeadroomForPrepare(so, c.id, itemId, qcMap, recheckMap, postCycleMap);
   }
   const freePhysicalUsable = Math.max(0, num(usableStock) - num(unlockedDraftReservedQty) + num(replaceableDraftQty));
   const totalAvailable = Math.min(cycleHeadroomTotal, freePhysicalUsable);
   let physicalRemaining = totalAvailable;
   for (const c of cyclesSorted) {
     if (rem <= REPORT_QUEUE_EPS || physicalRemaining <= REPORT_QUEUE_EPS) break;
-    const headroom = getNoQtyCycleDispatchHeadroomForItem(so, c.id, itemId, qcMap, recheckMap, postCycleMap);
+    const headroom = getNoQtyCycleDispatchHeadroomForPrepare(so, c.id, itemId, qcMap, recheckMap, postCycleMap);
     const take = Math.min(rem, headroom, physicalRemaining);
     if (take > REPORT_QUEUE_EPS) {
       slices.push({ cycleId: c.id, cycleNo: num(c.cycleNo), qty: take });
@@ -3411,7 +3436,7 @@ dispatchRouter.post(
 /**
  * Cancel a draft (UNLOCKED) dispatch only. Locked rows must use reversal, not delete.
  */
-dispatchRouter.delete("/dispatches/:id", requireAuth, requireRole(["ADMIN"]), async (req, res, next) => {
+dispatchRouter.delete("/dispatches/:id", requireAuth, requireRole(DISPATCH_WRITE_ROLES), async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     if (!Number.isFinite(id) || id <= 0) {
@@ -3787,6 +3812,7 @@ module.exports = {
   loadNoQtyDispositionUsableForDispatchPoolMap,
   loadNoQtyPostCycleApprovalMapForInputs,
   computeNoQtyDispatchHeadroom,
+  computeNoQtyFifoPrepareSlicesForItem,
   filterNoQtyDispatchRowsForActiveCycle,
   netNoQtyCycleDispatchedByItemId,
   /** Dashboard / reports: same NO_QTY per-cycle line stats as GET /api/dispatch/sales-orders. */

@@ -14,10 +14,10 @@ const {
   loadReturnedByWorkOrder,
 } = require("./materialReturnService");
 
-const SUBMITTED_PMR_STATUSES = ["REQUESTED", "PARTIALLY_ISSUED", "FULLY_ISSUED"];
+const SUBMITTED_PMR_STATUSES = ["REQUESTED", "PARTIALLY_ISSUED", "FULLY_ISSUED", "SHORT_ISSUE_ACCEPTED"];
 const PRODUCTION_QTY_EPS = 1e-6;
 
-/** @typedef {'NO_PMR'|'PMR_DRAFT_ONLY'|'WAITING_STORE_ISSUE'|'PARTIAL_READY'|'FULLY_ISSUED_READY'} ReadinessGate */
+/** @typedef {'NO_PMR'|'PMR_DRAFT_ONLY'|'WAITING_STORE_ISSUE'|'WAITING_RELEASE_TO_PRODUCTION'|'READY_FOR_PRODUCTION'} ReadinessGate */
 
 function n(v) {
   return qtyToNumber(v);
@@ -180,29 +180,39 @@ async function loadSubmittedPmrsForWorkOrder(db, workOrderId) {
 function isPmrLineIssueComplete(line) {
   const req = n(line?.requiredQty);
   if (req <= STOCK_EPS) return true;
-  return n(line?.issuedQty) + STOCK_EPS >= req;
+  const iss = n(line?.issuedQty);
+  const waived = n(line?.waivedQty);
+  return iss + waived + STOCK_EPS >= req;
 }
 
-/** PMR is store-issue-complete when status is FULLY_ISSUED or every line meets required qty. */
+/** PMR is store-issue-complete when status is FULLY_ISSUED, SHORT_ISSUE_ACCEPTED, or every line is satisfied. */
 function isPmrStoreIssueComplete(pmr) {
-  if (pmr?.status === "FULLY_ISSUED") return true;
+  if (pmr?.status === "FULLY_ISSUED" || pmr?.status === "SHORT_ISSUE_ACCEPTED") return true;
   const lines = pmr?.lines ?? [];
   if (!lines.length) return false;
   return lines.every(isPmrLineIssueComplete);
 }
 
-function resolveReadinessGate(pmrs, totalIssued) {
+function pmrHasMaterialIssueTransfer(pmr) {
+  return (pmr?.materialIssueNotes || []).length > 0;
+}
+
+function hasCompletedStoreIssueTransfer(pmrs) {
+  return (pmrs || []).some((pmr) => isPmrStoreIssueComplete(pmr) && pmrHasMaterialIssueTransfer(pmr));
+}
+
+function resolveReadinessGate(pmrs, totalIssued, materialReleasedToProduction) {
   if (!pmrs.length) {
     return { gate: /** @type {ReadinessGate} */ ("NO_PMR"), hasDraftOnly: false };
   }
   if (totalIssued <= STOCK_EPS) {
     return { gate: "WAITING_STORE_ISSUE", hasDraftOnly: false };
   }
-  const allFull = pmrs.every(isPmrStoreIssueComplete);
-  return {
-    gate: allFull ? "FULLY_ISSUED_READY" : "PARTIAL_READY",
-    hasDraftOnly: false,
-  };
+  const releasedByIssueTransfer = hasCompletedStoreIssueTransfer(pmrs);
+  if (!materialReleasedToProduction && !releasedByIssueTransfer) {
+    return { gate: "WAITING_RELEASE_TO_PRODUCTION", hasDraftOnly: false };
+  }
+  return { gate: "READY_FOR_PRODUCTION", hasDraftOnly: false, releasedByIssueTransfer };
 }
 
 /**
@@ -253,7 +263,11 @@ async function buildProductionRmReadiness(db, workOrderLineId) {
       hasDraftOnly: draftPmrs > 0,
     };
   } else {
-    gateInfo = resolveReadinessGate(submittedPmrs, totalIssued);
+    gateInfo = resolveReadinessGate(
+      submittedPmrs,
+      totalIssued,
+      Boolean(wo.materialReleasedToProductionAt),
+    );
   }
 
   const { rmNeeded: requiredForWo, missingChildBoms, bomMissing } = await (async () => {
@@ -418,10 +432,79 @@ async function buildProductionRmReadiness(db, workOrderLineId) {
     flags: {
       waitingForMaterialRequest: gateInfo.gate === "NO_PMR" || gateInfo.gate === "PMR_DRAFT_ONLY",
       waitingForStoreIssue: gateInfo.gate === "WAITING_STORE_ISSUE",
-      readyForProduction:
-        gateInfo.gate === "PARTIAL_READY" || gateInfo.gate === "FULLY_ISSUED_READY",
-      partiallyReady: gateInfo.gate === "PARTIAL_READY",
+      waitingForReleaseToProduction: gateInfo.gate === "WAITING_RELEASE_TO_PRODUCTION",
+      readyForProduction: gateInfo.gate === "READY_FOR_PRODUCTION",
+      partiallyReady: gateInfo.gate === "READY_FOR_PRODUCTION",
+      materialReleasedToProduction: Boolean(wo.materialReleasedToProductionAt) || Boolean(gateInfo.releasedByIssueTransfer),
+      explicitMaterialReleasedToProduction: Boolean(wo.materialReleasedToProductionAt),
+      materialReleasedByIssueTransfer: Boolean(gateInfo.releasedByIssueTransfer),
     },
+  };
+}
+
+function resolveReadinessBlockReason(readiness) {
+  if (readiness?.bomMissing) return "BOM_MISSING";
+  if (readiness?.gate === "NO_PMR" || readiness?.gate === "PMR_DRAFT_ONLY") return "PMR_NOT_SUBMITTED";
+  if (readiness?.gate === "WAITING_STORE_ISSUE") return "WAITING_STORE_ISSUE";
+  if (readiness?.gate === "WAITING_RELEASE_TO_PRODUCTION") return "WAITING_RELEASE_TO_PRODUCTION";
+  if (n(readiness?.productionAllowedNowQty) <= STOCK_EPS) return "ISSUED_RM_CAP_ZERO";
+  return null;
+}
+
+async function buildProductionRmReadinessDebugPayload(db, workOrderLineId, readiness = null) {
+  const snap = readiness || await buildProductionRmReadiness(db, workOrderLineId);
+  const wo = await db.workOrder.findUnique({
+    where: { id: snap.workOrderId },
+    select: {
+      id: true,
+      docNo: true,
+      materialReleasedToProductionAt: true,
+      lines: { select: { id: true } },
+      productionMaterialRequests: {
+        where: { status: { in: SUBMITTED_PMR_STATUSES } },
+        orderBy: { id: "desc" },
+        include: {
+          lines: { select: { itemId: true, requiredQty: true, issuedQty: true, waivedQty: true } },
+          materialIssueNotes: { select: { id: true, docNo: true, toLocationId: true, createdAt: true } },
+        },
+      },
+    },
+  });
+  const pmrs = wo?.productionMaterialRequests || [];
+  return {
+    workOrderId: snap.workOrderId,
+    workOrderNo: snap.workOrderNo,
+    workOrderLineId: snap.workOrderLineId,
+    workOrderLineIds: (wo?.lines || []).map((line) => line.id),
+    materialReleasedToProductionAt: wo?.materialReleasedToProductionAt ?? null,
+    pmrs: pmrs.map((pmr) => {
+      const requiredRmQty = round3((pmr.lines || []).reduce((sum, line) => sum + n(line.requiredQty), 0));
+      const issuedRmQty = round3((pmr.lines || []).reduce((sum, line) => sum + n(line.issuedQty), 0));
+      const waivedRmQty = round3((pmr.lines || []).reduce((sum, line) => sum + n(line.waivedQty), 0));
+      const pendingRmQty = round3(Math.max(0, requiredRmQty - issuedRmQty - waivedRmQty));
+      return {
+        pmrId: pmr.id,
+        pmrDocNo: pmr.docNo,
+        status: pmr.status,
+        requiredRmQty,
+        issuedRmQty,
+        waivedRmQty,
+        pendingRmQty,
+        storeIssueComplete: isPmrStoreIssueComplete(pmr),
+        materialIssueStatus: pmrHasMaterialIssueTransfer(pmr) ? "ISSUED" : "NO_MATERIAL_ISSUE",
+        materialIssues: (pmr.materialIssueNotes || []).map((note) => ({
+          id: note.id,
+          docNo: note.docNo,
+          toLocationId: note.toLocationId,
+          createdAt: note.createdAt,
+        })),
+      };
+    }),
+    productionAllowedNowQty: snap.productionAllowedNowQty,
+    readinessStatus: snap.gate,
+    flags: snap.flags,
+    blockReason: resolveReadinessBlockReason(snap),
+    rmLines: snap.rmLines,
   };
 }
 
@@ -508,6 +591,13 @@ async function assertProductionRmReadiness(tx, {
   if (readiness.gate === "WAITING_STORE_ISSUE") {
     const err = new Error("Production blocked: Waiting for Store RM Issue.");
     err.code = "PRODUCTION_RM_WAITING_ISSUE";
+    err.statusCode = 409;
+    throw err;
+  }
+
+  if (readiness.gate === "WAITING_RELEASE_TO_PRODUCTION") {
+    const err = new Error("Production blocked: Store must release this work order to production.");
+    err.code = "PRODUCTION_RM_WAITING_RELEASE";
     err.statusCode = 409;
     throw err;
   }
@@ -698,7 +788,10 @@ module.exports = {
   resolveProductionBatchRmCap,
   productionQtyExceedsRmAllowed,
   isPmrStoreIssueComplete,
+  pmrHasMaterialIssueTransfer,
+  hasCompletedStoreIssueTransfer,
   resolveReadinessGate,
+  buildProductionRmReadinessDebugPayload,
   getWorkOrderProductionLocationIds,
   buildProductionRmReadiness,
   assertProductionRmReadiness,

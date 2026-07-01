@@ -14,14 +14,40 @@ describe("deriveProductionConciseRmLabel", () => {
     ).toBe("READY");
   });
 
-  it("returns PARTIAL for partial gate", () => {
+  it("returns READY for ready gate even when an accepted short issue leaves a partial RM line", () => {
     expect(
       deriveProductionConciseRmLabel({
         bomMissing: false,
-        gate: "PARTIAL_READY",
+        gate: "READY_FOR_PRODUCTION",
+        productionAllowedNowQty: 4487,
+        rmLines: [{ status: "PARTIAL" }],
         workOrderId: 1,
       } as never),
-    ).toBe("PARTIAL");
+    ).toBe("READY");
+  });
+
+  it("returns READY for fully issued ready-for-production gate", () => {
+    expect(
+      deriveProductionConciseRmLabel({
+        bomMissing: false,
+        gate: "READY_FOR_PRODUCTION",
+        productionAllowedNowQty: 4487,
+        rmLines: [{ status: "READY" }],
+        workOrderId: 1,
+      } as never),
+    ).toBe("READY");
+  });
+
+  it("returns WAITING RM when ready gate has no producible RM cap", () => {
+    expect(
+      deriveProductionConciseRmLabel({
+        bomMissing: false,
+        gate: "READY_FOR_PRODUCTION",
+        productionAllowedNowQty: 0,
+        rmLines: [{ status: "READY" }],
+        workOrderId: 1,
+      } as never),
+    ).toBe("WAITING RM");
   });
 
   it("returns WAITING RM when blocked or BOM missing", () => {
@@ -29,6 +55,16 @@ describe("deriveProductionConciseRmLabel", () => {
       deriveProductionConciseRmLabel({
         bomMissing: true,
         gate: "WAITING_STORE_ISSUE",
+        workOrderId: 1,
+      } as never),
+    ).toBe("WAITING RM");
+  });
+
+  it("returns WAITING RM while issued RM is not released to production", () => {
+    expect(
+      deriveProductionConciseRmLabel({
+        bomMissing: false,
+        gate: "WAITING_RELEASE_TO_PRODUCTION",
         workOrderId: 1,
       } as never),
     ).toBe("WAITING RM");

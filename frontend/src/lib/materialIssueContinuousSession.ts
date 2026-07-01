@@ -3,7 +3,11 @@
  */
 
 import type { PendingPmrSummary } from "./materialIssueWorkspace";
-import { pickActionablePmrForWorkOrder } from "./materialIssueWorkspace";
+import {
+  filterPmrsWithPendingIssue,
+  pickActionablePmrForWorkOrder,
+  sortPendingPmrsFifo,
+} from "./materialIssueWorkspace";
 
 export type MaterialIssueSessionScope = {
   requirementSheetId?: number | null;
@@ -97,15 +101,41 @@ export function pickNextPendingPmrInScope(
   scope: MaterialIssueSessionScope,
   excludeWorkOrderId?: number,
 ): PendingPmrSummary | null {
-  const scoped = filterPendingPmrsForSessionScope(pmrs, scope);
+  const actionable = filterPmrsWithPendingIssue(filterPendingPmrsForSessionScope(pmrs, scope));
   const excludeWo = Number(excludeWorkOrderId ?? 0);
-  for (const p of scoped) {
+  const seenWo = new Set<number>();
+  for (const p of sortPendingPmrsFifo(actionable)) {
     const woId = Number(p.workOrderId ?? 0);
+    if (woId <= 0 || seenWo.has(woId)) continue;
     if (excludeWo > 0 && woId === excludeWo) continue;
-    if (woId > 0) {
-      const picked = pickActionablePmrForWorkOrder(woId, scoped);
-      if (picked) return picked;
-    }
+    seenWo.add(woId);
+    return pickActionablePmrForWorkOrder(woId, actionable) ?? p;
   }
-  return scoped[0] ?? null;
+  return null;
+}
+
+export type PostIssueAdvanceResult =
+  | { kind: "stay"; pmr: PendingPmrSummary }
+  | { kind: "advance"; pmr: PendingPmrSummary | null };
+
+/** After a successful issue: stay on partial WO or advance FIFO to the next waiting WO. */
+export function resolvePostIssueAdvance(input: {
+  issuedWorkOrderId: number;
+  freshPending: PendingPmrSummary[];
+  scope: MaterialIssueSessionScope;
+}): PostIssueAdvanceResult {
+  const actionable = filterPmrsWithPendingIssue(
+    filterPendingPmrsForSessionScope(input.freshPending, input.scope),
+  );
+  const stillWaiting = actionable.some((p) => Number(p.workOrderId) === input.issuedWorkOrderId);
+  if (stillWaiting) {
+    const pmr =
+      pickActionablePmrForWorkOrder(input.issuedWorkOrderId, actionable) ??
+      actionable.find((p) => Number(p.workOrderId) === input.issuedWorkOrderId);
+    if (pmr) return { kind: "stay", pmr };
+  }
+  return {
+    kind: "advance",
+    pmr: pickNextPendingPmrInScope(input.freshPending, input.scope, input.issuedWorkOrderId),
+  };
 }

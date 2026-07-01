@@ -63,9 +63,23 @@ describe("dispatchOpenListEligibility", () => {
     assert.equal(isDispatchOpenListLineCandidate(line, "NORMAL"), false);
   });
 
-  it("NO_QTY: keeps cycle row with dispatchable headroom", () => {
+  it("NO_QTY: keeps cycle row with dispatchable headroom even when pendingDispatchQty is zero", () => {
     const line = { pendingDispatchQty: 0, dispatchPendingLock: 0, dispatchable: 5 };
     assert.equal(isDispatchOpenListLineCandidate(line, "NO_QTY"), true);
+  });
+
+  it("NO_QTY: partial QA acceptance uses dispatchable qty for backlog eligibility", () => {
+    const partial = { pendingDispatchQty: 0, dispatchPendingLock: 0, dispatchable: 40, dispatchableQty: 40 };
+    const none = { pendingDispatchQty: 0, dispatchPendingLock: 0, dispatchable: 0, dispatchableQty: 0 };
+    assert.equal(isDispatchOpenListLineCandidate(partial, "NO_QTY"), true);
+    assert.equal(isDispatchOpenListLineCandidate(none, "NO_QTY"), false);
+  });
+
+  it("NO_QTY: accumulated batches increase dispatchable headroom", () => {
+    const batchOne = { pendingDispatchQty: 0, dispatchPendingLock: 0, dispatchable: 50 };
+    const batchTwo = { pendingDispatchQty: 0, dispatchPendingLock: 0, dispatchable: 120 };
+    assert.equal(isDispatchOpenListLineCandidate(batchOne, "NO_QTY"), true);
+    assert.equal(isDispatchOpenListLineCandidate(batchTwo, "NO_QTY"), true);
   });
 
   it("commercially closed NORMAL SO is excluded at SO level", () => {

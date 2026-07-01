@@ -99,7 +99,7 @@ describe("dashboardOperationalDedup", () => {
           balanceQty: 100,
           status: "IN_PROGRESS",
           orderType: "NORMAL",
-          rmReadinessGate: "FULLY_ISSUED_READY",
+          rmReadinessGate: "READY_FOR_PRODUCTION",
           rmReadyForProduction: true,
         },
       ],

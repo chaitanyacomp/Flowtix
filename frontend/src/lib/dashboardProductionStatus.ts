@@ -221,7 +221,7 @@ function operationalStatusFromRegularRow(row: DashboardProductionStatusSource): 
   if (gate === "WAITING_STORE_ISSUE") {
     return { label: "Waiting for RM issue", tone: "partial" };
   }
-  if (gate === "PARTIAL_READY" && produced <= ROW_NUM_EPS) {
+  if (gate === "READY_FOR_PRODUCTION" && produced <= ROW_NUM_EPS) {
     return { label: "Partial RM at Production", tone: "partial" };
   }
   if (gate != null && !rmReady && produced <= ROW_NUM_EPS) {
@@ -250,7 +250,7 @@ function operationalStatusFromRegularRow(row: DashboardProductionStatusSource): 
     const canStart =
       gate == null
         ? woStatus === "IN_PROGRESS" || woStatus === "PENDING" || next === "PRODUCTION_PENDING"
-        : gate === "FULLY_ISSUED_READY" && rmReady;
+        : gate === "READY_FOR_PRODUCTION" && rmReady;
     if (canStart) {
       return { label: "Ready for Production", tone: "running" };
     }

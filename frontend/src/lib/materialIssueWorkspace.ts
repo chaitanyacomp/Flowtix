@@ -86,7 +86,30 @@ export function groupPendingPmrsByWorkOrder(pmrs: PendingPmrSummary[]): WoPmrGro
     });
   }
 
-  return groups.sort((a, b) => b.totalPending - a.totalPending);
+  return groups.sort((a, b) => a.workOrderId - b.workOrderId);
+}
+
+/** Oldest work order first (FIFO queue order for Store auto-advance). */
+export function sortPendingPmrsFifo(pmrs: PendingPmrSummary[]): PendingPmrSummary[] {
+  return [...pmrs].sort((a, b) => {
+    const woA = Number(a.workOrderId ?? 0);
+    const woB = Number(b.workOrderId ?? 0);
+    if (woA !== woB) return woA - woB;
+    return a.id - b.id;
+  });
+}
+
+/** Hide stock warning when every PMR line is fully issued (WO handoff complete for Store). */
+export function shouldShowNoRmAvailableWarning(input: {
+  executionReady: boolean;
+  canIssueAnyLine: boolean;
+  lines: Array<{ pmrLineId?: number; pmrPendingQty?: number; pendingQty?: number }>;
+}): boolean {
+  if (!input.executionReady || input.canIssueAnyLine) return false;
+  return input.lines.some((ln) => {
+    if (!ln.pmrLineId) return false;
+    return n(ln.pmrPendingQty ?? ln.pendingQty ?? 0) > EPS;
+  });
 }
 
 /** PMRs with store-actionable pending issue quantity. */

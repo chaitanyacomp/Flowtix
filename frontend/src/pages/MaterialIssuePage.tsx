@@ -28,6 +28,7 @@ import {
   filterPmrsWithPendingIssue,
   pickActionablePmrForWorkOrder,
   resolveMaterialIssueLineStatus,
+  shouldShowNoRmAvailableWarning,
 } from "../lib/materialIssueWorkspace";
 import {
   filterPendingPmrsForSessionScope,
@@ -36,6 +37,7 @@ import {
   materialIssueSessionCompleteMessage,
   materialIssueSessionCompleteTitle,
   parseMaterialIssueSessionScope,
+  resolvePostIssueAdvance,
   type MaterialIssueSessionComplete,
 } from "../lib/materialIssueContinuousSession";
 
@@ -142,13 +144,40 @@ type PmrIssueLine = {
   maxAllowedIssueQty?: number;
 };
 
+type PmrUnissuedRequiredLine = {
+  pmrLineId?: number;
+  itemId: number;
+  itemName: string;
+  unit: string;
+  requiredQty: number;
+  issuedQty: number;
+};
+
+type PmrIssueDecision = {
+  totalRequired: number;
+  totalIssued: number;
+  totalWaived: number;
+  totalExcessIssue: number;
+  totalRemaining: number;
+  canIssueMore: boolean;
+  canWaiveRemaining: boolean;
+  canReleaseToProduction: boolean;
+  unissuedRequiredLines?: PmrUnissuedRequiredLine[];
+  releaseBlockedByUnissuedBom?: boolean;
+  materialReleasedToProductionAt: string | null;
+  showPartialDecisionPanel: boolean;
+};
+
 type PmrIssueContext = {
   pmr: PendingPmr & {
     productionItemName?: string | null;
     lines: PmrIssueLine[];
+    totalWaived?: number;
+    totalExcessIssue?: number;
   };
   lines: PmrIssueLine[];
   pendingLines: PmrIssueLine[];
+  issueDecision?: PmrIssueDecision;
 };
 
 type ContextResponse = {
@@ -247,6 +276,10 @@ export function MaterialIssuePage() {
   const [pendingPmrs, setPendingPmrs] = React.useState<PendingPmr[]>([]);
   const [activePmrId, setActivePmrId] = React.useState<number | null>(null);
   const [activePmr, setActivePmr] = React.useState<PmrIssueContext["pmr"] | null>(null);
+  const [issueDecision, setIssueDecision] = React.useState<PmrIssueDecision | null>(null);
+  const [waiveReason, setWaiveReason] = React.useState("");
+  const [waiveRemarks, setWaiveRemarks] = React.useState("");
+  const [showWaiveForm, setShowWaiveForm] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
   const [submitting, setSubmitting] = React.useState(false);
   const [sessionComplete, setSessionComplete] = React.useState<MaterialIssueSessionComplete | null>(null);
@@ -301,6 +334,7 @@ export function MaterialIssuePage() {
       const data = await apiFetch<PmrIssueContext>(`/api/production-material-requests/${pmrId}/issue-context${qs}`);
       setActivePmrId(pmrId);
       setActivePmr(data.pmr);
+      setIssueDecision(data.issueDecision ?? null);
       if (data.pmr.workOrderId) setWorkOrderId(data.pmr.workOrderId);
       setRemarks(`Issue against ${data.pmr.docNo || `PMR-${pmrId}`}`);
       const sourceLines = data.lines?.length ? data.lines : data.pendingLines;
@@ -309,6 +343,7 @@ export function MaterialIssuePage() {
       setPmrLoadError(e instanceof Error ? e.message : "Could not load PMR");
       setActivePmrId(null);
       setActivePmr(null);
+      setIssueDecision(null);
       setLines([]);
       showError(e instanceof Error ? e.message : "Could not load PMR");
     } finally {
@@ -397,6 +432,8 @@ export function MaterialIssuePage() {
   const clearExecution = React.useCallback(() => {
     setActivePmrId(null);
     setActivePmr(null);
+    setIssueDecision(null);
+    setShowWaiveForm(false);
     setWorkOrderId("");
     setLines([]);
     setPmrLoadError(null);
@@ -433,6 +470,7 @@ export function MaterialIssuePage() {
       }
       setActivePmrId(null);
       setActivePmr(null);
+      setIssueDecision(null);
       setLines([]);
     },
     [selectPmr],
@@ -570,17 +608,11 @@ export function MaterialIssuePage() {
     workOrderId: number;
     workOrderNo: string | null;
     salesOrderId?: number | null;
+    pmrId: number;
   }) {
+    setSessionBanner(null);
     setRemarks("");
-    setActivePmrId(null);
-    setActivePmr(null);
-    setWorkOrderId("");
-    setLines([emptyLine()]);
-    const nextParams = new URLSearchParams(searchParams);
-    nextParams.delete("pmrId");
-    nextParams.delete("workOrderId");
-    if (returnTo) nextParams.set("returnTo", returnTo);
-    setSearchParams(nextParams, { replace: true });
+    setShowWaiveForm(false);
 
     const [freshPending] = await Promise.all([
       refreshPendingPmrsList(),
@@ -588,25 +620,57 @@ export function MaterialIssuePage() {
         .then((list) => setRecent(Array.isArray(list) ? list : []))
         .catch(() => undefined),
     ]);
+
+    const woLabel =
+      issued.workOrderNo?.trim() || (issued.workOrderId > 0 ? `WO-${issued.workOrderId}` : "work order");
+    showSuccess(formatMaterialIssueSuccessMessage(woLabel));
+
+    const advance = resolvePostIssueAdvance({
+      issuedWorkOrderId: issued.workOrderId,
+      freshPending,
+      scope: sessionScope,
+    });
+
+    if (advance.kind === "stay") {
+      setSessionComplete(null);
+      selectPmr(advance.pmr.id, issued.workOrderId);
+      return;
+    }
+
+    setActivePmrId(null);
+    setActivePmr(null);
+    setIssueDecision(null);
+    setWorkOrderId("");
+    setLines([]);
+    setPmrLoadError(null);
+    const nextParams = new URLSearchParams(searchParams);
+    nextParams.delete("pmrId");
+    nextParams.delete("workOrderId");
+    if (returnTo) nextParams.set("returnTo", returnTo);
+    setSearchParams(nextParams, { replace: true });
+
+    if (advance.pmr) {
+      setSessionComplete(null);
+      selectPmr(advance.pmr.id, advance.pmr.workOrderId);
+      return;
+    }
+
     const scopedRemaining = filterPmrsWithPendingIssue(
       filterPendingPmrsForSessionScope(freshPending, sessionScope),
     );
-    const woLabel = issued.workOrderNo?.trim() || (issued.workOrderId > 0 ? `WO-${issued.workOrderId}` : "work order");
-    showSuccess(formatMaterialIssueSuccessMessage(woLabel));
-
-    if (scopedRemaining.length === 0) {
-      setSessionBanner(null);
+    if (
+      scopedRemaining.length === 0 &&
+      (sessionScope.requirementSheetId || sessionScope.salesOrderId)
+    ) {
       setSessionComplete({
         requirementSheetId: sessionScope.requirementSheetId,
         salesOrderId: sessionScope.salesOrderId ?? issued.salesOrderId ?? null,
         lastWorkOrderId: issued.workOrderId,
         lastWorkOrderNo: issued.workOrderNo,
       });
-      return;
+    } else {
+      setSessionComplete(null);
     }
-
-    setSessionComplete(null);
-    setSessionBanner("Select the next work order from the queue when ready.");
   }
 
   async function submitIssue() {
@@ -666,11 +730,12 @@ export function MaterialIssuePage() {
             }),
           },
         );
+        const issuedWoId = Number(activePmr?.workOrderId ?? workOrderId ?? 0);
         await finalizeAfterSuccessfulIssue({
-          workOrderId: Number(activePmr?.workOrderId ?? 0),
+          workOrderId: issuedWoId,
           workOrderNo: activePmr?.workOrderNo ?? null,
-          salesOrderId:
-            pendingPmrs.find((p) => p.id === activePmrId)?.salesOrderId ?? sessionScope.salesOrderId ?? null,
+          salesOrderId: activePmr?.salesOrderId ?? null,
+          pmrId: activePmrId,
         });
         setSubmitting(false);
         return;
@@ -691,6 +756,7 @@ export function MaterialIssuePage() {
       setWorkOrderId("");
       setActivePmrId(null);
       setActivePmr(null);
+      setIssueDecision(null);
       setSearchParams(
         postIssueSearchParams(returnTo, typeof workOrderId === "number" ? workOrderId : undefined),
       );
@@ -699,6 +765,69 @@ export function MaterialIssuePage() {
       await loadPendingPmrs();
     } catch (e) {
       showError(e instanceof Error ? e.message : "Issue failed");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleIssueLater() {
+    if (!activePmrId) return;
+    setSubmitting(true);
+    try {
+      await apiFetch(`/api/production-material-requests/${activePmrId}/issue-later`, { method: "POST" });
+      setShowWaiveForm(false);
+      showSuccess("Remaining material stays pending. You can issue more or release to production when ready.");
+      await loadPmrIntoForm(activePmrId, typeof fromLocationId === "number" ? fromLocationId : undefined);
+    } catch (e) {
+      showError(e instanceof Error ? e.message : "Could not save decision");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleWaiveRemaining() {
+    if (!activePmrId || !waiveReason) {
+      showError("Select a waive reason.");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await apiFetch(`/api/production-material-requests/${activePmrId}/waive-remaining`, {
+        method: "POST",
+        body: JSON.stringify({ reason: waiveReason, remarks: waiveRemarks.trim() || null }),
+      });
+      setShowWaiveForm(false);
+      setWaiveReason("");
+      setWaiveRemarks("");
+      showSuccess("Remaining quantity waived — short issue accepted.");
+      await refreshPendingPmrsList();
+      await loadPmrIntoForm(activePmrId, typeof fromLocationId === "number" ? fromLocationId : undefined);
+    } catch (e) {
+      showError(e instanceof Error ? e.message : "Waive failed");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleReleaseToProduction() {
+    if (!activePmrId) return;
+    setSubmitting(true);
+    try {
+      await apiFetch(`/api/production-material-requests/${activePmrId}/release-to-production`, {
+        method: "POST",
+        body: JSON.stringify({ remarks: remarks.trim() || null }),
+      });
+      showSuccess("Work order released to production.");
+      await refreshPendingPmrsList();
+      await loadPmrIntoForm(activePmrId, typeof fromLocationId === "number" ? fromLocationId : undefined);
+    } catch (e) {
+      const msg =
+        e instanceof Error
+          ? e.message
+          : typeof e === "object" && e && "message" in e
+            ? String((e as { message?: string }).message)
+            : "Release failed";
+      showError(msg);
     } finally {
       setSubmitting(false);
     }
@@ -776,6 +905,12 @@ export function MaterialIssuePage() {
   const hasToleranceBlockedLine = lines.some((ln) => {
     if (!ln.pmrLineId || !ln.issueQty) return false;
     return !assessIssueLineDraft(ln).allowed;
+  });
+
+  const showNoRmAvailableWarning = shouldShowNoRmAvailableWarning({
+    executionReady,
+    canIssueAnyLine,
+    lines,
   });
 
   const canSubmitIssue =
@@ -1052,7 +1187,9 @@ export function MaterialIssuePage() {
           {woPmrMode && !executionReady && !pmrLoading ? (
             <div className="mt-2 rounded border border-dashed border-slate-300 bg-slate-50 px-3 py-4 text-center">
               <p className="text-[12px] font-semibold text-slate-800">
-                Select a work order from the queue to load RM lines.
+                {actionablePendingPmrs.length === 0
+                  ? "No pending material requests."
+                  : "Select a work order from the queue to load RM lines."}
               </p>
             </div>
           ) : (
@@ -1090,8 +1227,17 @@ export function MaterialIssuePage() {
                     });
                     const issueAssessment = assessIssueLineDraft(ln);
                     const noIssue = isMaterialIssueLineStockBlocked(pending, avail);
+                    const zeroIssuedRequired = woPmrMode && required > 1e-6 && issued <= 1e-6;
                     return (
-                      <tr key={ln.key} className={cn("border-b border-slate-100", noIssue && "bg-amber-50/50")}>
+                      <tr
+                        key={ln.key}
+                        className={cn(
+                          "border-b border-slate-100",
+                          zeroIssuedRequired && "bg-red-50/90",
+                          !zeroIssuedRequired && noIssue && "bg-amber-50/50",
+                        )}
+                        data-testid={zeroIssuedRequired ? "material-issue-zero-issued-row" : undefined}
+                      >
                         <td className="font-medium text-slate-900">
                           {woPmrMode && ln.pmrLineId ? (
                             ln.itemName
@@ -1194,7 +1340,7 @@ export function MaterialIssuePage() {
             </p>
           ) : null}
 
-          {woPmrMode && executionReady && !canIssueAnyLine ? (
+          {showNoRmAvailableWarning ? (
             <div className="mt-2 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">
               <p className="font-bold">No RM available for issue</p>
               <p className="mt-0.5 text-xs leading-relaxed text-amber-900">
@@ -1211,6 +1357,136 @@ export function MaterialIssuePage() {
                 </Link>
               ) : null}
             </div>
+          ) : null}
+
+          {woPmrMode && issueDecision && (issueDecision.totalIssued > 0 || issueDecision.showPartialDecisionPanel) ? (
+            <section
+              className="mt-2 rounded border border-violet-200 bg-violet-50/80 px-3 py-2.5"
+              data-testid="material-issue-decision-panel"
+            >
+              <h3 className="text-[12px] font-bold text-violet-950">Material issue status</h3>
+              <div className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] tabular-nums text-violet-950">
+                <span>
+                  <span className="font-semibold">Required:</span> {fmtQty(issueDecision.totalRequired)}
+                </span>
+                <span>
+                  <span className="font-semibold">Issued:</span> {fmtQty(issueDecision.totalIssued)}
+                </span>
+                {issueDecision.totalExcessIssue > 1e-6 ? (
+                  <span>
+                    <span className="font-semibold">Excess:</span> {fmtQty(issueDecision.totalExcessIssue)}
+                  </span>
+                ) : null}
+                <span>
+                  <span className="font-semibold">Remaining:</span> {fmtQty(issueDecision.totalRemaining)}
+                </span>
+                {issueDecision.totalWaived > 1e-6 ? (
+                  <span>
+                    <span className="font-semibold">Waived:</span> {fmtQty(issueDecision.totalWaived)}
+                  </span>
+                ) : null}
+              </div>
+              {issueDecision.materialReleasedToProductionAt ? (
+                <p className="mt-1 text-[11px] font-medium text-emerald-900">Released to production.</p>
+              ) : null}
+              {issueDecision.releaseBlockedByUnissuedBom ? (
+                <div
+                  className="mt-2 rounded border border-red-200 bg-red-50 px-2.5 py-2 text-[11px] text-red-950"
+                  data-testid="material-issue-release-blocked-warning"
+                >
+                  <p className="font-bold">Production cannot be released.</p>
+                  <p className="mt-0.5">Some required BOM materials have not been issued yet.</p>
+                  {issueDecision.unissuedRequiredLines?.length ? (
+                    <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                      {issueDecision.unissuedRequiredLines.map((ln) => (
+                        <li key={`${ln.itemId}-${ln.pmrLineId ?? 0}`}>
+                          {ln.itemName} ({fmtQty(ln.issuedQty, ln.unit)} / {fmtQty(ln.requiredQty, ln.unit)})
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
+                </div>
+              ) : null}
+              {issueDecision.showPartialDecisionPanel ? (
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-8 text-[11px]"
+                    disabled={submitting}
+                    onClick={() => void handleIssueLater()}
+                  >
+                    Issue Later
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-8 text-[11px]"
+                    disabled={submitting}
+                    onClick={() => setShowWaiveForm((v) => !v)}
+                  >
+                    Waive Remaining
+                  </Button>
+                  {issueDecision.canReleaseToProduction ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="h-8 bg-violet-900 text-[11px] hover:bg-violet-800"
+                      disabled={submitting}
+                      onClick={() => void handleReleaseToProduction()}
+                    >
+                      Release to Production
+                    </Button>
+                  ) : null}
+                </div>
+              ) : issueDecision.canReleaseToProduction ? (
+                <div className="mt-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="h-8 bg-violet-900 text-[11px] hover:bg-violet-800"
+                    disabled={submitting}
+                    onClick={() => void handleReleaseToProduction()}
+                  >
+                    Release to Production
+                  </Button>
+                </div>
+              ) : null}
+              {showWaiveForm && issueDecision.canWaiveRemaining ? (
+                <div className="mt-2 space-y-1.5 rounded border border-violet-200 bg-white p-2">
+                  <label className="erp-form-field block">
+                    <span className="text-xs font-medium text-slate-600">Waive reason</span>
+                    <select
+                      className="erp-select mt-1 w-full"
+                      value={waiveReason}
+                      onChange={(e) => setWaiveReason(e.target.value)}
+                    >
+                      <option value="">Select reason…</option>
+                      <option value="SCALE_LIMITATION">Scale limitation</option>
+                      <option value="PACKING_LIMITATION">Packing limitation</option>
+                      <option value="MANAGEMENT_DECISION">Management decision</option>
+                      <option value="OTHER">Other</option>
+                    </select>
+                  </label>
+                  <label className="erp-form-field block">
+                    <span className="text-xs font-medium text-slate-600">Remarks</span>
+                    <Input className="mt-1" value={waiveRemarks} onChange={(e) => setWaiveRemarks(e.target.value)} />
+                  </label>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="destructive"
+                    className="h-8 text-[11px]"
+                    disabled={submitting || !waiveReason}
+                    onClick={() => void handleWaiveRemaining()}
+                  >
+                    Confirm waive remaining
+                  </Button>
+                </div>
+              ) : null}
+            </section>
           ) : null}
 
           <div className="mt-3 flex flex-wrap gap-2">
@@ -1258,7 +1534,10 @@ export function MaterialIssuePage() {
             />
           ) : null}
           {woPmrMode && issuedWorkOrderInfoRows.length > 0 ? (
-            <div className="rounded-md border border-slate-200 bg-white px-2.5 py-2">
+            <div
+              className="rounded-md border border-slate-200 bg-white px-2.5 py-2"
+              data-testid="material-issue-issued-queue-panel"
+            >
               <h3 className="text-[11px] font-semibold uppercase tracking-wide text-slate-600">
                 RM issued — waiting for Production
               </h3>

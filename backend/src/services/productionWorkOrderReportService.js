@@ -10,8 +10,10 @@ const { qtyToNumber } = require("./rmPurchaseHelpers");
 const { round3 } = require("./bomExplosionService");
 const { computeExecutionSummary } = require("./productionExecutionService");
 const { buildReturnableLinesForWorkOrder, createMaterialReturnNote } = require("./materialReturnService");
+const { createMaterialWastageNote } = require("./materialWastageService");
 const { QC_ENTRY_ACTIVE_WHERE } = require("./qcEntryConstants");
 const auditLog = require("./auditLog");
+const { assertNoOpenProductionRmReturnPending } = require("./productionRmReturnPendingGuard");
 
 const EPS = 1e-6;
 
@@ -230,17 +232,6 @@ async function countOpenProductionRmReturnPending(db, workOrderId) {
   });
 }
 
-async function assertNoOpenProductionRmReturnPending(db, workOrderId) {
-  const count = await countOpenProductionRmReturnPending(db, workOrderId);
-  if (count > 0) {
-    const err = new Error("Store must acknowledge pending RM returns before closing the work order.");
-    err.statusCode = 409;
-    err.code = "RM_RETURN_PENDING_STORE_ACK_REQUIRED";
-    err.pendingReturnCount = count;
-    throw err;
-  }
-  return true;
-}
 
 /**
  * @param {import('@prisma/client').PrismaClient | import('@prisma/client').Prisma.TransactionClient} db
@@ -437,11 +428,8 @@ async function confirmProductionWorkOrderReport(db, workOrderId, input = {}, act
         ? inputLine.rmConsumedQty
         : round3(n(rm.reportedConsumedQty ?? rm.ledgerConsumedQty ?? 0));
     const returnQty = round3(n(inputLine.rmReturnQty ?? 0));
-    const scrapWasteQty = round3(n(inputLine.scrapWasteQty ?? 0));
-    const varianceQty =
-      inputLine.varianceQty != null
-        ? inputLine.varianceQty
-        : round3(issuedQty - consumedQty - returnQty - scrapWasteQty);
+    const scrapWasteQty = round3(Math.max(0, issuedQty - consumedQty - returnQty));
+    const varianceQty = round3(issuedQty - consumedQty);
 
     if (consumedQty < -EPS || returnQty < -EPS || scrapWasteQty < -EPS) {
       const err = new Error("Production Report quantities cannot be negative.");
@@ -604,6 +592,30 @@ async function listProductionRmReturnPending(db = prisma, { status = "PENDING", 
   }));
 }
 
+async function buildRmDispositionSummaryForWorkOrder(db, workOrderId) {
+  const report = await loadConfirmedReport(db, workOrderId);
+  if (!report || report.status !== "CONFIRMED") {
+    return { finalized: false, lines: [] };
+  }
+  const openPending = await countOpenProductionRmReturnPending(db, workOrderId);
+  if (openPending > 0) {
+    return { finalized: false, lines: [] };
+  }
+  return {
+    finalized: true,
+    lines: (report.lines ?? []).map((ln) => ({
+      itemId: ln.itemId,
+      itemName: ln.item?.itemName ?? `Item #${ln.itemId}`,
+      unit: ln.item?.unit ?? "",
+      issuedQty: round3(n(ln.rmIssuedQty)),
+      consumedQty: round3(n(ln.rmConsumedQty)),
+      returnedQty: round3(n(ln.rmReturnQty)),
+      wastageQty: round3(n(ln.scrapWasteQty)),
+      returnableQty: 0,
+    })),
+  };
+}
+
 async function receiveProductionRmReturnPending(input, actor = {}, db = prisma) {
   const pendingId = Number(input?.pendingId ?? input?.id);
   if (!Number.isFinite(pendingId) || pendingId <= 0) {
@@ -676,7 +688,41 @@ async function receiveProductionRmReturnPending(input, actor = {}, db = prisma) 
     }
     return { pending: updated, materialReturnNote: { id: note.id, docNo: note.docNo } };
   };
-  return typeof db.$transaction === "function" ? db.$transaction(run) : run(db);
+  const result =
+    typeof db.$transaction === "function" ? await db.$transaction(run) : await run(db);
+
+  const receivedPending = result.pending;
+  const report = await loadConfirmedReport(db, receivedPending.workOrderId);
+  const reportLine = report?.lines?.find((ln) => ln.itemId === receivedPending.itemId);
+  const scrapQty = reportLine ? round3(n(reportLine.scrapWasteQty)) : 0;
+  let wastageNote = null;
+  if (scrapQty > EPS) {
+    try {
+      wastageNote = await createMaterialWastageNote(
+        {
+          workOrderId: receivedPending.workOrderId,
+          fromLocationId: input.fromLocationId,
+          itemId: receivedPending.itemId,
+          qty: scrapQty,
+          reason: "PROCESS_LOSS",
+          remarks: `Auto-declared from Production Report after Store received RM return (pending #${pendingId}).`,
+        },
+        actor,
+      );
+    } catch (err) {
+      if (String(err?.message ?? "").includes("exceeds available returnable")) {
+        // Wastage may already be posted — idempotent receive path.
+      } else {
+        throw err;
+      }
+    }
+  }
+
+  return {
+    ...result,
+    wastageNote: wastageNote ? { id: wastageNote.id, docNo: wastageNote.docNo } : null,
+    disposition: await buildRmDispositionSummaryForWorkOrder(db, receivedPending.workOrderId),
+  };
 }
 
 module.exports = {
@@ -686,6 +732,7 @@ module.exports = {
   assertNoOpenProductionRmReturnPending,
   listProductionRmReturnPending,
   receiveProductionRmReturnPending,
+  buildRmDispositionSummaryForWorkOrder,
   loadApprovedByMap,
   sumQcForProduction,
 };

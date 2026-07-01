@@ -221,15 +221,36 @@ export function formatProductionExecutionQueueNotice(
   const label = workOrderLabel.trim() || "Work order";
   switch (outcome) {
     case "CARRY_FORWARD":
-      return `${label} closed. Remaining qty carried forward — pick the next work order from the queue.`;
+      return `${label} closed. Remaining qty carried forward. No production work orders pending.`;
     case "WAIVE_BALANCE":
-      return `${label} closed. Remaining qty waived — pick another work order from the queue when ready.`;
+      return `${label} closed. Remaining qty waived. No production work orders pending.`;
+    case "PAUSE":
+      return `${label} paused. No production work orders pending.`;
     case "SURPLUS":
       return `${label} completed with surplus recorded — proceed to Quality Inspection.`;
     case "COMPLETE":
     default:
       return formatNoQtyProductionQueueCompleteMessage(label);
   }
+}
+
+export function formatProductionExecutionAutoAdvanceNotice(
+  outcome: ProductionExecutionClosedOutcome,
+  workOrderLabel: string,
+  hasNextWorkOrder: boolean,
+): string {
+  if (hasNextWorkOrder) return "Auto-loaded next WO.";
+  const label = workOrderLabel.trim() || "Work order";
+  if (outcome === "CARRY_FORWARD") {
+    return `${label} closed. Remaining qty carried forward. No production work orders pending.`;
+  }
+  if (outcome === "WAIVE_BALANCE") {
+    return `${label} closed. Remaining qty waived. No production work orders pending.`;
+  }
+  if (outcome === "PAUSE") {
+    return `${label} paused. No production work orders pending.`;
+  }
+  return "No production work orders pending.";
 }
 
 export type ProductionDecisionConfirmKind =
@@ -329,7 +350,7 @@ export function productionEntriesRefreshSignature(
   return rows.map((r) => `${r.id}:${r.producedQty ?? 0}:${r.workflowStatus ?? ""}`).join("|");
 }
 
-export type ProductionExecutionClosedOutcome = "COMPLETE" | "SURPLUS" | "WAIVE_BALANCE" | "CARRY_FORWARD";
+export type ProductionExecutionClosedOutcome = "COMPLETE" | "SURPLUS" | "WAIVE_BALANCE" | "CARRY_FORWARD" | "PAUSE";
 
 export type ShortfallDecisionChoice = "waive" | "carry" | "pause";
 

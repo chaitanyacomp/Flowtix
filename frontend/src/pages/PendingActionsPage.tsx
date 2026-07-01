@@ -61,7 +61,7 @@ export function PendingActionsPage() {
   const auth = useAuth();
   const navigate = useNavigate();
   const role = String(auth.user?.role ?? "").trim().toUpperCase();
-  const liveTick = useErpRefreshTick(["dashboard"], { pollIntervalMs: 60_000 });
+  const liveTick = useErpRefreshTick(["dashboard", "pending-actions"], { pollIntervalMs: 60_000 });
 
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);

@@ -28,12 +28,18 @@ const {
 } = require("./materialAllocationService");
 const auditLog = require("./auditLog");
 const {
-  assessRmIssueQty,
   computeMaxAllowedRmIssueQty,
   computeRmIssueToleranceQty,
 } = require("./rmIssueToleranceService");
 
 const STORE_ISSUE_STATUSES = ["REQUESTED", "PARTIALLY_ISSUED"];
+
+const PMR_SHORT_ISSUE_WAIVE_REASONS = [
+  "SCALE_LIMITATION",
+  "PACKING_LIMITATION",
+  "MANAGEMENT_DECISION",
+  "OTHER",
+];
 
 function n(v) {
   return qtyToNumber(v);
@@ -48,7 +54,68 @@ function runInTransaction(db, fn) {
 }
 
 function pendingQty(line) {
-  return Math.max(0, n(line.requiredQty) - n(line.issuedQty));
+  const req = n(line.requiredQty);
+  const iss = n(line.issuedQty);
+  const waived = n(line.waivedQty);
+  return Math.max(0, req - iss - waived);
+}
+
+function excessIssueQty(line) {
+  const req = n(line.requiredQty);
+  const iss = n(line.issuedQty);
+  return round3(Math.max(0, iss - req));
+}
+
+function normalizePmrLineForReleaseCheck(line) {
+  return {
+    pmrLineId: line.id,
+    itemId: line.itemId,
+    itemName: line.itemName ?? line.item?.itemName ?? `Item #${line.itemId ?? "?"}`,
+    unit: line.unit ?? line.unitSnapshot ?? line.item?.unit ?? "",
+    requiredQty: round3(n(line.requiredQty)),
+    issuedQty: round3(n(line.issuedQty)),
+  };
+}
+
+/** P16-13A: every required BOM line must have issued qty > 0 before production release. */
+function listUnissuedRequiredPmrLines(lines) {
+  return (lines || [])
+    .map(normalizePmrLineForReleaseCheck)
+    .filter((ln) => ln.requiredQty > STOCK_EPS && ln.issuedQty <= STOCK_EPS);
+}
+
+function assessPmrReleaseEligibility(lines, { alreadyReleased = false } = {}) {
+  const unissuedRequiredLines = listUnissuedRequiredPmrLines(lines);
+  const totalIssued = round3((lines || []).reduce((s, l) => s + n(l.issuedQty), 0));
+  const canRelease =
+    !alreadyReleased && totalIssued > STOCK_EPS && unissuedRequiredLines.length === 0;
+  return { canRelease, unissuedRequiredLines, totalIssued };
+}
+
+function formatPmrReleaseBlockedMessage(unissuedRequiredLines) {
+  const bullets = (unissuedRequiredLines || [])
+    .map((l) => {
+      const unit = l.unit?.trim() ? ` ${l.unit.trim()}` : "";
+      return `• ${l.itemName} (${round3(l.issuedQty)} / ${round3(l.requiredQty)}${unit})`;
+    })
+    .join("\n");
+  return [
+    "Cannot release Work Order.",
+    "",
+    "The following BOM materials have not been issued.",
+    "",
+    bullets,
+    "",
+    "Issue at least some quantity for every required material before releasing production.",
+  ]
+    .filter((line, idx, arr) => !(line === "" && idx === arr.length - 2 && !bullets))
+    .join("\n");
+}
+
+/** True when PMR has at least one issue and every required line has issued qty > 0. */
+function pmrMeetsProductionReleaseIssueRule(pmrOrLines) {
+  const lines = Array.isArray(pmrOrLines) ? pmrOrLines : pmrOrLines?.lines;
+  return assessPmrReleaseEligibility(lines || []).canRelease;
 }
 
 function computeFreeStoreStockLine({ totalStoreStock, reservedForOtherOrdersQty }) {
@@ -82,7 +149,9 @@ async function loadReservedForOtherOpenPmrsByItem(db, { itemIds, excludePmrId })
 function mapPmrLine(ln) {
   const required = n(ln.requiredQty);
   const issued = n(ln.issuedQty);
-  const pending = Math.max(0, required - issued);
+  const waived = n(ln.waivedQty);
+  const pending = Math.max(0, required - issued - waived);
+  const excess = Math.max(0, issued - required);
   return {
     id: ln.id,
     itemId: ln.itemId,
@@ -90,7 +159,10 @@ function mapPmrLine(ln) {
     unit: ln.unitSnapshot || ln.item?.unit || "",
     requiredQty: required,
     issuedQty: issued,
+    waivedQty: waived,
+    excessIssueQty: excess,
     pendingQty: pending,
+    remainingQty: pending,
   };
 }
 
@@ -98,6 +170,8 @@ function mapPmrRow(row) {
   const lines = (row.lines || []).map(mapPmrLine);
   const totalRequired = lines.reduce((s, l) => s + l.requiredQty, 0);
   const totalIssued = lines.reduce((s, l) => s + l.issuedQty, 0);
+  const totalWaived = lines.reduce((s, l) => s + l.waivedQty, 0);
+  const totalExcessIssue = lines.reduce((s, l) => s + l.excessIssueQty, 0);
   const totalPending = lines.reduce((s, l) => s + l.pendingQty, 0);
   return {
     id: row.id,
@@ -115,6 +189,8 @@ function mapPmrRow(row) {
     lineCount: lines.length,
     totalRequired,
     totalIssued,
+    totalWaived,
+    totalExcessIssue,
     totalPending,
     lines,
     materialIssues: (row.materialIssueNotes || []).map((m) => ({
@@ -131,20 +207,28 @@ async function recalcPmrStatus(tx, pmrId) {
     include: { lines: true },
   });
   if (!pmr || pmr.status === "CANCELLED" || pmr.status === "DRAFT") return pmr?.status;
+  if (pmr.status === "SHORT_ISSUE_ACCEPTED") {
+    await syncAllocationsForPmrIssueStatus(tx, pmrId);
+    return pmr.status;
+  }
 
-  let allFull = true;
+  let allSatisfied = true;
   let anyIssued = false;
+  let anyWaived = false;
   for (const ln of pmr.lines) {
     const req = n(ln.requiredQty);
     const iss = n(ln.issuedQty);
+    const waived = n(ln.waivedQty);
     if (iss > STOCK_EPS) anyIssued = true;
-    if (iss + STOCK_EPS < req) allFull = false;
+    if (waived > STOCK_EPS) anyWaived = true;
+    if (iss + waived + STOCK_EPS < req) allSatisfied = false;
   }
 
   let next = pmr.status;
   if (!anyIssued) next = "REQUESTED";
-  else if (allFull) next = "FULLY_ISSUED";
-  else next = "PARTIALLY_ISSUED";
+  else if (allSatisfied) {
+    next = anyWaived ? "SHORT_ISSUE_ACCEPTED" : "FULLY_ISSUED";
+  } else next = "PARTIALLY_ISSUED";
 
   if (next !== pmr.status) {
     await tx.productionMaterialRequest.update({ where: { id: pmrId }, data: { status: next } });
@@ -662,20 +746,7 @@ async function issueMaterialAgainstPmr(pmrId, input, actor = {}) {
     const qty = n(row.issueQty);
     if (qty <= STOCK_EPS) continue;
     const pend = pendingQty(pl);
-    const woLine = woIssueSnapshot?.linesByItemId?.get(pl.itemId);
-    const issueAssessment = assessRmIssueQty(qty, pend, {
-      woStillRequiredQty: woLine ? n(woLine.stillRequiredQty) : null,
-    });
-    if (!issueAssessment.allowed) {
-      const err = new Error(
-        issueAssessment.overIssueQty > STOCK_EPS
-          ? `Issue qty exceeds allowed tolerance for line #${row.pmrLineId}. Max allowed: ${round3(issueAssessment.maxAllowedQty)}.`
-          : `Issue qty exceeds pending qty for line #${row.pmrLineId}.`,
-      );
-      err.statusCode = 400;
-      err.code = issueAssessment.overIssueQty > STOCK_EPS ? "PMR_ISSUE_TOLERANCE_EXCEEDED" : "PMR_ISSUE_PENDING_EXCEEDED";
-      throw err;
-    }
+    const overIssueQty = round3(Math.max(0, qty - pend));
     const availability = issueAvailabilityByItem.get(pl.itemId);
     const freeStoreStock = n(availability?.freeStockQty);
     if (qty > freeStoreStock + STOCK_EPS) {
@@ -687,14 +758,15 @@ async function issueMaterialAgainstPmr(pmrId, input, actor = {}) {
       throw err;
     }
     issueLines.push({ itemId: pl.itemId, issueQty: qty, pmrLineId: pl.id });
-    if (issueAssessment.withinTolerance) {
+    if (overIssueQty > STOCK_EPS) {
       overIssueAuditLines.push({
         pmrLineId: pl.id,
         itemId: pl.itemId,
         pendingQty: pend,
         issueQty: qty,
-        overIssueQty: issueAssessment.overIssueQty,
-        toleranceQty: issueAssessment.toleranceQty,
+        overIssueQty,
+        requiredQty: n(pl.requiredQty),
+        issuedQtyBefore: n(pl.issuedQty),
       });
     }
   }
@@ -706,7 +778,7 @@ async function issueMaterialAgainstPmr(pmrId, input, actor = {}) {
 
   const overIssueRemark =
     overIssueAuditLines.length > 0
-      ? ` Over-issue within tolerance: ${overIssueAuditLines
+      ? ` Excess issue: ${overIssueAuditLines
           .map((l) => `item #${l.itemId} +${round3(l.overIssueQty)}`)
           .join("; ")}.`
       : "";
@@ -744,10 +816,10 @@ async function issueMaterialAgainstPmr(pmrId, input, actor = {}) {
         entityId: String(pmr.workOrderId),
         actorUserId: userId,
         actorRole: actor.role,
-        summary: `RM over-issue within tolerance on ${pmr.docNo || `PMR-${pmrId}`}`,
+        summary: `RM excess issue on ${pmr.docNo || `PMR-${pmrId}`}`,
         payload: {
           module: "MATERIAL_ISSUE",
-          actionLabel: "RM_OVER_ISSUE_TOLERANCE",
+          actionLabel: "RM_EXCESS_ISSUE",
           ref: { type: "PMR", id: String(pmrId), no: pmr.docNo },
           materialIssueNoteId: created.id,
           materialIssueDocNo: created.docNo,
@@ -773,7 +845,19 @@ async function issueMaterialAgainstPmr(pmrId, input, actor = {}) {
 /** Store issue context for a PMR (all lines + store availability for guided issue UI). */
 async function buildPmrIssueContext(pmrId, fromLocationId, db = prisma) {
   const pmr = await getProductionMaterialRequestById(pmrId, db);
-  if (!STORE_ISSUE_STATUSES.includes(pmr.status)) {
+  const woRelease = await db.workOrder.findUnique({
+    where: { id: pmr.workOrderId },
+    select: {
+      materialReleasedToProductionAt: true,
+      materialReleasedByUserId: true,
+    },
+  });
+  const canIssue = STORE_ISSUE_STATUSES.includes(pmr.status);
+  const releaseAssessment = assessPmrReleaseEligibility(pmr.lines, {
+    alreadyReleased: Boolean(woRelease?.materialReleasedToProductionAt),
+  });
+  const canRelease = releaseAssessment.canRelease;
+  if (!canIssue && !canRelease && releaseAssessment.totalIssued <= STOCK_EPS) {
     const err = new Error("This request is not open for store issue.");
     err.statusCode = 400;
     throw err;
@@ -845,11 +929,12 @@ async function buildPmrIssueContext(pmrId, fromLocationId, db = prisma) {
       freeStoreStock = issueAvailability?.freeStockQty ?? 0;
     }
     const woLine = woIssueSnapshot?.linesByItemId?.get(l.itemId) ?? null;
-    const pendingQty = n(l.pendingQty);
-    const issueCapQty = woLine ? Math.min(pendingQty, n(woLine.stillRequiredQty)) : pendingQty;
+    const linePendingQty = n(l.pendingQty);
+    const issueCapQty = linePendingQty;
     const woStillRequired = woLine ? n(woLine.stillRequiredQty) : null;
-    const rmIssueToleranceQty = computeRmIssueToleranceQty(pendingQty);
-    const maxAllowedIssueQty = computeMaxAllowedRmIssueQty(pendingQty, woStillRequired);
+    const rmIssueToleranceQty = 0;
+    const maxAllowedIssueQty =
+      freeStoreStock == null ? linePendingQty : round3(Math.max(linePendingQty, n(freeStoreStock)));
     const suggestedIssueQty =
       freeStoreStock == null
         ? 0
@@ -879,11 +964,11 @@ async function buildPmrIssueContext(pmrId, fromLocationId, db = prisma) {
       allocationCoverageQty: currentAllocation?.activeAllocatedQty ?? availability?.allocationCoverageQty ?? 0,
       allocationShortageQty:
         currentAllocation != null
-          ? round3(Math.max(0, pendingQty - n(currentAllocation.activeAllocatedQty)))
+          ? round3(Math.max(0, linePendingQty - n(currentAllocation.activeAllocatedQty)))
           : availability?.allocationShortageQty ?? null,
       allocationStatus:
         currentAllocation?.activeAllocatedQty > STOCK_EPS
-          ? currentAllocation.activeAllocatedQty + STOCK_EPS >= pendingQty
+          ? currentAllocation.activeAllocatedQty + STOCK_EPS >= linePendingQty
             ? "FULLY_ALLOCATED"
             : "PARTIALLY_ALLOCATED"
           : availability?.allocationStatus ?? "NOT_ALLOCATED",
@@ -891,12 +976,12 @@ async function buildPmrIssueContext(pmrId, fromLocationId, db = prisma) {
       availableStoreQty: freeStoreStock,
       /** @deprecated alias for older clients */
       available: freeStoreStock,
-      pmrPendingQty: pendingQty,
+      pmrPendingQty: linePendingQty,
       fullWoRmNeed: woLine?.fullWoRmNeed ?? l.requiredQty,
       consumedQty: woLine?.consumedQty ?? 0,
       returnedQty: woLine?.returnedQty ?? 0,
       atProductionQty: woLine?.atProductionQty ?? 0,
-      requiredForBalanceQty: woLine?.requiredForBalanceQty ?? pendingQty,
+      requiredForBalanceQty: woLine?.requiredForBalanceQty ?? linePendingQty,
       stillRequiredQty: issueCapQty,
       issueCapQty,
       rmIssueToleranceQty,
@@ -908,15 +993,256 @@ async function buildPmrIssueContext(pmrId, fromLocationId, db = prisma) {
   const lines = await Promise.all(pmr.lines.map(enrichLine));
   const pendingLines = lines.filter((l) => n(l.issueCapQty) > STOCK_EPS);
 
+  const issueDecision = {
+    totalRequired: pmr.totalRequired,
+    totalIssued: pmr.totalIssued,
+    totalWaived: pmr.totalWaived,
+    totalExcessIssue: pmr.totalExcessIssue,
+    totalRemaining: pmr.totalPending,
+    canIssueMore: canIssue,
+    canWaiveRemaining:
+      canIssue && n(pmr.totalIssued) > STOCK_EPS && n(pmr.totalPending) > STOCK_EPS,
+    canReleaseToProduction: canRelease,
+    unissuedRequiredLines: releaseAssessment.unissuedRequiredLines,
+    releaseBlockedByUnissuedBom: releaseAssessment.unissuedRequiredLines.length > 0,
+    materialReleasedToProductionAt: woRelease?.materialReleasedToProductionAt ?? null,
+    showPartialDecisionPanel:
+      n(pmr.totalIssued) > STOCK_EPS && n(pmr.totalPending) > STOCK_EPS && pmr.status !== "SHORT_ISSUE_ACCEPTED",
+  };
+
   return {
     pmr: { ...pmr, productionItemName },
     lines,
     pendingLines,
+    issueDecision,
   };
+}
+
+/** P16-13: Store waives remaining unissued PMR qty (short issue accepted). */
+async function waiveRemainingPmrQty(pmrId, input, actor = {}) {
+  const reason = String(input?.reason ?? "").trim().toUpperCase();
+  if (!PMR_SHORT_ISSUE_WAIVE_REASONS.includes(reason)) {
+    const err = new Error("A valid waive reason is required.");
+    err.statusCode = 400;
+    throw err;
+  }
+  const remarks = input?.remarks?.trim() || null;
+
+  return prisma.$transaction(async (tx) => {
+    const pmr = await tx.productionMaterialRequest.findUnique({
+      where: { id: pmrId },
+      include: { lines: true },
+    });
+    if (!pmr) {
+      const err = new Error("Production material request not found");
+      err.statusCode = 404;
+      throw err;
+    }
+    if (pmr.status === "CANCELLED" || pmr.status === "DRAFT") {
+      const err = new Error("This request cannot be waived.");
+      err.statusCode = 400;
+      throw err;
+    }
+    if (pmr.status === "SHORT_ISSUE_ACCEPTED") {
+      const err = new Error("Remaining quantity is already waived.");
+      err.statusCode = 400;
+      throw err;
+    }
+    const totalIssued = (pmr.lines || []).reduce((s, l) => s + n(l.issuedQty), 0);
+    if (totalIssued <= STOCK_EPS) {
+      const err = new Error("Issue at least some material before waiving remaining quantity.");
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const waivedLines = [];
+    for (const ln of pmr.lines) {
+      const remaining = pendingQty(ln);
+      if (remaining <= STOCK_EPS) continue;
+      const nextWaived = round3(n(ln.waivedQty) + remaining);
+      await tx.productionMaterialRequestLine.update({
+        where: { id: ln.id },
+        data: { waivedQty: String(nextWaived) },
+      });
+      waivedLines.push({
+        pmrLineId: ln.id,
+        itemId: ln.itemId,
+        requiredQty: n(ln.requiredQty),
+        issuedQty: n(ln.issuedQty),
+        waivedQty: nextWaived,
+        remainingWaived: remaining,
+      });
+    }
+    if (!waivedLines.length) {
+      const err = new Error("No remaining quantity to waive.");
+      err.statusCode = 400;
+      throw err;
+    }
+
+    await tx.productionMaterialRequest.update({
+      where: { id: pmrId },
+      data: { status: "SHORT_ISSUE_ACCEPTED" },
+    });
+    await syncAllocationsForPmrIssueStatus(tx, pmrId);
+
+    const userId = actor.userId;
+    if (typeof userId === "number" && Number.isFinite(userId)) {
+      await auditLog.write(tx, {
+        action: auditLog.AuditAction.UPDATE,
+        entityType: auditLog.AuditEntityType.WORK_ORDER,
+        entityId: String(pmr.workOrderId),
+        actorUserId: userId,
+        actorRole: actor.role,
+        summary: `Short issue accepted on ${pmr.docNo || `PMR-${pmrId}`}`,
+        payload: {
+          module: "MATERIAL_ISSUE",
+          actionLabel: "PMR_WAIVE_REMAINING",
+          ref: { type: "PMR", id: String(pmrId), no: pmr.docNo },
+          reason,
+          remarks,
+          lines: waivedLines,
+        },
+      });
+    }
+
+    return getProductionMaterialRequestById(pmrId, tx);
+  });
+}
+
+/** P16-13: Store explicitly releases WO to production after at least one issue. */
+async function releaseWorkOrderMaterialToProduction(workOrderId, input = {}, actor = {}) {
+  const woId = Number(workOrderId);
+  if (!Number.isFinite(woId) || woId <= 0) {
+    const err = new Error("workOrderId is required");
+    err.statusCode = 400;
+    throw err;
+  }
+  const remarks = input?.remarks?.trim() || null;
+  const pmrId = input?.pmrId != null ? Number(input.pmrId) : null;
+
+  return prisma.$transaction(async (tx) => {
+    const wo = await tx.workOrder.findUnique({
+      where: { id: woId },
+      select: {
+        id: true,
+        docNo: true,
+        materialReleasedToProductionAt: true,
+        productionMaterialRequests: {
+          where: { status: { not: "CANCELLED" } },
+          include: { lines: true, materialIssueNotes: { select: { id: true } } },
+          orderBy: { id: "desc" },
+        },
+      },
+    });
+    if (!wo) {
+      const err = new Error("Work order not found");
+      err.statusCode = 404;
+      throw err;
+    }
+    if (wo.materialReleasedToProductionAt) {
+      const err = new Error("Work order is already released to production.");
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const pmrs = wo.productionMaterialRequests || [];
+    const targetPmr =
+      pmrId != null && Number.isFinite(pmrId)
+        ? pmrs.find((p) => p.id === pmrId)
+        : pmrs.find((p) => STORE_ISSUE_STATUSES.includes(p.status) || p.status === "FULLY_ISSUED" || p.status === "SHORT_ISSUE_ACCEPTED") ?? pmrs[0];
+    if (!targetPmr) {
+      const err = new Error("No production material request found for this work order.");
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const totalIssued = (targetPmr.lines || []).reduce((s, l) => s + n(l.issuedQty), 0);
+    const hasIssueNote = (targetPmr.materialIssueNotes || []).length > 0;
+    if (totalIssued <= STOCK_EPS || !hasIssueNote) {
+      const err = new Error("Release requires at least one material issue transaction.");
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const releaseAssessment = assessPmrReleaseEligibility(targetPmr.lines);
+    if (!releaseAssessment.canRelease) {
+      const err = new Error(formatPmrReleaseBlockedMessage(releaseAssessment.unissuedRequiredLines));
+      err.statusCode = 400;
+      err.code = "PMR_RELEASE_UNISSUED_BOM_LINES";
+      err.unissuedRequiredLines = releaseAssessment.unissuedRequiredLines;
+      throw err;
+    }
+
+    const releasedAt = new Date();
+    const userId = actor.userId;
+    await tx.workOrder.update({
+      where: { id: woId },
+      data: {
+        materialReleasedToProductionAt: releasedAt,
+        materialReleasedByUserId: typeof userId === "number" && Number.isFinite(userId) ? userId : null,
+      },
+    });
+
+    if (typeof userId === "number" && Number.isFinite(userId)) {
+      await auditLog.write(tx, {
+        action: auditLog.AuditAction.UPDATE,
+        entityType: auditLog.AuditEntityType.WORK_ORDER,
+        entityId: String(woId),
+        actorUserId: userId,
+        actorRole: actor.role,
+        summary: `Released to production: ${wo.docNo || `WO-${woId}`}`,
+        payload: {
+          module: "MATERIAL_ISSUE",
+          actionLabel: "RELEASE_TO_PRODUCTION",
+          ref: { type: "PMR", id: String(targetPmr.id), no: targetPmr.docNo },
+          pmrStatus: targetPmr.status,
+          totalRequired: round3((targetPmr.lines || []).reduce((s, l) => s + n(l.requiredQty), 0)),
+          totalIssued: round3(totalIssued),
+          totalRemaining: round3((targetPmr.lines || []).reduce((s, l) => s + pendingQty(l), 0)),
+          remarks,
+        },
+      });
+    }
+
+    return {
+      workOrderId: woId,
+      workOrderNo: wo.docNo,
+      materialReleasedToProductionAt: releasedAt,
+      pmr: await getProductionMaterialRequestById(targetPmr.id, tx),
+    };
+  });
+}
+
+async function acknowledgePmrIssueLater(pmrId, actor = {}) {
+  const pmr = await getProductionMaterialRequestById(pmrId);
+  if (!STORE_ISSUE_STATUSES.includes(pmr.status) || n(pmr.totalPending) <= STOCK_EPS) {
+    const err = new Error("Issue Later applies only when partial issue with remaining quantity.");
+    err.statusCode = 400;
+    throw err;
+  }
+  const userId = actor.userId;
+  if (typeof userId === "number" && Number.isFinite(userId)) {
+    await auditLog.write(prisma, {
+      action: auditLog.AuditAction.UPDATE,
+      entityType: auditLog.AuditEntityType.WORK_ORDER,
+      entityId: String(pmr.workOrderId),
+      actorUserId: userId,
+      actorRole: actor.role,
+      summary: `Issue Later on ${pmr.docNo || `PMR-${pmrId}`}`,
+      payload: {
+        module: "MATERIAL_ISSUE",
+        actionLabel: "PMR_ISSUE_LATER",
+        ref: { type: "PMR", id: String(pmrId), no: pmr.docNo },
+        totalRemaining: pmr.totalPending,
+      },
+    });
+  }
+  return pmr;
 }
 
 module.exports = {
   STORE_ISSUE_STATUSES,
+  PMR_SHORT_ISSUE_WAIVE_REASONS,
   buildBomSuggestionsForWorkOrder,
   listProductionMaterialRequests,
   getProductionMaterialRequestById,
@@ -926,9 +1252,17 @@ module.exports = {
   cancelProductionMaterialRequest,
   issueMaterialAgainstPmr,
   buildPmrIssueContext,
+  waiveRemainingPmrQty,
+  releaseWorkOrderMaterialToProduction,
+  acknowledgePmrIssueLater,
   buildWorkOrderMaterialIssueSnapshot,
   loadReservedForOtherOpenPmrsByItem,
   computeFreeStoreStockLine,
   recalcPmrStatus,
   pendingQty,
+  excessIssueQty,
+  listUnissuedRequiredPmrLines,
+  assessPmrReleaseEligibility,
+  formatPmrReleaseBlockedMessage,
+  pmrMeetsProductionReleaseIssueRule,
 };

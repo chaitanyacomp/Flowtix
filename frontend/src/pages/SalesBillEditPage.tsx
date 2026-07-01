@@ -23,6 +23,11 @@ import {
 import { cn } from "../lib/utils";
 import { SalesBillInvoiceDocument } from "../components/sales/SalesBillInvoiceDocument";
 import { StickyWorkflowActionBar } from "../components/erp/StickyWorkflowActionBar";
+import {
+  hrefForEligibleDispatch,
+  pickNextEligibleDispatch,
+  type EligibleDispatchRow,
+} from "../lib/salesBillBillingQueue";
 
 type SalesBillReceiptRow = {
   id: number;
@@ -220,6 +225,17 @@ export function SalesBillEditPage() {
     password: string;
   } | null>(null);
   const [reExportAuth, setReExportAuth] = React.useState<{ open: boolean; password: string } | null>(null);
+  const [nextBillHref, setNextBillHref] = React.useState<string | null>(null);
+
+  const refreshBillingQueueHint = React.useCallback(async (excludeDispatchId?: number) => {
+    try {
+      const rows = await apiFetch<EligibleDispatchRow[]>("/api/sales-bills/eligible-dispatches");
+      const next = pickNextEligibleDispatch(rows, { excludeDispatchId });
+      setNextBillHref(next ? hrefForEligibleDispatch(next) : null);
+    } catch {
+      setNextBillHref(null);
+    }
+  }, []);
   const [adminRateDlg, setAdminRateDlg] = React.useState<{ lineId: number; password: string } | null>(null);
   const [localRates, setLocalRates] = React.useState<Record<number, string>>({});
   const [applyingRate, setApplyingRate] = React.useState(false);
@@ -342,6 +358,7 @@ export function SalesBillEditPage() {
       setBillDate(toDateInputValue(finalized.billDate));
       setRemarks(finalized.remarks?.trim() ?? "");
       await loadSoHead(finalized.dispatch.soId);
+      await refreshBillingQueueHint(finalized.dispatch.id);
     } catch (e) {
       setFormError(e instanceof Error ? e.message : "Could not finalize.");
     } finally {
@@ -482,6 +499,7 @@ export function SalesBillEditPage() {
       setExportError(null);
       setReExportAuth(null);
       await loadSoHead(refreshed.dispatch.soId);
+      await refreshBillingQueueHint(refreshed.dispatch.id);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Could not export to Tally";
       setExportError(msg);
@@ -1435,6 +1453,15 @@ export function SalesBillEditPage() {
                         >
                           New SO
                         </Link>
+                        {nextBillHref ? (
+                          <Link
+                            to={nextBillHref}
+                            className={cn(buttonVariants({ variant: "default", size: "sm" }), "no-underline")}
+                            data-testid="sales-bill-continue-next-pending"
+                          >
+                            Continue to next pending bill
+                          </Link>
+                        ) : null}
                       </div>
                     </div>
                   ),

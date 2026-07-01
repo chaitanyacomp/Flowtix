@@ -4,6 +4,7 @@ import {
   buildIssuedWorkOrderInfoRows,
   filterPmrsWithPendingIssue,
   groupPendingPmrsByWorkOrder,
+  shouldShowNoRmAvailableWarning,
 } from "../../src/lib/materialIssueWorkspace";
 import type { PendingPmrSummary } from "../../src/lib/materialIssueWorkspace";
 
@@ -43,14 +44,48 @@ describe("materialIssueWorkspace", () => {
     expect(options[0].label).toContain("WO-001");
   });
 
-  it("groups queue by WO and skips fully issued work orders", () => {
+  it("groups queue by WO in FIFO order and skips fully issued work orders", () => {
     const rows = [
+      pmr({ id: 3, workOrderId: 30, totalPending: 4 }),
       pmr({ id: 1, workOrderId: 10, totalPending: 4 }),
       pmr({ id: 2, workOrderId: 11, totalPending: 0, status: "ISSUED" }),
     ];
     const groups = groupPendingPmrsByWorkOrder(rows);
-    expect(groups).toHaveLength(1);
-    expect(groups[0].workOrderId).toBe(10);
+    expect(groups.map((g) => g.workOrderId)).toEqual([10, 30]);
+  });
+
+  it("keeps right-panel issued rows in sync when a WO leaves the actionable queue", () => {
+    const pendingAfterIssue = filterPmrsWithPendingIssue([
+      pmr({ id: 2, workOrderId: 20, totalPending: 6 }),
+    ]);
+    const queueGroups = groupPendingPmrsByWorkOrder(pendingAfterIssue);
+    const actionableIds = new Set(queueGroups.map((g) => g.workOrderId));
+    const issuedRows = buildIssuedWorkOrderInfoRows({
+      recentIssues: [
+        { workOrderId: 10, workOrderNo: "WO-001" },
+        { workOrderId: 20, workOrderNo: "WO-002" },
+      ],
+      actionableWorkOrderIds: actionableIds,
+    });
+    expect(queueGroups.map((g) => g.workOrderId)).toEqual([20]);
+    expect(issuedRows).toEqual([{ workOrderId: 10, label: "WO-001" }]);
+  });
+
+  it("suppresses no-RM warning when all PMR lines are fully issued", () => {
+    expect(
+      shouldShowNoRmAvailableWarning({
+        executionReady: true,
+        canIssueAnyLine: false,
+        lines: [{ pmrLineId: 1, pmrPendingQty: 0, pendingQty: 0 }],
+      }),
+    ).toBe(false);
+    expect(
+      shouldShowNoRmAvailableWarning({
+        executionReady: true,
+        canIssueAnyLine: false,
+        lines: [{ pmrLineId: 1, pmrPendingQty: 5, pendingQty: 5 }],
+      }),
+    ).toBe(true);
   });
 
   it("lists issued WOs for informational panel when not in actionable set", () => {

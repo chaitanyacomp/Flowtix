@@ -51,6 +51,7 @@ const { attachRmReadinessToProductionQueueRows } = require("./productionRmReadin
 const { buildMaterialAvailabilityWorkspace } = require("./materialAvailabilityWorkspaceService");
 const { getSalesOrderFgWorkOrderBalances } = require("./workOrderSoValidation");
 const { getEligibleDispatches } = require("./salesBillService");
+const { isDispatchOpenListLineCandidate } = require("./dispatchOpenListEligibility");
 
 /** Single map for tests and docs — each queue row type must set quantityMetricContext from here */
 const QUEUE_SNAPSHOT_ROW_METRIC_CONTEXT = {
@@ -348,8 +349,8 @@ function numDash(v) {
 
 /**
  * Dispatch backlog rows for dashboard + operations-exception dispatch section.
- * Backlog means true pending dispatch only: rows must have pendingDispatchQty > 0.
- * Optional NO_QTY usable stock belongs on Dispatch, not in this backlog report.
+ * NO_QTY: same eligibility as Dispatch open list (QC-backed dispatchable headroom, draft lock, or pending).
+ * NORMAL/REPLACEMENT: customer-attributed backlog — pendingDispatchQty > 0.
  */
 async function getDispatchBacklogRows() {
   const bucketStockRows = await prisma.stockTransaction.groupBy({
@@ -465,9 +466,8 @@ async function getDispatchBacklogRows() {
       });
 
       for (const ls of lineStats || []) {
-        const pend = Number(ls.pendingDispatchQty ?? 0);
+        if (!isDispatchOpenListLineCandidate(ls, "NO_QTY")) continue;
         const dbl = Number(ls.dispatchable ?? ls.dispatchableQty ?? 0);
-        if (pend <= REPORT_QUEUE_EPS) continue;
 
         const rowCycleId = ls.noQtyCycleId != null ? Number(ls.noQtyCycleId) : null;
 
@@ -484,6 +484,7 @@ async function getDispatchBacklogRows() {
         rows.push({
           salesOrderId: so.id,
           salesOrderNo: `SO-${so.id}`,
+          salesOrderDocNo: so.docNo ?? null,
           customerName,
           itemId,
           itemName: String(ls.itemName ?? fgLine?.item?.itemName ?? `Item #${itemId}`),
@@ -491,7 +492,7 @@ async function getDispatchBacklogRows() {
           orderType: so.orderType,
           orderedQty: Number(ls.cycleCap ?? 0),
           dispatchedQty: Number(ls.dispatched ?? ls.cycleDispatchedQty ?? 0),
-          pendingQty: pend,
+          pendingQty: Number(ls.pendingDispatchQty ?? ls.remaining ?? 0),
           dispatchableNow: dbl,
           cycleId: rowCycleId,
           ...(rowCycleNo != null ? { cycleNo: rowCycleNo } : {}),
@@ -542,6 +543,7 @@ async function getDispatchBacklogRows() {
       rows.push({
         salesOrderId: so.id,
         salesOrderNo: `SO-${so.id}`,
+        salesOrderDocNo: so.docNo ?? null,
         customerName,
         itemId: line.itemId,
         itemName: line.item?.itemName ?? `Item #${line.itemId}`,
@@ -1589,7 +1591,15 @@ async function getContinueWorkingRows(options = {}) {
         nextStep,
         href: prodPick.actionHref,
       });
-    } else if (disp && Number(disp.dispatchableNow) > QUEUE_EPS) {
+    }
+
+    const skipDispatchBecauseProdPick =
+      prodPick &&
+      !skipProdPickDupDispatch &&
+      !skipProdPickStaleProduction &&
+      prodPick.nextAction === "DISPATCH_PENDING";
+
+    if (disp && Number(disp.dispatchableNow) > QUEUE_EPS && !skipDispatchBecauseProdPick) {
       const cycleId =
         so.orderType === "NO_QTY" && disp.cycleId != null && Number.isFinite(Number(disp.cycleId)) && Number(disp.cycleId) > 0
           ? normalizePositiveCycleId(disp.cycleId)
@@ -1633,7 +1643,7 @@ async function getContinueWorkingRows(options = {}) {
         nextStep: "Go to Dispatch",
         href: route,
       });
-    } else {
+    } else if (!(disp && Number(disp.dispatchableNow) > QUEUE_EPS)) {
       const bill = billingBySo.get(soId) ?? null;
       if (bill) {
         const href =

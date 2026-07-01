@@ -117,7 +117,7 @@ export function ProductionMaterialWorkflowCard({
     returnTo: "production-workspace",
   });
 
-  const partialIssue = data.gate === "PARTIAL_READY";
+  const partialIssue = data.gate === "READY_FOR_PRODUCTION" && (data.rmLines?.some((ln) => ln.status === "PARTIAL") ?? false);
 
   return (
     <div className="space-y-2">

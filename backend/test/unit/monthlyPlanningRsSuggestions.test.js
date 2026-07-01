@@ -114,6 +114,19 @@ describe("monthlyPlanningRsSuggestionsService.computeEffectiveProductionDemandFr
     assert.equal(effective, 20000);
   });
 
+  it("keeps carry-forward at zero when the current cycle requirement is zero", () => {
+    const effective = computeEffectiveProductionDemandFromSources([
+      {
+        salesOrderId: 45,
+        cycleNo: 2,
+        requirementQty: 0,
+        shortfallQtySnapshot: 52,
+        suggestedWoQtySnapshot: 52,
+      },
+    ]);
+    assert.equal(effective, 0);
+  });
+
   it("sums latest cycle targets across different sales orders", () => {
     const effective = computeEffectiveProductionDemandFromSources([
       {
@@ -170,6 +183,15 @@ describe("monthlyPlanningRsSuggestionsService.lineProductionRequirement", () => 
     });
     assert.equal(res.productionRequirementQty, 21000);
   });
+
+  it("ignores carry-forward snapshot when the current requirement is zero", () => {
+    const res = lineProductionRequirement({
+      requirementQty: 0,
+      shortfallQtySnapshot: 52,
+      suggestedWoQtySnapshot: 52,
+    });
+    assert.equal(res.productionRequirementQty, 0);
+  });
 });
 
 describe("monthlyPlanningRsSuggestionsService.pickLatestLockedSheets", () => {
@@ -200,6 +222,26 @@ describe("monthlyPlanningRsSuggestionsService.getRsSuggestionsForPeriod", () => 
     assert.equal(res.items[0].carryForwardQty, 1000);
     assert.equal(res.items[0].productionRequirementQty, 21000);
     assert.equal(res.items[0].effectiveProductionDemandQty, 21000);
+  });
+
+  it("shows zero production requirement for a zero-demand carry-forward-only RS line", async () => {
+    const db = createReadOnlyMockDb([
+      lockedSheet({
+        id: 12,
+        lines: [
+          fgLine({
+            requirementQty: 0,
+            shortfallQtySnapshot: 52,
+            suggestedWoQtySnapshot: 52,
+          }),
+        ],
+      }),
+    ]);
+    const res = await getRsSuggestionsForPeriod({ db, periodKey: "2026-07" });
+    assert.equal(res.items[0].scheduleQty, 0);
+    assert.equal(res.items[0].carryForwardQty, 52);
+    assert.equal(res.items[0].productionRequirementQty, 0);
+    assert.equal(res.items[0].effectiveProductionDemandQty, 0);
   });
 
   it("aggregates multiple locked RS for the same FG item", async () => {

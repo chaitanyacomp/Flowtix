@@ -4,6 +4,7 @@ import {
   buildProductionDecisionConfirmDialog,
   CARRY_FORWARD_REASON_OPTIONS,
   formatCarryForwardSuccessMessage,
+  formatProductionExecutionAutoAdvanceNotice,
   formatNoQtyProductionAdvanceMessage,
   formatNoQtyProductionQueueCompleteMessage,
   formatProductionCompletionSuccessMessage,
@@ -78,6 +79,24 @@ describe("productionCompletionUx", () => {
     expect(formatProductionWorkflowSuccessMessage("PAUSE")).toContain("paused");
     expect(formatProductionWorkflowSuccessMessage("COMPLETE")).toContain("Quality Inspection");
     expect(formatProductionExecutionQueueNotice("CARRY_FORWARD", "WO-26-0001")).toContain("carried forward");
+    expect(formatProductionExecutionQueueNotice("CARRY_FORWARD", "WO-26-0001")).not.toMatch(
+      /pick .*work order from the queue/i,
+    );
+  });
+
+  it("uses auto-advance or empty-state copy after shortfall decisions", () => {
+    expect(formatProductionExecutionAutoAdvanceNotice("CARRY_FORWARD", "WO-26-0001", true)).toBe(
+      "Auto-loaded next WO.",
+    );
+    expect(formatProductionExecutionAutoAdvanceNotice("WAIVE_BALANCE", "WO-26-0001", false)).toContain(
+      "No production work orders pending.",
+    );
+    expect(formatProductionExecutionAutoAdvanceNotice("PAUSE", "WO-26-0001", false)).toContain(
+      "No production work orders pending.",
+    );
+    expect(
+      formatProductionExecutionAutoAdvanceNotice("CARRY_FORWARD", "WO-26-0001", true),
+    ).not.toMatch(/pick .*work order from the queue/i);
   });
 
   it("shows Continue Production CTA only when production is paused", () => {

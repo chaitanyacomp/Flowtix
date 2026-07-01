@@ -40,7 +40,10 @@ export function MaterialIssuePmrQueuePanel({
   }
 
   return (
-    <div className="rounded-md border border-slate-200 bg-slate-50/80 px-2.5 py-2">
+    <div
+      className="rounded-md border border-slate-200 bg-slate-50/80 px-2.5 py-2"
+      data-testid="material-issue-queue-panel"
+    >
       <div className="mb-1.5 flex items-center justify-between gap-2">
         <h3 className="text-[11px] font-semibold uppercase tracking-wide text-slate-700">
           Work orders waiting for issue

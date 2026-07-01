@@ -18,7 +18,7 @@ const auditLog = require("./auditLog");
 const { isMaterialWastageSchemaUnavailable } = require("./materialWastageSchemaGuard");
 
 const TXN_TYPE = "LOCATION_TRANSFER";
-const SUBMITTED_PMR_STATUSES = ["REQUESTED", "PARTIALLY_ISSUED", "FULLY_ISSUED"];
+const SUBMITTED_PMR_STATUSES = ["REQUESTED", "PARTIALLY_ISSUED", "FULLY_ISSUED", "SHORT_ISSUE_ACCEPTED"];
 
 function n(v) {
   return qtyToNumber(v);

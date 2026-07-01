@@ -37,7 +37,7 @@ export function ProductionReportPanel({
   workOrderId: number;
   refreshKey?: number;
   className?: string;
-  onConfirmed?: () => void;
+  onConfirmed?: (meta: { requiresShortfallDecision: boolean; remainderQty: number }) => void;
 }) {
   const [report, setReport] = React.useState<ProductionWorkOrderReport | null>(null);
   const [lineInputs, setLineInputs] = React.useState<Record<number, LineInput>>({});
@@ -62,11 +62,12 @@ export function ProductionReportPanel({
         const next: Record<number, LineInput> = {};
         for (const ln of data.rmLines || []) {
           const consumed = Number(ln.reportedConsumedQty ?? ln.ledgerConsumedQty ?? 0);
+          const issued = Number(ln.issuedQty ?? 0);
           next[ln.itemId] = {
             rmConsumedQty: fmtQty(consumed),
             rmReturnQty: "0",
-            scrapWasteQty: "0",
-            varianceQty: fmtQty(Number(ln.issuedQty ?? 0) - consumed),
+            scrapWasteQty: fmtQty(Math.max(0, issued - consumed)),
+            varianceQty: fmtQty(issued - consumed),
             remarks: "",
           };
         }
@@ -89,21 +90,23 @@ export function ProductionReportPanel({
   const updateLineInput = React.useCallback(
     (itemId: number, key: keyof LineInput, value: string) => {
       setLineInputs((prev) => {
+        const source = report?.rmLines.find((ln) => ln.itemId === itemId);
+        const issued = Number(source?.issuedQty ?? 0);
+        const consumedDefault = Number(source?.reportedConsumedQty ?? source?.ledgerConsumedQty ?? 0);
         const cur = prev[itemId] ?? {
-          rmConsumedQty: "0",
+          rmConsumedQty: fmtQty(consumedDefault),
           rmReturnQty: "0",
           scrapWasteQty: "0",
-          varianceQty: "0",
+          varianceQty: fmtQty(issued - consumedDefault),
           remarks: "",
         };
         const next = { ...cur, [key]: value };
-        if (key === "rmConsumedQty" || key === "rmReturnQty" || key === "scrapWasteQty") {
-          const source = report?.rmLines.find((ln) => ln.itemId === itemId);
-          const issued = Number(source?.issuedQty ?? 0);
+        if (key === "rmReturnQty") {
           const consumed = Number(next.rmConsumedQty) || 0;
           const ret = Number(next.rmReturnQty) || 0;
-          const scrap = Number(next.scrapWasteQty) || 0;
-          next.varianceQty = fmtQty(issued - consumed - ret - scrap);
+          const scrap = Math.max(0, issued - consumed - ret);
+          next.scrapWasteQty = fmtQty(scrap);
+          next.varianceQty = fmtQty(issued - consumed);
         }
         return { ...prev, [itemId]: next };
       });
@@ -124,14 +127,15 @@ export function ProductionReportPanel({
             itemId: ln.itemId,
             rmConsumedQty: Number(input?.rmConsumedQty ?? ln.reportedConsumedQty ?? ln.ledgerConsumedQty ?? 0),
             rmReturnQty: Number(input?.rmReturnQty ?? 0),
-            scrapWasteQty: Number(input?.scrapWasteQty ?? 0),
-            varianceQty: Number(input?.varianceQty ?? 0),
             remarks: input?.remarks || null,
           };
         }),
       });
       setReport(result.report);
-      onConfirmed?.();
+      onConfirmed?.({
+        requiresShortfallDecision: Boolean(result.requiresShortfallDecision),
+        remainderQty: Number(result.report?.summary?.remainderQty ?? 0),
+      });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to confirm Production Report");
     } finally {
@@ -151,7 +155,7 @@ export function ProductionReportPanel({
     >
       <div className="border-b border-slate-100 bg-slate-50/80 px-3 py-2">
         <div className="flex items-center justify-between gap-2">
-          <div className="text-[12px] font-semibold text-slate-900">Production Report / RM Consumption</div>
+          <div className="text-[13px] font-semibold text-slate-900">Production Report / RM Consumption</div>
           <span
             className={cn(
               "rounded border px-2 py-0.5 text-[10px] font-semibold",
@@ -166,14 +170,14 @@ export function ProductionReportPanel({
       </div>
       <div className="space-y-3 px-3 py-2">
         {loading ? (
-          <p className="text-[11px] text-slate-600">Loading production report...</p>
+          <p className="text-[12px] text-slate-600">Loading production report...</p>
         ) : error ? (
           <p className="text-[11px] text-amber-800">{error}</p>
         ) : !report?.hasApprovedProduction ? (
           <p className="text-[11px] text-slate-600">No approved production batches on this work order yet.</p>
         ) : (
           <>
-            <div className="grid gap-2 text-[11px] sm:grid-cols-2 lg:grid-cols-4">
+            <div className="grid gap-2 text-[12px] sm:grid-cols-2 lg:grid-cols-4">
               <div>
                 <span className="text-slate-500">WO</span>
                 <div className="font-semibold text-slate-900">{report.workOrderNo}</div>
@@ -204,7 +208,7 @@ export function ProductionReportPanel({
 
             {report.rmLines.length > 0 ? (
               <div className="overflow-x-auto rounded border border-slate-200">
-                <table className="w-full min-w-[54rem] border-collapse text-[11px]">
+                <table className="w-full min-w-[54rem] border-collapse text-[12px]">
                   <thead>
                     <tr className="border-b border-slate-200 bg-slate-50 text-left text-[10px] font-semibold uppercase text-slate-500">
                       <th className="px-2 py-1">RM Item</th>
@@ -233,14 +237,14 @@ export function ProductionReportPanel({
                             {confirmed ? (
                               fmtQty(confirmedLine?.rmConsumedQty ?? ln.reportedConsumedQty ?? ln.ledgerConsumedQty)
                             ) : (
-                              <input className="w-20 rounded border border-slate-200 px-1 py-0.5 text-right" type="number" min="0" step="0.001" value={input?.rmConsumedQty ?? ""} onChange={(e) => updateLineInput(ln.itemId, "rmConsumedQty", e.target.value)} />
+                              fmtQty(Number(input?.rmConsumedQty ?? ln.reportedConsumedQty ?? ln.ledgerConsumedQty ?? 0))
                             )}
                           </td>
                           <td className="px-2 py-1 text-right tabular-nums">
                             {confirmed ? fmtQty(confirmedLine?.rmReturnQty ?? 0) : <input className="w-20 rounded border border-slate-200 px-1 py-0.5 text-right" type="number" min="0" step="0.001" value={input?.rmReturnQty ?? ""} onChange={(e) => updateLineInput(ln.itemId, "rmReturnQty", e.target.value)} />}
                           </td>
                           <td className="px-2 py-1 text-right tabular-nums">
-                            {confirmed ? fmtQty(confirmedLine?.scrapWasteQty ?? 0) : <input className="w-20 rounded border border-slate-200 px-1 py-0.5 text-right" type="number" min="0" step="0.001" value={input?.scrapWasteQty ?? ""} onChange={(e) => updateLineInput(ln.itemId, "scrapWasteQty", e.target.value)} />}
+                            {confirmed ? fmtQty(confirmedLine?.scrapWasteQty ?? 0) : fmtQty(Number(input?.scrapWasteQty ?? 0))}
                           </td>
                           <td className={cn("px-2 py-1 text-right tabular-nums", Number(variance ?? 0) > 0 ? "text-rose-800" : Number(variance ?? 0) < 0 ? "text-emerald-800" : "")}>{fmtQty(variance)}</td>
                           <td className="px-2 py-1 text-right tabular-nums">{fmtQty(ln.returnableQty)}</td>
@@ -255,7 +259,7 @@ export function ProductionReportPanel({
               </div>
             ) : null}
 
-            <div className="flex flex-col gap-2 border-t border-slate-100 pt-2 sm:flex-row sm:items-end">
+            <div className="sticky bottom-0 z-10 -mx-3 flex flex-col gap-2 border-t border-slate-200 bg-white/95 px-3 py-2 backdrop-blur-sm sm:flex-row sm:items-end">
               <label className="flex-1 text-[11px] font-medium text-slate-600">
                 Remarks
                 <textarea className="mt-1 min-h-16 w-full rounded border border-slate-200 px-2 py-1 text-[12px] text-slate-900" value={remarks} onChange={(e) => setRemarks(e.target.value)} disabled={confirmed} />

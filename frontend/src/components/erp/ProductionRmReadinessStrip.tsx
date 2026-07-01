@@ -19,7 +19,12 @@ export type RmReadinessLine = {
 };
 
 export type ProductionRmReadiness = {
-  gate: "NO_PMR" | "PMR_DRAFT_ONLY" | "WAITING_STORE_ISSUE" | "PARTIAL_READY" | "FULLY_ISSUED_READY";
+  gate:
+    | "NO_PMR"
+    | "PMR_DRAFT_ONLY"
+    | "WAITING_STORE_ISSUE"
+    | "WAITING_RELEASE_TO_PRODUCTION"
+    | "READY_FOR_PRODUCTION";
   fgItemName: string;
   fgUnit: string;
   woQty: number;
@@ -35,8 +40,17 @@ export type ProductionRmReadiness = {
   latestPmrId: number | null;
   latestPmrDocNo: string | null;
   workOrderId: number;
+  workOrderLineId?: number;
   rmLines: RmReadinessLine[];
   bomMissing?: boolean;
+  flags?: {
+    waitingForMaterialRequest?: boolean;
+    waitingForStoreIssue?: boolean;
+    waitingForReleaseToProduction?: boolean;
+    readyForProduction?: boolean;
+    partiallyReady?: boolean;
+    materialReleasedToProduction?: boolean;
+  };
 };
 
 export type RegularRmQtyCapOptions = {
@@ -254,10 +268,22 @@ export function ProductionRmReadinessStrip({
         </div>
       ) : null}
 
-      {data.gate === "PARTIAL_READY" && !blocked ? (
+      {data.gate === "WAITING_RELEASE_TO_PRODUCTION" ? (
+        <div className="mt-1.5 space-y-1.5 text-amber-950">
+          <p className="font-medium">RM issued — waiting for Store to release this work order to production.</p>
+          <Link
+            to={`/material-issue?workOrderId=${data.workOrderId}&returnTo=production`}
+            className={cn(buttonVariants({ variant: "default", size: "sm" }), "h-7 text-[12px]")}
+          >
+            Open Material Issue Workspace
+          </Link>
+        </div>
+      ) : null}
+
+      {data.gate === "READY_FOR_PRODUCTION" && !blocked ? (
         <p className="mt-1 text-slate-700">
-          Partial issue: production entry cannot exceed {fmtQty(data.productionAllowedNowQty)} {data.fgUnit || "units"} based
-          on RM at production location.
+          Production may proceed up to {fmtQty(data.productionAllowedNowQty)} {data.fgUnit || "units"} based on issued RM
+          at production location.
         </p>
       ) : null}
 
@@ -332,7 +358,8 @@ export function isProductionBlockedByRmReadiness(data: ProductionRmReadiness | n
     data.bomMissing === true ||
     data.gate === "NO_PMR" ||
     data.gate === "PMR_DRAFT_ONLY" ||
-    data.gate === "WAITING_STORE_ISSUE"
+    data.gate === "WAITING_STORE_ISSUE" ||
+    data.gate === "WAITING_RELEASE_TO_PRODUCTION"
   );
 }
 

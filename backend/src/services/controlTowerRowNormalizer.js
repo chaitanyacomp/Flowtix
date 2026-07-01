@@ -193,7 +193,7 @@ function ownerForRmRiskRow(raw) {
   }
 
   if (queueType === "READY_TO_RELEASE_WO") {
-    return VISIBLE_OWNERS.PRODUCTION;
+    return raw?.workOrderReleased ? VISIBLE_OWNERS.PRODUCTION : VISIBLE_OWNERS.STORE;
   }
 
   if (queueType === "RM_RECEIVED_CREATE_WO" || operationalKey === "RM_RECEIVED_CREATE_WO") {
@@ -288,6 +288,7 @@ function normalizeRmRiskRow(raw) {
       mrStatus: raw?.mrStatus ?? raw?.requisitionStatus ?? null,
       receivedGrnQty: raw?.receivedGrnQty ?? null,
       productionExecutionStatus: raw?.productionExecutionStatus ?? null,
+      materialReleasedToProduction: Boolean(raw?.workOrderReleased),
       ...lineage,
       ...(purchaseHandoff ? { purchaseHandoff: true } : {}),
       ...(purchaseNextOwnerHint && currentOwner === VISIBLE_OWNERS.STORE

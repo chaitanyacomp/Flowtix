@@ -65,6 +65,25 @@ import { NO_QTY_TERMS, REGULAR_TERMS } from "../lib/flowTerminology";
 import { OperationalDispatchSnapshot } from "../components/erp/OperationalDispatchSnapshot";
 import { buildNoQtyOperationalMetrics } from "../lib/noQtyOperationalMetrics";
 import { DISPATCH_WRITE_ROLES } from "../config/erpRoles";
+import { DispatchCompactExecutionPanel } from "../components/erp/dispatch/DispatchCompactExecutionPanel";
+import { DispatchCompactHistoryPanel } from "../components/erp/dispatch/DispatchCompactHistoryPanel";
+import {
+  resolvePostCompactDispatchQueueRow,
+  resolveCompactDispatchSelection,
+  sumDispatchCompactQueueQty,
+  isDispatchCompactExecutionMode,
+  DISPATCH_DRAFT_DELETE_CONFIRM_MESSAGE,
+  buildDispatchSoCompleteMessage,
+  buildCompactDispatchHistoryRows,
+  sumCompactDispatchHistoryFinalizedQty,
+  dispatchFullTargetQty,
+  dispatchPrepareQtyCap,
+  shouldIncludeCompactQueueRow,
+  shouldSkipDispatchPrepareAsDuplicate,
+  compactQueueDisplayReadyQty,
+  type DispatchCompactQueueRow,
+} from "../lib/dispatchWorkspaceUx";
+import { bumpErpRefresh } from "../lib/erpRefresh";
 
 /** Soft flag for optional dashboard reminders — user chose “wait” on NORMAL partial dispatch (no API). */
 const DISPATCH_PARTIAL_WAIT_STORAGE_PREFIX = "erp:dispatch:partial-wait:";
@@ -739,6 +758,19 @@ function totalNoQtyDraftQtyForItem(so: SoRow, itemId: number): number {
     .reduce((s, d) => s + Number(d.dispatchedQty || 0), 0);
 }
 
+function totalUnlockedDraftQtyForItem(so: SoRow | undefined, itemId: number): number {
+  if (!so || !itemId) return 0;
+  if (so.orderType === "NO_QTY") return totalNoQtyDraftQtyForItem(so, itemId);
+  return (so.dispatch || [])
+    .filter(
+      (d) =>
+        Number(d.itemId) === Number(itemId) &&
+        d.reversalOfId == null &&
+        d.workflowStatus === "UNLOCKED",
+    )
+    .reduce((s, d) => s + Number(d.dispatchedQty || 0), 0);
+}
+
 /** NO_QTY: total QC-backed prepare headroom for one FG (sum per-cycle dispatchable now — FIFO pools). */
 function computeNoQtyTotalPrepareHeadroomForItem(so: SoRow, itemId: number): number {
   if (so.orderType !== "NO_QTY") return 0;
@@ -822,6 +854,7 @@ function computeNoQtyHeadroomBreakdownForItem(
 }
 
 const LEDGER_PAGE_SIZE = 10;
+const COMPACT_DISPATCH_HISTORY_LEDGER_LIMIT = 100;
 
 function rowStatusBadge(d: DispatchEvent): { label: string; className: string } {
   if (d.reversalOfId != null) {
@@ -1283,6 +1316,7 @@ export function DispatchPage() {
   const [sp, setSearchParams] = useSearchParams();
   const location = useLocation();
   const source = sp.get("source") ?? "";
+  const fromParam = sp.get("from") ?? "";
   const fromNoQtySo = source === "no_qty_so";
   const fromGlobalSearch = source === "global_search";
   const fromDashboard = source === "dashboard";
@@ -1293,6 +1327,9 @@ export function DispatchPage() {
   const focusLedgerDispatchId = Number(sp.get("dispatchId") ?? 0);
   const focusLedgerDispatchIdValid = Number.isFinite(focusLedgerDispatchId) && focusLedgerDispatchId > 0;
   const focusSoIdValid = Number.isFinite(focusSoId) && focusSoId > 0;
+  const fromPendingActions = isDispatchCompactExecutionMode(source, fromParam);
+  const dispatchCompactMode = fromPendingActions && focusSoIdValid;
+  const fromScopedSo = fromNoQtySo || fromGlobalSearch || fromDashboard || fromPendingActions;
   const focusItemId = Number(sp.get("itemId") ?? 0);
   const focusCycleId = Number(sp.get("cycleId") ?? 0);
   const focusCycleIdValid = Number.isFinite(focusCycleId) && focusCycleId > 0;
@@ -1533,16 +1570,13 @@ export function DispatchPage() {
   const loadSalesOrders = React.useCallback(async (): Promise<SoRow[]> => {
     // TEMP DEBUG (remove after live verification)
     const params = new URLSearchParams();
-    const pinSo =
-      (fromNoQtySo && focusSoIdValid) || (fromGlobalSearch && focusSoIdValid) || (fromDashboard && focusSoIdValid)
-        ? focusSoId
-        : soId;
+    const pinSo = fromScopedSo && focusSoIdValid ? focusSoId : soId;
     const pinCycle = noQtySelectedCycleId;
     const selectedRow = displayRowsRef.current.find((r) => r.id === pinSo);
     const allowNoQtyCycleQuery =
       pinSo > 0 &&
       pinCycle != null &&
-      (((fromNoQtySo || fromDashboard) && focusSoIdValid && pinSo === focusSoId) || selectedRow?.orderType === "NO_QTY");
+      (((fromNoQtySo || fromDashboard || fromPendingActions) && focusSoIdValid && pinSo === focusSoId) || selectedRow?.orderType === "NO_QTY");
     if (allowNoQtyCycleQuery) {
       params.set("noQtySoId", String(pinSo));
       params.set("noQtyCycleId", String(pinCycle));
@@ -1551,7 +1585,7 @@ export function DispatchPage() {
     const url = `/api/dispatch/sales-orders${qs ? `?${qs}` : ""}`;
     const list = await apiFetch<SoRow[]>(url);
     const finalRows =
-      (fromNoQtySo || fromGlobalSearch || fromDashboard) && focusSoIdValid
+      (fromScopedSo && focusSoIdValid)
         ? (list || []).filter((r) => r.id === focusSoId)
         : list || [];
     console.debug("[DISPATCH_UI_TRACE][sales-orders-response]", {
@@ -1565,10 +1599,10 @@ export function DispatchPage() {
     });
     setRows(finalRows);
     return finalRows;
-  }, [fromNoQtySo, fromGlobalSearch, fromDashboard, focusSoId, focusSoIdValid, soId, noQtySelectedCycleId]);
+  }, [fromScopedSo, focusSoId, focusSoIdValid, soId, noQtySelectedCycleId]);
 
   const displayRows = React.useMemo(() => {
-    if ((fromNoQtySo || fromGlobalSearch || fromDashboard) && focusSoIdValid) {
+    if (fromScopedSo && focusSoIdValid) {
       const hit = rows.find((r) => r.id === focusSoId);
       if (hit) return rows;
       if (fallbackSoRow?.id === focusSoId) return [fallbackSoRow];
@@ -1585,7 +1619,7 @@ export function DispatchPage() {
   displayRowsRef.current = displayRows;
 
   React.useEffect(() => {
-    if (!(fromNoQtySo || fromGlobalSearch || fromDashboard) || !focusSoIdValid) {
+    if (!fromScopedSo || !focusSoIdValid) {
       setFallbackSoRow(null);
       return;
     }
@@ -1680,7 +1714,7 @@ export function DispatchPage() {
     if (selectedSo != null) {
       return selectedSo.orderType === "NO_QTY" && selectedSo.id > 0 ? selectedSo.id : null;
     }
-    return (fromNoQtySo || fromDashboard) && focusSoIdValid ? focusSoId : null;
+    return (fromNoQtySo || fromDashboard || fromPendingActions) && focusSoIdValid ? focusSoId : null;
   }, [selectedSo, fromNoQtySo, fromDashboard, focusSoIdValid, focusSoId]);
 
   const noQtyFlowCycleOpt = React.useMemo(() => {
@@ -1702,7 +1736,7 @@ export function DispatchPage() {
 
   // NO_QTY guided entry: when routed from QC/Production with itemId, preselect that item’s first eligible line.
   React.useEffect(() => {
-    if (!(fromNoQtySo || fromDashboard) || !focusSoIdValid) return;
+    if (!(fromNoQtySo || fromDashboard || fromPendingActions) || !focusSoIdValid) return;
     if (!selectedSo || selectedSo.id !== focusSoId) return;
     if (!focusItemIdValid) return;
     if (salesOrderLineId > 0) return;
@@ -1829,7 +1863,12 @@ export function DispatchPage() {
 
     const offset = override ? 0 : (ledgerPage - 1) * LEDGER_PAGE_SIZE;
     const params = new URLSearchParams();
-    params.set("limit", String(LEDGER_PAGE_SIZE));
+    const compactHistoryLedger =
+      fromPendingActions &&
+      focusSoIdValid &&
+      (overrideSoId != null ? overrideSoId === focusSoId : true);
+    const ledgerLimit = compactHistoryLedger ? COMPACT_DISPATCH_HISTORY_LEDGER_LIMIT : LEDGER_PAGE_SIZE;
+    params.set("limit", String(ledgerLimit));
     params.set("offset", String(offset));
 
     const ignoreDates = Boolean(override?.ignoreDateFilters);
@@ -1846,7 +1885,7 @@ export function DispatchPage() {
       // NO_QTY: load ledger for the whole SO (all cycles) so multi-cycle prepared rows are visible without switching cycles.
       if (pin?.orderType === "NO_QTY" && soId > 0) {
         params.set("soId", String(soId));
-      } else if ((fromNoQtySo || fromGlobalSearch || fromDashboard) && focusSoIdValid) {
+      } else if (fromScopedSo && focusSoIdValid) {
         params.set("soId", String(focusSoId));
         const pinF = displayRowsRef.current.find((r) => r.id === focusSoId);
         if (pinF?.orderType !== "NO_QTY" && noQtySelectedCycleId != null) {
@@ -1859,7 +1898,7 @@ export function DispatchPage() {
     );
     let rows = ledger.rows || [];
     let total = typeof ledger.total === "number" ? ledger.total : 0;
-    if ((fromNoQtySo || fromGlobalSearch || fromDashboard) && focusSoIdValid && !params.has("cycleId")) {
+    if (fromScopedSo && focusSoIdValid && !params.has("cycleId")) {
       rows = rows.filter((r) => r.soId === focusSoId);
       total = rows.length;
     }
@@ -1878,7 +1917,7 @@ export function DispatchPage() {
       total,
       unlockedForwards: rows.filter((r) => r.workflowStatus === "UNLOCKED" && r.reversalOfId == null).map((r) => r.id),
     });
-  }, [ledgerPage, ledgerDateFrom, ledgerDateTo, fromNoQtySo, fromGlobalSearch, fromDashboard, focusSoId, focusSoIdValid, soId, noQtySelectedCycleId]);
+  }, [ledgerPage, ledgerDateFrom, ledgerDateTo, fromNoQtySo, fromGlobalSearch, fromDashboard, fromPendingActions, focusSoId, focusSoIdValid, soId, noQtySelectedCycleId]);
 
   React.useEffect(() => {
     void loadLedger();
@@ -1889,12 +1928,12 @@ export function DispatchPage() {
   }, [noQtySelectedCycleId, soId, loadLedger, loadSalesOrders, liveTick]);
 
   React.useEffect(() => {
-    if (!(fromNoQtySo || fromGlobalSearch || fromDashboard) || !focusSoIdValid) setFocusSo(null);
-  }, [fromNoQtySo, fromGlobalSearch, fromDashboard, focusSoIdValid]);
+    if (!fromScopedSo || !focusSoIdValid) setFocusSo(null);
+  }, [fromNoQtySo, fromGlobalSearch, fromDashboard, fromPendingActions, focusSoIdValid]);
 
   // When opened from NO_QTY Sales Orders, auto-select that SO and load context.
   React.useEffect(() => {
-    if ((!fromNoQtySo && !fromGlobalSearch && !fromDashboard) || !focusSoIdValid) return;
+    if (!fromScopedSo || !focusSoIdValid) return;
     setSoId(focusSoId);
     setSalesOrderLineId(0);
     resetDispatchQty();
@@ -1905,7 +1944,7 @@ export function DispatchPage() {
       })
       .catch(() => setFocusSo({ id: focusSoId, customerName: "—", docNo: null }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fromNoQtySo, fromGlobalSearch, fromDashboard, focusSoId, focusSoIdValid]);
+  }, [fromScopedSo, focusSoId, focusSoIdValid]);
 
   const refresh = React.useCallback(async () => {
     await loadSalesOrders();
@@ -1924,7 +1963,11 @@ export function DispatchPage() {
         if (c != null) setNoQtySelectedCycleId(c);
       }
       const regularPartialQty = r.orderType !== "NO_QTY" ? regularPartialDispatchPrefillQty(r, ls) : null;
-      if (regularPartialQty != null) {
+      const openDraftQty = totalUnlockedDraftQtyForItem(r, ls.itemId);
+      if (openDraftQty > 1e-9) {
+        setIsPartialMode(true);
+        setDispatchQtyStr(String(openDraftQty));
+      } else if (regularPartialQty != null) {
         setIsPartialMode(true);
         setDispatchQtyStr(String(regularPartialQty));
       } else {
@@ -1932,10 +1975,11 @@ export function DispatchPage() {
         resetDispatchQty();
       }
       window.requestAnimationFrame(() => {
+        if (dispatchCompactMode) return;
         dispatchFormRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
       });
     },
-    [resetDispatchQty],
+    [resetDispatchQty, dispatchCompactMode],
   );
 
   React.useEffect(() => {
@@ -1956,18 +2000,34 @@ export function DispatchPage() {
 
   // NO_QTY usability: when a focused SO is pre-selected, also pre-select the best dispatchable line.
   React.useEffect(() => {
-    if (!(fromNoQtySo || fromDashboard) || !focusSoIdValid) return;
+    if (!(fromNoQtySo || fromDashboard || fromPendingActions) || !focusSoIdValid) return;
     if (!selectedSo || selectedSo.id !== focusSoId) return;
     if (salesOrderLineId > 0) return;
     if (dispatchReadOnly) return;
+    if (dispatchCompactMode) return;
+
     const best = (selectedSo.lineStats || []).find((l) => {
       const cyc = resolveNoQtyDispatchSourceCycleId(selectedSo, l, noQtySelectedCycleId);
-      return computeDispatchableNow({ so: selectedSo, ls: l, cycleIdOverride: cyc }) > 1e-9;
+      const headroom = computeDispatchableNow({ so: selectedSo, ls: l, cycleIdOverride: cyc });
+      const draftQty = totalUnlockedDraftQtyForItem(selectedSo, l.itemId);
+      return shouldIncludeCompactQueueRow(headroom, draftQty);
     });
     const fallback = (selectedSo.lineStats || [])[0];
     const pick = best ?? fallback;
     if (pick) selectLineFromBacklog(selectedSo, pick);
-  }, [fromNoQtySo, fromDashboard, focusSoId, focusSoIdValid, selectedSo, salesOrderLineId, dispatchReadOnly, selectLineFromBacklog, noQtySelectedCycleId]);
+  }, [
+    fromNoQtySo,
+    fromDashboard,
+    fromPendingActions,
+    dispatchCompactMode,
+    focusSoId,
+    focusSoIdValid,
+    selectedSo,
+    salesOrderLineId,
+    dispatchReadOnly,
+    selectLineFromBacklog,
+    noQtySelectedCycleId,
+  ]);
 
   const prepareQueueSections = React.useMemo(() => buildPrepareQueueSections(displayRows), [displayRows]);
   const prepareQueueRowCount = React.useMemo(
@@ -1987,13 +2047,14 @@ export function DispatchPage() {
   );
 
   React.useEffect(() => {
+    if (dispatchCompactMode) return;
     if (displayRows.length === 0 || soId !== 0) return;
     const sections = buildPrepareQueueSections(displayRows);
     const first = sections[0]?.rows[0];
     if (first) {
       selectLineFromBacklog(first.so, first.ls);
     }
-  }, [displayRows, soId, selectLineFromBacklog]);
+  }, [displayRows, soId, selectLineFromBacklog, dispatchCompactMode]);
 
   React.useEffect(() => {
     setNormalPartialDispatchAck(false);
@@ -2038,6 +2099,7 @@ export function DispatchPage() {
 
   /** Drop stale SO/line when open-list refresh removes them (e.g. after full dispatch or commercial close). */
   React.useEffect(() => {
+    if (dispatchCompactMode) return;
     if (!soId) {
       setSalesOrderLineId(0);
       resetDispatchQty();
@@ -2088,7 +2150,7 @@ export function DispatchPage() {
       setSalesOrderLineId(0);
       resetDispatchQty();
     }
-  }, [soId, displayRows, salesOrderLineId, resetDispatchQty, reopenedPreparedDraft, draftDispatchId]);
+  }, [soId, displayRows, salesOrderLineId, resetDispatchQty, reopenedPreparedDraft, draftDispatchId, dispatchCompactMode]);
 
   const allLines = selectedSo?.lineStats ?? [];
   /** Regular SO: confirmed backlog (`pendingDispatchQty` > 0). NO_QTY: all cycle / FG lines so reasons stay visible at 0 dispatchable. */
@@ -2290,10 +2352,227 @@ export function DispatchPage() {
   /** Upper bound for POST /dispatches qty when replacing an existing draft (draft qty + additional headroom). */
   const maxDispatchPrepareQty =
     selectedSo?.orderType === "NO_QTY" && noQtyUsableStockForCurrentItem != null
-      ? Math.min(noQtyUsableStockForCurrentItem, existingDraftQty > 1e-9 ? existingDraftQty + headroomToPrepare : headroomToPrepare)
-      : existingDraftQty > 1e-9
-        ? existingDraftQty + headroomToPrepare
-        : headroomToPrepare;
+      ? dispatchPrepareQtyCap({
+          existingDraftQty,
+          headroomToPrepare,
+          usableStockCap: noQtyUsableStockForCurrentItem,
+        })
+      : dispatchPrepareQtyCap({ existingDraftQty, headroomToPrepare });
+
+  const buildCompactQueueForSo = React.useCallback((so: SoRow | null | undefined): DispatchCompactQueueRow[] => {
+    if (!so) return [];
+    if (so.orderType === "NO_QTY") {
+      const byItem = new Map<number, DispatchCompactQueueRow>();
+      for (const ls of so.lineStats ?? []) {
+        const headroom = computeNoQtyTotalPrepareHeadroomForItem(so, ls.itemId);
+        const draftQty = totalUnlockedDraftQtyForItem(so, ls.itemId);
+        if (!shouldIncludeCompactQueueRow(headroom, draftQty)) continue;
+        const existing = byItem.get(ls.itemId);
+        const readyQty = compactQueueDisplayReadyQty(headroom, draftQty);
+        const hasOpenDraft = draftQty > 1e-9;
+        if (existing) {
+          existing.readyQty = Math.max(existing.readyQty, readyQty);
+          existing.hasOpenDraft = existing.hasOpenDraft || hasOpenDraft;
+        } else {
+          byItem.set(ls.itemId, {
+            lineId: ls.lineId,
+            itemId: ls.itemId,
+            itemName: ls.itemName,
+            readyQty,
+            hasOpenDraft,
+          });
+        }
+      }
+      return [...byItem.values()].sort((a, b) => a.itemName.localeCompare(b.itemName) || a.itemId - b.itemId);
+    }
+    return (so.lineStats ?? [])
+      .map((ls) => {
+        const headroom = computeDispatchableNow({ so, ls });
+        const draftQty = totalUnlockedDraftQtyForItem(so, ls.itemId);
+        return {
+          lineId: ls.lineId,
+          itemId: ls.itemId,
+          itemName: ls.itemName,
+          headroom,
+          draftQty,
+        };
+      })
+      .filter((row) => shouldIncludeCompactQueueRow(row.headroom, row.draftQty))
+      .map((row) => ({
+        lineId: row.lineId,
+        itemId: row.itemId,
+        itemName: row.itemName,
+        readyQty: compactQueueDisplayReadyQty(row.headroom, row.draftQty),
+        hasOpenDraft: row.draftQty > 1e-9,
+      }))
+      .sort((a, b) => a.itemName.localeCompare(b.itemName) || a.itemId - b.itemId);
+  }, []);
+
+  const compactQueueRows = React.useMemo(
+    () => (dispatchCompactMode && selectedSo ? buildCompactQueueForSo(selectedSo) : []),
+    [dispatchCompactMode, selectedSo, buildCompactQueueForSo, rows],
+  );
+
+  const compactQueueComplete = compactQueueRows.length === 0;
+
+  const compactDispatchHistoryRows = React.useMemo(() => {
+    if (!dispatchCompactMode || !focusSoIdValid) return [];
+    return buildCompactDispatchHistoryRows(ledgerRows.filter((r) => r.soId === focusSoId));
+  }, [dispatchCompactMode, focusSoIdValid, focusSoId, ledgerRows]);
+
+  const compactDispatchHistoryTotal = React.useMemo(
+    () => sumCompactDispatchHistoryFinalizedQty(compactDispatchHistoryRows),
+    [compactDispatchHistoryRows],
+  );
+
+  const compactSelectionItemIdRef = React.useRef<number | null>(null);
+  const compactQtySyncRef = React.useRef<{ itemId: number; draftQty: number; headroom: number } | null>(null);
+
+  const findLineForCompactQueueRow = React.useCallback(
+    (so: SoRow, row: DispatchCompactQueueRow): LineStat | null => {
+      const hits = (so.lineStats ?? []).filter((l) => l.itemId === row.itemId);
+      if (!hits.length) return null;
+      if (so.orderType === "NO_QTY") {
+        let best = hits[0]!;
+        let bestQty = -1;
+        for (const ls of hits) {
+          const cyc = resolveNoQtyDispatchSourceCycleId(so, ls, noQtySelectedCycleId);
+          const qty = computeDispatchableNow({ so, ls, cycleIdOverride: cyc });
+          if (qty > bestQty) {
+            bestQty = qty;
+            best = ls;
+          }
+        }
+        return best;
+      }
+      return hits.find((l) => l.lineId === row.lineId) ?? hits[0]!;
+    },
+    [noQtySelectedCycleId],
+  );
+
+  const applyCompactQueueSelection = React.useCallback(
+    (so: SoRow, row: DispatchCompactQueueRow) => {
+      const ls = findLineForCompactQueueRow(so, row);
+      if (!ls) return;
+      compactSelectionItemIdRef.current = row.itemId;
+      if (so.id !== soId) setSoId(so.id);
+      if (salesOrderLineId !== ls.lineId) setSalesOrderLineId(ls.lineId);
+      const draftQty = totalUnlockedDraftQtyForItem(so, ls.itemId);
+      if (draftQty > 1e-9) {
+        setIsPartialMode(true);
+        setDispatchQtyStr(String(draftQty));
+        compactQtySyncRef.current = { itemId: ls.itemId, draftQty, headroom: 0 };
+      }
+    },
+    [findLineForCompactQueueRow, soId, salesOrderLineId, setDispatchQtyStr],
+  );
+
+  React.useEffect(() => {
+    if (!dispatchCompactMode || !selectedSo || reopenedPreparedDraftMode) return;
+
+    const queue = compactQueueRows;
+    if (!queue.length) {
+      compactSelectionItemIdRef.current = null;
+      compactQtySyncRef.current = null;
+      if (salesOrderLineId !== 0) {
+        setSalesOrderLineId(0);
+        resetDispatchQty();
+      }
+      return;
+    }
+
+    const activeItemId = currentLine?.itemId ?? compactSelectionItemIdRef.current;
+    const targetRow = resolveCompactDispatchSelection({
+      queue,
+      activeItemId,
+      drafts: (selectedSo.dispatch ?? []).map((d) => ({
+        id: Number(d.id),
+        itemId: Number(d.itemId),
+        dispatchedQty: d.dispatchedQty,
+        workflowStatus: d.workflowStatus,
+        reversalOfId: d.reversalOfId,
+      })),
+    });
+    if (!targetRow) return;
+
+    const ls = findLineForCompactQueueRow(selectedSo, targetRow);
+    if (!ls) return;
+
+    if (
+      compactSelectionItemIdRef.current === targetRow.itemId &&
+      currentLine?.itemId === targetRow.itemId &&
+      salesOrderLineId === ls.lineId
+    ) {
+      return;
+    }
+
+    applyCompactQueueSelection(selectedSo, targetRow);
+  }, [
+    dispatchCompactMode,
+    selectedSo,
+    compactQueueRows,
+    currentLine?.itemId,
+    reopenedPreparedDraftMode,
+    applyCompactQueueSelection,
+    findLineForCompactQueueRow,
+    salesOrderLineId,
+    resetDispatchQty,
+  ]);
+
+  const advanceCompactDispatchAfterSuccess = React.useCallback(
+    (dispatchedItemId: number, refreshedSo: SoRow) => {
+      const queue = buildCompactQueueForSo(refreshedSo);
+      const sameRemaining = queue.find((r) => r.itemId === dispatchedItemId)?.readyQty ?? 0;
+      const nextRow = resolvePostCompactDispatchQueueRow({
+        queue,
+        dispatchedItemId,
+        sameItemRemainingQty: sameRemaining,
+      });
+      if (nextRow) {
+        applyCompactQueueSelection(refreshedSo, nextRow);
+        return;
+      }
+      compactSelectionItemIdRef.current = null;
+      compactQtySyncRef.current = null;
+      setSalesOrderLineId(0);
+      setIsPartialMode(false);
+      resetDispatchQty();
+    },
+    [buildCompactQueueForSo, applyCompactQueueSelection, resetDispatchQty],
+  );
+
+  React.useEffect(() => {
+    if (!dispatchCompactMode || !currentLine) return;
+    const itemId = currentLine.itemId;
+    if (existingDraftQty > 1e-9) {
+      const prev = compactQtySyncRef.current;
+      if (prev?.itemId === itemId && Math.abs(prev.draftQty - existingDraftQty) < 1e-9) return;
+      compactQtySyncRef.current = { itemId, draftQty: existingDraftQty, headroom: headroomToPrepare };
+      setIsPartialMode(true);
+      setDispatchQtyStr(String(existingDraftQty));
+      return;
+    }
+    if (isPartialMode) return;
+    if (headroomToPrepare > 1e-9) {
+      const prev = compactQtySyncRef.current;
+      if (
+        prev?.itemId === itemId &&
+        prev.draftQty <= 1e-9 &&
+        Math.abs(prev.headroom - headroomToPrepare) < 1e-9
+      ) {
+        return;
+      }
+      compactQtySyncRef.current = { itemId, draftQty: 0, headroom: headroomToPrepare };
+      setDispatchQtyStr(String(headroomToPrepare));
+    }
+  }, [
+    dispatchCompactMode,
+    currentLine?.itemId,
+    headroomToPrepare,
+    existingDraftQty,
+    isPartialMode,
+    setDispatchQtyStr,
+  ]);
 
   const noQtySelectedCycleIdResolved = React.useMemo(
     () =>
@@ -2559,27 +2838,50 @@ export function DispatchPage() {
   }
 
   async function onFinalizeDraftDispatch(dispatchId: number) {
-    await finalizeDispatchOnce(dispatchId, { clearDraftMode: true });
+    const dispatchedItemId = currentLine?.itemId;
+    const currentSoId = soId;
+    await finalizeDispatchOnce(dispatchId, { clearDraftMode: !dispatchCompactMode });
+    if (dispatchCompactMode && dispatchedItemId && currentSoId) {
+      bumpErpRefresh(["dispatch", "dashboard", "pending-actions", "stock"]);
+      const list = await loadSalesOrders();
+      await loadLedger();
+      const refreshedSo = list.find((r) => r.id === currentSoId) ?? selectedSo;
+      if (refreshedSo) {
+        advanceCompactDispatchAfterSuccess(dispatchedItemId, refreshedSo);
+        const queue = buildCompactQueueForSo(refreshedSo);
+        if (!queue.length) {
+          setDispatchInfo(
+            buildDispatchSoCompleteMessage(
+              displaySalesOrderNo(refreshedSo.id, refreshedSo.docNo ?? null),
+            ),
+          );
+        }
+      }
+    }
   }
 
   async function onDeleteDraft(dispatchId: number) {
-    if (!window.confirm("Discard this dispatch draft? Inventory has not been deducted yet.")) return;
+    if (!window.confirm(DISPATCH_DRAFT_DELETE_CONFIRM_MESSAGE)) return;
     setError(null);
     setDeletingId(dispatchId);
     try {
       await apiFetch(`/api/dispatch/dispatches/${dispatchId}`, { method: "DELETE" });
-      setDispatchInfo("Dispatch draft removed.");
+      setDispatchInfo(null);
       if (reopenedPreparedDraftMode && reopenedPreparedDraft?.id === dispatchId) {
         setReopenedPreparedDraft(null);
         setReopenFallbackSoRow(null);
-        // Clear draftDispatchId from URL and return to normal dispatch state.
         const params = new URLSearchParams(sp);
         params.delete("draftDispatchId");
         navigate(`/dispatch?${params.toString()}`, { replace: true });
-        toast.showSuccess("Dispatch draft removed.");
       }
       setSalesBillStepDispatchId(null);
       await refresh();
+      bumpErpRefresh(["dispatch", "dashboard", "pending-actions", "stock"]);
+      if (dispatchCompactMode) {
+        setIsPartialMode(false);
+        resetDispatchQty();
+      }
+      toast.showSuccess("Dispatch draft removed.");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Delete failed");
     } finally {
@@ -2616,6 +2918,16 @@ export function DispatchPage() {
       dispatchSubmitLockRef.current = false;
       return;
     }
+    if (
+      shouldSkipDispatchPrepareAsDuplicate({
+        existingDraftQty,
+        dispatchQty: dispatchQtyParsed,
+      })
+    ) {
+      setDispatchInfo("Dispatch draft saved.");
+      dispatchSubmitLockRef.current = false;
+      return;
+    }
     const prepareQtyCap = existingDraftQty > 1e-9 ? maxDispatchPrepareQty : currentDispatchableQty;
     if (dispatchQtyParsed > prepareQtyCap + 1e-6) {
       setError(
@@ -2627,7 +2939,7 @@ export function DispatchPage() {
       return;
     }
     const avail = safeNum(prepareQtyCap);
-    if (avail > 1e-9 && dispatchQtyParsed < DISPATCH_LOW_QTY_WARN_RATIO * avail - 1e-9) {
+    if (!dispatchCompactMode && avail > 1e-9 && dispatchQtyParsed < DISPATCH_LOW_QTY_WARN_RATIO * avail - 1e-9) {
       const remainingUsable = Math.max(0, safeNum(getUsableStock(currentLine)) - dispatchQtyParsed);
       const proceed = window.confirm(
         `You are dispatching only ${fmtDispatchQty(dispatchQtyParsed)} out of ${fmtDispatchQty(avail)} available units.\n\n` +
@@ -2652,11 +2964,20 @@ export function DispatchPage() {
       const prepRes = await apiFetch<{
         allocation?: { cycleNo: number; qty: number | string }[];
         autoAllocated?: boolean;
+        dispatch?: { id?: number | null };
+        dispatches?: Array<{ id?: number | null }>;
       }>("/api/dispatch/dispatches", {
         method: "POST",
         headers: { "Idempotency-Key": idempotencyKey },
         body: JSON.stringify(dispatchBody),
       });
+      if (dispatchCompactMode) {
+        setDispatchInfo("Dispatch draft saved.");
+        setSalesBillStepDispatchId(null);
+        await loadSalesOrders();
+        await loadLedger();
+        return;
+      }
       const alloc = prepRes?.allocation;
       if (selectedSo?.orderType === "NO_QTY" && Array.isArray(alloc) && alloc.length > 0) {
         const totalAlloc = alloc.reduce((s, a) => s + safeNum(a.qty), 0);
@@ -2718,7 +3039,10 @@ export function DispatchPage() {
       dispatchQtyParsed > 1e-9 &&
       (allowFullHeadroomPartialSubmit
         ? dispatchQtyParsed <= headroomToPrepare + 1e-6
-        : dispatchQtyParsed < headroomToPrepare - 1e-6) &&
+        : existingDraftQty > 1e-9 && headroomToPrepare <= 1e-9
+          ? dispatchQtyParsed <= maxDispatchPrepareQty + 1e-6 &&
+            Math.abs(dispatchQtyParsed - existingDraftQty) > 1e-6
+          : dispatchQtyParsed < headroomToPrepare - 1e-6) &&
       dispatchQtyParsed <= maxDispatchPrepareQty + 1e-6 &&
       (!needsPartialDispatchAck || normalPartialDispatchAck),
   );
@@ -2735,7 +3059,7 @@ export function DispatchPage() {
       !noQtyBlocked &&
       selectableLines.length > 0 &&
       currentLine &&
-      headroomToPrepare > 1e-9 &&
+      (headroomToPrepare > 1e-9 || existingDraftQty > 1e-9) &&
       (!needsPartialDispatchAck || normalPartialDispatchAck),
   );
 
@@ -2747,10 +3071,21 @@ export function DispatchPage() {
   async function onDispatchFullPrepare() {
     if (dispatchSubmitLockRef.current || dispatching) return;
     if (!canDispatchFull) return;
-    const qty = headroomToPrepare;
-    if (!(qty > 1e-9)) return;
+    const targetQty = dispatchFullTargetQty({ existingDraftQty, headroomToPrepare });
+    if (!(targetQty > 1e-9)) return;
+
+    if (
+      primaryFinalizeDraftId != null &&
+      primaryFinalizeDraftId > 0 &&
+      existingDraftQty > 1e-9 &&
+      Math.abs(targetQty - existingDraftQty) <= 1e-6
+    ) {
+      await onFinalizeDraftDispatch(primaryFinalizeDraftId);
+      return;
+    }
+
     flushSync(() => {
-      setDispatchQtyStr(String(qty));
+      setDispatchQtyStr(String(targetQty));
     });
     shortcutHints.markFieldShortcutUsed("dispatchPrepare");
     await onDispatch();
@@ -4050,7 +4385,8 @@ export function DispatchPage() {
       <div className="grid gap-1.5">
         <OperationalContextSticky>
           <ErpWorkflowTrail navContext={dispatchNavContext} />
-          {(() => {
+          {!dispatchCompactMode
+            ? (() => {
             const eps = 1e-9;
             const so = selectedSo;
             const isNoQty = so?.orderType === "NO_QTY";
@@ -4221,9 +4557,12 @@ export function DispatchPage() {
                 </div>
               </>
             );
-          })()}
+          })()
+            : null}
         </OperationalContextSticky>
 
+        {!dispatchCompactMode ? (
+          <>
         {sp.get("mode") === "partial" && !fromNoQtySo ? (
           <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">
             Partial dispatch mode. Remaining qty will stay pending.
@@ -4340,9 +4679,101 @@ export function DispatchPage() {
             </div>
           </div>
         ) : null}
+          </>
+        ) : null}
       </div>
 
       <OperatorPageBody className="pb-0">
+        {dispatchCompactMode ? (
+          <>
+            <DispatchCompactExecutionPanel
+              soLabel={displaySalesOrderNo(
+                selectedSo?.id ?? focusSoId,
+                selectedSo?.docNo ?? focusSo?.docNo ?? null,
+              )}
+              customerName={
+                selectedSo?.customer?.name ??
+                selectedSo?.po?.customer?.name ??
+                focusSo?.customerName ??
+                "—"
+              }
+              totalReadyQty={sumDispatchCompactQueueQty(compactQueueRows)}
+              itemCount={compactQueueRows.length}
+              queue={compactQueueRows}
+              selectedItemId={currentLine?.itemId ?? null}
+              activeItemName={currentLine?.itemName ?? null}
+              activeReadyQty={headroomToPrepare}
+              dispatchQtyStr={dispatchQtyStr}
+              isPartialMode={isPartialMode}
+              dispatching={dispatching}
+              canDispatchFull={canDispatchFull}
+              canDispatchPartial={partialDispatchQtySubmit}
+              dispatchReadOnly={Boolean(selectedSo?.dispatchReadOnly)}
+              primaryFinalizeDraftId={primaryFinalizeDraftId}
+              draftQty={existingDraftQty}
+              lockingId={lockingId}
+              deletingId={deletingId}
+              error={error}
+              info={dispatchInfo}
+              onSelectItem={(itemId) => {
+                if (!selectedSo) return;
+                const row = compactQueueRows.find((r) => r.itemId === itemId);
+                if (!row) return;
+                applyCompactQueueSelection(selectedSo, row);
+              }}
+              onDispatchQtyChange={setDispatchQtyStr}
+              onDispatchFull={() => void onDispatchFullPrepare()}
+              onDispatchPartial={() => void onDispatch()}
+              onEnablePartial={() => {
+                setIsPartialMode(true);
+                resetDispatchQty();
+              }}
+              onDisablePartial={() => {
+                setIsPartialMode(false);
+                if (existingDraftQty > 1e-9) {
+                  setDispatchQtyStr(String(existingDraftQty));
+                } else if (headroomToPrepare > 1e-9) {
+                  setDispatchQtyStr(String(headroomToPrepare));
+                }
+              }}
+              onFinalizeDraft={() => {
+                if (primaryFinalizeDraftId != null) void onFinalizeDraftDispatch(primaryFinalizeDraftId);
+              }}
+              onDeleteDraft={() => {
+                if (primaryFinalizeDraftId != null) void onDeleteDraft(primaryFinalizeDraftId);
+              }}
+            />
+            {focusSoIdValid ? (
+              <details
+                className="mt-2 rounded border border-slate-200 bg-slate-50/80"
+                open={compactQueueComplete || undefined}
+                data-testid="dispatch-compact-history-accordion"
+              >
+                <summary className="cursor-pointer px-2 py-1.5 text-[11px] font-semibold text-slate-700">
+                  {compactQueueComplete ? "Dispatch History" : "Activity history"}
+                </summary>
+                <div className="border-t border-slate-200 bg-white px-2 py-2">
+                  {compactQueueComplete ? (
+                    <DispatchCompactHistoryPanel
+                      rows={compactDispatchHistoryRows}
+                      totalDispatched={compactDispatchHistoryTotal}
+                      registerHref={`/dispatch?salesOrderId=${focusSoId}#dispatch-page-history`}
+                    />
+                  ) : (
+                    <div className="max-h-48 overflow-auto px-1 py-1">
+                      <ActivityHistoryCard
+                        title=""
+                        density="compact"
+                        query={`module=DISPATCH&salesOrderId=${encodeURIComponent(String(focusSoId))}&limit=50`}
+                      />
+                    </div>
+                  )}
+                </div>
+              </details>
+            ) : null}
+          </>
+        ) : (
+          <>
         {/* Phase 1: "Create Next RS" CTA removed from Dispatch page. */}
         {error ? <div className="rounded border border-red-200 bg-red-50 px-2 py-1 text-[13px] text-red-800">{error}</div> : null}
         {dispatchInfo ? (
@@ -6590,6 +7021,9 @@ export function DispatchPage() {
       ) : null}
 
       <OperationalWorkspaceFooter className="max-w-full" sections={dispatchUnifiedFooterSections} />
+
+          </>
+        )}
 
       </OperatorPageBody>
     </PageContainer>

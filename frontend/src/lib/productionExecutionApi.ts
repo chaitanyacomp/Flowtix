@@ -74,6 +74,11 @@ export interface CarryForwardPendingRow {
   createdAt: string;
 }
 
+export type ProductionExecutionActionResponse = {
+  successMessage?: string | null;
+  outcome?: string;
+};
+
 export function blockReasonDisplayLabel(reason: string): string {
   return reason.replace(/_/g, " ").toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
 }
@@ -85,15 +90,15 @@ export async function fetchProductionExecution(workOrderId: number): Promise<Pro
 export async function blockProductionExecutionApi(
   workOrderId: number,
   body: { blockReason: ProductionBlockReason; remarks?: string | null },
-) {
-  return apiFetch(`/api/production/work-orders/${workOrderId}/production-execution/block`, {
+): Promise<ProductionExecutionActionResponse> {
+  return apiFetch<ProductionExecutionActionResponse>(`/api/production/work-orders/${workOrderId}/production-execution/block`, {
     method: "POST",
     body: JSON.stringify(body),
   });
 }
 
-export async function resumeProductionExecutionApi(workOrderId: number) {
-  return apiFetch(`/api/production/work-orders/${workOrderId}/production-execution/resume`, {
+export async function resumeProductionExecutionApi(workOrderId: number): Promise<ProductionExecutionActionResponse> {
+  return apiFetch<ProductionExecutionActionResponse>(`/api/production/work-orders/${workOrderId}/production-execution/resume`, {
     method: "POST",
     body: JSON.stringify({}),
   });
@@ -107,8 +112,8 @@ export async function finishProductionExecutionApi(
     resolutionReason?: ProductionResolutionReason;
     remarks?: string | null;
   },
-) {
-  return apiFetch(`/api/production/work-orders/${workOrderId}/production-execution/finish`, {
+): Promise<ProductionExecutionActionResponse> {
+  return apiFetch<ProductionExecutionActionResponse>(`/api/production/work-orders/${workOrderId}/production-execution/finish`, {
     method: "POST",
     body: JSON.stringify(body),
   });

@@ -79,6 +79,7 @@ const { evaluateWoPrepareReadiness } = require("../services/materialPlanningServ
 const { computeFgGapLinesForSalesOrder } = require("../services/rmCheckService");
 const {
   buildProductionRmReadiness,
+  buildProductionRmReadinessDebugPayload,
   assertProductionRmReadiness,
   issueRmForApprovedProductionFromPmrLocations,
   issueRmStockForProductionBatchAtProductionLocations,
@@ -1375,6 +1376,12 @@ productionRouter.get(
         throw err;
       }
       const data = await buildProductionRmReadiness(prisma, workOrderLineId);
+      const includeDebug =
+        String(req.query.debug ?? "").toLowerCase() === "1" ||
+        String(req.query.debug ?? "").toLowerCase() === "true";
+      if (includeDebug) {
+        data.debug = await buildProductionRmReadinessDebugPayload(prisma, workOrderLineId, data);
+      }
       return res.json(data);
     } catch (e) {
       return next(e);

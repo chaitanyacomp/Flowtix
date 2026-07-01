@@ -4,17 +4,20 @@ const {
   floorFgQty,
   productionQtyExceedsRmAllowed,
   resolveReadinessGate,
+  hasCompletedStoreIssueTransfer,
   resolveWorkOrderLinePlannedQty,
   resolveProductionBatchRmCap,
   SUBMITTED_PMR_STATUSES,
   aggregatePmrRequiredByItem,
   computeMaxProducibleFromPmrBasis,
 } = require("../../src/services/productionRmReadinessService");
+const { loadGrossIssuedByWorkOrder } = require("../../src/services/materialReturnService");
 
 describe("productionRmReadinessService", () => {
   it("SUBMITTED_PMR_STATUSES includes store-issue states", () => {
     assert.ok(SUBMITTED_PMR_STATUSES.includes("REQUESTED"));
     assert.ok(SUBMITTED_PMR_STATUSES.includes("PARTIALLY_ISSUED"));
+    assert.ok(SUBMITTED_PMR_STATUSES.includes("SHORT_ISSUE_ACCEPTED"));
     assert.ok(!SUBMITTED_PMR_STATUSES.includes("DRAFT"));
   });
 
@@ -73,17 +76,22 @@ describe("productionRmReadinessService", () => {
     assert.equal(g.gate, "WAITING_STORE_ISSUE");
   });
 
-  it("resolveReadinessGate - partial when some issued", () => {
-    const g = resolveReadinessGate([{ status: "PARTIALLY_ISSUED" }], 100);
-    assert.equal(g.gate, "PARTIAL_READY");
+  it("resolveReadinessGate - waiting release when some issued but not released", () => {
+    const g = resolveReadinessGate([{ status: "PARTIALLY_ISSUED" }], 100, false);
+    assert.equal(g.gate, "WAITING_RELEASE_TO_PRODUCTION");
   });
 
-  it("resolveReadinessGate - fully issued when all PMRs FULLY_ISSUED", () => {
-    const g = resolveReadinessGate([{ status: "FULLY_ISSUED" }, { status: "FULLY_ISSUED" }], 500);
-    assert.equal(g.gate, "FULLY_ISSUED_READY");
+  it("resolveReadinessGate - ready for production when released", () => {
+    const g = resolveReadinessGate([{ status: "PARTIALLY_ISSUED" }], 100, true);
+    assert.equal(g.gate, "READY_FOR_PRODUCTION");
   });
 
-  it("resolveReadinessGate - FULLY_ISSUED_READY when lines meet required qty even if PMR status is PARTIALLY_ISSUED", () => {
+  it("resolveReadinessGate - ready for production when fully issued and released", () => {
+    const g = resolveReadinessGate([{ status: "FULLY_ISSUED" }, { status: "FULLY_ISSUED" }], 500, true);
+    assert.equal(g.gate, "READY_FOR_PRODUCTION");
+  });
+
+  it("resolveReadinessGate - waiting release when lines meet required but not released", () => {
     const g = resolveReadinessGate(
       [
         {
@@ -95,11 +103,52 @@ describe("productionRmReadinessService", () => {
         },
       ],
       17.892,
+      false,
     );
-    assert.equal(g.gate, "FULLY_ISSUED_READY");
+    assert.equal(g.gate, "WAITING_RELEASE_TO_PRODUCTION");
   });
 
-  it("resolveReadinessGate - PARTIAL_READY when a line is still short", () => {
+  it("resolveReadinessGate - ready when store issue is complete and PMR-linked material issue exists", () => {
+    const pmrs = [
+      {
+        status: "FULLY_ISSUED",
+        lines: [{ requiredQty: "10", issuedQty: "10", waivedQty: "0" }],
+        materialIssueNotes: [{ id: 9001, docNo: "MIN-26-0001" }],
+      },
+    ];
+    const g = resolveReadinessGate(pmrs, 10, false);
+    assert.equal(hasCompletedStoreIssueTransfer(pmrs), true);
+    assert.equal(g.gate, "READY_FOR_PRODUCTION");
+    assert.equal(g.releasedByIssueTransfer, true);
+  });
+
+  it("resolveReadinessGate - ready when short issue is accepted and material issue exists", () => {
+    const pmrs = [
+      {
+        status: "SHORT_ISSUE_ACCEPTED",
+        lines: [{ requiredQty: "10", issuedQty: "8", waivedQty: "2" }],
+        materialIssueNotes: [{ id: 9002, docNo: "MIN-26-0002" }],
+      },
+    ];
+    const g = resolveReadinessGate(pmrs, 8, false);
+    assert.equal(g.gate, "READY_FOR_PRODUCTION");
+    assert.equal(g.releasedByIssueTransfer, true);
+  });
+
+  it("resolveReadinessGate - does not use material issue transfer when PMR is still short", () => {
+    const pmrs = [
+      {
+        status: "PARTIALLY_ISSUED",
+        lines: [{ requiredQty: "10", issuedQty: "8", waivedQty: "0" }],
+        materialIssueNotes: [{ id: 9003, docNo: "MIN-26-0003" }],
+      },
+    ];
+    const g = resolveReadinessGate(pmrs, 8, false);
+    assert.equal(hasCompletedStoreIssueTransfer(pmrs), false);
+    assert.equal(g.gate, "WAITING_RELEASE_TO_PRODUCTION");
+  });
+
+  it("resolveReadinessGate - waiting release when a line is still short", () => {
     const g = resolveReadinessGate(
       [
         {
@@ -108,8 +157,32 @@ describe("productionRmReadinessService", () => {
         },
       ],
       8,
+      false,
     );
-    assert.equal(g.gate, "PARTIAL_READY");
+    assert.equal(g.gate, "WAITING_RELEASE_TO_PRODUCTION");
+  });
+
+  it("loadGrossIssuedByWorkOrder includes SHORT_ISSUE_ACCEPTED PMRs", async () => {
+    let seenStatusFilter = [];
+    const db = {
+      productionMaterialRequest: {
+        findMany: async (args) => {
+          seenStatusFilter = args.where.status.in;
+          return [
+            {
+              status: "SHORT_ISSUE_ACCEPTED",
+              lines: [{ itemId: 10, issuedQty: "8" }],
+            },
+          ];
+        },
+      },
+      materialIssueNote: {
+        findMany: async () => [],
+      },
+    };
+    const issued = await loadGrossIssuedByWorkOrder(db, 260004);
+    assert.ok(seenStatusFilter.includes("SHORT_ISSUE_ACCEPTED"));
+    assert.equal(issued.get(10), 8);
   });
 
   it("aggregatePmrRequiredByItem sums submitted PMR lines", () => {

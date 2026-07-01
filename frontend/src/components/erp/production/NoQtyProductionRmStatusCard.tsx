@@ -115,7 +115,7 @@ export function NoQtyProductionRmStatusCard({
         Store must issue required RM before production can start.
         {workOrderNo ? ` Work order: ${workOrderNo}` : ""}
       </p>
-      {data.gate === "PARTIAL_READY" ? (
+      {data.gate === "READY_FOR_PRODUCTION" ? (
         <p className="mt-1 text-xs font-medium text-amber-900">
           Partially issued — production entry is capped until remaining RM arrives.
         </p>

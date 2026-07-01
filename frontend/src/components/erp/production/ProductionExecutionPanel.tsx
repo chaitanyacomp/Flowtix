@@ -249,15 +249,18 @@ export function ProductionExecutionPanel({
   }
 
   async function handlePause() {
-    const { ok } = await runAction(() =>
-      blockProductionExecutionApi(workOrderId, {
-        blockReason: pauseReason,
-        remarks: pauseRemarks.trim() || null,
-      }),
+    const { ok } = await runAction(
+      () =>
+        blockProductionExecutionApi(workOrderId, {
+          blockReason: pauseReason,
+          remarks: pauseRemarks.trim() || null,
+        }),
+      { skipParentRefresh: Boolean(onExecutionClosed) },
     );
     if (ok) {
       autoEvaluatedRef.current = null;
       toast.showSuccess(formatProductionWorkflowSuccessMessage("PAUSE", summary));
+      await notifyExecutionClosed("PAUSE");
     }
   }
 
@@ -297,7 +300,7 @@ export function ProductionExecutionPanel({
 
   return (
     <>
-      <div className="rounded-lg border border-slate-200 bg-slate-50/80 p-3 text-sm space-y-2">
+      <div className="rounded-lg border border-slate-200 bg-slate-50/80 p-3 text-[13px] space-y-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
             <div className="font-semibold text-slate-800">Production status</div>
@@ -352,21 +355,21 @@ export function ProductionExecutionPanel({
 
         {showResolutionPanel && summary && !isDone ? (
           <div
-            className="space-y-2 rounded border border-violet-300 bg-white p-2.5"
+            className="sticky bottom-0 z-10 space-y-2 rounded border border-violet-300 bg-white/95 p-2.5 shadow-[0_-4px_12px_rgba(15,23,42,0.08)] backdrop-blur-sm"
             data-testid="production-completion-dialog"
           >
             <div>
               <div className="text-[13px] font-semibold text-slate-900">
                 {showPausedShortfallDecision ? "Production paused with remaining qty" : "Produced less than WO quantity"}
               </div>
-              <p className="text-[11px] text-slate-600">
+              <p className="text-[12px] text-slate-600">
                 {showPausedShortfallDecision
                   ? "Resume to keep producing, or close the WO by waiving or carrying forward the remainder."
                   : "Choose how to handle the remaining qty."}
               </p>
             </div>
 
-            <dl className="grid grid-cols-3 gap-1.5 rounded border border-slate-200 bg-slate-50 px-2 py-1.5 text-[11px]">
+            <dl className="grid grid-cols-3 gap-1.5 rounded border border-slate-200 bg-slate-50 px-2 py-1.5 text-[12px]">
               <div>
                 <dt className="text-slate-500">Planned</dt>
                 <dd className="font-bold tabular-nums text-slate-900">{summary.plannedQty}</dd>

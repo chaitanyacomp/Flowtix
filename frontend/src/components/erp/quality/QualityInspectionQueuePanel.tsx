@@ -26,7 +26,7 @@ export function QualityInspectionQueuePanel({ rows, activeRowId, onSelectRow, lo
       {loading ? (
         <p className="text-[11px] text-slate-600">Loading quality queue…</p>
       ) : rows.length === 0 ? (
-        <p className="text-[11px] text-slate-600">No pending quality inspections.</p>
+        <p className="text-[11px] text-slate-600">No pending QC inspections.</p>
       ) : (
         <ul className="max-h-[min(360px,42vh)] space-y-1 overflow-y-auto">
           {rows.map((row) => {

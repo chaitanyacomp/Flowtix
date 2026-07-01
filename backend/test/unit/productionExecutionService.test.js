@@ -134,6 +134,16 @@ function createFinishMockTx({
     },
     productionRmReturnPending: {
       count: async () => openReturnPendingCount,
+      findMany: async () =>
+        openReturnPendingCount > 0
+          ? [
+              {
+                id: 1,
+                requestedQty: "3",
+                item: { itemName: "PP", unit: "Kg" },
+              },
+            ]
+          : [],
     },
   };
 
@@ -276,7 +286,11 @@ describe("productionExecutionService", () => {
           { shortfallOutcome: "WAIVE_BALANCE", resolutionReason: "MANAGEMENT_DECISION" },
           { actorUserId: null, actorRole: null },
         ),
-      (err) => err.code === "RM_RETURN_PENDING_STORE_ACK_REQUIRED" && err.statusCode === 409,
+      (err) =>
+        err.code === "RM_RETURN_PENDING_STORE_ACK_REQUIRED" &&
+        err.statusCode === 409 &&
+        /RM Return Pending/.test(err.message) &&
+        /PP — 3 Kg/.test(err.message),
     );
   });
 

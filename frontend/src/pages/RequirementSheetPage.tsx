@@ -280,11 +280,12 @@ const PLAN_EPS = 1e-6;
 
 /**
  * Draft: matches backend `productionRequiredQty`.
- * NO_QTY: last shortage + new requirement (same-SO prior usable stock is informational for dispatch only).
+ * NO_QTY: carry-forward applies only when the current requirement is positive.
  */
-function computeDraftProductionRequired(line: SheetLine, isNoQtyOrder: boolean): number {
+export function computeDraftProductionRequired(line: SheetLine, isNoQtyOrder: boolean): number {
   const newWo = safeNum(line.newWoQty ?? line.requirementQty);
   if (isNoQtyOrder) {
+    if (!(newWo > PLAN_EPS)) return 0;
     const short = safeNum(line.shortfallQty);
     return Math.max(0, Math.round((short + newWo) * 1000) / 1000);
   }

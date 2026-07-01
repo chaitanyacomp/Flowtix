@@ -3,7 +3,7 @@
  */
 import * as React from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { ArrowLeft, PackageMinus, Send, Trash2 } from "lucide-react";
+import { ArrowLeft, PackageMinus, Send, Trash2, Inbox } from "lucide-react";
 import { RmWastageModal } from "../components/erp/RmWastageModal";
 import { apiFetch } from "../services/api";
 import { Button } from "../components/ui/button";
@@ -54,6 +54,19 @@ type ReturnableResponse = {
   defaultFromLocationId: number | null;
   defaultToLocationId: number | null;
   lines: ReturnableLine[];
+  disposition?: {
+    finalized: boolean;
+    lines: Array<{
+      itemId: number;
+      itemName: string;
+      unit: string;
+      issuedQty: number;
+      consumedQty: number;
+      returnedQty: number;
+      wastageQty: number;
+      returnableQty: number;
+    }>;
+  };
 };
 
 type ContextResponse = {
@@ -83,6 +96,20 @@ type HistoryEntry = {
   lines: Array<{ itemName: string; qty: number; unit: string }>;
 };
 
+type PendingReturnRow = {
+  id: number;
+  productionReportId: number;
+  workOrderId: number;
+  workOrderNo: string;
+  itemId: number;
+  itemName: string;
+  unit: string;
+  requestedQty: number;
+  status: string;
+  createdAt: string;
+  remarks: string | null;
+};
+
 function fmtQty(n: number, unit?: string) {
   const u = unit?.trim() ? ` ${unit}` : "";
   return `${n.toLocaleString(undefined, { maximumFractionDigits: 3 })}${u}`;
@@ -97,13 +124,17 @@ export function ProductionRmReturnsPage() {
   const { showSuccess, showError } = useToast();
   const urlWoId = parsePositiveIntParam(searchParams.get("workOrderId"));
   const urlPmrId = parsePositiveIntParam(searchParams.get("pmrId"));
+  const urlPendingId = parsePositiveIntParam(searchParams.get("pendingId"));
   const [ctx, setCtx] = React.useState<ContextResponse | null>(null);
   const [history, setHistory] = React.useState<HistoryEntry[]>([]);
+  const [pendingReturns, setPendingReturns] = React.useState<PendingReturnRow[]>([]);
   const [wastageLine, setWastageLine] = React.useState<ReturnableLine | null>(null);
   const [returnable, setReturnable] = React.useState<ReturnableResponse | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [loadingReturnable, setLoadingReturnable] = React.useState(false);
+  const [loadingPending, setLoadingPending] = React.useState(false);
   const [submitting, setSubmitting] = React.useState(false);
+  const [receivingPendingId, setReceivingPendingId] = React.useState<number | null>(null);
   const [historyLoadFailed, setHistoryLoadFailed] = React.useState(false);
 
   const [workOrderId, setWorkOrderId] = React.useState<number | "">(urlWoId ?? "");
@@ -112,6 +143,53 @@ export function ProductionRmReturnsPage() {
   const [toLocationId, setToLocationId] = React.useState<number | "">("");
   const [remarks, setRemarks] = React.useState("");
   const [draftLines, setDraftLines] = React.useState<ReturnLineDraft[]>([]);
+
+  async function loadPendingReturns() {
+    setLoadingPending(true);
+    try {
+      const rows = await apiFetch<PendingReturnRow[]>("/api/production-material-returns/pending?status=PENDING");
+      setPendingReturns(Array.isArray(rows) ? rows : []);
+    } catch (e) {
+      logRmReturnsApiError("/api/production-material-returns/pending", e);
+      setPendingReturns([]);
+    } finally {
+      setLoadingPending(false);
+    }
+  }
+
+  async function receivePendingReturn(row: PendingReturnRow) {
+    if (typeof fromLocationId !== "number" || typeof toLocationId !== "number") {
+      showError("Select from production and return-to-store locations before receiving.");
+      return;
+    }
+    setReceivingPendingId(row.id);
+    try {
+      const res = await apiFetch<{ materialReturnNote?: { docNo?: string | null } }>(
+        `/api/production-material-returns/pending/${row.id}/receive`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            fromLocationId,
+            toLocationId,
+            remarks: remarks.trim() || `Received production report RM return for ${row.workOrderNo}`,
+          }),
+        },
+      );
+      showSuccess(
+        `Received ${row.itemName} ${fmtQty(row.requestedQty, row.unit)}${res.materialReturnNote?.docNo ? ` (${res.materialReturnNote.docNo})` : ""}.`,
+      );
+      await loadPendingReturns();
+      await loadPageBootstrap();
+      if (row.workOrderId) {
+        setWorkOrderId(row.workOrderId);
+        await loadReturnable(row.workOrderId, pmrId);
+      }
+    } catch (e) {
+      showError(e instanceof Error ? e.message : "Could not receive RM return");
+    } finally {
+      setReceivingPendingId(null);
+    }
+  }
 
   async function loadReturnable(woId: number, pmr?: number | "") {
     setLoadingReturnable(true);
@@ -175,6 +253,7 @@ export function ProductionRmReturnsPage() {
       setLoading(false);
     }
     void loadHistory();
+    void loadPendingReturns();
   }
 
   React.useEffect(() => {
@@ -185,6 +264,12 @@ export function ProductionRmReturnsPage() {
     if (urlWoId) setWorkOrderId(urlWoId);
     if (urlPmrId) setPmrId(urlPmrId);
   }, [urlWoId, urlPmrId]);
+
+  React.useEffect(() => {
+    if (!urlPendingId || pendingReturns.length === 0) return;
+    const row = pendingReturns.find((p) => p.id === urlPendingId);
+    if (row) setWorkOrderId(row.workOrderId);
+  }, [urlPendingId, pendingReturns]);
 
   React.useEffect(() => {
     if (urlWoId || urlPmrId) {
@@ -276,6 +361,7 @@ export function ProductionRmReturnsPage() {
   }, [ctx?.workOrders, workOrderId, returnable?.workOrderNo]);
 
   const selectedWo = woOptions.find((w) => w.id === workOrderId);
+  const rmDispositionFinalized = Boolean(returnable?.disposition?.finalized);
   const pmrOptions = React.useMemo(() => {
     const base = selectedWo?.pmrs ?? [];
     if (typeof pmrId !== "number") return base;
@@ -306,6 +392,91 @@ export function ProductionRmReturnsPage() {
         <p className="text-sm text-slate-600">Loading…</p>
       ) : (
         <div className="flex flex-col gap-4">
+          {(loadingPending || pendingReturns.length > 0) && (
+            <section
+              id="production-report-rm-return-pending"
+              className="rounded-lg border border-amber-300 bg-amber-50/90 p-3 shadow-sm"
+            >
+              <h2 className="flex items-center gap-1.5 text-sm font-semibold text-amber-950">
+                <Inbox className="h-4 w-4" />
+                RM Return Pending — from Production Report
+              </h2>
+              <p className="mt-0.5 text-xs text-amber-900">
+                Waiting for Store to receive returned material. Receiving here updates store stock and unblocks production.
+              </p>
+              {loadingPending ? (
+                <p className="mt-2 text-xs text-amber-900">Loading pending returns…</p>
+              ) : pendingReturns.length === 0 ? (
+                <p className="mt-2 text-xs text-amber-900">No pending production-report returns.</p>
+              ) : (
+                <div className="mt-2 space-y-2">
+                  {pendingReturns.map((row) => {
+                    const highlighted = urlPendingId === row.id;
+                    return (
+                      <div
+                        key={row.id}
+                        className={`rounded-md border bg-white p-2.5 ${highlighted ? "border-amber-500 ring-2 ring-amber-300" : "border-amber-200"}`}
+                      >
+                        <div className="flex flex-wrap items-start justify-between gap-2">
+                          <div className="text-[13px] text-slate-900">
+                            <div className="font-semibold">
+                              {row.itemName} — {fmtQty(row.requestedQty, row.unit)}
+                            </div>
+                            <div className="text-xs text-slate-600">
+                              WO {row.workOrderNo}
+                              {row.remarks ? ` · ${row.remarks}` : ""}
+                            </div>
+                          </div>
+                          <Button
+                            type="button"
+                            size="sm"
+                            className="h-8 text-[12px]"
+                            disabled={receivingPendingId === row.id}
+                            onClick={() => void receivePendingReturn(row)}
+                          >
+                            {receivingPendingId === row.id ? "Receiving…" : "Receive RM Return"}
+                          </Button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <label className="grid gap-0.5 text-[11px]">
+                      <span className="font-medium text-amber-950">From production</span>
+                      <select
+                        className="erp-flow-filter-input h-8 rounded-md border border-amber-200 bg-white px-2 text-[13px]"
+                        value={fromLocationId === "" ? "" : String(fromLocationId)}
+                        onChange={(e) => setFromLocationId(e.target.value ? Number(e.target.value) : "")}
+                      >
+                        <option value="">Select…</option>
+                        {(ctx?.fromLocations ?? []).map((l) => (
+                          <option key={l.id} value={l.id}>
+                            {l.locationName}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="grid gap-0.5 text-[11px]">
+                      <span className="font-medium text-amber-950">Return to store</span>
+                      <select
+                        className="erp-flow-filter-input h-8 rounded-md border border-amber-200 bg-white px-2 text-[13px]"
+                        value={toLocationId === "" ? "" : String(toLocationId)}
+                        onChange={(e) => setToLocationId(e.target.value ? Number(e.target.value) : "")}
+                      >
+                        <option value="">Select…</option>
+                        {(ctx?.toLocations ?? []).map((l) => (
+                          <option key={l.id} value={l.id}>
+                            {l.locationName}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                </div>
+              )}
+            </section>
+          )}
+
           <ErpKpiStrip>
             <ErpKpiSegment>
               <ErpKpiLabel>Direction</ErpKpiLabel>
@@ -368,7 +539,7 @@ export function ProductionRmReturnsPage() {
                       <th className="px-2 py-1 text-right">Returned</th>
                       <th className="px-2 py-1 text-right">Unused</th>
                       <th className="px-2 py-1 text-right">Returnable</th>
-                      <th className="px-2 py-1">Actions</th>
+                      {!rmDispositionFinalized ? <th className="px-2 py-1">Actions</th> : null}
                     </tr>
                   </thead>
                   <tbody>
@@ -384,6 +555,7 @@ export function ProductionRmReturnsPage() {
                         <td className="px-2 py-0.5 text-right tabular-nums">{fmtQty(ln.returnedQty, ln.unit)}</td>
                         <td className="px-2 py-0.5 text-right tabular-nums">{fmtQty(unused, ln.unit)}</td>
                         <td className="px-2 py-0.5 text-right tabular-nums font-medium">{fmtQty(ln.returnableQty, ln.unit)}</td>
+                        {!rmDispositionFinalized ? (
                         <td className="px-2 py-0.5">
                           <div className="flex flex-wrap gap-1">
                             <Button
@@ -408,6 +580,7 @@ export function ProductionRmReturnsPage() {
                             </Button>
                           </div>
                         </td>
+                        ) : null}
                       </tr>
                     );
                     })}
@@ -417,8 +590,39 @@ export function ProductionRmReturnsPage() {
             ) : typeof workOrderId === "number" ? (
               <p className="mt-2 text-xs text-slate-500">No returnable RM for this work order.</p>
             ) : null}
+            {returnable?.disposition?.finalized && returnable.disposition.lines.length > 0 ? (
+              <div className="mt-2 rounded-md border border-emerald-200 bg-emerald-50/90 px-2 py-2">
+                <div className="text-xs font-semibold text-emerald-950">RM disposition finalized</div>
+                <p className="mt-0.5 text-[11px] text-emerald-900">
+                  Returned and wastage recorded from Production Report. No further Return / Wastage actions required.
+                </p>
+                <div className="mt-1 overflow-x-auto">
+                  <table className="w-full text-[11px]">
+                    <thead>
+                      <tr className="text-left text-emerald-900">
+                        <th className="px-1 py-0.5">RM Item</th>
+                        <th className="px-1 py-0.5 text-right">Returned</th>
+                        <th className="px-1 py-0.5 text-right">Wastage</th>
+                        <th className="px-1 py-0.5 text-right">Returnable</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {returnable.disposition.lines.map((ln) => (
+                        <tr key={ln.itemId} className="border-t border-emerald-100 text-emerald-950">
+                          <td className="px-1 py-0.5">{ln.itemName}</td>
+                          <td className="px-1 py-0.5 text-right tabular-nums">{fmtQty(ln.returnedQty, ln.unit)}</td>
+                          <td className="px-1 py-0.5 text-right tabular-nums">{fmtQty(ln.wastageQty, ln.unit)}</td>
+                          <td className="px-1 py-0.5 text-right tabular-nums">{fmtQty(ln.returnableQty, ln.unit)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            ) : null}
           </section>
 
+          {!rmDispositionFinalized ? (
           <form onSubmit={onSubmit} className="rounded-lg border border-slate-200 bg-white p-3">
             <h2 className="flex items-center gap-1.5 text-sm font-semibold text-slate-900">
               <PackageMinus className="h-4 w-4" />
@@ -506,6 +710,7 @@ export function ProductionRmReturnsPage() {
               Return to store
             </Button>
           </form>
+          ) : null}
 
           <section className="rounded-lg border border-slate-200 bg-white p-3">
             <h2 className="text-sm font-semibold text-slate-900">3. History</h2>

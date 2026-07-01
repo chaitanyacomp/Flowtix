@@ -77,6 +77,17 @@ export type QualityQueuePendingQcInput = {
   pendingQty: number;
 };
 
+export type QcProductionFifoInput = {
+  productionId: number;
+  pendingQty: number;
+  date?: string | null;
+  createdAt?: string | null;
+};
+
+export type QcPostSaveAdvance =
+  | { kind: "stay"; productionId: number }
+  | { kind: "advance"; productionId: number | null };
+
 export type QualityQueueDispositionInput = {
   id: number;
   kind: "REWORK_PENDING" | "REWORK_SUPERVISOR" | "HOLD_DECISION";
@@ -125,6 +136,33 @@ function queueKindPriority(kind: QualityQueueRowKind): number {
     default:
       return 9;
   }
+}
+
+function timeValue(raw: string | null | undefined): number {
+  if (!raw) return Number.POSITIVE_INFINITY;
+  const t = new Date(raw).getTime();
+  return Number.isFinite(t) ? t : Number.POSITIVE_INFINITY;
+}
+
+export function sortPendingQcByProductionFifo<T extends QcProductionFifoInput>(rows: readonly T[]): T[] {
+  return [...rows]
+    .filter((r) => Number(r.pendingQty ?? 0) > EPS)
+    .sort((a, b) => {
+      const ta = Math.min(timeValue(a.date), timeValue(a.createdAt));
+      const tb = Math.min(timeValue(b.date), timeValue(b.createdAt));
+      if (ta !== tb) return ta - tb;
+      return Number(a.productionId ?? 0) - Number(b.productionId ?? 0);
+    });
+}
+
+export function resolvePostQcSaveAdvance<T extends QcProductionFifoInput>(args: {
+  savedProductionId: number;
+  freshPending: readonly T[];
+}): QcPostSaveAdvance {
+  const fifo = sortPendingQcByProductionFifo(args.freshPending);
+  const same = fifo.find((r) => Number(r.productionId) === Number(args.savedProductionId));
+  if (same) return { kind: "stay", productionId: same.productionId };
+  return { kind: "advance", productionId: fifo[0]?.productionId ?? null };
 }
 
 export function buildQualityQueueRows(input: {

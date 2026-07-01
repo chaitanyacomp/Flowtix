@@ -7,6 +7,7 @@ const { prisma } = require("../utils/prisma");
 const { getApprovedProducedQtyByWorkOrderLineIds } = require("./productionMetrics");
 const { assertRegularProductionRmReadiness } = require("./productionRmReadinessService");
 const auditLog = require("./auditLog");
+const { assertNoOpenProductionRmReturnPending } = require("./productionRmReturnPendingGuard");
 
 const EPS = 1e-6;
 
@@ -280,17 +281,7 @@ async function assertProductionReportConfirmedForWorkOrder(tx, workOrderId) {
 }
 
 async function assertNoOpenProductionRmReturnPendingForWorkOrder(tx, workOrderId) {
-  const count = await tx.productionRmReturnPending.count({
-    where: { workOrderId, status: "PENDING" },
-  });
-  if (count > 0) {
-    const err = new Error("Store must acknowledge pending RM returns before closing the work order.");
-    err.statusCode = 409;
-    err.code = "RM_RETURN_PENDING_STORE_ACK_REQUIRED";
-    err.pendingReturnCount = count;
-    throw err;
-  }
-  return true;
+  return assertNoOpenProductionRmReturnPending(tx, workOrderId);
 }
 
 /**

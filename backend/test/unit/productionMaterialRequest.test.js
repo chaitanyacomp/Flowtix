@@ -16,9 +16,10 @@ describe("productionMaterialRequestService helpers", () => {
     assert.equal(prefixForDocType(DocType.PRODUCTION_MATERIAL_REQUEST), "PMR");
   });
 
-  it("computes pending qty from required minus issued", () => {
+  it("computes pending qty from required minus issued and waived", () => {
     assert.equal(pendingQty({ requiredQty: 100, issuedQty: 70 }), 30);
     assert.equal(pendingQty({ requiredQty: 50, issuedQty: 50 }), 0);
+    assert.equal(pendingQty({ requiredQty: 7.02, issuedQty: 7, waivedQty: 0.02 }), 0);
   });
 
   it("store issue statuses include REQUESTED and PARTIALLY_ISSUED", () => {

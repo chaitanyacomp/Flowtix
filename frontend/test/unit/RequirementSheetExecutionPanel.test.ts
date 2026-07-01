@@ -54,7 +54,7 @@ describe("RequirementSheetExecutionPanel layout", () => {
   });
 
   it("splits placement into suggested and custom create actions", () => {
-    expect(panelSource).toContain("Create Suggested WO");
+    expect(panelSource).toContain("Create Suggested WOs");
     expect(panelSource).toContain("Create Custom WO");
     expect(panelSource).toContain('data-testid="execution-create-suggested-wo"');
     expect(panelSource).toContain('data-testid="execution-create-custom-wo"');

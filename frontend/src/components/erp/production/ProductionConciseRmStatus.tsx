@@ -17,6 +17,7 @@ type Props = {
   onLoadingChange?: (loading: boolean) => void;
   className?: string;
   showControlCenterLink?: boolean;
+  initialData?: ProductionRmReadiness | null;
 };
 
 const TONE_CLASS: Record<ReturnType<typeof productionConciseRmTone>, string> = {
@@ -33,8 +34,12 @@ export function ProductionConciseRmStatus({
   onLoadingChange,
   className,
   showControlCenterLink = true,
+  initialData = null,
 }: Props) {
-  const [data, setData] = React.useState<ProductionRmReadiness | null>(null);
+  const initialDataMatchesLine = initialData?.workOrderLineId === workOrderLineId;
+  const [data, setData] = React.useState<ProductionRmReadiness | null>(
+    initialDataMatchesLine ? initialData : null,
+  );
   const [loading, setLoading] = React.useState(false);
   const [err, setErr] = React.useState<string | null>(null);
 
@@ -46,12 +51,20 @@ export function ProductionConciseRmStatus({
       return;
     }
     let cancelled = false;
-    setLoading(true);
-    onLoadingChange?.(true);
-    onLoaded?.(null);
+    const seeded = initialData?.workOrderLineId === workOrderLineId ? initialData : null;
+    if (seeded) {
+      setData(seeded);
+      setLoading(false);
+      onLoaded?.(seeded);
+      onLoadingChange?.(false);
+    } else {
+      setLoading(true);
+      onLoadingChange?.(true);
+      onLoaded?.(null);
+    }
     setErr(null);
     apiFetch<ProductionRmReadiness | { skipped: boolean }>(
-      `/api/production/work-order-lines/${workOrderLineId}/rm-readiness`,
+      `/api/production/work-order-lines/${workOrderLineId}/rm-readiness?fresh=${Date.now()}`,
     )
       .then((res) => {
         if (cancelled) return;
@@ -80,7 +93,7 @@ export function ProductionConciseRmStatus({
       cancelled = true;
       onLoadingChange?.(false);
     };
-  }, [workOrderLineId, refreshKey, onLoaded, onLoadingChange]);
+  }, [workOrderLineId, refreshKey, initialData, onLoaded, onLoadingChange]);
 
   if (workOrderLineId <= 0) return null;
 

@@ -59,7 +59,7 @@ describe("regularSoOperationalGuidance", () => {
 
   it("readinessBlocksProduction delegates to RM readiness gate", () => {
     expect(readinessBlocksProduction(baseReadiness({ gate: "NO_PMR" }))).toBe(true);
-    expect(readinessBlocksProduction(baseReadiness({ gate: "FULLY_ISSUED_READY" }))).toBe(false);
+    expect(readinessBlocksProduction(baseReadiness({ gate: "READY_FOR_PRODUCTION" }))).toBe(false);
     expect(readinessBlocksProduction(null)).toBe(false);
   });
 

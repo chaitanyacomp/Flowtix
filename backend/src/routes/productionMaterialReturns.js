@@ -16,6 +16,7 @@ const {
 const {
   listProductionRmReturnPending,
   receiveProductionRmReturnPending,
+  buildRmDispositionSummaryForWorkOrder,
 } = require("../services/productionWorkOrderReportService");
 const {
   WASTAGE_REASON_LABELS,
@@ -115,7 +116,8 @@ productionMaterialReturnRouter.get(
         fromLocationId: fromLocationId && Number.isFinite(fromLocationId) ? fromLocationId : null,
         toLocationId: toLocationId && Number.isFinite(toLocationId) ? toLocationId : null,
       });
-      return res.json(data);
+      const disposition = await buildRmDispositionSummaryForWorkOrder(prisma, workOrderId);
+      return res.json({ ...data, disposition });
     } catch (e) {
       return next(e);
     }

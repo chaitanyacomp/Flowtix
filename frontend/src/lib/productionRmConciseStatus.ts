@@ -8,7 +8,10 @@ export function deriveProductionConciseRmLabel(
 ): ProductionConciseRmLabel | null {
   if (!data) return null;
   if (data.bomMissing) return "WAITING RM";
-  if (data.gate === "PARTIAL_READY") return "PARTIAL";
+  if (data.gate === "READY_FOR_PRODUCTION") {
+    return Number(data.productionAllowedNowQty ?? 0) > 0 ? "READY" : "WAITING RM";
+  }
+  if (data.gate === "WAITING_RELEASE_TO_PRODUCTION") return "WAITING RM";
   if (!isProductionBlockedByRmReadiness(data)) return "READY";
   return "WAITING RM";
 }

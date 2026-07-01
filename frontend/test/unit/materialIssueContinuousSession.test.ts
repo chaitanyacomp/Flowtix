@@ -7,6 +7,7 @@ import {
   materialIssueSessionCompleteTitle,
   parseMaterialIssueSessionScope,
   pickNextPendingPmrInScope,
+  resolvePostIssueAdvance,
   placementQuantitiesMatchSuggested,
 } from "../../src/lib/materialIssueContinuousSession";
 import type { PendingPmrSummary } from "../../src/lib/materialIssueWorkspace";
@@ -65,13 +66,57 @@ describe("materialIssueContinuousSession", () => {
     ).toBe("PMR-26-0003 · Waiting for RM Issue · 1 line pending");
   });
 
-  it("picks the next pending PMR after issuing one work order", () => {
+  it("picks the next pending PMR in FIFO work-order order after issuing one work order", () => {
     const rows = [
-      pmr({ id: 1, workOrderId: 10, requirementSheetId: 99 }),
-      pmr({ id: 2, workOrderId: 11, requirementSheetId: 99 }),
+      pmr({ id: 3, workOrderId: 30, totalPending: 5 }),
+      pmr({ id: 1, workOrderId: 10, totalPending: 8 }),
+      pmr({ id: 2, workOrderId: 20, totalPending: 12 }),
     ];
-    const next = pickNextPendingPmrInScope(rows, { requirementSheetId: 99 }, 10);
+    const next = pickNextPendingPmrInScope(rows, {}, 10);
+    expect(next?.workOrderId).toBe(20);
     expect(next?.id).toBe(2);
+  });
+
+  it("auto-advances to the next FIFO work order when the issued WO leaves the queue", () => {
+    const before = [
+      pmr({ id: 1, workOrderId: 10, totalPending: 4 }),
+      pmr({ id: 2, workOrderId: 20, totalPending: 6 }),
+      pmr({ id: 3, workOrderId: 30, totalPending: 8 }),
+    ];
+    const afterIssueWo10 = [
+      pmr({ id: 2, workOrderId: 20, totalPending: 6 }),
+      pmr({ id: 3, workOrderId: 30, totalPending: 8 }),
+    ];
+    const advance = resolvePostIssueAdvance({
+      issuedWorkOrderId: 10,
+      freshPending: afterIssueWo10,
+      scope: {},
+    });
+    expect(advance).toEqual({ kind: "advance", pmr: expect.objectContaining({ workOrderId: 20, id: 2 }) });
+    expect(before.filter((p) => p.workOrderId === 10)).toHaveLength(1);
+  });
+
+  it("stays on the same work order when partial issue leaves RM pending", () => {
+    const rows = [
+      pmr({ id: 1, workOrderId: 10, totalPending: 4, status: "PARTIALLY_ISSUED" }),
+      pmr({ id: 2, workOrderId: 20, totalPending: 6 }),
+    ];
+    const result = resolvePostIssueAdvance({
+      issuedWorkOrderId: 10,
+      freshPending: rows,
+      scope: {},
+    });
+    expect(result).toEqual({ kind: "stay", pmr: expect.objectContaining({ workOrderId: 10, id: 1 }) });
+  });
+
+  it("returns empty advance when the final work order is fully issued", () => {
+    const rows = [pmr({ id: 1, workOrderId: 10, totalPending: 0, status: "ISSUED" })];
+    const result = resolvePostIssueAdvance({
+      issuedWorkOrderId: 10,
+      freshPending: rows,
+      scope: {},
+    });
+    expect(result).toEqual({ kind: "advance", pmr: null });
   });
 
   it("parses session scope from URL params", () => {

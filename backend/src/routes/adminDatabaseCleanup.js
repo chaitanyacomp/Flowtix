@@ -215,6 +215,7 @@ const RESET_TRANSACTION_DOC_TYPES = [
   "MATERIAL_WASTAGE_NOTE",
   "MATERIAL_REQUIREMENT",
   "PURCHASE_REQUEST",
+  "MONTHLY_PRODUCTION_PLAN",
 ];
 
 const VALID_DOC_TYPES = new Set(Object.values(DocType));
@@ -261,6 +262,9 @@ const RESET_TRANSACTION_VERIFY_TABLES = [
   "productionMaterialRequestLine",
   "productionMaterialRequest",
   "materialAllocation",
+  "productionRmReturnPending",
+  "productionWorkOrderReportLine",
+  "productionWorkOrderReport",
   "carryForwardPending",
   "productionShortfallResolution",
   "workOrderProductionExecution",
@@ -295,7 +299,84 @@ const RESET_TRANSACTION_VERIFY_TABLES = [
   "rmPurchaseOrder",
   "customerPOLine",
   "customerPO",
+  "rmPlanLine",
+  "rmPlan",
+  "monthlyProductionPlanRevisionLine",
+  "monthlyProductionPlanLine",
+  "monthlyProductionPlan",
 ];
+
+/**
+ * Monthly planning documents (MPP / RM snapshot). Must run after materialRequirement is cleared
+ * (MR.monthlyProductionPlanId uses SetNull on plan delete; explicit MR delete comes first).
+ *
+ * @param {import("@prisma/client").Prisma.TransactionClient} tx
+ */
+function buildMonthlyPlanningCleanupSteps(tx) {
+  return [
+    {
+      table: "rmPlanLine",
+      delete: () => tx.rmPlanLine.deleteMany({}),
+      count: () => tx.rmPlanLine.count(),
+    },
+    {
+      table: "rmPlan",
+      delete: () => tx.rmPlan.deleteMany({}),
+      count: () => tx.rmPlan.count(),
+    },
+    {
+      table: "monthlyProductionPlanRevisionLine",
+      delete: () => tx.monthlyProductionPlanRevisionLine.deleteMany({}),
+      count: () => tx.monthlyProductionPlanRevisionLine.count(),
+    },
+    {
+      table: "monthlyProductionPlanLine",
+      delete: () => tx.monthlyProductionPlanLine.deleteMany({}),
+      count: () => tx.monthlyProductionPlanLine.count(),
+    },
+    {
+      table: "monthlyProductionPlan",
+      delete: () => tx.monthlyProductionPlan.deleteMany({}),
+      count: () => tx.monthlyProductionPlan.count(),
+    },
+  ];
+}
+
+/**
+ * Stock ledger wipe — run after all transactional parents so refId-only rows and QC links are gone.
+ *
+ * @param {import("@prisma/client").Prisma.TransactionClient} tx
+ */
+function buildStockLedgerCleanupSteps(tx) {
+  return [
+    {
+      table: "stockAdjustmentQcEntry",
+      delete: () => tx.stockAdjustmentQcEntry.deleteMany({}),
+      count: () => tx.stockAdjustmentQcEntry.count(),
+    },
+    {
+      table: "openingStockEntry:revertApproved",
+      delete: () => revertApprovedOpeningStockAfterLedgerWipe(tx),
+      count: () => tx.openingStockEntry.count({ where: { status: "APPROVED" } }),
+    },
+    {
+      table: "stockTransaction",
+      delete: async () => {
+        await tx.stockTransaction.updateMany({ data: { reversalOfId: null } });
+        return tx.stockTransaction.deleteMany({});
+      },
+      count: () => tx.stockTransaction.count(),
+    },
+  ];
+}
+
+/** Break self-references and cross-table blockers before delete passes. */
+async function clearTransactionSelfReferences(tx) {
+  await tx.stockTransaction.updateMany({ data: { reversalOfId: null } });
+  await tx.dispatch.updateMany({ data: { reversalOfId: null } });
+  await tx.qcRejectedDisposition.updateMany({ data: { parentDispositionId: null } });
+  await tx.salesOrder.updateMany({ where: { customerReturnId: { not: null } }, data: { customerReturnId: null } });
+}
 
 /**
  * Store procurement planning (MR → PR → RM PO traceability). Must run before rmPurchaseOrderLine
@@ -350,17 +431,6 @@ function buildResetTransactionDataCleanupSteps(tx) {
     { table: "salesBill", delete: () => tx.salesBill.deleteMany({}), count: () => tx.salesBill.count() },
     { table: "customerReturn", delete: () => tx.customerReturn.deleteMany({}), count: () => tx.customerReturn.count() },
     { table: "STORE", delete: () => tx.dispatch.deleteMany({}), count: () => tx.dispatch.count() },
-    {
-      table: "stockAdjustmentQcEntry",
-      delete: () => tx.stockAdjustmentQcEntry.deleteMany({}),
-      count: () => tx.stockAdjustmentQcEntry.count(),
-    },
-    { table: "stockTransaction", delete: () => tx.stockTransaction.deleteMany({}), count: () => tx.stockTransaction.count() },
-    {
-      table: "openingStockEntry:revertApproved",
-      delete: () => revertApprovedOpeningStockAfterLedgerWipe(tx),
-      count: () => tx.openingStockEntry.count({ where: { status: "APPROVED" } }),
-    },
     { table: "qcReversal", delete: () => tx.qcReversal.deleteMany({}), count: () => tx.qcReversal.count() },
     { table: "scrapRecord", delete: () => tx.scrapRecord.deleteMany({}), count: () => tx.scrapRecord.count() },
     {
@@ -375,8 +445,9 @@ function buildResetTransactionDataCleanupSteps(tx) {
       count: () => tx.productionEntryRmConsumption.count(),
     },
     { table: "productionEntry", delete: () => tx.productionEntry.deleteMany({}), count: () => tx.productionEntry.count() },
-    ...buildProductionRmFlowCleanupSteps(tx),
+    ...buildProductionReportCleanupSteps(tx),
     ...buildProductionExecutionCleanupSteps(tx),
+    ...buildProductionRmFlowCleanupSteps(tx),
     { table: "workOrderLine", delete: () => tx.workOrderLine.deleteMany({}), count: () => tx.workOrderLine.count() },
     { table: "workOrder", delete: () => tx.workOrder.deleteMany({}), count: () => tx.workOrder.count() },
     {
@@ -430,10 +501,12 @@ function buildResetTransactionDataCleanupSteps(tx) {
     { table: "grnLine", delete: () => tx.grnLine.deleteMany({}), count: () => tx.grnLine.count() },
     { table: "grn", delete: () => tx.grn.deleteMany({}), count: () => tx.grn.count() },
     ...buildProcurementPlanningCleanupSteps(tx),
+    ...buildMonthlyPlanningCleanupSteps(tx),
     { table: "rmPurchaseOrderLine", delete: () => tx.rmPurchaseOrderLine.deleteMany({}), count: () => tx.rmPurchaseOrderLine.count() },
     { table: "rmPurchaseOrder", delete: () => tx.rmPurchaseOrder.deleteMany({}), count: () => tx.rmPurchaseOrder.count() },
     { table: "customerPOLine", delete: () => tx.customerPOLine.deleteMany({}), count: () => tx.customerPOLine.count() },
     { table: "customerPO", delete: () => tx.customerPO.deleteMany({}), count: () => tx.customerPO.count() },
+    ...buildStockLedgerCleanupSteps(tx),
   ];
 }
 
@@ -441,17 +514,23 @@ function buildResetTransactionDataCleanupSteps(tx) {
  * Second pass in the same transaction: re-delete anything still present if FK order left orphans.
  * @param {import("@prisma/client").Prisma.TransactionClient} tx
  */
-async function runFinalTransactionResetSweep(tx) {
-  await tx.stockTransaction.updateMany({ data: { reversalOfId: null } });
-  await tx.dispatch.updateMany({ data: { reversalOfId: null } });
-  await tx.qcRejectedDisposition.updateMany({ data: { parentDispositionId: null } });
-  await tx.salesOrder.updateMany({ where: { customerReturnId: { not: null } }, data: { customerReturnId: null } });
+async function runFinalTransactionResetSweep(tx, { maxPasses = 3 } = {}) {
+  for (let pass = 1; pass <= maxPasses; pass += 1) {
+    await clearTransactionSelfReferences(tx);
 
-  if (await tableExists(tx, ["qclegacyrejectedclassification", "QcLegacyRejectedClassification"])) {
-    await tx.qcLegacyRejectedClassification.deleteMany({});
-  }
-  for (const step of buildResetTransactionDataCleanupSteps(tx)) {
-    await step.delete();
+    let passDeleted = 0;
+    if (await tableExists(tx, ["qclegacyrejectedclassification", "QcLegacyRejectedClassification"])) {
+      const legacyRes = await tx.qcLegacyRejectedClassification.deleteMany({});
+      passDeleted += typeof legacyRes?.count === "number" ? legacyRes.count : 0;
+    }
+
+    for (const step of buildResetTransactionDataCleanupSteps(tx)) {
+      const res = await step.delete();
+      passDeleted += typeof res?.count === "number" ? res.count : 0;
+    }
+
+    logCleanup("sweep-pass", { pass, passDeleted });
+    if (passDeleted === 0) break;
   }
 }
 
@@ -479,6 +558,15 @@ async function verifyTransactionResetComplete(tx) {
   for (const table of RESET_TRANSACTION_VERIFY_TABLES) {
     if (table === "materialWastageNote") {
       if (!(await tableExists(tx, ["materialwastagenote", "MaterialWastageNote"]))) continue;
+    }
+    if (
+      table === "monthlyProductionPlan" ||
+      table === "monthlyProductionPlanLine" ||
+      table === "monthlyProductionPlanRevisionLine" ||
+      table === "rmPlan" ||
+      table === "rmPlanLine"
+    ) {
+      if (!(await tableExists(tx, ["monthlyproductionplan", "MonthlyProductionPlan"]))) continue;
     }
     if (table === "dispatch") {
       checks.push({ table: "dispatch", count: () => tx.dispatch.count() });
@@ -524,12 +612,15 @@ function buildProductionRmFlowCleanupSteps(tx) {
   return [
     { table: "materialIssueLine", delete: () => tx.materialIssueLine.deleteMany({}), count: () => tx.materialIssueLine.count() },
     { table: "materialIssueNote", delete: () => tx.materialIssueNote.deleteMany({}), count: () => tx.materialIssueNote.count() },
-    { table: "materialReturnLine", delete: () => tx.materialReturnLine.deleteMany({}), count: () => tx.materialReturnLine.count() },
-    { table: "materialReturnNote", delete: () => tx.materialReturnNote.deleteMany({}), count: () => tx.materialReturnNote.count() },
     {
       table: "materialWastageNote",
       delete: () => tx.materialWastageNote.deleteMany({}),
       count: () => tx.materialWastageNote.count(),
+    },
+    {
+      table: "materialAllocation",
+      delete: () => tx.materialAllocation.deleteMany({}),
+      count: () => tx.materialAllocation.count(),
     },
     {
       table: "productionMaterialRequestLine",
@@ -541,10 +632,35 @@ function buildProductionRmFlowCleanupSteps(tx) {
       delete: () => tx.productionMaterialRequest.deleteMany({}),
       count: () => tx.productionMaterialRequest.count(),
     },
+    { table: "materialReturnLine", delete: () => tx.materialReturnLine.deleteMany({}), count: () => tx.materialReturnLine.count() },
+    { table: "materialReturnNote", delete: () => tx.materialReturnNote.deleteMany({}), count: () => tx.materialReturnNote.count() },
+  ];
+}
+
+/**
+ * Production report/return confirmation tables.
+ * Must run before workOrder because ProductionWorkOrderReport.workOrderId and
+ * ProductionRmReturnPending.workOrderId both use Restrict.
+ *
+ * @param {import("@prisma/client").Prisma.TransactionClient} tx
+ * @returns {Array<{ table: string; delete: () => Promise<{ count?: number }>; count: () => Promise<number> }>}
+ */
+function buildProductionReportCleanupSteps(tx) {
+  return [
     {
-      table: "materialAllocation",
-      delete: () => tx.materialAllocation.deleteMany({}),
-      count: () => tx.materialAllocation.count(),
+      table: "productionRmReturnPending",
+      delete: () => tx.productionRmReturnPending.deleteMany({}),
+      count: () => tx.productionRmReturnPending.count(),
+    },
+    {
+      table: "productionWorkOrderReportLine",
+      delete: () => tx.productionWorkOrderReportLine.deleteMany({}),
+      count: () => tx.productionWorkOrderReportLine.count(),
+    },
+    {
+      table: "productionWorkOrderReport",
+      delete: () => tx.productionWorkOrderReport.deleteMany({}),
+      count: () => tx.productionWorkOrderReport.count(),
     },
   ];
 }
@@ -624,6 +740,52 @@ async function deleteProductionExecutionForScope(tx, deletedCounts, { salesOrder
 }
 
 /**
+ * Scoped production report/return deletes for NO_QTY reset.
+ *
+ * @param {import("@prisma/client").Prisma.TransactionClient} tx
+ * @param {Record<string, number>} deletedCounts
+ * @param {{ workOrderIds: number[] }} scope
+ */
+async function deleteProductionReportsForWorkOrders(tx, deletedCounts, { workOrderIds }) {
+  if (workOrderIds.length === 0) {
+    deletedCounts.productionRmReturnPending = 0;
+    deletedCounts.productionWorkOrderReportLine = 0;
+    deletedCounts.productionWorkOrderReport = 0;
+    return;
+  }
+
+  const productionReportIds = (
+    await tx.productionWorkOrderReport.findMany({
+      where: { workOrderId: { in: workOrderIds } },
+      select: { id: true },
+    })
+  ).map((r) => r.id);
+
+  await addDeleteCountStep(deletedCounts, "productionRmReturnPending", () =>
+    tx.productionRmReturnPending.deleteMany({
+      where: {
+        OR: [
+          { workOrderId: { in: workOrderIds } },
+          ...(productionReportIds.length > 0 ? [{ productionReportId: { in: productionReportIds } }] : []),
+        ],
+      },
+    }),
+  );
+
+  if (productionReportIds.length > 0) {
+    await addDeleteCountStep(deletedCounts, "productionWorkOrderReportLine", () =>
+      tx.productionWorkOrderReportLine.deleteMany({ where: { productionReportId: { in: productionReportIds } } }),
+    );
+    await addDeleteCountStep(deletedCounts, "productionWorkOrderReport", () =>
+      tx.productionWorkOrderReport.deleteMany({ where: { id: { in: productionReportIds } } }),
+    );
+  } else {
+    deletedCounts.productionWorkOrderReportLine = 0;
+    deletedCounts.productionWorkOrderReport = 0;
+  }
+}
+
+/**
  * Scoped PMR/MIN/MRN deletes for NO_QTY reset (same FK order as buildProductionRmFlowCleanupSteps).
  *
  * @param {import("@prisma/client").Prisma.TransactionClient} tx
@@ -661,10 +823,6 @@ async function deleteProductionRmFlowForWorkOrders(tx, deletedCounts, { workOrde
     tx.materialIssueLine.deleteMany({ where: { materialIssueNote: noteWhere } }),
   );
   await addDeleteCountStep(deletedCounts, "materialIssueNote", () => tx.materialIssueNote.deleteMany({ where: noteWhere }));
-  await addDeleteCountStep(deletedCounts, "materialReturnLine", () =>
-    tx.materialReturnLine.deleteMany({ where: { materialReturnNote: noteWhere } }),
-  );
-  await addDeleteCountStep(deletedCounts, "materialReturnNote", () => tx.materialReturnNote.deleteMany({ where: noteWhere }));
 
   if (await tableExists(tx, ["materialwastagenote", "MaterialWastageNote"])) {
     await addDeleteCountStep(deletedCounts, "materialWastageNote", () =>
@@ -673,6 +831,17 @@ async function deleteProductionRmFlowForWorkOrders(tx, deletedCounts, { workOrde
   } else {
     deletedCounts.materialWastageNote = 0;
   }
+
+  const allocationWhere = {
+    OR: [
+      { workOrderId: { in: workOrderIds } },
+      { workOrderLine: { workOrderId: { in: workOrderIds } } },
+      ...(pmrIds.length > 0 ? [{ productionMaterialRequestId: { in: pmrIds } }] : []),
+    ],
+  };
+  await addDeleteCountStep(deletedCounts, "materialAllocation", () =>
+    tx.materialAllocation.deleteMany({ where: allocationWhere }),
+  );
 
   if (pmrIds.length > 0) {
     await addDeleteCountStep(deletedCounts, "productionMaterialRequestLine", () =>
@@ -686,16 +855,10 @@ async function deleteProductionRmFlowForWorkOrders(tx, deletedCounts, { workOrde
     deletedCounts.productionMaterialRequest = 0;
   }
 
-  const allocationWhere = {
-    OR: [
-      { workOrderId: { in: workOrderIds } },
-      { workOrderLine: { workOrderId: { in: workOrderIds } } },
-      ...(pmrIds.length > 0 ? [{ productionMaterialRequestId: { in: pmrIds } }] : []),
-    ],
-  };
-  await addDeleteCountStep(deletedCounts, "materialAllocation", () =>
-    tx.materialAllocation.deleteMany({ where: allocationWhere }),
+  await addDeleteCountStep(deletedCounts, "materialReturnLine", () =>
+    tx.materialReturnLine.deleteMany({ where: { materialReturnNote: noteWhere } }),
   );
+  await addDeleteCountStep(deletedCounts, "materialReturnNote", () => tx.materialReturnNote.deleteMany({ where: noteWhere }));
 }
 
 /**
@@ -1038,6 +1201,7 @@ async function runResetNoQtyTransactionalDeletes(tx) {
 
   if (woIds.length > 0) {
     await deleteProductionRmFlowForWorkOrders(tx, deletedCounts, { workOrderIds: woIds });
+    await deleteProductionReportsForWorkOrders(tx, deletedCounts, { workOrderIds: woIds });
     await addDeleteCount(deletedCounts, "workOrderLine", () =>
       tx.workOrderLine.deleteMany({ where: { workOrderId: { in: woIds } } }),
     );
@@ -1287,6 +1451,31 @@ async function runFullDemoResetDeletes(tx, deleted) {
           () => tx.workOrderProductionExecution.deleteMany({}),
         ),
     ],
+    [
+      "productionRmReturnPending",
+      async () =>
+        tryOptionalTableDelete(tx, deleted, ["productionrmreturnpending", "ProductionRmReturnPending"], "productionRmReturnPending", () =>
+          tx.productionRmReturnPending.deleteMany({}),
+        ),
+    ],
+    [
+      "productionWorkOrderReportLine",
+      async () =>
+        tryOptionalTableDelete(
+          tx,
+          deleted,
+          ["productionworkorderreportline", "ProductionWorkOrderReportLine"],
+          "productionWorkOrderReportLine",
+          () => tx.productionWorkOrderReportLine.deleteMany({}),
+        ),
+    ],
+    [
+      "productionWorkOrderReport",
+      async () =>
+        tryOptionalTableDelete(tx, deleted, ["productionworkorderreport", "ProductionWorkOrderReport"], "productionWorkOrderReport", () =>
+          tx.productionWorkOrderReport.deleteMany({}),
+        ),
+    ],
     ["workOrderLine", async () => addDeleteCount(deleted, "workOrderLine", () => tx.workOrderLine.deleteMany({}))],
     ["workOrder", async () => addDeleteCount(deleted, "workOrder", () => tx.workOrder.deleteMany({}))],
     ["requirementSheetLine", async () => addDeleteCount(deleted, "requirementSheetLine", () => tx.requirementSheetLine.deleteMany({}))],
@@ -1367,6 +1556,50 @@ async function runFullDemoResetDeletes(tx, deleted) {
 }
 
 /**
+ * Core Reset Transaction Data cleanup (single Prisma transaction). Used by the admin route and tests.
+ *
+ * @param {import("@prisma/client").Prisma.TransactionClient} tx
+ * @returns {Promise<{ table: string; deleted: number; remaining: number }[]>}
+ */
+async function runResetTransactionDataInTransaction(tx) {
+  /** @type {{ table: string; deleted: number; remaining: number }[]} */
+  const summary = [];
+
+  await runLoggedCleanupAction("clearTransactionSelfReferences", () => clearTransactionSelfReferences(tx));
+
+  const cleanupSteps = buildResetTransactionDataCleanupSteps(tx);
+
+  let qcLegacyChecked = false;
+  for (const step of cleanupSteps) {
+    if (step.table === "qcEntry" && !qcLegacyChecked) {
+      await runOptionalLoggedCleanupStep(tx, summary, {
+        table: "qcLegacyRejectedClassification",
+        candidates: ["qclegacyrejectedclassification", "QcLegacyRejectedClassification"],
+        delete: () => tx.qcLegacyRejectedClassification.deleteMany({}),
+        count: () => tx.qcLegacyRejectedClassification.count(),
+      });
+      qcLegacyChecked = true;
+    }
+    await runLoggedCleanupStep(summary, step);
+  }
+
+  await runOptionalLoggedCleanupStep(tx, summary, {
+    table: "docSequence",
+    candidates: ["docsequence", "DocSequence"],
+    delete: () =>
+      tx.docSequence.deleteMany({
+        where: { docType: { in: RESET_TRANSACTION_DOC_TYPES } },
+      }),
+    count: () => tx.docSequence.count({ where: { docType: { in: RESET_TRANSACTION_DOC_TYPES } } }),
+  });
+
+  await runLoggedCleanupAction("finalTransactionResetSweep", () => runFinalTransactionResetSweep(tx));
+  await verifyTransactionResetComplete(tx);
+
+  return summary;
+}
+
+/**
  * Admin-only destructive endpoint to clear transactional rows for process testing.
  * Master data (users/roles/items/customers/suppliers/units/settings/etc.) is preserved.
  */
@@ -1382,55 +1615,9 @@ adminDatabaseCleanupRouter.post(
       }
 
       try {
-        const results = await prisma.$transaction(
-          async (tx) => {
-            /** @type {{ table: string; deleted: number; remaining: number }[]} */
-            const summary = [];
-
-            await runLoggedCleanupAction("stockTransaction:clearReversalRefs", () =>
-              tx.stockTransaction.updateMany({ data: { reversalOfId: null } }),
-            );
-            await runLoggedCleanupAction("dispatch:clearReversalRefs", () => tx.dispatch.updateMany({ data: { reversalOfId: null } }));
-            await runLoggedCleanupAction("qcRejectedDisposition:clearParentRefs", () =>
-              tx.qcRejectedDisposition.updateMany({ data: { parentDispositionId: null } }),
-            );
-            await runLoggedCleanupAction("salesOrder:clearCustomerReturnRefs", () =>
-              tx.salesOrder.updateMany({ where: { customerReturnId: { not: null } }, data: { customerReturnId: null } }),
-            );
-
-            const cleanupSteps = buildResetTransactionDataCleanupSteps(tx);
-
-            let qcLegacyChecked = false;
-            for (const step of cleanupSteps) {
-              if (step.table === "qcEntry" && !qcLegacyChecked) {
-                await runOptionalLoggedCleanupStep(tx, summary, {
-                  table: "qcLegacyRejectedClassification",
-                  candidates: ["qclegacyrejectedclassification", "QcLegacyRejectedClassification"],
-                  delete: () => tx.qcLegacyRejectedClassification.deleteMany({}),
-                  count: () => tx.qcLegacyRejectedClassification.count(),
-                });
-                qcLegacyChecked = true;
-              }
-              await runLoggedCleanupStep(summary, step);
-            }
-
-            await runOptionalLoggedCleanupStep(tx, summary, {
-              table: "docSequence",
-              candidates: ["docsequence", "DocSequence"],
-              delete: () =>
-                tx.docSequence.deleteMany({
-                  where: { docType: { in: RESET_TRANSACTION_DOC_TYPES } },
-                }),
-              count: () => tx.docSequence.count({ where: { docType: { in: RESET_TRANSACTION_DOC_TYPES } } }),
-            });
-
-            await runLoggedCleanupAction("finalTransactionResetSweep", () => runFinalTransactionResetSweep(tx));
-            await verifyTransactionResetComplete(tx);
-
-            return summary;
-          },
-          { timeout: 120_000 },
-        );
+        const results = await prisma.$transaction(async (tx) => runResetTransactionDataInTransaction(tx), {
+          timeout: 120_000,
+        });
 
         return res.json({
           ok: true,
@@ -1588,7 +1775,15 @@ adminDatabaseCleanupRouter.post(
 
 module.exports = {
   adminDatabaseCleanupRouter,
+  buildMonthlyPlanningCleanupSteps,
   buildProductionExecutionCleanupSteps,
+  buildProductionReportCleanupSteps,
   buildResetTransactionDataCleanupSteps,
+  buildStockLedgerCleanupSteps,
   deleteProductionExecutionForScope,
+  deleteProductionReportsForWorkOrders,
+  RESET_TRANSACTION_VERIFY_TABLES,
+  runFinalTransactionResetSweep,
+  runResetTransactionDataInTransaction,
+  verifyTransactionResetComplete,
 };

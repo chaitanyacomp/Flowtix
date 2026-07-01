@@ -125,6 +125,12 @@ const MonthlyPlanningWorkspacePage = lazy(() =>
   import("./pages/MonthlyPlanningWorkspacePage").then((m) => ({ default: m.MonthlyPlanningWorkspacePage })),
 );
 
+/** Legacy `/production-rm-returns` → canonical RM returns workspace (preserve query string). */
+function LegacyProductionRmReturnsRedirect() {
+  const { search } = useLocation();
+  return <Navigate to={`/production/rm-returns${search}`} replace />;
+}
+
 /** Legacy `/planning-dashboard/production` → single planning hub (preserve query string). */
 function PlanningProductionPathRedirect() {
   const { search } = useLocation();
@@ -646,6 +652,14 @@ export default function App() {
           element={
             <ProtectedRoute allowedRoles={["ADMIN", "PRODUCTION", "STORE"]}>
               <ProductionMaterialRequestsPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/production-rm-returns"
+          element={
+            <ProtectedRoute allowedRoles={["ADMIN", "PRODUCTION", "STORE"]}>
+              <LegacyProductionRmReturnsRedirect />
             </ProtectedRoute>
           }
         />

@@ -289,10 +289,6 @@ async function loadProcurementProgress(db, { released, materialRequirement }) {
   counts.grnReceivedQty = round3([...poLineReceivedById.values()].reduce((sum, qty) => sum + qty, 0));
   counts.pendingGrnQty = round3([...poLinePendingById.values()].reduce((sum, qty) => sum + qty, 0));
 
-  const prStatus = stepStatus({
-    complete: counts.prCount > 0 && counts.prCount >= counts.mrLineCount,
-    partial: counts.prCount > 0 && counts.prCount < counts.mrLineCount,
-  });
   const poStatus = stepStatus({
     complete: counts.poCount > 0 && counts.pendingGrnQty <= EPS && counts.grnReceivedQty > EPS,
     partial: counts.poCount > 0 && counts.pendingGrnQty > EPS,
@@ -304,12 +300,25 @@ async function loadProcurementProgress(db, { released, materialRequirement }) {
     inProgress: counts.pendingGrnQty > EPS,
   });
 
+  const procurementPipelineComplete =
+    counts.grnReceivedQty > EPS && counts.pendingGrnQty <= EPS && counts.poCount > 0;
+
+  const prStatus = procurementPipelineComplete
+    ? "COMPLETE"
+    : stepStatus({
+        complete: counts.prCount > 0 && counts.prCount >= counts.mrLineCount,
+        partial: counts.prCount > 0 && counts.prCount < counts.mrLineCount,
+      });
+  const poStatusResolved = procurementPipelineComplete
+    ? "COMPLETE"
+    : poStatus;
+
   return {
     steps: [
       { key: "MONTHLY_PLAN_RELEASED", label: "Monthly Plan Released", status: stepStatus({ complete: released }) },
       { key: "MR_CREATED", label: "MR Created", status: stepStatus({ complete: Boolean(materialRequirement) }) },
       { key: "PR_CREATED", label: "PR Created", status: prStatus },
-      { key: "PO_CREATED", label: "PO Created", status: poStatus },
+      { key: "PO_CREATED", label: "PO Created", status: poStatusResolved },
       { key: "GRN_RECEIVED", label: "GRN Received", status: grnStatus },
     ],
     counts,

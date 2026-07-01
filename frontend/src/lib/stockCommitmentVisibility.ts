@@ -147,7 +147,7 @@ export function productionRmOperationalStatus(
       detail: "Store must issue RM to production before you can save or approve production.",
     };
   }
-  if (g === "PARTIAL_READY" || g === "FULLY_ISSUED_READY") {
+  if (g === "READY_FOR_PRODUCTION" || g === "WAITING_RELEASE_TO_PRODUCTION") {
     return {
       status: "READY",
       label: "Ready",

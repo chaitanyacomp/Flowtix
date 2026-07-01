@@ -114,7 +114,17 @@ enum ProductionMaterialRequestStatus {
   REQUESTED
   PARTIALLY_ISSUED
   FULLY_ISSUED
+  /// Store waived remaining unissued qty (short issue accepted).
+  SHORT_ISSUE_ACCEPTED
   CANCELLED
+}
+
+/// Mandatory reason when Store waives remaining PMR issue qty (P16-13).
+enum PmrShortIssueWaiveReason {
+  SCALE_LIMITATION
+  PACKING_LIMITATION
+  MANAGEMENT_DECISION
+  OTHER
 }
 
 enum MaterialAllocationStatus {
@@ -492,6 +502,7 @@ model User {
   woExecCompleted                           WorkOrderProductionExecution[] @relation("WoExecCompletedBy")
   carryForwardPendingCreated                CarryForwardPending[]          @relation("CfPendingCreatedBy")
   shortfallResolutionsCreated               ProductionShortfallResolution[] @relation("ShortfallResolutionCreatedBy")
+  workOrdersMaterialReleased                WorkOrder[]                     @relation("WoMaterialReleasedBy")
 }
 
 /// Full-database SQL backup row (see admin backup routes). `filePath` is server-only; never return to clients.
@@ -1705,6 +1716,8 @@ model ProductionMaterialRequestLine {
   itemId                      Int
   requiredQty                 Decimal @db.Decimal(18, 3)
   issuedQty                   Decimal @default(0) @db.Decimal(18, 3)
+  /// P16-13: remaining qty closed by Store waive (never deducted from stock).
+  waivedQty                   Decimal @default(0) @db.Decimal(18, 3)
   returnedQty                 Decimal @default(0) @db.Decimal(18, 3)
   unitSnapshot                String? @db.VarChar(64)
 
@@ -2276,10 +2289,14 @@ model WorkOrder {
   fgStockOverrideReason   String?      @db.Text
   fgStockOverrideAt       DateTime?
   fgStockOverrideByUserId Int?
+  /// P16-13: Store explicit release — production may start before full RM issue.
+  materialReleasedToProductionAt DateTime?
+  materialReleasedByUserId       Int?
   createdAt               DateTime     @default(now())
   updatedAt               DateTime     @updatedAt
 
   heldBy                          User?                            @relation("WoHeldBy", fields: [heldByUserId], references: [id], onDelete: SetNull)
+  materialReleasedBy              User?                            @relation("WoMaterialReleasedBy", fields: [materialReleasedByUserId], references: [id], onDelete: SetNull)
   closedBy                        User?                            @relation("WoClosedBy", fields: [closedByUserId], references: [id], onDelete: SetNull)
   salesOrder                      SalesOrder                       @relation(fields: [salesOrderId], references: [id], onDelete: Restrict)
   cycle                           SalesOrderCycle?                 @relation(fields: [cycleId], references: [id], onDelete: SetNull)

@@ -77,6 +77,18 @@ function computeNoQtyOperatorCarryForwardQty(plannedQty, approvedProducedQty) {
   return round3(Math.max(0, round3(plannedQty) - round3(approvedProducedQty)));
 }
 
+function resolveAppliedNoQtyCarryForwardQty(currentRequirementQty, carryForwardQty) {
+  const req = round3(n(currentRequirementQty));
+  if (!(req > EPS)) return 0;
+  return round3(Math.max(0, n(carryForwardQty)));
+}
+
+function resolveNoQtyCurrentCycleProductionRequirementQty(currentRequirementQty, carryForwardQty) {
+  const req = round3(n(currentRequirementQty));
+  if (!(req > EPS)) return 0;
+  return round3(req + resolveAppliedNoQtyCarryForwardQty(req, carryForwardQty));
+}
+
 /**
  * Sum execution surplus from the immediately prior NO_QTY cycle (reduces next RS production demand).
  * @param {import('@prisma/client').PrismaClient | import('@prisma/client').Prisma.TransactionClient} db
@@ -910,13 +922,13 @@ async function mapSheetDetail(sheet) {
       availableStockQty = usableStockDisplayQty(rawSnapStock);
       const snapCarry = ln.shortfallQtySnapshot != null ? n(ln.shortfallQtySnapshot) : 0;
       shortfallQty = round3(Math.max(0, snapCarry));
-      fulfillmentQty = round3(round3(shortfallQty) + round3(newWoQty));
+      fulfillmentQty = round3(resolveAppliedNoQtyCarryForwardQty(newWoQty, snapCarry) + round3(newWoQty));
       /** Prior-cycle usable remains for dispatch; do not treat as RS “covered from stock” for production planning. */
       coveredFromStockQty = 0;
       const fromSnapshot =
         ln.suggestedWoQtySnapshot != null ? round3(n(ln.suggestedWoQtySnapshot)) : null;
-      const recomputedDraftStyle = round3(Math.max(0, round3(shortfallQty) + round3(newWoQty)));
-      productionRequiredQty = fromSnapshot != null ? fromSnapshot : recomputedDraftStyle;
+      const recomputedDraftStyle = resolveNoQtyCurrentCycleProductionRequirementQty(newWoQty, snapCarry);
+      productionRequiredQty = newWoQty > EPS ? (fromSnapshot != null ? fromSnapshot : recomputedDraftStyle) : 0;
       if (
         fromSnapshot != null &&
         Math.abs(fromSnapshot - recomputedDraftStyle) > EPS &&
@@ -942,15 +954,15 @@ async function mapSheetDetail(sheet) {
       availableStockQty = rawSnapStock != null ? usableStockDisplayQty(rawSnapStock) : null;
       const snapCarry = ln.shortfallQtySnapshot != null ? n(ln.shortfallQtySnapshot) : 0;
       shortfallQty = snapCarry;
-      fulfillmentQty = round3(round3(snapCarry) + round3(newWoQty));
+      fulfillmentQty = round3(resolveAppliedNoQtyCarryForwardQty(newWoQty, snapCarry) + round3(newWoQty));
       coveredFromStockQty =
         availableStockQty != null ? round3(Math.min(fulfillmentQty, availableStockQty)) : null;
       productionRequiredQty =
-        availableStockQty != null
-          ? round3(Math.max(0, fulfillmentQty - availableStockQty))
-          : ln.suggestedWoQtySnapshot != null
+        newWoQty > EPS
+          ? ln.suggestedWoQtySnapshot != null
             ? round3(n(ln.suggestedWoQtySnapshot))
-            : null;
+            : resolveNoQtyCurrentCycleProductionRequirementQty(newWoQty, snapCarry)
+          : 0;
       gapPercent = computeGapPercent(fulfillmentQty, availableStockQty ?? 0);
       zone = computeZone(gapPercent, greenTh, yellowTh);
       totalWoQty = productionRequiredQty;
@@ -977,21 +989,14 @@ async function mapSheetDetail(sheet) {
         sheet?.salesOrder?.orderType === "NO_QTY"
           ? round3(Math.max(0, poolCarrySnap > EPS ? poolCarrySnap : rawCarryShortfall))
           : round3(rawCarryShortfall);
-      // Draft: gross fulfillment uses raw carry + new (same-cycle messaging); NO_QTY Total to Produce = shortfallQty + new (usable surplus informational only).
-      const grossFulfillment = round3(round3(rawCarryShortfall) + round3(newWoQty));
+      // Draft: carry-forward is backlog-only unless this cycle has positive current demand.
+      const grossFulfillment = round3(resolveAppliedNoQtyCarryForwardQty(newWoQty, rawCarryShortfall) + round3(newWoQty));
       fulfillmentQty = grossFulfillment;
       coveredFromStockQty =
         sheet?.salesOrder?.orderType === "NO_QTY" ? 0 : round3(Math.min(grossFulfillment, stock));
       productionRequiredQty =
         sheet?.salesOrder?.orderType === "NO_QTY"
-          ? round3(
-              Math.max(
-                0,
-                round3(shortfallQty) +
-                  round3(newWoQty) -
-                  round3(productionSurplusByItem.get(ln.itemId) ?? 0),
-              ),
-            )
+          ? round3(Math.max(0, grossFulfillment - round3(productionSurplusByItem.get(ln.itemId) ?? 0)))
           : round3(Math.max(0, grossFulfillment - postCycleQty - stock));
       gapPercent = computeGapPercent(grossFulfillment, stock);
       zone = computeZone(gapPercent, greenTh, yellowTh);
@@ -1021,12 +1026,12 @@ async function mapSheetDetail(sheet) {
       const stockForSug = round3(n(availableStockQty ?? 0));
       if (sheet?.salesOrder?.orderType === "NO_QTY") {
         suggestedNetWoQty =
-          productionRequiredQty != null ? round3(n(productionRequiredQty)) : round3(Math.max(0, round3(shortfallQty ?? 0) + round3(newWoQty)));
+          productionRequiredQty != null ? round3(n(productionRequiredQty)) : round3(Math.max(0, grossFulfillment));
       } else {
         suggestedNetWoQty = ful <= EPS ? 0 : round3(Math.max(0, ful - postCycleQty - stockForSug));
       }
     } else {
-      // NO_QTY: Total to Produce on draft = last shortage + new requirement (usable surplus is informational for dispatch).
+      // NO_QTY: carry-forward is informational unless the current cycle has positive requirement.
       const rawSf =
         sheet?.salesOrder?.orderType === "NO_QTY"
           ? round3(n(shortfallQty ?? 0))
@@ -1035,7 +1040,7 @@ async function mapSheetDetail(sheet) {
         sheet?.salesOrder?.orderType === "NO_QTY"
           ? productionRequiredQty != null
             ? round3(n(productionRequiredQty))
-            : round3(Math.max(0, rawSf + round3(newWoQty)))
+            : round3(Math.max(0, resolveAppliedNoQtyCarryForwardQty(newWoQty, rawSf) + round3(newWoQty)))
           : round3(
               Math.max(0, rawSf + round3(newWoQty) - postCycleQty - round3(draftUsableStockForSuggest)),
             );
@@ -1822,7 +1827,8 @@ requirementSheetsRouter.post(
               n(reservedUnlockedDraftByItemLock.get(ln.itemId) ?? 0),
           );
           const usableStockUsed = round3(usableStockDisplayQty(rawFree));
-          const totalDemand = round3(round3(confirmedCarrySnapshot) + round3(newWoQty));
+          const appliedCarryForwardQty = resolveAppliedNoQtyCarryForwardQty(newWoQty, confirmedCarrySnapshot);
+          const totalDemand = round3(appliedCarryForwardQty + round3(newWoQty));
           /** Prior-cycle leftover usable stays available for dispatch; do not auto-deduct from next cycle Total to Produce. */
           const productionRequiredQty = round3(Math.max(0, totalDemand));
 
@@ -1850,13 +1856,13 @@ requirementSheetsRouter.post(
 
           const gapPercent = computeGapPercent(totalDemand, usableStockUsed);
           const zone = computeZone(gapPercent, item?.planningGapGreenThresholdPercent, item?.planningGapYellowThresholdPercent);
-          if (totalDemand > EPS) anyPositiveFulfillment = true;
+          if (productionRequiredQty > EPS) anyPositiveFulfillment = true;
 
           await tx.requirementSheetLine.update({
             where: { id: ln.id },
             data: {
               // NO_QTY: requirementQty = new requirement only; shortfall snapshot = last shortage;
-              // suggestedWoQtySnapshot = max(0, lastShortage + newReq); availableStockQtySnapshot = informational usable surplus for dispatch.
+              // suggestedWoQtySnapshot = current requirement plus carry-forward only when current requirement is positive.
               requirementQty: String(round3(newWoQty)),
               availableStockQtySnapshot: usableStockUsed,
               gapPercentSnapshot: gapPercent,
@@ -1893,7 +1899,7 @@ requirementSheetsRouter.post(
         const soDoc = displaySalesOrderNo(soHead?.id ?? locked.salesOrderId, soHead?.docNo);
         const lineCount = (locked.lines || []).length;
         const totalRequirementQty = (locked.lines || []).reduce(
-          (s, ln) => s + n(ln.requirementQty) + n(ln.shortfallQtySnapshot ?? 0),
+          (s, ln) => s + n(ln.suggestedWoQtySnapshot ?? 0),
           0,
         );
         await logActivity({
@@ -2309,6 +2315,8 @@ module.exports = {
   getNoQtyLastShortageQtyForCycleItem,
   loadNoQtyPriorCycleUndispatchedAcceptedByItem,
   computeNoQtyOperatorCarryForwardQty,
+  resolveAppliedNoQtyCarryForwardQty,
+  resolveNoQtyCurrentCycleProductionRequirementQty,
   loadNoQtyProductionSurplusByItemForPriorCycle,
   resolveNoQtyCarryForwardDemandQty,
   loadNoQtyExecutionResolutionByItemForCycle,

@@ -15,7 +15,11 @@ const {
   cancelProductionMaterialRequest,
   issueMaterialAgainstPmr,
   buildPmrIssueContext,
+  waiveRemainingPmrQty,
+  releaseWorkOrderMaterialToProduction,
+  acknowledgePmrIssueLater,
   ensureSubmittedProductionMaterialRequestForWorkOrder,
+  PMR_SHORT_ISSUE_WAIVE_REASONS,
 } = require("../services/productionMaterialRequestService");
 
 const pmrRouter = express.Router();
@@ -176,6 +180,56 @@ pmrRouter.post("/:id/issue", requireAuth, requireRole(storeRoles), async (req, r
       role: req.user?.role,
     });
     return res.status(201).json(result);
+  } catch (e) {
+    return next(e);
+  }
+});
+
+const waiveSchema = z.object({
+  reason: z.enum(PMR_SHORT_ISSUE_WAIVE_REASONS),
+  remarks: z.string().max(4000).optional().nullable(),
+});
+
+pmrRouter.post("/:id/waive-remaining", requireAuth, requireRole(storeRoles), async (req, res, next) => {
+  try {
+    const body = waiveSchema.parse(req.body);
+    const pmr = await waiveRemainingPmrQty(Number(req.params.id), body, {
+      userId: req.user?.userId,
+      role: req.user?.role,
+    });
+    return res.json(pmr);
+  } catch (e) {
+    return next(e);
+  }
+});
+
+pmrRouter.post("/:id/issue-later", requireAuth, requireRole(storeRoles), async (req, res, next) => {
+  try {
+    const pmr = await acknowledgePmrIssueLater(Number(req.params.id), {
+      userId: req.user?.userId,
+      role: req.user?.role,
+    });
+    return res.json(pmr);
+  } catch (e) {
+    return next(e);
+  }
+});
+
+const releaseSchema = z.object({
+  remarks: z.string().max(4000).optional().nullable(),
+});
+
+pmrRouter.post("/:id/release-to-production", requireAuth, requireRole(storeRoles), async (req, res, next) => {
+  try {
+    const body = releaseSchema.parse(req.body ?? {});
+    const pmrId = Number(req.params.id);
+    const pmr = await getProductionMaterialRequestById(pmrId);
+    const result = await releaseWorkOrderMaterialToProduction(
+      pmr.workOrderId,
+      { pmrId, remarks: body.remarks },
+      { userId: req.user?.userId, role: req.user?.role },
+    );
+    return res.json(result);
   } catch (e) {
     return next(e);
   }

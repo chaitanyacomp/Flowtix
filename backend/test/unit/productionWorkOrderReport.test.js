@@ -253,6 +253,7 @@ describe("productionWorkOrderReportService", () => {
     const createdReports = [];
     const pendingReturns = [];
     const stockTransactions = [];
+    let capturedLineCreates = [];
     const db = {
       workOrder: {
         findUnique: async () => ({
@@ -295,6 +296,7 @@ describe("productionWorkOrderReportService", () => {
       productionWorkOrderReport: {
         findUnique: async () => null,
         create: async ({ data }) => {
+          capturedLineCreates = data.lines?.create ?? [];
           const row = { id: 701, ...data };
           createdReports.push(row);
           return row;
@@ -330,9 +332,127 @@ describe("productionWorkOrderReportService", () => {
       assert.equal(pendingReturns[0].status, "PENDING");
       assert.equal(stockTransactions.length, 0);
       assert.equal(result.returnPendingCount, 1);
+      assert.equal(capturedLineCreates.length, 1);
+      assert.equal(capturedLineCreates[0].scrapWasteQty, "0");
     } finally {
       require(returnPath).buildReturnableLinesForWorkOrder = origReturn;
       delete require.cache[reportPath];
     }
+  });
+
+  it("confirmProductionWorkOrderReport auto-calculates scrap as issued minus consumed minus return", async () => {
+    const returnPath = require.resolve("../../src/services/materialReturnService");
+    const reportPath = require.resolve("../../src/services/productionWorkOrderReportService");
+    const origReturn = require(returnPath).buildReturnableLinesForWorkOrder;
+    require(returnPath).buildReturnableLinesForWorkOrder = async () => ({
+      lines: [
+        {
+          itemId: 7,
+          itemName: "PP",
+          unit: "Kg",
+          grossIssuedQty: 12,
+          consumedQty: 8,
+          returnedQty: 0,
+          returnableQty: 4,
+          unusedQty: 4,
+        },
+      ],
+    });
+    delete require.cache[reportPath];
+    const { confirmProductionWorkOrderReport: confirmReport } = require(reportPath);
+
+    let capturedLineCreates = [];
+    const db = {
+      workOrder: {
+        findUnique: async () => ({
+          id: 15,
+          docNo: "WO-26-0001",
+          status: "IN_PROGRESS",
+          lines: [{ id: 150, fgItemId: 5, qty: 10, plannedQty: 10, fgItem: { id: 5, itemName: "FG", unit: "Nos" } }],
+          salesOrder: { id: 1, docNo: "SO-1", orderType: "NORMAL", customer: { name: "Acme" } },
+          requirementSheet: null,
+          cycle: null,
+          productionExecution: null,
+        }),
+        update: async ({ data }) => ({ id: 15, ...data }),
+      },
+      productionEntry: {
+        findMany: async () => [
+          {
+            id: 501,
+            docNo: "PE-501",
+            date: new Date("2026-06-01"),
+            producedQty: 10,
+            workOrderLine: { id: 150, fgItemId: 5, fgItem: { id: 5, itemName: "FG", unit: "Nos" } },
+            qcEntries: [],
+            rmConsumptions: [
+              {
+                itemId: 7,
+                standardQty: 8,
+                actualQty: 8,
+                varianceQty: 0,
+                variancePercent: 0,
+                consumptionType: "NORMAL",
+                remarks: null,
+                item: { id: 7, itemName: "PP", unit: "Kg" },
+              },
+            ],
+          },
+        ],
+        groupBy: async () => [{ workOrderLineId: 150, _sum: { producedQty: 10 } }],
+      },
+      productionWorkOrderReport: {
+        findUnique: async () => null,
+        create: async ({ data }) => {
+          capturedLineCreates = data.lines?.create ?? [];
+          return { id: 701, ...data };
+        },
+      },
+      productionRmReturnPending: { create: async ({ data }) => ({ id: 1, ...data }) },
+      auditLog: { findMany: async () => [], create: async () => ({ id: 1 }) },
+    };
+
+    try {
+      await confirmReport(db, 15, { lines: [{ itemId: 7, rmConsumedQty: 8, rmReturnQty: 2 }] }, { userId: 9 });
+      assert.equal(capturedLineCreates.length, 1);
+    assert.equal(capturedLineCreates[0].scrapWasteQty, "2");
+    assert.equal(capturedLineCreates[0].varianceQty, "4");
+  } finally {
+    require(returnPath).buildReturnableLinesForWorkOrder = origReturn;
+    delete require.cache[reportPath];
+  }
+  });
+
+  it("buildRmDispositionSummaryForWorkOrder is finalized when report confirmed and no open pending", async () => {
+    const reportPath = require.resolve("../../src/services/productionWorkOrderReportService");
+    delete require.cache[reportPath];
+    const { buildRmDispositionSummaryForWorkOrder } = require(reportPath);
+    const db = {
+      productionWorkOrderReport: {
+        findUnique: async () => ({
+          status: "CONFIRMED",
+          lines: [
+            {
+              itemId: 7,
+              rmIssuedQty: "74",
+              rmConsumedQty: "70.665",
+              rmReturnQty: "3",
+              scrapWasteQty: "0.335",
+              item: { itemName: "PP", unit: "Kg" },
+            },
+          ],
+          returnPendings: [],
+        }),
+      },
+      productionRmReturnPending: {
+        count: async () => 0,
+      },
+    };
+    const summary = await buildRmDispositionSummaryForWorkOrder(db, 15);
+    assert.equal(summary.finalized, true);
+    assert.equal(summary.lines.length, 1);
+    assert.equal(summary.lines[0].returnedQty, 3);
+    assert.equal(summary.lines[0].wastageQty, 0.335);
+    assert.equal(summary.lines[0].returnableQty, 0);
   });
 });

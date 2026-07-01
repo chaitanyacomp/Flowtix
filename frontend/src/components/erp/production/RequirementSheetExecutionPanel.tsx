@@ -637,7 +637,7 @@ export function RequirementSheetExecutionPanel({
             data-testid="execution-create-suggested-wo"
             onClick={() => void submitPlacement("suggested")}
           >
-            {submitBusy ? "Placing..." : "Create Suggested WO"}
+            {submitBusy ? "Placing..." : "Create Suggested WOs"}
           </Button>
           <Button
             type="button"

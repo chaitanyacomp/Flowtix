@@ -14,7 +14,8 @@ export type ErpRefreshScope =
   | "sales"
   | "requirement"
   | "workorders"
-  | "customer-tracking";
+  | "customer-tracking"
+  | "pending-actions";
 
 export const ERP_REFRESH_EVENT = "erp:data-changed";
 
@@ -93,6 +94,9 @@ export function erpRefreshScopesForMutation(path: string, method: string): ErpRe
   }
   if (p.includes("qc") || p.includes("scrap")) {
     scopes.add("qc");
+    scopes.add("pending-actions");
+    scopes.add("dispatch");
+    scopes.add("stock");
   }
   if (p.includes("/dispatch")) {
     scopes.add("dispatch");

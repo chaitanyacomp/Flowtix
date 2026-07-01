@@ -65,7 +65,9 @@ import {
   buildQualityQueueRows,
   formatQcCompletionMessage,
   qcCompletionPostActionHash,
+  resolvePostQcSaveAdvance,
   resolveQcCompletionOutcome,
+  sortPendingQcByProductionFifo,
   type QualityQueueRow,
 } from "../lib/qcWorkspaceUx";
 
@@ -891,7 +893,7 @@ export function QcEntryPage() {
     }
 
     if (focusWorkOrderId) {
-      const match = rows.find((r) => safeWorkOrderIdForRow(r) === focusWorkOrderId);
+      const match = rows.find((r) => safeWorkOrderIdForRow(r) === focusWorkOrderId && safeQcRollupsForRow(r).pending > 1e-6);
       if (match) {
         setProductionId(match.id);
         if (searchParams.get(DRILL_QUERY.productionId) !== String(match.id)) {
@@ -906,15 +908,25 @@ export function QcEntryPage() {
       return;
     }
 
-    if (productionIdFromUrl > 0 && rows.some((r) => r.id === productionIdFromUrl)) {
+    if (
+      productionIdFromUrl > 0 &&
+      rows.some((r) => r.id === productionIdFromUrl && safeQcRollupsForRow(r).pending > 1e-6)
+    ) {
       setProductionId(productionIdFromUrl);
       return;
     }
 
     setProductionId((cur) => {
-      if (rows.some((r) => r.id === cur)) return cur;
-      const sorted = [...rows].sort((a, b) => safeQcRollupsForRow(b).pending - safeQcRollupsForRow(a).pending);
-      return sorted[0]?.id ?? 0;
+      if (rows.some((r) => r.id === cur && safeQcRollupsForRow(r).pending > 1e-6)) return cur;
+      const sorted = sortPendingQcByProductionFifo(
+        rows.map((r) => ({
+          row: r,
+          productionId: safeProductionRowId(r),
+          pendingQty: safeQcRollupsForRow(r).pending,
+          date: safeIsoDate(r),
+        })),
+      );
+      return sorted[0]?.row.id ?? 0;
     });
   }, [listReady, rows, focusWorkOrderId, productionIdFromUrl, navigate, patch, searchParams]);
 
@@ -1619,20 +1631,22 @@ export function QcEntryPage() {
         navigate({ hash: postHash }, { replace: true });
       }
       const list = await refresh();
-      const sorted = [...list].sort((a, b) => safeQcRollupsForRow(b).pending - safeQcRollupsForRow(a).pending);
-      if (sorted.length === 0) {
+      const pendingAfterSave = list.map((r) => ({
+        row: r,
+        productionId: safeProductionRowId(r),
+        pendingQty: safeQcRollupsForRow(r).pending,
+        date: safeIsoDate(r),
+      }));
+      const advance = resolvePostQcSaveAdvance({
+        savedProductionId: prevProdId,
+        freshPending: pendingAfterSave,
+      });
+      if (advance.productionId == null) {
         setProductionId(0);
         patch({ [DRILL_QUERY.productionId]: null });
-      } else if (sorted.length === 1) {
-        setProductionId(sorted[0].id);
-        patch({ [DRILL_QUERY.productionId]: String(sorted[0].id) });
       } else {
-        const i = sorted.findIndex((r) => r.id === prevProdId);
-        let next = sorted[0];
-        if (i >= 0 && i < sorted.length - 1) next = sorted[i + 1];
-        else if (i === sorted.length - 1) next = sorted[0];
-        setProductionId(next.id);
-        patch({ [DRILL_QUERY.productionId]: String(next.id) });
+        setProductionId(advance.productionId);
+        patch({ [DRILL_QUERY.productionId]: String(advance.productionId) });
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed");
@@ -1725,8 +1739,11 @@ export function QcEntryPage() {
         const da = qa.pending > 1e-6 ? 0 : 1;
         const db = qb.pending > 1e-6 ? 0 : 1;
         if (da !== db) return da - db;
-        if (Math.abs(qb.pending - qa.pending) > 1e-9) return qb.pending - qa.pending;
-        return Number((b as any)?.id ?? 0) - Number((a as any)?.id ?? 0);
+        const ta = safeIsoDate(a) ? new Date(safeIsoDate(a)).getTime() : Number.POSITIVE_INFINITY;
+        const tb = safeIsoDate(b) ? new Date(safeIsoDate(b)).getTime() : Number.POSITIVE_INFINITY;
+        if (Number.isFinite(ta) && Number.isFinite(tb) && ta !== tb) return ta - tb;
+        if (Number.isFinite(ta) !== Number.isFinite(tb)) return Number.isFinite(ta) ? -1 : 1;
+        return safeProductionRowId(a) - safeProductionRowId(b);
       });
       return list;
     } catch {
@@ -1736,15 +1753,20 @@ export function QcEntryPage() {
 
   const qcQueueRows = React.useMemo(() => {
     // Queue panel focuses on batches that still have something to inspect (pending > 0).
-    const eps = 1e-6;
     try {
-      return (Array.isArray(productionBatchesAll) ? productionBatchesAll : [])
+      const pending = (Array.isArray(productionBatchesAll) ? productionBatchesAll : [])
         .map((r) => {
           const q = safeQcRollupsForRow(r);
-          return { r, q, status: qcStatusForRollups(q) };
-        })
-        .filter(({ q }) => q.pending > eps)
-        .sort((a, b) => b.q.pending - a.q.pending);
+          return {
+            r,
+            q,
+            status: qcStatusForRollups(q),
+            productionId: safeProductionRowId(r),
+            pendingQty: q.pending,
+            date: safeIsoDate(r),
+          };
+        });
+      return sortPendingQcByProductionFifo(pending);
     } catch {
       return [];
     }

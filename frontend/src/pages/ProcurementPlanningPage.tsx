@@ -8,7 +8,7 @@ import * as React from "react";
 
 import { Link, useSearchParams } from "react-router-dom";
 
-import { ArrowLeft, ChevronDown, ChevronRight, RefreshCw } from "lucide-react";
+import { ChevronDown, ChevronRight, RefreshCw } from "lucide-react";
 
 import { apiFetch } from "../services/api";
 import { useToast } from "../contexts/ToastContext";
@@ -20,7 +20,7 @@ import { Badge } from "../components/ui/badge";
 
 import { cn } from "../lib/utils";
 
-import { PageContainer, StickyWorkspaceHead } from "../components/PageHeader";
+import { PageContainer, StickyWorkspaceHead, ERPBackNavigation } from "../components/PageHeader";
 
 import { ErpKpiLabel, ErpKpiSegment, ErpKpiStrip, ErpKpiValue } from "../components/erp/foundation";
 
@@ -1070,19 +1070,7 @@ export function ProcurementPlanningPage() {
 
           <div className="min-w-0">
 
-            <Link
-
-              to="/rm-po-grn"
-
-              className="mb-1 inline-flex items-center gap-1 text-sm text-slate-600 hover:text-slate-900"
-
-            >
-
-              <ArrowLeft className="h-4 w-4" />
-
-              RM Purchase &amp; GRN
-
-            </Link>
+            <ERPBackNavigation defaultTo="/rm-po-grn" defaultLabel="Back to RM Purchase" />
 
             <h1 className="text-xl font-extrabold tracking-tight text-slate-900">{PROCUREMENT_TERMS.WORKSPACE_TITLE}</h1>
 

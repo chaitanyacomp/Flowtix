@@ -246,6 +246,9 @@ export function RmPoSupplierDocument({ po, poDate, companyProfile, className }: 
             <div className="procurement-doc-body-text mt-0.5 text-slate-600">
               Date: {formatPoDocumentDate(poDate)}
             </div>
+            <div className="procurement-doc-body-text mt-0.5 text-slate-600" data-testid="rm-po-supplier-po-number">
+              Supplier PO No.: <span className="font-semibold text-slate-900">{po.supplierPoNumber || "—"}</span>
+            </div>
             <span
               className={cn(
                 "rm-po-screen-only mt-2 inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-bold uppercase tracking-wide",

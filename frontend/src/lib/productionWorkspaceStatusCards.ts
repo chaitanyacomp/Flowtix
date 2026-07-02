@@ -63,7 +63,7 @@ export function buildProductionWorkspaceStatusCounts(
 
 export const PRODUCTION_STATUS_CARD_LABELS: Record<ProductionWorkspaceStatusBucket, string> = {
   readyToStart: "Ready to Start",
-  waitingRmReturn: "Waiting for Store RM Return",
+  waitingRmReturn: "Pending Store Tasks",
   shortfallDecision: "Ready for Shortfall Decision",
   pendingQa: "Pending QA",
 };

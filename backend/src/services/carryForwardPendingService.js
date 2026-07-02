@@ -139,6 +139,36 @@ async function consumeCarryForwardPendingForRequirementSheet(
   return { consumed };
 }
 
+async function createCarryForwardPendingFromProductionShortfall(
+  tx,
+  {
+    workOrder,
+    workOrderLine,
+    remainderQty,
+    resolutionReason,
+    remarks,
+    productionShortfallResolutionId,
+    actorUserId,
+  },
+) {
+  return tx.carryForwardPending.create({
+    data: {
+      itemId: workOrderLine.fgItemId,
+      salesOrderId: workOrder.salesOrderId,
+      sourceRequirementSheetId: workOrder.requirementSheetId ?? null,
+      sourceWorkOrderId: workOrder.id,
+      cycleId: workOrder.cycleId ?? null,
+      remainingQty: String(round3(remainderQty)),
+      resolutionReason,
+      resolutionReasonOther: resolutionReason === "OTHER" ? String(remarks ?? "").trim() : null,
+      remarks: remarks?.trim() || null,
+      status: "PENDING",
+      createdByUserId: actorUserId ?? null,
+      productionShortfallResolutionId,
+    },
+  });
+}
+
 async function updatePlannedNextRsHint(db, carryForwardPendingId, { plannedNextRsHint, actorUserId, actorRole }) {
   const row = await db.carryForwardPending.findUnique({ where: { id: carryForwardPendingId } });
   if (!row || row.status !== "PENDING") {
@@ -212,6 +242,7 @@ async function loadPendingCarryForwardQtyByItem(db, { salesOrderId, currentCycle
 module.exports = {
   listCarryForwardPending,
   consumeCarryForwardPendingForRequirementSheet,
+  createCarryForwardPendingFromProductionShortfall,
   updatePlannedNextRsHint,
   loadPendingCarryForwardQtyByItem,
   ageDaysFrom,

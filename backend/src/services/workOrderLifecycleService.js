@@ -7,7 +7,6 @@ const { prisma } = require("../utils/prisma");
 const { getApprovedProducedQtyByWorkOrderLineIds } = require("./productionMetrics");
 const { assertRegularProductionRmReadiness } = require("./productionRmReadinessService");
 const auditLog = require("./auditLog");
-const { assertNoOpenProductionRmReturnPending } = require("./productionRmReturnPendingGuard");
 
 const EPS = 1e-6;
 
@@ -280,10 +279,6 @@ async function assertProductionReportConfirmedForWorkOrder(tx, workOrderId) {
   return report;
 }
 
-async function assertNoOpenProductionRmReturnPendingForWorkOrder(tx, workOrderId) {
-  return assertNoOpenProductionRmReturnPending(tx, workOrderId);
-}
-
 /**
  * @param {import('@prisma/client').Prisma.TransactionClient} tx
  */
@@ -307,7 +302,6 @@ async function closeWorkOrderWithShortfall(tx, workOrderId, { closureReason, act
     throw err;
   }
   await assertProductionReportConfirmedForWorkOrder(tx, workOrderId);
-  await assertNoOpenProductionRmReturnPendingForWorkOrder(tx, workOrderId);
 
   const reason = String(closureReason || "").trim();
   if (reason.length < 3) {

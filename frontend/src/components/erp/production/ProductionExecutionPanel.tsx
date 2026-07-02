@@ -7,7 +7,6 @@ import {
   resumeProductionExecutionApi,
   type ProductionBlockReason,
   type ProductionExecutionSummary,
-  type ProductionResolutionReason,
 } from "../../../lib/productionExecutionApi";
 import { useToast } from "../../../contexts/ToastContext";
 import { cn } from "../../../lib/utils";
@@ -15,7 +14,6 @@ import { ErpModal } from "../ErpModal";
 import { Button } from "../../ui/button";
 import {
   buildProductionDecisionConfirmDialog,
-  CARRY_FORWARD_REASON_OPTIONS,
   completionEvaluationSignature,
   formatExecutionStatusSummary,
   formatProductionCompletionSuccessMessage,
@@ -32,8 +30,11 @@ import {
   type ProductionExecutionClosedOutcome,
   type ShortfallDecisionChoice,
   type PausedShortfallDecisionChoice,
-  WAIVE_REASON_OPTIONS,
 } from "../../../lib/productionCompletionUx";
+import { formatScopedWorkOrderCompletionMessage } from "../../../lib/productionScopedWorkspaceState";
+import {
+  shouldShowPauseWorkOrderAction,
+} from "../../../lib/productionWorkspaceCompactUx";
 
 const EPS = 1e-6;
 
@@ -47,6 +48,13 @@ type Props = {
   evaluateTick?: number;
   /** Approved batch qty that triggered the latest evaluate tick. */
   evaluateBatchQty?: number;
+  layoutMode?: "default" | "compact-closure";
+  productionReportConfirmed?: boolean;
+  reportStatusResolved?: boolean;
+  executionSummary?: ProductionExecutionSummary | null;
+  executionResolved?: boolean;
+  workOrderLabel?: string;
+  itemName?: string | null;
   onChanged?: () => void;
   /** Latest execution read model for parent (hide production entry when shortfall pending). */
   onSummaryChange?: (summary: ProductionExecutionSummary | null) => void;
@@ -64,6 +72,12 @@ export function ProductionExecutionPanel({
   refreshKey = 0,
   evaluateTick = 0,
   evaluateBatchQty = 0,
+  layoutMode = "default",
+  productionReportConfirmed = false,
+  reportStatusResolved = false,
+  executionResolved = false,
+  workOrderLabel,
+  itemName,
   onChanged,
   onSummaryChange,
   onExecutionClosed,
@@ -72,18 +86,16 @@ export function ProductionExecutionPanel({
   const [summary, setSummary] = React.useState<ProductionExecutionSummary | null>(null);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
-  const [shortfallChoice, setShortfallChoice] = React.useState<ShortfallDecisionChoice>("waive");
+  const [shortfallChoice, setShortfallChoice] = React.useState<ShortfallDecisionChoice>("close");
   const [pausedShortfallChoice, setPausedShortfallChoice] = React.useState<PausedShortfallDecisionChoice>("resume");
-  const [waiveReason, setWaiveReason] = React.useState<ProductionResolutionReason>("MANAGEMENT_DECISION");
-  const [carryReason, setCarryReason] = React.useState<ProductionResolutionReason>("CAPACITY_CONSTRAINT");
   const [pauseReason, setPauseReason] = React.useState<ProductionBlockReason>("MACHINE_BREAKDOWN");
-  const [waiveRemarks, setWaiveRemarks] = React.useState("");
-  const [carryRemarks, setCarryRemarks] = React.useState("");
   const [pauseRemarks, setPauseRemarks] = React.useState("");
   const [pendingConfirm, setPendingConfirm] = React.useState<ProductionDecisionConfirmKind | null>(null);
+  const [compactInlineAction, setCompactInlineAction] = React.useState<"pause" | null>(null);
   const autoEvaluatedRef = React.useRef<string | null>(null);
 
   const isNoQty = String(orderType ?? "").toUpperCase() === "NO_QTY";
+  const isCompactClosure = layoutMode === "compact-closure";
 
   const reload = React.useCallback(async () => {
     if (!isNoQty || !canOperate || !workOrderId) return null;
@@ -96,6 +108,7 @@ export function ProductionExecutionPanel({
       return data;
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to load production status.");
+      onSummaryChange?.(null);
       return null;
     } finally {
       setLoading(false);
@@ -104,6 +117,16 @@ export function ProductionExecutionPanel({
 
   React.useEffect(() => {
     if (!workOrderId) onSummaryChange?.(null);
+  }, [workOrderId, onSummaryChange]);
+
+  React.useEffect(() => {
+    setSummary(null);
+    setError(null);
+    setLoading(false);
+    setPendingConfirm(null);
+    setCompactInlineAction(null);
+    autoEvaluatedRef.current = null;
+    onSummaryChange?.(null);
   }, [workOrderId, onSummaryChange]);
 
   React.useEffect(() => {
@@ -172,14 +195,14 @@ export function ProductionExecutionPanel({
       autoEvaluatedRef.current = sig;
 
       if (shouldEvaluateShortfall) {
-        setShortfallChoice("waive");
+        setShortfallChoice("close");
         return;
       }
-      if (shouldEvaluateComplete) {
+      if (shouldEvaluateComplete && !isCompactClosure) {
         setPendingConfirm(scenario === "SURPLUS" ? "surplus" : "finish");
       }
     },
-    [],
+    [isCompactClosure],
   );
 
   React.useEffect(() => {
@@ -197,50 +220,22 @@ export function ProductionExecutionPanel({
   const showResolutionPanel = shouldShowShortfallResolutionPanel(summary);
   const showPanel = shouldShowProductionExecutionPanel(summary);
 
-  if (loading && !summary) {
-    return (
-      <div className="rounded-lg border border-slate-200 bg-slate-50/80 p-3 text-sm text-slate-600">
-        Loading production status…
-      </div>
-    );
-  }
-
-  if (!showPanel) return null;
-
   async function handleResume() {
     autoEvaluatedRef.current = null;
+    setCompactInlineAction(null);
     await runAction(() => resumeProductionExecutionApi(workOrderId));
   }
 
-  async function handleWaive() {
-    const { ok, result } = await runAction(
-      () =>
-        finishProductionExecutionApi(workOrderId, {
-          shortfallOutcome: "WAIVE_BALANCE",
-          resolutionReason: waiveReason,
-          remarks: waiveRemarks.trim() || null,
-        }),
-      { skipParentRefresh: Boolean(onExecutionClosed) },
-    );
-    if (ok) {
-      toast.showSuccess(
-        formatProductionWorkflowSuccessMessage("WAIVE_BALANCE", summary, result?.successMessage),
-      );
-      await notifyExecutionClosed("WAIVE_BALANCE");
-    }
-  }
-
-  async function handleCarryForward() {
+  async function handleCloseWithShortage() {
     const { ok, result } = await runAction(
       () =>
         finishProductionExecutionApi(workOrderId, {
           shortfallOutcome: "CARRY_FORWARD",
-          resolutionReason: carryReason,
-          remarks: carryRemarks.trim() || null,
         }),
       { skipParentRefresh: Boolean(onExecutionClosed) },
     );
     if (ok) {
+      setCompactInlineAction(null);
       toast.showSuccess(
         formatProductionWorkflowSuccessMessage("CARRY_FORWARD", summary, result?.successMessage),
       );
@@ -259,6 +254,7 @@ export function ProductionExecutionPanel({
     );
     if (ok) {
       autoEvaluatedRef.current = null;
+      setCompactInlineAction(null);
       toast.showSuccess(formatProductionWorkflowSuccessMessage("PAUSE", summary));
       await notifyExecutionClosed("PAUSE");
     }
@@ -268,8 +264,7 @@ export function ProductionExecutionPanel({
   const activePausedShortfall = PAUSED_SHORTFALL_DECISION_CHOICES.find((c) => c.id === pausedShortfallChoice)!;
 
   function requestShortfallConfirm() {
-    if (shortfallChoice === "waive") setPendingConfirm("waive");
-    else if (shortfallChoice === "carry") setPendingConfirm("carry");
+    if (shortfallChoice === "close") setPendingConfirm("close_shortfall");
     else setPendingConfirm("pause");
   }
 
@@ -278,8 +273,7 @@ export function ProductionExecutionPanel({
       void handleResume();
       return;
     }
-    if (pausedShortfallChoice === "waive") setPendingConfirm("resume_waive");
-    else setPendingConfirm("resume_carry");
+    setPendingConfirm("resume_close_shortfall");
   }
 
   async function executePendingConfirm() {
@@ -287,8 +281,7 @@ export function ProductionExecutionPanel({
     const kind = pendingConfirm;
     setPendingConfirm(null);
     if (kind === "pause") await handlePause();
-    else if (kind === "carry" || kind === "resume_carry") await handleCarryForward();
-    else if (kind === "waive" || kind === "resume_waive") await handleWaive();
+    else if (kind === "close_shortfall" || kind === "resume_close_shortfall") await handleCloseWithShortage();
     else if (kind === "surplus") await handleFinishComplete(summary, "SURPLUS");
     else if (kind === "finish") await handleFinishComplete(summary, "COMPLETE");
   }
@@ -297,6 +290,144 @@ export function ProductionExecutionPanel({
     pendingConfirm && summary
       ? buildProductionDecisionConfirmDialog(pendingConfirm, summary)
       : null;
+
+  const confirmModal = confirmDialog ? (
+    <ErpModal
+      onClose={() => setPendingConfirm(null)}
+      aria-labelledby="production-decision-confirm-title"
+      escapeDisabled={() => loading}
+    >
+      <div className="w-full max-w-md space-y-4 rounded-lg bg-white p-4 shadow-xl">
+        <div id="production-decision-confirm-title" className="text-base font-semibold text-slate-900">
+          {confirmDialog.title}
+        </div>
+        <div className="space-y-1 text-sm text-slate-700">
+          {confirmDialog.lines.map((line) => (
+            <p key={line}>{line}</p>
+          ))}
+        </div>
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="outline" disabled={loading} onClick={() => setPendingConfirm(null)}>
+            Cancel
+          </Button>
+          <Button type="button" disabled={loading} onClick={() => void executePendingConfirm()}>
+            {loading ? "Working…" : confirmDialog.confirmLabel}
+          </Button>
+        </div>
+      </div>
+    </ErpModal>
+  ) : null;
+
+  if (isCompactClosure) {
+    const planned = Number(summary?.plannedQty ?? 0);
+    const produced = Number(summary?.producedQty ?? 0);
+    const showPause = shouldShowPauseWorkOrderAction({
+      producedQty: produced,
+      plannedQty: planned,
+      showPausedShortfall: showPausedShortfallDecision,
+      isDone,
+    });
+
+    if (loading && !executionResolved) {
+      return <p className="text-[13px] font-medium text-slate-600">Loading…</p>;
+    }
+
+    return (
+      <>
+        <div className="space-y-2" data-testid="production-closure-compact">
+          {error ? <div className="text-[13px] font-medium text-red-700">{error}</div> : null}
+          {isDone ? (
+            <p
+              className="text-[13px] font-semibold text-emerald-800"
+              data-testid="production-scoped-completion-message"
+            >
+              {formatScopedWorkOrderCompletionMessage(
+                workOrderLabel ?? (summary?.workOrderDocNo ? String(summary.workOrderDocNo) : `WO #${workOrderId}`),
+                itemName ?? summary?.lines?.[0]?.fgItemName ?? null,
+              )}
+            </p>
+          ) : null}
+          {showPanel && (executionResolved || summary) ? (
+            <div className="flex flex-wrap gap-2">
+              {showPausedShortfallDecision ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-9 px-3 text-[13px] font-semibold"
+                  onClick={() => void handleResume()}
+                >
+                  Resume Production
+                </Button>
+              ) : null}
+              {showPause ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-9 px-3 text-[13px] font-semibold"
+                  data-testid="pause-work-order-btn"
+                  onClick={() => setCompactInlineAction(compactInlineAction === "pause" ? null : "pause")}
+                >
+                  Pause Work Order
+                </Button>
+              ) : null}
+            </div>
+          ) : null}
+          {compactInlineAction === "pause" ? (
+            <div className="space-y-2 rounded-md border border-slate-200 bg-slate-50/90 p-2.5 text-[13px]">
+              <label className="block">
+                <span className="font-semibold text-slate-700">Pause reason</span>
+                <select
+                  className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-[13px] text-slate-900"
+                  value={pauseReason}
+                  onChange={(e) => setPauseReason(e.target.value as ProductionBlockReason)}
+                >
+                  {PAUSE_REASON_OPTIONS.map((r) => (
+                    <option key={r} value={r}>
+                      {blockReasonDisplayLabel(r)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="block">
+                <span className="font-semibold text-slate-700">
+                  Remarks{pauseReason === "OTHER" ? " (required)" : ""}
+                </span>
+                <textarea
+                  className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-[13px] text-slate-900"
+                  rows={2}
+                  value={pauseRemarks}
+                  onChange={(e) => setPauseRemarks(e.target.value)}
+                />
+              </label>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-9 px-3 text-[13px] font-semibold"
+                disabled={loading}
+                onClick={() => void handlePause()}
+              >
+                Confirm pause
+              </Button>
+            </div>
+          ) : null}
+        </div>
+        {confirmModal}
+      </>
+    );
+  }
+
+  if (loading && !summary) {
+    return (
+      <div className="rounded-lg border border-slate-200 bg-slate-50/80 p-3 text-sm text-slate-600">
+        Loading production status…
+      </div>
+    );
+  }
+
+  if (!showPanel) return null;
 
   return (
     <>
@@ -360,12 +491,14 @@ export function ProductionExecutionPanel({
           >
             <div>
               <div className="text-[13px] font-semibold text-slate-900">
-                {showPausedShortfallDecision ? "Production paused with remaining qty" : "Produced less than WO quantity"}
-              </div>
-              <p className="text-[12px] text-slate-600">
                 {showPausedShortfallDecision
-                  ? "Resume to keep producing, or close the WO by waiving or carrying forward the remainder."
-                  : "Choose how to handle the remaining qty."}
+                  ? "Production paused with remaining qty"
+                  : "Production completed below Work Order quantity"}
+              </div>
+                  <p className="text-[12px] text-slate-600">
+                {showPausedShortfallDecision
+                  ? "Resume to keep producing, or close this Work Order. The remaining qty will carry forward automatically."
+                  : "How would you like to close this Work Order?"}
               </p>
             </div>
 
@@ -403,9 +536,7 @@ export function ProductionExecutionPanel({
                         pausedShortfallChoice === choice.id
                           ? choice.id === "resume"
                             ? "bg-sky-700 text-white shadow-sm"
-                            : choice.id === "waive"
-                              ? "bg-slate-800 text-white shadow-sm"
-                              : "bg-violet-700 text-white shadow-sm"
+                            : "bg-slate-800 text-white shadow-sm"
                           : "text-slate-700 hover:bg-white",
                       )}
                       onClick={() => setPausedShortfallChoice(choice.id)}
@@ -416,69 +547,11 @@ export function ProductionExecutionPanel({
                 </div>
                 <div className="space-y-2 rounded border border-slate-200 p-2" role="tabpanel">
                   <p className="text-[11px] leading-snug text-slate-600">{activePausedShortfall.description}</p>
-                  {pausedShortfallChoice === "waive" ? (
-                    <>
-                      <label className="block text-[11px]">
-                        <span className="text-slate-600">Reason</span>
-                        <select
-                          className="mt-0.5 w-full rounded border px-2 py-1 text-[12px]"
-                          value={waiveReason}
-                          onChange={(e) => setWaiveReason(e.target.value as ProductionResolutionReason)}
-                        >
-                          {WAIVE_REASON_OPTIONS.map((r) => (
-                            <option key={r} value={r}>
-                              {blockReasonDisplayLabel(r)}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="block text-[11px]">
-                        <span className="text-slate-600">Remarks{waiveReason === "OTHER" ? " (required)" : ""}</span>
-                        <textarea
-                          className="mt-0.5 w-full rounded border px-2 py-1 text-[12px]"
-                          rows={1}
-                          value={waiveRemarks}
-                          onChange={(e) => setWaiveRemarks(e.target.value)}
-                        />
-                      </label>
-                    </>
-                  ) : null}
-                  {pausedShortfallChoice === "carry" ? (
-                    <>
-                      <label className="block text-[11px]">
-                        <span className="text-slate-600">Reason</span>
-                        <select
-                          className="mt-0.5 w-full rounded border px-2 py-1 text-[12px]"
-                          value={carryReason}
-                          onChange={(e) => setCarryReason(e.target.value as ProductionResolutionReason)}
-                        >
-                          {CARRY_FORWARD_REASON_OPTIONS.map((r) => (
-                            <option key={r} value={r}>
-                              {blockReasonDisplayLabel(r)}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="block text-[11px]">
-                        <span className="text-slate-600">Remarks{carryReason === "OTHER" ? " (required)" : ""}</span>
-                        <textarea
-                          className="mt-0.5 w-full rounded border px-2 py-1 text-[12px]"
-                          rows={1}
-                          value={carryRemarks}
-                          onChange={(e) => setCarryRemarks(e.target.value)}
-                        />
-                      </label>
-                    </>
-                  ) : null}
                   <button
                     type="button"
                     className={cn(
                       "w-full rounded px-3 py-1.5 text-[12px] font-semibold text-white disabled:opacity-50",
-                      pausedShortfallChoice === "resume"
-                        ? "bg-sky-700"
-                        : pausedShortfallChoice === "waive"
-                          ? "bg-slate-800"
-                          : "bg-violet-700",
+                      pausedShortfallChoice === "resume" ? "bg-sky-700" : "bg-slate-800",
                     )}
                     disabled={loading}
                     data-testid="paused-shortfall-confirm"
@@ -505,11 +578,9 @@ export function ProductionExecutionPanel({
                       className={cn(
                         "flex-1 min-w-[5.5rem] rounded px-2 py-1 text-[11px] font-semibold transition-colors",
                         shortfallChoice === choice.id
-                          ? choice.id === "waive"
+                          ? choice.id === "close"
                             ? "bg-slate-800 text-white shadow-sm"
-                            : choice.id === "carry"
-                              ? "bg-violet-700 text-white shadow-sm"
-                              : "bg-amber-700 text-white shadow-sm"
+                            : "bg-amber-700 text-white shadow-sm"
                           : "text-slate-700 hover:bg-white",
                       )}
                       onClick={() => setShortfallChoice(choice.id)}
@@ -521,60 +592,6 @@ export function ProductionExecutionPanel({
 
                 <div className="space-y-2 rounded border border-slate-200 p-2" role="tabpanel">
                   <p className="text-[11px] leading-snug text-slate-600">{activeShortfall.description}</p>
-                  {shortfallChoice === "waive" ? (
-                    <>
-                      <label className="block text-[11px]">
-                        <span className="text-slate-600">Reason</span>
-                        <select
-                          className="mt-0.5 w-full rounded border px-2 py-1 text-[12px]"
-                          value={waiveReason}
-                          onChange={(e) => setWaiveReason(e.target.value as ProductionResolutionReason)}
-                        >
-                          {WAIVE_REASON_OPTIONS.map((r) => (
-                            <option key={r} value={r}>
-                              {blockReasonDisplayLabel(r)}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="block text-[11px]">
-                        <span className="text-slate-600">Remarks{waiveReason === "OTHER" ? " (required)" : ""}</span>
-                        <textarea
-                          className="mt-0.5 w-full rounded border px-2 py-1 text-[12px]"
-                          rows={1}
-                          value={waiveRemarks}
-                          onChange={(e) => setWaiveRemarks(e.target.value)}
-                        />
-                      </label>
-                    </>
-                  ) : null}
-                  {shortfallChoice === "carry" ? (
-                    <>
-                      <label className="block text-[11px]">
-                        <span className="text-slate-600">Reason</span>
-                        <select
-                          className="mt-0.5 w-full rounded border px-2 py-1 text-[12px]"
-                          value={carryReason}
-                          onChange={(e) => setCarryReason(e.target.value as ProductionResolutionReason)}
-                        >
-                          {CARRY_FORWARD_REASON_OPTIONS.map((r) => (
-                            <option key={r} value={r}>
-                              {blockReasonDisplayLabel(r)}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="block text-[11px]">
-                        <span className="text-slate-600">Remarks{carryReason === "OTHER" ? " (required)" : ""}</span>
-                        <textarea
-                          className="mt-0.5 w-full rounded border px-2 py-1 text-[12px]"
-                          rows={1}
-                          value={carryRemarks}
-                          onChange={(e) => setCarryRemarks(e.target.value)}
-                        />
-                      </label>
-                    </>
-                  ) : null}
                   {shortfallChoice === "pause" ? (
                     <>
                       <label className="block text-[11px]">
@@ -606,11 +623,7 @@ export function ProductionExecutionPanel({
                     type="button"
                     className={cn(
                       "w-full rounded px-3 py-1.5 text-[12px] font-semibold text-white disabled:opacity-50",
-                      shortfallChoice === "waive"
-                        ? "bg-slate-800"
-                        : shortfallChoice === "carry"
-                          ? "bg-violet-700"
-                          : "bg-amber-700",
+                      shortfallChoice === "close" ? "bg-slate-800" : "bg-amber-700",
                     )}
                     disabled={loading}
                     data-testid="shortfall-confirm"
@@ -625,32 +638,7 @@ export function ProductionExecutionPanel({
         ) : null}
       </div>
 
-      {confirmDialog ? (
-        <ErpModal
-          onClose={() => setPendingConfirm(null)}
-          aria-labelledby="production-decision-confirm-title"
-          escapeDisabled={() => loading}
-        >
-          <div className="w-full max-w-md space-y-4 rounded-lg bg-white p-4 shadow-xl">
-            <div id="production-decision-confirm-title" className="text-base font-semibold text-slate-900">
-              {confirmDialog.title}
-            </div>
-            <div className="space-y-1 text-sm text-slate-700">
-              {confirmDialog.lines.map((line) => (
-                <p key={line}>{line}</p>
-              ))}
-            </div>
-            <div className="flex justify-end gap-2">
-              <Button type="button" variant="outline" disabled={loading} onClick={() => setPendingConfirm(null)}>
-                Cancel
-              </Button>
-              <Button type="button" disabled={loading} onClick={() => void executePendingConfirm()}>
-                {loading ? "Working…" : confirmDialog.confirmLabel}
-              </Button>
-            </div>
-          </div>
-        </ErpModal>
-      ) : null}
+      {confirmModal}
     </>
   );
 }

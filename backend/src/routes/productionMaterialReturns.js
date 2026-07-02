@@ -107,6 +107,17 @@ productionMaterialReturnRouter.get(
         : null;
       const fromLocationId = req.query.fromLocationId ? Number(req.query.fromLocationId) : null;
       const toLocationId = req.query.toLocationId ? Number(req.query.toLocationId) : null;
+      const itemId = req.query.itemId ? Number(req.query.itemId) : null;
+      const pendingId = req.query.pendingId ? Number(req.query.pendingId) : null;
+      let focusItemId =
+        itemId && Number.isFinite(itemId) && itemId > 0 ? itemId : null;
+      if (!focusItemId && pendingId && Number.isFinite(pendingId) && pendingId > 0) {
+        const pending = await prisma.productionRmReturnPending.findUnique({
+          where: { id: pendingId },
+          select: { itemId: true },
+        });
+        if (pending?.itemId) focusItemId = pending.itemId;
+      }
       const data = await buildReturnableLinesForWorkOrder(prisma, {
         workOrderId,
         productionMaterialRequestId:
@@ -115,6 +126,7 @@ productionMaterialReturnRouter.get(
             : null,
         fromLocationId: fromLocationId && Number.isFinite(fromLocationId) ? fromLocationId : null,
         toLocationId: toLocationId && Number.isFinite(toLocationId) ? toLocationId : null,
+        itemId: focusItemId,
       });
       const disposition = await buildRmDispositionSummaryForWorkOrder(prisma, workOrderId);
       return res.json({ ...data, disposition });

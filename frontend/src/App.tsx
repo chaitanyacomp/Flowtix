@@ -20,6 +20,7 @@ import { CustomersPage } from "./pages/CustomersPage";
 import { ItemsPage } from "./pages/ItemsPage";
 import { OpeningStockPage } from "./pages/OpeningStockPage";
 import { UnitsPage } from "./pages/UnitsPage";
+import { WastageTypesPage } from "./pages/WastageTypesPage";
 import { LocationsPage } from "./pages/LocationsPage";
 import { StockPage } from "./pages/StockPage";
 import { StockItemDetailPage } from "./pages/StockItemDetailPage";
@@ -475,6 +476,14 @@ export default function App() {
           element={
             <ProtectedRoute allowedRoles={["ADMIN", "STORE"]}>
               <UnitsPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/wastage-types"
+          element={
+            <ProtectedRoute allowedRoles={["ADMIN"]}>
+              <WastageTypesPage />
             </ProtectedRoute>
           }
         />

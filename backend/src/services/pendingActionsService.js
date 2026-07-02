@@ -782,7 +782,7 @@ async function fetchProductionRmReturnWaitingActions(db = prisma) {
     return {
       id: `production-rm-return-waiting:wo:${row.workOrderId}`,
       priority: PENDING_PRIORITY.MEDIUM,
-      action: "Waiting for Store RM Return",
+      action: "RM Return Approval Pending",
       documentNo: row.workOrderNo ?? `WO-${row.workOrderId}`,
       ownerRole: "PRODUCTION",
       ageHours: ageHoursFromTimestamp(row.createdAt),

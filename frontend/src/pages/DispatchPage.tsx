@@ -70,7 +70,6 @@ import { DispatchCompactHistoryPanel } from "../components/erp/dispatch/Dispatch
 import {
   resolvePostCompactDispatchQueueRow,
   resolveCompactDispatchSelection,
-  sumDispatchCompactQueueQty,
   isDispatchCompactExecutionMode,
   DISPATCH_DRAFT_DELETE_CONFIRM_MESSAGE,
   buildDispatchSoCompleteMessage,
@@ -78,11 +77,19 @@ import {
   sumCompactDispatchHistoryFinalizedQty,
   dispatchFullTargetQty,
   dispatchPrepareQtyCap,
-  shouldIncludeCompactQueueRow,
   shouldSkipDispatchPrepareAsDuplicate,
-  compactQueueDisplayReadyQty,
   type DispatchCompactQueueRow,
 } from "../lib/dispatchWorkspaceUx";
+import {
+  buildCompactQueueRowsFromSo,
+  readDispatchDraftQty,
+  readDispatchStatusLabel,
+  readOriginalReadyQty,
+  readRemainingDispatchableQty,
+  readSoTotalRemainingDispatchable,
+  sumLineStatsDispatchDraftForItem,
+  sumLineStatsRemainingForItem,
+} from "../lib/dispatchLineQuantities";
 import { bumpErpRefresh } from "../lib/erpRefresh";
 
 /** Soft flag for optional dashboard reminders — user chose “wait” on NORMAL partial dispatch (no API). */
@@ -201,6 +208,13 @@ type LineStat = {
     qcPoolRemaining: { qty: number; metricContext: string };
     dispatchableQty: { qty: number; metricContext: string };
   };
+  /** Authoritative dispatch quantity engine (GET /api/dispatch/sales-orders). */
+  originalReadyQty?: number;
+  dispatchDraftQty?: number;
+  finalizedDispatchQty?: number;
+  remainingDispatchableQty?: number;
+  dispatchStatus?: string;
+  dispatchStatusLabel?: string;
 };
 
 type DispatchWorkflowStatus = "UNLOCKED" | "LOCKED";
@@ -262,6 +276,7 @@ type SoRow = {
   po?: { customer?: { name: string } | null } | null;
   /** True when SO is COMPLETED — no new drafts, locks, or draft deletes (reversal may reopen SO). */
   dispatchReadOnly?: boolean;
+  totalRemainingDispatchableQty?: number;
   lineStats: LineStat[];
   dispatch?: DispatchEvent[];
 };
@@ -514,27 +529,31 @@ function comparePrepareQueueEntries(a: { so: SoRow; ls: LineStat }, b: { so: SoR
   return b.ls.lineId - a.ls.lineId;
 }
 
+function remainingDispatchableForLine(ls: LineStat): number {
+  return readRemainingDispatchableQty(ls);
+}
+
 function computeDispatchableBaseNoDraft(params: {
   so: SoRow;
   ls: LineStat;
 }): number {
-  const { so, ls } = params;
-  if (so.orderType === "NO_QTY") {
-    return computeNoQtyPhysicalDispatchableNow({ so, ls });
-  }
-  const usable = getUsableStock(ls);
-  const soRemaining = confirmedBacklogQty(ls);
-  // REPLACEMENT: server dispatchable is driven by customer-return QC pool minus net dispatch — not global on-hand.
-  if (so.orderType === "REPLACEMENT") {
-    const serverCap = safeNum(ls.dispatchable ?? ls.dispatchableQty);
-    return Math.min(soRemaining, serverCap);
-  }
-  // NORMAL Regular SO: min(confirmed SO backlog, usable FG). Usable stock stays in USABLE until prepare/finalize;
-  // positive headroom is optional capacity (Dispatch UI), not an automatic "next mandatory stage" trigger.
-  return Math.min(soRemaining, usable);
+  return readOriginalReadyQty(params.ls);
 }
 
-/** NO_QTY only: QC + in-cycle disposition→USABLE + post-cycle approvals − same-cycle operational dispatch (matches API). */
+function computeDispatchableNow(params: {
+  so: SoRow;
+  ls: LineStat;
+  /** NO_QTY only: override selected cycle id (ignored — backend line stat is authoritative). */
+  cycleIdOverride?: number | null;
+}): number {
+  return remainingDispatchableForLine(params.ls);
+}
+
+function computeNoQtyAutoReadyQty(params: { so: SoRow; ls: LineStat }): number {
+  return readOriginalReadyQty(params.ls);
+}
+
+/** NO_QTY only: informational cycle QC pool (workbench breakdown — not operational dispatch qty). */
 function computeNoQtyCycleHeadroom(params: { ls: LineStat }): number {
   const { ls } = params;
   const net = safeNum(ls.operationalNetDispatchedQty ?? ls.cycleDispatchedQty ?? 0);
@@ -544,41 +563,8 @@ function computeNoQtyCycleHeadroom(params: { ls: LineStat }): number {
   return Math.max(0, qc + recheck + post - net);
 }
 
-function finiteQtyOrNull(v: unknown): number | null {
-  if (v == null) return null;
-  const n = Number(v);
-  return Number.isFinite(n) ? Math.max(0, n) : null;
-}
-
 function noQtyFreeUsableStockForItem(so: SoRow, itemId: number, usableStock: number): number {
   return Math.max(0, safeNum(usableStock) - totalNoQtyDraftQtyForItem(so, itemId));
-}
-
-function computeNoQtyPhysicalDispatchableNow(params: { so: SoRow; ls: LineStat }): number {
-  const { so, ls } = params;
-  if (so.orderType !== "NO_QTY") return 0;
-  const serverCapped = finiteQtyOrNull(ls.dispatchable ?? ls.dispatchableQty);
-  if (serverCapped != null) return serverCapped;
-  return Math.min(computeNoQtyCycleHeadroom({ ls }), noQtyFreeUsableStockForItem(so, ls.itemId, getUsableStock(ls)));
-}
-
-function computeNoQtyAutoReadyQty(params: { so: SoRow; ls: LineStat }): number {
-  const { so, ls } = params;
-  if (so.orderType !== "NO_QTY") return 0;
-  return computeDispatchableBaseNoDraft({ so, ls });
-}
-
-function computeDispatchableNow(params: {
-  so: SoRow;
-  ls: LineStat;
-  /** NO_QTY only: override selected cycle id */
-  cycleIdOverride?: number | null;
-}): number {
-  const { so, ls, cycleIdOverride } = params;
-  const base = computeDispatchableBaseNoDraft({ so, ls });
-  if (so.orderType === "NO_QTY") return base;
-  const existingDraftQty = draftQtyForSoItem(so, ls.itemId, cycleIdOverride, ls.noQtyCycleId ?? null);
-  return Math.max(0, base - existingDraftQty);
 }
 
 /**
@@ -777,11 +763,7 @@ function computeNoQtyTotalPrepareHeadroomForItem(so: SoRow, itemId: number): num
   const lines = (so.lineStats || []).filter((l) => Number(l.itemId) === Number(itemId));
   const usable = lines.reduce((max, ls) => Math.max(max, getUsableStock(ls)), 0);
   const freeUsable = noQtyFreeUsableStockForItem(so, itemId, usable);
-  let sum = 0;
-  for (const ls of lines) {
-    const cyc = resolveNoQtyDispatchSourceCycleId(so, ls);
-    sum += computeDispatchableNow({ so, ls, cycleIdOverride: cyc });
-  }
+  const sum = sumLineStatsRemainingForItem(lines, itemId);
   return Math.min(sum, freeUsable);
 }
 
@@ -2322,14 +2304,12 @@ export function DispatchPage() {
   const existingDraftQty =
     currentLine && selectedSo
       ? selectedSo.orderType === "NO_QTY"
-        ? totalNoQtyDraftQtyForItem(selectedSo, currentLine.itemId)
-        : draftQtyForSoItem(selectedSo, currentLine.itemId, noQtySelectedCycleId, currentLine.noQtyCycleId ?? null)
+        ? sumLineStatsDispatchDraftForItem(selectedSo.lineStats, currentLine.itemId)
+        : readDispatchDraftQty(currentLine)
       : 0;
 
   const currentDispatchableBase =
-    currentLine && selectedSo
-      ? computeDispatchableBaseNoDraft({ so: selectedSo, ls: currentLine })
-      : 0;
+    currentLine && selectedSo ? readOriginalReadyQty(currentLine) : 0;
 
   const noQtyTotalHeadroomForCurrentItem =
     selectedSo?.orderType === "NO_QTY" && currentLine
@@ -2342,11 +2322,13 @@ export function DispatchPage() {
     noQtyUsableStockForCurrentItem != null &&
     existingDraftQty > noQtyUsableStockForCurrentItem + 1e-9;
 
-  /** Max qty you can enter for prepare = Dispatchable Now (draft-aware). NO_QTY uses summed FIFO pools across cycles. */
+  /** Max qty you can enter for prepare = backend remaining dispatchable. NO_QTY uses summed pools across cycles. */
   const headroomToPrepare =
     selectedSo?.orderType === "NO_QTY" && noQtyTotalHeadroomForCurrentItem != null
       ? noQtyTotalHeadroomForCurrentItem
-      : Math.max(0, currentDispatchableBase - existingDraftQty);
+      : currentLine
+        ? readRemainingDispatchableQty(currentLine)
+        : 0;
   const readyToShip = headroomToPrepare;
   const currentDispatchableQty = headroomToPrepare;
   /** Upper bound for POST /dispatches qty when replacing an existing draft (draft qty + additional headroom). */
@@ -2359,58 +2341,27 @@ export function DispatchPage() {
         })
       : dispatchPrepareQtyCap({ existingDraftQty, headroomToPrepare });
 
-  const buildCompactQueueForSo = React.useCallback((so: SoRow | null | undefined): DispatchCompactQueueRow[] => {
-    if (!so) return [];
-    if (so.orderType === "NO_QTY") {
-      const byItem = new Map<number, DispatchCompactQueueRow>();
-      for (const ls of so.lineStats ?? []) {
-        const headroom = computeNoQtyTotalPrepareHeadroomForItem(so, ls.itemId);
-        const draftQty = totalUnlockedDraftQtyForItem(so, ls.itemId);
-        if (!shouldIncludeCompactQueueRow(headroom, draftQty)) continue;
-        const existing = byItem.get(ls.itemId);
-        const readyQty = compactQueueDisplayReadyQty(headroom, draftQty);
-        const hasOpenDraft = draftQty > 1e-9;
-        if (existing) {
-          existing.readyQty = Math.max(existing.readyQty, readyQty);
-          existing.hasOpenDraft = existing.hasOpenDraft || hasOpenDraft;
-        } else {
-          byItem.set(ls.itemId, {
-            lineId: ls.lineId,
-            itemId: ls.itemId,
-            itemName: ls.itemName,
-            readyQty,
-            hasOpenDraft,
-          });
-        }
-      }
-      return [...byItem.values()].sort((a, b) => a.itemName.localeCompare(b.itemName) || a.itemId - b.itemId);
-    }
-    return (so.lineStats ?? [])
-      .map((ls) => {
-        const headroom = computeDispatchableNow({ so, ls });
-        const draftQty = totalUnlockedDraftQtyForItem(so, ls.itemId);
-        return {
-          lineId: ls.lineId,
-          itemId: ls.itemId,
-          itemName: ls.itemName,
-          headroom,
-          draftQty,
-        };
-      })
-      .filter((row) => shouldIncludeCompactQueueRow(row.headroom, row.draftQty))
-      .map((row) => ({
-        lineId: row.lineId,
-        itemId: row.itemId,
-        itemName: row.itemName,
-        readyQty: compactQueueDisplayReadyQty(row.headroom, row.draftQty),
-        hasOpenDraft: row.draftQty > 1e-9,
-      }))
-      .sort((a, b) => a.itemName.localeCompare(b.itemName) || a.itemId - b.itemId);
-  }, []);
+  const buildCompactQueueForSo = React.useCallback(
+    (so: SoRow | null | undefined): DispatchCompactQueueRow[] => buildCompactQueueRowsFromSo(so ?? {}),
+    [],
+  );
 
   const compactQueueRows = React.useMemo(
     () => (dispatchCompactMode && selectedSo ? buildCompactQueueForSo(selectedSo) : []),
     [dispatchCompactMode, selectedSo, buildCompactQueueForSo, rows],
+  );
+
+  const compactSoTotalRemaining = React.useMemo(
+    () => (selectedSo ? readSoTotalRemainingDispatchable(selectedSo) : 0),
+    [selectedSo],
+  );
+
+  const activeCompactQueueRow = React.useMemo(
+    () =>
+      currentLine?.itemId != null
+        ? compactQueueRows.find((r) => r.itemId === currentLine.itemId) ?? null
+        : null,
+    [compactQueueRows, currentLine?.itemId],
   );
 
   const compactQueueComplete = compactQueueRows.length === 0;
@@ -2436,8 +2387,7 @@ export function DispatchPage() {
         let best = hits[0]!;
         let bestQty = -1;
         for (const ls of hits) {
-          const cyc = resolveNoQtyDispatchSourceCycleId(so, ls, noQtySelectedCycleId);
-          const qty = computeDispatchableNow({ so, ls, cycleIdOverride: cyc });
+          const qty = readRemainingDispatchableQty(ls);
           if (qty > bestQty) {
             bestQty = qty;
             best = ls;
@@ -2457,7 +2407,7 @@ export function DispatchPage() {
       compactSelectionItemIdRef.current = row.itemId;
       if (so.id !== soId) setSoId(so.id);
       if (salesOrderLineId !== ls.lineId) setSalesOrderLineId(ls.lineId);
-      const draftQty = totalUnlockedDraftQtyForItem(so, ls.itemId);
+      const draftQty = row.draftQty > 1e-9 ? row.draftQty : readDispatchDraftQty(ls);
       if (draftQty > 1e-9) {
         setIsPartialMode(true);
         setDispatchQtyStr(String(draftQty));
@@ -2974,6 +2924,7 @@ export function DispatchPage() {
       if (dispatchCompactMode) {
         setDispatchInfo("Dispatch draft saved.");
         setSalesBillStepDispatchId(null);
+        bumpErpRefresh(["dispatch", "dashboard", "pending-actions", "stock"]);
         await loadSalesOrders();
         await loadLedger();
         return;
@@ -4697,12 +4648,21 @@ export function DispatchPage() {
                 focusSo?.customerName ??
                 "—"
               }
-              totalReadyQty={sumDispatchCompactQueueQty(compactQueueRows)}
+              totalReadyQty={compactSoTotalRemaining}
               itemCount={compactQueueRows.length}
               queue={compactQueueRows}
               selectedItemId={currentLine?.itemId ?? null}
               activeItemName={currentLine?.itemName ?? null}
-              activeReadyQty={headroomToPrepare}
+              activeOriginalReadyQty={
+                activeCompactQueueRow?.originalReadyQty ??
+                (currentLine ? readOriginalReadyQty(currentLine) : 0)
+              }
+              activeDraftQty={activeCompactQueueRow?.draftQty ?? existingDraftQty}
+              activeRemainingQty={activeCompactQueueRow?.readyQty ?? headroomToPrepare}
+              activeStatusLabel={
+                activeCompactQueueRow?.statusLabel ??
+                (currentLine ? readDispatchStatusLabel(currentLine) : "—")
+              }
               dispatchQtyStr={dispatchQtyStr}
               isPartialMode={isPartialMode}
               dispatching={dispatching}
@@ -4710,7 +4670,6 @@ export function DispatchPage() {
               canDispatchPartial={partialDispatchQtySubmit}
               dispatchReadOnly={Boolean(selectedSo?.dispatchReadOnly)}
               primaryFinalizeDraftId={primaryFinalizeDraftId}
-              draftQty={existingDraftQty}
               lockingId={lockingId}
               deletingId={deletingId}
               error={error}

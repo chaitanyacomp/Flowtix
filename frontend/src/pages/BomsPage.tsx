@@ -1,8 +1,7 @@
 import * as React from "react";
 import { createPortal } from "react-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
-import { Link } from "react-router-dom";
-import { PageContainer } from "../components/PageHeader";
+import { PageContainer, ERPBackNavigation } from "../components/PageHeader";
 import { apiFetch, ApiRequestError } from "../services/api";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -17,7 +16,7 @@ import {
 } from "../lib/bomMath";
 import { cn } from "../lib/utils";
 import { erpTable } from "../lib/erpFoundationTokens";
-import { ArrowLeft, Ban, CheckCircle2, Copy, MoreHorizontal, Pencil, Plus, Trash2, X } from "lucide-react";
+import { Ban, CheckCircle2, Copy, MoreHorizontal, Pencil, Plus, Trash2, X } from "lucide-react";
 import { Badge } from "../components/ui/badge";
 import { type NumberDraft, toNumberDraft } from "../lib/numberDraft";
 import { useFastEntryForm } from "../hooks/useFastEntryForm";
@@ -358,9 +357,7 @@ function BomPageHeader({
   return (
     <header className="bom-vp-head">
       <div className="flex min-w-0 items-center gap-2">
-        <Link to="/dashboard" className="bom-ws-back" aria-label="Back to Dashboard">
-          <ArrowLeft className="h-4 w-4" strokeWidth={2.5} aria-hidden />
-        </Link>
+        <ERPBackNavigation defaultTo="/dashboard" defaultLabel="Back to Dashboard" />
         <div className="min-w-0">
           <h1 className="bom-vp-title">BOM</h1>
           <p className="bom-vp-sub">Factory recipe for material planning</p>

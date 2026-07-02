@@ -79,17 +79,11 @@ export function ProductionWorkspaceStatusStrip({ className }: { className?: stri
 
   const buckets: ProductionWorkspaceStatusBucket[] = [
     "readyToStart",
-    "waitingRmReturn",
     "shortfallDecision",
     "pendingQa",
   ];
 
   function openBucket(bucket: ProductionWorkspaceStatusBucket) {
-    if (bucket === "waitingRmReturn") {
-      const first = rmPending[0];
-      if (first) navigate(`/production?workOrderId=${first.workOrderId}&from=production-workspace`);
-      return;
-    }
     const row = firstRowForBucket(queueRows, bucket);
     if (row) navigate(productionHrefFromDashboardRow(row));
   }

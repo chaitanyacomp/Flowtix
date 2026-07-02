@@ -5,7 +5,7 @@ import {
 } from "../../src/lib/productionWorkspaceStatusCards";
 
 describe("productionWorkspaceStatusCards", () => {
-  it("classifies shortfall and RM return waiting buckets", () => {
+  it("classifies shortfall and parallel Store task buckets", () => {
     expect(
       classifyProductionQueueBucket({
         workOrderId: 1,

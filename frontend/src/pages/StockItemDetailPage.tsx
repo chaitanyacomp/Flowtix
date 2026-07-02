@@ -3,7 +3,6 @@
  */
 import * as React from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft } from "lucide-react";
 import { apiFetch } from "../services/api";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
@@ -110,7 +109,7 @@ export function StockItemDetailPage() {
   return (
     <OperatorPageBody>
       <div className="mx-auto w-full max-w-[960px] space-y-4">
-        <StickyWorkspaceHead lead={<PageSmartBackLink defaultTo="/stock" defaultLabel="Stock Overview" />}>
+        <StickyWorkspaceHead lead={<PageSmartBackLink defaultTo="/stock" defaultLabel="Back to Stock Overview" />}>
           <div>
             <OperatorPageTitle>{data?.item.itemName ?? "Item stock"}</OperatorPageTitle>
             <p className="mt-1 text-[13px] text-slate-600">
@@ -244,13 +243,6 @@ export function StockItemDetailPage() {
           </>
         ) : null}
 
-        <Link
-          to="/stock"
-          className="inline-flex items-center gap-1 text-[13px] font-medium text-slate-600 hover:text-slate-900"
-        >
-          <ArrowLeft className="h-4 w-4" />
-          Back to stock overview
-        </Link>
       </div>
     </OperatorPageBody>
   );

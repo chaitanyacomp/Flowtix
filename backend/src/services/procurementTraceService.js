@@ -425,6 +425,7 @@ function assembleRmPoProcurementTrace(poRow, stockTransactions = [], purchaseBil
       status: poRow.status,
       supplierId: poRow.supplierId,
       supplierLocationId: poRow.supplierLocationId,
+      supplierPoNumber: poRow.supplierPoNumber,
       remarks: poRow.remarks,
       createdAt: poRow.createdAt,
       updatedAt: poRow.updatedAt,

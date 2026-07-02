@@ -18,8 +18,64 @@ import { productionHrefFromDashboardRow } from "../../lib/operationalWorkspaceLi
 import { NO_QTY_TERMS } from "../../lib/flowTerminology";
 import { useErpRefreshTick } from "../../hooks/useErpRefreshTick";
 
+type RmReturnPendingTaskRow = {
+  id: number;
+  workOrderId: number;
+  workOrderNo: string | null;
+  itemName: string;
+  unit: string;
+  requestedQty: number;
+  status: string;
+};
+
 function flowBadge(orderType?: string | null) {
   return orderType === "NO_QTY" ? NO_QTY_TERMS.AGREEMENT_LABEL : "REGULAR";
+}
+
+export function PendingStoreTasksPanel({ className }: { className?: string }) {
+  const liveTick = useErpRefreshTick(["production", "dashboard"], { pollIntervalMs: 30000 });
+  const [rows, setRows] = React.useState<RmReturnPendingTaskRow[]>([]);
+
+  React.useEffect(() => {
+    let mounted = true;
+    void apiFetch<RmReturnPendingTaskRow[]>("/api/production-material-returns/pending?status=PENDING")
+      .then((data) => {
+        if (mounted) setRows(Array.isArray(data) ? data : []);
+      })
+      .catch(() => {
+        if (mounted) setRows([]);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [liveTick]);
+
+  if (rows.length === 0) return null;
+
+  return (
+    <Card className={cn("min-w-0 overflow-hidden", className)} data-testid="production-pending-store-tasks">
+      <CardHeader className="border-b border-slate-100 bg-white px-2.5 py-1.5">
+        <CardTitle className="text-sm font-semibold tracking-tight text-slate-900">Pending Store Tasks</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-1.5 p-2">
+        {rows.map((row) => (
+          <div key={row.id} className="rounded-md border border-amber-200 bg-amber-50/80 px-2.5 py-2 text-[11px] text-amber-950">
+            <div className="font-bold">RM Return Approval Pending</div>
+            <dl className="mt-1 grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 gap-y-0.5">
+              <dt className="font-medium text-amber-900">WO No</dt>
+              <dd className="tabular-nums">{row.workOrderNo || `WO-${row.workOrderId}`}</dd>
+              <dt className="font-medium text-amber-900">RM Item</dt>
+              <dd className="truncate" title={row.itemName}>{row.itemName}</dd>
+              <dt className="font-medium text-amber-900">Qty</dt>
+              <dd className="tabular-nums">{formatProductionQty(row.requestedQty)}{row.unit ? ` ${row.unit}` : ""}</dd>
+              <dt className="font-medium text-amber-900">Status</dt>
+              <dd>Awaiting Store Approval</dd>
+            </dl>
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  );
 }
 
 export function OperationalProductionWorkspace({

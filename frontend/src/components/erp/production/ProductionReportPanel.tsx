@@ -5,6 +5,19 @@ import {
   fetchProductionWorkOrderReport,
   type ProductionWorkOrderReport,
 } from "../../../lib/productionWorkOrderReportApi";
+import {
+  initialProductionReportPanelStatus,
+  type ProductionReportPanelStatus,
+} from "../../../lib/productionWorkspaceCompactUx";
+import { Button } from "../../ui/button";
+import { ProductionReportWastageDetails } from "./ProductionReportWastageDetails";
+import {
+  type WastageDetailDraft,
+  computeWastageClassificationBalance,
+  isWastageClassificationComplete,
+  toWastageDetailPayload,
+  validateWastageClassification,
+} from "../../../lib/productionWastageClassification";
 
 function fmtQty(n: number | null | undefined): string {
   const v = Number(n);
@@ -32,15 +45,33 @@ export function ProductionReportPanel({
   workOrderId,
   refreshKey = 0,
   className,
+  compact = false,
+  premium = false,
+  confirmButtonLabel,
+  confirmHelperText,
+  closeWorkOrderOnConfirm = false,
   onConfirmed,
+  onStatusChange,
 }: {
   workOrderId: number;
   refreshKey?: number;
   className?: string;
-  onConfirmed?: (meta: { requiresShortfallDecision: boolean; remainderQty: number }) => void;
+  compact?: boolean;
+  premium?: boolean;
+  confirmButtonLabel?: string;
+  confirmHelperText?: string;
+  closeWorkOrderOnConfirm?: boolean;
+  onConfirmed?: (meta: {
+    requiresShortfallDecision: boolean;
+    remainderQty: number;
+    executionCloseOutcome?: string | null;
+    executionCloseMessage?: string | null;
+  }) => void | Promise<void>;
+  onStatusChange?: (status: ProductionReportPanelStatus) => void;
 }) {
   const [report, setReport] = React.useState<ProductionWorkOrderReport | null>(null);
   const [lineInputs, setLineInputs] = React.useState<Record<number, LineInput>>({});
+  const [wastageRows, setWastageRows] = React.useState<WastageDetailDraft[]>([]);
   const [remarks, setRemarks] = React.useState("");
   const [loading, setLoading] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
@@ -49,11 +80,13 @@ export function ProductionReportPanel({
   React.useEffect(() => {
     if (!workOrderId || workOrderId <= 0) {
       setReport(null);
+      onStatusChange?.(initialProductionReportPanelStatus());
       return;
     }
     let cancelled = false;
     setLoading(true);
     setError(null);
+    onStatusChange?.({ ...initialProductionReportPanelStatus(), loading: true });
     void fetchProductionWorkOrderReport(workOrderId)
       .then((data) => {
         if (cancelled) return;
@@ -72,11 +105,31 @@ export function ProductionReportPanel({
           };
         }
         setLineInputs(next);
+        setWastageRows(
+          (data.confirmation?.wastageDetails || []).map((row) => ({
+            key: `wd-${row.id}`,
+            wastageTypeId: row.wastageTypeId,
+            qty: fmtQty(row.qty),
+            remarks: row.remarks ?? "",
+          })),
+        );
+        onStatusChange?.({
+          loading: false,
+          resolved: true,
+          confirmed: Boolean(data.confirmation?.confirmed),
+          hasApprovedProduction: Boolean(data.hasApprovedProduction),
+        });
       })
       .catch((e: unknown) => {
         if (!cancelled) {
           setReport(null);
           setError(e instanceof Error ? e.message : "Failed to load production report");
+          onStatusChange?.({
+            loading: false,
+            resolved: true,
+            confirmed: false,
+            hasApprovedProduction: false,
+          });
         }
       })
       .finally(() => {
@@ -85,7 +138,7 @@ export function ProductionReportPanel({
     return () => {
       cancelled = true;
     };
-  }, [workOrderId, refreshKey]);
+  }, [workOrderId, refreshKey, onStatusChange]);
 
   const updateLineInput = React.useCallback(
     (itemId: number, key: keyof LineInput, value: string) => {
@@ -114,13 +167,43 @@ export function ProductionReportPanel({
     [report?.rmLines],
   );
 
+  const totalWastageQty = React.useMemo(() => {
+    if (!report?.rmLines?.length) return 0;
+    if (report.confirmation?.confirmed) {
+      return Number(report.totalWastageQty ?? 0);
+    }
+    return report.rmLines.reduce((acc, ln) => {
+      const input = lineInputs[ln.itemId];
+      return acc + Math.max(0, Number(input?.scrapWasteQty ?? 0));
+    }, 0);
+  }, [lineInputs, report]);
+
+  const wastageUnit = React.useMemo(() => {
+    const fromLine = report?.rmLines.find((ln) => ln.unit)?.unit;
+    return fromLine?.trim() || "Kg";
+  }, [report?.rmLines]);
+
+  const wastageBalance = React.useMemo(
+    () => computeWastageClassificationBalance(totalWastageQty, wastageRows),
+    [totalWastageQty, wastageRows],
+  );
+
+  const confirmBlockedByWastage =
+    totalWastageQty > 1e-6 && !isWastageClassificationComplete(wastageBalance, wastageRows);
+
   const handleConfirm = React.useCallback(async () => {
     if (!report || saving) return;
+    const validationError = validateWastageClassification(totalWastageQty, wastageRows, wastageUnit);
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
       const result = await confirmProductionWorkOrderReport(workOrderId, {
         remarks,
+        closeWorkOrder: closeWorkOrderOnConfirm,
         lines: report.rmLines.map((ln) => {
           const input = lineInputs[ln.itemId];
           return {
@@ -130,95 +213,166 @@ export function ProductionReportPanel({
             remarks: input?.remarks || null,
           };
         }),
+        wastageDetails: totalWastageQty > 1e-6 ? toWastageDetailPayload(wastageRows) : [],
       });
       setReport(result.report);
-      onConfirmed?.({
+      setWastageRows(
+        (result.report?.confirmation?.wastageDetails || []).map((row) => ({
+          key: `wd-${row.id}`,
+          wastageTypeId: row.wastageTypeId,
+          qty: fmtQty(row.qty),
+          remarks: row.remarks ?? "",
+        })),
+      );
+      onStatusChange?.({
+        loading: false,
+        resolved: true,
+        confirmed: Boolean(result.report?.confirmation?.confirmed),
+        hasApprovedProduction: Boolean(result.report?.hasApprovedProduction),
+      });
+      await onConfirmed?.({
         requiresShortfallDecision: Boolean(result.requiresShortfallDecision),
         remainderQty: Number(result.report?.summary?.remainderQty ?? 0),
+        executionCloseOutcome: result.executionClose?.outcome ?? null,
+        executionCloseMessage: result.executionClose?.successMessage ?? null,
       });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to confirm Production Report");
     } finally {
       setSaving(false);
     }
-  }, [lineInputs, onConfirmed, remarks, report, saving, workOrderId]);
+  }, [
+    closeWorkOrderOnConfirm,
+    lineInputs,
+    onConfirmed,
+    onStatusChange,
+    remarks,
+    report,
+    saving,
+    totalWastageQty,
+    wastageRows,
+    wastageUnit,
+    workOrderId,
+  ]);
 
   if (!workOrderId || workOrderId <= 0) return null;
   const confirmed = Boolean(report?.confirmation?.confirmed);
+  const isPremiumCompact = compact && premium;
 
   return (
     <div
-      className={cn("rounded-md border border-slate-200 bg-white shadow-sm", className)}
+      className={cn(
+        compact
+          ? "flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-slate-200/90 bg-white shadow-sm"
+          : "rounded-md border border-slate-200 bg-white shadow-sm",
+        className,
+      )}
       role="region"
       aria-label="Production report and RM consumption"
       data-testid="production-report-panel"
     >
-      <div className="border-b border-slate-100 bg-slate-50/80 px-3 py-2">
+      <div
+        className={cn(
+          "shrink-0 border-b border-slate-100 bg-slate-50/90 px-3",
+          isPremiumCompact ? "py-2" : compact ? "py-1.5" : "py-2",
+        )}
+      >
         <div className="flex items-center justify-between gap-2">
-          <div className="text-[13px] font-semibold text-slate-900">Production Report / RM Consumption</div>
-          <span
+          <div
             className={cn(
-              "rounded border px-2 py-0.5 text-[10px] font-semibold",
-              confirmed
-                ? "border-emerald-200 bg-emerald-50 text-emerald-800"
-                : "border-amber-200 bg-amber-50 text-amber-800",
+              "font-semibold text-slate-900",
+              isPremiumCompact ? "text-[14px]" : compact ? "text-[12px]" : "text-[13px]",
             )}
           >
-            {confirmed ? "Confirmed" : "Mandatory"}
-          </span>
+            Production Report
+          </div>
+          {!isPremiumCompact ? (
+            <span
+              className={cn(
+                "rounded border px-2 py-0.5 text-[10px] font-semibold",
+                confirmed
+                  ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+                  : "border-amber-200 bg-amber-50 text-amber-800",
+              )}
+            >
+              {confirmed ? "Confirmed" : "Mandatory"}
+            </span>
+          ) : null}
         </div>
       </div>
-      <div className="space-y-3 px-3 py-2">
+      <div
+        className={cn(
+          compact ? "flex min-h-0 flex-1 flex-col gap-2 overflow-hidden px-2.5 py-2" : "space-y-3 px-3 py-2",
+        )}
+      >
         {loading ? (
-          <p className="text-[12px] text-slate-600">Loading production report...</p>
+          <p className={cn("text-slate-600", isPremiumCompact ? "text-[13px] font-medium" : "text-[12px]")}>
+            Loading production report…
+          </p>
         ) : error ? (
           <p className="text-[11px] text-amber-800">{error}</p>
         ) : !report?.hasApprovedProduction ? (
           <p className="text-[11px] text-slate-600">No approved production batches on this work order yet.</p>
         ) : (
           <>
-            <div className="grid gap-2 text-[12px] sm:grid-cols-2 lg:grid-cols-4">
-              <div>
-                <span className="text-slate-500">WO</span>
-                <div className="font-semibold text-slate-900">{report.workOrderNo}</div>
-              </div>
-              <div>
-                <span className="text-slate-500">SO / FG</span>
-                <div className="font-medium text-slate-900">
-                  {report.salesOrderNo ?? "-"}
-                  {report.fgItemName ? ` - ${report.fgItemName}` : ""}
+            {!compact ? (
+              <div className="grid gap-2 text-[12px] sm:grid-cols-2 lg:grid-cols-4">
+                <div>
+                  <span className="text-slate-500">WO</span>
+                  <div className="font-semibold text-slate-900">{report.workOrderNo}</div>
+                </div>
+                <div>
+                  <span className="text-slate-500">SO / FG</span>
+                  <div className="font-medium text-slate-900">
+                    {report.salesOrderNo ?? "-"}
+                    {report.fgItemName ? ` - ${report.fgItemName}` : ""}
+                  </div>
+                </div>
+                <div>
+                  <span className="text-slate-500">Planned / Produced</span>
+                  <div className="font-semibold tabular-nums text-slate-900">
+                    {fmtQty(report.summary.plannedQty)} / {fmtQty(report.summary.producedQty)}
+                  </div>
+                </div>
+                <div>
+                  <span className="text-slate-500">Remaining</span>
+                  <div className="font-medium tabular-nums text-slate-900">
+                    {fmtQty(report.summary.remainderQty)}
+                    {report.confirmation?.confirmedAt ? (
+                      <span className="ml-1 font-normal text-slate-500">{fmtWhen(report.confirmation.confirmedAt)}</span>
+                    ) : null}
+                  </div>
                 </div>
               </div>
-              <div>
-                <span className="text-slate-500">Planned / Produced</span>
-                <div className="font-semibold tabular-nums text-slate-900">
-                  {fmtQty(report.summary.plannedQty)} / {fmtQty(report.summary.producedQty)}
-                </div>
-              </div>
-              <div>
-                <span className="text-slate-500">Remaining</span>
-                <div className="font-medium tabular-nums text-slate-900">
-                  {fmtQty(report.summary.remainderQty)}
-                  {report.confirmation?.confirmedAt ? (
-                    <span className="ml-1 font-normal text-slate-500">{fmtWhen(report.confirmation.confirmedAt)}</span>
-                  ) : null}
-                </div>
-              </div>
-            </div>
+            ) : null}
 
             {report.rmLines.length > 0 ? (
-              <div className="overflow-x-auto rounded border border-slate-200">
-                <table className="w-full min-w-[54rem] border-collapse text-[12px]">
-                  <thead>
-                    <tr className="border-b border-slate-200 bg-slate-50 text-left text-[10px] font-semibold uppercase text-slate-500">
-                      <th className="px-2 py-1">RM Item</th>
-                      <th className="px-2 py-1 text-right">Issued</th>
-                      <th className="px-2 py-1 text-right">Consumed</th>
-                      <th className="px-2 py-1 text-right">Return</th>
-                      <th className="px-2 py-1 text-right">Scrap</th>
-                      <th className="px-2 py-1 text-right">Variance</th>
-                      <th className="px-2 py-1 text-right">Returnable</th>
-                      <th className="px-2 py-1">Remarks</th>
+              <div
+                className={cn(
+                  "min-h-0 overflow-auto rounded border border-slate-200",
+                  compact && "flex-1",
+                )}
+              >
+                <table
+                  className={cn(
+                    "w-full border-collapse text-slate-800",
+                    isPremiumCompact
+                      ? "min-w-[44rem] text-[12px]"
+                      : compact
+                        ? "min-w-[44rem] text-[11px]"
+                        : "min-w-[54rem] text-[12px]",
+                  )}
+                >
+                  <thead className="sticky top-0 z-[1] bg-slate-50">
+                    <tr className="border-b border-slate-200 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-600">
+                      <th className={cn("px-2", isPremiumCompact ? "py-1" : compact ? "py-0.5" : "py-1")}>RM Item</th>
+                      <th className={cn("px-2 text-right", compact ? "py-0.5" : "py-1")}>Issued</th>
+                      <th className={cn("px-2 text-right", compact ? "py-0.5" : "py-1")}>Consumed</th>
+                      <th className={cn("px-2 text-right", compact ? "py-0.5" : "py-1")}>Returned</th>
+                      <th className={cn("px-2 text-right", compact ? "py-0.5" : "py-1")}>Total Wastage</th>
+                      <th className={cn("px-2 text-right", compact ? "py-0.5" : "py-1")}>Variance</th>
+                      {!compact ? <th className="px-2 py-1 text-right">Returnable</th> : null}
+                      <th className={cn("px-2", compact ? "py-0.5" : "py-1")}>Remarks</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -226,30 +380,78 @@ export function ProductionReportPanel({
                       const confirmedLine = report.confirmation?.lines.find((r) => r.itemId === ln.itemId);
                       const input = lineInputs[ln.itemId];
                       const variance = confirmed ? confirmedLine?.varianceQty : Number(input?.varianceQty ?? 0);
+                      const cellPy = isPremiumCompact ? "py-1" : compact ? "py-0.5" : "py-1";
                       return (
-                        <tr key={ln.itemId} className="border-b border-slate-100 text-slate-800">
-                          <td className="px-2 py-1 font-medium">
+                        <tr key={ln.itemId} className="border-b border-slate-100">
+                          <td className={cn("px-2 font-medium", cellPy)}>
                             {ln.itemName}
                             {ln.unit ? <span className="ml-1 font-normal text-slate-500">{ln.unit}</span> : null}
                           </td>
-                          <td className="px-2 py-1 text-right tabular-nums">{fmtQty(ln.issuedQty)}</td>
-                          <td className="px-2 py-1 text-right tabular-nums">
+                          <td className={cn("px-2 text-right tabular-nums", cellPy)}>{fmtQty(ln.issuedQty)}</td>
+                          <td className={cn("px-2 text-right tabular-nums", cellPy)}>
                             {confirmed ? (
                               fmtQty(confirmedLine?.rmConsumedQty ?? ln.reportedConsumedQty ?? ln.ledgerConsumedQty)
                             ) : (
                               fmtQty(Number(input?.rmConsumedQty ?? ln.reportedConsumedQty ?? ln.ledgerConsumedQty ?? 0))
                             )}
                           </td>
-                          <td className="px-2 py-1 text-right tabular-nums">
-                            {confirmed ? fmtQty(confirmedLine?.rmReturnQty ?? 0) : <input className="w-20 rounded border border-slate-200 px-1 py-0.5 text-right" type="number" min="0" step="0.001" value={input?.rmReturnQty ?? ""} onChange={(e) => updateLineInput(ln.itemId, "rmReturnQty", e.target.value)} />}
+                          <td className={cn("px-2 text-right tabular-nums", cellPy)}>
+                            {confirmed ? (
+                              fmtQty(confirmedLine?.rmReturnQty ?? 0)
+                            ) : (
+                              <input
+                                className={cn(
+                                  "rounded border border-slate-200 px-1 text-right",
+                                  isPremiumCompact
+                                    ? "h-8 w-[4.5rem] text-[12px]"
+                                    : compact
+                                      ? "h-7 w-16 text-[11px]"
+                                      : "w-20 py-0.5",
+                                )}
+                                type="number"
+                                min="0"
+                                step="0.001"
+                                value={input?.rmReturnQty ?? ""}
+                                onChange={(e) => updateLineInput(ln.itemId, "rmReturnQty", e.target.value)}
+                              />
+                            )}
                           </td>
-                          <td className="px-2 py-1 text-right tabular-nums">
+                          <td className={cn("px-2 text-right tabular-nums", cellPy)}>
                             {confirmed ? fmtQty(confirmedLine?.scrapWasteQty ?? 0) : fmtQty(Number(input?.scrapWasteQty ?? 0))}
                           </td>
-                          <td className={cn("px-2 py-1 text-right tabular-nums", Number(variance ?? 0) > 0 ? "text-rose-800" : Number(variance ?? 0) < 0 ? "text-emerald-800" : "")}>{fmtQty(variance)}</td>
-                          <td className="px-2 py-1 text-right tabular-nums">{fmtQty(ln.returnableQty)}</td>
-                          <td className="px-2 py-1">
-                            {confirmed ? confirmedLine?.remarks ?? "-" : <input className="w-36 rounded border border-slate-200 px-1 py-0.5" value={input?.remarks ?? ""} onChange={(e) => updateLineInput(ln.itemId, "remarks", e.target.value)} />}
+                          <td
+                            className={cn(
+                              "px-2 text-right tabular-nums",
+                              cellPy,
+                              Number(variance ?? 0) > 0
+                                ? "text-rose-800"
+                                : Number(variance ?? 0) < 0
+                                  ? "text-emerald-800"
+                                  : "",
+                            )}
+                          >
+                            {fmtQty(variance)}
+                          </td>
+                          {!compact ? (
+                            <td className={cn("px-2 text-right tabular-nums", cellPy)}>{fmtQty(ln.returnableQty)}</td>
+                          ) : null}
+                          <td className={cn("px-2", cellPy)}>
+                            {confirmed ? (
+                              confirmedLine?.remarks ?? "-"
+                            ) : (
+                              <input
+                                className={cn(
+                                  "rounded border border-slate-200 px-1",
+                                  isPremiumCompact
+                                    ? "h-8 w-32 text-[12px]"
+                                    : compact
+                                      ? "h-7 w-28 text-[11px]"
+                                      : "w-36 py-0.5",
+                                )}
+                                value={input?.remarks ?? ""}
+                                onChange={(e) => updateLineInput(ln.itemId, "remarks", e.target.value)}
+                              />
+                            )}
                           </td>
                         </tr>
                       );
@@ -259,15 +461,72 @@ export function ProductionReportPanel({
               </div>
             ) : null}
 
-            <div className="sticky bottom-0 z-10 -mx-3 flex flex-col gap-2 border-t border-slate-200 bg-white/95 px-3 py-2 backdrop-blur-sm sm:flex-row sm:items-end">
-              <label className="flex-1 text-[11px] font-medium text-slate-600">
-                Remarks
-                <textarea className="mt-1 min-h-16 w-full rounded border border-slate-200 px-2 py-1 text-[12px] text-slate-900" value={remarks} onChange={(e) => setRemarks(e.target.value)} disabled={confirmed} />
-              </label>
+            {totalWastageQty > 1e-6 || (confirmed && wastageRows.length > 0) ? (
+              <ProductionReportWastageDetails
+                wastageTypes={report.wastageTypes ?? []}
+                rows={wastageRows}
+                totalWastageQty={totalWastageQty}
+                unit={wastageUnit}
+                readOnly={confirmed}
+                compact={compact}
+                onChange={setWastageRows}
+              />
+            ) : null}
+
+            <div
+              className={cn(
+                "shrink-0 border-t border-slate-200 bg-white",
+                isPremiumCompact
+                  ? "flex flex-col gap-2 px-1 py-2"
+                  : compact
+                    ? "flex flex-wrap items-end gap-2 px-1 py-1.5"
+                    : "sticky bottom-0 z-10 -mx-3 flex flex-col gap-2 bg-white/95 px-3 py-2 backdrop-blur-sm sm:flex-row sm:items-end",
+              )}
+            >
+              {!isPremiumCompact ? (
+                <label className={cn("text-[11px] font-medium text-slate-600", compact ? "min-w-[10rem] flex-1" : "flex-1")}>
+                  Remarks
+                  <textarea
+                    className={cn(
+                      "mt-0.5 w-full rounded border border-slate-200 px-2 py-1 text-slate-900",
+                      compact ? "min-h-10 text-[11px]" : "min-h-16 text-[12px]",
+                    )}
+                    value={remarks}
+                    onChange={(e) => setRemarks(e.target.value)}
+                    disabled={confirmed}
+                  />
+                </label>
+              ) : (
+                <label className="text-[12px] font-semibold text-slate-700">
+                  Report remarks
+                  <textarea
+                    className="mt-1 min-h-11 w-full rounded-md border border-slate-300 px-2.5 py-1.5 text-[13px] text-slate-900"
+                    value={remarks}
+                    onChange={(e) => setRemarks(e.target.value)}
+                    disabled={confirmed}
+                    placeholder="Optional"
+                  />
+                </label>
+              )}
               {!confirmed ? (
-                <button type="button" className="rounded bg-slate-900 px-3 py-2 text-[12px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60" onClick={handleConfirm} disabled={saving}>
-                  {saving ? "Confirming..." : "Confirm Report"}
-                </button>
+                <div className={cn("shrink-0", isPremiumCompact ? "w-full" : compact ? "space-y-1" : "space-y-1 sm:max-w-[16rem]")}>
+                  {!isPremiumCompact && confirmHelperText ? (
+                    <p className="text-[10px] leading-snug text-slate-600">{confirmHelperText}</p>
+                  ) : null}
+                  <Button
+                    type="button"
+                    size={isPremiumCompact ? "default" : "sm"}
+                    className={cn(
+                      isPremiumCompact ? "h-10 w-full text-[14px] font-semibold" : "w-full",
+                      !isPremiumCompact && compact ? "h-8 text-[11px]" : !isPremiumCompact ? "text-[12px]" : "",
+                    )}
+                    onClick={handleConfirm}
+                    disabled={saving || confirmBlockedByWastage}
+                    data-testid="confirm-report-close-wo-btn"
+                  >
+                    {saving ? "Working…" : confirmButtonLabel ?? "Confirm Report"}
+                  </Button>
+                </div>
               ) : null}
             </div>
 

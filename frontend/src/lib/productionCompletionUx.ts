@@ -43,14 +43,6 @@ export const WAIVE_REASON_OPTIONS = [
   "OTHER",
 ] as const;
 
-export const CARRY_FORWARD_REASON_OPTIONS = [
-  "MACHINE_BREAKDOWN",
-  "CAPACITY_CONSTRAINT",
-  "WAITING_FOR_RM",
-  "TOOL_MAINTENANCE",
-  "OTHER",
-] as const;
-
 export const PAUSE_REASON_OPTIONS = [
   "MACHINE_BREAKDOWN",
   "POWER_UTILITY_FAILURE",
@@ -96,7 +88,7 @@ export function shouldShowProductionExecutionPanel(
   return summary.executionStatus === "RUNNING";
 }
 
-/** Unresolved less-than-WO shortfall — operator must Waive, Carry Forward, or Pause. */
+/** Unresolved less-than-WO shortfall: operator must Close Work Order or Pause. */
 export function hasPendingShortfallDecision(
   summary: ProductionExecutionSummary | null | undefined,
 ): boolean {
@@ -255,12 +247,10 @@ export function formatProductionExecutionAutoAdvanceNotice(
 
 export type ProductionDecisionConfirmKind =
   | "pause"
-  | "carry"
-  | "waive"
+  | "close_shortfall"
   | "surplus"
   | "finish"
-  | "resume_carry"
-  | "resume_waive";
+  | "resume_close_shortfall";
 
 function formatQtyForConfirm(qty: number): string {
   const rounded = Math.round(Number(qty) * 1000) / 1000;
@@ -287,25 +277,14 @@ export function buildProductionDecisionConfirmDialog(
         ],
         confirmLabel: "Confirm",
       };
-    case "carry":
-    case "resume_carry":
+    case "close_shortfall":
+    case "resume_close_shortfall":
       return {
-        title: "Carry Forward Remaining Quantity?",
+        title: "Close Work Order With Shortage?",
         lines: [
           `Remaining Qty: ${remFmt}`,
           "Current Work Order will close.",
-          `${remFmt} Qty will move to next Requirement Sheet.`,
-        ],
-        confirmLabel: "Confirm",
-      };
-    case "waive":
-    case "resume_waive":
-      return {
-        title: "Waive Remaining Quantity?",
-        lines: [
-          `Remaining Qty: ${remFmt}`,
-          "Current Work Order will close.",
-          "Remaining quantity will be permanently waived.",
+          "Remaining quantity will automatically carry to the next Requirement Sheet.",
         ],
         confirmLabel: "Confirm",
       };
@@ -352,9 +331,9 @@ export function productionEntriesRefreshSignature(
 
 export type ProductionExecutionClosedOutcome = "COMPLETE" | "SURPLUS" | "WAIVE_BALANCE" | "CARRY_FORWARD" | "PAUSE";
 
-export type ShortfallDecisionChoice = "waive" | "carry" | "pause";
+export type ShortfallDecisionChoice = "close" | "pause";
 
-export type PausedShortfallDecisionChoice = "resume" | "waive" | "carry";
+export type PausedShortfallDecisionChoice = "resume" | "close";
 
 export const SHORTFALL_DECISION_CHOICES: Array<{
   id: ShortfallDecisionChoice;
@@ -363,22 +342,16 @@ export const SHORTFALL_DECISION_CHOICES: Array<{
   confirmLabel: string;
 }> = [
   {
-    id: "waive",
-    label: "Waive",
-    description: "Close this WO and cancel the remaining qty — it will not carry to the next RS.",
-    confirmLabel: "Waive remaining qty",
-  },
-  {
-    id: "carry",
-    label: "Carry forward",
-    description: "Close this WO and add the remaining qty to the next Requirement Sheet.",
-    confirmLabel: "Carry forward remaining qty",
+    id: "close",
+    label: "Close Work Order",
+    description: "Close this WO and carry the remaining qty to the next Requirement Sheet.",
+    confirmLabel: "Close Work Order",
   },
   {
     id: "pause",
-    label: "Pause",
-    description: "Keep the WO open — resume production later or choose waive / carry forward when ready.",
-    confirmLabel: "Pause production",
+    label: "Pause Work Order",
+    description: "Keep the WO open and resume production later.",
+    confirmLabel: "Close Work Order",
   },
 ];
 
@@ -395,16 +368,10 @@ export const PAUSED_SHORTFALL_DECISION_CHOICES: Array<{
     confirmLabel: "Resume production",
   },
   {
-    id: "waive",
-    label: "Waive",
-    description: "Close this WO and cancel the remaining qty — it will not carry to the next RS.",
-    confirmLabel: "Waive remaining qty",
-  },
-  {
-    id: "carry",
-    label: "Carry forward",
-    description: "Close this WO and add the remaining qty to the next Requirement Sheet.",
-    confirmLabel: "Carry forward remaining qty",
+    id: "close",
+    label: "Close Work Order",
+    description: "Close this WO and carry the remaining qty to the next Requirement Sheet.",
+    confirmLabel: "Close Work Order",
   },
 ];
 
@@ -482,3 +449,4 @@ export function formatNoQtyProductionAdvanceMessage(workOrderLabel: string, item
   const item = (itemName ?? "").trim();
   return item ? `Continuing on ${wo} · ${item}` : `Continuing on ${wo}`;
 }
+

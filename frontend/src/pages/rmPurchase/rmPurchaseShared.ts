@@ -112,6 +112,7 @@ export type RmPoRow = {
   supplier: Supplier;
   supplierLocation?: RmPoSupplierLocation | null;
   status: string;
+  supplierPoNumber: string;
   remarks?: string | null;
   lines: RmPoLine[];
   grns: GrnRow[];

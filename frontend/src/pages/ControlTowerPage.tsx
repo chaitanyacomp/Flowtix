@@ -1,6 +1,6 @@
 import * as React from "react";
 import { Link } from "react-router-dom";
-import { PageContainer, PageHeader, StickyWorkspaceHead } from "../components/PageHeader";
+import { PageContainer, PageHeader, StickyWorkspaceHead, ERPBackNavigation } from "../components/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { ErpKpiLabel, ErpKpiSegment, ErpKpiStrip, ErpKpiValue } from "../components/erp/foundation";
 import { useAuth } from "../hooks/useAuth";
@@ -478,7 +478,7 @@ export function ControlTowerPage() {
 
   return (
     <PageContainer className="space-y-4">
-      <StickyWorkspaceHead>
+      <StickyWorkspaceHead lead={<ERPBackNavigation defaultTo="/dashboard" defaultLabel="Back to Dashboard" />}>
         <PageHeader
           title="Control Tower (Beta)"
           subtitle="Read-only verification view — panel metrics, process board, and role queue."

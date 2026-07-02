@@ -262,22 +262,24 @@ describe("productionExecutionService", () => {
     assert.ok(execIdx > woIdx, "execution COMPLETED after WO completion");
   });
 
-  test("finishProductionExecution requires confirmed Production Report", async () => {
-    const { tx } = createFinishMockTx({ reportConfirmed: false });
-    await assert.rejects(
-      () =>
-        finishProductionExecution(
-          tx,
-          280,
-          { shortfallOutcome: "CARRY_FORWARD", resolutionReason: "CAPACITY_CONSTRAINT" },
-          { actorUserId: null, actorRole: null },
-        ),
-      (err) => err.code === "PRODUCTION_REPORT_REQUIRED" && err.statusCode === 409,
+  test("finishProductionExecution CARRY_FORWARD defaults reason for merged report close", async () => {
+    const { tx, carryForwardRows, auditRows } = createFinishMockTx();
+
+    const result = await finishProductionExecution(
+      tx,
+      280,
+      { shortfallOutcome: "CARRY_FORWARD" },
+      { actorUserId: null, actorRole: null },
     );
+
+    assert.equal(result.outcome, "CARRY_FORWARD");
+    assert.equal(carryForwardRows.length, 1);
+    assert.equal(carryForwardRows[0].resolutionReason, "CAPACITY_CONSTRAINT");
+    assert.equal(auditRows[0].resolutionReason, "CAPACITY_CONSTRAINT");
   });
 
-  test("finishProductionExecution waits for Store RM return acknowledgement", async () => {
-    const { tx } = createFinishMockTx({ openReturnPendingCount: 1 });
+  test("finishProductionExecution requires confirmed Production Report", async () => {
+    const { tx } = createFinishMockTx({ reportConfirmed: false });
     await assert.rejects(
       () =>
         finishProductionExecution(
@@ -286,15 +288,22 @@ describe("productionExecutionService", () => {
           { shortfallOutcome: "WAIVE_BALANCE", resolutionReason: "MANAGEMENT_DECISION" },
           { actorUserId: null, actorRole: null },
         ),
-      (err) =>
-        err.code === "RM_RETURN_PENDING_STORE_ACK_REQUIRED" &&
-        err.statusCode === 409 &&
-        /RM Return Pending/.test(err.message) &&
-        /PP — 3 Kg/.test(err.message),
+      (err) => err.code === "PRODUCTION_REPORT_REQUIRED" && err.statusCode === 409,
     );
   });
 
-  test("finishProductionExecution WAIVE_BALANCE closes WO without CarryForwardPending", async () => {
+  test("finishProductionExecution does not wait for Store RM return acknowledgement", async () => {
+    const { tx } = createFinishMockTx({ openReturnPendingCount: 1 });
+    const result = await finishProductionExecution(
+      tx,
+      280,
+      { shortfallOutcome: "WAIVE_BALANCE", resolutionReason: "MANAGEMENT_DECISION" },
+      { actorUserId: null, actorRole: null },
+    );
+    assert.equal(result.outcome, "WAIVE_BALANCE");
+  });
+
+  test("finishProductionExecution WAIVE_BALANCE closes WO and creates CarryForwardPending", async () => {
     const { tx, carryForwardRows, auditRows, getExecutionStatus, getWoStatus } = createFinishMockTx();
 
     const result = await finishProductionExecution(
@@ -308,7 +317,8 @@ describe("productionExecutionService", () => {
     assert.equal(result.successMessage, "Production completed. Remaining quantity has been waived.");
     assert.equal(getExecutionStatus(), "COMPLETED");
     assert.equal(getWoStatus(), "COMPLETED");
-    assert.equal(carryForwardRows.length, 0);
+    assert.equal(carryForwardRows.length, 1);
+    assert.equal(Number(carryForwardRows[0].remainingQty), 300);
     assert.equal(auditRows.length, 1);
     assert.equal(auditRows[0].resolutionType, "WAIVE_BALANCE");
   });
@@ -353,7 +363,8 @@ describe("productionExecutionService", () => {
     assert.equal(result.outcome, "WAIVE_BALANCE");
     assert.equal(getExecutionStatus(), "COMPLETED");
     assert.equal(getWoStatus(), "COMPLETED");
-    assert.equal(carryForwardRows.length, 0);
+    assert.equal(carryForwardRows.length, 1);
+    assert.equal(Number(carryForwardRows[0].remainingQty), 300);
     assert.equal(result.successMessage, "Production completed. Remaining quantity has been waived.");
   });
 

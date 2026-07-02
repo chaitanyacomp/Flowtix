@@ -2,17 +2,12 @@
  * Phase 3D — Production → Store RM return (MRN).
  */
 import * as React from "react";
-import { Link, useSearchParams } from "react-router-dom";
-import { ArrowLeft, PackageMinus, Send, Trash2, Inbox } from "lucide-react";
+import { useSearchParams } from "react-router-dom";
+import { PackageMinus, Send, Trash2, Inbox } from "lucide-react";
 import { RmWastageModal } from "../components/erp/RmWastageModal";
-import { apiFetch } from "../services/api";
+import { ApiRequestError, apiFetch } from "../services/api";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
-import { useToast } from "../contexts/ToastContext";
-import { PageContainer, StickyWorkspaceHead } from "../components/PageHeader";
-import { ErpKpiLabel, ErpKpiSegment, ErpKpiStrip, ErpKpiValue } from "../components/erp/foundation";
-import { computeUnusedIssuedRmQty, validateReturnQtyInput } from "../lib/rmReturnUx";
-import { logRmReturnsApiError, parsePositiveIntParam } from "../lib/rmReturnsPageLoad";
 
 type LocationRow = {
   id: number;
@@ -108,6 +103,12 @@ type PendingReturnRow = {
   status: string;
   createdAt: string;
   remarks: string | null;
+  suggestedFromLocationId?: number | null;
+  suggestedToLocationId?: number | null;
+  fromLocationName?: string | null;
+  toLocationName?: string | null;
+  locationResolved?: boolean;
+  locationWarning?: string | null;
 };
 
 function fmtQty(n: number, unit?: string) {
@@ -121,10 +122,15 @@ function newLineKey() {
 
 export function ProductionRmReturnsPage() {
   const [searchParams] = useSearchParams();
-  const { showSuccess, showError } = useToast();
   const urlWoId = parsePositiveIntParam(searchParams.get("workOrderId"));
   const urlPmrId = parsePositiveIntParam(searchParams.get("pmrId"));
   const urlPendingId = parsePositiveIntParam(searchParams.get("pendingId"));
+  const fromPendingActions = searchParams.get("from") === "pending-actions";
+  const pendingDrivenMode = isPendingDrivenRmReturnPage({
+    from: fromPendingActions ? "pending-actions" : null,
+    pendingId: urlPendingId,
+  });
+  const { showSuccess, showError, showInfo } = useToast();
   const [ctx, setCtx] = React.useState<ContextResponse | null>(null);
   const [history, setHistory] = React.useState<HistoryEntry[]>([]);
   const [pendingReturns, setPendingReturns] = React.useState<PendingReturnRow[]>([]);
@@ -158,45 +164,56 @@ export function ProductionRmReturnsPage() {
   }
 
   async function receivePendingReturn(row: PendingReturnRow) {
-    if (typeof fromLocationId !== "number" || typeof toLocationId !== "number") {
-      showError("Select from production and return-to-store locations before receiving.");
+    const fromId = row.suggestedFromLocationId;
+    const toId = row.suggestedToLocationId;
+    if (!row.locationResolved || fromId == null || toId == null) {
+      showError(row.locationWarning ?? "Locations could not be resolved for this return. Check material issue history.");
       return;
     }
     setReceivingPendingId(row.id);
     try {
-      const res = await apiFetch<{ materialReturnNote?: { docNo?: string | null } }>(
+      await apiFetch<{ materialReturnNote?: { docNo?: string | null } }>(
         `/api/production-material-returns/pending/${row.id}/receive`,
         {
           method: "POST",
           body: JSON.stringify({
-            fromLocationId,
-            toLocationId,
-            remarks: remarks.trim() || `Received production report RM return for ${row.workOrderNo}`,
+            fromLocationId: fromId,
+            toLocationId: toId,
+            remarks: `Received production report RM return for ${row.workOrderNo}`,
           }),
         },
       );
-      showSuccess(
-        `Received ${row.itemName} ${fmtQty(row.requestedQty, row.unit)}${res.materialReturnNote?.docNo ? ` (${res.materialReturnNote.docNo})` : ""}.`,
-      );
-      await loadPendingReturns();
-      await loadPageBootstrap();
-      if (row.workOrderId) {
+      setPendingReturns((prev) => prev.filter((p) => p.id !== row.id));
+      showSuccess("RM return received.");
+      bumpErpRefresh(["pending-actions", "production", "stock"]);
+      await Promise.all([loadPendingReturns(), loadHistory()]);
+      if (!pendingDrivenMode && row.workOrderId) {
         setWorkOrderId(row.workOrderId);
         await loadReturnable(row.workOrderId, pmrId);
       }
     } catch (e) {
-      showError(e instanceof Error ? e.message : "Could not receive RM return");
+      if (isAlreadyProcessedPendingReturnError(e)) {
+        setPendingReturns((prev) => prev.filter((p) => p.id !== row.id));
+        showInfo("RM return already received.");
+        bumpErpRefresh(["pending-actions", "production", "stock"]);
+        await Promise.all([loadPendingReturns(), loadHistory()]);
+        return;
+      }
+      const msg = e instanceof ApiRequestError ? e.message : e instanceof Error ? e.message : "Could not receive RM return";
+      showError(msg);
     } finally {
       setReceivingPendingId(null);
     }
   }
 
-  async function loadReturnable(woId: number, pmr?: number | "") {
+  async function loadReturnable(woId: number, pmr?: number | "", pendingId?: number | null, opts?: { silent?: boolean }) {
+    if (pendingDrivenMode) return;
     setLoadingReturnable(true);
     const qs = new URLSearchParams({ workOrderId: String(woId) });
     if (typeof pmr === "number" && pmr > 0) qs.set("productionMaterialRequestId", String(pmr));
     if (typeof fromLocationId === "number") qs.set("fromLocationId", String(fromLocationId));
     if (typeof toLocationId === "number") qs.set("toLocationId", String(toLocationId));
+    if (pendingId != null && pendingId > 0) qs.set("pendingId", String(pendingId));
     const endpoint = `/api/production-material-returns/returnable?${qs}`;
     try {
       const data = await apiFetch<ReturnableResponse>(endpoint);
@@ -210,7 +227,9 @@ export function ProductionRmReturnsPage() {
     } catch (e) {
       setReturnable(null);
       logRmReturnsApiError(endpoint, e);
-      showError(e instanceof Error ? e.message : "Could not load returnable RM");
+      if (!opts?.silent) {
+        showError(e instanceof Error ? e.message : "Could not load returnable RM");
+      }
     } finally {
       setLoadingReturnable(false);
     }
@@ -242,13 +261,17 @@ export function ProductionRmReturnsPage() {
   async function loadPageBootstrap() {
     setLoading(true);
     try {
-      await loadContext(
-        typeof workOrderId === "number" ? workOrderId : urlWoId,
-        typeof pmrId === "number" ? pmrId : urlPmrId,
-      );
+      if (!pendingDrivenMode) {
+        await loadContext(
+          typeof workOrderId === "number" ? workOrderId : urlWoId,
+          typeof pmrId === "number" ? pmrId : urlPmrId,
+        );
+      }
     } catch (e) {
       logRmReturnsApiError("/api/production-material-returns/context", e);
-      showError(e instanceof Error ? e.message : "Failed to load RM return workspace");
+      if (!pendingDrivenMode) {
+        showError(e instanceof Error ? e.message : "Failed to load RM return workspace");
+      }
     } finally {
       setLoading(false);
     }
@@ -261,31 +284,35 @@ export function ProductionRmReturnsPage() {
   }, []);
 
   React.useEffect(() => {
+    if (pendingDrivenMode) return;
     if (urlWoId) setWorkOrderId(urlWoId);
     if (urlPmrId) setPmrId(urlPmrId);
-  }, [urlWoId, urlPmrId]);
+  }, [urlWoId, urlPmrId, pendingDrivenMode]);
 
   React.useEffect(() => {
     if (!urlPendingId || pendingReturns.length === 0) return;
     const row = pendingReturns.find((p) => p.id === urlPendingId);
-    if (row) setWorkOrderId(row.workOrderId);
-  }, [urlPendingId, pendingReturns]);
-
-  React.useEffect(() => {
-    if (urlWoId || urlPmrId) {
-      void loadContext(urlWoId, urlPmrId).catch((e) => {
-        logRmReturnsApiError("/api/production-material-returns/context (url)", e);
-      });
+    if (!row) return;
+    if (!pendingDrivenMode) {
+      setWorkOrderId(row.workOrderId);
+      if (row.locationResolved && row.suggestedFromLocationId && row.suggestedToLocationId) {
+        setFromLocationId(row.suggestedFromLocationId);
+        setToLocationId(row.suggestedToLocationId);
+      }
     }
-  }, [urlWoId, urlPmrId]);
+    window.requestAnimationFrame(() => {
+      document.getElementById(`pending-return-row-${row.id}`)?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    });
+  }, [urlPendingId, pendingReturns, pendingDrivenMode]);
 
   React.useEffect(() => {
+    if (pendingDrivenMode) return;
     if (typeof workOrderId === "number" && workOrderId > 0) {
-      void loadReturnable(workOrderId, pmrId);
+      void loadReturnable(workOrderId, pmrId, urlPendingId);
     } else {
       setReturnable(null);
     }
-  }, [workOrderId, pmrId, fromLocationId, toLocationId]);
+  }, [workOrderId, pmrId, fromLocationId, toLocationId, urlPendingId, pendingDrivenMode]);
 
   function addDraftLine(line: ReturnableLine) {
     if (!line.canReturn) return;
@@ -362,6 +389,25 @@ export function ProductionRmReturnsPage() {
 
   const selectedWo = woOptions.find((w) => w.id === workOrderId);
   const rmDispositionFinalized = Boolean(returnable?.disposition?.finalized);
+  const displayedPendingReturns = React.useMemo(() => {
+    let rows = pendingReturns;
+    if (fromPendingActions && urlWoId) {
+      rows = rows.filter((r) => r.workOrderId === urlWoId);
+    }
+    if (urlPendingId) {
+      const hit = rows.find((r) => r.id === urlPendingId);
+      if (hit) return [hit, ...rows.filter((r) => r.id !== urlPendingId)];
+    }
+    return rows;
+  }, [pendingReturns, fromPendingActions, urlWoId, urlPendingId]);
+
+  React.useEffect(() => {
+    if (pendingDrivenMode || (!urlWoId && !urlPmrId)) return;
+    void loadContext(urlWoId, urlPmrId).catch((e) => {
+      logRmReturnsApiError("/api/production-material-returns/context (url)", e);
+    });
+  }, [urlWoId, urlPmrId, pendingDrivenMode]);
+
   const pmrOptions = React.useMemo(() => {
     const base = selectedWo?.pmrs ?? [];
     if (typeof pmrId !== "number") return base;
@@ -374,16 +420,19 @@ export function ProductionRmReturnsPage() {
     <PageContainer>
       <StickyWorkspaceHead
         lead={
-          <Link to="/production" className="inline-flex items-center gap-1 text-sm text-slate-600 hover:text-slate-900">
-            <ArrowLeft className="h-4 w-4" />
-            Production
-          </Link>
+          <ERPBackNavigation
+            defaultTo="/production"
+            defaultLabel="Back to Production"
+            data-testid={fromPendingActions ? "rm-returns-back-pending-actions" : "rm-returns-back-production"}
+          />
         }
       >
         <div>
           <h1 className="text-xl font-extrabold tracking-tight text-slate-900">Return unused RM</h1>
           <p className="text-xs font-medium text-slate-600">
-            Move surplus raw material from production back to store. Does not reverse consumption or finished goods.
+            {pendingDrivenMode
+              ? "Approve production-report RM returns waiting at store — one click per pending row."
+              : "Move surplus raw material from production back to store. Does not reverse consumption or finished goods."}
           </p>
         </div>
       </StickyWorkspaceHead>
@@ -392,7 +441,7 @@ export function ProductionRmReturnsPage() {
         <p className="text-sm text-slate-600">Loading…</p>
       ) : (
         <div className="flex flex-col gap-4">
-          {(loadingPending || pendingReturns.length > 0) && (
+          {(loadingPending || pendingReturns.length > 0 || pendingDrivenMode) && (
             <section
               id="production-report-rm-return-pending"
               className="rounded-lg border border-amber-300 bg-amber-50/90 p-3 shadow-sm"
@@ -406,33 +455,64 @@ export function ProductionRmReturnsPage() {
               </p>
               {loadingPending ? (
                 <p className="mt-2 text-xs text-amber-900">Loading pending returns…</p>
-              ) : pendingReturns.length === 0 ? (
+              ) : displayedPendingReturns.length === 0 ? (
                 <p className="mt-2 text-xs text-amber-900">No pending production-report returns.</p>
               ) : (
                 <div className="mt-2 space-y-2">
-                  {pendingReturns.map((row) => {
+                  {displayedPendingReturns.map((row) => {
                     const highlighted = urlPendingId === row.id;
+                    const canReceive = Boolean(
+                      row.locationResolved && row.suggestedFromLocationId && row.suggestedToLocationId,
+                    );
                     return (
                       <div
                         key={row.id}
-                        className={`rounded-md border bg-white p-2.5 ${highlighted ? "border-amber-500 ring-2 ring-amber-300" : "border-amber-200"}`}
+                        id={`pending-return-row-${row.id}`}
+                        className={`rounded-md border bg-white p-3 ${highlighted ? "border-amber-500 ring-2 ring-amber-300" : "border-amber-200"}`}
+                        data-testid={`pending-return-card-${row.id}`}
                       >
-                        <div className="flex flex-wrap items-start justify-between gap-2">
-                          <div className="text-[13px] text-slate-900">
-                            <div className="font-semibold">
-                              {row.itemName} — {fmtQty(row.requestedQty, row.unit)}
+                        <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                          <div className="min-w-0 flex-1 space-y-1.5 text-[13px] text-slate-900">
+                            <div className="font-semibold text-slate-950">WO {row.workOrderNo}</div>
+                            <div className="grid gap-1 sm:grid-cols-2">
+                              <div>
+                                <span className="text-[11px] font-medium uppercase tracking-wide text-slate-500">RM item</span>
+                                <div>{row.itemName}</div>
+                              </div>
+                              <div>
+                                <span className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Qty</span>
+                                <div className="tabular-nums font-medium">{fmtQty(row.requestedQty, row.unit)}</div>
+                              </div>
+                              <div>
+                                <span className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                                  From production
+                                </span>
+                                <div>{row.fromLocationName ?? (canReceive ? "—" : "Unresolved")}</div>
+                              </div>
+                              <div>
+                                <span className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                                  Return to store
+                                </span>
+                                <div>{row.toLocationName ?? (canReceive ? "—" : "Unresolved")}</div>
+                              </div>
                             </div>
-                            <div className="text-xs text-slate-600">
-                              WO {row.workOrderNo}
-                              {row.remarks ? ` · ${row.remarks}` : ""}
-                            </div>
+                            {row.remarks ? <div className="text-xs text-slate-600">{row.remarks}</div> : null}
+                            {!canReceive && row.locationWarning ? (
+                              <div
+                                className="rounded border border-red-200 bg-red-50 px-2 py-1.5 text-xs text-red-900"
+                                data-testid={`pending-return-location-warning-${row.id}`}
+                              >
+                                {row.locationWarning}
+                              </div>
+                            ) : null}
                           </div>
                           <Button
                             type="button"
                             size="sm"
-                            className="h-8 text-[12px]"
-                            disabled={receivingPendingId === row.id}
+                            className="h-8 shrink-0 text-[12px]"
+                            disabled={receivingPendingId === row.id || !canReceive}
                             onClick={() => void receivePendingReturn(row)}
+                            data-testid={`pending-return-receive-${row.id}`}
                           >
                             {receivingPendingId === row.id ? "Receiving…" : "Receive RM Return"}
                           </Button>
@@ -440,43 +520,12 @@ export function ProductionRmReturnsPage() {
                       </div>
                     );
                   })}
-                  <div className="grid gap-2 sm:grid-cols-2">
-                    <label className="grid gap-0.5 text-[11px]">
-                      <span className="font-medium text-amber-950">From production</span>
-                      <select
-                        className="erp-flow-filter-input h-8 rounded-md border border-amber-200 bg-white px-2 text-[13px]"
-                        value={fromLocationId === "" ? "" : String(fromLocationId)}
-                        onChange={(e) => setFromLocationId(e.target.value ? Number(e.target.value) : "")}
-                      >
-                        <option value="">Select…</option>
-                        {(ctx?.fromLocations ?? []).map((l) => (
-                          <option key={l.id} value={l.id}>
-                            {l.locationName}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="grid gap-0.5 text-[11px]">
-                      <span className="font-medium text-amber-950">Return to store</span>
-                      <select
-                        className="erp-flow-filter-input h-8 rounded-md border border-amber-200 bg-white px-2 text-[13px]"
-                        value={toLocationId === "" ? "" : String(toLocationId)}
-                        onChange={(e) => setToLocationId(e.target.value ? Number(e.target.value) : "")}
-                      >
-                        <option value="">Select…</option>
-                        {(ctx?.toLocations ?? []).map((l) => (
-                          <option key={l.id} value={l.id}>
-                            {l.locationName}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                  </div>
                 </div>
               )}
             </section>
           )}
 
+          {!pendingDrivenMode ? (
           <ErpKpiStrip>
             <ErpKpiSegment>
               <ErpKpiLabel>Direction</ErpKpiLabel>
@@ -487,7 +536,9 @@ export function ProductionRmReturnsPage() {
               <ErpKpiValue>Location transfer (paired)</ErpKpiValue>
             </ErpKpiSegment>
           </ErpKpiStrip>
+          ) : null}
 
+          {!pendingDrivenMode ? (
           <section className="rounded-lg border border-slate-200 bg-white p-3">
             <h2 className="text-sm font-semibold text-slate-900">1. Unused RM at production</h2>
             <p className="mt-0.5 text-xs text-slate-600">
@@ -621,8 +672,9 @@ export function ProductionRmReturnsPage() {
               </div>
             ) : null}
           </section>
+          ) : null}
 
-          {!rmDispositionFinalized ? (
+          {!pendingDrivenMode && !rmDispositionFinalized ? (
           <form onSubmit={onSubmit} className="rounded-lg border border-slate-200 bg-white p-3">
             <h2 className="flex items-center gap-1.5 text-sm font-semibold text-slate-900">
               <PackageMinus className="h-4 w-4" />
@@ -713,7 +765,9 @@ export function ProductionRmReturnsPage() {
           ) : null}
 
           <section className="rounded-lg border border-slate-200 bg-white p-3">
-            <h2 className="text-sm font-semibold text-slate-900">3. History</h2>
+            <h2 className="text-sm font-semibold text-slate-900">
+              {pendingDrivenMode ? "Return history" : "3. History"}
+            </h2>
             {historyLoadFailed ? (
               <p className="mt-1 text-xs text-amber-800">
                 Return history loaded; wastage notes could not be loaded (migration may be pending). Returns still work.
@@ -753,7 +807,7 @@ export function ProductionRmReturnsPage() {
             )}
           </section>
 
-          {wastageLine && typeof workOrderId === "number" && typeof fromLocationId === "number" ? (
+          {wastageLine && !pendingDrivenMode && typeof workOrderId === "number" && typeof fromLocationId === "number" ? (
             <RmWastageModal
               open
               line={wastageLine}

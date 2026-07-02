@@ -2,6 +2,7 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const {
   pendingQty,
+  effectiveRequiredQty,
   excessIssueQty,
   recalcPmrStatus,
   PMR_SHORT_ISSUE_WAIVE_REASONS,
@@ -16,6 +17,12 @@ describe("P16-13 material issue flexibility", () => {
     assert.equal(pendingQty({ requiredQty: 100, issuedQty: 70, waivedQty: 0 }), 30);
     assert.equal(pendingQty({ requiredQty: 7.02, issuedQty: 7, waivedQty: 0.02 }), 0);
     assert.equal(pendingQty({ requiredQty: 100, issuedQty: 101, waivedQty: 0 }), 0);
+  });
+
+  it("effectiveRequiredQty subtracts waived qty from original BOM requirement", () => {
+    assert.equal(effectiveRequiredQty({ requiredQty: 21.06, waivedQty: 0.06 }), 21);
+    assert.equal(effectiveRequiredQty({ requiredQty: 100, waivedQty: 0 }), 100);
+    assert.equal(effectiveRequiredQty({ requiredQty: 5, waivedQty: 7 }), 0);
   });
 
   it("excessIssueQty when issued exceeds required", () => {

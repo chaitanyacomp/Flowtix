@@ -860,7 +860,7 @@ describe("pendingActionsService", () => {
     };
     const actions = await fetchProductionRmReturnWaitingActions(mockDb);
     assert.equal(actions.length, 1);
-    assert.equal(actions[0].action, "Waiting for Store RM Return");
+    assert.equal(actions[0].action, "RM Return Approval Pending");
     assert.equal(actions[0].ownerRole, "PRODUCTION");
     assert.match(actions[0].href, /workOrderId=88/);
   });

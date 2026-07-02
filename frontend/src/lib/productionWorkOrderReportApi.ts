@@ -122,8 +122,18 @@ export type ProductionWorkOrderReport = {
       remarks: string | null;
       createdAt: string;
     }>;
+    wastageDetails: Array<{
+      id: number;
+      wastageTypeId: number;
+      wastageTypeName: string | null;
+      qty: number;
+      remarks: string | null;
+      sortOrder: number;
+    }>;
   };
   generatedAt: string;
+  wastageTypes?: Array<{ id: number; name: string; sortOrder: number; isActive: boolean }>;
+  totalWastageQty?: number;
 };
 
 export function fetchProductionWorkOrderReport(workOrderId: number): Promise<ProductionWorkOrderReport> {
@@ -132,6 +142,7 @@ export function fetchProductionWorkOrderReport(workOrderId: number): Promise<Pro
 
 export type ConfirmProductionWorkOrderReportInput = {
   remarks?: string | null;
+  closeWorkOrder?: boolean;
   lines: Array<{
     itemId: number;
     rmConsumedQty?: number | null;
@@ -139,6 +150,12 @@ export type ConfirmProductionWorkOrderReportInput = {
     scrapWasteQty?: number | null;
     varianceQty?: number | null;
     remarks?: string | null;
+  }>;
+  wastageDetails?: Array<{
+    wastageTypeId: number;
+    qty: number;
+    remarks?: string | null;
+    sortOrder?: number;
   }>;
 };
 
@@ -150,6 +167,10 @@ export function confirmProductionWorkOrderReport(
   confirmation: ProductionWorkOrderReport["confirmation"];
   alreadyConfirmed: boolean;
   requiresShortfallDecision: boolean;
+  executionClose?: {
+    outcome?: "FULL_COMPLETE" | "CARRY_FORWARD" | "WAIVE_BALANCE" | string;
+    successMessage?: string | null;
+  } | null;
 }> {
   return apiFetch(`/api/production/work-orders/${workOrderId}/production-report/confirm`, {
     method: "POST",

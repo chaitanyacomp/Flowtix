@@ -32,7 +32,7 @@ import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Badge } from "../components/ui/badge";
 import { apiFetch, ApiRequestError } from "../services/api";
-import { PageContainer } from "../components/PageHeader";
+import { PageContainer, ERPBackNavigation, PageNoQtyFlowBackLink } from "../components/PageHeader";
 import { NoQtyCycleContextBar } from "../components/erp/foundation/NoQtyCycleContextBar";
 import { ErpWorkflowBanner } from "../components/erp/foundation/ErpWorkflowBanner";
 import { ErpWorkflowTrail } from "../components/erp/foundation/ErpWorkflowTrail";
@@ -44,10 +44,9 @@ import {
   OperationalWorkspaceFooter,
   OpCtxSep,
 } from "../components/erp/OperationalWorkspaceChrome";
-import { ArrowLeft, CircleHelp } from "lucide-react";
+import { CircleHelp } from "lucide-react";
 import { displaySalesOrderNo, displayRequirementSheetNo } from "../lib/docNoDisplay";
 import { ActivityHistoryCard } from "../components/ActivityHistoryCard";
-import { PageNoQtyFlowBackLink } from "../components/PageHeader";
 import { NoQtyMacroLifecycleStrip } from "../components/erp/production/NoQtyMacroLifecycleStrip";
 import { NoQtyNextRsStatusPanel } from "../components/erp/production/NoQtyNextRsStatusPanel";
 import { NoQtyRsCycleSummaryPanel } from "../components/erp/production/NoQtyRsCycleSummaryPanel";
@@ -1465,16 +1464,13 @@ export function RequirementSheetPage() {
             {isNoQty && fromNoQtySo ? (
               <PageNoQtyFlowBackLink step="REQUIREMENT" className="mt-0" />
             ) : isNoQty ? (
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="h-7 gap-1 px-2 text-slate-600"
-                onClick={() => nav(noQtyAgreementListHref(viewerRole))}
-              >
-                <ArrowLeft className="h-3.5 w-3.5 shrink-0" />
-                {isStoreLikePlanningRole(viewerRole) ? "NO_QTY Execution" : "No Qty SOs"}
-              </Button>
+              <ERPBackNavigation
+                defaultTo={noQtyAgreementListHref(viewerRole)}
+                defaultLabel={
+                  isStoreLikePlanningRole(viewerRole) ? "Back to NO_QTY Execution" : "Back to No Qty Sales Orders"
+                }
+                className="h-8 min-h-8 text-[12px]"
+              />
             ) : null}
           </div>
           {!isNoQty ? (

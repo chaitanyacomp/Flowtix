@@ -1,5 +1,6 @@
 import * as React from "react";
 import { Link, useSearchParams } from "react-router-dom";
+import { ERPBackNavigation } from "../components/PageHeader";
 import { apiFetch } from "../services/api";
 import { stockAdjustmentUserMessage } from "../lib/stockAdjustmentErrors";
 import { useCanPostStockAdjustment } from "../hooks/useIsAdmin";
@@ -365,11 +366,7 @@ export function StockAdjustmentPage() {
             <p className="text-sm text-red-700" role="alert">
               Access denied. Only Admin and Store roles can post stock adjustments.
             </p>
-            <p className="mt-3 text-sm text-slate-600">
-              <Link to="/stock" className="font-medium text-primary underline">
-                Back to Stock
-              </Link>
-            </p>
+            <ERPBackNavigation defaultTo="/stock" defaultLabel="Back to Stock" />
           </CardContent>
         </Card>
       </div>
@@ -378,13 +375,9 @@ export function StockAdjustmentPage() {
 
   return (
     <div className="grid gap-3">
+      <ERPBackNavigation defaultTo="/stock" defaultLabel="Back to Stock" />
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h1 className="text-lg font-semibold text-slate-900">Stock Adjustment</h1>
-        <p className="text-sm text-slate-600">
-          <Link to="/stock" className="font-medium text-primary underline">
-            ← Stock balances
-          </Link>
-        </p>
       </div>
 
       {policyLoadWarning ? (

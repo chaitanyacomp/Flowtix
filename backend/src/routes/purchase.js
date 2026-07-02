@@ -37,6 +37,7 @@ const { repairRmPurchaseTaxData } = require("../services/rmPoTaxRepair");
 const {
   listPendingPurchaseRequests,
   createRmPoFromPurchaseRequestLines,
+  requireSupplierPoNumber,
 } = require("../services/purchaseRequestService");
 const {
   recalculateMaterialRequirementClosureForRmPo,
@@ -358,6 +359,7 @@ purchaseRouter.post("/rm-pos", requireAuth, requireRole([...RM_PO_WRITE_ROLES]),
     throw err;
     const schema = z.object({
       supplierId: z.number().int(),
+      supplierPoNumber: z.unknown().optional().nullable(),
       remarks: z.string().max(4000).optional().nullable(),
       lines: z
         .array(
@@ -370,6 +372,7 @@ purchaseRouter.post("/rm-pos", requireAuth, requireRole([...RM_PO_WRITE_ROLES]),
         .min(1),
     });
     const body = schema.parse(req.body);
+    const supplierPoNumber = requireSupplierPoNumber(body.supplierPoNumber);
 
     const userId = req.user?.userId;
     const relaxed = isTestingModeRelaxed();
@@ -426,6 +429,7 @@ purchaseRouter.post("/rm-pos", requireAuth, requireRole([...RM_PO_WRITE_ROLES]),
       const created = await tx.rmPurchaseOrder.create({
         data: {
           supplierId: body.supplierId,
+          supplierPoNumber,
           status: "PENDING",
           remarks: body.remarks?.trim() || null,
           supplierStateSnapshot: snap.supplierStateSnapshot,
@@ -449,6 +453,7 @@ purchaseRouter.post("/rm-pos", requireAuth, requireRole([...RM_PO_WRITE_ROLES]),
             snapshot: {
               supplierId: created.supplierId,
               supplierName: created.supplier?.name ?? null,
+              supplierPoNumber: created.supplierPoNumber,
               lineCount: created.lines.length,
             },
             status: { from: null, to: created.status },
@@ -474,6 +479,7 @@ purchaseRouter.put("/rm-pos/:id", requireAuth, requireRole([...RM_PO_WRITE_ROLES
     const schema = z.object({
       supplierId: z.number().int().optional(),
       supplierLocationId: z.number().int().positive().nullable().optional(),
+      supplierPoNumber: z.unknown().optional().nullable(),
       remarks: z.string().max(4000).optional().nullable(),
       lines: z.array(lineInSchema).min(1),
     });
@@ -655,6 +661,7 @@ purchaseRouter.put("/rm-pos/:id", requireAuth, requireRole([...RM_PO_WRITE_ROLES
           purchaseGstModeSnapshot: commercial.purchaseGstModeSnapshot,
         };
         if (body.supplierId != null) data.supplierId = body.supplierId;
+        if (body.supplierPoNumber !== undefined) data.supplierPoNumber = requireSupplierPoNumber(body.supplierPoNumber);
         if (body.remarks !== undefined) data.remarks = body.remarks?.trim() || null;
         await tx.rmPurchaseOrder.update({ where: { id }, data });
 
@@ -681,7 +688,10 @@ purchaseRouter.put("/rm-pos/:id", requireAuth, requireRole([...RM_PO_WRITE_ROLES
               module: "PURCHASE",
               actionLabel: "UPDATE",
               ref: { type: "RM_PO", id: String(out.id), no: `RMPO-${out.id}` },
-              changes: { status: { from: rmPo.status, to: out.status } },
+              changes: {
+                status: { from: rmPo.status, to: out.status },
+                supplierPoNumber: { from: rmPo.supplierPoNumber, to: out.supplierPoNumber },
+              },
             },
           });
         }
@@ -733,6 +743,8 @@ purchaseRouter.put("/rm-pos/:id", requireAuth, requireRole([...RM_PO_WRITE_ROLES
         data: {
           supplierId: body.supplierId ?? undefined,
           supplierLocationId: commercial.supplierLocationId,
+          supplierPoNumber:
+            body.supplierPoNumber !== undefined ? requireSupplierPoNumber(body.supplierPoNumber) : undefined,
           remarks: body.remarks !== undefined ? body.remarks?.trim() || null : undefined,
           supplierStateSnapshot: commercial.supplierStateSnapshot,
           supplierStateCodeSnapshot: commercial.supplierStateCodeSnapshot,
@@ -777,10 +789,13 @@ purchaseRouter.put("/rm-pos/:id", requireAuth, requireRole([...RM_PO_WRITE_ROLES
           payload: {
             module: "PURCHASE",
             actionLabel: "UPDATE",
-            ref: { type: "RM_PO", id: String(out.id), no: `RMPO-${out.id}` },
-            changes: { status: { from: rmPo.status, to: out.status } },
-          },
-        });
+              ref: { type: "RM_PO", id: String(out.id), no: `RMPO-${out.id}` },
+              changes: {
+                status: { from: rmPo.status, to: out.status },
+                supplierPoNumber: { from: rmPo.supplierPoNumber, to: out.supplierPoNumber },
+              },
+            },
+          });
       }
       return { out, taxWarnings: uniqueWarnings(taxWarnings) };
     });
@@ -1114,7 +1129,12 @@ purchaseRouter.post("/grns", requireAuth, grnWriteRoles, async (req, res, next) 
             module: "PURCHASE",
             actionLabel: "CREATE",
             ref: { type: "GRN", id: String(grn.id), no: `GRN-${grn.id}` },
-            snapshot: { rmPoId: rmPo.id, rmPoNo: `RMPO-${rmPo.id}`, lineCount: grn.lines.length },
+            snapshot: {
+              rmPoId: rmPo.id,
+              rmPoNo: `RMPO-${rmPo.id}`,
+              supplierPoNumber: rmPo.supplierPoNumber,
+              lineCount: grn.lines.length,
+            },
           },
         });
       }
@@ -1298,6 +1318,7 @@ purchaseRouter.post(
       const schema = z.object({
         supplierId: z.number().int().positive(),
         supplierLocationId: z.number().int().positive().optional().nullable(),
+        supplierPoNumber: z.unknown().optional().nullable(),
         remarks: z.string().max(4000).optional().nullable(),
         lines: z
           .array(

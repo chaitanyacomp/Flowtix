@@ -1,8 +1,8 @@
 import * as React from "react";
 import { Link } from "react-router-dom";
-import { ArrowLeft } from "lucide-react";
 import { cn } from "../../../lib/utils";
 import type { ErpNavContext } from "../../../lib/erpNavContext";
+import { ERPBackNavigation } from "./ERPBackNavigation";
 
 export type ErpWorkflowTrailProps = {
   navContext: ErpNavContext;
@@ -10,14 +10,11 @@ export type ErpWorkflowTrailProps = {
 };
 
 export function ErpWorkflowTrail({ navContext, className }: ErpWorkflowTrailProps) {
-  const { parentHref, parentLabel, trail } = navContext;
+  const { trail } = navContext;
 
   return (
-    <div className={cn("min-w-0 space-y-1", className)} data-testid="erp-workflow-trail">
-      <Link to={parentHref} className="erp-back-nav-chip">
-        <ArrowLeft className="h-3.5 w-3.5 shrink-0 opacity-80" aria-hidden />
-        <span>Back to {parentLabel}</span>
-      </Link>
+    <div className={cn("min-w-0 space-y-1.5", className)} data-testid="erp-workflow-trail">
+      <ERPBackNavigation navContext={navContext} />
       <nav
         aria-label="Workflow hierarchy"
         className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] leading-snug text-slate-600"

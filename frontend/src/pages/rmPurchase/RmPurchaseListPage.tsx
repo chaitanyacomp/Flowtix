@@ -110,6 +110,8 @@ export function RmPurchaseListPage() {
 
   const [newPoOpen, setNewPoOpen] = React.useState(false);
   const [supplierId, setSupplierId] = React.useState(0);
+  const [supplierPoNumber, setSupplierPoNumber] = React.useState("");
+  const [supplierPoNumberError, setSupplierPoNumberError] = React.useState<string | null>(null);
   const [poRemarks, setPoRemarks] = React.useState("");
   const [poLines, setPoLines] = React.useState<PoLineDraft[]>([]);
   const [purchaseMeta, setPurchaseMeta] = React.useState<PurchaseMeta | null>(null);
@@ -118,6 +120,7 @@ export function RmPurchaseListPage() {
   const relaxedTax = Boolean(purchaseMeta?.testingModeRelaxedTaxFields);
 
   const supplierSelectRef = React.useRef<HTMLSelectElement | null>(null);
+  const supplierPoNumberRef = React.useRef<HTMLInputElement | null>(null);
   const newPoModalFormRef = React.useRef<HTMLDivElement | null>(null);
   const poItemSelectRefs = React.useRef<(HTMLSelectElement | null)[]>([]);
   const poQtyInputRefs = React.useRef<(HTMLInputElement | null)[]>([]);
@@ -260,6 +263,8 @@ export function RmPurchaseListPage() {
     }
     setPoLines(lines);
     setSupplierId(suppliers[0]?.id ?? 0);
+    setSupplierPoNumber("");
+    setSupplierPoNumberError(null);
     setPoRemarks("");
     setError(DIRECT_PO_DISABLED_MESSAGE);
   }, [listLoaded, items, relaxedTax, suppliers, location.search, location.state]);
@@ -295,6 +300,8 @@ export function RmPurchaseListPage() {
 
     setPoLines([line]);
     setSupplierId(suppliers[0]?.id ?? 0);
+    setSupplierPoNumber("");
+    setSupplierPoNumberError(null);
     setPoRemarks(matched ? `RM shortage cover: ${matched.itemName}` : "");
     setError(DIRECT_PO_DISABLED_MESSAGE);
   }, [listLoaded, items, relaxedTax, suppliers, location.search]);
@@ -316,6 +323,8 @@ export function RmPurchaseListPage() {
 
   function openNewPoModal() {
     setError(DIRECT_PO_DISABLED_MESSAGE);
+    setSupplierPoNumber("");
+    setSupplierPoNumberError(null);
     setPoRemarks("");
     setPoLines(items.length ? [buildInitialPoLine(items[0], relaxedTax)] : []);
     setSupplierId(suppliers[0]?.id ?? 0);
@@ -350,6 +359,7 @@ export function RmPurchaseListPage() {
         const hit =
           String(r.id).includes(q) ||
           formatRmPoNo(r.id).toLowerCase().includes(q) ||
+          (r.supplierPoNumber ?? "").toLowerCase().includes(q) ||
           r.supplier.name.toLowerCase().includes(q) ||
           inLines;
         if (!hit) return false;
@@ -391,6 +401,7 @@ export function RmPurchaseListPage() {
     creatingPo ||
     !supplierId ||
     poLines.length < 1 ||
+    supplierPoNumber.trim().length < 1 ||
     poLines.some(
       (l) =>
         !l.itemId ||
@@ -402,12 +413,20 @@ export function RmPurchaseListPage() {
 
   async function onCreatePo() {
     setError(null);
+    const supplierPoNumberTrim = supplierPoNumber.trim();
+    if (!supplierPoNumberTrim) {
+      setSupplierPoNumberError("Supplier PO Number is required.");
+      supplierPoNumberRef.current?.focus();
+      return;
+    }
+    setSupplierPoNumberError(null);
     setCreatingPo(true);
     try {
       const created = await apiFetch<RmPoRow & { taxWarnings?: string[] }>("/api/purchase/rm-pos", {
         method: "POST",
         body: JSON.stringify({
           supplierId,
+          supplierPoNumber: supplierPoNumberTrim,
           remarks: poRemarks.trim() || null,
           lines: poLines.map((l) => ({ itemId: l.itemId, qty: l.qty, rate: l.rate })),
         }),
@@ -746,6 +765,7 @@ export function RmPurchaseListPage() {
               <thead className="sticky top-0 z-10 bg-slate-50">
                 <tr>
                   <th className="whitespace-nowrap">PO number</th>
+                  <th className="whitespace-nowrap">Supplier PO No.</th>
                   <th className="min-w-[8rem]">Supplier</th>
                   <th className="min-w-[7rem]">Demand source</th>
                   <th className="min-w-[7rem]">Supply from</th>
@@ -775,6 +795,9 @@ export function RmPurchaseListPage() {
                       aria-label={`Open purchase order ${formatRmPoNo(r.id)}`}
                     >
                       <td className="whitespace-nowrap font-semibold text-slate-900">{formatRmPoNo(r.id)}</td>
+                      <td className="max-w-[10rem] truncate font-medium text-slate-800" title={r.supplierPoNumber ?? ""}>
+                        {r.supplierPoNumber || "—"}
+                      </td>
                       <td className="max-w-[14rem] truncate text-slate-800" title={r.supplier.name}>
                         {r.supplier.name}
                       </td>
@@ -836,6 +859,7 @@ export function RmPurchaseListPage() {
           onClose={() => {
             setNewPoOpen(false);
             setError(null);
+            setSupplierPoNumberError(null);
           }}
           aria-labelledby="rm-po-new-title"
         >
@@ -886,6 +910,26 @@ export function RmPurchaseListPage() {
                   </label>
                 </FieldShortcutHint>
               </div>
+              <label className="grid gap-1 text-sm">
+                <span className="text-slate-600">
+                  Supplier PO Number <span className="text-red-600">*</span>
+                </span>
+                <Input
+                  ref={supplierPoNumberRef}
+                  className={`h-9 ${supplierPoNumberError ? "border-red-500 focus-visible:ring-red-400" : ""}`}
+                  value={supplierPoNumber}
+                  maxLength={100}
+                  aria-invalid={Boolean(supplierPoNumberError)}
+                  onChange={(e) => {
+                    setSupplierPoNumber(e.target.value.slice(0, 100));
+                    if (supplierPoNumberError) setSupplierPoNumberError(null);
+                  }}
+                  onBlur={(e) => setSupplierPoNumber(e.target.value.trim())}
+                />
+                {supplierPoNumberError ? (
+                  <span className="text-xs font-medium text-red-700">{supplierPoNumberError}</span>
+                ) : null}
+              </label>
               <label className="grid gap-1 text-sm">
                 <span className="text-slate-600">Remarks</span>
                 <Input className="h-9" value={poRemarks} onChange={(e) => setPoRemarks(e.target.value)} placeholder="Optional" />

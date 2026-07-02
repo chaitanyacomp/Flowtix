@@ -22,6 +22,30 @@ const { assertSingleDemandPoolFromSourceTypes } = require("./procurementDemandPo
 const { assertActorMayCreatePurchaseRequest } = require("./procurementPurchaseRequestOwnership");
 
 const OPEN_PURCHASE_REQUEST_STATUSES = ["PENDING_PURCHASE", "PARTIALLY_ORDERED"];
+const SUPPLIER_PO_NUMBER_REQUIRED = "Supplier PO Number is required.";
+
+function normalizeSupplierPoNumber(value) {
+  if (typeof value === "string") return value.trim();
+  if (value == null) return "";
+  return String(value).trim();
+}
+
+function requireSupplierPoNumber(value) {
+  const supplierPoNumber = normalizeSupplierPoNumber(value);
+  if (!supplierPoNumber) {
+    const err = new Error(SUPPLIER_PO_NUMBER_REQUIRED);
+    err.statusCode = 400;
+    err.code = "SUPPLIER_PO_NUMBER_REQUIRED";
+    throw err;
+  }
+  if (supplierPoNumber.length > 100) {
+    const err = new Error("Supplier PO Number must be 100 characters or fewer.");
+    err.statusCode = 400;
+    err.code = "SUPPLIER_PO_NUMBER_TOO_LONG";
+    throw err;
+  }
+  return supplierPoNumber;
+}
 
 function linePendingPoQty(line) {
   const net = qtyToNumber(line.netRequiredQty);
@@ -496,6 +520,7 @@ async function applyMrProcuredFromPoLine(tx, purchaseRequestLineId, poQty) {
  */
 async function createRmPoFromPurchaseRequestLines(input, actor = {}) {
   const relaxed = isTestingModeRelaxed();
+  const supplierPoNumber = requireSupplierPoNumber(input.supplierPoNumber);
   return prisma.$transaction(async (tx) => {
     const lineIds = input.lines.map((l) => l.purchaseRequestLineId);
     const prLines = await tx.purchaseRequestLine.findMany({
@@ -567,6 +592,7 @@ async function createRmPoFromPurchaseRequestLines(input, actor = {}) {
       data: {
         supplierId: input.supplierId,
         supplierLocationId: commercial.supplierLocationId,
+        supplierPoNumber,
         status: "PENDING",
         remarks: input.remarks?.trim() || null,
         supplierStateSnapshot: commercial.supplierStateSnapshot,
@@ -640,7 +666,11 @@ async function createRmPoFromPurchaseRequestLines(input, actor = {}) {
           module: "PURCHASE",
           actionLabel: "CREATE_PO_FROM_REQUEST",
           ref: { type: "RM_PO", id: String(created.id), no: `RMPO-${created.id}` },
-          snapshot: { supplierId: created.supplierId, lineCount: created.lines.length },
+          snapshot: {
+            supplierId: created.supplierId,
+            supplierPoNumber: created.supplierPoNumber,
+            lineCount: created.lines.length,
+          },
           status: { from: null, to: created.status },
         },
       });
@@ -697,6 +727,9 @@ module.exports = {
   createPurchaseRequestFromPool,
   listPendingPurchaseRequests,
   createRmPoFromPurchaseRequestLines,
+  normalizeSupplierPoNumber,
+  requireSupplierPoNumber,
+  SUPPLIER_PO_NUMBER_REQUIRED,
   recalcPurchaseRequestStatus,
   linePendingPoQty,
   lineExcessOrderedQty,

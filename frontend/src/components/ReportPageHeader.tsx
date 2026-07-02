@@ -1,7 +1,6 @@
 import * as React from "react";
-import { Link } from "react-router-dom";
-import { ArrowLeft } from "lucide-react";
 import { cn } from "../lib/utils";
+import { ERPBackNavigation } from "./erp/foundation/ERPBackNavigation";
 
 /**
  * Sticky in-page header band for `erp-main` scroll: solid background so tables/forms do not show through.
@@ -34,9 +33,7 @@ export const DEFAULT_REPORT_BACK_TARGET: ReportBackTarget = {
   label: "Back to Reports",
 };
 
-/** Primary back-nav for report pages — subtle inline text link with arrow icon.
- * No background, border, or shadow; reads as a muted breadcrumb. Destination
- * defaults to the Reports hub but can be overridden via {@link back}. */
+/** Primary back-nav for report pages — uses global {@link ERPBackNavigation}. */
 export function ReportBackLink({
   className,
   back,
@@ -45,12 +42,7 @@ export function ReportBackLink({
   back?: ReportBackTarget;
 }) {
   const target = back ?? DEFAULT_REPORT_BACK_TARGET;
-  return (
-    <Link to={target.to} className={cn("erp-report-back-link", className)}>
-      <ArrowLeft className="h-3.5 w-3.5 shrink-0" aria-hidden />
-      <span>{target.label}</span>
-    </Link>
-  );
+  return <ERPBackNavigation to={target.to} label={target.label} className={className} />;
 }
 
 /**

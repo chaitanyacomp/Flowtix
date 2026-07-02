@@ -50,6 +50,7 @@ export type RmPoTracePayload = {
     id: number;
     displayNo: string;
     status: string;
+    supplierPoNumber?: string | null;
     createdAt?: string;
     remarks?: string | null;
   };

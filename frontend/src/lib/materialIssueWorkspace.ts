@@ -112,6 +112,20 @@ export function shouldShowNoRmAvailableWarning(input: {
   });
 }
 
+/** Editable Material Issue entry rows are only PMR lines with executable pending qty. */
+export function filterMaterialIssueEntryLines<T extends {
+  pmrLineId?: number;
+  pmrPendingQty?: number;
+  pendingQty?: number;
+  stillRequiredQty?: number;
+  issueCapQty?: number;
+}>(lines: T[]): T[] {
+  return lines.filter((ln) => {
+    if (!ln.pmrLineId) return true;
+    return n(ln.pmrPendingQty ?? ln.pendingQty ?? ln.stillRequiredQty ?? ln.issueCapQty ?? 0) > EPS;
+  });
+}
+
 /** PMRs with store-actionable pending issue quantity. */
 export function filterPmrsWithPendingIssue(pmrs: PendingPmrSummary[]): PendingPmrSummary[] {
   return pmrs.filter((p) => isActionablePmrStatus(p.status) && n(p.totalPending) > EPS);
@@ -143,12 +157,15 @@ export function buildActionableWorkOrderDropdownOptions(
 export function buildIssuedWorkOrderInfoRows(input: {
   recentIssues: Array<{ workOrderId?: number | null; workOrderNo?: string | null }>;
   actionableWorkOrderIds: Set<number>;
+  /** When set, only these WOs are eligible for the issued-waiting panel (production read-model). */
+  waitingForProductionIds?: Set<number>;
 }): Array<{ workOrderId: number; label: string }> {
   const seen = new Set<number>();
   const rows: Array<{ workOrderId: number; label: string }> = [];
   for (const issue of input.recentIssues) {
     const woId = Number(issue.workOrderId ?? 0);
     if (woId <= 0 || input.actionableWorkOrderIds.has(woId) || seen.has(woId)) continue;
+    if (input.waitingForProductionIds && !input.waitingForProductionIds.has(woId)) continue;
     seen.add(woId);
     rows.push({
       workOrderId: woId,
@@ -156,6 +173,41 @@ export function buildIssuedWorkOrderInfoRows(input: {
     });
   }
   return rows;
+}
+
+export type WorkOrderRmIssuedWaitingSnapshot = {
+  status?: string | null;
+  hasMaterialIssue?: boolean;
+  pmrFullyIssued?: boolean;
+  productionReportCount?: number;
+  productionEntryCount?: number;
+  executionStatus?: string | null;
+  shortfallResolutionCount?: number;
+};
+
+/** Read-model filter for Material Issue right panel (mirrors backend). */
+export function isWorkOrderRmIssuedWaitingForProduction(snapshot: WorkOrderRmIssuedWaitingSnapshot): boolean {
+  const status = String(snapshot.status ?? "");
+  if (status === "COMPLETED" || status === "REJECTED" || status === "CLOSED_WITH_SHORTFALL") return false;
+  if (!snapshot.hasMaterialIssue && !snapshot.pmrFullyIssued) return false;
+  if (n(snapshot.productionReportCount) > 0) return false;
+  if (n(snapshot.productionEntryCount) > 0) return false;
+  const exec = String(snapshot.executionStatus ?? "NOT_STARTED");
+  if (exec !== "NOT_STARTED") return false;
+  if (n(snapshot.shortfallResolutionCount) > 0) return false;
+  return true;
+}
+
+export function mapIssuedWaitingForProductionPanelRows(
+  rows: Array<{ workOrderId: number; workOrderNo: string }>,
+  actionableWorkOrderIds: Set<number>,
+): Array<{ workOrderId: number; label: string }> {
+  return rows
+    .filter((row) => row.workOrderId > 0 && !actionableWorkOrderIds.has(row.workOrderId))
+    .map((row) => ({
+      workOrderId: row.workOrderId,
+      label: row.workOrderNo?.trim() || `WO-${row.workOrderId}`,
+    }));
 }
 
 /** Prefer latest actionable PMR for a work order. */
@@ -182,7 +234,7 @@ export function resolveMaterialIssueLineStatus(input: {
   const issueNow = n(input.issueQty ?? 0);
 
   if (pending <= EPS) {
-    return { status: "COMPLETE", label: "Fully issued", explanation: null };
+    return { status: "COMPLETE", label: "Fully Issued", explanation: null };
   }
   if (input.woWaitingProcurement && (available == null || available <= EPS)) {
     return {

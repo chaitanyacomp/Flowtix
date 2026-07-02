@@ -34,7 +34,7 @@ const {
 } = require("../services/soDispatchTraceReport");
 const { buildCustomerSoRsReport } = require("../services/customerSoRsReportService");
 const { buildProductionRmVarianceReport } = require("../services/productionRmVarianceReportService");
-const { buildRmWastageReport } = require("../services/rmWastageReportService");
+const { buildProductionWastageClassificationReport } = require("../services/productionWastageClassificationReportService");
 const { buildRmPlanningVsReceivedReport } = require("../services/rmPlanningVsReceivedReportService");
 
 const WORK_ORDER_TRACKING_ACCESS_DENIED =
@@ -1877,5 +1877,24 @@ reportsRouter.get("/customer-so-rs", requireAuth, customerSoRsRoles, async (req,
     return next(e);
   }
 });
+
+const productionWastageClassificationRoles = requireRole(
+  ["ADMIN", "PRODUCTION", "STORE", "PURCHASE"],
+  "Access denied. Production wastage classification report requires admin, production, store, or purchase role.",
+);
+
+reportsRouter.get(
+  "/production-wastage-classification",
+  requireAuth,
+  productionWastageClassificationRoles,
+  async (req, res, next) => {
+    try {
+      const payload = await buildProductionWastageClassificationReport(req.query);
+      return res.json(payload);
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
 
 module.exports = { reportsRouter };

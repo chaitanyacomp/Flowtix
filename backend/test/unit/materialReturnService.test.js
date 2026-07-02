@@ -59,6 +59,60 @@ describe("computePhysicalReturnableQty", () => {
   });
 });
 
+describe("resolveSuggestedRmReturnLocations", () => {
+  it("infers production and store locations from latest material issue for item", async () => {
+    const { resolveSuggestedRmReturnLocations } = require("../../src/services/materialReturnService");
+    const db = {
+      materialIssueNote: {
+        findMany: async () => [
+          {
+            id: 5,
+            fromLocationId: 2,
+            toLocationId: 3,
+            lines: [{ itemId: 7 }],
+          },
+        ],
+        findFirst: async () => null,
+      },
+      location: {
+        findUnique: async ({ where }) => {
+          if (where.id === 3) {
+            return {
+              id: 3,
+              locationCode: "PROD-A",
+              locationName: "Production Floor A",
+              locationType: "PRODUCTION",
+              isActive: true,
+              allowRm: true,
+              allowSfg: false,
+              allowFg: false,
+              allowConsumable: false,
+            };
+          }
+          return {
+            id: 2,
+            locationCode: "RM-STORE",
+            locationName: "RM Store",
+            locationType: "RM_STORE",
+            isActive: true,
+            allowRm: true,
+            allowSfg: false,
+            allowFg: false,
+            allowConsumable: false,
+          };
+        },
+        findFirst: async () => null,
+      },
+    };
+    const resolved = await resolveSuggestedRmReturnLocations(db, { workOrderId: 10, itemId: 7 });
+    assert.equal(resolved.locationResolved, true);
+    assert.equal(resolved.suggestedFromLocationId, 3);
+    assert.equal(resolved.suggestedToLocationId, 2);
+    assert.equal(resolved.fromLocationName, "Production Floor A");
+    assert.equal(resolved.toLocationName, "RM Store");
+  });
+});
+
 describe("buildReturnableLinesForWorkOrder", () => {
   it("returns unused RM as returnable after partial approved production", async () => {
     const db = {
@@ -75,10 +129,12 @@ describe("buildReturnableLinesForWorkOrder", () => {
         ],
       },
       materialIssueNote: {
-        findMany: async (args) =>
-          args?.where?.productionMaterialRequestId === null
+        findMany: async (args) => {
+          if (args?.take === 1) return [];
+          return args?.where?.productionMaterialRequestId === null
             ? []
-            : [{ toLocationId: 3 }],
+            : [{ toLocationId: 3, fromLocationId: 2, lines: [{ itemId: 1 }] }];
+        },
       },
       productionEntry: {
         findMany: async () => [{ id: 30 }],
@@ -94,7 +150,13 @@ describe("buildReturnableLinesForWorkOrder", () => {
         findMany: async () => [{ id: 1, itemName: "PP", unit: "KG", itemType: "RM" }],
       },
       location: {
-        findFirst: async () => ({ id: 2 }),
+        findFirst: async () => ({ id: 2, locationCode: "RM", locationName: "RM Store", locationType: "RM_STORE", isActive: true, allowRm: true, allowSfg: false, allowFg: false, allowConsumable: false }),
+        findUnique: async ({ where }) => {
+          if (where.id === 3) {
+            return { id: 3, locationCode: "PROD", locationName: "Production", locationType: "PRODUCTION", isActive: true, allowRm: true, allowSfg: false, allowFg: false, allowConsumable: false };
+          }
+          return { id: 2, locationCode: "RM", locationName: "RM Store", locationType: "RM_STORE", isActive: true, allowRm: true, allowSfg: false, allowFg: false, allowConsumable: false };
+        },
       },
     };
 

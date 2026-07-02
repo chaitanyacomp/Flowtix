@@ -1189,6 +1189,7 @@ productionRouter.get(
 /** NO_QTY — Production execution status (orthogonal to Work Order lifecycle). */
 const confirmProductionReportSchema = z.object({
   remarks: z.string().max(4000).optional().nullable(),
+  closeWorkOrder: z.boolean().optional().default(false),
   lines: z
     .array(
       z.object({
@@ -1198,6 +1199,17 @@ const confirmProductionReportSchema = z.object({
         scrapWasteQty: z.number().nonnegative().optional().nullable(),
         varianceQty: z.number().optional().nullable(),
         remarks: z.string().max(500).optional().nullable(),
+      }),
+    )
+    .optional()
+    .default([]),
+  wastageDetails: z
+    .array(
+      z.object({
+        wastageTypeId: z.number().int().positive(),
+        qty: z.number().positive(),
+        remarks: z.string().max(500).optional().nullable(),
+        sortOrder: z.number().int().nonnegative().optional(),
       }),
     )
     .optional()
@@ -1214,12 +1226,25 @@ productionRouter.post(
       const body = confirmProductionReportSchema.parse(req.body ?? {});
       const result = await prisma.$transaction(async (tx) => {
         await lockWorkOrderForUpdate(tx, id);
-        return confirmProductionWorkOrderReport(
+        const confirmed = await confirmProductionWorkOrderReport(
           tx,
           id,
-          { remarks: body.remarks, lines: body.lines },
+          { remarks: body.remarks, lines: body.lines, wastageDetails: body.wastageDetails },
           { userId: req.user?.userId, role: req.user?.role },
         );
+        const orderType = String(confirmed.report?.salesOrderOrderType ?? "").toUpperCase();
+        const executionStatus = String(confirmed.report?.execution?.status ?? "").toUpperCase();
+        let executionClose = null;
+        if (body.closeWorkOrder && orderType === "NO_QTY" && executionStatus !== "COMPLETED") {
+          const remainderQty = Number(confirmed.report?.summary?.remainderQty ?? 0);
+          executionClose = await finishProductionExecution(
+            tx,
+            id,
+            remainderQty > REPORT_QUEUE_EPS ? { shortfallOutcome: "CARRY_FORWARD" } : {},
+            { actorUserId: req.user?.userId, actorRole: req.user?.role },
+          );
+        }
+        return { ...confirmed, executionClose };
       });
       return res.status(result.alreadyConfirmed ? 200 : 201).json(result);
     } catch (e) {

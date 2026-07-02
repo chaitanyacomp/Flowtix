@@ -430,6 +430,95 @@ async function buildStockGroupedByLocation(db = prisma) {
     .sort((a, b) => a.locationName.localeCompare(b.locationName));
 }
 
+const PMR_FULLY_ISSUED_STATUSES = new Set(["FULLY_ISSUED", "SHORT_ISSUE_ACCEPTED"]);
+const WO_TERMINAL_FOR_ISSUED_WAITING_PANEL = new Set(["COMPLETED", "REJECTED", "CLOSED_WITH_SHORTFALL"]);
+
+/**
+ * Read-model: WO belongs on Material Issue "RM issued — waiting for Production" panel.
+ * Display filter only — does not mutate lifecycle or stock.
+ */
+function isWorkOrderRmIssuedWaitingForProduction(snapshot) {
+  const status = String(snapshot?.status ?? "");
+  if (WO_TERMINAL_FOR_ISSUED_WAITING_PANEL.has(status)) return false;
+  if (!snapshot?.hasMaterialIssue && !snapshot?.pmrFullyIssued) return false;
+  if (n(snapshot?.productionReportCount) > 0) return false;
+  if (n(snapshot?.productionEntryCount) > 0) return false;
+  const execStatus = String(snapshot?.executionStatus ?? "NOT_STARTED");
+  if (execStatus !== "NOT_STARTED") return false;
+  if (n(snapshot?.shortfallResolutionCount) > 0) return false;
+  return true;
+}
+
+/** @param {import('@prisma/client').PrismaClient | import('@prisma/client').Prisma.TransactionClient} db */
+async function listRmIssuedWorkOrdersWaitingForProduction(db = prisma, { limit = 50 } = {}) {
+  const recentIssues = await db.materialIssueNote.findMany({
+    where: { workOrderId: { not: null } },
+    orderBy: { id: "desc" },
+    take: Math.max(limit * 4, 80),
+    select: { workOrderId: true },
+  });
+  const candidateIds = [
+    ...new Set(recentIssues.map((r) => Number(r.workOrderId)).filter((id) => Number.isFinite(id) && id > 0)),
+  ].slice(0, Math.max(limit * 2, 40));
+  if (!candidateIds.length) return [];
+
+  const wos = await db.workOrder.findMany({
+    where: { id: { in: candidateIds } },
+    select: {
+      id: true,
+      docNo: true,
+      status: true,
+      materialIssueNotes: { select: { id: true }, take: 1 },
+      productionMaterialRequests: { select: { status: true } },
+      productionExecution: { select: { executionStatus: true } },
+      productionReports: { select: { id: true } },
+      lines: { select: { id: true } },
+      _count: { select: { productionShortfallResolutions: true } },
+    },
+  });
+
+  const lineIds = wos.flatMap((wo) => wo.lines.map((ln) => ln.id));
+  const entryGroups =
+    lineIds.length > 0
+      ? await db.productionEntry.groupBy({
+          by: ["workOrderLineId"],
+          where: { workOrderLineId: { in: lineIds } },
+          _count: { _all: true },
+        })
+      : [];
+  const lineToWo = new Map();
+  for (const wo of wos) {
+    for (const ln of wo.lines) lineToWo.set(ln.id, wo.id);
+  }
+  const productionEntryCountByWo = new Map();
+  for (const g of entryGroups) {
+    const woId = lineToWo.get(g.workOrderLineId);
+    if (!woId) continue;
+    productionEntryCountByWo.set(woId, (productionEntryCountByWo.get(woId) ?? 0) + n(g._count?._all));
+  }
+
+  return wos
+    .filter((wo) =>
+      isWorkOrderRmIssuedWaitingForProduction({
+        status: wo.status,
+        hasMaterialIssue: wo.materialIssueNotes.length > 0,
+        pmrFullyIssued: (wo.productionMaterialRequests || []).some((pmr) =>
+          PMR_FULLY_ISSUED_STATUSES.has(String(pmr.status ?? "")),
+        ),
+        productionReportCount: wo.productionReports.length,
+        productionEntryCount: productionEntryCountByWo.get(wo.id) ?? 0,
+        executionStatus: wo.productionExecution?.executionStatus ?? "NOT_STARTED",
+        shortfallResolutionCount: wo._count?.productionShortfallResolutions ?? 0,
+      }),
+    )
+    .map((wo) => ({
+      workOrderId: wo.id,
+      workOrderNo: wo.docNo?.trim() || `WO-${wo.id}`,
+    }))
+    .sort((a, b) => a.workOrderId - b.workOrderId)
+    .slice(0, limit);
+}
+
 module.exports = {
   TXN_TYPE,
   getAvailableRmAtLocation,
@@ -439,4 +528,6 @@ module.exports = {
   buildStockGroupedByLocation,
   loadIssuedByWorkOrderFromMaterialIssues,
   computeMaterialIssuePlanLine,
+  isWorkOrderRmIssuedWaitingForProduction,
+  listRmIssuedWorkOrdersWaitingForProduction,
 };

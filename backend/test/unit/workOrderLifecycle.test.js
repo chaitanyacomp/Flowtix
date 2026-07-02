@@ -5,6 +5,7 @@ const {
   shouldFreezeStatusSync,
   HOLD_REASONS,
   WO_PRODUCTION_BLOCKED,
+  closeWorkOrderWithShortfall,
 } = require("../../src/services/workOrderLifecycleService");
 
 describe("workOrderLifecycleService", () => {
@@ -30,5 +31,44 @@ describe("workOrderLifecycleService", () => {
   it("blocks production for PAUSED status", () => {
     assert.ok(WO_PRODUCTION_BLOCKED.has("PAUSED"));
     assert.ok(!WO_PRODUCTION_BLOCKED.has("IN_PROGRESS"));
+  });
+
+  it("closes with shortfall without waiting for Store RM return acknowledgement", async () => {
+    const tx = {
+      workOrder: {
+        findUnique: async () => ({
+          id: 10,
+          docNo: "WO-10",
+          status: "IN_PROGRESS",
+          requirementSheetId: null,
+          cycleId: null,
+          salesOrder: { id: 1, orderType: "NORMAL" },
+          lines: [{ id: 100, qty: "100", fgItem: { id: 1, itemName: "FG" } }],
+        }),
+        update: async ({ data }) => ({ id: 10, docNo: "WO-10", ...data }),
+      },
+      productionWorkOrderReport: {
+        findUnique: async () => ({ id: 20, status: "CONFIRMED" }),
+      },
+      productionEntry: {
+        groupBy: async () => [{ workOrderLineId: 100, _sum: { producedQty: "70" } }],
+      },
+      productionRmReturnPending: {
+        count: async () => {
+          throw new Error("RM return pending must remain a parallel Store task");
+        },
+      },
+      workOrderLine: {
+        update: async () => ({}),
+      },
+    };
+
+    const result = await closeWorkOrderWithShortfall(tx, 10, {
+      closureReason: "Customer accepted shortfall",
+      actorUserId: null,
+      actorRole: null,
+    });
+    assert.equal(result.shortfallQty, 30);
+    assert.equal(result.workOrder.status, "CLOSED_WITH_SHORTFALL");
   });
 });

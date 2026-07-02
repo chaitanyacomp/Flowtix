@@ -1,8 +1,9 @@
 import * as React from "react";
 import { Link } from "react-router-dom";
-import { ArrowLeft, Printer } from "lucide-react";
+import { Printer } from "lucide-react";
 import { Button, buttonVariants } from "../ui/button";
 import { cn } from "../../lib/utils";
+import { ERPBackNavigation } from "../erp/foundation/ERPBackNavigation";
 import { getApiUrl } from "../../services/api";
 import { printGrnDocumentSection } from "../../lib/grnDocumentActions";
 import {
@@ -134,14 +135,7 @@ export function GrnDocumentView({
             <Printer className="h-4 w-4" />
             Print / Save as PDF
           </Button>
-          <Link
-            to={poHref}
-            data-testid="grn-back-po-btn"
-            className={cn(buttonVariants({ variant: "outline", size: "sm" }), "gap-1.5 no-underline")}
-          >
-            <ArrowLeft className="h-4 w-4" />
-            Back to PO
-          </Link>
+          <ERPBackNavigation to={poHref} label="Back to PO" className="h-8 min-h-8 text-[12px]" data-testid="grn-back-po-btn" />
           {!grn.isReversed && canCreatePurchaseBill ? (
             primaryBill ? (
               <Link

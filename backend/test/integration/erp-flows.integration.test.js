@@ -304,6 +304,7 @@ d("Reporting + dispatch integration (seeded chain)", () => {
     await prisma.rmPurchaseOrder.create({
       data: {
         supplierId: supplier.id,
+        supplierPoNumber: `VPO-${tag}`,
         status: "PENDING",
         lines: { create: [{ itemId: rm.id, qty: "200", rate: "1" }] },
       },

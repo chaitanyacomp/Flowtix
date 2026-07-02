@@ -1,6 +1,7 @@
 ﻿import * as React from "react";
 import { Link, Navigate, useNavigate, useSearchParams } from "react-router-dom";
-import { ArrowLeft, X } from "lucide-react";
+import { X } from "lucide-react";
+import { ERPBackNavigation } from "../components/PageHeader";
 import { apiFetch } from "../services/api";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -351,10 +352,7 @@ export function QuotationsNewPage() {
         <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
           {loadError}
         </div>
-        <Link to="/quotations" className="erp-back-nav-chip">
-          <ArrowLeft className="h-4 w-4" aria-hidden />
-          Back to Quotations
-        </Link>
+        <ERPBackNavigation defaultTo="/quotations" defaultLabel="Back to Quotations" />
       </div>
     );
   }
@@ -362,10 +360,7 @@ export function QuotationsNewPage() {
   if (!feasibleEnquiries.length) {
     return (
       <div className="flex flex-col gap-4 p-1">
-        <Link to="/quotations" className="erp-back-nav-chip">
-          <ArrowLeft className="h-4 w-4 shrink-0" aria-hidden />
-          Back to Quotations
-        </Link>
+        <ERPBackNavigation defaultTo="/quotations" defaultLabel="Back to Quotations" />
         <p className="text-sm text-slate-600">
           No feasible enquiries without a quotation. Complete feasibility on the Enquiries page first.
         </p>
@@ -397,10 +392,7 @@ export function QuotationsNewPage() {
       <header className="overflow-hidden rounded-md border border-slate-200 bg-white shadow-sm">
         <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-1.5">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <Link to="/quotations" className="erp-back-nav-chip py-0.5 text-[12px]">
-              <ArrowLeft className="h-3.5 w-3.5 shrink-0" aria-hidden />
-              Quotations
-            </Link>
+            <ERPBackNavigation defaultTo="/quotations" defaultLabel="Back to Quotations" />
             <h1 className="text-base font-semibold tracking-tight text-slate-900">New Quotation</h1>
             <Badge
               variant={isNoQty ? "warning" : "info"}

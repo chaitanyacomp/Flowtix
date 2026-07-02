@@ -18,7 +18,14 @@ import {
   FIELD_HINT_SAVE,
 } from "../../lib/shortcutHintCopy";
 import { ErpModal } from "../../components/erp/ErpModal";
+import { GrnPostReceiptModal } from "../../components/rmPurchase/GrnPostReceiptModal";
 import { NextStepStrip } from "../../components/erp/NextStepStrip";
+import {
+  GRN_MODAL_DISCARD_CONFIRM,
+  hasGrnModalUnsavedEntry,
+  snapshotGrnModalLines,
+  type GrnModalEntryBaseline,
+} from "../../lib/grnReceivingWorkspaceUx";
 import {
   buildInitialPoLine,
   computeLineAmount,
@@ -126,6 +133,7 @@ export function RmPurchasePoDetailPage() {
   const [grnSupplierInvoiceNo, setGrnSupplierInvoiceNo] = React.useState("");
   const [grnFieldErrors, setGrnFieldErrors] = React.useState<{ grnDate?: string; supplierInvoiceNo?: string }>({});
   const [grnLines, setGrnLines] = React.useState<GrnLineDraft[]>([]);
+  const [grnModalBaseline, setGrnModalBaseline] = React.useState<GrnModalEntryBaseline | null>(null);
   const [grnLocations, setGrnLocations] = React.useState<GrnReceivingLocation[]>([]);
   const [grnLocationSuggestions, setGrnLocationSuggestions] = React.useState<Record<number, number>>({});
   const [grnLocationsLoading, setGrnLocationsLoading] = React.useState(false);
@@ -136,6 +144,8 @@ export function RmPurchasePoDetailPage() {
   const [supplierId, setSupplierId] = React.useState(0);
   const [supplierLocationId, setSupplierLocationId] = React.useState<number | null>(null);
   const [editSupplierLocations, setEditSupplierLocations] = React.useState<SupplierLocationOption[]>([]);
+  const [supplierPoNumber, setSupplierPoNumber] = React.useState("");
+  const [supplierPoNumberError, setSupplierPoNumberError] = React.useState<string | null>(null);
   const [poRemarks, setPoRemarks] = React.useState("");
   const [poLines, setPoLines] = React.useState<PoLineDraft[]>([]);
   const [savingPo, setSavingPo] = React.useState(false);
@@ -178,8 +188,10 @@ export function RmPurchasePoDetailPage() {
   );
 
   const supplierSelectRef = React.useRef<HTMLSelectElement | null>(null);
+  const supplierPoNumberRef = React.useRef<HTMLInputElement | null>(null);
   const poQtyInputRefs = React.useRef<(HTMLInputElement | null)[]>([]);
   const grnQtyInputRefs = React.useRef<(HTMLInputElement | null)[]>([]);
+  const grnLocationSelectRefs = React.useRef<(HTMLSelectElement | null)[]>([]);
 
   const load = React.useCallback(
     async (opts?: { silent?: boolean }): Promise<RmPoRow | null> => {
@@ -293,12 +305,79 @@ export function RmPurchasePoDetailPage() {
     setGrnDateInput((cur) => (cur.trim() === "" ? todayLocalIsoDate() : cur));
     setGrnSupplierInvoiceNo("");
     setGrnFieldErrors({});
+    setGrnModalBaseline(null);
   }, [grnModalOpen]);
+
+  React.useEffect(() => {
+    if (!grnModalOpen || !po) {
+      if (!grnModalOpen) setGrnModalBaseline(null);
+      return;
+    }
+    if (grnLocationsLoading || grnLines.length !== po.lines.length) return;
+    setGrnModalBaseline((prev) => {
+      if (prev) return prev;
+      return {
+        grnDateInput: grnDateInput.trim() || todayLocalIsoDate(),
+        grnSupplierInvoiceNo: "",
+        grnLines: snapshotGrnModalLines(grnLines),
+      };
+    });
+  }, [grnModalOpen, po, grnLines, grnDateInput, grnLocationsLoading]);
+
+  const closeGrnModal = React.useCallback(() => {
+    setGrnModalOpen(false);
+    setGrnModalBaseline(null);
+    setGrnFieldErrors({});
+  }, []);
+
+  const requestCloseGrnModal = React.useCallback(() => {
+    if (grning) return;
+    if (
+      hasGrnModalUnsavedEntry(grnModalBaseline, {
+        grnDateInput,
+        grnSupplierInvoiceNo,
+        grnLines,
+      })
+    ) {
+      if (!window.confirm(GRN_MODAL_DISCARD_CONFIRM)) return;
+    }
+    closeGrnModal();
+  }, [grning, grnModalBaseline, grnDateInput, grnSupplierInvoiceNo, grnLines, closeGrnModal]);
+
+  function onReceiveFullGrn() {
+    if (!po) return;
+    const fallbackLocId = grnLocations[0]?.id ?? 0;
+    setGrnLines(
+      po.lines.map((ln) => {
+        const got = receivedForLine(po, ln.id);
+        const pending = Math.max(0, Number(ln.qty) - got);
+        return {
+          rmPoLineId: ln.id,
+          receivedQty: pending,
+          locationId: grnLocationSuggestions[ln.id] ?? fallbackLocId,
+        };
+      }),
+    );
+    window.setTimeout(() => {
+      grnQtyInputRefs.current[0]?.focus();
+      grnQtyInputRefs.current[0]?.select?.();
+    }, 0);
+  }
+
+  function onReceiveNoneGrn() {
+    setGrnLines((prev) => prev.map((l) => ({ ...l, receivedQty: 0 })));
+    window.setTimeout(() => {
+      grnQtyInputRefs.current[0]?.focus();
+      grnQtyInputRefs.current[0]?.select?.();
+    }, 0);
+  }
 
   function openEditModal() {
     if (!po) return;
     setEditOpen(true);
     setPoRemarks(po.remarks ?? "");
+    setSupplierPoNumber(po.supplierPoNumber ?? "");
+    setSupplierPoNumberError(null);
     setSupplierId(po.supplierId);
     setSupplierLocationId(po.supplierLocationId ?? po.resolvedSupplierCommercial?.supplyLocation?.id ?? null);
     setPoLines(po.lines.map((l) => poResponseLineToDraft(l)));
@@ -385,6 +464,13 @@ export function RmPurchasePoDetailPage() {
 
   async function onSavePoEdit() {
     if (!po) return;
+    const supplierPoNumberTrim = supplierPoNumber.trim();
+    if (!supplierPoNumberTrim) {
+      setSupplierPoNumberError("Supplier PO Number is required.");
+      supplierPoNumberRef.current?.focus();
+      return;
+    }
+    setSupplierPoNumberError(null);
     setSavingPo(true);
     setError(null);
     try {
@@ -393,6 +479,7 @@ export function RmPurchasePoDetailPage() {
         body: JSON.stringify({
           supplierId,
           ...(canChangeCommercial && supplierLocationId != null ? { supplierLocationId } : {}),
+          supplierPoNumber: supplierPoNumberTrim,
           remarks: poRemarks.trim() || null,
           lines: poLines.map((l) => ({
             ...(l.id != null ? { id: l.id } : {}),
@@ -475,7 +562,7 @@ export function RmPurchasePoDetailPage() {
         }),
       });
       const refreshed = await load({ silent: true });
-      setGrnModalOpen(false);
+      closeGrnModal();
       try {
         const raw = localStorage.getItem("noQtyReturnContext");
         const ctx = raw ? (JSON.parse(raw) as { returnTo?: string; salesOrderId?: number; cycleId?: number | null; workOrderId?: number; workOrderLineId?: number }) : {};
@@ -591,6 +678,7 @@ export function RmPurchasePoDetailPage() {
   React.useEffect(() => {
     const n = po?.lines.length ?? 0;
     grnQtyInputRefs.current = grnQtyInputRefs.current.slice(0, n);
+    grnLocationSelectRefs.current = grnLocationSelectRefs.current.slice(0, n);
   }, [po?.lines.length]);
 
   const grnPostDisabled =
@@ -671,12 +759,60 @@ export function RmPurchasePoDetailPage() {
     poQtyInputRefs.current[next]?.focus();
   }
 
-  function onGrnQtyKeyDown(_i: number, e: React.KeyboardEvent<HTMLInputElement>) {
-    if (e.key !== "Enter" || e.ctrlKey || e.altKey || e.metaKey) return;
-    e.preventDefault();
-    shortcutHints.markFieldShortcutUsed("grnQty");
-    void onGrnPost();
+  function onGrnQtyKeyDown(i: number, e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const len = po?.lines.length ?? 0;
+    if (len < 1) return;
+
+    if (e.key === "Enter") {
+      e.preventDefault();
+      shortcutHints.markFieldShortcutUsed("grnQty");
+      const next = e.shiftKey ? Math.max(0, i - 1) : Math.min(len - 1, i + 1);
+      grnQtyInputRefs.current[next]?.focus();
+      grnQtyInputRefs.current[next]?.select?.();
+      return;
+    }
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      const next = Math.min(len - 1, i + 1);
+      grnQtyInputRefs.current[next]?.focus();
+      grnQtyInputRefs.current[next]?.select?.();
+      return;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      const next = Math.max(0, i - 1);
+      grnQtyInputRefs.current[next]?.focus();
+      grnQtyInputRefs.current[next]?.select?.();
+    }
   }
+
+  function onGrnLocationKeyDown(i: number, e: React.KeyboardEvent<HTMLSelectElement>) {
+    if (e.key !== "Enter" || e.ctrlKey || e.metaKey || e.altKey) return;
+    e.preventDefault();
+    grnQtyInputRefs.current[i]?.focus();
+    grnQtyInputRefs.current[i]?.select?.();
+  }
+
+  const bindGrnQtyField = React.useCallback(
+    (rmPoLineId: number) =>
+      shortcutHints.bindField("grnQty", {
+        onChange: (e) => {
+          const raw = (e.target as HTMLInputElement).value;
+          const v = raw.trim() === "" ? Number.NaN : Number(raw);
+          setGrnLines((prev) => {
+            const n = [...prev];
+            const ix = n.findIndex((x) => x.rmPoLineId === rmPoLineId);
+            const locId =
+              ix >= 0 ? n[ix]!.locationId : grnLocationSuggestions[rmPoLineId] ?? grnLocations[0]?.id ?? 0;
+            if (ix >= 0) n[ix] = { rmPoLineId, receivedQty: v, locationId: locId };
+            return n;
+          });
+        },
+        onFocus: (e) => (e.target as HTMLInputElement).select(),
+      }),
+    [shortcutHints, grnLocationSuggestions, grnLocations],
+  );
 
   const canEditPo = canWritePo && po && (po.status === "PENDING" || po.status === "PARTIAL");
   const showCancel = isAdmin && po && (po.status === "PENDING" || po.status === "PARTIAL");
@@ -1087,7 +1223,13 @@ export function RmPurchasePoDetailPage() {
       {!loading && !po && !error ? <p className="text-sm text-slate-600">Purchase order not found.</p> : null}
 
       {editOpen && po ? (
-        <ErpModal onClose={() => setEditOpen(false)} aria-labelledby="rm-po-edit-title">
+        <ErpModal
+          onClose={() => {
+            setEditOpen(false);
+            setSupplierPoNumberError(null);
+          }}
+          aria-labelledby="rm-po-edit-title"
+        >
           <Card className="erp-modal-shell max-h-[90vh] overflow-y-auto">
             <CardHeader className="pb-2">
               <CardTitle id="rm-po-edit-title" className="text-base">
@@ -1148,6 +1290,26 @@ export function RmPurchasePoDetailPage() {
                   </label>
                 ) : null}
               </div>
+              <label className="grid gap-1 text-sm">
+                <span className="text-slate-600">
+                  Supplier PO Number <span className="text-red-600">*</span>
+                </span>
+                <Input
+                  ref={supplierPoNumberRef}
+                  className={`h-9 ${supplierPoNumberError ? "border-red-500 focus-visible:ring-red-400" : ""}`}
+                  value={supplierPoNumber}
+                  maxLength={100}
+                  aria-invalid={Boolean(supplierPoNumberError)}
+                  onChange={(e) => {
+                    setSupplierPoNumber(e.target.value.slice(0, 100));
+                    if (supplierPoNumberError) setSupplierPoNumberError(null);
+                  }}
+                  onBlur={(e) => setSupplierPoNumber(e.target.value.trim())}
+                />
+                {supplierPoNumberError ? (
+                  <span className="text-xs font-medium text-red-700">{supplierPoNumberError}</span>
+                ) : null}
+              </label>
               <label className="grid gap-1 text-sm">
                 <span className="text-slate-600">Remarks</span>
                 <Input className="h-9" value={poRemarks} onChange={(e) => setPoRemarks(e.target.value)} placeholder="Optional" />
@@ -1321,224 +1483,49 @@ export function RmPurchasePoDetailPage() {
       ) : null}
 
       {grnModalOpen && po && grnAllowed ? (
-        <ErpModal onClose={() => setGrnModalOpen(false)} aria-labelledby="rm-grn-title">
-          <Card className="erp-modal-shell max-h-[90vh] overflow-y-auto">
-            <CardHeader className="pb-2">
-              <CardTitle id="rm-grn-title" className="text-base">
-                Post goods receipt — {formatRmPoNo(po.id)}
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="rounded-md border border-sky-100 bg-sky-50/80 px-3 py-2 text-xs text-sky-950">
-                <span className="font-medium">Receiving Location</span>
-                <span className="text-sky-900/90">
-                  {" "}
-                  — Material will be added to the selected location after you confirm receipt.
-                </span>
-              </div>
-
-              <div className="flex flex-wrap items-start justify-between gap-2">
-                <p className="text-xs text-slate-600">
-                  Enter receive quantities and location per line. Tab moves to the next field. Enter confirms receipt.
-                </p>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  disabled={grning}
-                  onClick={() => {
-                    const fallbackLocId = grnLocations[0]?.id ?? 0;
-                    setGrnLines(
-                      po.lines.map((ln) => {
-                        const got = receivedForLine(po, ln.id);
-                        const pending = Math.max(0, Number(ln.qty) - got);
-                        return {
-                          rmPoLineId: ln.id,
-                          receivedQty: pending,
-                          locationId: grnLocationSuggestions[ln.id] ?? fallbackLocId,
-                        };
-                      }),
-                    );
-                    window.setTimeout(() => {
-                      grnQtyInputRefs.current[0]?.focus();
-                      grnQtyInputRefs.current[0]?.select?.();
-                    }, 0);
-                  }}
-                >
-                  Receive full
-                </Button>
-              </div>
-
-              <div className="grid gap-2 sm:grid-cols-2">
-                <div className="grid gap-1">
-                  <label htmlFor="rm-grn-date" className="text-[11px] font-medium text-slate-600">
-                    GRN date *
-                  </label>
-                  <Input
-                    id="rm-grn-date"
-                    type="date"
-                    className="h-9 max-w-[240px]"
-                    value={grnDateInput}
-                    onChange={(e) => {
-                      setGrnDateInput(e.target.value);
-                      setGrnFieldErrors((x) => {
-                        const n = { ...x };
-                        delete n.grnDate;
-                        return n;
-                      });
-                    }}
-                    disabled={grning}
-                  />
-                  {grnFieldErrors.grnDate ? (
-                    <p className="text-xs text-red-600" role="alert">
-                      {grnFieldErrors.grnDate}
-                    </p>
-                  ) : null}
-                </div>
-                <div className="grid gap-1">
-                  <label htmlFor="rm-grn-supplier-inv" className="text-[11px] font-medium text-slate-600">
-                    Supplier invoice no. *
-                  </label>
-                  <Input
-                    id="rm-grn-supplier-inv"
-                    type="text"
-                    className="h-9 max-w-[320px]"
-                    autoCapitalize="off"
-                    autoCorrect="off"
-                    value={grnSupplierInvoiceNo}
-                    onChange={(e) => {
-                      setGrnSupplierInvoiceNo(e.target.value);
-                      setGrnFieldErrors((x) => {
-                        const n = { ...x };
-                        delete n.supplierInvoiceNo;
-                        return n;
-                      });
-                    }}
-                    disabled={grning}
-                  />
-                  {grnFieldErrors.supplierInvoiceNo ? (
-                    <p className="text-xs text-red-600" role="alert">
-                      {grnFieldErrors.supplierInvoiceNo}
-                    </p>
-                  ) : null}
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                {po.lines.map((ln, i) => {
-                  const got = receivedForLine(po, ln.id);
-                  const pending = Math.max(0, Number(ln.qty) - got);
-                  const gl = grnLines.find((g) => g.rmPoLineId === ln.id);
-                  const grnQtyBind = shortcutHints.bindField("grnQty", {
-                    onChange: (e) => {
-                      const raw = (e.target as HTMLInputElement).value;
-                      const v = raw.trim() === "" ? Number.NaN : Number(raw);
-                      setGrnLines((prev) => {
-                        const n = [...prev];
-                        const ix = n.findIndex((x) => x.rmPoLineId === ln.id);
-                        const locId = ix >= 0 ? n[ix].locationId : grnLocationSuggestions[ln.id] ?? grnLocations[0]?.id ?? 0;
-                        if (ix >= 0) n[ix] = { rmPoLineId: ln.id, receivedQty: v, locationId: locId };
-                        return n;
-                      });
-                    },
-                    onFocus: (e) => (e.target as HTMLInputElement).select(),
-                  });
-
-                  return (
-                    <div key={ln.id} className="rounded-md border border-slate-200 bg-white p-2">
-                      <div className="flex flex-wrap items-start justify-between gap-2">
-                        <div className="min-w-0">
-                          <div className="truncate text-sm font-medium text-slate-900">{ln.item?.itemName ?? "—"}</div>
-                          <div className="text-xs text-slate-600">
-                            Pending qty: <span className="tabular-nums text-slate-800">{pending}</span>
-                          </div>
-                        </div>
-
-                        <div className="grid gap-2 sm:grid-cols-2">
-                          <div className="grid gap-1">
-                            <label className="text-[11px] font-medium text-slate-600" htmlFor={`grn-loc-${ln.id}`}>
-                              Receiving Location *
-                            </label>
-                            <select
-                              id={`grn-loc-${ln.id}`}
-                              className="h-9 min-w-[10rem] rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-900"
-                              value={gl?.locationId && gl.locationId > 0 ? String(gl.locationId) : ""}
-                              disabled={grning || grnLocationsLoading || !grnLocations.length}
-                              onChange={(e) => {
-                                const locationId = Number(e.target.value);
-                                setGrnLines((prev) => {
-                                  const n = [...prev];
-                                  const ix = n.findIndex((x) => x.rmPoLineId === ln.id);
-                                  const qty = ix >= 0 ? n[ix].receivedQty : Number.NaN;
-                                  if (ix >= 0) n[ix] = { rmPoLineId: ln.id, receivedQty: qty, locationId };
-                                  else n.push({ rmPoLineId: ln.id, receivedQty: Number.NaN, locationId });
-                                  return n;
-                                });
-                              }}
-                            >
-                              <option value="">{grnLocationsLoading ? "Loading…" : "Select location"}</option>
-                              {grnLocations.map((loc) => (
-                                <option key={loc.id} value={String(loc.id)}>
-                                  {loc.locationName}
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-                          <div className="grid gap-1">
-                            <div className="text-[11px] font-medium text-slate-600">Receive qty</div>
-                            <FieldShortcutHint
-                            show={i === 0 && shortcutHints.activeFieldId === "grnQty"}
-                            hint={shortcutHints.activeFieldHintText ?? ""}
-                            placement="below-end"
-                          >
-                            <Input
-                              ref={(el) => {
-                                grnQtyInputRefs.current[i] = el;
-                              }}
-                              type="number"
-                              className="h-9 w-32"
-                              value={gl && Number.isFinite(gl.receivedQty) ? String(gl.receivedQty) : ""}
-                              min={0}
-                              step="any"
-                              onKeyDown={(e) => onGrnQtyKeyDown(i, e)}
-                              {...grnQtyBind}
-                            />
-                          </FieldShortcutHint>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-
-              <div className="flex flex-wrap gap-2">
-                <Button type="button" variant="outline" onClick={() => setGrnModalOpen(false)} disabled={grning}>
-                  Close
-                </Button>
-                <FieldShortcutHint
-                  show={shortcutHints.activeFieldId === "postGrn"}
-                  hint={shortcutHints.activeFieldHintText ?? ""}
-                  placement="above"
-                  className="inline-block"
-                >
-                  <Button
-                    type="button"
-                    onClick={() => {
-                      shortcutHints.markFieldShortcutUsed("postGrn");
-                      void onGrnPost();
-                    }}
-                    disabled={grnPostDisabled}
-                    onFocus={postGrnFocusBind.onFocus}
-                    onBlur={postGrnFocusBind.onBlur}
-                  >
-                    {grning ? "Posting…" : "Confirm receipt"}
-                  </Button>
-                </FieldShortcutHint>
-              </div>
-            </CardContent>
-          </Card>
-        </ErpModal>
+        <GrnPostReceiptModal
+          po={po}
+          grnDateInput={grnDateInput}
+          grnSupplierInvoiceNo={grnSupplierInvoiceNo}
+          grnFieldErrors={grnFieldErrors}
+          grnLines={grnLines}
+          grnLocations={grnLocations}
+          grnLocationsLoading={grnLocationsLoading}
+          grning={grning}
+          grnPostDisabled={grnPostDisabled}
+          onRequestClose={requestCloseGrnModal}
+          onGrnDateChange={(value) => {
+            setGrnDateInput(value);
+            setGrnFieldErrors((x) => {
+              const n = { ...x };
+              delete n.grnDate;
+              return n;
+            });
+          }}
+          onSupplierInvoiceChange={(value) => {
+            setGrnSupplierInvoiceNo(value);
+            setGrnFieldErrors((x) => {
+              const n = { ...x };
+              delete n.supplierInvoiceNo;
+              return n;
+            });
+          }}
+          onReceiveFull={onReceiveFullGrn}
+          onReceiveNone={onReceiveNoneGrn}
+          onConfirmReceipt={() => void onGrnPost()}
+          onGrnLinesChange={setGrnLines}
+          grnQtyInputRefs={grnQtyInputRefs}
+          grnLocationSelectRefs={grnLocationSelectRefs}
+          onGrnQtyKeyDown={onGrnQtyKeyDown}
+          onGrnLocationKeyDown={onGrnLocationKeyDown}
+          grnQtyBind={(_rowIndex, rmPoLineId) => bindGrnQtyField(rmPoLineId)}
+          showGrnQtyShortcut={shortcutHints.activeFieldId === "grnQty"}
+          grnQtyShortcutHint={shortcutHints.activeFieldHintText ?? ""}
+          postGrnFocusBind={postGrnFocusBind}
+          showPostGrnShortcut={shortcutHints.activeFieldId === "postGrn"}
+          postGrnShortcutHint={shortcutHints.activeFieldHintText ?? ""}
+          onPostGrnShortcutUsed={() => shortcutHints.markFieldShortcutUsed("postGrn")}
+        />
       ) : null}
     </PageContainer>
   );

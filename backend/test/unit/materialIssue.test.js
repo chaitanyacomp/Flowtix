@@ -5,7 +5,7 @@ const { createApp } = require("../../src/createApp");
 const { signAccessToken } = require("../../src/utils/jwt");
 const { prefixForDocType } = require("../../src/services/docNoService");
 const { DocType } = require("../../src/prismaClientPackage");
-const { TXN_TYPE, computeMaterialIssuePlanLine } = require("../../src/services/materialIssueService");
+const { TXN_TYPE, computeMaterialIssuePlanLine, isWorkOrderRmIssuedWaitingForProduction } = require("../../src/services/materialIssueService");
 
 function bearerForRole(role) {
   return `Bearer ${signAccessToken({
@@ -82,6 +82,63 @@ describe("material issue (Phase 3A)", () => {
     if (res.status === 200) {
       assert.ok(Array.isArray(res.body?.fromLocations));
       assert.ok(Array.isArray(res.body?.toLocations));
+    }
+  });
+
+  it("isWorkOrderRmIssuedWaitingForProduction hides WOs after production starts", () => {
+    assert.equal(
+      isWorkOrderRmIssuedWaitingForProduction({
+        status: "IN_PROGRESS",
+        hasMaterialIssue: true,
+        productionEntryCount: 0,
+        executionStatus: "NOT_STARTED",
+      }),
+      true,
+    );
+    assert.equal(
+      isWorkOrderRmIssuedWaitingForProduction({
+        status: "IN_PROGRESS",
+        hasMaterialIssue: true,
+        productionEntryCount: 2,
+        executionStatus: "NOT_STARTED",
+      }),
+      false,
+    );
+    assert.equal(
+      isWorkOrderRmIssuedWaitingForProduction({
+        status: "COMPLETED",
+        hasMaterialIssue: true,
+        executionStatus: "NOT_STARTED",
+      }),
+      false,
+    );
+    assert.equal(
+      isWorkOrderRmIssuedWaitingForProduction({
+        status: "IN_PROGRESS",
+        hasMaterialIssue: true,
+        productionReportCount: 1,
+        executionStatus: "NOT_STARTED",
+      }),
+      false,
+    );
+    assert.equal(
+      isWorkOrderRmIssuedWaitingForProduction({
+        status: "IN_PROGRESS",
+        hasMaterialIssue: true,
+        executionStatus: "RUNNING",
+      }),
+      false,
+    );
+  });
+
+  it("exposes issued-waiting-for-production read endpoint for STORE", async () => {
+    const app = createApp();
+    const res = await request(app)
+      .get("/api/material-issues/issued-waiting-for-production")
+      .set("Authorization", bearerForRole("STORE"));
+    assert.ok(res.status === 200 || res.status >= 500);
+    if (res.status === 200) {
+      assert.ok(Array.isArray(res.body));
     }
   });
 });

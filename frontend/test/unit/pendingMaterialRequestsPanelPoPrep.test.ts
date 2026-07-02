@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { resolvePendingPrPoPrepUi } from "../../src/lib/pendingMaterialRequestsPanelUx";
+import { resolvePendingPrPoPrepUi, hasRmPoModalUnsavedEntry, RM_PO_MODAL_DISCARD_CONFIRM } from "../../src/lib/pendingMaterialRequestsPanelUx";
 import { PROCUREMENT_TERMS } from "../../src/lib/procurementTerminology";
 import { hasErpRole, GRN_WRITE_ROLES, PURCHASE_EXECUTION_ROLES, RM_PO_WRITE_ROLES } from "../../src/config/erpRoles";
 
@@ -27,6 +27,36 @@ describe("pendingMaterialRequestsPanelUx", () => {
     expect(ui.showCheckboxes).toBe(true);
     expect(ui.showPrepareButton).toBe(true);
     expect(ui.readOnlyMessage).toBeNull();
+  });
+
+  it("detects unsaved RM PO modal entry against open baseline", () => {
+    const baseline = {
+      supplierPoNumber: "",
+      poRemarks: "",
+      supplierId: 1,
+      poQty: { 10: "100" },
+      rates: { 10: "" },
+    };
+    expect(hasRmPoModalUnsavedEntry(baseline, baseline)).toBe(false);
+    expect(
+      hasRmPoModalUnsavedEntry(baseline, {
+        ...baseline,
+        supplierPoNumber: "SUP-001",
+      }),
+    ).toBe(true);
+    expect(
+      hasRmPoModalUnsavedEntry(baseline, {
+        ...baseline,
+        poQty: { 10: "120" },
+      }),
+    ).toBe(true);
+    expect(
+      hasRmPoModalUnsavedEntry(baseline, {
+        ...baseline,
+        rates: { 10: "42.5" },
+      }),
+    ).toBe(true);
+    expect(RM_PO_MODAL_DISCARD_CONFIRM).toBe("Discard unsaved PO entry?");
   });
 });
 
@@ -68,6 +98,18 @@ describe("PendingMaterialRequestsPanel PO prep visibility", () => {
     expect(prepareIdx).toBeGreaterThan(-1);
     expect(branchIdx).toBeGreaterThan(-1);
     expect(prepareIdx).toBeGreaterThan(branchIdx);
+  });
+
+  it("uses horizontal RM PO entry grid with sticky header and footer", () => {
+    expect(panelSource).toContain('data-testid="rm-po-create-modal"');
+    expect(panelSource).toContain('data-testid="rm-po-create-lines-scroll"');
+    expect(panelSource).toContain('data-testid="rm-po-create-modal-close"');
+    expect(panelSource).toContain("max-w-[72rem]");
+    expect(panelSource).toContain("requestClosePoModal");
+    expect(panelSource).toContain("RM_PO_MODAL_DISCARD_CONFIRM");
+    expect(panelSource).not.toContain("rounded-lg border border-slate-200 p-3");
+    expect(panelSource).toContain("Excess to stock");
+    expect(panelSource).toContain("Still to order");
   });
 });
 

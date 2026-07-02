@@ -422,17 +422,22 @@
     @apply flex shrink-0 items-center justify-between gap-3 border-b border-slate-200/90 bg-white px-3 py-2 shadow-[0_1px_0_0_rgb(226_232_240_/0.9)] sm:gap-4 sm:px-5 sm:py-2.5;
   }
 
-  /** Context-aware back navigation — compact pill, not a full-width banner. */
-  .erp-back-nav-chip {
-    @apply inline-flex h-8 min-h-8 w-fit max-w-full shrink-0 items-center gap-1.5 rounded-md border border-slate-200/80 bg-white px-2.5 text-[12px] font-semibold leading-none text-slate-800 no-underline shadow-sm outline-none transition-[background-color,border-color,color,box-shadow] duration-150 ease-out;
+  /** Global ERP back navigation — large, visible, context-aware. */
+  .erp-back-nav-primary {
+    @apply inline-flex h-10 min-h-10 w-fit max-w-full shrink-0 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3.5 text-[14px] font-semibold leading-none text-slate-900 no-underline shadow-sm outline-none transition-[background-color,border-color,color,box-shadow] duration-150 ease-out;
   }
 
-  .erp-back-nav-chip:hover {
-    @apply border-slate-300 bg-slate-50 text-slate-950 shadow-[0_1px_2px_0_rgb(15_23_42_/0.06)];
+  .erp-back-nav-primary:hover {
+    @apply border-slate-300 bg-slate-50 text-slate-950 shadow-[0_1px_3px_0_rgb(15_23_42_/0.08)];
   }
 
-  .erp-back-nav-chip:focus-visible {
+  .erp-back-nav-primary:focus-visible {
     @apply ring-2 ring-sky-500/40 ring-offset-2 ring-offset-slate-50;
+  }
+
+  /** Legacy alias — operational pages should use erp-back-nav-primary via ERPBackNavigation. */
+  .erp-back-nav-chip {
+    @apply erp-back-nav-primary;
   }
 
   /** Subtle inline back link for report pages. No background, no border, no

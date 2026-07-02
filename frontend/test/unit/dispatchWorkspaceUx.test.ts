@@ -4,8 +4,6 @@ import {
 
   collectPreparedDispatchIdsFromPrepResponse,
 
-  compactQueueDisplayReadyQty,
-
   DISPATCH_DRAFT_DELETE_CONFIRM_MESSAGE,
 
   dispatchFullTargetQty,
@@ -40,7 +38,22 @@ import {
 
   shouldSkipDispatchPrepareAsDuplicate,
 
+  type DispatchCompactQueueRow,
+
 } from "../../src/lib/dispatchWorkspaceUx";
+
+function compactQueueRow(
+  row: Pick<DispatchCompactQueueRow, "lineId" | "itemId" | "itemName" | "readyQty"> &
+    Partial<DispatchCompactQueueRow>,
+): DispatchCompactQueueRow {
+  return {
+    draftQty: 0,
+    dispatchedQty: 0,
+    originalReadyQty: row.readyQty,
+    statusLabel: "Ready",
+    ...row,
+  };
+}
 
 
 
@@ -229,8 +242,6 @@ describe("dispatchWorkspaceUx", () => {
   it("keeps queue row visible when only an open draft exists", () => {
 
     expect(shouldIncludeCompactQueueRow(0, 3000)).toBe(true);
-
-    expect(compactQueueDisplayReadyQty(0, 3000)).toBe(3000);
 
   });
 

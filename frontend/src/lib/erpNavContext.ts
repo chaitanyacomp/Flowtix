@@ -210,6 +210,7 @@ function queryOrigin(params: URLSearchParams): string | null {
   const from = params.get("from");
   if (source === "dashboard" || from === "dashboard") return "dashboard";
   if (from === "pending-actions" || params.get("returnTo") === "pending-actions") return "pending-actions";
+  if (from === "control-tower" || params.get("returnTo") === "control-tower") return "control-tower";
   if (from === "execution-register" || source === "no_qty_execution") return "execution-register";
   if (params.get("returnTo") === "dashboard") return "dashboard";
   return null;

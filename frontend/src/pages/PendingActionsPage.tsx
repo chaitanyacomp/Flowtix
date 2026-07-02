@@ -1,7 +1,7 @@
 import * as React from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { ArrowUpDown, ClipboardList, ExternalLink } from "lucide-react";
-import { PageContainer, PageHeader } from "../components/PageHeader";
+import { ERPBackNavigation, PageContainer, PageHeader, StickyWorkspaceHead } from "../components/PageHeader";
 import { Button } from "../components/ui/button";
 import { Card, CardContent } from "../components/ui/card";
 import { ErpKpiLabel, ErpKpiSegment, ErpKpiStrip, ErpKpiValue } from "../components/erp/foundation";
@@ -17,6 +17,7 @@ import {
   type PendingActionPriority,
   type PendingActionsDashboardProps,
 } from "../lib/pendingActionsApi";
+import { groupPendingActionsIntoWorkBuckets } from "../lib/pendingActionsWorkBuckets";
 import { cn } from "../lib/utils";
 
 type SortMode = "priority" | "age";
@@ -94,24 +95,31 @@ export function PendingActionsPage() {
   }, [liveTick, role]);
 
   const sorted = React.useMemo(() => sortActions(actions, sortMode), [actions, sortMode]);
+  const buckets = React.useMemo(
+    () => groupPendingActionsIntoWorkBuckets(sorted, sortMode),
+    [sorted, sortMode],
+  );
 
   return (
     <PageContainer>
-      <PageHeader
-        title="Pending Actions"
-        description="Operational inbox — navigate to the workspace for each item. Nothing is edited on this page."
-        actions={
-          <Button variant="outline" size="sm" asChild>
-            <Link to="/dashboard">Back to Dashboard</Link>
-          </Button>
-        }
-      />
+      <StickyWorkspaceHead lead={<ERPBackNavigation defaultTo="/dashboard" defaultLabel="Back to Dashboard" />}>
+        <PageHeader
+          title="Pending Actions"
+          subtitle="Work grouped by type — open the workspace to work through each list. Nothing is edited on this page."
+        />
+      </StickyWorkspaceHead>
 
       <div className="mb-4 max-w-full overflow-x-auto pb-0.5">
         <ErpKpiStrip className="min-w-0" role="region" aria-label="Pending actions summary">
           <ErpKpiSegment>
             <ErpKpiLabel>Assigned to you</ErpKpiLabel>
             <ErpKpiValue tone={count > 0 ? "warn" : "muted"}>{loading ? "…" : count}</ErpKpiValue>
+          </ErpKpiSegment>
+          <ErpKpiSegment>
+            <ErpKpiLabel>Work buckets</ErpKpiLabel>
+            <ErpKpiValue tone={buckets.length > 0 ? "default" : "muted"}>
+              {loading ? "…" : buckets.length}
+            </ErpKpiValue>
           </ErpKpiSegment>
           <ErpKpiSegment>
             <ErpKpiLabel>Role</ErpKpiLabel>
@@ -160,47 +168,53 @@ export function PendingActionsPage() {
         </Card>
       ) : null}
 
-      {!error && sorted.length > 0 ? (
-        <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
-          <div className="overflow-x-auto">
-            <table className="min-w-full text-left text-sm">
-              <thead className="border-b border-slate-200 bg-slate-50 text-[11px] font-semibold uppercase tracking-wide text-slate-600">
-                <tr>
-                  <th className="w-10 px-3 py-2">Priority</th>
-                  <th className="px-3 py-2">Action</th>
-                  <th className="px-3 py-2">Document</th>
-                  <th className="px-3 py-2">Owner</th>
-                  <th className="w-24 px-3 py-2">Age</th>
-                  <th className="w-28 px-3 py-2 text-right">Open</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {sorted.map((row) => (
-                  <tr key={row.id ?? `${row.action}-${row.documentNo}`} className="hover:bg-slate-50/80">
-                    <td className="px-3 py-2.5">
-                      <PriorityDot priority={row.priority} />
-                    </td>
-                    <td className="px-3 py-2.5 font-medium text-slate-900">{row.action}</td>
-                    <td className="px-3 py-2.5 tabular-nums text-slate-800">{row.documentNo ?? "—"}</td>
-                    <td className="px-3 py-2.5 text-slate-700">{formatPendingActionOwner(row.ownerRole)}</td>
-                    <td className="px-3 py-2.5 tabular-nums text-slate-600">{formatPendingActionAge(row.ageHours)}</td>
-                    <td className="px-3 py-2.5 text-right">
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        className="h-8 gap-1"
-                        onClick={() => navigate(row.href)}
-                      >
-                        Open
-                        <ExternalLink className="h-3.5 w-3.5 opacity-60" aria-hidden />
-                      </Button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+      {!error && buckets.length > 0 ? (
+        <div className="space-y-3" data-testid="pending-actions-buckets">
+          {buckets.map((bucket) => (
+            <div
+              key={bucket.key}
+              className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm"
+              data-testid={`pending-action-bucket-${bucket.key}`}
+            >
+              <div className="flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-start sm:justify-between">
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <PriorityDot priority={bucket.topPriority} />
+                    <h2 className="text-[15px] font-semibold text-slate-900">{bucket.title}</h2>
+                    <span className="text-xs text-slate-500">
+                      {formatPendingActionOwner(bucket.ownerRole)}
+                      {bucket.maxAgeHours != null ? ` · ${formatPendingActionAge(bucket.maxAgeHours)}` : ""}
+                    </span>
+                  </div>
+                  <ul className="mt-2 space-y-1 text-sm text-slate-800">
+                    {bucket.previewLines.map((line, idx) => (
+                      <li key={`${bucket.key}-${line.documentNo}-${idx}`} className="tabular-nums">
+                        <span className="font-medium">{line.documentNo}</span>
+                        {line.detail ? (
+                          <span className="ml-2 text-slate-600">{line.detail}</span>
+                        ) : null}
+                      </li>
+                    ))}
+                    {bucket.overflowCount > 0 ? (
+                      <li className="text-slate-500">+{bucket.overflowCount} more…</li>
+                    ) : null}
+                  </ul>
+                </div>
+                <div className="shrink-0 sm:pt-0.5">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-8 gap-1"
+                    onClick={() => navigate(bucket.openHref)}
+                  >
+                    {bucket.openLabel}
+                    <ExternalLink className="h-3.5 w-3.5 opacity-60" aria-hidden />
+                  </Button>
+                </div>
+              </div>
+            </div>
+          ))}
         </div>
       ) : null}
 

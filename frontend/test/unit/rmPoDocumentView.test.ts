@@ -3,9 +3,11 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const detailPath = resolve(__dirname, "../../src/pages/rmPurchase/RmPurchasePoDetailPage.tsx");
+const grnModalPath = resolve(__dirname, "../../src/components/rmPurchase/GrnPostReceiptModal.tsx");
 const documentPath = resolve(__dirname, "../../src/components/rmPurchase/RmPoDocumentView.tsx");
 const supplierDocPath = resolve(__dirname, "../../src/components/rmPurchase/RmPoSupplierDocument.tsx");
 const detailSource = readFileSync(detailPath, "utf8");
+const grnModalSource = readFileSync(grnModalPath, "utf8");
 const documentSource = readFileSync(documentPath, "utf8");
 const supplierDocSource = readFileSync(supplierDocPath, "utf8");
 
@@ -96,5 +98,10 @@ describe("RmPurchasePoDetailPage P4D-B", () => {
   it("keeps GRN modal post flow", () => {
     expect(detailSource).toContain("grnModalOpen");
     expect(detailSource).toContain('apiFetch("/api/purchase/grns"');
+    expect(detailSource).toContain("GrnPostReceiptModal");
+    expect(detailSource).toContain("requestCloseGrnModal");
+    expect(grnModalSource).toContain('data-testid="grn-post-receipt-modal"');
+    expect(grnModalSource).toContain("Balance after receipt");
+    expect(grnModalSource).not.toContain("rounded-md border border-slate-200 bg-white p-2");
   });
 });

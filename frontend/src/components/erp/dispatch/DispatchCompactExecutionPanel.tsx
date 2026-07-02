@@ -1,7 +1,7 @@
 import * as React from "react";
-import { Link } from "react-router-dom";
 import { Button } from "../../ui/button";
 import { Input } from "../../ui/input";
+import { ERPBackNavigation } from "../foundation/ERPBackNavigation";
 import {
   OperatorMainSplit,
   operatorTableRowCompactClass,
@@ -24,7 +24,10 @@ export type DispatchCompactExecutionPanelProps = {
   queue: DispatchCompactQueueRow[];
   selectedItemId: number | null;
   activeItemName: string | null;
-  activeReadyQty: number;
+  activeOriginalReadyQty: number;
+  activeDraftQty: number;
+  activeRemainingQty: number;
+  activeStatusLabel: string;
   dispatchQtyStr: string;
   isPartialMode: boolean;
   dispatching: boolean;
@@ -32,7 +35,6 @@ export type DispatchCompactExecutionPanelProps = {
   canDispatchPartial: boolean;
   dispatchReadOnly?: boolean;
   primaryFinalizeDraftId?: number | null;
-  draftQty?: number;
   lockingId?: number | null;
   deletingId?: number | null;
   error?: string | null;
@@ -55,7 +57,10 @@ export function DispatchCompactExecutionPanel({
   queue,
   selectedItemId,
   activeItemName,
-  activeReadyQty,
+  activeOriginalReadyQty,
+  activeDraftQty,
+  activeRemainingQty,
+  activeStatusLabel,
   dispatchQtyStr,
   isPartialMode,
   dispatching,
@@ -63,7 +68,6 @@ export function DispatchCompactExecutionPanel({
   canDispatchPartial,
   dispatchReadOnly = false,
   primaryFinalizeDraftId,
-  draftQty = 0,
   lockingId,
   deletingId,
   error,
@@ -78,7 +82,7 @@ export function DispatchCompactExecutionPanel({
   onDeleteDraft,
 }: DispatchCompactExecutionPanelProps) {
   const queueEmpty = queue.length === 0;
-  const hasOpenDraft = primaryFinalizeDraftId != null && primaryFinalizeDraftId > 0 && draftQty > 1e-9;
+  const hasOpenDraft = primaryFinalizeDraftId != null && primaryFinalizeDraftId > 0 && activeDraftQty > 1e-9;
 
   return (
     <div className="flex flex-col gap-2" data-testid="dispatch-compact-execution">
@@ -118,9 +122,7 @@ export function DispatchCompactExecutionPanel({
             {buildDispatchSoCompleteMessage(soLabel)}
           </div>
           <div className="mt-2 flex flex-wrap items-center gap-2">
-            <Button variant="outline" size="sm" asChild>
-              <Link to="/pending-actions">Back to Pending Actions</Link>
-            </Button>
+            <ERPBackNavigation defaultTo="/pending-actions" defaultLabel="Back to Pending Actions" />
           </div>
         </div>
       ) : (
@@ -149,6 +151,9 @@ export function DispatchCompactExecutionPanel({
                     <tr className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
                       <th className="px-2 py-1.5 font-medium">Item</th>
                       <th className="px-2 py-1.5 text-right font-medium">Ready</th>
+                      <th className="px-2 py-1.5 text-right font-medium">Draft</th>
+                      <th className="px-2 py-1.5 text-right font-medium">Dispatched</th>
+                      <th className="px-2 py-1.5 font-medium">Status</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -167,12 +172,19 @@ export function DispatchCompactExecutionPanel({
                           onClick={() => onSelectItem(row.itemId)}
                           data-testid={`dispatch-compact-queue-row-${row.itemId}`}
                         >
-                          <td className="max-w-[12rem] truncate px-2 py-1 font-medium text-slate-900" title={row.itemName}>
+                          <td className="max-w-[10rem] truncate px-2 py-1 font-medium text-slate-900" title={row.itemName}>
                             {row.itemName}
                           </td>
                           <td className="px-2 py-1 text-right tabular-nums font-semibold text-emerald-900">
                             {formatDispatchCompactQty(row.readyQty)}
                           </td>
+                          <td className="px-2 py-1 text-right tabular-nums text-amber-900">
+                            {formatDispatchCompactQty(row.draftQty)}
+                          </td>
+                          <td className="px-2 py-1 text-right tabular-nums text-slate-700">
+                            {formatDispatchCompactQty(row.dispatchedQty)}
+                          </td>
+                          <td className="px-2 py-1 text-slate-700">{row.statusLabel}</td>
                         </tr>
                       );
                     })}
@@ -193,10 +205,28 @@ export function DispatchCompactExecutionPanel({
                     <div className="text-[11px] text-slate-500">Item</div>
                     <div className="font-semibold text-slate-900">{activeItemName}</div>
                   </div>
-                  <div className="space-y-1">
-                    <div className="text-[11px] text-slate-500">Ready qty</div>
-                    <div className="font-semibold tabular-nums text-emerald-900">
-                      {formatDispatchCompactQty(activeReadyQty)}
+                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                    <div className="space-y-1">
+                      <div className="text-[11px] text-slate-500">Original ready</div>
+                      <div className="font-semibold tabular-nums text-slate-900">
+                        {formatDispatchCompactQty(activeOriginalReadyQty)}
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <div className="text-[11px] text-slate-500">Draft</div>
+                      <div className="font-semibold tabular-nums text-amber-900">
+                        {formatDispatchCompactQty(activeDraftQty)}
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <div className="text-[11px] text-slate-500">Remaining</div>
+                      <div className="font-semibold tabular-nums text-emerald-900">
+                        {formatDispatchCompactQty(activeRemainingQty)}
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <div className="text-[11px] text-slate-500">Status</div>
+                      <div className="font-semibold text-slate-800">{activeStatusLabel}</div>
                     </div>
                   </div>
 
@@ -206,10 +236,6 @@ export function DispatchCompactExecutionPanel({
                       data-testid="dispatch-compact-draft-banner"
                     >
                       <div className="text-[12px] font-semibold text-amber-950">Dispatch draft saved</div>
-                      <div className="text-[12px] text-amber-900">
-                        Dispatch qty:{" "}
-                        <span className="font-semibold tabular-nums">{formatDispatchCompactQty(draftQty)}</span>
-                      </div>
                       <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
                         <Button
                           type="button"

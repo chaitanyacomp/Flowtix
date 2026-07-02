@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import type { ProductionExecutionSummary } from "../../src/lib/productionExecutionApi";
 import {
   buildProductionDecisionConfirmDialog,
-  CARRY_FORWARD_REASON_OPTIONS,
   formatCarryForwardSuccessMessage,
   formatProductionExecutionAutoAdvanceNotice,
   formatNoQtyProductionAdvanceMessage,
@@ -110,12 +109,12 @@ describe("productionCompletionUx", () => {
     expect(allowsNoQtyProductionEntry(completed)).toBe(false);
   });
 
-  it("builds confirmation dialog copy for carry forward and finish", () => {
+  it("builds confirmation dialog copy for shortfall close and finish", () => {
     const dialog = buildProductionDecisionConfirmDialog(
-      "carry",
+      "close_shortfall",
       summary({ producedQty: 3550, remainderQty: 450, plannedQty: 4000 }),
     );
-    expect(dialog.title).toContain("Carry Forward");
+    expect(dialog.title).toContain("Close Work Order");
     expect(dialog.lines.join(" ")).toContain("450");
     expect(dialog.lines.join(" ")).toContain("next Requirement Sheet");
     const finishDialog = buildProductionDecisionConfirmDialog(
@@ -151,7 +150,7 @@ describe("productionCompletionUx", () => {
     expect(hasPendingShortfallDecision(summary({ executionStatus: "BLOCKED" }))).toBe(false);
   });
 
-  it("paused shortfall after Pause exposes resume/waive/carry resolution panel", () => {
+  it("paused shortfall after Pause exposes resume/close resolution panel", () => {
     const paused = summary({
       executionStatus: "BLOCKED",
       producedQty: 2800,
@@ -161,7 +160,7 @@ describe("productionCompletionUx", () => {
     expect(hasPausedShortfallDecision(paused)).toBe(true);
     expect(shouldShowShortfallResolutionPanel(paused)).toBe(true);
     expect(shouldBlockNoQtyProductionEntry(paused)).toBe(true);
-    expect(PAUSED_SHORTFALL_DECISION_CHOICES.map((c) => c.id)).toEqual(["resume", "waive", "carry"]);
+    expect(PAUSED_SHORTFALL_DECISION_CHOICES.map((c) => c.id)).toEqual(["resume", "close"]);
     expect(hasPausedShortfallDecision(summary({ executionStatus: "BLOCKED", producedQty: 0, remainderQty: 200 }))).toBe(
       false,
     );
@@ -182,9 +181,8 @@ describe("productionCompletionUx", () => {
     expect(allowsNoQtyProductionEntry(resumed)).toBe(true);
   });
 
-  it("exposes operator reason options for waive, carry forward, and pause", () => {
+  it("exposes operator reason options for waive and pause", () => {
     expect(WAIVE_REASON_OPTIONS.length).toBeGreaterThan(0);
-    expect(CARRY_FORWARD_REASON_OPTIONS.length).toBeGreaterThan(0);
     expect(PAUSE_REASON_OPTIONS.length).toBeGreaterThan(0);
     expect(PAUSE_REASON_OPTIONS.some((r) => /CARRY|WAIVE/i.test(r))).toBe(false);
   });
@@ -228,7 +226,7 @@ describe("productionCompletionUx", () => {
   });
 
   it("exposes compact shortfall decision choices and queue-complete copy", () => {
-    expect(SHORTFALL_DECISION_CHOICES.map((c) => c.id)).toEqual(["waive", "carry", "pause"]);
+    expect(SHORTFALL_DECISION_CHOICES.map((c) => c.id)).toEqual(["close", "pause"]);
     expect(formatNoQtyProductionQueueCompleteMessage("WO-26-0001")).toContain("WO-26-0001");
     expect(formatNoQtyProductionAdvanceMessage("WO-26-0002", "Dummy Plug")).toContain("Dummy Plug");
   });

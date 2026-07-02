@@ -60,6 +60,12 @@ function pendingQty(line) {
   return Math.max(0, req - iss - waived);
 }
 
+function effectiveRequiredQty(line) {
+  const req = n(line.requiredQty);
+  const waived = n(line.waivedQty);
+  return round3(Math.max(0, req - waived));
+}
+
 function excessIssueQty(line) {
   const req = n(line.requiredQty);
   const iss = n(line.issuedQty);
@@ -150,7 +156,8 @@ function mapPmrLine(ln) {
   const required = n(ln.requiredQty);
   const issued = n(ln.issuedQty);
   const waived = n(ln.waivedQty);
-  const pending = Math.max(0, required - issued - waived);
+  const effectiveRequired = effectiveRequiredQty(ln);
+  const pending = pendingQty(ln);
   const excess = Math.max(0, issued - required);
   return {
     id: ln.id,
@@ -158,6 +165,8 @@ function mapPmrLine(ln) {
     itemName: ln.item?.itemName ?? "",
     unit: ln.unitSnapshot || ln.item?.unit || "",
     requiredQty: required,
+    originalRequiredQty: required,
+    effectiveRequiredQty: effectiveRequired,
     issuedQty: issued,
     waivedQty: waived,
     excessIssueQty: excess,
@@ -169,6 +178,7 @@ function mapPmrLine(ln) {
 function mapPmrRow(row) {
   const lines = (row.lines || []).map(mapPmrLine);
   const totalRequired = lines.reduce((s, l) => s + l.requiredQty, 0);
+  const totalEffectiveRequired = lines.reduce((s, l) => s + l.effectiveRequiredQty, 0);
   const totalIssued = lines.reduce((s, l) => s + l.issuedQty, 0);
   const totalWaived = lines.reduce((s, l) => s + l.waivedQty, 0);
   const totalExcessIssue = lines.reduce((s, l) => s + l.excessIssueQty, 0);
@@ -188,6 +198,8 @@ function mapPmrRow(row) {
     updatedAt: row.updatedAt,
     lineCount: lines.length,
     totalRequired,
+    totalOriginalRequired: totalRequired,
+    totalEffectiveRequired,
     totalIssued,
     totalWaived,
     totalExcessIssue,
@@ -994,7 +1006,9 @@ async function buildPmrIssueContext(pmrId, fromLocationId, db = prisma) {
   const pendingLines = lines.filter((l) => n(l.issueCapQty) > STOCK_EPS);
 
   const issueDecision = {
-    totalRequired: pmr.totalRequired,
+    totalRequired: pmr.totalEffectiveRequired,
+    totalOriginalRequired: pmr.totalOriginalRequired ?? pmr.totalRequired,
+    totalEffectiveRequired: pmr.totalEffectiveRequired,
     totalIssued: pmr.totalIssued,
     totalWaived: pmr.totalWaived,
     totalExcessIssue: pmr.totalExcessIssue,
@@ -1260,6 +1274,7 @@ module.exports = {
   computeFreeStoreStockLine,
   recalcPmrStatus,
   pendingQty,
+  effectiveRequiredQty,
   excessIssueQty,
   listUnissuedRequiredPmrLines,
   assessPmrReleaseEligibility,

@@ -5,7 +5,6 @@
 import * as React from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import {
-  ArrowLeft,
   ChevronRight,
   Info,
   Package,
@@ -18,6 +17,7 @@ import { cn } from "../lib/utils";
 import { useToast } from "../contexts/ToastContext";
 import { useFeatureFlags } from "../hooks/useFeatureFlags";
 import { WorkflowHandoffStrip } from "../components/erp/WorkflowHandoffStrip";
+import { ERPBackNavigation } from "../components/PageHeader";
 import { REGULAR_TERMS } from "../lib/flowTerminology";
 import { buildRmControlCenterHref } from "../lib/woProcurementContinuity";
 import { presentOperationalError } from "../lib/operationalErrorPresentation";
@@ -446,9 +446,7 @@ export function MaterialPlanningPage() {
     <div className={cn("mp-vp-page", activeRequirement && "mp-vp-page--handoff")}>
       <header className="mp-vp-head mp-vp-head--sticky">
         <div className="flex min-w-0 items-center gap-2">
-          <Link to="/dashboard" className="bom-ws-back" aria-label="Back">
-            <ArrowLeft className="h-4 w-4" strokeWidth={2.5} aria-hidden />
-          </Link>
+          <ERPBackNavigation defaultTo="/dashboard" defaultLabel="Back to Dashboard" />
           <div className="min-w-0">
             <h1 className="mp-vp-title">{REGULAR_TERMS.ORDER_RM_PLANNING_TITLE}</h1>
             <p className="mp-vp-sub">{REGULAR_TERMS.ORDER_RM_PLANNING_SUBTITLE}</p>

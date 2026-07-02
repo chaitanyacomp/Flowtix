@@ -18,6 +18,10 @@ type Props = {
   className?: string;
   showControlCenterLink?: boolean;
   initialData?: ProductionRmReadiness | null;
+  /** Workstation layout — label only, no helper subtext. */
+  dense?: boolean;
+  /** Premium operator console — stronger presence, no helper subtext. */
+  workstation?: boolean;
 };
 
 const TONE_CLASS: Record<ReturnType<typeof productionConciseRmTone>, string> = {
@@ -35,6 +39,8 @@ export function ProductionConciseRmStatus({
   className,
   showControlCenterLink = true,
   initialData = null,
+  dense = false,
+  workstation = false,
 }: Props) {
   const initialDataMatchesLine = initialData?.workOrderLineId === workOrderLineId;
   const [data, setData] = React.useState<ProductionRmReadiness | null>(
@@ -135,7 +141,9 @@ export function ProductionConciseRmStatus({
   return (
     <div
       className={cn(
-        "flex flex-wrap items-center justify-between gap-2 rounded-md border px-2.5 py-1.5",
+        "flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2",
+        workstation && "rounded-lg px-3 py-2.5 shadow-sm",
+        dense && !workstation && "px-2 py-1",
         TONE_CLASS[tone],
         className,
       )}
@@ -143,14 +151,16 @@ export function ProductionConciseRmStatus({
     >
       <div className="min-w-0">
         <p className="text-[10px] font-bold uppercase tracking-wide opacity-80">Material</p>
-        <p className="text-[13px] font-semibold">{label}</p>
-        {label === "WAITING RM" ? (
+        <p className={cn("font-semibold", workstation ? "text-[14px]" : dense ? "text-[12px]" : "text-[13px]")}>
+          {label}
+        </p>
+        {!dense && !workstation && label === "WAITING RM" ? (
           <p className="text-[11px] leading-snug opacity-90">Waiting for Store RM issue before production.</p>
-        ) : label === "PARTIAL" ? (
+        ) : !dense && !workstation && label === "PARTIAL" ? (
           <p className="text-[11px] leading-snug opacity-90">Partial issue — entry may be capped until Store completes issue.</p>
-        ) : (
+        ) : !dense && !workstation ? (
           <p className="text-[11px] leading-snug opacity-90">Store has issued required RM.</p>
-        )}
+        ) : null}
       </div>
       {rmControlHref && label !== "READY" ? (
         <Link

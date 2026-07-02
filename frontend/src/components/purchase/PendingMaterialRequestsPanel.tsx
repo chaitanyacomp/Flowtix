@@ -8,7 +8,7 @@ import * as React from "react";
 
 import { useNavigate } from "react-router-dom";
 
-import { ClipboardList } from "lucide-react";
+import { ClipboardList, X } from "lucide-react";
 
 import { apiFetch, ApiRequestError } from "../../services/api";
 
@@ -22,7 +22,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { useToast } from "../../contexts/ToastContext";
 
 import { PROCUREMENT_TERMS } from "../../lib/procurementTerminology";
-import { resolvePendingPrPoPrepUi } from "../../lib/pendingMaterialRequestsPanelUx";
+import { resolvePendingPrPoPrepUi, hasRmPoModalUnsavedEntry, RM_PO_MODAL_DISCARD_CONFIRM, type RmPoModalEntryBaseline } from "../../lib/pendingMaterialRequestsPanelUx";
 
 import { useBulkSelection } from "../../hooks/useBulkSelection";
 
@@ -119,7 +119,13 @@ export function PendingMaterialRequestsPanel({ embedded = false, canPrepareRmPo 
 
   const [poQty, setPoQty] = React.useState<Record<number, string>>({});
 
+  const [supplierPoNumber, setSupplierPoNumber] = React.useState("");
+  const [supplierPoNumberError, setSupplierPoNumberError] = React.useState<string | null>(null);
+  const supplierPoNumberRef = React.useRef<HTMLInputElement | null>(null);
+
   const [poRemarks, setPoRemarks] = React.useState("");
+
+  const [poModalBaseline, setPoModalBaseline] = React.useState<RmPoModalEntryBaseline | null>(null);
 
   const [creating, setCreating] = React.useState(false);
 
@@ -234,6 +240,32 @@ export function PendingMaterialRequestsPanel({ embedded = false, canPrepareRmPo 
 
   const selectedLines = orderableLines.filter((ln) => bulk.selectedIds.has(ln.id));
 
+  const currentPoModalEntry = React.useMemo<RmPoModalEntryBaseline>(
+    () => ({
+      supplierPoNumber,
+      poRemarks,
+      supplierId,
+      poQty,
+      rates,
+    }),
+    [supplierPoNumber, poRemarks, supplierId, poQty, rates],
+  );
+
+  const closePoModal = React.useCallback(() => {
+    setPoOpen(false);
+    setModalLines([]);
+    setSupplierPoNumberError(null);
+    setPoModalBaseline(null);
+  }, []);
+
+  const requestClosePoModal = React.useCallback(() => {
+    if (creating) return;
+    if (hasRmPoModalUnsavedEntry(poModalBaseline, currentPoModalEntry)) {
+      if (!window.confirm(RM_PO_MODAL_DISCARD_CONFIRM)) return;
+    }
+    closePoModal();
+  }, [creating, poModalBaseline, currentPoModalEntry, closePoModal]);
+
 
 
   const resolveLinesForIds = React.useCallback(
@@ -304,7 +336,18 @@ export function PendingMaterialRequestsPanel({ embedded = false, canPrepareRmPo 
 
       setRates(nextRates);
 
-      setSupplierId(sup[0]?.id ?? 0);
+      const nextSupplierId = sup[0]?.id ?? 0;
+      setSupplierId(nextSupplierId);
+      setSupplierPoNumber("");
+      setSupplierPoNumberError(null);
+      setPoRemarks("");
+      setPoModalBaseline({
+        supplierPoNumber: "",
+        poRemarks: "",
+        supplierId: nextSupplierId,
+        poQty: nextQty,
+        rates: nextRates,
+      });
 
       setPoOpen(true);
 
@@ -329,6 +372,14 @@ export function PendingMaterialRequestsPanel({ embedded = false, canPrepareRmPo 
       return;
 
     }
+
+    const supplierPoNumberTrim = supplierPoNumber.trim();
+    if (!supplierPoNumberTrim) {
+      setSupplierPoNumberError("Supplier PO Number is required.");
+      supplierPoNumberRef.current?.focus();
+      return;
+    }
+    setSupplierPoNumberError(null);
 
 
 
@@ -355,6 +406,7 @@ export function PendingMaterialRequestsPanel({ embedded = false, canPrepareRmPo 
         bulk.clear();
 
         setModalLines([]);
+        setPoModalBaseline(null);
 
         showError("These purchase request lines are no longer open for RM PO. Refresh the list — PO may already exist.");
 
@@ -387,6 +439,7 @@ export function PendingMaterialRequestsPanel({ embedded = false, canPrepareRmPo 
         body: JSON.stringify({
           supplierId,
           supplierLocationId: supplierLocationId ?? undefined,
+          supplierPoNumber: supplierPoNumberTrim,
           remarks: poRemarks.trim() || null,
           lines,
         }),
@@ -402,6 +455,7 @@ export function PendingMaterialRequestsPanel({ embedded = false, canPrepareRmPo 
       bulk.clear();
 
       setModalLines([]);
+      setPoModalBaseline(null);
 
       await load();
 
@@ -434,6 +488,7 @@ export function PendingMaterialRequestsPanel({ embedded = false, canPrepareRmPo 
         bulk.clear();
 
         setModalLines([]);
+        setPoModalBaseline(null);
 
       }
 
@@ -652,247 +707,210 @@ export function PendingMaterialRequestsPanel({ embedded = false, canPrepareRmPo 
 
       {canPrepareRmPo && poOpen ? (
         <ErpModal
-          onClose={() => {
-            if (creating) return;
-            setPoOpen(false);
-            setModalLines([]);
-          }}
+          onClose={requestClosePoModal}
+          escapeDisabled={() => creating}
           backdropClassName="bg-black/40"
-          aria-label="Create RM purchase order"
+          aria-labelledby="rm-po-create-modal-title"
         >
-          <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-xl border border-slate-200 bg-white p-5 shadow-xl">
-
-            <h2 className="text-lg font-semibold text-slate-900">Create RM Purchase Order</h2>
-
-            <p className="mt-1 text-sm text-slate-600">{modalLines.length} request line(s)</p>
-
-
-
-            <label className="mt-4 block text-sm font-medium text-slate-700">
-
-              Supplier
-
-              <select
-
-                className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-
-                value={supplierId}
-
-                disabled={creating}
-
-                onChange={(e) => setSupplierId(Number(e.target.value))}
-
-              >
-
-                {suppliers.map((s) => (
-
-                  <option key={s.id} value={s.id}>
-
-                    {s.name}
-
-                  </option>
-
-                ))}
-
-              </select>
-
-            </label>
-
-
-
-            {activeSupplierLocations.length > 0 ? (
-              <label className="mt-3 block text-sm font-medium text-slate-700">
-                Supply location
-                <select
-                  className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-                  value={supplierLocationId ?? ""}
-                  disabled={creating}
-                  onChange={(e) => setSupplierLocationId(Number(e.target.value) || null)}
-                >
-                  {activeSupplierLocations.map((loc) => (
-                    <option key={loc.id} value={loc.id}>
-                      {loc.label}
-                      {loc.isDefault ? " (default)" : ""}
-                    </option>
-                  ))}
-                </select>
-                <RmPoCommercialPreview
-                  label={selectedSupplyLocation?.label}
-                  gstin={selectedSupplyLocation?.gstin}
-                  stateCode={selectedSupplyLocation?.stateCode}
-                  stateName={selectedSupplyLocation?.stateName}
-                  gstMode={previewGstMode}
-                />
-              </label>
-            ) : supplierDetail ? (
-              <RmPoCommercialPreview
-                label="Registered Office"
-                gstin={supplierDetail.gstin}
-                stateCode={supplierDetail.stateCode}
-                stateName={supplierDetail.stateName}
-                gstMode={derivePreviewGstMode(companyStateCode, {
-                  id: 0,
-                  label: "Registered Office",
-                  stateCode: supplierDetail.stateCode,
-                  stateName: supplierDetail.stateName,
-                  gstin: supplierDetail.gstin,
-                })}
-              />
-            ) : null}
-
-
-
-            <label className="mt-3 block text-sm text-slate-700">
-
-              PO remarks (optional)
-
-              <Input
-
-                className="mt-1"
-
-                value={poRemarks}
-
-                disabled={creating}
-
-                onChange={(e) => setPoRemarks(e.target.value)}
-
-              />
-
-            </label>
-
-
-
-            <div className="mt-4 space-y-3">
-
-              {modalLines.map((ln) => (
-
-                <div key={ln.id} className="rounded-lg border border-slate-200 p-3">
-
-                  <div className="text-sm font-medium">{ln.itemName}</div>
-
-                  <div className="text-xs text-slate-500">{ln.requestDocNo}</div>
-
-                  {(() => {
-                    const orderQty = Number(poQty[ln.id]);
-                    const excess = purchaseRequestPoExcessToStock(ln, orderQty);
-                    return (
-                      <dl className="mt-2 grid grid-cols-3 gap-2 text-[11px] text-slate-600">
-                        <div>
-                          <dt className="font-medium text-slate-500">Required qty</dt>
-                          <dd className="tabular-nums text-slate-800">{fmtQty(ln.netRequiredQty, ln.unit)}</dd>
-                        </div>
-                        <div>
-                          <dt className="font-medium text-slate-500">Order qty</dt>
-                          <dd className="tabular-nums text-slate-800">
-                            {Number.isFinite(orderQty) && orderQty > 0
-                              ? fmtQty(orderQty, ln.unit)
-                              : "—"}
-                          </dd>
-                        </div>
-                        <div>
-                          <dt className="font-medium text-slate-500">Excess to stock</dt>
-                          <dd className="tabular-nums text-emerald-900">
-                            {excess > 1e-9 ? fmtQty(excess, ln.unit) : "—"}
-                          </dd>
-                        </div>
-                      </dl>
-                    );
-                  })()}
-
-                  <div className="mt-2 grid grid-cols-2 gap-2">
-
-                    <label className="text-xs text-slate-600">
-
-                      Order qty
-
-                      <Input
-
-                        type="number"
-
-                        min={0}
-
-                        step="any"
-
-                        className="mt-1"
-
-                        disabled={creating}
-
-                        value={poQty[ln.id] ?? ""}
-
-                        onChange={(e) => setPoQty((p) => ({ ...p, [ln.id]: e.target.value }))}
-
-                      />
-
-                    </label>
-
-                    <label className="text-xs text-slate-600">
-
-                      Rate
-
-                      <Input
-
-                        type="number"
-
-                        min={0}
-
-                        step="any"
-
-                        className="mt-1"
-
-                        disabled={creating}
-
-                        value={rates[ln.id] ?? ""}
-
-                        onChange={(e) => setRates((p) => ({ ...p, [ln.id]: e.target.value }))}
-
-                      />
-
-                    </label>
-
-                  </div>
-
-                </div>
-
-              ))}
-
-            </div>
-
-
-
-            <div className="mt-5 flex justify-end gap-2">
-
+          <div
+            className="flex max-h-[90vh] w-full max-w-[72rem] flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl"
+            data-testid="rm-po-create-modal"
+          >
+            <div className="sticky top-0 z-10 flex shrink-0 items-start justify-between gap-3 border-b border-slate-200 bg-white px-5 py-4">
+              <div className="min-w-0">
+                <h2 id="rm-po-create-modal-title" className="text-lg font-semibold text-slate-900">
+                  Create RM Purchase Order
+                </h2>
+                <p className="mt-1 text-sm text-slate-600">{modalLines.length} request line(s)</p>
+              </div>
               <Button
-
                 type="button"
-
-                variant="outline"
-
-                onClick={() => {
-
-                  if (creating) return;
-
-                  setPoOpen(false);
-
-                  setModalLines([]);
-
-                }}
-
+                variant="ghost"
+                size="sm"
+                className="h-8 w-8 shrink-0 p-0"
                 disabled={creating}
-
+                onClick={requestClosePoModal}
+                aria-label="Close create RM purchase order"
+                data-testid="rm-po-create-modal-close"
               >
-
-                Cancel
-
+                <X className="h-4 w-4" />
               </Button>
-
-              <Button type="button" disabled={creating} onClick={() => void submitPo()}>
-
-                {creating ? "Creating…" : "Create RM PO"}
-
-              </Button>
-
             </div>
 
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-5">
+              <div className="shrink-0 space-y-3 border-b border-slate-100 py-4">
+                <label className="block text-sm font-medium text-slate-700">
+                  Supplier
+                  <select
+                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                    value={supplierId}
+                    disabled={creating}
+                    onChange={(e) => setSupplierId(Number(e.target.value))}
+                  >
+                    {suppliers.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                {activeSupplierLocations.length > 0 ? (
+                  <label className="block text-sm font-medium text-slate-700">
+                    Supply location
+                    <select
+                      className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                      value={supplierLocationId ?? ""}
+                      disabled={creating}
+                      onChange={(e) => setSupplierLocationId(Number(e.target.value) || null)}
+                    >
+                      {activeSupplierLocations.map((loc) => (
+                        <option key={loc.id} value={loc.id}>
+                          {loc.label}
+                          {loc.isDefault ? " (default)" : ""}
+                        </option>
+                      ))}
+                    </select>
+                    <RmPoCommercialPreview
+                      label={selectedSupplyLocation?.label}
+                      gstin={selectedSupplyLocation?.gstin}
+                      stateCode={selectedSupplyLocation?.stateCode}
+                      stateName={selectedSupplyLocation?.stateName}
+                      gstMode={previewGstMode}
+                    />
+                  </label>
+                ) : supplierDetail ? (
+                  <RmPoCommercialPreview
+                    label="Registered Office"
+                    gstin={supplierDetail.gstin}
+                    stateCode={supplierDetail.stateCode}
+                    stateName={supplierDetail.stateName}
+                    gstMode={derivePreviewGstMode(companyStateCode, {
+                      id: 0,
+                      label: "Registered Office",
+                      stateCode: supplierDetail.stateCode,
+                      stateName: supplierDetail.stateName,
+                      gstin: supplierDetail.gstin,
+                    })}
+                  />
+                ) : null}
+
+                <label className="block text-sm text-slate-700">
+                  Supplier PO Number <span className="text-red-600">*</span>
+                  <Input
+                    ref={supplierPoNumberRef}
+                    className={`mt-1 ${supplierPoNumberError ? "border-red-500 focus-visible:ring-red-400" : ""}`}
+                    value={supplierPoNumber}
+                    disabled={creating}
+                    maxLength={100}
+                    aria-invalid={Boolean(supplierPoNumberError)}
+                    onChange={(e) => {
+                      setSupplierPoNumber(e.target.value.slice(0, 100));
+                      if (supplierPoNumberError) setSupplierPoNumberError(null);
+                    }}
+                    onBlur={(e) => setSupplierPoNumber(e.target.value.trim())}
+                  />
+                  {supplierPoNumberError ? (
+                    <span className="mt-1 block text-xs font-medium text-red-700">{supplierPoNumberError}</span>
+                  ) : null}
+                </label>
+
+                <label className="block text-sm text-slate-700">
+                  PO remarks (optional)
+                  <Input
+                    className="mt-1"
+                    value={poRemarks}
+                    disabled={creating}
+                    onChange={(e) => setPoRemarks(e.target.value)}
+                  />
+                </label>
+              </div>
+
+              <div
+                className="min-h-0 flex-1 overflow-auto py-4"
+                data-testid="rm-po-create-lines-scroll"
+              >
+                <table className="erp-table erp-table-dense w-full min-w-[64rem] text-[12px] [&_td]:py-1.5 [&_th]:py-1.5">
+                  <thead className="sticky top-0 z-[1] border-b border-slate-200 bg-slate-50 text-[11px] font-semibold uppercase tracking-wide text-slate-600">
+                    <tr>
+                      <th className="px-2 text-left">RM item</th>
+                      <th className="px-2 text-left">PR No.</th>
+                      <th className="px-2 text-right">Required qty</th>
+                      <th className="px-2 text-right">Already ordered</th>
+                      <th className="px-2 text-right">Still to order</th>
+                      <th className="px-2 text-right">Order qty</th>
+                      <th className="px-2 text-right">Rate</th>
+                      <th className="px-2 text-right">Excess to stock</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {modalLines.map((ln) => {
+                      const orderQty = Number(poQty[ln.id]);
+                      const excess = purchaseRequestPoExcessToStock(ln, orderQty);
+                      return (
+                        <tr key={ln.id} className="border-t border-slate-100 align-middle">
+                          <td className="max-w-[12rem] truncate px-2 font-medium text-slate-900" title={ln.itemName}>
+                            {ln.itemName}
+                          </td>
+                          <td className="whitespace-nowrap px-2 text-slate-700">{ln.requestDocNo}</td>
+                          <td className="px-2 text-right tabular-nums text-slate-800">
+                            {fmtQty(ln.netRequiredQty, ln.unit)}
+                          </td>
+                          <td className="px-2 text-right tabular-nums text-slate-600">
+                            {fmtQty(ln.orderedQty, ln.unit)}
+                          </td>
+                          <td className="px-2 text-right tabular-nums font-medium text-amber-950">
+                            {ln.pendingQty > 1e-9 ? fmtQty(ln.pendingQty, ln.unit) : "—"}
+                          </td>
+                          <td className="px-2 text-right">
+                            <Input
+                              type="number"
+                              min={0}
+                              step="any"
+                              className="ml-auto h-8 w-[7.5rem] text-right tabular-nums"
+                              disabled={creating}
+                              value={poQty[ln.id] ?? ""}
+                              onChange={(e) => setPoQty((p) => ({ ...p, [ln.id]: e.target.value }))}
+                              aria-label={`Order qty for ${ln.itemName}`}
+                            />
+                          </td>
+                          <td className="px-2 text-right">
+                            <Input
+                              type="number"
+                              min={0}
+                              step="any"
+                              className="ml-auto h-8 w-[6.5rem] text-right tabular-nums"
+                              disabled={creating}
+                              value={rates[ln.id] ?? ""}
+                              onChange={(e) => setRates((p) => ({ ...p, [ln.id]: e.target.value }))}
+                              aria-label={`Rate for ${ln.itemName}`}
+                            />
+                          </td>
+                          <td className="px-2 text-right tabular-nums text-emerald-900">
+                            {excess > 1e-9 ? fmtQty(excess, ln.unit) : "—"}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="sticky bottom-0 z-10 flex shrink-0 justify-end gap-2 border-t border-slate-200 bg-white px-5 py-3">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={requestClosePoModal}
+                disabled={creating}
+                data-testid="rm-po-create-modal-cancel"
+              >
+                Cancel
+              </Button>
+              <Button type="button" disabled={creating} onClick={() => void submitPo()} data-testid="rm-po-create-modal-submit">
+                {creating ? "Creating…" : "Create RM PO"}
+              </Button>
+            </div>
           </div>
         </ErpModal>
       ) : null}
@@ -902,5 +920,3 @@ export function PendingMaterialRequestsPanel({ embedded = false, canPrepareRmPo 
   );
 
 }
-
-

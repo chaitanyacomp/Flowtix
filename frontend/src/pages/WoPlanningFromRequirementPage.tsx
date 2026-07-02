@@ -12,8 +12,7 @@ import { Button } from "../components/ui/button";
 import { Badge } from "../components/ui/badge";
 import { Input } from "../components/ui/input";
 import { apiFetch } from "../services/api";
-import { PageContainer } from "../components/PageHeader";
-import { ArrowLeft } from "lucide-react";
+import { PageContainer, ERPBackNavigation } from "../components/PageHeader";
 import { displayRequirementSheetNo, displaySalesOrderNo } from "../lib/docNoDisplay";
 
 type WoPrefill = {
@@ -147,10 +146,14 @@ export function WoPlanningFromRequirementPage() {
   return (
     <PageContainer>
       <div className="min-w-0 space-y-1">
-        <Button type="button" variant="ghost" size="sm" className="mb-1 gap-1 px-0 text-slate-600" onClick={() => nav(-1)}>
-          <ArrowLeft className="h-4 w-4 shrink-0" />
-          Back
-        </Button>
+        <ERPBackNavigation
+          to={
+            sheet
+              ? `/sales-orders/${sheet.salesOrderId}/requirement-sheets`
+              : "/planning-dashboard"
+          }
+          label={sheet ? "Back to Requirement Sheet" : "Back to Planning Dashboard"}
+        />
         <h1 className="text-lg font-semibold leading-snug text-slate-900">WO planning</h1>
         <p className="text-sm leading-relaxed text-slate-600">
           Requirement sheet {sheet ? displayRequirementSheetNo(sheet.id, sheet.docNo) : `#${sheetId}`}

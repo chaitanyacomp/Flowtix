@@ -48,6 +48,7 @@ function computePhysicalReturnableQty(grossIssued, consumed, returned, onHand, w
  * @param {import('@prisma/client').Prisma.TransactionClient | import('@prisma/client').PrismaClient} db
  */
 async function getWorkOrderProductionLocationIdsForReturn(db, workOrderId) {
+  if (typeof db.materialIssueNote?.findMany !== "function") return [];
   const notes = await db.materialIssueNote.findMany({
     where: { workOrderId },
     select: { toLocationId: true },
@@ -174,6 +175,122 @@ async function sumStockAtLocations(db, itemId, locationIds) {
   return Math.max(0, total);
 }
 
+/**
+ * Latest material issue note for WO + item (falls back to latest WO MIN).
+ * @param {import('@prisma/client').Prisma.TransactionClient | import('@prisma/client').PrismaClient} db
+ */
+async function findLatestMaterialIssueForWoItem(db, workOrderId, itemId) {
+  if (typeof db.materialIssueNote?.findMany !== "function") return null;
+  const notes = await db.materialIssueNote.findMany({
+    where: { workOrderId },
+    include: { lines: { select: { itemId: true } } },
+    orderBy: { id: "desc" },
+  });
+  const itemIdNum = Number(itemId);
+  if (Number.isFinite(itemIdNum) && itemIdNum > 0) {
+    for (const note of notes) {
+      if ((note.lines ?? []).some((ln) => Number(ln.itemId) === itemIdNum)) return note;
+    }
+  }
+  return notes[0] ?? null;
+}
+
+/**
+ * Infer production → store locations for a pending RM return from material issue history.
+ * @param {import('@prisma/client').Prisma.TransactionClient | import('@prisma/client').PrismaClient} db
+ * @param {{ workOrderId: number, itemId?: number | null }} opts
+ */
+async function resolveSuggestedRmReturnLocations(db, { workOrderId, itemId = null }) {
+  const woId = Number(workOrderId);
+  const itemIdNum = itemId != null ? Number(itemId) : null;
+
+  const minNote =
+    itemIdNum != null && itemIdNum > 0
+      ? await findLatestMaterialIssueForWoItem(db, woId, itemIdNum)
+      : (
+          await db.materialIssueNote.findMany({
+            where: { workOrderId: woId },
+            orderBy: { id: "desc" },
+            take: 1,
+            select: { fromLocationId: true, toLocationId: true },
+          })
+        )[0] ?? null;
+
+  let fromLocationId = minNote?.toLocationId ?? null;
+  let toLocationId = minNote?.fromLocationId ?? null;
+
+  const prodLocIds = await getWorkOrderProductionLocationIdsForReturn(db, woId);
+  if (prodLocIds.length > 1 && itemIdNum != null && itemIdNum > 0) {
+    let bestLoc = fromLocationId && prodLocIds.includes(fromLocationId) ? fromLocationId : prodLocIds[0];
+    let bestQty = -1;
+    for (const locId of prodLocIds) {
+      const qty = await getItemStockQty(itemIdNum, db, { stockBucket: "USABLE", locationId: locId });
+      if (qty > bestQty) {
+        bestQty = qty;
+        bestLoc = locId;
+      }
+    }
+    fromLocationId = bestLoc;
+  } else if (!fromLocationId && prodLocIds.length > 0) {
+    fromLocationId = prodLocIds[0];
+  }
+
+  if (!toLocationId) {
+    if (typeof db.location?.findFirst === "function") {
+      const storeLoc =
+        (await db.location.findFirst({
+          where: { isActive: true, allowRm: true, locationType: "RM_STORE" },
+          orderBy: { id: "asc" },
+        })) ??
+        (await db.location.findFirst({
+          where: { isActive: true, allowRm: true, locationType: "CONSUMABLE" },
+          orderBy: { id: "asc" },
+        }));
+      toLocationId = storeLoc?.id ?? null;
+    }
+  }
+
+  const unresolved = {
+    suggestedFromLocationId: null,
+    suggestedToLocationId: null,
+    fromLocationName: null,
+    toLocationName: null,
+    locationResolved: false,
+    locationWarning: "Could not resolve production and store locations from material issue history.",
+  };
+
+  if (!fromLocationId || !toLocationId) return unresolved;
+
+  try {
+    const { fromLoc, toLoc } = await assertLocationPairForReturn(db, fromLocationId, toLocationId);
+    return {
+      suggestedFromLocationId: fromLocationId,
+      suggestedToLocationId: toLocationId,
+      fromLocationName: fromLoc.locationName ?? fromLoc.locationCode ?? null,
+      toLocationName: toLoc.locationName ?? toLoc.locationCode ?? null,
+      locationResolved: true,
+      locationWarning: null,
+    };
+  } catch (e) {
+    let fromRow = null;
+    let toRow = null;
+    if (typeof db.location?.findUnique === "function") {
+      [fromRow, toRow] = await Promise.all([
+        db.location.findUnique({ where: { id: fromLocationId }, select: { locationName: true, locationCode: true } }),
+        db.location.findUnique({ where: { id: toLocationId }, select: { locationName: true, locationCode: true } }),
+      ]);
+    }
+    return {
+      suggestedFromLocationId: fromLocationId,
+      suggestedToLocationId: toLocationId,
+      fromLocationName: fromRow?.locationName ?? fromRow?.locationCode ?? null,
+      toLocationName: toRow?.locationName ?? toRow?.locationCode ?? null,
+      locationResolved: false,
+      locationWarning: e instanceof Error ? e.message : "Invalid location pair for RM return.",
+    };
+  }
+}
+
 async function assertLocationPairForReturn(tx, fromLocationId, toLocationId) {
   const [fromLoc, toLoc] = await Promise.all([
     tx.location.findUnique({ where: { id: fromLocationId } }),
@@ -211,7 +328,7 @@ async function assertLocationPairForReturn(tx, fromLocationId, toLocationId) {
 
 /**
  * @param {import('@prisma/client').Prisma.TransactionClient | import('@prisma/client').PrismaClient} db
- * @param {{ workOrderId: number, productionMaterialRequestId?: number | null, fromLocationId?: number | null, toLocationId?: number | null }} opts
+ * @param {{ workOrderId: number, productionMaterialRequestId?: number | null, fromLocationId?: number | null, toLocationId?: number | null, itemId?: number | null }} opts
  */
 async function buildReturnableLinesForWorkOrder(db = prisma, opts) {
   const workOrderId = opts.workOrderId;
@@ -259,8 +376,20 @@ async function buildReturnableLinesForWorkOrder(db = prisma, opts) {
     : [];
   const itemById = new Map(items.map((i) => [i.id, i]));
 
-  const defaultFromId = opts.fromLocationId ?? prodLocIds[0] ?? null;
+  let defaultFromId = opts.fromLocationId ?? prodLocIds[0] ?? null;
   let defaultToId = opts.toLocationId ?? null;
+  if (!opts.fromLocationId || !opts.toLocationId) {
+    const suggested = await resolveSuggestedRmReturnLocations(db, {
+      workOrderId,
+      itemId: opts.itemId ?? null,
+    });
+    if (!opts.fromLocationId && suggested.suggestedFromLocationId) {
+      defaultFromId = suggested.suggestedFromLocationId;
+    }
+    if (!opts.toLocationId && suggested.suggestedToLocationId) {
+      defaultToId = suggested.suggestedToLocationId;
+    }
+  }
   if (!defaultToId) {
     const storeLoc =
       (await db.location.findFirst({
@@ -686,6 +815,7 @@ module.exports = {
   loadReturnedByWorkOrder,
   buildReturnableLinesForWorkOrder,
   buildMaterialReturnFormContext,
+  resolveSuggestedRmReturnLocations,
   createMaterialReturnNote,
   listMaterialReturnNotes,
   getMaterialReturnNoteById,

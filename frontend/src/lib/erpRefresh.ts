@@ -92,6 +92,10 @@ export function erpRefreshScopesForMutation(path: string, method: string): ErpRe
     scopes.add("production");
     scopes.add("workorders");
   }
+  if (p.includes("material-return")) {
+    scopes.add("pending-actions");
+    scopes.add("stock");
+  }
   if (p.includes("qc") || p.includes("scrap")) {
     scopes.add("qc");
     scopes.add("pending-actions");

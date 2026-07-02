@@ -17,19 +17,17 @@ export const DISPATCH_SO_COMPLETE_MESSAGE = "All dispatches for this Sales Order
 
 
 export type DispatchCompactQueueRow = {
-
   lineId: number;
-
   itemId: number;
-
   itemName: string;
-
+  /** Remaining dispatchable qty (backend remainingDispatchableQty). */
   readyQty: number;
-
+  draftQty: number;
+  dispatchedQty: number;
+  originalReadyQty: number;
+  statusLabel: string;
   /** True when row is visible only because an open draft reserves qty. */
-
   hasOpenDraft?: boolean;
-
 };
 
 
@@ -77,9 +75,7 @@ export function formatDispatchCompactQty(qty: number): string {
 
 
 export function sumDispatchCompactQueueQty(rows: DispatchCompactQueueRow[]): number {
-
   return rows.reduce((sum, row) => sum + Math.max(0, Number(row.readyQty ?? 0)), 0);
-
 }
 
 
@@ -121,31 +117,26 @@ export function findOldestUnlockedDraft(drafts: DispatchDraftSnapshot[] | null |
 
 
 /** Queue row stays visible when dispatchable headroom or an open draft exists. */
-
-export function shouldIncludeCompactQueueRow(headroom: number, draftQty: number, eps = 1e-9): boolean {
-
-  return headroom > eps || draftQty > eps;
-
+export function shouldIncludeCompactQueueRow(remainingQty: number, draftQty: number, eps = 1e-9): boolean {
+  return remainingQty > eps || draftQty > eps;
 }
 
 
 
-/** Display qty for compact queue — prefer live headroom, else show draft qty while waiting finalize. */
-
-export function compactQueueDisplayReadyQty(headroom: number, draftQty: number, eps = 1e-9): number {
-
-  if (headroom > eps) return headroom;
-
-  if (draftQty > eps) return draftQty;
-
-  return 0;
-
+export function deriveDispatchStatusLabelFromQuantities(
+  remainingQty: number,
+  draftQty: number,
+  finalizedQty: number,
+  eps = 1e-9,
+): string {
+  if (draftQty > eps && remainingQty <= eps) return "Draft Saved";
+  if (draftQty > eps && remainingQty > eps) return "Partial Draft";
+  if (remainingQty > eps) return "Ready";
+  if (finalizedQty > eps) return "Dispatched";
+  return "—";
 }
-
-
 
 /** Pick the next FIFO queue row after dispatch — same item if partial qty remains. */
-
 export function resolvePostCompactDispatchQueueRow(input: {
 
   queue: DispatchCompactQueueRow[];

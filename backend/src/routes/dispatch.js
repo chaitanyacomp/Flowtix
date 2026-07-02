@@ -43,6 +43,7 @@ const {
   isDispatchOpenListLineCandidate,
   isSalesOrderCommerciallyClosedForDispatch,
 } = require("../services/dispatchOpenListEligibility");
+const { enrichSalesOrderDispatchQuantities } = require("../services/dispatchLineQuantityEngine");
 const { assertAdminPassword } = require("../services/adminPasswordAuth");
 const { DISPATCH_WRITE_ROLES, DISPATCH_READ_ROLES, QC_PAGE_ROLES } = require("../constants/erpRoles");
 const {
@@ -1616,7 +1617,7 @@ dispatchRouter.get("/sales-orders", requireAuth, requireRole(DISPATCH_READ_ROLES
               : null,
           });
         }
-        return {
+        return enrichSalesOrderDispatchQuantities({
           ...so,
           flowMode: "NO_QTY_SO",
           // NO_QTY dispatch eligibility is cycle-wise QC minus same-cycle dispatch.
@@ -1640,7 +1641,7 @@ dispatchRouter.get("/sales-orders", requireAuth, requireRole(DISPATCH_READ_ROLES
             dispatchableQty: METRIC_DEFINITIONS.dispatchableQty,
             metricContextLegend: METRIC_CONTEXT,
           },
-        };
+        });
       }
 
       const lineInputs = mapSoLinesToDispatchFifoInputs(so.lines, so.orderType);
@@ -1757,7 +1758,7 @@ dispatchRouter.get("/sales-orders", requireAuth, requireRole(DISPATCH_READ_ROLES
           },
         };
       });
-      return {
+      return enrichSalesOrderDispatchQuantities({
         ...so,
         flowMode: "REGULAR_SO",
         dispatchReadOnly: so.internalStatus === "COMPLETED",
@@ -1768,7 +1769,7 @@ dispatchRouter.get("/sales-orders", requireAuth, requireRole(DISPATCH_READ_ROLES
           dispatchableQty: METRIC_DEFINITIONS.dispatchableQty,
           metricContextLegend: METRIC_CONTEXT,
         },
-      };
+      });
     });
 
     const regularSoIdsForInvoice = enriched
@@ -2013,7 +2014,7 @@ dispatchRouter.get("/sales-orders-debug", requireAuth, requireRole(["ADMIN"]), a
           inQcReworkQty: inProcessQty,
         };
       });
-      enriched = {
+      enriched = enrichSalesOrderDispatchQuantities({
         ...so,
         flowMode: "NO_QTY_SO",
         dispatchReadOnly:
@@ -2025,7 +2026,7 @@ dispatchRouter.get("/sales-orders-debug", requireAuth, requireRole(["ADMIN"]), a
             : null,
         lineStats: lineStatsWithBuckets,
         dispatch: attachDispatchMaxReversibleQty(so.dispatch),
-      };
+      });
     } else {
       const lineInputs = mapSoLinesToDispatchFifoInputs(so.lines, so.orderType);
       const { alloc: allocOp, netByItem } = buildSoLineDispatchAllocation(lineInputs, so.dispatch, DISPATCH_ALLOC_MODE.OPERATIONAL);
@@ -2119,13 +2120,13 @@ dispatchRouter.get("/sales-orders-debug", requireAuth, requireRole(["ADMIN"]), a
           regularDispatchReadiness: regularDispatchReadinessLabel(so.orderType, pendingDispatchQty, dispatchable),
         };
       });
-      enriched = {
+      enriched = enrichSalesOrderDispatchQuantities({
         ...so,
         flowMode: "REGULAR_SO",
         dispatchReadOnly: so.internalStatus === "COMPLETED",
         lineStats,
         dispatch: attachDispatchMaxReversibleQty(so.dispatch),
-      };
+      });
     }
 
     const invoicedQtyDebug = await fetchInvoicedQtyBySoId(prisma, enriched.orderType !== "NO_QTY" ? [enriched.id] : []);

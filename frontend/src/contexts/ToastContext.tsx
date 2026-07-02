@@ -58,7 +58,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
         >
           <div className="erp-toast" role="status" data-kind={toast.kind}>
             {toast.kind === "success" ? (
-              <span className="text-green-800">{toast.message}</span>
+              <span className="whitespace-pre-line text-green-800">{toast.message}</span>
             ) : toast.kind === "info" ? (
               <span className="text-slate-700">{toast.message}</span>
             ) : (

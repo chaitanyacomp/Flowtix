@@ -9,6 +9,7 @@ const {
   buildMaterialIssueFormContext,
   createMaterialIssueNote,
   listMaterialIssueNotes,
+  listRmIssuedWorkOrdersWaitingForProduction,
   getAvailableRmAtLocation,
   buildStockGroupedByLocation,
 } = require("../services/materialIssueService");
@@ -45,6 +46,20 @@ materialIssueRouter.get(
       }
       const availability = await getAvailableRmAtLocation(itemId, fromLocationId);
       return res.json({ itemId, fromLocationId, ...availability });
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
+materialIssueRouter.get(
+  "/issued-waiting-for-production",
+  requireAuth,
+  requireRole(storeRoles),
+  async (req, res, next) => {
+    try {
+      const rows = await listRmIssuedWorkOrdersWaitingForProduction();
+      return res.json(rows);
     } catch (e) {
       return next(e);
     }

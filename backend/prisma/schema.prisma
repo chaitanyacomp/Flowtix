@@ -2029,6 +2029,8 @@ model RmPurchaseOrder {
   /// Supply location (branch/depot) for commercial source — not warehouse receiving.
   supplierLocationId        Int?
   status                    RmPoStatus @default(PENDING)
+  /// Supplier-provided PO / vendor reference number. Required for new RM POs.
+  supplierPoNumber          String     @db.VarChar(100)
   remarks                   String?    @db.Text
   /// Supplier state snapshot at PO time (GST / Tally); optional for legacy rows.
   supplierStateSnapshot     String?    @db.VarChar(128)
@@ -2486,6 +2488,7 @@ model ProductionWorkOrderReport {
   confirmedBy User?     @relation("ProductionReportConfirmedBy", fields: [confirmedByUserId], references: [id], onDelete: SetNull)
   lines       ProductionWorkOrderReportLine[]
   returnPendings ProductionRmReturnPending[]
+  wastageDetails ProductionWorkOrderReportWastageDetail[]
 
   @@index([status])
   @@index([confirmedAt])
@@ -2535,6 +2538,36 @@ model ProductionRmReturnPending {
   @@index([status])
   @@index([materialReturnNoteId])
   @@index([receivedByUserId])
+}
+
+/// Admin-maintained wastage reason master for Production Report classification (P16-19A).
+model WastageType {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique @db.VarChar(120)
+  sortOrder Int      @default(0)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  reportDetails ProductionWorkOrderReportWastageDetail[]
+
+  @@index([isActive, sortOrder])
+}
+
+/// Per-report wastage classification rows (stored separately for analytics).
+model ProductionWorkOrderReportWastageDetail {
+  id                 Int     @id @default(autoincrement())
+  productionReportId Int
+  wastageTypeId      Int
+  qty                Decimal @db.Decimal(18, 3)
+  remarks            String? @db.Text
+  sortOrder          Int     @default(0)
+
+  productionReport ProductionWorkOrderReport @relation(fields: [productionReportId], references: [id], onDelete: Cascade)
+  wastageType      WastageType               @relation(fields: [wastageTypeId], references: [id], onDelete: Restrict)
+
+  @@index([productionReportId])
+  @@index([wastageTypeId])
 }
 
 model ProductionEntry {

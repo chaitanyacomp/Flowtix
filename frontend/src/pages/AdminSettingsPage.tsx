@@ -301,6 +301,18 @@ export function AdminSettingsPage() {
 
       <Card className="border-slate-200 shadow-sm">
         <CardHeader className="pb-2">
+          <CardTitle className="text-base">Production wastage master</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-2 text-sm text-slate-700">
+          <p>Manage wastage classification reasons used on Production Report confirmation.</p>
+          <Link className="font-medium text-sky-900 underline-offset-2 hover:underline" to="/wastage-types">
+            Open Wastage Types
+          </Link>
+        </CardContent>
+      </Card>
+
+      <Card className="border-slate-200 shadow-sm">
+        <CardHeader className="pb-2">
           <CardTitle className="text-base">Stock Adjustment Control</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4 text-sm text-slate-700">

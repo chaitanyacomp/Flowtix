@@ -9,11 +9,17 @@ const { AuditAction, AuditEntityType } = require("../prismaClientPackage");
 const { qtyToNumber } = require("./rmPurchaseHelpers");
 const { round3 } = require("./bomExplosionService");
 const { computeExecutionSummary } = require("./productionExecutionService");
-const { buildReturnableLinesForWorkOrder, createMaterialReturnNote } = require("./materialReturnService");
+const { buildReturnableLinesForWorkOrder, createMaterialReturnNote, resolveSuggestedRmReturnLocations } = require("./materialReturnService");
 const { createMaterialWastageNote } = require("./materialWastageService");
 const { QC_ENTRY_ACTIVE_WHERE } = require("./qcEntryConstants");
 const auditLog = require("./auditLog");
 const { assertNoOpenProductionRmReturnPending } = require("./productionRmReturnPendingGuard");
+const { listWastageTypes } = require("./wastageTypeService");
+const {
+  normalizeWastageDetailsInput,
+  assertWastageClassificationMatches,
+  mapWastageDetailRows,
+} = require("./productionWastageClassificationService");
 
 const EPS = 1e-6;
 
@@ -152,6 +158,7 @@ function mapConfirmedReportRow(row) {
       remarks: null,
       lines: [],
       returnPendings: [],
+      wastageDetails: [],
     };
   }
   return {
@@ -193,6 +200,7 @@ function mapConfirmedReportRow(row) {
       remarks: p.remarks ?? null,
       createdAt: p.createdAt,
     })),
+    wastageDetails: mapWastageDetailRows(row.wastageDetails || []),
   };
 }
 
@@ -211,6 +219,10 @@ async function loadConfirmedReport(db, workOrderId) {
           receivedBy: { select: { id: true, name: true } },
         },
         orderBy: { id: "asc" },
+      },
+      wastageDetails: {
+        include: { wastageType: { select: { id: true, name: true } } },
+        orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
       },
     },
   });
@@ -350,6 +362,17 @@ async function buildWorkOrderProductionReport(db = prisma, workOrderId) {
   const primaryLine = wo.lines[0] ?? null;
   const confirmedReport = await loadConfirmedReport(db, id);
 
+  const wastageTypes = db.wastageType?.findMany ? await listWastageTypes(db, { includeInactive: false }) : [];
+  const totalWastageQty = confirmedReport
+    ? round3((confirmedReport.lines || []).reduce((acc, ln) => acc + Math.max(0, n(ln.scrapWasteQty)), 0))
+    : round3(
+        (rmLines || []).reduce((acc, ln) => {
+          const issued = ln.issuedQty == null ? 0 : round3(n(ln.issuedQty));
+          const consumed = round3(n(ln.reportedConsumedQty ?? ln.ledgerConsumedQty ?? 0));
+          return acc + Math.max(0, issued - consumed);
+        }, 0),
+      );
+
   return {
     workOrderId: wo.id,
     workOrderNo: wo.docNo ?? `WO-${wo.id}`,
@@ -388,6 +411,8 @@ async function buildWorkOrderProductionReport(db = prisma, workOrderId) {
     },
     batches,
     rmLines,
+    wastageTypes,
+    totalWastageQty,
     confirmation: mapConfirmedReportRow(confirmedReport),
     generatedAt: new Date().toISOString(),
   };
@@ -460,6 +485,26 @@ async function confirmProductionWorkOrderReport(db, workOrderId, input = {}, act
     });
   }
 
+  const totalWastageQty = round3(lineCreates.reduce((acc, ln) => acc + n(ln.scrapWasteQty), 0));
+  const wastageUnit =
+    lineCreates.find((ln) => n(ln.scrapWasteQty) > EPS && ln.unit)?.unit ||
+    report.rmLines.find((ln) => ln.unit)?.unit ||
+    "Kg";
+  const wastageDetails = normalizeWastageDetailsInput(input.wastageDetails);
+  if (wastageDetails.length > 0 && db.wastageType?.findMany) {
+    const activeTypeIds = new Set(
+      (await db.wastageType.findMany({ where: { isActive: true }, select: { id: true } })).map((row) => row.id),
+    );
+    for (const row of wastageDetails) {
+      if (!activeTypeIds.has(row.wastageTypeId)) {
+        const err = new Error("One or more wastage types are inactive or invalid.");
+        err.statusCode = 400;
+        throw err;
+      }
+    }
+  }
+  assertWastageClassificationMatches(totalWastageQty, wastageDetails, wastageUnit);
+
   const created = await db.productionWorkOrderReport.create({
     data: {
       workOrderId: id,
@@ -480,6 +525,18 @@ async function confirmProductionWorkOrderReport(db, workOrderId, input = {}, act
           remarks: ln.remarks,
         })),
       },
+      ...(wastageDetails.length > 0 && db.productionWorkOrderReportWastageDetail?.create
+        ? {
+            wastageDetails: {
+              create: wastageDetails.map((row, index) => ({
+                wastageTypeId: row.wastageTypeId,
+                qty: String(row.qty),
+                remarks: row.remarks,
+                sortOrder: row.sortOrder ?? index,
+              })),
+            },
+          }
+        : {}),
     },
   });
 
@@ -572,24 +629,33 @@ async function listProductionRmReturnPending(db = prisma, { status = "PENDING", 
       receivedBy: { select: { id: true, name: true } },
     },
   });
-  return rows.map((p) => ({
-    id: p.id,
-    productionReportId: p.productionReportId,
-    workOrderId: p.workOrderId,
-    workOrderNo: p.workOrder?.docNo ?? `WO-${p.workOrderId}`,
-    itemId: p.itemId,
-    itemName: p.item?.itemName ?? `Item #${p.itemId}`,
-    unit: p.item?.unit ?? "",
-    requestedQty: round3(n(p.requestedQty)),
-    status: p.status,
-    materialReturnNoteId: p.materialReturnNoteId ?? null,
-    materialReturnNoteNo: p.materialReturnNote?.docNo ?? null,
-    confirmedAt: p.productionReport?.confirmedAt ?? null,
-    createdAt: p.createdAt,
-    receivedAt: p.receivedAt ?? null,
-    receivedByName: p.receivedBy?.name ?? null,
-    remarks: p.remarks ?? null,
-  }));
+  return Promise.all(
+    rows.map(async (p) => {
+      const base = {
+        id: p.id,
+        productionReportId: p.productionReportId,
+        workOrderId: p.workOrderId,
+        workOrderNo: p.workOrder?.docNo ?? `WO-${p.workOrderId}`,
+        itemId: p.itemId,
+        itemName: p.item?.itemName ?? `Item #${p.itemId}`,
+        unit: p.item?.unit ?? "",
+        requestedQty: round3(n(p.requestedQty)),
+        status: p.status,
+        materialReturnNoteId: p.materialReturnNoteId ?? null,
+        materialReturnNoteNo: p.materialReturnNote?.docNo ?? null,
+        confirmedAt: p.productionReport?.confirmedAt ?? null,
+        createdAt: p.createdAt,
+        receivedAt: p.receivedAt ?? null,
+        receivedByName: p.receivedBy?.name ?? null,
+        remarks: p.remarks ?? null,
+      };
+      const locations = await resolveSuggestedRmReturnLocations(db, {
+        workOrderId: p.workOrderId,
+        itemId: p.itemId,
+      });
+      return { ...base, ...locations };
+    }),
+  );
 }
 
 async function buildRmDispositionSummaryForWorkOrder(db, workOrderId) {

@@ -9,7 +9,7 @@ import { Button, buttonVariants } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { cn } from "../lib/utils";
 import { useToast } from "../contexts/ToastContext";
-import { PageContainer, StickyWorkspaceHead } from "../components/PageHeader";
+import { PageContainer, StickyWorkspaceHead, ERPBackNavigation } from "../components/PageHeader";
 import { ErpWorkflowTrail } from "../components/erp/foundation/ErpWorkflowTrail";
 import { useStoreExecutionNavContext } from "../hooks/useStoreExecutionNavContext";
 import {
@@ -24,7 +24,8 @@ import { buildRmControlCenterHref } from "../lib/woProcurementContinuity";
 import { MaterialIssuePmrQueuePanel } from "../components/erp/MaterialIssuePmrQueuePanel";
 import {
   buildActionableWorkOrderDropdownOptions,
-  buildIssuedWorkOrderInfoRows,
+  mapIssuedWaitingForProductionPanelRows,
+  filterMaterialIssueEntryLines,
   filterPmrsWithPendingIssue,
   pickActionablePmrForWorkOrder,
   resolveMaterialIssueLineStatus,
@@ -72,6 +73,9 @@ type IssueLineDraft = {
   unit?: string;
   /** PMR original request (requiredQty). */
   originalRequestQty?: number;
+  /** PMR executable requirement after waived qty is removed. */
+  effectiveRequiredQty?: number;
+  waivedQty?: number;
   /** PMR qty already issued to production. */
   alreadyIssuedQty?: number;
   /** PMR balance still to issue (= original − issued). */
@@ -124,7 +128,10 @@ type PmrIssueLine = {
   itemId: number;
   itemName: string;
   requiredQty: number;
+  originalRequiredQty?: number;
+  effectiveRequiredQty?: number;
   issuedQty: number;
+  waivedQty?: number;
   pendingQty: number;
   unit: string;
   totalStoreStock?: number | null;
@@ -155,6 +162,8 @@ type PmrUnissuedRequiredLine = {
 
 type PmrIssueDecision = {
   totalRequired: number;
+  totalOriginalRequired?: number;
+  totalEffectiveRequired?: number;
   totalIssued: number;
   totalWaived: number;
   totalExcessIssue: number;
@@ -185,6 +194,11 @@ type ContextResponse = {
   toLocations: LocationRow[];
   workOrders: WoOption[];
   rmItems: RmItem[];
+};
+
+type IssuedWaitingForProductionRow = {
+  workOrderId: number;
+  workOrderNo: string;
 };
 
 type RecentIssue = {
@@ -230,7 +244,9 @@ function pmrLineToDraft(pl: PmrIssueLine): IssueLineDraft {
     itemId: pl.itemId,
     itemName: pl.itemName,
     unit: pl.unit,
-    originalRequestQty: pl.requiredQty,
+    originalRequestQty: pl.originalRequiredQty ?? pl.requiredQty,
+    effectiveRequiredQty: pl.effectiveRequiredQty ?? Math.max(0, pl.requiredQty - (pl.waivedQty ?? 0)),
+    waivedQty: pl.waivedQty,
     alreadyIssuedQty: pl.issuedQty,
     stillRequiredQty: issueCap,
     issueCapQty: issueCap,
@@ -273,6 +289,7 @@ export function MaterialIssuePage() {
   const { showSuccess, showError } = useToast();
   const [ctx, setCtx] = React.useState<ContextResponse | null>(null);
   const [recent, setRecent] = React.useState<RecentIssue[]>([]);
+  const [issuedWaitingForProduction, setIssuedWaitingForProduction] = React.useState<IssuedWaitingForProductionRow[]>([]);
   const [pendingPmrs, setPendingPmrs] = React.useState<PendingPmr[]>([]);
   const [activePmrId, setActivePmrId] = React.useState<number | null>(null);
   const [activePmr, setActivePmr] = React.useState<PmrIssueContext["pmr"] | null>(null);
@@ -337,7 +354,7 @@ export function MaterialIssuePage() {
       setIssueDecision(data.issueDecision ?? null);
       if (data.pmr.workOrderId) setWorkOrderId(data.pmr.workOrderId);
       setRemarks(`Issue against ${data.pmr.docNo || `PMR-${pmrId}`}`);
-      const sourceLines = data.lines?.length ? data.lines : data.pendingLines;
+      const sourceLines = filterMaterialIssueEntryLines(data.pendingLines?.length ? data.pendingLines : data.lines ?? []);
       setLines(sourceLines.length ? sourceLines.map(pmrLineToDraft) : []);
     } catch (e) {
       setPmrLoadError(e instanceof Error ? e.message : "Could not load PMR");
@@ -354,13 +371,17 @@ export function MaterialIssuePage() {
   async function loadAll() {
     setLoading(true);
     try {
-      const [context, list] = await Promise.all([
+      const [context, list, waitingForProduction] = await Promise.all([
         apiFetch<ContextResponse>("/api/material-issues/context"),
         apiFetch<RecentIssue[]>("/api/material-issues/"),
+        apiFetch<IssuedWaitingForProductionRow[]>("/api/material-issues/issued-waiting-for-production").catch(
+          () => [] as IssuedWaitingForProductionRow[],
+        ),
         loadPendingPmrs(),
       ]);
       setCtx(context);
       setRecent(Array.isArray(list) ? list : []);
+      setIssuedWaitingForProduction(Array.isArray(waitingForProduction) ? waitingForProduction : []);
       if (context.fromLocations.length === 1 && fromLocationId === "") {
         setFromLocationId(context.fromLocations[0].id);
       }
@@ -406,12 +427,8 @@ export function MaterialIssuePage() {
     [actionableWorkOrderOptions],
   );
   const issuedWorkOrderInfoRows = React.useMemo(
-    () =>
-      buildIssuedWorkOrderInfoRows({
-        recentIssues: recent,
-        actionableWorkOrderIds,
-      }),
-    [recent, actionableWorkOrderIds],
+    () => mapIssuedWaitingForProductionPanelRows(issuedWaitingForProduction, actionableWorkOrderIds),
+    [issuedWaitingForProduction, actionableWorkOrderIds],
   );
   const materialIssueNavContext = useStoreExecutionNavContext("material-issue");
 
@@ -618,6 +635,9 @@ export function MaterialIssuePage() {
       refreshPendingPmrsList(),
       apiFetch<RecentIssue[]>("/api/material-issues/")
         .then((list) => setRecent(Array.isArray(list) ? list : []))
+        .catch(() => undefined),
+      apiFetch<IssuedWaitingForProductionRow[]>("/api/material-issues/issued-waiting-for-production")
+        .then((rows) => setIssuedWaitingForProduction(Array.isArray(rows) ? rows : []))
         .catch(() => undefined),
     ]);
 
@@ -838,6 +858,12 @@ export function MaterialIssuePage() {
   const woPmrMode = issueMode === "wo-pmr";
   const executionReady = woPmrMode && Boolean(activePmr && activePmrId);
   const pmrContextReady = Boolean(activePmr && lines.some((ln) => ln.pmrLineId));
+  const selectedPmrFullyIssued =
+    executionReady &&
+    !pmrLoading &&
+    lines.length === 0 &&
+    Number(issueDecision?.totalRemaining ?? activePmr?.totalPending ?? 0) <= 1e-6 &&
+    Number(issueDecision?.totalIssued ?? 0) > 1e-6;
   const showPartialAutofillHint = Boolean(activePmrId) && hasPartialStoreAutofill(lines);
   const pmrShortageCount = lines.filter((ln) => {
     const pending = ln.pmrPendingQty ?? ln.pendingQty ?? 0;
@@ -915,7 +941,7 @@ export function MaterialIssuePage() {
 
   const canSubmitIssue =
     (woPmrMode
-      ? executionReady && pmrContextReady
+      ? executionReady && pmrContextReady && !selectedPmrFullyIssued
       : typeof fromLocationId === "number" && typeof toLocationId === "number" && lines.some((l) => l.itemId)) &&
     typeof fromLocationId === "number" &&
     typeof toLocationId === "number" &&
@@ -958,12 +984,7 @@ export function MaterialIssuePage() {
       <StickyWorkspaceHead
         lead={
           hideWorkflowTrail ? (
-            <Link
-              to="/pending-actions"
-              className="inline-flex text-[10px] font-medium text-slate-600 hover:text-slate-900"
-            >
-              ← Pending Actions
-            </Link>
+            <ERPBackNavigation defaultTo="/pending-actions" defaultLabel="Back to Pending Actions" />
           ) : (
             <ErpWorkflowTrail navContext={materialIssueNavContext} />
           )
@@ -992,16 +1013,11 @@ export function MaterialIssuePage() {
           <h2 className="text-[13px] font-bold text-emerald-950">{materialIssueSessionCompleteTitle()}</h2>
           <p className="mt-1 text-[11px] leading-snug text-emerald-900">{materialIssueSessionCompleteMessage()}</p>
           <div className="mt-2 flex flex-wrap gap-1.5">
-            <Link
+            <ERPBackNavigation
               to="/dashboard"
-              className={cn(
-                buttonVariants({ size: "sm" }),
-                "inline-flex h-8 bg-slate-900 px-3 text-[11px] font-semibold text-white hover:bg-slate-800 no-underline",
-              )}
+              label="Back to Dashboard"
               data-testid="material-issue-back-dashboard"
-            >
-              Back to Dashboard
-            </Link>
+            />
             <Link
               to={sessionCompleteRmccHref}
               className={cn(
@@ -1012,13 +1028,11 @@ export function MaterialIssuePage() {
             >
               Open RM Control Center
             </Link>
-            <Link
+            <ERPBackNavigation
               to="/pending-actions"
-              className={cn(buttonVariants({ variant: "outline", size: "sm" }), "h-8 px-3 text-[11px] no-underline")}
+              label="Back to Pending Actions"
               data-testid="material-issue-back-pending-actions"
-            >
-              Back to Pending Actions
-            </Link>
+            />
           </div>
         </section>
       ) : (
@@ -1184,7 +1198,16 @@ export function MaterialIssuePage() {
             </label>
           </div>
 
-          {woPmrMode && !executionReady && !pmrLoading ? (
+          {selectedPmrFullyIssued ? (
+            <div
+              className="mt-2 rounded border border-emerald-200 bg-emerald-50 px-3 py-4 text-center"
+              data-testid="material-issue-fully-issued-message"
+            >
+              <p className="text-[12px] font-semibold text-emerald-950">
+                Material already fully issued for this work order.
+              </p>
+            </div>
+          ) : woPmrMode && !executionReady && !pmrLoading ? (
             <div className="mt-2 rounded border border-dashed border-slate-300 bg-slate-50 px-3 py-4 text-center">
               <p className="text-[12px] font-semibold text-slate-800">
                 {actionablePendingPmrs.length === 0
@@ -1214,7 +1237,7 @@ export function MaterialIssuePage() {
                   {lines.map((ln) => {
                     const item = ctx?.rmItems.find((i) => i.id === ln.itemId);
                     const unit = ln.unit ?? item?.unit;
-                    const required = ln.originalRequestQty ?? 0;
+                    const required = ln.effectiveRequiredQty ?? ln.originalRequestQty ?? 0;
                     const issued = ln.alreadyIssuedQty ?? 0;
                     const pending = ln.pmrPendingQty ?? ln.pendingQty ?? 0;
                     const avail = ln.available ?? ln.freeStoreStock ?? ln.issueAvailableStoreQty ?? null;

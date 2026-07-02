@@ -4,9 +4,11 @@
  */
 
 const auditLog = require("./auditLog");
-const { assertNoOpenProductionRmReturnPending } = require("./productionRmReturnPendingGuard");
 const { getApprovedProducedQtyByWorkOrderLineIds } = require("./productionMetrics");
 const { getWoLineRemainingProductionQty } = require("./reportMetrics");
+const {
+  createCarryForwardPendingFromProductionShortfall,
+} = require("./carryForwardPendingService");
 
 const EPS = 1e-6;
 
@@ -220,7 +222,7 @@ async function assertNoQtyProductionExecutionAllowsProduction(tx, workOrderId) {
   }
   if (exec.executionStatus === "SHORTFALL_PENDING") {
     const err = new Error(
-      "Production shortfall decision is pending. Choose Waive, Carry Forward, or Pause before recording more production.",
+      "Production shortfall decision is pending. Confirm Report & Close WO or Pause before recording more production.",
     );
     err.statusCode = 409;
     err.code = "WO_EXEC_SHORTFALL_DECISION_REQUIRED";
@@ -270,6 +272,12 @@ function validateResolutionReason(resolutionReason, remarks) {
       throw err;
     }
   }
+}
+
+function defaultAutomaticShortfallResolutionReason(shortfallOutcome, resolutionReason) {
+  if (resolutionReason) return resolutionReason;
+  if (shortfallOutcome === "CARRY_FORWARD") return "CAPACITY_CONSTRAINT";
+  return resolutionReason;
 }
 
 async function writeShortfallResolutionAudit(tx, {
@@ -508,33 +516,6 @@ async function reconcileShortfallPendingStatus(tx, wo) {
   });
 }
 
-async function createCarryForwardPendingFromLine(tx, {
-  wo,
-  line,
-  remainderQty,
-  resolutionReason,
-  remarks,
-  resolutionAuditId,
-  actorUserId,
-}) {
-  return tx.carryForwardPending.create({
-    data: {
-      itemId: line.fgItemId,
-      salesOrderId: wo.salesOrderId,
-      sourceRequirementSheetId: wo.requirementSheetId ?? null,
-      sourceWorkOrderId: wo.id,
-      cycleId: wo.cycleId ?? null,
-      remainingQty: String(round3(remainderQty)),
-      resolutionReason,
-      resolutionReasonOther: resolutionReason === "OTHER" ? String(remarks ?? "").trim() : null,
-      remarks: remarks?.trim() || null,
-      status: "PENDING",
-      createdByUserId: actorUserId ?? null,
-      productionShortfallResolutionId: resolutionAuditId,
-    },
-  });
-}
-
 async function assertProductionReportConfirmedForExecution(tx, workOrderId) {
   const row = await tx.productionWorkOrderReport.findUnique({
     where: { workOrderId },
@@ -547,10 +528,6 @@ async function assertProductionReportConfirmedForExecution(tx, workOrderId) {
     throw err;
   }
   return row;
-}
-
-async function assertNoOpenProductionRmReturnPendingForExecution(tx, workOrderId) {
-  return assertNoOpenProductionRmReturnPending(tx, workOrderId);
 }
 
 /**
@@ -593,7 +570,6 @@ async function finishProductionExecution(tx, workOrderId, input, { actorUserId, 
 
   // Full production or surplus — no shortfall remainder
   await assertProductionReportConfirmedForExecution(tx, workOrderId);
-  await assertNoOpenProductionRmReturnPendingForExecution(tx, workOrderId);
 
   if (summary.remainderQty <= EPS) {
     const now = new Date();
@@ -698,7 +674,8 @@ async function finishProductionExecution(tx, workOrderId, input, { actorUserId, 
     throw err;
   }
 
-  validateResolutionReason(resolutionReason, remarks);
+  const effectiveResolutionReason = defaultAutomaticShortfallResolutionReason(shortfallOutcome, resolutionReason);
+  validateResolutionReason(effectiveResolutionReason, remarks);
 
   const now = new Date();
   const carryForwardRecords = [];
@@ -713,19 +690,19 @@ async function finishProductionExecution(tx, workOrderId, input, { actorUserId, 
       producedQty: line.producedQty,
       remainderQty: line.remainderQty,
       resolutionType: shortfallOutcome,
-      resolutionReason,
+      resolutionReason: effectiveResolutionReason,
       remarks,
       actorUserId,
     });
 
-    if (shortfallOutcome === "CARRY_FORWARD") {
-      const cf = await createCarryForwardPendingFromLine(tx, {
-        wo,
-        line: wo.lines.find((l) => l.id === line.workOrderLineId),
+    if (shortfallOutcome === "CARRY_FORWARD" || shortfallOutcome === "WAIVE_BALANCE") {
+      const cf = await createCarryForwardPendingFromProductionShortfall(tx, {
+        workOrder: wo,
+        workOrderLine: wo.lines.find((l) => l.id === line.workOrderLineId),
         remainderQty: line.remainderQty,
-        resolutionReason,
+        resolutionReason: effectiveResolutionReason,
         remarks,
-        resolutionAuditId: auditRow.id,
+        productionShortfallResolutionId: auditRow.id,
         actorUserId,
       });
       carryForwardRecords.push(cf);
@@ -771,7 +748,7 @@ async function finishProductionExecution(tx, workOrderId, input, { actorUserId, 
         module: "PRODUCTION_EXECUTION",
         action: "FINISH_SHORTFALL",
         shortfallOutcome,
-        resolutionReason,
+        resolutionReason: effectiveResolutionReason,
         carryForwardCount: carryForwardRecords.length,
       },
       reason: remarks?.trim() || null,

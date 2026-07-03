@@ -241,7 +241,7 @@ function mapCommercialViewToSalesBillSnapshots(view) {
   const billTo = view?.resolvedBillTo ?? null;
   const shipTo = view?.resolvedShipTo ?? null;
   const pos = view?.resolvedPOS ?? null;
-  return {
+  const invoiceSnapshots = {
     customerNameSnapshot: String(billTo?.name ?? "").slice(0, 256),
     customerStateNameSnapshot: String(billTo?.stateName ?? "").slice(0, 128),
     customerStateCodeSnapshot: String(billTo?.stateCode ?? "").slice(0, 2),
@@ -256,6 +256,107 @@ function mapCommercialViewToSalesBillSnapshots(view) {
     posStateCodeSnapshot: String(pos?.stateCode ?? "").slice(0, 2),
     posSourceSnapshot: String(pos?.source ?? "").slice(0, 32),
   };
+  return {
+    ...invoiceSnapshots,
+    ...mapInvoiceShipToToDispatchSnapshots(invoiceSnapshots),
+  };
+}
+
+function mapInvoiceShipToToDispatchSnapshots(snapshots) {
+  return {
+    dispatchShipToLabelSnapshot: String(snapshots.shipToLabelSnapshot ?? "").slice(0, 128),
+    dispatchShipToAddressSnapshot: String(snapshots.shipToAddressSnapshot ?? ""),
+    dispatchShipToGstinSnapshot: String(snapshots.shipToGstinSnapshot ?? "").slice(0, 15),
+    dispatchShipToStateNameSnapshot: String(snapshots.shipToStateNameSnapshot ?? "").slice(0, 128),
+    dispatchShipToStateCodeSnapshot: String(snapshots.shipToStateCodeSnapshot ?? "").slice(0, 2),
+  };
+}
+
+function mapCustomerDeliveryAddressToShipTo(addr) {
+  return mapResolvedShipTo(addr, null);
+}
+
+function buildPosFromShipAndBillTo({ shipTo, billTo, companyStateCode }) {
+  const pos = resolvePlaceOfSupply({ shipTo, billTo });
+  return {
+    stateCode: pos.stateCode,
+    stateName: pos.stateName,
+    source: pos.source,
+    gstMode: gstModeFromCompanyVsPos({ companyStateCode, posStateCode: pos.stateCode }),
+  };
+}
+
+function mapShipToAndPosToBillSnapshots(shipTo, pos) {
+  return {
+    shipToLabelSnapshot: String(shipTo?.label ?? "").slice(0, 128),
+    shipToAddressSnapshot: String(shipTo?.address ?? ""),
+    shipToGstinSnapshot: String(shipTo?.gstin ?? "").slice(0, 15),
+    shipToStateNameSnapshot: String(shipTo?.stateName ?? "").slice(0, 128),
+    shipToStateCodeSnapshot: String(shipTo?.stateCode ?? "").slice(0, 2),
+    posStateNameSnapshot: String(pos?.stateName ?? "").slice(0, 128),
+    posStateCodeSnapshot: String(pos?.stateCode ?? "").slice(0, 2),
+    posSourceSnapshot: String(pos?.source ?? "").slice(0, 32),
+  };
+}
+
+function readDispatchShipToFromBill(bill) {
+  const hasDispatch =
+    trimSnap(bill?.dispatchShipToLabelSnapshot) ||
+    trimSnap(bill?.dispatchShipToAddressSnapshot) ||
+    trimSnap(bill?.dispatchShipToStateCodeSnapshot);
+  if (hasDispatch) {
+    return {
+      label: safeStrOrNull(bill.dispatchShipToLabelSnapshot, 128),
+      address: safeStrOrNull(bill.dispatchShipToAddressSnapshot) ?? "",
+      gstin: normalizeGstinOnSave(bill.dispatchShipToGstinSnapshot),
+      stateName: safeStrOrNull(bill.dispatchShipToStateNameSnapshot, 128),
+      stateCode: safeStrOrNull(bill.dispatchShipToStateCodeSnapshot, 2),
+    };
+  }
+  return {
+    label: safeStrOrNull(bill?.shipToLabelSnapshot, 128),
+    address: safeStrOrNull(bill?.shipToAddressSnapshot) ?? "",
+    gstin: normalizeGstinOnSave(bill?.shipToGstinSnapshot),
+    stateName: safeStrOrNull(bill?.shipToStateNameSnapshot, 128),
+    stateCode: safeStrOrNull(bill?.shipToStateCodeSnapshot, 2),
+  };
+}
+
+function readInvoiceShipToFromBill(bill) {
+  return {
+    label: safeStrOrNull(bill?.shipToLabelSnapshot, 128),
+    address: safeStrOrNull(bill?.shipToAddressSnapshot) ?? "",
+    gstin: normalizeGstinOnSave(bill?.shipToGstinSnapshot),
+    stateName: safeStrOrNull(bill?.shipToStateNameSnapshot, 128),
+    stateCode: safeStrOrNull(bill?.shipToStateCodeSnapshot, 2),
+  };
+}
+
+function trimSnap(v) {
+  if (v == null) return "";
+  return String(v).trim();
+}
+
+function shipToSnapshotsEqual(a, b) {
+  const norm = (x) =>
+    [
+      trimSnap(x?.label).toLowerCase(),
+      trimSnap(x?.address).toLowerCase(),
+      trimSnap(x?.gstin).toUpperCase(),
+      trimSnap(x?.stateCode).toUpperCase(),
+      trimSnap(x?.stateName).toLowerCase(),
+    ].join("|");
+  return norm(a) === norm(b);
+}
+
+async function listActiveCustomerDeliveryAddresses(tx, customerId) {
+  const id = Number(customerId);
+  if (!Number.isFinite(id) || id <= 0) return [];
+  return tx.customerDeliveryAddress.findMany({
+    where: { customerId: id, isActive: true },
+    orderBy: [{ isDefault: "desc" }, { id: "asc" }],
+    include: { stateRef: { select: { stateName: true, stateCode: true } } },
+  });
 }
 
 /**
@@ -285,6 +386,15 @@ module.exports = {
   freezeSalesOrderCommercialSnapshots,
   ensureShipToAutoPick,
   mapCommercialViewToSalesBillSnapshots,
+  mapInvoiceShipToToDispatchSnapshots,
+  mapCustomerDeliveryAddressToShipTo,
+  buildPosFromShipAndBillTo,
+  mapShipToAndPosToBillSnapshots,
+  readDispatchShipToFromBill,
+  readInvoiceShipToFromBill,
+  shipToSnapshotsEqual,
+  listActiveCustomerDeliveryAddresses,
+  resolveShipToAddress,
   resolveSalesBillCommercialSnapshots,
 };
 

@@ -15,7 +15,7 @@ import { type DispatchBacklogRow, ROW_NUM_EPS } from "../lib/dispatchBacklog";
 import { displaySalesOrderNo } from "../lib/docNoDisplay";
 import { useAuth } from "../hooks/useAuth";
 import { PendingActionsDashboardCard, PENDING_ACTIONS_PRODUCTION_HELPER } from "./PendingActionsPage";
-import { fetchPendingActions } from "../lib/pendingActionsApi";
+import { fetchPendingActions, isStoreOwnedNoQtyRsPendingAction, type PendingAction } from "../lib/pendingActionsApi";
 import { PurchaseDashboardPage } from "./PurchaseDashboardPage";
 import { QaDashboardPage } from "./QaDashboardPage";
 import { StoreDispatchDashboard, type StoreDispatchActionRow } from "./store/StoreDispatchDashboard";
@@ -43,11 +43,13 @@ import {
   ErpKpiLabel,
   ErpKpiValue,
   ErpWorkflowBanner,
+  ErpPageLoader,
 } from "../components/erp/foundation";
 import { dashboardShell } from "../lib/dashboardShell";
 import { erpKpi } from "../lib/erpFoundationTokens";
 import type { DashboardShortcut } from "../components/erp/foundation/DashboardRoleShortcuts";
 import { ERP_DASHBOARD_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
+import { endPerfMark, usePagePerf } from "../lib/performanceTiming";
 import { summarizeDashboardProductionAttention } from "../lib/dashboardProductionStatus";
 import {
   DISPATCH_READ_ROLES,
@@ -573,6 +575,7 @@ export function DashboardPage() {
   const toast = useToast();
   const auth = useAuth();
   const role = auth.user?.role ?? "";
+  const usesDedicatedRoleDesk = role === "PURCHASE" || role === "QA";
   const demo = useDemoMode();
   // Phase E: operator-first regular flow. Hide procurement-style panels/wording on the dashboard.
   const phaseEOperatorFlow = true;
@@ -649,11 +652,32 @@ export function DashboardPage() {
   const [pendingActionsCount, setPendingActionsCount] = React.useState(0);
   const [pendingActionsLoading, setPendingActionsLoading] = React.useState(true);
   const [pendingActionsError, setPendingActionsError] = React.useState<string | null>(null);
+  const [storePendingRsActions, setStorePendingRsActions] = React.useState<PendingAction[]>([]);
   const [salesOrdersForDashboard, setSalesOrdersForDashboard] = React.useState<DashboardSalesOrderHead[] | null>(null);
   const [quotationsPendingSo, setQuotationsPendingSo] = React.useState<QuotationPendingSoRow[] | null>(null);
   const [quotationsPendingSoError, setQuotationsPendingSoError] = React.useState<string | null>(null);
 
+  const dashboardPerfReady = usesDedicatedRoleDesk
+    ? !pendingActionsLoading
+    : canViewOverallSummary
+      ? data !== null || error !== null
+      : !pendingActionsLoading;
+  usePagePerf("dashboard", dashboardPerfReady, { role, usesDedicatedRoleDesk });
+
+  React.useEffect(() => {
+    if (!dashboardPerfReady) return;
+    try {
+      if (sessionStorage.getItem("erp:loginDashboardMark") === "1") {
+        endPerfMark("login-dashboard-ready", "login-dashboard-ready", { role });
+        sessionStorage.removeItem("erp:loginDashboardMark");
+      }
+    } catch {
+      // ignore
+    }
+  }, [dashboardPerfReady, role]);
+
   React.useLayoutEffect(() => {
+    if (usesDedicatedRoleDesk) return;
     if (!canViewContinueWorking) {
       setContinueWorking(null);
     }
@@ -693,9 +717,11 @@ export function DashboardPage() {
     canViewWoPrepareQueues,
     canViewContinueWorking,
     canViewQuotationsPendingSo,
+    usesDedicatedRoleDesk,
   ]);
 
   React.useEffect(() => {
+    if (usesDedicatedRoleDesk) return;
     let mounted = true;
     setBacklogError(null);
     setProdQueueError(null);
@@ -955,36 +981,57 @@ export function DashboardPage() {
     canViewWoPrepareQueues,
     canViewContinueWorking,
     canViewQuotationsPendingSo,
+    usesDedicatedRoleDesk,
     liveTick,
   ]);
 
   React.useEffect(() => {
     if (demo.enabled) {
       setPendingActionsCount(0);
+      setStorePendingRsActions([]);
       setPendingActionsLoading(false);
       setPendingActionsError(null);
       return;
     }
     let mounted = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     setPendingActionsLoading(true);
-    fetchPendingActions()
-      .then((res) => {
-        if (!mounted) return;
-        setPendingActionsCount(Number(res.count ?? res.actions?.length ?? 0));
-        setPendingActionsError(null);
-      })
-      .catch((e) => {
-        if (!mounted) return;
-        setPendingActionsCount(0);
-        setPendingActionsError(e instanceof Error ? e.message : "Could not load pending actions");
-      })
+    timer = setTimeout(() => {
+      fetchPendingActions()
+        .then((res) => {
+          if (!mounted) return;
+          setPendingActionsCount(Number(res.count ?? res.actions?.length ?? 0));
+          const pendingRs =
+            role === "STORE"
+              ? (res.actions ?? []).filter((a) => isStoreOwnedNoQtyRsPendingAction(a))
+              : [];
+          setStorePendingRsActions(pendingRs);
+          if (import.meta.env.DEV && role === "STORE") {
+            // eslint-disable-next-line no-console
+            console.debug("[store-dashboard] pending-actions raw", {
+              count: res.count,
+              actions: res.actions,
+              meta: res.meta,
+              pendingRsRows: pendingRs.length,
+            });
+          }
+          setPendingActionsError(null);
+        })
+        .catch((e) => {
+          if (!mounted) return;
+          setPendingActionsCount(0);
+          setStorePendingRsActions([]);
+          setPendingActionsError(e instanceof Error ? e.message : "Could not load pending actions");
+        })
       .finally(() => {
         if (mounted) setPendingActionsLoading(false);
       });
+    }, usesDedicatedRoleDesk ? 0 : 150);
     return () => {
       mounted = false;
+      if (timer) clearTimeout(timer);
     };
-  }, [demo.enabled, liveTick, role]);
+  }, [demo.enabled, liveTick, role, usesDedicatedRoleDesk]);
 
   React.useEffect(() => {
     if (!canUseOpenNoQtyContinuation || demo.enabled) {
@@ -1225,6 +1272,8 @@ export function DashboardPage() {
         latestRequirementSheetId: row.latestRequirementSheetId,
         lastRsStatus: row.lastRsStatus,
         flow,
+        noQtyPlanningPointerAhead: row.noQtyPlanningPointerAhead,
+        planningPointerCycleId: row.planningPointerCycleId,
         viewerRole: role,
         commercialContinuation: true,
       });
@@ -1254,6 +1303,25 @@ export function DashboardPage() {
   ]);
 
   const hasVisibleNoQtyContinuation = visibleOpenNoQtyContinuationRows.length > 0;
+
+  React.useEffect(() => {
+    if (import.meta.env.DEV && role === "STORE" && !demo.enabled) {
+      // eslint-disable-next-line no-console
+      console.debug("[store-dashboard] continuation derived", {
+        openNoQtyContinuationRows: openNoQtyContinuationRows.length,
+        visibleOpenNoQtyContinuationRows: visibleOpenNoQtyContinuationRows.length,
+        pendingRsRows: storePendingRsActions.length,
+        hasNoQtyContinuationInActionRequired,
+      });
+    }
+  }, [
+    role,
+    demo.enabled,
+    openNoQtyContinuationRows.length,
+    visibleOpenNoQtyContinuationRows.length,
+    storePendingRsActions.length,
+    hasNoQtyContinuationInActionRequired,
+  ]);
 
   const woProdNoQtyEligible = React.useMemo(() => {
     return actionRequiredGroups.production.filter((r) => {
@@ -1417,7 +1485,7 @@ export function DashboardPage() {
     return (
       <div className={DASH_SHELL}>
         <div className={DASH_MAX}>
-          <p className="text-sm text-slate-600">Loading?</p>
+          <ErpPageLoader variant="dashboard" hint="Loading dashboard…" />
         </div>
       </div>
     );
@@ -2075,6 +2143,26 @@ export function DashboardPage() {
         fgStockTotal={fgStockTotal}
         dispatchBacklogCount={backlog?.length ?? 0}
         pendingActions={pendingActionsDeskProps}
+        pendingRsActions={storePendingRsActions}
+        noQtyContinuationRows={visibleOpenNoQtyContinuationRows}
+        noQtyFlowBySo={noQtyFlowBySo}
+        noQtyContinuationTruncated={noQtyContinuationTruncated}
+        onNoQtyPrimaryAction={({ row, resolved }) => {
+          const appendFromDashboard = (to: string) => {
+            const sep = to.includes("?") ? "&" : "?";
+            return `${to}${sep}fromDashboard=1`;
+          };
+          if (resolved.kind === "prepare_next_rs") {
+            void prepareNoQtyNextRequirementSheetAndNavigate({
+              salesOrderId: row.salesOrderId,
+              navigate,
+              toast,
+              navigateState: { from: "dashboard" },
+            });
+          } else {
+            navigate(appendFromDashboard(resolved.to), { state: { from: "dashboard" } });
+          }
+        }}
       />
     );
   }

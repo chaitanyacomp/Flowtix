@@ -761,8 +761,13 @@ async function receiveProductionRmReturnPending(input, actor = {}, db = prisma) 
   const report = await loadConfirmedReport(db, receivedPending.workOrderId);
   const reportLine = report?.lines?.find((ln) => ln.itemId === receivedPending.itemId);
   const scrapQty = reportLine ? round3(n(reportLine.scrapWasteQty)) : 0;
+  const woForWastage = await db.workOrder.findUnique({
+    where: { id: receivedPending.workOrderId },
+    select: { salesOrder: { select: { orderType: true } } },
+  });
+  const isRegularWorkOrder = (woForWastage?.salesOrder?.orderType ?? "NORMAL") !== "NO_QTY";
   let wastageNote = null;
-  if (scrapQty > EPS) {
+  if (scrapQty > EPS && isRegularWorkOrder) {
     try {
       wastageNote = await createMaterialWastageNote(
         {

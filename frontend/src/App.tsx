@@ -1,10 +1,11 @@
 import { Navigate, Route, Routes, useLocation, useNavigate, useSearchParams } from "react-router-dom";
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { Button } from "./components/ui/button";
 import { Card, CardContent } from "./components/ui/card";
 import { Input } from "./components/ui/input";
 import { useAuth } from "./hooks/useAuth";
 import { consumeSessionExpiredMessage, describeApiOrigin, getApiUrl } from "./services/api";
+import { endPerfMark, startPerfMark } from "./lib/performanceTiming";
 import { AppLayout } from "./components/AppLayout";
 import {
   BrandBanner,
@@ -162,6 +163,11 @@ function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [ping, setPing] = useState<string | null>(null);
   const [sessionMessage] = useState<string | null>(() => consumeSessionExpiredMessage());
+
+  useEffect(() => {
+    startPerfMark("login-page");
+    endPerfMark("login-page", "page-load");
+  }, []);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();

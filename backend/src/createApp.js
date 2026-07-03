@@ -2,6 +2,7 @@ const express = require("express");
 const cors = require("cors");
 const { prisma } = require("./utils/prisma");
 const { errorHandler } = require("./middleware/errorHandler");
+const { performanceLoggingMiddleware } = require("./middleware/performanceLogging");
 const { authRouter } = require("./routes/auth");
 const { poRouter } = require("./routes/pos");
 const { customerRouter } = require("./routes/customers");
@@ -67,6 +68,7 @@ function createApp() {
     }),
   );
   app.use(express.json());
+  app.use(performanceLoggingMiddleware);
 
   app.get("/", (req, res) => {
     res.status(200).json({ message: "Mini ERP Backend Running" });

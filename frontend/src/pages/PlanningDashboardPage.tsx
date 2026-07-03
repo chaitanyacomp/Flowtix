@@ -175,6 +175,9 @@ export function PlanningDashboardPage() {
   const {
     rows: plannerInboxRows,
     loading: plannerInboxLoading,
+    initialLoading: plannerInboxInitialLoading,
+    refreshing: plannerInboxRefreshing,
+    firstLoadDone: plannerInboxFirstLoadDone,
     error: plannerInboxError,
   } = useNoQtyPlannerInbox(liveTick);
 
@@ -380,10 +383,23 @@ export function PlanningDashboardPage() {
       </StickyWorkspaceHead>
 
       {planningSalesOrderIdFromUrl > 0 && urlSoConflict === "loading" ? (
-        <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700" aria-live="polite">
+        <div className="sr-only" aria-live="polite">
           Checking sales order context…
         </div>
       ) : null}
+
+      <NoQtyPlannerInboxSection
+        rows={plannerInboxRows}
+        loading={plannerInboxLoading}
+        initialLoading={plannerInboxInitialLoading}
+        refreshing={plannerInboxRefreshing}
+        firstLoadDone={plannerInboxFirstLoadDone}
+        error={plannerInboxError}
+        focusedSalesOrderId={
+          planningSalesOrderIdFromUrl > 0 && urlSoConflict === "ok" ? planningSalesOrderIdFromUrl : null
+        }
+        contextLoading={planningSalesOrderIdFromUrl > 0 && urlSoConflict === "loading"}
+      />
 
       {planningSalesOrderIdFromUrl > 0 && urlSoConflict === "regular_so" ? (
         <div className="rounded-md border border-amber-200 bg-amber-50/90 px-3 py-2.5 text-sm text-amber-950 shadow-sm">
@@ -434,12 +450,6 @@ export function PlanningDashboardPage() {
           </Button>
         </div>
       ) : null}
-
-      <NoQtyPlannerInboxSection
-        rows={plannerInboxRows}
-        loading={plannerInboxLoading}
-        error={plannerInboxError}
-      />
 
       <Card>
         <CardHeader className="pb-2">

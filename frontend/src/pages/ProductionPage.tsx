@@ -35,6 +35,7 @@ import {
 } from "../components/PageHeader";
 import { NextStepStrip } from "../components/erp/NextStepStrip";
 import { NoQtyCycleContextBar } from "../components/erp/foundation/NoQtyCycleContextBar";
+import { ErpPageLoader } from "../components/erp/foundation/ErpPageLoader";
 import { OperationalContextBar, OperationalContextSticky, OpCtxSep } from "../components/erp/OperationalWorkspaceChrome";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { buildNoQtyGuidedHref, buildQcEntryHref, useNoQtyFlowState } from "../lib/noQtyFlowState";
@@ -4210,6 +4211,8 @@ export function ProductionPage() {
         <div className={cn("min-w-0", noQtyPremiumViewport && "flex min-h-0 flex-1 flex-col overflow-hidden")}>
             {!canProd ? (
               <p className="text-[13px] text-slate-600">Production / Admin only.</p>
+            ) : !initialRefreshDone ? (
+              <ErpPageLoader variant="workspace" hint="Loading production workspace…" />
             ) : !flatLines.length ? (
               <p className="text-[13px] text-slate-600">
                 {noQtyProductionStatusMsg ||
@@ -5125,6 +5128,8 @@ export function ProductionPage() {
           </div>
       ) : !canProd ? (
         <p className="text-[13px] text-slate-600">Production / Admin only.</p>
+      ) : !initialRefreshDone ? (
+        <ErpPageLoader variant="workspace" hint="Loading production workspace…" />
       ) : !flatLines.length ? (
         <>
           {showNoQtyScopedProductionCard ? (
@@ -5874,19 +5879,7 @@ export function ProductionPage() {
   if (productionIdentityUnresolved) {
     return (
       <PageContainer className="erp-flow-page -mt-1 max-w-none space-y-2 pb-2">
-        <div
-          role="status"
-          aria-live="polite"
-          aria-busy="true"
-          data-testid="production-identity-resolving"
-          className="mx-auto mt-6 flex max-w-md items-center gap-3 rounded-md border border-slate-200 bg-white px-4 py-3 text-[13px] text-slate-700 shadow-sm"
-        >
-          <span
-            aria-hidden
-            className="inline-block h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-slate-300 border-t-slate-600"
-          />
-          <span>Resolving production context&hellip;</span>
-        </div>
+        <ErpPageLoader variant="panel" hint="Resolving production context…" data-testid="production-identity-resolving" />
       </PageContainer>
     );
   }

@@ -1797,8 +1797,17 @@ async function getActiveNoQtySalesOrders(options = {}) {
           ? ptrNo
         : null;
 
+    const docLinkedCycleNo =
+      primaryActiveSheet?.cycle?.cycleNo != null && Number.isFinite(Number(primaryActiveSheet.cycle.cycleNo))
+        ? Number(primaryActiveSheet.cycle.cycleNo)
+        : fallbackSheet?.cycle?.cycleNo != null && Number.isFinite(Number(fallbackSheet.cycle.cycleNo))
+          ? Number(fallbackSheet.cycle.cycleNo)
+          : opCycleNo;
     const planningPointerAhead =
-      ptrNo != null && opCycleNo != null && ptrNo > opCycleNo && (primaryActiveSheet != null || fallbackSheet != null);
+      ptrNo != null &&
+      docLinkedCycleNo != null &&
+      ptrNo > docLinkedCycleNo &&
+      (primaryActiveSheet != null || fallbackSheet != null || pointerIsActive);
 
     const sheetForMetadata = primaryActiveSheet ?? fallbackSheet;
 

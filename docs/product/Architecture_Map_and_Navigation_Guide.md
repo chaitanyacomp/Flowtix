@@ -144,7 +144,7 @@ Volumes are listed in **dependency order** (read top-to-bottom for first-time co
 | **3** | [03_Domain_Specifications](./03_Domain_Specifications/) | FT-PD-030 – 035 | Domain behavior: commercial, planning, procurement, manufacturing, QA, dispatch | Domain owners, developers, QA | Volumes 1–2 | Volumes 4–6, 8 |
 | **4** | [04_Workflow_Engine](./04_Workflow_Engine/) | FT-PD-040 – 048 | Workflow Engine, Guard Registry, state machines, orchestration, Pending Actions | Workflow engineers, developers, QA | Volumes 1–3 | Volumes 5–6, 8 |
 | **5** | [05_Data_Architecture](./05_Data_Architecture/) | FT-PD-050 – 055 | Event store, transactional documents, master data, snapshots, ledger, Read Models | Data architects, backend leads | Volumes 2–4 | Volumes 6–7, 8 |
-| **6** | [06_UI_and_Experience_Architecture](./06_UI_and_Experience_Architecture/) | FT-PD-060 – 065 | Dashboard, Workspace, Control Tower, registers, reports, UX principles | UX, product, developers | Volumes 1, 3–5 | Volume 8 |
+| **6** | [06_UI_and_Experience_Architecture](./06_UI_and_Experience_Architecture/) | FT-PD-060 – 066 | Dashboard, Workspace, Control Tower, registers, reports, **UI/UX Design System** | UX, product, developers | Volumes 1, 3–5 | Volume 8 |
 | **7** | [07_Security_and_Governance_Architecture](./07_Security_and_Governance_Architecture/) | FT-PD-070 – 074 | Security, identity, audit, configuration, integration trust boundaries | Security, governance, ops | Volumes 1, 4–5 | Volumes 8–9 |
 | **8** | [08_Product_Testing_and_Validation](./08_Product_Testing_and_Validation/) | FT-PD-080 – 084 | Validation framework, regression guardrails, scenarios, certification, evidence | QA, validation, release governance | Volumes 1–7 | Volumes 9–10 |
 | **9** | [09_Deployment_and_Operations_Architecture](./09_Deployment_and_Operations_Architecture/) | FT-PD-090 – 094 | Deployment, migration, monitoring, resilience, operational governance | Implementation, operations | Volumes 1, 7–8 | Volume 10 |
@@ -173,7 +173,7 @@ Workflow Engine                 Volume 4  (FT-PD-040 – 048)
     ↓
 Data Architecture               Volume 5  (FT-PD-050 – 055)
     ↓
-UI Architecture                 Volume 6  (FT-PD-060 – 065)
+UI Architecture                 Volume 6  (FT-PD-060 – 066)
     ↓
 Security                        Volume 7  (FT-PD-070 – 074)
     ↓

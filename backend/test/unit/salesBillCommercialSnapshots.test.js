@@ -35,6 +35,8 @@ test("mapCommercialViewToSalesBillSnapshots copies Bill To / Ship To / POS", () 
   assert.equal(out.billToGstinSnapshot, "27AABCU9603R1ZM");
   assert.equal(out.shipToLabelSnapshot, "Nashik Plant");
   assert.equal(out.shipToAddressSnapshot, "MIDC Nashik");
+  assert.equal(out.dispatchShipToLabelSnapshot, "Nashik Plant");
+  assert.equal(out.dispatchShipToAddressSnapshot, "MIDC Nashik");
   assert.equal(out.posStateCodeSnapshot, "27");
   assert.equal(out.posSourceSnapshot, "SHIP_TO");
 });

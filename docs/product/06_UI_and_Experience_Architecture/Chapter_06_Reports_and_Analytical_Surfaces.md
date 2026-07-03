@@ -471,7 +471,7 @@ Reports **must never become operational execution surfaces**.
 | | Link |
 |--|------|
 | **Previous** | [Registers, Masters & Browse Surfaces](./Chapter_05_Registers_Masters_and_Browse_Surfaces.md) (FT-PD-064) |
-| **Next** | [Security, Authorization & Governance Architecture](../07_Security_and_Governance_Architecture/Chapter_01_Security_Authorization_and_Governance_Architecture.md) (FT-PD-070) |
+| **Next** | [FT ERP UI/UX Design System](./Chapter_07_FT_ERP_UI_UX_Design_System.md) (FT-PD-066) |
 | **Volume** | [UI and Experience Architecture](./README.md) |
 | **Product** | [Product Documentation Index](../README.md) |
 

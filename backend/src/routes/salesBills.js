@@ -13,6 +13,8 @@ const {
   deleteDraft,
   getSalesBillById,
   patchDraftSalesBillLineRate,
+  getDraftShipToOptions,
+  patchDraftShipTo,
   updateSalesBillPaymentTracking,
   addSalesBillReceipt,
   deleteSalesBillReceipt,
@@ -267,6 +269,57 @@ salesBillsRouter.delete("/:id/receipts/:receiptId", requireAuth, requireRole(SAL
       role: req.user?.role,
       adminPassword: req.body?.adminPassword,
     });
+    return res.json(updated);
+  } catch (e) {
+    return next(e);
+  }
+});
+
+salesBillsRouter.get("/:id/ship-to-options", requireAuth, requireRole(SALES_BILL_READ_ROLES), async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const options = await getDraftShipToOptions(prisma, id);
+    return res.json(options);
+  } catch (e) {
+    return next(e);
+  }
+});
+
+salesBillsRouter.patch("/:id/ship-to", requireAuth, requireRole(SALES_BILL_WRITE_ROLES), async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const schema = z.object({
+      shipToAddressId: z.number().int().positive(),
+      confirmed: z.boolean().optional(),
+      reason: z.string().max(4000).optional().nullable(),
+    });
+    const body = schema.parse(req.body);
+    const updated = await patchDraftShipTo(prisma, id, body, { userId: req.user?.userId });
+    const audit = updated._shipToAudit;
+    delete updated._shipToAudit;
+
+    const sbDoc = displaySalesBillNo(updated.id, updated.billNo, updated.docNo);
+    await logActivity({
+      user: req.user,
+      module: ACTIVITY_MODULES.SALES_BILL,
+      entityType: ACTIVITY_ENTITY_TYPES.SALES_BILL,
+      entityId: updated.id,
+      docNo: sbDoc,
+      action: ACTIVITY_ACTIONS.UPDATED,
+      subAction: "SHIP_TO_CHANGED",
+      message: `Sales Bill ${sbDoc} Ship To updated`,
+      reason: body.reason ?? null,
+      metadata: audit
+        ? {
+            dispatchShipToLabel: audit.dispatchShipTo?.label,
+            dispatchShipToStateCode: audit.dispatchShipTo?.stateCode,
+            invoiceShipToLabel: audit.invoiceShipTo?.label,
+            invoiceShipToStateCode: audit.invoiceShipTo?.stateCode,
+            differsFromDispatch: audit.differsFromDispatch,
+          }
+        : undefined,
+    });
+
     return res.json(updated);
   } catch (e) {
     return next(e);

@@ -2,7 +2,8 @@ import * as React from "react";
 import { Link } from "react-router-dom";
 import { PageContainer, PageHeader, StickyWorkspaceHead, ERPBackNavigation } from "../components/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
-import { ErpKpiLabel, ErpKpiSegment, ErpKpiStrip, ErpKpiValue } from "../components/erp/foundation";
+import { ErpKpiLabel, ErpKpiSegment, ErpKpiStrip, ErpKpiValue, ErpPageContentGate } from "../components/erp/foundation";
+import { useStablePageLoad } from "../hooks/useStablePageLoad";
 import { useAuth } from "../hooks/useAuth";
 import {
   CONTROL_TOWER_BOARD_GROUP_ORDER,
@@ -347,14 +348,14 @@ export function ControlTowerPage() {
   const [panelError, setPanelError] = React.useState<string | null>(null);
   const [boardError, setBoardError] = React.useState<string | null>(null);
   const [roleQueueError, setRoleQueueError] = React.useState<string | null>(null);
-  const [loading, setLoading] = React.useState(true);
   const [lastLoadedAt, setLastLoadedAt] = React.useState<Date | null>(null);
+  const { firstLoadDone, refreshing, startLoad, finishLoad, busy } = useStablePageLoad();
 
   React.useEffect(() => {
     let cancelled = false;
 
     async function load() {
-      setLoading(true);
+      startLoad();
       setPanelError(null);
       setBoardError(null);
       setRoleQueueError(null);
@@ -402,7 +403,7 @@ export function ControlTowerPage() {
       await Promise.all([panelPromise, boardPromise, rolePromise]);
       if (!cancelled) {
         setLastLoadedAt(new Date());
-        setLoading(false);
+        finishLoad();
       }
     }
 
@@ -410,7 +411,10 @@ export function ControlTowerPage() {
     return () => {
       cancelled = true;
     };
-  }, [role]);
+  }, [role, startLoad, finishLoad]);
+
+  const pageLoading = !firstLoadDone && busy;
+  const pageRefreshing = refreshing;
 
   const orderedBoardGroups = React.useMemo(() => {
     const byKey = new Map(boardGroups.map((g) => [g.groupKey, g]));
@@ -446,7 +450,7 @@ export function ControlTowerPage() {
     ? { status: "error", message: panelError }
     : panelMetrics
       ? { status: "ok" }
-      : loading
+      : pageLoading
         ? { status: "skipped" }
         : { status: "error", message: "No data returned" };
 
@@ -502,10 +506,13 @@ export function ControlTowerPage() {
         </div>
       </StickyWorkspaceHead>
 
-      {loading && !panelMetrics && !panelError ? (
-        <p className="text-sm text-slate-600">Loading Control Tower…</p>
-      ) : null}
-
+      <ErpPageContentGate
+        firstLoadDone={firstLoadDone}
+        loading={pageLoading || pageRefreshing}
+        refreshing={pageRefreshing}
+        hasDisplayData={panelMetrics != null || boardGroups.length > 0 || myWorkGroups.length > 0 || panelError != null || boardError != null}
+        skeletonVariant="dashboard"
+      >
       {panelError ? <ErrorPanel title="Panel metrics failed" message={panelError} /> : null}
       {panelMetrics ? <KpiStrip metrics={panelMetrics} isAdmin={isAdmin} /> : null}
 
@@ -513,7 +520,7 @@ export function ControlTowerPage() {
         KPI counts and board counts may differ during beta validation.
       </p>
 
-      {!loading ? (
+      {firstLoadDone ? (
         <DataStatusBar
           boardTotalRows={boardTotalRows}
           myWorkTotalRows={myWorkTotalRows}
@@ -540,9 +547,8 @@ export function ControlTowerPage() {
         <h2 id="control-tower-board-heading" className="text-lg font-semibold text-slate-900">
           Process Board
         </h2>
-        {loading ? <p className="text-sm text-slate-600">Loading process board…</p> : null}
-        {!loading && boardError ? <ErrorPanel title="Process board failed" message={boardError} /> : null}
-        {!loading && !boardError ? (
+        {boardError ? <ErrorPanel title="Process board failed" message={boardError} /> : null}
+        {!boardError ? (
           <div className={cn("grid gap-3", "grid-cols-1 xl:grid-cols-2 2xl:grid-cols-3")}>
             {orderedBoardGroups.map((group) => (
               <BoardGroupSection key={group.groupKey} group={group} />
@@ -555,9 +561,8 @@ export function ControlTowerPage() {
         <h2 id="control-tower-my-work-heading" className="text-lg font-semibold text-slate-900">
           {role ? `My Work – ${role}` : "My Work"}
         </h2>
-        {loading ? <p className="text-sm text-slate-600">Loading my work…</p> : null}
-        {!loading && roleQueueError ? <ErrorPanel title="Role queue failed" message={roleQueueError} /> : null}
-        {!loading && !roleQueueError ? (
+        {roleQueueError ? <ErrorPanel title="Role queue failed" message={roleQueueError} /> : null}
+        {!roleQueueError ? (
           <Card>
             <CardContent className="space-y-4 px-4 py-4">
               {!myWorkHasItems ? (
@@ -569,6 +574,7 @@ export function ControlTowerPage() {
           </Card>
         ) : null}
       </section>
+      </ErpPageContentGate>
     </PageContainer>
   );
 }

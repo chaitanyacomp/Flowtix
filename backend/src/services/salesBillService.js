@@ -6,6 +6,14 @@ const { assertAnyAdminPassword } = require("./adminPasswordAuth");
 const {
   gstModeFromCompanyVsPos,
   resolveSalesBillCommercialSnapshots,
+  mapCustomerDeliveryAddressToShipTo,
+  buildPosFromShipAndBillTo,
+  mapShipToAndPosToBillSnapshots,
+  readDispatchShipToFromBill,
+  readInvoiceShipToFromBill,
+  shipToSnapshotsEqual,
+  listActiveCustomerDeliveryAddresses,
+  resolveShipToAddress,
 } = require("./salesOrderCommercialAddress");
 
 function round2(n) {
@@ -470,6 +478,7 @@ async function createDraftFromDispatch(prisma, dispatchId, opts = {}) {
     const commercialSnapshots = await resolveSalesBillCommercialSnapshots(tx, so, {
       companyStateCode: companyState?.companyStateRef?.stateCode ?? null,
     });
+    const shipAddrRow = await resolveShipToAddress(tx, so);
     const billStateCode = trimCommercialSnapshot(commercialSnapshots.customerStateCodeSnapshot);
     const billStateName = trimCommercialSnapshot(commercialSnapshots.customerStateNameSnapshot);
     if (
@@ -553,6 +562,7 @@ async function createDraftFromDispatch(prisma, dispatchId, opts = {}) {
         remarks: null,
         status: "DRAFT",
         ...commercialSnapshots,
+        shipToAddressId: shipAddrRow?.id ?? null,
         dispatchNoSnapshot: dispatch.docNo || `DISP-${dispatch.id}`,
         dispatchDateSnapshot: dispatch.date,
         soIdSnapshot: dispatch.soId,
@@ -997,6 +1007,183 @@ async function getSalesBillById(prisma, id) {
   return withSalesBillGstBreakup(bill, { intraState: intra, companyState });
 }
 
+function formatShipToSummary(shipTo) {
+  if (!shipTo) return null;
+  return {
+    label: shipTo.label ?? null,
+    address: shipTo.address ?? "",
+    gstin: shipTo.gstin ?? null,
+    stateName: shipTo.stateName ?? null,
+    stateCode: shipTo.stateCode ?? null,
+  };
+}
+
+function mapDeliveryAddressOption(row) {
+  return {
+    id: row.id,
+    label: row.label,
+    address: row.address ?? "",
+    gst: row.gst ?? null,
+    isDefault: Boolean(row.isDefault),
+    stateCode: row.stateRef?.stateCode ?? null,
+    stateName: row.stateRef?.stateName ?? null,
+  };
+}
+
+async function getDraftShipToOptions(prisma, billId) {
+  const bill = await prisma.salesBill.findUnique({
+    where: { id: billId },
+    select: {
+      id: true,
+      status: true,
+      customerId: true,
+      shipToAddressId: true,
+      shipToLabelSnapshot: true,
+      shipToAddressSnapshot: true,
+      shipToGstinSnapshot: true,
+      shipToStateNameSnapshot: true,
+      shipToStateCodeSnapshot: true,
+      dispatchShipToLabelSnapshot: true,
+      dispatchShipToAddressSnapshot: true,
+      dispatchShipToGstinSnapshot: true,
+      dispatchShipToStateNameSnapshot: true,
+      dispatchShipToStateCodeSnapshot: true,
+    },
+  });
+  if (!bill) throw friendlyError("Sales bill not found.", 404);
+  if (bill.status !== "DRAFT") throw friendlyError("Ship To can only be changed on draft bills.", 409);
+
+  const addresses = await listActiveCustomerDeliveryAddresses(prisma, bill.customerId);
+  const dispatchShipTo = formatShipToSummary(readDispatchShipToFromBill(bill));
+  const invoiceShipTo = formatShipToSummary(readInvoiceShipToFromBill(bill));
+  const differsFromDispatch = !shipToSnapshotsEqual(
+    readInvoiceShipToFromBill(bill),
+    readDispatchShipToFromBill(bill),
+  );
+
+  return {
+    addresses: addresses.map(mapDeliveryAddressOption),
+    selectedShipToAddressId: bill.shipToAddressId ?? null,
+    dispatchShipTo,
+    invoiceShipTo,
+    differsFromDispatch,
+    allowDropdown: addresses.length > 1,
+  };
+}
+
+async function patchDraftShipTo(prisma, billId, body, opts = {}) {
+  const shipToAddressId = Number(body?.shipToAddressId);
+  if (!Number.isFinite(shipToAddressId) || shipToAddressId <= 0) {
+    throw friendlyError("Select a valid Ship To address.", 400);
+  }
+  const reason =
+    body?.reason != null && String(body.reason).trim() !== "" ? String(body.reason).trim().slice(0, 4000) : null;
+
+  return prisma.$transaction(async (tx) => {
+    const bill = await tx.salesBill.findUnique({
+      where: { id: billId },
+      include: {
+        customer: { include: { stateRef: { select: { id: true, stateName: true, stateCode: true } } } },
+        lines: { include: { item: true }, orderBy: { id: "asc" } },
+      },
+    });
+    if (!bill) throw friendlyError("Sales bill not found.", 404);
+    if (bill.status !== "DRAFT") throw friendlyError("Only draft Sales Bills can change Ship To.", 409);
+
+    if (bill.shipToAddressId === shipToAddressId) {
+      const companyState = await getCompanyState(tx);
+      const intra = resolveSalesIntraForBilling({ bill, customer: bill.customer, companyState }).intraState;
+      return withSalesBillGstBreakup(bill, { intraState: intra, companyState });
+    }
+
+    const addr = await tx.customerDeliveryAddress.findFirst({
+      where: { id: shipToAddressId, customerId: bill.customerId, isActive: true },
+      include: { stateRef: { select: { stateName: true, stateCode: true } } },
+    });
+    if (!addr) throw friendlyError("Ship To address not found for this customer.", 404);
+
+    const dispatchShipTo = readDispatchShipToFromBill(bill);
+    const newShipTo = mapCustomerDeliveryAddressToShipTo(addr);
+    const billTo = {
+      name: trimCommercialSnapshot(bill.customerNameSnapshot) || bill.customer?.name || null,
+      address: trimCommercialSnapshot(bill.billToAddressSnapshot),
+      gstin: trimCommercialSnapshot(bill.billToGstinSnapshot) || null,
+      stateName: trimCommercialSnapshot(bill.customerStateNameSnapshot) || null,
+      stateCode: trimCommercialSnapshot(bill.customerStateCodeSnapshot) || null,
+    };
+    const companyState = await getCompanyState(tx);
+    const companyStateCode = companyState?.companyStateRef?.stateCode ?? null;
+    const pos = buildPosFromShipAndBillTo({ shipTo: newShipTo, billTo, companyStateCode });
+    const shipSnapshots = mapShipToAndPosToBillSnapshots(newShipTo, pos);
+
+    const differsFromDispatch = !shipToSnapshotsEqual(newShipTo, dispatchShipTo);
+    if (differsFromDispatch && body?.confirmed !== true) {
+      const err = friendlyError(
+        "The selected Ship-To address differs from the Dispatch address. Confirm to continue.",
+        409,
+      );
+      err.code = "SHIP_TO_CONFIRM_REQUIRED";
+      throw err;
+    }
+
+    const intra = resolveSalesIntraForBilling({
+      bill: { ...bill, ...shipSnapshots },
+      customer: bill.customer,
+      companyState,
+    }).intraState;
+
+    const rebuilt = [];
+    for (const ln of bill.lines) {
+      const qty = Number(ln.qty);
+      const rate = Number(ln.rate);
+      const gstRate = Number(ln.gstRate);
+      const calc = computeLineTaxSplit(qty * rate, gstRate, intra);
+      await tx.salesBillLine.update({
+        where: { id: ln.id },
+        data: {
+          basicAmount: String(calc.basicAmount),
+          gstRate: String(calc.gstRate),
+          cgstAmount: String(calc.cgstAmount),
+          sgstAmount: String(calc.sgstAmount),
+          igstAmount: String(calc.igstAmount),
+          lineTotal: String(calc.lineTotal),
+        },
+      });
+      rebuilt.push(calc);
+    }
+    const totals = sumTotals(rebuilt);
+
+    const userId = typeof opts.userId === "number" ? opts.userId : null;
+    const now = new Date();
+
+    await tx.salesBill.update({
+      where: { id: billId },
+      data: {
+        ...shipSnapshots,
+        shipToAddressId: addr.id,
+        shipToChangedAt: now,
+        shipToChangedById: userId,
+        shipToChangeReason: reason,
+        totalBasic: String(totals.totalBasic),
+        totalCgst: String(totals.totalCgst),
+        totalSgst: String(totals.totalSgst),
+        totalIgst: String(totals.totalIgst),
+        totalTax: String(totals.totalTax),
+        netAmount: String(totals.netAmount),
+      },
+    });
+
+    const updated = await tx.salesBill.findUnique({ where: { id: billId }, include: billInclude });
+    const result = withSalesBillGstBreakup(updated, { intraState: intra, companyState });
+    result._shipToAudit = {
+      dispatchShipTo: formatShipToSummary(dispatchShipTo),
+      invoiceShipTo: formatShipToSummary(newShipTo),
+      differsFromDispatch,
+    };
+    return result;
+  });
+}
+
 module.exports = {
   listSalesBills,
   getEligibleDispatches,
@@ -1007,6 +1194,8 @@ module.exports = {
   cancelBill,
   deleteDraft,
   getSalesBillById,
+  getDraftShipToOptions,
+  patchDraftShipTo,
   updateSalesBillPaymentTracking,
   addSalesBillReceipt,
   deleteSalesBillReceipt,

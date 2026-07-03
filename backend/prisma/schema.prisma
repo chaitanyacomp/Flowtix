@@ -463,6 +463,7 @@ model User {
   salesBillsCancelled                      SalesBill[]                      @relation("SalesBillCancelledBy")
   salesBillsExportReset                    SalesBill[]                      @relation("SalesBillExportResetBy")
   salesBillsExported                       SalesBill[]                      @relation("SalesBillExportedBy")
+  salesBillsShipToChanged                  SalesBill[]                      @relation("SalesBillShipToChangedBy")
   auditLogs                                AuditLog[]                       @relation("AuditLogActor")
   activityLogs                             ActivityLog[]                    @relation("ActivityLogActor")
   qcRejectedDispositionsCreated            QcRejectedDisposition[]          @relation("QcRejDispCreatedBy")
@@ -655,6 +656,7 @@ model CustomerDeliveryAddress {
   customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
   stateRef State?   @relation(fields: [stateId], references: [id], onDelete: SetNull)
   shipToSalesOrders SalesOrder[]
+  salesBillShipToSelections SalesBill[] @relation("SalesBillShipToAddress")
 
   @@index([customerId])
   @@index([stateId])
@@ -1907,6 +1909,17 @@ model SalesBill {
   shipToGstinSnapshot       String    @default("") @db.VarChar(15)
   shipToStateNameSnapshot   String    @default("") @db.VarChar(128)
   shipToStateCodeSnapshot   String    @default("") @db.VarChar(2)
+  /// Dispatch / SO resolved Ship To frozen at bill create (logistics traceability).
+  dispatchShipToLabelSnapshot       String @default("") @db.VarChar(128)
+  dispatchShipToAddressSnapshot     String @default("") @db.Text
+  dispatchShipToGstinSnapshot       String @default("") @db.VarChar(15)
+  dispatchShipToStateNameSnapshot   String @default("") @db.VarChar(128)
+  dispatchShipToStateCodeSnapshot   String @default("") @db.VarChar(2)
+  /// Selected CustomerDeliveryAddress for invoice Ship To (draft edits).
+  shipToAddressId     Int?
+  shipToChangedAt     DateTime?
+  shipToChangedById   Int?
+  shipToChangeReason  String?   @db.Text
   posStateNameSnapshot      String    @default("") @db.VarChar(128)
   posStateCodeSnapshot      String    @default("") @db.VarChar(2)
   posSourceSnapshot         String    @default("") @db.VarChar(32)
@@ -1950,6 +1963,7 @@ model SalesBill {
   customer Customer         @relation(fields: [customerId], references: [id], onDelete: Restrict)
   dispatch Dispatch         @relation(fields: [dispatchId], references: [id], onDelete: Restrict)
   cycle    SalesOrderCycle? @relation(fields: [cycleId], references: [id], onDelete: SetNull)
+  shipToAddress CustomerDeliveryAddress? @relation("SalesBillShipToAddress", fields: [shipToAddressId], references: [id], onDelete: SetNull)
   lines    SalesBillLine[]
   receipts SalesBillReceipt[]
 
@@ -1957,12 +1971,15 @@ model SalesBill {
   exportedBy    User? @relation("SalesBillExportedBy", fields: [exportedById], references: [id], onDelete: SetNull)
   finalizedBy   User? @relation("SalesBillFinalizedBy", fields: [finalizedById], references: [id], onDelete: SetNull)
   cancelledBy   User? @relation("SalesBillCancelledBy", fields: [cancelledById], references: [id], onDelete: SetNull)
+  shipToChangedBy User? @relation("SalesBillShipToChangedBy", fields: [shipToChangedById], references: [id], onDelete: SetNull)
 
   @@index([billDate])
   @@index([status])
   @@index([customerId])
   @@index([dispatchId])
   @@index([cycleId])
+  @@index([shipToAddressId])
+  @@index([shipToChangedById])
   @@index([isExported])
   @@index([exportedById])
   @@index([exportResetById])

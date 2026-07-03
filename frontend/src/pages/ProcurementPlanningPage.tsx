@@ -22,7 +22,7 @@ import { cn } from "../lib/utils";
 
 import { PageContainer, StickyWorkspaceHead, ERPBackNavigation } from "../components/PageHeader";
 
-import { ErpKpiLabel, ErpKpiSegment, ErpKpiStrip, ErpKpiValue } from "../components/erp/foundation";
+import { ErpKpiLabel, ErpKpiSegment, ErpKpiStrip, ErpKpiValue, ErpPageSkeleton } from "../components/erp/foundation";
 
 import { PendingMaterialRequestsPanel } from "../components/purchase/PendingMaterialRequestsPanel";
 
@@ -548,9 +548,7 @@ function PendingMaterialRequirementsTable({
   }, [focusMaterialRequirementId]);
 
   if (loading) {
-
-    return <p className="px-3 py-4 text-sm text-slate-500">Loading material requirements…</p>;
-
+    return <ErpPageSkeleton variant="table" lines={5} className="mx-3" />;
   }
 
   if (!rows.length) {

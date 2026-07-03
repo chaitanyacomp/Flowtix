@@ -78,6 +78,10 @@ import {
   dispatchFullTargetQty,
   dispatchPrepareQtyCap,
   shouldSkipDispatchPrepareAsDuplicate,
+  resolveDispatchFullPrepareAction,
+  canCompactDispatchFull,
+  isCompactDraftSavedIdleState,
+  DISPATCH_FINALIZE_API_SUFFIX,
   type DispatchCompactQueueRow,
 } from "../lib/dispatchWorkspaceUx";
 import {
@@ -2409,7 +2413,7 @@ export function DispatchPage() {
       if (salesOrderLineId !== ls.lineId) setSalesOrderLineId(ls.lineId);
       const draftQty = row.draftQty > 1e-9 ? row.draftQty : readDispatchDraftQty(ls);
       if (draftQty > 1e-9) {
-        setIsPartialMode(true);
+        setIsPartialMode(false);
         setDispatchQtyStr(String(draftQty));
         compactQtySyncRef.current = { itemId: ls.itemId, draftQty, headroom: 0 };
       }
@@ -2498,7 +2502,7 @@ export function DispatchPage() {
       const prev = compactQtySyncRef.current;
       if (prev?.itemId === itemId && Math.abs(prev.draftQty - existingDraftQty) < 1e-9) return;
       compactQtySyncRef.current = { itemId, draftQty: existingDraftQty, headroom: headroomToPrepare };
-      setIsPartialMode(true);
+      setIsPartialMode(false);
       setDispatchQtyStr(String(existingDraftQty));
       return;
     }
@@ -2751,7 +2755,7 @@ export function DispatchPage() {
     setLockingId(id);
     try {
       // Unified finalize path: use /lock for both normal ledger and reopened-draft UX.
-      await apiFetch(`/api/dispatch/dispatches/${id}/lock`, {
+      await apiFetch(`/api/dispatch/dispatches/${id}${DISPATCH_FINALIZE_API_SUFFIX}`, {
         method: "POST",
         headers: { "Idempotency-Key": idempotencyKey },
         body: JSON.stringify({}),
@@ -2874,6 +2878,7 @@ export function DispatchPage() {
         dispatchQty: dispatchQtyParsed,
       })
     ) {
+      setError(null);
       setDispatchInfo("Dispatch draft saved.");
       dispatchSubmitLockRef.current = false;
       return;
@@ -2922,6 +2927,7 @@ export function DispatchPage() {
         body: JSON.stringify(dispatchBody),
       });
       if (dispatchCompactMode) {
+        setError(null);
         setDispatchInfo("Dispatch draft saved.");
         setSalesBillStepDispatchId(null);
         bumpErpRefresh(["dispatch", "dashboard", "pending-actions", "stock"]);
@@ -3010,7 +3016,14 @@ export function DispatchPage() {
       !noQtyBlocked &&
       selectableLines.length > 0 &&
       currentLine &&
-      (headroomToPrepare > 1e-9 || existingDraftQty > 1e-9) &&
+      (dispatchCompactMode
+        ? canCompactDispatchFull({
+            headroomToPrepare,
+            existingDraftQty,
+            dispatchQty: dispatchQtyParsed,
+            dispatchQtyValid,
+          })
+        : headroomToPrepare > 1e-9 || existingDraftQty > 1e-9) &&
       (!needsPartialDispatchAck || normalPartialDispatchAck),
   );
 
@@ -3025,13 +3038,9 @@ export function DispatchPage() {
     const targetQty = dispatchFullTargetQty({ existingDraftQty, headroomToPrepare });
     if (!(targetQty > 1e-9)) return;
 
-    if (
-      primaryFinalizeDraftId != null &&
-      primaryFinalizeDraftId > 0 &&
-      existingDraftQty > 1e-9 &&
-      Math.abs(targetQty - existingDraftQty) <= 1e-6
-    ) {
-      await onFinalizeDraftDispatch(primaryFinalizeDraftId);
+    if (resolveDispatchFullPrepareAction({ existingDraftQty, headroomToPrepare }) === "skip_duplicate") {
+      setError(null);
+      setDispatchInfo("Dispatch draft saved.");
       return;
     }
 
@@ -3362,6 +3371,17 @@ export function DispatchPage() {
     );
     return d?.id ?? null;
   }, [reopenedPreparedDraft, guidedLedgerContext, selectedSo, currentLine, soLedgerDispatches]);
+
+  const compactDraftSavedIdle = Boolean(
+    dispatchCompactMode &&
+      isCompactDraftSavedIdleState({
+        hasOpenDraft: primaryFinalizeDraftId != null && primaryFinalizeDraftId > 0 && existingDraftQty > 1e-9,
+        headroomToPrepare,
+        dispatchQty: dispatchQtyParsed,
+        dispatchQtyValid,
+        existingDraftQty,
+      }),
+  );
 
   const guidedBillAction = React.useMemo(() => {
     const latest = guidedLedgerContext?.latestFinalized ?? null;
@@ -4667,7 +4687,8 @@ export function DispatchPage() {
               isPartialMode={isPartialMode}
               dispatching={dispatching}
               canDispatchFull={canDispatchFull}
-              canDispatchPartial={partialDispatchQtySubmit}
+              canDispatchPartial={partialDispatchQtySubmit && (!dispatchCompactMode || headroomToPrepare > 1e-9)}
+              draftSavedIdle={compactDraftSavedIdle}
               dispatchReadOnly={Boolean(selectedSo?.dispatchReadOnly)}
               primaryFinalizeDraftId={primaryFinalizeDraftId}
               lockingId={lockingId}

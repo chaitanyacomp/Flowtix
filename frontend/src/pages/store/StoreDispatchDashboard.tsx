@@ -13,7 +13,15 @@ import { dashboardShell } from "../../lib/dashboardShell";
 import { purchaseGrnExecutionHref } from "../../lib/woPrepareOperationalStage";
 import { DashboardOpsClearStrip, DashboardWorkspaceHeader } from "../../components/erp/foundation";
 import { PendingActionsDashboardCard } from "../PendingActionsPage";
-import type { PendingActionsDashboardProps } from "../../lib/pendingActionsApi";
+import type { PendingActionsDashboardProps, PendingAction } from "../../lib/pendingActionsApi";
+import { prepareNoQtyNextRequirementSheetAndNavigate } from "../../lib/noQtyPrepareNextRsNavigate";
+import { useToast } from "../../contexts/ToastContext";
+import {
+  NoQtyDashboardCompactPanel,
+  type NoQtyDashboardCompactRow,
+} from "../../components/erp/planning/NoQtyDashboardCompactPanel";
+import type { NoQtyFlowState } from "../../lib/noQtyFlowState";
+import type { ResolvedNoQtyContinuation } from "../../lib/noQtyDashboardContinuation";
 import { erpKpi } from "../../lib/erpFoundationTokens";
 import { ERP_DASHBOARD_POLL_MS, useErpRefreshTick } from "../../hooks/useErpRefreshTick";
 import { useStoreDashboardOperationalData } from "../../hooks/useStoreDashboardOperationalData";
@@ -104,6 +112,15 @@ export type StoreDispatchDashboardProps = {
   fgStockTotal?: number;
   dispatchBacklogCount?: number;
   pendingActions?: PendingActionsDashboardProps;
+  /** Store-owned Create Cycle N Requirement Sheet rows from pending-actions. */
+  pendingRsActions?: PendingAction[];
+  noQtyContinuationRows?: NoQtyDashboardCompactRow[];
+  noQtyFlowBySo?: Record<number, NoQtyFlowState | null | undefined>;
+  noQtyContinuationTruncated?: boolean;
+  onNoQtyPrimaryAction?: (args: {
+    row: NoQtyDashboardCompactRow;
+    resolved: ResolvedNoQtyContinuation;
+  }) => void;
 };
 
 export function StoreDispatchDashboard({
@@ -112,8 +129,14 @@ export function StoreDispatchDashboard({
   fgStockTotal = 0,
   dispatchBacklogCount = 0,
   pendingActions,
+  pendingRsActions = [],
+  noQtyContinuationRows = [],
+  noQtyFlowBySo = {},
+  noQtyContinuationTruncated = false,
+  onNoQtyPrimaryAction,
 }: StoreDispatchDashboardProps) {
   const navigate = useNavigate();
+  const toast = useToast();
   const liveTick = useErpRefreshTick(["dashboard"], { pollIntervalMs: ERP_DASHBOARD_POLL_MS });
   const operational = useStoreDashboardOperationalData(liveTick);
 
@@ -151,6 +174,21 @@ export function StoreDispatchDashboard({
   });
 
   const dispatchReadyCount = dispatchReady.length;
+  const pendingRsCount = pendingRsActions.length;
+  const hasNoQtyContinuation = noQtyContinuationRows.length > 0;
+
+  React.useEffect(() => {
+    if (import.meta.env.DEV) {
+      // eslint-disable-next-line no-console
+      console.debug("[store-dashboard] render props", {
+        pendingRsCount,
+        continuationRows: noQtyContinuationRows.length,
+        hasNoQtyContinuation,
+        hasOnNoQtyPrimaryAction: Boolean(onNoQtyPrimaryAction),
+      });
+    }
+  }, [pendingRsCount, noQtyContinuationRows.length, hasNoQtyContinuation, onNoQtyPrimaryAction]);
+
   const executionRegisterHref = NO_QTY_AGREEMENTS_HREF;
   const rmccHref = rmControlCenterHref({ returnTo: "dashboard" });
   const materialIssueHref = "/material-issue?source=dashboard";
@@ -296,6 +334,56 @@ export function StoreDispatchDashboard({
           <StoreRmccSummaryCard metrics={rmccMetrics} loading={operational.loading} />
 
           <StoreProcurementMonitor metrics={procurementMonitorMetrics} loading={operational.loading} />
+
+          {pendingRsCount > 0 || hasNoQtyContinuation ? (
+            <div className="grid gap-1.5">
+              {pendingRsCount > 0 ? (
+                <Card className={cn(DASH_CARD_PRIMARY)} data-testid="store-pending-rs">
+                  <CardHeader className="border-b border-slate-100 p-2 pb-1.5">
+                    <CardTitle className="flex items-center gap-2 text-[13px] font-extrabold text-slate-950">
+                      <ClipboardList className="h-4 w-4 text-blue-700" aria-hidden />
+                      Pending RS
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-2 p-2.5 pt-2">
+                    {pendingRsActions.slice(0, 6).map((action) => (
+                      <StoreDashCard
+                        key={String(action.id ?? action.href)}
+                        title={action.action}
+                        detail={`${action.documentNo ?? "—"} · Store-owned RS planning`}
+                        actionLabel={action.action}
+                        href={action.href}
+                      />
+                    ))}
+                  </CardContent>
+                </Card>
+              ) : null}
+              {hasNoQtyContinuation && onNoQtyPrimaryAction ? (
+                <NoQtyDashboardCompactPanel
+                  rows={noQtyContinuationRows.slice(0, 5)}
+                  allRows={noQtyContinuationRows}
+                  flowBySo={noQtyFlowBySo}
+                  viewerRole="STORE"
+                  dispatchReadyCount={dispatchReadyCount}
+                  truncated={noQtyContinuationTruncated}
+                  viewAllHref="/no-qty-agreements?source=dashboard"
+                  maxVisible={5}
+                  onPrimaryAction={({ row, resolved }) => {
+                    if (resolved.kind === "prepare_next_rs") {
+                      void prepareNoQtyNextRequirementSheetAndNavigate({
+                        salesOrderId: row.salesOrderId,
+                        navigate,
+                        toast,
+                        navigateState: { from: "dashboard" },
+                      });
+                      return;
+                    }
+                    onNoQtyPrimaryAction({ row, resolved });
+                  }}
+                />
+              ) : null}
+            </div>
+          ) : null}
 
           <div className="grid gap-1.5 lg:grid-cols-2">
             <Card className={cn(dispatchReadyCount > 0 ? DASH_CARD_PRIMARY : DASH_CARD)} data-testid="store-dispatch-ready">

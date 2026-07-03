@@ -2,6 +2,8 @@ import * as React from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { ArrowDownToLine, Boxes, Filter, PackageCheck, RefreshCw } from "lucide-react";
 import { Badge } from "../components/ui/badge";
+import { ErpPageSkeleton, ErpRefreshingBadge } from "../components/erp/foundation";
+import { useStablePageLoad } from "../hooks/useStablePageLoad";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { apiFetch } from "../services/api";
@@ -550,6 +552,7 @@ export function MaterialAvailabilityControlCenterPage() {
   const rmUnitByItemIdRef = React.useRef(new Map<number, string>());
   const [data, setData] = React.useState<WorkspacePayload | null>(null);
   const [loading, setLoading] = React.useState(true);
+  const { firstLoadDone, initialLoading, refreshing, startLoad, finishLoad } = useStablePageLoad();
   const [error, setError] = React.useState<string | null>(null);
   const [selectedRmItemId, setSelectedRmItemId] = React.useState<number | null>(initialSelection?.rmItemId ?? null);
   const selectedRmItemIdRef = React.useRef<number | null>(initialSelection?.rmItemId ?? null);
@@ -569,6 +572,7 @@ export function MaterialAvailabilityControlCenterPage() {
   const autoSelectPending = React.useRef(initialSelection == null);
 
   const load = React.useCallback(async (nextFilters: ApiFilters) => {
+    startLoad();
     setLoading(true);
     setError(null);
     try {
@@ -613,8 +617,9 @@ export function MaterialAvailabilityControlCenterPage() {
       setError(presentOperationalError(e).userMessage);
     } finally {
       setLoading(false);
+      finishLoad();
     }
-  }, [setCaseSelectionState]);
+  }, [setCaseSelectionState, startLoad, finishLoad]);
 
   React.useEffect(() => {
     void load(filters);
@@ -1466,6 +1471,7 @@ export function MaterialAvailabilityControlCenterPage() {
             </p>
           </div>
           <div className="flex items-center gap-1.5">
+            {refreshing ? <ErpRefreshingBadge /> : null}
             <Button type="button" variant="outline" size="sm" className="h-7 gap-1 px-2 text-[11px]" onClick={() => void load(filters)} disabled={loading}>
               <RefreshCw className={cn("h-3 w-3", loading && "animate-spin")} />
               Refresh
@@ -1555,8 +1561,8 @@ export function MaterialAvailabilityControlCenterPage() {
             </Badge>
           </div>
           <div className="min-h-0 flex-1 space-y-1 overflow-y-auto p-1.5">
-            {loading ? (
-              <div className="px-2 py-8 text-sm text-slate-500">Loading material queue...</div>
+            {initialLoading && !data ? (
+              <ErpPageSkeleton variant="list" lines={5} className="mx-1" />
             ) : queueCases.length ? (
               queueCases.map((group) => {
                 const row = group.representative;

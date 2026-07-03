@@ -4,6 +4,7 @@ import {
   notifyDemoMutationBlocked,
 } from "../lib/demoSafeMode";
 import { bumpErpRefresh, erpRefreshScopesForMutation } from "../lib/erpRefresh";
+import { recordApiPerf } from "../lib/performanceTiming";
 
 export type ApiError = { message: string; code?: string };
 
@@ -161,6 +162,7 @@ export async function apiFetch<T>(path: string, opts: RequestInit = {}): Promise
 
   const url = getApiUrl(path);
   let res: Response;
+  const fetchStartedAt = performance.now();
   try {
     res = await fetch(url, { ...opts, headers });
   } catch (cause) {
@@ -222,6 +224,19 @@ export async function apiFetch<T>(path: string, opts: RequestInit = {}): Promise
     const scopes = erpRefreshScopesForMutation(path, method);
     if (scopes.length > 0) bumpErpRefresh(scopes);
   }
+
+  recordApiPerf(path, performance.now() - fetchStartedAt, {
+    method,
+    status: res.status,
+    role: (() => {
+      try {
+        const raw = localStorage.getItem("user");
+        return raw ? (JSON.parse(raw) as { role?: string }).role : undefined;
+      } catch {
+        return undefined;
+      }
+    })(),
+  });
 
   return data as T;
 }

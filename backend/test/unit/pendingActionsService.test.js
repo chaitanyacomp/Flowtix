@@ -1351,15 +1351,33 @@ describe("pendingActionsService", () => {
     assert.equal(filtered.length, 1);
   });
 
-  it("fetchStoreNoQtyCreateNextRsPendingActions skips next-cycle RS while cycle execution is open", async () => {
+  it("maps CONTINUE_WORKING NEXT_RS to Create Cycle N Requirement Sheet for Store", () => {
+    const row = normalizeContinueWorkingRow({
+      key: "so-1-nqrs",
+      salesOrderId: 1,
+      salesOrderDocNo: "SO-26-0001",
+      customerName: "Acme",
+      orderType: "NO_QTY",
+      cycleNo: 1,
+      stageKey: "NEXT_RS",
+      nextAction: "NEXT_RS_REQUIRED",
+    });
+    assert.equal(row.currentOwner, VISIBLE_OWNERS.STORE);
+    const action = mapNormalizedRowToPendingAction(row, "STORE");
+    assert.equal(action.action, "Create Cycle 2 Requirement Sheet");
+    assert.equal(action.ownerRole, "STORE");
+    const storeFiltered = filterNormalizedRowsByOwner([row], "STORE");
+    assert.equal(storeFiltered.length, 1);
+    const adminFiltered = filterNormalizedRowsByOwner([row], "ADMIN");
+    assert.equal(adminFiltered.length, 0);
+  });
+
+  it("fetchStoreNoQtyCreateNextRsPendingActions emits Cycle 2 RS when eligible (execution may continue)", async () => {
     const eligibilityPath = require.resolve("../../src/services/noQtyCreateNextRsEligibility");
-    const gatePath = require.resolve("../../src/services/noQtyCycleStoreExecutionGate");
     const pendingPath = require.resolve("../../src/services/pendingActionsService");
     const origEligibility = require(eligibilityPath);
-    const origGate = require(gatePath);
     const origCompute = origEligibility.computeNoQtyCreateNextRsEligibilityResolved;
     const origResolve = origEligibility.resolveNoQtyEligibilityCycleId;
-    const origIncomplete = origGate.isNoQtyCycleStoreExecutionIncomplete;
 
     require(eligibilityPath).computeNoQtyCreateNextRsEligibilityResolved = async () => ({
       eligible: true,
@@ -1369,7 +1387,6 @@ describe("pendingActionsService", () => {
       cycleId: 5,
       source: "ACTIVE",
     });
-    require(gatePath).isNoQtyCycleStoreExecutionIncomplete = async () => true;
 
     delete require.cache[pendingPath];
     const { fetchStoreNoQtyCreateNextRsPendingActions: fetchNextRs } = require(pendingPath);
@@ -1388,11 +1405,75 @@ describe("pendingActionsService", () => {
 
     try {
       const actions = await fetchNextRs(db);
-      assert.equal(actions.length, 0);
+      assert.equal(actions.length, 1);
+      assert.equal(actions[0].action, "Create Cycle 2 Requirement Sheet");
+      assert.equal(actions[0].ownerRole, "STORE");
+      assert.equal(actions[0].documentNo, "SO-26-0001");
     } finally {
       require(eligibilityPath).computeNoQtyCreateNextRsEligibilityResolved = origCompute;
       require(eligibilityPath).resolveNoQtyEligibilityCycleId = origResolve;
-      require(gatePath).isNoQtyCycleStoreExecutionIncomplete = origIncomplete;
+      delete require.cache[pendingPath];
+      require(pendingPath);
+    }
+  });
+
+  it("fetchStoreNoQtyCreateNextRsPendingActions emits Cycle 2 RS when ACTIVE cycle is empty after advance", async () => {
+    const eligibilityPath = require.resolve("../../src/services/noQtyCreateNextRsEligibility");
+    const pendingPath = require.resolve("../../src/services/pendingActionsService");
+    const origEligibility = require(eligibilityPath);
+    const origCompute = origEligibility.computeNoQtyCreateNextRsEligibility;
+    const origResolved = origEligibility.computeNoQtyCreateNextRsEligibilityResolved;
+
+    require(eligibilityPath).computeNoQtyCreateNextRsEligibility = async (_db, input) => {
+      if (Number(input?.cycleId) === 333) {
+        return { eligible: true, reason: "OK", existingNextRsDocNo: null, existingNextRsId: null };
+      }
+      return { eligible: false, reason: "NO_LOCKED_RS", existingNextRsDocNo: null, existingNextRsId: null };
+    };
+    require(eligibilityPath).computeNoQtyCreateNextRsEligibilityResolved = async () => ({
+      eligible: false,
+      reason: "NO_LOCKED_RS",
+    });
+
+    delete require.cache[pendingPath];
+    const { fetchStoreNoQtyCreateNextRsPendingActions: fetchNextRs } = require(pendingPath);
+
+    const db = {
+      salesOrder: {
+        findMany: async () => [{ id: 199, docNo: "SO-26-0001", updatedAt: new Date() }],
+      },
+      salesOrderCycle: {
+        findFirst: async (args) => {
+          if (args?.where?.status === "ACTIVE") {
+            return { id: 334, cycleNo: 2 };
+          }
+          if (args?.where?.status === "CLOSED") {
+            return { id: 333, cycleNo: 1 };
+          }
+          return null;
+        },
+      },
+      requirementSheet: {
+        findFirst: async (args) => {
+          if (args?.where?.cycleId === 334) return null;
+          if (args?.where?.cycleId === 333 && args?.where?.status === "LOCKED") {
+            return { updatedAt: new Date("2026-05-01") };
+          }
+          if (args?.where?.salesOrderId === 199 && args?.where?.cycleId === 334) return null;
+          return null;
+        },
+      },
+    };
+
+    try {
+      const actions = await fetchNextRs(db);
+      assert.equal(actions.length, 1);
+      assert.equal(actions[0].action, "Create Cycle 2 Requirement Sheet");
+      assert.equal(actions[0].ownerRole, "STORE");
+      assert.match(String(actions[0].href), /cycleId=334/);
+    } finally {
+      require(eligibilityPath).computeNoQtyCreateNextRsEligibility = origCompute;
+      require(eligibilityPath).computeNoQtyCreateNextRsEligibilityResolved = origResolved;
       delete require.cache[pendingPath];
       require(pendingPath);
     }

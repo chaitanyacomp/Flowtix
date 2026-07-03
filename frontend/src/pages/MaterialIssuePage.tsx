@@ -10,7 +10,8 @@ import { Input } from "../components/ui/input";
 import { cn } from "../lib/utils";
 import { useToast } from "../contexts/ToastContext";
 import { PageContainer, StickyWorkspaceHead, ERPBackNavigation } from "../components/PageHeader";
-import { ErpWorkflowTrail } from "../components/erp/foundation/ErpWorkflowTrail";
+import { ErpWorkflowTrail, ErpPageLoader } from "../components/erp/foundation";
+import { useStablePageLoad } from "../hooks/useStablePageLoad";
 import { useStoreExecutionNavContext } from "../hooks/useStoreExecutionNavContext";
 import {
   assessMaterialIssueQty,
@@ -298,6 +299,7 @@ export function MaterialIssuePage() {
   const [waiveRemarks, setWaiveRemarks] = React.useState("");
   const [showWaiveForm, setShowWaiveForm] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
+  const { firstLoadDone, initialLoading, refreshing, startLoad, finishLoad } = useStablePageLoad();
   const [submitting, setSubmitting] = React.useState(false);
   const [sessionComplete, setSessionComplete] = React.useState<MaterialIssueSessionComplete | null>(null);
   const [sessionBanner, setSessionBanner] = React.useState<string | null>(null);
@@ -369,6 +371,7 @@ export function MaterialIssuePage() {
   }
 
   async function loadAll() {
+    startLoad();
     setLoading(true);
     try {
       const [context, list, waitingForProduction] = await Promise.all([
@@ -392,6 +395,7 @@ export function MaterialIssuePage() {
       showError(e instanceof Error ? e.message : "Failed to load material issue screen");
     } finally {
       setLoading(false);
+      finishLoad();
     }
   }
 
@@ -1035,6 +1039,8 @@ export function MaterialIssuePage() {
             />
           </div>
         </section>
+      ) : initialLoading ? (
+        <ErpPageLoader variant="workspace" hint="Loading material issue workspace…" />
       ) : (
         <>
       <div className={cn("grid gap-2 lg:grid-cols-[minmax(0,1fr)_minmax(240px,300px)]")}>

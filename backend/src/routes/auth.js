@@ -107,7 +107,7 @@ authRouter.post("/login", async (req, res, next) => {
       name: user.name,
     });
 
-    await trySessionAudit({
+    void trySessionAudit({
       action: auditLog.AuditAction.LOGIN,
       entityType: auditLog.AuditEntityType.USER_SESSION,
       summary: `Signed in (user #${user.id})`,

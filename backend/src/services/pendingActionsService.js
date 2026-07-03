@@ -27,11 +27,11 @@ const { buildProcurementPendingQueue, buildGrnPendingSection } = require("./proc
 const { buildStoreIssuePendingDashboardRows, buildStoreProductionHandoffDashboardRows } = require("./materialAvailabilityWorkspaceService");
 const { pmrMeetsProductionReleaseIssueRule } = require("./productionMaterialRequestService");
 const {
+  computeNoQtyCreateNextRsEligibility,
   computeNoQtyCreateNextRsEligibilityResolved,
   resolveNoQtyEligibilityCycleId,
 } = require("./noQtyCreateNextRsEligibility");
 const { assessNoQtyPlacementStageForCycle } = require("./requirementSheetExecutionService");
-const { isNoQtyCycleStoreExecutionIncomplete } = require("./noQtyCycleStoreExecutionGate");
 const {
   WAITING_FOR_PURCHASE_RM_PO,
   PREPARE_RM_PO,
@@ -331,8 +331,11 @@ function friendlyActionForNormalizedRow(row, role = "STORE") {
     if (stage === "PRODUCTION") return PRODUCTION_EXECUTION_PENDING_LABELS.RUNNING;
     if (stage === "SALES_BILL") return "Create Sales Bill";
     if (stage === "NEXT_RS") {
-      const cycleNo = meta.cycleNo != null ? Number(meta.cycleNo) : 1;
-      return Number.isFinite(cycleNo) && cycleNo > 0 ? `Create RS Cycle ${cycleNo}` : "Create RS Cycle";
+      const docCycle = meta.cycleNo != null ? Number(meta.cycleNo) : null;
+      const nextCycle = Number.isFinite(docCycle) && docCycle > 0 ? docCycle + 1 : null;
+      return nextCycle != null
+        ? `Create Cycle ${nextCycle} Requirement Sheet`
+        : "Create Next Requirement Sheet";
     }
   }
   if (rowType === ROW_TYPES.RM_RISK) {
@@ -1016,6 +1019,95 @@ async function fetchStoreNoQtyMonthlyPlanningPendingActions(db = prisma) {
 }
 
 /**
+ * Resolve Store "Create Cycle N Requirement Sheet" when the ACTIVE cycle is empty but the prior
+ * CLOSED cycle already passed next-RS eligibility (post prepare-next / between-cycles).
+ *
+ * Does not change prepare-next gates — only the pending-actions read path.
+ */
+async function resolveStoreNoQtyCreateNextRsPendingContext(db, soId) {
+  const sid = Number(soId);
+  const active = await db.salesOrderCycle.findFirst({
+    where: { salesOrderId: sid, status: "ACTIVE" },
+    orderBy: { cycleNo: "desc" },
+    select: { id: true, cycleNo: true },
+  });
+
+  if (active?.id != null) {
+    const sheetOnActive = await db.requirementSheet.findFirst({
+      where: { salesOrderId: sid, cycleId: Number(active.id) },
+      select: { id: true },
+    });
+    if (!sheetOnActive) {
+      const priorClosed = await db.salesOrderCycle.findFirst({
+        where: {
+          salesOrderId: sid,
+          status: "CLOSED",
+          cycleNo: { lt: Number(active.cycleNo) },
+        },
+        orderBy: { cycleNo: "desc" },
+        select: { id: true },
+      });
+      if (priorClosed?.id != null) {
+        const priorElig = await computeNoQtyCreateNextRsEligibility(db, {
+          salesOrderId: sid,
+          cycleId: Number(priorClosed.id),
+        });
+        if (priorElig.eligible) {
+          const lockedRs = await db.requirementSheet.findFirst({
+            where: { salesOrderId: sid, cycleId: Number(priorClosed.id), status: "LOCKED" },
+            orderBy: [{ version: "desc" }, { id: "desc" }],
+            select: { updatedAt: true },
+          });
+          return {
+            eligible: true,
+            reason: "OK",
+            targetCycleId: Number(active.id),
+            targetCycleNo: Number(active.cycleNo),
+            ageTimestamp: lockedRs?.updatedAt ?? null,
+            resolution: "ACTIVE_EMPTY_PRIOR_ELIGIBLE",
+          };
+        }
+      }
+    }
+  }
+
+  const eligibility = await computeNoQtyCreateNextRsEligibilityResolved(db, sid);
+  if (!eligibility.eligible) {
+    return { eligible: false, reason: eligibility.reason ?? "NOT_ELIGIBLE" };
+  }
+
+  const { cycleId } = await resolveNoQtyEligibilityCycleId(db, sid);
+  if (!cycleId) {
+    return { eligible: false, reason: "NO_CYCLE" };
+  }
+
+  const cycle = await db.salesOrderCycle.findFirst({
+    where: { id: cycleId, salesOrderId: sid },
+    select: { cycleNo: true },
+  });
+  const lockedRs = await db.requirementSheet.findFirst({
+    where: { salesOrderId: sid, cycleId, status: "LOCKED" },
+    orderBy: [{ version: "desc" }, { id: "desc" }],
+    select: { updatedAt: true },
+  });
+  if (!lockedRs) {
+    return { eligible: false, reason: "NO_LOCKED_RS" };
+  }
+
+  const nextCycleNo =
+    cycle?.cycleNo != null && Number(cycle.cycleNo) > 0 ? Number(cycle.cycleNo) + 1 : null;
+
+  return {
+    eligible: true,
+    reason: "OK",
+    targetCycleId: active?.id != null ? Number(active.id) : null,
+    targetCycleNo: nextCycleNo,
+    ageTimestamp: lockedRs.updatedAt ?? null,
+    resolution: "RESOLVED_CYCLE",
+  };
+}
+
+/**
  * P8F-A14 — Store-owned NO_QTY cycle continuation when current-cycle RS is locked and next RS is eligible.
  */
 async function fetchStoreNoQtyCreateNextRsPendingActions(db = prisma) {
@@ -1029,38 +1121,38 @@ async function fetchStoreNoQtyCreateNextRsPendingActions(db = prisma) {
     take: 50,
   });
 
+  const debugStoreRs = process.env.DEBUG_STORE_RS === "1";
+
   const actions = [];
   for (const so of openSoRows) {
     const soId = Number(so.id);
-    const eligibility = await computeNoQtyCreateNextRsEligibilityResolved(db, soId);
-    if (!eligibility.eligible) continue;
-
-    const { cycleId } = await resolveNoQtyEligibilityCycleId(db, soId);
-    if (!cycleId) continue;
-
-    const [cycle, lockedRs] = await Promise.all([
-      db.salesOrderCycle.findFirst({
-        where: { id: cycleId, salesOrderId: soId },
-        select: { cycleNo: true },
-      }),
-      db.requirementSheet.findFirst({
-        where: { salesOrderId: soId, cycleId, status: "LOCKED" },
-        orderBy: [{ version: "desc" }, { id: "desc" }],
-        select: { updatedAt: true },
-      }),
-    ]);
-    if (!lockedRs) continue;
-
-    if (await isNoQtyCycleStoreExecutionIncomplete(db, { salesOrderId: soId, cycleId })) {
-      continue;
+    const ctx = await resolveStoreNoQtyCreateNextRsPendingContext(db, soId);
+    if (debugStoreRs || String(so.docNo ?? "").trim() === "SO-26-0001") {
+      // eslint-disable-next-line no-console
+      console.log("[debug] fetchStoreNoQtyCreateNextRsPendingActions", {
+        soId,
+        docNo: so.docNo ?? null,
+        ctx,
+      });
     }
+    if (!ctx.eligible) continue;
 
     const nextCycleNo =
-      cycle?.cycleNo != null && Number(cycle.cycleNo) > 0 ? Number(cycle.cycleNo) + 1 : null;
+      ctx.targetCycleNo != null && Number(ctx.targetCycleNo) > 0 ? Number(ctx.targetCycleNo) : null;
     const label =
       nextCycleNo != null && nextCycleNo > 0
         ? `Create Cycle ${nextCycleNo} Requirement Sheet`
         : "Create Next Requirement Sheet";
+
+    const hrefParams = new URLSearchParams({
+      intent: "add",
+      from: "pending-actions",
+      source: "no_qty_so",
+      salesOrderId: String(soId),
+    });
+    if (ctx.targetCycleId != null && Number(ctx.targetCycleId) > 0) {
+      hrefParams.set("cycleId", String(Math.trunc(Number(ctx.targetCycleId))));
+    }
 
     actions.push({
       id: `no-qty-create-next-rs:${soId}`,
@@ -1068,8 +1160,8 @@ async function fetchStoreNoQtyCreateNextRsPendingActions(db = prisma) {
       action: label,
       documentNo: so.docNo ?? null,
       ownerRole: "STORE",
-      ageHours: ageHoursFromTimestamp(lockedRs.updatedAt ?? so.updatedAt),
-      href: `/sales-orders/${soId}/requirement-sheets?intent=add&from=pending-actions&source=no_qty_so&salesOrderId=${soId}`,
+      ageHours: ageHoursFromTimestamp(ctx.ageTimestamp ?? so.updatedAt),
+      href: `/sales-orders/${soId}/requirement-sheets?${hrefParams.toString()}`,
       sourceModule: "NO_QTY_PLANNING",
       currentStatus: "NEXT_RS_READY",
     });
@@ -1546,11 +1638,41 @@ async function getPendingActions(opts = {}) {
   }
 
   const db = opts.db ?? prisma;
+  const startedAt = Date.now();
+  const bucketMs = {};
+
+  async function timedBucket(label, fn) {
+    const t0 = Date.now();
+    const result = await fn();
+    bucketMs[label] = Date.now() - t0;
+    return result;
+  }
 
   const [{ rows: mergedRows }, monthlyPlanActions] = await Promise.all([
-    fetchMergedNormalizedRows({ mode: CONTROL_TOWER_ROW_MODES.FULL }),
-    fetchMonthlyPlanPendingActions(db),
+    timedBucket("normalizedMerge", () => fetchMergedNormalizedRows({ mode: CONTROL_TOWER_ROW_MODES.FULL })),
+    timedBucket("monthlyPlan", () => fetchMonthlyPlanPendingActions(db)),
   ]);
+
+  const bucketCounts = {
+    dispatch: 0,
+    production: 0,
+    qc: 0,
+    procurement: 0,
+    noQty: 0,
+    inventory: 0,
+    salesBill: 0,
+    other: 0,
+  };
+  for (const row of mergedRows) {
+    const type = String(row.rowType ?? "").toUpperCase();
+    if (type.includes("DISPATCH")) bucketCounts.dispatch += 1;
+    else if (type.includes("PRODUCTION") || type.includes("WO_PLANNING") || type.includes("CONTINUE")) {
+      bucketCounts.production += 1;
+    } else if (type.includes("QA")) bucketCounts.qc += 1;
+    else if (type.includes("RM_RISK") || type.includes("INVENTORY")) bucketCounts.inventory += 1;
+    else if (type.includes("NO_QTY")) bucketCounts.noQty += 1;
+    else bucketCounts.other += 1;
+  }
 
   const roleFilteredNormalized = filterNormalizedRowsByOwner(mergedRows, role);
   const dedupedNormalized = dedupeRoleQueueRows(roleFilteredNormalized, role);
@@ -1558,24 +1680,47 @@ async function getPendingActions(opts = {}) {
 
   const supplemental = [...monthlyPlanActions.filter((a) => String(a.ownerRole).toUpperCase() === role)];
 
+  const supplementalStartedAt = Date.now();
   if (role === "ADMIN") {
     supplemental.push(...(await fetchAdminCommercialPendingActions()));
   }
   if (role === "PURCHASE") {
-    supplemental.push(...(await fetchPurchaseProcurementPendingActions(db)));
+    const purchaseChunk = await fetchPurchaseProcurementPendingActions(db);
+    supplemental.push(...purchaseChunk);
+    bucketCounts.procurement += purchaseChunk.length;
   }
   if (role === "STORE") {
-    supplemental.push(...(await fetchStoreIssuePendingActions(db)));
-    supplemental.push(...(await fetchStoreDispatchPendingActions(db)));
-    supplemental.push(...(await fetchStoreProductionRmReturnPendingActions(db)));
-    supplemental.push(...(await fetchStoreGrnPendingActions(db)));
-    supplemental.push(...(await fetchStoreProductionHandoffPendingActions(db)));
-    supplemental.push(...(await fetchStoreNoQtyMonthlyPlanningPendingActions(db)));
-    supplemental.push(...(await fetchStoreNoQtyCreateNextRsPendingActions(db)));
-    supplemental.push(...(await fetchStoreNoQtyPlaceWoPendingActions(db)));
+    const storeSupplemental = await Promise.all([
+      fetchStoreIssuePendingActions(db),
+      fetchStoreDispatchPendingActions(db),
+      fetchStoreProductionRmReturnPendingActions(db),
+      fetchStoreGrnPendingActions(db),
+      fetchStoreProductionHandoffPendingActions(db),
+      fetchStoreNoQtyMonthlyPlanningPendingActions(db),
+      fetchStoreNoQtyCreateNextRsPendingActions(db),
+      fetchStoreNoQtyPlaceWoPendingActions(db),
+    ]);
+    for (const chunk of storeSupplemental) supplemental.push(...chunk);
+    bucketCounts.inventory += storeSupplemental[0]?.length ?? 0;
+    bucketCounts.dispatch += storeSupplemental[1]?.length ?? 0;
+    bucketCounts.procurement += storeSupplemental[3]?.length ?? 0;
+    bucketCounts.noQty +=
+      (storeSupplemental[5]?.length ?? 0) +
+      (storeSupplemental[6]?.length ?? 0) +
+      (storeSupplemental[7]?.length ?? 0);
   }
   if (role === "PRODUCTION" || role === "ADMIN") {
     supplemental.push(...(await fetchProductionRmReturnWaitingActions(db)));
+  }
+  bucketMs.supplemental = Date.now() - supplementalStartedAt;
+
+  if (role === "ADMIN") {
+    bucketCounts.salesBill += supplemental.filter((a) =>
+      String(a.action ?? "").toLowerCase().includes("sales bill"),
+    ).length;
+    bucketCounts.procurement += supplemental.filter((a) =>
+      String(a.href ?? "").includes("procurement") || String(a.action ?? "").toLowerCase().includes("purchase"),
+    ).length;
   }
 
   const combined = [...normalizedActions, ...supplemental];
@@ -1604,6 +1749,25 @@ async function getPendingActions(opts = {}) {
   }
 
   const actions = sortPendingActions(merged);
+  bucketMs.total = Date.now() - startedAt;
+  bucketCounts.total = actions.length;
+
+  let storeRsPendingCount = null;
+  if (role === "ADMIN") {
+    const storeRsActions = await fetchStoreNoQtyCreateNextRsPendingActions(db);
+    storeRsPendingCount = storeRsActions.length;
+  }
+
+  if (process.env.NODE_ENV !== "production" || process.env.PERF_LOG === "1") {
+    // eslint-disable-next-line no-console
+    console.log("[perf] pending-actions buckets", {
+      role,
+      bucketMs,
+      bucketCounts,
+      normalizedRowCount: dedupedNormalized.length,
+      supplementalCount: supplemental.length,
+    });
+  }
 
   return {
     count: actions.length,
@@ -1623,6 +1787,11 @@ async function getPendingActions(opts = {}) {
       generatedAt: new Date().toISOString(),
       normalizedRowCount: dedupedNormalized.length,
       supplementalCount: supplemental.length,
+      perf: {
+        bucketMs,
+        bucketCounts,
+      },
+      ...(storeRsPendingCount != null ? { storeRsPendingCount } : {}),
     },
   };
 }

@@ -35,6 +35,7 @@ export type DispatchCompactExecutionPanelProps = {
   canDispatchPartial: boolean;
   dispatchReadOnly?: boolean;
   primaryFinalizeDraftId?: number | null;
+  draftSavedIdle?: boolean;
   lockingId?: number | null;
   deletingId?: number | null;
   error?: string | null;
@@ -68,6 +69,7 @@ export function DispatchCompactExecutionPanel({
   canDispatchPartial,
   dispatchReadOnly = false,
   primaryFinalizeDraftId,
+  draftSavedIdle = false,
   lockingId,
   deletingId,
   error,
@@ -274,48 +276,54 @@ export function DispatchCompactExecutionPanel({
                     />
                   </div>
 
-                  <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
-                    <Button
-                      type="button"
-                      className="sm:min-w-[8.5rem]"
-                      disabled={dispatchReadOnly || dispatching || !canDispatchFull}
-                      onClick={onDispatchFull}
-                      data-testid="dispatch-compact-full"
-                    >
-                      {dispatching ? "Saving…" : hasOpenDraft ? "Update draft" : "Dispatch Full"}
-                    </Button>
-                    {isPartialMode ? (
-                      <>
-                        <Button
-                          type="button"
-                          variant="secondary"
-                          className="sm:min-w-[8.5rem]"
-                          disabled={dispatchReadOnly || dispatching || !canDispatchPartial}
-                          onClick={onDispatchPartial}
-                          data-testid="dispatch-compact-partial"
-                        >
-                          Dispatch Partial
-                        </Button>
-                        <button
-                          type="button"
-                          className="text-[12px] font-medium text-slate-600 underline underline-offset-2"
-                          onClick={onDisablePartial}
-                        >
-                          Cancel partial
-                        </button>
-                      </>
-                    ) : (
+                  {!draftSavedIdle ? (
+                    <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
                       <Button
                         type="button"
-                        variant="outline"
                         className="sm:min-w-[8.5rem]"
-                        disabled={dispatchReadOnly || dispatching}
-                        onClick={onEnablePartial}
+                        disabled={dispatchReadOnly || dispatching || !canDispatchFull}
+                        onClick={onDispatchFull}
+                        data-testid="dispatch-compact-full"
                       >
-                        Partial dispatch
+                        {dispatching ? "Saving…" : hasOpenDraft ? "Update draft" : "Dispatch Full"}
                       </Button>
-                    )}
-                  </div>
+                      {isPartialMode ? (
+                        <>
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            className="sm:min-w-[8.5rem]"
+                            disabled={dispatchReadOnly || dispatching || !canDispatchPartial}
+                            onClick={onDispatchPartial}
+                            data-testid="dispatch-compact-partial"
+                          >
+                            Dispatch Partial
+                          </Button>
+                          <button
+                            type="button"
+                            className="text-[12px] font-medium text-slate-600 underline underline-offset-2"
+                            onClick={onDisablePartial}
+                          >
+                            Cancel partial
+                          </button>
+                        </>
+                      ) : (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="sm:min-w-[8.5rem]"
+                          disabled={dispatchReadOnly || dispatching || !canDispatchFull}
+                          onClick={onEnablePartial}
+                        >
+                          Partial dispatch
+                        </Button>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="text-[12px] text-amber-950/90">
+                      Draft is saved for the full ready quantity. Finalize dispatch or delete the draft to continue.
+                    </p>
+                  )}
                 </div>
               ) : (
                 <p className="mt-2 text-[13px] text-slate-600">Select an item from the queue.</p>

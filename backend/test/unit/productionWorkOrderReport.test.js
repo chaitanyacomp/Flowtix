@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const {
   buildWorkOrderProductionReport,
   confirmProductionWorkOrderReport,
+  receiveProductionRmReturnPending,
   sumQcForProduction,
 } = require("../../src/services/productionWorkOrderReportService");
 
@@ -510,6 +511,69 @@ describe("productionWorkOrderReportService", () => {
       );
     } finally {
       require(returnPath).buildReturnableLinesForWorkOrder = origReturn;
+      delete require.cache[reportPath];
+    }
+  });
+
+  it("receiveProductionRmReturnPending skips legacy RM wastage for NO_QTY pending rows", async () => {
+    const wastagePath = require.resolve("../../src/services/materialWastageService");
+    const returnPath = require.resolve("../../src/services/materialReturnService");
+    const reportPath = require.resolve("../../src/services/productionWorkOrderReportService");
+    const origWastage = require(wastagePath).createMaterialWastageNote;
+    const origReturn = require(returnPath).createMaterialReturnNote;
+    let wastageCalled = false;
+    require(wastagePath).createMaterialWastageNote = async () => {
+      wastageCalled = true;
+      throw new Error("RM wastage is available for Regular work orders only.");
+    };
+    require(returnPath).createMaterialReturnNote = async () => ({ id: 99, docNo: "MRN-99" });
+    delete require.cache[reportPath];
+    const { receiveProductionRmReturnPending: receivePending } = require(reportPath);
+
+    const pendingRow = {
+      id: 1,
+      workOrderId: 5,
+      itemId: 7,
+      requestedQty: "2",
+      status: "PENDING",
+      remarks: null,
+    };
+    const db = {
+      $transaction: async (run) => run(db),
+      productionRmReturnPending: {
+        findUnique: async () => pendingRow,
+        update: async ({ data }) => ({ ...pendingRow, ...data, status: "RECEIVED" }),
+        count: async () => 0,
+      },
+      productionWorkOrderReport: {
+        findUnique: async () => ({
+          status: "CONFIRMED",
+          remainingQty: 0,
+          lines: [{ itemId: 7, scrapWasteQty: "0.5", item: { itemName: "PP", unit: "Kg" } }],
+          returnPendings: [],
+        }),
+      },
+      workOrder: {
+        findUnique: async () => ({
+          id: 5,
+          salesOrder: { orderType: "NO_QTY" },
+        }),
+        update: async () => ({}),
+      },
+    };
+
+    try {
+      const result = await receivePending(
+        { pendingId: 1, fromLocationId: 1, toLocationId: 2 },
+        { userId: 9 },
+        db,
+      );
+      assert.equal(wastageCalled, false);
+      assert.equal(result.materialReturnNote.docNo, "MRN-99");
+      assert.equal(result.wastageNote, null);
+    } finally {
+      require(wastagePath).createMaterialWastageNote = origWastage;
+      require(returnPath).createMaterialReturnNote = origReturn;
       delete require.cache[reportPath];
     }
   });

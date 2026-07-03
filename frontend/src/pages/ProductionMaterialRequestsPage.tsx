@@ -12,6 +12,8 @@ import { cn } from "../lib/utils";
 import { useToast } from "../contexts/ToastContext";
 import { useAuth } from "../hooks/useAuth";
 import { PageContainer, StickyWorkspaceHead } from "../components/PageHeader";
+import { ErpPageContentGate } from "../components/erp/foundation";
+import { useStablePageLoad } from "../hooks/useStablePageLoad";
 import {
   materialIssueWorkspaceHref,
   productionWorkspaceHref,
@@ -95,6 +97,7 @@ export function ProductionMaterialRequestsPage() {
   const [tab, setTab] = React.useState<"list" | "create">("list");
   const [rows, setRows] = React.useState<PmrRow[]>([]);
   const [loading, setLoading] = React.useState(true);
+  const { firstLoadDone, initialLoading, refreshing, startLoad, finishLoad } = useStablePageLoad();
   const [workOrders, setWorkOrders] = React.useState<WoOption[]>([]);
   const [workOrderId, setWorkOrderId] = React.useState<number | "">("");
   const [bom, setBom] = React.useState<BomSuggestion | null>(null);
@@ -103,6 +106,7 @@ export function ProductionMaterialRequestsPage() {
   const [submitting, setSubmitting] = React.useState(false);
 
   async function loadList(pendingOnly = false) {
+    startLoad();
     setLoading(true);
     try {
       const qs = pendingOnly ? "?pendingForStore=1" : "";
@@ -113,6 +117,7 @@ export function ProductionMaterialRequestsPage() {
       setRows([]);
     } finally {
       setLoading(false);
+      finishLoad();
     }
   }
 
@@ -296,14 +301,21 @@ export function ProductionMaterialRequestsPage() {
         </div>
       ) : (
         <div className="space-y-3">
-          {loading ? (
-            <p className="text-sm text-slate-600">Loading…</p>
-          ) : displayRows.length === 0 ? (
+        <ErpPageContentGate
+          firstLoadDone={firstLoadDone}
+          loading={initialLoading || refreshing}
+          refreshing={refreshing}
+          hasDisplayData={rows.length > 0 || firstLoadDone}
+          skeletonVariant="list"
+          skeletonLines={4}
+          isEmpty={displayRows.length === 0}
+          emptyState={
             <p className="rounded-lg border border-slate-200 bg-white p-4 text-sm text-slate-600">
               {isStore ? "No pending material requests." : "No material requests yet."}
             </p>
-          ) : (
-            displayRows.map((r) => {
+          }
+        >
+          {displayRows.map((r) => {
               const actionableStore = isStore && (r.status === "REQUESTED" || r.status === "PARTIALLY_ISSUED");
               const actionableProd = isProduction && r.workOrderId > 0;
               const cardClickable = actionableStore || actionableProd;
@@ -377,8 +389,8 @@ export function ProductionMaterialRequestsPage() {
                   </div>
                 </section>
               );
-            })
-          )}
+            })}
+        </ErpPageContentGate>
         </div>
       )}
     </PageContainer>

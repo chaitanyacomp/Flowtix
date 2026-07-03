@@ -38,7 +38,7 @@
 |----|----------|--------------|
 | FT-PD-012 | FT ERP Constitution | Laws this document implements—not duplicates |
 | FT-PD-013 | Glossary | Official terms used herein |
-| FT-PD-060+ | Volume 6 — UX Standards | Operational detail for screen patterns |
+| FT-PD-066 | [Volume 6, Ch. 7 — UI/UX Design System](../06_UI_and_Experience_Architecture/Chapter_07_FT_ERP_UI_UX_Design_System.md) | **Mandatory** layout, interaction, and visual architecture law (v1.0.1) |
 | FT-PD-040+ | Volume 4 — Workflow Engine | Workflow pattern specifications |
 
 ---
@@ -69,7 +69,7 @@ This is not module documentation. Domain behavior belongs in Volume 3; workflow 
 - Term definitions (Chapter 3)
 - Field-level domain rules, API contracts, database design
 - Customer configuration playbooks
-- Visual design system (colors, typography tokens)—Volume 6
+- Visual design system (colors, typography tokens)—[Volume 6, Ch. 7 — UI/UX Design System](../06_UI_and_Experience_Architecture/Chapter_07_FT_ERP_UI_UX_Design_System.md) (FT-PD-066)
 
 ### 3.3 Audience use
 

@@ -8,6 +8,17 @@ import { RmWastageModal } from "../components/erp/RmWastageModal";
 import { ApiRequestError, apiFetch } from "../services/api";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
+import { PageContainer, StickyWorkspaceHead, ERPBackNavigation } from "../components/PageHeader";
+import { ErpKpiLabel, ErpKpiSegment, ErpKpiStrip, ErpKpiValue, ErpPageContentGate } from "../components/erp/foundation";
+import { useStablePageLoad } from "../hooks/useStablePageLoad";
+import { useToast } from "../contexts/ToastContext";
+import { bumpErpRefresh } from "../lib/erpRefresh";
+import {
+  isAlreadyProcessedPendingReturnError,
+  isPendingDrivenRmReturnPage,
+} from "../lib/rmReturnPendingUx";
+import { logRmReturnsApiError, parsePositiveIntParam } from "../lib/rmReturnsPageLoad";
+import { computeUnusedIssuedRmQty, validateReturnQtyInput } from "../lib/rmReturnUx";
 
 type LocationRow = {
   id: number;
@@ -136,7 +147,7 @@ export function ProductionRmReturnsPage() {
   const [pendingReturns, setPendingReturns] = React.useState<PendingReturnRow[]>([]);
   const [wastageLine, setWastageLine] = React.useState<ReturnableLine | null>(null);
   const [returnable, setReturnable] = React.useState<ReturnableResponse | null>(null);
-  const [loading, setLoading] = React.useState(true);
+  const { firstLoadDone, initialLoading, refreshing, startLoad, finishLoad } = useStablePageLoad();
   const [loadingReturnable, setLoadingReturnable] = React.useState(false);
   const [loadingPending, setLoadingPending] = React.useState(false);
   const [submitting, setSubmitting] = React.useState(false);
@@ -259,7 +270,7 @@ export function ProductionRmReturnsPage() {
   }
 
   async function loadPageBootstrap() {
-    setLoading(true);
+    startLoad();
     try {
       if (!pendingDrivenMode) {
         await loadContext(
@@ -273,7 +284,7 @@ export function ProductionRmReturnsPage() {
         showError(e instanceof Error ? e.message : "Failed to load RM return workspace");
       }
     } finally {
-      setLoading(false);
+      finishLoad();
     }
     void loadHistory();
     void loadPendingReturns();
@@ -437,9 +448,13 @@ export function ProductionRmReturnsPage() {
         </div>
       </StickyWorkspaceHead>
 
-      {loading ? (
-        <p className="text-sm text-slate-600">Loading…</p>
-      ) : (
+      <ErpPageContentGate
+        firstLoadDone={firstLoadDone}
+        loading={initialLoading || refreshing}
+        refreshing={refreshing}
+        hasDisplayData={firstLoadDone}
+        skeletonVariant="workspace"
+      >
         <div className="flex flex-col gap-4">
           {(loadingPending || pendingReturns.length > 0 || pendingDrivenMode) && (
             <section
@@ -822,7 +837,7 @@ export function ProductionRmReturnsPage() {
             />
           ) : null}
         </div>
-      )}
+      </ErpPageContentGate>
     </PageContainer>
   );
 }

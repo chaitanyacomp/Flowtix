@@ -8,18 +8,11 @@ import { getApiUrl } from "../services/api";
 import { useAuth } from "../hooks/useAuth";
 import { useToast } from "../contexts/ToastContext";
 import { PageContainer, PageSmartBackLink } from "../components/PageHeader";
-import { displayDispatchNo, displaySalesOrderNo } from "../lib/docNoDisplay";
+import { displayDispatchNo, displaySalesBillNo } from "../lib/docNoDisplay";
 import { withReportsReturnContextIfPresent } from "../lib/drillDownRoutes";
-import { ActivityHistoryCard } from "../components/ActivityHistoryCard";
 import { BillExportStatusPanel } from "../components/BillExportStatusPanel";
-import { Badge } from "../components/ui/badge";
 import { ErpModal } from "../components/erp/ErpModal";
-import {
-  OperationalContextBar,
-  OperationalContextSticky,
-  OperationalWorkspaceFooter,
-  OpCtxSep,
-} from "../components/erp/OperationalWorkspaceChrome";
+import { OperationalWorkspaceFooter } from "../components/erp/OperationalWorkspaceChrome";
 import { cn } from "../lib/utils";
 import { SalesBillInvoiceDocument } from "../components/sales/SalesBillInvoiceDocument";
 import { StickyWorkflowActionBar } from "../components/erp/StickyWorkflowActionBar";
@@ -28,17 +21,21 @@ import {
   pickNextEligibleDispatch,
   type EligibleDispatchRow,
 } from "../lib/salesBillBillingQueue";
-
-type SalesBillReceiptRow = {
-  id: number;
-  receiptDate: string;
-  amount: string | number;
-  mode: string;
-  referenceNo?: string | null;
-  remarks?: string | null;
-  createdAt: string;
-  createdBy?: { id: number; name: string } | null;
-};
+import { useWorkQueueContext } from "../hooks/useWorkQueueContext";
+import { SalesBillWorkQueueHeader } from "../components/sales/SalesBillWorkQueueHeader";
+import { SalesBillExportQueuePrompt } from "../components/sales/SalesBillExportQueuePrompt";
+import { SalesBillDocumentChain } from "../components/sales/SalesBillDocumentChain";
+import { SalesBillLinkedDocuments } from "../components/sales/SalesBillLinkedDocuments";
+import { SalesBillActivityTimeline } from "../components/sales/SalesBillActivityTimeline";
+import { SalesBillFinalizeChecklist } from "../components/sales/SalesBillDraftActionPanel";
+import { SalesBillShipToField } from "../components/sales/SalesBillShipToField";
+import {
+  buildSalesBillFinalizeChecks,
+  canFinalizeSalesBill,
+  firstFinalizeBlocker,
+} from "../lib/salesBillFinalizeValidation";
+import { bumpErpRefresh } from "../lib/erpRefresh";
+import { remainingWorkQueueCount } from "../lib/workQueueContext";
 
 function billOrderTypeLabel(ot?: string | null): string {
   if (ot === "NO_QTY") return "NO_QTY";
@@ -92,6 +89,8 @@ type Bill = {
   finalizedAt: string | null;
   cancelledAt?: string | null;
   cancelReason?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
   taxIntraState?: boolean;
   gstMode?: "LOCAL" | "INTERSTATE" | string | null;
   posStateCode?: string | null;
@@ -107,6 +106,10 @@ type Bill = {
   shipToGstinSnapshot?: string;
   shipToStateNameSnapshot?: string;
   shipToStateCodeSnapshot?: string;
+  dispatchShipToLabelSnapshot?: string | null;
+  dispatchShipToAddressSnapshot?: string | null;
+  dispatchShipToStateCodeSnapshot?: string | null;
+  shipToAddressId?: number | null;
   posStateNameSnapshot?: string;
   posStateCodeSnapshot?: string;
   posSourceSnapshot?: string;
@@ -120,7 +123,6 @@ type Bill = {
     salesOrder?: { docNo?: string | null; orderType?: "NORMAL" | "REPLACEMENT" | "NO_QTY" };
   };
   lines: BillLine[];
-  receipts?: SalesBillReceiptRow[];
   /** Document-linked cycle for operator UI (from bill or dispatch), not SO planning pointer. */
   operationalCycleNo?: number | null;
   cycle?: { id: number; cycleNo: number } | null;
@@ -165,16 +167,6 @@ function formatEffectiveDate(iso: string | null | undefined): string {
   return d.toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" });
 }
 
-const COMMERCIAL_PAYMENT_MODES = ["CASH", "BANK", "UPI", "CHEQUE", "OTHER"] as const;
-
-function todayDateInput(): string {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
 function printSalesBillInvoice() {
   document.body.classList.add("sales-bill-invoice-print");
   window.print();
@@ -192,10 +184,12 @@ export function SalesBillEditPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const billId = Number(idParam);
+  const { workQueue, isPendingActionsQueue } = useWorkQueueContext();
+  const fromPendingActions =
+    new URLSearchParams(location.search).get("from") === "pending-actions" || isPendingActionsQueue;
   const userRole = useAuth().user?.role;
   const toast = useToast();
   const isAdmin = userRole === "ADMIN";
-  const canEditPaymentTracking = userRole === "ADMIN";
 
   const [bill, setBill] = React.useState<Bill | null>(null);
   const [loadError, setLoadError] = React.useState<string | null>(null);
@@ -209,16 +203,6 @@ export function SalesBillEditPage() {
   const [resetting, setResetting] = React.useState(false);
   const [cancelling, setCancelling] = React.useState(false);
   const [exportError, setExportError] = React.useState<string | null>(null);
-  const [payDue, setPayDue] = React.useState("");
-  const [payRemarks, setPayRemarks] = React.useState("");
-  const [rcDate, setRcDate] = React.useState(() => todayDateInput());
-  const [rcAmount, setRcAmount] = React.useState("");
-  const [rcMode, setRcMode] = React.useState<(typeof COMMERCIAL_PAYMENT_MODES)[number]>("BANK");
-  const [rcRef, setRcRef] = React.useState("");
-  const [rcRemarks, setRcRemarks] = React.useState("");
-  const [rcAdminPwd, setRcAdminPwd] = React.useState("");
-  const [paySaving, setPaySaving] = React.useState(false);
-  const [rcSaving, setRcSaving] = React.useState(false);
   const [adminCancelAuth, setAdminCancelAuth] = React.useState<{
     open: boolean;
     reason: string;
@@ -226,6 +210,7 @@ export function SalesBillEditPage() {
   } | null>(null);
   const [reExportAuth, setReExportAuth] = React.useState<{ open: boolean; password: string } | null>(null);
   const [nextBillHref, setNextBillHref] = React.useState<string | null>(null);
+  const [exportQueuePrompt, setExportQueuePrompt] = React.useState<{ remaining: number } | null>(null);
 
   const refreshBillingQueueHint = React.useCallback(async (excludeDispatchId?: number) => {
     try {
@@ -287,6 +272,12 @@ export function SalesBillEditPage() {
     return bill.lines.reduce((s, l) => s + n(l.qty), 0);
   }, [bill]);
 
+  const finalizeChecks = React.useMemo(
+    () => (bill ? buildSalesBillFinalizeChecks(bill, billDate) : []),
+    [bill, billDate],
+  );
+  const finalizeReady = canFinalizeSalesBill(finalizeChecks);
+
   /** Informational only — no links (accounts screen). */
   const showNoQtyExportedOpsNote = Boolean(
     bill && isNoQtyBill && bill.status === "FINALIZED" && bill.isExported,
@@ -313,12 +304,6 @@ export function SalesBillEditPage() {
       })
       .catch((e) => setLoadError(e instanceof Error ? e.message : "Could not load this bill."));
   }, [billId]);
-
-  React.useEffect(() => {
-    if (!bill || bill.status !== "FINALIZED") return;
-    setPayDue(bill.dueDate ? toDateInputValue(bill.dueDate) : "");
-    setPayRemarks(bill.paymentRemarks?.trim() ?? "");
-  }, [bill?.id, bill?.status, bill?.dueDate, bill?.paymentRemarks]);
 
   const showNoQtyRateUi = bill?.dispatch?.salesOrder?.orderType === "NO_QTY";
   const firstLine = bill?.lines?.[0];
@@ -347,6 +332,12 @@ export function SalesBillEditPage() {
 
   async function finalize() {
     if (!bill || readOnly) return;
+    const checks = buildSalesBillFinalizeChecks(bill, billDate);
+    if (!canFinalizeSalesBill(checks)) {
+      const blocker = firstFinalizeBlocker(checks);
+      setFormError(blocker ?? "Complete all validation checks before finalizing.");
+      return;
+    }
     setFormError(null);
     setSaving(true);
     try {
@@ -363,98 +354,6 @@ export function SalesBillEditPage() {
       setFormError(e instanceof Error ? e.message : "Could not finalize.");
     } finally {
       setSaving(false);
-    }
-  }
-
-  async function savePaymentTracking() {
-    if (!bill || bill.status !== "FINALIZED" || bill.cancelledAt || !canEditPaymentTracking) return;
-    setPaySaving(true);
-    setFormError(null);
-    try {
-      const body = {
-        dueDate: payDue.trim() ? payDue : null,
-        paymentRemarks: payRemarks.trim() || null,
-      };
-      const updated = await apiFetch<Bill>(`/api/sales-bills/${bill.id}/payment-tracking`, {
-        method: "PATCH",
-        body: JSON.stringify(body),
-      });
-      setBill(updated);
-      toast.showSuccess("Payment tracking saved.");
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Could not save payment tracking.";
-      setFormError(msg);
-      toast.showError(msg);
-    } finally {
-      setPaySaving(false);
-    }
-  }
-
-  async function addReceipt() {
-    if (!bill || bill.status !== "FINALIZED" || bill.cancelledAt || !canEditPaymentTracking) return;
-    const amt = Number(rcAmount);
-    if (!Number.isFinite(amt) || amt <= 0) {
-      toast.showError("Enter a positive receipt amount.");
-      return;
-    }
-    setRcSaving(true);
-    setFormError(null);
-    try {
-      const body: Record<string, unknown> = {
-        receiptDate: rcDate,
-        amount: amt,
-        mode: rcMode,
-        referenceNo: rcRef.trim() || null,
-        remarks: rcRemarks.trim() || null,
-      };
-      if (rcAdminPwd.trim()) body.adminPassword = rcAdminPwd.trim();
-      const updated = await apiFetch<Bill>(`/api/sales-bills/${bill.id}/receipts`, {
-        method: "POST",
-        body: JSON.stringify(body),
-      });
-      setBill(updated);
-      setRcAmount("");
-      setRcRef("");
-      setRcRemarks("");
-      setRcAdminPwd("");
-      toast.showSuccess("Receipt added.");
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Could not add receipt.";
-      setFormError(msg);
-      toast.showError(msg);
-    } finally {
-      setRcSaving(false);
-    }
-  }
-
-  async function deleteReceipt(receiptId: number) {
-    if (!bill || bill.status !== "FINALIZED" || bill.cancelledAt || !canEditPaymentTracking) return;
-    let adminPassword: string | undefined;
-    if (!isAdmin) {
-      const p = window.prompt("Enter an admin password to remove this receipt:");
-      if (p == null) return;
-      if (!String(p).trim()) {
-        toast.showError("Admin password required to delete a receipt.");
-        return;
-      }
-      adminPassword = String(p).trim();
-    }
-    setPaySaving(true);
-    setFormError(null);
-    try {
-      const updated = await apiFetch<Bill>(`/api/sales-bills/${bill.id}/receipts/${receiptId}`, {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(adminPassword ? { adminPassword } : {}),
-      });
-      setBill(updated);
-      toast.showSuccess("Receipt removed.");
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Could not delete receipt.";
-      setFormError(msg);
-      toast.showError(msg);
-    } finally {
-      setPaySaving(false);
     }
   }
 
@@ -493,12 +392,22 @@ export function SalesBillEditPage() {
       a.download = `sales-bill-${safeNo}.xml`;
       a.click();
       URL.revokeObjectURL(a.href);
-      alert("Tally XML downloaded.");
       const refreshed = await apiFetch<Bill>(`/api/sales-bills/${bill.id}`);
       setBill(refreshed);
       setExportError(null);
       setReExportAuth(null);
       await loadSoHead(refreshed.dispatch.soId);
+      bumpErpRefresh(["pending-actions", "dashboard"]);
+      if (workQueue) {
+        const remaining = remainingWorkQueueCount(workQueue, true);
+        if (remaining === 0) {
+          navigate("/pending-actions", { replace: true });
+          return;
+        }
+        setExportQueuePrompt({ remaining });
+        return;
+      }
+      alert("Tally XML downloaded.");
       await refreshBillingQueueHint(refreshed.dispatch.id);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Could not export to Tally";
@@ -667,7 +576,10 @@ export function SalesBillEditPage() {
     return (
       <PageContainer className="space-y-4">
         <div className="flex flex-wrap gap-2">
-          <PageSmartBackLink defaultTo="/sales-bills" defaultLabel="Back to sales bills" />
+          <PageSmartBackLink
+            defaultTo={fromPendingActions ? "/pending-actions" : "/sales-bills"}
+            defaultLabel={fromPendingActions ? "Back to Pending Actions" : "Back to sales bills"}
+          />
         </div>
         <div className="min-w-0 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm leading-relaxed text-red-800 break-words">
           {loadError}
@@ -685,6 +597,13 @@ export function SalesBillEditPage() {
   }
 
   const billOperationalCycleNo = billHeaderOperationalCycleNo(bill);
+  const systemBillNo = displaySalesBillNo(bill.id, null, bill.docNo);
+  const gstModeLabel =
+    bill.gstMode === "INTERSTATE" || (bill.gstMode == null && bill.taxIntraState === false)
+      ? "Interstate"
+      : bill.gstMode === "LOCAL" || (bill.gstMode == null && bill.taxIntraState === true)
+        ? "Local"
+        : "POS Pending";
 
   return (
     <PageContainer className="erp-txn-workspace erp-txn-workspace--sticky-submit">
@@ -787,77 +706,74 @@ export function SalesBillEditPage() {
           </div>
         </ErpModal>
       ) : null}
-      <OperationalContextSticky className="space-y-1">
+      {exportQueuePrompt && workQueue ? (
+        <SalesBillExportQueuePrompt
+          open
+          workQueue={workQueue}
+          remainingCount={exportQueuePrompt.remaining}
+          onClose={() => setExportQueuePrompt(null)}
+        />
+      ) : null}
+      <div className="space-y-2">
         <div className="flex flex-wrap items-center gap-2">
-          <PageSmartBackLink defaultTo="/sales-bills" defaultLabel="Back to sales bills" />
-          <h1 className="text-sm font-semibold leading-tight text-slate-900">Sales bill</h1>
-          <span className="text-[11px] text-slate-500">
-            {bill.status === "CANCELLED"
-              ? "Cancelled"
-              : readOnly
-                ? "View only"
-                : "Draft"}
-          </span>
+          <PageSmartBackLink
+            defaultTo={fromPendingActions ? "/pending-actions" : "/sales-bills"}
+            defaultLabel={fromPendingActions ? "Back to Pending Actions" : "Back to sales bills"}
+          />
         </div>
-        <OperationalContextBar>
-          <span className="font-semibold text-slate-600">SO</span>
-          <span className="rounded border border-sky-200 bg-sky-50 px-1.5 py-0.5 font-mono text-[11px] font-semibold tabular-nums text-sky-950">
-            {displaySalesOrderNo(bill.dispatch.soId, bill.dispatch.salesOrder?.docNo)}
-          </span>
-          <OpCtxSep />
-          <span className="max-w-[14rem] truncate font-medium text-slate-800" title={bill.customer.name}>
-            {bill.customer.name}
-          </span>
-          <OpCtxSep />
-          <Badge variant="default" className="h-5 rounded-md border-slate-200 px-1.5 text-[10px] font-semibold text-slate-700">
-            {billOrderTypeLabel(soHead?.orderType ?? bill.dispatch.salesOrder?.orderType)}
-          </Badge>
-          {billOperationalCycleNo != null ? (
-            <>
-              <OpCtxSep />
-              <span className="font-medium text-slate-700">Cycle {billOperationalCycleNo}</span>
-            </>
-          ) : null}
-          <OpCtxSep />
-          <span className="font-semibold text-slate-600">Dispatch</span>
-          <span className="rounded border border-violet-200 bg-violet-50 px-1.5 py-0.5 font-mono text-[11px] font-semibold tabular-nums text-violet-900">
-            {displayDispatchNo(bill.dispatchId, bill.dispatch.docNo)}
-          </span>
-          <OpCtxSep />
-          <span className="font-semibold text-slate-600">Bill</span>
-          <span className="font-mono text-[11px] font-semibold text-slate-900">
-            {bill.docNo?.trim()
-              ? bill.docNo.trim()
-              : bill.billNo?.trim()
-                ? bill.billNo.trim()
-                : `#${bill.id}`}
-          </span>
-          <OpCtxSep />
-          <span
-            className={cn(
-              "rounded px-1.5 py-0.5 text-[11px] font-semibold",
-              bill.status === "CANCELLED"
-                ? "bg-red-50 text-red-900 ring-1 ring-red-200"
-                : bill.status === "FINALIZED"
-                  ? "bg-emerald-50 text-emerald-950 ring-1 ring-emerald-200"
-                  : "bg-amber-50 text-amber-950 ring-1 ring-amber-200",
-            )}
-          >
-            {bill.status === "DRAFT" ? "Draft" : bill.status === "FINALIZED" ? "Finalized" : "Cancelled"}
-          </span>
-          {bill.status === "FINALIZED" ? (
-            <>
-              <OpCtxSep />
-              <span className={cn("text-[11px] font-semibold", bill.isExported ? "text-emerald-800" : "text-slate-600")}>
-                {bill.isExported ? "Exported" : "Not exported"}
-              </span>
-            </>
-          ) : null}
-          <OpCtxSep />
-          <span className="font-semibold text-slate-600">Amount</span>
-          <span className="font-semibold tabular-nums text-slate-900">{formatMoney(bill.netAmount)}</span>
-        </OperationalContextBar>
-      </OperationalContextSticky>
+
+        {workQueue ? (
+          <SalesBillWorkQueueHeader
+            workQueue={workQueue}
+            salesOrderId={bill.dispatch.soId}
+            salesOrderDocNo={bill.dispatch.salesOrder?.docNo}
+            dispatchId={bill.dispatchId}
+            dispatchDocNo={bill.dispatch.docNo}
+          />
+        ) : null}
+
+        <SalesBillDocumentChain
+          salesOrderId={bill.dispatch.soId}
+          salesOrderDocNo={bill.dispatch.salesOrder?.docNo}
+          dispatchId={bill.dispatchId}
+          dispatchDocNo={bill.dispatch.docNo}
+          billId={bill.id}
+          billDocNo={bill.docNo}
+        />
+
+        <div
+          className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2.5 shadow-sm"
+          data-testid="sales-bill-header-summary"
+        >
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <span
+              className={cn(
+                "rounded-md px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide",
+                bill.status === "CANCELLED"
+                  ? "bg-red-50 text-red-900 ring-1 ring-red-200"
+                  : bill.status === "FINALIZED"
+                    ? "bg-emerald-50 text-emerald-950 ring-1 ring-emerald-200"
+                    : "bg-amber-50 text-amber-950 ring-1 ring-amber-200",
+              )}
+            >
+              {bill.status === "DRAFT" ? "Draft" : bill.status === "FINALIZED" ? "Finalized" : "Cancelled"}
+            </span>
+            <span className="text-[12px] text-slate-600">
+              Customer <span className="font-medium text-slate-900">{bill.customer.name}</span>
+            </span>
+            <span className="hidden text-slate-300 sm:inline">·</span>
+            <span className="font-mono text-[12px] tabular-nums text-violet-900">
+              {displayDispatchNo(bill.dispatchId, bill.dispatch.docNo)}
+            </span>
+            <span className="hidden text-slate-300 sm:inline">·</span>
+            <span className="font-mono text-[12px] tabular-nums text-slate-900">{systemBillNo}</span>
+          </div>
+          <div className="text-right">
+            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Grand total</div>
+            <div className="text-lg font-bold tabular-nums text-slate-900">₹{formatMoney(bill.netAmount)}</div>
+          </div>
+        </div>
+      </div>
 
       {formError ? (
         <div className="min-w-0 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm leading-relaxed text-red-800 break-words">
@@ -871,36 +787,26 @@ export function SalesBillEditPage() {
             <CardHeader className="erp-txn-card-header">
               <CardTitle className="text-sm font-semibold text-slate-900">Bill details</CardTitle>
             </CardHeader>
-            <CardContent className="erp-txn-card-body grid min-w-0 gap-2">
-              <div className="rounded-md border border-slate-200 bg-slate-50/70 p-2">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="text-sm font-medium text-slate-800">Commercial</div>
-                  <span
-                    className={cn(
-                      "rounded-full px-2 py-0.5 text-[11px] font-semibold",
-                      bill.gstMode === "INTERSTATE"
-                        ? "bg-purple-100 text-purple-900"
-                        : bill.gstMode === "LOCAL"
-                          ? "bg-emerald-100 text-emerald-900"
-                          : bill.taxIntraState === false
+            <CardContent className="erp-txn-card-body grid min-w-0 gap-3">
+              <section className="rounded-md border border-slate-200 bg-slate-50/70 p-3">
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-600">Commercial</h3>
+                <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <div className="rounded border border-slate-200 bg-white px-2.5 py-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-[11px] font-medium text-slate-600">Bill To</div>
+                      <span
+                        className={cn(
+                          "rounded-full px-2 py-0.5 text-[10px] font-semibold",
+                          bill.gstMode === "INTERSTATE" || (bill.gstMode == null && bill.taxIntraState === false)
                             ? "bg-purple-100 text-purple-900"
-                            : bill.taxIntraState === true
+                            : bill.gstMode === "LOCAL" || (bill.gstMode == null && bill.taxIntraState === true)
                               ? "bg-emerald-100 text-emerald-900"
                               : "bg-slate-100 text-slate-700",
-                    )}
-                    title={bill.posStateName ?? bill.posStateNameSnapshot ?? ""}
-                  >
-                    {bill.gstMode === "INTERSTATE" || (bill.gstMode == null && bill.taxIntraState === false)
-                      ? "Interstate"
-                      : bill.gstMode === "LOCAL" || (bill.gstMode == null && bill.taxIntraState === true)
-                        ? "Local"
-                        : "POS Pending"}
-                  </span>
-                </div>
-
-                <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  <div className="rounded border border-slate-200 bg-white px-2 py-1.5">
-                    <div className="text-[11px] font-medium text-slate-600">Bill To</div>
+                        )}
+                      >
+                        {gstModeLabel}
+                      </span>
+                    </div>
                     <div className="mt-0.5 text-[13px] font-semibold text-slate-900">
                       {bill.customerNameSnapshot?.trim() || bill.customer.name}
                     </div>
@@ -923,112 +829,98 @@ export function SalesBillEditPage() {
                         </span>
                       ) : null}
                     </div>
-                  </div>
-
-                  <div className="rounded border border-slate-200 bg-white px-2 py-1.5">
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="text-[11px] font-medium text-slate-600">Ship To</div>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        className="h-7 px-2 text-xs"
-                        onClick={() => setShowCommercialAddress((s) => !s)}
-                        aria-expanded={showCommercialAddress}
-                      >
-                        {showCommercialAddress ? "Hide address" : "View address"}
-                      </Button>
-                    </div>
-                    <div className="mt-0.5 text-[13px] font-semibold text-slate-900">
-                      {bill.shipToLabelSnapshot?.trim() ||
-                      bill.shipToAddressSnapshot?.trim() ||
-                      bill.shipToStateCodeSnapshot?.trim() ||
-                      bill.shipToGstinSnapshot?.trim()
-                        ? bill.shipToLabelSnapshot?.trim() || "Delivery address"
-                        : "Same as Bill To"}
-                    </div>
-                    <div className="mt-0.5 text-[12px] text-slate-600">
-                      {(bill.shipToStateCodeSnapshot ?? "").trim() || (bill.shipToStateNameSnapshot ?? "").trim() ? (
-                        <>
-                          {(bill.shipToStateCodeSnapshot ?? "").trim()}
-                          {(bill.shipToStateCodeSnapshot ?? "").trim() && (bill.shipToStateNameSnapshot ?? "").trim()
-                            ? " · "
-                            : ""}
-                          {(bill.shipToStateNameSnapshot ?? "").trim()}
-                        </>
-                      ) : (
-                        "State not set"
-                      )}
-                      {bill.shipToGstinSnapshot?.trim() ? (
-                        <span className="ml-2 rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[11px] text-slate-700">
-                          {bill.shipToGstinSnapshot.trim()}
-                        </span>
-                      ) : null}
-                    </div>
                     {showCommercialAddress ? (
-                      <div className="mt-1 space-y-1 rounded border border-slate-200 bg-slate-50 p-2 text-[12px] leading-snug text-slate-700">
-                        <div>
-                          <span className="font-medium text-slate-800">Bill To address: </span>
-                          <span className="whitespace-pre-wrap break-words">
-                            {bill.billToAddressSnapshot?.trim() || "Not recorded on this bill"}
-                          </span>
-                        </div>
-                        <div>
-                          <span className="font-medium text-slate-800">Ship To address: </span>
-                          <span className="whitespace-pre-wrap break-words">
-                            {bill.shipToAddressSnapshot?.trim() ||
-                            bill.shipToLabelSnapshot?.trim() ||
-                            bill.shipToStateCodeSnapshot?.trim()
-                              ? bill.shipToAddressSnapshot?.trim() || "Same as Bill To"
-                              : "Same as Bill To"}
-                          </span>
-                        </div>
-                        {(bill.posStateCodeSnapshot ?? bill.posStateCode)?.trim() ? (
-                          <div className="text-[11px] text-slate-500">
-                            POS: {(bill.posStateCodeSnapshot ?? bill.posStateCode)?.trim()}
-                            {(bill.posStateNameSnapshot ?? bill.posStateName)?.trim()
-                              ? ` · ${(bill.posStateNameSnapshot ?? bill.posStateName)?.trim()}`
-                              : ""}
-                          </div>
-                        ) : null}
+                      <div className="mt-2 rounded border border-slate-200 bg-slate-50 p-2 text-[12px] leading-snug text-slate-700">
+                        <span className="font-medium text-slate-800">Address: </span>
+                        <span className="whitespace-pre-wrap break-words">
+                          {bill.billToAddressSnapshot?.trim() || "Not recorded"}
+                        </span>
                       </div>
                     ) : null}
                   </div>
+                  <SalesBillShipToField
+                    bill={bill}
+                    readOnly={readOnly}
+                    showAddress={showCommercialAddress}
+                    onToggleAddress={() => setShowCommercialAddress((s) => !s)}
+                    onBillUpdated={(updated) => {
+                      setBill(updated as Bill);
+                      setFormError(null);
+                    }}
+                    onError={(msg) => setFormError(msg)}
+                  />
                 </div>
-              </div>
+              </section>
 
-              <div className="grid gap-1 sm:grid-cols-2 sm:gap-3">
-                <div className="grid gap-1">
-                  <span className="text-xs font-medium text-slate-600">Bill no.</span>
-                  <Input value={billNo} disabled={readOnly} onChange={(e) => setBillNo(e.target.value)} placeholder="Optional draft; required for export" />
+              <section className="rounded-md border border-slate-200 p-3">
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-600">Billing</h3>
+                <div className="mt-2 grid gap-3 sm:grid-cols-2">
+                  <div className="grid gap-1">
+                    <span className="text-xs font-medium text-slate-600">Sales Bill No. *</span>
+                    <div className="flex h-10 items-center rounded-md border border-slate-200 bg-slate-50 px-3 font-mono text-sm font-semibold tabular-nums text-slate-900">
+                      {systemBillNo}
+                    </div>
+                  </div>
+                  <div className="grid gap-1">
+                    <span className="text-xs font-medium text-slate-600">Bill date *</span>
+                    <Input type="date" value={billDate} disabled={readOnly} onChange={(e) => setBillDate(e.target.value)} />
+                  </div>
+                  <div className="grid gap-1 sm:col-span-2">
+                    <span className="text-xs font-medium text-slate-600">Customer invoice no. (optional)</span>
+                    <Input
+                      value={billNo}
+                      disabled={readOnly}
+                      onChange={(e) => setBillNo(e.target.value)}
+                      placeholder="Customer reference / invoice number"
+                    />
+                  </div>
                 </div>
-                <div className="grid gap-1">
-                  <span className="text-xs font-medium text-slate-600">Bill date *</span>
-                  <Input type="date" value={billDate} disabled={readOnly} onChange={(e) => setBillDate(e.target.value)} />
-                </div>
-              </div>
+              </section>
+
               {showNoQtyRateUi ? (
-                <div className="rounded-md border border-amber-100 bg-amber-50/90 px-3 py-2 text-sm text-amber-950">
-                  <div className="font-semibold">
+                <section className="rounded-md border border-amber-100 bg-amber-50/90 px-3 py-2">
+                  <h3 className="text-xs font-semibold uppercase tracking-wide text-amber-900">Pricing</h3>
+                  <div className="mt-1 text-sm font-semibold text-amber-950">
                     Applicable rate: ₹{headlineApplicableRate}{" "}
                     <span className="font-normal text-amber-900/90">(Effective from {headlineEffective})</span>
                   </div>
-                  <p className="mt-1 text-xs leading-snug text-amber-900/85">Rate follows bill date.</p>
-                </div>
+                  <p className="mt-1 text-xs text-amber-900/85">Rate follows bill date.</p>
+                </section>
               ) : null}
-              <div className="erp-context-inline rounded border border-slate-200 bg-slate-50/80 px-2 py-1.5">
-                <span className="text-slate-500">Dispatch</span>
-                <span className="font-mono text-[11px] font-semibold text-violet-900">{displayDispatchNo(bill.dispatchId, bill.dispatch.docNo)}</span>
-                <span className="text-slate-300">|</span>
-                <span className="text-slate-500">SO</span>
-                <span className="font-mono text-[11px] font-semibold text-sky-900">
-                  {displaySalesOrderNo(bill.dispatch.soId, bill.dispatch.salesOrder?.docNo)}
-                </span>
-              </div>
-              <div className="grid gap-1">
-                <span className="text-xs font-medium text-slate-600">Remarks</span>
-                <Input value={remarks} disabled={readOnly} onChange={(e) => setRemarks(e.target.value)} placeholder="Optional" />
-              </div>
+
+              <section className="rounded-md border border-slate-200 p-3">
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-600">Tax</h3>
+                <div className="mt-2 grid gap-2 text-sm sm:grid-cols-3">
+                  <div>
+                    <div className="text-[11px] text-slate-500">GST mode</div>
+                    <div className="font-medium text-slate-900">{gstModeLabel}</div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] text-slate-500">POS state</div>
+                    <div className="font-medium text-slate-900">
+                      {(bill.posStateCodeSnapshot ?? bill.posStateCode ?? "").trim() || "—"}
+                      {(bill.posStateNameSnapshot ?? bill.posStateName)?.trim()
+                        ? ` · ${(bill.posStateNameSnapshot ?? bill.posStateName)?.trim()}`
+                        : ""}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] text-slate-500">Order type</div>
+                    <div className="font-medium text-slate-900">
+                      {billOrderTypeLabel(soHead?.orderType ?? bill.dispatch.salesOrder?.orderType)}
+                      {billOperationalCycleNo != null ? ` · Cycle ${billOperationalCycleNo}` : ""}
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <section className="rounded-md border border-slate-200 p-3">
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-600">Remarks</h3>
+                <div className="mt-2 grid gap-1">
+                  <Input value={remarks} disabled={readOnly} onChange={(e) => setRemarks(e.target.value)} placeholder="Optional notes for this bill" />
+                </div>
+              </section>
+
               {bill.status === "CANCELLED" ? (
                 <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
                   <div className="font-medium">Cancelled</div>
@@ -1098,7 +990,7 @@ export function SalesBillEditPage() {
                         {showNoQtyRateUi ? <th className="text-right">Eff. from</th> : null}
                         <th className="text-right">Rate</th>
                         <th className="text-right">Taxable</th>
-                        <th className="text-right">Tax</th>
+                        <th className="text-right">GST</th>
                         <th className="text-right">Total</th>
                       </tr>
                     </thead>
@@ -1155,6 +1047,32 @@ export function SalesBillEditPage() {
         </div>
 
         <aside className="min-w-0 space-y-2 lg:sticky lg:top-[3.25rem] lg:self-start">
+          {bill.status === "DRAFT" && !finalizeReady ? (
+            <Card className="overflow-hidden shadow-sm ring-1 ring-amber-100">
+              <CardHeader className="erp-txn-card-header pb-2">
+                <CardTitle className="text-xs font-semibold uppercase tracking-wide text-amber-900">
+                  Finalize readiness
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="erp-txn-card-body pt-0">
+                <SalesBillFinalizeChecklist checks={finalizeChecks} />
+              </CardContent>
+            </Card>
+          ) : null}
+
+          {bill.status === "DRAFT" ? (
+            <Button
+              type="button"
+              variant="ghost"
+              className="h-9 w-full text-sm text-red-700 hover:bg-red-50 hover:text-red-800"
+              data-testid="delete-sales-bill-draft-btn"
+              disabled={deleting || saving || bill.isExported}
+              onClick={() => void deleteDraft()}
+            >
+              {deleting ? "Deleting…" : "Delete Draft"}
+            </Button>
+          ) : null}
+
           <Card className="overflow-hidden shadow-sm ring-1 ring-slate-100">
             <CardHeader className="erp-txn-card-header">
               <CardTitle className="text-sm font-semibold text-slate-900">Totals</CardTitle>
@@ -1183,42 +1101,6 @@ export function SalesBillEditPage() {
             </CardContent>
           </Card>
 
-          <Card className="overflow-hidden shadow-sm ring-1 ring-slate-100">
-            <CardHeader className="erp-txn-card-header">
-              <CardTitle className="text-sm font-semibold text-slate-900">Actions</CardTitle>
-            </CardHeader>
-            <CardContent className="erp-txn-card-body flex flex-col gap-1.5 pt-0">
-              <Button type="button" data-testid="finalize-sales-bill-btn" disabled={readOnly || saving} onClick={() => void finalize()}>
-                Finalize bill
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                data-testid="save-sales-bill-draft-btn"
-                disabled={readOnly || saving}
-                onClick={() => void saveDraft()}
-              >
-                Save draft
-              </Button>
-              {bill.status === "DRAFT" ? (
-                <Button
-                  type="button"
-                  variant="destructive"
-                  data-testid="delete-sales-bill-draft-btn"
-                  disabled={deleting || bill.isExported}
-                  onClick={() => void deleteDraft()}
-                >
-                  Delete draft
-                </Button>
-              ) : null}
-              {bill.status === "FINALIZED" ? (
-                <Button type="button" variant="outline" data-testid="cancel-sales-bill-btn" disabled={cancelling} onClick={() => void cancelFinalized()}>
-                  Cancel bill
-                </Button>
-              ) : null}
-            </CardContent>
-          </Card>
-
           <BillExportStatusPanel
             lifecycle={bill.status === "CANCELLED" ? "CANCELLED" : bill.status === "FINALIZED" ? "FINALIZED" : "DRAFT"}
             isExported={Boolean(bill.isExported)}
@@ -1233,181 +1115,51 @@ export function SalesBillEditPage() {
             onExport={exportToTally}
             onResetExport={resetExport}
             allowReExport
-            density="compact"
-            className="shadow-none ring-1 ring-slate-100"
+            density="default"
+            className="shadow-sm ring-1 ring-slate-100"
+          />
+
+          {bill.status === "FINALIZED" ? (
+            <Button
+              type="button"
+              variant="outline"
+              className="w-full"
+              data-testid="cancel-sales-bill-btn"
+              disabled={cancelling}
+              onClick={() => void cancelFinalized()}
+            >
+              Cancel bill
+            </Button>
+          ) : null}
+
+          <SalesBillLinkedDocuments
+            billId={bill.id}
+            billDocNo={bill.docNo}
+            salesOrderId={bill.dispatch.soId}
+            salesOrderDocNo={bill.dispatch.salesOrder?.docNo}
+            dispatchId={bill.dispatchId}
+            dispatchDocNo={bill.dispatch.docNo}
+            customerId={bill.customerId}
+            customerName={bill.customer.name}
+            isExported={bill.isExported}
+          />
+
+          <SalesBillActivityTimeline
+            billId={bill.id}
+            createdAt={bill.createdAt}
+            updatedAt={bill.updatedAt}
+            finalizedAt={bill.finalizedAt}
+            exportedAt={bill.exportedAt}
+            exportedByName={bill.exportedBy?.name}
+            cancelledAt={bill.cancelledAt}
           />
 
           {bill.status === "FINALIZED" && !bill.cancelledAt ? (
             <Card className="overflow-hidden shadow-sm ring-1 ring-slate-100">
-              <CardHeader className="border-b border-slate-100 pb-2 pt-3">
-                <CardTitle className="text-sm font-semibold text-slate-900">Payment tracking</CardTitle>
-                <p className="text-[11px] leading-snug text-slate-500">
-                  Commercial follow-up only — not statutory accounting. Status updates from received vs net.
+              <CardContent className="pt-3">
+                <p className="text-[11px] leading-snug text-slate-600">
+                  Payment tracking is not enabled in this ERP version.
                 </p>
-              </CardHeader>
-              <CardContent className="flex flex-col gap-3 pt-3">
-                <div className="flex flex-wrap gap-3 text-[12px]">
-                  <span className="text-slate-600">
-                    Status:{" "}
-                    <span className="font-semibold tabular-nums text-slate-900">{bill.paymentStatus ?? "—"}</span>
-                  </span>
-                  <span className="text-slate-600">
-                    Net: <span className="font-semibold tabular-nums text-slate-900">{formatMoney(bill.netAmount)}</span>
-                  </span>
-                  <span className="text-slate-600">
-                    Received:{" "}
-                    <span className="font-semibold tabular-nums text-slate-900">
-                      {bill.receivedAmount != null ? formatMoney(bill.receivedAmount) : "—"}
-                    </span>
-                  </span>
-                  <span className="text-slate-600">
-                    Pending:{" "}
-                    <span className="font-semibold tabular-nums text-slate-900">
-                      {bill.pendingAmount != null ? formatMoney(bill.pendingAmount) : formatMoney(bill.netAmount)}
-                    </span>
-                  </span>
-                </div>
-
-                <div className="overflow-x-auto rounded-md border border-slate-100">
-                  <table className="erp-table erp-table-dense w-full min-w-[520px] text-[11px] [&_td]:py-1 [&_th]:py-1">
-                    <thead>
-                      <tr>
-                        <th className="text-left">Date</th>
-                        <th className="text-right">Amount</th>
-                        <th className="text-left">Mode</th>
-                        <th className="text-left">Ref</th>
-                        <th className="text-left">Remarks</th>
-                        <th className="text-right"> </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(bill.receipts ?? []).length === 0 ? (
-                        <tr>
-                          <td colSpan={6} className="text-slate-500">
-                            No receipts yet.
-                          </td>
-                        </tr>
-                      ) : (
-                        (bill.receipts ?? []).map((r) => (
-                          <tr key={r.id}>
-                            <td className="whitespace-nowrap">{formatEffectiveDate(r.receiptDate)}</td>
-                            <td className="text-right tabular-nums font-medium">{formatMoney(r.amount)}</td>
-                            <td>{r.mode}</td>
-                            <td className="max-w-[6rem] truncate" title={r.referenceNo ?? ""}>
-                              {r.referenceNo ?? "—"}
-                            </td>
-                            <td className="max-w-[8rem] truncate" title={r.remarks ?? ""}>
-                              {r.remarks ?? "—"}
-                            </td>
-                            <td className="text-right">
-                              {canEditPaymentTracking ? (
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  size="sm"
-                                  className="h-7 text-[11px] text-rose-700"
-                                  disabled={paySaving}
-                                  onClick={() => void deleteReceipt(r.id)}
-                                >
-                                  Remove
-                                </Button>
-                              ) : null}
-                            </td>
-                          </tr>
-                        ))
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-
-                {canEditPaymentTracking ? (
-                  <div className="grid gap-2 rounded-md border border-slate-100 bg-slate-50/50 p-2">
-                    <div className="text-[11px] font-medium text-slate-700">Add receipt</div>
-                    <div className="grid gap-2 sm:grid-cols-2">
-                      <label className="grid gap-0.5 text-[11px] text-slate-600">
-                        Date
-                        <Input type="date" value={rcDate} onChange={(e) => setRcDate(e.target.value)} disabled={rcSaving} />
-                      </label>
-                      <label className="grid gap-0.5 text-[11px] text-slate-600">
-                        Amount
-                        <Input
-                          type="number"
-                          min={0}
-                          step="0.01"
-                          value={rcAmount}
-                          onChange={(e) => setRcAmount(e.target.value)}
-                          disabled={rcSaving}
-                        />
-                      </label>
-                      <label className="grid gap-0.5 text-[11px] text-slate-600">
-                        Mode
-                        <select
-                          className="flex h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm"
-                          value={rcMode}
-                          onChange={(e) => setRcMode(e.target.value as (typeof COMMERCIAL_PAYMENT_MODES)[number])}
-                          disabled={rcSaving}
-                        >
-                          {COMMERCIAL_PAYMENT_MODES.map((m) => (
-                            <option key={m} value={m}>
-                              {m}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="grid gap-0.5 text-[11px] text-slate-600">
-                        Reference no.
-                        <Input value={rcRef} onChange={(e) => setRcRef(e.target.value)} disabled={rcSaving} />
-                      </label>
-                    </div>
-                    <label className="grid gap-0.5 text-[11px] text-slate-600">
-                      Line remarks
-                      <Input value={rcRemarks} onChange={(e) => setRcRemarks(e.target.value)} disabled={rcSaving} />
-                    </label>
-                    <label className="grid gap-0.5 text-[11px] text-slate-600">
-                      Admin password (only if the system asks for confirmation)
-                      <Input
-                        type="password"
-                        autoComplete="off"
-                        value={rcAdminPwd}
-                        onChange={(e) => setRcAdminPwd(e.target.value)}
-                        disabled={rcSaving}
-                      />
-                    </label>
-                    <Button type="button" size="sm" disabled={rcSaving} onClick={() => void addReceipt()}>
-                      {rcSaving ? "Adding…" : "Add receipt"}
-                    </Button>
-                  </div>
-                ) : null}
-
-                <div className="grid gap-2 border-t border-slate-100 pt-3">
-                  <div className="text-[11px] font-medium text-slate-700">Due date &amp; bill remarks</div>
-                  <label className="text-[11px] font-medium text-slate-600" htmlFor="sb-pay-due">
-                    Due date
-                  </label>
-                  <Input
-                    id="sb-pay-due"
-                    type="date"
-                    value={payDue}
-                    onChange={(e) => setPayDue(e.target.value)}
-                    disabled={!canEditPaymentTracking || paySaving}
-                  />
-                  <label className="text-[11px] font-medium text-slate-600" htmlFor="sb-pay-remarks">
-                    Remarks
-                  </label>
-                  <textarea
-                    id="sb-pay-remarks"
-                    rows={2}
-                    className="border-input bg-background ring-offset-background placeholder:text-muted-foreground focus-visible:ring-ring flex min-h-[60px] w-full rounded-md border px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-                    value={payRemarks}
-                    onChange={(e) => setPayRemarks(e.target.value)}
-                    disabled={!canEditPaymentTracking || paySaving}
-                  />
-                  {canEditPaymentTracking ? (
-                    <Button type="button" variant="secondary" size="sm" disabled={paySaving} onClick={() => void savePaymentTracking()}>
-                      {paySaving ? "Saving…" : "Save due date & remarks"}
-                    </Button>
-                  ) : null}
-                </div>
               </CardContent>
             </Card>
           ) : null}
@@ -1480,60 +1232,23 @@ export function SalesBillEditPage() {
                 },
               ]
             : []),
-          {
-            key: "history",
-            title: "History",
-            children: (
-              <ActivityHistoryCard
-                title=""
-                density="compact"
-                className="border-0 shadow-none bg-transparent"
-                query={`entityType=SALES_BILL&entityId=${bill.id}&limit=50`}
-              />
-            ),
-          },
-          {
-            key: "links",
-            title: "Related links",
-            children: (
-              <div className="flex flex-wrap gap-x-4 gap-y-1">
-                <Link
-                  to={`/sales-bills/${bill.id}${location.search}`}
-                  className="text-[12px] font-medium text-sky-800 underline decoration-sky-800/35 underline-offset-2"
-                >
-                  Reload bill
-                </Link>
-              </div>
-            ),
-          },
         ]}
       />
       {bill.status === "DRAFT" ? (
         <StickyWorkflowActionBar
-          title={`Draft · ${formatMoney(bill.netAmount)}`}
+          title={`Draft · ₹${formatMoney(bill.netAmount)}`}
           subtitle={bill.customer.name}
           primaryAction={{
-            label: "Finalize bill",
+            label: saving ? "Working…" : "Finalize Bill",
             testId: "finalize-sales-bill-sticky-btn",
-            disabled: readOnly || saving,
+            disabled: readOnly || saving || !finalizeReady,
             onClick: () => void finalize(),
           }}
           secondaryAction={{
-            label: saving ? "Saving…" : "Save draft",
+            label: saving ? "Saving…" : "Save Draft",
             testId: "save-sales-bill-sticky-btn",
             disabled: readOnly || saving,
             onClick: () => void saveDraft(),
-          }}
-        />
-      ) : bill.status === "FINALIZED" && !bill.isExported ? (
-        <StickyWorkflowActionBar
-          title={`Finalized · ${formatMoney(bill.netAmount)}`}
-          subtitle="Ready to export to Tally"
-          primaryAction={{
-            label: exporting ? "Exporting…" : "Export to Tally",
-            testId: "export-sales-bill-sticky-btn",
-            disabled: exporting,
-            onClick: () => void exportToTally(),
           }}
         />
       ) : null}

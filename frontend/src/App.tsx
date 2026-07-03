@@ -14,7 +14,7 @@ import {
   BRAND_PRODUCT_NAME,
   BRAND_COMPANY_NAME,
 } from "./components/branding/Branding";
-import { DashboardPage as DashboardScreen } from "./pages/DashboardPage";
+import { DashboardPage as DashboardScreen } from "./pages/dashboard/DashboardRoleRouter";
 import { ControlTowerPage } from "./pages/ControlTowerPage";
 import { PendingActionsPage } from "./pages/PendingActionsPage";
 import { CustomersPage } from "./pages/CustomersPage";
@@ -110,6 +110,8 @@ import {
   PURCHASE_BILL_DRAFT_ROLES,
   PLANNING_DASHBOARD_ROLES,
   PROCUREMENT_PLANNING_ROLES,
+  MATERIAL_REQUISITION_WRITE_ROLES,
+  RM_STOCK_PLANNING_ROLES,
   MATERIAL_ISSUE_ROLES,
   STOCK_READ_ROLES,
   MONTHLY_PLANNING_READ_ROLES,
@@ -540,7 +542,7 @@ export default function App() {
         <Route
           path="/material-planning"
           element={
-            <ProtectedRoute allowedRoles={[...PROCUREMENT_PLANNING_ROLES]}>
+            <ProtectedRoute allowedRoles={[...MATERIAL_REQUISITION_WRITE_ROLES]}>
               <MaterialPlanningPage />
             </ProtectedRoute>
           }
@@ -548,7 +550,7 @@ export default function App() {
         <Route
           path="/rm-stock-planning"
           element={
-            <ProtectedRoute allowedRoles={[...PROCUREMENT_PLANNING_ROLES]}>
+            <ProtectedRoute allowedRoles={[...RM_STOCK_PLANNING_ROLES]}>
               <RmStockPlanningPage />
             </ProtectedRoute>
           }

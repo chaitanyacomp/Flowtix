@@ -4,7 +4,7 @@ const { incrementPrismaQueryCount } = require("./prismaQueryMetrics");
 const prisma = new PrismaClient();
 
 prisma.$use(async (params, next) => {
-  incrementPrismaQueryCount();
+  incrementPrismaQueryCount(params);
   return next(params);
 });
 

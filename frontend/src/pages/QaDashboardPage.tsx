@@ -4,6 +4,7 @@ import { ClipboardCheck, FileText } from "lucide-react";
 import { apiFetch } from "../services/api";
 import { PageContainer } from "../components/PageHeader";
 import { ERP_DASHBOARD_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
+import { useRouteActive } from "../hooks/useRouteActive";
 import { DashboardOpsClearStrip, DashboardWorkspaceHeader } from "../components/erp/foundation";
 import { PendingActionsDashboardCard } from "./PendingActionsPage";
 import type { PendingActionsDashboardProps } from "../lib/pendingActionsApi";
@@ -35,16 +36,23 @@ export function QaDashboardPage({
   pendingActions?: PendingActionsDashboardProps;
 } = {}) {
   const navigate = useNavigate();
-  const liveTick = useErpRefreshTick(["dashboard"], { pollIntervalMs: ERP_DASHBOARD_POLL_MS });
+  const isDashboardRoute = useRouteActive("/dashboard");
+  const liveTick = useErpRefreshTick(["dashboard"], {
+    pollIntervalMs: ERP_DASHBOARD_POLL_MS,
+    enabled: isDashboardRoute,
+  });
   const [qcQueue, setQcQueue] = React.useState<QcQueueRow[] | null>(null);
   const [err, setErr] = React.useState<string | null>(null);
   const [loading, setLoading] = React.useState(true);
+  const [initialLoadDone, setInitialLoadDone] = React.useState(false);
 
   React.useEffect(() => {
+    if (!isDashboardRoute) return;
+
     let cancelled = false;
     (async () => {
       try {
-        setLoading(true);
+        if (!initialLoadDone) setLoading(true);
         setErr(null);
         const queue = await apiFetch<QcQueueRow[]>("/api/dashboard/qc-queue");
         if (cancelled) return;
@@ -52,13 +60,16 @@ export function QaDashboardPage({
       } catch (e) {
         if (!cancelled) setErr(e instanceof Error ? e.message : "Failed to load quality dashboard");
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+          setInitialLoadDone(true);
+        }
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [liveTick]);
+  }, [liveTick, isDashboardRoute]);
 
   const clickTo = (to: string) => ({
     onClick: () => navigate(to, { state: { from: "dashboard" } }),
@@ -67,7 +78,7 @@ export function QaDashboardPage({
   const batchCount = qcQueue?.length ?? 0;
   const pendingQty = (qcQueue ?? []).reduce((s, r) => s + Number(r.pendingQcQty ?? 0), 0);
 
-  if (loading) {
+  if (loading && !initialLoadDone) {
     return (
       <div className={shell}>
         <PageContainer className={max}>

@@ -12,6 +12,7 @@ import type { DispatchBacklogRow } from "../../lib/dispatchBacklog";
 import { dashboardShell } from "../../lib/dashboardShell";
 import { purchaseGrnExecutionHref } from "../../lib/woPrepareOperationalStage";
 import { DashboardOpsClearStrip, DashboardWorkspaceHeader } from "../../components/erp/foundation";
+import { ErpRefreshingBadge } from "../../components/erp/foundation/ErpRefreshingBadge";
 import { PendingActionsDashboardCard } from "../PendingActionsPage";
 import type { PendingActionsDashboardProps, PendingAction } from "../../lib/pendingActionsApi";
 import { prepareNoQtyNextRequirementSheetAndNavigate } from "../../lib/noQtyPrepareNextRsNavigate";
@@ -24,6 +25,7 @@ import type { NoQtyFlowState } from "../../lib/noQtyFlowState";
 import type { ResolvedNoQtyContinuation } from "../../lib/noQtyDashboardContinuation";
 import { erpKpi } from "../../lib/erpFoundationTokens";
 import { ERP_DASHBOARD_POLL_MS, useErpRefreshTick } from "../../hooks/useErpRefreshTick";
+import { useRouteActive } from "../../hooks/useRouteActive";
 import { useStoreDashboardOperationalData } from "../../hooks/useStoreDashboardOperationalData";
 import {
   computeNoQtyExecutionSummaryMetrics,
@@ -114,6 +116,10 @@ export type StoreDispatchDashboardProps = {
   pendingActions?: PendingActionsDashboardProps;
   /** Store-owned Create Cycle N Requirement Sheet rows from pending-actions. */
   pendingRsActions?: PendingAction[];
+  /** Parent dashboard refresh tick — avoids duplicate poll timers when embedded in DashboardPage. */
+  refreshTick?: number;
+  /** Background revalidation — keep stale UI visible. */
+  refreshing?: boolean;
   noQtyContinuationRows?: NoQtyDashboardCompactRow[];
   noQtyFlowBySo?: Record<number, NoQtyFlowState | null | undefined>;
   noQtyContinuationTruncated?: boolean;
@@ -130,6 +136,8 @@ export function StoreDispatchDashboard({
   dispatchBacklogCount = 0,
   pendingActions,
   pendingRsActions = [],
+  refreshTick,
+  refreshing = false,
   noQtyContinuationRows = [],
   noQtyFlowBySo = {},
   noQtyContinuationTruncated = false,
@@ -137,8 +145,13 @@ export function StoreDispatchDashboard({
 }: StoreDispatchDashboardProps) {
   const navigate = useNavigate();
   const toast = useToast();
-  const liveTick = useErpRefreshTick(["dashboard"], { pollIntervalMs: ERP_DASHBOARD_POLL_MS });
-  const operational = useStoreDashboardOperationalData(liveTick);
+  const isDashboardRoute = useRouteActive("/dashboard");
+  const internalTick = useErpRefreshTick(["dashboard"], {
+    pollIntervalMs: ERP_DASHBOARD_POLL_MS,
+    enabled: isDashboardRoute && refreshTick == null,
+  });
+  const liveTick = refreshTick ?? internalTick;
+  const operational = useStoreDashboardOperationalData(liveTick, { enabled: isDashboardRoute });
 
   const executionMetrics = React.useMemo(
     () => computeNoQtyExecutionSummaryMetrics(operational.inboxRows),
@@ -200,6 +213,7 @@ export function StoreDispatchDashboard({
 
   const allQuiet =
     !operational.loading &&
+    !refreshing &&
     kpiMetrics.readyForWo === 0 &&
     kpiMetrics.materialIssuePending === 0 &&
     kpiMetrics.rmccCases === 0 &&
@@ -212,7 +226,12 @@ export function StoreDispatchDashboard({
     <div className={DASH_SHELL} data-testid="store-dispatch-dashboard">
       <div className={DASH_MAX}>
         <div className={dashboardShell.grid}>
-          <DashboardWorkspaceHeader role="STORE" />
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <DashboardWorkspaceHeader role="STORE" />
+            {refreshing || operational.refreshing ? (
+              <ErpRefreshingBadge className="shrink-0" />
+            ) : null}
+          </div>
 
           {pendingActions ? (
             <PendingActionsDashboardCard
@@ -330,10 +349,10 @@ export function StoreDispatchDashboard({
 
           {allQuiet ? <DashboardOpsClearStrip role="STORE" /> : null}
 
-          <StoreNoQtyExecutionSummaryCard metrics={executionMetrics} loading={operational.loading} />
-          <StoreRmccSummaryCard metrics={rmccMetrics} loading={operational.loading} />
+          <StoreNoQtyExecutionSummaryCard metrics={executionMetrics} loading={operational.initialLoading} />
+          <StoreRmccSummaryCard metrics={rmccMetrics} loading={operational.initialLoading} />
 
-          <StoreProcurementMonitor metrics={procurementMonitorMetrics} loading={operational.loading} />
+          <StoreProcurementMonitor metrics={procurementMonitorMetrics} loading={operational.initialLoading} />
 
           {pendingRsCount > 0 || hasNoQtyContinuation ? (
             <div className="grid gap-1.5">

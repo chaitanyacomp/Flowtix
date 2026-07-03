@@ -1771,4 +1771,22 @@ describe("pendingActionsService", () => {
       require(pendingPath);
     }
   });
+
+  it("fetchMonthlyPlanPendingActions scopes DB query for STORE role", async () => {
+    const { fetchMonthlyPlanPendingActions } = require("../../src/services/pendingActionsService");
+    let capturedWhere = null;
+    const db = {
+      monthlyProductionPlan: {
+        findMany: async ({ where }) => {
+          capturedWhere = where;
+          return [];
+        },
+      },
+    };
+    await fetchMonthlyPlanPendingActions(db, { role: "STORE" });
+    assert.ok(capturedWhere);
+    assert.deepEqual(capturedWhere, {
+      OR: [{ status: "DRAFT" }, { status: "APPROVED", releasedAt: null }],
+    });
+  });
 });

@@ -2,6 +2,7 @@ import * as React from "react";
 import type { ReactNode } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
+import { useErpCacheLifecycle } from "../hooks/useErpCacheLifecycle";
 import { useDemoMode } from "../contexts/DemoModeContext";
 import { isDemoNavigationAllowed } from "../lib/demoFlowConfig";
 import { DemoHighlightController } from "./demo/DemoHighlightController";
@@ -67,6 +68,8 @@ import {
   STOCK_READ_ROLES,
   CUSTOMER_RETURN_READ_ROLES,
   PROCUREMENT_PLANNING_ROLES,
+  MATERIAL_REQUISITION_WRITE_ROLES,
+  RM_STOCK_PLANNING_ROLES,
   MATERIAL_ISSUE_ROLES,
   SUPPLIER_VIEW_ROLES,
   MONTHLY_PLANNING_READ_ROLES,
@@ -197,14 +200,14 @@ const navGroups: NavGroup[] = [
         navKey: "mat-plan",
         label: REGULAR_TERMS.ORDER_RM_PLANNING_TITLE,
         navHint: REGULAR_TERMS.ORDER_RM_PLANNING_SCOPE_HINT,
-        roles: [...PROCUREMENT_PLANNING_ROLES],
+        roles: [...MATERIAL_REQUISITION_WRITE_ROLES],
         icon: <Package className="h-4 w-4 shrink-0" />,
       },
       {
         to: "/rm-stock-planning",
         navKey: "rm-stock-plan",
         label: "RM Stock Planning",
-        roles: [...PROCUREMENT_PLANNING_ROLES],
+        roles: [...RM_STOCK_PLANNING_ROLES],
         icon: <Boxes className="h-4 w-4 shrink-0" />,
       },
       {
@@ -416,6 +419,7 @@ function groupDefaultOpen(pathname: string, group: NavGroup): boolean {
 
 export function AppLayout() {
   const auth = useAuth();
+  useErpCacheLifecycle();
   const demo = useDemoMode();
   const nav = useNavigate();
   const { pathname } = useLocation();

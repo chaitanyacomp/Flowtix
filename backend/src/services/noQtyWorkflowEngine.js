@@ -1,3 +1,4 @@
+const { getOrSetRequestCache } = require("../utils/prismaQueryMetrics");
 const { normalizePositiveCycleId } = require("../utils/cycleIds");
 const {
   netDispatchedByItemId,
@@ -278,6 +279,16 @@ async function loadNoQtyDispatchableFacts(db, soId, cycleId) {
 }
 
 async function resolveNoQtyWorkflowState(db, input) {
+  const soId = Number(input?.salesOrderId);
+  const cycleId = input?.cycleId != null ? Number(input.cycleId) : 0;
+  const userRole = String(input?.userRole ?? "")
+    .trim()
+    .toUpperCase();
+  const cacheKey = `no-qty-flow:${soId}:${Number.isFinite(cycleId) && cycleId > 0 ? cycleId : 0}:${userRole}`;
+  return getOrSetRequestCache(cacheKey, () => resolveNoQtyWorkflowStateImpl(db, input));
+}
+
+async function resolveNoQtyWorkflowStateImpl(db, input) {
   const soId = Number(input?.salesOrderId);
   const userRole = normalizeRole(input?.userRole);
   if (!Number.isFinite(soId) || soId <= 0) {

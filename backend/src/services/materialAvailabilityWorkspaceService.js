@@ -4,6 +4,7 @@
  */
 
 const { prisma } = require("../utils/prisma");
+const { getOrSetRequestCache } = require("../utils/prismaQueryMetrics");
 const { filterNoQtyExecutionReleasedWorkOrders } = require("./noQtyExecutionBoundaryService");
 const { aggregateRmDemandForFgLines, round3 } = require("./bomExplosionService");
 const { getMaterialAvailabilityByItems } = require("./materialAvailabilityService");
@@ -2131,7 +2132,7 @@ async function buildSalesOrderPlanningAvailabilityRows(db, so, deps) {
   };
 }
 
-async function buildMaterialAvailabilityWorkspace(db = prisma, filtersInput = {}, depsInput = {}) {
+async function buildMaterialAvailabilityWorkspaceImpl(db = prisma, filtersInput = {}, depsInput = {}) {
   const filters = parseWorkspaceFilters(filtersInput);
   const deps = {
     aggregateRmDemandForFgLines,
@@ -2527,11 +2528,24 @@ async function buildMaterialAvailabilityWorkspace(db = prisma, filtersInput = {}
   };
 }
 
+function materialAvailabilityWorkspaceCacheKey(filtersInput = {}) {
+  return `rmcc-workspace:${JSON.stringify(parseWorkspaceFilters(filtersInput))}`;
+}
+
+async function buildMaterialAvailabilityWorkspace(db = prisma, filtersInput = {}, depsInput = {}) {
+  const cacheKey = materialAvailabilityWorkspaceCacheKey(filtersInput);
+  return getOrSetRequestCache(cacheKey, () =>
+    buildMaterialAvailabilityWorkspaceImpl(db, filtersInput, depsInput),
+  );
+}
+
 /**
  * Dashboard / operational continuity — one row per WO (or SO) waiting on Store issue after GRN.
  */
 async function buildStoreIssuePendingDashboardRows(db = prisma, opts = {}) {
-  const workspace = await buildMaterialAvailabilityWorkspace(db, { onlyBlocked: true });
+  const workspace =
+    opts.workspace ??
+    (await buildMaterialAvailabilityWorkspace(db, { onlyBlocked: true }));
   const byCase = new Map();
   const woIds = [];
   for (const row of workspace.actionQueue || []) {
@@ -2550,6 +2564,14 @@ async function buildStoreIssuePendingDashboardRows(db = prisma, opts = {}) {
     const waitingPmr = (pmrByWorkOrder.get(woId)?.openPmrs || []).find((p) =>
       PMR_WAITING_ISSUE_STATUSES.includes(p.status),
     );
+    let pmrIssuedQty = 0;
+    let pmrRemainingQty = 0;
+    if (waitingPmr?.lines?.length) {
+      pmrIssuedQty = waitingPmr.lines.reduce((s, l) => s + Number(l.issuedQty ?? 0), 0);
+      const waived = waitingPmr.lines.reduce((s, l) => s + Number(l.waivedQty ?? 0), 0);
+      const required = waitingPmr.lines.reduce((s, l) => s + Number(l.requiredQty ?? 0), 0);
+      pmrRemainingQty = Math.max(0, required - pmrIssuedQty - waived);
+    }
     rows.push({
       materialRequirementId: row.materialRequirementId ?? 0,
       docNo: row.requisitionDocNo ?? null,
@@ -2558,6 +2580,8 @@ async function buildStoreIssuePendingDashboardRows(db = prisma, opts = {}) {
       salesOrderId: row.salesOrderId,
       salesOrderDocNo: row.salesOrderNo,
       pmrId: waitingPmr?.id ?? null,
+      pmrIssuedQty,
+      pmrRemainingQty,
       primaryFgName: row.fgItemName,
       shortageRmLineCount: 0,
       totalShortageQty: 0,
@@ -2580,7 +2604,9 @@ async function buildStoreIssuePendingDashboardRows(db = prisma, opts = {}) {
  * Dashboard / pending actions — one row per WO where RM is fully issued and Production owns next step.
  */
 async function buildStoreProductionHandoffDashboardRows(db = prisma, opts = {}) {
-  const workspace = await buildMaterialAvailabilityWorkspace(db, { onlyBlocked: true });
+  const workspace =
+    opts.workspace ??
+    (await buildMaterialAvailabilityWorkspace(db, { onlyBlocked: true }));
   const byCase = new Map();
   for (const row of workspace.actionQueue || []) {
     if (row.queueType !== "READY_TO_RELEASE_WO") continue;

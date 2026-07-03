@@ -40,8 +40,11 @@ export const PROCUREMENT_PLANNING_ROLES = ["ADMIN", "STORE", "PURCHASE"] as cons
 /** Purchase Request creation (Store handoff) and PO execution actions in procurement workspace */
 export const PURCHASE_EXECUTION_ROLES = ["ADMIN", "PURCHASE"] as const;
 
-/** STORE — MR / requisition lifecycle */
+/** STORE — MR / requisition lifecycle (Order RM Planning workspace) */
 export const MATERIAL_REQUISITION_WRITE_ROLES = ["ADMIN", "STORE"] as const;
+
+/** STORE — RM stock replenishment planning workspace */
+export const RM_STOCK_PLANNING_ROLES = ["ADMIN", "STORE"] as const;
 
 /** STORE — RM Control Center allocation */
 export const RM_ALLOCATION_WRITE_ROLES = ["ADMIN", "STORE"] as const;

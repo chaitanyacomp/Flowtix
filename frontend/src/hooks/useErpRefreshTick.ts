@@ -27,6 +27,8 @@ export function useErpRefreshTick(
 ): number {
   const { pollIntervalMs = 0, refreshOnVisible = true, enabled = true } = options;
   const scopeKey = scopes.join(",");
+  const scopesRef = React.useRef(scopes);
+  scopesRef.current = scopes;
   const [tick, setTick] = React.useState(0);
 
   const bump = React.useCallback(() => {
@@ -38,12 +40,12 @@ export function useErpRefreshTick(
 
     const onEvent = (ev: Event) => {
       const detail = (ev as CustomEvent<ErpRefreshEventDetail>).detail;
-      if (erpRefreshEventMatches(detail, scopes)) bump();
+      if (erpRefreshEventMatches(detail, scopesRef.current)) bump();
     };
 
     window.addEventListener(ERP_REFRESH_EVENT, onEvent);
     return () => window.removeEventListener(ERP_REFRESH_EVENT, onEvent);
-  }, [enabled, scopeKey, bump, scopes]);
+  }, [enabled, scopeKey, bump]);
 
   React.useEffect(() => {
     if (!enabled || !refreshOnVisible) return;

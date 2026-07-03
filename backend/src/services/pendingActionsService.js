@@ -4,9 +4,11 @@
  */
 
 const { prisma } = require("../utils/prisma");
+const { getOrSetRequestCache } = require("../utils/prismaQueryMetrics");
 const {
   CONTROL_TOWER_ROW_MODES,
   fetchMergedNormalizedRows,
+  fetchStoreScopedNormalizedRows,
 } = require("./controlTowerNormalizedRowsService");
 const { dedupeRoleQueueRows, attachRowIdentity } = require("./controlTowerRowIdentity");
 const { RISK_LEVELS, ROW_TYPES } = require("./controlTowerRowNormalizer");
@@ -24,7 +26,7 @@ const {
   getQuotationsPendingSalesOrderRows,
 } = require("./dashboardQueueSnapshots");
 const { buildProcurementPendingQueue, buildGrnPendingSection } = require("./procurementWorkspaceService");
-const { buildStoreIssuePendingDashboardRows, buildStoreProductionHandoffDashboardRows } = require("./materialAvailabilityWorkspaceService");
+const { buildStoreIssuePendingDashboardRows, buildStoreProductionHandoffDashboardRows, buildMaterialAvailabilityWorkspace } = require("./materialAvailabilityWorkspaceService");
 const { pmrMeetsProductionReleaseIssueRule } = require("./productionMaterialRequestService");
 const {
   computeNoQtyCreateNextRsEligibility,
@@ -379,16 +381,31 @@ function mapNormalizedRowToPendingAction(row, role = "STORE") {
 
 /**
  * Monthly plan lifecycle actions (Store submit / Purchase review / Store release).
+ * @param {import('@prisma/client').PrismaClient} [db]
+ * @param {{ role?: string | null }} [opts]
  */
-async function fetchMonthlyPlanPendingActions(db = prisma) {
-  const plans = await db.monthlyProductionPlan.findMany({
-    where: {
+async function fetchMonthlyPlanPendingActions(db = prisma, opts = {}) {
+  const role = parseUserRole(opts.role);
+  /** @type {import('@prisma/client').Prisma.MonthlyProductionPlanWhereInput} */
+  let where;
+  if (role === "STORE") {
+    where = {
+      OR: [{ status: "DRAFT" }, { status: "APPROVED", releasedAt: null }],
+    };
+  } else if (role === "PURCHASE") {
+    where = { status: "AWAITING_PURCHASE_REVIEW" };
+  } else {
+    where = {
       OR: [
         { status: "DRAFT" },
         { status: "AWAITING_PURCHASE_REVIEW" },
         { status: "APPROVED", releasedAt: null },
       ],
-    },
+    };
+  }
+
+  const plans = await db.monthlyProductionPlan.findMany({
+    where,
     orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
     take: 100,
     select: {
@@ -650,34 +667,16 @@ async function fetchStoreGrnPendingActions(db = prisma) {
   return [...byPo.values()];
 }
 
-async function fetchStoreIssuePendingActions(db = prisma) {
-  const rows = await buildStoreIssuePendingDashboardRows(db);
-  const pmrs = await db.productionMaterialRequest.findMany({
-    where: { status: { in: ["REQUESTED", "PARTIALLY_ISSUED"] } },
-    select: {
-      id: true,
-      workOrderId: true,
-      status: true,
-      lines: { select: { requiredQty: true, issuedQty: true, waivedQty: true } },
-    },
-  });
-  const pmrByWo = new Map();
-  for (const pmr of pmrs) {
-    const issued = (pmr.lines || []).reduce((s, l) => s + Number(l.issuedQty ?? 0), 0);
-    const waived = (pmr.lines || []).reduce((s, l) => s + Number(l.waivedQty ?? 0), 0);
-    const required = (pmr.lines || []).reduce((s, l) => s + Number(l.requiredQty ?? 0), 0);
-    const remaining = Math.max(0, required - issued - waived);
-    pmrByWo.set(pmr.workOrderId, { pmrId: pmr.id, issued, remaining, status: pmr.status });
-  }
+async function fetchStoreIssuePendingActions(db = prisma, opts = {}) {
+  const rows = await buildStoreIssuePendingDashboardRows(db, opts);
 
   return rows.map((row) => {
     const woId = Number(row.workOrderId ?? 0);
-    const pmrId = row.pmrId != null ? Number(row.pmrId) : pmrByWo.get(woId)?.pmrId ?? 0;
-    const pmrInfo = pmrByWo.get(woId);
+    const pmrId = row.pmrId != null ? Number(row.pmrId) : 0;
+    const pmrIssued = Number(row.pmrIssuedQty ?? 0);
+    const pmrRemaining = Number(row.pmrRemainingQty ?? 0);
     const action =
-      pmrInfo && pmrInfo.issued > EPS && pmrInfo.remaining > EPS
-        ? STORE_ISSUE_REMAINING_ACTION
-        : STORE_ISSUE_PENDING_ACTION;
+      pmrIssued > EPS && pmrRemaining > EPS ? STORE_ISSUE_REMAINING_ACTION : STORE_ISSUE_PENDING_ACTION;
     const params = new URLSearchParams({ returnTo: "pending-actions", onlyBlocked: "1" });
     if (woId > 0) params.set("workOrderId", String(woId));
     if (pmrId > 0) params.set("pmrId", String(pmrId));
@@ -799,7 +798,11 @@ async function fetchProductionRmReturnWaitingActions(db = prisma) {
 }
 
 async function fetchStoreProductionRmReturnPendingActions(db = prisma) {
-  const rows = await listProductionRmReturnPending(db, { status: "PENDING", limit: 100 });
+  const rows = await listProductionRmReturnPending(db, {
+    status: "PENDING",
+    limit: 100,
+    skipLocationResolution: true,
+  });
   return rows.map((row) => {
     const params = new URLSearchParams({ from: "pending-actions", pendingId: String(row.id) });
     if (row.workOrderId) params.set("workOrderId", String(row.workOrderId));
@@ -894,8 +897,9 @@ async function filterNoQtyStoreHandoffSupersededByLaterRs(db, rows) {
   });
 }
 
-async function fetchStoreProductionHandoffPendingActions(db = prisma) {
-  const rows = await buildStoreProductionHandoffDashboardRows(db);
+async function fetchStoreProductionHandoffPendingActions(db = prisma, opts = {}) {
+  const rawRows = await buildStoreProductionHandoffDashboardRows(db, opts);
+  const rows = await filterNoQtyStoreHandoffSupersededByLaterRs(db, rawRows);
   const woIds = rows.map((row) => Number(row.workOrderId ?? 0)).filter((id) => id > 0);
   const pmrByWo = woIds.length
     ? await db.productionMaterialRequest.findMany({
@@ -935,46 +939,125 @@ async function fetchStoreProductionHandoffPendingActions(db = prisma) {
     });
 }
 
+const STORE_OPEN_NO_QTY_SO_WHERE = Object.freeze({
+  orderType: "NO_QTY",
+  internalStatus: { notIn: ["COMPLETED", "CLOSED", "MANUALLY_CLOSED"] },
+});
+
+async function loadStoreOpenNoQtySalesOrders(db = prisma) {
+  return getOrSetRequestCache("store:open-no-qty-sos", () =>
+    db.salesOrder.findMany({
+      where: STORE_OPEN_NO_QTY_SO_WHERE,
+      select: { id: true, docNo: true, updatedAt: true, currentCycleId: true },
+      orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
+      take: 50,
+    }),
+  );
+}
+
+/** Unit-test fallback when mocks only implement findFirst. */
+async function loadStoreNoQtySupplementalContextLegacy(db, openSoRows) {
+  const lockedRsRows = [];
+  const woRows = [];
+  for (const so of openSoRows) {
+    const soId = Number(so.id);
+    if (typeof db.requirementSheet?.findFirst === "function") {
+      const lockedRs = await db.requirementSheet.findFirst({
+        where: { salesOrderId: soId, status: "LOCKED", cycleId: { not: null } },
+        orderBy: [{ cycle: { cycleNo: "desc" } }, { version: "desc" }, { id: "desc" }],
+        select: {
+          id: true,
+          salesOrderId: true,
+          cycleId: true,
+          periodKey: true,
+          createdAt: true,
+          updatedAt: true,
+          cycle: { select: { cycleNo: true } },
+        },
+      });
+      if (lockedRs) lockedRsRows.push({ ...lockedRs, salesOrderId: soId });
+    }
+    if (typeof db.workOrder?.findFirst === "function") {
+      const wo = await db.workOrder.findFirst({
+        where: { salesOrderId: soId, status: { not: "REJECTED" } },
+        select: { id: true, salesOrderId: true, cycleId: true },
+      });
+      if (wo) woRows.push(wo);
+    }
+  }
+  return [lockedRsRows, woRows];
+}
+
+/**
+ * Shared NO_QTY supplemental context for Store pending-actions buckets.
+ * @returns {Promise<{ openSoRows: object[]; lockedRsBySo: Map<number, object>; woOnCycleKeys: Set<string> }>}
+ */
+async function loadStoreNoQtySupplementalContext(db = prisma) {
+  return getOrSetRequestCache("store:no-qty-supplemental-context", async () => {
+    const openSoRows = await loadStoreOpenNoQtySalesOrders(db);
+    const soIds = openSoRows.map((so) => Number(so.id)).filter((id) => id > 0);
+    if (!soIds.length) {
+      return { openSoRows, lockedRsBySo: new Map(), woOnCycleKeys: new Set() };
+    }
+
+    const [lockedRsRows, woRows] =
+      typeof db.requirementSheet?.findMany === "function" && typeof db.workOrder?.findMany === "function"
+        ? await Promise.all([
+            db.requirementSheet.findMany({
+              where: { salesOrderId: { in: soIds }, status: "LOCKED", cycleId: { not: null } },
+              select: {
+                id: true,
+                salesOrderId: true,
+                cycleId: true,
+                periodKey: true,
+                createdAt: true,
+                updatedAt: true,
+                cycle: { select: { cycleNo: true } },
+              },
+              orderBy: [{ cycle: { cycleNo: "desc" } }, { version: "desc" }, { id: "desc" }],
+            }),
+            db.workOrder.findMany({
+              where: { salesOrderId: { in: soIds }, status: { not: "REJECTED" } },
+              select: { id: true, salesOrderId: true, cycleId: true },
+            }),
+          ])
+        : await loadStoreNoQtySupplementalContextLegacy(db, openSoRows);
+
+    const lockedRsBySo = new Map();
+    for (const rs of lockedRsRows) {
+      const soId = Number(rs.salesOrderId);
+      if (!lockedRsBySo.has(soId)) lockedRsBySo.set(soId, rs);
+    }
+    const woOnCycleKeys = new Set(
+      woRows.map((wo) => `${Number(wo.salesOrderId)}:${Number(wo.cycleId)}`),
+    );
+
+    return { openSoRows, lockedRsBySo, woOnCycleKeys };
+  });
+}
+
 /**
  * P10-A7D — After Cycle 1 RS lock (no WO yet), Store next step is monthly planning for the locked period.
  */
 async function fetchStoreNoQtyMonthlyPlanningPendingActions(db = prisma) {
-  const openSoRows = await db.salesOrder.findMany({
-    where: {
-      orderType: "NO_QTY",
-      internalStatus: { notIn: ["COMPLETED", "CLOSED", "MANUALLY_CLOSED"] },
-    },
-    select: { id: true, docNo: true, updatedAt: true, currentCycleId: true },
-    orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
-    take: 50,
-  });
-
-  const actions = [];
+  const { openSoRows, lockedRsBySo, woOnCycleKeys } = await loadStoreNoQtySupplementalContext(db);
+  const placementPairs = [];
   for (const so of openSoRows) {
     const soId = Number(so.id);
-    const lockedRs = await db.requirementSheet.findFirst({
-      where: { salesOrderId: soId, status: "LOCKED", cycleId: { not: null } },
-      orderBy: [{ cycle: { cycleNo: "desc" } }, { version: "desc" }, { id: "desc" }],
-      select: {
-        id: true,
-        cycleId: true,
-        periodKey: true,
-        createdAt: true,
-        updatedAt: true,
-        cycle: { select: { cycleNo: true } },
-      },
-    });
+    const lockedRs = lockedRsBySo.get(soId);
     if (!lockedRs?.cycleId) continue;
-
     const rsCycleId = Number(lockedRs.cycleId);
-    const woOnRsCycle = await db.workOrder.findFirst({
-      where: { salesOrderId: soId, cycleId: rsCycleId, status: { not: "REJECTED" } },
-      select: { id: true },
-    });
-    if (woOnRsCycle?.id) continue;
+    if (woOnCycleKeys.has(`${soId}:${rsCycleId}`)) continue;
+    placementPairs.push({ salesOrderId: soId, cycleId: rsCycleId, so, lockedRs });
+  }
 
+  const actions = [];
+  for (const pair of placementPairs) {
+    const { so, lockedRs } = pair;
+    const soId = Number(so.id);
+    const rsCycleId = Number(lockedRs.cycleId);
     const placement = await assessNoQtyPlacementStageForCycle(db, { salesOrderId: soId, cycleId: rsCycleId });
-    if (placement.processStageKey !== "NO_QTY_REQUIREMENT_READY" || placement.readyToPlaceWo) continue;
+    if (placement?.processStageKey !== "NO_QTY_REQUIREMENT_READY" || placement.readyToPlaceWo) continue;
 
     const periodKey = String(lockedRs.periodKey ?? "").trim();
     const planningGate = periodKey ? await assessNoQtyMonthlyPlanningGate(db, periodKey) : null;
@@ -1025,6 +1108,13 @@ async function fetchStoreNoQtyMonthlyPlanningPendingActions(db = prisma) {
  * Does not change prepare-next gates — only the pending-actions read path.
  */
 async function resolveStoreNoQtyCreateNextRsPendingContext(db, soId) {
+  const sid = Number(soId);
+  return getOrSetRequestCache(`store:create-next-rs-ctx:${sid}`, () =>
+    resolveStoreNoQtyCreateNextRsPendingContextImpl(db, sid),
+  );
+}
+
+async function resolveStoreNoQtyCreateNextRsPendingContextImpl(db, soId) {
   const sid = Number(soId);
   const active = await db.salesOrderCycle.findFirst({
     where: { salesOrderId: sid, status: "ACTIVE" },
@@ -1111,15 +1201,13 @@ async function resolveStoreNoQtyCreateNextRsPendingContext(db, soId) {
  * P8F-A14 — Store-owned NO_QTY cycle continuation when current-cycle RS is locked and next RS is eligible.
  */
 async function fetchStoreNoQtyCreateNextRsPendingActions(db = prisma) {
-  const openSoRows = await db.salesOrder.findMany({
-    where: {
-      orderType: "NO_QTY",
-      internalStatus: { notIn: ["COMPLETED", "CLOSED", "MANUALLY_CLOSED"] },
-    },
-    select: { id: true, docNo: true, updatedAt: true },
-    orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
-    take: 50,
-  });
+  return getOrSetRequestCache("store:no-qty-create-next-rs-actions", () =>
+    fetchStoreNoQtyCreateNextRsPendingActionsImpl(db),
+  );
+}
+
+async function fetchStoreNoQtyCreateNextRsPendingActionsImpl(db = prisma) {
+  const { openSoRows } = await loadStoreNoQtySupplementalContext(db);
 
   const debugStoreRs = process.env.DEBUG_STORE_RS === "1";
 
@@ -1173,25 +1261,31 @@ async function fetchStoreNoQtyCreateNextRsPendingActions(db = prisma) {
  * P10-A5 — Store-owned WO placement when NO_QTY RM is ready and no WO exists yet.
  */
 async function fetchStoreNoQtyPlaceWoPendingActions(db = prisma) {
-  const openSoRows = await db.salesOrder.findMany({
-    where: {
-      orderType: "NO_QTY",
-      internalStatus: { notIn: ["COMPLETED", "CLOSED", "MANUALLY_CLOSED"] },
-    },
-    select: { id: true, docNo: true, updatedAt: true, currentCycleId: true },
-    orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
-    take: 50,
-  });
+  const { openSoRows } = await loadStoreNoQtySupplementalContext(db);
+
+  const eligibilityBySo = new Map();
+  await Promise.all(
+    openSoRows.map(async (so) => {
+      const soId = Number(so.id);
+      const resolved = await resolveNoQtyEligibilityCycleId(db, soId);
+      eligibilityBySo.set(soId, resolved.cycleId ?? (so.currentCycleId != null ? Number(so.currentCycleId) : null));
+    }),
+  );
+
+  const placementPairs = openSoRows
+    .map((so) => {
+      const soId = Number(so.id);
+      const effCycleId = eligibilityBySo.get(soId);
+      if (!effCycleId) return null;
+      return { salesOrderId: soId, cycleId: Number(effCycleId), so };
+    })
+    .filter(Boolean);
 
   const actions = [];
-  for (const so of openSoRows) {
-    const soId = Number(so.id);
-    const { cycleId } = await resolveNoQtyEligibilityCycleId(db, soId);
-    const effCycleId = cycleId ?? (so.currentCycleId != null ? Number(so.currentCycleId) : null);
-    if (!effCycleId) continue;
-
+  for (const pair of placementPairs) {
+    const { so, salesOrderId: soId, cycleId: effCycleId } = pair;
     const placement = await assessNoQtyPlacementStageForCycle(db, { salesOrderId: soId, cycleId: effCycleId });
-    if (!placement.readyToPlaceWo) continue;
+    if (!placement?.readyToPlaceWo) continue;
     if (placement.periodKey) {
       const planningGate = await assessNoQtyMonthlyPlanningGate(db, placement.periodKey);
       if (!isNoQtyMonthlyPlanningGateExecutionReady(planningGate)) continue;
@@ -1627,6 +1721,132 @@ function sortPendingActions(actions) {
   });
 }
 
+/**
+ * Store-only pending actions — scoped normalized merge + parallel store supplemental buckets.
+ * @param {{
+ *   db: import('@prisma/client').PrismaClient;
+ *   timedBucket: (label: string, fn: () => Promise<unknown>) => Promise<unknown>;
+ *   startedAt: number;
+ *   bucketMs: Record<string, number>;
+ * }} ctx
+ */
+async function getStorePendingActions(ctx) {
+  const { db, timedBucket, startedAt, bucketMs } = ctx;
+  const role = "STORE";
+
+  const workspace = await buildMaterialAvailabilityWorkspace(db, { onlyBlocked: true });
+  const workspaceOpts = { workspace };
+
+  const [
+    { rows: mergedRows },
+    monthlyPlanActions,
+    storeIssue,
+    storeDispatch,
+    storeRmReturn,
+    storeGrn,
+    storeHandoff,
+    storeNoQtyMonthly,
+    storeNoQtyCreateRs,
+    storeNoQtyPlaceWo,
+  ] = await Promise.all([
+    timedBucket("storeNormalized", () =>
+      fetchStoreScopedNormalizedRows({ mode: CONTROL_TOWER_ROW_MODES.FULL }),
+    ),
+    timedBucket("monthlyPlan", () => fetchMonthlyPlanPendingActions(db, { role })),
+    timedBucket("storeIssue", () => fetchStoreIssuePendingActions(db, workspaceOpts)),
+    timedBucket("storeDispatch", () => fetchStoreDispatchPendingActions(db)),
+    timedBucket("storeRmReturn", () => fetchStoreProductionRmReturnPendingActions(db)),
+    timedBucket("storeGrn", () => fetchStoreGrnPendingActions(db)),
+    timedBucket("storeHandoff", () => fetchStoreProductionHandoffPendingActions(db, workspaceOpts)),
+    timedBucket("storeNoQtyMonthly", () => fetchStoreNoQtyMonthlyPlanningPendingActions(db)),
+    timedBucket("storeNoQtyCreateRs", () => fetchStoreNoQtyCreateNextRsPendingActions(db)),
+    timedBucket("storeNoQtyPlaceWo", () => fetchStoreNoQtyPlaceWoPendingActions(db)),
+  ]);
+
+  const bucketCounts = {
+    dispatch: storeDispatch.length,
+    production: 0,
+    qc: 0,
+    procurement: storeGrn.length,
+    noQty: storeNoQtyMonthly.length + storeNoQtyCreateRs.length + storeNoQtyPlaceWo.length,
+    inventory: storeIssue.length,
+    salesBill: 0,
+    other: storeRmReturn.length,
+    total: 0,
+  };
+
+  const roleFilteredNormalized = filterNormalizedRowsByOwner(mergedRows, role);
+  const dedupedNormalized = dedupeRoleQueueRows(roleFilteredNormalized, role);
+  const normalizedActions = dedupedNormalized.map((row) => mapNormalizedRowToPendingAction(row, role));
+
+  const supplemental = [
+    ...monthlyPlanActions,
+    ...storeIssue,
+    ...storeDispatch,
+    ...storeRmReturn,
+    ...storeGrn,
+    ...storeHandoff,
+    ...storeNoQtyMonthly,
+    ...storeNoQtyCreateRs,
+    ...storeNoQtyPlaceWo,
+  ];
+
+  const combined = [...normalizedActions, ...supplemental];
+
+  const byId = new Map();
+  for (const action of combined) {
+    const key = String(action.id ?? `${action.action}:${action.documentNo}`);
+    if (!byId.has(key)) byId.set(key, action);
+  }
+
+  let merged = [...byId.values()].filter((a) => String(a.ownerRole ?? "").toUpperCase() === role);
+  merged = dedupePendingActionsByProcurementCase(merged);
+  merged = dedupePendingActionsByWorkOrder(merged);
+  merged = dedupeLifecyclePendingActions(merged);
+
+  const actions = sortPendingActions(merged);
+  bucketMs.total = Date.now() - startedAt;
+  bucketCounts.total = actions.length;
+
+  if (process.env.NODE_ENV !== "production" || process.env.PERF_LOG === "1") {
+    // eslint-disable-next-line no-console
+    console.log("[perf] pending-actions buckets", {
+      role,
+      bucketMs,
+      bucketCounts,
+      normalizedRowCount: dedupedNormalized.length,
+      supplementalCount: supplemental.length,
+      storeScoped: true,
+    });
+  }
+
+  return {
+    count: actions.length,
+    actions: actions.map(({ id, priority, action, documentNo, ownerRole, ageHours, href, planId, monthlyPlanId }) => ({
+      id,
+      priority,
+      action,
+      documentNo,
+      ownerRole,
+      ageHours,
+      href,
+      ...(planId != null ? { planId } : {}),
+      ...(monthlyPlanId != null ? { monthlyPlanId } : {}),
+    })),
+    meta: {
+      role,
+      generatedAt: new Date().toISOString(),
+      normalizedRowCount: dedupedNormalized.length,
+      supplementalCount: supplemental.length,
+      storeScoped: true,
+      perf: {
+        bucketMs,
+        bucketCounts,
+      },
+    },
+  };
+}
+
 
 /**
  * @param {{ userRole?: string | null; db?: import('@prisma/client').PrismaClient }} [opts]
@@ -1648,9 +1868,13 @@ async function getPendingActions(opts = {}) {
     return result;
   }
 
+  if (role === "STORE") {
+    return getStorePendingActions({ db, timedBucket, startedAt, bucketMs });
+  }
+
   const [{ rows: mergedRows }, monthlyPlanActions] = await Promise.all([
     timedBucket("normalizedMerge", () => fetchMergedNormalizedRows({ mode: CONTROL_TOWER_ROW_MODES.FULL })),
-    timedBucket("monthlyPlan", () => fetchMonthlyPlanPendingActions(db)),
+    timedBucket("monthlyPlan", () => fetchMonthlyPlanPendingActions(db, { role })),
   ]);
 
   const bucketCounts = {
@@ -1688,26 +1912,6 @@ async function getPendingActions(opts = {}) {
     const purchaseChunk = await fetchPurchaseProcurementPendingActions(db);
     supplemental.push(...purchaseChunk);
     bucketCounts.procurement += purchaseChunk.length;
-  }
-  if (role === "STORE") {
-    const storeSupplemental = await Promise.all([
-      fetchStoreIssuePendingActions(db),
-      fetchStoreDispatchPendingActions(db),
-      fetchStoreProductionRmReturnPendingActions(db),
-      fetchStoreGrnPendingActions(db),
-      fetchStoreProductionHandoffPendingActions(db),
-      fetchStoreNoQtyMonthlyPlanningPendingActions(db),
-      fetchStoreNoQtyCreateNextRsPendingActions(db),
-      fetchStoreNoQtyPlaceWoPendingActions(db),
-    ]);
-    for (const chunk of storeSupplemental) supplemental.push(...chunk);
-    bucketCounts.inventory += storeSupplemental[0]?.length ?? 0;
-    bucketCounts.dispatch += storeSupplemental[1]?.length ?? 0;
-    bucketCounts.procurement += storeSupplemental[3]?.length ?? 0;
-    bucketCounts.noQty +=
-      (storeSupplemental[5]?.length ?? 0) +
-      (storeSupplemental[6]?.length ?? 0) +
-      (storeSupplemental[7]?.length ?? 0);
   }
   if (role === "PRODUCTION" || role === "ADMIN") {
     supplemental.push(...(await fetchProductionRmReturnWaitingActions(db)));

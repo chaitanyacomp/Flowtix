@@ -355,6 +355,61 @@ async function fetchMergedNormalizedRows(opts = {}) {
 }
 
 /**
+ * Store pending-actions — only sources that can produce STORE-owned normalized rows.
+ * Skips QA, dispatch backlog, continue-working, and QA disposition queues.
+ * @param {{ mode?: "sample" | "full"; limitPerSource?: number }} [opts]
+ */
+async function fetchStoreScopedNormalizedRows(opts = {}) {
+  const mode = parseControlTowerRowMode(opts.mode);
+  const limitPerSource = Math.min(
+    25,
+    Math.max(1, Number(opts.limitPerSource) || DEFAULT_SAMPLE_LIMIT),
+  );
+
+  const noQtyPlanningLimit =
+    mode === CONTROL_TOWER_ROW_MODES.FULL ? NO_QTY_PLANNING_FULL_LIMIT : limitPerSource;
+  const woPlanningLimit =
+    mode === CONTROL_TOWER_ROW_MODES.FULL ? WO_PLANNING_FULL_LIMIT : limitPerSource;
+
+  const [rmRisk, production, noQtyPlanning, woPlanning] = await Promise.all([
+    getRmRiskRows(),
+    getProductionQueueRows(),
+    getNoQtyPlanningPendingRows({ limit: noQtyPlanningLimit }),
+    getWoPreparePlanningRows(prisma, { limit: woPlanningLimit }),
+  ]);
+
+  const built = mergeNormalizedRowsFromSources({
+    rmRisk,
+    production,
+    qa: [],
+    dispatch: [],
+    continueWorking: [],
+    noQtyPlanning,
+    woPlanning,
+    qaRework: [],
+    qaDispositionFollowUp: [],
+    mode,
+    limitPerSource,
+  });
+
+  const rows = built.merged.map((row) => attachRowIdentity(row));
+
+  return {
+    rows,
+    meta: {
+      generatedAt: new Date().toISOString(),
+      mode,
+      scopedForRole: "STORE",
+      sampled: mode === CONTROL_TOWER_ROW_MODES.SAMPLE,
+      limitPerSource: mode === CONTROL_TOWER_ROW_MODES.SAMPLE ? limitPerSource : null,
+      rowCountMerged: rows.length,
+      sources: built.sources,
+      note: "Store-scoped normalized rows (RM risk, production, NO_QTY planning, WO planning only).",
+    },
+  };
+}
+
+/**
  * Collect normalized operational rows with optional pagination (Prompt 6B).
  * @param {{
  *   mode?: "sample" | "full";
@@ -395,5 +450,6 @@ module.exports = {
   mergeNormalizedRowsFromSources,
   fetchNormalizedDedupedRows,
   fetchMergedNormalizedRows,
+  fetchStoreScopedNormalizedRows,
   getNormalizedOperationalRows,
 };

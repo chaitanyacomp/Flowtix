@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { apiFetch } from "../services/api";
+import { clearErpDataCache } from "../lib/erpDataCache";
 import { endPerfMark, startPerfMark } from "../lib/performanceTiming";
 
 export type AuthUser = { id: number; email: string; role: string; name: string };
@@ -55,6 +56,7 @@ export function useAuth() {
       method: "POST",
       body: JSON.stringify({ email, password }),
     });
+    clearErpDataCache("login");
     localStorage.setItem("token", data.token);
     localStorage.setItem("user", JSON.stringify(data.user));
     setUser(data.user);
@@ -78,9 +80,15 @@ export function useAuth() {
   }, []);
 
   const logout = useCallback(() => {
+    clearErpDataCache("logout");
     localStorage.removeItem("token");
     localStorage.removeItem("user");
     setUser(null);
+    try {
+      window.dispatchEvent(new Event("auth:logout"));
+    } catch {
+      /* ignore */
+    }
   }, []);
 
   return useMemo(

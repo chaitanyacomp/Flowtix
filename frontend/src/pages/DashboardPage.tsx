@@ -13,12 +13,8 @@ import { useDemoMode } from "../contexts/DemoModeContext";
 import { ApiRequestError } from "../services/api";
 import { type DispatchBacklogRow, ROW_NUM_EPS } from "../lib/dispatchBacklog";
 import { displaySalesOrderNo } from "../lib/docNoDisplay";
-import { useAuth } from "../hooks/useAuth";
 import { PendingActionsDashboardCard, PENDING_ACTIONS_PRODUCTION_HELPER } from "./PendingActionsPage";
-import { fetchPendingActions, isStoreOwnedNoQtyRsPendingAction, type PendingAction } from "../lib/pendingActionsApi";
-import { PurchaseDashboardPage } from "./PurchaseDashboardPage";
-import { QaDashboardPage } from "./QaDashboardPage";
-import { StoreDispatchDashboard, type StoreDispatchActionRow } from "./store/StoreDispatchDashboard";
+import { useDashboardPendingActionsDesk } from "../hooks/useDashboardPendingActionsDesk";
 import { type WoPrepareDashboardQueues } from "../components/erp/WoPrepareOperationalQueuesCard";
 import { type ProcurementPendingRow } from "../components/erp/ProcurementPendingDashboardCard";
 import { OperationalBlockersCard } from "../components/erp/OperationalBlockersCard";
@@ -49,6 +45,7 @@ import { dashboardShell } from "../lib/dashboardShell";
 import { erpKpi } from "../lib/erpFoundationTokens";
 import type { DashboardShortcut } from "../components/erp/foundation/DashboardRoleShortcuts";
 import { ERP_DASHBOARD_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
+import { useRouteActive } from "../hooks/useRouteActive";
 import { endPerfMark, usePagePerf } from "../lib/performanceTiming";
 import { summarizeDashboardProductionAttention } from "../lib/dashboardProductionStatus";
 import {
@@ -570,16 +567,18 @@ function isExcludedInternalStatusForOpenNoQtyDashboard(internalStatus: string): 
 }
 
 
-export function DashboardPage() {
+export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODUCTION" }) {
   const navigate = useNavigate();
   const toast = useToast();
-  const auth = useAuth();
-  const role = auth.user?.role ?? "";
-  const usesDedicatedRoleDesk = role === "PURCHASE" || role === "QA";
+  const isDashboardRoute = useRouteActive("/dashboard");
   const demo = useDemoMode();
+  const { deskProps: pendingActionsDeskProps } = useDashboardPendingActionsDesk();
   // Phase E: operator-first regular flow. Hide procurement-style panels/wording on the dashboard.
   const phaseEOperatorFlow = true;
-  const liveTick = useErpRefreshTick(["dashboard"], { pollIntervalMs: ERP_DASHBOARD_POLL_MS });
+  const liveTick = useErpRefreshTick(["dashboard"], {
+    pollIntervalMs: ERP_DASHBOARD_POLL_MS,
+    enabled: isDashboardRoute,
+  });
 
   function clickTo(to: string) {
     return {
@@ -649,20 +648,14 @@ export function DashboardPage() {
   const [dispQueues, setDispQueues] = React.useState<DashboardDispQueues | null>(null);
   const [continueWorking, setContinueWorking] = React.useState<ContinueWorkingRow[] | null>(null);
   const [continueWorkingError, setContinueWorkingError] = React.useState<string | null>(null);
-  const [pendingActionsCount, setPendingActionsCount] = React.useState(0);
-  const [pendingActionsLoading, setPendingActionsLoading] = React.useState(true);
-  const [pendingActionsError, setPendingActionsError] = React.useState<string | null>(null);
-  const [storePendingRsActions, setStorePendingRsActions] = React.useState<PendingAction[]>([]);
   const [salesOrdersForDashboard, setSalesOrdersForDashboard] = React.useState<DashboardSalesOrderHead[] | null>(null);
   const [quotationsPendingSo, setQuotationsPendingSo] = React.useState<QuotationPendingSoRow[] | null>(null);
   const [quotationsPendingSoError, setQuotationsPendingSoError] = React.useState<string | null>(null);
 
-  const dashboardPerfReady = usesDedicatedRoleDesk
-    ? !pendingActionsLoading
-    : canViewOverallSummary
-      ? data !== null || error !== null
-      : !pendingActionsLoading;
-  usePagePerf("dashboard", dashboardPerfReady, { role, usesDedicatedRoleDesk });
+  const dashboardPerfReady = canViewOverallSummary
+    ? data !== null || error !== null
+    : pendingActionsDeskProps?.loading !== true;
+  usePagePerf("dashboard", dashboardPerfReady, { role, usesDedicatedRoleDesk: false });
 
   React.useEffect(() => {
     if (!dashboardPerfReady) return;
@@ -677,7 +670,7 @@ export function DashboardPage() {
   }, [dashboardPerfReady, role]);
 
   React.useLayoutEffect(() => {
-    if (usesDedicatedRoleDesk) return;
+    if (!isDashboardRoute) return;
     if (!canViewContinueWorking) {
       setContinueWorking(null);
     }
@@ -717,11 +710,11 @@ export function DashboardPage() {
     canViewWoPrepareQueues,
     canViewContinueWorking,
     canViewQuotationsPendingSo,
-    usesDedicatedRoleDesk,
+    isDashboardRoute,
   ]);
 
   React.useEffect(() => {
-    if (usesDedicatedRoleDesk) return;
+    if (!isDashboardRoute) return;
     let mounted = true;
     setBacklogError(null);
     setProdQueueError(null);
@@ -981,61 +974,15 @@ export function DashboardPage() {
     canViewWoPrepareQueues,
     canViewContinueWorking,
     canViewQuotationsPendingSo,
-    usesDedicatedRoleDesk,
+    isDashboardRoute,
     liveTick,
   ]);
 
   React.useEffect(() => {
-    if (demo.enabled) {
-      setPendingActionsCount(0);
-      setStorePendingRsActions([]);
-      setPendingActionsLoading(false);
-      setPendingActionsError(null);
-      return;
-    }
-    let mounted = true;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    setPendingActionsLoading(true);
-    timer = setTimeout(() => {
-      fetchPendingActions()
-        .then((res) => {
-          if (!mounted) return;
-          setPendingActionsCount(Number(res.count ?? res.actions?.length ?? 0));
-          const pendingRs =
-            role === "STORE"
-              ? (res.actions ?? []).filter((a) => isStoreOwnedNoQtyRsPendingAction(a))
-              : [];
-          setStorePendingRsActions(pendingRs);
-          if (import.meta.env.DEV && role === "STORE") {
-            // eslint-disable-next-line no-console
-            console.debug("[store-dashboard] pending-actions raw", {
-              count: res.count,
-              actions: res.actions,
-              meta: res.meta,
-              pendingRsRows: pendingRs.length,
-            });
-          }
-          setPendingActionsError(null);
-        })
-        .catch((e) => {
-          if (!mounted) return;
-          setPendingActionsCount(0);
-          setStorePendingRsActions([]);
-          setPendingActionsError(e instanceof Error ? e.message : "Could not load pending actions");
-        })
-      .finally(() => {
-        if (mounted) setPendingActionsLoading(false);
-      });
-    }, usesDedicatedRoleDesk ? 0 : 150);
-    return () => {
-      mounted = false;
-      if (timer) clearTimeout(timer);
-    };
-  }, [demo.enabled, liveTick, role, usesDedicatedRoleDesk]);
-
-  React.useEffect(() => {
-    if (!canUseOpenNoQtyContinuation || demo.enabled) {
-      setSalesOrdersForDashboard(null);
+    if (!isDashboardRoute || !canUseOpenNoQtyContinuation || demo.enabled) {
+      if (!isDashboardRoute || !canUseOpenNoQtyContinuation || demo.enabled) {
+        setSalesOrdersForDashboard(null);
+      }
       return;
     }
     let mounted = true;
@@ -1049,7 +996,7 @@ export function DashboardPage() {
     return () => {
       mounted = false;
     };
-  }, [canUseOpenNoQtyContinuation, demo.enabled, liveTick]);
+  }, [canUseOpenNoQtyContinuation, demo.enabled, liveTick, isDashboardRoute]);
 
   const noQtyMetricsBySoId = React.useMemo(() => {
     const m = new Map<number, { shortage?: number; dispatch?: number }>();
@@ -1120,9 +1067,27 @@ export function DashboardPage() {
   }, [canUseOpenNoQtyContinuation, demo.enabled, salesOrdersForDashboard, noQtyMetricsBySoId]);
 
   const openNoQtyFlowFetchIds = React.useMemo(
-    () => openNoQtyContinuationRows.map((r) => r.salesOrderId),
+    () => openNoQtyContinuationRows.slice(0, DASH_NO_QTY_CONTINUATION_CAP).map((r) => r.salesOrderId),
     [openNoQtyContinuationRows],
   );
+
+  const openNoQtyFlowCycleBySoId = React.useMemo(() => {
+    const map = new Map<number, number | null>();
+    for (const row of openNoQtyContinuationRows.slice(0, DASH_NO_QTY_CONTINUATION_CAP)) {
+      const cid =
+        row.noQtyPlanningPointerAhead &&
+        row.planningPointerCycleId != null &&
+        Number(row.planningPointerCycleId) > 0
+          ? Number(row.planningPointerCycleId)
+          : row.cycleId != null && Number(row.cycleId) > 0
+            ? Number(row.cycleId)
+            : null;
+      map.set(row.salesOrderId, cid);
+    }
+    return map;
+  }, [openNoQtyContinuationRows]);
+
+  const openNoQtyFlowFetchKey = openNoQtyFlowFetchIds.join(",");
 
   const [noQtyFlowBySo, setNoQtyFlowBySo] = React.useState<Record<number, NoQtyFlowState | null>>({});
 
@@ -1137,15 +1102,7 @@ export function DashboardPage() {
       const pairs = await Promise.all(
         ids.map(async (id) => {
           try {
-            const row = openNoQtyContinuationRows.find((r) => r.salesOrderId === id);
-            const cid =
-              row?.noQtyPlanningPointerAhead &&
-              row.planningPointerCycleId != null &&
-              Number(row.planningPointerCycleId) > 0
-                ? Number(row.planningPointerCycleId)
-                : row?.cycleId != null && Number(row.cycleId) > 0
-                  ? Number(row.cycleId)
-                  : null;
+            const cid = openNoQtyFlowCycleBySoId.get(id) ?? null;
             const qs =
               cid != null ? `?cycleId=${encodeURIComponent(String(cid))}` : "";
             const st = await apiFetch<NoQtyFlowState>(
@@ -1165,8 +1122,8 @@ export function DashboardPage() {
   }, [
     canUseOpenNoQtyContinuation,
     demo.enabled,
-    openNoQtyFlowFetchIds,
-    openNoQtyContinuationRows,
+    openNoQtyFlowFetchKey,
+    openNoQtyFlowCycleBySoId,
     liveTick,
   ]);
 
@@ -1303,25 +1260,6 @@ export function DashboardPage() {
   ]);
 
   const hasVisibleNoQtyContinuation = visibleOpenNoQtyContinuationRows.length > 0;
-
-  React.useEffect(() => {
-    if (import.meta.env.DEV && role === "STORE" && !demo.enabled) {
-      // eslint-disable-next-line no-console
-      console.debug("[store-dashboard] continuation derived", {
-        openNoQtyContinuationRows: openNoQtyContinuationRows.length,
-        visibleOpenNoQtyContinuationRows: visibleOpenNoQtyContinuationRows.length,
-        pendingRsRows: storePendingRsActions.length,
-        hasNoQtyContinuationInActionRequired,
-      });
-    }
-  }, [
-    role,
-    demo.enabled,
-    openNoQtyContinuationRows.length,
-    visibleOpenNoQtyContinuationRows.length,
-    storePendingRsActions.length,
-    hasNoQtyContinuationInActionRequired,
-  ]);
 
   const woProdNoQtyEligible = React.useMemo(() => {
     return actionRequiredGroups.production.filter((r) => {
@@ -1489,22 +1427,6 @@ export function DashboardPage() {
         </div>
       </div>
     );
-  }
-
-  const pendingActionsDeskProps = !demo.enabled
-    ? {
-        count: pendingActionsCount,
-        loading: pendingActionsLoading,
-        error: pendingActionsError,
-      }
-    : undefined;
-
-  if (role === "PURCHASE") {
-    return <PurchaseDashboardPage pendingActions={pendingActionsDeskProps} />;
-  }
-
-  if (role === "QA") {
-    return <QaDashboardPage pendingActions={pendingActionsDeskProps} />;
   }
 
   if (!hasAnyWidget) {
@@ -2124,48 +2046,6 @@ export function DashboardPage() {
 
   const operationalActionCardsPresent =
     operationalDashGroupsPresent || hasVisibleNoQtyContinuation || hasOperationalBlockerCards;
-
-  if (role === "STORE" && !demo.enabled) {
-    const storeDispatchReady: StoreDispatchActionRow[] = actionRequiredGroups.dispatch.map((d) => ({
-      key: d.key,
-      salesOrderId: d.salesOrderId,
-      salesOrderDocNo: d.salesOrderDocNo,
-      customerName: d.customerName,
-      itemName: d.itemName,
-      orderType: d.orderType,
-      metricQty: d.metricQty,
-      href: d.href,
-    }));
-    return (
-      <StoreDispatchDashboard
-        dispatchReady={storeDispatchReady}
-        backlogPreview={backlog ?? []}
-        fgStockTotal={fgStockTotal}
-        dispatchBacklogCount={backlog?.length ?? 0}
-        pendingActions={pendingActionsDeskProps}
-        pendingRsActions={storePendingRsActions}
-        noQtyContinuationRows={visibleOpenNoQtyContinuationRows}
-        noQtyFlowBySo={noQtyFlowBySo}
-        noQtyContinuationTruncated={noQtyContinuationTruncated}
-        onNoQtyPrimaryAction={({ row, resolved }) => {
-          const appendFromDashboard = (to: string) => {
-            const sep = to.includes("?") ? "&" : "?";
-            return `${to}${sep}fromDashboard=1`;
-          };
-          if (resolved.kind === "prepare_next_rs") {
-            void prepareNoQtyNextRequirementSheetAndNavigate({
-              salesOrderId: row.salesOrderId,
-              navigate,
-              toast,
-              navigateState: { from: "dashboard" },
-            });
-          } else {
-            navigate(appendFromDashboard(resolved.to), { state: { from: "dashboard" } });
-          }
-        }}
-      />
-    );
-  }
 
   const operationalActionQueue =
     (showOperationalLeftPanel || showCommercialRightPanel) && operationalControlHasContent ? (

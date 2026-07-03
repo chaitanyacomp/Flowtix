@@ -18,6 +18,8 @@
  * NO_NEXT_CYCLE_DEMAND (locked RS but execution not started on cycle).
  */
 
+const { getOrSetRequestCache } = require("../utils/prismaQueryMetrics");
+
 /**
  * Same cycle resolution as prepare-next-requirement-sheet: prefer ACTIVE cycle (highest cycleNo),
  * else fall back to SO.currentCycleId if that row still exists for this SO,
@@ -32,7 +34,13 @@ async function resolveNoQtyEligibilityCycleId(db, salesOrderId) {
   if (!Number.isFinite(soId) || soId <= 0) {
     return { cycleId: null, source: "INVALID_SO" };
   }
+  return getOrSetRequestCache(`no-qty-eligibility-cycle:${soId}`, () =>
+    resolveNoQtyEligibilityCycleIdImpl(db, soId),
+  );
+}
 
+async function resolveNoQtyEligibilityCycleIdImpl(db, salesOrderId) {
+  const soId = Number(salesOrderId);
   const active = await db.salesOrderCycle.findFirst({
     where: { salesOrderId: soId, status: "ACTIVE" },
     orderBy: { cycleNo: "desc" },

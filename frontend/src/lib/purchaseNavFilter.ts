@@ -23,6 +23,8 @@ const PURCHASE_HIDDEN_NAV_KEYS = new Set([
   "stock-adj",
   "rm-ledger",
   "rm-control-center",
+  "mat-plan",
+  "rm-stock-plan",
   "monthly-planning",
   "plan-dash",
   "wo",

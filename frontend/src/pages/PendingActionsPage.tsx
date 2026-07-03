@@ -4,13 +4,13 @@ import { ArrowUpDown, ClipboardList, ExternalLink } from "lucide-react";
 import { ERPBackNavigation, PageContainer, PageHeader, StickyWorkspaceHead } from "../components/PageHeader";
 import { Button } from "../components/ui/button";
 import { Card, CardContent } from "../components/ui/card";
-import { ErpKpiLabel, ErpKpiSegment, ErpKpiStrip, ErpKpiValue, ErpPageContentGate } from "../components/erp/foundation";
+import { ErpKpiLabel, ErpKpiSegment, ErpKpiStrip, ErpKpiValue } from "../components/erp/foundation";
+import { ErpRefreshingBadge } from "../components/erp/foundation/ErpRefreshingBadge";
+import { PendingActionBucketSkeleton } from "../components/erp/pending/PendingActionBucketSkeleton";
 import { useAuth } from "../hooks/useAuth";
-import { useErpRefreshTick } from "../hooks/useErpRefreshTick";
-import { useStablePageLoad } from "../hooks/useStablePageLoad";
+import { usePendingActionsPageData } from "../hooks/usePendingActionsPageData";
 import { usePagePerf } from "../lib/performanceTiming";
 import {
-  fetchPendingActions,
   formatPendingActionAge,
   formatPendingActionOwner,
   pendingActionPriorityLabel,
@@ -67,44 +67,18 @@ export function PendingActionsPage() {
   const auth = useAuth();
   const navigate = useNavigate();
   const role = String(auth.user?.role ?? "").trim().toUpperCase();
-  const liveTick = useErpRefreshTick(["dashboard", "pending-actions"], { pollIntervalMs: 60_000 });
-  const { firstLoadDone, initialLoading, refreshing, startLoad, finishLoad, runDeduped } = useStablePageLoad();
-
-  const [error, setError] = React.useState<string | null>(null);
-  const [count, setCount] = React.useState(0);
-  const [actions, setActions] = React.useState<PendingAction[]>([]);
+  const { firstLoadDone, initialLoading, refreshing, error, count, actions } = usePendingActionsPageData();
   const [sortMode, setSortMode] = React.useState<SortMode>("priority");
   usePagePerf("pending-actions", firstLoadDone, { role, count });
-
-  React.useEffect(() => {
-    let mounted = true;
-    startLoad();
-    void runDeduped(async () => {
-      try {
-        const res = await fetchPendingActions();
-        if (!mounted) return;
-        setCount(Number(res.count ?? res.actions?.length ?? 0));
-        setActions(Array.isArray(res.actions) ? res.actions : []);
-        setError(null);
-      } catch (e) {
-        if (!mounted) return;
-        setError(e instanceof Error ? e.message : "Could not load pending actions");
-        setCount(0);
-        setActions([]);
-      } finally {
-        if (mounted) finishLoad();
-      }
-    });
-    return () => {
-      mounted = false;
-    };
-  }, [liveTick, role, startLoad, finishLoad, runDeduped]);
 
   const sorted = React.useMemo(() => sortActions(actions, sortMode), [actions, sortMode]);
   const buckets = React.useMemo(
     () => groupPendingActionsIntoWorkBuckets(sorted, sortMode),
     [sorted, sortMode],
   );
+
+  const showInitialBucketSkeleton = initialLoading && buckets.length === 0;
+  const showEmpty = firstLoadDone && !error && sorted.length === 0;
 
   return (
     <PageContainer>
@@ -119,12 +93,12 @@ export function PendingActionsPage() {
         <ErpKpiStrip className="min-w-0" role="region" aria-label="Pending actions summary">
           <ErpKpiSegment>
             <ErpKpiLabel>Assigned to you</ErpKpiLabel>
-            <ErpKpiValue tone={count > 0 ? "warn" : "muted"}>{initialLoading || refreshing ? "…" : count}</ErpKpiValue>
+            <ErpKpiValue tone={count > 0 ? "warn" : "muted"}>{initialLoading ? "…" : count}</ErpKpiValue>
           </ErpKpiSegment>
           <ErpKpiSegment>
             <ErpKpiLabel>Work buckets</ErpKpiLabel>
             <ErpKpiValue tone={buckets.length > 0 ? "default" : "muted"}>
-              {initialLoading || refreshing ? "…" : buckets.length}
+              {initialLoading ? "…" : buckets.length}
             </ErpKpiValue>
           </ErpKpiSegment>
           <ErpKpiSegment>
@@ -153,90 +127,87 @@ export function PendingActionsPage() {
         >
           Age
         </Button>
-      </div>
-
-      <ErpPageContentGate
-        firstLoadDone={firstLoadDone}
-        loading={initialLoading || refreshing}
-        refreshing={refreshing}
-        hasDisplayData={actions.length > 0 || error != null}
-        skeletonVariant="list"
-        skeletonLines={3}
-        isEmpty={sorted.length === 0}
-        error={
-          error ? (
-            <Card className="border-red-200 bg-red-50/80">
-              <CardContent className="px-4 py-3 text-sm text-red-900">{error}</CardContent>
-            </Card>
-          ) : null
-        }
-        emptyState={
-          <Card>
-            <CardContent className="flex flex-col items-center gap-2 px-6 py-10 text-center text-sm text-slate-600">
-              <ClipboardList className="h-8 w-8 text-slate-400" aria-hidden />
-              <p className="font-medium text-slate-900">No pending actions</p>
-              <p>When work is assigned to {formatPendingActionOwner(role)}, it will appear here.</p>
-              <Button variant="outline" size="sm" className="mt-2" asChild>
-                <Link to="/dashboard">Return to Dashboard</Link>
-              </Button>
-            </CardContent>
-          </Card>
-        }
-      >
-        {buckets.length > 0 ? (
-          <div className="space-y-3" data-testid="pending-actions-buckets">
-            {buckets.map((bucket) => (
-              <div
-                key={bucket.key}
-                className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm"
-                data-testid={`pending-action-bucket-${bucket.key}`}
-              >
-                <div className="flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-start sm:justify-between">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <PriorityDot priority={bucket.topPriority} />
-                      <h2 className="text-[15px] font-semibold text-slate-900">{bucket.title}</h2>
-                      <span className="text-xs text-slate-500">
-                        {formatPendingActionOwner(bucket.ownerRole)}
-                        {bucket.maxAgeHours != null ? ` · ${formatPendingActionAge(bucket.maxAgeHours)}` : ""}
-                      </span>
-                    </div>
-                    <ul className="mt-2 space-y-1 text-sm text-slate-800">
-                      {bucket.previewLines.map((line, idx) => (
-                        <li key={`${bucket.key}-${line.documentNo}-${idx}`} className="tabular-nums">
-                          <span className="font-medium">{line.documentNo}</span>
-                          {line.detail ? (
-                            <span className="ml-2 text-slate-600">{line.detail}</span>
-                          ) : null}
-                        </li>
-                      ))}
-                      {bucket.overflowCount > 0 ? (
-                        <li className="text-slate-500">+{bucket.overflowCount} more…</li>
-                      ) : null}
-                    </ul>
-                  </div>
-                  <div className="shrink-0 sm:pt-0.5">
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      className="h-8 gap-1"
-                      onClick={() =>
-                        navigate(bucket.openHref, {
-                          state: pendingActionsBucketNavigateState(bucket),
-                        })
-                      }
-                    >
-                      {bucket.openLabel}
-                      <ExternalLink className="h-3.5 w-3.5 opacity-60" aria-hidden />
-                    </Button>
-                  </div>
-                </div>
-              </div>
-            ))}
+        {refreshing ? (
+          <div className="ml-auto">
+            <ErpRefreshingBadge />
           </div>
         ) : null}
-      </ErpPageContentGate>
+      </div>
+
+      {error ? (
+        <Card className="mb-3 border-red-200 bg-red-50/80">
+          <CardContent className="px-4 py-3 text-sm text-red-900">{error}</CardContent>
+        </Card>
+      ) : null}
+
+      {showInitialBucketSkeleton ? <PendingActionBucketSkeleton count={3} /> : null}
+
+      {showEmpty ? (
+        <Card>
+          <CardContent className="flex flex-col items-center gap-2 px-6 py-10 text-center text-sm text-slate-600">
+            <ClipboardList className="h-8 w-8 text-slate-400" aria-hidden />
+            <p className="font-medium text-slate-900">No pending actions</p>
+            <p>When work is assigned to {formatPendingActionOwner(role)}, it will appear here.</p>
+            <Button variant="outline" size="sm" className="mt-2" asChild>
+              <Link to="/dashboard">Return to Dashboard</Link>
+            </Button>
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {!showInitialBucketSkeleton && buckets.length > 0 ? (
+        <div className="space-y-3" data-testid="pending-actions-buckets">
+          {buckets.map((bucket) => (
+            <div
+              key={bucket.key}
+              className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm"
+              data-testid={`pending-action-bucket-${bucket.key}`}
+            >
+              <div className="flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-start sm:justify-between">
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <PriorityDot priority={bucket.topPriority} />
+                    <h2 className="text-[15px] font-semibold text-slate-900">{bucket.title}</h2>
+                    <span className="text-xs text-slate-500">
+                      {formatPendingActionOwner(bucket.ownerRole)}
+                      {bucket.maxAgeHours != null ? ` · ${formatPendingActionAge(bucket.maxAgeHours)}` : ""}
+                    </span>
+                  </div>
+                  <ul className="mt-2 space-y-1 text-sm text-slate-800">
+                    {bucket.previewLines.map((line, idx) => (
+                      <li key={`${bucket.key}-${line.documentNo}-${idx}`} className="tabular-nums">
+                        <span className="font-medium">{line.documentNo}</span>
+                        {line.detail ? (
+                          <span className="ml-2 text-slate-600">{line.detail}</span>
+                        ) : null}
+                      </li>
+                    ))}
+                    {bucket.overflowCount > 0 ? (
+                      <li className="text-slate-500">+{bucket.overflowCount} more…</li>
+                    ) : null}
+                  </ul>
+                </div>
+                <div className="shrink-0 sm:pt-0.5">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-8 gap-1"
+                    onClick={() =>
+                      navigate(bucket.openHref, {
+                        state: pendingActionsBucketNavigateState(bucket),
+                      })
+                    }
+                  >
+                    {bucket.openLabel}
+                    <ExternalLink className="h-3.5 w-3.5 opacity-60" aria-hidden />
+                  </Button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
     </PageContainer>
   );
 }
@@ -249,6 +220,7 @@ export const PENDING_ACTIONS_PRODUCTION_HELPER = "Work you need to start or cont
 export function PendingActionsDashboardCard({
   count,
   loading,
+  refreshing,
   error,
   description,
 }: PendingActionsDashboardProps) {
@@ -275,6 +247,7 @@ export function PendingActionsDashboardCard({
         <ErpKpiValue tone={tone} className="text-3xl leading-none">
           {displayCount}
         </ErpKpiValue>
+        {refreshing ? <ErpRefreshingBadge className="shrink-0" /> : null}
       </div>
       {error ? <p className="mt-1.5 text-sm text-red-700">{error}</p> : null}
       {!error ? <p className="mt-1.5 text-sm text-slate-500">{helperText}</p> : null}

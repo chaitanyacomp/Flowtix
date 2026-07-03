@@ -1,4 +1,4 @@
-const { getPrismaQueryCount, runWithQueryMetrics } = require("../utils/prismaQueryMetrics");
+const { getPrismaQueryCount, getPrismaQueryDuplicatePatterns, runWithQueryMetrics } = require("../utils/prismaQueryMetrics");
 
 const PERF_SLOW_MS = Number(process.env.PERF_SLOW_MS || 700);
 
@@ -37,6 +37,8 @@ function performanceLoggingMiddleware(req, res, next) {
     res.on("finish", () => {
       const durationMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
       const queryCount = getPrismaQueryCount();
+      const duplicatePatterns =
+        durationMs >= PERF_SLOW_MS || queryCount >= 50 ? getPrismaQueryDuplicatePatterns(8) : [];
       const contentLength = res.getHeader("content-length");
       const responseSize =
         contentLength != null && contentLength !== "" ? Number(contentLength) : null;
@@ -51,6 +53,7 @@ function performanceLoggingMiddleware(req, res, next) {
         role,
         queryCount: queryCount != null ? queryCount : undefined,
         responseSize: Number.isFinite(responseSize) ? responseSize : undefined,
+        ...(duplicatePatterns.length ? { duplicatePatterns } : {}),
       };
       const line = `[perf] ${payload.method} ${payload.endpoint} ${payload.durationMs}ms`;
       if (durationMs >= PERF_SLOW_MS || res.statusCode >= 500) {

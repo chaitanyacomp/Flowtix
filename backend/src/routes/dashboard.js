@@ -154,12 +154,11 @@ dashboardRouter.get("/procurement-pending", requireAuth, woPrepareProcurementRol
       buildStoreIssuePendingDashboardRows,
       buildAllocationFirstDashboardRows,
     } = require("../services/materialAvailabilityWorkspaceService");
-    const [rows, storeIssuePending] = await Promise.all([
-      /** Match Procurement Workspace — all demand pools (REGULAR_SO, MPRS, replenishment). */
+    const [rows, storeIssuePending, allocationFirstPending] = await Promise.all([
       buildProcurementPendingQueue(prisma),
       buildStoreIssuePendingDashboardRows(prisma),
+      buildAllocationFirstDashboardRows(prisma),
     ]);
-    const allocationFirstPending = await buildAllocationFirstDashboardRows(prisma);
     return res.json({ rows, storeIssuePending, allocationFirstPending, count: rows.length });
   } catch (err) {
     console.error("Dashboard procurement-pending aggregation failed", {

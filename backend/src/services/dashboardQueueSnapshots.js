@@ -4,6 +4,7 @@
  */
 
 const { prisma } = require("../utils/prisma");
+const { getOrSetRequestCache } = require("../utils/prismaQueryMetrics");
 const { QC_ENTRY_ACTIVE_WHERE } = require("./qcEntryConstants");
 const { effectiveQtyPerUnit } = require("./bomUtils");
 const {
@@ -353,6 +354,10 @@ function numDash(v) {
  * NORMAL/REPLACEMENT: customer-attributed backlog — pendingDispatchQty > 0.
  */
 async function getDispatchBacklogRows() {
+  return getOrSetRequestCache("dashboard:dispatch-backlog", () => getDispatchBacklogRowsUncached());
+}
+
+async function getDispatchBacklogRowsUncached() {
   const bucketStockRows = await prisma.stockTransaction.groupBy({
     by: ["itemId", "stockBucket"],
     where: { stockBucket: { in: ["USABLE", "QC_HOLD", "QC_PENDING", "REWORK", "SCRAP"] } },
@@ -696,6 +701,10 @@ async function getNoQtyDispatchPendingRowsForDashboard() {
 }
 
 async function getProductionQueueRows() {
+  return getOrSetRequestCache("dashboard:production-queue", () => getProductionQueueRowsUncached());
+}
+
+async function getProductionQueueRowsUncached() {
   const workOrders = await prisma.workOrder.findMany({
     where: dashboardActiveWorkOrderWhere(),
     orderBy: { createdAt: "asc" },
@@ -1177,6 +1186,11 @@ async function getProductionQueueRows() {
  *   (NORMAL / REPLACEMENT / etc.). Reports and exception payloads should pass false (default) to see all pending QC.
  */
 async function getQcQueueRows(options = {}) {
+  const cacheKey = `dashboard:qc-queue:${JSON.stringify(options ?? {})}`;
+  return getOrSetRequestCache(cacheKey, () => getQcQueueRowsUncached(options));
+}
+
+async function getQcQueueRowsUncached(options = {}) {
   const excludeNoQty = options.excludeNoQty === true;
   const where = excludeNoQty
     ? {
@@ -1310,6 +1324,13 @@ async function getDraftFinalizeDispatchCandidates() {
  * Continue-working pipeline rows (may be multiple per NO_QTY SO: QC + per-cycle dispatch + Next RS, etc.).
  */
 async function getContinueWorkingRows(options = {}) {
+  const limit = Math.min(100, Math.max(5, Number(options.limit) || 50));
+  return getOrSetRequestCache(`dashboard:continue-working:${limit}`, () =>
+    getContinueWorkingRowsUncached({ ...options, limit }),
+  );
+}
+
+async function getContinueWorkingRowsUncached(options = {}) {
   const limit = Math.min(100, Math.max(5, Number(options.limit) || 50));
 
   const [prodRows, qcRows, dispRows, billingEligible] = await Promise.all([
@@ -2114,6 +2135,10 @@ async function getNoQtyDashboardCycleHistory(soId) {
 }
 
 async function getRmRiskRows() {
+  return getOrSetRequestCache("dashboard:rm-risk", () => getRmRiskRowsUncached());
+}
+
+async function getRmRiskRowsUncached() {
   const workspace = await buildMaterialAvailabilityWorkspace(prisma, { onlyBlocked: true });
   const rawQueue = workspace.actionQueue || [];
 

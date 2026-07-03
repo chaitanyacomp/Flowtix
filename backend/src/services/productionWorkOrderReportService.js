@@ -614,7 +614,7 @@ async function confirmProductionWorkOrderReport(db, workOrderId, input = {}, act
   };
 }
 
-async function listProductionRmReturnPending(db = prisma, { status = "PENDING", limit = 100 } = {}) {
+async function listProductionRmReturnPending(db = prisma, { status = "PENDING", limit = 100, skipLocationResolution = false } = {}) {
   if (!db.productionRmReturnPending?.findMany) return [];
   const where = status ? { status } : {};
   const rows = await db.productionRmReturnPending.findMany({
@@ -629,6 +629,26 @@ async function listProductionRmReturnPending(db = prisma, { status = "PENDING", 
       receivedBy: { select: { id: true, name: true } },
     },
   });
+  if (skipLocationResolution) {
+    return rows.map((p) => ({
+      id: p.id,
+      productionReportId: p.productionReportId,
+      workOrderId: p.workOrderId,
+      workOrderNo: p.workOrder?.docNo ?? `WO-${p.workOrderId}`,
+      itemId: p.itemId,
+      itemName: p.item?.itemName ?? `Item #${p.itemId}`,
+      unit: p.item?.unit ?? "",
+      requestedQty: round3(n(p.requestedQty)),
+      status: p.status,
+      materialReturnNoteId: p.materialReturnNoteId ?? null,
+      materialReturnNoteNo: p.materialReturnNote?.docNo ?? null,
+      confirmedAt: p.productionReport?.confirmedAt ?? null,
+      createdAt: p.createdAt,
+      receivedAt: p.receivedAt ?? null,
+      receivedByName: p.receivedBy?.name ?? null,
+      remarks: p.remarks ?? null,
+    }));
+  }
   return Promise.all(
     rows.map(async (p) => {
       const base = {

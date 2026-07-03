@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import {
   noQtyDashboardRowHasRs,
+  noQtyDashboardRowToPresentation,
   noQtyDashboardStageLabel,
   resolveNoQtyDashboardActionLabel,
 } from "../../src/lib/noQtyDashboardPresentation";
+import { NO_QTY_RS_STORE_HANDOFF_LABEL } from "../../src/lib/noQtyRsActionLabels";
 import type { ResolvedNoQtyContinuation } from "../../src/lib/noQtyDashboardContinuation";
 
 describe("noQtyDashboardPresentation", () => {
@@ -61,5 +63,37 @@ describe("noQtyDashboardPresentation", () => {
         hasRs: true,
       }),
     ).toBe("Open Draft RS (Cycle 1)");
+  });
+
+  it("shows Store handoff label for ADMIN on prepare_next_rs rows", () => {
+    const pres = noQtyDashboardRowToPresentation({
+      row: {
+        salesOrderId: 1,
+        salesOrderDocNo: "SO-26-0001",
+        customerName: "Acme",
+        cycleNo: 1,
+        lastRsStatus: "LOCKED",
+      },
+      flow: { createNextRsEligible: true } as never,
+      viewerRole: "ADMIN",
+      commercialContinuation: true,
+    });
+    expect(pres.actionLabel).toBe(NO_QTY_RS_STORE_HANDOFF_LABEL);
+  });
+
+  it("keeps Create Cycle CTA for STORE on prepare_next_rs rows", () => {
+    const pres = noQtyDashboardRowToPresentation({
+      row: {
+        salesOrderId: 1,
+        salesOrderDocNo: "SO-26-0001",
+        customerName: "Acme",
+        cycleNo: 1,
+        lastRsStatus: "LOCKED",
+      },
+      flow: { createNextRsEligible: true } as never,
+      viewerRole: "STORE",
+      commercialContinuation: true,
+    });
+    expect(pres.actionLabel).toBe("Create Cycle 2 Requirement Sheet");
   });
 });

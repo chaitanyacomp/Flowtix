@@ -37,6 +37,10 @@ import {
   sumCompactDispatchHistoryFinalizedQty,
 
   shouldSkipDispatchPrepareAsDuplicate,
+  resolveDispatchFullPrepareAction,
+  canCompactDispatchFull,
+  isCompactDraftSavedIdleState,
+  DISPATCH_FINALIZE_API_SUFFIX,
 
   type DispatchCompactQueueRow,
 
@@ -392,6 +396,136 @@ describe("dispatchWorkspaceUx", () => {
     expect(shouldSkipDispatchPrepareAsDuplicate({ existingDraftQty: 2445, dispatchQty: 2000 })).toBe(false);
 
     expect(shouldSkipDispatchPrepareAsDuplicate({ existingDraftQty: 0, dispatchQty: 2445 })).toBe(false);
+
+  });
+
+
+
+  it("resolveDispatchFullPrepareAction prepares once then skips duplicate full draft", () => {
+
+    expect(
+
+      resolveDispatchFullPrepareAction({ existingDraftQty: 0, headroomToPrepare: 2445 }),
+
+    ).toBe("prepare");
+
+    expect(
+
+      resolveDispatchFullPrepareAction({ existingDraftQty: 2445, headroomToPrepare: 0 }),
+
+    ).toBe("skip_duplicate");
+
+    expect(
+
+      resolveDispatchFullPrepareAction({ existingDraftQty: 1000, headroomToPrepare: 500 }),
+
+    ).toBe("prepare");
+
+  });
+
+
+
+  it("canCompactDispatchFull disables when ready qty is zero and draft matches input", () => {
+
+    expect(
+
+      canCompactDispatchFull({
+
+        headroomToPrepare: 0,
+
+        existingDraftQty: 2445,
+
+        dispatchQty: 2445,
+
+        dispatchQtyValid: true,
+
+      }),
+
+    ).toBe(false);
+
+    expect(
+
+      canCompactDispatchFull({
+
+        headroomToPrepare: 0,
+
+        existingDraftQty: 2445,
+
+        dispatchQty: 2000,
+
+        dispatchQtyValid: true,
+
+      }),
+
+    ).toBe(true);
+
+    expect(
+
+      canCompactDispatchFull({
+
+        headroomToPrepare: 500,
+
+        existingDraftQty: 0,
+
+        dispatchQty: 500,
+
+        dispatchQtyValid: true,
+
+      }),
+
+    ).toBe(true);
+
+  });
+
+
+
+  it("isCompactDraftSavedIdleState after full draft save with zero ready qty", () => {
+
+    expect(
+
+      isCompactDraftSavedIdleState({
+
+        hasOpenDraft: true,
+
+        headroomToPrepare: 0,
+
+        existingDraftQty: 2445,
+
+        dispatchQty: 2445,
+
+        dispatchQtyValid: true,
+
+      }),
+
+    ).toBe(true);
+
+    expect(
+
+      isCompactDraftSavedIdleState({
+
+        hasOpenDraft: true,
+
+        headroomToPrepare: 0,
+
+        existingDraftQty: 2445,
+
+        dispatchQty: 2000,
+
+        dispatchQtyValid: true,
+
+      }),
+
+    ).toBe(false);
+
+  });
+
+
+
+  it("finalize uses lock endpoint not draft prepare", () => {
+
+    expect(DISPATCH_FINALIZE_API_SUFFIX).toBe("/lock");
+
+    expect(resolveDispatchFullPrepareAction({ existingDraftQty: 2445, headroomToPrepare: 0 })).not.toBe("prepare");
 
   });
 

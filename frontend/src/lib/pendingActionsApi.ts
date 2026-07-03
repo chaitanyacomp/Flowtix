@@ -18,8 +18,16 @@ export type PendingActionsResponse = {
   meta?: {
     role?: string;
     generatedAt?: string;
+    storeRsPendingCount?: number;
   };
 };
+
+/** Store-owned NO_QTY RS creation rows from pending-actions API. */
+export function isStoreOwnedNoQtyRsPendingAction(action: PendingAction): boolean {
+  const owner = String(action.ownerRole ?? "").trim().toUpperCase();
+  if (owner !== "STORE") return false;
+  return /Create (Cycle \d+ )?(RS|Requirement Sheet)/i.test(String(action.action ?? ""));
+}
 
 /** Props passed from DashboardPage into role-specific desk dashboards. */
 export type PendingActionsDashboardProps = {

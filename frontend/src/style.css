@@ -2535,4 +2535,101 @@
   .erp-mat-issue-table tbody td {
     @apply px-2 py-1.5 text-[12px];
   }
+
+  /* --- FT-PD-067 Operational Workbench Shell --- */
+  .erp-workbench-page {
+    @apply flex min-h-0 flex-col;
+    min-height: calc(100dvh - var(--erp-app-header-h, 3.25rem) - 1.5rem);
+  }
+
+  .erp-workbench-shell {
+    @apply flex min-h-0 flex-1 flex-col gap-1;
+  }
+
+  .erp-workbench-header {
+    @apply rounded-md border border-slate-200/90 bg-white/95 shadow-sm backdrop-blur-sm;
+  }
+
+  .erp-workbench-header-title,
+  .erp-workbench-header-context,
+  .erp-workbench-header-workflow,
+  .erp-workbench-header-toolbar {
+    @apply px-2.5 py-1;
+  }
+
+  .erp-workbench-header-context {
+    @apply border-t border-slate-100/90 py-0.5 text-[11px];
+  }
+
+  .erp-workbench-header-workflow {
+    @apply border-t border-slate-100/90 py-1;
+  }
+
+  .erp-workbench-header-toolbar {
+    @apply flex flex-wrap items-center justify-between gap-1 border-t border-slate-100/90;
+  }
+
+  .erp-workbench-kpi {
+    @apply erp-kpi-strip--compact;
+  }
+
+  .erp-workbench-main {
+    @apply space-y-1 pb-1;
+  }
+
+  .erp-workbench-action-bar {
+    @apply border-t border-slate-200/90 bg-white/95 shadow-[0_-2px_8px_-2px_rgb(15_23_42_/0.08)] backdrop-blur-sm;
+  }
+
+  .erp-workbench-action-bar-inner {
+    @apply flex flex-wrap items-center justify-between gap-2 px-2.5 py-1.5;
+  }
+
+  .erp-workbench-grid-scroll {
+    @apply max-h-[min(52vh,28rem)] overflow-auto;
+  }
+
+  .erp-workbench-grid--sticky-head .erp-workbench-table thead th {
+    @apply sticky top-0 z-[1] bg-slate-50 shadow-[0_1px_0_0_rgb(226_232_240)];
+  }
+
+  .erp-workbench-grid--compact .erp-workbench-table th,
+  .erp-workbench-grid--compact .erp-workbench-table td {
+    @apply px-2 py-1 text-[12px];
+  }
+
+  .erp-workbench-grid-input {
+    @apply text-[13px];
+  }
+
+  .erp-workbench-grid-detail-row td {
+    @apply bg-slate-50/80 py-1.5;
+  }
+
+  .erp-workbench-info-panel summary {
+    @apply list-none;
+  }
+
+  .erp-workbench-info-panel summary::-webkit-details-marker {
+    display: none;
+  }
+
+  @media print {
+    .erp-workbench-page {
+      min-height: auto;
+    }
+
+    .erp-workbench-header {
+      position: static;
+    }
+
+    .erp-workbench-grid-scroll {
+      max-height: none;
+      overflow: visible;
+    }
+
+    .erp-workbench-table {
+      font-size: 10px;
+    }
+  }
 }

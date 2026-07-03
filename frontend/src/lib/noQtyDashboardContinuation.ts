@@ -77,6 +77,9 @@ export function resolveNoQtyDashboardContinuation(args: {
   latestRequirementSheetId: number | null | undefined;
   lastRsStatus: string | null | undefined;
   flow: NoQtyFlowState | null;
+  /** SO planning pointer is ahead of document-linked RS cycle (empty next cycle). */
+  noQtyPlanningPointerAhead?: boolean;
+  planningPointerCycleId?: number | null;
   /** Dashboard viewer — blocking QC step applies only for roles that own the QC floor. */
   viewerRole?: string | null;
   /**
@@ -93,6 +96,8 @@ export function resolveNoQtyDashboardContinuation(args: {
     latestRequirementSheetId,
     lastRsStatus,
     flow,
+    noQtyPlanningPointerAhead,
+    planningPointerCycleId,
     viewerRole,
     commercialContinuation,
   } = args;
@@ -133,8 +138,53 @@ export function resolveNoQtyDashboardContinuation(args: {
     return { kind: "navigate", label: "Next RS", to: withSheet };
   }
 
+  const pointerCycleId =
+    planningPointerCycleId != null && Number(planningPointerCycleId) > 0
+      ? Number(planningPointerCycleId)
+      : noQtyPlanningPointerAhead && effCycleId != null && Number(effCycleId) > 0
+        ? Number(effCycleId)
+        : null;
+
+  /** Post-advance empty ACTIVE cycle — create RS on the planning pointer, not prepare-next. */
+  if (
+    commercialContinuation &&
+    isPlanningViewer &&
+    noQtyPlanningPointerAhead &&
+    pointerCycleId != null &&
+    !rsDraft &&
+    flow != null &&
+    !flow.requirementExists
+  ) {
+    return {
+      kind: "navigate",
+      label: "Create RS",
+      to: noQtyRsCreationWorkspaceHref({
+        salesOrderId,
+        cycleId: pointerCycleId,
+        from: "dashboard",
+      }),
+    };
+  }
+
   /** Flow not loaded yet — infer from row hints; never prepare-next when no RS exists. */
   if (!flow) {
+    if (
+      commercialContinuation &&
+      isPlanningViewer &&
+      noQtyPlanningPointerAhead &&
+      pointerCycleId != null &&
+      !rsDraft
+    ) {
+      return {
+        kind: "navigate",
+        label: "Create RS",
+        to: noQtyRsCreationWorkspaceHref({
+          salesOrderId,
+          cycleId: pointerCycleId,
+          from: "dashboard",
+        }),
+      };
+    }
     const hasRs = noQtyDashboardRowHasRs({ lastRsStatus, latestRequirementSheetId, flow: null });
     if (!hasRs) {
       return {
@@ -167,7 +217,11 @@ export function resolveNoQtyDashboardContinuation(args: {
    * Case C — next RS only when createNextRsEligible is true.
    */
   if (commercialContinuation && isPlanningViewer) {
-    const hasRs = noQtyDashboardRowHasRs({ lastRsStatus, latestRequirementSheetId, flow });
+    const hasRsOnPointer =
+      noQtyPlanningPointerAhead && pointerCycleId != null
+        ? Boolean(flow?.requirementExists)
+        : noQtyDashboardRowHasRs({ lastRsStatus, latestRequirementSheetId, flow });
+    const hasRs = hasRsOnPointer;
     if (!hasRs) {
       return {
         kind: "navigate",

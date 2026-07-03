@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { apiFetch } from "../services/api";
+import { endPerfMark, startPerfMark } from "../lib/performanceTiming";
 
 export type AuthUser = { id: number; email: string; role: string; name: string };
 
@@ -45,6 +46,7 @@ export function useAuth() {
   }, []);
 
   const login = useCallback(async (email: string, password: string) => {
+    startPerfMark("login-submit");
     if (import.meta.env.DEV) {
       // eslint-disable-next-line no-console
       console.debug("[auth] login request start", { email: email.trim() });
@@ -56,6 +58,13 @@ export function useAuth() {
     localStorage.setItem("token", data.token);
     localStorage.setItem("user", JSON.stringify(data.user));
     setUser(data.user);
+    endPerfMark("login-submit", "login-submit", { role: data.user.role });
+    try {
+      sessionStorage.setItem("erp:loginDashboardMark", "1");
+      startPerfMark("login-dashboard-ready");
+    } catch {
+      // ignore
+    }
     if (import.meta.env.DEV) {
       // eslint-disable-next-line no-console
       console.debug("[auth] login success → token stored, user set (this hook instance); broadcasting auth:login");

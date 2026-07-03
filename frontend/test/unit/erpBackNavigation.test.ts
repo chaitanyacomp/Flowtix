@@ -13,6 +13,25 @@ describe("resolveERPBackTarget", () => {
     expect(target).toEqual({ to: "/pending-actions", label: "Back to Pending Actions" });
   });
 
+  it("resolves pending-actions from work queue navigation state", () => {
+    const target = resolveERPBackTarget(
+      {
+        pathname: "/sales-bills/42",
+        search: "",
+        state: {
+          workQueue: {
+            queueType: "CREATE_SALES_BILL",
+            queueItems: [{ id: "a", documentNo: "D-1", href: "/sales-bills/42?from=pending-actions", billId: 42 }],
+            currentIndex: 0,
+            returnToPendingActions: true,
+          },
+        },
+      },
+      { defaultTo: "/sales-bills", defaultLabel: "Back to sales bills" },
+    );
+    expect(target).toEqual({ to: "/pending-actions", label: "Back to Pending Actions" });
+  });
+
   it("resolves control-tower from query", () => {
     const target = resolveERPBackTarget(
       { pathname: "/material-planning", search: "?from=control-tower", state: null },

@@ -231,6 +231,36 @@ describe("isNoQtyDashboardPlanningRow", () => {
     ).toBe(true);
   });
 
+  it("routes STORE to RS creation on empty planning pointer cycle (post-advance)", () => {
+    const flow: NoQtyFlowState = {
+      ...baseFlow,
+      cycleId: 334,
+      requirementExists: false,
+      requirementLocked: false,
+      createNextRsEligible: false,
+    };
+    const resolved = resolveNoQtyDashboardContinuation({
+      salesOrderId: 199,
+      cycleId: 334,
+      latestRequirementSheetId: 296,
+      lastRsStatus: "LOCKED",
+      flow,
+      noQtyPlanningPointerAhead: true,
+      planningPointerCycleId: 334,
+      viewerRole: "STORE",
+      commercialContinuation: true,
+    });
+    expect(resolved.kind).toBe("navigate");
+    if (resolved.kind === "navigate") {
+      expect(resolved.to).toContain("/requirement-sheets");
+      expect(resolved.to).toContain("cycleId=334");
+      expect(resolved.to).toContain("intent=add");
+    }
+    expect(
+      isNoQtyDashboardPlanningRow(flow, resolved),
+    ).toBe(true);
+  });
+
   it("rejects shop-floor navigations (QC / Production / Dispatch / Sales Bill)", () => {
     expect(
       isNoQtyDashboardPlanningRow(

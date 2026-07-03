@@ -1,5 +1,6 @@
 import type { Location } from "react-router-dom";
 import { isReportsReturnContext } from "./drillDownRoutes";
+import { readWorkQueueFromLocationState } from "./workQueueContext";
 import type { ErpNavContext } from "./erpNavContext";
 import { materialWorkflowBackHref } from "./materialWorkflowLinks";
 import { NO_QTY_TERMS } from "./flowTerminology";
@@ -151,6 +152,11 @@ export function resolveERPBackTarget(
         ? navContext.parentLabel
         : `Back to ${navContext.parentLabel}`,
     };
+  }
+
+  const workQueue = readWorkQueueFromLocationState(location.state);
+  if (workQueue?.returnToPendingActions) {
+    return ERP_BACK_SMART_MAP["pending-actions"];
   }
 
   if (kind === "reports" || isReportsReturnContext(location.search)) {

@@ -108,7 +108,7 @@ export const NO_QTY_TERMS = {
   PLANNING_HELPER: "Requirement cycle-based planning",
   /** Matches sidebar / route title capitalization. */
   PLANNING_HUB_TITLE: "Requirement & Cycle Planning",
-  PLANNING_HUB_SUBTITLE: "Daily planner inbox for active NO_QTY agreements — cycle status, next RS eligibility, and shortage signals.",
+  PLANNING_HUB_SUBTITLE: "Cycle management for active NO_QTY agreements — current cycle status, next RS eligibility, carry-forward, and shortage signals.",
   /** Explicit CTA — use instead of generic “planning” or “production planning”. */
   OPEN_REQUIREMENT_AND_CYCLE_PLANNING: "Open Requirement & Cycle Planning",
   CONTINUE_NO_QTY_PLANNING: "Continue NO_QTY Planning",

@@ -1,4 +1,11 @@
 import type { PendingAction, PendingActionPriority } from "./pendingActionsApi";
+import {
+  buildCreateSalesBillWorkQueue,
+  isCreateSalesBillPendingBucket,
+  PENDING_ACTION_CREATE_SALES_BILL_KEY,
+  withWorkQueueState,
+  type WorkQueueContext,
+} from "./workQueueContext";
 
 const READY_TO_DISPATCH_PREFIX = "Ready to Dispatch";
 const DISPATCH_PENDING_LABEL = "Dispatch Pending";
@@ -50,6 +57,10 @@ export function parseReadyToDispatchQty(actionLabel: string): string | null {
 
 export function buildPendingActionPreviewLine(row: PendingAction): PendingActionBucketPreviewLine {
   const doc = String(row.documentNo ?? "").trim() || "—";
+  if (String(row.action ?? "").trim() === PENDING_ACTION_CREATE_SALES_BILL_KEY) {
+    const dispatchOnly = doc.split(" · ")[0]?.trim() || doc;
+    return { documentNo: dispatchOnly };
+  }
   if (String(row.action ?? "").startsWith(READY_TO_DISPATCH_PREFIX)) {
     const qty = parseReadyToDispatchQty(row.action);
     return { documentNo: doc, detail: qty ? `Ready Qty: ${qty}` : null };
@@ -144,7 +155,10 @@ export function groupPendingActionsIntoWorkBuckets(
     }
 
     const listHref = pendingActionWorkspaceListHref(items[0]?.href ?? "/pending-actions");
-    const openHref = count === 1 ? (items[0]?.href ?? listHref) : listHref;
+    const openHref =
+      count === 1 || isCreateSalesBillPendingBucket(key)
+        ? (items[0]?.href ?? listHref)
+        : listHref;
 
     buckets.push({
       key,
@@ -164,4 +178,13 @@ export function groupPendingActionsIntoWorkBuckets(
   }
 
   return buckets.sort((a, b) => compareBuckets(a, b, sortMode));
+}
+
+/** Navigation state when opening a pending-actions work bucket (sales bill queue). */
+export function pendingActionsBucketNavigateState(
+  bucket: PendingActionWorkBucket,
+): { workQueue?: WorkQueueContext } | undefined {
+  if (!isCreateSalesBillPendingBucket(bucket.key) || bucket.count < 1) return undefined;
+  const workQueue = buildCreateSalesBillWorkQueue(bucket.items);
+  return workQueue ? withWorkQueueState(workQueue) : undefined;
 }

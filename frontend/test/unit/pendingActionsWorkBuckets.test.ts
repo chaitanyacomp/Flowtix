@@ -4,6 +4,7 @@ import {
   groupPendingActionsIntoWorkBuckets,
   parseReadyToDispatchQty,
   pendingActionWorkspaceListHref,
+  pendingActionsBucketNavigateState,
   resolvePendingActionGroupKey,
 } from "../../src/lib/pendingActionsWorkBuckets";
 import type { PendingAction } from "../../src/lib/pendingActionsApi";
@@ -97,5 +98,34 @@ describe("pendingActionsWorkBuckets", () => {
       documentNo: "SO-1",
       detail: "Ready Qty: 3710",
     });
+  });
+
+  it("create sales bill bucket opens first dispatch with work queue state", () => {
+    const buckets = groupPendingActionsIntoWorkBuckets([
+      row({
+        id: "sb1",
+        action: "Create Sales Bill",
+        documentNo: "D-26-0001 · SO-26-0001 · Acme",
+        href: "/sales-bills/new?dispatchId=1&from=pending-actions",
+      }),
+      row({
+        id: "sb2",
+        action: "Create Sales Bill",
+        documentNo: "D-26-0002 · SO-26-0002 · Beta",
+        href: "/sales-bills/88?from=pending-actions",
+      }),
+    ]);
+    expect(buckets).toHaveLength(1);
+    expect(buckets[0]?.title).toBe("Create Sales Bill (2)");
+    expect(buckets[0]?.openLabel).toBe("Open List");
+    expect(buckets[0]?.openHref).toBe("/sales-bills/new?dispatchId=1&from=pending-actions");
+    expect(buckets[0]?.previewLines.map((l) => l.documentNo)).toEqual(["D-26-0001", "D-26-0002"]);
+    const navState = pendingActionsBucketNavigateState(buckets[0]!);
+    expect(navState?.workQueue).toMatchObject({
+      queueType: "CREATE_SALES_BILL",
+      currentIndex: 0,
+      returnToPendingActions: true,
+    });
+    expect(navState?.workQueue?.queueItems).toHaveLength(2);
   });
 });

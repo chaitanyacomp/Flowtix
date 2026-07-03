@@ -2,7 +2,9 @@ import type { ResolvedNoQtyContinuation } from "./noQtyDashboardContinuation";
 import { resolveNoQtyDashboardContinuation } from "./noQtyDashboardContinuation";
 import type { NoQtyFlowState } from "./noQtyFlowState";
 import {
+  NO_QTY_RS_STORE_HANDOFF_LABEL,
   createCycleRequirementSheetButtonLabel,
+  isNoQtyStoreOwnedRsCreateLabel,
   openDraftRsButtonLabel,
 } from "./noQtyRsActionLabels";
 
@@ -164,6 +166,8 @@ export function noQtyDashboardRowToPresentation(args: {
     latestRequirementSheetId: row.latestRequirementSheetId,
     lastRsStatus: row.lastRsStatus,
     flow,
+    noQtyPlanningPointerAhead: row.noQtyPlanningPointerAhead,
+    planningPointerCycleId: row.planningPointerCycleId,
     viewerRole,
     commercialContinuation,
   });
@@ -181,13 +185,19 @@ export function noQtyDashboardRowToPresentation(args: {
     lastRsStatus: row.lastRsStatus,
     hasRs,
   });
+  const viewer = String(viewerRole ?? "").trim().toUpperCase();
+  const finalActionLabel =
+    viewer === "ADMIN" &&
+    (resolved.kind === "prepare_next_rs" || isNoQtyStoreOwnedRsCreateLabel(actionLabel))
+      ? NO_QTY_RS_STORE_HANDOFF_LABEL
+      : actionLabel;
   const rs = String(row.lastRsStatus ?? "").trim().toUpperCase();
   let summaryBucket: NoQtyDashboardSummaryBucket = "in_progress";
   if (!hasRs) summaryBucket = "create_rs";
   else if (rs === "DRAFT") summaryBucket = "draft_rs";
   else if (flow?.readyToPlaceWo) summaryBucket = "ready_place_wo";
 
-  return { resolved, stageLabel, actionLabel, summaryBucket, hasRs };
+  return { resolved, stageLabel, actionLabel: finalActionLabel, summaryBucket, hasRs };
 }
 
 export type NoQtyDashboardSummaryCounts = {

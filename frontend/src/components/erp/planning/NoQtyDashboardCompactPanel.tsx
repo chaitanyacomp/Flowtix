@@ -130,17 +130,28 @@ export function NoQtyDashboardCompactPanel({
                     {pres.stageLabel}
                   </td>
                   <td className="px-2 py-0.5 text-right">
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      className="h-7 max-w-full truncate px-1.5 text-[10px] font-semibold text-blue-800 hover:bg-blue-50 hover:text-blue-950"
-                      data-testid={`dashboard-no-qty-continue-${row.salesOrderId}`}
-                      title={pres.actionLabel}
-                      onClick={() => onPrimaryAction({ row, resolved: pres.resolved })}
-                    >
-                      {pres.actionLabel}
-                    </Button>
+                    {viewerRole === "ADMIN" ? (
+                      <Link
+                        to={viewAllHref}
+                        className="inline-flex h-7 max-w-full items-center truncate px-1.5 text-[10px] font-semibold text-slate-700 underline-offset-2 hover:underline"
+                        data-testid={`dashboard-no-qty-monitor-${row.salesOrderId}`}
+                        title={pres.actionLabel}
+                      >
+                        Monitor
+                      </Link>
+                    ) : (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 max-w-full truncate px-1.5 text-[10px] font-semibold text-blue-800 hover:bg-blue-50 hover:text-blue-950"
+                        data-testid={`dashboard-no-qty-continue-${row.salesOrderId}`}
+                        title={pres.actionLabel}
+                        onClick={() => onPrimaryAction({ row, resolved: pres.resolved })}
+                      >
+                        {pres.actionLabel}
+                      </Button>
+                    )}
                   </td>
                 </tr>
               );

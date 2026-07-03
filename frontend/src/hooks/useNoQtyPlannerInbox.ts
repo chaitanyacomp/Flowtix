@@ -72,16 +72,19 @@ type NoQtyPlanningInboxApiRow = {
 export function useNoQtyPlannerInbox(refreshKey = 0): {
   rows: NoQtyPlannerInboxRow[];
   loading: boolean;
+  initialLoading: boolean;
+  refreshing: boolean;
+  firstLoadDone: boolean;
   error: string | null;
 } {
   const [rows, setRows] = React.useState<NoQtyPlannerInboxRow[]>([]);
-  const [loading, setLoading] = React.useState(true);
+  const [firstLoadDone, setFirstLoadDone] = React.useState(false);
+  const [busy, setBusy] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     let cancelled = false;
-    setLoading(true);
-    setError(null);
+    setBusy(true);
 
     void (async () => {
       try {
@@ -113,13 +116,16 @@ export function useNoQtyPlannerInbox(refreshKey = 0): {
         }));
         if (cancelled) return;
         setRows(mapped);
+        setError(null);
       } catch (e) {
-        if (!cancelled) {
-          setError(e instanceof Error ? e.message : "Failed to load planner inbox");
-          setRows([]);
-        }
+        if (cancelled) return;
+        setError(e instanceof Error ? e.message : "Failed to load planner inbox");
+        setRows((prev) => (prev.length > 0 ? prev : []));
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) {
+          setBusy(false);
+          setFirstLoadDone(true);
+        }
       }
     })();
 
@@ -128,5 +134,12 @@ export function useNoQtyPlannerInbox(refreshKey = 0): {
     };
   }, [refreshKey]);
 
-  return { rows, loading, error };
+  return {
+    rows,
+    loading: busy,
+    initialLoading: !firstLoadDone && busy,
+    refreshing: firstLoadDone && busy,
+    firstLoadDone,
+    error,
+  };
 }

@@ -1,154 +1,46 @@
 import * as React from "react";
-import { Link } from "react-router-dom";
-import { Badge } from "../../ui/badge";
-import { Button, buttonVariants } from "../../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../../ui/card";
 import { cn } from "../../../lib/utils";
-import { displaySalesOrderNo } from "../../../lib/docNoDisplay";
-import { buildNoQtyGuidedHref } from "../../../lib/noQtyFlowState";
-import {
-  formatPlanningInboxNextRsLine,
-  planningInboxCustomerName,
-  planningInboxCycleLabel,
-} from "../../../lib/planningInboxPresentation";
-import {
-  noQtyBusinessWorkflowStage,
-  noQtyNextCycleLabel,
-  resolveNoQtyInboxPlanningCta,
-  openCurrentRsButtonLabel,
-  createCycleRequirementSheetButtonLabel,
-} from "../../../lib/noQtyRsActionLabels";
-import { useCanOpenRequirementSheet } from "../../../hooks/useIsAdmin";
+import { ErpRefreshingBadge } from "../foundation/ErpRefreshingBadge";
 import type { NoQtyPlannerInboxRow } from "../../../hooks/useNoQtyPlannerInbox";
-import { NoQtyMacroLifecycleStrip } from "../production/NoQtyMacroLifecycleStrip";
+import { NoQtyCycleManagementWorkspace } from "./NoQtyCycleManagementWorkspace";
+import { NoQtyCycleManagementSkeleton } from "./NoQtyCycleManagementSkeleton";
 
 type Props = {
   rows: NoQtyPlannerInboxRow[];
   loading: boolean;
+  initialLoading?: boolean;
+  refreshing?: boolean;
+  firstLoadDone?: boolean;
   error: string | null;
   className?: string;
+  /** When set, show a single focused cycle management workspace for this agreement. */
+  focusedSalesOrderId?: number | null;
+  /** True while focused sales-order context is still being verified. */
+  contextLoading?: boolean;
 };
 
-function rsStatusVariant(status: string): "success" | "warning" | "default" | "rejected" {
-  if (status === "Locked") return "success";
-  if (status === "Draft") return "warning";
-  if (status === "Cancelled") return "rejected";
-  if (status === "No RS") return "default";
-  return "default";
-}
+/** FT-UX-002 — Cycle Management Workspace (not a Requirement Sheet launcher). */
+export function NoQtyPlannerInboxSection({
+  rows,
+  loading,
+  initialLoading,
+  refreshing,
+  firstLoadDone = false,
+  error,
+  className,
+  focusedSalesOrderId = null,
+  contextLoading = false,
+}: Props) {
+  const visibleRows = React.useMemo(() => {
+    const focusId = Number(focusedSalesOrderId);
+    if (Number.isFinite(focusId) && focusId > 0) {
+      return rows.filter((r) => Number(r.so.id) === focusId);
+    }
+    return rows;
+  }, [rows, focusedSalesOrderId]);
 
-function nextRsToneClass(tone: ReturnType<typeof formatPlanningInboxNextRsLine>["tone"]): string {
-  if (tone === "ready") return "text-emerald-900";
-  if (tone === "exists") return "text-slate-700";
-  return "text-amber-950";
-}
-
-function InboxRowCard({ row }: { row: NoQtyPlannerInboxRow }) {
-  const canOpenRs = useCanOpenRequirementSheet();
-
-  const { so, rsStatus, lockedPeriodKey, flowState, guidedCycleId, cycleNo } = row;
-  const nextRs = formatPlanningInboxNextRsLine(so);
-  const workflowStage = noQtyBusinessWorkflowStage({
-    processStageKey: so.processStage?.key,
-    processStageLabel: so.processStage?.label,
-    rsStatus,
-    hasRs: rsStatus !== "No RS",
-  });
-  const rsHref = buildNoQtyGuidedHref({
-    to: `/sales-orders/${so.id}/requirement-sheets`,
-    salesOrderId: so.id,
-    cycleId: guidedCycleId,
-    fromStep: "requirement",
-  });
-  const planningCta = resolveNoQtyInboxPlanningCta({
-    processStageKey: so.processStage?.key,
-    salesOrderId: so.id,
-    lockedPeriodKey,
-    cycleId: guidedCycleId,
-    requirementSheetId: (so as { noQtyPlacementRequirementSheetId?: number | null }).noQtyPlacementRequirementSheetId ?? null,
-    readyToPlaceWo: (so as { noQtyReadyToPlaceWo?: boolean | null }).noQtyReadyToPlaceWo ?? false,
-  });
-  const nextCycleNo =
-    (so as { noQtyNextPossibleCycleNo?: number | null }).noQtyNextPossibleCycleNo ??
-    (cycleNo != null ? cycleNo + 1 : null);
-
-  return (
-    <article
-      className="rounded-md border border-slate-200 bg-white p-2.5 shadow-sm"
-      data-testid={`planner-inbox-row-${so.id}`}
-    >
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div className="min-w-0 space-y-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="font-mono text-[13px] font-semibold tabular-nums text-slate-900">
-              {displaySalesOrderNo(so.id, so.docNo ?? null)}
-            </span>
-            <Badge variant="info" className="text-[10px]">
-              NO_QTY
-            </Badge>
-          </div>
-          <p className="truncate text-[12px] text-slate-700" title={planningInboxCustomerName(so)}>
-            {planningInboxCustomerName(so)}
-          </p>
-        </div>
-        <div className="flex shrink-0 flex-wrap justify-end gap-1">
-          <Link
-            to={planningCta.href}
-            className={cn(buttonVariants({ size: "sm" }), "h-8 text-[11px] font-semibold")}
-          >
-            {planningCta.label}
-          </Link>
-          {canOpenRs ? (
-            <Link to={rsHref} className={cn(buttonVariants({ size: "sm", variant: "outline" }), "h-8 text-[11px]")}>
-              {openCurrentRsButtonLabel()}
-            </Link>
-          ) : null}
-        </div>
-      </div>
-
-      <dl className="mt-2 grid gap-1.5 sm:grid-cols-2 lg:grid-cols-4">
-        <div>
-          <dt className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Current cycle</dt>
-          <dd className="text-[12px] font-semibold text-violet-950">{planningInboxCycleLabel(so)}</dd>
-        </div>
-        <div>
-          <dt className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Current stage</dt>
-          <dd className="text-[12px] font-semibold text-slate-900">{workflowStage}</dd>
-        </div>
-        <div>
-          <dt className="text-[10px] font-bold uppercase tracking-wide text-slate-500">RS status</dt>
-          <dd>
-            <Badge variant={rsStatusVariant(rsStatus)} className="text-[10px]">
-              {rsStatus}
-            </Badge>
-          </dd>
-        </div>
-        <div>
-          <dt className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Next cycle</dt>
-          <dd className="text-[12px] font-semibold text-slate-900">{noQtyNextCycleLabel(nextCycleNo)}</dd>
-        </div>
-        <div className="sm:col-span-2 lg:col-span-4">
-          <dt className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Next RS</dt>
-          <dd className={cn("text-[12px] font-semibold", nextRsToneClass(nextRs.tone))}>{nextRs.headline}</dd>
-          {nextRs.reason ? (
-            <p className="mt-0.5 text-[11px] leading-snug text-slate-600">
-              <span className="font-semibold text-slate-700">Reason: </span>
-              {nextRs.reason}
-            </p>
-          ) : null}
-        </div>
-      </dl>
-
-      {flowState ? (
-        <NoQtyMacroLifecycleStrip flow={flowState} cycleNo={cycleNo} className="mt-2" />
-      ) : null}
-    </article>
-  );
-}
-
-/** P6B-4A — planner inbox (signals + shortcuts; SO owns RS creation). */
-export function NoQtyPlannerInboxSection({ rows, loading, error, className }: Props) {
-  const attentionCount = rows.filter(
+  const attentionCount = visibleRows.filter(
     (r) =>
       r.so.noQtyCreateNextRsEligible ||
       r.rsStatus === "Draft" ||
@@ -156,37 +48,59 @@ export function NoQtyPlannerInboxSection({ rows, loading, error, className }: Pr
       r.rsStatus === "Cancelled",
   ).length;
 
+  const focused = Number(focusedSalesOrderId) > 0;
+  const isInitialLoad = initialLoading ?? (!firstLoadDone && loading);
+  const isRefreshing = refreshing ?? (firstLoadDone && loading);
+  const showSkeleton = isInitialLoad || contextLoading;
+  const contentMinHeight = focused ? "min-h-[18.5rem]" : "min-h-[12rem]";
+
   return (
-    <Card className={cn("min-w-0 overflow-hidden border-violet-200/80 shadow-sm", className)} data-testid="no-qty-planner-inbox">
+    <Card
+      className={cn("min-w-0 overflow-hidden border-violet-200/80 shadow-sm", className)}
+      data-testid="no-qty-planner-inbox"
+    >
       <CardHeader className="space-y-1 border-b border-violet-100 bg-gradient-to-r from-violet-50/90 to-white px-3.5 py-2.5">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <CardTitle className="text-sm font-semibold tracking-tight text-slate-900">NO_QTY Action Required</CardTitle>
-          {!loading ? (
+          <CardTitle className="text-sm font-semibold tracking-tight text-slate-900">
+            {focused ? "Cycle Management Workspace" : "NO_QTY Cycle Management"}
+          </CardTitle>
+          {showSkeleton ? (
+            <span
+              className="inline-block h-3 w-28 animate-pulse rounded bg-slate-200/80"
+              aria-hidden
+            />
+          ) : (
             <span className="text-[11px] tabular-nums text-slate-600">
-              {rows.length} active · {attentionCount} need attention
+              {visibleRows.length} active · {attentionCount} need attention
             </span>
-          ) : null}
+          )}
         </div>
         <p className="text-[11px] leading-snug text-slate-600">
-          Planner signals only — open NO_QTY Execution or Requirement & Cycle Planning to create or edit cycle Requirement Sheets.
+          {focused
+            ? "Review current cycle status, next RS eligibility, and prior cycle history — then use the single primary action to continue in the Requirement Sheet workbench."
+            : "Cycle status and next-step decisions for active NO_QTY agreements. Each workspace has one primary action into the Requirement Sheet workbench."}
         </p>
-      </CardHeader>
-      <CardContent className="space-y-2 px-2.5 py-2.5">
-        {error ? (
-          <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-[12px] text-red-900">{error}</div>
+        {isRefreshing ? (
+          <div className="flex justify-end pt-0.5">
+            <ErpRefreshingBadge />
+          </div>
         ) : null}
-        {loading ? (
-          <p className="text-[12px] text-slate-600" aria-live="polite">
-            Loading NO_QTY agreements…
-          </p>
-        ) : rows.length === 0 ? (
+      </CardHeader>
+      <CardContent className={cn("space-y-2 px-2.5 py-2.5", contentMinHeight)}>
+        {showSkeleton ? (
+          <NoQtyCycleManagementSkeleton focused={focused} rowCount={focused ? 1 : 2} />
+        ) : error ? (
+          <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-[12px] text-red-900">{error}</div>
+        ) : visibleRows.length === 0 ? (
           <p className="rounded-md border border-slate-200 bg-slate-50 px-3 py-3 text-[12px] text-slate-700">
-            No active NO_QTY agreements require planning attention right now.
+            {focused
+              ? "No active cycle management context for this sales order."
+              : "No active NO_QTY agreements require cycle planning attention right now."}
           </p>
         ) : (
           <div className="space-y-2">
-            {rows.map((row) => (
-              <InboxRowCard key={row.so.id} row={row} />
+            {visibleRows.map((row) => (
+              <NoQtyCycleManagementWorkspace key={row.so.id} row={row} compact={!focused && visibleRows.length > 1} />
             ))}
           </div>
         )}

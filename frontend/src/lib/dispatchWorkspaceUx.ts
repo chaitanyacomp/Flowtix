@@ -351,6 +351,144 @@ export function shouldSkipDispatchPrepareAsDuplicate(input: {
 
 
 
+export type DispatchFullPrepareAction = "prepare" | "skip_duplicate";
+
+
+
+/** Compact Dispatch Full — save draft once; never finalize from this action. */
+
+export function resolveDispatchFullPrepareAction(input: {
+
+  existingDraftQty: number;
+
+  headroomToPrepare: number;
+
+  eps?: number;
+
+}): DispatchFullPrepareAction {
+
+  const targetQty = dispatchFullTargetQty({
+
+    existingDraftQty: input.existingDraftQty,
+
+    headroomToPrepare: input.headroomToPrepare,
+
+    eps: input.eps,
+
+  });
+
+  const eps = input.eps ?? 1e-9;
+
+  if (!(targetQty > eps)) return "skip_duplicate";
+
+  if (
+
+    shouldSkipDispatchPrepareAsDuplicate({
+
+      existingDraftQty: input.existingDraftQty,
+
+      dispatchQty: targetQty,
+
+      eps,
+
+    })
+
+  ) {
+
+    return "skip_duplicate";
+
+  }
+
+  return "prepare";
+
+}
+
+
+
+/** Enable Dispatch Full / Update draft when headroom remains or draft qty was edited. */
+
+export function canCompactDispatchFull(input: {
+
+  headroomToPrepare: number;
+
+  existingDraftQty: number;
+
+  dispatchQty: number | null;
+
+  dispatchQtyValid: boolean;
+
+  eps?: number;
+
+}): boolean {
+
+  const eps = input.eps ?? 1e-9;
+
+  if (input.headroomToPrepare > eps) return true;
+
+  return (
+
+    input.existingDraftQty > eps &&
+
+    input.dispatchQtyValid &&
+
+    input.dispatchQty != null &&
+
+    input.dispatchQty > eps &&
+
+    !draftQtyMatchesDispatchQty(input.existingDraftQty, input.dispatchQty, eps)
+
+  );
+
+}
+
+
+
+/** After draft is saved with no remaining ready qty, show finalize/delete only. */
+
+export function isCompactDraftSavedIdleState(input: {
+
+  hasOpenDraft: boolean;
+
+  headroomToPrepare: number;
+
+  dispatchQty: number | null;
+
+  dispatchQtyValid: boolean;
+
+  existingDraftQty: number;
+
+  eps?: number;
+
+}): boolean {
+
+  if (!input.hasOpenDraft) return false;
+
+  const eps = input.eps ?? 1e-9;
+
+  if (input.headroomToPrepare > eps) return false;
+
+  return !canCompactDispatchFull({
+
+    headroomToPrepare: input.headroomToPrepare,
+
+    existingDraftQty: input.existingDraftQty,
+
+    dispatchQty: input.dispatchQty,
+
+    dispatchQtyValid: input.dispatchQtyValid,
+
+    eps,
+
+  });
+
+}
+
+
+
+export const DISPATCH_FINALIZE_API_SUFFIX = "/lock";
+
+
+
 export type CompactDispatchHistoryInput = {
 
   id: number;

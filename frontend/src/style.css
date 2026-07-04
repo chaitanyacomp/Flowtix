@@ -200,6 +200,9 @@
    */
   .erp-login-shell {
     @apply relative overflow-hidden;
+    min-height: 100dvh;
+    height: 100dvh;
+    max-height: 100dvh;
     background-color: #eef2f7;
     /* Each radial uses a soft 3-stop ramp (full → ~half → transparent)
        instead of a single hard cutoff, so the glows blend smoothly into
@@ -229,6 +232,42 @@
     background-repeat: no-repeat;
   }
 
+  .erp-login-main {
+    min-height: 0;
+  }
+
+  /**
+   * Login hero banner — fluid width with a height cap on short viewports so
+   * the form stays above the fold on tablet / small-laptop heights.
+   */
+  .erp-login-brand-banner {
+    width: 100%;
+    max-width: min(420px, 72vw);
+  }
+  .erp-login-brand-banner > img {
+    max-height: clamp(52px, 14vh, 96px);
+    width: auto;
+    max-width: 100%;
+    object-fit: contain;
+    object-position: left center;
+  }
+
+  @media (min-width: 768px) {
+    .erp-login-brand-banner {
+      max-width: min(420px, 38vw);
+    }
+    .erp-login-brand-banner > img {
+      max-height: clamp(72px, 16vh, 140px);
+    }
+  }
+
+  @media (min-width: 1024px) and (min-height: 900px) {
+    .erp-login-brand-banner > img {
+      max-height: none;
+      width: 100%;
+    }
+  }
+
   /**
    * Left brand panel — adds one more diffused blue pool above the banner
    * (subtle ambient halo behind the wordmark). Decorative, pointer-event
@@ -252,15 +291,66 @@
   }
 
   /**
-   * Right form panel — asymmetric vertical padding so the login card sits
-   * slightly **below** the geometric centre. That visually balances the
-   * top-weighted brand content on the left and gives a settled, "stationed"
-   * feel typical of premium SaaS sign-in surfaces.
+   * Right form panel — centred card; generous vertical offset only on tall
+   * desktops so laptop / tablet heights keep the submit button in view.
    */
   .erp-login-form-panel {
     @apply relative flex flex-col items-center justify-center;
-    padding-top: clamp(2rem, 12vh, 6.5rem);
-    padding-bottom: clamp(1.5rem, 5vh, 3rem);
+    padding-top: clamp(0.5rem, 2vh, 1.5rem);
+    padding-bottom: clamp(0.5rem, 2vh, 1.25rem);
+  }
+
+  @media (min-width: 768px) and (min-height: 820px) {
+    .erp-login-form-panel {
+      padding-top: clamp(1.5rem, 8vh, 4.5rem);
+      padding-bottom: clamp(1rem, 4vh, 2.5rem);
+    }
+  }
+
+  @media (min-width: 1024px) and (min-height: 900px) {
+    .erp-login-form-panel {
+      padding-top: clamp(2rem, 12vh, 6.5rem);
+      padding-bottom: clamp(1.5rem, 5vh, 3rem);
+    }
+  }
+
+  /** Short-height compaction — form first on narrow stacked layout. */
+  @media (max-width: 767px) and (max-height: 820px) {
+    .erp-login-main {
+      @apply flex flex-col;
+    }
+    .erp-login-form-panel {
+      @apply flex-none justify-start;
+      padding-top: clamp(0.75rem, 3vh, 1.25rem);
+      padding-bottom: 0.5rem;
+    }
+    .erp-login-brand-panel {
+      @apply flex-none justify-start py-3;
+    }
+    .erp-login-brand-copy {
+      display: none;
+    }
+    .erp-login-brand-hero {
+      @apply gap-2;
+    }
+    .erp-login-brand-banner > img {
+      max-height: 44px;
+    }
+  }
+
+  @media (min-width: 768px) and (max-height: 820px) {
+    .erp-login-brand-panel {
+      @apply py-6;
+    }
+    .erp-login-brand-copy p {
+      display: none;
+    }
+    .erp-login-brand-hero {
+      @apply gap-4;
+    }
+    .erp-login-brand-copy h2 {
+      font-size: clamp(18px, 2vw, 24px);
+    }
   }
 
   /**

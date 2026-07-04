@@ -246,25 +246,18 @@ function LoginPage() {
      * corporate attribution from the login card layout so it behaves
      * like a real enterprise SaaS page footer.
      */
-    <div className="erp-login-shell flex min-h-screen w-full flex-col">
-      <main className="grid flex-1 grid-cols-1 md:grid-cols-[55%_45%]">
-        {/* ──────────────── Left brand panel (md+) / top banner strip (mobile) ─ */}
-        <aside className="erp-login-brand-panel flex items-center justify-center px-6 py-10 sm:px-10 md:px-12 md:py-16 lg:px-20 lg:py-20">
-          <div className="erp-brand-fade-in relative z-10 flex w-full max-w-xl flex-col items-start gap-8 md:gap-10">
-            {/* New banner is a wider true-alpha PNG (no baked "Enquiry to
-                Dispatch" / no tall stacked composition), so it renders
-                shorter at the same width. We let the `xl` token (420px)
-                breathe so the hero still has presence next to the card. */}
-            <BrandBanner variant="transparent" size="xl" />
-            <div className="flex flex-col gap-5 md:gap-6">
-              <h2 className="text-[clamp(22px,2.4vw,30px)] font-semibold leading-[1.18] tracking-tight text-slate-900">
+    <div className="erp-login-shell flex h-[100dvh] max-h-[100dvh] w-full flex-col overflow-hidden">
+      <main className="erp-login-main grid min-h-0 flex-1 grid-cols-1 md:grid-cols-[55%_45%]">
+        {/* ──────────────── Left brand panel (md+) / compact strip (mobile) ─ */}
+        <aside className="erp-login-brand-panel order-2 flex shrink-0 items-center justify-center px-5 py-4 sm:px-8 sm:py-5 md:order-1 md:shrink md:px-12 md:py-10 lg:px-20 lg:py-16">
+          <div className="erp-brand-fade-in erp-login-brand-hero relative z-10 flex w-full max-w-xl flex-col items-start gap-4 sm:gap-5 md:gap-8 lg:gap-10">
+            <BrandBanner variant="transparent" size="lg" className="erp-login-brand-banner" />
+            <div className="erp-login-brand-copy flex flex-col gap-3 sm:gap-4 md:gap-5 lg:gap-6">
+              <h2 className="text-[clamp(18px,2.2vw,30px)] font-semibold leading-[1.18] tracking-tight text-slate-900">
                 Built for Production.
                 <span className="block text-slate-700">Designed for People.</span>
               </h2>
-              {/* Optical alignment: 6px left inset + tighter max-width so the
-                  lighter-weight supporting line reads as a contained block
-                  sitting *under* the bold heading, not flowing past it. */}
-              <p className="max-w-[380px] pl-[6px] text-[14px] leading-relaxed text-slate-500">
+              <p className="max-w-[380px] pl-[6px] text-[13px] leading-relaxed text-slate-500 sm:text-[14px]">
                 Operational ERP for modern manufacturing workflows.
               </p>
             </div>
@@ -272,11 +265,11 @@ function LoginPage() {
         </aside>
 
         {/* ────────────────────────────────── Right form panel ──────────────── */}
-        <section className="erp-login-form-panel px-5 sm:px-8 md:px-10 lg:px-12">
+        <section className="erp-login-form-panel order-1 flex min-h-0 shrink-0 px-5 py-3 sm:px-8 sm:py-4 md:order-2 md:shrink md:px-10 md:py-6 lg:px-12">
           <div className="erp-brand-fade-in relative z-10 flex w-full max-w-[400px] flex-col">
             <Card className="erp-login-card">
-            <CardContent className="p-7 sm:p-8">
-              <div className="mb-6 flex flex-col gap-1">
+            <CardContent className="p-5 sm:p-7 md:p-8">
+              <div className="mb-4 flex flex-col gap-1 sm:mb-6">
                 <h1 className="text-[20px] font-semibold tracking-tight text-slate-900">
                   Sign in to {BRAND_PRODUCT_NAME}
                 </h1>
@@ -377,7 +370,7 @@ function LoginPage() {
           area) so it behaves like a real enterprise SaaS footer instead
           of floating beneath the login card. Subtle opacity and compact
           typography keep it from competing with the product brand. */}
-      <footer className="relative z-10 flex items-center justify-center gap-1.5 px-6 pb-6 pt-3 text-[10.5px] font-medium tracking-[0.01em] text-slate-500/55 sm:pb-7">
+      <footer className="relative z-10 flex shrink-0 items-center justify-center gap-1.5 px-6 pb-4 pt-2 text-[10.5px] font-medium tracking-[0.01em] text-slate-500/55 sm:pb-5">
         <CompanyLogo size="xs" variant="transparent" alt="" className="opacity-50" />
         <span>Powered by {BRAND_COMPANY_NAME}</span>
       </footer>

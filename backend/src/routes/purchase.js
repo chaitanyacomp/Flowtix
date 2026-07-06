@@ -44,7 +44,7 @@ const {
   loadMaterialRequirementIdsForRmPo,
 } = require("../services/procurementLifecycleService");
 const {
-  ensureSubmittedProductionMaterialRequestForWorkOrder,
+  getExistingProductionMaterialRequestForWorkOrder,
 } = require("../services/productionMaterialRequestService");
 const { buildGrnDocumentDetail } = require("../services/grnDocumentService");
 
@@ -1144,13 +1144,12 @@ purchaseRouter.post("/grns", requireAuth, grnWriteRoles, async (req, res, next) 
     const autoPmrResults = [];
     for (const workOrderId of result.autoPmrWorkOrderIds || []) {
       try {
-        const pmr = await ensureSubmittedProductionMaterialRequestForWorkOrder(workOrderId, {
-          userId,
-          role: req.user?.role,
-        });
-        autoPmrResults.push({ workOrderId, pmrId: pmr?.id ?? null, pmrDocNo: pmr?.docNo ?? null });
+        const pmr = await getExistingProductionMaterialRequestForWorkOrder(workOrderId, prisma);
+        if (pmr) {
+          autoPmrResults.push({ workOrderId, pmrId: pmr.id, pmrDocNo: pmr.docNo ?? null, status: pmr.status ?? null });
+        }
       } catch (autoErr) {
-        console.warn("Auto PMR generation failed after GRN", {
+        console.warn("PMR lookup after GRN failed", {
           workOrderId,
           message: autoErr instanceof Error ? autoErr.message : String(autoErr),
         });

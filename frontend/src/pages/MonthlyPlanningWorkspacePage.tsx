@@ -31,7 +31,6 @@ import {
   PURCHASE_FROZEN_SNAPSHOT_SECTION,
   PURCHASE_LIVE_PROCUREMENT_SECTION,
   PURCHASE_LINE_TABLE_NOTE,
-  RM_REQUIREMENT_SNAPSHOT_TAB_LABEL,
   LIVE_RM_ESTIMATE_BANNER,
   RM_SNAPSHOT_BANNER,
   planStatusBadgeVariant,
@@ -70,6 +69,7 @@ import {
   formatGreenLevelSourceLabel,
   resolveFgGreenPlanningRow,
   type GreenLevelSource,
+  type FgGreenPlanningRow,
 } from "../lib/monthlyPlanningGreenLevelRowUx";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -83,7 +83,7 @@ import {
   shouldOfferSaveAndRefreshEstimate,
   type LiveRmEstimatePanelState,
 } from "../lib/monthlyPlanningLiveRmEstimateUx";
-import { noQtySoListHref } from "../lib/noQtyRsActionLabels";
+import { buildNoQtyGuidedHref } from "../lib/noQtyFlowState";
 import { formatOperationalWarningMessage } from "../lib/operationalWarningPresentation";
 import { cn } from "../lib/utils";
 import {
@@ -103,7 +103,6 @@ import {
   type ProductionPlanSavedBaseline,
 } from "../lib/monthlyPlanningProductionPlanDirty";
 import {
-  GREEN_SHORTAGE_PLANNING_MESSAGE,
   formatPlannedBelowSuggestedApproveMessage,
   formatPlannedBelowSuggestedSubmitMessage,
   isPlannedBelowSuggestedConfirmError,
@@ -207,6 +206,8 @@ type ProductionLine = {
   unit: string | null;
   suggestedFgQty: string | number;
   plannedFgQty: string | number;
+  customerProductionQty?: string | number;
+  greenReplenishmentQty?: string | number;
   plannedQtyOverridden: boolean;
   source: LineSource;
   remarks: string | null;
@@ -445,6 +446,7 @@ type RequirementCompositionItem = {
   carryForward: number;
   greenShortage: number;
   suggestedProduction: number;
+  customerProductionQty?: number;
   productionRequirementQty?: number;
   greenTarget?: number;
   freeFgStock?: number;
@@ -511,6 +513,8 @@ type EditRow = {
   unit: string | null;
   suggestedFgQty: number;
   plannedFgQty: string;
+  customerProductionQty: number;
+  greenReplenishmentQty: number;
   plannedQtyOverridden: boolean;
   source: LineSource;
   remarks: string;
@@ -748,9 +752,8 @@ export function MonthlyPlanningWorkspacePage() {
   const [releaseSummary, setReleaseSummary] = React.useState<ReleaseSummary | null>(null);
   const [rsSuggestions, setRsSuggestions] = React.useState<RsSuggestionsResponse | null>(null);
   const [loadingRsSuggestions, setLoadingRsSuggestions] = React.useState(false);
-  const [rsSuggestionsVisible, setRsSuggestionsVisible] = React.useState(false);
   const [greenLevels, setGreenLevels] = React.useState<GreenLevelsResponse | null>(null);
-  const [loadingGreenLevels, setLoadingGreenLevels] = React.useState(false);
+  const [, setLoadingGreenLevels] = React.useState(false);
   const [greenLevelsVisible, setGreenLevelsVisible] = React.useState(false);
   const [requirementComposition, setRequirementComposition] = React.useState<RequirementCompositionResponse | null>(
     null,
@@ -758,9 +761,9 @@ export function MonthlyPlanningWorkspacePage() {
   const [loadingRequirementComposition, setLoadingRequirementComposition] = React.useState(false);
   const [requirementCompositionVisible, setRequirementCompositionVisible] = React.useState(false);
   const [greenPlanningContextLoading, setGreenPlanningContextLoading] = React.useState(false);
-  const [rmRequirementComposition, setRmRequirementComposition] =
+  const [, setRmRequirementComposition] =
     React.useState<RmRequirementCompositionResponse | null>(null);
-  const [loadingRmRequirementComposition, setLoadingRmRequirementComposition] = React.useState(false);
+  const [, setLoadingRmRequirementComposition] = React.useState(false);
   const [rmRequirementCompositionVisible, setRmRequirementCompositionVisible] = React.useState(false);
   const [lockSummary, setLockSummary] = React.useState<LockSummary | null>(null);
   const [planRevisions, setPlanRevisions] = React.useState<PlanRevisionsResponse | null>(null);
@@ -768,8 +771,7 @@ export function MonthlyPlanningWorkspacePage() {
   const [expandedRevision, setExpandedRevision] = React.useState<number | null>(null);
   const [revisionHistoryExpanded, setRevisionHistoryExpanded] = React.useState(false);
   const [planningAuditExpanded, setPlanningAuditExpanded] = React.useState(false);
-  const [greenLevelAuditExpanded, setGreenLevelAuditExpanded] = React.useState(false);
-  const [rmAuditExpanded, setRmAuditExpanded] = React.useState(false);
+  const [greenSelectionOpen, setGreenSelectionOpen] = React.useState(false);
   const [reopening, setReopening] = React.useState(false);
   const [cancellingReopen, setCancellingReopen] = React.useState(false);
   const [startingPlanning, setStartingPlanning] = React.useState(false);
@@ -915,6 +917,8 @@ export function MonthlyPlanningWorkspacePage() {
           unit: l.unit,
           suggestedFgQty: num(l.suggestedFgQty),
           plannedFgQty: String(num(l.plannedFgQty)),
+          customerProductionQty: num(l.customerProductionQty ?? l.suggestedFgQty),
+          greenReplenishmentQty: num(l.greenReplenishmentQty),
           plannedQtyOverridden: Boolean(l.plannedQtyOverridden),
           source: l.source,
           remarks: l.remarks ?? "",
@@ -1201,9 +1205,11 @@ export function MonthlyPlanningWorkspacePage() {
       const upserts = suggestedItems.map((item) => ({
         fgItemId: item.itemId,
         plannedFgQty: round3(item.suggestedProduction),
+        customerProductionQty: round3(item.productionRequirementQty ?? item.customerProductionQty ?? item.suggestedProduction),
+        greenReplenishmentQty: 0,
         plannedQtyOverridden: false,
         source: "REQUIREMENT_SHEET" as const,
-        remarks: "From suggested production (RS + carry forward + green shortage)",
+        remarks: "From Customer Production",
       }));
       const lineBody: { upserts: typeof upserts; deletes: []; confirmPastPeriod?: true } = {
         upserts,
@@ -1334,7 +1340,6 @@ export function MonthlyPlanningWorkspacePage() {
         `/api/monthly-planning/rs-suggestions?periodKey=${encodeURIComponent(period)}`,
       );
       setRsSuggestions(res);
-      setRsSuggestionsVisible(true);
     } catch (e) {
       showError(e instanceof ApiRequestError ? e.message : "Failed to load RS suggestions.");
       setRsSuggestions(null);
@@ -1393,9 +1398,11 @@ export function MonthlyPlanningWorkspacePage() {
         unit: item.unit ?? fg?.unit ?? fg?.unitName ?? null,
         suggestedFgQty: suggested,
         plannedFgQty: String(suggested),
+        customerProductionQty: suggested,
+        greenReplenishmentQty: 0,
         plannedQtyOverridden: false,
         source: "REQUIREMENT_SHEET",
-        remarks: "From suggested production (RS + carry forward + green shortage)",
+        remarks: "From Customer Production",
       },
     ]);
     showSuccess(APPLY_SUGGESTED_ADDED_SUCCESS_TOAST);
@@ -1452,6 +1459,8 @@ export function MonthlyPlanningWorkspacePage() {
         unit: item?.unit ?? item?.unitName ?? null,
         suggestedFgQty: suggested,
         plannedFgQty: String(suggested),
+        customerProductionQty: suggested,
+        greenReplenishmentQty: 0,
         plannedQtyOverridden: false,
         source: "MANUAL",
         remarks: "",
@@ -1467,7 +1476,9 @@ export function MonthlyPlanningWorkspacePage() {
       const activePlan = await ensurePlanDraft(options);
       const upserts = rows.map((r) => ({
         fgItemId: r.fgItemId,
-        plannedFgQty: num(r.plannedFgQty),
+        plannedFgQty: r.plannedQtyOverridden ? num(r.plannedFgQty) : round3(num(r.customerProductionQty) + num(r.greenReplenishmentQty)),
+        customerProductionQty: num(r.customerProductionQty),
+        greenReplenishmentQty: num(r.greenReplenishmentQty),
         plannedQtyOverridden: r.plannedQtyOverridden,
         source: r.source === "CUSTOMER_SCHEDULE" ? "MANUAL" : r.source,
         remarks: r.remarks?.trim() ? r.remarks.trim() : null,
@@ -1923,6 +1934,101 @@ export function MonthlyPlanningWorkspacePage() {
   }, [planExists, period, requirementComposition]);
 
   const draftFgItemIds = React.useMemo(() => new Set(rows.map((r) => r.fgItemId)), [rows]);
+  const greenLevelShortageItems = React.useMemo(
+    () =>
+      (requirementComposition?.items ?? [])
+        .filter((item) => num(item.greenShortage) > 0)
+        .map((item) => ({
+          itemId: item.itemId,
+          itemName: item.itemName,
+          unit: item.unit,
+          greenShortage: round3(num(item.greenShortage)),
+          customerProductionQty: round3(num(item.productionRequirementQty ?? item.customerProductionQty ?? item.suggestedProduction)),
+        })),
+    [requirementComposition],
+  );
+  const selectedGreenItemIds = React.useMemo(
+    () => new Set(rows.filter((r) => num(r.greenReplenishmentQty) > 0).map((r) => r.fgItemId)),
+    [rows],
+  );
+
+  async function applyGreenLevelSelection(selectedIds: Set<number>) {
+    if (!editable || !canMutatePeriod) {
+      showError(!editable ? "Plan is read-only." : "Past periods are view-only for Store users.");
+      return;
+    }
+    const selectedById = new Map(greenLevelShortageItems.filter((item) => selectedIds.has(item.itemId)).map((item) => [item.itemId, item]));
+    const nextRows = rows.map((row) => {
+      const selected = selectedById.get(row.fgItemId);
+      const greenReplenishmentQty = selected ? selected.greenShortage : 0;
+      const customerProductionQty = selected?.customerProductionQty ?? row.customerProductionQty;
+      return {
+        ...row,
+        customerProductionQty,
+        greenReplenishmentQty,
+        plannedFgQty: row.plannedQtyOverridden
+          ? row.plannedFgQty
+          : String(round3(num(customerProductionQty) + greenReplenishmentQty)),
+        remarks:
+          greenReplenishmentQty > 0 && !row.remarks
+            ? "Customer Production + Green Level Replenishment"
+            : row.remarks,
+      };
+    });
+    const existingIds = new Set(nextRows.map((row) => row.fgItemId));
+    for (const item of greenLevelShortageItems) {
+      if (!selectedIds.has(item.itemId) || existingIds.has(item.itemId)) continue;
+      nextRows.push({
+        key: `gl-${item.itemId}-${Date.now()}`,
+        fgItemId: item.itemId,
+        fgItemName: item.itemName ?? `Item ${item.itemId}`,
+        unit: item.unit,
+        suggestedFgQty: item.customerProductionQty,
+        plannedFgQty: String(round3(item.customerProductionQty + item.greenShortage)),
+        customerProductionQty: item.customerProductionQty,
+        greenReplenishmentQty: item.greenShortage,
+        plannedQtyOverridden: false,
+        source: "REQUIREMENT_SHEET",
+        remarks: "Green Level Replenishment",
+      });
+    }
+
+    setSaving(true);
+    try {
+      const activePlan = await ensurePlanDraft(periodIsPast && isAdmin ? { confirmPastPeriod: true } : undefined);
+      const upserts = nextRows.map((r) => ({
+        fgItemId: r.fgItemId,
+        plannedFgQty: r.plannedQtyOverridden ? num(r.plannedFgQty) : round3(num(r.customerProductionQty) + num(r.greenReplenishmentQty)),
+        customerProductionQty: num(r.customerProductionQty),
+        greenReplenishmentQty: num(r.greenReplenishmentQty),
+        plannedQtyOverridden: r.plannedQtyOverridden,
+        source: r.source === "CUSTOMER_SCHEDULE" ? "MANUAL" : r.source,
+        remarks: r.remarks?.trim() ? r.remarks.trim() : null,
+      }));
+      const body: {
+        upserts: typeof upserts;
+        deletes: number[];
+        confirmPastPeriod?: true;
+      } = { upserts, deletes: removedIds };
+      if (periodIsPast && isAdmin) body.confirmPastPeriod = true;
+      await apiFetch<ProductionLinesResponse>(`/api/monthly-planning/${activePlan.id}/production-lines`, {
+        method: "PUT",
+        body: JSON.stringify(body),
+      });
+      setRows(nextRows);
+      setRemovedIds([]);
+      setGreenSelectionOpen(false);
+      showSuccess("Green Level replenishment selection saved.");
+      await loadPlan(period, activePlan.id);
+      await refreshRm(activePlan);
+    } catch (e) {
+      showError(e instanceof ApiRequestError ? e.message : "Failed to save Green Level selection.");
+    } finally {
+      setSaving(false);
+    }
+  }
+  void GreenLevelSection;
+  void RmRequirementCompositionSection;
 
   if (flagsLoading) {
     return <div className="p-6 text-sm text-slate-500">Loading…</div>;
@@ -2310,7 +2416,7 @@ export function MonthlyPlanningWorkspacePage() {
                   value={String(rmPlanning?.totals?.rmItemCount ?? rmPlanning?.lines.length ?? 0)}
                 />
                 <KpiCard
-                  label="Gross RM requirement"
+                  label="RM for Customer + selected Green Level"
                   value={(
                     rmPlanning?.totals?.grossDemandTotal ??
                     rmPlanning?.lines.reduce((a, l) => a + num(l.grossDemandQty), 0) ??
@@ -2484,10 +2590,8 @@ export function MonthlyPlanningWorkspacePage() {
             })}
             period={period}
             rsSuggestions={rsSuggestions}
-            rsSuggestionsVisible={rsSuggestionsVisible}
             loadingRsSuggestions={loadingRsSuggestions}
             onLoadRsSuggestions={() => void loadRsSuggestions()}
-            onHideRsSuggestions={() => setRsSuggestionsVisible(false)}
             onApplyRsSuggestion={(item) => void applyRsSuggestion(item)}
             draftFgItemIds={draftFgItemIds}
             onUpdateRow={updateRow}
@@ -2496,6 +2600,9 @@ export function MonthlyPlanningWorkspacePage() {
             addItemId={addItemId}
             setAddItemId={setAddItemId}
             onAddRow={() => void addRow()}
+            greenLevelShortageItems={greenLevelShortageItems}
+            selectedGreenItemIds={selectedGreenItemIds}
+            onOpenGreenSelection={() => setGreenSelectionOpen(true)}
             suggestedProductionMap={suggestedProductionMap}
             greenContextMap={greenContextMap}
             fgGreenPlanningMap={fgGreenPlanningMap}
@@ -2505,22 +2612,6 @@ export function MonthlyPlanningWorkspacePage() {
           />
         )}
       </div>
-
-      <GreenLevelSection
-        period={period}
-        data={greenLevels}
-        panelExpanded={greenLevelAuditExpanded}
-        visible={greenLevelsVisible}
-        loading={loadingGreenLevels}
-        onTogglePanel={() => {
-          setGreenLevelAuditExpanded((open) => {
-            const next = !open;
-            if (next && !greenLevels && !loadingGreenLevels) void loadGreenLevels();
-            return next;
-          });
-        }}
-        onLoad={() => void loadGreenLevels()}
-      />
 
       <RequirementCompositionSection
         period={period}
@@ -2538,24 +2629,6 @@ export function MonthlyPlanningWorkspacePage() {
           });
         }}
         onLoad={() => void loadRequirementComposition()}
-      />
-
-      <RmRequirementCompositionSection
-        period={period}
-        data={rmRequirementComposition}
-        panelExpanded={rmAuditExpanded}
-        visible={rmRequirementCompositionVisible}
-        loading={loadingRmRequirementComposition}
-        onTogglePanel={() => {
-          setRmAuditExpanded((open) => {
-            const next = !open;
-            if (next && !rmRequirementCompositionVisible && !loadingRmRequirementComposition) {
-              void loadRmRequirementComposition();
-            }
-            return next;
-          });
-        }}
-        onLoad={() => void loadRmRequirementComposition()}
       />
 
       {planExists && plan && isLegacyPlan ? (
@@ -2627,6 +2700,15 @@ export function MonthlyPlanningWorkspacePage() {
               });
             }
           }}
+        />
+      ) : null}
+
+      {greenSelectionOpen ? (
+        <GreenLevelSelectionModal
+          items={greenLevelShortageItems}
+          selectedItemIds={selectedGreenItemIds}
+          onCancel={() => setGreenSelectionOpen(false)}
+          onApply={applyGreenLevelSelection}
         />
       ) : null}
 
@@ -3157,7 +3239,7 @@ function RmPlanningTab({
       }
     : null;
 
-  const grossLabel = isEstimate ? "Gross RM requirement" : "Snapshot gross demand";
+  const grossLabel = isEstimate ? "RM for Customer + selected Green Level" : "Snapshot RM for Customer + selected Green Level";
   const freeLabel = isEstimate ? "Available RM" : "Snapshot free stock";
   const reservedLabel = isEstimate ? "Reserved RM" : "Snapshot reserved";
   const incomingLabel = isEstimate ? "Incoming PO" : "Snapshot incoming PO";
@@ -3207,8 +3289,8 @@ function RmPlanningTab({
         title={isEstimate ? LIVE_RM_ESTIMATE_BANNER.title : RM_SNAPSHOT_BANNER.title}
         subtitle={
           isEstimate
-            ? "Calculated from saved draft planned FG quantities and current stock visibility."
-            : "Stock position and net requirement captured at plan approval — not live inventory."
+            ? "Calculated from saved Customer Production and selected Green Level Replenishment quantities."
+            : "RM for Customer and RM for Green Level are captured from the approved plan quantities."
         }
         traceLabel={isEstimate ? "Live estimate" : "Frozen snapshot"}
         variant={isEstimate ? "estimate" : "snapshot"}
@@ -4173,6 +4255,7 @@ function GreenLevelSection({
   onTogglePanel: () => void;
   onLoad: () => void;
 }) {
+  void visible;
   const [showAllFg, setShowAllFg] = React.useState(false);
   const [expandedItemIds, setExpandedItemIds] = React.useState<Set<number>>(new Set());
   const dataForPeriod = data?.anchorPeriodKey === period ? data : null;
@@ -4355,6 +4438,7 @@ function RequirementCompositionSection({
   onTogglePanel: () => void;
   onLoad: () => void;
 }) {
+  void visible;
   const [expandedItemIds, setExpandedItemIds] = React.useState<Set<number>>(new Set());
   const dataForPeriod = data?.periodKey === period ? data : null;
 
@@ -4728,6 +4812,113 @@ function ApplySuggestedOverrideConfirmModal({
   );
 }
 
+function GreenLevelSelectionModal({
+  items,
+  selectedItemIds,
+  onCancel,
+  onApply,
+}: {
+  items: {
+    itemId: number;
+    itemName: string | null;
+    unit: string | null;
+    greenShortage: number;
+  }[];
+  selectedItemIds: Set<number>;
+  onCancel: () => void;
+  onApply: (selectedIds: Set<number>) => void;
+}) {
+  const [draftSelected, setDraftSelected] = React.useState<Set<number>>(() => new Set(selectedItemIds));
+  const selectAllRef = React.useRef<HTMLInputElement | null>(null);
+  const allSelected = items.length > 0 && items.every((item) => draftSelected.has(item.itemId));
+  const partiallySelected = !allSelected && items.some((item) => draftSelected.has(item.itemId));
+
+  React.useEffect(() => {
+    if (selectAllRef.current) {
+      selectAllRef.current.indeterminate = partiallySelected;
+    }
+  }, [partiallySelected]);
+
+  function toggle(itemId: number) {
+    setDraftSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(itemId)) next.delete(itemId);
+      else next.add(itemId);
+      return next;
+    });
+  }
+
+  function toggleAll(checked: boolean) {
+    setDraftSelected(checked ? new Set(items.map((item) => item.itemId)) : new Set());
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4">
+      <div className="w-full max-w-xl rounded-lg border border-slate-200 bg-white p-5 shadow-xl">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h3 className="text-base font-semibold text-slate-900">Green Level Replenishment</h3>
+            <p className="mt-1 text-[13px] text-slate-600">Items below Green Level: {items.length}</p>
+          </div>
+          <button type="button" onClick={onCancel} className="text-slate-400 hover:text-slate-700">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+        <div className="mt-4 max-h-[360px] overflow-auto rounded-md border border-slate-200">
+          <table className="w-full border-collapse text-[13px]">
+            <thead className="bg-slate-50 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              <tr>
+                <th className="w-12 px-3 py-2 text-center">
+                  <input
+                    ref={selectAllRef}
+                    type="checkbox"
+                    checked={allSelected}
+                    onChange={(e) => toggleAll(e.target.checked)}
+                    className="h-4 w-4 rounded border-slate-300"
+                    aria-label="Select all Green Level replenishment items"
+                  />
+                </th>
+                <th className="px-3 py-2">FG Item</th>
+                <th className="w-36 px-3 py-2 text-right">GL Shortage Qty</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((item) => (
+                <tr key={item.itemId} className="border-t border-slate-100">
+                  <td className="px-3 py-2 text-center">
+                    <input
+                      type="checkbox"
+                      checked={draftSelected.has(item.itemId)}
+                      onChange={() => toggle(item.itemId)}
+                      className="h-4 w-4 rounded border-slate-300"
+                      aria-label={`Select ${item.itemName ?? `Item ${item.itemId}`}`}
+                    />
+                  </td>
+                  <td className="px-3 py-2 font-medium text-slate-800">
+                    {item.itemName ?? `Item ${item.itemId}`}
+                    {item.unit ? <span className="ml-2 text-[11px] font-normal text-slate-500">{item.unit}</span> : null}
+                  </td>
+                  <td className="px-3 py-2 text-right font-semibold tabular-nums text-slate-900">
+                    {item.greenShortage.toLocaleString(undefined, { maximumFractionDigits: 3 })}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="mt-5 flex justify-end gap-2">
+          <Button type="button" variant="outline" onClick={onCancel}>
+            Cancel
+          </Button>
+          <Button type="button" onClick={() => onApply(draftSelected)}>
+            Apply Selection
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function PastPeriodConfirmModal({
   period,
   confirming,
@@ -4807,9 +4998,9 @@ function NoPlanPreviewPanel({
       </p>
       {hasSuggestions ? (
         <p className="mt-2 max-w-lg text-[13px] leading-relaxed text-slate-600">
-          Locked Requirement Sheets and Green Level provide <strong>{suggestedItemCount}</strong> suggested FG line
+          Locked Requirement Sheets provide <strong>{suggestedItemCount}</strong> Customer Production line
           {suggestedItemCount === 1 ? "" : "s"} for this period. Start Monthly Planning to create the draft plan with
-          those suggestions included.
+          customer demand included.
         </p>
       ) : (
         <p className="mt-2 max-w-lg text-[13px] leading-relaxed text-slate-600">
@@ -4824,7 +5015,7 @@ function NoPlanPreviewPanel({
             <>
               <Button type="button" onClick={onAddSuggestedItems} disabled={busy} className="h-9">
                 <Layers className="mr-1.5 h-4 w-4" />
-                {addingSuggested ? "Creating…" : "Create Monthly Plan from Suggestions"}
+                {addingSuggested ? "Creating…" : "Create Monthly Plan from Customer Production"}
               </Button>
               <Button type="button" variant="outline" onClick={onStartPlanning} disabled={busy} className="h-9">
                 <Plus className="mr-1.5 h-4 w-4" />
@@ -4868,16 +5059,32 @@ function sortRsSuggestionSources(sources: RsSuggestionSource[]): RsSuggestionSou
   });
 }
 
+function rsSuggestionSourceHref(src: RsSuggestionSource): string | null {
+  const salesOrderId = Number(src.salesOrderId);
+  const requirementSheetId = Number(src.requirementSheetId);
+  if (!Number.isFinite(salesOrderId) || salesOrderId <= 0) return null;
+  if (!Number.isFinite(requirementSheetId) || requirementSheetId <= 0) return null;
+  return buildNoQtyGuidedHref({
+    to: `/sales-orders/${salesOrderId}/requirement-sheets`,
+    salesOrderId,
+    cycleId: src.cycleId,
+    requirementSheetId,
+    fromStep: "requirement",
+  });
+}
+
+function rsSuggestionSourceLabel(src: RsSuggestionSource): string {
+  return src.requirementSheetDocNo?.trim() || `RS #${src.requirementSheetId}`;
+}
+
 function ProductionPlanTab({
   rows,
   editable,
   readOnlyMessage,
   period,
   rsSuggestions,
-  rsSuggestionsVisible,
   loadingRsSuggestions,
   onLoadRsSuggestions,
-  onHideRsSuggestions,
   onApplyRsSuggestion,
   draftFgItemIds,
   onUpdateRow,
@@ -4886,6 +5093,9 @@ function ProductionPlanTab({
   addItemId,
   setAddItemId,
   onAddRow,
+  greenLevelShortageItems,
+  selectedGreenItemIds,
+  onOpenGreenSelection,
   suggestedProductionMap,
   greenContextMap,
   fgGreenPlanningMap,
@@ -4898,10 +5108,8 @@ function ProductionPlanTab({
   readOnlyMessage: string | null;
   period: string;
   rsSuggestions: RsSuggestionsResponse | null;
-  rsSuggestionsVisible: boolean;
   loadingRsSuggestions: boolean;
   onLoadRsSuggestions: () => void;
-  onHideRsSuggestions: () => void;
   onApplyRsSuggestion: (item: RsSuggestionItem) => void;
   draftFgItemIds: Set<number>;
   onUpdateRow: (key: string, patch: Partial<EditRow>) => void;
@@ -4910,18 +5118,18 @@ function ProductionPlanTab({
   addItemId: string;
   setAddItemId: (v: string) => void;
   onAddRow: () => void;
+  greenLevelShortageItems: {
+    itemId: number;
+    itemName: string | null;
+    unit: string | null;
+    greenShortage: number;
+    customerProductionQty: number;
+  }[];
+  selectedGreenItemIds: Set<number>;
+  onOpenGreenSelection: () => void;
   suggestedProductionMap: Map<number, number>;
   greenContextMap: Map<number, { greenTarget: number; freeFgStock: number }>;
-  fgGreenPlanningMap: Map<
-    number,
-    {
-      greenLevelQty: number;
-      freeFgStock: number;
-      greenShortage: number;
-      suggestedProduction: number;
-      hasRsHistory: boolean;
-    }
-  >;
+  fgGreenPlanningMap: Map<number, FgGreenPlanningRow>;
   greenPlanningContextReady: boolean;
   greenLevelHistoryMonths: number;
   greenLevelSource: GreenLevelSource;
@@ -4946,7 +5154,7 @@ function ProductionPlanTab({
             <p className="mt-0.5 text-[12px] text-slate-600">
               Customer demand received through Requirement Sheets for <strong>{period}</strong>.
               {" "}
-              <span className="text-slate-500">{GREEN_SHORTAGE_PLANNING_MESSAGE}</span>
+              <span className="text-slate-500">Green Level replenishment is planned separately.</span>
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -4977,9 +5185,9 @@ function ProductionPlanTab({
                   <th className="px-3 py-2 w-32 text-right">RS demand</th>
                   <th
                     className="px-3 py-2 w-36 text-right"
-                    title="RS effective demand + carry forward + Green Shortage"
+                    title="Customer / RS demand only. Green Level replenishment is selected separately."
                   >
-                    <span className="cursor-help border-b border-dotted border-slate-400">Suggested production</span>
+                    <span className="cursor-help border-b border-dotted border-slate-400">Customer Production</span>
                   </th>
                   <th className="px-3 py-2 w-24 text-center">RS count</th>
                   {editable ? <th className="px-3 py-2 w-36">Action</th> : null}
@@ -5061,7 +5269,7 @@ function ProductionPlanTab({
                                   className="h-7 text-[12px]"
                                   onClick={() => onApplyRsSuggestion(item)}
                                 >
-                                  Add suggested production
+                                  Add Customer Production
                                 </Button>
                               )}
                             </td>
@@ -5082,29 +5290,34 @@ function ProductionPlanTab({
                                   </tr>
                                 </thead>
                                 <tbody>
-                                  {sortRsSuggestionSources(item.sources).map((src) => (
+                                  {sortRsSuggestionSources(item.sources).map((src) => {
+                                    const rsHref = rsSuggestionSourceHref(src);
+                                    const rsLabel = rsSuggestionSourceLabel(src);
+                                    return (
                                     <tr key={`${item.itemId}-${src.requirementSheetId}-${src.cycleId}`} className="text-slate-700">
                                       <td className="py-1 pr-3 font-medium tabular-nums">
                                         {formatRsSuggestionCycleLabel(src.cycleNo, src.cycleId)}
                                       </td>
                                       <td className="py-1 pr-3">
-                                        <Link
-                                          to={buildNoQtyGuidedHref({
-                                            to: `/sales-orders/${src.salesOrderId}/requirement-sheets`,
-                                            salesOrderId: src.salesOrderId,
-                                            cycleId: src.cycleId,
-                                            fromStep: "monthly_planning",
-                                          })}
-                                          className="font-medium text-sky-800 underline underline-offset-2"
-                                        >
-                                          {src.requirementSheetDocNo ?? `RS #${src.requirementSheetId}`}
-                                        </Link>
+                                        {rsHref ? (
+                                          <Link
+                                            to={rsHref}
+                                            className="font-medium text-sky-800 underline underline-offset-2"
+                                          >
+                                            {rsLabel}
+                                          </Link>
+                                        ) : (
+                                          <span className="font-medium text-slate-500" title="RS link unavailable — missing sales order context">
+                                            {rsLabel}
+                                          </span>
+                                        )}
                                       </td>
                                       <td className="py-1 pr-3 text-right font-semibold tabular-nums">
                                         {src.requirementQty.toLocaleString()}
                                       </td>
                                     </tr>
-                                  ))}
+                                    );
+                                  })}
                                   <tr className="border-t border-slate-200 font-semibold text-slate-900">
                                     <td className="pt-1.5 pr-3" colSpan={2}>
                                       Total RS requirement
@@ -5158,10 +5371,32 @@ function ProductionPlanTab({
             </Button>
           </div>
           <div className="rounded-md border border-emerald-200 bg-emerald-50/70 px-3 py-2 text-[12px] text-emerald-900">
-            {GREEN_SHORTAGE_PLANNING_MESSAGE} Planned qty defaults to suggested production unless you edit it manually.
+            Customer Production and Green Level Replenishment stay separate. Planned qty updates from selected demand unless you edit it manually.
           </div>
         </>
       )}
+
+      {greenLevelShortageItems.length > 0 ? (
+        <div className="rounded-lg border border-emerald-200 bg-emerald-50/70 p-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 className="text-[13px] font-semibold text-emerald-950">Green Level Replenishment</h3>
+              <p className="mt-0.5 text-[12px] text-emerald-900">
+                Items below Green Level: <strong>{greenLevelShortageItems.length}</strong>
+                {selectedGreenItemIds.size > 0 ? (
+                  <span> · Selected: <strong>{selectedGreenItemIds.size}</strong></span>
+                ) : null}
+              </p>
+            </div>
+            {editable ? (
+              <Button type="button" size="sm" variant="outline" className="h-8 bg-white" onClick={onOpenGreenSelection}>
+                <Boxes className="mr-1.5 h-4 w-4" />
+                Select Items
+              </Button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
 
       <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-slate-200 bg-white shadow-sm">
         <table className="w-full border-collapse text-[13px]">
@@ -5177,7 +5412,7 @@ function ProductionPlanTab({
               </th>
               <th className="px-3 py-2 w-24 text-right">Free FG</th>
               <th className="px-3 py-2 w-24 text-right">Green Short.</th>
-              <th className="px-3 py-2 w-28 text-right">Suggested</th>
+              <th className="px-3 py-2 w-28 text-right">Customer Production</th>
               <th className="px-3 py-2 w-28 text-right">Planned</th>
               <th className="px-3 py-2 w-24 text-right">Variance</th>
               <th className="px-3 py-2 w-20 text-right">Var %</th>

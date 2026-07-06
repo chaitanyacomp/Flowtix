@@ -27,6 +27,13 @@ export function isRmPoIrrelevantNextStepText(text: string | null | undefined): b
 }
 
 const RM_PO_SUPPLIER_PRINT_BODY_CLASS = "rm-po-supplier-print";
+const RM_PO_TRACE_PRINT_BODY_CLASS = "rm-po-traceability-print";
+
+export function buildRmPoTraceabilityHref(poId: number): string {
+  return `/rm-po-grn/${poId}/traceability`;
+}
+
+export { isRmPoDocumentOnly } from "./rmPurchaseWoContinuity";
 
 export function printRmPoSupplierSection(): void {
   document.body.classList.add(RM_PO_SUPPLIER_PRINT_BODY_CLASS);
@@ -41,6 +48,18 @@ export function printRmPoSupplierSection(): void {
 }
 
 /** PDF via browser print-to-PDF (dedicated server PDF deferred). */
+export function printRmPoInternalTraceability(): void {
+  document.body.classList.add(RM_PO_TRACE_PRINT_BODY_CLASS);
+  window.print();
+  window.addEventListener(
+    "afterprint",
+    () => {
+      document.body.classList.remove(RM_PO_TRACE_PRINT_BODY_CLASS);
+    },
+    { once: true },
+  );
+}
+
 export function exportRmPoPdfPlaceholder(poDisplayNo: string): void {
   // eslint-disable-next-line no-alert
   window.alert(

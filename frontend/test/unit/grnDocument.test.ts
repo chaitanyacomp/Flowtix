@@ -246,6 +246,22 @@ describe("GrnDocumentView P5B", () => {
     expect(viewSource).toContain("grn.isReversed");
   });
 
+  it("links PO reference back to RM PO", () => {
+    expect(viewSource).toContain('data-testid="grn-po-reference-link"');
+    expect(viewSource).toContain('data-testid="grn-po-ref-link"');
+    expect(viewSource).toContain("ProcurementRelatedDocuments");
+    expect(viewSource).toContain("buildGrnRelatedDocuments");
+  });
+
+  it("uses supplier terminology in party block and print layout", () => {
+    expect(viewSource).toContain("SupplierPartyBlock");
+    expect(viewSource).toContain('title="Supplier"');
+    expect(viewSource).toContain("Supplier Name");
+    expect(viewSource).toContain("Supplier Address");
+    expect(viewSource).toContain("Supplier GSTIN");
+    expect(viewSource).not.toContain('title="Vendor"');
+  });
+
   it("renders internal traceability separately", () => {
     expect(viewSource).toContain('data-testid="grn-internal-trace-section"');
     expect(viewSource).toContain("Internal procurement traceability");

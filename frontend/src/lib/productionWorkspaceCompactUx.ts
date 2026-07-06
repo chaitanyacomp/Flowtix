@@ -32,14 +32,29 @@ export function shouldShowProductionWorkspaceCompactLayout(input: {
   workOrderId: number;
   canOperate: boolean;
   navigateNoQtyContext: boolean;
+  isGreenLevelContext?: boolean;
   hideNoQtyAddProductionEntry: boolean;
   woIdFromUrlValid: boolean;
   workOrderLineIdFromUrlValid: boolean;
 }): boolean {
   if (!input.showProductionReport || !(input.workOrderId > 0) || !input.canOperate) return false;
+  if (input.isGreenLevelContext) return true;
   if (!input.navigateNoQtyContext) return false;
   if (input.hideNoQtyAddProductionEntry) return true;
   return input.woIdFromUrlValid || input.workOrderLineIdFromUrlValid;
+}
+
+/** Green Level scoped card uses viewport-height workbench when report/close is active. */
+export function shouldUseGreenLevelPremiumViewportWorkspace(input: {
+  isGreenLevelContext: boolean;
+  showGreenLevelScopedProductionCard: boolean;
+  showProductionWorkspaceCompactLayout: boolean;
+}): boolean {
+  return (
+    input.isGreenLevelContext &&
+    input.showGreenLevelScopedProductionCard &&
+    input.showProductionWorkspaceCompactLayout
+  );
 }
 
 /** NO_QTY scoped card uses viewport-height workbench (logging or report/close). */
@@ -56,6 +71,17 @@ export function shouldEmbedNoQtyRecentEntriesInLoggingWorkbench(input: {
   showProductionWorkspaceCompactLayout: boolean;
 }): boolean {
   return input.usePremiumViewport && !input.showProductionWorkspaceCompactLayout;
+}
+
+/**
+ * When false, the production page uses a locked viewport (flex + overflow-hidden + calc height).
+ * When true, the main document scrolls and sections are not vertically clipped.
+ */
+export function shouldUseProductionPageNaturalScroll(input: {
+  noQtyPremiumViewport: boolean;
+  greenLevelPremiumViewport: boolean;
+}): boolean {
+  return !input.noQtyPremiumViewport && !input.greenLevelPremiumViewport;
 }
 
 /** Minimal sticky chrome: one back nav + operator context (logging or report/close). */

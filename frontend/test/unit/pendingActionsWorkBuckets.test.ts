@@ -64,7 +64,7 @@ describe("pendingActionsWorkBuckets", () => {
     ]);
     expect(buckets).toHaveLength(1);
     expect(buckets[0]?.title).toBe("Ready to Dispatch (2 Items)");
-    expect(buckets[0]?.previewLines[0]).toEqual({ documentNo: "SO-26-0001", detail: "Ready Qty: 3710" });
+    expect(buckets[0]?.previewLines[0]).toEqual({ documentNo: "SO-26-0001", detail: "Dispatchable Qty: 3710" });
     expect(buckets[0]?.openLabel).toBe("Open Dispatch");
   });
 
@@ -87,6 +87,28 @@ describe("pendingActionsWorkBuckets", () => {
     expect(pendingActionWorkspaceListHref("/dispatch?salesOrderId=42&source=pending-actions")).toBe(
       "/dispatch?source=pending-actions",
     );
+    expect(
+      pendingActionWorkspaceListHref(
+        "/production-release?from=pending-actions&workOrderId=101&pmrId=55&flow=GREEN_LEVEL",
+      ),
+    ).toBe("/production-release?from=pending-actions");
+    expect(
+      pendingActionWorkspaceListHref(
+        "/store/green-level-wo?from=pending-actions&planId=12",
+      ),
+    ).toBe("/store/green-level-wo?from=pending-actions&planId=12");
+    const buckets = groupPendingActionsIntoWorkBuckets([
+      {
+        id: "green-level-place-wo:12",
+        priority: "MEDIUM",
+        action: "Create Green Level WO",
+        documentNo: "DOC-26-0001",
+        ownerRole: "STORE",
+        ageHours: 1,
+        href: "/work-orders?focus=green-level-wo&from=pending-actions&planId=12",
+      },
+    ]);
+    expect(buckets[0]?.openHref).toBe("/store/green-level-wo?from=pending-actions&planId=12");
   });
 
   it("resolvePendingActionGroupKey normalizes dispatch labels", () => {
@@ -96,7 +118,7 @@ describe("pendingActionsWorkBuckets", () => {
     expect(parseReadyToDispatchQty("Ready to Dispatch — SO-1 — Qty 3710")).toBe("3710");
     expect(buildPendingActionPreviewLine(row({ action: "Ready to Dispatch — SO-1 — Qty 3710", documentNo: "SO-1" }))).toEqual({
       documentNo: "SO-1",
-      detail: "Ready Qty: 3710",
+      detail: "Dispatchable Qty: 3710",
     });
   });
 

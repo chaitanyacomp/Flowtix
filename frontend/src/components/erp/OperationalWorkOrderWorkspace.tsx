@@ -26,8 +26,10 @@ import {
 type WoApiRow = {
   id: number;
   docNo?: string | null;
+  sourceType?: string | null;
+  monthlyProductionPlanId?: number | null;
   status: string;
-  salesOrderId: number;
+  salesOrderId?: number | null;
   salesOrder?: { docNo?: string | null; orderType?: string | null } | null;
   cycle?: { cycleNo?: number | null } | null;
   lines: Array<{
@@ -40,6 +42,7 @@ type WoApiRow = {
 function groupWorkOrdersFromApi(list: WoApiRow[]): WoApiGroupInput[] {
   const out: WoApiGroupInput[] = [];
   for (const wo of list) {
+    if (String(wo.sourceType ?? "").toUpperCase() === "GREEN_LEVEL_REPLENISHMENT") continue;
     const lines = (wo.lines ?? []).map((l) => ({
       fgName: l.fgItem?.itemName ?? "—",
       qty: l.qty,
@@ -49,9 +52,10 @@ function groupWorkOrdersFromApi(list: WoApiRow[]): WoApiGroupInput[] {
     out.push({
       woId: wo.id,
       woDocNo: wo.docNo ?? null,
-      salesOrderId: wo.salesOrderId,
+      salesOrderId: wo.salesOrderId ?? 0,
       soDocNo: wo.salesOrder?.docNo ?? null,
       orderType: wo.salesOrder?.orderType ?? null,
+      sourceType: wo.sourceType ?? null,
       cycleNo: wo.cycle?.cycleNo != null ? Number(wo.cycle.cycleNo) : null,
       status: wo.status,
       lines,
@@ -208,7 +212,7 @@ export function OperationalWorkOrderWorkspace({ className }: { className?: strin
       <CardHeader className="border-b border-slate-100 bg-white px-2.5 py-1.5">
         <CardTitle className="text-sm font-semibold tracking-tight text-slate-900">Work Order Workspace</CardTitle>
         <p className="text-[11px] text-slate-500">
-          Actionable cycles · cycle history below · {NO_QTY_TERMS.AGREEMENT_LABEL} and REGULAR
+          Production execution · actionable cycles · {NO_QTY_TERMS.AGREEMENT_LABEL} and REGULAR
         </p>
       </CardHeader>
       <CardContent className="space-y-0 p-0">
@@ -221,8 +225,8 @@ export function OperationalWorkOrderWorkspace({ className }: { className?: strin
           <div className="max-h-[min(52vh,440px)] overflow-y-auto">
             <section aria-label="Open Operational Cycles" className="bg-white">
               <div className="border-b border-slate-200 bg-gradient-to-b from-white to-slate-50/80 px-2.5 py-1.5">
-                <h3 className="text-[12px] font-bold tracking-tight text-slate-900">Open Operational Cycles</h3>
-                <p className="text-[10px] text-slate-500">Shop-floor and planning actions only</p>
+                <h3 className="text-[12px] font-bold tracking-tight text-slate-900">Operational Cycles</h3>
+                <p className="text-[10px] text-slate-500">Shop-floor actions only — WO placement is Store-owned</p>
               </div>
               {hasOperational ? (
                 <ul className="list-none space-y-2 p-2.5">

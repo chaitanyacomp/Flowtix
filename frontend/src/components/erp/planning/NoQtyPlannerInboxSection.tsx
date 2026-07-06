@@ -18,6 +18,8 @@ type Props = {
   focusedSalesOrderId?: number | null;
   /** True while focused sales-order context is still being verified. */
   contextLoading?: boolean;
+  /** Deep-link focus for Create Next RS from pending actions / dashboard. */
+  focusedCreateNextRs?: { nextCycleNo: number | null; autoOpen?: boolean } | null;
 };
 
 /** FT-UX-002 — Cycle Management Workspace (not a Requirement Sheet launcher). */
@@ -31,6 +33,7 @@ export function NoQtyPlannerInboxSection({
   className,
   focusedSalesOrderId = null,
   contextLoading = false,
+  focusedCreateNextRs = null,
 }: Props) {
   const visibleRows = React.useMemo(() => {
     const focusId = Number(focusedSalesOrderId);
@@ -100,7 +103,16 @@ export function NoQtyPlannerInboxSection({
         ) : (
           <div className="space-y-2">
             {visibleRows.map((row) => (
-              <NoQtyCycleManagementWorkspace key={row.so.id} row={row} compact={!focused && visibleRows.length > 1} />
+              <NoQtyCycleManagementWorkspace
+                key={row.so.id}
+                row={row}
+                compact={!focused && visibleRows.length > 1}
+                highlightCreateNextRs={
+                  focusedCreateNextRs && Number(focusedSalesOrderId) === Number(row.so.id)
+                    ? focusedCreateNextRs
+                    : null
+                }
+              />
             ))}
           </div>
         )}

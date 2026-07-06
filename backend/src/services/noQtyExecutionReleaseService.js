@@ -10,8 +10,9 @@ const { allocateDocNo } = require("./docNoService");
 const { aggregateRmDemandForFgLines, loadApprovedBomWithLines } = require("./bomExplosionService");
 const { getMaterialAvailabilityByItems } = require("./materialAvailabilityService");
 const { resolveNoQtyWoExecutableQty } = require("./noQtyWoQtyService");
+const { roundFgQty, capFgQtyFromRmAvailability } = require("./itemQtyPrecision");
 const {
-  ensureSubmittedProductionMaterialRequestForWorkOrder,
+  getExistingProductionMaterialRequestForWorkOrder,
 } = require("./productionMaterialRequestService");
 
 const NO_QTY_WO_PLACED_COUNT_STATUSES = Object.freeze([
@@ -39,6 +40,38 @@ function isNoQtyWoPlacedStatusCounted(status) {
 
 function woLinePlacedQty(line) {
   return round3(n(line?.plannedQty ?? line?.qty));
+}
+
+async function loadFgItemUnitById(tx, itemId) {
+  const id = Number(itemId);
+  if (!(id > 0) || typeof tx?.item?.findFirst !== "function") return null;
+  const row = await tx.item.findFirst({
+    where: { id },
+    select: {
+      unit: true,
+      unitRef: { select: { unitCode: true, unitName: true } },
+    },
+  });
+  if (!row) return null;
+  return row.unitRef?.unitCode ?? row.unitRef?.unitName ?? row.unit ?? null;
+}
+
+async function loadFgItemUnitMap(tx, itemIds) {
+  const ids = [...new Set((itemIds ?? []).map((id) => Number(id)).filter((id) => id > 0))];
+  const out = new Map();
+  if (!ids.length || typeof tx?.item?.findMany !== "function") return out;
+  const rows = await tx.item.findMany({
+    where: { id: { in: ids } },
+    select: {
+      id: true,
+      unit: true,
+      unitRef: { select: { unitCode: true, unitName: true } },
+    },
+  });
+  for (const row of rows) {
+    out.set(Number(row.id), row.unitRef?.unitCode ?? row.unitRef?.unitName ?? row.unit ?? null);
+  }
+  return out;
 }
 
 function sumPlacedQtyByItem(workOrders) {
@@ -79,7 +112,8 @@ function normalizeRequestedPlacementLines(requestedLines, balanceLines) {
 }
 
 async function buildNoQtyPlacementLinePreview(tx, balanceLine) {
-  const rsBalanceQty = round3(n(balanceLine?.rsBalanceQty));
+  const fgUnit = await loadFgItemUnitById(tx, balanceLine?.itemId);
+  const rsBalanceQty = roundFgQty(n(balanceLine?.rsBalanceQty), fgUnit, { mode: "floor" });
   if (!(rsBalanceQty > 0)) {
     return {
       itemId: Number(balanceLine?.itemId),
@@ -181,7 +215,7 @@ async function buildNoQtyPlacementLinePreview(tx, balanceLine) {
     if (availableQty > EPS) hasAvailableStock = true;
     if (incomingQty > EPS) hasIncomingStock = true;
     if (requiredPerFg > EPS) {
-      const cap = round3(Math.floor((availableQty / requiredPerFg) * 1000 + EPS) / 1000);
+      const cap = capFgQtyFromRmAvailability(availableQty, requiredPerFg, fgUnit);
       executableQty = Math.min(executableQty, cap);
     }
     return {
@@ -196,7 +230,7 @@ async function buildNoQtyPlacementLinePreview(tx, balanceLine) {
     };
   });
 
-  executableQty = round3(Math.max(0, Math.min(rsBalanceQty, executableQty)));
+  executableQty = roundFgQty(Math.max(0, Math.min(rsBalanceQty, executableQty)), fgUnit, { mode: "floor" });
   let status = "READY";
   let reason = "All required RM is available for this FG line.";
   if (executableQty <= EPS) {
@@ -393,12 +427,17 @@ async function createNoQtyWorkOrderFromLockedSheet(tx, sheet, options = {}) {
   const allowedFgItemIds = new Set((soLines || []).filter((l) => l.item?.itemType === "FG").map((l) => l.itemId));
 
   const placedByItem = sumPlacedQtyByItem(linkedWorkOrders);
+  const fgUnitByItemId = await loadFgItemUnitMap(
+    tx,
+    (sheet.lines || []).map((ln) => ln.itemId),
+  );
   const balanceLines = (sheet.lines || [])
     .map((ln) => {
       const demand = resolveNoQtyWoExecutableQty(ln);
       const placed = placedByItem.get(Number(ln.itemId)) ?? 0;
-      const balance = round3(Math.max(0, demand - placed));
-      return { fgItemId: Number(ln.itemId), qty: balance };
+      const fgUnit = fgUnitByItemId.get(Number(ln.itemId)) ?? ln.item?.unit ?? null;
+      const balance = roundFgQty(Math.max(0, round3(demand) - round3(placed)), fgUnit, { mode: "floor" });
+      return { fgItemId: Number(ln.itemId), qty: balance, fgUnit };
     })
     .filter((x) => Number.isFinite(x.qty) && x.qty > 0);
 
@@ -428,6 +467,11 @@ async function createNoQtyWorkOrderFromLockedSheet(tx, sheet, options = {}) {
     typeof tx?.productionMaterialRequestLine?.findMany === "function" &&
     typeof tx?.rmPurchaseOrder?.findMany === "function";
 
+  const placementUnitByItemId = await loadFgItemUnitMap(
+    tx,
+    positiveLines.map((line) => Number(line.itemId ?? line.fgItemId)),
+  );
+
   if (hasRmValidationSupport) {
     const previewByItem = new Map();
     for (const line of balanceLines) {
@@ -442,7 +486,7 @@ async function createNoQtyWorkOrderFromLockedSheet(tx, sheet, options = {}) {
                 itemName: sourceLine.item?.itemName ?? `Item ${line.fgItemId}`,
                 rsDemandQty: round3(n(sourceLine.requirementQty)),
                 woPlacedQty: round3(n(placedByItem.get(line.fgItemId) ?? 0)),
-                rsBalanceQty: round3(line.qty),
+                rsBalanceQty: line.qty,
               }
             : {
                 itemId: line.fgItemId,
@@ -457,6 +501,8 @@ async function createNoQtyWorkOrderFromLockedSheet(tx, sheet, options = {}) {
 
     for (const line of positiveLines) {
       const fgItemId = Number(line.itemId ?? line.fgItemId);
+      const fgUnit = placementUnitByItemId.get(fgItemId) ?? null;
+      const requestedQty = roundFgQty(line.qty, fgUnit, { mode: "floor" });
       const preview = previewByItem.get(fgItemId);
       const balanceLine = balanceLines.find((x) => Number(x.fgItemId) === fgItemId);
       if (!balanceLine) {
@@ -464,17 +510,21 @@ async function createNoQtyWorkOrderFromLockedSheet(tx, sheet, options = {}) {
         err.statusCode = 409;
         throw err;
       }
-      if (line.qty > round3(balanceLine.qty)) {
+      const balanceCap = roundFgQty(balanceLine.qty, fgUnit, { mode: "floor" });
+      if (requestedQty > balanceCap + EPS) {
         const err = new Error("RS balance changed while you were editing. Refresh and try again.");
         err.statusCode = 409;
         throw err;
       }
-      if (preview?.status === "MISSING_BOM" && line.qty > EPS) {
+      if (preview?.status === "MISSING_BOM" && requestedQty > EPS) {
         const err = new Error("Approved BOM is missing for this FG line.");
         err.statusCode = 409;
         throw err;
       }
-      if (preview && line.qty > round3(preview.suggestedExecutableQty) + EPS) {
+      if (
+        preview &&
+        requestedQty > roundFgQty(preview.suggestedExecutableQty, fgUnit, { mode: "floor" }) + EPS
+      ) {
         const err = new Error("RS balance changed while you were editing. Refresh and try again.");
         err.statusCode = 409;
         throw err;
@@ -483,7 +533,15 @@ async function createNoQtyWorkOrderFromLockedSheet(tx, sheet, options = {}) {
 
     const rmDemand = await aggregateRmDemandForFgLines(
       tx,
-      positiveLines.map((line) => ({ fgItemId: Number(line.itemId ?? line.fgItemId), fgQty: line.qty, bomMissing: false })),
+      positiveLines.map((line) => {
+        const fgItemId = Number(line.itemId ?? line.fgItemId);
+        const fgUnit = placementUnitByItemId.get(fgItemId) ?? null;
+        return {
+          fgItemId,
+          fgQty: roundFgQty(line.qty, fgUnit, { mode: "floor" }),
+          bomMissing: false,
+        };
+      }),
     );
     if ((rmDemand.missingChildBoms ?? []).length > 0) {
       const err = new Error("Approved BOM is missing for one or more FG lines.");
@@ -515,7 +573,9 @@ async function createNoQtyWorkOrderFromLockedSheet(tx, sheet, options = {}) {
   const createdWorkOrders = [];
   for (const line of positiveLines) {
     const fgItemId = Number(line.itemId ?? line.fgItemId);
-    const qty = round3(line.qty);
+    const fgUnit = placementUnitByItemId.get(fgItemId) ?? null;
+    const qty = roundFgQty(line.qty, fgUnit, { mode: "floor" });
+    if (!(qty > EPS)) continue;
     const created = await tx.workOrder.create({
       data: {
         salesOrderId: sheet.salesOrderId,
@@ -610,16 +670,19 @@ async function listNoQtyWorkOrderIdsForPeriod(db, periodKey) {
 }
 
 /**
- * Post-release PMR ensure for all execution WOs in the period.
+ * Post-release PMR lookup for all execution WOs in the period.
+ * Does not create PMRs; PMR auto-creation belongs to WO creation only.
  * @param {import("@prisma/client").PrismaClient} db
  * @param {{ periodKey: string, actor?: { userId?: number, role?: string } }} input
  */
 async function ensurePmrsForPeriodExecution(db, { periodKey, actor = {} }) {
+  void actor;
   const woIds = await listNoQtyWorkOrderIdsForPeriod(db, periodKey);
   const pmrs = [];
   for (const workOrderId of woIds) {
     try {
-      const pmr = await ensureSubmittedProductionMaterialRequestForWorkOrder(workOrderId, actor, db);
+      const pmr = await getExistingProductionMaterialRequestForWorkOrder(workOrderId, db);
+      if (!pmr) continue;
       pmrs.push({
         workOrderId,
         pmrId: pmr?.id ?? null,
@@ -627,7 +690,7 @@ async function ensurePmrsForPeriodExecution(db, { periodKey, actor = {} }) {
         status: pmr?.status ?? null,
       });
     } catch (err) {
-      console.warn(`[NO_QTY_RELEASE] Auto-ensure PMR for WO ${workOrderId} failed:`, err?.message || err);
+      console.warn(`[NO_QTY_RELEASE] PMR lookup for WO ${workOrderId} failed:`, err?.message || err);
     }
   }
   return pmrs;

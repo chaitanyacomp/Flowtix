@@ -1,4 +1,5 @@
 import type { PendingAction, PendingActionPriority } from "./pendingActionsApi";
+import { resolveGreenLevelPendingActionHref } from "./greenLevelWoPlacementNavigation";
 import {
   buildCreateSalesBillWorkQueue,
   isCreateSalesBillPendingBucket,
@@ -8,6 +9,8 @@ import {
 } from "./workQueueContext";
 
 const READY_TO_DISPATCH_PREFIX = "Ready to Dispatch";
+const DISPATCH_DRAFT_PREFIX = "Finalize Dispatch Draft";
+const DISPATCH_DELIVERY_DUE_PREFIX = "Delivery Due — Dispatch";
 const DISPATCH_PENDING_LABEL = "Dispatch Pending";
 
 export type PendingActionBucketPreviewLine = {
@@ -39,13 +42,17 @@ const PRIORITY_RANK: Record<PendingActionPriority, number> = { HIGH: 0, MEDIUM: 
 export function resolvePendingActionGroupKey(action: PendingAction): string {
   const label = String(action.action ?? "").trim();
   if (label.startsWith(READY_TO_DISPATCH_PREFIX)) return "READY_TO_DISPATCH";
+  if (label.startsWith(DISPATCH_DRAFT_PREFIX)) return "DISPATCH_DRAFT";
+  if (label.startsWith(DISPATCH_DELIVERY_DUE_PREFIX)) return "DISPATCH_DELIVERY_DUE";
   if (label === DISPATCH_PENDING_LABEL || label === "Dispatch") return "READY_TO_DISPATCH";
   return label || "UNKNOWN";
 }
 
 /** Human title for a group key / representative action. */
 export function resolvePendingActionGroupTitle(groupKey: string, sampleAction?: string): string {
-  if (groupKey === "READY_TO_DISPATCH") return READY_TO_DISPATCH_PREFIX;
+  if (groupKey === "READY_TO_DISPATCH" || groupKey === "DISPATCH_DRAFT" || groupKey === "DISPATCH_DELIVERY_DUE") {
+    return READY_TO_DISPATCH_PREFIX;
+  }
   const label = String(sampleAction ?? groupKey).trim();
   return label || "Pending work";
 }
@@ -61,9 +68,20 @@ export function buildPendingActionPreviewLine(row: PendingAction): PendingAction
     const dispatchOnly = doc.split(" · ")[0]?.trim() || doc;
     return { documentNo: dispatchOnly };
   }
-  if (String(row.action ?? "").startsWith(READY_TO_DISPATCH_PREFIX)) {
+  if (
+    String(row.action ?? "").startsWith(READY_TO_DISPATCH_PREFIX) ||
+    String(row.action ?? "").startsWith(DISPATCH_DRAFT_PREFIX) ||
+    String(row.action ?? "").startsWith(DISPATCH_DELIVERY_DUE_PREFIX)
+  ) {
     const qty = parseReadyToDispatchQty(row.action);
-    return { documentNo: doc, detail: qty ? `Ready Qty: ${qty}` : null };
+    return { documentNo: doc, detail: qty ? `Dispatchable Qty: ${qty}` : null };
+  }
+  const parts = doc.split(" · ").map((part) => part.trim()).filter(Boolean);
+  if (parts.length >= 2) {
+    return {
+      documentNo: parts[0],
+      detail: parts.slice(1).join(" · "),
+    };
   }
   return { documentNo: doc };
 }
@@ -73,8 +91,14 @@ export function pendingActionWorkspaceListHref(href: string): string {
   try {
     const url = new URL(href, "http://erp.local");
     const path = url.pathname;
+    if (path === "/production-release") {
+      const params = new URLSearchParams();
+      const from = url.searchParams.get("from") ?? "pending-actions";
+      params.set("from", from);
+      return `/production-release?${params.toString()}`;
+    }
     const params = new URLSearchParams();
-    for (const key of ["returnTo", "from", "source", "onlyBlocked", "demandPool"]) {
+    for (const key of ["returnTo", "from", "source", "onlyBlocked", "demandPool", "focus", "planId"]) {
       const v = url.searchParams.get(key);
       if (v != null && v !== "") params.set(key, v);
     }
@@ -92,14 +116,16 @@ export function pendingActionWorkspaceListHref(href: string): string {
 
 function bucketTitle(count: number, actionType: string, groupKey: string): string {
   const base = actionType;
-  if (groupKey === "READY_TO_DISPATCH") {
-    return `${base} (${count} ${count === 1 ? "Item" : "Items"})`;
+  if (groupKey === "READY_TO_DISPATCH" || groupKey === "DISPATCH_DRAFT" || groupKey === "DISPATCH_DELIVERY_DUE") {
+    return `${READY_TO_DISPATCH_PREFIX} (${count} ${count === 1 ? "Item" : "Items"})`;
   }
   return `${base} (${count})`;
 }
 
 function bucketOpenLabel(groupKey: string, count: number): string {
-  if (groupKey === "READY_TO_DISPATCH") return "Open Dispatch";
+  if (groupKey === "READY_TO_DISPATCH" || groupKey === "DISPATCH_DRAFT" || groupKey === "DISPATCH_DELIVERY_DUE") {
+    return "Open Dispatch";
+  }
   return count === 1 ? "Open" : "Open List";
 }
 
@@ -154,10 +180,13 @@ export function groupPendingActionsIntoWorkBuckets(
       }
     }
 
-    const listHref = pendingActionWorkspaceListHref(items[0]?.href ?? "/pending-actions");
+    const rawHref = items[0]?.href ?? "/pending-actions";
+    const listHref = pendingActionWorkspaceListHref(
+      resolveGreenLevelPendingActionHref(rawHref, items[0]?.action),
+    );
     const openHref =
       count === 1 || isCreateSalesBillPendingBucket(key)
-        ? (items[0]?.href ?? listHref)
+        ? resolveGreenLevelPendingActionHref(items[0]?.href ?? listHref, items[0]?.action)
         : listHref;
 
     buckets.push({

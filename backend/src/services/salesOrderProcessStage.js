@@ -57,6 +57,14 @@ function resolvePostDispatchProcessStage(dispatchSummary, invoicedQty = 0) {
   return { key: "COMPLETED", label: "Completed" };
 }
 
+function resolveIncompleteDispatchProcessStage(dispatchSummary) {
+  const dispatched = Number(dispatchSummary?.totalDispatched ?? 0);
+  if (dispatched > EPS) {
+    return { key: "PARTIALLY_DISPATCHED", label: "Partially dispatched — FG in stock" };
+  }
+  return { key: "DISPATCH_AVAILABLE", label: "Dispatch available" };
+}
+
 /**
  * @param {{ lines?: { item?: { itemType?: string } }[] }} so
  */
@@ -148,7 +156,7 @@ async function enrichSalesOrdersWithProcessStage(prisma, enrichedSalesOrders, op
       if (dispatchSummary.fullyDispatched) {
         return { ...so, processStage: resolvePostDispatchProcessStage(dispatchSummary, invoicedQty) };
       }
-      return { ...so, processStage: { key: "DISPATCH_PENDING", label: "Dispatch pending" } };
+      return { ...so, processStage: resolveIncompleteDispatchProcessStage(dispatchSummary) };
     }
 
     if (so.internalStatus === "DRAFT") {
@@ -159,7 +167,7 @@ async function enrichSalesOrdersWithProcessStage(prisma, enrichedSalesOrders, op
       if (dispatchSummary.fullyDispatched) {
         return { ...so, processStage: resolvePostDispatchProcessStage(dispatchSummary, invoicedQty) };
       }
-      return { ...so, processStage: { key: "DISPATCH_PENDING", label: "Dispatch pending" } };
+      return { ...so, processStage: resolveIncompleteDispatchProcessStage(dispatchSummary) };
     }
 
     const wols = wolsBySo.get(so.id) || [];
@@ -196,7 +204,7 @@ async function enrichSalesOrdersWithProcessStage(prisma, enrichedSalesOrders, op
     }
 
     if (!dispatchSummary.fullyDispatched) {
-      return { ...so, processStage: { key: "DISPATCH_PENDING", label: "Dispatch pending" } };
+      return { ...so, processStage: resolveIncompleteDispatchProcessStage(dispatchSummary) };
     }
 
     return { ...so, processStage: resolvePostDispatchProcessStage(dispatchSummary, invoicedQty) };

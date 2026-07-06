@@ -385,16 +385,30 @@ export function noQtyRsCreationWorkspaceHref(input: {
 
 
 
-export function noQtyPlanningHubHref(salesOrderId?: number): string {
-
+export function noQtyPlanningHubHref(
+  salesOrderId?: number,
+  opts?: {
+    nextCycleNo?: number | null;
+    action?: "create-next-rs";
+    from?: string;
+  },
+): string {
+  const params = new URLSearchParams();
+  const from = opts?.from?.trim();
+  if (from) params.set("from", from);
   if (salesOrderId != null && salesOrderId > 0) {
-
-    return `/planning-dashboard?salesOrderId=${encodeURIComponent(String(salesOrderId))}&source=no_qty_planning`;
-
+    params.set("salesOrderId", String(salesOrderId));
+    params.set("source", "no_qty_planning");
   }
-
-  return "/planning-dashboard";
-
+  if (opts?.action === "create-next-rs") {
+    params.set("action", "create-next-rs");
+  }
+  const nextCycleNo = opts?.nextCycleNo != null ? Number(opts.nextCycleNo) : NaN;
+  if (Number.isFinite(nextCycleNo) && nextCycleNo > 0) {
+    params.set("nextCycleNo", String(Math.trunc(nextCycleNo)));
+  }
+  const q = params.toString();
+  return q ? `/planning-dashboard?${q}` : "/planning-dashboard";
 }
 
 

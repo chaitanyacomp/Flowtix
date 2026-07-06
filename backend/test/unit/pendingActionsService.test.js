@@ -22,6 +22,7 @@ const {
   fetchStoreNoQtyCreateNextRsPendingActions,
   filterNoQtyStoreHandoffSupersededByLaterRs,
   buildStoreDispatchPendingActionLabel,
+  buildNoQtyCreateNextRsPlanningHubHref,
   PENDING_PRIORITY,
   productionExecutionPendingActionLabel,
   PRODUCTION_EXECUTION_PENDING_LABELS,
@@ -127,6 +128,63 @@ describe("pendingActionsService", () => {
     assert.match(href, /#qc-production-pending/);
   });
 
+  it("resolveHref uses actionHref for production queue when present", () => {
+    const href = resolveHrefForNormalizedRow({
+      rowType: "PRODUCTION_QUEUE",
+      metadata: {
+        workOrderId: 375,
+        actionHref: "/production?from=dashboard&flow=GREEN_LEVEL&workOrderId=375&workOrderLineId=384",
+      },
+    });
+    assert.equal(
+      href,
+      "/production?from=dashboard&flow=GREEN_LEVEL&workOrderId=375&workOrderLineId=384",
+    );
+  });
+
+  it("resolveHref builds GREEN_LEVEL production workspace from queue metadata", () => {
+    const { buildProductionWorkspaceHrefFromPendingMeta } = require("../../src/services/pendingActionsService");
+    const href = buildProductionWorkspaceHrefFromPendingMeta(
+      {
+        workOrderId: 375,
+        workOrderLineId: 384,
+        sourceType: "GREEN_LEVEL_REPLENISHMENT",
+        orderType: "GREEN_LEVEL",
+      },
+      "pending-actions",
+    );
+    assert.match(href, /flow=GREEN_LEVEL/);
+    assert.match(href, /workOrderId=375/);
+    assert.match(href, /workOrderLineId=384/);
+    assert.match(href, /from=pending-actions/);
+
+    const fromRow = resolveHrefForNormalizedRow({
+      rowType: "PRODUCTION_QUEUE",
+      metadata: {
+        workOrderId: 375,
+        workOrderLineId: 384,
+        orderType: "GREEN_LEVEL",
+        sourceType: "GREEN_LEVEL_REPLENISHMENT",
+      },
+    });
+    assert.equal(fromRow, href);
+  });
+
+  it("resolveHref keeps REGULAR_SO production queue links unchanged", () => {
+    const href = resolveHrefForNormalizedRow({
+      rowType: "PRODUCTION_QUEUE",
+      metadata: {
+        workOrderId: 12,
+        workOrderLineId: 34,
+        salesOrderId: 9,
+        orderType: "NORMAL",
+      },
+    });
+    assert.match(href, /flow=REGULAR_SO/);
+    assert.match(href, /salesOrderId=9/);
+    assert.doesNotMatch(href, /flow=GREEN_LEVEL/);
+  });
+
   it("filterNormalizedRowsByOwner suppresses per-item dispatch backlog for Store", () => {
     const rows = [
       {
@@ -147,10 +205,14 @@ describe("pendingActionsService", () => {
     assert.equal(filtered[0].rowType, "CONTINUE_WORKING");
   });
 
-  it("buildStoreDispatchPendingActionLabel formats SO-level dispatch queue label", () => {
+  it("buildStoreDispatchPendingActionLabel formats delivery-due and draft dispatch labels", () => {
     assert.equal(
-      buildStoreDispatchPendingActionLabel("SO-26-0001", 9593),
-      "Ready to Dispatch — SO-26-0001 — Qty 9593",
+      buildStoreDispatchPendingActionLabel("SO-26-0001", 9593, "DELIVERY_DUE"),
+      "Delivery Due — Dispatch — SO-26-0001 — Qty 9593",
+    );
+    assert.equal(
+      buildStoreDispatchPendingActionLabel("SO-26-0001", 40, "DRAFT"),
+      "Finalize Dispatch Draft — SO-26-0001 — Qty 40",
     );
   });
 
@@ -206,8 +268,24 @@ describe("pendingActionsService", () => {
     const rows = await fetchStoreProductionHandoffPendingActions();
     if (rows.length > 0) {
       assert.equal(rows[0].action, "Release to Production");
-      assert.match(rows[0].href, /\/material-issue/);
+      assert.match(rows[0].href, /^\/production-release\?/);
     }
+  });
+
+  it("buildReleaseToProductionHref uses GREEN_LEVEL flow without SO context", () => {
+    const { buildReleaseToProductionHref } = require("../../src/services/pendingActionsService");
+    const href = buildReleaseToProductionHref({
+      workOrderId: 375,
+      workOrderLineId: 384,
+      pmrId: 88,
+      sourceType: "GREEN_LEVEL_REPLENISHMENT",
+      orderType: "GREEN_LEVEL",
+    });
+    assert.match(href, /workOrderId=375/);
+    assert.match(href, /pmrId=88/);
+    assert.match(href, /flow=GREEN_LEVEL/);
+    assert.doesNotMatch(href, /salesOrderId=/);
+    assert.doesNotMatch(href, /flow=REGULAR_SO/);
   });
 
   it("fetchAdminSalesBillPendingActions maps eligible dispatch to Create Sales Bill", async () => {
@@ -561,7 +639,34 @@ describe("pendingActionsService", () => {
     assert.match(actions[0].href, /workOrderId=307/);
   });
 
-  it("fetchStoreDispatchPendingActions maps dispatch backlog to SO-level Ready to Dispatch row", async () => {
+  function mockDispatchTriggerDb(overrides = {}) {
+    const { drafts = [], salesOrders = [] } = overrides;
+    return {
+      dispatch: {
+        findMany: async () => drafts,
+      },
+      salesOrder: {
+        findMany: async ({ where }) => {
+          const ids = where?.id?.in ?? [];
+          return salesOrders.filter((so) => ids.includes(so.id));
+        },
+      },
+    };
+  }
+
+  function normalSoMeta(id, docNo, { requiredDate = null, orderType = "NORMAL" } = {}) {
+    return {
+      id,
+      internalStatus: "APPROVED",
+      orderType,
+      docNo,
+      createdAt: new Date("2026-05-20T00:00:00Z"),
+      po: { requiredDate },
+      customer: { name: "Acme" },
+    };
+  }
+
+  it("fetchStoreDispatchPendingActions omits inventory-only backlog without draft or delivery due", async () => {
     const dashPath = require.resolve("../../src/services/dashboardQueueSnapshots");
     const paPath = require.resolve("../../src/services/pendingActionsService");
     const orig = require(dashPath).getDispatchBacklogRows;
@@ -581,9 +686,41 @@ describe("pendingActionsService", () => {
     delete require.cache[paPath];
     const { fetchStoreDispatchPendingActions: fetchStoreDispatch } = require(paPath);
     try {
-      const actions = await fetchStoreDispatch({});
+      const actions = await fetchStoreDispatch(
+        mockDispatchTriggerDb({ salesOrders: [normalSoMeta(42, "SO-26-0042")] }),
+      );
+      assert.equal(actions.length, 0);
+    } finally {
+      require(dashPath).getDispatchBacklogRows = orig;
+      delete require.cache[paPath];
+    }
+  });
+
+  it("fetchStoreDispatchPendingActions maps unlocked draft to Finalize Dispatch Draft row", async () => {
+    const dashPath = require.resolve("../../src/services/dashboardQueueSnapshots");
+    const paPath = require.resolve("../../src/services/pendingActionsService");
+    const orig = require(dashPath).getDispatchBacklogRows;
+    require(dashPath).getDispatchBacklogRows = async () => [
+      {
+        salesOrderId: 42,
+        salesOrderNo: "SO-42",
+        salesOrderDocNo: "SO-26-0042",
+        customerName: "Acme",
+        dispatchableNow: 25,
+        salesOrderDate: new Date("2026-06-01T00:00:00Z"),
+      },
+    ];
+    delete require.cache[paPath];
+    const { fetchStoreDispatchPendingActions: fetchStoreDispatch } = require(paPath);
+    try {
+      const actions = await fetchStoreDispatch(
+        mockDispatchTriggerDb({
+          drafts: [{ soId: 42, dispatchedQty: 25, reversalOfId: null, workflowStatus: "UNLOCKED" }],
+          salesOrders: [normalSoMeta(42, "SO-26-0042")],
+        }),
+      );
       assert.equal(actions.length, 1);
-      assert.equal(actions[0].action, "Ready to Dispatch — SO-26-0042 — Qty 25");
+      assert.equal(actions[0].action, "Finalize Dispatch Draft — SO-26-0042 — Qty 25");
       assert.equal(actions[0].documentNo, "SO-26-0042");
       assert.equal(actions[0].ownerRole, "STORE");
       assert.match(actions[0].href, /\/dispatch\?/);
@@ -596,7 +733,7 @@ describe("pendingActionsService", () => {
     }
   });
 
-  it("fetchStoreDispatchPendingActions groups multiple FG lines into one SO dispatch row", async () => {
+  it("fetchStoreDispatchPendingActions groups delivery-due backlog into one SO dispatch row", async () => {
     const dashPath = require.resolve("../../src/services/dashboardQueueSnapshots");
     const paPath = require.resolve("../../src/services/pendingActionsService");
     const orig = require(dashPath).getDispatchBacklogRows;
@@ -637,17 +774,23 @@ describe("pendingActionsService", () => {
     delete require.cache[paPath];
     const { fetchStoreDispatchPendingActions: fetchStoreDispatch } = require(paPath);
     try {
-      const actions = await fetchStoreDispatch({});
+      const actions = await fetchStoreDispatch(
+        mockDispatchTriggerDb({
+          salesOrders: [
+            normalSoMeta(1, "SO-26-0001", { requiredDate: new Date("2026-05-01T00:00:00Z") }),
+          ],
+        }),
+      );
       assert.equal(actions.length, 1);
       assert.equal(actions[0].id, "store:dispatch:so:1");
-      assert.equal(actions[0].action, "Ready to Dispatch — SO-26-0001 — Qty 11593");
+      assert.equal(actions[0].action, "Delivery Due — Dispatch — SO-26-0001 — Qty 11593");
     } finally {
       require(dashPath).getDispatchBacklogRows = orig;
       delete require.cache[paPath];
     }
   });
 
-  it("fetchStoreDispatchPendingActions emits NO_QTY dispatch when only dispatchable headroom exists", async () => {
+  it("fetchStoreDispatchPendingActions emits NO_QTY dispatch only when draft exists", async () => {
     const dashPath = require.resolve("../../src/services/dashboardQueueSnapshots");
     const paPath = require.resolve("../../src/services/pendingActionsService");
     const orig = require(dashPath).getDispatchBacklogRows;
@@ -670,9 +813,14 @@ describe("pendingActionsService", () => {
     delete require.cache[paPath];
     const { fetchStoreDispatchPendingActions: fetchStoreDispatch } = require(paPath);
     try {
-      const actions = await fetchStoreDispatch({});
+      const actions = await fetchStoreDispatch(
+        mockDispatchTriggerDb({
+          drafts: [{ soId: 1, dispatchedQty: 120, reversalOfId: null, workflowStatus: "UNLOCKED" }],
+          salesOrders: [normalSoMeta(1, "SO-1", { orderType: "NO_QTY" })],
+        }),
+      );
       assert.equal(actions.length, 1);
-      assert.equal(actions[0].action, "Ready to Dispatch — SO-1 — Qty 120");
+      assert.equal(actions[0].action, "Finalize Dispatch Draft — SO-1 — Qty 120");
       assert.match(actions[0].href, /salesOrderId=1/);
       assert.doesNotMatch(actions[0].href, /cycleId=/);
       assert.doesNotMatch(actions[0].href, /itemId=/);
@@ -682,7 +830,7 @@ describe("pendingActionsService", () => {
     }
   });
 
-  it("dedupeLifecyclePendingActions keeps NO_QTY next RS and dispatch pending on the same SO", () => {
+  it("dedupeLifecyclePendingActions keeps NO_QTY next RS and dispatch draft on the same SO", () => {
     const actions = dedupeLifecyclePendingActions([
       {
         id: "no-qty-create-next-rs:1",
@@ -692,7 +840,7 @@ describe("pendingActionsService", () => {
       },
       {
         id: "store:dispatch:so:1",
-        action: "Ready to Dispatch — SO-26-0001 — Qty 9593",
+        action: "Finalize Dispatch Draft — SO-26-0001 — Qty 9593",
         ownerRole: "STORE",
         href: "/dispatch?salesOrderId=1&source=pending-actions",
         salesOrderId: 1,
@@ -700,10 +848,10 @@ describe("pendingActionsService", () => {
     ]);
     assert.equal(actions.length, 2);
     assert.ok(actions.some((a) => a.action === "Create Cycle 2 Requirement Sheet"));
-    assert.ok(actions.some((a) => a.action.startsWith("Ready to Dispatch")));
+    assert.ok(actions.some((a) => a.action.startsWith("Finalize Dispatch Draft")));
   });
 
-  it("fetchStoreDispatchPendingActions reflects partial QA acceptance via dispatchableNow only", async () => {
+  it("fetchStoreDispatchPendingActions reflects partial QA acceptance only when delivery is due", async () => {
     const dashPath = require.resolve("../../src/services/dashboardQueueSnapshots");
     const paPath = require.resolve("../../src/services/pendingActionsService");
     const orig = require(dashPath).getDispatchBacklogRows;
@@ -724,9 +872,18 @@ describe("pendingActionsService", () => {
     delete require.cache[paPath];
     const { fetchStoreDispatchPendingActions: fetchStoreDispatch } = require(paPath);
     try {
-      const actions = await fetchStoreDispatch({});
+      const actions = await fetchStoreDispatch(
+        mockDispatchTriggerDb({
+          salesOrders: [
+            normalSoMeta(1, "SO-1", {
+              orderType: "NO_QTY",
+              requiredDate: new Date("2026-05-01T00:00:00Z"),
+            }),
+          ],
+        }),
+      );
       assert.equal(actions.length, 1);
-      assert.equal(actions[0].action, "Ready to Dispatch — SO-1 — Qty 40");
+      assert.equal(actions[0].action, "Delivery Due — Dispatch — SO-1 — Qty 40");
     } finally {
       require(dashPath).getDispatchBacklogRows = orig;
       delete require.cache[paPath];
@@ -756,7 +913,9 @@ describe("pendingActionsService", () => {
     delete require.cache[paPath];
     const { fetchStoreDispatchPendingActions: fetchStoreDispatch } = require(paPath);
     try {
-      const actions = await fetchStoreDispatch({});
+      const actions = await fetchStoreDispatch(
+        mockDispatchTriggerDb({ salesOrders: [normalSoMeta(1, "SO-26-0001")] }),
+      );
       assert.equal(actions.length, 0);
     } finally {
       require(dashPath).getDispatchBacklogRows = orig;
@@ -764,7 +923,7 @@ describe("pendingActionsService", () => {
     }
   });
 
-  it("fetchStoreDispatchPendingActions reduces SO qty after partial FG dispatch", async () => {
+  it("fetchStoreDispatchPendingActions does not create mandatory dispatch after partial FG dispatch", async () => {
     const dashPath = require.resolve("../../src/services/dashboardQueueSnapshots");
     const paPath = require.resolve("../../src/services/pendingActionsService");
     const orig = require(dashPath).getDispatchBacklogRows;
@@ -789,11 +948,10 @@ describe("pendingActionsService", () => {
     delete require.cache[paPath];
     const { fetchStoreDispatchPendingActions: fetchStoreDispatch } = require(paPath);
     try {
-      const actions = await fetchStoreDispatch({});
-      assert.equal(actions.length, 1);
-      assert.equal(actions[0].action, "Ready to Dispatch — SO-26-0001 — Qty 3476");
-      assert.match(actions[0].href, /source=pending-actions/);
-      assert.doesNotMatch(actions[0].href, /workOrderId=/);
+      const actions = await fetchStoreDispatch(
+        mockDispatchTriggerDb({ salesOrders: [normalSoMeta(1, "SO-26-0001")] }),
+      );
+      assert.equal(actions.length, 0);
     } finally {
       require(dashPath).getDispatchBacklogRows = orig;
       delete require.cache[paPath];
@@ -1164,7 +1322,23 @@ describe("pendingActionsService", () => {
     assert.equal(row.currentOwner, VISIBLE_OWNERS.STORE);
     const action = mapNormalizedRowToPendingAction(row, "STORE");
     assert.equal(action.action, "Release to Production");
-    assert.match(action.href, /\/material-issue/);
+    assert.match(action.href, /^\/production-release\?/);
+  });
+
+  it("does not map READY_TO_RELEASE_WO to Release to Production when production entries exist", () => {
+    const row = normalizeRmRiskRow({
+      workOrderId: 1,
+      workOrderNo: "WO-26-0001",
+      itemId: 10,
+      queueType: "READY_TO_RELEASE_WO",
+      workOrderReleased: false,
+      hasProductionEntry: true,
+      procurementCompletedForCase: true,
+      mrStatus: "FULLY_PROCURED",
+      productionExecutionStatus: "RUNNING",
+    });
+    const action = mapNormalizedRowToPendingAction(row, "STORE");
+    assert.notEqual(action.action, "Release to Production");
   });
 
   it("maps READY_TO_RELEASE_WO RM risk row to Production Paused when execution is blocked", () => {
@@ -1219,17 +1393,23 @@ describe("pendingActionsService", () => {
       salesOrderId: 5,
       salesOrderDocNo: "SO-26-0001",
       workOrderId: 307,
+      workOrderLineId: 410,
       workOrderNo: "WO-26-0001",
       stageKey: "PRODUCTION",
       nextAction: "PRODUCTION_PENDING",
       nextStep: "Continue Production",
       href: "/production?workOrderId=307&from=dashboard",
-      orderType: "NORMAL",
+      orderType: "NO_QTY",
+      cycleId: 12,
     });
     const action = mapNormalizedRowToPendingAction(row, "PRODUCTION");
     assert.equal(action.action, PRODUCTION_EXECUTION_PENDING_LABELS.RUNNING);
-    assert.equal(action.documentNo, "WO-26-0001");
+    assert.match(String(action.documentNo ?? ""), /WO-26-0001/);
     assert.match(action.href, /workOrderId=307/);
+    assert.match(action.href, /workOrderLineId=410/);
+    assert.match(action.href, /flow=NO_QTY/);
+    assert.match(action.href, /salesOrderId=5/);
+    assert.match(action.href, /from=pending-actions/);
   });
 
   it("filters terminal completed WOs from Production pending actions", async () => {
@@ -1361,15 +1541,35 @@ describe("pendingActionsService", () => {
       cycleNo: 1,
       stageKey: "NEXT_RS",
       nextAction: "NEXT_RS_REQUIRED",
+      href: "/sales-orders/1/requirement-sheets?intent=add&source=no_qty_so&salesOrderId=1&cycleId=3",
     });
     assert.equal(row.currentOwner, VISIBLE_OWNERS.STORE);
     const action = mapNormalizedRowToPendingAction(row, "STORE");
     assert.equal(action.action, "Create Cycle 2 Requirement Sheet");
     assert.equal(action.ownerRole, "STORE");
+    assert.match(action.href, /^\/planning-dashboard\?/);
+    assert.match(action.href, /salesOrderId=1/);
+    assert.match(action.href, /nextCycleNo=2/);
+    assert.match(action.href, /action=create-next-rs/);
+    assert.match(action.href, /source=no_qty_planning/);
+    assert.doesNotMatch(action.href, /requirement-sheets/);
     const storeFiltered = filterNormalizedRowsByOwner([row], "STORE");
     assert.equal(storeFiltered.length, 1);
     const adminFiltered = filterNormalizedRowsByOwner([row], "ADMIN");
     assert.equal(adminFiltered.length, 0);
+  });
+
+  it("buildNoQtyCreateNextRsPlanningHubHref targets Requirement and Cycle Planning with next cycle context", () => {
+    const href = buildNoQtyCreateNextRsPlanningHubHref(10, {
+      nextCycleNo: 2,
+      from: "pending-actions",
+    });
+    assert.match(href, /^\/planning-dashboard\?/);
+    assert.match(href, /salesOrderId=10/);
+    assert.match(href, /nextCycleNo=2/);
+    assert.match(href, /action=create-next-rs/);
+    assert.match(href, /from=pending-actions/);
+    assert.doesNotMatch(href, /requirement-sheets/);
   });
 
   it("fetchStoreNoQtyCreateNextRsPendingActions emits Cycle 2 RS when eligible (execution may continue)", async () => {
@@ -1409,6 +1609,11 @@ describe("pendingActionsService", () => {
       assert.equal(actions[0].action, "Create Cycle 2 Requirement Sheet");
       assert.equal(actions[0].ownerRole, "STORE");
       assert.equal(actions[0].documentNo, "SO-26-0001");
+      assert.match(actions[0].href, /^\/planning-dashboard\?/);
+      assert.match(actions[0].href, /salesOrderId=10/);
+      assert.match(actions[0].href, /nextCycleNo=2/);
+      assert.match(actions[0].href, /action=create-next-rs/);
+      assert.doesNotMatch(actions[0].href, /requirement-sheets/);
     } finally {
       require(eligibilityPath).computeNoQtyCreateNextRsEligibilityResolved = origCompute;
       require(eligibilityPath).resolveNoQtyEligibilityCycleId = origResolve;
@@ -1470,7 +1675,11 @@ describe("pendingActionsService", () => {
       assert.equal(actions.length, 1);
       assert.equal(actions[0].action, "Create Cycle 2 Requirement Sheet");
       assert.equal(actions[0].ownerRole, "STORE");
-      assert.match(String(actions[0].href), /cycleId=334/);
+      assert.match(String(actions[0].href), /^\/planning-dashboard\?/);
+      assert.match(String(actions[0].href), /salesOrderId=199/);
+      assert.match(String(actions[0].href), /nextCycleNo=2/);
+      assert.match(String(actions[0].href), /action=create-next-rs/);
+      assert.doesNotMatch(String(actions[0].href), /requirement-sheets/);
     } finally {
       require(eligibilityPath).computeNoQtyCreateNextRsEligibility = origCompute;
       require(eligibilityPath).computeNoQtyCreateNextRsEligibilityResolved = origResolved;

@@ -82,12 +82,13 @@ export function materialWorkflowBackHref(returnTo: string | null, workOrderId?: 
   if (returnTo === "rm-control-center") return "/reports/rm-shortage";
   if (returnTo === "pending-actions") return "/pending-actions";
   if (returnTo === "work-orders") return "/work-orders";
+  if (returnTo === "green-level-wo") return "/store/green-level-wo";
   if (returnTo === "rm-purchase") return "/rm-po-grn";
   if (returnTo === "requirement-sheet" || returnTo === "requirement-sheet-execution") {
     return "/sales-orders";
   }
-  if (returnTo === "production-workspace" && workOrderId && workOrderId > 0) {
-    return productionWorkspaceHref(workOrderId);
+  if (returnTo === "production-workspace") {
+    return "/production";
   }
   if (returnTo === "material-requests") return materialRequestsQueueHref({});
   return "/production/material-requests";

@@ -14,6 +14,16 @@ import type { RmPoRow } from "../pages/rmPurchase/rmPurchaseShared";
 
 
 
+/** Toast + redirect after the final GRN completes an RM PO (UX-only; no workflow change). */
+export const RM_PO_FINAL_GRN_COMPLETION_TOAST =
+  "Goods Receipt completed successfully. RM requirement has been fulfilled.";
+
+export const RM_PO_FINAL_GRN_REDIRECT_DELAY_MS = 2500;
+
+export function isRmPoDocumentOnly(status: string | null | undefined): boolean {
+  return String(status ?? "").trim().toUpperCase() === "COMPLETED";
+}
+
 export const RM_PURCHASE_POST_GRN_MESSAGES = {
 
   fulfilledHeadline: "Goods receipt posted.",

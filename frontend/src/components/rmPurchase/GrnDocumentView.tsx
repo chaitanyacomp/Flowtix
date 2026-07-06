@@ -21,14 +21,16 @@ import {
   type GrnCompanyProfile,
   type GrnDocumentPayload,
 } from "../../lib/grnDocument";
-import { VENDOR_ADDRESS_MISSING_WARNING } from "../../lib/rmPoSupplierDocument";
+import { hasStateValue, VENDOR_ADDRESS_MISSING_WARNING } from "../../lib/rmPoSupplierDocument";
 import {
   buildPurchaseBillDetailHref,
   buildPurchaseBillNewHref,
   purchaseBillIdByBillNo,
   resolvePrimaryPurchaseBillForGrn,
 } from "../../lib/procurementNavigation";
+import { buildGrnRelatedDocuments } from "../../lib/procurementRelatedDocuments";
 import { PROCUREMENT_TERMS } from "../../lib/procurementTerminology";
+import { ProcurementRelatedDocuments } from "./ProcurementRelatedDocuments";
 
 export type GrnDocumentViewProps = {
   detail: GrnDocumentPayload;
@@ -49,7 +51,25 @@ function PartyBlock({ title, children }: { title: string; children: React.ReactN
   );
 }
 
-function PartyField({ label, value, mono }: { label: string; value?: string | null; mono?: boolean }) {
+function PartyField({
+  label,
+  value,
+  mono,
+  children,
+}: {
+  label: string;
+  value?: string | null;
+  mono?: boolean;
+  children?: React.ReactNode;
+}) {
+  if (children) {
+    return (
+      <div className="procurement-doc-body-text flex gap-2 leading-snug">
+        <span className="w-[5.5rem] shrink-0 font-medium text-slate-500 print:w-[4.5rem]">{label}</span>
+        <span className="min-w-0 text-slate-800">{children}</span>
+      </div>
+    );
+  }
   const text = (value ?? "").trim();
   if (!text) return null;
   return (
@@ -60,7 +80,7 @@ function PartyField({ label, value, mono }: { label: string; value?: string | nu
   );
 }
 
-function VendorAddressBlock({ lines }: { lines: string[] }) {
+function SupplierAddressBlock({ lines }: { lines: string[] }) {
   if (!lines.length) {
     return (
       <div
@@ -77,6 +97,36 @@ function VendorAddressBlock({ lines }: { lines: string[] }) {
         <div key={i}>{line}</div>
       ))}
     </div>
+  );
+}
+
+function SupplierPartyBlock({
+  supplierName,
+  supplyLabel,
+  addressLines,
+  gstin,
+  stateCode,
+  stateName,
+}: {
+  supplierName?: string | null;
+  supplyLabel?: string | null;
+  addressLines: string[];
+  gstin?: string | null;
+  stateCode?: string | null;
+  stateName?: string | null;
+}) {
+  const stateText = stateDisplay(stateCode, stateName);
+  return (
+    <PartyBlock title="Supplier">
+      <PartyField label="Supplier Name" value={supplierName} />
+      {supplyLabel ? <PartyField label="Supply" value={supplyLabel} /> : null}
+      <div className="pt-0.5">
+        <div className="procurement-doc-body-text mb-0.5 font-medium text-slate-500 print:text-[8pt]">Supplier Address</div>
+        <SupplierAddressBlock lines={addressLines} />
+      </div>
+      <PartyField label="Supplier GSTIN" value={gstin} mono />
+      {hasStateValue(stateCode, stateName) ? <PartyField label="State" value={stateText} /> : null}
+    </PartyBlock>
   );
 }
 
@@ -108,13 +158,17 @@ export function GrnDocumentView({
 }: GrnDocumentViewProps) {
   const { grn, po, supplier, supplyLocation, lines, stockPostingSummary, purchaseBillSummary, trace } = detail;
   const companyHeader = resolveGrnCompanyHeader(companyProfile);
-  const vendorAddress = resolveGrnVendorAddressLines(supplier, supplyLocation);
+  const supplierAddress = resolveGrnVendorAddressLines(supplier, supplyLocation);
   const billPresentation = resolveGrnBillPresentation(purchaseBillSummary, lines);
   const primaryBill = resolvePrimaryPurchaseBillForGrn(
     purchaseBillSummary.bills,
     lines.flatMap((ln) => ln.purchaseBillLines),
   );
   const grnReturnTo = `/grn/${grn.id}`;
+  const relatedDocuments = React.useMemo(
+    () => buildGrnRelatedDocuments(detail, poHref),
+    [detail, poHref],
+  );
   const createBillHref = buildPurchaseBillNewHref({
     supplierId: supplier?.id ?? null,
     returnTo: grnReturnTo,
@@ -178,6 +232,8 @@ export function GrnDocumentView({
         </div>
       </div>
 
+      <ProcurementRelatedDocuments documents={relatedDocuments} className="grn-no-print border-b border-slate-200" />
+
       <div id="grn-document-printable" data-testid="grn-document-section" className="grn-document-doc procurement-commercial-doc bg-white text-slate-900">
         <div
           className="procurement-doc-grid procurement-doc-print-inner"
@@ -220,10 +276,14 @@ export function GrnDocumentView({
               <MetaField label="GRN No." value={grn.displayNo} />
               <MetaField label="GRN Date" value={formatGrnDocumentDate(grn.date)} />
               <MetaField label="PO Reference">
-                <Link to={poHref} className="grn-no-print text-primary underline">
+                <Link
+                  to={poHref}
+                  className="grn-no-print font-semibold text-primary underline underline-offset-2"
+                  data-testid="grn-po-reference-link"
+                >
                   {po.displayNo}
                 </Link>
-                <span className="hidden print:inline">{po.displayNo}</span>
+                <span className="hidden font-semibold print:inline">{po.displayNo}</span>
               </MetaField>
               <MetaField label="Status" value={receiptStatus} />
             </div>
@@ -241,21 +301,30 @@ export function GrnDocumentView({
         </header>
 
         <section className="procurement-doc-section procurement-doc-party-grid border-b border-slate-300 py-2 print:gap-2 print:py-1.5" data-testid="grn-party-blocks">
-          <PartyBlock title="Vendor">
-            <PartyField label="Name" value={supplier?.name} />
-            {supplyLocation?.label ? <PartyField label="Supply" value={supplyLocation.label} /> : null}
-            <VendorAddressBlock lines={vendorAddress} />
-            <PartyField label="GSTIN" value={supplier?.gstin ?? supplyLocation?.gstin} mono />
-            <PartyField
-              label="State"
-              value={stateDisplay(supplier?.stateCode ?? supplyLocation?.stateCode, supplier?.stateName ?? supplyLocation?.stateName)}
-            />
-          </PartyBlock>
+          <SupplierPartyBlock
+            supplierName={supplier?.name}
+            supplyLabel={supplyLocation?.label}
+            addressLines={supplierAddress}
+            gstin={supplier?.gstin ?? supplyLocation?.gstin}
+            stateCode={supplier?.stateCode ?? supplyLocation?.stateCode}
+            stateName={supplier?.stateName ?? supplyLocation?.stateName}
+          />
           <PartyBlock title="Receipt Details">
             <PartyField label="Invoice No." value={grn.supplierInvoiceNo} />
             {invoiceDate ? <PartyField label="Invoice Date" value={formatGrnDocumentDate(invoiceDate)} /> : null}
             <PartyField label="GRN Date" value={formatGrnDocumentDate(grn.date)} />
-            <PartyField label="PO Ref." value={`${po.displayNo} (${po.status})`} />
+            <PartyField label="PO Ref.">
+              <Link
+                to={poHref}
+                className="grn-no-print font-semibold text-primary underline underline-offset-2"
+                data-testid="grn-po-ref-link"
+              >
+                {po.displayNo} ({po.status})
+              </Link>
+              <span className="hidden font-semibold print:inline">
+                {po.displayNo} ({po.status})
+              </span>
+            </PartyField>
             {receivedBy ? <PartyField label="Received By" value={receivedBy} /> : null}
             {remarks ? <PartyField label="Remarks" value={remarks} /> : null}
             <PartyField label="GRN Status" value={receiptStatus} />

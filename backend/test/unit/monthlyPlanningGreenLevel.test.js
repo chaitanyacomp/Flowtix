@@ -67,6 +67,7 @@ function createReadOnlyMockDb({ sheets = [], fgItems = [] } = {}) {
     "workOrder",
     "productionMaterialRequest",
     "materialRequirement",
+    "productionShortfallResolution",
   ];
   const db = {
     requirementSheet: {
@@ -79,6 +80,9 @@ function createReadOnlyMockDb({ sheets = [], fgItems = [] } = {}) {
     },
     item: {
       findMany: async () => fgItems,
+    },
+    productionShortfallResolution: {
+      findMany: async () => [],
     },
   };
   for (const model of models) {
@@ -441,6 +445,50 @@ describe("monthlyPlanningGreenLevelService.getGreenLevels status integration", (
       }),
     });
     assert.equal(stockWrite, false);
+  });
+
+  it("merges short-produced carry from closed GL WOs when stock is below green", async () => {
+    const db = createReadOnlyMockDb({
+      sheets: [lockedSheet({ lines: [fgLine({ requirementQty: 21000 })] })],
+      fgItems: [fgItem],
+    });
+    db.productionShortfallResolution.findMany = async () => [
+      { remainderQty: "132", workOrderLine: { fgItemId: 101 } },
+    ];
+    const res = await getGreenLevels({
+      db,
+      periodKey: "2026-07",
+      ...automaticGreenOpts,
+      loadGlobalStockBreakdown: mockStockBreakdown({
+        byItem: new Map([[101, { freeSurplusUsableQty: 20868 }]]),
+      }),
+    });
+    const row = res.items.find((i) => i.itemId === 101);
+    assert.equal(row.stockBasedGreenShortage, 132);
+    assert.equal(row.greenShortProducedCarryQty, 132);
+    assert.equal(row.shortageForGreenTarget, 132);
+  });
+
+  it("does not double-count when stock gap already covers short-produced carry", async () => {
+    const db = createReadOnlyMockDb({
+      sheets: [lockedSheet({ lines: [fgLine({ requirementQty: 21000 })] })],
+      fgItems: [fgItem],
+    });
+    db.productionShortfallResolution.findMany = async () => [
+      { remainderQty: "132", workOrderLine: { fgItemId: 101 } },
+    ];
+    const res = await getGreenLevels({
+      db,
+      periodKey: "2026-07",
+      ...automaticGreenOpts,
+      loadGlobalStockBreakdown: mockStockBreakdown({
+        byItem: new Map([[101, { freeSurplusUsableQty: 18000 }]]),
+      }),
+    });
+    const row = res.items.find((i) => i.itemId === 101);
+    assert.equal(row.stockBasedGreenShortage, 3000);
+    assert.equal(row.greenShortProducedCarryQty, 132);
+    assert.equal(row.shortageForGreenTarget, 3000);
   });
 });
 

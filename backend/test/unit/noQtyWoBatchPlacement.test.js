@@ -55,12 +55,41 @@ function createPlacementTx({
       findFirst: async ({ where }) => bomByFgItemId[Number(where?.fgItemId)] ?? null,
     },
     item: {
-      findMany: async ({ where }) =>
-        (where?.id?.in || rmItemIds).map((id) => ({
-          id: Number(id),
-          itemName: `RM-${id}`,
-          itemType: "RM",
-        })),
+      findMany: async ({ where }) => {
+        const ids = where?.id?.in || rmItemIds;
+        return ids.map((id) => {
+          const numId = Number(id);
+          if (numId === 100 || numId === 101 || numId === 102) {
+            return {
+              id: numId,
+              itemName: `FG-${numId}`,
+              itemType: "FG",
+              unit: "Nos",
+              unitRef: { unitCode: "NOS", unitName: "Nos" },
+            };
+          }
+          return {
+            id: numId,
+            itemName: `RM-${id}`,
+            itemType: "RM",
+            unit: "Kg",
+          };
+        });
+      },
+      findFirst: async ({ where }) => {
+        const numId = Number(where?.id);
+        if (numId === 100 || numId === 101 || numId === 102) {
+          return {
+            id: numId,
+            unit: "Nos",
+            unitRef: { unitCode: "NOS", unitName: "Nos" },
+          };
+        }
+        if (Number.isFinite(numId) && numId > 0) {
+          return { id: numId, unit: "Kg", unitRef: null };
+        }
+        return null;
+      },
     },
     stockTransaction: {
       groupBy: async ({ where }) =>
@@ -565,5 +594,40 @@ describe("noQtyExecutionReleaseService batch placement", () => {
     );
 
     assert.equal(tx.__workOrders.length, 0);
+  });
+
+  it("rounds RM-capped FG WO qty to whole numbers for Nos units", async () => {
+    const sheet = lockedSheet({ demand: 3500 });
+    const tx = createPlacementTx({
+      sheet,
+      bomByFgItemId: {
+        100: {
+          id: 1,
+          status: "APPROVED",
+          outputQty: 1,
+          processLossPercent: 0,
+          qcLossPercent: 0,
+          normalizationMode: null,
+          lines: [
+            {
+              baseQty: 7,
+              rmItemId: 501,
+              rmItem: { id: 501, itemName: "RM-A", itemType: "RM" },
+            },
+          ],
+        },
+      },
+      rmStockByItemId: { 501: 2300 },
+    });
+
+    const preview = await buildNoQtyWoBatchPlacementPreview(tx, sheet);
+    assert.equal(preview.lines[0].suggestedExecutableQty, 328);
+    assert.equal(Number.isInteger(preview.lines[0].suggestedExecutableQty), true);
+
+    const res = await createNoQtyWorkOrderFromLockedSheet(tx, sheet, {
+      requestedLines: [{ itemId: 100, qty: 328.571 }],
+    });
+    assert.equal(res.created, true);
+    assert.equal(tx.__workOrders[0].lines[0].plannedQty, "328");
   });
 });

@@ -30,6 +30,13 @@ function n(value) {
   return Number.isFinite(x) ? x : 0;
 }
 
+function plannedDemandQtyForRm(line) {
+  const customer = round3(n(line?.customerProductionQty));
+  const green = round3(n(line?.greenReplenishmentQty));
+  if (customer > 0 || green > 0) return round3(customer + green);
+  return round3(n(line?.plannedFgQty));
+}
+
 function canReadRmPlanningStatus(status) {
   return status === "APPROVED" || status === "LOCKED";
 }
@@ -157,7 +164,7 @@ async function createRmPlanSnapshot({
     include: { fgItem: { select: { id: true, itemName: true, unit: true } } },
     orderBy: { id: "asc" },
   });
-  const activeLines = planLines.filter((l) => Number(l.plannedFgQty) > 0);
+  const activeLines = planLines.filter((l) => plannedDemandQtyForRm(l) > 0);
   if (activeLines.length === 0) {
     throw new MonthlyPlanningError(
       "EMPTY_PLAN",
@@ -179,7 +186,7 @@ async function createRmPlanSnapshot({
 
   const fgLines = activeLines.map((line) => ({
     fgItemId: line.fgItemId,
-    fgQty: round3(Number(line.plannedFgQty)),
+    fgQty: plannedDemandQtyForRm(line),
   }));
   const { rmNeeded, missingChildBoms } = await explodeFn(db, fgLines);
   if (missingChildBoms.length > 0) {
@@ -210,7 +217,7 @@ async function createRmPlanSnapshot({
       : [];
   const itemMetaById = new Map(rmItems.map((i) => [i.id, i]));
 
-  const totalFgPlannedQty = round3(activeLines.reduce((acc, l) => acc + Number(l.plannedFgQty), 0));
+  const totalFgPlannedQty = round3(activeLines.reduce((acc, l) => acc + plannedDemandQtyForRm(l), 0));
   const now = asOf instanceof Date ? asOf : new Date();
 
   const rmPlan = await db.rmPlan.create({
@@ -260,7 +267,9 @@ async function createRmPlanSnapshot({
         revision: rev,
         fgItemId: l.fgItemId,
         suggestedFgQty: round3(l.suggestedFgQty),
-        plannedFgQty: round3(l.plannedFgQty),
+        plannedFgQty: plannedDemandQtyForRm(l),
+        customerProductionQty: round3(n(l.customerProductionQty)),
+        greenReplenishmentQty: round3(n(l.greenReplenishmentQty)),
         plannedQtyOverridden: Boolean(l.plannedQtyOverridden),
         source: l.source,
         remarks: l.remarks ?? null,

@@ -2171,6 +2171,7 @@ async function ensurePmrsForCreatedWorkOrders(tx, { createdWorkOrders, actor = {
         role: actor.role,
       },
       tx,
+      { allowCreate: true },
     );
     pmrs.push({
       workOrderId: wo.workOrderId,

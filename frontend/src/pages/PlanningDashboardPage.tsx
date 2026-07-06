@@ -399,6 +399,15 @@ export function PlanningDashboardPage() {
           planningSalesOrderIdFromUrl > 0 && urlSoConflict === "ok" ? planningSalesOrderIdFromUrl : null
         }
         contextLoading={planningSalesOrderIdFromUrl > 0 && urlSoConflict === "loading"}
+        focusedCreateNextRs={
+          sp.get("action") === "create-next-rs"
+            ? {
+                nextCycleNo:
+                  Number(sp.get("nextCycleNo") ?? 0) > 0 ? Number(sp.get("nextCycleNo")) : null,
+                autoOpen: sp.get("from") === "pending-actions",
+              }
+            : null
+        }
       />
 
       {planningSalesOrderIdFromUrl > 0 && urlSoConflict === "regular_so" ? (

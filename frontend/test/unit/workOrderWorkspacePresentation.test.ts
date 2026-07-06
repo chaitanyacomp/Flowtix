@@ -103,4 +103,24 @@ describe("buildWorkOrderWorkspaceSections", () => {
     expect(sections.operationalOpen[0]?.presentationStatus).toBe("Next Cycle Pending");
     expect(sections.operationalOpen[0]?.actionLabel).toBe("Next Cycle");
   });
+
+  it("excludes Green Level replenishment WOs from Production workspace", () => {
+    const glQueue = queueRow({
+      workOrderId: 901,
+      sourceType: "GREEN_LEVEL_REPLENISHMENT",
+      salesOrderId: 0,
+      nextAction: "PRODUCTION_PENDING",
+      orderType: "NORMAL",
+    });
+    const glApi = {
+      woId: 902,
+      salesOrderId: 0,
+      sourceType: "GREEN_LEVEL_REPLENISHMENT",
+      status: "PENDING",
+      lines: [{ fgName: "FG-A", qty: "100" }],
+    };
+    const sections = buildWorkOrderWorkspaceSections([glQueue], [glApi], []);
+    expect(sections.operationalOpen).toHaveLength(0);
+    expect(sections.cycleHistory).toHaveLength(0);
+  });
 });

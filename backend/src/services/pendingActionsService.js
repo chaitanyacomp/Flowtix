@@ -27,13 +27,16 @@ const {
 } = require("./dashboardQueueSnapshots");
 const { buildProcurementPendingQueue, buildGrnPendingSection } = require("./procurementWorkspaceService");
 const { buildStoreIssuePendingDashboardRows, buildStoreProductionHandoffDashboardRows, buildMaterialAvailabilityWorkspace } = require("./materialAvailabilityWorkspaceService");
-const { pmrMeetsProductionReleaseIssueRule } = require("./productionMaterialRequestService");
+const {
+  loadStoreProductionReleaseEligibilityByWorkOrder,
+} = require("./productionMaterialRequestService");
 const {
   computeNoQtyCreateNextRsEligibility,
   computeNoQtyCreateNextRsEligibilityResolved,
   resolveNoQtyEligibilityCycleId,
 } = require("./noQtyCreateNextRsEligibility");
 const { assessNoQtyPlacementStageForCycle } = require("./requirementSheetExecutionService");
+const { buildGreenLevelWoPlacement, GREEN_LEVEL_WO_SOURCE_TYPE } = require("./greenLevelWorkOrderService");
 const {
   WAITING_FOR_PURCHASE_RM_PO,
   PREPARE_RM_PO,
@@ -48,6 +51,11 @@ const {
 } = require("./productionExecutionService");
 const { listProductionRmReturnPending } = require("./productionWorkOrderReportService");
 const { getDispatchBacklogRows } = require("./dashboardQueueSnapshots");
+const {
+  buildStoreDispatchPendingActionLabel,
+  isStoreDispatchWorkflowTriggerAction,
+  resolveStoreDispatchPendingActionGroups,
+} = require("./dispatchWorkflowTriggers");
 
 const STORE_ISSUE_PENDING_ACTION = "Issue Material";
 const STORE_ISSUE_REMAINING_ACTION = "Issue Remaining Material";
@@ -69,6 +77,80 @@ const PENDING_PRIORITY = Object.freeze({
   MEDIUM: "MEDIUM",
   LOW: "LOW",
 });
+
+function releaseHandoffQty(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function formatReleaseHandoffPmrStatus(status) {
+  const token = String(status ?? "").trim().toUpperCase();
+  if (token === "FULLY_ISSUED") return "Fully issued";
+  if (token === "SHORT_ISSUE_ACCEPTED") return "Short issue accepted";
+  return token.replaceAll("_", " ") || "—";
+}
+
+function resolveReleaseHandoffSourceLabel({ sourceType, orderType, salesOrderDocNo }) {
+  const st = String(sourceType ?? "").trim().toUpperCase();
+  const ot = String(orderType ?? "").trim().toUpperCase();
+  if (st === GREEN_LEVEL_WO_SOURCE_TYPE) return "Green Level · Stock Replenishment";
+  if (ot === "NO_QTY") return salesOrderDocNo ? `NO_QTY · ${salesOrderDocNo}` : "NO_QTY";
+  if (salesOrderDocNo) return `Regular SO · ${salesOrderDocNo}`;
+  return "Work Order";
+}
+
+function buildProductionWorkspaceHrefFromPendingMeta(meta = {}, from = "pending-actions") {
+  const workOrderId = Number(meta.workOrderId ?? 0);
+  const workOrderLineId = Number(meta.workOrderLineId ?? 0);
+  const salesOrderId = Number(meta.salesOrderId ?? 0);
+  const cycleId = Number(meta.cycleId ?? 0);
+  const sourceType = String(meta.sourceType ?? "").trim().toUpperCase();
+  const orderType = String(meta.orderType ?? "").trim().toUpperCase();
+  const params = new URLSearchParams();
+  if (from) params.set("from", from);
+  if (workOrderId > 0) params.set("workOrderId", String(workOrderId));
+  if (workOrderLineId > 0) params.set("workOrderLineId", String(workOrderLineId));
+  if (sourceType === GREEN_LEVEL_WO_SOURCE_TYPE || orderType === "GREEN_LEVEL") {
+    params.set("flow", "GREEN_LEVEL");
+    return `/production?${params.toString()}`;
+  }
+  if (orderType === "NO_QTY" && salesOrderId > 0) {
+    params.set("flow", "NO_QTY");
+    params.set("salesOrderId", String(salesOrderId));
+    params.set("source", "no_qty_so");
+    if (cycleId > 0) params.set("cycleId", String(cycleId));
+    return `/production?${params.toString()}`;
+  }
+  if (salesOrderId > 0) {
+    params.set("flow", "REGULAR_SO");
+    params.set("salesOrderId", String(salesOrderId));
+  }
+  return `/production?${params.toString()}`;
+}
+
+function buildReleaseToProductionHref(row = {}) {
+  const params = new URLSearchParams({ from: "pending-actions" });
+  const woId = Number(row.workOrderId ?? 0);
+  const pmrId = Number(row.pmrId ?? 0);
+  const salesOrderId = Number(row.salesOrderId ?? 0);
+  const workOrderLineId = Number(row.workOrderLineId ?? 0);
+  const cycleId = Number(row.cycleId ?? 0);
+  const requirementSheetId = Number(row.requirementSheetId ?? 0);
+  const sourceType = String(row.sourceType ?? "").trim().toUpperCase();
+  const orderType = String(row.orderType ?? "").trim().toUpperCase();
+  if (woId > 0) params.set("workOrderId", String(woId));
+  if (pmrId > 0) params.set("pmrId", String(pmrId));
+  if (salesOrderId > 0) params.set("salesOrderId", String(salesOrderId));
+  if (workOrderLineId > 0) params.set("workOrderLineId", String(workOrderLineId));
+  if (cycleId > 0) params.set("cycleId", String(cycleId));
+  if (requirementSheetId > 0) params.set("requirementSheetId", String(requirementSheetId));
+  if (sourceType === GREEN_LEVEL_WO_SOURCE_TYPE || orderType === "GREEN_LEVEL") {
+    params.set("flow", "GREEN_LEVEL");
+  } else if (orderType && orderType !== "NO_QTY") {
+    params.set("flow", "REGULAR_SO");
+  }
+  return `/production-release?${params.toString()}`;
+}
 
 const PRIORITY_SORT = Object.freeze({
   [PENDING_PRIORITY.HIGH]: 0,
@@ -136,6 +218,23 @@ function priorityFromOperationalKey(key) {
   return PENDING_PRIORITY.LOW;
 }
 
+/** Requirement & Cycle Planning hub — create next-cycle RS (not Cycle 1 execution workspace). */
+function buildNoQtyCreateNextRsPlanningHubHref(salesOrderId, opts = {}) {
+  const sid = Number(salesOrderId);
+  if (!Number.isFinite(sid) || sid <= 0) return "/planning-dashboard";
+  const params = new URLSearchParams();
+  params.set("salesOrderId", String(Math.trunc(sid)));
+  params.set("source", "no_qty_planning");
+  params.set("action", "create-next-rs");
+  const from = opts.from != null ? String(opts.from).trim() : "pending-actions";
+  if (from) params.set("from", from);
+  const nextCycleNo = opts.nextCycleNo != null ? Number(opts.nextCycleNo) : NaN;
+  if (Number.isFinite(nextCycleNo) && nextCycleNo > 0) {
+    params.set("nextCycleNo", String(Math.trunc(nextCycleNo)));
+  }
+  return `/planning-dashboard?${params.toString()}`;
+}
+
 /** Requirement Sheet Creation Workspace — first RS or draft continuation (not execution / Place WO). */
 function buildNoQtyRsCreationWorkspaceHref(salesOrderId, opts = {}) {
   const sid = Number(salesOrderId);
@@ -185,6 +284,18 @@ function resolveHrefForNormalizedRow(row, role = "STORE") {
   const meta = row?.metadata && typeof row.metadata === "object" ? row.metadata : {};
   const rowType = String(row?.rowType ?? "");
   if (rowType === ROW_TYPES.RM_RISK) {
+    const executionStarted =
+      String(meta.productionExecutionStatus ?? "NOT_STARTED").trim().toUpperCase() !== "NOT_STARTED";
+    if (
+      role === "STORE" &&
+      String(meta.queueType ?? meta.sourceQueueType ?? "").trim() === "READY_TO_RELEASE_WO" &&
+      !meta.materialReleasedToProduction &&
+      !meta.workOrderReleased &&
+      !executionStarted &&
+      !meta.hasProductionEntry
+    ) {
+      return buildReleaseToProductionHref(meta);
+    }
     const resolved = resolveRmRiskPendingAction(meta, {
       queueType: meta.queueType ?? meta.sourceQueueType,
       freeStockQty: meta.freeStockQty,
@@ -193,10 +304,37 @@ function resolveHrefForNormalizedRow(row, role = "STORE") {
     }, role);
     return resolved.href;
   }
-  if (meta.href && String(meta.href).trim()) return String(meta.href).trim();
 
   const salesOrderId = Number(meta.salesOrderId ?? 0);
   const workOrderId = Number(meta.workOrderId ?? 0);
+
+  if (rowType === ROW_TYPES.CONTINUE_WORKING && salesOrderId > 0) {
+    const stage = String(meta.sourceStageKey ?? "").toUpperCase();
+    if (stage === "NEXT_RS") {
+      const docCycle = meta.cycleNo != null ? Number(meta.cycleNo) : null;
+      const nextCycle =
+        Number.isFinite(docCycle) && docCycle > 0
+          ? docCycle + 1
+          : meta.nextCycleNo != null
+            ? Number(meta.nextCycleNo)
+            : null;
+      return buildNoQtyCreateNextRsPlanningHubHref(salesOrderId, {
+        nextCycleNo: nextCycle,
+        from: "pending-actions",
+      });
+    }
+    if (stage === "PRODUCTION") {
+      return buildProductionWorkspaceHrefFromPendingMeta(
+        {
+          ...meta,
+          salesOrderId,
+        },
+        "pending-actions",
+      );
+    }
+  }
+
+  if (meta.href && String(meta.href).trim()) return String(meta.href).trim();
 
   if (rowType === ROW_TYPES.NO_QTY_PLANNING && salesOrderId > 0) {
     return resolveNoQtyPlanningWorkspaceHref(row);
@@ -211,7 +349,6 @@ function resolveHrefForNormalizedRow(row, role = "STORE") {
     return `/dispatch?${params.toString()}`;
   }
   if (rowType === ROW_TYPES.CONTINUE_WORKING) {
-    if (meta.href) return String(meta.href);
     if (salesOrderId > 0) {
       const stage = String(meta.sourceStageKey ?? "").toUpperCase();
       if (stage === "DISPATCH") {
@@ -233,7 +370,12 @@ function resolveHrefForNormalizedRow(row, role = "STORE") {
         if (productionId > 0) params.set("productionId", String(productionId));
         return `/qc-entry?${params.toString()}#qc-production-pending`;
       }
-      if (stage === "PRODUCTION") return `/production?salesOrderId=${salesOrderId}&from=pending-actions`;
+      if (stage === "PRODUCTION") {
+        return buildProductionWorkspaceHrefFromPendingMeta(
+          { ...meta, salesOrderId },
+          "pending-actions",
+        );
+      }
       if (stage === "SALES_BILL") {
         const dispatchId = Number(meta.dispatchId ?? 0);
         if (dispatchId > 0) {
@@ -241,13 +383,8 @@ function resolveHrefForNormalizedRow(row, role = "STORE") {
         }
         return `/sales-bills/new?salesOrderId=${salesOrderId}&from=pending-actions`;
       }
-      if (stage === "NEXT_RS") {
-        return buildNoQtyRsCreationWorkspaceHref(salesOrderId, {
-          cycleId: meta.cycleId ?? null,
-          from: "pending-actions",
-        });
-      }
     }
+    if (meta.href) return String(meta.href);
   }
   if (rowType === ROW_TYPES.PRODUCTION_QUEUE && workOrderId > 0) {
     const sourceNext = String(meta.sourceNextAction ?? "").trim().toUpperCase();
@@ -259,7 +396,9 @@ function resolveHrefForNormalizedRow(row, role = "STORE") {
       if (productionId > 0) params.set("productionId", String(productionId));
       return `/qc-entry?${params.toString()}#qc-production-pending`;
     }
-    return `/production?workOrderId=${workOrderId}&from=pending-actions`;
+    const actionHref = String(meta.actionHref ?? "").trim();
+    if (actionHref) return actionHref;
+    return buildProductionWorkspaceHrefFromPendingMeta(meta, "pending-actions");
   }
   if (rowType === ROW_TYPES.QA_QUEUE) {
     const params = new URLSearchParams({ source: "pending-actions" });
@@ -703,46 +842,18 @@ function formatStoreDispatchPendingQty(qty) {
   return String(Math.round(n * 1000) / 1000);
 }
 
-function buildStoreDispatchPendingActionLabel(soDoc, totalQty) {
-  const doc = String(soDoc ?? "").trim() || "Sales Order";
-  return `${STORE_DISPATCH_READY_PREFIX} — ${doc} — Qty ${formatStoreDispatchPendingQty(totalQty)}`;
-}
-
 function isStoreDispatchLifecycleAction(action) {
   const label = String(action?.action ?? "").trim();
   if (label === DISPATCH_PENDING_ACTION || label === "Dispatch") return true;
+  if (isStoreDispatchWorkflowTriggerAction(label)) return true;
   return label.startsWith(STORE_DISPATCH_READY_PREFIX);
 }
 
 async function fetchStoreDispatchPendingActions(db = prisma) {
-  void db;
   const rows = await getDispatchBacklogRows();
-  /** @type {Map<number, { salesOrderId: number; salesOrderNo: string; salesOrderDocNo: string | null; customerName: string | null; totalDispatchable: number; salesOrderDate: string | null }>} */
-  const bySo = new Map();
-  for (const row of rows) {
-    const dispatchable = Number(row.dispatchableNow ?? 0);
-    if (!(dispatchable > EPS)) continue;
-    const soId = Number(row.salesOrderId);
-    if (!Number.isFinite(soId) || soId <= 0) continue;
-    const prev = bySo.get(soId);
-    if (prev) {
-      prev.totalDispatchable += dispatchable;
-      if (row.salesOrderDate && (!prev.salesOrderDate || row.salesOrderDate < prev.salesOrderDate)) {
-        prev.salesOrderDate = row.salesOrderDate;
-      }
-    } else {
-      bySo.set(soId, {
-        salesOrderId: soId,
-        salesOrderNo: row.salesOrderNo ?? `SO-${soId}`,
-        salesOrderDocNo: row.salesOrderDocNo ?? row.salesOrderNo ?? null,
-        customerName: row.customerName ?? null,
-        totalDispatchable: dispatchable,
-        salesOrderDate: row.salesOrderDate ?? null,
-      });
-    }
-  }
+  const groups = await resolveStoreDispatchPendingActionGroups(db, rows);
 
-  return [...bySo.values()]
+  return groups
     .sort((a, b) => {
       const ta = a.salesOrderDate ? new Date(a.salesOrderDate).getTime() : 0;
       const tb = b.salesOrderDate ? new Date(b.salesOrderDate).getTime() : 0;
@@ -758,7 +869,11 @@ async function fetchStoreDispatchPendingActions(db = prisma) {
       return {
         id: `store:dispatch:so:${group.salesOrderId}`,
         priority: PENDING_PRIORITY.MEDIUM,
-        action: buildStoreDispatchPendingActionLabel(soDoc, group.totalDispatchable),
+        action: buildStoreDispatchPendingActionLabel(
+          soDoc,
+          formatStoreDispatchPendingQty(group.totalQty),
+          group.trigger,
+        ),
         documentNo: soDoc,
         ownerRole: "STORE",
         ageHours: group.salesOrderDate ? ageHoursFromTimestamp(group.salesOrderDate) : null,
@@ -779,8 +894,14 @@ async function fetchProductionRmReturnWaitingActions(db = prisma) {
     else prev.pendingCount += 1;
   }
   return [...byWo.values()].map(({ row, pendingCount }) => {
-    const params = new URLSearchParams({ from: "pending-actions", workOrderId: String(row.workOrderId) });
-    void params;
+    const href = buildProductionWorkspaceHrefFromPendingMeta(
+      {
+        workOrderId: row.workOrderId,
+        sourceType: row.workOrderSourceType ?? null,
+        orderType: row.workOrderOrderType ?? null,
+      },
+      "pending-actions",
+    );
     return {
       id: `production-rm-return-waiting:wo:${row.workOrderId}`,
       priority: PENDING_PRIORITY.MEDIUM,
@@ -788,7 +909,7 @@ async function fetchProductionRmReturnWaitingActions(db = prisma) {
       documentNo: row.workOrderNo ?? `WO-${row.workOrderId}`,
       ownerRole: "PRODUCTION",
       ageHours: ageHoursFromTimestamp(row.createdAt),
-      href: `/production?workOrderId=${row.workOrderId}&from=pending-actions`,
+      href,
       sourceModule: "PRODUCTION_REPORT",
       currentStatus: "RM_RETURN_PENDING",
       workOrderId: row.workOrderId,
@@ -897,46 +1018,65 @@ async function filterNoQtyStoreHandoffSupersededByLaterRs(db, rows) {
   });
 }
 
-async function fetchStoreProductionHandoffPendingActions(db = prisma, opts = {}) {
+async function buildStoreProductionReleaseHandoffQueue(db = prisma, opts = {}) {
   const rawRows = await buildStoreProductionHandoffDashboardRows(db, opts);
   const rows = await filterNoQtyStoreHandoffSupersededByLaterRs(db, rawRows);
   const woIds = rows.map((row) => Number(row.workOrderId ?? 0)).filter((id) => id > 0);
-  const pmrByWo = woIds.length
-    ? await db.productionMaterialRequest.findMany({
-        where: { workOrderId: { in: woIds }, status: { not: "CANCELLED" } },
-        include: { lines: { select: { requiredQty: true, issuedQty: true } } },
-        orderBy: { id: "desc" },
-      })
-    : [];
-  const releaseReadyWoIds = new Set();
-  const byWo = new Map();
-  for (const pmr of pmrByWo) {
-    if (!byWo.has(pmr.workOrderId)) byWo.set(pmr.workOrderId, pmr);
-  }
-  for (const [woId, pmr] of byWo) {
-    if (pmrMeetsProductionReleaseIssueRule(pmr.lines)) releaseReadyWoIds.add(woId);
-  }
+  const eligibilityByWo = await loadStoreProductionReleaseEligibilityByWorkOrder(db, woIds);
 
   return rows
-    .filter((row) => !row.workOrderReleased && releaseReadyWoIds.has(Number(row.workOrderId ?? 0)))
     .map((row) => {
       const woId = Number(row.workOrderId ?? 0);
-      const params = new URLSearchParams({ returnTo: "pending-actions" });
-      if (woId > 0) params.set("workOrderId", String(woId));
-      if (row.salesOrderId) params.set("salesOrderId", String(row.salesOrderId));
+      const gate = eligibilityByWo.get(woId);
+      if (!gate?.eligible || !gate.pmr || !gate.wo) return null;
+      const wo = gate.wo;
+      const pmr = gate.pmr;
+      const sourceType = wo.sourceType ?? null;
+      const orderType =
+        wo.salesOrder?.orderType ??
+        (String(sourceType ?? "").toUpperCase() === GREEN_LEVEL_WO_SOURCE_TYPE ? "GREEN_LEVEL" : null);
+      const salesOrderDocNo = row.salesOrderDocNo ?? wo.salesOrder?.docNo ?? null;
+      const plannedQty = (wo.lines ?? []).reduce(
+        (sum, line) => sum + Math.max(releaseHandoffQty(line.plannedQty), releaseHandoffQty(line.qty)),
+        0,
+      );
+      const firstLine = wo.lines?.[0] ?? null;
       return {
-        id: `store-release:wo:${woId}`,
-        priority: PENDING_PRIORITY.MEDIUM,
-        action: STORE_RELEASE_TO_PRODUCTION_ACTION,
-        documentNo: row.workOrderNo ?? row.salesOrderDocNo ?? null,
-        ownerRole: "STORE",
-        ageHours: null,
-        href: `/material-issue?${params.toString()}`,
-        sourceModule: "MATERIAL_ISSUE",
-        currentStatus: "STORE_RELEASE_PENDING",
         workOrderId: woId,
+        workOrderNo: row.workOrderNo ?? wo.docNo ?? null,
+        workOrderLineId: firstLine?.id ?? null,
+        pmrId: pmr.id,
+        pmrDocNo: pmr.docNo ?? null,
+        pmrStatus: pmr.status,
+        rmStatusLabel: formatReleaseHandoffPmrStatus(pmr.status),
+        sourceType,
+        orderType,
+        sourceLabel: resolveReleaseHandoffSourceLabel({ sourceType, orderType, salesOrderDocNo }),
+        itemName: row.primaryFgName ?? firstLine?.fgItem?.itemName ?? null,
+        plannedQty,
+        salesOrderId: row.salesOrderId ?? wo.salesOrderId ?? null,
+        salesOrderDocNo,
+        cycleId: wo.cycleId ?? null,
+        requirementSheetId: wo.requirementSheetId ?? null,
       };
-    });
+    })
+    .filter(Boolean);
+}
+
+async function fetchStoreProductionHandoffPendingActions(db = prisma, opts = {}) {
+  const queue = await buildStoreProductionReleaseHandoffQueue(db, opts);
+  return queue.map((row) => ({
+    id: `store-release:wo:${row.workOrderId}`,
+    priority: PENDING_PRIORITY.MEDIUM,
+    action: STORE_RELEASE_TO_PRODUCTION_ACTION,
+    documentNo: row.workOrderNo ?? row.salesOrderDocNo ?? null,
+    ownerRole: "STORE",
+    ageHours: null,
+    href: buildReleaseToProductionHref(row),
+    sourceModule: "MATERIAL_ISSUE",
+    currentStatus: "STORE_RELEASE_PENDING",
+    workOrderId: row.workOrderId,
+  }));
 }
 
 const STORE_OPEN_NO_QTY_SO_WHERE = Object.freeze({
@@ -1232,16 +1372,6 @@ async function fetchStoreNoQtyCreateNextRsPendingActionsImpl(db = prisma) {
         ? `Create Cycle ${nextCycleNo} Requirement Sheet`
         : "Create Next Requirement Sheet";
 
-    const hrefParams = new URLSearchParams({
-      intent: "add",
-      from: "pending-actions",
-      source: "no_qty_so",
-      salesOrderId: String(soId),
-    });
-    if (ctx.targetCycleId != null && Number(ctx.targetCycleId) > 0) {
-      hrefParams.set("cycleId", String(Math.trunc(Number(ctx.targetCycleId))));
-    }
-
     actions.push({
       id: `no-qty-create-next-rs:${soId}`,
       priority: PENDING_PRIORITY.MEDIUM,
@@ -1249,7 +1379,10 @@ async function fetchStoreNoQtyCreateNextRsPendingActionsImpl(db = prisma) {
       documentNo: so.docNo ?? null,
       ownerRole: "STORE",
       ageHours: ageHoursFromTimestamp(ctx.ageTimestamp ?? so.updatedAt),
-      href: `/sales-orders/${soId}/requirement-sheets?${hrefParams.toString()}`,
+      href: buildNoQtyCreateNextRsPlanningHubHref(soId, {
+        nextCycleNo,
+        from: "pending-actions",
+      }),
       sourceModule: "NO_QTY_PLANNING",
       currentStatus: "NEXT_RS_READY",
     });
@@ -1313,6 +1446,34 @@ async function fetchStoreNoQtyPlaceWoPendingActions(db = prisma) {
     });
   }
   return actions;
+}
+
+async function fetchStoreGreenLevelPlaceWoPendingActions(db = prisma) {
+  const placement = await buildGreenLevelWoPlacement(db);
+  if (!placement?.available || !placement?.summary?.remainingQty) return [];
+  const canCreate = placement.summary.canCreateWorkOrder === true;
+  const params = new URLSearchParams({
+    from: "pending-actions",
+  });
+  if (placement.plan?.id) params.set("planId", String(placement.plan.id));
+  return [
+    {
+      id: `green-level-place-wo:${placement.plan?.id ?? "latest"}`,
+      priority: PENDING_PRIORITY.MEDIUM,
+      action: canCreate ? "Create Green Level WO" : "Green Level Replenishment WO Pending",
+      documentNo: placement.plan?.docNo ?? placement.plan?.periodKey ?? null,
+      ownerRole: "STORE",
+      ageHours: ageHoursFromTimestamp(placement.plan?.releasedAt ?? new Date()),
+      href: `/store/green-level-wo?${params.toString()}`,
+      sourceModule: "GREEN_LEVEL_REPLENISHMENT",
+      currentStatus: canCreate ? "READY_TO_PLACE_WO" : "AWAITING_RM",
+      metadata: {
+        monthlyProductionPlanId: placement.plan?.id ?? null,
+        periodKey: placement.plan?.periodKey ?? null,
+        remainingQty: placement.summary.remainingQty,
+      },
+    },
+  ];
 }
 
 function filterNormalizedRowsByOwner(rows, role) {
@@ -1597,6 +1758,7 @@ function lifecycleActionRank(action) {
   const label = String(action?.action ?? "");
   if (label in LIFECYCLE_ACTION_RANK) return LIFECYCLE_ACTION_RANK[label];
   if (label.startsWith(STORE_DISPATCH_READY_PREFIX)) return LIFECYCLE_ACTION_RANK[DISPATCH_PENDING_ACTION];
+  if (isStoreDispatchWorkflowTriggerAction(label)) return LIFECYCLE_ACTION_RANK[DISPATCH_PENDING_ACTION];
   return 99;
 }
 
@@ -1748,6 +1910,7 @@ async function getStorePendingActions(ctx) {
     storeNoQtyMonthly,
     storeNoQtyCreateRs,
     storeNoQtyPlaceWo,
+    storeGreenLevelPlaceWo,
   ] = await Promise.all([
     timedBucket("storeNormalized", () =>
       fetchStoreScopedNormalizedRows({ mode: CONTROL_TOWER_ROW_MODES.FULL }),
@@ -1761,6 +1924,7 @@ async function getStorePendingActions(ctx) {
     timedBucket("storeNoQtyMonthly", () => fetchStoreNoQtyMonthlyPlanningPendingActions(db)),
     timedBucket("storeNoQtyCreateRs", () => fetchStoreNoQtyCreateNextRsPendingActions(db)),
     timedBucket("storeNoQtyPlaceWo", () => fetchStoreNoQtyPlaceWoPendingActions(db)),
+    timedBucket("storeGreenLevelPlaceWo", () => fetchStoreGreenLevelPlaceWoPendingActions(db)),
   ]);
 
   const bucketCounts = {
@@ -1777,7 +1941,9 @@ async function getStorePendingActions(ctx) {
 
   const roleFilteredNormalized = filterNormalizedRowsByOwner(mergedRows, role);
   const dedupedNormalized = dedupeRoleQueueRows(roleFilteredNormalized, role);
-  const normalizedActions = dedupedNormalized.map((row) => mapNormalizedRowToPendingAction(row, role));
+  const normalizedActions = dedupedNormalized
+    .map((row) => mapNormalizedRowToPendingAction(row, role))
+    .filter((action) => action.action !== STORE_RELEASE_TO_PRODUCTION_ACTION);
 
   const supplemental = [
     ...monthlyPlanActions,
@@ -1789,6 +1955,7 @@ async function getStorePendingActions(ctx) {
     ...storeNoQtyMonthly,
     ...storeNoQtyCreateRs,
     ...storeNoQtyPlaceWo,
+    ...storeGreenLevelPlaceWo,
   ];
 
   const combined = [...normalizedActions, ...supplemental];
@@ -2016,9 +2183,15 @@ module.exports = {
   fetchStoreNoQtyMonthlyPlanningPendingActions,
   fetchStoreNoQtyCreateNextRsPendingActions,
   fetchStoreNoQtyPlaceWoPendingActions,
+  fetchStoreGreenLevelPlaceWoPendingActions,
   fetchAdminCommercialPendingActions,
   fetchAdminSalesBillPendingActions,
   fetchAdminTallyExportPendingActions,
+  buildStoreProductionReleaseHandoffQueue,
+  loadStoreProductionReleaseEligibilityByWorkOrder,
+  buildReleaseToProductionHref,
+  buildProductionWorkspaceHrefFromPendingMeta,
+  buildNoQtyCreateNextRsPlanningHubHref,
   fetchStoreProductionHandoffPendingActions,
   filterNoQtyStoreHandoffSupersededByLaterRs,
   sortPendingActions,

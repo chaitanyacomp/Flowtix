@@ -77,7 +77,9 @@ import {
   shouldEmbedNoQtyRecentEntriesInLoggingWorkbench,
   shouldShowNoQtyOperatorWorkstationChrome,
   shouldShowProductionWorkspaceCompactLayout,
+  shouldUseGreenLevelPremiumViewportWorkspace,
   shouldUseNoQtyPremiumViewportWorkspace,
+  shouldUseProductionPageNaturalScroll,
 } from "../lib/productionWorkspaceCompactUx";
 import {
   hasPendingShortfallDecision,
@@ -152,13 +154,33 @@ import {
 import {
   inferProductionFlowFromLegacy,
   parseProductionFlowParam,
+  PRODUCTION_FLOW_GREEN_LEVEL,
   PRODUCTION_FLOW_NO_QTY,
   PRODUCTION_FLOW_REGULAR,
+  GREEN_LEVEL_STOCK_SOURCE_LABEL,
+  GREEN_LEVEL_CUSTOMER_DISPLAY_LABEL,
   validateProductionFlowVsOrderType,
+  isGreenLevelReplenishmentSourceType,
   type ProductionFlowParam,
 } from "../lib/productionFlowContract";
-import { ProductionFlowIdentityBar } from "../components/erp/production/ProductionFlowIdentityBar";
+import {
+  buildGreenLevelProductionQueueRows,
+  filterGreenLevelExecutableWorkOrders,
+  greenLevelRowAllowsProductionEntry,
+  greenLevelRowShowsQcWaiting,
+  isGreenLevelProductionEntry,
+  productionEntryUsesRmConsumptionReview,
+  type GreenLevelProductionQueueRow,
+} from "../lib/greenLevelProductionExecution";
+import { GreenLevelProductionWorkQueuePanel } from "../components/erp/production/GreenLevelProductionWorkQueuePanel";
+import { GreenLevelProductionCurrentWoCard } from "../components/erp/production/GreenLevelProductionCurrentWoCard";
+import { GreenLevelProductionWoSwitchDialog } from "../components/erp/production/GreenLevelProductionWoSwitchDialog";
+import {
+  clearProductionReportDraft,
+  isProductionReportDraftDirty,
+} from "../lib/productionReportDraftCache";
 import { ProductionConciseRmStatus } from "../components/erp/production/ProductionConciseRmStatus";
+import { ProductionFlowIdentityBar } from "../components/erp/production/ProductionFlowIdentityBar";
 import { NoQtyMacroLifecycleStrip } from "../components/erp/production/NoQtyMacroLifecycleStrip";
 import { deriveProductionConciseRmLabel } from "../lib/productionRmConciseStatus";
 
@@ -178,6 +200,7 @@ type WoRow = {
   salesOrderId: number;
   docNo?: string | null;
   status?: string;
+  sourceType?: string | null;
   holdReason?: string | null;
   holdRemarks?: string | null;
   shortfallQty?: number | string | null;
@@ -187,6 +210,7 @@ type WoRow = {
   cycle?: { cycleNo?: number | null; id?: number | null } | null;
   /** Present when `salesOrder: true` on work-orders API. */
   salesOrder?: { orderType?: string | null; docNo?: string | null } | null;
+  productionExecution?: { executionStatus?: string | null } | null;
   lines: WoLine[];
 };
 
@@ -211,6 +235,7 @@ type ProdEntryRow = {
     workOrder: {
       id: number;
       salesOrderId: number;
+      sourceType?: string | null;
       cycleId?: number | null;
       cycle?: { cycleNo?: number | null } | null;
       /** When API includes WO-level type (uncommon). */
@@ -290,10 +315,9 @@ function productionSoTypeUi(e: ProdEntryRow): ProductionSoTypeUi {
   return { kind: "muted", text: raw };
 }
 
-/** REGULAR (non–NO_QTY) batches use RM consumption review before approve (Phase 3E). */
+/** REGULAR (non–NO_QTY, non–GL) batches use RM consumption review before approve (Phase 3E). */
 function entryUsesRmConsumptionReview(e: ProdEntryRow | undefined): boolean {
-  if (!e) return false;
-  return prodEntryOrderTypeRaw(e) !== "NO_QTY";
+  return productionEntryUsesRmConsumptionReview(e);
 }
 
 function fmtProdQty(n: number): string {
@@ -427,7 +451,7 @@ function formatNoQtyProductionContextLabel(opts: {
   return [so, cyc, item].join(" | ");
 }
 
-type ProductionFlowMode = "NO_QTY" | "REGULAR" | "NONE";
+type ProductionFlowMode = "NO_QTY" | "REGULAR" | "GREEN_LEVEL" | "NONE";
 
 function formatNoQtyProductionEntryContextLine(opts: {
   cycleNo: number | null;
@@ -476,6 +500,7 @@ export function ProductionPage() {
 
   const source = searchParams.get("source") ?? "";
   const fromParam = searchParams.get("from") ?? "";
+  const fromPendingActions = fromParam === "pending-actions";
   const flowParam = parseProductionFlowParam(searchParams.get("flow"));
   const fromNoQtySo = source === "no_qty_so" || flowParam === PRODUCTION_FLOW_NO_QTY;
   const focusSoId = Number(searchParams.get("salesOrderId") ?? 0);
@@ -502,11 +527,12 @@ export function ProductionPage() {
     Number.isFinite(workOrderLineIdFromUrl) && workOrderLineIdFromUrl > 0;
   /** Deep-link WO/line in URL — authoritative; auto-pick and clear effects must not override. */
   const urlWoSelectionAuthority = woIdFromUrlValid || workOrderLineIdFromUrlValid;
-  /** Dashboard Continue Production / deep-link with WO identity — not bare sidebar entry. */
-  const noQtyContinueProductionIntent =
+  /** Any scoped target in URL — not bare sidebar Production Workspace entry. */
+  const productionScopedDeepLink =
     searchParams.get("fromDashboard") === "1" ||
+    fromPendingActions ||
     urlWoSelectionAuthority ||
-    (focusSoIdValid && (woIdFromUrlValid || workOrderLineIdFromUrlValid));
+    focusSoIdValid;
 
   const [workOrders, setWorkOrders] = React.useState<WoRow[]>([]);
   const [entries, setEntries] = React.useState<ProdEntryRow[]>([]);
@@ -598,15 +624,25 @@ export function ProductionPage() {
     return String(soOrderTypeById[wo.salesOrderId] ?? "") === "NO_QTY";
   }, [woIdFromUrlValid, woIdFromUrlPick, workOrders, soOrderTypeById]);
 
+  /** NO_QTY shop-floor continue from dashboard / guided deep-link — not REGULAR or GL WO. */
+  const noQtyContinueProductionIntent =
+    fromNoQtySo ||
+    noQtyRecoveryFromSelectedWo ||
+    noQtyRecoveryFromEntries ||
+    (fromPendingActions && (focusSoIdValid || woIdFromUrlValid || workOrderLineIdFromUrlValid)) ||
+    (focusSoIdValid &&
+      String(soOrderTypeById[focusSoId] ?? "") === "NO_QTY" &&
+      (searchParams.get("fromDashboard") === "1" || urlWoSelectionAuthority));
+
   /**
    * URL-only NO_QTY identity (never inferred from menu WO selection alone — that uses productionFlowMode).
    */
   const explicitNoQtyUrlNavigate =
     (focusSoIdValid &&
-      (fromNoQtySo || String(soOrderTypeById[focusSoId] ?? "") === "NO_QTY")) ||
+      (fromNoQtySo || fromPendingActions || String(soOrderTypeById[focusSoId] ?? "") === "NO_QTY")) ||
     noQtyRecoveryFromSelectedWo ||
     noQtyRecoveryFromEntries ||
-    noQtyContinueProductionIntent;
+    (fromPendingActions && (woIdFromUrlValid || workOrderLineIdFromUrlValid));
 
   /**
    * Identity resolving guard — prevents REGULAR flicker on NO_QTY deep-links.
@@ -644,6 +680,7 @@ export function ProductionPage() {
     if (woIdFromUrlValid) {
       if (!initialRefreshDone) return true;
       const wo = workOrders.find((w) => w.id === woIdFromUrlPick);
+      if (wo && isGreenLevelReplenishmentSourceType(wo.sourceType)) return false;
       if (wo && wo.salesOrderId > 0 && !Object.prototype.hasOwnProperty.call(soOrderTypeById, wo.salesOrderId)) {
         return true;
       }
@@ -887,12 +924,25 @@ export function ProductionPage() {
 
   const productionFlowMode = React.useMemo((): ProductionFlowMode => {
     if (flowParam === PRODUCTION_FLOW_NO_QTY) return "NO_QTY";
+    if (flowParam === PRODUCTION_FLOW_GREEN_LEVEL) return "GREEN_LEVEL";
     if (flowParam === PRODUCTION_FLOW_REGULAR) return "REGULAR";
     if (userLockedFlowMode) return userLockedFlowMode;
     if (fromNoQtySo) return "NO_QTY";
-    if (noQtyContinueProductionIntent) return "NO_QTY";
     if (noQtyRecoveryFromSelectedWo) return "NO_QTY";
     if (noQtyRecoveryFromEntries) return "NO_QTY";
+
+    if (woIdFromUrlValid) {
+      const wo = workOrders.find((w) => w.id === woIdFromUrlPick);
+      if (wo) {
+        if (isGreenLevelReplenishmentSourceType(wo.sourceType)) return "GREEN_LEVEL";
+        if (!(Number(wo.salesOrderId) > 0)) return "REGULAR";
+        if (Object.prototype.hasOwnProperty.call(soOrderTypeById, wo.salesOrderId)) {
+          return String(soOrderTypeById[wo.salesOrderId] ?? "") === "NO_QTY" ? "NO_QTY" : "REGULAR";
+        }
+      }
+    }
+
+    if (noQtyContinueProductionIntent) return "NO_QTY";
 
     const soId = flowResolutionSoId;
     if (soId > 0 && Object.prototype.hasOwnProperty.call(soOrderTypeById, soId)) {
@@ -900,7 +950,7 @@ export function ProductionPage() {
     }
 
     const menuNeutral =
-      !focusSoIdValid && !woIdFromUrlValid && !fromNoQtySo && !noQtyContinueProductionIntent;
+      !focusSoIdValid && !woIdFromUrlValid && !fromNoQtySo && !productionScopedDeepLink;
     if (menuNeutral && woId === 0 && wolId === 0) return "NONE";
 
     if (soId > 0 && !Object.prototype.hasOwnProperty.call(soOrderTypeById, soId)) return "NONE";
@@ -913,12 +963,15 @@ export function ProductionPage() {
     userLockedFlowMode,
     fromNoQtySo,
     noQtyContinueProductionIntent,
+    productionScopedDeepLink,
     noQtyRecoveryFromSelectedWo,
     noQtyRecoveryFromEntries,
     flowResolutionSoId,
     soOrderTypeById,
     focusSoIdValid,
     woIdFromUrlValid,
+    woIdFromUrlPick,
+    workOrders,
     woId,
     wolId,
   ]);
@@ -926,15 +979,19 @@ export function ProductionPage() {
   const resolvedProductionFlow: ProductionFlowParam | null =
     productionFlowMode === "NO_QTY"
       ? PRODUCTION_FLOW_NO_QTY
-      : productionFlowMode === "REGULAR"
-        ? PRODUCTION_FLOW_REGULAR
-        : null;
+      : productionFlowMode === "GREEN_LEVEL"
+        ? PRODUCTION_FLOW_GREEN_LEVEL
+        : productionFlowMode === "REGULAR"
+          ? PRODUCTION_FLOW_REGULAR
+          : null;
 
   const isNoQtyFlow = productionFlowMode === "NO_QTY";
+  const isGreenLevelFlow = productionFlowMode === "GREEN_LEVEL";
+  const useHardenedProductionShell = isNoQtyFlow || isGreenLevelFlow;
   const isRegularFlow = productionFlowMode === "REGULAR";
 
   const flowMismatchMessage = React.useMemo(() => {
-    if (!resolvedProductionFlow) return null;
+    if (!resolvedProductionFlow || resolvedProductionFlow === PRODUCTION_FLOW_GREEN_LEVEL) return null;
     const soId =
       flowResolutionSoId > 0
         ? flowResolutionSoId
@@ -961,7 +1018,7 @@ export function ProductionPage() {
         focusSoIdValid,
         woIdFromUrlValid,
         workOrderLineIdFromUrlValid,
-        fromDashboardWithTarget: noQtyContinueProductionIntent,
+        fromDashboardWithTarget: productionScopedDeepLink,
       })
     ) {
       return;
@@ -974,9 +1031,11 @@ export function ProductionPage() {
       }) ??
       (productionFlowMode === "NO_QTY"
         ? PRODUCTION_FLOW_NO_QTY
-        : productionFlowMode === "REGULAR"
-          ? PRODUCTION_FLOW_REGULAR
-          : null);
+        : productionFlowMode === "GREEN_LEVEL"
+          ? PRODUCTION_FLOW_GREEN_LEVEL
+          : productionFlowMode === "REGULAR"
+            ? PRODUCTION_FLOW_REGULAR
+            : null);
     if (!inferred) return;
     const next = new URLSearchParams(searchParams);
     if (next.get("flow") === inferred) return;
@@ -994,6 +1053,7 @@ export function ProductionPage() {
     woIdFromUrlValid,
     workOrderLineIdFromUrlValid,
     noQtyContinueProductionIntent,
+    productionScopedDeepLink,
     flowResolutionSoId,
     soOrderTypeById,
     productionFlowMode,
@@ -1002,6 +1062,15 @@ export function ProductionPage() {
   ]);
 
   const navigateNoQtyContext = productionFlowMode === "NO_QTY";
+  const navigateGreenLevelContext = productionFlowMode === "GREEN_LEVEL";
+
+  const greenLevelContextWorkOrders = React.useMemo(
+    () => filterGreenLevelExecutableWorkOrders(workOrders),
+    [workOrders],
+  );
+  const workOrdersForProductionSelector = navigateGreenLevelContext
+    ? greenLevelContextWorkOrders
+    : workOrders;
 
   const showProductionWorkspace = React.useMemo(
     () =>
@@ -1010,7 +1079,7 @@ export function ProductionPage() {
         focusSoIdValid,
         woIdFromUrlValid,
         workOrderLineIdFromUrlValid,
-        fromDashboardWithTarget: noQtyContinueProductionIntent,
+        fromDashboardWithTarget: productionScopedDeepLink,
       }) &&
       woId === 0 &&
       wolId === 0 &&
@@ -1021,6 +1090,7 @@ export function ProductionPage() {
       woIdFromUrlValid,
       workOrderLineIdFromUrlValid,
       noQtyContinueProductionIntent,
+    productionScopedDeepLink,
       woId,
       wolId,
       userLockedFlowMode,
@@ -1147,6 +1217,21 @@ export function ProductionPage() {
     fromParam,
     navigate,
   ]);
+
+  /** Deep-linked GL WO without `flow=GREEN_LEVEL` — normalize URL so workbench layout is stable. */
+  React.useEffect(() => {
+    if (flowParam === PRODUCTION_FLOW_GREEN_LEVEL) return;
+    if (!woIdFromUrlValid || workOrders.length === 0) return;
+    const wo = workOrders.find((w) => w.id === woIdFromUrlPick);
+    if (!wo || !isGreenLevelReplenishmentSourceType(wo.sourceType)) return;
+    const params = new URLSearchParams(searchParams);
+    params.set("flow", PRODUCTION_FLOW_GREEN_LEVEL);
+    const mergedHref = `/production?${params.toString()}`;
+    const current = `${window.location.pathname}${window.location.search}`;
+    if (mergedHref !== current) {
+      navigate(mergedHref, { replace: true });
+    }
+  }, [flowParam, woIdFromUrlValid, woIdFromUrlPick, workOrders, searchParams, navigate]);
 
   const noQtyCycleNoFromWorkOrders = React.useMemo((): number | null => {
     if (effectiveNoQtyCycleId == null) return null;
@@ -1280,6 +1365,8 @@ export function ProductionPage() {
   ]);
 
   const showNoQtyScopedProductionCard = productionFlowMode === "NO_QTY" && noQtyWorkbenchSoId > 0;
+  const showGreenLevelScopedProductionCard = isGreenLevelFlow;
+  const showHardenedScopedProductionCard = showNoQtyScopedProductionCard || showGreenLevelScopedProductionCard;
   const noQtyQcPendingStable = showNoQtyScopedProductionCard && entries.some((e) => qcPendingEntry(e));
 
   const selectedWoForNoQtyChrome = React.useMemo(() => {
@@ -1646,6 +1733,75 @@ export function ProductionPage() {
     noQtyPendingShortfallDecision,
   ]);
 
+  const hideGreenLevelAddProductionEntry = React.useMemo(() => {
+    if (!showGreenLevelScopedProductionCard) return false;
+    const scopedWoRow =
+      effectiveScopedWoId > 0 ? workOrders.find((w) => w.id === effectiveScopedWoId) ?? null : null;
+    const currentWoHasApprovedProduction =
+      effectiveScopedWoId > 0 &&
+      entries.some(
+        (e) =>
+          isApproved(e) && Number(e.workOrderLine?.workOrder?.id ?? 0) === effectiveScopedWoId,
+      );
+    const currentWoHasProducibleLine = scopedWorkOrderHasProducibleLine(
+      noQtyLineProducibility,
+      effectiveScopedWoId,
+    );
+    if (currentWoHasProducibleLine) return false;
+    if (isScopedWorkOrderClosed(scopedWoRow?.status)) return false;
+    if (currentWoHasApprovedProduction) return true;
+    return false;
+  }, [
+    showGreenLevelScopedProductionCard,
+    effectiveScopedWoId,
+    workOrders,
+    entries,
+    noQtyLineProducibility,
+  ]);
+
+  const hideScopedProductionEntry = hideNoQtyAddProductionEntry;
+
+  const greenLevelProductionQueueRows = React.useMemo(
+    () =>
+      navigateGreenLevelContext
+        ? buildGreenLevelProductionQueueRows({ workOrders: greenLevelContextWorkOrders, entries })
+        : [],
+    [navigateGreenLevelContext, greenLevelContextWorkOrders, entries],
+  );
+
+  const selectedGreenLevelQueueRow = React.useMemo((): GreenLevelProductionQueueRow | null => {
+    if (!navigateGreenLevelContext || effectiveScopedWolId <= 0) return null;
+    return greenLevelProductionQueueRows.find((r) => r.workOrderLineId === effectiveScopedWolId) ?? null;
+  }, [navigateGreenLevelContext, effectiveScopedWolId, greenLevelProductionQueueRows]);
+
+  const greenLevelShowQcWaiting = React.useMemo(
+    () => navigateGreenLevelContext && greenLevelRowShowsQcWaiting(selectedGreenLevelQueueRow),
+    [navigateGreenLevelContext, selectedGreenLevelQueueRow],
+  );
+
+  const greenLevelShowProductionEntryForm = React.useMemo(() => {
+    if (!navigateGreenLevelContext) return true;
+    if (effectiveScopedWolId <= 0) return false;
+    if (hideGreenLevelAddProductionEntry) return false;
+    return greenLevelRowAllowsProductionEntry(selectedGreenLevelQueueRow);
+  }, [
+    navigateGreenLevelContext,
+    effectiveScopedWolId,
+    hideGreenLevelAddProductionEntry,
+    selectedGreenLevelQueueRow,
+  ]);
+
+  const greenLevelOtherQueueRows = React.useMemo(
+    () =>
+      greenLevelProductionQueueRows.filter((row) => row.workOrderLineId !== effectiveScopedWolId),
+    [greenLevelProductionQueueRows, effectiveScopedWolId],
+  );
+
+  const [glWoSwitchPrompt, setGlWoSwitchPrompt] = React.useState<{
+    targetRow: GreenLevelProductionQueueRow;
+    fromWoLabel: string;
+  } | null>(null);
+
   const pickNoQtyContinueProductionLine = React.useCallback((): FlatLine | null => {
     const eps = 1e-6;
     if (workOrderLineIdFromUrlValid) {
@@ -1702,17 +1858,20 @@ export function ProductionPage() {
         woRow?.salesOrder?.orderType ?? soOrderTypeById[l.salesOrderId] ?? "",
       ).trim();
       if (embeddedType === "NO_QTY") setUserLockedFlowMode("NO_QTY");
+      else if (isGreenLevelReplenishmentSourceType(woRow?.sourceType)) setUserLockedFlowMode("GREEN_LEVEL");
       else if (embeddedType) setUserLockedFlowMode("REGULAR");
       void (async () => {
         const t = await ensureSoOrderType(l.salesOrderId);
+        const isGreenLevelWo = isGreenLevelReplenishmentSourceType(woRow?.sourceType);
         // Only refine the synchronous lock above when the async fetch resolved to a
         // concrete order type. An empty `t` (transient API failure / unknown SO) must
         // not silently clobber a correct NO_QTY lock back to REGULAR — that is what
         // hid the Next RS strip when Admin opened Production from the left menu.
         if (t === "NO_QTY") setUserLockedFlowMode("NO_QTY");
+        else if (isGreenLevelWo) setUserLockedFlowMode("GREEN_LEVEL");
         else if (t) setUserLockedFlowMode("REGULAR");
         if (isCarryForwardLine(l, t) && !noQtyAllowShopFloorContinue) return;
-        if (rem > 1e-9 && !producedQtyUserTouchedRef.current) {
+        if (rem > 1e-9 && !producedQtyUserTouchedRef.current && !isGreenLevelWo) {
           setProducedQtyStr(fmtProdQty(rem));
         }
       })();
@@ -1729,13 +1888,45 @@ export function ProductionPage() {
     ],
   );
 
+  const onGreenLevelQueueRowAction = React.useCallback(
+    (row: GreenLevelProductionQueueRow) => {
+      const fl = flatLines.find((l) => l.id === row.workOrderLineId);
+      if (fl) {
+        applyLine(fl);
+        return;
+      }
+      if (woIdRef.current !== row.workOrderId) {
+        resetScopedProductionWorkspaceState();
+      }
+      setWoId(row.workOrderId);
+      setWolId(row.workOrderLineId);
+    },
+    [flatLines, applyLine, resetScopedProductionWorkspaceState],
+  );
+
+  const requestGreenLevelRowSwitch = React.useCallback(
+    (row: GreenLevelProductionQueueRow) => {
+      const fromWoId = effectiveScopedWoId;
+      if (fromWoId > 0 && fromWoId !== row.workOrderId && isProductionReportDraftDirty(fromWoId)) {
+        const fromLabel =
+          greenLevelProductionQueueRows.find((r) => r.workOrderId === fromWoId)?.woLabel ?? `WO-${fromWoId}`;
+        setGlWoSwitchPrompt({ targetRow: row, fromWoLabel: fromLabel });
+        return;
+      }
+      onGreenLevelQueueRowAction(row);
+    },
+    [effectiveScopedWoId, greenLevelProductionQueueRows, onGreenLevelQueueRowAction],
+  );
+
   const navigateToNoQtyProductionLine = React.useCallback(
     (l: FlatLine) => {
       applyLine(l);
       const params = new URLSearchParams();
+      params.set("flow", PRODUCTION_FLOW_NO_QTY);
       params.set("workOrderId", String(l.workOrderId));
       params.set("workOrderLineId", String(l.id));
       params.set("source", "no_qty_so");
+      if (fromPendingActions) params.set("from", "pending-actions");
       const soId = focusSoIdValid ? focusSoId : l.salesOrderId;
       if (soId > 0) params.set("salesOrderId", String(soId));
       if (effectiveNoQtyCycleId != null && Number(effectiveNoQtyCycleId) > 0) {
@@ -1743,7 +1934,7 @@ export function ProductionPage() {
       }
       navigate(`/production?${params.toString()}`, { replace: true });
     },
-    [applyLine, focusSoIdValid, focusSoId, effectiveNoQtyCycleId, navigate],
+    [applyLine, focusSoIdValid, focusSoId, effectiveNoQtyCycleId, navigate, fromPendingActions],
   );
 
   const openExecutableProductionLine = React.useCallback(
@@ -1844,7 +2035,10 @@ export function ProductionPage() {
       const advance = resolvePostProductionReportConfirmAdvance({
         confirmedWorkOrderId: confirmedWoId,
         lines: queueLines,
-        requiresShortfallDecision: meta.requiresShortfallDecision,
+        requiresShortfallDecision: navigateGreenLevelContext
+          ? false
+          : meta.requiresShortfallDecision,
+        forceAdvanceFromConfirmedWorkOrder: Boolean(meta.executionCloseOutcome),
       });
 
       if (advance.kind === "stay") {
@@ -2007,7 +2201,7 @@ export function ProductionPage() {
 
   /** Active DRAFT on the selected WO line — REGULAR create form must not add a second batch. */
   const latestDraftForSelectedWoLine = React.useMemo(() => {
-    if (!selected || !canProd || isNoQtyProductionFlow) return null;
+    if (!selected || !canProd || isNoQtyProductionFlow || navigateGreenLevelContext) return null;
     const lineId = selected.id;
     const draftsForLine = entries.filter(
       (e) => isDraft(e) && Number(e.workOrderLine?.id ?? 0) === lineId,
@@ -2408,10 +2602,10 @@ export function ProductionPage() {
     return shouldShowScopedProductionReport({
       workOrderId: effectiveScopedWoId,
       hasApprovedProductionOnWorkOrder: hasApprovedOnWo,
-      navigateNoQtyContext,
+      navigateNoQtyContext: useHardenedProductionShell,
       executionSummary: scopedExecutionSummary,
     });
-  }, [effectiveScopedWoId, entries, navigateNoQtyContext, scopedExecutionSummary]);
+  }, [effectiveScopedWoId, entries, useHardenedProductionShell, scopedExecutionSummary]);
 
   const showProductionWorkspaceCompactLayout = React.useMemo(
     () =>
@@ -2420,7 +2614,8 @@ export function ProductionPage() {
         workOrderId: effectiveScopedWoId,
         canOperate: canProd,
         navigateNoQtyContext,
-        hideNoQtyAddProductionEntry,
+        isGreenLevelContext: navigateGreenLevelContext,
+        hideNoQtyAddProductionEntry: hideScopedProductionEntry,
         woIdFromUrlValid,
         workOrderLineIdFromUrlValid,
       }),
@@ -2429,28 +2624,53 @@ export function ProductionPage() {
       effectiveScopedWoId,
       canProd,
       navigateNoQtyContext,
-      hideNoQtyAddProductionEntry,
+      navigateGreenLevelContext,
+      hideScopedProductionEntry,
       woIdFromUrlValid,
       workOrderLineIdFromUrlValid,
     ],
   );
 
+  const useGreenLevelWorkbenchLayout = navigateGreenLevelContext && !showProductionWorkspaceCompactLayout;
+
   const noQtyPremiumViewport = React.useMemo(
     () =>
+      navigateNoQtyContext &&
       shouldUseNoQtyPremiumViewportWorkspace({
-        navigateNoQtyContext,
-        showNoQtyScopedProductionCard,
+        navigateNoQtyContext: true,
+        showNoQtyScopedProductionCard: showNoQtyScopedProductionCard,
       }),
     [navigateNoQtyContext, showNoQtyScopedProductionCard],
+  );
+
+  const greenLevelPremiumViewport = React.useMemo(
+    () =>
+      shouldUseGreenLevelPremiumViewportWorkspace({
+        isGreenLevelContext: navigateGreenLevelContext,
+        showGreenLevelScopedProductionCard,
+        showProductionWorkspaceCompactLayout,
+      }),
+    [navigateGreenLevelContext, showGreenLevelScopedProductionCard, showProductionWorkspaceCompactLayout],
+  );
+
+  const usePremiumViewport = noQtyPremiumViewport || greenLevelPremiumViewport;
+
+  const useProductionPageNaturalScroll = React.useMemo(
+    () =>
+      shouldUseProductionPageNaturalScroll({
+        noQtyPremiumViewport,
+        greenLevelPremiumViewport,
+      }),
+    [noQtyPremiumViewport, greenLevelPremiumViewport],
   );
 
   const embedNoQtyRecentEntries = React.useMemo(
     () =>
       shouldEmbedNoQtyRecentEntriesInLoggingWorkbench({
-        usePremiumViewport: noQtyPremiumViewport,
+        usePremiumViewport,
         showProductionWorkspaceCompactLayout,
       }),
-    [noQtyPremiumViewport, showProductionWorkspaceCompactLayout],
+    [usePremiumViewport, showProductionWorkspaceCompactLayout],
   );
 
   const showNoQtyOperatorChrome = React.useMemo(
@@ -2495,7 +2715,38 @@ export function ProductionPage() {
     selectedMetrics,
   ]);
 
-  const productionWorkspaceWoSummary = showProductionWorkspaceCompactLayout ? noQtyWoSummary : null;
+  const greenLevelWoSummary = React.useMemo(() => {
+    if (!navigateGreenLevelContext || effectiveScopedWoId <= 0) return null;
+    const woRow = workOrders.find((w) => w.id === effectiveScopedWoId);
+    const line =
+      (effectiveScopedWolId > 0
+        ? flatLines.find((l) => l.id === effectiveScopedWolId && l.workOrderId === effectiveScopedWoId)
+        : null) ??
+      flatLines.find((l) => l.workOrderId === effectiveScopedWoId) ??
+      (selected?.workOrderId === effectiveScopedWoId ? selected : null);
+    return {
+      workOrderId: effectiveScopedWoId,
+      woLabel: displayWorkOrderNo(effectiveScopedWoId, woRow?.docNo ?? null),
+      soLabel: GREEN_LEVEL_STOCK_SOURCE_LABEL,
+      itemName: line?.fgItem.itemName ?? "—",
+      customerName: GREEN_LEVEL_CUSTOMER_DISPLAY_LABEL,
+      plannedQty: selectedMetrics?.woLineQty ?? null,
+      producedQty: selectedMetrics?.usedQty ?? null,
+      remainingQty: selectedMetrics?.remainingQty ?? null,
+    };
+  }, [
+    navigateGreenLevelContext,
+    effectiveScopedWoId,
+    effectiveScopedWolId,
+    workOrders,
+    flatLines,
+    selected,
+    selectedMetrics,
+  ]);
+
+  const hardenedWoSummary = isGreenLevelFlow ? greenLevelWoSummary : noQtyWoSummary;
+
+  const productionWorkspaceWoSummary = showProductionWorkspaceCompactLayout ? hardenedWoSummary : null;
 
   const qcBannerHref = React.useMemo(() => {
     if (qcBannerSoId <= 0) return "";
@@ -2613,7 +2864,12 @@ export function ProductionPage() {
   ]);
 
   async function refresh(): Promise<{ flatLines: FlatLine[]; entries: ProdEntryRow[] }> {
-    const includeWorkOrderLineId = editing?.workOrderLine?.id ?? 0;
+    const includeWorkOrderLineId =
+      Number(editing?.workOrderLine?.id ?? 0) > 0
+        ? Number(editing?.workOrderLine?.id)
+        : workOrderLineIdFromUrlValid
+          ? workOrderLineIdFromUrl
+          : 0;
     const includeQs = includeWorkOrderLineId > 0 ? `&includeWorkOrderLineId=${includeWorkOrderLineId}` : "";
     /** When `salesOrderId` is in the URL — or derivable from URL WO — scope pending WOs to that SO. */
     let soScopeId = focusSoIdValid ? focusSoId : 0;
@@ -2621,7 +2877,7 @@ export function ProductionPage() {
       const fromState = workOrders.find((w) => w.id === woIdFromUrlPick)?.salesOrderId ?? 0;
       if (fromState > 0) soScopeId = fromState;
     }
-    const soScopeQs = soScopeId > 0 ? `&salesOrderId=${soScopeId}` : "";
+    const soScopeQs = soScopeId > 0 && !navigateGreenLevelContext ? `&salesOrderId=${soScopeId}` : "";
     const [w, e] = await Promise.all([
       apiFetch<WoRow[]>(`/api/production/work-orders?pendingOnly=1${includeQs}${soScopeQs}`),
       apiFetch<ProdEntryRow[]>(
@@ -2843,6 +3099,18 @@ export function ProductionPage() {
       return;
     }
 
+    if (productionFlowMode === "GREEN_LEVEL") {
+      if (!showGreenLevelScopedProductionCard) return;
+      if (woIdFromUrlValid && workOrders.some((w) => w.id === woIdFromUrlPick)) {
+        const forWo = sortFlatByPriority(flatLines.filter((l) => l.workOrderId === woIdFromUrlPick));
+        if (forWo.length > 0) {
+          applyLine(forWo[0]);
+          return;
+        }
+      }
+      return;
+    }
+
     if (productionFlowMode !== "REGULAR") return;
 
     if (woIdFromUrlValid && workOrders.some((w) => w.id === woIdFromUrlPick)) {
@@ -2860,6 +3128,7 @@ export function ProductionPage() {
     applyLine,
     productionFlowMode,
     showNoQtyScopedProductionCard,
+    showGreenLevelScopedProductionCard,
     focusSoIdValid,
     focusSoId,
     workOrders,
@@ -3068,12 +3337,24 @@ export function ProductionPage() {
     const approvedBatchQty = Number(approvedRow?.producedQty ?? 0);
     await refresh();
     setExecutionPanelRefreshTick((t) => t + 1);
-    if (navigateNoQtyContext) {
+    if (useHardenedProductionShell) {
       setCompletionEvaluateBatchQty(approvedBatchQty);
       setCompletionEvaluateTick((t) => t + 1);
     }
     const woIdNav = approvedRow ? Number(approvedRow.workOrderLine?.workOrder?.id ?? 0) : 0;
-    if (navigateNoQtyContext && Number.isFinite(woIdNav) && woIdNav > 0) {
+    if (navigateGreenLevelContext && Number.isFinite(woIdNav) && woIdNav > 0) {
+      const replaceParams = new URLSearchParams();
+      replaceParams.set("flow", PRODUCTION_FLOW_GREEN_LEVEL);
+      replaceParams.set("workOrderId", String(woIdNav));
+      const wolNav = Number(approvedRow?.workOrderLine?.id ?? effectiveScopedWolId ?? 0);
+      if (Number.isFinite(wolNav) && wolNav > 0) {
+        replaceParams.set("workOrderLineId", String(wolNav));
+      }
+      const nextSearch = `?${replaceParams.toString()}`;
+      if (location.search !== nextSearch) {
+        navigate(`/production${nextSearch}`, { replace: true });
+      }
+    } else if (navigateNoQtyContext && Number.isFinite(woIdNav) && woIdNav > 0) {
       const replaceParams = new URLSearchParams();
       replaceParams.set("workOrderId", String(woIdNav));
       replaceParams.set("source", "no_qty_so");
@@ -3096,15 +3377,21 @@ export function ProductionPage() {
     }
     if (consumptionWarnings?.length) {
       toast.showSuccess(`Production approved. ${consumptionWarnings.join(" ")}`);
-    } else if (!navigateNoQtyContext && !focusSoIdValid) {
+    } else if (!navigateNoQtyContext && !navigateGreenLevelContext && !focusSoIdValid) {
       toast.showSuccess("Production approved.");
-    } else if (!navigateNoQtyContext) {
+    } else if (!navigateNoQtyContext && !navigateGreenLevelContext) {
       toast.showSuccess("Production approved.");
     }
   }
 
-  async function approveDraftNoQty(id: number) {
-    if (!window.confirm("Approve this batch? Raw material stock will be issued and the batch will move to QC.")) {
+  async function approveDraftDirect(id: number) {
+    const row = entries.find((e) => e.id === id);
+    const greenLevelBatch =
+      navigateGreenLevelContext || isGreenLevelProductionEntry(row);
+    const confirmMsg = greenLevelBatch
+      ? "Approve this batch? The batch will move to QC."
+      : "Approve this batch? Raw material stock will be issued and the batch will move to QC.";
+    if (!window.confirm(confirmMsg)) {
       return;
     }
     setError(null);
@@ -3147,12 +3434,16 @@ export function ProductionPage() {
 
   function approveDraft(id: number) {
     const row = entries.find((e) => e.id === id);
-    if (entryUsesRmConsumptionReview(row)) {
-      setRowBusy(id);
-      setConsumptionApproveId(id);
+    if (
+      navigateGreenLevelContext ||
+      isGreenLevelProductionEntry(row) ||
+      !entryUsesRmConsumptionReview(row)
+    ) {
+      void approveDraftDirect(id);
       return;
     }
-    void approveDraftNoQty(id);
+    setRowBusy(id);
+    setConsumptionApproveId(id);
   }
 
   function renderApproveButtonLabel(entryId: number, idleLabel: string, compact?: boolean) {
@@ -3348,8 +3639,11 @@ export function ProductionPage() {
 
   const placeDraftInNoQtyPrimaryCard =
     showNoQtyScopedProductionCard && flatLines.length > 0 && canProd;
+  const placeDraftInGreenLevelPrimaryCard =
+    showGreenLevelScopedProductionCard && flatLines.length > 0 && canProd;
+  const placeDraftInHardenedPrimaryCard = placeDraftInNoQtyPrimaryCard || placeDraftInGreenLevelPrimaryCard;
   const placeDraftAfterRegularProductionCard =
-    !fromNoQtySo && flatLines.length > 0 && canProd;
+    !fromNoQtySo && !navigateGreenLevelContext && flatLines.length > 0 && canProd;
 
   /** Latest DRAFT batch on the currently selected WO — drives top approval strip + avoids duplicate actions in the ledger row. */
   const latestDraftForSelectedWo = React.useMemo(() => {
@@ -3370,7 +3664,10 @@ export function ProductionPage() {
 
   /** Regular flow: draft on selected line blocks RM Ready and duplicate workflow surfaces. */
   const draftApprovalPendingRegular =
-    !navigateNoQtyContext && Boolean(latestDraftForSelectedWoLine && selected);
+    !navigateNoQtyContext && !navigateGreenLevelContext && Boolean(latestDraftForSelectedWoLine && selected);
+
+  const greenLevelDraftApprovalPending =
+    navigateGreenLevelContext && Boolean(latestDraftForSelectedWo) && canProd;
 
   /** One primary next-action strip per screen state (NO_QTY + regular). */
   const productionPrimaryStrip = React.useMemo((): {
@@ -3385,7 +3682,7 @@ export function ProductionPage() {
         title: "Draft Production Entry Awaiting Approval",
         subtitle: `Qty ${fmtProdQty(latestDraftForSelectedWoLine.producedQty)} · Approve, edit, or cancel from the entries table below`,
         primaryAction: {
-          label: "Approve Draft",
+          label: "Approve Production",
           testId: "next-approve-production-draft",
           onClick: () => approveDraft(latestDraftForSelectedWoLine.latest.id),
         },
@@ -3734,7 +4031,7 @@ export function ProductionPage() {
           disabled={rowBusy === latest.id}
           onClick={() => approveDraft(latest.id)}
         >
-          {renderApproveButtonLabel(latest.id, "Approve")}
+          {renderApproveButtonLabel(latest.id, "Approve Production")}
         </Button>
         <Button
           type="button"
@@ -3846,7 +4143,7 @@ export function ProductionPage() {
     if (draftApprovalPendingRegular) return true;
     if (!latestDraftForSelectedWo || !selected || !(flatLines.length > 0) || !canProd) return false;
     return (
-      placeDraftInNoQtyPrimaryCard ||
+      placeDraftInHardenedPrimaryCard ||
       placeDraftAfterRegularProductionCard ||
       (Boolean(fromNoQtySo) && !showNoQtyScopedProductionCard)
     );
@@ -3856,7 +4153,7 @@ export function ProductionPage() {
     selected,
     flatLines.length,
     canProd,
-    placeDraftInNoQtyPrimaryCard,
+    placeDraftInHardenedPrimaryCard,
     placeDraftAfterRegularProductionCard,
     fromNoQtySo,
     showNoQtyScopedProductionCard,
@@ -3873,10 +4170,11 @@ export function ProductionPage() {
           : 0;
     const back = resolveProductionRegularBack({ fromParam, sourceParam: source, salesOrderId: sid });
     if (openedFromWorkOrderWorkspace) return back;
-    if (navigateNoQtyContext) return null;
+    if (navigateNoQtyContext || navigateGreenLevelContext) return null;
     return back;
   }, [
     navigateNoQtyContext,
+    navigateGreenLevelContext,
     openedFromWorkOrderWorkspace,
     selected?.salesOrderId,
     focusSoIdValid,
@@ -3994,10 +4292,12 @@ export function ProductionPage() {
       </OperationalContextBar>
     ) : null;
 
-  const renderRecentEntriesPanel = (embedded: boolean) => (
+  const renderRecentEntriesPanel = (embedded: boolean, opts?: { containedScroll?: boolean }) => (
     <ProductionRecentEntriesPanel
       embedded={embedded}
+      containedScroll={opts?.containedScroll ?? !useProductionPageNaturalScroll}
       navigateNoQtyContext={navigateNoQtyContext}
+      navigateGreenLevelContext={navigateGreenLevelContext}
       fromNoQtySo={fromNoQtySo}
       focusSoIdValid={focusSoIdValid}
       effectiveNoQtyCycleId={effectiveNoQtyCycleId}
@@ -4027,21 +4327,19 @@ export function ProductionPage() {
       className={cn(
         canProd && flatLines.length > 0 && "pb-3",
         "gap-1",
-        // Desktop workbench: keep split panels above fold (page should not scroll much).
-        // Use dvh to avoid scrollbar flicker from classic vh behavior on Windows/browser chrome.
-        // Desktop workbench: REGULAR shell adds a taller sticky header — reserve slightly more vertical space.
-        navigateNoQtyContext
-          ? cn(
-              "lg:flex lg:min-h-0 lg:flex-1 lg:flex-col lg:overflow-hidden",
-              noQtyPremiumViewport
-                ? showNoQtyOperatorChrome
-                  ? "lg:h-[calc(100dvh-7.75rem)]"
-                  : "lg:h-[calc(100dvh-10.5rem)]"
-                : "lg:h-[calc(100dvh-11.25rem)]",
-            )
-          : showProductionWorkspace
-            ? "lg:flex lg:min-h-0 lg:flex-1 lg:flex-col lg:overflow-hidden lg:h-[calc(100dvh-10rem)]"
-            : "lg:flex lg:min-h-0 lg:flex-1 lg:flex-col lg:overflow-hidden lg:h-[calc(100dvh-13.25rem)]",
+        !useProductionPageNaturalScroll &&
+          (navigateNoQtyContext
+            ? cn(
+                "lg:flex lg:min-h-0 lg:flex-1 lg:flex-col lg:overflow-hidden",
+                noQtyPremiumViewport
+                  ? showNoQtyOperatorChrome
+                    ? "lg:h-[calc(100dvh-7.75rem)]"
+                    : "lg:h-[calc(100dvh-10.5rem)]"
+                  : "lg:h-[calc(100dvh-11.25rem)]",
+              )
+            : showProductionWorkspace
+              ? "lg:flex lg:min-h-0 lg:flex-1 lg:flex-col lg:overflow-hidden lg:h-[calc(100dvh-10rem)]"
+              : "lg:flex lg:min-h-0 lg:flex-1 lg:flex-col lg:overflow-hidden lg:h-[calc(100dvh-13.25rem)]"),
       )}
     >
       {fromNoQtySo && !embedNoQtyRecentEntries ? (
@@ -4184,7 +4482,7 @@ export function ProductionPage() {
         body="Demo mode: No production is saved in Safe Demo. Continue the tour without posting real batches."
         actionLabel="Continue Demo → QC"
       />
-      {productionPrimaryStrip && !showNoQtyScopedProductionCard ? (
+      {productionPrimaryStrip && !showHardenedScopedProductionCard ? (
         <NextStepStrip
           visible
           density="compact"
@@ -4197,7 +4495,7 @@ export function ProductionPage() {
       ) : null}
       {!showProductionWorkspaceCompactLayout ? productionCompactContextBar : null}
       {showProductionWorkspace ? (
-        <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden" data-testid="production-workspace-dashboard">
+        <div className="flex flex-col gap-2" data-testid="production-workspace-dashboard">
           <div className="shrink-0 space-y-2">
             <ProductionWorkspaceStatusStrip />
             <div className="grid gap-2 xl:grid-cols-[minmax(0,1fr)_minmax(260px,340px)]">
@@ -4205,15 +4503,22 @@ export function ProductionPage() {
               <PendingStoreTasksPanel />
             </div>
           </div>
-          <div className="min-h-0 flex-1 pb-2">{renderRecentEntriesPanel(false)}</div>
+          <div className="pb-2">{renderRecentEntriesPanel(false, { containedScroll: false })}</div>
         </div>
-      ) : showNoQtyScopedProductionCard ? (
-        <div className={cn("min-w-0", noQtyPremiumViewport && "flex min-h-0 flex-1 flex-col overflow-hidden")}>
+      ) : showHardenedScopedProductionCard ? (
+        <div
+          className={cn(
+            "min-w-0",
+            usePremiumViewport && !useProductionPageNaturalScroll && "flex min-h-0 flex-1 flex-col overflow-hidden",
+          )}
+        >
             {!canProd ? (
               <p className="text-[13px] text-slate-600">Production / Admin only.</p>
             ) : !initialRefreshDone ? (
               <ErpPageLoader variant="workspace" hint="Loading production workspace…" />
-            ) : !flatLines.length ? (
+            ) : navigateGreenLevelContext && greenLevelProductionQueueRows.length === 0 ? (
+              <p className="text-[13px] text-slate-600">No eligible Green Level work orders.</p>
+            ) : !navigateGreenLevelContext && !flatLines.length ? (
               <p className="text-[13px] text-slate-600">
                 {noQtyProductionStatusMsg ||
                   noQtyEmptyMsg ||
@@ -4224,7 +4529,11 @@ export function ProductionPage() {
                 <Card
                   className={cn(
                     "erp-op-workspace-primary min-w-0",
-                    embedNoQtyRecentEntries ? "flex min-h-0 flex-1 flex-col overflow-visible" : "overflow-hidden",
+                    useGreenLevelWorkbenchLayout
+                      ? "overflow-visible"
+                      : embedNoQtyRecentEntries
+                        ? "flex min-h-0 flex-1 flex-col overflow-visible"
+                        : "overflow-hidden",
                   )}
                 >
                   {showProductionWorkspaceCompactLayout ? (
@@ -4234,7 +4543,7 @@ export function ProductionPage() {
                           <ProductionWorkspaceCompactPanel
                             key={scopedProductionWorkspaceKey(effectiveScopedWoId, effectiveScopedWolId)}
                             workOrderId={effectiveScopedWoId}
-                            orderType="NO_QTY"
+                            orderType={isGreenLevelFlow ? "GREEN_LEVEL" : "NO_QTY"}
                             woSummary={productionWorkspaceWoSummary}
                             canOperate={canProd}
                             executionRefreshKey={executionPanelRefreshTick}
@@ -4276,9 +4585,9 @@ export function ProductionPage() {
                       onSubmit={onPost}
                       className={cn("flex flex-col gap-2", embedNoQtyRecentEntries && "min-h-0 flex-1 gap-3")}
                     >
-                {!hideNoQtyAddProductionEntry ? (
+                {!hideScopedProductionEntry ? (
                   <>
-                    {navigateNoQtyContext ? (
+                    {navigateNoQtyContext || navigateGreenLevelContext ? (
                       <>
                         <select
                           ref={woSelectRef}
@@ -4290,7 +4599,7 @@ export function ProductionPage() {
                           disabled
                         >
                           <option value="">Select…</option>
-                          {workOrders.map((w) => (
+                          {workOrdersForProductionSelector.map((w) => (
                             <option key={w.id} value={w.id}>
                               {w.id}
                             </option>
@@ -4306,7 +4615,7 @@ export function ProductionPage() {
                           disabled
                         >
                           <option value="">Select…</option>
-                          {(linesForNoQtyEntryForm ?? []).map((l) => (
+                          {(navigateNoQtyContext ? linesForNoQtyEntryForm : linesForWo).map((l) => (
                             <option key={l.id} value={l.id}>
                               {l.id}
                             </option>
@@ -4314,7 +4623,7 @@ export function ProductionPage() {
                         </select>
                       </>
                     ) : (
-                      <div className="grid gap-2 lg:grid-cols-2 lg:items-end">
+                      <div className="relative z-0 isolate grid gap-2 lg:grid-cols-2 lg:items-end">
                     <FieldShortcutHint
                       show={shortcutHints.activeFieldId === "prodWo"}
                       hint={shortcutHints.activeFieldHintText ?? ""}
@@ -4353,10 +4662,10 @@ export function ProductionPage() {
                           {...prodLineBind}
                           className={cn("erp-select mt-0.5 w-full min-w-0 text-[13px]", operatorInputClass)}
                           value={wolId === 0 ? "" : String(wolId)}
-                          disabled={!woId || !(navigateNoQtyContext ? linesForNoQtyEntryForm : linesForWo).length}
+                          disabled={!woId || !linesForWo.length}
                         >
                           <option value="">{woId ? "Select line…" : "Select WO first…"}</option>
-                          {(navigateNoQtyContext ? linesForNoQtyEntryForm : linesForWo).map((l) => {
+                          {linesForWo.map((l) => {
                             const fl = {
                               ...l,
                               workOrderId: woId,
@@ -4365,7 +4674,7 @@ export function ProductionPage() {
                             const rem = lineRemaining(fl as FlatLine);
                             return (
                               <option key={l.id} value={l.id}>
-                                {l.fgItem.itemName} · {navigateNoQtyContext ? "Last shortage Qty" : "balance"} {fmtProdQty(rem)}
+                                {l.fgItem.itemName} · balance {fmtProdQty(rem)}
                               </option>
                             );
                           })}
@@ -4377,26 +4686,44 @@ export function ProductionPage() {
                   </>
                 ) : null}
 
+                {useGreenLevelWorkbenchLayout && selectedGreenLevelQueueRow ? (
+                  <GreenLevelProductionCurrentWoCard
+                    row={selectedGreenLevelQueueRow}
+                    fmtProdQty={fmtProdQty}
+                  />
+                ) : null}
+
+                {greenLevelDraftApprovalPending ? (
+                  <div className="sticky top-0 z-30 shrink-0" data-testid="green-level-draft-approval-strip">
+                    {renderDraftProductionBanner({ compact: true })}
+                  </div>
+                ) : null}
+
                 <div
                   className={cn(
-                    embedNoQtyRecentEntries
-                      ? "flex min-h-0 flex-1 flex-col gap-3 overflow-hidden lg:flex-row lg:gap-4"
-                      : "grid gap-3 lg:min-h-0 lg:grid-cols-[minmax(0,22rem)_minmax(0,1fr)] lg:items-start",
+                    useGreenLevelWorkbenchLayout
+                      ? cn("grid gap-3", showProductionReport && "xl:grid-cols-2 xl:items-start")
+                      : embedNoQtyRecentEntries
+                        ? "flex min-h-0 flex-1 flex-col gap-3 overflow-hidden lg:flex-row lg:gap-4"
+                        : "grid gap-3 lg:min-h-0 lg:grid-cols-[minmax(0,22rem)_minmax(0,1fr)] lg:items-start",
                   )}
                 >
                   <div
                     className={cn(
                       "min-w-0 space-y-2 lg:order-2 lg:min-h-0",
+                      useGreenLevelWorkbenchLayout && "hidden",
                       embedNoQtyRecentEntries &&
                         "flex min-h-0 flex-1 flex-col gap-3 overflow-hidden lg:order-2",
                     )}
                   >
                     {embedNoQtyRecentEntries ? (
                       <div data-testid="no-qty-production-work-queue" className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden">
+                        {navigateNoQtyContext ? (
+                          <>
                         <ProductionNoQtyWorkQueuePanel
                           rows={noQtyWorkQueueRows}
                           selectedLineId={wolId}
-                          onSelect={applyLine}
+                          onSelect={(row) => openExecutableProductionLine(row)}
                           fmtProdQty={fmtProdQty}
                         />
                         {noQtyWaitingRequirementRows.length > 0 ? (
@@ -4418,10 +4745,13 @@ export function ProductionPage() {
                             </ul>
                           </div>
                         ) : null}
+                          </>
+                        ) : null}
                         {renderRecentEntriesPanel(true)}
                       </div>
                     ) : (
                     <div className="flex flex-col gap-2">
+                      {!navigateGreenLevelContext ? (
                       <div className="space-y-2">
                         <div className="flex flex-wrap items-baseline justify-between gap-2">
                           <h3 className="text-[12px] font-semibold text-slate-700">Work queue</h3>
@@ -4482,7 +4812,7 @@ export function ProductionPage() {
                                           variant="ghost"
                                           size="sm"
                                           className="h-7 w-7 shrink-0 p-0 text-[13px]"
-                                          onClick={() => applyLine(l)}
+                                          onClick={() => openExecutableProductionLine(l)}
                                           aria-label={`Select ${l.fgItem.itemName}`}
                                         >
                                           ▶
@@ -4583,6 +4913,7 @@ export function ProductionPage() {
                           </div>
                         ) : null}
                       </div>
+                      ) : null}
                     </div>
                     )}
                   </div>
@@ -4595,7 +4926,7 @@ export function ProductionPage() {
                     )}
                   >
                     <div className={cn("space-y-2 lg:min-h-0", embedNoQtyRecentEntries && "space-y-0")}>
-                      {hideNoQtyAddProductionEntry ? (
+                      {hideScopedProductionEntry && navigateNoQtyContext ? (
                         <div
                           className="flex min-h-[10rem] flex-col justify-center rounded-md border border-indigo-200 bg-indigo-50/90 px-3 py-3 text-sm text-indigo-950"
                           data-testid={
@@ -4650,8 +4981,129 @@ export function ProductionPage() {
                             </>
                           )}
                         </div>
+                      ) : navigateGreenLevelContext && hideGreenLevelAddProductionEntry ? (
+                        <div
+                          className="flex min-h-[10rem] flex-col justify-center rounded-md border border-emerald-200 bg-emerald-50/90 px-3 py-3 text-sm text-emerald-950"
+                          data-testid={
+                            noQtyPendingShortfallDecision
+                              ? "green-level-shortfall-decision-hold"
+                              : noQtyPausedShortfallDecision
+                                ? "green-level-paused-shortfall-hold"
+                                : "green-level-production-entry-hold"
+                          }
+                        >
+                          {noQtyPendingShortfallDecision ? (
+                            <>
+                              <div className="text-[14px] font-semibold tracking-tight text-violet-950">
+                                Shortfall decision required
+                              </div>
+                              <p className="mt-2 text-[12px] leading-snug text-slate-700">
+                                Produced qty is below the WO qty. Use Confirm Report &amp; Close WO to finish this work
+                                order, or Pause Work Order to continue later. Remaining qty will be recalculated in next
+                                Green Level planning.
+                              </p>
+                            </>
+                          ) : noQtyPausedShortfallDecision ? (
+                            <>
+                              <div className="text-[14px] font-semibold tracking-tight text-amber-950">
+                                Production paused with remaining qty
+                              </div>
+                              <p className="mt-2 text-[12px] leading-snug text-slate-700">
+                                Use the production status panel above to resume production, or Confirm Report &amp; Close WO
+                                to finish this work order. Remaining qty will be recalculated in next Green Level planning.
+                              </p>
+                            </>
+                          ) : (
+                            <>
+                              <div className="text-[14px] font-semibold tracking-tight text-slate-900">
+                                Production entry completed for this work order
+                              </div>
+                              <p className="mt-2 text-[12px] leading-snug text-slate-600">
+                                Confirm the production report above to close this Green Level work order.
+                              </p>
+                            </>
+                          )}
+                        </div>
+                      ) : navigateGreenLevelContext && greenLevelShowQcWaiting ? (
+                        <div
+                          className="flex min-h-[10rem] flex-col justify-center rounded-md border border-amber-200 bg-amber-50/90 px-3 py-3 text-sm text-amber-950"
+                          data-testid="green-level-waiting-for-qa"
+                        >
+                          <div className="text-[14px] font-semibold tracking-tight text-amber-950">
+                            {PRODUCTION_QA_TERMS.WAITING_FOR_QA}
+                          </div>
+                          <p className="mt-2 text-[12px] leading-snug text-slate-700">
+                            Production is approved for this work order. QA must complete before further production entry.
+                          </p>
+                          {canOpenQaFromProduction && selectedGreenLevelQueueRow ? (
+                            <div className="mt-3">
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                className="h-8 text-[11px] font-semibold"
+                                onClick={() => {
+                                  const pendingEntryOnLine = entries.find(
+                                    (e) =>
+                                      Number(e.workOrderLine?.id ?? 0) ===
+                                        Number(selectedGreenLevelQueueRow.workOrderLineId) && qcPendingEntry(e),
+                                  );
+                                  const prodQs =
+                                    pendingEntryOnLine != null
+                                      ? `&productionId=${encodeURIComponent(String(pendingEntryOnLine.id))}`
+                                      : "";
+                                  navigate(
+                                    `/qc-entry?workOrderId=${encodeURIComponent(String(selectedGreenLevelQueueRow.workOrderId))}${prodQs}&from=production_screen`,
+                                  );
+                                }}
+                              >
+                                View QC
+                              </Button>
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : navigateGreenLevelContext && !greenLevelShowProductionEntryForm ? (
+                        greenLevelDraftApprovalPending ? null : (
+                        <div
+                          className="rounded-md border border-slate-200 bg-slate-50/90 px-3 py-2 text-sm text-slate-800"
+                          data-testid="green-level-production-readonly"
+                        >
+                          {effectiveScopedWolId <= 0 ? (
+                            <>
+                              <div className="text-[14px] font-semibold tracking-tight text-slate-900">
+                                Select a Green Level work order
+                              </div>
+                              <p className="mt-1 text-[12px] leading-snug text-slate-600">
+                                Use Open, Review, or View on a row in the table to continue.
+                              </p>
+                            </>
+                          ) : selectedGreenLevelQueueRow?.action === "review" ? (
+                            <>
+                              <div className="text-[14px] font-semibold tracking-tight text-slate-900">
+                                Draft approval pending
+                              </div>
+                              <p className="mt-1 text-[12px] leading-snug text-slate-600">
+                                Use Approve Production on the draft strip above to continue.
+                              </p>
+                            </>
+                          ) : (
+                            <>
+                              <div className="text-[14px] font-semibold tracking-tight text-slate-900">
+                                {selectedGreenLevelQueueRow?.statusLabel ?? "Work order"} — read only
+                              </div>
+                              <p className="mt-1 text-[12px] leading-snug text-slate-600">
+                                This Green Level work order is not open for new production entry. Recent batches are in
+                                the history panel.
+                              </p>
+                            </>
+                          )}
+                        </div>
+                        )
                       ) : (
-                        <ProductionNoQtyLoggingActionConsole enabled={embedNoQtyRecentEntries}>
+                        <ProductionNoQtyLoggingActionConsole
+                          enabled={embedNoQtyRecentEntries}
+                          className="relative z-10"
+                        >
                         <div className={cn(embedNoQtyRecentEntries ? "space-y-4" : "space-y-2")}>
                       {showNoQtyRmStatus && wolId > 0 ? (
                         <ProductionConciseRmStatus
@@ -4669,12 +5121,14 @@ export function ProductionPage() {
                           return (
                             <div className="space-y-1" data-testid="production-workspace-empty">
                               <div className="text-[12px] font-semibold tracking-tight text-slate-700">
-                                Production queue
+                                {navigateGreenLevelContext ? "Green Level production" : "Production queue"}
                               </div>
                               <p className="text-[11px] text-slate-500">
-                                {hasPendingProductionWork
-                                  ? "Select a row from the work queue."
-                                  : "No production work orders pending."}
+                                {navigateGreenLevelContext
+                                  ? "Select a row from the Green Level work order table."
+                                  : hasPendingProductionWork
+                                    ? "Select a row from the work queue."
+                                    : "No production work orders pending."}
                               </p>
                             </div>
                           );
@@ -4900,10 +5354,12 @@ export function ProductionPage() {
                           showCompactDraftApprovalStrip &&
                           latestDraftForSelectedWo != null &&
                           selected != null &&
-                          Number(latestDraftForSelectedWo.latest.workOrderLine?.workOrder?.id ?? 0) === Number(selected.workOrderId);
+                          Number(latestDraftForSelectedWo.latest.workOrderLine?.workOrder?.id ?? 0) ===
+                            Number(selected.workOrderId) &&
+                          (!navigateGreenLevelContext || greenLevelShowProductionEntryForm);
                         if (hasDraftLocked && !editing) {
                           return embedNoQtyRecentEntries ? (
-                            <div>{renderDraftProductionBanner({ compact: true })}</div>
+                            <div className="relative z-20">{renderDraftProductionBanner({ compact: true })}</div>
                           ) : (
                             <div className="space-y-2">
                               <div className="rounded border border-slate-200 bg-slate-50 px-2 py-1.5 text-[11px] text-slate-600">
@@ -4913,7 +5369,7 @@ export function ProductionPage() {
                             </div>
                           );
                         }
-                        if (editing && navigateNoQtyContext) {
+                        if (editing && (navigateNoQtyContext || navigateGreenLevelContext)) {
                           return (
                             <div className="space-y-2">
                               <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-[12px] text-slate-800">
@@ -5116,7 +5572,39 @@ export function ProductionPage() {
                       )}
                     </div>
                   </div>
+
+                  {useGreenLevelWorkbenchLayout && effectiveScopedWoId > 0 && showProductionReport ? (
+                    <div className="min-w-0 xl:sticky xl:top-2 xl:max-h-[min(72vh,calc(100dvh-12rem))] xl:overflow-auto">
+                      <ProductionReportPanel
+                        key={`gl-inline-report-${effectiveScopedWoId}`}
+                        workOrderId={effectiveScopedWoId}
+                        refreshKey={liveTick}
+                        enableDraftCache
+                        compact
+                        premium
+                        className="min-h-0"
+                        closeWorkOrderOnConfirm
+                        confirmButtonLabel="Confirm Report & Close WO"
+                        onConfirmed={handleProductionReportConfirmed}
+                      />
+                    </div>
+                  ) : null}
                 </div>
+
+                {useGreenLevelWorkbenchLayout ? (
+                  <div className="grid gap-3 border-t border-slate-200/90 pt-3 lg:grid-cols-[minmax(0,1fr)_minmax(16rem,22rem)] lg:items-start">
+                    <GreenLevelProductionWorkQueuePanel
+                      variant="secondary"
+                      containedScroll={!useProductionPageNaturalScroll}
+                      rows={greenLevelOtherQueueRows}
+                      selectedLineId={effectiveScopedWolId}
+                      onRowAction={requestGreenLevelRowSwitch}
+                      fmtProdQty={fmtProdQty}
+                    />
+                    <div className="min-w-0">{renderRecentEntriesPanel(true)}</div>
+                  </div>
+                ) : null}
+
                 </form>
                   </CardContent>
                     </>
@@ -5660,14 +6148,15 @@ export function ProductionPage() {
         </form>
       )}
 
-      {!placeDraftInNoQtyPrimaryCard &&
+      {!placeDraftInHardenedPrimaryCard &&
       !placeDraftAfterRegularProductionCard &&
       !productionPrimaryStripCoversDraft &&
+      !greenLevelDraftApprovalPending &&
       !(fromNoQtySo && !showNoQtyScopedProductionCard && flatLines.length > 0 && canProd) ? (
         <div className="mb-1.5">{renderDraftProductionBanner({ compact: true })}</div>
       ) : null}
 
-      {showProductionReport && !showProductionWorkspaceCompactLayout ? (
+      {showProductionReport && !showProductionWorkspaceCompactLayout && !navigateGreenLevelContext ? (
         <ProductionReportPanel
           key={scopedProductionWorkspaceKey(effectiveScopedWoId, effectiveScopedWolId)}
           workOrderId={effectiveScopedWoId}
@@ -5677,7 +6166,9 @@ export function ProductionPage() {
         />
       ) : null}
 
-      {!embedNoQtyRecentEntries && !showProductionWorkspace ? renderRecentEntriesPanel(false) : null}
+      {!embedNoQtyRecentEntries && !showProductionWorkspace && !useGreenLevelWorkbenchLayout
+        ? renderRecentEntriesPanel(false)
+        : null}
 
       {editing && canProd && !navigateNoQtyContext ? (
             <div className="mt-3 rounded border border-slate-200 bg-slate-50 p-2">
@@ -5847,7 +6338,7 @@ export function ProductionPage() {
   /** REGULAR approve modal — must render on every branch (REGULAR early returns omitted it previously). */
   const rmConsumptionApproveModal = (
     <ProductionRmConsumptionReviewModal
-      open={consumptionApproveId != null}
+      open={consumptionApproveId != null && !navigateGreenLevelContext}
       productionEntryId={consumptionApproveId}
       onClose={closeConsumptionApproveModal}
       onPreviewSettled={onConsumptionPreviewSettled}
@@ -5884,10 +6375,10 @@ export function ProductionPage() {
     );
   }
 
-  if (productionFlowMode !== "NO_QTY") {
+  if (!useHardenedProductionShell) {
     if (showProductionWorkspace) {
       return (
-        <PageContainer className="erp-flow-page -mt-1 flex max-w-none flex-col space-y-1.5 lg:min-h-0 lg:flex-1 lg:overflow-hidden">
+        <PageContainer className="erp-flow-page -mt-1 flex max-w-none flex-col space-y-1.5">
           <OperationalContextSticky className="sticky top-0 z-20 space-y-1 border-b border-slate-200/90 bg-white/95 pb-1.5 pt-0.5 shadow-sm backdrop-blur-sm">
             <DemoFlowBanner />
             <div className="flex flex-wrap items-end justify-between gap-2">
@@ -5895,7 +6386,7 @@ export function ProductionPage() {
                 <PageSmartBackLink defaultTo="/dashboard" defaultLabel="Back to Dashboard" />
                 <h1 className="text-sm font-semibold leading-tight tracking-tight text-slate-900">Production Workspace</h1>
                 <p className="text-[11px] leading-snug text-slate-600">
-                  Active shop-floor work across REGULAR and NO_QTY.
+                  Active shop-floor work across REGULAR, NO_QTY, and Green Level.
                 </p>
               </div>
               {canProd ? (
@@ -6219,14 +6710,14 @@ export function ProductionPage() {
                 </Button>
               ) : null}
             </div>
-            {noQtyWoSummary ? (
+            {hardenedWoSummary ? (
               <div className="mt-3">
-                <ProductionNoQtyOperatorContextBar summary={noQtyWoSummary} />
+                <ProductionNoQtyOperatorContextBar summary={hardenedWoSummary} />
               </div>
             ) : null}
           </>
         ) : null}
-        {!showNoQtyOperatorChrome && !showProductionWorkspaceCompactLayout ? (
+        {!showNoQtyOperatorChrome && !showProductionWorkspaceCompactLayout && navigateNoQtyContext ? (
           <PageNoQtyFlowBackLink step="PRODUCTION" />
         ) : null}
         {flowMismatchMessage ? (
@@ -6347,6 +6838,17 @@ export function ProductionPage() {
               </>
             ) : null}
           </OperationalContextBar>
+        ) : !showNoQtyOperatorChrome && showGreenLevelScopedProductionCard && !showProductionWorkspaceCompactLayout ? (
+          <ProductionFlowIdentityBar
+            flow={PRODUCTION_FLOW_GREEN_LEVEL}
+            soLabel={GREEN_LEVEL_STOCK_SOURCE_LABEL}
+            woLabel={
+              effectiveScopedWoId > 0
+                ? displayWorkOrderNo(effectiveScopedWoId, selectedWoForNoQtyChrome?.docNo ?? null)
+                : null
+            }
+            itemName={selected?.fgItem.itemName ?? null}
+          />
         ) : !showNoQtyOperatorChrome && navigateNoQtyContext && focusSoIdValid && !showProductionWorkspaceCompactLayout ? (
           <NoQtyCycleContextBar
             compact
@@ -6399,17 +6901,17 @@ export function ProductionPage() {
             <span className="font-semibold text-slate-900">{noQtyCycleDisplayStatus.label}</span>
           </div>
         ) : null}
-        {!showNoQtyOperatorChrome && navigateNoQtyContext && effectiveScopedWoId > 0 && canProd && !showProductionWorkspaceCompactLayout ? (
+        {!showNoQtyOperatorChrome && useHardenedProductionShell && effectiveScopedWoId > 0 && canProd && !showProductionWorkspaceCompactLayout ? (
           <ProductionExecutionPanel
             key={scopedProductionWorkspaceKey(effectiveScopedWoId, effectiveScopedWolId)}
             workOrderId={effectiveScopedWoId}
-            orderType="NO_QTY"
+            orderType={isGreenLevelFlow ? "GREEN_LEVEL" : "NO_QTY"}
             canOperate={canProd}
             refreshKey={executionPanelRefreshTick}
             evaluateTick={completionEvaluateTick}
             evaluateBatchQty={completionEvaluateBatchQty}
-            workOrderLabel={noQtyWoSummary?.woLabel}
-            itemName={noQtyWoSummary?.itemName}
+            workOrderLabel={hardenedWoSummary?.woLabel}
+            itemName={hardenedWoSummary?.itemName}
             onChanged={() => {
               void refresh();
             }}
@@ -6422,8 +6924,30 @@ export function ProductionPage() {
        * Phase 1: "Create Next RS" CTA removed from the Production page.
        * NO_QTY Next RS ownership now lives only on Dashboard, NO_QTY SO detail and Requirement Sheet pages.
        */}
-      <div className={cn(noQtyPremiumViewport && "flex min-h-0 flex-1 flex-col overflow-hidden")}>{main}</div>
+      <div
+        className={cn(
+          usePremiumViewport && !useProductionPageNaturalScroll && "flex min-h-0 flex-1 flex-col overflow-hidden",
+        )}
+      >
+        {main}
+      </div>
       {rmConsumptionApproveModal}
+      <GreenLevelProductionWoSwitchDialog
+        open={glWoSwitchPrompt != null}
+        woLabel={glWoSwitchPrompt?.fromWoLabel ?? "Work order"}
+        onCancel={() => setGlWoSwitchPrompt(null)}
+        onDiscard={() => {
+          if (!glWoSwitchPrompt) return;
+          clearProductionReportDraft(effectiveScopedWoId);
+          onGreenLevelQueueRowAction(glWoSwitchPrompt.targetRow);
+          setGlWoSwitchPrompt(null);
+        }}
+        onKeepDraft={() => {
+          if (!glWoSwitchPrompt) return;
+          onGreenLevelQueueRowAction(glWoSwitchPrompt.targetRow);
+          setGlWoSwitchPrompt(null);
+        }}
+      />
     </PageContainer>
   );
 }

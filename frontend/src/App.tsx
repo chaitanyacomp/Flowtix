@@ -38,6 +38,7 @@ import { QuotationsNewPage } from "./pages/QuotationsNewPage";
 import { RmPoGrnPage } from "./pages/RmPoGrnPage";
 import { RmPurchaseListPage } from "./pages/rmPurchase/RmPurchaseListPage";
 import { RmPurchasePoDetailPage } from "./pages/rmPurchase/RmPurchasePoDetailPage";
+import { RmPurchasePoTraceabilityPage } from "./pages/rmPurchase/RmPurchasePoTraceabilityPage";
 import { GrnDetailPage } from "./pages/rmPurchase/GrnDetailPage";
 import { PurchaseBillsListPage } from "./pages/PurchaseBillsListPage";
 import { PurchaseBillNewPage } from "./pages/PurchaseBillNewPage";
@@ -62,6 +63,7 @@ import { MaterialPlanningPage } from "./pages/MaterialPlanningPage";
 import { RmStockPlanningPage } from "./pages/RmStockPlanningPage";
 import { ProcurementPlanningPage } from "./pages/ProcurementPlanningPage";
 import { MaterialIssuePage } from "./pages/MaterialIssuePage";
+import { ProductionReleaseHandoffPage } from "./pages/ProductionReleaseHandoffPage";
 import { ProductionMaterialRequestsPage } from "./pages/ProductionMaterialRequestsPage";
 import { ProductionRmReturnsPage } from "./pages/ProductionRmReturnsPage";
 import { ProductionRmVarianceReportPage } from "./pages/ProductionRmVarianceReportPage";
@@ -100,6 +102,8 @@ import {
   ENQUIRY_QUOTATION_WRITE_ROLES,
   RS_WRITE_ROLES,
   WO_PLAN_PREP_ROLES,
+  WO_WRITE_ROLES,
+  GREEN_LEVEL_WO_PLACEMENT_ROLES,
   QA_PAGE_ROLES,
   QA_REPORT_READ_ROLES,
   DISPATCH_READ_ROLES,
@@ -119,6 +123,7 @@ import {
   RM_PO_READ_ROLES,
   STOCK_WRITE_ROLES,
 } from "./config/erpRoles";
+import { GreenLevelWoPlacementPage } from "./pages/store/GreenLevelWoPlacementPage";
 import { DatabaseCleanupPage } from "./pages/DatabaseCleanupPage";
 import { BackupRestorePage } from "./pages/BackupRestorePage";
 import { TallyMasterImportPage } from "./pages/TallyMasterImportPage";
@@ -565,6 +570,14 @@ export default function App() {
           }
         />
         <Route
+          path="/production-release"
+          element={
+            <ProtectedRoute allowedRoles={[...MATERIAL_ISSUE_ROLES]}>
+              <ProductionReleaseHandoffPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
           path="/rm-po-grn"
           element={
             <ProtectedRoute allowedRoles={["ADMIN", "PURCHASE", "STORE"]}>
@@ -575,6 +588,7 @@ export default function App() {
           <Route index element={<RmPurchaseListPage />} />
           <Route path="create" element={<RmPurchaseListPage />} />
           <Route path=":poId" element={<RmPurchasePoDetailPage />} />
+          <Route path=":poId/traceability" element={<RmPurchasePoTraceabilityPage />} />
         </Route>
         <Route
           path="/grn/:grnId"
@@ -642,9 +656,17 @@ export default function App() {
           }
         />
         <Route
+          path="/store/green-level-wo"
+          element={
+            <ProtectedRoute allowedRoles={[...GREEN_LEVEL_WO_PLACEMENT_ROLES]}>
+              <GreenLevelWoPlacementPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
           path="/work-orders"
           element={
-            <ProtectedRoute allowedRoles={["ADMIN", "PRODUCTION"]}>
+            <ProtectedRoute allowedRoles={[...WO_WRITE_ROLES]}>
               <WorkOrdersPage />
             </ProtectedRoute>
           }

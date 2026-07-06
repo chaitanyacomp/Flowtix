@@ -50,4 +50,17 @@ describe("productionNavigation", () => {
     expect(href).toContain("workOrderId=9");
     expect(href).toContain("workOrderLineId=12");
   });
+
+  it("routes Green Level work orders to GREEN_LEVEL production flow", () => {
+    const href = buildProductionScopedHref({
+      orderType: "GREEN_LEVEL",
+      workOrderId: 42,
+      workOrderLineId: 99,
+    });
+    expect(href).toContain("flow=GREEN_LEVEL");
+    expect(href).toContain("workOrderId=42");
+    expect(href).toContain("workOrderLineId=99");
+    expect(href).not.toContain("flow=REGULAR_SO");
+    expect(href).not.toContain("salesOrderId=");
+  });
 });

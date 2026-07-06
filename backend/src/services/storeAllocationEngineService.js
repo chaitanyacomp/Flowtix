@@ -71,7 +71,7 @@ async function allocateForWorkOrder(input, actor = {}, db = prisma, deps = {}) {
     throw err;
   }
 
-  // Ensure PMR exists and is submitted/open for Store issue.
+  // Load the WO's existing PMR; allocation must not auto-create PMRs.
   const pmr = await ensurePmr(workOrderId, actor, db);
   const pmrId = Number(pmr?.id);
   if (!pmrId) {

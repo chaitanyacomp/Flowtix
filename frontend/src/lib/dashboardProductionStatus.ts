@@ -1,5 +1,6 @@
 import { ROW_NUM_EPS } from "./dispatchBacklog";
 import { NO_QTY_TERMS } from "./flowTerminology";
+import { isGreenLevelReplenishmentSourceType } from "./productionFlowContract";
 import { workOrderHrefForOpenWo } from "./operationalWorkspaceLinks";
 import { holdReasonLabel } from "./workOrderLifecycle";
 import {
@@ -27,6 +28,7 @@ export type DashboardProductionStatusSource = {
   productionBlockReasonLabel?: string | null;
   productionBlockRemarks?: string | null;
   orderType?: string | null;
+  sourceType?: string | null;
   nextAction?: string | null;
   hasPendingQc?: boolean;
   dispatchableQty?: number;
@@ -93,12 +95,18 @@ export type NoQtyCarryContext = {
   bySoItem: Map<string, NoQtyPeer[]>;
 };
 
-function flowLabelFromOrderType(orderType?: string | null): string {
-  return orderType === "NO_QTY" ? NO_QTY_TERMS.AGREEMENT_LABEL : "REGULAR Order";
+function flowLabelFromOrderType(orderType?: string | null, sourceType?: string | null): string {
+  if (orderType === "NO_QTY") return NO_QTY_TERMS.AGREEMENT_LABEL;
+  if (orderType === "GREEN_LEVEL" || isGreenLevelReplenishmentSourceType(sourceType)) return "GREEN_LEVEL";
+  return "REGULAR Order";
 }
 
 function isNoQtyOrder(orderType?: string | null): boolean {
   return orderType === "NO_QTY";
+}
+
+function isGreenLevelProductionRow(row: Pick<DashboardProductionStatusSource, "orderType" | "sourceType">): boolean {
+  return row.orderType === "GREEN_LEVEL" || isGreenLevelReplenishmentSourceType(row.sourceType);
 }
 
 function soItemKey(row: DashboardProductionStatusSource): string | null {
@@ -357,6 +365,49 @@ function operationalStatusFromNoQtyRow(
   return { label: "Production Pending", tone: "running" };
 }
 
+/** Green Level stock replenishment — hardened execution without RS / SO references. */
+function operationalStatusFromGreenLevelRow(row: DashboardProductionStatusSource): ProductionOperationalStatus {
+  const produced = Number(row.producedQty ?? 0);
+  const remaining = Math.max(0, Number(row.balanceQty ?? 0));
+  const next = String(row.nextAction ?? "").toUpperCase();
+  const woStatus = String(row.status ?? "").toUpperCase();
+
+  if (row.productionExecutionStatus === "BLOCKED") {
+    const blocker =
+      row.productionBlockReasonLabel ??
+      (row.productionBlockReason ? row.productionBlockReason.replace(/_/g, " ") : "Blocked");
+    return { label: blocker, tone: "partial" };
+  }
+  if (next === "PRODUCTION_SHORTFALL_DECISION" || row.productionExecutionStatus === "SHORTFALL_PENDING") {
+    return { label: "Resolve Shortfall", tone: "partial" };
+  }
+  if (woStatus === "HOLD" || next === "ON_HOLD") {
+    return {
+      label: holdReasonLabel(row.holdReason) === "On hold" ? "On Hold" : `On Hold - ${holdReasonLabel(row.holdReason)}`,
+      tone: "partial",
+    };
+  }
+  if (woStatus === "CLOSED_WITH_SHORTFALL") {
+    return { label: "Shortfall Closed", tone: "idle" };
+  }
+  if (next === "QC_PENDING" || row.hasPendingQc) {
+    return { label: "QA in progress", tone: "qc" };
+  }
+  if (produced > ROW_NUM_EPS && remaining > ROW_NUM_EPS) {
+    return { label: "Continue Production", tone: "running" };
+  }
+  if (produced <= ROW_NUM_EPS) {
+    if (woStatus === "IN_PROGRESS" || woStatus === "PENDING" || next === "PRODUCTION_PENDING") {
+      return { label: "Ready for Production", tone: "running" };
+    }
+    return { label: "Waiting for Production", tone: "running" };
+  }
+  if (remaining <= ROW_NUM_EPS) {
+    return { label: "Production Complete", tone: "idle" };
+  }
+  return { label: "In Production", tone: "running" };
+}
+
 /** Map production-queue snapshot to operator-facing live status (presentation only). */
 export function operationalStatusFromProductionRow(
   row: DashboardProductionStatusSource,
@@ -365,6 +416,9 @@ export function operationalStatusFromProductionRow(
   if (isNoQtyOrder(row.orderType)) {
     const ctx = allRows?.length ? buildNoQtyCarryContext(allRows) : null;
     return operationalStatusFromNoQtyRow(row, ctx);
+  }
+  if (isGreenLevelProductionRow(row)) {
+    return operationalStatusFromGreenLevelRow(row);
   }
   return operationalStatusFromRegularRow(row);
 }
@@ -409,8 +463,11 @@ export function buildDashboardProductionStatusRows(
     const remaining = Math.max(0, Number(r.balanceQty ?? 0));
     const operationalStatus = isNoQtyOrder(r.orderType)
       ? operationalStatusFromNoQtyRow(r, noQtyCtx)
-      : operationalStatusFromRegularRow(r);
-    const shortageQty = isNoQtyOrder(r.orderType) ? noQtyOperatorPendingQtyFromRow(r) : 0;
+      : isGreenLevelProductionRow(r)
+        ? operationalStatusFromGreenLevelRow(r)
+        : operationalStatusFromRegularRow(r);
+    const shortageQty =
+      isNoQtyOrder(r.orderType) || isGreenLevelProductionRow(r) ? noQtyOperatorPendingQtyFromRow(r) : 0;
     const erpAdjustedPlanningQty = isNoQtyOrder(r.orderType) ? noQtyErpAdjustedPlanningQty(r) : 0;
     const hideProgress =
       operationalStatus.tone === "carryForward" || operationalStatus.tone === "carriedForward";
@@ -438,7 +495,7 @@ export function buildDashboardProductionStatusRows(
     const rowEnriched: DashboardProductionStatusRow = {
       ...r,
       actionHref,
-      flowLabel: flowLabelFromOrderType(r.orderType),
+      flowLabel: flowLabelFromOrderType(r.orderType, r.sourceType),
       operationalStatus,
       remainingQty: remaining,
       shortageQty,
@@ -493,9 +550,9 @@ export function formatProductionQty(q: number): string {
 
 /** True when row should show Planned / Prod / Pending (NO_QTY operator qty). */
 export function productionStatusUsesPendingColumn(
-  row: Pick<DashboardProductionStatusRow, "orderType">,
+  row: Pick<DashboardProductionStatusRow, "orderType" | "sourceType">,
 ): boolean {
-  return isNoQtyOrder(row.orderType);
+  return isNoQtyOrder(row.orderType) || isGreenLevelProductionRow(row);
 }
 
 /** @deprecated Use productionStatusUsesPendingColumn */

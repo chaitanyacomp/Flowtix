@@ -759,7 +759,10 @@ async function returnRmStockForProductionBatchFromProductionLocations(tx, { prod
  * @param {Array<{ orderType?: string | null, workOrderLineId?: number }>} rows
  */
 async function attachRmReadinessToProductionQueueRows(db, rows) {
-  const targets = rows.filter((r) => Number(r.workOrderLineId) > 0);
+  const targets = rows.filter((r) => {
+    if (!(Number(r.workOrderLineId) > 0)) return false;
+    return String(r.sourceType ?? "").toUpperCase() !== "GREEN_LEVEL_REPLENISHMENT";
+  });
   await Promise.all(
     targets.map(async (row) => {
       try {

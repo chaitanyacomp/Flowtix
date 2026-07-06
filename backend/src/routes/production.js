@@ -11,6 +11,10 @@ const {
   getUsableItemStockQty,
   STOCK_EPS,
 } = require("../services/stockService");
+const {
+  createFgQcStockLocationResolver,
+  resolveStockTxnReversalLocationId,
+} = require("../services/fgStockPostingLocationService");
 const auditLog = require("../services/auditLog");
 const { logActivity } = require("../services/activityLogService");
 const {
@@ -36,6 +40,11 @@ const { upsertRegularSoPlanningSnapshot } = require("../services/regularSoPlanni
 const {
   ensureSubmittedProductionMaterialRequestForWorkOrder,
 } = require("../services/productionMaterialRequestService");
+const {
+  GREEN_LEVEL_WO_SOURCE_TYPE,
+  buildGreenLevelWoPlacement,
+  createGreenLevelWorkOrdersFromPlan,
+} = require("../services/greenLevelWorkOrderService");
 const {
   assertWorkOrderLinesAgainstSalesOrder,
   loadWorkOrderQuantityContext,
@@ -122,13 +131,14 @@ const {
 async function assertNoQtyWorkOrderInActiveCycleOrThrow(tx, workOrderId, messagePrefix) {
   const wo = await tx.workOrder.findUnique({
     where: { id: workOrderId },
-    select: { id: true, salesOrderId: true, cycleId: true, status: true },
+    select: { id: true, salesOrderId: true, cycleId: true, status: true, sourceType: true },
   });
   if (!wo) {
     const err = new Error("Work order not found.");
     err.statusCode = 404;
     throw err;
   }
+  if (wo.sourceType === GREEN_LEVEL_WO_SOURCE_TYPE || wo.salesOrderId == null) return { wo, so: null };
   const so = await tx.salesOrder.findUnique({
     where: { id: wo.salesOrderId },
     select: { id: true, orderType: true, internalStatus: true, currentCycleId: true },
@@ -182,13 +192,14 @@ async function assertNoQtyWorkOrderInActiveCycleOrThrow(tx, workOrderId, message
 async function assertNoQtyWorkOrderEligibleForQcOrThrow(tx, workOrderId) {
   const wo = await tx.workOrder.findUnique({
     where: { id: workOrderId },
-    select: { id: true, salesOrderId: true, cycleId: true },
+    select: { id: true, salesOrderId: true, cycleId: true, sourceType: true },
   });
   if (!wo) {
     const err = new Error("Work order not found.");
     err.statusCode = 404;
     throw err;
   }
+  if (wo.sourceType === GREEN_LEVEL_WO_SOURCE_TYPE || wo.salesOrderId == null) return;
   const so = await tx.salesOrder.findUnique({
     where: { id: wo.salesOrderId },
     select: { id: true, orderType: true, internalStatus: true },
@@ -454,6 +465,9 @@ async function buildWorkOrderListPayload(db, rows, { pendingOnly, includeWorkOrd
     const lines = pendingOnly
       ? linesWithMetrics.filter((l) => {
           if (l.id === includeWorkOrderLineId) return true;
+          const isGlWo =
+            String(wo.sourceType ?? "").toUpperCase() === "GREEN_LEVEL_REPLENISHMENT";
+          if (isGlWo && l.qcPendingQty > REPORT_QUEUE_EPS) return true;
           if (l.remainingQty <= REPORT_QUEUE_EPS) return false;
           if (l.qcPendingQty > REPORT_QUEUE_EPS && l.remainingQty <= REPORT_QUEUE_EPS) return false;
           return true;
@@ -464,11 +478,112 @@ async function buildWorkOrderListPayload(db, rows, { pendingOnly, includeWorkOrd
   return pendingOnly ? mapped.filter((wo) => (wo.lines || []).length > 0) : mapped;
 }
 
+productionRouter.get(
+  "/green-level-work-orders/placement",
+  requireAuth,
+  requireRole(["ADMIN", "STORE"]),
+  async (req, res, next) => {
+    try {
+      const planIdRaw = req.query.planId;
+      const planId = planIdRaw != null && String(planIdRaw).trim() !== "" ? Number(planIdRaw) : null;
+      const placement = await buildGreenLevelWoPlacement(prisma, { planId });
+      return res.json(placement);
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
+productionRouter.post(
+  "/green-level-work-orders",
+  requireAuth,
+  requireRole(["ADMIN", "STORE"]),
+  async (req, res, next) => {
+    try {
+      const body = z
+        .object({
+          planId: z.coerce.number().int().positive(),
+          lines: z
+            .array(
+              z.object({
+                fgItemId: z.coerce.number().int().positive(),
+                qty: z.coerce.number().positive(),
+              }),
+            )
+            .optional()
+            .nullable(),
+        })
+        .parse(req.body ?? {});
+
+      const result = await prisma.$transaction(async (tx) => {
+        const woResult = await createGreenLevelWorkOrdersFromPlan(tx, {
+          planId: body.planId,
+          lines: Array.isArray(body.lines) ? body.lines : undefined,
+        });
+        if (!woResult.created || !woResult.workOrderId) {
+          const err = new Error(
+            woResult.skippedReason === "NO_SELECTED_GREEN_LEVEL_ITEMS"
+              ? "No selected Green Level replenishment quantity is available for Work Order creation."
+              : "No Green Level quantity remains for Work Order creation.",
+          );
+          err.statusCode = 409;
+          throw err;
+        }
+
+        const pmrs = [];
+        for (const wo of woResult.workOrders ?? []) {
+          const pmr = await ensureSubmittedProductionMaterialRequestForWorkOrder(
+            wo.workOrderId,
+            { userId: req.user?.userId, role: req.user?.role },
+            tx,
+            { allowCreate: true },
+          );
+          pmrs.push({
+            workOrderId: wo.workOrderId,
+            pmrId: pmr?.id ?? null,
+            pmrDocNo: pmr?.docNo ?? null,
+            status: pmr?.status ?? null,
+          });
+        }
+
+        return { ...woResult, pmrs };
+      });
+
+      await logActivity({
+        user: req.user,
+        module: ACTIVITY_MODULES.WORK_ORDER,
+        entityType: ACTIVITY_ENTITY_TYPES.WORK_ORDER,
+        entityId: result.workOrderId,
+        docNo: result.workOrderDocNo ?? undefined,
+        action: ACTIVITY_ACTIONS.CREATED,
+        message: `Green Level Work Order ${result.workOrderDocNo ?? result.workOrderId} created`,
+        metadata: {
+          sourceType: GREEN_LEVEL_WO_SOURCE_TYPE,
+          monthlyProductionPlanId: body.planId,
+          workOrderIds: (result.workOrders ?? []).map((wo) => wo.workOrderId),
+        },
+      });
+
+      return res.status(201).json(result);
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
 /** Only APPROVED batches count toward WO completion vs planned qty. */
 const PE_APPROVED = "APPROVED";
 const PE_DRAFT = "DRAFT";
 const PROD_TOLERANCE_PCT = 0.05;
 const TERMINAL_WO_STATUSES = Object.freeze(["COMPLETED", "REJECTED", "CLOSED_WITH_SHORTFALL"]);
+
+function isGreenLevelReplenishmentWorkOrder(wo) {
+  return String(wo?.sourceType ?? "").toUpperCase() === GREEN_LEVEL_WO_SOURCE_TYPE;
+}
+
+function allowsWorkOrderProductionOverPlan(wo, orderType) {
+  return orderType === "NO_QTY" || isGreenLevelReplenishmentWorkOrder(wo);
+}
 
 function isTerminalWorkOrderStatus(status) {
   return TERMINAL_WO_STATUSES.includes(String(status ?? "").toUpperCase());
@@ -653,7 +768,10 @@ function normalizeWorkOrderLinePayloads(lines) {
 async function syncWorkOrderStatusFromProduction(tx, workOrderId) {
   const wo = await tx.workOrder.findUnique({
     where: { id: workOrderId },
-    include: {
+    select: {
+      id: true,
+      status: true,
+      sourceType: true,
       lines: { select: { id: true, qty: true } },
       salesOrder: { select: { orderType: true } },
       productionExecution: { select: { executionStatus: true } },
@@ -662,6 +780,7 @@ async function syncWorkOrderStatusFromProduction(tx, workOrderId) {
   if (!wo || wo.status === "REJECTED" || !wo.lines.length) return;
   if (shouldFreezeStatusSync(wo.status)) return;
 
+  const isGreenLevel = isGreenLevelReplenishmentWorkOrder(wo);
   const isNoQty = wo.salesOrder?.orderType === "NO_QTY";
   const confirmedReport = await tx.productionWorkOrderReport.findUnique({
     where: { workOrderId },
@@ -673,7 +792,7 @@ async function syncWorkOrderStatusFromProduction(tx, workOrderId) {
     : 0;
   const rmReturnsSettled = openRmReturnPendingCount === 0;
 
-  if (isNoQty) {
+  if (isNoQty || isGreenLevel) {
     if (wo.productionExecution?.executionStatus === "COMPLETED" && hasConfirmedProductionReport && rmReturnsSettled) {
       if (wo.status !== "COMPLETED") {
         await tx.workOrder.update({ where: { id: workOrderId }, data: { status: "COMPLETED" } });
@@ -914,17 +1033,19 @@ productionRouter.post(
         },
       });
 
-      // Align Material Issue + production-readiness with the WO-level RM demand that
-      // RM Control Center already derives from BOM. Regular WO creation now ensures a
-      // submitted (store-visible) PMR so the WO appears in the Material Issue "waiting
-      // for issue" queue and its RM lines load. Mirrors the post-GRN auto-PMR path.
+      // WO creation is the only automatic PMR creation point for the initial RM demand.
       // Best-effort: WO creation must never fail because PMR ensure failed.
       if (so && so.orderType !== "NO_QTY") {
         try {
-          await ensureSubmittedProductionMaterialRequestForWorkOrder(wo.id, {
-            userId: req.user?.userId,
-            role: req.user?.role,
-          });
+          await ensureSubmittedProductionMaterialRequestForWorkOrder(
+            wo.id,
+            {
+              userId: req.user?.userId,
+              role: req.user?.role,
+            },
+            undefined,
+            { allowCreate: true },
+          );
         } catch (pmrErr) {
           console.warn(
             `Auto-ensure PMR after WO ${wo.id} creation failed:`,
@@ -1234,8 +1355,13 @@ productionRouter.post(
         );
         const orderType = String(confirmed.report?.salesOrderOrderType ?? "").toUpperCase();
         const executionStatus = String(confirmed.report?.execution?.status ?? "").toUpperCase();
+        const woMeta = await tx.workOrder.findUnique({
+          where: { id },
+          select: { sourceType: true },
+        });
+        const isGreenLevel = isGreenLevelReplenishmentWorkOrder(woMeta);
         let executionClose = null;
-        if (body.closeWorkOrder && orderType === "NO_QTY" && executionStatus !== "COMPLETED") {
+        if (body.closeWorkOrder && executionStatus !== "COMPLETED" && (orderType === "NO_QTY" || isGreenLevel)) {
           const remainderQty = Number(confirmed.report?.summary?.remainderQty ?? 0);
           executionClose = await finishProductionExecution(
             tx,
@@ -1243,8 +1369,13 @@ productionRouter.post(
             remainderQty > REPORT_QUEUE_EPS ? { shortfallOutcome: "CARRY_FORWARD" } : {},
             { actorUserId: req.user?.userId, actorRole: req.user?.role },
           );
+          await syncWorkOrderStatusFromProduction(tx, id);
         }
-        return { ...confirmed, executionClose };
+        return {
+          ...confirmed,
+          executionClose,
+          requiresShortfallDecision: executionClose ? false : confirmed.requiresShortfallDecision,
+        };
       });
       return res.status(result.alreadyConfirmed ? 200 : 201).json(result);
     } catch (e) {
@@ -1844,7 +1975,12 @@ productionRouter.post(
 
         const wol = await tx.workOrderLine.findUnique({
           where: { id: body.workOrderLineId },
-          include: { workOrder: { include: { salesOrder: { select: { orderType: true } } } }, fgItem: true },
+          include: {
+            workOrder: {
+              select: { sourceType: true, salesOrderId: true, salesOrder: { select: { orderType: true } } },
+            },
+            fgItem: true,
+          },
         });
         if (!wol) {
           const err = new Error("Work order line not found");
@@ -1856,13 +1992,9 @@ productionRouter.post(
           err.statusCode = 400;
           throw err;
         }
-        if (wol.workOrder.salesOrderId == null) {
-          const err = new Error("Production requires a work order linked to a sales order.");
-          err.statusCode = 400;
-          throw err;
+        if (wol.workOrder.salesOrderId != null) {
+          await assertSalesOrderNotCustomerReturnReplacementProduction(tx, wol.workOrder.salesOrderId);
         }
-
-        await assertSalesOrderNotCustomerReturnReplacementProduction(tx, wol.workOrder.salesOrderId);
 
         // NO_QTY: production allowed only for the active cycle and only after RS is locked.
         await assertNoQtyWorkOrderInActiveCycleOrThrow(tx, wol.workOrderId, "This work order");
@@ -1871,7 +2003,10 @@ productionRouter.post(
 
         const alreadyProduced = await sumProducedQtyOnLine(tx, wol.id);
         const lineQty = Number(wol.qty);
-        const allowOverproduction = (wol.workOrder?.salesOrder?.orderType ?? "NORMAL") === "NO_QTY";
+        const allowOverproduction = allowsWorkOrderProductionOverPlan(
+          wol.workOrder,
+          wol.workOrder?.salesOrder?.orderType ?? "NORMAL",
+        );
         rejectIfProductionQtyExceedsWoTolerance({
           lineQty,
           totalProducedQty: alreadyProduced + body.producedQty,
@@ -1956,7 +2091,9 @@ productionRouter.put(
         await lockWorkOrderLineForUpdate(tx, existing.workOrderLineId);
         const wol = await tx.workOrderLine.findUnique({
           where: { id: existing.workOrderLineId },
-          include: { workOrder: { include: { salesOrder: { select: { orderType: true } } } } },
+          include: {
+            workOrder: { select: { sourceType: true, salesOrder: { select: { orderType: true } } } },
+          },
         });
         if (!wol?.workOrder) {
           const err = new Error("Work order line not found");
@@ -1970,7 +2107,10 @@ productionRouter.put(
 
         const others = await sumProducedQtyOnLine(tx, wol.id, { excludeProductionId: id });
         const lineQty = Number(wol.qty);
-        const allowOverproduction = (wol.workOrder?.salesOrder?.orderType ?? "NORMAL") === "NO_QTY";
+        const allowOverproduction = allowsWorkOrderProductionOverPlan(
+          wol.workOrder,
+          wol.workOrder?.salesOrder?.orderType ?? "NORMAL",
+        );
         rejectIfProductionQtyExceedsWoTolerance({
           lineQty,
           totalProducedQty: others + body.producedQty,
@@ -2104,7 +2244,10 @@ productionRouter.post(
             workOrderLine: {
               include: {
                 workOrder: {
-                  include: { salesOrder: { select: { orderType: true } } },
+                  select: {
+                    sourceType: true,
+                    salesOrder: { select: { orderType: true } },
+                  },
                 },
                 fgItem: true,
               },
@@ -2138,7 +2281,7 @@ productionRouter.post(
 
         const others = await sumProducedQtyOnLine(tx, wol.id, { excludeProductionId: id });
         const woQty = Number(wol.qty);
-        const allowOverproduction = orderType === "NO_QTY";
+        const allowOverproduction = allowsWorkOrderProductionOverPlan(wol.workOrder, orderType);
         rejectIfProductionQtyExceedsWoTolerance({
           lineQty: woQty,
           totalProducedQty: others + Number(prod.producedQty),
@@ -2829,6 +2972,7 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QA"]), 
       });
 
       const woId = prod.workOrderLine.workOrderId;
+      const qcStockLocationId = await createFgQcStockLocationResolver(tx);
       // IMPORTANT: these must be declared before any REWORK pre/post reads (REWORK bucket, not production WO).
       /** @type {number | undefined} */
       let reworkStockGlobalBefore;
@@ -2881,6 +3025,7 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QA"]), 
           reworkOwnedStockTxn = await tx.stockTransaction.create({
             data: {
               itemId: fgItemIdForAssert,
+              locationId: await qcStockLocationId("REWORK"),
               transactionType: "QC",
               refId: created.id,
               qcRejectedDispositionId: dispId,
@@ -2928,6 +3073,7 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QA"]), 
           await tx.stockTransaction.create({
             data: {
               itemId: fgItemIdForAssert,
+              locationId: await qcStockLocationId("QC_HOLD"),
               transactionType: "QC",
               refId: created.id,
               qcRejectedDispositionId: dispHoldId,
@@ -2945,6 +3091,7 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QA"]), 
           await tx.stockTransaction.create({
             data: {
               itemId: fgItemIdForAssert,
+              locationId: await qcStockLocationId("SCRAP"),
               transactionType: "QC",
               refId: created.id,
               stockBucket: "SCRAP",
@@ -2999,6 +3146,7 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QA"]), 
           reworkOwnedStockTxn = await tx.stockTransaction.create({
             data: {
               itemId: fgItemIdForAssert,
+              locationId: await qcStockLocationId("REWORK"),
               transactionType: "QC",
               refId: created.id,
               qcRejectedDispositionId: createdDispositionId,
@@ -3052,6 +3200,7 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QA"]), 
           await tx.stockTransaction.create({
             data: {
               itemId: fgItemIdForAssert,
+              locationId: await qcStockLocationId("QC_HOLD"),
               transactionType: "QC",
               refId: created.id,
               qcRejectedDispositionId: dispHoldId,
@@ -3131,6 +3280,7 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QA"]), 
         await tx.stockTransaction.create({
           data: {
             itemId: fgItemId,
+            locationId: await qcStockLocationId("USABLE"),
             transactionType: "QC",
             refId: created.id,
             stockBucket: "USABLE",
@@ -3143,6 +3293,7 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QA"]), 
         await tx.stockTransaction.create({
           data: {
             itemId: fgItemId,
+            locationId: await qcStockLocationId(ledgerRejectedBucket),
             transactionType: "QC",
             refId: created.id,
             stockBucket: ledgerRejectedBucket,
@@ -3668,7 +3819,11 @@ productionRouter.post("/qc-reverse", requireAuth, requireRole(["ADMIN", "QA"]), 
       /** @type {number | null} */
       let acceptedForwardStockId = null;
       /** @type {number | null} */
+      let acceptedForwardLocationId = null;
+      /** @type {number | null} */
       let rejectedForwardStockId = null;
+      /** @type {number | null} */
+      let rejectedForwardLocationId = null;
       if (affectsUsable) {
         const accRow = await tx.stockTransaction.findFirst({
           where: {
@@ -3678,9 +3833,10 @@ productionRouter.post("/qc-reverse", requireAuth, requireRole(["ADMIN", "QA"]), 
             stockBucket: "USABLE",
           },
           orderBy: { id: "asc" },
-          select: { id: true },
+          select: { id: true, locationId: true },
         });
         acceptedForwardStockId = accRow?.id ?? null;
+        acceptedForwardLocationId = accRow?.locationId ?? null;
         if (acceptedForwardStockId == null) {
           const err = new Error("QC reversal failed: original QC usable stock row not found.");
           err.statusCode = 500;
@@ -3696,9 +3852,10 @@ productionRouter.post("/qc-reverse", requireAuth, requireRole(["ADMIN", "QA"]), 
             stockBucket: qc.rejectedStockBucket,
           },
           orderBy: { id: "asc" },
-          select: { id: true },
+          select: { id: true, locationId: true },
         });
         rejectedForwardStockId = rejRow?.id ?? null;
+        rejectedForwardLocationId = rejRow?.locationId ?? null;
         if (rejectedForwardStockId == null) {
           const err = new Error("QC reversal failed: original QC rejected-bucket stock row not found.");
           err.statusCode = 500;
@@ -3710,6 +3867,10 @@ productionRouter.post("/qc-reverse", requireAuth, requireRole(["ADMIN", "QA"]), 
         await tx.stockTransaction.create({
           data: {
             itemId: fgItemId,
+            locationId: await resolveStockTxnReversalLocationId(tx, {
+              forwardLocationId: acceptedForwardLocationId,
+              stockBucket: "USABLE",
+            }),
             transactionType: "QC_REVERSAL",
             refId: rev.id,
             reversalOfId: acceptedForwardStockId,
@@ -3724,6 +3885,10 @@ productionRouter.post("/qc-reverse", requireAuth, requireRole(["ADMIN", "QA"]), 
         await tx.stockTransaction.create({
           data: {
             itemId: fgItemId,
+            locationId: await resolveStockTxnReversalLocationId(tx, {
+              forwardLocationId: rejectedForwardLocationId,
+              stockBucket: qc.rejectedStockBucket,
+            }),
             transactionType: "QC_REVERSAL",
             refId: rev.id,
             reversalOfId: rejectedForwardStockId,

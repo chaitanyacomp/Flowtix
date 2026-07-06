@@ -160,6 +160,15 @@ describe("noQtyRsActionLabels", () => {
     );
     expect(noQtyPlanningHubHref(42)).toBe("/planning-dashboard?salesOrderId=42&source=no_qty_planning");
     expect(noQtyPlanningHubHref()).toBe("/planning-dashboard");
+    expect(
+      noQtyPlanningHubHref(42, {
+        nextCycleNo: 2,
+        action: "create-next-rs",
+        from: "pending-actions",
+      }),
+    ).toBe(
+      "/planning-dashboard?from=pending-actions&salesOrderId=42&source=no_qty_planning&action=create-next-rs&nextCycleNo=2",
+    );
     expect(createCycleRequirementSheetButtonLabel(2)).toBe("Create Cycle 2 Requirement Sheet");
     expect(noQtyCreateNextCycleContinuationLabel({ currentCycleNo: 1 })).toBe(
       "Create Cycle 2 Requirement Sheet",

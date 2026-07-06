@@ -73,6 +73,10 @@ const { maybeAutoCloseNoQtyCycle } = require("../services/noQtyCycleAutoClose");
 const { maybeAutoCloseSalesOrderOperationally } = require("../services/salesOrderOperationalAutoClose");
 const { getCompanyStateDetails } = require("../services/appSettings");
 const { freezeSalesOrderCommercialSnapshots } = require("../services/salesOrderCommercialAddress");
+const {
+  resolveFgDispatchSourceLocationId,
+  resolveStockTxnReversalLocationId,
+} = require("../services/fgStockPostingLocationService");
 
 const dispatchRouter = express.Router();
 
@@ -3055,9 +3059,11 @@ dispatchRouter.post("/dispatches/:id/lock", requireAuth, requireRole(DISPATCH_WR
       console.debug("[LOCK_BEFORE_POST]", { dispatchId: existing?.id ?? null });
 
       await assertUsableStockBeforeDispatchOut(tx, existing.itemId, qty);
+      const dispatchSourceLocationId = await resolveFgDispatchSourceLocationId(tx);
       await tx.stockTransaction.create({
         data: {
           itemId: existing.itemId,
+          locationId: dispatchSourceLocationId,
           transactionType: "DISPATCH",
           refId: id,
           stockBucket: "USABLE",
@@ -3321,9 +3327,11 @@ dispatchRouter.post(
 
         // Post stock and lock row (same as /lock).
         await assertUsableStockBeforeDispatchOut(tx, existing.itemId, qty);
+        const dispatchSourceLocationId = await resolveFgDispatchSourceLocationId(tx);
         await tx.stockTransaction.create({
           data: {
             itemId: existing.itemId,
+            locationId: dispatchSourceLocationId,
             transactionType: "DISPATCH",
             refId: id,
             stockBucket: "USABLE",
@@ -3657,6 +3665,10 @@ dispatchRouter.post(
       await tx.stockTransaction.create({
         data: {
           itemId: original.itemId,
+          locationId: await resolveStockTxnReversalLocationId(tx, {
+            forwardLocationId: forwardStockTxn.locationId,
+            stockBucket: "USABLE",
+          }),
           transactionType: "DISPATCH_REVERSAL",
           refId: reversalRow.id,
           stockBucket: "USABLE",

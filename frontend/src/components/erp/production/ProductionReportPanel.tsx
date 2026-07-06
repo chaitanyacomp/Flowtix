@@ -18,6 +18,12 @@ import {
   toWastageDetailPayload,
   validateWastageClassification,
 } from "../../../lib/productionWastageClassification";
+import {
+  clearProductionReportDraft,
+  getProductionReportDraft,
+  saveProductionReportDraft,
+  type ProductionReportLineInputDraft,
+} from "../../../lib/productionReportDraftCache";
 
 function fmtQty(n: number | null | undefined): string {
   const v = Number(n);
@@ -33,13 +39,32 @@ function fmtWhen(iso: string | null | undefined): string {
   return d.toLocaleString();
 }
 
-type LineInput = {
-  rmConsumedQty: string;
-  rmReturnQty: string;
-  scrapWasteQty: string;
-  varianceQty: string;
-  remarks: string;
-};
+type LineInput = ProductionReportLineInputDraft;
+
+function buildDefaultLineInputs(data: ProductionWorkOrderReport): Record<number, LineInput> {
+  const next: Record<number, LineInput> = {};
+  for (const ln of data.rmLines || []) {
+    const consumed = Number(ln.reportedConsumedQty ?? ln.ledgerConsumedQty ?? 0);
+    const issued = Number(ln.issuedQty ?? 0);
+    next[ln.itemId] = {
+      rmConsumedQty: fmtQty(consumed),
+      rmReturnQty: "0",
+      scrapWasteQty: fmtQty(Math.max(0, issued - consumed)),
+      varianceQty: fmtQty(issued - consumed),
+      remarks: "",
+    };
+  }
+  return next;
+}
+
+function buildDefaultWastageRows(data: ProductionWorkOrderReport): WastageDetailDraft[] {
+  return (data.confirmation?.wastageDetails || []).map((row) => ({
+    key: `wd-${row.id}`,
+    wastageTypeId: row.wastageTypeId,
+    qty: fmtQty(row.qty),
+    remarks: row.remarks ?? "",
+  }));
+}
 
 export function ProductionReportPanel({
   workOrderId,
@@ -50,6 +75,7 @@ export function ProductionReportPanel({
   confirmButtonLabel,
   confirmHelperText,
   closeWorkOrderOnConfirm = false,
+  enableDraftCache = false,
   onConfirmed,
   onStatusChange,
 }: {
@@ -61,6 +87,7 @@ export function ProductionReportPanel({
   confirmButtonLabel?: string;
   confirmHelperText?: string;
   closeWorkOrderOnConfirm?: boolean;
+  enableDraftCache?: boolean;
   onConfirmed?: (meta: {
     requiresShortfallDecision: boolean;
     remainderQty: number;
@@ -76,6 +103,7 @@ export function ProductionReportPanel({
   const [loading, setLoading] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const skipDraftPersistRef = React.useRef(false);
 
   React.useEffect(() => {
     if (!workOrderId || workOrderId <= 0) {
@@ -91,32 +119,20 @@ export function ProductionReportPanel({
       .then((data) => {
         if (cancelled) return;
         setReport(data);
-        setRemarks(data.confirmation?.remarks ?? "");
-        const next: Record<number, LineInput> = {};
-        for (const ln of data.rmLines || []) {
-          const consumed = Number(ln.reportedConsumedQty ?? ln.ledgerConsumedQty ?? 0);
-          const issued = Number(ln.issuedQty ?? 0);
-          next[ln.itemId] = {
-            rmConsumedQty: fmtQty(consumed),
-            rmReturnQty: "0",
-            scrapWasteQty: fmtQty(Math.max(0, issued - consumed)),
-            varianceQty: fmtQty(issued - consumed),
-            remarks: "",
-          };
+        const confirmed = Boolean(data.confirmation?.confirmed);
+        const cached = enableDraftCache && !confirmed ? getProductionReportDraft(workOrderId) : null;
+        const defaultLines = buildDefaultLineInputs(data);
+        const defaultWastage = buildDefaultWastageRows(data);
+        setRemarks(cached?.remarks ?? data.confirmation?.remarks ?? "");
+        setLineInputs(cached?.lineInputs ?? defaultLines);
+        setWastageRows(cached?.wastageRows ?? defaultWastage);
+        if (confirmed && enableDraftCache) {
+          clearProductionReportDraft(workOrderId);
         }
-        setLineInputs(next);
-        setWastageRows(
-          (data.confirmation?.wastageDetails || []).map((row) => ({
-            key: `wd-${row.id}`,
-            wastageTypeId: row.wastageTypeId,
-            qty: fmtQty(row.qty),
-            remarks: row.remarks ?? "",
-          })),
-        );
         onStatusChange?.({
           loading: false,
           resolved: true,
-          confirmed: Boolean(data.confirmation?.confirmed),
+          confirmed,
           hasApprovedProduction: Boolean(data.hasApprovedProduction),
         });
       })
@@ -138,7 +154,13 @@ export function ProductionReportPanel({
     return () => {
       cancelled = true;
     };
-  }, [workOrderId, refreshKey, onStatusChange]);
+  }, [workOrderId, refreshKey, onStatusChange, enableDraftCache]);
+
+  React.useEffect(() => {
+    if (!enableDraftCache || !(workOrderId > 0) || skipDraftPersistRef.current) return;
+    if (loading || !report || Boolean(report.confirmation?.confirmed)) return;
+    saveProductionReportDraft(workOrderId, { lineInputs, wastageRows, remarks }, { dirty: true });
+  }, [enableDraftCache, workOrderId, loading, report, lineInputs, wastageRows, remarks]);
 
   const updateLineInput = React.useCallback(
     (itemId: number, key: keyof LineInput, value: string) => {
@@ -216,14 +238,10 @@ export function ProductionReportPanel({
         wastageDetails: totalWastageQty > 1e-6 ? toWastageDetailPayload(wastageRows) : [],
       });
       setReport(result.report);
-      setWastageRows(
-        (result.report?.confirmation?.wastageDetails || []).map((row) => ({
-          key: `wd-${row.id}`,
-          wastageTypeId: row.wastageTypeId,
-          qty: fmtQty(row.qty),
-          remarks: row.remarks ?? "",
-        })),
-      );
+      setWastageRows(buildDefaultWastageRows(result.report));
+      if (enableDraftCache) {
+        clearProductionReportDraft(workOrderId);
+      }
       onStatusChange?.({
         loading: false,
         resolved: true,
@@ -243,6 +261,7 @@ export function ProductionReportPanel({
     }
   }, [
     closeWorkOrderOnConfirm,
+    enableDraftCache,
     lineInputs,
     onConfirmed,
     onStatusChange,
@@ -322,9 +341,11 @@ export function ProductionReportPanel({
                   <div className="font-semibold text-slate-900">{report.workOrderNo}</div>
                 </div>
                 <div>
-                  <span className="text-slate-500">SO / FG</span>
+                  <span className="text-slate-500">Source / FG</span>
                   <div className="font-medium text-slate-900">
-                    {report.salesOrderNo ?? "-"}
+                    {String(report.salesOrderNo ?? "").toLowerCase().includes("green level")
+                      ? "Green Level Stock"
+                      : (report.salesOrderNo ?? "-")}
                     {report.fgItemName ? ` - ${report.fgItemName}` : ""}
                   </div>
                 </div>

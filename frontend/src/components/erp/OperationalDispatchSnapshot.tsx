@@ -44,7 +44,7 @@ export function OperationalDispatchSnapshot({
       <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Operational snapshot</div>
       <dl className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
         <div className="rounded-md border border-slate-100 bg-white/90 px-2 py-1.5">
-          <dt className="text-[9px] font-semibold uppercase tracking-wide text-slate-500">Customer pending</dt>
+          <dt className="text-[9px] font-semibold uppercase tracking-wide text-slate-500">Allocated to SO</dt>
           <dd className="mt-0.5 text-lg font-bold tabular-nums leading-none text-slate-900">{fmtQty(metrics.customerPending)}</dd>
         </div>
         <div className="rounded-md border border-slate-100 bg-white/90 px-2 py-1.5">
@@ -56,11 +56,11 @@ export function OperationalDispatchSnapshot({
           <dd className="mt-0.5 text-lg font-bold tabular-nums leading-none text-slate-900">{fmtQty(metrics.totalDispatched)}</dd>
         </div>
         <div className="rounded-md border border-amber-100/90 bg-amber-50/55 px-2 py-1.5">
-          <dt className="text-[9px] font-semibold uppercase tracking-wide text-amber-900/85">Usable stock now</dt>
+          <dt className="text-[9px] font-semibold uppercase tracking-wide text-amber-900/85">Available FG stock</dt>
           <dd className="mt-0.5 text-lg font-bold tabular-nums leading-none text-amber-950">{fmtQty(metrics.usableStockNow)}</dd>
         </div>
         <div className="rounded-md border border-sky-100/90 bg-sky-50/65 px-2 py-1.5 sm:col-span-2 lg:col-span-1">
-          <dt className="text-[9px] font-semibold uppercase tracking-wide text-sky-900/85">Can dispatch now</dt>
+          <dt className="text-[9px] font-semibold uppercase tracking-wide text-sky-900/85">Dispatchable qty</dt>
           <dd className="mt-0.5 text-lg font-bold tabular-nums leading-none text-sky-950">{fmtQty(metrics.canDispatchNow)}</dd>
         </div>
       </dl>
@@ -74,12 +74,12 @@ export function OperationalDispatchSnapshot({
           <span className="mx-1 text-slate-400" aria-hidden>
             →
           </span>
-          <span className="font-medium text-slate-600">Remaining usable</span>
+          <span className="font-medium text-slate-600">Available FG stock</span>
         </p>
       ) : null}
       {stockLimited ? (
         <p className="mt-1.5 text-[10px] leading-snug text-slate-500">
-          Customer pending quantity is higher than current usable stock.
+          Allocated to SO quantity is higher than current available FG stock.
         </p>
       ) : null}
     </div>

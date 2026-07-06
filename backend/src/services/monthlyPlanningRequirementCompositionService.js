@@ -31,8 +31,8 @@ function n(value) {
  * @param {number} effectiveRsDemand Latest-cycle production need per SO, summed (see Phase 2 bridge)
  * @param {number} greenShortage
  */
-function computeSuggestedProduction(effectiveRsDemand, greenShortage) {
-  return round3(n(effectiveRsDemand) + n(greenShortage));
+function computeSuggestedProduction(effectiveRsDemand) {
+  return round3(n(effectiveRsDemand));
 }
 
 function resolveEffectiveRsDemand(rsItem) {
@@ -73,7 +73,7 @@ async function getRequirementComposition({
     const carryForward = round3(n(rsItem?.carryForwardQty ?? 0));
     const greenShortage = round3(n(greenItem?.shortageForGreenTarget ?? 0));
     const effectiveRsDemand = resolveEffectiveRsDemand(rsItem);
-    const suggestedProduction = computeSuggestedProduction(effectiveRsDemand, greenShortage);
+    const suggestedProduction = computeSuggestedProduction(effectiveRsDemand);
 
     if (!(rsRequirement > 0 || carryForward > 0 || greenShortage > 0)) continue;
 
@@ -85,6 +85,7 @@ async function getRequirementComposition({
       carryForward,
       greenShortage,
       suggestedProduction,
+      customerProductionQty: effectiveRsDemand,
       productionRequirementQty: effectiveRsDemand,
       greenTarget: round3(n(greenItem?.greenQty ?? 0)),
       freeFgStock: round3(n(greenItem?.freeFgStock ?? 0)),

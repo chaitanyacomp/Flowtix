@@ -51,6 +51,7 @@ export type WoWorkspaceGroup = {
   salesOrderId: number;
   soDocNo?: string | null;
   orderType?: string | null;
+  sourceType?: string | null;
   cycleId?: number | null;
   cycleNo?: number | null;
   itemName: string;
@@ -77,6 +78,7 @@ export type WoApiGroupInput = {
   salesOrderId: number;
   soDocNo?: string | null;
   orderType?: string | null;
+  sourceType?: string | null;
   cycleNo?: number | null;
   status: string;
   lines: WoWorkspaceLineItem[];
@@ -203,6 +205,8 @@ function isNoQty(orderType?: string | null): boolean {
   return orderType === "NO_QTY";
 }
 
+import { isGreenLevelWorkOrderSource } from "./greenLevelWoPlacementNavigation";
+
 function pickPrimaryLine(lines: DashboardProductionStatusRow[]): DashboardProductionStatusRow {
   return [...lines].sort((a, b) => {
     const ta = TONE_RANK[a.operationalStatus.tone] ?? 8;
@@ -287,6 +291,7 @@ function queueLinesToGroup(
     salesOrderId: primary.salesOrderId ?? 0,
     soDocNo: primary.salesOrderNo ?? null,
     orderType,
+    sourceType: primary.sourceType ?? null,
     cycleId: primary.cycleId ?? null,
     cycleNo: primary.cycleNo ?? null,
     itemName: primary.itemName,
@@ -317,6 +322,8 @@ function apiGroupToWorkspace(
   const itemName = g.lines[0]?.fgName ?? "—";
   let presentationStatus = completed ? "Completed" : st || "OPEN";
   let statusTone: WoWorkspaceGroup["statusTone"] = completed ? "idle" : "regular";
+  let actionHref = "";
+  let actionLabel = noQty ? "View Cycle" : "View WO";
   if (noQty) {
     const display = resolveNoQtyCycleDisplayStatusForWorkOrder(
       {
@@ -341,6 +348,7 @@ function apiGroupToWorkspace(
     salesOrderId: g.salesOrderId,
     soDocNo: g.soDocNo,
     orderType: g.orderType,
+    sourceType: g.sourceType ?? null,
     cycleId: null,
     cycleNo: g.cycleNo ?? null,
     itemName,
@@ -348,8 +356,8 @@ function apiGroupToWorkspace(
     section,
     presentationStatus,
     statusTone,
-    actionHref: "",
-    actionLabel: noQty ? "View Cycle" : "View WO",
+    actionHref,
+    actionLabel,
     isMuted: true,
     qtyTrace: noQty ? buildCycleOutcomeFromApiLines(g.lines) : buildCycleOutcomeFromApiLines(g.lines),
   };
@@ -401,6 +409,7 @@ export function buildWorkOrderWorkspaceSections(
   const completedCycles: WoWorkspaceGroup[] = [];
 
   for (const g of fromQueue) {
+    if (isGreenLevelWorkOrderSource(g.sourceType)) continue;
     if (g.section === "operationalOpen") operationalOpen.push(g);
     else if (g.section === "carryForwardHistory") carryForwardHistory.push(g);
     else completedCycles.push(g);
@@ -408,6 +417,7 @@ export function buildWorkOrderWorkspaceSections(
 
   for (const apiG of apiOpenGroups) {
     if (queueWoIds.has(apiG.woId)) continue;
+    if (isGreenLevelWorkOrderSource(apiG.sourceType)) continue;
     if (isNoQty(apiG.orderType)) {
       const st = String(apiG.status ?? "").toUpperCase();
       const g = apiGroupToWorkspace(apiG, "operationalOpen", queueRows);
@@ -433,6 +443,7 @@ export function buildWorkOrderWorkspaceSections(
 
   for (const apiG of apiCompletedGroups) {
     if (queueWoIds.has(apiG.woId)) continue;
+    if (isGreenLevelWorkOrderSource(apiG.sourceType)) continue;
     const g = apiGroupToWorkspace(apiG, "completedCycles", queueRows);
     if (isNoQty(g.orderType)) {
       completedCycles.push({

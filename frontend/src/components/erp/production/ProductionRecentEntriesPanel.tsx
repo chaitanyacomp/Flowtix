@@ -5,6 +5,7 @@ import { Badge } from "../../ui/badge";
 import { Button, buttonVariants } from "../../ui/button";
 import { cn } from "../../../lib/utils";
 import { PRODUCTION_QA_TERMS } from "../../../lib/productionQaTerminology";
+import { isGreenLevelProductionEntry } from "../../../lib/greenLevelProductionExecution";
 
 export type ProductionRecentEntryRow = {
   id: number;
@@ -66,6 +67,7 @@ function canOfferProductionReverse(r: ProductionRecentEntryRow, isAdminUser: boo
 type Props = {
   embedded?: boolean;
   navigateNoQtyContext: boolean;
+  navigateGreenLevelContext?: boolean;
   fromNoQtySo: boolean;
   focusSoIdValid: boolean;
   effectiveNoQtyCycleId: number | null;
@@ -87,12 +89,14 @@ type Props = {
   qcEntryHrefForEntry: (row: ProductionRecentEntryRow) => string;
   onOpenReverse: (row: ProductionRecentEntryRow) => void;
   renderApproveButtonLabel: (id: number, fallback: string, compact?: boolean) => string;
+  containedScroll?: boolean;
   className?: string;
 };
 
 export function ProductionRecentEntriesPanel({
   embedded = false,
   navigateNoQtyContext,
+  navigateGreenLevelContext = false,
   fromNoQtySo,
   focusSoIdValid,
   effectiveNoQtyCycleId,
@@ -114,8 +118,10 @@ export function ProductionRecentEntriesPanel({
   qcEntryHrefForEntry,
   onOpenReverse,
   renderApproveButtonLabel,
+  containedScroll = true,
   className,
 }: Props) {
+  const hardenedProductionContext = navigateNoQtyContext || navigateGreenLevelContext;
   const cycleScoped =
     navigateNoQtyContext && focusSoIdValid && effectiveNoQtyCycleId != null
       ? visibleEntries.filter(
@@ -129,7 +135,8 @@ export function ProductionRecentEntriesPanel({
         )
       : [];
 
-  const panelScrollsInternally = embedded || navigateNoQtyContext || showProductionWorkspace;
+  const panelScrollsInternally =
+    containedScroll && (embedded || hardenedProductionContext || showProductionWorkspace);
 
   const table = (rowsToShow: ProductionRecentEntryRow[]) => {
     const rowsOrdered = navigateNoQtyContext
@@ -163,9 +170,11 @@ export function ProductionRecentEntriesPanel({
           <thead className="sticky top-0 z-[1] border-b border-slate-200 bg-slate-50">
             <tr className="text-[11px] font-semibold uppercase tracking-wide text-slate-600">
               <th className="px-2 py-1.5 text-left">Date</th>
-              {navigateNoQtyContext ? null : <th className="px-1 py-1.5 text-center">WO</th>}
+              {navigateNoQtyContext || navigateGreenLevelContext ? null : (
+                <th className="px-1 py-1.5 text-center">WO</th>
+              )}
               {navigateNoQtyContext ? <th className="px-1 py-1.5 text-center">Cycle</th> : null}
-              <th className="px-1 py-1.5 text-center">SO</th>
+              <th className="px-1 py-1.5 text-center">{navigateGreenLevelContext ? "Source" : "SO"}</th>
               <th className="min-w-0 px-2 py-1.5 text-left">Item</th>
               <th className="px-1 py-1.5 text-center">Type</th>
               <th className="px-2 py-1.5 text-right">Produced</th>
@@ -187,7 +196,7 @@ export function ProductionRecentEntriesPanel({
                   <td className="whitespace-nowrap px-2 py-2 align-middle tabular-nums text-slate-700">
                     {new Date(r.date).toLocaleDateString()}
                   </td>
-                  {navigateNoQtyContext ? null : (
+                  {navigateNoQtyContext ? null : navigateGreenLevelContext ? null : (
                     <td className="px-1 py-1.5 text-center align-middle tabular-nums">#{r.workOrderLine.workOrder.id}</td>
                   )}
                   {navigateNoQtyContext ? (
@@ -197,7 +206,11 @@ export function ProductionRecentEntriesPanel({
                         : "—"}
                     </td>
                   ) : null}
-                  <td className="px-1 py-1.5 text-center align-middle tabular-nums">#{r.workOrderLine.workOrder.salesOrderId}</td>
+                  <td className="px-1 py-1.5 text-center align-middle tabular-nums">
+                    {isGreenLevelProductionEntry(r) || navigateGreenLevelContext
+                      ? "Stock"
+                      : `#${r.workOrderLine.workOrder.salesOrderId}`}
+                  </td>
                   <td className="min-w-0 px-2 py-1.5 align-middle">
                     <div className="truncate font-medium text-slate-800" title={r.workOrderLine.fgItem.itemName}>
                       {r.workOrderLine.fgItem.itemName}

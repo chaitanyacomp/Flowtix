@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { Badge } from "../../ui/badge";
 import { Button, buttonVariants } from "../../ui/button";
 import { cn } from "../../../lib/utils";
@@ -16,6 +16,8 @@ import { useCanCreateNextRs, useCanOpenRequirementSheet } from "../../../hooks/u
 import type { NoQtyPlannerInboxRow } from "../../../hooks/useNoQtyPlannerInbox";
 import { NoQtyMacroLifecycleStrip } from "../production/NoQtyMacroLifecycleStrip";
 import { NoQtyPreviousCyclesSection } from "./NoQtyPreviousCyclesSection";
+import { prepareNoQtyNextRequirementSheetAndNavigate } from "../../../lib/noQtyPrepareNextRsNavigate";
+import { useToast } from "../../../contexts/ToastContext";
 
 function rsStatusVariant(status: string): "success" | "warning" | "default" | "rejected" {
   if (status === "Locked") return "success";
@@ -27,8 +29,10 @@ function rsStatusVariant(status: string): "success" | "warning" | "default" | "r
 
 function PrimaryActionControl({
   action,
+  highlighted = false,
 }: {
   action: ReturnType<typeof resolveNoQtyCycleManagementPrimaryAction>;
+  highlighted?: boolean;
 }) {
   if (action.handoff) {
     return (
@@ -60,8 +64,13 @@ function PrimaryActionControl({
   return (
     <Link
       to={action.href}
-      className={cn(buttonVariants({ size: "sm" }), "h-8 font-semibold")}
+      className={cn(
+        buttonVariants({ size: "sm" }),
+        "h-8 font-semibold",
+        highlighted && "ring-2 ring-violet-600 ring-offset-2 animate-pulse",
+      )}
       data-testid="cycle-mgmt-primary-action"
+      data-highlighted={highlighted ? "true" : undefined}
     >
       {action.label}
     </Link>
@@ -71,27 +80,71 @@ function PrimaryActionControl({
 export function NoQtyCycleManagementWorkspace({
   row,
   compact = false,
+  highlightCreateNextRs = null,
 }: {
   row: NoQtyPlannerInboxRow;
   compact?: boolean;
+  highlightCreateNextRs?: { nextCycleNo: number | null; autoOpen?: boolean } | null;
 }) {
+  const navigate = useNavigate();
+  const toast = useToast();
   const canOpenRs = useCanOpenRequirementSheet();
   const canCreateNextRs = useCanCreateNextRs();
   const { so, flowState, cycleNo } = row;
+  const articleRef = React.useRef<HTMLElement | null>(null);
+  const autoCreateTriggeredRef = React.useRef(false);
 
   const primaryAction = React.useMemo(
     () => resolveNoQtyCycleManagementPrimaryAction(row, { canOpenRs, canCreateNextRs }),
     [row, canOpenRs, canCreateNextRs],
   );
 
+  const highlightPrimaryCreateNextRs = React.useMemo(() => {
+    if (!highlightCreateNextRs || primaryAction.key !== "create-next-rs") return false;
+    const target = highlightCreateNextRs.nextCycleNo;
+    if (target != null && target > 0) {
+      const rowNext =
+        so.noQtyNextPossibleCycleNo ?? (cycleNo != null && cycleNo > 0 ? cycleNo + 1 : null);
+      return rowNext == null || Number(rowNext) === Number(target);
+    }
+    return true;
+  }, [highlightCreateNextRs, primaryAction.key, so.noQtyNextPossibleCycleNo, cycleNo]);
+
+  React.useEffect(() => {
+    if (!highlightPrimaryCreateNextRs) return;
+    articleRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }, [highlightPrimaryCreateNextRs]);
+
+  React.useEffect(() => {
+    if (!highlightCreateNextRs?.autoOpen || autoCreateTriggeredRef.current) return;
+    if (!so.noQtyCreateNextRsEligible || !canCreateNextRs || primaryAction.key !== "create-next-rs") return;
+    autoCreateTriggeredRef.current = true;
+    void prepareNoQtyNextRequirementSheetAndNavigate({
+      salesOrderId: so.id,
+      navigate,
+      toast,
+      navigateState: { from: "pending-actions" },
+    });
+  }, [
+    highlightCreateNextRs?.autoOpen,
+    so.id,
+    so.noQtyCreateNextRsEligible,
+    canCreateNextRs,
+    primaryAction.key,
+    navigate,
+    toast,
+  ]);
+
   const currentStatus = React.useMemo(() => resolveCycleManagementCurrentCycleStatus(row), [row]);
   const nextRs = formatPlanningInboxNextRsLine(so);
 
   return (
     <article
+      ref={articleRef}
       className={cn(
         "rounded-md border border-slate-200 bg-white shadow-sm",
         compact ? "p-2" : "p-2.5",
+        highlightPrimaryCreateNextRs && "border-violet-400 ring-1 ring-violet-200",
       )}
       data-testid={`cycle-management-workspace-${so.id}`}
     >
@@ -109,7 +162,7 @@ export function NoQtyCycleManagementWorkspace({
             {planningInboxCustomerName(so)}
           </p>
         </div>
-        <PrimaryActionControl action={primaryAction} />
+        <PrimaryActionControl action={primaryAction} highlighted={highlightPrimaryCreateNextRs} />
       </div>
 
       <section

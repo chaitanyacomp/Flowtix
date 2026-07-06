@@ -50,9 +50,11 @@ const { loadNoQtyPendingQcDispositionQtyByItem } = require("./noQtyPostCycleAppr
 const { reconcileStaleSupervisorReworkDispositions } = require("./qcDispositionReconcile");
 const { attachRmReadinessToProductionQueueRows } = require("./productionRmReadinessService");
 const { buildMaterialAvailabilityWorkspace } = require("./materialAvailabilityWorkspaceService");
+const { loadStoreProductionReleaseEligibilityByWorkOrder } = require("./productionMaterialRequestService");
 const { getSalesOrderFgWorkOrderBalances } = require("./workOrderSoValidation");
 const { getEligibleDispatches } = require("./salesBillService");
 const { isDispatchOpenListLineCandidate } = require("./dispatchOpenListEligibility");
+const { loadStoreDispatchWorkflowTriggerSet } = require("./dispatchWorkflowTriggers");
 
 /** Single map for tests and docs — each queue row type must set quantityMetricContext from here */
 const QUEUE_SNAPSHOT_ROW_METRIC_CONTEXT = {
@@ -151,6 +153,30 @@ function logAuditWo147ContinueWorkingRows(rows) {
       title: r.nextStep ?? null,
     })),
   });
+}
+
+function filterGreenLevelUnreleasedWorkOrders(workOrders) {
+  return (workOrders || []).filter((wo) => {
+    const isGreenLevelWo = String(wo.sourceType ?? "").toUpperCase() === "GREEN_LEVEL_REPLENISHMENT";
+    if (!isGreenLevelWo) return true;
+    return Boolean(wo.materialReleasedToProductionAt);
+  });
+}
+
+function isGreenLevelReplenishmentSourceType(sourceType) {
+  return String(sourceType ?? "").toUpperCase() === "GREEN_LEVEL_REPLENISHMENT";
+}
+
+function normalizePositiveSalesOrderId(value) {
+  const id = Number(value);
+  return Number.isFinite(id) && id > 0 ? id : null;
+}
+
+function buildGreenLevelProductionHref(workOrderId, workOrderLineId = null) {
+  const q = new URLSearchParams({ from: "dashboard", flow: "GREEN_LEVEL" });
+  if (Number(workOrderId) > 0) q.set("workOrderId", String(workOrderId));
+  if (Number(workOrderLineId) > 0) q.set("workOrderLineId", String(workOrderLineId));
+  return `/production?${q.toString()}`;
 }
 
 async function filterDashboardActionableWorkOrders(workOrders, db = prisma) {
@@ -314,7 +340,8 @@ async function filterDashboardActionableWorkOrders(workOrders, db = prisma) {
     }
     return include;
   });
-  return filterNoQtyExecutionReleasedWorkOrders(db, included);
+  const released = await filterNoQtyExecutionReleasedWorkOrders(db, included);
+  return filterGreenLevelUnreleasedWorkOrders(released);
 }
 
 async function getActionableWorkOrderCount(db = prisma) {
@@ -326,6 +353,8 @@ async function getActionableWorkOrderCount(db = prisma) {
       salesOrderId: true,
       cycleId: true,
       requirementSheetId: true,
+      sourceType: true,
+      materialReleasedToProductionAt: true,
       status: true,
       cycle: { select: { id: true, status: true, cycleNo: true } },
       salesOrder: {
@@ -589,24 +618,30 @@ function buildDashboardProductionHref({
   productionId,
   workOrderLineId,
 }) {
+  const woId = workOrderId != null && Number(workOrderId) > 0 ? Number(workOrderId) : null;
+  const wolId =
+    workOrderLineId != null && Number(workOrderLineId) > 0 ? Number(workOrderLineId) : null;
+  const soId = normalizePositiveSalesOrderId(salesOrderId);
   const cyc =
     cycleId != null && Number.isFinite(Number(cycleId)) && Number(cycleId) > 0
       ? `&cycleId=${encodeURIComponent(String(cycleId))}`
       : "";
-  const noQtyBase = `source=no_qty_so&salesOrderId=${encodeURIComponent(String(salesOrderId))}${cyc}`;
+  const noQtyBase =
+    soId != null ? `source=no_qty_so&salesOrderId=${encodeURIComponent(String(soId))}${cyc}` : "";
   const pid =
     productionId != null && Number.isFinite(Number(productionId)) && Number(productionId) > 0
       ? `&productionId=${encodeURIComponent(String(productionId))}`
       : "";
-  const wo = workOrderId != null && Number(workOrderId) > 0 ? `&workOrderId=${encodeURIComponent(String(workOrderId))}` : "";
-  const wol =
-    workOrderLineId != null && Number(workOrderLineId) > 0
-      ? `&workOrderLineId=${encodeURIComponent(String(workOrderLineId))}`
-      : "";
+  const wo = woId != null ? `&workOrderId=${encodeURIComponent(String(woId))}` : "";
+  const wol = wolId != null ? `&workOrderLineId=${encodeURIComponent(String(wolId))}` : "";
+
+  if (soId == null && woId != null) {
+    return buildGreenLevelProductionHref(woId, wolId);
+  }
 
   if (nextAction === "QC_PENDING") {
     if (orderType === "NO_QTY") return `/qc-entry?${noQtyBase}${pid}`;
-    return `/qc-entry?salesOrderId=${encodeURIComponent(String(salesOrderId))}${pid}`;
+    return `/qc-entry?salesOrderId=${encodeURIComponent(String(soId))}${pid}`;
   }
   if (nextAction === "DISPATCH_PENDING") {
     if (orderType === "NO_QTY") return `/dispatch?${noQtyBase}`;
@@ -714,6 +749,8 @@ async function getProductionQueueRowsUncached() {
       salesOrderId: true,
       cycleId: true,
       requirementSheetId: true,
+      sourceType: true,
+      materialReleasedToProductionAt: true,
       status: true,
       createdAt: true,
       cycle: true,
@@ -913,10 +950,11 @@ async function getProductionQueueRowsUncached() {
   const emittedNoQtyDispatchHeadroomKeys = new Set();
   for (const wo of actionableWorkOrders) {
     const so = wo.salesOrder;
-    const orderType = so?.orderType ?? "NORMAL";
+    const isGreenLevelWo = String(wo.sourceType ?? "").toUpperCase() === "GREEN_LEVEL_REPLENISHMENT";
+    const orderType = isGreenLevelWo ? "GREEN_LEVEL" : (so?.orderType ?? "NORMAL");
     const woLines = Array.isArray(wo?.lines) ? wo.lines : [];
     if (
-      orderType === "NO_QTY" &&
+      (orderType === "NO_QTY" || orderType === "GREEN_LEVEL") &&
       wo.productionExecution?.executionStatus === "COMPLETED"
     ) {
       const hasQcPending = woLines.some((line) => (pendingQcByLineId.get(line.id) ?? 0) > QUEUE_EPS);
@@ -1070,10 +1108,10 @@ async function getProductionQueueRowsUncached() {
       if (isDashboardHoldWorkOrderStatus(wo.status)) {
         nextAction = "ON_HOLD";
         hasPendingQc = false;
-      } else if (orderType === "NO_QTY" && execStatus === "BLOCKED") {
+      } else if ((orderType === "NO_QTY" || orderType === "GREEN_LEVEL") && execStatus === "BLOCKED") {
         nextAction = "PRODUCTION_EXECUTION_BLOCKED";
         hasPendingQc = false;
-      } else if (orderType === "NO_QTY" && execStatus === "SHORTFALL_PENDING") {
+      } else if ((orderType === "NO_QTY" || orderType === "GREEN_LEVEL") && execStatus === "SHORTFALL_PENDING") {
         nextAction = "PRODUCTION_SHORTFALL_DECISION";
         hasPendingQc = false;
       }
@@ -1083,15 +1121,17 @@ async function getProductionQueueRowsUncached() {
       const rowDisplayCycleNo =
         orderType === "NO_QTY" && cycleId != null ? cycleNoById.get(cycleId) ?? null : null;
 
-      const href = buildDashboardProductionHref({
-        nextAction,
-        orderType,
-        salesOrderId: wo.salesOrderId,
-        cycleId: rowDisplayCycleId,
-        workOrderId: wo.id,
-        productionId: productionIdForQc,
-        workOrderLineId: line.id,
-      });
+      const href = isGreenLevelWo
+        ? buildGreenLevelProductionHref(wo.id, line.id)
+        : buildDashboardProductionHref({
+            nextAction,
+            orderType,
+            salesOrderId: wo.salesOrderId,
+            cycleId: rowDisplayCycleId,
+            workOrderId: wo.id,
+            productionId: productionIdForQc,
+            workOrderLineId: line.id,
+          });
 
       const displayQty =
         nextAction === "DISPATCH_PENDING"
@@ -1139,8 +1179,9 @@ async function getProductionQueueRowsUncached() {
         workOrderNo: wo.docNo ?? `WO-${wo.id}`,
         workOrderLineId: line.id,
         salesOrderId: wo.salesOrderId,
-        salesOrderNo: `SO-${wo.salesOrderId}`,
-        customerName,
+        salesOrderNo: isGreenLevelWo ? "Green Level WO" : `SO-${wo.salesOrderId}`,
+        customerName: isGreenLevelWo ? "Green Level Replenishment" : customerName,
+        sourceType: wo.sourceType ?? null,
         itemId: line.fgItemId,
         itemName: line.fgItem?.itemName ?? `Item #${line.fgItemId}`,
         requiredQty,
@@ -1340,34 +1381,55 @@ async function getContinueWorkingRowsUncached(options = {}) {
     getDispatchBacklogRows(),
     getEligibleDispatches(prisma),
   ]);
+  const dispatchTriggerBySo = await loadStoreDispatchWorkflowTriggerSet(prisma, dispRows);
 
   /** Prefer lowest pipeline rank; tie-break by larger urgency qty. */
   const prodBestBySo = new Map();
+  /** Released Green Level WOs — no sales order; keyed by workOrderId. */
+  const prodBestByGlWo = new Map();
   /** NO_QTY dispatch-pending rows (may include COMPLETED WOs / older cycles) — all emitted on continue-working. */
   /** @type {Map<number, object[]>} */
   const noQtyDispatchExtrasBySo = new Map();
   function includeProdRowInDashboard(r) {
+    if (isGreenLevelReplenishmentSourceType(r.sourceType)) {
+      return ["PENDING", "IN_PROGRESS", "PAUSED"].includes(String(r.status ?? ""));
+    }
     if (r.status === "PENDING" || r.status === "IN_PROGRESS") return true;
     return r.orderType === "NO_QTY" && r.nextAction === "DISPATCH_PENDING" && r.status === "COMPLETED";
   }
   for (const r of prodRows) {
     if (!includeProdRowInDashboard(r)) continue;
+    if (isGreenLevelReplenishmentSourceType(r.sourceType)) {
+      const woId = Number(r.workOrderId);
+      if (!(woId > 0)) continue;
+      const prev = prodBestByGlWo.get(woId);
+      const rank = dashboardNextActionRank(r.nextAction);
+      const prevRank = prev ? dashboardNextActionRank(prev.nextAction) : 999;
+      const qty = Number(r.displayQty ?? r.balanceQty ?? 0);
+      const prevQty = prev ? Number(prev.displayQty ?? prev.balanceQty ?? 0) : 0;
+      if (!prev || rank < prevRank || (rank === prevRank && qty > prevQty)) {
+        prodBestByGlWo.set(woId, r);
+      }
+      continue;
+    }
+    const soId = normalizePositiveSalesOrderId(r.salesOrderId);
+    if (soId == null) continue;
     if (
       r.orderType === "NO_QTY" &&
       r.nextAction === "DISPATCH_PENDING" &&
       Number(r.dispatchableQty ?? r.displayQty ?? 0) > QUEUE_EPS
     ) {
-      const arr = noQtyDispatchExtrasBySo.get(r.salesOrderId) ?? [];
+      const arr = noQtyDispatchExtrasBySo.get(soId) ?? [];
       arr.push(r);
-      noQtyDispatchExtrasBySo.set(r.salesOrderId, arr);
+      noQtyDispatchExtrasBySo.set(soId, arr);
     }
-    const prev = prodBestBySo.get(r.salesOrderId);
+    const prev = prodBestBySo.get(soId);
     const rank = dashboardNextActionRank(r.nextAction);
     const prevRank = prev ? dashboardNextActionRank(prev.nextAction) : 999;
     const qty = Number(r.displayQty ?? r.balanceQty ?? 0);
     const prevQty = prev ? Number(prev.displayQty ?? prev.balanceQty ?? 0) : 0;
     if (!prev || rank < prevRank || (rank === prevRank && qty > prevQty)) {
-      prodBestBySo.set(r.salesOrderId, r);
+      prodBestBySo.set(soId, r);
     }
   }
   for (const arr of noQtyDispatchExtrasBySo.values()) {
@@ -1376,16 +1438,20 @@ async function getContinueWorkingRowsUncached(options = {}) {
 
   const qcBySo = new Map();
   for (const r of qcRows) {
-    const prev = qcBySo.get(r.salesOrderId);
+    const soId = normalizePositiveSalesOrderId(r.salesOrderId);
+    if (soId == null) continue;
+    const prev = qcBySo.get(soId);
     const pending = Number(r.pendingQcQty) || 0;
-    if (!prev || pending > prev.pendingQcQty) qcBySo.set(r.salesOrderId, r);
+    if (!prev || pending > prev.pendingQcQty) qcBySo.set(soId, r);
   }
 
   const dispBySo = new Map();
   for (const r of dispRows) {
-    const prev = dispBySo.get(r.salesOrderId);
+    const soId = normalizePositiveSalesOrderId(r.salesOrderId);
+    if (soId == null) continue;
+    const prev = dispBySo.get(soId);
     const dispNow = Number(r.dispatchableNow) || 0;
-    if (!prev || dispNow > prev.dispatchableNow) dispBySo.set(r.salesOrderId, r);
+    if (!prev || dispNow > prev.dispatchableNow) dispBySo.set(soId, r);
   }
 
   /** LOCKED dispatches without a finalized bill — billing continuation for dashboard / pending actions. */
@@ -1406,12 +1472,24 @@ async function getContinueWorkingRowsUncached(options = {}) {
     ...noQtyDispatchExtrasBySo.keys(),
     ...billingBySo.keys(),
   ]);
-  if (soIds.size === 0) return [];
+  const positiveSoIds = [...soIds]
+    .map((id) => normalizePositiveSalesOrderId(id))
+    .filter((id) => id != null);
+  if (positiveSoIds.length === 0 && prodBestByGlWo.size === 0) return [];
 
-  const sos = await prisma.salesOrder.findMany({
-    where: { id: { in: [...soIds] } },
-    include: { customer: true, po: { include: { customer: true } }, currentCycle: true, dispatch: true, lines: { include: { item: true } } },
-  });
+  const sos =
+    positiveSoIds.length > 0
+      ? await prisma.salesOrder.findMany({
+          where: { id: { in: positiveSoIds } },
+          include: {
+            customer: true,
+            po: { include: { customer: true } },
+            currentCycle: true,
+            dispatch: true,
+            lines: { include: { item: true } },
+          },
+        })
+      : [];
   const soById = new Map(sos.map((s) => [s.id, s]));
 
   const qcCycleIdCandidates = [...qcBySo.values()]
@@ -1452,7 +1530,7 @@ async function getContinueWorkingRowsUncached(options = {}) {
   }
 
   const out = [];
-  for (const soId of soIds) {
+  for (const soId of positiveSoIds) {
     const so = soById.get(soId);
     if (!so || !["APPROVED", "IN_PROCESS"].includes(so.internalStatus)) continue;
 
@@ -1514,6 +1592,7 @@ async function getContinueWorkingRowsUncached(options = {}) {
     for (const d of noQtyDispExtras) {
       const mq = Number(d.dispatchableQty ?? d.displayQty ?? 0);
       if (!(mq > QUEUE_EPS)) continue;
+      if (!dispatchTriggerBySo.has(soId)) continue;
       out.push({
         key: `so-${soId}-nqdp-${d.cycleId}-${d.itemId}`,
         salesOrderId: soId,
@@ -1553,7 +1632,18 @@ async function getContinueWorkingRowsUncached(options = {}) {
       disp &&
       Number(disp.dispatchableNow) > QUEUE_EPS;
 
-    if (prodPick && !skipProdPickDupDispatch && !skipProdPickDupGlobalQc && !skipProdPickStaleProduction) {
+    const skipProdPickInventoryOnlyDispatch =
+      prodPick &&
+      prodPick.nextAction === "DISPATCH_PENDING" &&
+      !dispatchTriggerBySo.has(soId);
+
+    if (
+      prodPick &&
+      !skipProdPickDupDispatch &&
+      !skipProdPickDupGlobalQc &&
+      !skipProdPickStaleProduction &&
+      !skipProdPickInventoryOnlyDispatch
+    ) {
       const nextStep =
         prodPick.nextAction === "NEXT_RS_REQUIRED"
           ? "Create Next Requirement Sheet"
@@ -1620,7 +1710,7 @@ async function getContinueWorkingRowsUncached(options = {}) {
       !skipProdPickStaleProduction &&
       prodPick.nextAction === "DISPATCH_PENDING";
 
-    if (disp && Number(disp.dispatchableNow) > QUEUE_EPS && !skipDispatchBecauseProdPick) {
+    if (disp && Number(disp.dispatchableNow) > QUEUE_EPS && !skipDispatchBecauseProdPick && dispatchTriggerBySo.has(soId)) {
       const cycleId =
         so.orderType === "NO_QTY" && disp.cycleId != null && Number.isFinite(Number(disp.cycleId)) && Number(disp.cycleId) > 0
           ? normalizePositiveCycleId(disp.cycleId)
@@ -1692,6 +1782,50 @@ async function getContinueWorkingRowsUncached(options = {}) {
     }
   }
 
+  for (const [woId, prodPick] of prodBestByGlWo) {
+    if (!prodPick) continue;
+    const productionOnlyActions = new Set([
+      "PRODUCTION_PENDING",
+      "ON_HOLD",
+      "PRODUCTION_EXECUTION_BLOCKED",
+      "PRODUCTION_SHORTFALL_DECISION",
+    ]);
+    if (!productionOnlyActions.has(String(prodPick.nextAction ?? ""))) continue;
+    const metricQty = Number(prodPick.balanceQty ?? prodPick.displayQty ?? 0);
+    const nextStep =
+      prodPick.status === "PAUSED" || prodPick.nextAction === "ON_HOLD"
+        ? "Resume Production"
+        : prodPick.nextAction === "PRODUCTION_EXECUTION_BLOCKED"
+          ? "Resolve Production Block"
+          : prodPick.nextAction === "PRODUCTION_SHORTFALL_DECISION"
+            ? "Shortfall Decision"
+            : "Continue Production";
+    out.push({
+      key: `gl-wo-${woId}`,
+      salesOrderId: null,
+      salesOrderDocNo: prodPick.salesOrderNo ?? "Green Level WO",
+      customerName: prodPick.customerName ?? "Green Level Replenishment",
+      itemName: prodPick.itemName,
+      orderType: "GREEN_LEVEL",
+      sourceType: "GREEN_LEVEL_REPLENISHMENT",
+      cycleNo: null,
+      cycleId: null,
+      workOrderNo: prodPick.workOrderNo ?? null,
+      workOrderId: woId,
+      productionId: prodPick.productionId ?? null,
+      itemId: prodPick.itemId ?? null,
+      stageKey: "PRODUCTION",
+      productionRemaining: metricQty,
+      nextAction: prodPick.nextAction,
+      metricLabel: prodPick.status === "PAUSED" ? "Paused" : "Remaining Production",
+      metricQty,
+      nextStep,
+      href:
+        prodPick.actionHref ??
+        buildGreenLevelProductionHref(woId, prodPick.workOrderLineId ?? null),
+    });
+  }
+
   function continueWorkingRowSort(a, b) {
     const pri = (x) =>
       x.stageKey === "QC"
@@ -1713,7 +1847,7 @@ async function getContinueWorkingRowsUncached(options = {}) {
       const cb = Number(b.cycleNo ?? 1e9);
       if (ca !== cb) return ca - cb;
     }
-    return String(a.salesOrderId).localeCompare(String(b.salesOrderId));
+    return String(a.salesOrderId ?? a.workOrderId ?? "").localeCompare(String(b.salesOrderId ?? b.workOrderId ?? ""));
   }
 
   const sorted = [...out].sort(continueWorkingRowSort);
@@ -2149,24 +2283,20 @@ async function getRmRiskRowsUncached() {
         .map((row) => Number(row.workOrderId)),
     ),
   ];
-  const execByWoId = new Map();
-  if (releaseWoIds.length > 0) {
-    const execRows = await prisma.workOrderProductionExecution.findMany({
-      where: { workOrderId: { in: releaseWoIds } },
-      select: { workOrderId: true, executionStatus: true },
-    });
-    for (const exec of execRows) {
-      execByWoId.set(exec.workOrderId, exec.executionStatus);
-    }
-  }
+  const eligibilityByWo =
+    releaseWoIds.length > 0
+      ? await loadStoreProductionReleaseEligibilityByWorkOrder(prisma, releaseWoIds)
+      : new Map();
 
   const rows = rawQueue
     .filter((row) => {
       if (row.queueType !== "READY_TO_RELEASE_WO" || !row.workOrderId) return true;
-      const execStatus = execByWoId.get(Number(row.workOrderId)) ?? "NOT_STARTED";
-      return execStatus === "NOT_STARTED";
+      return Boolean(eligibilityByWo.get(Number(row.workOrderId))?.eligible);
     })
-    .map((row) => ({
+    .map((row) => {
+      const woId = row.workOrderId > 0 ? Number(row.workOrderId) : 0;
+      const gate = woId > 0 ? eligibilityByWo.get(woId) : null;
+      return {
     itemId: row.rmItemId,
     itemCode: row.rmItemName,
     itemName: row.rmItemName,
@@ -2205,16 +2335,18 @@ async function getRmRiskRowsUncached() {
     procurementCompletedForCase: row.procurementCompletedForCase ?? false,
     mrStatus: row.mrStatus ?? row.requisitionStatus ?? null,
     receivedGrnQty: row.receivedGrnQty ?? 0,
+    workOrderReleased: Boolean(gate?.released ?? row.workOrderReleased),
+    hasProductionEntry: Boolean(gate?.hasProductionEntry),
     href:
       row.workOrderId && row.workOrderId > 0
         ? `/reports/rm-shortage?workOrderId=${row.workOrderId}&rmItemId=${row.rmItemId}&onlyBlocked=true&returnTo=dashboard`
         : `/reports/rm-shortage?salesOrderId=${row.salesOrderId || ""}&materialRequirementId=${row.materialRequirementId || ""}&rmItemId=${row.rmItemId}&onlyBlocked=true&returnTo=dashboard`,
     status: row.netShortageAfterIncomingQty > QUEUE_EPS ? "CRITICAL" : "LOW_BUFFER",
     queueType: row.queueType,
-    productionExecutionStatus:
-      row.workOrderId > 0 ? (execByWoId.get(Number(row.workOrderId)) ?? "NOT_STARTED") : null,
+    productionExecutionStatus: woId > 0 ? (gate?.executionStatus ?? "NOT_STARTED") : null,
     quantityMetricContext: QUEUE_SNAPSHOT_ROW_METRIC_CONTEXT.rmRisk,
-  }));
+  };
+    });
 
   rows.sort((a, b) => {
     const ac = a.status === "CRITICAL" ? 0 : 1;

@@ -6,7 +6,7 @@ import { useAuth } from "../../hooks/useAuth";
 import { PURCHASE_BILL_DRAFT_ROLES, hasErpRole } from "../../config/erpRoles";
 import { GrnDocumentView } from "../../components/rmPurchase/GrnDocumentView";
 import type { GrnCompanyProfile, GrnDocumentPayload } from "../../lib/grnDocument";
-import { buildRmPoDetailHref } from "../../lib/rmPurchaseWoContinuity";
+import { buildRmPoPageReturnHref } from "../../lib/procurementRelatedDocuments";
 
 export function GrnDetailPage() {
   const { grnId: grnIdParam } = useParams();
@@ -77,7 +77,7 @@ export function GrnDetailPage() {
   const poHref =
     returnTo.startsWith("/") && returnTo.includes("/rm-po-grn/")
       ? returnTo
-      : buildRmPoDetailHref(detail?.po.id ?? 0);
+      : buildRmPoPageReturnHref(detail?.po.id ?? 0);
 
   return (
     <PageContainer>

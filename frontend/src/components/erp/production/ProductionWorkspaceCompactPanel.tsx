@@ -128,7 +128,10 @@ export function ProductionWorkspaceCompactPanel({
         >
           <div className="text-[13px] font-semibold text-amber-950">Below WO qty</div>
           <div className="mt-0.5 text-[12px] font-medium tabular-nums text-amber-900">
-            Short {Math.max(0, planned - produced)} units — carry forward on close
+            Short {Math.max(0, planned - produced)} units
+            {String(orderType ?? "").trim() !== "GREEN_LEVEL"
+              ? " — carry forward on close"
+              : " — remaining qty will be recalculated in next Green Level planning"}
           </div>
         </div>
       ) : null}

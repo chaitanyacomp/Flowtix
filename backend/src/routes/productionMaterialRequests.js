@@ -10,6 +10,7 @@ const {
   buildBomSuggestionsForWorkOrder,
   listProductionMaterialRequests,
   getProductionMaterialRequestById,
+  getExistingProductionMaterialRequestForWorkOrder,
   createProductionMaterialRequest,
   submitProductionMaterialRequest,
   cancelProductionMaterialRequest,
@@ -19,6 +20,8 @@ const {
   releaseWorkOrderMaterialToProduction,
   acknowledgePmrIssueLater,
   ensureSubmittedProductionMaterialRequestForWorkOrder,
+  STORE_ISSUE_STATUSES,
+  PMR_ISSUED_STATUSES,
   PMR_SHORT_ISSUE_WAIVE_REASONS,
 } = require("../services/productionMaterialRequestService");
 
@@ -53,6 +56,16 @@ pmrRouter.get("/", requireAuth, requireRole(readRoles), async (req, res, next) =
   }
 });
 
+pmrRouter.get("/release-handoff-queue", requireAuth, requireRole(readRoles), async (req, res, next) => {
+  try {
+    const { buildStoreProductionReleaseHandoffQueue } = require("../services/pendingActionsService");
+    const rows = await buildStoreProductionReleaseHandoffQueue(prisma);
+    return res.json({ count: rows.length, rows });
+  } catch (e) {
+    return next(e);
+  }
+});
+
 pmrRouter.get("/:id/issue-context", requireAuth, requireRole(storeRoles), async (req, res, next) => {
   try {
     const id = Number(req.params.id);
@@ -67,10 +80,19 @@ pmrRouter.get("/:id/issue-context", requireAuth, requireRole(storeRoles), async 
   }
 });
 
-pmrRouter.get("/:id", requireAuth, requireRole(readRoles), async (req, res, next) => {
+pmrRouter.get("/for-work-order/:workOrderId/release-handoff", requireAuth, requireRole(readRoles), async (req, res, next) => {
   try {
-    const data = await getProductionMaterialRequestById(Number(req.params.id));
-    return res.json(data);
+    const pmr = await getExistingProductionMaterialRequestForWorkOrder(Number(req.params.workOrderId), prisma, {
+      statuses: PMR_ISSUED_STATUSES,
+      preferIssued: true,
+    });
+    if (!pmr) {
+      const err = new Error("No issued PMR exists for this work order release handoff.");
+      err.statusCode = 404;
+      err.code = "ISSUED_PMR_NOT_FOUND_FOR_WORK_ORDER";
+      throw err;
+    }
+    return res.json(pmr);
   } catch (e) {
     return next(e);
   }
@@ -103,10 +125,8 @@ pmrRouter.post("/", requireAuth, requireRole(productionRoles), async (req, res, 
   }
 });
 
-// Ensure a submitted (store-visible) PMR exists for a work order (Regular or NO_QTY), building RM
-// lines from BOM when needed. Lets the Material Issue Workspace load RM lines for a WO
-// that has no PMR yet (the same WO-level RM demand RM Control Center derives from BOM).
-// Idempotent: returns the existing open PMR when one already exists.
+// Lookup/reuse the PMR for a work order. This endpoint must not create PMRs;
+// PMR auto-creation belongs only to the Work Order creation transaction/path.
 pmrRouter.post("/ensure-for-work-order", requireAuth, requireRole(readRoles), async (req, res, next) => {
   try {
     const workOrderId = Number(req.body?.workOrderId);
@@ -124,11 +144,28 @@ pmrRouter.post("/ensure-for-work-order", requireAuth, requireRole(readRoles), as
       err.statusCode = 404;
       throw err;
     }
-    const pmr = await ensureSubmittedProductionMaterialRequestForWorkOrder(workOrderId, {
-      userId: req.user?.userId,
-      role: req.user?.role,
-    });
+    const pmr = await ensureSubmittedProductionMaterialRequestForWorkOrder(
+      workOrderId,
+      { userId: req.user?.userId, role: req.user?.role },
+      prisma,
+      { allowCreate: false },
+    );
+    if (!STORE_ISSUE_STATUSES.includes(String(pmr?.status ?? "").trim().toUpperCase())) {
+      const err = new Error("No PMR is pending material issue for this work order.");
+      err.statusCode = 404;
+      err.code = "PMR_NOT_PENDING_MATERIAL_ISSUE_FOR_WORK_ORDER";
+      throw err;
+    }
     return res.status(200).json(pmr);
+  } catch (e) {
+    return next(e);
+  }
+});
+
+pmrRouter.get("/:id", requireAuth, requireRole(readRoles), async (req, res, next) => {
+  try {
+    const data = await getProductionMaterialRequestById(Number(req.params.id));
+    return res.json(data);
   } catch (e) {
     return next(e);
   }

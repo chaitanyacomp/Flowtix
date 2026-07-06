@@ -1161,9 +1161,9 @@ function DispatchDecisionSummaryCard(props: {
     // Long-form partial guidance lives only in the prepare panel (right column).
     shortNote = "";
   } else if (regNormal) {
-    shortNote = `Ready to dispatch — max prepare now ${fmtDispatchQty(Math.min(maxNow, pending))} (${fmtDispatchQty(
+    shortNote = `Dispatchable now ${fmtDispatchQty(Math.min(maxNow, pending))} (${fmtDispatchQty(
       pending,
-    )} pending on order).`;
+    )} allocated to SO). Available FG stock is not mandatory to ship immediately.`;
   } else if (isRep) {
     shortNote = `You can prepare up to ${fmtDispatchQty(maxNow)} within return limits and stock.`;
   } else {
@@ -1174,14 +1174,14 @@ function DispatchDecisionSummaryCard(props: {
     return (
       <div className="mb-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 border-b border-slate-200/80 pb-1.5">
         <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[11px] leading-none">
-          <span className="text-slate-500">Pending</span>
+          <span className="text-slate-500">{regNormal ? "Allocated to SO" : "Pending"}</span>
           <span className="font-bold tabular-nums text-amber-950">{fmtDispatchQty(pending)}</span>
         </div>
         <span className="hidden text-slate-300 sm:inline" aria-hidden>
           ·
         </span>
         <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[11px] leading-none">
-          <span className="text-slate-500">Ready now</span>
+          <span className="text-slate-500">{regNormal ? "Dispatchable qty" : "Ready now"}</span>
           <span
             className={cn(
               "font-bold tabular-nums",
@@ -1195,7 +1195,7 @@ function DispatchDecisionSummaryCard(props: {
           ·
         </span>
         <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[11px] leading-none">
-          <span className="text-slate-500">Usable</span>
+          <span className="text-slate-500">{regNormal ? "Available FG stock" : "Usable"}</span>
           <span className="font-semibold tabular-nums text-slate-900">{fmtDispatchQty(usable)}</span>
         </div>
         {shortNote.trim() && !(regNormal && maxNow > NO_QTY_BLOCK_EPS) ? (
@@ -1242,11 +1242,11 @@ function DispatchDecisionSummaryCard(props: {
             <dd className="text-lg font-semibold tabular-nums text-slate-900">{fmtDispatchQty(delivered)}</dd>
           </div>
           <div className="rounded-md border border-amber-100 bg-amber-50/60 px-2 py-1.5">
-            <dt className="text-[11px] font-medium text-amber-900/90">Pending on order</dt>
+            <dt className="text-[11px] font-medium text-amber-900/90">{regNormal ? "Allocated to SO" : "Pending on order"}</dt>
             <dd className="text-lg font-semibold tabular-nums text-amber-950">{fmtDispatchQty(pending)}</dd>
           </div>
           <div className="rounded-md border border-slate-100 bg-slate-50/80 px-2 py-1.5">
-            <dt className="text-[11px] font-medium text-slate-600">{regNormal ? "Available stock to use" : "Stock / pool"}</dt>
+            <dt className="text-[11px] font-medium text-slate-600">{regNormal ? "Available FG stock" : "Stock / pool"}</dt>
             <dd className="text-lg font-semibold tabular-nums text-slate-900">{fmtDispatchQty(usable)}</dd>
           </div>
           <div
@@ -1257,7 +1257,7 @@ function DispatchDecisionSummaryCard(props: {
             }
           >
             <dt className={partialRegularUx ? "text-[11px] font-medium text-slate-600" : "text-[11px] font-medium text-emerald-900/90"}>
-              {partialRegularUx ? "Partial stock available" : "Max prepare now"}
+              {partialRegularUx ? "Partial stock available" : regNormal ? "Dispatchable qty" : "Max prepare now"}
             </dt>
             <dd
               className={
@@ -2617,9 +2617,9 @@ export function DispatchPage() {
             ? existingDraftQty > 1e-9
               ? `Open dispatch draft: ${fmtDispatchQty(existingDraftQty)}.`
               : null
-            : `You can save a draft up to ${fmtDispatchQty(Math.min(readyToShip, remainingSoLine))} (ready now — ${fmtDispatchQty(
+            : `You can save a draft up to ${fmtDispatchQty(Math.min(readyToShip, remainingSoLine))} (dispatchable now — ${fmtDispatchQty(
                 remainingSoLine,
-              )} pending on order).${existingDraftQty > 1e-9 ? ` Draft already saved: ${fmtDispatchQty(existingDraftQty)}.` : ""}`
+              )} allocated to SO).${existingDraftQty > 1e-9 ? ` Draft already saved: ${fmtDispatchQty(existingDraftQty)}.` : ""}`
           : selectedSo?.orderType === "NO_QTY"
             ? `You may save a draft up to ${fmtDispatchQty(readyToShip)} when ready (optional).${
                 existingDraftQty > 1e-9 ? ` Open draft: ${fmtDispatchQty(existingDraftQty)}.` : ""
@@ -4536,7 +4536,7 @@ export function DispatchPage() {
           <>
         {sp.get("mode") === "partial" && !fromNoQtySo ? (
           <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">
-            Partial dispatch mode. Remaining qty will stay pending.
+            Partial dispatch mode. Undispatched quantity stays in FG stock for future dispatch.
           </div>
         ) : null}
 
@@ -4557,12 +4557,12 @@ export function DispatchPage() {
             </span>
             <span className="text-slate-500" aria-hidden>·</span>
             <span>
-              Pending{" "}
+              Allocated to SO{" "}
               <span className="font-bold tabular-nums text-amber-950">{fmtDispatchQty(regularPartialContinuationMetrics.pending)}</span>
             </span>
             <span className="text-slate-500" aria-hidden>·</span>
             <span>
-              Available now{" "}
+              Dispatchable qty{" "}
               <span className="font-bold tabular-nums text-emerald-900">{fmtDispatchQty(regularPartialContinuationMetrics.availableNow)}</span>
             </span>
           </div>
@@ -6233,11 +6233,10 @@ export function DispatchPage() {
                           <div className="mt-2 rounded-md border border-sky-100 bg-sky-50/90 px-2 py-1.5 text-[11px] leading-snug text-sky-950">
                             {dispatchQtyParsed < headroomToPrepare - 1e-6 ? (
                               <span>
-                                Remaining{" "}
                                 <span className="font-semibold tabular-nums">
                                   {fmtDispatchQty(Math.max(0, headroomToPrepare - dispatchQtyParsed))}
                                 </span>{" "}
-                                will stay as store stock.
+                                will stay in available FG stock.
                               </span>
                             ) : (
                               <span>Full available qty will be dispatched.</span>
@@ -6253,13 +6252,13 @@ export function DispatchPage() {
                         <div className="border-t border-slate-100 px-2 pb-2 pt-1.5">
                           <div className="grid grid-cols-2 gap-1.5">
                             <div className="rounded border border-slate-200/80 bg-white px-2 py-1.5">
-                              <div className="text-[9px] font-medium uppercase tracking-wide text-slate-500">Cust. pend.</div>
+                              <div className="text-[9px] font-medium uppercase tracking-wide text-slate-500">Allocated to SO</div>
                               <div className="text-sm font-semibold tabular-nums text-slate-900">
                                 {fmtDispatchQty(Math.max(0, remainingSoLine))}
                               </div>
                             </div>
                             <div className="rounded border border-slate-200/80 bg-white px-2 py-1.5">
-                              <div className="text-[9px] font-medium uppercase tracking-wide text-slate-500">Usable line</div>
+                              <div className="text-[9px] font-medium uppercase tracking-wide text-slate-500">Available FG stock</div>
                               <div className="text-sm font-semibold tabular-nums text-slate-900">
                                 {fmtDispatchQty(lineAvailableStockTable(selectedSo, currentLine ?? ({} as any)))}
                               </div>
@@ -6355,14 +6354,14 @@ export function DispatchPage() {
                       <span className="text-slate-300" aria-hidden>
                         ·
                       </span>
-                      <span className="text-slate-600">Pending</span>
+                      <span className="text-slate-600">Allocated to SO</span>
                       <span className="font-bold tabular-nums text-amber-950">
                         {fmtDispatchQty(regularPartialContinuationMetrics.pending)}
                       </span>
                       <span className="text-slate-300" aria-hidden>
                         ·
                       </span>
-                      <span className="text-slate-600">Ready</span>
+                      <span className="text-slate-600">Dispatchable qty</span>
                       <span className="font-bold tabular-nums text-emerald-900">
                         {fmtDispatchQty(regularPartialContinuationMetrics.availableNow)}
                       </span>
@@ -6436,7 +6435,7 @@ export function DispatchPage() {
                           isRegularDispatchWorkbench ? "text-[11px]" : "text-[12px]",
                         )}
                       >
-                        Only {fmtDispatchQty(readyToShip)} available against pending {fmtDispatchQty(remainingSoLine)}.
+                        Only {fmtDispatchQty(readyToShip)} dispatchable against {fmtDispatchQty(remainingSoLine)} allocated to SO.
                       </p>
                       <label
                         className={cn(

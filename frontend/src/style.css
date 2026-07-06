@@ -1029,6 +1029,60 @@
       break-inside: avoid;
     }
 
+    /* RM PO internal traceability (dedicated audit page) */
+    body.rm-po-traceability-print * {
+      visibility: hidden;
+    }
+    body.rm-po-traceability-print #rm-po-traceability-printable,
+    body.rm-po-traceability-print #rm-po-traceability-printable * {
+      visibility: visible;
+    }
+    body.rm-po-traceability-print #rm-po-traceability-printable {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 100%;
+      max-width: none !important;
+      box-shadow: none !important;
+      border: none !important;
+      padding: 0 !important;
+      margin: 0 !important;
+      background: #fff !important;
+      color: #111 !important;
+      font-size: 10px;
+      line-height: 1.3;
+    }
+    body.rm-po-traceability-print .rm-po-no-print,
+    body.rm-po-traceability-print aside,
+    body.rm-po-traceability-print nav,
+    body.rm-po-traceability-print header:not(.rm-po-traceability-print-header) {
+      display: none !important;
+      visibility: hidden !important;
+    }
+    body.rm-po-traceability-print .rm-po-traceability-print-header {
+      display: block !important;
+      visibility: visible !important;
+    }
+    body.rm-po-traceability-print #rm-po-traceability-printable table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 9px;
+    }
+    body.rm-po-traceability-print #rm-po-traceability-printable th,
+    body.rm-po-traceability-print #rm-po-traceability-printable td {
+      border: 1px solid #ccc;
+      padding: 3px 4px;
+      vertical-align: top;
+    }
+    body.rm-po-traceability-print #rm-po-traceability-printable section {
+      break-inside: avoid;
+      page-break-inside: avoid;
+    }
+    body.rm-po-traceability-print #rm-po-traceability-printable tr {
+      break-inside: avoid;
+      page-break-inside: avoid;
+    }
+
     /* GRN document (P5B / P5D / P5E) */
     body.grn-document-print * {
       visibility: hidden;

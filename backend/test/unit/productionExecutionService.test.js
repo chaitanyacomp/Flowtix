@@ -28,6 +28,7 @@ function createFinishMockTx({
   producedQty = 1200,
   reportConfirmed = true,
   openReturnPendingCount = 0,
+  greenLevel = false,
 } = {}) {
   const opOrder = [];
   const lineId = 1001;
@@ -36,9 +37,10 @@ function createFinishMockTx({
     id: workOrderId,
     docNo: `WO-${workOrderId}`,
     status: "IN_PROGRESS",
-    salesOrderId: 42,
-    requirementSheetId: 7,
-    cycleId: 3,
+    salesOrderId: greenLevel ? null : 42,
+    sourceType: greenLevel ? "GREEN_LEVEL_REPLENISHMENT" : null,
+    requirementSheetId: greenLevel ? null : 7,
+    cycleId: greenLevel ? null : 3,
     lines: [
       {
         id: lineId,
@@ -49,7 +51,9 @@ function createFinishMockTx({
         fgItem: { id: fgItemId, itemName: "FG Widget" },
       },
     ],
-    salesOrder: { id: 42, docNo: "SO-42", orderType: "NO_QTY", customerId: 1 },
+    salesOrder: greenLevel
+      ? null
+      : { id: 42, docNo: "SO-42", orderType: "NO_QTY", customerId: 1 },
     productionExecution: {
       workOrderId,
       executionStatus: "RUNNING",
@@ -541,6 +545,29 @@ describe("productionExecutionService", () => {
     );
     assert.equal(productionExecutionPendingActionLabel("BLOCKED"), PRODUCTION_EXECUTION_PENDING_LABELS.BLOCKED);
     assert.equal(productionExecutionPendingActionLabel("COMPLETED"), null);
+  });
+
+  test("syncShortfallPendingAfterProductionApprove skips Green Level WOs", async () => {
+    const { tx, getExecutionStatus } = createFinishMockTx({
+      plannedQty: 3000,
+      producedQty: 2868,
+      greenLevel: true,
+    });
+    await syncShortfallPendingAfterProductionApprove(tx, 280, 2868);
+    assert.equal(getExecutionStatus(), "RUNNING");
+  });
+
+  test("finishProductionExecution auto-carries Green Level short production on close", async () => {
+    const { tx, getExecutionStatus, auditRows } = createFinishMockTx({
+      plannedQty: 3000,
+      producedQty: 2868,
+      greenLevel: true,
+    });
+    const result = await finishProductionExecution(tx, 280, {}, { actorUserId: null, actorRole: null });
+    assert.equal(getExecutionStatus(), "COMPLETED");
+    assert.equal(result.outcome, "CARRY_FORWARD");
+    assert.equal(auditRows.length, 1);
+    assert.equal(Number(auditRows[0].remainderQty), 132);
   });
 
   test("deriveProductionQueueActionLabel uses execution status for production work", () => {

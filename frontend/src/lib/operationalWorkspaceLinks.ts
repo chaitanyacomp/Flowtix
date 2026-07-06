@@ -19,6 +19,7 @@ export function appendNavFrom(href: string, from: string): string {
 
 export type ProductionQueueRowLink = {
   orderType?: string | null;
+  sourceType?: string | null;
   salesOrderId?: number;
   workOrderId: number;
   workOrderLineId?: number;
@@ -31,6 +32,7 @@ export function productionHrefFromDashboardRow(row: ProductionQueueRowLink): str
   return buildProductionScopedHref({
     actionHref: row.actionHref,
     orderType: row.orderType,
+    sourceType: row.sourceType,
     salesOrderId: row.salesOrderId,
     cycleId: row.cycleId ?? undefined,
     workOrderId: row.workOrderId,

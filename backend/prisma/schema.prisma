@@ -1399,6 +1399,11 @@ enum MonthlyPlanLineSource {
   MANUAL
 }
 
+enum WorkOrderSourceType {
+  CUSTOMER_REQUIREMENT
+  GREEN_LEVEL_REPLENISHMENT
+}
+
 /// Monthly Production Plan — plan-document model (multiple per period). Store-owned.
 model MonthlyProductionPlan {
   id               Int                         @id @default(autoincrement())
@@ -1437,6 +1442,7 @@ model MonthlyProductionPlan {
   revisionLines        MonthlyProductionPlanRevisionLine[]
   rmPlans              RmPlan[]
   materialRequirements MaterialRequirement[]       @relation("MaterialRequirementMonthlyPlan")
+  greenLevelWorkOrders  WorkOrder[]                 @relation("MppGreenLevelWorkOrders")
   createdBy            User?                       @relation("MppCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
   lockedBy             User?                       @relation("MppLockedBy", fields: [lockedByUserId], references: [id], onDelete: SetNull)
   reopenedBy           User?                       @relation("MppReopenedBy", fields: [reopenedByUserId], references: [id], onDelete: SetNull)
@@ -1458,6 +1464,10 @@ model MonthlyProductionPlanLine {
   fgItemId       Int
   suggestedFgQty Decimal               @default(0) @db.Decimal(18, 3)
   plannedFgQty   Decimal               @default(0) @db.Decimal(18, 3)
+  /// Customer / Requirement Sheet production demand kept separate from Green Level replenishment.
+  customerProductionQty Decimal        @default(0) @db.Decimal(18, 3)
+  /// Store-selected FG stock replenishment demand for Green Level. Unselected GL items remain 0.
+  greenReplenishmentQty Decimal        @default(0) @db.Decimal(18, 3)
   /// True when Store manually edited planned qty; auto-fill must not overwrite.
   plannedQtyOverridden Boolean          @default(false)
   source         MonthlyPlanLineSource @default(MANUAL)
@@ -1481,6 +1491,8 @@ model MonthlyProductionPlanRevisionLine {
   fgItemId             Int
   suggestedFgQty       Decimal               @default(0) @db.Decimal(18, 3)
   plannedFgQty         Decimal               @default(0) @db.Decimal(18, 3)
+  customerProductionQty Decimal              @default(0) @db.Decimal(18, 3)
+  greenReplenishmentQty Decimal              @default(0) @db.Decimal(18, 3)
   plannedQtyOverridden Boolean               @default(false)
   source               MonthlyPlanLineSource @default(MANUAL)
   remarks              String?               @db.Text
@@ -2287,12 +2299,16 @@ model WorkOrder {
   id                      Int          @id @default(autoincrement())
   /// Display document number (e.g. WO-24-0001). Auto-generated on create.
   docNo                   String?      @unique @db.VarChar(32)
-  /// Every work order must belong to a sales order (DB NOT NULL; see cleanup + migration if upgrading legacy DBs).
-  salesOrderId            Int
+  /// Customer WOs belong to a sales order. Green Level replenishment WOs are stock WOs and leave this null.
+  salesOrderId            Int?
   /// NO_QTY: workflow cycle isolation (null for legacy / regular flows).
   cycleId                 Int?
   /// NO_QTY flow: links WOs created from a locked requirement sheet version; multiple WOs may share one RS.
   requirementSheetId      Int?
+  /// Separates customer/RS production from stock replenishment production.
+  sourceType              WorkOrderSourceType @default(CUSTOMER_REQUIREMENT)
+  /// Green Level stock WO source plan. Null for customer/RS WOs.
+  monthlyProductionPlanId Int?
   status                  SimpleStatus @default(PENDING)
   /// REGULAR: operational hold (does not change line qty or produced qty).
   holdReason              WoHoldReason?
@@ -2317,8 +2333,9 @@ model WorkOrder {
   heldBy                          User?                            @relation("WoHeldBy", fields: [heldByUserId], references: [id], onDelete: SetNull)
   materialReleasedBy              User?                            @relation("WoMaterialReleasedBy", fields: [materialReleasedByUserId], references: [id], onDelete: SetNull)
   closedBy                        User?                            @relation("WoClosedBy", fields: [closedByUserId], references: [id], onDelete: SetNull)
-  salesOrder                      SalesOrder                       @relation(fields: [salesOrderId], references: [id], onDelete: Restrict)
+  salesOrder                      SalesOrder?                      @relation(fields: [salesOrderId], references: [id], onDelete: Restrict)
   cycle                           SalesOrderCycle?                 @relation(fields: [cycleId], references: [id], onDelete: SetNull)
+  monthlyProductionPlan           MonthlyProductionPlan?           @relation("MppGreenLevelWorkOrders", fields: [monthlyProductionPlanId], references: [id], onDelete: SetNull)
   lines                           WorkOrderLine[]
   materialAllocations             MaterialAllocation[]
   scrapLoss                       ScrapRecord[]
@@ -2342,6 +2359,9 @@ model WorkOrder {
   @@index([cycleId])
   @@index([requirementSheetId])
   @@index([requirementSheetId, status])
+  @@index([sourceType])
+  @@index([monthlyProductionPlanId])
+  @@index([sourceType, monthlyProductionPlanId])
   @@index([fgStockOverrideByUserId])
 }
 

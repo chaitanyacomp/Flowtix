@@ -22,6 +22,13 @@ function n(value) {
   return Number.isFinite(x) ? x : 0;
 }
 
+function plannedDemandQtyForRm(line) {
+  const customer = round3(n(line?.customerProductionQty));
+  const green = round3(n(line?.greenReplenishmentQty));
+  if (customer > 0 || green > 0) return round3(customer + green);
+  return round3(n(line?.plannedFgQty));
+}
+
 function canShowLiveRmEstimateStatus(status) {
   return status === "DRAFT" || status === "AWAITING_PURCHASE_REVIEW";
 }
@@ -122,8 +129,8 @@ async function getRmPlanningEstimate({ db = prisma, planId, asOf = new Date(), d
     include: { fgItem: { select: { id: true, itemName: true, unit: true } } },
     orderBy: { id: "asc" },
   });
-  const activeLines = planLines.filter((l) => Number(l.plannedFgQty) > 0);
-  const totalFgPlannedQty = round3(activeLines.reduce((acc, l) => acc + Number(l.plannedFgQty), 0));
+  const activeLines = planLines.filter((l) => plannedDemandQtyForRm(l) > 0);
+  const totalFgPlannedQty = round3(activeLines.reduce((acc, l) => acc + plannedDemandQtyForRm(l), 0));
 
   const emptyEstimate = {
     mode: "LIVE_ESTIMATE",
@@ -168,7 +175,7 @@ async function getRmPlanningEstimate({ db = prisma, planId, asOf = new Date(), d
     }
     fgLines.push({
       fgItemId: line.fgItemId,
-      fgQty: round3(Number(line.plannedFgQty)),
+      fgQty: plannedDemandQtyForRm(line),
       bomMissing,
     });
   }

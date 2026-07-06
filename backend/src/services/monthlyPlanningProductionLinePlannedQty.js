@@ -33,16 +33,15 @@ function findGreenShortagePlannedBelowSuggested({ lines, composition }) {
     const fgItemId = Number(line.fgItemId);
     const comp = compById.get(fgItemId);
     if (!comp) continue;
-    const greenShortage = round3(n(comp.greenShortage));
-    if (!(greenShortage > 0)) continue;
     const suggestedProduction = round3(n(comp.suggestedProduction));
+    if (!(suggestedProduction > 0)) continue;
     const plannedFgQty = round3(n(line.plannedFgQty));
     if (plannedFgQty + 1e-9 < suggestedProduction) {
       violations.push({
         fgItemId,
         plannedFgQty,
         suggestedProduction,
-        greenShortage,
+        greenShortage: round3(n(comp.greenShortage)),
         plannedQtyOverridden: Boolean(line.plannedQtyOverridden),
       });
     }
@@ -58,22 +57,32 @@ function findGreenShortagePlannedBelowSuggested({ lines, composition }) {
  */
 async function syncNonOverriddenPlanLinesToSuggested(tx, planId, composition) {
   const { suggestedByFgItemId } = buildPlanningContextMaps(composition, { items: [] });
+  const customerByFgItemId = new Map(
+    (composition?.items || []).map((item) => [
+      item.itemId,
+      round3(n(item.productionRequirementQty ?? item.customerProductionQty ?? item.suggestedProduction)),
+    ]),
+  );
   const lines = await tx.monthlyProductionPlanLine.findMany({
     where: { planId },
-    select: { id: true, fgItemId: true, plannedQtyOverridden: true },
+    select: { id: true, fgItemId: true, plannedQtyOverridden: true, greenReplenishmentQty: true },
   });
   const updates = [];
   for (const line of lines) {
     if (line.plannedQtyOverridden) continue;
     const suggested = suggestedByFgItemId.get(line.fgItemId) ?? 0;
+    const customerProductionQty = customerByFgItemId.get(line.fgItemId) ?? suggested;
+    const greenReplenishmentQty = round3(n(line.greenReplenishmentQty));
+    const plannedFgQty = round3(customerProductionQty + greenReplenishmentQty);
     await tx.monthlyProductionPlanLine.update({
       where: { id: line.id },
       data: {
-        plannedFgQty: suggested,
+        plannedFgQty,
         suggestedFgQty: suggested,
+        customerProductionQty,
       },
     });
-    updates.push({ lineId: line.id, fgItemId: line.fgItemId, plannedFgQty: suggested });
+    updates.push({ lineId: line.id, fgItemId: line.fgItemId, plannedFgQty, customerProductionQty, greenReplenishmentQty });
   }
   return updates;
 }

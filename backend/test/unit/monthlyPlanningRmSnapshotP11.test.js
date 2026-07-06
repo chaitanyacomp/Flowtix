@@ -190,4 +190,71 @@ describe("monthlyPlanningRmSnapshotService P11", () => {
     assert.equal(res.totalFgPlannedQty, 9200);
     assert.equal(Number(state.rmPlanLines[0].grossDemandQty), 1260);
   });
+
+  it("FT-PD-067: GL shortage with no selection does not add RM demand", async () => {
+    const planLines = [
+      {
+        id: 1,
+        fgItemId: 10,
+        plannedFgQty: "1000",
+        customerProductionQty: "1000",
+        greenReplenishmentQty: "0",
+        suggestedFgQty: "1000",
+        plannedQtyOverridden: false,
+        source: "REQUIREMENT_SHEET",
+        remarks: null,
+        fgItem: { id: 10, itemName: "FG-A", unit: "Nos" },
+      },
+    ];
+    const { db, deps } = createSnapshotDb({ planLines });
+    deps.aggregateRmDemandForFgLines = async (_db, fgLines) => {
+      assert.deepEqual(fgLines.map((fg) => ({ fgItemId: fg.fgItemId, fgQty: fg.fgQty })), [
+        { fgItemId: 10, fgQty: 1000 },
+      ]);
+      return { rmNeeded: new Map([[201, 100]]), missingChildBoms: [] };
+    };
+
+    const res = await createRmPlanSnapshot({ db, planId: 5, revision: 1, deps });
+    assert.equal(res.totalFgPlannedQty, 1000);
+  });
+
+  it("FT-PD-067: selected GL items only are included in RM demand", async () => {
+    const planLines = [
+      {
+        id: 1,
+        fgItemId: 10,
+        plannedFgQty: "1300",
+        customerProductionQty: "1000",
+        greenReplenishmentQty: "300",
+        suggestedFgQty: "1000",
+        plannedQtyOverridden: false,
+        source: "REQUIREMENT_SHEET",
+        remarks: null,
+        fgItem: { id: 10, itemName: "FG-A", unit: "Nos" },
+      },
+      {
+        id: 2,
+        fgItemId: 11,
+        plannedFgQty: "2000",
+        customerProductionQty: "2000",
+        greenReplenishmentQty: "0",
+        suggestedFgQty: "2000",
+        plannedQtyOverridden: false,
+        source: "REQUIREMENT_SHEET",
+        remarks: null,
+        fgItem: { id: 11, itemName: "FG-B", unit: "Nos" },
+      },
+    ];
+    const { db, deps } = createSnapshotDb({ planLines });
+    deps.aggregateRmDemandForFgLines = async (_db, fgLines) => {
+      assert.deepEqual(fgLines.map((fg) => ({ fgItemId: fg.fgItemId, fgQty: fg.fgQty })), [
+        { fgItemId: 10, fgQty: 1300 },
+        { fgItemId: 11, fgQty: 2000 },
+      ]);
+      return { rmNeeded: new Map([[201, 330]]), missingChildBoms: [] };
+    };
+
+    const res = await createRmPlanSnapshot({ db, planId: 5, revision: 1, deps });
+    assert.equal(res.totalFgPlannedQty, 3300);
+  });
 });

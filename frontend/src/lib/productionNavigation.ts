@@ -4,13 +4,18 @@
  */
 
 import { buildNoQtyGuidedHref } from "./noQtyFlowState";
-import { PRODUCTION_FLOW_REGULAR } from "./productionFlowContract";
+import {
+  isGreenLevelReplenishmentSourceType,
+  PRODUCTION_FLOW_GREEN_LEVEL,
+  PRODUCTION_FLOW_REGULAR,
+} from "./productionFlowContract";
 
 export type ProductionScopedNavInput = {
   workOrderId?: number;
   workOrderLineId?: number;
   salesOrderId?: number;
   orderType?: string | null;
+  sourceType?: string | null;
   cycleId?: number | null;
   requirementSheetId?: number | null;
   /** Prefer server-built href when present. */
@@ -54,6 +59,17 @@ export function buildProductionScopedHref(input: ProductionScopedNavInput = {}):
   }
   const sid = Number(input.salesOrderId ?? 0);
   const orderType = String(input.orderType ?? "").trim().toUpperCase();
+
+  if (
+    isGreenLevelReplenishmentSourceType(input.sourceType) ||
+    orderType === "GREEN_LEVEL"
+  ) {
+    const qs = new URLSearchParams({ flow: PRODUCTION_FLOW_GREEN_LEVEL });
+    if (woId > 0) qs.set("workOrderId", String(woId));
+    if (wolId > 0) qs.set("workOrderLineId", String(wolId));
+    if (input.from) qs.set("from", input.from);
+    return `/production?${qs.toString()}`;
+  }
 
   if (orderType === "NO_QTY" && sid > 0) {
     let href = buildNoQtyGuidedHref({

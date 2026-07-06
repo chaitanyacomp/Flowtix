@@ -1,51 +1,63 @@
 import { describe, expect, it } from "vitest";
+
 import {
+  GREEN_LEVEL_REPLENISHMENT_SOURCE_TYPE,
+  isGreenLevelReplenishmentSourceType,
   parseProductionFlowParam,
-  validateProductionFlowVsOrderType,
-  PRODUCTION_FLOW_NO_QTY,
-  PRODUCTION_FLOW_REGULAR,
-  appendProductionFlowToHref,
+  productionFlowFromOrderType,
+  PRODUCTION_FLOW_GREEN_LEVEL,
 } from "../../src/lib/productionFlowContract";
-import {
-  formatNoQtyNextRsBlockReason,
-  presentNoQtyNextRsStatus,
-} from "../../src/lib/noQtyNextRsBlockerPresentation";
+import { isProductionScopedEntry, isProductionWorkspaceEntry } from "../../src/lib/operationalPageEntry";
 
-describe("productionFlowContract", () => {
-  it("parses explicit flow params", () => {
-    expect(parseProductionFlowParam("NO_QTY")).toBe(PRODUCTION_FLOW_NO_QTY);
-    expect(parseProductionFlowParam("REGULAR_SO")).toBe(PRODUCTION_FLOW_REGULAR);
-    expect(parseProductionFlowParam("regular")).toBe(PRODUCTION_FLOW_REGULAR);
+describe("productionFlowContract green level", () => {
+  it("recognizes green level replenishment source type", () => {
+    expect(isGreenLevelReplenishmentSourceType(GREEN_LEVEL_REPLENISHMENT_SOURCE_TYPE)).toBe(true);
+    expect(isGreenLevelReplenishmentSourceType("green_level_replenishment")).toBe(true);
+    expect(isGreenLevelReplenishmentSourceType("NORMAL")).toBe(false);
   });
 
-  it("rejects flow vs order type mismatch", () => {
-    const v = validateProductionFlowVsOrderType(PRODUCTION_FLOW_REGULAR, "NO_QTY");
-    expect(v.ok).toBe(false);
-    if (!v.ok) expect(v.message).toMatch(/NO_QTY agreement/);
+  it("does not map green level to NO_QTY production flow", () => {
+    expect(productionFlowFromOrderType(GREEN_LEVEL_REPLENISHMENT_SOURCE_TYPE)).toBeNull();
+    expect(productionFlowFromOrderType("GREEN_LEVEL")).toBe(PRODUCTION_FLOW_GREEN_LEVEL);
   });
 
-  it("appends flow to href", () => {
-    expect(appendProductionFlowToHref("/production?workOrderId=1", PRODUCTION_FLOW_REGULAR)).toContain(
-      "flow=REGULAR_SO",
-    );
+  it("parses GREEN_LEVEL flow param", () => {
+    expect(parseProductionFlowParam("GREEN_LEVEL")).toBe(PRODUCTION_FLOW_GREEN_LEVEL);
+    expect(parseProductionFlowParam("green_level")).toBe(PRODUCTION_FLOW_GREEN_LEVEL);
   });
 });
 
-describe("noQtyNextRsBlockerPresentation", () => {
-  it("maps draft RS block reason without execution-stage wording", () => {
-    const msg = formatNoQtyNextRsBlockReason({
-      reason: "DRAFT_RS_ON_CYCLE",
-    });
-    expect(msg).toMatch(/not locked/i);
-    expect(msg).not.toMatch(/RM Issue/i);
+describe("production workspace entry routing", () => {
+  it("keeps bare menu entry on Production Workspace dashboard", () => {
+    expect(
+      isProductionWorkspaceEntry({
+        fromNoQtySo: false,
+        focusSoIdValid: false,
+        woIdFromUrlValid: false,
+        workOrderLineIdFromUrlValid: false,
+        fromDashboardWithTarget: false,
+      }),
+    ).toBe(true);
   });
 
-  it("always presents blocked status", () => {
-    const s = presentNoQtyNextRsStatus({
-      eligible: false,
-      reason: "NO_LOCKED_RS",
-    });
-    expect(s.canCreate).toBe(false);
-    expect(s.reason).toMatch(/not locked/i);
+  it("scopes REGULAR / GL WO deep-links away from workspace dashboard", () => {
+    expect(
+      isProductionScopedEntry({
+        fromNoQtySo: false,
+        focusSoIdValid: false,
+        woIdFromUrlValid: true,
+        workOrderLineIdFromUrlValid: false,
+        fromDashboardWithTarget: false,
+      }),
+    ).toBe(true);
+    expect(
+      isProductionWorkspaceEntry({
+        fromNoQtySo: false,
+        focusSoIdValid: false,
+        woIdFromUrlValid: true,
+        workOrderLineIdFromUrlValid: false,
+        fromDashboardWithTarget: false,
+      }),
+    ).toBe(false);
   });
 });

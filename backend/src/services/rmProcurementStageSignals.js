@@ -168,6 +168,9 @@ function resolveRmRiskPendingAction(meta, queueHints = {}, role = "STORE") {
 
   if (procurementDone && queueType === "READY_TO_RELEASE_WO") {
     const released = Boolean(meta?.materialReleasedToProduction);
+    const executionStarted =
+      String(meta?.productionExecutionStatus ?? "NOT_STARTED").trim().toUpperCase() !== "NOT_STARTED";
+    const hasProductionEntry = Boolean(meta?.hasProductionEntry);
     if (isProductionRole(role) && released) {
       const params = new URLSearchParams({ returnTo: "pending-actions" });
       if (stage.workOrderId > 0) params.set("workOrderId", String(stage.workOrderId));
@@ -182,6 +185,12 @@ function resolveRmRiskPendingAction(meta, queueHints = {}, role = "STORE") {
       };
     }
     if (!isProductionRole(role)) {
+      if (released || executionStarted || hasProductionEntry) {
+        return {
+          action: RM_ISSUED_WAITING_FOR_PRODUCTION,
+          href: buildRmControlCenterHref(stage, rmItemId),
+        };
+      }
       return {
         action: "Release to Production",
         href: (() => {

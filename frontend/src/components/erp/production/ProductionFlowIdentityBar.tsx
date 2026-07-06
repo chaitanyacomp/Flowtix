@@ -1,6 +1,6 @@
 import { OperationalContextBar, OpCtxSep } from "../OperationalWorkspaceChrome";
 import { cn } from "../../../lib/utils";
-import { type ProductionFlowParam, PRODUCTION_FLOW_NO_QTY } from "../../../lib/productionFlowContract";
+import { type ProductionFlowParam, PRODUCTION_FLOW_GREEN_LEVEL, PRODUCTION_FLOW_NO_QTY } from "../../../lib/productionFlowContract";
 import { ProductionFlowTypeBadge } from "./ProductionFlowTypeBadge";
 
 type Props = {
@@ -24,6 +24,7 @@ export function ProductionFlowIdentityBar({
   className,
 }: Props) {
   const isNoQty = flow === PRODUCTION_FLOW_NO_QTY;
+  const isGreenLevel = flow === PRODUCTION_FLOW_GREEN_LEVEL;
   return (
     <div className={cn("space-y-1", className)}>
       <div className="flex flex-wrap items-center gap-2">
@@ -32,6 +33,10 @@ export function ProductionFlowIdentityBar({
           <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
             Requirement Sheet → Work Order → Production
           </span>
+        ) : isGreenLevel ? (
+          <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+            Stock Replenishment → Work Order → Production
+          </span>
         ) : (
           <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
             Sales Order → Work Order → Production
@@ -39,7 +44,7 @@ export function ProductionFlowIdentityBar({
         )}
       </div>
       <OperationalContextBar className="rounded-md border border-slate-200 bg-gradient-to-r from-slate-50 to-white px-2 py-1 text-[11px] shadow-sm">
-        <span className="font-semibold text-slate-600">SO</span>
+        <span className="font-semibold text-slate-600">{isGreenLevel ? "Source" : "SO"}</span>
         <span className="rounded border border-sky-200 bg-sky-50 px-1.5 py-0.5 font-mono text-[11px] font-semibold tabular-nums text-sky-900">
           {soLabel}
         </span>

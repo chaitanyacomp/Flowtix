@@ -7,6 +7,7 @@ import { apiFetch } from "../../services/api";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { useAuth } from "../../hooks/useAuth";
+import { useToast } from "../../contexts/ToastContext";
 import { GRN_WRITE_ROLES, hasErpRole, RM_PO_WRITE_ROLES } from "../../config/erpRoles";
 import { PROCUREMENT_TERMS } from "../../lib/procurementTerminology";
 import { useShortcutHints } from "../../hooks/useShortcutHints";
@@ -51,7 +52,10 @@ import { NO_QTY_TERMS } from "../../lib/flowTerminology";
 import {
   buildRmPoDetailHref,
   fetchPostGrnContinuitySnapshot,
+  isRmPoDocumentOnly,
   postGrnFulfilledMessage,
+  RM_PO_FINAL_GRN_COMPLETION_TOAST,
+  RM_PO_FINAL_GRN_REDIRECT_DELAY_MS,
   resolvePoLinkedSalesOrderId,
   resolvePostGrnNextStep,
   RM_PURCHASE_POST_GRN_MESSAGES,
@@ -71,6 +75,7 @@ export function RmPurchasePoDetailPage() {
   const location = useLocation();
   const [searchParams] = useSearchParams();
   const { user } = useAuth();
+  const toast = useToast();
   const isAdmin = user?.role === "ADMIN";
   const canWritePo = hasErpRole(user?.role, RM_PO_WRITE_ROLES);
 
@@ -591,10 +596,11 @@ export function RmPurchasePoDetailPage() {
         /* ignore */
       }
       if (refreshed?.status === "COMPLETED") {
-        setGrnSuccess(postGrnFulfilledMessage());
-      } else {
-        setGrnSuccess(RM_PURCHASE_POST_GRN_MESSAGES.partialHeadline);
+        toast.showSuccess(RM_PO_FINAL_GRN_COMPLETION_TOAST);
+        window.setTimeout(() => navigate("/pending-actions"), RM_PO_FINAL_GRN_REDIRECT_DELAY_MS);
+        return;
       }
+      setGrnSuccess(RM_PURCHASE_POST_GRN_MESSAGES.partialHeadline);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed");
     } finally {
@@ -888,6 +894,10 @@ export function RmPurchasePoDetailPage() {
 
   const rmPoNextActionStrip = React.useMemo(() => {
     if (loading || !po) return null;
+
+    if (isRmPoDocumentOnly(po.status)) {
+      return null;
+    }
 
     if (!hasActiveGrnRecord(po) && grnPendingReadOnlyForViewer) {
       return {
@@ -1212,6 +1222,7 @@ export function RmPurchasePoDetailPage() {
             grnAllowed={Boolean(grnAllowed)}
             isAdmin={isAdmin}
             reversingGrnId={reversingGrnId}
+            documentOnly={isRmPoDocumentOnly(po.status)}
             onEdit={openEditModal}
             onCancel={() => void onCancelPo()}
             onCreateGrn={() => setGrnModalOpen(true)}

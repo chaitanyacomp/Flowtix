@@ -74,6 +74,8 @@ const NO_QTY_FLOW_STATE_READ_ROLES = Object.freeze(["ADMIN", "STORE", "PRODUCTIO
 /** PRODUCTION — work orders, production entry, rework approval, prepare WO. */
 const WO_WRITE_ROLES = Object.freeze(["ADMIN", "PRODUCTION"]);
 const WO_PLAN_PREP_ROLES = Object.freeze(["ADMIN", "PRODUCTION"]);
+/** STORE — Green Level replenishment WO placement workspace */
+const GREEN_LEVEL_WO_PLACEMENT_ROLES = Object.freeze(["ADMIN", "STORE"]);
 const PRODUCTION_WRITE_ROLES = Object.freeze(["ADMIN", "PRODUCTION"]);
 const PRODUCTION_READ_ROLES = Object.freeze(["ADMIN", "PRODUCTION", "STORE", "QA"]);
 const PRODUCTION_DASHBOARD_ROLES = Object.freeze(["ADMIN", "PRODUCTION"]);
@@ -165,6 +167,7 @@ module.exports = {
   // production
   WO_WRITE_ROLES,
   WO_PLAN_PREP_ROLES,
+  GREEN_LEVEL_WO_PLACEMENT_ROLES,
   PRODUCTION_WRITE_ROLES,
   PRODUCTION_READ_ROLES,
   PRODUCTION_DASHBOARD_ROLES,

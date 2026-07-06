@@ -3,10 +3,9 @@
  *
  * Additional Requirement = MAX(0, Current Requirement Composition − Already Approved)
  *
- * Current Requirement Composition uses suggestedProduction from requirement composition
- * (RS + Carry Forward + Green Shortage + future composition drivers).
+ * Current Requirement Composition uses Customer / RS demand from requirement composition.
  *
- * Already Approved = sum of plannedFgQty across APPROVED plans in the same period only.
+ * Already Approved = sum of customerProductionQty across APPROVED plans in the same period only.
  */
 
 const { prisma } = require("../utils/prisma");
@@ -48,6 +47,7 @@ async function sumApprovedPlannedFgByItem(db, periodKey) {
     select: {
       fgItemId: true,
       plannedFgQty: true,
+      customerProductionQty: true,
     },
   });
 
@@ -55,7 +55,8 @@ async function sumApprovedPlannedFgByItem(db, periodKey) {
   for (const line of lines) {
     const fgItemId = Number(line.fgItemId);
     if (!Number.isFinite(fgItemId) || fgItemId <= 0) continue;
-    const qty = round3(n(line.plannedFgQty));
+    const customerQty = round3(n(line.customerProductionQty));
+    const qty = customerQty > 0 ? customerQty : round3(n(line.plannedFgQty));
     byItem.set(fgItemId, round3(n(byItem.get(fgItemId)) + qty));
   }
   return byItem;
@@ -81,8 +82,8 @@ function mapCoverageItem(fgItemId, compositionItem, alreadyApprovedQty, periodKe
   const greenShortage = round3(n(compositionItem?.greenShortage));
   const currentRequirementQty = round3(
     n(compositionItem?.suggestedProduction) ||
-      round3(n(compositionItem?.productionRequirementQty) + greenShortage) ||
-      rsRequirement + carryForward + greenShortage,
+      n(compositionItem?.productionRequirementQty) ||
+      rsRequirement + carryForward,
   );
   const approved = round3(alreadyApprovedQty);
   const additionalRequirementQty = computeAdditionalRequirementQty(currentRequirementQty, approved);

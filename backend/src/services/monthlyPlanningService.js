@@ -104,6 +104,8 @@ function toPlanLine(line) {
     fgItemId: line.fgItemId,
     suggestedFgQty: line.suggestedFgQty,
     plannedFgQty: line.plannedFgQty,
+    customerProductionQty: line.customerProductionQty ?? 0,
+    greenReplenishmentQty: line.greenReplenishmentQty ?? 0,
     plannedQtyOverridden: Boolean(line.plannedQtyOverridden),
     source: line.source,
     remarks: line.remarks ?? null,
@@ -115,6 +117,8 @@ function mapProductionLineResponse(line, { suggestedByFgItemId, greenByFgItemId 
   const liveSuggested = suggestedByFgItemId.has(line.fgItemId)
     ? suggestedByFgItemId.get(line.fgItemId)
     : storedSuggested;
+  const customerProductionQty = metricsRound3(line.customerProductionQty ?? liveSuggested);
+  const greenReplenishmentQty = metricsRound3(line.greenReplenishmentQty ?? 0);
   const greenCtx = greenByFgItemId.get(line.fgItemId) || { greenTarget: 0, freeFgStock: 0 };
   const metrics = enrichProductionLineMetrics({
     suggestedFgQty: liveSuggested,
@@ -130,6 +134,8 @@ function mapProductionLineResponse(line, { suggestedByFgItemId, greenByFgItemId 
     unit: line.fgItem?.unit ?? null,
     suggestedFgQty: metrics.suggestedFgQty,
     plannedFgQty: metrics.plannedFgQty,
+    customerProductionQty,
+    greenReplenishmentQty,
     plannedQtyOverridden: Boolean(line.plannedQtyOverridden),
     source: line.source,
     remarks: line.remarks ?? null,
@@ -316,6 +322,7 @@ async function updateProductionLines({
 
     const composition = await compositionLoader({ db: tx, periodKey: plan.periodKey });
     const { suggestedByFgItemId } = buildPlanningContextMaps(composition, { items: [] });
+    const compositionByFgItemId = new Map((composition.items || []).map((item) => [item.itemId, item]));
 
     const safeUpserts = Array.isArray(upserts) ? upserts : [];
     const safeDeletes = Array.isArray(deletes) ? deletes.map((n) => Number(n)).filter((n) => Number.isFinite(n) && n > 0) : [];
@@ -336,12 +343,38 @@ async function updateProductionLines({
       const suggestedFgQty = suggestedByFgItemId.has(fgItemId)
         ? suggestedByFgItemId.get(fgItemId)
         : round3(raw?.suggestedFgQty ?? 0);
+      const comp = compositionByFgItemId.get(fgItemId);
+      const baseCustomerProductionQty = round3(
+        comp ? Number(comp.productionRequirementQty ?? comp.customerProductionQty ?? suggestedFgQty) : raw?.customerProductionQty ?? suggestedFgQty,
+      );
+      const availableGreenShortageQty = round3(Number(comp?.greenShortage ?? raw?.availableGreenShortageQty ?? 0));
+      const greenReplenishmentQty = round3(raw?.greenReplenishmentQty ?? 0);
+      if (greenReplenishmentQty < 0) {
+        throw new MonthlyPlanningError("INVALID_GREEN_REPLENISHMENT_QTY", "greenReplenishmentQty must be >= 0.", 422);
+      }
+      if (greenReplenishmentQty > availableGreenShortageQty + 1e-9) {
+        throw new MonthlyPlanningError(
+          "GREEN_REPLENISHMENT_EXCEEDS_SHORTAGE",
+          "Selected Green Level replenishment cannot exceed the current GL shortage qty.",
+          422,
+        );
+      }
       const plannedQtyOverridden = raw?.plannedQtyOverridden === true;
       const plannedFgQty = resolvePlannedFgQtyForSave({
-        clientPlannedFgQty: raw?.plannedFgQty ?? 0,
+        clientPlannedFgQty: raw?.plannedFgQty ?? round3(baseCustomerProductionQty + greenReplenishmentQty),
         plannedQtyOverridden,
-        suggestedFgQty,
+        suggestedFgQty: round3(baseCustomerProductionQty + greenReplenishmentQty),
       });
+      if (plannedQtyOverridden && plannedFgQty + 1e-9 < greenReplenishmentQty) {
+        throw new MonthlyPlanningError(
+          "PLANNED_BELOW_GREEN_REPLENISHMENT",
+          "Planned FG qty cannot be less than selected Green Level replenishment qty.",
+          422,
+        );
+      }
+      const customerProductionQty = plannedQtyOverridden
+        ? round3(Math.max(0, plannedFgQty - greenReplenishmentQty))
+        : baseCustomerProductionQty;
       const source = raw?.source ?? "MANUAL";
       if (!["SALES_ORDER", "REQUIREMENT_SHEET", "MANUAL"].includes(source)) {
         // CUSTOMER_SCHEDULE intentionally not accepted in this phase.
@@ -351,6 +384,8 @@ async function updateProductionLines({
         fgItemId,
         plannedFgQty,
         suggestedFgQty,
+        customerProductionQty,
+        greenReplenishmentQty,
         plannedQtyOverridden,
         source,
         remarks: raw?.remarks != null ? String(raw.remarks).slice(0, 2000) : null,
@@ -393,6 +428,8 @@ async function updateProductionLines({
           fgItemId: n.fgItemId,
           plannedFgQty: n.plannedFgQty,
           suggestedFgQty: n.suggestedFgQty,
+          customerProductionQty: n.customerProductionQty,
+          greenReplenishmentQty: n.greenReplenishmentQty,
           plannedQtyOverridden: n.plannedQtyOverridden,
           source: n.source,
           remarks: n.remarks,
@@ -400,6 +437,8 @@ async function updateProductionLines({
         update: {
           plannedFgQty: n.plannedFgQty,
           suggestedFgQty: n.suggestedFgQty,
+          customerProductionQty: n.customerProductionQty,
+          greenReplenishmentQty: n.greenReplenishmentQty,
           plannedQtyOverridden: n.plannedQtyOverridden,
           source: n.source,
           remarks: n.remarks,
@@ -649,6 +688,8 @@ async function cancelReopenMonthlyPlan({
         fgItemId: l.fgItemId,
         suggestedFgQty: round3(l.suggestedFgQty),
         plannedFgQty: round3(l.plannedFgQty),
+        customerProductionQty: round3(l.customerProductionQty ?? l.plannedFgQty),
+        greenReplenishmentQty: round3(l.greenReplenishmentQty ?? 0),
         plannedQtyOverridden: Boolean(l.plannedQtyOverridden),
         source: l.source,
         remarks: l.remarks ?? null,
@@ -684,6 +725,8 @@ function toRevisionFgLine(line) {
     unit: line.unitSnapshot ?? line.fgItem?.unit ?? null,
     suggestedFgQty: round3(line.suggestedFgQty),
     plannedFgQty: round3(line.plannedFgQty),
+    customerProductionQty: round3(line.customerProductionQty ?? line.plannedFgQty),
+    greenReplenishmentQty: round3(line.greenReplenishmentQty ?? 0),
     plannedQtyOverridden: Boolean(line.plannedQtyOverridden),
     source: line.source,
     remarks: line.remarks ?? null,

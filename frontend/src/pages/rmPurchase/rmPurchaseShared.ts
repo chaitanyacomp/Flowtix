@@ -231,6 +231,10 @@ export function formatRmPoNo(id: number): string {
   return `RMPO-${id}`;
 }
 
+export function formatGrnNo(id: number): string {
+  return `GRN-${id}`;
+}
+
 /** Display labels for PO list/detail (stored: PENDING / PARTIAL / COMPLETED / CANCELLED). */
 export function poStatusLabel(status: string): string {
   switch (status) {

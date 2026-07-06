@@ -94,11 +94,12 @@ export function ProductionExecutionPanel({
   const [compactInlineAction, setCompactInlineAction] = React.useState<"pause" | null>(null);
   const autoEvaluatedRef = React.useRef<string | null>(null);
 
-  const isNoQty = String(orderType ?? "").toUpperCase() === "NO_QTY";
+  const orderTypeNorm = String(orderType ?? "").toUpperCase();
+  const isHardenedExecution = orderTypeNorm === "NO_QTY" || orderTypeNorm === "GREEN_LEVEL";
   const isCompactClosure = layoutMode === "compact-closure";
 
   const reload = React.useCallback(async () => {
-    if (!isNoQty || !canOperate || !workOrderId) return null;
+    if (!isHardenedExecution || !canOperate || !workOrderId) return null;
     setLoading(true);
     setError(null);
     try {
@@ -113,7 +114,7 @@ export function ProductionExecutionPanel({
     } finally {
       setLoading(false);
     }
-  }, [isNoQty, canOperate, workOrderId, onSummaryChange]);
+  }, [isHardenedExecution, canOperate, workOrderId, onSummaryChange]);
 
   React.useEffect(() => {
     if (!workOrderId) onSummaryChange?.(null);
@@ -210,7 +211,7 @@ export function ProductionExecutionPanel({
     void evaluateCompletion(summary, evaluateBatchQty, true);
   }, [evaluateTick, evaluateBatchQty, summary, evaluateCompletion]);
 
-  if (!isNoQty || !canOperate || !workOrderId) return null;
+  if (!isHardenedExecution || !canOperate || !workOrderId) return null;
 
   const scenario = resolveProductionCompletionScenario(summary);
   const isPaused = scenario === "PAUSED";

@@ -131,7 +131,7 @@ export function deriveDispatchStatusLabelFromQuantities(
 ): string {
   if (draftQty > eps && remainingQty <= eps) return "Draft Saved";
   if (draftQty > eps && remainingQty > eps) return "Partial Draft";
-  if (remainingQty > eps) return "Ready";
+  if (remainingQty > eps) return "Dispatchable";
   if (finalizedQty > eps) return "Dispatched";
   return "—";
 }

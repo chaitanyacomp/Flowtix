@@ -4,6 +4,7 @@
  */
 
 const auditLog = require("./auditLog");
+const { GREEN_LEVEL_WO_SOURCE_TYPE } = require("./greenLevelWorkOrderService");
 const { getApprovedProducedQtyByWorkOrderLineIds } = require("./productionMetrics");
 const { getWoLineRemainingProductionQty } = require("./reportMetrics");
 const {
@@ -83,8 +84,16 @@ function round3(v) {
   return Math.round(n(v) * 1000) / 1000;
 }
 
+function isGreenLevelWorkOrder(wo) {
+  return String(wo?.sourceType ?? "").toUpperCase() === GREEN_LEVEL_WO_SOURCE_TYPE;
+}
+
 function isNoQtyWorkOrder(wo, so) {
   return so?.orderType === "NO_QTY" || wo?.requirementSheetId != null || wo?.cycleId != null;
+}
+
+function supportsShopFloorExecutionWorkOrder(wo, so) {
+  return isGreenLevelWorkOrder(wo) || isNoQtyWorkOrder(wo, so);
 }
 
 function blockReasonLabel(reason) {
@@ -94,12 +103,15 @@ function blockReasonLabel(reason) {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-function buildFinishSuccessMessage(woDocNo, workOrderId, outcome, remainderQty, surplusQty = 0) {
+function buildFinishSuccessMessage(woDocNo, workOrderId, outcome, remainderQty, surplusQty = 0, opts = {}) {
   const surplus = round3(surplusQty);
   if (outcome === "WAIVE_BALANCE") {
     return "Production completed. Remaining quantity has been waived.";
   }
   if (outcome === "CARRY_FORWARD") {
+    if (opts.greenLevel) {
+      return "Production completed. Remaining quantity recorded for stock replenishment follow-up.";
+    }
     return "Production completed. Remaining quantity has been carried forward to the next Requirement Sheet.";
   }
   if (outcome === "FULL_COMPLETE") {
@@ -125,8 +137,10 @@ async function loadNoQtyExecutionContext(db, workOrderId) {
     err.statusCode = 404;
     throw err;
   }
-  if (!isNoQtyWorkOrder(wo, wo.salesOrder)) {
-    const err = new Error("Production execution shortfall resolution applies to NO_QTY work orders only.");
+  if (!supportsShopFloorExecutionWorkOrder(wo, wo.salesOrder)) {
+    const err = new Error(
+      "Production execution shortfall resolution applies to NO_QTY and Green Level work orders only.",
+    );
     err.statusCode = 409;
     err.code = "WO_EXEC_NO_QTY_ONLY";
     throw err;
@@ -207,7 +221,7 @@ async function assertNoQtyProductionExecutionAllowsProduction(tx, workOrderId) {
       productionExecution: { select: { executionStatus: true, blockReason: true } },
     },
   });
-  if (!wo || !isNoQtyWorkOrder(wo, wo.salesOrder)) return;
+  if (!wo || !supportsShopFloorExecutionWorkOrder(wo, wo.salesOrder)) return;
 
   const exec = wo.productionExecution;
   if (!exec) return;
@@ -464,6 +478,9 @@ async function resumeProductionExecution(tx, workOrderId, { actorUserId, actorRo
  */
 async function syncShortfallPendingAfterProductionApprove(tx, workOrderId, approvedBatchQty) {
   const wo = await loadNoQtyExecutionContext(tx, workOrderId);
+  if (isGreenLevelWorkOrder(wo)) {
+    return wo.productionExecution ?? (await ensureProductionExecutionRecord(tx, workOrderId));
+  }
   const exec = wo.productionExecution ?? (await ensureProductionExecutionRecord(tx, workOrderId));
   if (exec.executionStatus === "COMPLETED" || exec.executionStatus === "BLOCKED") return exec;
 
@@ -487,6 +504,7 @@ async function syncShortfallPendingAfterProductionApprove(tx, workOrderId, appro
  * Repair legacy RUNNING executions that already have an unresolved shortfall decision.
  */
 async function reconcileShortfallPendingStatus(tx, wo) {
+  if (isGreenLevelWorkOrder(wo)) return wo.productionExecution;
   const exec = wo.productionExecution;
   if (!exec || exec.executionStatus === "COMPLETED" || exec.executionStatus === "BLOCKED") return exec;
   if (exec.executionStatus === "SHORTFALL_PENDING") return exec;
@@ -645,8 +663,15 @@ async function finishProductionExecution(tx, workOrderId, input, { actorUserId, 
     };
   }
 
-  // Shortfall — require explicit outcome
-  if (!shortfallOutcome) {
+  // Shortfall — require explicit outcome (Green Level auto-carries to next replenishment planning)
+  let effectiveShortfallOutcome = shortfallOutcome;
+  if (isGreenLevelWorkOrder(wo) && summary.remainderQty > EPS) {
+    if (!effectiveShortfallOutcome || effectiveShortfallOutcome === "WAIVE_BALANCE") {
+      effectiveShortfallOutcome = "CARRY_FORWARD";
+    }
+  }
+
+  if (!effectiveShortfallOutcome) {
     const err = new Error("Production shortfall detected. Choose how to resolve the remaining quantity.");
     err.statusCode = 409;
     err.code = "WO_EXEC_SHORTFALL_REQUIRED";
@@ -654,7 +679,7 @@ async function finishProductionExecution(tx, workOrderId, input, { actorUserId, 
     throw err;
   }
 
-  if (shortfallOutcome === "BLOCK") {
+  if (effectiveShortfallOutcome === "BLOCK") {
     if (!input.blockReason) {
       const err = new Error("Block reason is required.");
       err.statusCode = 400;
@@ -668,13 +693,16 @@ async function finishProductionExecution(tx, workOrderId, input, { actorUserId, 
     });
   }
 
-  if (!FINISH_OUTCOMES.includes(shortfallOutcome)) {
+  if (!FINISH_OUTCOMES.includes(effectiveShortfallOutcome)) {
     const err = new Error("Invalid shortfall outcome.");
     err.statusCode = 400;
     throw err;
   }
 
-  const effectiveResolutionReason = defaultAutomaticShortfallResolutionReason(shortfallOutcome, resolutionReason);
+  const effectiveResolutionReason = defaultAutomaticShortfallResolutionReason(
+    effectiveShortfallOutcome,
+    resolutionReason,
+  );
   validateResolutionReason(effectiveResolutionReason, remarks);
 
   const now = new Date();
@@ -689,13 +717,16 @@ async function finishProductionExecution(tx, workOrderId, input, { actorUserId, 
       plannedQty: line.plannedQty,
       producedQty: line.producedQty,
       remainderQty: line.remainderQty,
-      resolutionType: shortfallOutcome,
+      resolutionType: effectiveShortfallOutcome,
       resolutionReason: effectiveResolutionReason,
       remarks,
       actorUserId,
     });
 
-    if (shortfallOutcome === "CARRY_FORWARD" || shortfallOutcome === "WAIVE_BALANCE") {
+    if (
+      !isGreenLevelWorkOrder(wo) &&
+      (effectiveShortfallOutcome === "CARRY_FORWARD" || effectiveShortfallOutcome === "WAIVE_BALANCE")
+    ) {
       const cf = await createCarryForwardPendingFromProductionShortfall(tx, {
         workOrder: wo,
         workOrderLine: wo.lines.find((l) => l.id === line.workOrderLineId),
@@ -708,7 +739,7 @@ async function finishProductionExecution(tx, workOrderId, input, { actorUserId, 
       carryForwardRecords.push(cf);
     }
 
-    if (shortfallOutcome === "WAIVE_BALANCE") {
+    if (effectiveShortfallOutcome === "WAIVE_BALANCE") {
       await tx.workOrderLine.update({
         where: { id: line.workOrderLineId },
         data: { executionWaivedQty: String(round3(line.remainderQty)) },
@@ -717,7 +748,7 @@ async function finishProductionExecution(tx, workOrderId, input, { actorUserId, 
   }
 
   await applyWorkOrderExecutionOutcome(tx, workOrderId, {
-    outcome: shortfallOutcome,
+    outcome: effectiveShortfallOutcome,
     actorUserId,
     actorRole,
   });
@@ -728,7 +759,7 @@ async function finishProductionExecution(tx, workOrderId, input, { actorUserId, 
       executionStatus: "COMPLETED",
       completedAt: now,
       completedByUserId: actorUserId ?? null,
-      lastResolutionType: shortfallOutcome,
+      lastResolutionType: effectiveShortfallOutcome,
       blockReason: null,
       blockRemarks: null,
       blockedAt: null,
@@ -743,11 +774,11 @@ async function finishProductionExecution(tx, workOrderId, input, { actorUserId, 
       entityId: `WORK_ORDER:${workOrderId}`,
       actorUserId,
       actorRole,
-      summary: `Production execution finished (${shortfallOutcome}) on WO ${wo.docNo || workOrderId}`,
+      summary: `Production execution finished (${effectiveShortfallOutcome}) on WO ${wo.docNo || workOrderId}`,
       payload: {
         module: "PRODUCTION_EXECUTION",
         action: "FINISH_SHORTFALL",
-        shortfallOutcome,
+        shortfallOutcome: effectiveShortfallOutcome,
         resolutionReason: effectiveResolutionReason,
         carryForwardCount: carryForwardRecords.length,
       },
@@ -762,13 +793,15 @@ async function finishProductionExecution(tx, workOrderId, input, { actorUserId, 
       productionExecution: execution,
       status: "COMPLETED",
     }),
-    outcome: shortfallOutcome,
+    outcome: effectiveShortfallOutcome,
     carryForwardPending: carryForwardRecords,
     successMessage: buildFinishSuccessMessage(
       wo.docNo,
       workOrderId,
-      shortfallOutcome,
+      effectiveShortfallOutcome,
       shortfallRemainderQty,
+      0,
+      { greenLevel: isGreenLevelWorkOrder(wo) },
     ),
   };
 }
@@ -796,7 +829,7 @@ async function getProductionExecutionSummary(db, workOrderId) {
     err.statusCode = 404;
     throw err;
   }
-  if (isNoQtyWorkOrder(wo, wo.salesOrder) && !wo.productionExecution) {
+  if (supportsShopFloorExecutionWorkOrder(wo, wo.salesOrder) && !wo.productionExecution) {
     await db.$transaction(async (tx) => {
       await ensureProductionExecutionRecord(tx, workOrderId);
     });
@@ -809,7 +842,7 @@ async function getProductionExecutionSummary(db, workOrderId) {
       },
     });
   }
-  if (isNoQtyWorkOrder(wo, wo.salesOrder) && wo.productionExecution) {
+  if (supportsShopFloorExecutionWorkOrder(wo, wo.salesOrder) && wo.productionExecution) {
     await db.$transaction(async (tx) => {
       await reconcileShortfallPendingStatus(tx, wo);
     });

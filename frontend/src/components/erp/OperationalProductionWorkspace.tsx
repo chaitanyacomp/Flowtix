@@ -29,7 +29,9 @@ type RmReturnPendingTaskRow = {
 };
 
 function flowBadge(orderType?: string | null) {
-  return orderType === "NO_QTY" ? NO_QTY_TERMS.AGREEMENT_LABEL : "REGULAR";
+  if (orderType === "NO_QTY") return NO_QTY_TERMS.AGREEMENT_LABEL;
+  if (orderType === "GREEN_LEVEL") return "Green Level";
+  return "REGULAR";
 }
 
 export function PendingStoreTasksPanel({ className }: { className?: string }) {
@@ -119,7 +121,7 @@ export function OperationalProductionWorkspace({
     <Card className={cn("erp-op-workspace-primary min-w-0 overflow-hidden", className)}>
       <CardHeader className="border-b border-slate-100 bg-white px-2.5 py-1.5">
         <CardTitle className="text-sm font-semibold tracking-tight text-slate-900">Active production</CardTitle>
-        <p className="text-[11px] text-slate-500">Pick a line to open scoped production · REGULAR and NO_QTY</p>
+        <p className="text-[11px] text-slate-500">Pick a line to open scoped production · REGULAR, NO_QTY, and Green Level</p>
       </CardHeader>
       <CardContent className="p-1.5">
         {error ? <p className="mb-1 text-[12px] text-red-700">{error}</p> : null}
@@ -149,6 +151,7 @@ export function OperationalProductionWorkspace({
                   {visible.map((row) => {
                     const href = productionHrefFromDashboardRow({
                       orderType: row.orderType,
+                      sourceType: row.sourceType,
                       salesOrderId: (row as { salesOrderId?: number }).salesOrderId,
                       workOrderId: row.workOrderId,
                       workOrderLineId: row.workOrderLineId,
@@ -172,9 +175,13 @@ export function OperationalProductionWorkspace({
                           </Badge>
                         </td>
                         <td className="px-2 py-0.5 tabular-nums font-medium">
-                          {row.salesOrderNo ?? (row.salesOrderId ? `SO-${row.salesOrderId}` : "—")}
+                          {row.orderType === "GREEN_LEVEL"
+                            ? (row.salesOrderNo ?? "Stock Replenishment")
+                            : (row.salesOrderNo ?? (row.salesOrderId ? `SO-${row.salesOrderId}` : "—"))}
                         </td>
-                        <td className="px-2 py-0.5 tabular-nums">{row.cycleNo ?? "—"}</td>
+                        <td className="px-2 py-0.5 tabular-nums">
+                          {row.orderType === "GREEN_LEVEL" ? "—" : (row.cycleNo ?? "—")}
+                        </td>
                         <td className="px-2 py-0.5 tabular-nums">{displayWorkOrderTraceNo(row.workOrderId)}</td>
                         <td className="max-w-[9rem] truncate px-2 py-0.5" title={row.itemName}>
                           {row.itemName}
@@ -184,11 +191,19 @@ export function OperationalProductionWorkspace({
                         <td
                           className={cn(
                             "px-2 py-0.5 text-right tabular-nums font-semibold",
-                            row.orderType === "NO_QTY" && thirdCol.qty > 0 && "text-amber-900",
+                            (row.orderType === "NO_QTY" || row.orderType === "GREEN_LEVEL") &&
+                              (row.orderType === "NO_QTY" ? thirdCol.qty : row.shortageQty) > 0 &&
+                              "text-amber-900",
                           )}
                           title={row.orderType === "NO_QTY" ? thirdCol.label : undefined}
                         >
-                          {formatProductionQty(thirdCol.qty)}
+                          {formatProductionQty(
+                            row.orderType === "NO_QTY"
+                              ? thirdCol.qty
+                              : row.orderType === "GREEN_LEVEL"
+                                ? row.shortageQty
+                                : thirdCol.qty,
+                          )}
                         </td>
                         <td className="px-2 py-0.5">
                           <span

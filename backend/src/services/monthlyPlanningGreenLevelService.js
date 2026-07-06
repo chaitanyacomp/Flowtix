@@ -35,6 +35,11 @@ const { computeGlobalNoQtyUsablePlanningBreakdownByItem } = require("./noQtyUsab
 const { getGreenLevelHistoryMonths, getGreenLevelSource } = require("./appSettings");
 
 const {
+  loadGreenLevelShortProducedCarryByItem,
+  resolveGreenShortageForPlanning,
+} = require("./greenLevelShortProducedCarryService");
+
+const {
 
   clampGreenLevelHistoryMonths,
 
@@ -550,7 +555,7 @@ async function getGreenLevels({
 
   const stockBreakdownByItem = await loadGlobalStockBreakdown(db);
 
-
+  const shortProducedCarryByItem = await loadGreenLevelShortProducedCarryByItem(db);
 
   const items = fgItems.map((item) => {
 
@@ -594,6 +599,15 @@ async function getGreenLevels({
 
     const activeGreenLevelQty = zones.greenQty;
 
+    const stockBasedGreenShortage = shortageForGreenTarget(activeGreenLevelQty, freeFgStock);
+
+    const greenShortProducedCarryQty = round3(n(shortProducedCarryByItem.get(item.id)));
+
+    const planningGreenShortage = resolveGreenShortageForPlanning(
+      stockBasedGreenShortage,
+      greenShortProducedCarryQty,
+    );
+
     return {
 
       itemId: item.id,
@@ -616,7 +630,11 @@ async function getGreenLevels({
 
       freeFgStock,
 
-      shortageForGreenTarget: shortageForGreenTarget(activeGreenLevelQty, freeFgStock),
+      shortageForGreenTarget: planningGreenShortage,
+
+      stockBasedGreenShortage,
+
+      greenShortProducedCarryQty,
 
       status: classifyGreenLevelStatus(
 

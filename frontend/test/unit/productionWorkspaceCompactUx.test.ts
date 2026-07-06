@@ -30,6 +30,8 @@ import {
 
   shouldUseNoQtyPremiumViewportWorkspace,
 
+  shouldUseProductionPageNaturalScroll,
+
 } from "../../src/lib/productionWorkspaceCompactUx";
 
 import { resolveProductionCompletionScenario } from "../../src/lib/productionCompletionUx";
@@ -273,6 +275,27 @@ describe("productionWorkspaceCompactUx", () => {
   });
 
 
+
+  it("uses natural page scroll outside premium viewport workbenches", () => {
+    expect(
+      shouldUseProductionPageNaturalScroll({
+        noQtyPremiumViewport: false,
+        greenLevelPremiumViewport: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldUseProductionPageNaturalScroll({
+        noQtyPremiumViewport: true,
+        greenLevelPremiumViewport: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldUseProductionPageNaturalScroll({
+        noQtyPremiumViewport: false,
+        greenLevelPremiumViewport: true,
+      }),
+    ).toBe(false);
+  });
 
   it("embeds recent entries in logging workbench only", () => {
     expect(

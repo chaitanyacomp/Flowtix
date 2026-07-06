@@ -282,6 +282,8 @@ monthlyPlanningRouter.post(
 const upsertLineSchema = z.object({
   fgItemId: z.coerce.number().int().positive(),
   plannedFgQty: z.coerce.number().min(0),
+  customerProductionQty: z.coerce.number().min(0).optional(),
+  greenReplenishmentQty: z.coerce.number().min(0).optional(),
   plannedQtyOverridden: z.boolean().optional(),
   source: z.enum(["SALES_ORDER", "REQUIREMENT_SHEET", "MANUAL"]).optional(),
   remarks: z.string().trim().max(2000).nullable().optional(),

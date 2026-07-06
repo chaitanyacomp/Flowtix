@@ -75,6 +75,7 @@ type WoRow = {
   shortfallQty?: number | string | null;
   closureReason?: string | null;
   salesOrderId: number;
+  sourceType?: string | null;
   salesOrder?: { docNo?: string | null } | null;
   cycleId?: number | null;
   cycle?: { cycleNo?: number | null } | null;
@@ -86,7 +87,7 @@ type SoListRow = {
   id: number;
   docNo?: string | null;
   internalStatus: string;
-  customer: { name: string } | null;
+  customer: { name?: string | null } | null;
   /** Present on GET /api/sales-orders — used to show approved SOs with FG in WO form without gating on eligible ids only. */
   lines?: { item?: { itemType?: string } }[];
 };
@@ -279,6 +280,14 @@ function filterSortWoList(
     return listSortDir === "asc" ? cmp : -cmp;
   });
   return out;
+}
+
+function normalizeWoRow(row: WoRow): WoRow {
+  return { ...row, salesOrderId: Number(row.salesOrderId ?? 0) };
+}
+
+function normalizeWoRows(rows: WoRow[] | null | undefined): WoRow[] {
+  return (rows ?? []).map(normalizeWoRow);
 }
 
 function totalParsedQtyForItem(lines: WoFormLine[], itemId: number): number | null {
@@ -1157,7 +1166,7 @@ export function WorkOrdersPage() {
     try {
       if (woStatusFilter === "OPEN") {
         const w = await apiFetch<WoRow[]>("/api/production/work-orders?listScope=nonCompleted");
-        setOpenWoRows(w);
+        setOpenWoRows(normalizeWoRows(w));
         setCompletedWoRows([]);
         setCompletedTotal(0);
       } else if (woStatusFilter === "COMPLETED") {
@@ -1165,7 +1174,7 @@ export function WorkOrdersPage() {
           `/api/production/work-orders?listScope=completed&completedPage=${page}&limit=${limit}`,
         );
         setOpenWoRows([]);
-        setCompletedWoRows(data.rows ?? []);
+        setCompletedWoRows(normalizeWoRows(data.rows));
         setCompletedTotal(typeof data.total === "number" ? data.total : 0);
       } else {
         const data = await apiFetch<{
@@ -1175,8 +1184,8 @@ export function WorkOrdersPage() {
           completedPage: number;
           completedLimit: number;
         }>(`/api/production/work-orders?listScope=all&completedPage=${page}&limit=${limit}`);
-        setOpenWoRows(data.nonCompleted ?? []);
-        setCompletedWoRows(data.completed ?? []);
+        setOpenWoRows(normalizeWoRows(data.nonCompleted));
+        setCompletedWoRows(normalizeWoRows(data.completed));
         setCompletedTotal(typeof data.completedTotal === "number" ? data.completedTotal : 0);
       }
     } catch (e) {

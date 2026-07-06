@@ -33,6 +33,9 @@ const {
 } = require("./rmIssueToleranceService");
 
 const STORE_ISSUE_STATUSES = ["REQUESTED", "PARTIALLY_ISSUED"];
+const PMR_ISSUED_STATUSES = ["FULLY_ISSUED", "SHORT_ISSUE_ACCEPTED"];
+const PMR_EXISTING_WORKFLOW_STATUSES = [...STORE_ISSUE_STATUSES, ...PMR_ISSUED_STATUSES];
+const PMR_NON_CANCELLED_STATUSES = ["DRAFT", ...PMR_EXISTING_WORKFLOW_STATUSES];
 
 const PMR_SHORT_ISSUE_WAIVE_REASONS = [
   "SCALE_LIMITATION",
@@ -70,6 +73,20 @@ function excessIssueQty(line) {
   const req = n(line.requiredQty);
   const iss = n(line.issuedQty);
   return round3(Math.max(0, iss - req));
+}
+
+function pmrIssueSelectionRank(status) {
+  const s = String(status ?? "").trim().toUpperCase();
+  if (s === "FULLY_ISSUED") return 0;
+  if (s === "SHORT_ISSUE_ACCEPTED") return 1;
+  return 99;
+}
+
+function sortPmrsByIssuedPriority(a, b) {
+  const ar = pmrIssueSelectionRank(a?.status);
+  const br = pmrIssueSelectionRank(b?.status);
+  if (ar !== br) return ar - br;
+  return Number(b?.id ?? 0) - Number(a?.id ?? 0);
 }
 
 function normalizePmrLineForReleaseCheck(line) {
@@ -122,6 +139,131 @@ function formatPmrReleaseBlockedMessage(unissuedRequiredLines) {
 function pmrMeetsProductionReleaseIssueRule(pmrOrLines) {
   const lines = Array.isArray(pmrOrLines) ? pmrOrLines : pmrOrLines?.lines;
   return assessPmrReleaseEligibility(lines || []).canRelease;
+}
+
+function releaseReadyPmrRank(pmr) {
+  const status = String(pmr?.status ?? "").trim().toUpperCase();
+  if (status === "FULLY_ISSUED") return 0;
+  if (status === "SHORT_ISSUE_ACCEPTED") return 1;
+  return 99;
+}
+
+function pickReleaseReadyPmr(pmrs = []) {
+  return [...pmrs]
+    .filter((pmr) => PMR_ISSUED_STATUSES.includes(String(pmr?.status ?? "").trim().toUpperCase()))
+    .filter((pmr) => pmrMeetsProductionReleaseIssueRule(pmr.lines || []))
+    .sort((a, b) => releaseReadyPmrRank(a) - releaseReadyPmrRank(b) || Number(a.id ?? 0) - Number(b.id ?? 0))[0] ?? null;
+}
+
+/**
+ * Store release eligibility — single source of truth for Pending Actions and /production-release.
+ * @param {import('@prisma/client').PrismaClient | import('@prisma/client').Prisma.TransactionClient} db
+ * @param {number[]} workOrderIds
+ */
+async function loadStoreProductionReleaseEligibilityByWorkOrder(db, workOrderIds) {
+  const ids = [...new Set((workOrderIds || []).map((id) => Number(id)).filter((id) => id > 0))];
+  const out = new Map();
+  if (!ids.length) return out;
+
+  const [workOrders, productionEntryGroups, executions, pmrRows] = await Promise.all([
+    db.workOrder.findMany({
+      where: { id: { in: ids } },
+      select: {
+        id: true,
+        docNo: true,
+        status: true,
+        sourceType: true,
+        salesOrderId: true,
+        cycleId: true,
+        requirementSheetId: true,
+        materialReleasedToProductionAt: true,
+        salesOrder: { select: { docNo: true, orderType: true } },
+        lines: {
+          select: {
+            id: true,
+            plannedQty: true,
+            qty: true,
+            fgItem: { select: { itemName: true } },
+          },
+        },
+      },
+    }),
+    db.productionEntry.groupBy({
+      by: ["workOrderLineId"],
+      where: { workOrderLine: { workOrderId: { in: ids } } },
+      _count: { _all: true },
+    }),
+    db.workOrderProductionExecution.findMany({
+      where: { workOrderId: { in: ids } },
+      select: { workOrderId: true, executionStatus: true },
+    }),
+    db.productionMaterialRequest.findMany({
+      where: { workOrderId: { in: ids }, status: { not: "CANCELLED" } },
+      include: { lines: { select: { requiredQty: true, issuedQty: true } } },
+      orderBy: { id: "desc" },
+    }),
+  ]);
+
+  const lineToWoId = new Map();
+  for (const wo of workOrders) {
+    for (const line of wo.lines || []) {
+      lineToWoId.set(line.id, wo.id);
+    }
+  }
+  const productionEntryCountByWo = new Map();
+  for (const group of productionEntryGroups) {
+    const woId = lineToWoId.get(group.workOrderLineId);
+    if (!woId) continue;
+    productionEntryCountByWo.set(
+      woId,
+      (productionEntryCountByWo.get(woId) ?? 0) + Number(group._count?._all ?? 0),
+    );
+  }
+  const execStatusByWo = new Map(
+    executions.map((row) => [
+      Number(row.workOrderId),
+      String(row.executionStatus ?? "NOT_STARTED").trim().toUpperCase(),
+    ]),
+  );
+  const pmrsByWo = new Map();
+  for (const pmr of pmrRows) {
+    const woId = Number(pmr.workOrderId);
+    if (!pmrsByWo.has(woId)) pmrsByWo.set(woId, []);
+    pmrsByWo.get(woId).push(pmr);
+  }
+
+  for (const wo of workOrders) {
+    const woId = Number(wo.id);
+    const released = Boolean(wo.materialReleasedToProductionAt);
+    const pmr = pickReleaseReadyPmr(pmrsByWo.get(woId) || []);
+    const hasProductionEntry = (productionEntryCountByWo.get(woId) ?? 0) > 0;
+    const execStatus = execStatusByWo.get(woId) ?? "NOT_STARTED";
+    const executionStarted = execStatus !== "NOT_STARTED";
+    const productionInProgress = String(wo.status ?? "").trim().toUpperCase() === "IN_PROGRESS";
+    let blockReason = null;
+    if (released) blockReason = "ALREADY_RELEASED";
+    else if (!pmr) blockReason = "PMR_NOT_READY";
+    else if (hasProductionEntry) blockReason = "PRODUCTION_ENTRY_EXISTS";
+    else if (executionStarted) blockReason = "PRODUCTION_EXECUTION_STARTED";
+    else if (productionInProgress) blockReason = "WORK_ORDER_IN_PROGRESS";
+    else if (
+      execStatus === "COMPLETED" ||
+      ["COMPLETED", "REJECTED", "CLOSED_WITH_SHORTFALL"].includes(String(wo.status ?? "").trim().toUpperCase())
+    ) {
+      blockReason = "WORK_ORDER_CLOSED";
+    }
+    out.set(woId, {
+      eligible: blockReason == null,
+      blockReason,
+      pmr,
+      wo,
+      hasProductionEntry,
+      executionStarted,
+      executionStatus: execStatus,
+      released,
+    });
+  }
+  return out;
 }
 
 function computeFreeStoreStockLine({ totalStoreStock, reservedForOtherOrdersQty }) {
@@ -505,6 +647,25 @@ async function getProductionMaterialRequestById(id, db = prisma) {
   return mapPmrRow(row);
 }
 
+async function getExistingProductionMaterialRequestForWorkOrder(workOrderId, db = prisma, opts = {}) {
+  const woId = Number(workOrderId);
+  if (!Number.isFinite(woId) || woId <= 0) {
+    const err = new Error("Work order id is required.");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const statuses = Array.isArray(opts.statuses) && opts.statuses.length ? opts.statuses : PMR_EXISTING_WORKFLOW_STATUSES;
+  const rows = await db.productionMaterialRequest.findMany({
+    where: { workOrderId: woId, status: { in: statuses } },
+    orderBy: { id: "desc" },
+    select: { id: true, status: true },
+  });
+  if (!rows.length) return null;
+  const row = opts.preferIssued ? [...rows].sort(sortPmrsByIssuedPriority)[0] : rows[0];
+  return getProductionMaterialRequestById(row.id, db);
+}
+
 /**
  * @param {{ workOrderId: number, remarks?: string | null, lines?: Array<{ itemId: number, requiredQty: number }>, useBom?: boolean }} input
  */
@@ -523,6 +684,23 @@ async function createProductionMaterialRequest(input, actor = {}, db = prisma) {
     if (!["PENDING", "IN_PROGRESS"].includes(wo.status)) {
       const err = new Error("Work order must be pending or in progress to request material.");
       err.statusCode = 400;
+      throw err;
+    }
+
+    const existingPmr = await tx.productionMaterialRequest.findFirst({
+      where: { workOrderId: input.workOrderId, status: { not: "CANCELLED" } },
+      orderBy: { id: "asc" },
+      select: { id: true, docNo: true, status: true },
+    });
+    if (existingPmr && !input.allowApprovedAdditionalRmRequest) {
+      const err = new Error("A PMR already exists for this work order.");
+      err.statusCode = 409;
+      err.code = "PMR_ALREADY_EXISTS_FOR_WORK_ORDER";
+      err.details = {
+        pmrId: existingPmr.id,
+        pmrDocNo: existingPmr.docNo ?? null,
+        pmrStatus: existingPmr.status,
+      };
       throw err;
     }
 
@@ -676,10 +854,10 @@ async function cancelProductionMaterialRequest(pmrId, actor = {}, db = prisma) {
 }
 
 /**
- * Ensure a submitted PMR exists for a regular work order so Store issue can proceed.
- * Reuses an existing draft/submitted request where possible.
+ * Reuse the PMR for a regular work order so Store issue can proceed.
+ * Creation is allowed only for explicit WO creation paths that pass allowCreate.
  */
-async function ensureSubmittedProductionMaterialRequestForWorkOrder(workOrderId, actor = {}, db = prisma) {
+async function ensureSubmittedProductionMaterialRequestForWorkOrder(workOrderId, actor = {}, db = prisma, opts = {}) {
   await assertNoQtyWorkOrderExecutionReleased(db, workOrderId, "Material request");
   const woId = Number(workOrderId);
   if (!Number.isFinite(woId) || woId <= 0) {
@@ -688,13 +866,13 @@ async function ensureSubmittedProductionMaterialRequestForWorkOrder(workOrderId,
     throw err;
   }
 
-  const existingSubmitted = await db.productionMaterialRequest.findFirst({
-    where: { workOrderId: woId, status: { in: STORE_ISSUE_STATUSES } },
+  const existingWorkflowPmr = await db.productionMaterialRequest.findFirst({
+    where: { workOrderId: woId, status: { in: PMR_EXISTING_WORKFLOW_STATUSES } },
     orderBy: { id: "desc" },
     select: { id: true },
   });
-  if (existingSubmitted) {
-    return getProductionMaterialRequestById(existingSubmitted.id, db);
+  if (existingWorkflowPmr) {
+    return getProductionMaterialRequestById(existingWorkflowPmr.id, db);
   }
 
   const existingDraft = await db.productionMaterialRequest.findFirst({
@@ -704,6 +882,13 @@ async function ensureSubmittedProductionMaterialRequestForWorkOrder(workOrderId,
   });
   if (existingDraft) {
     return submitProductionMaterialRequest(existingDraft.id, actor, db);
+  }
+
+  if (!opts.allowCreate) {
+    const err = new Error("No PMR exists for this work order.");
+    err.statusCode = 404;
+    err.code = "PMR_NOT_FOUND_FOR_WORK_ORDER";
+    throw err;
   }
 
   const created = await createProductionMaterialRequest({ workOrderId: woId, useBom: true }, actor, db);
@@ -1256,10 +1441,14 @@ async function acknowledgePmrIssueLater(pmrId, actor = {}) {
 
 module.exports = {
   STORE_ISSUE_STATUSES,
+  PMR_ISSUED_STATUSES,
+  PMR_EXISTING_WORKFLOW_STATUSES,
+  PMR_NON_CANCELLED_STATUSES,
   PMR_SHORT_ISSUE_WAIVE_REASONS,
   buildBomSuggestionsForWorkOrder,
   listProductionMaterialRequests,
   getProductionMaterialRequestById,
+  getExistingProductionMaterialRequestForWorkOrder,
   createProductionMaterialRequest,
   submitProductionMaterialRequest,
   ensureSubmittedProductionMaterialRequestForWorkOrder,
@@ -1280,4 +1469,6 @@ module.exports = {
   assessPmrReleaseEligibility,
   formatPmrReleaseBlockedMessage,
   pmrMeetsProductionReleaseIssueRule,
+  pickReleaseReadyPmr,
+  loadStoreProductionReleaseEligibilityByWorkOrder,
 };

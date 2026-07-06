@@ -159,9 +159,11 @@ describe("RmPoSupplierDocument P4D-C", () => {
     expect(typeof mod.RmPoSupplierDocument).toBe("function");
   });
 
-  it("renders vendor and deliver-to blocks with addresses", () => {
+  it("renders supplier and deliver-to blocks with addresses", () => {
     expect(supplierDocSource).toContain('testId="rm-po-vendor-block"');
     expect(supplierDocSource).toContain('testId="rm-po-deliver-to-block"');
+    expect(supplierDocSource).toContain('title="Supplier"');
+    expect(supplierDocSource).toContain("Supplier Name");
     expect(supplierDocSource).toContain("resolveRmPoVendorBlock");
     expect(supplierDocSource).toContain("resolveRmPoDeliverToBlock");
   });
@@ -188,10 +190,10 @@ describe("RmPoSupplierDocument P4D-C", () => {
     expect(documentViewSource).toContain("companyProfile");
   });
 
-  it("internal trace section preserved in full view", () => {
-    expect(documentViewSource).toContain('data-testid="rm-po-internal-trace-section"');
+  it("links to internal traceability on separate page", () => {
+    expect(documentViewSource).toContain('data-testid="rm-po-view-traceability-btn"');
+    expect(documentViewSource).toContain("buildRmPoTraceabilityHref");
     expect(documentViewSource).toContain("supplierCopyMode");
-    expect(documentViewSource).toContain("TraceChainInline");
   });
 
   it("print and workflow actions preserved", () => {

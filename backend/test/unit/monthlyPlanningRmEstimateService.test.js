@@ -148,6 +148,157 @@ describe("monthlyPlanningRmEstimateService", () => {
     assert.equal(second.totals.grossDemandTotal, 12000);
   });
 
+  it("FT-PD-067: live estimate uses customer demand plus selected GL replenishment only", async () => {
+    const planLines = [
+      {
+        id: 1,
+        fgItemId: 10,
+        plannedFgQty: "1300",
+        customerProductionQty: "1000",
+        greenReplenishmentQty: "300",
+        fgItem: { id: 10, itemName: "FG-A", unit: "Nos" },
+      },
+      {
+        id: 2,
+        fgItemId: 11,
+        plannedFgQty: "2500",
+        customerProductionQty: "2000",
+        greenReplenishmentQty: "0",
+        fgItem: { id: 11, itemName: "FG-B", unit: "Nos" },
+      },
+    ];
+    const { db } = createEstimateDb({ planLines });
+    const deps = {
+      loadApprovedBomWithLines: async () => ({ id: 1, lines: [{ id: 1 }] }),
+      aggregateRmDemandForFgLines: async (_db, fgLines) => {
+        assert.deepEqual(
+          fgLines.map((fg) => ({ fgItemId: fg.fgItemId, fgQty: fg.fgQty })),
+          [
+            { fgItemId: 10, fgQty: 1300 },
+            { fgItemId: 11, fgQty: 2000 },
+          ],
+        );
+        return { rmNeeded: new Map([[201, 3300]]), missingChildBoms: [] };
+      },
+      getMaterialAvailabilityByItems: async () => [
+        {
+          itemId: 201,
+          physicalUsableStockQty: 0,
+          freeStockQty: 0,
+          effectiveReservedQty: 0,
+          incomingQty: 0,
+          warnings: [],
+        },
+      ],
+    };
+
+    const res = await getRmPlanningEstimate({ db, planId: 5, deps });
+    assert.equal(res.totalFgPlannedQty, 3300);
+    assert.equal(res.totals.grossDemandTotal, 3300);
+  });
+
+  it("FT-PD-067: GL-only shortage with no customer or selection produces no RM estimate", async () => {
+    const { db } = createEstimateDb({
+      planLines: [
+        {
+          id: 1,
+          fgItemId: 10,
+          plannedFgQty: "0",
+          customerProductionQty: "0",
+          greenReplenishmentQty: "0",
+          fgItem: { id: 10, itemName: "FG-A", unit: "Nos" },
+        },
+      ],
+    });
+    const res = await getRmPlanningEstimate({ db, planId: 5, deps: {} });
+    assert.equal(res.exists, false);
+    assert.equal(res.totalFgPlannedQty, 0);
+    assert.deepEqual(res.lines, []);
+  });
+
+  async function estimateGrossForFtPd067(planLines, expectedFgLines) {
+    const { db } = createEstimateDb({ planLines });
+    const deps = {
+      loadApprovedBomWithLines: async () => ({ id: 1, lines: [{ id: 1 }] }),
+      aggregateRmDemandForFgLines: async (_db, fgLines) => {
+        assert.deepEqual(
+          fgLines.map((fg) => ({ fgItemId: fg.fgItemId, fgQty: fg.fgQty })),
+          expectedFgLines,
+        );
+        const gross = fgLines.reduce((sum, fg) => sum + Number(fg.fgQty) * 0.1, 0);
+        return { rmNeeded: new Map([[201, gross]]), missingChildBoms: [] };
+      },
+      getMaterialAvailabilityByItems: async () => [
+        {
+          itemId: 201,
+          physicalUsableStockQty: 0,
+          freeStockQty: 0,
+          effectiveReservedQty: 0,
+          incomingQty: 0,
+          warnings: [],
+        },
+      ],
+    };
+    const res = await getRmPlanningEstimate({ db, planId: 5, deps });
+    return res.totals.grossDemandTotal;
+  }
+
+  it("FT-PD-067: customer only RM excludes unselected GL", async () => {
+    const gross = await estimateGrossForFtPd067(
+      [
+        { id: 1, fgItemId: 10, plannedFgQty: "1500", customerProductionQty: "1000", greenReplenishmentQty: "0", fgItem: { id: 10, itemName: "FG-A", unit: "Nos" } },
+        { id: 2, fgItemId: 11, plannedFgQty: "2600", customerProductionQty: "2000", greenReplenishmentQty: "0", fgItem: { id: 11, itemName: "FG-B", unit: "Nos" } },
+      ],
+      [
+        { fgItemId: 10, fgQty: 1000 },
+        { fgItemId: 11, fgQty: 2000 },
+      ],
+    );
+    assert.equal(gross, 300);
+  });
+
+  it("FT-PD-067: selecting one GL item increases RM for that item only", async () => {
+    const gross = await estimateGrossForFtPd067(
+      [
+        { id: 1, fgItemId: 10, plannedFgQty: "1500", customerProductionQty: "1000", greenReplenishmentQty: "500", fgItem: { id: 10, itemName: "FG-A", unit: "Nos" } },
+        { id: 2, fgItemId: 11, plannedFgQty: "2600", customerProductionQty: "2000", greenReplenishmentQty: "0", fgItem: { id: 11, itemName: "FG-B", unit: "Nos" } },
+      ],
+      [
+        { fgItemId: 10, fgQty: 1500 },
+        { fgItemId: 11, fgQty: 2000 },
+      ],
+    );
+    assert.equal(gross, 350);
+  });
+
+  it("FT-PD-067: selecting all GL items increases RM for all selected BOMs", async () => {
+    const gross = await estimateGrossForFtPd067(
+      [
+        { id: 1, fgItemId: 10, plannedFgQty: "1500", customerProductionQty: "1000", greenReplenishmentQty: "500", fgItem: { id: 10, itemName: "FG-A", unit: "Nos" } },
+        { id: 2, fgItemId: 11, plannedFgQty: "2600", customerProductionQty: "2000", greenReplenishmentQty: "600", fgItem: { id: 11, itemName: "FG-B", unit: "Nos" } },
+      ],
+      [
+        { fgItemId: 10, fgQty: 1500 },
+        { fgItemId: 11, fgQty: 2600 },
+      ],
+    );
+    assert.equal(gross, 410);
+  });
+
+  it("FT-PD-067: deselect all returns RM to customer-only", async () => {
+    const gross = await estimateGrossForFtPd067(
+      [
+        { id: 1, fgItemId: 10, plannedFgQty: "1000", customerProductionQty: "1000", greenReplenishmentQty: "0", fgItem: { id: 10, itemName: "FG-A", unit: "Nos" } },
+        { id: 2, fgItemId: 11, plannedFgQty: "2000", customerProductionQty: "2000", greenReplenishmentQty: "0", fgItem: { id: 11, itemName: "FG-B", unit: "Nos" } },
+      ],
+      [
+        { fgItemId: 10, fgQty: 1000 },
+        { fgItemId: 11, fgQty: 2000 },
+      ],
+    );
+    assert.equal(gross, 300);
+  });
+
   it("rejects estimate for approved plans (frozen snapshot path only)", async () => {
     const { db } = createEstimateDb({ status: "APPROVED", planLines: [] });
     await assert.rejects(

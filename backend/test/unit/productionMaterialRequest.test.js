@@ -5,6 +5,7 @@ const { DocType } = require("../../src/prismaClientPackage");
 const {
   pendingQty,
   STORE_ISSUE_STATUSES,
+  PMR_EXISTING_WORKFLOW_STATUSES,
   computeFreeStoreStockLine,
   loadReservedForOtherOpenPmrsByItem,
   buildPmrIssueContext,
@@ -245,9 +246,9 @@ describe("productionMaterialRequestService helpers", () => {
       },
       productionMaterialRequest: {
         findFirst: async (query) => {
-          // First lookup is for an already-submitted (store-visible) PMR.
+          // First lookup is for an existing workflow PMR.
           if (query.where.status?.in) {
-            assert.deepEqual(query.where.status.in, STORE_ISSUE_STATUSES);
+            assert.deepEqual(query.where.status.in, PMR_EXISTING_WORKFLOW_STATUSES);
             return { id: 9 };
           }
           return null;
@@ -280,5 +281,159 @@ describe("productionMaterialRequestService helpers", () => {
     assert.equal(pmr.status, "REQUESTED");
     assert.equal(calls.created, 0);
     assert.equal(calls.updated, 0);
+  });
+
+  it("does not create another PMR when the WO already has a fully issued PMR", async () => {
+    const calls = { created: 0, updated: 0 };
+    const db = {
+      workOrder: {
+        findUnique: async () => ({
+          id: 26,
+          salesOrderId: 1,
+          cycleId: 1,
+          requirementSheetId: null,
+          salesOrder: { orderType: "REGULAR" },
+        }),
+      },
+      productionMaterialRequest: {
+        findFirst: async (query) => {
+          if (query.where.status?.in) {
+            assert.ok(query.where.status.in.includes("FULLY_ISSUED"));
+            return { id: 260001 };
+          }
+          return null;
+        },
+        findUnique: async () => ({
+          id: 260001,
+          docNo: "PMR-26-0001",
+          status: "FULLY_ISSUED",
+          remarks: null,
+          workOrderId: 26,
+          workOrder: { docNo: "WO-26-0001", salesOrder: { docNo: "SO-26-0001" } },
+          createdAt: new Date("2026-05-01T00:00:00Z"),
+          updatedAt: new Date("2026-05-01T00:00:00Z"),
+          lines: [],
+          materialIssueNotes: [],
+        }),
+        create: async () => {
+          calls.created += 1;
+          return {};
+        },
+        update: async () => {
+          calls.updated += 1;
+        },
+      },
+    };
+
+    const pmr = await ensureSubmittedProductionMaterialRequestForWorkOrder(26, {}, db);
+
+    assert.equal(pmr.id, 260001);
+    assert.equal(pmr.status, "FULLY_ISSUED");
+    assert.equal(calls.created, 0);
+    assert.equal(calls.updated, 0);
+  });
+
+  it("does not create a PMR from lookup paths when none exists", async () => {
+    const calls = { created: 0 };
+    const db = {
+      workOrder: {
+        findUnique: async () => ({
+          id: 27,
+          salesOrderId: 1,
+          cycleId: 1,
+          requirementSheetId: null,
+          salesOrder: { orderType: "REGULAR" },
+        }),
+      },
+      productionMaterialRequest: {
+        findFirst: async () => null,
+        create: async () => {
+          calls.created += 1;
+          return {};
+        },
+      },
+    };
+
+    await assert.rejects(
+      () => ensureSubmittedProductionMaterialRequestForWorkOrder(27, {}, db),
+      (err) => err?.code === "PMR_NOT_FOUND_FOR_WORK_ORDER" && err?.statusCode === 404,
+    );
+    assert.equal(calls.created, 0);
+  });
+});
+
+describe("loadStoreProductionReleaseEligibilityByWorkOrder", () => {
+  const { loadStoreProductionReleaseEligibilityByWorkOrder } = require("../../src/services/productionMaterialRequestService");
+
+  function mockDb({ wo, pmrs = [], productionEntryCount = 0, executionStatus = "NOT_STARTED" }) {
+    return {
+      workOrder: {
+        findMany: async () => [wo],
+      },
+      productionEntry: {
+        groupBy: async () =>
+          productionEntryCount > 0
+            ? [{ workOrderLineId: wo.lines[0].id, _count: { _all: productionEntryCount } }]
+            : [],
+      },
+      workOrderProductionExecution: {
+        findMany: async () =>
+          executionStatus !== "NOT_STARTED"
+            ? [{ workOrderId: wo.id, executionStatus }]
+            : [],
+      },
+      productionMaterialRequest: {
+        findMany: async () => pmrs,
+      },
+    };
+  }
+
+  const baseWo = {
+    id: 10,
+    docNo: "WO-10",
+    status: "PENDING",
+    sourceType: "SALES_ORDER",
+    salesOrderId: 1,
+    cycleId: null,
+    requirementSheetId: null,
+    materialReleasedToProductionAt: null,
+    salesOrder: { docNo: "SO-1", orderType: "REGULAR" },
+    lines: [{ id: 100, plannedQty: 50, qty: 50, fgItem: { itemName: "FG-A" } }],
+  };
+
+  const issuedPmr = {
+    id: 5,
+    docNo: "PMR-5",
+    workOrderId: 10,
+    status: "FULLY_ISSUED",
+    lines: [{ requiredQty: 10, issuedQty: 10 }],
+  };
+
+  it("marks WO eligible when PMR issued and production has not started", async () => {
+    const db = mockDb({ wo: baseWo, pmrs: [issuedPmr] });
+    const map = await loadStoreProductionReleaseEligibilityByWorkOrder(db, [10]);
+    assert.equal(map.get(10)?.eligible, true);
+  });
+
+  it("blocks WO when production entries exist", async () => {
+    const db = mockDb({ wo: baseWo, pmrs: [issuedPmr], productionEntryCount: 2 });
+    const map = await loadStoreProductionReleaseEligibilityByWorkOrder(db, [10]);
+    assert.equal(map.get(10)?.eligible, false);
+    assert.equal(map.get(10)?.blockReason, "PRODUCTION_ENTRY_EXISTS");
+  });
+
+  it("blocks WO when execution has started", async () => {
+    const db = mockDb({ wo: baseWo, pmrs: [issuedPmr], executionStatus: "RUNNING" });
+    const map = await loadStoreProductionReleaseEligibilityByWorkOrder(db, [10]);
+    assert.equal(map.get(10)?.eligible, false);
+    assert.equal(map.get(10)?.blockReason, "PRODUCTION_EXECUTION_STARTED");
+  });
+
+  it("blocks WO when already released to production", async () => {
+    const wo = { ...baseWo, materialReleasedToProductionAt: new Date() };
+    const db = mockDb({ wo, pmrs: [issuedPmr] });
+    const map = await loadStoreProductionReleaseEligibilityByWorkOrder(db, [10]);
+    assert.equal(map.get(10)?.eligible, false);
+    assert.equal(map.get(10)?.blockReason, "ALREADY_RELEASED");
   });
 });

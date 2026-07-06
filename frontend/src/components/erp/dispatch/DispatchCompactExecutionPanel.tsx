@@ -99,7 +99,7 @@ export function DispatchCompactExecutionPanel({
             |
           </span>
           <span>
-            Ready qty{" "}
+            Dispatchable qty{" "}
             <span className="font-semibold tabular-nums text-emerald-900">{formatDispatchCompactQty(totalReadyQty)}</span>
           </span>
           <span className="text-slate-400" aria-hidden>
@@ -152,7 +152,7 @@ export function DispatchCompactExecutionPanel({
                   <thead className="sticky top-0 z-[1] border-b border-slate-200 bg-slate-50">
                     <tr className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
                       <th className="px-2 py-1.5 font-medium">Item</th>
-                      <th className="px-2 py-1.5 text-right font-medium">Ready</th>
+                      <th className="px-2 py-1.5 text-right font-medium">Dispatchable</th>
                       <th className="px-2 py-1.5 text-right font-medium">Draft</th>
                       <th className="px-2 py-1.5 text-right font-medium">Dispatched</th>
                       <th className="px-2 py-1.5 font-medium">Status</th>
@@ -209,7 +209,7 @@ export function DispatchCompactExecutionPanel({
                   </div>
                   <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                     <div className="space-y-1">
-                      <div className="text-[11px] text-slate-500">Original ready</div>
+                      <div className="text-[11px] text-slate-500">Allocated to SO</div>
                       <div className="font-semibold tabular-nums text-slate-900">
                         {formatDispatchCompactQty(activeOriginalReadyQty)}
                       </div>
@@ -221,7 +221,7 @@ export function DispatchCompactExecutionPanel({
                       </div>
                     </div>
                     <div className="space-y-1">
-                      <div className="text-[11px] text-slate-500">Remaining</div>
+                      <div className="text-[11px] text-slate-500">Dispatchable qty</div>
                       <div className="font-semibold tabular-nums text-emerald-900">
                         {formatDispatchCompactQty(activeRemainingQty)}
                       </div>
@@ -321,7 +321,7 @@ export function DispatchCompactExecutionPanel({
                     </div>
                   ) : (
                     <p className="text-[12px] text-amber-950/90">
-                      Draft is saved for the full ready quantity. Finalize dispatch or delete the draft to continue.
+                      Draft is saved for the full dispatchable quantity. Finalize dispatch or delete the draft to continue.
                     </p>
                   )}
                 </div>

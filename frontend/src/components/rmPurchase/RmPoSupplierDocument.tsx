@@ -96,22 +96,23 @@ function AddressBlock({
   );
 }
 
-function VendorParty({ vendor }: { vendor: RmPoVendorBlock }) {
+function SupplierParty({ vendor }: { vendor: RmPoVendorBlock }) {
   const stateText = stateDisplay(vendor.stateCode, vendor.stateName);
   return (
-    <PartyBlock title="Vendor" testId="rm-po-vendor-block">
-      <PartyField label="Name" value={vendor.name} testId="rm-po-vendor-name" />
+    <PartyBlock title="Supplier" testId="rm-po-vendor-block">
+      <PartyField label="Supplier Name" value={vendor.name} testId="rm-po-vendor-name" />
       {vendor.supplyLabel ? (
         <PartyField label="Supply" value={vendor.supplyLabel} testId="rm-po-vendor-supply" />
       ) : null}
       <div className="pt-0.5">
+        <div className="procurement-doc-body-text mb-0.5 font-medium text-slate-500">Supplier Address</div>
         <AddressBlock
           lines={vendor.addressLines}
           missingWarning={VENDOR_ADDRESS_MISSING_WARNING}
           testId="rm-po-vendor-address"
         />
       </div>
-      <PartyField label="GSTIN" value={vendor.gstin} mono testId="rm-po-vendor-gstin" />
+      <PartyField label="Supplier GSTIN" value={vendor.gstin} mono testId="rm-po-vendor-gstin" />
       {hasStateValue(vendor.stateCode, vendor.stateName) ? (
         <PartyField label="State" value={stateText} testId="rm-po-vendor-state" />
       ) : null}
@@ -237,6 +238,12 @@ export function RmPoSupplierDocument({ po, poDate, companyProfile, className }: 
             <div className="procurement-doc-title font-bold uppercase tracking-wider text-slate-800">
               Purchase Order
             </div>
+            <div
+              className="rm-po-print-only mt-0.5 hidden text-[10px] font-semibold uppercase tracking-wide text-slate-600 print:block print:text-[8pt]"
+              data-testid="rm-po-supplier-copy-type"
+            >
+              Document Type: Supplier PO Copy
+            </div>
             <div className="mt-1" data-testid="rm-po-number-block">
               <div className="procurement-doc-section-heading font-medium uppercase tracking-wide text-slate-500">
                 Purchase Order No.
@@ -271,7 +278,7 @@ export function RmPoSupplierDocument({ po, poDate, companyProfile, className }: 
         className="procurement-doc-section procurement-doc-party-grid border-b border-slate-300 py-2 print:gap-2 print:py-1.5"
         data-testid="rm-po-supplier-details"
       >
-        <VendorParty vendor={vendor} />
+        <SupplierParty vendor={vendor} />
         <DeliverToParty deliverTo={deliverTo} />
       </section>
 

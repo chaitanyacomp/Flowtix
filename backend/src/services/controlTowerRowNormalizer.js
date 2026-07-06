@@ -138,6 +138,29 @@ function ownerForProductionNextAction(nextAction) {
   return VISIBLE_OWNERS.PRODUCTION;
 }
 
+function formatProductionQtyForPendingContext(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  const rounded = Math.round(n * 1000) / 1000;
+  return Math.abs(rounded - Math.round(rounded)) < 1e-9 ? String(Math.round(rounded)) : String(rounded);
+}
+
+function formatProductionQueueDocumentNo(raw) {
+  const wo =
+    String(raw?.workOrderNo ?? "").trim() ||
+    (raw?.workOrderId != null ? `WO-${raw.workOrderId}` : "WO");
+  const orderType = String(raw?.orderType ?? "NORMAL").toUpperCase();
+  const flowLabel =
+    orderType === "GREEN_LEVEL" ? "Green Level" : orderType === "NO_QTY" ? "NO_QTY" : null;
+  const item = String(raw?.itemName ?? "").trim();
+  const planned = formatProductionQtyForPendingContext(raw?.requiredQty);
+  const parts = [wo];
+  if (flowLabel) parts.push(flowLabel);
+  if (item) parts.push(item);
+  if (planned != null) parts.push(`Planned ${planned}`);
+  return parts.join(" · ");
+}
+
 function documentTypeForOrderType(orderType) {
   return orderType === "NO_QTY" ? DOCUMENT_TYPES.NO_QTY : DOCUMENT_TYPES.SALES_ORDER;
 }
@@ -289,6 +312,7 @@ function normalizeRmRiskRow(raw) {
       receivedGrnQty: raw?.receivedGrnQty ?? null,
       productionExecutionStatus: raw?.productionExecutionStatus ?? null,
       materialReleasedToProduction: Boolean(raw?.workOrderReleased),
+      hasProductionEntry: Boolean(raw?.hasProductionEntry),
       ...lineage,
       ...(purchaseHandoff ? { purchaseHandoff: true } : {}),
       ...(purchaseNextOwnerHint && currentOwner === VISIBLE_OWNERS.STORE
@@ -323,7 +347,7 @@ function normalizeProductionRow(raw) {
     rowType: ROW_TYPES.PRODUCTION_QUEUE,
     documentType:
       nextAction === "QC_PENDING" ? DOCUMENT_TYPES.PRODUCTION : DOCUMENT_TYPES.WORK_ORDER,
-    documentNo: raw?.workOrderNo ?? raw?.salesOrderNo ?? null,
+    documentNo: formatProductionQueueDocumentNo(raw),
     currentStatus,
     currentOwner: ownerForProductionNextAction(nextAction),
     nextAction: raw?.actionLabel ?? nextAction,
@@ -339,6 +363,7 @@ function normalizeProductionRow(raw) {
       itemName: raw?.itemName ?? null,
       balanceQty: raw?.balanceQty ?? null,
       orderType,
+      sourceType: raw?.sourceType ?? null,
       cycleNo: raw?.cycleNo ?? null,
       cycleId: raw?.cycleId ?? null,
       rmReadinessGate: raw?.rmReadinessGate ?? null,
@@ -651,11 +676,20 @@ function ownerForContinueWorkingStage(stageKey) {
  * @param {object} raw — getContinueWorkingRows() element
  * @returns {ControlTowerNormalizedRow}
  */
+function resolveContinueWorkingOrderType(raw) {
+  const explicit = String(raw?.orderType ?? "").trim().toUpperCase();
+  if (explicit === "GREEN_LEVEL" || explicit === "NO_QTY") return explicit;
+  if (String(raw?.sourceType ?? "").toUpperCase() === "GREEN_LEVEL_REPLENISHMENT") {
+    return "GREEN_LEVEL";
+  }
+  return explicit || "NORMAL";
+}
+
 function normalizeContinueWorkingRow(raw) {
   const stageKey = String(raw?.stageKey ?? "PRODUCTION");
   const nextAction = String(raw?.nextAction ?? raw?.nextStep ?? stageKey);
   const salesOrderId = Number(raw?.salesOrderId);
-  const orderType = raw?.orderType ?? "NORMAL";
+  const orderType = resolveContinueWorkingOrderType(raw);
   const sourceId = `continue:${raw?.key ?? `so:${salesOrderId}:${stageKey}`}`;
   const lineage = buildSourceLineageMetadata(raw, {
     sourceStageKey: stageKey,
@@ -671,7 +705,16 @@ function normalizeContinueWorkingRow(raw) {
   return buildNormalizedRow({
     rowType: ROW_TYPES.CONTINUE_WORKING,
     documentType: documentTypeForOrderType(orderType),
-    documentNo: stageKey === "PRODUCTION" ? raw?.workOrderNo ?? raw?.salesOrderDocNo ?? null : raw?.salesOrderDocNo ?? null,
+    documentNo:
+      stageKey === "PRODUCTION"
+        ? formatProductionQueueDocumentNo({
+            workOrderNo: raw?.workOrderNo,
+            workOrderId: raw?.workOrderId,
+            orderType,
+            itemName: raw?.itemName,
+            requiredQty: raw?.metricQty ?? raw?.productionRemaining ?? raw?.requiredQty,
+          })
+        : raw?.salesOrderDocNo ?? null,
     currentStatus,
     currentOwner: ownerForContinueWorkingStage(stageKey),
     nextAction: raw?.nextStep ?? nextAction,
@@ -683,6 +726,7 @@ function normalizeContinueWorkingRow(raw) {
       key: raw?.key ?? null,
       salesOrderId,
       workOrderId: raw?.workOrderId != null ? Number(raw.workOrderId) : null,
+      workOrderLineId: raw?.workOrderLineId != null ? Number(raw.workOrderLineId) : null,
       workOrderNo: raw?.workOrderNo ?? null,
       productionId: raw?.productionId != null ? Number(raw.productionId) : null,
       itemId: raw?.itemId != null ? Number(raw.itemId) : null,

@@ -5,27 +5,50 @@
 
 export const PRODUCTION_FLOW_REGULAR = "REGULAR_SO" as const;
 export const PRODUCTION_FLOW_NO_QTY = "NO_QTY" as const;
+export const PRODUCTION_FLOW_GREEN_LEVEL = "GREEN_LEVEL" as const;
 
-export type ProductionFlowParam = typeof PRODUCTION_FLOW_REGULAR | typeof PRODUCTION_FLOW_NO_QTY;
+export const GREEN_LEVEL_REPLENISHMENT_SOURCE_TYPE = "GREEN_LEVEL_REPLENISHMENT" as const;
+export const GREEN_LEVEL_PRODUCTION_DISPLAY_LABEL = "Green Level WO";
+export const GREEN_LEVEL_STOCK_SOURCE_LABEL = "Stock Replenishment";
+export const GREEN_LEVEL_CUSTOMER_DISPLAY_LABEL = "Green Level Replenishment";
+
+export function isGreenLevelReplenishmentSourceType(sourceType?: string | null): boolean {
+  return String(sourceType ?? "").toUpperCase() === GREEN_LEVEL_REPLENISHMENT_SOURCE_TYPE;
+}
+
+export type ProductionFlowParam =
+  | typeof PRODUCTION_FLOW_REGULAR
+  | typeof PRODUCTION_FLOW_NO_QTY
+  | typeof PRODUCTION_FLOW_GREEN_LEVEL;
 
 export function parseProductionFlowParam(raw: string | null | undefined): ProductionFlowParam | null {
   const v = String(raw ?? "")
     .trim()
     .toUpperCase();
   if (v === PRODUCTION_FLOW_NO_QTY || v === "NO_QTY_SO") return PRODUCTION_FLOW_NO_QTY;
+  if (v === PRODUCTION_FLOW_GREEN_LEVEL || v === "GREEN_LEVEL_WO" || v === "STOCK_WO") {
+    return PRODUCTION_FLOW_GREEN_LEVEL;
+  }
   if (v === PRODUCTION_FLOW_REGULAR || v === "REGULAR") return PRODUCTION_FLOW_REGULAR;
   return null;
 }
 
-export function orderTypeForProductionFlow(flow: ProductionFlowParam): "NO_QTY" | "NORMAL" {
-  return flow === PRODUCTION_FLOW_NO_QTY ? "NO_QTY" : "NORMAL";
+export function orderTypeForProductionFlow(flow: ProductionFlowParam): "NO_QTY" | "NORMAL" | "GREEN_LEVEL" {
+  if (flow === PRODUCTION_FLOW_NO_QTY) return "NO_QTY";
+  if (flow === PRODUCTION_FLOW_GREEN_LEVEL) return "GREEN_LEVEL";
+  return "NORMAL";
 }
 
 export function productionFlowFromOrderType(orderType: string | null | undefined): ProductionFlowParam | null {
-  const ot = String(orderType ?? "").trim();
+  const ot = String(orderType ?? "").trim().toUpperCase();
   if (ot === "NO_QTY") return PRODUCTION_FLOW_NO_QTY;
+  if (ot === "GREEN_LEVEL") return PRODUCTION_FLOW_GREEN_LEVEL;
   if (ot === "NORMAL") return PRODUCTION_FLOW_REGULAR;
   return null;
+}
+
+export function isHardenedProductionFlow(flow: ProductionFlowParam): boolean {
+  return flow === PRODUCTION_FLOW_NO_QTY || flow === PRODUCTION_FLOW_GREEN_LEVEL;
 }
 
 export function inferProductionFlowFromLegacy(opts: {
@@ -65,6 +88,7 @@ export function validateProductionFlowVsOrderType(
   flow: ProductionFlowParam,
   orderType: string | null | undefined,
 ): FlowOrderTypeValidation {
+  if (flow === PRODUCTION_FLOW_GREEN_LEVEL) return { ok: true };
   const ot = String(orderType ?? "").trim();
   if (!ot) return { ok: true };
   if (flow === PRODUCTION_FLOW_NO_QTY && ot !== "NO_QTY") {
@@ -88,5 +112,7 @@ export function validateProductionFlowVsOrderType(
 }
 
 export function productionFlowBadgeLabel(flow: ProductionFlowParam): string {
-  return flow === PRODUCTION_FLOW_NO_QTY ? "NO_QTY FLOW" : "REGULAR SO FLOW";
+  if (flow === PRODUCTION_FLOW_NO_QTY) return "NO_QTY FLOW";
+  if (flow === PRODUCTION_FLOW_GREEN_LEVEL) return "GREEN_LEVEL FLOW";
+  return "REGULAR SO FLOW";
 }

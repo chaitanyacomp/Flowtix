@@ -40,6 +40,6 @@ describe("materialWorkflowLinks", () => {
     expect(materialWorkflowBackHref("pending-actions")).toBe("/pending-actions");
     expect(materialWorkflowBackHref("work-orders")).toBe("/work-orders");
     expect(materialWorkflowBackHref("rm-purchase")).toBe("/rm-po-grn");
-    expect(materialWorkflowBackHref("production-workspace", 99)).toBe("/production?workOrderId=99");
+    expect(materialWorkflowBackHref("production-workspace", 99)).toBe("/production");
   });
 });

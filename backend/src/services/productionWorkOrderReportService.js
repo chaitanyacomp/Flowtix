@@ -623,7 +623,14 @@ async function listProductionRmReturnPending(db = prisma, { status = "PENDING", 
     take: limit,
     include: {
       productionReport: { select: { id: true, confirmedAt: true } },
-      workOrder: { select: { id: true, docNo: true } },
+      workOrder: {
+        select: {
+          id: true,
+          docNo: true,
+          sourceType: true,
+          salesOrder: { select: { orderType: true } },
+        },
+      },
       item: { select: { id: true, itemName: true, unit: true } },
       materialReturnNote: { select: { id: true, docNo: true } },
       receivedBy: { select: { id: true, name: true } },
@@ -635,6 +642,11 @@ async function listProductionRmReturnPending(db = prisma, { status = "PENDING", 
       productionReportId: p.productionReportId,
       workOrderId: p.workOrderId,
       workOrderNo: p.workOrder?.docNo ?? `WO-${p.workOrderId}`,
+      workOrderSourceType: p.workOrder?.sourceType ?? null,
+      workOrderOrderType:
+        String(p.workOrder?.sourceType ?? "").toUpperCase() === "GREEN_LEVEL_REPLENISHMENT"
+          ? "GREEN_LEVEL"
+          : (p.workOrder?.salesOrder?.orderType ?? null),
       itemId: p.itemId,
       itemName: p.item?.itemName ?? `Item #${p.itemId}`,
       unit: p.item?.unit ?? "",
@@ -656,6 +668,11 @@ async function listProductionRmReturnPending(db = prisma, { status = "PENDING", 
         productionReportId: p.productionReportId,
         workOrderId: p.workOrderId,
         workOrderNo: p.workOrder?.docNo ?? `WO-${p.workOrderId}`,
+        workOrderSourceType: p.workOrder?.sourceType ?? null,
+        workOrderOrderType:
+          String(p.workOrder?.sourceType ?? "").toUpperCase() === "GREEN_LEVEL_REPLENISHMENT"
+            ? "GREEN_LEVEL"
+            : (p.workOrder?.salesOrder?.orderType ?? null),
         itemId: p.itemId,
         itemName: p.item?.itemName ?? `Item #${p.itemId}`,
         unit: p.item?.unit ?? "",

@@ -15,8 +15,10 @@ import { planningInboxCustomerName } from "../lib/planningInboxPresentation";
 import { useCanOpenRequirementSheet } from "../hooks/useIsAdmin";
 import {
   formatNoQtyExecutionRegisterQty,
-  NO_QTY_OPEN_EXECUTION_WORKSPACE_LABEL,
+  NO_QTY_EXECUTION_PROCUREMENT_PENDING_HINT,
+  isNoQtyExecutionPlanningOnlyState,
   noQtyExecutionActionNeededClassName,
+  resolveNoQtyExecutionRegisterCtaLabel,
   resolveNoQtyExecutionWorkspaceHref,
 } from "../lib/noQtyRsActionLabels";
 
@@ -114,6 +116,15 @@ export function NoQtyAgreementsPage() {
                     (row.placementRequirementSheetId != null
                       ? `RS #${row.placementRequirementSheetId}`
                       : "—");
+                  const planningOnly = isNoQtyExecutionPlanningOnlyState({
+                    actionNeededKey: row.actionNeededKey,
+                    rmCoverageLabel: row.rmCoverageLabel,
+                  });
+                  const ctaLabel = resolveNoQtyExecutionRegisterCtaLabel({
+                    actionNeededKey: row.actionNeededKey,
+                    rmCoverageLabel: row.rmCoverageLabel,
+                    suggestedWoQty: row.suggestedWoQty,
+                  });
 
                   return (
                     <tr
@@ -154,16 +165,33 @@ export function NoQtyAgreementsPage() {
                       </td>
                       <td className="px-3 py-2">
                         {canOpenRs && workspaceHref ? (
-                          <Link
-                            to={workspaceHref}
-                            state={navStateWithNavContext(
-                              navContextExecutionWorkspace(navContext.origin ?? "sidebar"),
-                            )}
-                            className={cn(buttonVariants({ size: "sm" }), "h-7 text-[11px]")}
-                            data-testid="execution-workspace-cta"
-                          >
-                            {NO_QTY_OPEN_EXECUTION_WORKSPACE_LABEL}
-                          </Link>
+                          <div className="flex max-w-[12rem] flex-col gap-0.5">
+                            <Link
+                              to={workspaceHref}
+                              state={navStateWithNavContext(
+                                navContextExecutionWorkspace(navContext.origin ?? "sidebar"),
+                              )}
+                              className={cn(
+                                buttonVariants({
+                                  size: "sm",
+                                  variant: planningOnly ? "outline" : "default",
+                                }),
+                                "h-7 text-[11px]",
+                                planningOnly && "font-normal text-slate-600",
+                              )}
+                              data-testid="execution-workspace-cta"
+                            >
+                              {ctaLabel}
+                            </Link>
+                            {planningOnly ? (
+                              <span
+                                className="text-[10px] leading-snug text-slate-500"
+                                data-testid="execution-planning-hint"
+                              >
+                                {NO_QTY_EXECUTION_PROCUREMENT_PENDING_HINT}
+                              </span>
+                            ) : null}
+                          </div>
                         ) : (
                           <span className="text-slate-400">—</span>
                         )}

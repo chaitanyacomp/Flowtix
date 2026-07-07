@@ -226,8 +226,9 @@ async function recalcPurchaseRequestStatus(tx, purchaseRequestId) {
   for (const ln of lines) {
     const net = qtyToNumber(ln.netRequiredQty);
     const ordered = qtyToNumber(ln.orderedQty);
-    if (ordered > QUEUE_EPS) anyOrdered = true;
-    if (ordered + QUEUE_EPS < net) allOrdered = false;
+    const shortClosed = qtyToNumber(ln.shortClosedQty);
+    if (ordered > QUEUE_EPS || shortClosed > QUEUE_EPS) anyOrdered = true;
+    if (ordered + shortClosed + QUEUE_EPS < net) allOrdered = false;
   }
 
   let next = "PENDING_PURCHASE";

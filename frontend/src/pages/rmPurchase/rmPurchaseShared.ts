@@ -69,6 +69,7 @@ export type RmPoLine = {
   id: number;
   itemId: number;
   qty: string;
+  shortClosedQty?: string | number | null;
   rate?: string;
   unit?: string | null;
   hsn?: string | null;
@@ -122,6 +123,7 @@ export type RmPoRow = {
     finalizedBilledQtyByPoLineId?: Record<number, number>;
     cancelledBilledQtyByPoLineId?: Record<number, number>;
   };
+  procurementSummary?: import("../../lib/procurementShortClose").ProcurementSummary | null;
 };
 
 export type PoLineDraft = {
@@ -236,7 +238,10 @@ export function formatGrnNo(id: number): string {
 }
 
 /** Display labels for PO list/detail (stored: PENDING / PARTIAL / COMPLETED / CANCELLED). */
-export function poStatusLabel(status: string): string {
+export function poStatusLabel(status: string, procurementSummary?: RmPoRow["procurementSummary"]): string {
+  if (procurementSummary?.procurementClosureKind === "SHORT_CLOSED") {
+    return "PARTIALLY PROCURED (SHORT CLOSED)";
+  }
   switch (status) {
     case "PENDING":
       return "Pending";
@@ -286,15 +291,17 @@ export function receivedForLine(po: RmPoRow, lineId: number) {
   return s;
 }
 
-export function poOrderedReceivedPending(po: RmPoRow): { ordered: number; received: number; pending: number } {
+export function poOrderedReceivedPending(po: RmPoRow): { ordered: number; received: number; pending: number; shortClosed: number } {
   let ordered = 0;
   let received = 0;
+  let shortClosed = 0;
   for (const ln of po.lines) {
     ordered += Number(ln.qty);
     received += receivedForLine(po, ln.id);
+    shortClosed += Number(ln.shortClosedQty ?? 0);
   }
-  const pending = Math.max(0, ordered - received);
-  return { ordered, received, pending };
+  const pending = Math.max(0, ordered - received - shortClosed);
+  return { ordered, received, pending, shortClosed };
 }
 
 export function hasActiveGrnRecord(po: RmPoRow): boolean {

@@ -24,6 +24,12 @@ const {
   assertPositiveRate,
 } = require("../services/rmPoTaxFields");
 const { assembleRmPoProcurementTrace, RM_PO_INCLUDE } = require("../services/procurementTraceService");
+const {
+  PROCUREMENT_SHORT_CLOSE_REASONS,
+  getRmPoShortClosePreview,
+  shortCloseRmPurchaseOrder,
+  enrichRmPoProcurementSummary,
+} = require("../services/procurementShortCloseService");
 const { summarizePoProcurementSourceFromTrace } = require("../services/procurementDemandSourcePresentation");
 const {
   freezeRmPurchaseOrderCommercialSnapshots,
@@ -186,6 +192,10 @@ purchaseRouter.get("/rm-pos", requireAuth, requireRole([...RM_PO_READ_ROLES]), a
   }
 });
 
+purchaseRouter.get("/rm-pos/short-close-reasons", requireAuth, rmPoReadRoles, (_req, res) => {
+  return res.json({ reasons: [...PROCUREMENT_SHORT_CLOSE_REASONS] });
+});
+
 purchaseRouter.get("/rm-pos/:id", requireAuth, requireRole([...RM_PO_READ_ROLES]), async (req, res, next) => {
   try {
     const id = Number(req.params.id);
@@ -296,6 +306,10 @@ purchaseRouter.get("/rm-pos/:id", requireAuth, requireRole([...RM_PO_READ_ROLES]
         finalizedBilledQtyByPoLineId: finalizedByLineId,
         cancelledBilledQtyByPoLineId: cancelledByLineId,
       },
+      procurementSummary: enrichRmPoProcurementSummary(
+        enrichedPo,
+        sumReceivedByRmPoLineFromGrns(enrichedPo.grns),
+      ),
     });
   } catch (e) {
     return next(e);
@@ -889,6 +903,60 @@ purchaseRouter.post("/rm-pos/:id/cancel", requireAuth, requireRole(["ADMIN"]), a
       });
     });
     return res.json(updated);
+  } catch (e) {
+    return next(e);
+  }
+});
+
+purchaseRouter.get("/rm-pos/:id/short-close-preview", requireAuth, rmPoReadRoles, async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const lineIds = String(req.query.lineIds ?? "")
+      .split(",")
+      .map((v) => Number(v.trim()))
+      .filter((n) => Number.isFinite(n) && n > 0);
+    const preview = await getRmPoShortClosePreview(id, { lineIds: lineIds.length ? lineIds : null });
+    return res.json(preview);
+  } catch (e) {
+    return next(e);
+  }
+});
+
+purchaseRouter.post("/rm-pos/:id/short-close", requireAuth, rmPoWriteRoles, async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const schema = z.object({
+      reason: z.string().min(1).max(64),
+      remarks: z.string().max(2000).optional().nullable(),
+      lineIds: z.array(z.number().int().positive()).optional(),
+    });
+    const body = schema.parse(req.body ?? {});
+    const result = await shortCloseRmPurchaseOrder(
+      id,
+      { reason: body.reason, remarks: body.remarks, lineIds: body.lineIds },
+      { userId: req.user?.id, role: req.user?.role },
+    );
+    const refreshed = await prisma.rmPurchaseOrder.findUnique({
+      where: { id },
+      include: {
+        supplier: true,
+        lines: { include: { item: true }, orderBy: { id: "asc" } },
+        grns: { include: { lines: true } },
+      },
+    });
+    const enriched = refreshed ? await enrichRmPurchaseOrderCommercial(prisma, refreshed) : null;
+    return res.json({
+      ...result,
+      po: enriched
+        ? {
+            ...enriched,
+            procurementSummary: enrichRmPoProcurementSummary(
+              enriched,
+              sumReceivedByRmPoLineFromGrns(enriched.grns),
+            ),
+          }
+        : null,
+    });
   } catch (e) {
     return next(e);
   }

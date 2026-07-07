@@ -36,6 +36,12 @@ const {
   resolveNoQtyEligibilityCycleId,
 } = require("./noQtyCreateNextRsEligibility");
 const { assessNoQtyPlacementStageForCycle } = require("./requirementSheetExecutionService");
+const {
+  deriveActionNeeded,
+  mapRmCoverage,
+  resolvePlaceWoActionLabel,
+} = require("./noQtyExecutionRegisterService");
+const { formatQuantityWithUnit } = require("./quantityDisplayService");
 const { buildGreenLevelWoPlacement, GREEN_LEVEL_WO_SOURCE_TYPE } = require("./greenLevelWorkOrderService");
 const {
   WAITING_FOR_PURCHASE_RM_PO,
@@ -1088,11 +1094,117 @@ async function loadStoreOpenNoQtySalesOrders(db = prisma) {
   return getOrSetRequestCache("store:open-no-qty-sos", () =>
     db.salesOrder.findMany({
       where: STORE_OPEN_NO_QTY_SO_WHERE,
-      select: { id: true, docNo: true, updatedAt: true, currentCycleId: true },
+      select: {
+        id: true,
+        docNo: true,
+        updatedAt: true,
+        currentCycleId: true,
+        customer: { select: { name: true } },
+      },
       orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
       take: 50,
     }),
   );
+}
+
+const NO_QTY_WO_TERMINAL_STATUSES = new Set(["COMPLETED", "CLOSED", "CLOSED_WITH_SHORTFALL", "REJECTED"]);
+
+function isNoQtyOpenWorkOrderStatus(status) {
+  return !NO_QTY_WO_TERMINAL_STATUSES.has(String(status ?? "").toUpperCase());
+}
+
+function isNoQtyPlaceWoPendingFromPlacement(placement) {
+  const suggested = Number(placement?.suggestedWoQty ?? 0);
+  const balance = Number(placement?.rsBalanceQty ?? 0);
+  if (!(balance > EPS) || !(suggested > EPS)) return false;
+
+  const actionNeeded = deriveActionNeeded({
+    rsBalanceQty: placement.rsBalanceQty,
+    suggestedWoQty: placement.suggestedWoQty,
+    placementStatus: placement.placementStatus,
+    readinessStatus: placement.readinessStatus,
+    existingWoSummary: placement.existingWoSummary ?? [],
+  });
+  return actionNeeded.key === "PLACE_WO";
+}
+
+function resolveNoQtyPlaceWoActionTitle(placement) {
+  const rmCoverage = mapRmCoverage({
+    placementStatus: placement.placementStatus,
+    readinessStatus: placement.readinessStatus,
+    rsBalanceQty: placement.rsBalanceQty,
+  });
+  return resolvePlaceWoActionLabel({
+    rmCoverage,
+    placementStatus: placement.placementStatus,
+    readinessStatus: placement.readinessStatus,
+  });
+}
+
+function buildNoQtyPlaceWoPendingDocumentNo({ soDocNo, customerName, cycleNo, rsDocNo, suggestedWoQty, uom }) {
+  const suggestedLabel =
+    suggestedWoQty != null
+      ? `Suggested WO ${formatQuantityWithUnit(suggestedWoQty, { unit: uom ?? undefined })}`
+      : null;
+  const parts = [
+    soDocNo,
+    customerName,
+    cycleNo != null ? `Cycle ${cycleNo}` : null,
+    rsDocNo,
+    suggestedLabel,
+  ].filter(Boolean);
+  return parts.join(" · ") || soDocNo || null;
+}
+
+async function loadNoQtyPlaceWoPendingContext(db, { cycleId, requirementSheetId }) {
+  const cid = Number(cycleId);
+  const sheetId = Number(requirementSheetId);
+  const [cycleRow, sheetRow] = await Promise.all([
+    cid > 0 && typeof db.salesOrderCycle?.findUnique === "function"
+      ? db.salesOrderCycle.findUnique({ where: { id: cid }, select: { cycleNo: true } })
+      : null,
+    sheetId > 0 && typeof db.requirementSheet?.findUnique === "function"
+      ? db.requirementSheet.findUnique({
+          where: { id: sheetId },
+          select: {
+            docNo: true,
+            lines: {
+              take: 1,
+              orderBy: { id: "asc" },
+              select: {
+                item: {
+                  select: {
+                    unit: true,
+                    unitRef: { select: { unitCode: true, unitName: true } },
+                  },
+                },
+              },
+            },
+          },
+        })
+      : null,
+  ]);
+  const lineItem = sheetRow?.lines?.[0]?.item;
+  const uom = lineItem?.unitRef?.unitCode ?? lineItem?.unitRef?.unitName ?? lineItem?.unit ?? null;
+  return {
+    cycleNo: cycleRow?.cycleNo ?? null,
+    rsDocNo: sheetRow?.docNo ?? null,
+    uom,
+  };
+}
+
+async function appendNoQtyPlaceWoWorkOrderLineParam(db, params, existingWoSummary) {
+  const openWoIds = (existingWoSummary ?? [])
+    .filter((wo) => isNoQtyOpenWorkOrderStatus(wo.woStatus))
+    .map((wo) => Number(wo.workOrderId))
+    .filter((id) => id > 0);
+  if (openWoIds.length !== 1 || typeof db.workOrderLine?.findFirst !== "function") return;
+  const line = await db.workOrderLine.findFirst({
+    where: { workOrderId: openWoIds[0] },
+    orderBy: { id: "asc" },
+    select: { id: true },
+  });
+  if (line?.id) params.set("workOrderLineId", String(line.id));
 }
 
 /** Unit-test fallback when mocks only implement findFirst. */
@@ -1418,11 +1530,25 @@ async function fetchStoreNoQtyPlaceWoPendingActions(db = prisma) {
   for (const pair of placementPairs) {
     const { so, salesOrderId: soId, cycleId: effCycleId } = pair;
     const placement = await assessNoQtyPlacementStageForCycle(db, { salesOrderId: soId, cycleId: effCycleId });
-    if (!placement?.readyToPlaceWo) continue;
+    if (!isNoQtyPlaceWoPendingFromPlacement(placement)) continue;
     if (placement.periodKey) {
       const planningGate = await assessNoQtyMonthlyPlanningGate(db, placement.periodKey);
       if (!isNoQtyMonthlyPlanningGateExecutionReady(planningGate)) continue;
     }
+
+    const actionTitle = resolveNoQtyPlaceWoActionTitle(placement);
+    const ctx = await loadNoQtyPlaceWoPendingContext(db, {
+      cycleId: effCycleId,
+      requirementSheetId: placement.requirementSheetId,
+    });
+    const documentNo = buildNoQtyPlaceWoPendingDocumentNo({
+      soDocNo: so.docNo ?? null,
+      customerName: so.customer?.name ?? null,
+      cycleNo: ctx.cycleNo,
+      rsDocNo: placement.requirementSheetDocNo ?? ctx.rsDocNo ?? null,
+      suggestedWoQty: placement.suggestedWoQty,
+      uom: ctx.uom,
+    });
 
     const params = new URLSearchParams({
       source: "no_qty_so",
@@ -1432,17 +1558,25 @@ async function fetchStoreNoQtyPlaceWoPendingActions(db = prisma) {
       from: "pending-actions",
     });
     if (placement.requirementSheetId) params.set("sheetId", String(placement.requirementSheetId));
+    await appendNoQtyPlaceWoWorkOrderLineParam(db, params, placement.existingWoSummary);
+
+    const readiness = String(placement.readinessStatus ?? "").toUpperCase();
+    const placementStatus = String(placement.placementStatus ?? "").toUpperCase();
+    const currentStatus =
+      readiness === "PARTIALLY_READY" || placementStatus === "PARTIALLY_READY"
+        ? "PARTIALLY_READY_TO_PLACE_WO"
+        : "READY_TO_PLACE_WO";
 
     actions.push({
       id: `no-qty-place-wo:${soId}:${effCycleId}`,
       priority: PENDING_PRIORITY.MEDIUM,
-      action: "Place WO",
-      documentNo: so.docNo ?? null,
+      action: actionTitle,
+      documentNo,
       ownerRole: "STORE",
       ageHours: ageHoursFromTimestamp(so.updatedAt),
       href: `/sales-orders/${soId}/requirement-sheets?${params.toString()}`,
       sourceModule: "NO_QTY_EXECUTION",
-      currentStatus: "READY_TO_PLACE_WO",
+      currentStatus,
     });
   }
   return actions;

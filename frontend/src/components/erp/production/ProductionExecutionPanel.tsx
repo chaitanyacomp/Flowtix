@@ -31,6 +31,7 @@ import {
   type ShortfallDecisionChoice,
   type PausedShortfallDecisionChoice,
 } from "../../../lib/productionCompletionUx";
+import { formatFgQuantity } from "../../../lib/quantityDisplay";
 import { formatScopedWorkOrderCompletionMessage } from "../../../lib/productionScopedWorkspaceState";
 import {
   shouldShowPauseWorkOrderAction,
@@ -55,6 +56,8 @@ type Props = {
   executionResolved?: boolean;
   workOrderLabel?: string;
   itemName?: string | null;
+  /** FG item UOM from Item Master. */
+  unit?: string | null;
   onChanged?: () => void;
   /** Latest execution read model for parent (hide production entry when shortfall pending). */
   onSummaryChange?: (summary: ProductionExecutionSummary | null) => void;
@@ -78,6 +81,7 @@ export function ProductionExecutionPanel({
   executionResolved = false,
   workOrderLabel,
   itemName,
+  unit,
   onChanged,
   onSummaryChange,
   onExecutionClosed,
@@ -289,7 +293,7 @@ export function ProductionExecutionPanel({
 
   const confirmDialog =
     pendingConfirm && summary
-      ? buildProductionDecisionConfirmDialog(pendingConfirm, summary)
+      ? buildProductionDecisionConfirmDialog(pendingConfirm, summary, unit)
       : null;
 
   const confirmModal = confirmDialog ? (
@@ -506,15 +510,15 @@ export function ProductionExecutionPanel({
             <dl className="grid grid-cols-3 gap-1.5 rounded border border-slate-200 bg-slate-50 px-2 py-1.5 text-[12px]">
               <div>
                 <dt className="text-slate-500">Planned</dt>
-                <dd className="font-bold tabular-nums text-slate-900">{summary.plannedQty}</dd>
+                <dd className="font-bold tabular-nums text-slate-900">{formatFgQuantity(summary.plannedQty, unit)}</dd>
               </div>
               <div>
                 <dt className="text-slate-500">Produced</dt>
-                <dd className="font-bold tabular-nums text-slate-900">{summary.producedQty}</dd>
+                <dd className="font-bold tabular-nums text-slate-900">{formatFgQuantity(summary.producedQty, unit)}</dd>
               </div>
               <div>
                 <dt className="text-slate-500">Remaining</dt>
-                <dd className="font-bold tabular-nums text-amber-950">{summary.remainderQty}</dd>
+                <dd className="font-bold tabular-nums text-amber-950">{formatFgQuantity(summary.remainderQty, unit)}</dd>
               </div>
             </dl>
 

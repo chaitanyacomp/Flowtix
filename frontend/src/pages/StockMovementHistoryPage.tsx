@@ -9,6 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card"
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { cn } from "../lib/utils";
+import { formatStockQuantity } from "../lib/quantityDisplay";
 import { PageSmartBackLink, StickyWorkspaceHead } from "../components/PageHeader";
 import {
   OperatorPageBody,
@@ -76,10 +77,7 @@ type GroupBy = "none" | "item" | "location";
 const FILTER_BTN = "h-8 px-3 text-[12px]";
 
 function fmtQty(n: number, unit?: string): string {
-  if (!Number.isFinite(n)) return "0";
-  const s = n.toFixed(3).replace(/\.000$/, "");
-  const u = unit?.trim() ? ` ${unit}` : "";
-  return `${s}${u}`;
+  return formatStockQuantity(n, unit);
 }
 
 function fmtDate(d: string) {

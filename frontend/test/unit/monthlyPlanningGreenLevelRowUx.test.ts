@@ -4,6 +4,7 @@ import {
   greenLevelBasisTooltip,
   greenLevelNoHistoryHelper,
   buildFgGreenPlanningRowMap,
+  formatGreenPlanningQty,
   greenLevelQtyCellContent,
   productionPlanGreenLevelFieldsVisible,
   resolveFgGreenPlanningRow,
@@ -56,6 +57,28 @@ describe("monthlyPlanningGreenLevelRowUx", () => {
       suggestedProduction: 2500,
       noHistoryHelper: null,
     });
+  });
+
+  it("formats green planning quantities with item UOM and precision", () => {
+    expect(formatGreenPlanningQty(1500, false, "NOS")).toBe("1,500 NOS");
+    expect(formatGreenPlanningQty(523.809, false, "m")).toBe("523.809 m");
+    expect(formatGreenPlanningQty(100, true, "KG")).toBe("…");
+    expect(greenLevelQtyCellContent(
+      {
+        greenLevelQty: 2000,
+        manualGreenLevelQty: 2000,
+        autoSuggestedGreenLevelQty: 1800,
+        greenLevelSource: "MANUAL",
+        freeFgStock: 1500,
+        greenShortage: 500,
+        suggestedProduction: 2500,
+        hasAutoSuggestion: true,
+        hasRsHistory: true,
+        loading: false,
+      },
+      6,
+      "NOS",
+    ).display).toBe("2,000 NOS");
   });
 
   it("no-history state shows Green Level 0 and helper message in AUTOMATIC mode", () => {

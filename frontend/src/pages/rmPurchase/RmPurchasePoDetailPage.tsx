@@ -20,6 +20,8 @@ import {
 } from "../../lib/shortcutHintCopy";
 import { ErpModal } from "../../components/erp/ErpModal";
 import { GrnPostReceiptModal } from "../../components/rmPurchase/GrnPostReceiptModal";
+import { ShortCloseProcurementDialog } from "../../components/rmPurchase/ShortCloseProcurementDialog";
+import { canOfferProcurementShortClose } from "../../lib/procurementShortClose";
 import { NextStepStrip } from "../../components/erp/NextStepStrip";
 import {
   GRN_MODAL_DISCARD_CONFIRM,
@@ -134,6 +136,7 @@ export function RmPurchasePoDetailPage() {
   const [error, setError] = React.useState<string | null>(null);
 
   const [grnModalOpen, setGrnModalOpen] = React.useState(false);
+  const [shortCloseOpen, setShortCloseOpen] = React.useState(false);
   const [grnDateInput, setGrnDateInput] = React.useState("");
   const [grnSupplierInvoiceNo, setGrnSupplierInvoiceNo] = React.useState("");
   const [grnFieldErrors, setGrnFieldErrors] = React.useState<{ grnDate?: string; supplierInvoiceNo?: string }>({});
@@ -455,11 +458,21 @@ export function RmPurchasePoDetailPage() {
 
   const poPrimaryUnit = po?.lines[0]?.unit?.trim() ?? "";
   const stockStatusLabel =
-    po?.status === "COMPLETED"
+    po?.procurementSummary?.procurementClosureKind === "SHORT_CLOSED"
+      ? "PARTIALLY PROCURED (SHORT CLOSED)"
+      : po?.status === "COMPLETED"
       ? "Fully Received"
       : po?.status === "PARTIAL"
         ? "Partially Received"
         : "Not Received";
+  const canShortCloseProcurement =
+    canWritePo &&
+    Boolean(po) &&
+    canOfferProcurementShortClose({
+      status: po?.status ?? "",
+      receivedQty: receiveInfo?.received ?? 0,
+      outstandingQty: receiveInfo?.pending ?? 0,
+    });
   const billingStatusLabel =
     billingTotals.billed <= 1e-9
       ? "Not Started"
@@ -1207,6 +1220,31 @@ export function RmPurchasePoDetailPage() {
             </div>
           ) : null}
 
+          {canShortCloseProcurement ? (
+            <div
+              className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-violet-200 bg-violet-50 px-3 py-2"
+              data-testid="rm-po-procurement-decision-strip"
+            >
+              <div className="text-sm text-violet-950">
+                <span className="font-semibold">Remaining procurement balance open.</span>{" "}
+                Continue follow-up or short close the waived balance intentionally.
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button type="button" variant="outline" size="sm" data-testid="rm-po-continue-procurement-btn">
+                  Continue Procurement
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => setShortCloseOpen(true)}
+                  data-testid="rm-po-short-close-procurement-btn"
+                >
+                  Short Close Procurement
+                </Button>
+              </div>
+            </div>
+          ) : null}
+
           <RmPoDocumentView
             po={po}
             companyProfile={companyProfile}
@@ -1536,6 +1574,18 @@ export function RmPurchasePoDetailPage() {
           showPostGrnShortcut={shortcutHints.activeFieldId === "postGrn"}
           postGrnShortcutHint={shortcutHints.activeFieldHintText ?? ""}
           onPostGrnShortcutUsed={() => shortcutHints.markFieldShortcutUsed("postGrn")}
+        />
+      ) : null}
+
+      {shortCloseOpen && po ? (
+        <ShortCloseProcurementDialog
+          rmPoId={po.id}
+          open={shortCloseOpen}
+          onClose={() => setShortCloseOpen(false)}
+          onSuccess={() => {
+            toast.showSuccess("Procurement short closed. Remaining balance waived.");
+            void load({ silent: true });
+          }}
         />
       ) : null}
     </PageContainer>

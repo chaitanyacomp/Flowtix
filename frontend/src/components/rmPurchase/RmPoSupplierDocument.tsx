@@ -268,7 +268,7 @@ export function RmPoSupplierDocument({ po, poDate, companyProfile, className }: 
               data-testid="rm-po-status-badge"
             >
               <span className={`h-2 w-2 rounded-full ${poStatusDotClass(po.status)}`} />
-              {poStatusLabel(po.status)}
+              {poStatusLabel(po.status, po.procurementSummary)}
             </span>
           </div>
         </div>

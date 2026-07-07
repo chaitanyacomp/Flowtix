@@ -504,6 +504,7 @@ model User {
   carryForwardPendingCreated                CarryForwardPending[]          @relation("CfPendingCreatedBy")
   shortfallResolutionsCreated               ProductionShortfallResolution[] @relation("ShortfallResolutionCreatedBy")
   workOrdersMaterialReleased                WorkOrder[]                     @relation("WoMaterialReleasedBy")
+  procurementShortCloseEvents               ProcurementShortCloseEvent[]    @relation("ProcurementShortCloseActor")
 }
 
 /// Full-database SQL backup row (see admin backup routes). `filePath` is server-only; never return to clients.
@@ -1616,6 +1617,8 @@ model MaterialRequirementLine {
   unitSnapshot          String? @db.VarChar(64)
   /// Qty already covered by linked RM PO lines (planning traceability; not stock reservation).
   procuredQty           Decimal @default(0) @db.Decimal(18, 3)
+  /// Purchase-waived procurement balance (does not change requiredQty or stock).
+  shortClosedQty        Decimal @default(0) @db.Decimal(18, 3)
 
   materialRequirement MaterialRequirement       @relation(fields: [materialRequirementId], references: [id], onDelete: Cascade)
   rmItem              Item                      @relation(fields: [rmItemId], references: [id], onDelete: Restrict)
@@ -1670,6 +1673,8 @@ model PurchaseRequestLine {
   availableQtySnapshot Decimal @default(0) @db.Decimal(18, 3)
   netRequiredQty       Decimal @db.Decimal(18, 3)
   orderedQty           Decimal @default(0) @db.Decimal(18, 3)
+  /// Purchase-waived balance on this PR line (cascade from PO short close).
+  shortClosedQty       Decimal @default(0) @db.Decimal(18, 3)
   unitSnapshot         String? @db.VarChar(64)
 
   purchaseRequest PurchaseRequest                 @relation(fields: [purchaseRequestId], references: [id], onDelete: Cascade)
@@ -2089,6 +2094,7 @@ model RmPurchaseOrder {
   supplierLocation SupplierLocation? @relation(fields: [supplierLocationId], references: [id], onDelete: SetNull)
   lines            RmPurchaseOrderLine[]
   grns             Grn[]
+  shortCloseEvents ProcurementShortCloseEvent[]
 
   @@index([supplierId])
   @@index([supplierLocationId])
@@ -2109,13 +2115,37 @@ model RmPurchaseOrderLine {
   gstRate Decimal? @db.Decimal(5, 2)
   /// qty × rate, persisted for exports / bills.
   amount  Decimal? @db.Decimal(18, 2)
+  /// Remaining PO balance intentionally waived by Purchase (no stock impact).
+  shortClosedQty Decimal @default(0) @db.Decimal(18, 3)
 
   rmPo     RmPurchaseOrder @relation(fields: [rmPoId], references: [id], onDelete: Cascade)
   item     Item            @relation(fields: [itemId], references: [id], onDelete: Restrict)
   grnLines GrnLine[]
   procurementLinks RmPoLineProcurementLink[]
+  shortCloseEvents ProcurementShortCloseEvent[]
 
   @@index([rmPoId])
+}
+
+/// Audit trail for intentional procurement short close (Purchase workspace).
+model ProcurementShortCloseEvent {
+  id             Int      @id @default(autoincrement())
+  rmPoId         Int
+  rmPoLineId     Int
+  shortClosedQty Decimal  @db.Decimal(18, 3)
+  reason         String   @db.VarChar(64)
+  remarks        String?  @db.Text
+  actorUserId    Int?
+  createdAt      DateTime @default(now())
+
+  rmPo     RmPurchaseOrder     @relation(fields: [rmPoId], references: [id], onDelete: Cascade)
+  rmPoLine RmPurchaseOrderLine @relation(fields: [rmPoLineId], references: [id], onDelete: Cascade)
+  actor    User?               @relation("ProcurementShortCloseActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([rmPoId])
+  @@index([rmPoLineId])
+  @@index([actorUserId])
+  @@index([createdAt])
 }
 
 model Grn {

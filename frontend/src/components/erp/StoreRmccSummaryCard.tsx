@@ -6,7 +6,11 @@ import { cn } from "../../lib/utils";
 import { PROCUREMENT_TERMS } from "../../lib/procurementTerminology";
 import { rmControlCenterHref } from "../../lib/materialWorkflowLinks";
 import { navContextRmControlCenterFromDashboard, navStateWithNavContext } from "../../lib/erpNavContext";
-import type { StoreRmccSummaryMetrics } from "../../lib/storeDashboardMetrics";
+import {
+  isStoreRmccActionAvailable,
+  STORE_RMCC_UNAVAILABLE_HINT,
+  type StoreRmccSummaryMetrics,
+} from "../../lib/storeDashboardMetrics";
 
 function SummaryMetric({
   label,
@@ -51,6 +55,7 @@ export type StoreRmccSummaryCardProps = {
 export function StoreRmccSummaryCard({ metrics, loading }: StoreRmccSummaryCardProps) {
   const rmccHref = rmControlCenterHref({ returnTo: "dashboard" });
   const issueReadyHref = rmControlCenterHref({ onlyBlocked: true, returnTo: "dashboard" });
+  const rmccAvailable = isStoreRmccActionAvailable(metrics);
 
   return (
     <Card
@@ -67,15 +72,33 @@ export function StoreRmccSummaryCard({ metrics, loading }: StoreRmccSummaryCardP
             <p className="text-[11px] font-normal text-slate-600">
               Post–WO placement RM cases — issue RM from the control center queue.
             </p>
+            {!loading && !rmccAvailable ? (
+              <p className="mt-0.5 text-[10px] leading-snug text-slate-500" data-testid="store-rmcc-unavailable-hint">
+                {STORE_RMCC_UNAVAILABLE_HINT}
+              </p>
+            ) : null}
           </div>
-          <Link
-            to={rmccHref}
-            state={navStateWithNavContext(navContextRmControlCenterFromDashboard())}
-            className={cn(buttonVariants({ variant: "default", size: "sm" }), "h-7 px-2.5 text-[10px] no-underline")}
-            data-testid="store-open-rmcc"
-          >
-            {PROCUREMENT_TERMS.OPEN_RM_CONTROL_CENTER}
-          </Link>
+          {rmccAvailable ? (
+            <Link
+              to={rmccHref}
+              state={navStateWithNavContext(navContextRmControlCenterFromDashboard())}
+              className={cn(buttonVariants({ variant: "default", size: "sm" }), "h-7 px-2.5 text-[10px] no-underline")}
+              data-testid="store-open-rmcc"
+            >
+              {PROCUREMENT_TERMS.OPEN_RM_CONTROL_CENTER}
+            </Link>
+          ) : (
+            <span
+              className={cn(
+                buttonVariants({ variant: "outline", size: "sm" }),
+                "h-7 cursor-not-allowed px-2.5 text-[10px] opacity-60",
+              )}
+              aria-disabled="true"
+              data-testid="store-open-rmcc"
+            >
+              {PROCUREMENT_TERMS.OPEN_RM_CONTROL_CENTER}
+            </span>
+          )}
         </div>
       </CardHeader>
       <CardContent className="p-2.5 pt-2">

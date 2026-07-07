@@ -27,6 +27,10 @@ import {
   resolveCreateRsButtonLabel,
   resolveNoQtyExecutionWorkspaceHref,
   NO_QTY_OPEN_EXECUTION_WORKSPACE_LABEL,
+  NO_QTY_VIEW_PLANNING_STATUS_LABEL,
+  NO_QTY_EXECUTION_PROCUREMENT_PENDING_HINT,
+  isNoQtyExecutionPlanningOnlyState,
+  resolveNoQtyExecutionRegisterCtaLabel,
   noQtyExecutionActionNeededClassName,
   noQtyExecutionEntryHref,
 } from "../../src/lib/noQtyRsActionLabels";
@@ -254,6 +258,43 @@ describe("noQtyRsActionLabels", () => {
     });
     expect(cta?.label).toBe("Open Monthly Planning");
     expect(cta?.href).toBe("/monthly-planning?source=no_qty_rs&salesOrderId=9&period=2026-05");
+  });
+
+  it("resolveNoQtyExecutionRegisterCtaLabel uses planning status when procurement pending", () => {
+    expect(
+      resolveNoQtyExecutionRegisterCtaLabel({
+        actionNeededKey: "AWAIT_PROCUREMENT",
+        rmCoverageLabel: "Awaiting RM",
+        suggestedWoQty: 100,
+      }),
+    ).toBe(NO_QTY_VIEW_PLANNING_STATUS_LABEL);
+    expect(
+      isNoQtyExecutionPlanningOnlyState({
+        actionNeededKey: "AWAIT_PROCUREMENT",
+        rmCoverageLabel: "Ready",
+      }),
+    ).toBe(true);
+    expect(
+      isNoQtyExecutionPlanningOnlyState({
+        actionNeededKey: "PLACE_WO",
+        rmCoverageLabel: "Ready",
+      }),
+    ).toBe(false);
+    expect(
+      resolveNoQtyExecutionRegisterCtaLabel({
+        actionNeededKey: "PLACE_WO",
+        rmCoverageLabel: "Ready",
+        suggestedWoQty: 50,
+      }),
+    ).toBe(NO_QTY_PLACE_WO_LABEL);
+    expect(
+      resolveNoQtyExecutionRegisterCtaLabel({
+        actionNeededKey: "ISSUE_RM",
+        rmCoverageLabel: "Ready",
+        suggestedWoQty: 50,
+      }),
+    ).toBe(NO_QTY_OPEN_EXECUTION_WORKSPACE_LABEL);
+    expect(NO_QTY_EXECUTION_PROCUREMENT_PENDING_HINT).toContain("Procurement pending");
   });
 
   it("resolveNoQtyExecutionWorkspaceHref prefers API href", () => {

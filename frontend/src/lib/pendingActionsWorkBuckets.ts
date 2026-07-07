@@ -126,6 +126,9 @@ function bucketOpenLabel(groupKey: string, count: number): string {
   if (groupKey === "READY_TO_DISPATCH" || groupKey === "DISPATCH_DRAFT" || groupKey === "DISPATCH_DELIVERY_DUE") {
     return "Open Dispatch";
   }
+  if (groupKey === "Place Partial WO" || groupKey === "Place WO") {
+    return "Place WO";
+  }
   return count === 1 ? "Open" : "Open List";
 }
 

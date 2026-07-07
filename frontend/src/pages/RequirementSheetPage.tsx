@@ -86,7 +86,7 @@ import {
   WorkbenchAlerts,
   WorkbenchHeader,
   WorkbenchKpiStrip,
-  WorkbenchActionBar,
+  WorkbenchActionCluster,
   WorkbenchInfoPanels,
 } from "../components/erp/workbench";
 import { RequirementSheetNoQtyGrid } from "../components/erp/requirementSheet/RequirementSheetNoQtyGrid";
@@ -341,6 +341,7 @@ export function RequirementSheetPage() {
   }, [searchParams]);
 
   const createNewSheetRef = React.useRef<HTMLDivElement | null>(null);
+  const firstNewReqQtyRef = React.useRef<HTMLInputElement | null>(null);
   const toast = useToast();
   const { user } = useAuth();
   const viewerRole = user?.role ?? null;
@@ -1326,6 +1327,55 @@ export function RequirementSheetPage() {
     ],
   );
 
+  React.useEffect(() => {
+    if (!showNoQtyEmptyCycleCreateWorkspace) return;
+    if (noQtyEmptyCreatePreview.rows.length === 0) return;
+    const timer = window.setTimeout(() => firstNewReqQtyRef.current?.focus(), 0);
+    return () => window.clearTimeout(timer);
+  }, [showNoQtyEmptyCycleCreateWorkspace, noQtyEmptyCreatePreview.rows.length]);
+
+  const rsSectionActions = React.useMemo(() => {
+    const secondary = [
+      ...workbenchActions.secondary,
+      ...(sheet
+        ? [
+            {
+              key: "recalc",
+              label: "Recalculate",
+              onClick: () => void recalc(),
+              disabled: !sheet || editingDisabled || busy || isZeroPlanning,
+            },
+            ...(draftUi
+              ? [
+                  {
+                    key: "save-draft",
+                    label: "Save draft",
+                    onClick: () => void saveDraft(),
+                    disabled: !sheet || editingDisabled || busy,
+                  },
+                ]
+              : []),
+          ]
+        : []),
+    ];
+    const hasActions = workbenchActions.primary || secondary.length > 0 || workbenchActions.hint;
+    if (!hasActions) return null;
+    return {
+      primary: workbenchActions.primary,
+      secondary,
+      hint: workbenchActions.hint,
+    };
+  }, [
+    sheet,
+    workbenchActions,
+    editingDisabled,
+    busy,
+    isZeroPlanning,
+    draftUi,
+    recalc,
+    saveDraft,
+  ]);
+
   const showNoQtyExecutionWorkspace = shouldRenderNoQtyExecutionWorkspace({
     hasSheet: Boolean(sheet),
     isNoQty,
@@ -1333,6 +1383,21 @@ export function RequirementSheetPage() {
     showNoQtyEmptyCycleCreateWorkspace,
     canOpenRs,
   });
+
+  const showItemsCard = Boolean(
+    sheet && (!isNoQty || sheetOnActiveCycle || (locked && showNoQtyExecutionWorkspace)),
+  );
+
+  const rsWorkbenchActionCluster = rsSectionActions ? (
+    <WorkbenchActionCluster
+      primary={rsSectionActions.primary}
+      secondary={rsSectionActions.secondary}
+      hint={rsSectionActions.hint}
+    />
+  ) : null;
+
+  const rsItemsHeaderActionClassName =
+    "sticky top-[var(--erp-app-header-h,3.25rem)] z-20 -mx-3 border-b border-slate-200/90 bg-white/95 px-3 py-1.5 backdrop-blur-sm sm:-mx-0 sm:px-0";
 
   const executionModeRequested = isExecutionModeRequested(searchParams);
   const useExecutionModeShell = shouldUseNoQtyExecutionModeShell({
@@ -1668,8 +1733,8 @@ export function RequirementSheetPage() {
           <WorkbenchKpiStrip items={workbenchKpiItems} />
 
           <WorkbenchMain>
-        {isNoQty && !noQtyIntentEmptyActiveCycle ? (
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] leading-snug text-slate-500">
+        {isNoQty && !noQtyIntentEmptyActiveCycle && draftUi ? (
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] leading-snug text-slate-500">
             <span>Finalize locks this cycle for planning; return to the NO_QTY Sales Order for the next cycle.</span>
             <details className="inline-block">
               <summary className="inline cursor-pointer text-slate-600 underline underline-offset-2">Info</summary>
@@ -1806,13 +1871,16 @@ export function RequirementSheetPage() {
         <Card className="min-w-0 overflow-hidden">
           {!sheet || showNoQtyEmptyCycleCreateWorkspace || (isNoQty && noSheetsUi) ? (
             <CardHeader className="pb-3">
-              <CardTitle className="text-base">
-                {showNoQtyEmptyCycleCreateWorkspace && cycleNo != null
-                  ? `Create Requirement Sheet — Cycle ${cycleNo}`
-                  : primaryMode === "EMPTY"
-                    ? "Create requirement sheet"
-                    : "Versions"}
-              </CardTitle>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <CardTitle className="text-base">
+                  {showNoQtyEmptyCycleCreateWorkspace && cycleNo != null
+                    ? `Create Requirement Sheet — Cycle ${cycleNo}`
+                    : primaryMode === "EMPTY"
+                      ? "Create requirement sheet"
+                      : "Versions"}
+                </CardTitle>
+                {!showItemsCard ? rsWorkbenchActionCluster : null}
+              </div>
             </CardHeader>
           ) : null}
           <CardContent className="grid gap-3">
@@ -1884,7 +1952,7 @@ export function RequirementSheetPage() {
                     </div>
                   ) : (
                     <div className="grid gap-2">
-                      {noQtyEmptyCreatePreview.rows.map((row) => {
+                      {noQtyEmptyCreatePreview.rows.map((row, rowIdx) => {
                         const fmt = (n: number) => n.toFixed(3).replace(/\.000$/, "");
                         return (
                           <div key={row.itemId} className="rounded-lg border border-slate-200 bg-white p-2.5 shadow-sm">
@@ -1893,6 +1961,7 @@ export function RequirementSheetPage() {
                               <div>
                                 <div className="text-[11px] font-medium text-slate-600">New Requirement Qty</div>
                                 <Input
+                                  ref={rowIdx === 0 ? firstNewReqQtyRef : undefined}
                                   className="mt-0.5 h-9 w-full tabular-nums text-[14px]"
                                   value={row.raw}
                                   disabled={busy}
@@ -1920,7 +1989,6 @@ export function RequirementSheetPage() {
                     <div className="grid gap-1">
                       <span className="text-xs font-medium text-slate-600">Period (YYYY-MM)</span>
                       <Input
-                        autoFocus={Boolean(addRequirementIntent && primaryMode === "EMPTY")}
                         value={periodKey}
                         onChange={(e) => setPeriodKey(e.target.value)}
                         placeholder="2026-04"
@@ -2086,7 +2154,6 @@ export function RequirementSheetPage() {
                     <div className="grid gap-1">
                       <span className="text-xs font-medium text-slate-600">Period (YYYY-MM)</span>
                       <Input
-                        autoFocus={Boolean(addRequirementIntent && primaryMode === "EMPTY")}
                         value={periodKey}
                         onChange={(e) => setPeriodKey(e.target.value)}
                         placeholder="2026-04"
@@ -2116,12 +2183,37 @@ export function RequirementSheetPage() {
           </CardContent>
         </Card>
 
-        {noSheetsUi ? null : (
+        {noSheetsUi ? null : isNoQty && draftUi ? (
+          <div className="rounded-md border border-slate-200/80 bg-slate-50/60 px-2.5 py-1.5">
+            <div className="grid gap-1">
+              <span className="text-[11px] font-medium text-slate-600">Remarks</span>
+              <Input
+                className="h-8"
+                value={remarks}
+                disabled={editingDisabled || !sheet}
+                onChange={(e) => {
+                  setRemarks(e.target.value);
+                  if (!locked) setNeedsRecalc(true);
+                }}
+                placeholder="Optional"
+              />
+            </div>
+            {!locked && sheet ? (
+              <div className="mt-1 text-[11px] text-slate-600">
+                {needsRecalc ? (
+                  <span className="font-medium text-amber-800">Recalculate before finalize to use latest stock.</span>
+                ) : (
+                  <span>Recalculate before finalize to snapshot the latest stock.</span>
+                )}
+              </div>
+            ) : null}
+          </div>
+        ) : (
           <Card className="min-w-0 overflow-hidden">
-            <CardHeader className="pb-3">
-              <CardTitle className="text-base">Sheet details</CardTitle>
+            <CardHeader className="pb-2 pt-2">
+              <CardTitle className="text-sm">Sheet details</CardTitle>
             </CardHeader>
-            <CardContent className="grid gap-3">
+            <CardContent className="grid gap-2">
             <div className="flex flex-wrap items-center gap-2">
               {sheet ? (
                 <>
@@ -2238,10 +2330,13 @@ export function RequirementSheetPage() {
       </div>
       ) : null}
 
-      {sheet && (!isNoQty || sheetOnActiveCycle || (locked && showNoQtyExecutionWorkspace)) ? (
+      {showItemsCard ? (
         <Card className={cn("min-w-0 overflow-hidden", isNoQty && "border-0 shadow-none")}>
-          <CardHeader className={cn(isNoQty ? "px-3 py-2" : "pb-3")}>
-            <CardTitle className="text-base">Items</CardTitle>
+          <CardHeader className={cn(isNoQty ? "px-3 py-1.5" : "pb-2 pt-2", rsSectionActions && rsItemsHeaderActionClassName)}>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <CardTitle className={cn(isNoQty ? "text-sm" : "text-base")}>Items</CardTitle>
+              {rsWorkbenchActionCluster}
+            </div>
           </CardHeader>
           <CardContent id="rs-items" className={cn("min-w-0 p-0", isNoQty ? "sm:p-3 sm:pt-0" : "sm:p-6 sm:pt-0")}>
             {noQtyPlanningSummary ? (
@@ -2471,34 +2566,6 @@ export function RequirementSheetPage() {
         />
       ) : null}
           </WorkbenchMain>
-
-          <WorkbenchActionBar
-            primary={workbenchActions.primary}
-            secondary={[
-              ...workbenchActions.secondary,
-              ...(sheet
-                ? [
-                    {
-                      key: "recalc",
-                      label: "Recalculate",
-                      onClick: () => void recalc(),
-                      disabled: !sheet || editingDisabled || busy || isZeroPlanning,
-                    },
-                    ...(draftUi
-                      ? [
-                          {
-                            key: "save-draft",
-                            label: "Save draft",
-                            onClick: () => void saveDraft(),
-                            disabled: !sheet || editingDisabled || busy,
-                          },
-                        ]
-                      : []),
-                  ]
-                : []),
-            ]}
-            hint={workbenchActions.hint}
-          />
         </WorkbenchShell>
       </RequirementSheetErrorBoundary>
     </PageContainer>

@@ -1,6 +1,7 @@
 import * as React from "react";
 import { Button } from "../../ui/button";
 import { cn } from "../../../lib/utils";
+import { displayWorkOrderTraceNo } from "../../../lib/docNoDisplay";
 
 export type ProductionNoQtyWorkQueueRow = {
   id: number;
@@ -10,14 +11,14 @@ export type ProductionNoQtyWorkQueueRow = {
   queueStatus: "ready" | "qc_pending" | "carry_forward";
   qty: number;
   approvedProducedQty?: number | null;
-  fgItem: { itemName: string };
+  fgItem: { itemName: string; unit?: string };
 };
 
 type Props = {
   rows: ProductionNoQtyWorkQueueRow[];
   selectedLineId: number;
   onSelect: (row: ProductionNoQtyWorkQueueRow) => void;
-  fmtProdQty: (value: number) => string;
+  fmtProdQty: (value: number, unit?: string | null) => string;
   className?: string;
 };
 
@@ -84,15 +85,15 @@ export function ProductionNoQtyWorkQueuePanel({
                   <td className="px-2 py-1 tabular-nums font-medium text-slate-800">
                     {row.cycleNo != null ? row.cycleNo : "—"}
                   </td>
-                  <td className="px-2 py-1 tabular-nums">#{row.workOrderId}</td>
+                  <td className="px-2 py-1 tabular-nums">{displayWorkOrderTraceNo(row.workOrderId)}</td>
                   <td className="truncate px-2 py-1 font-medium" title={row.fgItem.itemName}>
                     {row.fgItem.itemName}
                   </td>
-                  <td className="px-2 py-1 text-right tabular-nums">{fmtProdQty(Number(row.qty))}</td>
+                  <td className="px-2 py-1 text-right tabular-nums">{fmtProdQty(Number(row.qty), row.fgItem.unit)}</td>
                   <td className="px-2 py-1 text-right tabular-nums">
-                    {fmtProdQty(row.approvedProducedQty ?? 0)}
+                    {fmtProdQty(row.approvedProducedQty ?? 0, row.fgItem.unit)}
                   </td>
-                  <td className="px-2 py-1 text-right font-semibold tabular-nums">{fmtProdQty(row.balance)}</td>
+                  <td className="px-2 py-1 text-right font-semibold tabular-nums">{fmtProdQty(row.balance, row.fgItem.unit)}</td>
                   <td className="px-1 py-1 text-right">
                     <Button
                       type="button"

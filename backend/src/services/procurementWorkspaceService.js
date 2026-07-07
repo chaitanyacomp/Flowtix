@@ -21,7 +21,7 @@ const {
 } = require("./procurementDemandPoolService");
 const { computeFgGapLinesForSalesOrder } = require("./rmCheckService");
 const {
-  isMaterialRequirementFullyReceived,
+  isMaterialRequirementProcurementSatisfied,
   healStaleMonthlyPlanProcurementHandoff,
 } = require("./procurementLifecycleService");
 const {
@@ -336,7 +336,10 @@ async function loadProcurementLinkageForMrLineIds(mrLineIds, db = prisma) {
     const prLine = sl.purchaseRequestLine;
     if (!prLine) continue;
     prLineIds.add(prLine.id);
-    const pendingQty = Math.max(0, qtyToNumber(prLine.netRequiredQty) - qtyToNumber(prLine.orderedQty));
+    const pendingQty = Math.max(
+      0,
+      qtyToNumber(prLine.netRequiredQty) - qtyToNumber(prLine.orderedQty) - qtyToNumber(prLine.shortClosedQty),
+    );
     if (pendingQty > QUEUE_EPS) prPendingCount += 1;
 
     for (const link of prLine.poLinks || []) {
@@ -346,12 +349,13 @@ async function loadProcurementLinkageForMrLineIds(mrLineIds, db = prisma) {
       poIds.add(po.id);
       if (OPEN_PO_STATUSES.includes(po.status)) hasOpenPo = true;
       const ordered = qtyToNumber(poLine.qty);
+      const shortClosed = qtyToNumber(poLine.shortClosedQty);
       let received = 0;
       for (const gl of poLine.grnLines || []) {
         if (gl.grn?.reversedAt) continue;
         received += qtyToNumber(gl.receivedQty);
       }
-      const pending = Math.max(0, ordered - received);
+      const pending = Math.max(0, ordered - received - shortClosed);
       if (pending > QUEUE_EPS) {
         hasGrnPending = true;
         pendingGrnByPoLineId.set(poLine.id, pending);
@@ -376,12 +380,13 @@ async function loadProcurementLinkageForMrLineIds(mrLineIds, db = prisma) {
     poIds.add(po.id);
     if (OPEN_PO_STATUSES.includes(po.status)) hasOpenPo = true;
     const ordered = qtyToNumber(lk.rmPoLine.qty);
+    const shortClosed = qtyToNumber(lk.rmPoLine.shortClosedQty);
     let received = 0;
     for (const gl of lk.rmPoLine.grnLines || []) {
       if (gl.grn?.reversedAt) continue;
       received += qtyToNumber(gl.receivedQty);
     }
-    const pending = Math.max(0, ordered - received);
+    const pending = Math.max(0, ordered - received - shortClosed);
     if (pending > QUEUE_EPS) {
       hasGrnPending = true;
       pendingGrnByPoLineId.set(lk.rmPoLine.id, pending);
@@ -621,7 +626,8 @@ async function buildGrnPendingSection(db = prisma) {
     for (const line of po.lines || []) {
       const ordered = qtyToNumber(line.qty);
       const received = receivedByLine.get(line.id) || 0;
-      const pending = Math.max(0, ordered - received);
+      const shortClosed = qtyToNumber(line.shortClosedQty);
+      const pending = Math.max(0, ordered - received - shortClosed);
       if (pending <= QUEUE_EPS) continue;
       rows.push({
         purchaseOrderId: po.id,
@@ -642,10 +648,47 @@ async function buildGrnPendingSection(db = prisma) {
 
 async function buildProcurementCompletedSection(db = prisma) {
   const closed = await db.materialRequirement.findMany({
-    where: { status: { in: ["FULLY_PROCURED", "CLOSED"] } },
+    where: { status: { in: ["FULLY_PROCURED", "PARTIALLY_PROCURED", "CLOSED"] } },
     include: {
       salesOrder: { select: { id: true, docNo: true } },
-      lines: { select: { id: true, shortageQty: true, procuredQty: true } },
+      lines: {
+        select: {
+          id: true,
+          shortageQty: true,
+          requiredQty: true,
+          procuredQty: true,
+          shortClosedQty: true,
+          purchaseRequestSourceLinks: {
+            include: {
+              purchaseRequestLine: {
+                include: {
+                  sourceLinks: true,
+                  poLinks: {
+                    include: {
+                      rmPoLine: {
+                        include: {
+                          rmPo: { select: { id: true, status: true } },
+                          grnLines: { include: { grn: { select: { id: true, reversedAt: true } } } },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          procurementLinks: {
+            include: {
+              rmPoLine: {
+                include: {
+                  rmPo: { select: { id: true, status: true } },
+                  grnLines: { include: { grn: { select: { id: true, reversedAt: true } } } },
+                },
+              },
+            },
+          },
+        },
+      },
     },
     orderBy: { updatedAt: "desc" },
     take: 30,
@@ -654,13 +697,14 @@ async function buildProcurementCompletedSection(db = prisma) {
   const rows = [];
   for (const group of grouped) {
     const mr = group.canonical;
-    if (!mr || !isMaterialRequirementFullyReceived(mr)) continue;
+    if (!mr || !isMaterialRequirementProcurementSatisfied(mr)) continue;
+    const shortClosed = (mr.lines || []).some((line) => qtyToNumber(line.shortClosedQty) > QUEUE_EPS);
     rows.push({
       materialRequirementId: mr.id,
       docNo: mr.docNo,
       sourceRef: sourceRefForMr(mr),
       salesOrderDocNo: mr.salesOrder?.docNo ?? null,
-      operationalLabel: "Procurement Completed",
+      operationalLabel: shortClosed ? "PARTIALLY PROCURED (SHORT CLOSED)" : "Procurement Completed",
       lineCount: (mr.lines || []).length,
       duplicateCount: group.archived.length,
     });

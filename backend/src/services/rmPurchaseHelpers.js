@@ -48,23 +48,29 @@ async function recalcRmPoStatus(tx, rmPoId) {
   const receivedByLine = sumReceivedByRmPoLineFromGrns(rmPo.grns);
   let totalOrdered = 0;
   let totalReceived = 0;
+  let totalShortClosed = 0;
+  let totalPending = 0;
   for (const l of rmPo.lines) {
-    totalOrdered += qtyToNumber(l.qty);
-    totalReceived += receivedByLine.get(l.id) || 0;
+    const ordered = qtyToNumber(l.qty);
+    const received = receivedByLine.get(l.id) || 0;
+    const shortClosed = qtyToNumber(l.shortClosedQty);
+    const pending = Math.max(0, ordered - received - shortClosed);
+    totalOrdered += ordered;
+    totalReceived += received;
+    totalShortClosed += shortClosed;
+    totalPending += pending;
   }
 
-  // Status follows *net* received on current PO lines only (active GRNs).
-  // Do not use "has any GRN row" — empty/orphan GRN headers must not force PENDING
-  // when lines are already fully received.
+  // Status follows net received + intentional short close on current PO lines (active GRNs only).
   let next;
   if (totalOrdered <= QUEUE_EPS) {
     next = "PENDING";
-  } else if (totalReceived <= QUEUE_EPS) {
-    next = "PENDING";
-  } else if (totalReceived + QUEUE_EPS < totalOrdered) {
-    next = "PARTIAL";
-  } else {
+  } else if (totalPending <= QUEUE_EPS && (totalReceived > QUEUE_EPS || totalShortClosed > QUEUE_EPS)) {
     next = "COMPLETED";
+  } else if (totalReceived <= QUEUE_EPS && totalShortClosed <= QUEUE_EPS) {
+    next = "PENDING";
+  } else {
+    next = "PARTIAL";
   }
 
   if (next !== rmPo.status) {

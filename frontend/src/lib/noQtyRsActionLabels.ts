@@ -633,6 +633,40 @@ export function noQtySoListHref(salesOrderId?: number, role?: string | null): st
 /** P10-A4 — Execution register primary CTA label. */
 export const NO_QTY_OPEN_EXECUTION_WORKSPACE_LABEL = "Open Execution Workspace";
 
+/** Execution register CTA when procurement / RM coverage blocks WO placement. */
+export const NO_QTY_VIEW_PLANNING_STATUS_LABEL = "View Planning Status";
+
+export const NO_QTY_EXECUTION_PROCUREMENT_PENDING_HINT =
+  "Procurement pending — WO can be placed after RM is available.";
+
+/** True when the register row is planning/status-only (WO placement not yet actionable). */
+export function isNoQtyExecutionPlanningOnlyState(input: {
+  actionNeededKey?: string | null;
+  rmCoverageLabel?: string | null;
+}): boolean {
+  const key = String(input.actionNeededKey ?? "").toUpperCase();
+  if (key === "AWAIT_PROCUREMENT") return true;
+  const rmLabel = String(input.rmCoverageLabel ?? "").trim().toLowerCase();
+  if (rmLabel.includes("awaiting")) return true;
+  return false;
+}
+
+/** Stage-aware execution register open CTA — does not change navigation target. */
+export function resolveNoQtyExecutionRegisterCtaLabel(input: {
+  actionNeededKey?: string | null;
+  rmCoverageLabel?: string | null;
+  suggestedWoQty?: number | null;
+}): string {
+  if (isNoQtyExecutionPlanningOnlyState(input)) {
+    return NO_QTY_VIEW_PLANNING_STATUS_LABEL;
+  }
+  const key = String(input.actionNeededKey ?? "").toUpperCase();
+  if (key === "PLACE_WO") return NO_QTY_PLACE_WO_LABEL;
+  const suggested = Number(input.suggestedWoQty ?? 0);
+  if (Number.isFinite(suggested) && suggested > 1e-6) return NO_QTY_OPEN_EXECUTION_WORKSPACE_LABEL;
+  return NO_QTY_OPEN_EXECUTION_WORKSPACE_LABEL;
+}
+
 export type NoQtyExecutionActionNeededKey =
   | "PLACE_WO"
   | "ISSUE_RM"

@@ -83,6 +83,16 @@ function mapRmCoverage({ placementStatus, readinessStatus, rsBalanceQty }) {
   return RM_COVERAGE.AWAITING_RM;
 }
 
+function resolvePlaceWoActionLabel({ rmCoverage, placementStatus, readinessStatus }) {
+  const placement = String(placementStatus ?? "").toUpperCase();
+  const readiness = String(readinessStatus ?? "").toUpperCase();
+  const partial =
+    rmCoverage?.key === RM_COVERAGE.PARTIAL.key ||
+    placement === "PARTIALLY_READY" ||
+    readiness === "PARTIALLY_READY";
+  return partial ? "Place Partial WO" : "Place WO";
+}
+
 function deriveActionNeeded({
   rsBalanceQty,
   suggestedWoQty,
@@ -94,15 +104,15 @@ function deriveActionNeeded({
   const suggested = Number(suggestedWoQty ?? 0);
 
   const readiness = String(readinessStatus ?? "").toUpperCase();
-
-  if (balance > EPS && suggested > EPS && readiness === "READY_TO_PLACE_WO") {
-    return ACTION_NEEDED.PLACE_WO;
-  }
+  const placement = String(placementStatus ?? "").toUpperCase();
 
   if (balance > EPS) {
-    const placement = String(placementStatus ?? "").toUpperCase();
     if (placement === "MISSING_BOM" || readiness === "BLOCKED") {
       return ACTION_NEEDED.BLOCKED;
+    }
+    // Executable qty drives WO placement — partial RM coverage is actionable.
+    if (suggested > EPS) {
+      return ACTION_NEEDED.PLACE_WO;
     }
     return ACTION_NEEDED.AWAIT_PROCUREMENT;
   }
@@ -173,6 +183,14 @@ function buildExecutionRegisterFieldsFromPick(salesOrderId, pick) {
     readinessStatus: assessment.readinessStatus,
     existingWoSummary: assessment.existingWoSummary,
   });
+  const actionNeededLabel =
+    actionNeeded.key === ACTION_NEEDED.PLACE_WO.key
+      ? resolvePlaceWoActionLabel({
+          rmCoverage,
+          placementStatus: assessment.placementStatus,
+          readinessStatus: assessment.readinessStatus,
+        })
+      : actionNeeded.label;
 
   const placementSheetId = Number(assessment.requirementSheetId);
   const placementCycleId =
@@ -191,7 +209,7 @@ function buildExecutionRegisterFieldsFromPick(salesOrderId, pick) {
     rmCoverageStatus: rmCoverage.key,
     rmCoverageLabel: rmCoverage.label,
     actionNeededKey: actionNeeded.key,
-    actionNeededLabel: actionNeeded.label,
+    actionNeededLabel,
     executionWorkspaceHref: buildRequirementSheetHref(salesOrderId, {
       sheetId: placementSheetId,
       cycleId: placementCycleId,
@@ -243,4 +261,5 @@ module.exports = {
   executionRegisterSortPriority,
   mapRmCoverage,
   pickPlacementSheetCandidate,
+  resolvePlaceWoActionLabel,
 };

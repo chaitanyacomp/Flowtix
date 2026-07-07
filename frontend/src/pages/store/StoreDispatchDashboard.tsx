@@ -32,6 +32,8 @@ import {
   computeStoreDashboardKpiMetrics,
   computeStoreProcurementMonitorMetrics,
   computeStoreRmccSummaryMetrics,
+  isStoreRmccActionAvailable,
+  STORE_RMCC_UNAVAILABLE_HINT,
 } from "../../lib/storeDashboardMetrics";
 import { NO_QTY_AGREEMENTS_HREF } from "../../lib/noQtyStoreNavigation";
 import { rmControlCenterHref } from "../../lib/materialWorkflowLinks";
@@ -176,6 +178,7 @@ export function StoreDispatchDashboard({
     () => computeStoreRmccSummaryMetrics(operational.rmccSummary),
     [operational.rmccSummary],
   );
+  const rmccQuickActionAvailable = isStoreRmccActionAvailable(rmccMetrics);
   const procurementMonitorMetrics = React.useMemo(
     () => computeStoreProcurementMonitorMetrics(operational.procurementWorkspace, operational.inboxRows),
     [operational.procurementWorkspace, operational.inboxRows],
@@ -241,7 +244,8 @@ export function StoreDispatchDashboard({
             />
           ) : null}
 
-          <div className="erp-op-workspace-primary erp-card-surface flex flex-wrap items-center gap-1.5 rounded-lg border border-slate-200/90 px-2.5 py-1.5 shadow-sm">
+          <div className="erp-op-workspace-primary erp-card-surface flex flex-col gap-1 rounded-lg border border-slate-200/90 px-2.5 py-1.5 shadow-sm">
+            <div className="flex flex-wrap items-center gap-1.5">
             <ErpActionButton
               tier="primary"
               className="gap-1.5"
@@ -252,10 +256,15 @@ export function StoreDispatchDashboard({
               NO_QTY Execution
             </ErpActionButton>
             <ErpActionButton
-              tier="primary"
-              className="gap-1.5"
+              tier={rmccQuickActionAvailable ? "primary" : "tertiary"}
+              className={cn("gap-1.5", !rmccQuickActionAvailable && "opacity-70")}
               data-testid="store-quick-rmcc"
-              onClick={() => navigate(rmccHref, dashboardRmccNav)}
+              disabled={!rmccQuickActionAvailable}
+              title={!rmccQuickActionAvailable ? STORE_RMCC_UNAVAILABLE_HINT : undefined}
+              onClick={() => {
+                if (!rmccQuickActionAvailable) return;
+                navigate(rmccHref, dashboardRmccNav);
+              }}
             >
               <PackageSearch className="h-3.5 w-3.5" aria-hidden />
               RM Control Center
@@ -297,6 +306,12 @@ export function StoreDispatchDashboard({
               <Boxes className="h-3.5 w-3.5" aria-hidden />
               Stock
             </ErpActionButton>
+            </div>
+            {!rmccQuickActionAvailable && !operational.initialLoading ? (
+              <p className="text-[10px] leading-snug text-slate-500" data-testid="store-quick-rmcc-hint">
+                {STORE_RMCC_UNAVAILABLE_HINT}
+              </p>
+            ) : null}
           </div>
 
           <div className="max-w-full overflow-x-auto pb-0.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">

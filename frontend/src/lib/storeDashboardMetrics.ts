@@ -60,6 +60,13 @@ export function computeStoreRmccSummaryMetrics(
   };
 }
 
+/** RM Control Center is actionable only after WO placement creates RMCC / issue-ready work. */
+export function isStoreRmccActionAvailable(metrics: StoreRmccSummaryMetrics): boolean {
+  return metrics.openCases > 0 || metrics.issueReadyWos > 0;
+}
+
+export const STORE_RMCC_UNAVAILABLE_HINT = "Available after WO is placed / RM issue is ready.";
+
 export function countBlockedProcurementCases(ws: StoreProcurementWorkspaceLike | null | undefined): number {
   const mrs = ws?.sections?.pendingMaterialRequirements ?? [];
   return mrs.filter((m) => {

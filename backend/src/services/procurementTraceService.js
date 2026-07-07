@@ -352,7 +352,8 @@ function assembleRmPoProcurementTrace(poRow, stockTransactions = [], purchaseBil
   const lines = (poRow.lines || []).map((poLine) => {
     const orderedQty = qtyToNumber(poLine.qty);
     const receivedQty = receivedByLine.get(poLine.id) || 0;
-    const pendingQty = Math.max(0, orderedQty - receivedQty);
+    const shortClosedQty = qtyToNumber(poLine.shortClosedQty);
+    const pendingQty = Math.max(0, orderedQty - receivedQty - shortClosedQty);
     const { demandSources, mrSources, prSources } = buildDemandSourcesForPoLine(poLine);
 
     const grnLines = [];
@@ -389,6 +390,8 @@ function assembleRmPoProcurementTrace(poRow, stockTransactions = [], purchaseBil
         : null,
       orderedQty,
       receivedQty,
+      shortClosedQty,
+      outstandingProcurement: pendingQty,
       pendingQty,
       rate: qtyToNumber(poLine.rate),
       demandSources,

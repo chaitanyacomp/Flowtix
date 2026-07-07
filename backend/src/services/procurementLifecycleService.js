@@ -55,11 +55,36 @@ function receivedQtyForMrLine(line) {
   return received;
 }
 
+function shortClosedQtyForMrLine(line) {
+  return qtyToNumber(line.shortClosedQty);
+}
+
+function outstandingProcurementForMrLine(line) {
+  const target = targetQtyForMrLine(line);
+  const received = receivedQtyForMrLine(line);
+  const shortClosed = shortClosedQtyForMrLine(line);
+  return Math.max(0, Math.round((target - received - shortClosed) * 1000) / 1000);
+}
+
+function isMaterialRequirementProcurementSatisfied(mr) {
+  const lines = mr?.lines || [];
+  const demandLines = lines.filter((line) => targetQtyForMrLine(line) > QUEUE_EPS);
+  if (!demandLines.length) return false;
+  return demandLines.every((line) => outstandingProcurementForMrLine(line) <= QUEUE_EPS);
+}
+
+function hasMaterialRequirementShortClosedBalance(mr) {
+  return (mr?.lines || []).some((line) => shortClosedQtyForMrLine(line) > QUEUE_EPS);
+}
+
 function isMaterialRequirementFullyReceived(mr) {
   const lines = mr?.lines || [];
   const demandLines = lines.filter((line) => targetQtyForMrLine(line) > QUEUE_EPS);
   if (!demandLines.length) return false;
-  return demandLines.every((line) => receivedQtyForMrLine(line) + QUEUE_EPS >= targetQtyForMrLine(line));
+  return demandLines.every((line) => {
+    if (shortClosedQtyForMrLine(line) > QUEUE_EPS) return false;
+    return receivedQtyForMrLine(line) + QUEUE_EPS >= targetQtyForMrLine(line);
+  });
 }
 
 function isMaterialRequirementPartiallyReceived(mr) {
@@ -158,18 +183,19 @@ async function recalculateMaterialRequirementClosure(db, materialRequirementIds)
   const mrs = await loadMaterialRequirementsForLifecycle(db, materialRequirementIds);
   const changes = [];
   for (const mr of mrs) {
-    const fullyReceived = isMaterialRequirementFullyReceived(mr);
+    const procurementSatisfied = isMaterialRequirementProcurementSatisfied(mr);
     const partiallyReceived = isMaterialRequirementPartiallyReceived(mr);
+    const hasShortClosed = hasMaterialRequirementShortClosedBalance(mr);
     const hasPo = hasMaterialRequirementPoLink(mr);
     const openHandoff = hasOpenPurchaseHandoff(mr);
     let next;
-    if (fullyReceived && !openHandoff) {
-      next = "FULLY_PROCURED";
+    if (procurementSatisfied && !openHandoff) {
+      next = hasShortClosed ? "PARTIALLY_PROCURED" : "FULLY_PROCURED";
     } else if (openHandoff && mr.sentToPurchaseAt) {
       next = "SENT_TO_PURCHASE";
     } else if (openHandoff && (mr.status === "APPROVED" || mr.status === "SENT_TO_PURCHASE")) {
       next = mr.status;
-    } else if (partiallyReceived) {
+    } else if (partiallyReceived || hasShortClosed) {
       next = "PARTIALLY_PROCURED";
     } else if (hasPo) {
       next = "PROCUREMENT_IN_PROGRESS";
@@ -182,7 +208,10 @@ async function recalculateMaterialRequirementClosure(db, materialRequirementIds)
     }
 
     const reopeningFromClosedProcurement =
-      (mr.status === "FULLY_PROCURED" || mr.status === "CLOSED") && next !== "FULLY_PROCURED" && next !== "CLOSED";
+      (mr.status === "FULLY_PROCURED" || mr.status === "CLOSED") &&
+      next !== "FULLY_PROCURED" &&
+      next !== "PARTIALLY_PROCURED" &&
+      next !== "CLOSED";
 
     if (mr.status !== next) {
       await db.materialRequirement.update({
@@ -190,6 +219,7 @@ async function recalculateMaterialRequirementClosure(db, materialRequirementIds)
         data: {
           status: next,
           ...(next === "FULLY_PROCURED" ? { closedAt: new Date() } : {}),
+          ...(next === "PARTIALLY_PROCURED" && procurementSatisfied && !openHandoff ? { closedAt: new Date() } : {}),
           ...(reopeningFromClosedProcurement ? { closedAt: null } : {}),
         },
       });
@@ -367,6 +397,10 @@ module.exports = {
   activeReceivedQtyForPoLine,
   targetQtyForMrLine,
   receivedQtyForMrLine,
+  shortClosedQtyForMrLine,
+  outstandingProcurementForMrLine,
+  isMaterialRequirementProcurementSatisfied,
+  hasMaterialRequirementShortClosedBalance,
   isMaterialRequirementFullyReceived,
   isMaterialRequirementPartiallyReceived,
   loadMaterialRequirementIdsForRmPo,

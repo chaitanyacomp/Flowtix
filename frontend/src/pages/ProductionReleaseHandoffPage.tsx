@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { Button } from "../components/ui/button";
 import { useToast } from "../contexts/ToastContext";
 import { apiFetch } from "../services/api";
@@ -59,61 +59,36 @@ function isIssuedPmr(status?: string | null): boolean {
   return token === "FULLY_ISSUED" || token === "SHORT_ISSUE_ACCEPTED";
 }
 
-function isGreenLevelReleaseRow(row: Pick<ReleaseHandoffQueueRow, "sourceType" | "orderType">): boolean {
-  const sourceType = String(row.sourceType ?? "").trim().toUpperCase();
-  const orderType = String(row.orderType ?? "").trim().toUpperCase();
-  return sourceType === "GREEN_LEVEL_REPLENISHMENT" || orderType === "GREEN_LEVEL";
-}
-
-function buildPostReleaseProductionHref(
-  pmr: Pick<Pmr, "workOrderId" | "salesOrderId">,
-  row?: Pick<
-    ReleaseHandoffQueueRow,
-    "sourceType" | "orderType" | "workOrderLineId" | "cycleId" | "requirementSheetId"
-  > | null,
-): string {
-  const q = new URLSearchParams({ from: "production-release", workOrderId: String(pmr.workOrderId) });
-  if (row?.workOrderLineId) q.set("workOrderLineId", String(row.workOrderLineId));
-  if (isGreenLevelReleaseRow(row ?? {})) {
-    q.set("flow", "GREEN_LEVEL");
-  } else if (String(row?.orderType ?? "").trim().toUpperCase() === "NO_QTY" && pmr.salesOrderId) {
-    q.set("flow", "NO_QTY");
-    q.set("salesOrderId", String(pmr.salesOrderId));
-    q.set("source", "no_qty_so");
-    if (row?.cycleId) q.set("cycleId", String(row.cycleId));
-    if (row?.requirementSheetId) q.set("requirementSheetId", String(row.requirementSheetId));
-  } else if (pmr.salesOrderId) {
-    q.set("flow", "REGULAR_SO");
-    q.set("salesOrderId", String(pmr.salesOrderId));
-  }
-  return `/production?${q.toString()}`;
-}
+const RELEASE_QUEUE_EMPTY_MESSAGE = "No work orders awaiting release.";
 
 function ProductionReleaseHandoffList({
   onOpenDetail,
 }: {
   onOpenDetail: (workOrderId: number) => void;
 }) {
-  const navigate = useNavigate();
   const { showSuccess, showError } = useToast();
   const [rows, setRows] = React.useState<ReleaseHandoffQueueRow[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
   const [releasingWoId, setReleasingWoId] = React.useState<number | null>(null);
 
-  const loadQueue = React.useCallback(async () => {
-    setLoading(true);
-    setError(null);
+  const loadQueue = React.useCallback(async (opts?: { silent?: boolean }) => {
+    if (!opts?.silent) {
+      setLoading(true);
+      setError(null);
+    }
     try {
       const data = await apiFetch<{ count: number; rows: ReleaseHandoffQueueRow[] }>(
         "/api/production-material-requests/release-handoff-queue",
       );
       setRows(Array.isArray(data.rows) ? data.rows : []);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not load release queue.");
-      setRows([]);
+      if (!opts?.silent) {
+        setError(e instanceof Error ? e.message : "Could not load release queue.");
+        setRows([]);
+      }
     } finally {
-      setLoading(false);
+      if (!opts?.silent) setLoading(false);
     }
   }, []);
 
@@ -132,7 +107,8 @@ function ProductionReleaseHandoffList({
       });
       showSuccess(`${row.workOrderNo || `WO-${row.workOrderId}`} released to production.`);
       bumpErpRefresh(["pending-actions", "dashboard", "production"]);
-      navigate(buildPostReleaseProductionHref({ workOrderId: row.workOrderId, salesOrderId: row.salesOrderId ?? null }, row));
+      setRows((prev) => prev.filter((r) => r.workOrderId !== row.workOrderId));
+      void loadQueue({ silent: true });
     } catch (e) {
       showError(e instanceof Error ? e.message : "Release failed.");
     } finally {
@@ -163,8 +139,11 @@ function ProductionReleaseHandoffList({
       ) : null}
 
       {!loading && !error && rows.length === 0 ? (
-        <div className="rounded-md border border-slate-200 bg-white p-4 text-sm text-slate-600">
-          No work orders are waiting for Store release to production.
+        <div
+          className="rounded-md border border-slate-200 bg-white p-4 text-sm text-slate-600"
+          data-testid="production-release-empty"
+        >
+          {RELEASE_QUEUE_EMPTY_MESSAGE}
         </div>
       ) : null}
 
@@ -234,10 +213,8 @@ function ProductionReleaseHandoffDetail({
   pmrId: number;
   onBackToList: () => void;
 }) {
-  const navigate = useNavigate();
   const { showSuccess, showError } = useToast();
   const [pmr, setPmr] = React.useState<Pmr | null>(null);
-  const [queueRow, setQueueRow] = React.useState<ReleaseHandoffQueueRow | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [submitting, setSubmitting] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -259,17 +236,7 @@ function ProductionReleaseHandoffDetail({
         } else {
           throw new Error("PMR or Work Order context is required.");
         }
-        const queue = await apiFetch<{ rows: ReleaseHandoffQueueRow[] }>(
-          "/api/production-material-requests/release-handoff-queue",
-        );
-        const row =
-          (queue.rows ?? []).find((r) => r.workOrderId === data.workOrderId) ??
-          (queue.rows ?? []).find((r) => r.pmrId === data.id) ??
-          null;
-        if (alive) {
-          setPmr(data);
-          setQueueRow(row);
-        }
+        if (alive) setPmr(data);
       } catch (e) {
         if (alive) setError(e instanceof Error ? e.message : "Could not load release handoff.");
       } finally {
@@ -292,7 +259,7 @@ function ProductionReleaseHandoffDetail({
       });
       showSuccess("Work order released to production.");
       bumpErpRefresh(["pending-actions", "dashboard", "production"]);
-      navigate(buildPostReleaseProductionHref(pmr, queueRow));
+      onBackToList();
     } catch (e) {
       showError(e instanceof Error ? e.message : "Release failed.");
     } finally {

@@ -42,16 +42,12 @@ describe("NoQtyAgreementsPage execution register", () => {
     expect(pageSource).toContain("No NO_QTY execution work is currently pending.");
   });
 
-  it("uses Open Execution Workspace CTA with executionWorkspaceHref", () => {
-    expect(pageSource).toContain("NO_QTY_OPEN_EXECUTION_WORKSPACE_LABEL");
-    expect(pageSource).toContain("resolveNoQtyExecutionWorkspaceHref");
-    expect(pageSource).toContain("executionWorkspaceHref");
-    expect(pageSource).not.toContain("resolveNoQtyInboxPlanningCta");
-    expect(pageSource).not.toContain("openCurrentRsButtonLabel");
-    expect(pageSource).not.toContain("pendingPlanningAction");
-    expect(pageSource).not.toContain("Open Current RS");
-    expect(pageSource).not.toContain("Create Requirement Sheet");
-    expect(pageSource).not.toContain("Open Monthly Planning");
+  it("uses stage-aware execution register CTA labels", () => {
+    expect(pageSource).toContain("resolveNoQtyExecutionRegisterCtaLabel");
+    expect(pageSource).toContain("isNoQtyExecutionPlanningOnlyState");
+    expect(pageSource).toContain("NO_QTY_EXECUTION_PROCUREMENT_PENDING_HINT");
+    expect(pageSource).toContain("execution-planning-hint");
+    expect(pageSource).not.toContain("NO_QTY_OPEN_EXECUTION_WORKSPACE_LABEL");
   });
 
   it("styles action needed from actionNeededKey", () => {

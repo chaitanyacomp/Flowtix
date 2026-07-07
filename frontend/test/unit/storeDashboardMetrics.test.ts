@@ -6,6 +6,7 @@ import {
   computeStoreProcurementMonitorMetrics,
   computeStoreRmccSummaryMetrics,
   countBlockedProcurementCases,
+  isStoreRmccActionAvailable,
 } from "../../src/lib/storeDashboardMetrics";
 import { sampleWorkspace } from "./storeProcurementPulse.test";
 
@@ -60,6 +61,14 @@ describe("computeStoreRmccSummaryMetrics", () => {
       openCases: 5,
       issueReadyWos: 2,
     });
+  });
+});
+
+describe("isStoreRmccActionAvailable", () => {
+  it("is false when no RMCC cases and no issue-ready WOs", () => {
+    expect(isStoreRmccActionAvailable({ openCases: 0, issueReadyWos: 0 })).toBe(false);
+    expect(isStoreRmccActionAvailable({ openCases: 2, issueReadyWos: 0 })).toBe(true);
+    expect(isStoreRmccActionAvailable({ openCases: 0, issueReadyWos: 1 })).toBe(true);
   });
 });
 

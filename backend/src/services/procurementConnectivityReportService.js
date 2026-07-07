@@ -3,7 +3,7 @@ const {
   assembleRmPoProcurementTrace,
   rmPoDisplayNo,
 } = require("./procurementTraceService");
-const { QUEUE_EPS, qtyToNumber } = require("./rmPurchaseHelpers");
+const { deriveProcurementStatusLabel, procurementStatusDisplayLabel } = require("./procurementQtyMath");
 
 const RECEIPT_STATUSES = Object.freeze({
   PENDING_RECEIPT: "PENDING_RECEIPT",
@@ -169,6 +169,11 @@ function flattenTraceToReportRows(trace) {
     const demandSources = line.demandSources?.length ? line.demandSources : [null];
     const receiptStatus = deriveReceiptStatus(line.orderedQty, line.receivedQty, line.pendingQty);
     const billStatus = deriveBillStatus(line.purchaseBillLines);
+    const procurementStatus = deriveProcurementStatusLabel({
+      targetQty: line.orderedQty,
+      receivedQty: line.receivedQty,
+      shortClosedQty: line.shortClosedQty,
+    });
     const stockPosted = buildStockPostedSummary(line.grnLines);
     const grnSummary = buildGrnSummary(line.grnLines);
 
@@ -183,7 +188,11 @@ function flattenTraceToReportRows(trace) {
         rmItem: line.item,
         orderedQty: line.orderedQty,
         receivedQty: line.receivedQty,
+        shortClosedQty: line.shortClosedQty ?? 0,
         pendingQty: line.pendingQty,
+        outstandingProcurement: line.outstandingProcurement ?? line.pendingQty,
+        procurementStatus,
+        procurementStatusLabel: procurementStatusDisplayLabel(procurementStatus),
         receiptStatus,
         receiptStatusLabel: RECEIPT_STATUS_LABELS[receiptStatus],
         billStatus,

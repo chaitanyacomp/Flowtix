@@ -1910,6 +1910,56 @@ describe("pendingActionsService", () => {
   it("fetchStoreNoQtyPlaceWoPendingActions does not emit Place WO when shared NO_QTY gate is not ready", async () => {
     const eligibilityPath = require.resolve("../../src/services/noQtyCreateNextRsEligibility");
     const executionPath = require.resolve("../../src/services/requirementSheetExecutionService");
+    const gatePath = require.resolve("../../src/services/noQtyMonthlyPlanningGateService");
+    const pendingPath = require.resolve("../../src/services/pendingActionsService");
+    const origEligibility = require(eligibilityPath);
+    const origExecution = require(executionPath);
+    const origGate = require(gatePath);
+    const origResolve = origEligibility.resolveNoQtyEligibilityCycleId;
+    const origAssess = origExecution.assessNoQtyPlacementStageForCycle;
+    const origPlanningGate = origGate.assessNoQtyMonthlyPlanningGate;
+
+    require(eligibilityPath).resolveNoQtyEligibilityCycleId = async () => ({ cycleId: 5, source: "ACTIVE" });
+    require(executionPath).assessNoQtyPlacementStageForCycle = async () => ({
+      readyToPlaceWo: false,
+      rsBalanceQty: 5000,
+      suggestedWoQty: 2905,
+      placementStatus: "PARTIALLY_READY",
+      readinessStatus: "PARTIALLY_READY",
+      existingWoSummary: [],
+      processStageKey: "NO_QTY_PROCUREMENT_IN_PROGRESS",
+      requirementSheetId: 20,
+      requirementSheetDocNo: "RS-001",
+      periodKey: "2026-06",
+    });
+    require(gatePath).assessNoQtyMonthlyPlanningGate = async () => ({
+      gate: "INITIAL_PLAN_REQUIRED",
+      action: "Monthly Planning Pending",
+    });
+
+    delete require.cache[pendingPath];
+    const { fetchStoreNoQtyPlaceWoPendingActions: fetchPlaceWo } = require(pendingPath);
+    const db = {
+      salesOrder: {
+        findMany: async () => [{ id: 10, docNo: "SO-26-0002", updatedAt: new Date(), currentCycleId: 5 }],
+      },
+    };
+
+    try {
+      const actions = await fetchPlaceWo(db);
+      assert.equal(actions.length, 0);
+    } finally {
+      require(eligibilityPath).resolveNoQtyEligibilityCycleId = origResolve;
+      require(executionPath).assessNoQtyPlacementStageForCycle = origAssess;
+      require(gatePath).assessNoQtyMonthlyPlanningGate = origPlanningGate;
+      delete require.cache[pendingPath];
+      require(pendingPath);
+    }
+  });
+
+  it("fetchStoreNoQtyPlaceWoPendingActions emits Place Partial WO when partial RM is executable", async () => {
+    const eligibilityPath = require.resolve("../../src/services/noQtyCreateNextRsEligibility");
+    const executionPath = require.resolve("../../src/services/requirementSheetExecutionService");
     const pendingPath = require.resolve("../../src/services/pendingActionsService");
     const origEligibility = require(eligibilityPath);
     const origExecution = require(executionPath);
@@ -1919,7 +1969,118 @@ describe("pendingActionsService", () => {
     require(eligibilityPath).resolveNoQtyEligibilityCycleId = async () => ({ cycleId: 5, source: "ACTIVE" });
     require(executionPath).assessNoQtyPlacementStageForCycle = async () => ({
       readyToPlaceWo: false,
-      processStageKey: "NO_QTY_REQUIREMENT_READY",
+      rsBalanceQty: 5000,
+      suggestedWoQty: 2905,
+      placementStatus: "PARTIALLY_READY",
+      readinessStatus: "PARTIALLY_READY",
+      existingWoSummary: [],
+      processStageKey: "NO_QTY_PROCUREMENT_IN_PROGRESS",
+      requirementSheetId: 20,
+      requirementSheetDocNo: "RS-001",
+    });
+
+    delete require.cache[pendingPath];
+    const { fetchStoreNoQtyPlaceWoPendingActions: fetchPlaceWo } = require(pendingPath);
+    const db = {
+      salesOrder: {
+        findMany: async () => [
+          {
+            id: 10,
+            docNo: "SO-26-0002",
+            updatedAt: new Date(),
+            currentCycleId: 5,
+            customer: { name: "Acme Corp" },
+          },
+        ],
+      },
+      salesOrderCycle: {
+        findUnique: async () => ({ cycleNo: 1 }),
+      },
+      requirementSheet: {
+        findUnique: async () => ({
+          docNo: "RS-001",
+          lines: [{ item: { unit: "KG", unitRef: { unitCode: "KG" } } }],
+        }),
+      },
+    };
+
+    try {
+      const actions = await fetchPlaceWo(db);
+      assert.equal(actions.length, 1);
+      assert.equal(actions[0].action, "Place Partial WO");
+      assert.equal(actions[0].currentStatus, "PARTIALLY_READY_TO_PLACE_WO");
+      assert.match(actions[0].documentNo, /SO-26-0002/);
+      assert.match(actions[0].documentNo, /Acme Corp/);
+      assert.match(actions[0].documentNo, /Cycle 1/);
+      assert.match(actions[0].documentNo, /RS-001/);
+      assert.match(actions[0].documentNo, /Suggested WO 2,905 KG/);
+      assert.match(actions[0].href, /cycleId=5/);
+      assert.match(actions[0].href, /sheetId=20/);
+      assert.match(actions[0].href, /from=pending-actions/);
+    } finally {
+      require(eligibilityPath).resolveNoQtyEligibilityCycleId = origResolve;
+      require(executionPath).assessNoQtyPlacementStageForCycle = origAssess;
+      delete require.cache[pendingPath];
+      require(pendingPath);
+    }
+  });
+
+  it("fetchStoreNoQtyPlaceWoPendingActions does not emit Place WO when suggestedWoQty is zero", async () => {
+    const eligibilityPath = require.resolve("../../src/services/noQtyCreateNextRsEligibility");
+    const executionPath = require.resolve("../../src/services/requirementSheetExecutionService");
+    const pendingPath = require.resolve("../../src/services/pendingActionsService");
+    const origEligibility = require(eligibilityPath);
+    const origExecution = require(executionPath);
+    const origResolve = origEligibility.resolveNoQtyEligibilityCycleId;
+    const origAssess = origExecution.assessNoQtyPlacementStageForCycle;
+
+    require(eligibilityPath).resolveNoQtyEligibilityCycleId = async () => ({ cycleId: 5, source: "ACTIVE" });
+    require(executionPath).assessNoQtyPlacementStageForCycle = async () => ({
+      readyToPlaceWo: false,
+      rsBalanceQty: 5000,
+      suggestedWoQty: 0,
+      placementStatus: "AWAITING_PROCUREMENT",
+      readinessStatus: "AWAITING_PROCUREMENT",
+      existingWoSummary: [],
+      requirementSheetId: 20,
+    });
+
+    delete require.cache[pendingPath];
+    const { fetchStoreNoQtyPlaceWoPendingActions: fetchPlaceWo } = require(pendingPath);
+    const db = {
+      salesOrder: {
+        findMany: async () => [{ id: 10, docNo: "SO-26-0002", updatedAt: new Date(), currentCycleId: 5 }],
+      },
+    };
+
+    try {
+      const actions = await fetchPlaceWo(db);
+      assert.equal(actions.length, 0);
+    } finally {
+      require(eligibilityPath).resolveNoQtyEligibilityCycleId = origResolve;
+      require(executionPath).assessNoQtyPlacementStageForCycle = origAssess;
+      delete require.cache[pendingPath];
+      require(pendingPath);
+    }
+  });
+
+  it("fetchStoreNoQtyPlaceWoPendingActions does not emit Place WO after full suggested qty is already placed", async () => {
+    const eligibilityPath = require.resolve("../../src/services/noQtyCreateNextRsEligibility");
+    const executionPath = require.resolve("../../src/services/requirementSheetExecutionService");
+    const pendingPath = require.resolve("../../src/services/pendingActionsService");
+    const origEligibility = require(eligibilityPath);
+    const origExecution = require(executionPath);
+    const origResolve = origEligibility.resolveNoQtyEligibilityCycleId;
+    const origAssess = origExecution.assessNoQtyPlacementStageForCycle;
+
+    require(eligibilityPath).resolveNoQtyEligibilityCycleId = async () => ({ cycleId: 5, source: "ACTIVE" });
+    require(executionPath).assessNoQtyPlacementStageForCycle = async () => ({
+      readyToPlaceWo: false,
+      rsBalanceQty: 0,
+      suggestedWoQty: 0,
+      placementStatus: "READY",
+      readinessStatus: "READY_TO_PLACE_WO",
+      existingWoSummary: [{ workOrderId: 99, woStatus: "OPEN", rmPendingIssueQty: 100 }],
       requirementSheetId: 20,
     });
 
@@ -1954,15 +2115,38 @@ describe("pendingActionsService", () => {
     require(eligibilityPath).resolveNoQtyEligibilityCycleId = async () => ({ cycleId: 5, source: "ACTIVE" });
     require(executionPath).assessNoQtyPlacementStageForCycle = async () => ({
       readyToPlaceWo: true,
+      rsBalanceQty: 5000,
+      suggestedWoQty: 5000,
+      placementStatus: "READY",
+      readinessStatus: "READY_TO_PLACE_WO",
+      existingWoSummary: [],
       processStageKey: "NO_QTY_READY_TO_PLACE_WO",
       requirementSheetId: 20,
+      requirementSheetDocNo: "RS-001",
     });
 
     delete require.cache[pendingPath];
     const { fetchStoreNoQtyPlaceWoPendingActions: fetchPlaceWo } = require(pendingPath);
     const db = {
       salesOrder: {
-        findMany: async () => [{ id: 10, docNo: "SO-26-0002", updatedAt: new Date(), currentCycleId: 5 }],
+        findMany: async () => [
+          {
+            id: 10,
+            docNo: "SO-26-0002",
+            updatedAt: new Date(),
+            currentCycleId: 5,
+            customer: { name: "Acme Corp" },
+          },
+        ],
+      },
+      salesOrderCycle: {
+        findUnique: async () => ({ cycleNo: 1 }),
+      },
+      requirementSheet: {
+        findUnique: async () => ({
+          docNo: "RS-001",
+          lines: [{ item: { unit: "KG", unitRef: { unitCode: "KG" } } }],
+        }),
       },
     };
 
@@ -1970,7 +2154,9 @@ describe("pendingActionsService", () => {
       const actions = await fetchPlaceWo(db);
       assert.equal(actions.length, 1);
       assert.equal(actions[0].action, "Place WO");
-      assert.equal(actions[0].documentNo, "SO-26-0002");
+      assert.equal(actions[0].currentStatus, "READY_TO_PLACE_WO");
+      assert.match(actions[0].documentNo, /SO-26-0002/);
+      assert.match(actions[0].documentNo, /Suggested WO 5,000 KG/);
       assert.match(actions[0].href, /cycleId=5/);
       assert.match(actions[0].href, /sheetId=20/);
     } finally {

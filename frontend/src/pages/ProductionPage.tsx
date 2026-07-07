@@ -44,7 +44,7 @@ import { DemoFlowBanner } from "../components/demo/DemoFlowBanner";
 import { DemoSafeNoQtyContinue } from "../components/demo/DemoSafeNoQtyContinue";
 import { useDemoMode } from "../contexts/DemoModeContext";
 import { demoHighlightKey } from "../lib/demoFlowConfig";
-import { displayRequirementSheetNo, displaySalesOrderNo, displayWorkOrderNo } from "../lib/docNoDisplay";
+import { displayRequirementSheetNo, displaySalesOrderNo, displayWorkOrderNo, displayWorkOrderTraceNo } from "../lib/docNoDisplay";
 import { useErpRefreshTick } from "../hooks/useErpRefreshTick";
 import { useErpRoleUi } from "../hooks/useErpRoleUi";
 import { useCanCreateNextRs } from "../hooks/useIsAdmin";
@@ -423,7 +423,7 @@ function formatNoQtyProductionWoLabel(
     w.cycle?.cycleNo != null && Number.isFinite(Number(w.cycle.cycleNo))
       ? `Cycle ${Number(w.cycle.cycleNo)}`
       : "Cycle —";
-  return `WO #${w.id} | ${displaySalesOrderNo(soId, soDoc)} | ${cyc}`;
+  return `${displayWorkOrderNo(w.id, w.docNo ?? null)} | ${displaySalesOrderNo(soId, soDoc)} | ${cyc}`;
 }
 
 function cycleNoForWorkOrder(workOrders: WoRow[], workOrderId: number): number | null {
@@ -4009,7 +4009,7 @@ export function ProductionPage() {
             itemName: selected!.fgItem.itemName,
           })
         : [
-            `WO #${selected!.workOrderId}`,
+            displayWorkOrderNo(selected!.workOrderId, woRow?.docNo ?? null),
             displaySalesOrderNo(selected!.salesOrderId, soDoc),
             woRow?.cycle?.cycleNo != null && Number.isFinite(Number(woRow.cycle.cycleNo))
               ? `Cycle ${Number(woRow.cycle.cycleNo)}`
@@ -4071,7 +4071,7 @@ export function ProductionPage() {
               <div className="grid min-w-0 flex-1 grid-cols-1 gap-1 sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] sm:items-center sm:gap-3">
                 <div className="min-w-0 space-y-0.5">
                   <div className="font-mono text-[11px] font-bold tabular-nums text-slate-900">
-                    WO #{selected!.workOrderId}
+                    {displayWorkOrderNo(selected!.workOrderId, woRow?.docNo ?? null)}
                     <span className="mx-1 font-normal text-slate-400">·</span>
                     {displaySalesOrderNo(selected!.salesOrderId, soDocInner)}
                   </div>
@@ -4643,7 +4643,7 @@ export function ProductionPage() {
                           <option value="">Select…</option>
                           {workOrders.map((w) => (
                             <option key={w.id} value={w.id}>
-                              {`WO #${w.id} · SO #${w.salesOrderId}`}
+                              {`${displayWorkOrderNo(w.id, w.docNo ?? null)} · ${displaySalesOrderNo(w.salesOrderId, w.salesOrderId === focusSoId ? focusSo?.docNo : undefined)}`}
                             </option>
                           ))}
                         </select>
@@ -4795,16 +4795,16 @@ export function ProductionPage() {
                                       <td className="px-2 py-0.5 tabular-nums font-medium text-slate-800">
                                         {l.cycleNo != null ? l.cycleNo : "—"}
                                       </td>
-                                      <td className="px-2 py-0.5 tabular-nums">#{l.workOrderId}</td>
+                                      <td className="px-2 py-0.5 tabular-nums">{displayWorkOrderTraceNo(l.workOrderId)}</td>
                                       <td className="truncate px-2 py-0.5 font-medium" title={l.fgItem.itemName}>
                                         {l.fgItem.itemName}
                                       </td>
-                                      <td className="px-2 py-0.5 text-right tabular-nums">{fmtProdQty(Number(l.qty))}</td>
+                                      <td className="px-2 py-0.5 text-right tabular-nums">{fmtProdQty(Number(l.qty), l.fgItem.unit)}</td>
                                       <td className="px-2 py-0.5 text-right tabular-nums">
-                                        {fmtProdQty(l.approvedProducedQty ?? 0)}
+                                        {fmtProdQty(l.approvedProducedQty ?? 0, l.fgItem.unit)}
                                       </td>
                                       <td className="px-2 py-0.5 text-right font-semibold tabular-nums">
-                                        {fmtProdQty(l.balance)}
+                                        {fmtProdQty(l.balance, l.fgItem.unit)}
                                       </td>
                                       <td className="px-1 py-0.5 text-right">
                                         <Button
@@ -5817,20 +5817,20 @@ export function ProductionPage() {
                             )}
                           >
                             {navigateNoQtyContext ? null : (
-                              <td className="px-2 py-0.5 tabular-nums">#{l.workOrderId}</td>
+                              <td className="px-2 py-0.5 tabular-nums">{displayWorkOrderTraceNo(l.workOrderId)}</td>
                             )}
                             <td className="max-w-[11rem] truncate px-2 py-0.5 font-medium" title={l.fgItem.itemName}>
                               {l.fgItem.itemName}
                             </td>
-                            <td className="px-2 py-0.5 text-right tabular-nums">{fmtProdQty(Number(l.qty))}</td>
-                            <td className="px-2 py-0.5 text-right tabular-nums">{fmtProdQty(approved)}</td>
+                            <td className="px-2 py-0.5 text-right tabular-nums">{fmtProdQty(Number(l.qty), l.fgItem.unit)}</td>
+                            <td className="px-2 py-0.5 text-right tabular-nums">{fmtProdQty(approved, l.fgItem.unit)}</td>
                             <td
                               className={cn(
                                 "px-2 py-0.5 text-right tabular-nums",
                                 !navigateNoQtyContext && "font-bold text-slate-950",
                               )}
                             >
-                              {fmtProdQty(rem)}
+                              {fmtProdQty(rem, l.fgItem.unit)}
                             </td>
                             <td className="px-1 py-1 text-right">
                               <Button
@@ -5882,7 +5882,7 @@ export function ProductionPage() {
                                 w.salesOrderId,
                                 w.salesOrderId === focusSoId ? focusSo?.docNo : undefined,
                               )
-                            : `WO #${w.id} · SO #${w.salesOrderId}`}
+                            : `${displayWorkOrderNo(w.id, w.docNo ?? null)} · ${displaySalesOrderNo(w.salesOrderId, w.salesOrderId === focusSoId ? focusSo?.docNo : undefined)}`}
                         </option>
                       ))}
                     </select>
@@ -5970,14 +5970,14 @@ export function ProductionPage() {
                                 )}
                               >
                                 {navigateNoQtyContext ? null : (
-                                  <td className="px-2 py-0.5 tabular-nums">#{l.workOrderId}</td>
+                                  <td className="px-2 py-0.5 tabular-nums">{displayWorkOrderTraceNo(l.workOrderId)}</td>
                                 )}
                                 <td className="max-w-[11rem] truncate px-2 py-0.5 font-medium" title={l.fgItem.itemName}>
                                   {l.fgItem.itemName}
                                 </td>
-                                <td className="px-2 py-0.5 text-right tabular-nums">{fmtProdQty(Number(l.qty))}</td>
-                                <td className="px-2 py-0.5 text-right tabular-nums">{fmtProdQty(approved)}</td>
-                                <td className="px-2 py-0.5 text-right font-semibold tabular-nums">{fmtProdQty(rem)}</td>
+                                <td className="px-2 py-0.5 text-right tabular-nums">{fmtProdQty(Number(l.qty), l.fgItem.unit)}</td>
+                                <td className="px-2 py-0.5 text-right tabular-nums">{fmtProdQty(approved, l.fgItem.unit)}</td>
+                                <td className="px-2 py-0.5 text-right font-semibold tabular-nums">{fmtProdQty(rem, l.fgItem.unit)}</td>
                                 <td className="px-1 py-0.5 text-right">
                                   <Button
                                     type="button"
@@ -6912,6 +6912,7 @@ export function ProductionPage() {
             evaluateBatchQty={completionEvaluateBatchQty}
             workOrderLabel={hardenedWoSummary?.woLabel}
             itemName={hardenedWoSummary?.itemName}
+            unit={selected?.fgItem?.unit ?? null}
             onChanged={() => {
               void refresh();
             }}

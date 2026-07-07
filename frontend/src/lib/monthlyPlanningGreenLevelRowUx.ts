@@ -1,10 +1,9 @@
 /**
-
  * Monthly Planning — FG Green Level row display (read-only, API-sourced).
-
  * Green Level is FG planning buffer — not RM minimum/low stock alerts.
-
  */
+
+import { formatPlanningQuantity } from "./quantityDisplay";
 
 
 
@@ -323,65 +322,46 @@ export function resolveFgGreenPlanningRow(
 
 
 export function greenLevelQtyCellContent(
-
   row: FgGreenPlanningRow,
-
   historyMonths = 6,
-
+  unit?: string | null,
 ): {
-
   display: string;
-
   helper: string | null;
-
 } {
+  const fmt = (value: number) =>
+    formatPlanningQuantity(value, unit, { includeUnit: Boolean(unit?.trim()) });
 
   if (row.greenLevelQty > 0) {
-
     return {
-
-      display: row.greenLevelQty.toLocaleString(undefined, { maximumFractionDigits: 3 }),
-
+      display: fmt(row.greenLevelQty),
       helper: null,
-
     };
-
   }
 
   if (row.greenLevelSource === "MANUAL" && row.manualGreenLevelQty <= 0) {
-
-    return { display: "0", helper: greenLevelManualMissingHelper() };
-
+    return { display: fmt(0), helper: greenLevelManualMissingHelper() };
   }
 
   if (row.greenLevelSource === "AUTOMATIC" && !row.hasAutoSuggestion) {
-
-    return { display: "0", helper: greenLevelNoHistoryHelper(historyMonths) };
-
+    return { display: fmt(0), helper: greenLevelNoHistoryHelper(historyMonths) };
   }
 
   return {
-
-    display: row.greenLevelQty.toLocaleString(undefined, { maximumFractionDigits: 3 }),
-
+    display: fmt(row.greenLevelQty),
     helper: null,
-
   };
-
 }
 
-
-
-export function greenLevelPlanningSubtext(row: FgGreenPlanningRow): string | null {
-
+export function greenLevelPlanningSubtext(row: FgGreenPlanningRow, unit?: string | null): string | null {
   if (row.loading) return null;
 
-  const manual = row.manualGreenLevelQty.toLocaleString(undefined, { maximumFractionDigits: 3 });
-
-  const auto = row.autoSuggestedGreenLevelQty.toLocaleString(undefined, { maximumFractionDigits: 3 });
+  const fmt = (value: number) =>
+    formatPlanningQuantity(value, unit, { includeUnit: Boolean(unit?.trim()) });
+  const manual = fmt(row.manualGreenLevelQty);
+  const auto = fmt(row.autoSuggestedGreenLevelQty);
 
   return `Manual ${manual} · Auto ${auto} · ${formatGreenLevelSourceLabel(row.greenLevelSource)}`;
-
 }
 
 

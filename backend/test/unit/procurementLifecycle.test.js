@@ -3,11 +3,12 @@ const assert = require("node:assert/strict");
 
 const {
   isMaterialRequirementFullyReceived,
+  isMaterialRequirementProcurementSatisfied,
   recalculateMaterialRequirementClosure,
   repairStaleDuplicateWoPlanningProcurement,
 } = require("../../src/services/procurementLifecycleService");
 
-function mrWithReceipt({ id = 1, status = "DRAFT", target = 100, received = 0, reversed = false } = {}) {
+function mrWithReceipt({ id = 1, status = "DRAFT", target = 100, received = 0, reversed = false, shortClosed = 0 } = {}) {
   return {
     id,
     status,
@@ -17,6 +18,7 @@ function mrWithReceipt({ id = 1, status = "DRAFT", target = 100, received = 0, r
         rmItemId: 7,
         requiredQty: target,
         shortageQty: target,
+        shortClosedQty: shortClosed,
         purchaseRequestSourceLinks: [
           {
             allocatedQty: target,
@@ -84,6 +86,16 @@ describe("procurement lifecycle closure", () => {
 
     assert.deepEqual(changes, [{ id: 1, from: "DRAFT", to: "FULLY_PROCURED" }]);
     assert.equal(db.updates[0].data.status, "FULLY_PROCURED");
+  });
+
+  it("short closed remainder marks RM Requisition partially procured (short closed)", async () => {
+    const db = fakeDbForRecalc(mrWithReceipt({ status: "DRAFT", received: 60, shortClosed: 40 }));
+
+    const changes = await recalculateMaterialRequirementClosure(db, [1]);
+
+    assert.deepEqual(changes, [{ id: 1, from: "DRAFT", to: "PARTIALLY_PROCURED" }]);
+    assert.equal(isMaterialRequirementProcurementSatisfied(mrWithReceipt({ received: 60, shortClosed: 40 })), true);
+    assert.equal(isMaterialRequirementFullyReceived(mrWithReceipt({ received: 60, shortClosed: 40 })), false);
   });
 
   it("reopens FULLY_PROCURED MR when revision delta is not on any purchase request", async () => {

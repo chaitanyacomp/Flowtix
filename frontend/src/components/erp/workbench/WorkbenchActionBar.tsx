@@ -80,6 +80,28 @@ function renderAction(action: WorkbenchActionSpec) {
   );
 }
 
+/** Compact inline action cluster (e.g. Items section header) — same specs as the sticky bar. */
+export function WorkbenchActionCluster({
+  primary,
+  secondary = [],
+  hint,
+  className,
+}: Pick<WorkbenchActionBarProps, "primary" | "secondary" | "hint" | "className">) {
+  const hasActions = primary || secondary.length > 0;
+  if (!hasActions && !hint) return null;
+
+  return (
+    <div
+      className={cn("flex min-w-0 flex-wrap items-center justify-end gap-1.5", className)}
+      data-testid="workbench-inline-actions"
+    >
+      {primary ? renderAction({ ...primary, tier: "primary" }) : null}
+      {secondary.map((a) => renderAction({ ...a, tier: a.tier ?? "secondary" }))}
+      {hint ? <span className="text-[11px] font-medium text-amber-800">{hint}</span> : null}
+    </div>
+  );
+}
+
 /**
  * FT-PD-067 — Sticky bottom action bar (primary left, cancel right).
  */

@@ -6,6 +6,8 @@ import { Button, buttonVariants } from "../../ui/button";
 import { cn } from "../../../lib/utils";
 import { PRODUCTION_QA_TERMS } from "../../../lib/productionQaTerminology";
 import { isGreenLevelProductionEntry } from "../../../lib/greenLevelProductionExecution";
+import { displaySalesOrderNo, displayWorkOrderTraceNo } from "../../../lib/docNoDisplay";
+import { formatFgQuantity } from "../../../lib/quantityDisplay";
 
 export type ProductionRecentEntryRow = {
   id: number;
@@ -17,7 +19,7 @@ export type ProductionRecentEntryRow = {
   qcPendingQty?: number;
   workOrderLine: {
     id: number;
-    fgItem: { itemName: string };
+    fgItem: { itemName: string; unit?: string };
     workOrder: {
       id: number;
       salesOrderId: number;
@@ -197,7 +199,9 @@ export function ProductionRecentEntriesPanel({
                     {new Date(r.date).toLocaleDateString()}
                   </td>
                   {navigateNoQtyContext ? null : navigateGreenLevelContext ? null : (
-                    <td className="px-1 py-1.5 text-center align-middle tabular-nums">#{r.workOrderLine.workOrder.id}</td>
+                    <td className="px-1 py-1.5 text-center align-middle tabular-nums">
+                      {displayWorkOrderTraceNo(r.workOrderLine.workOrder.id)}
+                    </td>
                   )}
                   {navigateNoQtyContext ? (
                     <td className="px-1 py-1.5 text-center align-middle tabular-nums">
@@ -209,7 +213,7 @@ export function ProductionRecentEntriesPanel({
                   <td className="px-1 py-1.5 text-center align-middle tabular-nums">
                     {isGreenLevelProductionEntry(r) || navigateGreenLevelContext
                       ? "Stock"
-                      : `#${r.workOrderLine.workOrder.salesOrderId}`}
+                      : displaySalesOrderNo(r.workOrderLine.workOrder.salesOrderId, null)}
                   </td>
                   <td className="min-w-0 px-2 py-1.5 align-middle">
                     <div className="truncate font-medium text-slate-800" title={r.workOrderLine.fgItem.itemName}>
@@ -232,7 +236,7 @@ export function ProductionRecentEntriesPanel({
                     )}
                   </td>
                   <td className="px-2 py-1.5 text-right align-middle font-bold tabular-nums text-slate-900">
-                    {Number(r.producedQty)}
+                    {formatFgQuantity(Number(r.producedQty), r.workOrderLine.fgItem.unit)}
                   </td>
                   <td className="px-1 py-1.5 text-center align-middle">
                     {isDraft(r) ? (

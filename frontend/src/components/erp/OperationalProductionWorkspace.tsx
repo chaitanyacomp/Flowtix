@@ -186,8 +186,8 @@ export function OperationalProductionWorkspace({
                         <td className="max-w-[9rem] truncate px-2 py-0.5" title={row.itemName}>
                           {row.itemName}
                         </td>
-                        <td className="px-2 py-0.5 text-right tabular-nums">{formatProductionQty(row.requiredQty)}</td>
-                        <td className="px-2 py-0.5 text-right tabular-nums">{formatProductionQty(row.producedQty)}</td>
+                        <td className="px-2 py-0.5 text-right tabular-nums">{formatProductionQty(row.requiredQty, row.itemUnit)}</td>
+                        <td className="px-2 py-0.5 text-right tabular-nums">{formatProductionQty(row.producedQty, row.itemUnit)}</td>
                         <td
                           className={cn(
                             "px-2 py-0.5 text-right tabular-nums font-semibold",
@@ -203,6 +203,7 @@ export function OperationalProductionWorkspace({
                               : row.orderType === "GREEN_LEVEL"
                                 ? row.shortageQty
                                 : thirdCol.qty,
+                            row.itemUnit,
                           )}
                         </td>
                         <td className="px-2 py-0.5">

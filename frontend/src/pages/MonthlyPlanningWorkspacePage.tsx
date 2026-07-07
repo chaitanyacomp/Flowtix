@@ -5448,7 +5448,7 @@ function ProductionPlanTab({
                   fgGreenPlanningMap,
                   greenPlanningContextReady,
                 );
-                const greenLevelCell = greenLevelQtyCellContent(greenRow, greenLevelHistoryMonths);
+                const greenLevelCell = greenLevelQtyCellContent(greenRow, greenLevelHistoryMonths, r.unit);
                 const belowSuggestedGap = rowHasGreenShortagePlannedGap({
                   greenShortage: greenRow.greenShortage,
                   plannedQty: metrics.planned,
@@ -5472,20 +5472,18 @@ function ProductionPlanTab({
                       </div>
                     ) : (
                       <div className="mt-0.5 text-[10px] font-normal normal-case leading-tight text-slate-400">
-                        {greenLevelPlanningSubtext(greenRow)}
+                        {greenLevelPlanningSubtext(greenRow, r.unit)}
                       </div>
                     )}
                   </td>
                   <td className="px-3 py-1.5 text-right tabular-nums text-slate-600">
-                    {formatGreenPlanningQty(greenRow.freeFgStock, greenRow.loading)}
+                    {formatGreenPlanningQty(greenRow.freeFgStock, greenRow.loading, r.unit)}
                   </td>
                   <td className="px-3 py-1.5 text-right tabular-nums text-slate-600">
-                    {formatGreenPlanningQty(greenRow.greenShortage, greenRow.loading)}
+                    {formatGreenPlanningQty(greenRow.greenShortage, greenRow.loading, r.unit)}
                   </td>
                   <td className="px-3 py-1.5 text-right tabular-nums font-medium text-violet-900">
-                    {greenRow.loading
-                      ? "…"
-                      : metrics.suggested.toLocaleString(undefined, { maximumFractionDigits: 3 })}
+                    {formatGreenPlanningQty(metrics.suggested, greenRow.loading, r.unit)}
                   </td>
                   <td className="px-3 py-1.5 text-right">
                     {editable ? (

@@ -113,13 +113,15 @@ describe("productionCompletionUx", () => {
     const dialog = buildProductionDecisionConfirmDialog(
       "close_shortfall",
       summary({ producedQty: 3550, remainderQty: 450, plannedQty: 4000 }),
+      "Nos",
     );
     expect(dialog.title).toContain("Close Work Order");
-    expect(dialog.lines.join(" ")).toContain("450");
+    expect(dialog.lines.join(" ")).toContain("450 Nos");
     expect(dialog.lines.join(" ")).toContain("next Requirement Sheet");
     const finishDialog = buildProductionDecisionConfirmDialog(
       "finish",
       summary({ producedQty: 4000, remainderQty: 0, plannedQty: 4000 }),
+      "Nos",
     );
     expect(finishDialog.title).toContain("Finish Production");
   });

@@ -150,23 +150,65 @@ describe("noQtyExecutionRegisterService", () => {
     });
     assert.equal(blockedAction.key, "BLOCKED");
   });
-  it("positive executable qty does not become PLACE_WO until monthly planning release is ready", () => {
+  it("partial RM with executable qty → PLACE_WO (Place Partial WO)", () => {
     const action = deriveActionNeeded({
       rsBalanceQty: 5000,
-      suggestedWoQty: 2500,
-      placementStatus: "READY",
-      readinessStatus: "AWAITING_PROCUREMENT",
+      suggestedWoQty: 2905,
+      placementStatus: "PARTIALLY_READY",
+      readinessStatus: "PARTIALLY_READY",
       existingWoSummary: [],
     });
-    assert.equal(action.key, "AWAIT_PROCUREMENT");
+    assert.equal(action.key, ACTION_NEEDED.PLACE_WO.key);
 
     const fields = buildExecutionRegisterFieldsFromPick(15, {
       sheet: { id: 6, cycleId: 5, docNo: "RS-26-0006" },
       assessment: assessment({
         requirementSheetId: 6,
         rsBalanceQty: 5000,
+        suggestedWoQty: 2905,
+        placementStatus: "PARTIALLY_READY",
+        readinessStatus: "PARTIALLY_READY",
+      }),
+    });
+    assert.equal(fields.actionNeededKey, "PLACE_WO");
+    assert.equal(fields.actionNeededLabel, "Place Partial WO");
+    assert.equal(fields.rmCoverageLabel, "Partial");
+    assert.equal(fields.suggestedWoQty, 2905);
+  });
+
+  it("full RM with executable qty → PLACE_WO (Place WO)", () => {
+    const fields = buildExecutionRegisterFieldsFromPick(15, {
+      sheet: { id: 7, cycleId: 5, docNo: "RS-26-0007" },
+      assessment: assessment({
+        requirementSheetId: 7,
+        rsBalanceQty: 5000,
         suggestedWoQty: 2500,
         placementStatus: "READY",
+        readinessStatus: "READY_TO_PLACE_WO",
+      }),
+    });
+    assert.equal(fields.actionNeededKey, "PLACE_WO");
+    assert.equal(fields.actionNeededLabel, "Place WO");
+    assert.equal(fields.rmCoverageLabel, "Ready");
+  });
+
+  it("no executable RM qty → AWAIT_PROCUREMENT even when RS balance remains", () => {
+    const action = deriveActionNeeded({
+      rsBalanceQty: 5000,
+      suggestedWoQty: 0,
+      placementStatus: "AWAITING_PROCUREMENT",
+      readinessStatus: "AWAITING_PROCUREMENT",
+      existingWoSummary: [],
+    });
+    assert.equal(action.key, "AWAIT_PROCUREMENT");
+
+    const fields = buildExecutionRegisterFieldsFromPick(15, {
+      sheet: { id: 8, cycleId: 5, docNo: "RS-26-0008" },
+      assessment: assessment({
+        requirementSheetId: 8,
+        rsBalanceQty: 5000,
+        suggestedWoQty: 0,
+        placementStatus: "AWAITING_PROCUREMENT",
         readinessStatus: "AWAITING_PROCUREMENT",
       }),
     });

@@ -27,9 +27,9 @@ const { getStrictInventoryControl } = require("../services/appSettings");
 const { DocType } = require("../prismaClientPackage");
 const { allocateDocNo } = require("../services/docNoService");
 const {
-  lockSalesOrderAndAssertCanComplete,
   enrichSalesOrderWithDispatchStats,
 } = require("../services/salesOrderDispatchHelpers");
+const { completeSalesOrderOperationally } = require("../services/salesOrderOperationalAutoClose");
 const { diagnoseNoQtyCycleAutoClose, maybeAutoCloseNoQtyCycle } = require("../services/noQtyCycleAutoClose");
 const { closeEmptyNoQtyActiveCycle } = require("../services/noQtyCloseEmptyCycle");
 const { enrichSalesOrdersWithProcessStage, fetchInvoicedQtyBySoId } = require("../services/salesOrderProcessStage");
@@ -555,25 +555,6 @@ salesOrderRouter.get(
         withDispatch.map((s) => s.id),
       );
       let staged = await enrichSalesOrdersWithProcessStage(prisma, withDispatch, { invoicedQtyBySoId: invoicedBySoId });
-
-      // Safety sync: if processStage is COMPLETED, internalStatus must be COMPLETED.
-      // Prevents mismatches like Status=IN_PROCESS while Stage shows Closed/Completed.
-      const shouldAutoCompleteIds = staged
-        .filter((s) => s.orderType !== "NO_QTY" && s?.processStage?.key === "COMPLETED" && s.internalStatus !== "COMPLETED")
-        .map((s) => s.id)
-        .filter((id) => Number.isFinite(id) && id > 0);
-
-      if (shouldAutoCompleteIds.length) {
-        await prisma.$transaction(async (tx) => {
-          for (const soId of shouldAutoCompleteIds) {
-            await lockSalesOrderAndAssertCanComplete(tx, soId);
-            await tx.salesOrder.update({ where: { id: soId }, data: { internalStatus: "COMPLETED" } });
-          }
-        });
-
-        const done = new Set(shouldAutoCompleteIds);
-        staged = staged.map((s) => (done.has(s.id) ? { ...s, internalStatus: "COMPLETED" } : s));
-      }
 
       // Invoice summary (NORMAL + REPLACEMENT): reuses invoicedBySoId computed before processStage enrichment.
 
@@ -1624,7 +1605,30 @@ salesOrderRouter.put(
           throw err;
         }
         if (internalStatus === "COMPLETED") {
-          await lockSalesOrderAndAssertCanComplete(tx, soId);
+          await completeSalesOrderOperationally(tx, soId, {
+            actorUserId: req.user.userId,
+            actorRole: req.user.role,
+            actionLabel: "MANUAL_CLOSE_OPERATIONAL",
+          });
+          const updated = await tx.salesOrder.findUnique({
+            where: { id: soId },
+            include: soInclude,
+          });
+          if (existing.internalStatus !== "COMPLETED") {
+            const docLabel = displaySalesOrderNo(soId, updated.docNo);
+            await logActivity({
+              tx,
+              user: req.user,
+              module: ACTIVITY_MODULES.SALES_ORDER,
+              entityType: ACTIVITY_ENTITY_TYPES.SALES_ORDER,
+              entityId: soId,
+              docNo: docLabel,
+              action: ACTIVITY_ACTIONS.CLOSED,
+              message: `Sales Order ${docLabel} closed`,
+              metadata: salesOrderActivityMeta(updated),
+            });
+          }
+          return updated;
         }
         const updated = await tx.salesOrder.update({
           where: { id: soId },
@@ -1661,20 +1665,7 @@ salesOrderRouter.put(
             metadata: salesOrderActivityMeta(updated),
           });
         }
-        if (internalStatus === "COMPLETED" && existing.internalStatus !== "COMPLETED") {
-          const docLabel = displaySalesOrderNo(soId, updated.docNo);
-          await logActivity({
-            tx,
-            user: req.user,
-            module: ACTIVITY_MODULES.SALES_ORDER,
-            entityType: ACTIVITY_ENTITY_TYPES.SALES_ORDER,
-            entityId: soId,
-            docNo: docLabel,
-            action: ACTIVITY_ACTIONS.CLOSED,
-            message: `Sales Order ${docLabel} closed`,
-            metadata: salesOrderActivityMeta(updated),
-          });
-        }
+
         return updated;
       });
       const [out] = await enrichSalesOrdersWithProcessStage(prisma, [enrichSalesOrderWithDispatchStats(row)]);
@@ -3009,8 +3000,14 @@ salesOrderRouter.patch(
           });
         }
 
-        if (body.internalStatus === "COMPLETED") {
-          await lockSalesOrderAndAssertCanComplete(tx, soId);
+        const completingViaMeta =
+          body.internalStatus === "COMPLETED" && soHead.internalStatus !== "COMPLETED";
+        if (completingViaMeta) {
+          await completeSalesOrderOperationally(tx, soId, {
+            actorUserId: req.user.userId,
+            actorRole: req.user.role,
+            actionLabel: "MANUAL_CLOSE_OPERATIONAL",
+          });
         }
 
         const so = await tx.salesOrder.findUnique({
@@ -3092,11 +3089,11 @@ salesOrderRouter.patch(
               body.customerPoReference === undefined ? undefined : body.customerPoReference?.trim() || null,
             remarks: body.remarks === undefined ? undefined : body.remarks?.trim() || null,
             quotationId: body.quotationId === undefined ? undefined : nextQuotationId,
-            internalStatus: body.internalStatus ?? undefined,
+            internalStatus: completingViaMeta ? undefined : body.internalStatus ?? undefined,
           },
           include: soInclude,
         });
-        if (body.internalStatus === "COMPLETED" && so.internalStatus !== "COMPLETED") {
+        if (completingViaMeta) {
           const docLabel = displaySalesOrderNo(soId, updatedMeta.docNo);
           await logActivity({
             tx,

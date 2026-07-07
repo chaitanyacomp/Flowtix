@@ -1,6 +1,6 @@
 const DISPATCH_COMPLETE_EPS = 1e-6;
 const { netDispatchedByItemId, DISPATCH_ALLOC_MODE } = require("./salesOrderDispatchAllocation");
-const { lockSalesOrderForUpdate } = require("./dispatchWriteLocks");
+const { assertSalesOrderOperationalCompletion } = require("./salesOrderOperationalAutoClose");
 const {
   computeSalesOrderDispatchLineStats,
   getSalesOrderDispatchCompletionPercent,
@@ -80,21 +80,11 @@ async function reopenSalesOrderIfConfirmedDispatchIncomplete(tx, soId) {
 }
 
 /**
- * COMPLETED transitions: lock the sales order (same lock dispatch writers take), re-read lines + dispatch
- * inside the transaction, then validate. Call only from prisma.$transaction.
+ * COMPLETED transitions: operational lifecycle guards (dispatch, production, QA, NO_QTY cycles).
+ * @deprecated Prefer completeSalesOrderOperationally — kept for existing import sites.
  */
 async function lockSalesOrderAndAssertCanComplete(tx, soId) {
-  await lockSalesOrderForUpdate(tx, soId);
-  const so = await tx.salesOrder.findUnique({
-    where: { id: soId },
-    include: { lines: true, dispatch: true },
-  });
-  if (!so) {
-    const err = new Error("Sales order not found");
-    err.statusCode = 404;
-    throw err;
-  }
-  assertCanMarkSalesOrderCompleted(so);
+  await assertSalesOrderOperationalCompletion(tx, soId);
 }
 
 /**

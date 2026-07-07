@@ -5,6 +5,11 @@
 
 const auditLog = require("./auditLog");
 const { GREEN_LEVEL_WO_SOURCE_TYPE } = require("./greenLevelWorkOrderService");
+const {
+  isShopFloorExecutionWorkOrder,
+  resolveWorkOrderOperationalStatus,
+  assertShopFloorExecutionAllowsProduction,
+} = require("./workOrderOperationalStatus");
 const { getApprovedProducedQtyByWorkOrderLineIds } = require("./productionMetrics");
 const { getWoLineRemainingProductionQty } = require("./reportMetrics");
 const {
@@ -93,7 +98,7 @@ function isNoQtyWorkOrder(wo, so) {
 }
 
 function supportsShopFloorExecutionWorkOrder(wo, so) {
-  return isGreenLevelWorkOrder(wo) || isNoQtyWorkOrder(wo, so);
+  return isShopFloorExecutionWorkOrder(wo, so);
 }
 
 function blockReasonLabel(reason) {
@@ -186,10 +191,13 @@ async function computeExecutionSummary(tx, wo) {
   const remainderQty = round3(lines.reduce((s, l) => s + l.remainderQty, 0));
   const surplusQty = round3(lines.reduce((s, l) => s + l.surplusQty, 0));
   const productionPendingQty = round3(lines.reduce((s, l) => s + l.productionPendingQty, 0));
+  const operational = resolveWorkOrderOperationalStatus(wo, wo.salesOrder);
   return {
     workOrderId: wo.id,
     workOrderDocNo: wo.docNo,
     workOrderStatus: wo.status,
+    operationalStatus: operational.operationalKey,
+    operationalAuthority: operational.authority,
     executionStatus: wo.productionExecution?.executionStatus ?? "RUNNING",
     blockReason: wo.productionExecution?.blockReason ?? null,
     blockRemarks: wo.productionExecution?.blockRemarks ?? null,
@@ -210,50 +218,7 @@ async function computeExecutionSummary(tx, wo) {
  * Blocks production entry when execution is BLOCKED or COMPLETED.
  */
 async function assertNoQtyProductionExecutionAllowsProduction(tx, workOrderId) {
-  const wo = await tx.workOrder.findUnique({
-    where: { id: workOrderId },
-    select: {
-      id: true,
-      requirementSheetId: true,
-      cycleId: true,
-      status: true,
-      salesOrder: { select: { orderType: true } },
-      productionExecution: { select: { executionStatus: true, blockReason: true } },
-    },
-  });
-  if (!wo || !supportsShopFloorExecutionWorkOrder(wo, wo.salesOrder)) return;
-
-  const exec = wo.productionExecution;
-  if (!exec) return;
-
-  if (exec.executionStatus === "BLOCKED") {
-    const err = new Error(
-      `Production is blocked (${blockReasonLabel(exec.blockReason)}). Resume production before recording new batches.`,
-    );
-    err.statusCode = 409;
-    err.code = "WO_EXEC_BLOCKED";
-    throw err;
-  }
-  if (exec.executionStatus === "SHORTFALL_PENDING") {
-    const err = new Error(
-      "Production shortfall decision is pending. Confirm Report & Close WO or Pause before recording more production.",
-    );
-    err.statusCode = 409;
-    err.code = "WO_EXEC_SHORTFALL_DECISION_REQUIRED";
-    throw err;
-  }
-  if (exec.executionStatus === "COMPLETED") {
-    const err = new Error("Production execution is finished for this work order. No further production is allowed.");
-    err.statusCode = 409;
-    err.code = "WO_EXEC_COMPLETED";
-    throw err;
-  }
-  if (wo.status === "COMPLETED" || wo.status === "REJECTED") {
-    const err = new Error("Work order is closed. No further production is allowed.");
-    err.statusCode = 409;
-    err.code = "WO_TERMINAL";
-    throw err;
-  }
+  await assertShopFloorExecutionAllowsProduction(tx, workOrderId);
 }
 
 function validateBlockReason(blockReason, remarks) {

@@ -115,6 +115,10 @@ const {
   shouldFreezeStatusSync,
 } = require("../services/workOrderLifecycleService");
 const {
+  isWorkOrderProductionOperationallyClosed,
+  filterWorkOrdersByOperationalClosure,
+} = require("../services/workOrderOperationalStatus");
+const {
   BLOCK_REASONS,
   RESOLUTION_REASONS,
   computeExecutionSummary,
@@ -131,7 +135,15 @@ const {
 async function assertNoQtyWorkOrderInActiveCycleOrThrow(tx, workOrderId, messagePrefix) {
   const wo = await tx.workOrder.findUnique({
     where: { id: workOrderId },
-    select: { id: true, salesOrderId: true, cycleId: true, status: true, sourceType: true },
+    select: {
+      id: true,
+      salesOrderId: true,
+      cycleId: true,
+      status: true,
+      sourceType: true,
+      requirementSheetId: true,
+      productionExecution: { select: { executionStatus: true } },
+    },
   });
   if (!wo) {
     const err = new Error("Work order not found.");
@@ -154,7 +166,7 @@ async function assertNoQtyWorkOrderInActiveCycleOrThrow(tx, workOrderId, message
     err.statusCode = 409;
     throw err;
   }
-  if (wo.status === "COMPLETED" || wo.status === "REJECTED") {
+  if (isWorkOrderProductionOperationallyClosed(wo, so)) {
     const err = new Error("This work order is not open for production.");
     err.statusCode = 409;
     throw err;
@@ -321,7 +333,7 @@ async function reconcileNoQtyWoLineQtyWithRsSnapshot(prismaClient, woRowsRaw, { 
 
   const candidates = [];
   for (const wo of woRowsRaw ?? []) {
-    if (!includeCompletedWorkOrders && wo.status === "COMPLETED") continue;
+    if (!includeCompletedWorkOrders && isWorkOrderProductionOperationallyClosed(wo, wo.salesOrder)) continue;
     const so = wo.salesOrder;
     if (!so || so.orderType !== "NO_QTY") continue;
     const cid = wo.cycleId == null ? null : Number(wo.cycleId);
@@ -446,9 +458,7 @@ async function buildWorkOrderListPayload(db, rows, { pendingOnly, includeWorkOrd
   }
 
   const mapped = rows.map((wo) => {
-    const woTerminal = isTerminalWorkOrderStatus(wo.status);
-    const execClosed = isProductionExecutionClosed(wo.productionExecution?.executionStatus);
-    const productionClosed = woTerminal || execClosed;
+    const productionClosed = isWorkOrderProductionOperationallyClosed(wo, wo.salesOrder);
     const linesWithMetrics = (wo.lines || []).map((l) => {
       const required = Number(l.qty);
       const usedQty = producedByLineId.get(l.id) ?? 0;
@@ -793,22 +803,11 @@ async function syncWorkOrderStatusFromProduction(tx, workOrderId) {
   const rmReturnsSettled = openRmReturnPendingCount === 0;
 
   if (isNoQty || isGreenLevel) {
+    // Execution status owns pacing for shop-floor WOs; only mirror COMPLETED on WorkOrder.status.
     if (wo.productionExecution?.executionStatus === "COMPLETED" && hasConfirmedProductionReport && rmReturnsSettled) {
       if (wo.status !== "COMPLETED") {
         await tx.workOrder.update({ where: { id: workOrderId }, data: { status: "COMPLETED" } });
       }
-      return;
-    }
-    const lineIds = wo.lines.map((l) => l.id);
-    const producedByLineId = await getApprovedProducedQtyByWorkOrderLineIds(tx, lineIds);
-    let anyProgress = false;
-    for (const line of wo.lines) {
-      const produced = producedByLineId.get(line.id) ?? 0;
-      if (produced > WO_SO_EPS) anyProgress = true;
-    }
-    const nextStatus = anyProgress ? "IN_PROGRESS" : "PENDING";
-    if (nextStatus !== wo.status && wo.status !== "COMPLETED") {
-      await tx.workOrder.update({ where: { id: workOrderId }, data: { status: nextStatus } });
     }
     return;
   }
@@ -1638,13 +1637,20 @@ productionRouter.get(
         throw err;
       }
 
-      const woInclude = { lines: { include: { fgItem: true } }, salesOrder: true, cycle: { select: { id: true, cycleNo: true, status: true } } };
+      const woInclude = {
+        lines: { include: { fgItem: true } },
+        salesOrder: true,
+        cycle: { select: { id: true, cycleNo: true, status: true } },
+        productionExecution: { select: { executionStatus: true } },
+      };
       const rawAll = await prisma.workOrder.findMany({
-        where: { salesOrderId: so.id, status: { not: "COMPLETED" } },
+        where: { salesOrderId: so.id, status: { not: "REJECTED" } },
         orderBy: { id: "desc" },
         include: woInclude,
       });
-      const rowsFiltered = await filterNoQtyWorkOrdersForActiveLockedCycle(prisma, rawAll);
+      const rowsFiltered = filterWorkOrdersByOperationalClosure(
+        await filterNoQtyWorkOrdersForActiveLockedCycle(prisma, rawAll),
+      );
       await reconcileNoQtyWoLineQtyWithRsSnapshot(prisma, rowsFiltered || []);
       const payload = await buildWorkOrderListPayload(prisma, rowsFiltered || [], {
         pendingOnly: false,
@@ -1750,52 +1756,45 @@ productionRouter.get(
 
       if (listScope === "nonCompleted") {
         const rowsRaw = await prisma.workOrder.findMany({
-          where: { status: { not: "COMPLETED" } },
+          where: { status: { not: "REJECTED" } },
           orderBy: { id: "desc" },
           include: woInclude,
         });
-        const rows = await filterNoQtyWorkOrdersForActiveLockedCycle(prisma, rowsRaw);
+        const rows = filterWorkOrdersByOperationalClosure(
+          await filterNoQtyWorkOrdersForActiveLockedCycle(prisma, rowsRaw),
+        );
         await reconcileNoQtyWoLineQtyWithRsSnapshot(prisma, rows);
         const out = await buildWorkOrderListPayload(prisma, rows, { pendingOnly: false, includeWorkOrderLineId: undefined });
         return res.json(out);
       }
 
       if (listScope === "completed") {
-        const where = { status: "COMPLETED" };
-        const [total, rows] = await prisma.$transaction([
-          prisma.workOrder.count({ where }),
-          prisma.workOrder.findMany({
-            where,
-            orderBy: { id: "desc" },
-            skip,
-            take: completedLimit,
-            include: woInclude,
-          }),
-        ]);
-        const payload = await buildWorkOrderListPayload(prisma, rows, {
-          pendingOnly: false,
-          includeWorkOrderLineId: undefined,
+        const rowsRaw = await prisma.workOrder.findMany({
+          where: { status: { not: "REJECTED" } },
+          orderBy: { id: "desc" },
+          include: woInclude,
         });
-        return res.json({ rows: payload, total, page: completedPage, limit: completedLimit });
+        const closedRows = filterWorkOrdersByOperationalClosure(
+          await filterNoQtyWorkOrdersForActiveLockedCycle(prisma, rowsRaw),
+          { includeClosed: true },
+        );
+        const total = closedRows.length;
+        const rows = closedRows.slice(skip, skip + completedLimit);
+        const out = await buildWorkOrderListPayload(prisma, rows, { pendingOnly: false, includeWorkOrderLineId: undefined });
+        return res.json({ rows: out, total, page: completedPage, limit: completedLimit });
       }
 
       if (listScope === "all") {
-        const [openRowsRaw, completedTotal, completedSlice] = await prisma.$transaction([
-          prisma.workOrder.findMany({
-            where: { status: { not: "COMPLETED" } },
-            orderBy: { id: "desc" },
-            include: woInclude,
-          }),
-          prisma.workOrder.count({ where: { status: "COMPLETED" } }),
-          prisma.workOrder.findMany({
-            where: { status: "COMPLETED" },
-            orderBy: { id: "desc" },
-            skip,
-            take: completedLimit,
-            include: woInclude,
-          }),
-        ]);
-        const openRows = await filterNoQtyWorkOrdersForActiveLockedCycle(prisma, openRowsRaw);
+        const allRowsRaw = await prisma.workOrder.findMany({
+          where: { status: { not: "REJECTED" } },
+          orderBy: { id: "desc" },
+          include: woInclude,
+        });
+        const filtered = await filterNoQtyWorkOrdersForActiveLockedCycle(prisma, allRowsRaw);
+        const openRows = filterWorkOrdersByOperationalClosure(filtered);
+        const closedAll = filterWorkOrdersByOperationalClosure(filtered, { includeClosed: true });
+        const completedTotal = closedAll.length;
+        const completedSlice = closedAll.slice(skip, skip + completedLimit);
         await reconcileNoQtyWoLineQtyWithRsSnapshot(prisma, openRows);
         const nonCompleted = await buildWorkOrderListPayload(prisma, openRows, {
           pendingOnly: false,

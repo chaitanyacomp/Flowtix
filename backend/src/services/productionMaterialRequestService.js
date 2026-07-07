@@ -31,6 +31,7 @@ const {
   computeMaxAllowedRmIssueQty,
   computeRmIssueToleranceQty,
 } = require("./rmIssueToleranceService");
+const { resolveWorkOrderOperationalStatus } = require("./workOrderOperationalStatus");
 
 const STORE_ISSUE_STATUSES = ["REQUESTED", "PARTIALLY_ISSUED"];
 const PMR_ISSUED_STATUSES = ["FULLY_ISSUED", "SHORT_ISSUE_ACCEPTED"];
@@ -239,7 +240,9 @@ async function loadStoreProductionReleaseEligibilityByWorkOrder(db, workOrderIds
     const hasProductionEntry = (productionEntryCountByWo.get(woId) ?? 0) > 0;
     const execStatus = execStatusByWo.get(woId) ?? "NOT_STARTED";
     const executionStarted = execStatus !== "NOT_STARTED";
-    const productionInProgress = String(wo.status ?? "").trim().toUpperCase() === "IN_PROGRESS";
+    const operational = resolveWorkOrderOperationalStatus(wo, wo.salesOrder);
+    const productionInProgress =
+      operational.authority === "WORK_ORDER_STATUS" && operational.workOrderStatus === "IN_PROGRESS";
     let blockReason = null;
     if (released) blockReason = "ALREADY_RELEASED";
     else if (!pmr) blockReason = "PMR_NOT_READY";
@@ -247,8 +250,8 @@ async function loadStoreProductionReleaseEligibilityByWorkOrder(db, workOrderIds
     else if (executionStarted) blockReason = "PRODUCTION_EXECUTION_STARTED";
     else if (productionInProgress) blockReason = "WORK_ORDER_IN_PROGRESS";
     else if (
-      execStatus === "COMPLETED" ||
-      ["COMPLETED", "REJECTED", "CLOSED_WITH_SHORTFALL"].includes(String(wo.status ?? "").trim().toUpperCase())
+      operational.productionClosed ||
+      execStatus === "COMPLETED"
     ) {
       blockReason = "WORK_ORDER_CLOSED";
     }

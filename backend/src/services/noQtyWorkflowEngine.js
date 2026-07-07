@@ -24,7 +24,7 @@ const { loadNoQtyCycleQcAcceptedMap } = require("../routes/dispatch");
 
 const NO_QTY_WORKFLOW_EPS = 1e-6;
 
-const { assessNoQtyPlacementStageForCycle } = require("./requirementSheetExecutionService");
+const { assessNoQtyPlacementStageForCycle, noQtyPlacementStageWorkflowHint } = require("./requirementSheetExecutionService");
 
 const ACTION_LABELS = Object.freeze({
   NONE: "No action",
@@ -588,11 +588,8 @@ async function resolveNoQtyWorkflowStateImpl(db, input) {
               ? "Remaining RS balance can be placed on Work Order(s). Production is still available for this cycle."
               : "Production is still available for this cycle."
             : primaryAction === "WORK_ORDER"
-              ? placementStage?.readyToPlaceWo
-                ? "RM available. Ready for Store to place Work Order(s)."
-                : placementStage?.released
-                  ? "Procurement in progress. Store will place Work Order(s) when RM is ready."
-                  : "Monthly planning release is pending before Work Order placement."
+              ? noQtyPlacementStageWorkflowHint(placementStage) ??
+                "Monthly planning release is pending before Work Order placement."
               : primaryAction === "SALES_BILL"
                 ? "Dispatch is ready for billing."
                 : primaryAction === "DONE"

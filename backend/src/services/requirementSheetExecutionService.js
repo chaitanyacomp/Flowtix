@@ -17,6 +17,18 @@ const {
 
 const EPS = 1e-6;
 
+const NO_QTY_PLACEMENT_STAGE = Object.freeze({
+  READY_TO_PLACE_WO: "NO_QTY_READY_TO_PLACE_WO",
+  PROCUREMENT_IN_PROGRESS: "NO_QTY_PROCUREMENT_IN_PROGRESS",
+  MONTHLY_PLANNING_PENDING: "NO_QTY_REQUIREMENT_READY",
+});
+
+const NO_QTY_PLACEMENT_STAGE_LABELS = Object.freeze({
+  [NO_QTY_PLACEMENT_STAGE.READY_TO_PLACE_WO]: "Ready to place WO",
+  [NO_QTY_PLACEMENT_STAGE.PROCUREMENT_IN_PROGRESS]: "Procurement in progress",
+  [NO_QTY_PLACEMENT_STAGE.MONTHLY_PLANNING_PENDING]: "Monthly planning pending",
+});
+
 function n(v) {
   const x = Number(v);
   return Number.isFinite(x) ? x : 0;
@@ -187,6 +199,44 @@ function deriveReadyToPlaceWo(totals, placement, readinessStatus = null) {
     ready &&
     (placement?.canPlace === true || suggestedExecutableQty > EPS)
   );
+}
+
+/**
+ * Single source for NO_QTY placement processStageKey / label derivation.
+ */
+function deriveNoQtyPlacementProcessStage({
+  readyToPlaceWo,
+  rsBalanceQty,
+  executionPlanReady,
+  materialRequirement,
+}) {
+  let processStageKey = NO_QTY_PLACEMENT_STAGE.MONTHLY_PLANNING_PENDING;
+  if (readyToPlaceWo) {
+    processStageKey = NO_QTY_PLACEMENT_STAGE.READY_TO_PLACE_WO;
+  } else if (n(rsBalanceQty) <= EPS) {
+    processStageKey = null;
+  } else if (executionPlanReady && materialRequirement) {
+    processStageKey = NO_QTY_PLACEMENT_STAGE.PROCUREMENT_IN_PROGRESS;
+  }
+  return {
+    processStageKey,
+    processStageLabel: processStageKey ? NO_QTY_PLACEMENT_STAGE_LABELS[processStageKey] ?? null : null,
+  };
+}
+
+/** Operator-facing hint for workflow summaries — keyed only by assessor processStageKey. */
+function noQtyPlacementStageWorkflowHint(placementStage) {
+  const key = placementStage?.processStageKey ?? null;
+  if (key === NO_QTY_PLACEMENT_STAGE.READY_TO_PLACE_WO) {
+    return "RM available. Ready for Store to place Work Order(s).";
+  }
+  if (key === NO_QTY_PLACEMENT_STAGE.PROCUREMENT_IN_PROGRESS) {
+    return "Procurement in progress. Store will place Work Order(s) when RM is ready.";
+  }
+  if (key === NO_QTY_PLACEMENT_STAGE.MONTHLY_PLANNING_PENDING) {
+    return "Monthly planning release is pending before Work Order placement.";
+  }
+  return null;
 }
 
 async function loadProcurementProgress(db, { released, materialRequirement }) {
@@ -583,6 +633,14 @@ async function getRequirementSheetExecutionSummary(db, requirementSheetId, deps 
     released: executionPlanReady,
     materialRequirement,
   });
+  const placementStage = await buildNoQtyLockedSheetPlacementAssessment(db, sheet, deps, {
+    totals,
+    placement,
+    readiness,
+    existingWoSummary,
+    materialRequirement,
+    executionPlanReady,
+  });
 
   return {
     requirementSheetId: sheet.id,
@@ -605,6 +663,10 @@ async function getRequirementSheetExecutionSummary(db, requirementSheetId, deps 
     rmReadiness,
     existingWoSummary,
     placement,
+    placementStage,
+    processStageKey: placementStage.processStageKey,
+    processStageLabel: placementStage.processStageLabel,
+    readyToPlaceWo: placementStage.readyToPlaceWo,
     procurement: {
       status: executionPlanReady ? (mrStatus ?? "RELEASED") : "NOT_RELEASED",
       materialRequirementId: materialRequirement?.id ?? null,
@@ -619,21 +681,99 @@ async function getRequirementSheetExecutionSummary(db, requirementSheetId, deps 
       available: true,
       message: "RM readiness is calculated from RS Balance only and shown for execution decision support.",
     },
-    placement,
   };
 }
 
-const NO_QTY_PLACEMENT_STAGE = Object.freeze({
-  READY_TO_PLACE_WO: "NO_QTY_READY_TO_PLACE_WO",
-  PROCUREMENT_IN_PROGRESS: "NO_QTY_PROCUREMENT_IN_PROGRESS",
-  MONTHLY_PLANNING_PENDING: "NO_QTY_REQUIREMENT_READY",
-});
+/**
+ * Authoritative NO_QTY placement assessment for a locked requirement sheet.
+ * When `precomputed` is supplied (execution summary path), reuses loaded context.
+ */
+async function buildNoQtyLockedSheetPlacementAssessment(db, sheet, deps = {}, precomputed = null) {
+  const periodKey = String(sheet.periodKey ?? "").trim();
+  let executionPlanReady;
+  let materialRequirement;
+  let totals;
+  let placement;
+  let readiness;
+  let existingWoSummary;
+  let woPlacedByItem;
 
-const NO_QTY_PLACEMENT_STAGE_LABELS = Object.freeze({
-  [NO_QTY_PLACEMENT_STAGE.READY_TO_PLACE_WO]: "Ready to place WO",
-  [NO_QTY_PLACEMENT_STAGE.PROCUREMENT_IN_PROGRESS]: "Procurement in progress",
-  [NO_QTY_PLACEMENT_STAGE.MONTHLY_PLANNING_PENDING]: "Monthly planning pending",
-});
+  if (precomputed) {
+    ({
+      totals,
+      placement,
+      readiness,
+      existingWoSummary,
+      materialRequirement,
+      executionPlanReady,
+    } = precomputed);
+  } else {
+    const assessPlanningGate = deps.assessNoQtyMonthlyPlanningGate || assessNoQtyMonthlyPlanningGate;
+    const planningGate = periodKey ? await assessPlanningGate(db, periodKey) : null;
+    const releasedPlan = periodKey
+      ? await db.monthlyProductionPlan.findFirst({
+          where: { periodKey, releasedAt: { not: null } },
+          orderBy: [{ releasedAt: "desc" }, { id: "desc" }],
+        })
+      : null;
+    const released = Boolean(releasedPlan?.releasedAt);
+    executionPlanReady = released && (!planningGate || isNoQtyMonthlyPlanningGateExecutionReady(planningGate));
+
+    materialRequirement = null;
+    if (executionPlanReady && releasedPlan?.id) {
+      materialRequirement = await db.materialRequirement.findFirst({
+        where: {
+          monthlyProductionPlanId: releasedPlan.id,
+          sourceType: "MONTHLY_PLAN",
+          reversedAt: null,
+        },
+        orderBy: { id: "desc" },
+        select: { id: true, docNo: true, status: true },
+      });
+    }
+
+    ({ existingWoSummary, woPlacedByItem } = await loadWoPlacementContextForSheet(db, sheet.id));
+    const built = buildRsBalanceLinesFromSheet(sheet, woPlacedByItem);
+    totals = built.totals;
+    const lines = built.lines;
+    const rmReadiness = await buildRmReadiness(db, lines, deps);
+    const buildPlacementPreview = deps.buildNoQtyWoBatchPlacementPreview || buildNoQtyWoBatchPlacementPreview;
+    placement = await buildPlacementPreview(db, sheet);
+    readiness = buildReadinessDecision({
+      totals,
+      rmReadiness,
+      existingWoSummary,
+      released: executionPlanReady,
+      materialRequirement,
+    });
+  }
+
+  const suggestedWoQty = round3(n(placement?.summary?.totalExecutableQty));
+  const readyToPlaceWo = deriveReadyToPlaceWo(totals, placement, readiness.status);
+  const { processStageKey, processStageLabel } = deriveNoQtyPlacementProcessStage({
+    readyToPlaceWo,
+    rsBalanceQty: totals.rsBalanceQty,
+    executionPlanReady,
+    materialRequirement,
+  });
+
+  return {
+    processStageKey,
+    processStageLabel,
+    readyToPlaceWo,
+    requirementSheetId: Number(sheet.id),
+    readinessStatus: readiness.status,
+    periodKey: periodKey || null,
+    released: executionPlanReady,
+    materialRequirementId: materialRequirement?.id ?? null,
+    rsBalanceQty: totals.rsBalanceQty,
+    suggestedWoQty,
+    placementStatus: placement?.status ?? null,
+    existingWoSummary,
+    cycleId: sheet.cycleId != null ? Number(sheet.cycleId) : null,
+    requirementSheetDocNo: sheet.docNo ?? null,
+  };
+}
 
 function emptyNoQtyPlacementAssessment(overrides = {}) {
   return {
@@ -675,72 +815,7 @@ async function assessNoQtyPlacementStageForSheet(db, requirementSheetId, deps = 
     return emptyNoQtyPlacementAssessment({ requirementSheetId: sheetId });
   }
 
-  const periodKey = String(sheet.periodKey ?? "").trim();
-  const assessPlanningGate = deps.assessNoQtyMonthlyPlanningGate || assessNoQtyMonthlyPlanningGate;
-  const planningGate = periodKey ? await assessPlanningGate(db, periodKey) : null;
-  const releasedPlan = periodKey
-    ? await db.monthlyProductionPlan.findFirst({
-        where: { periodKey, releasedAt: { not: null } },
-        orderBy: [{ releasedAt: "desc" }, { id: "desc" }],
-      })
-    : null;
-  const released = Boolean(releasedPlan?.releasedAt);
-  const executionPlanReady = released && (!planningGate || isNoQtyMonthlyPlanningGateExecutionReady(planningGate));
-
-  let materialRequirement = null;
-  if (executionPlanReady && releasedPlan?.id) {
-    materialRequirement = await db.materialRequirement.findFirst({
-      where: {
-        monthlyProductionPlanId: releasedPlan.id,
-        sourceType: "MONTHLY_PLAN",
-        reversedAt: null,
-      },
-      orderBy: { id: "desc" },
-      select: { id: true, docNo: true, status: true },
-    });
-  }
-
-  const { woPlacedByItem, existingWoSummary } = await loadWoPlacementContextForSheet(db, sheet.id);
-  const { lines, totals } = buildRsBalanceLinesFromSheet(sheet, woPlacedByItem);
-
-  const rmReadiness = await buildRmReadiness(db, lines, deps);
-  const buildPlacementPreview = deps.buildNoQtyWoBatchPlacementPreview || buildNoQtyWoBatchPlacementPreview;
-  const placement = await buildPlacementPreview(db, sheet);
-  const readiness = buildReadinessDecision({
-    totals,
-    rmReadiness,
-    existingWoSummary,
-    released: executionPlanReady,
-    materialRequirement,
-  });
-
-  const suggestedWoQty = round3(n(placement?.summary?.totalExecutableQty));
-  const readyToPlaceWo = deriveReadyToPlaceWo(totals, placement, readiness.status);
-  let processStageKey = NO_QTY_PLACEMENT_STAGE.MONTHLY_PLANNING_PENDING;
-  if (readyToPlaceWo) {
-    processStageKey = NO_QTY_PLACEMENT_STAGE.READY_TO_PLACE_WO;
-  } else if (totals.rsBalanceQty <= EPS) {
-    processStageKey = null;
-  } else if (executionPlanReady && materialRequirement) {
-    processStageKey = NO_QTY_PLACEMENT_STAGE.PROCUREMENT_IN_PROGRESS;
-  }
-
-  return {
-    processStageKey,
-    processStageLabel: processStageKey ? NO_QTY_PLACEMENT_STAGE_LABELS[processStageKey] ?? null : null,
-    readyToPlaceWo,
-    requirementSheetId: Number(sheet.id),
-    readinessStatus: readiness.status,
-    periodKey: periodKey || null,
-    released: executionPlanReady,
-    materialRequirementId: materialRequirement?.id ?? null,
-    rsBalanceQty: totals.rsBalanceQty,
-    suggestedWoQty,
-    placementStatus: placement?.status ?? null,
-    existingWoSummary,
-    cycleId: sheet.cycleId != null ? Number(sheet.cycleId) : null,
-    requirementSheetDocNo: sheet.docNo ?? null,
-  };
+  return buildNoQtyLockedSheetPlacementAssessment(db, sheet, deps);
 }
 
 /**
@@ -797,6 +872,9 @@ module.exports = {
   emptyNoQtyPlacementAssessment,
   NO_QTY_PLACEMENT_STAGE,
   NO_QTY_PLACEMENT_STAGE_LABELS,
+  deriveNoQtyPlacementProcessStage,
+  noQtyPlacementStageWorkflowHint,
+  buildNoQtyLockedSheetPlacementAssessment,
   buildReadinessDecision,
   deriveReadyToPlaceWo,
   loadWoPlacementContextForSheet,

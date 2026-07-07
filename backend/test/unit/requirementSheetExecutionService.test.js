@@ -4,6 +4,8 @@ const {
   getRequirementSheetExecutionSummary,
   assessNoQtyPlacementStageForCycle,
   deriveReadyToPlaceWo,
+  deriveNoQtyPlacementProcessStage,
+  NO_QTY_PLACEMENT_STAGE,
   woLinePlacedQty,
 } = require("../../src/services/requirementSheetExecutionService");
 
@@ -213,6 +215,8 @@ describe("requirementSheetExecutionService", () => {
     assert.equal(res.totals.rsDemandQty, 10000);
     assert.equal(res.totals.woPlacedQty, 3000);
     assert.equal(res.totals.rsBalanceQty, 7000);
+    assert.equal(res.processStageKey, res.placementStage.processStageKey);
+    assert.ok(typeof res.processStageKey === "string" || res.processStageKey === null);
   });
 
   it("shows release state when period plan is released", async () => {
@@ -592,6 +596,39 @@ describe("requirementSheetExecutionService", () => {
     assert.equal(res.procurementProgress.counts.grnCount, 1);
     assert.equal(res.procurementProgress.counts.grnReceivedQty, 5000);
     assert.equal(res.readiness.status, "READY_TO_PLACE_WO");
+  });
+});
+
+describe("deriveNoQtyPlacementProcessStage", () => {
+  it("maps readyToPlaceWo to NO_QTY_READY_TO_PLACE_WO", () => {
+    const stage = deriveNoQtyPlacementProcessStage({
+      readyToPlaceWo: true,
+      rsBalanceQty: 100,
+      executionPlanReady: true,
+      materialRequirement: { id: 1 },
+    });
+    assert.equal(stage.processStageKey, NO_QTY_PLACEMENT_STAGE.READY_TO_PLACE_WO);
+    assert.equal(stage.processStageLabel, "Ready to place WO");
+  });
+
+  it("returns null processStageKey when RS balance is zero", () => {
+    const stage = deriveNoQtyPlacementProcessStage({
+      readyToPlaceWo: false,
+      rsBalanceQty: 0,
+      executionPlanReady: true,
+      materialRequirement: { id: 1 },
+    });
+    assert.equal(stage.processStageKey, null);
+  });
+
+  it("returns procurement in progress when plan and MR exist but not ready to place", () => {
+    const stage = deriveNoQtyPlacementProcessStage({
+      readyToPlaceWo: false,
+      rsBalanceQty: 500,
+      executionPlanReady: true,
+      materialRequirement: { id: 9 },
+    });
+    assert.equal(stage.processStageKey, NO_QTY_PLACEMENT_STAGE.PROCUREMENT_IN_PROGRESS);
   });
 });
 

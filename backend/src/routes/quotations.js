@@ -6,6 +6,10 @@ const auditLog = require("../services/auditLog");
 const { buildQuotationPdf } = require("../services/quotationPdf");
 const { getCompanyProfileForDocuments } = require("../services/companyProfile");
 const { resolveSalesIntraState } = require("../services/salesStateCompare");
+const {
+  applyEnquiryStatusForQuotationWorkflowTransition,
+  reopenEnquiryToFeasibleAfterQuotationRollback,
+} = require("../services/enquiryQuotationLifecycle");
 
 const quotationRouter = express.Router();
 
@@ -202,22 +206,6 @@ quotationRouter.get("/", requireAuth, requireRole(["ADMIN", "ADMIN", "STORE"]), 
       include: includeQuotation,
     });
 
-    // Repair/sync: if a quotation is approved, the linked enquiry must be QUOTED.
-    // This handles legacy rows that were approved before the sync rule existed.
-    const toFix = rows.filter((q) => q.workflowStatus === "APPROVED" && q.enquiryId != null && q.enquiry?.status !== "QUOTED");
-    if (toFix.length) {
-      await prisma.$transaction(
-        toFix.map((q) =>
-          prisma.enquiry.update({
-            where: { id: q.enquiryId },
-            data: { status: "QUOTED" },
-          }),
-        ),
-      );
-      for (const q of toFix) {
-        console.log("Enquiry updated to QUOTED:", q.enquiryId);
-      }
-    }
     return res.json(
       rows.map((q) => {
         const customer = q.enquiry?.customer ?? null;
@@ -391,11 +379,6 @@ quotationRouter.post("/", requireAuth, requireRole(["ADMIN"]), async (req, res, 
         include: includeQuotation,
       });
 
-      await tx.enquiry.update({
-        where: { id: enquiry.id },
-        data: { status: "QUOTED" },
-      });
-
       const companyState = await getCompanyState(tx);
       const customer = updated.enquiry?.customer ?? null;
       const cmp = resolveSalesIntraState({ company: companyState, customer });
@@ -424,7 +407,6 @@ quotationRouter.put("/:id/status", requireAuth, requireRole(["ADMIN"]), async (r
         throw err;
       }
       // Lock rule: once approved/rejected, do not allow casual reversal via dropdown/status endpoint.
-      // However, approving the same quotation again should be idempotent and must still sync the enquiry status.
       if (existing.workflowStatus === "APPROVED") {
         if (status !== "APPROVED") {
           const err = new Error(
@@ -433,17 +415,6 @@ quotationRouter.put("/:id/status", requireAuth, requireRole(["ADMIN"]), async (r
           err.statusCode = 409;
           throw err;
         }
-        const quotation = await tx.quotation.findUnique({
-          where: { id },
-          select: { enquiryId: true },
-        });
-        if (quotation?.enquiryId) {
-          await tx.enquiry.update({
-            where: { id: quotation.enquiryId },
-            data: { status: "QUOTED" },
-          });
-          console.log("Enquiry updated to QUOTED:", quotation.enquiryId);
-        }
         return tx.quotation.findUnique({ where: { id }, include: includeQuotation });
       }
       if (existing.workflowStatus === "REJECTED") {
@@ -451,29 +422,17 @@ quotationRouter.put("/:id/status", requireAuth, requireRole(["ADMIN"]), async (r
         err.statusCode = 409;
         throw err;
       }
+      const previousWorkflowStatus = existing.workflowStatus;
       const row = await tx.quotation.update({
         where: { id },
         data: { workflowStatus: status },
         include: includeQuotation,
       });
-      // Business flow: approving quotation closes the enquiry so it no longer appears as open/feasible.
       if (row.enquiryId != null) {
-        if (status === "APPROVED") {
-          const quotation = await tx.quotation.findUnique({
-            where: { id },
-            select: { enquiryId: true },
-          });
-          if (quotation?.enquiryId) {
-            await tx.enquiry.update({
-              where: { id: quotation.enquiryId },
-              data: { status: "QUOTED" },
-            });
-            console.log("Enquiry updated to QUOTED:", quotation.enquiryId);
-          }
-        } else if (status === "REJECTED") {
-          // Rejected quotation reopens enquiry to feasible state for re-quote.
-          await tx.enquiry.update({ where: { id: row.enquiryId }, data: { status: "FEASIBLE" } });
-        }
+        await applyEnquiryStatusForQuotationWorkflowTransition(tx, row.enquiryId, {
+          previousWorkflowStatus,
+          nextWorkflowStatus: status,
+        });
       }
       return row;
     });
@@ -576,7 +535,7 @@ quotationRouter.post(
 
         // Re-open enquiry to feasible so it re-enters the funnel.
         if (row.enquiryId != null) {
-          await tx.enquiry.update({ where: { id: row.enquiryId }, data: { status: "FEASIBLE" } });
+          await reopenEnquiryToFeasibleAfterQuotationRollback(tx, row.enquiryId);
         }
 
         await auditLog.write(tx, {
@@ -761,10 +720,7 @@ quotationRouter.delete("/:id", requireAuth, requireRole(["ADMIN"]), async (req, 
       }
       const enquiryId = q.enquiryId;
       await tx.quotation.delete({ where: { id } });
-      await tx.enquiry.update({
-        where: { id: enquiryId },
-        data: { status: "FEASIBLE" },
-      });
+      await reopenEnquiryToFeasibleAfterQuotationRollback(tx, enquiryId);
     });
     return res.status(204).send();
   } catch (e) {

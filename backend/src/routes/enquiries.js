@@ -47,28 +47,6 @@ enquiryRouter.get("/", requireAuth, requireRole(["ADMIN"]), async (req, res, nex
       include: includeEnquiry,
     });
 
-    // Repair/sync: when a linked quotation is APPROVED, enquiry must be QUOTED.
-    // This ensures the Enquiries page reflects approval even if the quotation was approved before the sync rule existed.
-    const needsSync = rows.filter(
-      (e) => e.quotation?.workflowStatus === "APPROVED" && e.status !== "QUOTED",
-    );
-    if (needsSync.length) {
-      await prisma.$transaction(
-        needsSync.map((e) =>
-          prisma.enquiry.update({
-            where: { id: e.id },
-            data: { status: "QUOTED" },
-          }),
-        ),
-      );
-      for (const e of needsSync) {
-        console.log("Enquiry updated to QUOTED:", e.id);
-      }
-      // Update in-memory rows so the response matches DB immediately.
-      for (const e of rows) {
-        if (e.quotation?.workflowStatus === "APPROVED") e.status = "QUOTED";
-      }
-    }
     return res.json(rows);
   } catch (e) {
     return next(e);
@@ -261,10 +239,18 @@ async function applyFeasibility(req, res, next) {
     const body = schema.parse(req.body);
 
     const result = await prisma.$transaction(async (tx) => {
-      const enquiry = await tx.enquiry.findUnique({ where: { id } });
+      const enquiry = await tx.enquiry.findUnique({
+        where: { id },
+        include: { quotation: { select: { id: true } } },
+      });
       if (!enquiry) {
         const err = new Error("Enquiry not found");
         err.statusCode = 404;
+        throw err;
+      }
+      if (enquiry.quotation) {
+        const err = new Error("Feasibility locked after quotation");
+        err.statusCode = 400;
         throw err;
       }
       if (!["OPEN", "DRAFT", "PENDING", "FEASIBLE", "NOT_FEASIBLE"].includes(enquiry.status)) {

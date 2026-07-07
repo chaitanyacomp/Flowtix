@@ -2,6 +2,8 @@
  * P6D — RM Planning vs Actual Received report UX helpers.
  */
 
+import { formatRmQuantity } from "./quantityDisplay";
+
 export type ReportRowStatus =
   | "SHORT_RECEIVED"
   | "FULLY_RECEIVED"
@@ -109,11 +111,7 @@ export function buildReportQuery(filters: RmPlanningVsReceivedFilters): string {
 }
 
 export function formatReportQty(n: number | null | undefined, unit?: string | null): string {
-  const x = Number(n);
-  if (!Number.isFinite(x)) return "—";
-  const r = Math.round(x * 1000) / 1000;
-  const base = r.toLocaleString(undefined, { maximumFractionDigits: 3 });
-  return unit ? `${base} ${unit}` : base;
+  return formatRmQuantity(n, unit);
 }
 
 export function formatVarianceQty(n: number | null | undefined, unit?: string | null): string {

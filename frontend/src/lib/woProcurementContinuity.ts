@@ -6,6 +6,7 @@ import {
   PROCUREMENT_WORKFLOW_STAGES,
 } from "./procurementTerminology";
 import { procurementSourceAliasForDemandPool } from "./procurementWorkspaceQueues";
+import { formatRmQuantity } from "./quantityDisplay";
 
 export const WO_PROCUREMENT_CONTINUITY = {
   PROCUREMENT_INITIATED: PROCUREMENT_STATUS_VOCABULARY.AWAITING_PR,
@@ -44,8 +45,7 @@ export function buildRmControlCenterHref(opts: {
 }
 
 export function formatProcurementQty(n: number, unit?: string): string {
-  const u = unit?.trim() ? ` ${unit}` : "";
-  return `${n.toLocaleString(undefined, { maximumFractionDigits: 3 })}${u}`;
+  return formatRmQuantity(n, unit);
 }
 
 /** Maps dashboard / MR operational keys to continuous workflow labels. */

@@ -1,4 +1,5 @@
 import { cn } from "../../lib/utils";
+import { formatDispatchQuantity } from "../../lib/quantityDisplay";
 
 export type OperationalDispatchSnapshotMetrics = {
   customerPending: number;
@@ -8,15 +9,10 @@ export type OperationalDispatchSnapshotMetrics = {
   canDispatchNow: number;
 };
 
-function fmtQty(n: number): string {
-  if (!Number.isFinite(n)) return "—";
-  const r = Math.round(n * 1000) / 1000;
-  if (Math.abs(r - Math.round(r)) < 1e-9) return String(Math.round(r));
-  return String(r);
-}
-
 type OperationalDispatchSnapshotProps = {
   metrics: OperationalDispatchSnapshotMetrics;
+  /** FG item UOM when metrics share one unit. */
+  unit?: string | null;
   className?: string;
   /** When true, show the simple Produced → Dispatch → Usable flow line. */
   showFlowHint?: boolean;
@@ -27,9 +23,11 @@ type OperationalDispatchSnapshotProps = {
  */
 export function OperationalDispatchSnapshot({
   metrics,
+  unit,
   className,
   showFlowHint = true,
 }: OperationalDispatchSnapshotProps) {
+  const fmtQty = (n: number) => formatDispatchQuantity(n, unit);
   const stockLimited =
     metrics.customerPending > metrics.usableStockNow + 1e-6 &&
     metrics.canDispatchNow <= metrics.usableStockNow + 1e-6;

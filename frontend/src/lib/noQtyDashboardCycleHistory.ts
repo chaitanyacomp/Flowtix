@@ -1,5 +1,5 @@
 import { ROW_NUM_EPS } from "./dispatchBacklog";
-import { formatWorkspaceQty } from "./workOrderWorkspacePresentation";
+import { formatQtyNumber } from "./quantityDisplay";
 
 export type NoQtyDashboardCycleHistoryStatus =
   | "COMPLETED"
@@ -38,7 +38,7 @@ export function formatNoQtyDashboardHistoryQty(n: number | null | undefined): st
   if (n == null || !Number.isFinite(Number(n))) return "—";
   const v = Number(n);
   if (Math.abs(v) <= ROW_NUM_EPS) return "0";
-  return formatWorkspaceQty(v);
+  return formatQtyNumber(v, null);
 }
 
 export function isNoQtyHistoryCurrentCycleRow(

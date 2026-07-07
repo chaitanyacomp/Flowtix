@@ -5,9 +5,10 @@ import {
   createCycleRequirementSheetButtonLabel,
   resolveNoQtyLockedRsPlanningCta,
 } from "./noQtyRsActionLabels";
+import { formatQtyNumber } from "./quantityDisplay";
 
-function fmtQty(n: number): string {
-  return n.toFixed(3).replace(/\.000$/, "");
+function fmtQty(n: number, unit?: string | null): string {
+  return formatQtyNumber(n, unit);
 }
 
 export type RequirementSheetSummary = {

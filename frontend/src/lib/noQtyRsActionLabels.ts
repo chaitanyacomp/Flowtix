@@ -5,6 +5,7 @@
  */
 
 import { noQtyAgreementListHref } from "./noQtyStoreNavigation";
+import { formatQtyNumber } from "./quantityDisplay";
 
 
 
@@ -704,8 +705,7 @@ export function noQtyExecutionActionNeededClassName(actionNeededKey?: string | n
   }
 }
 
-export function formatNoQtyExecutionRegisterQty(n: number | null | undefined): string {
-  if (n == null || !Number.isFinite(n)) return "—";
-  return n.toFixed(3).replace(/\.000$/, "");
+export function formatNoQtyExecutionRegisterQty(n: number | null | undefined, unit?: string | null): string {
+  return formatQtyNumber(n, unit);
 }
 

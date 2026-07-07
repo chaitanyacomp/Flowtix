@@ -172,8 +172,8 @@ export function DashboardCurrentProductionStatus({
                         {row.orderType === "NO_QTY" ? "Planned / Prod / Pending" : "Planned / Prod / Rem"}
                       </div>
                       <div className="whitespace-nowrap text-[12px] font-medium tabular-nums text-slate-700">
-                        {formatProductionQty(row.requiredQty)} / {formatProductionQty(row.producedQty)} /{" "}
-                        {formatProductionQty(thirdQty)}
+                        {formatProductionQty(row.requiredQty, row.itemUnit)} / {formatProductionQty(row.producedQty, row.itemUnit)} /{" "}
+                        {formatProductionQty(thirdQty, row.itemUnit)}
                       </div>
                     </div>
 

@@ -21,12 +21,19 @@ const {
 } = require("./salesOrderDispatchAllocation");
 const { getSoItemDispatchShipCap } = require("./reportMetrics");
 
-function formatQtyForMessage(n) {
-  const v = Math.max(0, Number(n));
-  if (Number.isNaN(v)) return "0";
-  const rounded = Math.round(v * 1000) / 1000;
-  if (Math.abs(rounded - Math.round(rounded)) < 1e-9) return String(Math.round(rounded));
-  return String(rounded);
+const {
+  formatQuantityWithUnit,
+  formatFgQuantity,
+} = require("./quantityDisplayService");
+
+function formatQtyForMessage(n, unit) {
+  return formatQuantityWithUnit(n, { unit });
+}
+
+async function itemUnitForMessage(tx, itemId) {
+  if (!(Number(itemId) > 0)) return "";
+  const item = await tx.item.findUnique({ where: { id: Number(itemId) }, select: { unit: true } });
+  return String(item?.unit ?? "").trim();
 }
 
 /**
@@ -169,9 +176,12 @@ async function assertDispatchAllowedForSoItem(tx, params, opts = {}) {
   const { soId, itemId, lineInputs, dispatchRecords, requestQty, orderType, customerReturnId, lockTraceDispatchId } =
     params;
   const skipStockCheck = Boolean(opts.skipStockCheck);
+  const unit = await itemUnitForMessage(tx, itemId);
   const bucketRemaining = remainingDispatchCapacityForSoItem(lineInputs, dispatchRecords, itemId);
   if (requestQty > bucketRemaining + STOCK_EPS) {
-    const err = new Error(`Dispatch qty exceeds remaining (${bucketRemaining})`);
+    const err = new Error(
+      `Dispatch qty exceeds remaining (${formatQtyForMessage(bucketRemaining, unit)})`,
+    );
     err.statusCode = 400;
     throw err;
   }
@@ -223,7 +233,7 @@ async function assertDispatchAllowedForSoItem(tx, params, opts = {}) {
 
       if (requestQty > allowedQty + STOCK_EPS) {
         const err = new Error(
-          `Insufficient stock for dispatch. Available: ${formatQtyForMessage(allowedQty)}, required: ${formatQtyForMessage(requestQty)}.`,
+          `Insufficient stock for dispatch. Available: ${formatQtyForMessage(allowedQty, unit)}, required: ${formatQtyForMessage(requestQty, unit)}.`,
         );
         err.statusCode = 400;
         throw err;
@@ -243,7 +253,7 @@ async function assertDispatchAllowedForSoItem(tx, params, opts = {}) {
       });
       if (requestQty > allowedQty + STOCK_EPS) {
         const err = new Error(
-          `Insufficient QC-linked stock for dispatch. Available for this sales order: ${formatQtyForMessage(allowedQty)}, required: ${formatQtyForMessage(requestQty)}.`,
+          `Insufficient QC-linked stock for dispatch. Available for this sales order: ${formatQtyForMessage(allowedQty, unit)}, required: ${formatQtyForMessage(requestQty, unit)}.`,
         );
         err.statusCode = 400;
         throw err;

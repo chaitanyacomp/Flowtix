@@ -1,4 +1,5 @@
 import type { GrnLineDraft } from "../pages/rmPurchase/rmPurchaseShared";
+import { formatRmQuantity } from "./quantityDisplay";
 
 export const GRN_MODAL_DISCARD_CONFIRM = "Discard unsaved GRN receipt?";
 
@@ -9,9 +10,7 @@ export type GrnModalEntryBaseline = {
 };
 
 export function formatGrnWorkspaceQty(qty: number, unit?: string): string {
-  const u = unit?.trim() ? ` ${unit}` : "";
-  if (!Number.isFinite(qty)) return "—";
-  return `${qty.toLocaleString(undefined, { maximumFractionDigits: 3 })}${u}`;
+  return formatRmQuantity(qty, unit);
 }
 
 export function snapshotGrnModalLines(lines: GrnLineDraft[]): GrnModalEntryBaseline["grnLines"] {

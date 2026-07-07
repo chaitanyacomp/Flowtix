@@ -1,5 +1,7 @@
 /** Store compact dispatch execution — opened from Pending Actions SO queue. */
 
+import { formatQtyNumber, formatFgQuantity } from "./quantityDisplay";
+
 
 
 export const DISPATCH_COMPACT_PENDING_SOURCE = "pending-actions";
@@ -60,16 +62,12 @@ export function isDispatchCompactExecutionMode(source: string | null | undefined
 
 
 
-export function formatDispatchCompactQty(qty: number): string {
-
+export function formatDispatchCompactQty(qty: number, unit?: string | null): string {
   const n = Number(qty);
-
-  if (!Number.isFinite(n) || n <= 0) return "0";
-
-  if (Math.abs(n - Math.round(n)) < 1e-6) return String(Math.round(n));
-
-  return String(Math.round(n * 1000) / 1000);
-
+  if (!Number.isFinite(n) || n <= 0) {
+    return unit?.trim() ? formatFgQuantity(0, unit) : "0";
+  }
+  return unit?.trim() ? formatFgQuantity(n, unit) : formatQtyNumber(n, unit);
 }
 
 

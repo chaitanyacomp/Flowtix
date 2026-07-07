@@ -80,6 +80,7 @@ import {
   LEGACY_WO_PLANNING_RECORD_LABEL,
   poTraceChainSummary,
 } from "./procurementTraceTerminology";
+import { formatRmQuantity } from "./quantityDisplay";
 
 const SOURCE_LABELS: Record<string, string> = {
   MONTHLY_PLAN: "Monthly Planning",
@@ -130,6 +131,5 @@ export function formatPoDocumentDate(iso: string | undefined | null): string {
 }
 
 export function formatTraceQty(n: number, unit?: string | null): string {
-  const r = Math.round(n * 1000) / 1000;
-  return unit ? `${r} ${unit}` : String(r);
+  return formatRmQuantity(n, unit);
 }

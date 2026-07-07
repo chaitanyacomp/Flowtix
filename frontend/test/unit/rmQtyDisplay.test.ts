@@ -8,6 +8,7 @@ describe("formatRmQty", () => {
   });
 
   it("formats without unit when missing", () => {
-    expect(formatRmQty(1.02, "")).toBe("1.02");
+    expect(formatRmQty(1.02, "")).toBe("1");
+    expect(formatRmQty(1.02, "Kg")).toBe("1.02 Kg");
   });
 });

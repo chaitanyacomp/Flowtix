@@ -1,13 +1,12 @@
 import { cn } from "../../lib/utils";
+import { formatQcQuantity } from "../../lib/quantityDisplay";
 import { StatBlock } from "./StatBlock";
-
-function fmtQty(n: number): string {
-  return Number.isInteger(n) ? String(n) : n.toFixed(3);
-}
 
 type Props = {
   className?: string;
   fgItemName: string;
+  /** FG item UOM from Item Master. */
+  unit?: string | null;
   workOrderId: number;
   salesOrderId: number;
   producedQty: number;
@@ -23,6 +22,7 @@ type Props = {
 export function QcInfoPanel({
   className,
   fgItemName,
+  unit,
   workOrderId,
   salesOrderId,
   producedQty,
@@ -51,9 +51,9 @@ export function QcInfoPanel({
         role="group"
         aria-label="Production batch QC summary"
       >
-        <StatBlock label="Produced qty" value={fmtQty(producedQty)} />
-        <StatBlock label="QC done" value={fmtQty(qcDone)} />
-        <StatBlock label="Pending QC" value={fmtQty(pendingQty)} emphasis />
+        <StatBlock label="Produced qty" value={formatQcQuantity(producedQty, unit)} />
+        <StatBlock label="QC done" value={formatQcQuantity(qcDone, unit)} />
+        <StatBlock label="Pending QC" value={formatQcQuantity(pendingQty, unit)} emphasis />
       </div>
       {warnings.length > 0 ? (
         <ul className="mt-2 space-y-0.5 text-xs font-medium text-amber-900">

@@ -5,6 +5,7 @@ import {
   type DashboardProductionStatusSource,
   type ProductionOperationalStatusTone,
 } from "./dashboardProductionStatus";
+import { formatQtyNumber } from "./quantityDisplay";
 import {
   mapOperationalLabelToNoQtyDisplayLabel,
   resolveNoQtyCycleDisplayStatus,
@@ -112,10 +113,8 @@ const TONE_RANK: Record<ProductionOperationalStatusTone, number> = {
   carriedForward: 9,
 };
 
-export function formatWorkspaceQty(n: number | null | undefined): string {
-  const v = Number(n);
-  if (!Number.isFinite(v)) return "—";
-  return v.toLocaleString(undefined, { maximumFractionDigits: 2 });
+export function formatWorkspaceQty(n: number | null | undefined, unit?: string | null): string {
+  return formatQtyNumber(n, unit);
 }
 
 /** Derive operator-facing outcome from production-queue snapshot (no internal CF-in column). */

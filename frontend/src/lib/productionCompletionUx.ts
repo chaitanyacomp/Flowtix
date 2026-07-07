@@ -1,6 +1,7 @@
 /** Production Completion workflow — three operator-facing scenarios (P16-C). */
 
 import type { ProductionExecutionSummary } from "./productionExecutionApi";
+import { formatFgQuantity } from "./quantityDisplay";
 
 const EPS = 1e-6;
 
@@ -252,19 +253,19 @@ export type ProductionDecisionConfirmKind =
   | "finish"
   | "resume_close_shortfall";
 
-function formatQtyForConfirm(qty: number): string {
-  const rounded = Math.round(Number(qty) * 1000) / 1000;
-  return rounded.toLocaleString(undefined, { maximumFractionDigits: 3 });
+function formatQtyForConfirm(qty: number, unit?: string | null): string {
+  return formatFgQuantity(qty, unit);
 }
 
 export function buildProductionDecisionConfirmDialog(
   kind: ProductionDecisionConfirmKind,
   summary: ProductionExecutionSummary,
+  unit?: string | null,
 ): { title: string; lines: string[]; confirmLabel: string } {
   const rem = Number(summary.remainderQty ?? 0);
-  const remFmt = formatQtyForConfirm(rem);
+  const remFmt = formatQtyForConfirm(rem, unit);
   const surplus = Number(summary.surplusQty ?? 0);
-  const surplusFmt = formatQtyForConfirm(surplus);
+  const surplusFmt = formatQtyForConfirm(surplus, unit);
 
   switch (kind) {
     case "pause":

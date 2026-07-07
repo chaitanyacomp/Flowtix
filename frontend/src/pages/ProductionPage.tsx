@@ -183,6 +183,7 @@ import { ProductionConciseRmStatus } from "../components/erp/production/Producti
 import { ProductionFlowIdentityBar } from "../components/erp/production/ProductionFlowIdentityBar";
 import { NoQtyMacroLifecycleStrip } from "../components/erp/production/NoQtyMacroLifecycleStrip";
 import { deriveProductionConciseRmLabel } from "../lib/productionRmConciseStatus";
+import { formatFgQuantity, formatRmQuantity } from "../lib/quantityDisplay";
 
 type WoLine = {
   id: number;
@@ -193,7 +194,7 @@ type WoLine = {
   /** max(0, WO line qty − approved produced); lines with 0 are omitted when pendingOnly=1. */
   remainingQty?: number;
   qcPendingQty?: number;
-  fgItem: { itemName: string };
+  fgItem: { itemName: string; unit?: string };
 };
 type WoRow = {
   id: number;
@@ -231,7 +232,7 @@ type ProdEntryRow = {
   qcPendingQty?: number;
   workOrderLine: {
     id: number;
-    fgItem: { itemName: string };
+    fgItem: { itemName: string; unit?: string };
     workOrder: {
       id: number;
       salesOrderId: number;
@@ -320,13 +321,6 @@ function entryUsesRmConsumptionReview(e: ProdEntryRow | undefined): boolean {
   return productionEntryUsesRmConsumptionReview(e);
 }
 
-function fmtProdQty(n: number): string {
-  const v = Number(n);
-  if (!Number.isFinite(v)) return "0";
-  const r = Math.round(v * 1000) / 1000;
-  if (Math.abs(r - Math.round(r)) < 1e-9) return String(Math.round(r));
-  return String(r);
-}
 
 /** REGULAR flow only — smart back targets from `from` / `source` query (UI navigation). */
 function resolveProductionRegularBack(args: {
@@ -460,6 +454,7 @@ function formatNoQtyProductionEntryContextLine(opts: {
   requirementSheetId?: number | null;
   itemName: string;
   remainingQty: number;
+  unit?: string | null;
 }): string {
   const cycle =
     opts.cycleNo != null && Number.isFinite(Number(opts.cycleNo)) ? `Cycle ${Number(opts.cycleNo)}` : "Cycle —";
@@ -468,7 +463,7 @@ function formatNoQtyProductionEntryContextLine(opts: {
     opts.requirementSheetId != null && Number(opts.requirementSheetId) > 0
       ? displayRequirementSheetNo(Number(opts.requirementSheetId), null)
       : "RS —";
-  return `${cycle} · ${wo} · ${rs} · ${opts.itemName} · Remaining ${fmtProdQty(opts.remainingQty)}`;
+  return `${cycle} · ${wo} · ${rs} · ${opts.itemName} · Remaining ${formatFgQuantity(opts.remainingQty, opts.unit)}`;
 }
 
 function sortFlatByPriority(lines: FlatLine[]): FlatLine[] {
@@ -1331,6 +1326,11 @@ export function ProductionPage() {
   );
 
   const selected = flatLines.find((l) => l.id === wolId);
+
+  const fmtProdQty = React.useCallback(
+    (n: number, unit?: string | null) => formatFgQuantity(n, unit ?? selected?.fgItem?.unit ?? ""),
+    [selected?.fgItem?.unit],
+  );
 
   const noQtyCycleNoForDisplay = React.useMemo((): number | null => {
     if (noQtyBannerCycleNo != null) return noQtyBannerCycleNo;
@@ -4436,9 +4436,9 @@ export function ProductionPage() {
           <ul className="mt-1.5 space-y-0.5">
             {noQtyRmShortage.shortages!.map((s) => (
               <li key={s.rmItemId}>
-                {s.rmItemName} | Req: {fmtProdQty(s.requiredQty)} | Avl: {fmtProdQty(s.availableQty)} | Short:{" "}
-                {fmtProdQty(s.shortageQty)}
-                {s.unitName ? ` ${s.unitName}` : ""}
+                {s.rmItemName} | Req: {formatRmQuantity(s.requiredQty, s.unitName)} | Avl:{" "}
+                {formatRmQuantity(s.availableQty, s.unitName)} | Short:{" "}
+                {formatRmQuantity(s.shortageQty, s.unitName)}
               </li>
             ))}
           </ul>

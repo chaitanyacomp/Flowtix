@@ -2,6 +2,7 @@ import { demandPoolKeyForSourceType } from "./procurementTraceTerminology";
 import { buildProcurementWorkspaceHref } from "./woProcurementContinuity";
 import { buildRmPoDetailHref } from "./rmPurchaseWoContinuity";
 import { buildGrnDocumentHref, parseGrnDisplayNo } from "./procurementNavigation";
+import { formatRmQuantity } from "./quantityDisplay";
 
 export type ConnectivityReportRow = {
   rowKey: string;
@@ -74,11 +75,7 @@ export const CONNECTIVITY_RECEIPT_STATUSES = [
 ] as const;
 
 export function formatConnectivityQty(n: number | null | undefined, unit?: string | null): string {
-  const x = Number(n);
-  if (!Number.isFinite(x)) return "—";
-  const r = Math.round(x * 1000) / 1000;
-  const base = String(r);
-  return unit ? `${base} ${unit}` : base;
+  return formatRmQuantity(n, unit);
 }
 
 export function buildConnectivityReportQuery(filters: ConnectivityReportFilters): string {

@@ -21,6 +21,8 @@ export type DashboardProductionStatusSource = {
   requiredQty: number;
   producedQty: number;
   balanceQty: number;
+  /** FG item UOM from Item Master (production-queue API). */
+  itemUnit?: string | null;
   status?: string;
   holdReason?: string | null;
   productionExecutionStatus?: string | null;
@@ -542,11 +544,7 @@ export function summarizeDashboardProductionAttention(rows: DashboardProductionS
   };
 }
 
-export function formatProductionQty(q: number): string {
-  const n = Number(q);
-  if (!Number.isFinite(n)) return "—";
-  return Number.isInteger(n) ? String(n) : n.toFixed(2);
-}
+export { formatProductionQty, formatFgQuantity } from "./quantityDisplay";
 
 /** True when row should show Planned / Prod / Pending (NO_QTY operator qty). */
 export function productionStatusUsesPendingColumn(

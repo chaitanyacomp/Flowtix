@@ -1,12 +1,11 @@
 import { cn } from "../../lib/utils";
+import { formatDispatchQuantity } from "../../lib/quantityDisplay";
 import { StatBlock } from "./StatBlock";
-
-function fmtQty(n: number): string {
-  return Number.isInteger(n) ? String(n) : n.toFixed(3);
-}
 
 type Props = {
   className?: string;
+  /** FG item UOM from Item Master. */
+  unit?: string | null;
   /** Usable FG on hand for this SKU (same basis as Stock screen). */
   totalStock: number;
   /** Gross QC accepted for this sales order + FG item (informational). */
@@ -32,6 +31,7 @@ type Props = {
  */
 export function DispatchInfoPanel({
   className,
+  unit,
   totalStock,
   qcApprovedStock,
   inQcReworkQty,
@@ -59,7 +59,7 @@ export function DispatchInfoPanel({
 
   const minDisplay = isReplacementOrder
     ? "Replacement: min(SO remaining, available stock)."
-    : `min(operational remaining ${fmtQty(soRemaining)}, available ${fmtQty(totalStock)}) → ready ${fmtQty(dispatchableQty)}`;
+    : `min(operational remaining ${formatDispatchQuantity(soRemaining, unit)}, available ${formatDispatchQuantity(totalStock, unit)}) → ready ${formatDispatchQuantity(dispatchableQty, unit)}`;
 
   return (
     <div className={cn("min-w-0", className)}>
@@ -68,9 +68,9 @@ export function DispatchInfoPanel({
         role="group"
         aria-label="Stock and QC context"
       >
-        <StatBlock label="Available stock" value={fmtQty(totalStock)} />
-        <StatBlock label="QC approved (gross)" value={fmtQty(qcApprovedStock)} />
-        <StatBlock label="In QC / rework" value={fmtQty(inQcReworkQty)} />
+        <StatBlock label="Available stock" value={formatDispatchQuantity(totalStock, unit)} />
+        <StatBlock label="QC approved (gross)" value={formatDispatchQuantity(qcApprovedStock, unit)} />
+        <StatBlock label="In QC / rework" value={formatDispatchQuantity(inQcReworkQty, unit)} />
       </div>
 
       <div
@@ -80,7 +80,9 @@ export function DispatchInfoPanel({
       >
         <div className="min-w-0">
           <div className="text-[10px] font-semibold uppercase tracking-wide text-emerald-900">Ready to ship</div>
-          <div className="tabular-nums text-lg font-bold leading-tight text-emerald-950">{fmtQty(dispatchableQty)}</div>
+          <div className="tabular-nums text-lg font-bold leading-tight text-emerald-950">
+            {formatDispatchQuantity(dispatchableQty, unit)}
+          </div>
         </div>
       </div>
 
@@ -99,10 +101,10 @@ export function DispatchInfoPanel({
         role="group"
         aria-label="Order quantities"
       >
-        <StatBlock label="Customer qty" value={fmtQty(orderQty)} />
-        <StatBlock label="Confirmed dispatched" value={fmtQty(dispatchedQty)} />
-        <StatBlock label="Remaining SO" value={fmtQty(pendingQty)} />
-        <StatBlock label="Draft dispatch" value={fmtQty(existingDraftQty)} />
+        <StatBlock label="Customer qty" value={formatDispatchQuantity(orderQty, unit)} />
+        <StatBlock label="Confirmed dispatched" value={formatDispatchQuantity(dispatchedQty, unit)} />
+        <StatBlock label="Remaining SO" value={formatDispatchQuantity(pendingQty, unit)} />
+        <StatBlock label="Draft dispatch" value={formatDispatchQuantity(existingDraftQty, unit)} />
       </div>
       {warnings.length > 0 ? (
         <ul className="mt-2 space-y-0.5 text-xs font-medium text-amber-900">

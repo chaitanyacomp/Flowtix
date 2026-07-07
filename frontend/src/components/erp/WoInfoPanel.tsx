@@ -1,9 +1,6 @@
 import { cn } from "../../lib/utils";
+import { formatPlanningQuantity } from "../../lib/quantityDisplay";
 import { StatBlock } from "./StatBlock";
-
-function fmtQty(n: number): string {
-  return Number.isInteger(n) ? String(n) : n.toFixed(3);
-}
 
 type FgWoBalanceItem = {
   soOrderedQty: number;
@@ -36,6 +33,8 @@ type FgWoBalanceItem = {
 
 type Props = {
   className?: string;
+  /** FG item UOM from Item Master. */
+  unit?: string | null;
   balance: FgWoBalanceItem | undefined;
   fallbackSoOrdered?: number;
   /** Sum of WO qty draft for this FG across all lines (same item may appear on multiple rows). */
@@ -54,6 +53,7 @@ type Props = {
  */
 export function WoInfoPanel({
   className,
+  unit,
   balance,
   fallbackSoOrdered,
   draftEntryQty,
@@ -93,19 +93,19 @@ export function WoInfoPanel({
           role="group"
           aria-label="Sales order finished good: work order planning quantities"
         >
-          <StatBlock label="Customer qty" value={fmtQty(customerQty)} />
-          <StatBlock label="Dispatched qty" value={fmtQty(dispatched)} />
-          <StatBlock label="Planned production qty" value={fmtQty(plannedQty)} />
-          <StatBlock label="Remaining (planning)" value={fmtQty(balance.balanceQty)} emphasis />
-          <StatBlock label="Suggested WO qty" value={fmtQty(suggested)} />
+          <StatBlock label="Customer qty" value={formatPlanningQuantity(customerQty, unit)} />
+          <StatBlock label="Dispatched qty" value={formatPlanningQuantity(dispatched, unit)} />
+          <StatBlock label="Planned production qty" value={formatPlanningQuantity(plannedQty, unit)} />
+          <StatBlock label="Remaining (planning)" value={formatPlanningQuantity(balance.balanceQty, unit)} emphasis />
+          <StatBlock label="Suggested WO qty" value={formatPlanningQuantity(suggested, unit)} />
         </div>
         <div
           className="mt-1.5 flex flex-wrap gap-2"
           role="group"
           aria-label="Additional production context"
         >
-          <StatBlock label={plannedLabel} value={fmtQty(balance.plannedOnOtherWorkOrdersQty)} />
-          <StatBlock label="Produced qty" value={fmtQty(produced)} />
+          <StatBlock label={plannedLabel} value={formatPlanningQuantity(balance.plannedOnOtherWorkOrdersQty, unit)} />
+          <StatBlock label="Produced qty" value={formatPlanningQuantity(produced, unit)} />
         </div>
         <p className="mt-1.5 text-[10px] leading-snug text-slate-500">
           Remaining (planning) = max(0, planned production qty − total QC accepted − already planned on other work orders).
@@ -113,7 +113,7 @@ export function WoInfoPanel({
         </p>
         {carry > 1e-9 ? (
           <p className="mt-1 text-[11px] leading-snug text-slate-600">
-            Includes <span className="font-medium tabular-nums">{fmtQty(carry)}</span> qty from previous WO shortfall.
+            Includes <span className="font-medium tabular-nums">{formatPlanningQuantity(carry, unit)}</span> qty from previous WO shortfall.
           </p>
         ) : null}
         {hasDispatchMetrics ? (
@@ -122,17 +122,17 @@ export function WoInfoPanel({
             role="group"
             aria-label="Dispatch-ready quantities for this finished good"
           >
-            <StatBlock label="Pending SO" value={fmtQty(balance.pendingSoQty!)} />
-            <StatBlock label="Dispatchable" value={fmtQty(balance.dispatchableQty!)} />
-            <StatBlock label="Shortage" value={fmtQty(balance.shortageQty!)} />
+            <StatBlock label="Pending SO" value={formatPlanningQuantity(balance.pendingSoQty!, unit)} />
+            <StatBlock label="Dispatchable" value={formatPlanningQuantity(balance.dispatchableQty!, unit)} />
+            <StatBlock label="Shortage" value={formatPlanningQuantity(balance.shortageQty!, unit)} />
             {balance.stockAvailableQty != null ? (
-              <StatBlock label="Stock available" value={fmtQty(balance.stockAvailableQty)} />
+              <StatBlock label="Stock available" value={formatPlanningQuantity(balance.stockAvailableQty, unit)} />
             ) : null}
             {balance.qcAcceptedGross != null ? (
-              <StatBlock label="QC approved (gross)" value={fmtQty(balance.qcAcceptedGross)} />
+              <StatBlock label="QC approved (gross)" value={formatPlanningQuantity(balance.qcAcceptedGross, unit)} />
             ) : null}
             {balance.qcApprovedRemaining != null ? (
-              <StatBlock label="QC pool left" value={fmtQty(balance.qcApprovedRemaining)} />
+              <StatBlock label="QC pool left" value={formatPlanningQuantity(balance.qcApprovedRemaining, unit)} />
             ) : null}
           </div>
         ) : null}
@@ -150,7 +150,7 @@ export function WoInfoPanel({
   if (fallbackSoOrdered != null && Number.isFinite(fallbackSoOrdered)) {
     return (
       <p className={cn("text-left text-sm leading-snug text-slate-500 sm:text-right", className)}>
-        Customer qty: <span className="font-medium tabular-nums text-slate-800">{fmtQty(fallbackSoOrdered)}</span>
+        Customer qty: <span className="font-medium tabular-nums text-slate-800">{formatPlanningQuantity(fallbackSoOrdered, unit)}</span>
         <span className="text-slate-500"> · Balance details load after FG is selected.</span>
       </p>
     );

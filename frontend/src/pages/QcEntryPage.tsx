@@ -14,6 +14,7 @@ import {
   sumActiveQcAcceptedQty,
   sumActiveQcRejectedQty,
 } from "../lib/qcBatchRollups";
+import { formatQcQuantity } from "../lib/quantityDisplay";
 import { Button, buttonVariants } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { isValidNumberDraft, type NumberDraft, toNumberDraft } from "../lib/numberDraft";
@@ -202,8 +203,8 @@ function qcEntryChecked(q: { acceptedQty?: string; rejectedQty?: string }): numb
   return Number(q.acceptedQty ?? 0) + Number(q.rejectedQty ?? 0);
 }
 
-function fmtQcQty(n: number): string {
-  return Number.isInteger(n) ? String(n) : n.toFixed(3);
+function fmtQcQty(n: number, unit?: string | null): string {
+  return formatQcQuantity(n, unit);
 }
 
 function legacyClassifiedBadgeLabel(action: LegacyClassifiedRow["action"]): string {

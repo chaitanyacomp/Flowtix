@@ -4,6 +4,7 @@
  */
 
 import { PRODUCTION_QA_TERMS } from "./productionQaTerminology";
+import { formatQcQuantity } from "./quantityDisplay";
 
 export type QualityQueueRowKind =
   | "PENDING_QC"
@@ -169,9 +170,11 @@ export function buildQualityQueueRows(input: {
   pendingQc: QualityQueuePendingQcInput[];
   dispositions: QualityQueueDispositionInput[];
   customerReturns: QualityQueueCustomerReturnInput[];
+  /** FG item UOM when rows share one unit; per-row unit overrides via fmtQty. */
+  unit?: string | null;
   fmtQty?: (n: number) => string;
 }): QualityQueueRow[] {
-  const fmt = input.fmtQty ?? ((n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(3)));
+  const fmt = input.fmtQty ?? ((n: number) => formatQcQuantity(n, input.unit));
   const rows: QualityQueueRow[] = [];
 
   for (const p of input.pendingQc) {

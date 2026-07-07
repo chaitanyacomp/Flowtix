@@ -1,13 +1,6 @@
 import { cn } from "../../lib/utils";
+import { formatFgQuantity } from "../../lib/quantityDisplay";
 import { StatBlock } from "./StatBlock";
-
-function fmtQty(n: number): string {
-  const v = Number(n);
-  if (!Number.isFinite(v)) return "0";
-  const r = Math.round(v * 1000) / 1000;
-  if (Math.abs(r - Math.round(r)) < 1e-9) return String(Math.round(r));
-  return String(r);
-}
 
 type Props = {
   className?: string;
@@ -16,6 +9,8 @@ type Props = {
   workOrderId: number;
   salesOrderId: number;
   itemName: string;
+  /** FG item UOM from Item Master. */
+  unit?: string | null;
   woLineQty: number;
   producedSoFar: number;
   remainingQty: number;
@@ -33,6 +28,7 @@ export function ProductionInfoPanel({
   workOrderId,
   salesOrderId,
   itemName,
+  unit,
   woLineQty,
   producedSoFar,
   remainingQty,
@@ -71,9 +67,9 @@ export function ProductionInfoPanel({
         role="group"
         aria-label="Production quantities for selected work order line"
       >
-        <StatBlock label="WO qty" value={fmtQty(woLineQty)} />
-        <StatBlock label="Used" value={fmtQty(producedSoFar)} />
-        <StatBlock label="Remaining" value={fmtQty(remainingQty)} emphasis />
+        <StatBlock label="WO qty" value={formatFgQuantity(woLineQty, unit)} />
+        <StatBlock label="Used" value={formatFgQuantity(producedSoFar, unit)} />
+        <StatBlock label="Remaining" value={formatFgQuantity(remainingQty, unit)} emphasis />
       </div>
       {warnings.length > 0 ? (
         <ul className={cn("space-y-0.5 text-xs font-medium text-amber-900", compact ? "mt-1.5" : "mt-2")}>

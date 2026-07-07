@@ -1,3 +1,5 @@
+import { formatQtyNumber } from "./quantityDisplay";
+
 export type WastageDetailDraft = {
   key: string;
   wastageTypeId: number;
@@ -7,11 +9,12 @@ export type WastageDetailDraft = {
 
 const EPS = 1e-6;
 
-export function fmtWastageQty(n: number | null | undefined): string {
+export function fmtWastageQty(n: number | null | undefined, unit?: string | null): string {
   const v = Number(n);
-  if (!Number.isFinite(v) || Math.abs(v) <= 1e-9) return "0";
-  const r = Math.round(v * 1000) / 1000;
-  return Math.abs(r - Math.round(r)) < 1e-9 ? String(Math.round(r)) : String(r);
+  if (!Number.isFinite(v) || Math.abs(v) <= 1e-9) {
+    return unit?.trim() ? formatQtyNumber(0, unit, { emptyValue: "0" }) : "0";
+  }
+  return formatQtyNumber(v, unit, { emptyValue: "0" });
 }
 
 function round3(n: number): number {

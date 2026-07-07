@@ -4,6 +4,8 @@
  * Execution is independent of which cycle is currently active for planning.
  */
 
+import { formatQtyNumber } from "./quantityDisplay";
+
 export const EXECUTION_WO_HISTORY_MAX_ROWS = 5;
 
 export type PlacementStatusLike =
@@ -68,13 +70,8 @@ export function placementInlineReadinessMessage(input: {
   return reason || "Review RM coverage before placing WO.";
 }
 
-export function formatExecutionQty(n: number): string {
-  const v = Number(n);
-  if (!Number.isFinite(v)) return "0";
-  const r = Math.round(v * 1000) / 1000;
-  return Math.abs(r - Math.round(r)) < 1e-9
-    ? String(Math.round(r))
-    : r.toLocaleString(undefined, { maximumFractionDigits: 3 });
+export function formatExecutionQty(n: number, unit?: string | null): string {
+  return formatQtyNumber(n, unit, { emptyValue: "0" });
 }
 
 export function rmDetailCollapsedSummary(input: {

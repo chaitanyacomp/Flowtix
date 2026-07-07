@@ -122,27 +122,27 @@ export function DashboardPausedWorkOrders({
                       <dl className="mt-1 grid grid-cols-2 gap-x-3 gap-y-0.5 text-[11px] text-amber-900 sm:grid-cols-3">
                         <div>
                           <dt className="text-amber-800/80">Reserved FG</dt>
-                          <dd className="font-bold tabular-nums">{formatProductionQty(row.reservedFgQty)}</dd>
+                          <dd className="font-bold tabular-nums">{formatProductionQty(row.reservedFgQty, row.itemUnit)}</dd>
                         </div>
                         <div>
                           <dt className="text-amber-800/80">Customer pending</dt>
-                          <dd className="font-bold tabular-nums">{formatProductionQty(row.customerPendingQty)}</dd>
+                          <dd className="font-bold tabular-nums">{formatProductionQty(row.customerPendingQty, row.itemUnit)}</dd>
                         </div>
                         <div>
                           <dt className="text-amber-800/80">Remaining production</dt>
-                          <dd className="font-bold tabular-nums">{formatProductionQty(row.remainingProductionQty)}</dd>
+                          <dd className="font-bold tabular-nums">{formatProductionQty(row.remainingProductionQty, row.itemUnit)}</dd>
                         </div>
                         <div>
                           <dt className="text-amber-800/80">Produced</dt>
-                          <dd className="font-semibold tabular-nums">{formatProductionQty(row.producedQty)}</dd>
+                          <dd className="font-semibold tabular-nums">{formatProductionQty(row.producedQty, row.itemUnit)}</dd>
                         </div>
                         <div>
                           <dt className="text-amber-800/80">QC accepted</dt>
-                          <dd className="font-semibold tabular-nums">{formatProductionQty(row.qcAcceptedQty)}</dd>
+                          <dd className="font-semibold tabular-nums">{formatProductionQty(row.qcAcceptedQty, row.itemUnit)}</dd>
                         </div>
                         <div>
                           <dt className="text-amber-800/80">Dispatched</dt>
-                          <dd className="font-semibold tabular-nums">{formatProductionQty(row.dispatchedQty)}</dd>
+                          <dd className="font-semibold tabular-nums">{formatProductionQty(row.dispatchedQty, row.itemUnit)}</dd>
                         </div>
                       </dl>
                     </div>

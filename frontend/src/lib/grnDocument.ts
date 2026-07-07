@@ -1,4 +1,5 @@
 import type { RmPoTraceDemandSource } from "./rmPoDocumentTrace";
+import { formatRmQuantity } from "./quantityDisplay";
 import { demandSourceDisplay } from "./rmPoDocumentTrace";
 import { formatProcurementSignatoryForLine } from "./rmPoSupplierDocument";
 
@@ -137,9 +138,7 @@ export function formatGrnDocumentDate(iso?: string | null): string {
 }
 
 export function formatGrnQty(n: number, unit?: string | null): string {
-  const q = Number.isFinite(n) ? n.toFixed(3) : "—";
-  const u = (unit ?? "").trim();
-  return u ? `${q} ${u}` : q;
+  return formatRmQuantity(n, unit);
 }
 
 export function grnBillStatusDisplay(status: string): string {

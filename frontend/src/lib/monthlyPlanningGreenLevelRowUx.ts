@@ -440,12 +440,9 @@ export function productionPlanGreenLevelFieldsVisible(
 
 
 
-export function formatGreenPlanningQty(value: number, loading: boolean): string {
-
+export function formatGreenPlanningQty(value: number, loading: boolean, unit?: string | null): string {
   if (loading) return "…";
-
-  return value.toLocaleString(undefined, { maximumFractionDigits: 3 });
-
+  return formatPlanningQuantity(value, unit, { includeUnit: Boolean(unit?.trim()) });
 }
 
 

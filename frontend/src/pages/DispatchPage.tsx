@@ -27,6 +27,7 @@ import {
   FIELD_HINT_ENTER_NEXT,
 } from "../lib/shortcutHintCopy";
 import { cn } from "../lib/utils";
+import { formatDispatchQuantity } from "../lib/quantityDisplay";
 import { isDispatchOpenListLineCandidate } from "../lib/dispatchOpenListEligibility";
 import { useErpRefreshTick } from "../hooks/useErpRefreshTick";
 import {
@@ -289,8 +290,8 @@ function customerDisplayName(so: SoRow): string {
   return so.customer?.name?.trim() || so.po?.customer?.name?.trim() || "Unknown Customer";
 }
 
-function fmtDispatchQty(n: number): string {
-  return Number.isInteger(n) ? String(n) : n.toFixed(3);
+function fmtDispatchQty(n: number, unit?: string | null): string {
+  return formatDispatchQuantity(n, unit);
 }
 
 function dispatchSoContextLabel(

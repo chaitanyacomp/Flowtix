@@ -144,6 +144,15 @@ export function formatQtyNumber(
   return stripTrailingZeros(rounded.toFixed(decimalPlaces));
 }
 
+/** Raw numeric string for editable qty fields — no thousands separators. */
+export function formatQtyNumberForInput(
+  value: number | null | undefined,
+  unit?: string | null,
+  opts?: { decimalPlaces?: number | null; emptyValue?: string },
+): string {
+  return formatQtyNumber(value, unit, { ...opts, locale: false });
+}
+
 function normalizeOptions(
   options?: FormatQuantityWithUnitOptions | string | null,
 ): FormatQuantityWithUnitOptions {
@@ -227,6 +236,15 @@ export function formatQcQuantity(
   return formatQuantityWithUnit(value, { ...options, unit, category: "qc" });
 }
 
+/** QC qty for editable inputs — number only, no locale grouping or unit suffix. */
+export function formatQcQuantityForInput(
+  value: number | null | undefined,
+  unit?: string | null,
+  options?: Omit<FormatQuantityWithUnitOptions, "unit" | "category" | "locale" | "includeUnit">,
+): string {
+  return formatQuantityWithUnit(value, { ...options, unit, category: "qc", locale: false, includeUnit: false });
+}
+
 export function formatConsumptionQuantity(
   value: number | null | undefined,
   unit?: string | null,
@@ -281,3 +299,25 @@ export const formatDispatchQty = formatDispatchQuantity;
 
 /** QC entry quantities. */
 export const formatQcQty = formatQcQuantity;
+
+const PRODUCTION_QTY_PLACEHOLDER_UNITS: Record<string, string> = {
+  NOS: "Nos",
+  NO: "Nos",
+  PCS: "Pcs",
+  KG: "Kg",
+  GM: "Gm",
+  MTR: "Meter",
+  METER: "Meter",
+  MT: "Mt",
+  LTR: "Ltr",
+};
+
+/** Placeholder for production qty inputs — uses Item Master UOM token. */
+export function productionQtyInputPlaceholder(unit?: string | null): string {
+  const token = normalizeUnitToken(unit);
+  if (!token) return "Qty";
+  const label =
+    PRODUCTION_QTY_PLACEHOLDER_UNITS[token] ??
+    (String(unit ?? "").trim() || token);
+  return `Qty in ${label}`;
+}

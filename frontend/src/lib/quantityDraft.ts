@@ -1,6 +1,11 @@
+/** Strip thousands separators from qty draft text (paste-safe for editable fields). */
+export function sanitizeQtyInputDraft(raw: string): string {
+  return String(raw ?? "").replace(/,/g, "");
+}
+
 /** Parse a mandatory positive quantity from user input; blank or invalid → null. */
 export function parsePositiveQuantityDraft(raw: string): number | null {
-  const t = raw.trim();
+  const t = sanitizeQtyInputDraft(raw).trim();
   if (t === "") return null;
   const n = Number(t);
   if (!Number.isFinite(n) || n <= 0) return null;

@@ -16,17 +16,17 @@ export function QualityInspectionQueuePanel({ rows, activeRowId, onSelectRow, lo
       data-testid="quality-inspection-queue"
     >
       <div className="mb-1.5 flex items-center justify-between gap-2">
-        <h2 className="text-[11px] font-semibold uppercase tracking-wide text-violet-950">
+        <h2 className="text-xs font-semibold uppercase tracking-wide text-violet-950">
           {PRODUCTION_QA_TERMS.QUALITY_QUEUE}
         </h2>
         {!loading ? (
-          <span className="text-[10px] font-medium tabular-nums text-violet-800">{rows.length} open</span>
+          <span className="text-[11px] font-medium tabular-nums text-violet-800">{rows.length} open</span>
         ) : null}
       </div>
       {loading ? (
-        <p className="text-[11px] text-slate-600">Loading quality queue…</p>
+        <p className="text-xs text-slate-600">Loading quality queue…</p>
       ) : rows.length === 0 ? (
-        <p className="text-[11px] text-slate-600">No pending QC inspections.</p>
+        <p className="text-xs text-slate-600">No pending QC inspections.</p>
       ) : (
         <ul className="max-h-[min(360px,42vh)] space-y-1 overflow-y-auto">
           {rows.map((row) => {
@@ -45,10 +45,10 @@ export function QualityInspectionQueuePanel({ rows, activeRowId, onSelectRow, lo
                   onClick={() => onSelectRow(row)}
                 >
                   <div className="min-w-0">
-                    <div className="truncate text-[11px] font-semibold text-slate-900">{row.label}</div>
-                    <div className="truncate text-[10px] text-slate-600">{row.subtitle}</div>
+                    <div className="truncate text-xs font-semibold text-slate-900">{row.label}</div>
+                    <div className="truncate text-[11px] text-slate-600">{row.subtitle}</div>
                   </div>
-                  <span className="shrink-0 text-[10px] font-bold tabular-nums text-violet-950">{row.qtyLabel}</span>
+                  <span className="shrink-0 text-[11px] font-bold tabular-nums text-violet-950">{row.qtyLabel}</span>
                 </button>
               </li>
             );

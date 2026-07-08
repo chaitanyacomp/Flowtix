@@ -12,7 +12,8 @@ import {
   isActiveQcEntry,
   resolveProductionBatchQcRollups,
 } from "../lib/qcBatchRollups";
-import { formatQcQuantity } from "../lib/quantityDisplay";
+import { formatQcQuantity, formatQcQuantityForInput } from "../lib/quantityDisplay";
+import { sanitizeQtyInputDraft } from "../lib/quantityDraft";
 import { Button, buttonVariants } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { isValidNumberDraft, type NumberDraft, toNumberDraft } from "../lib/numberDraft";
@@ -214,6 +215,11 @@ function qcEntryChecked(q: { acceptedQty?: string; rejectedQty?: string }): numb
 
 function fmtQcQty(n: number, unit?: string | null): string {
   return formatQcQuantity(n, unit);
+}
+
+/** Raw numeric string for editable QC qty fields (no comma grouping). */
+function fmtQcQtyForInput(n: number, unit?: string | null): string {
+  return formatQcQuantityForInput(n, unit);
 }
 
 function legacyClassifiedBadgeLabel(action: LegacyClassifiedRow["action"]): string {
@@ -1184,7 +1190,7 @@ export function QcEntryPage() {
       }
       setLegacyClassifyOpen(row);
       setLegacyClassifyAction(null);
-      setLegacyClassifyQtyDraft(fmtQcQty(row.rejectedQty));
+      setLegacyClassifyQtyDraft(fmtQcQtyForInput(row.rejectedQty));
       setLegacyClassifyRemarks("");
       setLegacyClassifyModalError(null);
     },
@@ -1351,7 +1357,7 @@ export function QcEntryPage() {
     setRejectedQty("");
     setRejectedStockBucket(null);
     const roll = safeQcRollupsForRow(sel);
-    if (roll.pending > 1e-6) setCheckedQtyStr(fmtQcQty(roll.pending));
+    if (roll.pending > 1e-6) setCheckedQtyStr(fmtQcQtyForInput(roll.pending));
     else resetCheckedQty();
   }, [productionId, rows, resetCheckedQty, setCheckedQtyStr]);
 
@@ -2452,12 +2458,14 @@ export function QcEntryPage() {
           </div>
         ) : null}
         <OperatorPageBody className="gap-1.5">
-          <QualityInspectionQueuePanel
-            rows={qualityQueueRows}
-            activeRowId={activeQualityQueueRowId}
-            onSelectRow={handleQualityQueueSelect}
-            loading={!listReady}
-          />
+          <div className="max-w-xl">
+            <QualityInspectionQueuePanel
+              rows={qualityQueueRows}
+              activeRowId={activeQualityQueueRowId}
+              onSelectRow={handleQualityQueueSelect}
+              loading={!listReady}
+            />
+          </div>
           {!fromNoQtySo &&
           !roleUi.isPureQcOperator &&
           focusSoIdValid &&
@@ -3037,7 +3045,9 @@ export function QcEntryPage() {
 
               <OperatorMainSplit
                 balancedWorkbench
-                className="lg:max-h-[min(calc(100dvh-9.5rem),32rem)] lg:min-h-0"
+                lgGridClassName="lg:grid-cols-[minmax(0,0.88fr)_minmax(0,1.12fr)]"
+                panelContainerClassName="erp-op-inspect-zone flex min-h-0 flex-col overflow-x-visible overflow-y-visible lg:sticky lg:top-16 lg:z-[6] lg:max-h-[calc(100dvh-4.5rem)] lg:self-start lg:overflow-y-auto"
+                className="lg:max-h-[min(calc(100dvh-7.5rem),38rem)] lg:min-h-0"
                 panelClassName="!p-1 !pb-0 min-h-0 h-full"
                 queue={
                   <div className="flex min-h-0 flex-col gap-px lg:h-full lg:min-h-0">
@@ -3175,9 +3185,9 @@ export function QcEntryPage() {
                   </div>
                 }
                 panel={
-                  <div className="flex h-full min-h-0 w-full flex-col overflow-hidden">
-                    <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-                      <div className="shrink-0 space-y-0.5">
+                  <div className="flex h-full min-h-0 w-full flex-col">
+                    <div className="flex min-h-0 flex-1 flex-col">
+                      <div className="shrink-0 space-y-1">
                         {selected && selectedRollups ? (
                           <div
                             className="truncate text-[10px] leading-tight text-slate-700"
@@ -3198,52 +3208,52 @@ export function QcEntryPage() {
                         draftCheckedTotal > selectedRollups.pending + 1e-6 ? (
                           <p className="text-[10px] font-medium text-amber-800">Total exceeds remaining QC quantity</p>
                         ) : null}
-                        <div className="erp-op-action-focus space-y-1.5">
-                        <div className="grid grid-cols-3 gap-1.5">
+                        <div className="erp-op-action-focus space-y-2">
+                        <div className="grid grid-cols-3 gap-2">
                           <div className="erp-form-field min-w-0 [&_span]:leading-none">
-                            <span className="text-[11px] font-semibold text-slate-700">Inspecting now</span>
+                            <span className="text-[12px] font-semibold text-slate-700">Inspecting now</span>
                             <Input
                               ref={checkedQtyRef}
                               type="text"
                               data-testid="qc-inspecting-input"
                               inputMode="decimal"
                               autoComplete="off"
-                              className={cn("mt-px tabular-nums text-[13px]", operatorInputClass)}
+                              className={cn("mt-0.5 tabular-nums text-sm", operatorInputClass)}
                               placeholder="Required"
                               value={checkedQtyStr}
-                              onChange={(e) => setCheckedQtyStr(e.target.value)}
+                              onChange={(e) => setCheckedQtyStr(sanitizeQtyInputDraft(e.target.value))}
                               disabled={!productionId}
                             />
                             {productionId > 0 && !checkedQtyValid ? (
-                              <p className="mt-px text-[10px] font-medium text-amber-800">Enter inspected quantity</p>
+                              <p className="mt-0.5 text-[11px] font-medium text-amber-800">Enter inspected quantity</p>
                             ) : null}
                           </div>
                           <div className="erp-form-field min-w-0 [&_span]:leading-none">
-                            <span className="text-[10px] font-medium text-slate-600">Rejected qty</span>
+                            <span className="text-[12px] font-medium text-slate-600">Rejected qty</span>
                             <Input
                               type="text"
                               inputMode="decimal"
                               autoComplete="off"
-                              className={cn("mt-px tabular-nums text-[13px]", operatorInputClass)}
+                              className={cn("mt-0.5 tabular-nums text-sm", operatorInputClass)}
                               placeholder=""
                               value={rejectedQty}
-                              onChange={(e) => setRejectedQty(toNumberDraft(e.target.value))}
+                              onChange={(e) => setRejectedQty(toNumberDraft(sanitizeQtyInputDraft(e.target.value)))}
                               disabled={!productionId}
                             />
                             {productionId > 0 && rejectedQty !== "" && rejectedNumForForm === null ? (
-                              <p className="mt-px text-[10px] font-medium text-amber-800">Enter a valid rejected quantity.</p>
+                              <p className="mt-0.5 text-[11px] font-medium text-amber-800">Enter a valid rejected quantity.</p>
                             ) : null}
                           </div>
                           <div className="erp-form-field min-w-0 [&_span]:leading-none">
-                            <span className="text-[10px] font-medium text-slate-600">Accepted qty</span>
+                            <span className="text-[12px] font-medium text-slate-600">Accepted qty</span>
                             <Input
                               type="text"
                               inputMode="decimal"
                               autoComplete="off"
-                              className={cn("mt-px tabular-nums text-[13px] bg-slate-50", operatorInputClass)}
+                              className={cn("mt-0.5 tabular-nums text-sm bg-slate-50", operatorInputClass)}
                               value={
                                 checkedQtyValid && checkedParsed != null && rejectedNumForForm != null
-                                  ? fmtQcQty(Math.max(0, checkedParsed - rejectedNumForForm))
+                                  ? fmtQcQtyForInput(Math.max(0, checkedParsed - rejectedNumForForm))
                                   : ""
                               }
                               placeholder="Auto"
@@ -3255,7 +3265,7 @@ export function QcEntryPage() {
                             checkedParsed != null &&
                             rejectedNumForForm != null &&
                             rejectedNumForForm > checkedParsed + 1e-6 ? (
-                              <p className="mt-px text-[10px] font-medium text-amber-800">Rejected qty cannot exceed inspected qty.</p>
+                              <p className="mt-0.5 text-[11px] font-medium text-amber-800">Rejected qty cannot exceed inspected qty.</p>
                             ) : null}
                           </div>
                         </div>
@@ -3270,7 +3280,7 @@ export function QcEntryPage() {
                             disabled={saving || !selectedRollups || selectedRollups.pending <= 1e-6}
                             onClick={() => {
                               if (!selectedRollups) return;
-                              setCheckedQtyStr(fmtQcQty(selectedRollups.pending));
+                              setCheckedQtyStr(fmtQcQtyForInput(selectedRollups.pending));
                               setRejectedQty(0);
                               setRejectedStockBucket(null);
                             }}
@@ -3283,7 +3293,7 @@ export function QcEntryPage() {
                             size="sm"
                             className="h-8 shrink-0 px-2 text-[11px]"
                             disabled={saving || !selectedRollups || selectedRollups.pending <= 1e-6}
-                            onClick={() => setCheckedQtyStr(fmtQcQty(selectedRollups?.pending ?? 0))}
+                            onClick={() => setCheckedQtyStr(fmtQcQtyForInput(selectedRollups?.pending ?? 0))}
                           >
                             Inspect Full Remaining
                           </Button>
@@ -3326,64 +3336,64 @@ export function QcEntryPage() {
                         </div>
                       </div>
 
-                      <div className="mt-0.5 min-h-0 flex-1 space-y-0.5 overflow-y-auto overflow-x-hidden overscroll-contain border-t border-dashed border-slate-200/80 py-0.5 pr-0.5">
+                      <div className="mt-1 min-h-0 flex-1 space-y-1 overflow-y-auto overflow-x-visible overscroll-contain border-t border-dashed border-slate-200/80 py-1 pr-0.5">
                         {productionId > 0 && rejectedNumForForm != null && rejectedNumForForm > 1e-6 ? (
-                          <div className="space-y-0.5" aria-label="Rejected qty split">
+                          <div className="space-y-1" aria-label="Rejected qty split">
                             <div className="flex flex-wrap items-baseline justify-between gap-1">
-                              <span className="text-[10px] font-medium text-slate-600">Rejected qty split</span>
-                              <span className="text-[10px] text-slate-500">
+                              <span className="text-[12px] font-medium text-slate-600">Rejected qty split</span>
+                              <span className="text-[11px] text-slate-500">
                                 Total must equal{" "}
                                 <span className="font-semibold tabular-nums text-slate-700">{fmtQcQty(rejectedNumForForm)}</span>
                               </span>
                             </div>
-                            <div className="grid gap-0.5 sm:grid-cols-3">
-                              <div className="erp-form-field">
-                                <span className="erp-form-label text-[10px]">Rework Qty</span>
+                            <div className="grid gap-2 sm:grid-cols-3">
+                              <div className="erp-form-field min-w-0">
+                                <span className="erp-form-label text-[12px]">Rework Qty</span>
                                 <Input
                                   type="text"
                                   inputMode="decimal"
                                   autoComplete="off"
-                                  className={cn("tabular-nums text-[13px]", operatorInputClass)}
+                                  className={cn("tabular-nums text-sm", operatorInputClass)}
                                   value={rejSplitRework}
                                   onChange={(e) => {
-                                    setRejSplitRework(toNumberDraft(e.target.value));
+                                    setRejSplitRework(toNumberDraft(sanitizeQtyInputDraft(e.target.value)));
                                     setRejectedStockBucket(null);
                                   }}
                                   disabled={!productionId}
                                 />
                               </div>
-                              <div className="erp-form-field">
-                                <span className="erp-form-label text-[10px]">Hold Qty</span>
+                              <div className="erp-form-field min-w-0">
+                                <span className="erp-form-label text-[12px]">Hold Qty</span>
                                 <Input
                                   type="text"
                                   inputMode="decimal"
                                   autoComplete="off"
-                                  className={cn("tabular-nums text-[13px]", operatorInputClass)}
+                                  className={cn("tabular-nums text-sm", operatorInputClass)}
                                   value={rejSplitHold}
                                   onChange={(e) => {
-                                    setRejSplitHold(toNumberDraft(e.target.value));
+                                    setRejSplitHold(toNumberDraft(sanitizeQtyInputDraft(e.target.value)));
                                     setRejectedStockBucket(null);
                                   }}
                                   disabled={!productionId}
                                 />
                               </div>
-                              <div className="erp-form-field">
-                                <span className="erp-form-label text-[10px]">Scrap Qty</span>
+                              <div className="erp-form-field min-w-0">
+                                <span className="erp-form-label text-[12px]">Scrap Qty</span>
                                 <Input
                                   type="text"
                                   inputMode="decimal"
                                   autoComplete="off"
-                                  className={cn("tabular-nums text-[13px]", operatorInputClass)}
+                                  className={cn("tabular-nums text-sm", operatorInputClass)}
                                   value={rejSplitScrap}
                                   onChange={(e) => {
-                                    setRejSplitScrap(toNumberDraft(e.target.value));
+                                    setRejSplitScrap(toNumberDraft(sanitizeQtyInputDraft(e.target.value)));
                                     setRejectedStockBucket(null);
                                   }}
                                   disabled={!productionId}
                                 />
                               </div>
                             </div>
-                            <div className="text-[10px] text-slate-600">
+                            <div className="text-[11px] text-slate-600">
                               Split total:{" "}
                               <span className="font-semibold tabular-nums">
                                 {fmtQcQty(
@@ -4326,10 +4336,10 @@ export function QcEntryPage() {
                       className="tabular-nums"
                       value={reverseQcQtyDraft}
                       onChange={(e) => {
-                        setReverseQcQtyDraft(e.target.value);
+                        setReverseQcQtyDraft(sanitizeQtyInputDraft(e.target.value));
                         setReverseQcModalError(null);
                       }}
-                      placeholder={fmtQcQty(reverseQcModal.allowedReverseQty)}
+                      placeholder={fmtQcQtyForInput(reverseQcModal.allowedReverseQty)}
                     />
                     <div className="mt-1 flex flex-wrap items-center gap-2">
                       <Button
@@ -4338,7 +4348,7 @@ export function QcEntryPage() {
                         size="sm"
                         className="h-7 text-[11px]"
                         onClick={() => {
-                          setReverseQcQtyDraft(fmtQcQty(reverseQcModal.allowedReverseQty));
+                          setReverseQcQtyDraft(fmtQcQtyForInput(reverseQcModal.allowedReverseQty));
                           setReverseQcModalError(null);
                         }}
                       >

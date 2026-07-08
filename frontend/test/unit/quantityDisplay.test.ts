@@ -6,11 +6,14 @@ import {
   formatFgQuantity,
   formatPlanningQuantity,
   formatQtyNumber,
+  formatQtyNumberForInput,
   formatQuantityWithUnit,
   formatQcQuantity,
+  formatQcQuantityForInput,
   formatRmQuantity,
   formatScrapQuantity,
   formatStockQuantity,
+  productionQtyInputPlaceholder,
   qtyDecimalPlacesFromUnit,
 } from "../../src/lib/quantityDisplay";
 
@@ -25,6 +28,15 @@ describe("qtyDecimalPlacesFromUnit", () => {
     expect(qtyDecimalPlacesFromUnit("Kg")).toBe(3);
     expect(qtyDecimalPlacesFromUnit("m")).toBe(3);
     expect(qtyDecimalPlacesFromUnit("L")).toBe(3);
+  });
+});
+
+describe("productionQtyInputPlaceholder", () => {
+  it("builds UOM-aware placeholder text", () => {
+    expect(productionQtyInputPlaceholder("Nos")).toBe("Qty in Nos");
+    expect(productionQtyInputPlaceholder("Kg")).toBe("Qty in Kg");
+    expect(productionQtyInputPlaceholder("m")).toBe("Qty in m");
+    expect(productionQtyInputPlaceholder(null)).toBe("Qty");
   });
 });
 
@@ -90,6 +102,24 @@ describe("formatQtyNumber", () => {
   it("formats number only without unit suffix", () => {
     expect(formatQtyNumber(523.809, "m")).toBe("523.809");
     expect(formatQtyNumber(523, "Nos")).toBe("523");
+  });
+
+  it("applies locale grouping for large display values by default", () => {
+    expect(formatQtyNumber(2991, "Nos")).toBe("2,991");
+  });
+});
+
+describe("formatQtyNumberForInput", () => {
+  it("never applies thousands separators", () => {
+    expect(formatQtyNumberForInput(2991, "Nos")).toBe("2991");
+    expect(formatQtyNumberForInput(2978, "Nos")).toBe("2978");
+  });
+});
+
+describe("formatQcQuantityForInput", () => {
+  it("returns raw numeric QC qty without unit or locale grouping", () => {
+    expect(formatQcQuantityForInput(2991, "Nos")).toBe("2991");
+    expect(formatQcQuantity(2991, "Nos")).toBe("2,991 Nos");
   });
 });
 

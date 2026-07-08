@@ -64,7 +64,10 @@ export function OperatorMainSplit({
     <div
       className={cn(
         balancedWorkbench
-          ? "grid grid-cols-1 items-stretch gap-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] lg:items-start lg:gap-3"
+          ? cn(
+              "grid grid-cols-1 items-stretch gap-2 lg:items-start lg:gap-3",
+              lgGridClassName ?? "lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]",
+            )
           : cn(
               "grid grid-cols-1 items-start",
               lgGridClassName

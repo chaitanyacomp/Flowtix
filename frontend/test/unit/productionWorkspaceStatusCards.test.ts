@@ -36,4 +36,20 @@ describe("productionWorkspaceStatusCards", () => {
     expect(counts.readyToStart).toBe(1);
     expect(counts.waitingRmReturn).toBe(1);
   });
+
+  it("does not count RM-blocked zero-production rows as ready to start", () => {
+    expect(
+      classifyProductionQueueBucket({
+        workOrderId: 4,
+        workOrderNo: "WO-4",
+        itemName: "FG",
+        requiredQty: 100,
+        producedQty: 0,
+        balanceQty: 100,
+        nextAction: "PRODUCTION_PENDING",
+        rmReadinessGate: "WAITING_STORE_ISSUE",
+        rmReadyForProduction: false,
+      }),
+    ).toBeNull();
+  });
 });

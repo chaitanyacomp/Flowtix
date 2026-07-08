@@ -1,4 +1,5 @@
 import type { DashboardProductionStatusSource } from "./dashboardProductionStatus";
+import { classifyProductionQueueBucketFromBackend } from "./productionWorkspaceReadinessUx";
 
 export type ProductionWorkspaceStatusBucket =
   | "readyToStart"
@@ -13,22 +14,9 @@ export type RmReturnPendingRow = {
   workOrderNo?: string;
 };
 
-const EPS = 1e-6;
-
+/** @deprecated Prefer {@link classifyProductionQueueBucketFromBackend} — thin alias for call-site stability. */
 export function classifyProductionQueueBucket(row: DashboardProductionStatusSource): ProductionWorkspaceStatusBucket | null {
-  const next = String(row.nextAction ?? "").trim().toUpperCase();
-  const exec = String(row.productionExecutionStatus ?? "").trim().toUpperCase();
-
-  if (next === "QC_PENDING" || row.hasPendingQc) return "pendingQa";
-  if (next === "PRODUCTION_SHORTFALL_DECISION" || exec === "SHORTFALL_PENDING") return "shortfallDecision";
-  if (
-    next === "PRODUCTION_PENDING" &&
-    Number(row.producedQty ?? 0) <= EPS &&
-    exec !== "BLOCKED"
-  ) {
-    return "readyToStart";
-  }
-  return null;
+  return classifyProductionQueueBucketFromBackend(row);
 }
 
 export function buildProductionWorkspaceStatusCounts(

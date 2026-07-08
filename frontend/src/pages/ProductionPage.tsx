@@ -195,6 +195,12 @@ import { NoQtyMacroLifecycleStrip } from "../components/erp/production/NoQtyMacr
 import { deriveProductionConciseRmLabel } from "../lib/productionRmConciseStatus";
 import { formatFgQuantity, formatRmQuantity, productionQtyInputPlaceholder } from "../lib/quantityDisplay";
 import { parseProductionWorkspaceBucket } from "../lib/productionWorkspaceBucketFilter";
+import {
+  buildProductionQueueByLineId,
+  buildReadinessSeedFromQueueRow,
+  deriveConciseRmLabelFromQueueRow,
+  isQueueRmReadinessSufficient,
+} from "../lib/productionWorkspaceReadinessUx";
 
 function openWoQueueStatusLabel(rem: number, queueStatus?: string): string {
   if (queueStatus === "qc_pending") return "QC pending";
@@ -835,6 +841,10 @@ export function ProductionPage() {
     Record<number, ProdEntryRow[]>
   >({});
   const [noQtyProductionQueue, setNoQtyProductionQueue] = React.useState<DashboardProductionStatusSource[]>([]);
+  const productionQueueByLineId = React.useMemo(
+    () => buildProductionQueueByLineId(noQtyProductionQueue),
+    [noQtyProductionQueue],
+  );
 
   const shortcutHints = useShortcutHints({
     pageKey: "production",
@@ -2115,6 +2125,7 @@ export function ProductionPage() {
       const freshAdvance = await pickFreshExecutableProductionLine(
         queueLines.filter((line) => line.workOrderId !== confirmedWoId),
         fetchFreshProductionRmReadiness,
+        productionQueueByLineId,
       );
 
       if (freshAdvance?.line) {
@@ -2146,6 +2157,7 @@ export function ProductionPage() {
       fetchFreshProductionRmReadiness,
       openExecutableProductionLine,
       navigate,
+      productionQueueByLineId,
     ],
   );
 
@@ -2221,9 +2233,21 @@ export function ProductionPage() {
     fromNoQtySo || productionFlowMode === "NO_QTY" || navigateNoQtyContext;
   const showRegularRmReadiness = wolId > 0 && isRegularFlow;
   const showNoQtyRmStatus = wolId > 0 && isNoQtyFlow;
+  const selectedQueueRow = React.useMemo(
+    () => (wolId > 0 ? productionQueueByLineId.get(wolId) ?? null : null),
+    [productionQueueByLineId, wolId],
+  );
+  const queueSeededRmReadiness = React.useMemo(() => {
+    if (!selectedQueueRow || !isQueueRmReadinessSufficient(selectedQueueRow)) return null;
+    return buildReadinessSeedFromQueueRow(selectedQueueRow);
+  }, [selectedQueueRow]);
+  const effectiveRmReadiness = rmReadiness ?? queueSeededRmReadiness;
   const rmProductionEntryBlocked =
     (showRegularRmReadiness || showNoQtyRmStatus) &&
-    isRegularProductionEntryBlocked(rmReadiness, rmReadinessLoading);
+    isRegularProductionEntryBlocked(
+      effectiveRmReadiness,
+      rmReadinessLoading && !queueSeededRmReadiness,
+    );
 
   const selectedWoForLifecycle = React.useMemo(() => {
     const id = woId > 0 ? woId : selected?.workOrderId ?? 0;
@@ -2314,17 +2338,17 @@ export function ProductionPage() {
   /** Matches RM readiness strip headline ("Production allowed now"). */
   const rmAllowedNowQty = React.useMemo(() => {
     if (!showRegularRmReadiness) return null;
-    return resolveRegularRmAllowedNowQty(rmReadiness);
-  }, [showRegularRmReadiness, rmReadiness]);
+    return resolveRegularRmAllowedNowQty(effectiveRmReadiness);
+  }, [showRegularRmReadiness, effectiveRmReadiness]);
 
   /** Max qty for save/approve/clamp — same readiness payload, WO balance from API when present. */
   const rmEntryQtyCap = React.useMemo(() => {
     if ((!showRegularRmReadiness && !showNoQtyRmStatus) || !selectedMetrics) return null;
-    return resolveRegularRmEntryQtyCap(rmReadiness, {
+    return resolveRegularRmEntryQtyCap(effectiveRmReadiness, {
       lineWoRemaining: selectedMetrics.remainingQty,
       excludeProductionQty: editing?.workOrderLine?.id === wolId ? Number(editing.producedQty) : undefined,
     });
-  }, [showRegularRmReadiness, showNoQtyRmStatus, rmReadiness, selectedMetrics, editing, wolId]);
+  }, [showRegularRmReadiness, showNoQtyRmStatus, effectiveRmReadiness, selectedMetrics, editing, wolId]);
 
   const producedQtyWithinCaps = React.useMemo(() => {
     if (!producedQtyValid || producedQtyParsed == null) return false;
@@ -2375,7 +2399,16 @@ export function ProductionPage() {
     setRmReadinessLoading(loading);
   }, []);
 
-  const conciseRmLabel = React.useMemo(() => deriveProductionConciseRmLabel(rmReadiness), [rmReadiness]);
+  const conciseRmLabel = React.useMemo(() => {
+    if (rmReadiness) return deriveProductionConciseRmLabel(rmReadiness);
+    return deriveConciseRmLabelFromQueueRow(selectedQueueRow);
+  }, [rmReadiness, selectedQueueRow]);
+
+  const conciseRmInitialData = React.useMemo(() => {
+    if (seededRmReadiness?.workOrderLineId === wolId) return seededRmReadiness;
+    if (queueSeededRmReadiness?.workOrderLineId === wolId) return queueSeededRmReadiness;
+    return null;
+  }, [seededRmReadiness, queueSeededRmReadiness, wolId]);
 
   React.useEffect(() => {
     if (!showRegularRmReadiness && !showNoQtyRmStatus) {
@@ -2389,9 +2422,14 @@ export function ProductionPage() {
       setRmReadinessLoading(false);
       return;
     }
+    if (queueSeededRmReadiness?.workOrderLineId === wolId) {
+      setRmReadiness(queueSeededRmReadiness);
+      setRmReadinessLoading(false);
+      return;
+    }
     setRmReadiness(null);
     setRmReadinessLoading(true);
-  }, [showRegularRmReadiness, showNoQtyRmStatus, wolId, seededRmReadiness]);
+  }, [showRegularRmReadiness, showNoQtyRmStatus, wolId, seededRmReadiness, queueSeededRmReadiness]);
 
   const showRegularProductionEntry =
     !flowMismatchMessage && showRegularRmReadiness && !rmProductionEntryBlocked && !rmReadinessLoading;
@@ -2428,10 +2466,6 @@ export function ProductionPage() {
   }, [navigateNoQtyContext, focusSo?.currentCycleId, workOrders, woId]);
 
   React.useEffect(() => {
-    if (productionFlowMode !== "NO_QTY" && !navigateNoQtyContext) {
-      setNoQtyProductionQueue([]);
-      return;
-    }
     let cancelled = false;
     void apiFetch<DashboardProductionStatusSource[]>("/api/dashboard/production-queue")
       .then((data) => {
@@ -2443,7 +2477,7 @@ export function ProductionPage() {
     return () => {
       cancelled = true;
     };
-  }, [productionFlowMode, navigateNoQtyContext, liveTick]);
+  }, [liveTick]);
 
   const noQtyViewingPriorCycle = React.useMemo(() => {
     if (productionFlowMode !== "NO_QTY") return false;
@@ -5240,7 +5274,7 @@ export function ProductionPage() {
                             <ProductionConciseRmStatus
                               workOrderLineId={wolId}
                               refreshKey={liveTick + rmReadinessRefreshTick}
-                              initialData={seededRmReadiness?.workOrderLineId === wolId ? seededRmReadiness : null}
+                              initialData={conciseRmInitialData}
                               onLoaded={onRmReadinessLoaded}
                               onLoadingChange={onRmReadinessLoadingChange}
                               workstation
@@ -5790,7 +5824,7 @@ export function ProductionPage() {
                         <ProductionConciseRmStatus
                           workOrderLineId={wolId}
                           refreshKey={liveTick + rmReadinessRefreshTick}
-                          initialData={seededRmReadiness?.workOrderLineId === wolId ? seededRmReadiness : null}
+                          initialData={conciseRmInitialData}
                           onLoaded={onRmReadinessLoaded}
                           onLoadingChange={onRmReadinessLoadingChange}
                           workstation={embedNoQtyRecentEntries}
@@ -6204,7 +6238,7 @@ export function ProductionPage() {
                     <ProductionConciseRmStatus
                       workOrderLineId={wolId}
                       refreshKey={liveTick + rmReadinessRefreshTick}
-                      initialData={seededRmReadiness?.workOrderLineId === wolId ? seededRmReadiness : null}
+                      initialData={conciseRmInitialData}
                       onLoaded={onRmReadinessLoaded}
                       onLoadingChange={onRmReadinessLoadingChange}
                       className={productionPrimaryStripCoversMaterialCard ? "sr-only" : undefined}

@@ -8,6 +8,7 @@ import {
   PRODUCTION_STATUS_CARD_LABELS,
   type ProductionWorkspaceStatusBucket,
 } from "../../../lib/productionWorkspaceStatusCards";
+import { isQueueReadyToStart } from "../../../lib/productionWorkspaceReadinessUx";
 import { productionHrefFromDashboardRow } from "../../../lib/operationalWorkspaceLinks";
 import { useErpRefreshTick } from "../../../hooks/useErpRefreshTick";
 import { cn } from "../../../lib/utils";
@@ -33,11 +34,7 @@ function firstRowForBucket(
     ) {
       return row;
     }
-    if (
-      bucket === "readyToStart" &&
-      row.nextAction === "PRODUCTION_PENDING" &&
-      Number(row.producedQty ?? 0) <= 1e-6
-    ) {
+    if (bucket === "readyToStart" && isQueueReadyToStart(row)) {
       return row;
     }
   }

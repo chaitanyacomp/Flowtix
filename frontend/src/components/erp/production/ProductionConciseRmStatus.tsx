@@ -8,6 +8,7 @@ import {
   productionConciseRmTone,
   type ProductionConciseRmLabel,
 } from "../../../lib/productionRmConciseStatus";
+import { isSeededQueueRmReadiness } from "../../../lib/productionWorkspaceReadinessUx";
 import { rmControlCenterHref } from "../../../lib/materialWorkflowLinks";
 
 type Props = {
@@ -58,6 +59,7 @@ export function ProductionConciseRmStatus({
     }
     let cancelled = false;
     const seeded = initialData?.workOrderLineId === workOrderLineId ? initialData : null;
+    const skipFetch = Boolean(seeded && isSeededQueueRmReadiness(seeded) && refreshKey === 0);
     if (seeded) {
       setData(seeded);
       setLoading(false);
@@ -69,8 +71,14 @@ export function ProductionConciseRmStatus({
       onLoaded?.(null);
     }
     setErr(null);
+    if (skipFetch) {
+      return () => {
+        cancelled = true;
+        onLoadingChange?.(false);
+      };
+    }
     apiFetch<ProductionRmReadiness | { skipped: boolean }>(
-      `/api/production/work-order-lines/${workOrderLineId}/rm-readiness?fresh=${Date.now()}`,
+      `/api/production/work-order-lines/${workOrderLineId}/rm-readiness${refreshKey > 0 ? `?fresh=${Date.now()}` : ""}`,
     )
       .then((res) => {
         if (cancelled) return;

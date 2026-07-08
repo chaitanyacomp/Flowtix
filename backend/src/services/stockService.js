@@ -169,7 +169,11 @@ async function loadStockUsableByItemAndLocation(db = prisma) {
  */
 async function assertNonNegativeStockAfterNetChange(db, itemId, netInMinusOut, message, opts = {}) {
   const bucket = opts?.stockBucket ?? "USABLE";
-  const onHand = await getItemStockQty(itemId, db, { stockBucket: bucket, locationId: opts?.locationId });
+  const onHand = await getItemStockQty(itemId, db, {
+    stockBucket: bucket,
+    locationId: opts?.locationId,
+    ...(opts?.allLocations ? { allLocations: true } : {}),
+  });
   const after = onHand + Number(netInMinusOut);
   if (after < -STOCK_EPS) {
     const err = new Error(

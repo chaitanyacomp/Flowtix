@@ -2461,13 +2461,21 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QA"]), 
           ? Math.max(0, rejectedQty)
           : 0;
       // FG stock: accepted credits USABLE; rejected credits exactly one bucket (no double-count across buckets).
+      // QC FG postings resolve to FG Store (SCRAP → Scrap Yard). Stock reads MUST use the same
+      // locationId — default getItemStockQty scopes RM Store and would miss the FG credit
+      // (assertion "expected REWORK … got 0" while the txn exists on LOC-FG-STORE).
       const fgItemIdForAssert = prod.workOrderLine.fgItemId;
+      const qcStockLocationId = await createFgQcStockLocationResolver(tx);
+      const usableLocId = await qcStockLocationId("USABLE");
+      const reworkLocId = await qcStockLocationId("REWORK");
+      const holdLocId = await qcStockLocationId("QC_HOLD");
+      const scrapLocId = await qcStockLocationId("SCRAP");
       await assertNonNegativeStockAfterNetChange(
         tx,
         fgItemIdForAssert,
         acceptedQty,
         "Cannot post this QC: usable stock would go negative. Adjust quantities or refresh and try again.",
-        { stockBucket: "USABLE" },
+        { stockBucket: "USABLE", locationId: usableLocId },
       );
       if (hasSplit) {
         if (splitRework > WO_SO_EPS) {
@@ -2476,7 +2484,7 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QA"]), 
             fgItemIdForAssert,
             splitRework,
             "Cannot post this QC: rework bucket would go negative. Adjust rework split or refresh.",
-            { stockBucket: "REWORK" },
+            { stockBucket: "REWORK", locationId: reworkLocId },
           );
         }
         if (splitHold > WO_SO_EPS) {
@@ -2485,7 +2493,7 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QA"]), 
             fgItemIdForAssert,
             splitHold,
             "Cannot post this QC: QC hold bucket would go negative. Adjust hold split or refresh.",
-            { stockBucket: "QC_HOLD" },
+            { stockBucket: "QC_HOLD", locationId: holdLocId },
           );
         }
         if (splitScrap > WO_SO_EPS) {
@@ -2494,7 +2502,7 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QA"]), 
             fgItemIdForAssert,
             splitScrap,
             "Cannot post this QC: scrap bucket would go negative. Adjust scrap split or refresh.",
-            { stockBucket: "SCRAP" },
+            { stockBucket: "SCRAP", locationId: scrapLocId },
           );
         }
       } else if (ledgerRejectedBucket === "USABLE") {
@@ -2503,7 +2511,7 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QA"]), 
           fgItemIdForAssert,
           rejectedQty,
           "Cannot post this QC: usable stock would go negative. Adjust rejected quantity or refresh.",
-          { stockBucket: "USABLE" },
+          { stockBucket: "USABLE", locationId: usableLocId },
         );
       } else if (ledgerRejectedBucket === "QC_HOLD") {
         await assertNonNegativeStockAfterNetChange(
@@ -2511,7 +2519,7 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QA"]), 
           fgItemIdForAssert,
           rejectedQty,
           "Cannot post this QC: QC hold bucket would go negative. Adjust rejected quantity or refresh.",
-          { stockBucket: "QC_HOLD" },
+          { stockBucket: "QC_HOLD", locationId: holdLocId },
         );
       } else if (ledgerRejectedBucket === "REWORK") {
         await assertNonNegativeStockAfterNetChange(
@@ -2519,7 +2527,7 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QA"]), 
           fgItemIdForAssert,
           rejectedQty,
           "Cannot post this QC: rework bucket would go negative. Adjust rejected quantity or refresh.",
-          { stockBucket: "REWORK" },
+          { stockBucket: "REWORK", locationId: reworkLocId },
         );
       } else if (ledgerRejectedBucket === "QC_PENDING") {
         await assertNonNegativeStockAfterNetChange(
@@ -2527,7 +2535,7 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QA"]), 
           fgItemIdForAssert,
           rejectedQty,
           "Cannot post this QC: awaiting-QC bucket would go negative. Adjust rejected quantity or refresh.",
-          { stockBucket: "QC_PENDING" },
+          { stockBucket: "QC_PENDING", locationId: usableLocId },
         );
       } else if (ledgerRejectedBucket === "SCRAP") {
         await assertNonNegativeStockAfterNetChange(
@@ -2535,7 +2543,7 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QA"]), 
           fgItemIdForAssert,
           rejectedQty,
           "Cannot post this QC: scrap bucket would go negative. Adjust rejected quantity or refresh.",
-          { stockBucket: "SCRAP" },
+          { stockBucket: "SCRAP", locationId: scrapLocId },
         );
       }
 
@@ -2554,7 +2562,6 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QA"]), 
       });
 
       const woId = prod.workOrderLine.workOrderId;
-      const qcStockLocationId = await createFgQcStockLocationResolver(tx);
       // IMPORTANT: these must be declared before any REWORK pre/post reads (REWORK bucket, not production WO).
       /** @type {number | undefined} */
       let reworkStockGlobalBefore;
@@ -2598,16 +2605,20 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QA"]), 
           }
           createdDispositionId = createdDispositionId ?? dispId;
 
-          reworkStockGlobalBefore = await getItemStockQty(fgItemIdForAssert, tx, { stockBucket: "REWORK" });
+          reworkStockGlobalBefore = await getItemStockQty(fgItemIdForAssert, tx, {
+            stockBucket: "REWORK",
+            locationId: reworkLocId,
+          });
           ownedReworkStockBefore = await getItemStockQty(fgItemIdForAssert, tx, {
             stockBucket: "REWORK",
+            locationId: reworkLocId,
             qcRejectedDispositionId: dispId,
           });
 
           reworkOwnedStockTxn = await tx.stockTransaction.create({
             data: {
               itemId: fgItemIdForAssert,
-              locationId: await qcStockLocationId("REWORK"),
+              locationId: reworkLocId,
               transactionType: "QC",
               refId: created.id,
               qcRejectedDispositionId: dispId,
@@ -2655,7 +2666,7 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QA"]), 
           await tx.stockTransaction.create({
             data: {
               itemId: fgItemIdForAssert,
-              locationId: await qcStockLocationId("QC_HOLD"),
+              locationId: holdLocId,
               transactionType: "QC",
               refId: created.id,
               qcRejectedDispositionId: dispHoldId,
@@ -2673,7 +2684,7 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QA"]), 
           await tx.stockTransaction.create({
             data: {
               itemId: fgItemIdForAssert,
-              locationId: await qcStockLocationId("SCRAP"),
+              locationId: scrapLocId,
               transactionType: "QC",
               refId: created.id,
               stockBucket: "SCRAP",
@@ -2719,16 +2730,20 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QA"]), 
             throw err;
           }
 
-          reworkStockGlobalBefore = await getItemStockQty(fgItemIdForAssert, tx, { stockBucket: "REWORK" });
+          reworkStockGlobalBefore = await getItemStockQty(fgItemIdForAssert, tx, {
+            stockBucket: "REWORK",
+            locationId: reworkLocId,
+          });
           ownedReworkStockBefore = await getItemStockQty(fgItemIdForAssert, tx, {
             stockBucket: "REWORK",
+            locationId: reworkLocId,
             qcRejectedDispositionId: createdDispositionId,
           });
 
           reworkOwnedStockTxn = await tx.stockTransaction.create({
             data: {
               itemId: fgItemIdForAssert,
-              locationId: await qcStockLocationId("REWORK"),
+              locationId: reworkLocId,
               transactionType: "QC",
               refId: created.id,
               qcRejectedDispositionId: createdDispositionId,
@@ -2782,7 +2797,7 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QA"]), 
           await tx.stockTransaction.create({
             data: {
               itemId: fgItemIdForAssert,
-              locationId: await qcStockLocationId("QC_HOLD"),
+              locationId: holdLocId,
               transactionType: "QC",
               refId: created.id,
               qcRejectedDispositionId: dispHoldId,
@@ -2845,15 +2860,19 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QA"]), 
       /** @type {number | undefined} */
       let stockAfter;
       if (affectsUsableFg || affectsRejectedBucket) {
-        stockBefore = await getItemStockQty(fgItemId, tx);
+        stockBefore = await getItemStockQty(fgItemId, tx, { locationId: usableLocId });
       }
       if (affectsReworkBucketPosting) {
         if (reworkStockGlobalBefore === undefined) {
-          reworkStockGlobalBefore = await getItemStockQty(fgItemId, tx, { stockBucket: "REWORK" });
+          reworkStockGlobalBefore = await getItemStockQty(fgItemId, tx, {
+            stockBucket: "REWORK",
+            locationId: reworkLocId,
+          });
         }
         if (createdDispositionId != null && ownedReworkStockBefore === undefined) {
           ownedReworkStockBefore = await getItemStockQty(fgItemId, tx, {
             stockBucket: "REWORK",
+            locationId: reworkLocId,
             qcRejectedDispositionId: createdDispositionId,
           });
         }
@@ -2862,7 +2881,7 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QA"]), 
         await tx.stockTransaction.create({
           data: {
             itemId: fgItemId,
-            locationId: await qcStockLocationId("USABLE"),
+            locationId: usableLocId,
             transactionType: "QC",
             refId: created.id,
             stockBucket: "USABLE",
@@ -2872,10 +2891,18 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QA"]), 
         });
       }
       if (affectsRejectedBucketPosting) {
+        const rejectedPostLocId =
+          ledgerRejectedBucket === "SCRAP"
+            ? scrapLocId
+            : ledgerRejectedBucket === "QC_HOLD"
+              ? holdLocId
+              : ledgerRejectedBucket === "REWORK"
+                ? reworkLocId
+                : usableLocId;
         await tx.stockTransaction.create({
           data: {
             itemId: fgItemId,
-            locationId: await qcStockLocationId(ledgerRejectedBucket),
+            locationId: rejectedPostLocId,
             transactionType: "QC",
             refId: created.id,
             stockBucket: ledgerRejectedBucket,
@@ -2885,13 +2912,17 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QA"]), 
         });
       }
       if (affectsUsableFg || affectsRejectedBucket) {
-        stockAfter = await getItemStockQty(fgItemId, tx);
+        stockAfter = await getItemStockQty(fgItemId, tx, { locationId: usableLocId });
       }
       if (affectsReworkBucketPosting) {
-        reworkStockGlobalAfter = await getItemStockQty(fgItemId, tx, { stockBucket: "REWORK" });
+        reworkStockGlobalAfter = await getItemStockQty(fgItemId, tx, {
+          stockBucket: "REWORK",
+          locationId: reworkLocId,
+        });
         if (createdDispositionId != null) {
           ownedReworkStockAfter = await getItemStockQty(fgItemId, tx, {
             stockBucket: "REWORK",
+            locationId: reworkLocId,
             qcRejectedDispositionId: createdDispositionId,
           });
         }
@@ -2917,7 +2948,10 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QA"]), 
 
       // Split rework: verify global + owned REWORK deltas match splitRework.
       if (hasSplit && splitRework > WO_SO_EPS && createdDispositionId != null) {
-        const afterGlobal = await getItemStockQty(fgItemId, tx, { stockBucket: "REWORK" });
+        const afterGlobal = await getItemStockQty(fgItemId, tx, {
+          stockBucket: "REWORK",
+          locationId: reworkLocId,
+        });
         const beforeGlobal = Number(reworkStockGlobalBefore ?? 0);
         if (Math.abs(Number(afterGlobal) - beforeGlobal - splitRework) > 1e-6) {
           const err = new Error(
@@ -2928,6 +2962,7 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QA"]), 
         }
         const ownedAfter = await getItemStockQty(fgItemId, tx, {
           stockBucket: "REWORK",
+          locationId: reworkLocId,
           qcRejectedDispositionId: createdDispositionId,
         });
         const ownedBefore = Number(ownedReworkStockBefore ?? 0);

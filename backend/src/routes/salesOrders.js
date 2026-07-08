@@ -13,7 +13,9 @@ const {
   DISPATCH_WRITE_ROLES,
   MATERIAL_REQUISITION_WRITE_ROLES,
 } = require("../constants/erpRoles");
-const { createSalesOrderFromPo } = require("../services/salesOrderFromPo");
+const {
+  sumUnbilledLockedDispatchQtyBySoIdForNoQty,
+} = require("../services/salesBillEligibility");
 const { rmCheckForSalesOrder } = require("../services/rmCheckService");
 const { createMaterialRequirementFromWoPlanning } = require("../services/materialPlanningService");
 const { blockProcurementDemandWhenPlanningDriven } = require("../middleware/planningDrivenProcurementGuard");
@@ -649,7 +651,6 @@ salesOrderRouter.get(
       /** @type {Map<number, number>} */
       const unbilledBySoId = new Map();
       if (noQtyIds.length) {
-        /** Effective cycle for list attribution: ACTIVE (preferred) wins over stale/null SalesOrder.currentCycleId. */
         /** @type {Map<number, number>} */
         const currentCycleIdBySoId = new Map();
         for (const s of staged) {
@@ -659,32 +660,8 @@ salesOrderRouter.get(
           const eff = pref?.id ?? (Number.isFinite(ptr) && ptr > 0 ? ptr : 0);
           if (Number.isFinite(eff) && eff > 0) currentCycleIdBySoId.set(s.id, eff);
         }
-
-        const lockedForward = await prisma.dispatch.findMany({
-          where: {
-            soId: { in: noQtyIds },
-            reversalOfId: null,
-            workflowStatus: "LOCKED",
-          },
-          select: { id: true, soId: true, dispatchedQty: true, cycleId: true },
-        });
-        const dispatchIds = lockedForward.map((d) => d.id);
-        const existingBills = dispatchIds.length
-          ? await prisma.salesBill.findMany({
-              where: { dispatchId: { in: dispatchIds }, status: { in: ["DRAFT", "FINALIZED"] } },
-              select: { dispatchId: true },
-            })
-          : [];
-        const billedDispatchIds = new Set(existingBills.map((b) => b.dispatchId));
-        for (const d of lockedForward) {
-          if (billedDispatchIds.has(d.id)) continue;
-          const currentCycleId = currentCycleIdBySoId.get(d.soId) ?? 0;
-          // NO_QTY list stage must reflect current active cycle only.
-          if (!currentCycleId || Number(d.cycleId) !== Number(currentCycleId)) continue;
-          const q = Number(d.dispatchedQty ?? 0);
-          if (!Number.isFinite(q) || q <= 0) continue;
-          unbilledBySoId.set(d.soId, (unbilledBySoId.get(d.soId) ?? 0) + q);
-        }
+        const summed = await sumUnbilledLockedDispatchQtyBySoIdForNoQty(prisma, noQtyIds, currentCycleIdBySoId);
+        for (const [soId, qty] of summed) unbilledBySoId.set(soId, qty);
       }
 
       // NO_QTY stage clarity: does the current cycle have at least one requirement sheet yet?

@@ -1915,6 +1915,13 @@ model SalesBill {
   remarks    String?         @db.Text
   status     SalesBillStatus @default(DRAFT)
 
+  /// Equals dispatchId while status is DRAFT/FINALIZED (non-cancelled); null when CANCELLED — enforces one active bill per dispatch.
+  activeBillDispatchKey Int? @unique
+  /// Set when dispatch is reversed after finalize; invoice snapshot unchanged — commercial correction is a future workflow.
+  billingAdjustmentRequired   Boolean   @default(false)
+  billingAdjustmentRequiredAt DateTime?
+  billingAdjustmentReason     String?   @db.Text
+
   /// Snapshots / traceability
   customerNameSnapshot      String    @default("") @db.VarChar(256)
   customerStateNameSnapshot String    @default("") @db.VarChar(128)

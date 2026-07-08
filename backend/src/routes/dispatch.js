@@ -49,6 +49,7 @@ const {
   buildDispatchDraftLockEligibilityContext,
   attachDraftLockEligibilityToDispatchRows,
 } = require("../services/dispatchDraftLockEligibility");
+const { loadPrimaryBillSummaryByDispatchId } = require("../services/salesBillEligibility");
 const { assertAdminPassword } = require("../services/adminPasswordAuth");
 const { DISPATCH_WRITE_ROLES, DISPATCH_READ_ROLES, QC_PAGE_ROLES } = require("../constants/erpRoles");
 const {
@@ -2318,21 +2319,9 @@ dispatchRouter.get("/ledger", requireAuth, requireRole(DISPATCH_READ_ROLES), asy
     ]);
 
     const dispatchIds = rows.map((d) => d.id);
-    /** @type {Map<number, { id: number; isExported: boolean; status: string }>} */
-    const billByDispatchId = new Map();
-    if (dispatchIds.length) {
-      const bills = await prisma.salesBill.findMany({
-        where: { dispatchId: { in: dispatchIds } },
-        select: { id: true, dispatchId: true, isExported: true, status: true },
-      });
-      for (const b of bills) {
-        billByDispatchId.set(Number(b.dispatchId), {
-          id: Number(b.id),
-          isExported: Boolean(b.isExported),
-          status: String(b.status),
-        });
-      }
-    }
+    const billByDispatchId = dispatchIds.length
+      ? await loadPrimaryBillSummaryByDispatchId(prisma, dispatchIds)
+      : new Map();
 
     const payload = rows.map((d) => ({
       id: d.id,
@@ -2357,6 +2346,8 @@ dispatchRouter.get("/ledger", requireAuth, requireRole(DISPATCH_READ_ROLES), asy
       salesBillExists: billByDispatchId.has(Number(d.id)),
       salesBillIsExported: billByDispatchId.get(Number(d.id))?.isExported === true,
       salesBillStatus: billByDispatchId.get(Number(d.id))?.status ?? null,
+      salesBillBillingAdjustmentRequired:
+        billByDispatchId.get(Number(d.id))?.billingAdjustmentRequired === true,
     }));
 
     // Ensure includeDispatchId row is present even if outside pagination slice.
@@ -2369,10 +2360,8 @@ dispatchRouter.get("/ledger", requireAuth, requireRole(DISPATCH_READ_ROLES), asy
         },
       });
       if (extra) {
-        const bill = await prisma.salesBill.findFirst({
-          where: { dispatchId: extra.id },
-          select: { id: true, isExported: true, status: true },
-        });
+        const billMap = await loadPrimaryBillSummaryByDispatchId(prisma, [extra.id]);
+        const bill = billMap.get(Number(extra.id)) ?? null;
         payload.unshift({
           id: extra.id,
           date: extra.date,
@@ -2395,6 +2384,7 @@ dispatchRouter.get("/ledger", requireAuth, requireRole(DISPATCH_READ_ROLES), asy
           salesBillExists: Boolean(bill),
           salesBillIsExported: bill?.isExported === true,
           salesBillStatus: bill?.status ?? null,
+          salesBillBillingAdjustmentRequired: bill?.billingAdjustmentRequired === true,
         });
       }
     }
@@ -3596,7 +3586,7 @@ dispatchRouter.post(
       reason: z.string().min(1, "Reversal reason is required."),
       /** NO_QTY only: ADMIN acknowledgement for correcting a dispatch from a historical cycle. */
       confirmHistoricalCycleReversal: z.boolean().optional(),
-      /** Required only when exported-to-Tally. */
+      /** Required when an active finalized sales bill exists, or when bill was exported to Tally. */
       adminPassword: z.string().min(1).optional(),
     });
     const body = schema.parse(req.body);
@@ -3657,13 +3647,22 @@ dispatchRouter.post(
         throw err;
       }
 
-      // Block reversal after Tally export unless admin explicitly overrides.
-      const bill = await tx.salesBill.findFirst({
-        where: { dispatchId: original.id },
+      // Active finalized bill or Tally export: ADMIN password confirms commercial impact; reversal still proceeds (inventory first).
+      const activeFinalizedBill = await tx.salesBill.findFirst({
+        where: { dispatchId: original.id, status: "FINALIZED", cancelledAt: null },
         select: { id: true, isExported: true },
       });
-      const isExportedToTally = bill?.isExported === true;
-      if (isExportedToTally) {
+      const requiresAdminConfirmation = activeFinalizedBill != null;
+      const isExportedToTally = activeFinalizedBill?.isExported === true;
+      if (requiresAdminConfirmation) {
+        const password = typeof body.adminPassword === "string" ? body.adminPassword.trim() : "";
+        if (!password) {
+          const err = new Error(
+            "Admin password required when reversing dispatch with an active finalized sales bill.",
+          );
+          err.statusCode = 409;
+          throw err;
+        }
         await assertAdminPassword(tx, { userId, password: body.adminPassword });
       }
 
@@ -3772,16 +3771,22 @@ dispatchRouter.post(
         });
       }
 
-      // If the original dispatch was already exported (via its sales bill), automatically reset export status.
-      // This is required to prevent accounting inconsistencies and to allow re-export after correction.
-      if (isExportedToTally && bill?.id) {
+      // Commercial snapshot unchanged; flag adjustment for future credit note / return workflow.
+      if (activeFinalizedBill?.id) {
         await tx.salesBill.update({
-          where: { id: bill.id },
+          where: { id: activeFinalizedBill.id },
           data: {
-            isExported: false,
-            exportResetAt: new Date(),
-            exportResetReason: `Auto reset on dispatch reversal: ${reasonTrim}`.slice(0, 2000),
-            exportResetById: userId,
+            billingAdjustmentRequired: true,
+            billingAdjustmentRequiredAt: new Date(),
+            billingAdjustmentReason: `Dispatch reversal (${body.reverseQty} qty): ${reasonTrim}`.slice(0, 2000),
+            ...(isExportedToTally
+              ? {
+                  isExported: false,
+                  exportResetAt: new Date(),
+                  exportResetReason: `Auto reset on dispatch reversal: ${reasonTrim}`.slice(0, 2000),
+                  exportResetById: userId,
+                }
+              : {}),
           },
         });
       }
@@ -3806,7 +3811,7 @@ dispatchRouter.post(
         },
         reason: reasonTrim,
         isExportedToTally,
-        adminPasswordVerified: isExportedToTally ? true : false,
+        adminPasswordVerified: requiresAdminConfirmation ? true : false,
         noQtyHistoricalCycleReversal:
           so.orderType === "NO_QTY"
             ? {
@@ -3815,9 +3820,10 @@ dispatchRouter.post(
                 dispatchCycleId: normalizePositiveCycleId(original.cycleId),
               }
             : undefined,
-        salesBill: bill?.id
+        salesBill: activeFinalizedBill?.id
           ? {
-              id: bill.id,
+              id: activeFinalizedBill.id,
+              billingAdjustmentRequired: true,
               exportReset: isExportedToTally ? true : false,
             }
           : null,

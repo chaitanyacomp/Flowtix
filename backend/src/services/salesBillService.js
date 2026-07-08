@@ -15,6 +15,13 @@ const {
   listActiveCustomerDeliveryAddresses,
   resolveShipToAddress,
 } = require("./salesOrderCommercialAddress");
+const {
+  BILLABLE_FORWARD_DISPATCH_WHERE,
+  BILLABLE_SALES_ORDER_WHERE,
+  isPositiveDispatchQty,
+  loadFinalizedBillDispatchIdSet,
+  assertDispatchEligibleForBillingFinalize,
+} = require("./salesBillEligibility");
 
 function round2(n) {
   return Math.round(Number(n) * 100) / 100;
@@ -298,30 +305,14 @@ async function getEligibleDispatches(prisma) {
   // Eligible = forward LOCKED dispatch rows with qty>0 and without an active (draft/finalized) sales bill.
   const dispatches = await prisma.dispatch.findMany({
     where: {
-      reversalOfId: null,
-      workflowStatus: "LOCKED",
-      // Revenue dispatch only: exclude replacement / non-revenue sales orders.
-      salesOrder: {
-        OR: [
-          // NO_QTY dispatch is operational (cycle+stock) and may occur while SO internalStatus is still DRAFT.
-          { orderType: "NO_QTY" },
-          // NORMAL flow: keep approval dependency (exclude drafts).
-          { orderType: "NORMAL", internalStatus: { not: "DRAFT" } },
-        ],
-      },
+      ...BILLABLE_FORWARD_DISPATCH_WHERE,
+      salesOrder: BILLABLE_SALES_ORDER_WHERE,
     },
     orderBy: { id: "desc" },
     include: { salesOrder: { include: { customer: { include: { stateRef: true } }, po: { include: { customer: true } }, lines: true } }, item: true },
   });
   const ids = dispatches.map((d) => d.id);
-  const finalized = await prisma.salesBill.findMany({
-    where: {
-      dispatchId: { in: ids },
-      status: "FINALIZED",
-      cancelledAt: null,
-    },
-    select: { dispatchId: true },
-  });
+  const finalizedBlocked = await loadFinalizedBillDispatchIdSet(prisma, ids);
   const drafts = await prisma.salesBill.findMany({
     where: {
       dispatchId: { in: ids },
@@ -331,7 +322,6 @@ async function getEligibleDispatches(prisma) {
     select: { id: true, dispatchId: true },
     orderBy: { id: "desc" },
   });
-  const blocked = new Set(finalized.map((x) => x.dispatchId));
   const draftByDispatchId = new Map();
   for (const d of drafts) {
     if (!draftByDispatchId.has(d.dispatchId)) {
@@ -339,7 +329,8 @@ async function getEligibleDispatches(prisma) {
     }
   }
   return dispatches
-    .filter((d) => !blocked.has(d.id) && Number(d.dispatchedQty) > 0)
+    .filter((d) => !finalizedBlocked.has(d.id))
+    .filter((d) => isPositiveDispatchQty(d.dispatchedQty))
     .map((d) => ({
       dispatchId: d.id,
       dispatchNo: d.docNo || `D-${String(d.id).padStart(2, "0")}-${String(d.id).padStart(4, "0")}`,
@@ -433,7 +424,8 @@ async function refreshNoQtyDraftLinesFromContract(tx, billId, billDateUtc) {
 
 async function createDraftFromDispatch(prisma, dispatchId, opts = {}) {
   if (!Number.isFinite(dispatchId) || dispatchId <= 0) throw friendlyError("Invalid dispatch id");
-  return prisma.$transaction(async (tx) => {
+  try {
+    return await prisma.$transaction(async (tx) => {
     const existing = await tx.salesBill.findFirst({
       where: { dispatchId, status: { in: ["DRAFT", "FINALIZED"] } },
       orderBy: { id: "desc" },
@@ -558,6 +550,7 @@ async function createDraftFromDispatch(prisma, dispatchId, opts = {}) {
         billDate,
         customerId: customer.id,
         dispatchId: dispatch.id,
+        activeBillDispatchKey: dispatch.id,
         cycleId: dispatch.cycleId ?? null,
         remarks: null,
         status: "DRAFT",
@@ -580,7 +573,13 @@ async function createDraftFromDispatch(prisma, dispatchId, opts = {}) {
     });
 
     return { bill: withSalesBillGstBreakup(created, { intraState: intra, companyState }), created: true };
-  });
+    });
+  } catch (e) {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") {
+      throw friendlyError("Sales Bill already exists for this dispatch.", 409);
+    }
+    throw e;
+  }
 }
 
 async function updateDraft(prisma, billId, body) {
@@ -714,6 +713,7 @@ async function finalizeBill(prisma, billId, userId) {
     });
     if (!bill) throw friendlyError("Sales bill not found.", 404);
     if (bill.status !== "DRAFT") throw friendlyError("This bill is already finalized or cancelled.");
+    await assertDispatchEligibleForBillingFinalize(tx, bill.dispatchId);
     if (
       !bill.customer?.stateRef?.stateCode &&
       !trimCommercialSnapshot(bill.customerStateCodeSnapshot)
@@ -788,6 +788,7 @@ async function cancelBill(prisma, billId, { reason, userId }) {
       where: { id: billId },
       data: {
         status: "CANCELLED",
+        activeBillDispatchKey: null,
         cancelledAt: new Date(),
         cancelledById: typeof userId === "number" ? userId : null,
         cancelReason: reasonTrim,

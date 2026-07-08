@@ -52,6 +52,7 @@ const { attachRmReadinessToProductionQueueRows } = require("./productionRmReadin
 const { buildMaterialAvailabilityWorkspace } = require("./materialAvailabilityWorkspaceService");
 const { loadStoreProductionReleaseEligibilityByWorkOrder } = require("./productionMaterialRequestService");
 const { getSalesOrderFgWorkOrderBalances } = require("./workOrderSoValidation");
+const { loadNoQtyCycleBillingPendingBySoCycle } = require("./salesBillEligibility");
 const { getEligibleDispatches } = require("./salesBillService");
 const { isDispatchOpenListLineCandidate } = require("./dispatchOpenListEligibility");
 const { loadStoreDispatchWorkflowTriggerSet } = require("./dispatchWorkflowTriggers");
@@ -689,39 +690,7 @@ function buildDashboardActionLabel(nextAction) {
  * and no FINALIZED (non-cancelled) sales bill — billing still required before treating the cycle as past dispatch.
  */
 async function loadNoQtySalesBillPendingBySoCycle(prisma, salesOrderCyclePairs) {
-  const pairs = (salesOrderCyclePairs || []).filter((p) => p.salesOrderId != null && p.cycleId != null);
-  if (pairs.length === 0) return new Map();
-
-  const dispatches = await prisma.dispatch.findMany({
-    where: {
-      OR: pairs.map((p) => ({ soId: p.salesOrderId, cycleId: p.cycleId })),
-      reversalOfId: null,
-      workflowStatus: "LOCKED",
-    },
-    select: { id: true, soId: true, cycleId: true, dispatchedQty: true },
-  });
-  const fwd = dispatches.filter((d) => Number(d.dispatchedQty) > QUEUE_EPS);
-  if (fwd.length === 0) return new Map();
-
-  const finalized = await prisma.salesBill.findMany({
-    where: {
-      dispatchId: { in: fwd.map((d) => d.id) },
-      status: "FINALIZED",
-      cancelledAt: null,
-    },
-    select: { dispatchId: true },
-  });
-  const finalizedSet = new Set(finalized.map((x) => x.dispatchId));
-
-  /** @type {Map<string, boolean>} */
-  const out = new Map();
-  for (const d of fwd) {
-    if (finalizedSet.has(d.id)) continue;
-    const cyc = normalizePositiveCycleId(d.cycleId);
-    if (cyc == null) continue;
-    out.set(`${d.soId}:${cyc}`, true);
-  }
-  return out;
+  return loadNoQtyCycleBillingPendingBySoCycle(prisma, salesOrderCyclePairs);
 }
 
 /**

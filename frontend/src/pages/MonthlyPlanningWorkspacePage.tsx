@@ -2051,54 +2051,70 @@ export function MonthlyPlanningWorkspacePage() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-1.5 p-2 sm:p-3">
-      {/* Header */}
-      <div className="rounded-md border border-slate-200 bg-white px-2 py-1.5 shadow-sm">
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-          <div className="flex items-center gap-2">
-            <label className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-              Plan period
-            </label>
-            <Input
-              type="month"
-              value={period}
-              onChange={(e) => applyPeriod(e.target.value)}
-              className="h-9 w-[11rem] shrink-0"
-            />
+      {/* Header — compact toolbar: selectors | meta strip | actions */}
+      <div className="rounded-md border border-slate-200 bg-white px-2 py-1 shadow-sm">
+        <div className="flex min-h-9 flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-2">
+          <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1">
+            <div className="flex items-center gap-2">
+              <label className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                Plan period
+              </label>
+              <Input
+                type="month"
+                value={period}
+                onChange={(e) => applyPeriod(e.target.value)}
+                className="h-9 w-[11rem] shrink-0"
+              />
+            </div>
+
+            {shouldShowPlanSelector(periodPlans) ? (
+              <div className="flex min-w-0 items-center gap-2">
+                <label className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                  Plan document
+                </label>
+                <NativeSelect
+                  value={String(selectedPlanId ?? plan?.id ?? "")}
+                  onChange={(e) => onSelectPlan(Number(e.target.value))}
+                  className="h-9 min-w-[12rem] max-w-[min(100%,24rem)]"
+                  disabled={loading || periodPlans.length <= 1}
+                >
+                  {periodPlans.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {resolvePlanDisplayLabel(p)} · {formatPlanKindLabel(p.planKind)} ·{" "}
+                      {formatPlanStatusLabel(p.status)}
+                    </option>
+                  ))}
+                </NativeSelect>
+              </div>
+            ) : null}
           </div>
 
-          {shouldShowPlanSelector(periodPlans) ? (
-            <div className="flex min-w-0 items-center gap-2">
-              <label className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                Plan document
-              </label>
-              <NativeSelect
-                value={String(selectedPlanId ?? plan?.id ?? "")}
-                onChange={(e) => onSelectPlan(Number(e.target.value))}
-                className="h-9 min-w-[12rem] max-w-[min(100%,26rem)]"
-                disabled={loading || periodPlans.length <= 1}
-              >
-                {periodPlans.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {resolvePlanDisplayLabel(p)} · {formatPlanKindLabel(p.planKind)} ·{" "}
-                    {formatPlanStatusLabel(p.status)}
-                  </option>
-                ))}
-              </NativeSelect>
-            </div>
-          ) : null}
-
           {planExists && plan ? (
-            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
-              <Badge variant={planStatusBadgeVariant(plan.status)} className="text-[11px]">
+            <div
+              className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden sm:px-1"
+              title={[
+                plan.docNo,
+                plan.lockedAt ? `Submitted ${new Date(plan.lockedAt).toLocaleDateString()}` : null,
+                plan.createdAt ? `Created ${new Date(plan.createdAt).toLocaleDateString()}` : null,
+              ]
+                .filter(Boolean)
+                .join(" · ")}
+            >
+              <Badge variant={planStatusBadgeVariant(plan.status)} className="shrink-0 text-[11px]">
                 {formatPlanStatusLabel(plan.status)}
               </Badge>
+              {plan.planKind ? (
+                <Badge variant="default" className="shrink-0 text-[11px]">
+                  {formatPlanKindLabel(plan.planKind)}
+                </Badge>
+              ) : null}
               {!shouldShowPlanSelector(periodPlans) ? (
-                <span className="text-[12px] font-semibold text-slate-800">
+                <span className="shrink-0 text-[12px] font-semibold text-slate-800">
                   {resolvePlanDisplayLabel(plan)}
                 </span>
               ) : null}
               {isLegacyPlan ? (
-                <span className="inline-flex items-center gap-0.5" title={LEGACY_PLAN_INFO_TOOLTIP}>
+                <span className="inline-flex shrink-0 items-center gap-0.5" title={LEGACY_PLAN_INFO_TOOLTIP}>
                   <Badge variant="warning" className="text-[11px]">
                     {LEGACY_PLAN_BADGE_LABEL}
                   </Badge>
@@ -2106,46 +2122,47 @@ export function MonthlyPlanningWorkspacePage() {
                   <span className="sr-only">{LEGACY_PLAN_INFO_TOOLTIP}</span>
                 </span>
               ) : null}
-              {plan.planKind ? (
-                <Badge variant="default" className="text-[11px]">
-                  {formatPlanKindLabel(plan.planKind)}
-                </Badge>
-              ) : null}
               {isHistoricalPlanDocument(plan, periodPlans) ? (
-                <Badge variant="default" className="text-[11px]">
+                <Badge variant="default" className="shrink-0 text-[11px]">
                   Historical
                 </Badge>
               ) : null}
               {isDraftForNextRevision ? (
-                <span className="text-[11px] text-blue-800">
+                <span className="shrink-0 text-[11px] text-blue-800">
                   Draft for snapshot {plan.currentRevision + 1}
                 </span>
               ) : null}
-              <span className="text-[11px] text-slate-500">
-                {[
-                  plan.docNo,
-                  isLegacyPlan ? `Snapshot ${plan.currentRevision}` : null,
-                  plan.lockedAt
-                    ? `Submitted ${new Date(plan.lockedAt).toLocaleDateString()}`
-                    : null,
-                  plan.createdAt ? `Created ${new Date(plan.createdAt).toLocaleDateString()}` : null,
-                ]
-                  .filter(Boolean)
-                  .join(" · ")}
-              </span>
+              {plan.docNo ? (
+                <span className="min-w-0 truncate text-[11px] font-medium text-slate-700">{plan.docNo}</span>
+              ) : null}
+              {plan.lockedAt ? (
+                <span className="hidden shrink-0 text-[10px] text-slate-500 xl:inline">
+                  Submitted {new Date(plan.lockedAt).toLocaleDateString()}
+                </span>
+              ) : null}
+              {plan.createdAt ? (
+                <span className="hidden shrink-0 text-[10px] text-slate-500 xl:inline">
+                  Created {new Date(plan.createdAt).toLocaleDateString()}
+                </span>
+              ) : null}
+              {isLegacyPlan ? (
+                <span className="hidden shrink-0 text-[10px] text-slate-500 lg:inline">
+                  Snapshot {plan.currentRevision}
+                </span>
+              ) : null}
             </div>
           ) : (
-            <span className="text-[12px] text-slate-500">No production plan created yet.</span>
+            <span className="min-w-0 flex-1 text-[12px] text-slate-500">No production plan created yet.</span>
           )}
 
-          <div className="ml-auto flex flex-wrap items-center gap-1.5">
+          <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5 sm:ml-auto">
             <Button
               type="button"
               variant="outline"
               size="sm"
               onClick={() => void loadPlan(period)}
               disabled={loading}
-              className="h-8 px-2.5"
+              className="h-9 px-2.5"
             >
               <RefreshCw className={cn("mr-1 h-3.5 w-3.5", loading && "animate-spin")} />
               Refresh
@@ -2160,7 +2177,7 @@ export function MonthlyPlanningWorkspacePage() {
                   )
                 }
                 disabled={saving}
-                className="h-8 px-2.5"
+                className="h-9 px-2.5"
               >
                 <Save className="mr-1 h-3.5 w-3.5" />
                 {saving ? "Saving…" : "Save changes"}
@@ -2173,7 +2190,7 @@ export function MonthlyPlanningWorkspacePage() {
                 variant="outline"
                 onClick={() => setConfirmDiscardOpen(true)}
                 disabled={discarding || saving || submittingForReview}
-                className="h-8 border-red-300 px-2.5 text-red-800 hover:bg-red-50"
+                className="h-9 border-red-300 px-2.5 text-red-800 hover:bg-red-50"
               >
                 <Trash2 className="mr-1 h-3.5 w-3.5" />
                 {discarding ? "Discarding…" : "Discard Draft"}
@@ -2190,7 +2207,7 @@ export function MonthlyPlanningWorkspacePage() {
                   )
                 }
                 disabled={submittingForReview || saving}
-                className="h-8 bg-indigo-700 px-2.5 hover:bg-indigo-800"
+                className="h-9 bg-indigo-700 px-2.5 hover:bg-indigo-800"
               >
                 <Send className="mr-1 h-3.5 w-3.5" />
                 {submittingForReview ? "Submitting…" : "Submit For Purchase Review"}
@@ -2206,7 +2223,7 @@ export function MonthlyPlanningWorkspacePage() {
                   )
                 }
                 disabled={approvingPlan || loading}
-                className="h-8 bg-emerald-700 px-2.5 hover:bg-emerald-800"
+                className="h-9 bg-emerald-700 px-2.5 hover:bg-emerald-800"
               >
                 <CheckCircle className="mr-1 h-3.5 w-3.5" />
                 {approvingPlan ? "Approving…" : "Approve"}
@@ -2219,7 +2236,7 @@ export function MonthlyPlanningWorkspacePage() {
                 variant="outline"
                 onClick={() => setRejectModalOpen(true)}
                 disabled={rejectingPlan || loading}
-                className="h-8 border-red-300 px-2.5 text-red-800 hover:bg-red-50"
+                className="h-9 border-red-300 px-2.5 text-red-800 hover:bg-red-50"
               >
                 <XCircle className="mr-1 h-3.5 w-3.5" />
                 Reject
@@ -2232,7 +2249,7 @@ export function MonthlyPlanningWorkspacePage() {
                 onClick={() => setConfirmReleaseOpen(true)}
                 disabled={releasing || loading || !canReleaseRmRequirement}
                 title={releaseDisabledTooltip}
-                className="h-8 bg-sky-700 px-2.5 hover:bg-sky-800 disabled:opacity-50"
+                className="h-9 bg-sky-700 px-2.5 hover:bg-sky-800 disabled:opacity-50"
               >
                 <PackagePlus className="mr-1 h-3.5 w-3.5" />
                 {MP_RELEASE_CTA.PRIMARY}
@@ -2258,7 +2275,7 @@ export function MonthlyPlanningWorkspacePage() {
                           ? "Lock legacy plan and generate Plan RM Snapshot"
                           : "Add a planned qty > 0 to lock"
                     }
-                    className="h-8 bg-amber-700 px-2 hover:bg-amber-800"
+                    className="h-9 bg-amber-700 px-2 hover:bg-amber-800"
                   >
                     <Lock className="mr-1 h-3.5 w-3.5" />
                     Lock Plan
@@ -2275,7 +2292,7 @@ export function MonthlyPlanningWorkspacePage() {
                       )
                     }
                     disabled={reopening || loading}
-                    className="h-8 border-amber-400 px-2 text-amber-950 hover:bg-amber-100"
+                    className="h-9 border-amber-400 px-2 text-amber-950 hover:bg-amber-100"
                   >
                     <Unlock className="mr-1 h-3.5 w-3.5" />
                     {reopening ? "Reopening…" : "Reopen Plan"}
@@ -2292,7 +2309,7 @@ export function MonthlyPlanningWorkspacePage() {
                       )
                     }
                     disabled={cancellingReopen || loading || saving}
-                    className="h-8 border-slate-300 px-2 text-slate-800 hover:bg-slate-50"
+                    className="h-9 border-slate-300 px-2 text-slate-800 hover:bg-slate-50"
                   >
                     <X className="mr-1 h-3.5 w-3.5" />
                     {cancellingReopen ? "Cancelling…" : "Cancel Reopen"}
@@ -2307,7 +2324,7 @@ export function MonthlyPlanningWorkspacePage() {
                 variant="outline"
                 onClick={() => void loadAdditionalPlanPreview()}
                 disabled={loadingAdditionalPreview}
-                className="h-8 px-2.5"
+                className="h-9 px-2.5"
               >
                 <Plus className="mr-1 h-3.5 w-3.5" />
                 {loadingAdditionalPreview ? "Loading…" : "Additional Plan"}

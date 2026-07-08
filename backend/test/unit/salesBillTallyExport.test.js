@@ -180,11 +180,53 @@ test("buildSalesBillTallyXml — party ledger remains customer and XML is struct
   const payload = mapSalesBillToTallyExportPayload({ bill: baseBill(), companyState });
   const xml = buildSalesBillTallyXml(payload);
   assert.match(xml, /^<\?xml version="1.0" encoding="UTF-8"\?>/);
-  assert.match(xml, /<VOUCHER VCHTYPE="Sales" ACTION="Create">/);
+  assert.match(xml, /<VOUCHER VCHTYPE="Sales" ACTION="Create" OBJVIEW="Invoice Voucher View">/);
   assert.match(xml, /<PARTYLEDGERNAME>Acme Pvt Ltd<\/PARTYLEDGERNAME>/);
   assert.match(xml, /<PLACEOFSUPPLY>Maharashtra<\/PLACEOFSUPPLY>/);
   assert.match(xml, /<LEDGERNAME>Local Sales @18%<\/LEDGERNAME>/);
+  assert.match(xml, /<BASEUNITS>Nos<\/BASEUNITS>/);
+  assert.match(xml, /<STOCKITEMNAME>Widget<\/STOCKITEMNAME>/);
+  assert.match(xml, /<RATE>100\/Nos<\/RATE>/);
+  assert.match(xml, /<ACTUALQTY>10 Nos<\/ACTUALQTY>/);
+  assert.match(xml, /<BILLEDQTY>10 Nos<\/BILLEDQTY>/);
+  assert.match(xml, /<AMOUNT>1000\.00<\/AMOUNT>/);
+  assert.match(xml, /<BATCHALLOCATIONS\.LIST>/);
+  assert.match(xml, /<GODOWNNAME>Main Location<\/GODOWNNAME>/);
   assert.doesNotMatch(xml, /GST Total \(Info\)/i);
+});
+
+test("buildSalesBillTallyXml — Square Box qty, rate, and amount appear in inventory allocation", () => {
+  const bill = baseBill({
+    lines: [
+      baseLine({
+        itemNameSnapshot: "Square Box",
+        qty: "3465",
+        rate: "2.78",
+        basicAmount: "9632.70",
+        gstRate: "0",
+        cgstAmount: "0.00",
+        sgstAmount: "0.00",
+        igstAmount: "0.00",
+        lineTotal: "9632.70",
+      }),
+    ],
+    totalBasic: "9632.70",
+    totalCgst: "0.00",
+    totalSgst: "0.00",
+    totalIgst: "0.00",
+    totalTax: "0.00",
+    netAmount: "9632.70",
+  });
+  const payload = mapSalesBillToTallyExportPayload({ bill, companyState });
+  assert.equal(payload.lines[0].quantity, "3465");
+  assert.equal(payload.lines[0].rate, "2.78");
+  assert.equal(payload.lines[0].unit, "Nos");
+  const xml = buildSalesBillTallyXml(payload);
+  assert.match(xml, /<STOCKITEMNAME>Square Box<\/STOCKITEMNAME>/);
+  assert.match(xml, /<RATE>2\.78\/Nos<\/RATE>/);
+  assert.match(xml, /<ACTUALQTY>3465 Nos<\/ACTUALQTY>/);
+  assert.match(xml, /<BILLEDQTY>3465 Nos<\/BILLEDQTY>/);
+  assert.match(xml, /<AMOUNT>9632\.70<\/AMOUNT>/);
 });
 
 test("buildSalesBillTallyXml — legacy bill without snapshots still exports", () => {

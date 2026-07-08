@@ -37,6 +37,15 @@ const { assertAdminPassword, assertAnyAdminPassword } = require("../services/adm
 
 const salesBillsRouter = express.Router();
 
+const tallyExportBillInclude = {
+  customer: { include: { stateRef: true } },
+  dispatch: { include: { salesOrder: true } },
+  lines: {
+    include: { item: { include: { unitRef: { select: { unitName: true } } } } },
+    orderBy: { id: "asc" },
+  },
+};
+
 const dateInput = z.union([z.string().min(1), z.number(), z.coerce.date()]);
 
 function friendly400(message) {
@@ -69,6 +78,18 @@ function validateTallyExportEligibility({ bill, payload }) {
     const q = toNum(ln.qty);
     if (!Number.isFinite(q) || q <= 0) {
       return "Sales Bill has no valid quantity to export.";
+    }
+    const unit =
+      (typeof ln.unitSnapshot === "string" && ln.unitSnapshot.trim()) ||
+      (typeof ln.item?.unit === "string" && ln.item.unit.trim()) ||
+      (typeof ln.item?.unitRef?.unitName === "string" && ln.item.unitRef.unitName.trim()) ||
+      "";
+    if (!unit) {
+      return "Cannot export sales bill because line unit is missing.";
+    }
+    const r = toNum(ln.rate);
+    if (!Number.isFinite(r) || r <= 0) {
+      return "Cannot export sales bill because line rate is missing.";
     }
   }
   for (const ln of lines) {
@@ -538,11 +559,7 @@ salesBillsRouter.get("/:id/export/tally.xml", requireAuth, requireRole(SALES_BIL
 
     const bill = await prisma.salesBill.findUnique({
       where: { id },
-      include: {
-        customer: { include: { stateRef: true } },
-        dispatch: { include: { salesOrder: true } },
-        lines: { include: { item: true }, orderBy: { id: "asc" } },
-      },
+      include: tallyExportBillInclude,
     });
     if (!bill) return res.status(404).json(friendly400("Sales bill not found"));
     if (bill.isExported) {
@@ -630,11 +647,7 @@ salesBillsRouter.post("/:id/export/tally.xml", requireAuth, requireRole(SALES_BI
     const body = z.object({ adminPassword: z.string().optional() }).parse(req.body ?? {});
     const bill = await prisma.salesBill.findUnique({
       where: { id },
-      include: {
-        customer: { include: { stateRef: true } },
-        dispatch: { include: { salesOrder: true } },
-        lines: { include: { item: true }, orderBy: { id: "asc" } },
-      },
+      include: tallyExportBillInclude,
     });
     if (!bill) return res.status(404).json(friendly400("Sales bill not found"));
 
@@ -658,11 +671,7 @@ salesBillsRouter.get("/:id/download/tally.xml", requireAuth, requireRole(SALES_B
 
     const bill = await prisma.salesBill.findUnique({
       where: { id },
-      include: {
-        customer: { include: { stateRef: true } },
-        dispatch: { include: { salesOrder: true } },
-        lines: { include: { item: true }, orderBy: { id: "asc" } },
-      },
+      include: tallyExportBillInclude,
     });
     if (!bill) return res.status(404).json(friendly400("Sales bill not found"));
     if (!bill.isExported) return res.status(400).json(friendly400("This sales bill is not exported yet."));
@@ -753,11 +762,7 @@ salesBillsRouter.post("/:dispatchId/export-tally", requireAuth, requireRole(SALE
 
     const fullBill = await prisma.salesBill.findUnique({
       where: { id: ensured.id },
-      include: {
-        customer: { include: { stateRef: true } },
-        dispatch: { include: { salesOrder: true } },
-        lines: { include: { item: true }, orderBy: { id: "asc" } },
-      },
+      include: tallyExportBillInclude,
     });
     if (!fullBill) return res.status(404).json(friendly400("Sales bill not found"));
     if (fullBill.isExported) {

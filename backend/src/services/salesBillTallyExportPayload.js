@@ -10,6 +10,32 @@ function safeStrOrNull(v) {
   return t ? t : null;
 }
 
+/** Trim trailing zeros; keep up to 3 decimal places for billed quantity. */
+function fmtTallyQty(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "0";
+  const s = (Math.round(n * 1000) / 1000).toFixed(3);
+  return s.replace(/\.?0+$/, "") || "0";
+}
+
+/** Trim trailing zeros; keep up to 4 decimal places for unit rate. */
+function fmtTallyRate(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "0";
+  const s = (Math.round(n * 10000) / 10000).toFixed(4);
+  return s.replace(/\.?0+$/, "") || "0";
+}
+
+function resolveLineUnit(ln) {
+  const item = ln?.item ?? null;
+  return (
+    safeStrOrNull(ln?.unitSnapshot) ??
+    safeStrOrNull(item?.unitRef?.unitName) ??
+    safeStrOrNull(item?.unit) ??
+    null
+  );
+}
+
 function trimSnap(v) {
   return safeStr(v).trim();
 }
@@ -115,15 +141,17 @@ function mapSalesBillToTallyExportPayload({ bill, companyState }) {
 
   const mappedLines = lines.map((ln) => {
     const item = ln.item ?? null;
+    const qtyRaw = ln.qty;
+    const rateRaw = ln.rate;
     return {
       itemId: ln.itemId,
       itemName: safeStrOrNull(ln.itemNameSnapshot) ?? safeStrOrNull(item?.itemName),
       hsnCode: safeStrOrNull(ln.hsnCodeSnapshot) ?? safeStrOrNull(item?.hsnCode),
       gstRate: safeStrOrNull(ln.gstRate),
-      unit: safeStrOrNull(ln.unitSnapshot) ?? safeStrOrNull(item?.unit),
+      unit: resolveLineUnit(ln),
       // Quantity must come from SalesBillLine.qty (dispatch-derived in our flow).
-      quantity: safeStrOrNull(ln.qty),
-      rate: safeStrOrNull(ln.rate),
+      quantity: fmtTallyQty(qtyRaw),
+      rate: fmtTallyRate(rateRaw),
       baseAmount: safeStrOrNull(ln.basicAmount),
       cgstAmount: safeStrOrNull(ln.cgstAmount),
       sgstAmount: safeStrOrNull(ln.sgstAmount),
@@ -222,4 +250,7 @@ function mapSalesBillToTallyExportPayload({ bill, companyState }) {
 module.exports = {
   mapSalesBillToTallyExportPayload,
   resolveSalesBillCommercialForTallyExport,
+  fmtTallyQty,
+  fmtTallyRate,
+  resolveLineUnit,
 };

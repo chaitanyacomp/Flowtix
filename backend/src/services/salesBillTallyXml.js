@@ -1,3 +1,5 @@
+const { TALLY_INVENTORY_DEFAULTS } = require("../config/tally");
+
 function xmlEscape(v) {
   return String(v ?? "")
     .replace(/&/g, "&amp;")
@@ -20,6 +22,27 @@ function n2(v) {
   const n = Number(v);
   if (!Number.isFinite(n)) return "0.00";
   return (Math.round(n * 100) / 100).toFixed(2);
+}
+
+function pickUnit(line) {
+  return String(line?.unit || "").trim();
+}
+
+function fmtQtyWithUnit(qty, unit) {
+  const q = String(qty ?? "").trim() || "0";
+  return unit ? `${q} ${unit}` : q;
+}
+
+function buildBatchAllocationXml({ godownName, batchName, qtyWithUnit, amount }) {
+  return [
+    "<BATCHALLOCATIONS.LIST>",
+    `<GODOWNNAME>${xmlEscape(godownName)}</GODOWNNAME>`,
+    `<BATCHNAME>${xmlEscape(batchName)}</BATCHNAME>`,
+    `<AMOUNT>${xmlEscape(amount)}</AMOUNT>`,
+    `<ACTUALQTY>${xmlEscape(qtyWithUnit)}</ACTUALQTY>`,
+    `<BILLEDQTY>${xmlEscape(qtyWithUnit)}</BILLEDQTY>`,
+    "</BATCHALLOCATIONS.LIST>",
+  ].join("");
 }
 
 function isBadSummaryLedgerName(name) {
@@ -116,6 +139,7 @@ function buildStockItemMasterXml(line, { todayDateYYYYMMDD, action }) {
     // SAFE DATA HANDLING (MANDATORY)
     const itemName = String(line?.itemName || "").trim();
     const hsnCode = String(line?.hsnCode || "").toString().trim();
+    const unit = pickUnit(line);
     const rawGstRate = Number(line?.gstRate || 0);
     const gstRate = Number.isFinite(rawGstRate) && rawGstRate > 0 ? rawGstRate : 0;
 
@@ -135,6 +159,7 @@ function buildStockItemMasterXml(line, { todayDateYYYYMMDD, action }) {
       "<TALLYMESSAGE>",
       `<STOCKITEM NAME="${xmlEscape(itemName)}" ACTION="${xmlEscape(action)}">`,
       `<NAME>${xmlEscape(itemName)}</NAME>`,
+      unit ? `<BASEUNITS>${xmlEscape(unit)}</BASEUNITS>` : "",
       "<GSTAPPLICABLE>&#4; Applicable</GSTAPPLICABLE>",
       "<GSTTYPEOFSUPPLY>Goods</GSTTYPEOFSUPPLY>",
       `<HSNCODE>${xmlEscape(hsnCode)}</HSNCODE>`,
@@ -260,20 +285,26 @@ function buildSalesBillTallyXml(payload) {
     .map((ln) => {
       const itemName = ln.itemName || `Item-${ln.itemId ?? ""}`;
       const qty = ln.quantity || "0";
-      const unit = ln.unit || "";
+      const unit = pickUnit(ln);
       const rate = ln.rate || "0";
       const base = Math.abs(Number(ln.baseAmount ?? 0));
-      const amt = n2(-base);
+      const amt = n2(base);
+      const qtyWithUnit = fmtQtyWithUnit(qty, unit);
+      const rateWithUnit = unit ? `${rate}/${unit}` : rate;
+      const { godownName, batchName } = TALLY_INVENTORY_DEFAULTS;
+
       return [
         "<ALLINVENTORYENTRIES.LIST>",
         `<STOCKITEMNAME>${xmlEscape(itemName)}</STOCKITEMNAME>`,
-        `<RATE>${xmlEscape(rate)}${unit ? `/${xmlEscape(unit)}` : ""}</RATE>`,
-        `<ACTUALQTY>${xmlEscape(qty)}${unit ? ` ${xmlEscape(unit)}` : ""}</ACTUALQTY>`,
-        `<BILLEDQTY>${xmlEscape(qty)}${unit ? ` ${xmlEscape(unit)}` : ""}</BILLEDQTY>`,
+        "<ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>",
+        `<RATE>${xmlEscape(rateWithUnit)}</RATE>`,
         `<AMOUNT>${xmlEscape(amt)}</AMOUNT>`,
+        `<ACTUALQTY>${xmlEscape(qtyWithUnit)}</ACTUALQTY>`,
+        `<BILLEDQTY>${xmlEscape(qtyWithUnit)}</BILLEDQTY>`,
+        buildBatchAllocationXml({ godownName, batchName, qtyWithUnit, amount: amt }),
         "<ACCOUNTINGALLOCATIONS.LIST>",
         `<LEDGERNAME>${xmlEscape(salesLedger)}</LEDGERNAME>`,
-        "<ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE>",
+        "<ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>",
         `<AMOUNT>${xmlEscape(amt)}</AMOUNT>`,
         "</ACCOUNTINGALLOCATIONS.LIST>",
         "</ALLINVENTORYENTRIES.LIST>",
@@ -282,21 +313,21 @@ function buildSalesBillTallyXml(payload) {
     .join("");
 
   const ledgerEntries = [
-    // Party (debit)
+    // Party (debit) — invoice view uses negative amount with deemed positive Yes.
     [
       "<LEDGERENTRIES.LIST>",
       `<LEDGERNAME>${xmlEscape(partyName)}</LEDGERNAME>`,
-      "<ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>",
-      `<AMOUNT>${xmlEscape(totalAmount)}</AMOUNT>`,
+      "<ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE>",
+      `<AMOUNT>${xmlEscape(`-${totalAmount}`)}</AMOUNT>`,
       "</LEDGERENTRIES.LIST>",
     ].join(""),
-    // Tax ledgers (credit) – output tax
+    // Tax ledgers (credit) – output tax, positive amounts in invoice view.
     cgstTotal !== "0.00"
       ? [
           "<LEDGERENTRIES.LIST>",
           `<LEDGERNAME>${xmlEscape(cgstLedger)}</LEDGERNAME>`,
-          "<ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE>",
-          `<AMOUNT>${xmlEscape(`-${cgstTotal}`)}</AMOUNT>`,
+          "<ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>",
+          `<AMOUNT>${xmlEscape(cgstTotal)}</AMOUNT>`,
           "</LEDGERENTRIES.LIST>",
         ].join("")
       : "",
@@ -304,8 +335,8 @@ function buildSalesBillTallyXml(payload) {
       ? [
           "<LEDGERENTRIES.LIST>",
           `<LEDGERNAME>${xmlEscape(sgstLedger)}</LEDGERNAME>`,
-          "<ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE>",
-          `<AMOUNT>${xmlEscape(`-${sgstTotal}`)}</AMOUNT>`,
+          "<ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>",
+          `<AMOUNT>${xmlEscape(sgstTotal)}</AMOUNT>`,
           "</LEDGERENTRIES.LIST>",
         ].join("")
       : "",
@@ -313,8 +344,8 @@ function buildSalesBillTallyXml(payload) {
       ? [
           "<LEDGERENTRIES.LIST>",
           `<LEDGERNAME>${xmlEscape(igstLedger)}</LEDGERNAME>`,
-          "<ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE>",
-          `<AMOUNT>${xmlEscape(`-${igstTotal}`)}</AMOUNT>`,
+          "<ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>",
+          `<AMOUNT>${xmlEscape(igstTotal)}</AMOUNT>`,
           "</LEDGERENTRIES.LIST>",
         ].join("")
       : "",
@@ -331,8 +362,8 @@ function buildSalesBillTallyXml(payload) {
     throw new Error("Sales Tally XML: totals mismatch. Refusing to generate XML.");
   }
 
-  // Balance check (ledger entries must sum to 0): +party -base -taxes
-  const ledgerNet = net - baseSum - taxSum;
+  // Balance check (ledger entries must sum to 0): -party + base + taxes
+  const ledgerNet = -net + baseSum + taxSum;
   if (Math.abs(ledgerNet) > 0.05) {
     throw new Error("Sales Tally XML: voucher does not balance. Refusing to generate XML.");
   }
@@ -361,7 +392,7 @@ function buildSalesBillTallyXml(payload) {
     "<REQUESTDATA>",
     buildStockItemMasterMessages(payload),
     "<TALLYMESSAGE>",
-    '<VOUCHER VCHTYPE="Sales" ACTION="Create">',
+    '<VOUCHER VCHTYPE="Sales" ACTION="Create" OBJVIEW="Invoice Voucher View">',
     "<VOUCHERTYPENAME>Sales</VOUCHERTYPENAME>",
     "<ISINVOICE>Yes</ISINVOICE>",
     "<PERSISTEDVIEW>Invoice Voucher View</PERSISTEDVIEW>",

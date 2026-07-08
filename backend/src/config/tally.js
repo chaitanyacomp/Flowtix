@@ -32,5 +32,14 @@ const TALLY_LEDGER_PATTERNS = {
   inputIgstPrefix: "Input IGST",
 };
 
-module.exports = { TALLY_LEDGER_NAMES, TALLY_LEDGER_PATTERNS };
+/**
+ * Tally invoice-mode inventory defaults (see Tally sample XML for Sales Invoice View).
+ * Used when company has batch/godown disabled — Tally still expects these placeholder names.
+ */
+const TALLY_INVENTORY_DEFAULTS = {
+  godownName: "Main Location",
+  batchName: "Primary Batch",
+};
+
+module.exports = { TALLY_LEDGER_NAMES, TALLY_LEDGER_PATTERNS, TALLY_INVENTORY_DEFAULTS };
 

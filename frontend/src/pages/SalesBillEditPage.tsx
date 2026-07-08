@@ -9,7 +9,7 @@ import { getApiUrl } from "../services/api";
 import { useAuth } from "../hooks/useAuth";
 import { useToast } from "../contexts/ToastContext";
 import { PageContainer, PageSmartBackLink } from "../components/PageHeader";
-import { displayDispatchNo, displaySalesBillNo } from "../lib/docNoDisplay";
+import { displayDispatchNo, displaySalesBillNo, displaySalesOrderNo } from "../lib/docNoDisplay";
 import { withReportsReturnContextIfPresent } from "../lib/drillDownRoutes";
 import { BillExportStatusPanel } from "../components/BillExportStatusPanel";
 import { ErpModal } from "../components/erp/ErpModal";
@@ -1420,9 +1420,9 @@ export function SalesBillEditPage() {
                 ) : null}
                 <Button
                   type="button"
-                  variant="link"
+                  variant="ghost"
                   size="sm"
-                  className="h-auto px-0 text-[12px]"
+                  className="h-auto px-0 text-[12px] text-sky-800 underline"
                   onClick={() =>
                     document.getElementById("sales-bill-business-details")?.scrollIntoView({ behavior: "smooth", block: "start" })
                   }

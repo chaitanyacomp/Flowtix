@@ -38,6 +38,9 @@ export type DispatchCompactExecutionPanelProps = {
   draftSavedIdle?: boolean;
   lockingId?: number | null;
   deletingId?: number | null;
+  /** Batch 2D — when false, backend `draftLockEligibility` blocks finalize (display only). */
+  canFinalizeDraft?: boolean;
+  finalizeDraftBlockedReason?: string | null;
   error?: string | null;
   info?: string | null;
   onSelectItem: (itemId: number) => void;
@@ -72,6 +75,8 @@ export function DispatchCompactExecutionPanel({
   draftSavedIdle = false,
   lockingId,
   deletingId,
+  canFinalizeDraft = true,
+  finalizeDraftBlockedReason,
   error,
   info,
   onSelectItem,
@@ -238,6 +243,11 @@ export function DispatchCompactExecutionPanel({
                       data-testid="dispatch-compact-draft-banner"
                     >
                       <div className="text-[12px] font-semibold text-amber-950">Dispatch draft saved</div>
+                      {!canFinalizeDraft && finalizeDraftBlockedReason ? (
+                        <p className="text-[11px] leading-snug text-amber-900/95">
+                          Finalize blocked: {finalizeDraftBlockedReason}
+                        </p>
+                      ) : null}
                       <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
                         <Button
                           type="button"
@@ -253,7 +263,10 @@ export function DispatchCompactExecutionPanel({
                         <Button
                           type="button"
                           size="sm"
-                          disabled={lockingId === primaryFinalizeDraftId || dispatchReadOnly}
+                          disabled={
+                            lockingId === primaryFinalizeDraftId || dispatchReadOnly || !canFinalizeDraft
+                          }
+                          title={!canFinalizeDraft ? finalizeDraftBlockedReason ?? undefined : undefined}
                           onClick={() => onFinalizeDraft?.()}
                           data-testid="dispatch-compact-finalize-draft"
                         >

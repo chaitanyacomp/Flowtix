@@ -97,6 +97,15 @@ import {
   sumLineStatsRemainingForItem,
 } from "../lib/dispatchLineQuantities";
 import { bumpErpRefresh } from "../lib/erpRefresh";
+import {
+  DISPATCH_BILLING_ADJUSTMENT_LABEL,
+  draftLockEligibilityBadgeClass,
+  draftLockEligibilityLabel,
+  indexDraftLockEligibilityByDispatchId,
+  isSalesBillBillingAdjustmentRequired,
+  lookupDraftLockReadiness,
+  resolveBackendDraftFinalizeGate,
+} from "../lib/dispatchReadinessUx";
 
 /** Soft flag for optional dashboard reminders — user chose “wait” on NORMAL partial dispatch (no API). */
 const DISPATCH_PARTIAL_WAIT_STORAGE_PREFIX = "erp:dispatch:partial-wait:";
@@ -240,6 +249,11 @@ type DispatchEvent = {
   /** Remaining qty that can be reversed for this forward row (server-computed from ledger). */
   maxReversibleQty?: number | null;
   ledgerMetricContext?: string;
+  /** Batch 2D — backend draft lock eligibility (UNLOCKED forwards from GET /api/dispatch/sales-orders). */
+  draftLockEligibility?: "READY" | "WAITING_QA" | "WAITING_STOCK" | "WAITING_APPROVAL" | string | null;
+  draftLockEligibilityReason?: string | null;
+  salesBillBillingAdjustmentRequired?: boolean | null;
+  billingAdjustmentRequired?: boolean | null;
 };
 
 type DispatchLedgerRow = {
@@ -261,6 +275,10 @@ type DispatchLedgerRow = {
   salesBillExists?: boolean;
   salesBillIsExported?: boolean;
   salesBillStatus?: string | null;
+  salesBillBillingAdjustmentRequired?: boolean | null;
+  billingAdjustmentRequired?: boolean | null;
+  draftLockEligibility?: DispatchEvent["draftLockEligibility"];
+  draftLockEligibilityReason?: string | null;
 };
 
 type SoRow = {
@@ -466,6 +484,7 @@ function effectiveRegularDispatchReadiness(so: SoRow, ls: LineStat): RegularDisp
   if (fromApi === "READY_FULL" || fromApi === "PARTIAL_AVAILABLE" || fromApi === "NOT_READY") {
     return fromApi;
   }
+  /** Presentation-only estimate when API omits `regularDispatchReadiness` — not a workflow gate. */
   const pending = confirmedBacklogQty(ls);
   const cap = safeNum(ls.dispatchable ?? ls.dispatchableQty ?? 0);
   const eps = 1e-9;
@@ -850,6 +869,14 @@ function rowStatusBadge(d: DispatchEvent): { label: string; className: string } 
     return { label: "Reversed", className: "bg-red-50 text-red-900 border-red-200" };
   }
   if (d.workflowStatus === "UNLOCKED") {
+    const lockState = String(d.draftLockEligibility ?? "").trim().toUpperCase();
+    if (lockState && lockState !== "READY") {
+      const lockLabel = draftLockEligibilityLabel(d.draftLockEligibility) || DISPATCH_OP.BADGE_DRAFT;
+      return {
+        label: lockLabel,
+        className: draftLockEligibilityBadgeClass(d.draftLockEligibility),
+      };
+    }
     return {
       label: DISPATCH_OP.BADGE_DRAFT,
       className: "bg-amber-100 text-amber-950 border-amber-300 ring-1 ring-amber-200/90",
@@ -1606,6 +1633,19 @@ export function DispatchPage() {
 
   const displayRowsRef = React.useRef(displayRows);
   displayRowsRef.current = displayRows;
+
+  const draftEligibilityByDispatchId = React.useMemo(
+    () => indexDraftLockEligibilityByDispatchId(displayRows),
+    [displayRows],
+  );
+
+  const draftFinalizeGateForId = React.useCallback(
+    (dispatchId: number | null | undefined) =>
+      resolveBackendDraftFinalizeGate(
+        lookupDraftLockReadiness(dispatchId, draftEligibilityByDispatchId),
+      ),
+    [draftEligibilityByDispatchId],
+  );
 
   React.useEffect(() => {
     if (!fromScopedSo || !focusSoIdValid) {
@@ -3375,6 +3415,16 @@ export function DispatchPage() {
     return d?.id ?? null;
   }, [reopenedPreparedDraft, guidedLedgerContext, selectedSo, currentLine, soLedgerDispatches]);
 
+  const primaryDraftFinalizeGate = React.useMemo(
+    () => draftFinalizeGateForId(primaryFinalizeDraftId),
+    [draftFinalizeGateForId, primaryFinalizeDraftId],
+  );
+
+  const ledgerBillingAdjustmentRows = React.useMemo(
+    () => ledgerRows.filter((r) => isSalesBillBillingAdjustmentRequired(r)),
+    [ledgerRows],
+  );
+
   const compactDraftSavedIdle = Boolean(
     dispatchCompactMode &&
       isCompactDraftSavedIdleState({
@@ -3751,14 +3801,24 @@ export function DispatchPage() {
       : "";
 
   const finalizePreparedStripTitle =
-    stripShowFinalize && existingDraftQty > dqEps
+    stripShowFinalize && !primaryDraftFinalizeGate.canFinalize
+      ? "Prepared dispatch — finalize blocked"
+      : stripShowFinalize && existingDraftQty > dqEps
       ? "Prepared dispatch draft ready on this line"
       : "Prepared dispatch ready to finalize";
   const finalizePreparedStripSubtitle =
-    stripShowFinalize && existingDraftQty > dqEps
+    stripShowFinalize && !primaryDraftFinalizeGate.canFinalize && primaryDraftFinalizeGate.reason
+      ? `Finalize blocked: ${primaryDraftFinalizeGate.reason}\n\n${DISPATCH_OP.GUIDANCE_DRAFT_ONLY}`
+      : stripShowFinalize && existingDraftQty > dqEps
       ? `Draft qty: ${fmtDispatchQty(existingDraftQty)}\n${
           isRegularNormalSalesOrder(selectedSo) ? "Additional qty you could add now" : "Ready now"
-        }: ${fmtDispatchQty(currentDispatchableQty)}\n\n${DISPATCH_OP.GUIDANCE_DRAFT_ONLY} You can finalize even if no additional qty is available.`
+        }: ${fmtDispatchQty(currentDispatchableQty)}${
+          primaryDraftFinalizeGate.label
+            ? `\n\nFinalize readiness: ${primaryDraftFinalizeGate.label}${
+                primaryDraftFinalizeGate.reason ? ` — ${primaryDraftFinalizeGate.reason}` : ""
+              }`
+            : ""
+        }\n\n${DISPATCH_OP.GUIDANCE_DRAFT_ONLY} You can finalize even if no additional qty is available.`
       : `${finalizeStripSubtitle} · ${isRegularNormalSalesOrder(selectedSo) ? "Max draft qty" : "Ready"}: ${stripReady}`;
 
   const salesBillFlowHref =
@@ -3947,7 +4007,12 @@ export function DispatchPage() {
               size="sm"
               className="font-semibold"
               data-testid="next-finalize-dispatch"
-              disabled={lockingId === primaryFinalizeDraftId}
+              disabled={lockingId === primaryFinalizeDraftId || !primaryDraftFinalizeGate.canFinalize}
+              title={
+                !primaryDraftFinalizeGate.canFinalize && primaryDraftFinalizeGate.reason
+                  ? primaryDraftFinalizeGate.reason
+                  : undefined
+              }
               {...(finalizeDemoHl ? { "data-demo-highlight": finalizeDemoHl } : {})}
               onClick={() => primaryFinalizeDraftId != null && void onFinalizeDraftDispatch(primaryFinalizeDraftId)}
             >
@@ -4113,6 +4178,7 @@ export function DispatchPage() {
     canContinueRegularPartialDispatch,
     canCreateSalesBill,
     primaryFinalizeDraftId,
+    primaryDraftFinalizeGate,
     regularPartialContinuationMetrics,
     salesBillFlowHref,
     salesBillStepDispatchId,
@@ -4212,7 +4278,16 @@ export function DispatchPage() {
                     {itemName}
                   </td>
                   <td className={cn(rowPad, "text-right tabular-nums")}>{isRev ? qty : `+${qty}`}</td>
-                  <td className={cn(rowPad, "text-slate-600")}>{isRev ? (d.reversalReason?.trim() || "—") : "—"}</td>
+                  <td className={cn(rowPad, "text-slate-600")}>
+                    {isRev
+                      ? d.reversalReason?.trim() || "—"
+                      : d.draftLockEligibilityReason?.trim() ||
+                        (d.draftLockEligibility && String(d.draftLockEligibility).toUpperCase() !== "READY"
+                          ? draftLockEligibilityLabel(d.draftLockEligibility)
+                          : isSalesBillBillingAdjustmentRequired(d)
+                            ? DISPATCH_BILLING_ADJUSTMENT_LABEL
+                            : "—")}
+                  </td>
                   <td className={cn("erp-table-action-col", mes ? "py-0" : "py-0.5")}>
                     <div className="erp-table-actions">
                       {isUnlockedForward && !so.dispatchReadOnly ? (
@@ -4224,7 +4299,14 @@ export function DispatchPage() {
                               size="sm"
                               data-testid="finalize-dispatch-btn"
                               className={cn(actionBtnCls, "leading-none")}
-                              disabled={lockingId === d.id}
+                              disabled={
+                                lockingId === d.id || !draftFinalizeGateForId(d.id).canFinalize
+                              }
+                              title={
+                                !draftFinalizeGateForId(d.id).canFinalize
+                                  ? draftFinalizeGateForId(d.id).reason ?? undefined
+                                  : undefined
+                              }
                               onClick={() => onLockDispatch(d.id)}
                             >
                               {lockingId === d.id ? "…" : "Finalize Dispatch"}
@@ -4704,6 +4786,8 @@ export function DispatchPage() {
               primaryFinalizeDraftId={primaryFinalizeDraftId}
               lockingId={lockingId}
               deletingId={deletingId}
+              canFinalizeDraft={primaryDraftFinalizeGate.canFinalize}
+              finalizeDraftBlockedReason={primaryDraftFinalizeGate.reason}
               error={error}
               info={dispatchInfo}
               onSelectItem={(itemId) => {
@@ -4770,6 +4854,20 @@ export function DispatchPage() {
         {dispatchInfo ? (
           <div className="whitespace-pre-line rounded border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[12px] leading-snug text-emerald-900">
             {dispatchInfo}
+          </div>
+        ) : null}
+
+        {ledgerBillingAdjustmentRows.length > 0 ? (
+          <div
+            className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-[12px] text-amber-950"
+            data-testid="dispatch-billing-adjustment-banner"
+          >
+            <span className="font-semibold">{DISPATCH_BILLING_ADJUSTMENT_LABEL}</span>
+            <span className="mt-1 block text-amber-900/90">
+              {ledgerBillingAdjustmentRows.length} dispatch
+              {ledgerBillingAdjustmentRows.length === 1 ? "" : "es"} in the current ledger view require billing
+              review.
+            </span>
           </div>
         ) : null}
 
@@ -5873,7 +5971,12 @@ export function DispatchPage() {
                             size="sm"
                             className="font-semibold"
                             data-testid="prepared-dispatch-finalize-btn"
-                            disabled={lockingId === primaryFinalizeDraftId}
+                            disabled={lockingId === primaryFinalizeDraftId || !primaryDraftFinalizeGate.canFinalize}
+              title={
+                !primaryDraftFinalizeGate.canFinalize && primaryDraftFinalizeGate.reason
+                  ? primaryDraftFinalizeGate.reason
+                  : undefined
+              }
                             onClick={() => primaryFinalizeDraftId != null && void onFinalizeDraftDispatch(primaryFinalizeDraftId)}
                           >
                             {lockingId === primaryFinalizeDraftId ? "…" : DISPATCH_OP.FINALIZE}
@@ -6967,6 +7070,11 @@ export function DispatchPage() {
                                 <span className={cn("inline-flex rounded border px-1.5 py-0.5 text-[10px] font-medium", pillClass)}>
                                   {pillLabel}
                                 </span>
+                                {isSalesBillBillingAdjustmentRequired(d) ? (
+                                  <span className="mt-1 block text-[10px] font-medium text-amber-900">
+                                    Billing adjustment required
+                                  </span>
+                                ) : null}
                               </td>
                               <td className="erp-table-action-col py-2 pr-2 align-top">
                                 {isRegularNormalLedgerSoOrderType(d.soOrderType) ? (

@@ -45,7 +45,7 @@ import {
 import { OperationalContextBar, OperationalContextSticky, OpCtxSep } from "../components/erp/OperationalWorkspaceChrome";
 import { ErpEmptyState } from "../components/erp/foundation/ErpEmptyState";
 import { NoQtyCycleContextBar } from "../components/erp/foundation/NoQtyCycleContextBar";
-import { displaySalesOrderNo } from "../lib/docNoDisplay";
+import { displayProductionEntryNo, displayQcEntryNo, displaySalesOrderNo, displayWorkOrderNo } from "../lib/docNoDisplay";
 import { buildNoQtyGuidedHref, useNoQtyFlowState } from "../lib/noQtyFlowState";
 import { buildProductionScopedHref } from "../lib/productionNavigation";
 import { noQtyAgreementWorkspaceHref } from "../lib/noQtyRsActionLabels";
@@ -173,6 +173,7 @@ function extractApiRows<T>(payload: unknown): T[] {
 
 type ProdRow = {
   id: number;
+  docNo?: string | null;
   producedQty: string;
   /** Production batch date (ISO); shown read-only for alignment */
   date?: string;
@@ -185,6 +186,7 @@ type ProdRow = {
     fgItem: { id: number; itemName: string };
     workOrder: {
       id: number;
+      docNo?: string | null;
       salesOrderId?: number;
       cycleId?: number | null;
       cycle?: { cycleNo?: number | null } | null;
@@ -253,7 +255,7 @@ function HoldDispositionCard({
           <div className="text-[14px] font-semibold text-slate-900">{row.item.itemName}</div>
           <div className="mt-0.5 text-[12px] text-slate-600">
             Pending hold: <span className="tabular-nums font-medium">{fmtQcQty(row.remainingQty)}</span> · WO{" "}
-            {row.workOrder.docNo ?? row.workOrder.id}
+            {displayWorkOrderNo(row.workOrder.id, row.workOrder.docNo)}
           </div>
         </div>
         <OperatorStatusBadge kind="pending">Decision pending</OperatorStatusBadge>
@@ -1673,8 +1675,14 @@ export function QcEntryPage() {
 
   const qcBannerTitle =
     focusWorkOrderId > 0
-      ? drillFocusTitleWorkOrder(focusWorkOrderId)
-      : drillFocusTitleQcProduction(productionIdFromUrl);
+      ? drillFocusTitleWorkOrder(
+          focusWorkOrderId,
+          rows.find((r) => r.workOrder.id === focusWorkOrderId)?.workOrder.docNo ?? null,
+        )
+      : drillFocusTitleQcProduction(
+          productionIdFromUrl,
+          rows.find((r) => r.id === productionIdFromUrl)?.docNo ?? null,
+        );
 
   const prodInQueue =
     productionIdFromUrl > 0 && listReady && rows.length > 0 && rows.some((r) => r.id === productionIdFromUrl);
@@ -2092,7 +2100,7 @@ export function QcEntryPage() {
         kind: "REWORK_SUPERVISOR" as const,
         itemName: r.item.itemName,
         qty: Number(r.remainingQty ?? 0),
-        workOrderLabel: r.workOrder.docNo ?? `WO #${r.workOrder.id}`,
+        workOrderLabel: displayWorkOrderNo(r.workOrder.id, r.workOrder.docNo),
         qcDocNo: r.sourceQcEntry.docNo,
       })),
       ...(disp?.readyForQcRecheck ?? []).map((r) => ({
@@ -2100,7 +2108,7 @@ export function QcEntryPage() {
         kind: "REWORK_PENDING" as const,
         itemName: r.item.itemName,
         qty: Number(r.remainingQty ?? 0),
-        workOrderLabel: r.workOrder.docNo ?? `WO #${r.workOrder.id}`,
+        workOrderLabel: displayWorkOrderNo(r.workOrder.id, r.workOrder.docNo),
         qcDocNo: r.sourceQcEntry.docNo,
       })),
       ...(disp?.holdStock ?? []).map((r) => ({
@@ -2108,7 +2116,7 @@ export function QcEntryPage() {
         kind: "HOLD_DECISION" as const,
         itemName: r.item.itemName,
         qty: Number(r.remainingQty ?? r.qty ?? 0),
-        workOrderLabel: r.workOrder.docNo ?? `WO #${r.workOrder.id}`,
+        workOrderLabel: displayWorkOrderNo(r.workOrder.id, r.workOrder.docNo),
         qcDocNo: r.sourceQcEntry?.docNo ?? null,
       })),
     ];
@@ -2116,7 +2124,10 @@ export function QcEntryPage() {
       pendingQc: qcQueueRows.map(({ r, q }) => ({
         productionId: r.id,
         itemName: r.workOrderLine?.fgItem?.itemName ?? "Batch",
-        workOrderLabel: `WO #${r.workOrderLine?.workOrder?.id ?? "—"}`,
+        workOrderLabel: displayWorkOrderNo(
+          Number(r.workOrderLine?.workOrder?.id ?? 0),
+          r.workOrderLine?.workOrder?.docNo ?? null,
+        ),
         pendingQty: q.pending,
       })),
       dispositions,
@@ -3055,7 +3066,7 @@ export function QcEntryPage() {
                       const status = qcStatusForRollups(q);
                       return (
                         <option key={r.id} value={r.id}>
-                          #{safeProductionRowId(r)}
+                          {displayProductionEntryNo(r.id, r.docNo)}
                           {fromNoQtySo && safeCycleNoForRow(r) != null ? ` · Cycle ${safeCycleNoForRow(r)}` : ""} ·{" "}
                           {safeItemNameForRow(r) || "—"} · {qcStatusLabel(status)} · awaiting {fmtQcQty(q.pending)}
                         </option>
@@ -3533,7 +3544,7 @@ export function QcEntryPage() {
                         {r.item.itemName}
                       </td>
                       <td className="px-2 py-1 text-right tabular-nums">{fmtQcQty(r.remainingQty)}</td>
-                      <td className="px-2 py-1">{r.workOrder.docNo ?? `WO #${r.workOrder.id}`}</td>
+                      <td className="px-2 py-1">{displayWorkOrderNo(r.workOrder.id, r.workOrder.docNo)}</td>
                       <td className="px-2 py-1 font-mono text-[11px]">{r.sourceQcEntry.docNo ?? `QC #${r.sourceQcEntry.id}`}</td>
                       <td className="px-2 py-1">
                         <OperatorStatusBadge kind="blocked">Not usable</OperatorStatusBadge>
@@ -3620,7 +3631,7 @@ export function QcEntryPage() {
                 >
                   {dispQueues.readyForQcRecheck.map((r) => (
                     <option key={r.id} value={r.id}>
-                      {r.item.itemName} · remaining {fmtQcQty(r.remainingQty)} · WO {r.workOrder.docNo ?? r.workOrder.id}
+                      {r.item.itemName} · remaining {fmtQcQty(r.remainingQty)} · WO {displayWorkOrderNo(r.workOrder.id, r.workOrder.docNo)}
                     </option>
                   ))}
                 </select>
@@ -3704,7 +3715,7 @@ export function QcEntryPage() {
                     {(dispQueues as any).readyForQcRecheckMismatches.map((r: any) => (
                       <tr key={r.id} className="border-t border-amber-100">
                         <td className="py-1 pr-2 font-medium text-slate-900">{r.item?.itemName ?? "—"}</td>
-                        <td className="py-1 pr-2">{r.workOrder?.docNo ?? `WO #${r.workOrder?.id ?? "—"}`}</td>
+                        <td className="py-1 pr-2">{displayWorkOrderNo(r.workOrder?.id ?? 0, r.workOrder?.docNo ?? null)}</td>
                         <td className="py-1 pr-2">{r.sourceQcEntry?.docNo ?? `QC #${r.sourceQcEntry?.id ?? "—"}`}</td>
                         <td className="py-1 pr-2 text-right tabular-nums">{fmtQcQty(Number(r.dispositionRemainingQty ?? 0))}</td>
                         <td className="py-1 text-right tabular-nums">{fmtQcQty(Number(r.qcPendingQty ?? 0))}</td>
@@ -3873,7 +3884,7 @@ export function QcEntryPage() {
                           {s.item.itemName}
                         </td>
                         <td className="px-2 py-1 text-right tabular-nums text-slate-800">{fmtQcQty(s.qty)}</td>
-                        <td className="px-2 py-1 font-mono text-[11px] text-slate-700">{s.workOrder.docNo ?? `WO #${s.workOrder.id}`}</td>
+                        <td className="px-2 py-1 font-mono text-[11px] text-slate-700">{displayWorkOrderNo(s.workOrder.id, s.workOrder.docNo)}</td>
                         <td className="px-2 py-1 text-right tabular-nums text-slate-600">
                           {s.closedAt ? s.closedAt.slice(0, 10) : "—"}
                         </td>
@@ -4250,7 +4261,7 @@ export function QcEntryPage() {
                         key={r.id}
                         className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded border border-slate-100 bg-slate-50/80 px-3 py-2"
                       >
-                        <span className="font-mono text-xs text-slate-700">{r.qcDocNo ?? `QC #${r.sourceQcEntryId}`}</span>
+                        <span className="font-mono text-xs text-slate-700">{displayQcEntryNo(r.sourceQcEntryId, r.qcDocNo)}</span>
                         <span className="font-medium text-slate-900">{r.itemName}</span>
                         <span className="tabular-nums text-slate-700">{fmtQcQty(r.qty)}</span>
                         <OperatorStatusBadge

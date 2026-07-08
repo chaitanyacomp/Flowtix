@@ -42,6 +42,11 @@ import {
   resolvePostIssueAdvance,
   type MaterialIssueSessionComplete,
 } from "../lib/materialIssueContinuousSession";
+import {
+  displayMaterialIssueNo,
+  displayPmrNo,
+  displayWorkOrderNo,
+} from "../lib/docNoDisplay";
 
 type LocationRow = {
   id: number;
@@ -355,7 +360,7 @@ export function MaterialIssuePage() {
       setActivePmr(data.pmr);
       setIssueDecision(data.issueDecision ?? null);
       if (data.pmr.workOrderId) setWorkOrderId(data.pmr.workOrderId);
-      setRemarks(`Issue against ${data.pmr.docNo || `PMR-${pmrId}`}`);
+      setRemarks(`Issue against ${displayPmrNo(pmrId, data.pmr.docNo)}`);
       const sourceLines = filterMaterialIssueEntryLines(data.pendingLines?.length ? data.pendingLines : data.lines ?? []);
       setLines(sourceLines.length ? sourceLines.map(pmrLineToDraft) : []);
     } catch (e) {
@@ -646,7 +651,9 @@ export function MaterialIssuePage() {
     ]);
 
     const woLabel =
-      issued.workOrderNo?.trim() || (issued.workOrderId > 0 ? `WO-${issued.workOrderId}` : "work order");
+      issued.workOrderId > 0
+        ? displayWorkOrderNo(issued.workOrderId, issued.workOrderNo)
+        : "work order";
     showSuccess(formatMaterialIssueSuccessMessage(woLabel));
 
     const advance = resolvePostIssueAdvance({
@@ -1590,7 +1597,7 @@ export function MaterialIssuePage() {
             ) : (
               recent.slice(0, 8).map((r) => (
                 <li key={r.id} className="rounded border border-slate-200 bg-white px-2 py-1 text-[10px]">
-                  <div className="font-semibold text-slate-900">{r.docNo ?? `MIN #${r.id}`}</div>
+                  <div className="font-semibold text-slate-900">{displayMaterialIssueNo(r.id, r.docNo)}</div>
                   <div className="text-slate-600">
                     {r.fromLocation.locationName} → {r.toLocation.locationName}
                     {r.workOrderNo ? ` · ${r.workOrderNo}` : ""}

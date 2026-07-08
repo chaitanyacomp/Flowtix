@@ -276,6 +276,7 @@ type SoRow = {
   orderType?: "NORMAL" | "REPLACEMENT" | "NO_QTY";
   customerReturnId?: number | null;
   originalSalesOrderId?: number | null;
+  originalSalesOrderDocNo?: string | null;
   originalDispatchId?: number | null;
   customer?: { name: string } | null;
   po?: { customer?: { name: string } | null } | null;
@@ -300,7 +301,7 @@ function dispatchSoContextLabel(
   focusSoId: number,
 ): string | null {
   if (so && so.id > 0) return displaySalesOrderNo(so.id, so.docNo);
-  if (focusSoIdValid) return `SO-${focusSoId}`;
+  if (focusSoIdValid) return displaySalesOrderNo(focusSoId, null);
   return null;
 }
 
@@ -4861,7 +4862,7 @@ export function DispatchPage() {
                       <div className="rounded border border-slate-200 bg-white px-2 py-1 text-[12px] text-slate-800">
                         <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                           <span className="font-semibold text-slate-900">
-                            {selectedSo ? displaySalesOrderNo(selectedSo.id, selectedSo.docNo) : focusSoIdValid ? `SO-${focusSoId}` : "—"}
+                            {selectedSo ? displaySalesOrderNo(selectedSo.id, selectedSo.docNo) : focusSoIdValid ? displaySalesOrderNo(focusSoId, null) : "—"}
                           </span>
                           <span className="text-slate-400" aria-hidden>
                             |
@@ -6712,7 +6713,9 @@ export function DispatchPage() {
                     </span>
                     {" · "}
                     <span className="font-mono text-[11px]">
-                      {selectedSo?.originalSalesOrderId ? `SO-${selectedSo.originalSalesOrderId}` : "—"}
+                      {selectedSo?.originalSalesOrderId
+                        ? displaySalesOrderNo(selectedSo.originalSalesOrderId, selectedSo.originalSalesOrderDocNo ?? null)
+                        : "—"}
                     </span>
                     {" · "}
                     <span className="font-mono text-[11px]">

@@ -1,4 +1,5 @@
 import { cn } from "../../lib/utils";
+import { displaySalesOrderNo, displayWorkOrderNo } from "../../lib/docNoDisplay";
 import { formatQcQuantity } from "../../lib/quantityDisplay";
 import { StatBlock } from "./StatBlock";
 
@@ -8,7 +9,9 @@ type Props = {
   /** FG item UOM from Item Master. */
   unit?: string | null;
   workOrderId: number;
+  workOrderDocNo?: string | null;
   salesOrderId: number;
+  salesOrderDocNo?: string | null;
   producedQty: number;
   qcDone: number;
   pendingQty: number;
@@ -24,7 +27,9 @@ export function QcInfoPanel({
   fgItemName,
   unit,
   workOrderId,
+  workOrderDocNo,
   salesOrderId,
+  salesOrderDocNo,
   producedQty,
   qcDone,
   pendingQty,
@@ -42,9 +47,9 @@ export function QcInfoPanel({
     <div className={cn("min-w-0", className)}>
       <p className="text-sm font-semibold leading-snug text-slate-900">{fgItemName}</p>
       <p className="mt-0.5 text-xs text-slate-600">
-        SO #{salesOrderId}
+        {displaySalesOrderNo(salesOrderId, salesOrderDocNo)}
         <span className="text-slate-400"> · </span>
-        WO #{workOrderId}
+        {displayWorkOrderNo(workOrderId, workOrderDocNo)}
       </p>
       <div
         className="mt-2 flex flex-wrap gap-2"

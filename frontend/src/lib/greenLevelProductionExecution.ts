@@ -1,4 +1,5 @@
 import { isGreenLevelReplenishmentSourceType } from "./productionFlowContract";
+import { displayWorkOrderNo } from "./docNoDisplay";
 
 export type GreenLevelWorkOrderLike = {
   id: number;
@@ -46,8 +47,7 @@ export function productionEntryUsesRmConsumptionReview(e?: GreenLevelProductionE
 }
 
 export function greenLevelWorkOrderSelectLabel(wo: GreenLevelWorkOrderLike): string {
-  const doc = String(wo.docNo ?? "").trim();
-  return doc || `WO-${wo.id}`;
+  return displayWorkOrderNo(wo.id, wo.docNo);
 }
 
 const GL_QUEUE_EPS = 1e-6;

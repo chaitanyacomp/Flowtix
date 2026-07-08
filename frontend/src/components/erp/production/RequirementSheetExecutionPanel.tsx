@@ -5,6 +5,7 @@ import { Input } from "../../ui/input";
 import { Badge } from "../../ui/badge";
 import { apiFetch, ApiRequestError } from "../../../services/api";
 import { workOrdersFocusHref } from "../../../lib/drillDownRoutes";
+import { displayPmrNo, displayWorkOrderNo } from "../../../lib/docNoDisplay";
 import { cn } from "../../../lib/utils";
 import { useToast } from "../../../contexts/ToastContext";
 import { useStoreExecutionNavContext } from "../../../hooks/useStoreExecutionNavContext";
@@ -445,8 +446,8 @@ export function RequirementSheetExecutionPanel({
         res.pmrs?.find((p) => Number(p.workOrderId) === primaryWoId) ?? res.pmrs?.[0] ?? null;
       const createdLabels =
         res.workOrders?.length
-          ? res.workOrders.map((wo) => wo.workOrderDocNo?.trim() || `WO-${wo.workOrderId}`)
-          : [res.workOrderDocNo?.trim() || `WO-${res.workOrderId}`];
+          ? res.workOrders.map((wo) => displayWorkOrderNo(wo.workOrderId, wo.workOrderDocNo))
+          : [displayWorkOrderNo(res.workOrderId, res.workOrderDocNo)];
       const woLabel =
         createdLabels.length > 1 ? `Work orders ${createdLabels.join(", ")}` : `Work Order ${createdLabels[0]}`;
       toast.showSuccess(formatPostWoCreateSuccessMessage(woLabel, pmrRow?.pmrDocNo ?? null));
@@ -683,7 +684,7 @@ export function RequirementSheetExecutionPanel({
               <tbody>
                 {visibleWoRows.map((wo) => (
                   <tr key={wo.workOrderId} className="border-b border-slate-100 text-slate-800">
-                    <td className="py-1.5 pr-2 font-medium">{wo.docNo?.trim() || `WO-${wo.workOrderId}`}</td>
+                    <td className="py-1.5 pr-2 font-medium">{displayWorkOrderNo(wo.workOrderId, wo.docNo)}</td>
                     <td className="py-1.5 pr-2 text-right tabular-nums">{fmtQty(wo.woQty)}</td>
                     <td className="py-1.5 pr-2">{statusLabel(wo.woStatus)}</td>
                     <td className="py-1.5 text-right">
@@ -839,7 +840,7 @@ export function RequirementSheetExecutionPanel({
                 <tbody>
                   {data.existingWoSummary.map((wo) => (
                     <tr key={wo.workOrderId} className="border-b border-slate-100 text-slate-800">
-                      <td className="py-1.5 pr-2 font-medium">{wo.docNo?.trim() || `WO-${wo.workOrderId}`}</td>
+                      <td className="py-1.5 pr-2 font-medium">{displayWorkOrderNo(wo.workOrderId, wo.docNo)}</td>
                       <td className="py-1.5 pr-2 text-right tabular-nums">{fmtQty(wo.woQty)}</td>
                       <td className="py-1.5 pr-2">
                         {wo.pmrId ? (
@@ -848,7 +849,7 @@ export function RequirementSheetExecutionPanel({
                             state={executionMode ? materialIssueFromWorkspaceState : undefined}
                             className="font-medium text-primary underline underline-offset-2"
                           >
-                            {wo.pmrDocNo?.trim() || `PMR-${wo.pmrId}`}
+                            {displayPmrNo(wo.pmrId, wo.pmrDocNo)}
                           </Link>
                         ) : (
                           <span className="text-slate-500">None</span>

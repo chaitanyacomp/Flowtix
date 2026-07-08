@@ -13,8 +13,13 @@ import {
 } from "../../lib/dashboardProductionStatus";
 import { resolveNoQtyCycleDisplayStatus } from "../../lib/noQtyCycleDisplayStatus";
 import { noQtyOperatorThirdColumn } from "../../lib/noQtyShortagePresentation";
-import { displayWorkOrderTraceNo } from "../../lib/docNoDisplay";
+import { displaySalesOrderNo, displayWorkOrderNo } from "../../lib/docNoDisplay";
 import { productionHrefFromDashboardRow } from "../../lib/operationalWorkspaceLinks";
+import {
+  matchesProductionWorkspaceBucket,
+  PRODUCTION_WORKSPACE_BUCKET_LABELS,
+  type ProductionWorkspaceBucketFilter,
+} from "../../lib/productionWorkspaceBucketFilter";
 import { NO_QTY_TERMS } from "../../lib/flowTerminology";
 import { useErpRefreshTick } from "../../hooks/useErpRefreshTick";
 
@@ -65,7 +70,7 @@ export function PendingStoreTasksPanel({ className }: { className?: string }) {
             <div className="font-bold">RM Return Approval Pending</div>
             <dl className="mt-1 grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 gap-y-0.5">
               <dt className="font-medium text-amber-900">WO No</dt>
-              <dd className="tabular-nums">{row.workOrderNo || `WO-${row.workOrderId}`}</dd>
+              <dd className="tabular-nums">{displayWorkOrderNo(row.workOrderId, row.workOrderNo)}</dd>
               <dt className="font-medium text-amber-900">RM Item</dt>
               <dd className="truncate" title={row.itemName}>{row.itemName}</dd>
               <dt className="font-medium text-amber-900">Qty</dt>
@@ -82,10 +87,12 @@ export function PendingStoreTasksPanel({ className }: { className?: string }) {
 
 export function OperationalProductionWorkspace({
   onOpenRow,
+  productionBucket = null,
   className,
 }: {
   /** Optional in-page handoff (e.g. applyLine) instead of navigation. */
   onOpenRow?: (row: DashboardProductionStatusSource) => void;
+  productionBucket?: ProductionWorkspaceBucketFilter | null;
   className?: string;
 }) {
   const liveTick = useErpRefreshTick(["production", "dashboard"], { pollIntervalMs: 0 });
@@ -112,23 +119,35 @@ export function OperationalProductionWorkspace({
     };
   }, [liveTick]);
 
-  const { visible, total } = React.useMemo(
-    () => buildDashboardProductionStatusRows(rows ?? [], { limit: 24 }),
-    [rows],
-  );
+  const { visible, total } = React.useMemo(() => {
+    const built = buildDashboardProductionStatusRows(rows ?? [], { limit: 24 });
+    if (!productionBucket) return built;
+    const filtered = built.visible.filter((row) => matchesProductionWorkspaceBucket(row, productionBucket));
+    return { visible: filtered, total: filtered.length };
+  }, [rows, productionBucket]);
+
+  const bucketLabel = productionBucket ? PRODUCTION_WORKSPACE_BUCKET_LABELS[productionBucket] : null;
 
   return (
     <Card className={cn("erp-op-workspace-primary min-w-0 overflow-hidden", className)}>
       <CardHeader className="border-b border-slate-100 bg-white px-2.5 py-1.5">
         <CardTitle className="text-sm font-semibold tracking-tight text-slate-900">Active production</CardTitle>
-        <p className="text-[11px] text-slate-500">Pick a line to open scoped production · REGULAR, NO_QTY, and Green Level</p>
+        <p className="text-[11px] text-slate-500">
+          {bucketLabel
+            ? `Showing ${bucketLabel.toLowerCase()} work orders · pick a line to open scoped production`
+            : "Pick a line to open scoped production · REGULAR, NO_QTY, and Green Level"}
+        </p>
       </CardHeader>
       <CardContent className="p-1.5">
         {error ? <p className="mb-1 text-[12px] text-red-700">{error}</p> : null}
         {rows === null ? (
           <p className="px-1 py-2 text-[13px] text-slate-600">Loading production queue…</p>
         ) : visible.length === 0 ? (
-          <p className="px-1 py-2 text-[13px] text-slate-600">No active production work right now.</p>
+          <p className="px-1 py-2 text-[13px] text-slate-600">
+            {bucketLabel
+              ? `No ${bucketLabel.toLowerCase()} work orders right now.`
+              : "No active production work right now."}
+          </p>
         ) : (
           <>
             <div className="max-h-[min(36vh,320px)] overflow-auto rounded-md border border-slate-200/90">
@@ -177,12 +196,12 @@ export function OperationalProductionWorkspace({
                         <td className="px-2 py-0.5 tabular-nums font-medium">
                           {row.orderType === "GREEN_LEVEL"
                             ? (row.salesOrderNo ?? "Stock Replenishment")
-                            : (row.salesOrderNo ?? (row.salesOrderId ? `SO-${row.salesOrderId}` : "—"))}
+                            : displaySalesOrderNo(row.salesOrderId ?? 0, row.salesOrderNo)}
                         </td>
                         <td className="px-2 py-0.5 tabular-nums">
                           {row.orderType === "GREEN_LEVEL" ? "—" : (row.cycleNo ?? "—")}
                         </td>
-                        <td className="px-2 py-0.5 tabular-nums">{displayWorkOrderTraceNo(row.workOrderId)}</td>
+                        <td className="px-2 py-0.5 tabular-nums">{displayWorkOrderNo(row.workOrderId, row.workOrderNo)}</td>
                         <td className="max-w-[9rem] truncate px-2 py-0.5" title={row.itemName}>
                           {row.itemName}
                         </td>

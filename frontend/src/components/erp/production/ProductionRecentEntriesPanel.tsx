@@ -6,7 +6,7 @@ import { Button, buttonVariants } from "../../ui/button";
 import { cn } from "../../../lib/utils";
 import { PRODUCTION_QA_TERMS } from "../../../lib/productionQaTerminology";
 import { isGreenLevelProductionEntry } from "../../../lib/greenLevelProductionExecution";
-import { displaySalesOrderNo, displayWorkOrderTraceNo } from "../../../lib/docNoDisplay";
+import { displaySalesOrderNo, displayWorkOrderNo } from "../../../lib/docNoDisplay";
 import { formatFgQuantity } from "../../../lib/quantityDisplay";
 
 export type ProductionRecentEntryRow = {
@@ -25,7 +25,7 @@ export type ProductionRecentEntryRow = {
       salesOrderId: number;
       cycleId?: number | null;
       cycle?: { cycleNo?: number | null } | null;
-      orderType?: string;
+      docNo?: string | null;
       salesOrder?: { orderType?: string };
     };
   };
@@ -92,6 +92,8 @@ type Props = {
   onOpenReverse: (row: ProductionRecentEntryRow) => void;
   renderApproveButtonLabel: (id: number, fallback: string, compact?: boolean) => string;
   containedScroll?: boolean;
+  /** FT-PD-066 — Time · Qty · Status beside operator entry form */
+  operatorWorkbench?: boolean;
   className?: string;
 };
 
@@ -121,8 +123,10 @@ export function ProductionRecentEntriesPanel({
   onOpenReverse,
   renderApproveButtonLabel,
   containedScroll = true,
+  operatorWorkbench = false,
   className,
 }: Props) {
+  const [expandedEntryId, setExpandedEntryId] = React.useState<number | null>(null);
   const hardenedProductionContext = navigateNoQtyContext || navigateGreenLevelContext;
   const cycleScoped =
     navigateNoQtyContext && focusSoIdValid && effectiveNoQtyCycleId != null
@@ -138,7 +142,90 @@ export function ProductionRecentEntriesPanel({
       : [];
 
   const panelScrollsInternally =
-    containedScroll && (embedded || hardenedProductionContext || showProductionWorkspace);
+    containedScroll && (embedded || hardenedProductionContext || showProductionWorkspace || operatorWorkbench);
+
+  const operatorStatusLabel = (r: ProductionRecentEntryRow) => {
+    if (isDraft(r)) return "Draft";
+    if (qcCompleted(r)) return "QC done";
+    return "Pending QC";
+  };
+
+  const operatorWorkbenchTable = (rowsToShow: ProductionRecentEntryRow[]) => {
+    const rowsOrdered = [...rowsToShow]
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+      .slice(0, 12);
+    if (!rowsOrdered.length) {
+      return (
+        <p className="px-1 py-2 text-[11px] leading-snug text-slate-600">No production entries yet.</p>
+      );
+    }
+    return (
+      <div
+        className={cn(
+          "rounded border border-slate-200",
+          panelScrollsInternally ? "max-h-[min(28vh,240px)] overflow-y-auto overscroll-contain" : "",
+        )}
+      >
+        <table className="w-full table-fixed text-[11px]">
+          <thead className="sticky top-0 z-[1] border-b border-slate-200 bg-slate-50">
+            <tr className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+              <th className="px-1.5 py-1 text-left">Time</th>
+              <th className="px-1.5 py-1 text-right">Qty</th>
+              <th className="px-1.5 py-1 text-left">Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rowsOrdered.map((r) => {
+              const expanded = expandedEntryId === r.id;
+              return (
+                <React.Fragment key={r.id}>
+                  <tr
+                    className={cn(
+                      "cursor-pointer border-b border-slate-100 hover:bg-slate-50/90",
+                      expanded && "bg-slate-50",
+                      isDraft(r) && "bg-amber-50/50",
+                    )}
+                    onClick={() => setExpandedEntryId(expanded ? null : r.id)}
+                  >
+                    <td className="whitespace-nowrap px-1.5 py-1 tabular-nums text-slate-700">
+                      {new Date(r.date).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                    </td>
+                    <td className="px-1.5 py-1 text-right font-bold tabular-nums text-slate-900">
+                      {formatFgQuantity(Number(r.producedQty), r.workOrderLine.fgItem.unit)}
+                    </td>
+                    <td className="px-1.5 py-1 text-[10px] font-medium text-slate-700">{operatorStatusLabel(r)}</td>
+                  </tr>
+                  {expanded ? (
+                    <tr className="border-b border-slate-100 bg-slate-50/80">
+                      <td colSpan={3} className="px-1.5 py-1.5">
+                        <div className="space-y-1 text-[10px] text-slate-600">
+                          <div>{new Date(r.date).toLocaleDateString()}</div>
+                          <div className="truncate font-medium text-slate-800">{r.workOrderLine.fgItem.itemName}</div>
+                          {canProd && isDraft(r) ? (
+                            <div className="flex flex-wrap gap-1 pt-0.5">
+                              <Button type="button" size="sm" variant="outline" className="h-6 px-1.5 text-[10px]" disabled={rowBusy === r.id} onClick={() => onOpenEdit(r)}>
+                                Edit
+                              </Button>
+                              <Button type="button" size="sm" variant="secondary" className="h-6 px-1.5 text-[10px]" disabled={rowBusy === r.id} onClick={() => onApproveDraft(r.id)}>
+                                {renderApproveButtonLabel(r.id, "Approve", true)}
+                              </Button>
+                              <Button type="button" size="sm" variant="destructive" className="h-6 px-1.5 text-[10px]" disabled={rowBusy === r.id} onClick={() => onDeleteDraft(r.id)}>
+                                Delete
+                              </Button>
+                            </div>
+                          ) : null}
+                        </div>
+                      </td>
+                    </tr>
+                  ) : null}
+                </React.Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    );
+  };
 
   const table = (rowsToShow: ProductionRecentEntryRow[]) => {
     const rowsOrdered = navigateNoQtyContext
@@ -200,7 +287,7 @@ export function ProductionRecentEntriesPanel({
                   </td>
                   {navigateNoQtyContext ? null : navigateGreenLevelContext ? null : (
                     <td className="px-1 py-1.5 text-center align-middle tabular-nums">
-                      {displayWorkOrderTraceNo(r.workOrderLine.workOrder.id)}
+                      {displayWorkOrderNo(r.workOrderLine.workOrder.id, r.workOrderLine.workOrder.docNo)}
                     </td>
                   )}
                   {navigateNoQtyContext ? (
@@ -336,28 +423,53 @@ export function ProductionRecentEntriesPanel({
     );
   };
 
+  if (operatorWorkbench) {
+    return (
+      <div
+        className={cn("flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden", className)}
+        data-testid="production-recent-entries-mes-panel"
+      >
+        <div className="mb-1.5 shrink-0">
+          <select
+            className="h-7 w-full rounded border border-slate-300 bg-white px-2 text-[11px]"
+            value={entryFilter}
+            onChange={(e) => onEntryFilterChange(e.target.value as typeof entryFilter)}
+            aria-label="Filter entries"
+          >
+            <option value="ALL">All entries</option>
+            <option value="DRAFT">Draft</option>
+            <option value="APPROVED">Posted</option>
+          </select>
+        </div>
+        <div className="min-h-0 flex-1 overflow-hidden">{operatorWorkbenchTable(cycleScoped)}</div>
+      </div>
+    );
+  }
+
   return (
     <Card
       className={cn(
         "erp-op-workspace-secondary min-w-0 overflow-hidden",
         panelScrollsInternally && "flex min-h-0 flex-1 flex-col",
         embedded && "border-slate-200/95 shadow-[0_2px_10px_0_rgb(15_23_42_/0.06)]",
+        operatorWorkbench && "max-w-[13.5rem] border-slate-200/90 shadow-sm",
         className,
       )}
       data-testid={embedded ? "production-recent-entries-embedded" : "production-recent-entries-panel"}
     >
-      <CardHeader className={cn("shrink-0 border-b border-slate-100/80 bg-slate-50/90 px-3", embedded ? "py-2.5" : "py-1.5")}>
-        <CardTitle className={cn("font-semibold text-slate-800", embedded ? "text-[13px] tracking-tight" : "text-[12px] text-slate-600")}>
-          {embedded ? "Recent entries" : showProductionWorkspace ? "Recent Production Entries" : "Production entries"}
+      <CardHeader className={cn("shrink-0 border-b border-slate-100/80 bg-slate-50/90 px-2", operatorWorkbench ? "py-1" : embedded ? "py-2.5" : "py-1.5")}>
+        <CardTitle className={cn("font-semibold text-slate-800", operatorWorkbench ? "text-[11px]" : embedded ? "text-[13px] tracking-tight" : "text-[12px] text-slate-600")}>
+          {operatorWorkbench ? "Recent entries" : embedded ? "Recent entries" : showProductionWorkspace ? "Recent Production Entries" : "Production entries"}
         </CardTitle>
       </CardHeader>
       <CardContent
         className={cn(
           panelScrollsInternally
-            ? "flex min-h-0 flex-1 flex-col overflow-hidden px-3 py-2"
+            ? "flex min-h-0 flex-1 flex-col overflow-hidden px-2 py-1"
             : "space-y-2 px-3 py-2",
         )}
       >
+        {!operatorWorkbench ? (
         <div className={cn("shrink-0", embedded ? "mb-1.5" : "border-b border-slate-100 px-0 py-1")}>
           <label className="grid gap-1 text-[12px] font-semibold text-slate-700">
             Show
@@ -372,18 +484,32 @@ export function ProductionRecentEntriesPanel({
             </select>
           </label>
         </div>
+        ) : (
+          <div className="mb-1 shrink-0">
+            <select
+              className="erp-flow-filter-input h-7 w-full rounded border border-slate-200 bg-white px-1.5 text-[11px]"
+              value={entryFilter}
+              onChange={(e) => onEntryFilterChange(e.target.value as typeof entryFilter)}
+              aria-label="Filter entries"
+            >
+              <option value="ALL">All</option>
+              <option value="DRAFT">Draft</option>
+              <option value="APPROVED">Posted</option>
+            </select>
+          </div>
+        )}
         <div
           className={cn(
             panelScrollsInternally
-              ? "min-h-0 flex-1 overflow-y-auto overscroll-contain pb-3"
+              ? "min-h-0 flex-1 overflow-y-auto overscroll-contain pb-1"
               : "space-y-2 px-0",
           )}
         >
-          {fromNoQtySo && focusSoIdValid ? (
+          {fromNoQtySo && focusSoIdValid && !operatorWorkbench ? (
             <div className="mb-1 text-[12px] font-semibold text-slate-700">Current cycle</div>
           ) : null}
-          {table(cycleScoped)}
-          {fromNoQtySo && focusSoIdValid && older.length > 0 ? (
+          {operatorWorkbench ? operatorWorkbenchTable(cycleScoped) : table(cycleScoped)}
+          {fromNoQtySo && focusSoIdValid && older.length > 0 && !operatorWorkbench ? (
             <details className="mt-2 rounded border border-slate-200 bg-slate-50 px-2 py-1.5">
               <summary className="cursor-pointer text-[12px] font-medium text-slate-700">
                 Older history ({older.length})

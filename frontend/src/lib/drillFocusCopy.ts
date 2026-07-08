@@ -3,6 +3,12 @@
  * Keeps dashboard, reports, and destination pages aligned.
  */
 
+import {
+  displayProductionEntryNo,
+  displaySalesOrderNo,
+  displayWorkOrderNo,
+} from "./docNoDisplay";
+
 export const DRILL_FOCUS_CLEAR_LABEL = "Clear focus";
 
 export const DRILL_RECOVERY_LABEL = {
@@ -12,12 +18,12 @@ export const DRILL_RECOVERY_LABEL = {
   purchaseOrder: "Show in Material Planning",
 } as const;
 
-export function drillFocusTitleSalesOrder(id: number): string {
-  return `Focused from dashboard/report: Sales order #${id}`;
+export function drillFocusTitleSalesOrder(id: number, docNo?: string | null): string {
+  return `Focused from dashboard/report: Sales order ${displaySalesOrderNo(id, docNo)}`;
 }
 
-export function drillFocusTitleWorkOrder(id: number): string {
-  return `Focused from drill-down: Work order #${id}`;
+export function drillFocusTitleWorkOrder(id: number, docNo?: string | null): string {
+  return `Focused from drill-down: Work order ${displayWorkOrderNo(id, docNo)}`;
 }
 
 export function drillFocusTitleStockItem(id: number, itemName?: string): string {
@@ -34,8 +40,8 @@ export function drillFocusTitleRmPo(id: number, supplierName?: string): string {
   return `Focused from drill-down: RM purchase order #${id}`;
 }
 
-export function drillFocusTitleQcProduction(id: number): string {
-  return `Focused from drill-down: Production #${id}`;
+export function drillFocusTitleQcProduction(id: number, docNo?: string | null): string {
+  return `Focused from drill-down: Production batch ${displayProductionEntryNo(id, docNo)}`;
 }
 
 /** Soft-banner hints: not in loaded dataset */

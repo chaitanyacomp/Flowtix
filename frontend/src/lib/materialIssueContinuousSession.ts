@@ -3,6 +3,7 @@
  */
 
 import type { PendingPmrSummary } from "./materialIssueWorkspace";
+import { displayPmrNo } from "./docNoDisplay";
 import {
   filterPmrsWithPendingIssue,
   pickActionablePmrForWorkOrder,
@@ -90,7 +91,7 @@ export function formatMaterialIssueInlineStatus(input: {
   pmrId?: number | null;
   pendingLineCount: number;
 }): string {
-  const doc = input.pmrDocNo?.trim() || (input.pmrId ? `PMR-${input.pmrId}` : "PMR");
+  const doc = input.pmrId ? displayPmrNo(input.pmrId, input.pmrDocNo) : "PMR";
   const count = Math.max(0, Number(input.pendingLineCount ?? 0));
   const lineLabel = count === 1 ? "1 line pending" : `${count} lines pending`;
   return `${doc} · Waiting for RM Issue · ${lineLabel}`;

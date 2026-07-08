@@ -1482,7 +1482,7 @@ export function WorkOrdersPage() {
       : showWoWorkspace
         ? "production-workspace"
         : "work-orders";
-    const label = workOrderLabel?.trim() || `WO-${woId}`;
+    const label = workOrderLabel?.trim() || displayWorkOrderNo(woId, null);
     toast.showSuccess(formatPostWoCreateSuccessMessage(label, pmrDocNo));
     nav(
       postWoMaterialIssueHref({
@@ -1559,7 +1559,7 @@ export function WorkOrdersPage() {
         body: JSON.stringify(payload),
       });
       await refresh();
-      await handoffToMaterialIssueAfterWoCreate(wo.id, wo.docNo?.trim() || `WO-${wo.id}`);
+      await handoffToMaterialIssueAfterWoCreate(wo.id, displayWorkOrderNo(wo.id, wo.docNo));
     } catch (e) {
       if (e instanceof ApiRequestError && e.code === "FG_STOCK_SUFFICIENT_ADMIN_OVERRIDE_REQUIRED" && isAdmin) {
         setOverridePayload({ salesOrderId: Number(salesOrderId), lines: woLines.map((x) => ({ ...x })) });
@@ -1632,7 +1632,7 @@ export function WorkOrdersPage() {
       });
       closeOverrideModal();
       await refresh();
-      await handoffToMaterialIssueAfterWoCreate(wo.id, wo.docNo?.trim() || `WO-${wo.id}`);
+      await handoffToMaterialIssueAfterWoCreate(wo.id, displayWorkOrderNo(wo.id, wo.docNo));
     } catch (e) {
       const raw = e instanceof Error ? e.message : "Failed";
       setError(friendlyErrorMessage(raw));

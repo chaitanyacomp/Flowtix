@@ -66,3 +66,35 @@ export function displayRequirementSheetNo(id: number, docNo?: string | null): st
   if (!Number.isFinite(n) || n <= 0) return "RS-—";
   return `RS-${String(n).padStart(3, "0")}`;
 }
+
+export function displayPmrNo(id: number, docNo?: string | null): string {
+  const s = docNo?.trim();
+  if (s) return s;
+  const n = Number(id);
+  if (!Number.isFinite(n) || n <= 0) return "PMR-—";
+  return `PMR-${String(n).padStart(3, "0")}`;
+}
+
+export function displayMaterialRequirementNo(id: number, docNo?: string | null): string {
+  const s = docNo?.trim();
+  if (s) return s;
+  const n = Number(id);
+  if (!Number.isFinite(n) || n <= 0) return "MR-—";
+  return `MR-${String(n).padStart(3, "0")}`;
+}
+
+export function displayMaterialIssueNo(id: number, docNo?: string | null): string {
+  const s = docNo?.trim();
+  if (s) return s;
+  const n = Number(id);
+  if (!Number.isFinite(n) || n <= 0) return "MIN-—";
+  return `MIN-${String(n).padStart(3, "0")}`;
+}
+
+export function displayMonthlyPlanNo(id: number, docNo?: string | null): string {
+  const s = docNo?.trim();
+  if (s) return s;
+  const n = Number(id);
+  if (!Number.isFinite(n) || n <= 0) return "MP-—";
+  return `MP-${String(n).padStart(3, "0")}`;
+}

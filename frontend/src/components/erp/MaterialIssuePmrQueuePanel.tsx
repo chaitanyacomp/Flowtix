@@ -1,6 +1,7 @@
 import * as React from "react";
 import { Link } from "react-router-dom";
 import { ChevronDown, ChevronRight } from "lucide-react";
+import { displayPmrNo, displayWorkOrderNo } from "../../lib/docNoDisplay";
 import { cn } from "../../lib/utils";
 import {
   groupPendingPmrsByWorkOrder,
@@ -115,7 +116,7 @@ function WoGroupCard({
           <p className="truncate text-[11px] font-semibold text-slate-900">{g.productionItemName}</p>
         ) : null}
         <p className={cn("text-[11px] font-bold text-slate-950", g.productionItemName && "mt-0.5")}>
-          {g.workOrderNo ?? `WO-${g.workOrderId}`}
+          {displayWorkOrderNo(g.workOrderId, g.workOrderNo)}
           {g.salesOrderNo ? <span className="font-medium text-slate-500"> · {g.salesOrderNo}</span> : null}
         </p>
         <p className="mt-0.5 text-[10px] font-semibold tabular-nums text-amber-900">
@@ -151,7 +152,7 @@ function WoGroupCard({
                     )}
                     onClick={() => onSelectPmr(p.id, g.workOrderId)}
                   >
-                    {p.docNo ?? `PMR-${p.id}`} · {fmtQty(p.totalPending)}
+                    {displayPmrNo(p.id, p.docNo)} · {fmtQty(p.totalPending)}
                   </button>
                 </li>
               ))}

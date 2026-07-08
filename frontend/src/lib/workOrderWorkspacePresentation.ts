@@ -285,8 +285,7 @@ function queueLinesToGroup(
 
   return {
     woId,
-    /** Formal docNo when present on API rows; cycle history display uses woId via displayWorkOrderTraceNo. */
-    woDocNo: null,
+    woDocNo: primary.workOrderNo ?? null,
     salesOrderId: primary.salesOrderId ?? 0,
     soDocNo: primary.salesOrderNo ?? null,
     orderType,

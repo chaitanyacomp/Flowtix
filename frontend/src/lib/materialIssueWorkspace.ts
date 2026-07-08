@@ -2,6 +2,11 @@
  * Material Issue Workspace — WO/PMR grouping and line status labels (UX only).
  */
 
+import {
+  displaySalesOrderNo,
+  displayWorkOrderNo,
+} from "./docNoDisplay";
+
 const EPS = 1e-6;
 
 export type PendingPmrSummary = {
@@ -146,8 +151,8 @@ export function buildActionableWorkOrderDropdownOptions(
   return [...byWo.values()]
     .map((p) => ({
       id: Number(p.workOrderId),
-      label: `${p.workOrderNo ?? `WO-${p.workOrderId}`}${
-        p.salesOrderNo ? ` · ${p.salesOrderNo}` : ""
+      label: `${displayWorkOrderNo(Number(p.workOrderId), p.workOrderNo)}${
+        p.salesOrderId ? ` · ${displaySalesOrderNo(p.salesOrderId, p.salesOrderNo)}` : ""
       }${p.productionItemName ? ` · ${p.productionItemName}` : ""}`,
     }))
     .sort((a, b) => b.id - a.id);
@@ -169,7 +174,7 @@ export function buildIssuedWorkOrderInfoRows(input: {
     seen.add(woId);
     rows.push({
       workOrderId: woId,
-      label: issue.workOrderNo?.trim() || `WO-${woId}`,
+      label: displayWorkOrderNo(woId, issue.workOrderNo),
     });
   }
   return rows;
@@ -206,7 +211,7 @@ export function mapIssuedWaitingForProductionPanelRows(
     .filter((row) => row.workOrderId > 0 && !actionableWorkOrderIds.has(row.workOrderId))
     .map((row) => ({
       workOrderId: row.workOrderId,
-      label: row.workOrderNo?.trim() || `WO-${row.workOrderId}`,
+      label: displayWorkOrderNo(row.workOrderId, row.workOrderNo),
     }));
 }
 

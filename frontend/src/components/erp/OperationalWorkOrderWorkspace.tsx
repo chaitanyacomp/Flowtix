@@ -14,7 +14,7 @@ import {
 } from "../../lib/operationalWorkspaceLinks";
 import { NO_QTY_TERMS } from "../../lib/flowTerminology";
 import { useErpRefreshTick } from "../../hooks/useErpRefreshTick";
-import { displayWorkOrderTraceNo } from "../../lib/docNoDisplay";
+import { displaySalesOrderNo, displayWorkOrderNo } from "../../lib/docNoDisplay";
 import {
   buildWorkOrderWorkspaceSections,
   formatCycleHistoryOutcomeLine,
@@ -98,7 +98,7 @@ function resolveRowHref(g: WoWorkspaceGroup): string {
 
 function cycleWoLabel(g: WoWorkspaceGroup): string {
   const cycle = g.cycleNo != null ? `Cycle ${g.cycleNo}` : "Cycle —";
-  return `${cycle} · ${displayWorkOrderTraceNo(g.woId)}`;
+  return `${cycle} · ${displayWorkOrderNo(g.woId, g.woDocNo)}`;
 }
 
 function OperationalCycleCard({ g }: { g: WoWorkspaceGroup }) {

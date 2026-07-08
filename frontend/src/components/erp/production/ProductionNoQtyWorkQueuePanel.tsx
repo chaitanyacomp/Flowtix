@@ -1,11 +1,12 @@
 import * as React from "react";
 import { Button } from "../../ui/button";
 import { cn } from "../../../lib/utils";
-import { displayWorkOrderTraceNo } from "../../../lib/docNoDisplay";
+import { displayWorkOrderNo } from "../../../lib/docNoDisplay";
 
 export type ProductionNoQtyWorkQueueRow = {
   id: number;
   workOrderId: number;
+  workOrderDocNo?: string | null;
   cycleNo: number | null;
   balance: number;
   queueStatus: "ready" | "qc_pending" | "carry_forward";
@@ -85,7 +86,7 @@ export function ProductionNoQtyWorkQueuePanel({
                   <td className="px-2 py-1 tabular-nums font-medium text-slate-800">
                     {row.cycleNo != null ? row.cycleNo : "—"}
                   </td>
-                  <td className="px-2 py-1 tabular-nums">{displayWorkOrderTraceNo(row.workOrderId)}</td>
+                  <td className="px-2 py-1 tabular-nums">{displayWorkOrderNo(row.workOrderId, row.workOrderDocNo)}</td>
                   <td className="truncate px-2 py-1 font-medium" title={row.fgItem.itemName}>
                     {row.fgItem.itemName}
                   </td>

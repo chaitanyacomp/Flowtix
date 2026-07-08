@@ -80,6 +80,10 @@ import {
   type CaseSelection,
   type QueueSearchFilters,
 } from "../lib/rmControlCenterSelection";
+import {
+  displaySalesOrderNo,
+  displayWorkOrderNo,
+} from "../lib/docNoDisplay";
 
 type WarningRow = { code: string; message: string };
 type ReservationBreakdownRow = {
@@ -1411,7 +1415,7 @@ export function MaterialAvailabilityControlCenterPage() {
           body: JSON.stringify({
             workOrderId,
             confirmReopenClosed: confirm,
-            remarks: `SO-linked case bulk add for ${detail?.workOrder?.docNo || `WO-${workOrderId}`} (execution WO).`,
+            remarks: `SO-linked case bulk add for ${displayWorkOrderNo(workOrderId, detail?.workOrder?.docNo)} (execution WO).`,
           }),
         });
       let out;
@@ -1587,7 +1591,7 @@ export function MaterialAvailabilityControlCenterPage() {
                 >
                   <div className="flex items-start justify-between gap-1.5">
                     <p className="min-w-0 flex-1 truncate text-[14px] font-bold text-slate-900">
-                      {row.salesOrderNo ?? (row.salesOrderId ? `SO-${row.salesOrderId}` : "SO")}
+                      {displaySalesOrderNo(row.salesOrderId ?? 0, row.salesOrderNo)}
                     </p>
                     <Badge variant={qStatus.badgeVariant} density="compact" className="shrink-0 text-[10px]">
                       {qStatus.label}
@@ -1598,7 +1602,7 @@ export function MaterialAvailabilityControlCenterPage() {
                   </p>
                   {row.workOrderNo || row.workOrderId ? (
                     <p className="mt-0.5 truncate text-[11px] text-slate-600">
-                      {row.workOrderNo ?? `WO-${row.workOrderId}`}
+                      {row.workOrderId ? displayWorkOrderNo(row.workOrderId, row.workOrderNo) : null}
                     </p>
                   ) : null}
                   <p className="mt-1 truncate text-[12px] font-medium text-slate-800">

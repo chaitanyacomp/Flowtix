@@ -1,7 +1,9 @@
 /**
  * NO_QTY Production Execution — shortfall resolution.
- * Production owns execution actions; Work Order lifecycle updates via applyWorkOrderExecutionOutcome only.
+ * Production owns execution actions; Work Order document completion via workOrderCompletionService.
  */
+const { assertProductionReportConfirmedForCompletion } = require("./productionWorkOrderReportService");
+const { reconcileWorkOrderStatusFromProduction } = require("./workOrderCompletionService");
 
 const auditLog = require("./auditLog");
 const { GREEN_LEVEL_WO_SOURCE_TYPE } = require("./greenLevelWorkOrderService");
@@ -289,9 +291,10 @@ async function writeShortfallResolutionAudit(tx, {
 }
 
 /**
- * Workflow engine: apply Work Order outcome after Production execution decision.
+ * Validates production execution outcome before execution status is finalized.
+ * Work order document completion is applied separately via workOrderCompletionService.
  */
-async function applyWorkOrderExecutionOutcome(tx, workOrderId, { outcome, actorUserId, actorRole }) {
+async function applyWorkOrderExecutionOutcome(tx, workOrderId, { outcome }) {
   const wo = await loadNoQtyExecutionContext(tx, workOrderId);
   const exec = wo.productionExecution ?? (await ensureProductionExecutionRecord(tx, workOrderId));
 
@@ -309,21 +312,6 @@ async function applyWorkOrderExecutionOutcome(tx, workOrderId, { outcome, actorU
     const terminalStatuses = new Set(["COMPLETED", "REJECTED", "CLOSED_WITH_SHORTFALL"]);
     if (terminalStatuses.has(wo.status)) {
       return { workOrderId, outcome, alreadyTerminal: true };
-    }
-    await tx.workOrder.update({
-      where: { id: workOrderId },
-      data: { status: "COMPLETED" },
-    });
-    if (typeof actorUserId === "number") {
-      await auditLog.write(tx, {
-        action: auditLog.AuditAction.UPDATE,
-        entityType: auditLog.AuditEntityType.SETTINGS,
-        entityId: `WORK_ORDER:${workOrderId}`,
-        actorUserId,
-        actorRole,
-        summary: `Work order ${wo.docNo || workOrderId} marked COMPLETED after production execution ${outcome}`,
-        payload: { module: "PRODUCTION_EXECUTION", outcome },
-      });
     }
   }
 
@@ -500,17 +488,7 @@ async function reconcileShortfallPendingStatus(tx, wo) {
 }
 
 async function assertProductionReportConfirmedForExecution(tx, workOrderId) {
-  const row = await tx.productionWorkOrderReport.findUnique({
-    where: { workOrderId },
-    select: { id: true, status: true },
-  });
-  if (!row || row.status !== "CONFIRMED") {
-    const err = new Error("Confirm Production Report before finishing production.");
-    err.statusCode = 409;
-    err.code = "PRODUCTION_REPORT_REQUIRED";
-    throw err;
-  }
-  return row;
+  return assertProductionReportConfirmedForCompletion(tx, workOrderId);
 }
 
 /**
@@ -581,8 +559,6 @@ async function finishProductionExecution(tx, workOrderId, input, { actorUserId, 
 
     await applyWorkOrderExecutionOutcome(tx, workOrderId, {
       outcome: "FULL_COMPLETE",
-      actorUserId,
-      actorRole,
     });
     const execution = await tx.workOrderProductionExecution.update({
       where: { workOrderId },
@@ -612,6 +588,12 @@ async function finishProductionExecution(tx, workOrderId, input, { actorUserId, 
         },
       });
     }
+
+    await reconcileWorkOrderStatusFromProduction(tx, workOrderId, {
+      actorUserId,
+      actorRole,
+      source: "EXECUTION_FINISH_FULL",
+    });
 
     return {
       execution,
@@ -714,8 +696,6 @@ async function finishProductionExecution(tx, workOrderId, input, { actorUserId, 
 
   await applyWorkOrderExecutionOutcome(tx, workOrderId, {
     outcome: effectiveShortfallOutcome,
-    actorUserId,
-    actorRole,
   });
 
   const execution = await tx.workOrderProductionExecution.update({
@@ -750,6 +730,12 @@ async function finishProductionExecution(tx, workOrderId, input, { actorUserId, 
       reason: remarks?.trim() || null,
     });
   }
+
+  await reconcileWorkOrderStatusFromProduction(tx, workOrderId, {
+    actorUserId,
+    actorRole,
+    source: "EXECUTION_FINISH_SHORTFALL",
+  });
 
   return {
     execution,

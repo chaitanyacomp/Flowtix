@@ -89,6 +89,7 @@ const {
   PE_APPROVED,
 } = require("../services/productionEntryApprovalGateService");
 const { approveProductionWorkOrderReport } = require("../services/productionReportApprovalGateService");
+const { reconcileWorkOrderStatusFromProduction } = require("../services/workOrderCompletionService");
 const { maybeAutoCloseSalesOrderOperationally } = require("../services/salesOrderOperationalAutoClose");
 const { approvedBomWhere, approvedBomOrderBy } = require("../services/bomStatus");
 const { evaluateWoPrepareReadiness } = require("../services/materialPlanningService");
@@ -112,7 +113,6 @@ const {
   resumeWorkOrder,
   closeWorkOrderWithShortfall,
   assertWorkOrderAllowsProduction,
-  shouldFreezeStatusSync,
 } = require("../services/workOrderLifecycleService");
 const {
   isWorkOrderProductionOperationallyClosed,
@@ -598,65 +598,6 @@ function normalizeWorkOrderLinePayloads(lines) {
   return out;
 }
 
-/**
- * Set work order status from summed APPROVED production vs WO line qty (REJECTED unchanged).
- * COMPLETED when every line has producedQty >= qty (within WO_SO_EPS); IN_PROGRESS if any production but not all complete.
- */
-async function syncWorkOrderStatusFromProduction(tx, workOrderId) {
-  const wo = await tx.workOrder.findUnique({
-    where: { id: workOrderId },
-    select: {
-      id: true,
-      status: true,
-      sourceType: true,
-      lines: { select: { id: true, qty: true } },
-      salesOrder: { select: { orderType: true } },
-      productionExecution: { select: { executionStatus: true } },
-    },
-  });
-  if (!wo || wo.status === "REJECTED" || !wo.lines.length) return;
-  if (shouldFreezeStatusSync(wo.status)) return;
-
-  const isGreenLevel = isGreenLevelReplenishmentWorkOrder(wo);
-  const isNoQty = wo.salesOrder?.orderType === "NO_QTY";
-  const confirmedReport = await tx.productionWorkOrderReport.findUnique({
-    where: { workOrderId },
-    select: { id: true, status: true },
-  });
-  const hasConfirmedProductionReport = confirmedReport?.status === "CONFIRMED";
-  const openRmReturnPendingCount = hasConfirmedProductionReport
-    ? await tx.productionRmReturnPending.count({ where: { workOrderId, status: "PENDING" } })
-    : 0;
-  const rmReturnsSettled = openRmReturnPendingCount === 0;
-
-  if (isNoQty || isGreenLevel) {
-    // Execution status owns pacing for shop-floor WOs; only mirror COMPLETED on WorkOrder.status.
-    if (wo.productionExecution?.executionStatus === "COMPLETED" && hasConfirmedProductionReport && rmReturnsSettled) {
-      if (wo.status !== "COMPLETED") {
-        await tx.workOrder.update({ where: { id: workOrderId }, data: { status: "COMPLETED" } });
-      }
-    }
-    return;
-  }
-
-  const lineIds = wo.lines.map((l) => l.id);
-  const producedByLineId = await getApprovedProducedQtyByWorkOrderLineIds(tx, lineIds);
-
-  let allComplete = true;
-  let anyProgress = false;
-  for (const line of wo.lines) {
-    const required = Number(line.qty);
-    const produced = producedByLineId.get(line.id) ?? 0;
-    if (produced > WO_SO_EPS) anyProgress = true;
-    if (produced + WO_SO_EPS < required) allComplete = false;
-  }
-
-  const nextStatus = allComplete && hasConfirmedProductionReport && rmReturnsSettled ? "COMPLETED" : anyProgress ? "IN_PROGRESS" : "PENDING";
-  if (nextStatus !== wo.status) {
-    await tx.workOrder.update({ where: { id: workOrderId }, data: { status: nextStatus } });
-  }
-}
-
 productionRouter.post(
   "/work-orders",
   requireAuth,
@@ -1133,7 +1074,7 @@ productionRouter.get(
   },
 );
 
-/** NO_QTY — Production execution status (orthogonal to Work Order lifecycle). */
+/** NO_QTY / Green Level only: closes production execution (not REGULAR work order completion). */
 const confirmProductionReportSchema = z.object({
   remarks: z.string().max(4000).optional().nullable(),
   closeWorkOrder: z.boolean().optional().default(false),
@@ -1195,7 +1136,11 @@ productionRouter.post(
             remainderQty > REPORT_QUEUE_EPS ? { shortfallOutcome: "CARRY_FORWARD" } : {},
             { actorUserId: req.user?.userId, actorRole: req.user?.role },
           );
-          await syncWorkOrderStatusFromProduction(tx, id);
+          await reconcileWorkOrderStatusFromProduction(tx, id, {
+            actorUserId: req.user?.userId,
+            actorRole: req.user?.role,
+            source: "PRODUCTION_REPORT_EXECUTION_CLOSE",
+          });
         }
         return {
           ...confirmed,
@@ -1937,7 +1882,11 @@ productionRouter.delete(
         const woId = existing.workOrderLine.workOrderId;
         await tx.productionEntry.delete({ where: { id } });
         await lockWorkOrderForUpdate(tx, woId);
-        await syncWorkOrderStatusFromProduction(tx, woId);
+        await reconcileWorkOrderStatusFromProduction(tx, woId, {
+          actorUserId: req.user?.userId,
+          actorRole: req.user?.role,
+          source: "PRODUCTION_ENTRY_DELETE",
+        });
       });
       return res.status(204).send();
     } catch (e) {
@@ -2014,7 +1963,11 @@ productionRouter.post(
           where: { id: wol.workOrderId },
           select: { status: true, salesOrderId: true },
         });
-        await syncWorkOrderStatusFromProduction(tx, wol.workOrderId);
+        await reconcileWorkOrderStatusFromProduction(tx, wol.workOrderId, {
+          actorUserId: req.user.userId,
+          actorRole: req.user.role,
+          source: "PRODUCTION_ENTRY_APPROVE",
+        });
         const woAfter = await tx.workOrder.findUnique({
           where: { id: wol.workOrderId },
           select: { status: true, salesOrderId: true },
@@ -2239,7 +2192,11 @@ productionRouter.post(
           select: { status: true },
         });
         await lockWorkOrderForUpdate(tx, wol.workOrderId);
-        await syncWorkOrderStatusFromProduction(tx, wol.workOrderId);
+        await reconcileWorkOrderStatusFromProduction(tx, wol.workOrderId, {
+          actorUserId: req.user.userId,
+          actorRole: req.user.role,
+          source: "PRODUCTION_ENTRY_UNAPPROVE",
+        });
         const woAfter = await tx.workOrder.findUnique({
           where: { id: wol.workOrderId },
           select: { status: true },

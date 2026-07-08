@@ -238,6 +238,11 @@ async function assertProductionReportConfirmed(db, workOrderId) {
   return row;
 }
 
+/** Shared guard for work order completion and production execution finish paths. */
+async function assertProductionReportConfirmedForCompletion(db, workOrderId) {
+  return assertProductionReportConfirmed(db, workOrderId);
+}
+
 /**
  * Guards the single Production Report approval path — duplicate confirm is rejected.
  *
@@ -763,23 +768,13 @@ async function receiveProductionRmReturnPending(input, actor = {}, db = prisma) 
       },
     });
     const openCount = await countOpenProductionRmReturnPending(tx, pending.workOrderId);
-    const report = await tx.productionWorkOrderReport.findUnique({
-      where: { workOrderId: pending.workOrderId },
-      select: { remainingQty: true, status: true },
+    const { reconcileWorkOrderStatusFromProduction } = require("./workOrderCompletionService");
+    await reconcileWorkOrderStatusFromProduction(tx, pending.workOrderId, {
+      actorUserId: actor.userId ?? actor.actorUserId ?? null,
+      actorRole: actor.role ?? actor.actorRole ?? null,
+      source: "RM_RETURN_RECEIVED",
     });
-    if (openCount === 0 && report?.status === "CONFIRMED" && round3(n(report.remainingQty)) <= EPS) {
-      await tx.workOrder.update({
-        where: { id: pending.workOrderId },
-        data: {
-          status: "COMPLETED",
-          holdReason: null,
-          heldAt: null,
-          heldByUserId: null,
-          holdRemarks: null,
-        },
-      });
-    }
-    return { pending: updated, materialReturnNote: { id: note.id, docNo: note.docNo } };
+    return { pending: updated, materialReturnNote: { id: note.id, docNo: note.docNo }, openReturnPendingCount: openCount };
   };
   const result =
     typeof db.$transaction === "function" ? await db.$transaction(run) : await run(db);
@@ -827,6 +822,7 @@ module.exports = {
   buildWorkOrderProductionReport,
   confirmProductionWorkOrderReport,
   assertProductionReportConfirmed,
+  assertProductionReportConfirmedForCompletion,
   assertProductionReportNotConfirmed,
   assertProductionReportHasApprovedEntries,
   assertNoOpenProductionRmReturnPending,

@@ -263,7 +263,7 @@ describe("productionExecutionService", () => {
     const execIdx = opOrder.indexOf("execution.update");
     assert.ok(auditIdx >= 0 && cfIdx > auditIdx, "audit before carry forward");
     assert.ok(woIdx > cfIdx, "WO completion after carry forward");
-    assert.ok(execIdx > woIdx, "execution COMPLETED after WO completion");
+    assert.ok(execIdx > cfIdx && execIdx < woIdx, "execution COMPLETED before WO completion reconcile");
   });
 
   test("finishProductionExecution CARRY_FORWARD defaults reason for merged report close", async () => {
@@ -297,7 +297,7 @@ describe("productionExecutionService", () => {
   });
 
   test("finishProductionExecution does not wait for Store RM return acknowledgement", async () => {
-    const { tx } = createFinishMockTx({ openReturnPendingCount: 1 });
+    const { tx, getWoStatus } = createFinishMockTx({ openReturnPendingCount: 1 });
     const result = await finishProductionExecution(
       tx,
       280,
@@ -305,6 +305,7 @@ describe("productionExecutionService", () => {
       { actorUserId: null, actorRole: null },
     );
     assert.equal(result.outcome, "WAIVE_BALANCE");
+    assert.equal(getWoStatus(), "IN_PROGRESS");
   });
 
   test("finishProductionExecution WAIVE_BALANCE closes WO and creates CarryForwardPending", async () => {
@@ -431,7 +432,7 @@ describe("productionExecutionService", () => {
     assert.equal(summary.remainderQty, 0);
     assert.equal(summary.hasSurplus, true);
   });
-  test("finishProductionExecution FULL_COMPLETE marks WO before execution COMPLETED", async () => {
+  test("finishProductionExecution FULL_COMPLETE completes WO after execution via completion service", async () => {
     const { tx, opOrder, getExecutionStatus, getWoStatus } = createFinishMockTx({ producedQty: 1500 });
     const result = await finishProductionExecution(tx, 280, {}, { actorUserId: null, actorRole: null });
     assert.equal(result.outcome, "FULL_COMPLETE");
@@ -439,7 +440,7 @@ describe("productionExecutionService", () => {
     assert.equal(getWoStatus(), "COMPLETED");
     const woIdx = opOrder.indexOf("workOrder.update");
     const execIdx = opOrder.indexOf("execution.update");
-    assert.ok(woIdx >= 0 && execIdx > woIdx, "execution COMPLETED after WO completion");
+    assert.ok(woIdx >= 0 && execIdx >= 0 && execIdx < woIdx, "WO completion follows execution COMPLETED");
   });
 
   test("computeExecutionSummary aggregates approved production into produced and remainder", async () => {

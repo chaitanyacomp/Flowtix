@@ -211,42 +211,26 @@ async function resumeWorkOrder(tx, workOrderId, { actorUserId, actorRole }) {
     throw err;
   }
 
-  const lineIds = wo.lines.map((l) => l.id);
-  const producedByLineId = await getApprovedProducedQtyByWorkOrderLineIds(tx, lineIds);
-  let anyProgress = false;
-  let allComplete = true;
-  for (const line of wo.lines) {
-    const required = n(line.qty);
-    const produced = producedByLineId.get(line.id) ?? 0;
-    if (produced > EPS) anyProgress = true;
-    if (produced + EPS < required) allComplete = false;
-  }
-  let reportConfirmed = false;
-  let rmReturnsSettled = true;
-  if (allComplete) {
-    const report = await tx.productionWorkOrderReport.findUnique({
-      where: { workOrderId },
-      select: { id: true, status: true },
-    });
-    reportConfirmed = report?.status === "CONFIRMED";
-    if (reportConfirmed) {
-      const pendingReturns = await tx.productionRmReturnPending.count({
-        where: { workOrderId, status: "PENDING" },
-      });
-      rmReturnsSettled = pendingReturns === 0;
-    }
-  }
-  const nextStatus = allComplete && reportConfirmed && rmReturnsSettled ? "COMPLETED" : anyProgress ? "IN_PROGRESS" : "PENDING";
-
-  const updated = await tx.workOrder.update({
+  await tx.workOrder.update({
     where: { id: workOrderId },
     data: {
-      status: nextStatus,
+      status: "PENDING",
       holdReason: null,
       heldAt: null,
       heldByUserId: null,
       holdRemarks: null,
     },
+  });
+
+  const { reconcileWorkOrderStatusFromProduction } = require("./workOrderCompletionService");
+  await reconcileWorkOrderStatusFromProduction(tx, workOrderId, {
+    actorUserId,
+    actorRole,
+    source: "RESUME",
+  });
+
+  const updated = await tx.workOrder.findUnique({
+    where: { id: workOrderId },
     include: { lines: { include: { fgItem: true } }, salesOrder: true },
   });
 
@@ -257,8 +241,12 @@ async function resumeWorkOrder(tx, workOrderId, { actorUserId, actorRole }) {
       entityId: `WORK_ORDER:${workOrderId}`,
       actorUserId,
       actorRole,
-      summary: `Work order ${updated.docNo || workOrderId} resumed (${nextStatus})`,
-      payload: { module: "WORK_ORDER_LIFECYCLE", actionLabel: "RESUME", status: nextStatus },
+      summary: `Work order ${updated?.docNo || workOrderId} resumed (${updated?.status ?? "PENDING"})`,
+      payload: {
+        module: "WORK_ORDER_LIFECYCLE",
+        actionLabel: "RESUME",
+        status: updated?.status ?? "PENDING",
+      },
     });
   }
 
@@ -266,114 +254,39 @@ async function resumeWorkOrder(tx, workOrderId, { actorUserId, actorRole }) {
 }
 
 async function assertProductionReportConfirmedForWorkOrder(tx, workOrderId) {
-  const report = await tx.productionWorkOrderReport.findUnique({
-    where: { workOrderId },
-    select: { id: true, status: true },
-  });
-  if (!report || report.status !== "CONFIRMED") {
-    const err = new Error("Confirm Production Report before closing the work order.");
-    err.statusCode = 409;
-    err.code = "PRODUCTION_REPORT_REQUIRED";
-    throw err;
-  }
-  return report;
+  const { assertProductionReportConfirmedForCompletion } = require("./productionWorkOrderReportService");
+  return assertProductionReportConfirmedForCompletion(tx, workOrderId);
 }
 
 /**
  * @param {import('@prisma/client').Prisma.TransactionClient} tx
  */
 async function closeWorkOrderWithShortfall(tx, workOrderId, { closureReason, actorUserId, actorRole }) {
-  const { wo } = await assertRegularWorkOrderLifecycleScope(tx, workOrderId);
-  if (wo.status === "CLOSED_WITH_SHORTFALL") {
-    const err = new Error("Work order is already closed with shortfall.");
-    err.statusCode = 409;
-    throw err;
-  }
-  if (wo.status === "COMPLETED") {
-    const err = new Error(
-      "Work order is already fully produced. Use hold if you need to pause; shortfall close applies to incomplete balance.",
-    );
-    err.statusCode = 409;
-    throw err;
-  }
-  if (wo.status === "REJECTED") {
+  await assertRegularWorkOrderLifecycleScope(tx, workOrderId);
+  const wo = await tx.workOrder.findUnique({
+    where: { id: workOrderId },
+    select: { status: true },
+  });
+  if (wo?.status === "REJECTED") {
     const err = new Error("Rejected work orders cannot be closed with shortfall.");
     err.statusCode = 409;
     throw err;
   }
-  await assertProductionReportConfirmedForWorkOrder(tx, workOrderId);
 
-  const reason = String(closureReason || "").trim();
-  if (reason.length < 3) {
-    const err = new Error("Enter a closure reason (at least 3 characters).");
-    err.statusCode = 400;
-    throw err;
-  }
-
-  const lineIds = wo.lines.map((l) => l.id);
-  const producedByLineId = await getApprovedProducedQtyByWorkOrderLineIds(tx, lineIds);
-
-  let totalShortfall = 0;
-  const lineUpdates = [];
-  for (const line of wo.lines) {
-    const required = n(line.qty);
-    const produced = producedByLineId.get(line.id) ?? 0;
-    const lineShortfall = round3(Math.max(0, required - produced));
-    if (lineShortfall > EPS) {
-      lineUpdates.push({ id: line.id, shortfallQty: lineShortfall });
-      totalShortfall = round3(totalShortfall + lineShortfall);
-    }
-  }
-
-  if (totalShortfall <= EPS) {
-    const err = new Error(
-      "No remaining balance to close. All planned quantity is already produced, or increase production before shortfall close.",
-    );
-    err.statusCode = 409;
-    throw err;
-  }
-
-  for (const u of lineUpdates) {
-    await tx.workOrderLine.update({
-      where: { id: u.id },
-      data: { shortfallQty: String(u.shortfallQty) },
-    });
-  }
-
-  const updated = await tx.workOrder.update({
-    where: { id: workOrderId },
-    data: {
-      status: "CLOSED_WITH_SHORTFALL",
-      shortfallQty: String(totalShortfall),
-      closureReason: reason,
-      closedAt: new Date(),
-      closedByUserId: actorUserId ?? null,
-      holdReason: null,
-      heldAt: null,
-      heldByUserId: null,
-      holdRemarks: null,
-    },
-    include: { lines: { include: { fgItem: true } }, salesOrder: true },
+  const { completeWorkOrder, COMPLETION_TYPES } = require("./workOrderCompletionService");
+  const result = await completeWorkOrder(tx, workOrderId, {
+    completionType: COMPLETION_TYPES.CLOSED_WITH_SHORTFALL,
+    closureReason,
+    actorUserId,
+    actorRole,
+    source: "SHORTFALL_CLOSE",
   });
 
-  if (typeof actorUserId === "number") {
-    await auditLog.write(tx, {
-      action: auditLog.AuditAction.UPDATE,
-      entityType: auditLog.AuditEntityType.SETTINGS,
-      entityId: `WORK_ORDER:${workOrderId}`,
-      actorUserId,
-      actorRole,
-      summary: `Work order ${updated.docNo || workOrderId} closed with shortfall ${totalShortfall}`,
-      payload: {
-        module: "WORK_ORDER_LIFECYCLE",
-        actionLabel: "CLOSED_WITH_SHORTFALL",
-        shortfallQty: totalShortfall,
-      },
-      reason,
-    });
-  }
-
-  return { workOrder: updated, shortfallQty: totalShortfall, lineShortfalls: lineUpdates };
+  return {
+    workOrder: result.workOrder,
+    shortfallQty: result.shortfallQty,
+    lineShortfalls: result.lineShortfalls,
+  };
 }
 
 const { GREEN_LEVEL_WO_SOURCE_TYPE } = require("./greenLevelWorkOrderService");

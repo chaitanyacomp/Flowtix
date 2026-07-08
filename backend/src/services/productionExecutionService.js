@@ -2,7 +2,6 @@
  * NO_QTY Production Execution — shortfall resolution.
  * Production owns execution actions; Work Order document completion via workOrderCompletionService.
  */
-const { assertProductionReportConfirmedForCompletion } = require("./productionWorkOrderReportService");
 const { reconcileWorkOrderStatusFromProduction } = require("./workOrderCompletionService");
 
 const auditLog = require("./auditLog");
@@ -488,6 +487,7 @@ async function reconcileShortfallPendingStatus(tx, wo) {
 }
 
 async function assertProductionReportConfirmedForExecution(tx, workOrderId) {
+  const { assertProductionReportConfirmedForCompletion } = require("./productionWorkOrderReportService");
   return assertProductionReportConfirmedForCompletion(tx, workOrderId);
 }
 

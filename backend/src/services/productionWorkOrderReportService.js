@@ -8,7 +8,6 @@ const { prisma } = require("../utils/prisma");
 const { AuditAction, AuditEntityType } = require("../prismaClientPackage");
 const { qtyToNumber } = require("./rmPurchaseHelpers");
 const { round3 } = require("./bomExplosionService");
-const { computeExecutionSummary } = require("./productionExecutionService");
 const { buildReturnableLinesForWorkOrder, createMaterialReturnNote, resolveSuggestedRmReturnLocations } = require("./materialReturnService");
 const { createMaterialWastageNote } = require("./materialWastageService");
 const { QC_ENTRY_ACTIVE_WHERE } = require("./qcEntryConstants");
@@ -346,6 +345,7 @@ async function buildWorkOrderProductionReport(db = prisma, workOrderId) {
     mapBatchRow(p, approvedBy.get(String(p.id)) ?? null),
   );
 
+  const { computeExecutionSummary } = require("./productionExecutionService");
   const executionSummary = await computeExecutionSummary(db, wo);
   const exec = wo.productionExecution;
 

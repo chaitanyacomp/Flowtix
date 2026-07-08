@@ -135,6 +135,20 @@ describe("operationalStatusFromProductionRow — NO_QTY", () => {
     expect(s.label).toBe("On Hold - Management hold");
     expect(s.tone).toBe("partial");
   });
+
+  it("uses QC Pending for NO_QTY and Green Level rows awaiting QC", () => {
+    const noQtyQc = noQty({ hasPendingQc: true, nextAction: "QC_PENDING", producedQty: 500, balanceQty: 0 });
+    expect(operationalStatusFromProductionRow(noQtyQc, [noQtyQc]).label).toBe("QC Pending");
+
+    const greenQc = row({
+      orderType: "GREEN_LEVEL",
+      sourceType: "GREEN_LEVEL_REPLENISHMENT",
+      hasPendingQc: true,
+      producedQty: 200,
+      balanceQty: 0,
+    });
+    expect(operationalStatusFromProductionRow(greenQc, [greenQc]).label).toBe("QC Pending");
+  });
 });
 
 describe("buildDashboardProductionStatusRows", () => {

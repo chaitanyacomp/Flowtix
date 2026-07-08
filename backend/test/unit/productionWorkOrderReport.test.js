@@ -23,6 +23,42 @@ describe("productionWorkOrderReportService", () => {
     assert.equal(qc.pendingQcQty, 10);
   });
 
+  it("buildWorkOrderProductionReport resolves computeExecutionSummary after pendingActions load order", async () => {
+    const execPath = require.resolve("../../src/services/productionExecutionService");
+    const reportPath = require.resolve("../../src/services/productionWorkOrderReportService");
+    const pendingPath = require.resolve("../../src/services/pendingActionsService");
+    delete require.cache[execPath];
+    delete require.cache[reportPath];
+    delete require.cache[pendingPath];
+    require(pendingPath);
+    const { buildWorkOrderProductionReport: buildReport } = require(reportPath);
+
+    const db = {
+      workOrder: {
+        findUnique: async () => ({
+          id: 42,
+          docNo: "WO-42",
+          status: "IN_PROGRESS",
+          lines: [{ id: 1, fgItemId: 9, plannedQty: "100", qty: "100", fgItem: { itemName: "FG", unit: "Nos" } }],
+          salesOrder: { id: 1, docNo: "SO-1", orderType: "NO_QTY", customer: { name: "Acme" } },
+          requirementSheet: null,
+          cycle: null,
+          productionExecution: { executionStatus: "RUNNING" },
+        }),
+      },
+      productionEntry: {
+        findMany: async () => [],
+        groupBy: async () => [],
+      },
+      auditLog: { findMany: async () => [] },
+    };
+
+    const report = await buildReport(db, 42);
+    assert.equal(report.summary.plannedQty, 100);
+    assert.equal(report.summary.producedQty, 0);
+    assert.equal(report.summary.remainderQty, 100);
+  });
+
   it("buildWorkOrderProductionReport returns issued vs consumed RM values", async () => {
     const returnPath = require.resolve("../../src/services/materialReturnService");
     const reportPath = require.resolve("../../src/services/productionWorkOrderReportService");

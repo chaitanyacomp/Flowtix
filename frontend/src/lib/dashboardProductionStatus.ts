@@ -263,7 +263,7 @@ function operationalStatusFromRegularRow(row: DashboardProductionStatusSource): 
     return { label: "Waiting for Production", tone: "running" };
   }
   if (row.hasPendingQc) {
-    return { label: "QA in progress", tone: "qc" };
+    return { label: "QC Pending", tone: "qc" };
   }
   if (dispatchable > ROW_NUM_EPS && route === "dispatch") {
     return { label: "Waiting Dispatch", tone: "dispatch" };
@@ -314,7 +314,7 @@ function operationalStatusFromNoQtyRow(
   }
 
   if (next === "QC_PENDING" || row.hasPendingQc || route === "qc") {
-    return { label: "QA in progress", tone: "qc" };
+    return { label: "QC Pending", tone: "qc" };
   }
 
   if (produced > ROW_NUM_EPS && remaining > ROW_NUM_EPS && absorbed) {
@@ -398,7 +398,7 @@ function operationalStatusFromGreenLevelRow(row: DashboardProductionStatusSource
     return { label: "Shortfall Closed", tone: "idle" };
   }
   if (row.hasPendingQc) {
-    return { label: "QA in progress", tone: "qc" };
+    return { label: "QC Pending", tone: "qc" };
   }
   if (produced > ROW_NUM_EPS && remaining > ROW_NUM_EPS) {
     return { label: "Continue Production", tone: "running" };

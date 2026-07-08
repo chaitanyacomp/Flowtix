@@ -85,6 +85,12 @@ import {
   displaySalesOrderNo,
   displayWorkOrderNo,
 } from "../lib/docNoDisplay";
+import { PROCUREMENT_TERMS } from "../lib/procurementTerminology";
+import {
+  readinessBadgeFromBackendCase,
+  resolveStoreActionPrimaryPresentation,
+  normalizeStoreActionKey,
+} from "../lib/rmControlCenterReadinessUx";
 
 type WarningRow = { code: string; message: string };
 type ReservationBreakdownRow = {
@@ -470,16 +476,6 @@ function fmtQty(value: number | null | undefined, unit?: string | null): string 
 
 // Phase E: keep queue types internal; operator UI uses simple Ready/Partial/Shortage labels.
 
-function readinessFromDetail(detail: Detail | null): { label: string; variant: "default" | "success" | "warning" | "info" | "rejected" } {
-  if (!detail) return { label: "SELECT WO", variant: "default" };
-  const lines = detail.rmLines || [];
-  if (lines.some((l) => l.blockerReason === "PMR waiting for store issue")) return { label: "WAITING_ISSUE", variant: "warning" };
-  if (lines.some((l) => l.netShortageAfterIncomingQty > 0)) return { label: "BLOCKED", variant: "rejected" };
-  if (lines.some((l) => l.shortageAfterReservationQty > 0 && l.coveredByIncomingQty > 0)) return { label: "WAITING_GRN", variant: "info" };
-  if (lines.some((l) => l.shortageAfterReservationQty > 0)) return { label: "PARTIAL", variant: "warning" };
-  return { label: "READY", variant: "success" };
-}
-
 type BlockerRowLike = Pick<
   QueueRow,
   | "rmItemName"
@@ -660,23 +656,17 @@ export function MaterialAvailabilityControlCenterPage() {
   const woCase = detail?.woShortageCase ?? null;
   const caseSupply = detail?.caseSupplyPanel ?? null;
   const escalation = woCase?.escalationLifecycle;
-  const readiness = readinessFromDetail(detail);
+  const readiness = readinessBadgeFromBackendCase({
+    issueStatusLabel: woCase?.issueStatusLabel,
+    procurementStatusLabel: woCase?.procurementStatusLabel,
+    escalationLabel: escalation?.headline ?? escalation?.description,
+  });
   const selectedLine =
     detail?.rmLines.find((line) => line.rmItemId === selectedRmItemId) ?? detail?.rmLines[0] ?? null;
   const storeAction = woCase?.nextStoreAction;
   const hasWaitingPmr = Boolean(
     detail?.pmrStatus?.openPmrs?.some((p) => ["REQUESTED", "PARTIALLY_ISSUED"].includes(p.status)),
   );
-  const anyIssueable = React.useMemo(() => {
-    if (!detail || !hasWaitingPmr) return false;
-    return detail.rmLines.some((line) => {
-      const pending =
-        detail.pmrStatus?.openPmrs
-          ?.flatMap((p) => p.lines ?? [])
-          .find((ln) => ln.rmItemId === line.rmItemId)?.pendingQty ?? 0;
-      return pending > 0 && line.freeStockQty > 0;
-    });
-  }, [detail, hasWaitingPmr]);
   const requiresReopenConfirm = Boolean(woCase?.requiresReopenConfirm);
   const procurementCompletedForCase =
     escalation?.state === "PROCUREMENT_COMPLETED" ||
@@ -688,10 +678,11 @@ export function MaterialAvailabilityControlCenterPage() {
     }
     return resolveGuidedWorkflow({
       storeActionKey: storeAction?.key ?? "REVIEW",
+      storeActionLabel: storeAction?.label,
+      storeActionDescription: storeAction?.description,
       escalation: escalation ?? null,
       caseSupply,
       rmLines: detail.rmLines ?? [],
-      anyIssueable,
       hasWaitingPmr,
       workOrderId: detail.workOrder.id,
       salesOrderId: detail.salesOrder?.id ?? null,
@@ -708,9 +699,10 @@ export function MaterialAvailabilityControlCenterPage() {
     detail,
     escalation,
     caseSupply,
-    anyIssueable,
     hasWaitingPmr,
     storeAction?.key,
+    storeAction?.label,
+    storeAction?.description,
     woCase?.materialRequirement?.id,
     woCase?.materialRequirement?.status,
     requiresReopenConfirm,
@@ -766,18 +758,6 @@ export function MaterialAvailabilityControlCenterPage() {
     storeActionKey: storeAction?.key,
     allocationFirstKey: woCase?.allocationFirstStatus?.key,
   });
-  const stockReadyForIssue = React.useMemo(() => {
-    if (!detail?.workOrder?.id || !detail?.rmLines?.length || readyToRelease) return false;
-    const waitingPmr = detail.pmrStatus?.openPmrs?.some((p) =>
-      ["REQUESTED", "PARTIALLY_ISSUED"].includes(p.status),
-    );
-    if (waitingPmr) return false;
-    return detail.rmLines.some(
-      (line) =>
-        line.blockerReason === "Ready for material issue" ||
-        (line.freeStockQty + 1e-6 >= line.requiredQty && line.requiredQty > 0),
-    );
-  }, [detail, readyToRelease]);
   const notEscalated =
     (escalation?.state === "NOT_ESCALATED" || !woCase?.materialRequirement?.id) && !procurementCompletedForCase;
 
@@ -821,7 +801,6 @@ export function MaterialAvailabilityControlCenterPage() {
       poLineCount: caseSupply?.summary.poLineCount ?? 0,
       pendingGrnQty: caseSupply?.summary.pendingGrnQty ?? 0,
       receivedGrnQty: caseSupply?.summary.receivedGrnQty ?? 0,
-      anyIssueable,
       readyToRelease,
       hasWaitingPmr,
       notEscalated,
@@ -834,19 +813,20 @@ export function MaterialAvailabilityControlCenterPage() {
       prepareWoHref: salesOrderId ? woPreparePrepareHref(salesOrderId) : null,
       grnHref,
       procurementWorkspaceHref,
-      stockReadyForIssue,
       procurementCompletedForCase,
       queueType: selectedQueueRow?.queueType ?? null,
       requisitionStatus: selectedQueueRow?.requisitionStatus ?? null,
       procurementStatus: selectedQueueRow?.procurementStatus ?? woCase?.procurementStatusLabel ?? null,
       nextOwner: selectedQueueRow?.nextOwner ?? null,
       nextAction: selectedQueueRow?.nextAction ?? woCase?.nextStoreAction?.label ?? null,
+      storeActionKey: storeAction?.key,
+      storeActionLabel: storeAction?.label,
+      storeActionDescription: storeAction?.description,
     });
   }, [
     detail,
     woCase,
     caseSupply,
-    anyIssueable,
     readyToRelease,
     hasWaitingPmr,
     notEscalated,
@@ -854,10 +834,52 @@ export function MaterialAvailabilityControlCenterPage() {
     selectedQueueRow,
     escalation,
     selectedRmItemId,
-    stockReadyForIssue,
     procurementCompletedForCase,
     resolvedProcurementMr,
+    storeAction?.key,
+    storeAction?.label,
+    storeAction?.description,
   ]);
+
+  const storePrimaryAction = React.useMemo(() => {
+    if (!detail) return null;
+    const workOrderId = detail.workOrder?.id ?? null;
+    const salesOrderId = detail.salesOrder?.id ?? woCase?.salesOrderId ?? null;
+    const isNoQtyOrder =
+      detail.salesOrder?.orderType === "NO_QTY" || woCase?.salesOrderOrderType === "NO_QTY";
+    const primaryPoId = caseSupply?.poLines?.[0]?.purchaseOrderId ?? null;
+    const grnHref =
+      primaryPoId && primaryPoId > 0
+        ? buildRmPoDetailHref(primaryPoId, { salesOrderId, from: "rm-purchase" })
+        : "/rm-po-grn?focus=pending-requests";
+    const issueHref = workOrderId
+      ? buildMaterialIssueDeepLink({ workOrderId, returnTo: "rm-control-center", salesOrderId })
+      : "";
+    const procurementWorkspaceHref = buildProcurementWorkspaceHref({
+      workOrderId,
+      salesOrderId,
+      rmItemId: selectedRmItemId,
+      materialRequirementId: resolvedProcurementMr?.materialRequirementId ?? woCase?.materialRequirement?.id ?? null,
+      sourceType: resolvedProcurementMr?.sourceType ?? woCase?.materialRequirement?.sourceType ?? null,
+      returnTo: "rm-control-center",
+    });
+    return resolveStoreActionPrimaryPresentation({
+      storeAction,
+      issueHref,
+      grnHref,
+      prepareWoHref: salesOrderId ? woPreparePrepareHref(salesOrderId) : null,
+      noQtyPrepareWoHref: isNoQtyOrder
+        ? noQtyExecutionEntryHref({
+            salesOrderId: salesOrderId ?? 0,
+            guidedCycleId: detail.salesOrder?.currentCycleId ?? null,
+            role: role ?? "STORE",
+            source: "rm_control_center",
+          })
+        : null,
+      procurementWorkspaceHref,
+      isNoQtyOrder,
+    });
+  }, [detail, woCase, storeAction, caseSupply, selectedRmItemId, resolvedProcurementMr, role]);
 
   const displayGuided = React.useMemo((): GuidedWorkflowResolution | null => {
     if (guided) {
@@ -874,7 +896,7 @@ export function MaterialAvailabilityControlCenterPage() {
     );
     const activeIdx = operational.traceSteps.findIndex((s) => s.state === "active");
     const title = operatorStageLabel({
-      allocationFirstLabel: woCase?.allocationFirstStatus?.label,
+      allocationFirstLabel: storeAction?.label ?? woCase?.allocationFirstStatus?.label,
       nextAction: operational.nextAction,
       hasWorkOrder: Boolean(detail.workOrder?.id),
       postIssueHandoff,
@@ -983,7 +1005,11 @@ export function MaterialAvailabilityControlCenterPage() {
   }, [detail, postIssueHandoff, zeroAllocatableStock, physicalButNoFree, rmCaseLines, selectedQueueRow, woCase?.nextStoreAction]);
 
   const canShowAllocationControls =
-    hasWorkOrder && !postIssueHandoff && !zeroAllocatableStock && Boolean(selectedLineAllocationContext);
+    hasWorkOrder &&
+    !postIssueHandoff &&
+    !zeroAllocatableStock &&
+    Boolean(selectedLineAllocationContext) &&
+    (storePrimaryAction?.kind === "allocation_fallback" || storePrimaryAction?.kind === "none");
 
   // Continuity: shortage exists → Store raises one RM requirement → waiting for stock/purchase.
   const anyShortageOnCase = React.useMemo(
@@ -1161,9 +1187,11 @@ export function MaterialAvailabilityControlCenterPage() {
     );
 
   const operatorStageLabelText = operatorStageLabel({
-    allocationFirstLabel: postIssueHandoff ? STORE_HANDOFF_STATUS_LABEL : anyIssueable ? woCase?.allocationFirstStatus?.label : null,
+    allocationFirstLabel: postIssueHandoff
+      ? STORE_HANDOFF_STATUS_LABEL
+      : storeAction?.label ?? woCase?.allocationFirstStatus?.label ?? null,
     guidedPhaseTitle: displayGuided?.phaseTitle ?? displayGuided?.statusHeadline,
-    nextAction: postIssueHandoff ? STORE_HANDOFF_ACTION_LABEL : woCase?.nextStoreAction?.label,
+    nextAction: postIssueHandoff ? STORE_HANDOFF_ACTION_LABEL : storeAction?.label ?? woCase?.nextStoreAction?.label,
     hasWorkOrder,
     postIssueHandoff,
   });
@@ -1676,7 +1704,9 @@ export function MaterialAvailabilityControlCenterPage() {
                 fgLabel={detail.fgItem?.itemName ?? woCase?.fgItemName}
                 stageLabel={operatorStageLabelText}
                 allocationFirstLabel={
-                  postIssueHandoff ? STORE_HANDOFF_STATUS_LABEL : woCase?.allocationFirstStatus?.label ?? null
+                  postIssueHandoff
+                    ? STORE_HANDOFF_STATUS_LABEL
+                    : storeAction?.label ?? woCase?.allocationFirstStatus?.label ?? null
                 }
                 postIssueHandoff={postIssueHandoff}
                 rmItemFilterLabel={activeRmItemFilterLabel}
@@ -1754,76 +1784,34 @@ export function MaterialAvailabilityControlCenterPage() {
                     {postIssueHandoff ? STORE_HANDOFF_ACTION_LABEL : operatorStageLabelText}
                   </p>
                   <div className="mt-2 flex flex-col gap-2">
-                    {woCase?.allocationFirstStatus?.key === "RM_RECEIVED" ? (
+                    {storePrimaryAction?.kind === "link" ? (
                       <Link
-                        to={
-                          detail.salesOrder?.orderType === "NO_QTY" || woCase?.salesOrderOrderType === "NO_QTY"
-                            ? noQtyExecutionEntryHref({
-                                salesOrderId: detail.salesOrder?.id ?? woCase?.salesOrderId ?? 0,
-                                guidedCycleId: detail.salesOrder?.currentCycleId ?? null,
-                                role: role ?? "STORE",
-                                source: "rm_control_center",
-                              })
-                            : detail.salesOrder?.id
-                              ? woPreparePrepareHref(detail.salesOrder.id)
-                              : woCase?.salesOrderId
-                                ? woPreparePrepareHref(woCase.salesOrderId)
-                                : "/production/prepare-wo"
+                        to={storePrimaryAction.href}
+                        state={
+                          normalizeStoreActionKey(storeAction?.key) === "ISSUE" && detail.workOrder?.id
+                            ? materialIssueLinkState(detail.workOrder.id)
+                            : undefined
                         }
                         className={cn(
-                          buttonVariants({ size: "sm" }),
+                          buttonVariants({
+                            variant: normalizeStoreActionKey(storeAction?.key) === "WAIT_GRN" ? "outline" : "default",
+                            size: "sm",
+                          }),
                           "h-9 w-full justify-center text-[13px] font-semibold no-underline",
                         )}
                       >
-                        {detail.salesOrder?.orderType === "NO_QTY" || woCase?.salesOrderOrderType === "NO_QTY"
-                          ? "Place WO"
-                          : "Create Work Order"}
+                        {storePrimaryAction.label}
                       </Link>
-                    ) : woCase?.allocationFirstStatus?.key === "READY_FOR_ISSUE" && anyIssueable ? (
-                      <Link
-                        to={
-                          detail.workOrder?.id
-                            ? buildMaterialIssueDeepLink({
-                                workOrderId: detail.workOrder.id,
-                                returnTo: "rm-control-center",
-                                salesOrderId: detail.salesOrder?.id ?? woCase?.salesOrderId ?? null,
-                              })
-                            : "/material-issue"
-                        }
-                        state={detail.workOrder?.id ? materialIssueLinkState(detail.workOrder.id) : undefined}
-                        className={cn(
-                          buttonVariants({ size: "sm" }),
-                          "h-9 w-full justify-center text-[13px] font-semibold no-underline",
-                        )}
-                      >
-                        Issue RM to Production
-                      </Link>
-                    ) : storeAction?.key === "WAIT_PO" ||
-                      (Number(caseSupply?.summary?.prLineCount ?? 0) > 0 &&
-                        Number(caseSupply?.summary?.poLineCount ?? 0) === 0 &&
-                        !anyIssueable) ? (
+                    ) : storePrimaryAction?.kind === "waiting" ? (
                       <p className="rounded-md border border-amber-200 bg-amber-50 px-2.5 py-2 text-[12px] font-medium text-amber-950">
-                        {PROCUREMENT_TERMS.WAITING_FOR_PURCHASE_RM_PO}
+                        {storePrimaryAction.description || storePrimaryAction.label}
                       </p>
-                    ) : storeAction?.key === "WAIT_GRN" ||
-                      Number(caseSupply?.summary?.pendingGrnQty ?? 0) > 0 ||
-                      Number(caseSupply?.summary?.poLineCount ?? 0) > 0 ? (
-                      <Link
-                        to={
-                          caseSupply?.poLines?.[0]?.purchaseOrderId
-                            ? buildRmPoDetailHref(caseSupply.poLines[0].purchaseOrderId, {
-                                salesOrderId: detail.salesOrder?.id ?? woCase?.salesOrderId ?? undefined,
-                                from: "rm-control-center",
-                              })
-                            : "/rm-po-grn?focus=pending-requests"
-                        }
-                        className={cn(
-                          buttonVariants({ variant: "outline", size: "sm" }),
-                          "h-9 w-full justify-center text-[13px] font-semibold no-underline",
-                        )}
-                      >
-                        {anyIssueable ? "Record GRN" : "Waiting for GRN"}
-                      </Link>
+                    ) : storePrimaryAction?.kind === "raise_mr" ? (
+                      requirementActionBlock ?? (
+                        <p className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-2 text-[12px] text-slate-700">
+                          {storePrimaryAction.description || storePrimaryAction.label}
+                        </p>
+                      )
                     ) : canShowAllocationControls ? (
                       <div className="flex flex-col gap-2">
                         <Button

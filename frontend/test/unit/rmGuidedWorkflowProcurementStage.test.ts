@@ -36,13 +36,13 @@ describe("rmGuidedWorkflow procurement stage", () => {
     expect(guided.showMaterialIssueSection).toBe(false);
   });
 
-  it("enters ready-to-issue only when anyIssueable is true", () => {
+  it("enters ready-to-issue when backend store action is ISSUE", () => {
     const guided = resolveGuidedWorkflow({
       storeActionKey: "ISSUE",
+      storeActionLabel: "Issue RM to Production",
       escalation: { state: "PROCUREMENT_COMPLETED", procurementInitiated: true },
       caseSupply: { summary: { prLineCount: 1, poLineCount: 1, pendingGrnQty: 0, receivedGrnQty: 50 } },
       rmLines: [{ freeStockQty: 100, blockerReason: "Ready for material issue", shortageAfterReservationQty: 0 }],
-      anyIssueable: true,
       hasWaitingPmr: true,
       workOrderId: 1,
       salesOrderId: 2,

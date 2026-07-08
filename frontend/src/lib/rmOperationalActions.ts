@@ -7,6 +7,8 @@ import {
   STORE_HANDOFF_ACTION_LABEL,
   STORE_HANDOFF_COMPLETE_LABEL,
 } from "./rmControlCenterPostIssueHandoff";
+import { isStoreActionIssueReady, isStoreActionPostIssueHandoff, normalizeStoreActionKey } from "./rmControlCenterReadinessUx";
+import { PROCUREMENT_TERMS } from "./procurementTerminology";
 
 const EPS = 1e-6;
 
@@ -45,7 +47,7 @@ export type RmOperationalContextInput = {
   poLineCount: number;
   pendingGrnQty: number;
   receivedGrnQty: number;
-  anyIssueable: boolean;
+  anyIssueable?: boolean;
   readyToRelease: boolean;
   hasWaitingPmr: boolean;
   notEscalated: boolean;
@@ -65,6 +67,9 @@ export type RmOperationalContextInput = {
   procurementStatus?: string | null;
   nextOwner?: string | null;
   nextAction?: string | null;
+  storeActionKey?: string | null;
+  storeActionLabel?: string | null;
+  storeActionDescription?: string | null;
 };
 
 export type RmOperationalContext = {
@@ -119,8 +124,8 @@ export function resolveRmTraceSteps(input: RmOperationalContextInput): TraceStep
   const poDone = input.poLineCount > 0;
   const grnWaiting = poDone && n(input.pendingGrnQty) > EPS;
   const grnDone = poDone && n(input.pendingGrnQty) <= EPS && n(input.receivedGrnQty) > EPS;
-  const issueActive = input.anyIssueable;
-  const issueDone = input.readyToRelease;
+  const issueActive = isStoreActionIssueReady({ key: input.storeActionKey ?? "", label: "" });
+  const issueDone = input.readyToRelease || isStoreActionPostIssueHandoff({ key: input.storeActionKey ?? "", label: "" });
 
   return [
     {
@@ -182,14 +187,26 @@ export function resolveRmOperationalContext(input: RmOperationalContextInput): R
   const mrStatus = String(input.mrStatus ?? "").trim();
   const hasMr = Boolean(input.mrId);
   const partial = partialGrn(input);
+  const storeKey = normalizeStoreActionKey(input.storeActionKey);
+  const storeLabel = input.storeActionLabel?.trim() || null;
 
-  if (input.readyToRelease) {
+  if (input.readyToRelease || storeKey === "HANDOFF_TO_PRODUCTION" || storeKey === "RELEASE_TO_PRODUCTION") {
     buttons.push({
       id: "handoff-production",
       label: "RM issued — waiting for Production",
       kind: "info",
       disabled: true,
       description: "Store issue is complete. Production owns the next action on this work order.",
+    });
+  } else if (storeKey === "CREATE_WO" && input.prepareWoHref) {
+    buttons.push({
+      id: "create-wo-post-grn",
+      label: storeLabel || "Create Work Order",
+      kind: "primary",
+      href: input.prepareWoHref,
+      description:
+        input.storeActionDescription?.trim() ||
+        "RM received in Store after GRN. Create the work order to open PMR and material issue.",
     });
   } else if (
     mrStatus === "FULLY_PROCURED" &&
@@ -203,23 +220,52 @@ export function resolveRmOperationalContext(input: RmOperationalContextInput): R
       href: input.prepareWoHref,
       description: "RM received in Store after GRN. Create the work order to open PMR and material issue.",
     });
-  } else if (input.anyIssueable && !input.workOrderId) {
-    buttons.push({
-      id: "create-wo",
-      label: "Create Work Order",
-      kind: "primary",
-      href: input.prepareWoHref ?? undefined,
-      description: "WO not created yet. Complete RM procurement and create the work order before material issue.",
-    });
-  } else if (input.anyIssueable) {
+  } else if (storeKey === "ISSUE" && input.workOrderId) {
     buttons.push({
       id: "open-issue",
-      label: "Issue RM to Production",
+      label: storeLabel || "Issue RM to Production",
       kind: "primary",
       href: input.issueHref,
-      description: "Free store stock is available — issue RM against the open material request.",
+      description:
+        input.storeActionDescription?.trim() ||
+        "Free store stock is available — issue RM against the open material request.",
+    });
+  } else if (storeKey === "WAIT_GRN") {
+    buttons.push({
+      id: "wait-grn",
+      label: storeLabel || "Waiting for GRN",
+      kind: "info",
+      disabled: false,
+      description: input.storeActionDescription?.trim() || "Record goods receipt when material arrives.",
+      href: input.grnHref ?? undefined,
+    });
+  } else if (storeKey === "WAIT_PO") {
+    buttons.push({
+      id: "wait-po",
+      label: storeLabel || "Waiting for Purchase to prepare RM PO",
+      kind: "info",
+      disabled: true,
+      description: input.storeActionDescription?.trim() || PROCUREMENT_TERMS.WAITING_FOR_PURCHASE_RM_PO,
+      href: input.procurementWorkspaceHref ?? undefined,
+    });
+  } else if (storeKey === "CONTINUE_PROCUREMENT" || storeKey === "VIEW_PROCUREMENT") {
+    buttons.push({
+      id: "open-procurement",
+      label: storeLabel || "Open Procurement Workspace",
+      kind: "primary",
+      href: input.procurementWorkspaceHref ?? undefined,
+      description: input.storeActionDescription?.trim() || undefined,
+    });
+  } else if (storeKey === "ESCALATE" || storeKey === "REOPEN_REQUISITION") {
+    buttons.push({
+      id: "raise-mr-store-action",
+      label: storeLabel || "Raise Store Requisition",
+      kind: "primary",
+      action: "raise-mr",
+      description: input.storeActionDescription?.trim() || undefined,
     });
   } else if (partial) {
+    /** Presentation fallback when backend store action is REVIEW — supply panel partial GRN only. */
     buttons.push({
       id: "partial-grn",
       label: "Partial RM Received",
@@ -346,9 +392,10 @@ export function resolveRmOperationalContext(input: RmOperationalContextInput): R
       ? "Purchase Department"
       : "Store Department");
 
-  const nextAction = input.readyToRelease
+  const nextAction = input.readyToRelease || isStoreActionPostIssueHandoff({ key: storeKey, label: storeLabel ?? "" })
     ? STORE_HANDOFF_ACTION_LABEL
-    : input.nextAction?.trim() ||
+    : storeLabel ||
+      input.nextAction?.trim() ||
       buttons.find((b) => b.kind === "primary" && !b.disabled)?.label ||
       buttons[0]?.label ||
       "Review case";
@@ -364,9 +411,9 @@ export function resolveRmOperationalContext(input: RmOperationalContextInput): R
         : input.requisitionStatus?.trim() || mrStatusDisplayLabel(input.mrStatus),
     procurementStatus:
       input.procurementStatus?.trim() ||
-      (input.readyToRelease
+      (input.readyToRelease || isStoreActionPostIssueHandoff({ key: storeKey, label: storeLabel ?? "" })
         ? STORE_HANDOFF_COMPLETE_LABEL
-        : input.anyIssueable
+        : storeKey === "ISSUE"
           ? "Stock available for issue"
           : partial
             ? "Partially received"
@@ -374,7 +421,7 @@ export function resolveRmOperationalContext(input: RmOperationalContextInput): R
               ? "PO created / GRN pending"
               : input.prLineCount > 0
                 ? "Purchase request created"
-                : input.stockReadyForIssue || input.procurementCompletedForCase
+                : storeKey === "CREATE_WO" || input.procurementCompletedForCase
                   ? "RM ready in Store"
                   : hasMr
                     ? "RM Requisition active"

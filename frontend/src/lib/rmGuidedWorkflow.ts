@@ -13,6 +13,11 @@ import { isStockCommittedElsewhere, stockCommittedElsewhereSummary } from "./sto
 import { buildRmPoDetailHref } from "./rmPurchaseWoContinuity";
 import { productionWorkspaceHref } from "./materialWorkflowLinks";
 import { buildMaterialIssueDeepLink } from "./manufacturingNavigationContinuity";
+import {
+  guidedTimelineIndexForStoreAction,
+  mapStoreActionToGuidedPhase,
+  normalizeStoreActionKey,
+} from "./rmControlCenterReadinessUx";
 
 const EPS = 1e-6;
 
@@ -36,6 +41,9 @@ export type GuidedPrimaryActionKind =
 
 export type GuidedWorkflowInput = {
   storeActionKey: string;
+  /** Authoritative store action labels from workspace API (when present). */
+  storeActionLabel?: string | null;
+  storeActionDescription?: string | null;
   escalation: {
     state: string;
     procurementInitiated: boolean;
@@ -62,7 +70,8 @@ export type GuidedWorkflowInput = {
     coveredByIncomingQty?: number;
     blockerReason?: string;
   }>;
-  anyIssueable: boolean;
+  /** @deprecated Use `storeActionKey === 'ISSUE'` from backend — kept for legacy callers only. */
+  anyIssueable?: boolean;
   hasWaitingPmr: boolean;
   workOrderId: number;
   salesOrderId?: number | null;
@@ -110,12 +119,13 @@ function sumPendingPo(prLines: Array<{ pendingPoQty?: number }> | undefined): nu
 export function resolveGuidedWorkflow(input: GuidedWorkflowInput): GuidedWorkflowResolution {
   const esc = input.escalation;
   const summary = input.caseSupply?.summary ?? {};
-  const prCount = n(summary.prLineCount);
-  const poCount = n(summary.poLineCount);
   const pendingGrn = n(summary.pendingGrnQty);
   const pendingPo = sumPendingPo(input.caseSupply?.prLines);
   const procurementInitiated = Boolean(esc?.procurementInitiated);
   const mrDoc = esc?.materialRequirementDocNo ?? null;
+  const storeKey = normalizeStoreActionKey(input.storeActionKey);
+  const storeLabel = input.storeActionLabel?.trim() || null;
+  const storeDescription = input.storeActionDescription?.trim() || null;
 
   const rmHref = buildRmControlCenterHref({
     workOrderId: input.workOrderId,
@@ -153,50 +163,8 @@ export function resolveGuidedWorkflow(input: GuidedWorkflowInput): GuidedWorkflo
     cycleId: input.cycleId ?? undefined,
   });
 
-  let phase: GuidedWorkflowPhase = "IDLE";
-  let timelineStepIndex = 0;
-
-  if (input.anyIssueable) {
-    phase = "E_READY_TO_ISSUE";
-    timelineStepIndex = 4;
-  } else if (input.storeActionKey === "HANDOFF_TO_PRODUCTION") {
-    phase = "F_ISSUED_OPEN_PRODUCTION";
-    timelineStepIndex = 4;
-  } else if (pendingGrn > EPS || input.storeActionKey === "WAIT_GRN" || esc?.state === "WAITING_GRN") {
-    phase = "D_PO_GRN_PENDING";
-    timelineStepIndex = 3;
-  } else if (poCount > 0 && pendingGrn <= EPS && esc?.state === "PROCUREMENT_COMPLETED" && input.anyIssueable) {
-    phase = input.hasWaitingPmr ? "E_READY_TO_ISSUE" : "F_ISSUED_OPEN_PRODUCTION";
-    timelineStepIndex = 4;
-  } else if (
-    prCount > 0 &&
-    poCount === 0 &&
-    (input.storeActionKey === "WAIT_PO" || pendingPo > EPS || input.storeActionKey === "CONTINUE_PROCUREMENT")
-  ) {
-    phase = "C_PR_CREATED";
-    timelineStepIndex = 2;
-  } else if (prCount > 0 && poCount === 0) {
-    phase = "C_PR_CREATED";
-    timelineStepIndex = 2;
-  } else if (
-    input.mrStatus === "SENT_TO_PURCHASE" ||
-    (procurementInitiated && input.mrStatus && !["DRAFT", "PENDING_APPROVAL", "APPROVED"].includes(input.mrStatus))
-  ) {
-    phase = "B_MR_ESCALATED";
-    timelineStepIndex = 1;
-  } else if (procurementInitiated || input.storeActionKey === "CONTINUE_PROCUREMENT" || input.storeActionKey === "VIEW_PROCUREMENT") {
-    phase = "B_MR_ESCALATED";
-    timelineStepIndex = 1;
-  } else if (
-    input.storeActionKey === "ESCALATE" ||
-    input.storeActionKey === "REOPEN_REQUISITION" ||
-    input.requiresReopenConfirm ||
-    esc?.state === "NOT_ESCALATED" ||
-    input.rmLines.some((l) => n(l.netShortageAfterIncomingQty) > EPS || n(l.shortageAfterReservationQty) > EPS)
-  ) {
-    phase = "A_BLOCKED";
-    timelineStepIndex = 0;
-  }
+  const phase = mapStoreActionToGuidedPhase(storeKey);
+  const timelineStepIndex = guidedTimelineIndexForStoreAction(storeKey);
 
   const shortageLine = input.rmLines.find((l) => n(l.shortageAfterReservationQty) > EPS) ?? input.rmLines[0];
   const committedElsewhereLine = input.rmLines.find((l) =>
@@ -225,18 +193,21 @@ export function resolveGuidedWorkflow(input: GuidedWorkflowInput): GuidedWorkflo
           ? "Previous requisition closed"
           : committedElsewhereLine
             ? "Stock on hand — committed elsewhere"
-            : "RM blocked — no available stock",
+            : storeLabel || "RM blocked — no available stock",
         phaseDetail: input.requiresReopenConfirm
-          ? "Previous requisition was closed. Creating a new requisition will restart procurement for the same shortage."
-          : blockerText,
-        statusHeadline: input.requiresReopenConfirm
-          ? "Previous RM Requisition closed — raise a new requisition to restart procurement."
-          : committedElsewhereLine
-            ? "Review commitments below, then raise a Store RM Requisition or wait for stock to free up."
-            : "Raise a Store RM Requisition to cover the shortage on this work order.",
+          ? storeDescription ||
+            "Previous requisition was closed. Creating a new requisition will restart procurement for the same shortage."
+          : storeDescription || blockerText,
+        statusHeadline:
+          storeLabel ||
+          (input.requiresReopenConfirm
+            ? "Previous RM Requisition closed — raise a new requisition to restart procurement."
+            : committedElsewhereLine
+              ? "Review commitments below, then raise a Store RM Requisition or wait for stock to free up."
+              : "Raise a Store RM Requisition to cover the shortage on this work order."),
         primaryAction: {
           kind: "START_PROCUREMENT",
-          label: input.requiresReopenConfirm ? "Reopen / Raise New Requisition" : "Raise Store Requisition",
+          label: storeLabel || (input.requiresReopenConfirm ? "Reopen / Raise New Requisition" : "Raise Store Requisition"),
         },
         showMaterialIssueSection: false,
         showProductionLink: false,
@@ -257,15 +228,24 @@ export function resolveGuidedWorkflow(input: GuidedWorkflowInput): GuidedWorkflo
               ? `Store requisition ${mrDoc} is active. Approve it, then create the Purchase Request in Procurement Workspace.`
               : "Store requisition is active. Approve it, then create the Purchase Request in Procurement Workspace.",
         statusHeadline:
-          input.mrStatus === "SENT_TO_PURCHASE"
+          storeLabel ||
+          (input.mrStatus === "SENT_TO_PURCHASE"
             ? "Awaiting PR — Store creates Purchase Request"
             : esc?.headline?.includes("not escalated")
               ? "RM Requisition raised — next: Store approval"
-              : esc?.headline ?? "RM Requisition raised",
+              : esc?.headline ?? "RM Requisition raised"),
         primaryAction:
           input.mrStatus === "SENT_TO_PURCHASE"
-            ? { kind: "CREATE_PR", label: PROCUREMENT_TERMS.CREATE_PURCHASE_REQUEST, href: procHref }
-            : { kind: "CREATE_PR", label: "Open RM Requisition", href: requisitionHref },
+            ? {
+                kind: "CREATE_PR",
+                label: storeLabel || PROCUREMENT_TERMS.CREATE_PURCHASE_REQUEST,
+                href: procHref,
+              }
+            : {
+                kind: "CREATE_PR",
+                label: storeLabel || "Open RM Requisition",
+                href: requisitionHref,
+              },
         ownerLabel: input.mrStatus === "SENT_TO_PURCHASE" ? "Store" : base.ownerLabel,
         showMaterialIssueSection: false,
         showProductionLink: false,
@@ -276,12 +256,14 @@ export function resolveGuidedWorkflow(input: GuidedWorkflowInput): GuidedWorkflo
       return {
         ...base,
         phase,
-        phaseTitle: "Awaiting PO",
-        phaseDetail: `PR is on this case${pendingPo > EPS ? ` · ${pendingPo.toLocaleString()} qty still needs a PO` : ""}. Purchase will create the RM PO.`,
-        statusHeadline: PROCUREMENT_TERMS.WAITING_FOR_PURCHASE_RM_PO,
+        phaseTitle: storeLabel || "Awaiting PO",
+        phaseDetail:
+          storeDescription ||
+          `PR is on this case${pendingPo > EPS ? ` · ${pendingPo.toLocaleString()} qty still needs a PO` : ""}. Purchase will create the RM PO.`,
+        statusHeadline: storeLabel || PROCUREMENT_TERMS.WAITING_FOR_PURCHASE_RM_PO,
         primaryAction: {
           kind: "NONE",
-          label: PROCUREMENT_TERMS.WAITING_FOR_PURCHASE_RM_PO,
+          label: storeLabel || PROCUREMENT_TERMS.WAITING_FOR_PURCHASE_RM_PO,
           href: procHref,
         },
         showMaterialIssueSection: false,
@@ -293,13 +275,14 @@ export function resolveGuidedWorkflow(input: GuidedWorkflowInput): GuidedWorkflo
       return {
         ...base,
         phase,
-        phaseTitle: "Material incoming — waiting GRN",
+        phaseTitle: storeLabel || "Material incoming — waiting GRN",
         phaseDetail:
-          pendingGrn > EPS
+          storeDescription ||
+          (pendingGrn > EPS
             ? `${pendingGrn.toLocaleString()} qty pending goods receipt before issue.`
-            : esc?.description ?? "Record GRN when material arrives at store.",
-        statusHeadline: "PO created — record GRN to make stock available.",
-        primaryAction: { kind: "RECORD_GRN", label: "Record GRN", href: grnHref },
+            : esc?.description ?? "Record GRN when material arrives at store."),
+        statusHeadline: storeLabel || "PO created — record GRN to make stock available.",
+        primaryAction: { kind: "RECORD_GRN", label: storeLabel || "Record GRN", href: grnHref },
         showMaterialIssueSection: false,
         showProductionLink: false,
         timelineStepIndex: 3,
@@ -309,10 +292,14 @@ export function resolveGuidedWorkflow(input: GuidedWorkflowInput): GuidedWorkflo
       return {
         ...base,
         phase,
-        phaseTitle: "Stock available — ready to issue",
-        phaseDetail: "Free store stock is available for the open material request on this WO.",
-        statusHeadline: "GRN complete (or stock free) — issue RM to production.",
-        primaryAction: { kind: "ISSUE_RM", label: "Issue RM to Production", href: issueHref },
+        phaseTitle: storeLabel || "Stock available — ready to issue",
+        phaseDetail: storeDescription || "Free store stock is available for the open material request on this WO.",
+        statusHeadline: storeLabel || "GRN complete (or stock free) — issue RM to production.",
+        primaryAction: {
+          kind: "ISSUE_RM",
+          label: storeLabel || "Issue RM to Production",
+          href: issueHref,
+        },
         showMaterialIssueSection: true,
         showProductionLink: false,
         timelineStepIndex: 4,
@@ -322,10 +309,10 @@ export function resolveGuidedWorkflow(input: GuidedWorkflowInput): GuidedWorkflo
       return {
         ...base,
         phase,
-        phaseTitle: "RM issued — waiting for Production",
-        phaseDetail: "Store issue is complete for this work order. Production owns the next action.",
-        statusHeadline: "RM issued — waiting for Production",
-        primaryAction: { kind: "NONE", label: "Waiting for Production" },
+        phaseTitle: storeLabel || "RM issued — waiting for Production",
+        phaseDetail: storeDescription || "Store issue is complete for this work order. Production owns the next action.",
+        statusHeadline: storeLabel || "RM issued — waiting for Production",
+        primaryAction: { kind: "NONE", label: storeLabel || "Waiting for Production" },
         showMaterialIssueSection: false,
         showProductionLink: false,
         timelineStepIndex: 4,
@@ -335,10 +322,10 @@ export function resolveGuidedWorkflow(input: GuidedWorkflowInput): GuidedWorkflo
       return {
         ...base,
         phase: "IDLE",
-        phaseTitle: "Review work order material status",
-        phaseDetail: blockerText,
-        statusHeadline: "Select a queue row or review RM lines below.",
-        primaryAction: { kind: "NONE", label: "Review case", href: rmHref },
+        phaseTitle: storeLabel || "Review work order material status",
+        phaseDetail: storeDescription || blockerText,
+        statusHeadline: storeLabel || "Select a queue row or review RM lines below.",
+        primaryAction: { kind: "NONE", label: storeLabel || "Review case", href: rmHref },
         showMaterialIssueSection: false,
         showProductionLink: false,
         timelineStepIndex: 0,

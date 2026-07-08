@@ -1307,6 +1307,8 @@ describe("pendingActionsService", () => {
     const action = mapNormalizedRowToPendingAction(row, "PRODUCTION");
     assert.equal(action.action, READY_TO_START_PRODUCTION);
     assert.match(action.href, /\/production/);
+    assert.match(action.href, /productionBucket=readyToStart/);
+    assert.match(action.href, /from=pending-actions/);
   });
 
   it("maps READY_TO_RELEASE_WO RM risk row to Release to Production for Store when not released", () => {
@@ -1410,6 +1412,7 @@ describe("pendingActionsService", () => {
     assert.match(action.href, /flow=NO_QTY/);
     assert.match(action.href, /salesOrderId=5/);
     assert.match(action.href, /from=pending-actions/);
+    assert.match(action.href, /productionBucket=inProgress/);
   });
 
   it("filters terminal completed WOs from Production pending actions", async () => {

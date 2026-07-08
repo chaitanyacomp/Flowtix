@@ -111,6 +111,43 @@ describe("pendingActionsWorkBuckets", () => {
     expect(buckets[0]?.openHref).toBe("/store/green-level-wo?from=pending-actions&planId=12");
   });
 
+  it("production pending buckets deep-link workspace list with scoped bucket filter", () => {
+    const ready = groupPendingActionsIntoWorkBuckets([
+      row({
+        id: "a",
+        action: "Ready to Start Production",
+        documentNo: "WO-26-0001",
+        href: "/production?from=pending-actions&workOrderId=1&flow=REGULAR_SO&salesOrderId=5",
+      }),
+      row({
+        id: "b",
+        action: "Ready to Start Production",
+        documentNo: "WO-26-0002",
+        href: "/production?from=pending-actions&workOrderId=2&flow=REGULAR_SO&salesOrderId=5",
+      }),
+    ]);
+    expect(ready[0]?.listHref).toContain("productionBucket=readyToStart");
+    expect(ready[0]?.openLabel).toBe("Open Production Workspace");
+
+    const cont = groupPendingActionsIntoWorkBuckets([
+      row({
+        id: "c",
+        action: "Continue Production",
+        documentNo: "WO-26-0003",
+        href: "/production?from=pending-actions&workOrderId=3&flow=NO_QTY&salesOrderId=9&cycleId=2",
+      }),
+      row({
+        id: "d",
+        action: "Continue Production",
+        documentNo: "WO-26-0004",
+        href: "/production?from=pending-actions&workOrderId=4&flow=NO_QTY&salesOrderId=9&cycleId=2",
+      }),
+    ]);
+    expect(cont[0]?.listHref).toContain("productionBucket=inProgress");
+    expect(cont[0]?.listHref).toContain("flow=NO_QTY");
+    expect(cont[0]?.openLabel).toBe("Open Production Workspace");
+  });
+
   it("resolvePendingActionGroupKey normalizes dispatch labels", () => {
     expect(resolvePendingActionGroupKey(row({ action: "Ready to Dispatch — SO-1 — Qty 10" }))).toBe(
       "READY_TO_DISPATCH",

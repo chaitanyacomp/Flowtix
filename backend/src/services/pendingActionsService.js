@@ -62,6 +62,10 @@ const {
   isStoreDispatchWorkflowTriggerAction,
   resolveStoreDispatchPendingActionGroups,
 } = require("./dispatchWorkflowTriggers");
+const {
+  appendProductionBucketToProductionHref,
+  buildProductionWorkspaceHrefFromPendingMeta,
+} = require("./productionWorkspaceHref");
 
 const STORE_ISSUE_PENDING_ACTION = "Issue Material";
 const STORE_ISSUE_REMAINING_ACTION = "Issue Remaining Material";
@@ -103,35 +107,6 @@ function resolveReleaseHandoffSourceLabel({ sourceType, orderType, salesOrderDoc
   if (ot === "NO_QTY") return salesOrderDocNo ? `NO_QTY · ${salesOrderDocNo}` : "NO_QTY";
   if (salesOrderDocNo) return `Regular SO · ${salesOrderDocNo}`;
   return "Work Order";
-}
-
-function buildProductionWorkspaceHrefFromPendingMeta(meta = {}, from = "pending-actions") {
-  const workOrderId = Number(meta.workOrderId ?? 0);
-  const workOrderLineId = Number(meta.workOrderLineId ?? 0);
-  const salesOrderId = Number(meta.salesOrderId ?? 0);
-  const cycleId = Number(meta.cycleId ?? 0);
-  const sourceType = String(meta.sourceType ?? "").trim().toUpperCase();
-  const orderType = String(meta.orderType ?? "").trim().toUpperCase();
-  const params = new URLSearchParams();
-  if (from) params.set("from", from);
-  if (workOrderId > 0) params.set("workOrderId", String(workOrderId));
-  if (workOrderLineId > 0) params.set("workOrderLineId", String(workOrderLineId));
-  if (sourceType === GREEN_LEVEL_WO_SOURCE_TYPE || orderType === "GREEN_LEVEL") {
-    params.set("flow", "GREEN_LEVEL");
-    return `/production?${params.toString()}`;
-  }
-  if (orderType === "NO_QTY" && salesOrderId > 0) {
-    params.set("flow", "NO_QTY");
-    params.set("salesOrderId", String(salesOrderId));
-    params.set("source", "no_qty_so");
-    if (cycleId > 0) params.set("cycleId", String(cycleId));
-    return `/production?${params.toString()}`;
-  }
-  if (salesOrderId > 0) {
-    params.set("flow", "REGULAR_SO");
-    params.set("salesOrderId", String(salesOrderId));
-  }
-  return `/production?${params.toString()}`;
 }
 
 function buildReleaseToProductionHref(row = {}) {
@@ -516,7 +491,7 @@ function mapNormalizedRowToPendingAction(row, role = "STORE") {
     documentNo: enriched.documentNo ?? null,
     ownerRole: String(enriched.currentOwner ?? "").toUpperCase(),
     ageHours: enriched.ageHours != null ? enriched.ageHours : null,
-    href: resolveHrefForNormalizedRow(enriched, role),
+    href: appendProductionBucketToProductionHref(resolveHrefForNormalizedRow(enriched, role), actionLabel),
     sourceModule: enriched.sourceModule ?? null,
     currentStatus,
     purchaseOrderId: meta.primaryPoId != null ? Number(meta.primaryPoId) : null,

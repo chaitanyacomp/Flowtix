@@ -6,6 +6,7 @@
 const { QUEUE_EPS, qtyToNumber } = require("./rmPurchaseHelpers");
 const { resolveDemandPoolForSourceType, normalizeDemandPoolKey } = require("./procurementDemandPoolService");
 const { productionExecutionPendingActionLabel } = require("./productionExecutionService");
+const { buildProductionWorkspaceHrefFromPendingMeta } = require("./productionWorkspaceHref");
 
 const WAITING_FOR_PURCHASE_RM_PO = "Waiting for Purchase to prepare RM PO.";
 const PREPARE_RM_PO = "Prepare RM PO";
@@ -172,11 +173,20 @@ function resolveRmRiskPendingAction(meta, queueHints = {}, role = "STORE") {
       String(meta?.productionExecutionStatus ?? "NOT_STARTED").trim().toUpperCase() !== "NOT_STARTED";
     const hasProductionEntry = Boolean(meta?.hasProductionEntry);
     if (isProductionRole(role) && released) {
-      const params = new URLSearchParams({ returnTo: "pending-actions" });
-      if (stage.workOrderId > 0) params.set("workOrderId", String(stage.workOrderId));
       const execStatus = meta?.productionExecutionStatus ?? "NOT_STARTED";
       const action = productionExecutionPendingActionLabel(execStatus) ?? READY_TO_START_PRODUCTION;
-      return { action, href: `/production?${params.toString()}` };
+      return {
+        action,
+        href: buildProductionWorkspaceHrefFromPendingMeta(
+          {
+            ...meta,
+            workOrderId: stage.workOrderId,
+            salesOrderId: stage.salesOrderId,
+          },
+          "pending-actions",
+          { actionLabel: action },
+        ),
+      };
     }
     if (isProductionRole(role) && !released) {
       return {

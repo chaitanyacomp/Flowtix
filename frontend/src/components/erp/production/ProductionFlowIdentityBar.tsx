@@ -11,6 +11,8 @@ type Props = {
   rsLabel?: string | null;
   itemName?: string | null;
   className?: string;
+  /** FT-PD-066 — hide workflow breadcrumb; identity bar carries context. */
+  compact?: boolean;
 };
 
 /** P6B-1 — Always-visible flow identity (no inference from cycle alone). */
@@ -22,9 +24,11 @@ export function ProductionFlowIdentityBar({
   rsLabel,
   itemName,
   className,
+  compact = false,
 }: Props) {
   const isNoQty = flow === PRODUCTION_FLOW_NO_QTY;
   const isGreenLevel = flow === PRODUCTION_FLOW_GREEN_LEVEL;
+  if (compact) return null;
   return (
     <div className={cn("space-y-1", className)}>
       <div className="flex flex-wrap items-center gap-2">

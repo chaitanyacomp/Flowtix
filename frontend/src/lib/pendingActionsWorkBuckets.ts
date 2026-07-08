@@ -98,7 +98,11 @@ export function pendingActionWorkspaceListHref(href: string): string {
       return `/production-release?${params.toString()}`;
     }
     const params = new URLSearchParams();
-    for (const key of ["returnTo", "from", "source", "onlyBlocked", "demandPool", "focus", "planId"]) {
+    const preserveKeys = ["returnTo", "from", "source", "onlyBlocked", "demandPool", "focus", "planId"];
+    if (path.endsWith("/production")) {
+      preserveKeys.push("productionBucket", "flow", "salesOrderId", "cycleId");
+    }
+    for (const key of preserveKeys) {
       const v = url.searchParams.get(key);
       if (v != null && v !== "") params.set(key, v);
     }
@@ -109,6 +113,23 @@ export function pendingActionWorkspaceListHref(href: string): string {
     }
     const qs = params.toString();
     return qs ? `${path}?${qs}` : path;
+  } catch {
+    return href;
+  }
+}
+
+function appendProductionWorkspaceBucket(href: string, groupKey: string): string {
+  if (groupKey !== "Ready to Start Production" && groupKey !== "Continue Production") return href;
+  const bucket = groupKey === "Ready to Start Production" ? "readyToStart" : "inProgress";
+  try {
+    const url = new URL(href, "http://erp.local");
+    if (!url.pathname.endsWith("/production")) return href;
+    url.searchParams.set("productionBucket", bucket);
+    if (!url.searchParams.has("from")) {
+      url.searchParams.set("from", url.searchParams.get("returnTo") ?? "pending-actions");
+      url.searchParams.delete("returnTo");
+    }
+    return `${url.pathname}?${url.searchParams.toString()}`;
   } catch {
     return href;
   }
@@ -128,6 +149,9 @@ function bucketOpenLabel(groupKey: string, count: number): string {
   }
   if (groupKey === "Place Partial WO" || groupKey === "Place WO") {
     return "Place WO";
+  }
+  if (groupKey === "Ready to Start Production" || groupKey === "Continue Production") {
+    return "Open Production Workspace";
   }
   return count === 1 ? "Open" : "Open List";
 }
@@ -184,8 +208,11 @@ export function groupPendingActionsIntoWorkBuckets(
     }
 
     const rawHref = items[0]?.href ?? "/pending-actions";
-    const listHref = pendingActionWorkspaceListHref(
-      resolveGreenLevelPendingActionHref(rawHref, items[0]?.action),
+    const listHref = appendProductionWorkspaceBucket(
+      pendingActionWorkspaceListHref(
+        resolveGreenLevelPendingActionHref(rawHref, items[0]?.action),
+      ),
+      key,
     );
     const openHref =
       count === 1 || isCreateSalesBillPendingBucket(key)

@@ -197,5 +197,7 @@ describe("rmProcurementStageSignals", () => {
     );
     assert.equal(resolved.action, "Ready to Start Production");
     assert.match(resolved.href, /\/production/);
+    assert.match(resolved.href, /productionBucket=readyToStart/);
+    assert.match(resolved.href, /from=pending-actions/);
   });
 });

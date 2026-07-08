@@ -83,6 +83,12 @@ const {
   filterNoQtyExecutionReleasedWorkOrders,
 } = require("../services/noQtyExecutionBoundaryService");
 const { assertProductionEntryAllowed } = require("../services/productionEntryGateService");
+const {
+  approveProductionEntryWithLedgerPosting,
+  PE_DRAFT,
+  PE_APPROVED,
+} = require("../services/productionEntryApprovalGateService");
+const { approveProductionWorkOrderReport } = require("../services/productionReportApprovalGateService");
 const { maybeAutoCloseSalesOrderOperationally } = require("../services/salesOrderOperationalAutoClose");
 const { approvedBomWhere, approvedBomOrderBy } = require("../services/bomStatus");
 const { evaluateWoPrepareReadiness } = require("../services/materialPlanningService");
@@ -90,21 +96,15 @@ const { computeFgGapLinesForSalesOrder } = require("../services/rmCheckService")
 const {
   buildProductionRmReadiness,
   buildProductionRmReadinessDebugPayload,
-  issueRmForApprovedProductionFromPmrLocations,
-  issueRmStockForProductionBatchAtProductionLocations,
   returnRmStockForProductionBatchFromProductionLocations,
   getWorkOrderProductionLocationIds,
 } = require("../services/productionRmReadinessService");
-const { aggregateRmDemandForFgLines } = require("../services/bomExplosionService");
 const {
   buildRmConsumptionPreview,
-  resolveConsumptionForRegularApproval,
-  persistProductionEntryRmConsumption,
   RM_CONSUMPTION_ROUNDING_TOLERANCE_KG,
 } = require("../services/productionRmConsumptionService");
 const {
   buildWorkOrderProductionReport,
-  confirmProductionWorkOrderReport,
 } = require("../services/productionWorkOrderReportService");
 const {
   HOLD_REASONS,
@@ -126,8 +126,6 @@ const {
   blockProductionExecution,
   resumeProductionExecution,
   finishProductionExecution,
-  ensureProductionExecutionRecord,
-  syncShortfallPendingAfterProductionApprove,
   blockReasonLabel,
 } = require("../services/productionExecutionService");
 
@@ -494,8 +492,6 @@ productionRouter.post(
 );
 
 /** Only APPROVED batches count toward WO completion vs planned qty. */
-const PE_APPROVED = "APPROVED";
-const PE_DRAFT = "DRAFT";
 const TERMINAL_WO_STATUSES = Object.freeze(["COMPLETED", "REJECTED", "CLOSED_WITH_SHORTFALL"]);
 
 function isGreenLevelReplenishmentWorkOrder(wo) {
@@ -1177,7 +1173,7 @@ productionRouter.post(
       const body = confirmProductionReportSchema.parse(req.body ?? {});
       const result = await prisma.$transaction(async (tx) => {
         await lockWorkOrderForUpdate(tx, id);
-        const confirmed = await confirmProductionWorkOrderReport(
+        const confirmed = await approveProductionWorkOrderReport(
           tx,
           id,
           { remarks: body.remarks, lines: body.lines, wastageDetails: body.wastageDetails },
@@ -1207,7 +1203,7 @@ productionRouter.post(
           requiresShortfallDecision: executionClose ? false : confirmed.requiresShortfallDecision,
         };
       });
-      return res.status(result.alreadyConfirmed ? 200 : 201).json(result);
+      return res.status(201).json(result);
     } catch (e) {
       return next(e);
     }
@@ -2001,145 +1997,23 @@ productionRouter.post(
 
       const result = await prisma.$transaction(async (tx) => {
         await lockProductionEntryForUpdate(tx, id);
-        const prod = await tx.productionEntry.findUnique({
-          where: { id },
-          include: {
-            workOrderLine: {
-              include: {
-                workOrder: {
-                  select: {
-                    sourceType: true,
-                    salesOrder: { select: { orderType: true } },
-                  },
-                },
-                fgItem: true,
-              },
-            },
-          },
-        });
-        if (!prod) {
-          const err = new Error("Production entry not found");
-          err.statusCode = 404;
-          throw err;
-        }
-        if (prod.workflowStatus !== PE_DRAFT) {
-          const err = new Error("This production batch is already approved.");
-          err.statusCode = 409;
-          throw err;
-        }
-        const qcAny = await countAllQcEntriesForProduction(tx, id);
-        if (qcAny > 0) {
-          const err = new Error("Cannot approve a batch that already has QC history.");
-          err.statusCode = 409;
-          throw err;
-        }
-
-        const wol = prod.workOrderLine;
-        const orderType = wol.workOrder?.salesOrder?.orderType;
-        const isRegular = orderType != null && orderType !== "NO_QTY";
-        await lockWorkOrderLineForUpdate(tx, wol.id);
-
-        await assertProductionEntryAllowed(tx, {
-          workOrderLineId: wol.id,
-          producedQty: prod.producedQty,
-          excludeProductionId: id,
+        const approval = await approveProductionEntryWithLedgerPosting(tx, {
+          productionEntryId: id,
+          consumptionLines: body.consumptionLines,
           woQtyToleranceMessageBuilder: () =>
             "Cannot approve: total produced quantity would exceed the allowed tolerance for this WO line (WO Qty + 5%). Edit the draft quantity first.",
         });
 
-        const fgItemId = wol.fgItemId;
-        const producedQtyNum = Number(prod.producedQty);
+        const { prod, wol, wo, isRegular, bomFound, consumptionWarnings, rmStock, fgItemId, producedQtyNum } =
+          approval;
 
-        const bomPre = await tx.bom.findFirst({
-          where: approvedBomWhere(fgItemId),
-          orderBy: approvedBomOrderBy,
-          include: { lines: true },
-        });
-        if (!bomPre || !bomPre.lines?.length) {
-          const bomErr = new Error("BOM_MISSING");
-          bomErr.code = "BOM_MISSING";
-          bomErr.statusCode = 400;
-          throw bomErr;
-        }
-        /** @type {{ itemId: number; stockBefore: number; stockAfter?: number }[]} */
-        const rmStock = [];
-        if (isRegular) {
-          const prodLocIds = await getWorkOrderProductionLocationIds(tx, wol.workOrderId);
-          const { rmNeeded } = await aggregateRmDemandForFgLines(tx, [
-            { fgItemId, fgQty: producedQtyNum, bomMissing: false },
-          ]);
-          for (const [rmItemId] of rmNeeded) {
-            let before = 0;
-            for (const locId of prodLocIds) {
-              before += await getItemStockQty(rmItemId, tx, { stockBucket: "USABLE", locationId: locId });
-            }
-            rmStock.push({ itemId: rmItemId, stockBefore: before });
-          }
-        } else {
-          for (const line of bomPre.lines) {
-            const perUnit = effectiveQtyPerUnit(line.baseQtyPerFg ?? line.baseQty, line.wastagePercent, line.qcAllowancePercent);
-            if (perUnit * producedQtyNum <= STOCK_EPS) continue;
-            rmStock.push({
-              itemId: line.rmItemId,
-              stockBefore: await getItemStockQty(line.rmItemId, tx),
-            });
-          }
-        }
-
-        let bomFound = false;
-        /** @type {string[]} */
-        let consumptionWarnings = [];
-        if (isRegular) {
-          const resolved = await resolveConsumptionForRegularApproval(tx, {
-            fgItemId,
-            producedQty: prod.producedQty,
-            workOrderId: wol.workOrderId,
-            consumptionLines: body.consumptionLines,
-          });
-          consumptionWarnings = resolved.warnings;
-          bomFound = await issueRmStockForProductionBatchAtProductionLocations(tx, {
-            productionId: prod.id,
-            workOrderId: wol.workOrderId,
-            actualQtyByItemId: resolved.actualQtyByItemId,
-            roundingToleranceKg: RM_CONSUMPTION_ROUNDING_TOLERANCE_KG,
-          });
-          await persistProductionEntryRmConsumption(tx, prod.id, resolved.lines);
-        } else {
-          bomFound = await issueRmForApprovedProductionFromPmrLocations(tx, {
-            productionId: prod.id,
-            workOrderId: wol.workOrderId,
-            fgItemId,
-            producedQty: prod.producedQty,
-          });
-        }
-
-        for (const row of rmStock) {
-          if (isRegular) {
-            const prodLocIds = await getWorkOrderProductionLocationIds(tx, wol.workOrderId);
-            let after = 0;
-            for (const locId of prodLocIds) {
-              after += await getItemStockQty(row.itemId, tx, { stockBucket: "USABLE", locationId: locId });
-            }
-            row.stockAfter = after;
-          } else {
-            row.stockAfter = await getItemStockQty(row.itemId, tx);
-          }
-        }
-
-        await tx.productionEntry.update({
-          where: { id },
-          data: { workflowStatus: PE_APPROVED },
-        });
+        await lockWorkOrderLineForUpdate(tx, wol.id);
+        await lockWorkOrderForUpdate(tx, wol.workOrderId);
 
         const woBefore = await tx.workOrder.findUnique({
           where: { id: wol.workOrderId },
           select: { status: true, salesOrderId: true },
         });
-        await lockWorkOrderForUpdate(tx, wol.workOrderId);
-        if (!isRegular) {
-          await ensureProductionExecutionRecord(tx, wol.workOrderId);
-          await syncShortfallPendingAfterProductionApprove(tx, wol.workOrderId, producedQtyNum);
-        }
         await syncWorkOrderStatusFromProduction(tx, wol.workOrderId);
         const woAfter = await tx.workOrder.findUnique({
           where: { id: wol.workOrderId },
@@ -2151,7 +2025,7 @@ productionRouter.post(
           snapshot: {
             workOrderId: wol.workOrderId,
             workOrderLineId: wol.id,
-            salesOrderId: woAfter?.salesOrderId ?? woBefore?.salesOrderId ?? wol.workOrder.salesOrderId,
+            salesOrderId: woAfter?.salesOrderId ?? woBefore?.salesOrderId ?? wo.salesOrderId,
             producedQty: producedQtyNum,
             fgItemId,
             fgItemName: wol.fgItem?.itemName,
@@ -2240,7 +2114,7 @@ productionRouter.post(
             },
           });
         }
-        const operationalSoId = woAfter?.salesOrderId ?? woBefore?.salesOrderId ?? wol.workOrder.salesOrderId;
+        const operationalSoId = woAfter?.salesOrderId ?? woBefore?.salesOrderId ?? wo.salesOrderId;
         if (operationalSoId != null) {
           await maybeAutoCloseSalesOrderOperationally(tx, operationalSoId, {
             actorUserId: req.user?.userId,
@@ -2248,7 +2122,7 @@ productionRouter.post(
             reason: "Production approval completed the remaining operational work.",
           });
         }
-        return { wo: woFull ?? wol.workOrder, prod: prodAfter, bomFound, consumptionWarnings };
+        return { wo: woFull ?? wo, prod: prodAfter, bomFound, consumptionWarnings };
       });
 
       return res.status(200).json(result);

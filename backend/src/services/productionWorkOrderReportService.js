@@ -238,6 +238,38 @@ async function assertProductionReportConfirmed(db, workOrderId) {
   return row;
 }
 
+/**
+ * Guards the single Production Report approval path — duplicate confirm is rejected.
+ *
+ * @param {import('@prisma/client').PrismaClient | import('@prisma/client').Prisma.TransactionClient} db
+ * @param {number} workOrderId
+ */
+async function assertProductionReportNotConfirmed(db, workOrderId) {
+  const id = Number(workOrderId);
+  const existing = await loadConfirmedReport(db, id);
+  if (existing) {
+    const err = new Error("Production Report is already confirmed for this work order.");
+    err.statusCode = 409;
+    err.code = "PRODUCTION_REPORT_ALREADY_CONFIRMED";
+    throw err;
+  }
+}
+
+/**
+ * @param {import('@prisma/client').PrismaClient | import('@prisma/client').Prisma.TransactionClient} db
+ * @param {number} workOrderId
+ */
+async function assertProductionReportHasApprovedEntries(db, workOrderId) {
+  const report = await buildWorkOrderProductionReport(db, workOrderId);
+  if (!report.hasApprovedProduction || report.summary.producedQty <= EPS) {
+    const err = new Error("Record at least one approved production batch before confirming Production Report.");
+    err.statusCode = 409;
+    err.code = "PRODUCTION_REPORT_NO_APPROVED_ENTRIES";
+    throw err;
+  }
+  return report;
+}
+
 async function countOpenProductionRmReturnPending(db, workOrderId) {
   return db.productionRmReturnPending.count({
     where: { workOrderId, status: "PENDING" },
@@ -426,22 +458,8 @@ async function confirmProductionWorkOrderReport(db, workOrderId, input = {}, act
     throw err;
   }
 
-  const existing = await loadConfirmedReport(db, id);
-  if (existing) {
-    return {
-      report: await buildWorkOrderProductionReport(db, id),
-      confirmation: mapConfirmedReportRow(existing),
-      alreadyConfirmed: true,
-      requiresShortfallDecision: round3(n(existing.remainingQty)) > EPS,
-    };
-  }
-
-  const report = await buildWorkOrderProductionReport(db, id);
-  if (!report.hasApprovedProduction || report.summary.producedQty <= EPS) {
-    const err = new Error("Record at least one approved production batch before confirming Production Report.");
-    err.statusCode = 409;
-    throw err;
-  }
+  await assertProductionReportNotConfirmed(db, id);
+  const report = await assertProductionReportHasApprovedEntries(db, id);
 
   const inputByItem = normalizeInputLines(input.lines);
   const lineCreates = [];
@@ -557,33 +575,6 @@ async function confirmProductionWorkOrderReport(db, workOrderId, input = {}, act
     });
   }
 
-  if (report.summary.remainderQty <= EPS && returnPendingCount === 0) {
-    await db.workOrder.update({
-      where: { id },
-      data: {
-        status: "COMPLETED",
-        holdReason: null,
-        heldAt: null,
-        heldByUserId: null,
-        holdRemarks: null,
-      },
-    });
-    if (!report.isRegular && db.workOrderProductionExecution?.update) {
-      try {
-        await db.workOrderProductionExecution.update({
-          where: { workOrderId: id },
-          data: {
-            executionStatus: "COMPLETED",
-            completedAt: new Date(),
-            completedByUserId: actor.userId ?? actor.actorUserId ?? null,
-          },
-        });
-      } catch {
-        // Existing NO_QTY records can be absent in migrated data; WO closure remains WorkOrder-owned.
-      }
-    }
-  }
-
   const actorUserId = actor.userId ?? actor.actorUserId;
   if (typeof actorUserId === "number") {
     await auditLog.write(db, {
@@ -608,7 +599,6 @@ async function confirmProductionWorkOrderReport(db, workOrderId, input = {}, act
   return {
     report: await buildWorkOrderProductionReport(db, id),
     confirmation: mapConfirmedReportRow(confirmed),
-    alreadyConfirmed: false,
     requiresShortfallDecision: report.summary.remainderQty > EPS,
     returnPendingCount,
   };
@@ -837,6 +827,8 @@ module.exports = {
   buildWorkOrderProductionReport,
   confirmProductionWorkOrderReport,
   assertProductionReportConfirmed,
+  assertProductionReportNotConfirmed,
+  assertProductionReportHasApprovedEntries,
   assertNoOpenProductionRmReturnPending,
   listProductionRmReturnPending,
   receiveProductionRmReturnPending,

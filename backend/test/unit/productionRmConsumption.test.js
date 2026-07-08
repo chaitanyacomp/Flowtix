@@ -57,4 +57,40 @@ describe("productionRmConsumptionService", () => {
     assert.equal(check.withinTolerance, false);
     assert.equal(check.shortage, 0);
   });
+
+  it("assertProductionEntryLedgerNotPosted rejects duplicate snapshot", async () => {
+    const {
+      assertProductionEntryLedgerNotPosted,
+    } = require("../../src/services/productionRmConsumptionService");
+    const db = {
+      productionEntryRmConsumption: {
+        count: async () => 1,
+      },
+      stockTransaction: {
+        count: async () => 0,
+      },
+    };
+    await assert.rejects(
+      () => assertProductionEntryLedgerNotPosted(db, 42),
+      (err) => err.code === "PRODUCTION_LEDGER_ALREADY_POSTED" && err.statusCode === 409,
+    );
+  });
+
+  it("assertProductionEntryLedgerNotPosted rejects duplicate stock ISSUE", async () => {
+    const {
+      assertProductionEntryLedgerNotPosted,
+    } = require("../../src/services/productionRmConsumptionService");
+    const db = {
+      productionEntryRmConsumption: {
+        count: async () => 0,
+      },
+      stockTransaction: {
+        count: async ({ where }) => (where.refId === 42 && where.transactionType === "ISSUE" ? 2 : 0),
+      },
+    };
+    await assert.rejects(
+      () => assertProductionEntryLedgerNotPosted(db, 42),
+      (err) => err.code === "PRODUCTION_LEDGER_ALREADY_POSTED" && err.statusCode === 409,
+    );
+  });
 });

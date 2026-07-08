@@ -278,9 +278,53 @@ async function validateActualConsumptionForApproval(tx, { workOrderId, lines }) 
 }
 
 /**
+ * Guards against duplicate immutable consumption snapshots.
+ *
+ * @param {import('@prisma/client').Prisma.TransactionClient} tx
+ * @param {number} productionEntryId
+ */
+async function assertProductionEntryConsumptionSnapshotNotExists(tx, productionEntryId) {
+  const id = Number(productionEntryId);
+  const snapshotCount = await tx.productionEntryRmConsumption.count({
+    where: { productionEntryId: id },
+  });
+  if (snapshotCount > 0) {
+    const err = new Error("Production consumption snapshot already exists for this batch.");
+    err.statusCode = 409;
+    err.code = "PRODUCTION_LEDGER_ALREADY_POSTED";
+    throw err;
+  }
+}
+
+/**
+ * Guards against duplicate ledger posting on production entry approval.
+ *
+ * @param {import('@prisma/client').Prisma.TransactionClient} tx
+ * @param {number} productionEntryId
+ */
+async function assertProductionEntryLedgerNotPosted(tx, productionEntryId) {
+  const id = Number(productionEntryId);
+  await assertProductionEntryConsumptionSnapshotNotExists(tx, id);
+  const issueCount = await tx.stockTransaction.count({
+    where: {
+      refId: id,
+      transactionType: "ISSUE",
+      qtyOut: { gt: 0 },
+    },
+  });
+  if (issueCount > 0) {
+    const err = new Error("Production ledger already posted for this batch.");
+    err.statusCode = 409;
+    err.code = "PRODUCTION_LEDGER_ALREADY_POSTED";
+    throw err;
+  }
+}
+
+/**
  * @param {import('@prisma/client').Prisma.TransactionClient} tx
  */
 async function persistProductionEntryRmConsumption(tx, productionEntryId, lines) {
+  await assertProductionEntryConsumptionSnapshotNotExists(tx, productionEntryId);
   for (const ln of lines) {
     const { varianceQty, variancePercent } = calcVariance(ln.standardQty, ln.actualQty);
     await tx.productionEntryRmConsumption.create({
@@ -317,6 +361,121 @@ async function resolveConsumptionForRegularApproval(tx, params) {
   return { lines, warnings, actualQtyByItemId };
 }
 
+/**
+ * Posts RM consumption ledger (stock ISSUE + immutable snapshot) for an approved production batch.
+ * Caller must have validated gate G1 and entry approvability first.
+ *
+ * @param {import('@prisma/client').Prisma.TransactionClient} tx
+ */
+async function postProductionEntryLedgerOnApproval(
+  tx,
+  {
+    productionId,
+    prod,
+    isRegular,
+    consumptionLines,
+  },
+) {
+  const wol = prod.workOrderLine;
+  const fgItemId = wol.fgItemId;
+  const producedQtyNum = n(prod.producedQty);
+  const workOrderId = wol.workOrderId;
+
+  await assertProductionEntryLedgerNotPosted(tx, productionId);
+
+  const { approvedBomWhere, approvedBomOrderBy } = require("./bomStatus");
+  const { effectiveQtyPerUnit } = require("./bomUtils");
+  const {
+    issueRmForApprovedProductionFromPmrLocations,
+    issueRmStockForProductionBatchAtProductionLocations,
+    getWorkOrderProductionLocationIds,
+  } = require("./productionRmReadinessService");
+  const { aggregateRmDemandForFgLines } = require("./bomExplosionService");
+
+  const bomPre = await tx.bom.findFirst({
+    where: approvedBomWhere(fgItemId),
+    orderBy: approvedBomOrderBy,
+    include: { lines: true },
+  });
+  if (!bomPre || !bomPre.lines?.length) {
+    const bomErr = new Error("BOM_MISSING");
+    bomErr.code = "BOM_MISSING";
+    bomErr.statusCode = 400;
+    throw bomErr;
+  }
+
+  /** @type {{ itemId: number; stockBefore: number; stockAfter?: number }[]} */
+  const rmStock = [];
+  if (isRegular) {
+    const prodLocIds = await getWorkOrderProductionLocationIds(tx, workOrderId);
+    const { rmNeeded } = await aggregateRmDemandForFgLines(tx, [
+      { fgItemId, fgQty: producedQtyNum, bomMissing: false },
+    ]);
+    for (const [rmItemId] of rmNeeded) {
+      let before = 0;
+      for (const locId of prodLocIds) {
+        before += await getItemStockQty(rmItemId, tx, { stockBucket: "USABLE", locationId: locId });
+      }
+      rmStock.push({ itemId: rmItemId, stockBefore: before });
+    }
+  } else {
+    for (const line of bomPre.lines) {
+      const perUnit = effectiveQtyPerUnit(
+        line.baseQtyPerFg ?? line.baseQty,
+        line.wastagePercent,
+        line.qcAllowancePercent,
+      );
+      if (perUnit * producedQtyNum <= STOCK_EPS) continue;
+      rmStock.push({
+        itemId: line.rmItemId,
+        stockBefore: await getItemStockQty(line.rmItemId, tx),
+      });
+    }
+  }
+
+  let bomFound = false;
+  /** @type {string[]} */
+  let consumptionWarnings = [];
+  if (isRegular) {
+    const resolved = await resolveConsumptionForRegularApproval(tx, {
+      fgItemId,
+      producedQty: prod.producedQty,
+      workOrderId,
+      consumptionLines,
+    });
+    consumptionWarnings = resolved.warnings;
+    bomFound = await issueRmStockForProductionBatchAtProductionLocations(tx, {
+      productionId,
+      workOrderId,
+      actualQtyByItemId: resolved.actualQtyByItemId,
+      roundingToleranceKg: RM_CONSUMPTION_ROUNDING_TOLERANCE_KG,
+    });
+    await persistProductionEntryRmConsumption(tx, productionId, resolved.lines);
+  } else {
+    bomFound = await issueRmForApprovedProductionFromPmrLocations(tx, {
+      productionId,
+      workOrderId,
+      fgItemId,
+      producedQty: prod.producedQty,
+    });
+  }
+
+  for (const row of rmStock) {
+    if (isRegular) {
+      const prodLocIds = await getWorkOrderProductionLocationIds(tx, workOrderId);
+      let after = 0;
+      for (const locId of prodLocIds) {
+        after += await getItemStockQty(row.itemId, tx, { stockBucket: "USABLE", locationId: locId });
+      }
+      row.stockAfter = after;
+    } else {
+      row.stockAfter = await getItemStockQty(row.itemId, tx);
+    }
+  }
+
+  return { bomFound, consumptionWarnings, rmStock, fgItemId, producedQtyNum, workOrderId, wol };
+}
+
 module.exports = {
   RM_CONSUMPTION_WARN_PCT,
   RM_CONSUMPTION_ROUNDING_TOLERANCE_KG,
@@ -324,6 +483,9 @@ module.exports = {
   roundingToleranceWarningMessage,
   buildRmConsumptionPreview,
   resolveConsumptionForRegularApproval,
+  assertProductionEntryConsumptionSnapshotNotExists,
+  assertProductionEntryLedgerNotPosted,
+  postProductionEntryLedgerOnApproval,
   persistProductionEntryRmConsumption,
   buildStandardRmMapForBatch,
   calcVariance,

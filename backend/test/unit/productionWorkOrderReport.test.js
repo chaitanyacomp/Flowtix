@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const {
   buildWorkOrderProductionReport,
   confirmProductionWorkOrderReport,
+  assertProductionReportNotConfirmed,
   receiveProductionRmReturnPending,
   sumQcForProduction,
 } = require("../../src/services/productionWorkOrderReportService");
@@ -227,6 +228,132 @@ describe("productionWorkOrderReportService", () => {
       assert.equal(new Set(report.batches.map((b) => b.productionEntryId)).size, 1);
     } finally {
       require("../../src/services/materialReturnService").buildReturnableLinesForWorkOrder = orig;
+    }
+  });
+
+  it("confirmProductionWorkOrderReport rejects when no approved production exists", async () => {
+    const db = {
+      workOrder: {
+        findUnique: async () => ({
+          id: 15,
+          docNo: "WO-15",
+          status: "IN_PROGRESS",
+          lines: [{ id: 150, fgItemId: 5, qty: 10, plannedQty: 10, fgItem: { id: 5, itemName: "FG", unit: "Nos" } }],
+          salesOrder: { id: 1, docNo: "SO-1", orderType: "NORMAL", customer: { name: "Acme" } },
+          requirementSheet: null,
+          cycle: null,
+          productionExecution: null,
+        }),
+      },
+      productionEntry: {
+        findMany: async () => [],
+        groupBy: async () => [],
+      },
+      productionWorkOrderReport: { findUnique: async () => null },
+    };
+    await assert.rejects(
+      () => confirmProductionWorkOrderReport(db, 15, {}, { userId: 9 }),
+      (err) => err.code === "PRODUCTION_REPORT_NO_APPROVED_ENTRIES" && err.statusCode === 409,
+    );
+  });
+
+  it("confirmProductionWorkOrderReport rejects duplicate confirm", async () => {
+    const db = {
+      productionWorkOrderReport: {
+        findUnique: async () => ({
+          id: 701,
+          status: "CONFIRMED",
+          remainingQty: "0",
+          lines: [],
+          returnPendings: [],
+          wastageDetails: [],
+        }),
+      },
+    };
+    await assert.rejects(
+      () => confirmProductionWorkOrderReport(db, 15, {}, { userId: 9 }),
+      (err) => err.code === "PRODUCTION_REPORT_ALREADY_CONFIRMED" && err.statusCode === 409,
+    );
+  });
+
+  it("confirmProductionWorkOrderReport does not auto-complete work order", async () => {
+    const returnPath = require.resolve("../../src/services/materialReturnService");
+    const reportPath = require.resolve("../../src/services/productionWorkOrderReportService");
+    const origReturn = require(returnPath).buildReturnableLinesForWorkOrder;
+    require(returnPath).buildReturnableLinesForWorkOrder = async () => ({
+      lines: [
+        {
+          itemId: 7,
+          itemName: "PP",
+          unit: "Kg",
+          grossIssuedQty: 8,
+          consumedQty: 8,
+          returnedQty: 0,
+          returnableQty: 0,
+          unusedQty: 0,
+        },
+      ],
+    });
+    delete require.cache[reportPath];
+    const { confirmProductionWorkOrderReport: confirmReport } = require(reportPath);
+
+    let woUpdated = false;
+    const db = {
+      workOrder: {
+        findUnique: async () => ({
+          id: 15,
+          docNo: "WO-26-0001",
+          status: "IN_PROGRESS",
+          lines: [{ id: 150, fgItemId: 5, qty: 10, plannedQty: 10, fgItem: { id: 5, itemName: "FG", unit: "Nos" } }],
+          salesOrder: { id: 1, docNo: "SO-1", orderType: "NORMAL", customer: { name: "Acme" } },
+          requirementSheet: null,
+          cycle: null,
+          productionExecution: null,
+        }),
+        update: async () => {
+          woUpdated = true;
+          return { id: 15, status: "COMPLETED" };
+        },
+      },
+      productionEntry: {
+        findMany: async () => [
+          {
+            id: 501,
+            docNo: "PE-501",
+            date: new Date("2026-06-01"),
+            producedQty: 10,
+            workOrderLine: { id: 150, fgItemId: 5, fgItem: { id: 5, itemName: "FG", unit: "Nos" } },
+            qcEntries: [],
+            rmConsumptions: [
+              {
+                itemId: 7,
+                standardQty: 8,
+                actualQty: 8,
+                varianceQty: 0,
+                variancePercent: 0,
+                consumptionType: "NORMAL",
+                remarks: null,
+                item: { id: 7, itemName: "PP", unit: "Kg" },
+              },
+            ],
+          },
+        ],
+        groupBy: async () => [{ workOrderLineId: 150, _sum: { producedQty: 10 } }],
+      },
+      productionWorkOrderReport: {
+        findUnique: async () => null,
+        create: async ({ data }) => ({ id: 701, ...data }),
+      },
+      productionRmReturnPending: { create: async () => ({ id: 1 }) },
+      auditLog: { findMany: async () => [], create: async () => ({ id: 1 }) },
+    };
+
+    try {
+      await confirmReport(db, 15, { lines: [{ itemId: 7, rmConsumedQty: 8, rmReturnQty: 0 }] }, { userId: 9 });
+      assert.equal(woUpdated, false, "Production Report confirm must not auto-complete WO in Batch 2B");
+    } finally {
+      require(returnPath).buildReturnableLinesForWorkOrder = origReturn;
+      delete require.cache[reportPath];
     }
   });
 

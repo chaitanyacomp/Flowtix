@@ -3,11 +3,11 @@ const { AuditAction } = require("../prismaClientPackage");
 const { prisma } = require("../utils/prisma");
 const { requireAuth, requireRole } = require("../middleware/auth");
 const { netDispatchedByItemId, DISPATCH_ALLOC_MODE } = require("../services/salesOrderDispatchAllocation");
+const { computeNoQtyDispatchHeadroom } = require("../services/noQtyDispatchHeadroom");
 const {
   loadNoQtyCycleQcAcceptedMap,
   loadNoQtyDispositionUsableForDispatchPoolMap,
   loadNoQtyPostCycleApprovalMapForInputs,
-  computeNoQtyDispatchHeadroom,
   filterNoQtyDispatchRowsForActiveCycle,
   netNoQtyCycleDispatchedByItemId,
 } = require("./dispatch");

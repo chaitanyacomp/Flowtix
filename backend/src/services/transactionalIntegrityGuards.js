@@ -17,6 +17,9 @@ const WORK_ORDER_STATUSES_FOR_DRAFT_FLOOR_PLANNED = [
 ];
 
 /**
+ * Net operational dispatch for QC reversal guard: all forward + reversal rows (incl. UNLOCKED drafts).
+ * Aligns with operational dispatch caps — draft qty reserves QC pool before lock.
+ *
  * @param {import('@prisma/client').Prisma.TransactionClient} tx
  * @param {number} salesOrderId
  * @param {number} fgItemId
@@ -24,19 +27,6 @@ const WORK_ORDER_STATUSES_FOR_DRAFT_FLOOR_PLANNED = [
 async function netDispatchedForSoItem(tx, salesOrderId, fgItemId) {
   const rows = await tx.dispatch.findMany({
     where: { soId: salesOrderId, itemId: fgItemId },
-    select: { dispatchedQty: true },
-  });
-  return rows.reduce((s, d) => s + Number(d.dispatchedQty), 0);
-}
-
-/**
- * Net dispatched for QC/stock consumption rules: LOCKED rows only (forward confirms + reversal rows).
- * UNLOCKED draft forwards do not reduce QC-approved availability until locked.
- * @param {import('@prisma/client').Prisma.TransactionClient} tx
- */
-async function netLockedDispatchedForSoItem(tx, salesOrderId, fgItemId) {
-  const rows = await tx.dispatch.findMany({
-    where: { soId: salesOrderId, itemId: fgItemId, workflowStatus: "LOCKED" },
     select: { dispatchedQty: true },
   });
   return rows.reduce((s, d) => s + Number(d.dispatchedQty), 0);
@@ -146,7 +136,6 @@ async function assertWorkOrderAllowsStructuralEdit(tx, workOrderId) {
 module.exports = {
   STOCK_EPS,
   netDispatchedForSoItem,
-  netLockedDispatchedForSoItem,
   totalWoPlannedQtyForSoItem,
   totalProducedQtyForSoItem,
   workOrderLineExistsForSoItem,

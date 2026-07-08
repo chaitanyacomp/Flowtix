@@ -27,11 +27,11 @@ const { buildQcAcceptedMap, buildReplacementReturnQcGrossBySoItemKey } = require
 const { normalizePositiveCycleId } = require("../utils/cycleIds");
 const { filterNoQtyExecutionReleasedWorkOrders } = require("./noQtyExecutionBoundaryService");
 const { netDispatchedByItemId, DISPATCH_ALLOC_MODE: SO_DISPATCH_ALLOC_MODE } = require("./salesOrderDispatchAllocation");
+const { computeNoQtyDispatchHeadroom } = require("./noQtyDispatchHeadroom");
 const {
   loadNoQtyCycleQcAcceptedMap,
   loadNoQtyDispositionUsableForDispatchPoolMap,
   loadNoQtyPostCycleApprovalMapForInputs,
-  computeNoQtyDispatchHeadroom,
   filterNoQtyDispatchRowsForActiveCycle,
   netNoQtyCycleDispatchedByItemId,
   buildNoQtyDispatchLineStatsForAllCycles,

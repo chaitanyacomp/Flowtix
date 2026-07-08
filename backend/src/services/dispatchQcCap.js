@@ -151,20 +151,6 @@ async function buildQcAcceptedMap(db) {
 }
 
 /**
- * @param {{ qcAccepted: number; netDispatched: number; requestQty: number }} p
- */
-function assertDispatchWithinQcCap({ qcAccepted, netDispatched, requestQty }) {
-  const available = qcAccepted - netDispatched;
-  if (requestQty > available + STOCK_EPS) {
-    const err = new Error(
-      `Dispatch exceeds QC-approved quantity. Available for dispatch: ${formatQtyForMessage(available)}`,
-    );
-    err.statusCode = 400;
-    throw err;
-  }
-}
-
-/**
  * Lock/finalize gate: SO-line FIFO remainder, then usable FG (NORMAL) or min(return-QC pool, usable) (REPLACEMENT).
  * Draft create uses `skipStockCheck: true`.
  *
@@ -270,7 +256,6 @@ module.exports = {
   sumQcAcceptedForSoItem,
   buildQcAcceptedMap,
   buildReplacementReturnQcGrossBySoItemKey,
-  assertDispatchWithinQcCap,
   assertDispatchAllowedForSoItem,
   formatQtyForMessage,
 };

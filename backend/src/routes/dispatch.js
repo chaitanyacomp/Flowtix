@@ -44,6 +44,11 @@ const {
   isSalesOrderCommerciallyClosedForDispatch,
 } = require("../services/dispatchOpenListEligibility");
 const { enrichSalesOrderDispatchQuantities } = require("../services/dispatchLineQuantityEngine");
+const { computeNoQtyDispatchHeadroom } = require("../services/noQtyDispatchHeadroom");
+const {
+  buildDispatchDraftLockEligibilityContext,
+  attachDraftLockEligibilityToDispatchRows,
+} = require("../services/dispatchDraftLockEligibility");
 const { assertAdminPassword } = require("../services/adminPasswordAuth");
 const { DISPATCH_WRITE_ROLES, DISPATCH_READ_ROLES, QC_PAGE_ROLES } = require("../constants/erpRoles");
 const {
@@ -316,19 +321,35 @@ async function loadNoQtyCycleRecheckAcceptedMap(prisma, noQtySos) {
   return map;
 }
 
-/**
- * NO_QTY: purely cycle-wise QC eligibility (salesOrderId + cycleId + itemId).
- * dispatchableQty = qcAcceptedForCycle + in-cycle disposition→USABLE + post-cycle approvals from prior closed cycles
- * − same-cycle operational dispatch (incl. drafts).
- *
- * @param {{ alreadyOpNet: number; qcAcceptedThisCycle?: number; recheckAcceptedThisCycle?: number; postCycleApprovalQty?: number }} p
- */
-function computeNoQtyDispatchHeadroom(p) {
-  const net = num(p.alreadyOpNet);
-  const qc = num(p.qcAcceptedThisCycle);
-  const recheck = num(p.recheckAcceptedThisCycle ?? 0);
-  const post = num(p.postCycleApprovalQty ?? 0);
-  return Math.max(0, qc + recheck + post - net);
+function enrichDispatchLedgerForSo(so, deps) {
+  const withReversal = attachDispatchMaxReversibleQty(so.dispatch);
+  const eligibilityContext = buildDispatchDraftLockEligibilityContext(so, deps);
+  return attachDraftLockEligibilityToDispatchRows(withReversal, eligibilityContext);
+}
+
+async function buildDispatchDraftEligibilityDeps(tx, so, opts = {}) {
+  const lineInputs = mapSoLinesToDispatchFifoInputs(so.lines, so.orderType);
+  const qcAcceptedMap = await buildQcAcceptedMap(tx);
+  const replacementQcGrossBySoItem = await buildReplacementReturnQcGrossBySoItemKey(tx, [so], qcAcceptedMap);
+  /** @type {Map<number, number>} */
+  const onHandByItemId = new Map();
+  const itemIds = new Set((so.dispatch || []).map((d) => Number(d.itemId)).filter((id) => id > 0));
+  for (const itemId of itemIds) {
+    onHandByItemId.set(itemId, Number(await getItemStockQty(itemId, tx, { stockBucket: "USABLE" })));
+  }
+  return {
+    lineInputs,
+    onHandByItemId,
+    qcAcceptedMap,
+    replacementQcGrossBySoItem,
+    noQtyQcMaps: opts.noQtyQcMaps ?? null,
+  };
+}
+
+function enrichDispatchRowsWithDraftEligibility(so, dispatchRows, deps) {
+  const ledger = enrichDispatchLedgerForSo(so, deps);
+  const byId = new Map(ledger.map((d) => [Number(d.id), d]));
+  return (dispatchRows || []).map((d) => byId.get(Number(d.id)) ?? d);
 }
 
 /**
@@ -1639,7 +1660,17 @@ dispatchRouter.get("/sales-orders", requireAuth, requireRole(DISPATCH_READ_ROLES
                 }
               : null,
           lineStats: lineStatsWithBuckets,
-          dispatch: attachDispatchMaxReversibleQty(so.dispatch),
+          dispatch: enrichDispatchLedgerForSo(so, {
+            lineInputs: mapSoLinesToDispatchFifoInputs(so.lines, so.orderType),
+            onHandByItemId,
+            qcAcceptedMap,
+            replacementQcGrossBySoItem,
+            noQtyQcMaps: {
+              cycleQcAcceptedMap: cycleQcAcceptedMap,
+              cycleRecheckAcceptedMap: cycleRecheckAcceptedMap,
+              postCycleApprovalMap: postCycleApprovalMapAll,
+            },
+          }),
           dispatchMetricHints: {
             qcApprovedRemaining: METRIC_DEFINITIONS.qcApprovedRemaining,
             dispatchableQty: METRIC_DEFINITIONS.dispatchableQty,
@@ -1767,7 +1798,12 @@ dispatchRouter.get("/sales-orders", requireAuth, requireRole(DISPATCH_READ_ROLES
         flowMode: "REGULAR_SO",
         dispatchReadOnly: so.internalStatus === "COMPLETED",
         lineStats,
-        dispatch: attachDispatchMaxReversibleQty(so.dispatch),
+        dispatch: enrichDispatchLedgerForSo(so, {
+          lineInputs,
+          onHandByItemId,
+          qcAcceptedMap,
+          replacementQcGrossBySoItem,
+        }),
         dispatchMetricHints: {
           qcApprovedRemaining: METRIC_DEFINITIONS.qcApprovedRemaining,
           dispatchableQty: METRIC_DEFINITIONS.dispatchableQty,
@@ -2029,7 +2065,17 @@ dispatchRouter.get("/sales-orders-debug", requireAuth, requireRole(["ADMIN"]), a
             ? { selectedCycleId: eff, cycleNo: meta?.cycleNo ?? null, cycleLabel: meta?.cycleNo != null ? `Cycle ${meta.cycleNo}` : null }
             : null,
         lineStats: lineStatsWithBuckets,
-        dispatch: attachDispatchMaxReversibleQty(so.dispatch),
+        dispatch: enrichDispatchLedgerForSo(so, {
+          lineInputs: mapSoLinesToDispatchFifoInputs(so.lines, so.orderType),
+          onHandByItemId,
+          qcAcceptedMap,
+          replacementQcGrossBySoItem,
+          noQtyQcMaps: {
+            cycleQcAcceptedMap,
+            cycleRecheckAcceptedMap,
+            postCycleApprovalMap: postCycleApprovalMapDbg,
+          },
+        }),
       });
     } else {
       const lineInputs = mapSoLinesToDispatchFifoInputs(so.lines, so.orderType);
@@ -2129,7 +2175,12 @@ dispatchRouter.get("/sales-orders-debug", requireAuth, requireRole(["ADMIN"]), a
         flowMode: "REGULAR_SO",
         dispatchReadOnly: so.internalStatus === "COMPLETED",
         lineStats,
-        dispatch: attachDispatchMaxReversibleQty(so.dispatch),
+        dispatch: enrichDispatchLedgerForSo(so, {
+          lineInputs,
+          onHandByItemId,
+          qcAcceptedMap,
+          replacementQcGrossBySoItem,
+        }),
       });
     }
 
@@ -2645,6 +2696,8 @@ dispatchRouter.post("/dispatches", requireAuth, requireRole(DISPATCH_WRITE_ROLES
       /** @type {number | null} */
       let currentCycleId = null;
       let existingDraft = null;
+      /** @type {null | { cycleQcAcceptedMap: Map<string, number>; cycleRecheckAcceptedMap: Map<string, number>; postCycleApprovalMap: Map<string, number> }} */
+      let noQtyQcMapsForEligibility = null;
       /** @type {null | { dispatches: import("@prisma/client").Dispatch[]; allocation: Array<{ cycleId: number; cycleNo: number; qty: number }> }} */
       let noQtyFifoResult = null;
       if (isNoQty) {
@@ -2660,6 +2713,11 @@ dispatchRouter.post("/dispatches", requireAuth, requireRole(DISPATCH_WRITE_ROLES
           loadNoQtyPostCycleApprovalMapForInputs(tx, allCycleInputs),
           loadNoQtyCycleIdsWithBatchQcPendingBySalesOrderIds(tx, [so.id]),
         ]);
+        noQtyQcMapsForEligibility = {
+          cycleQcAcceptedMap: qcMapAll,
+          cycleRecheckAcceptedMap: recheckMapAll,
+          postCycleApprovalMap: postCycleMapAll,
+        };
         const batchPendingSetTx = batchPendingMapTx.get(so.id) ?? new Set();
         const gate = findSequentialNoQtyGateCycle({
           so,
@@ -2831,6 +2889,24 @@ dispatchRouter.post("/dispatches", requireAuth, requireRole(DISPATCH_WRITE_ROLES
           autoAllocated: true,
           dispatch: noQtyFifoResult.dispatches[0] ?? null,
         };
+        const soFifoFresh = {
+          ...so,
+          dispatch: [
+            ...(so.dispatch || []).filter(
+              (d) => !noQtyFifoResult.dispatches.some((x) => Number(x.id) === Number(d.id)),
+            ),
+            ...noQtyFifoResult.dispatches,
+          ],
+        };
+        const fifoEligDeps = await buildDispatchDraftEligibilityDeps(tx, soFifoFresh, {
+          noQtyQcMaps: noQtyQcMapsForEligibility,
+        });
+        payload.dispatches = enrichDispatchRowsWithDraftEligibility(
+          soFifoFresh,
+          noQtyFifoResult.dispatches,
+          fifoEligDeps,
+        );
+        payload.dispatch = payload.dispatches[0] ?? null;
         await syncNoQtyOptionalStoreStockIntentForSalesOrderAfterDispatchChange(tx, so.id, null);
         await completeDispatchIdempotency(tx, {
           userId,
@@ -2886,7 +2962,16 @@ dispatchRouter.post("/dispatches", requireAuth, requireRole(DISPATCH_WRITE_ROLES
         reason: "Dispatch finalization completed the operational workflow.",
       });
 
-      const payload = { dispatch };
+      const soFresh = {
+        ...so,
+        dispatch: [...(so.dispatch || []).filter((d) => Number(d.id) !== Number(dispatch.id)), dispatch],
+      };
+      const draftEligDeps = await buildDispatchDraftEligibilityDeps(tx, soFresh, {
+        noQtyQcMaps: noQtyQcMapsForEligibility,
+      });
+      const [enrichedDispatch] = enrichDispatchRowsWithDraftEligibility(soFresh, [dispatch], draftEligDeps);
+
+      const payload = { dispatch: enrichedDispatch };
       await completeDispatchIdempotency(tx, {
         userId,
         routeKey: ROUTE_KEYS.POST_DISPATCHES,

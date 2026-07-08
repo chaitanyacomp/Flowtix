@@ -101,6 +101,11 @@ function pickPrimaryBillForDispatch(bills) {
   return active[0] ?? null;
 }
 
+function isPrismaUnknownSalesBillFieldError(err, fieldName) {
+  const msg = String(err?.message ?? err ?? "");
+  return msg.includes(`Unknown field \`${fieldName}\``) || msg.includes(`Unknown field '${fieldName}'`);
+}
+
 /**
  * @param {import('@prisma/client').PrismaClient | import('@prisma/client').Prisma.TransactionClient} db
  * @param {number[]} dispatchIds
@@ -111,18 +116,29 @@ async function loadPrimaryBillSummaryByDispatchId(db, dispatchIds) {
   const out = new Map();
   if (!ids.length) return out;
 
-  const bills = await db.salesBill.findMany({
-    where: { dispatchId: { in: ids } },
-    select: {
-      id: true,
-      dispatchId: true,
-      isExported: true,
-      status: true,
-      cancelledAt: true,
-      billingAdjustmentRequired: true,
-    },
-    orderBy: { id: "desc" },
-  });
+  const baseSelect = {
+    id: true,
+    dispatchId: true,
+    isExported: true,
+    status: true,
+    cancelledAt: true,
+  };
+  /** @type {Array<{ id: number; dispatchId: number; isExported: boolean; status: string; cancelledAt: Date | null; billingAdjustmentRequired?: boolean }>} */
+  let bills;
+  try {
+    bills = await db.salesBill.findMany({
+      where: { dispatchId: { in: ids } },
+      select: { ...baseSelect, billingAdjustmentRequired: true },
+      orderBy: { id: "desc" },
+    });
+  } catch (err) {
+    if (!isPrismaUnknownSalesBillFieldError(err, "billingAdjustmentRequired")) throw err;
+    bills = await db.salesBill.findMany({
+      where: { dispatchId: { in: ids } },
+      select: baseSelect,
+      orderBy: { id: "desc" },
+    });
+  }
 
   /** @type {Map<number, typeof bills>} */
   const byDispatch = new Map();
@@ -138,7 +154,7 @@ async function loadPrimaryBillSummaryByDispatchId(db, dispatchIds) {
       id: Number(primary.id),
       isExported: Boolean(primary.isExported),
       status: String(primary.status),
-      billingAdjustmentRequired: Boolean(primary.billingAdjustmentRequired),
+      billingAdjustmentRequired: Boolean(primary.billingAdjustmentRequired ?? false),
     });
   }
   return out;

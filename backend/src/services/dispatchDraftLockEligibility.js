@@ -14,7 +14,7 @@ const {
   DISPATCH_ALLOC_MODE,
 } = require("./salesOrderDispatchAllocation");
 const { getSoItemDispatchShipCap, REPORT_QUEUE_EPS } = require("./reportMetrics");
-const { computeNoQtyDispatchHeadroom } = require("./noQtyDispatchHeadroom");
+const { resolveNoQtyFifoLockEligibility } = require("./noQtyDispatchFifoAllocation");
 const { normalizePositiveCycleId } = require("../utils/cycleIds");
 
 function num(v) {
@@ -127,63 +127,27 @@ function resolveNoQtyDispatchDraftLockEligibility(p) {
     soId,
     itemId,
     draftQty,
-    dispatchRecords,
     dispatchRecordsAll,
     cycleId,
     onHandUsable,
     noQtyQcMaps,
+    noQtyCyclesSorted,
   } = p;
-  const eps = REPORT_QUEUE_EPS;
 
   if (internalStatus === "MANUALLY_CLOSED" || internalStatus === "CLOSED") {
     return { state: "WAITING_APPROVAL", reason: "Sales order is closed for dispatch." };
   }
 
-  const cycleIdNorm = normalizePositiveCycleId(cycleId);
-  if (cycleIdNorm == null) {
-    return { state: "WAITING_APPROVAL", reason: "No cycle assigned for this dispatch draft." };
-  }
-
-  const cycleRecords = filterDispatchRowsForCycle(dispatchRecords, cycleIdNorm);
-  const netOp = netDispatchedByItemId(cycleRecords, DISPATCH_ALLOC_MODE.OPERATIONAL).get(itemId) ?? 0;
-  const hypNet = netOp + draftQty;
-
-  const qcKey = `${soId}:${cycleIdNorm}:${itemId}`;
-  const qcAccepted = mapGet(noQtyQcMaps?.cycleQcAcceptedMap, qcKey);
-  const recheckAccepted = mapGet(noQtyQcMaps?.cycleRecheckAcceptedMap, qcKey);
-  const postCycleAccepted = mapGet(noQtyQcMaps?.postCycleApprovalMap, qcKey);
-  const qcTotal = qcAccepted + recheckAccepted + postCycleAccepted;
-
-  if (hypNet > qcTotal + eps) {
-    return { state: "WAITING_QA", reason: "Dispatch exceeds QC-accepted quantity for this cycle." };
-  }
-
-  const headroom = computeNoQtyDispatchHeadroom({
-    alreadyOpNet: hypNet,
-    qcAcceptedThisCycle: qcAccepted,
-    recheckAcceptedThisCycle: recheckAccepted,
-    postCycleApprovalQty: postCycleAccepted,
+  return resolveNoQtyFifoLockEligibility({
+    so: { id: soId, dispatch: dispatchRecordsAll || [] },
+    soId,
+    itemId,
+    draftQty,
+    cycleId,
+    cyclesSorted: noQtyCyclesSorted,
+    onHandUsable,
+    noQtyQcMaps,
   });
-  const unlockedDraftAllCycles = (dispatchRecordsAll || [])
-    .filter(
-      (d) =>
-        d.reversalOfId == null &&
-        d.workflowStatus === "UNLOCKED" &&
-        Number(d.itemId) === Number(itemId),
-    )
-    .reduce((s, d) => s + num(d.dispatchedQty), 0);
-  const otherDrafts = Math.max(0, unlockedDraftAllCycles - draftQty);
-  const freeForThisLock = Math.max(0, onHandUsable - otherDrafts);
-  const dispatchableCapped = Math.min(headroom, freeForThisLock);
-
-  if (draftQty > dispatchableCapped + eps) {
-    if (draftQty > freeForThisLock + eps) {
-      return { state: "WAITING_STOCK", reason: "Insufficient usable stock for dispatch." };
-    }
-    return { state: "WAITING_QA", reason: "Dispatch exceeds QC-accepted quantity for this cycle." };
-  }
-
-  return { state: "READY", reason: null };
 }
 
 /**

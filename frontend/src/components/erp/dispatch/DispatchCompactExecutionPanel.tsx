@@ -92,8 +92,8 @@ export function DispatchCompactExecutionPanel({
   const hasOpenDraft = primaryFinalizeDraftId != null && primaryFinalizeDraftId > 0 && activeDraftQty > 1e-9;
 
   return (
-    <div className="flex flex-col gap-2" data-testid="dispatch-compact-execution">
-      <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-sm">
+    <div className="flex flex-col gap-1.5" data-testid="dispatch-compact-execution">
+      <div className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 shadow-sm">
         <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-[13px] text-slate-800">
           <span className="font-mono font-semibold text-slate-900">{soLabel}</span>
           <span className="text-slate-400" aria-hidden>
@@ -135,8 +135,8 @@ export function DispatchCompactExecutionPanel({
       ) : (
         <OperatorMainSplit
           balancedWorkbench
-          className="lg:max-h-[min(calc(100dvh-9.5rem),32rem)] lg:min-h-0"
-          panelClassName="!p-2.5 min-h-0 h-full"
+          className="lg:max-h-[min(calc(100dvh-8.5rem),30rem)] lg:min-h-0"
+          panelClassName="!p-2 min-h-0 h-full"
           queue={
             <div
               className="flex min-h-0 flex-col gap-1 lg:h-full lg:min-h-0"
@@ -207,31 +207,31 @@ export function DispatchCompactExecutionPanel({
                 <p className="mt-1 whitespace-pre-line text-[11px] leading-snug text-sky-900">{info}</p>
               ) : null}
               {activeItemName ? (
-                <div className="mt-2 space-y-3">
-                  <div className="space-y-1">
+                <div className="mt-1.5 space-y-2">
+                  <div className="space-y-0.5">
                     <div className="text-[11px] text-slate-500">Item</div>
                     <div className="font-semibold text-slate-900">{activeItemName}</div>
                   </div>
-                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                    <div className="space-y-1">
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                    <div className="space-y-0.5">
                       <div className="text-[11px] text-slate-500">Allocated to SO</div>
                       <div className="font-semibold tabular-nums text-slate-900">
                         {formatDispatchCompactQty(activeOriginalReadyQty)}
                       </div>
                     </div>
-                    <div className="space-y-1">
+                    <div className="space-y-0.5">
                       <div className="text-[11px] text-slate-500">Draft</div>
                       <div className="font-semibold tabular-nums text-amber-900">
                         {formatDispatchCompactQty(activeDraftQty)}
                       </div>
                     </div>
-                    <div className="space-y-1">
+                    <div className="space-y-0.5">
                       <div className="text-[11px] text-slate-500">Dispatchable qty</div>
                       <div className="font-semibold tabular-nums text-emerald-900">
                         {formatDispatchCompactQty(activeRemainingQty)}
                       </div>
                     </div>
-                    <div className="space-y-1">
+                    <div className="space-y-0.5">
                       <div className="text-[11px] text-slate-500">Status</div>
                       <div className="font-semibold text-slate-800">{activeStatusLabel}</div>
                     </div>

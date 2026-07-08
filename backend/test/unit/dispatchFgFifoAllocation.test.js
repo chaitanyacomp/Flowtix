@@ -3,7 +3,7 @@
  */
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
-const { computeNoQtyFifoPrepareSlicesForItem } = require("../../src/routes/dispatch");
+const { computeNoQtyFifoPrepareSlicesForItem, assertNoQtyDispatchLockQtyAllowed } = require("../../src/services/noQtyDispatchFifoAllocation");
 const { allocateDispatchFifoAcrossWorkOrderLines } = require("../../src/services/reportMetrics");
 
 describe("dispatchFgFifoAllocation", () => {

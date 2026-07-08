@@ -86,23 +86,52 @@ describe("dispatchDraftLockEligibility", () => {
     assert.match(result.reason, /remaining sales order line balance/i);
   });
 
-  it("NO_QTY: draft above cycle QC → WAITING_QA", () => {
+  it("NO_QTY: draft above single-cycle QC but within cross-cycle pool → READY", () => {
+    const draft = {
+      id: 99,
+      itemId: 10,
+      dispatchedQty: 100,
+      workflowStatus: "UNLOCKED",
+      reversalOfId: null,
+      cycleId: 6,
+    };
     const result = resolveNoQtyDispatchDraftLockEligibility({
       internalStatus: "IN_PROCESS",
       soId: 1,
       itemId: 10,
       draftQty: 100,
-      dispatchRecords: [],
-      dispatchRecordsAll: [{ id: 99, itemId: 10, dispatchedQty: 100, workflowStatus: "UNLOCKED", reversalOfId: null, cycleId: 5 }],
-      cycleId: 5,
+      dispatchRecordsAll: [draft],
+      cycleId: 6,
       onHandUsable: 500,
       noQtyQcMaps: {
-        cycleQcAcceptedMap: new Map([["1:5:10", 50]]),
+        cycleQcAcceptedMap: new Map([
+          ["1:5:10", 80],
+          ["1:6:10", 30],
+        ]),
         cycleRecheckAcceptedMap: new Map(),
         postCycleApprovalMap: new Map(),
       },
     });
-    assert.equal(result.state, "WAITING_QA");
+    assert.equal(result.state, "READY");
+    assert.equal(result.reason, null);
+  });
+
+  it("NO_QTY: draft above cross-cycle QC pool is blocked", () => {
+    const result = resolveNoQtyDispatchDraftLockEligibility({
+      internalStatus: "IN_PROCESS",
+      soId: 1,
+      itemId: 10,
+      draftQty: 100,
+      dispatchRecordsAll: [],
+      cycleId: 5,
+      onHandUsable: 500,
+      noQtyQcMaps: {
+        cycleQcAcceptedMap: new Map([["1:5:10", 80]]),
+        cycleRecheckAcceptedMap: new Map(),
+        postCycleApprovalMap: new Map(),
+      },
+    });
+    assert.ok(result.state === "WAITING_QA" || result.state === "WAITING_STOCK");
   });
 
   it("attachDraftLockEligibilityToDispatchRows decorates UNLOCKED forwards only", () => {

@@ -49,6 +49,14 @@ const {
   buildDispatchDraftLockEligibilityContext,
   attachDraftLockEligibilityToDispatchRows,
 } = require("../services/dispatchDraftLockEligibility");
+const {
+  filterNoQtyDispatchRowsForActiveCycle,
+  netNoQtyCycleDispatchedByItemId,
+  getNoQtyCycleDispatchHeadroomForItem,
+  getNoQtyUnlockedDraftQtyForItem,
+  computeNoQtyFifoPrepareSlicesForItem,
+  assertNoQtyDispatchLockQtyAllowed,
+} = require("../services/noQtyDispatchFifoAllocation");
 const { loadPrimaryBillSummaryByDispatchId } = require("../services/salesBillEligibility");
 const { assertAdminPassword } = require("../services/adminPasswordAuth");
 const { DISPATCH_WRITE_ROLES, DISPATCH_READ_ROLES, QC_PAGE_ROLES } = require("../constants/erpRoles");
@@ -99,25 +107,8 @@ function num(v) {
 
 /**
  * NO_QTY: operational net and caps MUST use only rows where Dispatch.cycleId equals the dispatch source cycle.
- * - Rows with null/undefined cycleId are excluded (no fallback).
- * - Rows for other cycles are excluded so a new cycle is not blocked by prior-cycle dispatch.
- * - Reversals are included only when they carry the same non-null cycleId (set from the forward row at reversal create).
- *
- * @param {Array<{ id?: number; cycleId?: unknown; itemId?: unknown; reversalOfId?: unknown }>} dispatchRecords
- * @param {unknown} activeCycleId — SalesOrderCycle.id for the dispatch source cycle
+ * Implemented in {@link filterNoQtyDispatchRowsForActiveCycle} (noQtyDispatchFifoAllocation).
  */
-function filterNoQtyDispatchRowsForActiveCycle(dispatchRecords, activeCycleId) {
-  const want = normalizePositiveCycleId(activeCycleId);
-  if (want == null) return [];
-  const out = [];
-  for (const d of dispatchRecords || []) {
-    const got = normalizePositiveCycleId(d.cycleId);
-    if (got == null) continue;
-    if (got !== want) continue;
-    out.push(d);
-  }
-  return out;
-}
 
 /**
  * NO_QTY prepare validation: net operational dispatch for the cycle+item after applying the requested draft qty
@@ -169,20 +160,6 @@ function hypotheticalNoQtyCycleOperationalNetForItem(soDispatch, activeCycleId, 
     ];
   }
   return num(netNoQtyCycleDispatchedByItemId(rows, DISPATCH_ALLOC_MODE.OPERATIONAL).get(Number(itemId)) ?? 0);
-}
-
-/**
- * NO_QTY only: same as {@link netDispatchedByItemId}, then merge per numeric itemId (Prisma/JSON may split keys).
- */
-function netNoQtyCycleDispatchedByItemId(dispatchRecords, mode) {
-  const raw = netDispatchedByItemId(dispatchRecords, mode);
-  const m = new Map();
-  for (const [k, v] of raw) {
-    const nk = Number(k);
-    if (!Number.isFinite(nk)) continue;
-    m.set(nk, (m.get(nk) ?? 0) + num(v));
-  }
-  return m;
 }
 
 /**
@@ -354,95 +331,6 @@ function enrichDispatchRowsWithDraftEligibility(so, dispatchRows, deps) {
   const ledger = enrichDispatchLedgerForSo(so, deps);
   const byId = new Map(ledger.map((d) => [Number(d.id), d]));
   return (dispatchRows || []).map((d) => byId.get(Number(d.id)) ?? d);
-}
-
-/**
- * NO_QTY: QC-backed headroom for one SO + cycle + FG item (QC + recheck + post-cycle − same-cycle operational net).
- */
-function getNoQtyCycleDispatchHeadroomForItem(so, cycleId, itemId, qcMap, recheckMap, postCycleMap) {
-  const c = normalizePositiveCycleId(cycleId);
-  if (c == null) return 0;
-  const qcKey = `${so.id}:${c}:${itemId}`;
-  const qcTotal =
-    num(qcMap.get(qcKey) ?? 0) + num(recheckMap.get(qcKey) ?? 0) + num(postCycleMap.get(qcKey) ?? 0);
-  const net = num(
-    netNoQtyCycleDispatchedByItemId(
-      filterNoQtyDispatchRowsForActiveCycle(so.dispatch, c),
-      DISPATCH_ALLOC_MODE.OPERATIONAL,
-    ).get(Number(itemId)) ?? 0,
-  );
-  return Math.max(0, qcTotal - net);
-}
-
-function getNoQtyUnlockedDraftQtyForItem(so, itemId) {
-  return (so.dispatch || [])
-    .filter((d) => d.reversalOfId == null && d.workflowStatus === "UNLOCKED" && Number(d.itemId) === Number(itemId))
-    .reduce((s, d) => s + num(d.dispatchedQty), 0);
-}
-
-/** Replaceable UNLOCKED draft qty for one NO_QTY cycle + FG item (same draft row can be updated in place). */
-function getNoQtyUnlockedDraftQtyForItemCycle(so, cycleId, itemId) {
-  const want = normalizePositiveCycleId(cycleId);
-  if (want == null) return 0;
-  return (so.dispatch || [])
-    .filter(
-      (d) =>
-        d.reversalOfId == null &&
-        d.workflowStatus === "UNLOCKED" &&
-        Number(d.itemId) === Number(itemId) &&
-        normalizePositiveCycleId(d.cycleId) === want,
-    )
-    .reduce((s, d) => s + num(d.dispatchedQty), 0);
-}
-
-/**
- * QC-backed headroom for prepare, treating replaceable open draft as available (not double-reserved).
- */
-function getNoQtyCycleDispatchHeadroomForPrepare(so, cycleId, itemId, qcMap, recheckMap, postCycleMap) {
-  const replaceable = getNoQtyUnlockedDraftQtyForItemCycle(so, cycleId, itemId);
-  return (
-    getNoQtyCycleDispatchHeadroomForItem(so, cycleId, itemId, qcMap, recheckMap, postCycleMap) + replaceable
-  );
-}
-
-/**
- * FIFO across sales-order cycles (cycleNo ascending) for one FG item: oldest cycle pool first, then next.
- *
- * @returns {{ slices: Array<{ cycleId: number; cycleNo: number; qty: number }>; totalAvailable: number; cycleHeadroomTotal: number; freePhysicalUsable: number; unallocated: number }}
- */
-function computeNoQtyFifoPrepareSlicesForItem({
-  so,
-  itemId,
-  requestedQty,
-  cyclesSorted,
-  qcMap,
-  recheckMap,
-  postCycleMap,
-  usableStock,
-  unlockedDraftReservedQty,
-  replaceableDraftQty,
-}) {
-  let rem = num(requestedQty);
-  /** @type {Array<{ cycleId: number; cycleNo: number; qty: number }>} */
-  const slices = [];
-  let cycleHeadroomTotal = 0;
-  for (const c of cyclesSorted) {
-    cycleHeadroomTotal += getNoQtyCycleDispatchHeadroomForPrepare(so, c.id, itemId, qcMap, recheckMap, postCycleMap);
-  }
-  const freePhysicalUsable = Math.max(0, num(usableStock) - num(unlockedDraftReservedQty) + num(replaceableDraftQty));
-  const totalAvailable = Math.min(cycleHeadroomTotal, freePhysicalUsable);
-  let physicalRemaining = totalAvailable;
-  for (const c of cyclesSorted) {
-    if (rem <= REPORT_QUEUE_EPS || physicalRemaining <= REPORT_QUEUE_EPS) break;
-    const headroom = getNoQtyCycleDispatchHeadroomForPrepare(so, c.id, itemId, qcMap, recheckMap, postCycleMap);
-    const take = Math.min(rem, headroom, physicalRemaining);
-    if (take > REPORT_QUEUE_EPS) {
-      slices.push({ cycleId: c.id, cycleNo: num(c.cycleNo), qty: take });
-      rem -= take;
-      physicalRemaining -= take;
-    }
-  }
-  return { slices, totalAvailable, cycleHeadroomTotal, freePhysicalUsable, unallocated: Math.max(0, rem) };
 }
 
 /**
@@ -3087,35 +2975,30 @@ dispatchRouter.post("/dispatches/:id/lock", requireAuth, requireRole(DISPATCH_WR
           loadNoQtyDispositionUsableForDispatchPoolMap(tx, allCycleInputsLock),
           loadNoQtyPostCycleApprovalMapForInputs(tx, allCycleInputsLock),
         ]);
-        const cycleDispatchRecords = filterNoQtyDispatchRowsForActiveCycle(so.dispatch, currentCycleId);
-        const netOp = num(
-          netNoQtyCycleDispatchedByItemId(cycleDispatchRecords, DISPATCH_ALLOC_MODE.OPERATIONAL).get(Number(existing.itemId)) ?? 0,
-        );
-
-        const qcKey = `${so.id}:${currentCycleId}:${existing.itemId}`;
-        const qcAccepted = num(qcMapAllLock.get(qcKey) ?? 0);
-        const recheckAccepted = num(recheckMapAllLock.get(qcKey) ?? 0);
-        const postCycleAccepted = num(postCycleMapAllLock.get(qcKey) ?? 0);
-        const qcTotal = qcAccepted + recheckAccepted + postCycleAccepted;
-
-        if (netOp > qcTotal + REPORT_QUEUE_EPS) {
-          throw friendlyNoQtyDispatchError("Dispatch exceeds QC-accepted quantity for this cycle.", 400);
-        }
-
-        const finalDispatchableQty = computeNoQtyDispatchHeadroom({
-          alreadyOpNet: netOp,
-          qcAcceptedThisCycle: qcAccepted,
-          recheckAcceptedThisCycle: recheckAccepted,
-          postCycleApprovalQty: postCycleAccepted,
+        const usableStockLock = await getItemStockQty(existing.itemId, tx, {
+          stockBucket: "USABLE",
+          allLocations: true,
         });
+        assertNoQtyDispatchLockQtyAllowed(
+          {
+            so,
+            itemId: existing.itemId,
+            qty,
+            cycleId: currentCycleId,
+            cyclesSorted: allCyclesLock,
+            qcMap: qcMapAllLock,
+            recheckMap: recheckMapAllLock,
+            postCycleMap: postCycleMapAllLock,
+            usableStock: usableStockLock,
+          },
+          friendlyNoQtyDispatchError,
+        );
 
         console.debug("[FINALIZE_CHECK]", {
           dispatchId: existing.id,
           qty,
-          cycleOperationalNet: netOp,
-          qcTotal,
-          finalDispatchableQty,
           mode: isDraftFinalize ? "draft-finalize" : "headroom-validate",
+          usableStock: usableStockLock,
         });
       } else {
         const lineInputs = mapSoLinesToDispatchFifoInputs(so.lines, so.orderType);
@@ -3374,21 +3257,24 @@ dispatchRouter.post(
             loadNoQtyDispositionUsableForDispatchPoolMap(tx, allCycleInputsFd),
             loadNoQtyPostCycleApprovalMapForInputs(tx, allCycleInputsFd),
           ]);
-          const cycleDispatchRecords = filterNoQtyDispatchRowsForActiveCycle(so.dispatch, currentCycleId);
-          const netOp = num(
-            netNoQtyCycleDispatchedByItemId(cycleDispatchRecords, DISPATCH_ALLOC_MODE.OPERATIONAL).get(Number(existing.itemId)) ??
-              0,
+          const usableStockFd = await getItemStockQty(existing.itemId, tx, {
+            stockBucket: "USABLE",
+            allLocations: true,
+          });
+          assertNoQtyDispatchLockQtyAllowed(
+            {
+              so,
+              itemId: existing.itemId,
+              qty,
+              cycleId: currentCycleId,
+              cyclesSorted: allCyclesFd,
+              qcMap: qcMapAllFd,
+              recheckMap: recheckMapAllFd,
+              postCycleMap: postCycleMapAllFd,
+              usableStock: usableStockFd,
+            },
+            friendlyNoQtyDispatchError,
           );
-
-          const qcKey = `${so.id}:${currentCycleId}:${existing.itemId}`;
-          const qcAccepted = num(qcMapAllFd.get(qcKey) ?? 0);
-          const recheckAccepted = num(recheckMapAllFd.get(qcKey) ?? 0);
-          const postCycleAccepted = num(postCycleMapAllFd.get(qcKey) ?? 0);
-          const qcTotal = qcAccepted + recheckAccepted + postCycleAccepted;
-
-          if (netOp > qcTotal + REPORT_QUEUE_EPS) {
-            throw friendlyNoQtyDispatchError("Dispatch exceeds QC-accepted quantity for this cycle.", 400);
-          }
         } else {
           // NORMAL / REPLACEMENT etc: keep standard validation but exclude this draft row from "already dispatched".
           const lineInputs = mapSoLinesToDispatchFifoInputs(so.lines, so.orderType);

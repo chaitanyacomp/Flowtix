@@ -98,6 +98,11 @@ describe("productionWastageClassification", () => {
     expect(suggestWastageQtyForTypeSelection(0.315, rows, "b", "", "Kg")).toBe("0.13");
   });
 
+  it("auto-fills remaining qty for the next row when total wastage is partially classified", () => {
+    const rows = [{ key: "a", wastageTypeId: 1, qty: "4", remarks: "" }];
+    expect(suggestWastageQtyForTypeSelection(6, rows, "b", "", "Kg")).toBe("2");
+  });
+
   it("formats mismatch message with totals", () => {
     expect(buildWastageClassificationMismatchMessage(2.85, 2.3, "Kg")).toContain("Classify remaining 0.55 Kg");
     expect(sumWastageDetailDraftQty([{ key: "a", wastageTypeId: 1, qty: "1.2", remarks: "" }])).toBe(1.2);

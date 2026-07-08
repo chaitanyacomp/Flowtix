@@ -18,6 +18,10 @@ type Props = {
   unit?: string;
   readOnly?: boolean;
   compact?: boolean;
+  /** When true, validation feedback is rendered by the parent sticky footer (compact report panel). */
+  hideInlineValidation?: boolean;
+  /** Cap wastage row table height so confirm action stays on screen; rows scroll internally. */
+  scrollableRows?: boolean;
   validationMessage?: string | null;
   onChange: (rows: WastageDetailDraft[]) => void;
 };
@@ -33,6 +37,8 @@ export function ProductionReportWastageDetails({
   unit = "Kg",
   readOnly = false,
   compact = false,
+  hideInlineValidation = false,
+  scrollableRows = false,
   validationMessage = null,
   onChange,
 }: Props) {
@@ -166,7 +172,13 @@ export function ProductionReportWastageDetails({
       ) : null}
 
       {rows.length > 0 ? (
-        <div className="overflow-x-auto">
+        <div
+          className={cn(
+            "overflow-x-auto",
+            scrollableRows && "max-h-[min(14rem,32vh)] overflow-y-auto rounded border border-slate-100",
+          )}
+          data-testid={scrollableRows ? "production-wastage-rows-scroll" : undefined}
+        >
           <table className={cn("w-full border-collapse text-slate-800", compact ? "text-[11px]" : "text-[12px]")}>
             <thead>
               <tr className="border-b border-slate-200 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-600">
@@ -268,14 +280,19 @@ export function ProductionReportWastageDetails({
         </Button>
       ) : null}
 
-      {liveMessage ? (
-        <p className={cn("rounded border px-2 py-1.5 text-[11px] font-medium", messageTone)} data-testid="production-wastage-validation">
-          {liveMessage}
-        </p>
-      ) : balance.status === "complete" && balance.totalWastageQty > 1e-6 ? (
-        <p className="rounded border border-emerald-200 bg-emerald-50 px-2 py-1.5 text-[11px] font-medium text-emerald-950">
-          Wastage fully classified.
-        </p>
+      {!hideInlineValidation ? (
+        liveMessage ? (
+          <p
+            className={cn("rounded border px-2 py-1.5 text-[11px] font-medium", messageTone)}
+            data-testid="production-wastage-validation"
+          >
+            {liveMessage}
+          </p>
+        ) : balance.status === "complete" && balance.totalWastageQty > 1e-6 ? (
+          <p className="rounded border border-emerald-200 bg-emerald-50 px-2 py-1.5 text-[11px] font-medium text-emerald-950">
+            Wastage fully classified.
+          </p>
+        ) : null
       ) : null}
     </div>
   );

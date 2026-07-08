@@ -15,6 +15,7 @@ import {
   type WastageDetailDraft,
   computeWastageClassificationBalance,
   isWastageClassificationComplete,
+  resolveLiveWastageValidationMessage,
   toWastageDetailPayload,
   validateWastageClassification,
 } from "../../../lib/productionWastageClassification";
@@ -210,8 +211,31 @@ export function ProductionReportPanel({
     [totalWastageQty, wastageRows],
   );
 
+  const reportConfirmed = Boolean(report?.confirmation?.confirmed);
+
   const confirmBlockedByWastage =
     totalWastageQty > 1e-6 && !isWastageClassificationComplete(wastageBalance, wastageRows);
+
+  const wastageFooterFeedback = React.useMemo(() => {
+    if (reportConfirmed || !(totalWastageQty > 1e-6)) return null;
+    const message = resolveLiveWastageValidationMessage(wastageBalance, wastageRows, wastageUnit);
+    if (message) {
+      return {
+        message,
+        tone:
+          wastageBalance.status === "over"
+            ? "border-red-200 bg-red-50 text-red-950"
+            : "border-amber-200 bg-amber-50 text-amber-950",
+      };
+    }
+    if (wastageBalance.status === "complete") {
+      return {
+        message: "Wastage fully classified.",
+        tone: "border-emerald-200 bg-emerald-50 text-emerald-950",
+      };
+    }
+    return null;
+  }, [reportConfirmed, totalWastageQty, wastageBalance, wastageRows, wastageUnit]);
 
   const handleConfirm = React.useCallback(async () => {
     if (!report || saving) return;
@@ -275,7 +299,7 @@ export function ProductionReportPanel({
   ]);
 
   if (!workOrderId || workOrderId <= 0) return null;
-  const confirmed = Boolean(report?.confirmation?.confirmed);
+  const confirmed = reportConfirmed;
   const isPremiumCompact = compact && premium;
 
   return (
@@ -367,13 +391,10 @@ export function ProductionReportPanel({
               </div>
             ) : null}
 
-            {report.rmLines.length > 0 ? (
-              <div
-                className={cn(
-                  "min-h-0 overflow-auto rounded border border-slate-200",
-                  compact && "flex-1",
-                )}
-              >
+            <div className={cn(compact && "flex min-h-0 flex-1 flex-col overflow-hidden")}>
+              <div className={cn(compact ? "min-h-0 flex-1 space-y-2 overflow-y-auto" : "space-y-3")}>
+                {report.rmLines.length > 0 ? (
+                  <div className={cn("min-h-0 overflow-auto rounded border border-slate-200")}>
                 <table
                   className={cn(
                     "w-full border-collapse text-slate-800",
@@ -479,31 +500,57 @@ export function ProductionReportPanel({
                     })}
                   </tbody>
                 </table>
+                  </div>
+                ) : null}
+
+                {totalWastageQty > 1e-6 || (confirmed && wastageRows.length > 0) ? (
+                  <ProductionReportWastageDetails
+                    wastageTypes={report.wastageTypes ?? []}
+                    rows={wastageRows}
+                    totalWastageQty={totalWastageQty}
+                    unit={wastageUnit}
+                    readOnly={confirmed}
+                    compact={compact}
+                    hideInlineValidation={compact && !confirmed}
+                    scrollableRows={compact && !confirmed}
+                    onChange={setWastageRows}
+                  />
+                ) : null}
+
+                {report.confirmation?.returnPendings?.length ? (
+                  <div className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-950">
+                    RM Return Pending:{" "}
+                    {report.confirmation.returnPendings
+                      .map((p) => `${p.itemName} ${fmtQty(p.requestedQty)} ${p.unit}`.trim())
+                      .join(", ")}
+                  </div>
+                ) : null}
               </div>
-            ) : null}
 
-            {totalWastageQty > 1e-6 || (confirmed && wastageRows.length > 0) ? (
-              <ProductionReportWastageDetails
-                wastageTypes={report.wastageTypes ?? []}
-                rows={wastageRows}
-                totalWastageQty={totalWastageQty}
-                unit={wastageUnit}
-                readOnly={confirmed}
-                compact={compact}
-                onChange={setWastageRows}
-              />
-            ) : null}
-
-            <div
-              className={cn(
-                "shrink-0 border-t border-slate-200 bg-white",
-                isPremiumCompact
-                  ? "flex flex-col gap-2 px-1 py-2"
-                  : compact
-                    ? "flex flex-wrap items-end gap-2 px-1 py-1.5"
-                    : "sticky bottom-0 z-10 -mx-3 flex flex-col gap-2 bg-white/95 px-3 py-2 backdrop-blur-sm sm:flex-row sm:items-end",
-              )}
-            >
+              <div
+                className={cn(
+                  "shrink-0 border-t border-slate-200 bg-white",
+                  compact && "shadow-[0_-4px_12px_-2px_rgba(15,23,42,0.08)]",
+                  isPremiumCompact
+                    ? "flex flex-col gap-2 px-1 py-2"
+                    : compact
+                      ? "flex flex-col gap-2 px-1 py-1.5"
+                      : "sticky bottom-0 z-10 -mx-3 flex flex-col gap-2 bg-white/95 px-3 py-2 backdrop-blur-sm sm:flex-row sm:items-end",
+                )}
+                data-testid={compact ? "production-report-sticky-footer" : undefined}
+              >
+                {compact && wastageFooterFeedback ? (
+                  <p
+                    className={cn(
+                      "rounded border px-2 py-1.5 font-medium",
+                      isPremiumCompact ? "text-[12px]" : "text-[11px]",
+                      wastageFooterFeedback.tone,
+                    )}
+                    data-testid="production-wastage-validation"
+                  >
+                    {wastageFooterFeedback.message}
+                  </p>
+                ) : null}
               {!isPremiumCompact ? (
                 <label className={cn("text-[11px] font-medium text-slate-600", compact ? "min-w-[10rem] flex-1" : "flex-1")}>
                   Remarks
@@ -549,16 +596,8 @@ export function ProductionReportPanel({
                   </Button>
                 </div>
               ) : null}
-            </div>
-
-            {report.confirmation?.returnPendings?.length ? (
-              <div className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-950">
-                RM Return Pending:{" "}
-                {report.confirmation.returnPendings
-                  .map((p) => `${p.itemName} ${fmtQty(p.requestedQty)} ${p.unit}`.trim())
-                  .join(", ")}
               </div>
-            ) : null}
+            </div>
           </>
         )}
       </div>

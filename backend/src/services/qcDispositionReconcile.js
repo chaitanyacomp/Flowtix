@@ -12,20 +12,24 @@ async function reconcileStaleSupervisorReworkDispositions(tx) {
     take: 500,
   });
   for (const row of rows) {
+    // Match queue groupBy (all locations) — FG Store REWORK must be visible after first QC.
     const hold = await getItemStockQty(row.itemId, tx, {
       stockBucket: "QC_HOLD",
       qcRejectedDispositionId: row.id,
       excludeReversed: true,
+      allLocations: true,
     });
     const pend = await getItemStockQty(row.itemId, tx, {
       stockBucket: "QC_PENDING",
       qcRejectedDispositionId: row.id,
       excludeReversed: true,
+      allLocations: true,
     });
     const rw = await getItemStockQty(row.itemId, tx, {
       stockBucket: "REWORK",
       qcRejectedDispositionId: row.id,
       excludeReversed: true,
+      allLocations: true,
     });
     if (hold <= STOCK_EPS && (pend > STOCK_EPS || rw > STOCK_EPS)) {
       await tx.qcRejectedDisposition.update({

@@ -196,6 +196,7 @@ async function assertSufficientStockForQtyOut(db, itemId, qtyOut, messagePrefix,
     locationId: opts?.locationId,
     ...(opts?.qcRejectedDispositionId ? { qcRejectedDispositionId: opts.qcRejectedDispositionId } : {}),
     ...(opts?.excludeReversed ? { excludeReversed: true } : {}),
+    ...(opts?.allLocations ? { allLocations: true } : {}),
   });
   const q = Number(qtyOut);
   if (onHand - q < -STOCK_EPS) {

@@ -13,6 +13,9 @@ const { lockItemForUpdate } = require("../services/dispatchWriteLocks");
 const { lockQcRejectedDispositionForUpdate } = require("../services/productionWriteLocks");
 const { reconcileStaleSupervisorReworkDispositions } = require("../services/qcDispositionReconcile");
 const { QC_REWORK_APPROVE_ROLES } = require("../constants/erpRoles");
+const {
+  createFgQcStockLocationResolver,
+} = require("../services/fgStockPostingLocationService");
 
 const qcRejectedDispositionsRouter = express.Router();
 
@@ -977,23 +980,30 @@ qcRejectedDispositionsRouter.post(
           throw err;
         }
 
+        // Queue availability (groupBy) is location-agnostic. Default getItemStockQty scopes RM Store and
+        // misses FG Store REWORK credits from first QC — same root cause as Save QC "got 0".
+        // Read owned qty across all locations (matches queue), then post outs/ins at FG QC locations.
         const ownedRework = await getItemStockQty(d.itemId, tx, {
           stockBucket: "REWORK",
           qcRejectedDispositionId: d.id,
           excludeReversed: true,
+          allLocations: true,
         });
         const ownedLegacyPending = await getItemStockQty(d.itemId, tx, {
           stockBucket: "QC_PENDING",
           qcRejectedDispositionId: d.id,
           excludeReversed: true,
+          allLocations: true,
         });
         const pooledQcPending = await getItemStockQty(d.itemId, tx, {
           stockBucket: "QC_PENDING",
           excludeReversed: true,
+          allLocations: true,
         });
         const pooledRework = await getItemStockQty(d.itemId, tx, {
           stockBucket: "REWORK",
           excludeReversed: true,
+          allLocations: true,
         });
         if (ownedRework <= STOCK_EPS && ownedLegacyPending <= STOCK_EPS) {
           const err = new Error("This rework quantity is no longer available. Please refresh.");
@@ -1023,22 +1033,43 @@ qcRejectedDispositionsRouter.post(
           rejectedQty,
         });
 
+        const qcStockLocationId = await createFgQcStockLocationResolver(tx);
+        const reworkLocId = await qcStockLocationId("REWORK");
+        const usableLocId = await qcStockLocationId("USABLE");
+        const scrapLocId = await qcStockLocationId("SCRAP");
+        /** Legacy QC_PENDING rows may be on FG Store (same physical home as REWORK) after FG posting era. */
+        const pendingLocId = usableLocId;
+
         if (ownedRework > STOCK_EPS) {
-          await assertSufficientStockForQtyOut(tx, d.itemId, ownedRework, "This rework quantity is no longer available. Please refresh.", {
-            stockBucket: "REWORK",
-            qcRejectedDispositionId: d.id,
-            excludeReversed: true,
-          });
+          await assertSufficientStockForQtyOut(
+            tx,
+            d.itemId,
+            ownedRework,
+            "This rework quantity is no longer available. Please refresh.",
+            {
+              stockBucket: "REWORK",
+              qcRejectedDispositionId: d.id,
+              excludeReversed: true,
+              allLocations: true,
+            },
+          );
         }
         if (ownedLegacyPending > STOCK_EPS) {
-          await assertSufficientStockForQtyOut(tx, d.itemId, ownedLegacyPending, "This rework quantity is no longer available. Please refresh.", {
-            stockBucket: "QC_PENDING",
-            qcRejectedDispositionId: d.id,
-            excludeReversed: true,
-          });
+          await assertSufficientStockForQtyOut(
+            tx,
+            d.itemId,
+            ownedLegacyPending,
+            "This rework quantity is no longer available. Please refresh.",
+            {
+              stockBucket: "QC_PENDING",
+              qcRejectedDispositionId: d.id,
+              excludeReversed: true,
+              allLocations: true,
+            },
+          );
         }
 
-        const stockBefore = await getItemStockQty(d.itemId, tx);
+        const stockBefore = await getItemStockQty(d.itemId, tx, { allLocations: true });
 
         const detail = reasonNote || "QC recheck";
         /** @type {import("@prisma/client").StockTransaction | null} */
@@ -1047,6 +1078,7 @@ qcRejectedDispositionsRouter.post(
           outTxn = await tx.stockTransaction.create({
             data: {
               itemId: d.itemId,
+              locationId: reworkLocId,
               transactionType: "BUCKET_TRANSFER",
               refId: d.id,
               qcRejectedDispositionId: d.id,
@@ -1063,6 +1095,7 @@ qcRejectedDispositionsRouter.post(
           const legOut = await tx.stockTransaction.create({
             data: {
               itemId: d.itemId,
+              locationId: pendingLocId,
               transactionType: "BUCKET_TRANSFER",
               refId: d.id,
               qcRejectedDispositionId: d.id,
@@ -1086,6 +1119,7 @@ qcRejectedDispositionsRouter.post(
           await tx.stockTransaction.create({
             data: {
               itemId: d.itemId,
+              locationId: usableLocId,
               transactionType: "BUCKET_TRANSFER",
               refId: d.id,
               qcRejectedDispositionId: d.id,
@@ -1103,6 +1137,7 @@ qcRejectedDispositionsRouter.post(
           await tx.stockTransaction.create({
             data: {
               itemId: d.itemId,
+              locationId: scrapLocId,
               transactionType: "BUCKET_TRANSFER",
               refId: d.id,
               qcRejectedDispositionId: d.id,
@@ -1124,7 +1159,7 @@ qcRejectedDispositionsRouter.post(
           });
         }
 
-        const stockAfter = await getItemStockQty(d.itemId, tx);
+        const stockAfter = await getItemStockQty(d.itemId, tx, { allLocations: true });
         if (Math.abs(stockAfter - stockBefore) > STOCK_EPS) {
           const err = new Error("Rework QC could not be saved (stock totals mismatch). Please contact support.");
           err.statusCode = 500;

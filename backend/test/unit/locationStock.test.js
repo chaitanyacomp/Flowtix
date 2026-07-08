@@ -98,6 +98,7 @@ describe("stockService location scope (unit)", () => {
               ),
             );
           }
+          // allLocations: empty scope — no location filter (matches disposition queue groupBy).
           const qtyIn = rows.reduce((s, r) => s + Number(r.qtyIn || 0), 0);
           const qtyOut = rows.reduce((s, r) => s + Number(r.qtyOut || 0), 0);
           return { _sum: { qtyIn, qtyOut } };
@@ -123,5 +124,13 @@ describe("stockService location scope (unit)", () => {
       qcRejectedDispositionId: 99,
     });
     assert.equal(owned, SPLIT_REWORK);
+
+    // Rework QC recheck must match queue groupBy (all locations), not RM default scope.
+    const ownedAll = await getItemStockQty(ITEM_ID, db, {
+      stockBucket: "REWORK",
+      qcRejectedDispositionId: 99,
+      allLocations: true,
+    });
+    assert.equal(ownedAll, SPLIT_REWORK);
   });
 });

@@ -97,6 +97,26 @@ describe("materialIssueWorkspace", () => {
     expect(resolveMaterialIssueLineStatus({ pendingQty: 0, available: 0 }).label).toBe("Fully Issued");
   });
 
+  it("prefers backend line readiness fields when present", () => {
+    expect(
+      resolveMaterialIssueLineStatus({
+        pendingQty: 10,
+        available: 0,
+        lineReadinessKey: "WAITING_PROCUREMENT",
+        lineReadinessLabel: "Waiting procurement",
+        lineReadinessExplanation: "GRN pending",
+      }).label,
+    ).toBe("Waiting procurement");
+  });
+
+  it("filters PMRs with backend storeIssueReady", () => {
+    const rows = [
+      pmr({ id: 1, workOrderId: 10, totalPending: 5, storeIssueReady: true, storeActionKey: "ISSUE" }),
+      pmr({ id: 2, workOrderId: 11, totalPending: 5, storeIssueReady: false, storeActionKey: "NONE" }),
+    ];
+    expect(filterPmrsWithPendingIssue(rows).map((r) => r.id)).toEqual([1]);
+  });
+
   it("filters fully issued PMR lines out of the editable entry grid", () => {
     const rows = filterMaterialIssueEntryLines([
       { pmrLineId: 1, itemId: 10, pendingQty: 0 },

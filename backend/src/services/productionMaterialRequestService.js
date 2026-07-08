@@ -320,6 +320,79 @@ function mapPmrLine(ln) {
   };
 }
 
+/**
+ * M1.5 — Additive Store PMR readiness (read-only). Does not change issue/lifecycle rules.
+ * UI must consume these instead of re-deriving actionable status locally.
+ */
+function derivePmrStoreIssueReadiness(status, totalPending) {
+  const storeIssueReady =
+    STORE_ISSUE_STATUSES.includes(String(status ?? "")) && n(totalPending) > STOCK_EPS;
+  return {
+    storeIssueReady,
+    hasPendingIssueQty: n(totalPending) > STOCK_EPS,
+    storeActionKey: storeIssueReady ? "ISSUE" : "NONE",
+    storeActionLabel: storeIssueReady ? "Issue available RM" : "Not open for store issue",
+  };
+}
+
+/** Line readiness for Material Issue workspace (presentation of already-computed stock fields). */
+function derivePmrIssueLineReadiness(line) {
+  const pending = n(line.pmrPendingQty ?? line.pendingQty);
+  const free = line.freeStoreStock == null && line.issueAvailableStoreQty == null && line.available == null
+    ? null
+    : n(line.freeStoreStock ?? line.issueAvailableStoreQty ?? line.available);
+  const physical = n(line.totalStoreStock ?? line.physicalUsableStockQty ?? 0);
+  const incoming = n(line.incomingQty ?? 0);
+  const coveredByIncoming = n(line.coveredByIncomingQty ?? 0);
+
+  if (pending <= STOCK_EPS) {
+    return {
+      lineReadinessKey: "COMPLETE",
+      lineReadinessLabel: "Fully Issued",
+      lineReadinessExplanation: null,
+      waitingProcurement: false,
+    };
+  }
+  if (free != null && free > STOCK_EPS) {
+    if (free + STOCK_EPS < pending) {
+      return {
+        lineReadinessKey: "PARTIAL",
+        lineReadinessLabel: "Partially available",
+        lineReadinessExplanation: `Only ${free.toLocaleString()} available of ${pending.toLocaleString()} pending.`,
+        waitingProcurement: incoming > STOCK_EPS || coveredByIncoming > STOCK_EPS,
+      };
+    }
+    return {
+      lineReadinessKey: "READY",
+      lineReadinessLabel: "Ready to issue",
+      lineReadinessExplanation: "Enter issue quantity when ready.",
+      waitingProcurement: false,
+    };
+  }
+  if (incoming > STOCK_EPS || coveredByIncoming > STOCK_EPS) {
+    return {
+      lineReadinessKey: "WAITING_PROCUREMENT",
+      lineReadinessLabel: "Waiting procurement",
+      lineReadinessExplanation: "Material is on order — waiting for procurement or GRN at store.",
+      waitingProcurement: true,
+    };
+  }
+  if (physical > STOCK_EPS) {
+    return {
+      lineReadinessKey: "COMMITTED_ELSEWHERE",
+      lineReadinessLabel: "Committed to other WO",
+      lineReadinessExplanation: "Physical stock exists but is committed to other work orders.",
+      waitingProcurement: false,
+    };
+  }
+  return {
+    lineReadinessKey: "NO_STOCK",
+    lineReadinessLabel: "No available stock",
+    lineReadinessExplanation: "No free stock at the selected store location.",
+    waitingProcurement: false,
+  };
+}
+
 function mapPmrRow(row) {
   const lines = (row.lines || []).map(mapPmrLine);
   const totalRequired = lines.reduce((s, l) => s + l.requiredQty, 0);
@@ -328,6 +401,7 @@ function mapPmrRow(row) {
   const totalWaived = lines.reduce((s, l) => s + l.waivedQty, 0);
   const totalExcessIssue = lines.reduce((s, l) => s + l.excessIssueQty, 0);
   const totalPending = lines.reduce((s, l) => s + l.pendingQty, 0);
+  const storeReadiness = derivePmrStoreIssueReadiness(row.status, totalPending);
   return {
     id: row.id,
     docNo: row.docNo,
@@ -349,6 +423,7 @@ function mapPmrRow(row) {
     totalWaived,
     totalExcessIssue,
     totalPending,
+    ...storeReadiness,
     lines,
     materialIssues: (row.materialIssueNotes || []).map((m) => ({
       id: m.id,
@@ -1139,7 +1214,7 @@ async function buildPmrIssueContext(pmrId, fromLocationId, db = prisma) {
       freeStoreStock == null
         ? 0
         : round3(Math.min(Math.max(0, issueCapQty), Math.max(0, n(freeStoreStock))));
-    return {
+    const enriched = {
       ...l,
       totalStoreStock,
       reservedForOtherOrdersQty,
@@ -1188,10 +1263,29 @@ async function buildPmrIssueContext(pmrId, fromLocationId, db = prisma) {
       maxAllowedIssueQty,
       suggestedIssueQty,
     };
+    return {
+      ...enriched,
+      ...derivePmrIssueLineReadiness(enriched),
+    };
   }
 
   const lines = await Promise.all(pmr.lines.map(enrichLine));
   const pendingLines = lines.filter((l) => n(l.issueCapQty) > STOCK_EPS);
+  const storeReadiness = derivePmrStoreIssueReadiness(pmr.status, pmr.totalPending);
+  const canIssueAnyPendingLine = pendingLines.some((l) => l.lineReadinessKey === "READY" || l.lineReadinessKey === "PARTIAL");
+  const waitingProcurement = pendingLines.some((l) => l.waitingProcurement === true);
+  const waitingProcurementLines = pendingLines.filter((l) => l.lineReadinessKey === "WAITING_PROCUREMENT");
+  const blockerReason = !canIssue
+    ? "This request is not open for store issue."
+    : canIssueAnyPendingLine
+      ? null
+      : waitingProcurement
+        ? "Waiting for Store / Purchase stock (procurement / GRN)."
+        : pendingLines.some((l) => l.lineReadinessKey === "COMMITTED_ELSEWHERE")
+          ? "Stock is committed to other work orders."
+          : pendingLines.length > 0
+            ? "No free stock available for issue at the selected store location."
+            : "No pending quantity to issue.";
 
   const issueDecision = {
     totalRequired: pmr.totalEffectiveRequired,
@@ -1202,6 +1296,13 @@ async function buildPmrIssueContext(pmrId, fromLocationId, db = prisma) {
     totalExcessIssue: pmr.totalExcessIssue,
     totalRemaining: pmr.totalPending,
     canIssueMore: canIssue,
+    canIssueAnyPendingLine,
+    waitingProcurement,
+    waitingProcurementLineCount: waitingProcurementLines.length,
+    blockerReason,
+    storeActionKey: storeReadiness.storeActionKey,
+    storeActionLabel: storeReadiness.storeActionLabel,
+    storeIssueReady: storeReadiness.storeIssueReady,
     canWaiveRemaining:
       canIssue && n(pmr.totalIssued) > STOCK_EPS && n(pmr.totalPending) > STOCK_EPS,
     canReleaseToProduction: canRelease,
@@ -1213,7 +1314,7 @@ async function buildPmrIssueContext(pmrId, fromLocationId, db = prisma) {
   };
 
   return {
-    pmr: { ...pmr, productionItemName },
+    pmr: { ...pmr, productionItemName, ...storeReadiness },
     lines,
     pendingLines,
     issueDecision,
@@ -1448,6 +1549,8 @@ module.exports = {
   PMR_EXISTING_WORKFLOW_STATUSES,
   PMR_NON_CANCELLED_STATUSES,
   PMR_SHORT_ISSUE_WAIVE_REASONS,
+  derivePmrStoreIssueReadiness,
+  derivePmrIssueLineReadiness,
   buildBomSuggestionsForWorkOrder,
   listProductionMaterialRequests,
   getProductionMaterialRequestById,

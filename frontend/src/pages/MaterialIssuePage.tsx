@@ -34,6 +34,10 @@ import {
   shouldShowNoRmAvailableWarning,
 } from "../lib/materialIssueWorkspace";
 import {
+  canSubmitFromBackendIssueDecision,
+  waitingProcurementFromIssueDecision,
+} from "../lib/materialIssueReadinessUx";
+import {
   filterPendingPmrsForSessionScope,
   formatMaterialIssueInlineStatus,
   formatMaterialIssueSuccessMessage,
@@ -112,6 +116,10 @@ type IssueLineDraft = {
   freeStoreStock?: number | null;
   available: number | null;
   loadingAvailable: boolean;
+  lineReadinessKey?: string | null;
+  lineReadinessLabel?: string | null;
+  lineReadinessExplanation?: string | null;
+  waitingProcurement?: boolean | null;
 };
 
 type PendingPmr = {
@@ -126,6 +134,9 @@ type PendingPmr = {
   productionItemName?: string | null;
   totalPending: number;
   lineCount?: number;
+  storeIssueReady?: boolean | null;
+  storeActionKey?: string | null;
+  storeActionLabel?: string | null;
 };
 
 type IssueMode = "wo-pmr" | "manual";
@@ -156,6 +167,10 @@ type PmrIssueLine = {
   stillRequiredQty?: number;
   rmIssueToleranceQty?: number;
   maxAllowedIssueQty?: number;
+  lineReadinessKey?: string | null;
+  lineReadinessLabel?: string | null;
+  lineReadinessExplanation?: string | null;
+  waitingProcurement?: boolean | null;
 };
 
 type PmrUnissuedRequiredLine = {
@@ -176,6 +191,13 @@ type PmrIssueDecision = {
   totalExcessIssue: number;
   totalRemaining: number;
   canIssueMore: boolean;
+  canIssueAnyPendingLine?: boolean;
+  waitingProcurement?: boolean;
+  waitingProcurementLineCount?: number;
+  blockerReason?: string | null;
+  storeActionKey?: string | null;
+  storeActionLabel?: string | null;
+  storeIssueReady?: boolean;
   canWaiveRemaining: boolean;
   canReleaseToProduction: boolean;
   unissuedRequiredLines?: PmrUnissuedRequiredLine[];
@@ -282,6 +304,10 @@ function pmrLineToDraft(pl: PmrIssueLine): IssueLineDraft {
     issueQtyTouched: false,
     available: storeQty,
     loadingAvailable: false,
+    lineReadinessKey: pl.lineReadinessKey,
+    lineReadinessLabel: pl.lineReadinessLabel,
+    lineReadinessExplanation: pl.lineReadinessExplanation,
+    waitingProcurement: pl.waitingProcurement,
   };
 }
 
@@ -320,13 +346,6 @@ export function MaterialIssuePage() {
   const [sessionBanner, setSessionBanner] = React.useState<string | null>(null);
   const [pmrLoading, setPmrLoading] = React.useState(false);
   const [pmrLoadError, setPmrLoadError] = React.useState<string | null>(null);
-  const [procurementHint, setProcurementHint] = React.useState<{
-    mrDocNo: string | null;
-    escalationLabel: string;
-    pendingGrnQty: number;
-    coveredByIncomingQty: number;
-    procurementInitiated: boolean;
-  } | null>(null);
 
   const [fromLocationId, setFromLocationId] = React.useState<number | "">("");
   const [toLocationId, setToLocationId] = React.useState<number | "">("");
@@ -891,68 +910,27 @@ export function MaterialIssuePage() {
     Number(issueDecision?.totalRemaining ?? activePmr?.totalPending ?? 0) <= 1e-6 &&
     Number(issueDecision?.totalIssued ?? 0) > 1e-6;
   const showPartialAutofillHint = Boolean(activePmrId) && hasPartialStoreAutofill(lines);
-  const pmrShortageCount = lines.filter((ln) => {
-    const pending = ln.pmrPendingQty ?? ln.pendingQty ?? 0;
-    return ln.pmrLineId && isMaterialIssueLineStockBlocked(pending, ln.available);
-  }).length;
 
   const resolvedWorkOrderIdForHint =
     (typeof workOrderId === "number" && workOrderId > 0 ? workOrderId : null) ??
     (urlWorkOrderId > 0 ? urlWorkOrderId : null) ??
     (activePmr?.workOrderId && activePmr.workOrderId > 0 ? activePmr.workOrderId : null);
 
-  React.useEffect(() => {
-    if (!resolvedWorkOrderIdForHint || pmrShortageCount <= 0) {
-      setProcurementHint(null);
-      return;
-    }
-    let cancelled = false;
-    void apiFetch<{
-      selectedWoShortageCase?: {
-        materialRequirement?: { docNo?: string | null };
-        escalationLifecycle?: { label?: string; procurementInitiated?: boolean };
-      } | null;
-      caseSupplyPanel?: { summary?: { pendingGrnQty?: number } } | null;
-      selectedDetail?: { rmLines?: Array<{ coveredByIncomingQty?: number }> } | null;
-    }>(`/api/material-availability/workspace?workOrderId=${resolvedWorkOrderIdForHint}`)
-      .then((payload) => {
-        if (cancelled) return;
-        const wo = payload.selectedWoShortageCase;
-        const covered = (payload.selectedDetail?.rmLines ?? []).reduce(
-          (s, l) => s + Number(l.coveredByIncomingQty ?? 0),
-          0,
-        );
-        setProcurementHint({
-          mrDocNo: wo?.materialRequirement?.docNo ?? null,
-          escalationLabel: wo?.escalationLifecycle?.label ?? "Material incoming",
-          pendingGrnQty: Number(payload.caseSupplyPanel?.summary?.pendingGrnQty ?? 0),
-          coveredByIncomingQty: covered,
-          procurementInitiated: Boolean(wo?.escalationLifecycle?.procurementInitiated),
-        });
-      })
-      .catch(() => {
-        if (!cancelled) setProcurementHint(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [resolvedWorkOrderIdForHint, pmrShortageCount]);
-
-  const canIssueAnyLine = lines.some((ln) => {
-    const pending = ln.pmrPendingQty ?? ln.pendingQty ?? 0;
-    if (!ln.pmrLineId || pending <= 0) return false;
-    const avail = ln.available ?? ln.freeStoreStock ?? ln.issueAvailableStoreQty;
-    return !isMaterialIssueLineStockBlocked(pending, avail);
-  });
+  const canIssueAnyLine =
+    issueDecision?.canIssueAnyPendingLine ??
+    lines.some((ln) => {
+      const pending = ln.pmrPendingQty ?? ln.pendingQty ?? 0;
+      if (!ln.pmrLineId || pending <= 0) return false;
+      const readinessKey = String(ln.lineReadinessKey ?? "").toUpperCase();
+      if (readinessKey === "READY" || readinessKey === "PARTIAL") return true;
+      if (readinessKey) return false;
+      const avail = ln.available ?? ln.freeStoreStock ?? ln.issueAvailableStoreQty;
+      return !isMaterialIssueLineStockBlocked(pending, avail);
+    });
 
   const hasPositiveIssueQty = lines.some((ln) => ln.pmrLineId && Number(ln.issueQty) > 0);
 
-  const waitingProcurement = Boolean(
-    procurementHint &&
-      (procurementHint.pendingGrnQty > 0 ||
-        procurementHint.procurementInitiated ||
-        procurementHint.coveredByIncomingQty > 0),
-  );
+  const waitingProcurement = waitingProcurementFromIssueDecision(issueDecision);
 
   const hasToleranceBlockedLine = lines.some((ln) => {
     if (!ln.pmrLineId || !ln.issueQty) return false;
@@ -971,12 +949,14 @@ export function MaterialIssuePage() {
       : typeof fromLocationId === "number" && typeof toLocationId === "number" && lines.some((l) => l.itemId)) &&
     typeof fromLocationId === "number" &&
     typeof toLocationId === "number" &&
-    canIssueAnyLine &&
-    hasPositiveIssueQty &&
-    !hasToleranceBlockedLine &&
-    !submitting &&
-    !loading &&
-    !pmrLoading;
+    (woPmrMode
+      ? canSubmitFromBackendIssueDecision(issueDecision, {
+          hasPositiveIssueQty,
+          hasToleranceBlockedLine,
+          submitting,
+          loading: loading || pmrLoading,
+        })
+      : hasPositiveIssueQty && !hasToleranceBlockedLine && !submitting && !loading);
 
   const materialIssuePrimaryStrip = React.useMemo(() => {
     if (sessionComplete || !executionReady || !activePmr || !activePmrId) return null;
@@ -1275,6 +1255,9 @@ export function MaterialIssuePage() {
                       physicalStock: ln.totalStoreStock ?? null,
                       issueQty: ln.issueQty,
                       woWaitingProcurement: waitingProcurement,
+                      lineReadinessKey: ln.lineReadinessKey,
+                      lineReadinessLabel: ln.lineReadinessLabel,
+                      lineReadinessExplanation: ln.lineReadinessExplanation,
                     });
                     const issueAssessment = assessIssueLineDraft(ln);
                     const noIssue = isMaterialIssueLineStockBlocked(pending, avail);
@@ -1395,9 +1378,10 @@ export function MaterialIssuePage() {
             <div className="mt-2 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">
               <p className="font-bold">No RM available for issue</p>
               <p className="mt-0.5 text-xs leading-relaxed text-amber-900">
-                {waitingProcurement
-                  ? "Waiting for Store / Purchase stock. RM requirement is raised — issue can start once stock is received (GRN)."
-                  : "Stock is not free for this work order (committed elsewhere or not yet received). Raise or track the RM requirement in RM Control Center."}
+                {issueDecision?.blockerReason ??
+                  (waitingProcurement
+                    ? "Waiting for Store / Purchase stock. RM requirement is raised — issue can start once stock is received (GRN)."
+                    : "Stock is not free for this work order (committed elsewhere or not yet received). Raise or track the RM requirement in RM Control Center.")}
               </p>
               {resolvedWorkOrderIdForHint ? (
                 <Link

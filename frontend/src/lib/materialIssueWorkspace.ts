@@ -1,11 +1,13 @@
 /**
- * Material Issue Workspace — WO/PMR grouping and line status labels (UX only).
+ * Material Issue Workspace — WO/PMR grouping and presentation helpers.
+ * M1.5: PMR actionability prefers additive backend storeIssueReady / storeActionKey.
  */
 
 import {
   displaySalesOrderNo,
   displayWorkOrderNo,
 } from "./docNoDisplay";
+import { filterStoreReadyPmrs, isBackendStoreIssueReady } from "./materialIssueReadinessUx";
 
 const EPS = 1e-6;
 
@@ -21,6 +23,11 @@ export type PendingPmrSummary = {
   productionItemName?: string | null;
   totalPending: number;
   lineCount?: number;
+  /** Additive backend readiness (M1.5). */
+  storeIssueReady?: boolean | null;
+  hasPendingIssueQty?: boolean | null;
+  storeActionKey?: string | null;
+  storeActionLabel?: string | null;
 };
 
 export type WoPmrGroup = {
@@ -55,8 +62,16 @@ function n(v: unknown): number {
 
 const ACTIONABLE_STATUSES = new Set(["REQUESTED", "PARTIALLY_ISSUED"]);
 
+/** @deprecated Prefer backend `storeIssueReady` / `storeActionKey` (M1.5). Legacy fallback only. */
 export function isActionablePmrStatus(status: string): boolean {
   return ACTIONABLE_STATUSES.has(String(status ?? "").toUpperCase());
+}
+
+function isStoreReadyPmr(p: PendingPmrSummary): boolean {
+  if (p.storeIssueReady != null || p.storeActionKey != null) {
+    return isBackendStoreIssueReady(p);
+  }
+  return isActionablePmrStatus(p.status) && n(p.totalPending) > EPS;
 }
 
 /** Group pending PMRs by work order; latest PMR = highest id per WO. */
@@ -73,9 +88,7 @@ export function groupPendingPmrsByWorkOrder(pmrs: PendingPmrSummary[]): WoPmrGro
   const groups: WoPmrGroup[] = [];
   for (const [workOrderId, list] of byWo) {
     const sorted = [...list].sort((a, b) => b.id - a.id);
-    const actionable = sorted.filter(
-      (p) => isActionablePmrStatus(p.status) && n(p.totalPending) > EPS,
-    );
+    const actionable = sorted.filter(isStoreReadyPmr);
     if (actionable.length === 0) continue;
     const latestPmr = actionable[0];
     const pendingLineCount = actionable.reduce((s, p) => s + Math.max(0, Number(p.lineCount ?? 1)), 0);
@@ -131,9 +144,12 @@ export function filterMaterialIssueEntryLines<T extends {
   });
 }
 
-/** PMRs with store-actionable pending issue quantity. */
+/**
+ * PMRs with store-actionable pending issue quantity.
+ * Prefers additive backend `storeIssueReady` when present.
+ */
 export function filterPmrsWithPendingIssue(pmrs: PendingPmrSummary[]): PendingPmrSummary[] {
-  return pmrs.filter((p) => isActionablePmrStatus(p.status) && n(p.totalPending) > EPS);
+  return filterStoreReadyPmrs(pmrs);
 }
 
 /** Work order dropdown options — only WOs that still have RM to issue. */
@@ -221,18 +237,34 @@ export function pickActionablePmrForWorkOrder(
   pmrs: PendingPmrSummary[],
 ): PendingPmrSummary | null {
   const forWo = pmrs
-    .filter((p) => Number(p.workOrderId) === workOrderId && isActionablePmrStatus(p.status))
+    .filter((p) => Number(p.workOrderId) === workOrderId && isStoreReadyPmr(p))
     .sort((a, b) => b.id - a.id);
   return forWo[0] ?? null;
 }
 
+/**
+ * @deprecated Prefer backend line readiness fields (M1.5).
+ * Kept as display fallback when issue-context line readiness fields are absent.
+ */
 export function resolveMaterialIssueLineStatus(input: {
   pendingQty: number;
   available: number | null;
   physicalStock?: number | null;
   issueQty?: number | string;
   woWaitingProcurement?: boolean;
+  lineReadinessKey?: string | null;
+  lineReadinessLabel?: string | null;
+  lineReadinessExplanation?: string | null;
 }): MaterialIssueLineStatusResult {
+  const backendKey = String(input.lineReadinessKey ?? "").trim().toUpperCase();
+  if (backendKey) {
+    return {
+      status: backendKey as MaterialIssueLineStatus,
+      label: String(input.lineReadinessLabel ?? backendKey).trim() || backendKey,
+      explanation: input.lineReadinessExplanation?.trim() || null,
+    };
+  }
+
   const pending = n(input.pendingQty);
   const available = input.available == null ? null : n(input.available);
   const physical = n(input.physicalStock ?? 0);
@@ -279,8 +311,12 @@ export function resolveMaterialIssueLineStatus(input: {
 export function pmrNextActionLabel(input: {
   canIssueAny: boolean;
   waitingProcurement?: boolean;
+  storeActionLabel?: string | null;
+  blockerReason?: string | null;
 }): string {
+  if (input.storeActionLabel?.trim()) return input.storeActionLabel.trim();
   if (input.canIssueAny) return "Issue available RM";
   if (input.waitingProcurement) return "Waiting procurement / GRN";
+  if (input.blockerReason?.trim()) return input.blockerReason.trim();
   return "Review allocation in RM Control Center";
 }

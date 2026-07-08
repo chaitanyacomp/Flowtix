@@ -183,6 +183,12 @@ describe("productionMaterialRequestService helpers", () => {
     assert.equal(line.freeStoreStock, 60);
     assert.equal(line.availableStoreQty, 60);
     assert.equal(line.available, 60);
+    assert.equal(line.lineReadinessKey, "PARTIAL");
+    assert.equal(line.lineReadinessLabel, "Partially available");
+    assert.equal(ctx.issueDecision.canIssueMore, true);
+    assert.equal(ctx.issueDecision.storeActionKey, "ISSUE");
+    assert.equal(ctx.issueDecision.canIssueAnyPendingLine, true);
+    assert.equal(ctx.pmr.storeIssueReady, true);
   });
 
   it("ensures an existing draft PMR using a transaction client without starting a nested transaction", async () => {

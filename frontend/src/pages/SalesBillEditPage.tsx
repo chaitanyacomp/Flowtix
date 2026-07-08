@@ -27,7 +27,7 @@ import { SalesBillExportQueuePrompt } from "../components/sales/SalesBillExportQ
 import { SalesBillDocumentChain } from "../components/sales/SalesBillDocumentChain";
 import { SalesBillLinkedDocuments } from "../components/sales/SalesBillLinkedDocuments";
 import { SalesBillActivityTimeline } from "../components/sales/SalesBillActivityTimeline";
-import { SalesBillFinalizeChecklist } from "../components/sales/SalesBillDraftActionPanel";
+import { SalesBillDraftActionPanel } from "../components/sales/SalesBillDraftActionPanel";
 import { SalesBillShipToField } from "../components/sales/SalesBillShipToField";
 import {
   buildSalesBillFinalizeChecks,
@@ -706,6 +706,43 @@ export function SalesBillEditPage() {
           </div>
         </ErpModal>
       ) : null}
+      {invoicePreviewOpen ? (
+        <ErpModal
+          onClose={() => setInvoicePreviewOpen(false)}
+          backdropClassName="bg-black/40"
+          aria-label="Invoice preview"
+        >
+          <div className="flex max-h-[min(92dvh,52rem)] w-[min(96vw,52rem)] flex-col overflow-hidden rounded-lg border border-slate-200 bg-white shadow-xl">
+            <div className="flex shrink-0 items-center justify-between gap-2 border-b border-slate-200 px-4 py-2.5">
+              <div className="text-sm font-semibold text-slate-900">Invoice preview</div>
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-8 text-[11px]"
+                  data-testid="print-sales-bill-invoice-btn"
+                  onClick={printSalesBillInvoice}
+                >
+                  Print invoice
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 text-[11px]"
+                  onClick={() => setInvoicePreviewOpen(false)}
+                >
+                  Close
+                </Button>
+              </div>
+            </div>
+            <div className="min-h-0 flex-1 overflow-auto p-3">
+              <SalesBillInvoiceDocument bill={bill} />
+            </div>
+          </div>
+        </ErpModal>
+      ) : null}
       {exportQueuePrompt && workQueue ? (
         <SalesBillExportQueuePrompt
           open
@@ -742,10 +779,10 @@ export function SalesBillEditPage() {
         />
 
         <div
-          className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2.5 shadow-sm"
+          className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-sm"
           data-testid="sales-bill-header-summary"
         >
-          <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
             <span
               className={cn(
                 "rounded-md px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide",
@@ -762,15 +799,17 @@ export function SalesBillEditPage() {
               Customer <span className="font-medium text-slate-900">{bill.customer.name}</span>
             </span>
             <span className="hidden text-slate-300 sm:inline">·</span>
-            <span className="font-mono text-[12px] tabular-nums text-violet-900">
+            <span className="font-mono text-[12px] tabular-nums text-slate-900">{systemBillNo}</span>
+            <span className="hidden text-slate-300 sm:inline">·</span>
+            <span className="text-[12px] tabular-nums text-slate-700">{billDate || "—"}</span>
+            <span className="hidden text-slate-300 lg:inline">·</span>
+            <span className="hidden font-mono text-[12px] tabular-nums text-violet-900 lg:inline">
               {displayDispatchNo(bill.dispatchId, bill.dispatch.docNo)}
             </span>
-            <span className="hidden text-slate-300 sm:inline">·</span>
-            <span className="font-mono text-[12px] tabular-nums text-slate-900">{systemBillNo}</span>
           </div>
           <div className="text-right">
             <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Grand total</div>
-            <div className="text-lg font-bold tabular-nums text-slate-900">₹{formatMoney(bill.netAmount)}</div>
+            <div className="text-base font-bold tabular-nums text-slate-900 sm:text-lg">₹{formatMoney(bill.netAmount)}</div>
           </div>
         </div>
       </div>
@@ -782,202 +821,24 @@ export function SalesBillEditPage() {
       ) : null}
 
       <div className="erp-workspace-2col">
-        <div className="min-w-0 space-y-2">
-          <Card className="min-w-0 overflow-hidden shadow-sm ring-1 ring-slate-100">
-            <CardHeader className="erp-txn-card-header">
-              <CardTitle className="text-sm font-semibold text-slate-900">Bill details</CardTitle>
-            </CardHeader>
-            <CardContent className="erp-txn-card-body grid min-w-0 gap-3">
-              <section className="rounded-md border border-slate-200 bg-slate-50/70 p-3">
-                <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-600">Commercial</h3>
-                <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  <div className="rounded border border-slate-200 bg-white px-2.5 py-2">
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="text-[11px] font-medium text-slate-600">Bill To</div>
-                      <span
-                        className={cn(
-                          "rounded-full px-2 py-0.5 text-[10px] font-semibold",
-                          bill.gstMode === "INTERSTATE" || (bill.gstMode == null && bill.taxIntraState === false)
-                            ? "bg-purple-100 text-purple-900"
-                            : bill.gstMode === "LOCAL" || (bill.gstMode == null && bill.taxIntraState === true)
-                              ? "bg-emerald-100 text-emerald-900"
-                              : "bg-slate-100 text-slate-700",
-                        )}
-                      >
-                        {gstModeLabel}
-                      </span>
-                    </div>
-                    <div className="mt-0.5 text-[13px] font-semibold text-slate-900">
-                      {bill.customerNameSnapshot?.trim() || bill.customer.name}
-                    </div>
-                    <div className="mt-0.5 text-[12px] text-slate-600">
-                      {(bill.customerStateCodeSnapshot ?? "").trim() || (bill.customerStateNameSnapshot ?? "").trim() ? (
-                        <>
-                          {(bill.customerStateCodeSnapshot ?? "").trim()}
-                          {(bill.customerStateCodeSnapshot ?? "").trim() &&
-                          (bill.customerStateNameSnapshot ?? "").trim()
-                            ? " · "
-                            : ""}
-                          {(bill.customerStateNameSnapshot ?? "").trim()}
-                        </>
-                      ) : (
-                        "State not set"
-                      )}
-                      {bill.billToGstinSnapshot?.trim() ? (
-                        <span className="ml-2 rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[11px] text-slate-700">
-                          {bill.billToGstinSnapshot.trim()}
-                        </span>
-                      ) : null}
-                    </div>
-                    {showCommercialAddress ? (
-                      <div className="mt-2 rounded border border-slate-200 bg-slate-50 p-2 text-[12px] leading-snug text-slate-700">
-                        <span className="font-medium text-slate-800">Address: </span>
-                        <span className="whitespace-pre-wrap break-words">
-                          {bill.billToAddressSnapshot?.trim() || "Not recorded"}
-                        </span>
-                      </div>
-                    ) : null}
-                  </div>
-                  <SalesBillShipToField
-                    bill={bill}
-                    readOnly={readOnly}
-                    showAddress={showCommercialAddress}
-                    onToggleAddress={() => setShowCommercialAddress((s) => !s)}
-                    onBillUpdated={(updated) => {
-                      setBill(updated as Bill);
-                      setFormError(null);
-                    }}
-                    onError={(msg) => setFormError(msg)}
-                  />
-                </div>
-              </section>
-
-              <section className="rounded-md border border-slate-200 p-3">
-                <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-600">Billing</h3>
-                <div className="mt-2 grid gap-3 sm:grid-cols-2">
-                  <div className="grid gap-1">
-                    <span className="text-xs font-medium text-slate-600">Sales Bill No. *</span>
-                    <div className="flex h-10 items-center rounded-md border border-slate-200 bg-slate-50 px-3 font-mono text-sm font-semibold tabular-nums text-slate-900">
-                      {systemBillNo}
-                    </div>
-                  </div>
-                  <div className="grid gap-1">
-                    <span className="text-xs font-medium text-slate-600">Bill date *</span>
-                    <Input type="date" value={billDate} disabled={readOnly} onChange={(e) => setBillDate(e.target.value)} />
-                  </div>
-                  <div className="grid gap-1 sm:col-span-2">
-                    <span className="text-xs font-medium text-slate-600">Customer invoice no. (optional)</span>
-                    <Input
-                      value={billNo}
-                      disabled={readOnly}
-                      onChange={(e) => setBillNo(e.target.value)}
-                      placeholder="Customer reference / invoice number"
-                    />
-                  </div>
-                </div>
-              </section>
-
-              {showNoQtyRateUi ? (
-                <section className="rounded-md border border-amber-100 bg-amber-50/90 px-3 py-2">
-                  <h3 className="text-xs font-semibold uppercase tracking-wide text-amber-900">Pricing</h3>
-                  <div className="mt-1 text-sm font-semibold text-amber-950">
-                    Applicable rate: ₹{headlineApplicableRate}{" "}
-                    <span className="font-normal text-amber-900/90">(Effective from {headlineEffective})</span>
-                  </div>
-                  <p className="mt-1 text-xs text-amber-900/85">Rate follows bill date.</p>
-                </section>
-              ) : null}
-
-              <section className="rounded-md border border-slate-200 p-3">
-                <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-600">Tax</h3>
-                <div className="mt-2 grid gap-2 text-sm sm:grid-cols-3">
-                  <div>
-                    <div className="text-[11px] text-slate-500">GST mode</div>
-                    <div className="font-medium text-slate-900">{gstModeLabel}</div>
-                  </div>
-                  <div>
-                    <div className="text-[11px] text-slate-500">POS state</div>
-                    <div className="font-medium text-slate-900">
-                      {(bill.posStateCodeSnapshot ?? bill.posStateCode ?? "").trim() || "—"}
-                      {(bill.posStateNameSnapshot ?? bill.posStateName)?.trim()
-                        ? ` · ${(bill.posStateNameSnapshot ?? bill.posStateName)?.trim()}`
-                        : ""}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-[11px] text-slate-500">Order type</div>
-                    <div className="font-medium text-slate-900">
-                      {billOrderTypeLabel(soHead?.orderType ?? bill.dispatch.salesOrder?.orderType)}
-                      {billOperationalCycleNo != null ? ` · Cycle ${billOperationalCycleNo}` : ""}
-                    </div>
-                  </div>
-                </div>
-              </section>
-
-              <section className="rounded-md border border-slate-200 p-3">
-                <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-600">Remarks</h3>
-                <div className="mt-2 grid gap-1">
-                  <Input value={remarks} disabled={readOnly} onChange={(e) => setRemarks(e.target.value)} placeholder="Optional notes for this bill" />
-                </div>
-              </section>
-
-              {bill.status === "CANCELLED" ? (
-                <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
-                  <div className="font-medium">Cancelled</div>
-                  {bill.cancelReason ? <div className="break-words">Reason: {bill.cancelReason}</div> : null}
-                </div>
-              ) : null}
-            </CardContent>
-          </Card>
-
-          <Card className="min-w-0 overflow-hidden shadow-sm ring-1 ring-slate-100">
-            <CardHeader className="erp-txn-card-header">
+        <div className="flex min-h-0 min-w-0 flex-col gap-2 lg:min-h-[calc(100dvh-12rem)]">
+          <Card className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden shadow-sm ring-1 ring-slate-100">
+            <CardHeader className="erp-txn-card-header shrink-0 py-2">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <CardTitle className="text-sm font-semibold text-slate-900">Invoice preview</CardTitle>
-                <div className="flex flex-wrap items-center gap-2">
-                  {invoicePreviewOpen ? (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className="h-7 text-[11px]"
-                      data-testid="print-sales-bill-invoice-btn"
-                      onClick={printSalesBillInvoice}
-                    >
-                      Print invoice
-                    </Button>
-                  ) : null}
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-7 text-[11px]"
-                    data-testid="toggle-sales-bill-invoice-preview"
-                    onClick={() => setInvoicePreviewOpen((open) => !open)}
-                  >
-                    {invoicePreviewOpen ? "Collapse" : "Expand"}
-                  </Button>
-                </div>
+                <CardTitle className="text-sm font-semibold text-slate-900">Line items</CardTitle>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-[11px]"
+                  data-testid="open-sales-bill-invoice-preview"
+                  onClick={() => setInvoicePreviewOpen(true)}
+                >
+                  Preview invoice
+                </Button>
               </div>
             </CardHeader>
-            {invoicePreviewOpen ? (
-              <CardContent className="erp-txn-card-body pt-0">
-                <SalesBillInvoiceDocument bill={bill} />
-              </CardContent>
-            ) : (
-              <CardContent className="erp-txn-card-body pt-0">
-                <p className="text-[11px] leading-snug text-slate-600">
-                  Preview hidden to save space. Expand when reviewing the invoice layout before finalize or export.
-                </p>
-              </CardContent>
-            )}
-          </Card>
-
-          <Card className="min-w-0 overflow-hidden shadow-sm ring-1 ring-slate-100">
-            <CardHeader className="erp-txn-card-header">
-              <CardTitle className="text-sm font-semibold text-slate-900">Line items</CardTitle>
-            </CardHeader>
-            <CardContent className="min-w-0 p-0 sm:p-4 sm:pt-0">
+            <CardContent className="min-h-0 flex-1 overflow-auto p-0 sm:p-4 sm:pt-0">
               <div className="erp-table-wrap border-0 shadow-none">
                 <div className="min-w-0 overflow-x-auto">
                   <table className="erp-table erp-table-dense w-full min-w-[980px] border-collapse">
@@ -995,7 +856,7 @@ export function SalesBillEditPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {bill.lines.map((ln, _idx) => {
+                      {bill.lines.map((ln) => {
                         const tax = n(ln.cgstAmount) + n(ln.sgstAmount) + n(ln.igstAmount);
                         return (
                           <tr key={ln.id} className="border-b border-slate-100">
@@ -1044,37 +905,172 @@ export function SalesBillEditPage() {
               </div>
             </CardContent>
           </Card>
+
+          <Card className="min-w-0 shrink-0 overflow-hidden shadow-sm ring-1 ring-slate-100">
+            <CardHeader className="erp-txn-card-header py-2">
+              <CardTitle className="text-sm font-semibold text-slate-900">Business details</CardTitle>
+            </CardHeader>
+            <CardContent className="erp-txn-card-body grid min-w-0 gap-2.5 pt-0">
+              <div className="grid gap-2.5 lg:grid-cols-2">
+                <div className="rounded-md border border-slate-200 bg-slate-50/70 p-2.5">
+                  <h3 className="text-[10px] font-semibold uppercase tracking-wide text-slate-600">Commercial</h3>
+                  <div className="mt-1.5 grid gap-2 sm:grid-cols-2">
+                    <div className="rounded border border-slate-200 bg-white px-2 py-1.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="text-[11px] font-medium text-slate-600">Bill To</div>
+                        <span
+                          className={cn(
+                            "rounded-full px-1.5 py-0.5 text-[10px] font-semibold",
+                            bill.gstMode === "INTERSTATE" || (bill.gstMode == null && bill.taxIntraState === false)
+                              ? "bg-purple-100 text-purple-900"
+                              : bill.gstMode === "LOCAL" || (bill.gstMode == null && bill.taxIntraState === true)
+                                ? "bg-emerald-100 text-emerald-900"
+                                : "bg-slate-100 text-slate-700",
+                          )}
+                        >
+                          {gstModeLabel}
+                        </span>
+                      </div>
+                      <div className="mt-0.5 text-[13px] font-semibold text-slate-900">
+                        {bill.customerNameSnapshot?.trim() || bill.customer.name}
+                      </div>
+                      <div className="mt-0.5 text-[12px] text-slate-600">
+                        {(bill.customerStateCodeSnapshot ?? "").trim() || (bill.customerStateNameSnapshot ?? "").trim() ? (
+                          <>
+                            {(bill.customerStateCodeSnapshot ?? "").trim()}
+                            {(bill.customerStateCodeSnapshot ?? "").trim() &&
+                            (bill.customerStateNameSnapshot ?? "").trim()
+                              ? " · "
+                              : ""}
+                            {(bill.customerStateNameSnapshot ?? "").trim()}
+                          </>
+                        ) : (
+                          "State not set"
+                        )}
+                        {bill.billToGstinSnapshot?.trim() ? (
+                          <span className="ml-1 rounded bg-slate-100 px-1 py-0.5 font-mono text-[10px] text-slate-700">
+                            {bill.billToGstinSnapshot.trim()}
+                          </span>
+                        ) : null}
+                      </div>
+                      {showCommercialAddress ? (
+                        <div className="mt-1.5 rounded border border-slate-200 bg-slate-50 p-1.5 text-[11px] leading-snug text-slate-700">
+                          <span className="font-medium text-slate-800">Address: </span>
+                          <span className="whitespace-pre-wrap break-words">
+                            {bill.billToAddressSnapshot?.trim() || "Not recorded"}
+                          </span>
+                        </div>
+                      ) : null}
+                    </div>
+                    <SalesBillShipToField
+                      bill={bill}
+                      readOnly={readOnly}
+                      showAddress={showCommercialAddress}
+                      onToggleAddress={() => setShowCommercialAddress((s) => !s)}
+                      onBillUpdated={(updated) => {
+                        setBill(updated as Bill);
+                        setFormError(null);
+                      }}
+                      onError={(msg) => setFormError(msg)}
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-2.5">
+                  <div className="rounded-md border border-slate-200 p-2.5">
+                    <h3 className="text-[10px] font-semibold uppercase tracking-wide text-slate-600">Billing</h3>
+                    <div className="mt-1.5 grid gap-2 sm:grid-cols-2">
+                      <div className="grid gap-0.5">
+                        <span className="text-[11px] font-medium text-slate-600">Sales Bill No. *</span>
+                        <div className="flex h-9 items-center rounded-md border border-slate-200 bg-slate-50 px-2.5 font-mono text-sm font-semibold tabular-nums text-slate-900">
+                          {systemBillNo}
+                        </div>
+                      </div>
+                      <div className="grid gap-0.5">
+                        <span className="text-[11px] font-medium text-slate-600">Bill date *</span>
+                        <Input type="date" className="h-9" value={billDate} disabled={readOnly} onChange={(e) => setBillDate(e.target.value)} />
+                      </div>
+                      <div className="grid gap-0.5 sm:col-span-2">
+                        <span className="text-[11px] font-medium text-slate-600">Customer invoice no. (optional)</span>
+                        <Input
+                          className="h-9"
+                          value={billNo}
+                          disabled={readOnly}
+                          onChange={(e) => setBillNo(e.target.value)}
+                          placeholder="Customer reference / invoice number"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {showNoQtyRateUi ? (
+                    <div className="rounded-md border border-amber-100 bg-amber-50/90 px-2.5 py-1.5">
+                      <h3 className="text-[10px] font-semibold uppercase tracking-wide text-amber-900">Pricing</h3>
+                      <div className="mt-0.5 text-[12px] font-semibold text-amber-950">
+                        Applicable rate: ₹{headlineApplicableRate}{" "}
+                        <span className="font-normal text-amber-900/90">(Effective from {headlineEffective})</span>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+
+              <div className="grid gap-2.5 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">
+                <div className="rounded-md border border-slate-200 p-2.5">
+                  <h3 className="text-[10px] font-semibold uppercase tracking-wide text-slate-600">Tax</h3>
+                  <div className="mt-1.5 grid gap-2 text-sm sm:grid-cols-3">
+                    <div>
+                      <div className="text-[11px] text-slate-500">GST mode</div>
+                      <div className="font-medium text-slate-900">{gstModeLabel}</div>
+                    </div>
+                    <div>
+                      <div className="text-[11px] text-slate-500">POS state</div>
+                      <div className="font-medium text-slate-900">
+                        {(bill.posStateCodeSnapshot ?? bill.posStateCode ?? "").trim() || "—"}
+                        {(bill.posStateNameSnapshot ?? bill.posStateName)?.trim()
+                          ? ` · ${(bill.posStateNameSnapshot ?? bill.posStateName)?.trim()}`
+                          : ""}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[11px] text-slate-500">Order type</div>
+                      <div className="font-medium text-slate-900">
+                        {billOrderTypeLabel(soHead?.orderType ?? bill.dispatch.salesOrder?.orderType)}
+                        {billOperationalCycleNo != null ? ` · Cycle ${billOperationalCycleNo}` : ""}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div className="rounded-md border border-slate-200 p-2.5">
+                  <h3 className="text-[10px] font-semibold uppercase tracking-wide text-slate-600">Remarks</h3>
+                  <div className="mt-1.5">
+                    <Input
+                      className="h-9"
+                      value={remarks}
+                      disabled={readOnly}
+                      onChange={(e) => setRemarks(e.target.value)}
+                      placeholder="Optional notes for this bill"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {bill.status === "CANCELLED" ? (
+                <div className="rounded-md border border-red-200 bg-red-50 px-2.5 py-1.5 text-sm text-red-800">
+                  <div className="font-medium">Cancelled</div>
+                  {bill.cancelReason ? <div className="break-words">Reason: {bill.cancelReason}</div> : null}
+                </div>
+              ) : null}
+            </CardContent>
+          </Card>
         </div>
 
-        <aside className="min-w-0 space-y-2 lg:sticky lg:top-[3.25rem] lg:self-start">
-          {bill.status === "DRAFT" && !finalizeReady ? (
-            <Card className="overflow-hidden shadow-sm ring-1 ring-amber-100">
-              <CardHeader className="erp-txn-card-header pb-2">
-                <CardTitle className="text-xs font-semibold uppercase tracking-wide text-amber-900">
-                  Finalize readiness
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="erp-txn-card-body pt-0">
-                <SalesBillFinalizeChecklist checks={finalizeChecks} />
-              </CardContent>
-            </Card>
-          ) : null}
-
-          {bill.status === "DRAFT" ? (
-            <Button
-              type="button"
-              variant="ghost"
-              className="h-9 w-full text-sm text-red-700 hover:bg-red-50 hover:text-red-800"
-              data-testid="delete-sales-bill-draft-btn"
-              disabled={deleting || saving || bill.isExported}
-              onClick={() => void deleteDraft()}
-            >
-              {deleting ? "Deleting…" : "Delete Draft"}
-            </Button>
-          ) : null}
-
+        <aside
+          className="min-w-0 space-y-2 lg:sticky lg:top-[3.25rem] lg:z-[1] lg:max-h-[calc(100dvh-4.5rem)] lg:self-start lg:overflow-y-auto"
+          data-testid="sales-bill-action-sidebar"
+        >
           <Card className="overflow-hidden shadow-sm ring-1 ring-slate-100">
-            <CardHeader className="erp-txn-card-header">
+            <CardHeader className="erp-txn-card-header py-2">
               <CardTitle className="text-sm font-semibold text-slate-900">Totals</CardTitle>
             </CardHeader>
             <CardContent className="erp-txn-card-body grid gap-1 pt-0 text-sm">
@@ -1100,6 +1096,20 @@ export function SalesBillEditPage() {
               </div>
             </CardContent>
           </Card>
+
+          {bill.status === "DRAFT" ? (
+            <SalesBillDraftActionPanel
+              saving={saving}
+              deleting={deleting}
+              canFinalize={finalizeReady}
+              checks={finalizeChecks}
+              deleteDisabled={Boolean(bill.isExported)}
+              onFinalize={() => void finalize()}
+              onSaveDraft={() => void saveDraft()}
+              onDeleteDraft={() => void deleteDraft()}
+              className="shadow-sm ring-1 ring-slate-100"
+            />
+          ) : null}
 
           <BillExportStatusPanel
             lifecycle={bill.status === "CANCELLED" ? "CANCELLED" : bill.status === "FINALIZED" ? "FINALIZED" : "DRAFT"}
@@ -1132,6 +1142,16 @@ export function SalesBillEditPage() {
             </Button>
           ) : null}
 
+          <SalesBillActivityTimeline
+            billId={bill.id}
+            createdAt={bill.createdAt}
+            updatedAt={bill.updatedAt}
+            finalizedAt={bill.finalizedAt}
+            exportedAt={bill.exportedAt}
+            exportedByName={bill.exportedBy?.name}
+            cancelledAt={bill.cancelledAt}
+          />
+
           <SalesBillLinkedDocuments
             billId={bill.id}
             billDocNo={bill.docNo}
@@ -1142,16 +1162,6 @@ export function SalesBillEditPage() {
             customerId={bill.customerId}
             customerName={bill.customer.name}
             isExported={bill.isExported}
-          />
-
-          <SalesBillActivityTimeline
-            billId={bill.id}
-            createdAt={bill.createdAt}
-            updatedAt={bill.updatedAt}
-            finalizedAt={bill.finalizedAt}
-            exportedAt={bill.exportedAt}
-            exportedByName={bill.exportedBy?.name}
-            cancelledAt={bill.cancelledAt}
           />
 
           {bill.status === "FINALIZED" && !bill.cancelledAt ? (
@@ -1236,6 +1246,7 @@ export function SalesBillEditPage() {
       />
       {bill.status === "DRAFT" ? (
         <StickyWorkflowActionBar
+          className="lg:hidden"
           title={`Draft · ₹${formatMoney(bill.netAmount)}`}
           subtitle={bill.customer.name}
           primaryAction={{

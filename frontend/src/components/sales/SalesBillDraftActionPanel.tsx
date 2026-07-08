@@ -35,6 +35,7 @@ export function SalesBillDraftActionPanel({
   onSaveDraft,
   onDeleteDraft,
   checks,
+  deleteDisabled = false,
   className,
 }: {
   saving: boolean;
@@ -44,6 +45,7 @@ export function SalesBillDraftActionPanel({
   onSaveDraft: () => void;
   onDeleteDraft: () => void;
   checks: SalesBillFinalizeCheck[];
+  deleteDisabled?: boolean;
   className?: string;
 }) {
   return (
@@ -54,6 +56,16 @@ export function SalesBillDraftActionPanel({
       <div className="space-y-3 px-3 py-3">
         <Button
           type="button"
+          variant="outline"
+          className="h-9 w-full text-sm"
+          data-testid="save-sales-bill-draft-btn"
+          disabled={saving}
+          onClick={onSaveDraft}
+        >
+          {saving ? "Saving…" : "Save Draft"}
+        </Button>
+        <Button
+          type="button"
           className="h-10 w-full text-sm font-semibold"
           data-testid="finalize-sales-bill-btn"
           disabled={saving || !canFinalize}
@@ -61,28 +73,16 @@ export function SalesBillDraftActionPanel({
         >
           {saving ? "Working…" : "Finalize Bill"}
         </Button>
-        <div className="flex flex-col gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            className="h-9 w-full text-sm"
-            data-testid="save-sales-bill-draft-btn"
-            disabled={saving}
-            onClick={onSaveDraft}
-          >
-            {saving ? "Saving…" : "Save Draft"}
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            className="h-9 w-full text-sm text-red-700 hover:bg-red-50 hover:text-red-800"
-            data-testid="delete-sales-bill-draft-btn"
-            disabled={deleting || saving}
-            onClick={onDeleteDraft}
-          >
-            {deleting ? "Deleting…" : "Delete Draft"}
-          </Button>
-        </div>
+        <Button
+          type="button"
+          variant="ghost"
+          className="h-9 w-full text-sm text-red-700 hover:bg-red-50 hover:text-red-800"
+          data-testid="delete-sales-bill-draft-btn"
+          disabled={deleting || saving || deleteDisabled}
+          onClick={onDeleteDraft}
+        >
+          {deleting ? "Deleting…" : "Delete Draft"}
+        </Button>
         {!canFinalize ? (
           <div className="rounded-md border border-amber-100 bg-amber-50/80 px-2.5 py-2">
             <p className="text-[11px] font-medium text-amber-950">Complete checks before finalize</p>

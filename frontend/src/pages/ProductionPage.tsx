@@ -4514,6 +4514,7 @@ export function ProductionPage() {
     return (
       <ProductionOperatorOpenWoQueue
         rows={noQtyEmbedOpenWoQueueRows}
+        totalOpenCount={noQtyWorkQueueRows.length}
         emptyMessage="No other work orders pending for this cycle."
       />
     );
@@ -4539,6 +4540,7 @@ export function ProductionPage() {
           opts.bottomQueue ?? (
             <ProductionOperatorOpenWoQueue
               rows={operatorOpenWoQueueRows}
+              totalOpenCount={sortedFlatLines.length}
               emptyMessage="No other work orders pending."
             />
           )

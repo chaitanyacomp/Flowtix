@@ -167,7 +167,7 @@ export function GrnPostReceiptModal({
                 Receive full
               </Button>
               <Button type="button" variant="outline" size="sm" disabled={grning} onClick={onReceiveNone}>
-                Receive none
+                Clear receive qty
               </Button>
             </div>
           </div>
@@ -178,7 +178,7 @@ export function GrnPostReceiptModal({
             className="max-h-[min(52vh,28rem)] overflow-auto py-3"
             data-testid="grn-post-receipt-lines-scroll"
           >
-            <table className="erp-table erp-table-dense w-full min-w-[64rem] text-[12px] [&_td]:py-1 [&_th]:py-1">
+            <table className="erp-table erp-table-dense w-full min-w-[52rem] text-[12px] [&_td]:py-1 [&_th]:py-1">
               <thead className="sticky top-0 z-[1] border-b border-slate-200 bg-slate-50 text-[10px] font-semibold uppercase tracking-wide text-slate-600">
                 <tr>
                   <th className="px-2 text-left">Item</th>

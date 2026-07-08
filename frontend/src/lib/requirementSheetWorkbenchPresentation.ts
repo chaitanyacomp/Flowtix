@@ -160,13 +160,8 @@ export function resolveRequirementSheetWorkbenchActions(
       hint = "Enter requirement qty.";
     }
   } else if (ctx.showNoQtyCreateWorkspace && ctx.noSheetsUi) {
-    primary = {
-      key: "create-rs",
-      label: "Create Requirement Sheet",
-      onClick: ctx.onCreateNewSheetFromEmpty,
-      disabled: ctx.busy,
-      loading: ctx.busy,
-    };
+    // Inline create form already exposes the primary CTA — avoid duplicate header button.
+    primary = null;
   } else if (ctx.canCreateNextRs && ctx.createNextRsEligible && ctx.showNoQtyLockedRsContextPanel) {
     primary = {
       key: "create-next-rs",

@@ -7,6 +7,7 @@ import {
   groupPendingPmrsByWorkOrder,
   isWorkOrderRmIssuedWaitingForProduction,
   mapIssuedWaitingForProductionPanelRows,
+  resolveDefaultMaterialIssueToLocationId,
   resolveMaterialIssueLineStatus,
   shouldShowNoRmAvailableWarning,
 } from "../../src/lib/materialIssueWorkspace";
@@ -189,5 +190,17 @@ describe("materialIssueWorkspace", () => {
       new Set([2]),
     );
     expect(rows).toEqual([{ workOrderId: 1, label: "WO-26-0001" }]);
+  });
+
+  it("defaults material issue destination to Production when multiple to-locations exist", () => {
+    expect(
+      resolveDefaultMaterialIssueToLocationId([
+        { id: 1, locationName: "WIP Bay", locationType: "WIP" },
+        { id: 2, locationName: "Production Floor", locationType: "PRODUCTION" },
+      ]),
+    ).toBe(2);
+    expect(
+      resolveDefaultMaterialIssueToLocationId([{ id: 9, locationName: "Only Store", locationType: "PRODUCTION" }]),
+    ).toBe(9);
   });
 });

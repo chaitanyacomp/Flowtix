@@ -307,3 +307,23 @@ export function resolveMaterialIssueLineStatus(input: {
     explanation: "No free stock at the selected store location.",
   };
 }
+
+export type MaterialIssueLocationOption = {
+  id: number;
+  locationName: string;
+  locationType?: string | null;
+};
+
+/** Prefer Production area when multiple issue destinations exist (M1.5 operator default). */
+export function resolveDefaultMaterialIssueToLocationId(
+  toLocations: MaterialIssueLocationOption[],
+): number | null {
+  if (!toLocations.length) return null;
+  if (toLocations.length === 1) return toLocations[0].id;
+  const production = toLocations.find((loc) => {
+    const type = String(loc.locationType ?? "").toUpperCase();
+    const name = String(loc.locationName ?? "").toLowerCase();
+    return type === "PRODUCTION" || /\bproduction\b/.test(name);
+  });
+  return production?.id ?? null;
+}

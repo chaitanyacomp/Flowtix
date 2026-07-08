@@ -30,6 +30,7 @@ import {
   filterMaterialIssueEntryLines,
   filterPmrsWithPendingIssue,
   pickActionablePmrForWorkOrder,
+  resolveDefaultMaterialIssueToLocationId,
   resolveMaterialIssueLineStatus,
   shouldShowNoRmAvailableWarning,
 } from "../lib/materialIssueWorkspace";
@@ -422,8 +423,9 @@ export function MaterialIssuePage() {
       if (context.fromLocations.length === 1 && fromLocationId === "") {
         setFromLocationId(context.fromLocations[0].id);
       }
-      if (context.toLocations.length === 1 && toLocationId === "") {
-        setToLocationId(context.toLocations[0].id);
+      if (toLocationId === "") {
+        const defaultTo = resolveDefaultMaterialIssueToLocationId(context.toLocations);
+        if (defaultTo != null) setToLocationId(defaultTo);
       }
     } catch (e) {
       showError(e instanceof Error ? e.message : "Failed to load material issue screen");

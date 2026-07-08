@@ -739,10 +739,11 @@ export function PendingMaterialRequestsPanel({ embedded = false, canPrepareRmPo 
 
             <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-5">
               <div className="shrink-0 space-y-3 border-b border-slate-100 py-4">
+                <div className="grid gap-3 md:grid-cols-2">
                 <label className="block text-sm font-medium text-slate-700">
                   Supplier
                   <select
-                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                    className="mt-1 w-full max-w-md rounded-md border border-slate-300 px-3 py-2 text-sm"
                     value={supplierId}
                     disabled={creating}
                     onChange={(e) => setSupplierId(Number(e.target.value))}
@@ -754,6 +755,27 @@ export function PendingMaterialRequestsPanel({ embedded = false, canPrepareRmPo 
                     ))}
                   </select>
                 </label>
+
+                <label className="block text-sm font-medium text-slate-700">
+                  Supplier PO Number <span className="text-red-600">*</span>
+                  <Input
+                    ref={supplierPoNumberRef}
+                    className={`mt-1 max-w-md ${supplierPoNumberError ? "border-red-500 focus-visible:ring-red-400" : ""}`}
+                    value={supplierPoNumber}
+                    disabled={creating}
+                    maxLength={100}
+                    aria-invalid={Boolean(supplierPoNumberError)}
+                    onChange={(e) => {
+                      setSupplierPoNumber(e.target.value.slice(0, 100));
+                      if (supplierPoNumberError) setSupplierPoNumberError(null);
+                    }}
+                    onBlur={(e) => setSupplierPoNumber(e.target.value.trim())}
+                  />
+                  {supplierPoNumberError ? (
+                    <span className="mt-1 block text-xs font-medium text-red-700">{supplierPoNumberError}</span>
+                  ) : null}
+                </label>
+                </div>
 
                 {activeSupplierLocations.length > 0 ? (
                   <label className="block text-sm font-medium text-slate-700">
@@ -795,30 +817,10 @@ export function PendingMaterialRequestsPanel({ embedded = false, canPrepareRmPo 
                   />
                 ) : null}
 
-                <label className="block text-sm text-slate-700">
-                  Supplier PO Number <span className="text-red-600">*</span>
-                  <Input
-                    ref={supplierPoNumberRef}
-                    className={`mt-1 ${supplierPoNumberError ? "border-red-500 focus-visible:ring-red-400" : ""}`}
-                    value={supplierPoNumber}
-                    disabled={creating}
-                    maxLength={100}
-                    aria-invalid={Boolean(supplierPoNumberError)}
-                    onChange={(e) => {
-                      setSupplierPoNumber(e.target.value.slice(0, 100));
-                      if (supplierPoNumberError) setSupplierPoNumberError(null);
-                    }}
-                    onBlur={(e) => setSupplierPoNumber(e.target.value.trim())}
-                  />
-                  {supplierPoNumberError ? (
-                    <span className="mt-1 block text-xs font-medium text-red-700">{supplierPoNumberError}</span>
-                  ) : null}
-                </label>
-
-                <label className="block text-sm text-slate-700">
+                <label className="block max-w-xl text-sm text-slate-700">
                   PO remarks (optional)
                   <Input
-                    className="mt-1"
+                    className="mt-1 max-w-xl"
                     value={poRemarks}
                     disabled={creating}
                     onChange={(e) => setPoRemarks(e.target.value)}

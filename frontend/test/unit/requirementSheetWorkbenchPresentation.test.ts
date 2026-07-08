@@ -79,4 +79,31 @@ describe("requirementSheetWorkbenchPresentation", () => {
     expect(result.primary?.key).toBe("planning-cta");
     expect(result.primary?.href).toContain("/monthly-planning");
   });
+
+  it("omits duplicate create CTA when NO_QTY create workspace is already visible", () => {
+    const result = resolveRequirementSheetWorkbenchActions({
+      isNoQty: true,
+      sheet: null,
+      showNoQtyCreateWorkspace: true,
+      showNoQtyFinalizeActions: false,
+      noQtyFinalizeDisabled: false,
+      draftUi: false,
+      noQtyDraftCanFinalize: false,
+      busy: false,
+      noSheetsUi: true,
+      canCreateNextRs: false,
+      createNextRsEligible: false,
+      nextCycleNoForRs: 2,
+      nextRsPrepareBusy: false,
+      readyToPlaceWo: false,
+      processStageKey: null,
+      showNoQtyLockedRsContextPanel: false,
+      locked: false,
+      onFinalize: () => {},
+      onCreateSheet: () => {},
+      onCreateNewSheetFromEmpty: () => {},
+      onPrepareNextRs: () => {},
+    });
+    expect(result.primary).toBeNull();
+  });
 });

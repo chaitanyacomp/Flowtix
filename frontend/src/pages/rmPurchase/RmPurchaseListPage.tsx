@@ -897,7 +897,7 @@ export function RmPurchaseListPage() {
                     <span className="text-slate-600">Supplier</span>
                     <select
                       ref={supplierSelectRef}
-                      className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm"
+                      className="h-10 w-full max-w-md rounded-md border border-slate-200 bg-white px-3 text-sm"
                       value={supplierId}
                       {...poSupplierBind}
                     >
@@ -932,7 +932,7 @@ export function RmPurchaseListPage() {
               </label>
               <label className="grid gap-1 text-sm">
                 <span className="text-slate-600">Remarks</span>
-                <Input className="h-9" value={poRemarks} onChange={(e) => setPoRemarks(e.target.value)} placeholder="Optional" />
+                <Input className="h-9 max-w-xl" value={poRemarks} onChange={(e) => setPoRemarks(e.target.value)} placeholder="Optional" />
               </label>
               <div className="space-y-2">
                 {poLines.map((l, i) => {

@@ -1,0 +1,116 @@
+import { formatFgQuantity, qtyDecimalPlacesFromUnit } from "./quantityDisplay";
+
+
+
+/** Effective max qty operator may enter on this save (WO remaining ∩ RM cap when present). */
+
+export function resolveProductionEntryMaxQty(
+
+  remainingQty: number | null | undefined,
+
+  rmEntryQtyCap: number | null | undefined,
+
+): number | null {
+
+  const rem = Number(remainingQty ?? 0);
+
+  if (!(rem > 0)) return rmEntryQtyCap != null ? Number(rmEntryQtyCap) : 0;
+
+  if (rmEntryQtyCap != null && Number.isFinite(Number(rmEntryQtyCap))) {
+
+    return Math.min(rem, Number(rmEntryQtyCap));
+
+  }
+
+  return rem;
+
+}
+
+
+
+export function formatProductionOperatorQty(
+
+  value: number | null | undefined,
+
+  unit?: string | null,
+
+): string {
+
+  if (value == null || !Number.isFinite(Number(value))) return "—";
+
+  return formatFgQuantity(Number(value), unit ?? undefined);
+
+}
+
+
+
+/** Short UOM token for compact helper text — Max: 6000 m */
+
+export function formatProductionOperatorShortUnit(unit?: string | null): string {
+
+  const raw = String(unit ?? "").trim();
+
+  if (!raw) return "";
+
+  const key = raw.toLowerCase();
+
+  if (key === "meter" || key === "mtr" || key === "m") return "m";
+
+  if (key === "nos" || key === "no" || key === "pcs" || key === "numbers") return "nos";
+
+  if (key === "kg" || key === "kilogram") return "kg";
+
+  if (key === "gm" || key === "gram") return "gm";
+
+  return raw.length <= 4 ? raw.toLowerCase() : raw;
+
+}
+
+
+
+export function formatProductionOperatorMaxHelper(
+
+  maxAllowedQty: number | null | undefined,
+
+  unit?: string | null,
+
+): string | null {
+
+  if (maxAllowedQty == null || !Number.isFinite(Number(maxAllowedQty))) return null;
+
+  const qty = formatFgQuantity(Number(maxAllowedQty), undefined).replace(/\s+[^\d.,]+$/, "");
+
+  const u = formatProductionOperatorShortUnit(unit);
+
+  return u ? `Max: ${qty} ${u}` : `Max: ${qty}`;
+
+}
+
+
+
+/** Operator qty placeholder — unit-aware; integer UOMs avoid misleading decimals. */
+export function productionOperatorQtyPlaceholder(unit?: string | null): string {
+  const u = String(unit ?? "").trim();
+  const decimals = qtyDecimalPlacesFromUnit(u);
+  const sample = decimals <= 0 ? "0" : decimals === 3 ? "0.000" : "0.00";
+  if (!u) return sample;
+  const key = u.toLowerCase();
+  const label =
+    key === "mtr" || key === "m" ? "Meter" : key === "nos" || key === "no" ? "Nos" : u;
+  return decimals <= 0 ? label : `${sample} ${label}`;
+}
+
+
+
+export const PRODUCTION_SAVE_BUTTON_LABEL = "Save Production";
+
+
+
+export const productionOperatorDateInputClass =
+  "erp-flow-filter-input h-9 w-[8.75rem] shrink-0 tabular-nums text-sm font-semibold";
+
+
+
+export const productionOperatorQtyInputClass =
+  "h-9 w-[11.5rem] min-w-[10rem] max-w-[13.75rem] shrink-0 rounded-md border border-slate-300 bg-white px-2 text-right text-base font-bold tabular-nums shadow-sm focus-visible:border-sky-500 focus-visible:ring-2 focus-visible:ring-sky-200";
+

@@ -2052,29 +2052,29 @@ export function MonthlyPlanningWorkspacePage() {
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-1.5 p-2 sm:p-3">
       {/* Header */}
-      <div className="rounded-md border border-slate-200 bg-white p-2 shadow-sm">
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+      <div className="rounded-md border border-slate-200 bg-white px-2 py-1.5 shadow-sm">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
           <div className="flex items-center gap-2">
-            <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+            <label className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
               Plan period
             </label>
             <Input
               type="month"
               value={period}
               onChange={(e) => applyPeriod(e.target.value)}
-              className="h-8 w-[160px]"
+              className="h-9 w-[11rem] shrink-0"
             />
           </div>
 
           {shouldShowPlanSelector(periodPlans) ? (
-            <div className="flex items-center gap-2">
-              <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+            <div className="flex min-w-0 items-center gap-2">
+              <label className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
                 Plan document
               </label>
               <NativeSelect
                 value={String(selectedPlanId ?? plan?.id ?? "")}
                 onChange={(e) => onSelectPlan(Number(e.target.value))}
-                className="h-8 min-w-[200px]"
+                className="h-9 min-w-[12rem] max-w-[min(100%,26rem)]"
                 disabled={loading || periodPlans.length <= 1}
               >
                 {periodPlans.map((p) => (

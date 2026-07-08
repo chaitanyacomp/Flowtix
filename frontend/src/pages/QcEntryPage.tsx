@@ -2458,7 +2458,7 @@ export function QcEntryPage() {
           </div>
         ) : null}
         <OperatorPageBody className="gap-1.5">
-          <div className="max-w-xl">
+          <div className="max-w-md">
             <QualityInspectionQueuePanel
               rows={qualityQueueRows}
               activeRowId={activeQualityQueueRowId}
@@ -3064,7 +3064,7 @@ export function QcEntryPage() {
                     >
                       <table className="w-full text-[11px] leading-none">
                         <thead className="sticky top-0 z-[1] border-b border-slate-200 bg-slate-50">
-                          <tr className="text-left text-[9px] text-slate-600">
+                          <tr className="text-left text-[10px] text-slate-600">
                             <th className="px-1 py-px font-medium">Batch</th>
                             <th className="px-1 py-px font-medium">Item</th>
                             <th className="px-1 py-px font-medium">Status</th>
@@ -3311,34 +3311,8 @@ export function QcEntryPage() {
                           </Button>
                         </div>
 
-                        </div>
-                        <div className="flex flex-wrap items-end gap-1 border-t border-dashed border-slate-200/60 pt-1">
-                          <div className="erp-form-field min-w-[8rem] max-w-[min(100%,18rem)] flex-1 [&_span]:leading-none">
-                            <span className="text-[10px] font-medium text-slate-600">Reason</span>
-                            <Input
-                              className={cn("mt-px text-[13px]", operatorInputClass)}
-                              value={reason}
-                              onChange={(e) => setReason(e.target.value)}
-                              placeholder="Optional"
-                              disabled={!productionId}
-                            />
-                          </div>
-                          <label className="mb-px flex min-h-0 cursor-pointer items-center gap-1 text-[10px] text-slate-700">
-                            <input
-                              type="checkbox"
-                              className="h-3 w-3 rounded border-slate-300"
-                              checked={scrapReusable}
-                              onChange={(e) => setScrapReusable(e.target.checked)}
-                              disabled={!productionId}
-                            />
-                            Scrap reusable
-                          </label>
-                        </div>
-                      </div>
-
-                      <div className="mt-1 min-h-0 flex-1 space-y-1 overflow-y-auto overflow-x-visible overscroll-contain border-t border-dashed border-slate-200/80 py-1 pr-0.5">
                         {productionId > 0 && rejectedNumForForm != null && rejectedNumForForm > 1e-6 ? (
-                          <div className="space-y-1" aria-label="Rejected qty split">
+                          <div className="space-y-1 border-t border-dashed border-slate-200/70 pt-2" aria-label="Rejected qty split">
                             <div className="flex flex-wrap items-baseline justify-between gap-1">
                               <span className="text-[12px] font-medium text-slate-600">Rejected qty split</span>
                               <span className="text-[11px] text-slate-500">
@@ -3406,6 +3380,32 @@ export function QcEntryPage() {
                           </div>
                         ) : null}
 
+                        </div>
+                        <div className="flex flex-wrap items-end gap-1 border-t border-dashed border-slate-200/60 pt-1">
+                          <div className="erp-form-field min-w-[8rem] max-w-[min(100%,18rem)] flex-1 [&_span]:leading-none">
+                            <span className="text-[10px] font-medium text-slate-600">Reason</span>
+                            <Input
+                              className={cn("mt-px text-[13px]", operatorInputClass)}
+                              value={reason}
+                              onChange={(e) => setReason(e.target.value)}
+                              placeholder="Optional"
+                              disabled={!productionId}
+                            />
+                          </div>
+                          <label className="mb-px flex min-h-0 cursor-pointer items-center gap-1 text-[10px] text-slate-700">
+                            <input
+                              type="checkbox"
+                              className="h-3 w-3 rounded border-slate-300"
+                              checked={scrapReusable}
+                              onChange={(e) => setScrapReusable(e.target.checked)}
+                              disabled={!productionId}
+                            />
+                            Scrap reusable
+                          </label>
+                        </div>
+                      </div>
+
+                      <div className="mt-1 min-h-0 flex-1 space-y-1 overflow-y-auto overflow-x-visible overscroll-contain border-t border-dashed border-slate-200/80 py-1 pr-0.5">
                         {productionId > 0 && qcInlineValidationMsg ? (
                           <div className="rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-900">
                             {qcInlineValidationMsg}

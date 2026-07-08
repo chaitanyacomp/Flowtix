@@ -1750,7 +1750,7 @@ export function RequirementSheetPage() {
             <span className="font-semibold tabular-nums">Cycle {cycleNo}</span>
           </div>
         ) : null}
-        {addRequirementIntent ? (
+        {addRequirementIntent && !showNoQtyCreateWorkspace ? (
           <details className="inline-block text-[11px] text-slate-500">
             <summary className="flex cursor-pointer list-none items-center gap-1 rounded border border-slate-200/80 bg-white px-1.5 py-0.5 text-slate-600 hover:bg-slate-50 [&::-webkit-details-marker]:hidden">
               <CircleHelp className="h-3 w-3 shrink-0" aria-hidden />
@@ -1879,7 +1879,7 @@ export function RequirementSheetPage() {
                       ? "Create requirement sheet"
                       : "Versions"}
                 </CardTitle>
-                {!showItemsCard ? rsWorkbenchActionCluster : null}
+                {!showItemsCard && !showNoQtyCreateWorkspace ? rsWorkbenchActionCluster : null}
               </div>
             </CardHeader>
           ) : null}

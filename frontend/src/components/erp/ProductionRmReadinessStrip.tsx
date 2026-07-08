@@ -3,6 +3,10 @@ import { Link } from "react-router-dom";
 import { apiFetch } from "../../services/api";
 import { buttonVariants } from "../ui/button";
 import { cn } from "../../lib/utils";
+import {
+  buildMaterialIssueDeepLink,
+  buildRmControlCenterDeepLink,
+} from "../../lib/manufacturingNavigationContinuity";
 
 export type RmReadinessLine = {
   rmItemId: number;
@@ -213,7 +217,15 @@ export function ProductionRmReadinessStrip({
   if (!data) return null;
 
   const fgLabel = data.fgUnit ? `${data.fgItemName} (${data.fgUnit})` : data.fgItemName;
-  const rmControlHref = `/reports/rm-shortage?workOrderId=${encodeURIComponent(String(data.workOrderId))}&onlyBlocked=true&returnTo=production-workspace`;
+  const rmControlHref = buildRmControlCenterDeepLink({
+    workOrderId: data.workOrderId,
+    onlyBlocked: true,
+    returnTo: "production-workspace",
+  });
+  const materialIssueHref = buildMaterialIssueDeepLink({
+    workOrderId: data.workOrderId,
+    returnTo: "production-workspace",
+  });
   const blocked =
     data.gate === "NO_PMR" ||
     data.gate === "PMR_DRAFT_ONLY" ||
@@ -253,7 +265,7 @@ export function ProductionRmReadinessStrip({
           <p className="font-medium">Waiting for Store RM Issue.</p>
           <div className="flex flex-wrap gap-1.5">
             <Link
-              to={`/material-issue?workOrderId=${data.workOrderId}&returnTo=production`}
+              to={materialIssueHref}
               className={cn(buttonVariants({ variant: "default", size: "sm" }), "h-7 text-[12px]")}
             >
               Open Material Issue Workspace
@@ -272,7 +284,7 @@ export function ProductionRmReadinessStrip({
         <div className="mt-1.5 space-y-1.5 text-amber-950">
           <p className="font-medium">RM issued — waiting for Store to release this work order to production.</p>
           <Link
-            to={`/material-issue?workOrderId=${data.workOrderId}&returnTo=production`}
+            to={materialIssueHref}
             className={cn(buttonVariants({ variant: "default", size: "sm" }), "h-7 text-[12px]")}
           >
             Open Material Issue Workspace

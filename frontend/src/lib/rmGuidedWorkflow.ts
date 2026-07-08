@@ -12,6 +12,7 @@ import { PROCUREMENT_TERMS } from "./procurementTerminology";
 import { isStockCommittedElsewhere, stockCommittedElsewhereSummary } from "./stockCommitmentVisibility";
 import { buildRmPoDetailHref } from "./rmPurchaseWoContinuity";
 import { productionWorkspaceHref } from "./materialWorkflowLinks";
+import { buildMaterialIssueDeepLink } from "./manufacturingNavigationContinuity";
 
 const EPS = 1e-6;
 
@@ -141,9 +142,11 @@ export function resolveGuidedWorkflow(input: GuidedWorkflowInput): GuidedWorkflo
           from: "rm-purchase",
         })
       : "/rm-po-grn?focus=pending-requests";
-  const issueHref = input.materialRequirementId
-    ? `/material-issue?workOrderId=${input.workOrderId}&returnTo=rm-control-center`
-    : `/material-issue?workOrderId=${input.workOrderId}&returnTo=rm-control-center`;
+  const issueHref = buildMaterialIssueDeepLink({
+    workOrderId: input.workOrderId,
+    returnTo: "rm-control-center",
+    salesOrderId: input.salesOrderId ?? null,
+  });
   const productionHref = productionWorkspaceHref(input.workOrderId, undefined, {
     salesOrderId: input.salesOrderId ?? undefined,
     orderType: input.orderType,

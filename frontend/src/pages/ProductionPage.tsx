@@ -51,7 +51,10 @@ import { useErpRoleUi } from "../hooks/useErpRoleUi";
 import { useCanCreateNextRs } from "../hooks/useIsAdmin";
 import { getRoleEmptyState } from "../lib/erpRoleEmptyStates";
 import { isProductionWorkspaceEntry } from "../lib/operationalPageEntry";
-import { productionHrefFromDashboardRow } from "../lib/operationalWorkspaceLinks";
+import {
+  buildProductionWorkspaceListHref,
+  productionHrefFromProductionWorkspace,
+} from "../lib/manufacturingNavigationContinuity";
 import { buildProductionScopedHref } from "../lib/productionNavigation";
 import {
   materialRequestsQueueHref,
@@ -84,7 +87,6 @@ import {
 } from "../lib/productionCompletionUx";
 import {
   buildProductionCloseSuccessToast,
-  PRODUCTION_WORKSPACE_DASHBOARD_HREF,
 } from "../lib/productionCloseCompletionUx";
 import {
   coerceExecutionSummaryForWorkOrder,
@@ -341,13 +343,28 @@ function entryUsesRmConsumptionReview(e: ProdEntryRow | undefined): boolean {
 function resolveProductionRegularBack(args: {
   fromParam: string;
   sourceParam: string;
+  fromStepParam?: string;
   salesOrderId: number;
+  productionBucket?: string | null;
 }): { label: string; to: string } {
   const from = args.fromParam.trim().toLowerCase();
   const src = args.sourceParam.trim().toLowerCase();
+  const fromStep = (args.fromStepParam ?? "").trim().toLowerCase();
   const sid = args.salesOrderId;
   const soQs = sid > 0 ? `?salesOrderId=${encodeURIComponent(String(sid))}` : "";
   if (from === "dashboard" || src === "dashboard") return { label: "Dashboard", to: "/dashboard" };
+  if (from === "production-workspace" || src === "production-workspace") {
+    return {
+      label: "Back to Production Workspace",
+      to: buildProductionWorkspaceListHref({ productionBucket: args.productionBucket }),
+    };
+  }
+  if (from === "dispatch" || src === "dispatch" || fromStep === "dispatch") {
+    return {
+      label: "Back to Dispatch",
+      to: sid > 0 ? `/dispatch?salesOrderId=${encodeURIComponent(String(sid))}` : "/dispatch",
+    };
+  }
   if (from === "work-order-workspace")
     return { label: "Back to Work Order Workspace", to: "/work-orders" };
   if (from === "work-orders" || from === "wo-list")
@@ -510,6 +527,7 @@ export function ProductionPage() {
 
   const source = searchParams.get("source") ?? "";
   const fromParam = searchParams.get("from") ?? "";
+  const fromStepParam = searchParams.get("fromStep") ?? "";
   const fromPendingActions = fromParam === "pending-actions";
   const productionBucketFilter = parseProductionWorkspaceBucket(searchParams.get("productionBucket"));
   const flowParam = parseProductionFlowParam(searchParams.get("flow"));
@@ -798,7 +816,7 @@ export function ProductionPage() {
     if (action === "redirect_dashboard") {
       resetScopedProductionWorkspaceState();
       clearWoLineSelection({ force: true });
-      navigate(PRODUCTION_WORKSPACE_DASHBOARD_HREF, { replace: true });
+      navigate(buildProductionWorkspaceListHref({ productionBucket: productionBucketFilter }), { replace: true });
     }
   }, [
     woIdFromUrlValid,
@@ -808,6 +826,7 @@ export function ProductionPage() {
     navigate,
     resetScopedProductionWorkspaceState,
     clearWoLineSelection,
+    productionBucketFilter,
   ]);
 
   const [noQtyShortageHistorySheets, setNoQtyShortageHistorySheets] = React.useState<NoQtyShortageHistorySheet[]>([]);
@@ -1111,7 +1130,7 @@ export function ProductionPage() {
   const openProductionFromWorkspace = React.useCallback(
     (row: DashboardProductionStatusSource) => {
       resetScopedProductionWorkspaceState();
-      const href = productionHrefFromDashboardRow({
+      const href = productionHrefFromProductionWorkspace({
         orderType: row.orderType,
         salesOrderId: row.salesOrderId,
         workOrderId: row.workOrderId,
@@ -1119,7 +1138,7 @@ export function ProductionPage() {
         cycleId: row.cycleId ?? null,
         actionHref: row.actionHref,
       });
-      navigate(href, { replace: true, state: { from: "dashboard" } });
+      navigate(href, { replace: true });
     },
     [navigate, resetScopedProductionWorkspaceState],
   );
@@ -2011,7 +2030,7 @@ export function ProductionPage() {
       urlWoSelectionAuthorityRef.current = false;
       setUserLockedFlowMode(null);
       resetScopedProductionWorkspaceState();
-      navigate(PRODUCTION_WORKSPACE_DASHBOARD_HREF, { replace: true });
+      navigate(buildProductionWorkspaceListHref({ productionBucket: productionBucketFilter }), { replace: true });
       if (opts?.refreshAfter) {
         bumpErpRefresh([...PRODUCTION_REPORT_CONFIRM_REFRESH_SCOPES]);
         void refresh().then(() => {
@@ -2019,7 +2038,7 @@ export function ProductionPage() {
         });
       }
     },
-    [clearWoLineSelection, navigate, resetScopedProductionWorkspaceState, refresh],
+    [clearWoLineSelection, navigate, resetScopedProductionWorkspaceState, refresh, productionBucketFilter],
   );
 
   const handleProductionExecutionClosed = React.useCallback(
@@ -4182,6 +4201,7 @@ export function ProductionPage() {
   ]);
 
   const openedFromWorkOrderWorkspace = fromParam.trim().toLowerCase() === "work-order-workspace";
+  const openedFromProductionWorkspace = fromParam.trim().toLowerCase() === "production-workspace";
 
   const productionRegularBackNav = React.useMemo(() => {
     const sid =
@@ -4190,19 +4210,28 @@ export function ProductionPage() {
         : focusSoIdValid
           ? focusSoId
           : 0;
-    const back = resolveProductionRegularBack({ fromParam, sourceParam: source, salesOrderId: sid });
-    if (openedFromWorkOrderWorkspace) return back;
+    const back = resolveProductionRegularBack({
+      fromParam,
+      sourceParam: source,
+      fromStepParam,
+      salesOrderId: sid,
+      productionBucket: productionBucketFilter,
+    });
+    if (openedFromWorkOrderWorkspace || openedFromProductionWorkspace) return back;
     if (navigateNoQtyContext || navigateGreenLevelContext) return null;
     return back;
   }, [
     navigateNoQtyContext,
     navigateGreenLevelContext,
     openedFromWorkOrderWorkspace,
+    openedFromProductionWorkspace,
     selected?.salesOrderId,
     focusSoIdValid,
     focusSoId,
     fromParam,
+    fromStepParam,
     source,
+    productionBucketFilter,
   ]);
 
   /** REGULAR-only WO context for chrome (no hybrid NO_QTY shell). */

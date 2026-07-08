@@ -95,4 +95,35 @@ describe("resolveERPBackTarget", () => {
     const target = resolveERPBackTarget({ pathname: "/dashboard", search: "", state: null }, defaults);
     expect(target).toEqual({ to: "/dashboard", label: "Back to Dashboard" });
   });
+
+  it("resolves production-workspace return with bucket and work order", () => {
+    const target = resolveERPBackTarget(
+      {
+        pathname: "/material-issue",
+        search: "?returnTo=production-workspace&productionBucket=READY&workOrderId=99",
+        state: null,
+      },
+      defaults,
+    );
+    expect(target).toEqual({
+      to: "/production?productionBucket=READY&workOrderId=99",
+      label: "Back to Production Workspace",
+    });
+  });
+
+  it("resolves dispatch from fromStep on production pages", () => {
+    const target = resolveERPBackTarget(
+      { pathname: "/production", search: "?fromStep=dispatch&salesOrderId=42", state: null },
+      { ...defaults, kind: "production" },
+    );
+    expect(target).toEqual({ to: "/dispatch?salesOrderId=42", label: "Back to Dispatch Workspace" });
+  });
+
+  it("resolves work-order-workspace from query from token", () => {
+    const target = resolveERPBackTarget(
+      { pathname: "/production", search: "?from=work-order-workspace", state: null },
+      defaults,
+    );
+    expect(target).toEqual({ to: "/work-orders", label: "Back to Work Order Workspace" });
+  });
 });

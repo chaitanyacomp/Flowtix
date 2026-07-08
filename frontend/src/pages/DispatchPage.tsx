@@ -56,6 +56,7 @@ import { Link, useLocation, useNavigate, useSearchParams } from "react-router-do
 import { displayDispatchNo, displaySalesOrderNo } from "../lib/docNoDisplay";
 import { ActivityHistoryCard } from "../components/ActivityHistoryCard";
 import { buildNoQtyGuidedHref, useNoQtyFlowState } from "../lib/noQtyFlowState";
+import { buildRegularDispatchGuidedHref } from "../lib/manufacturingNavigationContinuity";
 import { openCurrentRsButtonLabel } from "../lib/noQtyRsActionLabels";
 import { useToast } from "../contexts/ToastContext";
 import { DemoFlowBanner } from "../components/demo/DemoFlowBanner";
@@ -3797,11 +3798,15 @@ export function DispatchPage() {
     const prodHref =
       noQtyFooter && soIdValidFooter
         ? buildNoQtyGuidedHref({ to: "/production", salesOrderId: soIdFooter, cycleId: footerCycleId, fromStep: "dispatch" })
-        : soIdValidFooter ? `/production?salesOrderId=${soIdFooter}&fromStep=dispatch` : "/production";
+        : soIdValidFooter
+          ? buildRegularDispatchGuidedHref({ to: "/production", salesOrderId: soIdFooter })
+          : "/production";
     const qcHref =
       noQtyFooter && soIdValidFooter
         ? buildNoQtyGuidedHref({ to: "/qc-entry", salesOrderId: soIdFooter, cycleId: footerCycleId, fromStep: "dispatch" })
-        : soIdValidFooter ? `/qc-entry?salesOrderId=${soIdFooter}&fromStep=dispatch` : "/qc-entry";
+        : soIdValidFooter
+          ? buildRegularDispatchGuidedHref({ to: "/qc-entry", salesOrderId: soIdFooter })
+          : "/qc-entry";
     const dispatchHref =
       noQtyFooter && soIdValidFooter
         ? buildNoQtyGuidedHref({ to: "/dispatch", salesOrderId: soIdFooter, cycleId: footerCycleId, fromStep: "dispatch" })
@@ -4419,11 +4424,15 @@ export function DispatchPage() {
             const prodHref =
               isNoQty && soIdValid
                 ? buildNoQtyGuidedHref({ to: "/production", salesOrderId: soId, cycleId: flowCycleId, fromStep: "dispatch" })
-                : soIdValid ? `/production?salesOrderId=${soId}&fromStep=dispatch` : "/production";
+                : soIdValid
+                  ? buildRegularDispatchGuidedHref({ to: "/production", salesOrderId: soId })
+                  : "/production";
             const qcHref =
               isNoQty && soIdValid
                 ? buildNoQtyGuidedHref({ to: "/qc-entry", salesOrderId: soId, cycleId: flowCycleId, fromStep: "dispatch" })
-                : soIdValid ? `/qc-entry?salesOrderId=${soId}&fromStep=dispatch` : "/qc-entry";
+                : soIdValid
+                  ? buildRegularDispatchGuidedHref({ to: "/qc-entry", salesOrderId: soId })
+                  : "/qc-entry";
             const dispatchHref =
               isNoQty && soIdValid
                 ? buildNoQtyGuidedHref({ to: "/dispatch", salesOrderId: soId, cycleId: flowCycleId, fromStep: "dispatch" })
@@ -5516,10 +5525,10 @@ export function DispatchPage() {
                                               return;
                                             }
                                             if (action.kind === "qc") {
-                                              navigate(`/qc-entry?salesOrderId=${so.id}&fromStep=dispatch`);
+                                              navigate(buildRegularDispatchGuidedHref({ to: "/qc-entry", salesOrderId: so.id }));
                                               return;
                                             }
-                                            navigate(`/production?salesOrderId=${so.id}&fromStep=dispatch`);
+                                            navigate(buildRegularDispatchGuidedHref({ to: "/production", salesOrderId: so.id }));
                                           }}
                                         >
                                           {action.label}
@@ -6488,7 +6497,7 @@ export function DispatchPage() {
                           );
                           const hasAny = Array.isArray(rows) && rows.length > 0;
                           if (hasAny) {
-                            navigate(`/production?salesOrderId=${selectedSo.id}&fromStep=dispatch`);
+                            navigate(buildRegularDispatchGuidedHref({ to: "/production", salesOrderId: selectedSo.id }));
                             return;
                           }
                         } catch {

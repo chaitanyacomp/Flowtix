@@ -77,7 +77,11 @@ export function productionMaterialBlockedHref(opts: {
   return rmControlCenterHref({ onlyBlocked: true, returnTo: opts.returnTo });
 }
 
-export function materialWorkflowBackHref(returnTo: string | null, workOrderId?: number): string {
+export function materialWorkflowBackHref(
+  returnTo: string | null,
+  workOrderId?: number,
+  opts?: { productionBucket?: string | null },
+): string {
   if (returnTo === "dashboard") return "/dashboard";
   if (returnTo === "rm-control-center") return "/reports/rm-shortage";
   if (returnTo === "pending-actions") return "/pending-actions";
@@ -88,7 +92,15 @@ export function materialWorkflowBackHref(returnTo: string | null, workOrderId?: 
     return "/sales-orders";
   }
   if (returnTo === "production-workspace") {
-    return "/production";
+    const qs = new URLSearchParams();
+    if (opts?.productionBucket?.trim()) qs.set("productionBucket", opts.productionBucket.trim());
+    if (workOrderId && workOrderId > 0) qs.set("workOrderId", String(workOrderId));
+    const q = qs.toString();
+    return q ? `/production?${q}` : "/production";
+  }
+  if (returnTo === "material-issue") return "/material-issue";
+  if (returnTo === "dispatch") {
+    return "/dispatch";
   }
   if (returnTo === "material-requests") return materialRequestsQueueHref({});
   return "/production/material-requests";

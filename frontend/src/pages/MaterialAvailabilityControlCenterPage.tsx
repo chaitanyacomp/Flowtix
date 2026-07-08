@@ -18,6 +18,7 @@ import { RmControlCenterCasePanel } from "../components/erp/RmControlCenterCaseP
 import { RmControlCenterProcurementPanel } from "../components/erp/RmControlCenterProcurementPanel";
 import { ErpModal } from "../components/erp/ErpModal";
 import { buildProcurementWorkspaceHref } from "../lib/woProcurementContinuity";
+import { buildMaterialIssueDeepLink } from "../lib/manufacturingNavigationContinuity";
 import { buildRmPoDetailHref } from "../lib/rmPurchaseWoContinuity";
 import { buildProductionScopedHref } from "../lib/productionNavigation";
 import { woPreparePrepareHref } from "../lib/woPrepareOperationalStage";
@@ -790,7 +791,9 @@ export function MaterialAvailabilityControlCenterPage() {
       primaryPoId && primaryPoId > 0
         ? buildRmPoDetailHref(primaryPoId, { salesOrderId, from: "rm-purchase" })
         : "/rm-po-grn?focus=pending-requests";
-    const issueHref = workOrderId ? `/material-issue?workOrderId=${workOrderId}&returnTo=rm-control-center` : "";
+    const issueHref = workOrderId
+      ? buildMaterialIssueDeepLink({ workOrderId, returnTo: "rm-control-center", salesOrderId })
+      : "";
     const productionHref = workOrderId
       ? buildProductionScopedHref({
           workOrderId,
@@ -1780,7 +1783,11 @@ export function MaterialAvailabilityControlCenterPage() {
                       <Link
                         to={
                           detail.workOrder?.id
-                            ? `/material-issue?workOrderId=${detail.workOrder.id}&returnTo=rm-control-center`
+                            ? buildMaterialIssueDeepLink({
+                                workOrderId: detail.workOrder.id,
+                                returnTo: "rm-control-center",
+                                salesOrderId: detail.salesOrder?.id ?? woCase?.salesOrderId ?? null,
+                              })
                             : "/material-issue"
                         }
                         state={detail.workOrder?.id ? materialIssueLinkState(detail.workOrder.id) : undefined}

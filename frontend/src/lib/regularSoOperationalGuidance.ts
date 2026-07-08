@@ -8,6 +8,7 @@ import { isProductionBlockedByRmReadiness } from "../components/erp/ProductionRm
 import { productionWorkspaceHref } from "./productionNavigation";
 import type { ProductionScopedNavInput } from "./productionNavigation";
 import { materialIssueWorkspaceHref, materialRequestsQueueHref } from "./materialWorkflowLinks";
+import { buildMaterialIssueDeepLink } from "./manufacturingNavigationContinuity";
 
 export type RegularSoNextStepAction = {
   label: string;
@@ -55,7 +56,7 @@ export function buildRmIssueNextStep(
         href:
           pmrId && pmrId > 0
             ? materialIssueWorkspaceHref({ pmrId, workOrderId: woId, returnTo: "production-workspace" })
-            : `/material-issue?workOrderId=${encodeURIComponent(String(woId))}&returnTo=${encodeURIComponent(returnTo)}`,
+            : buildMaterialIssueDeepLink({ workOrderId: woId, returnTo }),
         testId: "next-issue-rm-material-issue",
       },
     };
@@ -70,7 +71,7 @@ export function buildRmIssueNextStep(
       href:
         pmrId && pmrId > 0
           ? materialIssueWorkspaceHref({ pmrId, workOrderId: woId, returnTo })
-          : `/material-issue?workOrderId=${encodeURIComponent(String(woId))}&returnTo=${encodeURIComponent(returnTo)}`,
+          : buildMaterialIssueDeepLink({ workOrderId: woId, returnTo }),
       testId: "next-issue-rm-material-issue",
     },
   };

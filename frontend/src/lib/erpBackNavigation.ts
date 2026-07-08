@@ -45,12 +45,14 @@ export const ERP_RETURN_TO_TOKEN_MAP: Record<string, ERPBackNavigationTarget> = 
   reports: ERP_BACK_SMART_MAP.reports,
   "pending-actions": ERP_BACK_SMART_MAP["pending-actions"],
   "control-tower": ERP_BACK_SMART_MAP["control-tower"],
+  "material-issue": { to: "/material-issue", label: "Back to Material Issue" },
+  "work-order-workspace": { to: "/work-orders", label: "Back to Work Order Workspace" },
+  "production-workspace": { to: "/production", label: "Back to Production Workspace" },
   "rm-control-center": { to: "/reports/rm-shortage", label: "Back to RM Control Center" },
   production: { to: "/production", label: "Back to Production Workspace" },
-  "production-workspace": { to: "/production", label: "Back to Production Workspace" },
   "work-orders": { to: "/work-orders", label: "Back to Work Orders" },
   "rm-purchase": { to: "/rm-po-grn", label: "Back to RM Purchase" },
-  "material-issue": { to: "/material-issue", label: "Back to Material Issue" },
+  dispatch: { to: "/dispatch", label: "Back to Dispatch Workspace" },
   "material-requests": { to: "/production/material-requests", label: "Back to Material Requests" },
   "requirement-sheet": { to: "/sales-orders", label: "Back to Sales Orders" },
   "requirement-sheet-execution": { to: "/sales-orders", label: "Back to Sales Orders" },
@@ -110,9 +112,35 @@ function resolveReturnToTarget(
   }
   const token = trimmed.toLowerCase();
   const mapped = ERP_RETURN_TO_TOKEN_MAP[token];
-  if (mapped) return mapped;
+  if (mapped) {
+    if (token === "production-workspace") {
+      const bucket = searchParams.get("productionBucket");
+      const qs = new URLSearchParams();
+      if (bucket?.trim()) qs.set("productionBucket", bucket.trim());
+      const wo =
+        workOrderId && workOrderId > 0
+          ? workOrderId
+          : Number(searchParams.get("workOrderId") || 0);
+      if (wo > 0) qs.set("workOrderId", String(wo));
+      const q = qs.toString();
+      return { to: q ? `/production?${q}` : "/production", label: "Back to Production Workspace" };
+    }
+    if (token === "dispatch") {
+      const soId = Number(searchParams.get("salesOrderId") || 0);
+      return {
+        to: soId > 0 ? `/dispatch?salesOrderId=${soId}` : "/dispatch",
+        label: "Back to Dispatch Workspace",
+      };
+    }
+    return mapped;
+  }
   if (token === "production-workspace" && workOrderId && workOrderId > 0) {
-    return { to: materialWorkflowBackHref(token, workOrderId), label: "Back to Production Workspace" };
+    return {
+      to: materialWorkflowBackHref(token, workOrderId, {
+        productionBucket: searchParams.get("productionBucket"),
+      }),
+      label: "Back to Production Workspace",
+    };
   }
   const href = materialWorkflowBackHref(trimmed, workOrderId);
   if (href) {
@@ -186,6 +214,21 @@ export function resolveERPBackTarget(
     if (returnTarget) return returnTarget;
   }
 
+  const fromTokenRaw = searchParams.get("from")?.trim().toLowerCase();
+  if (fromTokenRaw && ERP_RETURN_TO_TOKEN_MAP[fromTokenRaw]) {
+    const fromTarget = resolveReturnToTarget(fromTokenRaw, searchParams, workOrderId);
+    if (fromTarget) return fromTarget;
+  }
+
+  const fromStepRaw = searchParams.get("fromStep")?.trim().toLowerCase();
+  if (fromStepRaw === "dispatch") {
+    const soId = Number(searchParams.get("salesOrderId") || 0);
+    return {
+      to: soId > 0 ? `/dispatch?salesOrderId=${soId}` : "/dispatch",
+      label: "Back to Dispatch Workspace",
+    };
+  }
+
   if (stateBackTo) {
     return {
       to: stateBackTo,
@@ -218,6 +261,23 @@ export function resolveERPBackTarget(
     if (source === "no_qty_so") {
       const soId = Number(searchParams.get("salesOrderId") ?? 0);
       return noQtySoBackTarget(role, Number.isFinite(soId) && soId > 0 ? soId : undefined);
+    }
+    if (source === "production-workspace") {
+      const bucket = searchParams.get("productionBucket");
+      const qs = new URLSearchParams();
+      if (bucket?.trim()) qs.set("productionBucket", bucket.trim());
+      const wo = Number(searchParams.get("workOrderId") || 0);
+      if (wo > 0) qs.set("workOrderId", String(wo));
+      const q = qs.toString();
+      return { to: q ? `/production?${q}` : "/production", label: "Back to Production Workspace" };
+    }
+    const fromStep = (searchParams.get("fromStep") || "").toLowerCase();
+    if (fromStep === "dispatch" || source === "dispatch") {
+      const soId = Number(searchParams.get("salesOrderId") ?? 0);
+      return {
+        to: soId > 0 ? `/dispatch?salesOrderId=${soId}` : "/dispatch",
+        label: "Back to Dispatch Workspace",
+      };
     }
     return ERP_BACK_SMART_MAP.dashboard;
   }

@@ -14,6 +14,7 @@ import {
   formatPostWoCreateSuccessMessage,
   postWoMaterialIssueHref,
 } from "../../../lib/materialWorkflowLinks";
+import { buildMaterialIssueDeepLink } from "../../../lib/manufacturingNavigationContinuity";
 import { placementQuantitiesMatchSuggested } from "../../../lib/materialIssueContinuousSession";
 import {
   EXECUTION_WO_HISTORY_MAX_ROWS,
@@ -845,7 +846,11 @@ export function RequirementSheetExecutionPanel({
                       <td className="py-1.5 pr-2">
                         {wo.pmrId ? (
                           <Link
-                            to={`/material-issue?pmrId=${wo.pmrId}&returnTo=rm-control-center`}
+                            to={buildMaterialIssueDeepLink({
+                              pmrId: wo.pmrId,
+                              workOrderId: wo.workOrderId,
+                              returnTo: "rm-control-center",
+                            })}
                             state={executionMode ? materialIssueFromWorkspaceState : undefined}
                             className="font-medium text-primary underline underline-offset-2"
                           >

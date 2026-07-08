@@ -1,6 +1,7 @@
 import type { ProcurementPendingRow } from "../components/erp/ProcurementPendingDashboardCard";
 import type { WoPrepareDashboardQueues } from "../components/erp/WoPrepareOperationalQueuesCard";
 import { productionWorkspaceHref } from "./materialWorkflowLinks";
+import { buildMaterialIssueDeepLink } from "./manufacturingNavigationContinuity";
 import { GUIDED_WORKFLOW_CTA } from "./rmGuidedWorkflow";
 import { buildRmControlCenterHref } from "./woProcurementContinuity";
 import { woPreparePrepareHref } from "./woPrepareOperationalStage";
@@ -129,7 +130,7 @@ export function buildOperationalSoActions(
           : row.operationalKey === "PARTIALLY_ALLOCATED"
             ? "Partially allocated"
             : "Waiting RM";
-    const issueHref = `/material-issue?workOrderId=${woId}&returnTo=dashboard`;
+    const issueHref = buildMaterialIssueDeepLink({ workOrderId: woId, returnTo: "dashboard", salesOrderId: soId > 0 ? soId : null });
     const productionHref = productionWorkspaceHref(woId, undefined, {
       salesOrderId: soId > 0 ? soId : undefined,
       orderType: row.orderType,
@@ -195,7 +196,9 @@ export function buildOperationalSoActions(
         : "Issue RM to Production",
       statusLine: row.operationalLabel ?? null,
       actionLabel: "Issue RM to Production",
-      actionTo: woId > 0 ? `/material-issue?workOrderId=${woId}&returnTo=dashboard` : buildRmControlCenterHref({
+      actionTo: woId > 0
+        ? buildMaterialIssueDeepLink({ workOrderId: woId, returnTo: "dashboard", salesOrderId: soId > 0 ? soId : null })
+        : buildRmControlCenterHref({
         salesOrderId: soId > 0 ? soId : undefined,
         materialRequirementId: row.materialRequirementId,
         returnTo: "dashboard",

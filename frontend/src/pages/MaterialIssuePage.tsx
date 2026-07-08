@@ -22,6 +22,7 @@ import {
   isMaterialIssueLineStockBlocked,
 } from "../lib/materialIssueUx";
 import { buildRmControlCenterHref } from "../lib/woProcurementContinuity";
+import { buildMaterialIssuePostActionSearchParams } from "../lib/manufacturingNavigationContinuity";
 import { MaterialIssuePmrQueuePanel } from "../components/erp/MaterialIssuePmrQueuePanel";
 import {
   buildActionableWorkOrderDropdownOptions,
@@ -219,13 +220,22 @@ type RecentIssue = {
   lines: Array<{ itemName: string; issueQty: number; unit: string }>;
 };
 
-function postIssueSearchParams(returnTo: string | null, workOrderId?: number): Record<string, string> {
-  const next: Record<string, string> = {};
-  if (returnTo) next.returnTo = returnTo;
-  if (returnTo === "production-workspace" && workOrderId && workOrderId > 0) {
-    next.workOrderId = String(workOrderId);
-  }
-  return next;
+function postIssueSearchParams(
+  returnTo: string | null,
+  opts: {
+    workOrderId?: number;
+    salesOrderId?: number | null;
+    requirementSheetId?: number | null;
+    productionBucket?: string | null;
+  },
+): Record<string, string> {
+  return buildMaterialIssuePostActionSearchParams({
+    returnTo,
+    workOrderId: opts.workOrderId,
+    salesOrderId: opts.salesOrderId,
+    requirementSheetId: opts.requirementSheetId,
+    productionBucket: opts.productionBucket,
+  });
 }
 
 function fmtQty(n: number, unit?: string) {
@@ -789,7 +799,12 @@ export function MaterialIssuePage() {
       setActivePmr(null);
       setIssueDecision(null);
       setSearchParams(
-        postIssueSearchParams(returnTo, typeof workOrderId === "number" ? workOrderId : undefined),
+        postIssueSearchParams(returnTo, {
+          workOrderId: typeof workOrderId === "number" ? workOrderId : undefined,
+          salesOrderId: sessionScope.salesOrderId ?? (Number(searchParams.get("salesOrderId")) || null),
+          requirementSheetId: sessionScope.requirementSheetId ?? (Number(searchParams.get("requirementSheetId")) || null),
+          productionBucket: searchParams.get("productionBucket"),
+        }),
       );
       setLines([emptyLine()]);
       await loadAll();

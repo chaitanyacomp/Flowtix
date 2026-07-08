@@ -1,5 +1,6 @@
 /** WO shortage procurement visibility — presentation only (Phase A). */
 
+import { buildRmControlCenterDeepLink } from "./manufacturingNavigationContinuity";
 import {
   PROCUREMENT_STATUS_VOCABULARY,
   PROCUREMENT_TERMS,
@@ -31,17 +32,7 @@ export function buildRmControlCenterHref(opts: {
   returnTo?: string | null;
   onlyBlocked?: boolean;
 }): string {
-  const q = new URLSearchParams();
-  if (opts.workOrderId != null && opts.workOrderId > 0) q.set("workOrderId", String(opts.workOrderId));
-  if (opts.rmItemId != null && opts.rmItemId > 0) q.set("rmItemId", String(opts.rmItemId));
-  if (opts.salesOrderId != null && opts.salesOrderId > 0) q.set("salesOrderId", String(opts.salesOrderId));
-  if (opts.materialRequirementId != null && opts.materialRequirementId > 0) {
-    q.set("materialRequirementId", String(opts.materialRequirementId));
-  }
-  if (opts.returnTo) q.set("returnTo", opts.returnTo);
-  if (opts.onlyBlocked) q.set("onlyBlocked", "true");
-  const s = q.toString();
-  return s ? `/reports/rm-shortage?${s}` : "/reports/rm-shortage";
+  return buildRmControlCenterDeepLink(opts);
 }
 
 export function formatProcurementQty(n: number, unit?: string): string {

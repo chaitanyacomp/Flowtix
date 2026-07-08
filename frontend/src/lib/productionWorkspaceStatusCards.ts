@@ -14,11 +14,6 @@ export type RmReturnPendingRow = {
   workOrderNo?: string;
 };
 
-/** @deprecated Prefer {@link classifyProductionQueueBucketFromBackend} — thin alias for call-site stability. */
-export function classifyProductionQueueBucket(row: DashboardProductionStatusSource): ProductionWorkspaceStatusBucket | null {
-  return classifyProductionQueueBucketFromBackend(row);
-}
-
 export function buildProductionWorkspaceStatusCounts(
   queueRows: DashboardProductionStatusSource[],
   rmReturnPending: RmReturnPendingRow[],
@@ -31,7 +26,7 @@ export function buildProductionWorkspaceStatusCounts(
   for (const row of queueRows) {
     const woId = Number(row.workOrderId ?? 0);
     if (!(woId > 0)) continue;
-    const bucket = classifyProductionQueueBucket(row);
+    const bucket = classifyProductionQueueBucketFromBackend(row);
     if (bucket === "readyToStart") woReady.add(woId);
     if (bucket === "shortfallDecision") woShortfall.add(woId);
     if (bucket === "pendingQa") woQa.add(woId);

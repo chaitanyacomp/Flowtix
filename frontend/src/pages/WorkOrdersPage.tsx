@@ -48,7 +48,8 @@ import { isProductionBlockedByRmReadiness } from "../components/erp/ProductionRm
 import { buildRmIssueNextStep } from "../lib/regularSoOperationalGuidance";
 import { buildProductionScopedHref } from "../lib/productionNavigation";
 import { displaySalesOrderNo, displayWorkOrderNo } from "../lib/docNoDisplay";
-import { formatPostWoCreateSuccessMessage, postWoMaterialIssueHref } from "../lib/materialWorkflowLinks";
+import { formatPostWoCreateSuccessMessage } from "../lib/materialWorkflowLinks";
+import { buildMaterialIssueDeepLink } from "../lib/manufacturingNavigationContinuity";
 import { ensureSubmittedPmrForWorkOrderHandoff } from "../lib/postWoMaterialIssueHandoff";
 import { useToast } from "../contexts/ToastContext";
 import { NoQtyCycleContextBar } from "../components/erp/foundation/NoQtyCycleContextBar";
@@ -1485,7 +1486,7 @@ export function WorkOrdersPage() {
     const label = workOrderLabel?.trim() || displayWorkOrderNo(woId, null);
     toast.showSuccess(formatPostWoCreateSuccessMessage(label, pmrDocNo));
     nav(
-      postWoMaterialIssueHref({
+      buildMaterialIssueDeepLink({
         workOrderId: woId,
         pmrId,
         returnTo,

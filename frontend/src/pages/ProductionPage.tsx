@@ -44,7 +44,7 @@ import { DemoFlowBanner } from "../components/demo/DemoFlowBanner";
 import { DemoSafeNoQtyContinue } from "../components/demo/DemoSafeNoQtyContinue";
 import { useDemoMode } from "../contexts/DemoModeContext";
 import { demoHighlightKey } from "../lib/demoFlowConfig";
-import { displayRequirementSheetNo, displaySalesOrderNo, displayWorkOrderNo } from "../lib/docNoDisplay";
+import { displayRequirementSheetNo, displaySalesOrderNo, displayWorkOrderNo, displayWorkOrderTraceNo } from "../lib/docNoDisplay";
 import { productionFlowDisplayLabel } from "../lib/productionFlowPresentation";
 import { useErpRefreshTick } from "../hooks/useErpRefreshTick";
 import { useErpRoleUi } from "../hooks/useErpRoleUi";
@@ -1959,7 +1959,8 @@ export function ProductionPage() {
       const fromWoId = effectiveScopedWoId;
       if (fromWoId > 0 && fromWoId !== row.workOrderId && isProductionReportDraftDirty(fromWoId)) {
         const fromLabel =
-          greenLevelProductionQueueRows.find((r) => r.workOrderId === fromWoId)?.woLabel ?? `WO-${fromWoId}`;
+          greenLevelProductionQueueRows.find((r) => r.workOrderId === fromWoId)?.woLabel ??
+          displayWorkOrderTraceNo(fromWoId);
         setGlWoSwitchPrompt({ targetRow: row, fromWoLabel: fromLabel });
         return;
       }
@@ -2527,7 +2528,7 @@ export function ProductionPage() {
     if (!selected || !selectedMetrics) return null;
     return resolveNoQtyCycleDisplayStatus({
       workOrderId: woIdForStatus,
-      workOrderNo: `WO-${woIdForStatus}`,
+      workOrderNo: displayWorkOrderTraceNo(woIdForStatus),
       itemName: selected.fgItem.itemName,
       requiredQty: selectedMetrics.woLineQty,
       producedQty: selectedMetrics.usedQty,

@@ -1,4 +1,5 @@
 import { GREEN_LEVEL_WO_SOURCE_TYPE } from "./productionFlowContract";
+import { displayWorkOrderTraceNo } from "./docNoDisplay";
 import { greenLevelWorkOrderSelectLabel, isGreenLevelProductionWorkOrder } from "./greenLevelProductionExecution";
 
 const EPS = 1e-6;
@@ -187,7 +188,7 @@ export function buildGreenLevelProductionWorkQueueRows(input: {
     rows.push({
       workOrderLineId: lineId,
       workOrderId: woId,
-      woLabel: woId > 0 ? `WO-${woId}` : "—",
+      woLabel: woId > 0 ? displayWorkOrderTraceNo(woId) : "—",
       itemName: "—",
       plannedQty: producedQty,
       producedQty,

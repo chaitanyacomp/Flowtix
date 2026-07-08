@@ -134,23 +134,3 @@ export function isSalesBillBillingAdjustmentRequired(
     row?.salesBillBillingAdjustmentRequired === true || row?.billingAdjustmentRequired === true
   );
 }
-
-export function mergeDispatchReadinessFields<T extends DispatchReadinessRow>(
-  row: T,
-  index: Map<number, DispatchReadinessRow>,
-): T {
-  const id = Number(row.id);
-  if (!(id > 0)) return row;
-  const fromSo = index.get(id);
-  if (!fromSo) return row;
-  return {
-    ...row,
-    draftLockEligibility: row.draftLockEligibility ?? fromSo.draftLockEligibility ?? null,
-    draftLockEligibilityReason:
-      row.draftLockEligibilityReason ?? fromSo.draftLockEligibilityReason ?? null,
-    salesBillBillingAdjustmentRequired:
-      row.salesBillBillingAdjustmentRequired ?? fromSo.salesBillBillingAdjustmentRequired ?? null,
-    billingAdjustmentRequired:
-      row.billingAdjustmentRequired ?? fromSo.billingAdjustmentRequired ?? null,
-  };
-}

@@ -5,6 +5,7 @@ import {
   parseProductionIdFromQcRef,
   qcQueueRowHref,
   qcStatusFromRollups,
+  resolveRegularPostQcDispatchHref,
 } from "../../src/lib/qcWorkspaceReadinessUx";
 import { resolveProductionBatchQcRollups } from "../../src/lib/qcBatchRollups";
 
@@ -63,6 +64,13 @@ describe("qcWorkspaceReadinessUx", () => {
         dispatchableQty: 50,
       }),
     ).toBe(false);
+  });
+
+  it("builds regular post-QC dispatch href for QC handoff", () => {
+    expect(resolveRegularPostQcDispatchHref(12, false)).toBe("/dispatch?salesOrderId=12&from=qc-entry");
+    expect(resolveRegularPostQcDispatchHref(12, true)).toBe(
+      "/dispatch?salesOrderId=12&from=qc-entry&mode=partial",
+    );
   });
 
   it("builds qc-entry href from dashboard qc-queue row", () => {

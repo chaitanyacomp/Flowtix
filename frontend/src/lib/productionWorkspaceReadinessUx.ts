@@ -20,7 +20,7 @@ function n(v: unknown): number {
   return Number.isFinite(x) ? x : 0;
 }
 
-export function hasQueueRmReadinessFields(
+function hasQueueRmReadinessFields(
   row: Pick<DashboardProductionStatusSource, "rmReadinessGate" | "rmReadyForProduction">,
 ): boolean {
   if (row.rmReadyForProduction != null) return true;

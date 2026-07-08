@@ -6,6 +6,7 @@ import {
   type ProductionOperationalStatus,
   type ProductionOperationalStatusTone,
 } from "./dashboardProductionStatus";
+import { displayWorkOrderTraceNo } from "./docNoDisplay";
 
 export type NoQtyCycleDisplayScope = "auto" | "active" | "historical";
 
@@ -216,7 +217,7 @@ export function resolveNoQtyCycleDisplayStatusForWorkOrder(
 
   return resolveNoQtyCycleDisplayStatus({
     workOrderId: wo.id,
-    workOrderNo: `WO-${wo.id}`,
+    workOrderNo: displayWorkOrderTraceNo(wo.id),
     itemName: "—",
     requiredQty: required,
     producedQty: produced,

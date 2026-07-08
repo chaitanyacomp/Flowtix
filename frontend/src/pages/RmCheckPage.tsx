@@ -48,6 +48,7 @@ import { WoPrepareProductionPlanningPanel } from "../components/erp/WoPreparePro
 import { WoPrepareRmReadinessTable } from "../components/erp/WoPrepareRmReadinessTable";
 import { NextStepStrip } from "../components/erp/NextStepStrip";
 import { PageContainer } from "../components/PageHeader";
+import { displaySalesOrderNo } from "../lib/docNoDisplay";
 import type { ProductionRmReadiness } from "../components/erp/ProductionRmReadinessStrip";
 import { isProductionBlockedByRmReadiness } from "../components/erp/ProductionRmReadinessStrip";
 import {
@@ -726,7 +727,7 @@ export function RmCheckPage() {
     loading,
   ]);
 
-  const soDisplayLabel = soDetail?.docNo?.trim() || (soId > 0 ? `SO-${soId}` : "Select sales order");
+  const soDisplayLabel = displaySalesOrderNo(soId, soDetail?.docNo ?? null) || "Select sales order";
   const contextFgFromDetail = soDetail?.lines?.find((l) => l.item?.itemName);
   const contextFgFromList = orders.find((o) => o.id === soId)?.lines?.[0];
   const contextFgName = contextFgFromDetail?.item?.itemName ?? contextFgFromList?.item?.itemName ?? null;
@@ -903,7 +904,7 @@ export function RmCheckPage() {
       >
         {orders.map((o) => (
           <option key={o.id} value={o.id}>
-            {o.docNo?.trim() || `SO-${o.id}`}
+            {displaySalesOrderNo(o.id, o.docNo ?? null)}
           </option>
         ))}
       </select>

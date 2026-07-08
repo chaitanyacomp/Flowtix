@@ -96,15 +96,3 @@ export function waitingProcurementFromIssueDecision(
 ): boolean {
   return Boolean(decision?.waitingProcurement);
 }
-
-export function pmrNextActionFromBackend(input: {
-  decision?: BackendIssueDecisionReadiness | null;
-  pmr?: BackendPmrStoreReadiness | null;
-}): string {
-  if (input.decision?.storeActionLabel?.trim()) return input.decision.storeActionLabel.trim();
-  if (input.pmr?.storeActionLabel?.trim()) return input.pmr.storeActionLabel.trim();
-  if (input.decision?.canIssueAnyPendingLine) return "Issue available RM";
-  if (input.decision?.waitingProcurement) return "Waiting procurement / GRN";
-  if (input.decision?.blockerReason?.trim()) return input.decision.blockerReason.trim();
-  return "Review allocation in RM Control Center";
-}

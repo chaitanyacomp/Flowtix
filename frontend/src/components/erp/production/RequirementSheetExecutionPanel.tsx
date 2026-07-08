@@ -10,10 +10,7 @@ import { cn } from "../../../lib/utils";
 import { useToast } from "../../../contexts/ToastContext";
 import { useStoreExecutionNavContext } from "../../../hooks/useStoreExecutionNavContext";
 import { navContextMaterialIssueFromExecutionWorkspace, navStateWithNavContext } from "../../../lib/erpNavContext";
-import {
-  formatPostWoCreateSuccessMessage,
-  postWoMaterialIssueHref,
-} from "../../../lib/materialWorkflowLinks";
+import { formatPostWoCreateSuccessMessage } from "../../../lib/materialWorkflowLinks";
 import { buildMaterialIssueDeepLink } from "../../../lib/manufacturingNavigationContinuity";
 import { placementQuantitiesMatchSuggested } from "../../../lib/materialIssueContinuousSession";
 import {
@@ -460,7 +457,7 @@ export function RequirementSheetExecutionPanel({
               ? "dashboard"
               : "requirement-sheet-execution";
         navigate(
-          postWoMaterialIssueHref({
+          buildMaterialIssueDeepLink({
             workOrderId: primaryWoId,
             pmrId: pmrRow?.pmrId ?? null,
             returnTo,

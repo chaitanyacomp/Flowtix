@@ -5,7 +5,6 @@
  */
 
 import { buildNoQtyGuidedHref } from "./noQtyFlowState";
-import { buildRegularDispatchGuidedHref } from "./manufacturingNavigationContinuity";
 
 const EPS = 1e-6;
 
@@ -229,9 +228,11 @@ export function resolveNoQtyPostQcActionHref(
 }
 
 export function resolveRegularPostQcDispatchHref(salesOrderId: number, partial: boolean): string {
-  const base = buildRegularDispatchGuidedHref({ to: "/dispatch", salesOrderId });
-  if (!partial) return `${base}&from=qc-entry`;
-  return `${base}&mode=partial&from=qc-entry`;
+  const qs = new URLSearchParams();
+  if (salesOrderId > 0) qs.set("salesOrderId", String(salesOrderId));
+  qs.set("from", "qc-entry");
+  if (partial) qs.set("mode", "partial");
+  return `/dispatch?${qs.toString()}`;
 }
 
 export type QcBatchStatus = "AWAITING_QC" | "PARTIAL_QC" | "COMPLETED_QC";

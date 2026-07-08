@@ -74,6 +74,8 @@ import {
   isQcProductionQueueClear,
   mapRegularPostQcDispatchHandoff,
   qcStatusFromRollups,
+  resolveNoQtyPostQcActionHref,
+  resolveRegularPostQcDispatchHref,
   type QcBatchStatus,
 } from "../lib/qcWorkspaceReadinessUx";
 
@@ -2092,7 +2094,7 @@ export function QcEntryPage() {
     if (!fromNoQtySo || !focusSoIdValid) return { kind: "NONE", nextStepLabel: "—" };
     if (focusSo?.cycleStatus === "Closed Cycle") return { kind: "NONE", nextStepLabel: "Cycle Closed" };
 
-    // Operator hierarchy: production QC → rework/hold → dispatch.
+    // Display priority only — backend next-action and disposition queues remain authoritative.
     if (qcQueueRows.length > 0) return { kind: "CONTINUE_QC", nextStepLabel: "Continue QC" };
     if (dispQueuesScoped.readyForQcRecheck.length > 0) {
       return { kind: "REWORK_FINAL_QC", nextStepLabel: "Rework queue — complete before dispatch" };
@@ -2114,28 +2116,34 @@ export function QcEntryPage() {
       noQtyFlowState?.nextAction === "DISPATCH" ||
       noQtyFlowState?.activeStep === 5
     ) {
-      return {
-        kind: "DISPATCH",
-        nextStepLabel: "Dispatch accepted qty",
-        href: buildNoQtyGuidedHref({
+      const href =
+        resolveNoQtyPostQcActionHref(noQtyQcNextAction, focusSoId, noQtyFlowState?.cycleId ?? null) ??
+        buildNoQtyGuidedHref({
           to: "/dispatch",
           salesOrderId: focusSoId,
           cycleId: noQtyFlowState?.cycleId ?? null,
           fromStep: "qc",
-        }),
+        });
+      return {
+        kind: "DISPATCH",
+        nextStepLabel: "Dispatch accepted qty",
+        href,
         buttonLabel: "Open Dispatch",
       };
     }
     if (noQtyFlowState?.nextAction === "PRODUCTION" || noQtyFlowState?.activeStep === 3) {
-      return {
-        kind: "PRODUCTION",
-        nextStepLabel: "Production",
-        href: buildNoQtyGuidedHref({
+      const href =
+        resolveNoQtyPostQcActionHref(noQtyQcNextAction, focusSoId, noQtyFlowState?.cycleId ?? null) ??
+        buildNoQtyGuidedHref({
           to: "/production",
           salesOrderId: focusSoId,
           cycleId: noQtyFlowState?.cycleId ?? null,
           fromStep: "work_order",
-        }),
+        });
+      return {
+        kind: "PRODUCTION",
+        nextStepLabel: "Production",
+        href,
         buttonLabel: "Go to Production",
       };
     }
@@ -2155,6 +2163,7 @@ export function QcEntryPage() {
     noQtyFlowState?.primaryAction,
     noQtyFlowState?.primaryActionForCurrentUser,
     noQtyFlowState?.overallWorkflowState,
+    noQtyQcNextAction,
     qcQueueRows.length,
   ]);
 
@@ -2486,7 +2495,7 @@ export function QcEntryPage() {
                   </ul>
                   <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-start">
                     <Link
-                      to={`/dispatch?salesOrderId=${focusSoId}&mode=partial&from=qc-entry`}
+                      to={resolveRegularPostQcDispatchHref(focusSoId, true)}
                       data-testid="qc-dispatch-available-now"
                       className={cn(
                         buttonVariants({ size: "sm", variant: "default" }),
@@ -2552,7 +2561,7 @@ export function QcEntryPage() {
                   </p>
                   <div className="mt-2">
                     <Link
-                      to={`/dispatch?salesOrderId=${focusSoId}&from=qc-entry`}
+                      to={resolveRegularPostQcDispatchHref(focusSoId, false)}
                       data-testid="qc-go-dispatch-only"
                       className={cn(
                         buttonVariants({ size: "sm", variant: "default" }),

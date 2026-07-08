@@ -1,13 +1,11 @@
 import { describe, expect, it } from "vitest";
-import {
-  buildProductionWorkspaceStatusCounts,
-  classifyProductionQueueBucket,
-} from "../../src/lib/productionWorkspaceStatusCards";
+import { buildProductionWorkspaceStatusCounts } from "../../src/lib/productionWorkspaceStatusCards";
+import { classifyProductionQueueBucketFromBackend } from "../../src/lib/productionWorkspaceReadinessUx";
 
 describe("productionWorkspaceStatusCards", () => {
   it("classifies shortfall and parallel Store task buckets", () => {
     expect(
-      classifyProductionQueueBucket({
+      classifyProductionQueueBucketFromBackend({
         workOrderId: 1,
         workOrderNo: "WO-1",
         itemName: "FG",
@@ -39,7 +37,7 @@ describe("productionWorkspaceStatusCards", () => {
 
   it("does not count RM-blocked zero-production rows as ready to start", () => {
     expect(
-      classifyProductionQueueBucket({
+      classifyProductionQueueBucketFromBackend({
         workOrderId: 4,
         workOrderNo: "WO-4",
         itemName: "FG",

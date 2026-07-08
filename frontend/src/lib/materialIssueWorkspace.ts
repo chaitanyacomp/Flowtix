@@ -63,7 +63,7 @@ function n(v: unknown): number {
 const ACTIONABLE_STATUSES = new Set(["REQUESTED", "PARTIALLY_ISSUED"]);
 
 /** @deprecated Prefer backend `storeIssueReady` / `storeActionKey` (M1.5). Legacy fallback only. */
-export function isActionablePmrStatus(status: string): boolean {
+function isActionablePmrStatus(status: string): boolean {
   return ACTIONABLE_STATUSES.has(String(status ?? "").toUpperCase());
 }
 
@@ -306,17 +306,4 @@ export function resolveMaterialIssueLineStatus(input: {
     label: "No available stock",
     explanation: "No free stock at the selected store location.",
   };
-}
-
-export function pmrNextActionLabel(input: {
-  canIssueAny: boolean;
-  waitingProcurement?: boolean;
-  storeActionLabel?: string | null;
-  blockerReason?: string | null;
-}): string {
-  if (input.storeActionLabel?.trim()) return input.storeActionLabel.trim();
-  if (input.canIssueAny) return "Issue available RM";
-  if (input.waitingProcurement) return "Waiting procurement / GRN";
-  if (input.blockerReason?.trim()) return input.blockerReason.trim();
-  return "Review allocation in RM Control Center";
 }

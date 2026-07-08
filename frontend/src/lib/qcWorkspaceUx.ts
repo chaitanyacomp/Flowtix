@@ -1,6 +1,6 @@
 /**
  * QA workspace presentation — queue rows, completion copy, navigation labels.
- * Business rules unchanged; labels and operator flow only.
+ * Presentation only: maps backend/API state to operator copy. QC POST/reverse APIs remain authoritative.
  */
 
 import { PRODUCTION_QA_TERMS } from "./productionQaTerminology";

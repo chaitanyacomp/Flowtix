@@ -28,24 +28,6 @@ export type ManufacturingNavPreserveInput = {
   productionBucket?: string | null;
 };
 
-export function appendManufacturingNavPreserve(
-  qs: URLSearchParams,
-  input: ManufacturingNavPreserveInput,
-): void {
-  if (input.returnTo?.trim()) qs.set("returnTo", input.returnTo.trim());
-  if (input.from?.trim()) qs.set("from", input.from.trim());
-  if (input.salesOrderId != null && Number(input.salesOrderId) > 0) {
-    qs.set("salesOrderId", String(input.salesOrderId));
-  }
-  if (input.requirementSheetId != null && Number(input.requirementSheetId) > 0) {
-    qs.set("requirementSheetId", String(input.requirementSheetId));
-  }
-  if (input.workOrderId != null && Number(input.workOrderId) > 0) {
-    qs.set("workOrderId", String(input.workOrderId));
-  }
-  if (input.productionBucket?.trim()) qs.set("productionBucket", input.productionBucket.trim());
-}
-
 /** Production workspace list URL — preserves optional bucket filter. */
 export function buildProductionWorkspaceListHref(opts?: {
   productionBucket?: string | null;

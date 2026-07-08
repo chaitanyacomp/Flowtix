@@ -13,7 +13,7 @@ export function isActiveQcEntry(row: QcEntryLike | null | undefined): boolean {
   return row != null && row.reversedAt == null;
 }
 
-export function sumActiveQcAcceptedQty(qcEntries: readonly QcEntryLike[] | null | undefined): number {
+function sumActiveQcAcceptedQty(qcEntries: readonly QcEntryLike[] | null | undefined): number {
   let a = 0;
   for (const q of qcEntries ?? []) {
     if (!isActiveQcEntry(q)) continue;
@@ -22,7 +22,7 @@ export function sumActiveQcAcceptedQty(qcEntries: readonly QcEntryLike[] | null 
   return a;
 }
 
-export function sumActiveQcRejectedQty(qcEntries: readonly QcEntryLike[] | null | undefined): number {
+function sumActiveQcRejectedQty(qcEntries: readonly QcEntryLike[] | null | undefined): number {
   let r = 0;
   for (const q of qcEntries ?? []) {
     if (!isActiveQcEntry(q)) continue;
@@ -32,7 +32,7 @@ export function sumActiveQcRejectedQty(qcEntries: readonly QcEntryLike[] | null 
 }
 
 /** max(0, produced − accepted − rejected) using active QC only */
-export function getProductionBatchQcPendingQty(
+function getProductionBatchQcPendingQty(
   producedQty: number,
   acceptedQty: number,
   rejectedQty: number,

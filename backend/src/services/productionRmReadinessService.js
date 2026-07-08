@@ -549,22 +549,7 @@ function resolveProductionBatchRmCap(readiness, otherUnapprovedQty = 0) {
   return Math.max(0, Math.min(woCap, rmCap) - n(otherUnapprovedQty));
 }
 
-/**
- * @param {import('@prisma/client').Prisma.TransactionClient} tx
- */
-async function assertProductionRmReadiness(tx, {
-  workOrderLineId,
-  producedQty,
-  excludeProductionId,
-}) {
-  const readiness = await buildProductionRmReadiness(tx, workOrderLineId);
-  const qty = n(producedQty);
-  if (qty <= STOCK_EPS) {
-    const err = new Error("Production quantity must be positive.");
-    err.statusCode = 400;
-    throw err;
-  }
-
+function assertProductionPmrGate(readiness) {
   if (readiness.bomMissing) {
     const err = new Error("BOM_MISSING");
     err.code = "BOM_MISSING";
@@ -600,6 +585,29 @@ async function assertProductionRmReadiness(tx, {
     err.code = "PRODUCTION_RM_WAITING_RELEASE";
     err.statusCode = 409;
     throw err;
+  }
+}
+
+/**
+ * @param {import('@prisma/client').Prisma.TransactionClient} tx
+ */
+async function assertProductionRmReadiness(tx, {
+  workOrderLineId,
+  producedQty,
+  excludeProductionId,
+  readiness: preloadedReadiness,
+  skipPmrGate = false,
+}) {
+  const readiness = preloadedReadiness ?? (await buildProductionRmReadiness(tx, workOrderLineId));
+  const qty = n(producedQty);
+  if (qty <= STOCK_EPS) {
+    const err = new Error("Production quantity must be positive.");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  if (!skipPmrGate) {
+    assertProductionPmrGate(readiness);
   }
 
   const otherUnapprovedQty = await loadOtherUnapprovedProductionQty(tx, workOrderLineId, excludeProductionId);
@@ -797,6 +805,7 @@ module.exports = {
   buildProductionRmReadinessDebugPayload,
   getWorkOrderProductionLocationIds,
   buildProductionRmReadiness,
+  assertProductionPmrGate,
   assertProductionRmReadiness,
   /** @deprecated alias */
   assertRegularProductionRmReadiness: assertProductionRmReadiness,

@@ -82,6 +82,7 @@ const {
   assertNoQtyWorkOrderExecutionReleased,
   filterNoQtyExecutionReleasedWorkOrders,
 } = require("../services/noQtyExecutionBoundaryService");
+const { assertProductionEntryAllowed } = require("../services/productionEntryGateService");
 const { maybeAutoCloseSalesOrderOperationally } = require("../services/salesOrderOperationalAutoClose");
 const { approvedBomWhere, approvedBomOrderBy } = require("../services/bomStatus");
 const { evaluateWoPrepareReadiness } = require("../services/materialPlanningService");
@@ -89,7 +90,6 @@ const { computeFgGapLinesForSalesOrder } = require("../services/rmCheckService")
 const {
   buildProductionRmReadiness,
   buildProductionRmReadinessDebugPayload,
-  assertProductionRmReadiness,
   issueRmForApprovedProductionFromPmrLocations,
   issueRmStockForProductionBatchAtProductionLocations,
   returnRmStockForProductionBatchFromProductionLocations,
@@ -123,7 +123,6 @@ const {
   RESOLUTION_REASONS,
   computeExecutionSummary,
   getProductionExecutionSummary,
-  assertNoQtyProductionExecutionAllowsProduction,
   blockProductionExecution,
   resumeProductionExecution,
   finishProductionExecution,
@@ -132,72 +131,9 @@ const {
   blockReasonLabel,
 } = require("../services/productionExecutionService");
 
-async function assertNoQtyWorkOrderInActiveCycleOrThrow(tx, workOrderId, messagePrefix) {
-  const wo = await tx.workOrder.findUnique({
-    where: { id: workOrderId },
-    select: {
-      id: true,
-      salesOrderId: true,
-      cycleId: true,
-      status: true,
-      sourceType: true,
-      requirementSheetId: true,
-      productionExecution: { select: { executionStatus: true } },
-    },
-  });
-  if (!wo) {
-    const err = new Error("Work order not found.");
-    err.statusCode = 404;
-    throw err;
-  }
-  if (wo.sourceType === GREEN_LEVEL_WO_SOURCE_TYPE || wo.salesOrderId == null) return { wo, so: null };
-  const so = await tx.salesOrder.findUnique({
-    where: { id: wo.salesOrderId },
-    select: { id: true, orderType: true, internalStatus: true, currentCycleId: true },
-  });
-  if (!so) {
-    const err = new Error("Sales order not found.");
-    err.statusCode = 404;
-    throw err;
-  }
-  if (so.orderType !== "NO_QTY") return { wo, so }; // regular flows unchanged
-  if (so.internalStatus === "COMPLETED" || so.internalStatus === "MANUALLY_CLOSED" || so.internalStatus === "CLOSED") {
-    const err = new Error("This sales order is closed. Production/QC is view-only.");
-    err.statusCode = 409;
-    throw err;
-  }
-  if (isWorkOrderProductionOperationallyClosed(wo, so)) {
-    const err = new Error("This work order is not open for production.");
-    err.statusCode = 409;
-    throw err;
-  }
-  /**
-   * NO_QTY: allow optional production on this WO's cycle even when {@link SalesOrder.currentCycleId}
-   * has advanced (next RS / new cycle). Same RS-on-cycle guard as QC — do not require wo.cycleId === pointer.
-   */
-  const woCycleId = normalizePositiveCycleId(wo.cycleId);
-  if (!woCycleId) {
-    const err = new Error("This work order is not linked to a requirement-sheet cycle. Production cannot be recorded.");
-    err.statusCode = 409;
-    throw err;
-  }
-  const lockedOnWoCycle = await tx.requirementSheet.findFirst({
-    where: { salesOrderId: so.id, cycleId: woCycleId, status: "LOCKED" },
-    select: { id: true },
-  });
-  if (!lockedOnWoCycle) {
-    const err = new Error("Requirement Sheet must be locked before production.");
-    err.statusCode = 409;
-    throw err;
-  }
-  await assertNoQtyWorkOrderExecutionReleased(tx, workOrderId, "Production");
-  return { wo, so };
-}
-
 /**
  * NO_QTY only: allow QC on approved batches for the work order's own cycle when that cycle still has a LOCKED RS.
- * Production create/update/approve uses the same per-WO-cycle RS lock rule via {@link assertNoQtyWorkOrderInActiveCycleOrThrow}
- * (no longer requires `wo.cycleId === so.currentCycleId`).
+ * Production create/update/approve uses {@link assertProductionEntryAllowed} (Gate G1).
  * @param {import("@prisma/client").Prisma.TransactionClient} tx
  * @param {number} workOrderId
  */
@@ -389,30 +325,6 @@ async function reconcileNoQtyWoLineQtyWithRsSnapshot(prismaClient, woRowsRaw, { 
 }
 
 /**
- * Replacement / customer-return fulfillment orders must not use the production floor
- * (no work orders, no production batches, no production QC on those batches).
- */
-async function assertSalesOrderNotCustomerReturnReplacementProduction(tx, salesOrderId) {
-  const so = await tx.salesOrder.findUnique({
-    where: { id: salesOrderId },
-    select: { id: true, orderType: true, customerReturnId: true },
-  });
-  if (!so) {
-    const err = new Error("Sales order not found.");
-    err.statusCode = 404;
-    throw err;
-  }
-  if (so.orderType === "REPLACEMENT" || so.customerReturnId != null) {
-    const err = new Error(
-      "Work orders and production batches are not allowed on customer-return replacement sales orders. Fulfillment uses customer-return QC and replacement dispatch only.",
-    );
-    err.statusCode = 409;
-    err.code = "NO_PRODUCTION_ON_CUSTOMER_RETURN_REPLACEMENT_SO";
-    throw err;
-  }
-}
-
-/**
  * Shared enrichment for GET /work-orders (production line metrics; optional pending-only trim).
  * @param {import("@prisma/client").PrismaClient} db
  * @param {Awaited<ReturnType<import("@prisma/client").PrismaClient["workOrder"]["findMany"]>>} rows
@@ -584,15 +496,10 @@ productionRouter.post(
 /** Only APPROVED batches count toward WO completion vs planned qty. */
 const PE_APPROVED = "APPROVED";
 const PE_DRAFT = "DRAFT";
-const PROD_TOLERANCE_PCT = 0.05;
 const TERMINAL_WO_STATUSES = Object.freeze(["COMPLETED", "REJECTED", "CLOSED_WITH_SHORTFALL"]);
 
 function isGreenLevelReplenishmentWorkOrder(wo) {
   return String(wo?.sourceType ?? "").toUpperCase() === GREEN_LEVEL_WO_SOURCE_TYPE;
-}
-
-function allowsWorkOrderProductionOverPlan(wo, orderType) {
-  return orderType === "NO_QTY" || isGreenLevelReplenishmentWorkOrder(wo);
 }
 
 function isTerminalWorkOrderStatus(status) {
@@ -601,82 +508,6 @@ function isTerminalWorkOrderStatus(status) {
 
 function isProductionExecutionClosed(executionStatus) {
   return String(executionStatus ?? "").toUpperCase() === "COMPLETED";
-}
-
-function rejectIfProductionQtyExceedsWoTolerance({
-  lineQty,
-  totalProducedQty,
-  allowOverproduction,
-  messageBuilder,
-}) {
-  if (allowOverproduction) return;
-  const allowedMaxQty = lineQty * (1 + PROD_TOLERANCE_PCT);
-  if (totalProducedQty > allowedMaxQty + WO_SO_EPS) {
-    const err = new Error(messageBuilder({ lineQty, allowedMaxQty, totalProducedQty }));
-    err.statusCode = 409;
-    throw err;
-  }
-}
-
-/**
- * Sum produced qty on a WO line (draft + approved) for plan-cap checks.
- * @param {import('@prisma/client').Prisma.TransactionClient} tx
- * @param {{ excludeProductionId?: number }} [opts]
- */
-/** @deprecated All order types use {@link assertProductionRmReadiness}. */
-async function isRegularProductionWorkOrderLine(tx, workOrderLineId) {
-  const wol = await tx.workOrderLine.findUnique({
-    where: { id: workOrderLineId },
-    select: { workOrder: { select: { salesOrder: { select: { orderType: true } } } } },
-  });
-  const ot = wol?.workOrder?.salesOrder?.orderType;
-  return ot != null && ot !== "NO_QTY";
-}
-
-async function sumProducedQtyOnLine(tx, workOrderLineId, opts = {}) {
-  const where = { workOrderLineId };
-  if (opts.excludeProductionId != null) {
-    where.id = { not: opts.excludeProductionId };
-  }
-  const agg = await tx.productionEntry.aggregate({
-    where,
-    _sum: { producedQty: true },
-  });
-  return Number(agg._sum.producedQty ?? 0);
-}
-
-/**
- * Post RM ISSUE stock transactions for an approved production batch (BOM explosion).
- * @param {import('@prisma/client').Prisma.TransactionClient} tx
- */
-async function issueRmStockForProductionBatch(tx, { productionId, fgItemId, producedQty }) {
-  const bom = await tx.bom.findFirst({
-    where: approvedBomWhere(fgItemId),
-    orderBy: approvedBomOrderBy,
-    include: { lines: true },
-  });
-  if (!bom) return false;
-  const issueLines = await filterBomLinesForRmIssue(tx, bom);
-  for (const line of issueLines) {
-    const perUnit = effectiveQtyPerUnit(line.baseQtyPerFg ?? line.baseQty, line.wastagePercent, line.qcAllowancePercent);
-    const rmQtyOut = perUnit * Number(producedQty);
-    await assertSufficientStockForQtyOut(
-      tx,
-      line.rmItemId,
-      rmQtyOut,
-      `Insufficient raw material stock for production (BOM issue). RM item #${line.rmItemId}, required out: ${rmQtyOut}.`,
-    );
-    await tx.stockTransaction.create({
-      data: {
-        itemId: line.rmItemId,
-        transactionType: "ISSUE",
-        refId: productionId,
-        qtyIn: "0",
-        qtyOut: String(rmQtyOut),
-      },
-    });
-  }
-  return true;
 }
 
 /**
@@ -1972,68 +1803,28 @@ productionRouter.post(
       const result = await prisma.$transaction(async (tx) => {
         await lockWorkOrderLineForUpdate(tx, body.workOrderLineId);
 
-        const wol = await tx.workOrderLine.findUnique({
-          where: { id: body.workOrderLineId },
-          include: {
-            workOrder: {
-              select: { sourceType: true, salesOrderId: true, salesOrder: { select: { orderType: true } } },
-            },
-            fgItem: true,
-          },
-        });
-        if (!wol) {
-          const err = new Error("Work order line not found");
-          err.statusCode = 404;
-          throw err;
-        }
-        if (!wol.workOrder) {
-          const err = new Error("Production requires a valid work order.");
-          err.statusCode = 400;
-          throw err;
-        }
-        if (wol.workOrder.salesOrderId != null) {
-          await assertSalesOrderNotCustomerReturnReplacementProduction(tx, wol.workOrder.salesOrderId);
-        }
-
-        // NO_QTY: production allowed only for the active cycle and only after RS is locked.
-        await assertNoQtyWorkOrderInActiveCycleOrThrow(tx, wol.workOrderId, "This work order");
-        await assertWorkOrderAllowsProduction(tx, wol.workOrderId);
-        await assertNoQtyProductionExecutionAllowsProduction(tx, wol.workOrderId);
-
-        const alreadyProduced = await sumProducedQtyOnLine(tx, wol.id);
-        const lineQty = Number(wol.qty);
-        const allowOverproduction = allowsWorkOrderProductionOverPlan(
-          wol.workOrder,
-          wol.workOrder?.salesOrder?.orderType ?? "NORMAL",
-        );
-        rejectIfProductionQtyExceedsWoTolerance({
-          lineQty,
-          totalProducedQty: alreadyProduced + body.producedQty,
-          allowOverproduction,
-          messageBuilder: ({ lineQty: lq, allowedMaxQty, totalProducedQty }) => {
+        const gate = await assertProductionEntryAllowed(tx, {
+          workOrderLineId: body.workOrderLineId,
+          producedQty: body.producedQty,
+          woQtyToleranceMessageBuilder: ({ lineQty: lq, allowedMaxQty, alreadyProduced = 0 }) => {
             const fmt = (n) => (Number.isInteger(n) ? String(n) : Number(n).toFixed(3));
             const remainingProducible = Math.max(0, allowedMaxQty - alreadyProduced);
             return `Total produced quantity cannot exceed the allowed tolerance for this WO line (WO Qty + 5%). WO Qty: ${fmt(lq)}. Already recorded (draft + approved): ${fmt(alreadyProduced)}. Maximum additional quantity now: ${fmt(remainingProducible)}.`;
           },
         });
 
-        await assertProductionRmReadiness(tx, {
-          workOrderLineId: wol.id,
-          producedQty: body.producedQty,
-        });
-
         const prod = await tx.productionEntry.create({
           data: {
             docNo: await allocateDocNo(tx, { docType: DocType.PRODUCTION_ENTRY, date: entryDate ?? new Date() }),
-            workOrderLineId: wol.id,
+            workOrderLineId: gate.wol.id,
             producedQty: String(body.producedQty),
             workflowStatus: PE_DRAFT,
             ...(entryDate ? { date: entryDate } : {}),
           },
         });
 
-        const woAfter = await tx.workOrder.findUnique({ where: { id: wol.workOrderId } });
-        return { wo: woAfter ?? wol.workOrder, prod, draft: true };
+        const woAfter = await tx.workOrder.findUnique({ where: { id: gate.wo.id } });
+        return { wo: woAfter ?? gate.wo, prod, draft: true };
       });
 
       return res.status(201).json(result);
@@ -2088,43 +1879,16 @@ productionRouter.put(
         await assertProductionEntryHasNoQcHistory(tx, id);
 
         await lockWorkOrderLineForUpdate(tx, existing.workOrderLineId);
-        const wol = await tx.workOrderLine.findUnique({
-          where: { id: existing.workOrderLineId },
-          include: {
-            workOrder: { select: { sourceType: true, salesOrder: { select: { orderType: true } } } },
-          },
-        });
-        if (!wol?.workOrder) {
-          const err = new Error("Work order line not found");
-          err.statusCode = 404;
-          throw err;
-        }
 
-        await assertNoQtyWorkOrderInActiveCycleOrThrow(tx, wol.workOrderId, "This work order");
-        await assertWorkOrderAllowsProduction(tx, wol.workOrderId);
-        await assertNoQtyProductionExecutionAllowsProduction(tx, wol.workOrderId);
-
-        const others = await sumProducedQtyOnLine(tx, wol.id, { excludeProductionId: id });
-        const lineQty = Number(wol.qty);
-        const allowOverproduction = allowsWorkOrderProductionOverPlan(
-          wol.workOrder,
-          wol.workOrder?.salesOrder?.orderType ?? "NORMAL",
-        );
-        rejectIfProductionQtyExceedsWoTolerance({
-          lineQty,
-          totalProducedQty: others + body.producedQty,
-          allowOverproduction,
-          messageBuilder: ({ lineQty: lq, allowedMaxQty }) => {
-            const fmt = (n) => (Number.isInteger(n) ? String(n) : Number(n).toFixed(3));
-            const remaining = Math.max(0, allowedMaxQty - others);
-            return `Produced quantity cannot exceed the allowed tolerance for this WO line (WO Qty + 5%). WO Qty: ${fmt(lq)}. Other batches on this line: ${fmt(others)}. Maximum for this batch: ${fmt(remaining)}.`;
-          },
-        });
-
-        await assertProductionRmReadiness(tx, {
-          workOrderLineId: wol.id,
+        await assertProductionEntryAllowed(tx, {
+          workOrderLineId: existing.workOrderLineId,
           producedQty: body.producedQty,
           excludeProductionId: id,
+          woQtyToleranceMessageBuilder: ({ lineQty: lq, allowedMaxQty, alreadyProduced = 0 }) => {
+            const fmt = (n) => (Number.isInteger(n) ? String(n) : Number(n).toFixed(3));
+            const remaining = Math.max(0, allowedMaxQty - alreadyProduced);
+            return `Produced quantity cannot exceed the allowed tolerance for this WO line (WO Qty + 5%). WO Qty: ${fmt(lq)}. Other batches on this line: ${fmt(alreadyProduced)}. Maximum for this batch: ${fmt(remaining)}.`;
+          },
         });
 
         return tx.productionEntry.update({
@@ -2273,30 +2037,18 @@ productionRouter.post(
         const wol = prod.workOrderLine;
         const orderType = wol.workOrder?.salesOrder?.orderType;
         const isRegular = orderType != null && orderType !== "NO_QTY";
-        await assertNoQtyWorkOrderInActiveCycleOrThrow(tx, wol.workOrderId, "This work order");
-        await assertWorkOrderAllowsProduction(tx, wol.workOrderId);
-        await assertNoQtyProductionExecutionAllowsProduction(tx, wol.workOrderId);
         await lockWorkOrderLineForUpdate(tx, wol.id);
 
-        const others = await sumProducedQtyOnLine(tx, wol.id, { excludeProductionId: id });
-        const woQty = Number(wol.qty);
-        const allowOverproduction = allowsWorkOrderProductionOverPlan(wol.workOrder, orderType);
-        rejectIfProductionQtyExceedsWoTolerance({
-          lineQty: woQty,
-          totalProducedQty: others + Number(prod.producedQty),
-          allowOverproduction,
-          messageBuilder: () =>
+        await assertProductionEntryAllowed(tx, {
+          workOrderLineId: wol.id,
+          producedQty: prod.producedQty,
+          excludeProductionId: id,
+          woQtyToleranceMessageBuilder: () =>
             "Cannot approve: total produced quantity would exceed the allowed tolerance for this WO line (WO Qty + 5%). Edit the draft quantity first.",
         });
 
         const fgItemId = wol.fgItemId;
         const producedQtyNum = Number(prod.producedQty);
-
-        await assertProductionRmReadiness(tx, {
-          workOrderLineId: wol.id,
-          producedQty: prod.producedQty,
-          excludeProductionId: id,
-        });
 
         const bomPre = await tx.bom.findFirst({
           where: approvedBomWhere(fgItemId),

@@ -215,10 +215,10 @@ async function computeExecutionSummary(tx, wo) {
 }
 
 /**
- * Blocks production entry when execution is BLOCKED or COMPLETED.
+ * @deprecated Prefer {@link assertShopFloorExecutionAllowsProduction} via productionEntryGateService.
  */
 async function assertNoQtyProductionExecutionAllowsProduction(tx, workOrderId) {
-  await assertShopFloorExecutionAllowsProduction(tx, workOrderId);
+  return assertShopFloorExecutionAllowsProduction(tx, workOrderId);
 }
 
 function validateBlockReason(blockReason, remarks) {

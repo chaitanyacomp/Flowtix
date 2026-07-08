@@ -43,6 +43,32 @@ describe("workOrderOperationalStatus", () => {
     assert.equal(op.allowsProduction, true);
   });
 
+  it("blocks NO_QTY production when WorkOrder.status is HOLD even if execution is RUNNING", () => {
+    const op = resolveWorkOrderOperationalStatus(
+      {
+        status: "HOLD",
+        holdReason: "RM_SHORTAGE",
+        cycleId: 2,
+        productionExecution: { executionStatus: "RUNNING" },
+      },
+      { orderType: "NO_QTY" },
+    );
+    assert.equal(op.allowsProduction, false);
+  });
+
+  it("blocks Green Level production when WorkOrder.status is PAUSED", () => {
+    const op = resolveWorkOrderOperationalStatus(
+      {
+        status: "PAUSED",
+        holdReason: "PRODUCTION_PAUSE",
+        sourceType: "GREEN_LEVEL_REPLENISHMENT",
+        productionExecution: { executionStatus: "RUNNING" },
+      },
+      null,
+    );
+    assert.equal(op.allowsProduction, false);
+  });
+
   it("keeps REGULAR work orders on WorkOrder.status authority", () => {
     const op = resolveWorkOrderOperationalStatus(
       { status: "HOLD", productionExecution: { executionStatus: "RUNNING" } },

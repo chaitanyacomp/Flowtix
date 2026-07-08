@@ -376,14 +376,70 @@ async function closeWorkOrderWithShortfall(tx, workOrderId, { closureReason, act
   return { workOrder: updated, shortfallQty: totalShortfall, lineShortfalls: lineUpdates };
 }
 
+const { GREEN_LEVEL_WO_SOURCE_TYPE } = require("./greenLevelWorkOrderService");
+const { EPS: WO_SO_EPS } = require("./workOrderSoValidation");
+
+const PRODUCTION_ENTRY_WO_TOLERANCE_PCT = 0.05;
+
+function allowsWorkOrderProductionOverPlan(wo, orderType) {
+  return orderType === "NO_QTY" || String(wo?.sourceType ?? "").toUpperCase() === GREEN_LEVEL_WO_SOURCE_TYPE;
+}
+
+/**
+ * REGULAR WO line plan cap (+5% tolerance). Skipped for NO_QTY and Green Level over-plan flows.
+ *
+ * @param {import("@prisma/client").Prisma.TransactionClient} tx
+ */
+async function assertProductionEntryWoQtyTolerance(
+  tx,
+  {
+    workOrderLineId,
+    producedQty,
+    excludeProductionId,
+    lineQty,
+    workOrder,
+    orderType,
+    messageBuilder,
+  },
+) {
+  const allowOverproduction = allowsWorkOrderProductionOverPlan(workOrder, orderType);
+  if (allowOverproduction) return;
+
+  const where = { workOrderLineId };
+  if (excludeProductionId != null) where.id = { not: excludeProductionId };
+  const agg = await tx.productionEntry.aggregate({
+    where,
+    _sum: { producedQty: true },
+  });
+  const alreadyProduced = Number(agg._sum.producedQty ?? 0);
+  const totalProducedQty = alreadyProduced + Number(producedQty);
+  const allowedMaxQty = Number(lineQty) * (1 + PRODUCTION_ENTRY_WO_TOLERANCE_PCT);
+  if (totalProducedQty > allowedMaxQty + WO_SO_EPS) {
+    const err = new Error(
+      messageBuilder({
+        lineQty: Number(lineQty),
+        allowedMaxQty,
+        totalProducedQty,
+        alreadyProduced,
+      }),
+    );
+    err.statusCode = 409;
+    err.code = "PRODUCTION_EXCEEDS_WO";
+    throw err;
+  }
+}
+
 module.exports = {
   HOLD_REASONS,
   WO_PRODUCTION_BLOCKED,
   WO_STATUS_SYNC_FROZEN,
   WO_TERMINAL,
+  PRODUCTION_ENTRY_WO_TOLERANCE_PCT,
+  allowsWorkOrderProductionOverPlan,
   isRegularWorkOrderRecord,
   effectiveLinePlanQty,
   assertWorkOrderAllowsProduction,
+  assertProductionEntryWoQtyTolerance,
   shouldFreezeStatusSync,
   holdWorkOrder,
   resumeWorkOrder,

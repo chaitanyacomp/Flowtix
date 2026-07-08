@@ -3,7 +3,8 @@
  * Planning ends at Monthly Plan Release; execution (WO/PMR/RM CC/Issue) starts at Release.
  */
 
-const { prisma } = require("../utils/prisma");
+const { normalizePositiveCycleId } = require("../utils/cycleIds");
+const { GREEN_LEVEL_WO_SOURCE_TYPE } = require("./greenLevelWorkOrderService");
 
 const NO_QTY_EXECUTION_NOT_RELEASED_MESSAGE =
   "Monthly Production Plan must be released to procurement before NO_QTY execution can proceed for this cycle.";
@@ -151,6 +152,59 @@ async function assertNoQtyWorkOrderExecutionReleased(db, workOrderId, messagePre
 }
 
 /**
+ * NO_QTY production entry: locked RS on WO cycle + monthly plan release for execution.
+ * Does not check SO closed or WO operational status (gate steps 2–3).
+ *
+ * @param {import("@prisma/client").Prisma.TransactionClient | typeof prisma} db
+ * @param {number} workOrderId
+ * @param {string} [messagePrefix]
+ */
+async function assertNoQtyWorkOrderProductionCycleContext(db, workOrderId, messagePrefix = "Production") {
+  const wo = await db.workOrder.findUnique({
+    where: { id: workOrderId },
+    select: {
+      id: true,
+      salesOrderId: true,
+      cycleId: true,
+      sourceType: true,
+      requirementSheetId: true,
+      salesOrder: { select: { orderType: true } },
+    },
+  });
+  if (!wo) {
+    const err = new Error("Work order not found.");
+    err.statusCode = 404;
+    throw err;
+  }
+  if (wo.sourceType === GREEN_LEVEL_WO_SOURCE_TYPE || wo.salesOrderId == null) return wo;
+  if (!isNoQtyOrderType(wo.salesOrder?.orderType)) return wo;
+
+  const woCycleId = normalizePositiveCycleId(wo.cycleId);
+  if (!woCycleId) {
+    const err = new Error(
+      "This work order is not linked to a requirement-sheet cycle. Production cannot be recorded.",
+    );
+    err.statusCode = 409;
+    err.code = "NO_QTY_WO_CYCLE_REQUIRED";
+    throw err;
+  }
+
+  const lockedOnWoCycle = await db.requirementSheet.findFirst({
+    where: { salesOrderId: wo.salesOrderId, cycleId: woCycleId, status: "LOCKED" },
+    select: { id: true },
+  });
+  if (!lockedOnWoCycle) {
+    const err = new Error("Requirement Sheet must be locked before production.");
+    err.statusCode = 409;
+    err.code = "NO_QTY_RS_LOCK_REQUIRED";
+    throw err;
+  }
+
+  await assertNoQtyWorkOrderExecutionReleased(db, workOrderId, messagePrefix);
+  return wo;
+}
+
+/**
  * @param {import("@prisma/client").Prisma.TransactionClient | typeof prisma} db
  * @param {{ periodKey?: string | null, salesOrder?: { orderType?: string } | null }} sheet
  */
@@ -175,5 +229,6 @@ module.exports = {
   resolvePeriodKeysByWorkOrderId,
   filterNoQtyExecutionReleasedWorkOrders,
   assertNoQtyWorkOrderExecutionReleased,
+  assertNoQtyWorkOrderProductionCycleContext,
   assertNoQtyRequirementSheetPeriodReleased,
 };

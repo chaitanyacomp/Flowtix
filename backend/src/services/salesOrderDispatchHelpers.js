@@ -104,11 +104,44 @@ function enrichSalesOrderWithDispatchStats(so) {
   };
 }
 
+const SO_PRODUCTION_CLOSED = new Set(["COMPLETED", "MANUALLY_CLOSED", "CLOSED"]);
+
+/**
+ * Blocks production entry when the parent sales order is operationally closed.
+ *
+ * @param {import("@prisma/client").Prisma.TransactionClient} tx
+ * @param {{ salesOrderId?: number | null, so?: { internalStatus?: string | null } | null }} input
+ */
+async function assertSalesOrderOperationallyOpenForProduction(tx, input) {
+  const salesOrderId = input.salesOrderId ?? input.so?.id ?? null;
+  if (salesOrderId == null) return null;
+
+  const so =
+    input.so ??
+    (await tx.salesOrder.findUnique({
+      where: { id: salesOrderId },
+      select: { id: true, internalStatus: true, orderType: true },
+    }));
+  if (!so) {
+    const err = new Error("Sales order not found.");
+    err.statusCode = 404;
+    throw err;
+  }
+  if (SO_PRODUCTION_CLOSED.has(String(so.internalStatus ?? "").toUpperCase())) {
+    const err = new Error("This sales order is closed. Production/QC is view-only.");
+    err.statusCode = 409;
+    err.code = "SO_PRODUCTION_CLOSED";
+    throw err;
+  }
+  return so;
+}
+
 module.exports = {
   DISPATCH_COMPLETE_EPS,
   isSalesOrderConfirmedDispatchComplete,
   assertCanMarkSalesOrderCompleted,
   assertSalesOrderNotCompletedForDispatch,
+  assertSalesOrderOperationallyOpenForProduction,
   reopenSalesOrderIfConfirmedDispatchIncomplete,
   lockSalesOrderAndAssertCanComplete,
   enrichSalesOrderWithDispatchStats,

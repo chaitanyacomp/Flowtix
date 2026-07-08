@@ -7,6 +7,7 @@ import {
   noQtyErpAdjustedPlanningQty,
   noQtyOperatorPendingQtyFromRow,
 } from "./noQtyShortagePresentation";
+import { mapQueueReadinessToOperationalPresentation } from "./workOrderReadinessUx";
 
 /** Minimal production-queue row shape for dashboard live status (from /api/dashboard/production-queue). */
 export type DashboardProductionStatusSource = {
@@ -43,6 +44,8 @@ export type DashboardProductionStatusSource = {
   rmReadinessGate?: string | null;
   rmProductionAllowedNowQty?: number | null;
   rmReadyForProduction?: boolean | null;
+  /** Backend-owned CTA label from production-queue (`deriveProductionQueueActionLabel`). */
+  actionLabel?: string | null;
 };
 
 export type ProductionOperationalStatusTone =
@@ -79,6 +82,8 @@ export type DashboardProductionStatusRow = DashboardProductionStatusSource & {
 export type DashboardProductionStatusBuild = {
   /** Current operational rows for display, newest WO first. Historical carry-forward rows are counted but not shown. */
   visible: DashboardProductionStatusRow[];
+  /** All enriched queue lines (including historical / carried-forward). Used by Work Order Workspace sectioning. */
+  all: DashboardProductionStatusRow[];
   /** Lines that still need operator action. */
   activeCount: number;
   /** Distinct WOs with at least one actionable line. */
@@ -204,18 +209,39 @@ function effectiveProductionHref(row: DashboardProductionStatusSource): string |
   return row.actionHref ?? undefined;
 }
 
-/** REGULAR flow — production status respects Phase 3C PMR/MIN readiness when present. */
+/**
+ * REGULAR flow — prefer backend nextAction + RM readiness (M1.6).
+ * Qty/href may refine presentation only when nextAction is absent.
+ */
 function operationalStatusFromRegularRow(row: DashboardProductionStatusSource): ProductionOperationalStatus {
+  const next = String(row.nextAction ?? "").trim().toUpperCase();
+  if (next) {
+    // REGULAR does not use Next Cycle framing — keep historical Partially Produced for NEXT_RS.
+    if (next === "NEXT_RS_REQUIRED") {
+      return { label: "Partially Produced", tone: "partial" };
+    }
+    const mapped = mapQueueReadinessToOperationalPresentation(row);
+    // Preserve prior REGULAR nuance: READY_FOR_PRODUCTION gate with zero produced → Partial RM at Production
+    if (
+      mapped.label === "Ready for Production" &&
+      row.rmReadinessGate === "READY_FOR_PRODUCTION" &&
+      Number(row.producedQty ?? 0) <= ROW_NUM_EPS &&
+      row.rmReadyForProduction !== true
+    ) {
+      return { label: "Partial RM at Production", tone: "partial", contextHint: mapped.contextHint };
+    }
+    return { label: mapped.label, tone: mapped.tone, contextHint: mapped.contextHint };
+  }
+
   const produced = Number(row.producedQty ?? 0);
   const remaining = Math.max(0, Number(row.balanceQty ?? 0));
   const dispatchable = Number(row.dispatchableQty ?? 0);
-  const next = String(row.nextAction ?? "").toUpperCase();
   const route = inferProductionHrefRoute(row.actionHref);
   const gate = row.rmReadinessGate ?? null;
   const rmReady = row.rmReadyForProduction === true;
   const woStatus = String(row.status ?? "").toUpperCase();
 
-  if (woStatus === "HOLD" || next === "ON_HOLD") {
+  if (woStatus === "HOLD") {
     return {
       label: holdReasonLabel(row.holdReason) === "On hold" ? "On Hold" : `On Hold - ${holdReasonLabel(row.holdReason)}`,
       tone: "partial",
@@ -224,7 +250,6 @@ function operationalStatusFromRegularRow(row: DashboardProductionStatusSource): 
   if (woStatus === "CLOSED_WITH_SHORTFALL") {
     return { label: "Shortfall Closed", tone: "idle" };
   }
-
   if (gate === "NO_PMR" || gate === "PMR_DRAFT_ONLY") {
     return { label: "Waiting for Material", tone: "partial" };
   }
@@ -237,34 +262,21 @@ function operationalStatusFromRegularRow(row: DashboardProductionStatusSource): 
   if (gate != null && !rmReady && produced <= ROW_NUM_EPS) {
     return { label: "Waiting for Production", tone: "running" };
   }
-
-  if (next === "QC_PENDING" || row.hasPendingQc) {
+  if (row.hasPendingQc) {
     return { label: "QA in progress", tone: "qc" };
   }
-  if (next === "DISPATCH_PENDING" || (dispatchable > ROW_NUM_EPS && route === "dispatch")) {
+  if (dispatchable > ROW_NUM_EPS && route === "dispatch") {
     return { label: "Waiting Dispatch", tone: "dispatch" };
   }
-  if (next === "SALES_BILL_PENDING") {
-    return { label: "Ready to Bill", tone: "dispatch" };
-  }
   if (produced > ROW_NUM_EPS && remaining > ROW_NUM_EPS) {
-    if (gate === "WAITING_STORE_ISSUE" || gate === "NO_PMR" || gate === "PMR_DRAFT_ONLY") {
-      return { label: "Waiting RM", tone: "partial" };
-    }
-    return { label: "Partially Produced", tone: "partial" };
-  }
-  if (next === "NEXT_RS_REQUIRED") {
     return { label: "Partially Produced", tone: "partial" };
   }
   if (produced <= ROW_NUM_EPS) {
     const canStart =
       gate == null
-        ? woStatus === "IN_PROGRESS" || woStatus === "PENDING" || next === "PRODUCTION_PENDING"
+        ? woStatus === "IN_PROGRESS" || woStatus === "PENDING"
         : gate === "READY_FOR_PRODUCTION" && rmReady;
-    if (canStart) {
-      return { label: "Ready for Production", tone: "running" };
-    }
-    return { label: "Waiting for Production", tone: "running" };
+    return { label: canStart ? "Ready for Production" : "Waiting for Production", tone: "running" };
   }
   if (woStatus === "IN_PROGRESS" || woStatus === "PENDING") {
     return { label: "Running", tone: "running" };
@@ -275,31 +287,27 @@ function operationalStatusFromRegularRow(row: DashboardProductionStatusSource): 
   return { label: "Production Pending", tone: "running" };
 }
 
-/** NO_QTY flow — route-aligned labels (href must match badge; dispatchableQty alone is not dispatch). */
+/** NO_QTY flow — backend nextAction first; carry-forward peer detection is presentation grouping only. */
 function operationalStatusFromNoQtyRow(
   row: DashboardProductionStatusSource,
   ctx: NoQtyCarryContext | null | undefined,
 ): ProductionOperationalStatus {
   const produced = Number(row.producedQty ?? 0);
   const remaining = Math.max(0, Number(row.balanceQty ?? 0));
-  const next = String(row.nextAction ?? "").toUpperCase();
+  const next = String(row.nextAction ?? "").trim().toUpperCase();
   const woStatus = String(row.status ?? "").toUpperCase();
   const shortage = lineShortageQty(row);
   const absorbed = noQtyShortageAbsorbedByLaterRow(row, ctx);
   const route = inferProductionHrefRoute(effectiveProductionHref(row));
 
-  if (row.productionExecutionStatus === "BLOCKED") {
-    const blocker =
-      row.productionBlockReasonLabel ??
-      (row.productionBlockReason ? row.productionBlockReason.replace(/_/g, " ") : "Blocked");
-    return { label: blocker, tone: "partial" };
+  if (row.productionExecutionStatus === "BLOCKED" || next === "PRODUCTION_EXECUTION_BLOCKED") {
+    const mapped = mapQueueReadinessToOperationalPresentation(row);
+    return { label: mapped.label, tone: mapped.tone };
   }
 
   if (woStatus === "HOLD" || next === "ON_HOLD") {
-    return {
-      label: holdReasonLabel(row.holdReason) === "On hold" ? "On Hold" : `On Hold - ${holdReasonLabel(row.holdReason)}`,
-      tone: "partial",
-    };
+    const mapped = mapQueueReadinessToOperationalPresentation(row);
+    return { label: mapped.label, tone: mapped.tone };
   }
   if (woStatus === "CLOSED_WITH_SHORTFALL") {
     return { label: "Shortfall Closed", tone: "idle" };
@@ -317,15 +325,23 @@ function operationalStatusFromNoQtyRow(
     };
   }
 
-  if (route === "requirement" || next === "NEXT_RS_REQUIRED") {
+  if (next) {
+    const mapped = mapQueueReadinessToOperationalPresentation(row);
+    if (mapped.label === "Next Cycle") {
+      return { label: "Next Cycle", tone: "carryForward" };
+    }
+    return { label: mapped.label, tone: mapped.tone, contextHint: mapped.contextHint };
+  }
+
+  if (route === "requirement") {
     return { label: "Next Cycle", tone: "carryForward" };
   }
 
-  if (route === "dispatch" || next === "DISPATCH_PENDING") {
+  if (route === "dispatch") {
     return { label: "Dispatch Pending", tone: "dispatch" };
   }
 
-  if (next === "SALES_BILL_PENDING" || route === "sales_bill") {
+  if (route === "sales_bill") {
     return { label: "Ready to Bill", tone: "dispatch" };
   }
 
@@ -337,7 +353,7 @@ function operationalStatusFromNoQtyRow(
     return { label: "Work Order", tone: "running" };
   }
 
-  if (route === "production" || next === "PRODUCTION_PENDING") {
+  if (route === "production") {
     if (produced > ROW_NUM_EPS && remaining > ROW_NUM_EPS) {
       return { label: "Continue Production", tone: "running" };
     }
@@ -358,7 +374,7 @@ function operationalStatusFromNoQtyRow(
   }
 
   if (produced <= ROW_NUM_EPS) {
-    if (woStatus === "IN_PROGRESS" || woStatus === "PENDING" || next === "PRODUCTION_PENDING") {
+    if (woStatus === "IN_PROGRESS" || woStatus === "PENDING") {
       return { label: "Ready for Production", tone: "running" };
     }
     return { label: "Waiting for Production", tone: "running" };
@@ -367,39 +383,28 @@ function operationalStatusFromNoQtyRow(
   return { label: "Production Pending", tone: "running" };
 }
 
-/** Green Level stock replenishment — hardened execution without RS / SO references. */
+/** Green Level — prefer backend nextAction / execution block fields (M1.6). */
 function operationalStatusFromGreenLevelRow(row: DashboardProductionStatusSource): ProductionOperationalStatus {
+  const next = String(row.nextAction ?? "").trim().toUpperCase();
+  if (next || row.productionExecutionStatus) {
+    const mapped = mapQueueReadinessToOperationalPresentation({ ...row, orderType: "GREEN_LEVEL" });
+    return { label: mapped.label, tone: mapped.tone, contextHint: mapped.contextHint };
+  }
+
   const produced = Number(row.producedQty ?? 0);
   const remaining = Math.max(0, Number(row.balanceQty ?? 0));
-  const next = String(row.nextAction ?? "").toUpperCase();
   const woStatus = String(row.status ?? "").toUpperCase();
-
-  if (row.productionExecutionStatus === "BLOCKED") {
-    const blocker =
-      row.productionBlockReasonLabel ??
-      (row.productionBlockReason ? row.productionBlockReason.replace(/_/g, " ") : "Blocked");
-    return { label: blocker, tone: "partial" };
-  }
-  if (next === "PRODUCTION_SHORTFALL_DECISION" || row.productionExecutionStatus === "SHORTFALL_PENDING") {
-    return { label: "Resolve Shortfall", tone: "partial" };
-  }
-  if (woStatus === "HOLD" || next === "ON_HOLD") {
-    return {
-      label: holdReasonLabel(row.holdReason) === "On hold" ? "On Hold" : `On Hold - ${holdReasonLabel(row.holdReason)}`,
-      tone: "partial",
-    };
-  }
   if (woStatus === "CLOSED_WITH_SHORTFALL") {
     return { label: "Shortfall Closed", tone: "idle" };
   }
-  if (next === "QC_PENDING" || row.hasPendingQc) {
+  if (row.hasPendingQc) {
     return { label: "QA in progress", tone: "qc" };
   }
   if (produced > ROW_NUM_EPS && remaining > ROW_NUM_EPS) {
     return { label: "Continue Production", tone: "running" };
   }
   if (produced <= ROW_NUM_EPS) {
-    if (woStatus === "IN_PROGRESS" || woStatus === "PENDING" || next === "PRODUCTION_PENDING") {
+    if (woStatus === "IN_PROGRESS" || woStatus === "PENDING") {
       return { label: "Ready for Production", tone: "running" };
     }
     return { label: "Waiting for Production", tone: "running" };
@@ -520,6 +525,7 @@ export function buildDashboardProductionStatusRows(
   const activeCount = active.length;
   return {
     visible: displaySorted.slice(0, limit),
+    all: enriched,
     activeCount,
     activeWorkOrderCount,
     carriedForwardCount: carriedForward.length,

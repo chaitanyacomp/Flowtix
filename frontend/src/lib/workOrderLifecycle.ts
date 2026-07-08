@@ -1,4 +1,6 @@
-/** REGULAR work order lifecycle — labels and helpers (UI only). */
+/** REGULAR work order lifecycle — UI labels, badge variants, and POST wrappers only.
+ * M1.6: Does not derive production-queue operational status; that comes from /api/dashboard/production-queue.
+ */
 
 export const WO_HOLD_REASONS = [
   { value: "RM_SHORTAGE", label: "RM shortage" },

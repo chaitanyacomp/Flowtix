@@ -46,6 +46,7 @@ export function mapOperationalLabelToNoQtyDisplayLabel(operationalLabel: string)
   if (DISPATCH_ALIASES.has(lb)) return "Waiting Dispatch";
   if (lb === "Carried Forward") return "Carried Forward";
   if (lb === "Production Complete" || lb === "Completed") return "Completed";
+  if (lb === "QA in progress" || lb === "QC Pending") return "QC Pending";
   if (lb === "Closed" || lb === "Closed Cycle") return "Closed";
   if (ACTIVE_PRODUCTION_ALIASES.has(lb)) return "In Progress";
   return lb;
@@ -100,6 +101,7 @@ function historicalOverrideLabel(input: {
 
 /**
  * Single resolver for NO_QTY user-facing cycle workflow status (presentation only).
+ * Prefer production-queue nextAction / actionLabel via operationalStatusFromProductionRow (M1.6).
  * Never surfaces raw WO lifecycle enums (IN_PROGRESS, PENDING, OPEN) to operators.
  */
 export function resolveNoQtyCycleDisplayStatus(

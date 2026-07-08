@@ -1,6 +1,6 @@
 /**
- * REGULAR SO operational guidance — labels, next-step CTAs, and banner priority only.
- * No business logic / calculations.
+ * REGULAR SO operational guidance — maps backend RM readiness gate → labels/CTAs only.
+ * M1.6: Does not derive readiness; consumes ProductionRmReadiness / queue fields from API.
  */
 
 import type { ProductionRmReadiness } from "../components/erp/ProductionRmReadinessStrip";

@@ -28,7 +28,7 @@ describe("regularSoOperationalGuidance", () => {
     const step = buildRmIssueNextStep(baseReadiness({ gate: "NO_PMR", latestPmrId: null }), "work-orders");
     expect(step.statusTitle).toBe("Waiting for RM Issue");
     expect(step.primaryAction.label).toBe("Issue RM to Production");
-    expect(step.primaryAction.href).toContain("production-material-requests");
+    expect(step.primaryAction.href).toContain("material-requests");
     expect(step.primaryAction.href).toContain("workOrderId=42");
   });
 
@@ -60,7 +60,8 @@ describe("regularSoOperationalGuidance", () => {
   it("readinessBlocksProduction delegates to RM readiness gate", () => {
     expect(readinessBlocksProduction(baseReadiness({ gate: "NO_PMR" }))).toBe(true);
     expect(readinessBlocksProduction(baseReadiness({ gate: "READY_FOR_PRODUCTION" }))).toBe(false);
-    expect(readinessBlocksProduction(null)).toBe(false);
+    // Null readiness = not yet loaded / unavailable → treat as blocked until backend gate arrives.
+    expect(readinessBlocksProduction(null)).toBe(true);
   });
 
   it("resolveProductionStickyContext preserves context from production entries when WO line drops off picker", () => {

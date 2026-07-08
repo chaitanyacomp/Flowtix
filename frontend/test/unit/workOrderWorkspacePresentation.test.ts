@@ -123,4 +123,22 @@ describe("buildWorkOrderWorkspaceSections", () => {
     expect(sections.operationalOpen).toHaveLength(0);
     expect(sections.cycleHistory).toHaveLength(0);
   });
+
+  it("REGULAR queue rows present operational status not raw WO status enum", () => {
+    const r = queueRow({
+      workOrderId: 50,
+      orderType: "NORMAL",
+      status: "IN_PROGRESS",
+      nextAction: "PRODUCTION_PENDING",
+      rmReadinessGate: "WAITING_STORE_ISSUE",
+      rmReadyForProduction: false,
+      producedQty: 0,
+      balanceQty: 100,
+      actionLabel: "Go to Production",
+      actionHref: "/production?workOrderId=50",
+    });
+    const sections = buildWorkOrderWorkspaceSections([r], [], []);
+    expect(sections.operationalOpen[0]?.presentationStatus).toBe("Waiting for RM issue");
+    expect(sections.operationalOpen[0]?.actionLabel).toBe("Go to Production");
+  });
 });

@@ -17,6 +17,7 @@ import {
   sumNoQtyErpAdjustedPlanningQty,
   sumNoQtyOperatorPendingQty,
 } from "./noQtyShortagePresentation";
+import { resolveQueueActionLabel } from "./workOrderReadinessUx";
 
 export type WoWorkspaceSection = "operationalOpen" | "carryForwardHistory" | "completedCycles";
 
@@ -181,6 +182,7 @@ export function formatOperationalOutcomeLine(
 
 export { noQtyWorkspaceStatusLabel } from "./noQtyCycleDisplayStatus";
 
+/** @deprecated Prefer backend `actionLabel` via resolveQueueActionLabel (M1.6). Href inference is presentation fallback only. */
 export function noQtyWorkspaceActionLabel(href: string): string {
   switch (inferProductionHrefRoute(href)) {
     case "production":
@@ -198,6 +200,14 @@ export function noQtyWorkspaceActionLabel(href: string): string {
     default:
       return "View Cycle";
   }
+}
+
+function workspaceActionLabelFromQueueLine(primary: DashboardProductionStatusRow): string {
+  const hrefInferred = primary.actionHref ? noQtyWorkspaceActionLabel(primary.actionHref) : null;
+  return resolveQueueActionLabel(
+    { actionLabel: primary.actionLabel, nextAction: primary.nextAction },
+    hrefInferred,
+  );
 }
 
 function isNoQty(orderType?: string | null): boolean {
@@ -269,12 +279,15 @@ function queueLinesToGroup(
     actionLabel =
       section === "carryForwardHistory" || section === "completedCycles"
         ? "View Cycle"
-        : noQtyWorkspaceActionLabel(href);
+        : workspaceActionLabelFromQueueLine(primary);
   } else {
-    presentationStatus =
-      String(primary.status ?? "").toUpperCase() === "COMPLETED" ? "Completed" : String(primary.status ?? "OPEN");
-    actionLabel = "View WO";
-    statusTone = "regular";
+    // REGULAR / Green Level: presentation from queue operational status (backend nextAction / RM gate).
+    presentationStatus = primary.operationalStatus.label;
+    statusTone = primary.operationalStatus.tone;
+    actionLabel =
+      section === "carryForwardHistory" || section === "completedCycles"
+        ? "View WO"
+        : workspaceActionLabelFromQueueLine(primary);
   }
 
   if (section === "carryForwardHistory" || section === "completedCycles") {
@@ -391,7 +404,7 @@ export function buildWorkOrderWorkspaceSections(
   });
 
   const byWo = new Map<number, DashboardProductionStatusRow[]>();
-  for (const row of built.visible) {
+  for (const row of built.all) {
     const list = byWo.get(row.workOrderId) ?? [];
     list.push(row);
     byWo.set(row.workOrderId, list);

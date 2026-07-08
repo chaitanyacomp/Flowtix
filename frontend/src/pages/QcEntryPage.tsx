@@ -9,10 +9,8 @@ import { DRILL_DATA, DRILL_QUERY, workOrdersFocusHref } from "../lib/drillDownRo
 import { useDrillFocus } from "../hooks/useDrillFocus";
 import { apiFetch } from "../services/api";
 import {
-  getProductionBatchQcPendingQty,
   isActiveQcEntry,
-  sumActiveQcAcceptedQty,
-  sumActiveQcRejectedQty,
+  resolveProductionBatchQcRollups,
 } from "../lib/qcBatchRollups";
 import { formatQcQuantity } from "../lib/quantityDisplay";
 import { Button, buttonVariants } from "../components/ui/button";
@@ -71,6 +69,13 @@ import {
   sortPendingQcByProductionFifo,
   type QualityQueueRow,
 } from "../lib/qcWorkspaceUx";
+import {
+  isNoQtyDispatchReadyFromNextAction,
+  isQcProductionQueueClear,
+  mapRegularPostQcDispatchHandoff,
+  qcStatusFromRollups,
+  type QcBatchStatus,
+} from "../lib/qcWorkspaceReadinessUx";
 
 type ReworkQcQueueRow = {
   itemId: number;
@@ -338,39 +343,10 @@ function toYmdFromIso(iso: string | undefined): string {
 
 type RejectedStockBucket = "USABLE" | "QC_HOLD" | "REWORK" | "SCRAP";
 
-/** Produced / active accepted / active rejected / pending; matches backend batch QC math */
-function qcRollupsForRow(r: ProdRow): { produced: number; accepted: number; rejected: number; pending: number } {
-  const producedRaw = Number((r as any)?.producedQty ?? 0);
-  const produced = Number.isFinite(producedRaw) ? producedRaw : 0;
-  if (
-    r.qcAcceptedQty != null &&
-    r.qcRejectedQty != null &&
-    r.qcPendingQty != null &&
-    Number.isFinite(r.qcAcceptedQty) &&
-    Number.isFinite(r.qcRejectedQty) &&
-    Number.isFinite(r.qcPendingQty)
-  ) {
-    // Sanitize numeric fields defensively (API rows may have string-ish values in older payloads).
-    const a = Number((r as any).qcAcceptedQty);
-    const j = Number((r as any).qcRejectedQty);
-    const p = Number((r as any).qcPendingQty);
-    return {
-      produced,
-      accepted: Number.isFinite(a) ? a : 0,
-      rejected: Number.isFinite(j) ? j : 0,
-      pending: Number.isFinite(p) ? p : Math.max(0, produced - (Number.isFinite(a) ? a : 0) - (Number.isFinite(j) ? j : 0)),
-    };
-  }
-  const qcEntries = Array.isArray((r as any)?.qcEntries) ? (r as any).qcEntries : [];
-  const accepted = sumActiveQcAcceptedQty(qcEntries);
-  const rejected = sumActiveQcRejectedQty(qcEntries);
-  const pending = getProductionBatchQcPendingQty(produced, accepted, rejected);
-  return { produced, accepted, rejected, pending };
-}
-
+/** Produced / active accepted / active rejected / pending — prefers backend API rollups. */
 function safeQcRollupsForRow(r: ProdRow): { produced: number; accepted: number; rejected: number; pending: number } {
   try {
-    const roll = qcRollupsForRow(r);
+    const roll = resolveProductionBatchQcRollups(r);
     return {
       produced: Number.isFinite(roll.produced) ? roll.produced : 0,
       accepted: Number.isFinite(roll.accepted) ? roll.accepted : 0,
@@ -410,14 +386,10 @@ function safeIsoDate(r: ProdRow): string {
   return String((r as any)?.date ?? "");
 }
 
-type QcStatus = "AWAITING_QC" | "PARTIAL_QC" | "COMPLETED_QC";
+type QcStatus = QcBatchStatus;
 
 function qcStatusForRollups(roll: { accepted: number; rejected: number; pending: number }): QcStatus {
-  const done = (roll.accepted ?? 0) + (roll.rejected ?? 0);
-  const eps = 1e-6;
-  if ((roll.pending ?? 0) <= eps) return "COMPLETED_QC";
-  if (done <= eps) return "AWAITING_QC";
-  return "PARTIAL_QC";
+  return qcStatusFromRollups(roll);
 }
 
 function qcStatusLabel(s: QcStatus): string {
@@ -1789,10 +1761,9 @@ export function QcEntryPage() {
     return productionBatchesAll.some((r) => safeQcRollupsForRow(r).produced > eps);
   }, [listReady, fromNoQtySo, focusSoIdValid, qcQueueRows.length, productionBatchesAll]);
 
-  /** REGULAR (NORMAL) SO only — after batch QC is complete, guide partial ship vs produce remainder. NO_QTY unchanged. */
+  /** REGULAR (NORMAL) SO only — post-QC dispatch handoff from fg-work-order-balance API. */
   const regularDispatchPostQc = React.useMemo(() => {
     const eps = 1e-6;
-    const r3 = (n: number) => Math.round(n * 1000) / 1000;
     if (fromNoQtySo || !focusSoIdValid || !listReady) return null;
     const ot = focusSo?.orderType ?? "NORMAL";
     if (ot !== "NORMAL") return null;
@@ -1800,86 +1771,22 @@ export function QcEntryPage() {
     if (!(selectedRollups.produced > eps)) return null;
     if (selectedRollups.pending > eps) return null;
 
-    const qcAcceptedQty = selectedRollups.accepted;
-    const rejectedQty = selectedRollups.rejected;
     const workOrderId = Number(selected.workOrderLine?.workOrder?.id ?? 0);
     const fgItemId = Number(selected.workOrderLine?.fgItem?.id ?? 0);
     const balRow =
       Number.isFinite(fgItemId) && fgItemId > 0 ? qcFgBalanceItems.find((x) => Number(x.itemId) === fgItemId) : undefined;
-    const balanceUsable = qcFgBalanceItems.length > 0 && balRow != null;
-    const dispatchableNow = balanceUsable ? Math.max(0, Number(balRow.dispatchableQty ?? 0)) : null;
-    const qtyPendingToDeliver = balanceUsable
-      ? Math.max(0, Number(balRow.pendingSoQty ?? 0))
-      : Math.max(0, Number(focusSo?.dispatchPending ?? NaN));
-    if (!Number.isFinite(qtyPendingToDeliver) || !(qtyPendingToDeliver > eps)) return null;
 
-    if (balanceUsable && dispatchableNow != null) {
-      if (dispatchableNow >= qtyPendingToDeliver - eps) {
-        return {
-          kind: "DISPATCH_ONLY" as const,
-          workOrderId: workOrderId > 0 ? workOrderId : null,
-          qtyPendingToDeliver: r3(qtyPendingToDeliver),
-          dispatchableNow: r3(dispatchableNow),
-          qcAcceptedQty: r3(qcAcceptedQty),
-          rejectedQty: r3(rejectedQty),
-        };
-      }
-      if (dispatchableNow <= eps) {
-        return {
-          kind: "SHORTFALL_WO" as const,
-          workOrderId: workOrderId > 0 ? workOrderId : null,
-          qtyPendingToDeliver: r3(qtyPendingToDeliver),
-          dispatchableNow: r3(dispatchableNow),
-          qcAcceptedQty: r3(qcAcceptedQty),
-          rejectedQty: r3(rejectedQty),
-          workOrderShortfall: r3(Math.max(0, qtyPendingToDeliver - qcAcceptedQty)),
-        };
-      }
-      return {
-        kind: "DECISION" as const,
-        workOrderId: workOrderId > 0 ? workOrderId : null,
-        qtyPendingToDeliver: r3(qtyPendingToDeliver),
-        dispatchableNow: r3(dispatchableNow),
-        qcAcceptedQty: r3(qcAcceptedQty),
-        rejectedQty: r3(rejectedQty),
-        workOrderShortfall: r3(Math.max(0, qtyPendingToDeliver - qcAcceptedQty)),
-      };
-    }
-
-    /** No per-FG balance row — fall back to batch accepted qty vs SO pending (legacy). */
-    if (qcAcceptedQty <= eps) {
-      return {
-        kind: "SHORTFALL_WO" as const,
-        workOrderId: workOrderId > 0 ? workOrderId : null,
-        qtyPendingToDeliver: r3(qtyPendingToDeliver),
-        qcAcceptedQty: 0,
-        rejectedQty: r3(rejectedQty),
-        workOrderShortfall: r3(qtyPendingToDeliver),
-      };
-    }
-    if (qtyPendingToDeliver <= qcAcceptedQty + eps) {
-      return {
-        kind: "DISPATCH_ONLY" as const,
-        workOrderId: workOrderId > 0 ? workOrderId : null,
-        qtyPendingToDeliver: r3(qtyPendingToDeliver),
-        qcAcceptedQty: r3(qcAcceptedQty),
-        rejectedQty: r3(rejectedQty),
-      };
-    }
-    return {
-      kind: "DECISION" as const,
+    return mapRegularPostQcDispatchHandoff({
+      balanceItem: balRow,
+      batchAcceptedQty: selectedRollups.accepted,
+      batchRejectedQty: selectedRollups.rejected,
       workOrderId: workOrderId > 0 ? workOrderId : null,
-      qtyPendingToDeliver: r3(qtyPendingToDeliver),
-      qcAcceptedQty: r3(qcAcceptedQty),
-      rejectedQty: r3(rejectedQty),
-      workOrderShortfall: r3(qtyPendingToDeliver - qcAcceptedQty),
-    };
+    });
   }, [
     fromNoQtySo,
     focusSoIdValid,
     listReady,
     focusSo?.orderType,
-    focusSo?.dispatchPending,
     selected,
     selectedRollups,
     qcFgBalanceItems,
@@ -1982,13 +1889,12 @@ export function QcEntryPage() {
     };
   }, [showNoQtyQcNextStepPanel, focusSoId, noQtyCycleId, productionIdFromUrl]);
 
-  /** API: queue empty, DISPATCH w/ positive dispatchable — show next step in NO_QTY flow header, not under Pending Production QC. */
+  /** Backend no-qty/next-action: queue empty + dispatch handoff ready. */
   const noQtyDispatchReadyForHeader = React.useMemo(() => {
     if (!fromNoQtySo || !focusSoIdValid || !listReady) return false;
     if (qcQueueRows.length > 0) return false;
     if (noQtyQcNextActionLoading || !noQtyQcNextAction) return false;
-    if (noQtyQcNextAction.nextAction !== "DISPATCH") return false;
-    return noQtyQcNextAction.dispatchableQty > 1e-6;
+    return isNoQtyDispatchReadyFromNextAction(noQtyQcNextAction);
   }, [
     fromNoQtySo,
     focusSoIdValid,
@@ -2048,7 +1954,7 @@ export function QcEntryPage() {
 
   const qcProductionQueueClear = React.useMemo(() => {
     if (!listReady) return false;
-    return qcQueueRows.length <= QC_OPS_EPS;
+    return isQcProductionQueueClear(qcQueueRows.length);
   }, [listReady, qcQueueRows.length]);
 
   const showNoPendingQcBatchesMessage = React.useMemo(() => {

@@ -14,17 +14,16 @@ import { ErpEmptyState } from "../components/erp/foundation/ErpEmptyState";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { dashboardShell } from "../lib/dashboardShell";
 import { PRODUCTION_QA_TERMS } from "../lib/productionQaTerminology";
+import {
+  qcQueueRowHref,
+  qcQueueRowLabel,
+  qcQueueRowSubtitle,
+  type QcDashboardQueueRow,
+} from "../lib/qcWorkspaceReadinessUx";
 import { cn } from "../lib/utils";
 import { erpKpi } from "../lib/erpFoundationTokens";
 
-type QcQueueRow = {
-  id: number;
-  salesOrderDocNo?: string | null;
-  customerName?: string | null;
-  itemName?: string | null;
-  pendingQcQty?: number | null;
-  href?: string | null;
-};
+type QcQueueRow = QcDashboardQueueRow & { href?: string | null };
 
 const shell = dashboardShell.page;
 const max = dashboardShell.max;
@@ -167,20 +166,20 @@ export function QaDashboardPage({
             {!qcQueue?.length ? (
               <ErpEmptyState variant="inline" title="No batches awaiting QA" body="Production-posted batches appear here for inspection." />
             ) : (
-              qcQueue.slice(0, 12).map((row) => (
+              qcQueue.slice(0, 12).map((row, idx) => (
                 <button
-                  key={row.id}
+                  key={`${row.qcRef ?? row.workOrderId ?? idx}`}
                   type="button"
                   className="flex w-full items-center justify-between gap-2 rounded-md border border-slate-200 px-2.5 py-2 text-left text-[12px] hover:border-sky-300 hover:bg-sky-50/40"
-                  onClick={() => navigate(row.href ?? "/qc-entry?source=dashboard", { state: { from: "dashboard" } })}
+                  onClick={() => navigate(row.href ?? qcQueueRowHref(row), { state: { from: "dashboard" } })}
                 >
                   <div className="min-w-0">
-                    <div className="truncate font-semibold text-slate-900">{row.itemName ?? "Batch"}</div>
-                    <div className="truncate text-slate-600">
-                      {[row.customerName, row.salesOrderDocNo].filter(Boolean).join(" · ") || "—"}
-                    </div>
+                    <div className="truncate font-semibold text-slate-900">{qcQueueRowLabel(row)}</div>
+                    <div className="truncate text-slate-600">{qcQueueRowSubtitle(row)}</div>
                   </div>
-                  <span className="shrink-0 tabular-nums font-semibold text-slate-800">{Number(row.pendingQcQty ?? 0).toFixed(2)}</span>
+                  <span className="shrink-0 tabular-nums font-semibold text-slate-800">
+                    {Number(row.pendingQcQty ?? 0).toFixed(2)}
+                  </span>
                 </button>
               ))
             )}

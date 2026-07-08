@@ -28,6 +28,7 @@ import {
 } from "../lib/shortcutHintCopy";
 import { cn } from "../lib/utils";
 import { formatDispatchQuantity } from "../lib/quantityDisplay";
+import { sanitizeQtyInputDraft } from "../lib/quantityDraft";
 import { isDispatchOpenListLineCandidate } from "../lib/dispatchOpenListEligibility";
 import { useErpRefreshTick } from "../hooks/useErpRefreshTick";
 import {
@@ -3123,7 +3124,7 @@ export function DispatchPage() {
     },
   });
   const dispatchQtyBind = shortcutHints.bindField("dispatchQty", {
-    onChange: (e) => setDispatchQtyStr((e.target as HTMLInputElement).value),
+    onChange: (e) => setDispatchQtyStr(sanitizeQtyInputDraft((e.target as HTMLInputElement).value)),
   });
 
   const shortcutFlagsRef = React.useRef({ canPrepareSubmit: false, canPrepareFull: false });
@@ -4796,7 +4797,7 @@ export function DispatchPage() {
                 if (!row) return;
                 applyCompactQueueSelection(selectedSo, row);
               }}
-              onDispatchQtyChange={setDispatchQtyStr}
+              onDispatchQtyChange={(value) => setDispatchQtyStr(sanitizeQtyInputDraft(value))}
               onDispatchFull={() => void onDispatchFullPrepare()}
               onDispatchPartial={() => void onDispatch()}
               onEnablePartial={() => {

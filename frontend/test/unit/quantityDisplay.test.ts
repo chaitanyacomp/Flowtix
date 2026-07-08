@@ -3,6 +3,7 @@ import {
   bindQuantityFormatter,
   formatConsumptionQuantity,
   formatDispatchQuantity,
+  formatDispatchQuantityForInput,
   formatFgQuantity,
   formatPlanningQuantity,
   formatQtyNumber,
@@ -120,6 +121,13 @@ describe("formatQcQuantityForInput", () => {
   it("returns raw numeric QC qty without unit or locale grouping", () => {
     expect(formatQcQuantityForInput(2991, "Nos")).toBe("2991");
     expect(formatQcQuantity(2991, "Nos")).toBe("2,991 Nos");
+  });
+});
+
+describe("formatDispatchQuantityForInput", () => {
+  it("returns raw numeric dispatch qty without unit or locale grouping", () => {
+    expect(formatDispatchQuantityForInput(3495, "Nos")).toBe("3495");
+    expect(formatDispatchQuantity(3495, "Nos")).toBe("3,495 Nos");
   });
 });
 

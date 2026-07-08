@@ -194,7 +194,7 @@ async function assertDispatchAllowedForSoItem(tx, params, opts = {}) {
         qcAcceptedTotalForSoItem: qcGross,
         netDispatchedOperationalForSoItem: netOp,
       });
-      const onHandUsable = Number(await getItemStockQty(itemId, tx, { stockBucket: "USABLE" }));
+      const onHandUsable = Number(await getItemStockQty(itemId, tx, { stockBucket: "USABLE", allLocations: true }));
       const allowedQty = Math.min(poolShipCap, onHandUsable);
 
       /** Set env `REPLACEMENT_LOCK_TRACE=1` to log pool vs finalize once, then unset. */
@@ -230,7 +230,7 @@ async function assertDispatchAllowedForSoItem(tx, params, opts = {}) {
     if (orderType === "NORMAL" || orderType == null) {
       const qcGross = await sumQcAcceptedForSoItem(tx, soId, itemId);
       const netOp = netDispatchedByItemId(dispatchRecords || [], DISPATCH_ALLOC_MODE.OPERATIONAL).get(itemId) ?? 0;
-      const onHandUsable = Number(await getItemStockQty(itemId, tx, { stockBucket: "USABLE" }));
+      const onHandUsable = Number(await getItemStockQty(itemId, tx, { stockBucket: "USABLE", allLocations: true }));
       const allowedQty = getSoItemDispatchShipCap({
         orderType: "NORMAL",
         onHandQty: onHandUsable,

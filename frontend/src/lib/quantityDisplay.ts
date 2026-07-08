@@ -228,6 +228,21 @@ export function formatDispatchQuantity(
   return formatQuantityWithUnit(value, { ...options, unit, category: "dispatch" });
 }
 
+/** Dispatch qty for editable inputs — number only, no locale grouping or unit suffix. */
+export function formatDispatchQuantityForInput(
+  value: number | null | undefined,
+  unit?: string | null,
+  options?: Omit<FormatQuantityWithUnitOptions, "unit" | "category" | "locale" | "includeUnit">,
+): string {
+  return formatQuantityWithUnit(value, {
+    ...options,
+    unit,
+    category: "dispatch",
+    locale: false,
+    includeUnit: false,
+  });
+}
+
 export function formatQcQuantity(
   value: number | null | undefined,
   unit?: string | null,

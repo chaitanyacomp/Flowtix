@@ -336,7 +336,10 @@ async function buildDispatchDraftEligibilityDeps(tx, so, opts = {}) {
   const onHandByItemId = new Map();
   const itemIds = new Set((so.dispatch || []).map((d) => Number(d.itemId)).filter((id) => id > 0));
   for (const itemId of itemIds) {
-    onHandByItemId.set(itemId, Number(await getItemStockQty(itemId, tx, { stockBucket: "USABLE" })));
+    onHandByItemId.set(
+      itemId,
+      Number(await getItemStockQty(itemId, tx, { stockBucket: "USABLE", allLocations: true })),
+    );
   }
   return {
     lineInputs,
@@ -1082,7 +1085,7 @@ async function buildNoQtyDispatchDebugPayload(soId, itemId, selectedCycleIdOpt) 
   const qcRemainingAfterOperationalDispatch = Math.max(0, qcAcceptedThisCycle - alreadyOpNet);
   const qcPoolRemainingAfterOperationalDispatch = Math.max(0, qcPoolGross - alreadyOpNet);
 
-  const usableFgStock = await getItemStockQty(itemId, prisma, { stockBucket: "USABLE" });
+  const usableFgStock = await getItemStockQty(itemId, prisma, { stockBucket: "USABLE", allLocations: true });
   const unlockedDraftReserved = (so.dispatch || [])
     .filter((d) => d.reversalOfId == null && d.workflowStatus === "UNLOCKED" && Number(d.itemId) === Number(itemId))
     .reduce((s, d) => s + num(d.dispatchedQty), 0);
@@ -2591,7 +2594,7 @@ dispatchRouter.post(
         postCycleApprovalMap: postCycleMapAll,
         cycleIdsWithBatchQcPending: batchSet,
       });
-      const usableStock = await getItemStockQty(body.itemId, prisma, { stockBucket: "USABLE" });
+      const usableStock = await getItemStockQty(body.itemId, prisma, { stockBucket: "USABLE", allLocations: true });
       const unlockedDraftReservedQty = getNoQtyUnlockedDraftQtyForItem(so, body.itemId);
       const fifo = computeNoQtyFifoPrepareSlicesForItem({
         so,
@@ -2719,7 +2722,7 @@ dispatchRouter.post("/dispatches", requireAuth, requireRole(DISPATCH_WRITE_ROLES
         });
 
         if (body.autoAllocateAcrossCycles === true) {
-          const usableStock = await getItemStockQty(body.itemId, tx, { stockBucket: "USABLE" });
+          const usableStock = await getItemStockQty(body.itemId, tx, { stockBucket: "USABLE", allLocations: true });
           const unlockedDraftReservedQty = getNoQtyUnlockedDraftQtyForItem(so, body.itemId);
           const fifo = computeNoQtyFifoPrepareSlicesForItem({
             so,
@@ -3130,11 +3133,13 @@ dispatchRouter.post("/dispatches/:id/lock", requireAuth, requireRole(DISPATCH_WR
       }
       console.debug("[LOCK_AFTER_VALIDATE]", { dispatchId: existing?.id ?? null });
 
-      const stockBefore = await getItemStockQty(existing.itemId, tx);
+      const stockBefore = await getItemStockQty(existing.itemId, tx, { allLocations: true });
       console.debug("[LOCK_BEFORE_POST]", { dispatchId: existing?.id ?? null });
 
-      await assertUsableStockBeforeDispatchOut(tx, existing.itemId, qty);
       const dispatchSourceLocationId = await resolveFgDispatchSourceLocationId(tx);
+      await assertUsableStockBeforeDispatchOut(tx, existing.itemId, qty, {
+        locationId: dispatchSourceLocationId,
+      });
       await tx.stockTransaction.create({
         data: {
           itemId: existing.itemId,
@@ -3161,7 +3166,7 @@ dispatchRouter.post("/dispatches/:id/lock", requireAuth, requireRole(DISPATCH_WR
         // Do not block dispatch on snapshot freeze; operational flow must proceed.
       }
 
-      const stockAfter = await getItemStockQty(existing.itemId, tx);
+      const stockAfter = await getItemStockQty(existing.itemId, tx, { allLocations: true });
 
       await auditLog.write(tx, {
         action: auditLog.AuditAction.UPDATE,
@@ -3401,8 +3406,10 @@ dispatchRouter.post(
         }
 
         // Post stock and lock row (same as /lock).
-        await assertUsableStockBeforeDispatchOut(tx, existing.itemId, qty);
         const dispatchSourceLocationId = await resolveFgDispatchSourceLocationId(tx);
+        await assertUsableStockBeforeDispatchOut(tx, existing.itemId, qty, {
+          locationId: dispatchSourceLocationId,
+        });
         await tx.stockTransaction.create({
           data: {
             itemId: existing.itemId,

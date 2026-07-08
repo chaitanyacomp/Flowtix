@@ -12,6 +12,7 @@ describe("sanitizeQtyInputDraft", () => {
 describe("parsePositiveQuantityDraft", () => {
   it("parses comma-formatted mandatory positive qty after sanitization", () => {
     expect(parsePositiveQuantityDraft("2,991")).toBe(2991);
+    expect(parsePositiveQuantityDraft("3,495")).toBe(3495);
     expect(parsePositiveQuantityDraft("")).toBe(null);
     expect(parsePositiveQuantityDraft("0")).toBe(null);
   });

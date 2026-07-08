@@ -213,7 +213,11 @@ async function assertSufficientStockForQtyOut(db, itemId, qtyOut, messagePrefix,
  * @param {import('@prisma/client').Prisma.TransactionClient} db
  */
 async function assertUsableStockBeforeDispatchOut(db, itemId, dispatchQty, opts = {}) {
-  const usable = await getItemStockQty(itemId, db, { stockBucket: "USABLE", locationId: opts?.locationId });
+  const usable = await getItemStockQty(itemId, db, {
+    stockBucket: "USABLE",
+    locationId: opts?.locationId,
+    ...(opts?.allLocations ? { allLocations: true } : {}),
+  });
   const q = Number(dispatchQty);
   if (usable + STOCK_EPS < q) {
     const err = new Error(`Insufficient usable stock for dispatch. Available: ${usable}, required: ${q}.`);

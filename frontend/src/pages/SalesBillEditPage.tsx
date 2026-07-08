@@ -958,8 +958,8 @@ export function SalesBillEditPage() {
               <div className="grid gap-2.5 lg:grid-cols-2">
                 <div className="rounded-md border border-slate-200 bg-slate-50/70 p-2.5">
                   <h3 className="text-[10px] font-semibold uppercase tracking-wide text-slate-600">Commercial</h3>
-                  <div className="mt-1.5 grid gap-2 sm:grid-cols-2">
-                    <div className="rounded border border-slate-200 bg-white px-2 py-1.5">
+                  <div className="mt-1.5 grid grid-cols-1 gap-2.5">
+                    <div className="min-w-0 rounded border border-slate-200 bg-white px-2 py-1.5">
                       <div className="flex items-center justify-between gap-2">
                         <div className="text-[11px] font-medium text-slate-600">Bill To</div>
                         <span
@@ -1114,8 +1114,8 @@ export function SalesBillEditPage() {
               <div className="grid gap-2.5 lg:grid-cols-2">
                 <div className="rounded-md border border-slate-200 bg-slate-50/70 p-2.5">
                   <h3 className="text-[10px] font-semibold uppercase tracking-wide text-slate-600">Commercial</h3>
-                  <div className="mt-1.5 grid gap-2 sm:grid-cols-2">
-                    <div className="rounded border border-slate-200 bg-white px-2 py-1.5">
+                  <div className="mt-1.5 grid grid-cols-1 gap-2.5">
+                    <div className="min-w-0 rounded border border-slate-200 bg-white px-2 py-1.5">
                       <div className="flex items-center justify-between gap-2">
                         <div className="text-[11px] font-medium text-slate-600">Bill To</div>
                         <span
@@ -1261,7 +1261,7 @@ export function SalesBillEditPage() {
         </div>
 
         <aside
-          className="min-w-0 space-y-2 lg:sticky lg:top-[2.75rem] lg:z-[1] lg:max-h-[calc(100dvh-4rem)] lg:self-start lg:overflow-y-auto"
+          className="min-w-0 space-y-2 lg:sticky lg:top-[2.75rem] lg:z-[1] lg:self-start"
           data-testid="sales-bill-action-sidebar"
         >
           <div
@@ -1324,7 +1324,7 @@ export function SalesBillEditPage() {
                 onResetExport={resetExport}
                 allowReExport
                 density="default"
-                className="shadow-sm ring-1 ring-slate-100"
+                className="shadow-md ring-2 ring-emerald-200/90"
               />
               <Button
                 type="button"
@@ -1362,17 +1362,19 @@ export function SalesBillEditPage() {
             cancelledAt={bill.cancelledAt}
           />
 
-          <SalesBillLinkedDocuments
-            billId={bill.id}
-            billDocNo={bill.docNo}
-            salesOrderId={bill.dispatch.soId}
-            salesOrderDocNo={bill.dispatch.salesOrder?.docNo}
-            dispatchId={bill.dispatchId}
-            dispatchDocNo={bill.dispatch.docNo}
-            customerId={bill.customerId}
-            customerName={bill.customer.name}
-            isExported={bill.isExported}
-          />
+          {isFinalizedBill ? (
+            <SalesBillLinkedDocuments
+              billId={bill.id}
+              billDocNo={bill.docNo}
+              salesOrderId={bill.dispatch.soId}
+              salesOrderDocNo={bill.dispatch.salesOrder?.docNo}
+              dispatchId={bill.dispatchId}
+              dispatchDocNo={bill.dispatch.docNo}
+              customerId={bill.customerId}
+              customerName={bill.customer.name}
+              isExported={bill.isExported}
+            />
+          ) : null}
 
           {isDraftBill ? (
             <BillExportStatusPanel

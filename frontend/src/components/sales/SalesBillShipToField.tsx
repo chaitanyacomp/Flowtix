@@ -117,11 +117,11 @@ export function SalesBillShipToField({
   const allowDropdown = Boolean(isDraft && options?.allowDropdown);
   const invoiceLine = formatShipToLine(
     options?.invoiceShipTo ?? {
-      label: bill.shipToLabelSnapshot,
+      label: bill.shipToLabelSnapshot ?? null,
       address: bill.shipToAddressSnapshot ?? "",
-      gstin: bill.shipToGstinSnapshot,
-      stateName: bill.shipToStateNameSnapshot,
-      stateCode: bill.shipToStateCodeSnapshot,
+      gstin: bill.shipToGstinSnapshot ?? null,
+      stateName: bill.shipToStateNameSnapshot ?? null,
+      stateCode: bill.shipToStateCodeSnapshot ?? null,
     },
   );
   const differsFromDispatch =
@@ -164,14 +164,14 @@ export function SalesBillShipToField({
   }
 
   return (
-    <div className="rounded border border-slate-200 bg-white px-2.5 py-2" data-testid="sales-bill-ship-to-field">
-      <div className="flex items-center justify-between gap-2">
+    <div className="min-w-0 w-full rounded border border-slate-200 bg-white px-2.5 py-2" data-testid="sales-bill-ship-to-field">
+      <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
         <div className="text-[11px] font-medium text-slate-600">Ship To</div>
         <Button
           type="button"
           variant="ghost"
           size="sm"
-          className="h-7 px-2 text-xs"
+          className="h-7 shrink-0 px-2 text-xs"
           onClick={onToggleAddress}
           aria-expanded={showAddress}
         >
@@ -183,7 +183,7 @@ export function SalesBillShipToField({
 
       {allowDropdown ? (
         <select
-          className="mt-1.5 flex h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm"
+          className="mt-1.5 box-border h-9 w-full min-w-0 max-w-full rounded-md border border-slate-200 bg-white px-2 text-sm"
           value={selectedValue}
           disabled={busy || loading}
           data-testid="sales-bill-ship-to-select"
@@ -199,7 +199,7 @@ export function SalesBillShipToField({
           ))}
         </select>
       ) : (
-        <div className="mt-0.5 text-[13px] font-semibold text-slate-900">{invoiceLine}</div>
+        <div className="mt-0.5 break-words text-[13px] font-semibold leading-snug text-slate-900">{invoiceLine}</div>
       )}
 
       {differsFromDispatch && !readOnly ? (

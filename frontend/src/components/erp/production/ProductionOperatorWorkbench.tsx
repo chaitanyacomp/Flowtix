@@ -51,10 +51,10 @@ export function ProductionOperatorWorkbench({
           id={entryId}
           className="flex min-h-0 min-w-0 flex-col border-b border-slate-200 bg-white lg:border-b-0 lg:border-r"
         >
-          <div className="border-b border-slate-100 bg-slate-50/50 px-3 py-1">
-            <h2 className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Production entry</h2>
+          <div className="border-b border-slate-100 bg-slate-50/50 px-3 py-1.5">
+            <h2 className="text-[11px] font-bold uppercase tracking-wider text-slate-600">Production entry</h2>
           </div>
-          <div className="min-h-0 flex-1 px-3 py-2">
+          <div className="min-h-0 flex-1 px-3 py-2.5">
             {alerts ? <div className="mb-2 space-y-1">{alerts}</div> : null}
             {entry}
           </div>

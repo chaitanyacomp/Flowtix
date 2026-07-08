@@ -7,6 +7,7 @@ import {
   fmtWastageQty,
   remainingWastageAfterRow,
   resolveLiveWastageValidationMessage,
+  suggestWastageQtyForTypeSelection,
 } from "../../../lib/productionWastageClassification";
 import type { WastageTypeRow } from "../../../lib/wastageTypeApi";
 
@@ -46,23 +47,46 @@ export function ProductionReportWastageDetails({
 
   const addRow = React.useCallback(() => {
     const firstType = wastageTypes[0]?.id ?? 0;
+    const key = newRowKey();
     const remaining = Math.max(0, balance.remainingQty);
+    const qty =
+      firstType > 0 && remaining > 1e-6
+        ? suggestWastageQtyForTypeSelection(totalWastageQty, rows, key, "", unit) ?? ""
+        : remaining > 1e-6
+          ? fmtWastageQty(remaining)
+          : "";
     onChange([
       ...rows,
       {
-        key: newRowKey(),
+        key,
         wastageTypeId: firstType,
-        qty: remaining > 1e-6 ? fmtWastageQty(remaining) : "",
+        qty,
         remarks: "",
       },
     ]);
-  }, [balance.remainingQty, onChange, rows, wastageTypes]);
+  }, [balance.remainingQty, onChange, rows, totalWastageQty, unit, wastageTypes]);
 
   const updateRow = React.useCallback(
     (key: string, patch: Partial<WastageDetailDraft>) => {
-      onChange(rows.map((row) => (row.key === key ? { ...row, ...patch } : row)));
+      onChange(
+        rows.map((row) => {
+          if (row.key !== key) return row;
+          const next = { ...row, ...patch };
+          if (patch.wastageTypeId != null && patch.wastageTypeId > 0 && patch.qty == null) {
+            const suggested = suggestWastageQtyForTypeSelection(
+              totalWastageQty,
+              rows,
+              key,
+              row.qty,
+              unit,
+            );
+            if (suggested != null) next.qty = suggested;
+          }
+          return next;
+        }),
+      );
     },
-    [onChange, rows],
+    [onChange, rows, totalWastageQty, unit],
   );
 
   const removeRow = React.useCallback(

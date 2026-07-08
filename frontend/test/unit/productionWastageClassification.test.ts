@@ -8,6 +8,7 @@ import {
   isWastageClassificationComplete,
   remainingWastageAfterRow,
   sumWastageDetailDraftQty,
+  suggestWastageQtyForTypeSelection,
   validateWastageClassification,
 } from "../../src/lib/productionWastageClassification";
 
@@ -75,6 +76,26 @@ describe("productionWastageClassification", () => {
     ];
     expect(remainingWastageAfterRow(1.185, rows, 0)).toBe(1);
     expect(remainingWastageAfterRow(1.185, rows, 1)).toBe(0.5);
+  });
+
+  it("suggests remaining wastage qty when operator selects a type", () => {
+    const rows = [{ key: "a", wastageTypeId: 0, qty: "", remarks: "" }];
+    expect(
+      suggestWastageQtyForTypeSelection(0.315, rows, "a", "", "Kg"),
+    ).toBe("0.315");
+  });
+
+  it("does not overwrite manual wastage qty on type selection", () => {
+    const rows = [{ key: "a", wastageTypeId: 1, qty: "0.1", remarks: "" }];
+    expect(suggestWastageQtyForTypeSelection(0.315, rows, "a", "0.1", "Kg")).toBeNull();
+  });
+
+  it("fills only unclassified balance across multiple wastage rows", () => {
+    const rows = [
+      { key: "a", wastageTypeId: 1, qty: "0.185", remarks: "" },
+      { key: "b", wastageTypeId: 0, qty: "", remarks: "" },
+    ];
+    expect(suggestWastageQtyForTypeSelection(0.315, rows, "b", "", "Kg")).toBe("0.13");
   });
 
   it("formats mismatch message with totals", () => {

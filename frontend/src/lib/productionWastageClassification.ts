@@ -1,4 +1,4 @@
-import { formatQtyNumber } from "./quantityDisplay";
+import { formatQtyNumber, formatQtyNumberForInput } from "./quantityDisplay";
 
 export type WastageDetailDraft = {
   key: string;
@@ -76,12 +76,46 @@ export function remainingWastageAfterRow(
   return round3(Number(totalWastageQty) - classifiedUpTo);
 }
 
+/** Remaining wastage available for a row, excluding that row's current qty from the classified sum. */
+export function remainingWastageExcludingRow(
+  totalWastageQty: number,
+  rows: WastageDetailDraft[],
+  rowKey: string,
+): number {
+  const classifiedOthers = round3(
+    rows.reduce((acc, row) => {
+      if (row.key === rowKey) return acc;
+      const qty = Number(row.qty);
+      return acc + (Number.isFinite(qty) && qty > 0 ? qty : 0);
+    }, 0),
+  );
+  return round3(Math.max(0, Number(totalWastageQty) - classifiedOthers));
+}
+
+/**
+ * Suggest qty when operator selects a wastage type.
+ * Fills only unclassified balance; preserves manual qty when already entered.
+ */
+export function suggestWastageQtyForTypeSelection(
+  totalWastageQty: number,
+  rows: WastageDetailDraft[],
+  rowKey: string,
+  currentQty = "",
+  unit = "Kg",
+): string | null {
+  const remaining = remainingWastageExcludingRow(totalWastageQty, rows, rowKey);
+  if (!(remaining > EPS)) return null;
+  const parsed = Number(currentQty);
+  if (currentQty.trim() && Number.isFinite(parsed) && parsed > EPS) return null;
+  return formatQtyNumberForInput(remaining, unit);
+}
+
 export function buildWastageRemainingToClassifyMessage(remainingQty: number, unit = "Kg"): string {
-  return `Classify remaining ${fmtWastageQty(Math.abs(remainingQty))} ${unit} wastage before confirming.`;
+  return `Classify remaining ${fmtWastageQty(Math.abs(remainingQty), unit)} ${unit} wastage before confirming.`;
 }
 
 export function buildWastageOverClassifiedMessage(excessQty: number, unit = "Kg"): string {
-  return `Classified wastage exceeds total by ${fmtWastageQty(Math.abs(excessQty))} ${unit}.`;
+  return `Classified wastage exceeds total by ${fmtWastageQty(Math.abs(excessQty), unit)} ${unit}.`;
 }
 
 export function buildWastageClassificationMismatchMessage(
@@ -98,7 +132,7 @@ export function buildWastageClassificationMismatchMessage(
   if (balance.status === "remaining") {
     return buildWastageRemainingToClassifyMessage(balance.remainingQty, unit);
   }
-  return `Total Wastage : ${fmtWastageQty(totalWastageQty)} ${unit}\n\nDetailed Wastage : ${fmtWastageQty(detailedQty)} ${unit}\n\nPlease classify the complete wastage before confirming.`;
+  return `Total Wastage : ${fmtWastageQty(totalWastageQty, unit)} ${unit}\n\nDetailed Wastage : ${fmtWastageQty(detailedQty, unit)} ${unit}\n\nPlease classify the complete wastage before confirming.`;
 }
 
 export function resolveLiveWastageValidationMessage(

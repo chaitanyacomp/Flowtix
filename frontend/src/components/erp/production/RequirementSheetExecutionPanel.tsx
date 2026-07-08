@@ -155,6 +155,19 @@ export type RsExecutionSummary = {
     status: "READY" | "PARTIALLY_READY" | "AWAITING_PROCUREMENT" | "MISSING_BOM" | "ZERO_BALANCE";
     reason: string;
     canPlace: boolean;
+    sharedRmConflict?: boolean;
+    snapshot?: {
+      totalWoPlacedQty: number;
+      totalRsBalanceQty: number;
+      totalExecutableQty: number;
+      placementStatus: string | null;
+      woPlacedByItem: Record<string, number>;
+      lines: Array<{
+        itemId: number;
+        rsBalanceQty: number;
+        suggestedExecutableQty: number;
+      }>;
+    };
     summary: {
       totalRsDemandQty: number;
       totalWoPlacedQty: number;
@@ -179,6 +192,18 @@ export type RsExecutionSummary = {
         incomingQty: number;
         status: "READY" | "PARTIALLY_READY" | "AWAITING_PROCUREMENT";
       }>;
+    }>;
+  };
+  placementSnapshot?: {
+    totalWoPlacedQty: number;
+    totalRsBalanceQty: number;
+    totalExecutableQty: number;
+    placementStatus: string | null;
+    woPlacedByItem: Record<string, number>;
+    lines: Array<{
+      itemId: number;
+      rsBalanceQty: number;
+      suggestedExecutableQty: number;
     }>;
   };
 };
@@ -414,12 +439,25 @@ export function RequirementSheetExecutionPanel({
     setSubmitError(null);
   }
 
+  async function reloadExecutionSummary() {
+    const next = await apiFetch<RsExecutionSummary>(`/api/requirement-sheets/${sheetId}/execution`);
+    setData(next);
+    const nextDrafts: Record<number, string> = {};
+    for (const line of next.placement?.lines ?? []) {
+      nextDrafts[line.itemId] = fmtQty(Math.max(0, line.suggestedExecutableQty));
+    }
+    setDraftQtyByItem(nextDrafts);
+    return next;
+  }
+
   async function submitPlacement(mode: "suggested" | "custom") {
     if (!data) return;
     const lines = mode === "suggested" ? suggestedLines : requestedLines;
     if (mode === "suggested" && !canSubmitSuggested) return;
     if (mode === "custom" && !canSubmitCustom) return;
     if (!lines.length) return;
+
+    const placementSnapshot = data.placementSnapshot ?? data.placement?.snapshot ?? null;
 
     setSubmitBusy(true);
     setSubmitError(null);
@@ -437,7 +475,7 @@ export function RequirementSheetExecutionPanel({
         }>;
       }>(`/api/requirement-sheets/${sheetId}/create-wo`, {
         method: "POST",
-        body: JSON.stringify({ lines }),
+        body: JSON.stringify({ lines, placementSnapshot }),
       });
       const primaryWoId = Number(res.workOrders?.[0]?.workOrderId ?? res.workOrderId);
       const pmrRow =
@@ -468,10 +506,33 @@ export function RequirementSheetExecutionPanel({
         );
         return;
       }
-      const next = await apiFetch<RsExecutionSummary>(`/api/requirement-sheets/${sheetId}/execution`);
-      setData(next);
+      const next = await reloadExecutionSummary();
+      void next;
     } catch (e) {
-      const msg = e instanceof ApiRequestError ? e.message : e instanceof Error ? e.message : "WO placement failed.";
+      const apiErr = e instanceof ApiRequestError ? e : null;
+      const staleCodes = new Set(["NO_QTY_RS_CHANGED", "NO_QTY_RM_AVAILABILITY_CHANGED"]);
+      if (apiErr?.code && staleCodes.has(apiErr.code)) {
+        try {
+          await reloadExecutionSummary();
+          const msg =
+            apiErr.message ||
+            "Execution workspace refreshed because placement inputs changed. Review the updated suggested quantity.";
+          setSubmitError(msg);
+          toast.showInfo(msg);
+          return;
+        } catch (refreshErr) {
+          const refreshMsg =
+            refreshErr instanceof ApiRequestError
+              ? refreshErr.message
+              : refreshErr instanceof Error
+                ? refreshErr.message
+                : "Failed to refresh execution workspace.";
+          setSubmitError(refreshMsg);
+          toast.showError(refreshMsg);
+          return;
+        }
+      }
+      const msg = apiErr ? apiErr.message : e instanceof Error ? e.message : "WO placement failed.";
       setSubmitError(msg);
       toast.showError(msg);
     } finally {

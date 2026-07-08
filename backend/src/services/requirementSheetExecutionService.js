@@ -4,12 +4,11 @@
  */
 
 const { buildPlanDisplayLabel } = require("./monthlyPlanningPlanLifecycleService");
-const { aggregateRmDemandForFgLines, loadApprovedBomWithLines } = require("./bomExplosionService");
-const { getMaterialAvailabilityByItems } = require("./materialAvailabilityService");
 const {
   isNoQtyWoPlacedStatusCounted,
-  buildNoQtyWoBatchPlacementPreview,
+  sumPlacedQtyByItem,
 } = require("./noQtyExecutionReleaseService");
+const { assessNoQtyBatchPlacement } = require("./noQtyBatchPlacementEngine");
 const {
   assessNoQtyMonthlyPlanningGate,
   isNoQtyMonthlyPlanningGateExecutionReady,
@@ -100,11 +99,6 @@ function pmrIssueStatus(pmr) {
   return pmr.status === "DRAFT" ? "DRAFT" : "REQUESTED";
 }
 
-function rmLineStatus({ requiredQty, availableQty, shortageQty, incomingQty }) {
-  if (requiredQty <= EPS || shortageQty <= EPS) return "READY";
-  if (availableQty > EPS || incomingQty > EPS) return "PARTIALLY_READY";
-  return "AWAITING_PROCUREMENT";
-}
 
 /**
  * WO placement totals for one locked RS (One RS → many WOs).
@@ -375,128 +369,6 @@ async function loadProcurementProgress(db, { released, materialRequirement }) {
   };
 }
 
-async function buildRmReadiness(db, lines, deps = {}) {
-  const aggregate = deps.aggregateRmDemandForFgLines || aggregateRmDemandForFgLines;
-  const loadTopLevelBom = deps.loadApprovedBomWithLines || loadApprovedBomWithLines;
-  const availability = deps.getMaterialAvailabilityByItems || getMaterialAvailabilityByItems;
-  const fgBalanceLines = (lines ?? [])
-    .filter((line) => line.rsBalanceQty > EPS)
-    .map((line) => ({
-      fgItemId: line.itemId,
-      fgItemName: line.itemName,
-      fgQty: line.rsBalanceQty,
-      bomMissing: false,
-    }));
-
-  if (!fgBalanceLines.length) {
-    return {
-      basis: "RS_BALANCE",
-      fgBalanceLines: [],
-      lines: [],
-      missingBoms: [],
-      summary: {
-        requiredQty: 0,
-        availableQty: 0,
-        shortageQty: 0,
-        incomingQty: 0,
-        readyLineCount: 0,
-        partialLineCount: 0,
-        awaitingProcurementLineCount: 0,
-        missingBomCount: 0,
-      },
-    };
-  }
-
-  const topLevelBomIssues = [];
-  for (const fg of fgBalanceLines) {
-    const bom = await loadTopLevelBom(db, fg.fgItemId);
-    if (!bom) {
-      topLevelBomIssues.push({
-        type: "TOP_LEVEL_MISSING_BOM",
-        status: "MISSING_BOM",
-        fgItemId: fg.fgItemId,
-        fgItemName: fg.fgItemName,
-        fgQty: fg.fgQty,
-        message: "Missing BOM for FG item. RM requirement cannot be calculated.",
-      });
-      continue;
-    }
-    if (!bom.lines?.length) {
-      topLevelBomIssues.push({
-        type: "TOP_LEVEL_EMPTY_BOM",
-        status: "MISSING_BOM",
-        fgItemId: fg.fgItemId,
-        fgItemName: fg.fgItemName,
-        fgQty: fg.fgQty,
-        message: "FG BOM is empty. RM readiness cannot be previewed.",
-      });
-    }
-  }
-
-  const demand = await aggregate(db, fgBalanceLines);
-  const rmNeeded = demand?.rmNeeded instanceof Map ? demand.rmNeeded : new Map();
-  const childBomIssues = (demand?.missingChildBoms ?? []).map((m) => ({
-    type: "CHILD_MISSING_BOM",
-    status: "MISSING_BOM",
-    sfgItemId: m.sfgItemId,
-    sfgName: m.sfgName,
-    message: "Missing BOM for SFG item. RM requirement cannot be fully calculated.",
-  }));
-  const missingBoms = [...topLevelBomIssues, ...childBomIssues];
-  const itemIds = [...rmNeeded.keys()].filter((id) => Number(id) > 0);
-  const availabilityRows = itemIds.length
-    ? await availability({
-        db,
-        itemIds,
-        requiredQtyByItemId: rmNeeded,
-        includeIncoming: true,
-        includeIssued: false,
-      })
-    : [];
-  const itemRows =
-    itemIds.length && db.item?.findMany
-      ? await db.item.findMany({
-          where: { id: { in: itemIds } },
-          select: { id: true, itemName: true },
-        })
-      : [];
-  const itemNameById = new Map((itemRows ?? []).map((row) => [Number(row.id), row.itemName]));
-
-  const rmLines = (availabilityRows ?? []).map((row) => {
-    const requiredQty = round3(dec(row.requiredQty ?? rmNeeded.get(row.itemId)));
-    const availableQty = round3(dec(row.freeStockQty ?? row.physicalUsableStockQty));
-    const shortageQty = round3(dec(row.shortageAfterReservationQty ?? Math.max(0, requiredQty - availableQty)));
-    const incomingQty = round3(dec(row.incomingQty));
-    const status = rmLineStatus({ requiredQty, availableQty, shortageQty, incomingQty });
-    return {
-      rmItemId: Number(row.itemId),
-      rmItemName: row.itemName ?? itemNameById.get(Number(row.itemId)) ?? `Item ${row.itemId}`,
-      requiredQty,
-      availableQty,
-      shortageQty,
-      incomingQty,
-      status,
-    };
-  });
-
-  return {
-    basis: "RS_BALANCE",
-    fgBalanceLines,
-    lines: rmLines,
-    missingBoms,
-    summary: {
-      requiredQty: round3(rmLines.reduce((sum, line) => sum + line.requiredQty, 0)),
-      availableQty: round3(rmLines.reduce((sum, line) => sum + line.availableQty, 0)),
-      shortageQty: round3(rmLines.reduce((sum, line) => sum + line.shortageQty, 0)),
-      incomingQty: round3(rmLines.reduce((sum, line) => sum + line.incomingQty, 0)),
-      readyLineCount: rmLines.filter((line) => line.status === "READY").length,
-      partialLineCount: rmLines.filter((line) => line.status === "PARTIALLY_READY").length,
-      awaitingProcurementLineCount: rmLines.filter((line) => line.status === "AWAITING_PROCUREMENT").length,
-      missingBomCount: missingBoms.length,
-    },
-  };
-}
-
 function buildReadinessDecision({ totals, rmReadiness, existingWoSummary, released, materialRequirement }) {
   if (totals.rsBalanceQty <= EPS) {
     const status = "BLOCKED";
@@ -515,7 +387,7 @@ function buildReadinessDecision({ totals, rmReadiness, existingWoSummary, releas
     return { status, label: decisionLabel(status), reason: "Existing WO is already running." };
   }
 
-  if (rmReadiness.summary.missingBomCount > 0 || (!rmReadiness.lines.length && totals.rsBalanceQty > EPS)) {
+  if (rmReadiness.summary.missingBomCount > 0) {
     const status = "BLOCKED";
     return { status, label: decisionLabel(status), reason: "RM requirement preview is blocked by missing BOM data." };
   }
@@ -523,6 +395,11 @@ function buildReadinessDecision({ totals, rmReadiness, existingWoSummary, releas
   if (!released || !materialRequirement) {
     const status = "AWAITING_PROCUREMENT";
     return { status, label: decisionLabel(status), reason: "Monthly Plan procurement release or MR is not complete yet." };
+  }
+
+  if (!rmReadiness.lines.length && totals.rsBalanceQty > EPS) {
+    const status = "BLOCKED";
+    return { status, label: decisionLabel(status), reason: "RM requirement preview is blocked by missing BOM data." };
   }
 
   if (rmReadiness.summary.shortageQty <= EPS) {
@@ -602,7 +479,21 @@ async function getRequirementSheetExecutionSummary(db, requirementSheetId, deps 
   }
 
   const { workOrdersRaw, woPlacedByItem, existingWoSummary } = await loadWoPlacementContextForSheet(db, sheet.id);
-  const { lines, totals } = buildRsBalanceLinesFromSheet(sheet, woPlacedByItem);
+  const assessPlacement = deps.assessNoQtyBatchPlacement || assessNoQtyBatchPlacement;
+  const batchAssessment = await assessPlacement(db, sheet, { placedByItem: woPlacedByItem, ...deps });
+  const totals = batchAssessment.totals;
+  const lines = batchAssessment.balanceLines.map((line) => ({
+    itemId: line.itemId,
+    itemName: line.itemName,
+    rsDemandQty: line.rsDemandQty,
+    woPlacedQty: line.woPlacedQty,
+    rsBalanceQty: line.rsBalanceQty,
+  }));
+  const placement = {
+    ...batchAssessment.placement,
+    snapshot: batchAssessment.snapshot,
+  };
+  const rmReadiness = batchAssessment.rmReadiness;
 
   const workOrders = workOrdersRaw.map((wo) => {
     const pmr = wo.productionMaterialRequests?.[0] ?? null;
@@ -621,11 +512,7 @@ async function getRequirementSheetExecutionSummary(db, requirementSheetId, deps 
 
   const mrDocNo = materialRequirement?.docNo ?? null;
   const mrStatus = materialRequirement?.status ?? null;
-  const [procurementProgress, rmReadiness] = await Promise.all([
-    loadProcurementProgress(db, { released: executionPlanReady, materialRequirement }),
-    buildRmReadiness(db, lines, deps),
-  ]);
-  const placement = await buildNoQtyWoBatchPlacementPreview(db, sheet);
+  const procurementProgress = await loadProcurementProgress(db, { released: executionPlanReady, materialRequirement });
   const readiness = buildReadinessDecision({
     totals,
     rmReadiness,
@@ -663,6 +550,7 @@ async function getRequirementSheetExecutionSummary(db, requirementSheetId, deps 
     rmReadiness,
     existingWoSummary,
     placement,
+    placementSnapshot: batchAssessment.snapshot,
     placementStage,
     processStageKey: placementStage.processStageKey,
     processStageLabel: placementStage.processStageLabel,
@@ -733,12 +621,14 @@ async function buildNoQtyLockedSheetPlacementAssessment(db, sheet, deps = {}, pr
     }
 
     ({ existingWoSummary, woPlacedByItem } = await loadWoPlacementContextForSheet(db, sheet.id));
-    const built = buildRsBalanceLinesFromSheet(sheet, woPlacedByItem);
-    totals = built.totals;
-    const lines = built.lines;
-    const rmReadiness = await buildRmReadiness(db, lines, deps);
-    const buildPlacementPreview = deps.buildNoQtyWoBatchPlacementPreview || buildNoQtyWoBatchPlacementPreview;
-    placement = await buildPlacementPreview(db, sheet);
+    const assessPlacement = deps.assessNoQtyBatchPlacement || assessNoQtyBatchPlacement;
+  const batchAssessment = await assessPlacement(db, sheet, { placedByItem: woPlacedByItem, ...deps });
+    totals = batchAssessment.totals;
+    placement = {
+      ...batchAssessment.placement,
+      snapshot: batchAssessment.snapshot,
+    };
+    const rmReadiness = batchAssessment.rmReadiness;
     readiness = buildReadinessDecision({
       totals,
       rmReadiness,

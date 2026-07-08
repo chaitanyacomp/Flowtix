@@ -3,17 +3,21 @@
  *
  * Monthly Plan Release creates procurement MR only. Store/manual WO placement
  * uses the remaining RS balance and can create multiple WOs per Requirement Sheet.
+ *
+ * Placement preview and create validation delegate to noQtyBatchPlacementEngine.
  */
 
 const { DocType } = require("../prismaClientPackage");
 const { allocateDocNo } = require("./docNoService");
-const { aggregateRmDemandForFgLines, loadApprovedBomWithLines } = require("./bomExplosionService");
-const { getMaterialAvailabilityByItems } = require("./materialAvailabilityService");
-const { resolveNoQtyWoExecutableQty } = require("./noQtyWoQtyService");
-const { roundFgQty, capFgQtyFromRmAvailability } = require("./itemQtyPrecision");
+const {
+  assessNoQtyBatchPlacement,
+  validateNoQtyPlacementRequest,
+  loadFgItemUnitMap,
+} = require("./noQtyBatchPlacementEngine");
 const {
   getExistingProductionMaterialRequestForWorkOrder,
 } = require("./productionMaterialRequestService");
+const { roundFgQty } = require("./itemQtyPrecision");
 
 const NO_QTY_WO_PLACED_COUNT_STATUSES = Object.freeze([
   "PENDING",
@@ -40,38 +44,6 @@ function isNoQtyWoPlacedStatusCounted(status) {
 
 function woLinePlacedQty(line) {
   return round3(n(line?.plannedQty ?? line?.qty));
-}
-
-async function loadFgItemUnitById(tx, itemId) {
-  const id = Number(itemId);
-  if (!(id > 0) || typeof tx?.item?.findFirst !== "function") return null;
-  const row = await tx.item.findFirst({
-    where: { id },
-    select: {
-      unit: true,
-      unitRef: { select: { unitCode: true, unitName: true } },
-    },
-  });
-  if (!row) return null;
-  return row.unitRef?.unitCode ?? row.unitRef?.unitName ?? row.unit ?? null;
-}
-
-async function loadFgItemUnitMap(tx, itemIds) {
-  const ids = [...new Set((itemIds ?? []).map((id) => Number(id)).filter((id) => id > 0))];
-  const out = new Map();
-  if (!ids.length || typeof tx?.item?.findMany !== "function") return out;
-  const rows = await tx.item.findMany({
-    where: { id: { in: ids } },
-    select: {
-      id: true,
-      unit: true,
-      unitRef: { select: { unitCode: true, unitName: true } },
-    },
-  });
-  for (const row of rows) {
-    out.set(Number(row.id), row.unitRef?.unitCode ?? row.unitRef?.unitName ?? row.unit ?? null);
-  }
-  return out;
 }
 
 function sumPlacedQtyByItem(workOrders) {
@@ -111,153 +83,10 @@ function normalizeRequestedPlacementLines(requestedLines, balanceLines) {
   return order.map((itemId) => ({ itemId, fgItemId: itemId, qty: round3(merged.get(itemId) ?? 0) }));
 }
 
-async function buildNoQtyPlacementLinePreview(tx, balanceLine) {
-  const fgUnit = await loadFgItemUnitById(tx, balanceLine?.itemId);
-  const rsBalanceQty = roundFgQty(n(balanceLine?.rsBalanceQty), fgUnit, { mode: "floor" });
-  if (!(rsBalanceQty > 0)) {
-    return {
-      itemId: Number(balanceLine?.itemId),
-      itemName: balanceLine?.itemName ?? `Item ${balanceLine?.itemId}`,
-      rsDemandQty: round3(n(balanceLine?.rsDemandQty)),
-      woPlacedQty: round3(n(balanceLine?.woPlacedQty)),
-      rsBalanceQty,
-      suggestedExecutableQty: 0,
-      status: "ZERO_BALANCE",
-      reason: "No RS balance remains for this FG line.",
-      rmLines: [],
-    };
-  }
-
-  if (
-    typeof tx?.bom?.findFirst !== "function" ||
-    typeof tx?.stockTransaction?.groupBy !== "function" ||
-    typeof tx?.item?.findMany !== "function" ||
-    typeof tx?.productionMaterialRequestLine?.findMany !== "function" ||
-    typeof tx?.rmPurchaseOrder?.findMany !== "function"
-  ) {
-    return {
-      itemId: Number(balanceLine.itemId),
-      itemName: balanceLine.itemName ?? `Item ${balanceLine.itemId}`,
-      rsDemandQty: round3(n(balanceLine.rsDemandQty)),
-      woPlacedQty: round3(n(balanceLine.woPlacedQty)),
-      rsBalanceQty,
-      suggestedExecutableQty: 0,
-      status: "MISSING_BOM",
-      reason: "RM preview is unavailable in this context.",
-      rmLines: [],
-    };
-  }
-
-  const bom = await loadApprovedBomWithLines(tx, balanceLine.itemId);
-  if (!bom?.lines?.length) {
-    return {
-      itemId: Number(balanceLine.itemId),
-      itemName: balanceLine.itemName ?? `Item ${balanceLine.itemId}`,
-      rsDemandQty: round3(n(balanceLine.rsDemandQty)),
-      woPlacedQty: round3(n(balanceLine.woPlacedQty)),
-      rsBalanceQty,
-      suggestedExecutableQty: 0,
-      status: "MISSING_BOM",
-      reason: "Approved BOM is missing for this FG line.",
-      rmLines: [],
-    };
-  }
-
-  const explosion = await aggregateRmDemandForFgLines(tx, [
-    { fgItemId: balanceLine.itemId, fgQty: 1, bomMissing: false },
-  ]);
-  const rmNeeded = explosion?.rmNeeded instanceof Map ? explosion.rmNeeded : new Map();
-  if ((explosion?.missingChildBoms ?? []).length > 0) {
-    return {
-      itemId: Number(balanceLine.itemId),
-      itemName: balanceLine.itemName ?? `Item ${balanceLine.itemId}`,
-      rsDemandQty: round3(n(balanceLine.rsDemandQty)),
-      woPlacedQty: round3(n(balanceLine.woPlacedQty)),
-      rsBalanceQty,
-      suggestedExecutableQty: 0,
-      status: "MISSING_BOM",
-      reason: "Approved BOM is incomplete for this FG line.",
-      rmLines: [],
-    };
-  }
-
-  if (!rmNeeded.size) {
-    return {
-      itemId: Number(balanceLine.itemId),
-      itemName: balanceLine.itemName ?? `Item ${balanceLine.itemId}`,
-      rsDemandQty: round3(n(balanceLine.rsDemandQty)),
-      woPlacedQty: round3(n(balanceLine.woPlacedQty)),
-      rsBalanceQty,
-      suggestedExecutableQty: rsBalanceQty,
-      status: "READY",
-      reason: "No RM consumption was found for this FG line.",
-      rmLines: [],
-    };
-  }
-
-  const availabilityRows = await getMaterialAvailabilityByItems({
-    db: tx,
-    itemIds: [...rmNeeded.keys()],
-    requiredQtyByItemId: rmNeeded,
-    includeIncoming: true,
-    includeIssued: false,
-  });
-
-  let executableQty = rsBalanceQty;
-  let hasAvailableStock = false;
-  let hasIncomingStock = false;
-
-  const rmLines = (availabilityRows ?? []).map((row) => {
-    const requiredPerFg = round3(n(rmNeeded.get(Number(row.itemId))));
-    const availableQty = round3(n(row.freeStockQty ?? row.physicalUsableStockQty));
-    const incomingQty = round3(n(row.incomingQty));
-    const shortageQty = round3(Math.max(0, requiredPerFg - availableQty));
-    if (availableQty > EPS) hasAvailableStock = true;
-    if (incomingQty > EPS) hasIncomingStock = true;
-    if (requiredPerFg > EPS) {
-      const cap = capFgQtyFromRmAvailability(availableQty, requiredPerFg, fgUnit);
-      executableQty = Math.min(executableQty, cap);
-    }
-    return {
-      rmItemId: Number(row.itemId),
-      rmItemName: row.itemName ?? `Item ${row.itemId}`,
-      requiredQty: requiredPerFg,
-      availableQty,
-      shortageQty,
-      incomingQty,
-      status:
-        shortageQty <= EPS ? "READY" : availableQty > EPS || incomingQty > EPS ? "PARTIALLY_READY" : "AWAITING_PROCUREMENT",
-    };
-  });
-
-  executableQty = roundFgQty(Math.max(0, Math.min(rsBalanceQty, executableQty)), fgUnit, { mode: "floor" });
-  let status = "READY";
-  let reason = "All required RM is available for this FG line.";
-  if (executableQty <= EPS) {
-    status = hasIncomingStock && !hasAvailableStock ? "PARTIALLY_READY" : "AWAITING_PROCUREMENT";
-    reason =
-      status === "PARTIALLY_READY"
-        ? "RM is still incoming, but no physical RM is available for placement yet."
-        : "Required RM is not available yet.";
-  } else if (executableQty + EPS < rsBalanceQty) {
-    status = "PARTIALLY_READY";
-    reason = "Some RM shortages remain for this FG line.";
-  }
-
-  return {
-    itemId: Number(balanceLine.itemId),
-    itemName: balanceLine.itemName ?? `Item ${balanceLine.itemId}`,
-    rsDemandQty: round3(n(balanceLine.rsDemandQty)),
-    woPlacedQty: round3(n(balanceLine.woPlacedQty)),
-    rsBalanceQty,
-    suggestedExecutableQty: executableQty,
-    status,
-    reason,
-    rmLines,
-  };
-}
-
-async function buildNoQtyWoBatchPlacementPreview(tx, sheet) {
+/**
+ * Authoritative placement preview — thin wrapper over the batch placement engine.
+ */
+async function buildNoQtyWoBatchPlacementPreview(tx, sheet, deps = {}) {
   const linkedWorkOrders = await tx.workOrder.findMany({
     where: { requirementSheetId: sheet.id },
     select: {
@@ -268,76 +97,15 @@ async function buildNoQtyWoBatchPlacementPreview(tx, sheet) {
     },
   });
   const placedByItem = sumPlacedQtyByItem(linkedWorkOrders);
-  const balanceLines = (sheet.lines || [])
-    .map((ln) => {
-      const itemId = Number(ln.itemId);
-      const rsDemandQty = round3(n(ln.requirementQty));
-      const woPlacedQty = round3(placedByItem.get(itemId) ?? 0);
-      const rsBalanceQty = round3(Math.max(0, rsDemandQty - woPlacedQty));
-      return {
-        itemId,
-        itemName: ln.item?.itemName ?? `Item ${itemId}`,
-        rsDemandQty,
-        woPlacedQty,
-        rsBalanceQty,
-      };
-    })
-    .filter((line) => Number.isFinite(line.itemId) && line.itemId > 0);
-
-  const lines = [];
-  for (const line of balanceLines) {
-    lines.push(await buildNoQtyPlacementLinePreview(tx, line));
-  }
-
-  const positiveLines = lines.filter((line) => line.rsBalanceQty > EPS);
-  const executableLines = positiveLines.filter((line) => line.suggestedExecutableQty > EPS);
-  const summary = {
-    totalRsDemandQty: round3(balanceLines.reduce((sum, line) => sum + line.rsDemandQty, 0)),
-    totalWoPlacedQty: round3(balanceLines.reduce((sum, line) => sum + line.woPlacedQty, 0)),
-    totalRsBalanceQty: round3(balanceLines.reduce((sum, line) => sum + line.rsBalanceQty, 0)),
-    totalExecutableQty: round3(lines.reduce((sum, line) => sum + line.suggestedExecutableQty, 0)),
-  };
-
-  let status = "ZERO_BALANCE";
-  let reason = "No RS balance remains.";
-  if (positiveLines.length > 0) {
-    const anyMissingBom = positiveLines.some((line) => line.status === "MISSING_BOM");
-    const anyAwaiting = positiveLines.some((line) => line.status === "AWAITING_PROCUREMENT");
-    const allReady = positiveLines.every((line) => line.status === "READY" && line.suggestedExecutableQty + EPS >= line.rsBalanceQty);
-    if (allReady) {
-      status = "READY";
-      reason = "All remaining FG lines can be placed using current RM availability.";
-    } else if (executableLines.length > 0) {
-      status = "PARTIALLY_READY";
-      reason = "Some FG lines can be placed now; others still need RM or BOM completion.";
-    } else if (anyMissingBom) {
-      status = "MISSING_BOM";
-      reason = "One or more FG lines are missing approved BOM data.";
-    } else if (anyAwaiting) {
-      status = "AWAITING_PROCUREMENT";
-      reason = "One or more FG lines are still waiting for procurement.";
-    }
-  }
-
+  const assessment = await assessNoQtyBatchPlacement(tx, sheet, { ...deps, placedByItem });
   return {
-    status,
-    reason,
-    canPlace: executableLines.length > 0,
-    summary,
-    lines,
+    ...assessment.placement,
+    snapshot: assessment.snapshot,
   };
 }
 
 /**
  * Serialize WO placement for one Requirement Sheet.
- *
- * MySQL holds the row lock until the surrounding Prisma transaction commits, so
- * concurrent create-wo requests for the same RS cannot both read the same
- * pre-create balance. Unit-test mocks may omit $queryRaw; real callers use a
- * TransactionClient.
- *
- * @param {import("@prisma/client").Prisma.TransactionClient} tx
- * @param {number} requirementSheetId
  */
 async function lockRequirementSheetForWoPlacement(tx, requirementSheetId) {
   const id = Number(requirementSheetId);
@@ -358,8 +126,6 @@ async function lockRequirementSheetForWoPlacement(tx, requirementSheetId) {
 
 /**
  * Latest locked requirement sheet per SO+cycle for a planning period.
- * @param {import("@prisma/client").Prisma.TransactionClient} tx
- * @param {string} periodKey
  */
 async function findLatestLockedSheetsForPeriod(tx, periodKey) {
   const pk = String(periodKey ?? "").trim();
@@ -386,7 +152,6 @@ async function findLatestLockedSheetsForPeriod(tx, periodKey) {
 
 /**
  * Balance-capped WO creation from a locked Requirement Sheet.
- * @param {import("@prisma/client").Prisma.TransactionClient} tx
  */
 async function createNoQtyWorkOrderFromLockedSheet(tx, sheet, options = {}) {
   const activeCycleId = sheet.cycleId != null ? Number(sheet.cycleId) : null;
@@ -427,19 +192,8 @@ async function createNoQtyWorkOrderFromLockedSheet(tx, sheet, options = {}) {
   const allowedFgItemIds = new Set((soLines || []).filter((l) => l.item?.itemType === "FG").map((l) => l.itemId));
 
   const placedByItem = sumPlacedQtyByItem(linkedWorkOrders);
-  const fgUnitByItemId = await loadFgItemUnitMap(
-    tx,
-    (sheet.lines || []).map((ln) => ln.itemId),
-  );
-  const balanceLines = (sheet.lines || [])
-    .map((ln) => {
-      const demand = resolveNoQtyWoExecutableQty(ln);
-      const placed = placedByItem.get(Number(ln.itemId)) ?? 0;
-      const fgUnit = fgUnitByItemId.get(Number(ln.itemId)) ?? ln.item?.unit ?? null;
-      const balance = roundFgQty(Math.max(0, round3(demand) - round3(placed)), fgUnit, { mode: "floor" });
-      return { fgItemId: Number(ln.itemId), qty: balance, fgUnit };
-    })
-    .filter((x) => Number.isFinite(x.qty) && x.qty > 0);
+  const assessment = await assessNoQtyBatchPlacement(tx, sheet, { placedByItem });
+  const balanceLines = assessment.balanceLines.filter((line) => line.rsBalanceQty > EPS);
 
   const requestedLines = normalizeRequestedPlacementLines(options?.requestedLines, balanceLines);
   const positiveLines = requestedLines.filter((line) => Number.isFinite(line.qty) && line.qty > EPS);
@@ -460,115 +214,11 @@ async function createNoQtyWorkOrderFromLockedSheet(tx, sheet, options = {}) {
     }
   }
 
-  const hasRmValidationSupport =
-    typeof tx?.bom?.findFirst === "function" &&
-    typeof tx?.stockTransaction?.groupBy === "function" &&
-    typeof tx?.item?.findMany === "function" &&
-    typeof tx?.productionMaterialRequestLine?.findMany === "function" &&
-    typeof tx?.rmPurchaseOrder?.findMany === "function";
+  validateNoQtyPlacementRequest(assessment, positiveLines, {
+    snapshot: options?.placementSnapshot ?? null,
+  });
 
-  const placementUnitByItemId = await loadFgItemUnitMap(
-    tx,
-    positiveLines.map((line) => Number(line.itemId ?? line.fgItemId)),
-  );
-
-  if (hasRmValidationSupport) {
-    const previewByItem = new Map();
-    for (const line of balanceLines) {
-      const sourceLine = (sheet.lines || []).find((ln) => Number(ln.itemId) === Number(line.fgItemId));
-      previewByItem.set(
-        line.fgItemId,
-        await buildNoQtyPlacementLinePreview(
-          tx,
-          sourceLine
-            ? {
-                itemId: line.fgItemId,
-                itemName: sourceLine.item?.itemName ?? `Item ${line.fgItemId}`,
-                rsDemandQty: round3(n(sourceLine.requirementQty)),
-                woPlacedQty: round3(n(placedByItem.get(line.fgItemId) ?? 0)),
-                rsBalanceQty: line.qty,
-              }
-            : {
-                itemId: line.fgItemId,
-                itemName: `Item ${line.fgItemId}`,
-                rsDemandQty: round3(line.qty),
-                woPlacedQty: round3(n(placedByItem.get(line.fgItemId) ?? 0)),
-                rsBalanceQty: line.qty,
-              },
-        ),
-      );
-    }
-
-    for (const line of positiveLines) {
-      const fgItemId = Number(line.itemId ?? line.fgItemId);
-      const fgUnit = placementUnitByItemId.get(fgItemId) ?? null;
-      const requestedQty = roundFgQty(line.qty, fgUnit, { mode: "floor" });
-      const preview = previewByItem.get(fgItemId);
-      const balanceLine = balanceLines.find((x) => Number(x.fgItemId) === fgItemId);
-      if (!balanceLine) {
-        const err = new Error("Requirement sheet line not found.");
-        err.statusCode = 409;
-        throw err;
-      }
-      const balanceCap = roundFgQty(balanceLine.qty, fgUnit, { mode: "floor" });
-      if (requestedQty > balanceCap + EPS) {
-        const err = new Error("RS balance changed while you were editing. Refresh and try again.");
-        err.statusCode = 409;
-        throw err;
-      }
-      if (preview?.status === "MISSING_BOM" && requestedQty > EPS) {
-        const err = new Error("Approved BOM is missing for this FG line.");
-        err.statusCode = 409;
-        throw err;
-      }
-      if (
-        preview &&
-        requestedQty > roundFgQty(preview.suggestedExecutableQty, fgUnit, { mode: "floor" }) + EPS
-      ) {
-        const err = new Error("RS balance changed while you were editing. Refresh and try again.");
-        err.statusCode = 409;
-        throw err;
-      }
-    }
-
-    const rmDemand = await aggregateRmDemandForFgLines(
-      tx,
-      positiveLines.map((line) => {
-        const fgItemId = Number(line.itemId ?? line.fgItemId);
-        const fgUnit = placementUnitByItemId.get(fgItemId) ?? null;
-        return {
-          fgItemId,
-          fgQty: roundFgQty(line.qty, fgUnit, { mode: "floor" }),
-          bomMissing: false,
-        };
-      }),
-    );
-    if ((rmDemand.missingChildBoms ?? []).length > 0) {
-      const err = new Error("Approved BOM is missing for one or more FG lines.");
-      err.statusCode = 409;
-      throw err;
-    }
-    const requiredByItem = rmDemand?.rmNeeded instanceof Map ? rmDemand.rmNeeded : new Map();
-    if (requiredByItem.size > 0) {
-      const availabilityRows = await getMaterialAvailabilityByItems({
-        db: tx,
-        itemIds: [...requiredByItem.keys()],
-        requiredQtyByItemId: requiredByItem,
-        includeIncoming: true,
-        includeIssued: false,
-      });
-      const shortageRows = (availabilityRows ?? []).filter((row) => {
-        const requiredQty = round3(n(requiredByItem.get(Number(row.itemId))));
-        const availableQty = round3(n(row.freeStockQty ?? row.physicalUsableStockQty));
-        return requiredQty > availableQty + EPS;
-      });
-      if (shortageRows.length > 0) {
-        const err = new Error("RS balance changed while you were editing. Refresh and try again.");
-        err.statusCode = 409;
-        throw err;
-      }
-    }
-  }
+  const placementUnitByItemId = assessment.fgUnitByItemId;
 
   const createdWorkOrders = [];
   for (const line of positiveLines) {
@@ -644,8 +294,6 @@ async function createWorkOrdersForPeriodRelease(tx, { periodKey }) {
 
 /**
  * All NO_QTY WOs for a released period (including pre-release grandfather rows).
- * @param {import("@prisma/client").PrismaClient | import("@prisma/client").Prisma.TransactionClient} db
- * @param {string} periodKey
  */
 async function listNoQtyWorkOrderIdsForPeriod(db, periodKey) {
   const pk = String(periodKey ?? "").trim();
@@ -671,9 +319,6 @@ async function listNoQtyWorkOrderIdsForPeriod(db, periodKey) {
 
 /**
  * Post-release PMR lookup for all execution WOs in the period.
- * Does not create PMRs; PMR auto-creation belongs to WO creation only.
- * @param {import("@prisma/client").PrismaClient} db
- * @param {{ periodKey: string, actor?: { userId?: number, role?: string } }} input
  */
 async function ensurePmrsForPeriodExecution(db, { periodKey, actor = {} }) {
   void actor;

@@ -357,7 +357,7 @@ describe("noQtyExecutionReleaseService batch placement", () => {
         createNoQtyWorkOrderFromLockedSheet(tx, sheet, {
           requestedLines: [{ itemId: 100, qty: 100 }],
         }),
-      /not available|editing/i,
+      /Insufficient RM|Requirement Sheet changed/i,
     );
   });
 
@@ -398,7 +398,7 @@ describe("noQtyExecutionReleaseService batch placement", () => {
         createNoQtyWorkOrderFromLockedSheet(tx, sheet, {
           requestedLines: [{ itemId: 100, qty: 2000 }],
         }),
-      /Refresh and try again/i,
+      /Requirement Sheet changed while you were editing/i,
     );
   });
 
@@ -431,7 +431,7 @@ describe("noQtyExecutionReleaseService batch placement", () => {
         createNoQtyWorkOrderFromLockedSheet(tx, sheet, {
           requestedLines: [{ itemId: 100, qty: 3000 }],
         }),
-      /Refresh and try again/i,
+      /Insufficient RM for the requested Work Order quantity/i,
     );
   });
 

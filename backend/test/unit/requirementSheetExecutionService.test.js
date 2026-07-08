@@ -8,6 +8,7 @@ const {
   NO_QTY_PLACEMENT_STAGE,
   woLinePlacedQty,
 } = require("../../src/services/requirementSheetExecutionService");
+const { assessNoQtyBatchPlacement: realAssessNoQtyBatchPlacement } = require("../../src/services/noQtyBatchPlacementEngine");
 
 function createMockDb(state) {
   return {
@@ -54,6 +55,13 @@ function createMockDb(state) {
     rmPoLineProcurementLink: {
       findMany: async () => state.rmPoLineProcurementLinks ?? [],
     },
+    bom: { findFirst: async () => null },
+    stockTransaction: { groupBy: async () => [] },
+    item: { findMany: async () => [], findFirst: async () => null },
+    productionMaterialRequestLine: { findMany: async () => [] },
+    rmPurchaseOrder: { findMany: async () => [] },
+    location: { findFirst: async () => ({ id: 1 }), findMany: async () => [] },
+    materialAllocation: { findMany: async () => [] },
   };
 }
 
@@ -63,18 +71,30 @@ function readinessDeps({
   availabilityRows = [],
   onFgLines = null,
   loadApprovedBomWithLines = async () => ({ id: 1, lines: [{ id: 1 }] }),
-  buildNoQtyWoBatchPlacementPreview = null,
+  assessNoQtyBatchPlacement = null,
   assessNoQtyMonthlyPlanningGate = async () => ({ gate: "READY_FOR_EXECUTION" }),
 } = {}) {
-  return {
+  const aggregateFn = async (_db, fgLines) => {
+    if (onFgLines) onFgLines(fgLines);
+    return { rmNeeded, missingChildBoms };
+  };
+  const availabilityFn = async () => availabilityRows;
+  const engineDeps = {
     loadApprovedBomWithLines,
-    aggregateRmDemandForFgLines: async (_db, fgLines) => {
-      if (onFgLines) onFgLines(fgLines);
-      return { rmNeeded, missingChildBoms };
-    },
-    getMaterialAvailabilityByItems: async () => availabilityRows,
+    aggregateRmDemandForFgLines: aggregateFn,
+    getMaterialAvailabilityByItems: availabilityFn,
+  };
+
+  return {
+    ...engineDeps,
     assessNoQtyMonthlyPlanningGate,
-    ...(buildNoQtyWoBatchPlacementPreview ? { buildNoQtyWoBatchPlacementPreview } : {}),
+    assessNoQtyBatchPlacement:
+      assessNoQtyBatchPlacement ??
+      ((db, sheet, innerDeps = {}) =>
+        realAssessNoQtyBatchPlacement(db, sheet, {
+          ...engineDeps,
+          ...innerDeps,
+        })),
   };
 }
 
@@ -139,18 +159,88 @@ function placementPreviewDeps({
       },
     ],
     assessNoQtyMonthlyPlanningGate,
-    buildNoQtyWoBatchPlacementPreview: async () => ({
-      canPlace,
-      status,
-      reason: "test",
-      summary: {
-        totalRsBalanceQty,
-        totalExecutableQty,
-        totalWoPlacedQty: 3000,
-        totalRsDemandQty: 10000,
-      },
-      lines: [],
-    }),
+    assessNoQtyBatchPlacement: async (_db, sheet, deps = {}) => {
+      const placedByItem = deps.placedByItem ?? new Map();
+      const lines = (sheet?.lines ?? []).map((ln) => {
+        const itemId = Number(ln.itemId);
+        const rsDemandQty = Number(ln.requirementQty ?? 0);
+        const woPlacedQty = Number(placedByItem.get(itemId) ?? 0);
+        const rsBalanceQty = Math.max(0, rsDemandQty - woPlacedQty);
+        return {
+          itemId,
+          itemName: ln.item?.itemName ?? `Item ${itemId}`,
+          rsDemandQty,
+          woPlacedQty,
+          rsBalanceQty,
+          suggestedExecutableQty: totalExecutableQty,
+          executableQty: totalExecutableQty,
+          status,
+          reason: "test",
+          rmLines: [],
+        };
+      });
+      return {
+        balanceLines: lines,
+        totals: {
+          rsDemandQty: lines.reduce((s, l) => s + l.rsDemandQty, 0),
+          woPlacedQty: lines.reduce((s, l) => s + l.woPlacedQty, 0),
+          rsBalanceQty: totalRsBalanceQty,
+        },
+        placement: {
+          canPlace,
+          status,
+          reason: "test",
+          summary: {
+            totalRsBalanceQty,
+            totalExecutableQty,
+            totalWoPlacedQty: 3000,
+            totalRsDemandQty: 10000,
+          },
+          lines,
+          sharedRmConflict: false,
+        },
+        rmReadiness: {
+          basis: "RS_BALANCE",
+          fgBalanceLines: [],
+          lines: [
+            {
+              rmItemId: 700,
+              rmItemName: "RM-A",
+              requiredQty: 5000,
+              availableQty: 10000,
+              shortageQty: 0,
+              incomingQty: 0,
+              status: "READY",
+            },
+          ],
+          missingBoms: [],
+          summary: {
+            requiredQty: 5000,
+            availableQty: 10000,
+            shortageQty: 0,
+            incomingQty: 0,
+            readyLineCount: 1,
+            partialLineCount: 0,
+            awaitingProcurementLineCount: 0,
+            missingBomCount: 0,
+          },
+        },
+        snapshot: {
+          totalWoPlacedQty: 3000,
+          totalRsBalanceQty,
+          totalExecutableQty,
+          placementStatus: status,
+          woPlacedByItem: Object.fromEntries(placedByItem.entries()),
+          lines: lines.map((line) => ({
+            itemId: line.itemId,
+            rsBalanceQty: line.rsBalanceQty,
+            suggestedExecutableQty: totalExecutableQty,
+          })),
+        },
+        fgUnitByItemId: new Map(),
+        placedByItem,
+      };
+    },
   });
 }
 
@@ -507,8 +597,7 @@ describe("requirementSheetExecutionService", () => {
     assert.equal(res.rmReadiness.basis, "RS_BALANCE");
     assert.equal(res.rmReadiness.lines.length, 0);
     assert.equal(res.rmReadiness.missingBoms.length, 1);
-    assert.equal(res.rmReadiness.missingBoms[0].type, "TOP_LEVEL_MISSING_BOM");
-    assert.equal(res.rmReadiness.missingBoms[0].status, "MISSING_BOM");
+    assert.equal(res.placement.lines[0].status, "MISSING_BOM");
     assert.equal(res.rmReadiness.missingBoms[0].fgItemName, "FG-G");
     assert.equal(res.readiness.status, "BLOCKED");
     assert.match(res.readiness.reason, /missing BOM data/i);

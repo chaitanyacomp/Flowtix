@@ -2204,6 +2204,25 @@ requirementSheetsRouter.post(
             )
             .optional()
             .nullable(),
+          placementSnapshot: z
+            .object({
+              totalWoPlacedQty: z.coerce.number().optional(),
+              totalRsBalanceQty: z.coerce.number().optional(),
+              totalExecutableQty: z.coerce.number().optional(),
+              placementStatus: z.string().optional().nullable(),
+              woPlacedByItem: z.record(z.coerce.number()).optional(),
+              lines: z
+                .array(
+                  z.object({
+                    itemId: z.coerce.number().int().positive(),
+                    rsBalanceQty: z.coerce.number(),
+                    suggestedExecutableQty: z.coerce.number(),
+                  }),
+                )
+                .optional(),
+            })
+            .optional()
+            .nullable(),
         })
         .parse(req.body ?? {});
 
@@ -2263,6 +2282,7 @@ requirementSheetsRouter.post(
 
         const woResult = await createNoQtyWorkOrderFromLockedSheet(tx, sheet, {
           requestedLines: Array.isArray(body.lines) ? body.lines : undefined,
+          placementSnapshot: body.placementSnapshot ?? null,
         });
         if (!woResult.workOrderId) {
           const err = new Error(

@@ -4,7 +4,7 @@
 |-------|-------|
 | **Document ID** | FT-DEP-001 |
 | **Title** | Deployment & Release Management Standard |
-| **Version** | 1.7.0 |
+| **Version** | 1.8.0 |
 | **Status** | Draft — Architecture Review |
 | **Effective date** | 2026-07-09 |
 | **Author** | FT ERP Product Team |
@@ -49,6 +49,7 @@
 | 1.5.0 | 2026-07-09 | FT ERP Product Team | Batch 6 — one-click update orchestrator (`tools/update-flowtix.*`) |
 | 1.6.0 | 2026-07-09 | FT ERP Product Team | Batch 7 — app/web rollback from pre-update archive (`tools/rollback-flowtix.*`) |
 | 1.7.0 | 2026-07-09 | FT ERP Product Team | Batch 8 — optional WinSW Windows Service (`tools/service-*`) |
+| 1.8.0 | 2026-07-09 | FT ERP Product Team | Batch 9 — client setup / bootstrap (`tools/setup-flowtix.*`) |
 
 **Supersedes:** Informal client install notes; ad-hoc “copy the repo to the server” practices.
 
@@ -687,22 +688,34 @@ When escalating, Admin **SHOULD** provide:
 
 **First-time install** (pilot/production path — [INS-*](../09_Deployment_and_Operations_Architecture/Chapter_02_Installation_Upgrade_and_Migration_Architecture.md)):
 
+Preferred tooling (Batch 9 — [§34](#34-client-setup-bootstrap-batch-9)):
+
+```text
+tools\check-prereqs.bat --home C:\FT-ERP
+REM create shared\.env from shared\.env.example (never commit secrets)
+tools\setup-flowtix.bat --home C:\FT-ERP --source <releasePackage> --yes
+REM Path B (folders/env/app only): add --skip-migrate
+```
+
+Manual equivalent:
+
 1. **Prepare server** — Windows updates, disk space, static LAN IP recommended.
 2. **Install MySQL** — local instance; create empty database + user with least privilege.
-3. **Create folder tree** — §6 (`releases`, `shared`, `backups`, `logs`).
-4. **Place secrets** — create `shared\.env` (`DATABASE_URL`, JWT secrets, ports, etc.).
-5. **Extract release** — `releases\<version>\` from certified package; verify checksum.
-6. **Install runtime deps** — per Phase A/B packaging instructions (tooling deferred).
-7. **Apply migrations** — against empty DB.
-8. **Seed / configure** — only approved first-run seeds (roles, company profile); **no** demo wipe scripts on real masters without consent.
-9. **Start backend** — bind LAN interface; confirm health endpoint / login page.
-10. **Client browsers** — open `http://<server-ip>:<port>`; verify FT-PD-066 surfaces load.
+3. **Create folder tree** — §6 (`releases`, `shared`, `backups`, `logs`) via `init-folders` or setup.
+4. **Place secrets** — create `shared\.env` (`DATABASE_URL`, JWT secrets, ports, etc.). **Never** overwrite an existing `.env` with the package.
+5. **Extract / place release** — certified package into home + `releases\<version>\`.
+6. **Path A (default):** backup → `prisma migrate deploy` → baseline backup.
+7. **Path B:** `--skip-migrate` when DB work is deferred.
+8. **Optional service** — Batch 8 `service-install` (Administrator); not required.
+9. **Start backend** — service or `node app\server.js`; confirm `/health` / login.
+10. **Client browsers** — `http://<server-ip>:<port>`; FT-PD-066 surfaces.
 11. **Admin provisioning** — users/roles per Volume 7.
-12. **Backup baseline** — first successful dump to `backups\db\`.
-13. **Record** — deploy log + go-live / pilot acceptance as applicable.
-14. **Train** — Dashboard / Workspace / Reports navigation per Volume 6; do not invent alternate UX.
+12. **Record** — `logs\setup.log` / `SETUP_MANIFEST.json` + go-live acceptance.
+13. **Train** — Dashboard / Workspace / Reports per Volume 6.
 
 **Firewall:** allow LAN clients to app port only.
+
+**SHALL NOT:** wipe production DB; embed secrets in setup scripts; require MSI for Batch 9.
 
 ---
 
@@ -866,7 +879,7 @@ Explicitly **not** done in this documentation revision:
 | Release Operations | Pending review |
 | Documentation Steward | Pending review |
 
-**Status:** Draft — Architecture Review (v1.7.0). Batches 1–8 (packaging, runtime, esbuild, backup, migrate, update, rollback, optional WinSW service) are documented; automated DB restore and Windows Installer remain deferred.
+**Status:** Draft — Architecture Review (v1.8.0). Batches 1–9 (packaging through client setup bootstrap) are documented; automated DB restore and Windows Installer (MSI/Inno) remain deferred.
 
 ---
 
@@ -1071,7 +1084,7 @@ release/Flowtix-vX.Y.Z/
 
 ### 28.8 Still deferred
 
-Windows Installer, **automated DB restore**, Docker, pkg, nexe. *(Backup → §29; migrate → §30; update → §31; rollback → §32; Windows Service → §33)*
+Windows Installer (MSI/Inno), **automated DB restore**, Docker, pkg, nexe. *(…; Windows Service → §33; client setup → §34)*
 
 ---
 
@@ -1477,7 +1490,7 @@ Compliant with FT-DEP-001 §6/§14/§16: secrets remain in `shared\.env`; servic
 
 ### 33.8 Deferred
 
-Automated DB restore, Windows Installer, Docker, cloud, licensing, monitoring dashboards.
+Automated DB restore, Windows Installer (MSI/Inno), Docker, cloud, licensing, monitoring dashboards. *(Client setup bootstrap → Batch 9 / §34)*
 
 ### 33.9 Validation checklist
 
@@ -1487,3 +1500,63 @@ Automated DB restore, Windows Installer, Docker, cloud, licensing, monitoring da
 - [ ] Service scripts present in release `tools/`
 - [ ] FT-DEP-001 §16 / §33 document WinSW decision
 - [ ] No ERP business / UI / schema changes
+
+---
+
+## 34. Client Setup / Bootstrap (Batch 9)
+
+### 34.1 Purpose
+
+Automate **first-time LAN host preparation** per §18 without shipping an MSI/Inno installer. Setup prepares folders, validates env, places the certified package, and optionally runs Path A migrate or Path B skip-migrate.
+
+### 34.2 Paths
+
+| Path | Flag | Behavior |
+|------|------|----------|
+| **A (default)** | — | backup → `migrate deploy` → baseline backup |
+| **B** | `--skip-migrate` | Folders + env validate + place `app/`/`web/` only |
+
+### 34.3 Safety
+
+| Rule | Statement |
+|------|-----------|
+| No `.env` overwrite | Existing `shared/.env` is never replaced |
+| No DB wipe | Setup never drops/recreates the database |
+| Existing install | Aborts if `shared/.env` + `app` + `web` already present (unless `--force` repair; still no `.env` overwrite) |
+| Service optional | `--install-service` / prompt / `--skip-service` |
+| Update unchanged | Upgrades remain `update-flowtix` (Batch 6) |
+
+### 34.4 Logging
+
+| Artifact | Path |
+|----------|------|
+| Setup log | `logs/setup.log` |
+| Manifest | `logs/SETUP_MANIFEST.json` (append-only) |
+
+Manifest fields include: timestamp, home, appVersion, path A/B, migrationStatus, backup filenames, service result, verify mode, status, durationMs.
+
+### 34.5 Tooling
+
+| Artifact | Path |
+|----------|------|
+| Orchestrator | `deployment/setup-flowtix.js` / `.bat` |
+| Prereqs | `deployment/check-prereqs.js` / `.bat` |
+| Folders | `deployment/init-folders.js` / `.bat` |
+| Shipped | `release/Flowtix-vX.Y.Z/tools/setup-*` etc. |
+
+### 34.6 Deferred
+
+MSI/Inno guided installer (§21 R4), automated DB restore, MySQL product installer bundling.
+
+### 34.7 Validation checklist
+
+- [ ] Prereq checker reports Node / disk / mysqldump clearly
+- [ ] Folders created idempotently
+- [ ] Missing / invalid `.env` aborts without printing secrets
+- [ ] Existing `.env` not overwritten
+- [ ] Path B skips migrate
+- [ ] Path A runs backup → migrate → baseline when DB ready
+- [ ] Service remains optional
+- [ ] `setup.log` + `SETUP_MANIFEST.json` written
+- [ ] Release package includes setup tools
+- [ ] No schema / UI / business logic changes

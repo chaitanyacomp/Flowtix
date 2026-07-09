@@ -89,8 +89,8 @@ if exist "%ROOT%\deployment\production.env.example" (
   echo This release package ships templates only. Do not place production secrets in git.
 )
 
-REM --- 6. tools\ (Batch 4–8: backup, migrate, update, rollback, Windows Service) ---
-echo [create-release] Copying tools\ scripts ^(Batches 4–8^)...
+REM --- 6. tools\ (Batch 4–9: backup, migrate, update, rollback, service, setup) ---
+echo [create-release] Copying tools\ scripts ^(Batches 4–9^)...
 copy /Y "%DEPLOY%\backup-db.bat" "%RELEASE_DIR%\tools\backup-db.bat" >nul
 copy /Y "%DEPLOY%\backup-db.js" "%RELEASE_DIR%\tools\backup-db.js" >nul
 copy /Y "%DEPLOY%\migrate-db.bat" "%RELEASE_DIR%\tools\migrate-db.bat" >nul
@@ -107,6 +107,16 @@ copy /Y "%DEPLOY%\service-start.bat" "%RELEASE_DIR%\tools\service-start.bat" >nu
 copy /Y "%DEPLOY%\service-stop.bat" "%RELEASE_DIR%\tools\service-stop.bat" >nul
 copy /Y "%DEPLOY%\service-restart.bat" "%RELEASE_DIR%\tools\service-restart.bat" >nul
 copy /Y "%DEPLOY%\service-status.bat" "%RELEASE_DIR%\tools\service-status.bat" >nul
+copy /Y "%DEPLOY%\setup-flowtix.bat" "%RELEASE_DIR%\tools\setup-flowtix.bat" >nul
+copy /Y "%DEPLOY%\setup-flowtix.js" "%RELEASE_DIR%\tools\setup-flowtix.js" >nul
+copy /Y "%DEPLOY%\check-prereqs.bat" "%RELEASE_DIR%\tools\check-prereqs.bat" >nul
+copy /Y "%DEPLOY%\check-prereqs.js" "%RELEASE_DIR%\tools\check-prereqs.js" >nul
+copy /Y "%DEPLOY%\init-folders.bat" "%RELEASE_DIR%\tools\init-folders.bat" >nul
+copy /Y "%DEPLOY%\init-folders.js" "%RELEASE_DIR%\tools\init-folders.js" >nul
+if exist "%DEPLOY%\production.env.example" (
+  mkdir "%RELEASE_DIR%\shared" 2>nul
+  copy /Y "%DEPLOY%\production.env.example" "%RELEASE_DIR%\shared\.env.example" >nul
+)
 if exist "%DEPLOY%\vendor\winsw\WinSW-x64.exe" (
   mkdir "%RELEASE_DIR%\tools\vendor\winsw" 2>nul
   copy /Y "%DEPLOY%\vendor\winsw\WinSW-x64.exe" "%RELEASE_DIR%\tools\vendor\winsw\WinSW-x64.exe" >nul
@@ -128,11 +138,14 @@ if exist "%DEPLOY%\vendor\winsw\WinSW-x64.exe" (
   echo.
   echo Batch 8:
   echo   service-install/uninstall/start/stop/restart/status.bat — optional WinSW service
-  echo   ^(requires Administrator; deployments work without the service^)
+  echo.
+  echo Batch 9:
+  echo   setup-flowtix.bat / check-prereqs.bat / init-folders.bat — client setup bootstrap
+  echo   ^(not MSI; does not overwrite shared\.env; Path A migrate or --skip-migrate^)
   echo.
   echo Deferred:
   echo   - automated DB restore
-  echo   - Windows Installer
+  echo   - Windows Installer ^(MSI / Inno^)
 )
 
 REM --- 7. Git commit + build date ---
@@ -329,6 +342,27 @@ if not exist "%RELEASE_DIR%\tools\service-status.bat" (
   set "FAIL=1"
 ) else (
   echo   OK: tools\service-status.bat
+)
+
+if not exist "%RELEASE_DIR%\tools\setup-flowtix.bat" (
+  echo   FAIL: tools\setup-flowtix.bat missing
+  set "FAIL=1"
+) else (
+  echo   OK: tools\setup-flowtix.bat
+)
+
+if not exist "%RELEASE_DIR%\tools\check-prereqs.js" (
+  echo   FAIL: tools\check-prereqs.js missing
+  set "FAIL=1"
+) else (
+  echo   OK: tools\check-prereqs.js
+)
+
+if not exist "%RELEASE_DIR%\tools\init-folders.js" (
+  echo   FAIL: tools\init-folders.js missing
+  set "FAIL=1"
+) else (
+  echo   OK: tools\init-folders.js
 )
 
 if "%FAIL%"=="1" (

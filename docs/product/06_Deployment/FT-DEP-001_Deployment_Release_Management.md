@@ -1,0 +1,809 @@
+# FT ERP — Deployment & Release Management Standard
+
+| Field | Value |
+|-------|-------|
+| **Document ID** | FT-DEP-001 |
+| **Title** | Deployment & Release Management Standard |
+| **Version** | 1.0.0 |
+| **Status** | Draft — Architecture Review |
+| **Effective date** | 2026-07-09 |
+| **Author** | FT ERP Product Team |
+| **Owner** | FT ERP Product Architecture / Release Operations |
+| **Audience** | Release managers, implementation partners, system administrators, product owners, support leads |
+| **Classification** | Product — Deployment Operations Standard (LAN / Client-Server) |
+
+**Parent / governing documents:**
+
+- [Volume 9 — Deployment & Operations Architecture](../09_Deployment_and_Operations_Architecture/README.md) (FT-PD-090 – FT-PD-094)
+- [FT-PD-090 — Deployment & Release Architecture](../09_Deployment_and_Operations_Architecture/Chapter_01_Deployment_and_Release_Architecture.md)
+- [FT-PD-091 — Installation, Upgrade & Migration Architecture](../09_Deployment_and_Operations_Architecture/Chapter_02_Installation_Upgrade_and_Migration_Architecture.md)
+- [FT-PD-092 — Operational Monitoring, Support & Maintenance](../09_Deployment_and_Operations_Architecture/Chapter_03_Operational_Monitoring_Support_and_Maintenance_Architecture.md)
+- [FT-PD-093 — Backup, Recovery, BCP & DR](../09_Deployment_and_Operations_Architecture/Chapter_04_Backup_Recovery_Business_Continuity_and_Disaster_Recovery_Architecture.md)
+- [FT-PD-103 — Documentation Governance](../10_Product_Lifecycle_and_Continuous_Evolution/Chapter_04_Product_Knowledge_Management_Documentation_Governance_and_Organizational_Learning.md)
+- [Volume 2 — Business Architecture](../02_Business_Architecture/README.md)
+- [Volume 4 — Workflow Engine](../04_Workflow_Engine/README.md)
+- [FT-PD-066 — UI/UX Design System](../06_UI_and_Experience_Architecture/Chapter_07_FT_ERP_UI_UX_Design_System.md)
+- [Change Policy](../release/CHANGE_POLICY.md)
+
+**Authority relationship:**
+
+| Layer | Role |
+|-------|------|
+| **Volume 9 (FT-PD-090+)** | Technology-neutral **architecture law** (DEP-*, INS-*, OPS-*, RES-*) |
+| **FT-DEP-001 (this document)** | **Operational standard** for the approved LAN client-server deployment model — folder layout, packaging, backup, migration, update/rollback SOPs |
+| **Future FT-DEP-00x / scripts** | Implementation of this standard (build tools, installers, service wrappers) — **not in scope of this revision** |
+
+**Rule:** This document **implements** Volume 9 for the local-server / LAN model. It **SHALL NOT** override workflow semantics (Volume 4), business pipelines (Volume 2), data integrity (Volume 5), or UI architecture (Volume 6 / FT-PD-066). Deployment **consumes** certification ([DEP-01](../09_Deployment_and_Operations_Architecture/Chapter_01_Deployment_and_Release_Architecture.md)) — it never replaces it.
+
+---
+
+## 1. Document Control
+
+| Version | Date | Author | Summary |
+|---------|------|--------|---------|
+| 1.0.0 | 2026-07-09 | FT ERP Product Team | Initial Deployment & Release Management Standard for LAN client-server deployments |
+
+**Supersedes:** Informal client install notes; ad-hoc “copy the repo to the server” practices.
+
+**Change authority:** Product Architecture + Release Operations. Material changes to packaging, backup, migration, or rollback rules require Architecture Review and alignment with Volume 9.
+
+**Out of scope for this revision (deferred implementation):**
+
+- Build / release scripts
+- `package.json` script changes
+- esbuild bundling configuration
+- Windows Service wrappers / NSSM / node-windows
+- Windows Installer (MSI / Inno / electron-builder)
+- CI/CD pipelines
+- Docker / Kubernetes
+
+---
+
+## 2. Purpose & Scope
+
+### 2.1 Purpose
+
+Define a **complete, professional, repeatable standard** for packaging, installing, updating, rolling back, and recovering FT ERP on a **customer LAN server PC** serving **2–10 concurrent browser users**.
+
+Objectives:
+
+- Separate **development** from **deployment**
+- Ship **versioned release packages**, not source trees
+- Protect **client data** and **product IP**
+- Make every update **backup-first** and **rollback-ready**
+- Preserve **certified product behavior** after every install or upgrade ([DEP-10](../09_Deployment_and_Operations_Architecture/Chapter_01_Deployment_and_Release_Architecture.md))
+
+### 2.2 In scope
+
+- LAN / local-server deployment model (primary)
+- Frontend production build (React / Vite)
+- Backend runtime packaging (Node / Express; **esbuild bundling planned later**)
+- MySQL on the server PC
+- Prisma migration governance
+- Versioned release folders, update / rollback SOPs
+- Logging, diagnostics, Windows Service roadmap
+- Client installation, update, and disaster-recovery SOPs
+- Release acceptance checklist
+
+### 2.3 Out of scope
+
+- Changing business calculations, workflow guards, or UI standards
+- Multi-tenant SaaS / public-cloud topology (covered architecturally in FT-PD-090; not this SOP)
+- Source-code delivery to customers as the default model
+- Implementation of tools listed in §1 Out of scope
+
+### 2.4 Normative language
+
+Aligned with [FT-PD-066](../06_UI_and_Experience_Architecture/Chapter_07_FT_ERP_UI_UX_Design_System.md) / Constitution convention:
+
+| Term | Meaning |
+|------|---------|
+| **SHALL** / **MUST** | Mandatory |
+| **SHALL NOT** / **MUST NOT** | Prohibited |
+| **SHOULD** | Strong recommendation; deviation needs recorded exception |
+| **MAY** | Optional |
+
+---
+
+## 3. Deployment Principles
+
+| ID | Principle | Statement |
+|----|-----------|-----------|
+| **DRP-01** | Certified builds only | Production and pilot **SHALL** run only certified (or emergency-certified) builds ([DEP-01](../09_Deployment_and_Operations_Architecture/Chapter_01_Deployment_and_Release_Architecture.md), [DEP-08](../09_Deployment_and_Operations_Architecture/Chapter_01_Deployment_and_Release_Architecture.md)). |
+| **DRP-02** | Package ≠ repository | Clients receive a **release package**, never a developer working copy as the production tree. |
+| **DRP-03** | Versioned releases | Every deployable unit has an immutable **product version** + **build identity**. |
+| **DRP-04** | Backup before change | Every production update **SHALL** take a verified DB backup first ([DEP-03](../09_Deployment_and_Operations_Architecture/Chapter_01_Deployment_and_Release_Architecture.md), [RES-*](../09_Deployment_and_Operations_Architecture/Chapter_04_Backup_Recovery_Business_Continuity_and_Disaster_Recovery_Architecture.md)). |
+| **DRP-05** | Rollback-ready | Previous release folder **SHALL** remain available until the new release is accepted. |
+| **DRP-06** | Data over code | Client MySQL data, uploads, and `.env` **SHALL** outlive application folders. |
+| **DRP-07** | Semantics unchanged by deploy | Install/upgrade **SHALL NOT** alter workflow or business rules except via the certified package contents ([DEP-10](../09_Deployment_and_Operations_Architecture/Chapter_01_Deployment_and_Release_Architecture.md)). |
+| **DRP-08** | Traceability | Who deployed what, when, from which package — recorded ([DEP-06](../09_Deployment_and_Operations_Architecture/Chapter_01_Deployment_and_Release_Architecture.md)). |
+| **DRP-09** | Operational independence | Customer admin **SHOULD** run day-2 ops without daily product engineering access. |
+| **DRP-10** | IP protection | Source TypeScript/JS application trees **SHALL NOT** be the default client deliverable; prefer built artifacts (see §15). |
+
+---
+
+## 4. Development vs Deployment Separation
+
+| Concern | Development (engineering) | Deployment (client server) |
+|---------|---------------------------|----------------------------|
+| **Location** | Developer / CI machines; git repository | Customer server PC under `C:\FT-ERP\` (or agreed root) |
+| **Frontend** | Vite dev server / HMR | Static `dist/` from `vite build` |
+| **Backend** | `node` / nodemon on `src/` | Production Node process on packaged `app/` (bundled later via esbuild) |
+| **Database** | Local / shared dev MySQL; synthetic data | Authoritative client MySQL; never overwritten by package |
+| **Secrets** | Local `.env` (not committed) | Server `.env` outside versioned release or in `shared/` — never replaced blindly |
+| **Migrations** | Author in Prisma; test on validation DB | Apply only from release package via controlled SOP (§11) |
+| **Hot reload** | Allowed | **Prohibited** in production |
+| **Git** | Required | **Not required** on client server |
+| **UI compliance** | FT-PD-066 during build | Deployed UI is the certified build; no on-site UI “tweaks” |
+
+```mermaid
+flowchart LR
+  DEV[Dev repo + tests]
+  CERT[Vol 8 certification]
+  PKG[Release package]
+  SRV[Client server releases/]
+  DB[(Client MySQL)]
+
+  DEV --> CERT
+  CERT --> PKG
+  PKG --> SRV
+  SRV --> DB
+```
+
+**Rule:** Development tooling (Vite, test runners, source maps for debug, Cursor, etc.) **SHALL NOT** be prerequisites for client production runtime.
+
+---
+
+## 5. Recommended LAN Deployment Architecture
+
+### 5.1 Topology (approved)
+
+| Component | Placement | Notes |
+|-----------|-----------|-------|
+| **Server PC** | Factory office / IT room | Windows 10/11 or Windows Server; always-on preferred |
+| **MySQL** | Same server PC (default) | Localhost; not exposed to internet |
+| **FT ERP backend** | Same server PC | Listens on LAN IP + port (e.g. `0.0.0.0:3001`) |
+| **FT ERP frontend** | Served by backend static host **or** reverse proxy on same host | Production `dist/` only |
+| **Clients** | 2–10 PCs / tablets on LAN | Modern browser; no local app install required for Phase 1 |
+| **Internet** | Not required for core ERP | Optional for updates delivery / remote support |
+
+### 5.2 Logical view
+
+```mermaid
+flowchart TB
+  subgraph LAN["Customer LAN"]
+    U1[Browser users 2-10]
+    SRV[Server PC]
+    subgraph SRVBOX["Server PC"]
+      FE[Frontend dist]
+      BE[Node Express API]
+      MY[(MySQL)]
+      LOG[logs/]
+      BAK[backups/]
+    end
+    U1 -->|HTTP LAN| FE
+    U1 -->|HTTP LAN| BE
+    BE --> MY
+    BE --> LOG
+    BAK -.-> MY
+  end
+```
+
+### 5.3 Capacity assumptions
+
+| Item | Assumption |
+|------|------------|
+| Concurrent users | 2–10 |
+| Sites | Single plant / single company (Phase 1) |
+| HA / clustering | Not required for Phase 1 |
+| RPO target (guidance) | Last verified backup (daily + pre-update) |
+| RTO target (guidance) | Hours — restore backup + activate prior release folder |
+
+Exact contractual RPO/RTO remain tenant-specific ([FT-PD-093](../09_Deployment_and_Operations_Architecture/Chapter_04_Backup_Recovery_Business_Continuity_and_Disaster_Recovery_Architecture.md)).
+
+### 5.4 Network rules
+
+- ERP ports **SHOULD** be reachable only on LAN / VPN.
+- MySQL port **SHALL NOT** be exposed beyond localhost unless a documented exception exists.
+- HTTPS termination **MAY** be added later (IIS / nginx / Caddy); Phase 1 **MAY** use HTTP on trusted LAN with recorded risk acceptance.
+
+---
+
+## 6. Standard Client Server Folder Structure
+
+Canonical root (example): `C:\FT-ERP\`
+
+```text
+C:\FT-ERP\
+├── current\                      # Junction / pointer to active release (optional)
+│   └── → ..\releases\1.2.0\
+├── releases\
+│   ├── 1.1.0\                    # Prior release (keep for rollback)
+│   │   ├── app\                  # Backend runtime (packaged)
+│   │   ├── web\                  # Frontend dist
+│   │   ├── prisma\               # schema + migrations shipped with release
+│   │   ├── release.json          # Build identity manifest
+│   │   └── RELEASE_NOTES.md
+│   └── 1.2.0\                    # Active release
+│       ├── app\
+│       ├── web\
+│       ├── prisma\
+│       ├── release.json
+│       └── RELEASE_NOTES.md
+├── shared\
+│   ├── .env                      # Secrets & connection strings (NOT inside release zip overwrite)
+│   ├── uploads\                  # User/document files if stored on disk
+│   └── config\                   # Optional non-secret site overrides
+├── backups\
+│   ├── db\
+│   │   ├── pre-update_1.2.0_20260709_1830.sql
+│   │   └── daily_20260709.sql
+│   └── verify\                   # Optional restore-test notes
+├── logs\
+│   ├── app\                      # Application logs (by date)
+│   ├── service\                  # Windows Service stdout/stderr (future)
+│   └── deploy\                   # Install/update/rollback records
+└── tools\                        # Optional admin helpers (backup scripts — future)
+```
+
+### 6.1 Folder rules
+
+| Rule | Statement |
+|------|-----------|
+| **F-01** | Each product version **SHALL** occupy its own `releases\<version>\` directory. |
+| **F-02** | Updates **SHALL** add a new version folder; they **SHALL NOT** overwrite the previous folder in place. |
+| **F-03** | `shared\.env`, `shared\uploads`, and `backups\` **SHALL** live outside version folders. |
+| **F-04** | Activating a release **SHALL** be done by switching the process working directory / `current` junction / service path — not by deleting the old tree first. |
+| **F-05** | At least **one prior** successful release folder **SHOULD** be retained; major sites **SHOULD** retain N-2. |
+
+---
+
+## 7. Versioning Strategy
+
+### 7.1 Product version
+
+Use **MAJOR.MINOR.PATCH** (aligned with [Change Policy](../release/CHANGE_POLICY.md) and FT-PD-090 §8):
+
+| Segment | When to bump | Deploy impact |
+|---------|--------------|---------------|
+| **MAJOR** | Breaking architecture / Constitution-impacting | Full validation; enhanced rollback plan |
+| **MINOR** | Features within architecture | Standard update SOP + post-update smoke |
+| **PATCH** | Bug fixes / narrow hardening | Standard update SOP |
+
+### 7.2 Build identity
+
+Every package **SHALL** include `release.json` with at least:
+
+| Field | Purpose |
+|-------|---------|
+| `productVersion` | e.g. `1.2.0` |
+| `buildId` | Immutable id (git SHA or CI build number) |
+| `builtAt` | ISO-8601 UTC |
+| `frontendHash` | Optional content hash of `web/` |
+| `backendHash` | Optional content hash of `app/` |
+| `prismaMigrationHead` | Latest migration name included |
+| `minCompatibleVersion` | Oldest version this package may upgrade from |
+| `certificationRef` | Link/id to Vol. 8 cert record when available |
+
+**Rule:** Folder name version and `release.json` `productVersion` **SHALL** match ([DEP-02](../09_Deployment_and_Operations_Architecture/Chapter_01_Deployment_and_Release_Architecture.md)).
+
+### 7.3 Compatibility declaration
+
+Each release **SHALL** declare supported upgrade paths (e.g. `1.1.x → 1.2.0`). Skipping unsupported majors **SHALL** require a documented migration plan.
+
+---
+
+## 8. Release Workflow
+
+End-to-end product → client flow (architecture + ops):
+
+```mermaid
+flowchart TB
+  A[Feature complete on mainline]
+  B[Automated tests + Vol 8 gates as applicable]
+  C[Build frontend dist + package backend]
+  D[Assemble release zip + release.json]
+  E[Internal smoke on validation/pilot]
+  F[Deliver package to client]
+  G[Pre-update DB backup]
+  H[Extract to releases/new]
+  I[Apply Prisma migrations]
+  J[Switch active release]
+  K[Post-update acceptance]
+  L[Retain prior release]
+
+  A --> B --> C --> D --> E --> F --> G --> H --> I --> J --> K --> L
+```
+
+| Stage | Owner | Gate |
+|-------|-------|------|
+| Build & package | Product / Release | Clean build; manifest complete |
+| Certification / scoped cert | Product + QA | [DEP-04](../09_Deployment_and_Operations_Architecture/Chapter_01_Deployment_and_Release_Architecture.md) |
+| Delivery | Partner / Product | Package integrity (checksum) |
+| Install / update | Customer Admin or Partner | Backup verified; freeze window if needed |
+| Acceptance | Business Owner + Admin | §22 checklist |
+| Record | Admin | `logs/deploy/` entry |
+
+**Rule:** Failed post-update validation **SHALL** trigger rollback assessment before business resumes ([DEP-12](../09_Deployment_and_Operations_Architecture/Chapter_01_Deployment_and_Release_Architecture.md)).
+
+---
+
+## 9. Build Package Standard
+
+### 9.1 Package contents (logical)
+
+A release package (zip) **SHALL** contain:
+
+| Path | Content |
+|------|---------|
+| `web/` | Vite production build (`index.html`, assets) |
+| `app/` | Backend runtime suitable for production Node (see §9.2) |
+| `prisma/` | `schema.prisma` + `migrations/` required for this version |
+| `release.json` | Build identity |
+| `RELEASE_NOTES.md` | User-facing / admin notes |
+| `CHECKSUMS.txt` | SHA-256 of package members (**SHOULD**) |
+
+**SHALL NOT** include by default:
+
+- Full git history
+- `node_modules` from developer machines (install production deps in controlled build, or ship self-contained bundle)
+- `.env` with secrets
+- Dev-only tools, test fixtures with production-like PII
+- Unbuilt TypeScript sources as the primary runtime (see §15)
+
+### 9.2 Backend packaging phases
+
+| Phase | Status | Approach |
+|-------|--------|----------|
+| **Phase A** | Near-term | Production `node_modules` + compiled/runnable backend tree prepared by Release; no client-side `npm install` from public internet preferred |
+| **Phase B** | Planned | **esbuild** (or equivalent) bundle of server entry → fewer files, harder casual IP copy, faster cold start |
+| **Phase C** | Future | Windows Service + optional installer (§21) |
+
+**This document does not implement Phase B/C.** When esbuild lands, it **SHALL** still emit artifacts into `app/` under the same folder contract.
+
+### 9.3 Frontend packaging
+
+- **SHALL** use React/Vite **production** build only.
+- Source maps in client packages: **SHOULD NOT** ship full sources; if maps are needed for support, ship under controlled support channel, not default LAN package.
+
+### 9.4 Integrity
+
+Before activation, admin **SHOULD** verify checksums. Tampered packages **SHALL NOT** be installed.
+
+---
+
+## 10. Database Backup Standard
+
+Implements [FT-PD-093](../09_Deployment_and_Operations_Architecture/Chapter_04_Backup_Recovery_Business_Continuity_and_Disaster_Recovery_Architecture.md) for the LAN model.
+
+### 10.1 Mandatory backups
+
+| Trigger | Requirement |
+|---------|-------------|
+| **Before every update** | Full logical dump of the production schema/database — **mandatory** |
+| **Before every rollback that touches DB** | Fresh dump of current state — **mandatory** |
+| **Daily (steady state)** | Automated or scheduled dump — **SHOULD** |
+| **Before risky maintenance** | Dump — **SHOULD** |
+
+### 10.2 Backup naming
+
+```text
+backups\db\pre-update_<targetVersion>_<YYYYMMDD_HHMM>.sql
+backups\db\daily_<YYYYMMDD>.sql
+backups\db\pre-rollback_<fromVersion>_<YYYYMMDD_HHMM>.sql
+```
+
+### 10.3 Verification
+
+| Step | Requirement |
+|------|-------------|
+| File non-empty | **SHALL** |
+| Size sanity vs prior backup | **SHOULD** |
+| Periodic restore test on non-prod | **SHOULD** (quarterly guidance) |
+| Record path in deploy log | **SHALL** for pre-update backups |
+
+### 10.4 Retention (guidance)
+
+| Class | Retain |
+|-------|--------|
+| Pre-update | Until next successful update + 30 days minimum |
+| Daily | 14–30 days |
+| Month-end | 12 months (if policy requires) |
+
+Customer policy may tighten; architecture minimum is **recoverability** ([RES-01](../09_Deployment_and_Operations_Architecture/Chapter_04_Backup_Recovery_Business_Continuity_and_Disaster_Recovery_Architecture.md)).
+
+### 10.5 Scope of dump
+
+Backup **SHALL** include operational data, masters, config-in-DB, and audit tables required for certified recovery. Disk `shared\uploads` **SHOULD** be copied or snapshotted on the same schedule when used.
+
+---
+
+## 11. Prisma Migration Standard
+
+### 11.1 Principles
+
+| ID | Rule |
+|----|------|
+| **MIG-01** | Schema changes ship **only** as Prisma migrations inside the release package. |
+| **MIG-02** | Production **SHALL NOT** use `prisma db push` as the update path. |
+| **MIG-03** | Migrations **SHALL** be applied **after** verified DB backup and **before** traffic is switched to the new app (or in a controlled freeze). |
+| **MIG-04** | Migration set in the package **SHALL** match `release.json` `prismaMigrationHead`. |
+| **MIG-05** | Failed migration **SHALL** stop the update; do not partially activate the new UI/API. |
+| **MIG-06** | Historical integrity (WES / ledger) **SHALL** be preserved ([DEP-05](../09_Deployment_and_Operations_Architecture/Chapter_01_Deployment_and_Release_Architecture.md)). |
+
+### 11.2 Update-time sequence
+
+1. Stop accepting new writes (optional freeze / stop service).
+2. Backup DB (§10).
+3. Extract new release folder.
+4. Point migration tool at `shared\.env` / production `DATABASE_URL`.
+5. Run **migrate deploy** (or equivalent production migrate command — tooling deferred).
+6. Confirm migration head.
+7. Start new release process.
+8. Smoke test (§22).
+
+### 11.3 Rollback and migrations
+
+- **App-only rollback** (no schema change between versions): switch `current` to prior release; DB unchanged.
+- **Schema-forward migration already applied:** rolling back application code alone may be **unsafe**. Prefer:
+  - restore DB from pre-update backup **and** activate prior release, **or**
+  - ship a certified forward fix.
+- Destructive down-migrations in production **SHALL NOT** be the default strategy.
+
+---
+
+## 12. Update Strategy
+
+### 12.1 Standard update (happy path)
+
+1. Announce maintenance window (if users online).
+2. Verify package checksum + `release.json` compatibility.
+3. **Mandatory DB backup.**
+4. Stop Windows Service / Node process (when used).
+5. Extract to `releases\<newVersion>\` (do not delete old).
+6. Apply Prisma migrations.
+7. Ensure `shared\.env` still referenced (do not overwrite with empty template).
+8. Start process on new release path.
+9. Run acceptance checklist (§22).
+10. Record deploy log; keep prior release.
+
+### 12.2 Update classes
+
+| Class | Typical content | Extra care |
+|-------|-----------------|------------|
+| Patch | Bugfix | Short smoke |
+| Minor | Features | Broader smoke + key workflows |
+| Major | Architecture | Full pilot validation; DR dry-run **SHOULD** |
+
+### 12.3 Forbidden update practices
+
+- Editing production files by hand to “hotfix” without a package
+- Copying developer `src/` over `releases\`
+- Running uncertified builds on production ([DEP-08](../09_Deployment_and_Operations_Architecture/Chapter_01_Deployment_and_Release_Architecture.md))
+- Skipping backup “because it is a small change”
+
+---
+
+## 13. Rollback Strategy
+
+Implements [DEP-03](../09_Deployment_and_Operations_Architecture/Chapter_01_Deployment_and_Release_Architecture.md) / FT-PD-090 §10 for LAN.
+
+### 13.1 Decision triggers
+
+Rollback **SHOULD** be considered when:
+
+- Service will not start
+- Critical workflow smoke fails (login, create SO, stock read, etc.)
+- Data corruption suspected post-migrate
+- Business Owner rejects acceptance within the freeze window
+
+### 13.2 Rollback modes
+
+| Mode | When | Steps |
+|------|------|-------|
+| **A — Release switch** | No schema change / compatible | Stop process → point to prior `releases\<old>\` → start → smoke |
+| **B — Release + DB restore** | Migrations applied or data suspect | Stop → restore pre-update SQL → activate prior release → smoke |
+| **C — Forward fix** | Rollback cost high; fix available | Stay on version; apply certified patch ASAP |
+
+### 13.3 Authority
+
+Rollback authority **SHALL** be named before production update (Admin + Business Owner). Product/Partner advise; Customer owns go/no-go for live factory data.
+
+### 13.4 Distinction
+
+Rollback ≠ Disaster Recovery ([RES-11](../09_Deployment_and_Operations_Architecture/Chapter_04_Backup_Recovery_Business_Continuity_and_Disaster_Recovery_Architecture.md)). DR covers site loss / disk failure (§20).
+
+---
+
+## 14. Client Data Preservation Rules
+
+| Asset | Location | Update behavior |
+|-------|----------|-----------------|
+| MySQL database | Server MySQL instance | **Never** replaced by package; migrate only |
+| `.env` / secrets | `shared\.env` | **Never** overwritten by release zip without merge review |
+| Uploads / attachments | `shared\uploads` | Preserved across releases |
+| Backups | `backups\` | Preserved; not deleted by updater |
+| Deploy logs | `logs\deploy\` | Append-only |
+| Prior releases | `releases\<old>\` | Retained per §6 |
+
+**Rules:**
+
+- **DATA-01:** Package install **SHALL NOT** drop or recreate the client database.
+- **DATA-02:** Seed scripts that wipe data **SHALL NOT** run on production.
+- **DATA-03:** Production data **SHALL NOT** be copied to development without anonymization ([DEP-07](../09_Deployment_and_Operations_Architecture/Chapter_01_Deployment_and_Release_Architecture.md)).
+- **DATA-04:** Customer remains **data custodian**; Product/Partner access only under support agreement.
+
+---
+
+## 15. IP / Source Code Protection Strategy
+
+Goal: clients receive a **runnable product**, not a convenient full source tree for redistribution.
+
+| Measure | Phase | Notes |
+|---------|-------|-------|
+| Ship `web/` production assets only | Now (standard) | No React source in default package |
+| Ship backend as packaged runtime | Phase A → B | Prefer esbuild bundle later |
+| Exclude `.git`, tests, docs corpus from client zip | Now | Docs may ship separately as PDF if licensed |
+| No default delivery of monorepo | Now | |
+| License / use agreement | Commercial | Restrict reverse engineering / redistribution as contract allows |
+| Access control on server | Ops | Limit who can read `C:\FT-ERP\` |
+| Support channel for symbols | Optional | Source maps under NDA |
+
+**Limits (honest):** JavaScript/Node deployments cannot provide perfect secrecy. Protection is **deterrence + contract + packaging hygiene**, not DRM. This standard **SHALL NOT** claim absolute IP safety.
+
+**SHALL NOT:** Use obfuscation that breaks supportability or certification reproducibility without Architecture approval.
+
+---
+
+## 16. Windows Service Strategy
+
+### 16.1 Phase 1 (manual / scheduled)
+
+- Backend **MAY** run as a logged-in user process or Task Scheduler job at startup.
+- Document restart procedure in `logs\deploy\` notes.
+
+### 16.2 Phase 2 (approved direction)
+
+Run FT ERP backend as a **Windows Service** so that:
+
+- Process restarts on reboot
+- Stdout/stderr capture to `logs\service\`
+- Service account has least privilege to `C:\FT-ERP\` + MySQL local
+
+Candidate tooling (decision deferred): NSSM, node-windows, WinSW, or custom service wrapper.
+
+### 16.3 Service contract (future)
+
+| Setting | Requirement |
+|---------|-------------|
+| Display name | `FT ERP Backend` (or customer-branded) |
+| Startup | Automatic |
+| Failure restart | Restart after short delay |
+| Working directory | Active release `app\` |
+| Environment | Load from `shared\.env` or service environment |
+
+**This revision does not install a service.** When implemented, it **SHALL** obey folder and backup rules above.
+
+---
+
+## 17. Logging & Diagnostics
+
+Aligned with [FT-PD-092](../09_Deployment_and_Operations_Architecture/Chapter_03_Operational_Monitoring_Support_and_Maintenance_Architecture.md).
+
+### 17.1 Log classes
+
+| Class | Path | Content |
+|-------|------|---------|
+| Application | `logs\app\` | API errors, auth failures, unexpected exceptions |
+| Deploy | `logs\deploy\` | Install/update/rollback records, backup paths, versions |
+| Service | `logs\service\` | Process supervisor output (future) |
+
+### 17.2 Deploy log minimum fields
+
+- Timestamp
+- Actor (admin name)
+- From version → to version
+- Package `buildId`
+- Backup file path
+- Migration head before/after
+- Result: success / rolled back / failed
+- Notes
+
+### 17.3 Diagnostics pack (support)
+
+When escalating, Admin **SHOULD** provide:
+
+- `release.json` of active version
+- Recent `logs\app\` excerpt (no secrets)
+- Deploy log entry
+- Confirmation backup exists
+- Screenshot of error (UI per FT-PD-066 — do not redesign for logs)
+
+**SHALL NOT** paste full `.env` into tickets.
+
+---
+
+## 18. Client Installation SOP
+
+**First-time install** (pilot/production path — [INS-*](../09_Deployment_and_Operations_Architecture/Chapter_02_Installation_Upgrade_and_Migration_Architecture.md)):
+
+1. **Prepare server** — Windows updates, disk space, static LAN IP recommended.
+2. **Install MySQL** — local instance; create empty database + user with least privilege.
+3. **Create folder tree** — §6 (`releases`, `shared`, `backups`, `logs`).
+4. **Place secrets** — create `shared\.env` (`DATABASE_URL`, JWT secrets, ports, etc.).
+5. **Extract release** — `releases\<version>\` from certified package; verify checksum.
+6. **Install runtime deps** — per Phase A/B packaging instructions (tooling deferred).
+7. **Apply migrations** — against empty DB.
+8. **Seed / configure** — only approved first-run seeds (roles, company profile); **no** demo wipe scripts on real masters without consent.
+9. **Start backend** — bind LAN interface; confirm health endpoint / login page.
+10. **Client browsers** — open `http://<server-ip>:<port>`; verify FT-PD-066 surfaces load.
+11. **Admin provisioning** — users/roles per Volume 7.
+12. **Backup baseline** — first successful dump to `backups\db\`.
+13. **Record** — deploy log + go-live / pilot acceptance as applicable.
+14. **Train** — Dashboard / Workspace / Reports navigation per Volume 6; do not invent alternate UX.
+
+**Firewall:** allow LAN clients to app port only.
+
+---
+
+## 19. Update SOP
+
+Condensed runbook (see also §12):
+
+| Step | Action | Exit criteria |
+|------|--------|---------------|
+| 1 | Notify users / freeze if needed | Users informed |
+| 2 | Verify package + compatibility | `release.json` OK |
+| 3 | Backup DB (+ uploads if needed) | File verified |
+| 4 | Stop service/process | Port free |
+| 5 | Extract new version folder | Path exists; old retained |
+| 6 | Migrate DB | Head matches manifest |
+| 7 | Start new version | Health OK |
+| 8 | Acceptance checklist §22 | Signed or recorded |
+| 9 | Deploy log | Complete |
+| 10 | Keep prior release | Rollback possible |
+
+**Abort:** On any failure at steps 6–8, execute §13 before declaring success.
+
+---
+
+## 20. Disaster Recovery SOP
+
+For major loss (disk failure, ransomware, site outage) — distinct from update rollback.
+
+### 20.1 Recovery objectives (guidance)
+
+Restore **certified operational capability**: known `release.json` build + consistent DB + `shared` assets ([RES-01](../09_Deployment_and_Operations_Architecture/Chapter_04_Backup_Recovery_Business_Continuity_and_Disaster_Recovery_Architecture.md)).
+
+### 20.2 Recovery steps
+
+1. Provision replacement Windows host (or repair).
+2. Reinstall MySQL; restore latest **verified** SQL backup.
+3. Restore `C:\FT-ERP\shared\` (env, uploads) from file backup / copy.
+4. Restore last known good `releases\<version>\` (or re-extract same `buildId` package).
+5. Start service; verify build identity.
+6. Post-recovery validation — login, read stock, open key documents; spot-check audit.
+7. Record DR event; schedule root-cause and backup-process review.
+
+### 20.3 Business continuity
+
+During outage, factory **MAY** use paper/manual temporary process; catch-up entries **SHALL** follow workflow rules (no silent ledger edits) when system returns.
+
+---
+
+## 21. Future Windows Installer Roadmap
+
+| Stage | Deliverable | Depends on |
+|-------|-------------|------------|
+| **R0** | This standard (FT-DEP-001) | Done in documentation |
+| **R1** | Release packaging scripts (frontend build + backend package + zip + checksum) | Explicit implementation task |
+| **R2** | esbuild backend bundle in `app/` | R1 |
+| **R3** | Windows Service wrapper + install notes | R1–R2 |
+| **R4** | Guided installer (Inno Setup / MSI) — creates folders, service, MySQL checks | R3 |
+| **R5** | Optional auto-update agent (LAN share / signed packages) | R4 + security review |
+
+**Rules for future installer:**
+
+- **SHALL** implement §6 folder layout
+- **SHALL** refuse update without backup confirmation (or perform backup itself)
+- **SHALL NOT** embed customer secrets in the installer binary
+- **SHALL** leave prior release for rollback
+
+---
+
+## 22. Release Acceptance Checklist
+
+Use after **install** or **update** before declaring production success.
+
+### 22.1 Technical
+
+- [ ] `release.json` version matches intended release
+- [ ] Backend process running; LAN URL reachable
+- [ ] Frontend loads (no Vite dev server)
+- [ ] DB migration head matches manifest
+- [ ] Pre-change backup path recorded and file verified
+- [ ] Prior release folder still present (updates)
+- [ ] `shared\.env` intact (not blanked)
+- [ ] Logs writable under `logs\`
+
+### 22.2 Functional smoke (minimum)
+
+- [ ] Login / session works for Admin
+- [ ] Dashboard or home shell loads (FT-PD-066)
+- [ ] Open one master (e.g. Item or Customer) read-only
+- [ ] Open one operational workspace relevant to site (SO / WO / Stock — as licensed)
+- [ ] One Analysis report opens if Reports licensed
+- [ ] No obvious API 500 on home navigation
+
+### 22.3 Governance
+
+- [ ] Deploy log completed
+- [ ] Business Owner informed of result
+- [ ] If fail → rollback mode chosen (§13) and executed
+- [ ] No uncertified hotfix left on server
+
+### 22.4 Sign-off
+
+| Role | Name | Date | Result |
+|------|------|------|--------|
+| System Administrator | | | Pass / Fail |
+| Business Owner | | | Accept / Reject |
+| Partner (if present) | | | Witness |
+
+---
+
+## 23. Business Rules Summary (FT-DEP)
+
+| ID | Rule |
+|----|------|
+| **DRP-01…10** | See §3 |
+| **F-01…05** | See §6 |
+| **MIG-01…06** | See §11 |
+| **DATA-01…04** | See §14 |
+| **DEP-*** | Inherited from FT-PD-090 — remain authoritative |
+| **INS-*** | Inherited from FT-PD-091 |
+| **RES-*** | Inherited from FT-PD-093 |
+
+---
+
+## 24. Deferred Implementation Tasks
+
+Explicitly **not** done in this documentation revision:
+
+| # | Task | Blocked until |
+|---|------|---------------|
+| 1 | Add npm/pnpm release scripts in `package.json` | Product approval to implement R1 |
+| 2 | esbuild backend bundle pipeline | R1 complete |
+| 3 | Backup PowerShell/bash helpers under `tools/` | R1 |
+| 4 | Windows Service wrapper | R2–R3 |
+| 5 | Windows Installer project | R4 |
+| 6 | Automated checksum + `release.json` generator | R1 |
+| 7 | Update Architecture Map / product README index entry for `06_Deployment/` | Optional doc navigation follow-up |
+| 8 | Cross-link Volume 9 chapters to FT-DEP-001 as “LAN operationalization” | Doc patch |
+
+---
+
+## 25. Related Reading
+
+| Topic | Document |
+|-------|----------|
+| Deployment architecture law | [FT-PD-090](../09_Deployment_and_Operations_Architecture/Chapter_01_Deployment_and_Release_Architecture.md) |
+| Install / upgrade architecture | [FT-PD-091](../09_Deployment_and_Operations_Architecture/Chapter_02_Installation_Upgrade_and_Migration_Architecture.md) |
+| Monitoring / support | [FT-PD-092](../09_Deployment_and_Operations_Architecture/Chapter_03_Operational_Monitoring_Support_and_Maintenance_Architecture.md) |
+| Backup / DR architecture | [FT-PD-093](../09_Deployment_and_Operations_Architecture/Chapter_04_Backup_Recovery_Business_Continuity_and_Disaster_Recovery_Architecture.md) |
+| Documentation governance | [FT-PD-103](../10_Product_Lifecycle_and_Continuous_Evolution/Chapter_04_Product_Knowledge_Management_Documentation_Governance_and_Organizational_Learning.md) |
+| Workflow unchanged by deploy | [Volume 4](../04_Workflow_Engine/README.md) |
+| Business pipelines unchanged by deploy | [Volume 2](../02_Business_Architecture/README.md) |
+| UI standard for smoke surfaces | [FT-PD-066](../06_UI_and_Experience_Architecture/Chapter_07_FT_ERP_UI_UX_Design_System.md) |
+
+---
+
+## 26. Approval Block
+
+| Role | Status |
+|------|--------|
+| Product Architecture | Pending review |
+| Release Operations | Pending review |
+| Documentation Steward | Pending review |
+
+**Status:** Draft — Architecture Review (v1.0.0). Not Approved for tooling implementation until R1 is explicitly authorized.

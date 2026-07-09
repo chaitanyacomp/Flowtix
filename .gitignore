@@ -1,2 +1,5 @@
 # Local database backups (see BACKUP_STORAGE_DIR / default ERP_DATA/backups)
 ERP_DATA/
+
+# FT-DEP-001 Batch 1 — generated release packages (rebuild via deployment\create-release.bat)
+/release/

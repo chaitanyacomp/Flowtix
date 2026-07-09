@@ -3,3 +3,7 @@ ERP_DATA/
 
 # FT-DEP-001 Batch 1 — generated release packages (rebuild via deployment\create-release.bat)
 /release/
+
+# FT-DEP-001 Batch 2 — local runtime data (dev layout mirrors client shared/ + logs/)
+/shared/
+/logs/

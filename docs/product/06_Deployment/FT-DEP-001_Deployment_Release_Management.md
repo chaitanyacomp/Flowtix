@@ -4,7 +4,7 @@
 |-------|-------|
 | **Document ID** | FT-DEP-001 |
 | **Title** | Deployment & Release Management Standard |
-| **Version** | 1.0.0 |
+| **Version** | 1.1.0 |
 | **Status** | Draft — Architecture Review |
 | **Effective date** | 2026-07-09 |
 | **Author** | FT ERP Product Team |
@@ -42,6 +42,7 @@
 | Version | Date | Author | Summary |
 |---------|------|--------|---------|
 | 1.0.0 | 2026-07-09 | FT ERP Product Team | Initial Deployment & Release Management Standard for LAN client-server deployments |
+| 1.1.0 | 2026-07-09 | FT ERP Product Team | Batch 2 — runtime configuration, startup validation, logging, GET /health |
 
 **Supersedes:** Informal client install notes; ad-hoc “copy the repo to the server” practices.
 
@@ -806,4 +807,127 @@ Explicitly **not** done in this documentation revision:
 | Release Operations | Pending review |
 | Documentation Steward | Pending review |
 
-**Status:** Draft — Architecture Review (v1.0.0). Not Approved for tooling implementation until R1 is explicitly authorized.
+**Status:** Draft — Architecture Review (v1.1.0). Batch 1 packaging and Batch 2 runtime validation are documented; later batches (esbuild, Windows Service, installer, backup/update automation) remain deferred.
+
+---
+
+## 27. Runtime Configuration (Batch 2)
+
+### 27.1 Purpose
+
+Separate **development** from **deployment** at process start: load secrets from `shared/.env`, ensure runtime folders, validate required configuration, initialize production logs, and expose a non-sensitive health endpoint.
+
+### 27.2 Environment variable catalog
+
+| Variable | Required | Environments | Description |
+|----------|----------|--------------|-------------|
+| `DATABASE_URL` | **Yes** | All | MySQL URL `mysql://user:pass@host:port/db` |
+| `JWT_SECRET` | **Yes** | Production | Token signing secret (≥ 16 characters) |
+| `NODE_ENV` | Recommended | All | `development` \| `production` \| `test` |
+| `PORT` | No (default 4000) | All | HTTP listen port |
+| `FT_ERP_HOME` | Recommended (LAN) | Production | Client install root (`shared/`, `logs/`, `releases/`) |
+| `SHARED_DIR` | No | All | Override shared data directory |
+| `LOG_DIR` | No | All | Override log directory |
+| `VERSION_FILE` | No | All | Explicit path to Batch 1 `VERSION.txt` |
+| `BRANDING_STORAGE_DIR` | No | All | Company logo/signature disk root |
+| `BACKUP_STORAGE_DIR` | No | All | Admin backup storage root |
+| `MYSQLDUMP_PATH` / `MYSQL_PATH` | No | All | mysqldump/mysql binaries for backup UI |
+| `FEATURE_MONTHLY_PLANNING` | No | All | Feature flag (default OFF) |
+| `FEATURE_PLANNING_DRIVEN_PROCUREMENT` | No | All | Feature flag (default OFF) |
+
+**Template file:** `deployment/production.env.example` → copy to `shared/.env` on the server.
+
+**Load order:** process environment (highest) → `shared/.env` → package `backend/.env` / `app/.env` (neither overrides already-set vars).
+
+### 27.3 Runtime folder standard
+
+| Path | Purpose | Auto-create |
+|------|---------|-------------|
+| `shared/` | Client secrets and durable files | Yes |
+| `shared/.env` | Secrets (admin-created; not auto-written) | No |
+| `shared/uploads/` | Disk uploads (when used) | Yes |
+| `shared/temp/` | Temporary files | Yes |
+| `logs/` | `startup.log`, `application.log`, `error.log` | Yes |
+
+Layout detection:
+
+1. `FT_ERP_HOME` set → use that home
+2. Else running inside a Batch 1 release folder (`VERSION.txt` present) → release root
+3. Else development → repository root (`shared/`, `logs/` beside `backend/`)
+
+### 27.4 Startup validation
+
+On `node src/server.js` (or `npm start`), the process **SHALL**:
+
+1. Load configuration
+2. Ensure folders + writable logs
+3. Initialize file logging
+4. Validate required env (fail-fast with readable list)
+5. Verify Prisma client load
+6. Verify database `SELECT 1`
+7. Print validation report:
+
+```text
+[OK] configuration
+[OK] folders
+[OK] logging
+[OK] version
+[OK] Prisma
+[OK] database
+```
+
+(Console may also show checkmarks; log files use `[OK]` / `[FAIL]` for Windows encoding safety.)
+
+Missing or invalid configuration **SHALL** abort before listening, with messages naming the variable and remediation (see `formatConfigErrors`).
+
+### 27.5 Logging standard
+
+| File | Content |
+|------|---------|
+| `logs/startup.log` | Startup validation lines and boot summary |
+| `logs/application.log` | Mirrored `console.log` / `info` / `warn` / `error` |
+| `logs/error.log` | Warnings and errors |
+
+Console logging is **extended**, not replaced. Existing `console.*` and performance middleware continue to work.
+
+### 27.6 Health endpoint
+
+| Method / path | Purpose |
+|---------------|---------|
+| `GET /health` | Ops health — version, uptime, environment, DB status, build timestamp, git commit |
+| `GET /api/health` | Existing readiness JSON `{ ok, database }` (unchanged contract) |
+| `GET /api/health/live` | Liveness without DB (unchanged) |
+
+`GET /health` **SHALL NOT** expose `DATABASE_URL`, JWT secrets, file paths with credentials, or stack traces.
+
+Example success body:
+
+```json
+{
+  "ok": true,
+  "application": "Flowtix ERP",
+  "version": "1.0.0",
+  "environment": "production",
+  "uptimeSeconds": 42,
+  "database": "up",
+  "buildTimestamp": "2026-07-09T15:32:34.249Z",
+  "gitCommit": "c8e051d"
+}
+```
+
+Version fields are read from Batch 1 `VERSION.txt` when present; otherwise `package.json` version is used.
+
+### 27.7 Implementation map (Batch 2)
+
+| Module | Path |
+|--------|------|
+| Bootstrap | `backend/src/runtime/bootstrap.js` |
+| Env load | `backend/src/runtime/loadEnv.js` |
+| Config validate | `backend/src/runtime/config.js` |
+| Folders | `backend/src/runtime/folders.js` |
+| Logging | `backend/src/runtime/logging.js` |
+| Health | `backend/src/runtime/health.js` |
+| Release meta | `backend/src/runtime/releaseMeta.js` |
+| Production env template | `deployment/production.env.example` |
+
+**Still deferred:** esbuild, Windows Service, installer, backup/update automation, Docker, pkg, nexe.

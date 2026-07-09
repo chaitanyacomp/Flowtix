@@ -78,6 +78,9 @@ if exist "%ROOT%\backend\.env.example" (
 ) else if exist "%ROOT%\backend\env.example" (
   copy /Y "%ROOT%\backend\env.example" "%RELEASE_DIR%\shared\.env.example" >nul
 )
+if exist "%ROOT%\deployment\production.env.example" (
+  copy /Y "%ROOT%\deployment\production.env.example" "%RELEASE_DIR%\shared\production.env.example" >nul
+)
 > "%RELEASE_DIR%\shared\README.txt" (
   echo Client-specific files live here on the server ^(FT-DEP-001^):
   echo   .env          — secrets / DATABASE_URL ^(create from .env.example; never commit^)

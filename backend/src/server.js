@@ -1,8 +1,10 @@
 const http = require("http");
-const dotenv = require("dotenv");
 
-dotenv.config();
+// FT-DEP-001 Batch 2 — load shared/.env (and package .env) BEFORE Prisma client init.
+const { loadRuntimeEnv } = require("./runtime/loadEnv");
+loadRuntimeEnv();
 
+const { bootstrapRuntime, getReleaseMeta } = require("./runtime/bootstrap");
 const { prisma } = require("./utils/prisma");
 const { ensureDefaultAdmin } = require("./utils/ensureDefaultAdmin");
 const { ensureAppSettings } = require("./services/appSettings");
@@ -10,10 +12,6 @@ const { ensureIndiaStatesSeeded, backfillLegacyStateLinks } = require("./service
 const { ensureDefaultUnitsSeeded, backfillLegacyItemUnitLinks } = require("./services/unitMaster");
 const { createApp } = require("./createApp");
 const { resetBackupJobLockOnProcessStart } = require("./services/databaseBackupService");
-
-const app = createApp();
-
-const port = process.env.PORT ? Number(process.env.PORT) : 4000;
 
 /** Keep a strong reference to the HTTP server so the process stays alive (avoids rare exit-after-listen issues). */
 let httpServer;
@@ -23,30 +21,27 @@ function parseDatabaseUrlInfo() {
   if (!raw) return { host: null, database: null };
   try {
     const u = new URL(raw);
-    const host = u.host || null; // includes port if present
+    const host = u.host || null;
     const database = u.pathname ? u.pathname.replace(/^\//, "") : null;
     return { host: host || null, database: database || null };
   } catch {
-    // Non-URL formats (rare); avoid leaking full string.
     return { host: null, database: null };
   }
 }
 
 async function start() {
+  let boot;
   try {
-    await prisma.$queryRaw`SELECT 1`;
-    // eslint-disable-next-line no-console
-    console.log("[startup] Database connection OK");
-    resetBackupJobLockOnProcessStart();
+    boot = await bootstrapRuntime({ prisma });
   } catch (err) {
-    // eslint-disable-next-line no-console
-    console.error(
-      "[startup] Cannot connect to the database. Set DATABASE_URL in backend/.env and ensure MySQL is running (e.g. docker compose up -d mysql).",
-    );
-    // eslint-disable-next-line no-console
-    console.error(err?.message || err);
+    // bootstrap already printed readable errors
     process.exit(1);
   }
+
+  const port = process.env.PORT ? Number(process.env.PORT) : 4000;
+  const meta = getReleaseMeta();
+
+  resetBackupJobLockOnProcessStart();
 
   await ensureDefaultAdmin();
   await ensureAppSettings();
@@ -54,6 +49,8 @@ async function start() {
   await backfillLegacyStateLinks();
   await ensureDefaultUnitsSeeded();
   await backfillLegacyItemUnitLinks();
+
+  const app = createApp({ getReleaseMeta: getReleaseMeta });
 
   await new Promise((resolve, reject) => {
     const server = http.createServer(app);
@@ -69,17 +66,21 @@ async function start() {
       });
       httpServer = server;
       // eslint-disable-next-line no-console
-      console.log(`[startup] Backend listening on http://localhost:${port}`);
+      console.log(
+        `[startup] Backend listening on http://localhost:${port} (v${meta.productVersion || "?"})`,
+      );
       const dbInfo = parseDatabaseUrlInfo();
       // eslint-disable-next-line no-console
       console.log("[startup] Runtime", {
         pid: process.pid,
         port,
+        environment: boot.environment,
+        layout: boot.paths.layout,
         databaseHost: dbInfo.host,
         databaseName: dbInfo.database,
       });
       // eslint-disable-next-line no-console
-      console.log("[startup] Readiness: GET /api/health (includes DB check)");
+      console.log("[startup] Health: GET /health  |  Readiness: GET /api/health");
       console.log("[startup] Dashboard commercial: GET /api/dashboard/quotations-pending-so");
       resolve();
     });
@@ -87,8 +88,8 @@ async function start() {
 }
 
 start().catch((err) => {
-  // eslint-disable-next-line no-console
   const code = err && typeof err === "object" ? err.code : null;
+  const port = process.env.PORT ? Number(process.env.PORT) : 4000;
   if (code === "EADDRINUSE") {
     // eslint-disable-next-line no-console
     console.error(

@@ -55,11 +55,13 @@ const { rmStockPlanningRouter } = require("./routes/rmStockPlanning");
 const { monthlyPlanningRouter } = require("./routes/monthlyPlanning");
 const { procurementTraceRouter } = require("./routes/procurementTrace");
 const { isMonthlyPlanningEnabled, isPlanningDrivenProcurementEnabled } = require("./config/featureFlags");
+const { registerHealthRoutes } = require("./runtime/health");
 
 /**
  * Express app with all API routes (shared by server.js and integration tests).
+ * @param {{ getReleaseMeta?: () => object }} [options]
  */
-function createApp() {
+function createApp(options = {}) {
   const app = express();
   app.use(
     cors({
@@ -74,6 +76,9 @@ function createApp() {
     res.status(200).json({ message: "Mini ERP Backend Running" });
   });
 
+  // FT-DEP-001 Batch 2 — lightweight ops health (version, uptime, DB status; no secrets).
+  registerHealthRoutes(app, { prisma, getMeta: options.getReleaseMeta });
+
   app.get("/api/health/live", (req, res) => {
     res.json({ ok: true, database: null });
   });
@@ -86,6 +91,7 @@ function createApp() {
     });
   });
 
+  // Existing readiness probe (kept for clients/tests). Prefer GET /health for ops metadata.
   app.get("/api/health", async (req, res) => {
     try {
       await prisma.$queryRaw`SELECT 1`;

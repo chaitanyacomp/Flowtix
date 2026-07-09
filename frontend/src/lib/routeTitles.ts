@@ -56,7 +56,7 @@ const TITLES: Record<string, string> = {
   "/reports/rm-wastage": "RM Wastage Report",
   "/reports/work-order-tracking": "Work Order Tracking Report",
   "/reports/operations-exceptions": "Operations Exception Report",
-  "/reports/so-dispatch-trace": "SO to Dispatch Trace",
+  "/reports/so-dispatch-trace": "Customer Tracking Report",
   "/reports/activity-log": "User Activity Log",
   "/reports/dispatch-backlog": "Dispatch Backlog",
   "/reports/dispatch-summary": "Dispatch Summary",

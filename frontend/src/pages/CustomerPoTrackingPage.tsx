@@ -10,7 +10,8 @@ import { ReportPageHeader, PageContainer } from "../components/PageHeader";
 import { cn } from "../lib/utils";
 import { useAuth } from "../hooks/useAuth";
 import { NativeSelect } from "../components/ui/native-select";
-import { ReportFilterToolbar, ReportFilterField } from "../components/erp/ReportChrome";
+import { ReportFilterToolbar, ReportFilterField, ReportKpiStrip } from "../components/erp/ReportChrome";
+import { SoDispatchTraceTable, type SoDispatchTraceRow } from "../components/erp/SoDispatchTraceTable";
 import { CheckCircle2, Circle, Clock } from "lucide-react";
 import { ERP_REPORT_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
 
@@ -370,7 +371,6 @@ export function CustomerPoTrackingPage() {
   const accountsRole = auth.user?.role === "PURCHASE";
   const [urlSearch] = useSearchParams();
   const [customers, setCustomers] = React.useState<Customer[]>([]);
-  const [customerSearch, setCustomerSearch] = React.useState("");
   const [customerId, setCustomerId] = React.useState(0);
 
   const customerSeedRef = React.useRef(false);
@@ -399,6 +399,15 @@ export function CustomerPoTrackingPage() {
   >("All");
   const [poSearch, setPoSearch] = React.useState("");
 
+  const soSearchSeedRef = React.useRef(false);
+  React.useEffect(() => {
+    if (soSearchSeedRef.current) return;
+    const so = (urlSearch.get("soSearch") ?? "").trim();
+    if (!so) return;
+    soSearchSeedRef.current = true;
+    setPoSearch(so);
+  }, [urlSearch]);
+
   const [loadingList, setLoadingList] = React.useState(false);
   const [listError, setListError] = React.useState<string | null>(null);
   const [poRows, setPoRows] = React.useState<PoListRow[]>([]);
@@ -413,20 +422,16 @@ export function CustomerPoTrackingPage() {
     pollIntervalMs: ERP_REPORT_POLL_MS,
   });
 
-  // (was used for a small header suffix; removed to avoid unused var)
-
-  const customerOptions = React.useMemo(() => {
-    const q = customerSearch.trim().toLowerCase();
-    const list = Array.isArray(customers) ? customers : [];
-    if (!q) return list;
-    return list.filter((c) => c.name.toLowerCase().includes(q));
-  }, [customers, customerSearch]);
-
   React.useEffect(() => {
     apiFetch<Customer[]>("/api/customers")
       .then((c) => setCustomers(Array.isArray(c) ? c : []))
       .catch(() => setCustomers([]));
   }, []);
+
+  /** Production Journey — SO→WO→Prod→QC→Dispatch (merged from SO to Dispatch Trace; read-only). */
+  const [journeyRows, setJourneyRows] = React.useState<SoDispatchTraceRow[]>([]);
+  const [journeyLoading, setJourneyLoading] = React.useState(false);
+  const [journeyError, setJourneyError] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     if (dateRange === "ALL_DATES") {
@@ -556,9 +561,30 @@ export function CustomerPoTrackingPage() {
     setDetailLoading(true);
     setDetailError(null);
     setDetail(null);
+    setJourneyRows([]);
+    setJourneyError(null);
     try {
       const data = await apiFetch<PoDetail>(`/api/customer-po-tracking/${poKey}`);
       setDetail(data);
+      const soId = Number(data?.header?.salesOrderId ?? data?.header?.poKey ?? poKey);
+      if (Number.isFinite(soId) && soId > 0) {
+        setJourneyLoading(true);
+        try {
+          const params = new URLSearchParams();
+          params.set("page", "1");
+          params.set("pageSize", "50");
+          params.set("soSearch", String(soId));
+          const trace = await apiFetch<{ rows?: SoDispatchTraceRow[] }>(
+            `/api/reports/so-dispatch-trace?${params.toString()}`,
+          );
+          setJourneyRows(Array.isArray(trace?.rows) ? trace.rows : []);
+        } catch {
+          setJourneyError("Production journey could not be loaded.");
+          setJourneyRows([]);
+        } finally {
+          setJourneyLoading(false);
+        }
+      }
     } catch {
       setDetailError("Could not load PO details. Please refresh and try again.");
     } finally {
@@ -857,27 +883,12 @@ export function CustomerPoTrackingPage() {
         title="Customer Tracking Report"
         purpose={
           accountsRole
-            ? "Track customer order, dispatch, billing and payment follow-up."
-            : "Customer order qty, delivery, billing status, and dispatch history. Production detail is optional."
+            ? "Master customer lifecycle report — order through dispatch, billing, and payment follow-up (read-only)."
+            : "Master customer lifecycle report — Customer PO → SO → RS → WO → Production → QC → Dispatch → Bill (read-only)."
         }
       />
 
-      <ReportFilterToolbar
-        leftExtras={
-          customerOptions.length > 50 ? (
-            <span className="text-[11px] text-slate-500">
-              Showing first 50 customer matches. Keep typing to narrow.
-            </span>
-          ) : null
-        }
-      >
-        <ReportFilterField label="Customer (search)">
-          <Input
-            value={customerSearch}
-            onChange={(e) => setCustomerSearch(e.target.value)}
-            placeholder="Type customer name…"
-          />
-        </ReportFilterField>
+      <ReportFilterToolbar>
         <ReportFilterField label="Customer">
           <NativeSelect
             value={customerId || ""}
@@ -887,12 +898,20 @@ export function CustomerPoTrackingPage() {
             }}
           >
             <option value="">Select customer</option>
-            {customerOptions.slice(0, 50).map((c) => (
+            {(Array.isArray(customers) ? customers : []).map((c) => (
               <option key={c.id} value={c.id}>
                 {c.name}
               </option>
             ))}
           </NativeSelect>
+        </ReportFilterField>
+        <ReportFilterField label="Customer PO / Order ref" span={2}>
+          <Input
+            value={poSearch}
+            onChange={(e) => setPoSearch(e.target.value)}
+            placeholder={customerId ? "SO no., customer PO ref, or PO number…" : "Select a customer first"}
+            disabled={!customerId}
+          />
         </ReportFilterField>
         <ReportFilterField label="Date range">
           <NativeSelect value={dateRange} onChange={(e) => setDateRange(e.target.value as DateRangeKey)}>
@@ -927,14 +946,6 @@ export function CustomerPoTrackingPage() {
             value={dateTo}
             onChange={(e) => setDateTo(e.target.value)}
             disabled={dateRange === "ALL_DATES"}
-          />
-        </ReportFilterField>
-        <ReportFilterField label="Order ref / PO No (optional)" span={2}>
-          <Input
-            value={poSearch}
-            onChange={(e) => setPoSearch(e.target.value)}
-            placeholder={customerId ? "SO no., customer PO ref, or PO number…" : "Select a customer first"}
-            disabled={!customerId}
           />
         </ReportFilterField>
       </ReportFilterToolbar>
@@ -1117,10 +1128,46 @@ export function CustomerPoTrackingPage() {
           {!selectedPoKey ? (
             <Card className="flex flex-1 flex-col border-slate-200 shadow-sm">
               <CardHeader className="pb-2">
-                <CardTitle className="text-base">PO Tracking</CardTitle>
+                <CardTitle className="text-base">
+                  {!customerId ? "Select a customer" : "Customer summary"}
+                </CardTitle>
               </CardHeader>
-              <CardContent className="flex flex-1 flex-col text-sm text-slate-600">
-                <p>Select an order on the left to see full tracking.</p>
+              <CardContent className="flex flex-1 flex-col gap-3 text-sm text-slate-600">
+                {!customerId ? (
+                  <p>Choose a customer in the filters to load orders and lifecycle tracking.</p>
+                ) : (
+                  <>
+                    <ReportKpiStrip
+                      items={[
+                        {
+                          key: "orders",
+                          label: "Orders",
+                          value: String(customerSummary.totalOrders),
+                        },
+                        {
+                          key: "ordered",
+                          label: "Customer Ordered Qty",
+                          value: String(Math.round(customerSummary.totalOrderedQty * 1000) / 1000),
+                        },
+                        {
+                          key: "delivered",
+                          label: "Net Delivered Qty",
+                          value: String(Math.round(customerSummary.totalNetDeliveredQty * 1000) / 1000),
+                          tone: "success",
+                        },
+                        {
+                          key: "pending",
+                          label: "Active Pending Qty",
+                          value: String(Math.round(customerSummary.totalPendingToDeliverQty * 1000) / 1000),
+                          tone: customerSummary.totalPendingToDeliverQty > 1e-9 ? "warning" : "default",
+                        },
+                      ]}
+                    />
+                    <p className="text-[12px] text-slate-600">
+                      Select an order on the left to open the full lifecycle, production journey, and billing status.
+                    </p>
+                  </>
+                )}
               </CardContent>
             </Card>
           ) : detailLoading ? (
@@ -1412,6 +1459,32 @@ export function CustomerPoTrackingPage() {
                     })}
                   </div>
                   </details>
+                </CardContent>
+              </section>
+
+              <section
+                id="production-journey"
+                className="scroll-mt-24 rounded-md border border-slate-200 bg-white shadow-sm min-w-0"
+              >
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-base">Production Journey</CardTitle>
+                  <p className="text-xs font-normal text-slate-500">
+                    SO → Work Order → Production → QC → Dispatch (read-only). Merged from SO to Dispatch Trace —
+                    partial flows show blank downstream cells.
+                  </p>
+                </CardHeader>
+                <CardContent className="space-y-2">
+                  {journeyError ? (
+                    <div className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-950">
+                      {journeyError}
+                    </div>
+                  ) : null}
+                  <SoDispatchTraceTable
+                    rows={journeyRows}
+                    loading={journeyLoading}
+                    compact
+                    emptyMessage="No production journey rows for this sales order yet."
+                  />
                 </CardContent>
               </section>
 

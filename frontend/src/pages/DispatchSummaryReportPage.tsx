@@ -1,13 +1,12 @@
 import * as React from "react";
-import { Link } from "react-router-dom";
 import { apiFetch } from "../services/api";
 import { cn } from "../lib/utils";
-import { ReportPageHeader } from "../components/PageHeader";
+import { PageContainer, ReportPageHeader } from "../components/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
-import { buttonVariants } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { useUrlQueryState } from "../hooks/useUrlQueryState";
 import { ERP_REPORT_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
+import { ReportKpiStrip, type ReportKpiItem } from "../components/erp/ReportChrome";
 
 type Customer = { id: number; name: string };
 type Item = { id: number; itemName: string; itemType: string };
@@ -53,6 +52,7 @@ const URL_OMIT: Record<string, string> = {
   toDate: "",
   customerId: "",
   itemId: "",
+  tab: "pending",
 };
 
 function safeNum(v: unknown): number {
@@ -72,18 +72,27 @@ function fmtQty(n: number): string {
   return n.toFixed(3).replace(/\.000$/, "");
 }
 
+type SummaryTab = "pending" | "register";
+
 export function DispatchSummaryReportPage() {
   const { read, patch } = useUrlQueryState(URL_OMIT);
   const fromDate = read.string("fromDate");
   const toDate = read.string("toDate");
   const customerId = read.string("customerId");
   const itemId = read.string("itemId");
+  const tabRaw = read.string("tab");
+  const activeTab: SummaryTab = tabRaw === "register" ? "register" : "pending";
 
   const [customers, setCustomers] = React.useState<Customer[]>([]);
   const [items, setItems] = React.useState<Item[]>([]);
-  const [pendingRows, setPendingRows] = React.useState<{ soNo: string; customerName: string; itemName: string; ready: number; status: string }[]>([]);
+  const [pendingRows, setPendingRows] = React.useState<
+    { soNo: string; customerName: string; itemName: string; ready: number; status: string }[]
+  >([]);
   const [history, setHistory] = React.useState<DispatchSummaryHistoryRow[]>([]);
-  const [kpis, setKpis] = React.useState<{ dispatchTodayQty: number; dispatchMonthQty: number }>({ dispatchTodayQty: 0, dispatchMonthQty: 0 });
+  const [kpis, setKpis] = React.useState<{ dispatchTodayQty: number; dispatchMonthQty: number }>({
+    dispatchTodayQty: 0,
+    dispatchMonthQty: 0,
+  });
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
   const liveTick = useErpRefreshTick(["reports", "dispatch", "dashboard"], {
@@ -119,62 +128,49 @@ export function DispatchSummaryReportPage() {
 
         const selectedCustomerId = customerId ? Number(customerId) : null;
         const selectedItemId = itemId ? Number(itemId) : null;
+        const selectedCustomerName =
+          selectedCustomerId != null
+            ? customers.find((c) => c.id === selectedCustomerId)?.name?.trim().toLowerCase() ?? null
+            : null;
 
-        const pendingFlat = dispatchRows.flatMap((so) => {
-          const soNo = String(so.docNo ?? `SO-${so.id}`);
-          const customerName = String(so.customerName ?? so.customer?.name ?? "—");
-          return (so.lineStats || []).map((ls) => {
-            const pend = safeNum(ls.pendingDispatchQty ?? ls.dispatchable ?? ls.dispatchableQty);
-            const dispNow = safeNum(ls.dispatchable ?? ls.dispatchableQty);
-            return {
-              soNo,
-              customerName,
-              itemId: Number(ls.itemId),
-              itemName: String(ls.itemName ?? `Item #${ls.itemId}`),
-              ready: pend,
-              status:
-                pend > 1e-9
-                  ? "Can dispatch now"
-                  : dispNow > 1e-9
-                    ? "Can dispatch now"
-                    : ls.dispatchBlockedReason?.trim() ?? "Cannot dispatch now",
-            };
-          });
-        });
-
-        // Filters apply to pending too (but pending logic source remains the dispatch API).
-        const pendingFiltered = pendingFlat
-          .filter((r) => r.ready > 1e-9)
-          .filter((r) => (selectedItemId ? r.itemId === selectedItemId : true))
-          .filter((r) => {
-            if (!selectedCustomerId) return true;
-            const match = customers.find((c) => c.id === selectedCustomerId);
-            if (!match) return true;
-            return r.customerName === match.name;
-          })
-          .sort((a, b) => b.ready - a.ready);
-
-        setPendingRows(
-          pendingFiltered.map((r) => ({
-            soNo: r.soNo,
-            customerName: r.customerName,
-            itemName: r.itemName,
-            ready: r.ready,
-            status: r.status,
-          })),
-        );
+        const nextPending: typeof pendingRows = [];
+        for (const so of dispatchRows) {
+          const soCustomer =
+            String(so.customer?.name ?? so.customerName ?? "")
+              .trim()
+              .toLowerCase() || "";
+          if (selectedCustomerName && soCustomer && soCustomer !== selectedCustomerName) continue;
+          for (const ls of so.lineStats ?? []) {
+            const ready = Math.max(0, safeNum(ls.dispatchable ?? ls.dispatchableQty ?? 0));
+            if (!(ready > 1e-9)) continue;
+            if (selectedItemId != null && Number(ls.itemId) !== selectedItemId) continue;
+            nextPending.push({
+              soNo: so.docNo ?? `SO-${so.id}`,
+              customerName: so.customer?.name ?? so.customerName ?? "—",
+              itemName: ls.itemName,
+              ready,
+              status: ls.dispatchBlockedReason?.trim() || "Ready",
+            });
+          }
+        }
+        setPendingRows(nextPending);
 
         if (histRes.status === "fulfilled" && histRes.value) {
-          setHistory(Array.isArray(histRes.value.history) ? histRes.value.history : []);
           setKpis(histRes.value.kpis ?? { dispatchTodayQty: 0, dispatchMonthQty: 0 });
+          setHistory(Array.isArray(histRes.value.history) ? histRes.value.history : []);
         } else {
-          setHistory([]);
           setKpis({ dispatchTodayQty: 0, dispatchMonthQty: 0 });
+          setHistory([]);
+          if (pendingRes.status === "rejected" && histRes.status === "rejected") {
+            setError("Could not load dispatch summary.");
+          }
         }
       })
-      .catch((e) => {
+      .catch(() => {
         if (!mounted) return;
-        setError(e instanceof Error ? e.message : "Failed to load dispatch summary.");
+        setError("Could not load dispatch summary.");
+        setPendingRows([]);
+        setHistory([]);
       })
       .finally(() => {
         if (!mounted) return;
@@ -188,45 +184,57 @@ export function DispatchSummaryReportPage() {
 
   const pendingDispatchLines = pendingRows.length;
   const pendingDispatchQty = pendingRows.reduce((s, r) => s + safeNum(r.ready), 0);
+  const pendingDispatchOrders = new Set(pendingRows.map((r) => r.soNo).filter(Boolean)).size;
 
-  const kpiPillClass = "inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[12px]";
+  const kpiItems: ReportKpiItem[] = [
+    { key: "today", label: "Dispatch Today", value: fmtQty(kpis.dispatchTodayQty) },
+    { key: "month", label: "Dispatch This Month", value: fmtQty(kpis.dispatchMonthQty) },
+    {
+      key: "pending-qty",
+      label: "Pending Dispatch Qty",
+      value: fmtQty(pendingDispatchQty),
+      tone: pendingDispatchQty > 1e-9 ? "warning" : "default",
+    },
+    {
+      key: "pending-orders",
+      label: "Pending Dispatch Orders",
+      value: String(pendingDispatchOrders),
+      tone: pendingDispatchOrders > 0 ? "warning" : "default",
+    },
+  ];
 
   const selectClass =
     "h-9 w-full rounded-md border border-slate-200 bg-white px-2.5 text-sm text-slate-900 shadow-sm";
 
+  const tabBtn = (id: SummaryTab, label: string) => (
+    <button
+      key={id}
+      type="button"
+      role="tab"
+      aria-selected={activeTab === id}
+      className={cn(
+        "border-b-2 px-3 py-2 text-[13px] font-semibold transition-colors",
+        activeTab === id
+          ? "border-slate-900 text-slate-900"
+          : "border-transparent text-slate-500 hover:text-slate-800",
+      )}
+      onClick={() => patch({ tab: id === "pending" ? null : id })}
+    >
+      {label}
+    </button>
+  );
+
   return (
-    <div className="grid gap-3">
+    <PageContainer className="pb-8">
       <ReportPageHeader
         className="mb-0"
         title="Dispatch Summary"
-        purpose="Ready-to-ship now (same rules as Dispatch) plus locked dispatch history for the filters you choose."
-        actions={
-          <Link to="/dispatch?source=reports" className={cn(buttonVariants({ variant: "outline", size: "sm" }), "no-underline")}>
-            Open Dispatch
-          </Link>
-        }
+        purpose="Operational dispatch analytics — ready-to-ship pending (same rules as Dispatch) and locked dispatch register. Read-only; open Dispatch Workspace to execute."
       />
 
-      <div className="flex flex-wrap items-center gap-2 rounded-md border border-slate-200 bg-white px-3 py-2">
-        <span className={kpiPillClass}>
-          <span className="font-medium text-slate-600">Dispatch Today</span>
-          <span className="font-semibold tabular-nums text-slate-900">{fmtQty(kpis.dispatchTodayQty)}</span>
-        </span>
-        <span className={kpiPillClass}>
-          <span className="font-medium text-slate-600">Dispatch This Month</span>
-          <span className="font-semibold tabular-nums text-slate-900">{fmtQty(kpis.dispatchMonthQty)}</span>
-        </span>
-        <span className={kpiPillClass}>
-          <span className="font-medium text-slate-600">Pending Dispatch Qty</span>
-          <span className="font-semibold tabular-nums text-slate-900">{fmtQty(pendingDispatchQty)}</span>
-        </span>
-        <span className={kpiPillClass}>
-          <span className="font-medium text-slate-600">Pending Dispatch Lines</span>
-          <span className="font-semibold tabular-nums text-slate-900">{pendingDispatchLines}</span>
-        </span>
-      </div>
+      <ReportKpiStrip items={kpiItems} className="mt-2" />
 
-      <Card className="border-slate-200 shadow-sm">
+      <Card className="mt-3 border-slate-200 shadow-sm">
         <CardHeader className="pb-2">
           <CardTitle className="text-base">Filters</CardTitle>
         </CardHeader>
@@ -253,7 +261,11 @@ export function DispatchSummaryReportPage() {
           </label>
           <label className="grid gap-1 text-xs font-medium text-slate-600">
             Customer
-            <select className={selectClass} value={customerId} onChange={(e) => patch({ customerId: e.target.value || null })}>
+            <select
+              className={selectClass}
+              value={customerId}
+              onChange={(e) => patch({ customerId: e.target.value || null })}
+            >
               <option value="">All</option>
               {customers.map((c) => (
                 <option key={c.id} value={String(c.id)}>
@@ -276,89 +288,99 @@ export function DispatchSummaryReportPage() {
         </CardContent>
       </Card>
 
-      {error ? <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-[13px] text-red-800">{error}</div> : null}
-      {loading ? <div className="text-[13px] text-slate-600">Loading…</div> : null}
+      {error ? (
+        <div className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-[13px] text-red-800">{error}</div>
+      ) : null}
+      {loading ? <div className="mt-2 text-[13px] text-slate-600">Loading…</div> : null}
 
-      <Card className="border-slate-200 shadow-sm">
-        <CardHeader className="pb-2">
-          <CardTitle className="text-base">Pending Dispatch (ready to ship)</CardTitle>
-        </CardHeader>
-        <CardContent className="pt-0">
-          {pendingRows.length === 0 && !loading ? (
-            <div className="rounded border border-slate-200 bg-slate-50 px-3 py-2 text-[13px] text-slate-700">
-              No dispatchable lines found for the current filters.
-            </div>
-          ) : (
-            <div className="overflow-x-auto rounded border border-slate-200 bg-white">
-              <table className="w-full min-w-[760px] text-[13px]">
-                <thead className="border-b border-slate-200 bg-slate-50">
-                  <tr className="text-left text-[12px] text-slate-600">
-                    <th className="px-3 py-2 font-medium">SO No</th>
-                    <th className="px-3 py-2 font-medium">Customer</th>
-                    <th className="px-3 py-2 font-medium">Item</th>
-                    <th className="px-3 py-2 text-right font-medium">Ready to Ship</th>
-                    <th className="px-3 py-2 font-medium">Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {pendingRows.map((r, idx) => (
-                    <tr key={`${r.soNo}-${r.itemName}-${idx}`} className="border-b border-slate-100">
-                      <td className="px-3 py-2 whitespace-nowrap font-medium tabular-nums text-slate-900">{r.soNo}</td>
-                      <td className="px-3 py-2 max-w-[14rem] truncate">{r.customerName}</td>
-                      <td className="px-3 py-2 max-w-[14rem] truncate">{r.itemName}</td>
-                      <td className="px-3 py-2 text-right tabular-nums font-semibold text-slate-900">{fmtQty(r.ready)}</td>
-                      <td className="px-3 py-2 text-slate-700">{r.status}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </CardContent>
-      </Card>
+      <div className="mt-3 border-b border-slate-200" role="tablist" aria-label="Dispatch summary views">
+        {tabBtn("pending", "Pending Dispatch")}
+        {tabBtn("register", "Dispatch Register")}
+      </div>
 
-      <Card className="border-slate-200 shadow-sm">
-        <CardHeader className="pb-2">
-          <CardTitle className="text-base">Dispatched History (LOCKED)</CardTitle>
-        </CardHeader>
-        <CardContent className="pt-0">
-          {history.length === 0 && !loading ? (
-            <div className="rounded border border-slate-200 bg-slate-50 px-3 py-2 text-[13px] text-slate-700">
-              No locked dispatch rows found for the selected date range / filters.
-            </div>
-          ) : (
-            <div className="overflow-x-auto rounded border border-slate-200 bg-white">
-              <table className="w-full min-w-[760px] text-[13px]">
-                <thead className="border-b border-slate-200 bg-slate-50">
-                  <tr className="text-left text-[12px] text-slate-600">
-                    <th className="px-3 py-2 font-medium">Date</th>
-                    <th className="px-3 py-2 font-medium">SO No</th>
-                    <th className="px-3 py-2 font-medium">Customer</th>
-                    <th className="px-3 py-2 font-medium">Item</th>
-                    <th className="px-3 py-2 text-right font-medium">Qty</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {history.map((d) => (
-                    <tr key={d.id} className="border-b border-slate-100">
-                      <td className="px-3 py-2 whitespace-nowrap">{new Date(d.date).toLocaleString()}</td>
-                      <td className="px-3 py-2 whitespace-nowrap font-medium tabular-nums text-slate-900">
-                        {d.soNo ?? `SO-${d.soId}`}
-                      </td>
-                      <td className="px-3 py-2 max-w-[14rem] truncate">{d.customerName ?? "—"}</td>
-                      <td className="px-3 py-2 max-w-[14rem] truncate">{d.itemName ?? `Item #${d.itemId}`}</td>
-                      <td className="px-3 py-2 text-right tabular-nums font-medium text-slate-900">
-                        {fmtQty(safeNum(d.qty))}
-                      </td>
+      {activeTab === "pending" ? (
+        <Card className="mt-3 border-slate-200 shadow-sm">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">Pending Dispatch (ready to ship)</CardTitle>
+          </CardHeader>
+          <CardContent className="pt-0">
+            {pendingRows.length === 0 && !loading ? (
+              <div className="rounded border border-slate-200 bg-slate-50 px-3 py-2 text-[13px] text-slate-700">
+                No dispatchable lines found for the current filters.
+              </div>
+            ) : (
+              <div className="overflow-x-auto rounded border border-slate-200 bg-white">
+                <table className="w-full min-w-[760px] text-[13px]">
+                  <thead className="border-b border-slate-200 bg-slate-50">
+                    <tr className="text-left text-[12px] text-slate-600">
+                      <th className="px-3 py-2 font-medium">SO No</th>
+                      <th className="px-3 py-2 font-medium">Customer</th>
+                      <th className="px-3 py-2 font-medium">Item</th>
+                      <th className="px-3 py-2 text-right font-medium">Ready to Ship</th>
+                      <th className="px-3 py-2 font-medium">Status</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </CardContent>
-      </Card>
-    </div>
+                  </thead>
+                  <tbody>
+                    {pendingRows.map((r, idx) => (
+                      <tr key={`${r.soNo}-${r.itemName}-${idx}`} className="border-b border-slate-100">
+                        <td className="px-3 py-2 whitespace-nowrap font-medium tabular-nums text-slate-900">{r.soNo}</td>
+                        <td className="max-w-[14rem] truncate px-3 py-2">{r.customerName}</td>
+                        <td className="max-w-[14rem] truncate px-3 py-2">{r.itemName}</td>
+                        <td className="px-3 py-2 text-right font-semibold tabular-nums text-slate-900">
+                          {fmtQty(r.ready)}
+                        </td>
+                        <td className="px-3 py-2 text-slate-700">{r.status}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      ) : (
+        <Card className="mt-3 border-slate-200 shadow-sm">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">Dispatch Register (LOCKED history)</CardTitle>
+          </CardHeader>
+          <CardContent className="pt-0">
+            {history.length === 0 && !loading ? (
+              <div className="rounded border border-slate-200 bg-slate-50 px-3 py-2 text-[13px] text-slate-700">
+                No locked dispatch rows found for the selected date range / filters.
+              </div>
+            ) : (
+              <div className="overflow-x-auto rounded border border-slate-200 bg-white">
+                <table className="w-full min-w-[760px] text-[13px]">
+                  <thead className="border-b border-slate-200 bg-slate-50">
+                    <tr className="text-left text-[12px] text-slate-600">
+                      <th className="px-3 py-2 font-medium">Date</th>
+                      <th className="px-3 py-2 font-medium">SO No</th>
+                      <th className="px-3 py-2 font-medium">Customer</th>
+                      <th className="px-3 py-2 font-medium">Item</th>
+                      <th className="px-3 py-2 text-right font-medium">Qty</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {history.map((d) => (
+                      <tr key={d.id} className="border-b border-slate-100">
+                        <td className="whitespace-nowrap px-3 py-2">{new Date(d.date).toLocaleString()}</td>
+                        <td className="whitespace-nowrap px-3 py-2 font-medium tabular-nums text-slate-900">
+                          {d.soNo ?? `SO-${d.soId}`}
+                        </td>
+                        <td className="max-w-[14rem] truncate px-3 py-2">{d.customerName ?? "—"}</td>
+                        <td className="max-w-[14rem] truncate px-3 py-2">{d.itemName ?? `Item #${d.itemId}`}</td>
+                        <td className="px-3 py-2 text-right font-medium tabular-nums text-slate-900">
+                          {fmtQty(safeNum(d.qty))}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+    </PageContainer>
   );
 }
-

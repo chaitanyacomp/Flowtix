@@ -910,6 +910,8 @@ Base unit **SHALL** be **4px**. Common steps: 4, 8, 12, 16, 24, 32.
 
 **Rule:** Reports **SHALL NOT** execute workflow transitions ([FT-PD-065](./Chapter_06_Reports_and_Analytical_Surfaces.md)).
 
+**Sales Ops ownership:** Customer Tracking is the master lifecycle report; SO→Dispatch Trace is merged into its Production Journey; Dispatch Summary remains analytics + locked register only — see [FT-PD-065 §6.1](./Chapter_06_Reports_and_Analytical_Surfaces.md#61-sales-operations-report-ownership-product-register).
+
 ---
 
 ## 18. Accessibility & Performance

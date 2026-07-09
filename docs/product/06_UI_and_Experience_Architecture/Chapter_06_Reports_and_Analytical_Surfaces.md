@@ -6,9 +6,9 @@
 | **Volume** | 6 — UI & Experience Architecture |
 | **Chapter** | 6 — Reports & Analytical Surfaces |
 | **Title** | Reports & Analytical Surfaces |
-| **Version** | 1.0.0 |
+| **Version** | 1.1.0 |
 | **Status** | Draft — Architecture Review |
-| **Effective date** | 2026-05-29 |
+| **Effective date** | 2026-07-09 |
 | **Author** | FT ERP Product Team |
 | **Owner** | FT ERP Product Architecture |
 | **Audience** | Product, UX architects, analytics owners, compliance leads |
@@ -29,6 +29,7 @@
 | Version | Date | Author | Summary |
 |---------|------|--------|---------|
 | 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial Reports & Analytical Surfaces specification |
+| 1.1.0 | 2026-07-09 | FT ERP Product Team | Sales Ops report ownership — Customer Tracking master; SO→Dispatch Trace merged; Dispatch Summary analytics+register |
 
 **Supersedes:** None.
 
@@ -163,6 +164,20 @@ flowchart TB
 | **Executive Reports** | E2E cycle time, factory load | Executive KPI, orchestration aggregates | Management | Scheduled |
 
 *This chapter defines **architectural patterns** — not a catalog of named report products.*
+
+### 6.1 Sales Operations report ownership (product register)
+
+Named Sales Ops reports **SHALL** follow single ownership to avoid duplicate lifecycle surfaces. Decisions below are **presentation/navigation only** — workflow, stock, FIFO, QC, billing, dispatch execution, audit, and permissions are unchanged.
+
+| Report | Decision | Ownership / purpose | Coverage |
+|--------|----------|---------------------|----------|
+| **Customer Tracking Report** (`/customer-tracking-flow`, `/customer-po-tracking`) | **KEEP** — master customer lifecycle | Authoritative customer-facing order journey | Customer → Customer PO → SO → RS (NO_QTY) → WO → Production → QC → Dispatch → Sales Bill → Outstanding / Returns / Replacement (where linked). Includes **Production Journey** (SO → WO → Prod → QC → Dispatch) with drill-down. |
+| **SO to Dispatch Trace** (`/reports/so-dispatch-trace`) | **MERGE** into Customer Tracking | Capability preserved as Production Journey section; catalog tile removed; legacy URL redirects to Customer Tracking `#production-journey` | Same SO→Dispatch stage matrix via existing read API composition — no second ownership surface |
+| **Dispatch Summary** (`/reports/dispatch-summary`) | **KEEP** — operational dispatch analytics | Pending ready-to-ship + locked Dispatch Register; KPI strip; tabbed layout; **no** workflow actions (e.g. Open Dispatch) | Dispatch Today / Month / Pending Qty / Pending Lines; Pending tab; Register (LOCKED history) |
+
+**Navigation:** Reports catalog lists Customer Tracking and Dispatch Summary only for this lifecycle/analytics pair. Execution remains in Dispatch Workspace ([RPT-01](#11-business-rules), [RPT-04](#11-business-rules)).
+
+**UI standard:** Surfaces comply with [FT-PD-066](./Chapter_07_FT_ERP_UI_UX_Design_System.md) report chrome (read-only, filters, empty states, no duplicated KPIs).
 
 ---
 

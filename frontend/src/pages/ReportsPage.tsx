@@ -10,7 +10,6 @@ import {
   FileSearch,
   FileUp,
   Factory,
-  GitBranch,
   History,
   ListChecks,
   Network,
@@ -158,7 +157,8 @@ const TILES: ReportTile[] = [
   {
     to: "/customer-tracking-flow?from=reports",
     title: "Customer Tracking Report",
-    description: "Order journey from dispatch through billing, returns, and replacements",
+    description:
+      "Master customer lifecycle — PO → SO → RS → WO → Production → QC → Dispatch → Bill (includes Production Journey)",
     roles: ["ADMIN", "STORE", "PRODUCTION", "QA"],
     group: "sales-ops",
     icon: <Users className="h-4 w-4" />,
@@ -176,7 +176,7 @@ const TILES: ReportTile[] = [
   {
     to: "/reports/dispatch-summary",
     title: "Dispatch Summary",
-    description: "Ready-to-ship now (matches Dispatch) + locked dispatch history",
+    description: "Dispatch analytics — pending ready-to-ship + locked dispatch register (read-only)",
     roles: ["ADMIN", "STORE"],
     group: "sales-ops",
     icon: <Truck className="h-4 w-4" />,
@@ -190,15 +190,6 @@ const TILES: ReportTile[] = [
     group: "sales-ops",
     icon: <ClipboardList className="h-4 w-4" />,
     priority: 60,
-  },
-  {
-    to: "/reports/so-dispatch-trace",
-    title: "SO to Dispatch Trace",
-    description: "Follow a sales order through dispatch references",
-    roles: ["ADMIN", "STORE"],
-    group: "sales-ops",
-    icon: <GitBranch className="h-4 w-4" />,
-    priority: 70,
   },
   {
     to: "/reports/sales-matching",
@@ -230,9 +221,9 @@ const TILES: ReportTile[] = [
     priority: 10,
   },
   {
-    to: withReportsReturnContext("/customer-po-tracking"),
+    to: "/customer-tracking-flow?from=reports",
     title: "Customer PO Tracking",
-    description: "Customer purchase orders — fulfillment, dispatch, and billing alignment",
+    description: "Same master as Customer Tracking — PO lifecycle through dispatch and billing",
     roles: ["ADMIN"],
     group: "customer-service",
     icon: <Contact className="h-4 w-4" />,
@@ -415,20 +406,11 @@ const TILES: ReportTile[] = [
   {
     to: "/reports/dispatch-summary",
     title: "Dispatch Summary",
-    description: "Ready-to-ship and locked dispatch history",
+    description: "Dispatch analytics — pending ready-to-ship + locked register (read-only)",
     roles: ["ADMIN", "PURCHASE"],
     group: "commercial",
     icon: <Truck className="h-4 w-4" />,
     priority: 50,
-  },
-  {
-    to: "/reports/so-dispatch-trace",
-    title: "SO → Dispatch Trace",
-    description: "Follow an order through dispatch references",
-    roles: ["ADMIN", "PURCHASE"],
-    group: "commercial",
-    icon: <GitBranch className="h-4 w-4" />,
-    priority: 60,
   },
   {
     to: withReportsReturnContext("/customer-po-tracking"),

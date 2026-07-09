@@ -2721,8 +2721,9 @@
     @apply space-y-1 pb-1;
   }
 
-  .erp-workbench-main.space-y-0\.5 {
-    @apply space-y-0.5;
+  /* Plain CSS — avoid @apply space-y-0.5 (circular with the utility class name). */
+  .erp-workbench-main.space-y-0\.5 > :not([hidden]) ~ :not([hidden]) {
+    margin-top: 0.125rem;
   }
 
   .erp-workbench-action-bar {

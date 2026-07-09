@@ -74,7 +74,6 @@ import {
   resolvePostCompactDispatchQueueRow,
   resolveCompactDispatchSelection,
   isDispatchCompactExecutionMode,
-  DISPATCH_DRAFT_DELETE_CONFIRM_MESSAGE,
   buildDispatchSoCompleteMessage,
   buildCompactDispatchHistoryRows,
   sumCompactDispatchHistoryFinalizedQty,
@@ -85,6 +84,11 @@ import {
   canCompactDispatchFull,
   isCompactDraftSavedIdleState,
   DISPATCH_FINALIZE_API_SUFFIX,
+  listUnlockedDraftIdsForItem,
+  listUnlockedDraftsForItem,
+  buildNoQtyFifoDraftOperatorMessage,
+  buildRegularPartialDispatchOperatorMessage,
+  buildMultiDraftDeleteConfirmMessage,
   type DispatchCompactQueueRow,
 } from "../lib/dispatchWorkspaceUx";
 import {
@@ -2416,8 +2420,19 @@ export function DispatchPage() {
 
   const compactDispatchHistoryRows = React.useMemo(() => {
     if (!dispatchCompactMode || !focusSoIdValid) return [];
-    return buildCompactDispatchHistoryRows(ledgerRows.filter((r) => r.soId === focusSoId));
-  }, [dispatchCompactMode, focusSoIdValid, focusSoId, ledgerRows]);
+    const cycleNoById = new Map(noQtyCycles.map((c) => [Number(c.cycleId), Number(c.cycleNo)]));
+    return buildCompactDispatchHistoryRows(
+      ledgerRows
+        .filter((r) => r.soId === focusSoId)
+        .map((r) => ({
+          ...r,
+          cycleNo:
+            r.cycleId != null && cycleNoById.has(Number(r.cycleId))
+              ? cycleNoById.get(Number(r.cycleId)) ?? null
+              : null,
+        })),
+    );
+  }, [dispatchCompactMode, focusSoIdValid, focusSoId, ledgerRows, noQtyCycles]);
 
   const compactDispatchHistoryTotal = React.useMemo(
     () => sumCompactDispatchHistoryFinalizedQty(compactDispatchHistoryRows),
@@ -2785,11 +2800,11 @@ export function DispatchPage() {
 
   async function finalizeDispatchOnce(
     dispatchId: number,
-    opts: { clearDraftMode: boolean },
-  ) {
+    opts: { clearDraftMode: boolean; quietSuccess?: boolean },
+  ): Promise<boolean> {
     const id = Number(dispatchId);
-    if (!(Number.isFinite(id) && id > 0)) return;
-    if (finalizeInFlightRef.current.has(id)) return;
+    if (!(Number.isFinite(id) && id > 0)) return false;
+    if (finalizeInFlightRef.current.has(id)) return false;
     finalizeInFlightRef.current.add(id);
     const idempotencyKey =
       typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
@@ -2804,9 +2819,11 @@ export function DispatchPage() {
         headers: { "Idempotency-Key": idempotencyKey },
         body: JSON.stringify({}),
       });
-      toast.showSuccess("Dispatch finalized — stock posted.");
+      if (!opts.quietSuccess) {
+        toast.showSuccess("Dispatch finalized — stock posted.");
+        setDispatchInfo("Dispatch finalized — stock posted.");
+      }
       setError(null);
-      setDispatchInfo("Dispatch finalized — stock posted.");
       setSalesBillStepDispatchId(id);
       if (selectedSo?.orderType === "NO_QTY") setNoQtyLastFinalizedDispatchId(id);
       window.requestAnimationFrame(() => {
@@ -2825,20 +2842,61 @@ export function DispatchPage() {
         if (!prefersFinePointer()) return;
         fgLineSelectRef.current?.focus({ preventScroll: true });
       });
+      return true;
     } catch (e) {
       const msg = e instanceof ApiRequestError ? e.message : e instanceof Error ? e.message : "Finalize failed";
       setError(msg);
       toast.showError(msg);
+      return false;
     } finally {
       setLockingId(null);
       finalizeInFlightRef.current.delete(id);
     }
   }
 
+  /**
+   * Finalize one operator-facing dispatch: for NO_QTY FIFO, lock every open cycle draft
+   * for the item in cycle order (backend still validates each row).
+   */
+  async function finalizeOperatorDispatchDrafts(
+    draftIds: number[],
+    opts: { clearDraftMode: boolean },
+  ): Promise<boolean> {
+    const ids = [...new Set(draftIds.map((n) => Number(n)).filter((n) => Number.isFinite(n) && n > 0))];
+    if (!ids.length) return false;
+    let lastId = ids[0]!;
+    let posted = 0;
+    const multi = ids.length > 1;
+    for (let i = 0; i < ids.length; i++) {
+      const id = ids[i]!;
+      lastId = id;
+      const isLast = i === ids.length - 1;
+      const ok = await finalizeDispatchOnce(id, {
+        clearDraftMode: opts.clearDraftMode && isLast,
+        quietSuccess: multi,
+      });
+      if (!ok) return false;
+      posted += 1;
+    }
+    if (multi) {
+      setDispatchInfo(
+        `Dispatch finalized — ${posted} FIFO cycle rows posted (one operator operation).`,
+      );
+      toast.showSuccess(`Dispatch finalized — ${posted} FIFO cycle rows posted.`);
+    }
+    setSalesBillStepDispatchId(lastId);
+    return true;
+  }
+
   async function onFinalizeDraftDispatch(dispatchId: number) {
     const dispatchedItemId = currentLine?.itemId;
     const currentSoId = soId;
-    await finalizeDispatchOnce(dispatchId, { clearDraftMode: !dispatchCompactMode });
+    const batchIds =
+      selectedSo?.orderType === "NO_QTY" && openDraftIdsForActiveItem.length > 1
+        ? openDraftIdsForActiveItem
+        : [dispatchId];
+    const ok = await finalizeOperatorDispatchDrafts(batchIds, { clearDraftMode: !dispatchCompactMode });
+    if (!ok) return;
     if (dispatchCompactMode && dispatchedItemId && currentSoId) {
       bumpErpRefresh(["dispatch", "dashboard", "pending-actions", "stock"]);
       const list = await loadSalesOrders();
@@ -2859,13 +2917,23 @@ export function DispatchPage() {
   }
 
   async function onDeleteDraft(dispatchId: number) {
-    if (!window.confirm(DISPATCH_DRAFT_DELETE_CONFIRM_MESSAGE)) return;
+    const batchIds =
+      selectedSo?.orderType === "NO_QTY" && openDraftIdsForActiveItem.length > 1
+        ? openDraftIdsForActiveItem
+        : [dispatchId];
+    if (!window.confirm(buildMultiDraftDeleteConfirmMessage(batchIds.length))) return;
     setError(null);
     setDeletingId(dispatchId);
     try {
-      await apiFetch(`/api/dispatch/dispatches/${dispatchId}`, { method: "DELETE" });
+      for (const id of batchIds) {
+        await apiFetch(`/api/dispatch/dispatches/${id}`, { method: "DELETE" });
+      }
       setDispatchInfo(null);
-      if (reopenedPreparedDraftMode && reopenedPreparedDraft?.id === dispatchId) {
+      if (
+        reopenedPreparedDraftMode &&
+        reopenedPreparedDraft?.id != null &&
+        batchIds.includes(reopenedPreparedDraft.id)
+      ) {
         setReopenedPreparedDraft(null);
         setReopenFallbackSoRow(null);
         const params = new URLSearchParams(sp);
@@ -2879,7 +2947,9 @@ export function DispatchPage() {
         setIsPartialMode(false);
         resetDispatchQty();
       }
-      toast.showSuccess("Dispatch draft removed.");
+      toast.showSuccess(
+        batchIds.length > 1 ? `Removed ${batchIds.length} FIFO cycle drafts.` : "Dispatch draft removed.",
+      );
     } catch (e) {
       setError(e instanceof Error ? e.message : "Delete failed");
     } finally {
@@ -2972,7 +3042,29 @@ export function DispatchPage() {
       });
       if (dispatchCompactMode) {
         setError(null);
-        setDispatchInfo("Dispatch draft saved.");
+        const alloc = prepRes?.allocation;
+        if (selectedSo?.orderType === "NO_QTY" && Array.isArray(alloc) && alloc.length > 0) {
+          setDispatchInfo(
+            buildNoQtyFifoDraftOperatorMessage({
+              slices: alloc.map((a) => ({ cycleNo: a.cycleNo, qty: Number(a.qty) })),
+              formatQty: fmtDispatchQty,
+            }),
+          );
+        } else if (
+          selectedSo &&
+          isRegularNormalSalesOrder(selectedSo) &&
+          currentLine &&
+          effectiveRegularDispatchReadiness(selectedSo, currentLine) === "PARTIAL_AVAILABLE"
+        ) {
+          const partialMsg = buildRegularPartialDispatchOperatorMessage({
+            dispatchableQty: dispatchQtyParsed,
+            pendingQty: confirmedBacklogQty(currentLine),
+            formatQty: fmtDispatchQty,
+          });
+          setDispatchInfo(partialMsg ? `${partialMsg}\n\nDispatch draft saved.` : "Dispatch draft saved.");
+        } else {
+          setDispatchInfo("Dispatch draft saved.");
+        }
         setSalesBillStepDispatchId(null);
         bumpErpRefresh(["dispatch", "dashboard", "pending-actions", "stock"]);
         await loadSalesOrders();
@@ -2981,11 +3073,28 @@ export function DispatchPage() {
       }
       const alloc = prepRes?.allocation;
       if (selectedSo?.orderType === "NO_QTY" && Array.isArray(alloc) && alloc.length > 0) {
-        const totalAlloc = alloc.reduce((s, a) => s + safeNum(a.qty), 0);
-        const lines = alloc.map((a) => `Cycle ${a.cycleNo} → ${fmtDispatchQty(Number(a.qty))}`);
-        const footer =
-          alloc.length > 1 ? "Finalize each draft row to post stock." : "Finalize Dispatch to post stock.";
-        setDispatchInfo([...lines, `Total → ${fmtDispatchQty(totalAlloc)}`, footer].join("\n"));
+        setDispatchInfo(
+          buildNoQtyFifoDraftOperatorMessage({
+            slices: alloc.map((a) => ({ cycleNo: a.cycleNo, qty: Number(a.qty) })),
+            formatQty: fmtDispatchQty,
+          }),
+        );
+      } else if (
+        selectedSo &&
+        isRegularNormalSalesOrder(selectedSo) &&
+        currentLine &&
+        effectiveRegularDispatchReadiness(selectedSo, currentLine) === "PARTIAL_AVAILABLE"
+      ) {
+        const partialMsg = buildRegularPartialDispatchOperatorMessage({
+          dispatchableQty: dispatchQtyParsed,
+          pendingQty: confirmedBacklogQty(currentLine),
+          formatQty: fmtDispatchQty,
+        });
+        setDispatchInfo(
+          partialMsg
+            ? `${partialMsg}\n\nDraft saved. Use Finalize Dispatch to post stock.`
+            : "Dispatch draft saved. Use Finalize Dispatch to post stock.",
+        );
       } else {
         setDispatchInfo("Dispatch draft saved. Use Finalize Dispatch to post stock.");
       }
@@ -3396,18 +3505,7 @@ export function DispatchPage() {
     if (guidedLedgerContext?.preparedDraft?.id) return guidedLedgerContext.preparedDraft.id;
     if (!selectedSo?.dispatch?.length || !currentLine) return null;
     if (selectedSo.orderType === "NO_QTY") {
-      const drafts = selectedSo.dispatch.filter(
-        (x) =>
-          x.itemId === currentLine.itemId &&
-          !x.reversalOfId &&
-          x.workflowStatus === "UNLOCKED",
-      );
-      if (!drafts.length) return null;
-      drafts.sort((a, b) => {
-        const ca = normalizePositiveCycleId(a.cycleId) ?? 999999999;
-        const cb = normalizePositiveCycleId(b.cycleId) ?? 999999999;
-        return ca - cb || Number(a.id) - Number(b.id);
-      });
+      const drafts = listUnlockedDraftsForItem(selectedSo.dispatch, currentLine.itemId);
       return drafts[0]?.id ?? null;
     }
     const d = soLedgerDispatches.find(
@@ -3415,6 +3513,18 @@ export function DispatchPage() {
     );
     return d?.id ?? null;
   }, [reopenedPreparedDraft, guidedLedgerContext, selectedSo, currentLine, soLedgerDispatches]);
+
+  /** NO_QTY: all FIFO cycle drafts for the active item — one operator finalize. */
+  const openDraftIdsForActiveItem = React.useMemo(() => {
+    if (!selectedSo?.dispatch?.length || !currentLine) {
+      return primaryFinalizeDraftId != null ? [primaryFinalizeDraftId] : [];
+    }
+    if (selectedSo.orderType === "NO_QTY") {
+      const ids = listUnlockedDraftIdsForItem(selectedSo.dispatch, currentLine.itemId);
+      if (ids.length) return ids;
+    }
+    return primaryFinalizeDraftId != null ? [primaryFinalizeDraftId] : [];
+  }, [selectedSo, currentLine, primaryFinalizeDraftId]);
 
   const primaryDraftFinalizeGate = React.useMemo(
     () => draftFinalizeGateForId(primaryFinalizeDraftId),
@@ -3811,7 +3921,11 @@ export function DispatchPage() {
     stripShowFinalize && !primaryDraftFinalizeGate.canFinalize && primaryDraftFinalizeGate.reason
       ? `Finalize blocked: ${primaryDraftFinalizeGate.reason}\n\n${DISPATCH_OP.GUIDANCE_DRAFT_ONLY}`
       : stripShowFinalize && existingDraftQty > dqEps
-      ? `Draft qty: ${fmtDispatchQty(existingDraftQty)}\n${
+      ? `Draft qty: ${fmtDispatchQty(existingDraftQty)}${
+          openDraftIdsForActiveItem.length > 1
+            ? ` · ${openDraftIdsForActiveItem.length} FIFO cycle rows (one finalize posts all)`
+            : ""
+        }\n${
           isRegularNormalSalesOrder(selectedSo) ? "Additional qty you could add now" : "Ready now"
         }: ${fmtDispatchQty(currentDispatchableQty)}${
           primaryDraftFinalizeGate.label
@@ -4292,7 +4406,9 @@ export function DispatchPage() {
                   <td className={cn("erp-table-action-col", mes ? "py-0" : "py-0.5")}>
                     <div className="erp-table-actions">
                       {isUnlockedForward && !so.dispatchReadOnly ? (
-                        primaryFinalizeDraftId != null && d.id === primaryFinalizeDraftId ? null : (
+                        primaryFinalizeDraftId != null &&
+                        (d.id === primaryFinalizeDraftId ||
+                          openDraftIdsForActiveItem.includes(d.id)) ? null : (
                           <>
                             <Button
                               type="button"

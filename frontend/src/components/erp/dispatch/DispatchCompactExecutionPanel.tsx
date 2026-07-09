@@ -243,6 +243,12 @@ export function DispatchCompactExecutionPanel({
                       data-testid="dispatch-compact-draft-banner"
                     >
                       <div className="text-[12px] font-semibold text-amber-950">Dispatch draft saved</div>
+                      {activeDraftQty > 1e-9 && activeRemainingQty > 1e-9 ? (
+                        <p className="text-[11px] leading-snug text-amber-900/95">
+                          Remaining dispatchable after this draft: {formatDispatchCompactQty(activeRemainingQty)}.
+                          Finalize this wave, then continue when more QC/stock is available.
+                        </p>
+                      ) : null}
                       {!canFinalizeDraft && finalizeDraftBlockedReason ? (
                         <p className="text-[11px] leading-snug text-amber-900/95">
                           Finalize blocked: {finalizeDraftBlockedReason}

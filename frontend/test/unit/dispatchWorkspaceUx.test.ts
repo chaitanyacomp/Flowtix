@@ -28,6 +28,16 @@ import {
 
   sumUnlockedDraftQtyForItem,
 
+  listUnlockedDraftIdsForItem,
+
+  listUnlockedDraftsForItem,
+
+  buildNoQtyFifoDraftOperatorMessage,
+
+  buildRegularPartialDispatchOperatorMessage,
+
+  buildMultiDraftDeleteConfirmMessage,
+
   buildCompactDispatchHistoryRows,
 
   buildDispatchSoCompleteMessage,
@@ -575,9 +585,9 @@ describe("dispatchWorkspaceUx", () => {
 
     expect(rows.map((r) => r.id)).toEqual([1, 2]);
 
-    expect(rows[0]).toMatchObject({ statusLabel: "Finalized", qty: 1993 });
+    expect(rows[0]).toMatchObject({ statusLabel: "Finalized", qty: 1993, splitReason: "Shipment wave" });
 
-    expect(rows[1]).toMatchObject({ statusLabel: "Finalized", qty: 2445 });
+    expect(rows[1]).toMatchObject({ statusLabel: "Finalized", qty: 2445, splitReason: "Shipment wave" });
 
   });
 
@@ -685,6 +695,50 @@ describe("dispatchWorkspaceUx", () => {
 
     );
 
+  });
+
+  it("lists unlocked drafts for item in FIFO cycle order", () => {
+    const ids = listUnlockedDraftIdsForItem(
+      [
+        { id: 3, itemId: 10, dispatchedQty: 25, workflowStatus: "UNLOCKED", cycleId: 30 },
+        { id: 1, itemId: 10, dispatchedQty: 135, workflowStatus: "UNLOCKED", cycleId: 10 },
+        { id: 2, itemId: 10, dispatchedQty: 615, workflowStatus: "LOCKED", cycleId: 20 },
+        { id: 4, itemId: 99, dispatchedQty: 5, workflowStatus: "UNLOCKED", cycleId: 1 },
+      ],
+      10,
+    );
+    expect(ids).toEqual([1, 3]);
+    expect(listUnlockedDraftsForItem([{ id: 1, itemId: 10, dispatchedQty: 1, workflowStatus: "UNLOCKED" }], 10)).toHaveLength(1);
+  });
+
+  it("explains NO_QTY FIFO multi-cycle draft as one operator finalize", () => {
+    const msg = buildNoQtyFifoDraftOperatorMessage({
+      slices: [
+        { cycleNo: 1, qty: 135 },
+        { cycleNo: 2, qty: 615 },
+      ],
+      formatQty: (n) => String(n),
+    });
+    expect(msg).toContain("One dispatch operation");
+    expect(msg).toContain("Cycle 1 → 135");
+    expect(msg).toContain("Finalize Dispatch once");
+  });
+
+  it("explains REGULAR partial wave vs SO remaining", () => {
+    const msg = buildRegularPartialDispatchOperatorMessage({
+      dispatchableQty: 135,
+      pendingQty: 1000,
+      formatQty: (n) => String(n),
+    });
+    expect(msg).toContain("Partial wave");
+    expect(msg).toContain("135");
+    expect(msg).toContain("1000");
+    expect(buildRegularPartialDispatchOperatorMessage({ dispatchableQty: 1000, pendingQty: 1000, formatQty: String })).toBeNull();
+  });
+
+  it("confirms multi-draft delete when FIFO created several rows", () => {
+    expect(buildMultiDraftDeleteConfirmMessage(1)).toBe(DISPATCH_DRAFT_DELETE_CONFIRM_MESSAGE);
+    expect(buildMultiDraftDeleteConfirmMessage(3)).toContain("3 FIFO cycle draft");
   });
 
 });

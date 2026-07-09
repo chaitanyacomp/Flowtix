@@ -36,6 +36,7 @@ export function DispatchCompactHistoryPanel({
               <th className="px-2 py-1.5 font-medium">Item</th>
               <th className="px-2 py-1.5 text-right font-medium">Qty</th>
               <th className="px-2 py-1.5 font-medium">Status</th>
+              <th className="px-2 py-1.5 font-medium">Why split</th>
               <th className="px-2 py-1.5 font-medium">User</th>
             </tr>
           </thead>
@@ -69,12 +70,18 @@ export function DispatchCompactHistoryPanel({
                       {row.statusLabel}
                     </span>
                   </td>
+                  <td
+                    className="max-w-[9rem] truncate px-2 py-1.5 text-[11px] text-slate-600"
+                    title={row.splitReason ?? undefined}
+                  >
+                    {row.splitReason ?? "—"}
+                  </td>
                   <td className="whitespace-nowrap px-2 py-1.5 text-slate-600">{row.userLabel}</td>
                 </tr>
               ))
             ) : (
               <tr>
-                <td colSpan={6} className="px-2 py-3 text-center text-[12px] text-slate-500">
+                <td colSpan={7} className="px-2 py-3 text-center text-[12px] text-slate-500">
                   No dispatch records for this sales order yet.
                 </td>
               </tr>

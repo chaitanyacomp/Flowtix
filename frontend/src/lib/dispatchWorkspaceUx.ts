@@ -112,6 +112,95 @@ export function findOldestUnlockedDraft(drafts: DispatchDraftSnapshot[] | null |
 
 }
 
+export type DispatchDraftWithCycle = DispatchDraftSnapshot & {
+  cycleId?: number | null;
+  cycleNo?: number | null;
+};
+
+/**
+ * Unlocked drafts for one FG item, FIFO by cycle then id.
+ * NO_QTY prepare may create one row per cycle; operator treats them as one dispatch.
+ */
+export function listUnlockedDraftsForItem(
+  drafts: DispatchDraftWithCycle[] | null | undefined,
+  itemId: number,
+): DispatchDraftWithCycle[] {
+  return (drafts ?? [])
+    .filter(
+      (d) =>
+        Number(d.itemId) === Number(itemId) &&
+        d.reversalOfId == null &&
+        String(d.workflowStatus ?? "").toUpperCase() === "UNLOCKED",
+    )
+    .slice()
+    .sort((a, b) => {
+      const ca = Number(a.cycleId ?? 0) || 999999999;
+      const cb = Number(b.cycleId ?? 0) || 999999999;
+      return ca - cb || Number(a.id) - Number(b.id);
+    });
+}
+
+export function listUnlockedDraftIdsForItem(
+  drafts: DispatchDraftWithCycle[] | null | undefined,
+  itemId: number,
+): number[] {
+  return listUnlockedDraftsForItem(drafts, itemId)
+    .map((d) => Number(d.id))
+    .filter((id) => Number.isFinite(id) && id > 0);
+}
+
+/** Operator-facing explanation when one prepare created multiple cycle draft rows. */
+export function buildNoQtyFifoDraftOperatorMessage(input: {
+  slices: Array<{ cycleNo: number | null | undefined; qty: number }>;
+  formatQty: (n: number) => string;
+}): string {
+  const slices = (input.slices ?? []).filter((s) => Number(s.qty) > 1e-9);
+  if (!slices.length) return "Dispatch draft saved. Use Finalize Dispatch to post stock.";
+  const total = slices.reduce((s, a) => s + Math.max(0, Number(a.qty) || 0), 0);
+  if (slices.length === 1) {
+    const c = slices[0]?.cycleNo;
+    const cycleBit =
+      c != null && Number.isFinite(Number(c)) ? ` (Cycle ${Number(c)} — FIFO source)` : "";
+    return `Dispatch draft saved${cycleBit}: ${input.formatQty(total)}. Finalize once to post stock.`;
+  }
+  const lines = slices.map((a) => {
+    const c = a.cycleNo;
+    const label = c != null && Number.isFinite(Number(c)) ? `Cycle ${Number(c)}` : "Cycle";
+    return `${label} → ${input.formatQty(Number(a.qty))}`;
+  });
+  return [
+    "One dispatch operation — internal FIFO split across cycles (audit rows):",
+    ...lines,
+    `Total → ${input.formatQty(total)}`,
+    "Next: Finalize Dispatch once — all cycle drafts post in FIFO order.",
+  ].join("\n");
+}
+
+/** REGULAR partial wave: why qty is less than SO remaining. */
+export function buildRegularPartialDispatchOperatorMessage(input: {
+  dispatchableQty: number;
+  pendingQty: number;
+  formatQty: (n: number) => string;
+}): string | null {
+  const dispatchable = Math.max(0, Number(input.dispatchableQty) || 0);
+  const pending = Math.max(0, Number(input.pendingQty) || 0);
+  if (!(dispatchable > 1e-9) || !(pending > 1e-9)) return null;
+  if (dispatchable + 1e-9 >= pending) return null;
+  const remainingAfter = Math.max(0, pending - dispatchable);
+  return [
+    `Partial wave: only ${input.formatQty(dispatchable)} is dispatchable now of ${input.formatQty(pending)} still on the SO.`,
+    "Reason: QC-accepted / usable FG headroom is below remaining SO qty (not a separate production-batch split).",
+    `After this wave, about ${input.formatQty(remainingAfter)} remains on the SO until more QC/stock is available.`,
+    "Next: Save draft for the available qty, Finalize, then continue when more FG is dispatchable.",
+  ].join("\n");
+}
+
+export function buildMultiDraftDeleteConfirmMessage(draftCount: number): string {
+  const n = Math.max(1, Math.floor(Number(draftCount) || 1));
+  if (n <= 1) return DISPATCH_DRAFT_DELETE_CONFIRM_MESSAGE;
+  return `Delete all ${n} FIFO cycle draft rows for this item?\n\nThis restores the full reserved dispatch quantity.`;
+}
+
 
 
 /** Queue row stays visible when dispatchable headroom or an open draft exists. */
@@ -503,6 +592,11 @@ export type CompactDispatchHistoryInput = {
 
   workflowStatus: "UNLOCKED" | "LOCKED";
 
+  /** NO_QTY FIFO source cycle (display). */
+  cycleNo?: number | null;
+
+  cycleId?: number | null;
+
 };
 
 
@@ -522,6 +616,9 @@ export type CompactDispatchHistoryRow = {
   statusLabel: "Draft" | "Finalized";
 
   userLabel: string;
+
+  /** Why this row exists when split (FIFO cycle / partial wave). */
+  splitReason: string | null;
 
 };
 
@@ -569,23 +666,25 @@ export function buildCompactDispatchHistoryRows(
 
     })
 
-    .map((r) => ({
-
-      id: r.id,
-
-      docNo: r.docNo?.trim() || null,
-
-      dateLabel: formatCompactDispatchHistoryDate(r.date),
-
-      itemName: r.itemName?.trim() || "—",
-
-      qty: Math.max(0, Number(r.dispatchedQty) || 0),
-
-      statusLabel: r.workflowStatus === "LOCKED" ? "Finalized" : "Draft",
-
-      userLabel: "—",
-
-    }));
+    .map((r) => {
+      const cycleNo = r.cycleNo != null && Number.isFinite(Number(r.cycleNo)) ? Number(r.cycleNo) : null;
+      const splitReason =
+        cycleNo != null
+          ? `FIFO source: Cycle ${cycleNo}`
+          : r.workflowStatus === "UNLOCKED"
+            ? "Open draft"
+            : "Shipment wave";
+      return {
+        id: r.id,
+        docNo: r.docNo?.trim() || null,
+        dateLabel: formatCompactDispatchHistoryDate(r.date),
+        itemName: r.itemName?.trim() || "—",
+        qty: Math.max(0, Number(r.dispatchedQty) || 0),
+        statusLabel: (r.workflowStatus === "LOCKED" ? "Finalized" : "Draft") as "Draft" | "Finalized",
+        userLabel: "—",
+        splitReason,
+      };
+    });
 
 }
 

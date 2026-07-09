@@ -2383,7 +2383,7 @@ export function RequirementSheetPage() {
               {rsWorkbenchActionCluster}
             </div>
           </CardHeader>
-          <CardContent id="rs-items" className={cn("min-w-0 p-0", isNoQty ? "sm:p-0" : "sm:p-6 sm:pt-0")}>
+          <CardContent id="rs-items" className={cn("min-w-0 p-0", isNoQty ? "p-0 md:p-0" : "sm:p-6 sm:pt-0")}>
             {safeLines.length > 0 ? (
               <div className={cn(isNoQty ? "px-0 pb-0" : "px-3 pb-3 sm:px-0 sm:pb-0")}>
                 {isNoQty ? (

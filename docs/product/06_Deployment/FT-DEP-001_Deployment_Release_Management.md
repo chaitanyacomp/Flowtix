@@ -4,7 +4,7 @@
 |-------|-------|
 | **Document ID** | FT-DEP-001 |
 | **Title** | Deployment & Release Management Standard |
-| **Version** | 1.2.0 |
+| **Version** | 1.3.0 |
 | **Status** | Draft — Architecture Review |
 | **Effective date** | 2026-07-09 |
 | **Author** | FT ERP Product Team |
@@ -44,6 +44,7 @@
 | 1.0.0 | 2026-07-09 | FT ERP Product Team | Initial Deployment & Release Management Standard for LAN client-server deployments |
 | 1.1.0 | 2026-07-09 | FT ERP Product Team | Batch 2 — runtime configuration, startup validation, logging, GET /health |
 | 1.2.0 | 2026-07-09 | FT ERP Product Team | Batch 3 — esbuild backend bundling (`app/server.js`) |
+| 1.3.0 | 2026-07-09 | FT ERP Product Team | Batch 4 — safe mysqldump backup automation (`tools/backup-db.*`) |
 
 **Supersedes:** Informal client install notes; ad-hoc “copy the repo to the server” practices.
 
@@ -245,7 +246,7 @@ C:\FT-ERP\
 │   ├── app\                      # Application logs (by date)
 │   ├── service\                  # Windows Service stdout/stderr (future)
 │   └── deploy\                   # Install/update/rollback records
-└── tools\                        # Optional admin helpers (backup scripts — future)
+└── tools\                        # Admin helpers (Batch 4: backup-db.*; update/rollback later)
 ```
 
 ### 6.1 Folder rules
@@ -389,11 +390,21 @@ Implements [FT-PD-093](../09_Deployment_and_Operations_Architecture/Chapter_04_B
 
 ### 10.2 Backup naming
 
+Batch 4 operational dumps (primary):
+
+```text
+backups\db\flowtix-db-backup-vX.Y.Z-YYYYMMDD-HHMMSS.sql
+```
+
+Legacy / guidance aliases (still valid for manual naming):
+
 ```text
 backups\db\pre-update_<targetVersion>_<YYYYMMDD_HHMM>.sql
 backups\db\daily_<YYYYMMDD>.sql
 backups\db\pre-rollback_<fromVersion>_<YYYYMMDD_HHMM>.sql
 ```
+
+Manifest (Batch 4): `backups\db\BACKUP_MANIFEST.json` — append-only entries; **no passwords**.
 
 ### 10.3 Verification
 
@@ -808,7 +819,7 @@ Explicitly **not** done in this documentation revision:
 | Release Operations | Pending review |
 | Documentation Steward | Pending review |
 
-**Status:** Draft — Architecture Review (v1.2.0). Batches 1–3 (packaging, runtime validation, esbuild backend) are documented; later batches (Windows Service, installer, backup/update automation) remain deferred.
+**Status:** Draft — Architecture Review (v1.3.0). Batches 1–4 (packaging, runtime, esbuild, backup dump) are documented; restore/update/rollback, Windows Service, and installer remain deferred.
 
 ---
 
@@ -1013,4 +1024,82 @@ release/Flowtix-vX.Y.Z/
 
 ### 28.8 Still deferred
 
-Windows Service, installer, backup/update automation, Docker, pkg, nexe.
+Windows Service, installer, **restore / update / rollback** automation, Docker, pkg, nexe. *(Backup dump → Batch 4 / §29)*
+
+---
+
+## 29. Database Backup Automation (Batch 4)
+
+### 29.1 Purpose
+
+Provide a **safe, operator-run mysqldump** so every production update can satisfy the mandatory pre-update backup rule ([§10](#10-database-backup-standard), [DEP-03](../09_Deployment_and_Operations_Architecture/Chapter_01_Deployment_and_Release_Architecture.md)) without changing ERP data or schema.
+
+### 29.2 Location & filename
+
+| Item | Standard |
+|------|----------|
+| Directory | `<FT_ERP_HOME>\backups\db\` (dev: `<repo>\backups\db\`) |
+| Filename | `flowtix-db-backup-v{version}-{YYYYMMDD}-{HHMMSS}.sql` |
+| Manifest | `backups\db\BACKUP_MANIFEST.json` |
+
+### 29.3 Configuration
+
+| Source | Order |
+|--------|-------|
+| `shared/.env` `DATABASE_URL` | **Primary** |
+| Process env / `.env` fallbacks | Secondary (dev) |
+| `MYSQLDUMP_PATH` | Optional absolute path to mysqldump |
+
+Passwords **SHALL NOT** be printed to console, logs, or the manifest.
+
+### 29.4 Manifest entry fields
+
+| Field | Notes |
+|-------|-------|
+| `filename` | Backup SQL name |
+| `timestamp` | ISO-8601 start time |
+| `appVersion` | From `VERSION.txt` / package |
+| `gitCommit` | If available |
+| `databaseName` | Parsed from URL (no credentials) |
+| `host` | Host only |
+| `fileSizeBytes` | Post-dump size |
+| `status` | `success` \| `failed` |
+| `error` | Present only on failure (redacted) |
+
+### 29.5 Safety rules (Batch 4)
+
+| Rule | Statement |
+|------|-----------|
+| No auto-delete | Old backups **SHALL NOT** be deleted by the script |
+| No restore | Restore is **out of scope** (later batch) |
+| No migrate | Script **SHALL NOT** run Prisma or DDL |
+| No data mutation | Dump is read-only logical export |
+| Fail safe | Missing mysqldump / bad URL / empty file → non-zero exit + clear message |
+| Pre-update | Operators **SHALL** run backup successfully before applying an update |
+
+### 29.6 Tooling
+
+| Artifact | Path |
+|----------|------|
+| Script | `deployment/backup-db.js` |
+| Wrapper | `deployment/backup-db.bat` |
+| Shipped in release | `release/Flowtix-vX.Y.Z/tools/backup-db.*` |
+
+Usage:
+
+```text
+tools\backup-db.bat
+```
+
+### 29.7 Restore deferred
+
+Restore, update orchestration, and rollback automation remain **later batches**. Batch 4 only creates and catalogs dumps.
+
+### 29.8 Validation checklist
+
+- [ ] `mysqldump` found (or `MYSQLDUMP_PATH` set)
+- [ ] Backup `.sql` created under `backups/db/` with size &gt; 0
+- [ ] `BACKUP_MANIFEST.json` appended
+- [ ] Console output contains no password
+- [ ] Failure path readable when mysqldump missing or DB unavailable
+- [ ] Release package includes `tools/backup-db.bat` and `tools/backup-db.js`

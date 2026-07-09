@@ -89,13 +89,20 @@ if exist "%ROOT%\deployment\production.env.example" (
   echo This release package ships templates only. Do not place production secrets in git.
 )
 
-REM --- 6. tools\ placeholder (Batch 1 — no backup/update scripts yet) ---
+REM --- 6. tools\ (Batch 4 backup scripts; update/rollback still deferred) ---
+echo [create-release] Copying tools\ backup scripts...
+copy /Y "%DEPLOY%\backup-db.bat" "%RELEASE_DIR%\tools\backup-db.bat" >nul
+copy /Y "%DEPLOY%\backup-db.js" "%RELEASE_DIR%\tools\backup-db.js" >nul
 > "%RELEASE_DIR%\tools\README.txt" (
-  echo Reserved for future FT-DEP batches:
-  echo   - backup helpers
+  echo Flowtix ERP — release tools ^(FT-DEP-001^)
+  echo.
+  echo Batch 4:
+  echo   backup-db.bat / backup-db.js  — safe mysqldump to backups\db\
+  echo.
+  echo Deferred:
+  echo   - restore
   echo   - update / rollback helpers
   echo   - Windows Service wrappers
-  echo Batch 3 ships esbuild-bundled app\server.js; tools\ remains empty of ops scripts.
 )
 
 REM --- 7. Git commit + build date ---
@@ -215,6 +222,20 @@ if exist "%RELEASE_DIR%\prisma\seed.js" (
   set "FAIL=1"
 ) else (
   echo   OK: no prisma\seed.js
+)
+
+if not exist "%RELEASE_DIR%\tools\backup-db.bat" (
+  echo   FAIL: tools\backup-db.bat missing
+  set "FAIL=1"
+) else (
+  echo   OK: tools\backup-db.bat
+)
+
+if not exist "%RELEASE_DIR%\tools\backup-db.js" (
+  echo   FAIL: tools\backup-db.js missing
+  set "FAIL=1"
+) else (
+  echo   OK: tools\backup-db.js
 )
 
 if "%FAIL%"=="1" (

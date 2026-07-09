@@ -8,5 +8,8 @@ ERP_DATA/
 /shared/
 /logs/
 
+# FT-DEP-001 Batch 4 — local DB dumps (never commit)
+/backups/
+
 # FT-DEP-001 Batch 3 — local esbuild resolve layout (synced from deployment/vendor at build time)
 /deployment/node_modules/

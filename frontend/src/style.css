@@ -2747,7 +2747,7 @@
   }
 
   .erp-workbench-grid-detail-row td {
-    @apply bg-slate-50/80 py-1.5;
+    @apply bg-slate-50/80 py-2;
   }
 
   .erp-workbench-info-panel summary {

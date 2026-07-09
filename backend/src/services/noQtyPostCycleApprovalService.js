@@ -242,14 +242,129 @@ const NO_QTY_PENDING_DISPOSITION_STATUSES = [
   "REWORK_READY_FOR_QC",
 ];
 
+const DISPOSITION_STOCK_EPS = 1e-6;
+
 /**
- * NO_QTY: sum of {@link QcRejectedDisposition.remainingQty} on the **latest previous** sales order cycle
- * (cycleNo = current − 1) for each FG item — qty still in the QC disposition pipeline (not yet USABLE / CLOSED).
+ * Stock-authoritative pending qty for open dispositions (same rules as QC disposition queues).
+ * Raw {@link QcRejectedDisposition.remainingQty} alone is stale after rework recheck / hold release.
+ *
+ * @param {import('@prisma/client').PrismaClient | import('@prisma/client').Prisma.TransactionClient} prisma
+ * @param {Array<{ id: number; itemId: number; status: string; remainingQty: unknown }>} rows
+ * @returns {Promise<Map<number, number>>} itemId → authoritative pending qty
+ */
+async function sumAuthoritativeDispositionPendingByItem(prisma, rows) {
+  /** @type {Map<number, number>} */
+  const byItem = new Map();
+  if (!rows?.length) return byItem;
+
+  const readyIds = [];
+  const holdIds = [];
+  const supervisorIds = [];
+  const executionIds = [];
+  for (const r of rows) {
+    const id = Number(r.id);
+    if (!Number.isFinite(id) || id <= 0) continue;
+    const st = String(r.status ?? "");
+    if (st === "REWORK_READY_FOR_QC") readyIds.push(id);
+    else if (st === "HOLD") holdIds.push(id);
+    else if (st === "REWORK_PENDING_SUPERVISOR") supervisorIds.push(id);
+    else if (st === "REWORK_APPROVED_PENDING_EXECUTION") executionIds.push(id);
+  }
+
+  /** @type {Map<number, number>} */
+  const stockNetByDispId = new Map();
+  const addGroupedNet = (grouped) => {
+    for (const g of grouped || []) {
+      const dispId = g.qcRejectedDispositionId;
+      if (dispId == null) continue;
+      const net = Number(g._sum.qtyIn || 0) - Number(g._sum.qtyOut || 0);
+      stockNetByDispId.set(dispId, (stockNetByDispId.get(dispId) || 0) + net);
+    }
+  };
+
+  const groupJobs = [];
+  if (readyIds.length) {
+    groupJobs.push(
+      prisma.stockTransaction.groupBy({
+        by: ["qcRejectedDispositionId"],
+        where: { qcRejectedDispositionId: { in: readyIds }, stockBucket: "REWORK", reversedAt: null },
+        _sum: { qtyIn: true, qtyOut: true },
+      }),
+      prisma.stockTransaction.groupBy({
+        by: ["qcRejectedDispositionId"],
+        where: { qcRejectedDispositionId: { in: readyIds }, stockBucket: "QC_PENDING", reversedAt: null },
+        _sum: { qtyIn: true, qtyOut: true },
+      }),
+    );
+  }
+  if (holdIds.length) {
+    groupJobs.push(
+      prisma.stockTransaction.groupBy({
+        by: ["qcRejectedDispositionId"],
+        where: { qcRejectedDispositionId: { in: holdIds }, stockBucket: "QC_HOLD", reversedAt: null },
+        _sum: { qtyIn: true, qtyOut: true },
+      }),
+    );
+  }
+  if (supervisorIds.length) {
+    groupJobs.push(
+      prisma.stockTransaction.groupBy({
+        by: ["qcRejectedDispositionId"],
+        where: { qcRejectedDispositionId: { in: supervisorIds }, stockBucket: "QC_HOLD", reversedAt: null },
+        _sum: { qtyIn: true, qtyOut: true },
+      }),
+    );
+  }
+  if (executionIds.length) {
+    groupJobs.push(
+      prisma.stockTransaction.groupBy({
+        by: ["qcRejectedDispositionId"],
+        where: { qcRejectedDispositionId: { in: executionIds }, stockBucket: "REWORK", reversedAt: null },
+        _sum: { qtyIn: true, qtyOut: true },
+      }),
+      prisma.stockTransaction.groupBy({
+        by: ["qcRejectedDispositionId"],
+        where: { qcRejectedDispositionId: { in: executionIds }, stockBucket: "QC_PENDING", reversedAt: null },
+        _sum: { qtyIn: true, qtyOut: true },
+      }),
+    );
+  }
+  if (groupJobs.length) {
+    const groupedResults = await Promise.all(groupJobs);
+    for (const g of groupedResults) addGroupedNet(g);
+  }
+
+  for (const r of rows) {
+    const itemId = Number(r.itemId);
+    const dispId = Number(r.id);
+    if (!Number.isFinite(itemId) || itemId <= 0 || !Number.isFinite(dispId) || dispId <= 0) continue;
+    const st = String(r.status ?? "");
+    let q = 0;
+    if (
+      st === "REWORK_READY_FOR_QC" ||
+      st === "HOLD" ||
+      st === "REWORK_PENDING_SUPERVISOR" ||
+      st === "REWORK_APPROVED_PENDING_EXECUTION"
+    ) {
+      q = Math.max(0, Number(stockNetByDispId.get(dispId) ?? 0));
+    } else {
+      q = Math.max(0, num(r.remainingQty));
+    }
+    if (!(q > DISPOSITION_STOCK_EPS)) continue;
+    byItem.set(itemId, (byItem.get(itemId) || 0) + q);
+  }
+  return byItem;
+}
+
+/**
+ * NO_QTY: stock-authoritative hold/rework disposition qty on the **latest previous** sales order cycle
+ * (cycleNo = current − 1) for each FG item. Does **not** include first-pass production QC pending
+ * (use {@link loadNoQtyProductionQcPendingQtyByItem} for produced − accepted − rejected).
  *
  * @param {import('@prisma/client').PrismaClient | import('@prisma/client').Prisma.TransactionClient} prisma
  * @param {number} salesOrderId
  * @param {number|null|undefined} currentCycleId
- * @returns {Promise<Map<number, number>>} itemId → pending qty
+ * @returns {Promise<Map<number, number>>} itemId → pending disposition qty
  */
 async function loadNoQtyPendingQcDispositionQtyByItem(prisma, salesOrderId, currentCycleId) {
   const soId = Number(salesOrderId);
@@ -278,17 +393,70 @@ async function loadNoQtyPendingQcDispositionQtyByItem(prisma, salesOrderId, curr
       status: { in: NO_QTY_PENDING_DISPOSITION_STATUSES },
       workOrder: { salesOrderId: soId, cycleId: prevId },
     },
-    select: { itemId: true, remainingQty: true },
+    select: { id: true, itemId: true, status: true, remainingQty: true },
+  });
+
+  return sumAuthoritativeDispositionPendingByItem(prisma, rows);
+}
+
+/**
+ * NO_QTY: first-pass production QC still pending on APPROVED batches for the latest previous cycle
+ * (and current cycle when present) — max(0, produced − accepted − rejected) per FG item.
+ *
+ * @param {import('@prisma/client').PrismaClient | import('@prisma/client').Prisma.TransactionClient} prisma
+ * @param {number} salesOrderId
+ * @param {number|null|undefined} currentCycleId
+ * @returns {Promise<Map<number, number>>} itemId → production QC pending qty
+ */
+async function loadNoQtyProductionQcPendingQtyByItem(prisma, salesOrderId, currentCycleId) {
+  const { getProductionBatchQcPendingQty, sumActiveQcAcceptedQty, sumActiveQcRejectedQty } = require("./reportMetrics");
+  const { QC_ENTRY_ACTIVE_WHERE } = require("./qcEntryConstants");
+
+  const soId = Number(salesOrderId);
+  const curCid = normalizePositiveCycleId(currentCycleId);
+  if (!Number.isFinite(soId) || soId <= 0 || curCid == null) return new Map();
+
+  const cur = await prisma.salesOrderCycle.findFirst({
+    where: { id: curCid, salesOrderId: soId },
+    select: { id: true, cycleNo: true },
+  });
+  if (!cur) return new Map();
+  const curNo = Number(cur.cycleNo);
+  if (!Number.isFinite(curNo)) return new Map();
+
+  /** @type {number[]} */
+  const cycleIds = [Number(cur.id)];
+  if (curNo > 1) {
+    const prev = await prisma.salesOrderCycle.findFirst({
+      where: { salesOrderId: soId, cycleNo: curNo - 1 },
+      select: { id: true },
+    });
+    if (prev?.id) cycleIds.push(Number(prev.id));
+  }
+
+  const productions = await prisma.productionEntry.findMany({
+    where: {
+      workflowStatus: "APPROVED",
+      workOrderLine: { workOrder: { salesOrderId: soId, cycleId: { in: cycleIds } } },
+    },
+    select: {
+      producedQty: true,
+      workOrderLine: { select: { fgItemId: true } },
+      qcEntries: { where: QC_ENTRY_ACTIVE_WHERE, select: { acceptedQty: true, rejectedQty: true } },
+    },
   });
 
   /** @type {Map<number, number>} */
   const byItem = new Map();
-  for (const r of rows) {
-    const itemId = Number(r.itemId);
+  for (const pe of productions || []) {
+    const itemId = Number(pe.workOrderLine?.fgItemId);
     if (!Number.isFinite(itemId) || itemId <= 0) continue;
-    const q = num(r.remainingQty);
-    if (!(q > 0)) continue;
-    byItem.set(itemId, (byItem.get(itemId) || 0) + q);
+    const produced = num(pe.producedQty);
+    const acc = sumActiveQcAcceptedQty(pe.qcEntries || []);
+    const rej = sumActiveQcRejectedQty(pe.qcEntries || []);
+    const pend = getProductionBatchQcPendingQty(produced, acc, rej);
+    if (!(pend > DISPOSITION_STOCK_EPS)) continue;
+    byItem.set(itemId, (byItem.get(itemId) || 0) + pend);
   }
   return byItem;
 }
@@ -298,4 +466,7 @@ module.exports = {
   loadNoQtyPostCycleApprovalQtyByItem,
   loadNoQtyPostCycleApprovalMapForInputs,
   loadNoQtyPendingQcDispositionQtyByItem,
+  loadNoQtyProductionQcPendingQtyByItem,
+  sumAuthoritativeDispositionPendingByItem,
+  NO_QTY_PENDING_DISPOSITION_STATUSES,
 };

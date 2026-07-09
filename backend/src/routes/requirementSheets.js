@@ -33,6 +33,7 @@ const { QC_ENTRY_ACTIVE_WHERE } = require("../services/qcEntryConstants");
 const {
   loadNoQtyPostCycleApprovalQtyByItem,
   loadNoQtyPendingQcDispositionQtyByItem,
+  loadNoQtyProductionQcPendingQtyByItem,
 } = require("../services/noQtyPostCycleApprovalService");
 const {
   loadNoQtyCycleQcAcceptedMap,
@@ -883,6 +884,10 @@ async function mapSheetDetail(sheet) {
     sheet?.salesOrder?.orderType === "NO_QTY" && effCycleIdForPost != null && Number(effCycleIdForPost) > 0
       ? await loadNoQtyPendingQcDispositionQtyByItem(prisma, sheet.salesOrderId, Number(effCycleIdForPost))
       : new Map();
+  const productionQcPendingByItem =
+    sheet?.salesOrder?.orderType === "NO_QTY" && effCycleIdForPost != null && Number(effCycleIdForPost) > 0
+      ? await loadNoQtyProductionQcPendingQtyByItem(prisma, sheet.salesOrderId, Number(effCycleIdForPost))
+      : new Map();
   const undispatchedPriorByItem =
     sheet?.salesOrder?.orderType === "NO_QTY" && effCycleIdForPost != null && Number(effCycleIdForPost) > 0
       ? await loadNoQtyPriorCycleUndispatchedAcceptedByItem(prisma, sheet.salesOrderId, Number(effCycleIdForPost))
@@ -914,6 +919,8 @@ async function mapSheetDetail(sheet) {
       sheet?.salesOrder?.orderType === "NO_QTY" ? round3(n(postCycleByItem.get(ln.itemId) ?? 0)) : 0;
     const pendingDispositionQty =
       sheet?.salesOrder?.orderType === "NO_QTY" ? round3(n(pendingDispositionByItem.get(ln.itemId) ?? 0)) : 0;
+    const productionQcPendingQty =
+      sheet?.salesOrder?.orderType === "NO_QTY" ? round3(n(productionQcPendingByItem.get(ln.itemId) ?? 0)) : 0;
     const undispatchedPriorQty =
       sheet?.salesOrder?.orderType === "NO_QTY" ? round3(n(undispatchedPriorByItem.get(ln.itemId) ?? 0)) : 0;
 
@@ -1057,6 +1064,7 @@ async function mapSheetDetail(sheet) {
         ? {
             postCycleApprovalQty: postCycleQty > EPS ? postCycleQty : 0,
             pendingQcDispositionQty: pendingDispositionQty > EPS ? pendingDispositionQty : 0,
+            productionQcPendingQty: productionQcPendingQty > EPS ? productionQcPendingQty : 0,
             previousCycleUndispatchedAcceptedQty: undispatchedPriorQty > EPS ? undispatchedPriorQty : 0,
             totalUsableQty: round3(n(noQtyBreakdownByItem?.get(ln.itemId)?.totalUsableQty ?? usableStockDisplayQty(rawTotal))),
             /** Pending confirmed dispatch vs locked RS commitment (FIFO; includes closed cycles until fulfilled). */

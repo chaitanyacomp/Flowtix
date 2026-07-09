@@ -199,6 +199,8 @@ type SheetLine = {
   postCycleApprovalQty?: number | null;
   /** NO_QTY: FG qty from previous cycle still in hold/rework/recheck disposition (not yet USABLE). */
   pendingQcDispositionQty?: number | null;
+  /** NO_QTY: first-pass production QC still pending (produced − accepted − rejected). */
+  productionQcPendingQty?: number | null;
   /** NO_QTY: QC-accepted (+ recheck/post) from prior cycle still not operationally dispatched — informational for dispatch context. */
   previousCycleUndispatchedAcceptedQty?: number | null;
   gapPercent?: number | null;
@@ -989,6 +991,7 @@ export function RequirementSheetPage() {
     const lines = sheet?.lines ?? [];
     let shortfallSum = 0;
     let pendingDispositionSum = 0;
+    let productionQcPendingSum = 0;
     let newWoSum = 0;
     let totalWoSum = 0;
     let stockSum = 0;
@@ -999,6 +1002,7 @@ export function RequirementSheetPage() {
       const stock = usableDisplayStock(l.availableStockQty);
       shortfallSum += shortfall;
       pendingDispositionSum += isNoQty ? safeNum(l.pendingQcDispositionQty) : 0;
+      productionQcPendingSum += isNoQty ? safeNum(l.productionQcPendingQty) : 0;
       if (isNoQty) postCycleApprovalSum += safeNum(l.postCycleApprovalQty);
       newWoSum += newWo;
       const totalToProduce = locked
@@ -1010,6 +1014,7 @@ export function RequirementSheetPage() {
     return {
       shortfallSum,
       pendingDispositionSum,
+      productionQcPendingSum,
       newWoSum,
       totalWoSum,
       stockSum,

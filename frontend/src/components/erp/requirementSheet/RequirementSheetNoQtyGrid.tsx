@@ -36,6 +36,8 @@ export type RequirementSheetNoQtyGridLine = {
   availableStockQty?: number | null;
   postCycleApprovalQty?: number | null;
   pendingQcDispositionQty?: number | null;
+  /** First-pass production QC still pending: produced − accepted − rejected. */
+  productionQcPendingQty?: number | null;
   previousCycleUndispatchedAcceptedQty?: number | null;
 };
 
@@ -49,6 +51,29 @@ export type RequirementSheetNoQtyGridProps = {
   onLineChange: (itemId: number, value: string) => void;
   onLineBlur: () => void;
 };
+
+function DetailMetric({
+  label,
+  value,
+  emphasize = false,
+}: {
+  label: string;
+  value: string;
+  emphasize?: boolean;
+}) {
+  return (
+    <div
+      className={
+        emphasize
+          ? "rounded border border-amber-200/80 bg-amber-50/70 px-2.5 py-1.5 sm:col-span-2"
+          : "rounded border border-slate-200/80 bg-white px-2.5 py-1.5"
+      }
+    >
+      <div className="text-[12px] font-semibold text-slate-700">{label}</div>
+      <div className="mt-0.5 text-[14px] font-bold tabular-nums text-slate-950">{value}</div>
+    </div>
+  );
+}
 
 export function RequirementSheetNoQtyGrid({
   lines,
@@ -68,20 +93,20 @@ export function RequirementSheetNoQtyGrid({
         <thead>
           <tr>
             <th scope="col">Item</th>
-            <th scope="col" className="text-right">
-              New req.
+            <th scope="col" className="text-right" title="Current cycle requirement qty entered on this sheet">
+              Current requirement
             </th>
-            <th scope="col" className="text-right">
-              Total to Produce
+            <th scope="col" className="text-right" title="Prior-cycle production shortfall carried into this cycle">
+              Prior shortfall
             </th>
-            <th scope="col" className="text-right">
-              Prev cycles
+            <th scope="col" className="text-right" title="Qty that must be produced this cycle (shortfall + current requirement)">
+              Total to produce
             </th>
-            <th scope="col" className="text-right">
-              All cycles
+            <th scope="col" className="text-right" title="First-pass production QC still awaiting inspection">
+              Pending QC
             </th>
-            <th scope="col" className="text-right">
-              Usable (info)
+            <th scope="col" className="text-right" title="Usable FG available for optional dispatch (informational)">
+              Usable FG
             </th>
             <th scope="col">Status</th>
             <th scope="col" className="erp-table-action-col">
@@ -93,6 +118,7 @@ export function RequirementSheetNoQtyGrid({
           {lines.map((l) => {
             const shortfall = safeNum(l.shortfallQty);
             const pendingDisp = safeNum(l.pendingQcDispositionQty);
+            const productionQcPending = safeNum(l.productionQcPendingQty);
             const rawNewWo = String(l.newWoQty ?? l.requirementQty ?? "");
             const newWo =
               !locked && (rawNewWo === "" || rawNewWo === "0" || Number(rawNewWo) === 0) ? "" : rawNewWo;
@@ -114,7 +140,7 @@ export function RequirementSheetNoQtyGrid({
                 ? { kind: "neutral" as const, label: "Awaiting requirement" }
                 : productionRequired > PLAN_EPS
                   ? { kind: "required" as const, label: "WO required" }
-                  : pendingDisp > PLAN_EPS
+                  : pendingDisp > PLAN_EPS || productionQcPending > PLAN_EPS
                     ? { kind: "neutral" as const, label: "In process qty" }
                     : { kind: "neutral" as const, label: "No production qty" };
 
@@ -132,13 +158,14 @@ export function RequirementSheetNoQtyGrid({
                   : status.label;
 
             const detailOpen = expandedItemId === l.itemId;
+            const pendingQcDisplay = productionQcPending > PLAN_EPS ? productionQcPending : 0;
 
             return (
               <React.Fragment key={l.itemId}>
                 <tr className="erp-workbench-grid-row align-middle">
                   <td>
                     <div className="font-medium text-slate-900">{l.itemName}</div>
-                    {l.qcStockNote ? <div className="text-[11px] text-slate-600">{l.qcStockNote}</div> : null}
+                    {l.qcStockNote ? <div className="text-[12px] text-slate-600">{l.qcStockNote}</div> : null}
                   </td>
                   <td className="text-right">
                     <Input
@@ -148,12 +175,16 @@ export function RequirementSheetNoQtyGrid({
                       onChange={(e) => onLineChange(l.itemId, e.target.value)}
                       onBlur={onLineBlur}
                       placeholder="Qty"
-                      aria-label={`New requirement qty for ${l.itemName}`}
+                      aria-label={`Current requirement qty for ${l.itemName}`}
                     />
                   </td>
+                  <td className="erp-table-num font-semibold text-slate-900">
+                    {shortfall > PLAN_EPS ? fmtPlan(shortfall) : "—"}
+                  </td>
                   <td className="erp-table-num font-semibold text-slate-950">{fmtPlan(productionRequired)}</td>
-                  <td className="erp-table-num">{fmtPlan(prevCyclesQty)}</td>
-                  <td className="erp-table-num">{fmtPlan(allCyclesQty)}</td>
+                  <td className="erp-table-num font-semibold text-slate-900">
+                    {pendingQcDisplay > PLAN_EPS ? fmtPlan(pendingQcDisplay) : "—"}
+                  </td>
                   <td className="erp-table-num text-slate-700">{fmtPlan(usable)}</td>
                   <td>
                     <Badge variant={badgeVariant}>{badgeLabel}</Badge>
@@ -161,44 +192,48 @@ export function RequirementSheetNoQtyGrid({
                   <td className="erp-table-action-col">
                     <button
                       type="button"
-                      className="text-[11px] font-semibold text-slate-600 underline underline-offset-2 hover:text-slate-900"
+                      className="text-[12px] font-semibold text-slate-700 underline underline-offset-2 hover:text-slate-950"
                       aria-expanded={detailOpen}
                       onClick={() => setExpandedItemId(detailOpen ? null : l.itemId)}
                     >
-                      {detailOpen ? "Hide" : "More"}
+                      {detailOpen ? "Hide detail" : "Show detail"}
                     </button>
                   </td>
                 </tr>
                 {detailOpen ? (
                   <tr className="erp-workbench-grid-detail-row">
                     <td colSpan={8}>
-                      <div className="grid gap-1 text-[11px] text-slate-700 sm:grid-cols-2 lg:grid-cols-4">
-                        {shortfall > PLAN_EPS ? (
-                          <div className="flex justify-between gap-2 sm:col-span-2">
-                            <span>Production shortfall (prior cycle)</span>
-                            <span className="font-semibold tabular-nums">{fmtPlan(shortfall)}</span>
-                          </div>
-                        ) : null}
-                        <div className="flex justify-between gap-2">
-                          <span>Pending QC / In Process</span>
-                          <span className="font-semibold tabular-nums">
-                            {pendingDisp > PLAN_EPS ? fmtPlan(pendingDisp) : "—"}
-                          </span>
-                        </div>
-                        <div className="flex justify-between gap-2">
-                          <span>Post-cycle Approval</span>
-                          <span className="font-semibold tabular-nums">{postCycle > PLAN_EPS ? fmtPlan(postCycle) : "—"}</span>
-                        </div>
-                        <div className="flex justify-between gap-2">
-                          <span>Prior Undispatched QC</span>
-                          <span className="font-semibold tabular-nums">
-                            {undispatchedPrior > PLAN_EPS ? fmtPlan(undispatchedPrior) : "—"}
-                          </span>
-                        </div>
-                        <div className="flex justify-between gap-2 sm:col-span-2">
-                          <span>Current cycle requirement</span>
-                          <span className="font-semibold tabular-nums">{fmtPlan(newReqNum)}</span>
-                        </div>
+                      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                        <DetailMetric
+                          label="Current cycle demand"
+                          value={fmtPlan(newReqNum)}
+                          emphasize
+                        />
+                        <DetailMetric
+                          label="Prior shortfall (carry-forward)"
+                          value={shortfall > PLAN_EPS ? fmtPlan(shortfall) : "—"}
+                          emphasize={shortfall > PLAN_EPS}
+                        />
+                        <DetailMetric label="Total to produce" value={fmtPlan(productionRequired)} emphasize />
+                        <DetailMetric
+                          label="Pending QC (first-pass)"
+                          value={productionQcPending > PLAN_EPS ? fmtPlan(productionQcPending) : "—"}
+                        />
+                        <DetailMetric
+                          label="Hold / rework disposition"
+                          value={pendingDisp > PLAN_EPS ? fmtPlan(pendingDisp) : "—"}
+                        />
+                        <DetailMetric
+                          label="Prior undispatched QC-accepted FG"
+                          value={undispatchedPrior > PLAN_EPS ? fmtPlan(undispatchedPrior) : "—"}
+                        />
+                        <DetailMetric
+                          label="Post-cycle approval (usable)"
+                          value={postCycle > PLAN_EPS ? fmtPlan(postCycle) : "—"}
+                        />
+                        <DetailMetric label="Usable FG (dispatch info)" value={fmtPlan(usable)} />
+                        <DetailMetric label="Previous cycles requirement" value={fmtPlan(prevCyclesQty)} />
+                        <DetailMetric label="All cycles requirement" value={fmtPlan(allCyclesQty)} />
                       </div>
                     </td>
                   </tr>

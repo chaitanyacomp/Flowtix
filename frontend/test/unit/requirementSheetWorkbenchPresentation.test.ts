@@ -15,6 +15,7 @@ describe("requirementSheetWorkbenchPresentation", () => {
       summary: {
         shortfallSum: 1,
         pendingDispositionSum: 2,
+        productionQcPendingSum: 0,
         newWoSum: 3,
         totalWoSum: 4,
         stockSum: 5,
@@ -23,6 +24,16 @@ describe("requirementSheetWorkbenchPresentation", () => {
     });
     expect(items).toHaveLength(6);
     expect(new Set(items.map((i) => i.key)).size).toBe(6);
+    expect(items.map((i) => i.key)).toEqual([
+      "current-req",
+      "prior-shortfall",
+      "total-produce",
+      "pending-qc",
+      "hold-rework",
+      "usable-dispatch",
+    ]);
+    expect(items.find((i) => i.key === "pending-qc")?.label).toBe("Pending QC");
+    expect(items.find((i) => i.key === "hold-rework")?.label).toBe("Hold / rework");
   });
 
   it("prefers finalize as primary when draft NO_QTY sheet is editable", () => {

@@ -14,6 +14,8 @@ function fmtQty(n: number, unit?: string | null): string {
 export type RequirementSheetSummary = {
   shortfallSum: number;
   pendingDispositionSum: number;
+  /** First-pass production QC pending (produced − accepted − rejected). */
+  productionQcPendingSum?: number;
   newWoSum: number;
   totalWoSum: number;
   stockSum: number;
@@ -73,33 +75,37 @@ export function buildRequirementSheetKpiItems(input: {
     items.push(
       {
         key: "current-req",
-        label: "Current cycle req.",
+        label: "Current requirement",
         value: fmtQty(input.summary.newWoSum),
       },
       {
-        key: "prev-cycles",
-        label: "Previous cycles",
-        value: input.rsCycleSummaryLoading ? "…" : fmtQty(input.previousCyclesTotal),
-      },
-      {
-        key: "all-cycles",
-        label: "All cycles",
-        value: input.rsCycleSummaryLoading ? "…" : fmtQty(input.allCyclesTotal),
+        key: "prior-shortfall",
+        label: "Prior shortfall",
+        value: fmtQty(input.summary.shortfallSum),
+        tone: input.summary.shortfallSum > 1e-6 ? "warn" : "muted",
       },
       {
         key: "total-produce",
-        label: "Total to Produce",
+        label: "Total to produce",
         value: fmtQty(input.summary.totalWoSum),
       },
       {
         key: "pending-qc",
         label: "Pending QC",
+        value: fmtQty(input.summary.productionQcPendingSum ?? 0),
+        tone: (input.summary.productionQcPendingSum ?? 0) > 1e-6 ? "warn" : "muted",
+        title: "First-pass production QC still awaiting inspection (produced − accepted − rejected)",
+      },
+      {
+        key: "hold-rework",
+        label: "Hold / rework",
         value: fmtQty(input.summary.pendingDispositionSum),
         tone: input.summary.pendingDispositionSum > 1e-6 ? "warn" : "muted",
+        title: "Prior-cycle rejected qty still in hold/rework disposition pipeline",
       },
       {
         key: "usable-dispatch",
-        label: "Usable (dispatch)",
+        label: "Usable FG",
         value: fmtQty(input.summary.stockSum),
         title: "Usable FG stock for optional dispatch — informational only",
       },

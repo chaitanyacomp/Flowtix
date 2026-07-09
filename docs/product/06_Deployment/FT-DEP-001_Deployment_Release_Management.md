@@ -4,7 +4,7 @@
 |-------|-------|
 | **Document ID** | FT-DEP-001 |
 | **Title** | Deployment & Release Management Standard |
-| **Version** | 1.3.0 |
+| **Version** | 1.4.0 |
 | **Status** | Draft — Architecture Review |
 | **Effective date** | 2026-07-09 |
 | **Author** | FT ERP Product Team |
@@ -45,6 +45,7 @@
 | 1.1.0 | 2026-07-09 | FT ERP Product Team | Batch 2 — runtime configuration, startup validation, logging, GET /health |
 | 1.2.0 | 2026-07-09 | FT ERP Product Team | Batch 3 — esbuild backend bundling (`app/server.js`) |
 | 1.3.0 | 2026-07-09 | FT ERP Product Team | Batch 4 — safe mysqldump backup automation (`tools/backup-db.*`) |
+| 1.4.0 | 2026-07-09 | FT ERP Product Team | Batch 5 — Prisma `migrate deploy` with mandatory backup gate (`tools/migrate-db.*`) |
 
 **Supersedes:** Informal client install notes; ad-hoc “copy the repo to the server” practices.
 
@@ -246,7 +247,7 @@ C:\FT-ERP\
 │   ├── app\                      # Application logs (by date)
 │   ├── service\                  # Windows Service stdout/stderr (future)
 │   └── deploy\                   # Install/update/rollback records
-└── tools\                        # Admin helpers (Batch 4: backup-db.*; update/rollback later)
+└── tools\                        # Admin helpers (Batch 4–5: backup-db.*, migrate-db.*; update/rollback later)
 ```
 
 ### 6.1 Folder rules
@@ -444,24 +445,47 @@ Backup **SHALL** include operational data, masters, config-in-DB, and audit tabl
 | **MIG-05** | Failed migration **SHALL** stop the update; do not partially activate the new UI/API. |
 | **MIG-06** | Historical integrity (WES / ledger) **SHALL** be preserved ([DEP-05](../09_Deployment_and_Operations_Architecture/Chapter_01_Deployment_and_Release_Architecture.md)). |
 
-### 11.2 Update-time sequence
+### 11.2 Allowed and prohibited commands (Batch 5)
+
+| Allowed (production) | Prohibited |
+|----------------------|------------|
+| `npx prisma migrate deploy` | `prisma db push` |
+| | `prisma migrate dev` |
+| | `prisma migrate reset` / destructive reset |
+| | `prisma db seed` / seed scripts as part of update |
+| | Any ad-hoc DDL outside shipped migrations |
+
+Tooling: `tools/migrate-db.bat` / `migrate-db.js` ([§30](#30-prisma-migration-automation-batch-5)).
+
+### 11.3 Backup gate (Batch 5)
+
+Before `migrate deploy`, operators **SHALL** have a **recent successful** dump recorded in `backups\db\BACKUP_MANIFEST.json` with on-disk size &gt; 0. If the gate fails, migration **SHALL** abort with:
+
+```text
+Run backup-db.bat before migrate-db.bat
+```
+
+Default freshness window: **60 minutes** (`MIGRATE_BACKUP_MAX_AGE_MINUTES`).
+
+### 11.4 Update-time sequence
 
 1. Stop accepting new writes (optional freeze / stop service).
-2. Backup DB (§10).
+2. Backup DB (§10 / `backup-db.bat`).
 3. Extract new release folder.
 4. Point migration tool at `shared\.env` / production `DATABASE_URL`.
-5. Run **migrate deploy** (or equivalent production migrate command — tooling deferred).
-6. Confirm migration head.
+5. Run **`migrate-db.bat`** → `prisma migrate deploy` only.
+6. Confirm migration head / `MIGRATION_MANIFEST.json`.
 7. Start new release process.
 8. Smoke test (§22).
 
-### 11.3 Rollback and migrations
+### 11.5 Rollback and migrations
 
 - **App-only rollback** (no schema change between versions): switch `current` to prior release; DB unchanged.
 - **Schema-forward migration already applied:** rolling back application code alone may be **unsafe**. Prefer:
   - restore DB from pre-update backup **and** activate prior release, **or**
   - ship a certified forward fix.
 - Destructive down-migrations in production **SHALL NOT** be the default strategy.
+- **Automated restore remains deferred** (later batch).
 
 ---
 
@@ -819,7 +843,7 @@ Explicitly **not** done in this documentation revision:
 | Release Operations | Pending review |
 | Documentation Steward | Pending review |
 
-**Status:** Draft — Architecture Review (v1.3.0). Batches 1–4 (packaging, runtime, esbuild, backup dump) are documented; restore/update/rollback, Windows Service, and installer remain deferred.
+**Status:** Draft — Architecture Review (v1.4.0). Batches 1–5 (packaging, runtime, esbuild, backup dump, migrate deploy) are documented; restore/update/rollback, Windows Service, and installer remain deferred.
 
 ---
 
@@ -1024,7 +1048,7 @@ release/Flowtix-vX.Y.Z/
 
 ### 28.8 Still deferred
 
-Windows Service, installer, **restore / update / rollback** automation, Docker, pkg, nexe. *(Backup dump → Batch 4 / §29)*
+Windows Service, installer, **restore / update / rollback** automation, Docker, pkg, nexe. *(Backup dump → Batch 4 / §29; migrate deploy → Batch 5 / §30)*
 
 ---
 
@@ -1103,3 +1127,87 @@ Restore, update orchestration, and rollback automation remain **later batches**.
 - [ ] Console output contains no password
 - [ ] Failure path readable when mysqldump missing or DB unavailable
 - [ ] Release package includes `tools/backup-db.bat` and `tools/backup-db.js`
+
+---
+
+## 30. Prisma Migration Automation (Batch 5)
+
+### 30.1 Purpose
+
+Apply **shipped Prisma migrations only** via `prisma migrate deploy`, after a **mandatory verified backup** ([§10](#10-database-backup-standard), [§11](#11-prisma-migration-standard), [MIG-02/MIG-03](#111-principles)).
+
+### 30.2 SOP
+
+1. Ensure production `DATABASE_URL` is in `shared/.env` (fallback `.env` for lab only).
+2. Run `tools\backup-db.bat` and confirm success in `BACKUP_MANIFEST.json`.
+3. Run `tools\migrate-db.bat`.
+4. Confirm `MIGRATION_MANIFEST.json` status `success`.
+5. Do **not** start/stop the app server from this script (deferred to update batch).
+
+### 30.3 Backup gate
+
+| Check | Requirement |
+|-------|-------------|
+| Manifest exists | `backups\db\BACKUP_MANIFEST.json` |
+| Latest success | Last `status=success` entry |
+| File on disk | Path exists, size &gt; 0 |
+| Freshness | Age ≤ `MIGRATE_BACKUP_MAX_AGE_MINUTES` (default **60**) |
+
+On failure, abort with clear message including: **Run backup-db.bat before migrate-db.bat**.
+
+### 30.4 Allowed / prohibited Prisma commands
+
+| Allowed | Prohibited |
+|---------|------------|
+| `npx prisma migrate deploy` | `prisma db push` |
+| | `prisma migrate dev` |
+| | `prisma migrate reset` |
+| | Seed / reset / destructive scripts as part of migrate |
+
+### 30.5 Migration manifest
+
+Path: `backups\db\MIGRATION_MANIFEST.json` (append-only).
+
+| Field | Notes |
+|-------|-------|
+| `timestamp` | ISO-8601 start |
+| `appVersion` | Product version |
+| `gitCommit` | If available |
+| `backupFilename` | Gate backup used |
+| `migrationCommand` | Exact deploy invocation |
+| `status` | `success` \| `failed` |
+| `exitCode` | Process exit |
+| `durationMs` | Elapsed |
+| `error` | Redacted summary on failure |
+
+Passwords **SHALL NOT** appear in console, logs, or the manifest.
+
+### 30.6 Failure handling
+
+| Case | Behavior |
+|------|----------|
+| No / stale backup | Exit non-zero; **no** migrate |
+| `migrate deploy` fails | Log to `MIGRATION_MANIFEST.json`; keep backups; **no** auto-restore |
+| Manifest write fails | Non-zero exit; operator investigates |
+
+### 30.7 Tooling
+
+| Artifact | Path |
+|----------|------|
+| Script | `deployment/migrate-db.js` |
+| Wrapper | `deployment/migrate-db.bat` |
+| Shipped in release | `release/Flowtix-vX.Y.Z/tools/migrate-db.*` |
+
+### 30.8 Restore / update deferred
+
+Automated restore, full update orchestration, rollback, Windows Service, and installer remain **later batches**. Batch 5 does not change schema files or create new migrations — it only applies what already ships in the package.
+
+### 30.9 Validation checklist
+
+- [ ] Aborts without valid recent backup
+- [ ] Uses latest successful backup from `BACKUP_MANIFEST.json`
+- [ ] Command is `prisma migrate deploy` only
+- [ ] `MIGRATION_MANIFEST.json` appended
+- [ ] Console output contains no password
+- [ ] Release package includes `tools/migrate-db.bat` and `tools/migrate-db.js`
+- [ ] No schema / migration SQL files modified by this batch

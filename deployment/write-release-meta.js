@@ -88,7 +88,7 @@ Apply on the client server with Prisma migrate deploy against shared/.env DATABA
 
 - _None recorded for this build. Edit before customer delivery if applicable._
 
-## Package Contents (Batch 1+3+4)
+## Package Contents (Batch 1+3+4+5)
 
 - \`web/\` - Vite production frontend
 - \`app/server.js\` - esbuild-bundled Node/Express entry (Batch 3)
@@ -97,6 +97,7 @@ Apply on the client server with Prisma migrate deploy against shared/.env DATABA
 - \`prisma/\` - schema.prisma + migrations
 - \`shared/\` - env template only
 - \`tools/backup-db.*\` - safe mysqldump backup (Batch 4)
+- \`tools/migrate-db.*\` - prisma migrate deploy with backup gate (Batch 5)
 
 ## Not Included (later batches)
 

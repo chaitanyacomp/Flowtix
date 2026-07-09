@@ -89,15 +89,20 @@ if exist "%ROOT%\deployment\production.env.example" (
   echo This release package ships templates only. Do not place production secrets in git.
 )
 
-REM --- 6. tools\ (Batch 4 backup scripts; update/rollback still deferred) ---
-echo [create-release] Copying tools\ backup scripts...
+REM --- 6. tools\ (Batch 4 backup + Batch 5 migrate; update/rollback still deferred) ---
+echo [create-release] Copying tools\ backup and migrate scripts...
 copy /Y "%DEPLOY%\backup-db.bat" "%RELEASE_DIR%\tools\backup-db.bat" >nul
 copy /Y "%DEPLOY%\backup-db.js" "%RELEASE_DIR%\tools\backup-db.js" >nul
+copy /Y "%DEPLOY%\migrate-db.bat" "%RELEASE_DIR%\tools\migrate-db.bat" >nul
+copy /Y "%DEPLOY%\migrate-db.js" "%RELEASE_DIR%\tools\migrate-db.js" >nul
 > "%RELEASE_DIR%\tools\README.txt" (
   echo Flowtix ERP — release tools ^(FT-DEP-001^)
   echo.
   echo Batch 4:
   echo   backup-db.bat / backup-db.js  — safe mysqldump to backups\db\
+  echo.
+  echo Batch 5:
+  echo   migrate-db.bat / migrate-db.js — prisma migrate deploy ^(backup-gated^)
   echo.
   echo Deferred:
   echo   - restore
@@ -236,6 +241,20 @@ if not exist "%RELEASE_DIR%\tools\backup-db.js" (
   set "FAIL=1"
 ) else (
   echo   OK: tools\backup-db.js
+)
+
+if not exist "%RELEASE_DIR%\tools\migrate-db.bat" (
+  echo   FAIL: tools\migrate-db.bat missing
+  set "FAIL=1"
+) else (
+  echo   OK: tools\migrate-db.bat
+)
+
+if not exist "%RELEASE_DIR%\tools\migrate-db.js" (
+  echo   FAIL: tools\migrate-db.js missing
+  set "FAIL=1"
+) else (
+  echo   OK: tools\migrate-db.js
 )
 
 if "%FAIL%"=="1" (

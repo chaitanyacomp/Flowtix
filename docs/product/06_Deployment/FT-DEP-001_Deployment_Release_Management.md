@@ -4,7 +4,7 @@
 |-------|-------|
 | **Document ID** | FT-DEP-001 |
 | **Title** | Deployment & Release Management Standard |
-| **Version** | 1.4.0 |
+| **Version** | 1.5.0 |
 | **Status** | Draft — Architecture Review |
 | **Effective date** | 2026-07-09 |
 | **Author** | FT ERP Product Team |
@@ -46,6 +46,7 @@
 | 1.2.0 | 2026-07-09 | FT ERP Product Team | Batch 3 — esbuild backend bundling (`app/server.js`) |
 | 1.3.0 | 2026-07-09 | FT ERP Product Team | Batch 4 — safe mysqldump backup automation (`tools/backup-db.*`) |
 | 1.4.0 | 2026-07-09 | FT ERP Product Team | Batch 5 — Prisma `migrate deploy` with mandatory backup gate (`tools/migrate-db.*`) |
+| 1.5.0 | 2026-07-09 | FT ERP Product Team | Batch 6 — one-click update orchestrator (`tools/update-flowtix.*`) |
 
 **Supersedes:** Informal client install notes; ad-hoc “copy the repo to the server” practices.
 
@@ -247,7 +248,7 @@ C:\FT-ERP\
 │   ├── app\                      # Application logs (by date)
 │   ├── service\                  # Windows Service stdout/stderr (future)
 │   └── deploy\                   # Install/update/rollback records
-└── tools\                        # Admin helpers (Batch 4–5: backup-db.*, migrate-db.*; update/rollback later)
+└── tools\                        # Admin helpers (Batch 4–6: backup-db.*, migrate-db.*, update-flowtix.*; rollback later)
 ```
 
 ### 6.1 Folder rules
@@ -449,11 +450,12 @@ Backup **SHALL** include operational data, masters, config-in-DB, and audit tabl
 
 | Allowed (production) | Prohibited |
 |----------------------|------------|
-| `npx prisma migrate deploy` | `prisma db push` |
+| `prisma migrate deploy` (Prisma **5.22.x**; local CLI or pinned `npx prisma@5.22.0`) | `prisma db push` |
 | | `prisma migrate dev` |
 | | `prisma migrate reset` / destructive reset |
 | | `prisma db seed` / seed scripts as part of update |
 | | Any ad-hoc DDL outside shipped migrations |
+| | Unpinned Prisma 7+ CLI against shipped schema |
 
 Tooling: `tools/migrate-db.bat` / `migrate-db.js` ([§30](#30-prisma-migration-automation-batch-5)).
 
@@ -493,16 +495,19 @@ Default freshness window: **60 minutes** (`MIGRATE_BACKUP_MAX_AGE_MINUTES`).
 
 ### 12.1 Standard update (happy path)
 
+Operator path (Batch 6 tooling — [§31](#31-update-orchestration-batch-6)):
+
 1. Announce maintenance window (if users online).
-2. Verify package checksum + `release.json` compatibility.
-3. **Mandatory DB backup.**
-4. Stop Windows Service / Node process (when used).
-5. Extract to `releases\<newVersion>\` (do not delete old).
-6. Apply Prisma migrations.
-7. Ensure `shared\.env` still referenced (do not overwrite with empty template).
-8. Start process on new release path.
-9. Run acceptance checklist (§22).
-10. Record deploy log; keep prior release.
+2. Place new package under `releases\<newVersion>\` (do not delete old folders).
+3. Run `tools\update-flowtix.bat` from the **new** package (or pass `--source`).
+4. Confirm Current → Target version display.
+5. Orchestrator runs **mandatory backup** then **migrate deploy**.
+6. Orchestrator replaces **only** active `app/` and `web/` (archives prior copy under `releases\`).
+7. Verify `/health` or file-level equivalent; review `logs\update.log`.
+8. Start/restart process on the active path (service control deferred).
+9. Run acceptance checklist (§22); keep prior release folders.
+
+Manual equivalent (same order): backup → migrate → copy app/web only → smoke.
 
 ### 12.2 Update classes
 
@@ -843,7 +848,7 @@ Explicitly **not** done in this documentation revision:
 | Release Operations | Pending review |
 | Documentation Steward | Pending review |
 
-**Status:** Draft — Architecture Review (v1.4.0). Batches 1–5 (packaging, runtime, esbuild, backup dump, migrate deploy) are documented; restore/update/rollback, Windows Service, and installer remain deferred.
+**Status:** Draft — Architecture Review (v1.5.0). Batches 1–6 (packaging, runtime, esbuild, backup, migrate, update orchestrator) are documented; restore/rollback, Windows Service, and installer remain deferred.
 
 ---
 
@@ -1048,7 +1053,7 @@ release/Flowtix-vX.Y.Z/
 
 ### 28.8 Still deferred
 
-Windows Service, installer, **restore / update / rollback** automation, Docker, pkg, nexe. *(Backup dump → Batch 4 / §29; migrate deploy → Batch 5 / §30)*
+Windows Service, installer, **restore / rollback** automation, Docker, pkg, nexe. *(Backup → §29; migrate → §30; update orchestrator → §31)*
 
 ---
 
@@ -1159,10 +1164,11 @@ On failure, abort with clear message including: **Run backup-db.bat before migra
 
 | Allowed | Prohibited |
 |---------|------------|
-| `npx prisma migrate deploy` | `prisma db push` |
+| `prisma migrate deploy` (Prisma **5.22.x** CLI; local `node_modules` or pinned `npx prisma@5.22.0`) | `prisma db push` |
 | | `prisma migrate dev` |
 | | `prisma migrate reset` |
 | | Seed / reset / destructive scripts as part of migrate |
+| | Unpinned latest Prisma 7+ CLI (incompatible with shipped schema `url = env(...)`) |
 
 ### 30.5 Migration manifest
 
@@ -1198,9 +1204,9 @@ Passwords **SHALL NOT** appear in console, logs, or the manifest.
 | Wrapper | `deployment/migrate-db.bat` |
 | Shipped in release | `release/Flowtix-vX.Y.Z/tools/migrate-db.*` |
 
-### 30.8 Restore / update deferred
+### 30.8 Restore / rollback deferred
 
-Automated restore, full update orchestration, rollback, Windows Service, and installer remain **later batches**. Batch 5 does not change schema files or create new migrations — it only applies what already ships in the package.
+Automated restore and rollback remain **later batches**. Full update orchestration is Batch 6 ([§31](#31-update-orchestration-batch-6)). Batch 5 does not change schema files or create new migrations — it only applies what already ships in the package.
 
 ### 30.9 Validation checklist
 
@@ -1211,3 +1217,79 @@ Automated restore, full update orchestration, rollback, Windows Service, and ins
 - [ ] Console output contains no password
 - [ ] Release package includes `tools/migrate-db.bat` and `tools/migrate-db.js`
 - [ ] No schema / migration SQL files modified by this batch
+
+---
+
+## 31. Update Orchestration (Batch 6)
+
+### 31.1 Purpose
+
+Provide a **one-click update coordinator** that runs the certified sequence: validate → confirm → backup → migrate → replace `app/`+`web/` → verify — without Windows Service, installer, or automatic restore/rollback.
+
+### 31.2 Operator SOP
+
+1. Extract new package to `releases\Flowtix-vX.Y.Z\` (keep prior folders).
+2. Ensure `shared\.env` exists at install home (`FT_ERP_HOME`).
+3. From the **new** package: `tools\update-flowtix.bat`  
+   Or: `node update-flowtix.js --source <newPackage> --home <FT_ERP_HOME> --yes`
+4. Confirm Current / Target / Git Commit / Build Date.
+5. Review `logs\update.log` and post-update smoke (§22).
+6. Start or restart the Node process on the active path (service deferred).
+
+### 31.3 Exact sequence
+
+| Step | Action | Abort on failure |
+|------|--------|------------------|
+| 1 | Validate release (`VERSION.txt`, `app/`, `web/`) + `shared/.env` + existing active `app/`/`web/` | Yes |
+| 2 | Display versions; require confirmation | Cancel exits 0 |
+| 3 | `backup-db.bat` | Yes — no migrate/deploy |
+| 4 | `migrate-db.bat` | Yes — no app/web replace |
+| 5 | Archive prior `app/`+`web/` under `releases\`; replace active `app/`+`web/` only | Yes |
+| 6 | `GET /health` or file-layout equivalent | Yes |
+| 7 | Print summary; append `logs\update.log` | — |
+
+### 31.4 Safety checks
+
+| Rule | Statement |
+|------|-----------|
+| Never delete | `shared/`, `logs/`, `backups/` |
+| Never overwrite | `shared/.env`, uploads under `shared/` |
+| Never remove | Prior `releases\*` folders |
+| Never restore | Automatic DB restore is out of scope |
+| Never continue | After backup or migration failure |
+| Deploy scope | **Only** `app/` and `web/` (plus active `VERSION.txt`) |
+
+### 31.5 Failure handling
+
+| Stage | Exit | Behavior |
+|-------|------|----------|
+| Validate | 2 | No changes |
+| Backup | 3 | No migrate / deploy |
+| Migrate | 4 | No app/web replace |
+| Deploy | 5 | Stop; investigate archive |
+| Verify | 6 | Files may already be replaced; operator decides rollback (manual / later batch) |
+
+All stages append to `logs\update.log` (time, versions, backup, migration, result, errors). Passwords **SHALL NOT** be logged.
+
+### 31.6 Tooling
+
+| Artifact | Path |
+|----------|------|
+| Script | `deployment/update-flowtix.js` |
+| Wrapper | `deployment/update-flowtix.bat` |
+| Shipped | `release/Flowtix-vX.Y.Z/tools/update-flowtix.*` |
+
+### 31.7 Deferred
+
+Rollback automation, Windows Service, installer, Docker, cloud, licensing, monitoring.
+
+### 31.8 Validation checklist
+
+- [ ] Missing release / `shared/.env` / active app|web detected
+- [ ] Backup required before migrate/deploy
+- [ ] Migration required before app/web replace
+- [ ] Only `app/` and `web/` replaced
+- [ ] `shared/`, `logs/`, `backups/` preserved
+- [ ] `logs/update.log` written
+- [ ] Failure aborts at the correct stage
+- [ ] Release package includes `tools/update-flowtix.*`

@@ -13,3 +13,5 @@ ERP_DATA/
 
 # FT-DEP-001 Batch 3 — local esbuild resolve layout (synced from deployment/vendor at build time)
 /deployment/node_modules/
+
+/_lab_ft_home/

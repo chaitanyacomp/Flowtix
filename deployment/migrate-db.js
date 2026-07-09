@@ -19,7 +19,8 @@ const fs = require("fs");
 const path = require("path");
 const { spawn, spawnSync } = require("child_process");
 
-const MIGRATION_COMMAND = "npx prisma migrate deploy";
+const MIGRATION_COMMAND = "prisma migrate deploy";
+const PRISMA_CLI_PIN = "prisma@5.22.0";
 const DEFAULT_BACKUP_MAX_AGE_MIN = 60;
 
 function scriptDir() {
@@ -104,19 +105,30 @@ function resolveSchemaPath(home) {
 }
 
 /**
- * Working directory for npx/prisma (prefer a tree that already has the prisma package).
+ * Working directory for prisma CLI (prefer a tree that already has prisma@5.x).
  */
 function resolvePrismaCwd(home, schemaPath) {
+  if (process.env.PRISMA_CWD && String(process.env.PRISMA_CWD).trim()) {
+    return path.resolve(String(process.env.PRISMA_CWD).trim());
+  }
+
   const here = scriptDir();
   const candidates = [];
   if (path.basename(here) === "tools") {
+    // Dev: release/Flowtix-v*/tools → repo/backend
+    candidates.push(path.resolve(here, "..", "..", "..", "backend"));
     candidates.push(path.resolve(here, "..", "app"));
     candidates.push(path.resolve(here, ".."));
   }
   candidates.push(path.join(home, "backend"));
   candidates.push(home);
-  if (schemaPath) candidates.push(path.dirname(path.dirname(schemaPath))); // .../prisma -> package root guess
-  if (schemaPath) candidates.push(path.dirname(schemaPath));
+  if (schemaPath) {
+    // .../release/Flowtix-vX/prisma/schema → .../backend
+    candidates.push(path.resolve(path.dirname(schemaPath), "..", "..", "..", "backend"));
+    candidates.push(path.resolve(path.dirname(schemaPath), "..", "app"));
+    candidates.push(path.dirname(path.dirname(schemaPath)));
+    candidates.push(path.dirname(schemaPath));
+  }
 
   for (const c of candidates) {
     if (!c || !fs.existsSync(c)) continue;
@@ -128,15 +140,34 @@ function resolvePrismaCwd(home, schemaPath) {
       return c;
     }
   }
-  // Last resort: backend or release app (npx may download prisma)
+  // Last resort: backend with package.json (npx will use pinned prisma@5.22.0)
   if (fs.existsSync(path.join(home, "backend", "package.json"))) {
     return path.join(home, "backend");
   }
   if (path.basename(here) === "tools") {
+    const repoBackend = path.resolve(here, "..", "..", "..", "backend");
+    if (fs.existsSync(path.join(repoBackend, "package.json"))) return repoBackend;
     const releaseApp = path.resolve(here, "..", "app");
     if (fs.existsSync(path.join(releaseApp, "package.json"))) return releaseApp;
   }
   return home;
+}
+
+function findLocalPrismaBin(cwd) {
+  const bins =
+    process.platform === "win32"
+      ? [
+          path.join(cwd, "node_modules", ".bin", "prisma.cmd"),
+          path.join(cwd, "node_modules", "prisma", "build", "index.js"),
+        ]
+      : [
+          path.join(cwd, "node_modules", ".bin", "prisma"),
+          path.join(cwd, "node_modules", "prisma", "build", "index.js"),
+        ];
+  for (const b of bins) {
+    if (fs.existsSync(b)) return b;
+  }
+  return null;
 }
 
 function loadEnvFile(filePath) {
@@ -377,15 +408,33 @@ function requireFreshBackup(backupDir) {
 }
 
 function runMigrateDeploy(cwd, schemaPath) {
-  const args = ["prisma", "migrate", "deploy", `--schema=${schemaPath}`];
-  console.log(`[migrate-db] command: npx ${args.join(" ")}`);
+  const localBin = findLocalPrismaBin(cwd);
+  let cmd;
+  let args;
+  let useShell = false;
+
+  if (localBin && localBin.endsWith(".js")) {
+    cmd = process.execPath;
+    args = [localBin, "migrate", "deploy", `--schema=${schemaPath}`];
+  } else if (localBin) {
+    cmd = localBin;
+    args = ["migrate", "deploy", `--schema=${schemaPath}`];
+    useShell = process.platform === "win32";
+  } else {
+    // Pin Prisma 5.x — bare `npx prisma` may resolve Prisma 7 which rejects schema url=.
+    cmd = "npx";
+    args = ["--yes", PRISMA_CLI_PIN, "migrate", "deploy", `--schema=${schemaPath}`];
+    useShell = true;
+  }
+
+  console.log(`[migrate-db] command: ${cmd} ${args.join(" ")}`);
   console.log(`[migrate-db] cwd=${cwd}`);
 
   return new Promise((resolve) => {
-    const child = spawn("npx", args, {
+    const child = spawn(cmd, args, {
       cwd,
       env: process.env,
-      shell: true,
+      shell: useShell,
       windowsHide: true,
     });
 

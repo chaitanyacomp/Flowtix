@@ -71,9 +71,10 @@ describe("qcWorkspaceUx", () => {
     expect(buildQcBackLink({ fromNoQtySo: false, source: "", from: "production", role: "PRODUCTION" })?.label).toContain(
       "Production Workspace",
     );
-    expect(buildQcBackLink({ fromNoQtySo: false, source: "pending-actions", from: "", role: "QA" })?.label).toContain(
-      "Quality Inspection Dashboard",
-    );
+    expect(buildQcBackLink({ fromNoQtySo: false, source: "pending-actions", from: "", role: "QA" })).toEqual({
+      to: "/pending-actions",
+      label: "Back to Pending Actions",
+    });
   });
 
   it("builds embedded stage steps for production-embedded QA", () => {

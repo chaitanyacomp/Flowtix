@@ -1319,7 +1319,8 @@ productionRouter.get(
 productionRouter.get(
   "/sales-orders/:salesOrderId/fg-work-order-balance",
   requireAuth,
-  requireRole(["ADMIN", "PRODUCTION"]),
+  /** Read-only FG balance for post-QC dispatch handoff — QA may view, not mutate production. */
+  requireRole(["ADMIN", "PRODUCTION", "QA"]),
   async (req, res, next) => {
     try {
       const salesOrderId = Number(req.params.salesOrderId);

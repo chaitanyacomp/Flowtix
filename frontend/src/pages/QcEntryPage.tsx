@@ -875,8 +875,27 @@ export function QcEntryPage() {
       return;
     }
 
+    // Pending Actions / deep links: productionId is authoritative when present (PE-420).
+    if (productionIdFromUrl > 0) {
+      const byId = rows.find((r) => safeProductionRowId(r) === productionIdFromUrl);
+      if (byId) {
+        setProductionId(byId.id);
+        return;
+      }
+      const inActiveQc = withQcRows.find((r) => safeProductionRowId(r) === productionIdFromUrl);
+      if (inActiveQc) {
+        setProductionId(inActiveQc.id);
+        return;
+      }
+      // Keep URL focus; show empty/error state — do not redirect away from QC Entry.
+      setProductionId(0);
+      return;
+    }
+
     if (focusWorkOrderId) {
-      const match = rows.find((r) => safeWorkOrderIdForRow(r) === focusWorkOrderId && safeQcRollupsForRow(r).pending > 1e-6);
+      const match = rows.find(
+        (r) => safeWorkOrderIdForRow(r) === focusWorkOrderId && safeQcRollupsForRow(r).pending > 1e-6,
+      );
       if (match) {
         setProductionId(match.id);
         if (searchParams.get(DRILL_QUERY.productionId) !== String(match.id)) {
@@ -888,14 +907,6 @@ export function QcEntryPage() {
         qcDrillFallbackDone.current = true;
         navigate(workOrdersFocusHref(focusWorkOrderId), { replace: true });
       }
-      return;
-    }
-
-    if (
-      productionIdFromUrl > 0 &&
-      rows.some((r) => r.id === productionIdFromUrl && safeQcRollupsForRow(r).pending > 1e-6)
-    ) {
-      setProductionId(productionIdFromUrl);
       return;
     }
 
@@ -911,7 +922,16 @@ export function QcEntryPage() {
       );
       return sorted[0]?.row.id ?? 0;
     });
-  }, [listReady, rows, focusWorkOrderId, productionIdFromUrl, navigate, patch, searchParams]);
+  }, [
+    listReady,
+    rows,
+    withQcRows,
+    focusWorkOrderId,
+    productionIdFromUrl,
+    navigate,
+    patch,
+    searchParams,
+  ]);
 
   const drillProductionId = React.useMemo(() => {
     if (!focusWorkOrderId) return 0;
@@ -1654,35 +1674,45 @@ export function QcEntryPage() {
   }, [setSearchParams]);
 
   const qcBannerTitle =
-    focusWorkOrderId > 0
-      ? drillFocusTitleWorkOrder(
-          focusWorkOrderId,
-          rows.find((r) => r.workOrder.id === focusWorkOrderId)?.workOrder.docNo ?? null,
-        )
-      : drillFocusTitleQcProduction(
+    productionIdFromUrl > 0
+      ? drillFocusTitleQcProduction(
           productionIdFromUrl,
-          rows.find((r) => r.id === productionIdFromUrl)?.docNo ?? null,
-        );
+          (rows.find((r) => safeProductionRowId(r) === productionIdFromUrl) ??
+            withQcRows.find((r) => safeProductionRowId(r) === productionIdFromUrl))?.docNo ?? null,
+        )
+      : focusWorkOrderId > 0
+        ? drillFocusTitleWorkOrder(
+            focusWorkOrderId,
+            rows.find((r) => safeWorkOrderIdForRow(r) === focusWorkOrderId)?.workOrderLine?.workOrder
+              ?.docNo ?? null,
+          )
+        : drillFocusTitleQcProduction(0, null);
 
   const prodInQueue =
-    productionIdFromUrl > 0 && listReady && rows.length > 0 && rows.some((r) => r.id === productionIdFromUrl);
+    productionIdFromUrl > 0 &&
+    listReady &&
+    (rows.some((r) => safeProductionRowId(r) === productionIdFromUrl) ||
+      withQcRows.some((r) => safeProductionRowId(r) === productionIdFromUrl));
   const woHasBatch =
     focusWorkOrderId > 0 && listReady && rows.length > 0 && rows.some((r) => safeWorkOrderIdForRow(r) === focusWorkOrderId);
 
+  const focusedProductionMissing =
+    listReady && productionIdFromUrl > 0 && !prodInQueue;
+
   const qcBannerHint =
-    listReady && rows.length === 0 && qcDrillBannerActive
+    listReady && rows.length === 0 && qcDrillBannerActive && productionIdFromUrl <= 0
       ? DRILL_FOCUS_HINT_QC.emptyQueue
-      : listReady && focusWorkOrderId > 0 && rows.length > 0 && !woHasBatch
-        ? DRILL_FOCUS_HINT_QC.woNoBatch
-        : listReady && focusWorkOrderId === 0 && productionIdFromUrl > 0 && rows.length > 0 && !prodInQueue
-          ? DRILL_FOCUS_HINT_QC.productionMissing
+      : focusedProductionMissing
+        ? DRILL_FOCUS_HINT_QC.productionMissing
+        : listReady && focusWorkOrderId > 0 && productionIdFromUrl <= 0 && rows.length > 0 && !woHasBatch
+          ? DRILL_FOCUS_HINT_QC.woNoBatch
           : undefined;
 
   const qcBannerSoft =
     listReady &&
     ((rows.length === 0 && qcDrillBannerActive) ||
-      (focusWorkOrderId > 0 && rows.length > 0 && !woHasBatch) ||
-      (focusWorkOrderId === 0 && productionIdFromUrl > 0 && rows.length > 0 && !prodInQueue));
+      focusedProductionMissing ||
+      (focusWorkOrderId > 0 && productionIdFromUrl <= 0 && rows.length > 0 && !woHasBatch));
 
   const productionBatchesAll = React.useMemo(() => {
     try {
@@ -2457,6 +2487,42 @@ export function QcEntryPage() {
             {qcBannerHint ? <p className="mt-0.5 text-[10px] leading-snug text-amber-900/90">{qcBannerHint}</p> : null}
           </div>
         ) : null}
+        {focusedProductionMissing ? (
+          <ErpEmptyState
+            className="mt-2"
+            title="Production entry not available for QC"
+            body={
+              <>
+                Production entry{" "}
+                <span className="font-mono font-semibold">
+                  {displayProductionEntryNo(productionIdFromUrl, null)}
+                </span>{" "}
+                is not in the current QC-waiting queue
+                {focusSoIdValid ? (
+                  <>
+                    {" "}
+                    for sales order{" "}
+                    <span className="font-mono font-semibold">
+                      {displaySalesOrderNo(focusSoId, focusSo?.docNo ?? null)}
+                    </span>
+                  </>
+                ) : null}
+                . It may already be inspected, filtered out, or not linked to this order.
+              </>
+            }
+            action={
+              <div className="flex flex-wrap gap-2">
+                <PageBackLink
+                  to={qcBackLink?.to ?? "/pending-actions"}
+                  label={qcBackLink?.label ?? "Back to Pending Actions"}
+                />
+                <Button type="button" variant="outline" size="sm" onClick={clearQcDrillFocus}>
+                  Clear focus
+                </Button>
+              </div>
+            }
+          />
+        ) : null}
         <OperatorPageBody className="gap-1.5">
           <div className="max-w-md">
             <QualityInspectionQueuePanel
@@ -2821,7 +2887,7 @@ export function QcEntryPage() {
           />
           {!listReady ? (
             <p className="mt-2 text-[13px] text-slate-600">Loading production entries…</p>
-          ) : productionBatchesFiltered.length === 0 ? (
+          ) : focusedProductionMissing ? null : productionBatchesFiltered.length === 0 ? (
             <>
               {fromNoQtySo && focusSoIdValid && listReady && productionBatchesAll.length > 0 ? (
                 <p className="mt-1 text-[12px] leading-snug text-slate-600">

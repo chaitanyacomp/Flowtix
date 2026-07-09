@@ -246,7 +246,10 @@ export function buildQcBackLink(params: {
   if (fromProduction || (role === "PRODUCTION" && !fromDashboard && !fromPending)) {
     return { to: "/production", label: "Back to Production Workspace" };
   }
-  if (fromPending || fromDashboard) {
+  if (fromPending) {
+    return { to: "/pending-actions", label: "Back to Pending Actions" };
+  }
+  if (fromDashboard) {
     return {
       to: "/dashboard",
       label: isQaRole ? "Back to Quality Inspection Dashboard" : "Back to Production Dashboard",

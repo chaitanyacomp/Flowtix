@@ -1,8 +1,4 @@
 import { describe, expect, it } from "vitest";
-import {
-  safeWorkOrderIdForRow,
-  // re-export helpers via a thin test of the same access pattern used on QcEntryPage
-} from "../../src/lib/qcBatchRollups";
 
 /**
  * Mirrors QcEntryPage safe accessors — production entries nest WO under workOrderLine.workOrder.

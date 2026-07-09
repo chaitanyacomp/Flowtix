@@ -7,6 +7,7 @@ const { pipeline } = require("stream/promises");
 const { once } = require("events");
 const { prisma } = require("../utils/prisma");
 const { parseDatabaseUrl } = require("../utils/databaseUrl");
+const { getPackageRoot } = require("../runtime/paths");
 
 /** Single-flight lock: one mysqldump or mysql restore at a time (per Node process). */
 let backupJobLocked = false;
@@ -93,7 +94,7 @@ async function withBackupJobLock(fn) {
  * @returns {string}
  */
 function getDefaultBackupStorageRoot() {
-  const backendRoot = path.resolve(__dirname, "..", "..");
+  const backendRoot = getPackageRoot();
   return path.resolve(backendRoot, "..", "ERP_DATA", "backups");
 }
 

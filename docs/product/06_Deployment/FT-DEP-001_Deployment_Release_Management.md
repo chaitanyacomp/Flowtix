@@ -4,7 +4,7 @@
 |-------|-------|
 | **Document ID** | FT-DEP-001 |
 | **Title** | Deployment & Release Management Standard |
-| **Version** | 1.1.0 |
+| **Version** | 1.2.0 |
 | **Status** | Draft — Architecture Review |
 | **Effective date** | 2026-07-09 |
 | **Author** | FT ERP Product Team |
@@ -43,6 +43,7 @@
 |---------|------|--------|---------|
 | 1.0.0 | 2026-07-09 | FT ERP Product Team | Initial Deployment & Release Management Standard for LAN client-server deployments |
 | 1.1.0 | 2026-07-09 | FT ERP Product Team | Batch 2 — runtime configuration, startup validation, logging, GET /health |
+| 1.2.0 | 2026-07-09 | FT ERP Product Team | Batch 3 — esbuild backend bundling (`app/server.js`) |
 
 **Supersedes:** Informal client install notes; ad-hoc “copy the repo to the server” practices.
 
@@ -356,11 +357,11 @@ A release package (zip) **SHALL** contain:
 
 | Phase | Status | Approach |
 |-------|--------|----------|
-| **Phase A** | Near-term | Production `node_modules` + compiled/runnable backend tree prepared by Release; no client-side `npm install` from public internet preferred |
-| **Phase B** | Planned | **esbuild** (or equivalent) bundle of server entry → fewer files, harder casual IP copy, faster cold start |
+| **Phase A** | Superseded by Batch 3 | Raw `src/` copy (Batch 1 only) |
+| **Phase B** | **Implemented (Batch 3)** | **esbuild** bundle → `app/server.js`; Prisma client on disk; `node_modules` installed on server |
 | **Phase C** | Future | Windows Service + optional installer (§21) |
 
-**This document does not implement Phase B/C.** When esbuild lands, it **SHALL** still emit artifacts into `app/` under the same folder contract.
+Batch 3 **SHALL** emit `app/server.js` under the same release folder contract. Raw `app/src/` **SHALL NOT** ship in Batch 3+ packages.
 
 ### 9.3 Frontend packaging
 
@@ -807,7 +808,7 @@ Explicitly **not** done in this documentation revision:
 | Release Operations | Pending review |
 | Documentation Steward | Pending review |
 
-**Status:** Draft — Architecture Review (v1.1.0). Batch 1 packaging and Batch 2 runtime validation are documented; later batches (esbuild, Windows Service, installer, backup/update automation) remain deferred.
+**Status:** Draft — Architecture Review (v1.2.0). Batches 1–3 (packaging, runtime validation, esbuild backend) are documented; later batches (Windows Service, installer, backup/update automation) remain deferred.
 
 ---
 
@@ -930,4 +931,86 @@ Version fields are read from Batch 1 `VERSION.txt` when present; otherwise `pack
 | Release meta | `backend/src/runtime/releaseMeta.js` |
 | Production env template | `deployment/production.env.example` |
 
-**Still deferred:** esbuild, Windows Service, installer, backup/update automation, Docker, pkg, nexe.
+**Still deferred after Batch 2:** Windows Service, installer, backup/update automation, Docker, pkg, nexe. *(esbuild → Batch 3 / §28)*
+
+---
+
+## 28. Backend Bundling Standard (Batch 3)
+
+### 28.1 Purpose
+
+Use **esbuild** to produce a single Node entry `app/server.js` from `backend/src/server.js` so client releases:
+
+- Ship fewer application files (no raw `app/src/` tree)
+- Start with `node server.js` / `npm start`
+- Keep Prisma engines and npm packages as **external** runtime dependencies (compatible, supportable)
+
+### 28.2 Honest IP protection limitation
+
+Bundling is **deterrence and packaging hygiene**, not DRM. A determined party can still inspect JavaScript. Contractual license terms remain the primary IP control ([§15](#15-ip--source-code-protection-strategy)).
+
+### 28.3 Bundle structure
+
+```text
+release/Flowtix-vX.Y.Z/
+  app/
+    server.js                 # esbuild CJS bundle (entry)
+    package.json              # production dependencies only (no mini-erp file: link)
+    prisma/generated/client-v2/  # Prisma Client + query engine for this build
+    .env.example
+    README.txt
+  prisma/
+    schema.prisma
+    migrations/
+  web/
+  shared/
+  tools/
+  VERSION.txt
+  RELEASE_NOTES.md
+```
+
+### 28.4 Excluded from `app/`
+
+| Excluded | Reason |
+|----------|--------|
+| `src/` | Replaced by bundle |
+| `test/`, `scripts/` | Dev / ops tooling |
+| `.env` | Secrets live in `shared/.env` |
+| Source maps | Default off (support channel only if needed) |
+| `node_modules/` | Installed on server via `npm install --omit=dev` |
+| Docs / `.git` | Not part of runtime package |
+
+### 28.5 Prisma compatibility
+
+| Rule | Statement |
+|------|-----------|
+| Schema + migrations | Still ship under release `prisma/` (unchanged Batch 1 contract) |
+| Generated client | Copied into `app/prisma/generated/client-v2` at package time |
+| External packages | `@prisma/client` and engines remain external — not inlined into `server.js` |
+| Destructive commands | Packaging **SHALL NOT** run `migrate reset`, `db push`, or seed wipes |
+| Server migrate | Operators use `prisma migrate deploy --schema=../prisma/schema.prisma` (or release-root schema path) |
+
+`prismaClientPackage.js` resolves the client via `getPackageRoot()` so both source and bundled layouts work.
+
+### 28.6 Tooling
+
+| Artifact | Path |
+|----------|------|
+| Bundle script | `deployment/bundle-backend.js` |
+| Build wrapper | `deployment/build-backend.bat` |
+| Orchestrator | `deployment/create-release.bat` |
+| Dev dependency | `backend` → `esbuild` (devDependency) |
+
+### 28.7 Validation checklist (Batch 3)
+
+- [ ] `app/server.js` exists and is non-trivial size
+- [ ] `app/src/` absent
+- [ ] `app/package.json` lists production deps only (`main`: `server.js`)
+- [ ] `app/prisma/generated/client-v2` present
+- [ ] Release `prisma/schema.prisma` + `migrations/` present
+- [ ] `GET /health` works when running bundled `node server.js` with valid `shared/.env` / env
+- [ ] Backend unit tests still pass in the **source** tree (bundling does not replace test entrypoints)
+
+### 28.8 Still deferred
+
+Windows Service, installer, backup/update automation, Docker, pkg, nexe.

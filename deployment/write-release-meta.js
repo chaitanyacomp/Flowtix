@@ -53,7 +53,7 @@ const versionTxt = [
   `buildDate=${built}`,
   `gitCommit=${commit}`,
   `prismaMigrationHead=${mig}`,
-  "packagingBatch=FT-DEP-001-Batch-1",
+  "packagingBatch=FT-DEP-001-Batch-3",
   "",
 ].join("\n");
 
@@ -88,19 +88,22 @@ Apply on the client server with Prisma migrate deploy against shared/.env DATABA
 
 - _None recorded for this build. Edit before customer delivery if applicable._
 
-## Package Contents (Batch 1)
+## Package Contents (Batch 1+3)
 
 - \`web/\` - Vite production frontend
-- \`app/\` - Node/Express runtime sources (Phase A; no esbuild)
+- \`app/server.js\` - esbuild-bundled Node/Express entry (Batch 3)
+- \`app/package.json\` - production runtime dependencies only
+- \`app/prisma/generated/\` - Prisma Client for this build
 - \`prisma/\` - schema.prisma + migrations
 - \`shared/\` - env template only
-- \`tools/\` - reserved (empty of scripts in Batch 1)
+- \`tools/\` - reserved (empty of scripts)
 
 ## Not Included (later batches)
 
 - Windows Service / installer
 - Backup / update automation scripts
-- esbuild / pkg / nexe / Docker packaging
+- Docker / pkg / nexe packaging
+- Raw \`app/src/\` application tree (replaced by bundle)
 `;
 
 fs.writeFileSync(path.join(out, "VERSION.txt"), versionTxt, "utf8");

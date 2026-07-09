@@ -16,12 +16,13 @@ const path = require("path");
 const crypto = require("crypto");
 const { prisma } = require("../utils/prisma");
 const { ensureAppSettings, setCompanyGstDetails } = require("./appSettings");
+const { getPackageRoot } = require("../runtime/paths");
 
 /* --------------------------- Disk storage layout ------------------------- */
 
 /** Default branding storage root (mirrors the backup-storage pattern). */
 function getDefaultBrandingStorageRoot() {
-  const backendRoot = path.resolve(__dirname, "..", "..");
+  const backendRoot = getPackageRoot();
   return path.resolve(backendRoot, "..", "ERP_DATA", "branding");
 }
 

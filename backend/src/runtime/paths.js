@@ -1,13 +1,57 @@
 /**
- * FT-DEP-001 Batch 2 — resolve runtime roots (shared/, logs/, release metadata).
+ * FT-DEP-001 Batch 2/3 — resolve runtime roots (shared/, logs/, release metadata).
  * No business logic. Separates development layout from LAN deployment layout.
+ *
+ * Works for:
+ * - Source: backend/src/runtime/*.js  → package root = backend/
+ * - Bundle: app/server.js             → package root = app/ (via require.main / cwd)
+ *
+ * Note: esbuild rewrites __dirname to source-relative paths, so bundled code
+ * MUST NOT rely on __dirname alone for package-root detection.
  */
 const fs = require("fs");
 const path = require("path");
 
-/** backend/ or app/ root (parent of src/) */
+/**
+ * backend/ (dev) or app/ (Batch 3 bundled release).
+ * @returns {string}
+ */
 function getPackageRoot() {
-  return path.resolve(__dirname, "..", "..");
+  if (process.env.FT_PACKAGE_ROOT && String(process.env.FT_PACKAGE_ROOT).trim()) {
+    return path.resolve(String(process.env.FT_PACKAGE_ROOT).trim());
+  }
+
+  // Bundled entry: node server.js → require.main is app/server.js
+  try {
+    if (typeof require !== "undefined" && require.main && require.main.filename) {
+      const mainDir = path.dirname(require.main.filename);
+      if (
+        fs.existsSync(path.join(mainDir, "package.json")) &&
+        fs.existsSync(path.join(mainDir, "server.js"))
+      ) {
+        return mainDir;
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  // CWD when started from app/
+  const cwd = process.cwd();
+  if (fs.existsSync(path.join(cwd, "package.json")) && fs.existsSync(path.join(cwd, "server.js"))) {
+    return cwd;
+  }
+
+  // Source layout: backend/src/runtime/paths.js → backend/
+  const fromRuntime = path.resolve(__dirname, "..", "..");
+  if (
+    fs.existsSync(path.join(fromRuntime, "package.json")) &&
+    fs.existsSync(path.join(fromRuntime, "src", "server.js"))
+  ) {
+    return fromRuntime;
+  }
+
+  return fromRuntime;
 }
 
 /**

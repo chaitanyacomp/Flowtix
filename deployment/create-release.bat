@@ -1,6 +1,6 @@
 @echo off
-REM FT-DEP-001 Batch 1 — assemble Flowtix release package under release\Flowtix-vX.Y.Z\
-REM Does NOT implement: Windows Service, installer, backup/update scripts, esbuild, Docker, pkg, nexe.
+REM FT-DEP-001 — assemble Flowtix release (Batch 1 packaging + Batch 3 esbuild backend)
+REM Does NOT implement: Windows Service, installer, backup/update scripts, Docker, pkg, nexe.
 setlocal EnableExtensions EnableDelayedExpansion
 
 set "ROOT=%~dp0.."
@@ -27,7 +27,7 @@ set "DEPLOY=%ROOT%\deployment"
 
 echo ============================================================
 echo  Flowtix ERP — Create Release  %RELEASE_NAME%
-echo  FT-DEP-001 Batch 1 ^(packaging only^)
+echo  FT-DEP-001 Batch 1+3 ^(web + esbuild backend^)
 echo ============================================================
 echo.
 
@@ -95,7 +95,7 @@ REM --- 6. tools\ placeholder (Batch 1 — no backup/update scripts yet) ---
   echo   - backup helpers
   echo   - update / rollback helpers
   echo   - Windows Service wrappers
-  echo Batch 1 intentionally leaves this folder empty of automation scripts.
+  echo Batch 3 ships esbuild-bundled app\server.js; tools\ remains empty of ops scripts.
 )
 
 REM --- 7. Git commit + build date ---
@@ -126,11 +126,18 @@ if not exist "%RELEASE_DIR%\web\index.html" (
   echo   OK: web\index.html
 )
 
-if not exist "%RELEASE_DIR%\app\src\server.js" (
-  echo   FAIL: app\src\server.js missing
+if not exist "%RELEASE_DIR%\app\server.js" (
+  echo   FAIL: app\server.js missing ^(Batch 3 bundle^)
   set "FAIL=1"
 ) else (
-  echo   OK: app\src\server.js
+  echo   OK: app\server.js
+)
+
+if exist "%RELEASE_DIR%\app\src" (
+  echo   FAIL: app\src must not ship after Batch 3 bundling
+  set "FAIL=1"
+) else (
+  echo   OK: no app\src
 )
 
 if not exist "%RELEASE_DIR%\app\package.json" (
@@ -138,6 +145,13 @@ if not exist "%RELEASE_DIR%\app\package.json" (
   set "FAIL=1"
 ) else (
   echo   OK: app\package.json
+)
+
+if not exist "%RELEASE_DIR%\app\prisma\generated\client-v2" (
+  echo   FAIL: app\prisma\generated\client-v2 missing
+  set "FAIL=1"
+) else (
+  echo   OK: app\prisma\generated\client-v2
 )
 
 if not exist "%RELEASE_DIR%\prisma\schema.prisma" (
@@ -197,7 +211,7 @@ if exist "%RELEASE_DIR%\app\scripts" (
 )
 
 if exist "%RELEASE_DIR%\prisma\seed.js" (
-  echo   FAIL: prisma seed.js must not ship in Batch 1 package
+  echo   FAIL: prisma seed.js must not ship in release package
   set "FAIL=1"
 ) else (
   echo   OK: no prisma\seed.js

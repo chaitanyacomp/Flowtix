@@ -89,8 +89,8 @@ if exist "%ROOT%\deployment\production.env.example" (
   echo This release package ships templates only. Do not place production secrets in git.
 )
 
-REM --- 6. tools\ (Batch 4–9: backup, migrate, update, rollback, service, setup) ---
-echo [create-release] Copying tools\ scripts ^(Batches 4–9^)...
+REM --- 6. tools\ (Batch 4–11: backup, migrate, update, rollback, service, setup, verify) ---
+echo [create-release] Copying tools\ scripts ^(Batches 4–11^)...
 copy /Y "%DEPLOY%\backup-db.bat" "%RELEASE_DIR%\tools\backup-db.bat" >nul
 copy /Y "%DEPLOY%\backup-db.js" "%RELEASE_DIR%\tools\backup-db.js" >nul
 copy /Y "%DEPLOY%\migrate-db.bat" "%RELEASE_DIR%\tools\migrate-db.bat" >nul
@@ -113,6 +113,8 @@ copy /Y "%DEPLOY%\check-prereqs.bat" "%RELEASE_DIR%\tools\check-prereqs.bat" >nu
 copy /Y "%DEPLOY%\check-prereqs.js" "%RELEASE_DIR%\tools\check-prereqs.js" >nul
 copy /Y "%DEPLOY%\init-folders.bat" "%RELEASE_DIR%\tools\init-folders.bat" >nul
 copy /Y "%DEPLOY%\init-folders.js" "%RELEASE_DIR%\tools\init-folders.js" >nul
+copy /Y "%DEPLOY%\verify-install.bat" "%RELEASE_DIR%\tools\verify-install.bat" >nul
+copy /Y "%DEPLOY%\verify-install.js" "%RELEASE_DIR%\tools\verify-install.js" >nul
 if exist "%DEPLOY%\production.env.example" (
   mkdir "%RELEASE_DIR%\shared" 2>nul
   copy /Y "%DEPLOY%\production.env.example" "%RELEASE_DIR%\shared\.env.example" >nul
@@ -121,6 +123,22 @@ if exist "%DEPLOY%\vendor\winsw\WinSW-x64.exe" (
   mkdir "%RELEASE_DIR%\tools\vendor\winsw" 2>nul
   copy /Y "%DEPLOY%\vendor\winsw\WinSW-x64.exe" "%RELEASE_DIR%\tools\vendor\winsw\WinSW-x64.exe" >nul
 )
+
+REM --- 6b. docs\handover\ (Batch 11 — client handover pack) ---
+echo [create-release] Copying docs\handover\ ^(Batch 11^)...
+set "HANDOVER_SRC=%ROOT%\docs\product\06_Deployment\handover"
+if not exist "%HANDOVER_SRC%\README.md" (
+  echo [create-release] ERROR: handover pack missing at %HANDOVER_SRC%
+  exit /b 1
+)
+mkdir "%RELEASE_DIR%\docs\handover" 2>nul
+robocopy "%HANDOVER_SRC%" "%RELEASE_DIR%\docs\handover" /E /NFL /NDL /NJH /NJS /nc /ns /np >nul
+set "RC=%ERRORLEVEL%"
+if %RC% GEQ 8 (
+  echo [create-release] ERROR: handover robocopy failed with code %RC%.
+  exit /b 1
+)
+
 > "%RELEASE_DIR%\tools\README.txt" (
   echo Flowtix ERP — release tools ^(FT-DEP-001^)
   echo.
@@ -142,6 +160,10 @@ if exist "%DEPLOY%\vendor\winsw\WinSW-x64.exe" (
   echo Batch 9:
   echo   setup-flowtix.bat / check-prereqs.bat / init-folders.bat — client setup bootstrap
   echo   ^(not MSI; does not overwrite shared\.env; Path A migrate or --skip-migrate^)
+  echo.
+  echo Batch 11:
+  echo   verify-install.bat / verify-install.js — read-only install verification
+  echo   docs\handover\ — production readiness, checklists, runbook, templates
   echo.
   echo Deferred:
   echo   - automated DB restore
@@ -368,6 +390,48 @@ if not exist "%RELEASE_DIR%\tools\init-folders.js" (
   set "FAIL=1"
 ) else (
   echo   OK: tools\init-folders.js
+)
+
+if not exist "%RELEASE_DIR%\tools\verify-install.bat" (
+  echo   FAIL: tools\verify-install.bat missing
+  set "FAIL=1"
+) else (
+  echo   OK: tools\verify-install.bat
+)
+
+if not exist "%RELEASE_DIR%\tools\verify-install.js" (
+  echo   FAIL: tools\verify-install.js missing
+  set "FAIL=1"
+) else (
+  echo   OK: tools\verify-install.js
+)
+
+if not exist "%RELEASE_DIR%\docs\handover\README.md" (
+  echo   FAIL: docs\handover\README.md missing
+  set "FAIL=1"
+) else (
+  echo   OK: docs\handover\README.md
+)
+
+if not exist "%RELEASE_DIR%\docs\handover\FT-DEP-011_Production_Readiness.md" (
+  echo   FAIL: docs\handover\FT-DEP-011_Production_Readiness.md missing
+  set "FAIL=1"
+) else (
+  echo   OK: docs\handover\FT-DEP-011
+)
+
+if not exist "%RELEASE_DIR%\docs\handover\FT-DEP-012_Administrator_Runbook.md" (
+  echo   FAIL: docs\handover\FT-DEP-012_Administrator_Runbook.md missing
+  set "FAIL=1"
+) else (
+  echo   OK: docs\handover\FT-DEP-012
+)
+
+if not exist "%RELEASE_DIR%\docs\handover\checklists\01_Production_Deployment.md" (
+  echo   FAIL: docs\handover\checklists\01 missing
+  set "FAIL=1"
+) else (
+  echo   OK: docs\handover\checklists
 )
 
 if "%FAIL%"=="1" (

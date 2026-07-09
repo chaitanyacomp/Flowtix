@@ -53,7 +53,7 @@ const versionTxt = [
   `buildDate=${built}`,
   `gitCommit=${commit}`,
   `prismaMigrationHead=${mig}`,
-  "packagingBatch=FT-DEP-001-Batch-4",
+  "packagingBatch=FT-DEP-001-Batch-11",
   "",
 ].join("\n");
 
@@ -88,7 +88,7 @@ Apply on the client server with Prisma migrate deploy against shared/.env DATABA
 
 - _None recorded for this build. Edit before customer delivery if applicable._
 
-## Package Contents (Batch 1+3+4+5+6+7+8+9+10)
+## Package Contents (Batch 1+3+4+5+6+7+8+9+10+11)
 
 - \`web/\` - Vite production frontend
 - \`app/server.js\` - esbuild-bundled Node/Express entry (Batch 3)
@@ -102,6 +102,8 @@ Apply on the client server with Prisma migrate deploy against shared/.env DATABA
 - \`tools/rollback-flowtix.*\` - app/web rollback from pre-update archive (Batch 7)
 - \`tools/service-*.bat\` + \`service-control.js\` - optional WinSW Windows Service (Batch 8)
 - \`tools/setup-flowtix.*\` / \`check-prereqs.*\` / \`init-folders.*\` - client setup bootstrap (Batch 9)
+- \`tools/verify-install.*\` - read-only install verification (Batch 11)
+- \`docs/handover/\` - production readiness, checklists, runbook, templates (Batch 11)
 
 ## Windows Installer (Batch 10)
 

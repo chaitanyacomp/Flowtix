@@ -4,7 +4,7 @@
 |-------|-------|
 | **Document ID** | FT-DEP-001 |
 | **Title** | Deployment & Release Management Standard |
-| **Version** | 1.9.0 |
+| **Version** | 1.10.0 |
 | **Status** | Draft — Architecture Review |
 | **Effective date** | 2026-07-09 |
 | **Author** | FT ERP Product Team |
@@ -51,6 +51,7 @@
 | 1.7.0 | 2026-07-09 | FT ERP Product Team | Batch 8 — optional WinSW Windows Service (`tools/service-*`) |
 | 1.8.0 | 2026-07-09 | FT ERP Product Team | Batch 9 — client setup / bootstrap (`tools/setup-flowtix.*`) |
 | 1.9.0 | 2026-07-09 | FT ERP Product Team | Batch 10 — Inno Setup Windows installer wrapper (`deployment/installer/`) |
+| 1.10.0 | 2026-07-09 | FT ERP Product Team | Batch 11 — deployment validation & client handover pack (`handover/`, `verify-install`) |
 
 **Supersedes:** Informal client install notes; ad-hoc “copy the repo to the server” practices.
 
@@ -791,16 +792,32 @@ During outage, factory **MAY** use paper/manual temporary process; catch-up entr
 
 Use after **install** or **update** before declaring production success.
 
+**Expanded pack (Batch 11):** Printable checklists, templates, runbook, and compatibility matrix live under [`handover/`](./handover/README.md) (also shipped as `docs/handover/` in the release package). This section remains the **normative minimum**; the handover pack is the operator-facing expansion (FT-DEP-011 … FT-DEP-013).
+
+| Activity | Handover artifact |
+|----------|-------------------|
+| Production readiness gate | [FT-DEP-011](./handover/FT-DEP-011_Production_Readiness.md) |
+| End-to-end deploy | [01_Production_Deployment](./handover/checklists/01_Production_Deployment.md) |
+| Install verify | [02_Installation_Verification](./handover/checklists/02_Installation_Verification.md) |
+| Functional smoke | [03_Post_Install_Smoke](./handover/checklists/03_Post_Install_Smoke.md) |
+| Backup / update / rollback / service | [04](./handover/checklists/04_Backup_Verification.md)–[07](./handover/checklists/07_Windows_Service_Verification.md) |
+| Business acceptance / handover | [08](./handover/checklists/08_Client_Acceptance.md)–[09](./handover/checklists/09_Client_Handover.md) |
+| Sign-off / report / escalation | [templates/](./handover/templates/) |
+| Day-2 ops | [FT-DEP-012 Runbook](./handover/FT-DEP-012_Administrator_Runbook.md) |
+| Compatibility | [FT-DEP-013](./handover/FT-DEP-013_Version_Compatibility_Matrix.md) |
+| Optional read-only probe | `tools\verify-install.bat --home <FT_ERP_HOME>` (§36.3) |
+
 ### 22.1 Technical
 
-- [ ] `release.json` version matches intended release
+- [ ] `VERSION.txt` / release folder version matches intended release
 - [ ] Backend process running; LAN URL reachable
 - [ ] Frontend loads (no Vite dev server)
-- [ ] DB migration head matches manifest
+- [ ] DB migration head matches package / manifest
 - [ ] Pre-change backup path recorded and file verified
 - [ ] Prior release folder still present (updates)
 - [ ] `shared\.env` intact (not blanked)
 - [ ] Logs writable under `logs\`
+- [ ] Optional: `verify-install` PASS (or WARN only for offline `/health`)
 
 ### 22.2 Functional smoke (minimum)
 
@@ -813,10 +830,11 @@ Use after **install** or **update** before declaring production success.
 
 ### 22.3 Governance
 
-- [ ] Deploy log completed
+- [ ] Deploy log / [Deployment Report](./handover/templates/Deployment_Report.md) completed
 - [ ] Business Owner informed of result
 - [ ] If fail → rollback mode chosen (§13) and executed
 - [ ] No uncertified hotfix left on server
+- [ ] [Release Sign-off](./handover/templates/Release_Signoff.md) recorded (INS-06)
 
 ### 22.4 Sign-off
 
@@ -882,7 +900,7 @@ Explicitly **not** done in this documentation revision:
 | Release Operations | Pending review |
 | Documentation Steward | Pending review |
 
-**Status:** Draft — Architecture Review (v1.9.0). Batches 1–10 (through Inno Setup installer wrapper) are documented; automated DB restore, MSI/WiX, and auto-update agent (R5) remain deferred.
+**Status:** Draft — Architecture Review (v1.10.0). Batches 1–11 (through handover pack + read-only verify-install) are documented; automated DB restore, MSI/WiX, and auto-update agent (R5) remain deferred.
 
 ---
 
@@ -1622,4 +1640,58 @@ MSI/WiX, auto-update agent (R5), bundled MySQL, automated DB restore.
 - [ ] Uninstall preserves shared/backups/logs/releases/DB
 - [ ] Update/rollback tools unchanged
 - [ ] FT-DEP-001 §21 R4 / §35 documented
+- [ ] No ERP business / UI / schema changes
+
+---
+
+## 36. Deployment Validation & Client Handover Pack (Batch 11)
+
+### 36.1 Purpose
+
+Provide a **production-ready operational layer** for first customer go-live: readiness gates, printable checklists, sign-off/report/escalation templates, administrator runbook, version compatibility matrix, and an optional **read-only** install probe. Batch 11 **SHALL NOT** redesign Batches 1–10 engines.
+
+### 36.2 Package location
+
+| Location | Role |
+|----------|------|
+| Repo: `docs/product/06_Deployment/handover/` | Source of truth (FT-PD-103) |
+| Release: `docs/handover/` | Copied by `create-release.bat` into every `Flowtix-vX.Y.Z` package |
+| Tools: `tools/verify-install.*` | Optional read-only verification |
+
+Index: [handover/README.md](./handover/README.md). Governing IDs: **FT-DEP-011** (readiness), **FT-DEP-012** (runbook), **FT-DEP-013** (compatibility).
+
+### 36.3 Read-only verify-install
+
+```text
+tools\verify-install.bat --home C:\FT-ERP
+tools\verify-install.bat --home C:\FT-ERP --skip-health
+tools\verify-install.bat --home C:\FT-ERP --json
+```
+
+| Rule | Statement |
+|------|-----------|
+| Read-only | **SHALL NOT** migrate, backup, update, rollback, write `.env`, or start/stop services |
+| Secrets | **SHALL NOT** print `DATABASE_URL`, JWT, or other `.env` values (PORT may be read silently for `/health`) |
+| Checks | Folders (`app`, `web`, `shared`, `backups`, `logs`), `app\server.js`, `web\index.html`, `VERSION.txt` (if present), `shared\.env` **presence**, optional `GET /health`, optional WinSW status |
+| Log | Appends to `logs\verify-install.log` (no secrets) |
+| Exit | `0` = no ERROR-level failures; WARN (e.g. process down) does not fail the probe by itself for health/service |
+
+### 36.4 Relationship to §22
+
+§22 remains the **minimum** acceptance checklist. Operators **SHOULD** complete the numbered handover checklists and templates for production cutover (DEP-12, INS-06, OPS-04). Smoke surfaces remain FT-PD-066-compliant — no alternate UX.
+
+### 36.5 Safety / non-goals
+
+| In scope | Out of scope |
+|----------|--------------|
+| Docs + read-only verify | ERP business / workflow / UI / Prisma schema changes |
+| Copy handover into release | Changing backup/migrate/update/rollback/service/setup/installer core logic |
+| Templates forbid secrets in tickets | Automated DB restore, monitoring product, full Volume 8 UAT pack |
+
+### 36.6 Validation checklist
+
+- [ ] `handover/` pack present in repo and in release `docs/handover/`
+- [ ] `tools/verify-install.*` shipped; read-only behavior confirmed
+- [ ] FT-DEP-001 §22 links to handover; §36 documented
+- [ ] No diffs to Batches 4–10 engine scripts beyond packaging copy / README
 - [ ] No ERP business / UI / schema changes

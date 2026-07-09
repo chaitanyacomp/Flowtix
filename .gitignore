@@ -20,3 +20,6 @@ ERP_DATA/
 /service/
 
 /_lab_setup9/
+
+# FT-DEP-001 Batch 10 — Inno Setup build output
+/deployment/installer/output/

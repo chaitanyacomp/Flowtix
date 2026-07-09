@@ -4,7 +4,7 @@
 |-------|-------|
 | **Document ID** | FT-DEP-001 |
 | **Title** | Deployment & Release Management Standard |
-| **Version** | 1.8.0 |
+| **Version** | 1.9.0 |
 | **Status** | Draft — Architecture Review |
 | **Effective date** | 2026-07-09 |
 | **Author** | FT ERP Product Team |
@@ -50,6 +50,7 @@
 | 1.6.0 | 2026-07-09 | FT ERP Product Team | Batch 7 — app/web rollback from pre-update archive (`tools/rollback-flowtix.*`) |
 | 1.7.0 | 2026-07-09 | FT ERP Product Team | Batch 8 — optional WinSW Windows Service (`tools/service-*`) |
 | 1.8.0 | 2026-07-09 | FT ERP Product Team | Batch 9 — client setup / bootstrap (`tools/setup-flowtix.*`) |
+| 1.9.0 | 2026-07-09 | FT ERP Product Team | Batch 10 — Inno Setup Windows installer wrapper (`deployment/installer/`) |
 
 **Supersedes:** Informal client install notes; ad-hoc “copy the repo to the server” practices.
 
@@ -772,15 +773,17 @@ During outage, factory **MAY** use paper/manual temporary process; catch-up entr
 | **R1** | Release packaging scripts (frontend build + backend package + zip + checksum) | Explicit implementation task |
 | **R2** | esbuild backend bundle in `app/` | R1 |
 | **R3** | Windows Service wrapper + install notes | R1–R2 |
-| **R4** | Guided installer (Inno Setup / MSI) — creates folders, service, MySQL checks | R3 |
+| **R4** | Guided installer (Inno Setup) — wraps Batches 1–9 | **Batch 10** |
 | **R5** | Optional auto-update agent (LAN share / signed packages) | R4 + security review |
 
-**Rules for future installer:**
+**Rules for installer (Batch 10):**
 
-- **SHALL** implement §6 folder layout
-- **SHALL** refuse update without backup confirmation (or perform backup itself)
+- **SHALL** implement §6 folder layout via Batch 9 setup
+- **SHALL** refuse destructive re-bootstrap of existing installs (redirect to Batch 6 update)
 - **SHALL NOT** embed customer secrets in the installer binary
-- **SHALL** leave prior release for rollback
+- **SHALL** leave prior release / data folders for rollback
+- **SHALL NOT** install MySQL Server or wipe the database on uninstall by default
+- Digital code signing **MAY** be applied; not required to build
 
 ---
 
@@ -879,7 +882,7 @@ Explicitly **not** done in this documentation revision:
 | Release Operations | Pending review |
 | Documentation Steward | Pending review |
 
-**Status:** Draft — Architecture Review (v1.8.0). Batches 1–9 (packaging through client setup bootstrap) are documented; automated DB restore and Windows Installer (MSI/Inno) remain deferred.
+**Status:** Draft — Architecture Review (v1.9.0). Batches 1–10 (through Inno Setup installer wrapper) are documented; automated DB restore, MSI/WiX, and auto-update agent (R5) remain deferred.
 
 ---
 
@@ -1084,7 +1087,7 @@ release/Flowtix-vX.Y.Z/
 
 ### 28.8 Still deferred
 
-Windows Installer (MSI/Inno), **automated DB restore**, Docker, pkg, nexe. *(…; Windows Service → §33; client setup → §34)*
+MSI/WiX, **automated DB restore**, Docker, pkg, nexe, auto-update agent (R5). *(…; client setup → §34; Inno installer → §35)*
 
 ---
 
@@ -1546,7 +1549,7 @@ Manifest fields include: timestamp, home, appVersion, path A/B, migrationStatus,
 
 ### 34.6 Deferred
 
-MSI/Inno guided installer (§21 R4), automated DB restore, MySQL product installer bundling.
+MSI/WiX, automated DB restore, MySQL product installer bundling. *(Inno Setup wrapper → Batch 10 / §35)*
 
 ### 34.7 Validation checklist
 
@@ -1560,3 +1563,63 @@ MSI/Inno guided installer (§21 R4), automated DB restore, MySQL product install
 - [ ] `setup.log` + `SETUP_MANIFEST.json` written
 - [ ] Release package includes setup tools
 - [ ] No schema / UI / business logic changes
+
+---
+
+## 35. Windows Installer — Inno Setup (Batch 10)
+
+### 35.1 Purpose
+
+Deliver a **professional Windows setup EXE** that packages the certified release and **delegates** first-time bootstrap to Batch 9 (`setup-flowtix`) and optional service install to Batch 8. The installer does **not** redesign deployment or replace update/rollback.
+
+### 35.2 Architecture
+
+| Layer | Responsibility |
+|-------|----------------|
+| Inno Setup 6 | Wizard, extract, shortcuts, uninstaller, logging |
+| Batch 9 | Folders, env validation, place app/web, Path A/B migrate |
+| Batch 8 | Optional WinSW via setup flags |
+| Batch 6 / 7 | Day-2 update / rollback (unchanged) |
+
+### 35.3 Build
+
+```text
+deployment\create-release.bat
+deployment\installer\build-installer.bat
+→ deployment\installer\output\Flowtix-Setup-vX.Y.Z.exe
+```
+
+Sources: `deployment/installer/Flowtix.iss`, `license.txt`, `post-install.bat`, `README.md`.
+
+### 35.4 Safety
+
+| Rule | Statement |
+|------|-----------|
+| No MySQL install | Operator provides MySQL |
+| No `.env` overwrite | Batch 9 rules apply |
+| Existing install | `post-install.bat` skips setup; use Batch 6 |
+| Uninstall default | Stop/remove service; remove app/web binaries; **keep** `shared/`, `backups/`, `logs/`, `releases/`, DB |
+| No secrets in EXE | Templates only |
+
+### 35.5 Silent install
+
+`/VERYSILENT /DIR="C:\FT-ERP"` with optional `/TASKS="skipmigrate,installservice,desktopicon"` and `/LOG=…`. Path A requires pre-created `shared\.env`.
+
+### 35.6 Code signing
+
+Optional Authenticode via Inno `SignTool` — documented in `deployment/installer/README.md`; **not required** to produce a build.
+
+### 35.7 Deferred
+
+MSI/WiX, auto-update agent (R5), bundled MySQL, automated DB restore.
+
+### 35.8 Validation checklist
+
+- [ ] `build-installer.bat` produces `Flowtix-Setup-v*.exe`
+- [ ] Installer embeds release with `tools/setup-flowtix.bat`
+- [ ] Post-install calls Batch 9 (or skips on existing install)
+- [ ] Service task optional
+- [ ] Uninstall preserves shared/backups/logs/releases/DB
+- [ ] Update/rollback tools unchanged
+- [ ] FT-DEP-001 §21 R4 / §35 documented
+- [ ] No ERP business / UI / schema changes

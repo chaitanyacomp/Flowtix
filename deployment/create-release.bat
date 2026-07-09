@@ -145,8 +145,13 @@ if exist "%DEPLOY%\vendor\winsw\WinSW-x64.exe" (
   echo.
   echo Deferred:
   echo   - automated DB restore
-  echo   - Windows Installer ^(MSI / Inno^)
+  echo   - MSI / WiX ^(Inno Setup: deployment\installer\build-installer.bat^)
 )
+
+echo.
+echo [create-release] Optional next step ^(Batch 10^):
+echo   deployment\installer\build-installer.bat
+echo.
 
 REM --- 7. Git commit + build date ---
 set "GIT_COMMIT=unknown"

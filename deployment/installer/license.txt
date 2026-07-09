@@ -1,0 +1,30 @@
+Flowtix ERP — End User License / Use Terms (Installer)
+
+IMPORTANT: This is a deployment packaging license notice for the Windows installer.
+Replace with your commercial EULA before customer distribution if required.
+
+1. Certified package
+   You may install and run only the certified Flowtix ERP release package
+   delivered with this installer, in accordance with your license agreement
+   with the product owner / implementation partner.
+
+2. No warranty for environment
+   The installer does not install MySQL Server. You are responsible for
+   providing a suitable Windows host, Node.js runtime, and MySQL instance.
+
+3. Customer data
+   Database contents, shared/.env secrets, uploads, backups, and logs remain
+   customer property. The installer and uninstaller are designed not to wipe
+   the database or delete shared/, backups/, or logs/ by default.
+
+4. Source and redistribution
+   This installer delivers a runnable product package. It does not grant
+   rights to redistribute source code, reverse engineer beyond applicable law,
+   or deploy uncertified builds.
+
+5. Updates and rollback
+   Day-2 updates and rollbacks use the included tools (update-flowtix /
+   rollback-flowtix), not a re-run of this installer as a destructive
+   re-bootstrap.
+
+By clicking Next / Install you acknowledge these terms for this installation.

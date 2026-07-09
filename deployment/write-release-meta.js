@@ -88,7 +88,7 @@ Apply on the client server with Prisma migrate deploy against shared/.env DATABA
 
 - _None recorded for this build. Edit before customer delivery if applicable._
 
-## Package Contents (Batch 1+3+4+5+6+7+8+9)
+## Package Contents (Batch 1+3+4+5+6+7+8+9+10)
 
 - \`web/\` - Vite production frontend
 - \`app/server.js\` - esbuild-bundled Node/Express entry (Batch 3)
@@ -103,10 +103,14 @@ Apply on the client server with Prisma migrate deploy against shared/.env DATABA
 - \`tools/service-*.bat\` + \`service-control.js\` - optional WinSW Windows Service (Batch 8)
 - \`tools/setup-flowtix.*\` / \`check-prereqs.*\` / \`init-folders.*\` - client setup bootstrap (Batch 9)
 
+## Windows Installer (Batch 10)
+
+Build separately: \`deployment/installer/build-installer.bat\` → \`Flowtix-Setup-vX.Y.Z.exe\` (Inno Setup wrapper; not embedded in this folder).
+
 ## Not Included (later batches)
 
 - Automated DB restore
-- Windows Installer (MSI / Inno)
+- MSI / WiX installer
 - Docker / pkg / nexe packaging
 - Raw \`app/src/\` application tree (replaced by bundle)
 `;

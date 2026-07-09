@@ -164,7 +164,7 @@ export function ProductionWorkspaceCompactPanel({
       compact
       premium
       enableDraftCache
-      className="flex min-h-0 flex-1 flex-col overflow-hidden border-0 shadow-none"
+      className="flex h-full min-h-0 flex-1 flex-col overflow-hidden border-0 shadow-none"
       onStatusChange={handleReportStatusChange}
       closeWorkOrderOnConfirm
       confirmButtonLabel="Confirm Report & Close WO"

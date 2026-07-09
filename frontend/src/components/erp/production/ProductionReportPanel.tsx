@@ -301,214 +301,233 @@ export function ProductionReportPanel({
   if (!workOrderId || workOrderId <= 0) return null;
   const confirmed = reportConfirmed;
   const isPremiumCompact = compact && premium;
+  const showWastage =
+    Boolean(report) && (totalWastageQty > 1e-6 || (confirmed && wastageRows.length > 0));
 
-  return (
+  const rmTable = report && report.rmLines.length > 0 ? (
     <div
       className={cn(
-        compact
-          ? "flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-slate-200/90 bg-white shadow-sm"
-          : "rounded-md border border-slate-200 bg-white shadow-sm",
-        className,
+        "rounded border border-slate-200",
+        compact ? "max-h-[min(9.5rem,22vh)] overflow-x-hidden overflow-y-auto" : "overflow-auto",
       )}
-      role="region"
-      aria-label="Production report and RM consumption"
-      data-testid="production-report-panel"
+      data-testid={compact ? "production-report-rm-scroll" : undefined}
     >
-      <div
+      <table
         className={cn(
-          "shrink-0 border-b border-slate-100 bg-slate-50/90 px-3",
-          isPremiumCompact ? "py-2" : compact ? "py-1.5" : "py-2",
+          "w-full border-collapse text-slate-800",
+          isPremiumCompact
+            ? "table-fixed text-[12px]"
+            : compact
+              ? "table-fixed text-[11px]"
+              : "min-w-[54rem] text-[12px]",
         )}
       >
-        <div className="flex items-center justify-between gap-2">
-          <div
-            className={cn(
-              "font-semibold text-slate-900",
-              isPremiumCompact ? "text-[14px]" : compact ? "text-[12px]" : "text-[13px]",
-            )}
-          >
-            Production Report
-          </div>
-          {!isPremiumCompact ? (
-            <span
+        <thead className="sticky top-0 z-[1] bg-slate-50">
+          <tr className="border-b border-slate-200 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-600">
+            <th className={cn("px-2", isPremiumCompact ? "py-1" : compact ? "py-0.5" : "py-1")}>RM Item</th>
+            <th className={cn("px-2 text-right", compact ? "w-[4.25rem] py-0.5" : "py-1")}>Issued</th>
+            <th className={cn("px-2 text-right", compact ? "w-[4.25rem] py-0.5" : "py-1")}>Consumed</th>
+            <th className={cn("px-2 text-right", compact ? "w-[5rem] py-0.5" : "py-1")}>Returned</th>
+            <th className={cn("px-2 text-right", compact ? "w-[4.75rem] py-0.5" : "py-1")}>Total Wastage</th>
+            <th className={cn("px-2 text-right", compact ? "w-[4.25rem] py-0.5" : "py-1")}>Variance</th>
+            {!compact ? <th className="px-2 py-1 text-right">Returnable</th> : null}
+            <th className={cn("px-2", compact ? "w-[6.5rem] py-0.5" : "py-1")}>Remarks</th>
+          </tr>
+        </thead>
+        <tbody>
+          {report.rmLines.map((ln) => {
+            const confirmedLine = report.confirmation?.lines.find((r) => r.itemId === ln.itemId);
+            const input = lineInputs[ln.itemId];
+            const variance = confirmed ? confirmedLine?.varianceQty : Number(input?.varianceQty ?? 0);
+            const cellPy = isPremiumCompact ? "py-1" : compact ? "py-0.5" : "py-1";
+            return (
+              <tr key={ln.itemId} className="border-b border-slate-100">
+                <td className={cn("px-2 font-medium", cellPy)}>
+                  {ln.itemName}
+                  {ln.unit ? <span className="ml-1 font-normal text-slate-500">{ln.unit}</span> : null}
+                </td>
+                <td className={cn("px-2 text-right tabular-nums", cellPy)}>{fmtQty(ln.issuedQty)}</td>
+                <td className={cn("px-2 text-right tabular-nums", cellPy)}>
+                  {confirmed
+                    ? fmtQty(confirmedLine?.rmConsumedQty ?? ln.reportedConsumedQty ?? ln.ledgerConsumedQty)
+                    : fmtQty(Number(input?.rmConsumedQty ?? ln.reportedConsumedQty ?? ln.ledgerConsumedQty ?? 0))}
+                </td>
+                <td className={cn("px-2 text-right tabular-nums", cellPy)}>
+                  {confirmed ? (
+                    fmtQty(confirmedLine?.rmReturnQty ?? 0)
+                  ) : (
+                    <input
+                      className={cn(
+                        "rounded border border-slate-200 px-1 text-right",
+                        isPremiumCompact
+                          ? "h-8 w-full max-w-[4.5rem] text-[12px]"
+                          : compact
+                            ? "h-7 w-full max-w-[4rem] text-[11px]"
+                            : "w-20 py-0.5",
+                      )}
+                      type="number"
+                      min="0"
+                      step="0.001"
+                      value={input?.rmReturnQty ?? ""}
+                      onChange={(e) => updateLineInput(ln.itemId, "rmReturnQty", e.target.value)}
+                    />
+                  )}
+                </td>
+                <td className={cn("px-2 text-right tabular-nums", cellPy)}>
+                  {confirmed ? fmtQty(confirmedLine?.scrapWasteQty ?? 0) : fmtQty(Number(input?.scrapWasteQty ?? 0))}
+                </td>
+                <td
+                  className={cn(
+                    "px-2 text-right tabular-nums",
+                    cellPy,
+                    Number(variance ?? 0) > 0
+                      ? "text-rose-800"
+                      : Number(variance ?? 0) < 0
+                        ? "text-emerald-800"
+                        : "",
+                  )}
+                >
+                  {fmtQty(variance)}
+                </td>
+                {!compact ? (
+                  <td className={cn("px-2 text-right tabular-nums", cellPy)}>{fmtQty(ln.returnableQty)}</td>
+                ) : null}
+                <td className={cn("px-2", cellPy)}>
+                  {confirmed ? (
+                    confirmedLine?.remarks ?? "-"
+                  ) : (
+                    <input
+                      className={cn(
+                        "w-full rounded border border-slate-200 px-1",
+                        isPremiumCompact
+                          ? "h-8 text-[12px]"
+                          : compact
+                            ? "h-7 text-[11px]"
+                            : "w-36 py-0.5",
+                      )}
+                      value={input?.remarks ?? ""}
+                      onChange={(e) => updateLineInput(ln.itemId, "remarks", e.target.value)}
+                    />
+                  )}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  ) : null;
+
+  const remarksField = !isPremiumCompact ? (
+    <label className={cn("text-[11px] font-medium text-slate-600", compact ? "block" : "flex-1")}>
+      Remarks
+      <textarea
+        className={cn(
+          "mt-0.5 w-full rounded border border-slate-200 px-2 py-1 text-slate-900",
+          compact ? "min-h-10 text-[11px]" : "min-h-16 text-[12px]",
+        )}
+        value={remarks}
+        onChange={(e) => setRemarks(e.target.value)}
+        disabled={confirmed}
+        rows={compact ? 2 : undefined}
+      />
+    </label>
+  ) : (
+    <label className="block text-[12px] font-semibold text-slate-700">
+      Report remarks
+      <textarea
+        className="mt-1 min-h-9 w-full rounded-md border border-slate-300 px-2.5 py-1.5 text-[13px] text-slate-900"
+        value={remarks}
+        onChange={(e) => setRemarks(e.target.value)}
+        disabled={confirmed}
+        placeholder="Optional"
+        rows={2}
+      />
+    </label>
+  );
+
+  const confirmButton = !confirmed ? (
+    <div className={cn("shrink-0", isPremiumCompact || compact ? "w-full" : "space-y-1 sm:max-w-[16rem]")}>
+      {!isPremiumCompact && !compact && confirmHelperText ? (
+        <p className="text-[10px] leading-snug text-slate-600">{confirmHelperText}</p>
+      ) : null}
+      <Button
+        type="button"
+        size={isPremiumCompact ? "default" : "sm"}
+        className={cn(
+          isPremiumCompact ? "h-10 w-full text-[14px] font-semibold" : "w-full",
+          !isPremiumCompact && compact ? "h-9 text-[12px] font-semibold" : !isPremiumCompact ? "text-[12px]" : "",
+        )}
+        onClick={handleConfirm}
+        disabled={saving || confirmBlockedByWastage}
+        data-testid="confirm-report-close-wo-btn"
+      >
+        {saving ? "Working…" : confirmButtonLabel ?? "Confirm Report"}
+      </Button>
+    </div>
+  ) : null;
+
+  /** Compact/premium: true 3-zone containment — header / scroll middle / pinned action footer. */
+  if (compact) {
+    return (
+      <div
+        className={cn(
+          "flex h-full min-h-0 max-h-[min(100%,calc(100dvh-11rem))] flex-1 flex-col overflow-hidden rounded-lg border border-slate-200/90 bg-white shadow-sm",
+          className,
+        )}
+        role="region"
+        aria-label="Production report and RM consumption"
+        data-testid="production-report-panel"
+      >
+        {/* ZONE 1 — fixed header: title + RM summary */}
+        <div className="shrink-0 border-b border-slate-100 bg-slate-50/90 px-3 py-2" data-testid="production-report-header">
+          <div className="flex items-center justify-between gap-2">
+            <div
               className={cn(
-                "rounded border px-2 py-0.5 text-[10px] font-semibold",
-                confirmed
-                  ? "border-emerald-200 bg-emerald-50 text-emerald-800"
-                  : "border-amber-200 bg-amber-50 text-amber-800",
+                "font-semibold text-slate-900",
+                isPremiumCompact ? "text-[14px]" : "text-[12px]",
               )}
             >
-              {confirmed ? "Confirmed" : "Mandatory"}
-            </span>
-          ) : null}
+              Production Report
+            </div>
+            {!isPremiumCompact ? (
+              <span
+                className={cn(
+                  "rounded border px-2 py-0.5 text-[10px] font-semibold",
+                  confirmed
+                    ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+                    : "border-amber-200 bg-amber-50 text-amber-800",
+                )}
+              >
+                {confirmed ? "Confirmed" : "Mandatory"}
+              </span>
+            ) : null}
+          </div>
         </div>
-      </div>
-      <div
-        className={cn(
-          compact ? "flex min-h-0 flex-1 flex-col gap-2 overflow-hidden px-2.5 py-2" : "space-y-3 px-3 py-2",
-        )}
-      >
+
         {loading ? (
-          <p className={cn("text-slate-600", isPremiumCompact ? "text-[13px] font-medium" : "text-[12px]")}>
+          <p className={cn("px-2.5 py-2 text-slate-600", isPremiumCompact ? "text-[13px] font-medium" : "text-[12px]")}>
             Loading production report…
           </p>
         ) : error ? (
-          <p className="text-[11px] text-amber-800">{error}</p>
+          <p className="px-2.5 py-2 text-[11px] text-amber-800">{error}</p>
         ) : !report?.hasApprovedProduction ? (
-          <p className="text-[11px] text-slate-600">No approved production batches on this work order yet.</p>
+          <p className="px-2.5 py-2 text-[11px] text-slate-600">No approved production batches on this work order yet.</p>
         ) : (
           <>
-            {!compact ? (
-              <div className="grid gap-2 text-[12px] sm:grid-cols-2 lg:grid-cols-4">
-                <div>
-                  <span className="text-slate-500">WO</span>
-                  <div className="font-semibold text-slate-900">{report.workOrderNo}</div>
-                </div>
-                <div>
-                  <span className="text-slate-500">Source / FG</span>
-                  <div className="font-medium text-slate-900">
-                    {String(report.salesOrderNo ?? "").toLowerCase().includes("green level")
-                      ? "Green Level Stock"
-                      : (report.salesOrderNo ?? "-")}
-                    {report.fgItemName ? ` - ${report.fgItemName}` : ""}
-                  </div>
-                </div>
-                <div>
-                  <span className="text-slate-500">Planned / Produced</span>
-                  <div className="font-semibold tabular-nums text-slate-900">
-                    {fmtQty(report.summary.plannedQty)} / {fmtQty(report.summary.producedQty)}
-                  </div>
-                </div>
-                <div>
-                  <span className="text-slate-500">Remaining</span>
-                  <div className="font-medium tabular-nums text-slate-900">
-                    {fmtQty(report.summary.remainderQty)}
-                    {report.confirmation?.confirmedAt ? (
-                      <span className="ml-1 font-normal text-slate-500">{fmtWhen(report.confirmation.confirmedAt)}</span>
-                    ) : null}
-                  </div>
-                </div>
+            {rmTable ? (
+              <div className="shrink-0 space-y-1 border-b border-slate-100 px-2.5 py-2" data-testid="production-report-rm-zone">
+                {rmTable}
               </div>
             ) : null}
 
-            <div className={cn(compact && "flex min-h-0 flex-1 flex-col overflow-hidden")}>
-              <div className={cn(compact ? "min-h-0 flex-1 space-y-2 overflow-y-auto" : "space-y-3")}>
-                {report.rmLines.length > 0 ? (
-                  <div
-                    className={cn(
-                      "min-h-0 rounded border border-slate-200",
-                      compact ? "overflow-x-hidden overflow-y-auto" : "overflow-auto",
-                    )}
-                  >
-                <table
-                  className={cn(
-                    "w-full border-collapse text-slate-800",
-                    isPremiumCompact
-                      ? "table-fixed text-[12px]"
-                      : compact
-                        ? "table-fixed text-[11px]"
-                        : "min-w-[54rem] text-[12px]",
-                  )}
-                >
-                  <thead className="sticky top-0 z-[1] bg-slate-50">
-                    <tr className="border-b border-slate-200 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-600">
-                      <th className={cn("px-2", isPremiumCompact ? "py-1" : compact ? "py-0.5" : "py-1")}>RM Item</th>
-                      <th className={cn("px-2 text-right", compact ? "w-[4.25rem] py-0.5" : "py-1")}>Issued</th>
-                      <th className={cn("px-2 text-right", compact ? "w-[4.25rem] py-0.5" : "py-1")}>Consumed</th>
-                      <th className={cn("px-2 text-right", compact ? "w-[5rem] py-0.5" : "py-1")}>Returned</th>
-                      <th className={cn("px-2 text-right", compact ? "w-[4.75rem] py-0.5" : "py-1")}>Total Wastage</th>
-                      <th className={cn("px-2 text-right", compact ? "w-[4.25rem] py-0.5" : "py-1")}>Variance</th>
-                      {!compact ? <th className="px-2 py-1 text-right">Returnable</th> : null}
-                      <th className={cn("px-2", compact ? "w-[6.5rem] py-0.5" : "py-1")}>Remarks</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {report.rmLines.map((ln) => {
-                      const confirmedLine = report.confirmation?.lines.find((r) => r.itemId === ln.itemId);
-                      const input = lineInputs[ln.itemId];
-                      const variance = confirmed ? confirmedLine?.varianceQty : Number(input?.varianceQty ?? 0);
-                      const cellPy = isPremiumCompact ? "py-1" : compact ? "py-0.5" : "py-1";
-                      return (
-                        <tr key={ln.itemId} className="border-b border-slate-100">
-                          <td className={cn("px-2 font-medium", cellPy)}>
-                            {ln.itemName}
-                            {ln.unit ? <span className="ml-1 font-normal text-slate-500">{ln.unit}</span> : null}
-                          </td>
-                          <td className={cn("px-2 text-right tabular-nums", cellPy)}>{fmtQty(ln.issuedQty)}</td>
-                          <td className={cn("px-2 text-right tabular-nums", cellPy)}>
-                            {confirmed ? (
-                              fmtQty(confirmedLine?.rmConsumedQty ?? ln.reportedConsumedQty ?? ln.ledgerConsumedQty)
-                            ) : (
-                              fmtQty(Number(input?.rmConsumedQty ?? ln.reportedConsumedQty ?? ln.ledgerConsumedQty ?? 0))
-                            )}
-                          </td>
-                          <td className={cn("px-2 text-right tabular-nums", cellPy)}>
-                            {confirmed ? (
-                              fmtQty(confirmedLine?.rmReturnQty ?? 0)
-                            ) : (
-                              <input
-                                className={cn(
-                                  "rounded border border-slate-200 px-1 text-right",
-                                  isPremiumCompact
-                                    ? "h-8 w-full max-w-[4.5rem] text-[12px]"
-                                    : compact
-                                      ? "h-7 w-full max-w-[4rem] text-[11px]"
-                                      : "w-20 py-0.5",
-                                )}
-                                type="number"
-                                min="0"
-                                step="0.001"
-                                value={input?.rmReturnQty ?? ""}
-                                onChange={(e) => updateLineInput(ln.itemId, "rmReturnQty", e.target.value)}
-                              />
-                            )}
-                          </td>
-                          <td className={cn("px-2 text-right tabular-nums", cellPy)}>
-                            {confirmed ? fmtQty(confirmedLine?.scrapWasteQty ?? 0) : fmtQty(Number(input?.scrapWasteQty ?? 0))}
-                          </td>
-                          <td
-                            className={cn(
-                              "px-2 text-right tabular-nums",
-                              cellPy,
-                              Number(variance ?? 0) > 0
-                                ? "text-rose-800"
-                                : Number(variance ?? 0) < 0
-                                  ? "text-emerald-800"
-                                  : "",
-                            )}
-                          >
-                            {fmtQty(variance)}
-                          </td>
-                          {!compact ? (
-                            <td className={cn("px-2 text-right tabular-nums", cellPy)}>{fmtQty(ln.returnableQty)}</td>
-                          ) : null}
-                          <td className={cn("px-2", cellPy)}>
-                            {confirmed ? (
-                              confirmedLine?.remarks ?? "-"
-                            ) : (
-                              <input
-                                className={cn(
-                                  "w-full rounded border border-slate-200 px-1",
-                                  isPremiumCompact
-                                    ? "h-8 text-[12px]"
-                                    : compact
-                                      ? "h-7 text-[11px]"
-                                      : "w-36 py-0.5",
-                                )}
-                                value={input?.remarks ?? ""}
-                                onChange={(e) => updateLineInput(ln.itemId, "remarks", e.target.value)}
-                              />
-                            )}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-                  </div>
-                ) : null}
-
-                {totalWastageQty > 1e-6 || (confirmed && wastageRows.length > 0) ? (
+            {/* ZONE 2 — middle: wastage scrolls internally; remarks stay above footer */}
+            <div
+              className="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden px-2.5 py-2"
+              data-testid="production-report-scroll-body"
+            >
+              {showWastage ? (
+                <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
                   <ProductionReportWastageDetails
                     wastageTypes={report.wastageTypes ?? []}
                     rows={wastageRows}
@@ -516,35 +535,35 @@ export function ProductionReportPanel({
                     unit={wastageUnit}
                     readOnly={confirmed}
                     compact={compact}
-                    hideInlineValidation={compact && !confirmed}
-                    scrollableRows={compact && !confirmed}
+                    hideInlineValidation={!confirmed}
+                    scrollableRows={!confirmed}
+                    fillAvailableHeight={!confirmed}
                     onChange={setWastageRows}
                   />
-                ) : null}
+                </div>
+              ) : (
+                <div className="min-h-0 flex-1" />
+              )}
 
-                {report.confirmation?.returnPendings?.length ? (
-                  <div className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-950">
-                    RM Return Pending:{" "}
-                    {report.confirmation.returnPendings
-                      .map((p) => `${p.itemName} ${fmtQty(p.requestedQty)} ${p.unit}`.trim())
-                      .join(", ")}
-                  </div>
-                ) : null}
-              </div>
+              {report.confirmation?.returnPendings?.length ? (
+                <div className="shrink-0 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-950">
+                  RM Return Pending:{" "}
+                  {report.confirmation.returnPendings
+                    .map((p) => `${p.itemName} ${fmtQty(p.requestedQty)} ${p.unit}`.trim())
+                    .join(", ")}
+                </div>
+              ) : null}
 
-              <div
-                className={cn(
-                  "shrink-0 border-t border-slate-200 bg-white",
-                  compact && "shadow-[0_-4px_12px_-2px_rgba(15,23,42,0.08)]",
-                  isPremiumCompact
-                    ? "flex flex-col gap-2 px-1 py-2"
-                    : compact
-                      ? "flex flex-col gap-2 px-1 py-1.5"
-                      : "sticky bottom-0 z-10 -mx-3 flex flex-col gap-2 bg-white/95 px-3 py-2 backdrop-blur-sm sm:flex-row sm:items-end",
-                )}
-                data-testid={compact ? "production-report-sticky-footer" : undefined}
-              >
-                {compact && wastageFooterFeedback ? (
+              <div className="shrink-0">{remarksField}</div>
+            </div>
+
+            {/* ZONE 3 — pinned footer: validation + Confirm only */}
+            <div
+              className="shrink-0 border-t border-slate-200 bg-white px-2.5 py-2 shadow-[0_-4px_12px_-2px_rgba(15,23,42,0.08)]"
+              data-testid="production-report-sticky-footer"
+            >
+              <div className="flex flex-col gap-2">
+                {wastageFooterFeedback ? (
                   <p
                     className={cn(
                       "rounded border px-2 py-1.5 font-medium",
@@ -556,54 +575,104 @@ export function ProductionReportPanel({
                     {wastageFooterFeedback.message}
                   </p>
                 ) : null}
-              {!isPremiumCompact ? (
-                <label className={cn("text-[11px] font-medium text-slate-600", compact ? "min-w-[10rem] flex-1" : "flex-1")}>
-                  Remarks
-                  <textarea
-                    className={cn(
-                      "mt-0.5 w-full rounded border border-slate-200 px-2 py-1 text-slate-900",
-                      compact ? "min-h-10 text-[11px]" : "min-h-16 text-[12px]",
-                    )}
-                    value={remarks}
-                    onChange={(e) => setRemarks(e.target.value)}
-                    disabled={confirmed}
-                  />
-                </label>
-              ) : (
-                <label className="text-[12px] font-semibold text-slate-700">
-                  Report remarks
-                  <textarea
-                    className="mt-1 min-h-9 w-full rounded-md border border-slate-300 px-2.5 py-1.5 text-[13px] text-slate-900"
-                    value={remarks}
-                    onChange={(e) => setRemarks(e.target.value)}
-                    disabled={confirmed}
-                    placeholder="Optional"
-                    rows={2}
-                  />
-                </label>
-              )}
-              {!confirmed ? (
-                <div className={cn("shrink-0", isPremiumCompact ? "w-full" : compact ? "space-y-1" : "space-y-1 sm:max-w-[16rem]")}>
-                  {!isPremiumCompact && confirmHelperText ? (
-                    <p className="text-[10px] leading-snug text-slate-600">{confirmHelperText}</p>
-                  ) : null}
-                  <Button
-                    type="button"
-                    size={isPremiumCompact ? "default" : "sm"}
-                    className={cn(
-                      isPremiumCompact ? "h-10 w-full text-[14px] font-semibold" : "w-full",
-                      !isPremiumCompact && compact ? "h-8 text-[11px]" : !isPremiumCompact ? "text-[12px]" : "",
-                    )}
-                    onClick={handleConfirm}
-                    disabled={saving || confirmBlockedByWastage}
-                    data-testid="confirm-report-close-wo-btn"
-                  >
-                    {saving ? "Working…" : confirmButtonLabel ?? "Confirm Report"}
-                  </Button>
-                </div>
-              ) : null}
+                {confirmButton}
               </div>
             </div>
+          </>
+        )}
+      </div>
+    );
+  }
+
+  /* Non-compact (full page) layout — unchanged structure with sticky bottom action */
+  return (
+    <div
+      className={cn("rounded-md border border-slate-200 bg-white shadow-sm", className)}
+      role="region"
+      aria-label="Production report and RM consumption"
+      data-testid="production-report-panel"
+    >
+      <div className="shrink-0 border-b border-slate-100 bg-slate-50/90 px-3 py-2">
+        <div className="flex items-center justify-between gap-2">
+          <div className="text-[13px] font-semibold text-slate-900">Production Report</div>
+          <span
+            className={cn(
+              "rounded border px-2 py-0.5 text-[10px] font-semibold",
+              confirmed
+                ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+                : "border-amber-200 bg-amber-50 text-amber-800",
+            )}
+          >
+            {confirmed ? "Confirmed" : "Mandatory"}
+          </span>
+        </div>
+      </div>
+      <div className="space-y-3 px-3 py-2">
+        {loading ? (
+          <p className="text-[12px] text-slate-600">Loading production report…</p>
+        ) : error ? (
+          <p className="text-[11px] text-amber-800">{error}</p>
+        ) : !report?.hasApprovedProduction ? (
+          <p className="text-[11px] text-slate-600">No approved production batches on this work order yet.</p>
+        ) : (
+          <>
+            <div className="grid gap-2 text-[12px] sm:grid-cols-2 lg:grid-cols-4">
+              <div>
+                <span className="text-slate-500">WO</span>
+                <div className="font-semibold text-slate-900">{report.workOrderNo}</div>
+              </div>
+              <div>
+                <span className="text-slate-500">Source / FG</span>
+                <div className="font-medium text-slate-900">
+                  {String(report.salesOrderNo ?? "").toLowerCase().includes("green level")
+                    ? "Green Level Stock"
+                    : (report.salesOrderNo ?? "-")}
+                  {report.fgItemName ? ` - ${report.fgItemName}` : ""}
+                </div>
+              </div>
+              <div>
+                <span className="text-slate-500">Planned / Produced</span>
+                <div className="font-semibold tabular-nums text-slate-900">
+                  {fmtQty(report.summary.plannedQty)} / {fmtQty(report.summary.producedQty)}
+                </div>
+              </div>
+              <div>
+                <span className="text-slate-500">Remaining</span>
+                <div className="font-medium tabular-nums text-slate-900">
+                  {fmtQty(report.summary.remainderQty)}
+                  {report.confirmation?.confirmedAt ? (
+                    <span className="ml-1 font-normal text-slate-500">{fmtWhen(report.confirmation.confirmedAt)}</span>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+
+            {rmTable}
+
+            {showWastage ? (
+              <ProductionReportWastageDetails
+                wastageTypes={report.wastageTypes ?? []}
+                rows={wastageRows}
+                totalWastageQty={totalWastageQty}
+                unit={wastageUnit}
+                readOnly={confirmed}
+                onChange={setWastageRows}
+              />
+            ) : null}
+
+            <div className="sticky bottom-0 z-10 -mx-3 flex flex-col gap-2 border-t border-slate-200 bg-white/95 px-3 py-2 backdrop-blur-sm sm:flex-row sm:items-end">
+              {remarksField}
+              {confirmButton}
+            </div>
+
+            {report.confirmation?.returnPendings?.length ? (
+              <div className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-950">
+                RM Return Pending:{" "}
+                {report.confirmation.returnPendings
+                  .map((p) => `${p.itemName} ${fmtQty(p.requestedQty)} ${p.unit}`.trim())
+                  .join(", ")}
+              </div>
+            ) : null}
           </>
         )}
       </div>

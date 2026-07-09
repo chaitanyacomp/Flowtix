@@ -23,6 +23,8 @@ type Props = {
   hideInlineValidation?: boolean;
   /** Cap wastage row table height so confirm action stays on screen; rows scroll internally. */
   scrollableRows?: boolean;
+  /** Grow wastage row area to fill remaining middle-panel height (compact containment). */
+  fillAvailableHeight?: boolean;
   validationMessage?: string | null;
   onChange: (rows: WastageDetailDraft[]) => void;
 };
@@ -40,6 +42,7 @@ export function ProductionReportWastageDetails({
   compact = false,
   hideInlineValidation = false,
   scrollableRows = false,
+  fillAvailableHeight = false,
   validationMessage = null,
   onChange,
 }: Props) {
@@ -122,14 +125,20 @@ export function ProductionReportWastageDetails({
         : "border-amber-200 bg-amber-50 text-amber-950";
 
   return (
-    <div className={cn("min-w-0", compact ? "space-y-1.5" : "space-y-2")} data-testid="production-report-wastage-details">
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
+    <div
+      className={cn(
+        "min-w-0",
+        fillAvailableHeight ? "flex min-h-0 flex-col gap-1.5" : compact ? "space-y-1.5" : "space-y-2",
+      )}
+      data-testid="production-report-wastage-details"
+    >
+      <div className="flex shrink-0 flex-wrap items-baseline justify-between gap-2">
         <h4 className={cn("font-semibold text-slate-800", compact ? "text-[12px]" : "text-[13px]")}>Wastage Details</h4>
       </div>
 
       {totalWastageQty > 1e-6 ? (
         <div
-          className={cn("rounded border px-2 py-1.5 text-[11px]", balanceTone)}
+          className={cn("shrink-0 rounded border px-2 py-1.5 text-[11px]", balanceTone)}
           data-testid="production-wastage-balance-strip"
         >
           <div className="flex flex-wrap gap-x-4 gap-y-0.5 tabular-nums">
@@ -167,16 +176,22 @@ export function ProductionReportWastageDetails({
       ) : null}
 
       {rows.length === 0 && !readOnly ? (
-        <p className="text-[11px] text-slate-600">Add wastage reasons that sum to the total wastage before confirming.</p>
+        <p className="shrink-0 text-[11px] text-slate-600">Add wastage reasons that sum to the total wastage before confirming.</p>
       ) : null}
 
       {rows.length > 0 ? (
         <div
           className={cn(
-            scrollableRows ? "overflow-x-hidden overflow-y-auto rounded border border-slate-100" : "overflow-x-auto",
-            scrollableRows && "max-h-[min(14rem,32vh)]",
+            scrollableRows || fillAvailableHeight
+              ? "overflow-x-hidden overflow-y-auto rounded border border-slate-100"
+              : "overflow-x-auto",
+            fillAvailableHeight
+              ? "min-h-[6rem] flex-1"
+              : scrollableRows
+                ? "max-h-[min(14rem,32vh)]"
+                : null,
           )}
-          data-testid={scrollableRows ? "production-wastage-rows-scroll" : undefined}
+          data-testid={scrollableRows || fillAvailableHeight ? "production-wastage-rows-scroll" : undefined}
         >
           <table className={cn("w-full border-collapse text-slate-800", compact ? "table-fixed text-[11px]" : "text-[12px]")}>
             <thead>
@@ -274,7 +289,7 @@ export function ProductionReportWastageDetails({
       ) : null}
 
       {!readOnly ? (
-        <div className="pt-0.5 pb-1">
+        <div className="shrink-0 pt-0.5 pb-1">
           <Button
             type="button"
             variant="outline"

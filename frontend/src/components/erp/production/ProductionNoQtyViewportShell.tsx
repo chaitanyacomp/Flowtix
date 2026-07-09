@@ -26,9 +26,9 @@ export function ProductionNoQtyViewportShell({
     >
       <OperatorMainSplit
         balancedWorkbench
-        className="min-h-0 flex-1"
-        queueClassName="flex min-h-0 flex-col overflow-hidden"
-        panelContainerClassName="flex min-h-0 flex-col overflow-hidden"
+        className="min-h-0 flex-1 items-stretch lg:items-stretch"
+        queueClassName="flex h-full min-h-0 flex-col overflow-hidden"
+        panelContainerClassName="flex h-full min-h-0 flex-col overflow-hidden"
         queue={left}
         panel={right}
       />

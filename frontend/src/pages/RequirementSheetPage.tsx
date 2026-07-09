@@ -2343,7 +2343,7 @@ export function RequirementSheetPage() {
         >
           <CardHeader
             className={cn(
-              isNoQty ? "space-y-0 px-2.5 py-1.5" : "pb-2 pt-2",
+              isNoQty ? "space-y-0 p-2.5 py-1.5 md:p-2.5 md:py-1.5" : "pb-2 pt-2",
               rsSectionActions && rsItemsHeaderActionClassName,
             )}
           >

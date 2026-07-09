@@ -7,6 +7,7 @@ import {
   fmtWastageQty,
   remainingWastageAfterRow,
   resolveLiveWastageValidationMessage,
+  suggestNextWastageTypeId,
   suggestWastageQtyForTypeSelection,
 } from "../../../lib/productionWastageClassification";
 import type { WastageTypeRow } from "../../../lib/wastageTypeApi";
@@ -52,20 +53,18 @@ export function ProductionReportWastageDetails({
   );
 
   const addRow = React.useCallback(() => {
-    const firstType = wastageTypes[0]?.id ?? 0;
+    const nextTypeId = suggestNextWastageTypeId(wastageTypes, rows);
     const key = newRowKey();
     const remaining = Math.max(0, balance.remainingQty);
     const qty =
-      firstType > 0 && remaining > 1e-6
-        ? suggestWastageQtyForTypeSelection(totalWastageQty, rows, key, "", unit) ?? ""
-        : remaining > 1e-6
-          ? fmtWastageQty(remaining)
-          : "";
+      remaining > 1e-6
+        ? suggestWastageQtyForTypeSelection(totalWastageQty, rows, key, "", unit) ?? fmtWastageQty(remaining)
+        : "";
     onChange([
       ...rows,
       {
         key,
-        wastageTypeId: firstType,
+        wastageTypeId: nextTypeId,
         qty,
         remarks: "",
       },
@@ -174,18 +173,18 @@ export function ProductionReportWastageDetails({
       {rows.length > 0 ? (
         <div
           className={cn(
-            "overflow-x-auto",
-            scrollableRows && "max-h-[min(14rem,32vh)] overflow-y-auto rounded border border-slate-100",
+            scrollableRows ? "overflow-x-hidden overflow-y-auto rounded border border-slate-100" : "overflow-x-auto",
+            scrollableRows && "max-h-[min(14rem,32vh)]",
           )}
           data-testid={scrollableRows ? "production-wastage-rows-scroll" : undefined}
         >
-          <table className={cn("w-full border-collapse text-slate-800", compact ? "text-[11px]" : "text-[12px]")}>
+          <table className={cn("w-full border-collapse text-slate-800", compact ? "table-fixed text-[11px]" : "text-[12px]")}>
             <thead>
               <tr className="border-b border-slate-200 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-600">
-                <th className={cn("px-2 font-medium", compact ? "py-0.5" : "py-1")}>Wastage Type</th>
-                <th className={cn("px-2 text-right font-medium", compact ? "py-0.5" : "py-1")}>Qty ({unit})</th>
+                <th className={cn("px-2 font-medium", compact ? "w-[38%] py-0.5" : "py-1")}>Wastage Type</th>
+                <th className={cn("px-2 text-right font-medium", compact ? "w-[18%] py-0.5" : "py-1")}>Qty ({unit})</th>
                 <th className={cn("px-2 font-medium", compact ? "py-0.5" : "py-1")}>Remarks</th>
-                {!readOnly ? <th className={cn("px-2 text-right font-medium", compact ? "py-0.5" : "py-1")}>Delete</th> : null}
+                {!readOnly ? <th className={cn("px-2 text-right font-medium", compact ? "w-[4.5rem] py-0.5" : "py-1")}>Delete</th> : null}
               </tr>
             </thead>
             <tbody>
@@ -201,8 +200,8 @@ export function ProductionReportWastageDetails({
                       ) : (
                         <select
                           className={cn(
-                            "w-full min-w-[9rem] rounded border border-slate-200 bg-white px-1.5",
-                            compact ? "h-7 text-[11px]" : "h-8 text-[12px]",
+                            "w-full rounded border border-slate-200 bg-white px-1.5",
+                            compact ? "h-7 min-w-0 text-[11px]" : "h-8 min-w-[9rem] text-[12px]",
                           )}
                           value={row.wastageTypeId > 0 ? String(row.wastageTypeId) : ""}
                           onChange={(e) => updateRow(row.key, { wastageTypeId: Number(e.target.value) })}
@@ -251,8 +250,8 @@ export function ProductionReportWastageDetails({
                       ) : (
                         <input
                           className={cn(
-                            "w-full min-w-[8rem] rounded border border-slate-200 px-1.5",
-                            compact ? "h-7 text-[11px]" : "h-8 text-[12px]",
+                            "w-full rounded border border-slate-200 px-1.5",
+                            compact ? "h-7 min-w-0 text-[11px]" : "h-8 min-w-[8rem] text-[12px]",
                           )}
                           value={row.remarks}
                           onChange={(e) => updateRow(row.key, { remarks: e.target.value })}
@@ -275,9 +274,18 @@ export function ProductionReportWastageDetails({
       ) : null}
 
       {!readOnly ? (
-        <Button type="button" variant="outline" size="sm" className={cn("h-8", compact ? "text-[11px]" : "text-[12px]")} onClick={addRow}>
-          + Add Wastage Reason
-        </Button>
+        <div className="pt-0.5 pb-1">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className={cn("h-8 shrink-0", compact ? "text-[11px]" : "text-[12px]")}
+            onClick={addRow}
+            data-testid="add-wastage-reason-btn"
+          >
+            + Add Wastage Reason
+          </Button>
+        </div>
       ) : null}
 
       {!hideInlineValidation ? (

@@ -163,6 +163,7 @@ export function ProductionWorkspaceCompactPanel({
       refreshKey={reportRefreshKey}
       compact
       premium
+      enableDraftCache
       className="flex min-h-0 flex-1 flex-col overflow-hidden border-0 shadow-none"
       onStatusChange={handleReportStatusChange}
       closeWorkOrderOnConfirm

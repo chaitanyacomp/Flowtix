@@ -15,6 +15,6 @@ describe("ProductionOperatorIdentityBar", () => {
     expect(source).toContain("Produced");
     expect(source).toContain("Remaining");
     expect(source).toContain("flowContextLabel");
-    expect(source).toContain("text-[22px]");
+    expect(source).toContain("text-[20px]");
   });
 });

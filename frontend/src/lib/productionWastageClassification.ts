@@ -110,6 +110,25 @@ export function suggestWastageQtyForTypeSelection(
   return formatQtyNumberForInput(remaining, unit);
 }
 
+/**
+ * Next wastage type for a new row: first unused type in master order.
+ * Does not blindly repeat the first type (e.g. Purging) when it is already used.
+ * Returns 0 when all types are already used — operator must select manually.
+ */
+export function suggestNextWastageTypeId(
+  wastageTypes: Array<{ id: number }>,
+  rows: WastageDetailDraft[],
+): number {
+  const used = new Set(
+    rows.map((row) => Number(row.wastageTypeId)).filter((id) => Number.isFinite(id) && id > 0),
+  );
+  for (const type of wastageTypes) {
+    const id = Number(type.id);
+    if (Number.isFinite(id) && id > 0 && !used.has(id)) return id;
+  }
+  return 0;
+}
+
 export function buildWastageRemainingToClassifyMessage(remainingQty: number, unit = "Kg"): string {
   return `Classify remaining ${fmtWastageQty(Math.abs(remainingQty), unit)} ${unit} wastage before confirming.`;
 }

@@ -8,6 +8,7 @@ import {
   isWastageClassificationComplete,
   remainingWastageAfterRow,
   sumWastageDetailDraftQty,
+  suggestNextWastageTypeId,
   suggestWastageQtyForTypeSelection,
   validateWastageClassification,
 } from "../../src/lib/productionWastageClassification";
@@ -101,6 +102,25 @@ describe("productionWastageClassification", () => {
   it("auto-fills remaining qty for the next row when total wastage is partially classified", () => {
     const rows = [{ key: "a", wastageTypeId: 1, qty: "4", remarks: "" }];
     expect(suggestWastageQtyForTypeSelection(6, rows, "b", "", "Kg")).toBe("2");
+  });
+
+  it("defaults next wastage row to the next unused type instead of repeating Purging", () => {
+    const types = [{ id: 1 }, { id: 2 }, { id: 3 }];
+    expect(suggestNextWastageTypeId(types, [])).toBe(1);
+    expect(suggestNextWastageTypeId(types, [{ key: "a", wastageTypeId: 1, qty: "2", remarks: "" }])).toBe(2);
+    expect(
+      suggestNextWastageTypeId(types, [
+        { key: "a", wastageTypeId: 1, qty: "2", remarks: "" },
+        { key: "b", wastageTypeId: 2, qty: "1", remarks: "" },
+      ]),
+    ).toBe(3);
+    expect(
+      suggestNextWastageTypeId(types, [
+        { key: "a", wastageTypeId: 1, qty: "1", remarks: "" },
+        { key: "b", wastageTypeId: 2, qty: "1", remarks: "" },
+        { key: "c", wastageTypeId: 3, qty: "1", remarks: "" },
+      ]),
+    ).toBe(0);
   });
 
   it("formats mismatch message with totals", () => {

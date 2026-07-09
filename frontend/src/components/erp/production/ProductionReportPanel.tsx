@@ -394,27 +394,32 @@ export function ProductionReportPanel({
             <div className={cn(compact && "flex min-h-0 flex-1 flex-col overflow-hidden")}>
               <div className={cn(compact ? "min-h-0 flex-1 space-y-2 overflow-y-auto" : "space-y-3")}>
                 {report.rmLines.length > 0 ? (
-                  <div className={cn("min-h-0 overflow-auto rounded border border-slate-200")}>
+                  <div
+                    className={cn(
+                      "min-h-0 rounded border border-slate-200",
+                      compact ? "overflow-x-hidden overflow-y-auto" : "overflow-auto",
+                    )}
+                  >
                 <table
                   className={cn(
                     "w-full border-collapse text-slate-800",
                     isPremiumCompact
-                      ? "min-w-[44rem] text-[12px]"
+                      ? "table-fixed text-[12px]"
                       : compact
-                        ? "min-w-[44rem] text-[11px]"
+                        ? "table-fixed text-[11px]"
                         : "min-w-[54rem] text-[12px]",
                   )}
                 >
                   <thead className="sticky top-0 z-[1] bg-slate-50">
                     <tr className="border-b border-slate-200 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-600">
                       <th className={cn("px-2", isPremiumCompact ? "py-1" : compact ? "py-0.5" : "py-1")}>RM Item</th>
-                      <th className={cn("px-2 text-right", compact ? "py-0.5" : "py-1")}>Issued</th>
-                      <th className={cn("px-2 text-right", compact ? "py-0.5" : "py-1")}>Consumed</th>
-                      <th className={cn("px-2 text-right", compact ? "py-0.5" : "py-1")}>Returned</th>
-                      <th className={cn("px-2 text-right", compact ? "py-0.5" : "py-1")}>Total Wastage</th>
-                      <th className={cn("px-2 text-right", compact ? "py-0.5" : "py-1")}>Variance</th>
+                      <th className={cn("px-2 text-right", compact ? "w-[4.25rem] py-0.5" : "py-1")}>Issued</th>
+                      <th className={cn("px-2 text-right", compact ? "w-[4.25rem] py-0.5" : "py-1")}>Consumed</th>
+                      <th className={cn("px-2 text-right", compact ? "w-[5rem] py-0.5" : "py-1")}>Returned</th>
+                      <th className={cn("px-2 text-right", compact ? "w-[4.75rem] py-0.5" : "py-1")}>Total Wastage</th>
+                      <th className={cn("px-2 text-right", compact ? "w-[4.25rem] py-0.5" : "py-1")}>Variance</th>
                       {!compact ? <th className="px-2 py-1 text-right">Returnable</th> : null}
-                      <th className={cn("px-2", compact ? "py-0.5" : "py-1")}>Remarks</th>
+                      <th className={cn("px-2", compact ? "w-[6.5rem] py-0.5" : "py-1")}>Remarks</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -445,9 +450,9 @@ export function ProductionReportPanel({
                                 className={cn(
                                   "rounded border border-slate-200 px-1 text-right",
                                   isPremiumCompact
-                                    ? "h-8 w-[4.5rem] text-[12px]"
+                                    ? "h-8 w-full max-w-[4.5rem] text-[12px]"
                                     : compact
-                                      ? "h-7 w-16 text-[11px]"
+                                      ? "h-7 w-full max-w-[4rem] text-[11px]"
                                       : "w-20 py-0.5",
                                 )}
                                 type="number"
@@ -483,11 +488,11 @@ export function ProductionReportPanel({
                             ) : (
                               <input
                                 className={cn(
-                                  "rounded border border-slate-200 px-1",
+                                  "w-full rounded border border-slate-200 px-1",
                                   isPremiumCompact
-                                    ? "h-8 w-32 text-[12px]"
+                                    ? "h-8 text-[12px]"
                                     : compact
-                                      ? "h-7 w-28 text-[11px]"
+                                      ? "h-7 text-[11px]"
                                       : "w-36 py-0.5",
                                 )}
                                 value={input?.remarks ?? ""}
@@ -568,11 +573,12 @@ export function ProductionReportPanel({
                 <label className="text-[12px] font-semibold text-slate-700">
                   Report remarks
                   <textarea
-                    className="mt-1 min-h-11 w-full rounded-md border border-slate-300 px-2.5 py-1.5 text-[13px] text-slate-900"
+                    className="mt-1 min-h-9 w-full rounded-md border border-slate-300 px-2.5 py-1.5 text-[13px] text-slate-900"
                     value={remarks}
                     onChange={(e) => setRemarks(e.target.value)}
                     disabled={confirmed}
                     placeholder="Optional"
+                    rows={2}
                   />
                 </label>
               )}

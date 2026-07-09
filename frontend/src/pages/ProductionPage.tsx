@@ -6265,6 +6265,7 @@ export function ProductionPage() {
                       key={scopedProductionWorkspaceKey(effectiveScopedWoId, effectiveScopedWolId)}
                       workOrderId={effectiveScopedWoId}
                       refreshKey={liveTick}
+                      enableDraftCache
                       onConfirmed={handleProductionReportConfirmed}
                     />
                   ) : null,
@@ -6486,6 +6487,7 @@ export function ProductionPage() {
           key={scopedProductionWorkspaceKey(effectiveScopedWoId, effectiveScopedWolId)}
           workOrderId={effectiveScopedWoId}
           refreshKey={liveTick}
+          enableDraftCache
           className={cn(!fromNoQtySo && flatLines.length > 0 && "mt-1")}
           onConfirmed={handleProductionReportConfirmed}
         />

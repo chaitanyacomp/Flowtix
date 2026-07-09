@@ -107,10 +107,10 @@ export const PRODUCTION_SAVE_BUTTON_LABEL = "Save Production";
 
 
 export const productionOperatorDateInputClass =
-  "erp-flow-filter-input h-11 w-[9.5rem] shrink-0 tabular-nums text-sm font-semibold";
+  "erp-flow-filter-input h-12 w-[9.5rem] shrink-0 tabular-nums text-sm font-semibold";
 
 export const productionOperatorQtyInputClass =
-  "h-12 w-full min-w-[12rem] max-w-[16rem] shrink-0 rounded-md border-2 border-sky-300 bg-white px-3 text-right text-xl font-bold tabular-nums shadow-sm focus-visible:border-sky-500 focus-visible:ring-2 focus-visible:ring-sky-200";
+  "h-12 w-full min-w-[11rem] max-w-[15rem] shrink-0 rounded-md border-2 border-sky-300 bg-white px-3 text-right text-xl font-bold tabular-nums shadow-sm focus-visible:border-sky-500 focus-visible:ring-2 focus-visible:ring-sky-200";
 
 export const productionOperatorFieldLabelClass =
   "text-[11px] font-bold uppercase tracking-wider text-slate-600";

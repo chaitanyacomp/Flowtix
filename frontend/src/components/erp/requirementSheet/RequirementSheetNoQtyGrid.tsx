@@ -105,6 +105,9 @@ export function RequirementSheetNoQtyGrid({
             <th scope="col" className="text-right" title="First-pass production QC still awaiting inspection">
               Pending QC
             </th>
+            <th scope="col" className="text-right" title="Prior-cycle rejected qty still in hold/rework disposition">
+              Hold / rework
+            </th>
             <th scope="col" className="text-right" title="Usable FG available for optional dispatch (informational)">
               Usable FG
             </th>
@@ -185,6 +188,9 @@ export function RequirementSheetNoQtyGrid({
                   <td className="erp-table-num font-semibold text-slate-900">
                     {pendingQcDisplay > PLAN_EPS ? fmtPlan(pendingQcDisplay) : "—"}
                   </td>
+                  <td className="erp-table-num text-slate-800">
+                    {pendingDisp > PLAN_EPS ? fmtPlan(pendingDisp) : "—"}
+                  </td>
                   <td className="erp-table-num text-slate-700">{fmtPlan(usable)}</td>
                   <td>
                     <Badge variant={badgeVariant}>{badgeLabel}</Badge>
@@ -202,7 +208,7 @@ export function RequirementSheetNoQtyGrid({
                 </tr>
                 {detailOpen ? (
                   <tr className="erp-workbench-grid-detail-row">
-                    <td colSpan={8}>
+                    <td colSpan={9}>
                       <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
                         <DetailMetric
                           label="Current cycle demand"

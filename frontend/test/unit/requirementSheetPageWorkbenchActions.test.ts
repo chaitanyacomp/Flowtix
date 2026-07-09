@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest";
 
 const pagePath = resolve(__dirname, "../../src/pages/RequirementSheetPage.tsx");
 const pageSource = readFileSync(pagePath, "utf8");
+const gridPath = resolve(__dirname, "../../src/components/erp/requirementSheet/RequirementSheetNoQtyGrid.tsx");
+const gridSource = readFileSync(gridPath, "utf8");
 
 describe("RequirementSheetPage workbench actions (FT-PD-066)", () => {
   it("uses a single Items-header action cluster", () => {
@@ -11,8 +13,8 @@ describe("RequirementSheetPage workbench actions (FT-PD-066)", () => {
     expect(pageSource).not.toContain("WorkbenchActionBar");
     expect(pageSource).not.toContain('data-testid="workbench-action-bar"');
     expect(pageSource).toContain("rsWorkbenchActionCluster");
+    expect(pageSource).toContain('data-testid="rs-items-header-row"');
     expect(pageSource).toContain("rsItemsHeaderActionClassName");
-    expect(pageSource).toContain("sticky top-[var(--erp-app-header-h");
   });
 
   it("keeps draft action handlers on the single cluster", () => {
@@ -21,5 +23,22 @@ describe("RequirementSheetPage workbench actions (FT-PD-066)", () => {
     expect(pageSource).toContain("onClick: () => void recalc()");
     expect(pageSource).toContain("onClick: () => void saveDraft()");
     expect(pageSource).toContain("resolveRequirementSheetWorkbenchActions");
+  });
+
+  it("places Items title and actions on one header row for NO_QTY", () => {
+    expect(pageSource).toContain('data-testid="rs-items-header-row"');
+    expect(pageSource).toMatch(/Items[\s\S]*rsWorkbenchActionCluster/);
+    expect(pageSource).not.toContain("Planning Summary");
+  });
+});
+
+describe("RequirementSheetNoQtyGrid headings", () => {
+  it("keeps corrected qty column headings", () => {
+    expect(gridSource).toContain("Current requirement");
+    expect(gridSource).toContain("Prior shortfall");
+    expect(gridSource).toContain("Total to produce");
+    expect(gridSource).toContain("Pending QC");
+    expect(gridSource).toContain("Hold / rework");
+    expect(gridSource).toContain("Usable FG");
   });
 });

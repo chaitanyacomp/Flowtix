@@ -1401,8 +1401,10 @@ export function RequirementSheetPage() {
     />
   ) : null;
 
-  const rsItemsHeaderActionClassName =
-    "sticky top-[var(--erp-app-header-h,3.25rem)] z-20 -mx-3 border-b border-slate-200/90 bg-white/95 px-3 py-1.5 backdrop-blur-sm sm:-mx-0 sm:px-0";
+  /** Items title + Finalize / Recalculate / Save Draft on one compact row (NO_QTY). */
+  const rsItemsHeaderActionClassName = isNoQty
+    ? "z-20 border-b border-slate-200/90 bg-white px-0 py-0"
+    : "sticky top-[var(--erp-app-header-h,3.25rem)] z-20 -mx-3 border-b border-slate-200/90 bg-white/95 px-3 py-1.5 backdrop-blur-sm sm:-mx-0 sm:px-0";
 
   const executionModeRequested = isExecutionModeRequested(searchParams);
   const useExecutionModeShell = shouldUseNoQtyExecutionModeShell({
@@ -1653,25 +1655,14 @@ export function RequirementSheetPage() {
             }
             workflowRow={
               isNoQty && so ? (
-                <div className="space-y-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <ProductionFlowTypeBadge flow={PRODUCTION_FLOW_NO_QTY} />
-                    {noQtyFlowState ? <NoQtyMacroLifecycleStrip flow={noQtyFlowState} cycleNo={cycleNo} /> : null}
-                  </div>
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                  <ProductionFlowTypeBadge flow={PRODUCTION_FLOW_NO_QTY} />
+                  {noQtyFlowState ? <NoQtyMacroLifecycleStrip flow={noQtyFlowState} cycleNo={cycleNo} /> : null}
                   {sheet && Number(sheet.salesOrderId) > 0 && noQtyFlowState && !showNoQtyLockedRsContextPanel ? (
-                    <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-700">
-                      <span>
-                        Current cycle:{" "}
-                        <span className="font-semibold text-violet-950">
-                          {sheetDisplayCycleNo != null ? `Cycle ${sheetDisplayCycleNo}` : "—"}
-                        </span>
-                      </span>
-                      <span className="text-slate-300">·</span>
-                      <span>
-                        Next cycle:{" "}
-                        <span className="font-semibold text-slate-900">{noQtyNextCycleLabel(nextCycleNoForRs)}</span>
-                      </span>
-                    </div>
+                    <span className="text-[11px] text-slate-600">
+                      Next:{" "}
+                      <span className="font-semibold text-slate-900">{noQtyNextCycleLabel(nextCycleNoForRs)}</span>
+                    </span>
                   ) : null}
                 </div>
               ) : null
@@ -1737,8 +1728,8 @@ export function RequirementSheetPage() {
 
           <WorkbenchKpiStrip items={workbenchKpiItems} />
 
-          <WorkbenchMain>
-        {isNoQty && !noQtyIntentEmptyActiveCycle && draftUi ? (
+          <WorkbenchMain className={cn(isNoQty && showItemsCard && "space-y-0.5")}>
+        {isNoQty && !noQtyIntentEmptyActiveCycle && draftUi && !showItemsCard ? (
           <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] leading-snug text-slate-500">
             <span>Finalize locks this cycle for planning; return to the NO_QTY Sales Order for the next cycle.</span>
             <details className="inline-block">
@@ -1783,27 +1774,37 @@ export function RequirementSheetPage() {
         </div>
       ) : isNoQty && draftUi && !suppressDraftWarningBanner ? (
         <div
-          className={
+          className={cn(
+            "rounded-md border px-2 py-1 text-xs",
             !noQtyDraftCanFinalize || !isZeroPlanning
-              ? "rounded-md border border-amber-200 bg-amber-50/70 px-2 py-1 text-xs text-amber-950"
-              : "rounded-md border border-emerald-200 bg-emerald-50/70 px-2 py-1 text-xs text-emerald-950"
-          }
+              ? "border-amber-200 bg-amber-50/70 text-amber-950"
+              : "border-emerald-200 bg-emerald-50/70 text-emerald-950",
+            showItemsCard && "py-0.5",
+          )}
         >
           {!noQtyDraftCanFinalize ? (
-            <>
-              <div className="font-semibold">Awaiting requirement quantities</div>
-              <div className="mt-0.5 text-xs text-amber-900">Enter requirement qty to continue.</div>
-            </>
+            <div className="font-semibold leading-snug">
+              Awaiting requirement quantities
+              {!showItemsCard ? (
+                <span className="mt-0.5 block font-normal text-amber-900">Enter requirement qty to continue.</span>
+              ) : null}
+            </div>
           ) : isZeroPlanning ? (
-            <>
-              <div className="font-semibold">No fresh production qty on this sheet</div>
-              <div className="mt-0.5 text-xs text-emerald-900">You can finalize when ready (pending QC disposition alone does not drive production here).</div>
-            </>
+            <div className="font-semibold leading-snug">
+              No fresh production qty on this sheet
+              {!showItemsCard ? (
+                <span className="mt-0.5 block font-normal text-emerald-900">
+                  You can finalize when ready (pending QC disposition alone does not drive production here).
+                </span>
+              ) : null}
+            </div>
           ) : (
-            <>
-              <div className="font-semibold">You have an unfinished draft requirement sheet</div>
-              <div className="mt-0.5 text-xs text-amber-900">Continue the draft and finalize when ready.</div>
-            </>
+            <div className="font-semibold leading-snug">
+              Unfinished draft requirement sheet
+              {!showItemsCard ? (
+                <span className="mt-0.5 block font-normal text-amber-900">Continue the draft and finalize when ready.</span>
+              ) : null}
+            </div>
           )}
           <div className="hidden">
             <Button
@@ -2336,35 +2337,55 @@ export function RequirementSheetPage() {
       ) : null}
 
       {showItemsCard ? (
-        <Card className={cn("min-w-0 overflow-hidden", isNoQty && "border-0 shadow-none")}>
-          <CardHeader className={cn(isNoQty ? "px-3 py-1.5" : "pb-2 pt-2", rsSectionActions && rsItemsHeaderActionClassName)}>
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <CardTitle className={cn(isNoQty ? "text-sm" : "text-base")}>Items</CardTitle>
+        <Card
+          className={cn("min-w-0 overflow-hidden", isNoQty && "border border-slate-200/90 shadow-none")}
+          data-testid="rs-items-card"
+        >
+          <CardHeader
+            className={cn(
+              isNoQty ? "space-y-0 px-2.5 py-1.5" : "pb-2 pt-2",
+              rsSectionActions && rsItemsHeaderActionClassName,
+            )}
+          >
+            <div
+              className={cn(
+                "flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1.5",
+                isNoQty && "items-center",
+              )}
+              data-testid="rs-items-header-row"
+            >
+              <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
+                <CardTitle className={cn(isNoQty ? "text-[13px] font-semibold leading-none text-slate-900" : "text-base")}>
+                  Items
+                </CardTitle>
+                {isNoQty && sheetDisplayCycleNo != null && sheetDisplayCycleNo > 0 ? (
+                  <span className="rounded border border-violet-300 bg-violet-100 px-1.5 py-0.5 text-[11px] font-bold tabular-nums text-violet-950">
+                    Cycle {sheetDisplayCycleNo}
+                  </span>
+                ) : null}
+                {isNoQty && sheet ? (
+                  <Badge variant={sheet.status === "LOCKED" ? "success" : "warning"}>
+                    {sheet.status === "LOCKED" ? "Locked" : "Draft"}
+                  </Badge>
+                ) : null}
+                {isNoQty && noQtyPlanningSummary ? (
+                  <span className="text-[11px] text-slate-600">
+                    {noQtyPlanningSummary.total} item{noQtyPlanningSummary.total === 1 ? "" : "s"}
+                    {noQtyPlanningSummary.shortage > 0
+                      ? ` · ${noQtyPlanningSummary.shortage} need production`
+                      : noQtyPlanningSummary.idle > 0
+                        ? ` · ${noQtyPlanningSummary.idle} no fresh qty`
+                        : ""}
+                    {noQtyPlanningSummary.needsRecalc ? " · recalculate recommended" : ""}
+                  </span>
+                ) : null}
+              </div>
               {rsWorkbenchActionCluster}
             </div>
           </CardHeader>
-          <CardContent id="rs-items" className={cn("min-w-0 p-0", isNoQty ? "sm:p-3 sm:pt-0" : "sm:p-6 sm:pt-0")}>
-            {noQtyPlanningSummary ? (
-              <div className="border-b border-slate-200 px-3 py-1.5">
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs leading-snug text-slate-700">
-                  <span className="font-semibold text-slate-800">Planning Summary</span>
-                  <span>Total items: {noQtyPlanningSummary.total}</span>
-                  {noQtyPlanningSummary.idle > 0 ? (
-                    <div className="text-emerald-800">
-                      ✔ {noQtyPlanningSummary.idle} item{noQtyPlanningSummary.idle === 1 ? "" : "s"} with no fresh production qty this cycle
-                    </div>
-                  ) : null}
-                  {noQtyPlanningSummary.shortage > 0 ? (
-                    <div className="text-amber-800">⚠ {noQtyPlanningSummary.shortage} item{noQtyPlanningSummary.shortage === 1 ? "" : "s"} need production</div>
-                  ) : null}
-                  {noQtyPlanningSummary.needsRecalc ? (
-                    <div className="text-amber-900/90">Recalculate to see the latest planning impact.</div>
-                  ) : null}
-                </div>
-              </div>
-            ) : null}
+          <CardContent id="rs-items" className={cn("min-w-0 p-0", isNoQty ? "sm:p-0" : "sm:p-6 sm:pt-0")}>
             {safeLines.length > 0 ? (
-              <div className="px-3 pb-3 sm:px-0 sm:pb-0">
+              <div className={cn(isNoQty ? "px-0 pb-0" : "px-3 pb-3 sm:px-0 sm:pb-0")}>
                 {isNoQty ? (
                   <RequirementSheetNoQtyGrid
                     lines={safeLines}

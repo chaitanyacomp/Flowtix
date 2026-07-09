@@ -2698,7 +2698,7 @@
   .erp-workbench-header-context,
   .erp-workbench-header-workflow,
   .erp-workbench-header-toolbar {
-    @apply px-2.5 py-1;
+    @apply px-2.5 py-0.5;
   }
 
   .erp-workbench-header-context {
@@ -2706,11 +2706,11 @@
   }
 
   .erp-workbench-header-workflow {
-    @apply border-t border-slate-100/90 py-1;
+    @apply border-t border-slate-100/90 py-0.5;
   }
 
   .erp-workbench-header-toolbar {
-    @apply flex flex-wrap items-center justify-between gap-1 border-t border-slate-100/90;
+    @apply flex flex-wrap items-center justify-between gap-1 border-t border-slate-100/90 py-0.5;
   }
 
   .erp-workbench-kpi {
@@ -2719,6 +2719,10 @@
 
   .erp-workbench-main {
     @apply space-y-1 pb-1;
+  }
+
+  .erp-workbench-main.space-y-0\.5 {
+    @apply space-y-0.5;
   }
 
   .erp-workbench-action-bar {
@@ -2730,7 +2734,7 @@
   }
 
   .erp-workbench-grid-scroll {
-    @apply max-h-[min(52vh,28rem)] overflow-auto;
+    @apply max-h-[min(62vh,36rem)] overflow-auto;
   }
 
   .erp-workbench-grid--sticky-head .erp-workbench-table thead th {

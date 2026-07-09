@@ -6,19 +6,24 @@ import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { cn } from "../lib/utils";
-import { ROW_NUM_EPS, dashboardToneToBadgeVariant, maxInSlice } from "../lib/dispatchBacklog";
+import { ROW_NUM_EPS, maxInSlice } from "../lib/dispatchBacklog";
 import { getDrillRowProps, withReportsReturnContext, workOrdersFocusHref } from "../lib/drillDownRoutes";
-import { woTrackingStatusTone } from "../lib/reportStatusTones";
-import { useToast } from "../contexts/ToastContext";
+import { woTrackingStatusBadgeVariant } from "../lib/reportStatusTones";
 import { useAuth } from "../hooks/useAuth";
 import { useDrillActivable } from "../hooks/useDrillAccess";
 import { ReportPageHeader } from "../components/PageHeader";
+import {
+  ReportPrintExportBar,
+  ReportPrintMeta,
+  downloadReportCsv,
+  downloadReportExcel,
+} from "../components/erp/ReportPrintExport";
 import {
   type WoTrackingRow,
   type WoTrackingSummary,
   normalizeWoTrackingApiResponse,
 } from "../lib/woTrackingResponse";
-import { ChevronDown, ChevronUp, Download } from "lucide-react";
+import { ChevronDown, ChevronUp } from "lucide-react";
 import { ERP_REPORT_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
 
 type Customer = { id: number; name: string };
@@ -45,7 +50,6 @@ function woTrackingReportAllowed(role: string | undefined): boolean {
 export function WorkOrderTrackingReportPage() {
   const auth = useAuth();
   const navigate = useNavigate();
-  const toast = useToast();
   const allowed = woTrackingReportAllowed(auth.user?.role);
   const canDrillWorkOrder = useDrillActivable("work-order");
   const [rows, setRows] = React.useState<WoTrackingRow[]>([]);
@@ -165,9 +169,40 @@ export function WorkOrderTrackingReportPage() {
     setSortDir((d) => (d === "asc" ? "desc" : "asc"));
   }
 
-  function onExport() {
-    toast.showInfo("Export to Excel will be available in a future update.");
-  }
+  const filterSummary = [
+    customerName ? `Customer ${customerName}` : null,
+    statusFilter !== "ALL" ? `Status ${statusFilter}` : null,
+    dateFrom ? `WO from ${dateFrom}` : null,
+    dateTo ? `WO to ${dateTo}` : null,
+    search.trim() ? `Search “${search.trim()}”` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  const csvHeaders = [
+    "SO",
+    "WO",
+    "Customer",
+    "Item",
+    "Ordered",
+    "Produced",
+    "Accepted",
+    "Rejected",
+    "Dispatched",
+    "Status",
+  ];
+  const csvRows = sorted.map((r) => [
+    r.salesOrderNo,
+    r.workOrderNo,
+    r.customerName,
+    r.itemName,
+    r.orderedQty,
+    r.producedQty,
+    r.acceptedQty,
+    r.rejectedQty,
+    r.dispatchedQty,
+    r.status,
+  ]);
 
   function onRowActivate(r: WoTrackingRow) {
     navigate(withReportsReturnContext(workOrdersFocusHref(r.workOrderId)));
@@ -210,10 +245,29 @@ export function WorkOrderTrackingReportPage() {
   }
 
   return (
-    <div className="flex min-h-0 flex-col gap-4">
+    <div className="erp-report-page flex min-h-0 flex-col gap-4">
+      <ReportPrintMeta title="Work Order Tracking Report" filterSummary={filterSummary} />
       <ReportPageHeader
         title="Work Order Tracking Report"
         purpose="Tracks each work order’s current stage, quantity progress, and pending next action."
+        actions={
+          <ReportPrintExportBar
+            filterSummary={filterSummary}
+            onExportCsv={() =>
+              downloadReportCsv(`work-order-tracking_${new Date().toISOString().slice(0, 10)}.csv`, csvHeaders, csvRows)
+            }
+            onExportExcel={() =>
+              downloadReportExcel(
+                `work-order-tracking_${new Date().toISOString().slice(0, 10)}.xlsx`,
+                "Work Order Tracking Report",
+                csvHeaders,
+                csvRows,
+              )
+            }
+            csvDisabled={loading}
+            excelDisabled={loading}
+          />
+        }
       />
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -356,10 +410,6 @@ export function WorkOrderTrackingReportPage() {
                 </span>
               </span>
             </div>
-            <Button type="button" variant="outline" size="sm" className="h-8 gap-1.5" onClick={onExport}>
-              <Download className="h-3.5 w-3.5" />
-              Export
-            </Button>
           </div>
         </CardHeader>
         <CardContent className="flex min-h-0 flex-col p-0">
@@ -572,7 +622,7 @@ export function WorkOrderTrackingReportPage() {
                             </td>
                             <td className="min-w-[9.5rem] whitespace-normal align-middle">
                               <Badge
-                                variant={dashboardToneToBadgeVariant(woTrackingStatusTone(r.status))}
+                                variant={woTrackingStatusBadgeVariant(r.status)}
                                 className="whitespace-normal text-left font-semibold leading-snug"
                               >
                                 {r.status.replace(/_/g, " ")}

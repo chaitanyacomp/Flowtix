@@ -43,8 +43,8 @@ These three concepts **must never overlap** ([Design Principles §5.5](../01_Pro
 | 3 | [FT-PD-062](./Chapter_03_Control_Tower_Architecture_and_Factory_Monitoring.md) | [Control Tower Architecture & Factory Monitoring](./Chapter_03_Control_Tower_Architecture_and_Factory_Monitoring.md) | 1.0.0 | **Draft — Architecture Review** |
 | 4 | [FT-PD-063](./Chapter_04_Workspace_Architecture_and_Document_Execution_Surfaces.md) | [Workspace Architecture & Document Execution Surfaces](./Chapter_04_Workspace_Architecture_and_Document_Execution_Surfaces.md) | 1.0.0 | **Draft — Architecture Review** |
 | 5 | [FT-PD-064](./Chapter_05_Registers_Masters_and_Browse_Surfaces.md) | [Registers, Masters & Browse Surfaces](./Chapter_05_Registers_Masters_and_Browse_Surfaces.md) | 1.0.0 | **Draft — Architecture Review** |
-| 6 | [FT-PD-065](./Chapter_06_Reports_and_Analytical_Surfaces.md) | [Reports & Analytical Surfaces](./Chapter_06_Reports_and_Analytical_Surfaces.md) | 1.1.0 | **Draft — Architecture Review** |
-| 7 | [FT-PD-066](./Chapter_07_FT_ERP_UI_UX_Design_System.md) | [FT ERP UI/UX Design System](./Chapter_07_FT_ERP_UI_UX_Design_System.md) | 1.0.1 | **Draft — Final Architecture Review** |
+| 6 | [FT-PD-065](./Chapter_06_Reports_and_Analytical_Surfaces.md) | [Reports & Analytical Surfaces](./Chapter_06_Reports_and_Analytical_Surfaces.md) | 1.2.1 | **Draft — Architecture Review** |
+| 7 | [FT-PD-066](./Chapter_07_FT_ERP_UI_UX_Design_System.md) | [FT ERP UI/UX Design System](./Chapter_07_FT_ERP_UI_UX_Design_System.md) | 1.0.2 | **Draft — Final Architecture Review** |
 
 *Volume 6 core surface architecture complete (7 chapters). Ch. 7 (FT-PD-066) is **mandatory architecture law** for all UI development (initiative FT-PD-090). Every UI task SHALL begin: **Audit the screen against FT-PD-066 before redesign.***
 
@@ -64,7 +64,7 @@ These three concepts **must never overlap** ([Design Principles §5.5](../01_Pro
 
 ## Authority
 
-This volume **implements** UX contracts from Volume 4 Ch. 1 and Design Principles. It does not override domain behavior (Volume 3), engine rules (Volume 4), or read-model authority (Volume 5 Ch. 6). **[Chapter 7 — UI/UX Design System](./Chapter_07_FT_ERP_UI_UX_Design_System.md) (FT-PD-066 v1.0.1)** is mandatory architecture law for layout, interaction, and visual standards. Every UI task **SHALL** begin with an audit against FT-PD-066 before redesign.
+This volume **implements** UX contracts from Volume 4 Ch. 1 and Design Principles. It does not override domain behavior (Volume 3), engine rules (Volume 4), or read-model authority (Volume 5 Ch. 6). **[Chapter 7 — UI/UX Design System](./Chapter_07_FT_ERP_UI_UX_Design_System.md) (FT-PD-066 v1.0.2)** is mandatory architecture law for layout, interaction, and visual standards. Every UI task **SHALL** begin with an audit against FT-PD-066 before redesign.
 
 ---
 

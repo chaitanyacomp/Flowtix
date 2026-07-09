@@ -71,3 +71,27 @@ export function woTrackingStatusTone(status: string): DashboardBadgeTone {
       return "neutral";
   }
 }
+
+/**
+ * Standard workflow Badge variant for Work Order Tracking statuses (FT-PD-066).
+ * Aligns with work-order lifecycle badge semantics where possible.
+ */
+export function woTrackingStatusBadgeVariant(
+  status: string,
+): "default" | "success" | "warning" | "rejected" | "info" {
+  switch (status) {
+    case "COMPLETED":
+      return "success";
+    case "PENDING_PRODUCTION":
+      return "default";
+    case "IN_PRODUCTION":
+    case "PENDING_QC":
+    case "PARTIAL_QC":
+      return "info";
+    case "READY_TO_DISPATCH":
+    case "PARTIAL_DISPATCH":
+      return "warning";
+    default:
+      return "default";
+  }
+}

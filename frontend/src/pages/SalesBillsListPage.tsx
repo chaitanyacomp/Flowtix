@@ -5,7 +5,7 @@ import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { apiFetch, ApiRequestError } from "../services/api";
 import { PageContainer, PageSmartBackLink, StickyWorkspaceHead } from "../components/PageHeader";
-import { withReportsReturnContextIfPresent } from "../lib/drillDownRoutes";
+import { isReportsReturnContext, withReportsReturnContextIfPresent } from "../lib/drillDownRoutes";
 import { displayDispatchNo, displaySalesBillNo, displaySalesOrderNo } from "../lib/docNoDisplay";
 import { useDemoMode } from "../contexts/DemoModeContext";
 import { demoHighlightKey } from "../lib/demoFlowConfig";
@@ -224,6 +224,8 @@ export function SalesBillsListPage() {
     return withReportsReturnContextIfPresent(base, location.search);
   }, [fromNoQtySo, focusSoIdValid, focusSoId, location.search]);
 
+  const fromAnalysis = isReportsReturnContext(location.search);
+
   return (
     <PageContainer className="erp-txn-workspace space-y-1.5">
       <StickyWorkspaceHead lead={<PageSmartBackLink defaultTo="/dashboard" defaultLabel="Back to Dashboard" />}>
@@ -237,11 +239,13 @@ export function SalesBillsListPage() {
               </p>
             ) : (
               <p className="mt-0.5 text-sm leading-relaxed text-slate-600">
-                Dispatch-wise customer invoices (Tally export ready).
+                {fromAnalysis
+                  ? "Read-only Analysis view — dispatch-wise customer invoices (Tally export ready)."
+                  : "Dispatch-wise customer invoices (Tally export ready)."}
               </p>
             )}
           </div>
-          {canCreateSalesBill ? (
+          {canCreateSalesBill && !fromAnalysis ? (
             <Link to={newBillHref} className="shrink-0 sm:pt-0.5">
               <Button
                 type="button"

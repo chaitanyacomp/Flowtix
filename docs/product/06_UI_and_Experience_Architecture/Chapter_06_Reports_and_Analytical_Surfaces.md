@@ -6,7 +6,7 @@
 | **Volume** | 6 — UI & Experience Architecture |
 | **Chapter** | 6 — Reports & Analytical Surfaces |
 | **Title** | Reports & Analytical Surfaces |
-| **Version** | 1.1.0 |
+| **Version** | 1.2.1 |
 | **Status** | Draft — Architecture Review |
 | **Effective date** | 2026-07-09 |
 | **Author** | FT ERP Product Team |
@@ -30,6 +30,8 @@
 |---------|------|--------|---------|
 | 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial Reports & Analytical Surfaces specification |
 | 1.1.0 | 2026-07-09 | FT ERP Product Team | Sales Ops report ownership — Customer Tracking master; SO→Dispatch Trace merged; Dispatch Summary analytics+register |
+| 1.2.0 | 2026-07-09 | FT ERP Product Team | Analysis catalog rationalization; read-only from Reports; print/export; defect register RPT-001–014 |
+| 1.2.1 | 2026-07-09 | FT ERP Product Team | Print/Export coverage matrix §6.2A — close UAT gap on all official Analysis reports |
 
 **Supersedes:** None.
 
@@ -178,6 +180,76 @@ Named Sales Ops reports **SHALL** follow single ownership to avoid duplicate lif
 **Navigation:** Reports catalog lists Customer Tracking and Dispatch Summary only for this lifecycle/analytics pair. Execution remains in Dispatch Workspace ([RPT-01](#11-business-rules), [RPT-04](#11-business-rules)).
 
 **UI standard:** Surfaces comply with [FT-PD-066](./Chapter_07_FT_ERP_UI_UX_Design_System.md) report chrome (read-only, filters, empty states, no duplicated KPIs).
+
+### 6.2 Analysis catalog — Keep / Merge / Move / Remove (UAT 2026-07-09)
+
+| Report / tile | Decision | Notes |
+|---------------|----------|-------|
+| Customer Tracking Report | **KEEP** (master) | Single lifecycle ownership |
+| Customer PO Tracking (Customer Service tile) | **REMOVE** from catalog | Same surface as Customer Tracking |
+| Customer Ledger Summary | **KEEP** | Points to Customer Tracking |
+| SO to Dispatch Trace | **MERGE** (done) | Redirect to Customer Tracking Production Journey |
+| Dispatch Summary | **KEEP** | Analytics + register; no Open Dispatch |
+| RM Shortage Workspace | **MOVE** | Operations / RM Control Center only — not Analysis catalog |
+| Material Planning / RM PO-GRN | **MOVE** | Operations only — not Analysis catalog |
+| Sales Bills / Purchase Bills (from Analysis) | **KEEP** as read-only browse | Hide New bill; Back to Reports when `from=reports` |
+| Stock Overview (from Analysis) | **KEEP** read-only | Hide Stock Adjustments when from Reports |
+| Supplier Master (from Analysis) | **KEEP** | Back to Masters / Reports; hide Add when from Analysis |
+| RM Wastage Report | **KEEP** separate | MWN + GRN valuation — not mergeable into Production RM Variance |
+| Scrap Report | **KEEP** separate | FG QC scrap — distinct from RM wastage / consumption variance |
+| Production RM Variance | **KEEP** | Standard vs actual consumption |
+| Batch Traceability | **KEEP** | Document SO+Item limitation (RPT-003) |
+
+**Read-only rule:** Analysis surfaces **SHALL NOT** expose workflow create/execute controls ([RPT-01](#11-business-rules)). Creation remains in operational workspaces.
+
+**Print / export:** Every Analysis report **SHALL** support Print and Export CSV (Excel where useful); export respects filters; print hides chrome ([FT-PD-066](./Chapter_07_FT_ERP_UI_UX_Design_System.md) §17). Shared chrome: `ReportPrintExportBar` / `ReportPrintMeta` / `downloadReportCsv`.
+
+### 6.2A Print / Export coverage matrix (UAT gap close 2026-07-09)
+
+| Catalog tile | Classification | Print | CSV | Excel |
+|--------------|----------------|-------|-----|-------|
+| Dispatch Backlog | Official report | Yes | Yes | Yes |
+| Customer Tracking / Ledger Summary | Official report | Yes | Yes | Yes |
+| Dispatch Summary | Official report | Yes | Yes | — |
+| Customer-wise SO & RS | Official report | Yes | Yes | Yes |
+| Sales Matching / Sales Register | Official report | Yes | Yes | Yes |
+| Stock Reconciliation | Official report | Yes | Yes | — |
+| Stock Overview (`from=reports`) | Official report mode | Yes | Yes | — |
+| RM Ledger / RM Movement | Official report | Yes | Yes (all pages) | Yes (page) |
+| Purchase Matching / Purchase Register | Official report | Yes | Yes | Yes |
+| RM Procurement Connectivity | Official report | Yes | Yes | Yes |
+| RM Planning vs Actual Received | Official report | Yes | Yes (server) | Yes |
+| Work Order Tracking | Official report | Yes | Yes | Yes |
+| Batch Traceability | Official report | Yes | Yes | — |
+| Production RM Variance | Official report | Yes | Yes | Yes |
+| RM Wastage | Official report | Yes | Yes | — |
+| Scrap Report | Official report | Yes | Yes | — |
+| Operations Exception | Official report | Yes | Yes | Yes |
+| User Activity Log | Official report | Yes | Yes | — |
+| Export History | Official report | Yes | Yes | — |
+| Customer Returns (`from=reports`) | Dual — history export | Yes | Yes (history) | — |
+| Sales Bills / Purchase Bills (`from=reports`) | Read-only browse workspace | — | — | — |
+| Sales Order Status (`from=reports`) | Read-only browse workspace | — | — | — |
+| Supplier Master (`from=reports`) | Master browse | — | — | — |
+| Receivables / Payables | Same as bill lists | — | — | — |
+
+**Workspace (not Analysis print/export):** RM Shortage, Material Planning, Dispatch Workspace, Production, QC Entry, Sales/Purchase bill create — Operations only.
+
+---
+
+### 6.3 Defect register (Analysis UAT)
+
+| ID | Status | Resolution |
+|----|--------|------------|
+| RPT-001 | Fixed | Import `buildRmWastageReport` in reports route |
+| RPT-002 | Fixed | No raw JS errors; inline error/empty states |
+| RPT-003 | Documented | Batch Traceability SO+Item limitation banner |
+| RPT-004 | Fixed | WO Tracking uses standard workflow Badge variants |
+| RPT-005 | Deferred | Cost/loss KPIs on Production RM Variance — later |
+| RPT-006 | Deferred | Scrap top KPIs — later (not merged) |
+| RPT-007 | Fixed | Single Back; Analysis → Reports |
+| RPT-008 | Fixed | Dispatch Summary analytics-only |
+| RPT-014 | Fixed | Supplier Master Back to Masters |
 
 ---
 

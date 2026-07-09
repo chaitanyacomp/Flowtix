@@ -6,7 +6,7 @@ import { Input } from "../components/ui/input";
 import { apiFetch, ApiRequestError } from "../services/api";
 import { PageContainer, PageSmartBackLink, StickyWorkspaceHead } from "../components/PageHeader";
 import { cn } from "../lib/utils";
-import { withReportsReturnContextIfPresent } from "../lib/drillDownRoutes";
+import { isReportsReturnContext, withReportsReturnContextIfPresent } from "../lib/drillDownRoutes";
 import { buildGrnDocumentHref, buildPurchaseBillDetailHref } from "../lib/procurementNavigation";
 import { useAuth } from "../hooks/useAuth";
 import { useBulkSelection } from "../hooks/useBulkSelection";
@@ -78,7 +78,8 @@ export function PurchaseBillsListPage() {
   const [sp] = useSearchParams();
   const auth = useAuth();
   const role = auth.user?.role ?? "";
-  const hideNewBill = role === "PURCHASE";
+  const fromAnalysis = isReportsReturnContext(location.search);
+  const hideNewBill = role === "PURCHASE" || fromAnalysis;
 
   const [rows, setRows] = React.useState<BillRow[]>([]);
   const [suppliers, setSuppliers] = React.useState<Supplier[]>([]);
@@ -210,7 +211,9 @@ export function PurchaseBillsListPage() {
           <div className="min-w-0 space-y-1">
             <h1 className="text-lg font-semibold leading-snug text-slate-900">Purchase bills</h1>
             <p className="text-sm leading-relaxed text-slate-600">
-              Supplier invoices linked to GRNs (Tally-ready values; no stock impact).
+              {fromAnalysis
+                ? "Read-only Analysis view — supplier invoices linked to GRNs (no stock impact)."
+                : "Supplier invoices linked to GRNs (Tally-ready values; no stock impact)."}
             </p>
           </div>
           {hideNewBill ? null : (

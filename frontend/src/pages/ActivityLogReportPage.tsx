@@ -1,8 +1,12 @@
 import * as React from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
-import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { PageContainer, ReportPageHeader } from "../components/PageHeader";
+import {
+  ReportPrintExportBar,
+  ReportPrintMeta,
+  downloadReportCsv,
+} from "../components/erp/ReportPrintExport";
 import { apiFetch } from "../services/api";
 import { useUrlQueryState } from "../hooks/useUrlQueryState";
 import { ERP_REPORT_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
@@ -64,43 +68,20 @@ function fmtWhen(iso: string): string {
   return d.toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
-function toCsv(rows: Row[]): string {
-  const header = [
-    "Date & Time",
-    "User",
-    "Role",
-    "Module",
-    "Action",
-    "Reference Type",
-    "Reference No",
-    "Reference ID",
-    "Summary",
-    "Old Status",
-    "New Status",
-    "Reason/Remarks",
-  ];
-  const esc = (v: unknown) => {
-    const s = v == null ? "" : String(v);
-    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-  };
-  const lines = rows.map((r) =>
-    [
-      fmtWhen(r.createdAt),
-      r.userName,
-      r.role ?? "",
-      r.module ?? "",
-      r.action,
-      r.referenceType ?? "",
-      r.referenceNo ?? "",
-      r.referenceId ?? "",
-      r.summary,
-      r.oldStatus ?? "",
-      r.newStatus ?? "",
-      r.reason ?? "",
-    ].map(esc).join(","),
-  );
-  return [header.map(esc).join(","), ...lines].join("\n");
-}
+const ACTIVITY_CSV_HEADERS = [
+  "Date & Time",
+  "User",
+  "Role",
+  "Module",
+  "Action",
+  "Reference Type",
+  "Reference No",
+  "Reference ID",
+  "Summary",
+  "Old Status",
+  "New Status",
+  "Reason/Remarks",
+];
 
 const MODULES = ["", "SALES", "PURCHASE", "STOCK", "PRODUCTION", "QC", "DISPATCH", "REPORTS", "SETTINGS", "SESSION", "ADMIN"] as const;
 const ACTIONS = ["", "CREATE", "UPDATE", "DELETE", "APPROVE", "REVERSE", "CANCEL", "REJECT", "EXPORT", "OVERRIDE", "LOGIN", "LOGOUT", "LOGIN_FAILED"] as const;
@@ -168,29 +149,45 @@ export function ActivityLogReportPage() {
   }, [fromDate, toDate, actorUserId, module, action, refType, liveTick]);
 
   const rows = data?.rows ?? [];
-
-  function downloadCsv() {
-    const csv = toCsv(rows);
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `activity-log_${fromDate}_to_${toDate}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-  }
+  const filterSummary = [
+    fromDate ? `From ${fromDate}` : null,
+    toDate ? `To ${toDate}` : null,
+    actorUserId ? `User #${actorUserId}` : null,
+    module ? `Module ${module}` : null,
+    action ? `Action ${action}` : null,
+    refType ? `Ref ${refType}` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const csvRows = rows.map((r) => [
+    fmtWhen(r.createdAt),
+    r.userName,
+    r.role ?? "",
+    r.module ?? "",
+    r.action,
+    r.referenceType ?? "",
+    r.referenceNo ?? "",
+    r.referenceId ?? "",
+    r.summary,
+    r.oldStatus ?? "",
+    r.newStatus ?? "",
+    r.reason ?? "",
+  ]);
 
   return (
-    <PageContainer className="pb-8">
+    <PageContainer className="erp-report-page pb-8">
+      <ReportPrintMeta title="User Activity Log" filterSummary={filterSummary} />
       <ReportPageHeader
         title="User Activity Log"
         purpose="Audit-friendly view of who changed what, when, and on which document."
         actions={
-          <Button type="button" variant="outline" size="sm" disabled={!rows.length || missingDates} onClick={downloadCsv}>
-            Download CSV
-          </Button>
+          <ReportPrintExportBar
+            filterSummary={filterSummary}
+            onExportCsv={() =>
+              downloadReportCsv(`activity-log_${fromDate}_to_${toDate}.csv`, ACTIVITY_CSV_HEADERS, csvRows)
+            }
+            csvDisabled={missingDates || loading}
+          />
         }
       />
 

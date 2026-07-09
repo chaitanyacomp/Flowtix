@@ -29,6 +29,11 @@ import {
 import { formatRmStockAlertBanner } from "../lib/inventoryHealth";
 import { REGULAR_TERMS } from "../lib/flowTerminology";
 import { erpKpi } from "../lib/erpFoundationTokens";
+import {
+  ReportPrintExportBar,
+  ReportPrintMeta,
+  downloadReportCsv,
+} from "../components/erp/ReportPrintExport";
 
 const STOCK_PRIMARY_BTN = "h-8 px-3 text-[12px] font-bold shadow-sm";
 const STOCK_SECONDARY_BTN = "h-8 px-3 text-[12px]";
@@ -388,6 +393,53 @@ export function StockPage() {
   const godownRmTotals = React.useMemo(() => sumGodownSection(godownRmRows), [godownRmRows]);
   const godownFgTotals = React.useMemo(() => sumGodownSection(godownFgRows), [godownFgRows]);
 
+  const overviewExportRows = React.useMemo(() => {
+    const list =
+      itemTypeFilterVal === "FG"
+        ? godownFgRows
+        : itemTypeFilterVal === "RM"
+          ? godownRmRows
+          : [...godownRmRows, ...godownFgRows];
+    return list.map((r) => [
+      r.itemName,
+      r.itemType,
+      r.unit,
+      fmtQtyStock(r.total),
+      fmtQtyStock(r.rmStore),
+      fmtQtyStock(r.reservedStock),
+      fmtQtyStock(r.freeStock),
+      fmtQtyStock(r.production),
+      fmtQtyStock(r.wip),
+      fmtQtyStock(r.fgStore),
+      fmtQtyStock(r.qcHold),
+      fmtQtyStock(r.scrap),
+    ]);
+  }, [godownRmRows, godownFgRows, itemTypeFilterVal]);
+
+  const stockFilterSummary = [
+    itemTypeFilterVal !== "ALL" ? `Type ${itemTypeFilterVal}` : null,
+    qDraft.trim() ? `Search “${qDraft.trim()}”` : null,
+    showFilter !== "ALL" ? `Show ${showFilter}` : null,
+    `View ${viewMode}`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  const STOCK_CSV_HEADERS = [
+    "Item",
+    "Type",
+    "Unit",
+    "Total",
+    "Physical",
+    "Committed",
+    "Available",
+    "At Production",
+    "WIP",
+    "FG Store",
+    "Under QC",
+    "Scrap",
+  ];
+
   React.useEffect(() => {
     if (viewMode === "godown") void loadGodown();
   }, [itemTypeFilterVal, qDraft, liveTick, viewMode]);
@@ -473,29 +525,59 @@ export function StockPage() {
         </p>
       </div>
       <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
-        <Button
-          type="button"
-          size="sm"
-          className={STOCK_PRIMARY_BTN}
-          onClick={() => navigate("/stock/movement-history")}
-        >
-          Stock Movement History
-        </Button>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          className={cn(STOCK_SECONDARY_BTN, "font-semibold")}
-          onClick={() => navigate("/stock/adjustment")}
-        >
-          Stock Adjustments
-        </Button>
+        {fromReportsHub ? (
+          <ReportPrintExportBar
+            filterSummary={stockFilterSummary}
+            onExportCsv={() =>
+              downloadReportCsv(
+                `stock-summary_${new Date().toISOString().slice(0, 10)}.csv`,
+                STOCK_CSV_HEADERS,
+                overviewExportRows,
+              )
+            }
+            csvDisabled={!godownLoaded}
+          />
+        ) : null}
+        {fromReportsHub ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className={cn(STOCK_SECONDARY_BTN, "font-semibold")}
+            onClick={() => navigate("/stock/movement-history")}
+          >
+            Movement History
+          </Button>
+        ) : (
+          <Button
+            type="button"
+            size="sm"
+            className={STOCK_PRIMARY_BTN}
+            onClick={() => navigate("/stock/movement-history")}
+          >
+            Stock Movement History
+          </Button>
+        )}
+        {!fromReportsHub ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className={cn(STOCK_SECONDARY_BTN, "font-semibold")}
+            onClick={() => navigate("/stock/adjustment")}
+          >
+            Stock Adjustments
+          </Button>
+        ) : null}
       </div>
     </div>
   );
 
   return (
-    <OperatorPageBody>
+    <OperatorPageBody className={fromReportsHub ? "erp-report-page" : undefined}>
+      {fromReportsHub ? (
+        <ReportPrintMeta title="Stock Summary" filterSummary={stockFilterSummary} />
+      ) : null}
       <Card className="mx-auto w-full max-w-[1680px] border-slate-200 shadow-sm">
         <CardContent className="space-y-3 p-4">
           {fromReportsHub ? (

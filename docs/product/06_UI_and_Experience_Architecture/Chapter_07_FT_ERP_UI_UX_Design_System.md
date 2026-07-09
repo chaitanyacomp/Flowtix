@@ -7,7 +7,7 @@
 | **Volume** | 6 — UI & Experience Architecture |
 | **Chapter** | 7 — FT ERP UI/UX Design System |
 | **Title** | FT ERP UI/UX Design System |
-| **Version** | 1.0.1 |
+| **Version** | 1.0.2 |
 | **Status** | Draft — Final Architecture Review |
 | **Effective date** | 2026-07-03 |
 | **Author** | FT ERP Product Team |
@@ -35,6 +35,7 @@
 |---------|------|--------|---------|
 | 1.0.0 | 2026-07-03 | FT ERP Product Team | Initial FT ERP UI/UX Design System — mandatory standard for all UI development |
 | 1.0.1 | 2026-07-03 | FT ERP Product Team | Final Architecture Review — normative language, anti-patterns, compliance review, exception governance, redesign order |
+| 1.0.2 | 2026-07-09 | FT ERP Product Team | §14.2 — single primary Back; Analysis → Reports; Dashboard / Masters / Module matrix |
 
 **Supersedes:** Ad hoc screen conventions; informal spacing and button patterns not recorded in product documentation.
 
@@ -728,9 +729,19 @@ Applies to Register, Workbench grids, Dashboard lists, Control Tower tables, and
 
 ### 14.2 Back navigation
 
-- **Back** **SHALL** return to `returnTo` origin (Dashboard, Register, Control Tower).
+- **Back** **SHALL** return to `returnTo` / origin surface (Dashboard, Register, Control Tower, Reports).
 - Browser back **SHOULD** be supported via preserved history state.
 - Unsaved changes **SHALL** prompt confirmation before navigate away.
+- Each page **SHALL** expose **exactly one** primary Back control (FT-PD-066 tertiary tier). Duplicate Back links **SHALL NOT** appear.
+
+| Surface | Primary Back label | Destination |
+|---------|-------------------|-------------|
+| **Analysis / Report** | Back to Reports | `/reports` |
+| **Dashboard workspace** (opened from Dashboard) | Back to Dashboard | `/dashboard` |
+| **Master** | Back to Masters | Masters module entry / prior master list |
+| **Register** | Back to Module | Owning module register or workspace |
+
+**Analysis reports:** Use `ReportPageHeader` only (includes the Back strip). Do **not** also render `StickyReportBackStrip`. Dual-entry surfaces (e.g. RM Shortage, QC Report, Stock Overview) **MAY** resolve Dashboard vs Reports vs Module from `from` / `source` query params via `useAnalysisReportBack`.
 
 ### 14.3 Workflow trail
 

@@ -22,12 +22,16 @@ import {
   rmRiskStatusTone,
   workOrderStatusTone,
 } from "../lib/reportStatusTones";
-import { useToast } from "../contexts/ToastContext";
 import { ERP_REPORT_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
 import { useAuth } from "../hooks/useAuth";
 import { useDrillAccessMap } from "../hooks/useDrillAccess";
-import { Download } from "lucide-react";
-import { ReportPageHeader, StickyReportBackStrip } from "../components/PageHeader";
+import { ReportPageHeader } from "../components/PageHeader";
+import {
+  ReportPrintExportBar,
+  ReportPrintMeta,
+  downloadReportCsv,
+  downloadReportExcel,
+} from "../components/erp/ReportPrintExport";
 
 type Severity = "CRITICAL" | "WARNING";
 
@@ -160,7 +164,6 @@ export function OperationsExceptionReportPage() {
   const auth = useAuth();
   const allowed = opsExceptionReportAllowed(auth.user?.role);
   const navigate = useNavigate();
-  const toast = useToast();
   const drill = useDrillAccessMap();
 
   const [payload, setPayload] = React.useState<OpsExceptionPayload | null>(null);
@@ -276,9 +279,100 @@ export function OperationsExceptionReportPage() {
     setSearch("");
   }
 
-  function onExport() {
-    toast.showInfo("Export will be available in a future update.");
+  const filterSummary = [
+    sectionFilter !== "ALL" ? `Section ${sectionFilter}` : null,
+    severityFilter !== "ALL" ? `Severity ${severityFilter}` : null,
+    search.trim() ? `Search “${search.trim()}”` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  const csvHeaders = ["Section", "Ref", "Party / Item", "Detail", "Qty", "Status", "Severity"];
+  const csvRows: Array<Array<string | number | null | undefined>> = [];
+  if (showDispatch) {
+    for (const r of dispatchFiltered) {
+      csvRows.push([
+        "Dispatch",
+        r.salesOrderNo,
+        r.customerName,
+        r.itemName,
+        r.pendingQty,
+        r.status,
+        r.severity,
+      ]);
+    }
   }
+  if (showProduction) {
+    for (const r of productionFiltered) {
+      csvRows.push([
+        "Production",
+        r.workOrderNo,
+        r.salesOrderNo,
+        r.itemName,
+        r.balanceQty,
+        r.status,
+        r.severity,
+      ]);
+    }
+  }
+  if (showQc) {
+    for (const r of qcFiltered) {
+      csvRows.push([
+        "QC",
+        r.qcRef,
+        r.workOrderNo,
+        r.itemName,
+        r.pendingQcQty,
+        r.status,
+        r.severity,
+      ]);
+    }
+  }
+  if (showRm) {
+    for (const r of rmFiltered) {
+      csvRows.push([
+        "RM",
+        r.itemCode,
+        r.itemName,
+        `Stock ${r.currentStockQty} / Req ${r.requiredQty}`,
+        r.shortageQty,
+        r.status,
+        r.severity,
+      ]);
+    }
+  }
+  if (showPurchase) {
+    for (const r of purchaseFiltered) {
+      csvRows.push([
+        "Purchase",
+        r.purchaseOrderNo,
+        r.supplierName,
+        r.itemName,
+        r.pendingQty,
+        r.status,
+        r.severity,
+      ]);
+    }
+  }
+
+  const printExportActions = (
+    <ReportPrintExportBar
+      filterSummary={filterSummary}
+      onExportCsv={() =>
+        downloadReportCsv(`operations-exceptions_${new Date().toISOString().slice(0, 10)}.csv`, csvHeaders, csvRows)
+      }
+      onExportExcel={() =>
+        downloadReportExcel(
+          `operations-exceptions_${new Date().toISOString().slice(0, 10)}.xlsx`,
+          "Operations Exception Report",
+          csvHeaders,
+          csvRows,
+        )
+      }
+      csvDisabled={loading}
+      excelDisabled={loading}
+    />
+  );
 
   function exceptionResultLine(
     err: string | null,
@@ -308,8 +402,13 @@ export function OperationsExceptionReportPage() {
 
   if (!allowed) {
     return (
-      <div className="flex min-h-0 flex-col gap-3">
-        <StickyReportBackStrip />
+      <div className="erp-report-page flex min-h-0 flex-col gap-3">
+        <ReportPrintMeta title="Operations Exception Report" />
+        <ReportPageHeader
+          className="mb-0"
+          title="Operations Exception Report"
+          purpose="Highlights transactions that are stuck, delayed, missing the next step, or operationally abnormal."
+        />
         <div className="rounded-md border border-slate-200 bg-slate-50 px-6 py-10 text-center shadow-sm">
           <h2 className="text-lg font-semibold text-slate-900">Not authorized</h2>
           <p className="mt-2 text-sm text-slate-600">
@@ -322,19 +421,27 @@ export function OperationsExceptionReportPage() {
 
   if (loadError && !payload) {
     return (
-      <div className="flex min-h-0 flex-col gap-3">
-        <StickyReportBackStrip />
+      <div className="erp-report-page flex min-h-0 flex-col gap-3">
+        <ReportPrintMeta title="Operations Exception Report" filterSummary={filterSummary} />
+        <ReportPageHeader
+          className="mb-0"
+          title="Operations Exception Report"
+          purpose="Highlights transactions that are stuck, delayed, missing the next step, or operationally abnormal."
+          actions={printExportActions}
+        />
         <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">{loadError}</div>
       </div>
     );
   }
 
   return (
-    <div className="flex min-h-0 flex-col gap-4">
+    <div className="erp-report-page flex min-h-0 flex-col gap-4">
+      <ReportPrintMeta title="Operations Exception Report" filterSummary={filterSummary} />
       <ReportPageHeader
         className="mb-0"
         title="Operations Exception Report"
         purpose="Highlights transactions that are stuck, delayed, missing the next step, or operationally abnormal."
+        actions={printExportActions}
       />
       <p className="text-xs text-slate-500">
         Severities and exception shares are computed on the server; this page does not recalculate quantities or ratios.
@@ -376,15 +483,9 @@ export function OperationsExceptionReportPage() {
       <Card className="border-slate-200 shadow-sm">
         <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2 space-y-0 pb-3">
           <CardTitle className="text-sm font-semibold text-slate-800">Filters</CardTitle>
-          <div className="flex flex-wrap gap-2">
-            <Button type="button" variant="outline" size="sm" className="h-8" disabled={!canClear} onClick={clearFilters}>
-              Clear filters
-            </Button>
-            <Button type="button" variant="outline" size="sm" className="h-8 gap-1.5" onClick={onExport}>
-              <Download className="h-3.5 w-3.5" />
-              Export
-            </Button>
-          </div>
+          <Button type="button" variant="outline" size="sm" className="h-8" disabled={!canClear} onClick={clearFilters}>
+            Clear filters
+          </Button>
         </CardHeader>
         <CardContent className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <label className="grid gap-1.5 text-xs font-medium text-slate-600">

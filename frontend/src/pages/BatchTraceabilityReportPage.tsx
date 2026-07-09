@@ -1,9 +1,9 @@
 import * as React from "react";
 import { Link } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
-import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { PageContainer, ReportPageHeader } from "../components/PageHeader";
+import { ReportPrintExportBar, ReportPrintMeta } from "../components/erp/ReportPrintExport";
 import { apiFetch } from "../services/api";
 import { useUrlQueryState } from "../hooks/useUrlQueryState";
 import { ERP_REPORT_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
@@ -243,14 +243,21 @@ export function BatchTraceabilityReportPage() {
   const selectClass = "h-10 rounded-md border border-slate-200 bg-white px-3 text-sm";
 
   return (
-    <PageContainer className="pb-8">
+    <PageContainer className="erp-report-page pb-8">
+      <ReportPrintMeta
+        title="Batch Traceability Report"
+        filterSummary={[fromDate && `From ${fromDate}`, toDate && `To ${toDate}`, fgItemId && `FG #${fgItemId}`, customerId && `Customer #${customerId}`]
+          .filter(Boolean)
+          .join(" · ")}
+      />
       <ReportPageHeader
         title="Batch Traceability Report"
         purpose="Tracks a batch from production to QC to dispatch for traceability and complaint handling."
         actions={
-          <Button type="button" variant="outline" size="sm" disabled={!rows.length || missingDates} onClick={downloadCsv}>
-            Download CSV
-          </Button>
+          <ReportPrintExportBar
+            onExportCsv={downloadCsv}
+            csvDisabled={!rows.length || missingDates}
+          />
         }
       />
 
@@ -264,8 +271,12 @@ export function BatchTraceabilityReportPage() {
       {loadError ? <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{loadError}</div> : null}
 
       <div className="rounded-md border border-sky-100 bg-sky-50/80 px-3 py-2 text-xs text-slate-700">
-        <div className="font-semibold text-slate-900">Supported traceability level</div>
+        <div className="font-semibold text-slate-900">Supported traceability level (RPT-003)</div>
         <div className="mt-0.5">{data?.meta.supportedTraceabilityLevel ?? "—"}</div>
+        <div className="mt-1 text-slate-600">
+          Production → QC is batch-exact. Dispatch and Sales Bill linkage is available only at Sales Order + FG item
+          level (not per production batch), because the model does not allocate dispatch lines to batches.
+        </div>
       </div>
 
       <Card className="mt-3 border-slate-200 shadow-sm">

@@ -1,8 +1,14 @@
 import * as React from "react";
 import { Link } from "react-router-dom";
-import { ChevronDown, ChevronRight, Network } from "lucide-react";
-import { PageContainer, ReportPageHeader, StickyReportBackStrip } from "../components/PageHeader";
+import { ChevronDown, ChevronRight } from "lucide-react";
+import { PageContainer, ReportPageHeader } from "../components/PageHeader";
 import { ReportFilterToolbar, ReportFilterField } from "../components/erp/ReportChrome";
+import {
+  ReportPrintExportBar,
+  ReportPrintMeta,
+  downloadReportCsv,
+  downloadReportExcel,
+} from "../components/erp/ReportPrintExport";
 import { Card, CardContent } from "../components/ui/card";
 import { Button } from "../components/ui/button";
 import { apiFetch } from "../services/api";
@@ -351,13 +357,76 @@ export function RmProcurementConnectivityReportPage() {
     });
   };
 
+  const filterSummary = [
+    filters.sourceType ? `Source ${filters.sourceType}` : null,
+    filters.status ? `Status ${filters.status}` : null,
+    filters.supplierId ? `Supplier #${filters.supplierId}` : null,
+    filters.rmItemId ? `RM #${filters.rmItemId}` : null,
+    filters.rmPoId ? `PO #${filters.rmPoId}` : null,
+    filters.mrId ? `MR #${filters.mrId}` : null,
+    filters.prId ? `PR #${filters.prId}` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const csvHeaders = [
+    "Demand source",
+    "MR",
+    "PR",
+    "RM PO",
+    "Supplier",
+    "RM item",
+    "Ordered",
+    "Received",
+    "Pending",
+    "GRN",
+    "Stock",
+    "Bill",
+    "Status",
+  ];
+  const csvRows = rows.map((row) => [
+    resolveConnectivityDemandSourceLabel(row),
+    row.mr?.docNo ?? "",
+    row.pr?.docNo ?? "",
+    row.rmPoDisplayNo,
+    row.supplier?.name ?? "",
+    row.rmItem?.itemName ?? "",
+    row.orderedQty,
+    row.receivedQty,
+    row.pendingQty,
+    row.grnSummary.activeGrnNos[0] ?? row.grnSummary.label,
+    row.stockPosted.posted ? row.stockPosted.label : "Not posted",
+    connectivityBillSummary(row),
+    row.receiptStatusLabel,
+  ]);
+
   return (
-    <PageContainer>
-      <StickyReportBackStrip />
+    <PageContainer className="erp-report-page">
+      <ReportPrintMeta title="RM Procurement Connectivity Report" filterSummary={filterSummary} />
       <ReportPageHeader
         title="RM Procurement Connectivity Report"
-        subtitle="Line-wise trace from demand source through MR, PR, PO, GRN, stock inward, and purchase bill."
-        icon={<Network className="h-5 w-5" />}
+        purpose="Line-wise trace from demand source through MR, PR, PO, GRN, stock inward, and purchase bill."
+        actions={
+          <ReportPrintExportBar
+            filterSummary={filterSummary}
+            onExportCsv={() =>
+              downloadReportCsv(
+                `rm-procurement-connectivity_${new Date().toISOString().slice(0, 10)}.csv`,
+                csvHeaders,
+                csvRows,
+              )
+            }
+            onExportExcel={() =>
+              downloadReportExcel(
+                `rm-procurement-connectivity_${new Date().toISOString().slice(0, 10)}.xlsx`,
+                "RM Procurement Connectivity Report",
+                csvHeaders,
+                csvRows,
+              )
+            }
+            csvDisabled={loading}
+            excelDisabled={loading}
+          />
+        }
       />
 
       <ReportFilterToolbar>

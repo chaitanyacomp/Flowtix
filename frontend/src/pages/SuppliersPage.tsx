@@ -1,14 +1,16 @@
 import * as React from "react";
+import { useLocation } from "react-router-dom";
 import { apiFetch } from "../services/api";
 import { Button } from "../components/ui/button";
 import { useAuth } from "../hooks/useAuth";
-import { PageActions } from "../components/PageHeader";
+import { PageActions, PageBackLink, StickyWorkspaceHead, useAnalysisReportBack } from "../components/PageHeader";
 import { useToast } from "../contexts/ToastContext";
 import { ApiRequestError } from "../services/api";
 import { Pencil, Trash2 } from "lucide-react";
 import { SupplierMasterForm } from "../components/erp/SupplierMasterForm";
 import { PartyMasterModal } from "../components/erp/partyMasterUi";
 import type { StateRow } from "../lib/gstinValidation";
+import { isReportsReturnContext } from "../lib/drillDownRoutes";
 
 type Supplier = {
   id: number;
@@ -27,9 +29,13 @@ type Supplier = {
 
 export function SuppliersPage() {
   const toast = useToast();
+  const location = useLocation();
   const role = useAuth().user?.role;
-  const canWrite = role === "ADMIN" || role === "STORE";
-  const isAdmin = role === "ADMIN";
+  const fromAnalysis = isReportsReturnContext(location.search);
+  const mastersBack = React.useMemo(() => ({ to: "/customers", label: "Back to Masters" }), []);
+  const back = useAnalysisReportBack(mastersBack);
+  const canWrite = (role === "ADMIN" || role === "STORE") && !fromAnalysis;
+  const isAdmin = role === "ADMIN" && !fromAnalysis;
   const [rows, setRows] = React.useState<Supplier[]>([]);
   const [states, setStates] = React.useState<StateRow[]>([]);
   const [error, setError] = React.useState<string | null>(null);
@@ -79,7 +85,17 @@ export function SuppliersPage() {
 
   return (
     <div>
-      {canWrite ? (
+      <StickyWorkspaceHead lead={<PageBackLink to={back.to} label={back.label} />}>
+        <div className="min-w-0">
+          <h1 className="text-lg font-semibold leading-snug text-slate-900">Suppliers</h1>
+          <p className="mt-0.5 text-sm text-slate-600">
+            {fromAnalysis
+              ? "Read-only Analysis view — supplier directory for payable context."
+              : "Supplier master — GST, contact, and supply locations."}
+          </p>
+        </div>
+      </StickyWorkspaceHead>
+      {canWrite && !fromAnalysis ? (
         <PageActions>
           <Button type="button" variant="outline" size="sm" onClick={openAdd}>
             + Add supplier

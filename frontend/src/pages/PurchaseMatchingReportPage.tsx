@@ -3,6 +3,12 @@ import { Link } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Input } from "../components/ui/input";
 import { PageContainer, ReportPageHeader } from "../components/PageHeader";
+import {
+  ReportPrintExportBar,
+  ReportPrintMeta,
+  downloadReportCsv,
+  downloadReportExcel,
+} from "../components/erp/ReportPrintExport";
 import { apiFetch } from "../services/api";
 import { useDebouncedUrlStringParam, useUrlQueryState } from "../hooks/useUrlQueryState";
 import { ERP_REPORT_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
@@ -160,12 +166,65 @@ export function PurchaseMatchingReportPage() {
   }, [fromDate, toDate, supplierId, itemId, status, mismatchesOnly, liveTick]);
 
   const rows = data?.rows ?? [];
+  const filterSummary = [
+    fromDate ? `From ${fromDate}` : null,
+    toDate ? `To ${toDate}` : null,
+    supplierId ? `Supplier #${supplierId}` : null,
+    itemId ? `Item #${itemId}` : null,
+    status && status !== "ALL" ? `Status ${status}` : null,
+    mismatchesOnly ? "Mismatches only" : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const csvHeaders = [
+    "PO Ref",
+    "Date",
+    "Supplier",
+    "Item",
+    "Ordered",
+    "Received",
+    "Billed",
+    "Pending Receipt",
+    "Pending Bill",
+    "Status",
+  ];
+  const csvRows = rows.map((r) => [
+    r.purchaseRef,
+    r.purchaseDate,
+    r.supplierName,
+    r.itemName,
+    r.orderedQty,
+    r.receivedQty,
+    r.billedQty,
+    r.pendingReceiptQty,
+    r.pendingBillQty,
+    r.status,
+  ]);
 
   return (
-    <PageContainer className="pb-8">
+    <PageContainer className="erp-report-page pb-8">
+      <ReportPrintMeta title="Purchase Matching Report" filterSummary={filterSummary} />
       <ReportPageHeader
         title="Purchase Matching Report"
         purpose="Compare Material Planning orders, GRN receipts, and purchase bills to spot pending receipt, pending billing, or quantity mismatches."
+        actions={
+          <ReportPrintExportBar
+            filterSummary={filterSummary}
+            onExportCsv={() =>
+              downloadReportCsv(`purchase-matching_${fromDate}_to_${toDate}.csv`, csvHeaders, csvRows)
+            }
+            onExportExcel={() =>
+              downloadReportExcel(
+                `purchase-matching_${fromDate}_to_${toDate}.xlsx`,
+                "Purchase Matching Report",
+                csvHeaders,
+                csvRows,
+              )
+            }
+            csvDisabled={missingDates || loading}
+            excelDisabled={missingDates || loading}
+          />
+        }
       />
 
       {missingDates ? (

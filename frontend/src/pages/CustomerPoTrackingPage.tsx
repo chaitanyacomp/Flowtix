@@ -7,6 +7,11 @@ import { Button, buttonVariants } from "../components/ui/button";
 import { Badge } from "../components/ui/badge";
 import { DemoFlowBanner } from "../components/demo/DemoFlowBanner";
 import { ReportPageHeader, PageContainer } from "../components/PageHeader";
+import {
+  ReportPrintExportBar,
+  ReportPrintMeta,
+  downloadReportCsv,
+} from "../components/erp/ReportPrintExport";
 import { cn } from "../lib/utils";
 import { useAuth } from "../hooks/useAuth";
 import { NativeSelect } from "../components/ui/native-select";
@@ -876,15 +881,58 @@ export function CustomerPoTrackingPage() {
     [detail],
   );
 
+  const filterSummary = [
+    customerId ? `Customer #${customerId}` : null,
+    poSearch.trim() ? `PO “${poSearch.trim()}”` : null,
+    dateFrom ? `From ${dateFrom}` : null,
+    dateTo ? `To ${dateTo}` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const csvHeaders = [
+    "PO Number",
+    "Status",
+    "Ordered",
+    "Planned",
+    "Produced",
+    "QC Cleared",
+    "Dispatched",
+    "Balance",
+  ];
+  const csvRows = visiblePoRows.map((r) => [
+    r.poNumber,
+    r.status,
+    r.orderedQty,
+    r.plannedQty,
+    r.producedQty,
+    r.qcClearedQty,
+    r.dispatchedQty,
+    r.balanceQty,
+  ]);
+
   return (
-    <PageContainer>
+    <PageContainer className="erp-report-page">
       <DemoFlowBanner />
+      <ReportPrintMeta title="Customer Tracking Report" filterSummary={filterSummary} />
       <ReportPageHeader
         title="Customer Tracking Report"
         purpose={
           accountsRole
             ? "Master customer lifecycle report — order through dispatch, billing, and payment follow-up (read-only)."
             : "Master customer lifecycle report — Customer PO → SO → RS → WO → Production → QC → Dispatch → Bill (read-only)."
+        }
+        actions={
+          <ReportPrintExportBar
+            filterSummary={filterSummary}
+            onExportCsv={() =>
+              downloadReportCsv(
+                `customer-po-tracking_${new Date().toISOString().slice(0, 10)}.csv`,
+                csvHeaders,
+                csvRows,
+              )
+            }
+            csvDisabled={loadingList}
+          />
         }
       />
 
@@ -1644,7 +1692,7 @@ export function CustomerPoTrackingPage() {
                           className={cn(buttonVariants({ variant: "outline", size: "sm" }), "no-underline")}
                           to={trackingWithSo(selectedSalesOrderId, "/sales-orders")}
                         >
-                          Back to Sales Orders
+                          Open Sales Orders
                         </Link>
                       )}
                     </div>

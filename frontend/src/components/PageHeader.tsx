@@ -355,4 +355,14 @@ export function PageHeader({
   );
 }
 
-export { ReportBackLink, ReportPageHeader, StickyPageHeader, StickyReportBackStrip };
+export {
+  DEFAULT_DASHBOARD_BACK_TARGET,
+  DEFAULT_REPORT_BACK_TARGET,
+  ReportBackLink,
+  ReportPageHeader,
+  resolveAnalysisReportBackTarget,
+  StickyPageHeader,
+  StickyReportBackStrip,
+  useAnalysisReportBack,
+  type ReportBackTarget,
+} from "./ReportPageHeader";

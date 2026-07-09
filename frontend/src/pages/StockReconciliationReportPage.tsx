@@ -3,6 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card"
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { PageContainer, ReportPageHeader } from "../components/PageHeader";
+import { ReportPrintExportBar, ReportPrintMeta } from "../components/erp/ReportPrintExport";
 import { apiFetch } from "../services/api";
 import { useDebouncedUrlStringParam, useUrlQueryState } from "../hooks/useUrlQueryState";
 import { ERP_REPORT_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
@@ -238,14 +239,19 @@ export function StockReconciliationReportPage() {
   }
 
   return (
-    <PageContainer className="pb-8">
+    <PageContainer className="erp-report-page pb-8">
+      <ReportPrintMeta
+        title="Stock Reconciliation Report"
+        filterSummary={[fromDate && `From ${fromDate}`, toDate && `To ${toDate}`].filter(Boolean).join(" · ")}
+      />
       <ReportPageHeader
         title="Stock Reconciliation Report"
         purpose="Compare stock movement and balances to identify mismatches or reconciliation issues."
         actions={
-          <Button type="button" variant="outline" size="sm" disabled={!rows.length || missingDates} onClick={downloadCsv}>
-            Download CSV
-          </Button>
+          <ReportPrintExportBar
+            onExportCsv={downloadCsv}
+            csvDisabled={missingDates || loading}
+          />
         }
       />
 

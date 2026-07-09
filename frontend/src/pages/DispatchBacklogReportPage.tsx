@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useNavigate } from "react-router-dom";
-import { ChevronDown, ChevronUp, Download } from "lucide-react";
+import { ChevronDown, ChevronUp } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -17,10 +17,15 @@ import {
   dispatchBacklogStatusTone,
 } from "../lib/dispatchBacklog";
 import { getDrillRowProps, salesOrdersFocusHref, withReportsReturnContext } from "../lib/drillDownRoutes";
-import { useToast } from "../contexts/ToastContext";
 import { useDrillActivable } from "../hooks/useDrillAccess";
 import { useDebouncedUrlStringParam, useUrlQueryState } from "../hooks/useUrlQueryState";
 import { ReportPageHeader } from "../components/PageHeader";
+import {
+  ReportPrintExportBar,
+  ReportPrintMeta,
+  downloadReportCsv,
+  downloadReportExcel,
+} from "../components/erp/ReportPrintExport";
 
 type Customer = { id: number; name: string };
 type StatusFilter = "ALL" | "APPROVED" | "IN_PROCESS";
@@ -36,9 +41,10 @@ const REPORT_URL_OMIT: Record<string, string> = {
   dir: "asc",
 };
 
+const EXPORT_HEADERS = ["SO No", "Date", "Customer", "Item", "Pending Qty", "Status", "Days"];
+
 export function DispatchBacklogReportPage() {
   const navigate = useNavigate();
-  const toast = useToast();
   const canDrillSalesOrder = useDrillActivable("sales-order");
 
   const { patch, read } = useUrlQueryState(REPORT_URL_OMIT);
@@ -154,13 +160,33 @@ export function DispatchBacklogReportPage() {
     patch({ dir: next });
   }
 
-  function onExportPlaceholder() {
-    toast.showInfo("Export to Excel will be available in a future update.");
-  }
-
   function onRowActivate(r: DispatchBacklogRow) {
     navigate(withReportsReturnContext(salesOrdersFocusHref(r.salesOrderId)));
   }
+
+  const filterSummary = [
+    customerName ? `Customer ${customerName}` : null,
+    statusFilter !== "ALL" ? `Status ${statusFilter}` : null,
+    dateFrom ? `From ${dateFrom}` : null,
+    dateTo ? `To ${dateTo}` : null,
+    search.trim() ? `Search “${search.trim()}”` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  const exportRows = React.useMemo(
+    () =>
+      sorted.map((r) => [
+        r.salesOrderNo,
+        new Date(r.salesOrderDate).toLocaleDateString(),
+        r.customerName,
+        r.itemName,
+        r.pendingQty,
+        r.status,
+        daysSince(r.salesOrderDate),
+      ]),
+    [sorted],
+  );
 
   const selectClass =
     "h-9 w-full rounded-md border border-slate-200 bg-white px-2.5 text-sm text-slate-900 shadow-sm";
@@ -175,16 +201,33 @@ export function DispatchBacklogReportPage() {
   }
 
   return (
-    <div className="grid gap-3">
+    <div className="erp-report-page grid gap-3">
+      <ReportPrintMeta title="Dispatch Backlog" filterSummary={filterSummary} />
       <ReportPageHeader
         className="mb-0"
         title="Dispatch Backlog"
         purpose="Pending dispatch lines across active sales orders — who is waiting to ship, and how much."
         actions={
-          <Button type="button" variant="outline" size="sm" className="h-9 gap-1.5" onClick={onExportPlaceholder}>
-            <Download className="h-4 w-4" />
-            Export to Excel
-          </Button>
+          <ReportPrintExportBar
+            filterSummary={filterSummary}
+            onExportCsv={() =>
+              downloadReportCsv(
+                `dispatch-backlog_${new Date().toISOString().slice(0, 10)}.csv`,
+                EXPORT_HEADERS,
+                exportRows,
+              )
+            }
+            onExportExcel={() =>
+              downloadReportExcel(
+                `dispatch-backlog_${new Date().toISOString().slice(0, 10)}.xlsx`,
+                "Dispatch Backlog",
+                EXPORT_HEADERS,
+                exportRows,
+              )
+            }
+            csvDisabled={loading}
+            excelDisabled={loading}
+          />
         }
       />
 

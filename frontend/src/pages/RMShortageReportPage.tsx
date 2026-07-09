@@ -13,7 +13,7 @@ import { purchasePoStatusTone, rmRiskStatusTone } from "../lib/reportStatusTones
 import { useToast } from "../contexts/ToastContext";
 import { useAuth } from "../hooks/useAuth";
 import { ChevronDown, ChevronUp, Download, ShoppingCart } from "lucide-react";
-import { ReportPageHeader } from "../components/PageHeader";
+import { ReportPageHeader, useAnalysisReportBack } from "../components/PageHeader";
 import { ERP_REPORT_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
 
 type RmRiskRow = {
@@ -107,17 +107,8 @@ export function RMShortageReportPage() {
   const procurementAllowed = canProcureRmFromShortageWorkspace(auth.user?.role);
   const { patch, read } = useUrlQueryState(RM_SHORTAGE_URL_OMIT);
 
-  // Smart back-nav: if opened from Dashboard (source=dashboard), go back to
-  // Dashboard; otherwise default to the Reports hub. Mirrors the same query
-  // param convention used elsewhere on the dashboard.
-  const sourceFromUrl = read.string("source");
-  const back = React.useMemo(
-    () =>
-      sourceFromUrl === "dashboard"
-        ? { to: "/dashboard", label: "Back to Dashboard" }
-        : { to: "/reports", label: "Back to Reports" },
-    [sourceFromUrl],
-  );
+  // Single primary back: Dashboard when opened from dashboard; otherwise Reports.
+  const back = useAnalysisReportBack();
 
   const [rmRows, setRmRows] = React.useState<RmRiskRow[]>([]);
   const [poRows, setPoRows] = React.useState<PurchaseSummaryRow[]>([]);

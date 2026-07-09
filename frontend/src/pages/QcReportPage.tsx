@@ -5,7 +5,7 @@ import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Input } from "../components/ui/input";
-import { PageBackLink, PageContainer, StickyWorkspaceHead } from "../components/PageHeader";
+import { PageBackLink, PageContainer, StickyWorkspaceHead, useAnalysisReportBack } from "../components/PageHeader";
 import { displaySalesOrderNo } from "../lib/docNoDisplay";
 import { salesOrdersFocusHref, workOrdersFocusHref } from "../lib/drillDownRoutes";
 import { cn } from "../lib/utils";
@@ -338,9 +338,15 @@ export function QcReportPage() {
   const showProductionSection = sourceType === "ALL" || sourceType === "PRODUCTION";
   const showCustomerReturnSection = sourceType === "ALL" || sourceType === "CUSTOMER_RETURN";
 
+  const qcModuleBack = React.useMemo(
+    () => ({ to: "/qc-entry", label: "Back to Quality Inspection Workspace" }),
+    [],
+  );
+  const back = useAnalysisReportBack(qcModuleBack);
+
   return (
     <PageContainer className="erp-flow-page -mt-2 max-w-[min(110rem,calc(100vw-2rem))] space-y-2.5 pb-6">
-      <StickyWorkspaceHead lead={<PageBackLink to="/qc-entry" label="Back to Quality Inspection Workspace" />}>
+      <StickyWorkspaceHead lead={<PageBackLink to={back.to} label={back.label} />}>
         <div className="min-w-0 space-y-0.5">
           <h1 className="text-base font-semibold leading-tight tracking-tight text-slate-900">QC Report</h1>
           <p className="text-xs leading-snug text-slate-600">

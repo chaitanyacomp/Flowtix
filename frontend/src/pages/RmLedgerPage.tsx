@@ -7,6 +7,12 @@ import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { cn } from "../lib/utils";
 import { ReportPageHeader } from "../components/PageHeader";
+import {
+  ReportPrintExportBar,
+  ReportPrintMeta,
+  downloadReportCsv,
+  downloadReportExcel,
+} from "../components/erp/ReportPrintExport";
 
 type Item = { id: number; itemName: string; itemType: string; unit: string };
 
@@ -248,26 +254,119 @@ export function RmLedgerPage() {
     });
   }
 
+  const filterSummary = [
+    itemId > 0 ? `RM #${itemId}` : null,
+    dateFrom ? `From ${dateFrom}` : null,
+    dateTo ? `To ${dateTo}` : null,
+    movement !== "ALL" ? `Movement ${MOVEMENT_LABELS[movement]}` : null,
+    qFromUrl.trim() && itemId <= 0 ? `Search “${qFromUrl.trim()}”` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  const EXPORT_HEADERS = [
+    "Date",
+    "Movement type",
+    "Ref no",
+    "Source / use",
+    "Inward",
+    "Outward",
+    "Balance (after txn)",
+  ];
+
+  function rowToExportCells(r: RmLedgerRow): Array<string | number | null | undefined> {
+    const sourceParts = [sourceUsePrimary(r)];
+    if (itemId <= 0) sourceParts.push(r.itemName);
+    const secondary = sourceUseSecondary(r);
+    if (secondary) sourceParts.push(secondary.replace(/\n/g, " · "));
+    return [
+      r.date ? new Date(r.date).toLocaleString() : "",
+      movementTypeDisplay(r),
+      refNoCell(r.refNo, r.refType),
+      sourceParts.filter(Boolean).join(" · "),
+      r.inwardQty > 0 ? fmtQty(r.inwardQty) : "",
+      r.outwardQty > 0 ? fmtQty(r.outwardQty) : "",
+      r.runningBalanceAfter != null && Number.isFinite(r.runningBalanceAfter)
+        ? fmtQty(r.runningBalanceAfter)
+        : "",
+    ];
+  }
+
+  async function exportAllCsv() {
+    const exportPageSize = 200;
+    const maxPages = 50;
+    const all: RmLedgerRow[] = [];
+    let pageNum = 1;
+    let totalCount = Infinity;
+
+    while (pageNum <= maxPages && all.length < totalCount) {
+      const params = new URLSearchParams();
+      params.set("page", String(pageNum));
+      params.set("pageSize", String(exportPageSize));
+      params.set("sort", sort);
+      if (movement !== "ALL") params.set("movement", movement);
+      if (itemId > 0) params.set("itemId", String(itemId));
+      if (dateFrom.trim()) params.set("dateFrom", dateFrom.trim());
+      if (dateTo.trim()) params.set("dateTo", dateTo.trim());
+      const q = qFromUrl.trim();
+      if (q && itemId <= 0) params.set("q", q);
+
+      const data = await apiFetch<RmLedgerResponse>(`/api/stock/rm-ledger?${params.toString()}`);
+      const batch = Array.isArray(data.items) ? data.items : [];
+      totalCount = Number(data.total) || 0;
+      all.push(...batch);
+      if (batch.length === 0 || batch.length < exportPageSize) break;
+      pageNum += 1;
+    }
+
+    downloadReportCsv(
+      `rm-ledger_${new Date().toISOString().slice(0, 10)}.csv`,
+      EXPORT_HEADERS,
+      all.map(rowToExportCells),
+    );
+  }
+
+  function exportExcelCurrentPage() {
+    downloadReportExcel(
+      `rm-ledger_${new Date().toISOString().slice(0, 10)}.xlsx`,
+      "RM Movement",
+      EXPORT_HEADERS,
+      displayRows.map(rowToExportCells),
+    );
+  }
+
   return (
-    <div className="mx-auto flex w-full max-w-[1500px] flex-col gap-4 p-4">
+    <div className="erp-report-page mx-auto flex w-full max-w-[1500px] flex-col gap-2 p-3">
+      <ReportPrintMeta title="RM Movement" filterSummary={filterSummary} />
       <ReportPageHeader
         className="mb-0"
         title="RM Movement"
-        purpose="Track inward, consumption, adjustments, and running balance item-wise for raw materials."
+        purpose="Inward, consumption, adjustments, and running balance for raw materials."
+        actions={
+          <ReportPrintExportBar
+            filterSummary={filterSummary}
+            onExportCsv={() => {
+              void exportAllCsv();
+            }}
+            onExportExcel={exportExcelCurrentPage}
+            csvDisabled={loading}
+            excelDisabled={loading || displayRows.length === 0}
+          />
+        }
       />
       <p className="text-xs text-slate-500">
-        Use{" "}
+        Read-only history ·{" "}
         <Link to="/rm-po-grn" className="font-medium text-primary underline">
           Material Planning
-        </Link>{" "}
-        to post GRN. This page is read-only history.{" "}
+        </Link>
+        {" · "}
         <Link to="/stock" className="font-medium text-primary underline">
           Stock Summary
         </Link>
       </p>
 
       <Card>
-        <CardHeader className="pb-3">
+        <CardHeader className="pb-2">
           <CardTitle className="text-base">Filters</CardTitle>
         </CardHeader>
         <CardContent className="grid gap-3">

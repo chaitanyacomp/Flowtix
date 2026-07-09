@@ -9,7 +9,12 @@ import { salesOrdersFocusHref } from "../lib/drillDownRoutes";
 import { X } from "lucide-react";
 import { cn } from "../lib/utils";
 import { DemoFlowBanner } from "../components/demo/DemoFlowBanner";
-import { ReportPageHeader } from "../components/PageHeader";
+import { ReportPageHeader, useAnalysisReportBack } from "../components/PageHeader";
+import {
+  ReportPrintExportBar,
+  ReportPrintMeta,
+  downloadReportCsv,
+} from "../components/erp/ReportPrintExport";
 
 type Customer = { id: number; name: string };
 
@@ -347,12 +352,42 @@ export function CustomerReturnPage() {
     customerId > 0 && selectedDispatchId == null && firstActionableReturn == null;
   const showStripReturnEntry = selectedDispatch != null;
 
+  const workspaceBack = React.useMemo(
+    () => ({ to: "/dashboard", label: "Back to Dashboard" }),
+    [],
+  );
+  const back = useAnalysisReportBack(workspaceBack);
+
+  const historyCsvHeaders = ["Return No", "Date", "Customer", "Dispatch", "Item", "Qty", "Status"];
+  const historyCsvRows = history.map((r) => [
+    r.returnNo,
+    r.date,
+    r.customer?.name ?? "",
+    r.dispatchNo,
+    r.item?.name ?? "",
+    r.qty,
+    returnStatusUi(r).label,
+  ]);
+
   return (
-    <div className="grid gap-3">
+    <div className="erp-report-page grid gap-3">
       <DemoFlowBanner />
+      <ReportPrintMeta title="Customer Return" />
       <ReportPageHeader
         title="Customer Return"
         purpose="Record post-dispatch rejection and set next action — QC hold, rework, or back to stock."
+        back={back}
+        actions={
+          <ReportPrintExportBar
+            onExportCsv={() =>
+              downloadReportCsv(
+                `customer-returns_${new Date().toISOString().slice(0, 10)}.csv`,
+                historyCsvHeaders,
+                historyCsvRows,
+              )
+            }
+          />
+        }
       />
 
       {showStripNoCustomer ? (

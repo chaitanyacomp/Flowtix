@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card"
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Badge } from "../components/ui/badge";
-import { ReportPageHeader } from "../components/PageHeader";
+import { ReportPageHeader, useAnalysisReportBack } from "../components/PageHeader";
 
 type Bucket = "QC_HOLD" | "REWORK";
 
@@ -114,6 +114,12 @@ export function CustomerReturnBucketPage({ bucket }: { bucket: Bucket }) {
     }
   }
 
+  const moduleBack = React.useMemo(
+    () => ({ to: "/customer-returns", label: "Back to Customer Return" }),
+    [],
+  );
+  const back = useAnalysisReportBack(moduleBack);
+
   return (
     <div className="grid gap-3">
       <ReportPageHeader
@@ -123,6 +129,7 @@ export function CustomerReturnBucketPage({ bucket }: { bucket: Bucket }) {
             ? "Approve rework to stock (one step) or scrap."
             : "Approve to stock or scrap."
         }
+        back={back}
       />
 
       <Card className="border-slate-200 shadow-sm">

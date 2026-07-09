@@ -2781,4 +2781,54 @@
       font-size: 10px;
     }
   }
+
+  /* Analysis / Reports — FT-PD-066 §17 print layout */
+  @media print {
+    @page {
+      size: A4 landscape;
+      margin: 10mm 12mm;
+    }
+
+    .erp-sidebar,
+    .erp-topbar,
+    .erp-no-print,
+    nav,
+    aside.erp-sidebar {
+      display: none !important;
+    }
+
+    .erp-print-only {
+      display: block !important;
+    }
+
+    .erp-report-page a[href],
+    .erp-report-page button {
+      display: none !important;
+    }
+
+    .erp-report-page .erp-type-page-title {
+      display: block !important;
+    }
+
+    .erp-main,
+    .erp-workbench-main,
+    main {
+      margin: 0 !important;
+      padding: 0 !important;
+      max-width: none !important;
+    }
+
+    .erp-report-page table {
+      width: 100% !important;
+      font-size: 9pt;
+    }
+
+    .erp-report-page thead {
+      display: table-header-group;
+    }
+
+    .erp-report-page tbody tr {
+      page-break-inside: avoid;
+    }
+  }
 }

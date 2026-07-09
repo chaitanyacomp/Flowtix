@@ -1,11 +1,13 @@
-import * as React from "react";
-import { cn } from "../lib/utils";
-import { ERPBackNavigation } from "./erp/foundation/ERPBackNavigation";
-
 /**
  * Sticky in-page header band for `erp-main` scroll: solid background so tables/forms do not show through.
  * Use for back link + primary page heading row on long operational pages (not for arbitrary cards).
  */
+import * as React from "react";
+import { useLocation } from "react-router-dom";
+import { cn } from "../lib/utils";
+import { isReportsReturnContext } from "../lib/drillDownRoutes";
+import { ERPBackNavigation } from "./erp/foundation/ERPBackNavigation";
+
 export function StickyPageHeader({ children, className }: { children: React.ReactNode; className?: string }) {
   return (
     <header
@@ -21,17 +23,52 @@ export function StickyPageHeader({ children, className }: { children: React.Reac
   );
 }
 
-/** Configurable back destination for the {@link ReportBackLink}. `to` is the
- * route, `label` is the displayed text. Useful when a report page is opened
- * from a non-Reports context (e.g. Dashboard) — pass `{ to: "/dashboard",
- * label: "Back to Dashboard" }`. */
+/** Configurable back destination for the {@link ReportBackLink}. */
 export type ReportBackTarget = { to: string; label: string };
 
-/** Default back target — Reports hub. */
+/** Analysis reports — always return to the Reports hub (FT-PD-066 §14.2). */
 export const DEFAULT_REPORT_BACK_TARGET: ReportBackTarget = {
   to: "/reports",
   label: "Back to Reports",
 };
+
+/** Dashboard-origin workspaces. */
+export const DEFAULT_DASHBOARD_BACK_TARGET: ReportBackTarget = {
+  to: "/dashboard",
+  label: "Back to Dashboard",
+};
+
+/**
+ * Resolve the single primary back target for Analysis / dual-entry report surfaces.
+ * - `source|from=dashboard` → Back to Dashboard
+ * - `from|source=reports` (or pure analysis with no workspace default) → Back to Reports
+ * - otherwise → `workspaceDefault` when provided (module / workspace origin)
+ */
+export function resolveAnalysisReportBackTarget(
+  search: string,
+  workspaceDefault?: ReportBackTarget | null,
+): ReportBackTarget {
+  const q = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
+  const from = (q.get("from") ?? "").trim().toLowerCase();
+  const source = (q.get("source") ?? "").trim().toLowerCase();
+  if (from === "dashboard" || source === "dashboard") return DEFAULT_DASHBOARD_BACK_TARGET;
+  if (isReportsReturnContext(search) || from === "reports" || source === "reports") {
+    return DEFAULT_REPORT_BACK_TARGET;
+  }
+  if (workspaceDefault) return workspaceDefault;
+  return DEFAULT_REPORT_BACK_TARGET;
+}
+
+/** Hook: one primary back control for Analysis report pages. */
+export function useAnalysisReportBack(workspaceDefault?: ReportBackTarget | null): ReportBackTarget {
+  const { search } = useLocation();
+  return React.useMemo(
+    () => resolveAnalysisReportBackTarget(search, workspaceDefault),
+    // workspaceDefault is a small value object; compare by fields
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [search, workspaceDefault?.to, workspaceDefault?.label],
+  );
+}
 
 /** Primary back-nav for report pages — uses global {@link ERPBackNavigation}. */
 export function ReportBackLink({
@@ -47,9 +84,8 @@ export function ReportBackLink({
 
 /**
  * Inline back-nav row above the report title. Kept under the old name for
- * backward compatibility with existing report pages — but no longer renders a
- * white sticky strip, border, or shadow. It is now a transparent wrapper with
- * the same horizontal gutter as the title and filter toolbar.
+ * backward compatibility — transparent wrapper; do **not** also render
+ * {@link ReportPageHeader} (which already includes this strip).
  */
 export function StickyReportBackStrip({
   className,
@@ -57,6 +93,8 @@ export function StickyReportBackStrip({
 }: {
   className?: string;
   back?: ReportBackTarget;
+  /** @deprecated Ignored — use `back` or ReportPageHeader only. */
+  returnTo?: string;
 }) {
   const target = back ?? DEFAULT_REPORT_BACK_TARGET;
   return (
@@ -90,11 +128,10 @@ export function ReportPageTitleBlock({
 }
 
 /**
- * Standard report page chrome: sticky back strip only, then scrolling title / actions row.
- * Does not wrap filters, KPIs, or results in a sticky container.
+ * Standard Analysis report chrome: **one** primary Back control, then title / actions.
+ * Do not render a separate {@link StickyReportBackStrip} above this component.
  *
- * Pass `back={{ to, label }}` to customize the breadcrumb destination — useful
- * when the page is opened from a non-Reports context (e.g. `?source=dashboard`).
+ * Default back is **Back to Reports**. Pass `back` for Dashboard / Module origins.
  */
 export function ReportPageHeader({
   title,

@@ -3,11 +3,15 @@
  */
 import * as React from "react";
 import { Link } from "react-router-dom";
-import { ChevronDown, ChevronRight, Download } from "lucide-react";
-import { PageContainer, ReportPageHeader, StickyReportBackStrip } from "../components/PageHeader";
+import { ChevronDown, ChevronRight } from "lucide-react";
+import { PageContainer, ReportPageHeader } from "../components/PageHeader";
 import { ReportFilterToolbar, ReportFilterField } from "../components/erp/ReportChrome";
+import {
+  ReportPrintExportBar,
+  ReportPrintMeta,
+  downloadReportExcel,
+} from "../components/erp/ReportPrintExport";
 import { Card, CardContent } from "../components/ui/card";
-import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { apiFetch, getApiUrl } from "../services/api";
 import { useUrlQueryState } from "../hooks/useUrlQueryState";
@@ -229,12 +233,64 @@ export function RmPlanningVsReceivedReportPage() {
     window.open(url, "_blank", "noopener,noreferrer");
   };
 
+  const filterSummary = [
+    filters.periodKey ? `Period ${filters.periodKey}` : null,
+    filters.rmItemId ? `RM #${filters.rmItemId}` : null,
+    filters.procurementSource && filters.procurementSource !== "ALL"
+      ? `Source ${filters.procurementSource}`
+      : null,
+    filters.supplierId ? `Supplier #${filters.supplierId}` : null,
+    filters.status ? `Status ${filters.status}` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const excelHeaders = [
+    "RM Item",
+    "Unit",
+    "Planned RM Qty",
+    "Released Procurement Qty",
+    "PO Qty",
+    "GRN Received Qty",
+    "Pending GRN Qty",
+    "Variance Qty",
+    "Variance %",
+    "Status",
+  ];
+  const excelRows = rows.map((row) => [
+    row.rmItemName,
+    row.unit || "",
+    row.plannedRmQty,
+    row.releasedProcurementQty,
+    row.poQty,
+    row.grnReceivedQty,
+    row.pendingGrnQty,
+    row.varianceQty,
+    row.variancePercent ?? "",
+    row.statusLabel,
+  ]);
+
   return (
-    <PageContainer>
-      <StickyReportBackStrip returnTo="/reports" />
+    <PageContainer className="erp-report-page">
+      <ReportPrintMeta title="RM Planning vs Actual Received" filterSummary={filterSummary} />
       <ReportPageHeader
         title="RM Planning vs Actual Received"
-        description="Month-wise comparison of RM planned requirement, procurement release, PO quantity, and GRN received quantity."
+        purpose="Month-wise comparison of RM planned requirement, procurement release, PO quantity, and GRN received quantity."
+        actions={
+          <ReportPrintExportBar
+            filterSummary={filterSummary}
+            onExportCsv={handleExport}
+            onExportExcel={() =>
+              downloadReportExcel(
+                `rm-planning-vs-received_${filters.periodKey}.xlsx`,
+                "RM Planning vs Actual Received",
+                excelHeaders,
+                excelRows,
+              )
+            }
+            csvDisabled={loading}
+            excelDisabled={loading}
+          />
+        }
       />
 
       <ReportFilterToolbar onApply={() => setFilterTick((t) => t + 1)}>
@@ -307,10 +363,6 @@ export function RmPlanningVsReceivedReportPage() {
           Period: <span className="font-semibold">{filters.periodKey}</span>
           {loading ? " · Loading…" : ` · ${rows.length} item${rows.length === 1 ? "" : "s"}`}
         </p>
-        <Button type="button" variant="outline" size="sm" onClick={handleExport} disabled={loading || !rows.length}>
-          <Download className="mr-1.5 h-4 w-4" />
-          Export CSV
-        </Button>
       </div>
 
       {error ? (

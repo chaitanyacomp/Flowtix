@@ -7,6 +7,11 @@ import { Input } from "../components/ui/input";
 import { useUrlQueryState } from "../hooks/useUrlQueryState";
 import { ERP_REPORT_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
 import { ReportKpiStrip, type ReportKpiItem } from "../components/erp/ReportChrome";
+import {
+  ReportPrintExportBar,
+  ReportPrintMeta,
+  downloadReportCsv,
+} from "../components/erp/ReportPrintExport";
 
 type Customer = { id: number; name: string };
 type Item = { id: number; itemName: string; itemType: string };
@@ -206,6 +211,38 @@ export function DispatchSummaryReportPage() {
   const selectClass =
     "h-9 w-full rounded-md border border-slate-200 bg-white px-2.5 text-sm text-slate-900 shadow-sm";
 
+  const filterSummary = [
+    fromDate ? `From ${fromDate}` : null,
+    toDate ? `To ${toDate}` : null,
+    customerId ? `Customer #${customerId}` : null,
+    itemId ? `Item #${itemId}` : null,
+    activeTab === "register" ? "Tab Register" : "Tab Pending",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  function exportActiveTabCsv() {
+    if (activeTab === "pending") {
+      downloadReportCsv(
+        `dispatch-summary-pending_${ymdToday()}.csv`,
+        ["SO No", "Customer", "Item", "Ready to Ship", "Status"],
+        pendingRows.map((r) => [r.soNo, r.customerName, r.itemName, r.ready, r.status]),
+      );
+      return;
+    }
+    downloadReportCsv(
+      `dispatch-summary-register_${ymdToday()}.csv`,
+      ["Date", "SO No", "Customer", "Item", "Qty"],
+      history.map((d) => [
+        d.date,
+        d.soNo ?? `SO-${d.soId}`,
+        d.customerName ?? "",
+        d.itemName ?? `Item #${d.itemId}`,
+        d.qty,
+      ]),
+    );
+  }
+
   const tabBtn = (id: SummaryTab, label: string) => (
     <button
       key={id}
@@ -225,11 +262,19 @@ export function DispatchSummaryReportPage() {
   );
 
   return (
-    <PageContainer className="pb-8">
+    <PageContainer className="erp-report-page pb-8">
+      <ReportPrintMeta title="Dispatch Summary" filterSummary={filterSummary} />
       <ReportPageHeader
         className="mb-0"
         title="Dispatch Summary"
         purpose="Operational dispatch analytics — ready-to-ship pending (same rules as Dispatch) and locked dispatch register. Read-only; open Dispatch Workspace to execute."
+        actions={
+          <ReportPrintExportBar
+            filterSummary={filterSummary}
+            onExportCsv={exportActiveTabCsv}
+            csvDisabled={loading}
+          />
+        }
       />
 
       <ReportKpiStrip items={kpiItems} className="mt-2" />

@@ -4,6 +4,7 @@ const {
   rmPoDisplayNo,
 } = require("./procurementTraceService");
 const { deriveProcurementStatusLabel, procurementStatusDisplayLabel } = require("./procurementQtyMath");
+const { QUEUE_EPS } = require("./rmPurchaseHelpers");
 
 const RECEIPT_STATUSES = Object.freeze({
   PENDING_RECEIPT: "PENDING_RECEIPT",

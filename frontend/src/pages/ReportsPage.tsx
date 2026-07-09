@@ -1,7 +1,6 @@
 import { Link } from "react-router-dom";
 import {
   AlertCircle,
-  AlertTriangle,
   Boxes,
   BookOpen,
   ClipboardList,
@@ -167,7 +166,7 @@ const TILES: ReportTile[] = [
   {
     to: withReportsReturnContext("/sales-bills"),
     title: "Sales Bills",
-    description: "Dispatch-wise customer invoices (Tally export ready)",
+    description: "Dispatch-wise customer invoices (Tally export ready; read-only from Analysis)",
     roles: ["ADMIN"],
     group: "sales-ops",
     icon: <Receipt className="h-4 w-4" />,
@@ -220,15 +219,6 @@ const TILES: ReportTile[] = [
     icon: <RotateCcw className="h-4 w-4" />,
     priority: 10,
   },
-  {
-    to: "/customer-tracking-flow?from=reports",
-    title: "Customer PO Tracking",
-    description: "Same master as Customer Tracking — PO lifecycle through dispatch and billing",
-    roles: ["ADMIN"],
-    group: "customer-service",
-    icon: <Contact className="h-4 w-4" />,
-    priority: 20,
-  },
 
   /* -------------------------- Stock & Reconciliation -------------------------- */
   {
@@ -257,16 +247,6 @@ const TILES: ReportTile[] = [
     group: "stock",
     icon: <BookOpen className="h-4 w-4" />,
     priority: 30,
-  },
-  {
-    to: "/reports/rm-shortage",
-    title: "RM Shortage Workspace",
-    description:
-      "Raw material shortage vs open WO demand. Store and Admin manage purchase coverage and RM PO; Production sees a read-only shortage list.",
-    roles: ["ADMIN", "STORE", "PRODUCTION"],
-    group: "stock",
-    icon: <AlertTriangle className="h-4 w-4" />,
-    priority: 40,
   },
 
   /* ------------------------------ Purchase Audit ------------------------------ */
@@ -301,20 +281,11 @@ const TILES: ReportTile[] = [
   {
     to: withReportsReturnContext("/purchase-bills"),
     title: "Purchase Bills",
-    description: "Search and review purchase bills",
+    description: "Search and review purchase bills (read-only from Analysis)",
     roles: ["ADMIN", "PURCHASE"],
     group: "purchase",
     icon: <ShoppingCart className="h-4 w-4" />,
     priority: 20,
-  },
-  {
-    to: withReportsReturnContext("/rm-po-grn"),
-    title: "Material Planning",
-    description: "Pending purchase orders and GRN follow-up",
-    roles: ["ADMIN", "PURCHASE"],
-    group: "purchase",
-    icon: <Factory className="h-4 w-4" />,
-    priority: 30,
   },
 
   /* -------------------------- Production & Traceability ----------------------- */
@@ -413,9 +384,9 @@ const TILES: ReportTile[] = [
     priority: 50,
   },
   {
-    to: withReportsReturnContext("/customer-po-tracking"),
+    to: "/customer-tracking-flow?from=reports",
     title: "Customer Ledger Summary",
-    description: "Customer journey — dispatch, billing, returns (where linked)",
+    description: "Customer lifecycle — same master as Customer Tracking Report",
     roles: ["ADMIN"],
     group: "commercial",
     icon: <Contact className="h-4 w-4" />,

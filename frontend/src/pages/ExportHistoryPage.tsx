@@ -4,6 +4,11 @@ import { Input } from "../components/ui/input";
 import { Button } from "../components/ui/button";
 import { apiFetch, getApiUrl } from "../services/api";
 import { ReportPageHeader } from "../components/PageHeader";
+import {
+  ReportPrintExportBar,
+  ReportPrintMeta,
+  downloadReportCsv,
+} from "../components/erp/ReportPrintExport";
 import { cn } from "../lib/utils";
 import { NativeSelect } from "../components/ui/native-select";
 import {
@@ -105,12 +110,44 @@ export function ExportHistoryPage() {
     }
   }
 
+  const filterSummary = [
+    dateFrom ? `From ${dateFrom}` : null,
+    dateTo ? `To ${dateTo}` : null,
+    customer !== "ALL" ? `Customer ${customer}` : null,
+    search.trim() ? `Search “${search.trim()}”` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const csvHeaders = ["Date", "Customer", "Dispatch Ref", "Voucher No", "File Name", "Exported By"];
+  const csvRows = rows.map((r) => [
+    fmtDdMmYyyy(r.exportedAt),
+    r.customerName,
+    `DSP-${String(r.dispatchId).padStart(6, "0")}`,
+    r.voucherNo,
+    r.fileName || "",
+    r.exportedBy || "",
+  ]);
+
   return (
-    <div className="flex min-h-0 flex-col gap-4">
+    <div className="erp-report-page flex min-h-0 flex-col gap-4">
+      <ReportPrintMeta title="Export History" filterSummary={filterSummary} />
       <ReportPageHeader
         className="mb-0"
         title="Export History"
         purpose="Download previously generated Tally XML exports for sales bills (latest first)."
+        actions={
+          <ReportPrintExportBar
+            filterSummary={filterSummary}
+            onExportCsv={() =>
+              downloadReportCsv(
+                `export-history_${new Date().toISOString().slice(0, 10)}.csv`,
+                csvHeaders,
+                csvRows,
+              )
+            }
+            csvDisabled={loading}
+          />
+        }
       />
 
       {error ? <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{error}</div> : null}

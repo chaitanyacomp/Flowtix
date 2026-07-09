@@ -4,6 +4,12 @@ import { useCanOpenRequirementSheet } from "../hooks/useIsAdmin";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Input } from "../components/ui/input";
 import { PageContainer, ReportPageHeader } from "../components/PageHeader";
+import {
+  ReportPrintExportBar,
+  ReportPrintMeta,
+  downloadReportCsv,
+  downloadReportExcel,
+} from "../components/erp/ReportPrintExport";
 import { Badge } from "../components/ui/badge";
 import { apiFetch } from "../services/api";
 import { useDebouncedUrlStringParam, useUrlQueryState } from "../hooks/useUrlQueryState";
@@ -153,12 +159,105 @@ export function CustomerSoRsReportPage() {
   }, [customerId, soType, status, dateFrom, dateTo, qFromUrl, liveTick]);
 
   const rows = data?.rows ?? [];
+  const filterSummary = [
+    customerId ? `Customer #${customerId}` : null,
+    soType !== "ALL" ? `Type ${soType}` : null,
+    status !== "ALL" ? `Status ${status}` : null,
+    dateFrom ? `From ${dateFrom}` : null,
+    dateTo ? `To ${dateTo}` : null,
+    qFromUrl.trim() ? `Search “${qFromUrl.trim()}”` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const csvHeaders = showInternals
+    ? [
+        "Customer",
+        "SO No",
+        "Type",
+        "SO Date",
+        "Cycle",
+        "RS No",
+        "RS Status",
+        "Req Qty",
+        "Sug WO Qty",
+        "Carry / disposition qty",
+        "Closed shortage",
+        "Active carry",
+        "Reopen mode",
+        "Locked",
+        "Next action",
+      ]
+    : [
+        "Customer",
+        "SO No",
+        "Type",
+        "SO Date",
+        "Cycle",
+        "RS No",
+        "RS Status",
+        "Req Qty",
+        "Carry / disposition qty",
+        "Locked",
+        "Next action",
+      ];
+  const csvRows = rows.map((r) =>
+    showInternals
+      ? [
+          r.customerName,
+          r.salesOrderNo,
+          soTypeLabel(r.salesOrderType),
+          r.salesOrderDate,
+          r.currentCycleLabel ?? "",
+          r.requirementSheetNo ?? "",
+          r.requirementSheetStatus ?? "",
+          r.requirementQty ?? "",
+          r.suggestedWoQty ?? "",
+          r.lastShortageQty ?? "",
+          r.closedShortageQty ?? "",
+          r.activeCarryForwardQty ?? "",
+          r.reopenMode ?? "",
+          r.lockedAt ?? "",
+          r.nextActionLabel,
+        ]
+      : [
+          r.customerName,
+          r.salesOrderNo,
+          soTypeLabel(r.salesOrderType),
+          r.salesOrderDate,
+          r.currentCycleLabel ?? "",
+          r.requirementSheetNo ?? "",
+          r.requirementSheetStatus ?? "",
+          r.requirementQty ?? "",
+          r.lastShortageQty ?? "",
+          r.lockedAt ?? "",
+          r.nextActionLabel,
+        ],
+  );
 
   return (
-    <PageContainer className="pb-8">
+    <PageContainer className="erp-report-page pb-8">
+      <ReportPrintMeta title="Customer-wise SO & RS Report" filterSummary={filterSummary} />
       <ReportPageHeader
         title="Customer-wise SO & RS Report"
         purpose="Search SO number or Customer PO to filter. With search text, NO_QTY orders list every cycle; otherwise one row per order (NO_QTY uses current cycle for RS)."
+        actions={
+          <ReportPrintExportBar
+            filterSummary={filterSummary}
+            onExportCsv={() =>
+              downloadReportCsv(`customer-so-rs_${new Date().toISOString().slice(0, 10)}.csv`, csvHeaders, csvRows)
+            }
+            onExportExcel={() =>
+              downloadReportExcel(
+                `customer-so-rs_${new Date().toISOString().slice(0, 10)}.xlsx`,
+                "Customer-wise SO & RS Report",
+                csvHeaders,
+                csvRows,
+              )
+            }
+            csvDisabled={loading}
+            excelDisabled={loading}
+          />
+        }
       />
 
       {loadError ? (

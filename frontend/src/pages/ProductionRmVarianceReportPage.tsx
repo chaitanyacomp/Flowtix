@@ -10,8 +10,12 @@ import { apiFetch, getApiUrl } from "../services/api";
 import { cn } from "../lib/utils";
 import { useToast } from "../contexts/ToastContext";
 import { useAuth } from "../hooks/useAuth";
-import { Download } from "lucide-react";
 import { ReportPageHeader } from "../components/PageHeader";
+import {
+  ReportPrintExportBar,
+  ReportPrintMeta,
+  downloadReportExcelWorkbook,
+} from "../components/erp/ReportPrintExport";
 import { ERP_REPORT_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
 import { useDebouncedUrlStringParam, useUrlQueryState } from "../hooks/useUrlQueryState";
 
@@ -268,69 +272,93 @@ export function ProductionRmVarianceReportPage() {
 
   function downloadExcel() {
     if (!data) return;
-    const esc = (v: unknown) =>
-      v == null ? "" : String(v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-    const detailRows = data.rows
-      .map(
-        (r) =>
-          `<tr><td>${esc(fmtDate(r.productionDate))}</td><td>${esc(r.workOrderNo)}</td><td>${esc(r.salesOrderNo)}</td><td>${esc(r.fgItemName)}</td><td>${esc(r.rmItemName)}</td><td>${r.producedQty}</td><td>${r.standardQty}</td><td>${r.actualQty}</td><td>${r.varianceQty}</td><td>${esc(fmtPct(r.variancePercent))}</td><td>${esc(r.consumptionType)}</td><td>${esc(r.remarks)}</td><td>${esc(r.approvedByName)}</td></tr>`,
-      )
-      .join("");
-    const rmRows = data.rmSummary
-      .map(
-        (r) =>
-          `<tr><td>${esc(r.itemName)}</td><td>${r.totalStandard}</td><td>${r.totalActual}</td><td>${r.netVariance}</td><td>${esc(fmtPct(r.variancePercent))}</td></tr>`,
-      )
-      .join("");
-    const fgRows = data.fgSummary
-      .map(
-        (r) =>
-          `<tr><td>${esc(r.fgItemName)}</td><td>${r.batchCount}</td><td>${r.totalStandard}</td><td>${r.totalActual}</td><td>${esc(fmtPct(r.variancePercent))}</td></tr>`,
-      )
-      .join("");
-    const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel"><head><meta charset="UTF-8"></head><body>
-<h3>Production RM Variance (page ${data.meta.page} of ${data.meta.totalPages})</h3>
-<p>For full detail export, use Export CSV.</p>
-<table border="1"><thead><tr><th>Date</th><th>WO</th><th>SO</th><th>FG</th><th>RM</th><th>Produced</th><th>Standard</th><th>Actual</th><th>Variance</th><th>Var %</th><th>Type</th><th>Remarks</th><th>Approved By</th></tr></thead><tbody>${detailRows}</tbody></table>
-<h3>RM Variance Summary</h3>
-<table border="1"><thead><tr><th>RM Item</th><th>Total Standard</th><th>Total Actual</th><th>Net Variance</th><th>Var %</th></tr></thead><tbody>${rmRows}</tbody></table>
-<h3>FG Consumption Accuracy</h3>
-<table border="1"><thead><tr><th>FG Item</th><th>Batches</th><th>Standard RM</th><th>Actual RM</th><th>Net Var %</th></tr></thead><tbody>${fgRows}</tbody></table>
-</body></html>`;
-    const blob = new Blob([html], { type: "application/vnd.ms-excel" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `production-rm-variance_${dateFrom}_to_${dateTo}.xls`;
-    a.click();
-    URL.revokeObjectURL(a.href);
-    toast.showSuccess("Excel file exported (current filters; use CSV for full detail).");
+    downloadReportExcelWorkbook(`production-rm-variance_${dateFrom}_to_${dateTo}.xlsx`, [
+      {
+        name: "Detail",
+        headers: [
+          "Date",
+          "WO",
+          "SO",
+          "FG",
+          "RM",
+          "Produced",
+          "Standard",
+          "Actual",
+          "Variance",
+          "Var %",
+          "Type",
+          "Remarks",
+          "Approved By",
+        ],
+        rows: data.rows.map((r) => [
+          fmtDate(r.productionDate),
+          r.workOrderNo,
+          r.salesOrderNo,
+          r.fgItemName,
+          r.rmItemName,
+          r.producedQty,
+          r.standardQty,
+          r.actualQty,
+          r.varianceQty,
+          fmtPct(r.variancePercent),
+          r.consumptionType,
+          r.remarks,
+          r.approvedByName,
+        ]),
+      },
+      {
+        name: "RM Summary",
+        headers: ["RM Item", "Total Standard", "Total Actual", "Net Variance", "Var %"],
+        rows: data.rmSummary.map((r) => [
+          r.itemName,
+          r.totalStandard,
+          r.totalActual,
+          r.netVariance,
+          fmtPct(r.variancePercent),
+        ]),
+      },
+      {
+        name: "FG Accuracy",
+        headers: ["FG Item", "Batches", "Standard RM", "Actual RM", "Net Var %"],
+        rows: data.fgSummary.map((r) => [
+          r.fgItemName,
+          r.batchCount,
+          r.totalStandard,
+          r.totalActual,
+          fmtPct(r.variancePercent),
+        ]),
+      },
+    ]);
+    toast.showSuccess("Excel (.xlsx) exported (current page detail + summaries; use CSV for full detail).");
   }
 
   if (!allowed) {
     return (
-      <div className="rounded-md border border-slate-200 bg-slate-50 px-6 py-10 text-center shadow-sm">
-        <h2 className="text-lg font-semibold text-slate-900">Not authorized</h2>
-        <p className="mt-2 text-sm text-slate-600">This report is available to Admin, Store, and Production roles.</p>
+      <div className="flex min-h-0 flex-col gap-3">
+        <ReportPageHeader
+          title="Production RM Variance Report"
+          purpose="Compare standard vs actual RM consumption across approved production batches."
+        />
+        <div className="rounded-md border border-slate-200 bg-slate-50 px-6 py-10 text-center shadow-sm">
+          <h2 className="text-lg font-semibold text-slate-900">Not authorized</h2>
+          <p className="mt-2 text-sm text-slate-600">This report is available to Admin, Store, and Production roles.</p>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="flex min-h-0 flex-col gap-4">
+    <div className="erp-report-page flex min-h-0 flex-col gap-4">
+      <ReportPrintMeta title="Production RM Variance Report" />
       <ReportPageHeader
         title="Production RM Variance Report"
         purpose="Compare standard vs actual RM consumption across approved production batches."
         actions={
-          <div className="flex flex-wrap gap-2">
-            <Button type="button" variant="outline" size="sm" className="h-8 gap-1" onClick={() => void downloadCsv()}>
-              <Download className="h-3.5 w-3.5" />
-              Export CSV
-            </Button>
-            <Button type="button" variant="outline" size="sm" className="h-8 gap-1" disabled={!data} onClick={downloadExcel}>
-              <Download className="h-3.5 w-3.5" />
-              Export Excel
-            </Button>
-          </div>
+          <ReportPrintExportBar
+            onExportCsv={() => void downloadCsv()}
+            onExportExcel={downloadExcel}
+            excelDisabled={!data}
+          />
         }
       />
 

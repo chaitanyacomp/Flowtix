@@ -36,6 +36,7 @@ const { buildCustomerSoRsReport } = require("../services/customerSoRsReportServi
 const { buildProductionRmVarianceReport } = require("../services/productionRmVarianceReportService");
 const { buildProductionWastageClassificationReport } = require("../services/productionWastageClassificationReportService");
 const { buildRmPlanningVsReceivedReport } = require("../services/rmPlanningVsReceivedReportService");
+const { buildRmWastageReport } = require("../services/rmWastageReportService");
 
 const WORK_ORDER_TRACKING_ACCESS_DENIED =
   "Access denied. Only administrators and production staff can view the work order tracking report.";

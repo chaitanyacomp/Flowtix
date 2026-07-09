@@ -5,6 +5,7 @@ import { Button } from "../components/ui/button";
 import { PageContainer, ReportPageHeader } from "../components/PageHeader";
 import { Input } from "../components/ui/input";
 import { useErpReportLiveLoad } from "../hooks/useErpReportLiveLoad";
+import { ReportPrintExportBar, ReportPrintMeta } from "../components/erp/ReportPrintExport";
 
 type FgItem = { id: number; itemName: string };
 
@@ -58,11 +59,40 @@ export function ScrapReportPage() {
 
   const total = rows.reduce((s, r) => s + Number(r.rejectedQty || 0), 0);
 
+  function exportCsv() {
+    const header = "Date,WO Id,FG Item,Rejected Qty,Reason";
+    const lines =
+      rows.length === 0
+        ? ["No records found"]
+        : rows.map((r) => {
+            const date = r.date ? new Date(r.date).toISOString().slice(0, 10) : "";
+            const esc = (s: string | null) => `"${String(s ?? "").replace(/"/g, '""')}"`;
+            return [date, r.workOrderId, esc(r.fgItemName), r.rejectedQty, esc(r.reason)].join(",");
+          });
+    const blob = new Blob([[header, ...lines].join("\n")], { type: "text/csv;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `scrap-report_${from || "all"}_to_${to || "all"}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  const filterSummary = [
+    from ? `From ${from}` : null,
+    to ? `To ${to}` : null,
+    fgItemId !== "" ? `FG #${fgItemId}` : null,
+    workOrderId.trim() ? `WO ${workOrderId.trim()}` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
   return (
-    <PageContainer className="pb-8">
+    <PageContainer className="erp-report-page pb-8">
+      <ReportPrintMeta title="Scrap Report" filterSummary={filterSummary} />
       <ReportPageHeader
         title="Scrap Report"
         purpose="QC scrap and loss quantities by FG item and work order for the filters you choose."
+        actions={<ReportPrintExportBar filterSummary={filterSummary} onExportCsv={exportCsv} />}
       />
       <Card>
         <CardHeader>

@@ -13,6 +13,12 @@ import {
   ReportKpiStrip,
   ReportEmptyState,
 } from "../components/erp/ReportChrome";
+import {
+  ReportPrintExportBar,
+  ReportPrintMeta,
+  downloadReportCsv,
+  downloadReportExcel,
+} from "../components/erp/ReportPrintExport";
 
 type Customer = { id: number; name: string };
 type Item = { id: number; itemName: string };
@@ -170,12 +176,66 @@ export function SalesMatchingReportPage() {
   }, [fromDate, toDate, customerId, itemId, soType, status, mismatchesOnly, liveTick]);
 
   const rows = data?.rows ?? [];
+  const filterSummary = [
+    fromDate ? `From ${fromDate}` : null,
+    toDate ? `To ${toDate}` : null,
+    customerId ? `Customer #${customerId}` : null,
+    itemId ? `Item #${itemId}` : null,
+    soType ? `Type ${soType}` : null,
+    status && status !== "ALL" ? `Status ${status}` : null,
+    mismatchesOnly ? "Mismatches only" : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const csvHeaders = [
+    "SO No",
+    "Date",
+    "Customer",
+    "Item",
+    "Type",
+    "Ordered",
+    "Dispatched",
+    "Invoiced",
+    "Pending Dispatch",
+    "Pending Invoice",
+    "Status",
+  ];
+  const csvRows = rows.map((r) => [
+    r.salesOrderNo,
+    r.salesOrderDate,
+    r.customerName,
+    r.itemName,
+    r.soType,
+    r.orderedQty,
+    r.dispatchedQty,
+    r.invoicedQty,
+    r.pendingDispatchQty,
+    r.pendingInvoiceQty,
+    r.status,
+  ]);
 
   return (
-    <PageContainer className="pb-8">
+    <PageContainer className="erp-report-page pb-8">
+      <ReportPrintMeta title="Sales Matching Report" filterSummary={filterSummary} />
       <ReportPageHeader
         title="Sales Matching Report"
         purpose="Shows mismatch between Sales Order, Dispatch, and Sales Bill quantities/documents."
+        actions={
+          <ReportPrintExportBar
+            filterSummary={filterSummary}
+            onExportCsv={() => downloadReportCsv(`sales-matching_${fromDate}_to_${toDate}.csv`, csvHeaders, csvRows)}
+            onExportExcel={() =>
+              downloadReportExcel(
+                `sales-matching_${fromDate}_to_${toDate}.xlsx`,
+                "Sales Matching Report",
+                csvHeaders,
+                csvRows,
+              )
+            }
+            csvDisabled={missingDates || loading}
+            excelDisabled={missingDates || loading}
+          />
+        }
       />
 
       {missingDates ? (

@@ -7,8 +7,8 @@ import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { apiFetch, getApiUrl } from "../services/api";
 import { useToast } from "../contexts/ToastContext";
-import { Download } from "lucide-react";
 import { ReportPageHeader } from "../components/PageHeader";
+import { ReportPrintExportBar, ReportPrintMeta } from "../components/erp/ReportPrintExport";
 import { ERP_REPORT_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
 import { useDebouncedUrlStringParam, useUrlQueryState } from "../hooks/useUrlQueryState";
 import { RM_WASTAGE_REASON_OPTIONS } from "../lib/rmWastageUx";
@@ -70,6 +70,7 @@ export function RmWastageReportPage() {
 
   const [data, setData] = React.useState<ApiResp | null>(null);
   const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState<string | null>(null);
   const [page, setPage] = React.useState(1);
   const liveTick = useErpRefreshTick(["reports", "production"], { pollIntervalMs: ERP_REPORT_POLL_MS });
 
@@ -80,6 +81,7 @@ export function RmWastageReportPage() {
   React.useEffect(() => {
     let mounted = true;
     setLoading(true);
+    setError(null);
     const qs = new URLSearchParams();
     if (dateFrom) qs.set("dateFrom", dateFrom);
     if (dateTo) qs.set("dateTo", dateTo);
@@ -91,12 +93,17 @@ export function RmWastageReportPage() {
 
     apiFetch<ApiResp>(`/api/reports/rm-wastage?${qs}`)
       .then((resp) => {
-        if (mounted) setData(resp);
+        if (mounted) {
+          setData(resp);
+          setError(null);
+        }
       })
       .catch((e) => {
         if (mounted) {
           setData(null);
-          showError(e instanceof Error ? e.message : "Failed to load RM wastage report");
+          const msg = e instanceof Error ? e.message : "Failed to load RM wastage report";
+          setError(msg);
+          showError(msg);
         }
       })
       .finally(() => {
@@ -130,12 +137,29 @@ export function RmWastageReportPage() {
   }
 
   const rows = data?.rows ?? [];
+  const filterSummary = [
+    dateFrom ? `From ${dateFrom}` : null,
+    dateTo ? `To ${dateTo}` : null,
+    woNumber.trim() ? `WO ${woNumber.trim()}` : null,
+    reason !== "ALL" ? `Reason ${reason}` : null,
+    rmItemId ? `Item #${rmItemId}` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 
   return (
-    <div className="mx-auto max-w-6xl space-y-4 p-4">
+    <div className="erp-report-page mx-auto max-w-6xl space-y-4 p-4">
+      <ReportPrintMeta title="RM Wastage Report" filterSummary={filterSummary} />
       <ReportPageHeader
         title="RM Wastage Report"
-        description="Material Wastage Notes (MWN) — production RM written off as final loss, valued at latest GRN rate."
+        purpose="Material Wastage Notes (MWN) — production RM written off as final loss, valued at latest GRN rate."
+        actions={
+          <ReportPrintExportBar
+            filterSummary={filterSummary}
+            onExportCsv={() => void exportCsv()}
+            csvDisabled={loading}
+          />
+        }
       />
 
       <Card>
@@ -194,12 +218,14 @@ export function RmWastageReportPage() {
               ))}
             </select>
           </label>
-          <Button type="button" variant="outline" size="sm" className="mt-5 h-8 gap-1" onClick={() => void exportCsv()}>
-            <Download className="h-3.5 w-3.5" />
-            CSV
-          </Button>
         </CardContent>
       </Card>
+
+      {error ? (
+        <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800" role="alert">
+          {error}
+        </div>
+      ) : null}
 
       {data?.kpis ? (
         <div className="grid gap-2 sm:grid-cols-3">

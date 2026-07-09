@@ -70,6 +70,7 @@ import { buildNoQtyOperationalMetrics } from "../lib/noQtyOperationalMetrics";
 import { DISPATCH_WRITE_ROLES } from "../config/erpRoles";
 import { DispatchCompactExecutionPanel } from "../components/erp/dispatch/DispatchCompactExecutionPanel";
 import { DispatchCompactHistoryPanel } from "../components/erp/dispatch/DispatchCompactHistoryPanel";
+import { DispatchCurrentWorkbenchChrome } from "../components/erp/dispatch/DispatchCurrentWorkbenchChrome";
 import {
   resolvePostCompactDispatchQueueRow,
   resolveCompactDispatchSelection,
@@ -89,6 +90,7 @@ import {
   buildNoQtyFifoDraftOperatorMessage,
   buildRegularPartialDispatchOperatorMessage,
   buildMultiDraftDeleteConfirmMessage,
+  shouldIncludeCompactQueueRow,
   type DispatchCompactQueueRow,
 } from "../lib/dispatchWorkspaceUx";
 import {
@@ -1377,7 +1379,9 @@ export function DispatchPage() {
   /** Non-error user feedback (e.g. idempotency “already processing”). */
   const [dispatchInfo, setDispatchInfo] = React.useState<string | null>(null);
   /** NO_QTY FIFO preview line from POST /dispatches/no-qty-fifo-preview. */
-  const [, setNoQtyFifoPreviewLine] = React.useState<string | null>(null);
+  const [noQtyFifoAllocationSlices, setNoQtyFifoAllocationSlices] = React.useState<
+    Array<{ cycleNo: number | null; qty: number }>
+  >([]);
   const [noQtyLastFinalizedDispatchId, setNoQtyLastFinalizedDispatchId] = React.useState<number | null>(null);
   const [reopenedPreparedDraft, setReopenedPreparedDraft] = React.useState<{
     id: number;
@@ -2705,7 +2709,7 @@ export function DispatchPage() {
 
   React.useEffect(() => {
     if (selectedSo?.orderType !== "NO_QTY" || !currentLine || dispatchQtyParsed == null || !(dispatchQtyParsed > 1e-9)) {
-      setNoQtyFifoPreviewLine(null);
+      setNoQtyFifoAllocationSlices([]);
       return;
     }
     const ac = new AbortController();
@@ -2727,25 +2731,23 @@ export function DispatchPage() {
             signal: ac.signal,
           });
           if (ac.signal.aborted) return;
-          if (r.gateBlockedReason) {
-            setNoQtyFifoPreviewLine(r.gateBlockedReason);
-            return;
-          }
-          if (r.wouldExceedTotal) {
-            setNoQtyFifoPreviewLine(
-              `Exceeds total available (${fmtDispatchQty(Number(r.totalAvailable ?? 0))}) across cycles.`,
-            );
+          if (r.gateBlockedReason || r.wouldExceedTotal) {
+            setNoQtyFifoAllocationSlices([]);
             return;
           }
           const alloc = r.allocation ?? [];
           if (!alloc.length) {
-            setNoQtyFifoPreviewLine(null);
+            setNoQtyFifoAllocationSlices([]);
             return;
           }
-          const parts = alloc.map((a) => `${fmtDispatchQty(Number(a.qty))} from Cycle ${a.cycleNo}`);
-          setNoQtyFifoPreviewLine(`This dispatch will use ${parts.join(" and ")}.`);
+          setNoQtyFifoAllocationSlices(
+            alloc.map((a) => ({
+              cycleNo: a.cycleNo != null && Number.isFinite(Number(a.cycleNo)) ? Number(a.cycleNo) : null,
+              qty: Number(a.qty) || 0,
+            })),
+          );
         } catch {
-          if (!ac.signal.aborted) setNoQtyFifoPreviewLine(null);
+          if (!ac.signal.aborted) setNoQtyFifoAllocationSlices([]);
         }
       })();
     }, 450);
@@ -3849,6 +3851,77 @@ export function DispatchPage() {
     return "—";
   })();
 
+  const currentWorkbenchDispatchingNow = (() => {
+    if (existingDraftQty > dqEps) return existingDraftQty;
+    if (dispatchQtyParsed != null && dispatchQtyParsed > dqEps) return dispatchQtyParsed;
+    return Math.max(0, readyToShip);
+  })();
+
+  const currentWorkbenchRemainingAfter = Math.max(0, remainingSoLine - currentWorkbenchDispatchingNow);
+
+  const currentWorkbenchAllocationSlices = React.useMemo(() => {
+    if (selectedSo?.orderType !== "NO_QTY") return [];
+    if (noQtyFifoAllocationSlices.length > 0) return noQtyFifoAllocationSlices;
+    if (!selectedSo?.dispatch?.length || !currentLine) return [];
+    const cycleNoById = new Map(noQtyCycles.map((c) => [Number(c.cycleId), Number(c.cycleNo)]));
+    return listUnlockedDraftsForItem(selectedSo.dispatch, currentLine.itemId).map((d) => ({
+      cycleNo:
+        d.cycleId != null && cycleNoById.has(Number(d.cycleId))
+          ? cycleNoById.get(Number(d.cycleId)) ?? null
+          : null,
+      qty: Math.max(0, Number(d.dispatchedQty) || 0),
+    }));
+  }, [selectedSo, currentLine, noQtyFifoAllocationSlices, noQtyCycles]);
+
+  const currentWorkbenchGuidance = React.useMemo(() => {
+    if (showPreparedDispatchActionCard) {
+      return {
+        currentAction: "Dispatch draft ready",
+        nextAction: primaryDraftFinalizeGate.canFinalize
+          ? "Finalize Dispatch"
+          : primaryDraftFinalizeGate.reason?.trim() || "Resolve finalize blockers",
+      };
+    }
+    if (showDispatchCompletedBillingCardEffective || showDispatchCompletedBillingFallback) {
+      return {
+        currentAction: "Dispatch finalized",
+        nextAction: canCreateSalesBill ? "Create Sales Bill" : "Billing with Admin",
+      };
+    }
+    if (showRegularPartialDispatchContinuation) {
+      return {
+        currentAction: "Partial dispatch in progress",
+        nextAction: readyToShip > dqEps ? "Continue Dispatch" : "Wait for QC / stock",
+      };
+    }
+    if (readyToShip > dqEps || existingDraftQty > dqEps) {
+      return {
+        currentAction: "Dispatch Ready",
+        nextAction: existingDraftQty > dqEps ? "Finalize Dispatch" : "Save draft qty",
+      };
+    }
+    return {
+      currentAction: "Waiting for dispatchable FG",
+      nextAction: "Complete QC / stock",
+    };
+  }, [
+    showPreparedDispatchActionCard,
+    primaryDraftFinalizeGate.canFinalize,
+    primaryDraftFinalizeGate.reason,
+    showDispatchCompletedBillingCardEffective,
+    showDispatchCompletedBillingFallback,
+    canCreateSalesBill,
+    showRegularPartialDispatchContinuation,
+    readyToShip,
+    existingDraftQty,
+    dqEps,
+  ]);
+
+  const currentWorkbenchBillingFallback =
+    showPreparedDispatchActionCard || existingDraftQty > dqEps
+      ? "Draft — not billed yet"
+      : null;
+
   const stripShowGuidedBill =
     showCompactDispatchStrip &&
     guidedNoQtyResolved &&
@@ -4752,7 +4825,7 @@ export function DispatchPage() {
 
         {/* NO_QTY optional dispatch guidance is now a compact chip in the toolbar above. */}
 
-        {showPreparedDispatchActionCard ? renderSoDispatchLedger("belowPrepared") : null}
+        {/* Ledger stays below Current Dispatch (collapsed) — never above the workbench. */}
 
         {showRegularPartialDispatchContinuation && regularPartialContinuationMetrics && !isRegularDispatchWorkbench ? (
           <div
@@ -6057,7 +6130,7 @@ export function DispatchPage() {
             ) : null}
             {(!showDispatchCompletedBillingCardEffective || showRegularDispatchEntryPanel || showRegularPartialDispatchContinuation) &&
             !showDispatchCompletedBillingFallback ? (
-            <Card className="erp-op-workspace-primary min-w-0 overflow-hidden">
+            <Card className="erp-op-workspace-primary min-w-0 overflow-hidden" data-testid="dispatch-current-dispatch-card">
               <CardHeader
                 className={cn(
                   "border-b border-slate-100 bg-white px-3",
@@ -6068,77 +6141,18 @@ export function DispatchPage() {
                   <CardTitle
                     className={cn(
                       "font-semibold tracking-tight text-slate-900",
-                      selectedSo?.orderType === "NO_QTY" || isRegularDispatchWorkbench ? "text-xs" : "text-sm",
+                      selectedSo?.orderType === "NO_QTY" || isRegularDispatchWorkbench ? "text-sm" : "text-base",
                     )}
                   >
-                    {finalizePrepDraftMode
-                      ? DISPATCH_OP.CARD_TITLE_DRAFT_PENDING
-                      : reopenedPreparedDraftMode
-                        ? DISPATCH_OP.CARD_TITLE_REOPENED
-                        : selectedSo?.orderType === "NO_QTY"
-                          ? "Dispatch"
-                          : "Ready to Dispatch"}
+                    {finalizePrepDraftMode || reopenedPreparedDraftMode
+                      ? "Current Dispatch"
+                      : selectedSo?.orderType === "NO_QTY"
+                        ? "Current Dispatch"
+                        : "Current Dispatch"}
                   </CardTitle>
-                  {!dispatchReadOnly ? (
+                  {!dispatchReadOnly && !showPreparedDispatchActionCard ? (
                     <div className="flex flex-wrap items-center gap-2">
-                      {showPreparedDispatchActionCard && primaryFinalizeDraftId != null ? (
-                        <>
-                          <Button
-                            type="button"
-                            size="sm"
-                            className="font-semibold"
-                            data-testid="prepared-dispatch-finalize-btn"
-                            disabled={lockingId === primaryFinalizeDraftId || !primaryDraftFinalizeGate.canFinalize}
-              title={
-                !primaryDraftFinalizeGate.canFinalize && primaryDraftFinalizeGate.reason
-                  ? primaryDraftFinalizeGate.reason
-                  : undefined
-              }
-                            onClick={() => primaryFinalizeDraftId != null && void onFinalizeDraftDispatch(primaryFinalizeDraftId)}
-                          >
-                            {lockingId === primaryFinalizeDraftId ? "…" : DISPATCH_OP.FINALIZE}
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            className="font-semibold border-amber-300 bg-white text-amber-950 hover:bg-amber-50"
-                            data-testid="prepared-dispatch-edit-draft-btn"
-                            onClick={() => {
-                              dispatchFormRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-                              window.requestAnimationFrame(() => dispatchQtyRef.current?.focus({ preventScroll: true }));
-                            }}
-                          >
-                            {DISPATCH_OP.EDIT_DRAFT_QTY}
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="destructive"
-                            size="sm"
-                            className="font-semibold"
-                            data-testid="prepared-dispatch-delete-btn"
-                            disabled={deletingId === primaryFinalizeDraftId}
-                            onClick={() => primaryFinalizeDraftId != null && void onDeleteDraft(primaryFinalizeDraftId)}
-                          >
-                            {deletingId === primaryFinalizeDraftId ? "…" : DISPATCH_OP.DISCARD_DRAFT}
-                          </Button>
-                          {reopenedPreparedDraftMode ? (
-                            <button
-                              type="button"
-                              className="text-[11px] font-medium text-sky-800 underline decoration-sky-800/40 underline-offset-2 hover:text-sky-950"
-                              onClick={() => {
-                                setReopenedPreparedDraft(null);
-                                setReopenFallbackSoRow(null);
-                                const params = new URLSearchParams(sp);
-                                params.delete("draftDispatchId");
-                                navigate(`/dispatch?${params.toString()}`, { replace: true });
-                              }}
-                            >
-                              Back to open lines
-                            </button>
-                          ) : null}
-                        </>
-                      ) : isRegularDispatchWorkbench ? (
+                      {isRegularDispatchWorkbench ? (
                         <>
                           {showRegularPartialDispatchContinuation ? (
                         <>
@@ -6222,71 +6236,131 @@ export function DispatchPage() {
                 </div>
               </CardHeader>
               {finalizePrepDraftMode || (reopenedPreparedDraftMode && reopenedPreparedDraft) ? (
-                <CardContent className="space-y-3 border-t border-amber-100/80 bg-amber-50/25 px-3 py-2.5">
-                  <div className="rounded-md border-2 border-amber-300/80 bg-amber-50 px-2.5 py-2 shadow-sm">
-                    <p className="text-[11px] font-bold uppercase tracking-wide text-amber-900/95">{DISPATCH_OP.BADGE_DRAFT}</p>
-                    <p className="mt-1 text-[11px] font-medium leading-snug text-amber-950">{DISPATCH_OP.GUIDANCE_DRAFT_ONLY}</p>
-                    {reopenedPreparedDraftMode ? (
-                      <p className="mt-1 text-[11px] font-semibold text-amber-950">{DISPATCH_OP.BANNER_REOPENED}</p>
-                    ) : null}
-                    {preparedDispatchDocLabel && preparedDispatchQtyLabel !== "—" ? (
-                      <p className="mt-2 text-[12px] text-slate-900">
-                        <span className="font-mono font-semibold">{preparedDispatchDocLabel}</span> ·{" "}
-                        <span className="tabular-nums font-semibold">{preparedDispatchQtyLabel}</span>{" "}
-                        <span className="text-slate-600">(draft, not posted)</span>
+                <CardContent className="space-y-2 border-t border-amber-100/80 bg-amber-50/15 px-3 py-2.5">
+                  <DispatchCurrentWorkbenchChrome
+                    soBalance={remainingSoLine}
+                    usableFg={currentLine ? getUsableStock(currentLine) : 0}
+                    dispatchingNow={currentWorkbenchDispatchingNow}
+                    remainingAfter={currentWorkbenchRemainingAfter}
+                    formatQty={fmtDispatchQty}
+                    billingRow={billingTargetLedgerRow}
+                    billingFallbackLabel={currentWorkbenchBillingFallback}
+                    allocationSlices={currentWorkbenchAllocationSlices}
+                    guidance={currentWorkbenchGuidance}
+                    showFinalize={primaryFinalizeDraftId != null}
+                    finalizeDisabled={
+                      lockingId === primaryFinalizeDraftId || !primaryDraftFinalizeGate.canFinalize
+                    }
+                    finalizeTitle={
+                      !primaryDraftFinalizeGate.canFinalize && primaryDraftFinalizeGate.reason
+                        ? primaryDraftFinalizeGate.reason
+                        : undefined
+                    }
+                    finalizeLabel={
+                      lockingId === primaryFinalizeDraftId ? "…" : DISPATCH_OP.FINALIZE
+                    }
+                    onFinalize={() =>
+                      primaryFinalizeDraftId != null && void onFinalizeDraftDispatch(primaryFinalizeDraftId)
+                    }
+                    showEditDraft
+                    editDraftLabel={DISPATCH_OP.EDIT_DRAFT_QTY}
+                    onEditDraft={() => {
+                      dispatchFormRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+                      window.requestAnimationFrame(() => dispatchQtyRef.current?.focus({ preventScroll: true }));
+                    }}
+                    showDiscard={primaryFinalizeDraftId != null}
+                    discardDisabled={deletingId === primaryFinalizeDraftId}
+                    discardLabel={
+                      deletingId === primaryFinalizeDraftId ? "…" : DISPATCH_OP.DISCARD_DRAFT
+                    }
+                    onDiscard={() =>
+                      primaryFinalizeDraftId != null && void onDeleteDraft(primaryFinalizeDraftId)
+                    }
+                  >
+                    <div className="rounded-md border border-amber-200/80 bg-amber-50/80 px-2.5 py-2">
+                      <p className="text-[11px] font-bold uppercase tracking-wide text-amber-900/95">
+                        {DISPATCH_OP.BADGE_DRAFT}
                       </p>
+                      <p className="mt-1 text-[11px] font-medium leading-snug text-amber-950">
+                        {DISPATCH_OP.GUIDANCE_DRAFT_ONLY}
+                      </p>
+                      {reopenedPreparedDraftMode ? (
+                        <p className="mt-1 text-[11px] font-semibold text-amber-950">
+                          {DISPATCH_OP.BANNER_REOPENED}
+                        </p>
+                      ) : null}
+                      {preparedDispatchDocLabel && preparedDispatchQtyLabel !== "—" ? (
+                        <p className="mt-2 text-[12px] text-slate-900">
+                          <span className="font-semibold tabular-nums text-lg text-emerald-900">
+                            {preparedDispatchQtyLabel}
+                          </span>
+                          <span className="ml-2 text-[11px] text-slate-500">
+                            {preparedDispatchDocLabel} · draft
+                          </span>
+                        </p>
+                      ) : null}
+                    </div>
+                    {currentLine ? (
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+                        <FieldShortcutHint
+                          show={shortcutHints.activeFieldId === "dispatchQty"}
+                          hint={shortcutHints.activeFieldHintText ?? ""}
+                          placement="below-end"
+                          className="min-w-0 flex-1 sm:max-w-[13rem]"
+                        >
+                          <div className="erp-form-field min-w-0">
+                            <span className="text-[11px] font-medium text-slate-700">Edit draft qty</span>
+                            <Input
+                              ref={dispatchQtyRef}
+                              {...dispatchQtyBind}
+                              type="text"
+                              data-testid="dispatch-qty-input"
+                              inputMode="decimal"
+                              autoComplete="off"
+                              className={cn("mt-0.5 h-9 w-full tabular-nums text-sm", operatorInputClass)}
+                              placeholder="Qty"
+                              value={dispatchQtyStr}
+                              disabled={qtyInputDisabled}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
+                                  shortcutHints.markFieldShortcutUsed("dispatchQty");
+                                }
+                              }}
+                            />
+                          </div>
+                        </FieldShortcutHint>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          data-testid="dispatch-save-draft-qty-btn"
+                          className="h-9 shrink-0 font-semibold"
+                          disabled={!canUpdateDispatchDraftQty}
+                          onClick={() => {
+                            shortcutHints.markFieldShortcutUsed("dispatchPrepare");
+                            void onDispatch();
+                          }}
+                        >
+                          {dispatching ? "Saving…" : DISPATCH_OP.SAVE_DRAFT_QTY}
+                        </Button>
+                      </div>
                     ) : null}
-                  </div>
-                  {currentLine ? (
-                    <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
-                      <FieldShortcutHint
-                        show={shortcutHints.activeFieldId === "dispatchQty"}
-                        hint={shortcutHints.activeFieldHintText ?? ""}
-                        placement="below-end"
-                        className="min-w-0 flex-1 sm:max-w-[13rem]"
-                      >
-                        <div className="erp-form-field min-w-0">
-                          <span className="text-[11px] font-medium text-slate-700">Qty for this dispatch draft</span>
-                          <Input
-                            ref={dispatchQtyRef}
-                            {...dispatchQtyBind}
-                            type="text"
-                            data-testid="dispatch-qty-input"
-                            inputMode="decimal"
-                            autoComplete="off"
-                            className={cn("mt-0.5 h-9 w-full tabular-nums text-sm", operatorInputClass)}
-                            placeholder="Qty"
-                            value={dispatchQtyStr}
-                            disabled={qtyInputDisabled}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
-                                shortcutHints.markFieldShortcutUsed("dispatchQty");
-                              }
-                            }}
-                          />
-                        </div>
-                      </FieldShortcutHint>
-                      <Button
+                    {reopenedPreparedDraftMode ? (
+                      <button
                         type="button"
-                        variant="outline"
-                        size="sm"
-                        data-testid="dispatch-save-draft-qty-btn"
-                        className="h-9 shrink-0 font-semibold"
-                        disabled={!canUpdateDispatchDraftQty}
+                        className="text-[11px] font-medium text-sky-800 underline decoration-sky-800/40 underline-offset-2 hover:text-sky-950"
                         onClick={() => {
-                          shortcutHints.markFieldShortcutUsed("dispatchPrepare");
-                          void onDispatch();
+                          setReopenedPreparedDraft(null);
+                          setReopenFallbackSoRow(null);
+                          const params = new URLSearchParams(sp);
+                          params.delete("draftDispatchId");
+                          navigate(`/dispatch?${params.toString()}`, { replace: true });
                         }}
                       >
-                        {dispatching ? "Saving…" : DISPATCH_OP.SAVE_DRAFT_QTY}
-                      </Button>
-                    </div>
-                  ) : null}
-                  <p className="text-[10px] leading-snug text-slate-600">
-                    Maximum you can set on this draft now:{" "}
-                    <span className="font-semibold tabular-nums text-slate-900">{fmtDispatchQty(maxDispatchPrepareQty)}</span>
-                    . Then use <span className="font-semibold">{DISPATCH_OP.FINALIZE}</span> above to post stock.
-                  </p>
+                        Back to open lines
+                      </button>
+                    ) : null}
+                  </DispatchCurrentWorkbenchChrome>
                 </CardContent>
               ) : (
                 <CardContent
@@ -6298,6 +6372,17 @@ export function DispatchPage() {
                         : "space-y-3 px-3 py-2.5",
                   )}
                 >
+                  <DispatchCurrentWorkbenchChrome
+                    soBalance={remainingSoLine}
+                    usableFg={currentLine ? getUsableStock(currentLine) : 0}
+                    dispatchingNow={currentWorkbenchDispatchingNow}
+                    remainingAfter={currentWorkbenchRemainingAfter}
+                    formatQty={fmtDispatchQty}
+                    billingRow={billingTargetLedgerRow}
+                    billingFallbackLabel={currentWorkbenchBillingFallback}
+                    allocationSlices={currentWorkbenchAllocationSlices}
+                    guidance={currentWorkbenchGuidance}
+                  >
                   {selectedSo?.orderType === "NO_QTY" ? (
                     <div className="space-y-2">
                       <div className="overflow-hidden rounded-lg border border-slate-200/90 bg-white px-2.5 py-2 shadow-sm ring-1 ring-slate-100/70">
@@ -6510,9 +6595,9 @@ export function DispatchPage() {
                         </div>
                       </details>
 
-                      <details className="overflow-hidden rounded-md border border-slate-200/80 bg-white shadow-sm">
+                      <details className="overflow-hidden rounded-md border border-slate-200/80 bg-slate-50/40 shadow-none">
                         <summary className="cursor-pointer list-none px-2 py-1.5 text-[11px] font-medium text-slate-500 transition hover:bg-slate-50 [&::-webkit-details-marker]:hidden">
-                          Recent dispatches
+                          ▼ Dispatch ledger (audit)
                         </summary>
                         <div className="border-t border-slate-100">
                           <div className="overflow-x-hidden">
@@ -6893,6 +6978,7 @@ export function DispatchPage() {
                   ) : null}
                     </>
                   )}
+                  </DispatchCurrentWorkbenchChrome>
                 </CardContent>
               )}
             </Card>
@@ -6963,6 +7049,18 @@ export function DispatchPage() {
               </div>
             ) : null}
 
+            {showPreparedDispatchActionCard ? (
+              <details className="mt-2 overflow-hidden rounded-md border border-slate-200/80 bg-slate-50/40">
+                <summary className="cursor-pointer list-none px-2.5 py-1.5 text-[11px] font-semibold text-slate-600 hover:bg-slate-50 [&::-webkit-details-marker]:hidden">
+                  ▼ Dispatch ledger
+                  <span className="ml-2 font-normal text-slate-500">Collapsed — audit only</span>
+                </summary>
+                <div className="max-h-[40vh] overflow-auto border-t border-slate-100 p-1.5">
+                  {renderSoDispatchLedger("panel", { mesPanel: true, startCollapsed: false })}
+                </div>
+              </details>
+            ) : null}
+
             {!showPreparedDispatchActionCard
               ? renderSoDispatchLedger("panel", isRegularDispatchWorkbench ? { mesPanel: true, startCollapsed: true } : undefined)
               : null}
@@ -6972,7 +7070,6 @@ export function DispatchPage() {
         </div>
       )}
 
-      {!showPreparedDispatchActionCard ? (
       <div ref={dispatchHistoryAnchorRef} id="dispatch-page-history" className="scroll-mt-24">
       <details
         className={cn(
@@ -6988,7 +7085,7 @@ export function DispatchPage() {
               : "px-3 py-2 text-sm font-semibold text-slate-900",
           )}
         >
-          <span>Dispatch history</span>
+          <span>▼ Dispatch history</span>
           <span className="text-[11px] font-normal tabular-nums text-slate-500">
             {ledgerTotal === 0 ? "No rows yet" : `${ledgerTotal} ledger row(s)`}
           </span>
@@ -7235,7 +7332,6 @@ export function DispatchPage() {
         </div>
       </details>
       </div>
-      ) : null}
 
       <OperationalWorkspaceFooter className="max-w-full" sections={dispatchUnifiedFooterSections} />
 

@@ -27,7 +27,10 @@ describe("dispatchBillingStatus", () => {
     expect(
       deriveDispatchBillingStatus({ ...lockedForward, salesBillExists: false }),
     ).toBe("READY_FOR_SALES_BILL");
-    expect(dispatchBillingStatusLabel("READY_FOR_SALES_BILL")).toBe("Ready for Sales Bill");
+    expect(dispatchBillingStatusLabel("READY_FOR_SALES_BILL")).toBe("Ready for Billing");
+    expect(dispatchBillingStatusLabel("BILL_DRAFT")).toBe("Bill Pending");
+    expect(dispatchBillingStatusLabel("BILLED")).toBe("Bill Created");
+    expect(dispatchBillingStatusLabel("EXPORTED")).toBe("Bill Exported");
   });
 
   it("returns BILL_DRAFT when bill exists but not finalized", () => {

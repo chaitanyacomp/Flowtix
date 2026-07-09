@@ -32,13 +32,13 @@ export function deriveDispatchBillingStatus(row: DispatchBillingStatusInput): Di
 export function dispatchBillingStatusLabel(status: DispatchBillingStatus): string {
   switch (status) {
     case "READY_FOR_SALES_BILL":
-      return "Ready for Sales Bill";
+      return "Ready for Billing";
     case "BILL_DRAFT":
-      return "Bill draft";
+      return "Bill Pending";
     case "BILLED":
-      return "Billed";
+      return "Bill Created";
     case "EXPORTED":
-      return "Billed · Exported";
+      return "Bill Exported";
     default:
       return "";
   }

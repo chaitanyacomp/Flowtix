@@ -29,9 +29,10 @@ export function DispatchBillingStatusBadge({
   const tone = dispatchBillingStatusTone(status);
   return (
     <Badge
-      variant="outline"
+      variant="default"
+      density={compact ? "compact" : "default"}
       className={cn(
-        compact ? "text-[10px] font-semibold" : "text-[11px] font-semibold",
+        "font-semibold",
         TONE_CLASS[tone],
         className,
       )}

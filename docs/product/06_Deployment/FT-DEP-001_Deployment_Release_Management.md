@@ -4,7 +4,7 @@
 |-------|-------|
 | **Document ID** | FT-DEP-001 |
 | **Title** | Deployment & Release Management Standard |
-| **Version** | 1.5.0 |
+| **Version** | 1.6.0 |
 | **Status** | Draft — Architecture Review |
 | **Effective date** | 2026-07-09 |
 | **Author** | FT ERP Product Team |
@@ -47,6 +47,7 @@
 | 1.3.0 | 2026-07-09 | FT ERP Product Team | Batch 4 — safe mysqldump backup automation (`tools/backup-db.*`) |
 | 1.4.0 | 2026-07-09 | FT ERP Product Team | Batch 5 — Prisma `migrate deploy` with mandatory backup gate (`tools/migrate-db.*`) |
 | 1.5.0 | 2026-07-09 | FT ERP Product Team | Batch 6 — one-click update orchestrator (`tools/update-flowtix.*`) |
+| 1.6.0 | 2026-07-09 | FT ERP Product Team | Batch 7 — app/web rollback from pre-update archive (`tools/rollback-flowtix.*`) |
 
 **Supersedes:** Informal client install notes; ad-hoc “copy the repo to the server” practices.
 
@@ -248,7 +249,7 @@ C:\FT-ERP\
 │   ├── app\                      # Application logs (by date)
 │   ├── service\                  # Windows Service stdout/stderr (future)
 │   └── deploy\                   # Install/update/rollback records
-└── tools\                        # Admin helpers (Batch 4–6: backup-db.*, migrate-db.*, update-flowtix.*; rollback later)
+└── tools\                        # Admin helpers (Batch 4–7: backup, migrate, update, rollback; DB restore later)
 ```
 
 ### 6.1 Folder rules
@@ -543,9 +544,11 @@ Rollback **SHOULD** be considered when:
 
 | Mode | When | Steps |
 |------|------|-------|
-| **A — Release switch** | No schema change / compatible | Stop process → point to prior `releases\<old>\` → start → smoke |
-| **B — Release + DB restore** | Migrations applied or data suspect | Stop → restore pre-update SQL → activate prior release → smoke |
+| **A — Release switch (Batch 7)** | No schema change / compatible | Stop process → `tools\rollback-flowtix.bat` restores prior `app/`+`web/` from `releases\*-pre-update-*` → start → smoke ([§32](#32-rollback-automation-batch-7)) |
+| **B — Release + DB restore** | Migrations applied or data suspect | Stop → **manual** restore of pre-update SQL (automation deferred) → activate prior app/web (Mode A) → smoke |
 | **C — Forward fix** | Rollback cost high; fix available | Stay on version; apply certified patch ASAP |
+
+**Batch 7 implements Mode A only.** Mode B DB restore remains operator-guided (print related backup filename; no automatic `mysql` restore).
 
 ### 13.3 Authority
 
@@ -848,7 +851,7 @@ Explicitly **not** done in this documentation revision:
 | Release Operations | Pending review |
 | Documentation Steward | Pending review |
 
-**Status:** Draft — Architecture Review (v1.5.0). Batches 1–6 (packaging, runtime, esbuild, backup, migrate, update orchestrator) are documented; restore/rollback, Windows Service, and installer remain deferred.
+**Status:** Draft — Architecture Review (v1.6.0). Batches 1–7 (packaging, runtime, esbuild, backup, migrate, update, app/web rollback) are documented; automated DB restore, Windows Service, and installer remain deferred.
 
 ---
 
@@ -1053,7 +1056,7 @@ release/Flowtix-vX.Y.Z/
 
 ### 28.8 Still deferred
 
-Windows Service, installer, **restore / rollback** automation, Docker, pkg, nexe. *(Backup → §29; migrate → §30; update orchestrator → §31)*
+Windows Service, installer, **automated DB restore**, Docker, pkg, nexe. *(Backup → §29; migrate → §30; update → §31; app/web rollback → §32)*
 
 ---
 
@@ -1267,7 +1270,7 @@ Provide a **one-click update coordinator** that runs the certified sequence: val
 | Backup | 3 | No migrate / deploy |
 | Migrate | 4 | No app/web replace |
 | Deploy | 5 | Stop; investigate archive |
-| Verify | 6 | Files may already be replaced; operator decides rollback (manual / later batch) |
+| Verify | 6 | Files may already be replaced; operator runs Batch 7 rollback ([§32](#32-rollback-automation-batch-7)) |
 
 All stages append to `logs\update.log` (time, versions, backup, migration, result, errors). Passwords **SHALL NOT** be logged.
 
@@ -1281,7 +1284,7 @@ All stages append to `logs\update.log` (time, versions, backup, migration, resul
 
 ### 31.7 Deferred
 
-Rollback automation, Windows Service, installer, Docker, cloud, licensing, monitoring.
+Automated DB restore, Windows Service, installer, Docker, cloud, licensing, monitoring. *(App/web rollback → Batch 7 / §32)*
 
 ### 31.8 Validation checklist
 
@@ -1293,3 +1296,96 @@ Rollback automation, Windows Service, installer, Docker, cloud, licensing, monit
 - [ ] `logs/update.log` written
 - [ ] Failure aborts at the correct stage
 - [ ] Release package includes `tools/update-flowtix.*`
+
+---
+
+## 32. Rollback Automation (Batch 7)
+
+### 32.1 Purpose
+
+Restore the **previous application binaries** (`app/` + `web/`) after a failed or unsafe update, using the Batch 6 pre-update archive under `releases\`. This is **Mode A** ([§13](#13-rollback-strategy)). It does **not** restore MySQL automatically.
+
+### 32.2 App/web rollback SOP
+
+1. Stop accepting traffic / stop Node process (service control deferred).
+2. Confirm a `releases\Flowtix-v*-pre-update-*` archive exists (created by `update-flowtix`).
+3. Run `tools\rollback-flowtix.bat` (or `--archive <path>` / `--home <FT_ERP_HOME>` / `--yes`).
+4. Confirm Current → Restore version display.
+5. Review `logs\rollback.log` and `logs\ROLLBACK_MANIFEST.json`.
+6. If migrations were applied and data must match the prior app: **manually** restore the printed related backup under `backups\db\` (automation deferred).
+7. Start process; run smoke (§22).
+
+### 32.3 Sequence
+
+| Step | Action | Abort on failure |
+|------|--------|------------------|
+| 1 | Locate newest `*-pre-update-*` archive (or `--archive`) | Yes |
+| 2 | Validate archive contains `app/` + `web/` | Yes |
+| 3 | Display versions + related backup guidance; confirm | Cancel exits 0 |
+| 4 | Replace active `app/` + `web/` from archive; restore `VERSION.txt` | Yes |
+| 5 | Assert `shared/`, `logs/`, `backups/` untouched | Yes |
+| 6 | Append `rollback.log` + `ROLLBACK_MANIFEST.json` | — |
+
+### 32.4 DB restore limitation
+
+| Rule | Statement |
+|------|-----------|
+| No auto DB restore | Batch 7 **SHALL NOT** run `mysql` restore or delete dumps |
+| Guidance only | Print related backup filename from `update.log` / `BACKUP_MANIFEST.json` when available |
+| Mode B | Operator restores SQL manually, then re-smoke |
+| Future | Automated DB restore = later batch |
+
+### 32.5 Rollback manifest
+
+Path: `logs\ROLLBACK_MANIFEST.json` (append-only).
+
+| Field | Notes |
+|-------|-------|
+| `timestamp` | ISO-8601 start |
+| `fromVersion` | Active version before rollback |
+| `toVersion` | Version restored from archive |
+| `restoredAppPath` | Active `app/` path |
+| `restoredWebPath` | Active `web/` path |
+| `relatedBackupFilename` | Suggested dump for manual DB restore |
+| `status` | `success` \| `failed` |
+| `durationMs` | Elapsed |
+| `error` | Present on failure (redacted) |
+
+Also append human-readable lines to `logs\rollback.log`.
+
+### 32.6 Safety / failure handling
+
+| Rule | Statement |
+|------|-----------|
+| Abort if archive missing | Exit 2 |
+| Abort if archive `app/`/`web/` incomplete | Exit 3 |
+| Never delete | Release archives, `shared/`, `logs/`, `backups/` |
+| Never modify | `shared/.env`, uploads |
+| Never run | Prisma / migrate / seed / reset |
+| Never restore | Database automatically |
+
+### 32.7 Tooling
+
+| Artifact | Path |
+|----------|------|
+| Script | `deployment/rollback-flowtix.js` |
+| Wrapper | `deployment/rollback-flowtix.bat` |
+| Shipped | `release/Flowtix-vX.Y.Z/tools/rollback-flowtix.*` |
+
+### 32.8 Operator checklist
+
+- [ ] Pre-update archive present under `releases\`
+- [ ] Related backup filename noted if DB may need restore
+- [ ] App/web rollback completed (`ROLLBACK_MANIFEST` status `success`)
+- [ ] `shared/.env` unchanged
+- [ ] Smoke tests passed (or Mode B DB restore planned)
+- [ ] Business Owner informed of go/no-go
+
+### 32.9 Validation checklist
+
+- [ ] Aborts when previous release archive missing
+- [ ] Restores `app/` and `web/` from archive
+- [ ] `shared/`, `logs/`, `backups/` preserved
+- [ ] No Prisma command executed
+- [ ] `logs/rollback.log` and `ROLLBACK_MANIFEST.json` written
+- [ ] Release package includes `tools/rollback-flowtix.*`

@@ -89,14 +89,16 @@ if exist "%ROOT%\deployment\production.env.example" (
   echo This release package ships templates only. Do not place production secrets in git.
 )
 
-REM --- 6. tools\ (Batch 4–6: backup, migrate, update; rollback/service still deferred) ---
-echo [create-release] Copying tools\ backup, migrate, and update scripts...
+REM --- 6. tools\ (Batch 4–7: backup, migrate, update, rollback; service/installer deferred) ---
+echo [create-release] Copying tools\ backup, migrate, update, and rollback scripts...
 copy /Y "%DEPLOY%\backup-db.bat" "%RELEASE_DIR%\tools\backup-db.bat" >nul
 copy /Y "%DEPLOY%\backup-db.js" "%RELEASE_DIR%\tools\backup-db.js" >nul
 copy /Y "%DEPLOY%\migrate-db.bat" "%RELEASE_DIR%\tools\migrate-db.bat" >nul
 copy /Y "%DEPLOY%\migrate-db.js" "%RELEASE_DIR%\tools\migrate-db.js" >nul
 copy /Y "%DEPLOY%\update-flowtix.bat" "%RELEASE_DIR%\tools\update-flowtix.bat" >nul
 copy /Y "%DEPLOY%\update-flowtix.js" "%RELEASE_DIR%\tools\update-flowtix.js" >nul
+copy /Y "%DEPLOY%\rollback-flowtix.bat" "%RELEASE_DIR%\tools\rollback-flowtix.bat" >nul
+copy /Y "%DEPLOY%\rollback-flowtix.js" "%RELEASE_DIR%\tools\rollback-flowtix.js" >nul
 > "%RELEASE_DIR%\tools\README.txt" (
   echo Flowtix ERP — release tools ^(FT-DEP-001^)
   echo.
@@ -109,8 +111,11 @@ copy /Y "%DEPLOY%\update-flowtix.js" "%RELEASE_DIR%\tools\update-flowtix.js" >nu
   echo Batch 6:
   echo   update-flowtix.bat / update-flowtix.js — one-click update orchestrator
   echo.
+  echo Batch 7:
+  echo   rollback-flowtix.bat / rollback-flowtix.js — app/web rollback from archive
+  echo.
   echo Deferred:
-  echo   - restore / rollback helpers
+  echo   - automated DB restore
   echo   - Windows Service wrappers
 )
 
@@ -273,6 +278,20 @@ if not exist "%RELEASE_DIR%\tools\update-flowtix.js" (
   set "FAIL=1"
 ) else (
   echo   OK: tools\update-flowtix.js
+)
+
+if not exist "%RELEASE_DIR%\tools\rollback-flowtix.bat" (
+  echo   FAIL: tools\rollback-flowtix.bat missing
+  set "FAIL=1"
+) else (
+  echo   OK: tools\rollback-flowtix.bat
+)
+
+if not exist "%RELEASE_DIR%\tools\rollback-flowtix.js" (
+  echo   FAIL: tools\rollback-flowtix.js missing
+  set "FAIL=1"
+) else (
+  echo   OK: tools\rollback-flowtix.js
 )
 
 if "%FAIL%"=="1" (

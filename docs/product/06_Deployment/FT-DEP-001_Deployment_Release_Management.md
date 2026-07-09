@@ -4,7 +4,7 @@
 |-------|-------|
 | **Document ID** | FT-DEP-001 |
 | **Title** | Deployment & Release Management Standard |
-| **Version** | 1.6.0 |
+| **Version** | 1.7.0 |
 | **Status** | Draft — Architecture Review |
 | **Effective date** | 2026-07-09 |
 | **Author** | FT ERP Product Team |
@@ -48,6 +48,7 @@
 | 1.4.0 | 2026-07-09 | FT ERP Product Team | Batch 5 — Prisma `migrate deploy` with mandatory backup gate (`tools/migrate-db.*`) |
 | 1.5.0 | 2026-07-09 | FT ERP Product Team | Batch 6 — one-click update orchestrator (`tools/update-flowtix.*`) |
 | 1.6.0 | 2026-07-09 | FT ERP Product Team | Batch 7 — app/web rollback from pre-update archive (`tools/rollback-flowtix.*`) |
+| 1.7.0 | 2026-07-09 | FT ERP Product Team | Batch 8 — optional WinSW Windows Service (`tools/service-*`) |
 
 **Supersedes:** Informal client install notes; ad-hoc “copy the repo to the server” practices.
 
@@ -55,13 +56,15 @@
 
 **Out of scope for this revision (deferred implementation):**
 
-- Build / release scripts
+- Build / release scripts *(partially delivered in Batches 1–8)*
 - `package.json` script changes
-- esbuild bundling configuration
-- Windows Service wrappers / NSSM / node-windows
+- esbuild bundling configuration *(Batch 3 delivered)*
 - Windows Installer (MSI / Inno / electron-builder)
 - CI/CD pipelines
 - Docker / Kubernetes
+- Automated DB restore
+
+*(Windows Service wrappers delivered in Batch 8 — optional WinSW.)*
 
 ---
 
@@ -247,9 +250,10 @@ C:\FT-ERP\
 │   └── verify\                   # Optional restore-test notes
 ├── logs\
 │   ├── app\                      # Application logs (by date)
-│   ├── service\                  # Windows Service stdout/stderr (future)
+│   ├── service\                  # Windows Service stdout/stderr (Batch 8 WinSW)
 │   └── deploy\                   # Install/update/rollback records
-└── tools\                        # Admin helpers (Batch 4–7: backup, migrate, update, rollback; DB restore later)
+├── service\                      # Optional WinSW wrapper (FlowtixERP.exe + .xml) — Batch 8
+└── tools\                        # Admin helpers (Batch 4–8: backup, migrate, update, rollback, service; DB restore later)
 ```
 
 ### 6.1 Folder rules
@@ -261,6 +265,7 @@ C:\FT-ERP\
 | **F-03** | `shared\.env`, `shared\uploads`, and `backups\` **SHALL** live outside version folders. |
 | **F-04** | Activating a release **SHALL** be done by switching the process working directory / `current` junction / service path — not by deleting the old tree first. |
 | **F-05** | At least **one prior** successful release folder **SHOULD** be retained; major sites **SHOULD** retain N-2. |
+| **F-06** | Optional Windows Service files **SHALL** live under `<FT_ERP_HOME>\service\` (not inside a versioned release overwrite path for secrets). |
 
 ---
 
@@ -606,28 +611,38 @@ Goal: clients receive a **runnable product**, not a convenient full source tree 
 
 - Backend **MAY** run as a logged-in user process or Task Scheduler job at startup.
 - Document restart procedure in `logs\deploy\` notes.
+- **Still supported** after Batch 8 — service remains **optional**.
 
-### 16.2 Phase 2 (approved direction)
+### 16.2 Phase 2 (Batch 8 — approved implementation)
 
-Run FT ERP backend as a **Windows Service** so that:
+Run FT ERP backend as an **optional Windows Service** using **WinSW** (Windows Service Wrapper).
 
-- Process restarts on reboot
-- Stdout/stderr capture to `logs\service\`
-- Service account has least privilege to `C:\FT-ERP\` + MySQL local
+| Option | Verdict |
+|--------|---------|
+| **WinSW** | **Selected** — single EXE + XML, shippable, restart policies, log rolling, no Node native addon |
+| NSSM | Capable but less convenient to vendor/pin in release packages; GUI-centric ops |
+| node-windows / native | Ties service to Node modules; harder to keep out of ERP runtime tree |
+| Custom SCM wrapper | Higher cost; deferred |
 
-Candidate tooling (decision deferred): NSSM, node-windows, WinSW, or custom service wrapper.
+**Architectural justification:** WinSW matches FT-DEP-001 folder rules (wrapper under `service\`, secrets stay in `shared\.env`), supports Automatic start + on-failure restart, and integrates cleanly with Batch 6/7 stop→replace→start without requiring the service on every site.
 
-### 16.3 Service contract (future)
+### 16.3 Service contract (Batch 8)
 
 | Setting | Requirement |
 |---------|-------------|
-| Display name | `FT ERP Backend` (or customer-branded) |
+| Service id | `FlowtixERP` |
+| Display name | `Flowtix ERP Backend` |
 | Startup | Automatic |
-| Failure restart | Restart after short delay |
+| Failure restart | Restart after 5s / 10s / 30s (WinSW `onfailure`) |
+| Executable | `node` + active `app\server.js` |
 | Working directory | Active release `app\` |
-| Environment | Load from `shared\.env` or service environment |
+| Environment | `FT_ERP_HOME`, `NODE_ENV=production`; app loads `shared\.env` |
+| Logs | `logs\service\` (WinSW roll-by-size) |
+| Optional | Sites **MAY** run without installing the service |
 
-**This revision does not install a service.** When implemented, it **SHALL** obey folder and backup rules above.
+Tooling: `tools\service-install.bat` / `uninstall` / `start` / `stop` / `restart` / `status` ([§33](#33-windows-service-integration-batch-8)).
+
+Update/rollback **SHALL** stop the service when present before file replace, and start it afterward when present. If not installed, they **SHALL** continue (no-op).
 
 ---
 
@@ -641,7 +656,7 @@ Aligned with [FT-PD-092](../09_Deployment_and_Operations_Architecture/Chapter_03
 |-------|------|---------|
 | Application | `logs\app\` | API errors, auth failures, unexpected exceptions |
 | Deploy | `logs\deploy\` | Install/update/rollback records, backup paths, versions |
-| Service | `logs\service\` | Process supervisor output (future) |
+| Service | `logs\service\` | WinSW stdout/stderr (Batch 8) |
 
 ### 17.2 Deploy log minimum fields
 
@@ -851,7 +866,7 @@ Explicitly **not** done in this documentation revision:
 | Release Operations | Pending review |
 | Documentation Steward | Pending review |
 
-**Status:** Draft — Architecture Review (v1.6.0). Batches 1–7 (packaging, runtime, esbuild, backup, migrate, update, app/web rollback) are documented; automated DB restore, Windows Service, and installer remain deferred.
+**Status:** Draft — Architecture Review (v1.7.0). Batches 1–8 (packaging, runtime, esbuild, backup, migrate, update, rollback, optional WinSW service) are documented; automated DB restore and Windows Installer remain deferred.
 
 ---
 
@@ -1056,7 +1071,7 @@ release/Flowtix-vX.Y.Z/
 
 ### 28.8 Still deferred
 
-Windows Service, installer, **automated DB restore**, Docker, pkg, nexe. *(Backup → §29; migrate → §30; update → §31; app/web rollback → §32)*
+Windows Installer, **automated DB restore**, Docker, pkg, nexe. *(Backup → §29; migrate → §30; update → §31; rollback → §32; Windows Service → §33)*
 
 ---
 
@@ -1245,10 +1260,12 @@ Provide a **one-click update coordinator** that runs the certified sequence: val
 |------|--------|------------------|
 | 1 | Validate release (`VERSION.txt`, `app/`, `web/`) + `shared/.env` + existing active `app/`/`web/` | Yes |
 | 2 | Display versions; require confirmation | Cancel exits 0 |
+| 2b | Stop Windows Service if installed (Batch 8; no-op if absent) | Yes if present and stop fails |
 | 3 | `backup-db.bat` | Yes — no migrate/deploy |
 | 4 | `migrate-db.bat` | Yes — no app/web replace |
 | 5 | Archive prior `app/`+`web/` under `releases\`; replace active `app/`+`web/` only | Yes |
 | 6 | `GET /health` or file-layout equivalent | Yes |
+| 6b | Start Windows Service if installed (Batch 8; no-op if absent) | Warn / exit 8 if start fails after deploy |
 | 7 | Print summary; append `logs\update.log` | — |
 
 ### 31.4 Safety checks
@@ -1284,7 +1301,7 @@ All stages append to `logs\update.log` (time, versions, backup, migration, resul
 
 ### 31.7 Deferred
 
-Automated DB restore, Windows Service, installer, Docker, cloud, licensing, monitoring. *(App/web rollback → Batch 7 / §32)*
+Automated DB restore, Windows Installer, Docker, cloud, licensing, monitoring. *(Windows Service → Batch 8 / §33)*
 
 ### 31.8 Validation checklist
 
@@ -1322,8 +1339,10 @@ Restore the **previous application binaries** (`app/` + `web/`) after a failed o
 | 1 | Locate newest `*-pre-update-*` archive (or `--archive`) | Yes |
 | 2 | Validate archive contains `app/` + `web/` | Yes |
 | 3 | Display versions + related backup guidance; confirm | Cancel exits 0 |
+| 3b | Stop Windows Service if installed (Batch 8; no-op if absent) | Yes if present and stop fails |
 | 4 | Replace active `app/` + `web/` from archive; restore `VERSION.txt` | Yes |
 | 5 | Assert `shared/`, `logs/`, `backups/` untouched | Yes |
+| 5b | Start Windows Service if installed (Batch 8; no-op if absent) | Fail entry if start fails |
 | 6 | Append `rollback.log` + `ROLLBACK_MANIFEST.json` | — |
 
 ### 32.4 DB restore limitation
@@ -1389,3 +1408,82 @@ Also append human-readable lines to `logs\rollback.log`.
 - [ ] No Prisma command executed
 - [ ] `logs/rollback.log` and `ROLLBACK_MANIFEST.json` written
 - [ ] Release package includes `tools/rollback-flowtix.*`
+
+---
+
+## 33. Windows Service Integration (Batch 8)
+
+### 33.1 Purpose
+
+Provide an **optional** Windows Service so LAN servers can auto-start Flowtix ERP after reboot, with stdout/stderr under `logs\service\`, without requiring the service on every deployment.
+
+### 33.2 Architecture decision
+
+| Candidate | Decision |
+|-----------|----------|
+| **WinSW** | **Adopted** — EXE+XML, restart policies, log rolling, easy to vendor |
+| NSSM | Rejected for packaging friction |
+| node-windows / native | Rejected — couples service to Node package tree |
+| Custom SCM | Deferred |
+
+Compliant with FT-DEP-001 §6/§14/§16: secrets remain in `shared\.env`; service files under `service\`; update/rollback never delete `shared`/`backups`.
+
+### 33.3 Operator SOP
+
+1. Ensure active `app\server.js` and `shared\.env` exist.
+2. (Optional) Place `WinSW-x64.exe` in `deployment\vendor\winsw\` or allow download.
+3. Run elevated: `tools\service-install.bat --home <FT_ERP_HOME>`
+4. Run: `tools\service-start.bat`
+5. Verify: `tools\service-status.bat` and `GET /health`
+6. Uninstall when needed: `tools\service-stop.bat` then `tools\service-uninstall.bat`
+
+### 33.4 Update / rollback cooperation
+
+| Orchestrator | Behavior |
+|--------------|----------|
+| `update-flowtix` | Stop service if present → backup → migrate → replace app/web → verify → start if present |
+| `rollback-flowtix` | Stop if present → restore app/web → start if present (**no DB restore**) |
+| Service absent | No-op; exit success for stop/start helpers |
+
+### 33.5 Logging & recovery
+
+| Item | Standard |
+|------|----------|
+| Log directory | `logs\service\` |
+| Mode | WinSW roll-by-size (10 MB × 8 files) |
+| On failure | Restart after 5s, then 10s, then 30s |
+| Reset failure counter | 1 hour |
+| Stop timeout | 20 seconds |
+
+### 33.6 Safety
+
+| Rule | Statement |
+|------|-----------|
+| Optional | Install **MAY** be skipped; product runs as console/Task Scheduler |
+| No secrets in XML | Passwords stay in `shared\.env` |
+| No DB restore | Service tooling never restores MySQL |
+| Admin required | install / uninstall only |
+| Preserve data folders | Never touch `shared/`, `backups/` |
+
+### 33.7 Tooling
+
+| Artifact | Path |
+|----------|------|
+| Core | `deployment/service-control.js` |
+| CLI | `deployment/service-manage.js` |
+| Wrappers | `service-install/uninstall/start/stop/restart/status.bat` |
+| Vendor pin | `deployment/vendor/winsw/` (optional `WinSW-x64.exe`) |
+| Shipped | `release/Flowtix-vX.Y.Z/tools/service-*` |
+
+### 33.8 Deferred
+
+Automated DB restore, Windows Installer, Docker, cloud, licensing, monitoring dashboards.
+
+### 33.9 Validation checklist
+
+- [ ] Status reports `not_installed` when service absent
+- [ ] Stop/start no-op successfully when absent
+- [ ] Update/rollback continue without service
+- [ ] Service scripts present in release `tools/`
+- [ ] FT-DEP-001 §16 / §33 document WinSW decision
+- [ ] No ERP business / UI / schema changes

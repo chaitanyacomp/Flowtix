@@ -15,6 +15,12 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const readline = require("readline");
+const {
+  stopServiceIfPresent,
+  startServiceIfPresent,
+  writeServiceXml,
+  isServicePresent,
+} = require("./service-control");
 
 const PROTECTED_TOP = new Set(["shared", "logs", "backups"]);
 
@@ -472,6 +478,24 @@ async function main() {
     push("Confirmation skipped (--yes / ROLLBACK_CONFIRM)");
   }
 
+  // Optional Windows Service stop (Batch 8)
+  push("STAGE=service-stop");
+  const stopSvc = stopServiceIfPresent(home);
+  push(`service stop: ${stopSvc.detail}`);
+  if (stopSvc.present && !stopSvc.ok) {
+    console.error("");
+    console.error("[rollback-flowtix] ERROR: could not stop Windows Service — rollback aborted");
+    console.error(`  ${stopSvc.detail}`);
+    console.error("");
+    appendRollbackLog(rollbackLogPath, [
+      ...logLines,
+      "RESULT=failed",
+      "STAGE=service-stop",
+      `ERROR=${stopSvc.detail}`,
+    ]);
+    process.exit(7);
+  }
+
   const protectedSnap = snapshotProtected(home);
   const srcApp = path.join(archivePath, "app");
   const srcWeb = path.join(archivePath, "web");
@@ -480,6 +504,7 @@ async function main() {
 
   let status = "failed";
   let errorSummary = null;
+  let startSvc = { present: false, ok: true, state: "not_installed", detail: "n/a" };
 
   try {
     push("STAGE=restore-app-web");
@@ -498,6 +523,24 @@ async function main() {
     assertProtectedUntouched(home, protectedSnap);
     status = "success";
     push("restore OK: app/ + web/ restored; shared/logs/backups preserved; no Prisma");
+
+    // Optional Windows Service start (Batch 8) — still no DB restore
+    push("STAGE=service-start");
+    if (isServicePresent()) {
+      try {
+        writeServiceXml(home);
+        push("service XML refreshed for active app path");
+      } catch (e) {
+        push(`service XML refresh skipped: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    startSvc = startServiceIfPresent(home);
+    push(`service start: ${startSvc.detail}`);
+    if (startSvc.present && !startSvc.ok) {
+      status = "failed";
+      errorSummary = `app/web restored but service start failed: ${startSvc.detail}`;
+      console.error("[rollback-flowtix] ERROR:", errorSummary);
+    }
   } catch (e) {
     status = "failed";
     errorSummary = redactSecrets(e instanceof Error ? e.message : String(e));
@@ -514,6 +557,8 @@ async function main() {
     restoredWebPath: destWeb,
     archivePath,
     relatedBackupFilename: relatedBackup,
+    servicePresent: Boolean(startSvc && startSvc.present),
+    serviceState: startSvc && startSvc.state ? startSvc.state : "not_installed",
     status,
     durationMs,
     ...(errorSummary ? { error: errorSummary.slice(0, 800) } : {}),

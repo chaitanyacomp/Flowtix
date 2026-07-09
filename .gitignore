@@ -15,3 +15,6 @@ ERP_DATA/
 /deployment/node_modules/
 
 /_lab_ft_home/
+
+# FT-DEP-001 Batch 8 — optional WinSW install tree at FT home (dev/lab)
+/service/

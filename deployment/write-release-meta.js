@@ -88,7 +88,7 @@ Apply on the client server with Prisma migrate deploy against shared/.env DATABA
 
 - _None recorded for this build. Edit before customer delivery if applicable._
 
-## Package Contents (Batch 1+3+4+5+6+7)
+## Package Contents (Batch 1+3+4+5+6+7+8)
 
 - \`web/\` - Vite production frontend
 - \`app/server.js\` - esbuild-bundled Node/Express entry (Batch 3)
@@ -100,11 +100,12 @@ Apply on the client server with Prisma migrate deploy against shared/.env DATABA
 - \`tools/migrate-db.*\` - prisma migrate deploy with backup gate (Batch 5)
 - \`tools/update-flowtix.*\` - one-click update orchestrator (Batch 6)
 - \`tools/rollback-flowtix.*\` - app/web rollback from pre-update archive (Batch 7)
+- \`tools/service-*.bat\` + \`service-control.js\` - optional WinSW Windows Service (Batch 8)
 
 ## Not Included (later batches)
 
 - Automated DB restore
-- Windows Service / installer
+- Windows Installer (MSI / Inno)
 - Docker / pkg / nexe packaging
 - Raw \`app/src/\` application tree (replaced by bundle)
 `;

@@ -89,8 +89,8 @@ if exist "%ROOT%\deployment\production.env.example" (
   echo This release package ships templates only. Do not place production secrets in git.
 )
 
-REM --- 6. tools\ (Batch 4–7: backup, migrate, update, rollback; service/installer deferred) ---
-echo [create-release] Copying tools\ backup, migrate, update, and rollback scripts...
+REM --- 6. tools\ (Batch 4–8: backup, migrate, update, rollback, Windows Service) ---
+echo [create-release] Copying tools\ scripts ^(Batches 4–8^)...
 copy /Y "%DEPLOY%\backup-db.bat" "%RELEASE_DIR%\tools\backup-db.bat" >nul
 copy /Y "%DEPLOY%\backup-db.js" "%RELEASE_DIR%\tools\backup-db.js" >nul
 copy /Y "%DEPLOY%\migrate-db.bat" "%RELEASE_DIR%\tools\migrate-db.bat" >nul
@@ -99,6 +99,18 @@ copy /Y "%DEPLOY%\update-flowtix.bat" "%RELEASE_DIR%\tools\update-flowtix.bat" >
 copy /Y "%DEPLOY%\update-flowtix.js" "%RELEASE_DIR%\tools\update-flowtix.js" >nul
 copy /Y "%DEPLOY%\rollback-flowtix.bat" "%RELEASE_DIR%\tools\rollback-flowtix.bat" >nul
 copy /Y "%DEPLOY%\rollback-flowtix.js" "%RELEASE_DIR%\tools\rollback-flowtix.js" >nul
+copy /Y "%DEPLOY%\service-control.js" "%RELEASE_DIR%\tools\service-control.js" >nul
+copy /Y "%DEPLOY%\service-manage.js" "%RELEASE_DIR%\tools\service-manage.js" >nul
+copy /Y "%DEPLOY%\service-install.bat" "%RELEASE_DIR%\tools\service-install.bat" >nul
+copy /Y "%DEPLOY%\service-uninstall.bat" "%RELEASE_DIR%\tools\service-uninstall.bat" >nul
+copy /Y "%DEPLOY%\service-start.bat" "%RELEASE_DIR%\tools\service-start.bat" >nul
+copy /Y "%DEPLOY%\service-stop.bat" "%RELEASE_DIR%\tools\service-stop.bat" >nul
+copy /Y "%DEPLOY%\service-restart.bat" "%RELEASE_DIR%\tools\service-restart.bat" >nul
+copy /Y "%DEPLOY%\service-status.bat" "%RELEASE_DIR%\tools\service-status.bat" >nul
+if exist "%DEPLOY%\vendor\winsw\WinSW-x64.exe" (
+  mkdir "%RELEASE_DIR%\tools\vendor\winsw" 2>nul
+  copy /Y "%DEPLOY%\vendor\winsw\WinSW-x64.exe" "%RELEASE_DIR%\tools\vendor\winsw\WinSW-x64.exe" >nul
+)
 > "%RELEASE_DIR%\tools\README.txt" (
   echo Flowtix ERP — release tools ^(FT-DEP-001^)
   echo.
@@ -114,9 +126,13 @@ copy /Y "%DEPLOY%\rollback-flowtix.js" "%RELEASE_DIR%\tools\rollback-flowtix.js"
   echo Batch 7:
   echo   rollback-flowtix.bat / rollback-flowtix.js — app/web rollback from archive
   echo.
+  echo Batch 8:
+  echo   service-install/uninstall/start/stop/restart/status.bat — optional WinSW service
+  echo   ^(requires Administrator; deployments work without the service^)
+  echo.
   echo Deferred:
   echo   - automated DB restore
-  echo   - Windows Service wrappers
+  echo   - Windows Installer
 )
 
 REM --- 7. Git commit + build date ---
@@ -292,6 +308,27 @@ if not exist "%RELEASE_DIR%\tools\rollback-flowtix.js" (
   set "FAIL=1"
 ) else (
   echo   OK: tools\rollback-flowtix.js
+)
+
+if not exist "%RELEASE_DIR%\tools\service-control.js" (
+  echo   FAIL: tools\service-control.js missing
+  set "FAIL=1"
+) else (
+  echo   OK: tools\service-control.js
+)
+
+if not exist "%RELEASE_DIR%\tools\service-install.bat" (
+  echo   FAIL: tools\service-install.bat missing
+  set "FAIL=1"
+) else (
+  echo   OK: tools\service-install.bat
+)
+
+if not exist "%RELEASE_DIR%\tools\service-status.bat" (
+  echo   FAIL: tools\service-status.bat missing
+  set "FAIL=1"
+) else (
+  echo   OK: tools\service-status.bat
 )
 
 if "%FAIL%"=="1" (

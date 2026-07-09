@@ -22,6 +22,12 @@ const path = require("path");
 const http = require("http");
 const readline = require("readline");
 const { spawnSync } = require("child_process");
+const {
+  stopServiceIfPresent,
+  startServiceIfPresent,
+  writeServiceXml,
+  isServicePresent,
+} = require("./service-control");
 
 const PROTECTED_TOP = new Set(["shared", "logs", "backups"]);
 
@@ -528,6 +534,25 @@ async function main() {
 
   const protectedSnap = snapshotProtected(home);
 
+  // --- 2b. Optional Windows Service stop (Batch 8) ---
+  push("STAGE=service-stop");
+  const stopSvc = stopServiceIfPresent(home);
+  push(`service stop: ${stopSvc.detail}`);
+  if (stopSvc.present && !stopSvc.ok) {
+    console.error("");
+    console.error("[update-flowtix] ERROR: could not stop Windows Service — update aborted");
+    console.error(`  ${stopSvc.detail}`);
+    console.error("  Stop the service manually (service-stop.bat) and retry.");
+    console.error("");
+    appendUpdateLog(updateLogPath, [
+      ...logLines,
+      "RESULT=failed",
+      "STAGE=service-stop",
+      `ERROR=${stopSvc.detail}`,
+    ]);
+    process.exit(7);
+  }
+
   // --- 3. Backup ---
   push("STAGE=backup");
   const backupBat = findTool(sourceRelease, home, "backup-db.bat");
@@ -693,6 +718,36 @@ async function main() {
   }
   push(`verify OK: mode=${health.mode} ${health.detail ? String(health.detail).slice(0, 120) : ""}`);
 
+  // --- 6b. Optional Windows Service start (Batch 8) ---
+  push("STAGE=service-start");
+  if (isServicePresent()) {
+    try {
+      writeServiceXml(home);
+      push("service XML refreshed for active app path");
+    } catch (e) {
+      push(`service XML refresh skipped: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  const startSvc = startServiceIfPresent(home);
+  push(`service start: ${startSvc.detail}`);
+  if (startSvc.present && !startSvc.ok) {
+    console.error("");
+    console.error("[update-flowtix] WARN: app/web deployed but Windows Service did not start");
+    console.error(`  ${startSvc.detail}`);
+    console.error("  Start manually with tools\\service-start.bat");
+    console.error("");
+    appendUpdateLog(updateLogPath, [
+      ...logLines,
+      "RESULT=partial",
+      "STAGE=service-start",
+      `BACKUP=${backupFilename}`,
+      `MIGRATION=${migrationStatus}`,
+      `ERROR=${startSvc.detail}`,
+    ]);
+    // Files already replaced — do not roll back automatically; exit non-zero for operator attention.
+    process.exit(8);
+  }
+
   // --- 7. Summary ---
   const elapsedMs = Date.now() - started;
   const elapsedSec = (elapsedMs / 1000).toFixed(1);
@@ -722,6 +777,8 @@ async function main() {
     `MIGRATION=${migrationStatus}`,
     `ARCHIVE=${archivePath}`,
     `VERIFY_MODE=${health.mode}`,
+    `SERVICE_PRESENT=${startSvc.present}`,
+    `SERVICE_STATE=${startSvc.state}`,
     `ELAPSED_MS=${elapsedMs}`,
   ]);
 

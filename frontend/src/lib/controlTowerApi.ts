@@ -65,6 +65,25 @@ export type ControlTowerPanelMetricsData = {
   noQtyControlPanel: {
     activeNoQtyOrders: number;
     planningPending: number;
+    productionShortfallPendingQty?: number;
+    qcRecoveryAvailableQty?: number;
+    soWaitingForWaiver?: number;
+    acceptedFgDispositionPending?: number;
+    blockedClosures?: number;
+    closedWithWaiver?: number;
+    openRecoverySources?: number;
+    monitoringRows?: Array<{
+      documentNo: string;
+      recoveryType: string;
+      recoveryStatus: string;
+      pendingQty: number;
+      waivedQty: number;
+      soCloseMode: string | null;
+      closureBlockers: string[];
+      recoveryAgeDays: number;
+      itemName: string | null;
+      uom: string | null;
+    }>;
   };
   commercialControl: {
     billingReady: number | null;

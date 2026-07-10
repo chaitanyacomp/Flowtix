@@ -18,6 +18,10 @@ const {
 } = require("./dashboardQueueSnapshots");
 const { parseDateStart, parseDateEnd } = require("./soDispatchTraceReport");
 const { computeNoQtyCreateNextRsEligibilityResolved } = require("./noQtyCreateNextRsEligibility");
+const {
+  enrichSalesOrdersWithRecoveryClosure,
+  sumRequirementSheetComponentTotals,
+} = require("./noQtyRecoveryAnalyticsService");
 
 function n(v) {
   const x = typeof v === "number" ? v : Number(v);
@@ -246,6 +250,11 @@ async function buildCustomerSoRsReport(query) {
     }),
   );
 
+  const recoveryClosureBySoId = await enrichSalesOrdersWithRecoveryClosure(
+    prisma,
+    nqSoForElig.map((s) => s.id),
+  );
+
   /** @type {Map<number, import('@prisma/client').SalesOrderCycle[]>} */
   const cyclesBySoId = new Map();
   if (expandNoQtyCycles) {
@@ -364,8 +373,14 @@ async function buildCustomerSoRsReport(query) {
       /** @type {string | null} */
       let lastShortageQtyLabel = null;
       let activeCarryForwardQty = null;
+      let baseDemandQty = null;
+      let productionShortfallQty = null;
+      let qcRejectionRecoveryQty = null;
+      let approvedManualAdjustmentQty = null;
+      let totalRsQty = null;
 
       const snapMeta = snapMetaBySoId.get(so.id);
+      const recoveryMeta = recoveryClosureBySoId.get(so.id);
 
       if (cycleId != null && Number.isFinite(cycleId) && cycleId > 0) {
         const k = `${so.id}:${cycleId}`;
@@ -379,6 +394,12 @@ async function buildCustomerSoRsReport(query) {
           requirementQty = sums.requirementQty;
           suggestedWoQty = sums.suggestedWoQty;
           lockedAt = sheet.status === "LOCKED" ? sheet.updatedAt.toISOString() : null;
+          const comps = sumRequirementSheetComponentTotals(sheet);
+          baseDemandQty = comps.baseDemandQty;
+          productionShortfallQty = comps.productionShortfallQty;
+          qcRejectionRecoveryQty = comps.qcRejectionRecoveryQty;
+          approvedManualAdjustmentQty = comps.approvedManualAdjustmentQty;
+          totalRsQty = comps.totalRsQty;
         }
         const cfMap = carryBySoCycleKey.get(k);
         let ls = 0;
@@ -410,12 +431,26 @@ async function buildCustomerSoRsReport(query) {
         requirementSheetStatus,
         requirementQty,
         suggestedWoQty,
+        baseDemandQty,
+        productionShortfallQty,
+        qcRejectionRecoveryQty,
+        approvedManualAdjustmentQty,
+        totalRsQty,
         lockedAt,
         lastShortageQty,
         lastShortageQtyLabel,
         closedShortageQty: snapMeta?.closedShortageQty ?? 0,
         activeCarryForwardQty,
         reopenMode: snapMeta?.reopenMode ?? null,
+        productionShortfallPendingQty: recoveryMeta?.productionShortfallPendingQty ?? 0,
+        qcFinalRejectionPendingQty: recoveryMeta?.qcFinalRejectionPendingQty ?? 0,
+        recoveryAllocatedQty: recoveryMeta?.recoveryAllocatedQty ?? 0,
+        recoveryWaivedQty: recoveryMeta?.recoveryWaivedQty ?? 0,
+        closureMode: recoveryMeta?.closureMode ?? null,
+        closedWithWaiverAt: recoveryMeta?.closedWithWaiverAt
+          ? new Date(recoveryMeta.closedWithWaiverAt).toISOString()
+          : null,
+        waiverReasonCode: recoveryMeta?.waiverReasonCode ?? null,
         nextActionKey,
         nextActionLabel,
       });

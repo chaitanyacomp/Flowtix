@@ -81,6 +81,10 @@ import {
   type QuotationPendingSoRow,
 } from "../lib/dashboardCommercialWorkflow";
 import { NoQtyDashboardCompactPanel } from "../components/erp/planning/NoQtyDashboardCompactPanel";
+import {
+  NoQtyRecoveryDashboardPanel,
+  type NoQtyRecoveryDashboardSnapshot,
+} from "../components/erp/planning/NoQtyRecoveryDashboardPanel";
 import { formatRmStockAlertBanner } from "../lib/inventoryHealth";
 import { hasSoWoRmBlockerAttention } from "../lib/dashboardRmClassification";
 import {
@@ -991,6 +995,26 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
       })
       .catch(() => {
         if (mounted) setSalesOrdersForDashboard([]);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [canUseOpenNoQtyContinuation, demo.enabled, liveTick, isDashboardRoute]);
+
+  const [noQtyRecoverySnapshot, setNoQtyRecoverySnapshot] =
+    React.useState<NoQtyRecoveryDashboardSnapshot | null>(null);
+  React.useEffect(() => {
+    if (!isDashboardRoute || !canUseOpenNoQtyContinuation || demo.enabled) {
+      setNoQtyRecoverySnapshot(null);
+      return;
+    }
+    let mounted = true;
+    apiFetch<NoQtyRecoveryDashboardSnapshot>("/api/dashboard/no-qty-recovery")
+      .then((payload) => {
+        if (mounted) setNoQtyRecoverySnapshot(payload);
+      })
+      .catch(() => {
+        if (mounted) setNoQtyRecoverySnapshot(null);
       });
     return () => {
       mounted = false;
@@ -2096,6 +2120,10 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
                 }
               }}
             />
+          ) : null}
+
+          {noQtyRecoverySnapshot && (isAdmin || role === "STORE") ? (
+            <NoQtyRecoveryDashboardPanel snapshot={noQtyRecoverySnapshot} isAdmin={isAdmin} />
           ) : null}
         </DashboardControlColumn>
   ) : null;

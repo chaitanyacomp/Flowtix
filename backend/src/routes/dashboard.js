@@ -260,6 +260,19 @@ dashboardRouter.get("/no-qty-cycle-history", requireAuth, continueWorkingRoles, 
   }
 });
 
+/** Batch 3E — aggregated NO_QTY recovery / closure dashboard snapshot (read-only). */
+dashboardRouter.get("/no-qty-recovery", requireAuth, continueWorkingRoles, async (req, res, next) => {
+  try {
+    const { getNoQtyRecoveryDashboardSnapshot } = require("../services/noQtyRecoveryAnalyticsService");
+    const payload = await getNoQtyRecoveryDashboardSnapshot(prisma, {
+      userRole: req.user?.role ?? null,
+    });
+    return res.json(payload);
+  } catch (err) {
+    return dashboardErrorResponse(res, err, "/api/dashboard/no-qty-recovery");
+  }
+});
+
 const RECENT_QC_REJECTIONS_REPORT_ROW_CAP = 2500;
 
 dashboardRouter.get("/recent-qc-rejections-report.pdf", requireAuth, dashboardSummaryRoles, async (req, res, next) => {

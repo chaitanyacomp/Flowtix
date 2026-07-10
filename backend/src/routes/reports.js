@@ -37,6 +37,7 @@ const { buildProductionRmVarianceReport } = require("../services/productionRmVar
 const { buildProductionWastageClassificationReport } = require("../services/productionWastageClassificationReportService");
 const { buildRmPlanningVsReceivedReport } = require("../services/rmPlanningVsReceivedReportService");
 const { buildRmWastageReport } = require("../services/rmWastageReportService");
+const { buildNoQtyRecoveryTraceReport } = require("../services/noQtyRecoveryAnalyticsService");
 
 const WORK_ORDER_TRACKING_ACCESS_DENIED =
   "Access denied. Only administrators and production staff can view the work order tracking report.";
@@ -179,22 +180,46 @@ reportsRouter.get("/dispatch-summary", requireAuth, dispatchSummaryRoles, async 
       }),
     ]);
 
+    const noQtySoIds = [
+      ...new Set(
+        historyRows
+          .filter((d) => d.salesOrder?.orderType === "NO_QTY")
+          .map((d) => Number(d.soId))
+          .filter((id) => id > 0),
+      ),
+    ];
+    const { enrichSalesOrdersWithRecoveryClosure } = require("../services/noQtyRecoveryAnalyticsService");
+    const recoveryBySo =
+      noQtySoIds.length > 0 ? await enrichSalesOrdersWithRecoveryClosure(prisma, noQtySoIds) : new Map();
+
     return res.json({
       kpis: {
         dispatchTodayQty: Number(todayAgg._sum.dispatchedQty || 0),
         dispatchMonthQty: Number(monthAgg._sum.dispatchedQty || 0),
       },
-      history: historyRows.map((d) => ({
-        id: d.id,
-        date: d.date,
-        soId: d.soId,
-        soNo: d.salesOrder?.docNo ?? null,
-        customerName: d.salesOrder?.customer?.name ?? null,
-        itemId: d.itemId,
-        itemName: d.item?.itemName ?? null,
-        qty: Number(d.dispatchedQty || 0),
-        reversalOfId: d.reversalOfId,
-      })),
+      history: historyRows.map((d) => {
+        const recovery = recoveryBySo.get(Number(d.soId));
+        return {
+          id: d.id,
+          date: d.date,
+          soId: d.soId,
+          soNo: d.salesOrder?.docNo ?? null,
+          customerName: d.salesOrder?.customer?.name ?? null,
+          itemId: d.itemId,
+          itemName: d.item?.itemName ?? null,
+          qty: Number(d.dispatchedQty || 0),
+          reversalOfId: d.reversalOfId,
+          // Informational only — dispatch qty logic unchanged
+          soDemand: null,
+          netDispatched: Number(d.dispatchedQty || 0),
+          pendingRecovery: recovery
+            ? Number(recovery.productionShortfallPendingQty || 0) +
+              Number(recovery.qcFinalRejectionPendingQty || 0)
+            : null,
+          waivedDemand: recovery?.recoveryWaivedQty ?? null,
+          closureStatus: recovery?.closureStatus ?? d.salesOrder?.internalStatus ?? null,
+        };
+      }),
     });
   } catch (e) {
     return next(e);
@@ -1737,6 +1762,36 @@ reportsRouter.get("/work-order-tracking", requireAuth, workOrderTrackingRoles, a
 
     const summary = computeWorkOrderTrackingSummaryFromRows(rows);
 
+    const noQtyIdsFromLines = [
+      ...new Set(
+        lines
+          .filter((l) => l.workOrder?.salesOrder?.orderType === "NO_QTY")
+          .map((l) => Number(l.workOrder.salesOrderId))
+          .filter((id) => id > 0),
+      ),
+    ];
+    const { enrichSalesOrdersWithRecoveryClosure } = require("../services/noQtyRecoveryAnalyticsService");
+    const recoveryBySo =
+      noQtyIdsFromLines.length > 0
+        ? await enrichSalesOrdersWithRecoveryClosure(prisma, noQtyIdsFromLines)
+        : new Map();
+
+    for (const row of rows) {
+      const recovery = recoveryBySo.get(Number(row.salesOrderId));
+      if (!recovery) {
+        row.productionShortfallSourceQty = null;
+        row.recoverySourceStatus = null;
+        row.recoveryAllocatedQty = null;
+        continue;
+      }
+      const itemSources = (recovery.recoverySummary?.sources || []).filter(
+        (s) => Number(s.itemId) === Number(row.itemId) && s.recoveryType === "PRODUCTION_SHORTFALL",
+      );
+      row.productionShortfallSourceQty = itemSources.reduce((s, x) => s + Number(x.sourceQty || 0), 0);
+      row.recoverySourceStatus = itemSources[0]?.recoveryStatus ?? null;
+      row.recoveryAllocatedQty = itemSources.reduce((s, x) => s + Number(x.activeAllocatedQty || 0), 0);
+    }
+
     return res.json({
       rows,
       summary,
@@ -1878,6 +1933,76 @@ reportsRouter.get("/customer-so-rs", requireAuth, customerSoRsRoles, async (req,
     return next(e);
   }
 });
+
+/** Batch 3E — NO_QTY Recovery Trace Report (read-only). */
+const noQtyRecoveryTraceRoles = requireRole(
+  ["ADMIN", "STORE"],
+  "Access denied. Recovery Trace report requires admin or store role.",
+);
+
+reportsRouter.get("/no-qty-recovery-trace", requireAuth, noQtyRecoveryTraceRoles, async (req, res, next) => {
+  try {
+    const payload = await buildNoQtyRecoveryTraceReport(prisma, req.query);
+    if (String(req.query.export || "").toLowerCase() === "csv") {
+      const headers = [
+        "SalesOrderNo",
+        "Item",
+        "UOM",
+        "RecoverySourceId",
+        "OriginDocType",
+        "OriginDocId",
+        "OriginCycleId",
+        "RecoveryType",
+        "SourceQty",
+        "AllocatedQty",
+        "AvailableQty",
+        "WaivedQty",
+        "RequirementSheetNo",
+        "AllocatedCycleId",
+        "Status",
+        "AgeDays",
+        "ReconciliationOk",
+      ];
+      const lines = [headers.join(",")];
+      for (const r of payload.rows) {
+        lines.push(
+          [
+            csvEscape(r.salesOrderNo),
+            csvEscape(r.itemName),
+            csvEscape(r.uom),
+            r.recoverySourceId,
+            csvEscape(r.originDocumentType),
+            r.originDocumentId ?? "",
+            r.originCycleId ?? "",
+            csvEscape(r.recoveryType),
+            r.sourceQty,
+            r.allocatedQty,
+            r.availableQty,
+            r.waivedQty,
+            csvEscape(r.requirementSheetNo),
+            r.allocatedCycleId ?? "",
+            csvEscape(r.recoveryStatus),
+            r.ageDays,
+            r.reconciliationOk ? "Y" : "N",
+          ].join(","),
+        );
+      }
+      const csv = lines.join("\n");
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader("Content-Disposition", 'attachment; filename="no-qty-recovery-trace.csv"');
+      return res.send(csv);
+    }
+    return res.json(payload);
+  } catch (e) {
+    return next(e);
+  }
+});
+
+function csvEscape(v) {
+  const s = v == null ? "" : String(v);
+  if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
 
 const productionWastageClassificationRoles = requireRole(
   ["ADMIN", "PRODUCTION", "STORE", "PURCHASE"],

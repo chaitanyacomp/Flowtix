@@ -81,6 +81,7 @@ import { RmProcurementConnectivityReportPage } from "./pages/RmProcurementConnec
 import { RmPlanningVsReceivedReportPage } from "./pages/RmPlanningVsReceivedReportPage";
 import { SalesMatchingReportPage } from "./pages/SalesMatchingReportPage";
 import { CustomerSoRsReportPage } from "./pages/CustomerSoRsReportPage";
+import { NoQtyRecoveryTraceReportPage } from "./pages/NoQtyRecoveryTraceReportPage";
 import { BatchTraceabilityReportPage } from "./pages/BatchTraceabilityReportPage";
 import { ActivityLogReportPage } from "./pages/ActivityLogReportPage";
 import { DispatchSummaryReportPage } from "./pages/DispatchSummaryReportPage";
@@ -984,6 +985,14 @@ export default function App() {
           element={
             <ProtectedRoute allowedRoles={[...REPORTS_ROLES]}>
               <CustomerSoRsReportPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/reports/no-qty-recovery-trace"
+          element={
+            <ProtectedRoute allowedRoles={["ADMIN", "STORE"]}>
+              <NoQtyRecoveryTraceReportPage />
             </ProtectedRoute>
           }
         />

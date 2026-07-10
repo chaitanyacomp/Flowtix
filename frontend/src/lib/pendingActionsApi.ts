@@ -10,6 +10,13 @@ export type PendingAction = {
   href: string;
   planId?: number;
   monthlyPlanId?: number;
+  itemId?: number;
+  itemName?: string | null;
+  qty?: number | null;
+  uom?: string | null;
+  recoveryType?: string | null;
+  reason?: string | null;
+  reasonMessage?: string | null;
 };
 
 export type PendingActionsResponse = {

@@ -24,6 +24,7 @@ const {
 const { getAccountsDashboard } = require("./accountsDashboardService");
 const { getEligibleDispatches } = require("./salesBillService");
 const { buildOperationsExceptionReportPayload } = require("./operationsExceptionReport");
+const { getNoQtyRecoveryControlTowerSlice } = require("./noQtyRecoveryAnalyticsService");
 
 const PANEL_NUM_EPS = QUEUE_EPS;
 
@@ -61,6 +62,13 @@ function buildEmptyPanelMetricsData() {
     noQtyControlPanel: {
       activeNoQtyOrders: 0,
       planningPending: 0,
+      productionShortfallPendingQty: 0,
+      qcRecoveryAvailableQty: 0,
+      soWaitingForWaiver: 0,
+      acceptedFgDispositionPending: 0,
+      blockedClosures: 0,
+      closedWithWaiver: 0,
+      openRecoverySources: 0,
     },
     commercialControl: {
       billingReady: null,
@@ -195,6 +203,7 @@ async function getControlTowerPanelMetrics(db = prisma, opts = {}) {
     activeNoQtyRows,
     continueWorking,
     operationsExceptions,
+    noQtyRecoverySlice,
   ] = await Promise.all([
     loadStockByItemIdUsableMap(db),
     db.item.findMany({ where: { itemType: "RM" }, select: { id: true, itemName: true, minimumStockQty: true, minStockLevel: true } }),
@@ -210,6 +219,7 @@ async function getControlTowerPanelMetrics(db = prisma, opts = {}) {
     getActiveNoQtySalesOrders({ limit: 50 }),
     getContinueWorkingRows({ limit: 100 }),
     buildOperationsExceptionReportPayload(),
+    getNoQtyRecoveryControlTowerSlice(db),
   ]);
 
   const { rmStockCriticalCount } = buildRmStockHealthAlerts(rmItems, stockByItemId);
@@ -260,6 +270,22 @@ async function getControlTowerPanelMetrics(db = prisma, opts = {}) {
   data.noQtyControlPanel = {
     activeNoQtyOrders: (activeNoQtyRows || []).length,
     planningPending: countPlanningPendingNoQty(activeNoQtyRows),
+    productionShortfallPendingQty: n(
+      (noQtyRecoverySlice?.rows || [])
+        .filter((r) => r.recoveryType === "PRODUCTION_SHORTFALL")
+        .reduce((s, r) => s + n(r.pendingQty), 0),
+    ),
+    qcRecoveryAvailableQty: n(
+      (noQtyRecoverySlice?.rows || [])
+        .filter((r) => r.recoveryType === "QC_FINAL_REJECTION")
+        .reduce((s, r) => s + n(r.pendingQty), 0),
+    ),
+    soWaitingForWaiver: n(noQtyRecoverySlice?.metrics?.soWaitingForWaiver),
+    acceptedFgDispositionPending: n(noQtyRecoverySlice?.metrics?.acceptedFgDispositionPending),
+    blockedClosures: n(noQtyRecoverySlice?.metrics?.blockedClosures),
+    closedWithWaiver: n(noQtyRecoverySlice?.metrics?.closedWithWaiver),
+    openRecoverySources: n(noQtyRecoverySlice?.metrics?.openRecoverySources),
+    monitoringRows: (noQtyRecoverySlice?.rows || []).slice(0, 100),
   };
 
   if (includeCommercial) {

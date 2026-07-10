@@ -57,6 +57,7 @@ const {
 } = require("./productionExecutionService");
 const { listProductionRmReturnPending } = require("./productionWorkOrderReportService");
 const { getDispatchBacklogRows } = require("./dashboardQueueSnapshots");
+const { fetchNoQtyRecoveryPendingActions } = require("./noQtyRecoveryAnalyticsService");
 const {
   buildStoreDispatchPendingActionLabel,
   isStoreDispatchWorkflowTriggerAction,
@@ -2020,6 +2021,7 @@ async function getStorePendingActions(ctx) {
     storeNoQtyCreateRs,
     storeNoQtyPlaceWo,
     storeGreenLevelPlaceWo,
+    storeNoQtyRecovery,
   ] = await Promise.all([
     timedBucket("storeNormalized", () =>
       fetchStoreScopedNormalizedRows({ mode: CONTROL_TOWER_ROW_MODES.FULL }),
@@ -2034,6 +2036,7 @@ async function getStorePendingActions(ctx) {
     timedBucket("storeNoQtyCreateRs", () => fetchStoreNoQtyCreateNextRsPendingActions(db)),
     timedBucket("storeNoQtyPlaceWo", () => fetchStoreNoQtyPlaceWoPendingActions(db)),
     timedBucket("storeGreenLevelPlaceWo", () => fetchStoreGreenLevelPlaceWoPendingActions(db)),
+    timedBucket("storeNoQtyRecovery", () => fetchNoQtyRecoveryPendingActions(db, { role: "STORE" })),
   ]);
 
   const bucketCounts = {
@@ -2041,7 +2044,7 @@ async function getStorePendingActions(ctx) {
     production: 0,
     qc: 0,
     procurement: storeGrn.length,
-    noQty: storeNoQtyMonthly.length + storeNoQtyCreateRs.length + storeNoQtyPlaceWo.length,
+    noQty: storeNoQtyMonthly.length + storeNoQtyCreateRs.length + storeNoQtyPlaceWo.length + storeNoQtyRecovery.length,
     inventory: storeIssue.length,
     salesBill: 0,
     other: storeRmReturn.length,
@@ -2065,6 +2068,7 @@ async function getStorePendingActions(ctx) {
     ...storeNoQtyCreateRs,
     ...storeNoQtyPlaceWo,
     ...storeGreenLevelPlaceWo,
+    ...storeNoQtyRecovery,
   ];
 
   const combined = [...normalizedActions, ...supplemental];
@@ -2098,16 +2102,23 @@ async function getStorePendingActions(ctx) {
 
   return {
     count: actions.length,
-    actions: actions.map(({ id, priority, action, documentNo, ownerRole, ageHours, href, planId, monthlyPlanId }) => ({
-      id,
-      priority,
-      action,
-      documentNo,
-      ownerRole,
-      ageHours,
-      href,
-      ...(planId != null ? { planId } : {}),
-      ...(monthlyPlanId != null ? { monthlyPlanId } : {}),
+    actions: actions.map((a) => ({
+      id: a.id,
+      priority: a.priority,
+      action: a.action,
+      documentNo: a.documentNo,
+      ownerRole: a.ownerRole,
+      ageHours: a.ageHours,
+      href: a.href,
+      ...(a.planId != null ? { planId: a.planId } : {}),
+      ...(a.monthlyPlanId != null ? { monthlyPlanId: a.monthlyPlanId } : {}),
+      ...(a.itemId != null ? { itemId: a.itemId } : {}),
+      ...(a.itemName != null ? { itemName: a.itemName } : {}),
+      ...(a.qty != null ? { qty: a.qty } : {}),
+      ...(a.uom != null ? { uom: a.uom } : {}),
+      ...(a.recoveryType != null ? { recoveryType: a.recoveryType } : {}),
+      ...(a.reason != null ? { reason: a.reason } : {}),
+      ...(a.reasonMessage != null ? { reasonMessage: a.reasonMessage } : {}),
     })),
     meta: {
       role,
@@ -2183,6 +2194,7 @@ async function getPendingActions(opts = {}) {
   const supplementalStartedAt = Date.now();
   if (role === "ADMIN") {
     supplemental.push(...(await fetchAdminCommercialPendingActions()));
+    supplemental.push(...(await fetchNoQtyRecoveryPendingActions(db, { role: "ADMIN" })));
   }
   if (role === "PURCHASE") {
     const purchaseChunk = await fetchPurchaseProcurementPendingActions(db);
@@ -2251,16 +2263,23 @@ async function getPendingActions(opts = {}) {
 
   return {
     count: actions.length,
-    actions: actions.map(({ id, priority, action, documentNo, ownerRole, ageHours, href, planId, monthlyPlanId }) => ({
-      id,
-      priority,
-      action,
-      documentNo,
-      ownerRole,
-      ageHours,
-      href,
-      ...(planId != null ? { planId } : {}),
-      ...(monthlyPlanId != null ? { monthlyPlanId } : {}),
+    actions: actions.map((a) => ({
+      id: a.id,
+      priority: a.priority,
+      action: a.action,
+      documentNo: a.documentNo,
+      ownerRole: a.ownerRole,
+      ageHours: a.ageHours,
+      href: a.href,
+      ...(a.planId != null ? { planId: a.planId } : {}),
+      ...(a.monthlyPlanId != null ? { monthlyPlanId: a.monthlyPlanId } : {}),
+      ...(a.itemId != null ? { itemId: a.itemId } : {}),
+      ...(a.itemName != null ? { itemName: a.itemName } : {}),
+      ...(a.qty != null ? { qty: a.qty } : {}),
+      ...(a.uom != null ? { uom: a.uom } : {}),
+      ...(a.recoveryType != null ? { recoveryType: a.recoveryType } : {}),
+      ...(a.reason != null ? { reason: a.reason } : {}),
+      ...(a.reasonMessage != null ? { reasonMessage: a.reasonMessage } : {}),
     })),
     meta: {
       role,

@@ -41,6 +41,18 @@ type ReportRow = {
   /** Effective carry-forward demand for this row's cycle context. */
   activeCarryForwardQty?: number | null;
   reopenMode?: string | null;
+  baseDemandQty?: number | null;
+  productionShortfallQty?: number | null;
+  qcRejectionRecoveryQty?: number | null;
+  approvedManualAdjustmentQty?: number | null;
+  totalRsQty?: number | null;
+  productionShortfallPendingQty?: number | null;
+  qcFinalRejectionPendingQty?: number | null;
+  recoveryAllocatedQty?: number | null;
+  recoveryWaivedQty?: number | null;
+  closureMode?: string | null;
+  closedWithWaiverAt?: string | null;
+  waiverReasonCode?: string | null;
   nextActionKey: string;
   nextActionLabel: string;
 };
@@ -183,6 +195,18 @@ export function CustomerSoRsReportPage() {
         "Carry / disposition qty",
         "Closed shortage",
         "Active carry",
+        "Prod shortfall pending",
+        "QC recovery pending",
+        "Recovery allocated",
+        "Recovery waived",
+        "Closure mode",
+        "Closed with waiver at",
+        "Waiver reason",
+        "Base demand",
+        "RS shortfall",
+        "RS QC recovery",
+        "RS manual adj",
+        "Total RS qty",
         "Reopen mode",
         "Locked",
         "Next action",
@@ -215,6 +239,18 @@ export function CustomerSoRsReportPage() {
           r.lastShortageQty ?? "",
           r.closedShortageQty ?? "",
           r.activeCarryForwardQty ?? "",
+          r.productionShortfallPendingQty ?? "",
+          r.qcFinalRejectionPendingQty ?? "",
+          r.recoveryAllocatedQty ?? "",
+          r.recoveryWaivedQty ?? "",
+          r.closureMode ?? "",
+          r.closedWithWaiverAt ?? "",
+          r.waiverReasonCode ?? "",
+          r.baseDemandQty ?? "",
+          r.productionShortfallQty ?? "",
+          r.qcRejectionRecoveryQty ?? "",
+          r.approvedManualAdjustmentQty ?? "",
+          r.totalRsQty ?? "",
           r.reopenMode ?? "",
           r.lockedAt ?? "",
           r.nextActionLabel,

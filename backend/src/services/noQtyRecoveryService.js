@@ -563,33 +563,25 @@ async function reverseAllocationsForSheet(
   return reversed;
 }
 
-async function getRecoverySummary(db, salesOrderId) {
+function emptyRecoveryTotals() {
+  return {
+    productionShortfallSourceQty: 0,
+    productionShortfallAvailableQty: 0,
+    qcFinalRejectionSourceQty: 0,
+    qcFinalRejectionAvailableQty: 0,
+    waivedQty: 0,
+    activeAllocatedQty: 0,
+  };
+}
+
+/**
+ * Build recovery summary from already-loaded CarryForwardPending rows (same math as getRecoverySummary).
+ * @param {number} salesOrderId
+ * @param {object[]} rows
+ */
+function buildRecoverySummaryFromRows(salesOrderId, rows) {
   const soId = Number(salesOrderId);
-  if (!Number.isFinite(soId) || soId <= 0) {
-    return {
-      salesOrderId: soId,
-      sources: [],
-      totals: {
-        productionShortfallSourceQty: 0,
-        productionShortfallAvailableQty: 0,
-        qcFinalRejectionSourceQty: 0,
-        qcFinalRejectionAvailableQty: 0,
-        waivedQty: 0,
-        activeAllocatedQty: 0,
-      },
-    };
-  }
-
-  const rows = await db.carryForwardPending.findMany({
-    where: { salesOrderId: soId },
-    include: {
-      allocations: true,
-      item: { select: { id: true, itemName: true, unit: true } },
-    },
-    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-  });
-
-  const sources = rows.map((r) => {
+  const sources = (rows || []).map((r) => {
     const activeAllocatedQty = sumActiveAllocatedQty(r.allocations);
     const availableQty = computeAvailableQty(r, r.allocations);
     return {
@@ -606,6 +598,7 @@ async function getRecoverySummary(db, salesOrderId) {
       sourceDocumentType: r.sourceDocumentType,
       sourceDocumentId: r.sourceDocumentId,
       cycleId: r.cycleId,
+      createdAt: r.createdAt ?? null,
       migrationIncomplete: Boolean(r.migrationIncomplete),
       allocations: (r.allocations || []).map((a) => ({
         id: a.id,
@@ -620,14 +613,7 @@ async function getRecoverySummary(db, salesOrderId) {
     };
   });
 
-  const totals = {
-    productionShortfallSourceQty: 0,
-    productionShortfallAvailableQty: 0,
-    qcFinalRejectionSourceQty: 0,
-    qcFinalRejectionAvailableQty: 0,
-    waivedQty: 0,
-    activeAllocatedQty: 0,
-  };
+  const totals = emptyRecoveryTotals();
   for (const s of sources) {
     if (s.recoveryStatus === "CANCELLED") continue;
     totals.waivedQty = round3(totals.waivedQty + s.waivedQty);
@@ -642,6 +628,59 @@ async function getRecoverySummary(db, salesOrderId) {
   }
 
   return { salesOrderId: soId, sources, totals };
+}
+
+async function getRecoverySummary(db, salesOrderId) {
+  const soId = Number(salesOrderId);
+  if (!Number.isFinite(soId) || soId <= 0) {
+    return { salesOrderId: soId, sources: [], totals: emptyRecoveryTotals() };
+  }
+
+  const rows = await db.carryForwardPending.findMany({
+    where: { salesOrderId: soId },
+    include: {
+      allocations: true,
+      item: { select: { id: true, itemName: true, unit: true } },
+    },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+  });
+
+  return buildRecoverySummaryFromRows(soId, rows);
+}
+
+/**
+ * Batch recovery summaries — one query for many SOs (Batch 3E read model). Same math as getRecoverySummary.
+ * @param {import("@prisma/client").PrismaClient | import("@prisma/client").Prisma.TransactionClient} db
+ * @param {number[]} salesOrderIds
+ * @returns {Promise<Map<number, ReturnType<typeof buildRecoverySummaryFromRows>>>}
+ */
+async function getRecoverySummariesBatch(db, salesOrderIds) {
+  /** @type {Map<number, ReturnType<typeof buildRecoverySummaryFromRows>>} */
+  const out = new Map();
+  const ids = [...new Set((salesOrderIds || []).map(Number).filter((id) => Number.isFinite(id) && id > 0))];
+  for (const id of ids) out.set(id, buildRecoverySummaryFromRows(id, []));
+  if (!ids.length) return out;
+
+  const rows = await db.carryForwardPending.findMany({
+    where: { salesOrderId: { in: ids } },
+    include: {
+      allocations: true,
+      item: { select: { id: true, itemName: true, unit: true } },
+    },
+    orderBy: [{ salesOrderId: "asc" }, { createdAt: "asc" }, { id: "asc" }],
+  });
+
+  /** @type {Map<number, object[]>} */
+  const bySo = new Map();
+  for (const r of rows) {
+    const soId = Number(r.salesOrderId);
+    if (!bySo.has(soId)) bySo.set(soId, []);
+    bySo.get(soId).push(r);
+  }
+  for (const id of ids) {
+    out.set(id, buildRecoverySummaryFromRows(id, bySo.get(id) || []));
+  }
+  return out;
 }
 
 /**
@@ -743,6 +782,9 @@ module.exports = {
   commitReservedAllocationsForSheet,
   reverseAllocationsForSheet,
   getRecoverySummary,
+  getRecoverySummariesBatch,
+  buildRecoverySummaryFromRows,
+  emptyRecoveryTotals,
   cancelUnallocatedRecoverySource,
   findExistingByProvenance,
 };

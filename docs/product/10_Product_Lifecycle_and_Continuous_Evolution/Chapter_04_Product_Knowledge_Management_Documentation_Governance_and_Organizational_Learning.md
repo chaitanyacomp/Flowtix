@@ -506,3 +506,7 @@ Remain **technology-neutral**.
 | **Volume** | [Product Lifecycle and Continuous Evolution](./README.md) |
 | **Product** | [Product Documentation Index](../README.md) |
 
+
+## Batch 3E — Recovery / Closure analytics surfaces (read-only)
+
+Dashboard, Pending Actions, Control Tower, and Reports consume `assessNoQtySoClosure()` and `getRecoverySummary()` / `getRecoverySummariesBatch()` via `noQtyRecoveryAnalyticsService`. Production Shortfall and QC Recovery remain separate. Reconciliation identity: Source Qty = Active Allocated + Waived + Available. No mutation of recovery, RS allocation, stock, dispatch qty, billing qty, or SO closure transactions in this batch.

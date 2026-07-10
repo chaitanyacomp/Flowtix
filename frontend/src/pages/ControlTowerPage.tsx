@@ -206,6 +206,12 @@ function KpiStrip({ metrics, isAdmin }: { metrics: ControlTowerPanelMetricsData;
         <ErpKpiValue>
           Active {fmtCount(noQty.activeNoQtyOrders)} · Planning {fmtCount(noQty.planningPending)}
         </ErpKpiValue>
+        <span className="mt-0.5 block text-[11px] text-slate-500">
+          Shortfall {fmtCount(noQty.productionShortfallPendingQty)} · QC recovery{" "}
+          {fmtCount(noQty.qcRecoveryAvailableQty)} · Waiver {fmtCount(noQty.soWaitingForWaiver)} · FG disp{" "}
+          {fmtCount(noQty.acceptedFgDispositionPending)} · Blocked {fmtCount(noQty.blockedClosures)} · Closed
+          waiver {fmtCount(noQty.closedWithWaiver)}
+        </span>
       </ErpKpiSegment>
     </ErpKpiStrip>
   );

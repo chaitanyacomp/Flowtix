@@ -191,6 +191,16 @@ const TILES: ReportTile[] = [
     priority: 60,
   },
   {
+    to: "/reports/no-qty-recovery-trace",
+    title: "NO_QTY Recovery Trace",
+    description:
+      "Item-wise recovery lineage — source, allocated, available, waived, RS, age (Print / Excel / CSV)",
+    roles: ["ADMIN", "STORE"],
+    group: "sales-ops",
+    icon: <ClipboardList className="h-4 w-4" />,
+    priority: 65,
+  },
+  {
     to: "/reports/sales-matching",
     title: "Sales Matching Report",
     description: "Sales Order vs Dispatch vs Sales Bill (partial dispatch / billing, mismatches)",

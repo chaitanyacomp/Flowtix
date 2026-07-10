@@ -51,7 +51,7 @@ function woLinePlacedQty(line) {
 
 function procurementSummaryLabel({ released, materialRequirementDocNo, mrStatus }) {
   if (!released) return "Not released to procurement";
-  if (!materialRequirementDocNo) return "Released to procurement - MR pending";
+  if (!materialRequirementDocNo) return "Procurement not required — execution ready";
   const statusPart = mrStatus ? ` - ${mrStatus}` : "";
   return `Released - MR ${materialRequirementDocNo}${statusPart}`;
 }
@@ -209,7 +209,7 @@ function deriveNoQtyPlacementProcessStage({
     processStageKey = NO_QTY_PLACEMENT_STAGE.READY_TO_PLACE_WO;
   } else if (n(rsBalanceQty) <= EPS) {
     processStageKey = null;
-  } else if (executionPlanReady && materialRequirement) {
+  } else if (executionPlanReady) {
     processStageKey = NO_QTY_PLACEMENT_STAGE.PROCUREMENT_IN_PROGRESS;
   }
   return {
@@ -252,7 +252,10 @@ async function loadProcurementProgress(db, { released, materialRequirement }) {
         {
           key: "MR_CREATED",
           label: "MR Created",
-          status: stepStatus({ complete: Boolean(materialRequirement), inProgress: released && !materialRequirement }),
+          status: stepStatus({
+            complete: Boolean(materialRequirement) || (released && !materialRequirement),
+            inProgress: false,
+          }),
         },
         { key: "PR_CREATED", label: "PR Created", status: "NOT_STARTED" },
         { key: "PO_CREATED", label: "PO Created", status: "NOT_STARTED" },
@@ -369,7 +372,14 @@ async function loadProcurementProgress(db, { released, materialRequirement }) {
   };
 }
 
-function buildReadinessDecision({ totals, rmReadiness, existingWoSummary, released, materialRequirement }) {
+function buildReadinessDecision({
+  totals,
+  rmReadiness,
+  existingWoSummary,
+  released,
+  materialRequirement,
+  procurementRequired = true,
+}) {
   if (totals.rsBalanceQty <= EPS) {
     const status = "BLOCKED";
     return { status, label: decisionLabel(status), reason: "No RS balance remains to place on Work Orders." };
@@ -392,9 +402,23 @@ function buildReadinessDecision({ totals, rmReadiness, existingWoSummary, releas
     return { status, label: decisionLabel(status), reason: "RM requirement preview is blocked by missing BOM data." };
   }
 
-  if (!released || !materialRequirement) {
+  if (!released) {
     const status = "AWAITING_PROCUREMENT";
-    return { status, label: decisionLabel(status), reason: "Monthly Plan procurement release or MR is not complete yet." };
+    return {
+      status,
+      label: decisionLabel(status),
+      reason: "Monthly Plan procurement release is not complete yet.",
+    };
+  }
+
+  // Zero-net approved plans complete handoff without an MR.
+  if (procurementRequired && !materialRequirement) {
+    const status = "AWAITING_PROCUREMENT";
+    return {
+      status,
+      label: decisionLabel(status),
+      reason: "Monthly Plan procurement release or MR is not complete yet.",
+    };
   }
 
   if (!rmReadiness.lines.length && totals.rsBalanceQty > EPS) {
@@ -513,12 +537,31 @@ async function getRequirementSheetExecutionSummary(db, requirementSheetId, deps 
   const mrDocNo = materialRequirement?.docNo ?? null;
   const mrStatus = materialRequirement?.status ?? null;
   const procurementProgress = await loadProcurementProgress(db, { released: executionPlanReady, materialRequirement });
+  let procurementRequired = true;
+  if (executionPlanReady && releasedPlan?.id && !materialRequirement) {
+    try {
+      const {
+        assessMonthlyPlanProcurementOutcome,
+      } = require("./monthlyPlanningProcurementOutcomeService");
+      const outcome = await assessMonthlyPlanProcurementOutcome({
+        db,
+        planId: releasedPlan.id,
+        plan: releasedPlan,
+      });
+      procurementRequired = outcome.procurementRequired;
+    } catch {
+      procurementRequired = true;
+    }
+  } else if (materialRequirement) {
+    procurementRequired = true;
+  }
   const readiness = buildReadinessDecision({
     totals,
     rmReadiness,
     existingWoSummary,
     released: executionPlanReady,
     materialRequirement,
+    procurementRequired,
   });
   const placementStage = await buildNoQtyLockedSheetPlacementAssessment(db, sheet, deps, {
     totals,
@@ -556,7 +599,9 @@ async function getRequirementSheetExecutionSummary(db, requirementSheetId, deps 
     processStageLabel: placementStage.processStageLabel,
     readyToPlaceWo: placementStage.readyToPlaceWo,
     procurement: {
-      status: executionPlanReady ? (mrStatus ?? "RELEASED") : "NOT_RELEASED",
+      status: executionPlanReady
+        ? (mrStatus ?? (materialRequirement ? "RELEASED" : "PROCUREMENT_NOT_REQUIRED"))
+        : "NOT_RELEASED",
       materialRequirementId: materialRequirement?.id ?? null,
       materialRequirementDocNo: mrDocNo,
       summaryLabel: procurementSummaryLabel({
@@ -629,12 +674,31 @@ async function buildNoQtyLockedSheetPlacementAssessment(db, sheet, deps = {}, pr
       snapshot: batchAssessment.snapshot,
     };
     const rmReadiness = batchAssessment.rmReadiness;
+    let procurementRequired = true;
+    if (executionPlanReady && releasedPlan?.id && !materialRequirement) {
+      try {
+        const {
+          assessMonthlyPlanProcurementOutcome,
+        } = require("./monthlyPlanningProcurementOutcomeService");
+        const outcome = await assessMonthlyPlanProcurementOutcome({
+          db,
+          planId: releasedPlan.id,
+          plan: releasedPlan,
+        });
+        procurementRequired = outcome.procurementRequired;
+      } catch {
+        procurementRequired = true;
+      }
+    } else if (materialRequirement) {
+      procurementRequired = true;
+    }
     readiness = buildReadinessDecision({
       totals,
       rmReadiness,
       existingWoSummary,
       released: executionPlanReady,
       materialRequirement,
+      procurementRequired,
     });
   }
 

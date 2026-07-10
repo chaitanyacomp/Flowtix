@@ -22,6 +22,7 @@ export type MonthlyPlanHeader = {
   displayLabel?: string | null;
   reopenedAt?: string | null;
   purchaseRejectReason?: string | null;
+  releasedAt?: string | null;
 };
 
 export type WorkflowActionVisibility = {
@@ -338,7 +339,9 @@ export function resolveWorkflowActionVisibility(params: {
     approve: plan.status === "AWAITING_PURCHASE_REVIEW" && canPurchaseReview,
     reject: plan.status === "AWAITING_PURCHASE_REVIEW" && canPurchaseReview,
     release:
-      (plan.status === "APPROVED" || plan.status === "LOCKED") && canMutatePeriod,
+      (plan.status === "APPROVED" || plan.status === "LOCKED") &&
+      canMutatePeriod &&
+      !plan.releasedAt,
     lock: editable && legacy && hasSaveableLines,
     reopen: plan.status === "LOCKED" && legacy && canMutatePeriod,
     cancelReopen: legacyReopenDraft && canMutatePeriod,

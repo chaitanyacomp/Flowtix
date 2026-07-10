@@ -2122,8 +2122,11 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
             />
           ) : null}
 
-          {noQtyRecoverySnapshot && (isAdmin || role === "STORE") ? (
-            <NoQtyRecoveryDashboardPanel snapshot={noQtyRecoverySnapshot} isAdmin={isAdmin} />
+          {noQtyRecoverySnapshot && canUseOpenNoQtyContinuation ? (
+            <NoQtyRecoveryDashboardPanel
+              snapshot={noQtyRecoverySnapshot}
+              isAdmin={role === "ADMIN"}
+            />
           ) : null}
         </DashboardControlColumn>
   ) : null;

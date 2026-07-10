@@ -331,8 +331,9 @@ describe("requirementSheetExecutionService", () => {
     const res = await getRequirementSheetExecutionSummary(db, 2, readinessDeps());
     assert.equal(res.release.released, true);
     assert.equal(res.release.monthlyPlanId, 6);
-    assert.equal(res.procurement.status, "RELEASED");
-    assert.match(res.procurement.summaryLabel, /Released/);
+    // Released with no MR = procurement not required (zero net handoff).
+    assert.equal(res.procurement.status, "PROCUREMENT_NOT_REQUIRED");
+    assert.match(res.procurement.summaryLabel, /Procurement not required/);
   });
 
   it("returns not released when plan period has no release", async () => {

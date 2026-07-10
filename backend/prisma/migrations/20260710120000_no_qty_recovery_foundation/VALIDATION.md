@@ -2,37 +2,37 @@
 
 **Migration:** `20260710120000_no_qty_recovery_foundation`  
 **Date:** 2026-07-10  
-**Scope:** Schema + backfill + terminal-status dual-read compatibility (no recovery engine)
+**Scope:** Schema + backfill + terminal-status dual-read compatibility  
+**Batch 3F re-validation:** 2026-07-10 (local `erp` @ localhost:3306)
 
 ## Automated checks
 
 | Check | Result |
 |-------|--------|
-| `prisma validate` | PASS |
-| `prisma generate` | PASS |
-| Migration map unit tests | PASS (9) |
-| CF / production execution unit tests | PASS |
-| Close eligibility / operational auto-close unit tests | PASS (run with Batch 3A) |
-| Live `prisma migrate deploy` | **Pending** on target DB |
+| `prisma migrate deploy` | **PASS** — applied `20260710120000_no_qty_recovery_foundation` |
+| `prisma migrate status` | **PASS** — Database schema is up to date |
+| Migration map unit tests | PASS |
+| Reconciliation sample (live) | **PASS** — 0 exceptions on 1 CF source |
+| `migrationIncomplete` count | **0** |
 
-## Backfill coverage
+## Live backfill snapshot (Batch 3F)
 
-1. CF `sourceQty`, `recoveryType`, `recoveryStatus`, provenance  
-2. Duplicate provenance → `migrationIncomplete`  
-3. RS line quantity components  
-4. `MANUALLY_CLOSED` → `CLOSED_WITH_WAIVER`  
-5. Best-effort `RecoveryAllocation` for CONSUMED+target RS  
-6. New empty tables: Waiver, WaiverLine, AcceptedFgDisposition  
+| Metric | Value |
+|--------|-------|
+| CF sources | 1 × PRODUCTION_SHORTFALL / OPEN (sourceQty 75) |
+| Recovery allocations | 0 |
+| Waivers | 0 |
+| NO_QTY SO statuses | 1 × IN_PROCESS (no residual MANUALLY_CLOSED) |
+| RS line components | baseDemand 160000 · prodShortfall 75 · qcRecovery 0 · totalRs 160075 |
 
 ## Compatibility
 
 - Legacy `CarryForwardPending.status` / `remainingQty` retained  
-- Enum retains `MANUALLY_CLOSED`  
-- App terminal guards updated to accept `CLOSED_WITH_WAIVER`  
-- `POST /close` now writes `CLOSED_WITH_WAIVER`  
+- Enum retains `MANUALLY_CLOSED` for dual-read / rollback window  
+- App terminal guards accept `CLOSED_WITH_WAIVER`  
+- Close-with-waiver writes `CLOSED_WITH_WAIVER`; complete close writes `COMPLETED`
 
 ## Risks
 
-- Incomplete allocation reconstruction for some CONSUMED rows  
-- Live migrate not executed in this environment  
-- Rollback requires careful reverse of enum/data (see migration comments)  
+- Incomplete allocation reconstruction may still appear on larger historical datasets (`migrationIncomplete`)  
+- Prisma client regenerate may need a process restart if `EPERM` locks the query engine DLL during `prisma generate`

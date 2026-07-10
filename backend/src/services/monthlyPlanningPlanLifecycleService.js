@@ -323,6 +323,17 @@ async function purchaseApprovePlan({
       deps,
     });
 
+    // Authoritative branch: zero net RM → procurement not required (sets releasedAt, no MR).
+    const {
+      completeProcurementHandoffIfNotRequired,
+    } = require("./monthlyPlanningProcurementOutcomeService");
+    const procurementHandoff = await completeProcurementHandoffIfNotRequired({
+      db: tx,
+      planId: updated.id,
+      actorUserId,
+      now,
+    });
+
     return {
       planId: updated.id,
       status: updated.status,
@@ -331,6 +342,8 @@ async function purchaseApprovePlan({
       planKind: updated.planKind,
       displayLabel: buildPlanDisplayLabel(updated),
       approvedAt: updated.approvedAt,
+      releasedAt: procurementHandoff.releasedAt ?? null,
+      procurementOutcome: procurementHandoff.outcome,
       rmSnapshot: {
         revision: snapshot.revision,
         rmPlanId: snapshot.rmPlanId,

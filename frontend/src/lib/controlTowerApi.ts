@@ -73,16 +73,24 @@ export type ControlTowerPanelMetricsData = {
     closedWithWaiver?: number;
     openRecoverySources?: number;
     monitoringRows?: Array<{
+      salesOrderId?: number;
       documentNo: string;
+      recoverySourceId?: number;
       recoveryType: string;
       recoveryStatus: string;
+      sourceQty?: number;
+      allocatedQty?: number;
       pendingQty: number;
       waivedQty: number;
+      originCycleId?: number | null;
+      allocationCycleId?: number | null;
       soCloseMode: string | null;
       closureBlockers: string[];
       recoveryAgeDays: number;
+      itemId?: number;
       itemName: string | null;
       uom: string | null;
+      reconciliationOk?: boolean;
     }>;
   };
   commercialControl: {

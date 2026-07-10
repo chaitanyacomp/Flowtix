@@ -202,11 +202,13 @@ Architecture is defined in [Volume 2, Chapters 2–3](../02_Business_Architectur
 | **Creator** | Store |
 | **Owner** | Store |
 | **Inputs** | MPRS in **Approved** state; Monthly Planning RM Snapshot present |
-| **Outputs** | Material Requirement(s) in MPRS pool; `releasedAt` timestamp on plan |
-| **Lifecycle** | Not Released → Released |
-| **Allowed actions** | Release (confirm); **no** Work Order create on this action |
+| **Outputs** | When Estimated Net RM Requirement **> 0**: Material Requirement(s) in MPRS pool + `releasedAt`. When Estimated Net RM Requirement **= 0**: **no** MR; `releasedAt` set with outcome **PROCUREMENT_NOT_REQUIRED** (execution-ready). |
+| **Lifecycle** | Not Released → Released **or** Procurement Not Required (execution-ready) |
+| **Allowed actions** | Release (confirm) only when net RM > 0; **no** Work Order create on this action |
 | **Validation rules** | Plan must be Approved; snapshot immutable; not already Released for same revision |
-| **Completion criteria** | **Released** — Procurement domain owns PR/PO/GRN |
+| **Completion criteria** | **Released** (procurement owns PR/PO/GRN) **or** **Procurement Not Required** (Store may place WO / Material Issue when RM available) |
+
+*Branching rule (authoritative):* After Purchase Approval, the frozen Monthly Planning RM Snapshot decides the handoff. Net RM = 0 **SHALL NOT** emit `PLN_MPRS_RELEASE` or create Procurement Workspace entries.
 
 *REGULAR:* No RM release stage — MR raised directly from order shortage ([Vol. 2 Ch. 2](../02_Business_Architecture/Chapter_02_REGULAR_Order_Planning_Pipeline.md) §8).
 
@@ -439,11 +441,8 @@ Engine-generated only. Representative planning Pending Actions:
 | `PLN_RS_LOCK` | RS Active; lines complete | Lock Requirement Sheet |
 | `PLN_MPRS_DRAFT` | Period open; no draft plan | Complete MPRS draft |
 | `PLN_MPRS_SUBMIT` | MPRS Draft complete | Submit for Purchase review |
-| `PLN_MPRS_RELEASE` | MPRS Approved; not Released | Release RM to procurement |
-| `PLN_MR_REGULAR` | REGULAR shortage; no MR | Raise Material Requirement |
-| `PLN_MR_PR` | REGULAR MR Approved; no PR | Create Purchase Requisition |
-| `PLN_WO_PREPARE` | REGULAR case Ready | Create Work Order |
-| `PLN_WO_PLACE` | NO_QTY RS locked + RM ready | Place Work Order |
+| `PLN_MPRS_RELEASE` | MPRS Approved; not Released; **Estimated Net RM Requirement > 0** | Release RM to procurement |
+| `PLN_WO_PLACE` | NO_QTY RS locked + RM ready (includes **Procurement Not Required** after approval when net RM = 0) | Place Work Order / Material Issue |
 | `PLN_RS_CONTINUE` | Post-dispatch cycle | Continue next cycle planning |
 | `PLN_BOM_BLOCK` | BOM missing on case | Resolve BOM (escalation) |
 
@@ -669,3 +668,7 @@ stateDiagram-v2
 ## Batch 3E — Recovery / Closure analytics surfaces (read-only)
 
 Dashboard, Pending Actions, Control Tower, and Reports consume `assessNoQtySoClosure()` and `getRecoverySummary()` / `getRecoverySummariesBatch()` via `noQtyRecoveryAnalyticsService`. Production Shortfall and QC Recovery remain separate. Reconciliation identity: Source Qty = Active Allocated + Waived + Available. No mutation of recovery, RS allocation, stock, dispatch qty, billing qty, or SO closure transactions in this batch.
+
+## Batch 3F — Certification
+
+Final cleanup validated: QA/QC recovery columns, Control Tower recovery monitor (read-only), reconciliation identity, migration `20260710120000_no_qty_recovery_foundation` applied on target DB, analytics surfaces consume `assessNoQtySoClosure` / `getRecoverySummariesBatch`. `MANUALLY_CLOSED` retained for dual-read only; operational close uses `CLOSED_WITH_WAIVER` / `COMPLETED`. Physical rework remains QA-owned; QC recovery starts at terminal rejection; Green Level isolated; WO shortfall waiver ≠ SO closure waiver.

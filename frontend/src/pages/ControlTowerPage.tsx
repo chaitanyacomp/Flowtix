@@ -26,6 +26,8 @@ import {
 import { cn } from "../lib/utils";
 import { noQtySoListHref } from "../lib/noQtyRsActionLabels";
 import { NO_QTY_TERMS } from "../lib/flowTerminology";
+import { formatQuantityWithUnit } from "../lib/quantityDisplay";
+import { salesOrdersFocusHref } from "../lib/drillDownRoutes";
 
 type EndpointDebug = {
   status: "ok" | "error" | "skipped";
@@ -521,6 +523,84 @@ export function ControlTowerPage() {
       >
       {panelError ? <ErrorPanel title="Panel metrics failed" message={panelError} /> : null}
       {panelMetrics ? <KpiStrip metrics={panelMetrics} isAdmin={isAdmin} /> : null}
+
+      {panelMetrics?.noQtyControlPanel?.monitoringRows &&
+      panelMetrics.noQtyControlPanel.monitoringRows.length > 0 ? (
+        <Card className="border-slate-200 shadow-sm" aria-label="NO_QTY recovery monitoring">
+          <CardHeader className="border-b border-slate-100 bg-slate-50/50 px-3 py-2">
+            <CardTitle className="text-sm font-semibold text-slate-900">
+              NO_QTY recovery monitor
+              <span className="ml-2 text-[11px] font-normal text-slate-500">Read-only</span>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="overflow-x-auto px-0 py-0">
+            <table className="w-full min-w-[1100px] border-collapse text-[11px]">
+              <thead>
+                <tr className="border-b border-slate-200 bg-slate-50 text-left text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                  <th className="px-2 py-1.5">SO</th>
+                  <th className="px-2 py-1.5">Item</th>
+                  <th className="px-2 py-1.5">Type</th>
+                  <th className="px-2 py-1.5 text-right">Source</th>
+                  <th className="px-2 py-1.5 text-right">Allocated</th>
+                  <th className="px-2 py-1.5 text-right">Pending</th>
+                  <th className="px-2 py-1.5 text-right">Waived</th>
+                  <th className="px-2 py-1.5">Origin cycle</th>
+                  <th className="px-2 py-1.5">Alloc cycle</th>
+                  <th className="px-2 py-1.5">Age</th>
+                  <th className="px-2 py-1.5">Close mode</th>
+                  <th className="px-2 py-1.5">Blockers</th>
+                </tr>
+              </thead>
+              <tbody>
+                {panelMetrics.noQtyControlPanel.monitoringRows.slice(0, 50).map((r, idx) => (
+                  <tr
+                    key={`${r.recoverySourceId ?? idx}-${r.documentNo}`}
+                    className="border-t border-slate-100 hover:bg-slate-50/80"
+                  >
+                    <td className="px-2 py-1">
+                      {r.salesOrderId ? (
+                        <Link
+                          className="font-medium text-sky-800 hover:underline"
+                          to={salesOrdersFocusHref(r.salesOrderId)}
+                        >
+                          {r.documentNo}
+                        </Link>
+                      ) : (
+                        r.documentNo
+                      )}
+                    </td>
+                    <td className="px-2 py-1">{r.itemName ?? "—"}</td>
+                    <td className="px-2 py-1">{r.recoveryType}</td>
+                    <td className="px-2 py-1 text-right tabular-nums">
+                      {formatQuantityWithUnit(r.sourceQty ?? 0, { unit: r.uom })}
+                    </td>
+                    <td className="px-2 py-1 text-right tabular-nums">
+                      {formatQuantityWithUnit(r.allocatedQty ?? 0, { unit: r.uom })}
+                    </td>
+                    <td className="px-2 py-1 text-right tabular-nums">
+                      {formatQuantityWithUnit(r.pendingQty, { unit: r.uom })}
+                    </td>
+                    <td className="px-2 py-1 text-right tabular-nums">
+                      {formatQuantityWithUnit(r.waivedQty, { unit: r.uom })}
+                    </td>
+                    <td className="px-2 py-1 tabular-nums">
+                      {r.originCycleId != null ? `C${r.originCycleId}` : "—"}
+                    </td>
+                    <td className="px-2 py-1 tabular-nums">
+                      {r.allocationCycleId != null ? `C${r.allocationCycleId}` : "—"}
+                    </td>
+                    <td className="px-2 py-1 tabular-nums">{r.recoveryAgeDays}d</td>
+                    <td className="px-2 py-1">{r.soCloseMode ?? "—"}</td>
+                    <td className="max-w-[160px] truncate px-2 py-1 text-slate-600" title={(r.closureBlockers || []).join(", ")}>
+                      {(r.closureBlockers || []).length ? r.closureBlockers.join(", ") : "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </CardContent>
+        </Card>
+      ) : null}
 
       <p className="text-[11px] text-slate-500">
         KPI counts and board counts may differ during beta validation.

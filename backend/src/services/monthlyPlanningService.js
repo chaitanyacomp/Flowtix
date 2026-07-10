@@ -1062,6 +1062,14 @@ async function getPurchasePlanning({ db = prisma, planId, revision = null } = {}
     return mapPurchasePlanningLine(l, agg);
   });
 
+  const {
+    assessMonthlyPlanProcurementOutcome,
+  } = require("./monthlyPlanningProcurementOutcomeService");
+  const procurementOutcome = await assessMonthlyPlanProcurementOutcome({
+    db,
+    planId: rm.planId,
+  });
+
   return {
     locked: true,
     exists: true,
@@ -1074,6 +1082,11 @@ async function getPurchasePlanning({ db = prisma, planId, revision = null } = {}
     rmPlan: rm.rmPlan,
     lines,
     totals: summarizePurchasePlanningLines(lines),
+    procurementOutcome: procurementOutcome.outcome,
+    procurementRequired: procurementOutcome.procurementRequired,
+    releaseRequired: procurementOutcome.releaseRequired,
+    executionReady: procurementOutcome.executionReady,
+    netRequirementTotal: procurementOutcome.netRequirementTotal,
   };
 }
 
@@ -1146,7 +1159,37 @@ async function releaseToProcurement({ db = prisma, planId, revision = null, conf
     }
     const hasPositiveNet = rmPlan.lines.some((l) => Number(l.netRequirementQty) > RELEASE_EPS);
     if (!hasPositiveNet) {
-      throw new MonthlyPlanningError("NO_DEMAND", "No positive net requirement to release.", 422);
+      // Zero net RM: complete handoff without MR (procurement firewall still uses releasedAt).
+      const {
+        markPlanProcurementNotRequired,
+        MONTHLY_PLAN_PROCUREMENT_OUTCOME,
+      } = require("./monthlyPlanningProcurementOutcomeService");
+      const handoff = await markPlanProcurementNotRequired({
+        db: tx,
+        planId: plan.id,
+        actorUserId,
+        now: new Date(),
+        revision: rev,
+      });
+      return {
+        planId: plan.id,
+        revision: rev,
+        materialRequirementId: null,
+        materialRequirementDocNo: null,
+        releasedLineCount: 0,
+        skippedLineCount: rmPlan.lines.length,
+        surplusLineCount: 0,
+        totalDeltaQty: 0,
+        released: [],
+        skipped: rmPlan.lines.map((l) => ({
+          rmItemId: l.rmItemId,
+          netRequirementQty: round3(Number(l.netRequirementQty)),
+        })),
+        surplus: [],
+        outcome: MONTHLY_PLAN_PROCUREMENT_OUTCOME.PROCUREMENT_NOT_REQUIRED,
+        procurementOutcome: handoff.outcome,
+        releasedAt: handoff.releasedAt,
+      };
     }
 
     const requisitionedByItem = await sumRequisitionedByItem(tx, plan.id);
@@ -1274,6 +1317,9 @@ async function releaseToProcurement({ db = prisma, planId, revision = null, conf
       released,
       skipped,
       surplus,
+      outcome: "RELEASE_REQUIRED",
+      procurementOutcome: "ALREADY_RELEASED",
+      releasedAt: now,
     };
   };
 

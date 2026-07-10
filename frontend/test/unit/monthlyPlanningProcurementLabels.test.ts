@@ -37,7 +37,7 @@ describe("monthlyPlanningProcurementLabels", () => {
     expect(purchasePlanningOperationalStatusMessage(0, 50)).toBe(
       "RM requirement released to procurement. Track Ordered → Received below.",
     );
-    expect(purchasePlanningOperationalStatusMessage(0, 0)).toContain("Requirement Snapshot");
+    expect(purchasePlanningOperationalStatusMessage(0, 0)).toContain("No RM procurement required");
   });
 
   it("releaseDeltaDisabledStatusMessage uses RM requirement wording for plan documents", () => {
@@ -45,7 +45,7 @@ describe("monthlyPlanningProcurementLabels", () => {
       "RM requirement released — no further release required.",
     );
     expect(releaseDeltaDisabledStatusMessage(0, 50, true, "ADDITIONAL")).toContain("Additional RM");
-    expect(releaseDeltaDisabledStatusMessage(0, 0, false)).toBe("No RM requirement to release.");
+    expect(releaseDeltaDisabledStatusMessage(0, 0, false)).toContain("No RM procurement required");
   });
 
   it("releaseConfirmModalBodyMessage avoids delta for initial plans", () => {

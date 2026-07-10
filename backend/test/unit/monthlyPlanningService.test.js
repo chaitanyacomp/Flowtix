@@ -982,11 +982,17 @@ describe("monthlyPlanningService.releaseToProcurement", () => {
   });
 
   it("blocks release when no positive net requirement exists", async () => {
-    const db = createReleaseMockDb({ rmPlanLines: [{ rmItemId: 70, netRequirementQty: 0 }] });
-    await assert.rejects(
-      () => releaseToProcurement({ db, planId: 1, revision: 1, confirm: true }),
-      (e) => e instanceof MonthlyPlanningError && e.code === "NO_DEMAND",
-    );
+    const db = createReleaseMockDb({
+      status: "APPROVED",
+      currentRevision: 0,
+      rmPlanLines: [{ rmItemId: 70, netRequirementQty: 0 }],
+    });
+    const res = await releaseToProcurement({ db, planId: 1, revision: 1, confirm: true });
+    assert.equal(res.outcome, "PROCUREMENT_NOT_REQUIRED");
+    assert.equal(res.materialRequirementId, null);
+    assert.equal(res.releasedLineCount, 0);
+    assert.equal(db.__state.mrs.length, 0);
+    assert.ok(db.__state.plan.releasedAt);
   });
 });
 

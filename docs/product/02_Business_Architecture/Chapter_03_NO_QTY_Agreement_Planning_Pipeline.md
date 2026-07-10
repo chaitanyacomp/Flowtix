@@ -250,9 +250,14 @@ Released monthly plan demand creates **Material Requirement** documents with sou
 
 ### 9.3 RM release
 
-**RM release** is Store’s explicit action after plan approval publishing frozen RM requirement to procurement. It is a **handoff**, not GRN and not WO creation.
+**RM release** is Store’s explicit action after plan approval publishing frozen RM requirement to procurement **when Estimated Net RM Requirement > 0**. It is a **handoff**, not GRN and not WO creation.
 
-**Rule:** RM release **never** creates Work Orders.
+**Branch (authoritative):** After Purchase Approval, the frozen Monthly Planning RM Snapshot decides the handoff:
+
+- **Net RM > 0** → Release RM Requirement → MR in MPRS pool → Procurement → GRN → Execution  
+- **Net RM = 0** → **Procurement Not Required** (sets `releasedAt`, **no** MR) → Execution Ready → WO / Material Issue  
+
+**Rule:** RM release **never** creates Work Orders. Zero-net approval **SHALL NOT** create Procurement Workspace entries.
 
 ### 9.4 Purchase Requisition → PO → GRN
 
@@ -317,9 +322,8 @@ Engine-generated only (Constitution Art. 12). Representative **NO_QTY planning-p
 |---------------------------|---------|
 | Complete / lock Requirement Sheet | Cycle not ready for execution |
 | Complete Monthly Production Plan draft | Period FG not submitted |
-| Release RM requirement to procurement | Plan approved; `releasedAt` pending |
-| Post GRN | Inbound RM for MPRS PO |
-| WO placement / Create Work Order | RS balance + RM readiness |
+| Release RM requirement to procurement | Plan approved; `releasedAt` pending; **net RM > 0** |
+| WO placement / Create Work Order / Material Issue | RS balance + RM readiness (includes **Procurement Not Required** when net RM = 0) |
 | Continue NO_QTY planning | Post-dispatch next cycle (planning hub) |
 
 ### 11.2 Purchase
@@ -480,3 +484,7 @@ flowchart TB
 ## Batch 3E — Recovery / Closure analytics surfaces (read-only)
 
 Dashboard, Pending Actions, Control Tower, and Reports consume `assessNoQtySoClosure()` and `getRecoverySummary()` / `getRecoverySummariesBatch()` via `noQtyRecoveryAnalyticsService`. Production Shortfall and QC Recovery remain separate. Reconciliation identity: Source Qty = Active Allocated + Waived + Available. No mutation of recovery, RS allocation, stock, dispatch qty, billing qty, or SO closure transactions in this batch.
+
+## Batch 3F — Certification
+
+Final cleanup validated: QA/QC recovery columns, Control Tower recovery monitor (read-only), reconciliation identity, migration `20260710120000_no_qty_recovery_foundation` applied on target DB, analytics surfaces consume `assessNoQtySoClosure` / `getRecoverySummariesBatch`. `MANUALLY_CLOSED` retained for dual-read only; operational close uses `CLOSED_WITH_WAIVER` / `COMPLETED`. Physical rework remains QA-owned; QC recovery starts at terminal rejection; Green Level isolated; WO shortfall waiver ≠ SO closure waiver.

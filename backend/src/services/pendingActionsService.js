@@ -578,19 +578,36 @@ async function fetchMonthlyPlanPendingActions(db = prisma, opts = {}) {
         monthlyPlanId: plan.id,
       });
     } else if (plan.status === "APPROVED" && plan.releasedAt == null) {
-      actions.push({
-        id: `monthly-plan:release:${plan.id}`,
-        priority: PENDING_PRIORITY.MEDIUM,
-        action: `Release ${displayLabel}`,
-        documentNo: docNo,
-        ownerRole: "STORE",
-        ageHours,
-        href,
-        sourceModule: "MONTHLY_PLANNING",
-        currentStatus: "APPROVED",
-        planId: plan.id,
-        monthlyPlanId: plan.id,
-      });
+      let emitRelease = true;
+      try {
+        const {
+          assessMonthlyPlanProcurementOutcome,
+          completeProcurementHandoffIfNotRequired,
+          MONTHLY_PLAN_PROCUREMENT_OUTCOME,
+        } = require("./monthlyPlanningProcurementOutcomeService");
+        const assessment = await assessMonthlyPlanProcurementOutcome({ db, planId: plan.id, plan });
+        if (assessment.outcome === MONTHLY_PLAN_PROCUREMENT_OUTCOME.PROCUREMENT_NOT_REQUIRED) {
+          await completeProcurementHandoffIfNotRequired({ db, planId: plan.id });
+          emitRelease = false;
+        }
+      } catch {
+        emitRelease = true;
+      }
+      if (emitRelease) {
+        actions.push({
+          id: `monthly-plan:release:${plan.id}`,
+          priority: PENDING_PRIORITY.MEDIUM,
+          action: `Release ${displayLabel}`,
+          documentNo: docNo,
+          ownerRole: "STORE",
+          ageHours,
+          href,
+          sourceModule: "MONTHLY_PLANNING",
+          currentStatus: "APPROVED",
+          planId: plan.id,
+          monthlyPlanId: plan.id,
+        });
+      }
     }
   }
   return actions;

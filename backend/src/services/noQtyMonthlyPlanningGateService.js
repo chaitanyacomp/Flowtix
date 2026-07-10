@@ -78,12 +78,53 @@ async function assessNoQtyMonthlyPlanningGate(db, periodKey) {
   const approvedUnreleasedPlan =
     periodPlans.find((plan) => plan.status === "APPROVED" && plan.releasedAt == null) ?? null;
   if (approvedUnreleasedPlan) {
+    const {
+      assessMonthlyPlanProcurementOutcome,
+      completeProcurementHandoffIfNotRequired,
+      MONTHLY_PLAN_PROCUREMENT_OUTCOME,
+    } = require("./monthlyPlanningProcurementOutcomeService");
+
+    const assessment = await assessMonthlyPlanProcurementOutcome({
+      db,
+      planId: approvedUnreleasedPlan.id,
+      plan: approvedUnreleasedPlan,
+    });
+
+    if (assessment.outcome === MONTHLY_PLAN_PROCUREMENT_OUTCOME.PROCUREMENT_NOT_REQUIRED) {
+      // Heal stuck zero-net approvals so execution boundaries (releasedAt) stay authoritative.
+      await completeProcurementHandoffIfNotRequired({
+        db,
+        planId: approvedUnreleasedPlan.id,
+      });
+      return {
+        gate: NO_QTY_MONTHLY_PLANNING_GATE.READY_FOR_EXECUTION,
+        periodKey: normalized,
+        action: null,
+        plan: summarizePlan({ ...approvedUnreleasedPlan, releasedAt: assessment.releasedAt ?? new Date() }),
+        preview,
+        procurementOutcome: MONTHLY_PLAN_PROCUREMENT_OUTCOME.PROCUREMENT_NOT_REQUIRED,
+      };
+    }
+
+    if (assessment.outcome === MONTHLY_PLAN_PROCUREMENT_OUTCOME.RELEASE_REQUIRED) {
+      return {
+        gate: NO_QTY_MONTHLY_PLANNING_GATE.RELEASE_PENDING,
+        periodKey: normalized,
+        action: `Release ${buildPlanDisplayLabel(approvedUnreleasedPlan)}`,
+        plan: summarizePlan(approvedUnreleasedPlan),
+        preview,
+        procurementOutcome: MONTHLY_PLAN_PROCUREMENT_OUTCOME.RELEASE_REQUIRED,
+      };
+    }
+
+    // Snapshot missing / unexpected — keep release pending so Store can investigate.
     return {
       gate: NO_QTY_MONTHLY_PLANNING_GATE.RELEASE_PENDING,
       periodKey: normalized,
       action: `Release ${buildPlanDisplayLabel(approvedUnreleasedPlan)}`,
       plan: summarizePlan(approvedUnreleasedPlan),
       preview,
+      procurementOutcome: assessment.outcome,
     };
   }
 

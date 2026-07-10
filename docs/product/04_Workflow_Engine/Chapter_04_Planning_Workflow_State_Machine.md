@@ -283,16 +283,17 @@ Guard order is **top-to-bottom**. First failure stops transition ([FT-PD-041](./
 | — | `mprs.additional.create` | Store | `GRD_XDM_ISO_COMMITTED`, `GRD_PLN_BM_REGULAR_CTX`, `GRD_PLN_ADDITIONAL_INITIAL` | `DRAFT` | `PLN_MPRS_DRAFT` | `Created` |
 | `DRAFT` | `mprs.line.save` | Store | `GRD_PLN_BOM_APPROVED` | `DRAFT` | `PLN_MPRS_SUBMIT` (when complete) | `Submitted` |
 | `DRAFT` | `mprs.submit` | Store | `GRD_PLN_BOM_APPROVED` | `AWAITING_PURCHASE_REVIEW` | `PLN_MPRS_REVIEW` (resolves `PLN_MPRS_DRAFT`, `PLN_MPRS_SUBMIT`) | `Submitted` |
-| `AWAITING_PURCHASE_REVIEW` | `mprs.approve` | Purchase | — | `APPROVED` | `PLN_MPRS_RELEASE` (resolves `PLN_MPRS_REVIEW`, `PLN_MPRS_APPROVE`) | `Approved` |
+| `AWAITING_PURCHASE_REVIEW` | `mprs.approve` | Purchase | — | `APPROVED` | If snapshot **net RM > 0**: `PLN_MPRS_RELEASE` (resolves review/approve). If snapshot **net RM = 0**: no release pending — outcome `PROCUREMENT_NOT_REQUIRED`, `releasedAt` set, execution-ready (resolves review/approve). | `Approved` |
 | `AWAITING_PURCHASE_REVIEW` | `mprs.reject` | Purchase | — | `REJECTED` | — (resolves `PLN_MPRS_REVIEW`) | `Rejected` |
 | `APPROVED` | `mprs.release` | Store | `GRD_PLN_MPRS_APPROVED`, `GRD_PLN_MPRS_NOT_RELEASED`, `GRD_PLN_POOL_MPRS`, `GRD_PLN_RELEASE_NOT_WO` | `RELEASED` | `PLN_MPRS_PR` (Purchase; resolves `PLN_MPRS_RELEASE`) | `Completed` |
+| `APPROVED` | `mprs.completeProcurementNotRequired` | System / Store heal | Snapshot net RM = 0 | `RELEASED` (flag) with outcome `PROCUREMENT_NOT_REQUIRED`; **no MR** | — (no `PLN_MPRS_RELEASE`) | `Completed` |
 | `APPROVED` | `mprs.markReleasePending` | Store | `GRD_PLN_MPRS_APPROVED` | `RELEASE_PENDING` | `PLN_MPRS_RELEASE` | `Submitted` |
 | `RELEASE_PENDING` | `mprs.release` | Store | `GRD_PLN_MPRS_NOT_RELEASED`, `GRD_PLN_POOL_MPRS`, `GRD_PLN_RELEASE_NOT_WO` | `RELEASED` | `PLN_MPRS_PR` | `Completed` |
 | `DRAFT` | `mprs.cancel` | Store | — | `CANCELLED` | — | `Cancelled` |
 | `APPROVED`+ | `mprs.update` | Store | `GRD_PLN_FREEZE` | unchanged | — | `GuardBlocked` |
 | `REJECTED` | `mprs.reopen` | Store | — | `DRAFT` | `PLN_MPRS_SUBMIT` | `Activated` |
 
-**Side effect on `mprs.approve`:** Planning freeze — Monthly Planning RM Snapshot created; FG lines immutable.
+**Side effect on `mprs.approve`:** Planning freeze — Monthly Planning RM Snapshot created; FG lines immutable. When Estimated Net RM Requirement = 0, also completes procurement handoff (`releasedAt`, no MR).
 
 **Side effect on `mprs.release`:** `rmRelease.confirm`; MR(s) `CREATED`; rmRelease `RELEASED`.
 
@@ -718,3 +719,7 @@ flowchart TB
 ## Batch 3E — Recovery / Closure analytics surfaces (read-only)
 
 Dashboard, Pending Actions, Control Tower, and Reports consume `assessNoQtySoClosure()` and `getRecoverySummary()` / `getRecoverySummariesBatch()` via `noQtyRecoveryAnalyticsService`. Production Shortfall and QC Recovery remain separate. Reconciliation identity: Source Qty = Active Allocated + Waived + Available. No mutation of recovery, RS allocation, stock, dispatch qty, billing qty, or SO closure transactions in this batch.
+
+## Batch 3F — Certification
+
+Final cleanup validated: QA/QC recovery columns, Control Tower recovery monitor (read-only), reconciliation identity, migration `20260710120000_no_qty_recovery_foundation` applied on target DB, analytics surfaces consume `assessNoQtySoClosure` / `getRecoverySummariesBatch`. `MANUALLY_CLOSED` retained for dual-read only; operational close uses `CLOSED_WITH_WAIVER` / `COMPLETED`. Physical rework remains QA-owned; QC recovery starts at terminal rejection; Green Level isolated; WO shortfall waiver ≠ SO closure waiver.

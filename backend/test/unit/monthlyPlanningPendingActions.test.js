@@ -117,4 +117,44 @@ describe("fetchMonthlyPlanPendingActions", () => {
     assert.match(plan2.href, /planId=12/);
     assert.match(plan2.href, /monthlyPlanId=12/);
   });
+
+  it("does not emit Release when approved plan has zero net RM (procurement not required)", async () => {
+    const plan = {
+      id: 21,
+      docNo: "MPP-26-0021",
+      periodKey: "2026-07",
+      planSequenceNo: 1,
+      planKind: "INITIAL",
+      status: "APPROVED",
+      currentRevision: 0,
+      updatedAt: new Date("2026-07-01T10:00:00Z"),
+      createdAt: new Date("2026-07-01T09:00:00Z"),
+      releasedAt: null,
+      releasedRevision: null,
+      approvedAt: new Date("2026-07-01T09:30:00Z"),
+    };
+    const db = {
+      monthlyProductionPlan: {
+        findMany: async () => [plan],
+        findUnique: async () => ({ ...plan }),
+        update: async ({ data }) => {
+          Object.assign(plan, data);
+          return { ...plan };
+        },
+      },
+      rmPlan: {
+        findFirst: async () => ({ id: 90, revision: 1 }),
+        findUnique: async () => ({
+          id: 90,
+          planId: 21,
+          revision: 1,
+          lines: [{ netRequirementQty: 0 }],
+        }),
+      },
+    };
+
+    const actions = await fetchMonthlyPlanPendingActions(db);
+    assert.equal(actions.filter((a) => String(a.action).startsWith("Release ")).length, 0);
+    assert.ok(plan.releasedAt);
+  });
 });

@@ -12,6 +12,12 @@ import { cn } from "../lib/utils";
 import { useErpReportLiveLoad } from "../hooks/useErpReportLiveLoad";
 import { ErpModal } from "../components/erp/ErpModal";
 import { PRODUCTION_QA_TERMS } from "../lib/productionQaTerminology";
+import { formatQcQuantity } from "../lib/quantityDisplay";
+import {
+  ReportPrintExportBar,
+  downloadReportCsv,
+  downloadReportExcel,
+} from "../components/erp/ReportPrintExport";
 
 type CustomerOpt = { id: number; name: string };
 type ItemOpt = { id: number; itemName: string };
@@ -58,6 +64,7 @@ type QcReportRow = {
   customerName?: string | null;
   itemId: number | null;
   itemName: string;
+  uom?: string | null;
   inputQty: number;
   acceptedQty: number;
   rejectedQty: number;
@@ -67,6 +74,15 @@ type QcReportRow = {
   statusLabel: string;
   isReversed: boolean;
   dispatchableQty: number | null;
+  /** Batch 3F — NO_QTY QC recovery (read-only; production rows only). */
+  finalRejectedQty?: number | null;
+  recoveryCreatedQty?: number | null;
+  recoveryAllocatedQty?: number | null;
+  recoveryPendingQty?: number | null;
+  recoveryWaivedQty?: number | null;
+  recoverySourceStatus?: string | null;
+  recoveryOriginCycleId?: number | null;
+  recoveryAgeDays?: number | null;
   detail: {
     producedQty?: number | null;
     lossQty?: number;
@@ -92,6 +108,11 @@ function fmt(n: number): string {
   if (!Number.isFinite(v)) return "0";
   const r = Math.round(v * 1000) / 1000;
   return String(r);
+}
+
+function fmtQtyUom(n: number | null | undefined, uom: string | null | undefined): string {
+  if (n == null || !Number.isFinite(Number(n))) return "—";
+  return formatQcQuantity(Number(n), uom ?? undefined);
 }
 
 function statusBadgeClass(label: string, isReversed: boolean): "default" | "success" | "warning" | "info" | "rejected" {
@@ -122,13 +143,15 @@ type QcHistoryTableSectionProps = {
 };
 
 function QcQtyCells({ r, layout }: { r: QcReportRow; layout: "production" | "customerReturn" }) {
-  const inspected = <td className="px-2 py-1 text-right tabular-nums">{fmt(r.inputQty)}</td>;
-  const rejected = <td className="px-2 py-1 text-right tabular-nums">{fmt(r.rejectedQty)}</td>;
-  const rework = <td className="px-2 py-1 text-right tabular-nums">{fmt(r.reworkQty)}</td>;
-  const hold = <td className="px-2 py-1 text-right tabular-nums">{fmt(r.holdQty)}</td>;
-  const scrap = <td className="px-2 py-1 text-right tabular-nums">{fmt(r.scrapQty)}</td>;
+  const inspected = <td className="px-2 py-1 text-right tabular-nums">{fmtQtyUom(r.inputQty, r.uom)}</td>;
+  const rejected = (
+    <td className="px-2 py-1 text-right tabular-nums">{fmtQtyUom(r.finalRejectedQty ?? r.rejectedQty, r.uom)}</td>
+  );
+  const rework = <td className="px-2 py-1 text-right tabular-nums">{fmtQtyUom(r.reworkQty, r.uom)}</td>;
+  const hold = <td className="px-2 py-1 text-right tabular-nums">{fmtQtyUom(r.holdQty, r.uom)}</td>;
+  const scrap = <td className="px-2 py-1 text-right tabular-nums">{fmtQtyUom(r.scrapQty, r.uom)}</td>;
   const accepted = (
-    <td className="px-2 py-1 text-right tabular-nums text-emerald-800">{fmt(r.acceptedQty)}</td>
+    <td className="px-2 py-1 text-right tabular-nums text-emerald-800">{fmtQtyUom(r.acceptedQty, r.uom)}</td>
   );
 
   if (layout === "production") {
@@ -140,6 +163,15 @@ function QcQtyCells({ r, layout }: { r: QcReportRow; layout: "production" | "cus
         {hold}
         {scrap}
         {accepted}
+        <td className="px-2 py-1 text-right tabular-nums">{fmtQtyUom(r.recoveryCreatedQty, r.uom)}</td>
+        <td className="px-2 py-1 text-right tabular-nums">{fmtQtyUom(r.recoveryAllocatedQty, r.uom)}</td>
+        <td className="px-2 py-1 text-right tabular-nums">{fmtQtyUom(r.recoveryPendingQty, r.uom)}</td>
+        <td className="px-2 py-1 text-right tabular-nums">{fmtQtyUom(r.recoveryWaivedQty, r.uom)}</td>
+        <td className="px-2 py-1 text-[11px] text-slate-600">{r.recoverySourceStatus ?? "—"}</td>
+        <td className="px-2 py-1 tabular-nums">{r.recoveryOriginCycleId != null ? `C${r.recoveryOriginCycleId}` : "—"}</td>
+        <td className="px-2 py-1 tabular-nums">
+          {r.recoveryAgeDays != null ? `${r.recoveryAgeDays}d` : "—"}
+        </td>
       </>
     );
   }
@@ -181,7 +213,7 @@ function QcHistoryTableSection({
           <p className="px-3 py-6 text-center text-[12px] text-slate-600">No QC records found for selected filters.</p>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[1180px] border-collapse text-[12px]">
+            <table className="w-full min-w-[1480px] border-collapse text-[12px]">
               <thead>
                 <tr className="border-b border-slate-200 bg-slate-50 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500">
                   <th className="px-2 py-1.5 font-medium">QC Ref</th>
@@ -193,11 +225,18 @@ function QcHistoryTableSection({
                   <th className="px-2 py-1.5 text-right font-medium">Inspected</th>
                   {productionQtyCols ? (
                     <>
-                      <th className="px-2 py-1.5 text-right font-medium">Rejected</th>
+                      <th className="px-2 py-1.5 text-right font-medium">Final rejected</th>
                       <th className="px-2 py-1.5 text-right font-medium">Rework</th>
                       <th className="px-2 py-1.5 text-right font-medium">Hold</th>
                       <th className="px-2 py-1.5 text-right font-medium">Scrap</th>
                       <th className="px-2 py-1.5 text-right font-medium">Accepted</th>
+                      <th className="px-2 py-1.5 text-right font-medium">Recovery created</th>
+                      <th className="px-2 py-1.5 text-right font-medium">Recovery allocated</th>
+                      <th className="px-2 py-1.5 text-right font-medium">Recovery pending</th>
+                      <th className="px-2 py-1.5 text-right font-medium">Recovery waived</th>
+                      <th className="px-2 py-1.5 font-medium">Recovery status</th>
+                      <th className="px-2 py-1.5 font-medium">Origin cycle</th>
+                      <th className="px-2 py-1.5 font-medium">Recovery age</th>
                     </>
                   ) : (
                     <>
@@ -338,6 +377,45 @@ export function QcReportPage() {
   const showProductionSection = sourceType === "ALL" || sourceType === "PRODUCTION";
   const showCustomerReturnSection = sourceType === "ALL" || sourceType === "CUSTOMER_RETURN";
 
+  const csvHeaders = [
+    "QC Ref",
+    "Date",
+    "Source",
+    "SO",
+    "Item",
+    "UOM",
+    "Inspected",
+    "Final rejected",
+    "Accepted",
+    "Recovery created",
+    "Recovery allocated",
+    "Recovery pending",
+    "Recovery waived",
+    "Recovery status",
+    "Origin cycle",
+    "Recovery age",
+    "Status",
+  ];
+  const csvRows = productionRows.map((r) => [
+    r.qcDocNo ?? (r.qcEntryId ? `QC #${r.qcEntryId}` : r.id),
+    r.date ? new Date(r.date).toISOString().slice(0, 10) : "",
+    r.sourceType,
+    r.salesOrderDocNo ?? (r.salesOrderId ? `SO-${r.salesOrderId}` : ""),
+    r.itemName,
+    r.uom ?? "",
+    r.inputQty,
+    r.finalRejectedQty ?? r.rejectedQty,
+    r.acceptedQty,
+    r.recoveryCreatedQty ?? "",
+    r.recoveryAllocatedQty ?? "",
+    r.recoveryPendingQty ?? "",
+    r.recoveryWaivedQty ?? "",
+    r.recoverySourceStatus ?? "",
+    r.recoveryOriginCycleId ?? "",
+    r.recoveryAgeDays ?? "",
+    r.statusLabel,
+  ]);
+
   const qcModuleBack = React.useMemo(
     () => ({ to: "/qc-entry", label: "Back to Quality Inspection Workspace" }),
     [],
@@ -347,11 +425,20 @@ export function QcReportPage() {
   return (
     <PageContainer className="erp-flow-page -mt-2 max-w-[min(110rem,calc(100vw-2rem))] space-y-2.5 pb-6">
       <StickyWorkspaceHead lead={<PageBackLink to={back.to} label={back.label} />}>
-        <div className="min-w-0 space-y-0.5">
-          <h1 className="text-base font-semibold leading-tight tracking-tight text-slate-900">QC Report</h1>
-          <p className="text-xs leading-snug text-slate-600">
-            Review inspection results, rejection, rework, scrap, and return QC.
-          </p>
+        <div className="flex min-w-0 flex-wrap items-start justify-between gap-2">
+          <div className="min-w-0 space-y-0.5">
+            <h1 className="text-base font-semibold leading-tight tracking-tight text-slate-900">QC Report</h1>
+            <p className="text-xs leading-snug text-slate-600">
+              Review inspection results, rejection, rework, scrap, and return QC. NO_QTY recovery columns are
+              informational.
+            </p>
+          </div>
+          <ReportPrintExportBar
+            onExportCsv={() => downloadReportCsv(`qc-report_${new Date().toISOString().slice(0, 10)}.csv`, csvHeaders, csvRows)}
+            onExportExcel={() =>
+              downloadReportExcel(`qc-report_${new Date().toISOString().slice(0, 10)}.xlsx`, csvHeaders, csvRows)
+            }
+          />
         </div>
       </StickyWorkspaceHead>
 

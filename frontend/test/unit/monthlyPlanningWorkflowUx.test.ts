@@ -144,6 +144,14 @@ describe("monthlyPlanningWorkflowUx.resolveWorkflowActionVisibility", () => {
     expect(actions.release).toBe(true);
   });
 
+  it("APPROVED with releasedAt hides release (procurement handoff complete)", () => {
+    const actions = resolveWorkflowActionVisibility({
+      ...base,
+      plan: plan({ status: "APPROVED", releasedAt: "2026-06-01T00:00:00.000Z" }),
+    });
+    expect(actions.release).toBe(false);
+  });
+
   it("legacy LOCKED shows reopen and release, hides submit", () => {
     const actions = resolveWorkflowActionVisibility({
       ...base,

@@ -443,10 +443,12 @@ qcReportRouter.get("/report", requireAuth, roles, async (req, res, next) => {
           productionEntryId: pe?.id ?? null,
           salesOrderId: so?.id ?? null,
           salesOrderDocNo: so?.docNo ?? null,
+          salesOrderType: so?.orderType ?? null,
           customerId: so?.customerId ?? null,
           customerName: so?.customer?.name ?? null,
           itemId: item?.id ?? wol?.fgItemId ?? null,
           itemName: item?.itemName ?? "—",
+          uom: item?.unit ?? null,
           inputQty: metrics.inspectedQty,
           acceptedQty: metrics.finalUsableQty,
           rejectedQty: metrics.rejectedQty,
@@ -456,6 +458,15 @@ qcReportRouter.get("/report", requireAuth, roles, async (req, res, next) => {
           statusLabel: productionStatusLabel(q, metrics),
           isReversed: Boolean(q.reversedAt),
           dispatchableQty: null,
+          // Batch 3F — recovery columns filled post-build (read-only)
+          finalRejectedQty: metrics.rejectedQty,
+          recoveryCreatedQty: null,
+          recoveryAllocatedQty: null,
+          recoveryPendingQty: null,
+          recoveryWaivedQty: null,
+          recoverySourceStatus: null,
+          recoveryOriginCycleId: null,
+          recoveryAgeDays: null,
           detail: {
             producedQty: pe ? roundQty(Number(pe.producedQty ?? 0)) : null,
             lossQty: metrics.lossQty,
@@ -538,6 +549,56 @@ qcReportRouter.get("/report", requireAuth, roles, async (req, res, next) => {
     }
 
     rows.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+    // Batch 3F — attach NO_QTY QC recovery fields (read-only; does not alter QC metrics).
+    const noQtySoIds = [
+      ...new Set(
+        rows
+          .filter((r) => r.sourceType === "PRODUCTION" && r.salesOrderType === "NO_QTY" && Number(r.salesOrderId) > 0)
+          .map((r) => Number(r.salesOrderId)),
+      ),
+    ];
+    if (noQtySoIds.length > 0) {
+      const { enrichSalesOrdersWithRecoveryClosure } = require("../services/noQtyRecoveryAnalyticsService");
+      const recoveryBySo = await enrichSalesOrdersWithRecoveryClosure(prisma, noQtySoIds);
+      const now = Date.now();
+      for (const row of rows) {
+        if (row.sourceType !== "PRODUCTION" || row.salesOrderType !== "NO_QTY") continue;
+        const recovery = recoveryBySo.get(Number(row.salesOrderId));
+        if (!recovery) continue;
+        const itemSources = (recovery.recoverySummary?.sources || []).filter(
+          (s) =>
+            Number(s.itemId) === Number(row.itemId) &&
+            s.recoveryType === "QC_FINAL_REJECTION" &&
+            s.recoveryStatus !== "CANCELLED",
+        );
+        if (!itemSources.length) continue;
+        let created = 0;
+        let allocated = 0;
+        let pending = 0;
+        let waived = 0;
+        let oldestCreatedAt = null;
+        for (const s of itemSources) {
+          created += Number(s.sourceQty || 0);
+          allocated += Number(s.activeAllocatedQty || 0);
+          pending += Number(s.availableQty || 0);
+          waived += Number(s.waivedQty || 0);
+          if (s.createdAt) {
+            const t = new Date(s.createdAt).getTime();
+            if (!oldestCreatedAt || t < oldestCreatedAt) oldestCreatedAt = t;
+          }
+        }
+        row.recoveryCreatedQty = roundQty(created);
+        row.recoveryAllocatedQty = roundQty(allocated);
+        row.recoveryPendingQty = roundQty(pending);
+        row.recoveryWaivedQty = roundQty(waived);
+        row.recoverySourceStatus = itemSources[0]?.recoveryStatus ?? null;
+        row.recoveryOriginCycleId = itemSources[0]?.cycleId ?? null;
+        row.recoveryAgeDays =
+          oldestCreatedAt != null ? Math.max(0, Math.floor((now - oldestCreatedAt) / 86400000)) : null;
+        if (!row.uom && itemSources[0]?.uom) row.uom = itemSources[0].uom;
+      }
+    }
 
     const customerReturnDispatchableSum = roundQty(customerReturnDispatchableSumForSummary);
 

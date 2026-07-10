@@ -67,7 +67,9 @@ export function purchasePlanningOperationalStatusMessage(
       ? "Additional RM requirement released to procurement. Track Ordered → Received below."
       : "RM requirement released to procurement. Track Ordered → Received below.";
   }
-  return `Review requirement snapshot and release when the plan is approved (${procurementProgressModelLine()}).`;
+  return additionalPlan
+    ? "No additional RM procurement required. Execution may continue when RM is available."
+    : "No RM procurement required. Execution may continue when RM is available.";
 }
 
 export function purchasePlanningReductionMessageText(): string {
@@ -90,7 +92,9 @@ export function releaseDeltaDisabledStatusMessage(
     }
     return `${MP_PROCUREMENT.DEMAND_RELEASED} complete for this legacy plan snapshot.`;
   }
-  return additionalPlan ? "No additional RM requirement to release." : "No RM requirement to release.";
+  return additionalPlan
+    ? "No additional RM procurement required — release step skipped."
+    : "No RM procurement required — release step skipped.";
 }
 
 export function releaseConfirmModalBodyMessage(planKind: MpPlanKind = null): string {

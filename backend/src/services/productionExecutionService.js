@@ -683,7 +683,7 @@ async function finishProductionExecution(tx, workOrderId, input, { actorUserId, 
         productionShortfallResolutionId: auditRow.id,
         actorUserId,
       });
-      carryForwardRecords.push(cf);
+      if (cf) carryForwardRecords.push(cf);
     }
 
     if (effectiveShortfallOutcome === "WAIVE_BALANCE") {

@@ -1541,7 +1541,7 @@ dispatchRouter.get("/sales-orders", requireAuth, requireRole(DISPATCH_READ_ROLES
           // internalStatus=COMPLETED can occur even when a new cycle is active (SO line qty is often 0),
           // so do not block dispatch purely on COMPLETED. Only manual SO close is view-only.
           dispatchReadOnly:
-            so.internalStatus === "MANUALLY_CLOSED" || so.internalStatus === "CLOSED",
+            so.internalStatus === "MANUALLY_CLOSED" || so.internalStatus === "CLOSED_WITH_WAIVER" || so.internalStatus === "CLOSED",
           noQtyDispatchBlockedReason,
           noQtyDispatchContext:
             eff != null
@@ -1950,7 +1950,7 @@ dispatchRouter.get("/sales-orders-debug", requireAuth, requireRole(["ADMIN"]), a
         ...so,
         flowMode: "NO_QTY_SO",
         dispatchReadOnly:
-          so.internalStatus === "MANUALLY_CLOSED" || so.internalStatus === "CLOSED",
+          so.internalStatus === "MANUALLY_CLOSED" || so.internalStatus === "CLOSED_WITH_WAIVER" || so.internalStatus === "CLOSED",
         noQtyDispatchBlockedReason,
         noQtyDispatchContext:
           eff != null

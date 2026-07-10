@@ -23,7 +23,7 @@ async function maybeAutoCloseNoQtyCycle(tx, { soId, cycleId }) {
   });
   if (!so) return { closed: false, reason: "SO_NOT_FOUND" };
   if (so.orderType !== "NO_QTY") return { closed: false, reason: "NOT_NO_QTY" };
-  if (so.internalStatus === "MANUALLY_CLOSED" || so.internalStatus === "CLOSED") {
+  if (so.internalStatus === "MANUALLY_CLOSED" || so.internalStatus === "CLOSED_WITH_WAIVER" || so.internalStatus === "CLOSED") {
     return { closed: false, reason: "ALREADY_CLOSED" };
   }
   const currentCycleId = so.currentCycleId != null ? Number(so.currentCycleId) : 0;
@@ -133,7 +133,7 @@ async function diagnoseNoQtyCycleAutoClose(tx, { soId }) {
     out.failedReason = "NOT_NO_QTY";
     return out;
   }
-  if (so.internalStatus === "MANUALLY_CLOSED" || so.internalStatus === "CLOSED") {
+  if (so.internalStatus === "MANUALLY_CLOSED" || so.internalStatus === "CLOSED_WITH_WAIVER" || so.internalStatus === "CLOSED") {
     out.failedReason = "ALREADY_CLOSED";
     return out;
   }

@@ -1855,7 +1855,7 @@ reportsRouter.get("/customer-so-rs", requireAuth, customerSoRsRoles, async (req,
         "IN_PROCESS",
         "COMPLETED",
         "CLOSED",
-        "MANUALLY_CLOSED",
+        "MANUALLY_CLOSED", "CLOSED_WITH_WAIVER",
       ]);
       if (!allowed.has(statusRaw)) {
         const err = new Error(`Invalid status. Use ALL or one of: ${[...allowed].join(", ")}.`);

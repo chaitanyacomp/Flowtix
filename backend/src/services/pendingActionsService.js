@@ -1062,7 +1062,7 @@ async function fetchStoreProductionHandoffPendingActions(db = prisma, opts = {})
 
 const STORE_OPEN_NO_QTY_SO_WHERE = Object.freeze({
   orderType: "NO_QTY",
-  internalStatus: { notIn: ["COMPLETED", "CLOSED", "MANUALLY_CLOSED"] },
+  internalStatus: { notIn: ["COMPLETED", "CLOSED", "MANUALLY_CLOSED", "CLOSED_WITH_WAIVER"] },
 });
 
 async function loadStoreOpenNoQtySalesOrders(db = prisma) {

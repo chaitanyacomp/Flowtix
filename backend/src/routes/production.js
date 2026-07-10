@@ -156,7 +156,7 @@ async function assertNoQtyWorkOrderEligibleForQcOrThrow(tx, workOrderId) {
     throw err;
   }
   if (so.orderType !== "NO_QTY") return;
-  if (so.internalStatus === "COMPLETED" || so.internalStatus === "MANUALLY_CLOSED" || so.internalStatus === "CLOSED") {
+  if (so.internalStatus === "COMPLETED" || so.internalStatus === "MANUALLY_CLOSED" || so.internalStatus === "CLOSED_WITH_WAIVER" || so.internalStatus === "CLOSED") {
     const err = new Error("This sales order is closed. Production/QC is view-only.");
     err.statusCode = 409;
     throw err;
@@ -215,7 +215,7 @@ async function filterNoQtyWorkOrdersForActiveLockedCycle(prisma, rowsRaw) {
   const filtered = (rowsRaw || []).filter((wo) => {
     const so = wo.salesOrder;
     if (!so || so.orderType !== "NO_QTY") return true;
-    if (so.internalStatus === "COMPLETED" || so.internalStatus === "MANUALLY_CLOSED" || so.internalStatus === "CLOSED") {
+    if (so.internalStatus === "COMPLETED" || so.internalStatus === "MANUALLY_CLOSED" || so.internalStatus === "CLOSED_WITH_WAIVER" || so.internalStatus === "CLOSED") {
       return false;
     }
     const pointerCycleId = normalizePositiveCycleId(so.currentCycleId);

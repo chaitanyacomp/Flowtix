@@ -172,7 +172,7 @@ async function advanceNoQtyCycleForNextRequirementSheetIfEligible(tx, salesOrder
   if (!so || so.orderType !== "NO_QTY") {
     return { advanced: false, currentCycleId: null, cycleNo: null, reason: "NOT_NO_QTY" };
   }
-  if (["COMPLETED", "CLOSED", "MANUALLY_CLOSED"].includes(String(so.internalStatus ?? ""))) {
+  if (["COMPLETED", "CLOSED", "MANUALLY_CLOSED", "CLOSED_WITH_WAIVER"].includes(String(so.internalStatus ?? ""))) {
     return {
       advanced: false,
       currentCycleId: so.currentCycleId != null ? Number(so.currentCycleId) : null,

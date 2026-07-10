@@ -559,8 +559,7 @@ type OpenNoQtyContinuationRow = {
 
 function isExcludedInternalStatusForOpenNoQtyDashboard(internalStatus: string): boolean {
   return (
-    internalStatus === "CLOSED" ||
-    internalStatus === "MANUALLY_CLOSED" ||
+    internalStatus === "CLOSED" || internalStatus === "MANUALLY_CLOSED" || internalStatus === "CLOSED_WITH_WAIVER" ||
     internalStatus === "COMPLETED" ||
     internalStatus === "DRAFT"
   );

@@ -1721,8 +1721,11 @@ export function DispatchPage() {
           po: so.po ?? null,
           lineStats,
           dispatch: so.dispatch ?? [],
-          // NO_QTY: backend treats MANUALLY_CLOSED and CLOSED as view-only.
-          dispatchReadOnly: so.internalStatus === "CLOSED" || so.internalStatus === "MANUALLY_CLOSED",
+          // NO_QTY: backend treats closed statuses as view-only.
+          dispatchReadOnly:
+            so.internalStatus === "CLOSED" ||
+            so.internalStatus === "MANUALLY_CLOSED" ||
+            so.internalStatus === "CLOSED_WITH_WAIVER",
           noQtyDispatchBlockedReason: null,
         });
       })

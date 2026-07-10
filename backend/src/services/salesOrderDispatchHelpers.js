@@ -46,7 +46,7 @@ function assertSalesOrderNotCompletedForDispatch(so) {
       err.statusCode = 409;
       throw err;
     }
-    if (so.internalStatus === "MANUALLY_CLOSED" || so.internalStatus === "CLOSED") {
+    if (so.internalStatus === "MANUALLY_CLOSED" || so.internalStatus === "CLOSED_WITH_WAIVER" || so.internalStatus === "CLOSED") {
       const err = new Error("This sales order is closed. Dispatch is view-only.");
       err.statusCode = 409;
       throw err;
@@ -104,7 +104,7 @@ function enrichSalesOrderWithDispatchStats(so) {
   };
 }
 
-const SO_PRODUCTION_CLOSED = new Set(["COMPLETED", "MANUALLY_CLOSED", "CLOSED"]);
+const SO_PRODUCTION_CLOSED = new Set(["COMPLETED", "MANUALLY_CLOSED", "CLOSED_WITH_WAIVER", "CLOSED"]);
 
 /**
  * Blocks production entry when the parent sales order is operationally closed.

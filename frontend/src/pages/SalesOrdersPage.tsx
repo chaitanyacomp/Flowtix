@@ -318,7 +318,7 @@ function statusBadgeVariant(s: string): "default" | "success" | "warning" | "inf
   if (s === "APPROVED") return "success";
   if (s === "COMPLETED") return "info";
   if (s === "CLOSED") return "info";
-  if (s === "MANUALLY_CLOSED") return "info";
+  if (s === "MANUALLY_CLOSED" || s === "CLOSED_WITH_WAIVER") return "info";
   if (s === "IN_PROCESS") return "warning";
   return "default";
 }
@@ -350,7 +350,7 @@ function isReplacementSalesOrder(so: SoRow): boolean {
 function displaySoStatus(
   row: SoRow,
   noQtyStage: NoQtyStage | null,
-): "DRAFT" | "OPEN" | "APPROVED" | "IN_PROCESS" | "COMPLETED" | "CLOSED" | "MANUALLY_CLOSED" {
+): "DRAFT" | "OPEN" | "APPROVED" | "IN_PROCESS" | "COMPLETED" | "CLOSED" | "MANUALLY_CLOSED" | "CLOSED_WITH_WAIVER" {
   const raw = (row.internalStatus ?? "DRAFT") as
     | "DRAFT"
     | "OPEN"
@@ -358,9 +358,16 @@ function displaySoStatus(
     | "IN_PROCESS"
     | "COMPLETED"
     | "CLOSED"
-    | "MANUALLY_CLOSED";
+    | "MANUALLY_CLOSED"
+    | "CLOSED_WITH_WAIVER";
   // NO_QTY lifecycle is manually controlled: only explicit SO close is terminal for display/filtering.
-  if (row.orderType === "NO_QTY") return raw === "CLOSED" || raw === "MANUALLY_CLOSED" ? "CLOSED" : "OPEN";
+  if (row.orderType === "NO_QTY")
+    return raw === "CLOSED" ||
+      raw === "MANUALLY_CLOSED" ||
+      raw === "CLOSED_WITH_WAIVER" ||
+      raw === "COMPLETED"
+      ? "CLOSED"
+      : "OPEN";
   // UI safety: operational stage is the source of truth for display.
   if (noQtyStage === "COMPLETED") return "COMPLETED";
   if (row.processStage?.key === "COMPLETED") return "COMPLETED";
@@ -424,8 +431,7 @@ function buildNoQtyStageContext(row: SoRow, opts: { isAdmin: boolean }): NoQtySt
     isNoQtySo: row.orderType === "NO_QTY",
     isClosed:
       row.internalStatus === "COMPLETED" ||
-      row.internalStatus === "CLOSED" ||
-      row.internalStatus === "MANUALLY_CLOSED" ||
+      row.internalStatus === "CLOSED" || row.internalStatus === "MANUALLY_CLOSED" || row.internalStatus === "CLOSED_WITH_WAIVER" ||
       row.processStage?.key === "COMPLETED",
     hasActiveRequirementSheet,
     requirementSheetLocked: null,
@@ -716,6 +722,37 @@ export function SalesOrdersPage() {
   const [invoiceError, setInvoiceError] = React.useState<string | null>(null);
   const [noQtyDraftRsBySoId, setNoQtyDraftRsBySoId] = React.useState<Record<number, boolean>>({});
   const [noQtyCloseDialog, setNoQtyCloseDialog] = React.useState<{ soId: number; docNo?: string | null } | null>(null);
+  const [closeAssessmentLoading, setCloseAssessmentLoading] = React.useState(false);
+  const [closeAssessmentError, setCloseAssessmentError] = React.useState<string | null>(null);
+  const [closeAssessment, setCloseAssessment] = React.useState<{
+    mode: "COMPLETE" | "WAIVER_REQUIRED" | "BLOCKED";
+    blockers: { code: string; message: string }[];
+    warnings: { code: string; message: string }[];
+    proposedWaiverQty: number;
+    proposedWaiverLines: {
+      recoverySourceId: number;
+      itemId: number;
+      itemName: string | null;
+      recoveryType: string;
+      availableQty: number;
+      proposedWaivedQty: number;
+    }[];
+    acceptedFgPendingDispositionQty: number;
+    itemSummaries?: {
+      itemId: number;
+      itemName: string | null;
+      acceptedFgPendingDispositionQty: number;
+    }[];
+  } | null>(null);
+  const [waiverAdminPassword, setWaiverAdminPassword] = React.useState("");
+  const [waiverReasonCode, setWaiverReasonCode] = React.useState("MANAGEMENT_DECISION");
+  const [waiverRemarks, setWaiverRemarks] = React.useState("");
+  const [closingNoQty, setClosingNoQty] = React.useState(false);
+  const [fgDispItemId, setFgDispItemId] = React.useState("");
+  const [fgDispQty, setFgDispQty] = React.useState("");
+  const [fgDispType, setFgDispType] = React.useState("TRANSFER_TO_GENERAL_STOCK");
+  const [fgDispRemarks, setFgDispRemarks] = React.useState("");
+  const [savingFgDisp, setSavingFgDisp] = React.useState(false);
   const [noQtyReopenDialog, setNoQtyReopenDialog] = React.useState<{ soId: number; docNo?: string | null } | null>(null);
   const [reopenAdminPassword, setReopenAdminPassword] = React.useState("");
   const [reopenMode, setReopenMode] = React.useState<"CONTINUE_SHORTAGE" | "IGNORE_SHORTAGE">("CONTINUE_SHORTAGE");
@@ -793,14 +830,125 @@ export function SalesOrdersPage() {
       .catch(() => setCustomers([]));
   }
 
+  React.useEffect(() => {
+    if (!noQtyCloseDialog) {
+      setCloseAssessment(null);
+      setCloseAssessmentError(null);
+      setCloseAssessmentLoading(false);
+      setWaiverAdminPassword("");
+      setWaiverReasonCode("MANAGEMENT_DECISION");
+      setWaiverRemarks("");
+      setClosingNoQty(false);
+      setFgDispItemId("");
+      setFgDispQty("");
+      setFgDispType("TRANSFER_TO_GENERAL_STOCK");
+      setFgDispRemarks("");
+      setSavingFgDisp(false);
+      return;
+    }
+    let cancelled = false;
+    setCloseAssessmentLoading(true);
+    setCloseAssessmentError(null);
+    apiFetch<{
+      mode: "COMPLETE" | "WAIVER_REQUIRED" | "BLOCKED";
+      blockers: { code: string; message: string }[];
+      warnings: { code: string; message: string }[];
+      proposedWaiverQty: number;
+      proposedWaiverLines: {
+        recoverySourceId: number;
+        itemId: number;
+        itemName: string | null;
+        recoveryType: string;
+        availableQty: number;
+        proposedWaivedQty: number;
+      }[];
+      acceptedFgPendingDispositionQty: number;
+      itemSummaries?: {
+        itemId: number;
+        itemName: string | null;
+        acceptedFgPendingDispositionQty: number;
+      }[];
+    }>(`/api/sales-orders/${noQtyCloseDialog.soId}/no-qty-closure-assessment`)
+      .then((r) => {
+        if (!cancelled) {
+          setCloseAssessment(r);
+          const fgItem = (r.itemSummaries || []).find((s) => (s.acceptedFgPendingDispositionQty || 0) > 0);
+          if (fgItem) {
+            setFgDispItemId(String(fgItem.itemId));
+            setFgDispQty(String(fgItem.acceptedFgPendingDispositionQty));
+          }
+        }
+      })
+      .catch((e) => {
+        if (!cancelled) setCloseAssessmentError(e instanceof Error ? e.message : "Assessment failed.");
+      })
+      .finally(() => {
+        if (!cancelled) setCloseAssessmentLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [noQtyCloseDialog]);
+
   async function runNoQtyClose() {
-    if (!noQtyCloseDialog) return;
+    if (!noQtyCloseDialog || !closeAssessment) return;
     const { soId, docNo } = noQtyCloseDialog;
+    const label = displaySalesOrderNo(soId, docNo);
+
+    if (closeAssessment.mode === "BLOCKED") {
+      toast.showError(closeAssessment.blockers[0]?.message || "Cannot close this sales order.");
+      return;
+    }
+
+    if (closeAssessment.mode === "WAIVER_REQUIRED") {
+      if (!isAdmin) {
+        toast.showError("Admin password approval is required to close with waiver.");
+        return;
+      }
+      const pwd = waiverAdminPassword.trim();
+      const remarks = waiverRemarks.trim();
+      if (!pwd) {
+        toast.showError("Admin password is required.");
+        return;
+      }
+      if (!remarks) {
+        toast.showError("Waiver remarks are mandatory.");
+        return;
+      }
+      setClosingNoQty(true);
+      try {
+        await apiFetch(`/api/sales-orders/${soId}/close-with-waiver`, {
+          method: "POST",
+          body: JSON.stringify({
+            adminPassword: pwd,
+            reasonCode: waiverReasonCode,
+            remarks,
+            confirm: true,
+            waiverLines: closeAssessment.proposedWaiverLines.map((ln) => ({
+              recoverySourceId: ln.recoverySourceId,
+              itemId: ln.itemId,
+              waivedQty: ln.availableQty,
+            })),
+          }),
+        });
+        toast.showSuccess(
+          `Sales Order ${label} closed with waiver. Waived qty: ${closeAssessment.proposedWaiverQty}.`,
+        );
+        setNoQtyCloseDialog(null);
+        await load();
+      } catch (e) {
+        toast.showError(e instanceof Error ? e.message : "Failed to close with waiver.");
+      } finally {
+        setClosingNoQty(false);
+      }
+      return;
+    }
+
+    setClosingNoQty(true);
     try {
       const res = await apiFetch<{
         closedShortageSummary?: { totalClosedShortage: number; lines: { itemName: string; closedShortageQty: number }[] };
       }>(`/api/sales-orders/${soId}/close`, { method: "POST", body: JSON.stringify({}) });
-      const label = displaySalesOrderNo(soId, docNo);
       const sum = res?.closedShortageSummary?.totalClosedShortage;
       const lines = res?.closedShortageSummary?.lines?.length
         ? ` Items: ${res.closedShortageSummary.lines.map((l) => `${l.itemName} ${l.closedShortageQty}`).join("; ")}`
@@ -813,7 +961,21 @@ export function SalesOrdersPage() {
       setNoQtyCloseDialog(null);
       await load();
     } catch (e) {
-      toast.showError(e instanceof Error ? e.message : "Failed to close sales order.");
+      if (e instanceof ApiRequestError && e.code === "WAIVER_REQUIRED") {
+        toast.showError("Unresolved recovery requires close with waiver (admin).");
+        try {
+          const r = await apiFetch<NonNullable<typeof closeAssessment>>(
+            `/api/sales-orders/${soId}/no-qty-closure-assessment`,
+          );
+          setCloseAssessment(r);
+        } catch {
+          /* keep prior assessment */
+        }
+      } else {
+        toast.showError(e instanceof Error ? e.message : "Failed to close sales order.");
+      }
+    } finally {
+      setClosingNoQty(false);
     }
   }
 
@@ -2392,14 +2554,18 @@ export function SalesOrdersPage() {
                 {visibleRows.map((so) => {
                     const meta = getNoQtySoStageMeta(so, { isAdmin });
                     const isClosed =
-                      so.internalStatus === "MANUALLY_CLOSED" ||
-                      so.internalStatus === "CLOSED" ||
+                      so.internalStatus === "MANUALLY_CLOSED" || so.internalStatus === "CLOSED_WITH_WAIVER" || so.internalStatus === "CLOSED" ||
                       so.internalStatus === "COMPLETED" ||
                       so.processStage?.key === "COMPLETED";
                     const hasDraftRequirementSheet = Boolean(noQtyDraftRsBySoId[so.id]);
                     const stage = meta.stage;
                     const displayStage =
-                      so.internalStatus === "CLOSED" || so.internalStatus === "MANUALLY_CLOSED" ? "CLOSED" : "OPEN";
+                      so.internalStatus === "CLOSED" ||
+                      so.internalStatus === "MANUALLY_CLOSED" ||
+                      so.internalStatus === "CLOSED_WITH_WAIVER" ||
+                      so.internalStatus === "COMPLETED"
+                        ? "CLOSED"
+                        : "OPEN";
                     const progress = isClosed ? "Sales order closed" : noQtyProgressSummary(stage, so);
                     const customer = so.customer?.name ?? so.po?.customer?.name ?? "—";
                     const guidedCycleId =
@@ -2712,7 +2878,13 @@ export function SalesOrdersPage() {
                     }
 
                     const agreementAdminActions: React.ReactNode[] = [];
-                    if (so.internalStatus !== "CLOSED" && so.internalStatus !== "MANUALLY_CLOSED" && canCloseNoQtySo) {
+                    if (
+                      so.internalStatus !== "CLOSED" &&
+                      so.internalStatus !== "MANUALLY_CLOSED" &&
+                      so.internalStatus !== "CLOSED_WITH_WAIVER" &&
+                      so.internalStatus !== "COMPLETED" &&
+                      canCloseNoQtySo
+                    ) {
                       if (so.noQtyManualCloseEligible === true) {
                         agreementAdminActions.push(
                           <Button
@@ -2738,7 +2910,14 @@ export function SalesOrdersPage() {
                         );
                       }
                     }
-                    if ((so.internalStatus === "CLOSED" || so.internalStatus === "MANUALLY_CLOSED") && isAdmin) {
+                    if (
+                      (so.internalStatus === "CLOSED" ||
+                        so.internalStatus === "MANUALLY_CLOSED" ||
+                        so.internalStatus === "CLOSED_WITH_WAIVER" ||
+                        so.internalStatus === "COMPLETED") &&
+                      isAdmin &&
+                      so.orderType === "NO_QTY"
+                    ) {
                       agreementAdminActions.push(
                         <Button
                           key="reopen-so"
@@ -3350,7 +3529,7 @@ export function SalesOrdersPage() {
             <CardHeader>
               <div className="flex items-center justify-between gap-3">
                 <CardTitle id="no-qty-close-title" className="text-base">
-                  Close NO_QTY sales order?
+                  Close NO_QTY sales order
                 </CardTitle>
                 <Button type="button" variant="ghost" size="sm" onClick={() => setNoQtyCloseDialog(null)}>
                   <X className="h-4 w-4" />
@@ -3358,17 +3537,182 @@ export function SalesOrdersPage() {
               </div>
             </CardHeader>
             <CardContent className="space-y-4 text-sm text-slate-700">
-              <p className="leading-relaxed">
-                Closing this NO_QTY SO will freeze current carry-forward shortage as <strong>Closed Shortage</strong>.
-                Stock will not be moved. Current usable, rework, hold, and scrap quantities stay in inventory as free
-                stock (no ledger postings on close).
-              </p>
+              {closeAssessmentLoading ? <p className="text-xs text-slate-500">Assessing closure…</p> : null}
+              {closeAssessmentError ? <p className="text-xs text-amber-800">{closeAssessmentError}</p> : null}
+
+              {closeAssessment?.mode === "BLOCKED" ? (
+                <div className="space-y-2">
+                  <p className="font-medium text-amber-900">Close is blocked</p>
+                  <ul className="list-disc space-y-1 pl-5 text-xs text-amber-900">
+                    {closeAssessment.blockers.map((b) => (
+                      <li key={b.code}>{b.message}</li>
+                    ))}
+                  </ul>
+                  {closeAssessment.acceptedFgPendingDispositionQty > 0 ? (
+                    <div className="space-y-2 rounded border border-amber-200 bg-amber-50 p-2">
+                      <p className="text-xs text-slate-700">
+                        Accepted FG pending disposition: {closeAssessment.acceptedFgPendingDispositionQty}. Record an
+                        approved disposition (audit only — no silent stock move; Green Level transfer is not allowed).
+                      </p>
+                      <label className="grid gap-1 text-xs">
+                        <span>Item id</span>
+                        <Input value={fgDispItemId} onChange={(e) => setFgDispItemId(e.target.value)} />
+                      </label>
+                      <label className="grid gap-1 text-xs">
+                        <span>Qty</span>
+                        <Input value={fgDispQty} onChange={(e) => setFgDispQty(e.target.value)} />
+                      </label>
+                      <label className="grid gap-1 text-xs">
+                        <span>Disposition type</span>
+                        <select
+                          className="rounded border border-slate-300 px-2 py-1.5 text-sm"
+                          value={fgDispType}
+                          onChange={(e) => setFgDispType(e.target.value)}
+                        >
+                          <option value="DISPATCH_BEFORE_CLOSE">Dispatch before close</option>
+                          <option value="TRANSFER_TO_GENERAL_STOCK">Transfer to general stock</option>
+                          <option value="RETAIN_AS_CUSTOMER_SPECIFIC_STOCK">Retain as customer-specific stock</option>
+                          <option value="SCRAP">Scrap</option>
+                          <option value="OTHER_APPROVED_DISPOSITION">Other approved disposition</option>
+                        </select>
+                      </label>
+                      <label className="grid gap-1 text-xs">
+                        <span>Remarks</span>
+                        <Input value={fgDispRemarks} onChange={(e) => setFgDispRemarks(e.target.value)} />
+                      </label>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        disabled={savingFgDisp}
+                        onClick={() => {
+                          void (async () => {
+                            const itemId = Number(fgDispItemId);
+                            const qty = Number(fgDispQty);
+                            if (!(itemId > 0) || !(qty > 0)) {
+                              toast.showError("Item and qty are required.");
+                              return;
+                            }
+                            setSavingFgDisp(true);
+                            try {
+                              await apiFetch(`/api/sales-orders/${noQtyCloseDialog.soId}/accepted-fg-dispositions`, {
+                                method: "POST",
+                                body: JSON.stringify({
+                                  itemId,
+                                  qty,
+                                  dispositionType: fgDispType,
+                                  remarks: fgDispRemarks.trim() || null,
+                                }),
+                              });
+                              toast.showSuccess("FG disposition recorded.");
+                              const r = await apiFetch<NonNullable<typeof closeAssessment>>(
+                                `/api/sales-orders/${noQtyCloseDialog.soId}/no-qty-closure-assessment`,
+                              );
+                              setCloseAssessment(r);
+                            } catch (e) {
+                              toast.showError(e instanceof Error ? e.message : "Failed to record disposition.");
+                            } finally {
+                              setSavingFgDisp(false);
+                            }
+                          })();
+                        }}
+                      >
+                        {savingFgDisp ? "Saving…" : "Record FG disposition"}
+                      </Button>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {closeAssessment?.mode === "COMPLETE" ? (
+                <p className="leading-relaxed">
+                  Closing this NO_QTY SO will freeze current carry-forward shortage as <strong>Closed Shortage</strong>.
+                  Stock will not be moved. Current usable, rework, hold, and scrap quantities stay in inventory as free
+                  stock (no ledger postings on close).
+                </p>
+              ) : null}
+
+              {closeAssessment?.mode === "WAIVER_REQUIRED" ? (
+                <div className="space-y-3">
+                  <p className="leading-relaxed">
+                    Unresolved recovery must be waived to close. Only available recovery quantity can be waived. Stock is
+                    not moved by this close.
+                  </p>
+                  <div className="rounded border border-slate-200 bg-slate-50 p-2 text-xs">
+                    <p className="mb-1 font-medium">Proposed waiver: {closeAssessment.proposedWaiverQty}</p>
+                    <ul className="space-y-1">
+                      {closeAssessment.proposedWaiverLines.map((ln) => (
+                        <li key={ln.recoverySourceId}>
+                          {ln.itemName ?? `Item #${ln.itemId}`} · {ln.recoveryType} · {ln.availableQty}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                  {!isAdmin ? (
+                    <p className="text-xs text-amber-800">Only Admin can close with waiver (password required).</p>
+                  ) : (
+                    <>
+                      <label className="grid gap-1 text-sm">
+                        <span className="text-slate-600">Reason code</span>
+                        <select
+                          className="rounded border border-slate-300 px-2 py-1.5 text-sm"
+                          value={waiverReasonCode}
+                          onChange={(e) => setWaiverReasonCode(e.target.value)}
+                        >
+                          <option value="MACHINE_BREAKDOWN">Machine breakdown</option>
+                          <option value="CAPACITY_CONSTRAINT">Capacity constraint</option>
+                          <option value="WAITING_FOR_RM">Waiting for RM</option>
+                          <option value="TOOL_MAINTENANCE">Tool maintenance</option>
+                          <option value="CUSTOMER_PRIORITY_CHANGE">Customer priority change</option>
+                          <option value="MANAGEMENT_DECISION">Management decision</option>
+                          <option value="QUALITY_CONCERN">Quality concern</option>
+                          <option value="CUSTOMER_CANCELLED_BALANCE">Customer cancelled balance</option>
+                          <option value="COMMERCIAL_SETTLEMENT">Commercial settlement</option>
+                          <option value="OTHER">Other</option>
+                        </select>
+                      </label>
+                      <label className="grid gap-1 text-sm">
+                        <span className="text-slate-600">Remarks (mandatory)</span>
+                        <textarea
+                          className="min-h-[72px] rounded border border-slate-300 px-2 py-1.5 text-sm"
+                          value={waiverRemarks}
+                          onChange={(e) => setWaiverRemarks(e.target.value)}
+                        />
+                      </label>
+                      <label className="grid gap-1 text-sm">
+                        <span className="text-slate-600">Admin password</span>
+                        <Input
+                          type="password"
+                          autoComplete="current-password"
+                          value={waiverAdminPassword}
+                          onChange={(e) => setWaiverAdminPassword(e.target.value)}
+                        />
+                      </label>
+                    </>
+                  )}
+                </div>
+              ) : null}
+
               <div className="flex justify-end gap-2 pt-2">
                 <Button type="button" variant="outline" onClick={() => setNoQtyCloseDialog(null)}>
                   Cancel
                 </Button>
-                <Button type="button" onClick={() => void runNoQtyClose()}>
-                  Close SO
+                <Button
+                  type="button"
+                  disabled={
+                    closingNoQty ||
+                    closeAssessmentLoading ||
+                    !closeAssessment ||
+                    closeAssessment.mode === "BLOCKED" ||
+                    (closeAssessment.mode === "WAIVER_REQUIRED" && !isAdmin)
+                  }
+                  onClick={() => void runNoQtyClose()}
+                >
+                  {closingNoQty
+                    ? "Closing…"
+                    : closeAssessment?.mode === "WAIVER_REQUIRED"
+                      ? "Close with waiver"
+                      : "Close SO"}
                 </Button>
               </div>
             </CardContent>

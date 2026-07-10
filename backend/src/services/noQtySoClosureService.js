@@ -1,0 +1,741 @@
+/**
+ * Batch 3D — NO_QTY SO Closure & Waiver (authoritative).
+ *
+ * assessNoQtySoClosure is the single source of truth for close eligibility/mode.
+ * closeNoQtySoWithWaiver / closeNoQtySoComplete own the close transactions.
+ */
+
+const { lockSalesOrderForUpdate } = require("./dispatchWriteLocks");
+const { assertAnyAdminPassword } = require("./adminPasswordAuth");
+const {
+  hasPendingProductionOrQc,
+  assessNoQtyCycleDispatchCapMet,
+} = require("./noQtySoOperationalGates");
+const {
+  getAvailableRecovery,
+  getRecoverySummary,
+  lockRecoverySourceForUpdate,
+  computeAvailableQty,
+  recomputeRecoveryStatus,
+} = require("./noQtyRecoveryService");
+const { createNoQtyCloseSnapshot } = require("./noQtySoCloseSnapshotService");
+const { getEffectiveProductionPendingQty } = require("./productionExecutionService");
+const { getApprovedProducedQtyByWorkOrderLineIds } = require("./productionMetrics");
+const auditLog = require("./auditLog");
+
+const EPS = 1e-6;
+const CLOSED_STATUSES = new Set(["COMPLETED", "CLOSED", "MANUALLY_CLOSED", "CLOSED_WITH_WAIVER"]);
+
+const CLOSURE_MODES = Object.freeze({
+  COMPLETE: "COMPLETE",
+  WAIVER_REQUIRED: "WAIVER_REQUIRED",
+  BLOCKED: "BLOCKED",
+});
+
+const WAIVER_REASON_CODES = Object.freeze([
+  "MACHINE_BREAKDOWN",
+  "CAPACITY_CONSTRAINT",
+  "WAITING_FOR_RM",
+  "TOOL_MAINTENANCE",
+  "CUSTOMER_PRIORITY_CHANGE",
+  "MANAGEMENT_DECISION",
+  "QUALITY_CONCERN",
+  "CUSTOMER_CANCELLED_BALANCE",
+  "COMMERCIAL_SETTLEMENT",
+  "OTHER",
+]);
+
+const FG_DISPOSITION_TYPES = Object.freeze([
+  "DISPATCH_BEFORE_CLOSE",
+  "TRANSFER_TO_GENERAL_STOCK",
+  "RETAIN_AS_CUSTOMER_SPECIFIC_STOCK",
+  "SCRAP",
+  "OTHER_APPROVED_DISPOSITION",
+]);
+
+const BLOCK_MESSAGES = Object.freeze({
+  NOT_NO_QTY: "Close is allowed only for No Qty sales orders.",
+  SO_NOT_FOUND: "Sales order not found.",
+  ALREADY_CLOSED: "Sales order is already closed.",
+  PENDING_PRODUCTION: "Cannot close SO: production is still pending.",
+  SHORTFALL_PENDING: "Cannot close SO: production shortfall decision is pending.",
+  PENDING_QC: "Cannot close SO: QA is pending.",
+  PENDING_QC_DISPOSITION: "Cannot close SO: QC rework or hold disposition is pending.",
+  DRAFT_DISPATCH_EXISTS: "Cannot close SO: dispatch draft is not finalized.",
+  ACTIVE_RS_DRAFT: "Cannot close SO: requirement sheet is not locked.",
+  WO_PENDING: "Cannot close SO: work order is pending for active cycle.",
+  PENDING_DISPATCH: "Cannot close SO: dispatch is pending for active cycle.",
+  PMR_WAITING_STORE_ISSUE: "Cannot close SO: store material issue is pending for active cycle.",
+  PMR_PARTIALLY_ISSUED: "Cannot close SO: store material issue is incomplete for active cycle.",
+  ACTIVE_CYCLE_INCOMPLETE: "Cannot close SO: active cycle operational work is incomplete.",
+  DRAFT_BILLING: "Cannot close SO: draft sales bill exists.",
+  BILLING_ADJUSTMENT: "Cannot close SO: billing adjustment is pending.",
+  FG_DISPOSITION_REQUIRED: "Cannot close SO: accepted FG requires an approved disposition before close.",
+  WAIVER_REQUIRED: "Unresolved recovery must be waived via close-with-waiver.",
+});
+
+function n(v) {
+  const x = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(x) ? x : 0;
+}
+
+function round3(v) {
+  return Math.round(n(v) * 1000) / 1000;
+}
+
+function closureError(message, { statusCode = 409, code = "NO_QTY_CLOSE_BLOCKED", reason = null } = {}) {
+  const err = new Error(message);
+  err.statusCode = statusCode;
+  err.code = code;
+  if (reason) err.reason = reason;
+  return err;
+}
+
+function blocker(code, message, extra = {}) {
+  return { code, message: message || BLOCK_MESSAGES[code] || code, ...extra };
+}
+
+async function hasExecutionAwareProductionPending(db, salesOrderId) {
+  const workOrders = await db.workOrder.findMany({
+    where: { salesOrderId, status: { not: "REJECTED" }, cycle: { status: "ACTIVE" } },
+    select: {
+      id: true,
+      status: true,
+      productionExecution: { select: { executionStatus: true } },
+      lines: { select: { id: true, qty: true } },
+    },
+  });
+  const lineIds = workOrders.flatMap((wo) => (wo.lines || []).map((l) => l.id));
+  if (!lineIds.length) return { pending: false, reason: null };
+
+  const producedByLineId = await getApprovedProducedQtyByWorkOrderLineIds(db, lineIds);
+  for (const wo of workOrders) {
+    if (wo.status === "CLOSED_WITH_SHORTFALL") continue;
+    const execStatus = wo.productionExecution?.executionStatus ?? null;
+    if (execStatus === "SHORTFALL_PENDING") {
+      return { pending: true, reason: "SHORTFALL_PENDING" };
+    }
+    for (const line of wo.lines || []) {
+      const produced = producedByLineId.get(line.id) || 0;
+      const pendingQty = getEffectiveProductionPendingQty(line.qty, produced, execStatus);
+      if (pendingQty > EPS) {
+        return { pending: true, reason: "PENDING_PRODUCTION" };
+      }
+    }
+  }
+  return { pending: false, reason: null };
+}
+
+async function computeAcceptedFgPendingByItem(db, salesOrderId) {
+  const soId = Number(salesOrderId);
+  const cycles = await db.salesOrderCycle.findMany({
+    where: { salesOrderId: soId },
+    select: { id: true },
+    orderBy: { cycleNo: "asc" },
+  });
+
+  /** @type {Map<number, number>} */
+  const acceptedByItem = new Map();
+
+  for (const cyc of cycles) {
+    const cycleId = Number(cyc.id);
+    const wos = await db.workOrder.findMany({
+      where: { salesOrderId: soId, cycleId, status: { not: "REJECTED" } },
+      select: { id: true },
+    });
+    if (!wos.length) continue;
+    const woIds = wos.map((w) => w.id);
+    const qcRows = await db.qcEntry.findMany({
+      where: {
+        reversedAt: null,
+        production: { workOrderLine: { workOrderId: { in: woIds } } },
+      },
+      select: {
+        acceptedQty: true,
+        production: { select: { workOrderLine: { select: { fgItemId: true } } } },
+      },
+    });
+    for (const q of qcRows) {
+      const itemId = Number(q.production?.workOrderLine?.fgItemId);
+      const qty = round3(n(q.acceptedQty));
+      if (!(itemId > 0) || !(qty > EPS)) continue;
+      acceptedByItem.set(itemId, round3((acceptedByItem.get(itemId) ?? 0) + qty));
+    }
+  }
+
+  const dispatches = await db.dispatch.findMany({
+    where: { soId, reversalOfId: null, workflowStatus: "LOCKED" },
+    select: { itemId: true, dispatchedQty: true },
+  });
+  /** @type {Map<number, number>} */
+  const dispatchedByItem = new Map();
+  for (const d of dispatches) {
+    const itemId = Number(d.itemId);
+    dispatchedByItem.set(itemId, round3((dispatchedByItem.get(itemId) ?? 0) + n(d.dispatchedQty)));
+  }
+
+  const dispositions = await db.noQtyAcceptedFgDisposition.findMany({
+    where: { salesOrderId: soId },
+    select: { itemId: true, qty: true },
+  });
+  /** @type {Map<number, number>} */
+  const disposedByItem = new Map();
+  for (const d of dispositions) {
+    const itemId = Number(d.itemId);
+    disposedByItem.set(itemId, round3((disposedByItem.get(itemId) ?? 0) + n(d.qty)));
+  }
+
+  /** @type {Map<number, number>} */
+  const pendingByItem = new Map();
+  let totalPending = 0;
+  for (const [itemId, accepted] of acceptedByItem) {
+    const pending = round3(
+      Math.max(0, accepted - (dispatchedByItem.get(itemId) ?? 0) - (disposedByItem.get(itemId) ?? 0)),
+    );
+    if (pending > EPS) {
+      pendingByItem.set(itemId, pending);
+      totalPending = round3(totalPending + pending);
+    }
+  }
+  return { pendingByItem, totalPending };
+}
+
+async function assessNoQtySoClosure(db, salesOrderId) {
+  const soId = Number(salesOrderId);
+  const empty = {
+    salesOrderId: soId,
+    eligible: false,
+    mode: CLOSURE_MODES.BLOCKED,
+    blockers: [],
+    warnings: [],
+    itemSummaries: [],
+    pendingProductionShortfallQty: 0,
+    pendingQcRecoveryQty: 0,
+    acceptedFgPendingDispositionQty: 0,
+    proposedWaiverQty: 0,
+    proposedWaiverLines: [],
+  };
+
+  if (!Number.isFinite(soId) || soId <= 0) {
+    return { ...empty, blockers: [blocker("SO_NOT_FOUND")] };
+  }
+
+  const so = await db.salesOrder.findUnique({
+    where: { id: soId },
+    select: { id: true, orderType: true, internalStatus: true, docNo: true },
+  });
+  if (!so) return { ...empty, blockers: [blocker("SO_NOT_FOUND")] };
+  if (so.orderType !== "NO_QTY") return { ...empty, blockers: [blocker("NOT_NO_QTY")] };
+  if (CLOSED_STATUSES.has(String(so.internalStatus ?? ""))) {
+    return { ...empty, blockers: [blocker("ALREADY_CLOSED")] };
+  }
+
+  const blockers = [];
+  const warnings = [];
+
+  const execPending = await hasExecutionAwareProductionPending(db, soId);
+  if (execPending.pending) {
+    blockers.push(blocker(execPending.reason || "PENDING_PRODUCTION"));
+  }
+
+  const pendingProdQc = await hasPendingProductionOrQc(db, soId, { orderType: "NO_QTY" });
+  if (pendingProdQc.pending) {
+    const reason = pendingProdQc.reason || "ACTIVE_CYCLE_INCOMPLETE";
+    if (reason === "PENDING_PRODUCTION" && execPending.pending) {
+      // already flagged
+    } else if (reason === "PENDING_QC" || reason === "PENDING_QC_DISPOSITION") {
+      blockers.push(blocker(reason));
+    } else if (!execPending.pending) {
+      blockers.push(blocker(reason));
+    }
+  }
+
+  const unlockedDispatchCount = await db.dispatch.count({
+    where: { soId, reversalOfId: null, workflowStatus: "UNLOCKED" },
+  });
+  if (unlockedDispatchCount > 0) blockers.push(blocker("DRAFT_DISPATCH_EXISTS"));
+
+  const draftRsCount = await db.requirementSheet.count({
+    where: { salesOrderId: soId, status: "DRAFT" },
+  });
+  if (draftRsCount > 0) blockers.push(blocker("ACTIVE_RS_DRAFT"));
+
+  const draftBillCount = await db.salesBill.count({
+    where: { status: "DRAFT", dispatch: { soId, reversalOfId: null } },
+  });
+  if (draftBillCount > 0) blockers.push(blocker("DRAFT_BILLING"));
+
+  const activeCycle = await db.salesOrderCycle.findFirst({
+    where: { salesOrderId: soId, status: "ACTIVE" },
+    orderBy: { cycleNo: "desc" },
+    select: { id: true, cycleNo: true },
+  });
+
+  if (activeCycle) {
+    const cycleId = Number(activeCycle.id);
+    const lockedRs = await db.requirementSheet.findFirst({
+      where: { salesOrderId: soId, cycleId, status: "LOCKED" },
+      select: { id: true },
+    });
+    const woCount = await db.workOrder.count({
+      where: { salesOrderId: soId, cycleId, status: { not: "REJECTED" } },
+    });
+    if (lockedRs && woCount === 0) blockers.push(blocker("WO_PENDING"));
+
+    const openPmr = await db.productionMaterialRequest.findFirst({
+      where: {
+        workOrder: { salesOrderId: soId, cycleId },
+        status: { in: ["REQUESTED", "PARTIALLY_ISSUED"] },
+      },
+      orderBy: { id: "desc" },
+      select: { status: true },
+    });
+    if (openPmr) {
+      blockers.push(
+        blocker(openPmr.status === "REQUESTED" ? "PMR_WAITING_STORE_ISSUE" : "PMR_PARTIALLY_ISSUED"),
+      );
+    }
+
+    if (lockedRs) {
+      const dispatchCap = await assessNoQtyCycleDispatchCapMet(db, { soId, cycleId });
+      if (!dispatchCap.complete) blockers.push(blocker("PENDING_DISPATCH"));
+    } else if (
+      woCount > 0 &&
+      !blockers.some((b) => b.code === "PENDING_PRODUCTION" || b.code === "SHORTFALL_PENDING")
+    ) {
+      blockers.push(blocker("ACTIVE_CYCLE_INCOMPLETE"));
+    }
+  }
+
+  const { pendingByItem: fgPendingByItem, totalPending: acceptedFgPendingDispositionQty } =
+    await computeAcceptedFgPendingByItem(db, soId);
+  if (acceptedFgPendingDispositionQty > EPS) {
+    blockers.push(blocker("FG_DISPOSITION_REQUIRED", undefined, { pendingQty: acceptedFgPendingDispositionQty }));
+  }
+
+  const recoverySummary = await getRecoverySummary(db, soId);
+  const available = await getAvailableRecovery(db, { salesOrderId: soId });
+  let pendingProductionShortfallQty = 0;
+  let pendingQcRecoveryQty = 0;
+  for (const row of available) {
+    if (row.recoveryType === "PRODUCTION_SHORTFALL") {
+      pendingProductionShortfallQty = round3(pendingProductionShortfallQty + row.availableQty);
+    } else if (row.recoveryType === "QC_FINAL_REJECTION") {
+      pendingQcRecoveryQty = round3(pendingQcRecoveryQty + row.availableQty);
+    }
+  }
+  const proposedWaiverQty = round3(pendingProductionShortfallQty + pendingQcRecoveryQty);
+  const proposedWaiverLines = available.map((r) => ({
+    recoverySourceId: r.recoverySourceId,
+    itemId: r.itemId,
+    itemName: r.itemName,
+    recoveryType: r.recoveryType,
+    availableQty: r.availableQty,
+    proposedWaivedQty: r.availableQty,
+  }));
+
+  if (recoverySummary.sources.some((s) => s.migrationIncomplete)) {
+    warnings.push({
+      code: "MIGRATION_INCOMPLETE",
+      message: "Some recovery sources have incomplete migration flags; verify before close.",
+    });
+  }
+
+  const itemMap = new Map();
+  for (const row of available) {
+    const cur = itemMap.get(row.itemId) || {
+      itemId: row.itemId,
+      itemName: row.itemName,
+      productionShortfallAvailableQty: 0,
+      qcRecoveryAvailableQty: 0,
+      acceptedFgPendingDispositionQty: 0,
+      proposedWaiverQty: 0,
+    };
+    if (row.recoveryType === "PRODUCTION_SHORTFALL") {
+      cur.productionShortfallAvailableQty = round3(cur.productionShortfallAvailableQty + row.availableQty);
+    } else {
+      cur.qcRecoveryAvailableQty = round3(cur.qcRecoveryAvailableQty + row.availableQty);
+    }
+    cur.proposedWaiverQty = round3(cur.productionShortfallAvailableQty + cur.qcRecoveryAvailableQty);
+    itemMap.set(row.itemId, cur);
+  }
+  for (const [itemId, qty] of fgPendingByItem) {
+    const cur = itemMap.get(itemId) || {
+      itemId,
+      itemName: null,
+      productionShortfallAvailableQty: 0,
+      qcRecoveryAvailableQty: 0,
+      acceptedFgPendingDispositionQty: 0,
+      proposedWaiverQty: 0,
+    };
+    cur.acceptedFgPendingDispositionQty = qty;
+    itemMap.set(itemId, cur);
+  }
+
+  let mode = CLOSURE_MODES.COMPLETE;
+  if (blockers.length) mode = CLOSURE_MODES.BLOCKED;
+  else if (proposedWaiverQty > EPS) {
+    mode = CLOSURE_MODES.WAIVER_REQUIRED;
+    warnings.push({ code: "WAIVER_REQUIRED", message: BLOCK_MESSAGES.WAIVER_REQUIRED });
+  }
+
+  return {
+    salesOrderId: soId,
+    salesOrderDocNo: so.docNo ?? null,
+    internalStatus: so.internalStatus,
+    eligible: mode !== CLOSURE_MODES.BLOCKED,
+    mode,
+    blockers,
+    warnings,
+    itemSummaries: [...itemMap.values()],
+    pendingProductionShortfallQty,
+    pendingQcRecoveryQty,
+    acceptedFgPendingDispositionQty,
+    proposedWaiverQty,
+    proposedWaiverLines,
+  };
+}
+
+async function recordAcceptedFgDisposition(
+  tx,
+  {
+    salesOrderId,
+    itemId,
+    qty,
+    dispositionType,
+    remarks = null,
+    stockTransactionId = null,
+    actorUserId = null,
+  },
+) {
+  const soId = Number(salesOrderId);
+  const iid = Number(itemId);
+  const q = round3(qty);
+  if (!(q > EPS)) {
+    throw closureError("Disposition quantity must be positive.", {
+      statusCode: 400,
+      code: "INVALID_DISPOSITION_QTY",
+    });
+  }
+  if (!FG_DISPOSITION_TYPES.includes(String(dispositionType))) {
+    throw closureError("Invalid FG disposition type.", {
+      statusCode: 400,
+      code: "INVALID_DISPOSITION_TYPE",
+    });
+  }
+  if (String(dispositionType) === "TRANSFER_TO_GREEN_LEVEL") {
+    throw closureError("Green Level transfer is not an allowed FG disposition.", {
+      statusCode: 400,
+      code: "GREEN_LEVEL_TRANSFER_FORBIDDEN",
+    });
+  }
+
+  const so = await tx.salesOrder.findUnique({
+    where: { id: soId },
+    select: { id: true, orderType: true, internalStatus: true },
+  });
+  if (!so || so.orderType !== "NO_QTY") {
+    throw closureError(BLOCK_MESSAGES.NOT_NO_QTY, { reason: "NOT_NO_QTY" });
+  }
+  if (CLOSED_STATUSES.has(String(so.internalStatus ?? ""))) {
+    throw closureError(BLOCK_MESSAGES.ALREADY_CLOSED, { reason: "ALREADY_CLOSED" });
+  }
+
+  const { pendingByItem } = await computeAcceptedFgPendingByItem(tx, soId);
+  const pending = pendingByItem.get(iid) ?? 0;
+  if (q > pending + EPS) {
+    throw closureError(`Disposition qty ${q} exceeds pending accepted FG ${pending} for item ${iid}.`, {
+      code: "FG_DISPOSITION_OVER",
+      reason: "FG_DISPOSITION_OVER",
+    });
+  }
+
+  const row = await tx.noQtyAcceptedFgDisposition.create({
+    data: {
+      salesOrderId: soId,
+      itemId: iid,
+      qty: String(q),
+      dispositionType,
+      remarks: remarks?.trim() || null,
+      stockTransactionId: stockTransactionId != null ? Number(stockTransactionId) : null,
+      approvedByUserId: actorUserId ?? null,
+    },
+  });
+
+  if (typeof actorUserId === "number") {
+    await auditLog.write(tx, {
+      action: auditLog.AuditAction.CREATE,
+      entityType: auditLog.AuditEntityType.SETTINGS,
+      entityId: `NO_QTY_FG_DISPOSITION:${row.id}`,
+      actorUserId,
+      summary: `Recorded accepted FG disposition ${dispositionType} qty ${q} for SO ${soId} item ${iid}`,
+      payload: { salesOrderId: soId, itemId: iid, qty: q, dispositionType },
+    });
+  }
+
+  return row;
+}
+
+async function applyWaiverLines(tx, { waiverId, waiverLines }) {
+  const applied = [];
+  for (const ln of waiverLines) {
+    const sourceId = Number(ln.recoverySourceId);
+    const waiveQty = round3(ln.waivedQty);
+    if (!(waiveQty > EPS)) {
+      throw closureError("Waiver line quantity must be positive.", {
+        statusCode: 400,
+        code: "WAIVER_QTY_MISMATCH",
+      });
+    }
+    const source = await lockRecoverySourceForUpdate(tx, sourceId);
+    if (!source) {
+      throw closureError("Recovery source not found for waiver.", {
+        statusCode: 404,
+        code: "RECOVERY_SOURCE_NOT_FOUND",
+      });
+    }
+    const allocs = await tx.recoveryAllocation.findMany({
+      where: { recoverySourceId: sourceId },
+      select: { status: true, allocatedQty: true },
+    });
+    const available = computeAvailableQty(source, allocs);
+    if (waiveQty > available + EPS) {
+      throw closureError(`Cannot waive ${waiveQty}; available recovery is ${available} for source ${sourceId}.`, {
+        code: "WAIVER_QTY_MISMATCH",
+        reason: "WAIVER_QTY_MISMATCH",
+      });
+    }
+    if (Number(ln.itemId) > 0 && Number(ln.itemId) !== Number(source.itemId)) {
+      throw closureError("Waiver line item does not match recovery source item.", {
+        statusCode: 400,
+        code: "WAIVER_ITEM_MISMATCH",
+      });
+    }
+
+    const newWaived = round3(n(source.waivedQty) + waiveQty);
+    await tx.carryForwardPending.update({
+      where: { id: sourceId },
+      data: { waivedQty: String(newWaived) },
+    });
+    await recomputeRecoveryStatus(tx, sourceId);
+
+    await tx.noQtySoWaiverLine.create({
+      data: {
+        waiverId,
+        recoverySourceId: sourceId,
+        itemId: source.itemId,
+        waivedQty: String(waiveQty),
+        recoveryType: source.recoveryType,
+      },
+    });
+    applied.push({ recoverySourceId: sourceId, itemId: source.itemId, waivedQty: waiveQty });
+  }
+  return applied;
+}
+
+async function closeNoQtySoWithWaiver(
+  tx,
+  {
+    salesOrderId,
+    adminPassword,
+    reasonCode,
+    remarks,
+    waiverLines,
+    actorUserId,
+    actorRole = null,
+    skipPasswordCheck = false,
+  },
+) {
+  const soId = Number(salesOrderId);
+  await lockSalesOrderForUpdate(tx, soId);
+
+  let approvingAdminUserId = actorUserId;
+  if (!skipPasswordCheck) {
+    approvingAdminUserId = await assertAnyAdminPassword(tx, { password: adminPassword });
+  }
+  if (!Number.isFinite(Number(approvingAdminUserId)) || Number(approvingAdminUserId) <= 0) {
+    throw closureError("Admin approval is required for waiver close.", {
+      statusCode: 401,
+      code: "ADMIN_AUTH_FAILED",
+    });
+  }
+
+  if (!WAIVER_REASON_CODES.includes(String(reasonCode))) {
+    throw closureError("A valid waiver reason code is required.", {
+      statusCode: 400,
+      code: "WAIVER_REASON_REQUIRED",
+    });
+  }
+  const remarksTrim = String(remarks ?? "").trim();
+  if (!remarksTrim) {
+    throw closureError("Waiver remarks are mandatory.", {
+      statusCode: 400,
+      code: "WAIVER_REMARKS_REQUIRED",
+    });
+  }
+
+  const assessment = await assessNoQtySoClosure(tx, soId);
+  if (assessment.mode === CLOSURE_MODES.BLOCKED) {
+    throw closureError(assessment.blockers[0]?.message || BLOCK_MESSAGES.ACTIVE_CYCLE_INCOMPLETE, {
+      code: "NO_QTY_CLOSE_BLOCKED",
+      reason: assessment.blockers[0]?.code || "BLOCKED",
+    });
+  }
+
+  const lines = Array.isArray(waiverLines) ? waiverLines : [];
+  if (assessment.mode === CLOSURE_MODES.WAIVER_REQUIRED) {
+    if (!lines.length) {
+      throw closureError("Waiver lines are required when recovery is pending.", {
+        statusCode: 400,
+        code: "WAIVER_QTY_MISMATCH",
+      });
+    }
+    const proposedIds = new Set(assessment.proposedWaiverLines.map((p) => Number(p.recoverySourceId)));
+    const providedIds = new Set(lines.map((l) => Number(l.recoverySourceId)));
+    for (const id of proposedIds) {
+      if (!providedIds.has(id)) {
+        throw closureError("All available recovery sources must be included in the waiver.", {
+          code: "WAIVER_QTY_MISMATCH",
+        });
+      }
+    }
+    for (const ln of lines) {
+      const proposed = assessment.proposedWaiverLines.find(
+        (p) => Number(p.recoverySourceId) === Number(ln.recoverySourceId),
+      );
+      if (!proposed) {
+        throw closureError("Waiver references a recovery source that is not available.", {
+          code: "WAIVER_QTY_MISMATCH",
+        });
+      }
+      if (round3(ln.waivedQty) > round3(proposed.availableQty) + EPS) {
+        throw closureError(
+          `Waiver for source ${ln.recoverySourceId} exceeds available qty ${proposed.availableQty}.`,
+          { code: "WAIVER_QTY_MISMATCH" },
+        );
+      }
+      if (round3(ln.waivedQty) < round3(proposed.availableQty) - EPS) {
+        throw closureError(
+          `Waiver for source ${ln.recoverySourceId} must equal available qty ${proposed.availableQty}.`,
+          { code: "WAIVER_QTY_MISMATCH" },
+        );
+      }
+    }
+  }
+
+  const waiver = await tx.noQtySoWaiver.create({
+    data: {
+      salesOrderId: soId,
+      reasonCode,
+      remarks: remarksTrim,
+      approvedByUserId: Number(approvingAdminUserId),
+    },
+  });
+
+  const applied =
+    lines.length > 0 ? await applyWaiverLines(tx, { waiverId: waiver.id, waiverLines: lines }) : [];
+
+  const post = await assessNoQtySoClosure(tx, soId);
+  if (post.mode === CLOSURE_MODES.BLOCKED) {
+    throw closureError(post.blockers[0]?.message || "Close blocked after waiver.", {
+      code: "NO_QTY_CLOSE_BLOCKED",
+      reason: post.blockers[0]?.code,
+    });
+  }
+  if (post.proposedWaiverQty > EPS) {
+    throw closureError("Waiver did not clear all available recovery.", { code: "WAIVER_QTY_MISMATCH" });
+  }
+
+  const byItem = new Map();
+  for (const a of applied) {
+    byItem.set(a.itemId, round3((byItem.get(a.itemId) ?? 0) + a.waivedQty));
+  }
+  const { snapshot, lines: snapLines } = await createNoQtyCloseSnapshot(tx, {
+    salesOrderId: soId,
+    userId: Number(approvingAdminUserId),
+    reason: remarksTrim,
+    waiverId: waiver.id,
+    closeMode: "WAIVER",
+    linesOverride: [...byItem.entries()].map(([itemId, closedShortageQty]) => ({
+      itemId,
+      closedShortageQty,
+    })),
+  });
+
+  const updated = await tx.salesOrder.update({
+    where: { id: soId },
+    data: { internalStatus: "CLOSED_WITH_WAIVER", currentCycleId: null },
+  });
+
+  await auditLog.write(tx, {
+    action: auditLog.AuditAction.UPDATE,
+    entityType: auditLog.AuditEntityType.SETTINGS,
+    entityId: `SALES_ORDER:${soId}`,
+    actorUserId: Number(approvingAdminUserId),
+    actorRole,
+    summary: `NO_QTY SO ${soId} closed with waiver (${reasonCode})`,
+    payload: { module: "NO_QTY_SO_CLOSURE", waiverId: waiver.id, snapshotId: snapshot.id, applied },
+    reason: remarksTrim,
+  });
+
+  return { salesOrder: updated, waiver, snapshot, snapshotLines: snapLines, assessment: post, applied };
+}
+
+async function closeNoQtySoComplete(tx, { salesOrderId, actorUserId = null, actorRole = null, reason = null }) {
+  const soId = Number(salesOrderId);
+  await lockSalesOrderForUpdate(tx, soId);
+
+  const assessment = await assessNoQtySoClosure(tx, soId);
+  if (assessment.mode === CLOSURE_MODES.BLOCKED) {
+    throw closureError(assessment.blockers[0]?.message || "Close blocked.", {
+      code: "NO_QTY_CLOSE_BLOCKED",
+      reason: assessment.blockers[0]?.code,
+    });
+  }
+  if (assessment.mode === CLOSURE_MODES.WAIVER_REQUIRED) {
+    throw closureError(BLOCK_MESSAGES.WAIVER_REQUIRED, {
+      code: "WAIVER_REQUIRED",
+      reason: "WAIVER_REQUIRED",
+    });
+  }
+
+  const { snapshot, lines } = await createNoQtyCloseSnapshot(tx, {
+    salesOrderId: soId,
+    userId: actorUserId,
+    reason: reason?.trim() || null,
+    closeMode: "COMPLETE",
+  });
+
+  const updated = await tx.salesOrder.update({
+    where: { id: soId },
+    data: { internalStatus: "COMPLETED", currentCycleId: null },
+  });
+
+  if (typeof actorUserId === "number") {
+    await auditLog.write(tx, {
+      action: auditLog.AuditAction.UPDATE,
+      entityType: auditLog.AuditEntityType.SETTINGS,
+      entityId: `SALES_ORDER:${soId}`,
+      actorUserId,
+      actorRole,
+      summary: `NO_QTY SO ${soId} closed complete (no waiver)`,
+      payload: { module: "NO_QTY_SO_CLOSURE", snapshotId: snapshot.id, closeMode: "COMPLETE" },
+    });
+  }
+
+  return { salesOrder: updated, snapshot, snapshotLines: lines, assessment };
+}
+
+module.exports = {
+  EPS,
+  CLOSURE_MODES,
+  WAIVER_REASON_CODES,
+  FG_DISPOSITION_TYPES,
+  BLOCK_MESSAGES,
+  assessNoQtySoClosure,
+  closeNoQtySoWithWaiver,
+  closeNoQtySoComplete,
+  recordAcceptedFgDisposition,
+  computeAcceptedFgPendingByItem,
+  hasExecutionAwareProductionPending,
+};

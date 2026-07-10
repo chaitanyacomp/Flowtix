@@ -235,7 +235,7 @@ async function auditAllOpenNoQtyForDashboard(db, stagedRows) {
   const open = stagedRows.filter((s) => {
     if (s.orderType !== "NO_QTY") return false;
     const st = String(s.internalStatus ?? "");
-    return !["CLOSED", "MANUALLY_CLOSED", "COMPLETED"].includes(st);
+    return !["CLOSED", "MANUALLY_CLOSED", "CLOSED_WITH_WAIVER", "COMPLETED"].includes(st);
   });
   const out = [];
   for (const s of open) {

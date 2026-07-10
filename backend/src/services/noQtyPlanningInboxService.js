@@ -13,7 +13,7 @@ const {
   executionRegisterSortPriority,
 } = require("./noQtyExecutionRegisterService");
 
-const CLOSED_SO_STATUSES = Object.freeze(["COMPLETED", "CLOSED", "MANUALLY_CLOSED"]);
+const CLOSED_SO_STATUSES = Object.freeze(["COMPLETED", "CLOSED", "MANUALLY_CLOSED", "CLOSED_WITH_WAIVER"]);
 
 function round3(n) {
   return Math.round(Number(n) * 1000) / 1000;

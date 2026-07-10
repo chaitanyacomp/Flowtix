@@ -86,6 +86,15 @@ const {
   computeNoQtyManualCloseEligibility,
   assertNoQtyManualCloseEligible,
 } = require("../services/noQtySoManualCloseEligibility");
+const {
+  assessNoQtySoClosure,
+  closeNoQtySoWithWaiver,
+  closeNoQtySoComplete,
+  recordAcceptedFgDisposition,
+  CLOSURE_MODES,
+  WAIVER_REASON_CODES,
+  FG_DISPOSITION_TYPES,
+} = require("../services/noQtySoClosureService");
 const { findNoQtyNextRollingRequirementSheetTarget } = require("../services/noQtyRollingRequirementNav");
 const { resolveNoQtyWorkflowState } = require("../services/noQtyWorkflowEngine");
 const { batchAssessNoQtyPlacementStages } = require("../services/requirementSheetExecutionService");
@@ -218,7 +227,7 @@ const statusEnum = z.enum([
   "IN_PROCESS",
   "COMPLETED",
   "CLOSED",
-  "MANUALLY_CLOSED",
+  "MANUALLY_CLOSED", "CLOSED_WITH_WAIVER",
 ]);
 
 /** Create internal SO from approved quotation only. */
@@ -895,7 +904,7 @@ salesOrderRouter.get(
             .filter(
               (s) =>
                 s.orderType === "NO_QTY" &&
-                !["COMPLETED", "CLOSED", "MANUALLY_CLOSED"].includes(String(s.internalStatus ?? "")),
+                !["COMPLETED", "CLOSED", "MANUALLY_CLOSED", "CLOSED_WITH_WAIVER"].includes(String(s.internalStatus ?? "")),
             )
             .map(async (s) => {
               const r = await computeNoQtyManualCloseEligibility(prisma, s.id);
@@ -1099,8 +1108,7 @@ salesOrderRouter.get(
                 const wfCnt = noQtyWorkflowActiveCycleCountBySoId.get(s.id) ?? 0;
                 const wfPref = noQtyWorkflowActiveCycleBySoId.get(s.id);
                 const completedSoRow =
-                  s.internalStatus === "MANUALLY_CLOSED" ||
-                  s.internalStatus === "CLOSED" ||
+                  s.internalStatus === "MANUALLY_CLOSED" || s.internalStatus === "CLOSED_WITH_WAIVER" || s.internalStatus === "CLOSED" ||
                   s.internalStatus === "COMPLETED";
 
                 /** Max cycleNo among **this SO’s cycle rows** that have a finalized bill (display truth). */
@@ -1326,7 +1334,7 @@ salesOrderRouter.get(
               ? (() => {
                   const cid = noQtyEffectiveListCycleId(s);
                   if (cid <= 0) return null;
-                  if (s.internalStatus === "MANUALLY_CLOSED" || s.internalStatus === "CLOSED") return false;
+                  if (s.internalStatus === "MANUALLY_CLOSED" || s.internalStatus === "CLOSED_WITH_WAIVER" || s.internalStatus === "CLOSED") return false;
                   const pref = noQtyPreferredActiveCycleBySoId.get(s.id);
                   const cycleIsActive =
                     (pref != null && pref.id === cid) ||
@@ -1891,7 +1899,77 @@ salesOrderRouter.post(
 );
 
 /**
- * NO_QTY only: manually close the sales order container (cycles remain unchanged).
+ * NO_QTY: authoritative closure assessment (Batch 3D SSOT).
+ * GET /api/sales-orders/:id/no-qty-closure-assessment
+ */
+salesOrderRouter.get(
+  "/:id/no-qty-closure-assessment",
+  requireAuth,
+  requireRole(SO_WRITE_ROLES),
+  async (req, res, next) => {
+    try {
+      const soId = Number(req.params.id);
+      if (!Number.isFinite(soId) || soId <= 0) {
+        const err = new Error("Invalid sales order id.");
+        err.statusCode = 400;
+        throw err;
+      }
+      const assessment = await assessNoQtySoClosure(prisma, soId);
+      return res.json(assessment);
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
+/**
+ * NO_QTY: record accepted FG disposition before waiver close (audit only; no silent stock move).
+ * POST /api/sales-orders/:id/accepted-fg-dispositions
+ */
+salesOrderRouter.post(
+  "/:id/accepted-fg-dispositions",
+  requireAuth,
+  requireRole(SO_WRITE_ROLES),
+  async (req, res, next) => {
+    try {
+      const soId = Number(req.params.id);
+      if (!Number.isFinite(soId) || soId <= 0) {
+        const err = new Error("Invalid sales order id.");
+        err.statusCode = 400;
+        throw err;
+      }
+      const body = z
+        .object({
+          itemId: z.number().int().positive(),
+          qty: z.number().positive(),
+          dispositionType: z.enum(FG_DISPOSITION_TYPES),
+          remarks: z.string().max(4000).optional().nullable(),
+          stockTransactionId: z.number().int().positive().optional().nullable(),
+        })
+        .strict()
+        .parse(req.body ?? {});
+
+      const row = await prisma.$transaction(async (tx) =>
+        recordAcceptedFgDisposition(tx, {
+          salesOrderId: soId,
+          itemId: body.itemId,
+          qty: body.qty,
+          dispositionType: body.dispositionType,
+          remarks: body.remarks ?? null,
+          stockTransactionId: body.stockTransactionId ?? null,
+          actorUserId: req.user?.userId ?? null,
+        }),
+      );
+      return res.status(201).json(row);
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
+/**
+ * NO_QTY only: close complete when assessment mode is COMPLETE.
+ * If WAIVER_REQUIRED, returns 409 directing to close-with-waiver.
  * POST /api/sales-orders/:id/close
  */
 salesOrderRouter.post(
@@ -1908,6 +1986,23 @@ salesOrderRouter.post(
       }
       const body = z.object({ reason: z.string().optional().nullable() }).parse(req.body ?? {});
 
+      const pre = await assessNoQtySoClosure(prisma, soId);
+      if (pre.mode === CLOSURE_MODES.WAIVER_REQUIRED) {
+        return res.status(409).json({
+          message: pre.warnings.find((w) => w.code === "WAIVER_REQUIRED")?.message || "Waiver required.",
+          code: "WAIVER_REQUIRED",
+          assessment: pre,
+        });
+      }
+      if (pre.mode === CLOSURE_MODES.BLOCKED) {
+        return res.status(409).json({
+          message: pre.blockers[0]?.message || "Cannot close this sales order.",
+          code: "NO_QTY_CLOSE_BLOCKED",
+          reason: pre.blockers[0]?.code,
+          assessment: pre,
+        });
+      }
+
       const { snapshotLines } = await prisma.$transaction(async (tx) => {
         const so = await tx.salesOrder.findUnique({ where: { id: soId }, include: soInclude });
         if (!so) {
@@ -1920,24 +2015,23 @@ salesOrderRouter.post(
           err.statusCode = 409;
           throw err;
         }
-        if (so.internalStatus === "MANUALLY_CLOSED" || so.internalStatus === "CLOSED") {
+        if (
+          so.internalStatus === "MANUALLY_CLOSED" ||
+          so.internalStatus === "CLOSED_WITH_WAIVER" ||
+          so.internalStatus === "CLOSED" ||
+          so.internalStatus === "COMPLETED"
+        ) {
           return { snapshotLines: [] };
         }
 
-        await assertNoQtyManualCloseEligible(tx, soId);
-
-        const { lines } = await createNoQtyCloseSnapshot(tx, {
+        const result = await closeNoQtySoComplete(tx, {
           salesOrderId: soId,
-          userId: req.user?.userId ?? null,
+          actorUserId: req.user?.userId ?? null,
+          actorRole: req.user?.role ?? null,
           reason: body.reason?.trim() || null,
         });
 
-        const updated = await tx.salesOrder.update({
-          where: { id: soId },
-          data: { internalStatus: "MANUALLY_CLOSED", currentCycleId: null },
-          include: soInclude,
-        });
-        const docLabel = displaySalesOrderNo(soId, updated.docNo);
+        const docLabel = displaySalesOrderNo(soId, so.docNo);
         await logActivity({
           tx,
           user: req.user,
@@ -1946,10 +2040,10 @@ salesOrderRouter.post(
           entityId: soId,
           docNo: docLabel,
           action: ACTIVITY_ACTIONS.CLOSED,
-          message: `Sales Order ${docLabel} closed`,
-          metadata: salesOrderActivityMeta(updated),
+          message: `Sales Order ${docLabel} closed (complete)`,
+          metadata: salesOrderActivityMeta(result.salesOrder),
         });
-        return { snapshotLines: lines };
+        return { snapshotLines: result.snapshotLines };
       });
 
       const row = await prisma.salesOrder.findUnique({ where: { id: soId }, include: soInclude });
@@ -1978,6 +2072,7 @@ salesOrderRouter.post(
 
       return res.json({
         ...out,
+        closeMode: "COMPLETE",
         closedShortageSummary: {
           totalClosedShortage: Math.round(totalClosedShortage * 1000) / 1000,
           lines: linesOut,
@@ -1990,7 +2085,90 @@ salesOrderRouter.post(
 );
 
 /**
- * NO_QTY only: reopen a manually closed sales order (cycles remain unchanged).
+ * NO_QTY: close with waiver (admin password + reason + remarks + waiver lines).
+ * POST /api/sales-orders/:id/close-with-waiver
+ */
+salesOrderRouter.post(
+  "/:id/close-with-waiver",
+  requireAuth,
+  requireRole(["ADMIN"], "Only Admin can close a No Qty sales order with waiver."),
+  async (req, res, next) => {
+    try {
+      const soId = Number(req.params.id);
+      if (!Number.isFinite(soId) || soId <= 0) {
+        const err = new Error("Invalid sales order id.");
+        err.statusCode = 400;
+        throw err;
+      }
+      const body = z
+        .object({
+          adminPassword: z.string().min(1),
+          reasonCode: z.enum(WAIVER_REASON_CODES),
+          remarks: z.string().min(1).max(8000),
+          confirm: z.boolean().optional(),
+          waiverLines: z
+            .array(
+              z.object({
+                recoverySourceId: z.number().int().positive(),
+                itemId: z.number().int().positive().optional(),
+                waivedQty: z.number().positive(),
+              }),
+            )
+            .min(1),
+        })
+        .strict()
+        .parse(req.body ?? {});
+
+      if (body.confirm === false) {
+        const err = new Error("Confirm must be true to close with waiver.");
+        err.statusCode = 400;
+        throw err;
+      }
+
+      const result = await prisma.$transaction(async (tx) => {
+        const out = await closeNoQtySoWithWaiver(tx, {
+          salesOrderId: soId,
+          adminPassword: body.adminPassword,
+          reasonCode: body.reasonCode,
+          remarks: body.remarks,
+          waiverLines: body.waiverLines,
+          actorUserId: req.user?.userId ?? null,
+          actorRole: req.user?.role ?? null,
+        });
+        const so = await tx.salesOrder.findUnique({ where: { id: soId }, include: soInclude });
+        const docLabel = displaySalesOrderNo(soId, so?.docNo);
+        await logActivity({
+          tx,
+          user: req.user,
+          module: ACTIVITY_MODULES.SALES_ORDER,
+          entityType: ACTIVITY_ENTITY_TYPES.SALES_ORDER,
+          entityId: soId,
+          docNo: docLabel,
+          action: ACTIVITY_ACTIONS.CLOSED,
+          message: `Sales Order ${docLabel} closed with waiver`,
+          metadata: { ...salesOrderActivityMeta(so), waiverId: out.waiver.id },
+        });
+        return out;
+      });
+
+      const row = await prisma.salesOrder.findUnique({ where: { id: soId }, include: soInclude });
+      const [out] = await enrichSalesOrdersWithProcessStage(prisma, [enrichSalesOrderWithDispatchStats(row)]);
+      return res.json({
+        ...out,
+        closeMode: "WAIVER",
+        waiverId: result.waiver.id,
+        snapshotId: result.snapshot.id,
+        applied: result.applied,
+        assessment: result.assessment,
+      });
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
+/**
+ * NO_QTY only: reopen a closed sales order (CLOSED_WITH_WAIVER / MANUALLY_CLOSED / CLOSED).
  * POST /api/sales-orders/:id/reopen
  */
 salesOrderRouter.post(
@@ -2027,7 +2205,12 @@ salesOrderRouter.post(
           err.statusCode = 409;
           throw err;
         }
-        if (so.internalStatus !== "MANUALLY_CLOSED" && so.internalStatus !== "CLOSED") {
+        if (
+          so.internalStatus !== "MANUALLY_CLOSED" &&
+          so.internalStatus !== "CLOSED_WITH_WAIVER" &&
+          so.internalStatus !== "CLOSED" &&
+          so.internalStatus !== "COMPLETED"
+        ) {
           const err = new Error("Only closed No Qty sales orders can be reopened.");
           err.statusCode = 409;
           throw err;
@@ -2167,7 +2350,9 @@ salesOrderRouter.get(
         currentUsableByItem: usableByItem,
         pendingQcDispositionByItem,
         stockMayHaveChangedWarning:
-          String(so.internalStatus) === "MANUALLY_CLOSED" || String(so.internalStatus) === "CLOSED",
+          String(so.internalStatus) === "MANUALLY_CLOSED" ||
+          String(so.internalStatus) === "CLOSED_WITH_WAIVER" ||
+          String(so.internalStatus) === "CLOSED",
       });
     } catch (e) {
       return next(e);
@@ -2283,8 +2468,7 @@ salesOrderRouter.get(
           cycleId: null,
           isCompleted:
             head.internalStatus === "COMPLETED" ||
-            head.internalStatus === "MANUALLY_CLOSED" ||
-            head.internalStatus === "CLOSED",
+            head.internalStatus === "MANUALLY_CLOSED" || head.internalStatus === "CLOSED_WITH_WAIVER" || head.internalStatus === "CLOSED",
           requirementExists: false,
           requirementLocked: false,
           workOrderExists: false,
@@ -2351,8 +2535,7 @@ salesOrderRouter.get(
 
       const isCompleted =
         head.internalStatus === "COMPLETED" ||
-        head.internalStatus === "MANUALLY_CLOSED" ||
-        head.internalStatus === "CLOSED";
+        head.internalStatus === "MANUALLY_CLOSED" || head.internalStatus === "CLOSED_WITH_WAIVER" || head.internalStatus === "CLOSED";
 
       // NO_QTY: stock-covered shortcut to Dispatch only when locked RS has no manufacturing remainder
       // (suggestedWoQtySnapshot > 0 means WO/production path must come first).

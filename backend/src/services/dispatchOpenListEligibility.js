@@ -57,11 +57,11 @@ function isSalesOrderCommerciallyClosedForDispatch(so, invoicedQty) {
  */
 function shouldExcludeSalesOrderFromDispatchOpenList(so, invoicedQty) {
   if (so.orderType === "NO_QTY") {
-    return so.internalStatus === "MANUALLY_CLOSED" || so.internalStatus === "CLOSED";
+    return so.internalStatus === "MANUALLY_CLOSED" || so.internalStatus === "CLOSED_WITH_WAIVER" || so.internalStatus === "CLOSED";
   }
   if (so.internalStatus === "DRAFT") return true;
   if (so.internalStatus === "COMPLETED") return true;
-  if (so.internalStatus === "CLOSED" || so.internalStatus === "MANUALLY_CLOSED") return true;
+  if (so.internalStatus === "CLOSED" || so.internalStatus === "MANUALLY_CLOSED" || so.internalStatus === "CLOSED_WITH_WAIVER") return true;
   if (isSalesOrderCommerciallyClosedForDispatch(so, invoicedQty)) return true;
   return false;
 }

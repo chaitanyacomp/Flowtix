@@ -101,11 +101,26 @@ async function computeNoQtyClosedShortageSnapshot(tx, salesOrderId) {
 
 /**
  * @param {import('@prisma/client').Prisma.TransactionClient} tx
- * @param {{ salesOrderId: number; userId: number | null; reason: string | null }} input
+ * @param {{
+ *   salesOrderId: number;
+ *   userId: number | null;
+ *   reason: string | null;
+ *   waiverId?: number | null;
+ *   closeMode?: string | null;
+ *   linesOverride?: Array<{ itemId: number; closedShortageQty: number; cycleIdAtClose?: number | null; cycleNoAtClose?: number | null }>;
+ * }} input
  */
-async function createNoQtyCloseSnapshot(tx, { salesOrderId, userId, reason }) {
+async function createNoQtyCloseSnapshot(tx, { salesOrderId, userId, reason, waiverId = null, closeMode = null, linesOverride = null }) {
   const soId = Number(salesOrderId);
-  const linesRaw = await computeNoQtyClosedShortageSnapshot(tx, soId);
+  const linesRaw =
+    Array.isArray(linesOverride) && linesOverride.length
+      ? linesOverride.map((ln) => ({
+          itemId: Number(ln.itemId),
+          closedShortageQty: round3(n(ln.closedShortageQty)),
+          cycleIdAtClose: ln.cycleIdAtClose != null ? Number(ln.cycleIdAtClose) : null,
+          cycleNoAtClose: ln.cycleNoAtClose != null ? Number(ln.cycleNoAtClose) : null,
+        }))
+      : await computeNoQtyClosedShortageSnapshot(tx, soId);
   const agg = await tx.noQtySoCloseSnapshot.aggregate({
     where: { salesOrderId: soId },
     _max: { closeVersion: true },
@@ -124,10 +139,13 @@ async function createNoQtyCloseSnapshot(tx, { salesOrderId, userId, reason }) {
       closedByUserId: userId != null && Number.isFinite(Number(userId)) && Number(userId) > 0 ? Number(userId) : null,
       reason: reason?.trim() || null,
       status: SNAPSHOT_STATUS.ACTIVE,
+      waiverId: waiverId != null && Number.isFinite(Number(waiverId)) ? Number(waiverId) : null,
+      closeMode: closeMode != null ? String(closeMode).slice(0, 32) : null,
     },
   });
 
   for (const ln of linesRaw) {
+    if (!(round3(ln.closedShortageQty) > EPS)) continue;
     await tx.noQtySoClosedShortageLine.create({
       data: {
         snapshotId: snap.id,
@@ -268,7 +286,7 @@ async function loadEffectiveNoQtyCarryForwardShortfallByItem(db, input) {
   }
 
   const st = String(so.internalStatus ?? "");
-  if (st === "MANUALLY_CLOSED" || st === "CLOSED" || st === "COMPLETED") {
+  if (st === "MANUALLY_CLOSED" || st === "CLOSED_WITH_WAIVER" || st === "CLOSED" || st === "COMPLETED") {
     return empty();
   }
 

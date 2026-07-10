@@ -123,12 +123,27 @@ function createFinishMockTx({
       },
     },
     carryForwardPending: {
+      findFirst: async () => null,
+      findUnique: async ({ where }) => carryForwardRows.find((r) => r.id === where.id) ?? null,
       create: async ({ data }) => {
         opOrder.push("carryForwardPending.create");
         const row = { id: carryForwardRows.length + 1, ...data };
         carryForwardRows.push(row);
         return row;
       },
+      update: async ({ where, data }) => {
+        const row = carryForwardRows.find((r) => r.id === where.id);
+        if (!row) return null;
+        Object.assign(row, data);
+        return row;
+      },
+    },
+    salesOrder: {
+      findUnique: async ({ where }) =>
+        greenLevel ? null : { id: where.id, orderType: "NO_QTY" },
+    },
+    recoveryAllocation: {
+      findMany: async () => [],
     },
     workOrderLine: {
       update: async ({ data }) => ({ executionWaivedQty: data.executionWaivedQty }),
@@ -254,6 +269,10 @@ describe("productionExecutionService", () => {
     assert.equal(getWoStatus(), "COMPLETED");
     assert.equal(carryForwardRows.length, 1);
     assert.equal(Number(carryForwardRows[0].remainingQty), 300);
+    assert.equal(carryForwardRows[0].recoveryType, "PRODUCTION_SHORTFALL");
+    assert.equal(carryForwardRows[0].recoveryStatus, "OPEN");
+    assert.equal(Number(carryForwardRows[0].sourceQty), 300);
+    assert.equal(carryForwardRows[0].sourceDocumentType, "PRODUCTION_SHORTFALL_RESOLUTION");
     assert.equal(auditRows.length, 1);
     assert.equal(auditRows[0].resolutionType, "CARRY_FORWARD");
 

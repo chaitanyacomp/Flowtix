@@ -72,101 +72,17 @@ async function listCarryForwardPending(db, { salesOrderId } = {}) {
 
 /**
  * Consume matching PENDING pool records when Store creates a Requirement Sheet.
- * Sets shortfallQtySnapshot on RS lines so demand = current + carry forward.
+ * Batch 3C: delegates to recovery auto-allocate (RESERVED + line components).
  */
-async function consumeCarryForwardPendingForRequirementSheet(
-  tx,
-  { salesOrderId, cycleId, requirementSheetId, itemIds, actorUserId, actorRole },
-) {
-  if (!itemIds?.length) return { consumed: [] };
-
-  const pending = await tx.carryForwardPending.findMany({
-    where: {
-      salesOrderId,
-      status: "PENDING",
-      itemId: { in: itemIds },
-      ...(cycleId != null ? { OR: [{ cycleId }, { cycleId: null }] } : {}),
-    },
-    orderBy: { createdAt: "asc" },
-  });
-
-  if (!pending.length) return { consumed: [] };
-
-  const consumed = [];
-  const now = new Date();
-
-  for (const cf of pending) {
-    const qty = round3(n(cf.remainingQty));
-    if (qty <= EPS) continue;
-
-    const line = await tx.requirementSheetLine.findUnique({
-      where: { sheetId_itemId: { sheetId: requirementSheetId, itemId: cf.itemId } },
-    });
-    if (!line) continue;
-
-    const existingSnap = line.shortfallQtySnapshot != null ? round3(n(line.shortfallQtySnapshot)) : 0;
-    const nextSnap = round3(existingSnap + qty);
-
-    await tx.requirementSheetLine.update({
-      where: { id: line.id },
-      data: { shortfallQtySnapshot: String(nextSnap) },
-    });
-
-    await tx.carryForwardPending.update({
-      where: { id: cf.id },
-      data: {
-        status: "CONSUMED",
-        consumedAt: now,
-        targetRequirementSheetId: requirementSheetId,
-      },
-    });
-
-    consumed.push({ carryForwardPendingId: cf.id, itemId: cf.itemId, qty, requirementSheetLineId: line.id });
-  }
-
-  if (consumed.length && typeof actorUserId === "number") {
-    await auditLog.write(tx, {
-      action: auditLog.AuditAction.UPDATE,
-      entityType: auditLog.AuditEntityType.SETTINGS,
-      entityId: `REQUIREMENT_SHEET:${requirementSheetId}`,
-      actorUserId,
-      actorRole,
-      summary: `Consumed ${consumed.length} carry-forward pending record(s) into RS ${requirementSheetId}`,
-      payload: { module: "CARRY_FORWARD_PENDING", consumed },
-    });
-  }
-
-  return { consumed };
+async function consumeCarryForwardPendingForRequirementSheet(tx, args) {
+  const { consumeCarryForwardPendingForRequirementSheet: integrate } = require("./noQtyRsRecoveryIntegrationService");
+  return integrate(tx, args);
 }
 
-async function createCarryForwardPendingFromProductionShortfall(
-  tx,
-  {
-    workOrder,
-    workOrderLine,
-    remainderQty,
-    resolutionReason,
-    remarks,
-    productionShortfallResolutionId,
-    actorUserId,
-  },
-) {
-  return tx.carryForwardPending.create({
-    data: {
-      itemId: workOrderLine.fgItemId,
-      salesOrderId: workOrder.salesOrderId,
-      sourceRequirementSheetId: workOrder.requirementSheetId ?? null,
-      sourceWorkOrderId: workOrder.id,
-      cycleId: workOrder.cycleId ?? null,
-      remainingQty: String(round3(remainderQty)),
-      resolutionReason,
-      resolutionReasonOther: resolutionReason === "OTHER" ? String(remarks ?? "").trim() : null,
-      remarks: remarks?.trim() || null,
-      status: "PENDING",
-      createdByUserId: actorUserId ?? null,
-      productionShortfallResolutionId,
-    },
-  });
+async function createCarryForwardPendingFromProductionShortfall(tx, args) {
+  // Batch 3B: delegate to authoritative recovery engine (idempotent).
+  const { createProductionShortRecovery } = require("./noQtyRecoveryService");
+  return createProductionShortRecovery(tx, args);
 }
 
 async function updatePlannedNextRsHint(db, carryForwardPendingId, { plannedNextRsHint, actorUserId, actorRole }) {

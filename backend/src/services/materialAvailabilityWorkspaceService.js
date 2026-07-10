@@ -28,7 +28,7 @@ const PURCHASE_VISIBLE_MR_STATUSES = [
 ];
 /** Post-GRN: procurement complete, awaiting WO before Store issue. */
 const PROCURED_MR_STATUSES = ["FULLY_PROCURED"];
-const POST_GRN_INELIGIBLE_SO_STATUSES = ["COMPLETED", "CLOSED", "MANUALLY_CLOSED"];
+const POST_GRN_INELIGIBLE_SO_STATUSES = ["COMPLETED", "CLOSED", "MANUALLY_CLOSED", "CLOSED_WITH_WAIVER"];
 const OPEN_MR_STATUSES = PURCHASE_VISIBLE_MR_STATUSES;
 const {
   REGULAR_SO_PROCUREMENT_SOURCE,
@@ -734,7 +734,7 @@ async function loadCandidateSoPlanningShortageSalesOrders(db, filters, existingM
   const rows = await db.salesOrder.findMany({
     where: {
       orderType: "NORMAL",
-      internalStatus: { notIn: ["DRAFT", "CLOSED", "MANUALLY_CLOSED", "COMPLETED"] },
+      internalStatus: { notIn: ["DRAFT", "CLOSED", "MANUALLY_CLOSED", "CLOSED_WITH_WAIVER", "COMPLETED"] },
       workOrders: { none: { status: { not: "REJECTED" } } },
       ...(existingMrSalesOrderIds.size ? { id: { notIn: [...existingMrSalesOrderIds] } } : {}),
     },

@@ -28,7 +28,7 @@ async function closeEmptyNoQtyActiveCycle(tx, { salesOrderId }) {
     err.statusCode = 409;
     throw err;
   }
-  if (so.internalStatus === "MANUALLY_CLOSED" || so.internalStatus === "CLOSED") {
+  if (so.internalStatus === "MANUALLY_CLOSED" || so.internalStatus === "CLOSED_WITH_WAIVER" || so.internalStatus === "CLOSED") {
     const err = new Error("Sales order is already closed.");
     err.statusCode = 409;
     throw err;

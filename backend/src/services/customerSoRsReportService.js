@@ -133,7 +133,7 @@ function resolveNextAction(so, { prodBestBySo, qcBySo, dispBySo }) {
   if (disp && Number(disp.dispatchableNow) > QUEUE_EPS) {
     return { nextActionKey: "DISPATCH_PENDING", nextActionLabel: buildDashboardActionLabel("DISPATCH_PENDING") };
   }
-  if (["COMPLETED", "CLOSED", "MANUALLY_CLOSED"].includes(String(so.internalStatus))) {
+  if (["COMPLETED", "CLOSED", "MANUALLY_CLOSED", "CLOSED_WITH_WAIVER"].includes(String(so.internalStatus))) {
     return { nextActionKey: "DONE", nextActionLabel: "Done" };
   }
   return { nextActionKey: "NONE", nextActionLabel: "—" };
@@ -449,7 +449,7 @@ async function buildCustomerSoRsReport(query) {
     const el = createNextRsBySoId.get(so.id);
     if (
       el?.eligible &&
-      !["MANUALLY_CLOSED", "CLOSED", "COMPLETED"].includes(String(so.internalStatus ?? ""))
+      !["MANUALLY_CLOSED", "CLOSED_WITH_WAIVER", "CLOSED", "COMPLETED"].includes(String(so.internalStatus ?? ""))
     ) {
       rows[i] = {
         ...row,

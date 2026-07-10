@@ -9,7 +9,7 @@ const SO_ID = 1;
 const CYCLE_ID = 10;
 
 function baseNoQtySo(overrides = {}) {
-  return { orderType: "NO_QTY", internalStatus: "OPEN", ...overrides };
+  return { id: SO_ID, orderType: "NO_QTY", internalStatus: "OPEN", docNo: "SO-1", ...overrides };
 }
 
 function makeDb(handlers) {
@@ -17,8 +17,15 @@ function makeDb(handlers) {
     salesOrder: { findUnique: async () => handlers.so ?? baseNoQtySo() },
     salesOrderCycle: {
       findFirst: async () => handlers.activeCycle ?? null,
+      findMany: async () => handlers.cycles ?? (handlers.activeCycle ? [handlers.activeCycle] : []),
     },
-    dispatch: { count: async () => handlers.unlockedDispatchCount ?? 0 },
+    dispatch: {
+      count: async () => handlers.unlockedDispatchCount ?? 0,
+      findMany: async (args) => {
+        if (args?.where?.workflowStatus === "LOCKED") return handlers.cycleDispatch ?? [];
+        return [];
+      },
+    },
     requirementSheet: {
       count: async (args) => {
         if (args?.where?.status === "DRAFT") return handlers.draftRsCount ?? 0;
@@ -37,9 +44,16 @@ function makeDb(handlers) {
       groupBy: async () => handlers.productionGroupBy ?? [],
       findMany: async () => handlers.prodEntries ?? [],
     },
+    qcEntry: {
+      findMany: async () => handlers.qcEntries ?? [],
+    },
     qcRejectedDisposition: { count: async () => handlers.openDispositionCount ?? 0 },
     productionMaterialRequest: { findFirst: async () => handlers.openPmr ?? null },
-    dispatch_findMany: handlers.cycleDispatch ?? [],
+    salesBill: { count: async () => handlers.draftBillCount ?? 0 },
+    noQtyAcceptedFgDisposition: { findMany: async () => handlers.fgDispositions ?? [] },
+    carryForwardPending: {
+      findMany: async () => handlers.recoverySources ?? [],
+    },
   };
 }
 
@@ -136,6 +150,7 @@ describe("noQtySoManualCloseEligibility", () => {
     const r = await computeNoQtyManualCloseEligibility(db, SO_ID);
     assert.equal(r.eligible, true);
     assert.equal(r.reason, "OK");
+    assert.equal(r.mode, "COMPLETE");
   });
 
   it("allows when dispatch finalized on active cycle (sales bill not checked)", async () => {
@@ -172,6 +187,30 @@ describe("noQtySoManualCloseEligibility", () => {
     const r = await computeNoQtyManualCloseEligibility(db, SO_ID);
     assert.equal(r.eligible, true);
     assert.equal(r.reason, "OK");
+  });
+
+  it("returns WAIVER_REQUIRED as eligible when recovery is available", async () => {
+    const db = makeDb({
+      activeCycle: null,
+      recoverySources: [
+        {
+          id: 9,
+          salesOrderId: SO_ID,
+          itemId: 63,
+          recoveryType: "PRODUCTION_SHORTFALL",
+          recoveryStatus: "OPEN",
+          sourceQty: "10",
+          waivedQty: "0",
+          allocations: [],
+          item: { id: 63, itemName: "FG", unit: "Kg" },
+          migrationIncomplete: false,
+        },
+      ],
+    });
+    const r = await computeNoQtyManualCloseEligibility(db, SO_ID);
+    assert.equal(r.eligible, true);
+    assert.equal(r.reason, "WAIVER_REQUIRED");
+    assert.equal(r.mode, "WAIVER_REQUIRED");
   });
 
   it("returns NOT_NO_QTY for REGULAR sales orders (REGULAR completion path unchanged)", async () => {

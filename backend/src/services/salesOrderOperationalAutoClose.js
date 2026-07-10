@@ -3,7 +3,7 @@ const { lockSalesOrderForUpdate } = require("./dispatchWriteLocks");
 const { computeSalesOrderDispatchLineStats } = require("./reportMetrics");
 const { hasPendingProductionOrQc, OPEN_QC_REJECTED_DISPOSITION_STATUSES } = require("./noQtySoOperationalGates");
 
-const CLOSED_STATUSES = new Set(["COMPLETED", "CLOSED", "MANUALLY_CLOSED"]);
+const CLOSED_STATUSES = new Set(["COMPLETED", "CLOSED", "MANUALLY_CLOSED", "CLOSED_WITH_WAIVER"]);
 
 const OPERATIONAL_STATUSES = new Set(["APPROVED", "IN_PROCESS", "OPEN"]);
 

@@ -243,6 +243,56 @@ enum CarryForwardPendingStatus {
   CONSUMED
 }
 
+/// NO_QTY Batch 3A: recovery source lifecycle (SSOT; legacy status kept for compat).
+enum NoQtyRecoverySourceStatus {
+  OPEN
+  PARTIALLY_ALLOCATED
+  FULLY_ALLOCATED
+  PARTIALLY_WAIVED
+  WAIVED
+  CANCELLED
+}
+
+enum NoQtyRecoveryType {
+  PRODUCTION_SHORTFALL
+  QC_FINAL_REJECTION
+}
+
+enum NoQtyRecoverySourceDocumentType {
+  WORK_ORDER
+  PRODUCTION_SHORTFALL_RESOLUTION
+  QC_REJECTED_DISPOSITION
+  QC_ENTRY
+  SCRAP_RECORD
+}
+
+enum NoQtyRecoveryAllocationStatus {
+  RESERVED
+  COMMITTED
+  REVERSED
+}
+
+enum NoQtySoWaiverReasonCode {
+  MACHINE_BREAKDOWN
+  CAPACITY_CONSTRAINT
+  WAITING_FOR_RM
+  TOOL_MAINTENANCE
+  CUSTOMER_PRIORITY_CHANGE
+  MANAGEMENT_DECISION
+  QUALITY_CONCERN
+  CUSTOMER_CANCELLED_BALANCE
+  COMMERCIAL_SETTLEMENT
+  OTHER
+}
+
+enum NoQtyAcceptedFgDispositionType {
+  DISPATCH_BEFORE_CLOSE
+  TRANSFER_TO_GENERAL_STOCK
+  RETAIN_AS_CUSTOMER_SPECIFIC_STOCK
+  SCRAP
+  OTHER_APPROVED_DISPOSITION
+}
+
 enum ProductionWorkOrderReportStatus {
   CONFIRMED
 }
@@ -315,7 +365,9 @@ enum SalesOrderInternalStatus {
   IN_PROCESS
   COMPLETED
   CLOSED
+  /// @deprecated Prefer CLOSED_WITH_WAIVER. Kept for dual-read / rollback window.
   MANUALLY_CLOSED
+  CLOSED_WITH_WAIVER
 }
 
 enum SalesOrderType {
@@ -502,9 +554,15 @@ model User {
   woExecResumed                             WorkOrderProductionExecution[] @relation("WoExecResumedBy")
   woExecCompleted                           WorkOrderProductionExecution[] @relation("WoExecCompletedBy")
   carryForwardPendingCreated                CarryForwardPending[]          @relation("CfPendingCreatedBy")
+  carryForwardPendingCancelled              CarryForwardPending[]          @relation("CfPendingCancelledBy")
   shortfallResolutionsCreated               ProductionShortfallResolution[] @relation("ShortfallResolutionCreatedBy")
   workOrdersMaterialReleased                WorkOrder[]                     @relation("WoMaterialReleasedBy")
   procurementShortCloseEvents               ProcurementShortCloseEvent[]    @relation("ProcurementShortCloseActor")
+  recoveryAllocationsReserved               RecoveryAllocation[]           @relation("RecoveryAllocReservedBy")
+  recoveryAllocationsCommitted              RecoveryAllocation[]           @relation("RecoveryAllocCommittedBy")
+  recoveryAllocationsReversed               RecoveryAllocation[]           @relation("RecoveryAllocReversedBy")
+  noQtySoWaiversApproved                    NoQtySoWaiver[]                @relation("NoQtySoWaiverApprovedBy")
+  noQtyAcceptedFgDispositionsApproved       NoQtyAcceptedFgDisposition[]   @relation("NoQtyFgDispositionApprovedBy")
 }
 
 /// Full-database SQL backup row (see admin backup routes). `filePath` is server-only; never return to clients.
@@ -724,6 +782,8 @@ model Item {
   pmrLines                        ProductionMaterialRequestLine[]
   materialAllocations             MaterialAllocation[]            @relation("MaterialAllocationRmItem")
   noQtyClosedShortageLines        NoQtySoClosedShortageLine[]
+  noQtySoWaiverLines              NoQtySoWaiverLine[]
+  noQtyAcceptedFgDispositions     NoQtyAcceptedFgDisposition[]
   scrapRecords                    ScrapRecord[]                    @relation("ScrapFgItem")
   dispatches                      Dispatch[]
   stockTxns                       StockTransaction[]
@@ -1123,6 +1183,8 @@ model SalesOrder {
   noQtyCloseSnapshots NoQtySoCloseSnapshot[]
   noQtyClosedShortageLines NoQtySoClosedShortageLine[]
   carryForwardPending CarryForwardPending[]
+  noQtySoWaivers NoQtySoWaiver[]
+  noQtyAcceptedFgDispositions NoQtyAcceptedFgDisposition[]
 
   @@index([customerId])
   @@index([shipToAddressId])
@@ -1184,10 +1246,15 @@ model NoQtySoCloseSnapshot {
   reopenedByUserId Int?
   status           String   @default("ACTIVE") @db.VarChar(32)
   reason           String?  @db.Text
+  /// Batch 3A: optional link to waiver ceremony (CLOSED_WITH_WAIVER).
+  waiverId         Int?     @unique
+  /// COMPLETE | WAIVER (string for forward compat; app-owned).
+  closeMode        String?  @db.VarChar(32)
 
   salesOrder SalesOrder @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
   closedBy   User?      @relation("NoQtySoCloseSnapshotClosedBy", fields: [closedByUserId], references: [id], onDelete: SetNull)
   reopenedBy User?      @relation("NoQtySoCloseSnapshotReopenedBy", fields: [reopenedByUserId], references: [id], onDelete: SetNull)
+  waiver     NoQtySoWaiver? @relation(fields: [waiverId], references: [id], onDelete: SetNull)
   lines      NoQtySoClosedShortageLine[]
 
   @@unique([salesOrderId, closeVersion])
@@ -1319,6 +1386,7 @@ model RequirementSheet {
   workOrders WorkOrder[]
   carryForwardPendingSources CarryForwardPending[] @relation("CfPendingSourceRs")
   carryForwardPendingTargets CarryForwardPending[] @relation("CfPendingTargetRs")
+  recoveryAllocations        RecoveryAllocation[]
 
   @@unique([salesOrderId, cycleId, periodKey, version])
   @@index([salesOrderId])
@@ -1331,6 +1399,7 @@ model RequirementSheetLine {
   id                        Int                        @id @default(autoincrement())
   sheetId                   Int
   itemId                    Int
+  /// Base / new demand only (legacy column; same semantics).
   requirementQty            Decimal                    @db.Decimal(18, 3)
   /// NO_QTY: operator carry-forward shortfall from latest previous cycle (planned qty - approved produced qty). Snapshot on lock.
   shortfallQtySnapshot      Decimal?                   @db.Decimal(18, 3)
@@ -1338,11 +1407,18 @@ model RequirementSheetLine {
   gapPercentSnapshot        Decimal?                   @db.Decimal(18, 2)
   suggestedWoQtySnapshot    Decimal?                   @db.Decimal(18, 3)
   colorZoneSnapshot         RequirementSheetColorZone?
+  /// Batch 3A: explicit RS quantity components (backfilled from legacy columns).
+  baseDemandQty                 Decimal @default(0) @db.Decimal(18, 3)
+  productionShortfallQty        Decimal @default(0) @db.Decimal(18, 3)
+  qcRejectionRecoveryQty        Decimal @default(0) @db.Decimal(18, 3)
+  approvedManualAdjustmentQty   Decimal @default(0) @db.Decimal(18, 3)
+  totalRsQty                    Decimal @default(0) @db.Decimal(18, 3)
   createdAt                 DateTime                   @default(now())
   updatedAt                 DateTime                   @updatedAt
 
   sheet RequirementSheet @relation(fields: [sheetId], references: [id], onDelete: Cascade)
   item  Item             @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  recoveryAllocations RecoveryAllocation[]
 
   @@unique([sheetId, itemId])
   @@index([sheetId])
@@ -2427,18 +2503,21 @@ model WorkOrderProductionExecution {
   @@index([executionStatus])
 }
 
-/// NO_QTY: interim holder between Close & Carry Forward and next Requirement Sheet.
+/// NO_QTY: recovery source (evolved carry-forward pending). Legacy status/remainingQty retained for compat.
 model CarryForwardPending {
   id                         Int                              @id @default(autoincrement())
   itemId                     Int
   salesOrderId               Int
   sourceRequirementSheetId   Int?
-  sourceWorkOrderId          Int
+  /// Nullable for QC_FINAL_REJECTION sources (Batch 3A+).
+  sourceWorkOrderId          Int?
   cycleId                    Int?
+  /// @deprecated Prefer derived availability from sourceQty − allocations − waivedQty. Kept for legacy readers.
   remainingQty               Decimal                          @db.Decimal(18, 3)
   resolutionReason           ProductionShortfallResolutionReason
   resolutionReasonOther      String?                          @db.Text
   remarks                    String?                          @db.Text
+  /// Legacy PENDING/CONSUMED — kept for existing services until Batch 3B cutover.
   status                     CarryForwardPendingStatus        @default(PENDING)
   createdByUserId            Int?
   createdAt                  DateTime                         @default(now())
@@ -2447,19 +2526,126 @@ model CarryForwardPending {
   plannedNextRsHint          String?                          @db.VarChar(128)
   productionShortfallResolutionId Int?                        @unique
 
+  /// Batch 3A recovery source fields
+  recoveryType         NoQtyRecoveryType                 @default(PRODUCTION_SHORTFALL)
+  sourceDocumentType   NoQtyRecoverySourceDocumentType?
+  sourceDocumentId     Int?
+  sourceQty            Decimal                           @default(0) @db.Decimal(18, 3)
+  recoveryStatus       NoQtyRecoverySourceStatus         @default(OPEN)
+  waivedQty            Decimal                           @default(0) @db.Decimal(18, 3)
+  cancelledAt          DateTime?
+  cancelledByUserId    Int?
+  cancelReason         String?                           @db.Text
+  /// Set when CONSUMED allocation reconstruction was incomplete.
+  migrationIncomplete  Boolean                           @default(false)
+
   item                   Item                        @relation(fields: [itemId], references: [id], onDelete: Restrict)
   salesOrder             SalesOrder                  @relation(fields: [salesOrderId], references: [id], onDelete: Restrict)
   sourceRequirementSheet RequirementSheet?           @relation("CfPendingSourceRs", fields: [sourceRequirementSheetId], references: [id], onDelete: SetNull)
-  sourceWorkOrder        WorkOrder                   @relation("CfPendingSourceWo", fields: [sourceWorkOrderId], references: [id], onDelete: Restrict)
+  sourceWorkOrder        WorkOrder?                  @relation("CfPendingSourceWo", fields: [sourceWorkOrderId], references: [id], onDelete: Restrict)
   cycle                  SalesOrderCycle?            @relation(fields: [cycleId], references: [id], onDelete: SetNull)
   createdBy              User?                       @relation("CfPendingCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  cancelledBy            User?                       @relation("CfPendingCancelledBy", fields: [cancelledByUserId], references: [id], onDelete: SetNull)
   targetRequirementSheet RequirementSheet?           @relation("CfPendingTargetRs", fields: [targetRequirementSheetId], references: [id], onDelete: SetNull)
   shortfallResolution    ProductionShortfallResolution? @relation(fields: [productionShortfallResolutionId], references: [id], onDelete: SetNull)
+  allocations            RecoveryAllocation[]
+  waiverLines            NoQtySoWaiverLine[]
 
   @@index([salesOrderId, status])
   @@index([itemId, status])
   @@index([sourceWorkOrderId])
   @@index([status])
+  @@index([salesOrderId, recoveryStatus])
+  @@index([salesOrderId, itemId, recoveryType])
+  @@index([sourceDocumentType, sourceDocumentId])
+  @@unique([recoveryType, sourceDocumentType, sourceDocumentId], name: "CarryForwardPending_recovery_source_key")
+}
+
+/// NO_QTY Batch 3A: recovery allocation history (RESERVED / COMMITTED / REVERSED).
+model RecoveryAllocation {
+  id                     Int                           @id @default(autoincrement())
+  recoverySourceId       Int
+  requirementSheetId     Int
+  requirementSheetLineId Int
+  allocatedQty           Decimal                       @db.Decimal(18, 3)
+  status                 NoQtyRecoveryAllocationStatus
+  reservedAt             DateTime?
+  reservedByUserId       Int?
+  committedAt            DateTime?
+  committedByUserId      Int?
+  reversedAt             DateTime?
+  reversedByUserId       Int?
+  reverseReason          String?                       @db.Text
+  createdAt              DateTime                      @default(now())
+
+  recoverySource       CarryForwardPending  @relation(fields: [recoverySourceId], references: [id], onDelete: Restrict)
+  requirementSheet     RequirementSheet     @relation(fields: [requirementSheetId], references: [id], onDelete: Restrict)
+  requirementSheetLine RequirementSheetLine @relation(fields: [requirementSheetLineId], references: [id], onDelete: Restrict)
+  reservedBy           User?                @relation("RecoveryAllocReservedBy", fields: [reservedByUserId], references: [id], onDelete: SetNull)
+  committedBy          User?                @relation("RecoveryAllocCommittedBy", fields: [committedByUserId], references: [id], onDelete: SetNull)
+  reversedBy           User?                @relation("RecoveryAllocReversedBy", fields: [reversedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([recoverySourceId, status])
+  @@index([requirementSheetLineId, status])
+  @@index([requirementSheetId, status])
+}
+
+/// NO_QTY Batch 3A: immutable SO closure waiver ceremony.
+model NoQtySoWaiver {
+  id              Int                    @id @default(autoincrement())
+  salesOrderId    Int
+  reasonCode      NoQtySoWaiverReasonCode
+  remarks         String                 @db.Text
+  approvedByUserId Int
+  approvedAt      DateTime               @default(now())
+  createdAt       DateTime               @default(now())
+
+  salesOrder SalesOrder          @relation(fields: [salesOrderId], references: [id], onDelete: Restrict)
+  approvedBy User                @relation("NoQtySoWaiverApprovedBy", fields: [approvedByUserId], references: [id], onDelete: Restrict)
+  lines      NoQtySoWaiverLine[]
+  closeSnapshot NoQtySoCloseSnapshot?
+
+  @@index([salesOrderId])
+  @@index([approvedAt])
+}
+
+model NoQtySoWaiverLine {
+  id               Int             @id @default(autoincrement())
+  waiverId         Int
+  recoverySourceId Int
+  itemId           Int
+  waivedQty        Decimal         @db.Decimal(18, 3)
+  recoveryType     NoQtyRecoveryType
+
+  waiver         NoQtySoWaiver       @relation(fields: [waiverId], references: [id], onDelete: Cascade)
+  recoverySource CarryForwardPending @relation(fields: [recoverySourceId], references: [id], onDelete: Restrict)
+  item           Item                @relation(fields: [itemId], references: [id], onDelete: Restrict)
+
+  @@index([waiverId])
+  @@index([recoverySourceId])
+  @@index([itemId])
+}
+
+/// NO_QTY Batch 3A: accepted FG disposition audit before CLOSED_WITH_WAIVER (does not post stock).
+model NoQtyAcceptedFgDisposition {
+  id                 Int                            @id @default(autoincrement())
+  salesOrderId       Int
+  itemId             Int
+  qty                Decimal                        @db.Decimal(18, 3)
+  dispositionType    NoQtyAcceptedFgDispositionType
+  stockTransactionId Int?
+  approvedByUserId   Int?
+  remarks            String?                        @db.Text
+  createdAt          DateTime                       @default(now())
+
+  salesOrder       SalesOrder        @relation(fields: [salesOrderId], references: [id], onDelete: Restrict)
+  item             Item              @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  stockTransaction StockTransaction? @relation(fields: [stockTransactionId], references: [id], onDelete: SetNull)
+  approvedBy       User?             @relation("NoQtyFgDispositionApprovedBy", fields: [approvedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([salesOrderId, itemId])
+  @@index([dispositionType])
+  @@index([stockTransactionId])
 }
 
 /// NO_QTY: immutable audit of Production execution shortfall decisions.
@@ -2872,6 +3058,7 @@ model StockTransaction {
   reversalParent           StockTransaction?        @relation("AdjustmentReversal", fields: [reversalOfId], references: [id], onDelete: Restrict)
   reversalChildren         StockTransaction[]       @relation("AdjustmentReversal")
   stockAdjustmentQcEntries StockAdjustmentQcEntry[]
+  noQtyAcceptedFgDispositions NoQtyAcceptedFgDisposition[]
 
   @@index([itemId, date])
   @@index([locationId, itemId, stockBucket])

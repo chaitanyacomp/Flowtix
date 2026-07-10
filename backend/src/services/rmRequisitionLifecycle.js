@@ -95,7 +95,7 @@ function isWorkOrderTerminalForRmClosure(status) {
 }
 
 function isSalesOrderClosedForRmClosure(status) {
-  return ["COMPLETED", "CLOSED", "MANUALLY_CLOSED"].includes(String(status || ""));
+  return ["COMPLETED", "CLOSED", "MANUALLY_CLOSED", "CLOSED_WITH_WAIVER"].includes(String(status || ""));
 }
 
 function buildRmCloseBlockedMessage(mr) {

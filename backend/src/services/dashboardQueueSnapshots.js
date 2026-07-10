@@ -114,7 +114,7 @@ function resolveNoQtyWorkOrderCycleId(wo, so) {
 }
 
 function isClosedNoQtySalesOrderStatus(status) {
-  return ["MANUALLY_CLOSED", "CLOSED", "COMPLETED"].includes(String(status ?? ""));
+  return ["MANUALLY_CLOSED", "CLOSED_WITH_WAIVER", "CLOSED", "COMPLETED"].includes(String(status ?? ""));
 }
 
 /** Set `DASHBOARD_AUDIT_WO147=1` for temporary structured logs for work order id 147 only (runtime audit). */
@@ -486,7 +486,7 @@ async function getDispatchBacklogRowsUncached() {
     const soLines = Array.isArray(so?.lines) ? so.lines : [];
 
     if (so.orderType === "NO_QTY") {
-      if (so.internalStatus === "MANUALLY_CLOSED" || so.internalStatus === "CLOSED") continue;
+      if (so.internalStatus === "MANUALLY_CLOSED" || so.internalStatus === "CLOSED_WITH_WAIVER" || so.internalStatus === "CLOSED") continue;
 
       const { lineStats } = buildNoQtyDispatchLineStatsForAllCycles({
         soId: so.id,
@@ -931,7 +931,7 @@ async function getProductionQueueRowsUncached() {
     }
     if (
       orderType === "NO_QTY" &&
-      ["MANUALLY_CLOSED", "CLOSED", "COMPLETED"].includes(String(so?.internalStatus ?? ""))
+      ["MANUALLY_CLOSED", "CLOSED_WITH_WAIVER", "CLOSED", "COMPLETED"].includes(String(so?.internalStatus ?? ""))
     ) {
       if (auditWo147(wo)) {
         console.info("[AUDIT_WO147_QUEUE]", {
@@ -1844,7 +1844,7 @@ async function getActiveNoQtySalesOrders(options = {}) {
   const rows = await prisma.salesOrder.findMany({
     where: {
       orderType: "NO_QTY",
-      internalStatus: { notIn: ["COMPLETED", "CLOSED", "MANUALLY_CLOSED"] },
+      internalStatus: { notIn: ["COMPLETED", "CLOSED", "MANUALLY_CLOSED", "CLOSED_WITH_WAIVER"] },
     },
     orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
     take: limit,

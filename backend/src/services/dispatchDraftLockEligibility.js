@@ -66,7 +66,7 @@ function resolveRegularDispatchDraftLockEligibility(p) {
   if (internalStatus === "DRAFT") {
     return { state: "WAITING_APPROVAL", reason: "Dispatch requires an approved sales order." };
   }
-  if (internalStatus === "MANUALLY_CLOSED" || internalStatus === "CLOSED") {
+  if (internalStatus === "MANUALLY_CLOSED" || internalStatus === "CLOSED_WITH_WAIVER" || internalStatus === "CLOSED") {
     return { state: "WAITING_APPROVAL", reason: "Sales order is closed for dispatch." };
   }
 
@@ -134,7 +134,7 @@ function resolveNoQtyDispatchDraftLockEligibility(p) {
     noQtyCyclesSorted,
   } = p;
 
-  if (internalStatus === "MANUALLY_CLOSED" || internalStatus === "CLOSED") {
+  if (internalStatus === "MANUALLY_CLOSED" || internalStatus === "CLOSED_WITH_WAIVER" || internalStatus === "CLOSED") {
     return { state: "WAITING_APPROVAL", reason: "Sales order is closed for dispatch." };
   }
 

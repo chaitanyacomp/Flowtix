@@ -131,7 +131,7 @@ async function getWoPrepareDashboardQueues(db = prisma, opts = {}) {
   const rows = await db.salesOrder.findMany({
     where: {
       orderType: "NORMAL",
-      internalStatus: { notIn: ["DRAFT", "CLOSED", "MANUALLY_CLOSED", "COMPLETED"] },
+      internalStatus: { notIn: ["DRAFT", "CLOSED", "MANUALLY_CLOSED", "CLOSED_WITH_WAIVER", "COMPLETED"] },
       workOrders: { none: { status: { not: "REJECTED" } } },
     },
     include: {
@@ -217,7 +217,7 @@ async function getWoPreparePlanningRows(db = prisma, opts = {}) {
   const rows = await db.salesOrder.findMany({
     where: {
       orderType: "NORMAL",
-      internalStatus: { notIn: ["DRAFT", "CLOSED", "MANUALLY_CLOSED", "COMPLETED"] },
+      internalStatus: { notIn: ["DRAFT", "CLOSED", "MANUALLY_CLOSED", "CLOSED_WITH_WAIVER", "COMPLETED"] },
       workOrders: { none: { status: { not: "REJECTED" } } },
     },
     include: {

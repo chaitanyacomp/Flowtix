@@ -179,6 +179,11 @@ type SheetLine = {
   requirementQty: string;
   // New fields for NO_QTY shortfall workflow.
   shortfallQty?: number | null;
+  productionShortfallQty?: number | null;
+  qcRejectionRecoveryQty?: number | null;
+  baseDemandQty?: number | null;
+  approvedManualAdjustmentQty?: number | null;
+  totalRsQty?: number | null;
   qcStockNote?: string | null;
   newWoQty?: string;
   totalWoQty?: number | null;
@@ -255,6 +260,15 @@ type SheetDetail = {
   remarks?: string | null;
   customerName?: string | null;
   lines: SheetLine[];
+  availableQcRecovery?: Array<{
+    recoverySourceId: number;
+    itemId: number;
+    itemName?: string | null;
+    uom?: string | null;
+    availableQty: number;
+    sourceQty?: number;
+    recoveryStatus?: string;
+  }>;
 };
 
 function sheetVersionNum(v: number | null | undefined): number {
@@ -289,15 +303,19 @@ function round2(v: number): number {
 const PLAN_EPS = 1e-6;
 
 /**
- * Draft: matches backend `productionRequiredQty`.
- * NO_QTY: carry-forward applies only when the current requirement is positive.
+ * Draft: matches backend `productionRequiredQty` / `totalRsQty` composition.
+ * NO_QTY: base + production shortfall + QC recovery (+ adj); shortfall applies even when base = 0.
  */
 export function computeDraftProductionRequired(line: SheetLine, isNoQtyOrder: boolean): number {
-  const newWo = safeNum(line.newWoQty ?? line.requirementQty);
+  const newWo = safeNum(line.newWoQty ?? line.requirementQty ?? line.baseDemandQty);
   if (isNoQtyOrder) {
-    if (!(newWo > PLAN_EPS)) return 0;
-    const short = safeNum(line.shortfallQty);
-    return Math.max(0, Math.round((short + newWo) * 1000) / 1000);
+    if (line.totalRsQty != null && Number.isFinite(Number(line.totalRsQty)) && safeNum(line.totalRsQty) > PLAN_EPS) {
+      return Math.max(0, Math.round(safeNum(line.totalRsQty) * 1000) / 1000);
+    }
+    const short = safeNum(line.productionShortfallQty ?? line.shortfallQty);
+    const qc = safeNum(line.qcRejectionRecoveryQty);
+    const adj = safeNum(line.approvedManualAdjustmentQty);
+    return Math.max(0, Math.round((short + newWo + qc + adj) * 1000) / 1000);
   }
   const stock = usableDisplayStock(line.availableStockQty);
   const post = safeNum(line.postCycleApprovalQty);
@@ -417,7 +435,7 @@ export function RequirementSheetPage() {
     addRequirementIntent && so?.currentCycle?.status !== "ACTIVE"
       ? "Next Cycle"
       : so?.currentCycle?.status === "ACTIVE" &&
-          !["COMPLETED", "CLOSED", "MANUALLY_CLOSED"].includes(String(so?.internalStatus ?? "")) &&
+          !["COMPLETED", "CLOSED", "MANUALLY_CLOSED", "CLOSED_WITH_WAIVER"].includes(String(so?.internalStatus ?? "")) &&
           String(so?.processStage?.key ?? "") !== "COMPLETED"
         ? "Active Cycle"
         : "Closed Cycle";
@@ -2394,6 +2412,7 @@ export function RequirementSheetPage() {
                     needsRecalc={needsRecalc}
                     sheetDisplayCycleNo={sheetDisplayCycleNo}
                     rsCycleSummaries={rsCycleSummaries}
+                    availableQcRecovery={sheet?.availableQcRecovery ?? []}
                     onLineChange={(itemId, value) => {
                       setSheet((prev) =>
                         prev
@@ -2409,6 +2428,20 @@ export function RequirementSheetPage() {
                     }}
                     onLineBlur={() => {
                       if (!locked) setNeedsRecalc(true);
+                    }}
+                    onAllocateQcRecovery={async (recoverySourceId, qty) => {
+                      if (!sheet?.id) return;
+                      try {
+                        await apiFetch(`/api/requirement-sheets/${sheet.id}/recovery-allocations`, {
+                          method: "POST",
+                          body: JSON.stringify({ recoverySourceId, qty }),
+                        });
+                        const next = await apiFetch<SheetDetail>(`/api/requirement-sheets/${sheet.id}`);
+                        setSheet(next);
+                        setNeedsRecalc(false);
+                      } catch (e) {
+                        window.alert(e instanceof Error ? e.message : "Failed to allocate QC recovery.");
+                      }
                     }}
                   />
                 ) : (

@@ -307,7 +307,7 @@ async function resolveNoQtyWorkflowStateImpl(db, input) {
     throw err;
   }
 
-  const isCompleted = ["COMPLETED", "MANUALLY_CLOSED", "CLOSED"].includes(String(head.internalStatus ?? ""));
+  const isCompleted = ["COMPLETED", "MANUALLY_CLOSED", "CLOSED_WITH_WAIVER", "CLOSED"].includes(String(head.internalStatus ?? ""));
   if (head.orderType !== "NO_QTY") {
     const rolePayload = roleAwareActionPayload({
       role: userRole,

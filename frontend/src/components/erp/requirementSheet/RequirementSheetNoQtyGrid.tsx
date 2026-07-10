@@ -29,6 +29,9 @@ export type RequirementSheetNoQtyGridLine = {
   itemName: string;
   requirementQty: string;
   shortfallQty?: number | null;
+  productionShortfallQty?: number | null;
+  qcRejectionRecoveryQty?: number | null;
+  totalRsQty?: number | null;
   qcStockNote?: string | null;
   newWoQty?: string;
   totalWoQty?: number | null;
@@ -41,6 +44,14 @@ export type RequirementSheetNoQtyGridLine = {
   previousCycleUndispatchedAcceptedQty?: number | null;
 };
 
+export type QcRecoveryAvailabilityRow = {
+  recoverySourceId: number;
+  itemId: number;
+  itemName?: string | null;
+  uom?: string | null;
+  availableQty: number;
+};
+
 export type RequirementSheetNoQtyGridProps = {
   lines: RequirementSheetNoQtyGridLine[];
   locked: boolean;
@@ -48,8 +59,10 @@ export type RequirementSheetNoQtyGridProps = {
   needsRecalc: boolean;
   sheetDisplayCycleNo: number | null;
   rsCycleSummaries: NoQtyRsCycleSummaryEntry[];
+  availableQcRecovery?: QcRecoveryAvailabilityRow[];
   onLineChange: (itemId: number, value: string) => void;
   onLineBlur: () => void;
+  onAllocateQcRecovery?: (recoverySourceId: number, qty: number) => void;
 };
 
 function DetailMetric({
@@ -82,8 +95,10 @@ export function RequirementSheetNoQtyGrid({
   needsRecalc,
   sheetDisplayCycleNo,
   rsCycleSummaries,
+  availableQcRecovery = [],
   onLineChange,
   onLineBlur,
+  onAllocateQcRecovery,
 }: RequirementSheetNoQtyGridProps) {
   const [expandedItemId, setExpandedItemId] = React.useState<number | null>(null);
 
@@ -99,7 +114,10 @@ export function RequirementSheetNoQtyGrid({
             <th scope="col" className="text-right" title="Prior-cycle production shortfall carried into this cycle">
               Prior shortfall
             </th>
-            <th scope="col" className="text-right" title="Qty that must be produced this cycle (shortfall + current requirement)">
+            <th scope="col" className="text-right" title="Final QC rejection recovery allocated to this sheet">
+              QC recovery
+            </th>
+            <th scope="col" className="text-right" title="Qty that must be produced this cycle (base + shortfall + QC recovery)">
               Total to produce
             </th>
             <th scope="col" className="text-right" title="First-pass production QC still awaiting inspection">
@@ -119,7 +137,8 @@ export function RequirementSheetNoQtyGrid({
         </thead>
         <tbody>
           {lines.map((l) => {
-            const shortfall = safeNum(l.shortfallQty);
+            const shortfall = safeNum(l.productionShortfallQty ?? l.shortfallQty);
+            const qcRecovery = safeNum(l.qcRejectionRecoveryQty);
             const pendingDisp = safeNum(l.pendingQcDispositionQty);
             const productionQcPending = safeNum(l.productionQcPendingQty);
             const rawNewWo = String(l.newWoQty ?? l.requirementQty ?? "");
@@ -130,14 +149,15 @@ export function RequirementSheetNoQtyGrid({
             const postCycle = safeNum(l.postCycleApprovalQty);
             const undispatchedPrior = safeNum(l.previousCycleUndispatchedAcceptedQty);
             const productionRequired = locked
-              ? safeNum(l.totalWoQty ?? l.productionRequiredQty)
+              ? safeNum(l.totalWoQty ?? l.productionRequiredQty ?? l.totalRsQty)
               : needsRecalc
                 ? computeDraftProductionRequired(l, true)
-                : safeNum(l.totalWoQty ?? computeDraftProductionRequired(l, true));
+                : safeNum(l.totalRsQty ?? l.totalWoQty ?? computeDraftProductionRequired(l, true));
             const prevCyclesQty = previousCyclesQtyForItem(rsCycleSummaries, l.itemId, sheetDisplayCycleNo);
             const allCyclesQty = allCyclesQtyForItem(rsCycleSummaries, l.itemId, newReqNum, sheetDisplayCycleNo);
+            const itemQcAvailable = availableQcRecovery.filter((r) => r.itemId === l.itemId && r.availableQty > PLAN_EPS);
 
-            const effectiveDemand = shortfall + newReqNum;
+            const effectiveDemand = shortfall + newReqNum + qcRecovery;
             const status =
               effectiveDemand <= PLAN_EPS
                 ? { kind: "neutral" as const, label: "Awaiting requirement" }
@@ -184,6 +204,9 @@ export function RequirementSheetNoQtyGrid({
                   <td className="erp-table-num font-semibold text-slate-900">
                     {shortfall > PLAN_EPS ? fmtPlan(shortfall) : "—"}
                   </td>
+                  <td className="erp-table-num font-semibold text-slate-900">
+                    {qcRecovery > PLAN_EPS ? fmtPlan(qcRecovery) : "—"}
+                  </td>
                   <td className="erp-table-num font-semibold text-slate-950">{fmtPlan(productionRequired)}</td>
                   <td className="erp-table-num font-semibold text-slate-900">
                     {pendingQcDisplay > PLAN_EPS ? fmtPlan(pendingQcDisplay) : "—"}
@@ -208,7 +231,7 @@ export function RequirementSheetNoQtyGrid({
                 </tr>
                 {detailOpen ? (
                   <tr className="erp-workbench-grid-detail-row">
-                    <td colSpan={9}>
+                    <td colSpan={10}>
                       <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
                         <DetailMetric
                           label="Current cycle demand"
@@ -219,6 +242,11 @@ export function RequirementSheetNoQtyGrid({
                           label="Prior shortfall (carry-forward)"
                           value={shortfall > PLAN_EPS ? fmtPlan(shortfall) : "—"}
                           emphasize={shortfall > PLAN_EPS}
+                        />
+                        <DetailMetric
+                          label="QC recovery (allocated)"
+                          value={qcRecovery > PLAN_EPS ? fmtPlan(qcRecovery) : "—"}
+                          emphasize={qcRecovery > PLAN_EPS}
                         />
                         <DetailMetric label="Total to produce" value={fmtPlan(productionRequired)} emphasize />
                         <DetailMetric
@@ -241,6 +269,48 @@ export function RequirementSheetNoQtyGrid({
                         <DetailMetric label="Previous cycles requirement" value={fmtPlan(prevCyclesQty)} />
                         <DetailMetric label="All cycles requirement" value={fmtPlan(allCyclesQty)} />
                       </div>
+                      {!locked && itemQcAvailable.length > 0 ? (
+                        <div className="mt-3 space-y-2 rounded border border-slate-200 bg-slate-50/80 px-3 py-2">
+                          <div className="text-[12px] font-semibold text-slate-800">Available QC recovery</div>
+                          {itemQcAvailable.map((src) => (
+                            <div
+                              key={src.recoverySourceId}
+                              className="flex flex-wrap items-center gap-2 text-[12px] text-slate-700"
+                            >
+                              <span className="tabular-nums font-semibold">
+                                {fmtPlan(src.availableQty)}
+                                {src.uom ? ` ${src.uom}` : ""}
+                              </span>
+                              <button
+                                type="button"
+                                className="rounded border border-slate-300 bg-white px-2 py-0.5 font-semibold text-slate-800 hover:bg-slate-100 disabled:opacity-50"
+                                disabled={editingDisabled || !onAllocateQcRecovery}
+                                onClick={() => onAllocateQcRecovery?.(src.recoverySourceId, src.availableQty)}
+                              >
+                                Add full
+                              </button>
+                              <button
+                                type="button"
+                                className="rounded border border-slate-300 bg-white px-2 py-0.5 font-semibold text-slate-800 hover:bg-slate-100 disabled:opacity-50"
+                                disabled={editingDisabled || !onAllocateQcRecovery}
+                                onClick={() => {
+                                  const raw = window.prompt(
+                                    `Allocate partial QC recovery (max ${fmtPlan(src.availableQty)}):`,
+                                    String(src.availableQty),
+                                  );
+                                  if (raw == null) return;
+                                  const qty = Number(raw);
+                                  if (!Number.isFinite(qty) || qty <= 0) return;
+                                  onAllocateQcRecovery?.(src.recoverySourceId, qty);
+                                }}
+                              >
+                                Add partial
+                              </button>
+                              <span className="text-slate-500">Skip for now leaves this source available.</span>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
                     </td>
                   </tr>
                 ) : null}

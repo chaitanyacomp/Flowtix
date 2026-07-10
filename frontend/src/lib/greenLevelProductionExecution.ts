@@ -57,7 +57,7 @@ const GL_TERMINAL_WO_STATUSES = new Set([
   "CLOSED",
   "CLOSED_WITH_SHORTFALL",
   "REJECTED",
-  "MANUALLY_CLOSED",
+  "MANUALLY_CLOSED", "CLOSED_WITH_WAIVER",
 ]);
 
 export type GreenLevelProductionQueueAction = "open" | "review" | "view" | "waiting_qa";

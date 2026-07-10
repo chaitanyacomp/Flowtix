@@ -30,7 +30,7 @@ export type PlanningInboxSoSummary = {
 
 export function isNoQtyAgreementClosed(so: Pick<PlanningInboxSoSummary, "internalStatus">): boolean {
   const st = String(so.internalStatus ?? "").toUpperCase();
-  return st === "CLOSED" || st === "MANUALLY_CLOSED" || st === "COMPLETED";
+  return st === "CLOSED" || st === "MANUALLY_CLOSED" || st === "CLOSED_WITH_WAIVER" || st === "COMPLETED";
 }
 
 export function planningInboxCustomerName(so: PlanningInboxSoSummary): string {

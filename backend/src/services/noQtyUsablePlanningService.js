@@ -375,7 +375,7 @@ async function computeGlobalNoQtyUsablePlanningBreakdownByItem(db) {
   const cycles = await db.salesOrderCycle.findMany({
     where: {
       status: { in: ["ACTIVE", "CLOSED"] },
-      salesOrder: { orderType: "NO_QTY", internalStatus: { notIn: ["COMPLETED", "CLOSED", "MANUALLY_CLOSED"] } },
+      salesOrder: { orderType: "NO_QTY", internalStatus: { notIn: ["COMPLETED", "CLOSED", "MANUALLY_CLOSED", "CLOSED_WITH_WAIVER"] } },
     },
     select: { id: true, salesOrderId: true, cycleNo: true, status: true },
     orderBy: [{ cycleNo: "asc" }, { salesOrderId: "asc" }],

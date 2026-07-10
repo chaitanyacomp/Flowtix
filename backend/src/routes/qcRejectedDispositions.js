@@ -16,6 +16,7 @@ const { QC_REWORK_APPROVE_ROLES } = require("../constants/erpRoles");
 const {
   createFgQcStockLocationResolver,
 } = require("../services/fgStockPostingLocationService");
+const { appendTerminalQcScrapRecovery } = require("../services/noQtyRecoveryService");
 
 const qcRejectedDispositionsRouter = express.Router();
 
@@ -418,6 +419,13 @@ qcRejectedDispositionsRouter.post(
           },
           include: dispInclude,
         });
+        // Terminal scrap after rework path — not first-pass QC reject.
+        await appendTerminalQcScrapRecovery(tx, {
+          disposition: updated,
+          scrapQty,
+          actorUserId: userId,
+          remarks: remarksTrim || `Supervisor denied rework → scrap (disposition #${d.id})`,
+        });
         await auditLog.write(tx, {
           action: auditLog.AuditAction.REJECT,
           entityType: auditLog.AuditEntityType.QC_ENTRY,
@@ -709,6 +717,12 @@ qcRejectedDispositionsRouter.post(
           },
           include: dispInclude,
         });
+        await appendTerminalQcScrapRecovery(tx, {
+          disposition: updated,
+          scrapQty: q,
+          actorUserId: userId,
+          remarks: remarksTrim || `Hold scrap (disposition #${d.id})`,
+        });
         return updated;
       });
 
@@ -879,6 +893,12 @@ qcRejectedDispositionsRouter.post(
             },
           });
           const nd2 = await tx.qcRejectedDisposition.findFirst({ where: { id }, include: dispInclude });
+          await appendTerminalQcScrapRecovery(tx, {
+            disposition: nd2 || d,
+            scrapQty: s,
+            actorUserId: userId,
+            remarks: remarksTrim || `Hold scrap (disposition #${d.id})`,
+          });
           if (!nd2 || nd2.status !== "HOLD" || Number(nd2.remainingQty) <= STOCK_EPS) {
             return nd2;
           }
@@ -1156,6 +1176,13 @@ qcRejectedDispositionsRouter.post(
               reason: `Rework final QC (disposition #${d.id})`,
               qcEntryId: d.sourceQcEntryId,
             },
+          });
+          // Final rework QC scrap — authoritative QC_FINAL_REJECTION recovery source.
+          await appendTerminalQcScrapRecovery(tx, {
+            disposition: d,
+            scrapQty: rejectedQty,
+            actorUserId: userId,
+            remarks: `Rework final QC scrap (disposition #${d.id})`,
           });
         }
 

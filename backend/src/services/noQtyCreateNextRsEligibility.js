@@ -67,7 +67,7 @@ async function resolveNoQtyEligibilityCycleIdImpl(db, salesOrderId) {
 
   if (
     so?.orderType === "NO_QTY" &&
-    !["COMPLETED", "CLOSED", "MANUALLY_CLOSED"].includes(String(so.internalStatus ?? ""))
+    !["COMPLETED", "CLOSED", "MANUALLY_CLOSED", "CLOSED_WITH_WAIVER"].includes(String(so.internalStatus ?? ""))
   ) {
     const latestClosed = await db.salesOrderCycle.findFirst({
       where: { salesOrderId: soId, status: "CLOSED" },
@@ -130,7 +130,7 @@ async function computeNoQtyCreateNextRsEligibility(db, input) {
   if (!so || so.orderType !== "NO_QTY") {
     return { eligible: false, reason: "NOT_NO_QTY", existingNextRsDocNo: null, existingNextRsId: null };
   }
-  if (["COMPLETED", "CLOSED", "MANUALLY_CLOSED"].includes(String(so.internalStatus))) {
+  if (["COMPLETED", "CLOSED", "MANUALLY_CLOSED", "CLOSED_WITH_WAIVER"].includes(String(so.internalStatus))) {
     return { eligible: false, reason: "SO_CLOSED", existingNextRsDocNo: null, existingNextRsId: null };
   }
 

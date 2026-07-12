@@ -120,6 +120,52 @@ export function isExecutionModeRequested(searchParams: Pick<URLSearchParams, "ge
   return Number.isSafeInteger(id) && id > 0;
 }
 
+/**
+ * Explicit RS execution identity from deep link (Pending Actions / Execution Register).
+ * Must not be replaced by ACTIVE-cycle / latest-RS fallback.
+ */
+export function resolveExplicitExecutionSheetId(
+  searchParams: Pick<URLSearchParams, "get">,
+): number | null {
+  const raw = String(searchParams.get("sheetId") ?? searchParams.get("requirementSheetId") ?? "").trim();
+  if (!/^\d{1,15}$/.test(raw)) return null;
+  const id = Number(raw);
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
+}
+
+export function shouldHonorExplicitRsExecutionIdentity(input: {
+  searchParams: Pick<URLSearchParams, "get">;
+  addRequirementIntent?: boolean;
+}): boolean {
+  if (input.addRequirementIntent) return false;
+  const sheetId = resolveExplicitExecutionSheetId(input.searchParams);
+  if (sheetId == null) return false;
+  const focusExecution = input.searchParams.get("focus") === "execution";
+  const fromPending = input.searchParams.get("from") === "pending-actions";
+  const fromRegister = (input.searchParams.get("source") || "").toLowerCase() === "no_qty_so";
+  return focusExecution || fromPending || fromRegister;
+}
+
+/** Prefer URL cycle when opening an explicit prior-cycle execution deep link. */
+export function resolveExecutionViewCycleId(input: {
+  searchParams: Pick<URLSearchParams, "get">;
+  soCurrentCycleId: number | null;
+  addRequirementIntent?: boolean;
+}): number | null {
+  const soCycle =
+    input.soCurrentCycleId != null && Number.isFinite(Number(input.soCurrentCycleId)) && Number(input.soCurrentCycleId) > 0
+      ? Number(input.soCurrentCycleId)
+      : null;
+  if (shouldHonorExplicitRsExecutionIdentity(input)) {
+    const raw = String(input.searchParams.get("cycleId") ?? "").trim();
+    if (/^\d{1,15}$/.test(raw)) {
+      const n = Number(raw);
+      if (Number.isSafeInteger(n) && n > 0) return n;
+    }
+  }
+  return soCycle;
+}
+
 /** P10-A3F — Use execution-only page shell (hide planning chrome). */
 export function shouldUseNoQtyExecutionModeShell(input: {
   executionModeRequested: boolean;

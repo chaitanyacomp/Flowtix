@@ -98,9 +98,24 @@ export function pendingActionWorkspaceListHref(href: string): string {
       return `/production-release?${params.toString()}`;
     }
     const params = new URLSearchParams();
-    const preserveKeys = ["returnTo", "from", "source", "onlyBlocked", "demandPool", "focus", "planId"];
+    const preserveKeys = [
+      "returnTo",
+      "from",
+      "source",
+      "onlyBlocked",
+      "demandPool",
+      "focus",
+      "planId",
+      "monthlyPlanId",
+      "period",
+      "openAdditionalPlan",
+    ];
     if (path.endsWith("/production")) {
       preserveKeys.push("productionBucket", "flow", "salesOrderId", "cycleId");
+    }
+    // NO_QTY WO placement / RS execution: never drop explicit RS identity (FT-PD-040 §7.10).
+    if (path.includes("/requirement-sheets")) {
+      preserveKeys.push("sheetId", "requirementSheetId", "cycleId", "salesOrderId");
     }
     for (const key of preserveKeys) {
       const v = url.searchParams.get(key);

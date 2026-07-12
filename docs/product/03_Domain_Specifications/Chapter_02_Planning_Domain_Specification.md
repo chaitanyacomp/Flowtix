@@ -6,7 +6,7 @@
 | **Volume** | 3 — Domain Specifications |
 | **Chapter** | 2 — Planning Domain Specification |
 | **Title** | Planning Domain Specification |
-| **Version** | 1.0.0 |
+| **Version** | 1.0.1 |
 | **Status** | Draft — Architecture Review |
 | **Effective date** | 2026-05-29 |
 | **Author** | FT ERP Product Team |
@@ -30,6 +30,7 @@
 | Version | Date | Author | Summary |
 |---------|------|--------|---------|
 | 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial Planning domain — REGULAR and NO_QTY documents, states, logic |
+| 1.0.1 | 2026-07-10 | FT ERP Product Team | PLN-19 — Additional Plan source-identity coverage (RS/cycle/component); pending QC excluded |
 
 **Supersedes:** None.
 
@@ -354,7 +355,24 @@ Rolls unmet or partially met cycle/period intent into current planning view **wi
 
 **Applies:** NO_QTY.
 
-**Additional Plan** (`planKind = ADDITIONAL`) after Initial Plan approval in same period. Captures incremental FG/RM delta. Requires Purchase review and approval; RM release publishes **incremental** MR only.
+**Additional Plan** (`planKind = ADDITIONAL`) after Initial Plan approval in same period. Captures **uncovered requirement components** by immutable source identity (Requirement Sheet ID / RS line ID / cycle / component type)—not a period+FG quantity subtraction against all prior plans.
+
+**Coverage rule (PLN-19):** An approved plan’s customer production quantity is bound to specific requirement components via `MonthlyPlanRequirementCoverage`. Plan 1 covering RS-1 / Cycle 1 must never offset independent RS-2 / Cycle 2 demand for the same FG item in the same accounting period.
+
+**Component model:**
+
+| Component | Identity | Notes |
+|-----------|----------|-------|
+| New RS base demand | RS line + `RS_BASE_DEMAND` | Independent per RS / cycle |
+| Production shortfall carry-forward | RS line + `PRODUCTION_SHORTFALL` | Counted once where embedded on the eligible RS; do not double-add |
+| Final QC rejection recovery | RS line + `QC_REJECTION_RECOVERY` | Only finalized qty on the RS line; pending QC does not create carry-forward |
+| Green-level replenishment | Separate identity | Never silently merged with customer demand |
+
+**Additional Plan Qty** = sum of eligible components with status UNPLANNED (not covered by any previous APPROVED plan document).
+
+**Save / submit persistence (PLN-19 companion):** For `planKind = ADDITIONAL`, Save and pre-submit line sync **SHALL** derive suggested / customer production quantities from **source-identity coverage** (or preserve persisted Additional line quantities). They **SHALL NOT** rebind Additional draft lines from Initial-plan requirement composition. Save is a DRAFT self-loop and must not zero valid Additional quantities or force draft recreation.
+
+Requires Purchase review and approval; RM release publishes **incremental** MR only.
 
 ARR may cover ad-hoc RM outside monthly freeze—supplementary, not substitute for base MPRS release ([Glossary ARR](../01_Product_Foundation/Chapter_03_FT_ERP_Glossary_and_Standard_Terminology.md)).
 
@@ -425,6 +443,7 @@ Partial RM → proportional reduction. Multiple placement waves allowed. Suggest
 | **PLN-16** | Locked RS required before NO_QTY WO placement. |
 | **PLN-17** | Approved BOM required before MR raise or WO create (both models). |
 | **PLN-18** | Carry forward **must not** duplicate already-fulfilled quantity. |
+| **PLN-19** | **Additional Plan** coverage is by **source identity** (RS / cycle / line / component). An earlier approved plan must not consume demand belonging to a later Requirement Sheet merely because FG item and period match. |
 
 *Architecture rules RPL-* and NPL-* in Volume 2 remain authoritative; PLN rules operationalize them.*
 
@@ -440,6 +459,7 @@ Engine-generated only. Representative planning Pending Actions:
 |----|---------|--------|
 | `PLN_RS_LOCK` | RS Active; lines complete | Lock Requirement Sheet |
 | `PLN_MPRS_DRAFT` | Period open; no draft plan | Complete MPRS draft |
+| `PLN_MPRS_ADDITIONAL_CREATE` | Approved plan exists; uncovered source-identity components remain; no active draft | Create Additional Monthly Plan |
 | `PLN_MPRS_SUBMIT` | MPRS Draft complete | Submit for Purchase review |
 | `PLN_MPRS_RELEASE` | MPRS Approved; not Released; **Estimated Net RM Requirement > 0** | Release RM to procurement |
 | `PLN_WO_PLACE` | NO_QTY RS locked + RM ready (includes **Procurement Not Required** after approval when net RM = 0) | Place Work Order / Material Issue |

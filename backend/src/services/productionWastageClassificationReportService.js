@@ -1,153 +1,89 @@
+/**
+ * Thin compatibility wrapper — Lane C production wastage classification report.
+ * Delegates to productionWastageAnalysisQueryService (modes: legacy | wo-detail | type-summary).
+ */
 const { prisma } = require("../utils/prisma");
-const { qtyToNumber } = require("./rmPurchaseHelpers");
-const { round3 } = require("./bomExplosionService");
 const { mapWastageDetailRows } = require("./productionWastageClassificationService");
+const { buildProductionWastageAnalysis } = require("./reports/productionWastageAnalysisQueryService");
 
-function n(v) {
-  return qtyToNumber(v);
+function looksLikePrisma(candidate) {
+  return (
+    candidate != null &&
+    typeof candidate === "object" &&
+    (typeof candidate.productionWorkOrderReport?.findMany === "function" ||
+      typeof candidate.productionWorkOrderReportWastageDetail?.findMany === "function")
+  );
 }
 
 /**
- * Reporting foundation — aggregated production report wastage classification rows.
- * Supports item / customer / operator / trend / Pareto slices via query filters.
+ * @param {object} filtersOrDb - query filters, or prisma when called as (db, filters)
+ * @param {object} [maybeFilters]
  */
-async function buildProductionWastageClassificationReport(db = prisma, filters = {}) {
-  const from = filters.fromDate ? new Date(filters.fromDate) : null;
-  const to = filters.toDate ? new Date(filters.toDate) : null;
-  const itemId = filters.itemId != null ? Number(filters.itemId) : null;
-  const customerId = filters.customerId != null ? Number(filters.customerId) : null;
-  const wastageTypeId = filters.wastageTypeId != null ? Number(filters.wastageTypeId) : null;
+async function buildProductionWastageClassificationReport(filtersOrDb = {}, maybeFilters) {
+  let db = prisma;
+  let filters = filtersOrDb;
 
-  const rows = await db.productionWorkOrderReportWastageDetail.findMany({
-    where: {
-      ...(wastageTypeId > 0 ? { wastageTypeId } : {}),
-      productionReport: {
-        status: "CONFIRMED",
-        ...(from || to
-          ? {
-              confirmedAt: {
-                ...(from ? { gte: from } : {}),
-                ...(to ? { lte: to } : {}),
-              },
-            }
-          : {}),
-        workOrder: {
-          ...(customerId > 0 ? { salesOrder: { customerId } } : {}),
-        },
-        ...(itemId > 0
-          ? {
-              lines: { some: { itemId } },
-            }
-          : {}),
-      },
-    },
-    include: {
-      wastageType: { select: { id: true, name: true } },
-      productionReport: {
-        select: {
-          id: true,
-          confirmedAt: true,
-          workOrderId: true,
-          workOrder: {
-            select: {
-              id: true,
-              docNo: true,
-              salesOrder: {
-                select: {
-                  id: true,
-                  docNo: true,
-                  customer: { select: { id: true, name: true } },
-                },
-              },
-              lines: {
-                select: {
-                  fgItem: { select: { id: true, itemName: true } },
-                },
-                take: 1,
-              },
-            },
-          },
-          lines: { select: { itemId: true, item: { select: { itemName: true, unit: true } } } },
-        },
-      },
-    },
-    orderBy: [{ productionReport: { confirmedAt: "desc" } }, { sortOrder: "asc" }, { id: "asc" }],
-  });
-
-  const detailRows = rows.map((row) => {
-    const report = row.productionReport;
-    const wo = report?.workOrder;
-    const fg = wo?.lines?.[0]?.fgItem ?? null;
-    const rmLines = report?.lines ?? [];
-    const totalWastageQty = round3(rmLines.reduce((acc, ln) => acc + Math.max(0, n(ln.scrapWasteQty)), 0));
-    return {
-      id: row.id,
-      reportId: report?.id ?? null,
-      confirmedAt: report?.confirmedAt ?? null,
-      workOrderId: wo?.id ?? null,
-      workOrderNo: wo?.docNo ?? null,
-      salesOrderId: wo?.salesOrder?.id ?? null,
-      salesOrderNo: wo?.salesOrder?.docNo ?? null,
-      customerId: wo?.salesOrder?.customer?.id ?? null,
-      customerName: wo?.salesOrder?.customer?.name ?? null,
-      fgItemId: fg?.id ?? null,
-      fgItemName: fg?.itemName ?? null,
-      wastageTypeId: row.wastageTypeId,
-      wastageTypeName: row.wastageType?.name ?? null,
-      qty: round3(n(row.qty)),
-      remarks: row.remarks ?? null,
-      reportTotalWastageQty: totalWastageQty,
-      rmItems: rmLines.map((ln) => ({
-        itemId: ln.itemId,
-        itemName: ln.item?.itemName ?? null,
-        unit: ln.item?.unit ?? null,
-        totalWastageQty: round3(Math.max(0, n(ln.scrapWasteQty))),
-      })),
-    };
-  });
-
-  const byReason = new Map();
-  for (const row of detailRows) {
-    const key = row.wastageTypeId;
-    const prev = byReason.get(key) ?? {
-      wastageTypeId: row.wastageTypeId,
-      wastageTypeName: row.wastageTypeName,
-      qty: 0,
-      reportCount: 0,
-      _reports: new Set(),
-    };
-    prev.qty = round3(prev.qty + row.qty);
-    prev._reports.add(row.reportId);
-    byReason.set(key, prev);
+  if (looksLikePrisma(filtersOrDb)) {
+    db = filtersOrDb;
+    filters = maybeFilters || {};
+  } else if (maybeFilters != null && looksLikePrisma(maybeFilters)) {
+    // Defensive: (filters, db)
+    db = maybeFilters;
   }
-  const pareto = [...byReason.values()]
-    .map((row) => ({
-      wastageTypeId: row.wastageTypeId,
-      wastageTypeName: row.wastageTypeName,
-      qty: row.qty,
-      reportCount: row._reports.size,
-    }))
-    .sort((a, b) => b.qty - a.qty);
 
-  const totalQty = round3(detailRows.reduce((acc, row) => acc + row.qty, 0));
+  const mode = String(filters.mode || "legacy").trim().toLowerCase();
+  const forExport = filters.export === "1" || filters.export === "true" || filters.export === "all";
 
-  return {
-    filters: {
-      fromDate: from?.toISOString() ?? null,
-      toDate: to?.toISOString() ?? null,
-      itemId: itemId > 0 ? itemId : null,
-      customerId: customerId > 0 ? customerId : null,
-      wastageTypeId: wastageTypeId > 0 ? wastageTypeId : null,
+  const result = await buildProductionWastageAnalysis(
+    {
+      mode: mode === "wo-detail" || mode === "type-summary" ? mode : "legacy",
+      filters: {
+        fromDate: filters.fromDate || filters.dateFrom || null,
+        toDate: filters.toDate || filters.dateTo || null,
+        workOrderId: filters.workOrderId,
+        woNumber: filters.woNumber || filters.workOrderNo,
+        salesOrderId: filters.salesOrderId,
+        customerId: filters.customerId,
+        fgItemId: filters.fgItemId,
+        rmItemId: filters.rmItemId || filters.itemId,
+        wastageTypeId: filters.wastageTypeId,
+        category: filters.category,
+        page: forExport ? 1 : filters.page,
+        pageSize: forExport ? 100000 : filters.pageSize,
+        sortField: filters.sortField,
+        sortDir: filters.sortDir,
+      },
+      page: forExport ? 1 : filters.page,
+      pageSize: forExport ? 100000 : filters.pageSize,
+      sort: filters.sortField
+        ? { field: filters.sortField, dir: filters.sortDir || "desc" }
+        : undefined,
     },
-    summary: {
-      rowCount: detailRows.length,
-      totalQty,
-      distinctReports: new Set(detailRows.map((r) => r.reportId)).size,
-    },
-    pareto,
-    rows: detailRows,
-    generatedAt: new Date().toISOString(),
-  };
+    db,
+  );
+
+  // Strip internal export helper if present
+  if (result.allRowsForExport) {
+    if (forExport && (result.mode === "wo-detail" || result.mode === "type-summary")) {
+      result.rows = result.allRowsForExport;
+      result.pagination = {
+        page: 1,
+        pageSize: result.allRowsForExport.length,
+        total: result.allRowsForExport.length,
+        totalPages: 1,
+      };
+    }
+    delete result.allRowsForExport;
+  }
+
+  // Preserve legacy filter key `itemId` alias in applied filters for old consumers
+  if (result.filters && filters.itemId != null && result.filters.rmItemId == null) {
+    result.filters.itemId = Number(filters.itemId) || null;
+  } else if (result.filters) {
+    result.filters.itemId = result.filters.rmItemId;
+  }
+
+  return result;
 }
 
 module.exports = {

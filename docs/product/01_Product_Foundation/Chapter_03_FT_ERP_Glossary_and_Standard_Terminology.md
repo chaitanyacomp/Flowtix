@@ -6,7 +6,7 @@
 | **Volume** | 1 — Product Foundation |
 | **Chapter** | 3 — FT ERP Glossary & Standard Terminology |
 | **Title** | FT ERP Glossary & Standard Terminology |
-| **Version** | 1.0.0 |
+| **Version** | 1.1.0 |
 | **Status** | Draft — Architecture Review |
 | **Effective date** | 2026-05-29 |
 | **Author** | FT ERP Product Team |
@@ -26,6 +26,7 @@
 | Version | Date | Author | Summary |
 |---------|------|--------|---------|
 | 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial glossary — controlled vocabulary for FT ERP Product Documentation |
+| 1.1.0 | 2026-07-10 | FT ERP Product Team | Wastage / MWN / Production Variance / FG Scrap lane distinctions |
 
 **Supersedes:** None (first glossary release).
 
@@ -326,7 +327,23 @@ QA disposition requiring correction or reprocessing before acceptance. Rework re
 
 ### Scrap
 
-QA or production disposition writing off non-salable FG (or material) with audit trail. Scrap reduces effective good output.
+QA or production disposition writing off non-salable FG (or material) with audit trail. Scrap reduces effective good output. **FG Scrap** (`ScrapRecord`) is analytical **Lane D** and must not be totaled with Production Report RM wastage classification (Lane C) or Material Wastage Notes (Lane A).
+
+### Wastage (Production Report classification)
+
+RM quantity classified on a **CONFIRMED Production Work Order Report** against the `WastageType` master (Lane C). Distinct from ledger write-off via Material Wastage Note. Returns are not wastage. Material Cost Loss is deferred pending valuation policy.
+
+### RM Wastage Note (MWN)
+
+Store/production document that posts `RM_WASTAGE` ledger OUT from the production location (Lane A). Source for the **RM Wastage Report**. Must not be double-counted with Lane C classification KPIs.
+
+### Production Variance (RM)
+
+Difference between planned/standard RM consumption (`ProductionEntryRmConsumption`) and actual consumption (Lane B). Source for **Production RM Variance**. Not a wastage classification report.
+
+### FG Scrap
+
+See **Scrap**. Report surface: Scrap Report.
 
 ---
 

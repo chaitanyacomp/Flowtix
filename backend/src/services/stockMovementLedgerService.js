@@ -14,6 +14,7 @@ const MOVEMENT_FILTERS = new Set([
   "LOCATION_TRANSFER",
   "MATERIAL_RETURN",
   "PRODUCTION_CONSUMPTION",
+  "RM_WASTAGE",
   "DISPATCH",
   "QC",
   "REVERSAL",
@@ -31,6 +32,7 @@ const STOCK_TXN_TYPES = new Set([
   "QC",
   "DISPATCH",
   "SCRAP",
+  "RM_WASTAGE",
   "ADJUSTMENT",
   "BUCKET_TRANSFER",
   "LOCATION_TRANSFER",
@@ -93,6 +95,7 @@ function buildMovementFilterWhere(filter) {
   if (f === "GRN") return { transactionType: "GRN" };
   if (f === "LOCATION_TRANSFER") return { transactionType: "LOCATION_TRANSFER" };
   if (f === "PRODUCTION_CONSUMPTION") return { transactionType: "ISSUE", qtyOut: { gt: 0 } };
+  if (f === "RM_WASTAGE") return { transactionType: "RM_WASTAGE" };
   if (f === "DISPATCH") return { transactionType: { in: ["DISPATCH", "DISPATCH_REVERSAL"] } };
   if (f === "QC") return { transactionType: { in: ["QC", "QC_REVERSAL", "PRODUCTION"] } };
   if (f === "ADJUSTMENT") return { transactionType: "ADJUSTMENT" };

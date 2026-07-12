@@ -220,7 +220,7 @@ async function loadConfirmedReport(db, workOrderId) {
         orderBy: { id: "asc" },
       },
       wastageDetails: {
-        include: { wastageType: { select: { id: true, name: true } } },
+        include: { wastageType: { select: { id: true, code: true, name: true, category: true, isActive: true } } },
         orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
       },
     },
@@ -580,6 +580,38 @@ async function confirmProductionWorkOrderReport(db, workOrderId, input = {}, act
     });
   }
 
+  // Wastage-only disposition (no return pending): post RM_WASTAGE immediately so
+  // PRODUCTION USABLE does not retain finalized process loss.
+  for (const line of lineCreates) {
+    const scrapQty = round3(n(line.scrapWasteQty));
+    const returnQty = round3(n(line.rmReturnQty));
+    if (scrapQty <= EPS || returnQty > EPS) continue;
+    const locations = await resolveSuggestedRmReturnLocations(db, {
+      workOrderId: id,
+      itemId: line.itemId,
+    });
+    const fromLocationId = locations?.suggestedFromLocationId ?? null;
+    if (!fromLocationId) continue;
+    try {
+      await createMaterialWastageNote(
+        {
+          workOrderId: id,
+          fromLocationId,
+          itemId: line.itemId,
+          qty: scrapQty,
+          reason: "PROCESS_LOSS",
+          remarks: `Auto-declared from Production Report confirm (wastage-only disposition).`,
+        },
+        actor,
+      );
+    } catch (err) {
+      if (String(err?.message ?? "").includes("exceeds available returnable")) {
+        continue;
+      }
+      throw err;
+    }
+  }
+
   const actorUserId = actor.userId ?? actor.actorUserId;
   if (typeof actorUserId === "number") {
     await auditLog.write(db, {
@@ -783,13 +815,10 @@ async function receiveProductionRmReturnPending(input, actor = {}, db = prisma) 
   const report = await loadConfirmedReport(db, receivedPending.workOrderId);
   const reportLine = report?.lines?.find((ln) => ln.itemId === receivedPending.itemId);
   const scrapQty = reportLine ? round3(n(reportLine.scrapWasteQty)) : 0;
-  const woForWastage = await db.workOrder.findUnique({
-    where: { id: receivedPending.workOrderId },
-    select: { salesOrder: { select: { orderType: true } } },
-  });
-  const isRegularWorkOrder = (woForWastage?.salesOrder?.orderType ?? "NORMAL") !== "NO_QTY";
   let wastageNote = null;
-  if (scrapQty > EPS && isRegularWorkOrder) {
+  // Finalized report wastage must leave PRODUCTION USABLE for Regular and NO_QTY.
+  // Consumption (ISSUE) and return (LOCATION_TRANSFER) remain separate — no double deduction.
+  if (scrapQty > EPS) {
     try {
       wastageNote = await createMaterialWastageNote(
         {

@@ -846,7 +846,7 @@ describe("assessNoQtyPlacementStageForCycle", () => {
     }
   });
 
-  it("does not unlock Place WO when approved Plan 1 exists but additional planning is required", async () => {
+  it("unlocks Place WO when Plan 1 is released even if Additional Plan is still required", async () => {
     const db = createAssessorMockDb({
       sheets: [lockedSheetFixture],
       plans: [{ id: 5, periodKey: "2026-06", releasedAt: new Date("2026-06-01"), releasedRevision: 1, planSequenceNo: 1 }],
@@ -867,10 +867,10 @@ describe("assessNoQtyPlacementStageForCycle", () => {
       }),
     );
 
-    assert.equal(res.readyToPlaceWo, false);
-    assert.equal(res.released, false);
-    assert.equal(res.materialRequirementId, null);
-    assert.equal(res.processStageKey, "NO_QTY_REQUIREMENT_READY");
+    assert.equal(res.readyToPlaceWo, true);
+    assert.equal(res.released, true);
+    assert.equal(res.materialRequirementId, 9);
+    assert.equal(res.processStageKey, "NO_QTY_READY_TO_PLACE_WO");
   });
 
   it("returns readyToPlaceWo false when RS balance is zero", async () => {

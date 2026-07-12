@@ -6,7 +6,7 @@
 | **Volume** | 3 — Domain Specifications |
 | **Chapter** | 4 — Manufacturing Domain Specification |
 | **Title** | Manufacturing Domain Specification |
-| **Version** | 1.0.0 |
+| **Version** | 1.1.0 |
 | **Status** | Draft — Architecture Review |
 | **Effective date** | 2026-05-29 |
 | **Author** | FT ERP Product Team |
@@ -30,6 +30,7 @@
 | Version | Date | Author | Summary |
 |---------|------|--------|---------|
 | 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial Manufacturing domain — WO through Production Entry handoff to QA |
+| 1.1.0 | 2026-07-10 | FT ERP Product Team | WastageType master extension (code/category/description); Lane C Production Report classification analytics ownership clarified |
 
 **Supersedes:** None.
 
@@ -611,6 +612,21 @@ stateDiagram-v2
 | Version | Date | Author | Summary |
 |---------|------|--------|---------|
 | 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial Manufacturing Domain Specification |
+| 1.1.0 | 2026-07-10 | FT ERP Product Team | WastageType master (code/category/description); Lane C Production Report wastage classification analytics |
+
+---
+
+## 16A. Production Report wastage classification (Lane C)
+
+Production Work Order Report confirmation owns **wastage classification** against the `WastageType` master (`code` optional unique, `category`, `description`, `name`, `sortOrder`, `isActive`).
+
+| Rule | Requirement |
+|------|-------------|
+| Ownership | Classification is entered/confirmed on **Production Work Order Report**, not Production Entry |
+| Active types | Inactive types are unavailable for **new** classification |
+| Historical | Inactive types remain visible on confirmed historical reports and Lane C analytics |
+| Analytical lanes | Lane C classification qty **SHALL NOT** be merged with MaterialWastageNote (Lane A), PE consumption variance (Lane B), or ScrapRecord (Lane D) in the same KPI |
+| Deferred | Machine / Shift / Operator dimensions and Material Cost Loss are **not** implemented until persisted dimensions / valuation policy exist |
 
 ---
 

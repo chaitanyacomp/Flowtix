@@ -6,7 +6,7 @@
 | **Volume** | 2 — Business Architecture |
 | **Chapter** | 3 — NO_QTY Agreement Planning Pipeline |
 | **Title** | NO_QTY Agreement Planning Pipeline |
-| **Version** | 1.0.0 |
+| **Version** | 1.0.1 |
 | **Status** | Draft — Architecture Review |
 | **Effective date** | 2026-05-29 |
 | **Author** | FT ERP Product Team |
@@ -28,6 +28,9 @@
 | Version | Date | Author | Summary |
 |---------|------|--------|---------|
 | 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial NO_QTY planning pipeline — agreement through Work Order creation |
+| 1.0.1 | 2026-07-10 | FT ERP Product Team | Additional Plan source-identity coverage — RS/cycle components; no period+FG offset |
+| 1.0.2 | 2026-07-10 | FT ERP Product Team | WO placement PA uses SO-wide locked-RS candidate (same as Execution Register) |
+| 1.0.3 | 2026-07-10 | FT ERP Product Team | Admin reset: recovery/waiver children deleted before CarryForwardPending (Restrict FK order) |
 
 **Supersedes:** None.
 
@@ -226,7 +229,9 @@ Before approval, Store sees **live RM estimate** from planned FG; after Purchase
 
 ### 8.5 Additional plans
 
-**Additional Plan** documents capture mid-period FG/RM deltas. Purchase reviews and approves; release adds incremental MR demand to MPRS pool without rewriting Initial Plan history.
+**Additional Plan** documents capture mid-period FG/RM deltas for **uncovered requirement components** identified by Requirement Sheet / cycle / line / component type. Purchase reviews and approves; release adds incremental MR demand to MPRS pool without rewriting Initial Plan history.
+
+**Must not** treat Additional Plan as `current period FG suggested qty − sum(all prior approved plan FG qty)`. An approved Plan 1 bound to RS-1 must not offset RS-2 demand for the same FG in the same period. Production shortfall already embedded on the eligible RS is counted once; pending QC rejection is not carried forward until finalized on the RS.
 
 ---
 
@@ -323,7 +328,7 @@ Engine-generated only (Constitution Art. 12). Representative **NO_QTY planning-p
 | Complete / lock Requirement Sheet | Cycle not ready for execution |
 | Complete Monthly Production Plan draft | Period FG not submitted |
 | Release RM requirement to procurement | Plan approved; `releasedAt` pending; **net RM > 0** |
-| WO placement / Create Work Order / Material Issue | RS balance + RM readiness (includes **Procurement Not Required** when net RM = 0) |
+| WO placement / Create Work Order / Material Issue | RS balance + RM readiness (includes **Procurement Not Required** when net RM = 0). Store WO Pending Action uses the **same SO-wide locked-RS candidate** as the Execution Register — not ACTIVE-cycle-only. |
 | Continue NO_QTY planning | Post-dispatch next cycle (planning hub) |
 
 ### 11.2 Purchase
@@ -483,7 +488,7 @@ flowchart TB
 
 ## Batch 3E — Recovery / Closure analytics surfaces (read-only)
 
-Dashboard, Pending Actions, Control Tower, and Reports consume `assessNoQtySoClosure()` and `getRecoverySummary()` / `getRecoverySummariesBatch()` via `noQtyRecoveryAnalyticsService`. Production Shortfall and QC Recovery remain separate. Reconciliation identity: Source Qty = Active Allocated + Waived + Available. No mutation of recovery, RS allocation, stock, dispatch qty, billing qty, or SO closure transactions in this batch.
+Dashboard, Pending Actions, Control Tower, and Reports consume `assessNoQtySoClosure()` and `getRecoverySummary()` / `getRecoverySummariesBatch()` via `noQtyRecoveryAnalyticsService`. Production Shortfall and QC Recovery remain separate **recovery types and RS line components**. They do **not** appear as duplicate Store inbox CTAs when Create Cycle N Requirement Sheet already covers the next-RS obligation. Reconciliation identity: Source Qty = Active Allocated + Waived + Available. No mutation of recovery, RS allocation, stock, dispatch qty, billing qty, or SO closure transactions in this batch.
 
 ## Batch 3F — Certification
 

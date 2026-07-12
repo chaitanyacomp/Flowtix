@@ -9,10 +9,6 @@ const {
   sumPlacedQtyByItem,
 } = require("./noQtyExecutionReleaseService");
 const { assessNoQtyBatchPlacement } = require("./noQtyBatchPlacementEngine");
-const {
-  assessNoQtyMonthlyPlanningGate,
-  isNoQtyMonthlyPlanningGateExecutionReady,
-} = require("./noQtyMonthlyPlanningGateService");
 
 const EPS = 1e-6;
 
@@ -187,7 +183,8 @@ function buildRsBalanceLinesFromSheet(sheet, woPlacedByItem) {
 
 function deriveReadyToPlaceWo(totals, placement, readinessStatus = null) {
   const suggestedExecutableQty = round3(n(placement?.summary?.totalExecutableQty));
-  const ready = String(readinessStatus ?? "").toUpperCase() === "READY_TO_PLACE_WO";
+  const status = String(readinessStatus ?? "").toUpperCase();
+  const ready = status === "READY_TO_PLACE_WO" || status === "PARTIALLY_READY";
   return (
     totals.rsBalanceQty > EPS &&
     ready &&
@@ -473,8 +470,6 @@ async function getRequirementSheetExecutionSummary(db, requirementSheetId, deps 
   }
 
   const periodKey = String(sheet.periodKey ?? "").trim();
-  const assessPlanningGate = deps.assessNoQtyMonthlyPlanningGate || assessNoQtyMonthlyPlanningGate;
-  const planningGate = periodKey ? await assessPlanningGate(db, periodKey) : null;
   const releasedPlan = periodKey
     ? await db.monthlyProductionPlan.findFirst({
         where: { periodKey, releasedAt: { not: null } },
@@ -482,7 +477,9 @@ async function getRequirementSheetExecutionSummary(db, requirementSheetId, deps 
       })
     : null;
   const released = Boolean(releasedPlan?.releasedAt);
-  const executionPlanReady = released && (!planningGate || isNoQtyMonthlyPlanningGateExecutionReady(planningGate));
+  // WO placement may proceed against a released plan even when Additional Plan is still
+  // required for uncovered RS demand (ADDITIONAL_PLAN_REQUIRED must not block execution).
+  const executionPlanReady = released;
 
   let materialRequirement = null;
   if (executionPlanReady && releasedPlan?.id) {
@@ -641,8 +638,6 @@ async function buildNoQtyLockedSheetPlacementAssessment(db, sheet, deps = {}, pr
       executionPlanReady,
     } = precomputed);
   } else {
-    const assessPlanningGate = deps.assessNoQtyMonthlyPlanningGate || assessNoQtyMonthlyPlanningGate;
-    const planningGate = periodKey ? await assessPlanningGate(db, periodKey) : null;
     const releasedPlan = periodKey
       ? await db.monthlyProductionPlan.findFirst({
           where: { periodKey, releasedAt: { not: null } },
@@ -650,7 +645,9 @@ async function buildNoQtyLockedSheetPlacementAssessment(db, sheet, deps = {}, pr
         })
       : null;
     const released = Boolean(releasedPlan?.releasedAt);
-    executionPlanReady = released && (!planningGate || isNoQtyMonthlyPlanningGateExecutionReady(planningGate));
+    // WO placement may proceed against a released plan even when Additional Plan is still
+    // required for uncovered RS demand (ADDITIONAL_PLAN_REQUIRED must not block execution).
+    executionPlanReady = released;
 
     materialRequirement = null;
     if (executionPlanReady && releasedPlan?.id) {
@@ -736,6 +733,9 @@ function emptyNoQtyPlacementAssessment(overrides = {}) {
     readyToPlaceWo: false,
     requirementSheetId: null,
     readinessStatus: null,
+    periodKey: null,
+    released: false,
+    materialRequirementId: null,
     rsBalanceQty: 0,
     suggestedWoQty: 0,
     placementStatus: null,

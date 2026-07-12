@@ -12,7 +12,13 @@ import {
 
   placementInlineReadinessMessage,
 
+  resolveExecutionViewCycleId,
+
+  resolveExplicitExecutionSheetId,
+
   rmCoverageLabelFromPlacement,
+
+  shouldHonorExplicitRsExecutionIdentity,
 
   shouldRenderNoQtyExecutionWorkspace,
 
@@ -51,6 +57,96 @@ describe("isExecutionModeRequested", () => {
   it("is false without focus=execution", () => {
 
     expect(isExecutionModeRequested(params("sheetId=261"))).toBe(false);
+
+  });
+
+});
+
+
+
+describe("explicit RS execution identity", () => {
+
+  it("resolves sheetId from deep link", () => {
+
+    expect(resolveExplicitExecutionSheetId(params("sheetId=335&cycleId=382&focus=execution"))).toBe(335);
+
+  });
+
+
+
+  it("honors pending-actions / register execution deep links", () => {
+
+    expect(
+
+      shouldHonorExplicitRsExecutionIdentity({
+
+        searchParams: params(
+
+          "source=no_qty_so&salesOrderId=224&cycleId=382&focus=execution&from=pending-actions&sheetId=335",
+
+        ),
+
+      }),
+
+    ).toBe(true);
+
+  });
+
+
+
+  it("does not honor intent=add create-next-RS links", () => {
+
+    expect(
+
+      shouldHonorExplicitRsExecutionIdentity({
+
+        searchParams: params("intent=add&sheetId=335&cycleId=382"),
+
+        addRequirementIntent: true,
+
+      }),
+
+    ).toBe(false);
+
+  });
+
+
+
+  it("prefers URL cycle over SO current cycle for execution deep links", () => {
+
+    expect(
+
+      resolveExecutionViewCycleId({
+
+        searchParams: params(
+
+          "source=no_qty_so&cycleId=382&focus=execution&from=pending-actions&sheetId=335",
+
+        ),
+
+        soCurrentCycleId: 383,
+
+      }),
+
+    ).toBe(382);
+
+  });
+
+
+
+  it("falls back to SO current cycle when no execution identity", () => {
+
+    expect(
+
+      resolveExecutionViewCycleId({
+
+        searchParams: params("source=no_qty_so"),
+
+        soCurrentCycleId: 383,
+
+      }),
+
+    ).toBe(383);
 
   });
 
@@ -324,7 +420,7 @@ describe("execution workspace presentation helpers", () => {
 
       }),
 
-    ).toContain("Partial RM — 1000 executable");
+    ).toMatch(/Partial RM — 1,?000 executable/);
 
     expect(
 

@@ -38,7 +38,7 @@ describe("pendingActionsWorkBuckets", () => {
       Array.from({ length: 8 }, (_, i) =>
         row({
           id: `r${i}`,
-          action: "RM Return Pending",
+          action: "RM Return Approval Pending",
           documentNo: `WO-${i}`,
           href: `/production/rm-returns?from=pending-actions&workOrderId=${i}`,
         }),
@@ -46,7 +46,7 @@ describe("pendingActionsWorkBuckets", () => {
     );
     expect(buckets[0]?.overflowCount).toBe(5);
     expect(buckets[0]?.previewLines).toHaveLength(3);
-    expect(buckets[0]?.title).toBe("RM Return Pending (8)");
+    expect(buckets[0]?.title).toBe("RM Return Approval Pending (8)");
   });
 
   it("groups ready to dispatch rows and shows ready qty detail", () => {
@@ -109,6 +109,80 @@ describe("pendingActionsWorkBuckets", () => {
       },
     ]);
     expect(buckets[0]?.openHref).toBe("/store/green-level-wo?from=pending-actions&planId=12");
+  });
+
+  it("preserves RS execution identity on requirement-sheets deep links", () => {
+    const href =
+      "/sales-orders/224/requirement-sheets?source=no_qty_so&salesOrderId=224&cycleId=382&focus=execution&from=pending-actions&sheetId=335";
+    expect(pendingActionWorkspaceListHref(href)).toContain("sheetId=335");
+    expect(pendingActionWorkspaceListHref(href)).toContain("cycleId=382");
+    expect(pendingActionWorkspaceListHref(href)).toContain("focus=execution");
+    expect(pendingActionWorkspaceListHref(href)).toContain("salesOrderId=224");
+
+    const single = groupPendingActionsIntoWorkBuckets([
+      row({
+        id: "no-qty-place-wo:224:382",
+        action: "Create Suggested WO",
+        documentNo: "SO-26-0001 · Cycle 2 · RS-26-0002 · Suggested WO 11,069 Nos",
+        href,
+      }),
+    ]);
+    expect(single[0]?.openHref).toContain("sheetId=335");
+    expect(single[0]?.openHref).toContain("cycleId=382");
+
+    const multi = groupPendingActionsIntoWorkBuckets([
+      row({
+        id: "no-qty-place-wo:224:382",
+        action: "Create Suggested WO",
+        documentNo: "SO-26-0001 · RS-26-0002",
+        href,
+      }),
+      row({
+        id: "no-qty-place-wo:99:1",
+        action: "Create Suggested WO",
+        documentNo: "SO-26-0099 · RS-26-0099",
+        href: "/sales-orders/99/requirement-sheets?source=no_qty_so&salesOrderId=99&cycleId=1&focus=execution&from=pending-actions&sheetId=900",
+      }),
+    ]);
+    // Multi-item list must still carry an explicit RS identity (first item), not strip to latest/active cycle.
+    expect(multi[0]?.openHref).toContain("sheetId=335");
+    expect(multi[0]?.openHref).toContain("cycleId=382");
+  });
+
+  it("preserves monthly-planning period and from on Pending Actions Open", () => {
+    const href = "/monthly-planning?period=2026-06&from=pending-actions";
+    expect(pendingActionWorkspaceListHref(href)).toBe(
+      "/monthly-planning?from=pending-actions&period=2026-06",
+    );
+
+    const single = groupPendingActionsIntoWorkBuckets([
+      row({
+        id: "no-qty-monthly-plan:24:5:2026-06",
+        action: "Monthly Planning Pending",
+        documentNo: "SO-26-0000",
+        href,
+      }),
+    ]);
+    expect(single[0]?.openHref).toBe(href);
+    expect(single[0]?.openLabel).toBe("Open");
+
+    const multi = groupPendingActionsIntoWorkBuckets([
+      row({
+        id: "a",
+        action: "Monthly Planning Pending",
+        documentNo: "SO-26-0000",
+        href,
+      }),
+      row({
+        id: "b",
+        action: "Monthly Planning Pending",
+        documentNo: "SO-26-0001",
+        href: "/monthly-planning?period=2026-07&from=pending-actions",
+      }),
+    ]);
+    expect(multi[0]?.openHref).toContain("period=2026-06");
+    expect(multi[0]?.openHref).toContain("from=pending-actions");
+    expect(multi[0]?.openLabel).toBe("Open List");
   });
 
   it("production pending buckets deep-link workspace list with scoped bucket filter", () => {

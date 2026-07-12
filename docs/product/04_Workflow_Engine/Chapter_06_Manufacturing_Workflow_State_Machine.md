@@ -423,9 +423,9 @@ Every transition in §6 preserves trace ids in audit `correlationId` and documen
 | `MFG_ISSUE` | PMR `SUBMITTED`; open lines | `issue.post` or PMR `FULLY_ISSUED` |
 | `MFG_ISSUE_PARTIAL` | PMR `PARTIALLY_ISSUED` | Next `issue.post` or `FULLY_ISSUED` |
 | `MFG_ARR` | Shortage beyond PMR | `arr.markIssued` or `arr.close` |
-| `MFG_RETURN` | Return from production event | Return processed |
+| `MFG_RETURN` | Return from production event (`productionRmReturnPending` PENDING) | Return received / processed |
 
-**Owner:** `ownerRole = Store`.
+**Owner:** `ownerRole = Store` (Admin may also receive). Production submission creates the pending row; Production **does not** own the approval Pending Action (see FT-PD-040 §7.11).
 
 ### 8.2 Production Pending Actions
 
@@ -436,6 +436,8 @@ Every transition in §6 preserves trace ids in audit `correlationId` and documen
 | `MFG_PE_BLOCK` | Issue gap on floor (engine detect) | `issue.post` or ARR resolved |
 
 **Owner:** `ownerRole = Production`.
+
+Production may show **informational** status for submitted RM returns awaiting Store receive; that status is not a Pending Action and must not inflate Assigned / badge counts.
 
 ### 8.3 QA handoff Pending Actions
 

@@ -678,16 +678,18 @@ describe("productionWorkOrderReportService", () => {
     }
   });
 
-  it("receiveProductionRmReturnPending skips legacy RM wastage for NO_QTY pending rows", async () => {
+  it("receiveProductionRmReturnPending posts RM wastage for NO_QTY when report scrapWasteQty > 0", async () => {
     const wastagePath = require.resolve("../../src/services/materialWastageService");
     const returnPath = require.resolve("../../src/services/materialReturnService");
     const reportPath = require.resolve("../../src/services/productionWorkOrderReportService");
     const origWastage = require(wastagePath).createMaterialWastageNote;
     const origReturn = require(returnPath).createMaterialReturnNote;
     let wastageCalled = false;
-    require(wastagePath).createMaterialWastageNote = async () => {
+    let wastageQty = null;
+    require(wastagePath).createMaterialWastageNote = async (input) => {
       wastageCalled = true;
-      throw new Error("RM wastage is available for Regular work orders only.");
+      wastageQty = Number(input.qty);
+      return { id: 55, docNo: "MWN-55" };
     };
     require(returnPath).createMaterialReturnNote = async () => ({ id: 99, docNo: "MRN-99" });
     delete require.cache[reportPath];
@@ -697,7 +699,7 @@ describe("productionWorkOrderReportService", () => {
       id: 1,
       workOrderId: 5,
       itemId: 7,
-      requestedQty: "2",
+      requestedQty: "10",
       status: "PENDING",
       remarks: null,
     };
@@ -712,7 +714,16 @@ describe("productionWorkOrderReportService", () => {
         findUnique: async () => ({
           status: "CONFIRMED",
           remainingQty: 0,
-          lines: [{ itemId: 7, scrapWasteQty: "0.5", item: { itemName: "PP", unit: "Kg" } }],
+          lines: [
+            {
+              itemId: 7,
+              rmIssuedQty: "281",
+              rmConsumedQty: "266.76",
+              rmReturnQty: "10",
+              scrapWasteQty: "4.24",
+              item: { itemName: "HDPE", unit: "Kg" },
+            },
+          ],
           returnPendings: [],
         }),
       },
@@ -731,9 +742,10 @@ describe("productionWorkOrderReportService", () => {
         { userId: 9 },
         db,
       );
-      assert.equal(wastageCalled, false);
+      assert.equal(wastageCalled, true);
+      assert.equal(wastageQty, 4.24);
+      assert.equal(result.wastageNote.docNo, "MWN-55");
       assert.equal(result.materialReturnNote.docNo, "MRN-99");
-      assert.equal(result.wastageNote, null);
     } finally {
       require(wastagePath).createMaterialWastageNote = origWastage;
       require(returnPath).createMaterialReturnNote = origReturn;

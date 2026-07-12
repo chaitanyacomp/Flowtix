@@ -15,6 +15,7 @@ const { RISK_LEVELS, ROW_TYPES } = require("./controlTowerRowNormalizer");
 
 const EPS = 1e-6;
 
+const { isMonthlyPlanningEnabled } = require("../config/featureFlags");
 const { buildPlanDisplayLabel } = require("./monthlyPlanningPlanLifecycleService");
 const {
   NO_QTY_MONTHLY_PLANNING_GATE,
@@ -31,15 +32,16 @@ const {
   loadStoreProductionReleaseEligibilityByWorkOrder,
 } = require("./productionMaterialRequestService");
 const {
-  computeNoQtyCreateNextRsEligibility,
-  computeNoQtyCreateNextRsEligibilityResolved,
   resolveNoQtyEligibilityCycleId,
+  computeStoreCreateNextRsPendingEligibility,
 } = require("./noQtyCreateNextRsEligibility");
 const { assessNoQtyPlacementStageForCycle } = require("./requirementSheetExecutionService");
 const {
   deriveActionNeeded,
   mapRmCoverage,
   resolvePlaceWoActionLabel,
+  isNoQtyWoPlacementActionable,
+  resolveNoQtyWoPlacementCandidateForSo,
 } = require("./noQtyExecutionRegisterService");
 const { formatQuantityWithUnit } = require("./quantityDisplayService");
 const { buildGreenLevelWoPlacement, GREEN_LEVEL_WO_SOURCE_TYPE } = require("./greenLevelWorkOrderService");
@@ -71,7 +73,8 @@ const {
 const STORE_ISSUE_PENDING_ACTION = "Issue Material";
 const STORE_ISSUE_REMAINING_ACTION = "Issue Remaining Material";
 const STORE_RELEASE_TO_PRODUCTION_ACTION = "Release to Production";
-const RM_RETURN_PENDING_ACTION = "RM Return Pending";
+const RM_RETURN_PENDING_ACTION = "RM Return Approval Pending";
+const RM_RETURN_PENDING_ACTION_LEGACY = "RM Return Pending";
 const DISPATCH_PENDING_ACTION = "Dispatch Pending";
 const STORE_DISPATCH_READY_PREFIX = "Ready to Dispatch";
 const GRN_PENDING_ACTION = "GRN Pending";
@@ -506,6 +509,9 @@ function mapNormalizedRowToPendingAction(row, role = "STORE") {
  * @param {{ role?: string | null }} [opts]
  */
 async function fetchMonthlyPlanPendingActions(db = prisma, opts = {}) {
+  // FT-PD-040 / FT-PD-073: do not deep-link to a workspace the feature flag disables.
+  if (!isMonthlyPlanningEnabled()) return [];
+
   const role = parseUserRole(opts.role);
   /** @type {import('@prisma/client').Prisma.MonthlyProductionPlanWhereInput} */
   let where;
@@ -884,7 +890,12 @@ async function fetchStoreDispatchPendingActions(db = prisma) {
     });
 }
 
-async function fetchProductionRmReturnWaitingActions(db = prisma) {
+/**
+ * Production informational status for submitted RM returns awaiting Store/Admin receive.
+ * NOT an actionable Pending Action — must not inflate Assigned/Work/badge counts.
+ * Approver obligation is emitted only by fetchStoreProductionRmReturnPendingActions.
+ */
+async function fetchProductionRmReturnInformationalStatuses(db = prisma) {
   const rows = await listProductionRmReturnPending(db, { status: "PENDING", limit: 100 });
   const byWo = new Map();
   for (const row of rows) {
@@ -892,29 +903,27 @@ async function fetchProductionRmReturnWaitingActions(db = prisma) {
     if (!prev) byWo.set(row.workOrderId, { row, pendingCount: 1 });
     else prev.pendingCount += 1;
   }
-  return [...byWo.values()].map(({ row, pendingCount }) => {
-    const href = buildProductionWorkspaceHrefFromPendingMeta(
-      {
-        workOrderId: row.workOrderId,
-        sourceType: row.workOrderSourceType ?? null,
-        orderType: row.workOrderOrderType ?? null,
-      },
-      "pending-actions",
-    );
-    return {
-      id: `production-rm-return-waiting:wo:${row.workOrderId}`,
-      priority: PENDING_PRIORITY.MEDIUM,
-      action: "RM Return Approval Pending",
-      documentNo: row.workOrderNo ?? `WO-${row.workOrderId}`,
-      ownerRole: "PRODUCTION",
-      ageHours: ageHoursFromTimestamp(row.createdAt),
-      href,
-      sourceModule: "PRODUCTION_REPORT",
-      currentStatus: "RM_RETURN_PENDING",
-      workOrderId: row.workOrderId,
-      metadata: { pendingCount },
-    };
-  });
+  return [...byWo.values()].map(({ row, pendingCount }) => ({
+    id: `production-rm-return-info:wo:${row.workOrderId}`,
+    kind: "INFORMATIONAL",
+    actionable: false,
+    action: "RM Return Submitted — Awaiting Store Approval",
+    documentNo: row.workOrderNo ?? `WO-${row.workOrderId}`,
+    ownerRole: "PRODUCTION",
+    ageHours: ageHoursFromTimestamp(row.createdAt),
+    href: null,
+    sourceModule: "PRODUCTION_REPORT",
+    currentStatus: "RM_RETURN_AWAITING_STORE_APPROVAL",
+    workOrderId: row.workOrderId,
+    metadata: { pendingCount, informational: true },
+  }));
+}
+
+/** @deprecated Use fetchProductionRmReturnInformationalStatuses — approval is Store/Admin owned. */
+async function fetchProductionRmReturnWaitingActions(db = prisma) {
+  // Intentionally empty: Production must not receive actionable RM return approval Pending Actions.
+  void db;
+  return [];
 }
 
 async function fetchStoreProductionRmReturnPendingActions(db = prisma) {
@@ -928,8 +937,9 @@ async function fetchStoreProductionRmReturnPendingActions(db = prisma) {
     if (row.workOrderId) params.set("workOrderId", String(row.workOrderId));
     return {
       id: `production-rm-return-pending:${row.id}`,
+      type: "RM_RETURN_APPROVAL_PENDING",
       priority: PENDING_PRIORITY.MEDIUM,
-      action: "RM Return Pending",
+      action: "RM Return Approval Pending",
       documentNo: row.workOrderNo ?? `WO-${row.workOrderId}`,
       ownerRole: "STORE",
       ageHours: ageHoursFromTimestamp(row.createdAt),
@@ -944,6 +954,7 @@ async function fetchStoreProductionRmReturnPendingActions(db = prisma) {
         productionReportId: row.productionReportId,
         pendingId: row.id,
         itemName: row.itemName,
+        approverRoles: ["STORE", "ADMIN"],
       },
     };
   });
@@ -1107,18 +1118,7 @@ function isNoQtyOpenWorkOrderStatus(status) {
 }
 
 function isNoQtyPlaceWoPendingFromPlacement(placement) {
-  const suggested = Number(placement?.suggestedWoQty ?? 0);
-  const balance = Number(placement?.rsBalanceQty ?? 0);
-  if (!(balance > EPS) || !(suggested > EPS)) return false;
-
-  const actionNeeded = deriveActionNeeded({
-    rsBalanceQty: placement.rsBalanceQty,
-    suggestedWoQty: placement.suggestedWoQty,
-    placementStatus: placement.placementStatus,
-    readinessStatus: placement.readinessStatus,
-    existingWoSummary: placement.existingWoSummary ?? [],
-  });
-  return actionNeeded.key === "PLACE_WO";
+  return isNoQtyWoPlacementActionable(placement);
 }
 
 function resolveNoQtyPlaceWoActionTitle(placement) {
@@ -1131,6 +1131,8 @@ function resolveNoQtyPlaceWoActionTitle(placement) {
     rmCoverage,
     placementStatus: placement.placementStatus,
     readinessStatus: placement.readinessStatus,
+    suggestedWoQty: placement.suggestedWoQty,
+    rsBalanceQty: placement.rsBalanceQty,
   });
 }
 
@@ -1165,6 +1167,7 @@ async function loadNoQtyPlaceWoPendingContext(db, { cycleId, requirementSheetId 
               take: 1,
               orderBy: { id: "asc" },
               select: {
+                id: true,
                 item: {
                   select: {
                     unit: true,
@@ -1179,10 +1182,15 @@ async function loadNoQtyPlaceWoPendingContext(db, { cycleId, requirementSheetId 
   ]);
   const lineItem = sheetRow?.lines?.[0]?.item;
   const uom = lineItem?.unitRef?.unitCode ?? lineItem?.unitRef?.unitName ?? lineItem?.unit ?? null;
+  const requirementSheetLineId =
+    sheetRow?.lines?.[0]?.id != null && Number(sheetRow.lines[0].id) > 0
+      ? Number(sheetRow.lines[0].id)
+      : null;
   return {
     cycleNo: cycleRow?.cycleNo ?? null,
     rsDocNo: sheetRow?.docNo ?? null,
     uom,
+    requirementSheetLineId,
   };
 }
 
@@ -1282,9 +1290,167 @@ async function loadStoreNoQtySupplementalContext(db = prisma) {
 }
 
 /**
- * P10-A7D — After Cycle 1 RS lock (no WO yet), Store next step is monthly planning for the locked period.
+ * Format Store PA document reference for Additional Monthly Plan.
+ * Example: "July 2026 · Plan 3 · 16,768 Nos"
+ */
+function buildAdditionalMonthlyPlanPendingDocumentNo({
+  periodKey,
+  nextPlanSequenceNo,
+  qty,
+  unit,
+}) {
+  const key = String(periodKey ?? "").trim();
+  const [year, month] = key.split("-");
+  const monthNames = [
+    "",
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+  ];
+  const monthLabel = monthNames[Number(month)] || key || "Period";
+  const yearLabel = year || "";
+  const seq = Number(nextPlanSequenceNo) > 0 ? Number(nextPlanSequenceNo) : 1;
+  const qtyNum = Number(qty);
+  const qtyLabel = Number.isFinite(qtyNum)
+    ? qtyNum.toLocaleString("en-US", { maximumFractionDigits: 3 })
+    : "0";
+  const uom = String(unit ?? "Nos").trim() || "Nos";
+  const periodPart = yearLabel ? `${monthLabel} ${yearLabel}` : monthLabel;
+  return `${periodPart} · Plan ${seq} · ${qtyLabel} ${uom}`;
+}
+
+/**
+ * Period-scoped Store obligation: Create Additional Monthly Plan.
+ * Uses the same authoritative preview/gate as Additional Plan Preview (source-identity coverage).
+ * One action per period — component breakdown stays in metadata, not separate PAs.
+ */
+async function fetchStoreAdditionalMonthlyPlanPendingActions(db = prisma) {
+  if (!isMonthlyPlanningEnabled()) return [];
+  if (typeof db.monthlyProductionPlan?.findMany !== "function") return [];
+
+  const approvedPeriodRows = await db.monthlyProductionPlan.findMany({
+    where: { status: "APPROVED" },
+    select: { periodKey: true },
+    distinct: ["periodKey"],
+  });
+  const periodKeys = [
+    ...new Set(
+      approvedPeriodRows
+        .map((row) => String(row.periodKey ?? "").trim())
+        .filter(Boolean),
+    ),
+  ];
+  if (!periodKeys.length) return [];
+
+  const actions = [];
+  for (const periodKey of periodKeys) {
+    const planningGate = await assessNoQtyMonthlyPlanningGate(db, periodKey);
+    if (planningGate?.gate !== NO_QTY_MONTHLY_PLANNING_GATE.ADDITIONAL_PLAN_REQUIRED) continue;
+
+    const preview = planningGate.preview;
+    if (!preview?.canCreate) continue;
+
+    const totals = preview.totals ?? {};
+    const qty = Number(totals.totalAdditionalRequirementQty) || 0;
+    if (!(qty > EPS)) continue;
+
+    const primaryUnit =
+      Array.isArray(preview.items) && preview.items.length
+        ? String(preview.items.find((item) => item?.hasAdditionalRequirement)?.unit ?? preview.items[0]?.unit ?? "Nos")
+        : "Nos";
+    const nextPlanSequenceNo = Number(preview.nextPlanSequenceNo) || 0;
+    const nextPlanLabel =
+      preview.nextPlanLabel ||
+      buildPlanDisplayLabel({ periodKey, planSequenceNo: nextPlanSequenceNo });
+    const componentBreakdown = totals.componentBreakdown ?? {
+      newUncoveredRsDemand: 0,
+      productionShortfallCarryForward: 0,
+      qcRejectionCarryForward: 0,
+      greenLevelQty: 0,
+    };
+    const sourceIdentities = (Array.isArray(preview.items) ? preview.items : [])
+      .flatMap((item) => (Array.isArray(item?.uncoveredComponents) ? item.uncoveredComponents : []))
+      .map((c) => ({
+        sourceKey: c.sourceKey,
+        componentType: c.componentType,
+        requirementSheetId: c.requirementSheetId,
+        requirementSheetDocNo: c.requirementSheetDocNo ?? null,
+        requirementSheetLineId: c.requirementSheetLineId,
+        salesOrderId: c.salesOrderId,
+        cycleId: c.cycleId,
+        cycleNo: c.cycleNo,
+        uncoveredQty: c.uncoveredQty,
+      }));
+
+    const params = new URLSearchParams({
+      period: periodKey,
+      from: "pending-actions",
+      openAdditionalPlan: "1",
+    });
+    if (planningGate.plan?.id) {
+      params.set("planId", String(planningGate.plan.id));
+      params.set("monthlyPlanId", String(planningGate.plan.id));
+    }
+
+    actions.push({
+      id: `no-qty-additional-monthly-plan:${periodKey}`,
+      type: "NO_QTY_ADDITIONAL_PLAN_REQUIRED",
+      priority: PENDING_PRIORITY.MEDIUM,
+      action: planningGate.action || "Create Additional Monthly Plan",
+      documentNo: buildAdditionalMonthlyPlanPendingDocumentNo({
+        periodKey,
+        nextPlanSequenceNo,
+        qty,
+        unit: primaryUnit,
+      }),
+      ownerRole: "STORE",
+      ageHours: ageHoursFromTimestamp(
+        planningGate.plan?.updatedAt ?? planningGate.plan?.approvedAt ?? planningGate.plan?.releasedAt,
+      ),
+      href: `/monthly-planning?${params.toString()}`,
+      sourceModule: "MONTHLY_PLANNING",
+      currentStatus: "ADDITIONAL_MONTHLY_PLANNING_PENDING",
+      qty,
+      uom: primaryUnit,
+      quantity: qty,
+      unit: primaryUnit,
+      metadata: {
+        periodKey,
+        nextPlanSequenceNo,
+        nextPlanLabel,
+        fgItemCount: Number(totals.additionalItemCount) || 0,
+        componentBreakdown: {
+          newUncoveredRsDemand: Number(componentBreakdown.newUncoveredRsDemand) || 0,
+          productionShortfallCarryForward:
+            Number(componentBreakdown.productionShortfallCarryForward) || 0,
+          qcRejectionCarryForward: Number(componentBreakdown.qcRejectionCarryForward) || 0,
+          greenLevelQty: Number(componentBreakdown.greenLevelQty) || 0,
+        },
+        sourceIdentities,
+        approvedPlanCount: Number(preview.approvedPlanCount) || 0,
+        latestApprovedPlanId: planningGate.plan?.id ?? null,
+      },
+    });
+  }
+  return actions;
+}
+
+/**
+ * P10-A7D — After Cycle 1 RS lock (no WO yet), Store next step is initial monthly planning for the locked period.
+ * Additional Plan creation is period-scoped via {@link fetchStoreAdditionalMonthlyPlanPendingActions}.
  */
 async function fetchStoreNoQtyMonthlyPlanningPendingActions(db = prisma) {
+  if (!isMonthlyPlanningEnabled()) return [];
+
   const { openSoRows, lockedRsBySo, woOnCycleKeys } = await loadStoreNoQtySupplementalContext(db);
   const placementPairs = [];
   for (const so of openSoRows) {
@@ -1306,41 +1472,25 @@ async function fetchStoreNoQtyMonthlyPlanningPendingActions(db = prisma) {
 
     const periodKey = String(lockedRs.periodKey ?? "").trim();
     const planningGate = periodKey ? await assessNoQtyMonthlyPlanningGate(db, periodKey) : null;
-    if (
-      planningGate &&
-      ![
-        NO_QTY_MONTHLY_PLANNING_GATE.INITIAL_PLAN_REQUIRED,
-        NO_QTY_MONTHLY_PLANNING_GATE.ADDITIONAL_PLAN_REQUIRED,
-      ].includes(planningGate.gate)
-    ) {
-      continue;
-    }
-    if (
-      planningGate?.gate === NO_QTY_MONTHLY_PLANNING_GATE.ADDITIONAL_PLAN_REQUIRED &&
-      !isRequirementSheetNewerThanPlan(lockedRs, planningGate.plan)
-    ) {
+    // Additional Plan is emitted period-wide; this SO-scoped path is initial planning only.
+    if (planningGate?.gate !== NO_QTY_MONTHLY_PLANNING_GATE.INITIAL_PLAN_REQUIRED) {
       continue;
     }
 
     const href = periodKey
       ? `/monthly-planning?period=${encodeURIComponent(periodKey)}&from=pending-actions`
       : "/monthly-planning?from=pending-actions";
-    const action = planningGate?.action ?? "Monthly Planning Pending";
-    const currentStatus =
-      planningGate?.gate === NO_QTY_MONTHLY_PLANNING_GATE.ADDITIONAL_PLAN_REQUIRED
-        ? "ADDITIONAL_MONTHLY_PLANNING_PENDING"
-        : "MONTHLY_PLANNING_PENDING";
 
     actions.push({
       id: `no-qty-monthly-plan:${soId}:${rsCycleId}:${periodKey || "no-period"}`,
       priority: PENDING_PRIORITY.MEDIUM,
-      action,
+      action: planningGate?.action ?? "Monthly Planning Pending",
       documentNo: so.docNo ?? null,
       ownerRole: "STORE",
       ageHours: ageHoursFromTimestamp(lockedRs.updatedAt ?? so.updatedAt),
       href,
       sourceModule: "MONTHLY_PLANNING",
-      currentStatus,
+      currentStatus: "MONTHLY_PLANNING_PENDING",
     });
   }
   return actions;
@@ -1351,95 +1501,13 @@ async function fetchStoreNoQtyMonthlyPlanningPendingActions(db = prisma) {
  * CLOSED cycle already passed next-RS eligibility (post prepare-next / between-cycles).
  *
  * Does not change prepare-next gates — only the pending-actions read path.
+ * Authoritative implementation: {@link computeStoreCreateNextRsPendingEligibility}.
  */
 async function resolveStoreNoQtyCreateNextRsPendingContext(db, soId) {
   const sid = Number(soId);
   return getOrSetRequestCache(`store:create-next-rs-ctx:${sid}`, () =>
-    resolveStoreNoQtyCreateNextRsPendingContextImpl(db, sid),
+    computeStoreCreateNextRsPendingEligibility(db, sid),
   );
-}
-
-async function resolveStoreNoQtyCreateNextRsPendingContextImpl(db, soId) {
-  const sid = Number(soId);
-  const active = await db.salesOrderCycle.findFirst({
-    where: { salesOrderId: sid, status: "ACTIVE" },
-    orderBy: { cycleNo: "desc" },
-    select: { id: true, cycleNo: true },
-  });
-
-  if (active?.id != null) {
-    const sheetOnActive = await db.requirementSheet.findFirst({
-      where: { salesOrderId: sid, cycleId: Number(active.id) },
-      select: { id: true },
-    });
-    if (!sheetOnActive) {
-      const priorClosed = await db.salesOrderCycle.findFirst({
-        where: {
-          salesOrderId: sid,
-          status: "CLOSED",
-          cycleNo: { lt: Number(active.cycleNo) },
-        },
-        orderBy: { cycleNo: "desc" },
-        select: { id: true },
-      });
-      if (priorClosed?.id != null) {
-        const priorElig = await computeNoQtyCreateNextRsEligibility(db, {
-          salesOrderId: sid,
-          cycleId: Number(priorClosed.id),
-        });
-        if (priorElig.eligible) {
-          const lockedRs = await db.requirementSheet.findFirst({
-            where: { salesOrderId: sid, cycleId: Number(priorClosed.id), status: "LOCKED" },
-            orderBy: [{ version: "desc" }, { id: "desc" }],
-            select: { updatedAt: true },
-          });
-          return {
-            eligible: true,
-            reason: "OK",
-            targetCycleId: Number(active.id),
-            targetCycleNo: Number(active.cycleNo),
-            ageTimestamp: lockedRs?.updatedAt ?? null,
-            resolution: "ACTIVE_EMPTY_PRIOR_ELIGIBLE",
-          };
-        }
-      }
-    }
-  }
-
-  const eligibility = await computeNoQtyCreateNextRsEligibilityResolved(db, sid);
-  if (!eligibility.eligible) {
-    return { eligible: false, reason: eligibility.reason ?? "NOT_ELIGIBLE" };
-  }
-
-  const { cycleId } = await resolveNoQtyEligibilityCycleId(db, sid);
-  if (!cycleId) {
-    return { eligible: false, reason: "NO_CYCLE" };
-  }
-
-  const cycle = await db.salesOrderCycle.findFirst({
-    where: { id: cycleId, salesOrderId: sid },
-    select: { cycleNo: true },
-  });
-  const lockedRs = await db.requirementSheet.findFirst({
-    where: { salesOrderId: sid, cycleId, status: "LOCKED" },
-    orderBy: [{ version: "desc" }, { id: "desc" }],
-    select: { updatedAt: true },
-  });
-  if (!lockedRs) {
-    return { eligible: false, reason: "NO_LOCKED_RS" };
-  }
-
-  const nextCycleNo =
-    cycle?.cycleNo != null && Number(cycle.cycleNo) > 0 ? Number(cycle.cycleNo) + 1 : null;
-
-  return {
-    eligible: true,
-    reason: "OK",
-    targetCycleId: active?.id != null ? Number(active.id) : null,
-    targetCycleNo: nextCycleNo,
-    ageTimestamp: lockedRs.updatedAt ?? null,
-    resolution: "RESOLVED_CYCLE",
-  };
 }
 
 /**
@@ -1498,8 +1566,13 @@ async function fetchStoreNoQtyCreateNextRsPendingActionsImpl(db = prisma) {
 /**
  * P10-A5 — Store-owned WO placement when NO_QTY RM is ready and no WO exists yet.
  */
-async function fetchStoreNoQtyPlaceWoPendingActions(db = prisma) {
+async function fetchStoreNoQtyPlaceWoPendingActions(db = prisma, deps = {}) {
   const { openSoRows } = await loadStoreNoQtySupplementalContext(db);
+  const soIds = openSoRows.map((so) => Number(so.id)).filter((id) => id > 0);
+  if (!soIds.length) return [];
+
+  const resolveCandidate =
+    deps.resolveNoQtyWoPlacementCandidateForSo || resolveNoQtyWoPlacementCandidateForSo;
 
   const eligibilityBySo = new Map();
   await Promise.all(
@@ -1510,35 +1583,62 @@ async function fetchStoreNoQtyPlaceWoPendingActions(db = prisma) {
     }),
   );
 
-  const placementPairs = openSoRows
-    .map((so) => {
-      const soId = Number(so.id);
-      const effCycleId = eligibilityBySo.get(soId);
-      if (!effCycleId) return null;
-      return { salesOrderId: soId, cycleId: Number(effCycleId), so };
-    })
-    .filter(Boolean);
+  // Same sheet universe as Execution Register — all locked RS for the SO (not ACTIVE cycle only).
+  const lockedSheets =
+    typeof db.requirementSheet?.findMany === "function"
+      ? await db.requirementSheet.findMany({
+          where: { salesOrderId: { in: soIds }, status: "LOCKED" },
+          select: {
+            id: true,
+            docNo: true,
+            salesOrderId: true,
+            cycleId: true,
+            version: true,
+            status: true,
+            periodKey: true,
+          },
+          orderBy: [{ id: "asc" }],
+        })
+      : [];
+
+  const lockedSheetsBySo = new Map();
+  for (const sheet of lockedSheets) {
+    const soId = Number(sheet.salesOrderId);
+    if (!lockedSheetsBySo.has(soId)) lockedSheetsBySo.set(soId, []);
+    lockedSheetsBySo.get(soId).push(sheet);
+  }
 
   const actions = [];
-  for (const pair of placementPairs) {
-    const { so, salesOrderId: soId, cycleId: effCycleId } = pair;
-    const placement = await assessNoQtyPlacementStageForCycle(db, { salesOrderId: soId, cycleId: effCycleId });
-    if (!isNoQtyPlaceWoPendingFromPlacement(placement)) continue;
-    if (placement.periodKey) {
-      const planningGate = await assessNoQtyMonthlyPlanningGate(db, placement.periodKey);
-      if (!isNoQtyMonthlyPlanningGateExecutionReady(planningGate)) continue;
-    }
+  for (const so of openSoRows) {
+    const soId = Number(so.id);
+    const guidedCycleId = eligibilityBySo.get(soId) ?? null;
+    const sheets = lockedSheetsBySo.get(soId) ?? [];
+    if (!sheets.length) continue;
+
+    const pick = await resolveCandidate(db, soId, sheets, guidedCycleId, deps);
+    const placement = pick?.assessment ?? null;
+    // Shared predicate with Execution Register / Dashboard — do not re-apply monthly
+    // planning ADDITIONAL_PLAN_REQUIRED gate here (that blocks partial WO incorrectly).
+    if (!placement || !isNoQtyPlaceWoPendingFromPlacement(placement)) continue;
+
+    const placementCycleId =
+      pick?.sheet?.cycleId != null && Number(pick.sheet.cycleId) > 0
+        ? Number(pick.sheet.cycleId)
+        : placement.cycleId != null && Number(placement.cycleId) > 0
+          ? Number(placement.cycleId)
+          : guidedCycleId;
+    if (!placementCycleId) continue;
 
     const actionTitle = resolveNoQtyPlaceWoActionTitle(placement);
     const ctx = await loadNoQtyPlaceWoPendingContext(db, {
-      cycleId: effCycleId,
-      requirementSheetId: placement.requirementSheetId,
+      cycleId: placementCycleId,
+      requirementSheetId: placement.requirementSheetId ?? pick?.sheet?.id ?? null,
     });
     const documentNo = buildNoQtyPlaceWoPendingDocumentNo({
       soDocNo: so.docNo ?? null,
       customerName: so.customer?.name ?? null,
       cycleNo: ctx.cycleNo,
-      rsDocNo: placement.requirementSheetDocNo ?? ctx.rsDocNo ?? null,
+      rsDocNo: placement.requirementSheetDocNo ?? pick?.sheet?.docNo ?? ctx.rsDocNo ?? null,
       suggestedWoQty: placement.suggestedWoQty,
       uom: ctx.uom,
     });
@@ -1546,11 +1646,12 @@ async function fetchStoreNoQtyPlaceWoPendingActions(db = prisma) {
     const params = new URLSearchParams({
       source: "no_qty_so",
       salesOrderId: String(soId),
-      cycleId: String(effCycleId),
+      cycleId: String(placementCycleId),
       focus: "execution",
       from: "pending-actions",
     });
-    if (placement.requirementSheetId) params.set("sheetId", String(placement.requirementSheetId));
+    const sheetId = placement.requirementSheetId ?? pick?.sheet?.id ?? null;
+    if (sheetId) params.set("sheetId", String(sheetId));
     await appendNoQtyPlaceWoWorkOrderLineParam(db, params, placement.existingWoSummary);
 
     const readiness = String(placement.readinessStatus ?? "").toUpperCase();
@@ -1559,9 +1660,15 @@ async function fetchStoreNoQtyPlaceWoPendingActions(db = prisma) {
       readiness === "PARTIALLY_READY" || placementStatus === "PARTIALLY_READY"
         ? "PARTIALLY_READY_TO_PLACE_WO"
         : "READY_TO_PLACE_WO";
+    const rmCoverage = mapRmCoverage({
+      placementStatus: placement.placementStatus,
+      readinessStatus: placement.readinessStatus,
+      rsBalanceQty: placement.rsBalanceQty,
+    });
 
     actions.push({
-      id: `no-qty-place-wo:${soId}:${effCycleId}`,
+      id: `no-qty-place-wo:${soId}:${placementCycleId}`,
+      type: "NO_QTY_WO_PLACEMENT_REQUIRED",
       priority: PENDING_PRIORITY.MEDIUM,
       action: actionTitle,
       documentNo,
@@ -1570,6 +1677,20 @@ async function fetchStoreNoQtyPlaceWoPendingActions(db = prisma) {
       href: `/sales-orders/${soId}/requirement-sheets?${params.toString()}`,
       sourceModule: "NO_QTY_EXECUTION",
       currentStatus,
+      metadata: {
+        salesOrderId: soId,
+        salesOrderDocNo: so.docNo ?? null,
+        customerName: so.customer?.name ?? null,
+        cycleId: placementCycleId,
+        cycleNo: ctx.cycleNo,
+        requirementSheetId: sheetId != null ? Number(sheetId) : null,
+        requirementSheetDocNo: placement.requirementSheetDocNo ?? pick?.sheet?.docNo ?? ctx.rsDocNo ?? null,
+        requirementSheetLineId: ctx.requirementSheetLineId ?? null,
+        rsBalanceQty: placement.rsBalanceQty,
+        suggestedExecutableQty: placement.suggestedWoQty,
+        rmCoverageStatus: rmCoverage.key,
+        rmCoverageLabel: rmCoverage.label,
+      },
     });
   }
   return actions;
@@ -1831,8 +1952,10 @@ function dedupeProductionPendingActions(actions) {
 }
 
 function preferStorePendingAction(existing, candidate) {
-  const existingReturn = existing.action === RM_RETURN_PENDING_ACTION;
-  const candidateReturn = candidate.action === RM_RETURN_PENDING_ACTION;
+  const existingReturn =
+    existing.action === RM_RETURN_PENDING_ACTION || existing.action === RM_RETURN_PENDING_ACTION_LEGACY;
+  const candidateReturn =
+    candidate.action === RM_RETURN_PENDING_ACTION || candidate.action === RM_RETURN_PENDING_ACTION_LEGACY;
   if (existingReturn && !candidateReturn) return existing;
   if (candidateReturn && !existingReturn) return candidate;
 
@@ -2035,6 +2158,7 @@ async function getStorePendingActions(ctx) {
     storeGrn,
     storeHandoff,
     storeNoQtyMonthly,
+    storeAdditionalMonthlyPlan,
     storeNoQtyCreateRs,
     storeNoQtyPlaceWo,
     storeGreenLevelPlaceWo,
@@ -2050,6 +2174,7 @@ async function getStorePendingActions(ctx) {
     timedBucket("storeGrn", () => fetchStoreGrnPendingActions(db)),
     timedBucket("storeHandoff", () => fetchStoreProductionHandoffPendingActions(db, workspaceOpts)),
     timedBucket("storeNoQtyMonthly", () => fetchStoreNoQtyMonthlyPlanningPendingActions(db)),
+    timedBucket("storeAdditionalMonthlyPlan", () => fetchStoreAdditionalMonthlyPlanPendingActions(db)),
     timedBucket("storeNoQtyCreateRs", () => fetchStoreNoQtyCreateNextRsPendingActions(db)),
     timedBucket("storeNoQtyPlaceWo", () => fetchStoreNoQtyPlaceWoPendingActions(db)),
     timedBucket("storeGreenLevelPlaceWo", () => fetchStoreGreenLevelPlaceWoPendingActions(db)),
@@ -2061,7 +2186,12 @@ async function getStorePendingActions(ctx) {
     production: 0,
     qc: 0,
     procurement: storeGrn.length,
-    noQty: storeNoQtyMonthly.length + storeNoQtyCreateRs.length + storeNoQtyPlaceWo.length + storeNoQtyRecovery.length,
+    noQty:
+      storeNoQtyMonthly.length +
+      storeAdditionalMonthlyPlan.length +
+      storeNoQtyCreateRs.length +
+      storeNoQtyPlaceWo.length +
+      storeNoQtyRecovery.length,
     inventory: storeIssue.length,
     salesBill: 0,
     other: storeRmReturn.length,
@@ -2074,6 +2204,41 @@ async function getStorePendingActions(ctx) {
     .map((row) => mapNormalizedRowToPendingAction(row, role))
     .filter((action) => action.action !== STORE_RELEASE_TO_PRODUCTION_ACTION);
 
+  // Authoritative: if Create Cycle N is already emitted for an SO, drop recovery shortfall/QC CTAs.
+  const createNextRsSoIds = new Set();
+  const createNextRsDocNos = new Set();
+  for (const a of storeNoQtyCreateRs) {
+    const m = String(a.id || "").match(/^no-qty-create-next-rs:(\d+)$/);
+    if (m) createNextRsSoIds.add(Number(m[1]));
+    if (a.documentNo) createNextRsDocNos.add(String(a.documentNo));
+  }
+  for (const a of normalizedActions) {
+    if (!/Create Cycle \d+ Requirement Sheet|Create Next Requirement Sheet/i.test(String(a.action || ""))) {
+      continue;
+    }
+    const href = String(a.href || "");
+    const m = href.match(/salesOrderId=(\d+)/i) || href.match(/\/sales-orders\/(\d+)/i);
+    if (m) createNextRsSoIds.add(Number(m[1]));
+    if (a.documentNo) createNextRsDocNos.add(String(a.documentNo));
+  }
+
+  const filteredRecovery = storeNoQtyRecovery.filter((action) => {
+    const recoveryType = String(action.recoveryType || "");
+    if (recoveryType !== "PRODUCTION_SHORTFALL" && recoveryType !== "QC_FINAL_REJECTION") {
+      return true;
+    }
+    const soId = action.salesOrderId != null ? Number(action.salesOrderId) : NaN;
+    if (Number.isFinite(soId) && soId > 0 && createNextRsSoIds.has(soId)) return false;
+    if (action.documentNo && createNextRsDocNos.has(String(action.documentNo))) return false;
+    return true;
+  });
+  bucketCounts.noQty =
+    storeNoQtyMonthly.length +
+    storeAdditionalMonthlyPlan.length +
+    storeNoQtyCreateRs.length +
+    storeNoQtyPlaceWo.length +
+    filteredRecovery.length;
+
   const supplemental = [
     ...monthlyPlanActions,
     ...storeIssue,
@@ -2082,10 +2247,11 @@ async function getStorePendingActions(ctx) {
     ...storeGrn,
     ...storeHandoff,
     ...storeNoQtyMonthly,
+    ...storeAdditionalMonthlyPlan,
     ...storeNoQtyCreateRs,
     ...storeNoQtyPlaceWo,
     ...storeGreenLevelPlaceWo,
-    ...storeNoQtyRecovery,
+    ...filteredRecovery,
   ];
 
   const combined = [...normalizedActions, ...supplemental];
@@ -2127,12 +2293,18 @@ async function getStorePendingActions(ctx) {
       ownerRole: a.ownerRole,
       ageHours: a.ageHours,
       href: a.href,
+      ...(a.type != null ? { type: a.type } : {}),
+      ...(a.currentStatus != null ? { currentStatus: a.currentStatus } : {}),
+      ...(a.sourceModule != null ? { sourceModule: a.sourceModule } : {}),
+      ...(a.metadata != null ? { metadata: a.metadata } : {}),
       ...(a.planId != null ? { planId: a.planId } : {}),
       ...(a.monthlyPlanId != null ? { monthlyPlanId: a.monthlyPlanId } : {}),
       ...(a.itemId != null ? { itemId: a.itemId } : {}),
       ...(a.itemName != null ? { itemName: a.itemName } : {}),
       ...(a.qty != null ? { qty: a.qty } : {}),
       ...(a.uom != null ? { uom: a.uom } : {}),
+      ...(a.quantity != null ? { quantity: a.quantity } : {}),
+      ...(a.unit != null ? { unit: a.unit } : {}),
       ...(a.recoveryType != null ? { recoveryType: a.recoveryType } : {}),
       ...(a.reason != null ? { reason: a.reason } : {}),
       ...(a.reasonMessage != null ? { reasonMessage: a.reasonMessage } : {}),
@@ -2212,15 +2384,23 @@ async function getPendingActions(opts = {}) {
   if (role === "ADMIN") {
     supplemental.push(...(await fetchAdminCommercialPendingActions()));
     supplemental.push(...(await fetchNoQtyRecoveryPendingActions(db, { role: "ADMIN" })));
+    // Admin may approve RM returns (same as Store) — do not emit Production waiting CTAs.
+    const adminRmReturns = await fetchStoreProductionRmReturnPendingActions(db);
+    supplemental.push(
+      ...adminRmReturns.map((a) => ({
+        ...a,
+        ownerRole: "ADMIN",
+        id: `${a.id}:admin`,
+      })),
+    );
   }
   if (role === "PURCHASE") {
     const purchaseChunk = await fetchPurchaseProcurementPendingActions(db);
     supplemental.push(...purchaseChunk);
     bucketCounts.procurement += purchaseChunk.length;
   }
-  if (role === "PRODUCTION" || role === "ADMIN") {
-    supplemental.push(...(await fetchProductionRmReturnWaitingActions(db)));
-  }
+  // Production: RM return after submit is informational only (workspace status cards).
+  // Do not push fetchProductionRmReturnWaitingActions into actionable Pending Actions.
   bucketMs.supplemental = Date.now() - supplementalStartedAt;
 
   if (role === "ADMIN") {
@@ -2288,12 +2468,18 @@ async function getPendingActions(opts = {}) {
       ownerRole: a.ownerRole,
       ageHours: a.ageHours,
       href: a.href,
+      ...(a.type != null ? { type: a.type } : {}),
+      ...(a.currentStatus != null ? { currentStatus: a.currentStatus } : {}),
+      ...(a.sourceModule != null ? { sourceModule: a.sourceModule } : {}),
+      ...(a.metadata != null ? { metadata: a.metadata } : {}),
       ...(a.planId != null ? { planId: a.planId } : {}),
       ...(a.monthlyPlanId != null ? { monthlyPlanId: a.monthlyPlanId } : {}),
       ...(a.itemId != null ? { itemId: a.itemId } : {}),
       ...(a.itemName != null ? { itemName: a.itemName } : {}),
       ...(a.qty != null ? { qty: a.qty } : {}),
       ...(a.uom != null ? { uom: a.uom } : {}),
+      ...(a.quantity != null ? { quantity: a.quantity } : {}),
+      ...(a.unit != null ? { unit: a.unit } : {}),
       ...(a.recoveryType != null ? { recoveryType: a.recoveryType } : {}),
       ...(a.reason != null ? { reason: a.reason } : {}),
       ...(a.reasonMessage != null ? { reasonMessage: a.reasonMessage } : {}),
@@ -2324,9 +2510,12 @@ module.exports = {
   fetchStoreGrnPendingActions,
   fetchStoreDispatchPendingActions,
   fetchProductionRmReturnWaitingActions,
+  fetchProductionRmReturnInformationalStatuses,
   fetchStoreProductionRmReturnPendingActions,
   fetchStoreNoQtyMonthlyPlanningPendingActions,
+  fetchStoreAdditionalMonthlyPlanPendingActions,
   fetchStoreNoQtyCreateNextRsPendingActions,
+  resolveStoreNoQtyCreateNextRsPendingContext,
   fetchStoreNoQtyPlaceWoPendingActions,
   fetchStoreGreenLevelPlaceWoPendingActions,
   fetchAdminCommercialPendingActions,

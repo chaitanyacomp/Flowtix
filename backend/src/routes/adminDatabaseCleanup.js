@@ -8,6 +8,11 @@ const {
   MprsResetStepError,
   runMprsTestReset,
 } = require("../services/mprsTestResetService");
+const {
+  NO_QTY_RECOVERY_CLEANUP_TABLES,
+  applyNoQtyRecoveryDependencyCleanup,
+  buildNoQtyRecoveryDependencyCleanupSteps,
+} = require("../services/noQtyRecoveryCleanupService");
 
 const adminDatabaseCleanupRouter = express.Router();
 
@@ -265,6 +270,9 @@ const RESET_TRANSACTION_VERIFY_TABLES = [
   "productionRmReturnPending",
   "productionWorkOrderReportLine",
   "productionWorkOrderReport",
+  "recoveryAllocation",
+  "noQtySoWaiverLine",
+  "noQtySoWaiver",
   "carryForwardPending",
   "productionShortfallResolution",
   "workOrderProductionExecution",
@@ -666,24 +674,16 @@ function buildProductionReportCleanupSteps(tx) {
 }
 
 /**
- * P16 Production Execution shortfall tables.
- * CarryForwardPending.sourceWorkOrderId → WorkOrder (Restrict) must be cleared before workOrder.deleteMany.
+ * P16 Production Execution + NO_QTY recovery dependency cluster.
+ * RecoveryAllocation / NoQtySoWaiverLine Restrict → CarryForwardPending must be cleared first
+ * (shared helper — do not reorder locally).
  *
  * @param {import("@prisma/client").Prisma.TransactionClient} tx
  * @returns {Array<{ table: string; delete: () => Promise<{ count?: number }>; count: () => Promise<number> }>}
  */
 function buildProductionExecutionCleanupSteps(tx) {
   return [
-    {
-      table: "carryForwardPending",
-      delete: () => tx.carryForwardPending.deleteMany({}),
-      count: () => tx.carryForwardPending.count(),
-    },
-    {
-      table: "productionShortfallResolution",
-      delete: () => tx.productionShortfallResolution.deleteMany({}),
-      count: () => tx.productionShortfallResolution.count(),
-    },
+    ...buildNoQtyRecoveryDependencyCleanupSteps(tx),
     {
       table: "workOrderProductionExecution",
       delete: () => tx.workOrderProductionExecution.deleteMany({}),
@@ -693,7 +693,7 @@ function buildProductionExecutionCleanupSteps(tx) {
 }
 
 /**
- * Scoped P16 deletes for NO_QTY reset (same order as buildProductionExecutionCleanupSteps).
+ * Scoped P16 + recovery deletes for NO_QTY reset (same order as buildProductionExecutionCleanupSteps).
  *
  * @param {import("@prisma/client").Prisma.TransactionClient} tx
  * @param {Record<string, number>} deletedCounts
@@ -703,29 +703,15 @@ async function deleteProductionExecutionForScope(tx, deletedCounts, { salesOrder
   const soIds = (salesOrderIds || []).filter((id) => Number.isFinite(id) && id > 0);
   const woIds = (workOrderIds || []).filter((id) => Number.isFinite(id) && id > 0);
 
-  if (!(await tableExists(tx, ["carryforwardpending", "CarryForwardPending"]))) {
-    deletedCounts.carryForwardPending = 0;
-    deletedCounts.productionShortfallResolution = 0;
-    deletedCounts.workOrderProductionExecution = 0;
-    return;
-  }
-
   if (soIds.length > 0) {
-    await addDeleteCountStep(deletedCounts, "carryForwardPending", () =>
-      tx.carryForwardPending.deleteMany({ where: { salesOrderId: { in: soIds } } }),
-    );
+    await applyNoQtyRecoveryDependencyCleanup(tx, deletedCounts, {
+      salesOrderIds: soIds,
+      workOrderIds: woIds,
+    });
   } else {
-    deletedCounts.carryForwardPending = 0;
-  }
-
-  if (!(await tableExists(tx, ["productionshortfallresolution", "ProductionShortfallResolution"]))) {
-    deletedCounts.productionShortfallResolution = 0;
-  } else if (woIds.length > 0) {
-    await addDeleteCountStep(deletedCounts, "productionShortfallResolution", () =>
-      tx.productionShortfallResolution.deleteMany({ where: { workOrderId: { in: woIds } } }),
-    );
-  } else {
-    deletedCounts.productionShortfallResolution = 0;
+    for (const table of NO_QTY_RECOVERY_CLEANUP_TABLES) {
+      deletedCounts[table] = 0;
+    }
   }
 
   if (!(await tableExists(tx, ["workorderproductionexecution", "WorkOrderProductionExecution"]))) {
@@ -1423,22 +1409,10 @@ async function runFullDemoResetDeletes(tx, deleted) {
     ],
     ["purchaseRequest", async () => addDeleteCount(deleted, "purchaseRequest", () => tx.purchaseRequest.deleteMany({}))],
     [
-      "carryForwardPending",
-      async () =>
-        tryOptionalTableDelete(tx, deleted, ["carryforwardpending", "CarryForwardPending"], "carryForwardPending", () =>
-          tx.carryForwardPending.deleteMany({}),
-        ),
-    ],
-    [
-      "productionShortfallResolution",
-      async () =>
-        tryOptionalTableDelete(
-          tx,
-          deleted,
-          ["productionshortfallresolution", "ProductionShortfallResolution"],
-          "productionShortfallResolution",
-          () => tx.productionShortfallResolution.deleteMany({}),
-        ),
+      "noQtyRecoveryDependencies",
+      async () => {
+        await applyNoQtyRecoveryDependencyCleanup(tx, deleted, {});
+      },
     ],
     [
       "workOrderProductionExecution",
@@ -1786,4 +1760,5 @@ module.exports = {
   runFinalTransactionResetSweep,
   runResetTransactionDataInTransaction,
   verifyTransactionResetComplete,
+  NO_QTY_RECOVERY_CLEANUP_TABLES,
 };

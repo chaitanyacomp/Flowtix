@@ -6,7 +6,7 @@
 | **Volume** | 6 — UI & Experience Architecture |
 | **Chapter** | 6 — Reports & Analytical Surfaces |
 | **Title** | Reports & Analytical Surfaces |
-| **Version** | 1.2.1 |
+| **Version** | 1.3.0 |
 | **Status** | Draft — Architecture Review |
 | **Effective date** | 2026-07-09 |
 | **Author** | FT ERP Product Team |
@@ -32,6 +32,7 @@
 | 1.1.0 | 2026-07-09 | FT ERP Product Team | Sales Ops report ownership — Customer Tracking master; SO→Dispatch Trace merged; Dispatch Summary analytics+register |
 | 1.2.0 | 2026-07-09 | FT ERP Product Team | Analysis catalog rationalization; read-only from Reports; print/export; defect register RPT-001–014 |
 | 1.2.1 | 2026-07-09 | FT ERP Product Team | Print/Export coverage matrix §6.2A — close UAT gap on all official Analysis reports |
+| 1.3.0 | 2026-07-10 | FT ERP Product Team | Production Wastage WO / Type Analysis catalog entries (Lane C); keep MWN / Variance / Scrap separate |
 
 **Supersedes:** None.
 
@@ -198,6 +199,8 @@ Named Sales Ops reports **SHALL** follow single ownership to avoid duplicate lif
 | RM Wastage Report | **KEEP** separate | MWN + GRN valuation — not mergeable into Production RM Variance |
 | Scrap Report | **KEEP** separate | FG QC scrap — distinct from RM wastage / consumption variance |
 | Production RM Variance | **KEEP** | Standard vs actual consumption |
+| Production Wastage — WO Analysis | **ADD** (Lane C) | CONFIRMED Production Work Order Report classification by WO/RM line — not MWN, not variance, not FG scrap |
+| Production Wastage — Type Analysis | **ADD** (Lane C) | Same source grouped by Wastage Type / Category; drills to WO Analysis |
 | Batch Traceability | **KEEP** | Document SO+Item limitation (RPT-003) |
 
 **Read-only rule:** Analysis surfaces **SHALL NOT** expose workflow create/execute controls ([RPT-01](#11-business-rules)). Creation remains in operational workspaces.
@@ -223,6 +226,8 @@ Named Sales Ops reports **SHALL** follow single ownership to avoid duplicate lif
 | Batch Traceability | Official report | Yes | Yes | — |
 | Production RM Variance | Official report | Yes | Yes | Yes |
 | RM Wastage | Official report | Yes | Yes | — |
+| Production Wastage — WO Analysis | Official report (Lane C) | Yes | Yes | Yes |
+| Production Wastage — Type Analysis | Official report (Lane C) | Yes | Yes | Yes |
 | Scrap Report | Official report | Yes | Yes | — |
 | Operations Exception | Official report | Yes | Yes | Yes |
 | User Activity Log | Official report | Yes | Yes | — |

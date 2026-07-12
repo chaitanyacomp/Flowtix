@@ -76,6 +76,9 @@ import { useAuth } from "../hooks/useAuth";
 import { noQtyAgreementListHref, isStoreLikePlanningRole } from "../lib/noQtyStoreNavigation";
 import {
   isExecutionModeRequested,
+  resolveExecutionViewCycleId,
+  resolveExplicitExecutionSheetId,
+  shouldHonorExplicitRsExecutionIdentity,
   shouldRenderNoQtyExecutionWorkspace,
   shouldUseNoQtyExecutionModeShell,
 } from "../lib/requirementSheetExecutionWorkspaceUx";
@@ -408,6 +411,14 @@ export function RequirementSheetPage() {
         ? Number(so.currentCycleId)
         : null;
   const activePlanningCycleId = React.useMemo(() => {
+    // Explicit WO-placement / register deep link: keep URL cycle (may be prior CLOSED cycle).
+    if (shouldHonorExplicitRsExecutionIdentity({ searchParams, addRequirementIntent })) {
+      return resolveExecutionViewCycleId({
+        searchParams,
+        soCurrentCycleId: soCycleId,
+        addRequirementIntent,
+      });
+    }
     if (addRequirementIntent && fromNoQtySo && cycleIdFromUrl != null) {
       if (soCycleId == null) return cycleIdFromUrl;
       if (so?.orderType !== "NO_QTY") return soCycleId;
@@ -417,7 +428,7 @@ export function RequirementSheetPage() {
       return soCycleId;
     }
     return soCycleId;
-  }, [addRequirementIntent, fromNoQtySo, cycleIdFromUrl, fromDashboard, so?.orderType, soCycleId]);
+  }, [addRequirementIntent, fromNoQtySo, cycleIdFromUrl, fromDashboard, so?.orderType, soCycleId, searchParams]);
   const isNoQty = so?.orderType === "NO_QTY";
   const cycleNo = so?.currentCycle?.cycleNo != null ? Number(so.currentCycle.cycleNo) : null;
   const sheetDisplayCycleNo = React.useMemo(() => {
@@ -466,6 +477,15 @@ export function RequirementSheetPage() {
     const forceReselect = opts?.forceReselect === true;
     const existsSelected =
       !forceReselect && selectedSheetId != null && rows.some((r) => r.id === selectedSheetId);
+
+    // Explicit execution identity from Pending Actions / Register must win over ACTIVE-cycle auto-pick.
+    const explicitSheetId = resolveExplicitExecutionSheetId(searchParams);
+    const honorExplicit = shouldHonorExplicitRsExecutionIdentity({ searchParams, addRequirementIntent });
+    if (honorExplicit && explicitSheetId != null && rows.some((r) => Number(r.id) === explicitSheetId)) {
+      setSelectedSheetId(explicitSheetId);
+      return;
+    }
+
     if (!existsSelected) {
       // Prefer: active cycle + latest DRAFT, else latest LOCKED, else latest by id (stable).
       // In "intent=add" mode, never auto-select a LOCKED sheet (history) as the working sheet.

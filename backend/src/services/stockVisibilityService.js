@@ -207,6 +207,7 @@ async function aggregateItemOperationalFlows(db, itemId, locTypeById) {
   let issuedToProduction = 0;
   let returnedToStore = 0;
   let consumedInProduction = 0;
+  let wastageInProduction = 0;
   let dispatchOut = 0;
 
   for (const t of txns) {
@@ -231,6 +232,11 @@ async function aggregateItemOperationalFlows(db, itemId, locTypeById) {
         if (net > STOCK_EPS) consumedInProduction += net;
       }
     }
+    if (t.transactionType === "RM_WASTAGE" && t.stockBucket === "USABLE") {
+      if (PRODUCTION_LOCATION_TYPES.has(locType) || WIP_LOCATION_TYPES.has(locType)) {
+        if (qOut > STOCK_EPS) wastageInProduction += qOut;
+      }
+    }
   }
 
   return {
@@ -238,6 +244,7 @@ async function aggregateItemOperationalFlows(db, itemId, locTypeById) {
     issuedToProduction: round3(issuedToProduction),
     returnedToStore: round3(returnedToStore),
     consumedInProduction: round3(consumedInProduction),
+    wastageInProduction: round3(wastageInProduction),
     dispatchOut: round3(dispatchOut),
   };
 }
@@ -308,6 +315,14 @@ async function buildItemStockDrilldown(db = prisma, itemId) {
         label: "Returned to Store",
         qty: flows.returnedToStore,
         tone: "return",
+      });
+    }
+    if (flows.wastageInProduction > STOCK_EPS) {
+      summaryLines.push({
+        key: "wastage",
+        label: "Production Wastage",
+        qty: flows.wastageInProduction,
+        tone: "wastage",
       });
     }
     if (remainingAtProduction > STOCK_EPS) {
@@ -381,4 +396,5 @@ module.exports = {
   emptyGodownQty,
   buildGodownStockOverview,
   buildItemStockDrilldown,
+  aggregateItemOperationalFlows,
 };

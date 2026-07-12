@@ -12,6 +12,7 @@ import { PageContainer, StickyWorkspaceHead, ERPBackNavigation } from "../compon
 import { ErpKpiLabel, ErpKpiSegment, ErpKpiStrip, ErpKpiValue, ErpPageContentGate } from "../components/erp/foundation";
 import { useStablePageLoad } from "../hooks/useStablePageLoad";
 import { useToast } from "../contexts/ToastContext";
+import { useAuth } from "../hooks/useAuth";
 import { bumpErpRefresh } from "../lib/erpRefresh";
 import {
   isAlreadyProcessedPendingReturnError,
@@ -133,6 +134,8 @@ function newLineKey() {
 
 export function ProductionRmReturnsPage() {
   const [searchParams] = useSearchParams();
+  const { user } = useAuth();
+  const canApproveRmReturn = user?.role === "ADMIN" || user?.role === "STORE";
   const urlWoId = parsePositiveIntParam(searchParams.get("workOrderId"));
   const urlPmrId = parsePositiveIntParam(searchParams.get("pmrId"));
   const urlPendingId = parsePositiveIntParam(searchParams.get("pendingId"));
@@ -476,9 +479,10 @@ export function ProductionRmReturnsPage() {
                 <div className="mt-2 space-y-2">
                   {displayedPendingReturns.map((row) => {
                     const highlighted = urlPendingId === row.id;
-                    const canReceive = Boolean(
+                    const locationsOk = Boolean(
                       row.locationResolved && row.suggestedFromLocationId && row.suggestedToLocationId,
                     );
+                    const canReceive = canApproveRmReturn && locationsOk;
                     return (
                       <div
                         key={row.id}
@@ -502,17 +506,25 @@ export function ProductionRmReturnsPage() {
                                 <span className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
                                   From production
                                 </span>
-                                <div>{row.fromLocationName ?? (canReceive ? "—" : "Unresolved")}</div>
+                                <div>{row.fromLocationName ?? (locationsOk ? "—" : "Unresolved")}</div>
                               </div>
                               <div>
                                 <span className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
                                   Return to store
                                 </span>
-                                <div>{row.toLocationName ?? (canReceive ? "—" : "Unresolved")}</div>
+                                <div>{row.toLocationName ?? (locationsOk ? "—" : "Unresolved")}</div>
                               </div>
                             </div>
                             {row.remarks ? <div className="text-xs text-slate-600">{row.remarks}</div> : null}
-                            {!canReceive && row.locationWarning ? (
+                            {!canApproveRmReturn ? (
+                              <div
+                                className="rounded border border-slate-200 bg-slate-50 px-2 py-1.5 text-xs text-slate-700"
+                                data-testid={`pending-return-awaiting-store-${row.id}`}
+                              >
+                                RM return submitted — awaiting Store approval. Production cannot receive this return.
+                              </div>
+                            ) : null}
+                            {canApproveRmReturn && !locationsOk && row.locationWarning ? (
                               <div
                                 className="rounded border border-red-200 bg-red-50 px-2 py-1.5 text-xs text-red-900"
                                 data-testid={`pending-return-location-warning-${row.id}`}
@@ -521,16 +533,18 @@ export function ProductionRmReturnsPage() {
                               </div>
                             ) : null}
                           </div>
-                          <Button
-                            type="button"
-                            size="sm"
-                            className="h-8 shrink-0 text-[12px]"
-                            disabled={receivingPendingId === row.id || !canReceive}
-                            onClick={() => void receivePendingReturn(row)}
-                            data-testid={`pending-return-receive-${row.id}`}
-                          >
-                            {receivingPendingId === row.id ? "Receiving…" : "Receive RM Return"}
-                          </Button>
+                          {canApproveRmReturn ? (
+                            <Button
+                              type="button"
+                              size="sm"
+                              className="h-8 shrink-0 text-[12px]"
+                              disabled={receivingPendingId === row.id || !canReceive}
+                              onClick={() => void receivePendingReturn(row)}
+                              data-testid={`pending-return-receive-${row.id}`}
+                            >
+                              {receivingPendingId === row.id ? "Receiving…" : "Receive RM Return"}
+                            </Button>
+                          ) : null}
                         </div>
                       </div>
                     );

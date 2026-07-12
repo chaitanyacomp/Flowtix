@@ -3,7 +3,7 @@
 | Field | Value |
 |-------|-------|
 | **Document ID** | FT-DEP-012 |
-| **Version** | 1.0.0 |
+| **Version** | 1.0.1 |
 | **Parent** | FT-DEP-001 v1.10.0 |
 | **Audience** | Customer System Administrator |
 
@@ -79,11 +79,25 @@ tools\setup-flowtix.bat --home C:\FT-ERP --source <package> --yes
 
 Requires existing `shared\.env`. Path B: add `--skip-migrate`.
 
-## 8. Escalation
+## 8. Admin database reset (Settings)
+
+Destructive Admin tools (Reset Transaction Data, Reset NO_QTY Data, MPRS Test Reset, Full Demo Reset) delete transactional rows only (masters preserved on transaction/NO_QTY paths).
+
+NO_QTY recovery cleanup uses a **shared reverse-FK order** (`noQtyRecoveryCleanupService`):
+
+1. `RecoveryAllocation`
+2. `NoQtySoWaiverLine`
+3. `NoQtySoWaiver`
+4. `CarryForwardPending`
+5. `ProductionShortfallResolution`
+
+Do **not** change Prisma `onDelete: Restrict` to Cascade to “fix” reset. Confirm text gates remain required (`RESET`, `RESET MPRS`, etc.).
+
+## 9. Escalation
 
 Use [Support Escalation template](./templates/Support_Escalation.md). Never paste passwords.
 
-## 9. Forbidden
+## 10. Forbidden
 
 - `prisma migrate reset` / `db push` on production  
 - Deleting `shared\`, `backups\`, or DB to “fix” deploy  

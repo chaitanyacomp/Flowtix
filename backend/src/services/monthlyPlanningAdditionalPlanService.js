@@ -198,7 +198,7 @@ async function createAdditionalPlan({
       },
     });
 
-    const lineRemark = "Additional requirement from coverage calculation";
+    const lineRemark = "Additional requirement from source-identity coverage";
     const createdLines = [];
     for (const row of deltaItems) {
       const line = await tx.monthlyProductionPlanLine.create({
@@ -206,7 +206,9 @@ async function createAdditionalPlan({
           planId: plan.id,
           fgItemId: row.fgItemId,
           plannedFgQty: row.additionalRequirementQty,
-          suggestedFgQty: row.currentRequirementQty,
+          suggestedFgQty: row.additionalRequirementQty,
+          customerProductionQty: row.additionalRequirementQty,
+          greenReplenishmentQty: 0,
           plannedQtyOverridden: false,
           source: "REQUIREMENT_SHEET",
           remarks: lineRemark,
@@ -234,11 +236,13 @@ async function createAdditionalPlan({
         fgItemId: line.fgItemId,
         suggestedFgQty: line.suggestedFgQty,
         plannedFgQty: line.plannedFgQty,
+        customerProductionQty: line.customerProductionQty,
         plannedQtyOverridden: Boolean(line.plannedQtyOverridden),
         source: line.source,
         remarks: line.remarks ?? null,
       })),
       totals: coverage.totals,
+      items: coverage.items.filter((row) => Number(row.additionalRequirementQty) > ADDITIONAL_EPS),
       lineCount: createdLines.length,
     };
   };

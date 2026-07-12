@@ -44,7 +44,9 @@ const {
   isPlanEditableStatus,
   buildPlanDisplayLabel,
   selectPrimaryPlanForPeriod,
+  MONTHLY_PLAN_KIND,
 } = require("./monthlyPlanningPlanLifecycleService");
+const { getPeriodRequirementCoverage } = require("./monthlyPlanningCoverageService");
 const {
   APPROVED_PLAN_SNAPSHOT_REVISION,
   canReadRmPlanningStatus,
@@ -55,9 +57,72 @@ const {
 } = require("./monthlyPlanningRmSnapshotService");
 const { getRmPlanningEstimate } = require("./monthlyPlanningRmEstimateService");
 
+const ADDITIONAL_PLAN_QTY_EPS = 1e-6;
+
+function isAdditionalMonthlyPlan(plan) {
+  return String(plan?.planKind ?? "") === MONTHLY_PLAN_KIND.ADDITIONAL;
+}
+
+/**
+ * Authoritative Additional Plan suggested/customer qty for one FG line.
+ * Preference: source-identity uncovered coverage → persisted draft line → never Initial composition.
+ */
+function resolveAdditionalPlanLineBaseQty({
+  fgItemId,
+  coverageByFgItemId,
+  existingLine,
+  clientCustomerProductionQty,
+}) {
+  const coverageItem = coverageByFgItemId?.get(Number(fgItemId));
+  const coverageQty = round3(Number(coverageItem?.additionalRequirementQty) || 0);
+  if (coverageQty > ADDITIONAL_PLAN_QTY_EPS) return coverageQty;
+
+  const persistedSuggested = round3(Number(existingLine?.suggestedFgQty) || 0);
+  if (persistedSuggested > ADDITIONAL_PLAN_QTY_EPS) return persistedSuggested;
+
+  const persistedCustomer = round3(Number(existingLine?.customerProductionQty) || 0);
+  if (persistedCustomer > ADDITIONAL_PLAN_QTY_EPS) return persistedCustomer;
+
+  const persistedPlanned = round3(Number(existingLine?.plannedFgQty) || 0);
+  if (persistedPlanned > ADDITIONAL_PLAN_QTY_EPS) return persistedPlanned;
+
+  const clientQty = round3(Number(clientCustomerProductionQty) || 0);
+  if (clientQty > ADDITIONAL_PLAN_QTY_EPS) return clientQty;
+
+  return 0;
+}
+
+function buildAdditionalSuggestedByFgItemId(coverageItems, existingLines) {
+  const suggestedByFgItemId = new Map();
+  for (const item of coverageItems || []) {
+    const fgItemId = Number(item.fgItemId);
+    const qty = round3(Number(item.additionalRequirementQty) || 0);
+    if (Number.isFinite(fgItemId) && fgItemId > 0 && qty > ADDITIONAL_PLAN_QTY_EPS) {
+      suggestedByFgItemId.set(fgItemId, qty);
+    }
+  }
+  for (const line of existingLines || []) {
+    const fgItemId = Number(line.fgItemId);
+    if (!Number.isFinite(fgItemId) || fgItemId <= 0) continue;
+    if (suggestedByFgItemId.has(fgItemId)) continue;
+    const preserved = resolveAdditionalPlanLineBaseQty({
+      fgItemId,
+      coverageByFgItemId: suggestedByFgItemId,
+      existingLine: line,
+    });
+    if (preserved > ADDITIONAL_PLAN_QTY_EPS) suggestedByFgItemId.set(fgItemId, preserved);
+  }
+  return suggestedByFgItemId;
+}
+
 function resolveRequirementCompositionLoader(loadComposition) {
   if (loadComposition) return loadComposition;
   return require("./monthlyPlanningRequirementCompositionService").getRequirementComposition;
+}
+
+function resolvePeriodCoverageLoader(loadPeriodCoverage) {
+  if (loadPeriodCoverage) return loadPeriodCoverage;
+  return getPeriodRequirementCoverage;
 }
 
 function resolveGreenLevelsLoader(loadGreenLevelsFn) {
@@ -112,11 +177,26 @@ function toPlanLine(line) {
   };
 }
 
-function mapProductionLineResponse(line, { suggestedByFgItemId, greenByFgItemId }) {
+function mapProductionLineResponse(line, { suggestedByFgItemId, greenByFgItemId, preferStoredSuggested = false }) {
   const storedSuggested = metricsRound3(line.suggestedFgQty);
-  const liveSuggested = suggestedByFgItemId.has(line.fgItemId)
+  const mappedSuggested = suggestedByFgItemId.has(line.fgItemId)
     ? suggestedByFgItemId.get(line.fgItemId)
-    : storedSuggested;
+    : null;
+  let liveSuggested = storedSuggested;
+  if (mappedSuggested != null) {
+    const mappedQty = metricsRound3(mappedSuggested);
+    if (preferStoredSuggested) {
+      // Additional Plan: never replace a positive stored suggested qty with Initial/zero overlay.
+      liveSuggested =
+        mappedQty > ADDITIONAL_PLAN_QTY_EPS
+          ? mappedQty
+          : storedSuggested > ADDITIONAL_PLAN_QTY_EPS
+            ? storedSuggested
+            : mappedQty;
+    } else {
+      liveSuggested = mappedQty;
+    }
+  }
   const customerProductionQty = metricsRound3(line.customerProductionQty ?? liveSuggested);
   const greenReplenishmentQty = metricsRound3(line.greenReplenishmentQty ?? 0);
   const greenCtx = greenByFgItemId.get(line.fgItemId) || { greenTarget: 0, freeFgStock: 0 };
@@ -243,7 +323,7 @@ async function loadPlanForEdit(db, planId) {
   }
   const plan = await db.monthlyProductionPlan.findUnique({
     where: { id },
-    select: { id: true, status: true, periodKey: true },
+    select: { id: true, status: true, periodKey: true, planKind: true },
   });
   if (!plan) {
     throw new MonthlyPlanningError("PLAN_NOT_FOUND", "Monthly Production Plan not found.", 404);
@@ -257,6 +337,7 @@ async function getProductionLines({
   planId,
   loadComposition = null,
   loadGreenLevelsFn = null,
+  loadPeriodCoverage = null,
 } = {}) {
   const plan = await loadPlanForEdit(db, planId);
   const lines = await db.monthlyProductionPlanLine.findMany({
@@ -267,12 +348,33 @@ async function getProductionLines({
 
   const compositionLoader = resolveRequirementCompositionLoader(loadComposition);
   const greenLoader = resolveGreenLevelsLoader(loadGreenLevelsFn);
-  const [composition, greenLevels] = await Promise.all([
-    compositionLoader({ db, periodKey: plan.periodKey }),
+  const coverageLoader = resolvePeriodCoverageLoader(loadPeriodCoverage);
+  const additional = isAdditionalMonthlyPlan(plan);
+
+  const [composition, greenLevels, coverage] = await Promise.all([
+    additional
+      ? Promise.resolve({ periodKey: plan.periodKey, items: [] })
+      : compositionLoader({ db, periodKey: plan.periodKey }),
     greenLoader({ db, periodKey: plan.periodKey }),
+    additional ? coverageLoader({ db, periodKey: plan.periodKey }) : Promise.resolve(null),
   ]);
-  const { suggestedByFgItemId, greenByFgItemId } = buildPlanningContextMaps(composition, greenLevels);
-  const mappedLines = lines.map((l) => mapProductionLineResponse(l, { suggestedByFgItemId, greenByFgItemId }));
+
+  let suggestedByFgItemId;
+  let greenByFgItemId;
+  if (additional) {
+    suggestedByFgItemId = buildAdditionalSuggestedByFgItemId(coverage?.items, lines);
+    ({ greenByFgItemId } = buildPlanningContextMaps({ items: [] }, greenLevels));
+  } else {
+    ({ suggestedByFgItemId, greenByFgItemId } = buildPlanningContextMaps(composition, greenLevels));
+  }
+
+  const mappedLines = lines.map((l) =>
+    mapProductionLineResponse(l, {
+      suggestedByFgItemId,
+      greenByFgItemId,
+      preferStoredSuggested: additional,
+    }),
+  );
 
   return {
     planId: plan.id,
@@ -286,9 +388,8 @@ async function getProductionLines({
 
 /**
  * Upsert / delete FG production-plan lines. DRAFT-only.
- * @param {{ upserts?: Array, deletes?: number[] }} payload
- *   upsert item: { fgItemId, plannedFgQty, plannedQtyOverridden?, source?, remarks? }
- *   suggestedFgQty is set server-side from Phase 5 composition (single source of truth).
+ * INITIAL: suggested/customer from requirement composition.
+ * ADDITIONAL: suggested/customer from source-identity coverage (or persisted draft qty).
  */
 async function updateProductionLines({
   db = prisma,
@@ -301,9 +402,11 @@ async function updateProductionLines({
   now = new Date(),
   loadComposition = null,
   loadGreenLevelsFn = null,
+  loadPeriodCoverage = null,
 } = {}) {
   const compositionLoader = resolveRequirementCompositionLoader(loadComposition);
   const greenLoader = resolveGreenLevelsLoader(loadGreenLevelsFn);
+  const coverageLoader = resolvePeriodCoverageLoader(loadPeriodCoverage);
   const run = async (tx) => {
     const plan = await loadPlanForEdit(tx, planId);
     assertPeriodWriteAllowed({
@@ -320,14 +423,50 @@ async function updateProductionLines({
       );
     }
 
-    const composition = await compositionLoader({ db: tx, periodKey: plan.periodKey });
-    const { suggestedByFgItemId } = buildPlanningContextMaps(composition, { items: [] });
-    const compositionByFgItemId = new Map((composition.items || []).map((item) => [item.itemId, item]));
+    const additional = isAdditionalMonthlyPlan(plan);
+    const existingLines = await tx.monthlyProductionPlanLine.findMany({
+      where: { planId: plan.id },
+      select: {
+        id: true,
+        fgItemId: true,
+        suggestedFgQty: true,
+        plannedFgQty: true,
+        customerProductionQty: true,
+        greenReplenishmentQty: true,
+        plannedQtyOverridden: true,
+      },
+    });
+    const existingByFgItemId = new Map(existingLines.map((line) => [Number(line.fgItemId), line]));
+
+    let suggestedByFgItemId = new Map();
+    let compositionByFgItemId = new Map();
+    let greenShortageByFgItemId = new Map();
+    let additionalCoverageByFgItemId = new Map();
+
+    if (additional) {
+      const [coverage, greenLevels] = await Promise.all([
+        coverageLoader({ db: tx, periodKey: plan.periodKey }),
+        greenLoader({ db: tx, periodKey: plan.periodKey }),
+      ]);
+      additionalCoverageByFgItemId = new Map(
+        (coverage.items || []).map((item) => [Number(item.fgItemId), item]),
+      );
+      suggestedByFgItemId = buildAdditionalSuggestedByFgItemId(coverage.items, existingLines);
+      for (const g of greenLevels.items || []) {
+        greenShortageByFgItemId.set(Number(g.itemId), round3(Number(g.shortageForGreenTarget ?? 0)));
+      }
+    } else {
+      const composition = await compositionLoader({ db: tx, periodKey: plan.periodKey });
+      ({ suggestedByFgItemId } = buildPlanningContextMaps(composition, { items: [] }));
+      compositionByFgItemId = new Map((composition.items || []).map((item) => [item.itemId, item]));
+      for (const [fgItemId, item] of compositionByFgItemId.entries()) {
+        greenShortageByFgItemId.set(Number(fgItemId), round3(Number(item.greenShortage ?? 0)));
+      }
+    }
 
     const safeUpserts = Array.isArray(upserts) ? upserts : [];
     const safeDeletes = Array.isArray(deletes) ? deletes.map((n) => Number(n)).filter((n) => Number.isFinite(n) && n > 0) : [];
 
-    // Validate upserts: qty >= 0, no duplicate fgItemId within payload, fgItemId must be FG.
     const seen = new Set();
     const normalized = [];
     for (const raw of safeUpserts) {
@@ -340,14 +479,41 @@ async function updateProductionLines({
       }
       seen.add(fgItemId);
 
-      const suggestedFgQty = suggestedByFgItemId.has(fgItemId)
-        ? suggestedByFgItemId.get(fgItemId)
-        : round3(raw?.suggestedFgQty ?? 0);
-      const comp = compositionByFgItemId.get(fgItemId);
-      const baseCustomerProductionQty = round3(
-        comp ? Number(comp.productionRequirementQty ?? comp.customerProductionQty ?? suggestedFgQty) : raw?.customerProductionQty ?? suggestedFgQty,
-      );
-      const availableGreenShortageQty = round3(Number(comp?.greenShortage ?? raw?.availableGreenShortageQty ?? 0));
+      const existingLine = existingByFgItemId.get(fgItemId) ?? null;
+      let suggestedFgQty;
+      let baseCustomerProductionQty;
+      let availableGreenShortageQty;
+
+      if (additional) {
+        baseCustomerProductionQty = resolveAdditionalPlanLineBaseQty({
+          fgItemId,
+          coverageByFgItemId: additionalCoverageByFgItemId,
+          existingLine,
+          clientCustomerProductionQty: raw?.customerProductionQty,
+        });
+        suggestedFgQty = baseCustomerProductionQty;
+        availableGreenShortageQty = round3(
+          Number(
+            greenShortageByFgItemId.get(fgItemId) ??
+              raw?.availableGreenShortageQty ??
+              0,
+          ),
+        );
+      } else {
+        suggestedFgQty = suggestedByFgItemId.has(fgItemId)
+          ? suggestedByFgItemId.get(fgItemId)
+          : round3(raw?.suggestedFgQty ?? 0);
+        const comp = compositionByFgItemId.get(fgItemId);
+        baseCustomerProductionQty = round3(
+          comp
+            ? Number(comp.productionRequirementQty ?? comp.customerProductionQty ?? suggestedFgQty)
+            : raw?.customerProductionQty ?? suggestedFgQty,
+        );
+        availableGreenShortageQty = round3(
+          Number(comp?.greenShortage ?? raw?.availableGreenShortageQty ?? 0),
+        );
+      }
+
       const greenReplenishmentQty = round3(raw?.greenReplenishmentQty ?? 0);
       if (greenReplenishmentQty < 0) {
         throw new MonthlyPlanningError("INVALID_GREEN_REPLENISHMENT_QTY", "greenReplenishmentQty must be >= 0.", 422);
@@ -360,11 +526,15 @@ async function updateProductionLines({
         );
       }
       const plannedQtyOverridden = raw?.plannedQtyOverridden === true;
+      const plannedDefault = round3(baseCustomerProductionQty + greenReplenishmentQty);
       const plannedFgQty = resolvePlannedFgQtyForSave({
-        clientPlannedFgQty: raw?.plannedFgQty ?? round3(baseCustomerProductionQty + greenReplenishmentQty),
+        clientPlannedFgQty: raw?.plannedFgQty ?? plannedDefault,
         plannedQtyOverridden,
-        suggestedFgQty: round3(baseCustomerProductionQty + greenReplenishmentQty),
+        suggestedFgQty: plannedDefault,
       });
+      if (!(plannedFgQty >= 0)) {
+        throw new MonthlyPlanningError("INVALID_QTY", "plannedFgQty must be >= 0.", 422);
+      }
       if (plannedQtyOverridden && plannedFgQty + 1e-9 < greenReplenishmentQty) {
         throw new MonthlyPlanningError(
           "PLANNED_BELOW_GREEN_REPLENISHMENT",
@@ -377,7 +547,6 @@ async function updateProductionLines({
         : baseCustomerProductionQty;
       const source = raw?.source ?? "MANUAL";
       if (!["SALES_ORDER", "REQUIREMENT_SHEET", "MANUAL"].includes(source)) {
-        // CUSTOMER_SCHEDULE intentionally not accepted in this phase.
         throw new MonthlyPlanningError("INVALID_SOURCE", `Unsupported source: ${source}.`, 422);
       }
       normalized.push({
@@ -450,7 +619,13 @@ async function updateProductionLines({
   };
 
   const plan = typeof db.$transaction === "function" ? await db.$transaction(run) : await run(db);
-  return getProductionLines({ db, planId: plan.id, loadComposition: compositionLoader, loadGreenLevelsFn: greenLoader });
+  return getProductionLines({
+    db,
+    planId: plan.id,
+    loadComposition: compositionLoader,
+    loadGreenLevelsFn: greenLoader,
+    loadPeriodCoverage: coverageLoader,
+  });
 }
 
 /**

@@ -284,7 +284,7 @@ Architectural standards per role — **not** screen layouts.
 |----------|---------|
 | **Mandatory** | Pending Actions (`MFG_*` production entry), KPI Cards (active WO) |
 | **Optional** | Queue Widget (QA pending PE), Recent Activity, Quick Actions (Production Entry) |
-| **Forbidden** | PR/PO creation, dispatch post, commercial Pending Actions |
+| **Forbidden** | PR/PO creation, dispatch post, commercial Pending Actions; **RM Return Approval** (Store/Admin actionable — Production may show informational awaiting-approval status only; see FT-PD-040 §7.11) |
 
 ### 9.5 QA
 

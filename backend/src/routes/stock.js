@@ -1245,7 +1245,7 @@ function buildRmLedgerMovementWhere(movement) {
   if (m === "GRN") return { transactionType: "GRN" };
   if (m === "PRODUCTION_CONSUMPTION") return { transactionType: "ISSUE", qtyOut: { gt: 0 } };
   if (m === "PRODUCTION_RETURN") return { transactionType: "ISSUE", qtyIn: { gt: 0 } };
-  if (m === "RM_WASTAGE") return { transactionType: "SCRAP" };
+  if (m === "RM_WASTAGE") return { transactionType: "RM_WASTAGE" };
   if (m === "STOCK_INCREASE")
     return { transactionType: "ADJUSTMENT", qtyIn: { gt: 0 }, reversalOfId: null };
   if (m === "STOCK_DECREASE")
@@ -1276,7 +1276,8 @@ function rmLedgerActivityLabel(row) {
     if (qIn > 0) return "Production Return";
     return "Production Issue";
   }
-  if (t === "SCRAP") return "RM Wastage";
+  if (t === "RM_WASTAGE") return "RM Wastage";
+  if (t === "SCRAP") return "Scrap / Loss";
   if (t === "ADJUSTMENT") {
     if (row.reversalOfId != null) {
       if (qIn > 0 && qOut <= 0) return "Stock Increase (Reversal)";
@@ -1307,6 +1308,7 @@ function rmLedgerRefType(t) {
     OPENING: "Opening stock",
     GRN: "GRN",
     ISSUE: "Production batch",
+    RM_WASTAGE: "RM Wastage Note",
     SCRAP: "Scrap",
     ADJUSTMENT: "Adjustment",
     QC_REVERSAL: "QC Reversal",

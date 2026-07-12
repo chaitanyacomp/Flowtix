@@ -6,7 +6,7 @@
 | **Volume** | 4 — Workflow Engine |
 | **Chapter** | 1 — Workflow Engine Overview & Pending Actions Contract |
 | **Title** | Workflow Engine Overview & Pending Actions Contract |
-| **Version** | 1.0.0 |
+| **Version** | 1.0.5 |
 | **Status** | Draft — Architecture Review |
 | **Effective date** | 2026-05-29 |
 | **Author** | FT ERP Product Team |
@@ -29,6 +29,11 @@
 | Version | Date | Author | Summary |
 |---------|------|--------|---------|
 | 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial Workflow Engine overview and Pending Actions contract |
+| 1.0.1 | 2026-07-10 | FT ERP Product Team | NO_QTY: suppress recovery shortfall/QC inbox CTAs when Create Next RS covers carry-forward |
+| 1.0.2 | 2026-07-10 | FT ERP Product Team | NO_QTY: Place Partial WO Pending Action shares execution-register readiness (not Additional Plan gate) |
+| 1.0.3 | 2026-07-10 | FT ERP Product Team | NO_QTY WO PA uses same SO-wide locked-RS candidate pick as Execution Register (not ACTIVE cycle only) |
+| 1.0.4 | 2026-07-10 | FT ERP Product Team | WO PA deep link identity immutable — sheetId/cycleId must survive open + refresh |
+| 1.0.5 | 2026-07-12 | FT ERP Product Team | Monthly Planning Pending Actions emit only when FEATURE_MONTHLY_PLANNING is ON |
 
 **Supersedes:** None.
 
@@ -288,6 +293,78 @@ When `age > threshold`:
 | **Workspace** | Actions valid for document state **and** actor role |
 | **Control Tower** | Factory-wide; all roles; monitor primary; escalation deep-link only |
 | **KPI strips** | Counts from engine aggregates—not parallel queries |
+
+### 7.9 NO_QTY next-RS carry-forward (no duplicate Store CTAs)
+
+For NO_QTY agreements, **Create Cycle N Requirement Sheet** is the **single Store-owned actionable** Pending Action for the next-cycle planning obligation.
+
+Production shortfall and QC rejection recovery remain persisted recovery sources and Requirement Sheet carry-forward components. They **must not** appear as separate Store actionable Pending Actions when create-next-RS is already eligible for that SO, or when a next-cycle draft Requirement Sheet already exists. Suppression is inbox-only — it does not waive, delete, or weaken carry-forward calculations.
+
+### 7.10 NO_QTY WO placement (shared execution readiness)
+
+Store **Place Partial WO** / **Create Suggested WO** Pending Actions are derived from the same authoritative placement assessment as the NO_QTY Execution Register and Store Dashboard **Ready for WO** KPI (`resolveNoQtyWoPlacementCandidateForSo` → `assessNoQtyPlacementStageForSheet` + `isNoQtyWoPlacementActionable`).
+
+**Sheet scope:** Assess **all locked Requirement Sheets** for the Sales Order and pick the same candidate as the Execution Register (`pickPlacementSheetCandidate`). Do **not** limit WO Pending Actions to the ACTIVE planning cycle only — a prior-cycle locked RS with remaining balance and executable RM remains Store-actionable after the planning pointer advances.
+
+**Emit when:**
+
+- Locked RS has RS balance > 0
+- Suggested executable qty > 0 (RM coverage may be PARTIAL)
+- At least one Monthly Plan for the period is released (`releasedAt` set), including procurement-not-required handoff
+- No blocking BOM / workflow gate on the placement assessment
+
+**Do not suppress** WO placement solely because `ADDITIONAL_PLAN_REQUIRED` (uncovered later-cycle demand). Additional Plan is a separate planning Pending Action; partial WO against released Plan RM remains Store-executable.
+
+**Wording:**
+
+- `Place Partial WO` when suggested executable qty < RS balance
+- `Create Suggested WO` when suggested executable qty equals the executable RS balance
+
+Deep link opens the Requirement Sheet execution workspace for **that** RS identity (`sheetId` + RS `cycleId`). Carry-forward components are not separate WO obligations — placement uses current RS balance and executable RM coverage.
+
+**Surface reconciliation:** Store Dashboard Ready for WO count, Pending Actions, Execution Register, and the RS execution workspace for the picked `sheetId` must report the same RS balance, suggested qty, and RM coverage from this shared candidate.
+
+**Identity immutability:** Pending Action metadata, `openHref`, and the opened workspace **SHALL** use the same `requirementSheetId` / `cycleId`. Frontend must not replace an explicit execution deep link with the SO ACTIVE / latest RS after navigation or refresh. Monthly Plan planned FG qty (e.g. Additional Plan 16,768) is a **procurement coverage** quantity and is not interchangeable with RS balance or suggested WO qty.
+
+### 7.10a NO_QTY Additional Monthly Plan (period-scoped Store obligation)
+
+When `previewAdditionalPlan` / `assessNoQtyMonthlyPlanningGate` returns `ADDITIONAL_PLAN_REQUIRED` for a period:
+
+| Field | Value |
+|-------|-------|
+| **type** | `NO_QTY_ADDITIONAL_PLAN_REQUIRED` |
+| **ownerRole** | `STORE` |
+| **action** | Create Additional Monthly Plan |
+| **quantity** | `totals.totalAdditionalRequirementQty` (source-identity uncovered sum) |
+| **emit** | Exactly **one** action per period |
+| **deep link** | `/monthly-planning?period={YYYY-MM}&openAdditionalPlan=1&from=pending-actions` (optional `planId` of latest approved plan) |
+
+**Must not** gate this obligation on WO placement readiness, RS entered qty = 0, or “RS newer than plan” timestamps. Uncovered production shortfall / QC / RS demand / green-level components are **metadata** on the single planning action — not separate Pending Actions.
+
+**Suppress when:** no uncovered components; draft/active plan already exists (`PLAN_IN_PROGRESS`); components already covered; SO/cycle closed with no remaining uncovered period demand; role is not Store planning initiator; **`FEATURE_MONTHLY_PLANNING` is OFF** (do not emit INITIAL or ADDITIONAL Monthly Planning Pending Actions — workspace and APIs are unavailable).
+
+### 7.10b Monthly Planning feature-flag gate (Pending Actions)
+
+All Monthly Planning Pending Action emitters (`Monthly Planning Pending` / INITIAL, `Create Additional Monthly Plan` / ADDITIONAL, and lifecycle draft/review/release actions) **SHALL** consult the authoritative `FEATURE_MONTHLY_PLANNING` reader (`isMonthlyPlanningEnabled`). When the flag is OFF:
+
+- Emit **no** Monthly Planning Pending Actions (inbox must not deep-link to a disabled workspace — DSH-04).
+- Do **not** invent a separate flag reader in the PA service.
+
+Client feature-flag fetch failure is **not** the same as flag OFF: the SPA must allow retry/recovery without a hard refresh and must not permanently cache all flags as disabled.
+
+Production **owns creation/submission** of the RM return request (Production Report / RM return submit).
+
+Once the return is submitted (`productionRmReturnPending.status = PENDING`):
+
+| Surface | Role | Behavior |
+|---------|------|----------|
+| **Pending Actions (actionable)** | Store (primary); Admin (same receive authority) | Emit exactly one `RM_RETURN_APPROVAL_PENDING` / **RM Return Approval Pending** deep-linked to `/production/rm-returns?pendingId=…` |
+| **Pending Actions (actionable)** | Production | **SHALL NOT** emit `RM_RETURN_APPROVAL_PENDING` or any Open CTA implying Production can approve |
+| **Informational workspace status** | Production | May show **RM Return Submitted — Awaiting Store Approval** (read-only). Must **not** inflate Assigned to you, Work bucket, Pending Actions badge, or actionable inbox rows |
+
+**Receive API:** `POST /api/production-material-returns/pending/:id/receive` — `ADMIN` / `STORE` only.
+
+**Counts rule:** Dashboard badge, Pending Actions count, and API `actions[]` include **actionable** rows only.
 
 ---
 

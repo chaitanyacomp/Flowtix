@@ -67,7 +67,7 @@ export function PendingStoreTasksPanel({ className }: { className?: string }) {
       <CardContent className="space-y-1.5 p-2">
         {rows.map((row) => (
           <div key={row.id} className="rounded-md border border-amber-200 bg-amber-50/80 px-2.5 py-2 text-[11px] text-amber-950">
-            <div className="font-bold">RM Return Approval Pending</div>
+            <div className="font-bold">RM Return Submitted — Awaiting Store Approval</div>
             <dl className="mt-1 grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 gap-y-0.5">
               <dt className="font-medium text-amber-900">WO No</dt>
               <dd className="tabular-nums">{displayWorkOrderNo(row.workOrderId, row.workOrderNo)}</dd>
@@ -76,7 +76,7 @@ export function PendingStoreTasksPanel({ className }: { className?: string }) {
               <dt className="font-medium text-amber-900">Qty</dt>
               <dd className="tabular-nums">{formatProductionQty(row.requestedQty)}{row.unit ? ` ${row.unit}` : ""}</dd>
               <dt className="font-medium text-amber-900">Status</dt>
-              <dd>Awaiting Store Approval</dd>
+              <dd>Informational — no Production action</dd>
             </dl>
           </div>
         ))}

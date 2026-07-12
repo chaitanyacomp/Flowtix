@@ -6,7 +6,7 @@
 | **Volume** | 7 — Security & Governance Architecture |
 | **Chapter** | 4 — Configuration, Business Policies & Feature Flag Architecture |
 | **Title** | Configuration, Business Policies & Feature Flag Architecture |
-| **Version** | 1.0.0 |
+| **Version** | 1.0.1 |
 | **Status** | Draft — Architecture Review |
 | **Effective date** | 2026-05-29 |
 | **Author** | FT ERP Product Team |
@@ -31,6 +31,7 @@
 | Version | Date | Author | Summary |
 |---------|------|--------|---------|
 | 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial Configuration, Business Policies & Feature Flag Architecture |
+| 1.0.1 | 2026-07-12 | FT ERP Product Team | FEATURE_MONTHLY_PLANNING ownership — PA + workspace share one reader; client fetch failure ≠ flag OFF |
 
 **Supersedes:** None.
 
@@ -241,6 +242,14 @@ Policies **do not**:
 | **User preference** | How user interacts when feature visible | Default Planning Workspace tab |
 
 **Rule:** Feature flags control **visibility and eligibility** — not Guard truth ([CFG-02](#11-business-rules)).
+
+### 8.2 Runtime catalog notes (implementation alignment)
+
+| Flag | Ownership | Default | Consumers (must not fork readers) |
+|------|-----------|---------|-----------------------------------|
+| `FEATURE_MONTHLY_PLANNING` | Product capability / factory enablement | OFF | Workspace + Monthly Planning APIs + **all Monthly Planning Pending Action emitters** via `isMonthlyPlanningEnabled` |
+
+**Client contract:** A failed `/api/config/feature-flags` fetch is a **transient configuration error**, not an authoritative OFF. The SPA must allow retry/recovery without requiring a hard browser refresh, and must not permanently cache all flags as disabled after one failure.
 
 ---
 

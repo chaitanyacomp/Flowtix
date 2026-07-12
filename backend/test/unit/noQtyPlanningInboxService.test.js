@@ -176,7 +176,7 @@ describe("noQtyExecutionRegisterService", () => {
     assert.equal(fields.suggestedWoQty, 2905);
   });
 
-  it("full RM with executable qty → PLACE_WO (Place WO)", () => {
+  it("full RM with executable qty → PLACE_WO (Create Suggested WO when partial vs balance)", () => {
     const fields = buildExecutionRegisterFieldsFromPick(15, {
       sheet: { id: 7, cycleId: 5, docNo: "RS-26-0007" },
       assessment: assessment({
@@ -188,8 +188,37 @@ describe("noQtyExecutionRegisterService", () => {
       }),
     });
     assert.equal(fields.actionNeededKey, "PLACE_WO");
-    assert.equal(fields.actionNeededLabel, "Place WO");
+    // suggested 2500 < balance 5000 → Place Partial WO
+    assert.equal(fields.actionNeededLabel, "Place Partial WO");
     assert.equal(fields.rmCoverageLabel, "Ready");
+  });
+
+  it("full executable equals RS balance → Create Suggested WO", () => {
+    const fields = buildExecutionRegisterFieldsFromPick(15, {
+      sheet: { id: 7, cycleId: 5, docNo: "RS-26-0007" },
+      assessment: assessment({
+        requirementSheetId: 7,
+        rsBalanceQty: 5000,
+        suggestedWoQty: 5000,
+        placementStatus: "READY",
+        readinessStatus: "READY_TO_PLACE_WO",
+        released: true,
+      }),
+    });
+    assert.equal(fields.actionNeededKey, "PLACE_WO");
+    assert.equal(fields.actionNeededLabel, "Create Suggested WO");
+  });
+
+  it("unreleased plan → AWAIT_PROCUREMENT even with executable free-stock qty", () => {
+    const action = deriveActionNeeded({
+      rsBalanceQty: 5000,
+      suggestedWoQty: 2905,
+      placementStatus: "PARTIALLY_READY",
+      readinessStatus: "AWAITING_PROCUREMENT",
+      existingWoSummary: [],
+      released: false,
+    });
+    assert.equal(action.key, "AWAIT_PROCUREMENT");
   });
 
   it("no executable RM qty → AWAIT_PROCUREMENT even when RS balance remains", () => {

@@ -6,7 +6,7 @@
 | **Volume** | 5 — Data Architecture |
 | **Chapter** | 5 — Inventory Ledger & Stock Persistence Architecture |
 | **Title** | Inventory Ledger & Stock Persistence Architecture |
-| **Version** | 1.0.0 |
+| **Version** | 1.0.1 |
 | **Status** | Draft — Architecture Review |
 | **Effective date** | 2026-05-29 |
 | **Author** | FT ERP Product Team |
@@ -33,6 +33,7 @@
 | Version | Date | Author | Summary |
 |---------|------|--------|---------|
 | 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial Inventory Ledger & Stock Persistence Architecture |
+| 1.0.1 | 2026-07-10 | FT ERP Product Team | §11.7 — Lane C wastage analysis read implications (no MWN/ledger merge into classification KPIs) |
 
 **Supersedes:** None.
 
@@ -276,6 +277,7 @@ All standard movements are **engine-created** on workflow transition (or authori
 | **Material Issue** | Engine | `materialIssue.post` | Material Issue | −qty OUT store; +qty IN production location (paired transfer) | Store ↓ production ↑ | Yes — issue reversal / return | WO/PMR `correlationId` |
 | **Material Return** | Engine | `materialReturn.post` | Material Return Note | +qty IN store; −qty OUT production | Reverses issue envelope | Yes — return reversal | Same WO `correlationId` |
 | **Production Consumption** | Engine | `productionEntry.approve` | Production Entry | −qty OUT production (RM consumed) | Production location ↓ | Yes — PE reversal (policy) | WO `correlationId` |
+| **Production RM Wastage** | Engine | `materialWastage.post` / Production Report disposition finalize | Material Wastage Note (MWN) | −qty OUT production (`RM_WASTAGE`, USABLE) | Production location ↓ (final process loss; **not** returned to store; **not** FG Scrap bucket) | No undelete — compensating adjustment only | WO `correlationId` |
 | **FG Production Post** | Engine | `productionEntry.approve` | Production Entry | +FG qty IN QC hold / WIP (policy) | QC/WIP ↑ pending QA | Yes — PE reversal | WO `correlationId` |
 | **FG Acceptance** | Engine | `fgAcceptance.post` | FG Acceptance | +FG IN dispatch-eligible location | Dispatch-eligible stock ↑ | Yes — QA reversal (policy) | QA/PE `correlationId` |
 | **Scrap Posting** | Engine | `scrapRecord.post` | Scrap Record | −qty OUT (usable/QC) to scrap bucket/area | On-hand ↓ scrap ↑ | No undelete — adjustment only | QA `correlationId` |
@@ -288,7 +290,7 @@ All standard movements are **engine-created** on workflow transition (or authori
 
 | Class | Movements | Nature |
 |-------|-----------|--------|
-| **Engine-created, user-authorized** | GRN, Issue, Return, PE, FG Acceptance, Scrap, Dispatch | Operational — tied to workflow documents |
+| **Engine-created, user-authorized** | GRN, Issue, Return, PE, FG Acceptance, Scrap, **RM Wastage (MWN)**, Dispatch | Operational — tied to workflow documents |
 | **Engine-created, admin-authorized** | Opening Balance, Physical Count, Manual Correction | Governance — explicit approval policy |
 | **Financial vs operational** | All movements are **operational** ledger facts; financial valuation is downstream (Volume 6+) | Ledger qty is operational source of truth |
 | **Permanent vs compensating** | Initial post = permanent entry; reversal = **new compensating entry** linked to original — never in-place edit | |
@@ -485,6 +487,10 @@ Workflow Event Store replay **re-derives workflow state** — it does **not** re
 | **Compensate, don't delete** | Errors corrected by reversal entries |
 | **Snapshot supplementary** | Inventory balance snapshots (count freeze) supplement — never replace — ledger |
 
+### 11.7 Read-model reconciliation — wastage analytical lanes
+
+Lane C Production Wastage Analysis reports (`productionWastageAnalysisQueryService`) are **read-only** over CONFIRMED Production Work Order Reports. They **SHALL NOT** treat ledger `RM_WASTAGE` / MaterialWastageNote quantities as the primary fact, and **SHALL NOT** merge those quantities into Lane C KPIs (reconciliation metadata may surface classification vs line wastage deltas only). Material Return remains a return — never wastage. FG `ScrapRecord` remains Lane D.
+
 ---
 
 ## 12. Business Rules
@@ -674,6 +680,7 @@ flowchart LR
 | Version | Date | Author | Summary |
 |---------|------|--------|---------|
 | 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial Inventory Ledger & Stock Persistence Architecture |
+| 1.0.1 | 2026-07-10 | FT ERP Product Team | §11.7 Lane C wastage analysis read implications |
 
 ---
 

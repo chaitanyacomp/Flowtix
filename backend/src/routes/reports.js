@@ -2015,7 +2015,147 @@ reportsRouter.get(
   productionWastageClassificationRoles,
   async (req, res, next) => {
     try {
-      const payload = await buildProductionWastageClassificationReport(req.query);
+      const q = req.query || {};
+      const mode = String(q.mode || "legacy").trim().toLowerCase();
+      const payload = await buildProductionWastageClassificationReport({
+        ...q,
+        mode: mode === "wo-detail" || mode === "type-summary" ? mode : "legacy",
+        fromDate: q.fromDate || q.dateFrom,
+        toDate: q.toDate || q.dateTo,
+        rmItemId: q.rmItemId || q.itemId,
+      });
+
+      if (String(q.export || "").toLowerCase() === "csv") {
+        const exportPayload = await buildProductionWastageClassificationReport({
+          ...q,
+          mode: mode === "type-summary" ? "type-summary" : mode === "wo-detail" ? "wo-detail" : "legacy",
+          fromDate: q.fromDate || q.dateFrom,
+          toDate: q.toDate || q.dateTo,
+          rmItemId: q.rmItemId || q.itemId,
+          export: "all",
+        });
+        const rows = exportPayload.rows || [];
+        let header;
+        let lines;
+        if (exportPayload.mode === "type-summary") {
+          header = [
+            "Wastage Type",
+            "Category",
+            "Total Wastage Qty",
+            "Share of Total %",
+            "Work Order Count",
+            "Production Report Count",
+            "Avg Wastage per WO",
+            "Avg Wastage %",
+            "Highest Wastage WO",
+            "Highest Wastage Qty",
+            "Lowest Non-zero WO",
+            "Lowest Non-zero Qty",
+          ];
+          lines = rows.map((r) =>
+            [
+              r.wastageTypeName,
+              r.category,
+              r.totalWastageQty,
+              r.shareOfTotalWastagePct,
+              r.workOrderCount,
+              r.productionReportCount,
+              r.averageWastagePerWo,
+              r.averageWastagePct,
+              r.highestWastageWoNo,
+              r.highestWastageQty,
+              r.lowestNonZeroWastageWoNo,
+              r.lowestNonZeroWastageQty,
+            ]
+              .map(csvEscape)
+              .join(","),
+          );
+        } else if (exportPayload.mode === "wo-detail") {
+          header = [
+            "Report Date",
+            "WO No",
+            "Sales Order",
+            "Customer",
+            "FG Item",
+            "RM Item",
+            "Planned Consumption",
+            "Issued Qty",
+            "Returned Qty",
+            "Actual Consumed Qty",
+            "FG Produced Qty",
+            "Wastage Qty",
+            "Wastage %",
+            "Yield %",
+            "Wastage Type",
+            "Category",
+            "Reason / Remarks",
+            "Production Report Ref",
+            "Status",
+          ];
+          lines = rows.map((r) =>
+            [
+              r.reportDate,
+              r.workOrderNo,
+              r.salesOrderNo,
+              r.customerName,
+              r.fgItemName,
+              r.rmItemName,
+              r.plannedConsumption,
+              r.issuedQty,
+              r.returnedQty,
+              r.actualConsumedQty,
+              r.fgProducedQty,
+              r.wastageQty,
+              r.wastagePct,
+              r.yieldPct,
+              r.wastageTypeLabel,
+              r.categoryLabel,
+              r.remarks,
+              r.productionReportRef,
+              r.status,
+            ]
+              .map(csvEscape)
+              .join(","),
+          );
+        } else {
+          header = [
+            "Confirmed At",
+            "WO No",
+            "Sales Order",
+            "Customer",
+            "FG Item",
+            "Wastage Type",
+            "Category",
+            "Qty",
+            "Remarks",
+            "Report Total Wastage",
+          ];
+          lines = rows.map((r) =>
+            [
+              r.confirmedAt,
+              r.workOrderNo,
+              r.salesOrderNo,
+              r.customerName,
+              r.fgItemName,
+              r.wastageTypeName,
+              r.category,
+              r.qty,
+              r.remarks,
+              r.reportTotalWastageQty,
+            ]
+              .map(csvEscape)
+              .join(","),
+          );
+        }
+        const body = [header.map(csvEscape).join(","), ...lines].join("\n");
+        res.setHeader("Content-Type", "text/csv; charset=utf-8");
+        res.setHeader(
+          "Content-Disposition",
+          `attachment; filename="production-wastage-${exportPayload.mode || "legacy"}.csv"`,
+        );
+        return res.send(body);
+      }
+
       return res.json(payload);
     } catch (e) {
       return next(e);

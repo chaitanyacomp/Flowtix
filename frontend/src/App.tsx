@@ -68,6 +68,8 @@ import { ProductionMaterialRequestsPage } from "./pages/ProductionMaterialReques
 import { ProductionRmReturnsPage } from "./pages/ProductionRmReturnsPage";
 import { ProductionRmVarianceReportPage } from "./pages/ProductionRmVarianceReportPage";
 import { RmWastageReportPage } from "./pages/RmWastageReportPage";
+import { ProductionWastageWoReportPage } from "./pages/ProductionWastageWoReportPage";
+import { ProductionWastageByTypeReportPage } from "./pages/ProductionWastageByTypeReportPage";
 import { RegularWorkOrderPlanningPage } from "./pages/RegularWorkOrderPlanningPage";
 import { ScrapReportPage } from "./pages/ScrapReportPage";
 import { ReportsPage } from "./pages/ReportsPage";
@@ -1057,6 +1059,22 @@ export default function App() {
           element={
             <ProtectedRoute allowedRoles={["ADMIN", "STORE", "PRODUCTION"]}>
               <RmWastageReportPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/reports/production-wastage-wo"
+          element={
+            <ProtectedRoute allowedRoles={["ADMIN", "STORE", "PRODUCTION", "PURCHASE"]}>
+              <ProductionWastageWoReportPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/reports/production-wastage-by-type"
+          element={
+            <ProtectedRoute allowedRoles={["ADMIN", "STORE", "PRODUCTION", "PURCHASE"]}>
+              <ProductionWastageByTypeReportPage />
             </ProtectedRoute>
           }
         />

@@ -83,14 +83,27 @@ function mapRmCoverage({ placementStatus, readinessStatus, rsBalanceQty }) {
   return RM_COVERAGE.AWAITING_RM;
 }
 
-function resolvePlaceWoActionLabel({ rmCoverage, placementStatus, readinessStatus }) {
+function resolvePlaceWoActionLabel({
+  rmCoverage,
+  placementStatus,
+  readinessStatus,
+  suggestedWoQty,
+  rsBalanceQty,
+}) {
+  const suggested = Number(suggestedWoQty ?? 0);
+  const balance = Number(rsBalanceQty ?? 0);
+  if (suggested > EPS && balance > EPS && suggested + EPS < balance) {
+    return "Place Partial WO";
+  }
+
   const placement = String(placementStatus ?? "").toUpperCase();
   const readiness = String(readinessStatus ?? "").toUpperCase();
   const partial =
     rmCoverage?.key === RM_COVERAGE.PARTIAL.key ||
     placement === "PARTIALLY_READY" ||
     readiness === "PARTIALLY_READY";
-  return partial ? "Place Partial WO" : "Place WO";
+  if (partial) return "Place Partial WO";
+  return "Create Suggested WO";
 }
 
 function deriveActionNeeded({
@@ -99,6 +112,7 @@ function deriveActionNeeded({
   placementStatus,
   readinessStatus,
   existingWoSummary,
+  released,
 }) {
   const balance = Number(rsBalanceQty ?? 0);
   const suggested = Number(suggestedWoQty ?? 0);
@@ -109,6 +123,10 @@ function deriveActionNeeded({
   if (balance > EPS) {
     if (placement === "MISSING_BOM" || readiness === "BLOCKED") {
       return ACTION_NEEDED.BLOCKED;
+    }
+    // Plan release (or procurement-not-required handoff) is required before WO placement CTA.
+    if (released === false) {
+      return ACTION_NEEDED.AWAIT_PROCUREMENT;
     }
     // Executable qty drives WO placement — partial RM coverage is actionable.
     if (suggested > EPS) {
@@ -126,6 +144,27 @@ function deriveActionNeeded({
   }
 
   return ACTION_NEEDED.COMPLETE;
+}
+
+/**
+ * Shared authoritative WO-placement pending/register predicate.
+ * Aligns Store Dashboard, Execution Register, and Pending Actions.
+ */
+function isNoQtyWoPlacementActionable(placement) {
+  const suggested = Number(placement?.suggestedWoQty ?? 0);
+  const balance = Number(placement?.rsBalanceQty ?? 0);
+  if (!(balance > EPS) || !(suggested > EPS)) return false;
+  if (placement?.released === false) return false;
+
+  const actionNeeded = deriveActionNeeded({
+    rsBalanceQty: placement.rsBalanceQty,
+    suggestedWoQty: placement.suggestedWoQty,
+    placementStatus: placement.placementStatus,
+    readinessStatus: placement.readinessStatus,
+    existingWoSummary: placement.existingWoSummary ?? [],
+    released: placement.released,
+  });
+  return actionNeeded.key === ACTION_NEEDED.PLACE_WO.key;
 }
 
 function pickPlacementSheetCandidate(assessedRows, guidedCycleId) {
@@ -182,6 +221,7 @@ function buildExecutionRegisterFieldsFromPick(salesOrderId, pick) {
     placementStatus: assessment.placementStatus,
     readinessStatus: assessment.readinessStatus,
     existingWoSummary: assessment.existingWoSummary,
+    released: assessment.released,
   });
   const actionNeededLabel =
     actionNeeded.key === ACTION_NEEDED.PLACE_WO.key
@@ -189,6 +229,8 @@ function buildExecutionRegisterFieldsFromPick(salesOrderId, pick) {
           rmCoverage,
           placementStatus: assessment.placementStatus,
           readinessStatus: assessment.readinessStatus,
+          suggestedWoQty: assessment.suggestedWoQty,
+          rsBalanceQty: assessment.rsBalanceQty,
         })
       : actionNeeded.label;
 
@@ -219,15 +261,21 @@ function buildExecutionRegisterFieldsFromPick(salesOrderId, pick) {
 }
 
 /**
- * @param {import("@prisma/client").PrismaClient | import("@prisma/client").Prisma.TransactionClient} db
- * @param {number} salesOrderId
- * @param {number | null} guidedCycleId
- * @param {Array<object>} lockedSheets
- * @param {object} [deps]
+ * Shared SO-scoped WO placement candidate (Execution Register + Store Pending Actions).
+ * Assesses all locked RS sheets for the SO and picks the same candidate the register uses.
+ * Do not scope to ACTIVE cycle only — prior-cycle locked RS with remaining balance remains executable.
+ *
+ * @returns {Promise<{ sheet: object, assessment: object } | null>}
  */
-async function buildExecutionRegisterForSo(db, salesOrderId, guidedCycleId, lockedSheets, deps = {}) {
+async function resolveNoQtyWoPlacementCandidateForSo(
+  db,
+  salesOrderId,
+  lockedSheets,
+  guidedCycleId,
+  deps = {},
+) {
   const sheets = Array.isArray(lockedSheets) ? lockedSheets : [];
-  if (!sheets.length) return emptyRegisterFields();
+  if (!sheets.length) return null;
 
   const assess =
     deps.assessNoQtyPlacementStageForSheet ||
@@ -240,7 +288,24 @@ async function buildExecutionRegisterForSo(db, salesOrderId, guidedCycleId, lock
     })),
   );
 
-  const pick = pickPlacementSheetCandidate(assessed, guidedCycleId);
+  return pickPlacementSheetCandidate(assessed, guidedCycleId);
+}
+
+/**
+ * @param {import("@prisma/client").PrismaClient | import("@prisma/client").Prisma.TransactionClient} db
+ * @param {number} salesOrderId
+ * @param {number | null} guidedCycleId
+ * @param {Array<object>} lockedSheets
+ * @param {object} [deps]
+ */
+async function buildExecutionRegisterForSo(db, salesOrderId, guidedCycleId, lockedSheets, deps = {}) {
+  const pick = await resolveNoQtyWoPlacementCandidateForSo(
+    db,
+    salesOrderId,
+    lockedSheets,
+    guidedCycleId,
+    deps,
+  );
   return buildExecutionRegisterFieldsFromPick(salesOrderId, pick);
 }
 
@@ -259,7 +324,9 @@ module.exports = {
   deriveActionNeeded,
   emptyRegisterFields,
   executionRegisterSortPriority,
+  isNoQtyWoPlacementActionable,
   mapRmCoverage,
   pickPlacementSheetCandidate,
+  resolveNoQtyWoPlacementCandidateForSo,
   resolvePlaceWoActionLabel,
 };

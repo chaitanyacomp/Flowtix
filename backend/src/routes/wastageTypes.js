@@ -3,6 +3,7 @@ const { z } = require("zod");
 const { prisma } = require("../utils/prisma");
 const { requireAuth, requireRole } = require("../middleware/auth");
 const {
+  WASTAGE_TYPE_CATEGORIES,
   listWastageTypes,
   createWastageType,
   updateWastageType,
@@ -10,6 +11,8 @@ const {
 } = require("../services/wastageTypeService");
 
 const wastageTypesRouter = express.Router();
+
+const categorySchema = z.enum(WASTAGE_TYPE_CATEGORIES);
 
 wastageTypesRouter.get("/", requireAuth, async (req, res, next) => {
   try {
@@ -23,7 +26,14 @@ wastageTypesRouter.get("/", requireAuth, async (req, res, next) => {
 
 wastageTypesRouter.post("/", requireAuth, requireRole(["ADMIN"]), async (req, res, next) => {
   try {
-    const body = z.object({ name: z.string().min(1).max(120) }).parse(req.body ?? {});
+    const body = z
+      .object({
+        name: z.string().min(1).max(120),
+        code: z.string().max(32).optional().nullable(),
+        category: categorySchema.optional(),
+        description: z.string().max(500).optional().nullable(),
+      })
+      .parse(req.body ?? {});
     const row = await createWastageType(prisma, body);
     return res.status(201).json(row);
   } catch (e) {
@@ -37,6 +47,9 @@ wastageTypesRouter.patch("/:id", requireAuth, requireRole(["ADMIN"]), async (req
     const body = z
       .object({
         name: z.string().min(1).max(120).optional(),
+        code: z.string().max(32).optional().nullable(),
+        category: categorySchema.optional(),
+        description: z.string().max(500).optional().nullable(),
         isActive: z.boolean().optional(),
       })
       .parse(req.body ?? {});

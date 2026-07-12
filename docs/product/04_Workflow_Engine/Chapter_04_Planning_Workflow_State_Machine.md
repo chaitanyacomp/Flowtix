@@ -6,7 +6,7 @@
 | **Volume** | 4 — Workflow Engine |
 | **Chapter** | 4 — Planning Workflow State Machine |
 | **Title** | Planning Workflow State Machine |
-| **Version** | 1.0.0 |
+| **Version** | 1.0.3 |
 | **Status** | Draft — Architecture Review |
 | **Effective date** | 2026-05-29 |
 | **Author** | FT ERP Product Team |
@@ -30,6 +30,9 @@
 | Version | Date | Author | Summary |
 |---------|------|--------|---------|
 | 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial Planning domain State Machines and transition tables |
+| 1.0.1 | 2026-07-10 | FT ERP Product Team | §8.1 — next-RS single Store CTA; recovery shortfall/QC not duplicate inbox actions |
+| 1.0.2 | 2026-07-10 | FT ERP Product Team | Additional Plan create uses source-identity coverage (PLN-19) |
+| 1.0.3 | 2026-07-12 | FT ERP Product Team | Monthly Planning PA materialization gated by FEATURE_MONTHLY_PLANNING |
 
 **Supersedes:** None.
 
@@ -415,7 +418,7 @@ Guard order is **top-to-bottom**. First failure stops transition ([FT-PD-041](./
 | 4 | `RELEASED` | Store | RM release → MR in **MPRS pool** |
 | 5 | PR stage | Purchase | `PLN_MPRS_PR` → Procurement domain (Ch. 5) |
 
-**Additional Plan:** Repeats steps 1–5 as new `monthlyProductionPlan` instance (`planKind = ADDITIONAL`); Initial Plan history unchanged.
+**Additional Plan:** Repeats steps 1–5 as new `monthlyProductionPlan` instance (`planKind = ADDITIONAL`); Initial Plan history unchanged. Preview/create quantities use **source-identity coverage** ([PLN-19](../03_Domain_Specifications/Chapter_02_Planning_Domain_Specification.md)) — uncovered RS/cycle/component qty only; prior plans do not offset a later RS by FG+period alone. **Save** and pre-submit suggested-qty sync for Additional drafts use the same source-identity authority (not Initial requirement composition), so repeated Save remains a DRAFT self-loop and Submit stays eligible when planned qty > 0.
 
 ### 7.5 WO preparation differences
 
@@ -440,16 +443,23 @@ Guard order is **top-to-bottom**. First failure stops transition ([FT-PD-041](./
 |-----------|-------------------|---------------|
 | `PLN_RS_LOCK` | RS `ACTIVE` with completable lines | RS `LOCKED` or cancelled |
 | `PLN_MPRS_DRAFT` | Period open; MPRS `DRAFT` | MPRS submitted or cancelled |
+| `PLN_MPRS_ADDITIONAL_CREATE` | Period has ≥1 APPROVED plan; `previewAdditionalPlan.canCreate` (source-identity uncovered qty > 0); no active draft | Additional plan DRAFT created (`mprs.additional.create`) |
 | `PLN_MPRS_SUBMIT` | MPRS `DRAFT` complete | MPRS ≠ `DRAFT` |
 | `PLN_MPRS_RELEASE` | MPRS `APPROVED`; not `RELEASED` | MPRS `RELEASED` |
 | `PLN_MR_REGULAR` | REGULAR shortage; no active MR | MR `APPROVED` or cancelled |
 | `PLN_MR_PR` | REGULAR MR `APPROVED`; no PR | PR created (Procurement Ch. 5) |
 | `PLN_WO_PREPARE` | REGULAR case `READY` / `PARTIAL_READY` | `WO_CREATED` |
 | `PLN_WO_PLACE` | NO_QTY RS locked + case `READY` | `PLACED` |
-| `PLN_RS_CONTINUE` | Cycle `CLOSED` | New RS started or policy off |
+| `PLN_RS_CONTINUE` | Cycle `CLOSED` / next-RS eligible | New RS started (Create Cycle N Requirement Sheet) or policy off |
 | `PLN_BOM_BLOCK` | BOM Guard failure on any planning action | BOM approved |
 
 **Owner:** `ownerRole = Store` for all §8.1 actions.
+
+**NO_QTY Additional Plan inbox rule:** Emit exactly one Store actionable **Create Additional Monthly Plan** (`PLN_MPRS_ADDITIONAL_CREATE` / `NO_QTY_ADDITIONAL_PLAN_REQUIRED`) per period when Additional Plan Preview can create. Quantity = source-identity uncovered total. Do **not** emit separate shortfall / QC / RS-demand / green-level Pending Actions for the same next Additional Plan. Do **not** suppress this action because RS entered qty = 0 or because Place WO is also eligible (FT-PD-040 §7.10 / §7.10a).
+
+**Feature-flag gate:** When `FEATURE_MONTHLY_PLANNING` is OFF, emit **no** Monthly Planning Pending Actions (INITIAL, ADDITIONAL, or lifecycle draft/review/release). See FT-PD-040 §7.10b.
+
+**NO_QTY carry-forward inbox rule:** Production shortfall and QC rejection recovery quantities remain on recovery sources and appear as **informational / carry-forward components** on the next Requirement Sheet. They **SHALL NOT** emit a separate Store actionable Pending Action (`Production shortfall awaiting next RS` / `QC recovery available for allocation`) when Create Cycle N Requirement Sheet is already pending for the same SO, or when a next-cycle draft RS already exists. Analytics / Control Tower monitoring may still show recovery qty separately.
 
 ### 8.2 Purchase Pending Actions
 
@@ -691,6 +701,7 @@ flowchart TB
 | Version | Date | Author | Summary |
 |---------|------|--------|---------|
 | 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial Planning Workflow State Machine |
+| 1.0.1 | 2026-07-10 | FT ERP Product Team | NO_QTY carry-forward inbox rule under §8.1 |
 
 ---
 
@@ -718,7 +729,7 @@ flowchart TB
 
 ## Batch 3E — Recovery / Closure analytics surfaces (read-only)
 
-Dashboard, Pending Actions, Control Tower, and Reports consume `assessNoQtySoClosure()` and `getRecoverySummary()` / `getRecoverySummariesBatch()` via `noQtyRecoveryAnalyticsService`. Production Shortfall and QC Recovery remain separate. Reconciliation identity: Source Qty = Active Allocated + Waived + Available. No mutation of recovery, RS allocation, stock, dispatch qty, billing qty, or SO closure transactions in this batch.
+Dashboard, Pending Actions, Control Tower, and Reports consume `assessNoQtySoClosure()` and `getRecoverySummary()` / `getRecoverySummariesBatch()` via `noQtyRecoveryAnalyticsService`. Production Shortfall and QC Recovery remain separate **recovery types and RS line components**. They do **not** appear as duplicate Store inbox CTAs when Create Cycle N Requirement Sheet already covers the next-RS obligation. Reconciliation identity: Source Qty = Active Allocated + Waived + Available. No mutation of recovery, RS allocation, stock, dispatch qty, billing qty, or SO closure transactions in this batch.
 
 ## Batch 3F — Certification
 

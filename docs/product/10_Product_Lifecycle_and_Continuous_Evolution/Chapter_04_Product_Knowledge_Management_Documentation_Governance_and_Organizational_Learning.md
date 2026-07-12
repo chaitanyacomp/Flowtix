@@ -469,6 +469,7 @@ flowchart TB
 | Version | Date | Author | Summary |
 |---------|------|--------|---------|
 | 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial Product Knowledge Management, Documentation Governance & Organizational Learning |
+| 1.0.1 | 2026-07-10 | FT ERP Product Team | Register — FT-PD-065/054/033/013/024 updates for Production Wastage Analysis (Lane C) |
 
 ---
 

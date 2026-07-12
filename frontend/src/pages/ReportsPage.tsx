@@ -335,6 +335,26 @@ const TILES: ReportTile[] = [
     icon: <Trash2 className="h-4 w-4" />,
     priority: 16,
   },
+  {
+    to: "/reports/production-wastage-wo",
+    title: "Production Wastage — WO Analysis",
+    description:
+      "CONFIRMED Production Report wastage by work order (Lane C classification). Distinct from RM Wastage Notes, Production RM Variance, and FG Scrap.",
+    roles: ["ADMIN", "STORE", "PRODUCTION", "PURCHASE"],
+    group: "production",
+    icon: <ClipboardList className="h-4 w-4" />,
+    priority: 17,
+  },
+  {
+    to: "/reports/production-wastage-by-type",
+    title: "Production Wastage — Type Analysis",
+    description:
+      "Wastage type / category summary from Production Report classification. Drill into WO Analysis. Not MWN, variance, or FG scrap.",
+    roles: ["ADMIN", "STORE", "PRODUCTION", "PURCHASE"],
+    group: "production",
+    icon: <ListChecks className="h-4 w-4" />,
+    priority: 18,
+  },
 
   /* ------------------------------- Quality & Scrap ---------------------------- */
   {

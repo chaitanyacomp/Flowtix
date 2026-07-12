@@ -168,7 +168,14 @@ describe("monthlyPlanningService.getMonthlyPlanByPeriod", () => {
 /**
  * Mock db for production-line CRUD. Tracks upserts/deletes and serves lines back.
  */
-function createLinesMockDb({ status = "DRAFT", planId = 1, items = [], existingLines = [] } = {}) {
+function createLinesMockDb({
+  status = "DRAFT",
+  planId = 1,
+  planKind = "INITIAL",
+  periodKey = "2026-07",
+  items = [],
+  existingLines = [],
+} = {}) {
   const state = {
     lines: existingLines.map((l) => ({ ...l })),
     upserts: [],
@@ -178,7 +185,9 @@ function createLinesMockDb({ status = "DRAFT", planId = 1, items = [], existingL
   const db = {
     monthlyProductionPlan: {
       findUnique: async ({ where }) =>
-        where.id === planId ? { id: planId, status, periodKey: "2026-06" } : null,
+        where.id === planId
+          ? { id: planId, status, periodKey, planKind }
+          : null,
     },
     monthlyProductionPlanLine: {
       findMany: async () =>
@@ -187,6 +196,8 @@ function createLinesMockDb({ status = "DRAFT", planId = 1, items = [], existingL
           fgItemId: l.fgItemId,
           suggestedFgQty: l.suggestedFgQty ?? 0,
           plannedFgQty: l.plannedFgQty ?? 0,
+          customerProductionQty: l.customerProductionQty ?? l.suggestedFgQty ?? l.plannedFgQty ?? 0,
+          greenReplenishmentQty: l.greenReplenishmentQty ?? 0,
           plannedQtyOverridden: Boolean(l.plannedQtyOverridden),
           source: l.source ?? "MANUAL",
           remarks: l.remarks ?? null,
@@ -218,8 +229,8 @@ function createLinesMockDb({ status = "DRAFT", planId = 1, items = [], existingL
   return db;
 }
 
-const emptyCompositionLoader = async () => ({ periodKey: "2026-06", items: [] });
-const emptyGreenLoader = async () => ({ anchorPeriodKey: "2026-06", items: [] });
+const emptyCompositionLoader = async () => ({ periodKey: "2026-07", items: [] });
+const emptyGreenLoader = async () => ({ anchorPeriodKey: "2026-07", items: [] });
 
 describe("monthlyPlanningService.getProductionLines", () => {
   it("returns mapped lines + editable flag for DRAFT", async () => {
@@ -382,6 +393,181 @@ describe("monthlyPlanningService.updateProductionLines", () => {
         }),
       (e) => e instanceof MonthlyPlanningError && e.code === "FG_ITEM_NOT_FOUND",
     );
+  });
+
+  it("ADDITIONAL save preserves source-identity qty when Initial composition is zero", async () => {
+    const db = createLinesMockDb({
+      status: "DRAFT",
+      planKind: "ADDITIONAL",
+      periodKey: "2026-07",
+      items: [{ id: 75, itemType: "FG" }],
+      existingLines: [
+        {
+          id: 219,
+          fgItemId: 75,
+          suggestedFgQty: 16768,
+          plannedFgQty: 16768,
+          customerProductionQty: 16768,
+          greenReplenishmentQty: 0,
+          plannedQtyOverridden: false,
+          source: "REQUIREMENT_SHEET",
+        },
+      ],
+    });
+    const res = await updateProductionLines({
+      db,
+      planId: 1,
+      upserts: [
+        {
+          fgItemId: 75,
+          plannedFgQty: 16768,
+          customerProductionQty: 16768,
+          greenReplenishmentQty: 0,
+          plannedQtyOverridden: false,
+          source: "REQUIREMENT_SHEET",
+        },
+      ],
+      loadComposition: async () => ({
+        periodKey: "2026-07",
+        items: [
+          {
+            itemId: 75,
+            suggestedProduction: 0,
+            productionRequirementQty: 0,
+            customerProductionQty: 0,
+            greenShortage: 3000,
+          },
+        ],
+      }),
+      loadPeriodCoverage: async () => ({
+        periodKey: "2026-07",
+        items: [{ fgItemId: 75, additionalRequirementQty: 16768, unit: "Nos" }],
+        totals: { totalAdditionalRequirementQty: 16768 },
+      }),
+      loadGreenLevelsFn: emptyGreenLoader,
+    });
+    assert.equal(res.lines.length, 1);
+    assert.equal(res.lines[0].plannedFgQty, 16768);
+    assert.equal(res.lines[0].suggestedFgQty, 16768);
+    assert.equal(res.lines[0].customerProductionQty, 16768);
+    assert.equal(db.__state.upserts[0].update.plannedFgQty, 16768);
+  });
+
+  it("ADDITIONAL save preserves persisted qty when coverage returns zero", async () => {
+    const db = createLinesMockDb({
+      status: "DRAFT",
+      planKind: "ADDITIONAL",
+      periodKey: "2026-07",
+      items: [{ id: 75, itemType: "FG" }],
+      existingLines: [
+        {
+          id: 219,
+          fgItemId: 75,
+          suggestedFgQty: 16768,
+          plannedFgQty: 16768,
+          customerProductionQty: 16768,
+          plannedQtyOverridden: false,
+          source: "REQUIREMENT_SHEET",
+        },
+      ],
+    });
+    const res = await updateProductionLines({
+      db,
+      planId: 1,
+      upserts: [
+        {
+          fgItemId: 75,
+          plannedFgQty: 16768,
+          customerProductionQty: 16768,
+          plannedQtyOverridden: false,
+          source: "REQUIREMENT_SHEET",
+        },
+      ],
+      loadComposition: async () => ({
+        periodKey: "2026-07",
+        items: [{ itemId: 75, suggestedProduction: 0, productionRequirementQty: 0, greenShortage: 0 }],
+      }),
+      loadPeriodCoverage: async () => ({
+        periodKey: "2026-07",
+        items: [{ fgItemId: 75, additionalRequirementQty: 0 }],
+        totals: { totalAdditionalRequirementQty: 0 },
+      }),
+      loadGreenLevelsFn: emptyGreenLoader,
+    });
+    assert.equal(res.lines[0].plannedFgQty, 16768);
+    assert.equal(res.lines[0].suggestedFgQty, 16768);
+  });
+
+  it("ADDITIONAL save preserves planned override while keeping suggested from coverage", async () => {
+    const db = createLinesMockDb({
+      status: "DRAFT",
+      planKind: "ADDITIONAL",
+      periodKey: "2026-07",
+      items: [{ id: 75, itemType: "FG" }],
+      existingLines: [
+        {
+          id: 219,
+          fgItemId: 75,
+          suggestedFgQty: 16768,
+          plannedFgQty: 16768,
+          customerProductionQty: 16768,
+          plannedQtyOverridden: false,
+          source: "REQUIREMENT_SHEET",
+        },
+      ],
+    });
+    const res = await updateProductionLines({
+      db,
+      planId: 1,
+      upserts: [
+        {
+          fgItemId: 75,
+          plannedFgQty: 10000,
+          customerProductionQty: 16768,
+          plannedQtyOverridden: true,
+          source: "REQUIREMENT_SHEET",
+        },
+      ],
+      loadPeriodCoverage: async () => ({
+        periodKey: "2026-07",
+        items: [{ fgItemId: 75, additionalRequirementQty: 16768 }],
+        totals: { totalAdditionalRequirementQty: 16768 },
+      }),
+      loadGreenLevelsFn: emptyGreenLoader,
+    });
+    assert.equal(res.lines[0].plannedFgQty, 10000);
+    assert.equal(res.lines[0].suggestedFgQty, 16768);
+    assert.equal(res.lines[0].plannedQtyOverridden, true);
+    assert.equal(res.lines[0].customerProductionQty, 10000);
+  });
+
+  it("INITIAL save still uses requirement composition suggested qty", async () => {
+    const db = createLinesMockDb({
+      status: "DRAFT",
+      planKind: "INITIAL",
+      periodKey: "2026-07",
+      items: [{ id: 50, itemType: "FG" }],
+    });
+    const res = await updateProductionLines({
+      db,
+      planId: 1,
+      upserts: [{ fgItemId: 50, plannedFgQty: 1, plannedQtyOverridden: false }],
+      loadComposition: async () => ({
+        periodKey: "2026-07",
+        items: [
+          {
+            itemId: 50,
+            suggestedProduction: 500,
+            productionRequirementQty: 500,
+            customerProductionQty: 500,
+            greenShortage: 0,
+          },
+        ],
+      }),
+      loadGreenLevelsFn: emptyGreenLoader,
+    });
+    assert.equal(res.lines[0].plannedFgQty, 500);
+    assert.equal(res.lines[0].suggestedFgQty, 500);
   });
 });
 

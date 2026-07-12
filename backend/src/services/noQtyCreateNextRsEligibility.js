@@ -231,8 +231,126 @@ async function computeNoQtyCreateNextRsEligibility(db, input) {
   return { eligible: true, reason: "OK", existingNextRsDocNo: null, existingNextRsId: null };
 }
 
+/**
+ * Store Pending Actions eligibility for "Create Cycle N Requirement Sheet".
+ * Includes ACTIVE-empty + prior-CLOSED eligible (post prepare-next / between-cycles).
+ * This is the authoritative Store inbox predicate — recovery shortfall/QC PAs must use the same.
+ *
+ * @returns {Promise<{
+ *   eligible: boolean;
+ *   reason: string;
+ *   targetCycleId?: number | null;
+ *   targetCycleNo?: number | null;
+ *   ageTimestamp?: Date | null;
+ *   resolution?: string;
+ *   existingNextRsDocNo?: string | null;
+ *   existingNextRsId?: number | null;
+ * }>}
+ */
+async function computeStoreCreateNextRsPendingEligibility(db, salesOrderId) {
+  const sid = Number(salesOrderId);
+  if (!Number.isFinite(sid) || sid <= 0) {
+    return { eligible: false, reason: "INVALID_SO" };
+  }
+  return getOrSetRequestCache(`store:create-next-rs-elig:${sid}`, () =>
+    computeStoreCreateNextRsPendingEligibilityImpl(db, sid),
+  );
+}
+
+async function computeStoreCreateNextRsPendingEligibilityImpl(db, soId) {
+  const active = await db.salesOrderCycle.findFirst({
+    where: { salesOrderId: soId, status: "ACTIVE" },
+    orderBy: { cycleNo: "desc" },
+    select: { id: true, cycleNo: true },
+  });
+
+  if (active?.id != null) {
+    const sheetOnActive = await db.requirementSheet.findFirst({
+      where: { salesOrderId: soId, cycleId: Number(active.id) },
+      select: { id: true },
+    });
+    if (!sheetOnActive) {
+      const priorClosed = await db.salesOrderCycle.findFirst({
+        where: {
+          salesOrderId: soId,
+          status: "CLOSED",
+          cycleNo: { lt: Number(active.cycleNo) },
+        },
+        orderBy: { cycleNo: "desc" },
+        select: { id: true },
+      });
+      if (priorClosed?.id != null) {
+        const priorElig = await computeNoQtyCreateNextRsEligibility(db, {
+          salesOrderId: soId,
+          cycleId: Number(priorClosed.id),
+        });
+        if (priorElig.eligible) {
+          const lockedRs = await db.requirementSheet.findFirst({
+            where: { salesOrderId: soId, cycleId: Number(priorClosed.id), status: "LOCKED" },
+            orderBy: [{ version: "desc" }, { id: "desc" }],
+            select: { updatedAt: true },
+          });
+          return {
+            eligible: true,
+            reason: "OK",
+            targetCycleId: Number(active.id),
+            targetCycleNo: Number(active.cycleNo),
+            ageTimestamp: lockedRs?.updatedAt ?? null,
+            resolution: "ACTIVE_EMPTY_PRIOR_ELIGIBLE",
+            existingNextRsDocNo: null,
+            existingNextRsId: null,
+          };
+        }
+      }
+    }
+  }
+
+  const eligibility = await computeNoQtyCreateNextRsEligibilityResolved(db, soId);
+  if (!eligibility.eligible) {
+    return {
+      eligible: false,
+      reason: eligibility.reason ?? "NOT_ELIGIBLE",
+      existingNextRsDocNo: eligibility.existingNextRsDocNo ?? null,
+      existingNextRsId: eligibility.existingNextRsId ?? null,
+    };
+  }
+
+  const { cycleId } = await resolveNoQtyEligibilityCycleId(db, soId);
+  if (!cycleId) {
+    return { eligible: false, reason: "NO_CYCLE" };
+  }
+
+  const cycle = await db.salesOrderCycle.findFirst({
+    where: { id: cycleId, salesOrderId: soId },
+    select: { cycleNo: true },
+  });
+  const lockedRs = await db.requirementSheet.findFirst({
+    where: { salesOrderId: soId, cycleId, status: "LOCKED" },
+    orderBy: [{ version: "desc" }, { id: "desc" }],
+    select: { updatedAt: true },
+  });
+  if (!lockedRs) {
+    return { eligible: false, reason: "NO_LOCKED_RS" };
+  }
+
+  const nextCycleNo =
+    cycle?.cycleNo != null && Number(cycle.cycleNo) > 0 ? Number(cycle.cycleNo) + 1 : null;
+
+  return {
+    eligible: true,
+    reason: "OK",
+    targetCycleId: active?.id != null ? Number(active.id) : null,
+    targetCycleNo: nextCycleNo,
+    ageTimestamp: lockedRs.updatedAt ?? null,
+    resolution: "RESOLVED_CYCLE",
+    existingNextRsDocNo: null,
+    existingNextRsId: null,
+  };
+}
+
 module.exports = {
   computeNoQtyCreateNextRsEligibility,
   resolveNoQtyEligibilityCycleId,
   computeNoQtyCreateNextRsEligibilityResolved,
+  computeStoreCreateNextRsPendingEligibility,
 };

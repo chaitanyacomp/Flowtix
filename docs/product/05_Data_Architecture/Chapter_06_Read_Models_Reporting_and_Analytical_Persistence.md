@@ -6,7 +6,7 @@
 | **Volume** | 5 — Data Architecture |
 | **Chapter** | 6 — Read Models, Reporting & Analytical Persistence |
 | **Title** | Read Models, Reporting & Analytical Persistence |
-| **Version** | 1.0.0 |
+| **Version** | 1.0.1 |
 | **Status** | Draft — Architecture Review |
 | **Effective date** | 2026-05-29 |
 | **Author** | FT ERP Product Team |
@@ -29,6 +29,7 @@
 | Version | Date | Author | Summary |
 |---------|------|--------|---------|
 | 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial Read Models, Reporting & Analytical Persistence Architecture |
+| 1.0.1 | 2026-07-10 | FT ERP Product Team | §8.3 Production wastage analysis read models (Lane C) |
 
 **Supersedes:** None.
 
@@ -250,6 +251,15 @@ Every projection must be **rebuildable** from authoritative sources (events + do
 - Reports **never modify** transactions ([RMP-04](#11-business-rules)).
 - Historical reports use **snapshots and ledger as-of** — not live master for posted periods.
 - Scheduled reports persist **run metadata** (who, when, parameter set) — not a second ledger.
+
+### 8.3 Production wastage analysis read models (Lane C)
+
+| Surface | Route | Primary facts | Explicitly excluded |
+|---------|-------|---------------|---------------------|
+| WO Analysis | `/reports/production-wastage-wo` | CONFIRMED `ProductionWorkOrderReport` + lines + wastage details | MWN / `RM_WASTAGE`, PE variance as wastage, `ScrapRecord` |
+| Type Analysis | `/reports/production-wastage-by-type` | Same source, grouped by `WastageType` / category | Cost columns until valuation policy |
+
+Formulas are centralized in `productionWastageAnalysisQueryService` (backend-only). Frontend renders API results only. Machine / Shift / Operator dimensions are not projected.
 
 ---
 
@@ -495,6 +505,7 @@ flowchart TB
 | Version | Date | Author | Summary |
 |---------|------|--------|---------|
 | 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial Read Models, Reporting & Analytical Persistence Architecture |
+| 1.0.1 | 2026-07-10 | FT ERP Product Team | §8.3 Lane C production wastage analysis read models |
 
 ---
 

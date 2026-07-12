@@ -190,7 +190,11 @@ async function submitPlanForPurchaseReview({
       );
     }
 
-    const composition = await loadCompositionFn({ db: tx, periodKey: plan.periodKey });
+    const composition = await plannedQtyGuards().resolvePlanLineSyncComposition(
+      tx,
+      plan,
+      loadCompositionFn,
+    );
     const { syncNonOverriddenPlanLinesToSuggested, findGreenShortagePlannedBelowSuggested } =
       plannedQtyGuards();
     await syncNonOverriddenPlanLinesToSuggested(tx, plan.id, composition);
@@ -277,7 +281,11 @@ async function purchaseApprovePlan({
       );
     }
 
-    const composition = await loadCompositionFn({ db: tx, periodKey: plan.periodKey });
+    const composition = await plannedQtyGuards().resolvePlanLineSyncComposition(
+      tx,
+      plan,
+      loadCompositionFn,
+    );
     const { syncNonOverriddenPlanLinesToSuggested, findGreenShortagePlannedBelowSuggested } =
       plannedQtyGuards();
     await syncNonOverriddenPlanLinesToSuggested(tx, plan.id, composition);
@@ -314,6 +322,11 @@ async function purchaseApprovePlan({
         purchaseRejectReason: null,
       },
     });
+
+    const {
+      writeCoverageForApprovedPlan,
+    } = require("./monthlyPlanningSourceCoverageService");
+    await writeCoverageForApprovedPlan(tx, updated.id);
 
     const snapshot = await rmSnapshotService().ensureApprovedPlanRmSnapshot({
       db: tx,

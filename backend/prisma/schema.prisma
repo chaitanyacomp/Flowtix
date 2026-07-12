@@ -108,6 +108,18 @@ enum RmWastageReason {
   OTHER
 }
 
+/// Production Report wastage classification category (Lane C analytics).
+enum WastageTypeCategory {
+  PROCESS
+  SETUP
+  QUALITY
+  MACHINE
+  MATERIAL
+  TRIAL
+  BREAKDOWN
+  MISC
+}
+
 /// Production → Store RM request (PMR); fulfilled via Material Issue Note (MIN).
 enum ProductionMaterialRequestStatus {
   DRAFT
@@ -795,6 +807,7 @@ model Item {
   openingStockEntries             OpeningStockEntry[]
   monthlyProductionPlanLinesAsFg  MonthlyProductionPlanLine[]      @relation("MppLineFgItem")
   monthlyProductionPlanRevisionLinesAsFg MonthlyProductionPlanRevisionLine[] @relation("MppRevisionLineFgItem")
+  monthlyPlanRequirementCoveragesAsFg MonthlyPlanRequirementCoverage[] @relation("MppRequirementCoverageFgItem")
   rmPlanLinesAsRm                 RmPlanLine[]                     @relation("RmPlanLineRmItem")
 
   @@index([itemType])
@@ -1387,6 +1400,7 @@ model RequirementSheet {
   carryForwardPendingSources CarryForwardPending[] @relation("CfPendingSourceRs")
   carryForwardPendingTargets CarryForwardPending[] @relation("CfPendingTargetRs")
   recoveryAllocations        RecoveryAllocation[]
+  planRequirementCoverages   MonthlyPlanRequirementCoverage[]
 
   @@unique([salesOrderId, cycleId, periodKey, version])
   @@index([salesOrderId])
@@ -1419,6 +1433,7 @@ model RequirementSheetLine {
   sheet RequirementSheet @relation(fields: [sheetId], references: [id], onDelete: Cascade)
   item  Item             @relation(fields: [itemId], references: [id], onDelete: Restrict)
   recoveryAllocations RecoveryAllocation[]
+  planRequirementCoverages MonthlyPlanRequirementCoverage[]
 
   @@unique([sheetId, itemId])
   @@index([sheetId])
@@ -1476,6 +1491,15 @@ enum MonthlyPlanLineSource {
   MANUAL
 }
 
+/// Immutable requirement-component identity covered by an approved Monthly Production Plan.
+/// Additional Plan coverage is computed by source identity — never by period+FG quantity subtraction alone.
+enum MonthlyPlanCoverageComponentType {
+  RS_BASE_DEMAND
+  PRODUCTION_SHORTFALL
+  QC_REJECTION_RECOVERY
+  GREEN_LEVEL
+}
+
 enum WorkOrderSourceType {
   CUSTOMER_REQUIREMENT
   GREEN_LEVEL_REPLENISHMENT
@@ -1518,6 +1542,7 @@ model MonthlyProductionPlan {
   lines                MonthlyProductionPlanLine[]
   revisionLines        MonthlyProductionPlanRevisionLine[]
   rmPlans              RmPlan[]
+  requirementCoverages MonthlyPlanRequirementCoverage[]
   materialRequirements MaterialRequirement[]       @relation("MaterialRequirementMonthlyPlan")
   greenLevelWorkOrders  WorkOrder[]                 @relation("MppGreenLevelWorkOrders")
   createdBy            User?                       @relation("MppCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
@@ -1554,10 +1579,45 @@ model MonthlyProductionPlanLine {
 
   plan   MonthlyProductionPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
   fgItem Item                  @relation("MppLineFgItem", fields: [fgItemId], references: [id], onDelete: Restrict)
+  requirementCoverages MonthlyPlanRequirementCoverage[]
 
   @@unique([planId, fgItemId])
   @@index([planId])
   @@index([fgItemId])
+}
+
+/// Plan-to-requirement coverage link. Binds an approved plan quantity to an immutable RS/source component.
+/// Plan 1 covering RS-1 must never offset RS-2 demand for the same FG/period.
+model MonthlyPlanRequirementCoverage {
+  id                     Int                              @id @default(autoincrement())
+  planId                 Int
+  planLineId             Int?
+  periodKey              String                           @db.VarChar(16)
+  fgItemId               Int
+  requirementSheetId     Int?
+  requirementSheetLineId Int?
+  salesOrderId           Int?
+  cycleId                Int?
+  cycleNo                Int?
+  componentType          MonthlyPlanCoverageComponentType
+  /// Stable identity: RS_LINE:{lineId}:{componentType} or GREEN:{fgItemId}:{periodKey}
+  sourceKey              String                           @db.VarChar(128)
+  componentQty           Decimal                          @db.Decimal(18, 3)
+  coveredQty             Decimal                          @db.Decimal(18, 3)
+  createdAt              DateTime                         @default(now())
+
+  plan                   MonthlyProductionPlan            @relation(fields: [planId], references: [id], onDelete: Cascade)
+  planLine               MonthlyProductionPlanLine?       @relation(fields: [planLineId], references: [id], onDelete: SetNull)
+  fgItem                 Item                             @relation("MppRequirementCoverageFgItem", fields: [fgItemId], references: [id], onDelete: Restrict)
+  requirementSheet       RequirementSheet?                @relation(fields: [requirementSheetId], references: [id], onDelete: SetNull)
+  requirementSheetLine   RequirementSheetLine?            @relation(fields: [requirementSheetLineId], references: [id], onDelete: SetNull)
+
+  @@unique([planId, sourceKey])
+  @@index([periodKey, fgItemId])
+  @@index([requirementSheetId])
+  @@index([requirementSheetLineId])
+  @@index([sourceKey])
+  @@index([planId])
 }
 
 /// Immutable FG Production Plan snapshot for one lock revision (audit / revision history).
@@ -2802,16 +2862,20 @@ model ProductionRmReturnPending {
 
 /// Admin-maintained wastage reason master for Production Report classification (P16-19A).
 model WastageType {
-  id        Int      @id @default(autoincrement())
-  name      String   @unique @db.VarChar(120)
-  sortOrder Int      @default(0)
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id          Int                 @id @default(autoincrement())
+  code        String?             @unique @db.VarChar(32)
+  name        String              @unique @db.VarChar(120)
+  category    WastageTypeCategory @default(MISC)
+  description String?             @db.VarChar(500)
+  sortOrder   Int                 @default(0)
+  isActive    Boolean             @default(true)
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
 
   reportDetails ProductionWorkOrderReportWastageDetail[]
 
   @@index([isActive, sortOrder])
+  @@index([category, isActive])
 }
 
 /// Per-report wastage classification rows (stored separately for analytics).

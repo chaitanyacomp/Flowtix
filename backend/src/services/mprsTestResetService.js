@@ -1,4 +1,5 @@
 const { DocType } = require("../prismaClientPackage");
+const { cleanupNoQtyRecoveryDependencies } = require("./noQtyRecoveryCleanupService");
 
 const MONTHLY_PLAN_SOURCE = "MONTHLY_PLAN";
 
@@ -297,6 +298,10 @@ async function runMprsTestReset(tx) {
   // Phase B — monthly planning & RM snapshots
   await runDeleteStep(deleted, "rmPlan", () => tx.rmPlan.deleteMany({}));
   await runDeleteStep(deleted, "monthlyProductionPlan", () => tx.monthlyProductionPlan.deleteMany({}));
+
+  // Phase B2 — recovery/waiver/carry-forward before RS (Restrict FKs on RecoveryAllocation → RS/CFP)
+  const recoveryCounts = await cleanupNoQtyRecoveryDependencies(tx, {});
+  Object.assign(deleted, recoveryCounts);
 
   // Phase C — requirement sheets
   await runDeleteStep(deleted, "requirementSheetLine", () => tx.requirementSheetLine.deleteMany({}));

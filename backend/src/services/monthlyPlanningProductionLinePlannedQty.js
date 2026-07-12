@@ -87,6 +87,56 @@ async function syncNonOverriddenPlanLinesToSuggested(tx, planId, composition) {
   return updates;
 }
 
+const ADDITIONAL_SYNC_EPS = 1e-6;
+
+/**
+ * Build a composition-shaped sync payload for ADDITIONAL plans from source-identity coverage
+ * (with persisted line fallback). Never use Initial requirement composition for Additional sync.
+ */
+async function buildAdditionalPlanSyncComposition(tx, plan) {
+  const { getPeriodRequirementCoverage } = require("./monthlyPlanningCoverageService");
+  const coverage = await getPeriodRequirementCoverage({ db: tx, periodKey: plan.periodKey });
+  const coverageByFg = new Map(
+    (coverage.items || []).map((item) => [Number(item.fgItemId), item]),
+  );
+  const lines = await tx.monthlyProductionPlanLine.findMany({
+    where: { planId: plan.id },
+    select: {
+      fgItemId: true,
+      suggestedFgQty: true,
+      customerProductionQty: true,
+      plannedFgQty: true,
+    },
+  });
+  const items = lines.map((line) => {
+    const fgItemId = Number(line.fgItemId);
+    const covQty = round3(n(coverageByFg.get(fgItemId)?.additionalRequirementQty));
+    const preserved = round3(
+      n(line.suggestedFgQty) || n(line.customerProductionQty) || n(line.plannedFgQty),
+    );
+    const qty = covQty > ADDITIONAL_SYNC_EPS ? covQty : preserved;
+    return {
+      itemId: fgItemId,
+      suggestedProduction: qty,
+      productionRequirementQty: qty,
+      customerProductionQty: qty,
+      greenShortage: 0,
+    };
+  });
+  return { periodKey: plan.periodKey, items, coverageModel: "SOURCE_IDENTITY" };
+}
+
+/**
+ * Resolve the suggested-qty sync source for submit/approve.
+ * INITIAL → requirement composition; ADDITIONAL → source-identity coverage.
+ */
+async function resolvePlanLineSyncComposition(tx, plan, loadCompositionFn) {
+  if (String(plan?.planKind ?? "") === "ADDITIONAL") {
+    return buildAdditionalPlanSyncComposition(tx, plan);
+  }
+  return loadCompositionFn({ db: tx, periodKey: plan.periodKey });
+}
+
 /**
  * Backfill persisted planned qty for non-overridden lines on frozen plans (APPROVED / AWAITING).
  * Does not alter RM snapshot lines — only MonthlyProductionPlanLine planned/suggested columns.
@@ -179,5 +229,7 @@ module.exports = {
   resolvePlannedFgQtyForSave,
   findGreenShortagePlannedBelowSuggested,
   syncNonOverriddenPlanLinesToSuggested,
+  buildAdditionalPlanSyncComposition,
+  resolvePlanLineSyncComposition,
   backfillNonOverriddenPlannedQtyForPlan,
 };

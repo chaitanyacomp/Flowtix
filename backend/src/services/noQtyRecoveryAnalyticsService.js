@@ -14,8 +14,14 @@ const {
   sumActiveAllocatedQty,
 } = require("./noQtyRecoveryService");
 const { assessNoQtySoClosure, CLOSURE_MODES } = require("./noQtySoClosureService");
+const { computeStoreCreateNextRsPendingEligibility } = require("./noQtyCreateNextRsEligibility");
 
 const EPS = 1e-6;
+
+/** Recovery types that fold into next-RS carry-forward (not separate Store inbox CTAs). */
+const NEXT_RS_COVERED_RECOVERY_TYPES = Object.freeze(
+  new Set(["PRODUCTION_SHORTFALL", "QC_FINAL_REJECTION"]),
+);
 
 const OPEN_SO_STATUSES = Object.freeze([
   "DRAFT",
@@ -309,18 +315,106 @@ function buildEmptySummary(soId) {
 }
 
 /**
- * Pending actions for recovery / closure (deduped by source or SO+action type).
+ * Pure rule: recovery qty remains in analytics / RS components, but must not emit a separate
+ * Store actionable PA when the next Requirement Sheet already covers that obligation.
  */
-async function fetchNoQtyRecoveryPendingActions(db = prisma, { role = null } = {}) {
+function shouldSuppressRecoveryPendingAction(args = {}) {
+  const recoveryType = String(args.recoveryType || "");
+  if (!NEXT_RS_COVERED_RECOVERY_TYPES.has(recoveryType)) return false;
+  if (args.soClosed) return true;
+  return Boolean(args.createNextRsEligible) || Boolean(args.nextRsDraftExists);
+}
+
+/**
+ * Detect whether next-RS creation (or an open next-cycle draft) already owns carry-forward.
+ * Does not mutate recovery sources or RS history.
+ */
+async function resolveNextRsCarryForwardCoverage(db, salesOrderId) {
+  const soId = Number(salesOrderId);
+  const empty = {
+    covered: false,
+    createNextRsEligible: false,
+    nextRsDraftExists: false,
+    reason: null,
+  };
+  if (!Number.isFinite(soId) || soId <= 0) return empty;
+
+  // Must match Store Create Cycle N emitter (includes ACTIVE_EMPTY_PRIOR_ELIGIBLE).
+  let createNextRsEligible = false;
+  let createReason = null;
+  try {
+    const elig = await computeStoreCreateNextRsPendingEligibility(db, soId);
+    createNextRsEligible = Boolean(elig?.eligible);
+    createReason = elig?.resolution || elig?.reason || null;
+  } catch {
+    createNextRsEligible = false;
+  }
+
+  let nextRsDraftExists = false;
+  try {
+    if (typeof db.requirementSheet?.findFirst === "function") {
+      const draft = await db.requirementSheet.findFirst({
+        where: {
+          salesOrderId: soId,
+          status: "DRAFT",
+        },
+        select: { id: true, salesOrderCycle: { select: { status: true } } },
+      });
+      if (draft?.id) {
+        const cycleStatus = draft.salesOrderCycle?.status;
+        nextRsDraftExists = !cycleStatus || cycleStatus !== "CLOSED";
+      }
+    }
+  } catch {
+    nextRsDraftExists = false;
+  }
+
+  const covered = shouldSuppressRecoveryPendingAction({
+    recoveryType: "PRODUCTION_SHORTFALL",
+    createNextRsEligible,
+    nextRsDraftExists,
+  });
+
+  return {
+    covered,
+    createNextRsEligible,
+    nextRsDraftExists,
+    reason: createNextRsEligible
+      ? createReason || "CREATE_NEXT_RS_PENDING"
+      : nextRsDraftExists
+        ? "NEXT_RS_DRAFT_EXISTS"
+        : null,
+  };
+}
+
+async function resolveNextRsCarryForwardCoverageBatch(db, salesOrderIds) {
+  const map = new Map();
+  for (const id of salesOrderIds || []) {
+    map.set(Number(id), await resolveNextRsCarryForwardCoverage(db, id));
+  }
+  return map;
+}
+
+/**
+ * Pending actions for recovery / closure (deduped by source or SO+action type).
+ *
+ * PRODUCTION_SHORTFALL / QC_FINAL_REJECTION inbox rows are suppressed when Create Next RS is
+ * already the Store-owned obligation (or a next-cycle draft RS exists). Underlying recovery
+ * qty and RS carry-forward components are unchanged.
+ */
+async function fetchNoQtyRecoveryPendingActions(db = prisma, { role = null, coverageBySoId = null } = {}) {
   const r = String(role ?? "").trim().toUpperCase();
   const openSos = await loadOpenNoQtySalesOrders(db);
   if (!openSos.length) return [];
 
   const soIds = openSos.map((s) => s.id);
   const soById = new Map(openSos.map((s) => [s.id, s]));
-  const [summaries, assessments] = await Promise.all([
+  const [summaries, assessments, coverageMap] = await Promise.all([
     getRecoverySummariesBatch(db, soIds),
     assessNoQtySoClosureMany(db, soIds),
+    coverageBySoId
+      ? Promise.resolve(coverageBySoId)
+      : resolveNextRsCarryForwardCoverageBatch(db, soIds),
   ]);
 
   const now = new Date();
@@ -340,13 +434,31 @@ async function fetchNoQtyRecoveryPendingActions(db = prisma, { role = null } = {
     const docNo = displaySalesOrderNo(soId, so?.docNo);
     const summary = summaries.get(soId) || buildEmptySummary(soId);
     const assessment = assessments.get(soId);
+    const coverage = coverageMap.get(soId) || coverageMap.get(Number(soId)) || {
+      covered: false,
+      createNextRsEligible: false,
+      nextRsDraftExists: false,
+    };
 
     for (const src of summary.sources) {
       if (src.availableQty <= EPS) continue;
       if (src.recoveryStatus === "CANCELLED" || src.recoveryStatus === "WAIVED") continue;
 
-      const ageHours = Math.floor(ageDaysFrom(src.createdAt, now) * 24);
       const isPs = src.recoveryType === "PRODUCTION_SHORTFALL";
+      const isQc = src.recoveryType === "QC_FINAL_REJECTION";
+
+      if (
+        (isPs || isQc) &&
+        shouldSuppressRecoveryPendingAction({
+          recoveryType: src.recoveryType,
+          createNextRsEligible: coverage.createNextRsEligible,
+          nextRsDraftExists: coverage.nextRsDraftExists,
+        })
+      ) {
+        continue;
+      }
+
+      const ageHours = Math.floor(ageDaysFrom(src.createdAt, now) * 24);
       const actionLabel = isPs
         ? "Production shortfall awaiting next RS"
         : "QC recovery available for allocation";
@@ -411,7 +523,6 @@ async function fetchNoQtyRecoveryPendingActions(db = prisma, { role = null } = {
       }
     } else if (assessment.mode === CLOSURE_MODES.BLOCKED) {
       const first = assessment.blockers[0];
-      // Skip FG-only if already emitted FG action; still emit if other blockers
       const nonFgBlockers = assessment.blockers.filter((b) => b.code !== "FG_DISPOSITION_REQUIRED");
       if (nonFgBlockers.length && (!r || r === "ADMIN" || r === "STORE")) {
         push({
@@ -706,9 +817,12 @@ function sumRequirementSheetComponentTotals(sheet) {
 module.exports = {
   AGE_BUCKETS,
   OPEN_SO_STATUSES,
+  NEXT_RS_COVERED_RECOVERY_TYPES,
   ageDaysFrom,
   ageBucketKey,
   reconciliationOk,
+  shouldSuppressRecoveryPendingAction,
+  resolveNextRsCarryForwardCoverage,
   assessNoQtySoClosureMany,
   getNoQtyRecoveryDashboardSnapshot,
   fetchNoQtyRecoveryPendingActions,

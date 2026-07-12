@@ -6,7 +6,7 @@
 | **Volume** | 2 — Business Architecture |
 | **Chapter** | 5 — Document Ownership & Responsibility Matrix |
 | **Title** | Document Ownership & Responsibility Matrix |
-| **Version** | 1.0.0 |
+| **Version** | 1.1.0 |
 | **Status** | Draft — Architecture Review |
 | **Effective date** | 2026-05-29 |
 | **Author** | FT ERP Product Team |
@@ -30,6 +30,7 @@
 | Version | Date | Author | Summary |
 |---------|------|--------|---------|
 | 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial ownership and responsibility matrix for all major documents and stages |
+| 1.1.0 | 2026-07-10 | FT ERP Product Team | Production Report owns wastage classification; Lane C analytics read-only; MWN/Scrap/Variance remain separate owners |
 
 **Supersedes:** None.
 
@@ -192,9 +193,9 @@ Ownership transfers when the Workflow Engine advances state (e.g. Store submits 
 | Role | Representative Pending Actions (planning + execution) |
 |------|------------------------------------------------------|
 | **Admin** | Complete Enquiry / Feasibility / Quotation; commit Internal Sales Order; create Sales Bill; billing export; commercial completion review |
-| **Store** | Lock RS; complete/submit MPRS; release RM; raise REGULAR MR; create REGULAR PR; post GRN; WO prepare/placement; submit PMR; Material Issue; Dispatch; Material Return |
+| **Store** | Lock RS; complete/submit MPRS; **Create Additional Monthly Plan** (when uncovered source-identity components remain); release RM; raise REGULAR MR; create REGULAR PR; post GRN; WO prepare/placement; submit PMR; Material Issue; Dispatch; **RM Return Approval** (receive submitted production returns) |
 | **Purchase** | Review/approve Monthly Production Plan (NO_QTY); create MPRS PR; prepare PO; supplier follow-up; monitor awaiting GRN (read-only alert, GRN action remains Store) |
-| **Production** | Record Production Entry; approve batch; report floor blocker |
+| **Production** | Record Production Entry; approve batch; report floor blocker; **submit RM return** (approval is Store/Admin — Production sees informational awaiting-approval status only) |
 | **QA** | Inspect batch; disposition reject/rework/scrap; re-inspection after rework |
 
 **Rule:** Dashboard does **not** show other roles’ actionable buttons. Cross-role work appears on **Control Tower** for visibility, not for execution on Dashboard.
@@ -383,8 +384,19 @@ Control Tower may deep-link to owning role’s **Workspace** or show read-only t
 
 ## Batch 3E — Recovery / Closure analytics surfaces (read-only)
 
-Dashboard, Pending Actions, Control Tower, and Reports consume `assessNoQtySoClosure()` and `getRecoverySummary()` / `getRecoverySummariesBatch()` via `noQtyRecoveryAnalyticsService`. Production Shortfall and QC Recovery remain separate. Reconciliation identity: Source Qty = Active Allocated + Waived + Available. No mutation of recovery, RS allocation, stock, dispatch qty, billing qty, or SO closure transactions in this batch.
+Dashboard, Pending Actions, Control Tower, and Reports consume `assessNoQtySoClosure()` and `getRecoverySummary()` / `getRecoverySummariesBatch()` via `noQtyRecoveryAnalyticsService`. Production Shortfall and QC Recovery remain separate **recovery types and RS line components**. They do **not** appear as duplicate Store inbox CTAs when Create Cycle N Requirement Sheet already covers the next-RS obligation. Reconciliation identity: Source Qty = Active Allocated + Waived + Available. No mutation of recovery, RS allocation, stock, dispatch qty, billing qty, or SO closure transactions in this batch.
 
 ## Batch 3F — Certification
 
 Final cleanup validated: QA/QC recovery columns, Control Tower recovery monitor (read-only), reconciliation identity, migration `20260710120000_no_qty_recovery_foundation` applied on target DB, analytics surfaces consume `assessNoQtySoClosure` / `getRecoverySummariesBatch`. `MANUALLY_CLOSED` retained for dual-read only; operational close uses `CLOSED_WITH_WAIVER` / `COMPLETED`. Physical rework remains QA-owned; QC recovery starts at terminal rejection; Green Level isolated; WO shortfall waiver ≠ SO closure waiver.
+
+## Batch — Production wastage analysis (Lane C)
+
+| Artifact | Owner | Notes |
+|----------|-------|-------|
+| `WastageType` master | Admin | Extended with code/category/description; inactive blocked for new classification |
+| Production Work Order Report wastage details | Production (confirm) | Classification ownership stays on Production Report |
+| Production Wastage WO / Type Analysis reports | Reports (read-only) | Lane C only — not MWN, PE variance, or FG Scrap |
+| Material Wastage Note / RM Wastage Report | Store / Production | Lane A — ledger `RM_WASTAGE` |
+| Production RM Variance | Production / Store | Lane B — PE consumption |
+| Scrap Report | QA | Lane D — `ScrapRecord` |

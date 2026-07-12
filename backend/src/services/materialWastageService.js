@@ -41,7 +41,7 @@ function wastageReasonLabel(reason) {
   return WASTAGE_REASON_LABELS[String(reason)] ?? String(reason || "");
 }
 
-async function assertRegularWorkOrderForWastage(tx, workOrderId) {
+async function assertWorkOrderForWastage(tx, workOrderId) {
   const wo = await tx.workOrder.findUnique({
     where: { id: workOrderId },
     include: { salesOrder: { select: { orderType: true } } },
@@ -51,11 +51,8 @@ async function assertRegularWorkOrderForWastage(tx, workOrderId) {
     err.statusCode = 404;
     throw err;
   }
-  if (wo.salesOrder?.orderType === "NO_QTY") {
-    const err = new Error("RM wastage is available for Regular work orders only.");
-    err.statusCode = 400;
-    throw err;
-  }
+  // Stock conservation: finalized production wastage posts for Regular and NO_QTY.
+  // Consumption / return / issue authority remain unchanged.
   return wo;
 }
 
@@ -139,7 +136,7 @@ async function createMaterialWastageNote(input, actor = {}) {
 
   try {
     return await prisma.$transaction(async (tx) => {
-    await assertRegularWorkOrderForWastage(tx, workOrderId);
+    await assertWorkOrderForWastage(tx, workOrderId);
     await assertProductionFromLocation(tx, input.fromLocationId);
 
     if (input.productionMaterialRequestId) {

@@ -196,7 +196,24 @@ type AdditionalPlanPreview = {
   totals: {
     totalAdditionalRequirementQty: number;
     additionalItemCount: number;
+    componentBreakdown?: {
+      newUncoveredRsDemand: number;
+      productionShortfallCarryForward: number;
+      qcRejectionCarryForward: number;
+      greenLevelQty: number;
+    };
   };
+  items?: Array<{
+    fgItemId: number;
+    fgItemName: string | null;
+    additionalRequirementQty: number;
+    componentBreakdown?: {
+      newUncoveredRsDemand: number;
+      productionShortfallCarryForward: number;
+      qcRejectionCarryForward: number;
+      greenLevelQty: number;
+    };
+  }>;
 };
 
 type ProductionLine = {
@@ -697,7 +714,13 @@ type PlanRevisionsResponse = {
 type TabKey = "production" | "rm" | "purchase";
 
 export function MonthlyPlanningWorkspacePage() {
-  const { flags, loading: flagsLoading } = useFeatureFlags();
+  const {
+    flags,
+    loading: flagsLoading,
+    error: flagsError,
+    status: flagsStatus,
+    retry: retryFeatureFlags,
+  } = useFeatureFlags();
   const { showSuccess, showError, showInfo } = useToast();
   const auth = useAuth();
   const userRole = auth.user?.role ?? "";
@@ -1076,6 +1099,34 @@ export function MonthlyPlanningWorkspacePage() {
     }
     void loadPlan(period, requestedPlanId);
   }, [flags.monthlyPlanning, period, periodFromUrl, requestedPlanId, loadPlan]);
+
+  // Pending Actions deep-link: open Additional Plan Preview for the period.
+  const openAdditionalPlanRequested = searchParams.get("openAdditionalPlan") === "1";
+  const openAdditionalPlanHandledRef = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    if (!flags.monthlyPlanning || !openAdditionalPlanRequested) return;
+    if (!showAdditionalPlanEntry || loading || loadingAdditionalPreview || additionalPanelOpen) return;
+    const handleKey = `${period}|${openAdditionalPlanRequested ? "1" : "0"}`;
+    if (openAdditionalPlanHandledRef.current === handleKey) return;
+    openAdditionalPlanHandledRef.current = handleKey;
+    void loadAdditionalPlanPreview().finally(() => {
+      const sp = new URLSearchParams(searchParams);
+      if (sp.get("openAdditionalPlan") === "1") {
+        sp.delete("openAdditionalPlan");
+        setSearchParams(sp, { replace: true });
+      }
+    });
+  }, [
+    flags.monthlyPlanning,
+    openAdditionalPlanRequested,
+    showAdditionalPlanEntry,
+    loading,
+    loadingAdditionalPreview,
+    additionalPanelOpen,
+    period,
+    searchParams,
+    setSearchParams,
+  ]);
 
   function suggestedProductionForFg(
     fgItemId: number,
@@ -2030,8 +2081,30 @@ export function MonthlyPlanningWorkspacePage() {
   void GreenLevelSection;
   void RmRequirementCompositionSection;
 
-  if (flagsLoading) {
-    return <div className="p-6 text-sm text-slate-500">Loading…</div>;
+  if (flagsLoading || flagsStatus === "loading") {
+    return <div className="p-6 text-sm text-slate-500">Loading Monthly Planning configuration…</div>;
+  }
+
+  // Transient /api/config/feature-flags failure — do not misrepresent as permanently disabled.
+  if (flagsStatus === "error" || flagsError) {
+    return (
+      <div className="p-6">
+        <div className="mx-auto max-w-xl rounded-lg border border-amber-200 bg-amber-50/60 p-8 text-center shadow-sm">
+          <CalendarRange className="mx-auto h-8 w-8 text-amber-600" />
+          <h2 className="mt-3 text-lg font-semibold text-slate-900">
+            Could not load Monthly Planning configuration
+          </h2>
+          <p className="mt-1 text-sm text-slate-600">
+            The configuration service was temporarily unavailable. This is not the same as Monthly Planning
+            being disabled. Retry after the backend is reachable — a hard refresh is not required.
+          </p>
+          {flagsError ? <p className="mt-2 text-xs text-slate-500">{flagsError}</p> : null}
+          <Button type="button" className="mt-4" onClick={() => retryFeatureFlags()}>
+            Retry
+          </Button>
+        </div>
+      </div>
+    );
   }
 
   if (!flags.monthlyPlanning) {
@@ -2861,6 +2934,12 @@ function AdditionalPlanPreviewModal({
   onClose: () => void;
   onCreate: () => void;
 }) {
+  const breakdown = preview.totals.componentBreakdown ?? {
+    newUncoveredRsDemand: 0,
+    productionShortfallCarryForward: 0,
+    qcRejectionCarryForward: 0,
+    greenLevelQty: 0,
+  };
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4">
       <div className="w-full max-w-lg rounded-lg border border-slate-200 bg-white p-5 shadow-xl">
@@ -2871,9 +2950,9 @@ function AdditionalPlanPreviewModal({
               Next document: <strong>{preview.nextPlanLabel}</strong> ({preview.nextPlanKind})
             </p>
             <p className="mt-1 text-[12px] text-slate-500">
-              Covers the remaining requirement gap after {preview.approvedPlanCount} approved plan
-              {preview.approvedPlanCount === 1 ? "" : "s"} in this period. Only delta FG quantities are stored in the
-              new plan document.
+              Covers uncovered requirement components after {preview.approvedPlanCount} approved plan
+              {preview.approvedPlanCount === 1 ? "" : "s"}. Prior plans remain bound to their RS /
+              source identity and do not offset a later Requirement Sheet for the same FG.
             </p>
           </div>
           <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-700">
@@ -2882,8 +2961,36 @@ function AdditionalPlanPreviewModal({
         </div>
         <div className="mt-4 grid grid-cols-2 gap-2 text-[13px]">
           <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
-            <div className="text-[11px] font-semibold uppercase text-slate-500">Additional qty</div>
+            <div className="text-[11px] font-semibold uppercase text-slate-500">New RS demand</div>
             <div className="text-lg font-bold tabular-nums">
+              {num(breakdown.newUncoveredRsDemand).toLocaleString()}
+            </div>
+          </div>
+          <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+            <div className="text-[11px] font-semibold uppercase text-slate-500">
+              Production shortfall
+            </div>
+            <div className="text-lg font-bold tabular-nums">
+              {num(breakdown.productionShortfallCarryForward).toLocaleString()}
+            </div>
+          </div>
+          <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+            <div className="text-[11px] font-semibold uppercase text-slate-500">
+              Final QC rejection
+            </div>
+            <div className="text-lg font-bold tabular-nums">
+              {num(breakdown.qcRejectionCarryForward).toLocaleString()}
+            </div>
+          </div>
+          <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+            <div className="text-[11px] font-semibold uppercase text-slate-500">Green level</div>
+            <div className="text-lg font-bold tabular-nums">
+              {num(breakdown.greenLevelQty).toLocaleString()}
+            </div>
+          </div>
+          <div className="rounded-md border border-indigo-200 bg-indigo-50 px-3 py-2">
+            <div className="text-[11px] font-semibold uppercase text-indigo-800">Additional qty</div>
+            <div className="text-lg font-bold tabular-nums text-indigo-950">
               {preview.totals.totalAdditionalRequirementQty.toLocaleString()}
             </div>
           </div>

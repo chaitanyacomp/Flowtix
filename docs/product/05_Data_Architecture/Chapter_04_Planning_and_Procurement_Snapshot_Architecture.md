@@ -329,6 +329,7 @@ For each snapshot category: **parent document**, **creation trigger**, **owner**
 |----------|--------|---------|-------|-----------|--------|--------|---------|-------|
 | RS version snapshot | RS | `rs.lock` | Store | `LOCKED` | Prohibited | Pre-lock only | New RS version supersedes | Yes |
 | MPRS FG plan | MPRS | `mprs.approve` | Store / Purchase | `APPROVED` | Prohibited — `GRD_PLN_FREEZE` | MPRS cancel (policy) | Additional Plan (new MPRS) | Yes |
+| Monthly Plan Requirement Coverage | Engine | `mprs.approve` (and lazy backfill) | Engine | Linked to APPROVED plan | Prohibited (append-only links) | Plan cancel (policy) | New Additional Plan coverage rows | Yes — binds plan qty to RS line / component identity (PLN-19) |
 | Monthly Planning RM Snapshot | MPRS | `mprs.approve` | Engine | `APPROVED` | **Prohibited** | MPRS cancel (policy) | New plan revision / Additional Plan | Yes — `snapshotRevision`, `frozenAt` in event |
 | Green Level composition | MPRS | `mprs.approve` | Engine | `APPROVED` | Prohibited | With MPRS | New MPRS period plan | Embedded in RM Snapshot |
 | REGULAR order planning | ISO | Planning milestone / commit policy | Store | REGULAR planning active | Prohibited post-freeze | ISO cancel (policy) | Re-snapshot on controlled replan | Yes |

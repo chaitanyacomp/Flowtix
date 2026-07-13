@@ -275,7 +275,7 @@ End-to-end RM supply path: **Material Requirement → Purchase Requisition → P
 
 ### ARR (Additional RM Requisition)
 
-Ad-hoc RM procurement need **outside** the primary monthly plan freeze—typically from **RM Stock Planning** / replenishment or explicit additional RM request. ARR uses procurement paths exempt from planning-driven Guards where product policy allows; not a substitute for monthly plan release for NO_QTY base demand.
+Ad-hoc RM procurement need **outside** Regular SO Material Planning and Monthly Planning / MPRS—raised from **RM Stock Monitor** (RM Stock Replenishment) when Current Stock falls below Minimum Stock. Canonical demand pool / source type: **`STOCK_REPLENISHMENT`**. ARR uses procurement paths exempt from planning-driven Guards where product policy allows; not a substitute for monthly plan release for NO_QTY base demand.
 
 ---
 

@@ -1053,6 +1053,9 @@ describe("MPRS WO case — completed procurement read model", () => {
       escalation: { state: "PROCUREMENT_COMPLETED", procurementInitiated: true },
       shortageSummary: { blockedLineCount: 0, totalNetShortQty: 0 },
       workOrderId: 1,
+      // Handoff to Production only occurs after Store has released the WO; until then the
+      // authoritative Store action is RELEASE_TO_PRODUCTION.
+      workOrderReleased: true,
     });
     assert.equal(action.key, "HANDOFF_TO_PRODUCTION");
     assert.match(action.label, /waiting for Production/i);

@@ -64,6 +64,8 @@ export function itemStockStatusFromItemFields(args: {
 
   minStockLevel?: string | number | null;
 
+  reorderQty?: string | number | null;
+
 }): ItemStockStatus {
 
   return classifyRmInventoryHealthFromFields(args);

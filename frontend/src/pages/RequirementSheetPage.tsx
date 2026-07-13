@@ -81,6 +81,8 @@ import {
   shouldHonorExplicitRsExecutionIdentity,
   shouldRenderNoQtyExecutionWorkspace,
   shouldUseNoQtyExecutionModeShell,
+  resolveRequirementSheetWorkbenchPageTitle,
+  WO_PLANNING_UX,
 } from "../lib/requirementSheetExecutionWorkspaceUx";
 import { resolveRequirementSheetFlowStateCycleId } from "../lib/requirementSheetFlowCycle";
 import {
@@ -1580,7 +1582,7 @@ export function RequirementSheetPage() {
 
           {!sheet && !error ? (
             <div className="mt-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
-              Loading execution workspace…
+              Loading work order planning…
             </div>
           ) : null}
 
@@ -1608,7 +1610,11 @@ export function RequirementSheetPage() {
   return (
     <PageContainer className="erp-workbench-page">
       <RequirementSheetErrorBoundary>
-        <WorkbenchShell moduleLabel="Requirement Sheet">
+        <WorkbenchShell
+          moduleLabel={
+            showNoQtyExecutionWorkspace ? WO_PLANNING_UX.PAGE_TITLE : "Requirement Sheet"
+          }
+        >
           <WorkbenchAlerts>
             <DemoFlowBanner />
             {soCreatedBanner ? (
@@ -1647,7 +1653,17 @@ export function RequirementSheetPage() {
           <WorkbenchHeader
             titleRow={
               <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
-                <span className="text-[12px] font-semibold text-slate-900">Requirement sheet</span>
+                <span className="text-[12px] font-semibold text-slate-900">
+                  {resolveRequirementSheetWorkbenchPageTitle({
+                    isNoQty,
+                    showExecutionWorkspace: showNoQtyExecutionWorkspace,
+                  })}
+                </span>
+                {showNoQtyExecutionWorkspace ? (
+                  <span className="rounded border border-emerald-200 bg-emerald-50 px-1.5 py-0 text-[10px] font-semibold text-emerald-900">
+                    RS locked · {WO_PLANNING_UX.STAGE_CURRENT}
+                  </span>
+                ) : null}
                 {isNoQty && fromNoQtySo ? (
                   <PageNoQtyFlowBackLink step="REQUIREMENT" className="mt-0" />
                 ) : isNoQty ? (

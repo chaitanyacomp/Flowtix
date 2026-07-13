@@ -6,7 +6,7 @@
 | **Volume** | 2 — Business Architecture |
 | **Chapter** | 3 — NO_QTY Agreement Planning Pipeline |
 | **Title** | NO_QTY Agreement Planning Pipeline |
-| **Version** | 1.0.1 |
+| **Version** | 1.0.5 |
 | **Status** | Draft — Architecture Review |
 | **Effective date** | 2026-05-29 |
 | **Author** | FT ERP Product Team |
@@ -21,6 +21,10 @@
 - [Chapter 2 — FT ERP Constitution](../01_Product_Foundation/Chapter_02_FT_ERP_Constitution.md)
 - [Chapter 3 — Glossary](../01_Product_Foundation/Chapter_03_FT_ERP_Glossary_and_Standard_Terminology.md)
 
+**Related decisions:**
+
+- [ADR-2026-001 — NO_QTY Planning and Execution Are Independent Axes](../10_Product_Lifecycle_and_Continuous_Evolution/adr/ADR-2026-001_NO_QTY_Planning_and_Execution_Are_Independent_Axes.md) — planning (RS/FG-line) and execution (WO) are independent axes; one RS may have multiple WOs.
+
 ---
 
 ## 1. Document Control
@@ -31,6 +35,8 @@
 | 1.0.1 | 2026-07-10 | FT ERP Product Team | Additional Plan source-identity coverage — RS/cycle components; no period+FG offset |
 | 1.0.2 | 2026-07-10 | FT ERP Product Team | WO placement PA uses SO-wide locked-RS candidate (same as Execution Register) |
 | 1.0.3 | 2026-07-10 | FT ERP Product Team | Admin reset: recovery/waiver children deleted before CarryForwardPending (Restrict FK order) |
+| 1.0.4 | 2026-07-12 | FT ERP Product Team | §7.3 — draft RS continuous PRODUCTION_SHORTFALL sync / Store ownership |
+| 1.0.5 | 2026-07-12 | FT ERP Product Team | §10 — RM-capped suggested WO; multi-WO RS remains open; RM Detail = proposed qty |
 
 **Supersedes:** None.
 
@@ -192,6 +198,8 @@ A **Planning Cycle** is the bounded period associated with an RS version: plan �
 
 **Carry forward** rolls unmet or partially met cycle intent into the next planning view without double-counting fulfilled quantity. It maintains NO_QTY continuity across months—distinct from creating a new commercial order.
 
+**Ownership:** Store owns next-cycle Requirement Sheet continuity. Production shortfall from Work Order completion creates `CarryForwardPending` (`PRODUCTION_SHORTFALL`). The editable next-cycle draft RS **must** continuously reflect available production-shortfall recovery (auto-inject missing FG lines as carry-forward-only when needed). Customer demand and system recovery remain separate RS line components. QC final-rejection recovery remains separately allocatable (manual) and is not auto-forced by production-shortfall sync.
+
 ### 7.4 Green Level
 
 **Green Level** is FG buffer planning metadata on items (manual or historically derived). It informs **suggested production** in MPRS composition—it is **not** RM minimum stock and not shop-floor safety stock.
@@ -300,12 +308,23 @@ If RM supports only part of RS line balance:
 Minimum of:
 
 - RS line remaining placement balance
-- RM-readiness-constrained FG capacity
+- RM-readiness-constrained FG capacity (canonical free stock ÷ BOM requirement per FG unit, including wastage/UOM rules)
 - Period/cycle policy limits (Volume 3)
+
+Suggested WO quantity **must not** simply repeat full RS balance when RM cannot support it. Open PO / unposted GRN **must not** count as available RM.
 
 ### 10.4 Multiple WO placement
 
-**Multiple Work Orders** may be created from **one Requirement Sheet** across placement waves or FG lines (**WO Batch** grouping). Each WO consumes RS balance; cumulative placed qty cannot exceed RS line balance minus prior placements.
+**Multiple Work Orders** may be created from **one Requirement Sheet** across placement waves or FG lines (**WO Batch** grouping). Each WO consumes RS placement balance by its **planned** quantity; cumulative placed qty cannot exceed RS line balance minus prior active placements.
+
+After each WO creation:
+
+- Recalculate remaining requirement and RM-limited capacity
+- Keep the RS in Store’s Work Order Planning queue while Remaining Requirement > 0 (unless authorised waiver/closure completes)
+- Allow Store to create the next WO immediately or return later
+- Each created WO may proceed independently to Material Issue / Production
+
+Creating one WO **does not** close the RS or remove it from the active placement queue.
 
 ### 10.5 Store ownership
 

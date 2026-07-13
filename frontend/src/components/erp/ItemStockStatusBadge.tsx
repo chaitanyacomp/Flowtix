@@ -10,6 +10,7 @@ type ItemStockStatusBadgeProps = {
   currentQty: number;
   minimumStockQty?: string | number | null;
   minStockLevel?: string | number | null;
+  reorderQty?: string | number | null;
   className?: string;
 };
 
@@ -20,9 +21,10 @@ export function ItemStockStatusBadge({
   currentQty,
   minimumStockQty,
   minStockLevel,
+  reorderQty,
   className,
 }: ItemStockStatusBadgeProps) {
-  const status = itemStockStatusFromItemFields({ currentQty, minimumStockQty, minStockLevel });
+  const status = itemStockStatusFromItemFields({ currentQty, minimumStockQty, minStockLevel, reorderQty });
   return (
     <Badge
       variant={itemStockStatusBadgeVariant(status)}

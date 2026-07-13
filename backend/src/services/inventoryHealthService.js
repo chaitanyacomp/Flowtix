@@ -17,7 +17,10 @@ function parseInventoryQty(raw) {
 /**
  * Policy-driven RM health: critical only when Minimum Stock is configured and breached.
  *
- * @param {{ currentQty: number, minimumStock?: number|null, lowStockLevel?: number|null }} args
+ * Order: CRITICAL (below minimum) → LOW (below low alert OR below optional Target) → HEALTHY.
+ * Prefer explicit lowStockLevel when set; otherwise Target Stock drives the Low band.
+ *
+ * @param {{ currentQty: number, minimumStock?: number|null, lowStockLevel?: number|null, targetStock?: number|null }} args
  * @returns {InventoryHealthStatus}
  */
 function classifyInventoryHealth(args) {
@@ -26,8 +29,11 @@ function classifyInventoryHealth(args) {
     args.minimumStock != null && Number.isFinite(args.minimumStock) ? args.minimumStock : 0;
   const low =
     args.lowStockLevel != null && Number.isFinite(args.lowStockLevel) ? args.lowStockLevel : 0;
+  const target =
+    args.targetStock != null && Number.isFinite(args.targetStock) ? args.targetStock : 0;
   if (min > 0 && cur < min) return "CRITICAL";
   if (low > 0 && cur < low) return "LOW";
+  if (target > min && cur < target) return "LOW";
   return "HEALTHY";
 }
 
@@ -39,7 +45,7 @@ function inventoryHealthToRmAlertBand(status) {
 }
 
 /**
- * @param {Array<{ id: number, itemName: string, minimumStockQty?: unknown, minStockLevel?: unknown }>} rmItems
+ * @param {Array<{ id: number, itemName: string, minimumStockQty?: unknown, minStockLevel?: unknown, reorderQty?: unknown }>} rmItems
  * @param {Map<number, number>} stockByItemId
  */
 function buildRmStockHealthAlerts(rmItems, stockByItemId) {
@@ -52,10 +58,12 @@ function buildRmStockHealthAlerts(rmItems, stockByItemId) {
     const qty = stockByItemId.get(i.id) || 0;
     const minimumStockQty = Number(i.minimumStockQty ?? 0);
     const minStockLevel = Number(i.minStockLevel ?? 0);
+    const targetStock = Number(i.reorderQty ?? 0);
     const status = classifyInventoryHealth({
       currentQty: qty,
       minimumStock: minimumStockQty,
-      lowStockLevel: minStockLevel,
+      lowStockLevel: minStockLevel > 0 ? minStockLevel : null,
+      targetStock: targetStock > 0 ? targetStock : null,
     });
     const row = {
       itemId: i.id,

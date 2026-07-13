@@ -556,6 +556,7 @@ export default function App() {
             </ProtectedRoute>
           }
         />
+        <Route path="/rm-stock-monitor" element={<Navigate to="/rm-stock-planning" replace />} />
         <Route
           path="/procurement-planning"
           element={

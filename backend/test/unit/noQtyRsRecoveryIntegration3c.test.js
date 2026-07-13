@@ -18,8 +18,12 @@ const {
   reverseRecoveryOnRequirementSheetCancel,
   reverseRecoveryOnDraftRequirementSheetDelete,
   syncRequirementSheetLineComponents,
+  syncDraftRsWithAvailableRecovery,
+  syncEligibleDraftRsAfterProductionShortfallCreated,
+  findEligibleDraftRequirementSheetForRecoverySync,
 } = require("../../src/services/noQtyRsRecoveryIntegrationService");
 const { consumeCarryForwardPendingForRequirementSheet } = require("../../src/services/carryForwardPendingService");
+const { shouldSuppressRecoveryPendingAction } = require("../../src/services/noQtyRecoveryAnalyticsService");
 
 function makeDb() {
   let nextCfId = 1;
@@ -27,7 +31,7 @@ function makeDb() {
   let nextLineId = 1;
   const sources = [];
   const allocations = [];
-  const sheets = [{ id: 10, status: "DRAFT", salesOrderId: 42 }];
+  const sheets = [{ id: 10, status: "DRAFT", salesOrderId: 42, cycleId: 2, cycleNo: 2, cycleStatus: "ACTIVE" }];
   const lines = [
     {
       id: 100,
@@ -42,20 +46,50 @@ function makeDb() {
       shortfallQtySnapshot: null,
     },
   ];
-  const salesOrders = { 42: { id: 42, orderType: "NO_QTY" } };
+  const salesOrders = { 42: { id: 42, orderType: "NO_QTY", currentCycleId: 2 } };
 
   const db = {
     salesOrder: {
       findUnique: async ({ where }) => salesOrders[where.id] ?? null,
     },
     requirementSheet: {
-      findUnique: async ({ where, include }) => {
+      findUnique: async ({ where, include, select }) => {
         const sheet = sheets.find((s) => s.id === where.id);
         if (!sheet) return null;
+        const wantSalesOrder = Boolean(include?.salesOrder || select?.salesOrder);
+        const wantLines = Boolean(include?.lines || select?.lines);
         return {
           ...sheet,
-          lines: include?.lines ? lines.filter((l) => l.sheetId === sheet.id) : undefined,
-          salesOrder: include?.salesOrder ? salesOrders[sheet.salesOrderId] : undefined,
+          lines: wantLines ? lines.filter((l) => l.sheetId === sheet.id) : undefined,
+          salesOrder: wantSalesOrder ? salesOrders[sheet.salesOrderId] : undefined,
+        };
+      },
+      findMany: async ({ where, select }) => {
+        let rows = sheets.filter((s) => {
+          if (where.salesOrderId != null && s.salesOrderId !== where.salesOrderId) return false;
+          if (where.status != null && s.status !== where.status) return false;
+          return true;
+        });
+        return rows.map((s) => ({
+          ...s,
+          cycle: select?.cycle
+            ? { id: s.cycleId ?? 1, cycleNo: s.cycleNo ?? 2, status: s.cycleStatus ?? "ACTIVE" }
+            : undefined,
+        }));
+      },
+      findFirst: async ({ where, select }) => {
+        const rows = sheets.filter((s) => {
+          if (where?.salesOrderId != null && s.salesOrderId !== where.salesOrderId) return false;
+          if (where?.status != null && s.status !== where.status) return false;
+          return true;
+        });
+        const s = rows[0];
+        if (!s) return null;
+        return {
+          ...s,
+          cycle: select?.cycle
+            ? { id: s.cycleId ?? 1, cycleNo: s.cycleNo ?? 2, status: s.cycleStatus ?? "ACTIVE" }
+            : undefined,
         };
       },
       update: async ({ where, data }) => {
@@ -458,6 +492,190 @@ describe("Batch 3C RS recovery integration", () => {
     assert.equal(Number(line502.productionShortfallQty), 18);
     assert.equal(Number(line502.baseDemandQty), 0);
   });
+
+  it("late PRODUCTION_SHORTFALL after draft exists injects missing item immediately", async () => {
+    const db = makeDb();
+    // Draft RS-2 already exists with only item 501; late shortfall on 777.
+    await createProductionShortRecovery(db, {
+      workOrder: { id: 9, salesOrderId: 42, requirementSheetId: 1, cycleId: 1 },
+      workOrderLine: { fgItemId: 777 },
+      remainderQty: 22,
+      productionShortfallResolutionId: 90,
+    });
+
+    const sync = await syncEligibleDraftRsAfterProductionShortfallCreated(db, {
+      salesOrderId: 42,
+      excludeRequirementSheetIds: [1],
+    });
+    assert.equal(sync.synced, true);
+    assert.equal(sync.requirementSheetId, 10);
+    assert.ok(sync.createdItemIds.includes(777));
+    const line = db._lines.find((l) => l.itemId === 777);
+    assert.ok(line);
+    assert.equal(Number(line.baseDemandQty), 0);
+    assert.equal(Number(line.productionShortfallQty), 22);
+    assert.equal(Number(line.totalRsQty), 22);
+  });
+
+  it("merges late shortfall into an existing draft line without duplicate rows", async () => {
+    const db = makeDb();
+    await createProductionShortRecovery(db, {
+      workOrder: { id: 1, salesOrderId: 42, requirementSheetId: 1 },
+      workOrderLine: { fgItemId: 501 },
+      remainderQty: 15,
+      productionShortfallResolutionId: 91,
+    });
+    const sync = await syncEligibleDraftRsAfterProductionShortfallCreated(db, {
+      salesOrderId: 42,
+      excludeRequirementSheetIds: [1],
+    });
+    assert.equal(sync.synced, true);
+    assert.equal(db._lines.filter((l) => l.itemId === 501).length, 1);
+    assert.equal(Number(db._lines.find((l) => l.itemId === 501).productionShortfallQty), 15);
+  });
+
+  it("consolidates multiple WO shortfalls for the same product onto one RS line", async () => {
+    const db = makeDb();
+    await createProductionShortRecovery(db, {
+      workOrder: { id: 1, salesOrderId: 42 },
+      workOrderLine: { fgItemId: 501 },
+      remainderQty: 10,
+      productionShortfallResolutionId: 101,
+    });
+    await createProductionShortRecovery(db, {
+      workOrder: { id: 2, salesOrderId: 42 },
+      workOrderLine: { fgItemId: 501 },
+      remainderQty: 7,
+      productionShortfallResolutionId: 102,
+    });
+    await syncDraftRsWithAvailableRecovery(db, { requirementSheetId: 10, salesOrderId: 42 });
+    assert.equal(db._lines.filter((l) => l.itemId === 501).length, 1);
+    assert.equal(Number(db._lines.find((l) => l.itemId === 501).productionShortfallQty), 17);
+    assert.equal(db._allocations.filter((a) => a.status === "RESERVED").length, 2);
+  });
+
+  it("repeated syncDraftRsWithAvailableRecovery is idempotent", async () => {
+    const db = makeDb();
+    await createProductionShortRecovery(db, {
+      workOrder: { id: 1, salesOrderId: 42 },
+      workOrderLine: { fgItemId: 501 },
+      remainderQty: 40,
+      productionShortfallResolutionId: 103,
+    });
+    await syncDraftRsWithAvailableRecovery(db, { requirementSheetId: 10, salesOrderId: 42 });
+    const again = await syncDraftRsWithAvailableRecovery(db, { requirementSheetId: 10, salesOrderId: 42 });
+    assert.equal(again.allocated.length, 0);
+    assert.equal(db._allocations.filter((a) => a.status === "RESERVED").length, 1);
+    assert.equal(Number(db._lines.find((l) => l.itemId === 501).productionShortfallQty), 40);
+  });
+
+  it("draft demand edit after CF sync keeps recovery attached", async () => {
+    const db = makeDb();
+    await createProductionShortRecovery(db, {
+      workOrder: { id: 1, salesOrderId: 42 },
+      workOrderLine: { fgItemId: 501 },
+      remainderQty: 12,
+      productionShortfallResolutionId: 104,
+    });
+    await syncDraftRsWithAvailableRecovery(db, { requirementSheetId: 10, salesOrderId: 42 });
+    await db.requirementSheetLine.update({
+      where: { id: 100 },
+      data: { requirementQty: "8", baseDemandQty: "8" },
+    });
+    await syncDraftRsWithAvailableRecovery(db, { requirementSheetId: 10, salesOrderId: 42 });
+    const synced = await syncRequirementSheetLineComponents(db, 100);
+    assert.equal(Number(synced.baseDemandQty), 8);
+    assert.equal(Number(synced.productionShortfallQty), 12);
+    assert.equal(Number(synced.totalRsQty), 20);
+  });
+
+  it("leaves recovery OPEN when no eligible draft RS exists", async () => {
+    const db = makeDb();
+    db._sheets[0].status = "LOCKED";
+    await createProductionShortRecovery(db, {
+      workOrder: { id: 1, salesOrderId: 42 },
+      workOrderLine: { fgItemId: 501 },
+      remainderQty: 9,
+      productionShortfallResolutionId: 105,
+    });
+    const sync = await syncEligibleDraftRsAfterProductionShortfallCreated(db, {
+      salesOrderId: 42,
+      excludeRequirementSheetIds: [1],
+    });
+    assert.equal(sync.synced, false);
+    assert.equal(sync.reason, "NO_ELIGIBLE_DRAFT_RS");
+    const available = await getAvailableRecovery(db, { salesOrderId: 42, recoveryType: "PRODUCTION_SHORTFALL" });
+    assert.equal(available[0].availableQty, 9);
+    assert.equal(
+      shouldSuppressRecoveryPendingAction({
+        recoveryType: "PRODUCTION_SHORTFALL",
+        createNextRsEligible: false,
+        nextRsDraftExists: false,
+      }),
+      false,
+    );
+  });
+
+  it("does not allocate late shortfall onto a locked or unrelated RS", async () => {
+    const db = makeDb();
+    db._sheets.push({
+      id: 99,
+      status: "LOCKED",
+      salesOrderId: 42,
+      cycleId: 1,
+      cycleNo: 1,
+      cycleStatus: "CLOSED",
+    });
+    await createProductionShortRecovery(db, {
+      workOrder: { id: 1, salesOrderId: 42, requirementSheetId: 99 },
+      workOrderLine: { fgItemId: 888 },
+      remainderQty: 5,
+      productionShortfallResolutionId: 106,
+    });
+
+    // Draft on cycle 2 is eligible; locked RS-99 is not.
+    const eligible = await findEligibleDraftRequirementSheetForRecoverySync(db, {
+      salesOrderId: 42,
+      excludeRequirementSheetIds: [99],
+    });
+    assert.equal(eligible.id, 10);
+
+    const lockedSync = await syncDraftRsWithAvailableRecovery(db, {
+      requirementSheetId: 99,
+      salesOrderId: 42,
+    });
+    assert.equal(lockedSync.skipped, true);
+    assert.equal(lockedSync.reason, "RS_NOT_DRAFT");
+    assert.equal(db._lines.filter((l) => l.sheetId === 99).length, 0);
+  });
+
+  it("QC_FINAL_REJECTION remains unallocated by production-shortfall sync", async () => {
+    const db = makeDb();
+    await createFinalQcRejectedRecovery(db, {
+      salesOrderId: 42,
+      itemId: 501,
+      sourceQty: 11,
+      sourceDocumentId: 5011,
+    });
+    const result = await syncDraftRsWithAvailableRecovery(db, {
+      requirementSheetId: 10,
+      salesOrderId: 42,
+    });
+    assert.equal(result.allocated.length, 0);
+    const qcAvail = await getAvailableRecovery(db, { salesOrderId: 42, recoveryType: "QC_FINAL_REJECTION" });
+    assert.equal(qcAvail[0].availableQty, 11);
+  });
+
+  it("suppresses production-shortfall PA when draft exists (sync makes suppression valid)", async () => {
+    assert.equal(
+      shouldSuppressRecoveryPendingAction({
+        recoveryType: "PRODUCTION_SHORTFALL",
+        createNextRsEligible: false,
+        nextRsDraftExists: true,
+      }),
+      true,
+    );
+  });
 });
 
 describe("Batch 3C concurrent RS allocation", () => {
@@ -503,5 +721,43 @@ describe("Batch 3C concurrent RS allocation", () => {
     assert.equal(ok.length, 1);
     assert.equal(bad.length, 1);
     assert.equal(bad[0].reason.code, "RECOVERY_OVER_ALLOC");
+  });
+
+  it("cannot over-allocate the same PRODUCTION_SHORTFALL across concurrent syncs", async () => {
+    const db = makeDb();
+    const src = await createProductionShortRecovery(db, {
+      workOrder: { id: 1, salesOrderId: 42 },
+      workOrderLine: { fgItemId: 501 },
+      remainderQty: 50,
+      productionShortfallResolutionId: 5010,
+    });
+
+    /** @type {Map<number, Promise<void>>} */
+    const locks = new Map();
+    async function withLock(id, fn) {
+      const prev = locks.get(id) || Promise.resolve();
+      let release;
+      const gate = new Promise((r) => {
+        release = r;
+      });
+      locks.set(id, prev.then(() => gate));
+      await prev;
+      try {
+        return await fn();
+      } finally {
+        release();
+      }
+    }
+
+    await Promise.all([
+      withLock(src.id, () => syncDraftRsWithAvailableRecovery(db, { requirementSheetId: 10, salesOrderId: 42 })),
+      withLock(src.id, () => syncDraftRsWithAvailableRecovery(db, { requirementSheetId: 10, salesOrderId: 42 })),
+    ]);
+
+    const reservedQty = db._allocations
+      .filter((a) => a.status === "RESERVED" && a.recoverySourceId === src.id)
+      .reduce((sum, a) => sum + Number(a.allocatedQty), 0);
+    assert.ok(reservedQty <= 50 + 1e-6);
+    assert.equal(Number(db._lines.find((l) => l.itemId === 501).productionShortfallQty), 50);
   });
 });

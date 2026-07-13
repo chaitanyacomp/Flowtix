@@ -207,9 +207,53 @@ export function formatPriorCycleExecutionBanner(input: {
       ? input.rsBalanceQty.toFixed(3).replace(/\.000$/, "")
       : null;
   return {
-    title: `Cycle ${viewingCycleNo} (Previous Cycle) — Execution In Progress`,
+    title: `Cycle ${viewingCycleNo} (Previous Cycle) — Work Order Planning In Progress`,
     detail: balance
-      ? `Open execution balance: ${balance}. A newer planning cycle does not stop WO placement here.`
-      : "A newer planning cycle does not stop execution on this cycle.",
+      ? `Open remaining requirement: ${balance}. A newer planning cycle does not stop Work Order creation here.`
+      : "A newer planning cycle does not stop Work Order creation on this cycle.",
   };
+}
+
+/**
+ * Operator-facing labels for the locked-RS Work Order Planning surface (UI only).
+ * Source document remains Requirement Sheet; current task is Work Order Planning.
+ * @see FT-PD-022 WO placement; FT-PD-066 page-title / stage clarity
+ */
+export const WO_PLANNING_UX = Object.freeze({
+  PAGE_TITLE: "Work Order Planning",
+  SOURCE_DOCUMENT_LABEL: "Requirement Sheet (reference)",
+  WORK_AREA_TITLE: "Create Work Order",
+  WORK_AREA_INTRO: "Enter quantity and confirm RM feasibility, then create the Work Order.",
+  INFO_PANEL_TITLE: "Planning Context",
+  CAPACITY_AREA_TITLE: "Live RM Requirement",
+  KPI_TOTAL_RS_REQUIREMENT: "Total RS Requirement",
+  KPI_WO_QTY_PLACED: "WO Quantity Placed",
+  KPI_REMAINING_REQUIREMENT: "Remaining Requirement",
+  KPI_RM_LIMITED_CAPACITY: "RM-Limited Capacity",
+  KPI_SUGGESTED_NEXT_WO: "Suggested Next WO Qty",
+  KPI_NUMBER_OF_WOS: "Number of WOs",
+  /** @deprecated Prefer KPI_SUGGESTED_NEXT_WO — kept for older tests/call sites */
+  KPI_SUGGESTED_WO_QTY: "Suggested Next WO Qty",
+  KPI_RM_COVERAGE: "RM Coverage",
+  KPI_RS_DEMAND: "Total RS Requirement",
+  KPI_WO_PLACED: "WO Quantity Placed",
+  CURRENT_WOS_TITLE: "Current Work Orders",
+  WO_HISTORY_TITLE: "Current Work Orders",
+  STAGE_DONE: "Requirement Sheet",
+  STAGE_CURRENT: "Create Work Orders",
+  STAGE_NEXT: "Material Issue",
+  CREATE_SUGGESTED: "Create Suggested WO",
+  CREATE_CUSTOM: "Create Custom WO",
+  CREATE_ANOTHER: "Create Another WO",
+  OPEN_WO: "Open WO",
+  MATERIAL_ISSUE: "Material Issue",
+});
+
+/** Workbench page title: draft RS stays Requirement Sheet; locked execution becomes Work Order Planning. */
+export function resolveRequirementSheetWorkbenchPageTitle(input: {
+  isNoQty: boolean;
+  showExecutionWorkspace: boolean;
+}): string {
+  if (input.isNoQty && input.showExecutionWorkspace) return WO_PLANNING_UX.PAGE_TITLE;
+  return "Requirement sheet";
 }

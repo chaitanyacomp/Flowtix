@@ -358,10 +358,10 @@ async function resolveNextRsCarryForwardCoverage(db, salesOrderId) {
           salesOrderId: soId,
           status: "DRAFT",
         },
-        select: { id: true, salesOrderCycle: { select: { status: true } } },
+        select: { id: true, cycle: { select: { status: true } } },
       });
       if (draft?.id) {
-        const cycleStatus = draft.salesOrderCycle?.status;
+        const cycleStatus = draft.cycle?.status;
         nextRsDraftExists = !cycleStatus || cycleStatus !== "CLOSED";
       }
     }

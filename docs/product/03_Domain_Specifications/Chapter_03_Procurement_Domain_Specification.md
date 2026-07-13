@@ -6,7 +6,7 @@
 | **Volume** | 3 — Domain Specifications |
 | **Chapter** | 3 — Procurement Domain Specification |
 | **Title** | Procurement Domain Specification |
-| **Version** | 1.0.0 |
+| **Version** | 1.0.1 |
 | **Status** | Draft — Architecture Review |
 | **Effective date** | 2026-05-29 |
 | **Author** | FT ERP Product Team |
@@ -30,6 +30,7 @@
 | Version | Date | Author | Summary |
 |---------|------|--------|---------|
 | 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial Procurement domain — PR, PO, GRN, pools, availability |
+| 1.0.1 | 2026-07-12 | FT ERP Product Team | RM Stock Replenishment / Monitor — STOCK_REPLENISHMENT as sole ARR path |
 
 **Supersedes:** None.
 
@@ -305,14 +306,22 @@ MR enters pool on **Approved** state ([Vol. 3 Ch. 2](./Chapter_02_Planning_Domai
 
 MR created on **Released** MPRS ([Vol. 3 Ch. 2](./Chapter_02_Planning_Domain_Specification.md) §5.5).
 
-### 7.3 STOCK_REPLENISHMENT demand pool
+### 7.3 STOCK_REPLENISHMENT demand pool (RM Stock Replenishment)
 
 | Attribute | Value |
 |-----------|-------|
-| **Source** | RM Stock Planning, ARR, min-stock replenishment MR |
-| **Typical path** | Store (or Purchase) PR → PO → GRN |
-| **Planning link** | Supplementary — not substitute for MPRS base demand (NO_QTY) |
+| **Product name** | **RM Stock Replenishment** (Store workbench: **RM Stock Monitor**) |
+| **Canonical source type** | `MaterialPlanningSourceType.STOCK_REPLENISHMENT` — **do not** introduce a parallel `RM_STOCK_REPLENISHMENT` enum |
+| **Source** | Item Master Minimum Stock (+ optional Target Stock); Store raises demand from RM Stock Monitor |
+| **Typical path** | RM Stock Monitor → Raise Replenishment Request → Purchase PO → Store GRN |
+| **Planning link** | **Independent** of Regular SO Material Planning and Monthly Planning / MPRS |
 | **PR creator** | **Store** (default) |
+
+**Item Master (RM Stock Control):** Store maintains **Minimum Stock** (mandatory). **Target Stock** is an optional advanced setting used only for suggested replenishment quantity. Low Stock Level, Buffer %, Critical Below %, and Warning Below % are **not** Store-facing for RM replenishment (legacy columns may remain for compatibility).
+
+**RM Stock Monitor status (Minimum-only):** Current ≥ Minimum → **Healthy**; Current &lt; Minimum → **Below Minimum**. There is no Monitor **Low** status — Target does not determine stock health. **Raise Replenishment Request** is available only when Current &lt; Minimum **and** net replenishment gap &gt; 0.
+
+**Suggested qty:** Replenishment Level = Target (when configured) else Minimum. Net Gap = Level − Current − Open `STOCK_REPLENISHMENT` qty (active approved requests + PO not yet received; exclude cancelled / closed / fully received). Suggested Qty = max(0, Net Gap). Duplicate raise is blocked when Net Gap ≤ 0.
 
 May be exempt from planning-driven procurement guards where policy allows ([Glossary ARR](../01_Product_Foundation/Chapter_03_FT_ERP_Glossary_and_Standard_Terminology.md)).
 

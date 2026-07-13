@@ -30,9 +30,9 @@ describe("inventoryHealth", () => {
 
   it("formatRmStockAlertBanner", () => {
     expect(formatRmStockAlertBanner(0, 0)).toBeNull();
-    expect(formatRmStockAlertBanner(2, 0)).toBe("Stock replenishment critical: 2 items below minimum");
-    expect(formatRmStockAlertBanner(0, 3)).toBe("Replenishment low: 3 items below alert level");
-    expect(formatRmStockAlertBanner(1, 2)).toBe("Stock replenishment alerts: 1 critical • 2 low");
+    expect(formatRmStockAlertBanner(2, 0)).toBe("Stock replenishment: 2 items below minimum");
+    expect(formatRmStockAlertBanner(0, 3)).toBe("Replenishment low: 3 items below target");
+    expect(formatRmStockAlertBanner(1, 2)).toBe("Stock replenishment alerts: 1 below minimum • 2 low");
   });
 
   it("countRmInventoryHealthAlerts splits critical and warning", () => {

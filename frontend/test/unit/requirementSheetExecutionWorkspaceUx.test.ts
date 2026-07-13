@@ -16,6 +16,8 @@ import {
 
   resolveExplicitExecutionSheetId,
 
+  resolveRequirementSheetWorkbenchPageTitle,
+
   rmCoverageLabelFromPlacement,
 
   shouldHonorExplicitRsExecutionIdentity,
@@ -23,6 +25,8 @@ import {
   shouldRenderNoQtyExecutionWorkspace,
 
   shouldUseNoQtyExecutionModeShell,
+
+  WO_PLANNING_UX,
 
 } from "../../src/lib/requirementSheetExecutionWorkspaceUx";
 
@@ -350,9 +354,10 @@ describe("formatPriorCycleExecutionBanner", () => {
 
     expect(formatPriorCycleExecutionBanner({ viewingCycleNo: 1, rsBalanceQty: 10000 })).toEqual({
 
-      title: "Cycle 1 (Previous Cycle) — Execution In Progress",
+      title: "Cycle 1 (Previous Cycle) — Work Order Planning In Progress",
 
-      detail: "Open execution balance: 10000. A newer planning cycle does not stop WO placement here.",
+      detail:
+        "Open remaining requirement: 10000. A newer planning cycle does not stop Work Order creation here.",
 
     });
 
@@ -444,6 +449,26 @@ describe("execution workspace presentation helpers", () => {
 
   });
 
+});
+
+describe("Work Order Planning UX labels", () => {
+  it("uses Work Order Planning page title for locked execution workspace", () => {
+    expect(
+      resolveRequirementSheetWorkbenchPageTitle({ isNoQty: true, showExecutionWorkspace: true }),
+    ).toBe(WO_PLANNING_UX.PAGE_TITLE);
+    expect(
+      resolveRequirementSheetWorkbenchPageTitle({ isNoQty: true, showExecutionWorkspace: false }),
+    ).toBe("Requirement sheet");
+  });
+
+  it("keeps Create Work Orders as the current-step operator label", () => {
+    expect(WO_PLANNING_UX.WORK_AREA_TITLE).toBe("Create Work Order");
+    expect(WO_PLANNING_UX.INFO_PANEL_TITLE).toBe("Planning Context");
+    expect(WO_PLANNING_UX.KPI_REMAINING_REQUIREMENT).toBe("Remaining Requirement");
+    expect(WO_PLANNING_UX.KPI_SUGGESTED_NEXT_WO).toBe("Suggested Next WO Qty");
+    expect(WO_PLANNING_UX.KPI_RM_LIMITED_CAPACITY).toBe("RM-Limited Capacity");
+    expect(WO_PLANNING_UX.CURRENT_WOS_TITLE).toBe("Current Work Orders");
+  });
 });
 
 

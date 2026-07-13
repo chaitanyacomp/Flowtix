@@ -1638,15 +1638,38 @@ describe("pendingActionsService", () => {
     delete require.cache[pendingPath];
     const { fetchStoreNoQtyCreateNextRsPendingActions: fetchNextRs } = require(pendingPath);
 
+    // Fixture represents the real eligibility surface (assertPeriodWriteAllowed is not involved
+    // here): active cycle 1 has a LOCKED RS and a WO, so execution may continue while the next
+    // RS is eligible. salesOrder.findUnique is required by the eligibility resolver's fallback.
     const db = {
       salesOrder: {
         findMany: async () => [{ id: 10, docNo: "SO-26-0001", updatedAt: new Date() }],
+        findUnique: async ({ where }) => ({
+          id: Number(where.id),
+          orderType: "NO_QTY",
+          internalStatus: "IN_PROGRESS",
+          currentCycleId: 3,
+        }),
       },
       salesOrderCycle: {
-        findFirst: async () => ({ cycleNo: 1 }),
+        findFirst: async (args) => {
+          const w = args?.where ?? {};
+          if (w.status === "ACTIVE") return { id: 3, cycleNo: 1 };
+          if (w.status === "CLOSED") return null;
+          if (Number(w.id) === 3) return { id: 3, cycleNo: 1 };
+          return null;
+        },
       },
       requirementSheet: {
-        findFirst: async () => ({ updatedAt: new Date() }),
+        findFirst: async (args) => {
+          const w = args?.where ?? {};
+          if (w.cycle?.cycleNo?.gt != null) return null; // no sheet/draft on a later cycle yet
+          if (Number(w.cycleId) === 3) return { id: 71, status: "LOCKED", updatedAt: new Date() };
+          return null;
+        },
+      },
+      workOrder: {
+        findFirst: async () => ({ id: 900 }),
       },
     };
 
@@ -1690,30 +1713,40 @@ describe("pendingActionsService", () => {
     delete require.cache[pendingPath];
     const { fetchStoreNoQtyCreateNextRsPendingActions: fetchNextRs } = require(pendingPath);
 
+    // Active cycle 2 (334) is empty after advance; prior CLOSED cycle 1 (333) has a LOCKED RS + WO,
+    // so it is eligible and the next-RS action must target Cycle 2. salesOrder.findUnique and the
+    // id-scoped cycle/RS/WO lookups are required by the real eligibility path.
     const db = {
       salesOrder: {
         findMany: async () => [{ id: 199, docNo: "SO-26-0001", updatedAt: new Date() }],
+        findUnique: async ({ where }) => ({
+          id: Number(where.id),
+          orderType: "NO_QTY",
+          internalStatus: "IN_PROGRESS",
+          currentCycleId: 334,
+        }),
       },
       salesOrderCycle: {
         findFirst: async (args) => {
-          if (args?.where?.status === "ACTIVE") {
-            return { id: 334, cycleNo: 2 };
-          }
-          if (args?.where?.status === "CLOSED") {
-            return { id: 333, cycleNo: 1 };
-          }
+          const w = args?.where ?? {};
+          if (w.status === "ACTIVE") return { id: 334, cycleNo: 2 };
+          if (w.status === "CLOSED") return { id: 333, cycleNo: 1 };
+          if (Number(w.id) === 333) return { id: 333, cycleNo: 1 };
+          if (Number(w.id) === 334) return { id: 334, cycleNo: 2 };
           return null;
         },
       },
       requirementSheet: {
         findFirst: async (args) => {
-          if (args?.where?.cycleId === 334) return null;
-          if (args?.where?.cycleId === 333 && args?.where?.status === "LOCKED") {
-            return { updatedAt: new Date("2026-05-01") };
-          }
-          if (args?.where?.salesOrderId === 199 && args?.where?.cycleId === 334) return null;
+          const w = args?.where ?? {};
+          if (w.cycle?.cycleNo?.gt != null) return null; // no sheet/draft ahead of cycle 1
+          if (Number(w.cycleId) === 334) return null; // active cycle 2 is empty
+          if (Number(w.cycleId) === 333) return { id: 81, status: "LOCKED", updatedAt: new Date("2026-05-01") };
           return null;
         },
+      },
+      workOrder: {
+        findFirst: async () => ({ id: 901 }),
       },
     };
 

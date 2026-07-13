@@ -200,7 +200,7 @@ function placementPreviewDeps({
           sharedRmConflict: false,
         },
         rmReadiness: {
-          basis: "RS_BALANCE",
+          basis: "PROPOSED_WO_QTY",
           fgBalanceLines: [],
           lines: [
             {
@@ -223,6 +223,7 @@ function placementPreviewDeps({
             partialLineCount: 0,
             awaitingProcurementLineCount: 0,
             missingBomCount: 0,
+            proposedFgQty: totalExecutableQty,
           },
         },
         snapshot: {
@@ -479,8 +480,8 @@ describe("requirementSheetExecutionService", () => {
     assert.equal(res.rmPreview.available, true);
   });
 
-  it("RM readiness is derived from RS balance only", async () => {
-    let capturedFgLines = [];
+  it("RM readiness reflects proposed WO qty (not full RS balance)", async () => {
+    const capturedCalls = [];
     const db = createMockDb({
       sheets: [
         {
@@ -525,34 +526,40 @@ describe("requirementSheetExecutionService", () => {
       pmrs: [{ id: 92, workOrderId: 91, docNo: "PMR-26-0092", status: "FULLY_ISSUED", lines: [{ requiredQty: 500, issuedQty: 500 }] }],
     });
 
-    const res = await getRequirementSheetExecutionSummary(
-      db,
-      6,
-      readinessDeps({
-        rmNeeded: new Map([[700, 14000]]),
-        availabilityRows: [
-          {
-            itemId: 700,
-            itemName: "RM-X",
-            requiredQty: 14000,
-            freeStockQty: 10000,
-            shortageAfterReservationQty: 4000,
-            incomingQty: 1000,
-          },
-        ],
-        onFgLines: (fgLines) => {
-          capturedFgLines = fgLines;
+    const res = await getRequirementSheetExecutionSummary(db, 6, {
+      loadApprovedBomWithLines: async () => ({ id: 1, lines: [{ id: 1 }] }),
+      aggregateRmDemandForFgLines: async (_db, fgLines) => {
+        capturedCalls.push(fgLines.map((l) => ({ fgItemId: l.fgItemId, fgQty: l.fgQty })));
+        const totalFg = (fgLines ?? []).reduce((s, l) => s + Number(l.fgQty || 0), 0);
+        return { rmNeeded: new Map([[700, totalFg * 2]]), missingChildBoms: [] };
+      },
+      getMaterialAvailabilityByItems: async () => [
+        {
+          itemId: 700,
+          itemName: "RM-X",
+          freeStockQty: 10000,
+          shortageAfterReservationQty: 0,
+          incomingQty: 1000,
         },
-      }),
-    );
+      ],
+      assessNoQtyMonthlyPlanningGate: async () => ({ gate: "READY_FOR_EXECUTION" }),
+    });
 
     assert.equal(res.totals.rsBalanceQty, 7000);
-    assert.equal(capturedFgLines.length, 1);
-    assert.equal(capturedFgLines[0].fgQty, 7000);
-    assert.equal(res.rmReadiness.basis, "RS_BALANCE");
-    assert.equal(res.rmReadiness.lines[0].requiredQty, 14000);
-    assert.equal(res.rmReadiness.lines[0].shortageQty, 4000);
-    assert.equal(res.rmReadiness.lines[0].status, "PARTIALLY_READY");
+    assert.ok(res.placement.summary.totalExecutableQty < 7000);
+    assert.equal(res.rmReadiness.basis, "PROPOSED_WO_QTY");
+    assert.ok(capturedCalls.some((call) => call[0]?.fgQty === 7000));
+    const proposedQty = res.placement.summary.totalExecutableQty;
+    assert.ok(
+      res.rmReadiness.summary.proposedFgQty === proposedQty ||
+        res.rmReadiness.lines[0].requiredQty === proposedQty * 2,
+    );
+    assert.equal(res.kpis.suggestedNextWoQty, proposedQty);
+    assert.equal(res.kpis.remainingRequirement, 7000);
+    assert.ok(
+      res.placement.lines[0].operatorGuidance?.code === "PARTIAL_COVER" ||
+        res.placement.lines[0].suggestedExecutableQty < 7000,
+    );
   });
 
   it("surfaces missing top-level FG BOM when RS balance exists but no RM lines are produced", async () => {
@@ -595,7 +602,7 @@ describe("requirementSheetExecutionService", () => {
     );
 
     assert.equal(res.totals.rsBalanceQty, 1200);
-    assert.equal(res.rmReadiness.basis, "RS_BALANCE");
+    assert.equal(res.rmReadiness.basis, "PROPOSED_WO_QTY");
     assert.equal(res.rmReadiness.lines.length, 0);
     assert.equal(res.rmReadiness.missingBoms.length, 1);
     assert.equal(res.placement.lines[0].status, "MISSING_BOM");

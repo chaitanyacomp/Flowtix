@@ -206,7 +206,7 @@ const navGroups: NavGroup[] = [
       {
         to: "/rm-stock-planning",
         navKey: "rm-stock-plan",
-        label: "RM Stock Planning",
+        label: "RM Stock Monitor",
         roles: [...RM_STOCK_PLANNING_ROLES],
         icon: <Boxes className="h-4 w-4 shrink-0" />,
       },

@@ -8,7 +8,10 @@ const {
   isNoQtyWoPlacedStatusCounted,
   sumPlacedQtyByItem,
 } = require("./noQtyExecutionReleaseService");
-const { assessNoQtyBatchPlacement } = require("./noQtyBatchPlacementEngine");
+const {
+  assessNoQtyBatchPlacement,
+  previewRmReadinessForProposedQty,
+} = require("./noQtyBatchPlacementEngine");
 
 const EPS = 1e-6;
 
@@ -105,9 +108,9 @@ async function loadWoPlacementContextForSheet(db, requirementSheetId) {
   const sheetId = Number(requirementSheetId);
   const workOrdersRaw = await db.workOrder.findMany({
     where: { requirementSheetId: sheetId },
-    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     include: {
-      lines: { select: { id: true, fgItemId: true, qty: true, plannedQty: true } },
+      lines: { select: { id: true, fgItemId: true, qty: true, plannedQty: true, fgItem: { select: { itemName: true, unit: true } } } },
       productionMaterialRequests: {
         orderBy: { id: "desc" },
         take: 1,
@@ -138,11 +141,17 @@ async function loadWoPlacementContextForSheet(db, requirementSheetId) {
     const woQty = round3((wo.lines ?? []).reduce((s, line) => s + woLinePlacedQty(line), 0));
     const rmRequiredQty = round3((pmr?.lines ?? []).reduce((s, line) => s + dec(line.requiredQty), 0));
     const rmIssuedQty = round3((pmr?.lines ?? []).reduce((s, line) => s + dec(line.issuedQty), 0));
+    const primaryLine = (wo.lines ?? [])[0] ?? null;
+    const fgItemId = primaryLine?.fgItemId != null ? Number(primaryLine.fgItemId) : null;
     return {
       workOrderId: wo.id,
       docNo: wo.docNo ?? null,
       woQty,
       woStatus: wo.status,
+      createdAt: wo.createdAt?.toISOString?.() ?? wo.createdAt ?? null,
+      fgItemId,
+      fgItemName: primaryLine?.fgItem?.itemName ?? (fgItemId != null ? `Item ${fgItemId}` : null),
+      unit: primaryLine?.fgItem?.unit ?? null,
       pmrId: pmr?.id ?? null,
       pmrDocNo: pmr?.docNo ?? null,
       pmrStatus: pmr?.status ?? null,
@@ -595,6 +604,14 @@ async function getRequirementSheetExecutionSummary(db, requirementSheetId, deps 
     processStageKey: placementStage.processStageKey,
     processStageLabel: placementStage.processStageLabel,
     readyToPlaceWo: placementStage.readyToPlaceWo,
+    kpis: {
+      totalRsRequirement: totals.rsDemandQty,
+      woQuantityPlaced: totals.woPlacedQty,
+      remainingRequirement: totals.rsBalanceQty,
+      rmLimitedCapacity: totals.rmLimitedCapacityQty ?? placement.summary.totalExecutableQty,
+      suggestedNextWoQty: placement.summary.totalExecutableQty,
+      numberOfWos: existingWoSummary.length,
+    },
     procurement: {
       status: executionPlanReady
         ? (mrStatus ?? (materialRequirement ? "RELEASED" : "PROCUREMENT_NOT_REQUIRED"))
@@ -609,7 +626,9 @@ async function getRequirementSheetExecutionSummary(db, requirementSheetId, deps 
     },
     rmPreview: {
       available: true,
-      message: "RM readiness is calculated from RS Balance only and shown for execution decision support.",
+      basis: rmReadiness?.basis ?? "PROPOSED_WO_QTY",
+      message:
+        "RM Detail reflects the proposed / suggested Work Order quantity (not the full remaining RS requirement). Entered qty updates RM requirements live.",
     },
   };
 }
@@ -818,8 +837,45 @@ async function batchAssessNoQtyPlacementStages(db, pairs, deps = {}) {
   return out;
 }
 
+/**
+ * Live RM Detail for operator-entered proposed WO quantities (preview only).
+ * Reuses canonical BOM explosion + free-stock availability; does not place WO.
+ */
+async function previewRequirementSheetRmForProposedQty(db, requirementSheetId, proposedLines, deps = {}) {
+  const sheet = await db.requirementSheet.findUnique({
+    where: { id: requirementSheetId },
+    include: {
+      salesOrder: { select: { id: true, orderType: true } },
+      lines: {
+        include: { item: { select: { id: true, itemName: true, itemType: true, unit: true } } },
+        orderBy: { id: "asc" },
+      },
+    },
+  });
+  if (!sheet) {
+    const err = new Error("Requirement sheet not found.");
+    err.statusCode = 404;
+    throw err;
+  }
+  if (sheet.salesOrder?.orderType !== "NO_QTY") {
+    const err = new Error("RM preview is available only for No Qty requirement sheets.");
+    err.statusCode = 409;
+    throw err;
+  }
+  if (sheet.status !== "LOCKED") {
+    const err = new Error("RM preview is available only for locked requirement sheets.");
+    err.statusCode = 409;
+    throw err;
+  }
+
+  const { woPlacedByItem } = await loadWoPlacementContextForSheet(db, sheet.id);
+  const previewFn = deps.previewRmReadinessForProposedQty || previewRmReadinessForProposedQty;
+  return previewFn(db, sheet, proposedLines ?? [], { placedByItem: woPlacedByItem, ...deps });
+}
+
 module.exports = {
   getRequirementSheetExecutionSummary,
+  previewRequirementSheetRmForProposedQty,
   assessNoQtyPlacementStageForSheet,
   assessNoQtyPlacementStageForCycle,
   batchAssessNoQtyPlacementStages,

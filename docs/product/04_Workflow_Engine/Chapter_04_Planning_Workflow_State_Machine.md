@@ -6,7 +6,7 @@
 | **Volume** | 4 — Workflow Engine |
 | **Chapter** | 4 — Planning Workflow State Machine |
 | **Title** | Planning Workflow State Machine |
-| **Version** | 1.0.3 |
+| **Version** | 1.0.4 |
 | **Status** | Draft — Architecture Review |
 | **Effective date** | 2026-05-29 |
 | **Author** | FT ERP Product Team |
@@ -33,6 +33,7 @@
 | 1.0.1 | 2026-07-10 | FT ERP Product Team | §8.1 — next-RS single Store CTA; recovery shortfall/QC not duplicate inbox actions |
 | 1.0.2 | 2026-07-10 | FT ERP Product Team | Additional Plan create uses source-identity coverage (PLN-19) |
 | 1.0.3 | 2026-07-12 | FT ERP Product Team | Monthly Planning PA materialization gated by FEATURE_MONTHLY_PLANNING |
+| 1.0.4 | 2026-07-12 | FT ERP Product Team | §8.1 — draft RS sync precondition for carry-forward PA suppression |
 
 **Supersedes:** None.
 
@@ -460,6 +461,8 @@ Guard order is **top-to-bottom**. First failure stops transition ([FT-PD-041](./
 **Feature-flag gate:** When `FEATURE_MONTHLY_PLANNING` is OFF, emit **no** Monthly Planning Pending Actions (INITIAL, ADDITIONAL, or lifecycle draft/review/release). See FT-PD-040 §7.10b.
 
 **NO_QTY carry-forward inbox rule:** Production shortfall and QC rejection recovery quantities remain on recovery sources and appear as **informational / carry-forward components** on the next Requirement Sheet. They **SHALL NOT** emit a separate Store actionable Pending Action (`Production shortfall awaiting next RS` / `QC recovery available for allocation`) when Create Cycle N Requirement Sheet is already pending for the same SO, or when a next-cycle draft RS already exists. Analytics / Control Tower monitoring may still show recovery qty separately.
+
+**Draft sync precondition (`carryForward.save` / RS draft lifecycle):** An editable next-cycle draft RS **SHALL** continuously reflect available `PRODUCTION_SHORTFALL` via `syncDraftRsWithAvailableRecovery` (including when shortfall is created after the draft already exists). Missing FGs are auto-created as carry-forward-only lines. Suppression of the shortfall inbox CTA when a draft exists depends on this synchronization. Customer demand and system recovery remain separate components. `QC_FINAL_REJECTION` remains manually allocatable and is not auto-synced by the production-shortfall path.
 
 ### 8.2 Purchase Pending Actions
 

@@ -20,13 +20,15 @@ function usableDisplayStock(v: unknown): number {
   return Math.max(0, safeNum(v));
 }
 
-function fmtPlan(n: number): string {
-  return n.toFixed(3).replace(/\.000$/, "");
+function fmtPlan(n: number, unit?: string | null): string {
+  const text = n.toFixed(3).replace(/\.000$/, "");
+  return unit?.trim() ? `${text} ${unit.trim()}` : text;
 }
 
 export type RequirementSheetNoQtyGridLine = {
   itemId: number;
   itemName: string;
+  unit?: string | null;
   requirementQty: string;
   shortfallQty?: number | null;
   productionShortfallQty?: number | null;
@@ -108,17 +110,25 @@ export function RequirementSheetNoQtyGrid({
         <thead>
           <tr>
             <th scope="col">Item</th>
-            <th scope="col" className="text-right" title="Current cycle requirement qty entered on this sheet">
-              Current requirement
+            <th scope="col" className="text-right" title="Customer / current-cycle demand entered on this sheet">
+              Customer Demand
             </th>
-            <th scope="col" className="text-right" title="Prior-cycle production shortfall carried into this cycle">
-              Prior shortfall
+            <th
+              scope="col"
+              className="text-right"
+              title="System PRODUCTION_SHORTFALL carry-forward (read-only; from CarryForwardPending)"
+            >
+              Production Shortfall Carry Forward
             </th>
             <th scope="col" className="text-right" title="Final QC rejection recovery allocated to this sheet">
               QC recovery
             </th>
-            <th scope="col" className="text-right" title="Qty that must be produced this cycle (base + shortfall + QC recovery)">
-              Total to produce
+            <th
+              scope="col"
+              className="text-right"
+              title="Total RS quantity = Customer Demand + Production Shortfall + QC recovery"
+            >
+              Total RS Quantity
             </th>
             <th scope="col" className="text-right" title="First-pass production QC still awaiting inspection">
               Pending QC
@@ -141,6 +151,7 @@ export function RequirementSheetNoQtyGrid({
             const qcRecovery = safeNum(l.qcRejectionRecoveryQty);
             const pendingDisp = safeNum(l.pendingQcDispositionQty);
             const productionQcPending = safeNum(l.productionQcPendingQty);
+            const unit = l.unit ?? null;
             const rawNewWo = String(l.newWoQty ?? l.requirementQty ?? "");
             const newWo =
               !locked && (rawNewWo === "" || rawNewWo === "0" || Number(rawNewWo) === 0) ? "" : rawNewWo;
@@ -182,12 +193,17 @@ export function RequirementSheetNoQtyGrid({
 
             const detailOpen = expandedItemId === l.itemId;
             const pendingQcDisplay = productionQcPending > PLAN_EPS ? productionQcPending : 0;
+            const isCarryForwardOnly = shortfall > PLAN_EPS && newReqNum <= PLAN_EPS;
 
             return (
               <React.Fragment key={l.itemId}>
                 <tr className="erp-workbench-grid-row align-middle">
                   <td>
                     <div className="font-medium text-slate-900">{l.itemName}</div>
+                    {unit ? <div className="text-[11px] text-slate-500">{unit}</div> : null}
+                    {isCarryForwardOnly && !locked ? (
+                      <div className="text-[11px] font-medium text-amber-800">Carry-forward only</div>
+                    ) : null}
                     {l.qcStockNote ? <div className="text-[12px] text-slate-600">{l.qcStockNote}</div> : null}
                   </td>
                   <td className="text-right">
@@ -198,23 +214,23 @@ export function RequirementSheetNoQtyGrid({
                       onChange={(e) => onLineChange(l.itemId, e.target.value)}
                       onBlur={onLineBlur}
                       placeholder="Qty"
-                      aria-label={`Current requirement qty for ${l.itemName}`}
+                      aria-label={`Customer demand qty for ${l.itemName}`}
                     />
                   </td>
-                  <td className="erp-table-num font-semibold text-slate-900">
-                    {shortfall > PLAN_EPS ? fmtPlan(shortfall) : "—"}
+                  <td className="erp-table-num font-semibold text-slate-900" title="System-generated; not editable">
+                    {shortfall > PLAN_EPS ? fmtPlan(shortfall, unit) : "—"}
                   </td>
                   <td className="erp-table-num font-semibold text-slate-900">
-                    {qcRecovery > PLAN_EPS ? fmtPlan(qcRecovery) : "—"}
+                    {qcRecovery > PLAN_EPS ? fmtPlan(qcRecovery, unit) : "—"}
                   </td>
-                  <td className="erp-table-num font-semibold text-slate-950">{fmtPlan(productionRequired)}</td>
+                  <td className="erp-table-num font-semibold text-slate-950">{fmtPlan(productionRequired, unit)}</td>
                   <td className="erp-table-num font-semibold text-slate-900">
-                    {pendingQcDisplay > PLAN_EPS ? fmtPlan(pendingQcDisplay) : "—"}
+                    {pendingQcDisplay > PLAN_EPS ? fmtPlan(pendingQcDisplay, unit) : "—"}
                   </td>
                   <td className="erp-table-num text-slate-800">
-                    {pendingDisp > PLAN_EPS ? fmtPlan(pendingDisp) : "—"}
+                    {pendingDisp > PLAN_EPS ? fmtPlan(pendingDisp, unit) : "—"}
                   </td>
-                  <td className="erp-table-num text-slate-700">{fmtPlan(usable)}</td>
+                  <td className="erp-table-num text-slate-700">{fmtPlan(usable, unit)}</td>
                   <td>
                     <Badge variant={badgeVariant}>{badgeLabel}</Badge>
                   </td>
@@ -234,40 +250,40 @@ export function RequirementSheetNoQtyGrid({
                     <td colSpan={10}>
                       <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
                         <DetailMetric
-                          label="Current cycle demand"
-                          value={fmtPlan(newReqNum)}
+                          label="Customer Demand"
+                          value={fmtPlan(newReqNum, unit)}
                           emphasize
                         />
                         <DetailMetric
-                          label="Prior shortfall (carry-forward)"
-                          value={shortfall > PLAN_EPS ? fmtPlan(shortfall) : "—"}
+                          label="Production Shortfall Carry Forward"
+                          value={shortfall > PLAN_EPS ? fmtPlan(shortfall, unit) : "—"}
                           emphasize={shortfall > PLAN_EPS}
                         />
                         <DetailMetric
                           label="QC recovery (allocated)"
-                          value={qcRecovery > PLAN_EPS ? fmtPlan(qcRecovery) : "—"}
+                          value={qcRecovery > PLAN_EPS ? fmtPlan(qcRecovery, unit) : "—"}
                           emphasize={qcRecovery > PLAN_EPS}
                         />
-                        <DetailMetric label="Total to produce" value={fmtPlan(productionRequired)} emphasize />
+                        <DetailMetric label="Total RS Quantity" value={fmtPlan(productionRequired, unit)} emphasize />
                         <DetailMetric
                           label="Pending QC (first-pass)"
-                          value={productionQcPending > PLAN_EPS ? fmtPlan(productionQcPending) : "—"}
+                          value={productionQcPending > PLAN_EPS ? fmtPlan(productionQcPending, unit) : "—"}
                         />
                         <DetailMetric
                           label="Hold / rework disposition"
-                          value={pendingDisp > PLAN_EPS ? fmtPlan(pendingDisp) : "—"}
+                          value={pendingDisp > PLAN_EPS ? fmtPlan(pendingDisp, unit) : "—"}
                         />
                         <DetailMetric
                           label="Prior undispatched QC-accepted FG"
-                          value={undispatchedPrior > PLAN_EPS ? fmtPlan(undispatchedPrior) : "—"}
+                          value={undispatchedPrior > PLAN_EPS ? fmtPlan(undispatchedPrior, unit) : "—"}
                         />
                         <DetailMetric
                           label="Post-cycle approval (usable)"
-                          value={postCycle > PLAN_EPS ? fmtPlan(postCycle) : "—"}
+                          value={postCycle > PLAN_EPS ? fmtPlan(postCycle, unit) : "—"}
                         />
-                        <DetailMetric label="Usable FG (dispatch info)" value={fmtPlan(usable)} />
-                        <DetailMetric label="Previous cycles requirement" value={fmtPlan(prevCyclesQty)} />
-                        <DetailMetric label="All cycles requirement" value={fmtPlan(allCyclesQty)} />
+                        <DetailMetric label="Usable FG (dispatch info)" value={fmtPlan(usable, unit)} />
+                        <DetailMetric label="Previous cycles requirement" value={fmtPlan(prevCyclesQty, unit)} />
+                        <DetailMetric label="All cycles requirement" value={fmtPlan(allCyclesQty, unit)} />
                       </div>
                       {!locked && itemQcAvailable.length > 0 ? (
                         <div className="mt-3 space-y-2 rounded border border-slate-200 bg-slate-50/80 px-3 py-2">

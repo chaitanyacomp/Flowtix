@@ -289,6 +289,229 @@ function buildPlacementLineStatus(rsBalanceQty, executableQty, bomMissing, hasIn
   return { status: "READY", reason: "All required RM is available for this FG line." };
 }
 
+function formatQtyLabel(qty, unit) {
+  const q = round3(qty);
+  const text = Number.isFinite(q) ? String(q) : "0";
+  const u = String(unit ?? "").trim();
+  return u ? `${text} ${u}` : text;
+}
+
+/**
+ * Operator guidance for RM-limited suggested WO qty (display only).
+ */
+function buildOperatorGuidanceForLine({
+  rsBalanceQty,
+  suggestedExecutableQty,
+  unit = null,
+  limitingRmItemName = null,
+}) {
+  const balance = round3(rsBalanceQty);
+  const suggested = round3(suggestedExecutableQty);
+  const remaining = round3(Math.max(0, balance - suggested));
+  const balLabel = formatQtyLabel(balance, unit);
+  const sugLabel = formatQtyLabel(suggested, unit);
+  const remLabel = formatQtyLabel(remaining, unit);
+
+  if (!(balance > EPS)) {
+    return {
+      code: "ZERO_BALANCE",
+      message: "No remaining requirement for Work Order creation.",
+      limitingRmItemName: null,
+    };
+  }
+  if (suggested <= EPS) {
+    return {
+      code: "NO_RM",
+      message: "Work Order cannot be created currently because RM is insufficient.",
+      limitingRmItemName: limitingRmItemName || null,
+    };
+  }
+  if (suggested + EPS >= balance) {
+    return {
+      code: "FULL_COVER",
+      message: `RM is available for the full remaining requirement of ${balLabel}.`,
+      limitingRmItemName: null,
+    };
+  }
+  const limitPart = limitingRmItemName
+    ? ` Production capacity is limited by ${limitingRmItemName}.`
+    : "";
+  return {
+    code: "PARTIAL_COVER",
+    message: `You can currently produce up to ${sugLabel} with available RM. Remaining ${remLabel} requires additional RM.${limitPart}`,
+    limitingRmItemName: limitingRmItemName || null,
+  };
+}
+
+/**
+ * Identify the BOM RM that most constrains FG production at remaining balance.
+ */
+async function identifyLimitingRmItem(db, itemId, rsBalanceQty, suggestedExecutableQty, deps = {}) {
+  if (!(rsBalanceQty > EPS) || suggestedExecutableQty + EPS >= rsBalanceQty) return null;
+  const aggregate = deps.aggregateRmDemandForFgLines || aggregateRmDemandForFgLines;
+  const availability = deps.getMaterialAvailabilityByItems || getMaterialAvailabilityByItems;
+  const demand = await aggregate(db, [{ fgItemId: itemId, fgQty: rsBalanceQty, bomMissing: false }]);
+  const rmNeeded = demand?.rmNeeded instanceof Map ? demand.rmNeeded : new Map();
+  if (!rmNeeded.size) return null;
+  const availabilityRows = await availability({
+    db,
+    itemIds: [...rmNeeded.keys()],
+    requiredQtyByItemId: rmNeeded,
+    includeIncoming: true,
+    includeIssued: false,
+  });
+  let worst = null;
+  for (const row of availabilityRows ?? []) {
+    const rmItemId = Number(row.itemId);
+    const requiredQty = round3(n(rmNeeded.get(rmItemId)));
+    if (!(requiredQty > EPS)) continue;
+    const availableQty = round3(n(row.freeStockQty ?? row.physicalUsableStockQty));
+    const capacityRatio = availableQty / requiredQty;
+    if (!worst || capacityRatio < worst.capacityRatio) {
+      worst = {
+        rmItemId,
+        rmItemName: row.itemName ?? `Item ${rmItemId}`,
+        capacityRatio,
+        shortageQty: round3(Math.max(0, requiredQty - availableQty)),
+      };
+    }
+  }
+  return worst
+    ? { rmItemId: worst.rmItemId, rmItemName: worst.rmItemName, shortageQty: worst.shortageQty }
+    : null;
+}
+
+function buildRmReadinessFromBatch(db, balanceLines, placementLines, batchRmAtProposed, deps = {}) {
+  const missingBoms = (placementLines ?? [])
+    .filter((line) => line.status === "MISSING_BOM")
+    .map((line) => ({
+      type: "TOP_LEVEL_MISSING_BOM",
+      status: "MISSING_BOM",
+      fgItemId: line.itemId,
+      fgItemName: line.itemName,
+      fgQty: line.suggestedExecutableQty ?? line.rsBalanceQty,
+      message: line.reason || "Missing BOM for FG item. RM requirement cannot be calculated.",
+    }));
+
+  const rmLines = (batchRmAtProposed?.availabilityRows ?? []).map((row) => {
+    const rmItemId = Number(row.itemId);
+    const requiredQty = round3(n(batchRmAtProposed.rmNeeded?.get(rmItemId)));
+    const availableQty = round3(n(row.freeStockQty ?? row.physicalUsableStockQty));
+    const incomingQty = round3(n(row.incomingQty));
+    const shortageQty = round3(Math.max(0, requiredQty - availableQty));
+    const status = rmLineStatus({ requiredQty, availableQty, shortageQty, incomingQty });
+    return {
+      rmItemId,
+      rmItemName: row.itemName ?? `Item ${rmItemId}`,
+      requiredQty,
+      availableQty,
+      shortageQty,
+      incomingQty,
+      status,
+    };
+  });
+
+  const proposedFgLines = (placementLines ?? [])
+    .filter((line) => round3(n(line.suggestedExecutableQty ?? line.proposedQty)) > EPS)
+    .map((line) => ({
+      fgItemId: line.itemId,
+      fgItemName: line.itemName,
+      fgQty: round3(n(line.suggestedExecutableQty ?? line.proposedQty)),
+      bomMissing: line.status === "MISSING_BOM",
+    }));
+
+  return {
+    /** RM Detail for the proposed / suggested WO qty — not full RS balance. */
+    basis: "PROPOSED_WO_QTY",
+    fgBalanceLines: (balanceLines ?? [])
+      .filter((line) => line.rsBalanceQty > EPS)
+      .map((line) => ({
+        fgItemId: line.itemId,
+        fgItemName: line.itemName,
+        fgQty: line.rsBalanceQty,
+        bomMissing: Boolean(line.bomMissing),
+      })),
+    fgProposedLines: proposedFgLines,
+    lines: rmLines,
+    missingBoms,
+    summary: {
+      requiredQty: round3(rmLines.reduce((sum, line) => sum + line.requiredQty, 0)),
+      availableQty: round3(rmLines.reduce((sum, line) => sum + line.availableQty, 0)),
+      shortageQty: round3(rmLines.reduce((sum, line) => sum + line.shortageQty, 0)),
+      incomingQty: round3(rmLines.reduce((sum, line) => sum + line.incomingQty, 0)),
+      readyLineCount: rmLines.filter((line) => line.status === "READY").length,
+      partialLineCount: rmLines.filter((line) => line.status === "PARTIALLY_READY").length,
+      awaitingProcurementLineCount: rmLines.filter((line) => line.status === "AWAITING_PROCUREMENT").length,
+      missingBomCount: missingBoms.length,
+      proposedFgQty: round3(proposedFgLines.reduce((sum, line) => sum + line.fgQty, 0)),
+    },
+  };
+}
+
+/**
+ * Live RM readiness for operator-entered proposed WO quantities (canonical BOM + availability).
+ * Does not change RS balance or placement caps — preview only.
+ *
+ * @param {Array<{ itemId: number, qty: number }>} proposedLines
+ */
+async function previewRmReadinessForProposedQty(db, sheet, proposedLines, deps = {}) {
+  const loadBom = deps.loadApprovedBomWithLines || loadApprovedBomWithLines;
+  const placedByItem = deps.placedByItem instanceof Map ? deps.placedByItem : new Map();
+  const fgUnitByItemId = await loadFgItemUnitMap(
+    db,
+    (sheet?.lines ?? []).map((ln) => ln.itemId),
+  );
+  const balanceLines = buildPlacementBalanceLines(sheet, placedByItem, fgUnitByItemId);
+  const balanceByItem = new Map(balanceLines.map((l) => [l.itemId, l]));
+
+  const placementLines = [];
+  const fgLinesForRm = [];
+  for (const raw of proposedLines ?? []) {
+    const itemId = Number(raw.itemId);
+    const bal = balanceByItem.get(itemId);
+    if (!bal) continue;
+    const fgUnit = bal.fgUnit ?? fgUnitByItemId.get(itemId) ?? null;
+    let qty = roundFgQty(raw.qty, fgUnit, { mode: "floor" });
+    if (qty > bal.rsBalanceQty + EPS) qty = bal.rsBalanceQty;
+    if (!(qty > EPS)) continue;
+    const bom = await loadBom(db, itemId);
+    const bomMissing = !bom?.lines?.length;
+    placementLines.push({
+      itemId,
+      itemName: bal.itemName,
+      rsBalanceQty: bal.rsBalanceQty,
+      suggestedExecutableQty: qty,
+      proposedQty: qty,
+      status: bomMissing ? "MISSING_BOM" : "READY",
+      reason: bomMissing ? "Approved BOM is missing for this FG line." : null,
+    });
+    if (!bomMissing) {
+      fgLinesForRm.push({ fgItemId: itemId, fgQty: qty, bomMissing: false });
+    }
+  }
+
+  const batchRm =
+    fgLinesForRm.length > 0
+      ? await verifyBatchRmFeasibility(db, fgLinesForRm, deps)
+      : { feasible: true, rmNeeded: new Map(), shortages: [], missingChildBoms: [], availabilityRows: [] };
+
+  const rmReadiness = buildRmReadinessFromBatch(db, balanceLines, placementLines, batchRm, deps);
+
+  const perLine = [];
+  for (const line of placementLines) {
+    const rmLines = line.status === "MISSING_BOM" ? [] : await buildPerLineRmLines(db, line.itemId, line.proposedQty, deps);
+    perLine.push({
+      itemId: line.itemId,
+      itemName: line.itemName,
+      proposedQty: line.proposedQty,
+      rsBalanceQty: line.rsBalanceQty,
+      rmLines,
+    });
+  }
+
+  return { rmReadiness, lines: perLine, basis: "PROPOSED_WO_QTY" };
+}
+
 function buildPlacementStatus(positiveLines) {
   if (!positiveLines.length) {
     return { status: "ZERO_BALANCE", reason: "No RS balance remains.", canPlace: false };
@@ -330,61 +553,6 @@ function buildPlacementStatus(positiveLines) {
     };
   }
   return { status: "ZERO_BALANCE", reason: "No RS balance remains.", canPlace: false };
-}
-
-function buildRmReadinessFromBatch(db, balanceLines, placementLines, batchRmAtBalance, deps = {}) {
-  const missingBoms = (placementLines ?? [])
-    .filter((line) => line.status === "MISSING_BOM")
-    .map((line) => ({
-      type: "TOP_LEVEL_MISSING_BOM",
-      status: "MISSING_BOM",
-      fgItemId: line.itemId,
-      fgItemName: line.itemName,
-      fgQty: line.rsBalanceQty,
-      message: line.reason || "Missing BOM for FG item. RM requirement cannot be calculated.",
-    }));
-
-  const rmLines = (batchRmAtBalance?.availabilityRows ?? []).map((row) => {
-    const rmItemId = Number(row.itemId);
-    const requiredQty = round3(n(batchRmAtBalance.rmNeeded?.get(rmItemId)));
-    const availableQty = round3(n(row.freeStockQty ?? row.physicalUsableStockQty));
-    const incomingQty = round3(n(row.incomingQty));
-    const shortageQty = round3(Math.max(0, requiredQty - availableQty));
-    const status = rmLineStatus({ requiredQty, availableQty, shortageQty, incomingQty });
-    return {
-      rmItemId,
-      rmItemName: row.itemName ?? `Item ${rmItemId}`,
-      requiredQty,
-      availableQty,
-      shortageQty,
-      incomingQty,
-      status,
-    };
-  });
-
-  return {
-    basis: "RS_BALANCE",
-    fgBalanceLines: (balanceLines ?? [])
-      .filter((line) => line.rsBalanceQty > EPS)
-      .map((line) => ({
-        fgItemId: line.itemId,
-        fgItemName: line.itemName,
-        fgQty: line.rsBalanceQty,
-        bomMissing: Boolean(line.bomMissing),
-      })),
-    lines: rmLines,
-    missingBoms,
-    summary: {
-      requiredQty: round3(rmLines.reduce((sum, line) => sum + line.requiredQty, 0)),
-      availableQty: round3(rmLines.reduce((sum, line) => sum + line.availableQty, 0)),
-      shortageQty: round3(rmLines.reduce((sum, line) => sum + line.shortageQty, 0)),
-      incomingQty: round3(rmLines.reduce((sum, line) => sum + line.incomingQty, 0)),
-      readyLineCount: rmLines.filter((line) => line.status === "READY").length,
-      partialLineCount: rmLines.filter((line) => line.status === "PARTIALLY_READY").length,
-      awaitingProcurementLineCount: rmLines.filter((line) => line.status === "AWAITING_PROCUREMENT").length,
-      missingBomCount: missingBoms.length,
-    },
-  };
 }
 
 function buildPlacementSnapshot(placedByItem, balanceLines, placement) {
@@ -501,9 +669,10 @@ async function assessNoQtyBatchPlacement(db, sheet, deps = {}) {
   const fullFgLines = balanceLines
     .filter((line) => line.rsBalanceQty > EPS && !line.bomMissing)
     .map((line) => ({ fgItemId: line.itemId, fgQty: line.rsBalanceQty, bomMissing: false }));
-  const batchRmAtBalance = fullFgLines.length
-    ? await verifyBatchRmFeasibility(db, fullFgLines, deps)
-    : { feasible: true, rmNeeded: new Map(), shortages: [], missingChildBoms: [], availabilityRows: [] };
+  // Still evaluate full-balance RM for allocation diagnostics; primary RM Detail uses proposed WO qty.
+  if (fullFgLines.length) {
+    await verifyBatchRmFeasibility(db, fullFgLines, deps);
+  }
 
   const placementLines = [];
   for (const line of balanceLines) {
@@ -518,17 +687,31 @@ async function assessNoQtyBatchPlacement(db, sheet, deps = {}) {
       hasIncomingStock,
       hasAvailableStock,
     );
+    const limitingRm = line.bomMissing
+      ? null
+      : await identifyLimitingRmItem(db, line.itemId, line.rsBalanceQty, executableQty, deps);
+    const guidance = buildOperatorGuidanceForLine({
+      rsBalanceQty: line.rsBalanceQty,
+      suggestedExecutableQty: executableQty,
+      unit: line.fgUnit,
+      limitingRmItemName: limitingRm?.rmItemName ?? null,
+    });
     placementLines.push({
       itemId: line.itemId,
       itemName: line.itemName,
+      unit: line.fgUnit ?? null,
       rsDemandQty: line.rsDemandQty,
       woPlacedQty: line.woPlacedQty,
       rsBalanceQty: line.rsBalanceQty,
+      rmLimitedCapacityQty: executableQty,
       suggestedExecutableQty: executableQty,
       executableQty,
       status,
       reason,
       rmLines,
+      limitingRmItemId: limitingRm?.rmItemId ?? null,
+      limitingRmItemName: limitingRm?.rmItemName ?? null,
+      operatorGuidance: guidance,
     });
   }
 
@@ -541,10 +724,21 @@ async function assessNoQtyBatchPlacement(db, sheet, deps = {}) {
       totalWoPlacedQty: round3(balanceLines.reduce((sum, line) => sum + line.woPlacedQty, 0)),
       totalRsBalanceQty: round3(balanceLines.reduce((sum, line) => sum + line.rsBalanceQty, 0)),
       totalExecutableQty: round3(placementLines.reduce((sum, line) => sum + line.suggestedExecutableQty, 0)),
+      totalRmLimitedCapacityQty: round3(
+        placementLines.reduce((sum, line) => sum + line.rmLimitedCapacityQty, 0),
+      ),
+      woCount: null,
     },
     lines: placementLines,
     sharedRmConflict: Boolean(allocation.sharedRmConflict),
   };
+
+  const proposedFgLines = placementLines
+    .filter((line) => line.suggestedExecutableQty > EPS && line.status !== "MISSING_BOM")
+    .map((line) => ({ fgItemId: line.itemId, fgQty: line.suggestedExecutableQty, bomMissing: false }));
+  const batchRmAtProposed = proposedFgLines.length
+    ? await verifyBatchRmFeasibility(db, proposedFgLines, deps)
+    : { feasible: true, rmNeeded: new Map(), shortages: [], missingChildBoms: [], availabilityRows: [] };
 
   return {
     balanceLines,
@@ -554,9 +748,10 @@ async function assessNoQtyBatchPlacement(db, sheet, deps = {}) {
       rsDemandQty: placement.summary.totalRsDemandQty,
       woPlacedQty: placement.summary.totalWoPlacedQty,
       rsBalanceQty: placement.summary.totalRsBalanceQty,
+      rmLimitedCapacityQty: placement.summary.totalRmLimitedCapacityQty,
     },
     placement,
-    rmReadiness: buildRmReadinessFromBatch(db, balanceLines, placementLines, batchRmAtBalance, deps),
+    rmReadiness: buildRmReadinessFromBatch(db, balanceLines, placementLines, batchRmAtProposed, deps),
     snapshot: buildPlacementSnapshot(placedByItem, balanceLines, placement),
   };
 }
@@ -658,4 +853,8 @@ module.exports = {
   createPlacementConflictError,
   loadFgItemUnitMap,
   loadFgItemUnitById,
+  previewRmReadinessForProposedQty,
+  buildOperatorGuidanceForLine,
+  identifyLimitingRmItem,
+  buildPerLineRmLines,
 };

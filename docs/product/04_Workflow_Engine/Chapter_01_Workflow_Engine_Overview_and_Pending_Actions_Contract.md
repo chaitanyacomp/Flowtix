@@ -6,7 +6,7 @@
 | **Volume** | 4 — Workflow Engine |
 | **Chapter** | 1 — Workflow Engine Overview & Pending Actions Contract |
 | **Title** | Workflow Engine Overview & Pending Actions Contract |
-| **Version** | 1.0.5 |
+| **Version** | 1.0.6 |
 | **Status** | Draft — Architecture Review |
 | **Effective date** | 2026-05-29 |
 | **Author** | FT ERP Product Team |
@@ -34,6 +34,7 @@
 | 1.0.3 | 2026-07-10 | FT ERP Product Team | NO_QTY WO PA uses same SO-wide locked-RS candidate pick as Execution Register (not ACTIVE cycle only) |
 | 1.0.4 | 2026-07-10 | FT ERP Product Team | WO PA deep link identity immutable — sheetId/cycleId must survive open + refresh |
 | 1.0.5 | 2026-07-12 | FT ERP Product Team | Monthly Planning Pending Actions emit only when FEATURE_MONTHLY_PLANNING is ON |
+| 1.0.6 | 2026-07-12 | FT ERP Product Team | §7.9 — draft RS must sync late PRODUCTION_SHORTFALL for PA suppression validity |
 
 **Supersedes:** None.
 
@@ -299,6 +300,8 @@ When `age > threshold`:
 For NO_QTY agreements, **Create Cycle N Requirement Sheet** is the **single Store-owned actionable** Pending Action for the next-cycle planning obligation.
 
 Production shortfall and QC rejection recovery remain persisted recovery sources and Requirement Sheet carry-forward components. They **must not** appear as separate Store actionable Pending Actions when create-next-RS is already eligible for that SO, or when a next-cycle draft Requirement Sheet already exists. Suppression is inbox-only — it does not waive, delete, or weaken carry-forward calculations.
+
+**Draft synchronization precondition:** Inbox suppression when a next-cycle draft exists is valid **only because** that draft is kept continuously synchronized with available `PRODUCTION_SHORTFALL` recovery (`syncDraftRsWithAvailableRecovery`). Carry-forward may arise **after** the draft already exists (prior-cycle WO closes late); the draft must still receive missing products as carry-forward-only lines. When no eligible draft exists, recovery remains OPEN and the production-shortfall Pending Action may still appear until Create Next RS covers the obligation.
 
 ### 7.10 NO_QTY WO placement (shared execution readiness)
 

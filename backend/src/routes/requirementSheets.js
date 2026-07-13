@@ -37,6 +37,7 @@ const {
   reverseSheetRecoveryAllocation,
   getQcRecoveryAvailabilityForSheet,
   syncRequirementSheetLineComponents,
+  syncDraftRsWithAvailableRecovery,
 } = require("../services/noQtyRsRecoveryIntegrationService");
 const { getAvailableRecovery } = require("../services/noQtyRecoveryService");
 const { QC_ENTRY_ACTIVE_WHERE } = require("../services/qcEntryConstants");
@@ -63,7 +64,10 @@ const {
 } = require("../services/noQtyExecutionReleaseService");
 const { ensureSubmittedProductionMaterialRequestForWorkOrder } = require("../services/productionMaterialRequestService");
 const { resolveNoQtyWoExecutableQty } = require("../services/noQtyWoQtyService");
-const { getRequirementSheetExecutionSummary } = require("../services/requirementSheetExecutionService");
+const {
+  getRequirementSheetExecutionSummary,
+  previewRequirementSheetRmForProposedQty,
+} = require("../services/requirementSheetExecutionService");
 
 const requirementSheetsRouter = express.Router();
 
@@ -1098,6 +1102,7 @@ async function mapSheetDetail(sheet) {
       id: ln.id,
       itemId: ln.itemId,
       itemName: item?.itemName ?? `Item #${ln.itemId}`,
+      unit: item?.unit ?? null,
       shortfallQty,
       productionShortfallQty: round3(n(ln.productionShortfallQty ?? shortfallQty ?? 0)),
       qcRejectionRecoveryQty: round3(n(ln.qcRejectionRecoveryQty ?? 0)),
@@ -1353,6 +1358,27 @@ requirementSheetsRouter.get(
       });
       if (!sheet) return res.status(404).json(friendly400("Requirement sheet not found."));
       if (sheet.salesOrder?.orderType !== "NO_QTY") return res.status(409).json(friendly400("Requirement sheet is allowed only for No Qty sales orders."));
+
+      // Canonical refresh: draft RS must reflect available PRODUCTION_SHORTFALL before Store views the grid.
+      if (sheet.status === "DRAFT") {
+        await prisma.$transaction(async (tx) => {
+          await syncDraftRsWithAvailableRecovery(tx, {
+            requirementSheetId: sheet.id,
+            salesOrderId: sheet.salesOrderId,
+            actorUserId: req.user?.userId ?? null,
+            actorRole: req.user?.role ?? null,
+          });
+        });
+        const refreshed = await prisma.requirementSheet.findUnique({
+          where: { id },
+          include: {
+            salesOrder: { include: { customer: true, po: { include: { customer: true } } } },
+            lines: { include: { item: true }, orderBy: { id: "asc" } },
+          },
+        });
+        if (!refreshed) return res.status(404).json(friendly400("Requirement sheet not found."));
+        return res.json(await mapSheetDetail(refreshed));
+      }
 
       return res.json(await mapSheetDetail(sheet));
     } catch (e) {
@@ -1709,6 +1735,14 @@ requirementSheetsRouter.put(
           });
           if (line) await syncRequirementSheetLineComponents(tx, line.id);
         }
+
+        // Keep draft aligned with any PRODUCTION_SHORTFALL that arrived after create.
+        await syncDraftRsWithAvailableRecovery(tx, {
+          requirementSheetId: id,
+          salesOrderId: sheet.salesOrderId,
+          actorUserId: req.user?.userId ?? null,
+          actorRole: req.user?.role ?? null,
+        });
       });
 
       return res.json({ ok: true });
@@ -1773,6 +1807,13 @@ requirementSheetsRouter.post(
         }
 
         await tx.requirementSheet.update({ where: { id }, data: { recalculatedAt: new Date() } });
+
+        await syncDraftRsWithAvailableRecovery(tx, {
+          requirementSheetId: id,
+          salesOrderId: before.salesOrderId,
+          actorUserId: req.user?.userId ?? null,
+          actorRole: req.user?.role ?? null,
+        });
       });
 
       const sheet = await prisma.requirementSheet.findUnique({
@@ -2278,6 +2319,37 @@ requirementSheetsRouter.get(
   },
 );
 
+// POST /api/requirement-sheets/:id/execution/rm-preview — live RM Detail for proposed WO qty
+requirementSheetsRouter.post(
+  "/requirement-sheets/:id/execution/rm-preview",
+  requireAuth,
+  requireRole(RS_READ_ROLES),
+  async (req, res, next) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id) || id <= 0) return res.status(400).json(friendly400("Invalid requirement sheet id."));
+      const body = z
+        .object({
+          lines: z
+            .array(
+              z.object({
+                itemId: z.coerce.number().int().positive(),
+                qty: z.coerce.number(),
+              }),
+            )
+            .default([]),
+        })
+        .parse(req.body ?? {});
+      const data = await previewRequirementSheetRmForProposedQty(prisma, id, body.lines);
+      return res.json(data);
+    } catch (e) {
+      if (e.statusCode === 404) return res.status(404).json(friendly400(e.message));
+      if (e.statusCode === 409) return res.status(409).json(friendly400(e.message));
+      return next(e);
+    }
+  },
+);
+
 // GET /api/requirement-sheets/:id/wo-prefill
 requirementSheetsRouter.get(
   "/requirement-sheets/:id/wo-prefill",
@@ -2368,7 +2440,7 @@ requirementSheetsRouter.post(
               totalRsBalanceQty: z.coerce.number().optional(),
               totalExecutableQty: z.coerce.number().optional(),
               placementStatus: z.string().optional().nullable(),
-              woPlacedByItem: z.record(z.coerce.number()).optional(),
+              woPlacedByItem: z.record(z.string(), z.coerce.number()).optional(),
               lines: z
                 .array(
                   z.object({
@@ -2468,6 +2540,23 @@ requirementSheetsRouter.post(
           workOrders: createdWorkOrders,
           pmrs,
           salesOrderId: sheet.salesOrderId,
+          placedLines: Array.isArray(body.lines)
+            ? body.lines
+                .map((ln) => {
+                  const itemId = Number(ln.itemId);
+                  const sheetLine = (sheet.lines ?? []).find((row) => Number(row.itemId) === itemId);
+                  return {
+                    itemId,
+                    qty: Number(ln.qty) || 0,
+                    itemName: sheetLine?.item?.itemName ?? `Item ${itemId}`,
+                    unit: sheetLine?.item?.unit ?? null,
+                  };
+                })
+                .filter((ln) => ln.qty > 0)
+            : [],
+          nextStep: "MATERIAL_ISSUE",
+          nextStepLabel: "Material Issue",
+          rsRemainsOpenForPlacement: true,
         };
       });
 
@@ -2478,6 +2567,10 @@ requirementSheetsRouter.post(
         workOrders: result.workOrders ?? [],
         pmrs: result.pmrs ?? [],
         salesOrderId: result.salesOrderId,
+        placedLines: result.placedLines ?? [],
+        nextStep: result.nextStep ?? "MATERIAL_ISSUE",
+        nextStepLabel: result.nextStepLabel ?? "Material Issue",
+        rsRemainsOpenForPlacement: result.rsRemainsOpenForPlacement !== false,
       });
     } catch (e) {
       return next(e);

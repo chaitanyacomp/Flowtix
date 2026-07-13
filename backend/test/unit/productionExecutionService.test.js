@@ -140,9 +140,19 @@ function createFinishMockTx({
     },
     salesOrder: {
       findUnique: async ({ where }) =>
-        greenLevel ? null : { id: where.id, orderType: "NO_QTY" },
+        greenLevel ? null : { id: where.id, orderType: "NO_QTY", currentCycleId: null },
     },
     recoveryAllocation: {
+      findMany: async () => [],
+    },
+    // Late-CF draft-RS sync surface (noQtyRsRecoveryIntegrationService). No eligible draft
+    // RS exists in these fixtures, so the real sync runs but is a verified no-op — it must
+    // not alter the CARRY_FORWARD / WAIVE_BALANCE execution result.
+    requirementSheet: {
+      findMany: async () => [],
+      findUnique: async () => null,
+    },
+    requirementSheetLine: {
       findMany: async () => [],
     },
     workOrderLine: {
@@ -275,6 +285,12 @@ describe("productionExecutionService", () => {
     assert.equal(carryForwardRows[0].sourceDocumentType, "PRODUCTION_SHORTFALL_RESOLUTION");
     assert.equal(auditRows.length, 1);
     assert.equal(auditRows[0].resolutionType, "CARRY_FORWARD");
+
+    // Draft-RS sync ran (not suppressed) but is a no-op: no eligible draft RS, no allocation,
+    // and the execution result above is unchanged.
+    assert.equal(result.draftRsSync.synced, false);
+    assert.equal(result.draftRsSync.reason, "NO_ELIGIBLE_DRAFT_RS");
+    assert.deepEqual(result.draftRsSync.allocated, []);
 
     const cfIdx = opOrder.indexOf("carryForwardPending.create");
     const auditIdx = opOrder.indexOf("shortfallResolution.create");

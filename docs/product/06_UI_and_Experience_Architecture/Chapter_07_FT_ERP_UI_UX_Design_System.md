@@ -7,7 +7,7 @@
 | **Volume** | 6 — UI & Experience Architecture |
 | **Chapter** | 7 — FT ERP UI/UX Design System |
 | **Title** | FT ERP UI/UX Design System |
-| **Version** | 1.0.2 |
+| **Version** | 1.0.6 |
 | **Status** | Draft — Final Architecture Review |
 | **Effective date** | 2026-07-03 |
 | **Author** | FT ERP Product Team |
@@ -36,6 +36,10 @@
 | 1.0.0 | 2026-07-03 | FT ERP Product Team | Initial FT ERP UI/UX Design System — mandatory standard for all UI development |
 | 1.0.1 | 2026-07-03 | FT ERP Product Team | Final Architecture Review — normative language, anti-patterns, compliance review, exception governance, redesign order |
 | 1.0.2 | 2026-07-09 | FT ERP Product Team | §14.2 — single primary Back; Analysis → Reports; Dashboard / Masters / Module matrix |
+| 1.0.3 | 2026-07-12 | FT ERP Product Team | §10.8 — locked RS presents as Work Order Planning (operator stage clarity) |
+| 1.0.4 | 2026-07-12 | FT ERP Product Team | §10.8 — multi-WO planning layout; RM Detail = proposed qty; stay after create |
+| 1.0.5 | 2026-07-12 | FT ERP Product Team | §10.8 — workstation hierarchy: transaction above fold; reference below |
+| 1.0.6 | 2026-07-12 | FT ERP Product Team | §10.8 — single two-column workstation grid (left context / right action); RM integrated in action column; Planning Context duplication removed |
 
 **Supersedes:** Ad hoc screen conventions; informal spacing and button patterns not recorded in product documentation.
 
@@ -540,7 +544,27 @@ The Workbench **SHALL** be the **default pattern** for Requirement Sheet, Monthl
 
 - Focus indicator **SHALL** always be visible for keyboard users.
 
-### 10.8 Density rules
+### 10.8 Locked Requirement Sheet → Work Order Planning (stage clarity)
+
+When a NO_QTY Requirement Sheet is **LOCKED**, the operator’s current task is **Work Order Planning / Create Work Orders** ([FT-PD-022](../02_Business_Architecture/Chapter_03_NO_QTY_Agreement_Planning_Pipeline.md) WO placement; [FT-PD-040](../04_Workflow_Engine/Chapter_01_Workflow_Engine_Overview_and_Pending_Actions_Contract.md) §7.10).
+
+| Rule | Requirement |
+|------|-------------|
+| **Page title** | **SHALL** present **Work Order Planning** (not “Requirement Sheet”) so the operator identifies the stage within 2–3 seconds. |
+| **Source document** | Requirement Sheet identity (RS number, customer, cycle, Locked status) **SHALL** appear as a **compact reference card** — not as the page purpose. |
+| **Stage banner** | **SHALL** show completed → current → next: Requirement Sheet ✓ → **Create Work Orders** (highlighted) → Material Issue. |
+| **Work area heading** | **SHALL** use **Create Work Orders** (not “Place WO” as the section title). Action verbs on buttons may retain Create Suggested / Create Custom WO. |
+| **KPI labels** | Operator-facing labels **SHALL** distinguish Remaining Requirement, RM-Limited Capacity, and Suggested Next WO Qty. Suggested Next WO **must not** be labeled as if it always equals full RS demand. |
+| **Layout** | Desktop **SHALL** present **one workstation grid** directly below the page navigation, using horizontal space before adding vertical sections. A **left context column** carries RS reference / KPIs (Remaining Requirement, WO Quantity Placed, Total RS Requirement, Number of WOs, cycle, guidance text) as horizontal, balanced tiles — **not** a vertical stack. A **right action column** carries the complete Work Order transaction (FG Item, Suggested Next WO Qty, Enter Qty, RM-Limited Capacity, RM Coverage, RM feasibility, Create Suggested / Create Custom / Reset). The complete action, including buttons and RM feasibility, **SHALL** be visible without scrolling at 1920×1080. There **SHALL** be a single standalone “Planning Context” block; its values **SHALL** be merged into the context / KPI / action regions so each business value has one primary display. Font size, input height, and button size **SHALL NOT** be reduced to fit. |
+| **RM Detail** | **SHALL** be integrated **within** the right action column, directly below quantity entry, and reflect the proposed / entered WO quantity (defaulting to Suggested Next WO Qty). For a small BOM it **SHALL** be a compact table (RM Item, Required, Available, Shortage, Status); a separate full-width RM section is used **only** when the number of RM lines justifies it. Live operator guidance **SHALL** state max producible qty and limiting RM where useful. |
+| **Current Work Orders** | **SHALL** appear immediately below the Create Work Order workstation so newly created WOs are visible without scrolling through reference sections. |
+| **Reference sections** | Procurement Progress, Coverage Calculations, and Audit / History **SHALL** remain available but **SHALL** be collapsible and below the primary transaction / Current Work Orders area. |
+| **Post-create continuity** | After WO create, the workspace **SHALL** remain on Work Order Planning, show the business WO number and next step, refresh Current Work Orders, and offer Open WO / Material Issue / Create Another WO. Auto-navigation away **SHALL NOT** be the default. |
+| **Multi-WO** | While Remaining Requirement > 0, the RS **SHALL** remain available for additional WO placement. |
+
+Draft Requirement Sheet editing **SHALL** continue to use the Requirement Sheet page title. Workflow ownership and lifecycle rules remain in FT-PD-022 / FT-PD-031 / FT-PD-035 — this section governs presentation and operator continuity only. **No** calculation, permission, API, or lifecycle change is implied by layout hierarchy.
+
+### 10.9 Density rules
 
 | Tier | Row height (target) | Use |
 |------|---------------------|-----|
@@ -781,7 +805,7 @@ Applies to Register, Workbench grids, Dashboard lists, Control Tower tables, and
 | **Approve** | Approve / Confirm | Authority-gated |
 | **Cancel** | Cancel | Discards unsaved or closes dialog — **SHALL NOT** be ambiguous with Cancel document |
 
-Domain-accurate verbs **SHALL** come from [Glossary](../01_Product_Foundation/Chapter_03_FT_ERP_Glossary_and_Standard_Terminology.md) (Issue, Dispatch, Lock RS, Place WO).
+Domain-accurate verbs **SHALL** come from [Glossary](../01_Product_Foundation/Chapter_03_FT_ERP_Glossary_and_Standard_Terminology.md) (Issue, Dispatch, Lock RS, Place WO). On the locked-RS **Work Order Planning** surface (§10.8), section titles **SHALL** prefer **Create Work Orders**; Pending Action labels such as Place Partial WO / Create Suggested WO remain engine-owned wording.
 
 ### 15.3 Placement consistency
 

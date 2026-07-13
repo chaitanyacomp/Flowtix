@@ -6,6 +6,8 @@ const {
   validateNoQtyPlacementRequest,
   NO_QTY_PLACEMENT_ERROR,
   createPlacementConflictError,
+  buildOperatorGuidanceForLine,
+  previewRmReadinessForProposedQty,
 } = require("../../src/services/noQtyBatchPlacementEngine");
 const {
   buildNoQtyWoBatchPlacementPreview,
@@ -252,5 +254,85 @@ describe("noQtyBatchPlacementEngine", () => {
     const err = createPlacementConflictError(NO_QTY_PLACEMENT_ERROR.RM_SHORTAGE, "Insufficient RM");
     assert.equal(err.statusCode, 409);
     assert.equal(err.code, NO_QTY_PLACEMENT_ERROR.RM_SHORTAGE);
+  });
+
+  it("operator guidance covers full, partial, and zero RM capacity", () => {
+    const full = buildOperatorGuidanceForLine({
+      rsBalanceQty: 60000,
+      suggestedExecutableQty: 60000,
+      unit: "Nos",
+    });
+    assert.equal(full.code, "FULL_COVER");
+    assert.match(full.message, /full remaining requirement of 60000 Nos/i);
+
+    const partial = buildOperatorGuidanceForLine({
+      rsBalanceQty: 60000,
+      suggestedExecutableQty: 42000,
+      unit: "Nos",
+      limitingRmItemName: "RM-A",
+    });
+    assert.equal(partial.code, "PARTIAL_COVER");
+    assert.match(partial.message, /produce up to 42000 Nos/i);
+    assert.match(partial.message, /Remaining 18000 Nos/i);
+    assert.match(partial.message, /limited by RM-A/i);
+
+    const none = buildOperatorGuidanceForLine({
+      rsBalanceQty: 60000,
+      suggestedExecutableQty: 0,
+      unit: "Nos",
+    });
+    assert.equal(none.code, "NO_RM");
+    assert.match(none.message, /RM is insufficient/i);
+  });
+
+  it("suggested qty equals RS balance when RM fully covers demand", async () => {
+    const sheet = lockedSheet({
+      cycleId: 2,
+      lines: [{ itemId: 100, requirementQty: 5000, item: { itemName: "FG-A", itemType: "FG" } }],
+    });
+    const tx = createPlacementTx({
+      sheet,
+      bomByFgItemId: { 100: simpleBom(1, 501) },
+      rmStockByItemId: { 501: 10000 },
+    });
+    const assessment = await assessNoQtyBatchPlacement(tx, sheet);
+    assert.equal(assessment.placement.lines[0].suggestedExecutableQty, 5000);
+    assert.equal(assessment.rmReadiness.basis, "PROPOSED_WO_QTY");
+    assert.equal(assessment.placement.lines[0].operatorGuidance.code, "FULL_COVER");
+  });
+
+  it("suggested qty is capped by RM-limited capacity when stock is partial", async () => {
+    const sheet = lockedSheet({
+      cycleId: 2,
+      lines: [{ itemId: 100, requirementQty: 10000, item: { itemName: "FG-A", itemType: "FG" } }],
+    });
+    const tx = createPlacementTx({
+      sheet,
+      bomByFgItemId: { 100: simpleBom(2, 501) },
+      rmStockByItemId: { 501: 8400 },
+    });
+    const assessment = await assessNoQtyBatchPlacement(tx, sheet);
+    const suggested = assessment.placement.lines[0].suggestedExecutableQty;
+    assert.ok(suggested < 10000);
+    assert.equal(suggested, assessment.placement.lines[0].rmLimitedCapacityQty);
+    assert.equal(assessment.rmReadiness.basis, "PROPOSED_WO_QTY");
+    assert.ok(assessment.rmReadiness.summary.proposedFgQty <= suggested + 1e-6);
+    assert.equal(assessment.placement.lines[0].operatorGuidance.code, "PARTIAL_COVER");
+  });
+
+  it("live RM preview uses entered WO qty not full RS balance", async () => {
+    const sheet = lockedSheet({
+      cycleId: 2,
+      lines: [{ itemId: 100, requirementQty: 60000, item: { itemName: "Square Box", itemType: "FG" } }],
+    });
+    const tx = createPlacementTx({
+      sheet,
+      bomByFgItemId: { 100: simpleBom(1, 501) },
+      rmStockByItemId: { 501: 100000 },
+    });
+    const preview = await previewRmReadinessForProposedQty(tx, sheet, [{ itemId: 100, qty: 5000 }]);
+    assert.equal(preview.basis, "PROPOSED_WO_QTY");
+    assert.equal(preview.rmReadiness.summary.proposedFgQty, 5000);
+    assert.equal(preview.rmReadiness.lines[0].requiredQty, 5000);
   });
 });

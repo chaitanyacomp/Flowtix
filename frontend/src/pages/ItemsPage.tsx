@@ -15,10 +15,6 @@ import { BulkDeleteConfirmModal } from "../components/masters/BulkDeleteConfirmM
 import { BULK_DELETE_IN_USE_TOAST, bulkDeleteByIds } from "../lib/masterBulkDelete";
 import { ItemStockStatusBadge } from "../components/erp/ItemStockStatusBadge";
 import { parseItemQtyStr } from "../lib/itemStockStatus";
-import {
-  computeDerivedLowStockLevel,
-  DEFAULT_RM_BUFFER_PERCENT_NEW,
-} from "../lib/inventoryHealth";
 import { ErpModal } from "../components/erp/ErpModal";
 
 type Item = {
@@ -104,15 +100,14 @@ export function ItemsPage() {
   const [name, setName] = React.useState("");
   const [unitId, setUnitId] = React.useState<number | "">("");
   const [legacyUnitText, setLegacyUnitText] = React.useState<string>("");
-  // Absolute quantities only (non-technical):
-  // - Minimum stock -> RED
-  // - Low stock level -> YELLOW
-  // - Target stock -> optional (planning hint)
+  // RM Stock Control: Minimum Stock (mandatory) + optional Target Stock.
+  // Low Stock Level / Buffer % are no longer Store-facing (derived internally when needed).
   const [minimumStock, setMinimumStock] = React.useState("");
   const [lowStockAlert, setLowStockAlert] = React.useState("");
   const [lowStockTouched, setLowStockTouched] = React.useState(false);
-  const [bufferPct, setBufferPct] = React.useState("25");
+  const [bufferPct, setBufferPct] = React.useState("");
   const [targetStock, setTargetStock] = React.useState("");
+  const [targetStockOpen, setTargetStockOpen] = React.useState(false);
   const [criticalCoveragePct, setCriticalCoveragePct] = React.useState("50");
   const [warningCoveragePct, setWarningCoveragePct] = React.useState("80");
   const [hsnCode, setHsnCode] = React.useState("");
@@ -126,51 +121,17 @@ export function ItemsPage() {
 
   const isRmStockForm = creatingType === "RM";
 
-  function bufferPercentForAutoCalc(): number {
-    const parsed = parseQtyStr(bufferPct);
-    if (parsed != null) return parsed;
-    return editingId != null ? 0 : DEFAULT_RM_BUFFER_PERCENT_NEW;
-  }
-
-  React.useEffect(() => {
-    // Auto-fill Low Stock from Minimum using buffer%, but only until user edits Low Stock manually.
-    if (!isRmStockForm || lowStockTouched) return;
-    const minVal = parseQtyStr(minimumStock);
-    if (minVal == null || minVal <= 0) return;
-    const suggested = computeDerivedLowStockLevel(minVal, bufferPercentForAutoCalc());
-    setLowStockAlert(String(suggested));
-  }, [minimumStock, bufferPct, lowStockTouched, isRmStockForm, editingId]);
-
   function quickFillDefaults() {
     // Only fill when empty; do not overwrite user-entered values.
     const minEmpty = minimumStock.trim() === "";
-    const bufEmpty = bufferPct.trim() === "";
-    const lowEmpty = lowStockAlert.trim() === "";
     const critEmpty = criticalCoveragePct.trim() === "";
     const warnEmpty = warningCoveragePct.trim() === "";
     const gstEmpty = gstRateStr.trim() === "";
 
-    const nextMin = minEmpty ? "0" : minimumStock;
-    const nextBuf =
-      bufEmpty && isRmStockForm
-        ? String(editingId != null ? 0 : DEFAULT_RM_BUFFER_PERCENT_NEW)
-        : bufferPct;
-
-    if (minEmpty) setMinimumStock("0");
-    if (bufEmpty && isRmStockForm) {
-      setBufferPct(editingId != null ? "0" : String(DEFAULT_RM_BUFFER_PERCENT_NEW));
-    }
-    if (critEmpty) setCriticalCoveragePct("50");
-    if (warnEmpty) setWarningCoveragePct("80");
+    if (minEmpty) setMinimumStock(isRmStockForm ? "" : "0");
+    if (critEmpty && !isRmStockForm) setCriticalCoveragePct("50");
+    if (warnEmpty && !isRmStockForm) setWarningCoveragePct("80");
     if (gstEmpty) setGstRateStr("18");
-
-    if (lowEmpty) {
-      const minVal = parseQtyStr(nextMin) ?? 0;
-      const bufVal = parseQtyStr(nextBuf) ?? (editingId != null ? 0 : DEFAULT_RM_BUFFER_PERCENT_NEW);
-      setLowStockAlert(String(computeDerivedLowStockLevel(minVal, bufVal)));
-      // Keep as auto-filled (not user-touched).
-      setLowStockTouched(false);
-    }
   }
 
   function focusNextField(fromEl: HTMLElement) {
@@ -231,8 +192,9 @@ export function ItemsPage() {
     setMinimumStock("");
     setLowStockAlert("");
     setLowStockTouched(false);
-    setBufferPct(type === "RM" ? String(DEFAULT_RM_BUFFER_PERCENT_NEW) : "");
+    setBufferPct("");
     setTargetStock("");
+    setTargetStockOpen(false);
     setCriticalCoveragePct("50");
     setWarningCoveragePct("80");
     setHsnCode("");
@@ -266,6 +228,7 @@ export function ItemsPage() {
     setGstRateStr(gr != null && String(gr).trim() !== "" ? String(gr) : "");
     setMinimumStock(i.minimumStockQty != null && String(i.minimumStockQty).trim() !== "" ? String(i.minimumStockQty) : "");
     setTargetStock(i.reorderQty != null && String(i.reorderQty).trim() !== "" ? String(i.reorderQty) : "");
+    setTargetStockOpen(Boolean(i.reorderQty != null && String(i.reorderQty).trim() !== "" && Number(i.reorderQty) > 0));
     setCriticalCoveragePct(i.redThresholdPercent != null && String(i.redThresholdPercent).trim() !== "" ? String(i.redThresholdPercent) : "50");
     setWarningCoveragePct(i.yellowThresholdPercent != null && String(i.yellowThresholdPercent).trim() !== "" ? String(i.yellowThresholdPercent) : "80");
     setFgManualGreenLevel(
@@ -297,7 +260,7 @@ export function ItemsPage() {
     }
     const lowTrim = lowStockAlert.trim();
     const lowNum = lowTrim === "" ? 0 : Number(lowTrim);
-    if (Number.isNaN(lowNum) || lowNum < 0) {
+    if (!isRmStockForm && (Number.isNaN(lowNum) || lowNum < 0)) {
       setError("Low Stock Level must be zero or a positive number");
       return;
     }
@@ -343,22 +306,29 @@ export function ItemsPage() {
     let criticalPctPayload: number | null | undefined;
     let warningPctPayload: number | null | undefined;
     let fgManualGreenLevelPayload: number | null | undefined;
+    let minStockLevelPayload = lowNum;
     try {
       minimumStockQtyPayload = parseOptionalQty(minimumStock);
       if (isRmStockForm) {
-        reorderQtyPayload = parseOptionalQty(targetStock);
-        const bufTrim = bufferPct.trim();
-        if (bufTrim === "") {
-          planningBufferPayload = editingId != null ? null : undefined;
-        } else {
-          const b = Number(bufTrim);
-          if (Number.isNaN(b) || b < 0) throw new Error("Buffer % must be a non-negative number");
-          if (b > 100) throw new Error("Buffer % cannot exceed 100");
-          planningBufferPayload = b;
+        if (minimumStockQtyPayload == null || !(minimumStockQtyPayload > 0)) {
+          throw new Error("Minimum Stock is mandatory for RM items");
         }
+        reorderQtyPayload = parseOptionalQty(targetStock);
+        if (
+          reorderQtyPayload != null &&
+          reorderQtyPayload > 0 &&
+          reorderQtyPayload < minimumStockQtyPayload
+        ) {
+          throw new Error("Target Stock must be greater than or equal to Minimum Stock");
+        }
+        // Internally align legacy low-stock column to minimum (UI no longer exposes Buffer / Low Stock).
+        minStockLevelPayload = minimumStockQtyPayload;
+        planningBufferPayload = editingId != null ? null : undefined;
       }
-      criticalPctPayload = parseCoveragePercent(criticalCoveragePct, "Critical coverage %");
-      warningPctPayload = parseCoveragePercent(warningCoveragePct, "Warning coverage %");
+      if (!isRmStockForm) {
+        criticalPctPayload = parseCoveragePercent(criticalCoveragePct, "Critical coverage %");
+        warningPctPayload = parseCoveragePercent(warningCoveragePct, "Warning coverage %");
+      }
       if (creatingType === "FG") {
         fgManualGreenLevelPayload = parseOptionalQty(fgManualGreenLevel);
       }
@@ -385,8 +355,8 @@ export function ItemsPage() {
           method: "PUT",
           body: JSON.stringify({
             itemName,
-            // Low stock level (YELLOW)
-            minStockLevel: lowNum,
+            // Legacy low-stock column: for RM, aligned to Minimum Stock (no separate Low Stock UI).
+            minStockLevel: minStockLevelPayload,
             hsnCode: hsnPayload,
             gstRate: gstRatePayload,
             // Minimum stock (RED) + Target stock (optional)
@@ -414,8 +384,8 @@ export function ItemsPage() {
             itemName,
             itemType: creatingType,
             unitId: unitIdPayload,
-            // Low stock level (YELLOW)
-            minStockLevel: lowNum,
+            // Legacy low-stock column: for RM, aligned to Minimum Stock (no separate Low Stock UI).
+            minStockLevel: minStockLevelPayload,
             // Tax info is required by backend; keep in collapsible UI but always send.
             ...(hsnPayload ? { hsnCode: hsnPayload } : {}),
             ...(gstRatePayload !== undefined ? { gstRate: gstRatePayload } : {}),
@@ -765,97 +735,84 @@ export function ItemsPage() {
                       {/* RIGHT: Stock Control + Planning Sensitivity */}
                       <div className="space-y-3">
                         <div className="rounded-md border border-slate-200 bg-white px-3 py-2">
-                          <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Stock Control</div>
+                          <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                            {isRmStockForm ? "RM Stock Control" : "Stock Control"}
+                          </div>
                           <div className="mt-2 grid gap-2.5">
-                            <div className="grid gap-2.5 sm:grid-cols-2">
-                              <div className="erp-form-field">
-                                <span className="erp-form-label">Minimum stock</span>
-                                <Input
-                                  type="number"
-                                  min={0}
-                                  step="any"
-                                  value={minimumStock}
-                                  onChange={(e) => setMinimumStock(e.target.value)}
-                                  placeholder="0"
-                                />
-                                <p className="mt-1 text-xs text-slate-500">Critical threshold — stock below this is urgent</p>
-                              </div>
-                              <div className="erp-form-field">
-                                <span className="erp-form-label">Low Stock Level</span>
-                                <Input
-                                  type="number"
-                                  min={0}
-                                  step="any"
-                                  value={lowStockAlert}
-                                  onChange={(e) => {
-                                    setLowStockAlert(e.target.value);
-                                    setLowStockTouched(true);
-                                  }}
-                                  placeholder="0"
-                                />
-                                <p className="mt-1 text-xs text-slate-500">
-                                  {isRmStockForm
-                                    ? "Auto-calculated warning level (or manual override)"
-                                    : "Optional warning level for on-hand visibility"}
-                                </p>
-                              </div>
-                            </div>
-
                             {isRmStockForm ? (
-                              <div className="grid gap-2.5 sm:grid-cols-2">
-                                <div className="erp-form-field">
-                                  <span className="erp-form-label">Buffer %</span>
-                                  <Input
-                                    type="number"
-                                    min={0}
-                                    max={200}
-                                    step="0.01"
-                                    value={bufferPct}
-                                    onChange={(e) => setBufferPct(e.target.value)}
-                                  />
-                                  <p className="mt-1 text-xs text-slate-500">
-                                    Warning buffer above minimum (0 = warning at minimum only)
-                                  </p>
-                                  {lowStockTouched ? (
-                                    <button
-                                      type="button"
-                                      className="mt-1 text-xs font-medium text-slate-700 underline underline-offset-4 hover:text-slate-900"
-                                      onClick={() => {
-                                        setLowStockTouched(false);
-                                        const minVal = parseQtyStr(minimumStock);
-                                        if (minVal == null || minVal <= 0) return;
-                                        setLowStockAlert(
-                                          String(
-                                            computeDerivedLowStockLevel(minVal, bufferPercentForAutoCalc()),
-                                          ),
-                                        );
-                                      }}
-                                    >
-                                      Reset to auto
-                                    </button>
-                                  ) : null}
-                                </div>
-                                <div className="erp-form-field">
-                                  <span className="erp-form-label">Target stock</span>
+                              <>
+                                <div className="erp-form-field max-w-xs">
+                                  <span className="erp-form-label">Minimum Stock</span>
                                   <Input
                                     type="number"
                                     min={0}
                                     step="any"
-                                    value={targetStock}
-                                    onChange={(e) => setTargetStock(e.target.value)}
-                                    placeholder="Optional"
+                                    value={minimumStock}
+                                    onChange={(e) => setMinimumStock(e.target.value)}
+                                    placeholder="Required"
+                                    required
                                   />
-                                  <p className="mt-1 text-xs text-slate-500">Replenishment planning hint (RM only)</p>
+                                  <p className="mt-1 text-xs text-slate-500">
+                                    Mandatory. Raise Replenishment Request when Current Stock falls below this level.
+                                  </p>
                                 </div>
-                              </div>
+                                <div className="rounded-md border border-dashed border-slate-200 bg-slate-50/80 px-2.5 py-2">
+                                  <button
+                                    type="button"
+                                    className="text-xs font-medium text-slate-700 underline underline-offset-4 hover:text-slate-900"
+                                    onClick={() => setTargetStockOpen((o) => !o)}
+                                  >
+                                    {targetStockOpen ? "Hide advanced" : "Advanced: Target Stock (optional)"}
+                                  </button>
+                                  {targetStockOpen ? (
+                                    <div className="erp-form-field mt-2 max-w-xs">
+                                      <span className="erp-form-label">Target Stock</span>
+                                      <Input
+                                        type="number"
+                                        min={0}
+                                        step="any"
+                                        value={targetStock}
+                                        onChange={(e) => setTargetStock(e.target.value)}
+                                        placeholder="Optional"
+                                      />
+                                      <p className="mt-1 text-xs text-slate-500">
+                                        When set, suggested purchase qty = Target − Current. Status “Low” applies
+                                        between Minimum and Target.
+                                      </p>
+                                    </div>
+                                  ) : null}
+                                </div>
+                              </>
                             ) : (
-                              <div className="space-y-2.5">
-                                <p className="text-xs text-slate-500">
-                                  Finished goods use simple on-hand thresholds — RM buffer % and purchase alerts do
-                                  not apply.
-                                </p>
+                              <div className="grid gap-2.5 sm:grid-cols-2">
+                                <div className="erp-form-field">
+                                  <span className="erp-form-label">Minimum stock</span>
+                                  <Input
+                                    type="number"
+                                    min={0}
+                                    step="any"
+                                    value={minimumStock}
+                                    onChange={(e) => setMinimumStock(e.target.value)}
+                                    placeholder="0"
+                                  />
+                                </div>
+                                <div className="erp-form-field">
+                                  <span className="erp-form-label">Low Stock Level</span>
+                                  <Input
+                                    type="number"
+                                    min={0}
+                                    step="any"
+                                    value={lowStockAlert}
+                                    onChange={(e) => {
+                                      setLowStockAlert(e.target.value);
+                                      setLowStockTouched(true);
+                                    }}
+                                    placeholder="0"
+                                  />
+                                  <p className="mt-1 text-xs text-slate-500">Optional warning level for on-hand visibility</p>
+                                </div>
                                 {creatingType === "FG" ? (
-                                  <div className="erp-form-field max-w-xs">
+                                  <div className="erp-form-field sm:col-span-2 max-w-xs">
                                     <span className="erp-form-label">Manual Green Level qty</span>
                                     <Input
                                       type="number"
@@ -865,10 +822,6 @@ export function ItemsPage() {
                                       onChange={(e) => setFgManualGreenLevel(e.target.value)}
                                       placeholder="From Excel at go-live"
                                     />
-                                    <p className="mt-1 text-xs text-slate-500">
-                                      Used when Admin Green Level source is Manual. Monthly Planning still shows
-                                      auto-suggested RS history for reference.
-                                    </p>
                                   </div>
                                 ) : null}
                               </div>
@@ -876,6 +829,7 @@ export function ItemsPage() {
                           </div>
                         </div>
 
+                        {!isRmStockForm ? (
                         <div className="rounded-md border border-slate-200 bg-white px-3 py-2">
                           <div className="flex items-center justify-between gap-2">
                             <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Planning Sensitivity</div>
@@ -918,6 +872,7 @@ export function ItemsPage() {
                             <div className="mt-1 text-xs text-slate-500">Optional settings</div>
                           )}
                         </div>
+                        ) : null}
                       </div>
                     </div>
 
@@ -934,9 +889,18 @@ export function ItemsPage() {
                                 <span>
                                   Minimum: <span className="tabular-nums font-semibold">{minVal ?? 0}</span>
                                 </span>
-                                <span>
-                                  Low: <span className="tabular-nums font-semibold">{lowVal ?? 0}</span>
-                                </span>
+                                {isRmStockForm ? (
+                                  <span>
+                                    Target:{" "}
+                                    <span className="tabular-nums font-semibold">
+                                      {parseQtyStr(targetStock) ?? "—"}
+                                    </span>
+                                  </span>
+                                ) : (
+                                  <span>
+                                    Low: <span className="tabular-nums font-semibold">{lowVal ?? 0}</span>
+                                  </span>
+                                )}
                                 <span>
                                   Current: <span className="tabular-nums font-semibold">{currentQty}</span>
                                 </span>
@@ -945,7 +909,8 @@ export function ItemsPage() {
                             <ItemStockStatusBadge
                               currentQty={currentQty}
                               minimumStockQty={minimumStock}
-                              minStockLevel={lowStockAlert}
+                              minStockLevel={isRmStockForm ? minimumStock : lowStockAlert}
+                              reorderQty={isRmStockForm ? targetStock : undefined}
                             />
                           </div>
                         </div>

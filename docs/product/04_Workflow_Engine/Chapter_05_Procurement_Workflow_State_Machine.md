@@ -6,7 +6,7 @@
 | **Volume** | 4 — Workflow Engine |
 | **Chapter** | 5 — Procurement Workflow State Machine |
 | **Title** | Procurement Workflow State Machine |
-| **Version** | 1.0.0 |
+| **Version** | 1.0.1 |
 | **Status** | Draft — Architecture Review |
 | **Effective date** | 2026-05-29 |
 | **Author** | FT ERP Product Team |
@@ -31,6 +31,7 @@
 | Version | Date | Author | Summary |
 |---------|------|--------|---------|
 | 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial Procurement domain State Machines and transition tables |
+| 1.0.1 | 2026-07-12 | FT ERP Product Team | STOCK_REPLENISHMENT flow via RM Stock Monitor Raise PR |
 
 **Supersedes:** None.
 
@@ -309,17 +310,18 @@ Guard order is **top-to-bottom**. First failure stops transition ([FT-PD-041](./
 
 ---
 
-### 7.3 STOCK_REPLENISHMENT procurement flow
+### 7.3 STOCK_REPLENISHMENT procurement flow (RM Stock Replenishment)
 
 | Stage | Actor | Document transition | Pool |
 |-------|-------|---------------------|------|
-| MR publish | Store (Planning) | Replenishment / ARR MR approved | `STOCK_REPLENISHMENT` |
-| PR create | **Store** (default) | `pr.create` | `STOCK_REPLENISHMENT` |
-| PR approve | Purchase (standard) | `pr.approve` | `STOCK_REPLENISHMENT` |
+| Monitor | Store | RM Stock Monitor — Current vs Minimum (Target optional for suggested qty only) | — |
+| Raise Replenishment Request | **Store** | APPROVED MR (`STOCK_REPLENISHMENT`) + Purchase Request (operator label; shared workflow) | `STOCK_REPLENISHMENT` |
 | PO create | Purchase | `po.create` | `STOCK_REPLENISHMENT` |
 | GRN post | Store | `grn.post` | `STOCK_REPLENISHMENT` |
 
 **Pending Actions:** `PRC_PR_REPLEN` → `PRC_PO_PREP` → `PRC_GRN_POST`.
+
+**Authoritative workbench:** Operations → **RM Stock Monitor**. Canonical source type remains `STOCK_REPLENISHMENT` (product name: RM Stock Replenishment). Independent of Regular SO and Monthly Planning / MPRS.
 
 **Rule:** Supplementary only — **cannot** substitute NO_QTY base MPRS demand ([PRC-16](../03_Domain_Specifications/Chapter_03_Procurement_Domain_Specification.md), [PLN-07](../03_Domain_Specifications/Chapter_02_Planning_Domain_Specification.md)).
 

@@ -6,7 +6,7 @@
 | **Volume** | 3 — Domain Specifications |
 | **Chapter** | 2 — Planning Domain Specification |
 | **Title** | Planning Domain Specification |
-| **Version** | 1.0.1 |
+| **Version** | 1.0.3 |
 | **Status** | Draft — Architecture Review |
 | **Effective date** | 2026-05-29 |
 | **Author** | FT ERP Product Team |
@@ -31,6 +31,8 @@
 |---------|------|--------|---------|
 | 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial Planning domain — REGULAR and NO_QTY documents, states, logic |
 | 1.0.1 | 2026-07-10 | FT ERP Product Team | PLN-19 — Additional Plan source-identity coverage (RS/cycle/component); pending QC excluded |
+| 1.0.2 | 2026-07-12 | FT ERP Product Team | §7.2 — late PRODUCTION_SHORTFALL draft RS synchronization |
+| 1.0.3 | 2026-07-12 | FT ERP Product Team | §7.7 — Suggested WO = min(RS balance, RM capacity); multi-WO RS remains open |
 
 **Supersedes:** None.
 
@@ -351,6 +353,12 @@ Rolls unmet or partially met cycle/period intent into current planning view **wi
 
 **Validation:** Carry forward qty ≤ prior cycle unfulfilled balance; audit link to source cycle.
 
+**Authoritative persistence:** `CarryForwardPending` (recovery source) + `RecoveryAllocation` (RS reservation/commit). RS line fields `productionShortfallQty` / `qcRejectionRecoveryQty` / `totalRsQty` are **derived snapshots**, not a second queue.
+
+**Late arrival / draft synchronization (PRODUCTION_SHORTFALL):** A next-cycle draft Requirement Sheet may already exist when a prior-cycle Work Order later closes with production shortfall. The editable next draft **SHALL** be continuously synchronized with available `PRODUCTION_SHORTFALL` recovery via the canonical `syncDraftRsWithAvailableRecovery` path (create, draft edit/recalculate/refresh, lock, and immediately after shortfall source creation when an eligible draft exists). Missing products are auto-created as **carry-forward-only** RS lines (customer / base demand = 0). Customer demand remains editable; production shortfall qty is system-generated and read-only. If no eligible draft exists, recovery remains OPEN for the normal Create Next RS flow. **QC_FINAL_REJECTION** allocation policy is unchanged (manual allocate on draft RS).
+
+**Pending Actions:** Store inbox may suppress separate “production shortfall awaiting next RS” CTAs when Create Next RS is eligible or a next-cycle draft exists ([FT-PD-040](../04_Workflow_Engine/Chapter_01_Workflow_Engine_Overview_and_Pending_Actions_Contract.md) §7.9). That suppression is valid **only because** the draft is kept synchronized with available production-shortfall recovery.
+
 ### 7.3 Additional Planning
 
 **Applies:** NO_QTY.
@@ -417,7 +425,13 @@ Post-freeze NO_QTY procurement uses snapshot lines at RM release—not live repl
 | **REGULAR** | `min(remaining ISO line qty, RM-readiness-constrained FG capacity)` |
 | **NO_QTY** | `min(RS line placement balance, RM-readiness-constrained FG capacity, policy limits)` |
 
-Partial RM → proportional reduction. Multiple placement waves allowed. Suggestion is advisory; Store confirms on WO create.
+**RM-limited capacity** is the minimum producible FG quantity across every required BOM RM item, using canonical free/uncommitted stock (not open PO / unposted GRN). Incoming procurement is informational only.
+
+**Placement balance** = Total RS requirement − Total active WO planned quantity. Material Issue, Production, QC, rejection, and Dispatch **do not** reduce placement balance. WO cancel restores balance per canonical lifecycle rules. Production completed short does **not** reopen placement balance; shortfall uses the carry-forward architecture.
+
+Partial RM → proportional / capacity-capped suggestion. **Multiple Work Orders** may be placed from one locked RS while balance > 0 (or until authorised remaining-balance waiver/closure). Creating one WO **must not** close or hide the RS Work Order Planning workspace. Each WO may proceed independently to Material Issue and Production.
+
+**RM Detail** on the planning surface **SHALL** calculate required / available / shortage for the **proposed / suggested WO quantity**, not the full remaining RS requirement. Suggestion is advisory; Store confirms on WO create. Transactional revalidation during create prevents stale suggestions.
 
 ---
 

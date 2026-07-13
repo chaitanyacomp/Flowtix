@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 
 const {
   normalizePeriodKey,
+  getCurrentPeriodKey,
   getMonthlyPlanByPeriod,
   createMonthlyPlan,
   getProductionLines,
@@ -14,6 +15,14 @@ const {
   MonthlyPlanningError,
 } = require("../../src/services/monthlyPlanningService");
 const { readBoolEnv, isMonthlyPlanningEnabled } = require("../../src/config/featureFlags");
+
+/**
+ * Deterministic, evergreen planning period for guarded write/lock paths.
+ * Past periods are read-only (assertPeriodWriteAllowed), so fixtures must target
+ * the current calendar month, computed at run time so the suite never fails at a
+ * month boundary. The past-period guard itself is exercised in monthlyPlanningPeriodUtils.
+ */
+const CURRENT_PERIOD = getCurrentPeriodKey();
 
 /**
  * Mock Prisma-like db. Supports the small surface the Phase 1 service uses:
@@ -88,9 +97,9 @@ describe("monthlyPlanningService.normalizePeriodKey", () => {
 describe("monthlyPlanningService.createMonthlyPlan", () => {
   it("creates a DRAFT plan at revision 0 with a docNo and empty lines", async () => {
     const db = createMockDb({ existingPlan: null });
-    const res = await createMonthlyPlan({ db, period: "2026-06", actorUserId: 7 });
+    const res = await createMonthlyPlan({ db, period: CURRENT_PERIOD, actorUserId: 7 });
     assert.equal(res.exists, true);
-    assert.equal(res.plan.periodKey, "2026-06");
+    assert.equal(res.plan.periodKey, CURRENT_PERIOD);
     assert.equal(res.plan.status, "DRAFT");
     assert.equal(res.plan.currentRevision, 0);
     assert.equal(res.plan.createdByUserId, 7);
@@ -101,10 +110,10 @@ describe("monthlyPlanningService.createMonthlyPlan", () => {
 
   it("blocks create when the period already has an active draft", async () => {
     const db = createMockDb({
-      existingPlans: [{ id: 5, periodKey: "2026-06", status: "DRAFT", planSequenceNo: 1 }],
+      existingPlans: [{ id: 5, periodKey: CURRENT_PERIOD, status: "DRAFT", planSequenceNo: 1 }],
     });
     await assert.rejects(
-      () => createMonthlyPlan({ db, period: "2026-06", actorUserId: 7 }),
+      () => createMonthlyPlan({ db, period: CURRENT_PERIOD, actorUserId: 7 }),
       (e) => e instanceof MonthlyPlanningError && e.code === "ACTIVE_PLAN_EXISTS" && e.httpStatus === 409,
     );
   });
@@ -586,7 +595,7 @@ function createLockMockDb({
   monthlyPlanMrLines = [],
 } = {}) {
   const state = {
-    plan: { id: 1, status, currentRevision, periodKey: "2026-06", lockedAt: null },
+    plan: { id: 1, status, currentRevision, periodKey: CURRENT_PERIOD, lockedAt: null },
     rmPlans: [], // { id, planId, revision, totalFgPlannedQty, recalculatedAt }
     rmPlanLines: [], // includes rmPlanId
     revisionLines: [], // FG snapshot lines

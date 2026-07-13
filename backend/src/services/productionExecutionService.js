@@ -731,6 +731,18 @@ async function finishProductionExecution(tx, workOrderId, input, { actorUserId, 
     });
   }
 
+  // Late CF: if a next-cycle draft RS already exists, sync PRODUCTION_SHORTFALL immediately.
+  let draftRsSync = null;
+  if (carryForwardRecords.length) {
+    const { syncEligibleDraftRsAfterProductionShortfallCreated } = require("./noQtyRsRecoveryIntegrationService");
+    draftRsSync = await syncEligibleDraftRsAfterProductionShortfallCreated(tx, {
+      salesOrderId: wo.salesOrderId,
+      excludeRequirementSheetIds: wo.requirementSheetId != null ? [wo.requirementSheetId] : [],
+      actorUserId,
+      actorRole,
+    });
+  }
+
   await reconcileWorkOrderStatusFromProduction(tx, workOrderId, {
     actorUserId,
     actorRole,
@@ -746,6 +758,7 @@ async function finishProductionExecution(tx, workOrderId, input, { actorUserId, 
     }),
     outcome: effectiveShortfallOutcome,
     carryForwardPending: carryForwardRecords,
+    draftRsSync,
     successMessage: buildFinishSuccessMessage(
       wo.docNo,
       workOrderId,

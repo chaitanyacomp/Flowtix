@@ -24,6 +24,16 @@ const { loadNoQtyCycleQcAcceptedMap } = require("../routes/dispatch");
 
 const NO_QTY_WORKFLOW_EPS = 1e-6;
 
+// ADR-2026-001 (execution axis): Work Order statuses that can still produce.
+// Terminal statuses (COMPLETED, CLOSED_WITH_SHORTFALL, REJECTED, cancelled) contribute
+// zero executable remaining — a shortfall-closed WO is recovery demand, not production.
+const ACTIVE_WO_STATUSES = Object.freeze(["PENDING", "IN_PROGRESS", "HOLD", "PAUSED"]);
+const TERMINAL_WO_STATUSES = Object.freeze(["COMPLETED", "CLOSED_WITH_SHORTFALL", "REJECTED", "CANCELLED"]);
+
+function isActiveWoStatus(status) {
+  return ACTIVE_WO_STATUSES.includes(String(status ?? "").toUpperCase());
+}
+
 const { assessNoQtyPlacementStageForCycle, noQtyPlacementStageWorkflowHint } = require("./requirementSheetExecutionService");
 
 const ACTION_LABELS = Object.freeze({
@@ -463,7 +473,7 @@ async function resolveNoQtyWorkflowStateImpl(db, input) {
       },
       include: {
         qcEntries: { where: QC_ENTRY_ACTIVE_WHERE },
-        workOrderLine: { select: { plannedQty: true, qty: true } },
+        workOrderLine: { select: { plannedQty: true, qty: true, workOrderId: true } },
       },
     }),
     db.qcRejectedDisposition.count({
@@ -509,6 +519,8 @@ async function resolveNoQtyWorkflowStateImpl(db, input) {
       if (Number.isFinite(linePlan) && linePlan > 0) plannedQty += linePlan;
     }
   }
+  // Approved production attributed per Work Order (execution axis, ADR-2026-001).
+  const producedByWoId = new Map();
   for (const pe of productionRows || []) {
     const producedQty = Number(pe.producedQty ?? 0);
     const acceptedQty = sumActiveQcAcceptedQty(pe.qcEntries || []);
@@ -516,18 +528,43 @@ async function resolveNoQtyWorkflowStateImpl(db, input) {
     const pendingQty = getProductionBatchQcPendingQty(producedQty, acceptedQty, rejectedQty);
     approvedProducedQty += Number.isFinite(producedQty) ? producedQty : 0;
     qcAcceptedQty += Number.isFinite(acceptedQty) ? acceptedQty : 0;
+    const peWoId = Number(pe.workOrderLine?.workOrderId ?? 0);
+    if (peWoId > 0 && Number.isFinite(producedQty)) {
+      producedByWoId.set(peWoId, (producedByWoId.get(peWoId) ?? 0) + producedQty);
+    }
     if (pendingQty > NO_QTY_WORKFLOW_EPS && acceptedQty <= NO_QTY_WORKFLOW_EPS && rejectedQty <= NO_QTY_WORKFLOW_EPS) {
       qcPendingForCycle = true;
     }
   }
 
+  // Execution axis: production is "required" only for ACTIVE WOs with remaining planned qty.
+  // Terminal WOs (incl. CLOSED_WITH_SHORTFALL) contribute zero — their gap is recovery demand,
+  // not executable production. NEXT_RS must never outrank this (ADR-2026-001 §12–§13).
+  let activeProductionRemainingQty = 0;
+  let activeWoProductionPending = false;
+  for (const wo of workOrders || []) {
+    if (!isActiveWoStatus(wo.status)) continue;
+    let woPlanned = 0;
+    for (const line of wo.lines || []) {
+      woPlanned += Math.max(Number(line.plannedQty ?? 0), Number(line.qty ?? 0));
+    }
+    const woProduced = producedByWoId.get(Number(wo.id)) ?? 0;
+    const woRemaining = Math.max(0, woPlanned - woProduced);
+    if (woRemaining > NO_QTY_WORKFLOW_EPS) {
+      activeProductionRemainingQty += woRemaining;
+      activeWoProductionPending = true;
+    }
+  }
+
   const { hasQcAcceptedUndispatched, dispatchableQty } = await loadNoQtyDispatchableFacts(db, soId, cycleId);
   const productionRemainingQty = Math.max(0, plannedQty - approvedProducedQty);
+  // Only a carry-forward shortage remains when NO active WO still needs production
+  // (terminal/shortfall WOs excluded). Do NOT use productionExists as a completion proxy.
   const carryForwardShortageOnly =
     createNextRs.eligible &&
     !qcPendingForCycle &&
     pendingDispositionCount <= 0 &&
-    (productionExists || productionRemainingQty <= NO_QTY_WORKFLOW_EPS);
+    !activeWoProductionPending;
 
   const secondary = [];
   const optional = [];
@@ -541,6 +578,12 @@ async function resolveNoQtyWorkflowStateImpl(db, input) {
   } else if (pendingDispositionCount > 0) {
     primaryAction = "QC";
     blockedReasons.push("REWORK_OR_HOLD_PENDING");
+  } else if (activeWoProductionPending) {
+    // Execution axis: an active WO still requires production. This outranks DISPATCH and
+    // NEXT_RS (ADR-2026-001 §13). NEXT_RS is added below as a parallel Store planning action;
+    // dispatch of already-accepted FG stays available as a secondary action.
+    primaryAction = "PRODUCTION";
+    if (hasQcAcceptedUndispatched || dispatchableQty > NO_QTY_WORKFLOW_EPS) secondary.push("DISPATCH");
   } else if (createNextRs.eligible && carryForwardShortageOnly) {
     primaryAction = "NEXT_RS";
     if (productionRemainingQty > NO_QTY_WORKFLOW_EPS) optional.push("PRODUCTION");
@@ -624,6 +667,8 @@ async function resolveNoQtyWorkflowStateImpl(db, input) {
     hasQcDispatchPending: hasQcAcceptedUndispatched,
     dispatchableQty,
     productionRemainingQty,
+    activeWoProductionPending,
+    activeProductionRemainingQty,
     approvedProducedQty,
     qcAcceptedQty,
     carryForwardShortageOnly,

@@ -34,9 +34,12 @@ describe("RequirementSheetPage workbench actions (FT-PD-066)", () => {
 
 describe("RequirementSheetNoQtyGrid headings", () => {
   it("keeps corrected qty column headings", () => {
-    expect(gridSource).toContain("Current requirement");
-    expect(gridSource).toContain("Prior shortfall");
-    expect(gridSource).toContain("Total to produce");
+    // Headings renamed to canonical NO_QTY business terms (WO Planning Workspace UI/UX
+    // redesign) — kept in sync with the DetailMetric labels in the same component.
+    expect(gridSource).toContain("Customer Demand");
+    expect(gridSource).toContain("Production Shortfall Carry Forward");
+    expect(gridSource).toContain("QC recovery");
+    expect(gridSource).toContain("Total RS Quantity");
     expect(gridSource).toContain("Pending QC");
     expect(gridSource).toContain("Hold / rework");
     expect(gridSource).toContain("Usable FG");

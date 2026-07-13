@@ -1,60 +1,64 @@
 import { describe, expect, it } from "vitest";
 import {
-  getRmStockPlanningRowStatus,
-  hasReplenishmentShortage,
-  isReplenishmentInProgress,
+  canRaisePurchaseRequestForRow,
+  isRowCheckboxEnabled,
   isRowOrderQtyLocked,
   isRowSelectableForReplenishmentMr,
-  isStockSufficientRow,
-  REPLENISHMENT_IN_PROGRESS_LABEL,
-  STOCK_SUFFICIENT_LABEL,
 } from "../../src/lib/rmStockPlanningUx";
 
 describe("rmStockPlanningUx", () => {
-  it("treats pending replenishment with zero shortage as in progress", () => {
-    expect(
-      isReplenishmentInProgress({ pendingReplenishmentQty: 500, shortageQty: 0 }),
-    ).toBe(true);
-    expect(getRmStockPlanningRowStatus({ pendingReplenishmentQty: 500, shortageQty: 0 })).toBe(
-      REPLENISHMENT_IN_PROGRESS_LABEL,
-    );
-  });
-
-  it("locks order qty when shortage is zero after GRN", () => {
+  it("locks healthy rows (Current >= Minimum) — not selectable", () => {
     const row = {
-      pendingReplenishmentQty: 0,
-      shortageQty: 0,
+      currentStock: 600,
       usableStock: 600,
       minimumStockQty: 500,
+      suggestedPurchaseQty: 0,
+      canRaisePurchaseRequest: false,
+      monitorStatus: "HEALTHY" as const,
     };
     expect(isRowOrderQtyLocked(row)).toBe(true);
-    expect(isStockSufficientRow(row)).toBe(true);
-    expect(getRmStockPlanningRowStatus(row)).toBe(STOCK_SUFFICIENT_LABEL);
+    expect(isRowCheckboxEnabled(row)).toBe(false);
     expect(isRowSelectableForReplenishmentMr(row, 100)).toBe(false);
   });
 
-  it("allows selection when shortage remains despite pending replenishment", () => {
-    expect(
-      isReplenishmentInProgress({ pendingReplenishmentQty: 100, shortageQty: 50 }),
-    ).toBe(false);
-    expect(isRowSelectableForReplenishmentMr({ pendingReplenishmentQty: 100, shortageQty: 50 }, 50)).toBe(true);
-    expect(hasReplenishmentShortage({ pendingReplenishmentQty: 100, shortageQty: 50 })).toBe(true);
+  it("enables checkbox only for eligible below-minimum rows with gap", () => {
+    const row = {
+      currentStock: 40,
+      minimumStockQty: 50,
+      suggestedPurchaseQty: 10,
+      canRaisePurchaseRequest: true,
+      eligibleForRequest: true,
+      monitorStatus: "BELOW_MINIMUM" as const,
+    };
+    expect(isRowCheckboxEnabled(row)).toBe(true);
+    expect(isRowSelectableForReplenishmentMr(row, 10)).toBe(true);
+    expect(isRowSelectableForReplenishmentMr(row, 0)).toBe(false);
   });
 
-  it("blocks selection for in-progress rows even with positive order qty", () => {
-    expect(
-      isRowSelectableForReplenishmentMr({ pendingReplenishmentQty: 200, shortageQty: 0 }, 100),
-    ).toBe(false);
+  it("blocks selection when open replenishment covers the gap", () => {
+    const row = {
+      currentStock: 40,
+      minimumStockQty: 50,
+      openStockReplenishmentQty: 60,
+      suggestedPurchaseQty: 0,
+      canRaisePurchaseRequest: false,
+      monitorStatus: "BELOW_MINIMUM" as const,
+    };
+    expect(canRaisePurchaseRequestForRow(row)).toBe(false);
+    expect(isRowCheckboxEnabled(row)).toBe(false);
   });
 
-  it("allows shortage items without pending replenishment", () => {
+  it("requires positive request qty even when eligible", () => {
     expect(
-      isReplenishmentInProgress({ pendingReplenishmentQty: 0, shortageQty: 80 }),
+      isRowSelectableForReplenishmentMr(
+        {
+          currentStock: 40,
+          minimumStockQty: 50,
+          suggestedPurchaseQty: 10,
+          canRaisePurchaseRequest: true,
+        },
+        0,
+      ),
     ).toBe(false);
-    expect(isRowSelectableForReplenishmentMr({ pendingReplenishmentQty: 0, shortageQty: 80 }, 80)).toBe(true);
-  });
-
-  it("requires positive order qty even when shortage exists", () => {
-    expect(isRowSelectableForReplenishmentMr({ pendingReplenishmentQty: 0, shortageQty: 80 }, 0)).toBe(false);
   });
 });

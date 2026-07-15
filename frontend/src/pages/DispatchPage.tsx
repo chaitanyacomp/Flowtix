@@ -196,6 +196,8 @@ type LineStat = {
   postCycleApprovalQty?: number;
   dispatchable: number;
   dispatchableQty?: number;
+  excessAcceptedFgQty?: number;
+  excessAcceptedFgNote?: string | null;
   // NO_QTY cycle-cap fields (present only when SO.orderType === "NO_QTY")
   cycleCap?: number;
   cycleDispatchedQty?: number;
@@ -427,12 +429,16 @@ function noQtyDispatchNextActionMessage(params: {
     safeNum(ls.cycleRecheckAcceptedQty ?? 0) +
     safeNum(ls.postCycleApprovalQty ?? 0);
   const stock = safeNum(ls.usableQcPassedStock ?? ls.onHand ?? ls.totalStock);
+  const soBalance = safeNum(ls.soRemainingDemandQty);
   const lastShort = safeNum(ls.lastShortageQty);
 
   if (existingDraftQty > NO_QTY_BLOCK_EPS && headroomToPrepare <= NO_QTY_BLOCK_EPS) {
     return "Dispatch draft is ready — use Finalize Dispatch to post stock.";
   }
   if (qcCycle > NO_QTY_BLOCK_EPS) {
+    if (soBalance <= NO_QTY_BLOCK_EPS && stock > NO_QTY_BLOCK_EPS) {
+      return ls.excessAcceptedFgNote ?? `${fmtDispatchQty(stock)} excess accepted FG will remain in stock and may be applied to the next cycle.`;
+    }
     return "QC-accepted quantity for this cycle is fully dispatched (same-cycle basis).";
   }
   if (stock <= NO_QTY_BLOCK_EPS) {
@@ -586,14 +592,9 @@ function computeNoQtyAutoReadyQty(params: { so: SoRow; ls: LineStat }): number {
   return readOriginalReadyQty(params.ls);
 }
 
-/** NO_QTY only: informational cycle QC pool (workbench breakdown — not operational dispatch qty). */
+/** NO_QTY cycle dispatchable: preserve the authoritative backend value, including numeric zero. */
 function computeNoQtyCycleHeadroom(params: { ls: LineStat }): number {
-  const { ls } = params;
-  const net = safeNum(ls.operationalNetDispatchedQty ?? ls.cycleDispatchedQty ?? 0);
-  const qc = safeNum(ls.cycleQcAcceptedQty ?? ls.qcAccepted ?? 0);
-  const recheck = safeNum(ls.cycleRecheckAcceptedQty ?? 0);
-  const post = safeNum(ls.postCycleApprovalQty ?? 0);
-  return Math.max(0, qc + recheck + post - net);
+  return readRemainingDispatchableQty(params.ls);
 }
 
 function noQtyFreeUsableStockForItem(so: SoRow, itemId: number, usableStock: number): number {
@@ -996,6 +997,11 @@ function DispatchAvailabilityStrip({
             </p>
           </div>
         </dl>
+        {line.excessAcceptedFgNote ? (
+          <p className="mt-2 rounded border border-teal-200 bg-teal-50 px-2 py-1.5 text-[11px] font-medium text-teal-950">
+            {line.excessAcceptedFgNote}
+          </p>
+        ) : null}
         {readyToShip <= NO_QTY_BLOCK_EPS && noQtyNextAction ? (
           <p className="mt-2 rounded border border-slate-200 bg-slate-50/90 px-2 py-1.5 text-[11px] leading-snug text-slate-700">
             {noQtyNextAction}
@@ -1432,6 +1438,69 @@ export function DispatchPage() {
   const [salesBillStepDispatchId, setSalesBillStepDispatchId] = React.useState<number | null>(null);
   /** When prepared-draft card is shown, open-lines queue starts collapsed. */
   const [showOpenLinesQueue, setShowOpenLinesQueue] = React.useState(false);
+  /** Active Customer Delivery Locations for the selected SO customer. */
+  const [deliveryLocations, setDeliveryLocations] = React.useState<
+    Array<{
+      id: number;
+      locationLabel: string;
+      label?: string;
+      address?: string | null;
+      city?: string | null;
+      stateName?: string | null;
+      pincode?: string | null;
+      gstin?: string | null;
+      contactPerson?: string | null;
+      phone?: string | null;
+      isDefault?: boolean;
+    }>
+  >([]);
+  const [deliveryLocationId, setDeliveryLocationId] = React.useState<number | null>(null);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    async function loadDeliveryLocations() {
+      if (!soId || soId <= 0) {
+        setDeliveryLocations([]);
+        setDeliveryLocationId(null);
+        return;
+      }
+      try {
+        const res = await apiFetch<{
+          customerId: number | null;
+          deliveryLocations: Array<{
+            id: number;
+            locationLabel: string;
+            label?: string;
+            address?: string | null;
+            city?: string | null;
+            stateName?: string | null;
+            pincode?: string | null;
+            gstin?: string | null;
+            contactPerson?: string | null;
+            phone?: string | null;
+            isDefault?: boolean;
+          }>;
+          defaultDeliveryLocationId: number | null;
+        }>(`/api/dispatch/delivery-locations?soId=${soId}`);
+        if (cancelled) return;
+        const locs = Array.isArray(res?.deliveryLocations) ? res.deliveryLocations : [];
+        setDeliveryLocations(locs);
+        setDeliveryLocationId((prev) => {
+          if (prev != null && locs.some((l) => l.id === prev)) return prev;
+          return res?.defaultDeliveryLocationId ?? locs.find((l) => l.isDefault)?.id ?? locs[0]?.id ?? null;
+        });
+      } catch {
+        if (!cancelled) {
+          setDeliveryLocations([]);
+          setDeliveryLocationId(null);
+        }
+      }
+    }
+    void loadDeliveryLocations();
+    return () => {
+      cancelled = true;
+    };
+  }, [soId]);
 
   async function openDraftById(dispatchId: number) {
     const id = Number(dispatchId);
@@ -1450,11 +1519,16 @@ export function DispatchPage() {
         cycleId: number | null;
         qty: string;
         salesOrderLineId: number | null;
+        deliveryLocationId?: number | null;
       }>(`/api/dispatch/dispatches/${id}`);
 
       if (!draft || draft.workflowStatus !== "UNLOCKED") {
         toast.showError("Could not reopen this dispatch draft.");
         return;
+      }
+
+      if (draft.deliveryLocationId != null && Number(draft.deliveryLocationId) > 0) {
+        setDeliveryLocationId(Number(draft.deliveryLocationId));
       }
 
       // Baseline reopen: load the draft context without entering a dedicated “reopened draft mode”.
@@ -1790,6 +1864,54 @@ export function DispatchPage() {
   }, [fromNoQtySo, fromDashboard, focusSoIdValid, focusSoId, selectedSo, focusItemId, focusItemIdValid, salesOrderLineId]);
   // Read-only when SO is completed/closed, or when the signed-in role cannot post dispatch (e.g. Accounts).
   const dispatchReadOnly = Boolean(selectedSo?.dispatchReadOnly) || !canDispatchWrite;
+
+  const selectedDeliveryLocation = React.useMemo(
+    () => deliveryLocations.find((l) => l.id === deliveryLocationId) ?? null,
+    [deliveryLocations, deliveryLocationId],
+  );
+
+  const deliveryLocationSelectEl =
+    deliveryLocations.length > 0 ? (
+      <div className="erp-form-field min-w-0" data-testid="dispatch-delivery-location">
+        <span className="text-[10px] font-medium text-slate-600">Delivery location</span>
+        <select
+          className={cn(
+            "mt-0.5 h-9 w-full min-w-[10rem] rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-900",
+            operatorInputClass,
+          )}
+          value={deliveryLocationId ?? ""}
+          disabled={dispatchReadOnly}
+          onChange={(e) => {
+            const n = Number(e.target.value);
+            setDeliveryLocationId(Number.isFinite(n) && n > 0 ? n : null);
+          }}
+          aria-label="Delivery location"
+        >
+          {deliveryLocations.map((loc) => (
+            <option key={loc.id} value={loc.id}>
+              {loc.locationLabel || loc.label || `Location ${loc.id}`}
+              {loc.isDefault ? " (default)" : ""}
+            </option>
+          ))}
+        </select>
+        {selectedDeliveryLocation ? (
+          <p className="mt-1 text-[11px] leading-snug text-slate-600">
+            {[
+              selectedDeliveryLocation.address,
+              selectedDeliveryLocation.city,
+              selectedDeliveryLocation.stateName,
+              selectedDeliveryLocation.pincode,
+            ]
+              .filter(Boolean)
+              .join(", ")}
+            {selectedDeliveryLocation.gstin ? ` · GSTIN ${selectedDeliveryLocation.gstin}` : ""}
+            {selectedDeliveryLocation.contactPerson || selectedDeliveryLocation.phone
+              ? ` · ${[selectedDeliveryLocation.contactPerson, selectedDeliveryLocation.phone].filter(Boolean).join(" / ")}`
+              : ""}
+          </p>
+        ) : null}
+      </div>
+    ) : null;
 
   React.useEffect(() => {
     setNoQtySelectedCycleId(null);
@@ -2170,6 +2292,15 @@ export function DispatchPage() {
         })
       : (so.lineStats ?? []).filter((l) => isDispatchOpenListLineCandidate(l, so.orderType));
     if (!selectable.length) {
+      if (fromScopedSo && focusSoIdValid && Number(so.id) === Number(focusSoId) && isNoQty) {
+        // Keep the focused zero-dispatchable line visible as informational excess-stock context.
+        // It remains excluded from actionable queues and cannot prefill/save a dispatch draft.
+        if (salesOrderLineId === 0 && (so.lineStats || []).length > 0) {
+          setSalesOrderLineId(so.lineStats[0].lineId);
+        }
+        resetDispatchQty();
+        return;
+      }
       // Keep SO/FG selection when a prepared draft was reopened from history — finalize path even if headroom shows 0.
       if (
         reopenedPreparedDraft &&
@@ -2191,7 +2322,7 @@ export function DispatchPage() {
       setSalesOrderLineId(0);
       resetDispatchQty();
     }
-  }, [soId, displayRows, salesOrderLineId, resetDispatchQty, reopenedPreparedDraft, draftDispatchId, dispatchCompactMode]);
+  }, [soId, displayRows, salesOrderLineId, resetDispatchQty, reopenedPreparedDraft, draftDispatchId, dispatchCompactMode, fromScopedSo, focusSoIdValid, focusSoId]);
 
   const allLines = selectedSo?.lineStats ?? [];
   /** Regular SO: confirmed backlog (`pendingDispatchQty` > 0). NO_QTY: all cycle / FG lines so reasons stay visible at 0 dispatchable. */
@@ -3033,8 +3164,19 @@ export function DispatchPage() {
     try {
       const dispatchBody =
         selectedSo?.orderType === "NO_QTY"
-          ? { soId, itemId: currentLine.itemId, dispatchedQty: dispatchQtyParsed, autoAllocateAcrossCycles: true }
-          : { soId, itemId: currentLine.itemId, dispatchedQty: dispatchQtyParsed };
+          ? {
+              soId,
+              itemId: currentLine.itemId,
+              dispatchedQty: dispatchQtyParsed,
+              autoAllocateAcrossCycles: true,
+              ...(deliveryLocationId != null ? { deliveryLocationId } : {}),
+            }
+          : {
+              soId,
+              itemId: currentLine.itemId,
+              dispatchedQty: dispatchQtyParsed,
+              ...(deliveryLocationId != null ? { deliveryLocationId } : {}),
+            };
       const prepRes = await apiFetch<{
         allocation?: { cycleNo: number; qty: number | string }[];
         autoAllocated?: boolean;
@@ -3454,37 +3596,51 @@ export function DispatchPage() {
     return filtered.length ? filtered : null;
   }, [fromNoQtySo, displayRows]);
 
-  const guidedNoQtyRequested = fromNoQtySo && focusSoIdValid && focusItemIdValid && focusCycleIdValid;
+  const guidedNoQtyRequested = fromNoQtySo && focusSoIdValid;
   const guidedNoQtyCanResolve =
     guidedNoQtyRequested &&
     selectedSo?.id === focusSoId &&
     selectedSo?.orderType === "NO_QTY" &&
-    (selectedSo?.lineStats ?? []).some((l) => Number(l.itemId) === Number(focusItemId)) &&
+    (focusItemIdValid
+      ? (selectedSo?.lineStats ?? []).some((l) => Number(l.itemId) === Number(focusItemId))
+      : true) &&
     (noQtyCyclesLoading
       ? true
-      : noQtyStrictCycleGuidance
+      : focusCycleIdValid && noQtyStrictCycleGuidance
         ? noQtyCycles.some((c) => c.cycleId === focusCycleId)
-        : noQtyCycles.length > 0);
+        : true);
   const guidedNoQtyResolved =
     guidedNoQtyCanResolve &&
-    currentLine?.itemId != null &&
-    Number(currentLine.itemId) === Number(focusItemId) &&
-    (!noQtyStrictCycleGuidance || normalizePositiveCycleId(noQtySelectedCycleId) === Number(focusCycleId));
+    (focusItemIdValid
+      ? currentLine?.itemId != null && Number(currentLine.itemId) === Number(focusItemId)
+      : true) &&
+    (!noQtyStrictCycleGuidance ||
+      !focusCycleIdValid ||
+      normalizePositiveCycleId(noQtySelectedCycleId) === Number(focusCycleId));
   const guidedNoQtyLockUi = guidedNoQtyCanResolve && !reopenedPreparedDraftMode;
 
   // Guided NO_QTY: make sure ledger includes the current cycle context (ignore date filters),
   // so the operator doesn't have to hunt for finalize/billing actions.
   React.useEffect(() => {
     if (!guidedNoQtyResolved) return;
-    void loadLedger({ soId: focusSoId, cycleId: focusCycleId, ignoreDateFilters: true });
+    const cycleForLedger = focusCycleIdValid
+      ? focusCycleId
+      : normalizePositiveCycleId(noQtySelectedCycleId);
+    void loadLedger({
+      soId: focusSoId,
+      cycleId: cycleForLedger ?? undefined,
+      ignoreDateFilters: true,
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [guidedNoQtyResolved, focusSoId, focusCycleId]);
+  }, [guidedNoQtyResolved, focusSoId, focusCycleId, focusCycleIdValid, noQtySelectedCycleId]);
 
   const guidedTopRef = React.useRef<HTMLDivElement | null>(null);
 
   const guidedLedgerContext = React.useMemo(() => {
     if (!guidedNoQtyResolved || !selectedSo || !currentLine) return null;
-    const cycleId = Number(focusCycleId);
+    const cycleId = focusCycleIdValid
+      ? Number(focusCycleId)
+      : Number(resolveNoQtyDispatchSourceCycleId(selectedSo, currentLine, noQtySelectedCycleId) ?? 0);
     const selectedCycle = resolveNoQtyDispatchSourceCycleId(selectedSo, currentLine, noQtySelectedCycleId);
     const rows = ledgerRows.filter(
       (r) =>
@@ -3903,6 +4059,12 @@ export function DispatchPage() {
         nextAction: existingDraftQty > dqEps ? "Finalize Dispatch" : "Save draft qty",
       };
     }
+    if (fromNoQtySo && focusSoIdValid) {
+      return {
+        currentAction: "No dispatchable FG for this agreement",
+        nextAction: "Return to NO_QTY Sales Order summary",
+      };
+    }
     return {
       currentAction: "Waiting for dispatchable FG",
       nextAction: "Complete QC / stock",
@@ -3918,6 +4080,8 @@ export function DispatchPage() {
     readyToShip,
     existingDraftQty,
     dqEps,
+    fromNoQtySo,
+    focusSoIdValid,
   ]);
 
   const currentWorkbenchBillingFallback =
@@ -4658,7 +4822,7 @@ export function DispatchPage() {
               ) {
                 return "BILL";
               }
-              if (dispatchable > eps || usable > eps) return "DISPATCH";
+              if (dispatchable > eps) return "DISPATCH";
               if (qcPending > eps) return "QC";
               if (pending > eps) return "PROD";
               return "DISPATCH";
@@ -5010,6 +5174,7 @@ export function DispatchPage() {
               onDeleteDraft={() => {
                 if (primaryFinalizeDraftId != null) void onDeleteDraft(primaryFinalizeDraftId);
               }}
+              deliveryLocationSelect={deliveryLocationSelectEl}
             />
             {focusSoIdValid ? (
               <details
@@ -5175,7 +5340,14 @@ export function DispatchPage() {
                           </span>
                           <span className="text-slate-700">
                             {selectedSo?.orderType === "NO_QTY"
-                              ? selectedNoQtyCycleStatusLabel ?? (noQtyCyclesLoading ? "…" : `Cycle #${focusCycleId}`)
+                              ? selectedNoQtyCycleStatusLabel ??
+                                (noQtyCyclesLoading
+                                  ? "…"
+                                  : focusCycleIdValid
+                                    ? `Cycle #${focusCycleId}`
+                                    : noQtySelectedCycleId != null
+                                      ? `Cycle #${noQtySelectedCycleId}`
+                                      : "—")
                               : "—"}
                           </span>
                         </div>
@@ -5706,12 +5878,9 @@ export function DispatchPage() {
                       for (const g of byKey.values()) {
                         const freeUsable = noQtyFreeUsableStockForItem(g.so, g.itemId, g.usableAny);
                         g.dispatchableSum = Math.min(g.dispatchableSum, freeUsable);
-                        // Final state rule (explicitly matches your requirement):
-                        // - If customer pending = 0 AND usable/dispatchable > 0 => Optional Dispatch
-                        // - If customer pending = 0 AND usable/dispatchable = 0 AND no QC/prod pending => Completed
-                        // Otherwise QC/prod states.
-                        const hasOptional =
-                          g.customerPendingAny <= eps && (g.usableAny > eps || g.dispatchableSum > eps);
+                        // Dispatch is actionable only while both customer demand and dispatchable stock remain.
+                        // Accepted excess with zero customer balance stays in FG for the next cycle.
+                        const hasOptional = g.customerPendingAny > eps && g.dispatchableSum > eps;
                         if (hasOptional) g.state = "OPTIONAL_DISPATCH";
                         else if (g.qcPendingAny > eps) g.state = "AWAITING_QC";
                         else if (g.customerPendingAny > eps) g.state = "AWAITING_PRODUCTION";
@@ -6419,7 +6588,8 @@ export function DispatchPage() {
                           </span>
                         </div>
 
-                        <div className="mt-2 space-y-2 border-t border-slate-100 pt-2">
+                          <div className="mt-2 space-y-2 border-t border-slate-100 pt-2">
+                          {deliveryLocationSelectEl}
                           {noQtyWorkbenchHeadroomBreakdown && selectedSo && currentLine ? (
                             <>
                               {(() => {
@@ -6820,6 +6990,7 @@ export function DispatchPage() {
 
                   {headroomToPrepare > 1e-9 ? (
                     <div className={cn("space-y-2", isRegularDispatchWorkbench && "space-y-1.5")}>
+                      {deliveryLocationSelectEl}
                       <Button
                         type="button"
                         variant="default"

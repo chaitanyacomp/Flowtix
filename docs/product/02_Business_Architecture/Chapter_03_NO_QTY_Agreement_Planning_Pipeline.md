@@ -6,7 +6,7 @@
 | **Volume** | 2 — Business Architecture |
 | **Chapter** | 3 — NO_QTY Agreement Planning Pipeline |
 | **Title** | NO_QTY Agreement Planning Pipeline |
-| **Version** | 1.0.5 |
+| **Version** | 1.0.8 |
 | **Status** | Draft — Architecture Review |
 | **Effective date** | 2026-05-29 |
 | **Author** | FT ERP Product Team |
@@ -37,6 +37,9 @@
 | 1.0.3 | 2026-07-10 | FT ERP Product Team | Admin reset: recovery/waiver children deleted before CarryForwardPending (Restrict FK order) |
 | 1.0.4 | 2026-07-12 | FT ERP Product Team | §7.3 — draft RS continuous PRODUCTION_SHORTFALL sync / Store ownership |
 | 1.0.5 | 2026-07-12 | FT ERP Product Team | §10 — RM-capped suggested WO; multi-WO RS remains open; RM Detail = proposed qty |
+| 1.0.6 | 2026-07-14 | FT ERP Product Team | §11 / §11A — close/FG PA navigation; Current Stage vs SO close evaluation order |
+| 1.0.7 | 2026-07-14 | FT ERP Product Team | §7.3 — Decision-only / Recovery-only cycle finalize when Current Requirement = 0 |
+| 1.0.8 | 2026-07-14 | FT ERP Product Team | §7.3 — Post-RS-lock navigation: no Dispatch when zero FG; contextual Dispatch when ready |
 
 **Supersedes:** None.
 
@@ -198,7 +201,15 @@ A **Planning Cycle** is the bounded period associated with an RS version: plan �
 
 **Carry forward** rolls unmet or partially met cycle intent into the next planning view without double-counting fulfilled quantity. It maintains NO_QTY continuity across months—distinct from creating a new commercial order.
 
-**Ownership:** Store owns next-cycle Requirement Sheet continuity. Production shortfall from Work Order completion creates `CarryForwardPending` (`PRODUCTION_SHORTFALL`). The editable next-cycle draft RS **must** continuously reflect available production-shortfall recovery (auto-inject missing FG lines as carry-forward-only when needed). Customer demand and system recovery remain separate RS line components. QC final-rejection recovery remains separately allocatable (manual) and is not auto-forced by production-shortfall sync.
+**Ownership:** Store owns next-cycle Requirement Sheet continuity. Production shortfall and final QC rejection create `CarryForwardPending` sources (`PRODUCTION_SHORTFALL` / `QC_FINAL_REJECTION`). The editable next-cycle draft RS **discovers** available recovery and seeds per-FG **PENDING Keep/Waive** decisions — it does **not** auto-allocate either type. Customer demand and system recovery remain separate RS line components. Planner Keep reserves all pending recovery for the FG item; Store or Admin Waive (mandatory reason) permanently waives it. Lock is blocked while any FG decision remains PENDING.
+
+**Decision-only / Recovery-only cycle (zero Current Requirement):** When every carry-forward item is KEEP or WAIVE, Current Requirement = 0, Total To Produce = 0, Pending QC = 0, and no active WO / production pending, the RS **may still Finalize/Lock**. The UI shows “Recovery decisions completed. This cycle can now be finalized.” instead of “Awaiting requirement quantities.” After lock, the ACTIVE cycle closes without manufacturing (empty cycle cap). Historical RS cycles are execution history only — SO outstanding demand is **not** the sum of historical RS quantities. Outstanding resolves as Original Customer Demand − (Accepted & Dispatched + Waived). When Outstanding = 0, SO close becomes eligible.
+
+**Post-lock navigation (RS Finalize):**
+1. Recalculate NO_QTY flow state / dispatchable headroom.
+2. If **no dispatchable FG** (decision-only waive, all already dispatched, or zero headroom) → return to the focused **NO_QTY Agreement summary** (Ready to Close or real blocker). **Do not** open Dispatch Workspace.
+3. If **dispatchable FG exists** → open `/dispatch?flow=NO_QTY&source=no_qty_so&salesOrderId=…&cycleId=…` in **contextual mode** (SO + cycle pre-bound; no generic Sales Order dropdown / Open Line Queue hunt).
+4. REGULAR SO and STOCK_REPLENISHMENT dispatch entry points are unchanged.
 
 ### 7.4 Green Level
 
@@ -265,12 +276,21 @@ Released monthly plan demand creates **Material Requirement** documents with sou
 
 **RM release** is Store’s explicit action after plan approval publishing frozen RM requirement to procurement **when Estimated Net RM Requirement > 0**. It is a **handoff**, not GRN and not WO creation.
 
-**Branch (authoritative):** After Purchase Approval, the frozen Monthly Planning RM Snapshot decides the handoff:
+**Branch (authoritative):**
+
+**A. After Requirement Sheet lock (before Monthly Plan exists)** — evaluate **FG-item RM feasibility** for the locked RS remaining balance (shared-RM safe via batch placement):
+
+- **FG item fully covered by free usable RM** → `READY_FOR_WO` for that FG → **allow WO creation** without waiting for Monthly Plan / Purchase / Release for that item  
+- **FG item has RM shortage** → `PROCUREMENT_REQUIRED` for that FG → include only that shortage in Monthly Planning → block WO **only for that FG**  
+- **All FG stock-covered (sheet Net RM = 0)** → Outcome **PROCUREMENT_NOT_REQUIRED** → **skip** Monthly Planning, Purchase Approval, and Procurement Release → Pending Action **Work Order Planning**  
+- **Mixed RS** → Place WO for ready FG **and** Monthly Planning Pending for shortage FG may coexist; **do not** whole-RS-lock ready items behind period release  
+
+**B. After Purchase Approval (frozen Monthly Planning RM Snapshot):**
 
 - **Net RM > 0** → Release RM Requirement → MR in MPRS pool → Procurement → GRN → Execution  
 - **Net RM = 0** → **Procurement Not Required** (sets `releasedAt`, **no** MR) → Execution Ready → WO / Material Issue  
 
-**Rule:** RM release **never** creates Work Orders. Zero-net approval **SHALL NOT** create Procurement Workspace entries.
+**Rule:** RM release **never** creates Work Orders. Zero-net / stock-ready paths **SHALL NOT** create Procurement Workspace entries for covered FG. One FG shortage **SHALL NOT** block WO creation for other FG items on the same locked RS.
 
 ### 9.4 Purchase Requisition → PO → GRN
 
@@ -286,12 +306,14 @@ After GRN, **Material Availability** and placement readiness recompute. WO place
 
 ### 10.1 RM validation
 
-Before Work Order creation, Store validates:
+Before Work Order creation, Store validates **per FG item**:
 
-- Requirement Sheet cycle is **locked** and has remaining placement balance
-- RM coverage supports intended placement qty (policy-defined use of free, incoming, and released plan context)
-- No NO_QTY execution boundary block (e.g. sheet not released for execution)
-- BOM approved for FG lines
+- Requirement Sheet cycle is **locked** and the FG line has remaining placement balance
+- That FG’s BOM RM coverage supports the intended placement qty (policy-defined use of free usable stock, reservations, and shared-RM allocation across FG lines on the sheet)
+- Approved BOM for the FG line
+- Shortage FG may remain blocked for procurement while **other** RM-ready FG lines on the same locked RS **may** place WO without waiting for Monthly Plan release
+
+Whole-RS “wait for period release before any WO” is **not** the gate when some FG are stock-executable.
 
 ### 10.2 Partial RM
 
@@ -338,6 +360,8 @@ Work Order is handoff to **Execution Pipeline** (PMR → Material Issue → Prod
 
 ## 11. Pending Actions
 
+**Active-cycle execution priority:** The active cycle remains the primary execution context while its locked RS has `remainingToPlace > 0`, or its Work Orders still have Store-owned execution. If FG-level RM capacity is positive, the primary action is **Create Work Order / Continue WO Planning** for that cycle; otherwise it is **View Planning Status / Await Procurement**. Production or QC completion of one WO does not make the next cycle primary. **Create Next Cycle** is emitted only after the canonical cycle-completion policy permits it. Pending Actions, Execution Register, and Control Tower use the same placement candidate, RM readiness, action type, and target.
+
 Engine-generated only (Constitution Art. 12). Representative **NO_QTY planning-phase** actions:
 
 ### 11.1 Store
@@ -365,8 +389,32 @@ Engine-generated only (Constitution Art. 12). Representative **NO_QTY planning-p
 |---------------------------|---------|
 | Commercial pipeline tasks | Enquiry → Quotation |
 | Agreement amendments | Commercial only—no Business Model change |
+| Accepted FG disposition required | Deep-link **NO_QTY Agreements** + FG disposition workspace (`action=no-qty-fg-disposition`) — never Regular Orders |
+| NO_QTY SO blocked by unresolved downstream work | Deep-link focused NO_QTY Agreement with `highlight=downstream` |
+| NO_QTY SO eligible for waiver closure | Deep-link NO_QTY Agreements close workspace (`action=no-qty-close`) |
 
 *REGULAR-specific actions (order RM Control Center primary, Store PR from REGULAR_SO) must not appear as primary NO_QTY paths.*
+
+---
+
+## 11A. Current Stage & SO Close (downstream)
+
+**Current Stage** on NO_QTY Agreements is computed from downstream evidence and **must not** combine Production and QA into one generic label.
+
+| Stage examples | When |
+|----------------|------|
+| Production Running | Execution-aware production remaining on active cycle WOs |
+| QC In Progress | Approved production batches with QC pending (shop floor may show Pending QC) |
+| FG Disposition Pending | Accepted FG still needs disposition before close |
+| Recovery Decision Pending | Closure mode `WAIVER_REQUIRED` |
+| Dispatch Pending | Manufacturing complete; dispatch not posted |
+| Ready to Close | **`assessNoQtySoClosure` mode = COMPLETE** (never from billing caption alone) |
+| Dispatch Pending | Close still blocked on draft/unmet RS dispatch |
+| Billing Pending Export | Finalized Sales Bill without `exportedAt` |
+
+**SO close evaluation order** (`assessNoQtySoClosure`): Outstanding WO → Production (incl. PMR) → QC → FG Disposition → Recovery (waiver mode) → Dispatch dependency → Sales Bill / Export dependency → Close Allowed. Each blocker reports the **exact** record (e.g. `Dispatch D-26-0008 not finalized`, `Sales Bill SB-26-0003 not exported`, remaining RS dispatch qty by item)—never a generic outstanding-dispatch label when a specific document can be named.
+
+**SSOT rule:** Current Stage, Pending Actions (`NO_QTY SO blocked by unresolved downstream work`), and Close validator **must** derive from `assessNoQtySoClosure`. Ready to Close and close success/failure cannot disagree. When billing caption shows “Billing completed · Exported” but ACTIVE-cycle locked RS still has unmet dispatch cap, Current Stage is **Dispatch Pending**, not Ready to Close.
 
 ---
 
@@ -497,6 +545,10 @@ flowchart TB
 
 ## Document navigation
 
+## Injection-moulding BOM calculation used by NO_QTY planning
+
+NO_QTY live estimates and approved monthly RM snapshots consume the approved engineering recipe. Runner/sprue material is included through `Shot Weight = (FG Weight × Output Qty) + Runner Weight`. Component RM demand is derived from component mix against shot weight. Process wastage, QC rejection allowance, and planning buffer are not BOM inputs; planning policy remains explicit in the planning document and actual losses remain execution facts.
+
 | | Link |
 |--|------|
 | **Previous** | [REGULAR Order Planning Pipeline](./Chapter_02_REGULAR_Order_Planning_Pipeline.md) (FT-PD-021) |
@@ -509,6 +561,26 @@ flowchart TB
 
 Dashboard, Pending Actions, Control Tower, and Reports consume `assessNoQtySoClosure()` and `getRecoverySummary()` / `getRecoverySummariesBatch()` via `noQtyRecoveryAnalyticsService`. Production Shortfall and QC Recovery remain separate **recovery types and RS line components**. They do **not** appear as duplicate Store inbox CTAs when Create Cycle N Requirement Sheet already covers the next-RS obligation. Reconciliation identity: Source Qty = Active Allocated + Waived + Available. No mutation of recovery, RS allocation, stock, dispatch qty, billing qty, or SO closure transactions in this batch.
 
+**Navigation (FT-PD-040 §7.12):** FG disposition / waiver-close / downstream-blocked Pending Actions deep-link to **NO_QTY Agreements** with `salesOrderId` context (role-aware). Never Regular Orders / `focusSalesOrderId`.
+
 ## Batch 3F — Certification
 
 Final cleanup validated: QA/QC recovery columns, Control Tower recovery monitor (read-only), reconciliation identity, migration `20260710120000_no_qty_recovery_foundation` applied on target DB, analytics surfaces consume `assessNoQtySoClosure` / `getRecoverySummariesBatch`. `MANUALLY_CLOSED` retained for dual-read only; operational close uses `CLOSED_WITH_WAIVER` / `COMPLETED`. Physical rework remains QA-owned; QC recovery starts at terminal rejection; Green Level isolated; WO shortfall waiver ≠ SO closure waiver.
+
+## UAT — Current Stage / PA navigation / SO close
+
+| Case | Setup | Expected |
+|------|-------|----------|
+| 1 | Everything complete (close SSOT COMPLETE) | Stage **Ready to Close**; no downstream-blocked PA; close succeeds |
+| 2 | Dispatch incomplete (RS cap / draft) | Stage **Dispatch Pending**; close blocked with **exact** dispatch/RS reason |
+| 3 | Sales Bill finalized but not exported | Stage **Billing Pending Export**; close blocked naming the bill |
+| 4 | QA pending | Stage **QC In Progress**; close blocked |
+| 5 | Recovery pending (waiver mode) | Stage **Recovery Decision Pending**; close requires waiver |
+| 6 | Pending Action navigation | FG → FG workspace; Downstream blocked → focused NO_QTY Agreement; **never** Regular Orders |
+| 7 | Decision-only recovery (all WAIVE, Current Requirement = 0) | Finalize RS enabled; lock succeeds; cycle closes; SO close reassessed — **no** infinite draft loop |
+| 8 | Production cycle (positive Current Requirement) | Finalize still requires qty / Total to Produce; decision-only path **not** used |
+| 9 | KEEP on carry-forward | Increases Total to Produce / RS demand; decision-only path blocked until produced or later waived |
+| 10 | WAIVE remaining obligation | Removes outstanding; when Outstanding Qty = 0 and other gates clear, SO close eligible |
+| 11 | SO outstanding identity | Original Customer Demand = Accepted & Dispatched + Waived + Outstanding — **not** sum of historical RS quantities |
+| 12 | RS Finalize with no dispatchable FG | Lands on NO_QTY Agreement summary — **not** generic Dispatch Workspace |
+| 13 | RS Finalize with dispatchable FG | Contextual `/dispatch?source=no_qty_so&salesOrderId&cycleId` — SO/cycle pre-bound |

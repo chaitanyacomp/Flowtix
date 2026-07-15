@@ -57,6 +57,10 @@ describe("buildResetTransactionDataCleanupSteps", () => {
     assert.ok(raIdx >= 0, "recoveryAllocation step present");
     assert.ok(cfIdx >= 0, "carryForwardPending step present");
     assert.ok(raIdx < cfIdx, "recoveryAllocation before carryForwardPending");
+    assert.ok(
+      names.indexOf("noQtyRsItemRecoveryDecisionLine") < cfIdx,
+      "decision lines before carryForwardPending",
+    );
     assert.ok(returnPendingIdx >= 0, "production return pending step present");
     assert.ok(reportLineIdx > returnPendingIdx, "production report lines after return pending");
     assert.ok(reportIdx > reportLineIdx, "production report after report lines");
@@ -78,38 +82,22 @@ describe("buildResetTransactionDataCleanupSteps", () => {
 describe("deleteProductionExecutionForScope", () => {
   it("scopes deletes to NO_QTY sales orders and work orders", async () => {
     const deleted = [];
+    const emptyMany = (name) => ({
+      deleteMany: async (args) => {
+        deleted.push([name, args]);
+        return { count: name === "carryForwardPending" ? 2 : name === "recoveryAllocation" ? 1 : 0 };
+      },
+    });
     const db = {
       $queryRaw: async () => [{ ok: 1 }],
-      recoveryAllocation: {
-        deleteMany: async (args) => {
-          deleted.push(["recoveryAllocation", args]);
-          return { count: 1 };
-        },
-      },
-      noQtySoWaiverLine: {
-        deleteMany: async (args) => {
-          deleted.push(["noQtySoWaiverLine", args]);
-          return { count: 0 };
-        },
-      },
-      noQtySoWaiver: {
-        deleteMany: async (args) => {
-          deleted.push(["noQtySoWaiver", args]);
-          return { count: 0 };
-        },
-      },
-      carryForwardPending: {
-        deleteMany: async (args) => {
-          deleted.push(["carryForwardPending", args]);
-          return { count: 2 };
-        },
-      },
-      productionShortfallResolution: {
-        deleteMany: async (args) => {
-          deleted.push(["productionShortfallResolution", args]);
-          return { count: 1 };
-        },
-      },
+      noQtyRsItemRecoveryDecisionLine: emptyMany("noQtyRsItemRecoveryDecisionLine"),
+      noQtyRsItemRecoveryDecision: emptyMany("noQtyRsItemRecoveryDecision"),
+      recoveryAllocation: emptyMany("recoveryAllocation"),
+      noQtySoWaiverLine: emptyMany("noQtySoWaiverLine"),
+      noQtySoWaiver: emptyMany("noQtySoWaiver"),
+      noQtyAcceptedFgDisposition: emptyMany("noQtyAcceptedFgDisposition"),
+      carryForwardPending: emptyMany("carryForwardPending"),
+      productionShortfallResolution: emptyMany("productionShortfallResolution"),
       workOrderProductionExecution: {
         deleteMany: async (args) => {
           deleted.push(["workOrderProductionExecution", args]);
@@ -124,6 +112,7 @@ describe("deleteProductionExecutionForScope", () => {
     });
     assert.equal(counts.carryForwardPending, 2);
     assert.equal(counts.recoveryAllocation, 1);
+    assert.equal(counts.noQtyRsItemRecoveryDecisionLine, 0);
     assert.deepEqual(deleted.find((d) => d[0] === "carryForwardPending")?.[1], {
       where: { salesOrderId: { in: [10, 20] } },
     });

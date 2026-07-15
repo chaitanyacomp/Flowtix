@@ -63,12 +63,16 @@ tallyMasterImportRouter.post(
       return res.json({
         previewToken,
         warnings: payload.warnings,
+        infoNotes: payload.infoNotes ?? [],
+        parsedMasterCounts: payload.parsedMasterCounts ?? null,
         summary: payload.summary,
         customers: payload.customers,
         suppliers: payload.suppliers,
         items: payload.items,
         units: payload.units,
         parseStats: payload.parseStats,
+        runtime: payload.runtime ?? null,
+        ...(payload.partyDiagnostics ? { partyDiagnostics: payload.partyDiagnostics } : {}),
       });
     } catch (e) {
       return next(e);

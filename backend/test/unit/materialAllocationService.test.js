@@ -105,4 +105,44 @@ describe("materialAllocationService", () => {
     assert.equal(tx.__updated[0].data.qtyIssued, "25");
     assert.equal(tx.__updated[0].data.status, "PARTIALLY_ISSUED");
   });
+
+  it("releases residual allocation on Short Issue close without changing issued stock qty", async () => {
+    const updated = [];
+    const tx = {
+      productionMaterialRequest: {
+        findUnique: async () => ({
+          id: 42,
+          status: "SHORT_ISSUE_ACCEPTED",
+          lines: [{ itemId: 7, requiredQty: 6.396, issuedQty: 6.0, waivedQty: 0.396 }],
+        }),
+      },
+      materialAllocation: {
+        findMany: async () => [
+          {
+            id: 91,
+            rmItemId: 7,
+            productionMaterialRequestId: 42,
+            qtyAllocated: 6.396,
+            qtyIssued: 0,
+            status: "PARTIALLY_ISSUED",
+            remarks: null,
+          },
+        ],
+        update: async ({ where, data }) => {
+          updated.push({ where, data });
+          return { id: where.id, ...data };
+        },
+      },
+    };
+
+    await syncAllocationsForPmrIssueStatus(tx, 42);
+
+    assert.equal(updated.length, 1);
+    assert.equal(updated[0].data.qtyAllocated, "6");
+    assert.equal(updated[0].data.qtyIssued, "6");
+    assert.equal(updated[0].data.status, "ISSUED");
+    assert.match(String(updated[0].data.remarks ?? ""), /Short issue closed/i);
+    // Active residual = allocated − issued would be 0 after close (free stock restored).
+    assert.equal(Number(updated[0].data.qtyAllocated) - Number(updated[0].data.qtyIssued), 0);
+  });
 });

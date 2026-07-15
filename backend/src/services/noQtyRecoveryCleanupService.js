@@ -2,15 +2,20 @@
  * Authoritative NO_QTY recovery / waiver / carry-forward cleanup (FT-PD-022).
  *
  * Child-first reverse FK order — do not change Prisma onDelete Restrict to Cascade.
- * All admin reset paths must call this helper instead of inventing local delete sequences.
+ * Order is owned by `cleanup/cleanupRegistry.js` (RECOVERY_CLUSTER_CLIENT_KEYS).
  *
- * Order:
- * 1. RecoveryAllocation
- * 2. NoQtySoWaiverLine
- * 3. NoQtySoWaiver
- * 4. CarryForwardPending
- * 5. ProductionShortfallResolution
+ * Required order (Phase 2B):
+ * 1. NoQtyRsItemRecoveryDecisionLine
+ * 2. NoQtyRsItemRecoveryDecision
+ * 3. RecoveryAllocation
+ * 4. NoQtySoWaiverLine
+ * 5. NoQtySoWaiver
+ * 6. NoQtyAcceptedFgDisposition
+ * 7. CarryForwardPending
+ * 8. ProductionShortfallResolution
  */
+
+const { getRecoveryClusterClientKeys } = require("./cleanup/cleanupRegistry");
 
 /**
  * @param {import("@prisma/client").Prisma.TransactionClient} tx
@@ -31,16 +36,8 @@ async function tableExists(tx, candidates) {
   return false;
 }
 
-/**
- * Tables deleted by {@link cleanupNoQtyRecoveryDependencies} / step builders (verify lists).
- */
-const NO_QTY_RECOVERY_CLEANUP_TABLES = Object.freeze([
-  "recoveryAllocation",
-  "noQtySoWaiverLine",
-  "noQtySoWaiver",
-  "carryForwardPending",
-  "productionShortfallResolution",
-]);
+/** @type {readonly string[]} */
+const NO_QTY_RECOVERY_CLEANUP_TABLES = Object.freeze(getRecoveryClusterClientKeys());
 
 /**
  * @param {number[] | null | undefined} ids
@@ -53,27 +50,40 @@ function normalizeIdList(ids) {
 /**
  * @param {import("@prisma/client").Prisma.TransactionClient} tx
  * @param {{ salesOrderIds?: number[] | null; workOrderIds?: number[] | null }} [scope]
- * @returns {Promise<{
- *   recoveryAllocation: { delete: () => Promise<{ count?: number }>; count: () => Promise<number> };
- *   noQtySoWaiverLine: { delete: () => Promise<{ count?: number }>; count: () => Promise<number> };
- *   noQtySoWaiver: { delete: () => Promise<{ count?: number }>; count: () => Promise<number> };
- *   carryForwardPending: { delete: () => Promise<{ count?: number }>; count: () => Promise<number> };
- *   productionShortfallResolution: { delete: () => Promise<{ count?: number }>; count: () => Promise<number> };
- * }>}
  */
 async function resolveNoQtyRecoveryCleanupOps(tx, scope = {}) {
   const soIds = normalizeIdList(scope.salesOrderIds);
   const woIds = normalizeIdList(scope.workOrderIds);
   const scoped = soIds.length > 0;
 
+  const hasDecisionLine = await tableExists(tx, ["noqtyrsitemrecoverydecisionline", "NoQtyRsItemRecoveryDecisionLine"]);
+  const hasDecision = await tableExists(tx, ["noqtyrsitemrecoverydecision", "NoQtyRsItemRecoveryDecision"]);
   const hasRecoveryAllocation = await tableExists(tx, ["recoveryallocation", "RecoveryAllocation"]);
   const hasWaiverLine = await tableExists(tx, ["noqtysowaiverline", "NoQtySoWaiverLine"]);
   const hasWaiver = await tableExists(tx, ["noqtysowaiver", "NoQtySoWaiver"]);
+  const hasAcceptedFg = await tableExists(tx, ["noqtyacceptedfgdisposition", "NoQtyAcceptedFgDisposition"]);
   const hasCarryForward = await tableExists(tx, ["carryforwardpending", "CarryForwardPending"]);
   const hasShortfall = await tableExists(tx, ["productionshortfallresolution", "ProductionShortfallResolution"]);
 
   const empty = async () => ({ count: 0 });
   const zero = async () => 0;
+
+  /** @type {import("@prisma/client").Prisma.NoQtyRsItemRecoveryDecisionLineWhereInput | undefined} */
+  let decisionLineWhere;
+  if (scoped && hasDecisionLine) {
+    decisionLineWhere = {
+      OR: [
+        { recoverySource: { salesOrderId: { in: soIds } } },
+        { decision: { requirementSheet: { salesOrderId: { in: soIds } } } },
+      ],
+    };
+  }
+
+  /** @type {import("@prisma/client").Prisma.NoQtyRsItemRecoveryDecisionWhereInput | undefined} */
+  let decisionWhere;
+  if (scoped && hasDecision) {
+    decisionWhere = { requirementSheet: { salesOrderId: { in: soIds } } };
+  }
 
   /** @type {import("@prisma/client").Prisma.RecoveryAllocationWhereInput | undefined} */
   let recoveryAllocationWhere;
@@ -103,6 +113,12 @@ async function resolveNoQtyRecoveryCleanupOps(tx, scope = {}) {
     waiverWhere = { salesOrderId: { in: soIds } };
   }
 
+  /** @type {import("@prisma/client").Prisma.NoQtyAcceptedFgDispositionWhereInput | undefined} */
+  let acceptedFgWhere;
+  if (scoped && hasAcceptedFg) {
+    acceptedFgWhere = { salesOrderId: { in: soIds } };
+  }
+
   /** @type {import("@prisma/client").Prisma.CarryForwardPendingWhereInput | undefined} */
   let carryForwardWhere;
   if (scoped && hasCarryForward) {
@@ -115,12 +131,28 @@ async function resolveNoQtyRecoveryCleanupOps(tx, scope = {}) {
     if (woIds.length > 0) {
       shortfallWhere = { workOrderId: { in: woIds } };
     } else if (scoped) {
-      // Scoped SO reset without WO ids: delete shortfall rows for WOs on those SOs.
       shortfallWhere = { workOrder: { salesOrderId: { in: soIds } } };
     }
   }
 
   return {
+    noQtyRsItemRecoveryDecisionLine: {
+      delete: hasDecisionLine
+        ? () =>
+            tx.noQtyRsItemRecoveryDecisionLine.deleteMany(decisionLineWhere ? { where: decisionLineWhere } : {})
+        : empty,
+      count: hasDecisionLine
+        ? () => tx.noQtyRsItemRecoveryDecisionLine.count(decisionLineWhere ? { where: decisionLineWhere } : {})
+        : zero,
+    },
+    noQtyRsItemRecoveryDecision: {
+      delete: hasDecision
+        ? () => tx.noQtyRsItemRecoveryDecision.deleteMany(decisionWhere ? { where: decisionWhere } : {})
+        : empty,
+      count: hasDecision
+        ? () => tx.noQtyRsItemRecoveryDecision.count(decisionWhere ? { where: decisionWhere } : {})
+        : zero,
+    },
     recoveryAllocation: {
       delete: hasRecoveryAllocation
         ? () => tx.recoveryAllocation.deleteMany(recoveryAllocationWhere ? { where: recoveryAllocationWhere } : {})
@@ -140,6 +172,14 @@ async function resolveNoQtyRecoveryCleanupOps(tx, scope = {}) {
     noQtySoWaiver: {
       delete: hasWaiver ? () => tx.noQtySoWaiver.deleteMany(waiverWhere ? { where: waiverWhere } : {}) : empty,
       count: hasWaiver ? () => tx.noQtySoWaiver.count(waiverWhere ? { where: waiverWhere } : {}) : zero,
+    },
+    noQtyAcceptedFgDisposition: {
+      delete: hasAcceptedFg
+        ? () => tx.noQtyAcceptedFgDisposition.deleteMany(acceptedFgWhere ? { where: acceptedFgWhere } : {})
+        : empty,
+      count: hasAcceptedFg
+        ? () => tx.noQtyAcceptedFgDisposition.count(acceptedFgWhere ? { where: acceptedFgWhere } : {})
+        : zero,
     },
     carryForwardPending: {
       delete: hasCarryForward
@@ -163,13 +203,11 @@ async function resolveNoQtyRecoveryCleanupOps(tx, scope = {}) {
 
 /**
  * Step list for Reset Transaction Data / Full Demo (global deleteMany).
- * Compatible with buildResetTransactionDataCleanupSteps step shape.
  *
  * @param {import("@prisma/client").Prisma.TransactionClient} tx
  * @returns {Array<{ table: string; delete: () => Promise<{ count?: number }>; count: () => Promise<number> }>}
  */
 function buildNoQtyRecoveryDependencyCleanupSteps(tx) {
-  // Ops are resolved lazily inside each delete/count so tableExists runs at execution time.
   return NO_QTY_RECOVERY_CLEANUP_TABLES.map((table) => ({
     table,
     delete: async () => {
@@ -184,12 +222,8 @@ function buildNoQtyRecoveryDependencyCleanupSteps(tx) {
 }
 
 /**
- * Execute the recovery dependency cluster in reverse FK order.
- *
  * @param {import("@prisma/client").Prisma.TransactionClient} tx
  * @param {{ salesOrderIds?: number[] | null; workOrderIds?: number[] | null }} [scope]
- *   When salesOrderIds is non-empty, deletes are scoped to those SOs (and related WOs for shortfall).
- *   When omitted/empty, deletes are global.
  * @returns {Promise<Record<string, number>>}
  */
 async function cleanupNoQtyRecoveryDependencies(tx, scope = {}) {
@@ -204,8 +238,6 @@ async function cleanupNoQtyRecoveryDependencies(tx, scope = {}) {
 }
 
 /**
- * Merge recovery cleanup counts into an existing deletedCounts bag.
- *
  * @param {import("@prisma/client").Prisma.TransactionClient} tx
  * @param {Record<string, number>} deletedCounts
  * @param {{ salesOrderIds?: number[] | null; workOrderIds?: number[] | null }} [scope]

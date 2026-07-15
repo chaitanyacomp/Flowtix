@@ -18,6 +18,7 @@ import {
   executionWoHistoryVisibleCount,
   formatExecutionQty,
   formatPriorCycleExecutionBanner,
+  fgItemRmStatusLabel,
   placementInlineReadinessMessage,
   procurementCollapsedSummary,
   rmCoverageChipClassName,
@@ -93,6 +94,8 @@ export type RsExecutionSummary = {
     releasedAt: string | null;
     releasedRevision: number | null;
     label: string | null;
+    procurementNotRequiredWithoutPlan?: boolean;
+    allowWoWithoutPlanRelease?: boolean;
   };
   totals: {
     rsDemandQty: number;
@@ -101,9 +104,14 @@ export type RsExecutionSummary = {
     rmLimitedCapacityQty?: number;
   };
   kpis?: {
+    customerDemandQty?: number;
+    productionShortageQty?: number;
+    qcFinalRejectionQty?: number;
+    totalRecoveryQty?: number;
     totalRsRequirement: number;
     woQuantityPlaced: number;
     remainingRequirement: number;
+    remainingToPlace?: number;
     rmLimitedCapacity: number;
     suggestedNextWoQty: number;
     numberOfWos: number;
@@ -227,6 +235,20 @@ export type RsExecutionSummary = {
       }>;
     }>;
   };
+  fgItemReadiness?: Array<{
+    itemId: number;
+    itemName: string;
+    rsBalanceQty: number;
+    suggestedExecutableQty: number;
+    placementStatus: string;
+    outcome: string;
+    shortageSummary: string | null;
+  }>;
+  fgReadinessSummary?: {
+    readyCount: number;
+    shortageCount: number;
+    totalWithBalance: number;
+  };
   placementSnapshot?: {
     totalWoPlacedQty: number;
     totalRsBalanceQty: number;
@@ -293,10 +315,10 @@ function ContextKpiTile({ label, value }: { label: string; value: string }) {
   );
 }
 
-function TinyStatus({ status }: { status: string }) {
+function TinyStatus({ status, label }: { status: string; label?: string }) {
   return (
     <span className={cn("inline-flex rounded-full border px-2 py-0.5 text-[10px] font-semibold", statusBadgeClass(status))}>
-      {statusLabel(status)}
+      {label ?? statusLabel(status)}
     </span>
   );
 }
@@ -693,6 +715,9 @@ export function RequirementSheetExecutionPanel({
   const rmCoverageLabel = rmCoverageLabelFromPlacement({
     placementStatus: data.placement.status,
     rsBalanceQty: data.totals.rsBalanceQty,
+    readyFgCount: data.fgReadinessSummary?.readyCount,
+    shortageFgCount: data.fgReadinessSummary?.shortageCount,
+    totalFgWithBalance: data.fgReadinessSummary?.totalWithBalance,
   });
 
   const placementMessage = placementInlineReadinessMessage({
@@ -700,16 +725,31 @@ export function RequirementSheetExecutionPanel({
     totalExecutableQty: data.placement.summary.totalExecutableQty,
     rsBalanceQty: data.totals.rsBalanceQty,
     placementReason: data.placement.reason,
+    readyFgCount: data.fgReadinessSummary?.readyCount,
+    shortageFgCount: data.fgReadinessSummary?.shortageCount,
+    allowWoWithoutPlanRelease: data.release.allowWoWithoutPlanRelease,
   });
 
   const kpis = data.kpis ?? {
+    customerDemandQty: 0,
+    productionShortageQty: 0,
+    qcFinalRejectionQty: 0,
+    totalRecoveryQty: 0,
     totalRsRequirement: data.totals.rsDemandQty,
     woQuantityPlaced: data.totals.woPlacedQty,
     remainingRequirement: data.totals.rsBalanceQty,
+    remainingToPlace: data.totals.rsBalanceQty,
     rmLimitedCapacity: data.totals.rmLimitedCapacityQty ?? data.placement.summary.totalExecutableQty,
     suggestedNextWoQty: data.placement.summary.totalExecutableQty,
     numberOfWos: data.existingWoSummary.length,
   };
+  const remainingToPlace = kpis.remainingToPlace ?? kpis.remainingRequirement;
+  const customerDemandQty = Number(kpis.customerDemandQty ?? 0);
+  const productionShortageQty = Number(kpis.productionShortageQty ?? 0);
+  const qcFinalRejectionQty = Number(kpis.qcFinalRejectionQty ?? 0);
+  const totalRecoveryQty = Number(
+    kpis.totalRecoveryQty ?? productionShortageQty + qcFinalRejectionQty,
+  );
 
   const displayRm = liveRm ?? data.rmReadiness;
   const proposedFgQty = displayRm.summary.proposedFgQty ?? requestedLines.reduce((s, l) => s + l.qty, 0);
@@ -758,8 +798,20 @@ export function RequirementSheetExecutionPanel({
             <span className="font-semibold text-slate-600">{WO_PLANNING_UX.STAGE_NEXT}</span>
           </div>
         </div>
-        <Badge variant={data.release.released ? "success" : "default"}>
-          {data.release.released ? "Released to Procurement" : "Not Released"}
+        <Badge
+          variant={
+            data.release.released
+              ? "success"
+              : data.release.allowWoWithoutPlanRelease
+                ? "warning"
+                : "default"
+          }
+        >
+          {data.release.released
+            ? "Released to Procurement"
+            : data.release.allowWoWithoutPlanRelease
+              ? "WO Available (RM-ready FG)"
+              : "Not Released"}
         </Badge>
       </div>
 
@@ -843,8 +895,14 @@ export function RequirementSheetExecutionPanel({
             ) : null}
           </div>
           <div data-testid="execution-hero-kpis" className="mt-2 grid grid-cols-2 gap-2">
-            <HeroKpiTile label={WO_PLANNING_UX.KPI_REMAINING_REQUIREMENT} value={fmtQty(kpis.remainingRequirement)} />
+            <HeroKpiTile label={WO_PLANNING_UX.KPI_REMAINING_TO_PLACE} value={fmtQty(remainingToPlace)} />
             <HeroKpiTile label={WO_PLANNING_UX.KPI_WO_QTY_PLACED} value={fmtQty(kpis.woQuantityPlaced)} />
+          </div>
+          <div data-testid="execution-composition-kpis" className="mt-2 grid grid-cols-2 gap-2">
+            <ContextKpiTile label={WO_PLANNING_UX.KPI_CUSTOMER_DEMAND} value={fmtQty(customerDemandQty)} />
+            <ContextKpiTile label={WO_PLANNING_UX.KPI_PRODUCTION_SHORTAGE} value={fmtQty(productionShortageQty)} />
+            <ContextKpiTile label={WO_PLANNING_UX.KPI_QC_FINAL_REJECTION} value={fmtQty(qcFinalRejectionQty)} />
+            <ContextKpiTile label={WO_PLANNING_UX.KPI_TOTAL_RECOVERY} value={fmtQty(totalRecoveryQty)} />
             <ContextKpiTile label={WO_PLANNING_UX.KPI_TOTAL_RS_REQUIREMENT} value={fmtQty(kpis.totalRsRequirement)} />
             <ContextKpiTile label={WO_PLANNING_UX.KPI_NUMBER_OF_WOS} value={String(kpis.numberOfWos)} />
           </div>
@@ -905,15 +963,27 @@ export function RequirementSheetExecutionPanel({
                 <thead>
                   <tr className="border-b border-slate-200 text-left text-[10px] font-semibold uppercase tracking-wide text-slate-500">
                     <th className="py-2 pr-3">FG Item</th>
+                    <th className="py-2 pr-3 text-right">Remaining</th>
                     <th className="py-2 pr-3 text-right">{WO_PLANNING_UX.KPI_SUGGESTED_NEXT_WO}</th>
                     <th className="py-2 pr-3 text-right">Enter Qty</th>
-                    <th className="py-2">RM Status</th>
+                    <th className="py-2 pr-3">RM Status</th>
+                    <th className="py-2">Shortage Summary</th>
                   </tr>
                 </thead>
                 <tbody>
                   {data.placement.lines.map((line) => {
                     const draft = draftQtyByItem[line.itemId] ?? "";
                     const lineError = validationByItem.get(line.itemId) ?? null;
+                    const readinessRow = data.fgItemReadiness?.find((r) => r.itemId === line.itemId);
+                    const rmStatusLabel = fgItemRmStatusLabel(readinessRow?.outcome ?? line.status);
+                    const shortageText =
+                      readinessRow?.shortageSummary ||
+                      line.operatorGuidance?.message ||
+                      (line.status === "AWAITING_PROCUREMENT"
+                        ? line.reason || "RM shortage — Create WO disabled"
+                        : line.status === "READY"
+                          ? "Create WO enabled"
+                          : line.reason || "—");
                     const disabledInput =
                       !canPlaceWoBatch || line.rsBalanceQty <= 0 || line.suggestedExecutableQty <= 0;
                     return (
@@ -924,9 +994,9 @@ export function RequirementSheetExecutionPanel({
                       >
                         <td className="py-2.5 pr-3">
                           <div className="text-sm font-semibold text-slate-900">{line.itemName}</div>
-                          <div className="mt-0.5 text-xs text-slate-500">
-                            Remaining {fmtQty(line.rsBalanceQty, line.unit)}
-                          </div>
+                        </td>
+                        <td className="py-2.5 pr-3 text-right text-sm tabular-nums text-slate-700">
+                          {fmtQty(line.rsBalanceQty, line.unit)}
                         </td>
                         <td className="py-2.5 pr-3 text-right text-base font-semibold tabular-nums">
                           {fmtQty(line.suggestedExecutableQty, line.unit)}
@@ -946,9 +1016,10 @@ export function RequirementSheetExecutionPanel({
                           />
                           {lineError ? <div className="mt-1 text-[11px] text-red-700">{lineError}</div> : null}
                         </td>
-                        <td className="py-2.5">
-                          <TinyStatus status={line.status} />
+                        <td className="py-2.5 pr-3">
+                          <TinyStatus status={line.status} label={rmStatusLabel} />
                         </td>
+                        <td className="py-2.5 text-xs text-slate-600">{shortageText}</td>
                       </tr>
                     );
                   })}
@@ -1166,7 +1237,7 @@ export function RequirementSheetExecutionPanel({
             <div className="mt-0.5 text-slate-600">{data.readiness.reason}</div>
           </div>
           <p className="leading-relaxed text-slate-600">
-            {WO_PLANNING_UX.KPI_REMAINING_REQUIREMENT} is Total RS Requirement minus active WO planned quantity. Production,
+            {WO_PLANNING_UX.KPI_REMAINING_TO_PLACE} is Total RS Requirement minus WO Qty Placed. Production,
             QC, Dispatch, Material Issue, and Carry Forward do not reduce placement balance. Suggested Next WO Qty is the
             minimum of remaining requirement and RM-limited capacity.
           </p>

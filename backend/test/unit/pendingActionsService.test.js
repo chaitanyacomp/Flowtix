@@ -1829,6 +1829,113 @@ describe("pendingActionsService", () => {
     });
   });
 
+  it("fetchStoreNoQtyMonthlyPlanningPendingActions skips when Net RM = 0 unlocks Place WO", async () => {
+    await withMonthlyPlanningEnabled(true, async () => {
+      const executionPath = require.resolve("../../src/services/requirementSheetExecutionService");
+      const pendingPath = require.resolve("../../src/services/pendingActionsService");
+      const origExecution = require(executionPath);
+      const origAssess = origExecution.assessNoQtyPlacementStageForCycle;
+
+      require(executionPath).assessNoQtyPlacementStageForCycle = async () => ({
+        readyToPlaceWo: true,
+        processStageKey: "NO_QTY_READY_TO_PLACE_WO",
+        readinessStatus: "READY_TO_PLACE_WO",
+        requirementSheetId: 18,
+        skipMonthlyPlanning: true,
+      });
+
+      delete require.cache[pendingPath];
+      const { fetchStoreNoQtyMonthlyPlanningPendingActions: fetchMonthlyPlanning } = require(pendingPath);
+      const db = {
+        salesOrder: {
+          findMany: async () => [{ id: 24, docNo: "SO-26-0000", updatedAt: new Date("2026-06-01T00:00:00Z") }],
+        },
+        requirementSheet: {
+          findMany: async () => [
+            {
+              id: 18,
+              salesOrderId: 24,
+              cycleId: 5,
+              periodKey: "2026-06",
+              createdAt: new Date("2026-06-01T00:00:00Z"),
+              updatedAt: new Date("2026-06-01T00:00:00Z"),
+              cycle: { cycleNo: 1 },
+            },
+          ],
+        },
+        workOrder: { findMany: async () => [] },
+      };
+
+      try {
+        const actions = await fetchMonthlyPlanning(db);
+        assert.equal(actions.length, 0);
+      } finally {
+        require(executionPath).assessNoQtyPlacementStageForCycle = origAssess;
+        delete require.cache[pendingPath];
+        require(pendingPath);
+      }
+    });
+  });
+
+  it("fetchStoreNoQtyMonthlyPlanningPendingActions still emits when mixed FG readiness (some ready, some short)", async () => {
+    await withMonthlyPlanningEnabled(true, async () => {
+      const executionPath = require.resolve("../../src/services/requirementSheetExecutionService");
+      const gatePath = require.resolve("../../src/services/noQtyMonthlyPlanningGateService");
+      const pendingPath = require.resolve("../../src/services/pendingActionsService");
+      const origExecution = require(executionPath);
+      const origGate = require(gatePath);
+      const origAssess = origExecution.assessNoQtyPlacementStageForCycle;
+      const origPlanningGate = origGate.assessNoQtyMonthlyPlanningGate;
+
+      require(executionPath).assessNoQtyPlacementStageForCycle = async () => ({
+        readyToPlaceWo: true,
+        processStageKey: "NO_QTY_READY_TO_PLACE_WO",
+        readinessStatus: "PARTIALLY_READY",
+        requirementSheetId: 19,
+        skipMonthlyPlanning: false,
+        allowWoWithoutPlanRelease: true,
+      });
+      require(gatePath).assessNoQtyMonthlyPlanningGate = async () => ({
+        gate: "INITIAL_PLAN_REQUIRED",
+        action: "Monthly Planning Pending",
+      });
+
+      delete require.cache[pendingPath];
+      const { fetchStoreNoQtyMonthlyPlanningPendingActions: fetchMonthlyPlanning } = require(pendingPath);
+      const db = {
+        salesOrder: {
+          findMany: async () => [{ id: 25, docNo: "SO-26-0025", updatedAt: new Date("2026-06-01T00:00:00Z") }],
+        },
+        requirementSheet: {
+          findMany: async () => [
+            {
+              id: 19,
+              salesOrderId: 25,
+              cycleId: 6,
+              periodKey: "2026-06",
+              createdAt: new Date("2026-06-01T00:00:00Z"),
+              updatedAt: new Date("2026-06-01T00:00:00Z"),
+              cycle: { cycleNo: 1 },
+            },
+          ],
+        },
+        workOrder: { findMany: async () => [] },
+      };
+
+      try {
+        const actions = await fetchMonthlyPlanning(db);
+        assert.equal(actions.length, 1);
+        assert.equal(actions[0].action, "Monthly Planning Pending");
+        assert.equal(actions[0].metadata.mixedFgReadiness, true);
+      } finally {
+        require(executionPath).assessNoQtyPlacementStageForCycle = origAssess;
+        require(gatePath).assessNoQtyMonthlyPlanningGate = origPlanningGate;
+        delete require.cache[pendingPath];
+        require(pendingPath);
+      }
+    });
+  });
+
   it("fetchStoreNoQtyMonthlyPlanningPendingActions emits nothing when FEATURE_MONTHLY_PLANNING is OFF", async () => {
     await withMonthlyPlanningEnabled(false, async () => {
       const pendingPath = require.resolve("../../src/services/pendingActionsService");
@@ -2111,6 +2218,47 @@ describe("pendingActionsService", () => {
     });
   });
 
+  it("fetchStoreAdditionalMonthlyPlanPendingActions does not emit when preview has no procurement need", async () => {
+    await withMonthlyPlanningEnabled(true, async () => {
+      const gatePath = require.resolve("../../src/services/noQtyMonthlyPlanningGateService");
+      const pendingPath = require.resolve("../../src/services/pendingActionsService");
+      const origGate = require(gatePath);
+      const origPlanningGate = origGate.assessNoQtyMonthlyPlanningGate;
+
+      require(gatePath).assessNoQtyMonthlyPlanningGate = async (_db, periodKey) => ({
+        gate: "ADDITIONAL_PLAN_REQUIRED",
+        action: "Create Additional Monthly Plan",
+        plan: { id: 73, periodKey, planSequenceNo: 2, status: "APPROVED" },
+        preview: {
+          canCreate: true,
+          nextPlanSequenceNo: 3,
+          totals: {
+            totalAdditionalRequirementQty: 1025,
+            additionalItemCount: 1,
+            procurementRequired: false,
+            netRmShortageQty: 0,
+            componentBreakdown: {},
+          },
+          items: [{ fgItemId: 10, unit: "Nos", hasAdditionalRequirement: true, uncoveredComponents: [] }],
+        },
+      });
+
+      delete require.cache[pendingPath];
+      const { fetchStoreAdditionalMonthlyPlanPendingActions: fetchAdditional } = require(pendingPath);
+
+      try {
+        const actions = await fetchAdditional({
+          monthlyProductionPlan: { findMany: async () => [{ periodKey: "2026-07" }] },
+        });
+        assert.equal(actions.length, 0);
+      } finally {
+        require(gatePath).assessNoQtyMonthlyPlanningGate = origPlanningGate;
+        delete require.cache[pendingPath];
+        require(pendingPath);
+      }
+    });
+  });
+
   it("fetchStoreAdditionalMonthlyPlanPendingActions does not emit when preview cannot create", async () => {
     await withMonthlyPlanningEnabled(true, async () => {
     const gatePath = require.resolve("../../src/services/noQtyMonthlyPlanningGateService");
@@ -2293,7 +2441,44 @@ describe("pendingActionsService", () => {
         },
       ),
     });
-    assert.equal(actions.length, 0);
+    assert.equal(actions.length, 1);
+    assert.equal(actions[0].type, "NO_QTY_WO_PLACEMENT_REQUIRED");
+  });
+
+  it("fetchStoreNoQtyPlaceWoPendingActions emits Place WO when Net RM = 0 unlocks without Monthly Plan", async () => {
+    const pendingPath = require.resolve("../../src/services/pendingActionsService");
+    delete require.cache[pendingPath];
+    const { fetchStoreNoQtyPlaceWoPendingActions: fetchPlaceWo } = require(pendingPath);
+    const db = buildPlaceWoDb({
+      so: { id: 11, docNo: "SO-26-0011", updatedAt: new Date(), currentCycleId: 6, customer: { name: "Acme" } },
+      lockedSheets: [{ id: 21, docNo: "RS-021", salesOrderId: 11, cycleId: 6, version: 1, status: "LOCKED" }],
+      cycleNo: 1,
+      rsDocNo: "RS-021",
+    });
+
+    const actions = await fetchPlaceWo(db, {
+      resolveNoQtyWoPlacementCandidateForSo: placeWoCandidate(
+        { id: 21, docNo: "RS-021", cycleId: 6 },
+        {
+          readyToPlaceWo: true,
+          released: true,
+          skipMonthlyPlanning: true,
+          rsBalanceQty: 10000,
+          suggestedWoQty: 10000,
+          placementStatus: "READY",
+          readinessStatus: "READY_TO_PLACE_WO",
+          existingWoSummary: [],
+          requirementSheetId: 21,
+          requirementSheetDocNo: "RS-021",
+          periodKey: "2026-06",
+        },
+      ),
+    });
+    assert.equal(actions.length, 1);
+    assert.equal(actions[0].action, "Create Work Order");
+    assert.equal(actions[0].type, "NO_QTY_WO_PLACEMENT_REQUIRED");
+    assert.match(actions[0].href, /sheetId=21/);
+    assert.match(actions[0].href, /focus=execution/);
   });
 
   it("fetchStoreNoQtyPlaceWoPendingActions emits Place Partial WO even when Additional Plan is still required", async () => {
@@ -2417,7 +2602,9 @@ describe("pendingActionsService", () => {
         },
       ),
     });
-    assert.equal(actions.length, 0);
+    assert.equal(actions.length, 1);
+    assert.equal(actions[0].type, "NO_QTY_WO_PLANNING_STATUS");
+    assert.equal(actions[0].action, "View Planning Status");
   });
 
   it("fetchStoreNoQtyPlaceWoPendingActions does not emit Place WO after full suggested qty is already placed", async () => {
@@ -2483,7 +2670,7 @@ describe("pendingActionsService", () => {
       ),
     });
     assert.equal(actions.length, 1);
-    assert.equal(actions[0].action, "Create Suggested WO");
+    assert.equal(actions[0].action, "Create Work Order");
     assert.equal(actions[0].currentStatus, "READY_TO_PLACE_WO");
     assert.match(actions[0].documentNo, /SO-26-0002/);
     assert.match(actions[0].documentNo, /Suggested WO 5,000 KG/);
@@ -2530,7 +2717,7 @@ describe("pendingActionsService", () => {
       ),
     });
     assert.equal(actions.length, 1);
-    assert.equal(actions[0].action, "Create Suggested WO");
+    assert.equal(actions[0].action, "Create Work Order");
     assert.equal(actions[0].type, "NO_QTY_WO_PLACEMENT_REQUIRED");
     assert.equal(actions[0].metadata.rsBalanceQty, 11069);
     assert.equal(actions[0].metadata.suggestedExecutableQty, 11069);

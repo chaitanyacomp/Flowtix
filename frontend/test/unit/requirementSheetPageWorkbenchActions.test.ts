@@ -23,6 +23,9 @@ describe("RequirementSheetPage workbench actions (FT-PD-066)", () => {
     expect(pageSource).toContain("onClick: () => void recalc()");
     expect(pageSource).toContain("onClick: () => void saveDraft()");
     expect(pageSource).toContain("resolveRequirementSheetWorkbenchActions");
+    // Save draft must recalculate atomically and clear needsRecalc
+    expect(pageSource).toContain("/recalculate");
+    expect(pageSource).toContain("setNeedsRecalc(false)");
   });
 
   it("places Items title and actions on one header row for NO_QTY", () => {
@@ -34,14 +37,13 @@ describe("RequirementSheetPage workbench actions (FT-PD-066)", () => {
 
 describe("RequirementSheetNoQtyGrid headings", () => {
   it("keeps corrected qty column headings", () => {
-    // Headings renamed to canonical NO_QTY business terms (WO Planning Workspace UI/UX
-    // redesign) — kept in sync with the DetailMetric labels in the same component.
     expect(gridSource).toContain("Customer Demand");
-    expect(gridSource).toContain("Production Shortfall Carry Forward");
-    expect(gridSource).toContain("QC recovery");
-    expect(gridSource).toContain("Total RS Quantity");
+    expect(gridSource).toContain("Production Shortage");
+    expect(gridSource).toContain("Final QC Rejection");
+    expect(gridSource).toContain("Pending Recovery");
+    expect(gridSource).toContain("Prior Accepted Excess");
+    expect(gridSource).toContain("Net Production Requirement");
     expect(gridSource).toContain("Pending QC");
-    expect(gridSource).toContain("Hold / rework");
-    expect(gridSource).toContain("Usable FG");
+    expect(gridSource).not.toContain("Final RS Qty");
   });
 });

@@ -88,6 +88,7 @@ type IssueLineDraft = {
   /** PMR executable requirement after waived qty is removed. */
   effectiveRequiredQty?: number;
   waivedQty?: number;
+  shortIssueQty?: number;
   /** PMR qty already issued to production. */
   alreadyIssuedQty?: number;
   /** PMR balance still to issue (= original − issued). */
@@ -151,6 +152,7 @@ type PmrIssueLine = {
   effectiveRequiredQty?: number;
   issuedQty: number;
   waivedQty?: number;
+  shortIssueQty?: number;
   pendingQty: number;
   unit: string;
   totalStoreStock?: number | null;
@@ -189,8 +191,11 @@ type PmrIssueDecision = {
   totalEffectiveRequired?: number;
   totalIssued: number;
   totalWaived: number;
+  totalShortIssueQty?: number;
   totalExcessIssue: number;
   totalRemaining: number;
+  pmrStatus?: string;
+  pmrStatusLabel?: string;
   canIssueMore: boolean;
   canIssueAnyPendingLine?: boolean;
   waitingProcurement?: boolean;
@@ -286,6 +291,7 @@ function pmrLineToDraft(pl: PmrIssueLine): IssueLineDraft {
     originalRequestQty: pl.originalRequiredQty ?? pl.requiredQty,
     effectiveRequiredQty: pl.effectiveRequiredQty ?? Math.max(0, pl.requiredQty - (pl.waivedQty ?? 0)),
     waivedQty: pl.waivedQty,
+    shortIssueQty: pl.shortIssueQty ?? pl.waivedQty,
     alreadyIssuedQty: pl.issuedQty,
     stillRequiredQty: issueCap,
     issueCapQty: issueCap,
@@ -854,7 +860,7 @@ export function MaterialIssuePage() {
 
   async function handleWaiveRemaining() {
     if (!activePmrId || !waiveReason) {
-      showError("Select a waive reason.");
+      showError("Select a Short Issue close reason.");
       return;
     }
     setSubmitting(true);
@@ -866,7 +872,9 @@ export function MaterialIssuePage() {
       setShowWaiveForm(false);
       setWaiveReason("");
       setWaiveRemarks("");
-      showSuccess("Remaining quantity waived — short issue accepted.");
+      showSuccess(
+        "Short Issue closed — unissued qty stays in RM Store (no stock movement). Production uses issued qty only.",
+      );
       await refreshPendingPmrsList();
       await loadPmrIntoForm(activePmrId, typeof fromLocationId === "number" ? fromLocationId : undefined);
     } catch (e) {
@@ -1235,6 +1243,7 @@ export function MaterialIssuePage() {
                       <>
                         <th className="text-right">Required</th>
                         <th className="text-right">Issued</th>
+                        <th className="text-right">Short Issue</th>
                         <th className="text-right">Pending</th>
                       </>
                     ) : null}
@@ -1247,8 +1256,9 @@ export function MaterialIssuePage() {
                   {lines.map((ln) => {
                     const item = ctx?.rmItems.find((i) => i.id === ln.itemId);
                     const unit = ln.unit ?? item?.unit;
-                    const required = ln.effectiveRequiredQty ?? ln.originalRequestQty ?? 0;
+                    const required = ln.originalRequestQty ?? ln.effectiveRequiredQty ?? 0;
                     const issued = ln.alreadyIssuedQty ?? 0;
+                    const shortIssue = ln.waivedQty ?? ln.shortIssueQty ?? 0;
                     const pending = ln.pmrPendingQty ?? ln.pendingQty ?? 0;
                     const avail = ln.available ?? ln.freeStoreStock ?? ln.issueAvailableStoreQty ?? null;
                     const lineStatus = resolveMaterialIssueLineStatus({
@@ -1299,6 +1309,9 @@ export function MaterialIssuePage() {
                           <>
                             <td className="text-right tabular-nums">{fmtQty(required, unit)}</td>
                             <td className="text-right tabular-nums">{fmtQty(issued, unit)}</td>
+                            <td className="text-right tabular-nums text-slate-700">
+                              {fmtQty(shortIssue, unit)}
+                            </td>
                             <td className="text-right tabular-nums font-bold text-amber-900">
                               {fmtQty(pending, unit)}
                             </td>
@@ -1396,7 +1409,11 @@ export function MaterialIssuePage() {
             </div>
           ) : null}
 
-          {woPmrMode && issueDecision && (issueDecision.totalIssued > 0 || issueDecision.showPartialDecisionPanel) ? (
+          {woPmrMode &&
+          issueDecision &&
+          (issueDecision.totalIssued > 0 ||
+            issueDecision.showPartialDecisionPanel ||
+            (issueDecision.totalShortIssueQty ?? issueDecision.totalWaived) > 1e-6) ? (
             <section
               className="mt-2 rounded border border-violet-200 bg-violet-50/80 px-3 py-2.5"
               data-testid="material-issue-decision-panel"
@@ -1404,7 +1421,8 @@ export function MaterialIssuePage() {
               <h3 className="text-[12px] font-bold text-violet-950">Material issue status</h3>
               <div className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] tabular-nums text-violet-950">
                 <span>
-                  <span className="font-semibold">Required:</span> {fmtQty(issueDecision.totalRequired)}
+                  <span className="font-semibold">Required:</span>{" "}
+                  {fmtQty(issueDecision.totalOriginalRequired ?? issueDecision.totalRequired)}
                 </span>
                 <span>
                   <span className="font-semibold">Issued:</span> {fmtQty(issueDecision.totalIssued)}
@@ -1414,15 +1432,30 @@ export function MaterialIssuePage() {
                     <span className="font-semibold">Excess:</span> {fmtQty(issueDecision.totalExcessIssue)}
                   </span>
                 ) : null}
-                <span>
-                  <span className="font-semibold">Remaining:</span> {fmtQty(issueDecision.totalRemaining)}
-                </span>
-                {issueDecision.totalWaived > 1e-6 ? (
-                  <span>
-                    <span className="font-semibold">Waived:</span> {fmtQty(issueDecision.totalWaived)}
+                {(issueDecision.totalShortIssueQty ?? issueDecision.totalWaived) > 1e-6 ? (
+                  <span data-testid="material-issue-short-issue-qty">
+                    <span className="font-semibold">Short Issue:</span>{" "}
+                    {fmtQty(issueDecision.totalShortIssueQty ?? issueDecision.totalWaived)}
                   </span>
-                ) : null}
+                ) : (
+                  <span>
+                    <span className="font-semibold">Remaining:</span> {fmtQty(issueDecision.totalRemaining)}
+                  </span>
+                )}
+                <span>
+                  <span className="font-semibold">Status:</span>{" "}
+                  {issueDecision.pmrStatusLabel ??
+                    (issueDecision.pmrStatus === "SHORT_ISSUE_ACCEPTED"
+                      ? "Closed – Short Issue Accepted"
+                      : issueDecision.pmrStatus ?? "—")}
+                </span>
               </div>
+              {(issueDecision.totalShortIssueQty ?? issueDecision.totalWaived) > 1e-6 ? (
+                <p className="mt-1 text-[11px] text-violet-900" data-testid="material-issue-short-issue-note">
+                  Short Issue is audit-only — that quantity was not issued and remains in RM Store (no stock
+                  movement). Production uses Issued qty only.
+                </p>
+              ) : null}
               {issueDecision.materialReleasedToProductionAt ? (
                 <p className="mt-1 text-[11px] font-medium text-emerald-900">Released to production.</p>
               ) : null}
@@ -1464,7 +1497,7 @@ export function MaterialIssuePage() {
                     disabled={submitting}
                     onClick={() => setShowWaiveForm((v) => !v)}
                   >
-                    Waive Remaining
+                    Close remaining (Short Issue)
                   </Button>
                   {issueDecision.canReleaseToProduction ? (
                     <Button
@@ -1494,7 +1527,7 @@ export function MaterialIssuePage() {
               {showWaiveForm && issueDecision.canWaiveRemaining ? (
                 <div className="mt-2 space-y-1.5 rounded border border-violet-200 bg-white p-2">
                   <label className="erp-form-field block">
-                    <span className="text-xs font-medium text-slate-600">Waive reason</span>
+                    <span className="text-xs font-medium text-slate-600">Short Issue reason</span>
                     <select
                       className="erp-select mt-1 w-full"
                       value={waiveReason}
@@ -1519,7 +1552,7 @@ export function MaterialIssuePage() {
                     disabled={submitting || !waiveReason}
                     onClick={() => void handleWaiveRemaining()}
                   >
-                    Confirm waive remaining
+                    Confirm Short Issue close
                   </Button>
                 </div>
               ) : null}

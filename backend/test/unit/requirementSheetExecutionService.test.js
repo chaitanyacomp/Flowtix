@@ -264,7 +264,7 @@ const lockedSheetFixture = {
 };
 
 describe("requirementSheetExecutionService", () => {
-  it("balance uses requirementQty not suggestedWoQtySnapshot", async () => {
+  it("balance uses locked Final RS Qty (totalRsQty / suggestedWoQtySnapshot), not base requirementQty", async () => {
     const db = createMockDb({
       sheets: [
         {
@@ -277,8 +277,12 @@ describe("requirementSheetExecutionService", () => {
           lines: [
             {
               itemId: 100,
-              requirementQty: 10000,
-              suggestedWoQtySnapshot: 25000,
+              requirementQty: 1000,
+              baseDemandQty: 1000,
+              totalRsQty: 1025,
+              suggestedWoQtySnapshot: 1025,
+              productionShortfallQty: 20,
+              qcRejectionRecoveryQty: 5,
               item: { id: 100, itemName: "FG-A", itemType: "FG" },
             },
           ],
@@ -293,21 +297,105 @@ describe("requirementSheetExecutionService", () => {
           docNo: "WO-26-0001",
           status: "PENDING",
           createdAt: new Date("2026-06-02"),
-          lines: [{ fgItemId: 100, qty: 3000, plannedQty: 3000 }],
+          lines: [{ fgItemId: 100, qty: 300, plannedQty: 300 }],
         },
       ],
       pmrs: [{ id: 60, workOrderId: 50, docNo: "PMR-26-0001", status: "REQUESTED" }],
     });
 
     const res = await getRequirementSheetExecutionSummary(db, 1, readinessDeps());
-    assert.equal(res.lines[0].rsDemandQty, 10000);
-    assert.equal(res.lines[0].woPlacedQty, 3000);
-    assert.equal(res.lines[0].rsBalanceQty, 7000);
-    assert.equal(res.totals.rsDemandQty, 10000);
-    assert.equal(res.totals.woPlacedQty, 3000);
-    assert.equal(res.totals.rsBalanceQty, 7000);
+    assert.equal(res.lines[0].rsDemandQty, 1025);
+    assert.equal(res.lines[0].woPlacedQty, 300);
+    assert.equal(res.lines[0].rsBalanceQty, 725);
+    assert.equal(res.totals.rsDemandQty, 1025);
+    assert.equal(res.totals.woPlacedQty, 300);
+    assert.equal(res.totals.rsBalanceQty, 725);
     assert.equal(res.processStageKey, res.placementStage.processStageKey);
     assert.ok(typeof res.processStageKey === "string" || res.processStageKey === null);
+  });
+
+  it("Waive locked sheet balance stays at customer demand only", async () => {
+    const db = createMockDb({
+      sheets: [
+        {
+          id: 1,
+          salesOrderId: 10,
+          cycleId: 2,
+          periodKey: "2026-06",
+          status: "LOCKED",
+          salesOrder: { id: 10, orderType: "NO_QTY" },
+          lines: [
+            {
+              itemId: 100,
+              requirementQty: 1000,
+              baseDemandQty: 1000,
+              totalRsQty: 1000,
+              suggestedWoQtySnapshot: 1000,
+              productionShortfallQty: 0,
+              qcRejectionRecoveryQty: 0,
+              item: { id: 100, itemName: "FG-A", itemType: "FG" },
+            },
+          ],
+        },
+      ],
+      plans: [{ id: 5, periodKey: "2026-06", releasedAt: new Date("2026-06-01"), releasedRevision: 1, planSequenceNo: 1 }],
+      mrs: [{ id: 9, monthlyProductionPlanId: 5, sourceType: "MONTHLY_PLAN", reversedAt: null, docNo: "MR-26-0001", status: "APPROVED" }],
+      workOrders: [],
+      pmrs: [],
+    });
+
+    const res = await getRequirementSheetExecutionSummary(db, 1, readinessDeps());
+    assert.equal(res.lines[0].rsDemandQty, 1000);
+    assert.equal(res.lines[0].rsBalanceQty, 1000);
+    assert.equal(res.totals.rsDemandQty, 1000);
+    assert.equal(res.kpis.customerDemandQty, 1000);
+    assert.equal(res.kpis.productionShortageQty, 0);
+    assert.equal(res.kpis.qcFinalRejectionQty, 0);
+    assert.equal(res.kpis.totalRecoveryQty, 0);
+    assert.equal(res.kpis.woQuantityPlaced, 0);
+    assert.equal(res.kpis.numberOfWos, 0);
+    assert.equal(res.kpis.remainingToPlace, 1000);
+  });
+
+  it("Planning Context KPIs expose Keep composition without treating demand as WO qty", async () => {
+    const db = createMockDb({
+      sheets: [
+        {
+          id: 1,
+          salesOrderId: 10,
+          cycleId: 2,
+          periodKey: "2026-06",
+          status: "LOCKED",
+          salesOrder: { id: 10, orderType: "NO_QTY" },
+          lines: [
+            {
+              itemId: 100,
+              requirementQty: 1000,
+              baseDemandQty: 1000,
+              totalRsQty: 1025,
+              suggestedWoQtySnapshot: 1025,
+              productionShortfallQty: 20,
+              qcRejectionRecoveryQty: 5,
+              item: { id: 100, itemName: "FG-A", itemType: "FG" },
+            },
+          ],
+        },
+      ],
+      plans: [{ id: 5, periodKey: "2026-06", releasedAt: new Date("2026-06-01"), releasedRevision: 1, planSequenceNo: 1 }],
+      mrs: [{ id: 9, monthlyProductionPlanId: 5, sourceType: "MONTHLY_PLAN", reversedAt: null, docNo: "MR-26-0001", status: "APPROVED" }],
+      workOrders: [],
+      pmrs: [],
+    });
+
+    const res = await getRequirementSheetExecutionSummary(db, 1, readinessDeps());
+    assert.equal(res.kpis.customerDemandQty, 1000);
+    assert.equal(res.kpis.productionShortageQty, 20);
+    assert.equal(res.kpis.qcFinalRejectionQty, 5);
+    assert.equal(res.kpis.totalRecoveryQty, 25);
+    assert.equal(res.kpis.totalRsRequirement, 1025);
+    assert.equal(res.kpis.woQuantityPlaced, 0);
+    assert.equal(res.kpis.remainingToPlace, 1025);
+    assert.equal(res.kpis.numberOfWos, 0);
   });
 
   it("shows release state when period plan is released", async () => {
@@ -495,7 +583,9 @@ describe("requirementSheetExecutionService", () => {
             {
               itemId: 105,
               requirementQty: 10000,
-              suggestedWoQtySnapshot: 25000,
+              baseDemandQty: 10000,
+              totalRsQty: 10000,
+              suggestedWoQtySnapshot: 10000,
               item: { id: 105, itemName: "FG-F", itemType: "FG" },
             },
           ],
@@ -812,7 +902,7 @@ describe("assessNoQtyPlacementStageForCycle", () => {
     assert.equal(res.placementStatus, "PARTIALLY_READY");
   });
 
-  it("does not unlock Place WO when locked RS has no released Monthly Plan", async () => {
+  it("unlocks Place WO when locked RS has Net RM = 0 even without a Monthly Plan (PROCUREMENT_NOT_REQUIRED)", async () => {
     const db = createAssessorMockDb({
       sheets: [lockedSheetFixture],
       plans: [],
@@ -827,12 +917,244 @@ describe("assessNoQtyPlacementStageForCycle", () => {
       placementPreviewDeps({ canPlace: true, totalExecutableQty: 10000, totalRsBalanceQty: 10000, status: "READY" }),
     );
 
+    assert.equal(res.readyToPlaceWo, true);
+    assert.equal(res.released, true);
+    assert.equal(res.skipMonthlyPlanning, true);
+    assert.equal(res.readinessStatus, "READY_TO_PLACE_WO");
+    assert.equal(res.processStageKey, "NO_QTY_READY_TO_PLACE_WO");
+  });
+
+  it("unlocks Place WO for stock-ready FG while other FG still need Monthly Planning (mixed RS)", async () => {
+    const db = createAssessorMockDb({
+      sheets: [
+        {
+          ...lockedSheetFixture,
+          lines: [
+            { itemId: 101, requirementQty: 1000, item: { id: 101, itemName: "Dummy Plug", itemType: "FG", unit: "Nos" } },
+            { itemId: 102, requirementQty: 500, item: { id: 102, itemName: "Nozzle", itemType: "FG", unit: "Nos" } },
+          ],
+        },
+      ],
+      plans: [],
+      mrs: [],
+      workOrders: [],
+      pmrs: [],
+    });
+
+    const res = await assessNoQtyPlacementStageForCycle(
+      db,
+      { salesOrderId: 10, cycleId: 2 },
+      readinessDeps({
+        rmNeeded: new Map([
+          [700, 1],
+          [701, 1],
+        ]),
+        availabilityRows: [
+          {
+            itemId: 700,
+            itemName: "RM-A",
+            requiredQty: 1000,
+            freeStockQty: 1000,
+            shortageAfterReservationQty: 0,
+            incomingQty: 0,
+          },
+          {
+            itemId: 701,
+            itemName: "RM-B",
+            requiredQty: 500,
+            freeStockQty: 0,
+            shortageAfterReservationQty: 500,
+            incomingQty: 0,
+          },
+        ],
+        assessNoQtyBatchPlacement: async (_db, sheet, deps = {}) => {
+          const placedByItem = deps.placedByItem ?? new Map();
+          const balanceLines = (sheet?.lines ?? []).map((ln) => {
+            const itemId = Number(ln.itemId);
+            const rsDemandQty = Number(ln.requirementQty ?? 0);
+            const woPlacedQty = Number(placedByItem.get(itemId) ?? 0);
+            const rsBalanceQty = Math.max(0, rsDemandQty - woPlacedQty);
+            const executable = itemId === 101 ? rsBalanceQty : 0;
+            return {
+              itemId,
+              itemName: ln.item?.itemName ?? `Item ${itemId}`,
+              rsDemandQty,
+              woPlacedQty,
+              rsBalanceQty,
+              suggestedExecutableQty: executable,
+              executableQty: executable,
+              status: executable > 0 ? "READY" : "AWAITING_PROCUREMENT",
+              reason: executable > 0 ? "stock ready" : "shortage",
+              rmLines: [],
+            };
+          });
+          return {
+            balanceLines,
+            totals: {
+              rsDemandQty: 1500,
+              woPlacedQty: 0,
+              rsBalanceQty: 1500,
+              rmLimitedCapacityQty: 1000,
+            },
+            placement: {
+              canPlace: true,
+              status: "PARTIALLY_READY",
+              reason: "mixed",
+              summary: {
+                totalRsBalanceQty: 1500,
+                totalExecutableQty: 1000,
+                totalWoPlacedQty: 0,
+                totalRsDemandQty: 1500,
+              },
+              lines: balanceLines,
+              sharedRmConflict: false,
+            },
+            rmReadiness: {
+              basis: "PROPOSED_WO_QTY",
+              fgBalanceLines: [],
+              lines: [
+                {
+                  rmItemId: 700,
+                  rmItemName: "RM-A",
+                  requiredQty: 1000,
+                  availableQty: 1000,
+                  shortageQty: 0,
+                  incomingQty: 0,
+                  status: "READY",
+                },
+                {
+                  rmItemId: 701,
+                  rmItemName: "RM-B",
+                  requiredQty: 500,
+                  availableQty: 0,
+                  shortageQty: 500,
+                  incomingQty: 0,
+                  status: "SHORT",
+                },
+              ],
+              summary: {
+                requiredQty: 1500,
+                availableQty: 1000,
+                shortageQty: 500,
+                incomingQty: 0,
+                readyLineCount: 1,
+                partialLineCount: 0,
+                awaitingProcurementLineCount: 1,
+                missingBomCount: 0,
+              },
+            },
+            snapshot: {},
+            fgUnitByItemId: new Map(),
+          };
+        },
+      }),
+    );
+
+    assert.equal(res.readyToPlaceWo, true);
+    assert.equal(res.released, true);
+    assert.equal(res.skipMonthlyPlanning, false);
+    assert.equal(res.allowWoWithoutPlanRelease, true);
+    assert.equal(res.readinessStatus, "PARTIALLY_READY");
+    assert.equal(res.processStageKey, "NO_QTY_READY_TO_PLACE_WO");
+  });
+
+  it("keeps Monthly Planning pending when locked RS has RM shortage and no Monthly Plan", async () => {
+    const db = createAssessorMockDb({
+      sheets: [lockedSheetFixture],
+      plans: [],
+      mrs: [],
+      workOrders: [],
+      pmrs: [],
+    });
+
+    const res = await assessNoQtyPlacementStageForCycle(
+      db,
+      { salesOrderId: 10, cycleId: 2 },
+      readinessDeps({
+        rmNeeded: new Map([[700, 1]]),
+        availabilityRows: [
+          {
+            itemId: 700,
+            itemName: "RM-A",
+            requiredQty: 5000,
+            freeStockQty: 0,
+            shortageAfterReservationQty: 5000,
+            incomingQty: 0,
+          },
+        ],
+        assessNoQtyBatchPlacement: async (_db, sheet, deps = {}) => {
+          const placedByItem = deps.placedByItem ?? new Map();
+          const lines = (sheet?.lines ?? []).map((ln) => {
+            const itemId = Number(ln.itemId);
+            const rsDemandQty = Number(ln.requirementQty ?? 0);
+            const woPlacedQty = Number(placedByItem.get(itemId) ?? 0);
+            return {
+              itemId,
+              itemName: ln.item?.itemName ?? `Item ${itemId}`,
+              rsDemandQty,
+              woPlacedQty,
+              rsBalanceQty: Math.max(0, rsDemandQty - woPlacedQty),
+              suggestedExecutableQty: 0,
+              executableQty: 0,
+              status: "AWAITING_PROCUREMENT",
+              reason: "shortage",
+              rmLines: [],
+            };
+          });
+          return {
+            balanceLines: lines,
+            totals: {
+              rsDemandQty: 10000,
+              woPlacedQty: 0,
+              rsBalanceQty: 10000,
+            },
+            placement: {
+              canPlace: false,
+              status: "AWAITING_PROCUREMENT",
+              reason: "shortage",
+              summary: {
+                totalRsBalanceQty: 10000,
+                totalExecutableQty: 0,
+                totalWoPlacedQty: 0,
+                totalRsDemandQty: 10000,
+              },
+              lines,
+              sharedRmConflict: false,
+            },
+            rmReadiness: {
+              basis: "PROPOSED_WO_QTY",
+              fgBalanceLines: [],
+              lines: [
+                {
+                  rmItemId: 700,
+                  rmItemName: "RM-A",
+                  requiredQty: 5000,
+                  availableQty: 0,
+                  shortageQty: 5000,
+                  incomingQty: 0,
+                  status: "SHORT",
+                },
+              ],
+              missingBoms: [],
+              summary: {
+                requiredQty: 5000,
+                availableQty: 0,
+                shortageQty: 5000,
+                incomingQty: 0,
+                missingBomCount: 0,
+              },
+            },
+          };
+        },
+      }),
+    );
+
     assert.equal(res.readyToPlaceWo, false);
     assert.equal(res.readinessStatus, "AWAITING_PROCUREMENT");
     assert.equal(res.processStageKey, "NO_QTY_REQUIREMENT_READY");
   });
 
-  it("does not unlock Place WO when Monthly Plan is draft or approved but unreleased", async () => {
+  it("does not unlock Place WO when Monthly Plan is draft or approved but unreleased and RM still short", async () => {
     for (const status of ["DRAFT", "APPROVED"]) {
       const db = createAssessorMockDb({
         sheets: [lockedSheetFixture],
@@ -845,7 +1167,79 @@ describe("assessNoQtyPlacementStageForCycle", () => {
       const res = await assessNoQtyPlacementStageForCycle(
         db,
         { salesOrderId: 10, cycleId: 2 },
-        placementPreviewDeps({ canPlace: true, totalExecutableQty: 10000, totalRsBalanceQty: 10000, status: "READY" }),
+        readinessDeps({
+          rmNeeded: new Map([[700, 1]]),
+          availabilityRows: [
+            {
+              itemId: 700,
+              itemName: "RM-A",
+              requiredQty: 5000,
+              freeStockQty: 0,
+              shortageAfterReservationQty: 5000,
+              incomingQty: 0,
+            },
+          ],
+          assessNoQtyBatchPlacement: async (_db, sheet, deps = {}) => {
+            const placedByItem = deps.placedByItem ?? new Map();
+            const lines = (sheet?.lines ?? []).map((ln) => {
+              const itemId = Number(ln.itemId);
+              const rsDemandQty = Number(ln.requirementQty ?? 0);
+              const woPlacedQty = Number(placedByItem.get(itemId) ?? 0);
+              return {
+                itemId,
+                itemName: ln.item?.itemName ?? `Item ${itemId}`,
+                rsDemandQty,
+                woPlacedQty,
+                rsBalanceQty: Math.max(0, rsDemandQty - woPlacedQty),
+                suggestedExecutableQty: 0,
+                executableQty: 0,
+                status: "AWAITING_PROCUREMENT",
+                reason: "shortage",
+                rmLines: [],
+              };
+            });
+            return {
+              balanceLines: lines,
+              totals: { rsDemandQty: 10000, woPlacedQty: 0, rsBalanceQty: 10000 },
+              placement: {
+                canPlace: false,
+                status: "AWAITING_PROCUREMENT",
+                reason: "shortage",
+                summary: {
+                  totalRsBalanceQty: 10000,
+                  totalExecutableQty: 0,
+                  totalWoPlacedQty: 0,
+                  totalRsDemandQty: 10000,
+                },
+                lines,
+                sharedRmConflict: false,
+              },
+              rmReadiness: {
+                basis: "PROPOSED_WO_QTY",
+                fgBalanceLines: [],
+                lines: [
+                  {
+                    rmItemId: 700,
+                    rmItemName: "RM-A",
+                    requiredQty: 5000,
+                    availableQty: 0,
+                    shortageQty: 5000,
+                    incomingQty: 0,
+                    status: "SHORT",
+                  },
+                ],
+                missingBoms: [],
+                summary: {
+                  requiredQty: 5000,
+                  availableQty: 0,
+                  shortageQty: 5000,
+                  incomingQty: 0,
+                  missingBomCount: 0,
+                },
+              },
+            };
+          },
+        }),
       );
 
       assert.equal(res.readyToPlaceWo, false);

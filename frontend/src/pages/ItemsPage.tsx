@@ -16,6 +16,7 @@ import { BULK_DELETE_IN_USE_TOAST, bulkDeleteByIds } from "../lib/masterBulkDele
 import { ItemStockStatusBadge } from "../components/erp/ItemStockStatusBadge";
 import { parseItemQtyStr } from "../lib/itemStockStatus";
 import { ErpModal } from "../components/erp/ErpModal";
+import { DependencyLifecycleModal, type DependencySummary } from "../components/masters/DependencyLifecycleModal";
 
 type Item = {
   id: number;
@@ -34,6 +35,7 @@ type Item = {
   minimumStockQty?: string | null;
   reorderQty?: string | null;
   fgManualGreenLevelQty?: string | null;
+  isActive: boolean;
 };
 
 type UnitRow = { id: number; unitName: string; unitCode?: string | null };
@@ -89,6 +91,9 @@ export function ItemsPage() {
   const [error, setError] = React.useState<string | null>(null);
   const [bulkDeleteOpen, setBulkDeleteOpen] = React.useState(false);
   const [bulkDeleting, setBulkDeleting] = React.useState(false);
+  const [lifecycleItem, setLifecycleItem] = React.useState<Item | null>(null);
+  const [dependencySummary, setDependencySummary] = React.useState<DependencySummary | null>(null);
+  const [checkingDependencies, setCheckingDependencies] = React.useState(false);
 
   const rowIds = React.useMemo(() => rows.map((r) => r.id), [rows]);
   const bulkSel = useBulkSelection(rowIds);
@@ -159,7 +164,7 @@ export function ItemsPage() {
 
   function load() {
     return Promise.all([
-      apiFetch<Item[]>("/api/items"),
+      apiFetch<Item[]>("/api/items?includeInactive=true"),
       apiFetch<UnitRow[]>("/api/units"),
       apiFetch<StockSummaryRow[]>("/api/stock/summary-buckets"),
     ])
@@ -412,11 +417,25 @@ export function ItemsPage() {
     }
   }
 
-  async function onDelete(id: number) {
-    if (!confirm("Delete item?")) return;
-    setError(null);
+  async function inspectLifecycle(item: Item) {
+    setLifecycleItem(item);
+    setDependencySummary(null);
+    setCheckingDependencies(true);
     try {
-      await apiFetch(`/api/items/${id}`, { method: "DELETE" });
+      setDependencySummary(await apiFetch<DependencySummary>(`/api/items/${item.id}/dependencies`));
+    } catch (e) {
+      toast.showError(e instanceof Error ? e.message : "Dependency check failed");
+      setLifecycleItem(null);
+    } finally {
+      setCheckingDependencies(false);
+    }
+  }
+
+  async function deleteLifecycleItem() {
+    if (!lifecycleItem) return;
+    try {
+      await apiFetch(`/api/items/${lifecycleItem.id}`, { method: "DELETE" });
+      setLifecycleItem(null);
       await load();
       toast.showSuccess("Item deleted");
     } catch (e) {
@@ -427,6 +446,18 @@ export function ItemsPage() {
       } else {
         toast.showError(msg);
       }
+    }
+  }
+
+  async function deactivateLifecycleItem() {
+    if (!lifecycleItem) return;
+    try {
+      await apiFetch(`/api/items/${lifecycleItem.id}/deactivate`, { method: "POST" });
+      setLifecycleItem(null);
+      await load();
+      toast.showSuccess("Item marked inactive");
+    } catch (e) {
+      toast.showError(e instanceof Error ? e.message : "Failed to mark inactive");
     }
   }
 
@@ -525,7 +556,7 @@ export function ItemsPage() {
                     />
                   </td>
                 ) : null}
-                <td className="font-medium">{i.itemName}</td>
+                <td className="font-medium">{i.itemName} {!i.isActive ? <Badge variant="default">Inactive</Badge> : null}</td>
                 <td>
                   <Badge
                     variant={i.itemType === "FG" ? "success" : i.itemType === "SFG" ? "info" : "default"}
@@ -554,9 +585,9 @@ export function ItemsPage() {
                         type="button"
                         size="icon"
                         variant="destructive"
-                        onClick={() => onDelete(i.id)}
-                        aria-label="Delete"
-                        title="Items in use (BOM, orders, stock) cannot be deleted."
+                        onClick={() => inspectLifecycle(i)}
+                        aria-label="Review dependencies"
+                        title="Review delete or inactive options"
                       >
                         <Trash2 className="h-4 w-4" />
                       </Button>
@@ -577,6 +608,14 @@ export function ItemsPage() {
         loading={bulkDeleting}
         onCancel={() => setBulkDeleteOpen(false)}
         onConfirm={onBulkDeleteConfirm}
+      />
+      <DependencyLifecycleModal
+        open={lifecycleItem != null}
+        summary={dependencySummary}
+        loading={checkingDependencies}
+        onClose={() => setLifecycleItem(null)}
+        onDelete={deleteLifecycleItem}
+        onDeactivate={deactivateLifecycleItem}
       />
 
       {showForm ? (
@@ -941,4 +980,3 @@ export function ItemsPage() {
     </div>
   );
 }
-

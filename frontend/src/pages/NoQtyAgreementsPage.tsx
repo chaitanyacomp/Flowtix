@@ -118,11 +118,13 @@ export function NoQtyAgreementsPage() {
                       : "—");
                   const planningOnly = isNoQtyExecutionPlanningOnlyState({
                     actionNeededKey: row.actionNeededKey,
-                    rmCoverageLabel: row.rmCoverageLabel,
+                    showProcurementPendingHint: row.showProcurementPendingHint,
                   });
                   const ctaLabel = resolveNoQtyExecutionRegisterCtaLabel({
                     actionNeededKey: row.actionNeededKey,
-                    rmCoverageLabel: row.rmCoverageLabel,
+                    actionNeededLabel: row.actionNeededLabel,
+                    ctaLabel: row.ctaLabel,
+                    showProcurementPendingHint: row.showProcurementPendingHint,
                     suggestedWoQty: row.suggestedWoQty,
                   });
 

@@ -13,3 +13,4 @@ Versioned registry of FT ERP Architectural Decision Records, governed by
 | ADR | Title | Status | Date | Supersedes |
 |-----|-------|--------|------|------------|
 | [ADR-2026-001](./ADR-2026-001_NO_QTY_Planning_and_Execution_Are_Independent_Axes.md) | NO_QTY Planning and Execution Are Independent Axes | Proposed | 2026-07-13 | — |
+| [ADR-2026-002](./ADR-2026-002_NO_QTY_Accepted_Surplus_Is_Reconstructed.md) | NO_QTY Accepted Surplus Is Reconstructed | Accepted | 2026-07-15 | — |

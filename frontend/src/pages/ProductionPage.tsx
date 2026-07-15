@@ -2338,9 +2338,9 @@ export function ProductionPage() {
 
   /** Matches RM readiness strip headline ("Production allowed now"). */
   const rmAllowedNowQty = React.useMemo(() => {
-    if (!showRegularRmReadiness) return null;
+    if (!showRegularRmReadiness && !showNoQtyRmStatus) return null;
     return resolveRegularRmAllowedNowQty(effectiveRmReadiness);
-  }, [showRegularRmReadiness, effectiveRmReadiness]);
+  }, [showRegularRmReadiness, showNoQtyRmStatus, effectiveRmReadiness]);
 
   /** Max qty for save/approve/clamp — same readiness payload, WO balance from API when present. */
   const rmEntryQtyCap = React.useMemo(() => {
@@ -2927,6 +2927,16 @@ export function ProductionPage() {
     ) {
       w.push(`Entered quantity exceeds issued RM capacity (${fmtProdQty(rmEntryQtyCap)}).`);
     }
+    if (fromNoQtySo && selectedMetrics && producedQtyParsed != null) {
+      const editingQty = editing?.workOrderLine?.id === wolId ? Number(editing.producedQty ?? 0) : 0;
+      const cumulative = Math.max(0, selectedMetrics.usedQty - editingQty) + producedQtyParsed;
+      const excess = cumulative - selectedMetrics.woLineQty;
+      if (excess > 1e-6) {
+        w.push(
+          `Production exceeds the planned WO quantity by ${fmtProdQty(excess)} and will be treated as excess production.`,
+        );
+      }
+    }
     return w;
   }, [
     fromNoQtySo,
@@ -2936,6 +2946,9 @@ export function ProductionPage() {
     rmEntryQtyCap,
     rmAllowedNowQty,
     rmReadinessLoading,
+    selectedMetrics,
+    editing,
+    wolId,
   ]);
 
   async function refresh(): Promise<{ flatLines: FlatLine[]; entries: ProdEntryRow[] }> {
@@ -4313,8 +4326,10 @@ export function ProductionPage() {
   ]);
 
   const productionEntryMaxQty = React.useMemo(
-    () => resolveProductionEntryMaxQty(selectedMetrics?.remainingQty, rmEntryQtyCap),
-    [selectedMetrics?.remainingQty, rmEntryQtyCap],
+    () => fromNoQtySo && rmEntryQtyCap != null
+      ? rmEntryQtyCap
+      : resolveProductionEntryMaxQty(selectedMetrics?.remainingQty, rmEntryQtyCap),
+    [fromNoQtySo, selectedMetrics?.remainingQty, rmEntryQtyCap],
   );
 
   const showProductionOperatorIdentity =
@@ -4385,10 +4400,12 @@ export function ProductionPage() {
 
   const fillOperatorRemainingQty = React.useCallback(() => {
     const woRem = selectedMetrics?.remainingQty ?? 0;
-    const cap = rmEntryQtyCap != null ? Math.min(woRem, rmEntryQtyCap) : woRem;
+    const cap = fromNoQtySo
+      ? Math.max(0, rmEntryQtyCap ?? 0)
+      : rmEntryQtyCap != null ? Math.min(woRem, rmEntryQtyCap) : woRem;
     producedQtyUserTouchedRef.current = true;
     setProducedQtyStr(fmtProdQty(cap));
-  }, [selectedMetrics?.remainingQty, rmEntryQtyCap, fmtProdQty, setProducedQtyStr]);
+  }, [fromNoQtySo, selectedMetrics?.remainingQty, rmEntryQtyCap, fmtProdQty, setProducedQtyStr]);
 
   const submitOperatorEntryFromQty = React.useCallback(() => {
     if (!posting && createFormCanSubmit) {
@@ -4407,6 +4424,7 @@ export function ProductionPage() {
       unit={selected?.fgItem.unit ?? null}
       disabled={rmProductionEntryBlocked}
       maxAllowedQty={productionEntryMaxQty}
+      maxLabelPrefix={fromNoQtySo ? "RM-supported maximum" : "Max"}
       producedQtyValid={producedQtyValid}
       wolId={wolId}
       rmReadinessLoading={rmReadinessLoading}
@@ -7324,4 +7342,3 @@ export function ProductionPage() {
     </PageContainer>
   );
 }
-

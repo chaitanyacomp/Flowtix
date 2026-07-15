@@ -284,6 +284,19 @@ enum NoQtyRecoveryAllocationStatus {
   REVERSED
 }
 
+/// Phase 2B: per-FG Keep/Waive decision on a draft Requirement Sheet.
+enum NoQtyRsItemRecoveryDecisionStatus {
+  PENDING
+  KEPT
+  WAIVED
+  CANCELLED
+}
+
+enum NoQtyRsItemRecoveryDecisionEffect {
+  KEEP
+  WAIVE
+}
+
 enum NoQtySoWaiverReasonCode {
   MACHINE_BREAKDOWN
   CAPACITY_CONSTRAINT
@@ -575,6 +588,7 @@ model User {
   recoveryAllocationsReversed               RecoveryAllocation[]           @relation("RecoveryAllocReversedBy")
   noQtySoWaiversApproved                    NoQtySoWaiver[]                @relation("NoQtySoWaiverApprovedBy")
   noQtyAcceptedFgDispositionsApproved       NoQtyAcceptedFgDisposition[]   @relation("NoQtyFgDispositionApprovedBy")
+  noQtyRsRecoveryDecisionsDecided           NoQtyRsItemRecoveryDecision[]  @relation("NoQtyRsRecoveryDecisionDecidedBy")
 }
 
 /// Full-database SQL backup row (see admin backup routes). `filePath` is server-only; never return to clients.
@@ -711,14 +725,21 @@ model Customer {
 model CustomerDeliveryAddress {
   id            Int      @id @default(autoincrement())
   customerId    Int
+  /// User-facing location label (dropdown name), e.g. "Registered Office", "Pune Plant".
   label         String   @db.VarChar(128)
+  locationType  CustomerDeliveryLocationType @default(OTHER)
   address       String?  @db.Text
   city          String?  @db.VarChar(128)
+  district      String?  @db.VarChar(128)
   stateId       Int?
+  pincode       String?  @db.VarChar(16)
+  country       String?  @db.VarChar(64)
   /// Optional GSTIN for this delivery location (Tally ship-to / branch GST).
   gst           String?  @db.VarChar(15)
   contactPerson String?  @db.VarChar(128)
   phone         String?  @db.VarChar(32)
+  email         String?  @db.VarChar(254)
+  notes         String?  @db.Text
   isDefault     Boolean  @default(false)
   isActive      Boolean  @default(true)
   createdAt     DateTime @default(now())
@@ -728,12 +749,14 @@ model CustomerDeliveryAddress {
   stateRef State?   @relation(fields: [stateId], references: [id], onDelete: SetNull)
   shipToSalesOrders SalesOrder[]
   salesBillShipToSelections SalesBill[] @relation("SalesBillShipToAddress")
+  dispatches Dispatch[]
 
   @@index([customerId])
   @@index([stateId])
   @@index([gst])
   @@index([isDefault])
   @@index([isActive])
+  @@index([locationType])
 }
 
 model Item {
@@ -767,6 +790,8 @@ model Item {
   fgManualGreenLevelQty             Decimal? @db.Decimal(18, 3)
   createdAt                         DateTime @default(now())
   updatedAt                         DateTime @updatedAt
+  /// Inactive masters remain queryable for history but cannot be selected for new transactions.
+  isActive                          Boolean  @default(true)
 
   unitRef Unit? @relation(fields: [unitId], references: [id], onDelete: SetNull)
 
@@ -780,6 +805,7 @@ model Item {
   rmPoLines                       RmPurchaseOrderLine[]
   workOrderLines                  WorkOrderLine[]                  @relation("WoLineFg")
   carryForwardPending             CarryForwardPending[]
+  noQtyRsRecoveryDecisions        NoQtyRsItemRecoveryDecision[]
   materialRequirementsAsFg        MaterialRequirement[]            @relation("MaterialRequirementFgItem")
   salesBillLines                  SalesBillLine[]
   requirementSheetLines           RequirementSheetLine[]
@@ -811,6 +837,7 @@ model Item {
   rmPlanLinesAsRm                 RmPlanLine[]                     @relation("RmPlanLineRmItem")
 
   @@index([itemType])
+  @@index([isActive])
   @@index([unitId])
 }
 
@@ -855,12 +882,15 @@ model Bom {
   /// Finished-good net weight for one BOM output batch (manufacturing planning).
   fgWeight         Decimal? @db.Decimal(18, 4)
   fgWeightUnitId   Int?
+  /// Runner/sprue weight produced per mould shot, expressed in fgWeightUnit.
+  /// It is engineering material consumption and is not part of delivered FG weight.
+  runnerWeight     Decimal @default(0) @db.Decimal(18, 4)
   /// Number of FG units this BOM represents (default 1 Nos).
   outputQty            Decimal @default(1) @db.Decimal(18, 3)
-  /// Centralized expected production + QC losses (not per RM line).
+  /// Legacy compatibility only. Engineering BOM calculations ignore these fields.
   processLossPercent   Decimal @default(0) @db.Decimal(18, 3)
   qcLossPercent        Decimal @default(0) @db.Decimal(18, 3)
-  /// Optional default FG planning buffer % suggested at Prepare WO (not mandatory).
+  /// Legacy compatibility only. Planning policy must not be owned by the BOM.
   suggestedFgPlanningBufferPercent Decimal? @db.Decimal(5, 2)
 
   fgItem       Item  @relation("BomFgItem", fields: [fgItemId], references: [id], onDelete: Cascade)
@@ -879,9 +909,9 @@ model BomLine {
   id             Int     @id @default(autoincrement())
   bomId          Int
   rmItemId       Int
-  /// Per unit of FG, before wastage
+  /// Engineering RM weight per FG unit, including its allocated share of runner weight.
   baseQty            Decimal @db.Decimal(18, 6)
-  /// Legacy operational compatibility field. Currently mirrors processLossPercent for RM issue math.
+  /// Legacy compatibility fields. BOM explosion and consumption ignore these percentages.
   wastagePercent     Decimal @default(0) @db.Decimal(18, 3)
   processLossPercent Decimal @default(0) @db.Decimal(18, 3)
   qcAllowancePercent Decimal @default(0) @db.Decimal(18, 3)
@@ -1342,6 +1372,15 @@ enum RequirementSheetColorZone {
   EXCESS
 }
 
+/// Customer delivery location types (canonical CustomerDeliveryAddress model).
+enum CustomerDeliveryLocationType {
+  REGISTERED_OFFICE
+  PLANT
+  WAREHOUSE
+  DEPOT
+  OTHER
+}
+
 /// One row per dispatch event; partial dispatch per sales order (aggregated qty for SO).
 /// Reversals: dispatchedQty negative, reversalOfId points at original forward dispatch row.
 model Dispatch {
@@ -1359,9 +1398,25 @@ model Dispatch {
   workflowStatus DispatchWorkflowStatus @default(LOCKED)
   date           DateTime               @default(now())
 
+  /// Customer Delivery Location selected at dispatch (nullable for legacy rows).
+  deliveryLocationId Int?
+  /// Immutable ship-to snapshot frozen at dispatch create (survives master edits).
+  deliveryLocationLabelSnapshot   String? @db.VarChar(128)
+  deliveryAddressSnapshot         String? @db.Text
+  deliveryCitySnapshot            String? @db.VarChar(128)
+  deliveryStateNameSnapshot       String? @db.VarChar(128)
+  deliveryStateCodeSnapshot       String? @db.VarChar(2)
+  deliveryPincodeSnapshot         String? @db.VarChar(16)
+  deliveryCountrySnapshot         String? @db.VarChar(64)
+  deliveryGstinSnapshot           String? @db.VarChar(15)
+  deliveryContactPersonSnapshot   String? @db.VarChar(128)
+  deliveryPhoneSnapshot           String? @db.VarChar(32)
+  deliveryEmailSnapshot           String? @db.VarChar(254)
+
   salesOrder      SalesOrder       @relation(fields: [soId], references: [id], onDelete: Cascade)
   cycle           SalesOrderCycle? @relation(fields: [cycleId], references: [id], onDelete: SetNull)
   item            Item             @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  deliveryLocation CustomerDeliveryAddress? @relation(fields: [deliveryLocationId], references: [id], onDelete: SetNull)
   reversalOf      Dispatch?        @relation("DispatchReversal", fields: [reversalOfId], references: [id], onDelete: Restrict)
   reversals       Dispatch[]       @relation("DispatchReversal")
   customerReturns CustomerReturn[]
@@ -1371,6 +1426,7 @@ model Dispatch {
   @@index([cycleId])
   @@index([date])
   @@index([reversalOfId])
+  @@index([deliveryLocationId])
 }
 
 /// Requirement planning sheet for NO_QTY sales orders (versioned per period).
@@ -1401,6 +1457,7 @@ model RequirementSheet {
   carryForwardPendingTargets CarryForwardPending[] @relation("CfPendingTargetRs")
   recoveryAllocations        RecoveryAllocation[]
   planRequirementCoverages   MonthlyPlanRequirementCoverage[]
+  recoveryDecisions          NoQtyRsItemRecoveryDecision[]
 
   @@unique([salesOrderId, cycleId, periodKey, version])
   @@index([salesOrderId])
@@ -2610,6 +2667,7 @@ model CarryForwardPending {
   shortfallResolution    ProductionShortfallResolution? @relation(fields: [productionShortfallResolutionId], references: [id], onDelete: SetNull)
   allocations            RecoveryAllocation[]
   waiverLines            NoQtySoWaiverLine[]
+  rsDecisionLines        NoQtyRsItemRecoveryDecisionLine[]
 
   @@index([salesOrderId, status])
   @@index([itemId, status])
@@ -2648,6 +2706,55 @@ model RecoveryAllocation {
   @@index([recoverySourceId, status])
   @@index([requirementSheetLineId, status])
   @@index([requirementSheetId, status])
+}
+
+/// Phase 2B: immutable Keep/Waive decision per FG item on a draft Requirement Sheet.
+/// PENDING = recovery discovered, not yet decided. KEEP/WAIVE are all-or-nothing for pending recovery.
+model NoQtyRsItemRecoveryDecision {
+  id                     Int                               @id @default(autoincrement())
+  requirementSheetId     Int
+  itemId                 Int
+  status                 NoQtyRsItemRecoveryDecisionStatus @default(PENDING)
+  /// Snapshot of available PRODUCTION_SHORTFALL at decision (or discovery) time.
+  productionShortfallQty Decimal                           @default(0) @db.Decimal(18, 3)
+  /// Snapshot of available QC_FINAL_REJECTION at decision (or discovery) time.
+  qcFinalRejectionQty    Decimal                           @default(0) @db.Decimal(18, 3)
+  pendingRecoveryQty     Decimal                           @default(0) @db.Decimal(18, 3)
+  /// Mandatory for WAIVE.
+  reason                 String?                           @db.Text
+  decidedAt              DateTime?
+  decidedByUserId        Int?
+  createdAt              DateTime                          @default(now())
+  updatedAt              DateTime                          @updatedAt
+
+  requirementSheet RequirementSheet                  @relation(fields: [requirementSheetId], references: [id], onDelete: Cascade)
+  item             Item                              @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  decidedBy        User?                             @relation("NoQtyRsRecoveryDecisionDecidedBy", fields: [decidedByUserId], references: [id], onDelete: SetNull)
+  lines            NoQtyRsItemRecoveryDecisionLine[]
+
+  @@unique([requirementSheetId, itemId])
+  @@index([requirementSheetId, status])
+  @@index([itemId])
+  @@index([status])
+}
+
+/// Phase 2B: per-source effects applied by a Keep/Waive decision (audit + reverse).
+model NoQtyRsItemRecoveryDecisionLine {
+  id                   Int                              @id @default(autoincrement())
+  decisionId           Int
+  recoverySourceId     Int
+  recoveryType         NoQtyRecoveryType
+  qty                  Decimal                          @db.Decimal(18, 3)
+  effect               NoQtyRsItemRecoveryDecisionEffect
+  /// Set when effect = KEEP (links to RecoveryAllocation).
+  recoveryAllocationId Int?
+  createdAt            DateTime                         @default(now())
+
+  decision       NoQtyRsItemRecoveryDecision @relation(fields: [decisionId], references: [id], onDelete: Cascade)
+  recoverySource CarryForwardPending         @relation(fields: [recoverySourceId], references: [id], onDelete: Restrict)
+
+  @@index([decisionId])
+  @@index([recoverySourceId])
 }
 
 /// NO_QTY Batch 3A: immutable SO closure waiver ceremony.

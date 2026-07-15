@@ -18,6 +18,54 @@ const { computeStoreCreateNextRsPendingEligibility } = require("./noQtyCreateNex
 
 const EPS = 1e-6;
 
+/**
+ * Pending Action / sample hrefs for NO_QTY Agreements (never Regular Orders).
+ * Admin → commercial SO list tab; Store/Production → execution register.
+ */
+function isStoreLikeRole(role) {
+  const r = String(role ?? "").trim().toUpperCase();
+  return r === "STORE" || r === "PRODUCTION";
+}
+
+function buildNoQtyAgreementHref(salesOrderId, { role = null, action = null, highlight = null } = {}) {
+  const soId = Number(salesOrderId);
+  const params = new URLSearchParams();
+  if (!(soId > 0)) {
+    return isStoreLikeRole(role) ? "/no-qty-agreements" : "/sales-orders?soType=NO_QTY";
+  }
+  params.set("salesOrderId", String(soId));
+  if (action) params.set("action", String(action));
+  if (highlight) params.set("highlight", String(highlight));
+  if (isStoreLikeRole(role)) {
+    return `/no-qty-agreements?${params.toString()}`;
+  }
+  params.set("soType", "NO_QTY");
+  return `/sales-orders?${params.toString()}`;
+}
+
+/** FG disposition / waiver close → Admin close workspace (NO_QTY Agreements tab). */
+function buildNoQtyFgDispositionHref(salesOrderId) {
+  return buildNoQtyAgreementHref(salesOrderId, {
+    role: "ADMIN",
+    action: "no-qty-fg-disposition",
+  });
+}
+
+function buildNoQtyWaiverCloseHref(salesOrderId) {
+  return buildNoQtyAgreementHref(salesOrderId, {
+    role: "ADMIN",
+    action: "no-qty-close",
+  });
+}
+
+/** Downstream blockers → focused NO_QTY Agreement with highlight context. */
+function buildNoQtyDownstreamBlockerHref(salesOrderId, role = null) {
+  return buildNoQtyAgreementHref(salesOrderId, {
+    role,
+    highlight: "downstream",
+  });
+}
+
 /** Recovery types that fold into next-RS carry-forward (not separate Store inbox CTAs). */
 const NEXT_RS_COVERED_RECOVERY_TYPES = Object.freeze(
   new Set(["PRODUCTION_SHORTFALL", "QC_FINAL_REJECTION"]),
@@ -227,7 +275,7 @@ async function getNoQtyRecoveryDashboardSnapshot(db = prisma, opts = {}) {
           salesOrderId: soId,
           documentNo: docNo,
           proposedWaiverQty: a.proposedWaiverQty,
-          href: `/sales-orders?focusSalesOrderId=${soId}`,
+          href: buildNoQtyWaiverCloseHref(soId),
         });
       }
     } else if (a.mode === CLOSURE_MODES.BLOCKED) {
@@ -237,7 +285,7 @@ async function getNoQtyRecoveryDashboardSnapshot(db = prisma, opts = {}) {
           salesOrderId: soId,
           documentNo: docNo,
           blockers: a.blockers.slice(0, 3),
-          href: `/sales-orders?focusSalesOrderId=${soId}`,
+          href: buildNoQtyDownstreamBlockerHref(soId, role),
         });
       }
     }
@@ -248,7 +296,7 @@ async function getNoQtyRecoveryDashboardSnapshot(db = prisma, opts = {}) {
           salesOrderId: soId,
           documentNo: docNo,
           pendingQty: a.acceptedFgPendingDispositionQty,
-          href: `/sales-orders?focusSalesOrderId=${soId}`,
+          href: buildNoQtyFgDispositionHref(soId),
         });
       }
     }
@@ -285,7 +333,7 @@ async function getNoQtyRecoveryDashboardSnapshot(db = prisma, opts = {}) {
         documentNo: displaySalesOrderNo(w.salesOrderId, w.salesOrder?.docNo),
         reasonCode: w.reasonCode,
         closedAt: w.createdAt,
-        href: `/sales-orders?focusSalesOrderId=${w.salesOrderId}`,
+        href: buildNoQtyWaiverCloseHref(w.salesOrderId),
       })),
     },
   };
@@ -315,14 +363,80 @@ function buildEmptySummary(soId) {
 }
 
 /**
- * Pure rule: recovery qty remains in analytics / RS components, but must not emit a separate
- * Store actionable PA when the next Requirement Sheet already covers that obligation.
+ * Pure rule: legacy per-source "awaiting next RS" / allocate inbox CTAs are suppressed when
+ * Create-Next-RS is eligible or a next-cycle draft exists.
+ * Phase 2B: draft-with-PENDING emits a separate "Resolve Recovery Decision" action instead.
  */
 function shouldSuppressRecoveryPendingAction(args = {}) {
   const recoveryType = String(args.recoveryType || "");
   if (!NEXT_RS_COVERED_RECOVERY_TYPES.has(recoveryType)) return false;
   if (args.soClosed) return true;
   return Boolean(args.createNextRsEligible) || Boolean(args.nextRsDraftExists);
+}
+
+/**
+ * Phase 2B Store PA: draft RS has FG items with PENDING Keep/Waive.
+ */
+async function fetchPendingRecoveryDecisionActions(db, { role = null } = {}) {
+  const r = String(role ?? "").trim().toUpperCase();
+  if (r && r !== "ADMIN" && r !== "STORE") return [];
+  if (typeof db?.requirementSheet?.findMany !== "function") return [];
+
+  const drafts = await db.requirementSheet.findMany({
+    where: {
+      status: "DRAFT",
+      salesOrder: {
+        orderType: "NO_QTY",
+        internalStatus: { in: [...OPEN_SO_STATUSES] },
+      },
+    },
+    select: {
+      id: true,
+      docNo: true,
+      salesOrderId: true,
+      salesOrder: { select: { id: true, docNo: true } },
+      recoveryDecisions: {
+        where: { status: "PENDING" },
+        select: {
+          id: true,
+          itemId: true,
+          pendingRecoveryQty: true,
+          item: { select: { itemName: true, unit: true } },
+        },
+      },
+    },
+    orderBy: { id: "asc" },
+    take: 200,
+  });
+
+  /** @type {object[]} */
+  const actions = [];
+  for (const sheet of drafts) {
+    const pendingItems = (sheet.recoveryDecisions || []).filter(
+      (d) => round3(n(d.pendingRecoveryQty)) > EPS,
+    );
+    if (!pendingItems.length) continue;
+    const soId = sheet.salesOrderId;
+    const docNo = displaySalesOrderNo(soId, sheet.salesOrder?.docNo);
+    const totalQty = pendingItems.reduce((s, d) => round3(s + n(d.pendingRecoveryQty)), 0);
+    actions.push({
+      id: `noqty-recovery-decision:${sheet.id}`,
+      priority: "HIGH",
+      action: "Resolve Recovery Decision",
+      documentNo: docNo,
+      ownerRole: "STORE",
+      ageHours: null,
+      href: `/requirement-sheets?sheetId=${sheet.id}&source=recovery_decision`,
+      qty: totalQty,
+      uom: null,
+      reason: "RECOVERY_DECISION_PENDING",
+      salesOrderId: soId,
+      requirementSheetId: sheet.id,
+      pendingItemCount: pendingItems.length,
+      itemNames: pendingItems.map((d) => d.item?.itemName).filter(Boolean).slice(0, 5),
+    });
+  }
+  return actions;
 }
 
 /**
@@ -409,18 +523,19 @@ async function fetchNoQtyRecoveryPendingActions(db = prisma, { role = null, cove
 
   const soIds = openSos.map((s) => s.id);
   const soById = new Map(openSos.map((s) => [s.id, s]));
-  const [summaries, assessments, coverageMap] = await Promise.all([
+  const [summaries, assessments, coverageMap, decisionActions] = await Promise.all([
     getRecoverySummariesBatch(db, soIds),
     assessNoQtySoClosureMany(db, soIds),
     coverageBySoId
       ? Promise.resolve(coverageBySoId)
       : resolveNextRsCarryForwardCoverageBatch(db, soIds),
+    fetchPendingRecoveryDecisionActions(db, { role }),
   ]);
 
   const now = new Date();
   /** @type {object[]} */
-  const actions = [];
-  const seen = new Set();
+  const actions = [...decisionActions];
+  const seen = new Set(actions.map((a) => String(a.id)));
 
   function push(action) {
     const key = String(action.id);
@@ -459,9 +574,7 @@ async function fetchNoQtyRecoveryPendingActions(db = prisma, { role = null, cove
       }
 
       const ageHours = Math.floor(ageDaysFrom(src.createdAt, now) * 24);
-      const actionLabel = isPs
-        ? "Production shortfall awaiting next RS"
-        : "QC recovery available for allocation";
+      const actionLabel = "Resolve Recovery Decision — open next Requirement Sheet";
       const ownerRole = "STORE";
       if (r && r !== "ADMIN" && r !== ownerRole) continue;
 
@@ -494,7 +607,7 @@ async function fetchNoQtyRecoveryPendingActions(db = prisma, { role = null, cove
           documentNo: docNo,
           ownerRole: "ADMIN",
           ageHours: null,
-          href: `/sales-orders?focusSalesOrderId=${soId}`,
+          href: buildNoQtyFgDispositionHref(soId),
           qty: assessment.acceptedFgPendingDispositionQty,
           uom: null,
           recoveryType: null,
@@ -513,7 +626,7 @@ async function fetchNoQtyRecoveryPendingActions(db = prisma, { role = null, cove
           documentNo: docNo,
           ownerRole: "ADMIN",
           ageHours: null,
-          href: `/sales-orders?focusSalesOrderId=${soId}`,
+          href: buildNoQtyWaiverCloseHref(soId),
           qty: assessment.proposedWaiverQty,
           uom: null,
           recoveryType: null,
@@ -532,7 +645,7 @@ async function fetchNoQtyRecoveryPendingActions(db = prisma, { role = null, cove
           documentNo: docNo,
           ownerRole: "ADMIN",
           ageHours: null,
-          href: `/sales-orders?focusSalesOrderId=${soId}`,
+          href: buildNoQtyDownstreamBlockerHref(soId, r),
           qty: null,
           uom: null,
           recoveryType: null,
@@ -756,6 +869,8 @@ async function buildNoQtyRecoveryTraceReport(db = prisma, query = {}) {
       originDocumentType: r.sourceDocumentType,
       originDocumentId: r.sourceDocumentId,
       originCycleId: r.cycleId,
+      sourceWorkOrderId: r.sourceWorkOrderId ?? null,
+      sourceRequirementSheetId: r.sourceRequirementSheetId ?? null,
       recoveryType: r.recoveryType,
       sourceQty,
       allocatedQty: activeAllocatedQty,
@@ -826,8 +941,13 @@ module.exports = {
   assessNoQtySoClosureMany,
   getNoQtyRecoveryDashboardSnapshot,
   fetchNoQtyRecoveryPendingActions,
+  fetchPendingRecoveryDecisionActions,
   getNoQtyRecoveryControlTowerSlice,
   enrichSalesOrdersWithRecoveryClosure,
   buildNoQtyRecoveryTraceReport,
   sumRequirementSheetComponentTotals,
+  buildNoQtyAgreementHref,
+  buildNoQtyFgDispositionHref,
+  buildNoQtyWaiverCloseHref,
+  buildNoQtyDownstreamBlockerHref,
 };

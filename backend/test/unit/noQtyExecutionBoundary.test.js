@@ -5,7 +5,6 @@ const {
   isPeriodReleasedForExecution,
   filterNoQtyExecutionReleasedWorkOrders,
   assertNoQtyWorkOrderExecutionReleased,
-  NO_QTY_EXECUTION_NOT_RELEASED_MESSAGE,
 } = require("../../src/services/noQtyExecutionBoundaryService");
 const { createNoQtyWorkOrderFromLockedSheet } = require("../../src/services/noQtyExecutionReleaseService");
 
@@ -284,7 +283,7 @@ function buildLockedSheet(overrides = {}) {
     salesOrderId: 10,
     cycleId: 3,
     salesOrder: { orderType: "NO_QTY", customerReturnId: null },
-    lines: [{ itemId: FG_ITEM.id, requirementQty: "5000", suggestedWoQtySnapshot: "15000" }],
+    lines: [{ itemId: FG_ITEM.id, requirementQty: "5000", suggestedWoQtySnapshot: "5000" }],
     ...overrides,
   };
 }
@@ -297,7 +296,7 @@ describe("noQtyExecutionBoundaryService", () => {
     assert.equal(await isPeriodReleasedForExecution(db, "2026-06"), true);
   });
 
-  it("filterNoQtyExecutionReleasedWorkOrders hides pre-release NO_QTY WOs", async () => {
+  it("filterNoQtyExecutionReleasedWorkOrders keeps existing NO_QTY WOs (stock-ready path may create before period release)", async () => {
     const db = createBoundaryDb({
       releasedPeriods: [],
       sheets: [{ id: 10, salesOrderId: 1, cycleId: 2, periodKey: "2026-06", status: "LOCKED" }],
@@ -307,11 +306,10 @@ describe("noQtyExecutionBoundaryService", () => {
       { id: 2, salesOrderId: 2, cycleId: 1, requirementSheetId: null, salesOrder: { orderType: "NORMAL" } },
     ];
     const out = await filterNoQtyExecutionReleasedWorkOrders(db, rows);
-    assert.equal(out.length, 1);
-    assert.equal(out[0].id, 2);
+    assert.equal(out.length, 2);
   });
 
-  it("assertNoQtyWorkOrderExecutionReleased blocks pre-release execution", async () => {
+  it("assertNoQtyWorkOrderExecutionReleased allows existing WO before period release", async () => {
     const db = createBoundaryDb({
       releasedPeriods: [],
       sheets: [{ id: 10, salesOrderId: 1, cycleId: 2, periodKey: "2026-06", status: "LOCKED" }],
@@ -323,10 +321,8 @@ describe("noQtyExecutionBoundaryService", () => {
       requirementSheetId: 10,
       salesOrder: { orderType: "NO_QTY" },
     });
-    await assert.rejects(
-      () => assertNoQtyWorkOrderExecutionReleased(db, 5),
-      (e) => e.code === "NO_QTY_EXECUTION_NOT_RELEASED" && e.message.includes(NO_QTY_EXECUTION_NOT_RELEASED_MESSAGE),
-    );
+    const wo = await assertNoQtyWorkOrderExecutionReleased(db, 5);
+    assert.equal(wo.id, 5);
   });
 });
 
@@ -337,7 +333,7 @@ describe("noQtyExecutionReleaseService.createNoQtyWorkOrderFromLockedSheet", () 
       rmFreeStock: new Map([[RM_ITEM.id, 20000]]),
     });
     const sheet = buildLockedSheet({
-      lines: [{ itemId: FG_ITEM.id, requirementQty: "5000", suggestedWoQtySnapshot: "15000" }],
+      lines: [{ itemId: FG_ITEM.id, requirementQty: "5000", suggestedWoQtySnapshot: "5000" }],
     });
 
     const res = await createNoQtyWorkOrderFromLockedSheet(tx, sheet);
@@ -377,7 +373,7 @@ describe("noQtyExecutionReleaseService.createNoQtyWorkOrderFromLockedSheet", () 
       ],
     });
     const sheet = buildLockedSheet({
-      lines: [{ itemId: FG_ITEM.id, requirementQty: "10000", suggestedWoQtySnapshot: "25000" }],
+      lines: [{ itemId: FG_ITEM.id, requirementQty: "10000", suggestedWoQtySnapshot: "10000" }],
     });
 
     const res = await createNoQtyWorkOrderFromLockedSheet(tx, sheet);
@@ -412,7 +408,7 @@ describe("noQtyExecutionReleaseService.createNoQtyWorkOrderFromLockedSheet", () 
       salesOrderId: 10,
       cycleId: 3,
       salesOrder: { orderType: "NO_QTY", customerReturnId: null },
-      lines: [{ itemId: 65, requirementQty: "5000", suggestedWoQtySnapshot: "15000" }],
+      lines: [{ itemId: 65, requirementQty: "5000", suggestedWoQtySnapshot: "5000" }],
     };
 
     const res = await createNoQtyWorkOrderFromLockedSheet(tx, sheet);
@@ -430,7 +426,7 @@ describe("noQtyExecutionReleaseService.createNoQtyWorkOrderFromLockedSheet", () 
       serialize: true,
     });
     const sheet = buildLockedSheet({
-      lines: [{ itemId: FG_ITEM.id, requirementQty: "10000", suggestedWoQtySnapshot: "25000" }],
+      lines: [{ itemId: FG_ITEM.id, requirementQty: "10000", suggestedWoQtySnapshot: "10000" }],
     });
 
     async function placeWithCommit() {
@@ -455,6 +451,51 @@ describe("noQtyExecutionReleaseService.createNoQtyWorkOrderFromLockedSheet", () 
   });
 });
 
+describe("assertNoQtyRequirementSheetPeriodReleased — FG-level stock gate", () => {
+  const {
+    assertNoQtyRequirementSheetPeriodReleased,
+  } = require("../../src/services/noQtyExecutionBoundaryService");
+
+  it("allows WO create without period release when requested FG is stock-executable", async () => {
+    const { tx } = createExecutionReadyTx({
+      rmFreeStock: new Map([[RM_ITEM.id, 20000]]),
+    });
+    const sheet = buildLockedSheet({
+      periodKey: "2026-06",
+      lines: [{ itemId: FG_ITEM.id, requirementQty: "5000", suggestedWoQtySnapshot: "5000" }],
+    });
+    // Period not released — createExecutionReadyTx has no monthlyProductionPlan release rows.
+    tx.monthlyProductionPlan = {
+      findFirst: async () => null,
+    };
+    await assert.doesNotReject(() =>
+      assertNoQtyRequirementSheetPeriodReleased(tx, sheet, {
+        requestedLines: [{ itemId: FG_ITEM.id, qty: 5000 }],
+      }),
+    );
+  });
+
+  it("blocks WO create for shortage FG when period is not released", async () => {
+    const { tx } = createExecutionReadyTx({
+      rmFreeStock: new Map([[RM_ITEM.id, 0]]),
+    });
+    const sheet = buildLockedSheet({
+      periodKey: "2026-06",
+      lines: [{ itemId: FG_ITEM.id, requirementQty: "5000", suggestedWoQtySnapshot: "5000" }],
+    });
+    tx.monthlyProductionPlan = {
+      findFirst: async () => null,
+    };
+    await assert.rejects(
+      () =>
+        assertNoQtyRequirementSheetPeriodReleased(tx, sheet, {
+          requestedLines: [{ itemId: FG_ITEM.id, qty: 5000 }],
+        }),
+      (e) => e.code === "NO_QTY_FG_PROCUREMENT_REQUIRED" || e.code === "NO_QTY_EXECUTION_NOT_RELEASED",
+    );
+  });
+});
+
 describe("createNoQtyWorkOrderFromLockedSheet — approved BOM guard (GRD_PLN_BOM_APPROVED / PLN-17)", () => {
   it("throws NO_QTY_MISSING_BOM and creates no WO/PMR/stock movement when FG has no approved BOM", async () => {
     // Locked RS with a valid FG demand, but NO approved BOM exists for the FG line.
@@ -463,7 +504,7 @@ describe("createNoQtyWorkOrderFromLockedSheet — approved BOM guard (GRD_PLN_BO
       rmFreeStock: new Map([[RM_ITEM.id, 100000]]),
     });
     const sheet = buildLockedSheet({
-      lines: [{ itemId: FG_ITEM.id, requirementQty: "5000", suggestedWoQtySnapshot: "15000" }],
+      lines: [{ itemId: FG_ITEM.id, requirementQty: "5000", suggestedWoQtySnapshot: "5000" }],
     });
 
     await assert.rejects(

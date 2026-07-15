@@ -2,6 +2,7 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const {
   floorFgQty,
+  resolveWoIssuedAvailableQty,
   productionQtyExceedsRmAllowed,
   resolveReadinessGate,
   hasCompletedStoreIssueTransfer,
@@ -425,7 +426,7 @@ describe("productionRmReadinessService", () => {
     );
   });
 
-  it("resolveProductionBatchRmCap excludes other unapproved drafts but not the entry being approved", () => {
+  it("resolveProductionBatchRmCap exposes the RM envelope; caller reserves other drafts once", () => {
     const readiness = {
       orderType: "NO_QTY",
       woQty: 2500,
@@ -436,7 +437,40 @@ describe("productionRmReadinessService", () => {
     const capWhenApprovingOwnDraft = resolveProductionBatchRmCap(readiness, 0);
     assert.equal(capWhenApprovingOwnDraft, 2500);
     const capWithOtherDraft = resolveProductionBatchRmCap(readiness, 500);
-    assert.equal(capWithOtherDraft, 2000);
+    assert.equal(capWithOtherDraft, 2500);
+    assert.equal(productionQtyExceedsRmAllowed({ producedQty: 2000, productionAllowedNowQty: capWithOtherDraft, otherUnapprovedQty: 500 }), false);
+    assert.equal(productionQtyExceedsRmAllowed({ producedQty: 2001, productionAllowedNowQty: capWithOtherDraft, otherUnapprovedQty: 500 }), true);
+  });
+
+  it("A: NO_QTY WO 2000, RM capacity 2050, production 2020 is allowed", () => {
+    const cap = computeMaxProducibleFromPmrBasis({
+      woQty: 2000,
+      totalWoQty: 2000,
+      pmrRequiredByItem: new Map([[10, 20]]),
+      availableByItem: new Map([[10, 20.5]]),
+      allowSurplus: true,
+    });
+    assert.equal(cap, 2050);
+    assert.equal(productionQtyExceedsRmAllowed({ producedQty: 2020, productionAllowedNowQty: cap }), false);
+  });
+
+  it("B: NO_QTY WO 2000, RM capacity 2000, production 2020 is blocked", () => {
+    assert.equal(productionQtyExceedsRmAllowed({ producedQty: 2020, productionAllowedNowQty: 2000 }), true);
+  });
+
+  it("C/D: after 1900 approved, remaining RM supports 150 but not 151", () => {
+    assert.equal(productionQtyExceedsRmAllowed({ producedQty: 150, productionAllowedNowQty: 150 }), false);
+    assert.equal(productionQtyExceedsRmAllowed({ producedQty: 151, productionAllowedNowQty: 150 }), true);
+  });
+
+  it("E: returned RM reduces remaining FG capacity", () => {
+    assert.equal(floorFgQty(1.5, 0.01), 150);
+    assert.equal(floorFgQty(1.4, 0.01), 140);
+  });
+
+  it("WO capacity never falls back to unrelated production-location stock", () => {
+    assert.equal(resolveWoIssuedAvailableQty({ grossIssued: 10, consumed: 8, returned: 1, onHand: 50 }), 1);
+    assert.equal(resolveWoIssuedAvailableQty({ grossIssued: 10, consumed: 9, returned: 1, onHand: 50 }), 0);
   });
 
   it("resolveProductionBatchRmCap partial issue caps supported qty", () => {

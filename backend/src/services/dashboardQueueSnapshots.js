@@ -1014,13 +1014,6 @@ async function getProductionQueueRowsUncached() {
           const netByItem = netDispatchedByItemId(dispatchInCycle, SO_DISPATCH_ALLOC_MODE.OPERATIONAL);
           const netDisp = Number(netByItem.get(line.fgItemId) ?? 0);
 
-          /** Same QC pool as Dispatch page: QC accepted + disposition → USABLE (in window) + post-cycle − operational net dispatch. */
-          const remDispatch = computeNoQtyDispatchHeadroom({
-            alreadyOpNet: netDisp,
-            qcAcceptedThisCycle: qcAcc,
-            recheckAcceptedThisCycle: recheckAcc,
-            postCycleApprovalQty: postAcc,
-          });
           // Keep dashboard NO_QTY dispatchable consistent with Dispatch page:
           // cap QC headroom by physical free USABLE stock (ledger) minus UNLOCKED draft reservations.
           const unlockedDraftReserved = (so.dispatch || [])
@@ -1028,6 +1021,14 @@ async function getProductionQueueRowsUncached() {
             .reduce((s, d) => s + Number(d.dispatchedQty), 0);
           const usableLedger = Number(stockByItemId.get(line.fgItemId) ?? 0);
           const freePhysicalUsable = Math.max(0, usableLedger - unlockedDraftReserved);
+          const remDispatch = computeNoQtyDispatchHeadroom({
+            alreadyOpNet: netDisp,
+            customerDemandQty: Number(caps?.get(line.fgItemId) ?? 0),
+            qcAcceptedThisCycle: qcAcc,
+            recheckAcceptedThisCycle: recheckAcc,
+            postCycleApprovalQty: postAcc,
+            availableFgStock: freePhysicalUsable,
+          });
           const remDispatchCapped = Math.min(Number(remDispatch) || 0, freePhysicalUsable);
 
           if (remDispatchCapped > QUEUE_EPS) {

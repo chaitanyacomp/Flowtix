@@ -31,9 +31,7 @@ export function ExecutionWorkspaceContextHeader({
           Current task
         </div>
         <h1 className="text-lg font-extrabold tracking-tight text-slate-900">{WO_PLANNING_UX.PAGE_TITLE}</h1>
-        <p className="mt-0.5 text-xs font-medium text-slate-600">
-          Create Work Orders from the locked Requirement Sheet — the sheet itself is complete.
-        </p>
+        <p className="mt-0.5 text-xs font-medium text-slate-600">{WO_PLANNING_UX.PAGE_SUBTITLE}</p>
       </div>
 
       <div

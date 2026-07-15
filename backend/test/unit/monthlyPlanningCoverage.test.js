@@ -117,10 +117,10 @@ function createSourceCoverageDb({
 
   for (const method of WRITE_METHODS) {
     if (!db.monthlyProductionPlan[method]) {
-      db.monthlyProductionPlan[method] = throwOnWrite(`monthlyProductionPlan.${method}`);
+    db.monthlyProductionPlan[method] = throwOnWrite(`monthlyProductionPlan.${method}`);
     }
     if (!db.monthlyProductionPlanLine[method]) {
-      db.monthlyProductionPlanLine[method] = throwOnWrite(`monthlyProductionPlanLine.${method}`);
+    db.monthlyProductionPlanLine[method] = throwOnWrite(`monthlyProductionPlanLine.${method}`);
     }
   }
 
@@ -287,9 +287,9 @@ describe("monthlyPlanningCoverage.getPeriodRequirementCoverage source identity",
               fgItemId: 75,
               plannedFgQty: 60000,
               customerProductionQty: 60000,
-            },
-          ],
-        },
+          },
+        ],
+      },
       ],
     });
 
@@ -610,7 +610,7 @@ describe("monthlyPlanningCoverage legacy helpers", () => {
         },
         {
           id: 2,
-          periodKey: "2026-06",
+      periodKey: "2026-06",
           planSequenceNo: 2,
           status: "APPROVED",
           lines: [{ fgItemId: 66, plannedFgQty: "4300", customerProductionQty: 0 }],

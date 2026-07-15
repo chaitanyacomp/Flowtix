@@ -29,16 +29,25 @@ const customerReadRoles = requireRole(["ADMIN"], CUSTOMER_READ_ACCESS_DENIED);
 
 const deliveryAddressSchema = z.object({
   id: z.number().int().positive().optional(),
-  label: z.string().min(1),
+  label: z.string().min(1).optional(),
+  locationLabel: z.string().min(1).optional(),
+  locationType: z.enum(["REGISTERED_OFFICE", "PLANT", "WAREHOUSE", "DEPOT", "OTHER"]).optional(),
   address: z.string().optional().nullable(),
   city: z.string().optional().nullable(),
+  district: z.string().optional().nullable(),
   stateId: z.number().int().positive().optional().nullable(),
+  pincode: z.string().optional().nullable(),
+  country: z.string().optional().nullable(),
   gst: z.string().optional().nullable(),
   gstin: z.string().optional().nullable(),
   contactPerson: z.string().optional().nullable(),
   phone: z.string().optional().nullable(),
+  email: z.string().optional().nullable(),
+  notes: z.string().optional().nullable(),
   isDefault: z.boolean().optional(),
   isActive: z.boolean().optional(),
+}).refine((row) => Boolean(String(row.label || row.locationLabel || "").trim()), {
+  message: "Location label is required.",
 });
 
 const customerBodySchema = z.object({
@@ -52,6 +61,7 @@ const customerBodySchema = z.object({
   stateId: z.number().int().positive().optional().nullable(),
   isActive: z.boolean().optional(),
   deliveryAddresses: z.array(deliveryAddressSchema).optional(),
+  deliveryLocations: z.array(deliveryAddressSchema).optional(),
 });
 
 /** @param {string} displayName @param {number | null} excludeId */
@@ -75,16 +85,14 @@ async function buildCustomerWritePayload(data, customerIdForExclude, opts = {}) 
   const gstRaw = data.gstin !== undefined ? data.gstin : data.gst;
   const registered = await validateRegisteredGstin(gstRaw, data.stateId ?? null);
 
+  const locationRows = data.deliveryLocations ?? data.deliveryAddresses ?? [];
   const deliveryAddresses = opts.includeDeliveryAddresses
-    ? await validateDeliveryAddresses(data.deliveryAddresses ?? [], customerIdForExclude ?? null)
+    ? await validateDeliveryAddresses(locationRows, customerIdForExclude ?? null)
     : [];
 
-  const excludeDeliveryAddressIds = opts.includeDeliveryAddresses
-    ? deliveryAddresses.map((a) => a.id).filter(Boolean)
-    : [];
   await assertGstinUnique(registered.gst, {
     excludeCustomerId: customerIdForExclude ?? null,
-    excludeDeliveryAddressIds,
+    ownerCustomerId: customerIdForExclude ?? null,
   });
 
   let stateId = registered.stateId;
@@ -106,6 +114,10 @@ async function buildCustomerWritePayload(data, customerIdForExclude, opts = {}) 
     stateText,
     deliveryAddresses,
   };
+}
+
+function hasDeliveryLocationsInBody(data) {
+  return data.deliveryAddresses !== undefined || data.deliveryLocations !== undefined;
 }
 
 customerRouter.get("/", requireAuth, customerReadRoles, async (req, res, next) => {
@@ -242,9 +254,14 @@ customerRouter.put("/:id", requireAuth, requireRole(["ADMIN"]), async (req, res,
         : existing.gst;
     const stateIdInput = data.stateId !== undefined ? data.stateId : existing.stateId;
     const { registered, stateId, stateText, deliveryAddresses } = await buildCustomerWritePayload(
-      { ...data, gstin: gstRaw, stateId: stateIdInput, deliveryAddresses: data.deliveryAddresses },
+      {
+        ...data,
+        gstin: gstRaw,
+        stateId: stateIdInput,
+        deliveryAddresses: data.deliveryLocations ?? data.deliveryAddresses,
+      },
       id,
-      { includeDeliveryAddresses: data.deliveryAddresses !== undefined },
+      { includeDeliveryAddresses: hasDeliveryLocationsInBody(data) },
     );
 
     let updated;
@@ -264,7 +281,7 @@ customerRouter.put("/:id", requireAuth, requireRole(["ADMIN"]), async (req, res,
             ...(data.isActive !== undefined ? { isActive: data.isActive !== false } : {}),
           },
         });
-        if (data.deliveryAddresses !== undefined) {
+        if (hasDeliveryLocationsInBody(data)) {
           await syncDeliveryAddresses(tx, id, deliveryAddresses);
         }
         return tx.customer.findUnique({ where: { id }, include: customerInclude });

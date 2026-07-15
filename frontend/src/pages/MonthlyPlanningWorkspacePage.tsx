@@ -2514,12 +2514,13 @@ export function MonthlyPlanningWorkspacePage() {
                   ).toLocaleString()}
                 />
                 <KpiCard
-                  label="Available RM"
-                  value={(
-                    rmPlanning?.totals?.availableRmTotal ??
-                    rmPlanning?.lines.reduce((a, l) => a + num(l.availableRmQty ?? l.freeStockSnapshot), 0) ??
-                    0
-                  ).toLocaleString()}
+                  label="RM Items Available"
+                  value={(() => {
+                    const lines = rmPlanning?.lines ?? [];
+                    const total = lines.length;
+                    const available = lines.filter((l) => num(l.netRequirementQty) <= 0).length;
+                    return `${available} / ${total}`;
+                  })()}
                 />
                 <KpiCard
                   label="Reserved RM"
@@ -3340,9 +3341,6 @@ function RmPlanningTab({
   const lines = data.lines;
   const totalRmItems = data.totals?.rmItemCount ?? lines.length;
   const totalGross = data.totals?.grossDemandTotal ?? lines.reduce((a, l) => a + num(l.grossDemandQty), 0);
-  const totalAvailable =
-    data.totals?.availableRmTotal ??
-    lines.reduce((a, l) => a + num(l.availableRmQty ?? l.freeStockSnapshot), 0);
   const totalReserved = data.totals?.reservedTotal ?? lines.reduce((a, l) => a + num(l.reservedSnapshot), 0);
   const totalIncoming = data.totals?.incomingPoTotal ?? lines.reduce((a, l) => a + num(l.incomingPoSnapshot), 0);
   const totalNet = data.totals?.netRequirementTotal ?? lines.reduce((a, l) => a + num(l.netRequirementQty), 0);
@@ -3364,10 +3362,11 @@ function RmPlanningTab({
     : null;
 
   const grossLabel = isEstimate ? "RM for Customer + selected Green Level" : "Snapshot RM for Customer + selected Green Level";
-  const freeLabel = isEstimate ? "Available RM" : "Snapshot free stock";
+  const rmItemsAvailableLabel = "RM Items Available";
   const reservedLabel = isEstimate ? "Reserved RM" : "Snapshot reserved";
   const incomingLabel = isEstimate ? "Incoming PO" : "Snapshot incoming PO";
   const netLabel = isEstimate ? "Est. net RM requirement" : "Snapshot net requirement";
+  const freeColumnLabel = isEstimate ? "Available stock" : "Snapshot free stock";
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-2">
@@ -3422,7 +3421,7 @@ function RmPlanningTab({
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
           <KpiCard label="Total RM items" value={String(totalRmItems)} />
           <KpiCard label={grossLabel} value={totalGross.toLocaleString()} />
-          <KpiCard label={freeLabel} value={totalAvailable.toLocaleString()} />
+          <KpiCard label={rmItemsAvailableLabel} value={`${coveredItems} / ${totalRmItems}`} />
           <KpiCard label={reservedLabel} value={totalReserved.toLocaleString()} />
           <KpiCard label={incomingLabel} value={totalIncoming.toLocaleString()} />
           <KpiCard label={netLabel} value={totalNet.toLocaleString()} tier="primary" />
@@ -3460,7 +3459,7 @@ function RmPlanningTab({
               <th className="px-3 py-2">RM item</th>
               <th className="px-3 py-2 w-20">Unit</th>
               <th className="px-3 py-2 w-28 text-right">{grossLabel}</th>
-              <th className="px-3 py-2 w-24 text-right">{freeLabel}</th>
+              <th className="px-3 py-2 w-24 text-right">{freeColumnLabel}</th>
               <th className="px-3 py-2 w-24 text-right">{reservedLabel}</th>
               <th className="px-3 py-2 w-28 text-right">{incomingLabel}</th>
               <th className="px-3 py-2 w-28 text-right">{netLabel}</th>

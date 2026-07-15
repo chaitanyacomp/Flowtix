@@ -96,7 +96,9 @@ test("LEDGER: state + GSTIN from LEDMAILINGDETAILS.LIST (Sundry Creditors)", () 
     <LEDMAILINGDETAILS>
       <MAILINGNAME>Acme Supplies</MAILINGNAME>
       <STATENAME>Maharashtra</STATENAME>
-      <ADDRESS>Plot 1, MIDC</ADDRESS>
+      <ADDRESS.LIST TYPE="String">
+        <ADDRESS>Plot 1, MIDC</ADDRESS>
+      </ADDRESS.LIST>
     </LEDMAILINGDETAILS>
   </LEDMAILINGDETAILS.LIST>
   <LEDGSTREGISTRATION.LIST>
@@ -113,6 +115,52 @@ test("LEDGER: state + GSTIN from LEDMAILINGDETAILS.LIST (Sundry Creditors)", () 
   assert.equal(sup.stateText, "Maharashtra");
   assert.equal(sup.gst, "27AAAAA0000A1Z5");
   assert.ok(String(sup.address || "").includes("MIDC"));
+});
+
+test("LEDGER: Tally Prime LEDGSTREGDETAILS + CONTACTDETAILS + ADDRESS.LIST (customer)", () => {
+  const inner = `
+<LEDGER NAME="TATA Demo">
+  <NAME>TATA Demo</NAME>
+  <PARENT>Sundry Debtors</PARENT>
+  <INCOMETAXNUMBER>ALSKD1412A</INCOMETAXNUMBER>
+  <LEDGERPHONE>4785456665</LEDGERPHONE>
+  <LEDGERCONTACT>Mahesh</LEDGERCONTACT>
+  <LEDGERMOBILE>8754789587</LEDGERMOBILE>
+  <LEDGSTREGDETAILS.LIST>
+    <APPLICABLEFROM>20260401</APPLICABLEFROM>
+    <GSTIN>27ALSKD1412A1Z5</GSTIN>
+    <PLACEOFSUPPLY>Maharashtra</PLACEOFSUPPLY>
+  </LEDGSTREGDETAILS.LIST>
+  <LEDMAILINGDETAILS.LIST>
+    <ADDRESS.LIST TYPE="String">
+      <ADDRESS>985 Hinjawadi Phase 2</ADDRESS>
+    </ADDRESS.LIST>
+    <PINCODE>4110085</PINCODE>
+    <MAILINGNAME>TATA Demo</MAILINGNAME>
+    <STATE>Maharashtra</STATE>
+    <COUNTRY>India</COUNTRY>
+  </LEDMAILINGDETAILS.LIST>
+  <CONTACTDETAILS.LIST>
+    <NAME>Mahesh</NAME>
+    <PHONENUMBER>8754789587</PHONENUMBER>
+    <COUNTRYISDCODE>+91</COUNTRYISDCODE>
+  </CONTACTDETAILS.LIST>
+</LEDGER>`;
+  const p = parseTallyMastersXml(envelope(inner));
+  const led = p.ledgers.find((l) => strVal(l.NAME) === "TATA Demo" || l["@_NAME"] === "TATA Demo");
+  assert.ok(led);
+  const cust = mapLedgerToParty(led, "CUSTOMER");
+  assert.ok(cust);
+  assert.equal(cust.gst, "27ALSKD1412A1Z5");
+  assert.notEqual(cust.gst, "ALSKD1412A");
+  assert.equal(cust.stateText, "Maharashtra");
+  assert.equal(cust.pincode, "4110085");
+  assert.equal(cust.country, "India");
+  assert.equal(cust.contact, "Mahesh");
+  assert.equal(cust.phone, "8754789587");
+  assert.ok(String(cust.address || "").includes("985 Hinjawadi Phase 2"));
+  assert.ok(String(cust.address || "").includes("4110085"));
+  assert.doesNotMatch(String(cust.address || ""), /^TATA Demo$/);
 });
 
 test("mapStockItemToItem: PARENT Raw Material → auto RM (HDPE-style)", () => {

@@ -161,8 +161,8 @@ describe("Batch 3B recovery engine integration flow", () => {
     assert.equal(qc.recoveryType, "QC_FINAL_REJECTION");
     assert.equal(Number(qc.sourceQty), 15);
 
-    // First-pass scrap must NOT be created by callers — engine still allows explicit create,
-    // but integration contract is: only appendTerminalQcScrapRecovery from disposition terminals.
+    // Phase 2A: first-pass and disposition terminal SCRAP both use appendTerminalQcScrapRecovery
+    // with the same disposition provenance — no duplicate rows for one disposition.
     assert.equal(db._sources.filter((s) => s.recoveryType === "QC_FINAL_REJECTION").length, 1);
 
     const { allocation, availableQty } = await allocateRecovery(db, {

@@ -379,19 +379,27 @@ describe("execution workspace presentation helpers", () => {
 
   it("maps placement status to RM coverage labels", () => {
 
-    expect(rmCoverageLabelFromPlacement({ placementStatus: "READY", rsBalanceQty: 1000 })).toBe("Ready");
+    expect(rmCoverageLabelFromPlacement({ placementStatus: "READY", rsBalanceQty: 1000 })).toBe("All Items Ready");
 
     expect(rmCoverageLabelFromPlacement({ placementStatus: "PARTIALLY_READY", rsBalanceQty: 1000 })).toBe("Partial");
 
     expect(rmCoverageLabelFromPlacement({ placementStatus: "AWAITING_PROCUREMENT", rsBalanceQty: 1000 })).toBe(
-
-      "Awaiting RM",
-
+      "No Items Ready",
     );
 
     expect(rmCoverageLabelFromPlacement({ placementStatus: "MISSING_BOM", rsBalanceQty: 1000 })).toBe("Blocked");
 
     expect(rmCoverageLabelFromPlacement({ placementStatus: "READY", rsBalanceQty: 0 })).toBe("Complete");
+
+    expect(
+      rmCoverageLabelFromPlacement({
+        placementStatus: "PARTIALLY_READY",
+        rsBalanceQty: 1500,
+        readyFgCount: 3,
+        shortageFgCount: 1,
+        totalFgWithBalance: 4,
+      }),
+    ).toBe("3 Ready / 1 Shortage");
 
   });
 
@@ -458,13 +466,22 @@ describe("Work Order Planning UX labels", () => {
     ).toBe(WO_PLANNING_UX.PAGE_TITLE);
     expect(
       resolveRequirementSheetWorkbenchPageTitle({ isNoQty: true, showExecutionWorkspace: false }),
-    ).toBe("Requirement sheet");
+    ).toBe("Requirement Sheet");
+    expect(WO_PLANNING_UX.PAGE_TITLE).toBe("Work Order Planning");
+    expect(WO_PLANNING_UX.SOURCE_DOCUMENT_LABEL).toBe("Requirement Sheet Reference");
+    expect(WO_PLANNING_UX.PAGE_SUBTITLE).toBe(
+      "Create Work Orders from the locked Requirement Sheet.",
+    );
   });
 
   it("keeps Create Work Orders as the current-step operator label", () => {
     expect(WO_PLANNING_UX.WORK_AREA_TITLE).toBe("Create Work Order");
     expect(WO_PLANNING_UX.INFO_PANEL_TITLE).toBe("Planning Context");
-    expect(WO_PLANNING_UX.KPI_REMAINING_REQUIREMENT).toBe("Remaining Requirement");
+    expect(WO_PLANNING_UX.KPI_REMAINING_REQUIREMENT).toBe("Remaining to Place");
+    expect(WO_PLANNING_UX.KPI_REMAINING_TO_PLACE).toBe("Remaining to Place");
+    expect(WO_PLANNING_UX.KPI_CUSTOMER_DEMAND).toBe("Customer Demand");
+    expect(WO_PLANNING_UX.KPI_TOTAL_RECOVERY).toBe("Total Recovery");
+    expect(WO_PLANNING_UX.KPI_WO_QTY_PLACED).toBe("WO Qty Placed");
     expect(WO_PLANNING_UX.KPI_SUGGESTED_NEXT_WO).toBe("Suggested Next WO Qty");
     expect(WO_PLANNING_UX.KPI_RM_LIMITED_CAPACITY).toBe("RM-Limited Capacity");
     expect(WO_PLANNING_UX.CURRENT_WOS_TITLE).toBe("Current Work Orders");

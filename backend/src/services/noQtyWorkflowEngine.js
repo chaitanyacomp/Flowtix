@@ -7,6 +7,7 @@ const {
 const {
   computeNoQtyCreateNextRsEligibility,
   computeNoQtyCreateNextRsEligibilityResolved,
+  computeStoreCreateNextRsPendingEligibility,
   resolveNoQtyEligibilityCycleId,
 } = require("./noQtyCreateNextRsEligibility");
 const { findNoQtyNextRollingRequirementSheetTarget } = require("./noQtyRollingRequirementNav");
@@ -247,7 +248,7 @@ async function loadNoQtyDispatchableFacts(db, soId, cycleId) {
   if (wantCycle == null) return { hasQcAcceptedUndispatched: false, dispatchableQty: 0 };
 
   const qcInputs = [{ id: soId, currentCycleId: wantCycle }];
-  const [qcAcceptedMap, recheckDispMap, postCycleMap, dispatchRows] = await Promise.all([
+  const [qcAcceptedMap, recheckDispMap, postCycleMap, dispatchRows, lockedSheet] = await Promise.all([
     loadNoQtyCycleQcAcceptedMap(db, qcInputs),
     loadNoQtyDispositionUsableForDispatchPoolMap(db, qcInputs),
     loadNoQtyPostCycleApprovalMapForInputs(db, qcInputs),
@@ -255,7 +256,16 @@ async function loadNoQtyDispatchableFacts(db, soId, cycleId) {
       where: { soId, reversalOfId: null },
       select: { itemId: true, dispatchedQty: true, cycleId: true, workflowStatus: true },
     }),
+    db.requirementSheet.findFirst({
+      where: { salesOrderId: soId, cycleId: wantCycle, status: "LOCKED" },
+      orderBy: [{ version: "desc" }, { id: "desc" }],
+      select: { lines: { select: { itemId: true, requirementQty: true, baseDemandQty: true, totalRsQty: true } } },
+    }),
   ]);
+  const demandByItem = new Map((lockedSheet?.lines || []).map((line) => [
+    Number(line.itemId),
+    Math.max(0, Number(line.totalRsQty ?? line.baseDemandQty ?? line.requirementQty) || 0),
+  ]));
 
   const cycleDispRows = (dispatchRows || []).filter((d) => normalizePositiveCycleId(d.cycleId) === wantCycle);
   const netByItemRaw = netDispatchedByItemId(cycleDispRows, DISPATCH_ALLOC_MODE.OPERATIONAL);
@@ -280,7 +290,7 @@ async function loadNoQtyDispatchableFacts(db, soId, cycleId) {
       Number(recheckDispMap.get(key) ?? 0) +
       Number(postCycleMap.get(key) ?? 0);
     const net = Number(netByItem.get(itemId) ?? 0);
-    const headroom = Math.max(0, pool - net);
+    const headroom = Math.max(0, Math.min(pool - net, (demandByItem.get(itemId) ?? 0) - net));
     dispatchableQty += headroom;
     if (headroom > NO_QTY_WORKFLOW_EPS) hasQcAcceptedUndispatched = true;
   }
@@ -431,7 +441,7 @@ async function resolveNoQtyWorkflowStateImpl(db, input) {
     dispatchRows,
     productionRows,
     pendingDispositionCount,
-    createNextRs,
+    createNextRsBase,
     cycleUi,
     rolling,
   ] = await Promise.all([
@@ -493,8 +503,19 @@ async function resolveNoQtyWorkflowStateImpl(db, input) {
     findNoQtyNextRollingRequirementSheetTarget(db, soId, cycleId),
   ]);
 
-  const requirementExists = (reqSheets || []).length > 0;
-  const requirementLocked = (reqSheets || []).some((s) => s.status === "LOCKED");
+  // Sales Order readiness and Store Pending Actions share the same canonical replacement resolver.
+  // Consult it only when this cycle contains cancelled history and no executable RS.
+  let canonicalCreateNextRs = createNextRsBase;
+  if ((reqSheets || []).length > 0 && (reqSheets || []).every((s) => s.status === "CANCELLED")) {
+    const replacementNeed = await computeStoreCreateNextRsPendingEligibility(db, soId);
+    if (replacementNeed?.resolution === "SAME_CYCLE_CANCELLED_REPLACEMENT") canonicalCreateNextRs = replacementNeed;
+  }
+
+  // CANCELLED rows are immutable audit history, not active/executable Requirement Sheets.
+  const executableReqSheets = (reqSheets || []).filter((s) => s.status !== "CANCELLED");
+  const requirementExists = executableReqSheets.length > 0;
+  const requirementLocked = executableReqSheets.some((s) => s.status === "LOCKED");
+  const createNextRs = canonicalCreateNextRs;
   const workOrderExists = (workOrders || []).length > 0;
   const workOrderId = workOrders && workOrders.length ? Number(workOrders[workOrders.length - 1].id) : null;
   const productionExists = Boolean(prodAny?.id);
@@ -532,7 +553,7 @@ async function resolveNoQtyWorkflowStateImpl(db, input) {
     if (peWoId > 0 && Number.isFinite(producedQty)) {
       producedByWoId.set(peWoId, (producedByWoId.get(peWoId) ?? 0) + producedQty);
     }
-    if (pendingQty > NO_QTY_WORKFLOW_EPS && acceptedQty <= NO_QTY_WORKFLOW_EPS && rejectedQty <= NO_QTY_WORKFLOW_EPS) {
+    if (pendingQty > NO_QTY_WORKFLOW_EPS) {
       qcPendingForCycle = true;
     }
   }
@@ -692,7 +713,13 @@ async function resolveNoQtyWorkflowStateImpl(db, input) {
     secondaryActions: uniqActions(secondary),
     optionalActions: uniqActions(optional),
     actionLabel: ACTION_LABELS[primaryAction] ?? primaryAction,
-    actionHref: actionHref(primaryAction, soId, cycleId),
+    actionHref:
+      primaryAction === "NEXT_RS" && createNextRs.resolution === "SAME_CYCLE_CANCELLED_REPLACEMENT"
+        ? `/sales-orders/${soId}/requirement-sheets?intent=add&source=no_qty_so&salesOrderId=${soId}&cycleId=${cycleId}`
+        : actionHref(primaryAction, soId, cycleId),
+    requirementSheetCreationResolution: createNextRs.resolution ?? null,
+    requirementSheetTargetCycleId: createNextRs.targetCycleId ?? null,
+    requirementSheetTargetVersion: createNextRs.targetVersion ?? null,
     blockedReasons: uniqActions(blockedReasons),
     displaySummary,
     workflowSummary: displaySummary,

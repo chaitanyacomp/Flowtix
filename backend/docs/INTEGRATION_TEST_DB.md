@@ -23,19 +23,21 @@ Reference SQL in repo:
 - `prisma/migrations/20260402160000_qc_reversal/migration.sql` — QC reversal + `QcReversal` + scrap/qc links + `QC_REVERSAL`
 - `prisma/migrations/20260402120000_workorder_salesorderid_not_null/migration.sql` — NOT NULL `salesOrderId`
 
-### Why `prisma migrate deploy` hit P3005
-
-P3005 appears when Prisma sees a **non-empty** database that was never marked as migrated. That is normal for an existing dev DB full of data. **`migrate deploy` is not a good fit for “fix my old dev DB in place”** unless you baseline migrations explicitly (see [Prisma baselining](https://www.prisma.io/docs/guides/migrate/developing-with-prisma-migrate/add-prisma-migrate-to-a-project)).
-
 ### Recommended path: dedicated empty integration database
 
 Safest for local/dev (no silent wipes of your main ERP data):
 
 1. Create a **new empty** database on the same MySQL instance (or a disposable instance).
 2. Point **`TEST_DATABASE_URL`** at it.
-3. Run **`npm run test:integration:prepare`** (runs `prisma db push` against that URL).
+3. Run **`npm run test:integration:prepare`** (runs `prisma migrate deploy` against that URL).
 
-`db push` syncs the database to **`schema.prisma`**, which matches what the running app and integration tests expect. Use an **empty** database so push does not need destructive reconciles.
+`migrate deploy` applies the committed migration history in `prisma/migrations/`, so the integration database is built **exactly like development and production** — including MySQL 8 expression-default DDL (`DEFAULT ('')`) on TEXT snapshot columns that schema-driven `db push` cannot generate on Prisma 5.22.0. Use an **empty** database so the full history applies cleanly from scratch.
+
+> **Do not use `prisma db push` for this database.** On Prisma 5.22.0 it emits an illegal literal `TEXT ... DEFAULT ''` for `@default("") @db.Text` fields, which MySQL rejects with error 1101 ("BLOB, TEXT, GEOMETRY or JSON column can't have a default value").
+
+### Why `prisma migrate deploy` can hit P3005
+
+P3005 appears when Prisma sees a **non-empty** database that was never marked as migrated. That is normal for an existing dev DB full of data, but it does **not** happen for the recommended empty integration DB. For a long-lived dev DB you cannot replace, baseline migrations explicitly (see [Prisma baselining](https://www.prisma.io/docs/guides/migrate/developing-with-prisma-migrate/add-prisma-migrate-to-a-project)) before using `migrate deploy`.
 
 Example (MySQL CLI, adjust user/password):
 
@@ -83,7 +85,7 @@ $env:TEST_DATABASE_URL = "mysql://erp:erp1234@localhost:3306/mini_erp_test"
 npm run test:integration:prepare
 ```
 
-The script **refuses** to run unless `NODE_ENV=test` and refuses if `TEST_DATABASE_URL` equals `DATABASE_URL` (after loading `.env`) so you do not accidentally push against your primary DB.
+The script **refuses** to run unless `NODE_ENV=test` and refuses if `TEST_DATABASE_URL` equals `DATABASE_URL` (after loading `.env` and `.env.integration`) so you do not accidentally migrate your primary DB.
 
 ### Run integration tests
 
@@ -125,4 +127,4 @@ Steps:
 
 ## Migration history note
 
-The first migration file under `prisma/migrations/` may not represent the full evolution to the current `schema.prisma`. For a **from-empty** integration database, **`prisma db push` is the reliable alignment mechanism** in this repo; use `migrate deploy` only after you have verified the full migration chain on a clean database.
+For a **from-empty** integration database, **`prisma migrate deploy` (the committed migration history) is the reliable alignment mechanism** in this repo. It reproduces development/production exactly, including MySQL expression-default DDL that schema-driven `db push` cannot emit on Prisma 5.22.0. `npm run test:integration:prepare` runs `migrate deploy` for you.

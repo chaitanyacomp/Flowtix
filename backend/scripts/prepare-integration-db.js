@@ -1,10 +1,17 @@
 /**
- * Apply prisma/schema.prisma to an empty MySQL database dedicated to integration tests.
+ * Apply the committed Prisma migration history to an empty MySQL database
+ * dedicated to integration tests.
+ *
+ * Uses `prisma migrate deploy` (NOT `prisma db push`) so the integration
+ * database is built exactly like development and production — from the SQL in
+ * `prisma/migrations/`. This matters because several TEXT snapshot columns use
+ * the MySQL 8 expression-default form `DEFAULT ('')`, which the committed
+ * migrations contain but schema-driven `db push` on Prisma 5.22.0 cannot
+ * generate (it emits an illegal literal `TEXT ... DEFAULT ''` and MySQL rejects
+ * it with error 1101).
  *
  * Requires TEST_DATABASE_URL (or legacy INTEGRATION_DATABASE_URL) and it must
- * differ from DATABASE_URL after .env load.
- * Uses `prisma db push` so the database matches the current schema without relying on
- * a complete migration history from empty.
+ * differ from DATABASE_URL after .env / .env.integration load.
  *
  * Usage:
  *   NODE_ENV=test TEST_DATABASE_URL="mysql://..." npm run test:integration:prepare
@@ -16,6 +23,7 @@ const path = require("path");
 const backendRoot = path.join(__dirname, "..");
 
 require("dotenv").config({ path: path.join(backendRoot, ".env") });
+require("dotenv").config({ path: path.join(backendRoot, ".env.integration") });
 
 const integrationUrl = process.env.TEST_DATABASE_URL || process.env.INTEGRATION_DATABASE_URL;
 const mainUrl = process.env.DATABASE_URL;
@@ -43,14 +51,17 @@ if (mainUrl && integrationUrl.trim() === mainUrl.trim()) {
   process.exit(1);
 }
 
-console.log("[prepare-integration-db] prisma db push →", maskUrl(integrationUrl));
-execSync("npx prisma db push", {
+console.log("[prepare-integration-db] prisma migrate deploy →", maskUrl(integrationUrl));
+// Pass the integration URL as DATABASE_URL for the child process only, so Prisma
+// applies the committed migration history to the dedicated test database and the
+// developer's own DATABASE_URL is never targeted.
+execSync("npx prisma migrate deploy", {
   cwd: backendRoot,
   stdio: "inherit",
   env: { ...process.env, DATABASE_URL: integrationUrl },
 });
 
-console.log("[prepare-integration-db] Done.");
+console.log("[prepare-integration-db] Done — committed migrations applied.");
 console.log(
   "Run integration tests, e.g.\n" +
     "  NODE_ENV=test TEST_DATABASE_URL=<same URL> npm run test:integration:db",

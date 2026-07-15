@@ -1,5 +1,9 @@
 /**
  * Phase P3 — Additional plan preview & creation (delta-only plan documents).
+ *
+ * Additional Monthly Plan is a procurement activity. Uncovered FG demand alone is
+ * not enough — create/PA only when BOM(RM) for that delta has net shortage after
+ * free stock and inbound procurement coverage.
  */
 
 const { prisma } = require("../utils/prisma");
@@ -13,6 +17,8 @@ const {
   getNextPlanSequenceNo,
   MONTHLY_PLAN_KIND,
 } = require("./monthlyPlanningPlanLifecycleService");
+const { aggregateRmDemandForFgLines } = require("./bomExplosionService");
+const { getMaterialAvailabilityByItems } = require("./materialAvailabilityService");
 
 const ADDITIONAL_EPS = 1e-6;
 
@@ -20,17 +26,111 @@ function planningCore() {
   return require("./monthlyPlanningService");
 }
 
+function round3(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return 0;
+  return Math.round(num * 1000) / 1000;
+}
+
+function n(value) {
+  const x = Number(value);
+  return Number.isFinite(x) ? x : 0;
+}
+
+/**
+ * Net RM shortage for Additional Plan FG delta after free stock and inbound PO/cover.
+ * @returns {Promise<{ procurementRequired: boolean; netRmShortageQty: number | null; rmRequiredQty: number | null; lines: object[]; missingChildBoms?: object[]; blockingCode?: string }>}
+ */
+async function assessAdditionalPlanRmProcurementNeed({
+  db = prisma,
+  coverageItems = [],
+  aggregateRmDemand = aggregateRmDemandForFgLines,
+  loadAvailability = getMaterialAvailabilityByItems,
+} = {}) {
+  const fgLines = [];
+  for (const row of coverageItems || []) {
+    const fgItemId = Number(row.fgItemId);
+    const fgQty = round3(n(row.additionalRequirementQty));
+    if (!(Number.isFinite(fgItemId) && fgItemId > 0 && fgQty > ADDITIONAL_EPS)) continue;
+    fgLines.push({ fgItemId, fgQty, bomMissing: false });
+  }
+
+  if (!fgLines.length) {
+    return { procurementRequired: false, netRmShortageQty: 0, rmRequiredQty: 0, lines: [] };
+  }
+
+  const demand = await aggregateRmDemand(db, fgLines);
+  if ((demand?.missingChildBoms || []).length > 0) {
+    // Cannot prove stock coverage without BOM — treat as procurement-planning needed.
+    return {
+      procurementRequired: true,
+      netRmShortageQty: null,
+      rmRequiredQty: null,
+      lines: [],
+      missingChildBoms: demand.missingChildBoms,
+      blockingCode: "MISSING_BOM",
+    };
+  }
+
+  const rmNeeded = demand?.rmNeeded instanceof Map ? demand.rmNeeded : new Map();
+  if (!rmNeeded.size) {
+    return { procurementRequired: false, netRmShortageQty: 0, rmRequiredQty: 0, lines: [] };
+  }
+
+  const availabilityRows = await loadAvailability({
+    db,
+    itemIds: [...rmNeeded.keys()],
+    requiredQtyByItemId: rmNeeded,
+    includeIncoming: true,
+    includeIssued: false,
+  });
+
+  const lines = [];
+  let rmRequiredQty = 0;
+  let netRmShortageQty = 0;
+  for (const [rmItemId, requiredRaw] of rmNeeded.entries()) {
+    const requiredQty = round3(n(requiredRaw));
+    if (!(requiredQty > ADDITIONAL_EPS)) continue;
+    const row = (availabilityRows || []).find((r) => Number(r.itemId) === Number(rmItemId));
+    const availableQty = round3(n(row?.freeStockQty ?? row?.physicalUsableStockQty ?? 0));
+    const incomingQty = round3(n(row?.incomingQty ?? 0));
+    const shortageAfterStock = round3(Math.max(0, requiredQty - availableQty));
+    const shortageAfterIncoming = round3(Math.max(0, shortageAfterStock - incomingQty));
+    rmRequiredQty = round3(rmRequiredQty + requiredQty);
+    netRmShortageQty = round3(netRmShortageQty + shortageAfterIncoming);
+    lines.push({
+      rmItemId: Number(rmItemId),
+      requiredQty,
+      availableQty,
+      incomingQty,
+      shortageAfterStock,
+      netRmShortageQty: shortageAfterIncoming,
+    });
+  }
+
+  return {
+    procurementRequired: netRmShortageQty > ADDITIONAL_EPS,
+    netRmShortageQty,
+    rmRequiredQty,
+    lines,
+  };
+}
+
 /**
  * @param {{
  *   approvedPlanCount: number;
  *   activePlan: object | null;
  *   totalAdditionalRequirementQty: number;
+ *   netRmShortageQty?: number | null;
+ *   procurementRequired?: boolean | null;
  * }} input
  */
 function evaluateAdditionalPlanCreateEligibility({
   approvedPlanCount,
   activePlan,
   totalAdditionalRequirementQty,
+  netRmShortageQty = null,
+  procurementRequired = null,
 }) {
   if (!(Number(approvedPlanCount) > 0)) {
     return {
@@ -53,6 +153,16 @@ function evaluateAdditionalPlanCreateEligibility({
       blockingReason: "No additional requirement remains for this period.",
     };
   }
+  // Procurement gate: Additional Monthly Plan is only for net RM shortage.
+  // Uncovered FG with full RM stock/inbound coverage must not force a new plan.
+  if (procurementRequired === false || (netRmShortageQty != null && !(Number(netRmShortageQty) > ADDITIONAL_EPS))) {
+    return {
+      canCreate: false,
+      blockingCode: "NO_PROCUREMENT_NEED",
+      blockingReason:
+        "RM stock (and inbound procurement) already covers the uncovered Requirement Sheet demand. Proceed to Work Order creation — Additional Monthly Plan is not required.",
+    };
+  }
   return {
     canCreate: true,
     blockingCode: null,
@@ -67,6 +177,8 @@ async function previewAdditionalPlan({
   db = prisma,
   periodKey,
   loadRequirementComposition,
+  aggregateRmDemand,
+  loadAvailability,
 } = {}) {
   const { normalizePeriodKey } = planningCore();
   const normalized = normalizePeriodKey(periodKey);
@@ -77,10 +189,19 @@ async function previewAdditionalPlan({
     getNextPlanSequenceNo(db, normalized),
   ]);
 
+  const rmNeed = await assessAdditionalPlanRmProcurementNeed({
+    db,
+    coverageItems: coverage.items,
+    aggregateRmDemand,
+    loadAvailability,
+  });
+
   const eligibility = evaluateAdditionalPlanCreateEligibility({
     approvedPlanCount: coverage.approvedPlanCount,
     activePlan,
     totalAdditionalRequirementQty: coverage.totals.totalAdditionalRequirementQty,
+    netRmShortageQty: rmNeed.netRmShortageQty,
+    procurementRequired: rmNeed.procurementRequired,
   });
 
   const nextPlanLabel = buildPlanDisplayLabel({
@@ -107,7 +228,13 @@ async function previewAdditionalPlan({
         }
       : null,
     items: coverage.items,
-    totals: coverage.totals,
+    totals: {
+      ...coverage.totals,
+      netRmShortageQty: rmNeed.netRmShortageQty,
+      rmRequiredQty: rmNeed.rmRequiredQty,
+      procurementRequired: rmNeed.procurementRequired,
+    },
+    rmProcurementNeed: rmNeed,
     anchorPeriodKey: coverage.anchorPeriodKey,
   };
 }
@@ -134,6 +261,8 @@ async function createAdditionalPlan({
   remarks = null,
   now = new Date(),
   loadRequirementComposition,
+  aggregateRmDemand,
+  loadAvailability,
 } = {}) {
   const { MonthlyPlanningError, assertPeriodWriteAllowed } = planningCore();
   const normalized = assertPeriodWriteAllowed({
@@ -150,10 +279,18 @@ async function createAdditionalPlan({
       loadRequirementComposition,
     });
     const activePlan = await findActivePlanInPeriod(tx, normalized);
+    const rmNeed = await assessAdditionalPlanRmProcurementNeed({
+      db: tx,
+      coverageItems: coverage.items,
+      aggregateRmDemand,
+      loadAvailability,
+    });
     const eligibility = evaluateAdditionalPlanCreateEligibility({
       approvedPlanCount: coverage.approvedPlanCount,
       activePlan,
       totalAdditionalRequirementQty: coverage.totals.totalAdditionalRequirementQty,
+      netRmShortageQty: rmNeed.netRmShortageQty,
+      procurementRequired: rmNeed.procurementRequired,
     });
     assertCanCreateAdditionalPlan(eligibility);
     await assertNoOtherActivePlanInPeriod(tx, normalized);
@@ -241,7 +378,11 @@ async function createAdditionalPlan({
         source: line.source,
         remarks: line.remarks ?? null,
       })),
-      totals: coverage.totals,
+      totals: {
+        ...coverage.totals,
+        netRmShortageQty: rmNeed.netRmShortageQty,
+        procurementRequired: rmNeed.procurementRequired,
+      },
       items: coverage.items.filter((row) => Number(row.additionalRequirementQty) > ADDITIONAL_EPS),
       lineCount: createdLines.length,
     };
@@ -253,6 +394,7 @@ async function createAdditionalPlan({
 module.exports = {
   ADDITIONAL_EPS,
   evaluateAdditionalPlanCreateEligibility,
+  assessAdditionalPlanRmProcurementNeed,
   previewAdditionalPlan,
   createAdditionalPlan,
 };

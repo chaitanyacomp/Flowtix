@@ -22,6 +22,8 @@ export type NoQtyFlowState = {
   qcPendingForCycle?: boolean;
   /** True when cycle QC accepted qty exceeds operational net dispatch for some FG line. */
   hasQcDispatchPending?: boolean;
+  /** QC-backed dispatchable headroom for the resolved cycle (from workflow engine). */
+  dispatchableQty?: number;
   productionRemainingQty?: number;
   carryForwardShortageOnly?: boolean;
   /** NO_QTY: server-derived optional-store intent (partial prepare / remaining QC headroom); dashboard pressure only. */

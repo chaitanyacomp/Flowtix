@@ -38,6 +38,8 @@ export type ProductionRmReadiness = {
   /** Sum of all production entry qty on the line (draft + approved). */
   draftAndApprovedQty?: number;
   productionAllowedNowQty: number;
+  /** Approved production plus the FG capacity supported by RM still available. */
+  rmSupportedCumulativeCapacityQty?: number;
   maxAdditionalQty: number;
   orderType?: string | null;
   unapprovedProducedQty?: number;
@@ -108,12 +110,11 @@ export function resolveRegularRmEntryQtyCap(
   if (!data || isProductionBlockedByRmReadiness(data)) return null;
   const isNoQty = String(data.orderType ?? "").toUpperCase() === "NO_QTY";
   if (isNoQty) {
-    const woRem = resolveRegularRmWoRemaining(data, options.lineWoRemaining);
     const rmCap = safeRmQty(data.productionAllowedNowQty);
     const exclude = safeRmQty(options.excludeProductionQty);
     const unapprovedOnLine = safeRmQty(data.unapprovedProducedQty);
     const others = exclude > 1e-6 ? Math.max(0, unapprovedOnLine - exclude) : unapprovedOnLine;
-    return Math.max(0, Math.min(woRem, rmCap) - others);
+    return Math.max(0, rmCap - others);
   }
   const woRem = resolveRegularRmWoRemaining(data, options.lineWoRemaining);
   const rmBatchCeiling = safeRmQty(data.productionAllowedNowQty);
@@ -293,10 +294,18 @@ export function ProductionRmReadinessStrip({
       ) : null}
 
       {data.gate === "READY_FOR_PRODUCTION" && !blocked ? (
-        <p className="mt-1 text-slate-700">
-          Production may proceed up to {fmtQty(data.productionAllowedNowQty)} {data.fgUnit || "units"} based on issued RM
-          at production location.
-        </p>
+        String(data.orderType ?? "").toUpperCase() === "NO_QTY" ? (
+          <div className="mt-1 grid gap-1 text-slate-700 sm:grid-cols-3">
+            <p>RM Production Capacity: <strong>{fmtQty(data.rmSupportedCumulativeCapacityQty ?? data.productionAllowedNowQty)} {data.fgUnit || "units"}</strong></p>
+            <p>Produced Qty: <strong>{fmtQty(data.approvedProducedQty ?? 0)} {data.fgUnit || "units"}</strong></p>
+            <p>RM-supported Remaining Capacity: <strong>{fmtQty(data.maxAdditionalQty)} {data.fgUnit || "units"}</strong></p>
+          </div>
+        ) : (
+          <p className="mt-1 text-slate-700">
+            Production may proceed up to {fmtQty(data.productionAllowedNowQty)} {data.fgUnit || "units"} based on issued RM
+            at production location.
+          </p>
+        )
       ) : null}
 
       {data.rmLines.some((ln) => (ln.returnableQty ?? 0) > 0) ? (

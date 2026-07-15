@@ -330,11 +330,17 @@ function processStageBadgeVariant(
   if (woPrepareKey === "READY_FOR_WO") return "success";
   if (woPrepareKey === "PURCHASE_GRN_PENDING" || woPrepareKey === "RM_SHORTAGE") return "warning";
   if (key === "COMPLETED") return "info";
-  if (key === "NO_QTY_BILLING_COMPLETE") return "success";
+  if (key === "NO_QTY_BILLING_COMPLETE" || key === "NO_QTY_READY_TO_CLOSE") return "success";
+  if (key === "NO_QTY_BILLING_PENDING_EXPORT") return "warning";
   if (
     key === "DISPATCH_PENDING" ||
+    key === "NO_QTY_DISPATCH_PENDING" ||
     key === "QC_PENDING" ||
+    key === "NO_QTY_QC_IN_PROGRESS" ||
     key === "PRODUCTION_PENDING" ||
+    key === "NO_QTY_PRODUCTION_RUNNING" ||
+    key === "NO_QTY_FG_DISPOSITION_PENDING" ||
+    key === "NO_QTY_RECOVERY_PENDING" ||
     key === "WO_PENDING" ||
     key === "SALES_BILL_PENDING"
   ) {
@@ -466,8 +472,22 @@ function getNoQtySoStageMeta(row: SoRow, opts: { isAdmin: boolean }): { stage: N
 
   // Backend NO_QTY stage override (priority-based, current cycle only).
   if (key === "NO_QTY_BILLING_COMPLETE") return { stage: "BILLING COMPLETE", ctx, reason: "backend stage: billing finalized" };
-  if (key === "NO_QTY_DISPATCH_BILLING") return { stage: "DISPATCH / BILLING", ctx, reason: "backend stage: dispatch/billing" };
-  if (key === "NO_QTY_IN_PRODUCTION") return { stage: "IN PRODUCTION", ctx, reason: "backend stage: in production" };
+  if (key === "NO_QTY_READY_TO_CLOSE") return { stage: "BILLING COMPLETE", ctx, reason: "backend stage: ready to close" };
+  if (key === "NO_QTY_BILLING_PENDING_EXPORT") {
+    return { stage: "DISPATCH / BILLING", ctx, reason: "backend stage: billing pending export" };
+  }
+  if (key === "NO_QTY_DISPATCH_BILLING" || key === "NO_QTY_DISPATCH_PENDING") {
+    return { stage: "DISPATCH / BILLING", ctx, reason: "backend stage: dispatch/billing" };
+  }
+  if (
+    key === "NO_QTY_PRODUCTION_RUNNING" ||
+    key === "NO_QTY_QC_IN_PROGRESS" ||
+    key === "NO_QTY_FG_DISPOSITION_PENDING" ||
+    key === "NO_QTY_RECOVERY_PENDING" ||
+    key === "NO_QTY_IN_PRODUCTION"
+  ) {
+    return { stage: "IN PRODUCTION", ctx, reason: `backend stage: ${key}` };
+  }
   if (key === "NO_QTY_WORK_ORDER") return { stage: "WORK ORDER", ctx, reason: "backend stage: work order" };
   if (key === "NO_QTY_REQUIREMENT_READY") return { stage: "REQUIREMENT READY", ctx, reason: "backend stage: requirement ready" };
   if (key === "NO_QTY_DRAFT") return { stage: "DRAFT", ctx, reason: "backend stage: draft" };
@@ -511,7 +531,7 @@ function noQtyProgressSummary(stage: NoQtyStage, so: SoRow): string {
   if (stage === "DRAFT") return "Requirement Sheet pending";
   if (stage === "REQUIREMENT READY") return "RS locked";
   if (stage === "WORK ORDER") return "Work order ready";
-  if (stage === "IN PRODUCTION") return "Production / QC in progress";
+  if (stage === "IN PRODUCTION") return "Manufacturing / disposition in progress";
   if (stage === "BILLING COMPLETE") {
     if (so.noQtyBillingExported === true) return "Billing completed · Exported";
     return "Billing completed";
@@ -624,6 +644,7 @@ export function SalesOrdersPage() {
   const copyFromPreviousActive =
     (copySourceRaw === "QUOTATION" || copySourceRaw === "SO") && Number.isFinite(copyIdFromUrl) && copyIdFromUrl > 0;
   const focusSalesOrderId = Number(searchParams.get(DRILL_QUERY.salesOrderId)) || 0;
+  const downstreamHighlight = searchParams.get("highlight") === "downstream";
 
   const statusFilter = read.enum(
     "status",
@@ -1372,6 +1393,17 @@ export function SalesOrdersPage() {
     }
     openNoQtyCreateModal();
   }, [quickEntryAction, patch, navigate]);
+
+  /** Pending Action deep-links: FG disposition / waiver close open the NO_QTY close workspace for the focused SO. */
+  React.useEffect(() => {
+    if (quickEntryAction !== "no-qty-fg-disposition" && quickEntryAction !== "no-qty-close") return;
+    if (focusSalesOrderId <= 0) return;
+    if (!listLoaded) return;
+    const hit = rows.find((r) => r.id === focusSalesOrderId);
+    if (!hit || hit.orderType !== "NO_QTY") return;
+    setNoQtyCloseDialog({ soId: hit.id, docNo: hit.docNo });
+    patch({ action: null });
+  }, [quickEntryAction, focusSalesOrderId, listLoaded, rows, patch]);
 
   async function createFromPreviousSnapshot() {
     if (!copyPreview) return;
@@ -2549,6 +2581,15 @@ export function SalesOrdersPage() {
             </label>
           </div>
           <div className="space-y-2 px-2.5 pb-0.5 pt-0">
+            {soTypeFilter === "NO_QTY" && downstreamHighlight && focusSalesOrderId > 0 ? (
+              <div
+                className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-950"
+                data-testid="no-qty-downstream-highlight"
+              >
+                Downstream work is blocking close for this NO_QTY Agreement. Review Current Stage and close blockers on
+                the focused order.
+              </div>
+            ) : null}
             {soTypeFilter === "NO_QTY" && visibleRows.length > 0 ? (
               <div className="flex flex-col gap-2 pb-0.5" data-testid="no-qty-agreements-list">
                 {visibleRows.map((so) => {

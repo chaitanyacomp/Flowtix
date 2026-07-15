@@ -25,12 +25,18 @@ export type PartyLocationDraft = {
   key: string;
   id?: number;
   label: string;
+  locationType?: "REGISTERED_OFFICE" | "PLANT" | "WAREHOUSE" | "DEPOT" | "OTHER";
   address: string;
   city: string;
+  district?: string;
   stateId: number | "";
+  pincode?: string;
+  country?: string;
   gstin: string;
   contactPerson: string;
   phone: string;
+  email?: string;
+  notes?: string;
   isDefault: boolean;
   isActive: boolean;
 };
@@ -257,6 +263,7 @@ export function PartyMasterLocationCard({
   onChange,
   onRemove,
   onSetDefault,
+  showCustomerLocationExtras = false,
 }: {
   row: PartyLocationDraft;
   states: StateRow[];
@@ -264,6 +271,8 @@ export function PartyMasterLocationCard({
   onChange: (patch: Partial<PartyLocationDraft>) => void;
   onRemove: () => void;
   onSetDefault: () => void;
+  /** Customer Delivery Locations: type / pincode / country / email / notes */
+  showCustomerLocationExtras?: boolean;
 }) {
   const [gstTouched, setGstTouched] = React.useState(false);
 
@@ -320,9 +329,43 @@ export function PartyMasterLocationCard({
             placeholder={labelPlaceholder}
           />
         </PartyMasterField>
-        <PartyMasterField label="City">
-          <Input className="h-9" value={row.city} onChange={(e) => onChange({ city: e.target.value })} />
-        </PartyMasterField>
+        {showCustomerLocationExtras ? (
+          <PartyMasterField label="Location type">
+            <select
+              className="h-9 w-full rounded-md border border-slate-200 bg-white px-2.5 text-sm text-slate-900 shadow-sm"
+              value={row.locationType || "OTHER"}
+              onChange={(e) =>
+                onChange({
+                  locationType: e.target.value as PartyLocationDraft["locationType"],
+                })
+              }
+            >
+              <option value="REGISTERED_OFFICE">Registered Office</option>
+              <option value="PLANT">Plant</option>
+              <option value="WAREHOUSE">Warehouse</option>
+              <option value="DEPOT">Depot</option>
+              <option value="OTHER">Other</option>
+            </select>
+          </PartyMasterField>
+        ) : (
+          <PartyMasterField label="City">
+            <Input className="h-9" value={row.city} onChange={(e) => onChange({ city: e.target.value })} />
+          </PartyMasterField>
+        )}
+        {showCustomerLocationExtras ? (
+          <PartyMasterField label="City">
+            <Input className="h-9" value={row.city} onChange={(e) => onChange({ city: e.target.value })} />
+          </PartyMasterField>
+        ) : null}
+        {showCustomerLocationExtras ? (
+          <PartyMasterField label="District">
+            <Input
+              className="h-9"
+              value={row.district ?? ""}
+              onChange={(e) => onChange({ district: e.target.value })}
+            />
+          </PartyMasterField>
+        ) : null}
         <PartyMasterField label="Address" className="sm:col-span-2">
           <PartyMasterTextArea value={row.address} onChange={(v) => onChange({ address: v })} />
         </PartyMasterField>
@@ -350,12 +393,44 @@ export function PartyMasterLocationCard({
             ))}
           </PartyMasterSelect>
         </PartyMasterField>
+        {showCustomerLocationExtras ? (
+          <>
+            <PartyMasterField label="Pincode">
+              <Input
+                className="h-9"
+                value={row.pincode ?? ""}
+                onChange={(e) => onChange({ pincode: e.target.value })}
+              />
+            </PartyMasterField>
+            <PartyMasterField label="Country">
+              <Input
+                className="h-9"
+                value={row.country ?? ""}
+                onChange={(e) => onChange({ country: e.target.value })}
+              />
+            </PartyMasterField>
+          </>
+        ) : null}
         <PartyMasterField label="Contact person">
           <Input className="h-9" value={row.contactPerson} onChange={(e) => onChange({ contactPerson: e.target.value })} />
         </PartyMasterField>
         <PartyMasterField label="Phone">
           <Input className="h-9" value={row.phone} onChange={(e) => onChange({ phone: e.target.value })} />
         </PartyMasterField>
+        {showCustomerLocationExtras ? (
+          <>
+            <PartyMasterField label="Email">
+              <Input
+                className="h-9"
+                value={row.email ?? ""}
+                onChange={(e) => onChange({ email: e.target.value })}
+              />
+            </PartyMasterField>
+            <PartyMasterField label="Notes" className="sm:col-span-2">
+              <PartyMasterTextArea value={row.notes ?? ""} onChange={(v) => onChange({ notes: v })} />
+            </PartyMasterField>
+          </>
+        ) : null}
       </div>
     </div>
   );

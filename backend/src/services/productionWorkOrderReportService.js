@@ -455,7 +455,7 @@ async function buildWorkOrderProductionReport(db = prisma, workOrderId) {
   };
 }
 
-async function confirmProductionWorkOrderReport(db, workOrderId, input = {}, actor = {}) {
+async function confirmProductionWorkOrderReport(db, workOrderId, input = {}, actor = {}, options = {}) {
   const id = Number(workOrderId);
   if (!Number.isFinite(id) || id <= 0) {
     const err = new Error("Invalid work order id");
@@ -603,6 +603,7 @@ async function confirmProductionWorkOrderReport(db, workOrderId, input = {}, act
           remarks: `Auto-declared from Production Report confirm (wastage-only disposition).`,
         },
         actor,
+        db,
       );
     } catch (err) {
       if (String(err?.message ?? "").includes("exceeds available returnable")) {
@@ -633,11 +634,22 @@ async function confirmProductionWorkOrderReport(db, workOrderId, input = {}, act
   }
 
   const confirmed = await loadConfirmedReport(db, id);
+  // The full report is a heavy read-only reconstruction (~21 queries). When the
+  // caller owns the transaction (e.g. the confirm-and-close route) it passes
+  // `includeReport: false` and rebuilds the response AFTER commit on the root
+  // client, keeping the write transaction small. Standalone callers keep the
+  // report inline (default) for backward compatibility.
+  const includeReport = options.includeReport !== false;
   return {
-    report: await buildWorkOrderProductionReport(db, id),
+    report: includeReport ? await buildWorkOrderProductionReport(db, id) : null,
     confirmation: mapConfirmedReportRow(confirmed),
     requiresShortfallDecision: report.summary.remainderQty > EPS,
     returnPendingCount,
+    // Decision fields the transactional caller needs without a full rebuild,
+    // sourced from the report already built during validation above.
+    salesOrderOrderType: report.salesOrderOrderType,
+    executionStatus: report.execution?.status ?? null,
+    remainderQty: report.summary.remainderQty,
   };
 }
 
@@ -830,6 +842,7 @@ async function receiveProductionRmReturnPending(input, actor = {}, db = prisma) 
           remarks: `Auto-declared from Production Report after Store received RM return (pending #${pendingId}).`,
         },
         actor,
+        db,
       );
     } catch (err) {
       if (String(err?.message ?? "").includes("exceeds available returnable")) {

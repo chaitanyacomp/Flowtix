@@ -34,4 +34,10 @@ describe("noQtyDispatchHeadroom", () => {
       30,
     );
   });
+
+  it("caps excess accepted FG by remaining customer demand", () => {
+    assert.equal(computeNoQtyDispatchHeadroom({ alreadyOpNet: 6000, customerDemandQty: 6000, qcAcceptedThisCycle: 6500, availableFgStock: 500 }), 0);
+    assert.equal(computeNoQtyDispatchHeadroom({ alreadyOpNet: 5500, customerDemandQty: 6000, qcAcceptedThisCycle: 6500, availableFgStock: 1000 }), 500);
+    assert.equal(computeNoQtyDispatchHeadroom({ alreadyOpNet: 5000, customerDemandQty: 6000, qcAcceptedThisCycle: 5500, availableFgStock: 500 }), 500);
+  });
 });

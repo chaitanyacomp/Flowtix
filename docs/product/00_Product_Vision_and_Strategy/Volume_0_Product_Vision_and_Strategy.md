@@ -40,7 +40,7 @@ Our product thinking is shaped by real factory experience, including:
 - **RM is the constraint** — Finished goods ship only when raw material, planning, and shop-floor execution align. Procurement visibility must connect to production readiness.
 - **Not every customer order is a fixed quantity** — Long-term supply agreements (rolling schedules, call-offs, cycle-based planning) require a different commercial and planning model than fixed-quantity sales orders.
 - **Planning and execution are different jobs** — Store plans; Purchase procures; Production makes; QA releases; Store dispatches. Software must respect these boundaries while making handoffs explicit.
-- **BOM is the manufacturing truth** — Weight-based FG planning, process loss, QC allowance, and multi-level BOM (FG → SFG → RM) are not optional academic concepts; they determine whether production is allowed and whether RM is sufficient.
+- **BOM is the engineering truth** — Weight-based FG recipes, runner/sprue weight, component mix, and multi-level BOM (FG → SFG → RM) determine engineering RM demand. Process loss and QC rejection are execution facts; planning buffer is owned by Planning.
 - **Dashboards must show work, not reports** — Operators need *my next action*, not a chart of last month.
 
 FT ERP is built from these realities—not from a generic ERP feature checklist.
@@ -363,6 +363,10 @@ Documentation, configuration templates, and industry packs reduce time-to-live f
 ### 11.2 Geographic and go-to-market strategy (product implications)
 
 Initial product depth assumes **Indian mid-market manufacturing** conventions (GST commercial flows, RM weight in kg, Tally-adjacent finance export patterns)—without binding the product to a single geography. Core workflows remain globally intelligible; **localization** is Configuration and Optional—not Core forks.
+
+### TallyPrime ownership boundary
+
+Flowtix owns operational inventory and manufacturing execution; Tally owns accounting books, statutory returns and accepted accounting vouchers. Compatibility must use the staged and acknowledged contract in [Flowtix–TallyPrime Compatibility Contract](../05_Data_Architecture/Tally_Compatibility_Contract.md). Flowtix is not a replacement general ledger.
 
 ### 11.3 Technology strategy (product-level only)
 

@@ -6,7 +6,7 @@
 | **Volume** | 5 — Data Architecture |
 | **Chapter** | 4 — Planning & Procurement Snapshot Architecture |
 | **Title** | Planning & Procurement Snapshot Architecture |
-| **Version** | 1.0.0 |
+| **Version** | 1.0.1 |
 | **Status** | Draft — Architecture Review |
 | **Effective date** | 2026-05-29 |
 | **Author** | FT ERP Product Team |
@@ -31,6 +31,7 @@
 | Version | Date | Author | Summary |
 |---------|------|--------|---------|
 | 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial Planning & Procurement Snapshot Architecture |
+| 1.0.1 | 2026-07-15 | FT ERP Product Team | BOM Revision Snapshot note — Phase-2 FK traceability roadmap (docs only) |
 | 1.0.1 | 2026-05-29 | FT ERP Product Team | Added §6A Snapshot Creation Matrix; §3.4 four-concept distinction; Writing Requirements |
 
 **Supersedes:** None.
@@ -277,6 +278,8 @@ Authoritative register of **when** each snapshot is created, **what** freezes it
 | **Supplier Address Snapshot** | Engine | `po.activate` | PO `ACTIVATED` | GRN; PO paperwork; inbound logistics | Retained with PO |
 | **Supplier Commercial Terms Snapshot** | Engine | `po.activate` | PO `ACTIVATED` | GRN; PO; payment follow-up | Retained with PO |
 | **BOM Revision Snapshot** | Engine | `pmr.submit` | PMR `SUBMITTED` | PMR; Material Issue validation; production trace | Retained per PMR; never rewritten |
+
+*Note (Phase-2 roadmap):* PMR submit freezes a **BOM Revision Snapshot** for issue/production validation. That does **not** yet place a durable BOM Revision FK on Work Order, Material Issue, Production, or QC rows for master-data dependency analysis. Release-1 therefore retains conservative FG/WO-history deletion blocking ([FT-PD-052](./Chapter_03_Master_Data_and_Reference_Architecture.md)). A future enhancement may persist BOM Revision ID across the execution chain for precise engineering traceability.
 | **BOM Explosion Snapshot** | Engine | `pmr.submit` | PMR `SUBMITTED` | Planned Consumption Snapshot; PMR lines; issue trace | Retained per PMR |
 | **Planned Consumption Snapshot** | Engine | `pmr.submit` | PMR `SUBMITTED` | Material Issue; Production Entry consumption envelope | Retained per PMR; ARR supplements without mutation |
 
@@ -627,6 +630,7 @@ flowchart TB
 | Version | Date | Author | Summary |
 |---------|------|--------|---------|
 | 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial Planning & Procurement Snapshot Architecture (includes §6A Snapshot Creation Matrix and §3.4 four-concept distinction) |
+| 1.0.1 | 2026-07-15 | FT ERP Product Team | BOM Revision Snapshot note — Phase-2 FK traceability roadmap (docs only) |
 
 ---
 

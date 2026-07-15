@@ -35,8 +35,10 @@ function buildNoQtyWoCapDb({ requirementQty = 10000, suggestedSnap = 20000, open
       {
         itemId: 10,
         requirementQty: String(requirementQty),
+        baseDemandQty: String(requirementQty),
+        totalRsQty: String(suggestedSnap),
         suggestedWoQtySnapshot: String(suggestedSnap),
-        shortfallQtySnapshot: String(suggestedSnap - requirementQty),
+        shortfallQtySnapshot: String(Math.max(0, suggestedSnap - requirementQty)),
       },
     ],
   };
@@ -95,7 +97,7 @@ function buildNoQtyWoCapDb({ requirementQty = 10000, suggestedSnap = 20000, open
 }
 
 describe("workOrderSoValidation NO_QTY per-cycle WO ceiling", () => {
-  it("allows 10k new WO when cumulative snap is 20k and prior-cycle WO holds 10k", async () => {
+  it("allows WO up to locked Final RS Qty (suggestedWoQtySnapshot) minus open WO planned", async () => {
     const db = buildNoQtyWoCapDb({
       openWoLines: [{ qty: 10000, status: "PENDING" }],
     });
@@ -106,16 +108,29 @@ describe("workOrderSoValidation NO_QTY per-cycle WO ceiling", () => {
     });
   });
 
-  it("blocks WO above current-cycle requirementQty even when cumulative headroom remains", async () => {
+  it("allows Keep Final RS Qty above base requirementQty (Phase 2B)", async () => {
+    const db = buildNoQtyWoCapDb({
+      requirementQty: 1000,
+      suggestedSnap: 1025,
+      openWoLines: [],
+    });
+    await assertWorkOrderLinesAgainstSalesOrder(db, {
+      salesOrderId: 1,
+      lineRequests: [{ fgItemId: 10, qty: 1025 }],
+      excludeWorkOrderId: null,
+    });
+  });
+
+  it("blocks WO above locked Final RS Qty (suggestedWoQtySnapshot)", async () => {
     const db = buildNoQtyWoCapDb({ openWoLines: [] });
     await assert.rejects(
       () =>
         assertWorkOrderLinesAgainstSalesOrder(db, {
           salesOrderId: 1,
-          lineRequests: [{ fgItemId: 10, qty: 15000 }],
+          lineRequests: [{ fgItemId: 10, qty: 20001 }],
           excludeWorkOrderId: null,
         }),
-      /Maximum allowed now: 10000/,
+      /Maximum allowed now: 20000/,
     );
   });
 

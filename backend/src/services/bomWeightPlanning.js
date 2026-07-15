@@ -76,14 +76,8 @@ function fgWeightInGrams(fgWeight, unitKind) {
 
  */
 
-function lossMultiplier(processLossPercent, qcLossPercent) {
-
-  const pl = Math.max(0, Math.min(100, n(processLossPercent)));
-
-  const ql = Math.max(0, Math.min(100, n(qcLossPercent)));
-
-  return 1 + pl / 100 + ql / 100;
-
+function lossMultiplier() {
+  return 1;
 }
 
 function bomNormalizationModeValue(value) {
@@ -108,10 +102,8 @@ function normalizedBaseQtyPerFg(baseQty, outputQty, normalizationMode) {
 
  */
 
-function effectiveQtyPerUnitWithHeaderLosses(baseQty, processLossPercent, qcLossPercent) {
-
-  return round3(Math.max(0, n(baseQty)) * lossMultiplier(processLossPercent, qcLossPercent));
-
+function effectiveQtyPerUnitWithHeaderLosses(baseQty) {
+  return round3(Math.max(0, n(baseQty)));
 }
 
 
@@ -139,10 +131,9 @@ function computeBomWeightPlanning(input) {
   const fgWeight = n(input?.fgWeight);
 
   const outputQty = Math.max(EPS, n(input?.outputQty ?? 1));
-
-  const processLossPercent = Math.max(0, Math.min(100, n(input?.processLossPercent)));
-
-  const qcLossPercent = Math.max(0, Math.min(100, n(input?.qcLossPercent)));
+  const runnerWeight = Math.max(0, n(input?.runnerWeight));
+  const processLossPercent = 0;
+  const qcLossPercent = 0;
 
   const unitKind = weightUnitKind(input?.fgWeightUnit);
 
@@ -182,7 +173,10 @@ function computeBomWeightPlanning(input) {
 
 
 
-  const possibleFgPerKg = 1000 / weightGrams;
+  const runnerGrams = unitKind === "kilogram" ? runnerWeight * 1000 : runnerWeight;
+  const shotWeightGrams = weightGrams * outputQty + runnerGrams;
+  const rmPerFgGrams = shotWeightGrams / outputQty;
+  const possibleFgPerKg = 1000 / rmPerFgGrams;
 
   const unitLabel =
 
@@ -203,7 +197,9 @@ function computeBomWeightPlanning(input) {
     qcLossPercent,
 
     netFgWeight: round3(fgWeight),
-
+    runnerWeight: round3(runnerWeight),
+    shotWeight: round3(unitKind === "kilogram" ? shotWeightGrams / 1000 : shotWeightGrams),
+    rmPerFg: round3(unitKind === "kilogram" ? rmPerFgGrams / 1000 : rmPerFgGrams),
     possibleFgPerKg: round3(possibleFgPerKg),
 
     weightUnitLabel: unitLabel,
@@ -255,6 +251,7 @@ function enrichBomWithPlanning(bom) {
     fgWeightUnit: unit,
 
     outputQty: bom.outputQty,
+    runnerWeight: bom.runnerWeight,
 
     processLossPercent: bom.processLossPercent,
 

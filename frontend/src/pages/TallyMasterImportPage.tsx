@@ -1,6 +1,6 @@
 import * as React from "react";
 import { Navigate } from "react-router-dom";
-import { AlertTriangle, CheckCircle2, FileSpreadsheet, Download } from "lucide-react";
+import { AlertTriangle, CheckCircle2, FileSpreadsheet, Download, Info } from "lucide-react";
 import { PageHeader } from "../components/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
@@ -13,6 +13,16 @@ import { cn } from "../lib/utils";
 type DuplicateAction = "SKIP" | "UPDATE_EMPTY_FIELDS_ONLY";
 type DefaultItemType = "RM" | "FG";
 type ProposedAction = "CREATE" | "SKIP_DUPLICATE" | "UPDATE_EMPTY_FIELDS" | "ERROR";
+type PreviewStatus = "OK" | "WARNING" | "ERROR";
+
+type FieldIssue = {
+  masterName: string;
+  masterType: string;
+  field: string;
+  actualValue: string | null;
+  reason: string;
+  message: string;
+};
 
 type PreviewRow = {
   entityType: string;
@@ -21,6 +31,8 @@ type PreviewRow = {
   existingErpId: number | null;
   warnings: string[];
   errors: string[];
+  fieldIssues?: FieldIssue[];
+  status?: PreviewStatus;
   mapped: Record<string, unknown>;
 };
 
@@ -31,14 +43,33 @@ type PreviewSummary = {
   units: { total: number; create: number; skip: number; update: number; error: number };
 };
 
+type ParsedMasterCounts = {
+  customers: number;
+  suppliers: number;
+  items: number;
+  units: number;
+  stockGroups: number;
+  godowns: number;
+  voucherTypes: number;
+  ledgers?: number;
+  stockItems?: number;
+  warnings: number;
+};
+
 type ParseStats = {
   tallyMessageOpenInRaw: number;
   ledgerOpenInRaw: number;
   stockItemOpenInRaw: number;
   unitOpenInRaw: number;
+  stockGroupOpenInRaw?: number;
+  godownOpenInRaw?: number;
+  voucherTypeOpenInRaw?: number;
   ledgersParsed: number;
   stockItemsParsed: number;
   unitsParsed: number;
+  stockGroupsParsed?: number;
+  godownsParsed?: number;
+  voucherTypesParsed?: number;
   tallyMessageSeen: number;
 };
 
@@ -78,20 +109,91 @@ function downloadCsv(filename: string, header: string, lines: string[]) {
   URL.revokeObjectURL(url);
 }
 
-function previewRowsToCsv(rows: PreviewRow[], fileSuffix: string): void {
-  const header = "Entity,Tally name,Proposed action,Existing ERP id,Warnings,Errors,Mapped JSON\n";
+function cell(v: unknown): string {
+  if (v == null || v === "") return "";
+  return String(v);
+}
+
+function display(v: unknown): string {
+  const s = cell(v).trim();
+  return s || "—";
+}
+
+function rowStatus(r: PreviewRow): PreviewStatus {
+  if (r.status === "OK" || r.status === "WARNING" || r.status === "ERROR") return r.status;
+  if (r.proposedAction === "ERROR" || r.errors.length) return "ERROR";
+  if (r.warnings.length) return "WARNING";
+  return "OK";
+}
+
+function partyCsvLines(rows: PreviewRow[]): { header: string; lines: string[] } {
+  const header =
+    "Name,GSTIN,Contact Person,Phone,Email,Address,State,Action,Status,Warning\n";
   const lines = rows.map((r) =>
     [
-      escCsvCell(r.entityType),
-      escCsvCell(r.tallyName),
+      escCsvCell(cell(r.mapped?.name) || r.tallyName),
+      escCsvCell(cell(r.mapped?.gst) || cell(r.mapped?.gstRaw)),
+      escCsvCell(cell(r.mapped?.contact)),
+      escCsvCell(cell(r.mapped?.phone)),
+      escCsvCell(cell(r.mapped?.email)),
+      escCsvCell(cell(r.mapped?.address)),
+      escCsvCell(cell(r.mapped?.stateText)),
       escCsvCell(r.proposedAction),
-      escCsvCell(r.existingErpId != null ? String(r.existingErpId) : ""),
-      escCsvCell(r.warnings.join("; ")),
-      escCsvCell(r.errors.join("; ")),
-      escCsvCell(JSON.stringify(r.mapped)),
+      escCsvCell(rowStatus(r)),
+      escCsvCell([...r.warnings, ...r.errors].join("; ")),
     ].join(","),
   );
-  downloadCsv(`tally-import-preview-${fileSuffix}.csv`, header, lines);
+  return { header, lines };
+}
+
+function itemCsvLines(rows: PreviewRow[]): { header: string; lines: string[] } {
+  const header = "Name,Unit,HSN,GST %,Stock Group,Item Type,Action,Status,Warning\n";
+  const lines = rows.map((r) =>
+    [
+      escCsvCell(cell(r.mapped?.itemName) || r.tallyName),
+      escCsvCell(cell(r.mapped?.baseUnit)),
+      escCsvCell(cell(r.mapped?.hsnCode)),
+      escCsvCell(cell(r.mapped?.gstRate)),
+      escCsvCell(cell(r.mapped?.tallyStockGroup)),
+      escCsvCell(cell(r.mapped?.suggestedItemType) || cell(r.mapped?.itemType)),
+      escCsvCell(r.proposedAction),
+      escCsvCell(rowStatus(r)),
+      escCsvCell([...r.warnings, ...r.errors].join("; ")),
+    ].join(","),
+  );
+  return { header, lines };
+}
+
+function unitCsvLines(rows: PreviewRow[]): { header: string; lines: string[] } {
+  const header = "Name,Code,Action,Status,Warning\n";
+  const lines = rows.map((r) =>
+    [
+      escCsvCell(cell(r.mapped?.unitName) || r.tallyName),
+      escCsvCell(cell(r.mapped?.unitCode)),
+      escCsvCell(r.proposedAction),
+      escCsvCell(rowStatus(r)),
+      escCsvCell([...r.warnings, ...r.errors].join("; ")),
+    ].join(","),
+  );
+  return { header, lines };
+}
+
+function previewRowsToCsv(rows: PreviewRow[], tab: string): void {
+  if (tab === "customers" || tab === "suppliers") {
+    const { header, lines } = partyCsvLines(rows);
+    downloadCsv(`tally-import-preview-${tab}.csv`, header, lines);
+    return;
+  }
+  if (tab === "items") {
+    const { header, lines } = itemCsvLines(rows);
+    downloadCsv(`tally-import-preview-${tab}.csv`, header, lines);
+    return;
+  }
+  if (tab === "units") {
+    const { header, lines } = unitCsvLines(rows);
+    downloadCsv(`tally-import-preview-${tab}.csv`, header, lines);
+    return;
+  }
 }
 
 function applyResultsToCsv(results: ApplyResult["results"]): void {
@@ -109,6 +211,21 @@ function applyResultsToCsv(results: ApplyResult["results"]): void {
   downloadCsv("tally-import-apply-results.csv", header, lines);
 }
 
+function StatusBadge({ status }: { status: PreviewStatus }) {
+  return (
+    <span
+      className={cn(
+        "inline-block rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+        status === "OK" && "border-emerald-200 bg-emerald-50 text-emerald-900",
+        status === "WARNING" && "border-amber-200 bg-amber-50 text-amber-950",
+        status === "ERROR" && "border-red-200 bg-red-50 text-red-900",
+      )}
+    >
+      {status}
+    </span>
+  );
+}
+
 export function TallyMasterImportPage() {
   const toast = useToast();
   const isAdmin = useIsAdmin();
@@ -123,14 +240,16 @@ export function TallyMasterImportPage() {
   const [applying, setApplying] = React.useState(false);
   const [previewToken, setPreviewToken] = React.useState<string | null>(null);
   const [warnings, setWarnings] = React.useState<string[]>([]);
+  const [infoNotes, setInfoNotes] = React.useState<string[]>([]);
+  const [parsedMasterCounts, setParsedMasterCounts] = React.useState<ParsedMasterCounts | null>(null);
   const [summary, setSummary] = React.useState<PreviewSummary | null>(null);
   const [customers, setCustomers] = React.useState<PreviewRow[]>([]);
   const [suppliers, setSuppliers] = React.useState<PreviewRow[]>([]);
   const [items, setItems] = React.useState<PreviewRow[]>([]);
   const [units, setUnits] = React.useState<PreviewRow[]>([]);
   const [parseStats, setParseStats] = React.useState<ParseStats | null>(null);
+  const [pipelineId, setPipelineId] = React.useState<string | null>(null);
   const [applyResult, setApplyResult] = React.useState<ApplyResult | null>(null);
-  /** Per Tally stock-item name → RM | FG for import apply (initialized from preview). */
   const [itemRowTypes, setItemRowTypes] = React.useState<Record<string, DefaultItemType>>({});
   const [tab, setTab] = React.useState<"customers" | "suppliers" | "items" | "units" | "alerts">("customers");
 
@@ -159,6 +278,9 @@ export function TallyMasterImportPage() {
     setUnits([]);
     setItemRowTypes({});
     setParseStats(null);
+    setPipelineId(null);
+    setParsedMasterCounts(null);
+    setInfoNotes([]);
     setApplyResult(null);
     setWarnings([]);
     try {
@@ -189,12 +311,15 @@ export function TallyMasterImportPage() {
       }
       setPreviewToken(data.previewToken);
       setWarnings(Array.isArray(data.warnings) ? data.warnings : []);
+      setInfoNotes(Array.isArray(data.infoNotes) ? data.infoNotes : []);
+      setParsedMasterCounts(data.parsedMasterCounts ?? null);
       setSummary(data.summary);
       setCustomers(data.customers ?? []);
       setSuppliers(data.suppliers ?? []);
       setItems(data.items ?? []);
       setUnits(data.units ?? []);
       setParseStats(data.parseStats ?? null);
+      setPipelineId(data.runtime?.pipelineId ?? null);
       const itemList: PreviewRow[] = data.items ?? [];
       const initTypes: Record<string, DefaultItemType> = {};
       for (const r of itemList) {
@@ -243,20 +368,36 @@ export function TallyMasterImportPage() {
   }
 
   function downloadFullPreviewCsv() {
-    const all = [...units, ...customers, ...suppliers, ...items];
-    const header = "Entity,Tally name,Proposed action,Existing ERP id,Warnings,Errors,Mapped JSON\n";
-    const lines = all.map((r) =>
-      [
-        escCsvCell(r.entityType),
-        escCsvCell(r.tallyName),
-        escCsvCell(r.proposedAction),
-        escCsvCell(r.existingErpId != null ? String(r.existingErpId) : ""),
-        escCsvCell(r.warnings.join("; ")),
-        escCsvCell(r.errors.join("; ")),
-        escCsvCell(JSON.stringify(r.mapped)),
-      ].join(","),
-    );
-    downloadCsv("tally-import-preview-all.csv", header, lines);
+    const sections: string[] = [];
+    const cust = partyCsvLines(customers);
+    if (cust.lines.length) {
+      sections.push("# Customers");
+      sections.push(cust.header.trimEnd());
+      sections.push(...cust.lines);
+      sections.push("");
+    }
+    const sup = partyCsvLines(suppliers);
+    if (sup.lines.length) {
+      sections.push("# Suppliers");
+      sections.push(sup.header.trimEnd());
+      sections.push(...sup.lines);
+      sections.push("");
+    }
+    const it = itemCsvLines(items);
+    if (it.lines.length) {
+      sections.push("# Items");
+      sections.push(it.header.trimEnd());
+      sections.push(...it.lines);
+      sections.push("");
+    }
+    const un = unitCsvLines(units);
+    if (un.lines.length) {
+      sections.push("# Units");
+      sections.push(un.header.trimEnd());
+      sections.push(...un.lines);
+      sections.push("");
+    }
+    downloadCsv("tally-import-preview-all.csv", "", sections);
   }
 
   if (!isAdmin) {
@@ -277,6 +418,8 @@ export function TallyMasterImportPage() {
 
   const activeRows =
     tab === "customers" ? customers : tab === "suppliers" ? suppliers : tab === "items" ? items : tab === "units" ? units : [];
+
+  const counts = parsedMasterCounts;
 
   return (
     <div className="mx-auto w-full max-w-6xl space-y-4 px-4 py-4 md:px-6 md:py-5">
@@ -367,10 +510,6 @@ export function TallyMasterImportPage() {
                 aria-label="Custom RM classification keywords"
               />
             </div>
-            <span className="mt-1 block text-xs text-slate-500">
-              Uses Tally stock group fields on each <span className="font-mono">STOCKITEM</span> (<span className="font-mono">PARENT</span>,{" "}
-              <span className="font-mono">CATEGORY</span>, <span className="font-mono">STOCKGROUP</span>). Leave blank for built-in keyword lists.
-            </span>
           </label>
           <div className="flex flex-wrap items-center gap-2">
             <Button type="button" onClick={() => void runPreview()} disabled={previewing || !file}>
@@ -392,18 +531,46 @@ export function TallyMasterImportPage() {
             <CardTitle className="text-base font-semibold text-slate-900">2. Preview summary</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3 py-4">
+            {counts ? (
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-8">
+                <CountChip label="Customers" value={counts.customers} />
+                <CountChip label="Suppliers" value={counts.suppliers} />
+                <CountChip label="Items" value={counts.items} />
+                <CountChip label="Units" value={counts.units} />
+                <CountChip label="Stock Groups" value={counts.stockGroups} muted />
+                <CountChip label="Godowns" value={counts.godowns} muted />
+                <CountChip label="Voucher Types" value={counts.voucherTypes} muted />
+                <CountChip label="Warnings" value={counts.warnings} warn={counts.warnings > 0} />
+              </div>
+            ) : null}
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
               <SummaryChip label="Customers" s={summary.customers} />
               <SummaryChip label="Suppliers" s={summary.suppliers} />
               <SummaryChip label="Items" s={summary.items} />
               <SummaryChip label="Units" s={summary.units} />
             </div>
+            {infoNotes.length ? (
+              <ul className="space-y-1 rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-sm text-sky-950">
+                {infoNotes.map((n) => (
+                  <li key={n} className="flex gap-2">
+                    <Info className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+                    <span>{n}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
             {parseStats ? (
               <div className="rounded-md border border-slate-200 bg-slate-50 px-2 py-2 font-mono text-[11px] leading-relaxed text-slate-700">
                 <span className="font-sans font-semibold text-slate-800">XML scan: </span>
-                raw &lt;TALLYMESSAGE&gt; {parseStats.tallyMessageOpenInRaw} · &lt;LEDGER&gt; {parseStats.ledgerOpenInRaw} ·
-                &lt;STOCKITEM&gt; {parseStats.stockItemOpenInRaw} · &lt;UNIT&gt; {parseStats.unitOpenInRaw} → parsed LEDGER{" "}
-                {parseStats.ledgersParsed} · STOCKITEM {parseStats.stockItemsParsed} · UNIT {parseStats.unitsParsed}
+                LEDGER {parseStats.ledgersParsed} · STOCKITEM {parseStats.stockItemsParsed} · UNIT {parseStats.unitsParsed}
+                {parseStats.stockGroupsParsed != null ? ` · STOCKGROUP ${parseStats.stockGroupsParsed}` : ""}
+                {parseStats.godownsParsed != null ? ` · GODOWN ${parseStats.godownsParsed}` : ""}
+                {parseStats.voucherTypesParsed != null ? ` · VOUCHERTYPE ${parseStats.voucherTypesParsed}` : ""}
+                {pipelineId ? (
+                  <div className="mt-1 font-sans text-[10px] text-slate-500">
+                    Pipeline: <span className="font-mono">{pipelineId}</span>
+                  </div>
+                ) : null}
               </div>
             ) : null}
             {warnings.length ? (
@@ -430,133 +597,47 @@ export function TallyMasterImportPage() {
             </div>
             {tab === "alerts" ? (
               <div className="max-h-72 space-y-2 overflow-auto text-sm">
+                {infoNotes.map((n) => (
+                  <div key={`info-${n}`} className="rounded border border-sky-200 bg-sky-50 px-2 py-1 text-sky-950">
+                    {n}
+                  </div>
+                ))}
                 {warnings.map((w) => (
                   <div key={w} className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-amber-950">
                     {w}
                   </div>
                 ))}
-                {[...customers, ...suppliers, ...items, ...units].flatMap((r) =>
-                  [...r.warnings.map((x) => ({ r, x, kind: "w" as const })), ...r.errors.map((x) => ({ r, x, kind: "e" as const }))].map(
-                    ({ r, x, kind }, i) => (
-                      <div
-                        key={`${r.entityType}-${r.tallyName}-${kind}-${i}`}
-                        className={cn(
-                          "rounded border px-2 py-1",
-                          kind === "e" ? "border-red-200 bg-red-50 text-red-900" : "border-slate-200 bg-slate-50 text-slate-800",
-                        )}
-                      >
-                        <span className="font-medium">{r.entityType}</span> · {r.tallyName}: {x}
-                      </div>
-                    ),
-                  ),
-                )}
+                {[...customers, ...suppliers, ...items, ...units].flatMap((r) => {
+                  const issues = r.fieldIssues?.length
+                    ? r.fieldIssues.map((fi) => ({ r, x: fi.message, kind: r.errors.includes(fi.message) ? ("e" as const) : ("w" as const) }))
+                    : [
+                        ...r.warnings.map((x) => ({ r, x, kind: "w" as const })),
+                        ...r.errors.map((x) => ({ r, x, kind: "e" as const })),
+                      ];
+                  return issues.map(({ r: row, x, kind }, i) => (
+                    <div
+                      key={`${row.entityType}-${row.tallyName}-${kind}-${i}`}
+                      className={cn(
+                        "rounded border px-2 py-1",
+                        kind === "e" ? "border-red-200 bg-red-50 text-red-900" : "border-slate-200 bg-slate-50 text-slate-800",
+                      )}
+                    >
+                      {x}
+                    </div>
+                  ));
+                })}
               </div>
             ) : tab === "items" ? (
-              <div className="max-h-80 overflow-auto rounded border border-slate-200">
-                <table className="w-full min-w-[960px] border-collapse text-left text-xs">
-                  <thead className="sticky top-0 z-[1] bg-slate-100 text-slate-700">
-                    <tr>
-                      <th className="border-b border-slate-200 px-2 py-1.5 font-semibold">Name</th>
-                      <th className="border-b border-slate-200 px-2 py-1.5 font-semibold">Unit</th>
-                      <th className="border-b border-slate-200 px-2 py-1.5 font-semibold">HSN</th>
-                      <th className="border-b border-slate-200 px-2 py-1.5 font-semibold">GST %</th>
-                      <th className="border-b border-slate-200 px-2 py-1.5 font-semibold">Tally stock group</th>
-                      <th className="border-b border-slate-200 px-2 py-1.5 font-semibold">Auto</th>
-                      <th className="border-b border-slate-200 px-2 py-1.5 font-semibold">Item type</th>
-                      <th className="border-b border-slate-200 px-2 py-1.5 font-semibold">Action</th>
-                      <th className="border-b border-slate-200 px-2 py-1.5 font-semibold">Notes</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {items.map((r) => {
-                      const unit = String(r.mapped?.baseUnit ?? "").trim() || "—";
-                      const hsn = String(r.mapped?.hsnCode ?? "").trim() || "—";
-                      const gstRaw = r.mapped?.gstRate;
-                      const gst =
-                        gstRaw != null && gstRaw !== "" && Number.isFinite(Number(gstRaw)) ? String(Number(gstRaw)) : "—";
-                      const stockGroup = String(r.mapped?.tallyStockGroup ?? "").trim() || "—";
-                      const auto = r.mapped?.autoDetectedItemType;
-                      const rowType =
-                        itemRowTypes[r.tallyName] ??
-                        (r.mapped?.suggestedItemType === "RM" || r.mapped?.suggestedItemType === "FG"
-                          ? r.mapped.suggestedItemType
-                          : defaultItemType);
-                      return (
-                        <tr key={`ITEM-${r.tallyName}`} className="border-b border-slate-100 odd:bg-white even:bg-slate-50/80">
-                          <td className="px-2 py-1 align-top font-medium text-slate-900">{r.tallyName}</td>
-                          <td className="max-w-[100px] truncate px-2 py-1 align-top text-slate-800" title={unit}>
-                            {unit}
-                          </td>
-                          <td className="px-2 py-1 align-top font-mono text-[11px] text-slate-800">{hsn}</td>
-                          <td className="px-2 py-1 align-top tabular-nums text-slate-800">{gst}</td>
-                          <td
-                            className="max-w-[140px] truncate px-2 py-1 align-top text-slate-700"
-                            title={stockGroup === "—" ? undefined : stockGroup}
-                          >
-                            {stockGroup}
-                          </td>
-                          <td className="whitespace-nowrap px-2 py-1 align-top">
-                            {auto === "RM" ? (
-                              <span className="inline-block rounded border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 font-semibold text-emerald-900">
-                                RM
-                              </span>
-                            ) : auto === "FG" ? (
-                              <span className="inline-block rounded border border-indigo-200 bg-indigo-50 px-1.5 py-0.5 font-semibold text-indigo-900">
-                                FG
-                              </span>
-                            ) : (
-                              <span className="text-slate-400">—</span>
-                            )}
-                          </td>
-                          <td className="px-2 py-1 align-top">
-                            <NativeSelect
-                              className="h-7 max-w-[5.5rem] py-0 pr-6 text-xs"
-                              value={rowType}
-                              onChange={(e) => {
-                                const v = e.target.value as DefaultItemType;
-                                setItemRowTypes((prev) => ({ ...prev, [r.tallyName]: v }));
-                              }}
-                              aria-label={`Item type for ${r.tallyName}`}
-                            >
-                              <option value="RM">RM</option>
-                              <option value="FG">FG</option>
-                            </NativeSelect>
-                          </td>
-                          <td className="whitespace-nowrap px-2 py-1 align-top">{r.proposedAction}</td>
-                          <td className="min-w-[100px] px-2 py-1 align-top text-slate-600">
-                            {[...r.warnings, ...r.errors].join(" · ") || "—"}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
+              <ItemsPreviewTable
+                items={items}
+                itemRowTypes={itemRowTypes}
+                setItemRowTypes={setItemRowTypes}
+                defaultItemType={defaultItemType}
+              />
+            ) : tab === "units" ? (
+              <UnitsPreviewTable rows={units} />
             ) : (
-              <div className="max-h-80 overflow-auto rounded border border-slate-200">
-                <table className="w-full min-w-[640px] border-collapse text-left text-xs">
-                  <thead className="sticky top-0 bg-slate-100 text-slate-700">
-                    <tr>
-                      <th className="border-b border-slate-200 px-2 py-1.5 font-semibold">Name</th>
-                      <th className="border-b border-slate-200 px-2 py-1.5 font-semibold">Action</th>
-                      <th className="border-b border-slate-200 px-2 py-1.5 font-semibold">Match id</th>
-                      <th className="border-b border-slate-200 px-2 py-1.5 font-semibold">Notes</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {activeRows.map((r) => (
-                      <tr key={`${r.entityType}-${r.tallyName}`} className="border-b border-slate-100 odd:bg-white even:bg-slate-50/80">
-                        <td className="px-2 py-1 align-top font-medium text-slate-900">{r.tallyName}</td>
-                        <td className="px-2 py-1 align-top">{r.proposedAction}</td>
-                        <td className="px-2 py-1 align-top">{r.existingErpId ?? "—"}</td>
-                        <td className="px-2 py-1 align-top text-slate-600">
-                          {[...r.warnings, ...r.errors].join(" · ") || "—"}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              <PartyPreviewTable rows={activeRows} />
             )}
             <div className="flex flex-wrap gap-2 pt-2">
               <Button type="button" onClick={() => void runApply()} disabled={applying || !previewToken} className="bg-emerald-700 hover:bg-emerald-800">
@@ -613,9 +694,34 @@ export function TallyMasterImportPage() {
           <strong className="text-slate-800">How to export from Tally:</strong> In Tally Prime, use{" "}
           <span className="font-mono">Gateway of Tally → Import/Export → Export</span> (or your company’s XML export path) and export{" "}
           <strong>masters</strong> (ledgers, stock items, units) as XML. Do not rely on transaction/voucher XML for this screen. If the file
-          contains voucher sections, they are ignored and you will see a notice.
+          contains voucher sections, they are ignored and you will see a notice. Preview shows all fields that will be imported; Stock Groups,
+          Godowns and Voucher Types may appear as parsed counts only in Release-1.
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+function CountChip({
+  label,
+  value,
+  muted,
+  warn,
+}: {
+  label: string;
+  value: number;
+  muted?: boolean;
+  warn?: boolean;
+}) {
+  return (
+    <div
+      className={cn(
+        "rounded-md border px-2 py-2 text-xs",
+        warn ? "border-amber-200 bg-amber-50" : muted ? "border-slate-200 bg-slate-50" : "border-slate-200 bg-white",
+      )}
+    >
+      <div className="font-semibold text-slate-800">{label}</div>
+      <div className="mt-0.5 text-lg font-semibold tabular-nums text-slate-900">{value}</div>
     </div>
   );
 }
@@ -628,6 +734,177 @@ function SummaryChip({ label, s }: { label: string; s: { create: number; skip: n
         New {s.create} · Skip {s.skip} · Update {s.update} · Error {s.error}{" "}
         <span className="text-slate-400">(total {s.total})</span>
       </div>
+    </div>
+  );
+}
+
+function PartyPreviewTable({ rows }: { rows: PreviewRow[] }) {
+  return (
+    <div className="max-h-80 overflow-auto rounded border border-slate-200">
+      <table className="w-full min-w-[1100px] border-collapse text-left text-xs">
+        <thead className="sticky top-0 z-[1] bg-slate-100 text-slate-700">
+          <tr>
+            <th className="border-b border-slate-200 px-2 py-1.5 font-semibold">Name</th>
+            <th className="border-b border-slate-200 px-2 py-1.5 font-semibold">GSTIN</th>
+            <th className="border-b border-slate-200 px-2 py-1.5 font-semibold">Contact Person</th>
+            <th className="border-b border-slate-200 px-2 py-1.5 font-semibold">Phone</th>
+            <th className="border-b border-slate-200 px-2 py-1.5 font-semibold">Email</th>
+            <th className="border-b border-slate-200 px-2 py-1.5 font-semibold">Address</th>
+            <th className="border-b border-slate-200 px-2 py-1.5 font-semibold">State</th>
+            <th className="border-b border-slate-200 px-2 py-1.5 font-semibold">Action</th>
+            <th className="border-b border-slate-200 px-2 py-1.5 font-semibold">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => {
+            const gst = display(r.mapped?.gstin || r.mapped?.gst || r.mapped?.gstRaw);
+            const notes = [...r.warnings, ...r.errors].join(" · ");
+            return (
+              <tr key={`${r.entityType}-${r.tallyName}`} className="border-b border-slate-100 odd:bg-white even:bg-slate-50/80">
+                <td className="px-2 py-1 align-top font-medium text-slate-900">{display(r.mapped?.name) || r.tallyName}</td>
+                <td className="px-2 py-1 align-top font-mono text-[11px] text-slate-800" title={notes || undefined}>
+                  {gst}
+                </td>
+                <td className="max-w-[120px] truncate px-2 py-1 align-top text-slate-800">
+                  {display(r.mapped?.contactPerson || r.mapped?.contact)}
+                </td>
+                <td className="whitespace-nowrap px-2 py-1 align-top text-slate-800">{display(r.mapped?.phone)}</td>
+                <td className="max-w-[140px] truncate px-2 py-1 align-top text-slate-800">{display(r.mapped?.email)}</td>
+                <td className="max-w-[180px] truncate px-2 py-1 align-top text-slate-700" title={cell(r.mapped?.address) || undefined}>
+                  {display(r.mapped?.address)}
+                </td>
+                <td className="whitespace-nowrap px-2 py-1 align-top text-slate-800">{display(r.mapped?.stateText)}</td>
+                <td className="whitespace-nowrap px-2 py-1 align-top">{r.proposedAction}</td>
+                <td className="px-2 py-1 align-top" title={notes || undefined}>
+                  <StatusBadge status={rowStatus(r)} />
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function UnitsPreviewTable({ rows }: { rows: PreviewRow[] }) {
+  return (
+    <div className="max-h-80 overflow-auto rounded border border-slate-200">
+      <table className="w-full min-w-[640px] border-collapse text-left text-xs">
+        <thead className="sticky top-0 z-[1] bg-slate-100 text-slate-700">
+          <tr>
+            <th className="border-b border-slate-200 px-2 py-1.5 font-semibold">Name</th>
+            <th className="border-b border-slate-200 px-2 py-1.5 font-semibold">Code</th>
+            <th className="border-b border-slate-200 px-2 py-1.5 font-semibold">Action</th>
+            <th className="border-b border-slate-200 px-2 py-1.5 font-semibold">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={`UNIT-${r.tallyName}`} className="border-b border-slate-100 odd:bg-white even:bg-slate-50/80">
+              <td className="px-2 py-1 align-top font-medium text-slate-900">{display(r.mapped?.unitName) || r.tallyName}</td>
+              <td className="px-2 py-1 align-top font-mono text-[11px] text-slate-800">{display(r.mapped?.unitCode)}</td>
+              <td className="whitespace-nowrap px-2 py-1 align-top">{r.proposedAction}</td>
+              <td className="px-2 py-1 align-top">
+                <StatusBadge status={rowStatus(r)} />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function ItemsPreviewTable({
+  items,
+  itemRowTypes,
+  setItemRowTypes,
+  defaultItemType,
+}: {
+  items: PreviewRow[];
+  itemRowTypes: Record<string, DefaultItemType>;
+  setItemRowTypes: React.Dispatch<React.SetStateAction<Record<string, DefaultItemType>>>;
+  defaultItemType: DefaultItemType;
+}) {
+  return (
+    <div className="max-h-80 overflow-auto rounded border border-slate-200">
+      <table className="w-full min-w-[960px] border-collapse text-left text-xs">
+        <thead className="sticky top-0 z-[1] bg-slate-100 text-slate-700">
+          <tr>
+            <th className="border-b border-slate-200 px-2 py-1.5 font-semibold">Name</th>
+            <th className="border-b border-slate-200 px-2 py-1.5 font-semibold">Unit</th>
+            <th className="border-b border-slate-200 px-2 py-1.5 font-semibold">HSN</th>
+            <th className="border-b border-slate-200 px-2 py-1.5 font-semibold">GST %</th>
+            <th className="border-b border-slate-200 px-2 py-1.5 font-semibold">Tally stock group</th>
+            <th className="border-b border-slate-200 px-2 py-1.5 font-semibold">Auto</th>
+            <th className="border-b border-slate-200 px-2 py-1.5 font-semibold">Item type</th>
+            <th className="border-b border-slate-200 px-2 py-1.5 font-semibold">Action</th>
+            <th className="border-b border-slate-200 px-2 py-1.5 font-semibold">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((r) => {
+            const unit = display(r.mapped?.baseUnit);
+            const hsn = display(r.mapped?.hsnCode);
+            const gstRaw = r.mapped?.gstRate;
+            const gst =
+              gstRaw != null && gstRaw !== "" && Number.isFinite(Number(gstRaw)) ? String(Number(gstRaw)) : "—";
+            const stockGroup = display(r.mapped?.tallyStockGroup);
+            const auto = r.mapped?.autoDetectedItemType;
+            const rowType =
+              itemRowTypes[r.tallyName] ??
+              (r.mapped?.suggestedItemType === "RM" || r.mapped?.suggestedItemType === "FG"
+                ? r.mapped.suggestedItemType
+                : defaultItemType);
+            const notes = [...r.warnings, ...r.errors].join(" · ");
+            return (
+              <tr key={`ITEM-${r.tallyName}`} className="border-b border-slate-100 odd:bg-white even:bg-slate-50/80">
+                <td className="px-2 py-1 align-top font-medium text-slate-900">{r.tallyName}</td>
+                <td className="max-w-[100px] truncate px-2 py-1 align-top text-slate-800" title={unit}>
+                  {unit}
+                </td>
+                <td className="px-2 py-1 align-top font-mono text-[11px] text-slate-800">{hsn}</td>
+                <td className="px-2 py-1 align-top tabular-nums text-slate-800">{gst}</td>
+                <td className="max-w-[140px] truncate px-2 py-1 align-top text-slate-700" title={stockGroup === "—" ? undefined : stockGroup}>
+                  {stockGroup}
+                </td>
+                <td className="whitespace-nowrap px-2 py-1 align-top">
+                  {auto === "RM" ? (
+                    <span className="inline-block rounded border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 font-semibold text-emerald-900">
+                      RM
+                    </span>
+                  ) : auto === "FG" ? (
+                    <span className="inline-block rounded border border-indigo-200 bg-indigo-50 px-1.5 py-0.5 font-semibold text-indigo-900">
+                      FG
+                    </span>
+                  ) : (
+                    <span className="text-slate-400">—</span>
+                  )}
+                </td>
+                <td className="px-2 py-1 align-top">
+                  <NativeSelect
+                    className="h-7 max-w-[5.5rem] py-0 pr-6 text-xs"
+                    value={rowType}
+                    onChange={(e) => {
+                      const v = e.target.value as DefaultItemType;
+                      setItemRowTypes((prev) => ({ ...prev, [r.tallyName]: v }));
+                    }}
+                    aria-label={`Item type for ${r.tallyName}`}
+                  >
+                    <option value="RM">RM</option>
+                    <option value="FG">FG</option>
+                  </NativeSelect>
+                </td>
+                <td className="whitespace-nowrap px-2 py-1 align-top">{r.proposedAction}</td>
+                <td className="px-2 py-1 align-top" title={notes || undefined}>
+                  <StatusBadge status={rowStatus(r)} />
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }

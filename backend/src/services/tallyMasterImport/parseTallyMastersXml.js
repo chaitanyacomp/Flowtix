@@ -1,4 +1,5 @@
 const { XMLParser } = require("fast-xml-parser");
+const { strVal, xmlLocalTagNameUpper, walkCollectTaggedMasters } = require("./tallyXmlListHelpers");
 
 const VOUCHER_TAG = "VOUCHER";
 
@@ -23,6 +24,16 @@ const IGNORE_SUBTREE_SEGMENTS = new Set([
   "JOURNAL",
   "DEBITNOTE",
   "CREDITNOTE",
+]);
+
+/** Master entity tags collected by the canonical walker (import apply may use a subset). */
+const MASTER_COLLECT_TAGS = new Set([
+  "LEDGER",
+  "STOCKITEM",
+  "UNIT",
+  "STOCKGROUP",
+  "GODOWN",
+  "VOUCHERTYPE",
 ]);
 
 /**
@@ -52,31 +63,6 @@ function decodeXmlFromBuffer(buf) {
 }
 
 /**
- * Strip XML namespace prefix from parser keys (e.g. `n0:LEDGER` → `LEDGER`).
- * @param {string} key
- * @returns {string | null} UPPERCASE local name, or null for attributes
- */
-function xmlLocalTagNameUpper(key) {
-  if (typeof key !== "string" || key.startsWith("@_")) return null;
-  const base = key.includes(":") ? key.slice(key.lastIndexOf(":") + 1) : key;
-  return base.toUpperCase();
-}
-
-/**
- * @param {unknown} v
- * @returns {string}
- */
-function strVal(v) {
-  if (v == null) return "";
-  if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") return String(v).trim();
-  if (typeof v === "object") {
-    if (Object.prototype.hasOwnProperty.call(v, "#text")) return String(v["#text"]).trim();
-    if (Object.prototype.hasOwnProperty.call(v, "text")) return String(v.text).trim();
-  }
-  return "";
-}
-
-/**
  * @param {string} xmlStr
  * @returns {boolean}
  */
@@ -103,46 +89,17 @@ function countRawMasterTags(xmlStr) {
     ledgerOpen: count(/<LEDGER\b/gi),
     stockItemOpen: count(/<STOCKITEM\b/gi),
     unitOpen: count(/<UNIT\b/gi),
+    stockGroupOpen: count(/<STOCKGROUP\b/gi),
+    godownOpen: count(/<GODOWN\b/gi),
+    voucherTypeOpen: count(/<VOUCHERTYPE\b/gi),
   };
 }
 
 /**
- * @param {unknown} node
- * @param {string[]} pathSegUpper path of **local** tag names (uppercase)
- * @param {{ ledgers: unknown[]; stockItems: unknown[]; units: unknown[]; tallyMessageSeen: number }} acc
+ * @param {string[]} pathSegUpper
  */
-function walkCollectMasters(node, pathSegUpper, acc) {
-  if (node == null) return;
-  const blocked = pathSegUpper.some((p) => IGNORE_SUBTREE_SEGMENTS.has(p));
-  if (blocked) return;
-
-  if (Array.isArray(node)) {
-    for (const child of node) walkCollectMasters(child, pathSegUpper, acc);
-    return;
-  }
-  if (typeof node !== "object") return;
-
-  for (const [key, val] of Object.entries(node)) {
-    const localUpper = xmlLocalTagNameUpper(key);
-    if (localUpper == null) continue;
-    const nextPath = [...pathSegUpper, localUpper];
-
-    if (localUpper === "TALLYMESSAGE") acc.tallyMessageSeen += 1;
-
-    const subBlocked = nextPath.some((p) => IGNORE_SUBTREE_SEGMENTS.has(p));
-    if (!subBlocked && localUpper === "LEDGER") {
-      const arr = Array.isArray(val) ? val : [val];
-      for (const L of arr) if (L && typeof L === "object") acc.ledgers.push(L);
-    } else if (!subBlocked && localUpper === "STOCKITEM") {
-      const arr = Array.isArray(val) ? val : [val];
-      for (const S of arr) if (S && typeof S === "object") acc.stockItems.push(S);
-    } else if (!subBlocked && localUpper === "UNIT") {
-      const arr = Array.isArray(val) ? val : [val];
-      for (const U of arr) if (U && typeof U === "object") acc.units.push(U);
-    }
-
-    walkCollectMasters(val, nextPath, acc);
-  }
+function isPathBlocked(pathSegUpper) {
+  return pathSegUpper.some((p) => IGNORE_SUBTREE_SEGMENTS.has(p));
 }
 
 /**
@@ -152,17 +109,11 @@ function walkCollectMasters(node, pathSegUpper, acc) {
  *   ledgers: unknown[];
  *   stockItems: unknown[];
  *   units: unknown[];
+ *   stockGroups: unknown[];
+ *   godowns: unknown[];
+ *   voucherTypes: unknown[];
  *   warnings: string[];
- *   parseStats: {
- *     tallyMessageOpenInRaw: number;
- *     ledgerOpenInRaw: number;
- *     stockItemOpenInRaw: number;
- *     unitOpenInRaw: number;
- *     ledgersParsed: number;
- *     stockItemsParsed: number;
- *     unitsParsed: number;
- *     tallyMessageSeen: number;
- *   };
+ *   parseStats: Record<string, number>;
  * } | { ok: false; error: string }}
  */
 function parseTallyMastersXml(xmlString) {
@@ -190,17 +141,50 @@ function parseTallyMastersXml(xmlString) {
     return { ok: false, error: e instanceof Error ? e.message : "Invalid XML." };
   }
 
-  const acc = { ledgers: [], stockItems: [], units: [], tallyMessageSeen: 0 };
-  walkCollectMasters(parsed, [], acc);
+  /** @type {{ ledgers: unknown[]; stockItems: unknown[]; units: unknown[]; stockGroups: unknown[]; godowns: unknown[]; voucherTypes: unknown[]; tallyMessageSeen: number }} */
+  const acc = {
+    ledgers: [],
+    stockItems: [],
+    units: [],
+    stockGroups: [],
+    godowns: [],
+    voucherTypes: [],
+    tallyMessageSeen: 0,
+  };
+
+  walkCollectTaggedMasters(
+    parsed,
+    MASTER_COLLECT_TAGS,
+    (tag, obj) => {
+      if (tag === "LEDGER") acc.ledgers.push(obj);
+      else if (tag === "STOCKITEM") acc.stockItems.push(obj);
+      else if (tag === "UNIT") acc.units.push(obj);
+      else if (tag === "STOCKGROUP") acc.stockGroups.push(obj);
+      else if (tag === "GODOWN") acc.godowns.push(obj);
+      else if (tag === "VOUCHERTYPE") acc.voucherTypes.push(obj);
+    },
+    {
+      isPathBlocked,
+      onTag: (tag) => {
+        if (tag === "TALLYMESSAGE") acc.tallyMessageSeen += 1;
+      },
+    },
+  );
 
   const parseStats = {
     tallyMessageOpenInRaw: rawCounts.tallyMessageOpen,
     ledgerOpenInRaw: rawCounts.ledgerOpen,
     stockItemOpenInRaw: rawCounts.stockItemOpen,
     unitOpenInRaw: rawCounts.unitOpen,
+    stockGroupOpenInRaw: rawCounts.stockGroupOpen,
+    godownOpenInRaw: rawCounts.godownOpen,
+    voucherTypeOpenInRaw: rawCounts.voucherTypeOpen,
     ledgersParsed: acc.ledgers.length,
     stockItemsParsed: acc.stockItems.length,
     unitsParsed: acc.units.length,
+    stockGroupsParsed: acc.stockGroups.length,
+    godownsParsed: acc.godowns.length,
+    voucherTypesParsed: acc.voucherTypes.length,
     tallyMessageSeen: acc.tallyMessageSeen,
   };
 
@@ -210,11 +194,22 @@ function parseTallyMastersXml(xmlString) {
   }
 
   if (
-    acc.ledgers.length + acc.stockItems.length + acc.units.length === 0 &&
-    (rawCounts.ledgerOpen > 0 || rawCounts.stockItemOpen > 0 || rawCounts.unitOpen > 0)
+    acc.ledgers.length +
+      acc.stockItems.length +
+      acc.units.length +
+      acc.stockGroups.length +
+      acc.godowns.length +
+      acc.voucherTypes.length ===
+      0 &&
+    (rawCounts.ledgerOpen > 0 ||
+      rawCounts.stockItemOpen > 0 ||
+      rawCounts.unitOpen > 0 ||
+      rawCounts.stockGroupOpen > 0 ||
+      rawCounts.godownOpen > 0 ||
+      rawCounts.voucherTypeOpen > 0)
   ) {
     warnings.push(
-      "The XML file contains LEDGER/STOCKITEM/UNIT tags in the raw text, but none were extracted into the import model. Try re-exporting UTF-8 XML from Tally, or contact support with a sample file.",
+      "The XML file contains master tags in the raw text, but none were extracted into the import model. Try re-exporting UTF-8 XML from Tally, or contact support with a sample file.",
     );
   }
 
@@ -223,6 +218,9 @@ function parseTallyMastersXml(xmlString) {
     ledgers: acc.ledgers,
     stockItems: acc.stockItems,
     units: acc.units,
+    stockGroups: acc.stockGroups,
+    godowns: acc.godowns,
+    voucherTypes: acc.voucherTypes,
     warnings,
     parseStats,
   };
@@ -235,4 +233,6 @@ module.exports = {
   xmlLooksLikeContainsVoucher,
   countRawMasterTags,
   xmlLocalTagNameUpper,
+  MASTER_COLLECT_TAGS,
+  IGNORE_SUBTREE_SEGMENTS,
 };

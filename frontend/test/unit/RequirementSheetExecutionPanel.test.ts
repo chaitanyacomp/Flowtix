@@ -24,13 +24,19 @@ describe("RequirementSheetExecutionPanel layout", () => {
     // KPI tiles live in the left context column, which is inside the grid and before the right action column.
     expect(workIdx).toBeLessThan(heroIdx);
     expect(heroIdx).toBeLessThan(placeIdx);
-    expect(panelSource).toContain("KPI_REMAINING_REQUIREMENT");
+    expect(panelSource).toContain("KPI_REMAINING_TO_PLACE");
     expect(panelSource).toContain("KPI_SUGGESTED_NEXT_WO");
     expect(panelSource).toContain("KPI_RM_LIMITED_CAPACITY");
     expect(panelSource).toContain("KPI_WO_QTY_PLACED");
     expect(panelSource).toContain("KPI_TOTAL_RS_REQUIREMENT");
     expect(panelSource).toContain("KPI_NUMBER_OF_WOS");
+    expect(panelSource).toContain("KPI_CUSTOMER_DEMAND");
+    expect(panelSource).toContain("KPI_PRODUCTION_SHORTAGE");
+    expect(panelSource).toContain("KPI_QC_FINAL_REJECTION");
+    expect(panelSource).toContain("KPI_TOTAL_RECOVERY");
     expect(panelSource).toContain("KPI_RM_COVERAGE");
+    expect(panelSource).toContain('data-testid="execution-composition-kpis"');
+    expect(panelSource).not.toContain("Original WO Qty");
   });
 
   it("places left context column before the right action column with RM integrated inside it", () => {

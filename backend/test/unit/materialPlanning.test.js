@@ -18,7 +18,8 @@ describe("bomExplosionService helpers", () => {
     const eff = effectivePerFgUnit(bom, line);
     const expected = rmRequiredForFgCount(2, 1, 1, 10, 5);
     assert.ok(Math.abs(eff - expected) < 1e-6);
-    assert.ok(Math.abs(lossMultiplier(10, 5) - 1.15) < 1e-6);
+    assert.equal(eff, 2);
+    assert.equal(lossMultiplier(10, 5), 1);
   });
 
   it("MAX_EXPLOSION_DEPTH is 3", () => {

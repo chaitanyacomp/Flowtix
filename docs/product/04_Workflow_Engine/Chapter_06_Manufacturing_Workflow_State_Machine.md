@@ -234,6 +234,7 @@ Guard order is **top-to-bottom**. First failure stops transition ([FT-PD-041](./
 | `SUBMITTED` | `pmr.line.update` | Store | `GRD_MFG_PMR_FROZEN` | unchanged | — | `GuardBlocked` |
 | `SUBMITTED` | `pmr.updateIssuedProgress` | Engine | — | `PARTIALLY_ISSUED` \| `FULLY_ISSUED` | `MFG_ISSUE_PARTIAL` or resolve `MFG_ISSUE` | `Completed` |
 | `PARTIALLY_ISSUED` | `pmr.updateIssuedProgress` | Engine | — | `PARTIALLY_ISSUED` \| `FULLY_ISSUED` | `MFG_ISSUE_PARTIAL` | `Completed` |
+| `PARTIALLY_ISSUED` | `pmr.shortIssueClose` (`waiveRemaining`) | Store | Issue qty &gt; 0; pending &gt; 0 | `SHORT_ISSUE_ACCEPTED` | Resolves further `MFG_ISSUE*` | `Completed` (audit: Short Issue Closed; **no StockTxn** for short qty) |
 | `FULLY_ISSUED` | `pmr.close` | Engine | — | `CLOSED` | — | `Completed` |
 | `SUBMITTED`+ | `pmr.cancel` | — | — | blocked (policy) | — | `GuardBlocked` |
 
@@ -361,11 +362,14 @@ ARR **never** replaces PMR accountability ([MFG-03](../03_Domain_Specifications/
 
 | Condition | PMR state | Production capacity |
 |-----------|-----------|---------------------|
-| First issue < PMR open | `PARTIALLY_ISSUED` | Proportional to issued RM |
+| First issue < PMR open | `PARTIALLY_ISSUED` | Proportional to **issued** RM |
 | Cumulative issue = PMR required | `FULLY_ISSUED` | Full PMR-aligned capacity |
 | Further issue after partial | Remains / → `FULLY_ISSUED` | Increases until cap |
+| Store closes remaining unissued (Short Issue) | `SHORT_ISSUE_ACCEPTED` | Capacity = **Issued** only; Short Issue Qty stays in RM Store (no StockTxn) |
 
-Engine: `pmr.updateIssuedProgress` after each `issue.post`.
+Engine: `pmr.updateIssuedProgress` after each `issue.post`. Short Issue close: `pmr.waiveRemaining` / `PMR_SHORT_ISSUE_CLOSED` — demand audit only; release residual allocations; **never** post inventory for Short Issue Qty.
+
+**Rule:** Inventory movement = Issued Qty. Unissued RM never disappears. Production shortfall from lower issued RM is handled only by existing NO_QTY recovery (not a new RM carry-forward).
 
 ### 7.7 Partial production
 
@@ -658,6 +662,8 @@ flowchart TB
 ## Batch 3E — Recovery / Closure analytics surfaces (read-only)
 
 Dashboard, Pending Actions, Control Tower, and Reports consume `assessNoQtySoClosure()` and `getRecoverySummary()` / `getRecoverySummariesBatch()` via `noQtyRecoveryAnalyticsService`. Production Shortfall and QC Recovery remain separate. Reconciliation identity: Source Qty = Active Allocated + Waived + Available. No mutation of recovery, RS allocation, stock, dispatch qty, billing qty, or SO closure transactions in this batch.
+
+**Current Stage:** List/card stage engine distinguishes Production Running vs QC In Progress vs Dispatch Pending vs Billing Pending Export vs Ready to Close. Ready to Close is driven by `assessNoQtySoClosure` COMPLETE — not by commercial billing captions alone.
 
 ## Batch 3F — Certification
 

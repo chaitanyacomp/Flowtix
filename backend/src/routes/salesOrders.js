@@ -81,6 +81,10 @@ const {
   sumActiveQcAcceptedQty,
   sumActiveQcRejectedQty,
 } = require("../services/reportMetrics");
+const { getApprovedProducedQtyByWorkOrderLineIds } = require("../services/productionMetrics");
+const { getEffectiveProductionPendingQty } = require("../services/productionExecutionService");
+const { resolveNoQtyAgreementProcessStage } = require("../services/noQtySoProcessStageService");
+const { assessNoQtySoClosureMany } = require("../services/noQtyRecoveryAnalyticsService");
 const { computeNoQtyCreateNextRsEligibility, computeNoQtyCreateNextRsEligibilityResolved, resolveNoQtyEligibilityCycleId } = require("../services/noQtyCreateNextRsEligibility");
 const {
   computeNoQtyManualCloseEligibility,
@@ -715,6 +719,10 @@ salesOrderRouter.get(
       const noQtyAnyDispatchBySoCycleKey = new Set();
       /** Any QC row (including reversed) on production in cycle — matches empty-close POST checks. */
       const noQtyAnyQcBySoCycleKey = new Set();
+      const noQtyProductionPendingBySoCycleKey = new Set();
+      const noQtyQcPendingBySoCycleKey = new Set();
+      /** @type {Map<number, Awaited<ReturnType<typeof assessNoQtySoClosure>>>} */
+      let noQtyClosureBySoId = new Map();
 
       if (noQtyIds.length && noQtyCycleIds.length) {
         const wos = await prisma.workOrder.findMany({
@@ -763,6 +771,65 @@ salesOrderRouter.get(
           const c = Number(q.production.workOrderLine.workOrder.cycleId);
           noQtyQcBySoCycleKey.add(`${soId}:${c}`);
         }
+
+        // Pending production vs pending QC (do not collapse into one stage).
+        const wosDet = await prisma.workOrder.findMany({
+          where: {
+            salesOrderId: { in: noQtyIds },
+            cycleId: { in: noQtyCycleIds },
+            status: { not: "REJECTED" },
+          },
+          select: {
+            id: true,
+            salesOrderId: true,
+            cycleId: true,
+            status: true,
+            productionExecution: { select: { executionStatus: true } },
+            lines: { select: { id: true, qty: true } },
+          },
+        });
+        const detLineIds = wosDet.flatMap((wo) => (wo.lines || []).map((l) => l.id));
+        const producedByLineId =
+          detLineIds.length > 0 ? await getApprovedProducedQtyByWorkOrderLineIds(prisma, detLineIds) : new Map();
+        for (const wo of wosDet) {
+          if (wo.status === "CLOSED_WITH_SHORTFALL") continue;
+          const key = `${wo.salesOrderId}:${Number(wo.cycleId)}`;
+          const execStatus = wo.productionExecution?.executionStatus ?? null;
+          if (execStatus === "SHORTFALL_PENDING") {
+            noQtyProductionPendingBySoCycleKey.add(key);
+            continue;
+          }
+          for (const line of wo.lines || []) {
+            const produced = producedByLineId.get(line.id) || 0;
+            if (getEffectiveProductionPendingQty(line.qty, produced, execStatus) > 1e-6) {
+              noQtyProductionPendingBySoCycleKey.add(key);
+              break;
+            }
+          }
+        }
+        if (detLineIds.length > 0) {
+          const peRows = await prisma.productionEntry.findMany({
+            where: { workOrderLineId: { in: detLineIds }, workflowStatus: "APPROVED" },
+            include: {
+              qcEntries: { where: QC_ENTRY_ACTIVE_WHERE },
+              workOrderLine: {
+                select: { workOrder: { select: { salesOrderId: true, cycleId: true } } },
+              },
+            },
+          });
+          for (const pe of peRows) {
+            const producedQty = Number(pe.producedQty ?? 0);
+            const accepted = sumActiveQcAcceptedQty(pe.qcEntries || []);
+            const rejected = sumActiveQcRejectedQty(pe.qcEntries || []);
+            if (getProductionBatchQcPendingQty(producedQty, accepted, rejected) > 1e-6) {
+              const soId = pe.workOrderLine.workOrder.salesOrderId;
+              const c = Number(pe.workOrderLine.workOrder.cycleId);
+              noQtyQcPendingBySoCycleKey.add(`${soId}:${c}`);
+            }
+          }
+        }
+
+        noQtyClosureBySoId = await assessNoQtySoClosureMany(prisma, noQtyIds, { concurrency: 4 });
 
         const dispatchRows = await prisma.dispatch.findMany({
           where: {
@@ -823,6 +890,10 @@ salesOrderRouter.get(
           const c = Number(q.production.workOrderLine.workOrder.cycleId);
           noQtyAnyQcBySoCycleKey.add(`${sid}:${c}`);
         }
+      }
+
+      if (noQtyIds.length && noQtyClosureBySoId.size === 0) {
+        noQtyClosureBySoId = await assessNoQtySoClosureMany(prisma, noQtyIds, { concurrency: 4 });
       }
 
       /** Pre-WO placement stage (Store-owned WO placement readiness). */
@@ -1134,13 +1205,23 @@ salesOrderRouter.get(
                 const productionExists = c > 0 ? noQtyProductionBySoCycleKey.has(key) : false;
                 const workOrderExists = c > 0 ? noQtyWorkOrderBySoCycleKey.has(key) : false;
                 const requirementExists = c > 0 ? noQtyHasReqSheetBySoCycleKey.has(key) : false;
+                const productionPending = c > 0 ? noQtyProductionPendingBySoCycleKey.has(key) : false;
+                const qcPending = c > 0 ? noQtyQcPendingBySoCycleKey.has(key) : false;
+                const closure = noQtyClosureBySoId.get(s.id);
+                const fgDispositionPending = Number(closure?.acceptedFgPendingDispositionQty ?? 0) > 1e-6;
+                const recoveryPending = closure?.mode === CLOSURE_MODES.WAIVER_REQUIRED;
+                const closeEligible =
+                  closure?.mode === CLOSURE_MODES.COMPLETE || closure?.mode === CLOSURE_MODES.WAIVER_REQUIRED;
 
                 const nextAction = (() => {
                   if (completedSoRow) return "COMPLETED";
                   if (wfCnt === 0 && createNextRsEligible) return "CREATE_NEXT_RS";
-                  if (finalizedBillExists) return "CLOSE_SO";
+                  // CLOSE_SO only when close SSOT allows (not merely when a finalized bill exists)
+                  if (closeEligible) return "CLOSE_SO";
                   if (salesBillExists) return "SALES_BILL";
                   if (dispatchExists) return "SALES_BILL";
+                  if (qcPending) return "QA";
+                  if (productionPending) return "PRODUCTION";
                   if (qcExists) return "STORE";
                   if (productionExists) return "QA";
                   if (workOrderExists) return "PRODUCTION";
@@ -1148,42 +1229,25 @@ salesOrderRouter.get(
                   return "REQUIREMENT";
                 })();
 
-                let stageKey = "NO_QTY_DRAFT";
-                let stageLabel = "Draft";
-                if (completedSoRow) {
-                  stageKey = "COMPLETED";
-                  stageLabel = "Completed";
-                } else if (nextAction === "CREATE_NEXT_RS") {
-                  stageKey = "NO_QTY_PREPARE_NEXT_RS";
-                  stageLabel = "Next cycle RS";
-                } else if (finalizedBillExists) {
-                  stageKey = "NO_QTY_BILLING_COMPLETE";
-                  stageLabel = "Billing complete";
-                } else if (salesBillExists || dispatchExists) {
-                  stageKey = "NO_QTY_DISPATCH_BILLING";
-                  stageLabel = "Dispatch / Billing";
-                } else if (qcExists || productionExists) {
-                  stageKey = "NO_QTY_IN_PRODUCTION";
-                  stageLabel = "Production / QC";
-                } else if (workOrderExists) {
-                  stageKey = "NO_QTY_WORK_ORDER";
-                  stageLabel = "Work order";
-                } else if (requirementExists) {
-                  const placement = c > 0 ? noQtyPlacementBySoCycleKey.get(key) : null;
-                  if (placement?.processStageKey === "NO_QTY_READY_TO_PLACE_WO") {
-                    stageKey = "NO_QTY_READY_TO_PLACE_WO";
-                    stageLabel = "Ready to place WO";
-                  } else if (placement?.processStageKey === "NO_QTY_PROCUREMENT_IN_PROGRESS") {
-                    stageKey = "NO_QTY_PROCUREMENT_IN_PROGRESS";
-                    stageLabel = "Procurement in progress";
-                  } else {
-                    stageKey = "NO_QTY_REQUIREMENT_READY";
-                    stageLabel = "Monthly planning pending";
-                  }
-                } else {
-                  stageKey = "NO_QTY_DRAFT";
-                  stageLabel = "Draft";
-                }
+                const placement = c > 0 ? noQtyPlacementBySoCycleKey.get(key) : null;
+                const { key: stageKey, label: stageLabel } = resolveNoQtyAgreementProcessStage({
+                  completedSoRow,
+                  nextAction,
+                  finalizedBillExists,
+                  salesBillExists,
+                  dispatchExists,
+                  productionPending,
+                  qcPending,
+                  fgDispositionPending,
+                  recoveryPending,
+                  productionExists,
+                  qcExists,
+                  workOrderExists,
+                  requirementExists,
+                  placementProcessStageKey: placement?.processStageKey ?? null,
+                  closureMode: closure?.mode ?? null,
+                  closureBlockers: closure?.blockers ?? null,
+                });
 
                 let noQtyListPositionLabel = "";
                 const operatorEvidenceOnCycle = (soId, cycleRowId) => {
@@ -2616,7 +2680,7 @@ salesOrderRouter.get(
         const ac = sumActiveQcAcceptedQty(pe.qcEntries);
         const rj = sumActiveQcRejectedQty(pe.qcEntries);
         const pend = getProductionBatchQcPendingQty(producedQty, ac, rj);
-        if (pend > NO_QTY_FLOW_EPS && ac <= NO_QTY_FLOW_EPS && rj <= NO_QTY_FLOW_EPS) {
+        if (pend > NO_QTY_FLOW_EPS) {
           qcPendingForCycle = true;
           break;
         }

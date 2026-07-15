@@ -140,6 +140,10 @@ Use as a quick coverage map; detailed steps are in §2 and §3.
 | DS-003 | Dispatch | Block over QC stock | Insufficient accepted FG | Dispatch | Blocked | Validation |
 | DS-004 | Dispatch | Partial dispatch | — | Multiple dispatch events | Cumulative; FIFO/attribution per design | Happy path / Edge |
 | DS-005 | Dispatch | Dispatch reversal | Reversal supported in app | Reverse one dispatch line | Stock and SO remaining restore per rules | Edge / Regression-sensitive |
+| DS-006 | Dispatch | Delivery location select | Customer has multiple active Delivery Locations | Prepare dispatch | Dropdown shows active locations only; default preselected; inactive excluded | Happy path |
+| DS-007 | Dispatch | Snapshot immutability | Dispatch prepared with location | Edit Customer Delivery Location master | Print/export/Sales Bill still show original dispatch snapshot | Regression-sensitive |
+| DS-008 | Dispatch | Used location delete blocked | Location referenced by Dispatch | Delete location on Customer | Blocked; mark Inactive instead | Validation |
+| MD-011 | Master | Same GSTIN Customer + Registered Office | Customer GSTIN equals Registered Office location GSTIN | Save Customer | Allowed (not a within-customer duplicate error) | Validation |
 
 ---
 
@@ -355,6 +359,22 @@ Regression note:
 - **Dispatch reversal:** UAT assumes “if supported”; confirm in app before mandating HR-07.
 - **Permissions model:** Not redesigned in recent work — test **as deployed** (Admin vs Store vs Sales vs Production).
 
+### NO_QTY Decision-only Recovery Cycle (P0 regression)
+
+Authoritative SSOT: FT-PD-022 §7.3 / FT-PD-031 §7.2 / Planning State Machine §8.1.
+
+| ID | Setup | Action | Expected |
+|----|-------|--------|----------|
+| NQ-DOC-01 | Recovery draft RS, Current Requirement = 0, all CF WAIVE/KEEP, no WO | Open RS workbench | Banner: “Recovery decisions completed. This cycle can now be finalized.” Finalize enabled |
+| NQ-DOC-02 | Same as NQ-DOC-01 | Finalize / Lock RS | Lock succeeds; ACTIVE cycle closes (empty cap); no WO required |
+| NQ-DOC-03 | After NQ-DOC-02, Outstanding Qty = 0, other gates clear | Assess / Close SO | SO close eligible; demand identity = Original − (Dispatched + Waived) — **not** sum of historical RS qty |
+| NQ-DOC-04 | Positive Current Requirement / Total to Produce | Finalize | Existing production-cycle rules unchanged; decision-only path **not** used |
+| NQ-DOC-05 | KEEP on carry-forward | Keep | Increases demand / Total to Produce; decision-only blocked until resolved |
+| NQ-DOC-06 | WAIVE remaining | Waive | Removes outstanding obligation; does not invent new customer demand |
+| NQ-NAV-01 | RS Finalize, no dispatchable FG (decision-only / all waived) | Lock RS | Lands on NO_QTY Agreement summary with `salesOrderId` — **not** `/dispatch` |
+| NQ-NAV-02 | RS Finalize, dispatchable FG > 0 | Lock RS | Opens `/dispatch?source=no_qty_so&salesOrderId&cycleId` with SO/cycle pre-bound (no blank SO dropdown) |
+| NQ-NAV-03 | REGULAR SO dispatch deep-link | Open `/dispatch?salesOrderId=` without `source=no_qty_so` | Generic REGULAR workbench unchanged |
+
 ### Final pre-go-live checks (recommendations)
 
 1. **Data backup** before UAT on shared environments; restore procedure documented.
@@ -366,3 +386,64 @@ Regression note:
 ---
 
 *Document version: 1.0 — aligned with post-integrity-fix manufacturing ERP behavior described in project context.*
+# Tally Compatibility — Release-1 UAT Gate
+
+The Release-1 gate covers Primary Unit, one Alternate Unit, precision, missing Unit/Location, external-ID/GSTIN/duplicate/ambiguous/inactive matching, HSN/GST, location-wise opening quantity/rate/value, approval and safe rerun, BOM history protection, invoice generation, duplicate-attempt prevention, acknowledgement, rejection persistence and retry. Deferred features must be reported as unsupported, never silently ignored. See the [Tally Compatibility Contract](./product/05_Data_Architecture/Tally_Compatibility_Contract.md).
+
+## NO_QTY RM-supported overproduction UAT
+
+- WO 2,000 / RM capacity 2,050: 2,020 saves with a non-blocking 20 excess warning.
+- WO 2,000 / RM capacity 2,000: 2,020 is blocked.
+- Approved 1,900 / cumulative capacity 2,050: additional 150 is allowed and 151 is blocked.
+- Store return reduces the displayed and enforced capacity.
+- Multiple BOM components use the lowest component capacity.
+- Excess enters normal QC; accepted qty posts FG stock and rejection remains recordable.
+- WO planned qty and RS balance/placed quantity do not change.
+- Regular SO production tolerance remains unchanged.
+
+**Master import runtime check (mandatory):** After any Tally mapper change, stop all Node backends on port 4000, start a single backend, hard-refresh the UI, and confirm Preview Network → `POST /api/admin/tally-import/preview` returns `runtime.pipelineId` matching the current contract. Mapper unit tests alone are not sufficient — run `tallyMasterImportHttpPreview.test.js`. For an existing wrong TATA row (Address=`TATA`, blank GSTIN), use “Update empty fields only” only after clearing wrong non-empty fields, or delete/reset the customer first.
+# NO_QTY active-cycle action priority (2026-07-15)
+
+- Active Cycle 2, RS 12,251, WO placed 3,251, remaining 9,000, RM-supported FG 9,000: Pending Actions and Execution Register both show Create Work Order for Cycle 2 and open its RS execution workspace.
+
+### Admin-cancelled NO_QTY RS — Store recovery
+
+Precondition: an open NO_QTY SO has active Cycle 1 and a locked RS with no Work Order, material movement, production, QC, dispatch, stock transaction, procurement document, or other downstream reference.
+
+1. As Admin, cancel/reopen the locked RS and record a reason.
+2. Confirm the SO remains open and Cycle 1 remains the active/current cycle.
+3. Confirm the cancelled RS remains in history with status `CANCELLED`, actor, time, and reason.
+4. As Store, open Pending Actions. Confirm exactly one **Create Requirement Sheet** action appears for the SO.
+5. Open the action. Confirm it deep-links to NO_QTY RS creation for the same SO and Cycle 1; it must not prepare Cycle 2.
+6. Create the replacement. Confirm its version is greater than the cancelled version.
+7. Refresh Pending Actions. Confirm the Create Requirement Sheet action is gone while the replacement draft exists.
+8. Confirm Sales Order “Next RS Ready” and Pending Actions agree before creation and both use the same target cycle/version.
+9. Negative check: close the SO and confirm no Create Requirement Sheet action appears.
+
+Pass criteria: cancelled history never counts as active/locked; one same-cycle Store action is emitted only while no replacement exists; no duplicate RS/action or unintended cycle is created.
+- With the same balance but zero executable FG capacity, both surfaces show Await Procurement / View Planning Status.
+- A completed earlier WO, or Production/QC completion for one WO, does not expose Create Cycle 3 while Cycle 2 placement balance or Store execution remains.
+- With placement balance zero but open Production/QC work, next-cycle action follows the canonical completion policy.
+- Once the cycle is canonically complete, Create Next Cycle becomes available exactly once.
+# NO_QTY QC-accepted production surplus (2026-07-15)
+
+### Dispatch suppression for excess FG
+
+1. Demand 6,000, accepted 6,500, dispatched 6,000: confirm SO Balance 0, Usable FG 500, Dispatchable and Dispatching Now 0, no mandatory queue/save action, and the next-cycle stock note.
+2. With dispatched 5,500, confirm dispatchable 500. With accepted 5,500 and dispatched 5,000, confirm dispatchable 500.
+3. Confirm the remaining 500 stays in USABLE stock, remains available to next-cycle carry-forward, creates no billing obligation, and does not block SO closure.
+4. Attempt draft creation/finalization above remaining demand and confirm the backend rejects it.
+5. Smoke-test Regular SO dispatch and billing behavior.
+
+Use SO-26-0001: Cycle 1 demand 6,000; WOs planned 2,000 each; production 2,000 + 2,000 + 2,500; QC acceptance 6,500.
+
+1. Before final QC, accepted excess is zero and Pending QC reflects undisposed production.
+2. After final QA, Pending QC is zero and Cycle 1 accepted excess is 500.
+3. Recalculate Cycle 2 demand 3,500: Prior Accepted Excess 500, **Net Production Requirement** and Suggested WO 3,000, with the explanatory note. No separate Final RS Qty column.
+4. Edit Customer Demand to 4,000 on the draft grid: Net Production Requirement updates immediately to 3,500 without reload.
+5. Edit Customer Demand to 300: Net Production Requirement becomes 0; unused excess 200 retained for a following cycle.
+6. Save Draft preserves updated demand and refreshes authoritative net; Finalize is blocked until Save/Recalculate clears dirty state; lock persists demand + net atomically.
+7. Customer demand and prior WO planned/placed quantities stay unchanged by surplus reconstruction.
+8. Acceptance 6,300/rejection 200 gives 300 excess; acceptance 6,000 gives zero.
+9. Verify partial dispatch, multiple WOs, FG isolation, cancelled-version exclusion, existing-draft Recalculate, and lock-time stale recalculation.
+10. Smoke-test Regular SO and Green Level workflows.

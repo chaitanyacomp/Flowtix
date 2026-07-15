@@ -6,7 +6,7 @@
 | **Volume** | 2 — Business Architecture |
 | **Chapter** | 1 — Business Models & Document Inheritance |
 | **Title** | Business Models & Document Inheritance |
-| **Version** | 1.0.0 |
+| **Version** | 1.0.2 |
 | **Status** | Draft — Architecture Review |
 | **Effective date** | 2026-05-29 |
 | **Author** | FT ERP Product Team |
@@ -28,6 +28,9 @@
 | Version | Date | Author | Summary |
 |---------|------|--------|---------|
 | 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial business architecture — two models, inheritance, convergence |
+| 1.0.1 | 2026-07-15 | FT ERP Product Team | BOM history boundary — Phase-2 Future Enhancement for BOM Revision FK traceability (docs only) |
+| 1.0.2 | 2026-07-15 | FT ERP Product Team | Cross-ref FT-PD-100 §7.1 Phase-2 planning register (docs only) |
+| 1.0.3 | 2026-07-15 | FT ERP Product Team | Customer Delivery Address is canonical Delivery Location for Dispatch inheritance |
 
 **Supersedes:** None (first Volume 2 chapter).
 
@@ -300,6 +303,8 @@ Every **ERP-controlled document** created after Enquiry **inherits** the Busines
 
 the Workflow Engine validates inheritance on create and transition. Documents with mismatched Business Model ancestry are rejected.
 
+**Commercial ship-to:** Customer Delivery Locations (`CustomerDeliveryAddress`) are customer-scoped masters. Dispatch inherits a selected active location as an immutable snapshot; Sales Bill / export ship-to prefer that Dispatch snapshot over live master edits.
+
 ### 9.2 Inheritance chain
 
 ```mermaid
@@ -507,4 +512,28 @@ After dispatch, **NO_QTY Agreement** returns to **cycle planning** (next Require
 | **Next** | [REGULAR Order Planning Pipeline](./Chapter_02_REGULAR_Order_Planning_Pipeline.md) (FT-PD-021) |
 | **Volume** | [Business Architecture](./README.md) |
 | **Product** | [Product Documentation Index](../README.md) |
+
+## BOM and Item history boundary
+
+Permanent deletion is allowed only when the dependency checker finds no operational or commercial reference. Once a BOM's FG has entered planning, work-order execution, PMR, material issue, production, QC, or dispatch history, that revision is retained and may only be marked **Inactive**. Referenced Items follow the same policy.
+
+Downstream tables currently preserve history through the FG/work-order chain rather than a direct BOM-revision foreign key. Flowtix therefore conservatively blocks deletion of every BOM revision for an FG when downstream FG history exists. Revision and inheritance behavior remains unchanged.
+
+### Future Enhancement — BOM Revision traceability (Phase-2 roadmap)
+
+Current Flowtix ERP preserves manufacturing history by conservatively preventing deletion whenever downstream manufacturing history exists.
+
+A future release may persist the exact BOM Revision ID on:
+
+- Work Order
+- PMR
+- Material Issue
+- Production
+- QC
+
+This will provide complete engineering traceability and enable more precise dependency analysis without relying on conservative blocking.
+
+This enhancement is intentionally deferred because the current implementation already guarantees audit safety and meets Release-1 business requirements. Marked as a **Phase-2** roadmap item for future engineering traceability. Release-1 conservative dependency behaviour **SHALL** remain the operational SSOT until that release.
+
+**Roadmap register:** See [FT-PD-100 §7.1](../10_Product_Lifecycle_and_Continuous_Evolution/Chapter_01_Product_Lifecycle_Roadmap_and_Continuous_Evolution.md#71-phase-2-roadmap--engineering-planning-register) — **BOM Revision Traceability** (Priority: **High**; Target: **Phase-2**).
 

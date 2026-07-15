@@ -6,7 +6,7 @@
 | **Volume** | 5 — Data Architecture |
 | **Chapter** | 3 — Master Data & Reference Architecture |
 | **Title** | Master Data & Reference Architecture |
-| **Version** | 1.0.0 |
+| **Version** | 1.0.1 |
 | **Status** | Draft — Architecture Review |
 | **Effective date** | 2026-05-29 |
 | **Author** | FT ERP Product Team |
@@ -29,6 +29,8 @@
 | Version | Date | Author | Summary |
 |---------|------|--------|---------|
 | 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial Master Data & Reference Architecture specification |
+| 1.0.1 | 2026-07-15 | FT ERP Product Team | Audit-safe BOM deletion — Phase-2 Future Enhancement for BOM Revision FK (docs only) |
+| 1.0.2 | 2026-07-15 | FT ERP Product Team | Customer Delivery Address = canonical Delivery Location; Dispatch snapshot ship-to |
 
 **Supersedes:** None.
 
@@ -307,6 +309,7 @@ For each entity: **purpose**, **business identity**, **owner**, **lifecycle**, *
 | **Versioning** | Address and commercial profile versioned; identity immutable |
 | **Status** | Active required for new ISO; Suspended blocks new commercial docs |
 | **Audit** | Profile, address, GSTIN changes |
+| **Delivery Locations** | Canonical child model is **CustomerDeliveryAddress** (UI: Delivery Locations). Types: REGISTERED_OFFICE, PLANT, WAREHOUSE, DEPOT, OTHER. One default per customer; multiple active allowed. Same GSTIN may appear on Customer and its own locations. Used locations cannot be hard-deleted (Inactive only). Tally ledger import upserts one Registered Office location. |
 
 #### Supplier
 
@@ -681,7 +684,7 @@ For each entity: **purpose**, **business identity**, **owner**, **lifecycle**, *
 | Item (FG) | BOM header |
 | BOM | BOM Versions |
 | BOM Version | BOM component lines (RM/SFG) |
-| Customer | Delivery addresses (logical child) |
+| Customer | Delivery locations (logical child; table `CustomerDeliveryAddress` — canonical Customer Delivery Location) |
 | Supplier | Supplier locations |
 | Role | Permissions (via mapping) |
 
@@ -708,7 +711,7 @@ Reference catalogs (**UOM**, **Currency**, **HSN/SAC**, **Tax Classification**, 
 | **Customer** | Commercial, Dispatch, Billing |
 | **Supplier** | Procurement |
 | **Location** | Procurement (GRN), MFG (issue), Stock ledger |
-| **Customer delivery address** | ISO snapshot, Dispatch Note |
+| **Customer delivery location** | ISO ship-to; Dispatch Note selection + immutable dispatch snapshot |
 
 ### 7.5 BOM relationships
 
@@ -1062,4 +1065,38 @@ flowchart TB
 | **Next** | [Planning & Procurement Snapshot Architecture](./Chapter_04_Planning_and_Procurement_Snapshot_Architecture.md) (FT-PD-053) |
 | **Volume** | [Data Architecture](./README.md) |
 | **Product** | [Product Documentation Index](../README.md) |
+
+## Audit-safe deletion and deactivation
+
+Tally-origin identities, aliases, unit conversions, party fields, Godown mappings and duplicate/update policy are governed by the [Flowtix–TallyPrime Compatibility Contract](./Tally_Compatibility_Contract.md). All Tally master XML import parsing must use the shared `tallyXmlListHelpers.js` utilities (see that contract § Parser architecture). Preview and Confirm Import must share the same canonical mapper chain; endpoint-level Master.xml fixture tests are mandatory. External GUID is preferred over display-name matching; imports may not silently reactivate inactive masters.
+
+Before deleting a BOM or Item, the central dependency checker returns named reference counts. Zero references is **Safe to delete**. Any non-zero count blocks physical deletion and offers **Mark Inactive**.
+
+- Draft, never-approved, unused BOM: may be permanently deleted.
+- Approved but unused BOM: Admin may permanently delete after re-authentication, or mark Inactive.
+- Used BOM: deletion is prohibited; Inactive is the only retirement action.
+- Item: deletion requires no BOM, planning, WO, PMR, issue/return, production, QC, dispatch, purchase, inventory, sales, or other reference.
+- Inactive Items remain readable for history and are excluded from normal new-transaction selectors.
+
+Dependency uncertainty fails closed and blocks deletion.
+
+### Future Enhancement — BOM Revision FK persistence (Phase-2 roadmap)
+
+**Architectural limitation (Release-1):** Downstream manufacturing documents do not store the exact BOM Revision used during execution. The system can identify the FG Item but cannot always prove which engineering revision produced a historical Work Order. Conservative FG/WO-history blocking therefore remains the audit-safe dependency boundary.
+
+Current Flowtix ERP preserves manufacturing history by conservatively preventing deletion whenever downstream manufacturing history exists.
+
+A future release may persist the exact BOM Revision ID on:
+
+- Work Order
+- PMR
+- Material Issue
+- Production
+- QC
+
+This will provide complete engineering traceability and enable more precise dependency analysis without relying on conservative blocking.
+
+This enhancement is intentionally deferred because the current implementation already guarantees audit safety and meets Release-1 business requirements. It is a **Phase-2** engineering-traceability roadmap item. Until implemented, schema, APIs, and deletion/Inactive lifecycle rules **SHALL NOT** change for this purpose.
+
+**Roadmap register:** [FT-PD-100 §7.1](../10_Product_Lifecycle_and_Continuous_Evolution/Chapter_01_Product_Lifecycle_Roadmap_and_Continuous_Evolution.md#71-phase-2-roadmap--engineering-planning-register) — **BOM Revision Traceability** (Priority: **High**; Target: **Phase-2**).
 

@@ -319,6 +319,8 @@ MR created on **Released** MPRS ([Vol. 3 Ch. 2](./Chapter_02_Planning_Domain_Spe
 
 **Item Master (RM Stock Control):** Store maintains **Minimum Stock** (mandatory). **Target Stock** is an optional advanced setting used only for suggested replenishment quantity. Low Stock Level, Buffer %, Critical Below %, and Warning Below % are **not** Store-facing for RM replenishment (legacy columns may remain for compatibility).
 
+All operational and purchase quantities use the Item Primary Unit. A Tally Alternate Unit is converted at the input boundary and never changes procurement, GRN or inventory quantity semantics. See the [Tally Compatibility Contract](../05_Data_Architecture/Tally_Compatibility_Contract.md).
+
 **RM Stock Monitor status (Minimum-only):** Current ≥ Minimum → **Healthy**; Current &lt; Minimum → **Below Minimum**. There is no Monitor **Low** status — Target does not determine stock health. **Raise Replenishment Request** is available only when Current &lt; Minimum **and** net replenishment gap &gt; 0.
 
 **Suggested qty:** Replenishment Level = Target (when configured) else Minimum. Net Gap = Level − Current − Open `STOCK_REPLENISHMENT` qty (active approved requests + PO not yet received; exclude cancelled / closed / fully received). Suggested Qty = max(0, Net Gap). Duplicate raise is blocked when Net Gap ≤ 0.

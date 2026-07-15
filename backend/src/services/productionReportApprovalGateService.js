@@ -39,9 +39,9 @@ async function assertProductionReportApprovalAllowed(db, workOrderId) {
  * @param {{ remarks?: string | null; lines?: object[]; wastageDetails?: object[] }} input
  * @param {{ userId?: number; actorUserId?: number; role?: string; actorRole?: string }} actor
  */
-async function approveProductionWorkOrderReport(db, workOrderId, input = {}, actor = {}) {
+async function approveProductionWorkOrderReport(db, workOrderId, input = {}, actor = {}, options = {}) {
   await assertProductionReportApprovalAllowed(db, workOrderId);
-  return confirmProductionWorkOrderReport(db, workOrderId, input, actor);
+  return confirmProductionWorkOrderReport(db, workOrderId, input, actor, options);
 }
 
 module.exports = {

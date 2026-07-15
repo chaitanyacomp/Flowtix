@@ -1,5 +1,7 @@
 # Inventory Ledger & Stock Persistence Architecture
 
+> **Tally opening-stock boundary:** imported quantities are staged, converted to the Item Primary Unit, mapped to a Flowtix Location and approved before OPENING ledger posting. Source fingerprints prevent duplicate go-live posting. Rate/value are audit metadata and do not turn Flowtix into the accounting ledger. See the [Tally Compatibility Contract](./Tally_Compatibility_Contract.md).
+
 | Field | Value |
 |-------|-------|
 | **Document ID** | FT-PD-054 |

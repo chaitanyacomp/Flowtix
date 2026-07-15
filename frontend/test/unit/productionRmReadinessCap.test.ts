@@ -126,4 +126,28 @@ describe("resolveRegularRmProductionQtyCap", () => {
     });
     expect(resolveRegularRmEntryQtyCap(data, { lineWoRemaining: 2500 })).toBe(1000);
   });
+
+  it("NO_QTY does not clamp RM-supported surplus to WO remaining", () => {
+    const data = ready({
+      orderType: "NO_QTY",
+      woQty: 2000,
+      woRemainingQty: 2000,
+      productionAllowedNowQty: 2050,
+      unapprovedProducedQty: 0,
+      maxAdditionalQty: 2050,
+    });
+    expect(resolveRegularRmEntryQtyCap(data, { lineWoRemaining: 2000 })).toBe(2050);
+  });
+
+  it("NO_QTY remaining capacity subtracts other saved drafts, not WO plan", () => {
+    const data = ready({
+      orderType: "NO_QTY",
+      woQty: 2000,
+      woRemainingQty: 100,
+      productionAllowedNowQty: 150,
+      unapprovedProducedQty: 20,
+      maxAdditionalQty: 130,
+    });
+    expect(resolveRegularRmEntryQtyCap(data, { lineWoRemaining: 100 })).toBe(130);
+  });
 });

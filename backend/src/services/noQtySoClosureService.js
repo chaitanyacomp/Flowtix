@@ -8,7 +8,7 @@
 const { lockSalesOrderForUpdate } = require("./dispatchWriteLocks");
 const { assertAnyAdminPassword } = require("./adminPasswordAuth");
 const {
-  hasPendingProductionOrQc,
+  summarizeNoQtyProductionQcPending,
   assessNoQtyCycleDispatchCapMet,
 } = require("./noQtySoOperationalGates");
 const {
@@ -19,8 +19,7 @@ const {
   recomputeRecoveryStatus,
 } = require("./noQtyRecoveryService");
 const { createNoQtyCloseSnapshot } = require("./noQtySoCloseSnapshotService");
-const { getEffectiveProductionPendingQty } = require("./productionExecutionService");
-const { getApprovedProducedQtyByWorkOrderLineIds } = require("./productionMetrics");
+const { displayDispatchNo, displaySalesBillNo, displayRequirementSheetNo } = require("../utils/docNoLabels");
 const auditLog = require("./auditLog");
 
 const EPS = 1e-6;
@@ -59,20 +58,40 @@ const BLOCK_MESSAGES = Object.freeze({
   ALREADY_CLOSED: "Sales order is already closed.",
   PENDING_PRODUCTION: "Cannot close SO: production is still pending.",
   SHORTFALL_PENDING: "Cannot close SO: production shortfall decision is pending.",
-  PENDING_QC: "Cannot close SO: QA is pending.",
+  PENDING_QC: "Cannot close SO: QC is pending.",
   PENDING_QC_DISPOSITION: "Cannot close SO: QC rework or hold disposition is pending.",
-  DRAFT_DISPATCH_EXISTS: "Cannot close SO: dispatch draft is not finalized.",
+  DRAFT_DISPATCH_EXISTS: "Cannot close SO: outstanding draft dispatch.",
   ACTIVE_RS_DRAFT: "Cannot close SO: requirement sheet is not locked.",
-  WO_PENDING: "Cannot close SO: work order is pending for active cycle.",
-  PENDING_DISPATCH: "Cannot close SO: dispatch is pending for active cycle.",
+  WO_PENDING: "Cannot close SO: outstanding Work Orders are pending for the active cycle.",
+  PENDING_DISPATCH: "Cannot close SO: outstanding dispatch dependency.",
   PMR_WAITING_STORE_ISSUE: "Cannot close SO: store material issue is pending for active cycle.",
   PMR_PARTIALLY_ISSUED: "Cannot close SO: store material issue is incomplete for active cycle.",
   ACTIVE_CYCLE_INCOMPLETE: "Cannot close SO: active cycle operational work is incomplete.",
-  DRAFT_BILLING: "Cannot close SO: draft sales bill exists.",
+  DRAFT_BILLING: "Cannot close SO: outstanding billing dependency (draft sales bill).",
+  BILLING_NOT_EXPORTED: "Cannot close SO: Sales Bill not exported.",
   BILLING_ADJUSTMENT: "Cannot close SO: billing adjustment is pending.",
-  FG_DISPOSITION_REQUIRED: "Cannot close SO: accepted FG requires an approved disposition before close.",
+  FG_DISPOSITION_REQUIRED: "Cannot close SO: accepted FG disposition pending.",
   WAIVER_REQUIRED: "Unresolved recovery must be waived via close-with-waiver.",
+  RECOVERY_PENDING: "Cannot close SO: recovery decision is pending.",
 });
+
+function productionBlockerMessage(count) {
+  const n = Math.max(0, Number(count) || 0);
+  if (n <= 0) return BLOCK_MESSAGES.PENDING_PRODUCTION;
+  return `Cannot close SO: ${n} Work Order${n === 1 ? "" : "s"} still have production pending.`;
+}
+
+function qcBlockerMessage(count) {
+  const n = Math.max(0, Number(count) || 0);
+  if (n <= 0) return BLOCK_MESSAGES.PENDING_QC;
+  return `Cannot close SO: ${n} Work Order${n === 1 ? "" : "s"} pending QC.`;
+}
+
+function fgDispositionBlockerMessage(qty) {
+  const q = round3(qty);
+  if (!(q > EPS)) return BLOCK_MESSAGES.FG_DISPOSITION_REQUIRED;
+  return `Cannot close SO: accepted FG disposition pending (${q}).`;
+}
 
 function n(v) {
   const x = typeof v === "number" ? v : Number(v);
@@ -96,34 +115,29 @@ function blocker(code, message, extra = {}) {
 }
 
 async function hasExecutionAwareProductionPending(db, salesOrderId) {
-  const workOrders = await db.workOrder.findMany({
-    where: { salesOrderId, status: { not: "REJECTED" }, cycle: { status: "ACTIVE" } },
-    select: {
-      id: true,
-      status: true,
-      productionExecution: { select: { executionStatus: true } },
-      lines: { select: { id: true, qty: true } },
-    },
-  });
-  const lineIds = workOrders.flatMap((wo) => (wo.lines || []).map((l) => l.id));
-  if (!lineIds.length) return { pending: false, reason: null };
-
-  const producedByLineId = await getApprovedProducedQtyByWorkOrderLineIds(db, lineIds);
-  for (const wo of workOrders) {
-    if (wo.status === "CLOSED_WITH_SHORTFALL") continue;
-    const execStatus = wo.productionExecution?.executionStatus ?? null;
-    if (execStatus === "SHORTFALL_PENDING") {
-      return { pending: true, reason: "SHORTFALL_PENDING" };
-    }
-    for (const line of wo.lines || []) {
-      const produced = producedByLineId.get(line.id) || 0;
-      const pendingQty = getEffectiveProductionPendingQty(line.qty, produced, execStatus);
-      if (pendingQty > EPS) {
-        return { pending: true, reason: "PENDING_PRODUCTION" };
-      }
-    }
+  const summary = await summarizeNoQtyProductionQcPending(db, salesOrderId, { orderType: "NO_QTY" });
+  if (summary.shortfallPendingWoCount > 0) {
+    return {
+      pending: true,
+      reason: "SHORTFALL_PENDING",
+      productionPendingWoCount: summary.productionPendingWoCount,
+      shortfallPendingWoCount: summary.shortfallPendingWoCount,
+    };
   }
-  return { pending: false, reason: null };
+  if (summary.productionPendingWoCount > 0) {
+    return {
+      pending: true,
+      reason: "PENDING_PRODUCTION",
+      productionPendingWoCount: summary.productionPendingWoCount,
+      shortfallPendingWoCount: summary.shortfallPendingWoCount,
+    };
+  }
+  return {
+    pending: false,
+    reason: null,
+    productionPendingWoCount: 0,
+    shortfallPendingWoCount: 0,
+  };
 }
 
 async function computeAcceptedFgPendingByItem(db, salesOrderId) {
@@ -233,55 +247,41 @@ async function assessNoQtySoClosure(db, salesOrderId) {
   const blockers = [];
   const warnings = [];
 
-  const execPending = await hasExecutionAwareProductionPending(db, soId);
-  if (execPending.pending) {
-    blockers.push(blocker(execPending.reason || "PENDING_PRODUCTION"));
-  }
-
-  const pendingProdQc = await hasPendingProductionOrQc(db, soId, { orderType: "NO_QTY" });
-  if (pendingProdQc.pending) {
-    const reason = pendingProdQc.reason || "ACTIVE_CYCLE_INCOMPLETE";
-    if (reason === "PENDING_PRODUCTION" && execPending.pending) {
-      // already flagged
-    } else if (reason === "PENDING_QC" || reason === "PENDING_QC_DISPOSITION") {
-      blockers.push(blocker(reason));
-    } else if (!execPending.pending) {
-      blockers.push(blocker(reason));
-    }
-  }
-
-  const unlockedDispatchCount = await db.dispatch.count({
-    where: { soId, reversalOfId: null, workflowStatus: "UNLOCKED" },
-  });
-  if (unlockedDispatchCount > 0) blockers.push(blocker("DRAFT_DISPATCH_EXISTS"));
-
-  const draftRsCount = await db.requirementSheet.count({
-    where: { salesOrderId: soId, status: "DRAFT" },
-  });
-  if (draftRsCount > 0) blockers.push(blocker("ACTIVE_RS_DRAFT"));
-
-  const draftBillCount = await db.salesBill.count({
-    where: { status: "DRAFT", dispatch: { soId, reversalOfId: null } },
-  });
-  if (draftBillCount > 0) blockers.push(blocker("DRAFT_BILLING"));
-
+  /**
+   * Close evaluation order (SSOT):
+   * Outstanding WO → Production (incl. PMR) → QC → FG Disposition → Recovery →
+   * Dispatch dependency → Sales Bill dependency → Close Allowed
+   */
   const activeCycle = await db.salesOrderCycle.findFirst({
     where: { salesOrderId: soId, status: "ACTIVE" },
     orderBy: { cycleNo: "desc" },
     select: { id: true, cycleNo: true },
   });
 
+  let lockedRs = null;
+  let woCount = 0;
   if (activeCycle) {
     const cycleId = Number(activeCycle.id);
-    const lockedRs = await db.requirementSheet.findFirst({
+    lockedRs = await db.requirementSheet.findFirst({
       where: { salesOrderId: soId, cycleId, status: "LOCKED" },
       select: { id: true },
     });
-    const woCount = await db.workOrder.count({
+    woCount = await db.workOrder.count({
       where: { salesOrderId: soId, cycleId, status: { not: "REJECTED" } },
     });
-    if (lockedRs && woCount === 0) blockers.push(blocker("WO_PENDING"));
+    // 1) Outstanding Work Orders — skip when locked RS is decision-only (empty cycle cap)
+    if (lockedRs && woCount === 0) {
+      const { assessNoQtyCycleDispatchCapMet } = require("./noQtySoOperationalGates");
+      const dispatchCap = await assessNoQtyCycleDispatchCapMet(db, { soId, cycleId });
+      const emptyCap =
+        dispatchCap.complete === true &&
+        (dispatchCap.reason === "EMPTY_CYCLE_CAP" || dispatchCap.reason === "NO_LOCKED_RS");
+      if (!emptyCap) {
+        blockers.push(blocker("WO_PENDING"));
+      }
+    }
 
+    // 2) Production prerequisites (material issue)
     const openPmr = await db.productionMaterialRequest.findFirst({
       where: {
         workOrder: { salesOrderId: soId, cycleId },
@@ -295,24 +295,60 @@ async function assessNoQtySoClosure(db, salesOrderId) {
         blocker(openPmr.status === "REQUESTED" ? "PMR_WAITING_STORE_ISSUE" : "PMR_PARTIALLY_ISSUED"),
       );
     }
-
-    if (lockedRs) {
-      const dispatchCap = await assessNoQtyCycleDispatchCapMet(db, { soId, cycleId });
-      if (!dispatchCap.complete) blockers.push(blocker("PENDING_DISPATCH"));
-    } else if (
-      woCount > 0 &&
-      !blockers.some((b) => b.code === "PENDING_PRODUCTION" || b.code === "SHORTFALL_PENDING")
-    ) {
-      blockers.push(blocker("ACTIVE_CYCLE_INCOMPLETE"));
-    }
   }
 
+  // 2b) Production / shortfall
+  const prodQc = await summarizeNoQtyProductionQcPending(db, soId, { orderType: "NO_QTY" });
+  if (prodQc.shortfallPendingWoCount > 0) {
+    blockers.push(
+      blocker(
+        "SHORTFALL_PENDING",
+        prodQc.shortfallPendingWoCount === 1
+          ? BLOCK_MESSAGES.SHORTFALL_PENDING
+          : `Cannot close SO: ${prodQc.shortfallPendingWoCount} Work Orders have production shortfall decisions pending.`,
+        { woCount: prodQc.shortfallPendingWoCount },
+      ),
+    );
+  } else if (prodQc.productionPendingWoCount > 0) {
+    blockers.push(
+      blocker("PENDING_PRODUCTION", productionBlockerMessage(prodQc.productionPendingWoCount), {
+        woCount: prodQc.productionPendingWoCount,
+      }),
+    );
+  }
+
+  // 3) QC / QC disposition
+  if (prodQc.qcPendingWoCount > 0) {
+    blockers.push(
+      blocker("PENDING_QC", qcBlockerMessage(prodQc.qcPendingWoCount), {
+        woCount: prodQc.qcPendingWoCount,
+      }),
+    );
+  }
+  if (prodQc.openQcDispositionCount > 0) {
+    blockers.push(
+      blocker(
+        "PENDING_QC_DISPOSITION",
+        prodQc.openQcDispositionCount === 1
+          ? BLOCK_MESSAGES.PENDING_QC_DISPOSITION
+          : `Cannot close SO: ${prodQc.openQcDispositionCount} QC rework/hold dispositions are pending.`,
+        { count: prodQc.openQcDispositionCount },
+      ),
+    );
+  }
+
+  // 4) FG Disposition
   const { pendingByItem: fgPendingByItem, totalPending: acceptedFgPendingDispositionQty } =
     await computeAcceptedFgPendingByItem(db, soId);
   if (acceptedFgPendingDispositionQty > EPS) {
-    blockers.push(blocker("FG_DISPOSITION_REQUIRED", undefined, { pendingQty: acceptedFgPendingDispositionQty }));
+    blockers.push(
+      blocker("FG_DISPOSITION_REQUIRED", fgDispositionBlockerMessage(acceptedFgPendingDispositionQty), {
+        pendingQty: acceptedFgPendingDispositionQty,
+      }),
+    );
   }
 
+  // 5) Recovery is evaluated after gates — WAIVER_REQUIRED mode when clear of hard blockers
   const recoverySummary = await getRecoverySummary(db, soId);
   const available = await getAvailableRecovery(db, { salesOrderId: soId });
   let pendingProductionShortfallQty = 0;
@@ -340,6 +376,126 @@ async function assessNoQtySoClosure(db, salesOrderId) {
       message: "Some recovery sources have incomplete migration flags; verify before close.",
     });
   }
+
+  // 6) Dispatch dependency
+  const unlockedDispatches = await db.dispatch.findMany({
+    where: { soId, reversalOfId: null, workflowStatus: "UNLOCKED" },
+    select: { id: true, docNo: true },
+    orderBy: { id: "asc" },
+    take: 5,
+  });
+  if (unlockedDispatches.length > 0) {
+    const labels = unlockedDispatches.map((d) => displayDispatchNo(d.id, d.docNo));
+    const more =
+      unlockedDispatches.length >= 5
+        ? await db.dispatch.count({
+            where: { soId, reversalOfId: null, workflowStatus: "UNLOCKED" },
+          })
+        : unlockedDispatches.length;
+    const suffix = more > labels.length ? ` (+${more - labels.length} more)` : "";
+    blockers.push(
+      blocker(
+        "DRAFT_DISPATCH_EXISTS",
+        labels.length === 1
+          ? `Cannot close SO: Dispatch ${labels[0]} not finalized.`
+          : `Cannot close SO: Draft dispatches not finalized: ${labels.join(", ")}${suffix}.`,
+        { dispatchIds: unlockedDispatches.map((d) => d.id), documentNos: labels },
+      ),
+    );
+  }
+
+  if (activeCycle && lockedRs) {
+    const cycleId = Number(activeCycle.id);
+    const dispatchCap = await assessNoQtyCycleDispatchCapMet(db, { soId, cycleId });
+    if (!dispatchCap.complete) {
+      const rsLabel = displayRequirementSheetNo(dispatchCap.sheetId, dispatchCap.sheetDocNo);
+      let message = BLOCK_MESSAGES.PENDING_DISPATCH;
+      if (dispatchCap.reason === "NO_DISPATCHES") {
+        message = `Cannot close SO: Cycle ${activeCycle.cycleNo} locked RS ${rsLabel} has no confirmed dispatch.`;
+      } else if (dispatchCap.reason === "PENDING_DISPATCH_REMAINS") {
+        const itemBit = dispatchCap.pendingItemName
+          ? ` for ${dispatchCap.pendingItemName}`
+          : dispatchCap.pendingItemId
+            ? ` for item ${dispatchCap.pendingItemId}`
+            : "";
+        message = `Cannot close SO: Cycle ${activeCycle.cycleNo} dispatch remaining vs locked RS ${rsLabel}${itemBit} — ${dispatchCap.pendingQty} of ${dispatchCap.capQty} still undispatched.`;
+      }
+      blockers.push(
+        blocker("PENDING_DISPATCH", message, {
+          dispatchCapReason: dispatchCap.reason,
+          cycleId,
+          cycleNo: activeCycle.cycleNo,
+          sheetId: dispatchCap.sheetId,
+          sheetDocNo: dispatchCap.sheetDocNo,
+          pendingItemId: dispatchCap.pendingItemId,
+          pendingItemName: dispatchCap.pendingItemName,
+          pendingQty: dispatchCap.pendingQty,
+          capQty: dispatchCap.capQty,
+          dispatchedQty: dispatchCap.dispatchedQty,
+        }),
+      );
+    }
+  } else if (
+    activeCycle &&
+    woCount > 0 &&
+    !blockers.some(
+      (b) =>
+        b.code === "PENDING_PRODUCTION" ||
+        b.code === "SHORTFALL_PENDING" ||
+        b.code === "PENDING_QC" ||
+        b.code === "PENDING_QC_DISPOSITION",
+    )
+  ) {
+    blockers.push(blocker("ACTIVE_CYCLE_INCOMPLETE"));
+  }
+
+  // 7) Sales Bill / export / RS draft dependencies
+  const draftBills = await db.salesBill.findMany({
+    where: { status: "DRAFT", dispatch: { soId, reversalOfId: null } },
+    select: { id: true, billNo: true, docNo: true },
+    orderBy: { id: "asc" },
+    take: 5,
+  });
+  if (draftBills.length > 0) {
+    const labels = draftBills.map((b) => displaySalesBillNo(b.id, b.billNo, b.docNo));
+    blockers.push(
+      blocker(
+        "DRAFT_BILLING",
+        labels.length === 1
+          ? `Cannot close SO: Sales Bill ${labels[0]} is still draft.`
+          : `Cannot close SO: Draft sales bills pending: ${labels.join(", ")}.`,
+        { salesBillIds: draftBills.map((b) => b.id), documentNos: labels },
+      ),
+    );
+  }
+
+  const unexportedBills = await db.salesBill.findMany({
+    where: {
+      status: "FINALIZED",
+      exportedAt: null,
+      dispatch: { soId, reversalOfId: null },
+    },
+    select: { id: true, billNo: true, docNo: true },
+    orderBy: { id: "asc" },
+    take: 5,
+  });
+  if (unexportedBills.length > 0) {
+    const labels = unexportedBills.map((b) => displaySalesBillNo(b.id, b.billNo, b.docNo));
+    blockers.push(
+      blocker(
+        "BILLING_NOT_EXPORTED",
+        labels.length === 1
+          ? `Cannot close SO: Sales Bill ${labels[0]} not exported.`
+          : `Cannot close SO: Sales Bills not exported: ${labels.join(", ")}.`,
+        { salesBillIds: unexportedBills.map((b) => b.id), documentNos: labels },
+      ),
+    );
+  }
+
+  const draftRsCount = await db.requirementSheet.count({
+    where: { salesOrderId: soId, status: "DRAFT" },
+  });
+  if (draftRsCount > 0) blockers.push(blocker("ACTIVE_RS_DRAFT"));
 
   const itemMap = new Map();
   for (const row of available) {

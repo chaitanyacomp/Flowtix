@@ -1,5 +1,7 @@
 # Commercial Domain Specification
 
+> Party compatibility, external identity, GSTIN matching and the Tally accounting ownership boundary are defined in the [Tally Compatibility Contract](../05_Data_Architecture/Tally_Compatibility_Contract.md). Name-only ambiguous matches and silent reactivation are prohibited.
+
 | Field | Value |
 |-------|-------|
 | **Document ID** | FT-PD-030 |

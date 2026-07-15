@@ -195,8 +195,18 @@ async function createProductionShortRecovery(
 }
 
 /**
- * Create QC_FINAL_REJECTION recovery from terminal unusable qty (scrap / final reject).
- * Never call for first-pass rework/hold routing.
+ * Create or adjust QC_FINAL_REJECTION recovery from terminal unusable qty (scrap / final reject).
+ *
+ * Provenance identity: (QC_FINAL_REJECTION, sourceDocumentType, sourceDocumentId).
+ * `sourceQty` is the authoritative absolute terminal-scrap total for that source.
+ *
+ * Never call for first-pass rework/hold routing or pending QC — only for terminal SCRAP.
+ *
+ * Adjustment rules:
+ * - same source + same qty → no change (idempotent)
+ * - same source + higher qty → increase by delta only
+ * - same source + lower qty → decrease by delta only, never below activeAllocated + waived
+ * - qty ≤ EPS on an existing source → cancel if fully unallocated (or only RESERVED)
  */
 async function createFinalQcRejectedRecovery(
   tx,
@@ -206,6 +216,7 @@ async function createFinalQcRejectedRecovery(
     sourceQty,
     workOrderId = null,
     cycleId = null,
+    sourceRequirementSheetId = null,
     sourceDocumentType = "QC_REJECTED_DISPOSITION",
     sourceDocumentId,
     remarks = null,
@@ -214,8 +225,6 @@ async function createFinalQcRejectedRecovery(
   },
 ) {
   const qty = round3(sourceQty);
-  if (qty <= EPS) return null;
-
   const soId = Number(salesOrderId);
   const iid = Number(itemId);
   const docId = Number(sourceDocumentId);
@@ -234,23 +243,22 @@ async function createFinalQcRejectedRecovery(
     sourceDocumentType,
     sourceDocumentId: docId,
   });
+
   if (existing) {
-    // Same disposition may scrap in multiple steps — increase source if new terminal qty exceeds prior.
-    const prev = round3(n(existing.sourceQty));
-    if (qty > prev + EPS) {
-      const delta = round3(qty - prev);
-      const updated = await tx.carryForwardPending.update({
-        where: { id: existing.id },
-        data: {
-          sourceQty: String(qty),
-          remainingQty: String(round3(n(existing.remainingQty) + delta)),
-          remarks: remarks?.trim() || existing.remarks,
-        },
-      });
-      return recomputeRecoveryStatus(tx, updated.id);
-    }
-    return existing;
+    return adjustExistingQcRejectionSource(tx, {
+      existing,
+      qty,
+      workOrderId,
+      cycleId,
+      sourceRequirementSheetId,
+      remarks,
+      actorUserId,
+      sourceDocumentType,
+      sourceDocumentId: docId,
+    });
   }
+
+  if (qty <= EPS) return null;
 
   try {
     return await tx.carryForwardPending.create({
@@ -258,6 +266,8 @@ async function createFinalQcRejectedRecovery(
         itemId: iid,
         salesOrderId: soId,
         sourceWorkOrderId: workOrderId != null ? Number(workOrderId) : null,
+        sourceRequirementSheetId:
+          sourceRequirementSheetId != null ? Number(sourceRequirementSheetId) : null,
         cycleId: cycleId != null ? Number(cycleId) : null,
         remainingQty: String(qty),
         resolutionReason,
@@ -279,10 +289,122 @@ async function createFinalQcRejectedRecovery(
         sourceDocumentType,
         sourceDocumentId: docId,
       });
-      if (again) return again;
+      if (again) {
+        return adjustExistingQcRejectionSource(tx, {
+          existing: again,
+          qty,
+          workOrderId,
+          cycleId,
+          sourceRequirementSheetId,
+          remarks,
+          actorUserId,
+          sourceDocumentType,
+          sourceDocumentId: docId,
+        });
+      }
     }
     throw e;
   }
+}
+
+/**
+ * Apply absolute terminal-scrap qty to an existing QC_FINAL_REJECTION source.
+ * Preserves the row (no silent delete); CANCELLED reopen is allowed when qty > 0.
+ */
+async function adjustExistingQcRejectionSource(
+  tx,
+  {
+    existing,
+    qty,
+    workOrderId = null,
+    cycleId = null,
+    sourceRequirementSheetId = null,
+    remarks = null,
+    actorUserId = null,
+    sourceDocumentType,
+    sourceDocumentId,
+  },
+) {
+  await lockRecoverySourceForUpdate(tx, existing.id);
+  const locked = await tx.carryForwardPending.findUnique({
+    where: { id: existing.id },
+    include: { allocations: true },
+  });
+  if (!locked) {
+    throw recoveryError("Recovery source not found.", { statusCode: 404, code: "RECOVERY_SOURCE_NOT_FOUND" });
+  }
+
+  const prev = round3(n(locked.sourceQty));
+  const waived = round3(n(locked.waivedQty));
+  const active = sumActiveAllocatedQty(locked.allocations);
+  const floor = round3(active + waived);
+  const metaPatch = {
+    remarks: remarks?.trim() || locked.remarks,
+    ...(workOrderId != null ? { sourceWorkOrderId: Number(workOrderId) } : {}),
+    ...(cycleId != null ? { cycleId: Number(cycleId) } : {}),
+    ...(sourceRequirementSheetId != null
+      ? { sourceRequirementSheetId: Number(sourceRequirementSheetId) }
+      : {}),
+  };
+
+  if (qty <= EPS) {
+    if (floor > EPS) {
+      throw recoveryError(
+        "Cannot clear QC recovery source below active allocated + waived quantity.",
+        { statusCode: 409, code: "RECOVERY_SOURCE_QTY_BELOW_ALLOCATED" },
+      );
+    }
+    return cancelUnallocatedRecoverySource(tx, {
+      recoveryType: "QC_FINAL_REJECTION",
+      sourceDocumentType,
+      sourceDocumentId,
+      actorUserId,
+      reason: remarks?.trim() || "Terminal scrap quantity cleared",
+    });
+  }
+
+  if (String(locked.recoveryStatus) === "CANCELLED") {
+    const reopened = await tx.carryForwardPending.update({
+      where: { id: locked.id },
+      data: {
+        ...metaPatch,
+        sourceQty: String(qty),
+        remainingQty: String(qty),
+        recoveryStatus: "OPEN",
+        status: "PENDING",
+        cancelledAt: null,
+        cancelledByUserId: null,
+        cancelReason: null,
+      },
+    });
+    return recomputeRecoveryStatus(tx, reopened.id);
+  }
+
+  if (Math.abs(qty - prev) <= EPS) {
+    if (Object.keys(metaPatch).length > 1 || remarks?.trim()) {
+      await tx.carryForwardPending.update({
+        where: { id: locked.id },
+        data: metaPatch,
+      });
+    }
+    return recomputeRecoveryStatus(tx, locked.id);
+  }
+
+  if (qty + EPS < floor) {
+    throw recoveryError(
+      `Cannot reduce QC recovery sourceQty below active allocated (${active}) + waived (${waived}).`,
+      { statusCode: 409, code: "RECOVERY_SOURCE_QTY_BELOW_ALLOCATED" },
+    );
+  }
+
+  const updated = await tx.carryForwardPending.update({
+    where: { id: locked.id },
+    data: {
+      ...metaPatch,
+      sourceQty: String(qty),
+    },
+  });
+  return recomputeRecoveryStatus(tx, updated.id);
 }
 
 async function getAvailableRecovery(db, { salesOrderId, itemId = null, recoveryType = null } = {}) {
@@ -322,6 +444,8 @@ async function getAvailableRecovery(db, { salesOrderId, itemId = null, recoveryT
         availableQty,
         sourceDocumentType: r.sourceDocumentType,
         sourceDocumentId: r.sourceDocumentId,
+        sourceWorkOrderId: r.sourceWorkOrderId ?? null,
+        sourceRequirementSheetId: r.sourceRequirementSheetId ?? null,
         cycleId: r.cycleId,
         createdAt: r.createdAt,
       };
@@ -597,6 +721,8 @@ function buildRecoverySummaryFromRows(salesOrderId, rows) {
       availableQty,
       sourceDocumentType: r.sourceDocumentType,
       sourceDocumentId: r.sourceDocumentId,
+      sourceWorkOrderId: r.sourceWorkOrderId ?? null,
+      sourceRequirementSheetId: r.sourceRequirementSheetId ?? null,
       cycleId: r.cycleId,
       createdAt: r.createdAt ?? null,
       migrationIncomplete: Boolean(r.migrationIncomplete),
@@ -684,9 +810,18 @@ async function getRecoverySummariesBatch(db, salesOrderIds) {
 }
 
 /**
- * Append terminal scrap qty onto a QC_FINAL_REJECTION recovery for a disposition.
- * Call only from disposition terminal-scrap paths (hold scrap, deny→scrap, final recheck scrap).
- * Do NOT call from first-pass QC entry scrap creation.
+ * Append a new terminal-scrap delta onto a QC_FINAL_REJECTION recovery for a disposition.
+ *
+ * Call from EVERY terminal final-SCRAP path for NO_QTY:
+ * - first-pass direct SCRAP (single or split scrap portion)
+ * - hold → scrap / hold-save-combined scrap
+ * - deny → scrap
+ * - rework final QC scrap
+ *
+ * Do NOT call for hold-only, rework-pending, accept, or provisional reject.
+ * Each call adds `scrapQty` as a delta (multi-step hold-scrap accumulates).
+ * Duplicate absolute create for the same provenance uses createFinalQcRejectedRecovery
+ * (same qty → no-op).
  */
 async function appendTerminalQcScrapRecovery(
   tx,
@@ -711,26 +846,150 @@ async function appendTerminalQcScrapRecovery(
     sourceDocumentType: "QC_REJECTED_DISPOSITION",
     sourceDocumentId: dispositionId,
   });
-  const nextQty = existing ? round3(n(existing.sourceQty) + delta) : delta;
+  // Skip cancelled rows for append math — adjustExisting reopen is handled by absolute set.
+  const prior =
+    existing && String(existing.recoveryStatus) !== "CANCELLED"
+      ? round3(n(existing.sourceQty))
+      : 0;
+  const nextQty = round3(prior + delta);
 
-  return createFinalQcRejectedRecovery(tx, {
+  const created = await createFinalQcRejectedRecovery(tx, {
     salesOrderId: soId,
     itemId,
     sourceQty: nextQty,
     workOrderId: disposition.workOrderId ?? disposition.workOrder?.id ?? null,
     cycleId: disposition.workOrder?.cycleId ?? disposition.cycleId ?? null,
+    sourceRequirementSheetId:
+      disposition.workOrder?.requirementSheetId ?? disposition.sourceRequirementSheetId ?? null,
     sourceDocumentType: "QC_REJECTED_DISPOSITION",
     sourceDocumentId: dispositionId,
     remarks: remarks ?? disposition.remarks ?? null,
     actorUserId,
   });
+
+  // Phase 2B: seed PENDING Keep/Waive on an eligible draft RS (discovery only — no allocate).
+  if (created) {
+    try {
+      const { syncEligibleDraftRsAfterProductionShortfallCreated } = require("./noQtyRsRecoveryIntegrationService");
+      const excludeIds = [];
+      const srcRs =
+        disposition.workOrder?.requirementSheetId ?? disposition.sourceRequirementSheetId ?? null;
+      if (srcRs != null) excludeIds.push(Number(srcRs));
+      await syncEligibleDraftRsAfterProductionShortfallCreated(tx, {
+        salesOrderId: soId,
+        excludeRequirementSheetIds: excludeIds,
+        actorUserId,
+      });
+    } catch {
+      /* discovery sync is best-effort; create path remains authoritative */
+    }
+  }
+
+  return created;
+}
+
+/**
+ * Permanently waive available qty on a recovery source (planning Waive or SO close).
+ * Does not create NoQtySoWaiver rows — caller owns ceremony/audit.
+ */
+async function waiveAvailableQtyOnSource(
+  tx,
+  { recoverySourceId, qty, actorUserId = null, reason = null },
+) {
+  const id = Number(recoverySourceId);
+  const waiveQty = round3(qty);
+  if (!(waiveQty > EPS)) {
+    throw recoveryError("Waiver qty must be positive.", { statusCode: 400, code: "WAIVER_QTY_INVALID" });
+  }
+
+  await lockRecoverySourceForUpdate(tx, id);
+  const source = await tx.carryForwardPending.findUnique({
+    where: { id },
+    include: { allocations: { select: { status: true, allocatedQty: true } } },
+  });
+  if (!source) {
+    throw recoveryError("Recovery source not found.", { statusCode: 404, code: "RECOVERY_SOURCE_NOT_FOUND" });
+  }
+  if (String(source.recoveryStatus) === "CANCELLED") {
+    throw recoveryError("Cannot waive a cancelled recovery source.", {
+      statusCode: 409,
+      code: "RECOVERY_CANCELLED",
+    });
+  }
+
+  const available = computeAvailableQty(source, source.allocations);
+  if (waiveQty > available + EPS) {
+    throw recoveryError(`Cannot waive ${waiveQty}; only ${available} available.`, {
+      statusCode: 409,
+      code: "WAIVER_QTY_EXCEEDS_AVAILABLE",
+    });
+  }
+
+  const newWaived = round3(n(source.waivedQty) + waiveQty);
+  await tx.carryForwardPending.update({
+    where: { id },
+    data: {
+      waivedQty: String(newWaived),
+      remarks: reason?.trim()
+        ? `${source.remarks ? `${source.remarks}\n` : ""}Waived ${waiveQty}: ${reason.trim()}`
+        : source.remarks,
+    },
+  });
+  return recomputeRecoveryStatus(tx, id);
+}
+
+/**
+ * Reverse a prior planning waive by reducing waivedQty (draft RS reverse only).
+ */
+async function reverseWaivedQtyOnSource(tx, { recoverySourceId, qty, actorUserId = null, reason = null }) {
+  const id = Number(recoverySourceId);
+  const reverseQty = round3(qty);
+  if (!(reverseQty > EPS)) return null;
+
+  await lockRecoverySourceForUpdate(tx, id);
+  const source = await tx.carryForwardPending.findUnique({
+    where: { id },
+    include: { allocations: { select: { status: true, allocatedQty: true } } },
+  });
+  if (!source) {
+    throw recoveryError("Recovery source not found.", { statusCode: 404, code: "RECOVERY_SOURCE_NOT_FOUND" });
+  }
+  if (String(source.recoveryStatus) === "CANCELLED") {
+    throw recoveryError("Cannot reverse waiver on a cancelled recovery source.", {
+      statusCode: 409,
+      code: "RECOVERY_CANCELLED",
+    });
+  }
+
+  const currentWaived = round3(n(source.waivedQty));
+  if (reverseQty > currentWaived + EPS) {
+    throw recoveryError(`Cannot reverse waive ${reverseQty}; only ${currentWaived} is waived.`, {
+      statusCode: 409,
+      code: "WAIVER_REVERSE_EXCEEDS",
+    });
+  }
+
+  const newWaived = round3(Math.max(0, currentWaived - reverseQty));
+  await tx.carryForwardPending.update({
+    where: { id },
+    data: {
+      waivedQty: String(newWaived),
+      remarks: reason?.trim()
+        ? `${source.remarks ? `${source.remarks}\n` : ""}Waiver reversed ${reverseQty}: ${reason.trim()}`
+        : source.remarks,
+    },
+  });
+  return recomputeRecoveryStatus(tx, id);
 }
 
 /**
  * Cancel an unallocated (or only-RESERVED) QC recovery when the source QC is reversed.
  * Does not mutate COMMITTED irreversible allocations.
  */
-async function cancelUnallocatedRecoverySource(tx, { recoveryType, sourceDocumentType, sourceDocumentId, actorUserId = null, reason = null }) {
+async function cancelUnallocatedRecoverySource(
+  tx,
+  { recoveryType, sourceDocumentType, sourceDocumentId, actorUserId = null, reason = null },
+) {
   const existing = await findExistingByProvenance(tx, { recoveryType, sourceDocumentType, sourceDocumentId });
   if (!existing) return null;
 
@@ -787,4 +1046,7 @@ module.exports = {
   emptyRecoveryTotals,
   cancelUnallocatedRecoverySource,
   findExistingByProvenance,
+  adjustExistingQcRejectionSource,
+  waiveAvailableQtyOnSource,
+  reverseWaivedQtyOnSource,
 };

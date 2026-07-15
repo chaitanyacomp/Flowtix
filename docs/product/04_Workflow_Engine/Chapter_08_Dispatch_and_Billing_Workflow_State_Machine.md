@@ -30,6 +30,7 @@
 | Version | Date | Author | Summary |
 |---------|------|--------|---------|
 | 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial Dispatch & Billing workflow State Machines and transition tables |
+| 1.0.1 | 2026-07-15 | FT ERP Product Team | Dispatch prepare freezes Customer Delivery Location snapshot for print/export |
 
 **Supersedes:** None.
 
@@ -46,6 +47,8 @@ This chapter defines the **executable workflow State Machines** for the **Dispat
 Execution **begins** when QA posts FG Acceptance and materializes `QAS_DISPATCH_READY` ([Ch. 7](./Chapter_07_Quality_Assurance_Workflow_State_Machine.md)) and **ends** with **Commercial Closure** — ISO `COMMERCIALLY_COMPLETE`, successful billing, and Tally export per policy.
 
 Guard **definitions** are not repeated—only **Guard IDs** and **execution order** per transition.
+
+**Ship-to at prepare:** When a Dispatch draft is created/updated, the selected active Customer Delivery Location is snapshotted onto the Dispatch row. Confirmation/lock must not re-resolve live master address fields for historical print/export.
 
 ---
 
@@ -655,6 +658,15 @@ flowchart TB
 
 Dashboard, Pending Actions, Control Tower, and Reports consume `assessNoQtySoClosure()` and `getRecoverySummary()` / `getRecoverySummariesBatch()` via `noQtyRecoveryAnalyticsService`. Production Shortfall and QC Recovery remain separate. Reconciliation identity: Source Qty = Active Allocated + Waived + Available. No mutation of recovery, RS allocation, stock, dispatch qty, billing qty, or SO closure transactions in this batch.
 
+**NO_QTY SO close evaluation order:** Outstanding WO → Production → QC → FG Disposition → Recovery → Dispatch dependency → Sales Bill / Export dependency → Close Allowed. Blocker messages must name the real gate and document (e.g. Dispatch `D-…` not finalized; Sales Bill `SB-…` not exported; remaining lock-RS dispatch by item)—not a generic production or dispatch pending label. Ready to Close (Current Stage) is allowed only when this assessment returns COMPLETE.
+
+**Outstanding demand identity:** Original Customer Demand = Accepted & Dispatched + Waived Qty + Outstanding Qty. Historical RS cycles are execution history only — do **not** sum historical RS quantities as additional demand. Locked decision-only recovery cycles (empty cycle cap) skip `WO_PENDING`. When Outstanding Qty = 0 and other gates clear, SO close is eligible.
+
+**NO_QTY Dispatch entry (post–RS lock):** Opening Dispatch **SHALL** require positive dispatchable FG (flow-state `dispatchableQty` / `hasQcDispatchPending` / primaryAction `DISPATCH`). When headroom is zero after RS Finalize (including decision-only recovery), navigation **SHALL** return to the NO_QTY Agreement summary — not the generic Dispatch Workspace. When Dispatch is warranted, deep-links **SHALL** use `source=no_qty_so` with `salesOrderId` (and `cycleId` when known) so the workbench binds SO/cycle context without a blank Sales Order dropdown. REGULAR and STOCK_REPLENISHMENT entry points remain unchanged.
+
 ## Batch 3F — Certification
 
 Final cleanup validated: QA/QC recovery columns, Control Tower recovery monitor (read-only), reconciliation identity, migration `20260710120000_no_qty_recovery_foundation` applied on target DB, analytics surfaces consume `assessNoQtySoClosure` / `getRecoverySummariesBatch`. `MANUALLY_CLOSED` retained for dual-read only; operational close uses `CLOSED_WITH_WAIVER` / `COMPLETED`. Physical rework remains QA-owned; QC recovery starts at terminal rejection; Green Level isolated; WO shortfall waiver ≠ SO closure waiver.
+# NO_QTY accepted-excess dispatch rule (2026-07-15)
+
+Dispatchable is the minimum of remaining locked customer demand, remaining QC-accepted pool, and free USABLE FG. Zero customer balance suppresses dispatch queue/actions even when excess stock exists. Sales Bill eligibility remains based only on finalized dispatch rows; excess stock creates no billable obligation.

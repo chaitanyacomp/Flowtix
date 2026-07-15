@@ -166,7 +166,7 @@ describe("fetchNoQtyRecoveryPendingActions — next-RS single Store obligation",
       coverageBySoId: coverage(false),
     });
     assert.equal(withoutCover.filter((a) => a.reason === "PRODUCTION_SHORTFALL_AVAILABLE").length, 1);
-    assert.equal(withoutCover[0].action, "Production shortfall awaiting next RS");
+    assert.equal(withoutCover[0].action, "Resolve Recovery Decision — open next Requirement Sheet");
   });
 
   it("QC rejection only: suppresses QC PA when Create Cycle RS is pending", async () => {

@@ -1,7 +1,7 @@
 /**
- * Canonical NO_QTY dispatch headroom — single source for cycle QC pool minus operational net.
+ * Canonical NO_QTY dispatchable quantity.
  *
- * headroom = max(0, qcAccepted + recheckAccepted + postCycleApproval − alreadyOpNet)
+ * dispatchable = min(remaining customer demand, remaining QC pool, available FG stock)
  *
  * Used by dispatch routes, dashboard snapshots, and reports. Do not duplicate this formula elsewhere.
  */
@@ -14,7 +14,7 @@ function num(v) {
 }
 
 /**
- * @param {{ alreadyOpNet: number; qcAcceptedThisCycle?: number; recheckAcceptedThisCycle?: number; postCycleApprovalQty?: number }} p
+ * @param {{ alreadyOpNet: number; customerDemandQty?: number; qcAcceptedThisCycle?: number; recheckAcceptedThisCycle?: number; postCycleApprovalQty?: number; availableFgStock?: number }} p
  * @returns {number}
  */
 function computeNoQtyDispatchHeadroom(p) {
@@ -22,7 +22,10 @@ function computeNoQtyDispatchHeadroom(p) {
   const qc = num(p.qcAcceptedThisCycle);
   const recheck = num(p.recheckAcceptedThisCycle ?? 0);
   const post = num(p.postCycleApprovalQty ?? 0);
-  return Math.max(0, qc + recheck + post - net);
+  const qcRemaining = Math.max(0, qc + recheck + post - net);
+  const demandRemaining = p.customerDemandQty == null ? Number.POSITIVE_INFINITY : Math.max(0, num(p.customerDemandQty) - net);
+  const stock = p.availableFgStock == null ? Number.POSITIVE_INFINITY : Math.max(0, num(p.availableFgStock));
+  return Math.max(0, Math.min(demandRemaining, qcRemaining, stock));
 }
 
 module.exports = {

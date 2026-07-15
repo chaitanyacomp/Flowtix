@@ -72,8 +72,15 @@ import { useToast } from "../contexts/ToastContext";
 import { cn } from "../lib/utils";
 import { DemoFlowBanner } from "../components/demo/DemoFlowBanner";
 import { useCanCreateNextRs, useCanOpenRequirementSheet } from "../hooks/useIsAdmin";
+import { RS_WRITE_ROLES } from "../config/erpRoles";
 import { useAuth } from "../hooks/useAuth";
 import { noQtyAgreementListHref, isStoreLikePlanningRole } from "../lib/noQtyStoreNavigation";
+import {
+  isDecisionOnlyRecoveryCycleReady,
+  DECISION_ONLY_RECOVERY_FINALIZE_MESSAGE,
+} from "../lib/noQtyDecisionOnlyRecoveryCycle";
+import { resolveNoQtyPostRsLockNavigation } from "../lib/noQtyPostRsLockNavigation";
+import type { NoQtyFlowState } from "../lib/noQtyFlowState";
 import {
   isExecutionModeRequested,
   resolveExecutionViewCycleId,
@@ -99,6 +106,7 @@ import {
   buildRequirementSheetKpiItems,
   resolveRequirementSheetWorkbenchActions,
 } from "../lib/requirementSheetWorkbenchPresentation";
+import { computeLiveNetProductionRequirement } from "../lib/requirementSheetNoQtyUx";
 
 class RequirementSheetErrorBoundary extends React.Component<
   { children: React.ReactNode },
@@ -217,6 +225,12 @@ type SheetLine = {
   suggestedWoQty?: number | null;
   /** Cycle production need (gross fulfillment − usable stock); drives WO / dispatch cap. */
   productionRequiredQty?: number | null;
+  priorAcceptedQty?: number | null;
+  priorAcceptedExcessQty?: number | null;
+  unusedAcceptedExcessQty?: number | null;
+  availableAcceptedSurplusQty?: number | null;
+  netProductionRequirementQty?: number | null;
+  acceptedExcessExplanation?: string | null;
   fulfillmentQty?: number | null;
   coveredFromStockQty?: number | null;
   yellowThreshold?: number | null;
@@ -234,7 +248,7 @@ type LockHandoff = {
     status?: string | null;
     createdThisLock?: boolean;
   } | null;
-  executionStartsAt?: "MONTHLY_PLAN_RELEASE" | null;
+  executionStartsAt?: "MONTHLY_PLAN_RELEASE" | "DECISION_ONLY_RECOVERY" | null;
 };
 
 type SheetDetail = {
@@ -242,6 +256,9 @@ type SheetDetail = {
   docNo?: string | null;
   salesOrderId: number;
   cycleId?: number | null;
+  /** Present on lock response when zero-fulfillment recovery cycle closed without production. */
+  decisionOnlyRecoveryCycle?: boolean;
+  decisionOnlyCycleClosed?: boolean;
   status: SheetStatus;
   periodKey?: string | null;
   version?: number | null;
@@ -273,7 +290,63 @@ type SheetDetail = {
     availableQty: number;
     sourceQty?: number;
     recoveryStatus?: string;
+    sourceWorkOrderId?: number | null;
   }>;
+  recoverySummary?: {
+    salesOrderId: number;
+    totals: {
+      productionShortfallSourceQty?: number;
+      productionShortfallAvailableQty?: number;
+      qcFinalRejectionSourceQty?: number;
+      qcFinalRejectionAvailableQty?: number;
+      waivedQty?: number;
+      activeAllocatedQty?: number;
+    };
+    sources: Array<{
+      recoverySourceId: number;
+      itemId: number;
+      itemName?: string | null;
+      uom?: string | null;
+      recoveryType: string;
+      recoveryStatus: string;
+      sourceQty: number;
+      waivedQty: number;
+      activeAllocatedQty: number;
+      availableQty: number;
+      sourceWorkOrderId?: number | null;
+    }>;
+  } | null;
+  recoveryDecisions?: {
+    requirementSheetId: number;
+    salesOrderId: number;
+    status: string;
+    items: Array<{
+      decisionId: number;
+      itemId: number;
+      itemName?: string | null;
+      uom?: string | null;
+      decisionStatus: string;
+      customerDemandQty: number;
+      productionShortfallQty: number;
+      qcFinalRejectionQty: number;
+      pendingRecoveryQty: number;
+      finalRsQty: number;
+      reason?: string | null;
+      sources?: Array<{
+        recoverySourceId: number;
+        recoveryType: string;
+        availableQty?: number;
+        effect?: string;
+        sourceRsDocNo?: string | null;
+        sourceRsId?: number | null;
+        cycleNo?: number | null;
+        cycleId?: number | null;
+        sourceWorkOrderId?: number | null;
+        workOrderDocNo?: string | null;
+        recoveryStatus?: string;
+      }>;
+    }>;
+  } | null;
 };
 
 function sheetVersionNum(v: number | null | undefined): number {
@@ -388,6 +461,8 @@ export function RequirementSheetPage() {
   const [showCreatePanel, setShowCreatePanel] = React.useState(false);
   const [justCreatedSheetId, setJustCreatedSheetId] = React.useState<number | null>(null);
   const [createSelectedItemIds, setCreateSelectedItemIds] = React.useState<number[]>([]);
+  /** Draft editor: FG item id to add to the current cycle sheet. */
+  const [addDraftItemId, setAddDraftItemId] = React.useState<string>("");
   /** Pre–RS-create new requirement qty (NO_QTY empty active cycle); applied via PUT /lines after POST creates draft. */
   const [pendingNoQtyNewReqQty, setPendingNoQtyNewReqQty] = React.useState<Record<number, string>>({});
   const [woPreviewOpen, setWoPreviewOpen] = React.useState(false);
@@ -589,7 +664,7 @@ export function RequirementSheetPage() {
   async function cancelLockedSheet() {
     if (!sheet) return;
     const ok = window.confirm(
-      "Cancel this locked requirement sheet? The document will remain in history as cancelled. New demand must be created on the next cycle.",
+      "Cancel and reopen this locked requirement sheet? This is allowed only when no downstream execution exists. The document remains in audit history and this Sales Order can create a fresh Requirement Sheet.",
     );
     if (!ok) return;
     setBusy(true);
@@ -600,7 +675,7 @@ export function RequirementSheetPage() {
         method: "POST",
         body: JSON.stringify({ reason: null }),
       });
-      setSuccess("Requirement Sheet cancelled successfully. Create the next cycle when ready.");
+      setSuccess("Requirement Sheet cancelled successfully. This Sales Order is ready for a fresh Requirement Sheet.");
       await loadSoAndSheets();
       await loadSelectedSheet(sheet.id);
     } catch (e) {
@@ -807,9 +882,9 @@ export function RequirementSheetPage() {
         method: "PUT",
         body: JSON.stringify({ remarks: remarks.trim() || null }),
       });
-      // Save lines
-      await apiFetch(`/api/requirement-sheets/${sheet.id}/lines`, {
-        method: "PUT",
+      // Persist demand + recalculate accepted surplus atomically (authoritative Net Production Requirement).
+      const next = await apiFetch<SheetDetail>(`/api/requirement-sheets/${sheet.id}/recalculate`, {
+        method: "POST",
         body: JSON.stringify({
           lines: (Array.isArray(sheet?.lines) ? sheet!.lines : []).map((l) => ({
             itemId: l.itemId,
@@ -817,7 +892,9 @@ export function RequirementSheetPage() {
           })),
         }),
       });
-      await loadSelectedSheet(sheet.id);
+      setSheet(next);
+      setNeedsRecalc(false);
+      setSuccess("Draft saved. Quantities recalculated.");
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Failed to save.";
       setError(msg);
@@ -877,6 +954,53 @@ export function RequirementSheetPage() {
     }
   }
 
+  async function addDraftFgItem() {
+    if (!sheet?.id || sheet.status !== "DRAFT") return;
+    const itemId = Number(addDraftItemId);
+    if (!Number.isFinite(itemId) || itemId <= 0) {
+      setError("Select an FG item to add.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      await apiFetch(`/api/requirement-sheets/${sheet.id}/lines`, {
+        method: "POST",
+        body: JSON.stringify({ itemId }),
+      });
+      const next = await apiFetch<SheetDetail>(`/api/requirement-sheets/${sheet.id}`);
+      setSheet(next);
+      setAddDraftItemId("");
+      setNeedsRecalc(true);
+      setSuccess("FG item added to this cycle.");
+    } catch (e) {
+      const msg = e instanceof ApiRequestError ? e.message : e instanceof Error ? e.message : "Failed to add item.";
+      setError(msg);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeDraftFgItem(itemId: number) {
+    if (!sheet?.id || sheet.status !== "DRAFT") return;
+    setBusy(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      await apiFetch(`/api/requirement-sheets/${sheet.id}/lines/${itemId}`, { method: "DELETE" });
+      const next = await apiFetch<SheetDetail>(`/api/requirement-sheets/${sheet.id}`);
+      setSheet(next);
+      setNeedsRecalc(true);
+      setSuccess("FG item removed from this cycle.");
+    } catch (e) {
+      const msg = e instanceof ApiRequestError ? e.message : e instanceof Error ? e.message : "Failed to remove item.";
+      setError(msg);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const sheetCycleIdForAlign = sheet?.cycleId != null ? Number(sheet.cycleId) : NaN;
   const sheetOnActiveCycle =
     Boolean(sheet) &&
@@ -895,7 +1019,10 @@ export function RequirementSheetPage() {
   async function lockSheet() {
     if (!sheet) return;
     if (!isLatestForPeriod) return;
-    if (needsRecalc) return;
+    if (needsRecalc) {
+      setError("Recalculate or Save draft before finalize — displayed quantities may be stale.");
+      return;
+    }
     if (
       isNoQty &&
       sheet.status === "DRAFT" &&
@@ -913,26 +1040,68 @@ export function RequirementSheetPage() {
     setBusy(true);
     setError(null);
     try {
+      // Persist current demand lines with lock so Finalize never freezes a stale net.
       const locked = await apiFetch<SheetDetail>(`/api/requirement-sheets/${sheet.id}/lock`, {
         method: "POST",
-        body: JSON.stringify({}),
+        body: JSON.stringify({
+          lines: (Array.isArray(sheet?.lines) ? sheet!.lines : []).map((l) => ({
+            itemId: l.itemId,
+            requirementQty: Number(l.requirementQty || 0),
+          })),
+        }),
       });
       setSheet(locked);
       setRemarks(locked.remarks?.trim() ?? "");
       setNeedsRecalc(false);
 
       if (isNoQty) {
-        toast.showSuccess("Requirement Sheet locked successfully.");
+        const decisionOnly =
+          locked.decisionOnlyRecoveryCycle === true ||
+          locked.lockHandoff?.executionStartsAt === "DECISION_ONLY_RECOVERY";
+        toast.showSuccess(
+          decisionOnly
+            ? "Recovery decisions locked. Cycle completed without production."
+            : "Requirement Sheet locked successfully.",
+        );
         await loadSoAndSheets();
         await refreshNoQtyFlowState();
-        if (isZeroPlanning) {
-          nav(`/dispatch?source=no_qty_so&salesOrderId=${locked.salesOrderId}`, { replace: true });
+
+        let flowAfterLock: NoQtyFlowState | null = null;
+        try {
+          const cycleQs =
+            locked.cycleId != null && Number(locked.cycleId) > 0
+              ? `?cycleId=${encodeURIComponent(String(locked.cycleId))}`
+              : "";
+          flowAfterLock = await apiFetch<NoQtyFlowState>(
+            `/api/sales-orders/${locked.salesOrderId}/no-qty-flow-state${cycleQs}`,
+          );
+        } catch {
+          flowAfterLock = null;
+        }
+
+        const postNav = resolveNoQtyPostRsLockNavigation({
+          salesOrderId: locked.salesOrderId,
+          cycleId: locked.cycleId ?? flowAfterLock?.canonicalCycleId ?? flowAfterLock?.cycleId ?? null,
+          requirementSheetId: locked.id,
+          decisionOnlyRecoveryCycle: decisionOnly,
+          dispatchableQty: flowAfterLock?.dispatchableQty ?? null,
+          hasQcDispatchPending: flowAfterLock?.hasQcDispatchPending ?? null,
+          primaryAction: flowAfterLock?.primaryAction ?? flowAfterLock?.nextAction ?? null,
+          viewerRole,
+          isZeroPlanning,
+        });
+
+        if (postNav.kind === "DISPATCH_CONTEXTUAL" && postNav.href) {
+          nav(postNav.href, { replace: true });
           return;
         }
-        const isStoreRole = String(viewerRole ?? "").toUpperCase() === "STORE";
-        if (isStoreRole) {
+        if (postNav.kind === "SO_SUMMARY" && postNav.href) {
+          nav(postNav.href, { replace: true });
+          return;
+        }
+        if (postNav.kind === "DASHBOARD" && postNav.href) {
           setShowCreatePanel(false);
-          nav("/dashboard", { replace: true });
+          nav(postNav.href, { replace: true });
           return;
         }
         return;
@@ -951,10 +1120,6 @@ export function RequirementSheetPage() {
           ? `Cycle RS locked. ${lockParts.join(" · ")}.`
           : "Cycle RS locked.",
       );
-      if (isZeroPlanning) {
-        nav(`/dispatch?source=no_qty_so&salesOrderId=${locked.salesOrderId}`);
-        return;
-      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Failed to lock.";
       setError(msg);
@@ -1046,8 +1211,18 @@ export function RequirementSheetPage() {
       if (isNoQty) postCycleApprovalSum += safeNum(l.postCycleApprovalQty);
       newWoSum += newWo;
       const totalToProduce = locked
-        ? safeNum(l.totalWoQty ?? l.productionRequiredQty ?? l.suggestedWoQty)
-        : safeNum(l.totalWoQty ?? l.productionRequiredQty ?? computeDraftProductionRequired(l, isNoQty));
+        ? safeNum(l.totalWoQty ?? l.productionRequiredQty ?? l.suggestedWoQty ?? l.netProductionRequirementQty)
+        : isNoQty
+          ? computeLiveNetProductionRequirement({
+              customerDemandQty: newWo,
+              keptProductionShortageQty: safeNum(l.productionShortfallQty ?? l.shortfallQty),
+              keptQcRejectionQty: safeNum(l.qcRejectionRecoveryQty),
+              approvedManualAdjustmentQty: safeNum(l.approvedManualAdjustmentQty),
+              priorAcceptedExcessQty: safeNum(l.priorAcceptedExcessQty),
+              unusedAcceptedExcessQty: safeNum(l.unusedAcceptedExcessQty),
+              availableAcceptedSurplusQty: l.availableAcceptedSurplusQty,
+            }).netProductionRequirementQty
+          : safeNum(l.totalWoQty ?? l.productionRequiredQty ?? computeDraftProductionRequired(l, isNoQty));
       totalWoSum += isNoQty ? totalToProduce : (locked ? safeNum(l.suggestedWoQty) : computeSystemSuggestedNet(newWo, stock));
       stockSum += stock;
     }
@@ -1246,16 +1421,31 @@ export function RequirementSheetPage() {
     isNoQty &&
     (safeLines.length === 0 || safeLines.every((l) => Math.abs(computeDraftProductionRequired(l, true)) <= PLAN_EPS));
 
-  /** NO_QTY draft: allow finalize only when New requirement Qty or Total to Produce (computed) is positive on some line. */
+  const decisionOnlyRecoveryReady = React.useMemo(() => {
+    if (!isNoQty || sheet?.status !== "DRAFT") return false;
+    return isDecisionOnlyRecoveryCycleReady({
+      isNoQty: true,
+      sheetStatus: sheet?.status,
+      lines: safeLines.map((l) => ({
+        newWoQty: l.newWoQty,
+        requirementQty: l.requirementQty,
+        toProduceQty: computeDraftProductionRequired(l, true),
+      })),
+      recoveryDecisionItems: sheet?.recoveryDecisions?.items ?? [],
+    });
+  }, [isNoQty, sheet?.status, sheet?.recoveryDecisions?.items, safeLines]);
+
+  /** NO_QTY draft: allow finalize when New requirement / Total to Produce is positive, OR decision-only recovery complete. */
   const noQtyDraftCanFinalize = React.useMemo(() => {
     if (!isNoQty || sheet?.status !== "DRAFT") return true;
+    if (decisionOnlyRecoveryReady) return true;
     if (safeLines.length === 0) return false;
     return safeLines.some((l) => {
       const newReq = safeNum(l.newWoQty ?? l.requirementQty);
       const toProduce = computeDraftProductionRequired(l, true);
       return newReq > PLAN_EPS || toProduce > PLAN_EPS;
     });
-  }, [isNoQty, sheet?.status, safeLines]);
+  }, [isNoQty, sheet?.status, safeLines, decisionOnlyRecoveryReady]);
 
   const noQtyFinalizeDisabled =
     !sheet ||
@@ -1328,6 +1518,7 @@ export function RequirementSheetPage() {
         noQtyFinalizeDisabled,
         draftUi,
         noQtyDraftCanFinalize,
+        decisionOnlyRecoveryReady,
         busy,
         noSheetsUi,
         canCreateNextRs,
@@ -1357,6 +1548,7 @@ export function RequirementSheetPage() {
       noQtyFinalizeDisabled,
       draftUi,
       noQtyDraftCanFinalize,
+      decisionOnlyRecoveryReady,
       busy,
       noSheetsUi,
       canCreateNextRs,
@@ -1768,9 +1960,9 @@ export function RequirementSheetPage() {
                       <Button type="button" variant="outline" size="sm" disabled={!sheet || busy || needsRecalc} onClick={() => setWoPreviewOpen((o) => !o)}>
                         {woPreviewOpen ? "Hide WO plan" : "WO plan (preview)"}
                       </Button>
-                      {locked && canOpenRs ? (
+                      {locked && viewerRole === "ADMIN" ? (
                         <Button type="button" variant="destructive" size="sm" disabled={busy || cancelled} onClick={() => void cancelLockedSheet()}>
-                          Cancel Requirement Sheet
+                          Cancel / Reopen Requirement Sheet
                         </Button>
                       ) : null}
                     </div>
@@ -1841,6 +2033,15 @@ export function RequirementSheetPage() {
               Awaiting requirement quantities
               {!showItemsCard ? (
                 <span className="mt-0.5 block font-normal text-amber-900">Enter requirement qty to continue.</span>
+              ) : null}
+            </div>
+          ) : decisionOnlyRecoveryReady ? (
+            <div className="font-semibold leading-snug">
+              {DECISION_ONLY_RECOVERY_FINALIZE_MESSAGE}
+              {!showItemsCard ? (
+                <span className="mt-0.5 block font-normal text-emerald-900">
+                  Finalize to lock this recovery cycle — no production is required.
+                </span>
               ) : null}
             </div>
           ) : isZeroPlanning ? (
@@ -1916,7 +2117,7 @@ export function RequirementSheetPage() {
           <div className="font-semibold">
             {noQtyFlowState?.readyToPlaceWo
               ? `Requirement Sheet locked for ${noQtyCurrentCycleLabel(sheetDisplayCycleNo)}.`
-              : "Requirement Sheet locked. Next step: Monthly Planning."}
+              : "Requirement Sheet locked. Next step depends on Estimated Net RM Requirement (Monthly Planning if Net RM > 0, otherwise Work Order Planning)."}
           </div>
           <div className="mt-0.5 text-xs text-emerald-900">
             {noQtyFlowState?.readyToPlaceWo
@@ -2438,9 +2639,44 @@ export function RequirementSheetPage() {
             </div>
           </CardHeader>
           <CardContent id="rs-items" className={cn("min-w-0 p-0", isNoQty ? "p-0 md:p-0" : "sm:p-6 sm:pt-0")}>
-            {safeLines.length > 0 ? (
+            {safeLines.length > 0 || (isNoQty && sheet?.status === "DRAFT" && !editingDisabled) ? (
               <div className={cn(isNoQty ? "px-0 pb-0" : "px-3 pb-3 sm:px-0 sm:pb-0")}>
-                {isNoQty ? (
+                {isNoQty && sheet?.status === "DRAFT" && !editingDisabled ? (
+                  <div className="flex flex-wrap items-end gap-2 border-b border-slate-200 bg-slate-50/80 px-3 py-2">
+                    <div className="grid min-w-[12rem] flex-1 gap-0.5">
+                      <label htmlFor="rs-add-fg-item" className="text-[11px] font-medium text-slate-600">
+                        Add FG item to this cycle
+                      </label>
+                      <select
+                        id="rs-add-fg-item"
+                        className="h-9 rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-900"
+                        value={addDraftItemId}
+                        disabled={busy}
+                        onChange={(e) => setAddDraftItemId(e.target.value)}
+                      >
+                        <option value="">Select FG…</option>
+                        {fgItemOptionsFromSo(so)
+                          .filter((o) => !(sheet?.lines || []).some((l) => Number(l.itemId) === o.itemId))
+                          .map((o) => (
+                            <option key={o.itemId} value={o.itemId}>
+                              {o.itemName}
+                            </option>
+                          ))}
+                      </select>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-9"
+                      disabled={busy || !addDraftItemId}
+                      onClick={() => void addDraftFgItem()}
+                    >
+                      Add item
+                    </Button>
+                  </div>
+                ) : null}
+                {isNoQty && safeLines.length > 0 ? (
                   <RequirementSheetNoQtyGrid
                     lines={safeLines}
                     locked={locked}
@@ -2448,7 +2684,10 @@ export function RequirementSheetPage() {
                     needsRecalc={needsRecalc}
                     sheetDisplayCycleNo={sheetDisplayCycleNo}
                     rsCycleSummaries={rsCycleSummaries}
-                    availableQcRecovery={sheet?.availableQcRecovery ?? []}
+                    recoveryDecisions={sheet?.recoveryDecisions?.items ?? []}
+                    canWaive={(RS_WRITE_ROLES as readonly string[]).includes(
+                      String(viewerRole ?? "").toUpperCase(),
+                    )}
                     onLineChange={(itemId, value) => {
                       setSheet((prev) =>
                         prev
@@ -2465,22 +2704,55 @@ export function RequirementSheetPage() {
                     onLineBlur={() => {
                       if (!locked) setNeedsRecalc(true);
                     }}
-                    onAllocateQcRecovery={async (recoverySourceId, qty) => {
+                    onKeepRecovery={async (itemId) => {
                       if (!sheet?.id) return;
                       try {
-                        await apiFetch(`/api/requirement-sheets/${sheet.id}/recovery-allocations`, {
+                        await apiFetch(`/api/requirement-sheets/${sheet.id}/recovery-decisions/${itemId}/keep`, {
                           method: "POST",
-                          body: JSON.stringify({ recoverySourceId, qty }),
+                          body: JSON.stringify({}),
                         });
                         const next = await apiFetch<SheetDetail>(`/api/requirement-sheets/${sheet.id}`);
                         setSheet(next);
                         setNeedsRecalc(false);
                       } catch (e) {
-                        window.alert(e instanceof Error ? e.message : "Failed to allocate QC recovery.");
+                        window.alert(e instanceof Error ? e.message : "Failed to Keep recovery.");
                       }
                     }}
+                    onWaiveRecovery={async (itemId, reason) => {
+                      if (!sheet?.id) return;
+                      try {
+                        await apiFetch(`/api/requirement-sheets/${sheet.id}/recovery-decisions/${itemId}/waive`, {
+                          method: "POST",
+                          body: JSON.stringify({ reason }),
+                        });
+                        const next = await apiFetch<SheetDetail>(`/api/requirement-sheets/${sheet.id}`);
+                        setSheet(next);
+                        setNeedsRecalc(false);
+                      } catch (e) {
+                        window.alert(e instanceof Error ? e.message : "Failed to Waive recovery.");
+                      }
+                    }}
+                    onReverseRecoveryDecision={async (itemId) => {
+                      if (!sheet?.id) return;
+                      try {
+                        await apiFetch(`/api/requirement-sheets/${sheet.id}/recovery-decisions/${itemId}/reverse`, {
+                          method: "POST",
+                          body: JSON.stringify({}),
+                        });
+                        const next = await apiFetch<SheetDetail>(`/api/requirement-sheets/${sheet.id}`);
+                        setSheet(next);
+                        setNeedsRecalc(false);
+                      } catch (e) {
+                        window.alert(e instanceof Error ? e.message : "Failed to reverse recovery decision.");
+                      }
+                    }}
+                    onRemoveItem={
+                      sheet?.status === "DRAFT" && !editingDisabled
+                        ? (itemId) => removeDraftFgItem(itemId)
+                        : undefined
+                    }
                   />
-                ) : (
+                ) : !isNoQty && safeLines.length > 0 ? (
                   <div className="min-w-0 overflow-x-auto">
                     <table className="w-full min-w-[900px] border-collapse text-sm">
                       <thead>
@@ -2565,7 +2837,7 @@ export function RequirementSheetPage() {
                       </tbody>
                     </table>
                   </div>
-                )}
+                ) : null}
               </div>
             ) : (
               <div className="px-3 py-4 text-sm text-slate-600 sm:px-6">

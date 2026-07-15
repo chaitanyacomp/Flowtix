@@ -55,6 +55,38 @@ NO_QTY runs in internal cycles to preserve history.
   - sets `SalesOrder.currentCycleId` to the new cycle
   - keeps all previous cycles **locked / history-only**
 
+### Admin Requirement Sheet Cancel/Reopen policy
+
+Cancel/Reopen here means cancelling a finalized (`LOCKED`) Requirement Sheet so the same open Sales Order and cycle can create a fresh, higher-version RS. It does not edit or delete the finalized RS; the cancelled record remains as audit history.
+
+Only Admin may perform this recovery, and only when the RS has absolutely no downstream execution or references. The eligibility check must confirm all of the following:
+
+- no Work Order of any status (including cancelled or closed history)
+- no Material Issue or Material Return
+- no Production or QC entry
+- no Dispatch or Sales Bill
+- no Stock Transaction attributable to those documents
+- no Monthly Plan coverage/reference
+- no Material Requirement, Purchase Request, RM Purchase Order, GRN, or other procurement document derived from the RS
+- no other downstream reference to the RS or its lines
+
+The validation evaluates the complete graph and returns every discovered blocker in one business response. Database/schema validation errors fail closed as `VALIDATION_FAILED`; they must never partially cancel the RS or surface as an unhandled Prisma exception.
+
+When eligible, cancellation runs in one database transaction: the RS becomes `CANCELLED`, actor/time/reason are persisted, the activity audit log is written, and the SO/cycle becomes eligible for a fresh RS version. No downstream row is deleted, because eligibility guarantees that none exists. A cancelled RS is history and must not itself prevent creation of the replacement RS.
+
+#### Store Pending Actions after Admin cancellation
+
+For an open NO_QTY SO, active/executable RS resolution ignores every `CANCELLED` row. If the active required cycle has cancelled RS history but no non-cancelled `DRAFT` or `LOCKED` replacement, the canonical Store creation resolver returns `SAME_CYCLE_CANCELLED_REPLACEMENT`.
+
+- Store Pending Actions emits exactly one **Create Requirement Sheet** action.
+- The action deep-links to the NO_QTY RS creation workspace with the same `salesOrderId` and active `cycleId`.
+- Creation uses `max(existing version) + 1`; cancelled versions remain unchanged in history.
+- A replacement `DRAFT` or `LOCKED` RS suppresses the creation action, preventing duplicates.
+- Cancellation never creates or advances to a new cycle. A new cycle is created only by the normal next-cycle lifecycle.
+- Closed SO statuses never emit Create Requirement Sheet.
+
+Sales Order “Next RS Ready” and Store Pending Actions consume the same canonical replacement resolution. They must agree on eligibility, target cycle, and target version.
+
 ---
 
 ### Formulas (exact)
@@ -154,6 +186,9 @@ Export uses **SalesBillLine.qty** (dispatch-derived) only.
 - **Shortfall didn’t appear**
   - QC is not finalized for the relevant produced qty yet (pending QC exists), so shortfall is deferred.
 
+- **Final QC rejection / production shortage recovery (NO_QTY)**
+  - Both create recovery sources. On the next Requirement Sheet they appear as **Pending Recovery** per FG item. Planner must **Keep** (add to RS Qty) or **Waive** (Store or Admin + reason) before lock. Neither type auto-adds. Check detail panel for source RS / Cycle / WO provenance.
+
 - **Dispatch blocked even though stock exists**
   - cycle cap remaining is 0, or the item is not in the current cycle plan, or requirement sheet not locked.
 
@@ -167,8 +202,27 @@ Export uses **SalesBillLine.qty** (dispatch-derived) only.
 
 ### Key implementation touchpoints (for developers)
 - Requirement shortfall + snapshots: `backend/src/routes/requirementSheets.js`
-- Production/QC cycle locks: `backend/src/routes/production.js`
+- Production/QC cycle locks + first-pass terminal SCRAP recovery: `backend/src/routes/production.js`
+- Disposition terminal scrap recovery: `backend/src/routes/qcRejectedDispositions.js` → `appendTerminalQcScrapRecovery`
+- Recovery engine: `backend/src/services/noQtyRecoveryService.js`
 - NO_QTY dispatch caps + validation: `backend/src/routes/dispatch.js`
 - Sales Bill dispatch-only eligibility: `backend/src/services/salesBillService.js` and `backend/src/routes/salesOrders.js` (unbilled summary)
 - Tally export qty source + narration: `backend/src/services/salesBillTallyExportPayload.js`, `backend/src/services/salesBillTallyXml.js`
 
+# QC-accepted surplus carry-forward (2026-07-15)
+
+## Dispatch cap for accepted excess
+
+NO_QTY dispatchable quantity is `min(remaining locked customer/cycle demand, remaining QC-accepted pool, free USABLE FG stock)`. Accepted FG above a completed customer obligation remains in USABLE stock, stays traceable to the SO + FG, and is eligible for the next-cycle accepted-surplus resolver. It is not an optional dispatch, dispatch queue item, closure blocker, or billing obligation. Draft creation and finalization enforce the same cap.
+
+- RS customer demand and WO planned quantity are historical commitments and never change when production exceeds plan.
+- Excess becomes eligible only after final QC acceptance. Pending and rejected quantities contribute zero.
+- Per SO + FG, the canonical resolver reconstructs prior accepted quantity, active locked customer demand, and locked dispatch/consumption. Cancelled versions are excluded; the highest active locked version per cycle wins.
+- Available excess is `min(max(accepted - demand, 0), max(accepted - dispatched, 0))`; current **Net Production Requirement** is:
+
+  `max(Customer Demand + Kept Recovery − allocated Prior Accepted Excess, 0)`
+
+- The UI shows a **single** final executable quantity column: **Net Production Requirement** (not a separate Final RS Qty).
+- Customer Demand edits refresh Net Production Requirement immediately in the draft grid (live allocation preview). Save Draft and Finalize both persist demand and recalculate accepted surplus atomically; Finalize is blocked while the draft is marked dirty.
+- Unused balance rolls through the cumulative formula. Suggested WO and monthly planning consume Net Production Requirement only.
+- Unused excess when demand < available pool is retained for future cycles (example: demand 300, pool 500 → net 0, unused 200).

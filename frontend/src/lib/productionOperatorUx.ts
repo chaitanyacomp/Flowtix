@@ -73,6 +73,7 @@ export function formatProductionOperatorMaxHelper(
   maxAllowedQty: number | null | undefined,
 
   unit?: string | null,
+  labelPrefix = "Max",
 
 ): string | null {
 
@@ -82,7 +83,7 @@ export function formatProductionOperatorMaxHelper(
 
   const u = formatProductionOperatorShortUnit(unit);
 
-  return u ? `Max: ${qty} ${u}` : `Max: ${qty}`;
+  return u ? `${labelPrefix}: ${qty} ${u}` : `${labelPrefix}: ${qty}`;
 
 }
 

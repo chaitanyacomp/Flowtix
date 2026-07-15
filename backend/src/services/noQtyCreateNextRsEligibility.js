@@ -258,6 +258,15 @@ async function computeStoreCreateNextRsPendingEligibility(db, salesOrderId) {
 }
 
 async function computeStoreCreateNextRsPendingEligibilityImpl(db, soId) {
+  const so = await db.salesOrder.findUnique({
+    where: { id: soId },
+    select: { orderType: true, internalStatus: true },
+  });
+  if (!so || so.orderType !== "NO_QTY") return { eligible: false, reason: "NOT_NO_QTY" };
+  if (["COMPLETED", "CLOSED", "MANUALLY_CLOSED", "CLOSED_WITH_WAIVER"].includes(String(so.internalStatus ?? ""))) {
+    return { eligible: false, reason: "SO_CLOSED" };
+  }
+
   const active = await db.salesOrderCycle.findFirst({
     where: { salesOrderId: soId, status: "ACTIVE" },
     orderBy: { cycleNo: "desc" },
@@ -265,8 +274,40 @@ async function computeStoreCreateNextRsPendingEligibilityImpl(db, soId) {
   });
 
   if (active?.id != null) {
+    // Canonical active/executable RS excludes CANCELLED audit history. If the active cycle has
+    // no DRAFT/LOCKED RS, Store owns creation on this same cycle (never prepare a new cycle).
+    const activeSheet = await db.requirementSheet.findFirst({
+      where: {
+        salesOrderId: soId,
+        cycleId: Number(active.id),
+        status: { not: "CANCELLED" },
+      },
+      orderBy: [{ version: "desc" }, { id: "desc" }],
+      select: { id: true, docNo: true, status: true, version: true, updatedAt: true },
+    });
+    if (!activeSheet) {
+      const cancelled = await db.requirementSheet.findFirst({
+        where: { salesOrderId: soId, cycleId: Number(active.id), status: "CANCELLED" },
+        orderBy: [{ version: "desc" }, { id: "desc" }],
+        select: { id: true, version: true, updatedAt: true },
+      });
+      if (cancelled) {
+        return {
+          eligible: true,
+          reason: "OK",
+          targetCycleId: Number(active.id),
+          targetCycleNo: Number(active.cycleNo),
+          targetVersion: Math.max(1, Number(cancelled.version ?? 0) + 1),
+          ageTimestamp: cancelled.updatedAt ?? null,
+          resolution: "SAME_CYCLE_CANCELLED_REPLACEMENT",
+          existingNextRsDocNo: null,
+          existingNextRsId: null,
+        };
+      }
+    }
+
     const sheetOnActive = await db.requirementSheet.findFirst({
-      where: { salesOrderId: soId, cycleId: Number(active.id) },
+      where: { salesOrderId: soId, cycleId: Number(active.id), status: { not: "CANCELLED" } },
       select: { id: true },
     });
     if (!sheetOnActive) {

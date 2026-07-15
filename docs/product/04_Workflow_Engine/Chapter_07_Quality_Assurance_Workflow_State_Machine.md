@@ -256,6 +256,8 @@ Guard order is **top-to-bottom**. First failure stops transition ([FT-PD-041](./
 
 **Rejected qty** on `inspection.reject` does **not** trigger FG post.
 
+**NO_QTY recovery side effect (Phase 2B):** when reject disposition reaches **terminal SCRAP** (first-pass direct scrap, hold→scrap, deny→scrap, rework final scrap), the engine creates/adjusts `CarryForwardPending` with `recoveryType = QC_FINAL_REJECTION` (provenance = disposition). Hold/rework-pending paths do **not** emit recovery. QC reverse of a terminal SCRAP disposition cancels unallocated recovery (or blocks if committed). Allocation onto the next Requirement Sheet uses the unified **Keep/Waive** planner decision shared with Production Shortage.
+
 ---
 
 ### 6.2 QA Batch transitions (engine)

@@ -116,8 +116,8 @@ function assertMaterialWastageSchemaReady(db = prisma) {
   }
 }
 
-async function createMaterialWastageNote(input, actor = {}) {
-  assertMaterialWastageSchemaReady(prisma);
+async function createMaterialWastageNote(input, actor = {}, db = prisma) {
+  assertMaterialWastageSchemaReady(db);
   const workOrderId = Number(input.workOrderId);
   const itemId = Number(input.itemId);
   const qty = round3(n(input.qty));
@@ -134,8 +134,12 @@ async function createMaterialWastageNote(input, actor = {}) {
     throw err;
   }
 
-  try {
-    return await prisma.$transaction(async (tx) => {
+  // Transaction-aware: when a caller supplies a transaction client (a `tx` has no
+  // `$transaction` method) we run inline on it, so the wastage note + RM_WASTAGE
+  // stock posting participate in the caller's atomic boundary instead of escaping
+  // into an independent root-client transaction. Standalone callers (root client)
+  // still get their own transaction.
+  const run = async (tx) => {
     await assertWorkOrderForWastage(tx, workOrderId);
     await assertProductionFromLocation(tx, input.fromLocationId);
 
@@ -252,7 +256,10 @@ async function createMaterialWastageNote(input, actor = {}) {
       createdByName: note.createdBy?.name ?? null,
       fromLocation: mapLocationRow(note.fromLocation),
     };
-    });
+  };
+
+  try {
+    return typeof db.$transaction === "function" ? await db.$transaction(run) : await run(db);
   } catch (e) {
     if (isMaterialWastageSchemaUnavailable(e)) {
       const err = new Error(`RM Wastage is not available on this database. ${MIGRATION_GUIDANCE}`);

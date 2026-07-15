@@ -128,6 +128,10 @@ const {
   finishProductionExecution,
   blockReasonLabel,
 } = require("../services/productionExecutionService");
+const {
+  appendTerminalQcScrapRecovery,
+  cancelUnallocatedRecoverySource,
+} = require("../services/noQtyRecoveryService");
 
 /**
  * NO_QTY only: allow QC on approved batches for the work order's own cycle when that cycle still has a LOCKED RS.
@@ -1109,9 +1113,14 @@ productionRouter.post(
   requireAuth,
   requireRole(["ADMIN", "PRODUCTION"]),
   async (req, res, next) => {
+    const id = Number(req.params.id);
     try {
-      const id = Number(req.params.id);
       const body = confirmProductionReportSchema.parse(req.body ?? {});
+      // Single atomic write boundary. All confirmation effects (report, RM
+      // return-pending, wastage note + RM_WASTAGE stock, audit, execution close,
+      // shortfall/carry-forward, RS draft sync, WO lifecycle reconcile) commit or
+      // roll back together. The heavy read-only report reconstruction is done
+      // AFTER commit (see below) to keep this transaction small.
       const result = await prisma.$transaction(async (tx) => {
         await lockWorkOrderForUpdate(tx, id);
         const confirmed = await approveProductionWorkOrderReport(
@@ -1119,9 +1128,10 @@ productionRouter.post(
           id,
           { remarks: body.remarks, lines: body.lines, wastageDetails: body.wastageDetails },
           { userId: req.user?.userId, role: req.user?.role },
+          { includeReport: false },
         );
-        const orderType = String(confirmed.report?.salesOrderOrderType ?? "").toUpperCase();
-        const executionStatus = String(confirmed.report?.execution?.status ?? "").toUpperCase();
+        const orderType = String(confirmed.salesOrderOrderType ?? "").toUpperCase();
+        const executionStatus = String(confirmed.executionStatus ?? "").toUpperCase();
         const woMeta = await tx.workOrder.findUnique({
           where: { id },
           select: { sourceType: true },
@@ -1129,7 +1139,7 @@ productionRouter.post(
         const isGreenLevel = isGreenLevelReplenishmentWorkOrder(woMeta);
         let executionClose = null;
         if (body.closeWorkOrder && executionStatus !== "COMPLETED" && (orderType === "NO_QTY" || isGreenLevel)) {
-          const remainderQty = Number(confirmed.report?.summary?.remainderQty ?? 0);
+          const remainderQty = Number(confirmed.remainderQty ?? 0);
           executionClose = await finishProductionExecution(
             tx,
             id,
@@ -1142,14 +1152,40 @@ productionRouter.post(
             source: "PRODUCTION_REPORT_EXECUTION_CLOSE",
           });
         }
-        return {
-          ...confirmed,
-          executionClose,
-          requiresShortfallDecision: executionClose ? false : confirmed.requiresShortfallDecision,
-        };
+        return { confirmed, executionClose };
       });
-      return res.status(201).json(result);
+      // Post-commit, read-only response reconstruction on the root client.
+      const report = await buildWorkOrderProductionReport(prisma, id);
+      return res.status(201).json({
+        report,
+        confirmation: result.confirmed.confirmation,
+        returnPendingCount: result.confirmed.returnPendingCount,
+        alreadyConfirmed: false,
+        executionClose: result.executionClose,
+        requiresShortfallDecision: result.executionClose
+          ? false
+          : result.confirmed.requiresShortfallDecision,
+      });
     } catch (e) {
+      // Idempotent retry: if the report is already confirmed (a prior request
+      // committed, possibly with a lost response), return the current
+      // authoritative state as success rather than a conflict. Only this known
+      // state is handled — all other errors propagate unchanged.
+      if (e && e.code === "PRODUCTION_REPORT_ALREADY_CONFIRMED") {
+        try {
+          const report = await buildWorkOrderProductionReport(prisma, id);
+          return res.status(200).json({
+            report,
+            confirmation: report.confirmation,
+            returnPendingCount: 0,
+            alreadyConfirmed: true,
+            executionClose: null,
+            requiresShortfallDecision: false,
+          });
+        } catch (rebuildErr) {
+          return next(rebuildErr);
+        }
+      }
       return next(e);
     }
   },
@@ -2693,7 +2729,7 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QA"]), 
               qtyOut: "0",
             },
           });
-          await tx.qcRejectedDisposition.create({
+          const scrapDisp = await tx.qcRejectedDisposition.create({
             data: {
               sourceQcEntryId: created.id,
               workOrderId: woId,
@@ -2706,6 +2742,29 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QA"]), 
               createdByUserId: req.user.userId,
               closedAt: now,
             },
+          });
+          // Phase 2A: first-pass terminal SCRAP → QC_FINAL_REJECTION recovery (NO_QTY only).
+          const woCtx = prod.workOrderLine?.workOrder;
+          await appendTerminalQcScrapRecovery(tx, {
+            disposition: {
+              ...scrapDisp,
+              salesOrderId: woCtx?.salesOrderId ?? null,
+              cycleId: woCtx?.cycleId ?? null,
+              sourceRequirementSheetId: woCtx?.requirementSheetId ?? null,
+              workOrder: woCtx
+                ? {
+                    id: woCtx.id,
+                    salesOrderId: woCtx.salesOrderId,
+                    cycleId: woCtx.cycleId,
+                    requirementSheetId: woCtx.requirementSheetId ?? null,
+                  }
+                : null,
+            },
+            scrapQty: splitScrap,
+            actorUserId: req.user.userId,
+            remarks: reasonTrim
+              ? `First-pass QC split scrap (disposition #${scrapDisp.id}) — ${reasonTrim}`
+              : `First-pass QC split scrap (disposition #${scrapDisp.id})`,
           });
         }
       } else if (rejectedQty > WO_SO_EPS && rejectedRoute && rejectedRoute !== "USABLE") {
@@ -2812,7 +2871,7 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QA"]), 
             },
           });
         } else if (rejectedRoute === "SCRAP") {
-          await tx.qcRejectedDisposition.create({
+          const scrapDisp = await tx.qcRejectedDisposition.create({
             data: {
               sourceQcEntryId: created.id,
               workOrderId: woId,
@@ -2825,6 +2884,29 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QA"]), 
               createdByUserId: req.user.userId,
               closedAt: new Date(),
             },
+          });
+          // Phase 2A: first-pass terminal SCRAP → QC_FINAL_REJECTION recovery (NO_QTY only).
+          const woCtx = prod.workOrderLine?.workOrder;
+          await appendTerminalQcScrapRecovery(tx, {
+            disposition: {
+              ...scrapDisp,
+              salesOrderId: woCtx?.salesOrderId ?? null,
+              cycleId: woCtx?.cycleId ?? null,
+              sourceRequirementSheetId: woCtx?.requirementSheetId ?? null,
+              workOrder: woCtx
+                ? {
+                    id: woCtx.id,
+                    salesOrderId: woCtx.salesOrderId,
+                    cycleId: woCtx.cycleId,
+                    requirementSheetId: woCtx.requirementSheetId ?? null,
+                  }
+                : null,
+            },
+            scrapQty: rejectedQty,
+            actorUserId: req.user.userId,
+            remarks: body.reason?.trim()
+              ? `First-pass QC scrap (disposition #${scrapDisp.id}) — ${body.reason.trim()}`
+              : `First-pass QC scrap (disposition #${scrapDisp.id})`,
           });
         }
       }
@@ -3433,6 +3515,19 @@ productionRouter.post("/qc-reverse", requireAuth, requireRole(["ADMIN", "QA"]), 
         where: { sourceQcEntryId: qc.id, voidedAt: null },
         data: { voidedAt: now },
       });
+
+      // Phase 2A: cancel unallocated QC_FINAL_REJECTION recovery for terminal SCRAP dispositions.
+      // Does not mutate COMMITTED irreversible allocations (throws RECOVERY_CANCEL_BLOCKED).
+      for (const d of linkedDispositions) {
+        if (String(d.status) !== "SCRAP") continue;
+        await cancelUnallocatedRecoverySource(tx, {
+          recoveryType: "QC_FINAL_REJECTION",
+          sourceDocumentType: "QC_REJECTED_DISPOSITION",
+          sourceDocumentId: d.id,
+          actorUserId: req.user.userId,
+          reason: reasonTrim || `QC entry #${qc.id} reversed`,
+        });
+      }
 
       /** @type {number | null} */
       let acceptedForwardStockId = null;

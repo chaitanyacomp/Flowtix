@@ -29,7 +29,7 @@ function netNoQtyCycleDispatchedByItemId(dispatchRecords, mode) {
   return m;
 }
 
-function getNoQtyCycleDispatchHeadroomForItem(so, cycleId, itemId, qcMap, recheckMap, postCycleMap) {
+function getNoQtyCycleDispatchHeadroomForItem(so, cycleId, itemId, qcMap, recheckMap, postCycleMap, demandByCycleItem) {
   const c = normalizePositiveCycleId(cycleId);
   if (c == null) return 0;
   const qcKey = `${so.id}:${c}:${itemId}`;
@@ -41,7 +41,11 @@ function getNoQtyCycleDispatchHeadroomForItem(so, cycleId, itemId, qcMap, rechec
       DISPATCH_ALLOC_MODE.OPERATIONAL,
     ).get(Number(itemId)) ?? 0,
   );
-  return Math.max(0, qcTotal - net);
+  return computeNoQtyDispatchHeadroom({
+    alreadyOpNet: net,
+    customerDemandQty: demandByCycleItem?.get(`${c}:${itemId}`),
+    qcAcceptedThisCycle: qcTotal,
+  });
 }
 
 function getNoQtyUnlockedDraftQtyForItem(so, itemId) {
@@ -64,9 +68,18 @@ function getNoQtyUnlockedDraftQtyForItemCycle(so, cycleId, itemId) {
     .reduce((s, d) => s + num(d.dispatchedQty), 0);
 }
 
-function getNoQtyCycleDispatchHeadroomForPrepare(so, cycleId, itemId, qcMap, recheckMap, postCycleMap) {
+function getNoQtyCycleDispatchHeadroomForPrepare(so, cycleId, itemId, qcMap, recheckMap, postCycleMap, demandByCycleItem) {
+  const c = normalizePositiveCycleId(cycleId);
+  if (c == null) return 0;
   const replaceable = getNoQtyUnlockedDraftQtyForItemCycle(so, cycleId, itemId);
-  return getNoQtyCycleDispatchHeadroomForItem(so, cycleId, itemId, qcMap, recheckMap, postCycleMap) + replaceable;
+  const net = num(netNoQtyCycleDispatchedByItemId(filterNoQtyDispatchRowsForActiveCycle(so.dispatch, c), DISPATCH_ALLOC_MODE.OPERATIONAL).get(Number(itemId)));
+  const qcKey = `${so.id}:${c}:${itemId}`;
+  const qcTotal = num(qcMap.get(qcKey)) + num(recheckMap.get(qcKey)) + num(postCycleMap.get(qcKey));
+  return computeNoQtyDispatchHeadroom({
+    alreadyOpNet: Math.max(0, net - replaceable),
+    customerDemandQty: demandByCycleItem?.get(`${c}:${itemId}`),
+    qcAcceptedThisCycle: qcTotal,
+  });
 }
 
 /**
@@ -83,20 +96,21 @@ function computeNoQtyFifoPrepareSlicesForItem({
   usableStock,
   unlockedDraftReservedQty,
   replaceableDraftQty,
+  demandByCycleItem,
 }) {
   let rem = num(requestedQty);
   /** @type {Array<{ cycleId: number; cycleNo: number; qty: number }>} */
   const slices = [];
   let cycleHeadroomTotal = 0;
   for (const c of cyclesSorted) {
-    cycleHeadroomTotal += getNoQtyCycleDispatchHeadroomForPrepare(so, c.id, itemId, qcMap, recheckMap, postCycleMap);
+    cycleHeadroomTotal += getNoQtyCycleDispatchHeadroomForPrepare(so, c.id, itemId, qcMap, recheckMap, postCycleMap, demandByCycleItem);
   }
   const freePhysicalUsable = Math.max(0, num(usableStock) - num(unlockedDraftReservedQty) + num(replaceableDraftQty));
   const totalAvailable = Math.min(cycleHeadroomTotal, freePhysicalUsable);
   let physicalRemaining = totalAvailable;
   for (const c of cyclesSorted) {
     if (rem <= REPORT_QUEUE_EPS || physicalRemaining <= REPORT_QUEUE_EPS) break;
-    const headroom = getNoQtyCycleDispatchHeadroomForPrepare(so, c.id, itemId, qcMap, recheckMap, postCycleMap);
+    const headroom = getNoQtyCycleDispatchHeadroomForPrepare(so, c.id, itemId, qcMap, recheckMap, postCycleMap, demandByCycleItem);
     const take = Math.min(rem, headroom, physicalRemaining);
     if (take > REPORT_QUEUE_EPS) {
       slices.push({ cycleId: c.id, cycleNo: num(c.cycleNo), qty: take });
@@ -123,6 +137,7 @@ function assertNoQtyDispatchLockQtyAllowed(
     recheckMap,
     postCycleMap,
     usableStock,
+    demandByCycleItem,
   },
   throwError,
 ) {
@@ -139,6 +154,7 @@ function assertNoQtyDispatchLockQtyAllowed(
     usableStock,
     unlockedDraftReservedQty: unlockedDraftReserved,
     replaceableDraftQty: Math.max(replaceableDraftQty, qty),
+    demandByCycleItem,
   });
   if (fifo.totalAvailable + REPORT_QUEUE_EPS < qty) {
     throw throwError("Dispatch exceeds current usable stock available for this item.", 400);

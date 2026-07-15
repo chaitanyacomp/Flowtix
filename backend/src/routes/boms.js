@@ -6,6 +6,7 @@ const { assertAdminPassword } = require("../services/adminPasswordAuth");
 const { enrichBomWithPlanning } = require("../services/bomWeightPlanning");
 const { allocateDocNo } = require("../services/docNoService");
 const { DocType } = require("../prismaClientPackage");
+const { buildBomDependencySummary } = require("../services/masterDependencyService");
 const {
   BomStatus,
   BomType,
@@ -44,10 +45,8 @@ const bomTypeSchema = z.enum(["STANDARD", "APPROXIMATE", "CUSTOMER_SPECIFIC"]);
 const headerSchema = z.object({
   fgWeight: z.number().positive().optional().nullable(),
   fgWeightUnitId: z.number().int().positive().optional().nullable(),
+  runnerWeight: z.number().min(0).optional().default(0),
   outputQty: z.number().positive().optional().default(1),
-  processLossPercent: z.number().min(0).max(100).optional().default(0),
-  qcLossPercent: z.number().min(0).max(100).optional().default(0),
-  suggestedFgPlanningBufferPercent: z.number().min(0).max(10).optional().nullable(),
   bomType: bomTypeSchema.optional().default("STANDARD"),
   effectiveFrom: z
     .union([z.string(), z.date()])
@@ -65,9 +64,6 @@ const lineSchema = z.object({
   rmItemId: z.number().int(),
   baseQty: z.number().positive(),
   notes: z.string().trim().max(500).optional().nullable(),
-  wastagePercent: z.number().nonnegative().optional(),
-  processLossPercent: z.number().nonnegative().optional(),
-  qcAllowancePercent: z.number().nonnegative().optional(),
 });
 
 function normalizeBomHeaderInput(h) {
@@ -78,13 +74,11 @@ function normalizeBomHeaderInput(h) {
   return {
     fgWeight: fgWeight != null && Number.isFinite(fgWeight) && fgWeight > 0 ? String(fgWeight) : null,
     fgWeightUnitId: fgWeightUnitId != null && Number.isFinite(fgWeightUnitId) ? fgWeightUnitId : null,
+    runnerWeight: String(Math.max(0, Number(h.runnerWeight ?? 0))),
     outputQty: String(Math.max(0.001, Number(h.outputQty ?? 1))),
-    processLossPercent: String(Math.max(0, Math.min(100, Number(h.processLossPercent ?? 0)))),
-    qcLossPercent: String(Math.max(0, Math.min(100, Number(h.qcLossPercent ?? 0)))),
-    suggestedFgPlanningBufferPercent:
-      h.suggestedFgPlanningBufferPercent != null && h.suggestedFgPlanningBufferPercent !== ""
-        ? String(Math.max(0, Math.min(10, Number(h.suggestedFgPlanningBufferPercent))))
-        : null,
+    processLossPercent: "0",
+    qcLossPercent: "0",
+    suggestedFgPlanningBufferPercent: null,
     bomType: h.bomType ?? BomType.STANDARD,
     effectiveFrom,
     remarks: h.remarks ? String(h.remarks).trim() : null,
@@ -92,15 +86,13 @@ function normalizeBomHeaderInput(h) {
 }
 
 function normalizeBomLineInput(l, header) {
-  const processLossPercent = Number(header.processLossPercent ?? 0);
-  const qcAllowancePercent = Number(header.qcLossPercent ?? 0);
   return {
     rmItemId: l.rmItemId,
     baseQty: l.baseQty,
-    processLossPercent,
-    qcAllowancePercent,
+    processLossPercent: 0,
+    qcAllowancePercent: 0,
     notes: l.notes ? String(l.notes).trim() : null,
-    wastagePercent: processLossPercent,
+    wastagePercent: 0,
   };
 }
 
@@ -332,12 +324,7 @@ bomRouter.post("/:id/revise", requireAuth, requireRole(["ADMIN"], BOM_EDIT_FORBI
         fgWeight: source.fgWeight != null ? Number(source.fgWeight) : null,
         fgWeightUnitId: source.fgWeightUnitId,
         outputQty: Number(source.outputQty ?? 1),
-        processLossPercent: Number(source.processLossPercent ?? 0),
-        qcLossPercent: Number(source.qcLossPercent ?? 0),
-        suggestedFgPlanningBufferPercent:
-          source.suggestedFgPlanningBufferPercent != null
-            ? Number(source.suggestedFgPlanningBufferPercent)
-            : null,
+        runnerWeight: Number(source.runnerWeight ?? 0),
         bomType: source.bomType,
         effectiveFrom: source.effectiveFrom,
         remarks: source.remarks,
@@ -424,8 +411,7 @@ bomRouter.post("/:id/approve", requireAuth, requireRole(["ADMIN"], BOM_EDIT_FORB
       fgWeight: existing.fgWeight != null ? Number(existing.fgWeight) : null,
       fgWeightUnitId: existing.fgWeightUnitId,
       outputQty: Number(existing.outputQty ?? 1),
-      processLossPercent: Number(existing.processLossPercent ?? 0),
-      qcLossPercent: Number(existing.qcLossPercent ?? 0),
+      runnerWeight: Number(existing.runnerWeight ?? 0),
       bomType: existing.bomType,
       effectiveFrom: existing.effectiveFrom,
       remarks: existing.remarks,
@@ -489,6 +475,16 @@ bomRouter.post("/:id/deactivate", requireAuth, requireRole(["ADMIN"], BOM_EDIT_F
   }
 });
 
+bomRouter.get("/:id/dependencies", requireAuth, async (req, res, next) => {
+  try {
+    const summary = await buildBomDependencySummary(prisma, Number(req.params.id));
+    if (!summary) return res.status(404).json({ error: "BOM not found" });
+    return res.json(summary);
+  } catch (e) {
+    return next(e);
+  }
+});
+
 bomRouter.delete("/:id", requireAuth, requireRole(["ADMIN"], BOM_DELETE_FORBIDDEN), async (req, res, next) => {
   try {
     const id = Number(req.params.id);
@@ -504,11 +500,18 @@ bomRouter.delete("/:id", requireAuth, requireRole(["ADMIN"], BOM_DELETE_FORBIDDE
       throw err;
     }
 
+    const dependencies = await buildBomDependencySummary(prisma, bom);
+    if (!dependencies.safeToDelete) {
+      return res.status(409).json({
+        error: "BOM_DELETE_BLOCKED",
+        message: BOM_IN_USE_MESSAGE,
+        details: dependencies,
+      });
+    }
+
+    // Approved engineering history requires explicit re-authentication even when unused.
     if (!bomIsDraft(bom)) {
-      const err = new Error(BOM_IN_USE_MESSAGE);
-      err.statusCode = 400;
-      err.code = "BOM_IN_USE";
-      throw err;
+      await assertAdminPassword(prisma, { userId: req.user.userId, password: adminPassword });
     }
 
     await prisma.bom.delete({ where: { id } });

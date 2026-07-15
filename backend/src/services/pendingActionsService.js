@@ -100,7 +100,7 @@ function releaseHandoffQty(v) {
 function formatReleaseHandoffPmrStatus(status) {
   const token = String(status ?? "").trim().toUpperCase();
   if (token === "FULLY_ISSUED") return "Fully issued";
-  if (token === "SHORT_ISSUE_ACCEPTED") return "Short issue accepted";
+  if (token === "SHORT_ISSUE_ACCEPTED") return "Closed – Short Issue Accepted";
   return token.replaceAll("_", " ") || "—";
 }
 
@@ -1363,6 +1363,13 @@ async function fetchStoreAdditionalMonthlyPlanPendingActions(db = prisma) {
     const qty = Number(totals.totalAdditionalRequirementQty) || 0;
     if (!(qty > EPS)) continue;
 
+    // Belt-and-suspenders: Additional Plan PA is procurement-driven.
+    // Preview eligibility already enforces NO_PROCUREMENT_NEED when RM covers;
+    // also skip if totals explicitly say procurement is not required.
+    if (totals.procurementRequired === false) continue;
+    const netRm = Number(totals.netRmShortageQty);
+    if (Number.isFinite(netRm) && !(netRm > EPS)) continue;
+
     const primaryUnit =
       Array.isArray(preview.items) && preview.items.length
         ? String(preview.items.find((item) => item?.hasAdditionalRequirement)?.unit ?? preview.items[0]?.unit ?? "Nos")
@@ -1445,8 +1452,10 @@ async function fetchStoreAdditionalMonthlyPlanPendingActions(db = prisma) {
 }
 
 /**
- * P10-A7D — After Cycle 1 RS lock (no WO yet), Store next step is initial monthly planning for the locked period.
- * Additional Plan creation is period-scoped via {@link fetchStoreAdditionalMonthlyPlanPendingActions}.
+ * After Cycle 1 RS lock (no WO yet): emit initial Monthly Planning when FG shortage
+ * remains (Estimated Net RM / per-FG PROCUREMENT_REQUIRED). Fully stock-covered RS
+ * skips via skipMonthlyPlanning. Mixed RS emits BOTH Monthly Planning (shortage FG)
+ * and Place WO (ready FG) — do not suppress INITIAL when readyToPlaceWo is true.
  */
 async function fetchStoreNoQtyMonthlyPlanningPendingActions(db = prisma) {
   if (!isMonthlyPlanningEnabled()) return [];
@@ -1468,7 +1477,8 @@ async function fetchStoreNoQtyMonthlyPlanningPendingActions(db = prisma) {
     const soId = Number(so.id);
     const rsCycleId = Number(lockedRs.cycleId);
     const placement = await assessNoQtyPlacementStageForCycle(db, { salesOrderId: soId, cycleId: rsCycleId });
-    if (placement?.processStageKey !== "NO_QTY_REQUIREMENT_READY" || placement.readyToPlaceWo) continue;
+    // All FG stock-covered → PROCUREMENT_NOT_REQUIRED; Place WO path only.
+    if (placement?.skipMonthlyPlanning) continue;
 
     const periodKey = String(lockedRs.periodKey ?? "").trim();
     const planningGate = periodKey ? await assessNoQtyMonthlyPlanningGate(db, periodKey) : null;
@@ -1491,6 +1501,11 @@ async function fetchStoreNoQtyMonthlyPlanningPendingActions(db = prisma) {
       href,
       sourceModule: "MONTHLY_PLANNING",
       currentStatus: "MONTHLY_PLANNING_PENDING",
+      metadata: {
+        mixedFgReadiness: Boolean(placement?.readyToPlaceWo && !placement?.skipMonthlyPlanning),
+        readyToPlaceWo: Boolean(placement?.readyToPlaceWo),
+        readinessStatus: placement?.readinessStatus ?? null,
+      },
     });
   }
   return actions;
@@ -1540,8 +1555,10 @@ async function fetchStoreNoQtyCreateNextRsPendingActionsImpl(db = prisma) {
 
     const nextCycleNo =
       ctx.targetCycleNo != null && Number(ctx.targetCycleNo) > 0 ? Number(ctx.targetCycleNo) : null;
-    const label =
-      nextCycleNo != null && nextCycleNo > 0
+    const sameCycleReplacement = ctx.resolution === "SAME_CYCLE_CANCELLED_REPLACEMENT";
+    const label = sameCycleReplacement
+      ? "Create Requirement Sheet"
+      : nextCycleNo != null && nextCycleNo > 0
         ? `Create Cycle ${nextCycleNo} Requirement Sheet`
         : "Create Next Requirement Sheet";
 
@@ -1552,12 +1569,18 @@ async function fetchStoreNoQtyCreateNextRsPendingActionsImpl(db = prisma) {
       documentNo: so.docNo ?? null,
       ownerRole: "STORE",
       ageHours: ageHoursFromTimestamp(ctx.ageTimestamp ?? so.updatedAt),
-      href: buildNoQtyCreateNextRsPlanningHubHref(soId, {
-        nextCycleNo,
-        from: "pending-actions",
-      }),
+      href: sameCycleReplacement
+        ? buildNoQtyRsCreationWorkspaceHref(soId, { cycleId: ctx.targetCycleId, from: "pending-actions" })
+        : buildNoQtyCreateNextRsPlanningHubHref(soId, { nextCycleNo, from: "pending-actions" }),
       sourceModule: "NO_QTY_PLANNING",
       currentStatus: "NEXT_RS_READY",
+      metadata: {
+        salesOrderId: soId,
+        cycleId: ctx.targetCycleId ?? null,
+        cycleNo: nextCycleNo,
+        targetVersion: ctx.targetVersion ?? null,
+        creationResolution: ctx.resolution ?? null,
+      },
     });
   }
   return actions;
@@ -1619,7 +1642,8 @@ async function fetchStoreNoQtyPlaceWoPendingActions(db = prisma, deps = {}) {
     const placement = pick?.assessment ?? null;
     // Shared predicate with Execution Register / Dashboard — do not re-apply monthly
     // planning ADDITIONAL_PLAN_REQUIRED gate here (that blocks partial WO incorrectly).
-    if (!placement || !isNoQtyPlaceWoPendingFromPlacement(placement)) continue;
+    if (!placement || !(Number(placement.rsBalanceQty ?? 0) > EPS)) continue;
+    const placementActionable = isNoQtyPlaceWoPendingFromPlacement(placement);
 
     const placementCycleId =
       pick?.sheet?.cycleId != null && Number(pick.sheet.cycleId) > 0
@@ -1629,7 +1653,7 @@ async function fetchStoreNoQtyPlaceWoPendingActions(db = prisma, deps = {}) {
           : guidedCycleId;
     if (!placementCycleId) continue;
 
-    const actionTitle = resolveNoQtyPlaceWoActionTitle(placement);
+    const actionTitle = placementActionable ? resolveNoQtyPlaceWoActionTitle(placement) : "View Planning Status";
     const ctx = await loadNoQtyPlaceWoPendingContext(db, {
       cycleId: placementCycleId,
       requirementSheetId: placement.requirementSheetId ?? pick?.sheet?.id ?? null,
@@ -1657,7 +1681,9 @@ async function fetchStoreNoQtyPlaceWoPendingActions(db = prisma, deps = {}) {
     const readiness = String(placement.readinessStatus ?? "").toUpperCase();
     const placementStatus = String(placement.placementStatus ?? "").toUpperCase();
     const currentStatus =
-      readiness === "PARTIALLY_READY" || placementStatus === "PARTIALLY_READY"
+      !placementActionable
+        ? "AWAITING_RM"
+        : readiness === "PARTIALLY_READY" || placementStatus === "PARTIALLY_READY"
         ? "PARTIALLY_READY_TO_PLACE_WO"
         : "READY_TO_PLACE_WO";
     const rmCoverage = mapRmCoverage({
@@ -1668,7 +1694,7 @@ async function fetchStoreNoQtyPlaceWoPendingActions(db = prisma, deps = {}) {
 
     actions.push({
       id: `no-qty-place-wo:${soId}:${placementCycleId}`,
-      type: "NO_QTY_WO_PLACEMENT_REQUIRED",
+      type: placementActionable ? "NO_QTY_WO_PLACEMENT_REQUIRED" : "NO_QTY_WO_PLANNING_STATUS",
       priority: PENDING_PRIORITY.MEDIUM,
       action: actionTitle,
       documentNo,
@@ -2222,6 +2248,16 @@ async function getStorePendingActions(ctx) {
     if (a.documentNo) createNextRsDocNos.add(String(a.documentNo));
   }
 
+  const currentCyclePlanningSoIds = new Set(
+    storeNoQtyPlaceWo
+      .map((action) => Number(action?.metadata?.salesOrderId ?? 0))
+      .filter((id) => id > 0),
+  );
+  const filteredCreateRs = storeNoQtyCreateRs.filter((action) => {
+    const match = String(action?.id ?? "").match(/^no-qty-create-next-rs:(\d+)$/);
+    return !match || !currentCyclePlanningSoIds.has(Number(match[1]));
+  });
+
   const filteredRecovery = storeNoQtyRecovery.filter((action) => {
     const recoveryType = String(action.recoveryType || "");
     if (recoveryType !== "PRODUCTION_SHORTFALL" && recoveryType !== "QC_FINAL_REJECTION") {
@@ -2235,7 +2271,7 @@ async function getStorePendingActions(ctx) {
   bucketCounts.noQty =
     storeNoQtyMonthly.length +
     storeAdditionalMonthlyPlan.length +
-    storeNoQtyCreateRs.length +
+    filteredCreateRs.length +
     storeNoQtyPlaceWo.length +
     filteredRecovery.length;
 
@@ -2248,7 +2284,7 @@ async function getStorePendingActions(ctx) {
     ...storeHandoff,
     ...storeNoQtyMonthly,
     ...storeAdditionalMonthlyPlan,
-    ...storeNoQtyCreateRs,
+    ...filteredCreateRs,
     ...storeNoQtyPlaceWo,
     ...storeGreenLevelPlaceWo,
     ...filteredRecovery,

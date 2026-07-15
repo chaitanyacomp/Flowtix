@@ -83,15 +83,33 @@ Requires existing `shared\.env`. Path B: add `--skip-migrate`.
 
 Destructive Admin tools (Reset Transaction Data, Reset NO_QTY Data, MPRS Test Reset, Full Demo Reset) delete transactional rows only (masters preserved on transaction/NO_QTY paths).
 
-NO_QTY recovery cleanup uses a **shared reverse-FK order** (`noQtyRecoveryCleanupService`):
+**Canonical SSOT:** `backend/src/services/cleanup/cleanupRegistry.js`  
+NO_QTY recovery cleanup runs through `noQtyRecoveryCleanupService` using the registry recovery cluster (do not invent local delete sequences).
 
-1. `RecoveryAllocation`
-2. `NoQtySoWaiverLine`
-3. `NoQtySoWaiver`
-4. `CarryForwardPending`
-5. `ProductionShortfallResolution`
+Child-first recovery order (Phase 2B):
+
+1. `NoQtyRsItemRecoveryDecisionLine`
+2. `NoQtyRsItemRecoveryDecision`
+3. `RecoveryAllocation`
+4. `NoQtySoWaiverLine`
+5. `NoQtySoWaiver`
+6. `NoQtyAcceptedFgDisposition`
+7. `CarryForwardPending`
+8. `ProductionShortfallResolution`
 
 Do **not** change Prisma `onDelete: Restrict` to Cascade to “fix” reset. Confirm text gates remain required (`RESET`, `RESET MPRS`, etc.).
+
+**Developer / CI checks**
+
+```bash
+cd backend
+npm run verify:cleanup-dependencies
+npm run test:cleanup
+```
+
+When a migration adds a transactional model or Restrict FK (especially `recoverySourceId`), update the cleanup registry until `verify:cleanup-dependencies` passes.
+
+CLI reset: `npm run reset:transactions` (same path as Settings → Reset Transaction Data).
 
 ## 9. Escalation
 

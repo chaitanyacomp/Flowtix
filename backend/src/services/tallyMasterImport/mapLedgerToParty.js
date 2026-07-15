@@ -1,10 +1,12 @@
-const { strVal } = require("./parseTallyMastersXml");
-
-/** @param {unknown} v */
-function normalizeList(v) {
-  if (v == null) return [];
-  return Array.isArray(v) ? v : [v];
-}
+const { cleanGstinChars, isValidGstinFormat } = require("../gstinNormalize");
+const {
+  strVal,
+  getByLocalTag,
+  getListBlocks,
+  joinAddressList,
+  findFirstTextByTags,
+  masterDisplayName,
+} = require("./tallyXmlListHelpers");
 
 /**
  * Map Tally ledger PARENT to customer (debtor) vs supplier (creditor).
@@ -29,134 +31,234 @@ function classifySundryLedgerParent(parentRaw) {
  * @returns {string}
  */
 function ledgerDisplayName(ledger) {
-  const fromAttr = ledger && ledger["@_NAME"] != null ? String(ledger["@_NAME"]).trim() : "";
-  const fromName = strVal(ledger?.NAME);
-  return fromName || fromAttr;
+  return masterDisplayName(ledger);
 }
 
 /**
- * Best-effort GSTIN from common Tally tags.
+ * Canonical Tally master-import pipeline id — returned on every preview so operators
+ * can confirm the live server loaded this mapper (not a stale Node process).
+ */
+const TALLY_IMPORT_PIPELINE_ID = "tallyXmlListHelpers+mapLedgerToParty/v2-gstin-mailing-contact";
+
+/**
+ * Collect GSTIN candidates (for diagnostics / tests). Prefer valid format via extractGstin.
+ * @param {Record<string, unknown>} ledger
+ * @returns {string[]}
+ */
+function collectGstinCandidates(ledger) {
+  const gstTags = [
+    "GSTIN",
+    "PARTYGSTIN",
+    "GSTREGISTRATIONNUMBER",
+    "GSTREGISTRATIONNO",
+    "GSTNUMBER",
+  ];
+  /** @type {string[]} */
+  const candidates = [];
+  const pushCandidate = (raw) => {
+    const t = String(raw || "")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!t) return;
+    if (!candidates.some((c) => cleanGstinChars(c) === cleanGstinChars(t))) candidates.push(t);
+  };
+
+  for (const listName of ["LEDGSTREGDETAILS", "LEDGSTREGISTRATION", "GSTDETAILS"]) {
+    for (const block of getListBlocks(ledger, listName)) {
+      for (const tag of gstTags) {
+        const g = findFirstTextByTags(block, [tag], 6);
+        if (g) pushCandidate(g);
+      }
+    }
+  }
+  for (const tag of gstTags) {
+    const g = findFirstTextByTags(ledger, [tag], 14);
+    if (g) pushCandidate(g);
+  }
+  return candidates;
+}
+
+/**
+ * GSTIN only — never treat PAN (INCOMETAXNUMBER) as GSTIN.
+ * Prefer LEDGSTREGDETAILS / LEDGSTREGISTRATION list blocks, then deep GSTIN tags.
+ *
  * @param {Record<string, unknown>} ledger
  * @returns {string | null}
  */
 function extractGstin(ledger) {
-  const keys = [
-    "GSTIN",
-    "PARTYGSTIN",
-    "INCOMETAXNUMBER",
-    "VATDEALER",
-    "GSTREGISTRATIONNUMBER",
-    "GSTREGISTRATIONNO",
-    "GSTNUMBER",
-    "GSTREGISTRATION",
-  ];
-
-  /**
-   * Tally Prime nests GSTIN under LEDMAILINGDETAILS / LEDGSTREGISTRATION list blocks — not only ledger top-level.
-   * @param {unknown} node
-   * @param {number} depth
-   */
-  function scan(node, depth) {
-    if (depth > 14 || node == null) return null;
-    if (Array.isArray(node)) {
-      for (const el of node) {
-        const t = scan(el, depth + 1);
-        if (t) return t;
-      }
-      return null;
-    }
-    if (typeof node !== "object") return null;
-    const o = /** @type {Record<string, unknown>} */ (node);
-    for (const k of keys) {
-      const t = strVal(o[k]);
-      if (t) return t;
-    }
-    for (const v of Object.values(o)) {
-      if (v && typeof v === "object") {
-        const t = scan(v, depth + 1);
-        if (t) return t;
-      }
-    }
-    return null;
-  }
-
-  const top = scan(ledger, 0);
-  if (top) return top;
-  return null;
+  const candidates = collectGstinCandidates(ledger);
+  const valid = candidates.find((c) => isValidGstinFormat(c));
+  if (valid) return valid;
+  return candidates[0] || null;
 }
 
 /**
- * Flatten first ADDRESS block if present.
+ * Dev-only diagnostic snapshot for a mapped party ledger (gated by caller).
  * @param {Record<string, unknown>} ledger
- * @returns {{ address: string; stateText: string }}
+ * @param {ReturnType<typeof mapLedgerToParty>} mapped
  */
-function extractAddressAndStateText(ledger) {
+function buildPartyMapDiagnostics(ledger, mapped) {
+  const mailing = extractMailingDetails(ledger);
+  const contact = extractContactPhoneEmail(ledger);
+  return {
+    ledgerName: masterDisplayName(ledger) || mapped?.tallyName || null,
+    gstinCandidates: collectGstinCandidates(ledger),
+    selectedGstin: mapped?.gst ?? null,
+    mailingName: mailing.mailingName || null,
+    rawMailingAddressLines: mailing.address || null,
+    finalMappedAddress: mapped?.address ?? null,
+    contactCandidates: {
+      contactDetailsName: getListBlocks(ledger, "CONTACTDETAILS")
+        .map((b) => strVal(getByLocalTag(b, "NAME")))
+        .filter(Boolean),
+      ledgerContact: strVal(getByLocalTag(ledger, "LEDGERCONTACT")) || null,
+    },
+    selectedContact: mapped?.contact ?? null,
+    phoneCandidates: {
+      contactDetailsPhone: getListBlocks(ledger, "CONTACTDETAILS")
+        .map((b) => strVal(getByLocalTag(b, "PHONENUMBER")) || strVal(getByLocalTag(b, "PHONE")) || strVal(getByLocalTag(b, "MOBILE")))
+        .filter(Boolean),
+      ledgerMobile: strVal(getByLocalTag(ledger, "LEDGERMOBILE")) || null,
+      ledgerPhone: strVal(getByLocalTag(ledger, "LEDGERPHONE")) || null,
+    },
+    selectedPhone: mapped?.phone ?? null,
+    mapperModule: require.resolve("./mapLedgerToParty"),
+    helpersModule: require.resolve("./tallyXmlListHelpers"),
+    pipelineId: TALLY_IMPORT_PIPELINE_ID,
+  };
+}
+
+/**
+ * LEDMAILINGDETAILS (Tally Prime) — mailing name, address lines, state, pin, country.
+ *
+ * @param {Record<string, unknown>} ledger
+ * @returns {{
+ *   mailingName: string;
+ *   address: string;
+ *   stateText: string;
+ *   pincode: string;
+ *   country: string;
+ * }}
+ */
+function extractMailingDetails(ledger) {
+  let mailingName = "";
   let address = "";
   let stateText = "";
+  let pincode = "";
+  let country = "";
 
-  const pick = (obj) => {
-    if (!obj || typeof obj !== "object") return;
-    const a =
-      strVal(obj.ADDRESS) ||
-      strVal(obj.MAILINGNAME) ||
-      strVal(obj.ADDRESSLINE1) ||
-      strVal(obj.STREET) ||
-      strVal(obj.MAILINGADDRESS1);
-    const st =
-      strVal(obj.STATE) ||
-      strVal(obj.STATENAME) ||
-      strVal(obj.LEDSTATENAME) ||
-      strVal(obj.PLACE) ||
-      strVal(obj.PLACEOFTHESUPPLIER);
-    if (a) address = address ? `${address}\n${a}` : a;
-    if (st && !stateText) stateText = st;
-  };
-
-  const addrRoot = ledger?.["ADDRESS.LIST"] || ledger?.ADDRESS_LIST || ledger?.ADDRESS;
-  if (addrRoot) {
-    const blocks = Array.isArray(addrRoot) ? addrRoot : [addrRoot];
-    for (const b of blocks) {
-      const inner = b?.ADDRESS || b;
-      if (Array.isArray(inner)) inner.forEach(pick);
-      else pick(inner || b);
+  const blocks = getListBlocks(ledger, "LEDMAILINGDETAILS");
+  for (const block of blocks) {
+    if (!mailingName) {
+      mailingName = strVal(getByLocalTag(block, "MAILINGNAME")) || "";
+    }
+    if (!address) {
+      address = joinAddressList(block);
+    }
+    if (!stateText) {
+      stateText =
+        strVal(getByLocalTag(block, "STATE")) ||
+        strVal(getByLocalTag(block, "STATENAME")) ||
+        strVal(getByLocalTag(block, "PLACEOFSUPPLY")) ||
+        "";
+    }
+    if (!pincode) {
+      pincode = strVal(getByLocalTag(block, "PINCODE")) || strVal(getByLocalTag(block, "PINCODEMAILING")) || "";
+    }
+    if (!country) {
+      country = strVal(getByLocalTag(block, "COUNTRY")) || strVal(getByLocalTag(block, "COUNTRYOFRESIDENCE")) || "";
     }
   }
 
-  /** Tally party masters often carry state only under LEDMAILINGDETAILS.LIST → LEDMAILINGDETAILS. */
-  const mailRoot = ledger?.["LEDMAILINGDETAILS.LIST"] || ledger?.LEDMAILINGDETAILS_LIST || ledger?.LEDMAILINGDETAILS;
-  const mailInner = mailRoot && typeof mailRoot === "object" ? mailRoot.LEDMAILINGDETAILS || mailRoot : null;
-  for (const block of normalizeList(mailInner)) {
-    pick(block);
+  // Legacy / alternate top-level ADDRESS.LIST
+  if (!address) {
+    address = joinAddressList(ledger);
   }
-
-  const pin = strVal(ledger?.PINCODE) || strVal(ledger?.PINCODEMAILING);
-  if (pin) address = address ? `${address}\nPIN: ${pin}` : `PIN: ${pin}`;
-
   if (!stateText) {
     stateText =
-      strVal(ledger?.STATE) ||
-      strVal(ledger?.STATENAME) ||
-      strVal(ledger?.LEDSTATENAME) ||
-      strVal(ledger?.STATENAMEMAILING);
+      strVal(getByLocalTag(ledger, "STATE")) ||
+      strVal(getByLocalTag(ledger, "STATENAME")) ||
+      strVal(getByLocalTag(ledger, "LEDSTATENAME")) ||
+      strVal(getByLocalTag(ledger, "PRIORSTATENAME")) ||
+      "";
+  }
+  if (!pincode) {
+    pincode = strVal(getByLocalTag(ledger, "PINCODE")) || "";
+  }
+  if (!country) {
+    country =
+      strVal(getByLocalTag(ledger, "COUNTRY")) ||
+      strVal(getByLocalTag(ledger, "COUNTRYOFRESIDENCE")) ||
+      "";
   }
 
-  return { address: address.trim(), stateText: stateText.trim() };
+  return {
+    mailingName: mailingName.trim(),
+    address: address.trim(),
+    stateText: stateText.trim(),
+    pincode: pincode.trim(),
+    country: country.trim(),
+  };
 }
 
 /**
+ * Contact person + phone from CONTACTDETAILS.LIST with LEDGER* fallbacks.
+ *
  * @param {Record<string, unknown>} ledger
- * @returns {{ contact: string; email: string }}
+ * @returns {{ contact: string; phone: string; email: string }}
  */
-function extractContactEmail(ledger) {
-  const contact =
-    strVal(ledger?.MOBILE) ||
-    strVal(ledger?.PHONENUMBER) ||
-    strVal(ledger?.PHONE) ||
-    strVal(ledger?.CONTACT) ||
-    strVal(ledger?.CONTACTNUMBER) ||
+function extractContactPhoneEmail(ledger) {
+  let contact = "";
+  let phone = "";
+
+  for (const block of getListBlocks(ledger, "CONTACTDETAILS")) {
+    if (!contact) {
+      contact = strVal(getByLocalTag(block, "NAME")) || "";
+    }
+    if (!phone) {
+      phone =
+        strVal(getByLocalTag(block, "PHONENUMBER")) ||
+        strVal(getByLocalTag(block, "PHONE")) ||
+        strVal(getByLocalTag(block, "MOBILE")) ||
+        "";
+    }
+  }
+
+  if (!contact) {
+    contact =
+      strVal(getByLocalTag(ledger, "LEDGERCONTACT")) ||
+      strVal(getByLocalTag(ledger, "CONTACT")) ||
+      "";
+  }
+  if (!phone) {
+    phone =
+      strVal(getByLocalTag(ledger, "LEDGERMOBILE")) ||
+      strVal(getByLocalTag(ledger, "LEDGERPHONE")) ||
+      strVal(getByLocalTag(ledger, "MOBILE")) ||
+      strVal(getByLocalTag(ledger, "PHONENUMBER")) ||
+      strVal(getByLocalTag(ledger, "PHONE")) ||
+      "";
+  }
+
+  const email =
+    strVal(getByLocalTag(ledger, "EMAIL")) ||
+    strVal(getByLocalTag(ledger, "EMAILID")) ||
+    findFirstTextByTags(ledger, ["EMAIL", "EMAILID"], 8) ||
     "";
-  const email = strVal(ledger?.EMAIL) || strVal(ledger?.EMAILID) || strVal(ledger?.INCOMETAXMAILING) || "";
-  return { contact, email };
+
+  return { contact: contact.trim(), phone: phone.trim(), email: email.trim() };
+}
+
+/**
+ * Compose registered office address text for ERP (no dedicated pincode/country columns).
+ * @param {{ address: string; pincode: string; country: string }} m
+ */
+function composeRegisteredOfficeAddress(m) {
+  const parts = [];
+  if (m.address) parts.push(m.address);
+  if (m.pincode) parts.push(m.pincode);
+  if (m.country) parts.push(m.country);
+  return parts.join("\n").trim();
 }
 
 /**
@@ -171,7 +273,10 @@ function extractContactEmail(ledger) {
  *   gst: string | null;
  *   address: string | null;
  *   stateText: string | null;
+ *   pincode: string | null;
+ *   country: string | null;
  *   contact: string | null;
+ *   phone: string | null;
  *   email: string | null;
  * }}
  */
@@ -186,18 +291,23 @@ function mapLedgerToParty(ledgerRaw, kind) {
   const tallyName = ledgerDisplayName(ledger);
   if (!tallyName) return null;
 
-  const { address, stateText } = extractAddressAndStateText(ledger);
-  const { contact, email } = extractContactEmail(ledger);
+  const mailing = extractMailingDetails(ledger);
+  const { contact, phone, email } = extractContactPhoneEmail(ledger);
   const gstRaw = extractGstin(ledger);
+  const name = mailing.mailingName || tallyName;
+  const address = composeRegisteredOfficeAddress(mailing) || null;
 
   return {
     tallyName,
     parentGroup,
-    name: tallyName,
+    name,
     gst: gstRaw || null,
-    address: address || null,
-    stateText: stateText || null,
+    address,
+    stateText: mailing.stateText || null,
+    pincode: mailing.pincode || null,
+    country: mailing.country || null,
     contact: contact || null,
+    phone: phone || null,
     email: email || null,
   };
 }
@@ -207,4 +317,10 @@ module.exports = {
   mapLedgerToParty,
   ledgerDisplayName,
   extractGstin,
+  collectGstinCandidates,
+  extractMailingDetails,
+  extractContactPhoneEmail,
+  composeRegisteredOfficeAddress,
+  buildPartyMapDiagnostics,
+  TALLY_IMPORT_PIPELINE_ID,
 };

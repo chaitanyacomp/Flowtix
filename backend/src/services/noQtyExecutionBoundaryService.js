@@ -1,10 +1,15 @@
 /**
  * P8F — NO_QTY execution visibility boundary.
- * Planning ends at Monthly Plan Release; execution (WO/PMR/RM CC/Issue) starts at Release.
+ *
+ * Period release remains required for shortage-driven FG items (procurement path).
+ * Stock-ready FG items (READY_FOR_WO / partial executable from free usable RM) may
+ * create and execute Work Orders without waiting for Monthly Plan release — FG-level gate.
  */
 
 const { normalizePositiveCycleId } = require("../utils/cycleIds");
 const { GREEN_LEVEL_WO_SOURCE_TYPE } = require("./greenLevelWorkOrderService");
+
+const EPS = 1e-6;
 
 const NO_QTY_EXECUTION_NOT_RELEASED_MESSAGE =
   "Monthly Production Plan must be released to procurement before NO_QTY execution can proceed for this cycle.";
@@ -97,24 +102,21 @@ async function resolvePeriodKeysByWorkOrderId(db, workOrders) {
 }
 
 /**
+ * Existing Work Orders are execution-visible once created.
+ * Create-time gate enforces FG-level stock readiness vs period release; do not
+ * hide stock-ready WOs that were legitimately created before period release.
+ *
  * @param {import("@prisma/client").Prisma.TransactionClient | typeof prisma} db
  * @param {Array<{ id: number, salesOrder?: { orderType?: string } | null, salesOrderId?: number, cycleId?: number | null, requirementSheetId?: number | null }>} workOrders
  */
 async function filterNoQtyExecutionReleasedWorkOrders(db, workOrders) {
   const list = workOrders || [];
   if (!list.length) return [];
-
-  const noQty = list.filter((wo) => isNoQtyOrderType(wo.salesOrder?.orderType));
-  if (!noQty.length) return list;
-
-  const periodByWoId = await resolvePeriodKeysByWorkOrderId(db, list);
-  const released = await loadReleasedPeriodKeySet(db, [...periodByWoId.values()].filter(Boolean));
-
-  return list.filter((wo) => {
-    if (!isNoQtyOrderType(wo.salesOrder?.orderType)) return true;
-    const pk = periodByWoId.get(wo.id);
-    return Boolean(pk && released.has(pk));
-  });
+  // Preserve REGULAR / non-NO_QTY rows and all NO_QTY WOs that already exist.
+  // Period-release filtering previously blocked stock-ready FG WOs created
+  // before Monthly Plan release (incorrect whole-RS gate).
+  void db;
+  return list;
 }
 
 /**
@@ -140,19 +142,14 @@ async function assertNoQtyWorkOrderExecutionReleased(db, workOrderId, messagePre
   }
   if (!isNoQtyOrderType(wo.salesOrder?.orderType)) return wo;
 
-  const periodByWoId = await resolvePeriodKeysByWorkOrderId(db, [wo]);
-  const pk = periodByWoId.get(wo.id);
-  if (!pk || !(await isPeriodReleasedForExecution(db, pk))) {
-    const err = new Error(`${messagePrefix}: ${NO_QTY_EXECUTION_NOT_RELEASED_MESSAGE}`);
-    err.statusCode = 409;
-    err.code = "NO_QTY_EXECUTION_NOT_RELEASED";
-    throw err;
-  }
+  // Create-time FG-level gate is authoritative. Once a WO exists (including
+  // stock-ready FG before period release), Material Issue / QC / production may proceed.
+  void messagePrefix;
   return wo;
 }
 
 /**
- * NO_QTY production entry: locked RS on WO cycle + monthly plan release for execution.
+ * NO_QTY production entry: locked RS on WO cycle + allowed execution context.
  * Does not check SO closed or WO operational status (gate steps 2–3).
  *
  * @param {import("@prisma/client").Prisma.TransactionClient | typeof prisma} db
@@ -205,18 +202,100 @@ async function assertNoQtyWorkOrderProductionCycleContext(db, workOrderId, messa
 }
 
 /**
+ * Allow WO create when period is released, OR when every requested (or fully suggested)
+ * FG line is covered by authoritative placement executable qty from free stock
+ * (FG-level READY_FOR_WO / PARTIALLY_READY). Shortage FG remain blocked until release
+ * (or until stock becomes available).
+ *
  * @param {import("@prisma/client").Prisma.TransactionClient | typeof prisma} db
- * @param {{ periodKey?: string | null, salesOrder?: { orderType?: string } | null }} sheet
+ * @param {{ id?: number, periodKey?: string | null, salesOrder?: { orderType?: string } | null, lines?: Array<any> }} sheet
+ * @param {{ requestedLines?: Array<{ itemId?: number, fgItemId?: number, qty?: number }>, deps?: object }} [options]
  */
-async function assertNoQtyRequirementSheetPeriodReleased(db, sheet) {
+async function assertNoQtyRequirementSheetPeriodReleased(db, sheet, options = {}) {
   if (!isNoQtyOrderType(sheet.salesOrder?.orderType)) return;
   const pk = String(sheet.periodKey ?? "").trim();
-  if (!pk || !(await isPeriodReleasedForExecution(db, pk))) {
+  if (pk && (await isPeriodReleasedForExecution(db, pk))) return;
+
+  const { assessNoQtyBatchPlacement } = require("./noQtyBatchPlacementEngine");
+  const assessPlacement = options.deps?.assessNoQtyBatchPlacement || assessNoQtyBatchPlacement;
+
+  const linkedWorkOrders =
+    sheet.id != null && typeof db.workOrder?.findMany === "function"
+      ? await db.workOrder.findMany({
+          where: { requirementSheetId: sheet.id },
+          select: {
+            id: true,
+            status: true,
+            lines: { select: { fgItemId: true, qty: true, plannedQty: true } },
+          },
+        })
+      : [];
+
+  const placedByItem = new Map();
+  for (const wo of linkedWorkOrders) {
+    if (String(wo.status ?? "").toUpperCase() === "CANCELLED") continue;
+    for (const ln of wo.lines ?? []) {
+      const fgItemId = Number(ln.fgItemId);
+      if (!(fgItemId > 0)) continue;
+      const qty = Number(ln.plannedQty ?? ln.qty ?? 0);
+      placedByItem.set(fgItemId, (placedByItem.get(fgItemId) ?? 0) + (Number.isFinite(qty) ? qty : 0));
+    }
+  }
+
+  const assessment = await assessPlacement(db, sheet, { placedByItem, ...(options.deps || {}) });
+  const balanceLines = (assessment.balanceLines ?? assessment.placement?.lines ?? []).filter(
+    (line) => Number(line.rsBalanceQty ?? 0) > EPS,
+  );
+  const placementByItem = new Map(
+    (assessment.placement?.lines ?? balanceLines).map((line) => [Number(line.itemId), line]),
+  );
+
+  let requested = Array.isArray(options.requestedLines) ? options.requestedLines : null;
+  if (!requested || !requested.length) {
+    requested = [...placementByItem.values()]
+      .filter((line) => Number(line.suggestedExecutableQty ?? line.executableQty ?? 0) > EPS)
+      .map((line) => ({
+        itemId: line.itemId,
+        qty: Number(line.suggestedExecutableQty ?? line.executableQty ?? 0),
+      }));
+  }
+
+  const positive = (requested || []).filter((ln) => Number(ln.qty) > EPS);
+  if (!positive.length) {
     const err = new Error(
-      `Work orders for this requirement sheet cannot be created until the Monthly Production Plan for ${pk} is released to procurement.`,
+      pk
+        ? `Work orders for this requirement sheet cannot be created until RM is available for at least one FG item, or the Monthly Production Plan for ${pk} is released to procurement.`
+        : "Work orders for this requirement sheet cannot be created until RM is available for at least one FG item, or Monthly Planning is released.",
     );
     err.statusCode = 409;
     err.code = "NO_QTY_EXECUTION_NOT_RELEASED";
+    throw err;
+  }
+
+  const blocked = [];
+  for (const req of positive) {
+    const itemId = Number(req.itemId ?? req.fgItemId);
+    const qty = Number(req.qty);
+    const line = placementByItem.get(itemId);
+    const executable = Number(line?.suggestedExecutableQty ?? line?.executableQty ?? 0);
+    if (!line || !(executable > EPS) || qty > executable + EPS) {
+      blocked.push({
+        itemId,
+        itemName: line?.itemName ?? `Item ${itemId}`,
+        requestedQty: qty,
+        executableQty: executable,
+      });
+    }
+  }
+
+  if (blocked.length) {
+    const names = blocked.map((b) => b.itemName).join(", ");
+    const err = new Error(
+      `Work Order creation is blocked for FG item(s) with unresolved RM shortage (${names}). RM-ready items may still place WO. Shortage items require Monthly Plan release or additional usable RM.`,
+    );
+    err.statusCode = 409;
+    err.code = "NO_QTY_FG_PROCUREMENT_REQUIRED";
+    err.details = { blockedFgItems: blocked, periodKey: pk || null };
     throw err;
   }
 }

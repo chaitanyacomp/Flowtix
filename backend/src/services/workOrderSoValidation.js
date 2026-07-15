@@ -31,6 +31,7 @@ const {
   getSoItemDispatchableReadyQty,
   getSoItemQcApprovedRemainingQty,
 } = require("./reportMetrics");
+const { resolveNoQtyWoExecutableQty } = require("./noQtyWoQtyService");
 
 const EPS = 1e-6;
 
@@ -277,11 +278,11 @@ async function loadWorkOrderQuantityContext(db, salesOrderId, excludeWorkOrderId
           const itemId = Number(ln.itemId);
           if (!Number.isFinite(itemId) || itemId <= 0) continue;
           const snap = n(ln.suggestedWoQtySnapshot ?? 0);
-          const reqL = n(ln.requirementQty ?? 0);
+          const executable = resolveNoQtyWoExecutableQty(ln);
           const sf =
             ln.shortfallQtySnapshot == null || ln.shortfallQtySnapshot === undefined ? 0 : n(ln.shortfallQtySnapshot);
           noQtyRsSuggestedSnapshotByItem.set(itemId, (noQtyRsSuggestedSnapshotByItem.get(itemId) || 0) + snap);
-          noQtyRsRequirementQtyByItem.set(itemId, (noQtyRsRequirementQtyByItem.get(itemId) || 0) + reqL);
+          noQtyRsRequirementQtyByItem.set(itemId, (noQtyRsRequirementQtyByItem.get(itemId) || 0) + executable);
           noQtyRsShortfallSnapshotByItem.set(itemId, (noQtyRsShortfallSnapshotByItem.get(itemId) || 0) + sf);
           fgOrderQtyByItem.set(itemId, (fgOrderQtyByItem.get(itemId) || 0) + snap);
         }
@@ -496,14 +497,15 @@ async function assertWorkOrderLinesAgainstSalesOrder(tx, { salesOrderId, lineReq
       throw err;
     }
 
-    /** NO_QTY: cumulative headroom from RS Total to Produce, capped per cycle by requirementQty. */
+    /**
+     * NO_QTY: headroom from locked Final RS Qty (suggestedWoQtySnapshot = totalRsQty after Keep).
+     * Do not clamp to requirementQty — that field is customer demand / baseDemandQty only.
+     */
     let allowed;
     if (so.orderType === "NO_QTY") {
       const snap = ctx.noQtyRsSuggestedSnapshotByItem?.get(itemId) ?? 0;
       const woPlanned = ctx.allocatedByItem.get(itemId) || 0;
-      const cumulativeHeadroom = Math.max(0, snap - woPlanned);
-      const cycleExecutableCeiling = ctx.noQtyRsRequirementQtyByItem?.get(itemId) ?? 0;
-      allowed = Math.min(cumulativeHeadroom, cycleExecutableCeiling);
+      allowed = Math.max(0, snap - woPlanned);
     } else {
       allowed = remainingOpenQtyForItem(ctx, itemId);
     }

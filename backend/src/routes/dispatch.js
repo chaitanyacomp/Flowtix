@@ -91,6 +91,10 @@ const {
   resolveFgDispatchSourceLocationId,
   resolveStockTxnReversalLocationId,
 } = require("../services/fgStockPostingLocationService");
+const {
+  resolveDeliveryLocationForDispatch,
+  listActiveDeliveryLocationsForCustomer,
+} = require("../services/dispatchDeliveryLocation");
 
 const dispatchRouter = express.Router();
 
@@ -103,6 +107,27 @@ function friendlyNoQtyDispatchError(message, statusCode = 409) {
 function num(v) {
   const x = typeof v === "number" ? v : Number(v);
   return Number.isFinite(x) ? x : 0;
+}
+
+async function loadNoQtyLockedDemandByCycleItem(db, salesOrderId, cycleIds) {
+  const ids = [...new Set((cycleIds || []).map(Number).filter((id) => id > 0))];
+  if (!ids.length) return new Map();
+  const sheets = await db.requirementSheet.findMany({
+    where: { salesOrderId, cycleId: { in: ids }, status: "LOCKED" },
+    orderBy: [{ cycleId: "asc" }, { version: "desc" }, { id: "desc" }],
+    select: { cycleId: true, lines: { select: { itemId: true, requirementQty: true, baseDemandQty: true, totalRsQty: true } } },
+  });
+  const seen = new Set();
+  const out = new Map();
+  for (const sheet of sheets) {
+    const cycleId = Number(sheet.cycleId);
+    if (seen.has(cycleId)) continue;
+    seen.add(cycleId);
+    for (const line of sheet.lines || []) {
+      out.set(`${cycleId}:${line.itemId}`, Math.max(0, num(line.totalRsQty ?? line.baseDemandQty ?? line.requirementQty)));
+    }
+  }
+  return out;
 }
 
 /**
@@ -724,12 +749,6 @@ function buildNoQtyLineStats({
     const recheckAcceptedThisCycle = num(cycleRecheckAcceptedMap?.get(qcKey) ?? 0);
     const postCycleApprovalThisCycle = num(postCycleApprovalMap?.get(qcKey) ?? 0);
     const usableStock = num(onHandByItemId?.get(Number(itemId)) ?? 0);
-    const dispatchable = computeNoQtyDispatchHeadroom({
-      alreadyOpNet: dispatched,
-      qcAcceptedThisCycle,
-      recheckAcceptedThisCycle,
-      postCycleApprovalQty: postCycleApprovalThisCycle,
-    });
     const qcPoolGross = qcAcceptedThisCycle + recheckAcceptedThisCycle + postCycleApprovalThisCycle;
     // Cap QC-backed headroom by physical free USABLE stock.
     // Without this cap, cycle attribution mismatches (rework credited to one cycle, dispatch consumed under another)
@@ -738,7 +757,15 @@ function buildNoQtyLineStats({
       .filter((d) => d.reversalOfId == null && d.workflowStatus === "UNLOCKED" && Number(d.itemId) === Number(itemId))
       .reduce((s, d) => s + num(d.dispatchedQty), 0);
     const freePhysicalUsable = Math.max(0, num(usableStock) - num(unlockedDraftAllCyclesForItem));
-    const dispatchableCapped = Math.min(num(dispatchable), freePhysicalUsable);
+    const dispatchable = computeNoQtyDispatchHeadroom({
+      alreadyOpNet: dispatched,
+      customerDemandQty: cycleCap,
+      qcAcceptedThisCycle,
+      recheckAcceptedThisCycle,
+      postCycleApprovalQty: postCycleApprovalThisCycle,
+      availableFgStock: freePhysicalUsable,
+    });
+    const dispatchableCapped = num(dispatchable);
     /** Dispatchable amount for UI: min(QC headroom, free physical USABLE). */
     const cycleDispatchHeadroom = dispatchableCapped;
 
@@ -746,10 +773,9 @@ function buildNoQtyLineStats({
       capObj?.itemName ??
       (salesOrderLines || []).find((l) => Number(l.itemId) === Number(itemId))?.item?.itemName ??
       `Item #${itemId}`;
-    const soRemainingDemandQty = cycleDispatchHeadroom;
+    const soRemainingDemandQty = Math.max(0, cycleCap - dispatched);
     const lastShortageQty = 0;
-    // NO_QTY: dispatch is optional. Do not treat QC-backed availability as customer backlog/pending dispatch.
-    const logicalPending = 0;
+    const logicalPending = soRemainingDemandQty;
     const draftPreparedQty = (cycleDispatchRecords || [])
       .filter((d) => d.reversalOfId == null && d.workflowStatus === "UNLOCKED" && Number(d.itemId) === Number(itemId))
       .reduce((s, d) => s + num(d.dispatchedQty), 0);
@@ -783,7 +809,7 @@ function buildNoQtyLineStats({
       isFree: false,
       dispatched: dispatched,
       dispatchPendingLock: draftPreparedQty,
-      remaining: cycleDispatchHeadroom,
+      remaining: soRemainingDemandQty,
       pendingDispatchQty: logicalPending,
       onHand: usableStock,
       totalStock: usableStock,
@@ -796,6 +822,13 @@ function buildNoQtyLineStats({
       inQcReworkQty: 0,
       dispatchable: dispatchableCapped,
       dispatchableQty: dispatchableCapped,
+      excessAcceptedFgQty: Math.max(0, Math.min(freePhysicalUsable, qcPoolGross - dispatched) - dispatchableCapped),
+      excessAcceptedFgNote:
+        soRemainingDemandQty <= REPORT_QUEUE_EPS && freePhysicalUsable > REPORT_QUEUE_EPS
+          ? `${freePhysicalUsable.toLocaleString("en-US", { maximumFractionDigits: 3 })} ${
+              (salesOrderLines || []).find((l) => Number(l.itemId) === Number(itemId))?.item?.unit || "qty"
+            } excess accepted FG will remain in stock and may be applied to the next cycle.`
+          : null,
       cycleCap,
       cycleDispatchedQty: dispatched,
       cycleCapRemaining: cycleDispatchHeadroom,
@@ -811,7 +844,7 @@ function buildNoQtyLineStats({
       quantityContexts: {
         cycleCap: { qty: cycleCap, metricContext: "NO_QTY_CYCLE_CAP" },
         cycleRemaining: { qty: cycleDispatchHeadroom, metricContext: "NO_QTY_CYCLE_REMAINING" },
-        usableStock: { qty: 0, metricContext: "NO_QTY_USABLE_STOCK" },
+        usableStock: { qty: usableStock, metricContext: "NO_QTY_USABLE_STOCK" },
         dispatchableQty: { qty: dispatchableCapped, metricContext: "NO_QTY_DISPATCHABLE_QC" },
       },
     });
@@ -1724,6 +1757,9 @@ dispatchRouter.get("/sales-orders", requireAuth, requireRole(DISPATCH_READ_ROLES
           return false;
         }
         if (so.orderType === "NO_QTY") {
+          // A focused workspace request keeps its zero-dispatchable context for informational
+          // SO balance / usable excess rendering. Unscoped queue requests still omit it.
+          if (Number.isFinite(noQtySoIdQ) && noQtySoIdQ > 0 && Number(so.id) === noQtySoIdQ) return true;
           return (so.lineStats || []).some((l) => isDispatchOpenListLineCandidate(l, so.orderType));
         }
         return (so.lineStats || []).length > 0;
@@ -2287,6 +2323,42 @@ dispatchRouter.get("/ledger", requireAuth, requireRole(DISPATCH_READ_ROLES), asy
 });
 
 /**
+ * GET /api/dispatch/delivery-locations?soId=
+ * Active Customer Delivery Locations for the SO's customer (Dispatch dropdown).
+ */
+dispatchRouter.get("/delivery-locations", requireAuth, requireRole(DISPATCH_READ_ROLES), async (req, res, next) => {
+  try {
+    const soId = Number(req.query.soId);
+    if (!Number.isFinite(soId) || soId <= 0) {
+      const err = new Error("Valid soId is required.");
+      err.statusCode = 400;
+      throw err;
+    }
+    const so = await prisma.salesOrder.findUnique({
+      where: { id: soId },
+      select: { id: true, customerId: true, po: { select: { customerId: true } } },
+    });
+    if (!so) {
+      const err = new Error("Sales order not found.");
+      err.statusCode = 404;
+      throw err;
+    }
+    const customerId = so.customerId ?? so.po?.customerId ?? null;
+    if (!customerId) {
+      return res.json({ customerId: null, deliveryLocations: [] });
+    }
+    const deliveryLocations = await listActiveDeliveryLocationsForCustomer(prisma, customerId);
+    return res.json({
+      customerId,
+      deliveryLocations,
+      defaultDeliveryLocationId: deliveryLocations.find((l) => l.isDefault)?.id ?? deliveryLocations[0]?.id ?? null,
+    });
+  } catch (e) {
+    return next(e);
+  }
+});
+
+/**
  * GET /api/dispatch/dispatches/:id
  * Fetch a single dispatch row (draft or locked) with enough context to reopen a prepared draft by id.
  */
@@ -2338,6 +2410,18 @@ dispatchRouter.get("/dispatches/:id", requireAuth, requireRole(DISPATCH_READ_ROL
       cycleId: d.cycleId ?? null,
       qty: String(d.dispatchedQty),
       salesOrderLineId: line?.id ?? null,
+      deliveryLocationId: d.deliveryLocationId ?? null,
+      deliveryLocationLabelSnapshot: d.deliveryLocationLabelSnapshot ?? null,
+      deliveryAddressSnapshot: d.deliveryAddressSnapshot ?? null,
+      deliveryCitySnapshot: d.deliveryCitySnapshot ?? null,
+      deliveryStateNameSnapshot: d.deliveryStateNameSnapshot ?? null,
+      deliveryStateCodeSnapshot: d.deliveryStateCodeSnapshot ?? null,
+      deliveryPincodeSnapshot: d.deliveryPincodeSnapshot ?? null,
+      deliveryCountrySnapshot: d.deliveryCountrySnapshot ?? null,
+      deliveryGstinSnapshot: d.deliveryGstinSnapshot ?? null,
+      deliveryContactPersonSnapshot: d.deliveryContactPersonSnapshot ?? null,
+      deliveryPhoneSnapshot: d.deliveryPhoneSnapshot ?? null,
+      deliveryEmailSnapshot: d.deliveryEmailSnapshot ?? null,
     });
   } catch (e) {
     return next(e);
@@ -2467,6 +2551,7 @@ dispatchRouter.post(
         select: { id: true, cycleNo: true },
       });
       const allCycleInputs = allCycles.map((c) => ({ id: so.id, currentCycleId: c.id }));
+      const demandByCycleItem = await loadNoQtyLockedDemandByCycleItem(prisma, so.id, allCycles.map((c) => c.id));
       const [qcMapAll, recheckMapAll, postCycleMapAll, batchPendingForSo] = await Promise.all([
         loadNoQtyCycleQcAcceptedMap(prisma, allCycleInputs),
         loadNoQtyDispositionUsableForDispatchPoolMap(prisma, allCycleInputs),
@@ -2495,6 +2580,7 @@ dispatchRouter.post(
         usableStock,
         unlockedDraftReservedQty,
         replaceableDraftQty: unlockedDraftReservedQty,
+        demandByCycleItem,
       });
       const first = fifo.slices[0] ?? null;
       let gateBlockedReason = null;
@@ -2528,6 +2614,8 @@ dispatchRouter.post("/dispatches", requireAuth, requireRole(DISPATCH_WRITE_ROLES
       cycleId: z.number().int().positive().optional(),
       /** NO_QTY: allocate requested qty FIFO across all cycles (oldest first); creates/updates one draft per cycle slice. */
       autoAllocateAcrossCycles: z.boolean().optional(),
+      /** Customer Delivery Location (active for SO customer). Defaults to customer's default location. */
+      deliveryLocationId: z.number().int().positive().optional().nullable(),
     });
     const body = schema.parse(req.body);
     const idempotencyKey = normalizeIdempotencyKey(req.get("Idempotency-Key") ?? req.get("idempotency-key"));
@@ -2550,7 +2638,11 @@ dispatchRouter.post("/dispatches", requireAuth, requireRole(DISPATCH_WRITE_ROLES
 
       const so = await tx.salesOrder.findUnique({
         where: { id: body.soId },
-        include: { lines: true, dispatch: true },
+        include: {
+          lines: true,
+          dispatch: true,
+          po: { select: { customerId: true } },
+        },
       });
       if (!so) {
         const err = new Error("Sales order not found");
@@ -2565,6 +2657,11 @@ dispatchRouter.post("/dispatches", requireAuth, requireRole(DISPATCH_WRITE_ROLES
         throw err;
       }
       assertSalesOrderNotCompletedForDispatch(so);
+
+      const customerIdForDelivery = so.customerId ?? so.po?.customerId ?? null;
+      const deliverySnap = customerIdForDelivery
+        ? await resolveDeliveryLocationForDispatch(tx, customerIdForDelivery, body.deliveryLocationId)
+        : await resolveDeliveryLocationForDispatch(tx, 0, null);
 
       const line = so.lines.find((l) => l.itemId === body.itemId);
       if (!line) {
@@ -2588,6 +2685,7 @@ dispatchRouter.post("/dispatches", requireAuth, requireRole(DISPATCH_WRITE_ROLES
           select: { id: true, cycleNo: true },
         });
         const allCycleInputs = allCycles.map((c) => ({ id: so.id, currentCycleId: c.id }));
+        const demandByCycleItem = await loadNoQtyLockedDemandByCycleItem(tx, so.id, allCycles.map((c) => c.id));
         const [qcMapAll, recheckMapAll, postCycleMapAll, batchPendingMapTx] = await Promise.all([
           loadNoQtyCycleQcAcceptedMap(tx, allCycleInputs),
           loadNoQtyDispositionUsableForDispatchPoolMap(tx, allCycleInputs),
@@ -2623,6 +2721,7 @@ dispatchRouter.post("/dispatches", requireAuth, requireRole(DISPATCH_WRITE_ROLES
             usableStock,
             unlockedDraftReservedQty,
             replaceableDraftQty: unlockedDraftReservedQty,
+            demandByCycleItem,
           });
           if (fifo.totalAvailable + REPORT_QUEUE_EPS < body.dispatchedQty) {
             throw friendlyNoQtyDispatchError(
@@ -2671,7 +2770,7 @@ dispatchRouter.post("/dispatches", requireAuth, requireRole(DISPATCH_WRITE_ROLES
             const row = existingDraftSlice
               ? await tx.dispatch.update({
                   where: { id: existingDraftSlice.id },
-                  data: { dispatchedQty: String(slice.qty) },
+                  data: { dispatchedQty: String(slice.qty), ...deliverySnap },
                 })
               : await tx.dispatch.create({
                   data: {
@@ -2682,6 +2781,7 @@ dispatchRouter.post("/dispatches", requireAuth, requireRole(DISPATCH_WRITE_ROLES
                     dispatchedQty: String(slice.qty),
                     reversalOfId: null,
                     workflowStatus: "UNLOCKED",
+                    ...deliverySnap,
                   },
             });
             dispatchesOut.push(row);
@@ -2816,7 +2916,7 @@ dispatchRouter.post("/dispatches", requireAuth, requireRole(DISPATCH_WRITE_ROLES
       const dispatch = existingDraft
         ? await tx.dispatch.update({
             where: { id: existingDraft.id },
-            data: { dispatchedQty: String(body.dispatchedQty) },
+            data: { dispatchedQty: String(body.dispatchedQty), ...deliverySnap },
           })
         : await tx.dispatch.create({
             data: {
@@ -2827,6 +2927,7 @@ dispatchRouter.post("/dispatches", requireAuth, requireRole(DISPATCH_WRITE_ROLES
               dispatchedQty: String(body.dispatchedQty),
               reversalOfId: null,
               workflowStatus: "UNLOCKED",
+              ...deliverySnap,
             },
           });
 
@@ -2970,6 +3071,7 @@ dispatchRouter.post("/dispatches/:id/lock", requireAuth, requireRole(DISPATCH_WR
           select: { id: true, cycleNo: true },
         });
         const allCycleInputsLock = allCyclesLock.map((c) => ({ id: so.id, currentCycleId: c.id }));
+        const demandByCycleItemLock = await loadNoQtyLockedDemandByCycleItem(tx, so.id, allCyclesLock.map((c) => c.id));
         const [qcMapAllLock, recheckMapAllLock, postCycleMapAllLock] = await Promise.all([
           loadNoQtyCycleQcAcceptedMap(tx, allCycleInputsLock),
           loadNoQtyDispositionUsableForDispatchPoolMap(tx, allCycleInputsLock),
@@ -2990,6 +3092,7 @@ dispatchRouter.post("/dispatches/:id/lock", requireAuth, requireRole(DISPATCH_WR
             recheckMap: recheckMapAllLock,
             postCycleMap: postCycleMapAllLock,
             usableStock: usableStockLock,
+            demandByCycleItem: demandByCycleItemLock,
           },
           friendlyNoQtyDispatchError,
         );
@@ -3252,6 +3355,7 @@ dispatchRouter.post(
             select: { id: true, cycleNo: true },
           });
           const allCycleInputsFd = allCyclesFd.map((c) => ({ id: so.id, currentCycleId: c.id }));
+          const demandByCycleItemFd = await loadNoQtyLockedDemandByCycleItem(tx, so.id, allCyclesFd.map((c) => c.id));
           const [qcMapAllFd, recheckMapAllFd, postCycleMapAllFd] = await Promise.all([
             loadNoQtyCycleQcAcceptedMap(tx, allCycleInputsFd),
             loadNoQtyDispositionUsableForDispatchPoolMap(tx, allCycleInputsFd),
@@ -3272,6 +3376,7 @@ dispatchRouter.post(
               recheckMap: recheckMapAllFd,
               postCycleMap: postCycleMapAllFd,
               usableStock: usableStockFd,
+              demandByCycleItem: demandByCycleItemFd,
             },
             friendlyNoQtyDispatchError,
           );

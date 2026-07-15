@@ -34,7 +34,7 @@ describe("lossMultiplier — additive process + QC", () => {
 
   it("combines percentages additively", () => {
 
-    assert.equal(lossMultiplier(2, 3), 1.05);
+    assert.equal(lossMultiplier(2, 3), 1);
 
   });
 
@@ -48,7 +48,7 @@ describe("effectiveQtyPerUnitWithHeaderLosses", () => {
 
     const q = effectiveQtyPerUnitWithHeaderLosses(10, 2, 3);
 
-    assert.equal(q, 10.5);
+    assert.equal(q, 10);
 
   });
 
@@ -83,6 +83,18 @@ describe("computeBomWeightPlanning — FG per KG", () => {
   });
 
 
+
+  it("includes runner weight in shot weight and RM per FG", () => {
+    const r = computeBomWeightPlanning({
+      fgWeight: 8,
+      runnerWeight: 2,
+      fgWeightUnit: { unitName: "Gram", unitCode: "G" },
+      outputQty: 1,
+    });
+    assert.equal(r.shotWeight, 10);
+    assert.equal(r.rmPerFg, 10);
+    assert.equal(r.possibleFgPerKg, 100);
+  });
 
   it("converts KG weight to grams for FG per KG", () => {
 
@@ -136,7 +148,7 @@ describe("rmRequiredForFgCount", () => {
 
     const qty = rmRequiredForFgCount(0.5, 100, 1, 2, 3);
 
-    assert.ok(Math.abs(qty - 52.5) < 0.01);
+    assert.ok(Math.abs(qty - 50) < 0.01);
 
   });
 

@@ -313,7 +313,9 @@ function mapPmrLine(ln) {
     originalRequiredQty: required,
     effectiveRequiredQty: effectiveRequired,
     issuedQty: issued,
+    /** Alias for Store UI / reports — unissued qty closed without stock movement. */
     waivedQty: waived,
+    shortIssueQty: waived,
     excessIssueQty: excess,
     pendingQty: pending,
     remainingQty: pending,
@@ -402,10 +404,19 @@ function mapPmrRow(row) {
   const totalExcessIssue = lines.reduce((s, l) => s + l.excessIssueQty, 0);
   const totalPending = lines.reduce((s, l) => s + l.pendingQty, 0);
   const storeReadiness = derivePmrStoreIssueReadiness(row.status, totalPending);
+  const statusLabel =
+    row.status === "SHORT_ISSUE_ACCEPTED"
+      ? "Closed – Short Issue Accepted"
+      : row.status === "FULLY_ISSUED"
+        ? "Fully Issued"
+        : row.status === "PARTIALLY_ISSUED"
+          ? "Partially Issued"
+          : row.status;
   return {
     id: row.id,
     docNo: row.docNo,
     status: row.status,
+    statusLabel,
     remarks: row.remarks,
     workOrderId: row.workOrderId,
     workOrderNo: row.workOrder?.docNo ?? null,
@@ -421,6 +432,7 @@ function mapPmrRow(row) {
     totalEffectiveRequired,
     totalIssued,
     totalWaived,
+    totalShortIssueQty: totalWaived,
     totalExcessIssue,
     totalPending,
     ...storeReadiness,
@@ -1293,8 +1305,11 @@ async function buildPmrIssueContext(pmrId, fromLocationId, db = prisma) {
     totalEffectiveRequired: pmr.totalEffectiveRequired,
     totalIssued: pmr.totalIssued,
     totalWaived: pmr.totalWaived,
+    totalShortIssueQty: pmr.totalShortIssueQty ?? pmr.totalWaived,
     totalExcessIssue: pmr.totalExcessIssue,
     totalRemaining: pmr.totalPending,
+    pmrStatus: pmr.status,
+    pmrStatusLabel: pmr.statusLabel ?? null,
     canIssueMore: canIssue,
     canIssueAnyPendingLine,
     waitingProcurement,
@@ -1386,6 +1401,8 @@ async function waiveRemainingPmrQty(pmrId, input, actor = {}) {
       where: { id: pmrId },
       data: { status: "SHORT_ISSUE_ACCEPTED" },
     });
+    // Release residual allocation so unissued qty returns to free usable stock.
+    // Never create StockTransaction for waived / short-issue qty.
     await syncAllocationsForPmrIssueStatus(tx, pmrId);
 
     const userId = actor.userId;
@@ -1396,14 +1413,21 @@ async function waiveRemainingPmrQty(pmrId, input, actor = {}) {
         entityId: String(pmr.workOrderId),
         actorUserId: userId,
         actorRole: actor.role,
-        summary: `Short issue accepted on ${pmr.docNo || `PMR-${pmrId}`}`,
+        summary: `Short Issue Closed on ${pmr.docNo || `PMR-${pmrId}`} — inventory moved issued qty only`,
         payload: {
           module: "MATERIAL_ISSUE",
-          actionLabel: "PMR_WAIVE_REMAINING",
+          actionLabel: "PMR_SHORT_ISSUE_CLOSED",
+          legacyActionLabel: "PMR_WAIVE_REMAINING",
           ref: { type: "PMR", id: String(pmrId), no: pmr.docNo },
           reason,
           remarks,
-          lines: waivedLines,
+          closedByUserId: userId,
+          closedAt: new Date().toISOString(),
+          inventoryRule: "STOCK_MOVEMENT_EQUALS_ISSUED_QTY_ONLY",
+          lines: waivedLines.map((w) => ({
+            ...w,
+            shortIssueQty: w.remainingWaived,
+          })),
         },
       });
     }

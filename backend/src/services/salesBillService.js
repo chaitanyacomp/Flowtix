@@ -9,6 +9,7 @@ const {
   mapCustomerDeliveryAddressToShipTo,
   buildPosFromShipAndBillTo,
   mapShipToAndPosToBillSnapshots,
+  mapInvoiceShipToToDispatchSnapshots,
   readDispatchShipToFromBill,
   readInvoiceShipToFromBill,
   shipToSnapshotsEqual,
@@ -22,6 +23,7 @@ const {
   loadFinalizedBillDispatchIdSet,
   assertDispatchEligibleForBillingFinalize,
 } = require("./salesBillEligibility");
+const { shipToFromDispatchOrSo } = require("./dispatchDeliveryLocation");
 
 function round2(n) {
   return Math.round(Number(n) * 100) / 100;
@@ -467,9 +469,30 @@ async function createDraftFromDispatch(prisma, dispatchId, opts = {}) {
     if (!customer) throw friendlyError("Customer is required before creating a Sales Bill.");
 
     const companyState = await getCompanyState(tx);
-    const commercialSnapshots = await resolveSalesBillCommercialSnapshots(tx, so, {
+    let commercialSnapshots = await resolveSalesBillCommercialSnapshots(tx, so, {
       companyStateCode: companyState?.companyStateRef?.stateCode ?? null,
     });
+    const dispatchShip = shipToFromDispatchOrSo(dispatch, null);
+    if (dispatchShip?.fromDispatchSnapshot) {
+      const billTo = {
+        name: commercialSnapshots.customerNameSnapshot,
+        address: commercialSnapshots.billToAddressSnapshot,
+        gstin: commercialSnapshots.billToGstinSnapshot,
+        stateName: commercialSnapshots.customerStateNameSnapshot,
+        stateCode: commercialSnapshots.customerStateCodeSnapshot,
+      };
+      const pos = buildPosFromShipAndBillTo({
+        shipTo: dispatchShip,
+        billTo,
+        companyStateCode: companyState?.companyStateRef?.stateCode ?? null,
+      });
+      const shipSnaps = mapShipToAndPosToBillSnapshots(dispatchShip, pos);
+      commercialSnapshots = {
+        ...commercialSnapshots,
+        ...shipSnaps,
+        ...mapInvoiceShipToToDispatchSnapshots(shipSnaps),
+      };
+    }
     const shipAddrRow = await resolveShipToAddress(tx, so);
     const billStateCode = trimCommercialSnapshot(commercialSnapshots.customerStateCodeSnapshot);
     const billStateName = trimCommercialSnapshot(commercialSnapshots.customerStateNameSnapshot);
@@ -555,7 +578,7 @@ async function createDraftFromDispatch(prisma, dispatchId, opts = {}) {
         remarks: null,
         status: "DRAFT",
         ...commercialSnapshots,
-        shipToAddressId: shipAddrRow?.id ?? null,
+        shipToAddressId: dispatch.deliveryLocationId ?? shipAddrRow?.id ?? null,
         dispatchNoSnapshot: dispatch.docNo || `DISP-${dispatch.id}`,
         dispatchDateSnapshot: dispatch.date,
         soIdSnapshot: dispatch.soId,

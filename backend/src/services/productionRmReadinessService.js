@@ -28,6 +28,11 @@ function floorFgQty(rmAvailable, perUnitFg) {
   return Math.floor((Math.max(0, rmAvailable) + STOCK_EPS) / perUnitFg);
 }
 
+function resolveWoIssuedAvailableQty({ grossIssued, consumed, returned, onHand }) {
+  const logicalAvailable = round3(Math.max(0, n(grossIssued) - n(consumed) - n(returned)));
+  return round3(Math.max(0, Math.min(n(onHand), logicalAvailable)));
+}
+
 /**
  * Sum frozen PMR required qty by RM item across submitted requests on a work order.
  * @param {Array<{ lines?: Array<{ itemId: number, requiredQty: unknown }> }>} submittedPmrs
@@ -91,6 +96,22 @@ function productionQtyExceedsRmAllowed({ producedQty, productionAllowedNowQty, o
   const allowed = n(productionAllowedNowQty);
   const reserved = n(otherUnapprovedQty);
   return reserved + qty > allowed + Math.max(STOCK_EPS, PRODUCTION_QTY_EPS);
+}
+
+/**
+ * Canonical production-entry authorization envelope.
+ * `productionAllowedNowQty` is the FG quantity supported by RM that remains
+ * physically and logically available to this WO. Draft entries reserve part
+ * of that envelope; WO planned quantity is intentionally not an input.
+ */
+function resolveRmSupportedEntryCapacity({ productionAllowedNowQty, otherUnapprovedQty = 0 }) {
+  const rmSupportedQty = Math.max(0, n(productionAllowedNowQty));
+  const reservedQty = Math.max(0, n(otherUnapprovedQty));
+  return {
+    rmSupportedQty: round3(rmSupportedQty),
+    reservedQty: round3(reservedQty),
+    remainingQty: round3(Math.max(0, rmSupportedQty - reservedQty)),
+  };
 }
 
 async function loadOtherUnapprovedProductionQty(tx, workOrderLineId, excludeProductionId) {
@@ -323,8 +344,9 @@ async function buildProductionRmReadiness(db, workOrderLineId) {
     const netIssued = round3(Math.max(0, grossIssued - returned));
     const onHand = await sumStockAtLocations(db, itemId, stockLocIds);
     const alreadyConsumed = n(consumedMap.get(itemId));
-    const logicalAvailable = round3(Math.max(0, grossIssued - alreadyConsumed - returned));
-    const available = round3(Math.min(onHand, logicalAvailable > STOCK_EPS ? logicalAvailable : onHand));
+    // Both boundaries are mandatory: physical production-location stock and the
+    // unused RM explicitly issued to this WO. Never borrow unrelated location stock.
+    const available = resolveWoIssuedAvailableQty({ grossIssued, consumed: alreadyConsumed, returned, onHand });
     availableByItem.set(itemId, available);
     const returnableQty = round3(Math.max(0, Math.min(grossIssued - alreadyConsumed - returned, onHand)));
     const canSupport =
@@ -394,10 +416,15 @@ async function buildProductionRmReadiness(db, workOrderLineId) {
   });
   const approvedProduced = n(approvedAgg._sum.producedQty);
   const woRemaining = Math.max(0, woQty - approvedProduced);
-  const maxAdditionalQty = Math.max(
-    0,
-    Math.min(woRemaining, maxProducibleQty) - unapprovedProduced,
-  );
+  // RM availability already excludes material consumed by approved production.
+  // Draft/unapproved entries reserve part of that remaining envelope until approved/cancelled.
+  // NO_QTY WO qty is a target, not a cap; REGULAR retains the WO-remaining boundary.
+  const rmSupportedCumulativeCapacityQty = round3(approvedProduced + maxProducibleQty);
+  const authorizationCapacity = resolveRmSupportedEntryCapacity({
+    productionAllowedNowQty: isNoQty ? maxProducibleQty : Math.min(woRemaining, maxProducibleQty),
+    otherUnapprovedQty: unapprovedProduced,
+  });
+  const maxAdditionalQty = authorizationCapacity.remainingQty;
 
   const latestPmr = submittedPmrs[0] ?? null;
 
@@ -418,7 +445,8 @@ async function buildProductionRmReadiness(db, workOrderLineId) {
     gate: gateInfo.gate,
     hasDraftPmr: draftPmrs > 0,
     productionAllowedNowQty: maxProducibleQty,
-    maxAdditionalQty,
+    rmSupportedCumulativeCapacityQty,
+    maxAdditionalQty: round3(maxAdditionalQty),
     productionLocationIds: prodLocIds,
     bomMissing: bomMissing || perUnitBomMissing,
     missingChildBoms: [...(missingChildBoms || []), ...(perUnitMissing || [])].filter(
@@ -543,10 +571,9 @@ async function issueRmForApprovedProductionFromPmrLocations(
 
 function resolveProductionBatchRmCap(readiness, otherUnapprovedQty = 0) {
   const rmCap = n(readiness?.productionAllowedNowQty);
-  const isNoQty = String(readiness?.orderType ?? "").toUpperCase() === "NO_QTY";
-  if (!isNoQty) return rmCap;
-  const woCap = Math.max(0, n(readiness?.woRemainingQty ?? readiness?.woQty));
-  return Math.max(0, Math.min(woCap, rmCap) - n(otherUnapprovedQty));
+  // Caller compares `otherUnapprovedQty + requestedQty` against this envelope.
+  // Do not subtract drafts here as well, and never clamp NO_QTY to WO planned qty.
+  return Math.max(0, rmCap);
 }
 
 function assertProductionPmrGate(readiness) {
@@ -611,23 +638,15 @@ async function assertProductionRmReadiness(tx, {
   }
 
   const otherUnapprovedQty = await loadOtherUnapprovedProductionQty(tx, workOrderLineId, excludeProductionId);
-  const maxAllowed = readiness.productionAllowedNowQty;
-  const isNoQty = readiness.orderType === "NO_QTY";
   const batchAllowed = resolveProductionBatchRmCap(readiness, otherUnapprovedQty);
-  const qtyToCheck = qty;
-  if (
-    productionQtyExceedsRmAllowed({
-      producedQty: qtyToCheck,
-      productionAllowedNowQty: batchAllowed,
-      otherUnapprovedQty,
-    })
-  ) {
+  const authorizationCapacity = resolveRmSupportedEntryCapacity({
+    productionAllowedNowQty: batchAllowed,
+    otherUnapprovedQty,
+  });
+  if (qty > authorizationCapacity.remainingQty + Math.max(STOCK_EPS, PRODUCTION_QTY_EPS)) {
     const fmt = (x) => (Number.isInteger(x) ? String(x) : Number(x).toFixed(3));
-    const displayCap = isNoQty
-      ? Math.max(0, batchAllowed)
-      : maxAllowed;
     const err = new Error(
-      `Production blocked: issued RM can support only ${fmt(displayCap)} qty for this work order.`,
+      `Production blocked: issued RM can support only ${fmt(authorizationCapacity.remainingQty)} qty for this work order.`,
     );
     err.code = "PRODUCTION_RM_INSUFFICIENT";
     err.statusCode = 409;
@@ -793,10 +812,12 @@ async function attachRmReadinessToProductionQueueRows(db, rows) {
 module.exports = {
   SUBMITTED_PMR_STATUSES,
   floorFgQty,
+  resolveWoIssuedAvailableQty,
   aggregatePmrRequiredByItem,
   computeMaxProducibleFromPmrBasis,
   resolveWorkOrderLinePlannedQty,
   resolveProductionBatchRmCap,
+  resolveRmSupportedEntryCapacity,
   productionQtyExceedsRmAllowed,
   isPmrStoreIssueComplete,
   pmrHasMaterialIssueTransfer,

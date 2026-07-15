@@ -6,7 +6,7 @@
 | **Volume** | 3 — Domain Specifications |
 | **Chapter** | 2 — Planning Domain Specification |
 | **Title** | Planning Domain Specification |
-| **Version** | 1.0.3 |
+| **Version** | 1.0.4 |
 | **Status** | Draft — Architecture Review |
 | **Effective date** | 2026-05-29 |
 | **Author** | FT ERP Product Team |
@@ -33,6 +33,7 @@
 | 1.0.1 | 2026-07-10 | FT ERP Product Team | PLN-19 — Additional Plan source-identity coverage (RS/cycle/component); pending QC excluded |
 | 1.0.2 | 2026-07-12 | FT ERP Product Team | §7.2 — late PRODUCTION_SHORTFALL draft RS synchronization |
 | 1.0.3 | 2026-07-12 | FT ERP Product Team | §7.7 — Suggested WO = min(RS balance, RM capacity); multi-WO RS remains open |
+| 1.0.4 | 2026-07-14 | FT ERP Product Team | §7.2 — Decision-only Recovery Cycle; SO outstanding ≠ sum of historical RS qty |
 
 **Supersedes:** None.
 
@@ -211,7 +212,14 @@ Architecture is defined in [Volume 2, Chapters 2–3](../02_Business_Architectur
 | **Validation rules** | Plan must be Approved; snapshot immutable; not already Released for same revision |
 | **Completion criteria** | **Released** (procurement owns PR/PO/GRN) **or** **Procurement Not Required** (Store may place WO / Material Issue when RM available) |
 
-*Branching rule (authoritative):* After Purchase Approval, the frozen Monthly Planning RM Snapshot decides the handoff. Net RM = 0 **SHALL NOT** emit `PLN_MPRS_RELEASE` or create Procurement Workspace entries.
+*Branching rule (authoritative):*
+
+1. **After RS lock (FG-level):** Evaluate RM feasibility **per FG item** (authoritative batch placement; shared RM must not be double-counted).  
+   - FG fully covered → `READY_FOR_WO` — allow WO; skip Monthly Planning / Purchase / Release **for that FG**.  
+   - FG shortage → `PROCUREMENT_REQUIRED` — include only that shortage in Monthly Planning; block WO only for that FG.  
+   - All FG covered (sheet Net RM = 0) → `PROCUREMENT_NOT_REQUIRED`; Pending Action = Work Order Planning.  
+   - Mixed RS → Place WO and Monthly Planning Pending may coexist.  
+2. **After Purchase Approval:** The frozen Monthly Planning RM Snapshot decides the handoff. Net RM = 0 **SHALL NOT** emit `PLN_MPRS_RELEASE` or create Procurement Workspace entries.
 
 *REGULAR:* No RM release stage — MR raised directly from order shortage ([Vol. 2 Ch. 2](../02_Business_Architecture/Chapter_02_REGULAR_Order_Planning_Pipeline.md) §8).
 
@@ -355,7 +363,13 @@ Rolls unmet or partially met cycle/period intent into current planning view **wi
 
 **Authoritative persistence:** `CarryForwardPending` (recovery source) + `RecoveryAllocation` (RS reservation/commit). RS line fields `productionShortfallQty` / `qcRejectionRecoveryQty` / `totalRsQty` are **derived snapshots**, not a second queue.
 
-**Late arrival / draft synchronization (PRODUCTION_SHORTFALL):** A next-cycle draft Requirement Sheet may already exist when a prior-cycle Work Order later closes with production shortfall. The editable next draft **SHALL** be continuously synchronized with available `PRODUCTION_SHORTFALL` recovery via the canonical `syncDraftRsWithAvailableRecovery` path (create, draft edit/recalculate/refresh, lock, and immediately after shortfall source creation when an eligible draft exists). Missing products are auto-created as **carry-forward-only** RS lines (customer / base demand = 0). Customer demand remains editable; production shortfall qty is system-generated and read-only. If no eligible draft exists, recovery remains OPEN for the normal Create Next RS flow. **QC_FINAL_REJECTION** allocation policy is unchanged (manual allocate on draft RS).
+**Late arrival / draft synchronization (Phase 2B):** When recovery is created while a next-cycle draft Requirement Sheet exists (or when a draft is created/refreshed), the system **discovers** available `PRODUCTION_SHORTFALL` and `QC_FINAL_REJECTION` and seeds per-FG **PENDING** Keep/Waive decisions. It does **not** auto-allocate either recovery type. Missing products may be auto-created as FG lines with **customer demand = 0** until the planner enters demand and decides Keep/Waive.
+
+**Planner decision (Keep / Waive):** Applies only to FG items with pending recovery. Keep reserves all pending recovery for that item (PS + QC) atomically onto the RS line; Waive (Store or Admin, mandatory reason) permanently waives all pending recovery for that item. No partial Keep/Waive. RS cannot be locked while any FG item remains PENDING.
+
+**Decision-only Recovery Cycle:** When Current Requirement = 0, Total To Produce = 0, all FG recovery decisions are KEEP or WAIVE, Pending QC = 0, and no active WO / production pending, Finalize/Lock **SHALL** be allowed even though fulfillment qty is zero (`assessDecisionOnlyRecoveryCycleEligibility`). After lock, `closeDecisionOnlyNoQtyCycle` closes the ACTIVE cycle (empty cap — no dispatch/WO required). SO closure **SHALL NOT** treat historical RS cycle quantities as additive customer demand; waived recovery removes outstanding obligation. `WO_PENDING` does **not** apply to a locked RS with empty cycle cap.
+
+**Post-lock handoff:** If flow state reports no dispatchable FG, UI **SHALL** navigate to the NO_QTY Agreement summary (not Dispatch). If dispatchable FG exists, UI **SHALL** open contextual Dispatch (`source=no_qty_so` + SO + cycle).
 
 **Pending Actions:** Store inbox may suppress separate “production shortfall awaiting next RS” CTAs when Create Next RS is eligible or a next-cycle draft exists ([FT-PD-040](../04_Workflow_Engine/Chapter_01_Workflow_Engine_Overview_and_Pending_Actions_Contract.md) §7.9). That suppression is valid **only because** the draft is kept synchronized with available production-shortfall recovery.
 
@@ -373,7 +387,7 @@ Rolls unmet or partially met cycle/period intent into current planning view **wi
 |-----------|----------|-------|
 | New RS base demand | RS line + `RS_BASE_DEMAND` | Independent per RS / cycle |
 | Production shortfall carry-forward | RS line + `PRODUCTION_SHORTFALL` | Counted once where embedded on the eligible RS; do not double-add |
-| Final QC rejection recovery | RS line + `QC_REJECTION_RECOVERY` | Only finalized qty on the RS line; pending QC does not create carry-forward |
+| Final QC rejection recovery | RS line + `QC_REJECTION_RECOVERY` | Only **terminal final scrap** qty becomes a recovery source (NO_QTY); pending/hold/rework do not. Phase 2A: source is created automatically; allocation onto RS remains manual |
 | Green-level replenishment | Separate identity | Never silently merged with customer demand |
 
 **Additional Plan Qty** = sum of eligible components with status UNPLANNED (not covered by any previous APPROVED plan document).
@@ -526,6 +540,8 @@ Admin does not own planning document actions in standard product.
 | **RM Control Center** | REGULAR | Store | Case-oriented ISO RM diagnosis; coverage strip; WO prepare handoff ([Vol. 2 Ch. 2](../02_Business_Architecture/Chapter_02_REGULAR_Order_Planning_Pipeline.md) §7) |
 | **Requirement & Cycle Planning** | NO_QTY | Store | RS lines; lock; placement balance; cycle progress |
 | **Monthly Production Planning Sheet** | NO_QTY | Store / Purchase | FG plan; live RM estimate (draft); snapshot view (approved); release action |
+
+**Monthly Planning RM coverage KPI (UI only):** Aggregate banner KPI **SHALL** show **RM Items Available** as `coveredItems / totalRmItems` (lines with net requirement ≤ 0 over required RM lines). **SHALL NOT** sum heterogeneous stock quantities into a single “Available RM” total. Per-line free/available stock columns remain valid. Estimation, reservation, incoming PO, shortage, and Net RM formulas are unchanged.
 | **WO prepare / placement** | Both | Store | Readiness validation; suggested qty; create WO |
 
 ### 11.1 Common workspace rules
@@ -691,6 +707,16 @@ stateDiagram-v2
 
 ## Document navigation
 
+## BOM input boundary for RM planning
+
+Planning consumes the approved engineering BOM without embedding planning policy into it. For injection-moulded FG:
+
+`Shot Weight = (FG Weight × Output Quantity) + Runner Weight`
+
+`RM Required for WO = WO Qty × Σ(component engineering RM per FG)`
+
+Runner weight participates in live estimates and frozen RM snapshots. Process wastage and QC allowance are excluded because they are manufacturing-performance outcomes. FG planning buffer, when required, is applied and audited by Planning outside the BOM. Existing REGULAR and NO_QTY freeze/version rules remain unchanged.
+
 | | Link |
 |--|------|
 | **Previous** | [Commercial Domain Specification](./Chapter_01_Commercial_Domain_Specification.md) (FT-PD-030) |
@@ -701,8 +727,13 @@ stateDiagram-v2
 
 ## Batch 3E — Recovery / Closure analytics surfaces (read-only)
 
-Dashboard, Pending Actions, Control Tower, and Reports consume `assessNoQtySoClosure()` and `getRecoverySummary()` / `getRecoverySummariesBatch()` via `noQtyRecoveryAnalyticsService`. Production Shortfall and QC Recovery remain separate. Reconciliation identity: Source Qty = Active Allocated + Waived + Available. No mutation of recovery, RS allocation, stock, dispatch qty, billing qty, or SO closure transactions in this batch.
+Dashboard, Pending Actions, Control Tower, and Reports consume `assessNoQtySoClosure()` and `getRecoverySummary()` / `getRecoverySummariesBatch()` via `noQtyRecoveryAnalyticsService`. Production Shortfall and QC Recovery remain separate. Reconciliation identity: Source Qty = Active Allocated + Waived + Available. No mutation of recovery, RS allocation, stock, dispatch qty, billing qty, or SO closure transactions in this batch. Close evaluation order and Pending Action deep-links: see FT-PD-022 §11A and FT-PD-040 §7.12.
 
 ## Batch 3F — Certification
 
 Final cleanup validated: QA/QC recovery columns, Control Tower recovery monitor (read-only), reconciliation identity, migration `20260710120000_no_qty_recovery_foundation` applied on target DB, analytics surfaces consume `assessNoQtySoClosure` / `getRecoverySummariesBatch`. `MANUALLY_CLOSED` retained for dual-read only; operational close uses `CLOSED_WITH_WAIVER` / `COMPLETED`. Physical rework remains QA-owned; QC recovery starts at terminal rejection; Green Level isolated; WO shortfall waiver ≠ SO closure waiver.
+# NO_QTY cycle carry-forward rule (2026-07-15)
+
+FG preserved because prior customer demand is fully dispatched remains available to the next-cycle SO + FG surplus calculation. It cannot simultaneously be presented as dispatchable for the completed obligation.
+
+The immediately following cycle applies prior QC-accepted excess per SO + FG before suggesting production. Kept recovery and approved shortage are added before the deduction. **Net Production Requirement** is the sole executable quantity shown on the RS draft grid (Customer Demand is stored unchanged). Draft edits refresh the net immediately; Save Draft and Finalize recalculate atomically. Suggested WO uses Net Production Requirement only.

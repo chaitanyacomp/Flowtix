@@ -1,6 +1,6 @@
 /**
  * P10-A2C - Read-only RS execution summary and readiness (NO_QTY).
- * RS balance uses RequirementSheetLine.requirementQty only - not suggestedWoQtySnapshot.
+ * RS balance uses locked Final RS Qty (totalRsQty / suggestedWoQtySnapshot via resolveNoQtyWoExecutableQty).
  */
 
 const { buildPlanDisplayLabel } = require("./monthlyPlanningPlanLifecycleService");
@@ -12,6 +12,7 @@ const {
   assessNoQtyBatchPlacement,
   previewRmReadinessForProposedQty,
 } = require("./noQtyBatchPlacementEngine");
+const { resolveNoQtyWoExecutableQty } = require("./noQtyWoQtyService");
 
 const EPS = 1e-6;
 
@@ -48,7 +49,10 @@ function woLinePlacedQty(line) {
   return round3(dec(line?.plannedQty ?? line?.qty));
 }
 
-function procurementSummaryLabel({ released, materialRequirementDocNo, mrStatus }) {
+function procurementSummaryLabel({ released, materialRequirementDocNo, mrStatus, partialStockReady = false }) {
+  if (!released && partialStockReady) {
+    return "RM-ready FG items can place WO; shortage items still need Monthly Planning / procurement";
+  }
   if (!released) return "Not released to procurement";
   if (!materialRequirementDocNo) return "Procurement not required — execution ready";
   const statusPart = mrStatus ? ` - ${mrStatus}` : "";
@@ -169,7 +173,7 @@ async function loadWoPlacementContextForSheet(db, requirementSheetId) {
 function buildRsBalanceLinesFromSheet(sheet, woPlacedByItem) {
   const lines = (sheet.lines ?? []).map((ln) => {
     const itemId = Number(ln.itemId);
-    const rsDemandQty = round3(dec(ln.requirementQty));
+    const rsDemandQty = round3(resolveNoQtyWoExecutableQty(ln));
     const woPlacedQty = round3(woPlacedByItem.get(itemId) ?? 0);
     const rsBalanceQty = round3(Math.max(0, rsDemandQty - woPlacedQty));
     return {
@@ -188,6 +192,32 @@ function buildRsBalanceLinesFromSheet(sheet, woPlacedByItem) {
   };
 
   return { lines, totals };
+}
+
+/**
+ * Planning Context composition from locked RS lines (Phase 2B transparency).
+ * Does not change executable qty — only exposes existing base / PS / QC components.
+ */
+function sumLockedRsComposition(sheetLines = []) {
+  let customerDemandQty = 0;
+  let productionShortageQty = 0;
+  let qcFinalRejectionQty = 0;
+  for (const ln of sheetLines || []) {
+    customerDemandQty = round3(
+      customerDemandQty + dec(ln.baseDemandQty ?? ln.requirementQty),
+    );
+    productionShortageQty = round3(productionShortageQty + dec(ln.productionShortfallQty));
+    qcFinalRejectionQty = round3(qcFinalRejectionQty + dec(ln.qcRejectionRecoveryQty));
+  }
+  const totalRecoveryQty = round3(productionShortageQty + qcFinalRejectionQty);
+  const composedTotalRsRequirementQty = round3(customerDemandQty + totalRecoveryQty);
+  return {
+    customerDemandQty,
+    productionShortageQty,
+    qcFinalRejectionQty,
+    totalRecoveryQty,
+    composedTotalRsRequirementQty,
+  };
 }
 
 function deriveReadyToPlaceWo(totals, placement, readinessStatus = null) {
@@ -234,7 +264,7 @@ function noQtyPlacementStageWorkflowHint(placementStage) {
     return "Procurement in progress. Store will place Work Order(s) when RM is ready.";
   }
   if (key === NO_QTY_PLACEMENT_STAGE.MONTHLY_PLANNING_PENDING) {
-    return "Monthly planning release is pending before Work Order placement.";
+    return "Monthly planning is pending only when Estimated Net RM Requirement > 0.";
   }
   return null;
 }
@@ -378,6 +408,35 @@ async function loadProcurementProgress(db, { released, materialRequirement }) {
   };
 }
 
+/**
+ * FG-level WO gate (SSOT): do not lock the whole RS because one FG has shortage.
+ * Uses authoritative batch placement (`canPlace` / per-line executable qty).
+ */
+function resolveStockExecutableWithoutPlan({ released, rmReadiness, placement }) {
+  if (released) {
+    return {
+      allFgStockCovered: false,
+      anyFgExecutableFromStock: false,
+      skipMonthlyPlanning: false,
+      allowWoWithoutPlanRelease: false,
+    };
+  }
+  const netRmShortage = round3(n(rmReadiness?.summary?.shortageQty));
+  const allFgStockCovered = netRmShortage <= EPS;
+  const executableQty = round3(n(placement?.summary?.totalExecutableQty));
+  const anyFgExecutableFromStock =
+    placement?.canPlace === true ||
+    executableQty > EPS ||
+    String(placement?.status ?? "").toUpperCase() === "READY" ||
+    String(placement?.status ?? "").toUpperCase() === "PARTIALLY_READY";
+  return {
+    allFgStockCovered,
+    anyFgExecutableFromStock,
+    skipMonthlyPlanning: allFgStockCovered,
+    allowWoWithoutPlanRelease: allFgStockCovered || anyFgExecutableFromStock,
+  };
+}
+
 function buildReadinessDecision({
   totals,
   rmReadiness,
@@ -385,6 +444,7 @@ function buildReadinessDecision({
   released,
   materialRequirement,
   procurementRequired = true,
+  placement = null,
 }) {
   if (totals.rsBalanceQty <= EPS) {
     const status = "BLOCKED";
@@ -408,22 +468,40 @@ function buildReadinessDecision({
     return { status, label: decisionLabel(status), reason: "RM requirement preview is blocked by missing BOM data." };
   }
 
-  if (!released) {
+  /**
+   * FG-level readiness (SSOT):
+   * - All FG stock-covered → skip Monthly Planning entirely (PROCUREMENT_NOT_REQUIRED).
+   * - Some FG executable from stock → allow WO for ready FG even before plan release;
+   *   Monthly Planning remains for shortage FG only (do not whole-RS lock).
+   * - No FG executable → await Monthly Planning / procurement as before.
+   */
+  const stockPath = resolveStockExecutableWithoutPlan({ released, rmReadiness, placement });
+  const effectiveReleased = released || stockPath.allowWoWithoutPlanRelease;
+  const effectiveProcurementRequired = stockPath.skipMonthlyPlanning ? false : procurementRequired;
+
+  if (!effectiveReleased) {
     const status = "AWAITING_PROCUREMENT";
     return {
       status,
       label: decisionLabel(status),
       reason: "Monthly Plan procurement release is not complete yet.",
+      procurementOutcome: null,
+      skipMonthlyPlanning: false,
+      allowWoWithoutPlanRelease: false,
     };
   }
 
-  // Zero-net approved plans complete handoff without an MR.
-  if (procurementRequired && !materialRequirement) {
+  // Zero-net approved plans (or fully stock-covered initial path) complete handoff without an MR.
+  // Mixed stock-ready FG may proceed without MR; shortage FG still need procurement separately.
+  if (effectiveProcurementRequired && !materialRequirement && !stockPath.allowWoWithoutPlanRelease) {
     const status = "AWAITING_PROCUREMENT";
     return {
       status,
       label: decisionLabel(status),
       reason: "Monthly Plan procurement release or MR is not complete yet.",
+      procurementOutcome: null,
+      skipMonthlyPlanning: false,
+      allowWoWithoutPlanRelease: false,
     };
   }
 
@@ -434,16 +512,44 @@ function buildReadinessDecision({
 
   if (rmReadiness.summary.shortageQty <= EPS) {
     const status = "READY_TO_PLACE_WO";
-    return { status, label: decisionLabel(status), reason: "All required RM available." };
+    return {
+      status,
+      label: decisionLabel(status),
+      reason: stockPath.skipMonthlyPlanning
+        ? "All required RM available. Monthly Planning / procurement not required."
+        : "All required RM available.",
+      procurementOutcome: stockPath.skipMonthlyPlanning ? "PROCUREMENT_NOT_REQUIRED" : null,
+      skipMonthlyPlanning: stockPath.skipMonthlyPlanning,
+      allowWoWithoutPlanRelease: stockPath.allowWoWithoutPlanRelease,
+    };
   }
 
-  if (rmReadiness.summary.availableQty > EPS || rmReadiness.summary.incomingQty > EPS) {
+  if (
+    stockPath.anyFgExecutableFromStock ||
+    rmReadiness.summary.availableQty > EPS ||
+    rmReadiness.summary.incomingQty > EPS
+  ) {
     const status = "PARTIALLY_READY";
-    return { status, label: decisionLabel(status), reason: "Some RM shortages still exist." };
+    return {
+      status,
+      label: decisionLabel(status),
+      reason: stockPath.anyFgExecutableFromStock
+        ? "Work Order creation is available for RM-ready FG items. Items with unresolved RM shortages remain blocked."
+        : "Some RM shortages still exist.",
+      procurementOutcome: null,
+      skipMonthlyPlanning: false,
+      allowWoWithoutPlanRelease: stockPath.allowWoWithoutPlanRelease,
+    };
   }
 
   const status = "AWAITING_PROCUREMENT";
-  return { status, label: decisionLabel(status), reason: "Required RM is not available yet." };
+  return {
+    status,
+    label: decisionLabel(status),
+    reason: "Required RM is not available yet.",
+    skipMonthlyPlanning: false,
+    allowWoWithoutPlanRelease: false,
+  };
 }
 
 /**
@@ -512,6 +618,7 @@ async function getRequirementSheetExecutionSummary(db, requirementSheetId, deps 
   const assessPlacement = deps.assessNoQtyBatchPlacement || assessNoQtyBatchPlacement;
   const batchAssessment = await assessPlacement(db, sheet, { placedByItem: woPlacedByItem, ...deps });
   const totals = batchAssessment.totals;
+  const composition = sumLockedRsComposition(sheet.lines);
   const lines = batchAssessment.balanceLines.map((line) => ({
     itemId: line.itemId,
     itemName: line.itemName,
@@ -542,7 +649,6 @@ async function getRequirementSheetExecutionSummary(db, requirementSheetId, deps 
 
   const mrDocNo = materialRequirement?.docNo ?? null;
   const mrStatus = materialRequirement?.status ?? null;
-  const procurementProgress = await loadProcurementProgress(db, { released: executionPlanReady, materialRequirement });
   let procurementRequired = true;
   if (executionPlanReady && releasedPlan?.id && !materialRequirement) {
     try {
@@ -568,15 +674,54 @@ async function getRequirementSheetExecutionSummary(db, requirementSheetId, deps 
     released: executionPlanReady,
     materialRequirement,
     procurementRequired,
+    placement,
   });
+  const skipMonthlyPlanning = Boolean(readiness.skipMonthlyPlanning);
+  const allowWoWithoutPlanRelease = Boolean(readiness.allowWoWithoutPlanRelease);
+  // Plan/handcuff release for procurement badge (all-covered skip OR real release).
+  const procurementHandoffComplete = executionPlanReady || skipMonthlyPlanning;
+  // WO create / Place WO PA may unlock for stock-ready FG before period release.
+  const effectivePlanReady = procurementHandoffComplete || allowWoWithoutPlanRelease;
+  const procurementProgress = await loadProcurementProgress(db, {
+    released: procurementHandoffComplete,
+    materialRequirement,
+  });
+  const procurementStatus = executionPlanReady
+    ? (mrStatus ?? (materialRequirement ? "RELEASED" : "PROCUREMENT_NOT_REQUIRED"))
+    : skipMonthlyPlanning
+      ? "PROCUREMENT_NOT_REQUIRED"
+      : allowWoWithoutPlanRelease
+        ? "PARTIAL_STOCK_READY"
+        : "NOT_RELEASED";
   const placementStage = await buildNoQtyLockedSheetPlacementAssessment(db, sheet, deps, {
     totals,
     placement,
     readiness,
     existingWoSummary,
     materialRequirement,
-    executionPlanReady,
+    executionPlanReady: effectivePlanReady,
   });
+
+  const fgItemReadiness = (placement.lines ?? []).map((line) => {
+    const executable = round3(n(line.suggestedExecutableQty ?? line.executableQty));
+    const balance = round3(n(line.rsBalanceQty));
+    let outcome = "PROCUREMENT_REQUIRED";
+    if (balance <= EPS) outcome = "ZERO_BALANCE";
+    else if (String(line.status).toUpperCase() === "MISSING_BOM") outcome = "MISSING_BOM";
+    else if (executable > EPS && executable + EPS >= balance) outcome = "READY_FOR_WO";
+    else if (executable > EPS) outcome = "PARTIALLY_READY";
+    return {
+      itemId: line.itemId,
+      itemName: line.itemName,
+      rsBalanceQty: balance,
+      suggestedExecutableQty: executable,
+      placementStatus: line.status,
+      outcome,
+      shortageSummary: line.operatorGuidance?.message ?? line.reason ?? null,
+    };
+  });
+  const readyFgCount = fgItemReadiness.filter((r) => r.outcome === "READY_FOR_WO" || r.outcome === "PARTIALLY_READY").length;
+  const shortageFgCount = fgItemReadiness.filter((r) => r.outcome === "PROCUREMENT_REQUIRED").length;
 
   return {
     requirementSheetId: sheet.id,
@@ -586,10 +731,12 @@ async function getRequirementSheetExecutionSummary(db, requirementSheetId, deps 
     status: sheet.status,
     release: {
       monthlyPlanId: releasedPlan?.id ?? null,
-      released: executionPlanReady,
+      released: procurementHandoffComplete,
       releasedAt: releasedPlan?.releasedAt?.toISOString?.() ?? releasedPlan?.releasedAt ?? null,
       releasedRevision: releasedPlan?.releasedRevision ?? null,
       label: releasedPlan ? buildPlanDisplayLabel(releasedPlan) : null,
+      procurementNotRequiredWithoutPlan: skipMonthlyPlanning && !executionPlanReady,
+      allowWoWithoutPlanRelease: allowWoWithoutPlanRelease && !procurementHandoffComplete,
     },
     totals,
     lines,
@@ -604,24 +751,34 @@ async function getRequirementSheetExecutionSummary(db, requirementSheetId, deps 
     processStageKey: placementStage.processStageKey,
     processStageLabel: placementStage.processStageLabel,
     readyToPlaceWo: placementStage.readyToPlaceWo,
+    fgItemReadiness,
+    fgReadinessSummary: {
+      readyCount: readyFgCount,
+      shortageCount: shortageFgCount,
+      totalWithBalance: fgItemReadiness.filter((r) => r.rsBalanceQty > EPS).length,
+    },
     kpis: {
+      customerDemandQty: composition.customerDemandQty,
+      productionShortageQty: composition.productionShortageQty,
+      qcFinalRejectionQty: composition.qcFinalRejectionQty,
+      totalRecoveryQty: composition.totalRecoveryQty,
       totalRsRequirement: totals.rsDemandQty,
       woQuantityPlaced: totals.woPlacedQty,
       remainingRequirement: totals.rsBalanceQty,
+      remainingToPlace: totals.rsBalanceQty,
       rmLimitedCapacity: totals.rmLimitedCapacityQty ?? placement.summary.totalExecutableQty,
       suggestedNextWoQty: placement.summary.totalExecutableQty,
       numberOfWos: existingWoSummary.length,
     },
     procurement: {
-      status: executionPlanReady
-        ? (mrStatus ?? (materialRequirement ? "RELEASED" : "PROCUREMENT_NOT_REQUIRED"))
-        : "NOT_RELEASED",
+      status: procurementStatus,
       materialRequirementId: materialRequirement?.id ?? null,
       materialRequirementDocNo: mrDocNo,
       summaryLabel: procurementSummaryLabel({
-        released: executionPlanReady,
+        released: procurementHandoffComplete,
         materialRequirementDocNo: mrDocNo,
         mrStatus,
+        partialStockReady: allowWoWithoutPlanRelease && !procurementHandoffComplete,
       }),
     },
     rmPreview: {
@@ -715,15 +872,24 @@ async function buildNoQtyLockedSheetPlacementAssessment(db, sheet, deps = {}, pr
       released: executionPlanReady,
       materialRequirement,
       procurementRequired,
+      placement,
     });
   }
+
+  // Align with execution summary: Net RM = 0 without a Monthly Plan is execution-ready
+  // (PROCUREMENT_NOT_REQUIRED). Mixed FG readiness also unlocks Place WO for stock-ready
+  // lines without waiting for period release (allowWoWithoutPlanRelease).
+  const skipMonthlyPlanning = Boolean(readiness?.skipMonthlyPlanning);
+  const allowWoWithoutPlanRelease = Boolean(readiness?.allowWoWithoutPlanRelease);
+  const effectiveReleased =
+    Boolean(executionPlanReady) || skipMonthlyPlanning || allowWoWithoutPlanRelease;
 
   const suggestedWoQty = round3(n(placement?.summary?.totalExecutableQty));
   const readyToPlaceWo = deriveReadyToPlaceWo(totals, placement, readiness.status);
   const { processStageKey, processStageLabel } = deriveNoQtyPlacementProcessStage({
     readyToPlaceWo,
     rsBalanceQty: totals.rsBalanceQty,
-    executionPlanReady,
+    executionPlanReady: effectiveReleased,
     materialRequirement,
   });
 
@@ -734,7 +900,9 @@ async function buildNoQtyLockedSheetPlacementAssessment(db, sheet, deps = {}, pr
     requirementSheetId: Number(sheet.id),
     readinessStatus: readiness.status,
     periodKey: periodKey || null,
-    released: executionPlanReady,
+    released: effectiveReleased,
+    skipMonthlyPlanning,
+    allowWoWithoutPlanRelease,
     materialRequirementId: materialRequirement?.id ?? null,
     rsBalanceQty: totals.rsBalanceQty,
     suggestedWoQty,
@@ -889,6 +1057,7 @@ module.exports = {
   deriveReadyToPlaceWo,
   loadWoPlacementContextForSheet,
   buildRsBalanceLinesFromSheet,
+  sumLockedRsComposition,
   woLinePlacedQty,
   procurementSummaryLabel,
 };

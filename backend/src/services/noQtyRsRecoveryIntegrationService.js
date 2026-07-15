@@ -1,26 +1,24 @@
 /**
- * Batch 3C — Requirement Sheet ↔ Recovery Engine integration.
+ * Batch 3C / Phase 2B — Requirement Sheet ↔ Recovery Engine integration.
  *
- * Owns RS-side orchestration: auto shortfall reserve, QC allocate/skip,
- * line component sync, lock commit, cancel/delete reverse.
+ * Phase 2B: PRODUCTION_SHORTFALL and QC_FINAL_REJECTION are NEVER auto-allocated.
+ * Allocation happens only via Keep (noQtyRsRecoveryDecisionService).
  *
- * Canonical PRODUCTION_SHORTFALL sync: syncDraftRsWithAvailableRecovery —
- * keeps an editable next-cycle draft RS continuously aligned with the
- * CarryForwardPending + RecoveryAllocation queue (no parallel source of truth).
+ * This module owns: line component sync from active allocations,
+ * discovery stubs (no allocate), cancel/delete reverse, QC helpers.
  */
 
 const auditLog = require("./auditLog");
 const {
   EPS,
   getAvailableRecovery,
-  allocateRecovery,
   reverseRecovery,
-  commitReservedAllocationsForSheet,
   reverseAllocationsForSheet,
   ACTIVE_ALLOC_STATUSES,
 } = require("./noQtyRecoveryService");
 
 const PRODUCTION_SHORTFALL = "PRODUCTION_SHORTFALL";
+/** @deprecated Phase 2B — auto sync source types removed; Keep/Waive owns allocation. */
 const DEFAULT_SYNC_SOURCE_TYPES = Object.freeze([PRODUCTION_SHORTFALL]);
 
 function n(v) {
@@ -104,50 +102,17 @@ async function syncAllSheetLineComponents(tx, requirementSheetId) {
 }
 
 /**
- * Ensure FG lines exist for items that still have available production shortfall.
- * Creates carry-forward-only lines (base/customer demand = 0) when missing.
+ * Ensure FG lines exist for items with available recovery (both types). Does NOT allocate.
+ * @deprecated Prefer ensureLinesForPendingRecoveryItems in decision service; kept for compatibility.
  */
 async function ensureLinesForProductionShortfallItems(tx, { salesOrderId, requirementSheetId, itemIds }) {
-  const available = await getAvailableRecovery(tx, {
-    salesOrderId,
-    recoveryType: PRODUCTION_SHORTFALL,
-  });
-  const selected = new Set((itemIds || []).map((id) => Number(id)));
-  const toEnsure = new Set(selected);
-  for (const row of available) {
-    if (row.availableQty > EPS) toEnsure.add(Number(row.itemId));
-  }
-
-  const existing = await tx.requirementSheetLine.findMany({
-    where: { sheetId: requirementSheetId },
-    select: { id: true, itemId: true },
-  });
-  const have = new Set(existing.map((l) => Number(l.itemId)));
-  const createdItemIds = [];
-
-  for (const itemId of toEnsure) {
-    if (have.has(itemId)) continue;
-    await tx.requirementSheetLine.create({
-      data: {
-        sheetId: requirementSheetId,
-        itemId,
-        requirementQty: 0,
-        baseDemandQty: 0,
-        productionShortfallQty: 0,
-        qcRejectionRecoveryQty: 0,
-        approvedManualAdjustmentQty: 0,
-        totalRsQty: 0,
-      },
-    });
-    createdItemIds.push(itemId);
-    have.add(itemId);
-  }
-
-  return { itemIds: [...have], createdItemIds };
+  void itemIds;
+  const { ensureLinesForPendingRecoveryItems } = require("./noQtyRsRecoveryDecisionService");
+  return ensureLinesForPendingRecoveryItems(tx, { salesOrderId, requirementSheetId });
 }
 
 /**
- * Locate the canonical editable next-cycle draft RS for late PRODUCTION_SHORTFALL sync.
+ * Locate the canonical editable next-cycle draft RS for late recovery discovery.
  * Does not create a sheet. Never returns locked/cancelled/closed-cycle drafts or excluded source RS.
  *
  * @returns {Promise<{ id: number, salesOrderId: number, cycleId: number|null } | null>}
@@ -208,16 +173,9 @@ async function findEligibleDraftRequirementSheetForRecoverySync(
 }
 
 /**
- * Canonical draft RS ↔ PRODUCTION_SHORTFALL synchronization.
- *
- * - Loads editable NO_QTY draft only
- * - Ensures lines for available shortfall items (merge or create CF-only line)
- * - Allocates via RecoveryAllocation (FOR UPDATE + available-qty gate = idempotent)
- * - Refreshes derived RS component snapshots
- * - Does NOT allocate QC_FINAL_REJECTION (out of scope)
- *
- * @param {object} tx
- * @param {{ requirementSheetId: number, sourceTypes?: string[], itemIds?: number[]|null, actorUserId?: number|null, actorRole?: string|null, salesOrderId?: number|null }} args
+ * Phase 2B: discovery-only. Does NOT allocate.
+ * Seeds PENDING Keep/Waive decisions via noQtyRsRecoveryDecisionService.
+ * Name retained for call-site compatibility.
  */
 async function syncDraftRsWithAvailableRecovery(
   tx,
@@ -230,132 +188,27 @@ async function syncDraftRsWithAvailableRecovery(
     salesOrderId = null,
   } = {},
 ) {
-  const sheetId = Number(requirementSheetId);
-  if (!Number.isFinite(sheetId) || sheetId <= 0) {
-    throw rsRecoveryError("Invalid requirement sheet id.", { statusCode: 400, code: "RS_INVALID_ID" });
-  }
-
-  const types = [...new Set((sourceTypes || DEFAULT_SYNC_SOURCE_TYPES).map((t) => String(t)))];
-  if (!types.includes(PRODUCTION_SHORTFALL)) {
-    return {
-      skipped: true,
-      reason: "SOURCE_TYPES_EXCLUDE_PRODUCTION_SHORTFALL",
-      allocated: [],
-      createdItemIds: [],
-      requirementSheetId: sheetId,
-    };
-  }
-  // Explicitly refuse silent QC expansion in this sync path.
-  if (types.some((t) => t !== PRODUCTION_SHORTFALL)) {
-    throw rsRecoveryError(
-      "syncDraftRsWithAvailableRecovery only supports PRODUCTION_SHORTFALL in this batch; QC_FINAL_REJECTION remains manual.",
-      { statusCode: 400, code: "RS_SYNC_SOURCE_TYPE_UNSUPPORTED" },
-    );
-  }
-
-  const sheet = await tx.requirementSheet.findUnique({
-    where: { id: sheetId },
-    select: {
-      id: true,
-      status: true,
-      salesOrderId: true,
-      salesOrder: { select: { id: true, orderType: true } },
-    },
+  void sourceTypes;
+  void itemIds;
+  void salesOrderId;
+  void actorRole;
+  const { syncPendingRecoveryDecisionsForSheet } = require("./noQtyRsRecoveryDecisionService");
+  const result = await syncPendingRecoveryDecisionsForSheet(tx, {
+    requirementSheetId,
+    actorUserId,
   });
-  if (!sheet) {
-    throw rsRecoveryError("Requirement sheet not found.", { statusCode: 404, code: "RS_NOT_FOUND" });
-  }
-  if (sheet.status !== "DRAFT") {
-    return {
-      skipped: true,
-      reason: "RS_NOT_DRAFT",
-      allocated: [],
-      createdItemIds: [],
-      requirementSheetId: sheetId,
-    };
-  }
-  if (sheet.salesOrder?.orderType !== "NO_QTY") {
-    return {
-      skipped: true,
-      reason: "NOT_NO_QTY",
-      allocated: [],
-      createdItemIds: [],
-      requirementSheetId: sheetId,
-    };
-  }
-
-  const soId = Number(salesOrderId != null ? salesOrderId : sheet.salesOrderId);
-  if (Number(sheet.salesOrderId) !== soId) {
-    throw rsRecoveryError("Requirement sheet does not belong to this sales order.", {
-      statusCode: 400,
-      code: "RS_SO_MISMATCH",
-    });
-  }
-
-  const ensured = await ensureLinesForProductionShortfallItems(tx, {
-    salesOrderId: soId,
-    requirementSheetId: sheetId,
-    itemIds: itemIds || [],
-  });
-
-  const available = await getAvailableRecovery(tx, {
-    salesOrderId: soId,
-    recoveryType: PRODUCTION_SHORTFALL,
-  });
-
-  const allowedItems = new Set(ensured.itemIds);
-  const allocated = [];
-
-  for (const src of available) {
-    if (!allowedItems.has(Number(src.itemId))) continue;
-    if (src.availableQty <= EPS) continue;
-    // allocateRecovery locks CarryForwardPending FOR UPDATE and re-checks available qty.
-    const result = await allocateRecovery(tx, {
-      recoverySourceId: src.recoverySourceId,
-      requirementSheetId: sheetId,
-      qty: src.availableQty,
-      actorUserId,
-    });
-    allocated.push({
-      recoverySourceId: src.recoverySourceId,
-      itemId: src.itemId,
-      qty: src.availableQty,
-      allocationId: result.allocation.id,
-    });
-  }
-
-  await syncAllSheetLineComponents(tx, sheetId);
-
-  if ((allocated.length || ensured.createdItemIds.length) && typeof actorUserId === "number") {
-    await auditLog.write(tx, {
-      action: auditLog.AuditAction.UPDATE,
-      entityType: auditLog.AuditEntityType.SETTINGS,
-      entityId: `REQUIREMENT_SHEET:${sheetId}`,
-      actorUserId,
-      actorRole,
-      summary: `Synced ${allocated.length} PRODUCTION_SHORTFALL recovery source(s) onto draft RS ${sheetId}`,
-      payload: {
-        module: "RS_RECOVERY",
-        actionLabel: "SYNC_DRAFT_RS_PRODUCTION_SHORTFALL",
-        allocated,
-        createdItemIds: ensured.createdItemIds,
-      },
-    });
-  }
-
   return {
-    skipped: false,
-    reason: null,
-    allocated,
-    createdItemIds: ensured.createdItemIds,
-    requirementSheetId: sheetId,
-    salesOrderId: soId,
+    skipped: Boolean(result.skipped),
+    reason: result.reason || null,
+    allocated: [],
+    createdItemIds: [],
+    requirementSheetId: Number(requirementSheetId),
+    decisions: result.decisions || [],
   };
 }
 
 /**
- * After a new PRODUCTION_SHORTFALL CarryForwardPending is created: sync the eligible next draft RS if any.
- * If no eligible draft exists, leave recovery OPEN for Create Next RS.
+ * Phase 2B: after recovery is created, sync PENDING decisions on eligible draft — no allocate.
  */
 async function syncEligibleDraftRsAfterProductionShortfallCreated(
   tx,
@@ -366,6 +219,7 @@ async function syncEligibleDraftRsAfterProductionShortfallCreated(
     actorRole = null,
   } = {},
 ) {
+  void actorRole;
   const draft = await findEligibleDraftRequirementSheetForRecoverySync(tx, {
     salesOrderId,
     excludeRequirementSheetIds,
@@ -383,23 +237,20 @@ async function syncEligibleDraftRsAfterProductionShortfallCreated(
   const result = await syncDraftRsWithAvailableRecovery(tx, {
     requirementSheetId: draft.id,
     salesOrderId: draft.salesOrderId,
-    sourceTypes: [PRODUCTION_SHORTFALL],
     actorUserId,
-    actorRole,
   });
 
   return {
     synced: !result.skipped,
-    reason: result.reason || "SYNCED",
+    reason: result.reason || "DECISIONS_SYNCED",
     requirementSheetId: draft.id,
-    allocated: result.allocated,
-    createdItemIds: result.createdItemIds,
+    allocated: [],
+    createdItemIds: result.createdItemIds || [],
   };
 }
 
 /**
- * Auto-reserve all available PRODUCTION_SHORTFALL onto the draft RS (incl. base demand 0).
- * Delegates to syncDraftRsWithAvailableRecovery (canonical).
+ * @deprecated Phase 2B — auto-allocate removed. Seeds PENDING decisions only.
  */
 async function autoAllocateProductionShortfallForSheet(
   tx,
@@ -411,18 +262,12 @@ async function autoAllocateProductionShortfallForSheet(
     itemIds,
     actorUserId,
     actorRole,
-    sourceTypes: [PRODUCTION_SHORTFALL],
   });
-  if (result.skipped && result.reason === "RS_NOT_DRAFT") {
-    throw rsRecoveryError("Production shortfall can only be reserved on a draft requirement sheet.", {
-      code: "RS_NOT_DRAFT",
-    });
-  }
-  return { allocated: result.allocated, createdItemIds: result.createdItemIds };
+  return { allocated: [], createdItemIds: result.createdItemIds || [], decisions: result.decisions };
 }
 
 /**
- * Legacy facade used by RS create — delegates to canonical draft sync.
+ * Legacy facade used by RS create — Phase 2B: seed PENDING decisions only (no allocate).
  */
 async function consumeCarryForwardPendingForRequirementSheet(tx, args) {
   const result = await syncDraftRsWithAvailableRecovery(tx, {
@@ -431,93 +276,54 @@ async function consumeCarryForwardPendingForRequirementSheet(tx, args) {
     itemIds: args.itemIds,
     actorUserId: args.actorUserId,
     actorRole: args.actorRole,
-    sourceTypes: [PRODUCTION_SHORTFALL],
   });
   return {
-    consumed: result.allocated.map((a) => ({
-      carryForwardPendingId: a.recoverySourceId,
-      itemId: a.itemId,
-      qty: a.qty,
-      requirementSheetLineId: null,
-    })),
-    allocated: result.allocated,
-    createdItemIds: result.createdItemIds,
+    consumed: [],
+    allocated: [],
+    createdItemIds: result.createdItemIds || [],
     ...result,
   };
 }
 
 /**
- * Allocate QC recovery (full or partial) onto a draft RS line.
+ * @deprecated Phase 2B — use Keep (keepItemRecovery) for all recovery types.
+ * Thin alias: Keep for the source's FG item (all-or-nothing for that item).
  */
 async function allocateQcRecoveryToSheet(
   tx,
   { requirementSheetId, recoverySourceId, qty, actorUserId = null },
 ) {
-  const sheet = await tx.requirementSheet.findUnique({
-    where: { id: Number(requirementSheetId) },
-    select: { id: true, status: true, salesOrderId: true },
-  });
-  if (!sheet) {
-    throw rsRecoveryError("Requirement sheet not found.", { statusCode: 404, code: "RS_NOT_FOUND" });
-  }
-  if (sheet.status !== "DRAFT") {
-    throw rsRecoveryError("QC recovery can only be reserved on a draft requirement sheet.", {
-      code: "RS_NOT_DRAFT",
-    });
-  }
-
+  void qty;
   const source = await tx.carryForwardPending.findUnique({
     where: { id: Number(recoverySourceId) },
-    select: { id: true, recoveryType: true, itemId: true, salesOrderId: true },
+    select: { id: true, itemId: true, recoveryType: true },
   });
   if (!source) {
     throw rsRecoveryError("Recovery source not found.", { statusCode: 404, code: "RECOVERY_SOURCE_NOT_FOUND" });
   }
-  if (source.recoveryType !== "QC_FINAL_REJECTION") {
-    throw rsRecoveryError("Only QC final-rejection recovery can be allocated via this path.", {
-      statusCode: 400,
-      code: "RECOVERY_TYPE_INVALID",
-    });
-  }
-  if (Number(source.salesOrderId) !== Number(sheet.salesOrderId)) {
-    throw rsRecoveryError("Recovery source does not belong to this sales order.", {
-      statusCode: 400,
-      code: "RS_SO_MISMATCH",
-    });
-  }
-
-  let line = await tx.requirementSheetLine.findUnique({
-    where: { sheetId_itemId: { sheetId: sheet.id, itemId: source.itemId } },
-  });
-  if (!line) {
-    line = await tx.requirementSheetLine.create({
-      data: {
-        sheetId: sheet.id,
-        itemId: source.itemId,
-        requirementQty: 0,
-        baseDemandQty: 0,
-        productionShortfallQty: 0,
-        qcRejectionRecoveryQty: 0,
-        approvedManualAdjustmentQty: 0,
-        totalRsQty: 0,
-      },
-    });
-  }
-
-  const result = await allocateRecovery(tx, {
-    recoverySourceId: source.id,
-    requirementSheetId: sheet.id,
-    requirementSheetLineId: line.id,
-    qty,
+  const { keepItemRecovery } = require("./noQtyRsRecoveryDecisionService");
+  const kept = await keepItemRecovery(tx, {
+    requirementSheetId,
+    itemId: source.itemId,
     actorUserId,
   });
-  const synced = await syncRequirementSheetLineComponents(tx, line.id);
-  const available = await getAvailableRecovery(tx, {
-    salesOrderId: sheet.salesOrderId,
+  const sheet = await tx.requirementSheet.findUnique({
+    where: { id: Number(requirementSheetId) },
+    select: { salesOrderId: true },
+  });
+  const remaining = await getAvailableRecovery(tx, {
+    salesOrderId: sheet?.salesOrderId,
     itemId: source.itemId,
     recoveryType: "QC_FINAL_REJECTION",
   });
-  return { ...result, line: synced, availableQcRecovery: available };
+  return {
+    allocation: null,
+    recoverySource: kept.decision,
+    availableQcRecovery: remaining,
+    line: null,
+    redirectedToKeep: true,
+    decision: kept.decision,
+  };
 }
 
 /**
@@ -539,68 +345,24 @@ async function reverseSheetRecoveryAllocation(tx, { allocationId, actorUserId = 
 }
 
 /**
- * RS lock: ensure shortfall reserved, commit RESERVED→COMMITTED, snapshot line totals.
+ * Phase 2B lock finalize — decision gate + commit KEPT reservations. No auto-allocate.
  */
 async function finalizeRecoveryOnRequirementSheetLock(tx, { requirementSheetId, actorUserId = null }) {
-  const sheetId = Number(requirementSheetId);
-  const sheet = await tx.requirementSheet.findUnique({
-    where: { id: sheetId },
-    include: { lines: true, salesOrder: { select: { id: true, orderType: true } } },
-  });
-  if (!sheet) {
-    throw rsRecoveryError("Requirement sheet not found.", { statusCode: 404, code: "RS_NOT_FOUND" });
-  }
-  if (sheet.salesOrder?.orderType !== "NO_QTY") {
-    return { committed: [], lines: sheet.lines };
-  }
-  if (sheet.status !== "DRAFT") {
-    throw rsRecoveryError("Sheet must be draft to finalize recovery on lock.", { code: "RS_NOT_DRAFT" });
-  }
-
-  for (const ln of sheet.lines || []) {
-    const base = round3(n(ln.requirementQty));
-    await tx.requirementSheetLine.update({
-      where: { id: ln.id },
-      data: { baseDemandQty: String(base), requirementQty: String(base) },
-    });
-  }
-
-  await syncDraftRsWithAvailableRecovery(tx, {
-    salesOrderId: sheet.salesOrderId,
-    requirementSheetId: sheetId,
-    itemIds: (sheet.lines || []).map((l) => l.itemId),
-    actorUserId,
-    sourceTypes: [PRODUCTION_SHORTFALL],
-  });
-
-  const committed = await commitReservedAllocationsForSheet(tx, {
-    requirementSheetId: sheetId,
-    actorUserId,
-  });
-
-  const lines = await syncAllSheetLineComponents(tx, sheetId);
-
-  for (const ln of lines) {
-    const total = round3(n(ln.totalRsQty));
-    const shortfall = round3(n(ln.productionShortfallQty));
-    const base = round3(n(ln.baseDemandQty));
-    await tx.requirementSheetLine.update({
-      where: { id: ln.id },
-      data: {
-        shortfallQtySnapshot: String(shortfall),
-        suggestedWoQtySnapshot: String(total),
-        requirementQty: String(base),
-      },
-    });
-  }
-
-  return { committed, lines };
+  const { finalizeRecoveryDecisionsOnRequirementSheetLock } = require("./noQtyRsRecoveryDecisionService");
+  return finalizeRecoveryDecisionsOnRequirementSheetLock(tx, { requirementSheetId, actorUserId });
 }
 
 /**
- * After allowed cancel (status already CANCELLED): reverse active allocations.
+ * After allowed cancel (status already CANCELLED): reverse decisions + allocations.
  */
 async function reverseRecoveryOnRequirementSheetCancel(tx, { requirementSheetId, actorUserId = null, reason = null }) {
+  void reason;
+  const { reverseRecoveryDecisionsForSheet } = require("./noQtyRsRecoveryDecisionService");
+  await reverseRecoveryDecisionsForSheet(tx, {
+    requirementSheetId,
+    actorUserId,
+    deleteDecisionRows: false,
+  });
   return reverseAllocationsForSheet(tx, {
     requirementSheetId,
     actorUserId,
@@ -610,9 +372,15 @@ async function reverseRecoveryOnRequirementSheetCancel(tx, { requirementSheetId,
 }
 
 /**
- * Draft delete: reverse active allocs, delete allocation rows (FK Restrict), then caller deletes sheet.
+ * Draft delete: reverse decisions + allocations, delete allocation rows, then caller deletes sheet.
  */
 async function reverseRecoveryOnDraftRequirementSheetDelete(tx, { requirementSheetId, actorUserId = null }) {
+  const { reverseRecoveryDecisionsForSheet } = require("./noQtyRsRecoveryDecisionService");
+  await reverseRecoveryDecisionsForSheet(tx, {
+    requirementSheetId,
+    actorUserId,
+    deleteDecisionRows: true,
+  });
   await reverseAllocationsForSheet(tx, {
     requirementSheetId,
     actorUserId,

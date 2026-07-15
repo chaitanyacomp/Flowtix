@@ -33,13 +33,26 @@ const {
   finalizeRecoveryOnRequirementSheetLock,
   reverseRecoveryOnRequirementSheetCancel,
   reverseRecoveryOnDraftRequirementSheetDelete,
-  allocateQcRecoveryToSheet,
   reverseSheetRecoveryAllocation,
   getQcRecoveryAvailabilityForSheet,
   syncRequirementSheetLineComponents,
   syncDraftRsWithAvailableRecovery,
 } = require("../services/noQtyRsRecoveryIntegrationService");
-const { getAvailableRecovery } = require("../services/noQtyRecoveryService");
+const { getAvailableRecovery, getRecoverySummary } = require("../services/noQtyRecoveryService");
+const {
+  getRecoveryDecisionsForSheet,
+  keepItemRecovery,
+  waiveItemRecovery,
+  reverseItemRecoveryDecision,
+  assessDecisionOnlyRecoveryCycleEligibility,
+} = require("../services/noQtyRsRecoveryDecisionService");
+const { closeDecisionOnlyNoQtyCycle } = require("../services/noQtyCycleAutoClose");
+const {
+  addDraftRequirementSheetItem,
+  removeDraftRequirementSheetItem,
+  assertNoDuplicateItemIds,
+  DUPLICATE_ITEM_MESSAGE,
+} = require("../services/noQtyRsDraftItemService");
 const { QC_ENTRY_ACTIVE_WHERE } = require("../services/qcEntryConstants");
 const {
   loadNoQtyPostCycleApprovalQtyByItem,
@@ -68,6 +81,7 @@ const {
   getRequirementSheetExecutionSummary,
   previewRequirementSheetRmForProposedQty,
 } = require("../services/requirementSheetExecutionService");
+const { loadNoQtyAcceptedSurplusForCycle } = require("../services/noQtyAcceptedSurplusService");
 
 const requirementSheetsRouter = express.Router();
 
@@ -886,9 +900,27 @@ async function mapSheetDetail(sheet) {
     salesOrderId: sheet.salesOrderId,
     currentCycleId: effCycleIdForPost,
   });
-  const productionSurplusByItem =
+  const grossRequirementByItem = new Map(
+    (sheet.lines || []).map((ln) => [
+      Number(ln.itemId),
+      round3(
+        n(
+          ln.totalRsQty ??
+            n(ln.baseDemandQty ?? ln.requirementQty) +
+              n(ln.productionShortfallQty) +
+              n(ln.qcRejectionRecoveryQty) +
+              n(ln.approvedManualAdjustmentQty),
+        ),
+      ),
+    ]),
+  );
+  const acceptedSurplusByItem =
     sheet?.salesOrder?.orderType === "NO_QTY" && effCycleIdForPost != null && Number(effCycleIdForPost) > 0
-      ? await loadNoQtyProductionSurplusByItemForPriorCycle(prisma, sheet.salesOrderId, Number(effCycleIdForPost))
+      ? await loadNoQtyAcceptedSurplusForCycle(prisma, {
+          salesOrderId: sheet.salesOrderId,
+          targetCycleId: Number(effCycleIdForPost),
+          grossRequirementByItem,
+        })
       : new Map();
   const postCycleByItem =
     sheet?.salesOrder?.orderType === "NO_QTY" && effCycleIdForPost != null && Number(effCycleIdForPost) > 0
@@ -906,6 +938,17 @@ async function mapSheetDetail(sheet) {
     sheet?.salesOrder?.orderType === "NO_QTY" && effCycleIdForPost != null && Number(effCycleIdForPost) > 0
       ? await loadNoQtyPriorCycleUndispatchedAcceptedByItem(prisma, sheet.salesOrderId, Number(effCycleIdForPost))
       : new Map();
+
+  // Phase 2B: read-only recovery summary + Keep/Waive decisions (no auto-allocation).
+  const recoverySummary =
+    sheet?.salesOrder?.orderType === "NO_QTY"
+      ? await getRecoverySummary(prisma, sheet.salesOrderId)
+      : null;
+
+  const recoveryDecisions =
+    sheet?.salesOrder?.orderType === "NO_QTY"
+      ? await getRecoveryDecisionsForSheet(prisma, sheet.id)
+      : null;
 
   const availableQcRecovery =
     sheet?.salesOrder?.orderType === "NO_QTY"
@@ -945,6 +988,8 @@ async function mapSheetDetail(sheet) {
       sheet?.salesOrder?.orderType === "NO_QTY" ? round3(n(productionQcPendingByItem.get(ln.itemId) ?? 0)) : 0;
     const undispatchedPriorQty =
       sheet?.salesOrder?.orderType === "NO_QTY" ? round3(n(undispatchedPriorByItem.get(ln.itemId) ?? 0)) : 0;
+    const acceptedSurplus = acceptedSurplusByItem.get(Number(ln.itemId)) ?? null;
+    const priorAcceptedExcessQty = round3(n(acceptedSurplus?.allocatedAcceptedSurplusQty ?? 0));
 
     if (sheet.status === "LOCKED" && sheet?.salesOrder?.orderType === "NO_QTY") {
       const rawSnapStock = ln.availableStockQtySnapshot != null ? n(ln.availableStockQtySnapshot) : 0;
@@ -1047,7 +1092,7 @@ async function mapSheetDetail(sheet) {
         sheet?.salesOrder?.orderType === "NO_QTY" ? 0 : round3(Math.min(grossFulfillment, stock));
       productionRequiredQty =
         sheet?.salesOrder?.orderType === "NO_QTY"
-          ? round3(Math.max(0, grossFulfillment - round3(productionSurplusByItem.get(ln.itemId) ?? 0)))
+          ? round3(Math.max(0, acceptedSurplus?.netProductionRequirementQty ?? grossFulfillment))
           : round3(Math.max(0, grossFulfillment - postCycleQty - stock));
       gapPercent = computeGapPercent(grossFulfillment, stock);
       zone = computeZone(gapPercent, greenTh, yellowTh);
@@ -1126,6 +1171,15 @@ async function mapSheetDetail(sheet) {
             pendingQcDispositionQty: pendingDispositionQty > EPS ? pendingDispositionQty : 0,
             productionQcPendingQty: productionQcPendingQty > EPS ? productionQcPendingQty : 0,
             previousCycleUndispatchedAcceptedQty: undispatchedPriorQty > EPS ? undispatchedPriorQty : 0,
+            priorAcceptedQty: round3(n(acceptedSurplus?.priorAcceptedQty ?? 0)),
+            priorAcceptedExcessQty,
+            unusedAcceptedExcessQty: round3(n(acceptedSurplus?.unusedAcceptedSurplusQty ?? 0)),
+            availableAcceptedSurplusQty: round3(n(acceptedSurplus?.availableAcceptedSurplusQty ?? 0)),
+            netProductionRequirementQty: round3(n(productionRequiredQty ?? 0)),
+            acceptedExcessExplanation:
+              priorAcceptedExcessQty > EPS
+                ? `${priorAcceptedExcessQty.toLocaleString("en-US", { maximumFractionDigits: 3 })} ${item?.unit || "qty"} accepted in previous cycles have been applied to this cycle.`
+                : null,
             totalUsableQty: round3(n(noQtyBreakdownByItem?.get(ln.itemId)?.totalUsableQty ?? usableStockDisplayQty(rawTotal))),
             /** Pending confirmed dispatch vs locked RS commitment (FIFO; includes closed cycles until fulfilled). */
             reservedForActiveNoQtyDispatchQty: round3(n(noQtyBreakdownByItem?.get(ln.itemId)?.reservedForActiveNoQtyDispatchQty ?? 0)),
@@ -1185,6 +1239,10 @@ async function mapSheetDetail(sheet) {
     customerName,
     lines,
     availableQcRecovery: sheet?.salesOrder?.orderType === "NO_QTY" ? availableQcRecovery : [],
+    /** Phase 2B: SO recovery ledger (both types). Allocation only via Keep. */
+    recoverySummary,
+    /** Phase 2B: per-FG Keep/Waive decisions for this RS. */
+    recoveryDecisions,
   };
 }
 
@@ -1270,8 +1328,8 @@ requirementSheetsRouter.post(
 
         const fgLines = (so.lines || []).filter((l) => l.item?.itemType === "FG");
         const allowedFgItemIds = new Set(fgLines.map((l) => l.itemId));
-        const requested = [...new Set((body.itemIds || []).map((x) => Number(x)).filter((x) => Number.isFinite(x) && x > 0))];
-        const selectedItemIds = requested.filter((id) => allowedFgItemIds.has(id));
+        const uniqueItemIds = assertNoDuplicateItemIds(body.itemIds || []);
+        const selectedItemIds = uniqueItemIds.filter((id) => allowedFgItemIds.has(id));
 
         if (!fgLines.length) {
           const err = new Error("No FG items found on this sales order.");
@@ -1283,35 +1341,46 @@ requirementSheetsRouter.post(
           err.statusCode = 400;
           throw err;
         }
-        if (selectedItemIds.length !== requested.length) {
+        if (selectedItemIds.length !== uniqueItemIds.length) {
           const err = new Error("One or more selected items are not valid FG items for this sales order.");
           err.statusCode = 400;
           throw err;
         }
 
-        const sheet = await tx.requirementSheet.create({
-          data: {
-            docNo: await allocateDocNo(tx, { docType: DocType.REQUIREMENT_SHEET, date: new Date() }),
-            salesOrderId: soId,
-            cycleId,
-            periodKey,
-            version: nextVersion,
-            status: "DRAFT",
-            remarks: body.remarks?.trim() || null,
-            lines: {
-              create: selectedItemIds.map((itemId) => ({
-                itemId,
-                requirementQty: 0,
-                baseDemandQty: 0,
-                productionShortfallQty: 0,
-                qcRejectionRecoveryQty: 0,
-                approvedManualAdjustmentQty: 0,
-                totalRsQty: 0,
-              })),
+        let sheet;
+        try {
+          sheet = await tx.requirementSheet.create({
+            data: {
+              docNo: await allocateDocNo(tx, { docType: DocType.REQUIREMENT_SHEET, date: new Date() }),
+              salesOrderId: soId,
+              cycleId,
+              periodKey,
+              version: nextVersion,
+              status: "DRAFT",
+              remarks: body.remarks?.trim() || null,
+              lines: {
+                create: selectedItemIds.map((itemId) => ({
+                  itemId,
+                  requirementQty: 0,
+                  baseDemandQty: 0,
+                  productionShortfallQty: 0,
+                  qcRejectionRecoveryQty: 0,
+                  approvedManualAdjustmentQty: 0,
+                  totalRsQty: 0,
+                })),
+              },
             },
-          },
-          select: { id: true },
-        });
+            select: { id: true },
+          });
+        } catch (e) {
+          if (e && e.code === "P2002") {
+            const err = new Error(DUPLICATE_ITEM_MESSAGE);
+            err.statusCode = 409;
+            err.code = "DUPLICATE_RS_ITEM";
+            throw err;
+          }
+          throw e;
+        }
 
         await consumeCarryForwardPendingForRequirementSheet(tx, {
           salesOrderId: soId,
@@ -1752,6 +1821,66 @@ requirementSheetsRouter.put(
   },
 );
 
+// POST /api/requirement-sheets/:id/lines — add one FG item to a draft cycle (no duplicates by itemId)
+requirementSheetsRouter.post(
+  "/requirement-sheets/:id/lines",
+  requireAuth,
+  requireRole(RS_WRITE_ROLES),
+  async (req, res, next) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id) || id <= 0) return res.status(400).json(friendly400("Invalid requirement sheet id."));
+      const body = z.object({ itemId: z.number().int().positive() }).parse(req.body);
+
+      const result = await prisma.$transaction(async (tx) => {
+        return addDraftRequirementSheetItem(tx, {
+          requirementSheetId: id,
+          itemId: body.itemId,
+          actorUserId: req.user?.userId ?? null,
+          actorRole: req.user?.role ?? null,
+        });
+      });
+
+      return res.status(201).json({
+        ok: true,
+        itemId: result.itemId,
+        lineId: result.line?.id ?? null,
+        requirementSheetId: result.requirementSheetId,
+      });
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
+// DELETE /api/requirement-sheets/:id/lines/:itemId — remove FG from draft cycle + recovery cleanup
+requirementSheetsRouter.delete(
+  "/requirement-sheets/:id/lines/:itemId",
+  requireAuth,
+  requireRole(RS_WRITE_ROLES),
+  async (req, res, next) => {
+    try {
+      const id = Number(req.params.id);
+      const itemId = Number(req.params.itemId);
+      if (!Number.isFinite(id) || id <= 0) return res.status(400).json(friendly400("Invalid requirement sheet id."));
+      if (!Number.isFinite(itemId) || itemId <= 0) return res.status(400).json(friendly400("Invalid item id."));
+
+      const result = await prisma.$transaction(async (tx) => {
+        return removeDraftRequirementSheetItem(tx, {
+          requirementSheetId: id,
+          itemId,
+          actorUserId: req.user?.userId ?? null,
+          actorRole: req.user?.role ?? null,
+        });
+      });
+
+      return res.json(result);
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
 // POST /api/requirement-sheets/:id/recalculate
 requirementSheetsRouter.post(
   "/requirement-sheets/:id/recalculate",
@@ -1885,6 +2014,22 @@ requirementSheetsRouter.post(
       const id = Number(req.params.id);
       if (!Number.isFinite(id) || id <= 0) return res.status(400).json(friendly400("Invalid requirement sheet id."));
 
+      const lockBody = z
+        .object({
+          lines: z
+            .array(
+              z.object({
+                itemId: z.number().int().positive(),
+                requirementQty: z.number().nonnegative(),
+              }),
+            )
+            .optional()
+            .nullable(),
+        })
+        .optional()
+        .nullable()
+        .parse(req.body ?? {});
+
       const sheet = await prisma.$transaction(async (tx) => {
         const existing = await tx.requirementSheet.findUnique({
           where: { id },
@@ -1921,6 +2066,37 @@ requirementSheetsRouter.post(
           await tx.requirementSheet.update({ where: { id }, data: { cycleId: activeCycleId } });
         }
 
+        // Persist draft demand edits before recovery finalize + surplus snapshot (never lock stale demand).
+        const incomingLines = Array.isArray(lockBody?.lines) ? lockBody.lines : [];
+        if (incomingLines.length) {
+          const allowed = new Set((existing.lines || []).map((l) => l.itemId));
+          for (const ln of incomingLines) {
+            if (!allowed.has(ln.itemId)) {
+              const err = new Error("Invalid item in sheet lines.");
+              err.statusCode = 400;
+              throw err;
+            }
+            await tx.requirementSheetLine.updateMany({
+              where: { sheetId: id, itemId: ln.itemId },
+              data: {
+                requirementQty: ln.requirementQty,
+                baseDemandQty: ln.requirementQty,
+              },
+            });
+            const line = await tx.requirementSheetLine.findFirst({
+              where: { sheetId: id, itemId: ln.itemId },
+              select: { id: true },
+            });
+            if (line) await syncRequirementSheetLineComponents(tx, line.id);
+          }
+          await syncDraftRsWithAvailableRecovery(tx, {
+            requirementSheetId: id,
+            salesOrderId: existing.salesOrderId,
+            actorUserId: req.user?.userId ?? null,
+            actorRole: req.user?.role ?? null,
+          });
+        }
+
         const reservedNormalByItemLock = await reservedNormalDispatchQtyByItemForPlanning(existing.salesOrderId);
         const freeAfterNormalByItemLock = await freeUsableFgStockByItemForNoQtyPlanning({ salesOrderId: existing.salesOrderId });
         const reservedUnlockedDraftByItemLock = await reservedUnlockedDispatchDraftQtyByItemForPlanning(tx);
@@ -1937,6 +2113,16 @@ requirementSheetsRouter.post(
           actorUserId: req.user?.userId ?? null,
         });
 
+        const grossRequirementByItem = new Map(
+          (recoveryLines || []).map((ln) => [Number(ln.itemId), round3(n(ln.totalRsQty))]),
+        );
+        // Atomic freshness: lock always reconstructs accepted surplus from current QC/dispatch history.
+        const acceptedSurplusByItem = await loadNoQtyAcceptedSurplusForCycle(tx, {
+          salesOrderId: existing.salesOrderId,
+          targetCycleId: activeCycleId,
+          grossRequirementByItem,
+        });
+
         let anyPositiveFulfillment = false;
         for (const ln of recoveryLines || []) {
           const item = (existing.lines || []).find((x) => x.id === ln.id)?.item;
@@ -1944,6 +2130,9 @@ requirementSheetsRouter.post(
           const shortfall = n(ln.productionShortfallQty);
           const qcRec = n(ln.qcRejectionRecoveryQty);
           const total = n(ln.totalRsQty);
+          const netProductionRequirement = round3(
+            n(acceptedSurplusByItem.get(Number(ln.itemId))?.netProductionRequirementQty ?? total),
+          );
           const rawFree = Math.max(
             0,
             n(freeAfterNormalByItemLock.get(ln.itemId) ?? n(noQtyBreakdownByItemLock.get(ln.itemId)?.freeSurplusUsableQty ?? 0)) -
@@ -1961,7 +2150,7 @@ requirementSheetsRouter.post(
               availableStockQtySnapshot: usableStockUsed,
               gapPercentSnapshot: gapPercent,
               shortfallQtySnapshot: String(round3(shortfall)),
-              suggestedWoQtySnapshot: String(round3(total)),
+              suggestedWoQtySnapshot: String(netProductionRequirement),
               colorZoneSnapshot: zone,
               baseDemandQty: String(round3(base)),
               productionShortfallQty: String(round3(shortfall)),
@@ -1973,11 +2162,20 @@ requirementSheetsRouter.post(
         }
 
         if (!anyPositiveFulfillment) {
-          const err = new Error(
-            "Cannot lock requirement sheet with zero fulfillment quantity. Enter a positive fulfillment qty for at least one item (carry-forward shortfall or QC recovery may also apply).",
-          );
-          err.statusCode = 409;
-          throw err;
+          const decisionOnly = await assessDecisionOnlyRecoveryCycleEligibility(tx, {
+            requirementSheetId: id,
+            lines: recoveryLines,
+            skipPendingSync: true,
+          });
+          if (!decisionOnly.eligible) {
+            const err = new Error(
+              "Cannot lock requirement sheet with zero fulfillment quantity. Enter a positive fulfillment qty for at least one item (carry-forward shortfall or QC recovery may also apply).",
+            );
+            err.statusCode = 409;
+            err.code = "ZERO_FULFILLMENT";
+            err.details = { decisionOnlyReason: decisionOnly.reason };
+            throw err;
+          }
         }
 
         const locked = await tx.requirementSheet.update({
@@ -1986,11 +2184,28 @@ requirementSheetsRouter.post(
           include: { salesOrder: { include: { customer: true, po: { include: { customer: true } } } }, lines: { include: { item: true }, orderBy: { id: "asc" } } },
         });
 
+        const decisionOnlyAfterLock = !anyPositiveFulfillment
+          ? await assessDecisionOnlyRecoveryCycleEligibility(tx, {
+              requirementSheetId: id,
+              lines: recoveryLines,
+              skipPendingSync: true,
+            })
+          : { eligible: false };
+        let decisionOnlyCycleClosed = false;
+        if (decisionOnlyAfterLock.eligible && locked.cycleId != null) {
+          const closed = await closeDecisionOnlyNoQtyCycle(tx, {
+            soId: locked.salesOrderId,
+            cycleId: Number(locked.cycleId),
+            requirementSheetId: locked.id,
+          });
+          decisionOnlyCycleClosed = closed.closed === true;
+        }
+
         const cyc =
           locked.cycleId != null
             ? await tx.salesOrderCycle.findUnique({
                 where: { id: Number(locked.cycleId) },
-                select: { id: true, cycleNo: true },
+                select: { id: true, cycleNo: true, status: true },
               })
             : null;
         const soHead = locked.salesOrder;
@@ -2018,10 +2233,12 @@ requirementSheetsRouter.post(
             lineCount,
             totalRequirementQty: lineCount ? round3(totalRequirementQty) : undefined,
             source: "no_qty_so",
+            decisionOnlyRecoveryCycle: decisionOnlyAfterLock.eligible === true,
+            decisionOnlyCycleClosed,
           },
         });
 
-        return { locked };
+        return { locked, decisionOnlyRecoveryCycle: decisionOnlyAfterLock.eligible === true, decisionOnlyCycleClosed };
       });
 
       const lockedSheet = sheet.locked;
@@ -2029,12 +2246,14 @@ requirementSheetsRouter.post(
 
       return res.json({
         ...detail,
+        decisionOnlyRecoveryCycle: sheet.decisionOnlyRecoveryCycle === true,
+        decisionOnlyCycleClosed: sheet.decisionOnlyCycleClosed === true,
         lockHandoff: {
           workOrderCreated: false,
           workOrderId: detail.workOrderId ?? null,
           workOrderDocNo: null,
           productionMaterialRequest: null,
-          executionStartsAt: "MONTHLY_PLAN_RELEASE",
+          executionStartsAt: sheet.decisionOnlyRecoveryCycle ? "DECISION_ONLY_RECOVERY" : "MONTHLY_PLAN_RELEASE",
         },
       });
     } catch (e) {
@@ -2060,49 +2279,115 @@ requirementSheetsRouter.get(
   },
 );
 
-// POST /api/requirement-sheets/:id/recovery-allocations — QC full/partial allocate (draft only)
+// Phase 2B — unified Keep/Waive (all recovery types). No partial Keep/Waive.
 requirementSheetsRouter.post(
-  "/requirement-sheets/:id/recovery-allocations",
+  "/requirement-sheets/:id/recovery-decisions/:itemId/keep",
   requireAuth,
   requireRole(RS_WRITE_ROLES),
   async (req, res, next) => {
     try {
       const id = Number(req.params.id);
+      const itemId = Number(req.params.itemId);
       if (!Number.isFinite(id) || id <= 0) return res.status(400).json(friendly400("Invalid requirement sheet id."));
-      const body = z
-        .object({
-          recoverySourceId: z.number().int().positive(),
-          qty: z.number().positive(),
-        })
-        .strict()
-        .parse(req.body ?? {});
+      if (!Number.isFinite(itemId) || itemId <= 0) return res.status(400).json(friendly400("Invalid item id."));
 
       const result = await prisma.$transaction(async (tx) =>
-        allocateQcRecoveryToSheet(tx, {
+        keepItemRecovery(tx, {
           requirementSheetId: id,
-          recoverySourceId: body.recoverySourceId,
-          qty: body.qty,
+          itemId,
           actorUserId: req.user?.userId ?? null,
+          actorRole: req.user?.role ?? null,
         }),
       );
-
-      return res.status(201).json({
-        allocationId: result.allocation.id,
-        allocatedQty: Number(result.allocation.allocatedQty),
-        status: result.allocation.status,
-        availableQty: result.availableQty,
-        line: {
-          id: result.line.id,
-          itemId: result.line.itemId,
-          productionShortfallQty: Number(result.line.productionShortfallQty),
-          qcRejectionRecoveryQty: Number(result.line.qcRejectionRecoveryQty),
-          totalRsQty: Number(result.line.totalRsQty),
-        },
-        availableQcRecovery: result.availableQcRecovery,
+      const decisions = await getRecoveryDecisionsForSheet(prisma, id);
+      return res.status(200).json({
+        alreadyDecided: result.alreadyDecided,
+        decision: result.decision,
+        recoveryDecisions: decisions,
       });
     } catch (e) {
       return next(e);
     }
+  },
+);
+
+requirementSheetsRouter.post(
+  "/requirement-sheets/:id/recovery-decisions/:itemId/waive",
+  requireAuth,
+  requireRole(RS_WRITE_ROLES),
+  async (req, res, next) => {
+    try {
+      const id = Number(req.params.id);
+      const itemId = Number(req.params.itemId);
+      if (!Number.isFinite(id) || id <= 0) return res.status(400).json(friendly400("Invalid requirement sheet id."));
+      if (!Number.isFinite(itemId) || itemId <= 0) return res.status(400).json(friendly400("Invalid item id."));
+      const body = z
+        .object({ reason: z.string().min(3).max(2000) })
+        .strict()
+        .parse(req.body ?? {});
+
+      const result = await prisma.$transaction(async (tx) =>
+        waiveItemRecovery(tx, {
+          requirementSheetId: id,
+          itemId,
+          reason: body.reason,
+          actorUserId: req.user?.userId ?? null,
+          actorRole: req.user?.role ?? null,
+        }),
+      );
+      const decisions = await getRecoveryDecisionsForSheet(prisma, id);
+      return res.status(200).json({
+        alreadyDecided: result.alreadyDecided,
+        decision: result.decision,
+        recoveryDecisions: decisions,
+      });
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
+requirementSheetsRouter.post(
+  "/requirement-sheets/:id/recovery-decisions/:itemId/reverse",
+  requireAuth,
+  requireRole(RS_WRITE_ROLES),
+  async (req, res, next) => {
+    try {
+      const id = Number(req.params.id);
+      const itemId = Number(req.params.itemId);
+      if (!Number.isFinite(id) || id <= 0) return res.status(400).json(friendly400("Invalid requirement sheet id."));
+      if (!Number.isFinite(itemId) || itemId <= 0) return res.status(400).json(friendly400("Invalid item id."));
+      const body = z.object({ reason: z.string().max(2000).optional().nullable() }).parse(req.body ?? {});
+
+      const decisions = await prisma.$transaction(async (tx) =>
+        reverseItemRecoveryDecision(tx, {
+          requirementSheetId: id,
+          itemId,
+          actorUserId: req.user?.userId ?? null,
+          actorRole: req.user?.role ?? null,
+          reason: body.reason ?? null,
+        }),
+      );
+      return res.status(200).json({ recoveryDecisions: decisions });
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
+// Deprecated: partial/manual QC allocate removed. Use Keep/Waive (410 Gone).
+requirementSheetsRouter.post(
+  "/requirement-sheets/:id/recovery-allocations",
+  requireAuth,
+  requireRole(RS_WRITE_ROLES),
+  async (_req, res) => {
+    return res.status(410).json({
+      error: {
+        message:
+          "Manual QC recovery allocation was removed in Phase 2B. Use Keep/Waive per FG item (POST .../recovery-decisions/:itemId/keep|waive).",
+        code: "RECOVERY_ALLOCATE_REMOVED",
+      },
+    });
   },
 );
 
@@ -2157,7 +2442,7 @@ requirementSheetsRouter.get(
 requirementSheetsRouter.post(
   "/requirement-sheets/:id/cancel",
   requireAuth,
-  requireRole(RS_WRITE_ROLES),
+  requireRole(["ADMIN"]),
   async (req, res, next) => {
     try {
       const id = Number(req.params.id);
@@ -2508,7 +2793,9 @@ requirementSheetsRouter.post(
           throw err;
         }
 
-        await assertNoQtyRequirementSheetPeriodReleased(tx, sheet);
+        await assertNoQtyRequirementSheetPeriodReleased(tx, sheet, {
+          requestedLines: Array.isArray(body.lines) ? body.lines : undefined,
+        });
 
         const woResult = await createNoQtyWorkOrderFromLockedSheet(tx, sheet, {
           requestedLines: Array.isArray(body.lines) ? body.lines : undefined,

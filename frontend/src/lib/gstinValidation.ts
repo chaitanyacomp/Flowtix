@@ -2,15 +2,23 @@
 
 export const GSTIN_FORMAT_REGEX = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
 
-export function normalizeGstinInput(raw: string): string {
-  return String(raw ?? "")
-    .trim()
+/** Strip whitespace/newlines/separators; keep A–Z / 0–9 only. */
+export function cleanGstinChars(raw: string | null | undefined): string {
+  if (raw == null) return "";
+  return String(raw)
     .toUpperCase()
-    .replace(/\s+/g, "");
+    .replace(/[^0-9A-Z]/g, "");
+}
+
+export function normalizeGstinInput(raw: string): string {
+  const t = cleanGstinChars(raw);
+  return t.length === 15 ? t : t;
 }
 
 export function validateGstinFormatMessage(gstin: string): string | null {
-  const g = normalizeGstinInput(gstin);
+  const raw = String(gstin ?? "").trim();
+  if (!raw) return null;
+  const g = cleanGstinChars(raw);
   if (!g) return null;
   if (g.length !== 15) return "GSTIN must be exactly 15 characters.";
   if (!GSTIN_FORMAT_REGEX.test(g)) return "Enter a valid GSTIN format (15 characters).";
@@ -18,7 +26,7 @@ export function validateGstinFormatMessage(gstin: string): string | null {
 }
 
 export function gstStateCodeFromGstin(gstin: string): string | null {
-  const g = normalizeGstinInput(gstin);
+  const g = cleanGstinChars(gstin);
   if (g.length < 2) return null;
   const code = g.slice(0, 2);
   return /^\d{2}$/.test(code) ? code : null;
@@ -47,7 +55,7 @@ export function validateGstinAgainstState(
 ): string | null {
   const formatMsg = validateGstinFormatMessage(gstin);
   if (formatMsg) return formatMsg;
-  const g = normalizeGstinInput(gstin);
+  const g = cleanGstinChars(gstin);
   if (!g) return null;
   if (stateId === "") return null;
   const state = states.find((s) => s.id === stateId);

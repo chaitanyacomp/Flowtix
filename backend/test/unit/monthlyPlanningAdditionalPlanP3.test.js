@@ -208,6 +208,16 @@ describe("monthlyPlanningAdditionalPlanP3.evaluateAdditionalPlanCreateEligibilit
       }).canCreate,
       true,
     );
+    assert.equal(
+      evaluateAdditionalPlanCreateEligibility({
+        approvedPlanCount: 1,
+        activePlan: null,
+        totalAdditionalRequirementQty: 1025,
+        procurementRequired: false,
+        netRmShortageQty: 0,
+      }).blockingCode,
+      "NO_PROCUREMENT_NEED",
+    );
   });
 });
 

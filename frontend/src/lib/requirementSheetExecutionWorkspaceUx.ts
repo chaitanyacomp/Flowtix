@@ -19,32 +19,47 @@ export type PlacementStatusLike =
 export function rmCoverageLabelFromPlacement(input: {
   placementStatus?: PlacementStatusLike | null;
   rsBalanceQty?: number | null;
+  readyFgCount?: number | null;
+  shortageFgCount?: number | null;
+  totalFgWithBalance?: number | null;
 }): string {
   const balance = Number(input.rsBalanceQty ?? 0);
   if (!(balance > 0)) return "Complete";
+
+  const ready = Number(input.readyFgCount ?? 0);
+  const shortage = Number(input.shortageFgCount ?? 0);
+  const total = Number(input.totalFgWithBalance ?? ready + shortage);
+  if (total > 0 && (ready > 0 || shortage > 0)) {
+    if (shortage <= 0 && ready > 0) return "All Items Ready";
+    if (ready <= 0 && shortage > 0) return "No Items Ready";
+    return `${ready} Ready / ${shortage} Shortage`;
+  }
+
   const status = String(input.placementStatus ?? "").toUpperCase();
-  if (status === "READY") return "Ready";
+  if (status === "READY") return "All Items Ready";
   if (status === "PARTIALLY_READY") return "Partial";
-  if (status === "AWAITING_PROCUREMENT") return "Awaiting RM";
+  if (status === "AWAITING_PROCUREMENT") return "No Items Ready";
   if (status === "MISSING_BOM") return "Blocked";
   return "Awaiting RM";
 }
 
 export function rmCoverageChipClassName(label: string): string {
-  switch (label) {
-    case "Ready":
-      return "border-emerald-200 bg-emerald-50 text-emerald-800";
-    case "Partial":
-      return "border-amber-200 bg-amber-50 text-amber-900";
-    case "Awaiting RM":
-      return "border-sky-200 bg-sky-50 text-sky-800";
-    case "Blocked":
-      return "border-red-200 bg-red-50 text-red-800";
-    case "Complete":
-      return "border-slate-200 bg-slate-50 text-slate-600";
-    default:
-      return "border-slate-200 bg-slate-50 text-slate-700";
+  if (label === "All Items Ready" || label === "Ready") {
+    return "border-emerald-200 bg-emerald-50 text-emerald-800";
   }
+  if (label.includes("Ready /") || label === "Partial") {
+    return "border-amber-200 bg-amber-50 text-amber-900";
+  }
+  if (label === "No Items Ready" || label === "Awaiting RM") {
+    return "border-sky-200 bg-sky-50 text-sky-800";
+  }
+  if (label === "Blocked") {
+    return "border-red-200 bg-red-50 text-red-800";
+  }
+  if (label === "Complete") {
+    return "border-slate-200 bg-slate-50 text-slate-600";
+  }
+  return "border-slate-200 bg-slate-50 text-slate-700";
 }
 
 export function placementInlineReadinessMessage(input: {
@@ -52,22 +67,43 @@ export function placementInlineReadinessMessage(input: {
   totalExecutableQty?: number | null;
   rsBalanceQty?: number | null;
   placementReason?: string | null;
+  readyFgCount?: number | null;
+  shortageFgCount?: number | null;
+  allowWoWithoutPlanRelease?: boolean | null;
 }): string {
   const balance = Number(input.rsBalanceQty ?? 0);
   const status = String(input.placementStatus ?? "").toUpperCase();
   const executable = Number(input.totalExecutableQty ?? 0);
+  const ready = Number(input.readyFgCount ?? 0);
+  const shortage = Number(input.shortageFgCount ?? 0);
   if (!(balance > 0)) return "Complete — RS balance is fully placed.";
+  if (ready > 0 && shortage > 0) {
+    return "Work Order creation is available for RM-ready items. Items with unresolved RM shortages remain blocked.";
+  }
+  if (input.allowWoWithoutPlanRelease && executable > 0 && status === "PARTIALLY_READY") {
+    return "Work Order creation is available for RM-ready items. Items with unresolved RM shortages remain blocked.";
+  }
   if (status === "READY") return "Ready — full balance can be placed.";
   if (status === "PARTIALLY_READY") {
     const qty = Number.isFinite(executable) && executable > 0 ? formatExecutionQty(executable) : "0";
     return `Partial RM — ${qty} executable; remaining stays on RS.`;
   }
   if (status === "AWAITING_PROCUREMENT") {
-    return "Awaiting RM — WO placement blocked until RM is physically available.";
+    return "Awaiting RM — WO placement blocked until RM is physically available for remaining FG items.";
   }
   if (status === "MISSING_BOM") return "Blocked — approved BOM required.";
   const reason = String(input.placementReason ?? "").trim();
   return reason || "Review RM coverage before placing WO.";
+}
+
+export function fgItemRmStatusLabel(outcomeOrStatus?: string | null): string {
+  const key = String(outcomeOrStatus ?? "").toUpperCase();
+  if (key === "READY_FOR_WO" || key === "READY") return "READY";
+  if (key === "PARTIALLY_READY") return "PARTIAL";
+  if (key === "PROCUREMENT_REQUIRED" || key === "AWAITING_PROCUREMENT") return "SHORTAGE";
+  if (key === "MISSING_BOM") return "BOM MISSING";
+  if (key === "ZERO_BALANCE") return "COMPLETE";
+  return key.replace(/_/g, " ") || "—";
 }
 
 export function formatExecutionQty(n: number, unit?: string | null): string {
@@ -221,14 +257,21 @@ export function formatPriorCycleExecutionBanner(input: {
  */
 export const WO_PLANNING_UX = Object.freeze({
   PAGE_TITLE: "Work Order Planning",
-  SOURCE_DOCUMENT_LABEL: "Requirement Sheet (reference)",
+  SOURCE_DOCUMENT_LABEL: "Requirement Sheet Reference",
+  PAGE_SUBTITLE: "Create Work Orders from the locked Requirement Sheet.",
   WORK_AREA_TITLE: "Create Work Order",
   WORK_AREA_INTRO: "Enter quantity and confirm RM feasibility, then create the Work Order.",
   INFO_PANEL_TITLE: "Planning Context",
   CAPACITY_AREA_TITLE: "Live RM Requirement",
+  KPI_CUSTOMER_DEMAND: "Customer Demand",
+  KPI_PRODUCTION_SHORTAGE: "Production Shortage",
+  KPI_QC_FINAL_REJECTION: "Final QC Rejection",
+  KPI_TOTAL_RECOVERY: "Total Recovery",
   KPI_TOTAL_RS_REQUIREMENT: "Total RS Requirement",
-  KPI_WO_QTY_PLACED: "WO Quantity Placed",
-  KPI_REMAINING_REQUIREMENT: "Remaining Requirement",
+  KPI_WO_QTY_PLACED: "WO Qty Placed",
+  KPI_REMAINING_TO_PLACE: "Remaining to Place",
+  /** @deprecated Prefer KPI_REMAINING_TO_PLACE */
+  KPI_REMAINING_REQUIREMENT: "Remaining to Place",
   KPI_RM_LIMITED_CAPACITY: "RM-Limited Capacity",
   KPI_SUGGESTED_NEXT_WO: "Suggested Next WO Qty",
   KPI_NUMBER_OF_WOS: "Number of WOs",
@@ -236,7 +279,7 @@ export const WO_PLANNING_UX = Object.freeze({
   KPI_SUGGESTED_WO_QTY: "Suggested Next WO Qty",
   KPI_RM_COVERAGE: "RM Coverage",
   KPI_RS_DEMAND: "Total RS Requirement",
-  KPI_WO_PLACED: "WO Quantity Placed",
+  KPI_WO_PLACED: "WO Qty Placed",
   CURRENT_WOS_TITLE: "Current Work Orders",
   WO_HISTORY_TITLE: "Current Work Orders",
   STAGE_DONE: "Requirement Sheet",
@@ -255,5 +298,5 @@ export function resolveRequirementSheetWorkbenchPageTitle(input: {
   showExecutionWorkspace: boolean;
 }): string {
   if (input.isNoQty && input.showExecutionWorkspace) return WO_PLANNING_UX.PAGE_TITLE;
-  return "Requirement sheet";
+  return "Requirement Sheet";
 }

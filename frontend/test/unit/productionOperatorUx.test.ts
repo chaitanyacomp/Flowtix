@@ -22,6 +22,7 @@ describe("productionOperatorUx", () => {
 
   it("uses compact max helper label", () => {
     expect(formatProductionOperatorMaxHelper(6000, "Meter")).toBe("Max: 6,000 m");
+    expect(formatProductionOperatorMaxHelper(2050, "Nos", "RM-supported maximum")).toBe("RM-supported maximum: 2,050 nos");
     expect(formatProductionOperatorShortUnit("NOS")).toBe("nos");
   });
 

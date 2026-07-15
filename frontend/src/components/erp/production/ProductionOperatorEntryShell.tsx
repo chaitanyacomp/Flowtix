@@ -17,12 +17,14 @@ export function ProductionOperatorQtyHelper({
   maxAllowedQty,
   unit,
   className,
+  labelPrefix,
 }: {
   maxAllowedQty?: number | null;
   unit?: string | null;
   className?: string;
+  labelPrefix?: string;
 }) {
-  const maxLabel = formatProductionOperatorMaxHelper(maxAllowedQty, unit);
+  const maxLabel = formatProductionOperatorMaxHelper(maxAllowedQty, unit, labelPrefix);
   if (!maxLabel) return null;
   return (
     <p className={cn("text-[11px] leading-snug text-slate-500", className)} data-testid="production-qty-helper">
@@ -41,6 +43,7 @@ export type ProductionOperatorEntryFieldsProps = {
   unit?: string | null;
   disabled?: boolean;
   maxAllowedQty?: number | null;
+  maxLabelPrefix?: string;
   producedQtyValid: boolean;
   wolId: number;
   rmReadinessLoading?: boolean;
@@ -72,6 +75,7 @@ export function ProductionOperatorEntryFields({
   unit,
   disabled,
   maxAllowedQty,
+  maxLabelPrefix,
   producedQtyValid,
   wolId,
   rmReadinessLoading,
@@ -177,7 +181,7 @@ export function ProductionOperatorEntryFields({
       </div>
 
       <div className="space-y-0.5">
-        <ProductionOperatorQtyHelper maxAllowedQty={maxAllowedQty} unit={unit} />
+        <ProductionOperatorQtyHelper maxAllowedQty={maxAllowedQty} unit={unit} labelPrefix={maxLabelPrefix} />
         {rmReadinessLoading ? (
           <p className="text-[11px] text-slate-500">Checking RM readiness…</p>
         ) : showRmCapHint && rmAllowedNowQty != null && !rmProductionEntryBlocked ? (

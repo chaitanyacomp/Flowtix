@@ -13,6 +13,7 @@ const {
   applyNoQtyRecoveryDependencyCleanup,
   buildNoQtyRecoveryDependencyCleanupSteps,
 } = require("../services/noQtyRecoveryCleanupService");
+const { getResetTransactionVerifyTables } = require("../services/cleanup/cleanupRegistry");
 
 const adminDatabaseCleanupRouter = express.Router();
 
@@ -244,75 +245,9 @@ const RESET_TRANSACTION_OPENING_STOCK_MESSAGE =
 /**
  * Transaction tables that must be empty after a successful reset (final verification + sweep).
  * Masters (Item, Customer, BOM, OpeningStockEntry, Location, etc.) are intentionally excluded.
+ * SSOT: cleanup/cleanupRegistry.js
  */
-const RESET_TRANSACTION_VERIFY_TABLES = [
-  "salesBillReceipt",
-  "salesBillLine",
-  "salesBill",
-  "customerReturn",
-  "dispatch",
-  "stockAdjustmentQcEntry",
-  "stockTransaction",
-  "qcReversal",
-  "scrapRecord",
-  "qcRejectedDisposition",
-  "qcEntry",
-  "productionEntryRmConsumption",
-  "productionEntry",
-  "materialReturnLine",
-  "materialReturnNote",
-  "materialIssueLine",
-  "materialIssueNote",
-  "materialWastageNote",
-  "productionMaterialRequestLine",
-  "productionMaterialRequest",
-  "materialAllocation",
-  "productionRmReturnPending",
-  "productionWorkOrderReportLine",
-  "productionWorkOrderReport",
-  "recoveryAllocation",
-  "noQtySoWaiverLine",
-  "noQtySoWaiver",
-  "carryForwardPending",
-  "productionShortfallResolution",
-  "workOrderProductionExecution",
-  "workOrderLine",
-  "workOrder",
-  "requirementSheetLine",
-  "requirementSheet",
-  "noQtySoClosedShortageLine",
-  "noQtySoCloseSnapshot",
-  "salesOrderCycle",
-  "regularSoPlanningSnapshotLine",
-  "regularSoPlanningSnapshot",
-  "salesOrderLine",
-  "salesOrder",
-  "rmPoLineProcurementLink",
-  "purchaseRequestLineSourceLink",
-  "materialRequirementLine",
-  "materialRequirement",
-  "purchaseRequestLine",
-  "purchaseRequest",
-  "quotationLine",
-  "quotation",
-  "feasibility",
-  "enquiryLine",
-  "enquiry",
-  "purchaseBillPayment",
-  "purchaseBillLine",
-  "purchaseBill",
-  "grnLine",
-  "grn",
-  "rmPurchaseOrderLine",
-  "rmPurchaseOrder",
-  "customerPOLine",
-  "customerPO",
-  "rmPlanLine",
-  "rmPlan",
-  "monthlyProductionPlanRevisionLine",
-  "monthlyProductionPlanLine",
-  "monthlyProductionPlan",
-];
+const RESET_TRANSACTION_VERIFY_TABLES = getResetTransactionVerifyTables();
 
 /**
  * Monthly planning documents (MPP / RM snapshot). Must run after materialRequirement is cleared
@@ -458,6 +393,11 @@ function buildResetTransactionDataCleanupSteps(tx) {
     ...buildProductionRmFlowCleanupSteps(tx),
     { table: "workOrderLine", delete: () => tx.workOrderLine.deleteMany({}), count: () => tx.workOrderLine.count() },
     { table: "workOrder", delete: () => tx.workOrder.deleteMany({}), count: () => tx.workOrder.count() },
+    {
+      table: "monthlyPlanRequirementCoverage",
+      delete: () => tx.monthlyPlanRequirementCoverage.deleteMany({}),
+      count: () => tx.monthlyPlanRequirementCoverage.count(),
+    },
     {
       table: "requirementSheetLine",
       delete: () => tx.requirementSheetLine.deleteMany({}),
@@ -675,8 +615,8 @@ function buildProductionReportCleanupSteps(tx) {
 
 /**
  * P16 Production Execution + NO_QTY recovery dependency cluster.
- * RecoveryAllocation / NoQtySoWaiverLine Restrict → CarryForwardPending must be cleared first
- * (shared helper — do not reorder locally).
+ * Recovery children (decision lines, allocations, waivers) Restrict → CarryForwardPending
+ * must be cleared first (shared helper — do not reorder locally).
  *
  * @param {import("@prisma/client").Prisma.TransactionClient} tx
  * @returns {Array<{ table: string; delete: () => Promise<{ count?: number }>; count: () => Promise<number> }>}
@@ -1208,10 +1148,18 @@ async function runResetNoQtyTransactionalDeletes(tx) {
   ).map((r) => r.id);
 
   if (rsIds.length > 0) {
+    if (typeof tx.monthlyPlanRequirementCoverage?.deleteMany === "function") {
+      await addDeleteCountStep(deletedCounts, "monthlyPlanRequirementCoverage", () =>
+        tx.monthlyPlanRequirementCoverage.deleteMany({ where: { requirementSheetId: { in: rsIds } } }),
+      );
+    } else {
+      deletedCounts.monthlyPlanRequirementCoverage = 0;
+    }
     await addDeleteCount(deletedCounts, "requirementSheetLine", () =>
       tx.requirementSheetLine.deleteMany({ where: { sheetId: { in: rsIds } } }),
     );
   } else {
+    deletedCounts.monthlyPlanRequirementCoverage = 0;
     deletedCounts.requirementSheetLine = 0;
   }
 
@@ -1452,6 +1400,17 @@ async function runFullDemoResetDeletes(tx, deleted) {
     ],
     ["workOrderLine", async () => addDeleteCount(deleted, "workOrderLine", () => tx.workOrderLine.deleteMany({}))],
     ["workOrder", async () => addDeleteCount(deleted, "workOrder", () => tx.workOrder.deleteMany({}))],
+    [
+      "monthlyPlanRequirementCoverage",
+      async () =>
+        tryOptionalTableDelete(
+          tx,
+          deleted,
+          ["monthlyplanrequirementcoverage", "MonthlyPlanRequirementCoverage"],
+          "monthlyPlanRequirementCoverage",
+          () => tx.monthlyPlanRequirementCoverage.deleteMany({}),
+        ),
+    ],
     ["requirementSheetLine", async () => addDeleteCount(deleted, "requirementSheetLine", () => tx.requirementSheetLine.deleteMany({}))],
     ["requirementSheet", async () => addDeleteCount(deleted, "requirementSheet", () => tx.requirementSheet.deleteMany({}))],
     [

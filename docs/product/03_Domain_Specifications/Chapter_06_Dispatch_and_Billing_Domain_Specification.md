@@ -1,5 +1,7 @@
 # Dispatch & Billing Domain Specification
 
+> **Tally export rule:** XML generation is not accounting acceptance. An invoice becomes Tally-accepted only after a persisted positive acknowledgement; rejection remains retryable and stores the response. See the [Tally Compatibility Contract](../05_Data_Architecture/Tally_Compatibility_Contract.md).
+
 | Field | Value |
 |-------|-------|
 | **Document ID** | FT-PD-035 |
@@ -31,6 +33,7 @@
 | Version | Date | Author | Summary |
 |---------|------|--------|---------|
 | 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial Dispatch & Billing domain — dispatch through commercial completion |
+| 1.0.1 | 2026-07-15 | FT ERP Product Team | Customer Delivery Location selection + immutable Dispatch ship-to snapshot (§7.8) |
 
 **Supersedes:** None.
 
@@ -309,6 +312,20 @@ Dispatch Note lines carry:
 - WO, Production Entry, QA Inspection, FG Acceptance links
 - Internal Sales Order line reference
 - Optional Customer PO ref on paperwork
+
+### 7.8 Customer Delivery Location (ship-to)
+
+At Dispatch prepare:
+
+1. Resolve the SO customer.
+2. Load **active** Customer Delivery Locations (`CustomerDeliveryAddress`) for that customer only.
+3. Preselect the default location; operator may choose another active location (label is the dropdown name).
+4. Persist `deliveryLocationId` plus an **immutable** ship-to snapshot on the Dispatch row (label, address, city, state, pincode, country, GSTIN, contact, phone, email).
+5. Print/export (Delivery Challan, Packing List, Sales Bill ship-to where supported) **SHALL** use the Dispatch snapshot — not live master edits.
+6. Legacy dispatches without `deliveryLocationId` remain readable via SO commercial ship-to fallback.
+7. Bill To remains Customer registered information; Ship To is the Dispatch snapshot.
+
+Do **not** create a parallel Delivery Location master table — `CustomerDeliveryAddress` is canonical.
 
 ---
 

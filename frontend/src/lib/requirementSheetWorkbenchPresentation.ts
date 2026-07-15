@@ -36,6 +36,8 @@ export type RequirementSheetWorkbenchActionContext = {
   noQtyFinalizeDisabled: boolean;
   draftUi: boolean;
   noQtyDraftCanFinalize: boolean;
+  /** Zero-demand recovery cycle: all KEEP/WAIVE done — Finalize allowed. */
+  decisionOnlyRecoveryReady?: boolean;
   busy: boolean;
   noSheetsUi: boolean;
   canCreateNextRs: boolean;
@@ -164,6 +166,8 @@ export function resolveRequirementSheetWorkbenchActions(
     };
     if (ctx.draftUi && !ctx.noQtyDraftCanFinalize) {
       hint = "Enter requirement qty.";
+    } else if (ctx.draftUi && ctx.decisionOnlyRecoveryReady) {
+      hint = "Recovery decisions completed — finalize this cycle.";
     }
   } else if (ctx.showNoQtyCreateWorkspace && ctx.noSheetsUi) {
     // Inline create form already exposes the primary CTA — avoid duplicate header button.

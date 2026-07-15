@@ -17,6 +17,7 @@ import {
 import { cn } from "../lib/utils";
 import { erpTable } from "../lib/erpFoundationTokens";
 import { Ban, CheckCircle2, Copy, MoreHorizontal, Pencil, Plus, Trash2, X } from "lucide-react";
+import { DependencyLifecycleModal, type DependencySummary } from "../components/masters/DependencyLifecycleModal";
 import { Badge } from "../components/ui/badge";
 import { type NumberDraft, toNumberDraft } from "../lib/numberDraft";
 import { useFastEntryForm } from "../hooks/useFastEntryForm";
@@ -70,9 +71,10 @@ type BomRow = {
   fgWeightUnitId?: number | null;
   fgWeightUnit?: UnitRow | null;
   outputQty?: string;
+  runnerWeight?: string;
+  /** Legacy response fields; not editable and ignored by engineering calculations. */
   processLossPercent?: string;
   qcLossPercent?: string;
-  suggestedFgPlanningBufferPercent?: string | null;
   planning?: BomPlanning;
   componentSummary?: BomComponentSummary;
   approvalWarnings?: string[];
@@ -85,9 +87,7 @@ type HeaderDraft = {
   fgWeight: NumberDraft;
   fgWeightUnitId: number | "";
   outputQty: NumberDraft;
-  processLossPercent: NumberDraft;
-  qcLossPercent: NumberDraft;
-  suggestedFgPlanningBufferPercent: NumberDraft;
+  runnerWeight: NumberDraft;
   bomType: BomType;
   effectiveFrom: string;
   remarks: string;
@@ -203,9 +203,7 @@ function defaultHeaderDraft(): HeaderDraft {
     fgWeight: "",
     fgWeightUnitId: "",
     outputQty: 1,
-    processLossPercent: "",
-    qcLossPercent: "",
-    suggestedFgPlanningBufferPercent: "",
+    runnerWeight: 0,
     bomType: "STANDARD",
     effectiveFrom: "",
     remarks: "",
@@ -215,18 +213,13 @@ function defaultHeaderDraft(): HeaderDraft {
 function headerFromBom(b: BomRow): HeaderDraft {
   const fw = b.fgWeight != null ? Number(b.fgWeight) : NaN;
   const oq = b.outputQty != null ? Number(b.outputQty) : 1;
-  const pl = Number(b.processLossPercent ?? 0);
-  const ql = Number(b.qcLossPercent ?? 0);
-  const sb =
-    b.suggestedFgPlanningBufferPercent != null ? Number(b.suggestedFgPlanningBufferPercent) : NaN;
+  const rw = Number(b.runnerWeight ?? 0);
   const eff = b.effectiveFrom ? String(b.effectiveFrom).slice(0, 10) : "";
   return {
     fgWeight: Number.isFinite(fw) && fw > 0 ? fw : "",
     fgWeightUnitId: b.fgWeightUnitId ?? "",
     outputQty: Number.isFinite(oq) && oq > 0 ? oq : 1,
-    processLossPercent: pl > 0 ? pl : "",
-    qcLossPercent: ql > 0 ? ql : "",
-    suggestedFgPlanningBufferPercent: Number.isFinite(sb) && sb >= 0 ? sb : "",
+    runnerWeight: Number.isFinite(rw) && rw >= 0 ? rw : 0,
     bomType: b.bomType ?? "STANDARD",
     effectiveFrom: eff,
     remarks: b.remarks ?? "",
@@ -240,7 +233,7 @@ function lineFromBom(b: BomRow, line: BomLine): LineDraft {
   const outputQty = Number(b.outputQty ?? 1);
   const mixPercent =
     Number.isFinite(fw) && fw > 0
-      ? bomMixPercentFromKg(baseQtyKg, fw, weightUnit, outputQty, b.normalizationMode ?? "PER_PIECE")
+      ? bomMixPercentFromKg(baseQtyKg, fw, weightUnit, outputQty, b.normalizationMode ?? "PER_PIECE", Number(b.runnerWeight ?? 0))
       : null;
   return {
     rmItemId: line.rmItemId,
@@ -254,10 +247,7 @@ function headerNums(h: HeaderDraft) {
     fgWeight: h.fgWeight === "" ? null : Number(h.fgWeight),
     fgWeightUnitId: h.fgWeightUnitId === "" ? null : Number(h.fgWeightUnitId),
     outputQty: h.outputQty === "" ? 1 : Number(h.outputQty),
-    processLossPercent: h.processLossPercent === "" ? 0 : Number(h.processLossPercent),
-    qcLossPercent: h.qcLossPercent === "" ? 0 : Number(h.qcLossPercent),
-    suggestedFgPlanningBufferPercent:
-      h.suggestedFgPlanningBufferPercent === "" ? null : Number(h.suggestedFgPlanningBufferPercent),
+    runnerWeight: h.runnerWeight === "" ? 0 : Number(h.runnerWeight),
   };
 }
 
@@ -440,8 +430,7 @@ function BomSummaryPanel({
     fgWeight: nums.fgWeight,
     fgWeightUnit: weightUnit,
     outputQty: nums.outputQty,
-    processLossPercent: nums.processLossPercent,
-    qcLossPercent: nums.qcLossPercent,
+    runnerWeight: nums.runnerWeight,
     lines: lines.map((l) => ({ rmItemId: l.rmItemId, mixPercent: l.mixPercent })),
   });
   const lineSummaries = summary.lineSummaries
@@ -470,7 +459,8 @@ function BomSummaryPanel({
           }
         />
         <BomSummaryRow label="Total composition" value={`${fmt3(summary.totalCompositionPercent)}%`} />
-        <BomSummaryRow label="Total RM after wastage" value={`${fmt3(summary.totalRmAfterWastageGm)} gm`} />
+        <BomSummaryRow label="Shot weight" value={summary.shotWeight != null ? `${fmt3(summary.shotWeight)} ${summary.weightUnitLabel}` : "—"} />
+        <BomSummaryRow label="RM per FG" value={summary.rmPerFg != null ? `${fmt3(summary.rmPerFg)} ${summary.weightUnitLabel}` : "—"} />
         <BomSummaryRow label="FG per KG" value={summary.weightConfigured && summary.possibleFgPerKg != null ? `${fmtIntish(summary.possibleFgPerKg)} Nos` : "—"} />
         <BomSummaryRow label="Output qty" value={`${fmt3(nums.outputQty)} ${fgUnit}`} />
         {summarySfg > 0 ? (
@@ -598,39 +588,15 @@ function BomCompactForm({
             ))}
           </select>
         </BomCell>
-        <BomCell label="Process wastage %">
+        <BomCell label="Runner weight">
           <Input
             type="number"
             step="any"
             className={cn(opInputClass, "w-full text-right")}
-            value={header.processLossPercent}
-            readOnly={readOnly}
-            onChange={(e) => setHeader((h) => ({ ...h, processLossPercent: toNumberDraft(e.target.value) }))}
-          />
-        </BomCell>
-        <BomCell label="QC allowance %">
-          <Input
-            type="number"
-            step="any"
-            className={cn(opInputClass, "w-full text-right")}
-            value={header.qcLossPercent}
-            readOnly={readOnly}
-            onChange={(e) => setHeader((h) => ({ ...h, qcLossPercent: toNumberDraft(e.target.value) }))}
-          />
-        </BomCell>
-        <BomCell label="Suggested FG planning buffer %">
-          <Input
-            type="number"
-            step="any"
             min={0}
-            max={10}
-            className={cn(opInputClass, "w-full text-right")}
-            value={header.suggestedFgPlanningBufferPercent}
+            value={header.runnerWeight}
             readOnly={readOnly}
-            onChange={(e) =>
-              setHeader((h) => ({ ...h, suggestedFgPlanningBufferPercent: toNumberDraft(e.target.value) }))
-            }
-            placeholder="Optional"
+            onChange={(e) => setHeader((h) => ({ ...h, runnerWeight: toNumberDraft(e.target.value) }))}
           />
         </BomCell>
         <BomCell label="Notes" className="bom-compact-span-3">
@@ -722,7 +688,7 @@ function BomRmWorkspaceTable({
               <th className="w-[4.5rem]">Code</th>
               <th className="bom-col-qty bom-col-num">Mix %</th>
               <th className="bom-col-qty bom-col-num">RM Weight</th>
-              <th className="bom-col-eff bom-col-num">Effective RM</th>
+              <th className="bom-col-eff bom-col-num">RM per FG</th>
               <th className="bom-col-act" />
           </tr>
         </thead>
@@ -733,7 +699,7 @@ function BomRmWorkspaceTable({
               const mix = l.mixPercent === "" ? NaN : Number(l.mixPercent);
               const qty =
                 Number.isFinite(mix) && nums.fgWeight != null
-                  ? bomLineQuantitiesFromMixPercent(nums.fgWeight, weightUnit, mix, nums.processLossPercent, nums.qcLossPercent)
+                  ? bomLineQuantitiesFromMixPercent(nums.fgWeight, weightUnit, mix, nums.runnerWeight, nums.outputQty)
                   : { rmWeightGm: null, internalQtyKg: null, effectiveQtyKg: null };
               const mixErr = mixPercentError(l, false);
             return (
@@ -1094,6 +1060,9 @@ export function BomsPage() {
   const [focusRmLineIndex, setFocusRmLineIndex] = React.useState<number | null>(null);
   const [adminGate, setAdminGate] = React.useState<{ mode: "edit" | "delete"; bom: BomRow } | null>(null);
   const [adminGatePassword, setAdminGatePassword] = React.useState("");
+  const [lifecycleBom, setLifecycleBom] = React.useState<BomRow | null>(null);
+  const [dependencySummary, setDependencySummary] = React.useState<DependencySummary | null>(null);
+  const [checkingDependencies, setCheckingDependencies] = React.useState(false);
 
   const editorSectionRef = React.useRef<HTMLDivElement | null>(null);
   const workspaceFormRef = React.useRef<HTMLFormElement | null>(null);
@@ -1335,18 +1304,7 @@ export function BomsPage() {
       if (!nums.fgWeightUnitId) return "Select weight unit when FG weight is set";
     }
     if (!Number.isFinite(nums.outputQty) || nums.outputQty <= 0) return "Output qty must be greater than 0";
-    if (!Number.isFinite(nums.processLossPercent) || nums.processLossPercent < 0 || nums.processLossPercent > 100)
-      return "Process wastage % must be between 0 and 100";
-    if (!Number.isFinite(nums.qcLossPercent) || nums.qcLossPercent < 0 || nums.qcLossPercent > 100)
-      return "QC allowance % must be between 0 and 100";
-    if (
-      nums.suggestedFgPlanningBufferPercent != null &&
-      (!Number.isFinite(nums.suggestedFgPlanningBufferPercent) ||
-        nums.suggestedFgPlanningBufferPercent < 0 ||
-        nums.suggestedFgPlanningBufferPercent > 10)
-    ) {
-      return "Suggested FG planning buffer % must be between 0 and 10";
-    }
+    if (!Number.isFinite(nums.runnerWeight) || nums.runnerWeight < 0) return "Runner weight cannot be negative";
     return null;
   }
 
@@ -1386,9 +1344,7 @@ export function BomsPage() {
       fgWeight: nums.fgWeight,
       fgWeightUnitId: nums.fgWeightUnitId,
       outputQty: nums.outputQty,
-      processLossPercent: nums.processLossPercent,
-      qcLossPercent: nums.qcLossPercent,
-      suggestedFgPlanningBufferPercent: nums.suggestedFgPlanningBufferPercent,
+      runnerWeight: nums.runnerWeight,
       bomType: h.bomType,
       effectiveFrom: h.effectiveFrom.trim() ? h.effectiveFrom.trim() : null,
       remarks: h.remarks.trim() || null,
@@ -1396,7 +1352,7 @@ export function BomsPage() {
         const mix = l.mixPercent === "" ? 0 : Number(l.mixPercent);
         const qty =
           fgWeightGm != null && Number.isFinite(mix)
-            ? bomLineQuantitiesFromMixPercent(nums.fgWeight ?? 0, weightUnit, mix, nums.processLossPercent, nums.qcLossPercent)
+            ? bomLineQuantitiesFromMixPercent(nums.fgWeight ?? 0, weightUnit, mix, nums.runnerWeight, nums.outputQty)
             : { internalQtyKg: null };
         return {
           rmItemId: l.rmItemId,
@@ -1507,21 +1463,45 @@ export function BomsPage() {
   }
 
   function requestDelete(b: BomRow) {
-    if (b.status !== "DRAFT") {
-      setError("Only draft BOM revisions can be deleted.");
-      return;
-    }
-    if (!window.confirm("Delete this draft BOM revision? This cannot be undone.")) return;
     void (async () => {
       try {
-        await deleteBomRequest(b.id);
-        await load();
-        if (editingBomId === b.id || selectedBomId === b.id) resetWorkspaceToIdle();
-        toast.showSuccess("BOM deleted");
+        setLifecycleBom(b);
+        setDependencySummary(null);
+        setCheckingDependencies(true);
+        setDependencySummary(await apiFetch<DependencySummary>(`/api/boms/${b.id}/dependencies`));
       } catch (err) {
         setError(bomApiError(err));
+        setLifecycleBom(null);
+      } finally {
+        setCheckingDependencies(false);
       }
     })();
+  }
+
+  function confirmLifecycleDelete() {
+    if (!lifecycleBom) return;
+    const bom = lifecycleBom;
+    setLifecycleBom(null);
+    if (bom.status !== "DRAFT") {
+      setAdminGate({ mode: "delete", bom });
+      setAdminGatePassword("");
+      return;
+    }
+    void (async () => {
+      try {
+        await deleteBomRequest(bom.id);
+        await load();
+        if (editingBomId === bom.id || selectedBomId === bom.id) resetWorkspaceToIdle();
+        toast.showSuccess("BOM deleted");
+      } catch (err) { setError(bomApiError(err)); }
+    })();
+  }
+
+  function deactivateLifecycleBom() {
+    if (!lifecycleBom) return;
+    const bom = lifecycleBom;
+    setLifecycleBom(null);
+    void deactivateBom(bom.id);
   }
 
   function startEdit(b: BomRow) {
@@ -1640,10 +1620,10 @@ export function BomsPage() {
                     FG weight
                   </th>
                   <th className="w-[4.5rem] text-right text-[10px] font-extrabold uppercase tracking-wide text-slate-600">
-                    Process
+                    Runner
                   </th>
                   <th className="w-[4rem] text-right text-[10px] font-extrabold uppercase tracking-wide text-slate-600">
-                    QC
+                    Shot wt.
                   </th>
                   <th className="w-[4rem] text-right text-[10px] font-extrabold uppercase tracking-wide text-slate-600">
                     Lines
@@ -1666,8 +1646,6 @@ export function BomsPage() {
                   </tr>
                 ) : (
                   visibleRows.map((b) => {
-                    const pl = Number(b.processLossPercent ?? 0);
-                    const ql = Number(b.qcLossPercent ?? 0);
                     const fw = b.fgWeight != null ? Number(b.fgWeight) : NaN;
                     const wtLabel = b.fgWeightUnit?.unitName ?? "";
                     const fgWt =
@@ -1696,8 +1674,8 @@ export function BomsPage() {
                             </td>
                         <td className="text-[11px] text-slate-600">{bomTypeLabel(b.bomType)}</td>
                         <td className="text-right tabular-nums text-[12px] text-slate-800">{fgWt}</td>
-                        <td className="text-right tabular-nums text-[12px] text-slate-700">{pl > 0 ? `${pl}%` : "—"}</td>
-                        <td className="text-right tabular-nums text-[12px] text-slate-700">{ql > 0 ? `${ql}%` : "—"}</td>
+                        <td className="text-right tabular-nums text-[12px] text-slate-700">{Number(b.runnerWeight ?? 0) > 0 ? `${fmt3(Number(b.runnerWeight))} ${wtLabel}` : "—"}</td>
+                        <td className="text-right tabular-nums text-[12px] text-slate-700">{b.planning?.shotWeight != null ? `${fmt3(b.planning.shotWeight)} ${wtLabel}` : "—"}</td>
                         <td className="text-right tabular-nums text-[12px] font-medium text-slate-900">
                           {b.componentSummary
                             ? `${b.componentSummary.rmCount}R/${b.componentSummary.sfgCount}S`
@@ -1734,7 +1712,7 @@ export function BomsPage() {
                               canApprove={b.status === "DRAFT"}
                               canInactive={b.status === "APPROVED"}
                               canDuplicate={!!fgWithoutBom}
-                              canDelete={b.status === "DRAFT"}
+                              canDelete={true}
                             />
                             </td>
                           ) : null}
@@ -1864,6 +1842,15 @@ export function BomsPage() {
           </Card>
         </ErpModal>
       ) : null}
+
+      <DependencyLifecycleModal
+        open={lifecycleBom != null}
+        summary={dependencySummary}
+        loading={checkingDependencies}
+        onClose={() => setLifecycleBom(null)}
+        onDelete={confirmLifecycleDelete}
+        onDeactivate={deactivateLifecycleBom}
+      />
 
       {adminGate ? (
         <ErpModal onClose={closeAdminGate} aria-labelledby="bom-admin-gate-title">

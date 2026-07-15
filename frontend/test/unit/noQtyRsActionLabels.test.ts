@@ -40,8 +40,14 @@ describe("noQtyRsActionLabels", () => {
     expect(noQtyBusinessWorkflowStage({ processStageKey: "NO_QTY_DRAFT", hasRs: false })).toBe(
       "Requirement Sheet pending",
     );
+    expect(noQtyBusinessWorkflowStage({ processStageKey: "NO_QTY_QC_IN_PROGRESS", hasRs: true })).toBe(
+      "QC In Progress",
+    );
+    expect(noQtyBusinessWorkflowStage({ processStageKey: "NO_QTY_PRODUCTION_RUNNING", hasRs: true })).toBe(
+      "Production Running",
+    );
     expect(noQtyBusinessWorkflowStage({ processStageKey: "NO_QTY_IN_PRODUCTION", hasRs: true })).toBe(
-      "Production / QA in progress",
+      "Production Running",
     );
     expect(noQtyBusinessWorkflowStage({ processStageKey: "NO_QTY_READY_TO_PLACE_WO", hasRs: true })).toBe(
       "Procurement complete · Ready for WO placement",
@@ -280,13 +286,28 @@ describe("noQtyRsActionLabels", () => {
         rmCoverageLabel: "Ready",
       }),
     ).toBe(false);
+    // Stale Awaiting RM label must not override PLACE_WO
+    expect(
+      isNoQtyExecutionPlanningOnlyState({
+        actionNeededKey: "PLACE_WO",
+        rmCoverageLabel: "Awaiting RM",
+      }),
+    ).toBe(false);
     expect(
       resolveNoQtyExecutionRegisterCtaLabel({
         actionNeededKey: "PLACE_WO",
-        rmCoverageLabel: "Ready",
-        suggestedWoQty: 50,
+        rmCoverageLabel: "Awaiting RM",
+        actionNeededLabel: "Create Work Order",
+        suggestedWoQty: 9000,
       }),
-    ).toBe(NO_QTY_PLACE_WO_LABEL);
+    ).toBe("Create Work Order");
+    expect(
+      resolveNoQtyExecutionRegisterCtaLabel({
+        actionNeededKey: "PLACE_WO",
+        ctaLabel: "Create Work Order",
+        rmCoverageLabel: "Awaiting RM",
+      }),
+    ).toBe("Create Work Order");
     expect(
       resolveNoQtyExecutionRegisterCtaLabel({
         actionNeededKey: "ISSUE_RM",

@@ -303,7 +303,8 @@ async function runMprsTestReset(tx) {
   const recoveryCounts = await cleanupNoQtyRecoveryDependencies(tx, {});
   Object.assign(deleted, recoveryCounts);
 
-  // Phase C — requirement sheets
+  // Phase C — requirement sheets (coverage first)
+  await runDeleteStep(deleted, "monthlyPlanRequirementCoverage", () => tx.monthlyPlanRequirementCoverage.deleteMany({}));
   await runDeleteStep(deleted, "requirementSheetLine", () => tx.requirementSheetLine.deleteMany({}));
   await runDeleteStep(deleted, "requirementSheet", () => tx.requirementSheet.deleteMany({}));
 

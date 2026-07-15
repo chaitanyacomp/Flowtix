@@ -96,4 +96,24 @@ describe("noQtyDispatchFifoAllocation", () => {
     assert.equal(fifo.slices[1].qty, 200);
     assert.equal(fifo.unallocated, 0);
   });
+
+  it("does not allocate QC-accepted excess after the cycle customer obligation is dispatched", () => {
+    const so = { id: 1, dispatch: [{ itemId: 10, cycleId: 5, dispatchedQty: 6000, workflowStatus: "LOCKED", reversalOfId: null }] };
+    const fifo = computeNoQtyFifoPrepareSlicesForItem({
+      so,
+      itemId: 10,
+      requestedQty: 500,
+      cyclesSorted: [{ id: 5, cycleNo: 1 }],
+      qcMap: new Map([["1:5:10", 6500]]),
+      recheckMap,
+      postCycleMap,
+      demandByCycleItem: new Map([["5:10", 6000]]),
+      usableStock: 500,
+      unlockedDraftReservedQty: 0,
+      replaceableDraftQty: 0,
+    });
+    assert.equal(fifo.totalAvailable, 0);
+    assert.equal(fifo.slices.length, 0);
+    assert.equal(fifo.unallocated, 500);
+  });
 });

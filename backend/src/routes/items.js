@@ -7,6 +7,7 @@ const {
   normalizeMasterNameKey,
 } = require("../services/masterNameNormalize");
 const { normalizeHsnOnSave } = require("../services/hsnNormalize");
+const { buildItemDependencySummary } = require("../services/masterDependencyService");
 
 const ITEM_DELETE_BLOCKED = "This item is used in orders, stock, or manufacturing and cannot be deleted.";
 const ITEM_DUPLICATE_NAME = "An item with this name already exists.";
@@ -95,45 +96,8 @@ function normalizeOptionalQty(v) {
  * True if the item is referenced anywhere that blocks deletion (FK Restrict).
  */
 async function itemHasBlockingReferences(itemId) {
-  const [
-    bomAsFg,
-    bomLineAsRm,
-    enquiryLines,
-    quotationLines,
-    poLines,
-    soLines,
-    rmPoLines,
-    woLines,
-    scrapRecords,
-    dispatches,
-    stockTxns,
-  ] = await prisma.$transaction([
-    prisma.bom.count({ where: { fgItemId: itemId } }),
-    prisma.bomLine.count({ where: { rmItemId: itemId } }),
-    prisma.enquiryLine.count({ where: { itemId } }),
-    prisma.quotationLine.count({ where: { itemId } }),
-    prisma.customerPOLine.count({ where: { itemId } }),
-    prisma.salesOrderLine.count({ where: { itemId } }),
-    prisma.rmPurchaseOrderLine.count({ where: { itemId } }),
-    prisma.workOrderLine.count({ where: { fgItemId: itemId } }),
-    prisma.scrapRecord.count({ where: { fgItemId: itemId } }),
-    prisma.dispatch.count({ where: { itemId } }),
-    prisma.stockTransaction.count({ where: { itemId } }),
-  ]);
-
-  return [
-    bomAsFg,
-    bomLineAsRm,
-    enquiryLines,
-    quotationLines,
-    poLines,
-    soLines,
-    rmPoLines,
-    woLines,
-    scrapRecords,
-    dispatches,
-    stockTxns,
-  ].some((c) => c > 0);
+  const summary = await buildItemDependencySummary(prisma, itemId);
+  return Boolean(summary && !summary.safeToDelete);
 }
 
 /** @param {string} displayName @param {number | null} excludeId */
@@ -149,8 +113,11 @@ async function itemNameTakenByOther(displayName, excludeId) {
 
 itemRouter.get("/", requireAuth, async (req, res, next) => {
   try {
-    const { type } = req.query;
-    const where = type ? { itemType: String(type) } : {};
+    const { type, includeInactive } = req.query;
+    const where = {
+      ...(type ? { itemType: String(type) } : {}),
+      ...(String(includeInactive).toLowerCase() === "true" ? {} : { isActive: true }),
+    };
     const rows = await prisma.item.findMany({
       where,
       orderBy: { id: "desc" },
@@ -441,6 +408,28 @@ itemRouter.put("/:id", requireAuth, requireRole(["ADMIN", "STORE"]), async (req,
   }
 });
 
+itemRouter.get("/:id/dependencies", requireAuth, async (req, res, next) => {
+  try {
+    const summary = await buildItemDependencySummary(prisma, Number(req.params.id));
+    if (!summary) return res.status(404).json({ error: "Item not found" });
+    return res.json(summary);
+  } catch (e) {
+    return next(e);
+  }
+});
+
+itemRouter.post("/:id/deactivate", requireAuth, requireRole(["ADMIN"]), async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const existing = await prisma.item.findUnique({ where: { id } });
+    if (!existing) return res.status(404).json({ error: "Item not found" });
+    const updated = await prisma.item.update({ where: { id }, data: { isActive: false } });
+    return res.json(updated);
+  } catch (e) {
+    return next(e);
+  }
+});
+
 itemRouter.delete("/:id", requireAuth, requireRole(["ADMIN"]), async (req, res, next) => {
   try {
     const id = Number(req.params.id);
@@ -451,10 +440,13 @@ itemRouter.delete("/:id", requireAuth, requireRole(["ADMIN"]), async (req, res, 
       throw err;
     }
 
-    if (await itemHasBlockingReferences(id)) {
-      const err = new Error(ITEM_DELETE_BLOCKED);
-      err.statusCode = 409;
-      throw err;
+    const dependencies = await buildItemDependencySummary(prisma, existing);
+    if (!dependencies.safeToDelete) {
+      return res.status(409).json({
+        error: "ITEM_DELETE_BLOCKED",
+        message: ITEM_DELETE_BLOCKED,
+        details: dependencies,
+      });
     }
 
     try {

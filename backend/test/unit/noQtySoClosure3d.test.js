@@ -76,7 +76,11 @@ function makeClosureDb(overrides = {}) {
       count: async () => overrides.unlockedDispatchCount ?? 0,
       findMany: async (args) => {
         if (args?.where?.workflowStatus === "LOCKED") return overrides.lockedDispatch ?? [];
-        if (args?.where?.workflowStatus === "UNLOCKED") return [];
+        if (args?.where?.workflowStatus === "UNLOCKED") {
+          if (overrides.unlockedDispatches) return overrides.unlockedDispatches;
+          const n = overrides.unlockedDispatchCount ?? 0;
+          return Array.from({ length: n }, (_, i) => ({ id: 9000 + i, docNo: `D-TEST-${i + 1}` }));
+        }
         return overrides.allDispatch ?? [];
       },
     },
@@ -92,6 +96,21 @@ function makeClosureDb(overrides = {}) {
     },
     salesBill: {
       count: async () => overrides.draftBillCount ?? 0,
+      findMany: async ({ where } = {}) => {
+        if (where?.status === "DRAFT") {
+          if (overrides.draftBills) return overrides.draftBills;
+          const n = overrides.draftBillCount ?? 0;
+          return Array.from({ length: n }, (_, i) => ({
+            id: 8000 + i,
+            billNo: null,
+            docNo: `SB-TEST-${i + 1}`,
+          }));
+        }
+        if (where?.status === "FINALIZED" && where?.exportedAt === null) {
+          return overrides.unexportedBills ?? [];
+        }
+        return overrides.salesBills ?? [];
+      },
     },
     noQtyAcceptedFgDisposition: {
       findMany: async () => dispositions,
@@ -217,7 +236,10 @@ describe("Batch 3D assessNoQtySoClosure", () => {
       { draftBillCount: 1, code: "DRAFT_BILLING" },
       {
         activeCycle: { id: 10, cycleNo: 1 },
-        lockedRs: { id: 1 },
+        lockedRs: {
+          id: 1,
+          lines: [{ itemId: 501, requirementQty: 10, suggestedWoQtySnapshot: 10, item: { id: 501, itemName: "FG" } }],
+        },
         woCount: 0,
         code: "WO_PENDING",
       },
@@ -250,6 +272,130 @@ describe("Batch 3D assessNoQtySoClosure", () => {
     assert.equal(a.mode, CLOSURE_MODES.WAIVER_REQUIRED);
     assert.equal(a.proposedWaiverQty, 40);
     assert.equal(a.pendingProductionShortfallQty, 40);
+  });
+
+  it("reports exact QC pending reason with WO count (not production)", async () => {
+    const db = makeClosureDb({
+      activeCycle: { id: 10, cycleNo: 1 },
+      lockedRs: { id: 1 },
+      woCount: 2,
+      workOrders: [
+        {
+          id: 11,
+          status: "IN_PROGRESS",
+          productionExecution: { executionStatus: "COMPLETED" },
+          lines: [{ id: 101, qty: 10 }],
+        },
+        {
+          id: 12,
+          status: "IN_PROGRESS",
+          productionExecution: { executionStatus: "COMPLETED" },
+          lines: [{ id: 102, qty: 5 }],
+        },
+      ],
+      prodEntries: [
+        {
+          producedQty: 10,
+          workOrderLineId: 101,
+          workOrderLine: { workOrderId: 11 },
+          qcEntries: [],
+        },
+        {
+          producedQty: 5,
+          workOrderLineId: 102,
+          workOrderLine: { workOrderId: 12 },
+          qcEntries: [],
+        },
+      ],
+      productionGroupBy: [
+        { workOrderLineId: 101, _sum: { producedQty: 10 } },
+        { workOrderLineId: 102, _sum: { producedQty: 5 } },
+      ],
+    });
+    // Stub produced qty path used by summarize
+    const a = await assessNoQtySoClosure(db, 1);
+    const qc = a.blockers.find((b) => b.code === "PENDING_QC");
+    assert.ok(qc, `expected PENDING_QC, got ${a.blockers.map((b) => b.code).join(",")}`);
+    assert.match(qc.message, /2 Work Orders pending QC/);
+    assert.ok(!a.blockers.some((b) => b.code === "PENDING_PRODUCTION"));
+  });
+
+  it("evaluates close gates in WO → Production → QC → FG → Dispatch → Bill order", async () => {
+    const db = makeClosureDb({
+      activeCycle: { id: 10, cycleNo: 1 },
+      lockedRs: {
+        id: 1,
+        lines: [{ itemId: 501, requirementQty: 10, suggestedWoQtySnapshot: 10, item: { id: 501, itemName: "FG" } }],
+      },
+      woCount: 0,
+      unlockedDispatchCount: 1,
+      draftBillCount: 1,
+    });
+    const a = await assessNoQtySoClosure(db, 1);
+    assert.equal(a.blockers[0]?.code, "WO_PENDING");
+  });
+
+  it("names exact draft dispatch and unexported sales bill records", async () => {
+    const db = makeClosureDb({
+      activeCycle: null,
+      unlockedDispatches: [{ id: 26, docNo: "D-26-0008" }],
+      unexportedBills: [{ id: 3, billNo: null, docNo: "SB-26-0003" }],
+    });
+    const a = await assessNoQtySoClosure(db, 1);
+    const draft = a.blockers.find((b) => b.code === "DRAFT_DISPATCH_EXISTS");
+    const exportBlock = a.blockers.find((b) => b.code === "BILLING_NOT_EXPORTED");
+    assert.ok(draft);
+    assert.match(draft.message, /D-26-0008/);
+    assert.ok(exportBlock);
+    assert.match(exportBlock.message, /SB-26-0003/);
+  });
+
+  it("names exact remaining dispatch vs locked RS (not generic outstanding dependency)", async () => {
+    const db = makeClosureDb({
+      activeCycle: { id: 10, cycleNo: 2 },
+      lockedRs: {
+        id: 55,
+        docNo: "RS-26-0005",
+        lines: [
+          {
+            itemId: 501,
+            requirementQty: 100,
+            suggestedWoQtySnapshot: 100,
+            item: { id: 501, itemName: "Round Plate" },
+          },
+        ],
+      },
+      woCount: 1,
+      lockedDispatch: [
+        {
+          id: 1,
+          docNo: "D-26-0001",
+          itemId: 501,
+          dispatchedQty: 40,
+          reversalOfId: null,
+          workflowStatus: "LOCKED",
+        },
+      ],
+    });
+    const a = await assessNoQtySoClosure(db, 1);
+    const pend = a.blockers.find((b) => b.code === "PENDING_DISPATCH");
+    assert.ok(pend, `expected PENDING_DISPATCH, got ${a.blockers.map((b) => b.code).join(",")}`);
+    assert.match(pend.message, /Round Plate|RS-26-0005|undispatched/i);
+    assert.doesNotMatch(pend.message, /^Cannot close SO: outstanding dispatch dependency\.$/);
+  });
+
+  it("does not block WO_PENDING when locked RS has empty cycle cap (decision-only)", async () => {
+    const db = makeClosureDb({
+      activeCycle: { id: 10, cycleNo: 3 },
+      lockedRs: {
+        id: 55,
+        docNo: "RS-26-0009",
+        lines: [],
+      },
+      woCount: 0,
+    });
+    const a = await assessNoQtySoClosure(db, 1);
+    assert.ok(!a.blockers.some((b) => b.code === "WO_PENDING"), a.blockers.map((b) => b.code).join(","));
   });
 
   it("blocks when accepted FG pending disposition", async () => {

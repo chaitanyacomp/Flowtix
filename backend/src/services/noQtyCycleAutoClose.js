@@ -82,6 +82,82 @@ async function maybeAutoCloseNoQtyCycle(tx, { soId, cycleId }) {
 }
 
 /**
+ * Close an ACTIVE cycle after a Decision-only / Recovery-only RS lock
+ * (zero fulfillment: all carry-forward KEEP/WAIVE, no production required).
+ *
+ * Unlike maybeAutoCloseNoQtyCycle, this does not require LOCKED dispatches —
+ * there is no RS cap to dispatch against.
+ *
+ * @param {import('@prisma/client').Prisma.TransactionClient} tx
+ * @param {{ soId: number; cycleId: number; requirementSheetId?: number }} input
+ */
+async function closeDecisionOnlyNoQtyCycle(tx, { soId, cycleId, requirementSheetId = null }) {
+  const so = await tx.salesOrder.findUnique({
+    where: { id: soId },
+    select: { id: true, orderType: true, internalStatus: true, currentCycleId: true },
+  });
+  if (!so) return { closed: false, reason: "SO_NOT_FOUND" };
+  if (so.orderType !== "NO_QTY") return { closed: false, reason: "NOT_NO_QTY" };
+  if (
+    so.internalStatus === "MANUALLY_CLOSED" ||
+    so.internalStatus === "CLOSED_WITH_WAIVER" ||
+    so.internalStatus === "CLOSED" ||
+    so.internalStatus === "COMPLETED"
+  ) {
+    return { closed: false, reason: "ALREADY_CLOSED" };
+  }
+
+  const cid = Number(cycleId);
+  if (!(cid > 0)) return { closed: false, reason: "INVALID_CYCLE" };
+
+  const cycle = await tx.salesOrderCycle.findFirst({
+    where: { id: cid, salesOrderId: soId },
+    select: { id: true, status: true },
+  });
+  if (!cycle) return { closed: false, reason: "CYCLE_NOT_FOUND" };
+  if (cycle.status === "CLOSED") return { closed: false, reason: "CYCLE_ALREADY_CLOSED" };
+
+  const sheetWhere = {
+    salesOrderId: soId,
+    cycleId: cid,
+    status: "LOCKED",
+  };
+  if (requirementSheetId != null && Number(requirementSheetId) > 0) {
+    sheetWhere.id = Number(requirementSheetId);
+  }
+  const sheet = await tx.requirementSheet.findFirst({
+    where: sheetWhere,
+    include: { lines: true },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+  });
+  if (!sheet) return { closed: false, reason: "NO_LOCKED_REQUIREMENT_SHEET" };
+
+  for (const ln of sheet.lines || []) {
+    const cap = Math.max(num(ln.suggestedWoQtySnapshot ?? 0), num(ln.requirementQty ?? 0), num(ln.totalRsQty ?? 0));
+    if (cap > EPS) return { closed: false, reason: "NON_EMPTY_CYCLE_CAP" };
+  }
+
+  const woCount = await tx.workOrder.count({
+    where: { salesOrderId: soId, cycleId: cid, status: { not: "REJECTED" } },
+  });
+  if (woCount > 0) return { closed: false, reason: "WO_EXISTS" };
+
+  await tx.salesOrderCycle.updateMany({
+    where: { id: cid, salesOrderId: soId },
+    data: { status: "CLOSED", closedAt: new Date() },
+  });
+  const pointer = so.currentCycleId != null ? Number(so.currentCycleId) : 0;
+  if (pointer === cid) {
+    await tx.salesOrder.update({
+      where: { id: soId },
+      data: { currentCycleId: null },
+    });
+  }
+
+  return { closed: true, reason: null, requirementSheetId: sheet.id };
+}
+
+/**
  * Diagnose the NO_QTY cycle close decision (no writes).
  * Returns exact evidence and which condition fails.
  *
@@ -213,5 +289,6 @@ async function diagnoseNoQtyCycleAutoClose(tx, { soId }) {
 
 module.exports = {
   maybeAutoCloseNoQtyCycle,
+  closeDecisionOnlyNoQtyCycle,
   diagnoseNoQtyCycleAutoClose,
 };

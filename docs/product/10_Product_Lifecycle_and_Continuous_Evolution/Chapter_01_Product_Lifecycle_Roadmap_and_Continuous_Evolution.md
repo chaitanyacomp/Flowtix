@@ -6,7 +6,7 @@
 | **Volume** | 10 — Product Lifecycle & Continuous Evolution |
 | **Chapter** | 1 — Product Lifecycle, Roadmap & Continuous Evolution |
 | **Title** | Product Lifecycle, Roadmap & Continuous Evolution |
-| **Version** | 1.0.0 |
+| **Version** | 1.0.2 |
 | **Status** | Draft — Architecture Review |
 | **Effective date** | 2026-05-29 |
 | **Author** | FT ERP Product Team |
@@ -28,6 +28,8 @@
 | Version | Date | Author | Summary |
 |---------|------|--------|---------|
 | 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial Product Lifecycle, Roadmap & Continuous Evolution |
+| 1.0.1 | 2026-07-15 | FT ERP Product Team | §7.1 Phase-2 roadmap — BOM Revision engineering traceability (docs only) |
+| 1.0.2 | 2026-07-15 | FT ERP Product Team | §7.1 Phase-2 engineering planning register — priority, value, deferral, dependencies |
 
 **Supersedes:** None.
 
@@ -153,6 +155,37 @@ flowchart TB
 | **Feature prioritization** | Constitution + PBL + capacity to certify |
 | **Architectural impact assessment** | Required for every roadmap item ([EVO-03](#11-business-rules)) |
 | **Release planning** | Major/minor/patch per FT-PD-090; Vol. 8 gates |
+
+### 7.1 Phase-2 roadmap — engineering planning register
+
+Approved future enhancements **outside Release-1**. Each item is planned for implementation priority, not committed delivery dates. Schema, API, and workflow changes require a future architectural impact assessment ([EVO-03](#11-business-rules)) before build.
+
+| Feature | Priority | Business Value | Reason for Deferral | Dependencies | Target Phase |
+|---------|----------|----------------|---------------------|--------------|--------------|
+| **BOM Revision Traceability** | High | Complete engineering traceability from BOM Revision through WO → PMR → Material Issue → Production → QC; enables precise master-data dependency analysis without conservative FG/WO-history blocking. | Release-1 already guarantees audit safety through conservative dependency blocking. Exact revision FK persistence is valuable but not required for Release-1. | Manufacturing workflow freeze; data-architecture amendment for FKs on WO / PMR / Material Issue / Production / QC | Phase-2 |
+| **Automatic Recovery Offset from Extra Production** | Medium | Automatically reduce future recovery demand when surplus FG is accepted. | RM-driven NO_QTY production authorization is delivered, but recovery offset ownership remains intentionally separate. | Recovery redesign; accepted excess-FG allocation policy | Phase-2 |
+| **Advanced Manufacturing Analytics** | Medium | Improved production KPIs, efficiency, recovery analytics, and variance reporting. | Core manufacturing workflow must stabilize first. | Manufacturing execution stability; Production / QC / Recovery reporting SSOT | Phase-2 |
+| **Tally Batch/Lot and Expiry Import** | Medium | Trace regulated or batch-controlled inventory from go-live. | Flowtix Release-1 has no canonical batch ledger. | Batch inventory domain, migration and UAT | Phase-2 |
+| **Multiple Alternate and Compound Units** | Low | Support complex packaging/trade conversions. | SMEs need one alternate unit first; conversion chains materially increase rounding risk. | Unit conversion engine and precision policy | Phase-2 |
+| **Tally Cost Centres and Job Costing** | Medium | Financial profitability by job/cost centre. | Tally owns financial reporting; no Flowtix cost-centre domain exists. | Accounting mapping governance | Phase-2 |
+| **Foreign Currency and Price Levels** | Low | Support export trade and Tally price lists. | Outside current India/INR Release-1 operating model. | Currency, exchange-rate and pricing domains | Phase-2 |
+| **E-invoice and E-way Bill Integration** | High | Statutory automation. | Requires separately governed compliance integration; Tally remains statutory owner. | GST compliance APIs, credentials and certification | Phase-2 |
+| **Advanced Godown Hierarchy** | Low | Mirror multi-level Tally warehouse structures. | Release-1 explicit one-Godown-to-one-Location mapping is sufficient and safer. | Location hierarchy design | Phase-2 |
+| **Real-time Tally API Synchronization** | Medium | Faster acknowledgement and master reconciliation. | File/XML staging is operationally simpler and auditable for SMEs. | Connector runtime, authentication, retry/monitoring | Phase-2 |
+| **Additional Tally Vouchers** | Medium | Credit/debit notes, receipts, payments and manufacturing journals. | Release-1 is limited to Sales and Purchase invoices; payments/statutory books belong to Tally. | Voucher-specific ownership and reversal contracts | Phase-2 |
+
+**Cross-references (normative domain context):**
+
+- BOM Revision Traceability — [FT-PD-033](../03_Domain_Specifications/Chapter_04_Manufacturing_Domain_Specification.md) § BOM lifecycle; [FT-PD-020](../02_Business_Architecture/Chapter_01_Business_Models_and_Document_Inheritance.md) § BOM history boundary; [FT-PD-052](../05_Data_Architecture/Chapter_03_Master_Data_and_Reference_Architecture.md) § Audit-safe deletion
+- Manufacturing execution / PMR freeze context — [FT-PD-033](../03_Domain_Specifications/Chapter_04_Manufacturing_Domain_Specification.md); [FT-PD-023](../02_Business_Architecture/Chapter_04_Manufacturing_Execution_Pipeline.md)
+
+#### Reason for Deferral (Release-1 boundary)
+
+Release-1 prioritizes business correctness, workflow stability, and audit safety.
+
+The current implementation satisfies all Release-1 business requirements.
+
+The above enhancements intentionally remain outside Release-1 to avoid unnecessary architectural changes while the manufacturing workflow is still evolving.
 
 ---
 
@@ -417,6 +450,8 @@ flowchart LR
 | Version | Date | Author | Summary |
 |---------|------|--------|---------|
 | 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial Product Lifecycle, Roadmap & Continuous Evolution |
+| 1.0.1 | 2026-07-15 | FT ERP Product Team | §7.1 Phase-2 roadmap — BOM Revision engineering traceability (docs only) |
+| 1.0.2 | 2026-07-15 | FT ERP Product Team | §7.1 Phase-2 engineering planning register — priority, value, deferral, dependencies |
 
 ---
 

@@ -290,6 +290,29 @@ QA creates **Scrap Record** from inspection disposition:
 - **Posted** scrap removes qty from salable/dispatch pool permanently
 - May trigger variance review vs WO expected output — audit only in QA domain
 
+#### 7.5.1 Final QC rejection recovery (NO_QTY only — Phase 2A)
+
+For **NO_QTY** Work Orders, **terminal final scrap** also creates (or adjusts) a recoverable demand source:
+
+| Field | Value |
+|-------|--------|
+| Recovery type | `QC_FINAL_REJECTION` |
+| Persistence | `CarryForwardPending` (same ledger as production shortfall) |
+| Provenance | `(QC_FINAL_REJECTION, QC_REJECTED_DISPOSITION, dispositionId)` — unique |
+| Source qty | Authoritative **final terminal scrap qty** for that disposition |
+
+**Included (creates recovery):** first-pass direct SCRAP; split scrap portion; hold → scrap; deny → scrap; hold-save-combined scrap; rework final QC scrap.
+
+**Excluded (no recovery):** accepted qty; pending QC; hold (awaiting decision); rework pending / rework-approved; provisional rejection before terminal scrap; cancelled/reversed QC (recovery cancelled or adjusted).
+
+**Idempotency / delta:** same provenance + same qty → no duplicate; increased terminal scrap → increase by delta; decreased terminal scrap → reduce by delta, never below `activeAllocated + waived`; QC reverse of terminal SCRAP cancelles unallocated (or only-RESERVED) recovery and **blocks** if COMMITTED allocations exist (`RECOVERY_CANCEL_BLOCKED`).
+
+**Allocation (Phase 2B):** QC recovery and Production Shortage share one Keep/Waive workflow on the draft Requirement Sheet. Neither is auto-allocated. Keep reserves all pending recovery for the FG item; Waive (Store or Admin, mandatory reason) permanently waives it. When Current Requirement = 0 after all decisions, the Decision-only Recovery Cycle path (FT-PD-022 / FT-PD-031) allows Finalize/Lock without production.
+
+**Reconciliation identity:** `Source Qty = Active Allocated + Waived + Available`.
+
+REGULAR SO and scrap stock posting behavior are unchanged.
+
 ### 7.6 FG posting
 
 On accept disposition:
@@ -342,6 +365,7 @@ Full chain auditable for disputes and recalls. QA decision records: actor, times
 | **QAS-13** | QA gates **identical** for REGULAR and NO_QTY batches. |
 | **QAS-14** | Cancelled QA Inspection (pre-start) returns batch to `QA_PENDING` queue. |
 | **QAS-15** | FG Acceptance is **QA domain terminus** — Dispatch owns shipment. |
+| **QAS-16** | **NO_QTY only:** Terminal final scrap (confirmed non-reworkable rejection) **SHALL** create/adjust `QC_FINAL_REJECTION` recovery on `CarryForwardPending`, keyed by disposition provenance. Hold/rework/pending QC/accept MUST NOT. Allocation onto the next RS uses the unified Keep/Waive planner decision (same as Production Shortage). |
 
 *Architecture rules EXE-03, EXE-11 in [Vol. 2 Ch. 4](../02_Business_Architecture/Chapter_04_Manufacturing_Execution_Pipeline.md) remain authoritative.*
 

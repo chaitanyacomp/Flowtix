@@ -218,7 +218,9 @@ Audit and variance reports cite PMR document identity and revision.
 
 ### 8.2 Partial issue
 
-Store may issue **less than full PMR** when stock, location, or operational policy requires wave-based supply. Partial issue **proportionally constrains** production capacity until further issue.
+Store may issue **less than full PMR** when stock, location, or operational policy requires wave-based supply. Partial issue **proportionally constrains** production capacity until further issue **or** Store closes remaining demand as **Short Issue Accepted**.
+
+**Stock movement rule:** Material Issue posts Stock Transactions for **Issued Qty only**. Short Issue Qty is audit/demand closure only — it **must not** leave RM Store inventory and **must not** create a stock movement. Residual allocations for unissued qty are released. Lower production from less issued RM is recovered only via existing **NO_QTY production shortfall** workflow.
 
 ### 8.3 Validation
 
@@ -262,6 +264,8 @@ Upon Production Entry **approval**, the system posts **RM consumption** against 
 **Production completion** for a WO line occurs when cumulative approved production reaches WO line quantity (or policy allows early close with reason). Unproduced balance may remain on WO until issue/RM allows further entries.
 
 **Rule:** Production **cannot exceed** material issued and PMR-aligned capacity.
+
+For NO_QTY, this is the hard execution boundary: WO quantity is a target, not a cap. Additional issued RM may authorize cumulative production above the WO plan. Returns and approved-batch consumption reduce available capacity, and the limiting RM component governs. This does not change RS demand, placed WO quantity, or the stored WO plan.
 
 ---
 

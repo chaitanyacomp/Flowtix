@@ -6,7 +6,7 @@
 | **Volume** | 4 — Workflow Engine |
 | **Chapter** | 1 — Workflow Engine Overview & Pending Actions Contract |
 | **Title** | Workflow Engine Overview & Pending Actions Contract |
-| **Version** | 1.0.6 |
+| **Version** | 1.0.11 |
 | **Status** | Draft — Architecture Review |
 | **Effective date** | 2026-05-29 |
 | **Author** | FT ERP Product Team |
@@ -35,6 +35,11 @@
 | 1.0.4 | 2026-07-10 | FT ERP Product Team | WO PA deep link identity immutable — sheetId/cycleId must survive open + refresh |
 | 1.0.5 | 2026-07-12 | FT ERP Product Team | Monthly Planning Pending Actions emit only when FEATURE_MONTHLY_PLANNING is ON |
 | 1.0.6 | 2026-07-12 | FT ERP Product Team | §7.9 — draft RS must sync late PRODUCTION_SHORTFALL for PA suppression validity |
+| 1.0.7 | 2026-07-14 | FT ERP Product Team | §7.10 / §7.10c — Net RM = 0 after RS lock skips INITIAL Monthly Planning Pending |
+| 1.0.8 | 2026-07-14 | FT ERP Product Team | §7.10 / §7.10c — FG-level RM readiness; mixed RS Place WO + Monthly Planning |
+| 1.0.9 | 2026-07-14 | FT ERP Product Team | §7.12 — NO_QTY close/FG PAs route to NO_QTY Agreements (never Regular Orders) |
+| 1.0.10 | 2026-07-14 | FT ERP Product Team | §7.12 / stage SSOT — Ready to Close only when assessNoQtySoClosure COMPLETE |
+| 1.0.11 | 2026-07-14 | FT ERP Product Team | Decision-only recovery cycle — zero-demand RS finalize after KEEP/WAIVE |
 
 **Supersedes:** None.
 
@@ -305,6 +310,8 @@ Production shortfall and QC rejection recovery remain persisted recovery sources
 
 ### 7.10 NO_QTY WO placement (shared execution readiness)
 
+The guided active cycle has first priority while it has RS placement balance, pending RM issue, or open Work Orders. Within that cycle, positive canonical `suggestedWoQty` (FG quantity supported by the limiting RM component) produces `PLACE_WO`, even if a stale planning-release flag says otherwise. Zero executable quantity with positive balance produces `AWAIT_PROCUREMENT`. Any current-cycle placement/planning action suppresses `CREATE_NEXT_CYCLE` for the same SO and prevents duplicate SO/RS/cycle rows.
+
 Store **Place Partial WO** / **Create Suggested WO** Pending Actions are derived from the same authoritative placement assessment as the NO_QTY Execution Register and Store Dashboard **Ready for WO** KPI (`resolveNoQtyWoPlacementCandidateForSo` → `assessNoQtyPlacementStageForSheet` + `isNoQtyWoPlacementActionable`).
 
 **Sheet scope:** Assess **all locked Requirement Sheets** for the Sales Order and pick the same candidate as the Execution Register (`pickPlacementSheetCandidate`). Do **not** limit WO Pending Actions to the ACTIVE planning cycle only — a prior-cycle locked RS with remaining balance and executable RM remains Store-actionable after the planning pointer advances.
@@ -312,11 +319,27 @@ Store **Place Partial WO** / **Create Suggested WO** Pending Actions are derived
 **Emit when:**
 
 - Locked RS has RS balance > 0
-- Suggested executable qty > 0 (RM coverage may be PARTIAL)
-- At least one Monthly Plan for the period is released (`releasedAt` set), including procurement-not-required handoff
-- No blocking BOM / workflow gate on the placement assessment
+- Suggested executable qty > 0 (RM coverage may be PARTIAL / FG-level ready)
+- Execution readiness allows Place WO: either (a) at least one Monthly Plan for the period is released (`releasedAt` set), including post-approval procurement-not-required handoff, **or** (b) one or more FG items are stock-executable without a released plan (`READY_FOR_WO` / partial — `allowWoWithoutPlanRelease`)
+- No blocking BOM / workflow gate on the placement assessment for the intended FG lines
 
-**Do not suppress** WO placement solely because `ADDITIONAL_PLAN_REQUIRED` (uncovered later-cycle demand). Additional Plan is a separate planning Pending Action; partial WO against released Plan RM remains Store-executable.
+**Do not suppress** WO placement solely because `ADDITIONAL_PLAN_REQUIRED` (uncovered later-cycle demand). Additional Plan is a separate planning Pending Action; partial WO against released Plan RM **or** stock-ready FG remains Store-executable.
+
+**FG-level rule:** A shortage on one FG **SHALL NOT** block Place WO for other FG items whose complete BOM requirement is covered. Mixed RS may emit both Place WO and INITIAL Monthly Planning (§7.10c).
+
+### 7.10c NO_QTY INITIAL Monthly Planning (skip fully covered; allow mixed)
+
+**Monthly Planning Pending** (INITIAL, after locked RS / no WO yet) **SHALL** emit when Estimated Net RM / FG shortage remains (`skipMonthlyPlanning` false) and the period gate is `INITIAL_PLAN_REQUIRED`.
+
+**Suppress INITIAL Monthly Planning Pending when:**
+
+- All FG stock-covered (`skipMonthlyPlanning` / sheet Net RM = 0) → outcome `PROCUREMENT_NOT_REQUIRED`; next Store Pending Action is Work Order Planning / Place WO (§7.10)
+- `FEATURE_MONTHLY_PLANNING` is OFF (§7.10b)
+- A WO already exists on that RS cycle (handoff past initial planning)
+
+**Do not suppress** INITIAL Monthly Planning solely because some FG items are already `READY_FOR_WO` (mixed RS). Metadata **MAY** flag `mixedFgReadiness`.
+
+**Must not** change Additional Plan (`NO_QTY_ADDITIONAL_PLAN_REQUIRED`) rules (§7.10a) or REGULAR shortage-driven procurement.
 
 **Wording:**
 
@@ -368,6 +391,22 @@ Once the return is submitted (`productionRmReturnPending.status = PENDING`):
 **Receive API:** `POST /api/production-material-returns/pending/:id/receive` — `ADMIN` / `STORE` only.
 
 **Counts rule:** Dashboard badge, Pending Actions count, and API `actions[]` include **actionable** rows only.
+
+### 7.12 NO_QTY close / FG disposition Pending Actions (navigation)
+
+Recovery/closure Pending Actions emitted by `fetchNoQtyRecoveryPendingActions` **SHALL NOT** deep-link to Regular Orders (`/sales-orders` without `soType=NO_QTY`, or legacy `focusSalesOrderId`).
+
+| Action | Destination | Context |
+|--------|-------------|---------|
+| **Accepted FG disposition required** | Admin: `/sales-orders?soType=NO_QTY&salesOrderId={id}&action=no-qty-fg-disposition` | Opens **NO_QTY Agreements** tab, focuses the SO, opens FG disposition / close workspace |
+| **NO_QTY SO eligible for waiver closure** | Admin: `/sales-orders?soType=NO_QTY&salesOrderId={id}&action=no-qty-close` | Same close workspace (waiver path) |
+| **NO_QTY SO blocked by unresolved downstream work** | Admin: `/sales-orders?soType=NO_QTY&salesOrderId={id}&highlight=downstream`; Store: `/no-qty-agreements?salesOrderId={id}&highlight=downstream` | Focused NO_QTY Agreement with downstream-blocker context |
+
+FG disposition and downstream-blocked close **must not** share one generic destination. UAT: Open must land on Sales Orders → NO_QTY Agreements (or Store execution register), never Regular Orders.
+
+**Stage / close agreement:** Emit `noqty-close-blocked:{soId}` only while `assessNoQtySoClosure.mode === BLOCKED`. Current Stage Ready to Close is reserved for `mode === COMPLETE`. Billing-complete captions must not imply Ready to Close when blockers remain (including unmet ACTIVE-cycle locked-RS dispatch cap or unexported finalized bills).
+
+**Decision-only recovery:** When a recovery draft has Current Requirement = 0 and all KEEP/WAIVE decisions are complete, Pending Actions must not leave the operator in an endless “enter requirement qty” loop — Finalize RS is the exit. After lock + cycle close, reassess SO closure; `ACTIVE_RS_DRAFT` clears and empty-cap cycles do not require WO. Post-lock navigation must not dump the operator into a blank generic Dispatch Workspace when nothing is dispatchable — return to the focused NO_QTY Agreement (Ready to Close or named blocker).
 
 ---
 
@@ -682,3 +721,6 @@ flowchart TB
 | **Volume** | [Workflow Engine](./README.md) |
 | **Product** | [Product Documentation Index](../README.md) |
 
+# NO_QTY net-production contract (2026-07-15)
+
+RS detail, WO suggestion, Execution Register, and Pending Actions consume the backend net-production snapshot; they do not recompute carry-forward. Zero net production emits no WO action and routes to the next valid dispatch/closure step. Pending QC is `max(produced - final accepted - final rejected, 0)` for approved production entries.

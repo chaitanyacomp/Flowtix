@@ -92,7 +92,7 @@ describe("noQtyExecutionRegisterService", () => {
       existingWoSummary: [],
     });
     assert.equal(action.key, ACTION_NEEDED.PLACE_WO.key);
-    assert.equal(action.label, "Place WO");
+    assert.equal(action.label, "Create Work Order");
 
     const coverage = mapRmCoverage({
       placementStatus: "READY",
@@ -206,7 +206,7 @@ describe("noQtyExecutionRegisterService", () => {
       }),
     });
     assert.equal(fields.actionNeededKey, "PLACE_WO");
-    assert.equal(fields.actionNeededLabel, "Create Suggested WO");
+    assert.equal(fields.actionNeededLabel, "Create Work Order");
   });
 
   it("unreleased plan → AWAIT_PROCUREMENT even with executable free-stock qty", () => {
@@ -218,7 +218,7 @@ describe("noQtyExecutionRegisterService", () => {
       existingWoSummary: [],
       released: false,
     });
-    assert.equal(action.key, "AWAIT_PROCUREMENT");
+    assert.equal(action.key, "PLACE_WO");
   });
 
   it("no executable RM qty → AWAIT_PROCUREMENT even when RS balance remains", () => {

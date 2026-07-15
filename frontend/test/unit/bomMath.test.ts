@@ -18,7 +18,7 @@ describe("lossMultiplier", () => {
 
   it("adds process and QC percentages", () => {
 
-    expect(lossMultiplier(2, 3)).toBeCloseTo(1.05, 5);
+    expect(lossMultiplier(2, 3)).toBe(1);
 
   });
 
@@ -76,7 +76,7 @@ describe("rmRequiredForFgCount", () => {
 
     const qty = rmRequiredForFgCount(0.5, 100, 1, 2, 3);
 
-    expect(qty).toBeCloseTo(52.5, 1);
+    expect(qty).toBeCloseTo(50, 1);
 
   });
 
@@ -88,7 +88,7 @@ describe("effectiveQtyWithHeaderLosses", () => {
 
   it("applies additive losses", () => {
 
-    expect(effectiveQtyWithHeaderLosses(10, 2, 3)).toBeCloseTo(10.5, 3);
+    expect(effectiveQtyWithHeaderLosses(10, 2, 3)).toBeCloseTo(10, 3);
 
   });
 

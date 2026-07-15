@@ -259,7 +259,7 @@ describe("noQtyRecoveryService — create sources", () => {
     assert.equal(db._sources.length, 1);
   });
 
-  it("creates QC final rejection recovery and rejects first-pass-only path by not calling it", async () => {
+  it("creates QC final rejection recovery (first-pass SCRAP uses same producer via append)", async () => {
     const db = makeDb();
     const row = await createFinalQcRejectedRecovery(db, {
       salesOrderId: 42,

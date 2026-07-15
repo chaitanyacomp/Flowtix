@@ -143,6 +143,15 @@ async function cancelAllocationsForPmr(tx, pmrId, actor = {}) {
   });
 }
 
+/**
+ * Sync PMR-linked allocations after issue / short-issue close.
+ *
+ * Stock movements always use issued qty only (Material Issue Note).
+ * When Store accepts a short issue (`SHORT_ISSUE_ACCEPTED` / line `waivedQty`),
+ * any unissued residual previously held as `qtyAllocated − qtyIssued` must be
+ * released so free usable stock returns to RM Store availability — without
+ * creating stock transactions for the short-issue qty.
+ */
 async function syncAllocationsForPmrIssueStatus(tx, pmrId) {
   if (!tx.materialAllocation?.findMany || !pmrId) return;
   const [pmr, allocations] = await Promise.all([
@@ -155,13 +164,45 @@ async function syncAllocationsForPmrIssueStatus(tx, pmrId) {
     }),
   ]);
   if (!pmr || !allocations.length) return;
+
+  const shortIssueClosed = String(pmr.status ?? "").toUpperCase() === "SHORT_ISSUE_ACCEPTED";
   const lineByItem = new Map((pmr.lines || []).map((line) => [line.itemId, line]));
+
   for (const allocation of allocations) {
-    if (["CANCELLED", "RELEASED"].includes(allocation.status)) continue;
+    if (["CANCELLED", "RELEASED"].includes(String(allocation.status ?? ""))) continue;
+
     const line = lineByItem.get(allocation.rmItemId);
-    const issuedQty = round3(Math.min(Math.max(0, n(line?.issuedQty)), Math.max(0, n(allocation.qtyAllocated))));
+    const lineIssued = round3(Math.max(0, n(line?.issuedQty)));
+    const lineWaived = round3(Math.max(0, n(line?.waivedQty)));
+    const allocated = round3(Math.max(0, n(allocation.qtyAllocated)));
+    const issuedQty = round3(Math.min(lineIssued, allocated));
+
+    const lineDemandClosed =
+      shortIssueClosed ||
+      (lineWaived > ALLOCATION_EPS &&
+        lineIssued + lineWaived + ALLOCATION_EPS >= n(line?.requiredQty));
+
+    if (lineDemandClosed) {
+      // Shrink allocation to issued qty only — residual unissued stays in RM Store (no StockTxn).
+      const nextAllocated = issuedQty;
+      const status = issuedQty > ALLOCATION_EPS ? "ISSUED" : "RELEASED";
+      await tx.materialAllocation.update({
+        where: { id: allocation.id },
+        data: {
+          qtyAllocated: String(nextAllocated),
+          qtyIssued: String(issuedQty),
+          status,
+          remarks:
+            lineWaived > ALLOCATION_EPS
+              ? `Short issue closed — released unissued ${round3(Math.max(0, allocated - issuedQty))} (audit only; no stock movement).`
+              : allocation.remarks ?? undefined,
+        },
+      });
+      continue;
+    }
+
     let status = "ACTIVE";
-    if (issuedQty + ALLOCATION_EPS >= n(allocation.qtyAllocated)) status = "ISSUED";
+    if (issuedQty + ALLOCATION_EPS >= allocated) status = "ISSUED";
     else if (issuedQty > ALLOCATION_EPS) status = "PARTIALLY_ISSUED";
     await tx.materialAllocation.update({
       where: { id: allocation.id },

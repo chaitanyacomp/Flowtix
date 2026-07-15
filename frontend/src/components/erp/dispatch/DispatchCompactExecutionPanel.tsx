@@ -51,6 +51,8 @@ export type DispatchCompactExecutionPanelProps = {
   onDisablePartial: () => void;
   onFinalizeDraft?: () => void;
   onDeleteDraft?: () => void;
+  /** Optional Customer Delivery Location selector (shared from DispatchPage). */
+  deliveryLocationSelect?: React.ReactNode;
 };
 
 export function DispatchCompactExecutionPanel({
@@ -87,6 +89,7 @@ export function DispatchCompactExecutionPanel({
   onDisablePartial,
   onFinalizeDraft,
   onDeleteDraft,
+  deliveryLocationSelect,
 }: DispatchCompactExecutionPanelProps) {
   const queueEmpty = queue.length === 0;
   const hasOpenDraft = primaryFinalizeDraftId != null && primaryFinalizeDraftId > 0 && activeDraftQty > 1e-9;
@@ -236,6 +239,8 @@ export function DispatchCompactExecutionPanel({
                       <div className="font-semibold text-slate-800">{activeStatusLabel}</div>
                     </div>
                   </div>
+
+                  {deliveryLocationSelect}
 
                   {hasOpenDraft ? (
                     <div

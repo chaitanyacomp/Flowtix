@@ -69,7 +69,22 @@ export function noQtyBusinessWorkflowStage(input: {
 
   if (key === "NO_QTY_WORK_ORDER") return "Work Order placed · execution pending";
 
-  if (key === "NO_QTY_IN_PRODUCTION") return "Production / QA in progress";
+  if (key === "NO_QTY_PRODUCTION_RUNNING") return "Production Running";
+
+  if (key === "NO_QTY_QC_IN_PROGRESS") return "QC In Progress";
+
+  if (key === "NO_QTY_FG_DISPOSITION_PENDING") return "FG Disposition Pending";
+
+  if (key === "NO_QTY_RECOVERY_PENDING") return "Recovery Decision Pending";
+
+  if (key === "NO_QTY_DISPATCH_PENDING") return "Dispatch Pending";
+
+  if (key === "NO_QTY_READY_TO_CLOSE") return "Ready to Close";
+
+  if (key === "NO_QTY_BILLING_PENDING_EXPORT") return "Billing Pending Export";
+
+  /* Legacy combined key — treat as production running for dual-read. */
+  if (key === "NO_QTY_IN_PRODUCTION") return "Production Running";
 
   if (key === "NO_QTY_DISPATCH_BILLING") return "Dispatch / Billing";
 
@@ -642,28 +657,35 @@ export const NO_QTY_EXECUTION_PROCUREMENT_PENDING_HINT =
 /** True when the register row is planning/status-only (WO placement not yet actionable). */
 export function isNoQtyExecutionPlanningOnlyState(input: {
   actionNeededKey?: string | null;
+  /** @deprecated Ignored — RM label must not override resolved actionNeededKey. */
   rmCoverageLabel?: string | null;
+  showProcurementPendingHint?: boolean | null;
 }): boolean {
+  if (input.showProcurementPendingHint === true) return true;
+  if (input.showProcurementPendingHint === false) return false;
   const key = String(input.actionNeededKey ?? "").toUpperCase();
-  if (key === "AWAIT_PROCUREMENT") return true;
-  const rmLabel = String(input.rmCoverageLabel ?? "").trim().toLowerCase();
-  if (rmLabel.includes("awaiting")) return true;
-  return false;
+  return key === "AWAIT_PROCUREMENT";
 }
 
-/** Stage-aware execution register open CTA — does not change navigation target. */
+/** Stage-aware execution register open CTA — prefers canonical API ctaLabel. */
 export function resolveNoQtyExecutionRegisterCtaLabel(input: {
   actionNeededKey?: string | null;
+  actionNeededLabel?: string | null;
+  ctaLabel?: string | null;
   rmCoverageLabel?: string | null;
   suggestedWoQty?: number | null;
+  showProcurementPendingHint?: boolean | null;
 }): string {
+  const canonical = String(input.ctaLabel ?? "").trim();
+  if (canonical) return canonical;
   if (isNoQtyExecutionPlanningOnlyState(input)) {
     return NO_QTY_VIEW_PLANNING_STATUS_LABEL;
   }
   const key = String(input.actionNeededKey ?? "").toUpperCase();
-  if (key === "PLACE_WO") return NO_QTY_PLACE_WO_LABEL;
-  const suggested = Number(input.suggestedWoQty ?? 0);
-  if (Number.isFinite(suggested) && suggested > 1e-6) return NO_QTY_OPEN_EXECUTION_WORKSPACE_LABEL;
+  if (key === "PLACE_WO") {
+    const fromAction = String(input.actionNeededLabel ?? "").trim();
+    return fromAction || "Create Work Order";
+  }
   return NO_QTY_OPEN_EXECUTION_WORKSPACE_LABEL;
 }
 

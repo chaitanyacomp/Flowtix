@@ -7,6 +7,7 @@ export type BomPlanningInput = {
   fgWeight?: number | string | null;
   fgWeightUnit?: WeightUnitRef;
   outputQty?: number | string | null;
+  runnerWeight?: number | string | null;
   processLossPercent?: number | string | null;
   qcLossPercent?: number | string | null;
   normalizationMode?: BomNormalizationMode | null;
@@ -18,6 +19,9 @@ export type BomPlanningResult = {
   outputQty: number;
   processLossPercent: number;
   qcLossPercent: number;
+  runnerWeight: number;
+  shotWeight: number | null;
+  rmPerFg: number | null;
   netFgWeight: number | null;
   possibleFgPerKg: number | null;
   weightUnitLabel: string | null;
@@ -43,6 +47,8 @@ export type BomComputedSummary = {
   fgWeightGm: number | null;
   weightUnitLabel: string | null;
   possibleFgPerKg: number | null;
+  shotWeight: number | null;
+  rmPerFg: number | null;
   totalCompositionPercent: number;
   totalRmAfterWastageGm: number;
   lineSummaries: BomComputedLineSummary[];
@@ -85,20 +91,22 @@ export function bomBaseQtyPerFgKg(baseQtyKg: number, outputQty: number, normaliz
   return round3(base);
 }
 
-export function bomMixPercentFromKg(baseQtyKg: number, fgWeight: number, fgWeightUnit: WeightUnitRef, outputQty: number, normalizationMode?: BomNormalizationMode | null) {
+export function bomMixPercentFromKg(baseQtyKg: number, fgWeight: number, fgWeightUnit: WeightUnitRef, outputQty: number, normalizationMode?: BomNormalizationMode | null, runnerWeight = 0) {
   const unitKind = weightUnitKind(fgWeightUnit ?? null);
   const fgWeightGm = fgWeightInGrams(fgWeight, unitKind);
   if (fgWeightGm == null || fgWeightGm <= 1e-9) return null;
   const perFgKg = bomBaseQtyPerFgKg(baseQtyKg, outputQty, normalizationMode);
-  return round3((perFgKg * 1000 / fgWeightGm) * 100);
+  const runnerGm = weightUnitKind(fgWeightUnit) === "kilogram" ? n(runnerWeight) * 1000 : n(runnerWeight);
+  const rmPerFgGm = (fgWeightGm * Math.max(1e-9, n(outputQty)) + runnerGm) / Math.max(1e-9, n(outputQty));
+  return round3((perFgKg * 1000 / rmPerFgGm) * 100);
 }
 
 export function bomLineQuantitiesFromMixPercent(
   fgWeight: number,
   fgWeightUnit: WeightUnitRef,
   mixPercent: number,
-  processLossPercent: number,
-  qcLossPercent: number,
+  runnerWeight = 0,
+  outputQty = 1,
 ) {
   const unitKind = weightUnitKind(fgWeightUnit ?? null);
   const fgWeightGm = fgWeightInGrams(fgWeight, unitKind);
@@ -106,24 +114,27 @@ export function bomLineQuantitiesFromMixPercent(
   if (fgWeightGm == null || fgWeightGm <= 1e-9) {
     return { rmWeightGm: null, internalQtyKg: null, effectiveQtyKg: null };
   }
-  const rmWeightGm = round3((fgWeightGm * mix) / 100);
-  const internalQtyKg = round3(rmWeightGm / 1000);
-  const effectiveQtyKg = round3(internalQtyKg * lossMultiplier(processLossPercent, qcLossPercent));
+  const runnerGm = unitKind === "kilogram" ? n(runnerWeight) * 1000 : n(runnerWeight);
+  const shotWeightGm = fgWeightGm * Math.max(1e-9, n(outputQty)) + runnerGm;
+  const rmWeightGm = round3((shotWeightGm * mix) / 100);
+  const internalQtyKg = round3(rmWeightGm / Math.max(1e-9, n(outputQty)) / 1000);
+  const effectiveQtyKg = internalQtyKg;
   return { rmWeightGm, internalQtyKg, effectiveQtyKg };
 }
 
-/** Base × (1 + Process% / 100 + QC% / 100) */
+/** Compatibility export: legacy loss fields are intentionally inert. */
 export function lossMultiplier(processLossPercent: number, qcLossPercent: number) {
-  const pl = Math.max(0, Math.min(100, n(processLossPercent)));
-  const ql = Math.max(0, Math.min(100, n(qcLossPercent)));
-  return 1 + pl / 100 + ql / 100;
+  void processLossPercent;
+  void qcLossPercent;
+  return 1;
 }
 
 export function computeBomWeightPlanning(input: BomPlanningInput): BomPlanningResult {
   const fgWeight = n(input.fgWeight);
   const outputQty = Math.max(1e-9, n(input.outputQty ?? 1));
-  const processLossPercent = Math.max(0, Math.min(100, n(input.processLossPercent)));
-  const qcLossPercent = Math.max(0, Math.min(100, n(input.qcLossPercent)));
+  const runnerWeight = Math.max(0, n(input.runnerWeight));
+  const processLossPercent = 0;
+  const qcLossPercent = 0;
   const unitKind = weightUnitKind(input.fgWeightUnit ?? null);
   const weightGrams = fgWeightInGrams(fgWeight, unitKind);
   const weightConfigured = weightGrams != null && weightGrams > 1e-9;
@@ -135,6 +146,9 @@ export function computeBomWeightPlanning(input: BomPlanningInput): BomPlanningRe
       outputQty,
       processLossPercent,
       qcLossPercent,
+      runnerWeight,
+      shotWeight: null,
+      rmPerFg: null,
       netFgWeight: null,
       possibleFgPerKg: null,
       weightUnitLabel: null,
@@ -142,7 +156,10 @@ export function computeBomWeightPlanning(input: BomPlanningInput): BomPlanningRe
     };
   }
 
-  const possibleFgPerKg = 1000 / weightGrams;
+  const runnerGrams = unitKind === "kilogram" ? runnerWeight * 1000 : runnerWeight;
+  const shotWeightGrams = weightGrams * outputQty + runnerGrams;
+  const rmPerFgGrams = shotWeightGrams / outputQty;
+  const possibleFgPerKg = 1000 / rmPerFgGrams;
   const unitLabel =
     unitKind === "gram"
       ? "g"
@@ -160,6 +177,9 @@ export function computeBomWeightPlanning(input: BomPlanningInput): BomPlanningRe
     outputQty,
     processLossPercent,
     qcLossPercent,
+    runnerWeight,
+    shotWeight: round3(unitKind === "kilogram" ? shotWeightGrams / 1000 : shotWeightGrams),
+    rmPerFg: round3(unitKind === "kilogram" ? rmPerFgGrams / 1000 : rmPerFgGrams),
     netFgWeight: round3(fgWeight),
     possibleFgPerKg: round3(possibleFgPerKg),
     weightUnitLabel: unitLabel,
@@ -192,8 +212,8 @@ export function computedBomSummary(
       Number(input.fgWeight ?? 0),
       input.fgWeightUnit ?? null,
       mix,
-      Number(input.processLossPercent ?? 0),
-      Number(input.qcLossPercent ?? 0),
+      Number(input.runnerWeight ?? 0),
+      Number(input.outputQty ?? 1),
     );
 
     lineSummaries.push({
@@ -211,6 +231,8 @@ export function computedBomSummary(
     fgWeightGm: planning.netFgWeight == null ? null : planning.netFgWeight,
     weightUnitLabel: planning.weightUnitLabel,
     possibleFgPerKg: planning.possibleFgPerKg,
+    shotWeight: planning.shotWeight,
+    rmPerFg: planning.rmPerFg,
     totalCompositionPercent: round3(
       lineSummaries.reduce((sum, line) => sum + (line.mixPercent ?? 0), 0),
     ),
@@ -221,13 +243,15 @@ export function computedBomSummary(
   };
 }
 
-/** Effective RM qty per FG with header-level additive losses. */
+/** Engineering RM qty per FG; legacy loss arguments are ignored. */
 export function effectiveQtyWithHeaderLosses(
   baseQty: number,
   processLossPercent: number,
   qcLossPercent = 0,
 ) {
-  return round3(Math.max(0, n(baseQty)) * lossMultiplier(processLossPercent, qcLossPercent));
+  void processLossPercent;
+  void qcLossPercent;
+  return round3(Math.max(0, n(baseQty)));
 }
 
 export function rmRequiredForFgCount(
@@ -237,11 +261,13 @@ export function rmRequiredForFgCount(
   processLossPercent: number,
   qcLossPercent: number,
 ) {
+  void processLossPercent;
+  void qcLossPercent;
   const base = Math.max(0, n(baseQty));
   const out = Math.max(1e-9, n(outputQty ?? 1));
   const count = Math.max(0, n(fgCount));
   const perFgBase = base / out;
-  return round3(count * perFgBase * lossMultiplier(processLossPercent, qcLossPercent));
+  return round3(count * perFgBase);
 }
 
 /** @deprecated Use effectiveQtyWithHeaderLosses — kept for any legacy imports. */

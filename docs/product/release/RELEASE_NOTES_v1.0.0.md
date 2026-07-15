@@ -119,7 +119,9 @@ These decisions are **recorded** in the baseline corpus — not introduced by th
 
 ## Future roadmap (v1.1)
 
-Planned documentation evolution (see [Volume 10, Ch. 1](../10_Product_Lifecycle_and_Continuous_Evolution/Chapter_01_Product_Lifecycle_Roadmap_and_Continuous_Evolution.md)):
+Planned documentation and Phase-2 engineering evolution (authoritative planning register: [FT-PD-100 §7.1](../10_Product_Lifecycle_and_Continuous_Evolution/Chapter_01_Product_Lifecycle_Roadmap_and_Continuous_Evolution.md#71-phase-2-roadmap--engineering-planning-register)):
+
+**Documentation / baseline**
 
 - **Volume 11** — Manufacturing Knowledge Reference Architecture
 - **Approved baseline promotion** — Constitution and core volumes to Approved status after architecture board sign-off
@@ -127,6 +129,16 @@ Planned documentation evolution (see [Volume 10, Ch. 1](../10_Product_Lifecycle_
 - **Implementation alignment notes** — non-normative mapping guides (separate from product architecture)
 - **Patch releases (v1.0.x)** — editorial corrections, link maintenance, glossary additions without semantic change per [Change Policy](./CHANGE_POLICY.md)
 
+**Phase-2 engineering (Release-1 deferred)**
+
+| Feature | Priority | Target | Summary |
+|---------|----------|--------|---------|
+| BOM Revision Traceability | High | Phase-2 | Persist BOM Revision ID on WO → PMR → Material Issue → Production → QC |
+| Automatic Recovery Offset from Extra Production | Medium | Phase-2 | RM-driven NO_QTY authorization is delivered; future recovery offset remains deferred |
+| Automatic Recovery Offset from Extra Production | Medium | Phase-2 | Offset recovery demand when surplus FG is accepted |
+| Advanced Manufacturing Analytics | Medium | Phase-2 | KPIs, efficiency, recovery analytics, variance reporting |
+
+Release-1 prioritizes business correctness, workflow stability, and audit safety. These enhancements remain outside Release-1 while manufacturing workflow continues to evolve. Domain detail: [FT-PD-033](../03_Domain_Specifications/Chapter_04_Manufacturing_Domain_Specification.md), [FT-PD-020](../02_Business_Architecture/Chapter_01_Business_Models_and_Document_Inheritance.md).
 ---
 
 ## Document navigation
@@ -136,3 +148,8 @@ Planned documentation evolution (see [Volume 10, Ch. 1](../10_Product_Lifecycle_
 | **Previous** | [Product Documentation Index](../README.md) |
 | **Next** | [Baseline Manifest v1.0.0](./BASELINE_MANIFEST_v1.0.0.md) |
 | **Product** | [Product Documentation Index](../README.md) |
+# 2026-07-15 — NO_QTY accepted-surplus correction
+
+NO_QTY Dispatch Workspace, FIFO preparation/finalization, dashboard queues, and workflow state now cap dispatch by remaining locked customer demand as well as QC and physical stock. Accepted excess remains in FG for carry-forward and no longer creates dispatch or billing pressure.
+
+QC-accepted production above cumulative active customer demand now offsets the next NO_QTY cycle per SO + FG. Pending/rejected QC, cancelled RS versions, unrelated stock, and dispatched/consumed quantities cannot create or duplicate deductions. Recalculate, Finalize, WO suggestion, Pending Actions, and the RS workspace share the backend result. No schema or cleanup change was required.

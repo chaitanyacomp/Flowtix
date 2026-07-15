@@ -424,7 +424,7 @@ Plant heads and shift managers use Control Tower; shop operators live primarily 
 
 - Disable invalid CTAs rather than show cryptic errors after click.
 - Block wrong Business Model paths at route level.
-- Clamp production quantity to PMR-allowed and WO-remaining caps with visible ceiling.
+- Clamp Regular production to its governed WO/tolerance and RM boundaries. Clamp NO_QTY production only to remaining PMR/BOM RM-supported capacity; show WO planned qty separately as a target.
 - Prevent mixed demand-pool PR creation in one requisition.
 
 ### 11.2 Fail with guidance

@@ -551,10 +551,12 @@ When a NO_QTY Requirement Sheet is **LOCKED**, the operator’s current task is 
 | Rule | Requirement |
 |------|-------------|
 | **Page title** | **SHALL** present **Work Order Planning** (not “Requirement Sheet”) so the operator identifies the stage within 2–3 seconds. |
-| **Source document** | Requirement Sheet identity (RS number, customer, cycle, Locked status) **SHALL** appear as a **compact reference card** — not as the page purpose. |
+| **Optional subtitle** | **MAY** show: Create Work Orders from the locked Requirement Sheet. |
+| **Source document** | Label **Requirement Sheet Reference**; identity (RS number, customer, cycle, Locked status) **SHALL** appear as a **compact reference** — not as the page purpose. |
 | **Stage banner** | **SHALL** show completed → current → next: Requirement Sheet ✓ → **Create Work Orders** (highlighted) → Material Issue. |
 | **Work area heading** | **SHALL** use **Create Work Orders** (not “Place WO” as the section title). Action verbs on buttons may retain Create Suggested / Create Custom WO. |
-| **KPI labels** | Operator-facing labels **SHALL** distinguish Remaining Requirement, RM-Limited Capacity, and Suggested Next WO Qty. Suggested Next WO **must not** be labeled as if it always equals full RS demand. |
+| **KPI labels** | Operator-facing labels **SHALL** distinguish Remaining Requirement, RM-Limited Capacity, and Suggested Next WO Qty. Suggested Next WO **must not** be labeled as if it always equals full RS demand. Page-level **RM Coverage** **SHALL** reflect FG-level mix (e.g. All Items Ready, `3 Ready / 1 Shortage`, No Items Ready) — **never** display sheet-level “Ready” when some FG remain short. |
+| **FG placement grid** | **SHALL** show per-FG Remaining, Suggested WO Qty, RM Status (`READY` / `SHORTAGE` / partial), Shortage Summary, and disable Create WO only for shortage / BOM-blocked FG. **SHALL NOT** show a whole-RS message that blocks WO until Monthly Plan release when any FG is RM-ready. Contextual copy **MAY** state: Work Order creation is available for RM-ready items; shortage items remain blocked. |
 | **Layout** | Desktop **SHALL** present **one workstation grid** directly below the page navigation, using horizontal space before adding vertical sections. A **left context column** carries RS reference / KPIs (Remaining Requirement, WO Quantity Placed, Total RS Requirement, Number of WOs, cycle, guidance text) as horizontal, balanced tiles — **not** a vertical stack. A **right action column** carries the complete Work Order transaction (FG Item, Suggested Next WO Qty, Enter Qty, RM-Limited Capacity, RM Coverage, RM feasibility, Create Suggested / Create Custom / Reset). The complete action, including buttons and RM feasibility, **SHALL** be visible without scrolling at 1920×1080. There **SHALL** be a single standalone “Planning Context” block; its values **SHALL** be merged into the context / KPI / action regions so each business value has one primary display. Font size, input height, and button size **SHALL NOT** be reduced to fit. |
 | **RM Detail** | **SHALL** be integrated **within** the right action column, directly below quantity entry, and reflect the proposed / entered WO quantity (defaulting to Suggested Next WO Qty). For a small BOM it **SHALL** be a compact table (RM Item, Required, Available, Shortage, Status); a separate full-width RM section is used **only** when the number of RM lines justifies it. Live operator guidance **SHALL** state max producible qty and limiting RM where useful. |
 | **Current Work Orders** | **SHALL** appear immediately below the Create Work Order workstation so newly created WOs are visible without scrolling through reference sections. |
@@ -1144,6 +1146,8 @@ Recommended modernization sequence **SHALL** be followed unless Product Architec
 | **6** | **Analysis** | Analysis | Variance and adherence views consume stabilized operational layouts |
 | **7** | **Reports** | Report / Analysis | Print/export standards (§17) after operational grids stable |
 
+**NO_QTY contextual Dispatch:** When entered with `source=no_qty_so` and `salesOrderId`, the Dispatch Workbench **SHALL** bind that Sales Order (and cycle when provided) and **MUST NOT** present a blank Sales Order dropdown as the first action. After Requirement Sheet Finalize with zero dispatchable FG, navigation **SHALL** return to the NO_QTY Agreement summary instead of Dispatch.
+
 **Rule:** Dashboard and Register refactors for each domain **SHOULD** ship in the same tranche as that domain's Workbench so AP-12 and AP-13 do not persist across linked surfaces.
 
 ---
@@ -1203,6 +1207,12 @@ Remain **technology-neutral**.
 
 ## Document navigation
 
+## BOM engineering workspace
+
+The SME BOM workspace SHALL expose only FG Item, Revision, Effective Date, Output Quantity, FG Weight, Weight Unit, Runner Weight, component RM Mix %, derived RM Weight, and Notes. Process Wastage %, QC Allowance %, and FG Planning Buffer % SHALL NOT appear on the BOM editor.
+
+Read-only operator guidance SHALL show Shot Weight, RM per FG, FG per Kg, and contextual RM required for the selected Work Order quantity. Values refresh immediately as weight, output quantity, runner weight, or mix changes. Runner Weight helper text SHALL clarify that runner/sprue is consumed with the shot but is not part of customer-delivered FG weight.
+
 | | Link |
 |--|------|
 | **Previous** | [Reports & Analytical Surfaces](./Chapter_06_Reports_and_Analytical_Surfaces.md) (FT-PD-065) |
@@ -1214,6 +1224,25 @@ Remain **technology-neutral**.
 ## Batch 3E — Recovery / Closure analytics surfaces (read-only)
 
 Dashboard, Pending Actions, Control Tower, and Reports consume `assessNoQtySoClosure()` and `getRecoverySummary()` / `getRecoverySummariesBatch()` via `noQtyRecoveryAnalyticsService`. Production Shortfall and QC Recovery remain separate. Reconciliation identity: Source Qty = Active Allocated + Waived + Available. No mutation of recovery, RS allocation, stock, dispatch qty, billing qty, or SO closure transactions in this batch.
+
+**UI navigation:** NO_QTY close / FG disposition Pending Actions open **Sales Orders → NO_QTY Agreements** (preserve `salesOrderId`; optional `action=no-qty-fg-disposition` / `highlight=downstream`). Never land on Regular Orders. Current Stage labels mirror `resolveNoQtyAgreementProcessStage` and **must agree with** `assessNoQtySoClosure` (Ready to Close ⇔ close COMPLETE; Dispatch Pending / Billing Pending Export when those blockers apply).
+
+## Master lifecycle dependency dialog
+
+Tally import uses a durable preview grid with Create / Update / Skip / Error, field-level differences, Unit conversion and Godown mapping. Export UI distinguishes Generated, Awaiting acknowledgement, Accepted and Rejected; downloaded XML must not be labelled “Exported to Tally.” See the [Tally Compatibility Contract](../05_Data_Architecture/Tally_Compatibility_Contract.md).
+
+Delete actions for BOM and Item masters first open a dependency-analysis dialog. It shows the master identity and named counts for every non-zero dependency.
+
+- **Delete permanently** appears only when the server reports `safeToDelete=true`.
+- **Mark Inactive** appears when references exist.
+- Loading or failure states never expose a destructive action.
+- Inactive masters display an Inactive badge and remain visible in the master register; transaction selectors omit them.
+
+Generic “Cannot delete” messages are prohibited. The backend repeats the dependency check during deletion to prevent race conditions.
+
+### Customer Delivery Locations (Customer edit)
+
+The Customer master **Delivery Locations** section (formerly Delivery Addresses) is the only UI for customer ship-to locations. Inline cards support Add / Edit / Default / Active / Delete-when-unused. Location Label is the Dispatch dropdown name. Do not add a separate Delivery Location menu page. Same GSTIN on Customer and its locations is allowed.
 
 ## Batch 3F — Certification
 

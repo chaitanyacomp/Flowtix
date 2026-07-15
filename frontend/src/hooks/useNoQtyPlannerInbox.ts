@@ -37,6 +37,8 @@ export type NoQtyPlannerInboxRow = {
   rmCoverageLabel?: string | null;
   actionNeededKey?: NoQtyExecutionActionNeededKey | null;
   actionNeededLabel?: string | null;
+  ctaLabel?: string | null;
+  showProcurementPendingHint?: boolean;
   executionWorkspaceHref?: string | null;
 };
 
@@ -67,6 +69,8 @@ type NoQtyPlanningInboxApiRow = {
   rmCoverageLabel?: string | null;
   actionNeededKey?: string | null;
   actionNeededLabel?: string | null;
+  ctaLabel?: string | null;
+  showProcurementPendingHint?: boolean;
   executionWorkspaceHref?: string | null;
 };
 
@@ -95,6 +99,8 @@ function mapInboxRows(payload: { rows: NoQtyPlanningInboxApiRow[] }): NoQtyPlann
     rmCoverageLabel: row.rmCoverageLabel ?? null,
     actionNeededKey: row.actionNeededKey ?? null,
     actionNeededLabel: row.actionNeededLabel ?? null,
+    ctaLabel: row.ctaLabel ?? null,
+    showProcurementPendingHint: row.showProcurementPendingHint === true,
     executionWorkspaceHref: row.executionWorkspaceHref ?? null,
   }));
 }

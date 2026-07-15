@@ -33,12 +33,18 @@ export function newDeliveryAddressDraft(partial?: Partial<DeliveryAddressDraft>)
     key: partial?.key ?? `new-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
     id: partial?.id,
     label: partial?.label ?? "",
+    locationType: partial?.locationType ?? "OTHER",
     address: partial?.address ?? "",
     city: partial?.city ?? "",
+    district: partial?.district ?? "",
     stateId: partial?.stateId ?? "",
+    pincode: partial?.pincode ?? "",
+    country: partial?.country ?? "",
     gstin: partial?.gstin ?? "",
     contactPerson: partial?.contactPerson ?? "",
     phone: partial?.phone ?? "",
+    email: partial?.email ?? "",
+    notes: partial?.notes ?? "",
     isDefault: partial?.isDefault ?? false,
     isActive: partial?.isActive ?? true,
   };
@@ -80,12 +86,18 @@ export function CustomerMasterForm({ states, onCancel, onSaved, editingId }: Pro
       deliveryAddresses?: Array<{
         id: number;
         label: string;
+        locationType?: string | null;
         address?: string | null;
         city?: string | null;
+        district?: string | null;
         stateId?: number | null;
+        pincode?: string | null;
+        country?: string | null;
         gstin?: string | null;
         contactPerson?: string | null;
         phone?: string | null;
+        email?: string | null;
+        notes?: string | null;
         isDefault?: boolean;
         isActive?: boolean;
       }>;
@@ -104,12 +116,18 @@ export function CustomerMasterForm({ states, onCancel, onSaved, editingId }: Pro
               key: `addr-${a.id}`,
               id: a.id,
               label: a.label,
+              locationType: (a.locationType as DeliveryAddressDraft["locationType"]) || "OTHER",
               address: a.address ?? "",
               city: a.city ?? "",
+              district: a.district ?? "",
               stateId: a.stateId ?? "",
+              pincode: a.pincode ?? "",
+              country: a.country ?? "",
               gstin: a.gstin ?? "",
               contactPerson: a.contactPerson ?? "",
               phone: a.phone ?? "",
+              email: a.email ?? "",
+              notes: a.notes ?? "",
               isDefault: Boolean(a.isDefault),
               isActive: a.isActive !== false,
             }),
@@ -158,21 +176,13 @@ export function CustomerMasterForm({ states, onCancel, onSaved, editingId }: Pro
     const gstErr = validateGstinFormatMessage(gstin) ?? validateGstinAgainstState(gstin, stateId, states);
     if (gstErr) return gstErr;
     for (const row of deliveryAddresses) {
-      if (!row.label.trim()) return "Each delivery address needs a label.";
+      if (!row.label.trim()) return "Each delivery location needs a location label.";
       const rowGstErr =
         validateGstinFormatMessage(row.gstin) ??
         validateGstinAgainstState(row.gstin, row.stateId, states);
-      if (rowGstErr) return `Delivery address "${row.label.trim() || "Untitled"}": ${rowGstErr}`;
+      if (rowGstErr) return `Delivery location "${row.label.trim() || "Untitled"}": ${rowGstErr}`;
     }
-    const gstSet = new Set<string>();
-    const mainGst = normalizeGstinInput(gstin);
-    if (mainGst) gstSet.add(mainGst);
-    for (const row of deliveryAddresses) {
-      const g = normalizeGstinInput(row.gstin);
-      if (!g) continue;
-      if (gstSet.has(g)) return "Duplicate GSTIN is not allowed within this customer.";
-      gstSet.add(g);
-    }
+    // Same GSTIN may appear on customer + own locations; only reject malformed GSTIN above.
     return null;
   }
 
@@ -197,12 +207,18 @@ export function CustomerMasterForm({ states, onCancel, onSaved, editingId }: Pro
       deliveryAddresses: deliveryAddresses.map((row) => ({
         ...(row.id ? { id: row.id } : {}),
         label: row.label.trim(),
+        locationType: row.locationType || "OTHER",
         address: row.address.trim() || null,
         city: row.city.trim() || null,
+        district: (row.district ?? "").trim() || null,
         stateId: row.stateId === "" ? null : Number(row.stateId),
+        pincode: (row.pincode ?? "").trim() || null,
+        country: (row.country ?? "").trim() || null,
         gstin: normalizeGstinInput(row.gstin) || null,
         contactPerson: row.contactPerson.trim() || null,
         phone: row.phone.trim() || null,
+        email: (row.email ?? "").trim() || null,
+        notes: (row.notes ?? "").trim() || null,
         isDefault: row.isDefault,
         isActive: row.isActive,
       })),
@@ -275,12 +291,13 @@ export function CustomerMasterForm({ states, onCancel, onSaved, editingId }: Pro
 
       <PartyMasterSection
         variant="locations"
-        title="Delivery Addresses"
+        title="Delivery Locations"
         action={<PartyMasterAddLocationButton onClick={addDeliveryRow} />}
       >
         {deliveryAddresses.length === 0 ? (
           <PartyMasterLocationsHelper>
-            Add plant, warehouse, or branch locations for ship-to operations. Bill-to remains the registered entity above.
+            Add plant, warehouse, or branch delivery locations for ship-to / dispatch. Bill-to remains the registered
+            entity above. The same GSTIN may appear on the customer and its locations.
           </PartyMasterLocationsHelper>
         ) : (
           <div className="mt-2 space-y-2">
@@ -290,6 +307,7 @@ export function CustomerMasterForm({ states, onCancel, onSaved, editingId }: Pro
                 row={row}
                 states={states}
                 labelPlaceholder="Pune Plant"
+                showCustomerLocationExtras
                 onChange={(patch) => updateDelivery(row.key, patch)}
                 onRemove={() => removeDeliveryRow(row.key)}
                 onSetDefault={() => setDefaultDelivery(row.key)}

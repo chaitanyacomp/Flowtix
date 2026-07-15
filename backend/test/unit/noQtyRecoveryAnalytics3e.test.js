@@ -98,7 +98,7 @@ function makeAnalyticsDb(overrides = {}) {
     dispatch: { count: async () => 0, findMany: async () => [] },
     requirementSheet: { count: async () => 0, findFirst: async () => null },
     productionMaterialRequest: { findFirst: async () => null },
-    salesBill: { count: async () => 0 },
+    salesBill: { count: async () => 0, findMany: async () => [] },
     salesOrderCycle: { findFirst: async () => null, findMany: async () => [] },
     noQtyAcceptedFgDisposition: { findMany: async () => [] },
     _assessments: assessments,
@@ -173,6 +173,57 @@ describe("Batch 3E recovery analytics", () => {
     const ids = actions.map((a) => a.id);
     assert.equal(ids.length, new Set(ids).size);
     assert.ok(actions.some((a) => a.id === "noqty-recovery:99"));
+  });
+
+  it("Case 5: FG disposition PA opens NO_QTY FG workspace, never Regular Orders", async () => {
+    const db = makeAnalyticsDb({
+      cycles: [{ id: 10, cycleNo: 1 }],
+      workOrders: [{ id: 5 }],
+      qcEntries: [
+        {
+          acceptedQty: "12",
+          production: { workOrderLine: { fgItemId: 501 } },
+        },
+      ],
+    });
+    // Wire findMany for FG computation used by assessNoQtySoClosure
+    db.salesOrderCycle.findMany = async () => [{ id: 10, cycleNo: 1 }];
+    db.workOrder.findMany = async () => [{ id: 5 }];
+    db.qcEntry.findMany = async () => [
+      {
+        acceptedQty: "12",
+        production: { workOrderLine: { fgItemId: 501 } },
+      },
+    ];
+    const actions = await fetchNoQtyRecoveryPendingActions(db, { role: "ADMIN" });
+    const fg = actions.find((a) => a.id === "noqty-fg-disp:10");
+    assert.ok(fg, `expected FG PA, got ${actions.map((a) => a.id).join(",")}`);
+    assert.match(fg.href, /soType=NO_QTY/);
+    assert.match(fg.href, /salesOrderId=10/);
+    assert.match(fg.href, /action=no-qty-fg-disposition/);
+    assert.doesNotMatch(fg.href, /focusSalesOrderId/);
+  });
+
+  it("Case 5: downstream blocker PA opens NO_QTY Agreement with highlight", async () => {
+    const db = makeAnalyticsDb({});
+    db.dispatch.findMany = async ({ where } = {}) => {
+      if (where?.workflowStatus === "UNLOCKED") return [{ id: 26, docNo: "D-26-0008" }];
+      return [];
+    };
+    db.dispatch.count = async () => 1;
+    const admin = await fetchNoQtyRecoveryPendingActions(db, { role: "ADMIN" });
+    const blocked = admin.find((a) => a.id === "noqty-close-blocked:10");
+    assert.ok(blocked, `expected blocked PA, got ${admin.map((a) => a.id).join(",")}`);
+    assert.match(blocked.href, /soType=NO_QTY/);
+    assert.match(blocked.href, /salesOrderId=10/);
+    assert.match(blocked.href, /highlight=downstream/);
+
+    const store = await fetchNoQtyRecoveryPendingActions(db, { role: "STORE" });
+    const storeBlocked = store.find((a) => a.id === "noqty-close-blocked:10");
+    assert.ok(storeBlocked);
+    assert.match(storeBlocked.href, /^\/no-qty-agreements\?/);
+    assert.match(storeBlocked.href, /salesOrderId=10/);
+    assert.match(storeBlocked.href, /highlight=downstream/);
   });
 
   it("waived quantities appear in summary and recon identity holds", () => {

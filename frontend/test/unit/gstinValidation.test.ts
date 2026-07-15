@@ -15,6 +15,11 @@ const STATES = [
 describe("gstinValidation", () => {
   it("normalizes GSTIN input", () => {
     expect(normalizeGstinInput(" 27aaecc1234f1z5 ")).toBe("27AAECC1234F1Z5");
+    expect(normalizeGstinInput("27 ALSKD1412A1Z5")).toBe("27ALSKD1412A1Z5");
+  });
+
+  it("accepts valid 15-char GSTIN 27ALSKD1412A1Z5", () => {
+    expect(validateGstinFormatMessage("27ALSKD1412A1Z5")).toBeNull();
   });
 
   it("extracts GST state code", () => {

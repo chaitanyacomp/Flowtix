@@ -6,7 +6,7 @@
 | **Volume** | 3 — Domain Specifications |
 | **Chapter** | 4 — Manufacturing Domain Specification |
 | **Title** | Manufacturing Domain Specification |
-| **Version** | 1.1.0 |
+| **Version** | 1.1.2 |
 | **Status** | Draft — Architecture Review |
 | **Effective date** | 2026-05-29 |
 | **Author** | FT ERP Product Team |
@@ -31,6 +31,8 @@
 |---------|------|--------|---------|
 | 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial Manufacturing domain — WO through Production Entry handoff to QA |
 | 1.1.0 | 2026-07-10 | FT ERP Product Team | WastageType master extension (code/category/description); Lane C Production Report classification analytics ownership clarified |
+| 1.1.1 | 2026-07-15 | FT ERP Product Team | BOM lifecycle — Phase-2 Future Enhancement for BOM Revision FK traceability (docs only) |
+| 1.1.2 | 2026-07-15 | FT ERP Product Team | Cross-ref FT-PD-100 §7.1 Phase-2 planning register (docs only) |
 
 **Supersedes:** None.
 
@@ -179,9 +181,13 @@ Architecture is in [Volume 2, Chapter 4](../02_Business_Architecture/Chapter_04_
 | **Inputs** | Submitted PMR lines; source location stock; target production location |
 | **Outputs** | Stock Transaction; issued qty; production capacity envelope |
 | **Lifecycle** | Draft → Posted \| Cancelled (draft) |
-| **Allowed actions** | Create from PMR; partial line issue; post; cancel draft |
+| **Allowed actions** | Create from PMR; partial line issue; post; cancel draft; **Short Issue close** (close remaining unissued demand) |
 | **Validation rules** | PMR Submitted; free stock ≥ issue qty; locations valid; WO not cancelled |
-| **Completion criteria** | **Posted** — updates issued totals on PMR; enables production within issued envelope |
+| **Completion criteria** | **Posted** — updates issued totals on PMR; enables production within **issued** envelope. Short Issue close → PMR `SHORT_ISSUE_ACCEPTED` |
+
+**Inventory rule (authoritative):** Stock Transactions **SHALL** move **Issued Qty only**. Unissued / Short Issue Qty **SHALL NOT** create stock movements and **SHALL** remain available in RM Store. Short Issue is an **audit / demand-closure** event (`waivedQty` on PMR line), not consumption.
+
+**Short Issue close:** Store may intentionally stop issue before Required Qty (e.g. Required 6.396, Issued 6.000). PMR records Required / Issued / Short Issue Qty + reason/actor via audit. Residual Material Allocations for unissued qty **SHALL** be released so free stock is restored. Production proceeds on Issued Qty; any FG shortfall uses the **existing NO_QTY production shortfall / recovery** workflow — not a second RM carry-forward.
 
 ---
 
@@ -196,7 +202,11 @@ Architecture is in [Volume 2, Chapter 4](../02_Business_Architecture/Chapter_04_
 | **Outputs** | Approved production qty; RM consumption posting; **QA Pending** handoff |
 | **Lifecycle** | Draft → Submitted → Approved → QA Pending \| Rejected (internal) |
 | **Allowed actions** | Record draft; submit; approve; cancel draft |
-| **Validation rules** | Material issued; qty ≤ PMR-aligned production capacity; qty ≤ WO line remaining |
+| **Validation rules** | Material issued; qty ≤ remaining RM-supported capacity. For NO_QTY, WO qty is the planned target and is not a hard cap; Regular tolerance rules remain unchanged. |
+
+### NO_QTY excess production authorization
+
+Net usable issued RM is gross issue minus Store return minus RM consumed by approved production. BOM/PMR per-FG demand converts each component balance to FG capacity; the lowest component controls. Saved unapproved batches reserve this remaining envelope once. NO_QTY production may exceed planned WO quantity within that envelope. The WO planned quantity and RS placement balance remain unchanged. Excess follows normal Production → QC → accepted FG stock/rejection processing and does not offset a future recovery cycle automatically.
 | **Completion criteria** | **Approved** → **QA Pending** — Manufacturing domain handoff complete |
 
 ---
@@ -644,6 +654,18 @@ Production Work Order Report confirmation owns **wastage classification** agains
 
 ## Document navigation
 
+## Engineering BOM boundary — injection moulding
+
+The approved BOM describes the engineering recipe for one FG item. It SHALL contain FG identity, revision, effective date, output quantity, FG weight and unit, runner weight, component mix/weight, and notes. It SHALL NOT own process wastage, QC allowance, or FG planning buffer percentages.
+
+Runner weight is the sprue/runner produced with one mould shot and is not delivered FG weight:
+
+`Shot Weight = (FG Weight × Output Quantity) + Runner Weight`
+
+`RM per FG = Shot Weight ÷ Output Quantity`
+
+Each component's engineering RM weight is its mix percentage of Shot Weight, divided by Output Quantity for the per-FG consumption basis. BOM explosion, PMR, Material Issue calculation, RM readiness, and production approval consumption SHALL use that engineering basis. Actual process loss and QC rejection remain execution facts; planning buffer remains a Planning-domain policy.
+
 | | Link |
 |--|------|
 | **Previous** | [Procurement Domain Specification](./Chapter_03_Procurement_Domain_Specification.md) (FT-PD-032) |
@@ -651,3 +673,34 @@ Production Work Order Report confirmation owns **wastage classification** agains
 | **Volume** | [Domain Specifications](./README.md) |
 | **Product** | [Product Documentation Index](../README.md) |
 
+## BOM lifecycle and manufacturing history
+
+Tally BOM import is unsupported in Release-1. A future safe importer may create Draft revisions only and must never update approved engineering history. Manufacturing quantities remain in the canonical Item Primary Unit. See the [Tally Compatibility Contract](../05_Data_Architecture/Tally_Compatibility_Contract.md).
+
+BOM approval, effective dates, revision numbering, locking, and history are unchanged. A revision with manufacturing participation cannot be deleted. Participation includes Monthly Planning, Work Order, PMR, Material Issue, Production, QC, or Dispatch connected to its finished good. Such a BOM may only become **Inactive**.
+
+The execution schema does not currently store a direct BOM revision on downstream rows, so the dependency rule uses FG/work-order history as a conservative boundary. No inventory movement, production, QC, dispatch, or NO_QTY recovery rule changes when a master is deactivated.
+
+### Future Enhancement — BOM Revision traceability (Phase-2 roadmap)
+
+Current Flowtix ERP preserves manufacturing history by conservatively preventing deletion whenever downstream manufacturing history exists.
+
+A future release may persist the exact BOM Revision ID on:
+
+- Work Order
+- PMR
+- Material Issue
+- Production
+- QC
+
+This will provide complete engineering traceability and enable more precise dependency analysis without relying on conservative blocking.
+
+This enhancement is intentionally deferred because the current implementation already guarantees audit safety and meets Release-1 business requirements. It is a **Phase-2** engineering-traceability roadmap item. Until delivered, Release-1 deletion and Inactive rules **SHALL** remain unchanged (no schema, API, or workflow change for this purpose).
+
+**Roadmap register:** Priority, business value, deferral rationale, and dependencies are maintained in [FT-PD-100 §7.1](../10_Product_Lifecycle_and_Continuous_Evolution/Chapter_01_Product_Lifecycle_Roadmap_and_Continuous_Evolution.md#71-phase-2-roadmap--engineering-planning-register) (Priority: **High**; Target: **Phase-2**).
+
+# NO_QTY over-production and accepted FG balance (2026-07-15)
+
+Accepted over-production is stock, not additional customer demand. Once locked cycle demand is fully dispatched, its accepted excess remains in the USABLE bucket without a dispatch or sales-bill obligation and remains attributable to the same SO + FG for carry-forward.
+
+WO quantity remains planned quantity. RM-supported over-production is valid, but only final QC-accepted FG can offset later production. The balance is reconstructed per SO + FG across all WOs and active prior cycles. Pending/rejected QC and cancelled RS versions never contribute. Customer demand and WO placement history remain gross; manufacturing consumes the snapshotted net production requirement.

@@ -260,9 +260,10 @@ function buildServiceXml(home) {
   const serverJs = path.join(appDir, "server.js");
   const nodeExe = findNodeExecutable();
   const logPath = serviceLogDir(home);
-  // WinSW 2.x XML — paths with spaces must be quoted in arguments.
+  // WinSW 2.x XML — Milestone 3 hardening: start/stop timeouts, restart policy, log rotation.
+  // Secrets stay in shared/.env (loaded by the app); never embed passwords here.
   return `<?xml version="1.0" encoding="UTF-8"?>
-<!-- FT-DEP-001 Batch 8 — Flowtix ERP Windows Service (WinSW ${WINSW_VERSION}) -->
+<!-- FT-DEP-001 Batch 8 / Milestone 3 — Flowtix ERP Windows Service (WinSW ${WINSW_VERSION}) -->
 <!-- Generated for FT_ERP_HOME=${home} — do not put secrets here; app loads shared/.env -->
 <service>
   <id>${SERVICE_ID}</id>
@@ -280,12 +281,108 @@ function buildServiceXml(home) {
   <onfailure action="restart" delay="10 sec"/>
   <onfailure action="restart" delay="30 sec"/>
   <resetfailure>1 hour</resetfailure>
-  <stoptimeout>20 sec</stoptimeout>
+  <stoptimeout>30 sec</stoptimeout>
+  <starttimeout>60 sec</starttimeout>
   <startmode>Automatic</startmode>
+  <delayedAutoStart>true</delayedAutoStart>
   <env name="FT_ERP_HOME" value="${escapeXml(home)}"/>
   <env name="NODE_ENV" value="production"/>
 </service>
 `;
+}
+
+/**
+ * Validate service dependencies before install/start.
+ */
+function validateServiceDependencies(home) {
+  const issues = [];
+  const appDir = resolveActiveApp(home);
+  const serverJs = path.join(appDir, "server.js");
+  if (!fs.existsSync(serverJs)) {
+    issues.push(`Working directory app missing server.js: ${appDir}`);
+  }
+  if (!fs.existsSync(path.join(home, "shared", ".env"))) {
+    issues.push("shared/.env missing");
+  }
+  if (!fs.existsSync(path.join(home, "web", "index.html"))) {
+    issues.push("web/index.html missing (SPA will not load)");
+  }
+  const nodeExe = findNodeExecutable();
+  if (!nodeExe || (nodeExe !== "node" && !fs.existsSync(nodeExe))) {
+    // "node" on PATH is OK even if absolute path not resolved
+    if (nodeExe !== "node") issues.push(`Node executable not found: ${nodeExe}`);
+  }
+  return { ok: issues.length === 0, issues, appDir, serverJs, nodeExe };
+}
+
+function probeLocalHealth(port, timeoutMs = 5000) {
+  return new Promise((resolve) => {
+    const http = require("http");
+    const req = http.get(
+      { hostname: "127.0.0.1", port, path: "/health", timeout: timeoutMs },
+      (res) => {
+        let body = "";
+        res.on("data", (c) => {
+          if (body.length < 2048) body += c;
+        });
+        res.on("end", () => {
+          let ok = res.statusCode === 200;
+          try {
+            const j = JSON.parse(body);
+            ok = ok && j && j.ok === true;
+          } catch {
+            ok = false;
+          }
+          resolve({ ok, statusCode: res.statusCode });
+        });
+      },
+    );
+    req.on("error", () => resolve({ ok: false, statusCode: null }));
+    req.on("timeout", () => {
+      req.destroy();
+      resolve({ ok: false, statusCode: null });
+    });
+  });
+}
+
+async function verifyServiceHealth(home, { attempts = 10, delayMs = 2000 } = {}) {
+  const state = queryServiceState();
+  if (state !== "running") {
+    return { ok: false, state, detail: `Service not running (state=${state})` };
+  }
+  let port = 4000;
+  try {
+    const envPath = path.join(home, "shared", ".env");
+    if (fs.existsSync(envPath)) {
+      const text = fs.readFileSync(envPath, "utf8");
+      const m = text.match(/^\s*PORT\s*=\s*(.+)$/im);
+      if (m) {
+        let v = m[1].trim().replace(/^["']|["']$/g, "");
+        const n = Number(v);
+        if (Number.isFinite(n) && n > 0) port = n;
+      }
+    }
+  } catch {
+    // ignore
+  }
+  for (let i = 0; i < attempts; i++) {
+    const health = await probeLocalHealth(port);
+    if (health.ok) {
+      return {
+        ok: true,
+        state,
+        port,
+        detail: `Service running; GET /health OK on port ${port}`,
+      };
+    }
+    sleepMs(delayMs);
+  }
+  return {
+    ok: false,
+    state,
+    port,
+    detail: `Service running but /health not OK after ${attempts} attempts on port ${port}`,
+  };
 }
 
 function escapeXml(s) {
@@ -433,11 +530,18 @@ function writeServiceXml(home) {
 }
 
 function writeServiceReadme(home) {
-  const text = `Flowtix ERP — Windows Service (FT-DEP-001 Batch 8)
+  const text = `Flowtix ERP — Windows Service (FT-DEP-001 Batch 8 / Milestone 3)
 
 Wrapper: WinSW (${WINSW_VERSION}) as ${SERVICE_EXE_NAME}
 Config:  ${SERVICE_XML_NAME}
-Logs:    ..\\logs\\service\\
+Logs:    ..\\logs\\service\\ (roll-by-size, 10MB x 8)
+
+Hardening:
+  - Automatic start (delayed)
+  - onfailure restart 5s / 10s / 30s
+  - starttimeout 60s, stoptimeout 30s
+  - Working directory = active app\\
+  - Dependency check before install
 
 Commands (from tools\\ or deployment\\):
   service-install.bat
@@ -463,7 +567,11 @@ async function installService(home) {
       detail: "Administrator privileges required to install the Windows Service.",
     };
   }
-  const appDir = resolveActiveApp(home);
+  const deps = validateServiceDependencies(home);
+  if (!deps.ok) {
+    return { ok: false, detail: `Service dependency validation failed: ${deps.issues.join("; ")}` };
+  }
+  const appDir = deps.appDir;
   if (!fs.existsSync(path.join(appDir, "server.js"))) {
     return { ok: false, detail: `Active app/server.js not found at ${appDir}` };
   }
@@ -579,4 +687,6 @@ module.exports = {
   ensureWinSWBinary,
   isAdmin,
   buildServiceXml,
+  validateServiceDependencies,
+  verifyServiceHealth,
 };

@@ -27,6 +27,17 @@ Technical checks after Batch 9 setup or Batch 10 installer. Do **not** print sec
 - [ ] `tools\service-status.bat` present (if service used)
 - [ ] `tools\firewall-flowtix.bat` present
 - [ ] `tools\vendor\winsw\WinSW-x64.exe` present (offline service)
+- [ ] `tools\install-validate.bat` present
+- [ ] `tools\configure-env.bat` present
+- [ ] `tools\db-safety.bat` present
+- [ ] `tools\install-recovery.bat` present
+- [ ] `tools\collect-diagnostics.bat` present
+
+## Pre-install / config (Milestone 3)
+
+- [ ] `install-validate` report PASS (or FAIL items fixed before place)
+- [ ] `configure-env` Configuration Summary accepted (secrets masked)
+- [ ] Path A: `db-safety` PASS (or setup Path A completed without db-safety FAIL)
 
 ## Runtime
 
@@ -38,11 +49,14 @@ Technical checks after Batch 9 setup or Batch 10 installer. Do **not** print sec
 - [ ] `/api/*` still JSON (not SPA HTML)
 - [ ] `verify-install.bat --home <FT_ERP_HOME>` exit **0** (checks health + UI HTML)
 - [ ] Firewall rule present **or** documented exception (`firewall-flowtix.bat verify`)
+- [ ] If service used: Automatic (delayed) + restart-on-failure; health OK after start
 
 ## Logs / manifests
 
 - [ ] `logs\setup.log` or installer log present (first install)
 - [ ] `logs\SETUP_MANIFEST.json` entry if setup ran
+- [ ] `logs\install\install-validation-report.txt` present if validate ran
+- [ ] `logs\diagnostics\flowtix-diagnostics-*` present (or skip documented)
 - [ ] No accidental `.env` pasted into logs/tickets
 
 **Result:** Pass / Fail  

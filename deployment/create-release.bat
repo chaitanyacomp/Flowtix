@@ -126,6 +126,19 @@ copy /Y "%DEPLOY%\verify-install.js" "%RELEASE_DIR%\tools\verify-install.js" >nu
 copy /Y "%DEPLOY%\firewall-flowtix.bat" "%RELEASE_DIR%\tools\firewall-flowtix.bat" >nul
 copy /Y "%DEPLOY%\firewall-flowtix.js" "%RELEASE_DIR%\tools\firewall-flowtix.js" >nul
 copy /Y "%DEPLOY%\validate-winsw.js" "%RELEASE_DIR%\tools\validate-winsw.js" >nul
+copy /Y "%DEPLOY%\install-common.js" "%RELEASE_DIR%\tools\install-common.js" >nul
+copy /Y "%DEPLOY%\install-validate.bat" "%RELEASE_DIR%\tools\install-validate.bat" >nul
+copy /Y "%DEPLOY%\install-validate.js" "%RELEASE_DIR%\tools\install-validate.js" >nul
+copy /Y "%DEPLOY%\configure-env.bat" "%RELEASE_DIR%\tools\configure-env.bat" >nul
+copy /Y "%DEPLOY%\configure-env.js" "%RELEASE_DIR%\tools\configure-env.js" >nul
+copy /Y "%DEPLOY%\db-safety.bat" "%RELEASE_DIR%\tools\db-safety.bat" >nul
+copy /Y "%DEPLOY%\db-safety.js" "%RELEASE_DIR%\tools\db-safety.js" >nul
+copy /Y "%DEPLOY%\install-recovery.bat" "%RELEASE_DIR%\tools\install-recovery.bat" >nul
+copy /Y "%DEPLOY%\install-recovery.js" "%RELEASE_DIR%\tools\install-recovery.js" >nul
+copy /Y "%DEPLOY%\collect-diagnostics.bat" "%RELEASE_DIR%\tools\collect-diagnostics.bat" >nul
+copy /Y "%DEPLOY%\collect-diagnostics.js" "%RELEASE_DIR%\tools\collect-diagnostics.js" >nul
+copy /Y "%DEPLOY%\certify-install.bat" "%RELEASE_DIR%\tools\certify-install.bat" >nul
+copy /Y "%DEPLOY%\certify-install.js" "%RELEASE_DIR%\tools\certify-install.js" >nul
 if exist "%DEPLOY%\production.env.example" (
   mkdir "%RELEASE_DIR%\shared" 2>nul
   copy /Y "%DEPLOY%\production.env.example" "%RELEASE_DIR%\shared\.env.example" >nul
@@ -182,6 +195,14 @@ if %RC% GEQ 8 (
   echo   firewall-flowtix.bat — optional inbound TCP rule for app PORT
   echo   vendor\winsw\ — offline WinSW-x64.exe ^(checksum validated^)
   echo   docs\handover\ — production readiness, checklists, runbook, templates
+  echo.
+  echo Milestone 3 — installation hardening:
+  echo   install-validate.bat — pre-install environment validation report
+  echo   configure-env.bat — guided production .env ^(secrets masked^)
+  echo   db-safety.bat — MySQL safety gate before migrate deploy
+  echo   install-recovery.bat — install transaction begin/abort/commit
+  echo   collect-diagnostics.bat — ZIP-ready diagnostics bundle
+  echo   certify-install.bat — clean-machine certification harness ^(lab^)
   echo.
   echo Deferred:
   echo   - automated DB restore
@@ -430,6 +451,48 @@ if not exist "%RELEASE_DIR%\tools\firewall-flowtix.js" (
   set "FAIL=1"
 ) else (
   echo   OK: tools\firewall-flowtix.js
+)
+
+if not exist "%RELEASE_DIR%\tools\install-validate.js" (
+  echo   FAIL: tools\install-validate.js missing
+  set "FAIL=1"
+) else (
+  echo   OK: tools\install-validate.js
+)
+
+if not exist "%RELEASE_DIR%\tools\configure-env.js" (
+  echo   FAIL: tools\configure-env.js missing
+  set "FAIL=1"
+) else (
+  echo   OK: tools\configure-env.js
+)
+
+if not exist "%RELEASE_DIR%\tools\db-safety.js" (
+  echo   FAIL: tools\db-safety.js missing
+  set "FAIL=1"
+) else (
+  echo   OK: tools\db-safety.js
+)
+
+if not exist "%RELEASE_DIR%\tools\install-recovery.js" (
+  echo   FAIL: tools\install-recovery.js missing
+  set "FAIL=1"
+) else (
+  echo   OK: tools\install-recovery.js
+)
+
+if not exist "%RELEASE_DIR%\tools\collect-diagnostics.js" (
+  echo   FAIL: tools\collect-diagnostics.js missing
+  set "FAIL=1"
+) else (
+  echo   OK: tools\collect-diagnostics.js
+)
+
+if not exist "%RELEASE_DIR%\tools\certify-install.js" (
+  echo   FAIL: tools\certify-install.js missing
+  set "FAIL=1"
+) else (
+  echo   OK: tools\certify-install.js
 )
 
 if not exist "%RELEASE_DIR%\tools\vendor\winsw\WinSW-x64.exe" (

@@ -1,6 +1,6 @@
-# Flowtix ERP — Windows Installer (FT-DEP-001 Batch 10 / Milestone 2)
+# Flowtix ERP — Windows Installer (FT-DEP-001 Batch 10 / Milestone 2–3)
 
-Inno Setup **wrapper only**. It packages the certified release from Batch 1 and runs Batch 9 `setup-flowtix` (optional Batch 8 service, optional firewall rule). It does **not** replace update/rollback, install MySQL, or redesign deployment.
+Inno Setup **wrapper only**. It packages the certified release from Batch 1 and runs Batch 9 `setup-flowtix` (optional Batch 8 service, optional firewall rule). Milestone 3 hardens setup (validate → configure-env → db-safety → install-recovery → diagnostics). It does **not** replace update/rollback, install MySQL, or redesign deployment.
 
 ## Prerequisites
 
@@ -57,7 +57,9 @@ In production, the Node/Express backend serves the packaged React SPA from `web\
 | No `.env` overwrite | Batch 9 never replaces existing `shared/.env` |
 | Existing install | Post-install **skips** setup; use `update-flowtix` for upgrades |
 | Offline WinSW | Release ships checksum-validated `WinSW-x64.exe` |
-| Uninstall default | Stops/removes service + firewall rule; removes app/web binaries; **keeps** `shared/`, `backups/`, `logs/`, DB, pre-update archives |
+| Uninstall default | Stops/removes service + firewall rule; removes `app`/`web`/`prisma` binaries; **asks** to preserve `shared/`, `backups/`, `logs/` (default Yes); **never deletes MySQL** |
+| Pre-setup config | Prefer `tools\configure-env.bat` before Path A; setup refuses placeholder secrets |
+| Install failure | `install-recovery` restores installation files only — never auto-rolls back the database |
 
 ## Silent install
 

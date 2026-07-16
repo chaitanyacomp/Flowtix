@@ -87,6 +87,7 @@ Filename: "{cmd}"; Parameters: "/C if exist ""{app}\releases\{#ReleaseFolder}\to
 [Code]
 var
   ResolvedPort: String;
+  RemoveCustomerData: Boolean;
 
 function SkipMigrateFlag(Param: String): String;
 begin
@@ -237,15 +238,23 @@ end;
 function InitializeUninstall(): Boolean;
 begin
   Result := True;
-  MsgBox('Uninstall stops the Windows Service (if installed), removes the firewall rule if present, and removes application binaries.'#13#10#13#10 +
-    'By default this does NOT delete:'#13#10 +
-    '  - shared\ (including .env and uploads)'#13#10 +
-    '  - backups\'#13#10 +
-    '  - logs\'#13#10 +
-    '  - prior release archives under releases\*-pre-update-*'#13#10 +
-    '  - MySQL database'#13#10#13#10 +
-    'Use update-flowtix / rollback-flowtix for version changes; uninstall is not a DB wipe.',
+  RemoveCustomerData := False;
+  MsgBox('Uninstall will stop the Windows Service (if installed), remove the firewall rule if present, and remove application binaries (app\, web\, prisma\).'#13#10#13#10 +
+    'The MySQL database is NEVER deleted by this uninstaller.',
     mbInformation, MB_OK);
+  { Default = preserve customer data }
+  if MsgBox('Preserve customer data on disk?'#13#10#13#10 +
+    'YES (recommended): keep shared\ (.env, uploads), backups\, logs\, and release archives.'#13#10 +
+    'NO: also delete shared\, backups\, and logs\ from the install folder.'#13#10#13#10 +
+    'MySQL database is still never deleted.',
+    mbConfirmation, MB_YESNO) = IDNO then
+  begin
+    if MsgBox('Confirm deletion of shared\, backups\, and logs\ under the install folder?'#13#10 +
+      'Type carefully: this removes configuration and local backup files.'#13#10 +
+      'MySQL database will still NOT be deleted.',
+      mbConfirmation, MB_YESNO) = IDYES then
+      RemoveCustomerData := True;
+  end;
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
@@ -255,11 +264,19 @@ begin
   if CurUninstallStep = usPostUninstall then
   begin
     AppDir := ExpandConstant('{app}');
+    { Always remove application binaries }
     DelTree(AppDir + '\app', True, True, True);
     DelTree(AppDir + '\web', True, True, True);
     DelTree(AppDir + '\prisma', True, True, True);
     DeleteFile(AppDir + '\VERSION.txt');
     DeleteFile(AppDir + '\{#MyAppExeName}');
     DeleteFile(AppDir + '\LAN-ACCESS.txt');
+    { Optional: customer data — never MySQL }
+    if RemoveCustomerData then
+    begin
+      DelTree(AppDir + '\shared', True, True, True);
+      DelTree(AppDir + '\backups', True, True, True);
+      DelTree(AppDir + '\logs', True, True, True);
+    end;
   end;
 end;

@@ -3,8 +3,8 @@
 | Field | Value |
 |-------|-------|
 | **Document ID** | FT-DEP-012 |
-| **Version** | 1.1.0 |
-| **Parent** | FT-DEP-001 v1.11.0 |
+| **Version** | 1.2.0 |
+| **Parent** | FT-DEP-001 v1.12.0 |
 | **Audience** | Customer System Administrator |
 
 Day-2 operations for LAN Flowtix ERP. Tools live under `{FT_ERP_HOME}\tools\` or `releases\Flowtix-v*\tools\` (copied from repo `deployment/` at packaging time).
@@ -93,11 +93,62 @@ Restores prior `app\`/`web\` from `*-pre-update-*`. **Does not** restore MySQL a
 
 Prefer Batch 10 installer or:
 
+1. Validate environment (stops before place if FAIL):
+
+```bat
+tools\install-validate.bat --home C:\FT-ERP --source <package>
+```
+
+2. Guided configuration (never overwrite `.env` without confirm; passwords not printed):
+
+```bat
+tools\configure-env.bat --home C:\FT-ERP
+```
+
+3. Setup (Path A migrate, or Path B `--skip-migrate`):
+
 ```bat
 tools\setup-flowtix.bat --home C:\FT-ERP --source <package> --yes
 ```
 
-Requires existing `shared\.env`. Path B: add `--skip-migrate`.
+Optional flags: `--create-db`, `--install-service`, `--configure-firewall`, `--skip-diagnostics`, `--allow-dev-db` (lab only).
+
+Requires existing `shared\.env` before setup. Database safety runs automatically before `prisma migrate deploy`.
+
+## 7b. Installation recovery
+
+If setup fails mid-way, files may be restored via the install transaction (DB is **not** rolled back):
+
+```bat
+tools\install-recovery.bat status --home C:\FT-ERP
+tools\install-recovery.bat abort --home C:\FT-ERP --reason "operator abort"
+```
+
+App/web rollback after a successful update still uses `rollback-flowtix` (Batch 7). Manual SQL restore is Mode B if schema must be reverted.
+
+## 7c. Diagnostics bundle
+
+```bat
+tools\collect-diagnostics.bat --home C:\FT-ERP
+```
+
+Creates a ZIP-ready folder under `logs\diagnostics\` with versions, service state, health, migrations, logs, and a **masked** configuration summary. Attach this folder (zipped) to support tickets — never paste `.env`.
+
+## 7d. Windows Service recovery
+
+Service XML uses Automatic (delayed) start, restart-on-failure (5s/10s/30s), start timeout 60s, stop timeout 30s, and roll-by-size logs under `logs\service\`.
+
+```bat
+tools\service-status.bat --home C:\FT-ERP
+tools\service-restart.bat --home C:\FT-ERP
+tools\verify-install.bat --home C:\FT-ERP
+```
+
+If the service fails to start: check `logs\service\`, `shared\.env` presence, `app\server.js`, Node on PATH, then re-run `service-install.bat` after fixing dependencies.
+
+## 7e. Safe uninstall
+
+Uninstaller removes application binaries by default and **asks** whether to preserve `shared\`, `backups\`, and `logs\`. Default = preserve. **MySQL is never deleted** by the Flowtix uninstaller.
 
 ## 8. Admin database reset (Settings)
 

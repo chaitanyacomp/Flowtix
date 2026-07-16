@@ -3,8 +3,8 @@
 | Field | Value |
 |-------|-------|
 | **Document ID** | FT-DEP-011 |
-| **Version** | 1.0.0 |
-| **Parent** | FT-DEP-001 v1.10.0 §36 |
+| **Version** | 1.1.0 |
+| **Parent** | FT-DEP-001 v1.12.0 §36–§37 |
 | **Site / Customer** | |
 | **Target product version** | |
 | **Date** | |
@@ -19,6 +19,9 @@ Use as the **master gate** before declaring production ready. Complete linked ch
 - [ ] MySQL installed and reachable (Flowtix installer does **not** install MySQL)
 - [ ] `mysqldump` available for Path A / backups (Batch 4)
 - [ ] `FT_ERP_HOME` chosen (e.g. `C:\FT-ERP`)
+- [ ] `tools\install-validate.bat --home <FT_ERP_HOME>` report PASS (or FAIL items corrected before setup)
+- [ ] `tools\configure-env.bat` completed; Configuration Summary reviewed (secrets masked)
+- [ ] `tools\db-safety.bat` PASS before Path A migrate (or covered by setup Path A)
 
 ## B. Package & identity
 
@@ -32,8 +35,11 @@ Use as the **master gate** before declaring production ready. Complete linked ch
 - [ ] Installation verification complete ([02](./checklists/02_Installation_Verification.md))
 - [ ] `shared\.env` present and validated (secrets **not** copied into this form); **PORT** recorded
 - [ ] Root URL returns Flowtix HTML shell (backend static hosting); LAN URL documented
-- [ ] Optional Windows Service verified if used ([07](./checklists/07_Windows_Service_Verification.md))
+- [ ] Optional Windows Service verified if used ([07](./checklists/07_Windows_Service_Verification.md)) — restart policy / health after start
 - [ ] `verify-install` run — result: Pass / Fail / Skipped (exit 0 = API + UI OK)
+- [ ] Diagnostics folder present under `logs\diagnostics\` (or intentionally skipped with `--skip-diagnostics`)
+- [ ] Install recovery understood: file rollback only; **never** automatic DB rollback (FT-DEP-001 §37)
+- [ ] Uninstall policy understood: preserve customer data by default; MySQL never deleted by installer
 
 ## D. Data protection
 

@@ -4,8 +4,8 @@
 |-------|-------|
 | **Document ID** | FT-DEP-001 |
 | **Title** | Deployment & Release Management Standard |
-| **Version** | 1.11.0 |
-| **Status** | Active — Operational Standard (Batches 1–11 + Milestone 2 gap closure) |
+| **Version** | 1.12.0 |
+| **Status** | Active — Operational Standard (Batches 1–11 + Milestone 2 + Milestone 3 install hardening) |
 | **Effective date** | 2026-07-09 |
 | **Author** | FT ERP Product Team |
 | **Owner** | FT ERP Product Architecture / Release Operations |
@@ -31,7 +31,7 @@
 |-------|------|
 | **Volume 9 (FT-PD-090+)** | Technology-neutral **architecture law** (DEP-*, INS-*, OPS-*, RES-*) |
 | **FT-DEP-001 (this document)** | **Operational standard** for the approved LAN client-server deployment model — folder layout, packaging, backup, migration, update/rollback SOPs |
-| **Implementation (`deployment/`)** | Committed scripts for Batches 1–11 + Milestone 2 (create-release, setup, WinSW, Inno installer, verify-install, firewall helper, static SPA hosting). Source of tools lives under `deployment/`; release packages copy them to `tools/`. |
+| **Implementation (`deployment/`)** | Committed scripts for Batches 1–11 + Milestone 2 + Milestone 3 (create-release, setup, WinSW, Inno installer, verify-install, firewall helper, static SPA hosting, install-validate, configure-env, db-safety, install-recovery, collect-diagnostics, certify-install). Source of tools lives under `deployment/`; release packages copy them to `tools/`. |
 
 **Rule:** This document **implements** Volume 9 for the local-server / LAN model. It **SHALL NOT** override workflow semantics (Volume 4), business pipelines (Volume 2), data integrity (Volume 5), or UI architecture (Volume 6 / FT-PD-066). Deployment **consumes** certification ([DEP-01](../09_Deployment_and_Operations_Architecture/Chapter_01_Deployment_and_Release_Architecture.md)) — it never replaces it.
 
@@ -53,6 +53,7 @@
 | 1.9.0 | 2026-07-09 | FT ERP Product Team | Batch 10 — Inno Setup Windows installer wrapper (`deployment/installer/`) |
 | 1.10.0 | 2026-07-09 | FT ERP Product Team | Batch 11 — deployment validation & client handover pack (`handover/`, `verify-install`) |
 | 1.11.0 | 2026-07-16 | FT ERP Product Team | Milestone 2 — backend static SPA hosting; verify UI+API; offline WinSW checksum; firewall helper; installer LAN URL policy; frontend `npm run build` gate |
+| 1.12.0 | 2026-07-16 | FT ERP Product Team | Milestone 3 — installation hardening: env validation, guided configure-env, db-safety gate, WinSW recovery policy, install-recovery, safe uninstall, diagnostics, certify-install |
 
 **Supersedes:** Informal client install notes; ad-hoc “copy the repo to the server” practices.
 
@@ -62,6 +63,7 @@
 
 - Batches 1–11 under `deployment/` (packaging, backup, migrate deploy, update, rollback, WinSW, setup, Inno wrapper, verify-install, handover)
 - Milestone 2: production static hosting (`backend/src/runtime/staticHosting.js`), offline WinSW (`deployment/vendor/winsw/` + checksum), `firewall-flowtix.*`, installer URL/LAN notes
+- Milestone 3: `install-validate.*`, `configure-env.*`, `db-safety.*`, `install-recovery.*`, `collect-diagnostics.*`, `certify-install.*`; hardened WinSW XML; Inno safe uninstall (preserve customer data by default)
 
 **Still deferred:**
 
@@ -1699,3 +1701,82 @@ tools\verify-install.bat --home C:\FT-ERP --json
 - [ ] FT-DEP-001 §22 links to handover; §36 documented
 - [ ] No diffs to Batches 4–10 engine scripts beyond packaging copy / README
 - [ ] No ERP business / UI / schema changes
+
+---
+
+## 37. Installation Hardening (Milestone 3)
+
+### 37.1 Purpose
+
+Harden first-time and repair installs so a production Windows server can be validated **before** mutation, configured safely, migrated with `prisma migrate deploy` only, recovered from install failures **without** rolling back the customer database, uninstalled without deleting MySQL by default, and support-ready via a diagnostics bundle.
+
+Milestone 3 **reuses** Batches 1–11 + Milestone 2. It **SHALL NOT** introduce a parallel deployment framework or redesign ERP workflows.
+
+### 37.2 Environment validation (Phase A)
+
+| Tool | `tools/install-validate.bat` / `install-validate.js` |
+|------|------------------------------------------------------|
+| When | Before `setup-flowtix` mutates the home (default; `--skip-validate` escapes only for lab) |
+| Checks | Windows version, Administrator (when service intended), disk space, Node/npm, MySQL client, Prisma availability, existing install/service/shared/.env/backups/logs/version, port, WinSW integrity, required folders |
+| Output | `logs/install/install-validation-report.{json,txt}` — FAIL items include corrective action |
+| Rule | On FAIL: stop; **never partially install** |
+
+### 37.3 Guided production configuration (Phase B)
+
+| Tool | `tools/configure-env.bat` / `configure-env.js` |
+|------|------------------------------------------------|
+| Fields | Hostname, IPv4, HTTP port, DB host/port/name/user/password, `FT_ERP_HOME`, backup dir, log dir, JWT |
+| Rules | Validate every field; show **Configuration Summary** with secrets masked; never overwrite existing `shared/.env` without confirmation / `--force`; never print passwords |
+
+### 37.4 Database safety (Phase C)
+
+| Tool | `tools/db-safety.bat` / `db-safety.js` (also invoked by `setup-flowtix` and `migrate-db`) |
+|------|----------------------------------------------------------------------------------------|
+| Checks | MySQL reachable, credentials, DB exists (optional `--create-db`), MySQL ≥ 8, migration history, `DATABASE_URL` sanity, block known development DB names (`mini_erp`, etc.) |
+| Allowed | `prisma migrate deploy` only |
+| Forbidden | `prisma db push`, `prisma migrate reset` |
+
+### 37.5 Windows Service hardening (Phase D)
+
+WinSW remains the wrapper. Generated XML includes Automatic + delayed start, `onfailure` restart (5s/10s/30s), `starttimeout` 60s, `stoptimeout` 30s, roll-by-size logs, dependency/working-directory validation before install, and post-start `/health` verification from setup when the service is started.
+
+### 37.6 Installation recovery (Phase E)
+
+| Tool | `tools/install-recovery.bat` / `install-recovery.js` |
+|------|------------------------------------------------------|
+| Model | begin → stages → commit \| abort |
+| On abort | Restore snapshotted `app`/`web`/`prisma` (or remove partial fresh trees) |
+| Never | Automatic MySQL rollback / delete of `shared/.env` / customer backups |
+
+State: `logs/install/INSTALL_TRANSACTION.json` + snapshots under `logs/install/snapshots/`.
+
+### 37.7 Safe uninstall (Phase F)
+
+Inno Setup (`Flowtix.iss`) asks whether to preserve customer data. **Default: preserve** `shared\`, `backups\`, `logs\`. Application binaries (`app\`, `web\`, `prisma\`) are removed. **MySQL database is never deleted** by the uninstaller.
+
+### 37.8 Diagnostics bundle (Phase G)
+
+| Tool | `tools/collect-diagnostics.bat` / `collect-diagnostics.js` |
+|------|------------------------------------------------------------|
+| Output | `logs/diagnostics/flowtix-diagnostics-<timestamp>/` (ZIP-ready) |
+| Contents | Versions (Flowtix/installer/Windows/Node/npm/MySQL/Prisma), service state, port, paths, health, migrations list, directory checks, recent installer logs, configuration summary — **passwords masked** |
+| Setup | Collected by default after setup (`--skip-diagnostics` to omit) |
+
+### 37.9 Clean-machine certification (Phase H)
+
+| Tool | `tools/certify-install.bat` / `certify-install.js` |
+|------|----------------------------------------------------|
+| Scope | Safe lab simulations (configure, validate, recovery, db-safety guard, WinSW XML, diagnostics, uninstall policy, syntax) |
+| Site acceptance | Reboot, LAN multi-browser, live service install remain FT-DEP-011 gates |
+
+### 37.10 Validation checklist (Milestone 3)
+
+- [ ] `install-validate` fails closed before place-release when environment unsafe
+- [ ] `configure-env` masks secrets; refuses overwrite without confirm/`--force`
+- [ ] `db-safety` blocks `mini_erp` / invalid URL; migrate remains `deploy` only
+- [ ] WinSW XML contains restart + timeouts + log rotation
+- [ ] Failed setup aborts install transaction (files only; DB untouched)
+- [ ] Uninstaller default preserves customer data; never deletes MySQL
+- [ ] `collect-diagnostics` produces masked `summary.json`
+- [ ] `certify-install` exits 0 in lab
+- [ ] FT-DEP-011 / FT-DEP-012 / checklist 02 synchronized

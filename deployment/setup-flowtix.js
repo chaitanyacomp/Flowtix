@@ -19,7 +19,12 @@ const readline = require("readline");
 const { spawnSync } = require("child_process");
 const { runPrerequisiteChecks } = require("./check-prereqs");
 const { initFolders } = require("./init-folders");
-const { installService, startServiceIfPresent, isAdmin } = require("./service-control");
+const {
+  installService,
+  startServiceIfPresent,
+  verifyServiceHealth,
+  isAdmin,
+} = require("./service-control");
 
 function scriptDir() {
   return __dirname;
@@ -46,6 +51,10 @@ function parseArgs(argv) {
     configureFirewall: false,
     skipFirewall: false,
     force: false,
+    skipValidate: false,
+    createDb: false,
+    allowDevDb: false,
+    collectDiagnostics: true,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -58,6 +67,10 @@ function parseArgs(argv) {
     else if (a === "--configure-firewall") out.configureFirewall = true;
     else if (a === "--skip-firewall") out.skipFirewall = true;
     else if (a === "--force") out.force = true;
+    else if (a === "--skip-validate") out.skipValidate = true;
+    else if (a === "--create-db") out.createDb = true;
+    else if (a === "--allow-dev-db") out.allowDevDb = true;
+    else if (a === "--skip-diagnostics") out.collectDiagnostics = false;
   }
   if (process.env.SETUP_CONFIRM === "1" || process.env.UPDATE_CONFIRM === "1") out.yes = true;
   if (process.env.FT_ERP_HOME && !out.home) {
@@ -68,6 +81,7 @@ function parseArgs(argv) {
   }
   if (process.env.SETUP_SKIP_MIGRATE === "1") out.skipMigrate = true;
   if (process.env.SETUP_CONFIGURE_FIREWALL === "1") out.configureFirewall = true;
+  if (process.env.SETUP_CREATE_DB === "1") out.createDb = true;
   return out;
 }
 
@@ -307,6 +321,23 @@ function copyToolsIntoHome(sourceRelease, home) {
     "backup-db.bat",
     "migrate-db.js",
     "migrate-db.bat",
+    "install-common.js",
+    "install-validate.js",
+    "install-validate.bat",
+    "configure-env.js",
+    "configure-env.bat",
+    "db-safety.js",
+    "db-safety.bat",
+    "install-recovery.js",
+    "install-recovery.bat",
+    "collect-diagnostics.js",
+    "collect-diagnostics.bat",
+    "certify-install.js",
+    "certify-install.bat",
+    "firewall-flowtix.js",
+    "firewall-flowtix.bat",
+    "verify-install.js",
+    "verify-install.bat",
   ]) {
     const from = path.join(scriptDir(), name);
     if (fs.existsSync(from)) fs.copyFileSync(from, path.join(destTools, name));
@@ -518,25 +549,76 @@ async function main() {
     push("Confirmation skipped (--yes)");
   }
 
-  // --- 1. Prerequisites ---
-  push("STAGE=prereqs");
-  const prereq = await runPrerequisiteChecks({ home });
-  for (const c of prereq.checks) {
-    push(`prereq [${c.level}] ${c.id}: ${c.detail}`);
-  }
-  if (!prereq.ok) {
-    console.error("[setup-flowtix] ERROR: prerequisite check failed");
-    appendSetupLog(setupLogPath, [...logLines, "RESULT=failed", "STAGE=prereqs"]);
-    process.exit(4);
+  // --- 1. Environment validation (Milestone 3 Phase A) — abort before any mutation ---
+  push("STAGE=install-validate");
+  if (!args.skipValidate) {
+    const { runInstallValidation } = require("./install-validate");
+    const validation = await runInstallValidation({
+      home,
+      source: sourceRelease,
+      allowExisting: !!args.force,
+      skipMysql: true, // DB deep-check runs after env exists (Path A)
+      skipMigratePath: !!args.skipMigrate,
+    });
+    for (const c of validation.checks) {
+      push(`validate [${c.level}] ${c.id}: ${c.detail}`);
+      if (!c.ok && c.corrective) push(`  → ${c.corrective}`);
+    }
+    if (!validation.ok) {
+      console.error("");
+      console.error("[setup-flowtix] ERROR: installation environment validation failed");
+      console.error("  Fix the FAIL items above, then re-run setup. No files were placed.");
+      console.error(`  Report: ${path.join(home, "logs", "install", "install-validation-report.txt")}`);
+      console.error("");
+      appendSetupLog(setupLogPath, [...logLines, "RESULT=failed", "STAGE=install-validate"]);
+      process.exit(4);
+    }
+  } else {
+    push("install-validate skipped (--skip-validate)");
+    const prereq = await runPrerequisiteChecks({ home });
+    for (const c of prereq.checks) push(`prereq [${c.level}] ${c.id}: ${c.detail}`);
+    if (!prereq.ok) {
+      console.error("[setup-flowtix] ERROR: prerequisite check failed");
+      appendSetupLog(setupLogPath, [...logLines, "RESULT=failed", "STAGE=prereqs"]);
+      process.exit(4);
+    }
   }
   if (!args.skipMigrate) {
-    const dump = prereq.checks.find((c) => c.id === "mysqldump");
+    const dumpCheck = await runPrerequisiteChecks({ home });
+    const dump = dumpCheck.checks.find((c) => c.id === "mysqldump");
     if (dump && !dump.ok) {
       console.error("[setup-flowtix] ERROR: Path A requires mysqldump (or use --skip-migrate)");
       appendSetupLog(setupLogPath, [...logLines, "RESULT=failed", "STAGE=prereqs-mysqldump"]);
       process.exit(4);
     }
   }
+
+  // --- 1b. Begin install transaction (Phase E) ---
+  const recovery = require("./install-recovery");
+  let tx = null;
+  try {
+    tx = recovery.beginTransaction(home, {
+      source: sourceRelease,
+      productVersion: targetMeta.productVersion,
+    });
+    push(`install-tx begin id=${tx.id} snapshotted=${tx.snapshotted.join(",") || "fresh"}`);
+  } catch (e) {
+    push(`install-tx begin warn: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  const failSetup = (exitCode, stage, message) => {
+    console.error(`[setup-flowtix] ERROR: ${message}`);
+    if (tx) {
+      try {
+        const aborted = recovery.abortTransaction(home, `${stage}: ${message}`);
+        push(`install-tx abort: ${aborted.detail}`);
+      } catch (e) {
+        push(`install-tx abort failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    appendSetupLog(setupLogPath, [...logLines, "RESULT=failed", `STAGE=${stage}`]);
+    process.exit(exitCode);
+  };
 
   // --- 2. Folders ---
   push("STAGE=folders");
@@ -549,49 +631,69 @@ async function main() {
   if (!envInfo.exists) {
     console.error("");
     console.error("[setup-flowtix] ERROR: shared/.env is missing");
-    console.error(`  Create ${envInfo.envPath} from template:`);
-    console.error(`  ${envInfo.examplePath || "deployment/production.env.example"}`);
+    console.error(`  Run: tools\\configure-env.bat --home "${home}"`);
+    console.error(`  Template: ${envInfo.examplePath || "deployment/production.env.example"}`);
     console.error("  Set DATABASE_URL and JWT_SECRET (no CHANGE_ME). Setup will NOT invent secrets.");
     console.error("");
-    appendSetupLog(setupLogPath, [...logLines, "RESULT=failed", "STAGE=env-missing"]);
-    process.exit(5);
+    failSetup(5, "env-missing", "shared/.env missing — run configure-env first");
   }
   // Never overwrite existing .env — only validate
   const envVal = validateEnvFile(envInfo.envPath);
   if (!envVal.ok) {
     console.error("[setup-flowtix] ERROR: shared/.env validation failed (values not printed)");
     for (const i of envVal.issues) console.error(`  - ${i}`);
-    appendSetupLog(setupLogPath, [
-      ...logLines,
-      "RESULT=failed",
-      "STAGE=env-validate",
-      ...envVal.issues.map((i) => `ISSUE=${i}`),
-    ]);
-    process.exit(5);
+    failSetup(5, "env-validate", envVal.issues.join("; "));
   }
   push("env OK (secrets not printed)");
+  if (tx) recovery.markStage(home, "env-ok", true);
 
   // --- 4. Place release ---
   push("STAGE=place-release");
   copyToolsIntoHome(sourceRelease, home);
   const placed = placeRelease(sourceRelease, home);
   push(`placed version=${placed.version} archive=${placed.archiveDir}`);
+  if (tx) recovery.markStage(home, "place-release", true, placed.version);
+  if (!fs.existsSync(path.join(home, "app", "server.js"))) {
+    failSetup(9, "place-release", "app\\server.js missing after place — package incomplete");
+  }
+  if (!fs.existsSync(path.join(home, "web", "index.html"))) {
+    failSetup(9, "place-release", "web\\index.html missing after place — package incomplete");
+  }
 
   push("STAGE=npm-install-app");
   const npmInst = installAppDependencies(home);
   push(npmInst.detail);
   if (!npmInst.ok) {
-    console.error(`[setup-flowtix] ERROR: ${npmInst.detail}`);
-    appendSetupLog(setupLogPath, [...logLines, "RESULT=failed", "STAGE=npm-install-app", npmInst.detail]);
-    process.exit(9);
+    failSetup(9, "npm-install-app", npmInst.detail);
   }
+  if (tx) recovery.markStage(home, "npm-install", true);
 
   let backupFilename = null;
   let migrationStatus = args.skipMigrate ? "skipped" : null;
   let baselineBackup = null;
 
-  // --- 5. Path A: backup → migrate → baseline backup ---
+  // --- 5. Path A: db-safety → backup → migrate → baseline backup ---
   if (!args.skipMigrate) {
+    push("STAGE=db-safety");
+    try {
+      const dbSafety = require("./db-safety");
+      const dbReport = await dbSafety.validateDatabaseSafety({
+        home,
+        createIfMissing: !!args.createDb,
+        allowDevDatabase: !!args.allowDevDb,
+      });
+      for (const c of dbReport.checks) {
+        push(`db-safety [${c.level}] ${c.id}: ${c.detail}`);
+        if (!c.ok && c.corrective) push(`  → ${c.corrective}`);
+      }
+      if (!dbReport.ok) {
+        failSetup(7, "db-safety", "Database safety checks failed — migrate deploy blocked");
+      }
+      if (tx) recovery.markStage(home, "db-safety", true);
+    } catch (e) {
+      failSetup(7, "db-safety", e instanceof Error ? e.message : String(e));
+    }
+
     push("STAGE=backup-pre-migrate");
     const backupBat = findTool(sourceRelease, home, "backup-db.bat");
     const backupDir = path.join(home, "backups", "db");
@@ -603,9 +705,7 @@ async function main() {
     if (backupRun.stdout) process.stdout.write(backupRun.stdout);
     if (backupRun.stderr) process.stderr.write(backupRun.stderr);
     if (backupRun.status !== 0) {
-      console.error("[setup-flowtix] ERROR: pre-migrate backup failed — abort (DB not migrated)");
-      appendSetupLog(setupLogPath, [...logLines, "RESULT=failed", "STAGE=backup-pre-migrate"]);
-      process.exit(6);
+      failSetup(6, "backup-pre-migrate", "pre-migrate backup failed — DB not migrated");
     }
     const b1 = latestSuccessfulBackup(backupDir);
     backupFilename = b1 ? b1.filename : null;
@@ -633,18 +733,16 @@ async function main() {
     if (migrateRun.stdout) process.stdout.write(migrateRun.stdout);
     if (migrateRun.stderr) process.stderr.write(migrateRun.stderr);
     if (migrateRun.status !== 0) {
-      console.error("[setup-flowtix] ERROR: migrate deploy failed");
       migrationStatus = "failed";
-      appendSetupLog(setupLogPath, [
-        ...logLines,
-        "RESULT=failed",
-        "STAGE=migrate",
-        `BACKUP=${backupFilename}`,
-      ]);
-      process.exit(7);
+      failSetup(
+        7,
+        "migrate",
+        "prisma migrate deploy failed — installation files rolled back; database left unchanged (restore from backup if needed)",
+      );
     }
     migrationStatus = "success";
     push("migrate OK");
+    if (tx) recovery.markStage(home, "migrate", true);
 
     push("STAGE=backup-baseline");
     const backupRun2 = runBat(
@@ -688,10 +786,20 @@ async function main() {
         console.error(`[setup-flowtix] WARN: service install failed: ${inst.detail}`);
       } else {
         const start = startServiceIfPresent(home);
+        let healthDetail = "health skipped (service not running)";
+        let healthOk = start.ok;
+        if (start.ok) {
+          const sh = await verifyServiceHealth(home, { attempts: 10, delayMs: 2000 });
+          healthOk = sh.ok;
+          healthDetail = sh.detail;
+          if (!sh.ok) {
+            console.error(`[setup-flowtix] WARN: service started but health check failed: ${sh.detail}`);
+          }
+        }
         serviceResult = {
           attempted: true,
-          ok: start.ok,
-          detail: `${inst.detail}; start: ${start.detail}`,
+          ok: healthOk,
+          detail: `${inst.detail}; start: ${start.detail}; ${healthDetail}`,
         };
         push(`service: ${serviceResult.detail}`);
       }
@@ -773,6 +881,27 @@ async function main() {
     console.error("[setup-flowtix] WARN: SETUP_MANIFEST write failed:", e instanceof Error ? e.message : String(e));
   }
 
+  if (tx) {
+    try {
+      recovery.commitTransaction(home);
+      push("install-tx committed");
+    } catch (e) {
+      push(`install-tx commit warn: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  let diagnosticsDir = null;
+  if (args.collectDiagnostics) {
+    try {
+      const { collectDiagnostics } = require("./collect-diagnostics");
+      const diag = await collectDiagnostics({ home, skipHealth: !health.ok });
+      diagnosticsDir = diag.outDir;
+      push(`diagnostics: ${diagnosticsDir}`);
+    } catch (e) {
+      push(`diagnostics warn: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
   appendSetupLog(setupLogPath, [
     ...logLines,
     `RESULT=${status}`,
@@ -784,6 +913,7 @@ async function main() {
     `SERVICE=${serviceResult.detail}`,
     `FIREWALL=${firewallResult.detail}`,
     `VERIFY=${health.mode}`,
+    `DIAGNOSTICS=${diagnosticsDir || ""}`,
     `ELAPSED_MS=${durationMs}`,
   ]);
 
@@ -800,6 +930,7 @@ async function main() {
   console.log(` Service          : ${serviceResult.detail}`);
   console.log(` Firewall         : ${firewallResult.detail}`);
   console.log(` Verify           : ${health.mode} (${health.ok ? "ok" : "check manually"})`);
+  console.log(` Diagnostics      : ${diagnosticsDir || "(skipped)"}`);
   console.log(` Setup log        : ${setupLogPath}`);
   console.log(` Manifest         : ${manifestPath}`);
   console.log("====================================================");
@@ -807,6 +938,7 @@ async function main() {
   console.log(" Server URL (this PC):  http://127.0.0.1:<PORT>/   (PORT from shared\\.env, default 4000)");
   console.log(" LAN clients:           http://<server-hostname-or-IPv4>:<PORT>/");
   console.log(" Backend serves the packaged React UI from web\\ (static hosting).");
+  console.log(" Recovery: tools\\install-recovery.bat status --home ...");
   console.log("");
   if (health.mode === "files") {
     console.log(" Start backend:  set FT_ERP_HOME=" + home);
@@ -820,5 +952,18 @@ async function main() {
 
 main().catch((e) => {
   console.error("[setup-flowtix] FATAL:", redactSecrets(e instanceof Error ? e.message : String(e)));
+  try {
+    const home = process.env.FT_ERP_HOME;
+    if (home) {
+      const recovery = require("./install-recovery");
+      const st = recovery.statusTransaction(home);
+      if (st && st.status === "in_progress") {
+        recovery.abortTransaction(home, e instanceof Error ? e.message : String(e));
+        console.error("[setup-flowtix] Install transaction aborted after fatal error (DB untouched).");
+      }
+    }
+  } catch {
+    // ignore
+  }
   process.exit(1);
 });

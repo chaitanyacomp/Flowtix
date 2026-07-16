@@ -523,6 +523,33 @@ async function main() {
   }
   console.log(`[migrate-db] database=${db.database} host=${db.host} port=${db.port} user=${db.user}`);
 
+  // Milestone 3 Phase C — database safety (never db push / migrate reset)
+  try {
+    const dbSafety = require("./db-safety");
+    const allowDev = process.env.DB_SAFETY_ALLOW_DEV === "1";
+    const createDb = process.env.DB_SAFETY_CREATE_DB === "1";
+    const safety = await dbSafety.validateDatabaseSafety({
+      home,
+      createIfMissing: createDb,
+      allowDevDatabase: allowDev,
+    });
+    for (const c of safety.checks) {
+      const tag = c.level === "ok" ? "OK" : c.level === "warn" ? "WARN" : "FAIL";
+      console.log(`[migrate-db] db-safety [${tag}] ${c.id}: ${c.detail}`);
+    }
+    if (!safety.ok) {
+      console.error("");
+      console.error("[migrate-db] ERROR: database safety checks failed — migrate deploy blocked");
+      console.error("  Fix MySQL connectivity/credentials/database name, then retry.");
+      console.error("  Never use prisma db push or prisma migrate reset on production.");
+      console.error("");
+      process.exit(2);
+    }
+  } catch (e) {
+    console.error("[migrate-db] ERROR: database safety probe failed:", e instanceof Error ? e.message : String(e));
+    process.exit(2);
+  }
+
   let backupGate;
   try {
     backupGate = requireFreshBackup(backupDir);

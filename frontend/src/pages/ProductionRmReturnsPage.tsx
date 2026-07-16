@@ -13,6 +13,7 @@ import { ErpKpiLabel, ErpKpiSegment, ErpKpiStrip, ErpKpiValue, ErpPageContentGat
 import { useStablePageLoad } from "../hooks/useStablePageLoad";
 import { useToast } from "../contexts/ToastContext";
 import { useAuth } from "../hooks/useAuth";
+import { useUnsavedChangesGuard } from "../hooks/useUnsavedChangesGuard";
 import { bumpErpRefresh } from "../lib/erpRefresh";
 import {
   isAlreadyProcessedPendingReturnError,
@@ -163,6 +164,14 @@ export function ProductionRmReturnsPage() {
   const [toLocationId, setToLocationId] = React.useState<number | "">("");
   const [remarks, setRemarks] = React.useState("");
   const [draftLines, setDraftLines] = React.useState<ReturnLineDraft[]>([]);
+
+  useUnsavedChangesGuard({
+    isDirty:
+      remarks.trim() !== "" ||
+      (draftLines.length > 0 && draftLines.some((l) => String(l.returnQty).trim() !== "")),
+    message: "RM return has unsaved quantities. Leave and discard them?",
+    enabled: !submitting,
+  });
 
   async function loadPendingReturns() {
     setLoadingPending(true);

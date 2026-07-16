@@ -121,7 +121,7 @@ export function ProductionOperatorEntryFields({
             <span className={productionOperatorFieldLabelClass}>Produced Qty</span>
             <div className="flex h-12 items-center gap-2">
               <Input
-                ref={producedQtyRef}
+                ref={producedQtyRef as React.RefObject<HTMLInputElement>}
                 {...prodQtyBind}
                 type="text"
                 data-testid="production-qty-input"

@@ -1,9 +1,10 @@
 import * as React from "react";
 import type { ReactNode } from "react";
-import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
+import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 import { useErpCacheLifecycle } from "../hooks/useErpCacheLifecycle";
 import { useDemoMode } from "../contexts/DemoModeContext";
+import { useConfirmLeaveDirty } from "../contexts/DirtyFormContext";
 import { isDemoNavigationAllowed } from "../lib/demoFlowConfig";
 import { DemoHighlightController } from "./demo/DemoHighlightController";
 import { DemoGuide } from "./demo/DemoGuide";
@@ -362,6 +363,7 @@ function DemoGatedNavLink({
   title?: string;
 }) {
   const demo = useDemoMode();
+  const confirmLeave = useConfirmLeaveDirty();
   const blocked = demo.enabled && !isDemoNavigationAllowed(to, demo.flow, demo.step);
   return (
     <NavLink
@@ -371,7 +373,13 @@ function DemoGatedNavLink({
       aria-disabled={blocked}
       tabIndex={blocked ? -1 : 0}
       onClick={(e) => {
-        if (blocked) e.preventDefault();
+        if (blocked) {
+          e.preventDefault();
+          return;
+        }
+        if (!confirmLeave()) {
+          e.preventDefault();
+        }
       }}
       className={(args) =>
         cn(typeof className === "function" ? className(args) : className, blocked && "pointer-events-none opacity-40")
@@ -421,7 +429,6 @@ export function AppLayout() {
   const auth = useAuth();
   useErpCacheLifecycle();
   const demo = useDemoMode();
-  const nav = useNavigate();
   const { pathname } = useLocation();
   const { flags } = useFeatureFlags();
   const role = auth.user?.role || "";
@@ -456,15 +463,15 @@ export function AppLayout() {
   }, [sidebarCollapsed]);
 
   function onLogout() {
+    // Hard redirect is performed inside auth.logout() (performIntentionalLogout).
     auth.logout();
-    nav("/login");
   }
 
   return (
     <div className="erp-shell erp-app-shell app-shell">
       <aside
         className={cn(
-          "erp-sidebar overflow-hidden transition-[width] duration-300 ease-[cubic-bezier(0.4,0,0.2,1)]",
+          "erp-sidebar overflow-hidden motion-safe:transition-[width] motion-safe:duration-300 motion-safe:ease-[cubic-bezier(0.4,0,0.2,1)]",
           sidebarCollapsed ? "w-14" : "w-60",
         )}
         data-sidebar-collapsed={sidebarCollapsed ? "1" : "0"}

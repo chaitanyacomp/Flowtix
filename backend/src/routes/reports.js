@@ -11,22 +11,12 @@ const {
   filterNoQtyDispatchRowsForActiveCycle,
   netNoQtyCycleDispatchedByItemId,
 } = require("./dispatch");
-const {
-  aggregateSoOrderedQtyByItemId,
-  allocateDispatchFifoAcrossWorkOrderLines,
-  deriveWoTrackingOperationalStatus,
-  getWoTrackingDispatchPendingQty,
-  getWoTrackingProductionPendingQty,
-  getWoTrackingQcPendingQty,
-  REPORT_QUEUE_EPS,
-  METRIC_DEFINITIONS,
-  METRIC_CONTEXT,
-  computeWorkOrderTrackingSummaryFromRows,
-  sumActiveQcAcceptedQty,
-  sumActiveQcRejectedQty,
-} = require("../services/reportMetrics");
 const { buildOperationsExceptionReportPayload } = require("../services/operationsExceptionReport");
-const { QC_ENTRY_ACTIVE_WHERE } = require("../services/qcEntryConstants");
+const { sumActiveQcAcceptedQty, sumActiveQcRejectedQty } = require("../services/reportMetrics");
+const {
+  parseWorkOrderTrackingQuery,
+  buildWorkOrderTrackingReport,
+} = require("../services/workOrderTrackingReportService");
 const {
   getSoDispatchTraceReport,
   parseDateStart,
@@ -1602,210 +1592,15 @@ function customerNameForSalesOrder(so) {
 /**
  * GET /api/reports/work-order-tracking
  *
- * One row per WorkOrderLine: required qty (SO), planned production qty (buffer), produced, QC, dispatch.
- *
- * Production: sum(ProductionEntry.producedQty) grouped by workOrderLineId.
- *
- * QC: for each ProductionEntry on the line, sum acceptedQty/rejectedQty from QcEntry where reversedAt is null
- * (reversed QC does not count), same rule as qc-queue dashboard.
- *
- * Dispatch: Dispatch is stored per SalesOrder + itemId only. For each WO line we set dispatchedQty to that
- * line's FIFO share of net dispatch on the SO for fgItemId (see allocateDispatchFifoAcrossWorkOrderLines
- * in reportMetrics). dispatchPendingQty = max(acceptedQty - dispatchedQty, 0) per line (WO tracking).
- * Summary pendingDispatchQtySum is capped per SO+FG: see computeWorkOrderTrackingSummaryPendingDispatchQtySum.
- *
- * orderedQty: sum of SalesOrderLine.qty for matching soId and itemId (same FG as the WO line).
+ * Flow-aware operational report (required query: flow=REGULAR|NO_QTY).
+ * Optional: includeClosed=true (default Active Only).
+ * Never mixes Regular and NO_QTY rows. See docs/WORK_ORDER_TRACKING_REPORT_STANDARD.md.
  */
 reportsRouter.get("/work-order-tracking", requireAuth, workOrderTrackingRoles, async (req, res, next) => {
   try {
-    const lines = await prisma.workOrderLine.findMany({
-      orderBy: [
-        { workOrder: { salesOrder: { createdAt: "asc" } } },
-        { workOrder: { createdAt: "asc" } },
-        { id: "asc" },
-      ],
-      include: {
-        fgItem: true,
-        workOrder: {
-          include: {
-            salesOrder: {
-              include: {
-                lines: { include: { item: true }, orderBy: { id: "asc" } },
-                customer: true,
-                po: { include: { customer: true } },
-                dispatch: true,
-              },
-            },
-          },
-        },
-        productions: {
-          include: {
-            qcEntries: { where: QC_ENTRY_ACTIVE_WHERE },
-          },
-        },
-      },
-    });
-
-    /** @type {Map<string, Array<{ lineId: number, acceptedQty: number }>>} */
-    const groupBuckets = new Map();
-
-    /** @type {Map<number, { producedQty: number, acceptedQty: number, rejectedQty: number }>} */
-    const metricsByLineId = new Map();
-
-    for (const wol of lines) {
-      let producedQty = 0;
-      let acceptedQty = 0;
-      let rejectedQty = 0;
-      for (const pe of wol.productions) {
-        if (pe.workflowStatus !== "APPROVED") continue;
-        producedQty += Number(pe.producedQty);
-        acceptedQty += sumActiveQcAcceptedQty(pe.qcEntries);
-        rejectedQty += sumActiveQcRejectedQty(pe.qcEntries);
-      }
-      metricsByLineId.set(wol.id, { producedQty, acceptedQty, rejectedQty });
-
-      const so = wol.workOrder.salesOrder;
-      const key = `${so.id}-${wol.fgItemId}`;
-      if (!groupBuckets.has(key)) groupBuckets.set(key, []);
-      groupBuckets.get(key).push({ lineId: wol.id, acceptedQty });
-    }
-
-    /** @type {Map<number, number>} */
-    const dispatchedByLineId = new Map();
-
-    for (const [key, bucket] of groupBuckets.entries()) {
-      const [soIdStr, fgItemIdStr] = key.split("-");
-      const soId = Number(soIdStr);
-      const fgItemId = Number(fgItemIdStr);
-      const sample = lines.find((l) => l.workOrder.salesOrderId === soId && l.fgItemId === fgItemId);
-      if (!sample) continue;
-      const so = sample.workOrder.salesOrder;
-      const net = netDispatchedByItemId(so.dispatch || [], DISPATCH_ALLOC_MODE.CONFIRMED).get(fgItemId) ?? 0;
-      const allocMap = allocateDispatchFifoAcrossWorkOrderLines(bucket, net);
-      for (const [lid, qty] of allocMap) {
-        dispatchedByLineId.set(lid, qty);
-      }
-    }
-
-    const rows = [];
-    for (const wol of lines) {
-      const wo = wol.workOrder;
-      const so = wo.salesOrder;
-      const m = metricsByLineId.get(wol.id);
-      const producedQty = m.producedQty;
-      const acceptedQty = m.acceptedQty;
-      const rejectedQty = m.rejectedQty;
-      const requiredQty = Number(wol.qty);
-      const orderedQty = aggregateSoOrderedQtyByItemId(so.lines || []).get(wol.fgItemId) ?? 0;
-      const dispatchedQty = dispatchedByLineId.get(wol.id) ?? 0;
-
-      const productionPendingQty = getWoTrackingProductionPendingQty(requiredQty, producedQty);
-      const qcPendingQty = getWoTrackingQcPendingQty(producedQty, acceptedQty, rejectedQty);
-      const dispatchPendingQty = getWoTrackingDispatchPendingQty(acceptedQty, dispatchedQty);
-
-      const status = deriveWoTrackingOperationalStatus(
-        {
-          productionPendingQty,
-          qcPendingQty,
-          dispatchPendingQty,
-          producedQty,
-          acceptedQty,
-          rejectedQty,
-          dispatchedQty,
-        },
-        REPORT_QUEUE_EPS,
-      );
-
-      rows.push({
-        workOrderLineId: wol.id,
-        salesOrderId: so.id,
-        salesOrderNo: `SO-${so.id}`,
-        salesOrderDate: so.createdAt.toISOString(),
-        customerName: customerNameForSalesOrder(so),
-        workOrderId: wo.id,
-        workOrderNo: `WO-${wo.id}`,
-        workOrderDate: wo.createdAt.toISOString(),
-        workOrderStatus: wo.status,
-        itemId: wol.fgItemId,
-        itemName: wol.fgItem.itemName,
-        orderedQty,
-        workOrderQty: requiredQty,
-        requiredQty,
-        producedQty,
-        acceptedQty,
-        rejectedQty,
-        dispatchedQty,
-        productionPendingQty,
-        qcPendingQty,
-        dispatchPendingQty,
-        status,
-        quantityContexts: {
-          so: {
-            orderedTotalForFgOnSalesOrder: orderedQty,
-            metricContext: METRIC_CONTEXT.SO_ITEM_TOTAL,
-          },
-          wo: {
-            requiredQty,
-            producedQty,
-            acceptedQty,
-            rejectedQty,
-            attributedDispatchedQty: dispatchedQty,
-            productionPendingQty,
-            qcPendingQty,
-            dispatchPendingQty,
-            metricContext: METRIC_CONTEXT.WO_LINE,
-          },
-          dispatchAllocation: METRIC_CONTEXT.WO_FIFO,
-        },
-      });
-    }
-
-    const summary = computeWorkOrderTrackingSummaryFromRows(rows);
-
-    const noQtyIdsFromLines = [
-      ...new Set(
-        lines
-          .filter((l) => l.workOrder?.salesOrder?.orderType === "NO_QTY")
-          .map((l) => Number(l.workOrder.salesOrderId))
-          .filter((id) => id > 0),
-      ),
-    ];
-    const { enrichSalesOrdersWithRecoveryClosure } = require("../services/noQtyRecoveryAnalyticsService");
-    const recoveryBySo =
-      noQtyIdsFromLines.length > 0
-        ? await enrichSalesOrdersWithRecoveryClosure(prisma, noQtyIdsFromLines)
-        : new Map();
-
-    for (const row of rows) {
-      const recovery = recoveryBySo.get(Number(row.salesOrderId));
-      if (!recovery) {
-        row.productionShortfallSourceQty = null;
-        row.recoverySourceStatus = null;
-        row.recoveryAllocatedQty = null;
-        continue;
-      }
-      const itemSources = (recovery.recoverySummary?.sources || []).filter(
-        (s) => Number(s.itemId) === Number(row.itemId) && s.recoveryType === "PRODUCTION_SHORTFALL",
-      );
-      row.productionShortfallSourceQty = itemSources.reduce((s, x) => s + Number(x.sourceQty || 0), 0);
-      row.recoverySourceStatus = itemSources[0]?.recoveryStatus ?? null;
-      row.recoveryAllocatedQty = itemSources.reduce((s, x) => s + Number(x.activeAllocatedQty || 0), 0);
-    }
-
-    return res.json({
-      rows,
-      summary,
-      reportMetricHints: {
-        orderedQty: "Sum of sales order line quantities for this FG item on the sales order (all matching SO lines)",
-        requiredQty: "Work order line qty committed to the sales order (SO validation / dispatch pool basis)",
-        workOrderQty: "Same as requiredQty (legacy field name)",
-        dispatchPendingQty: METRIC_DEFINITIONS.woDispatchPendingQty,
-        pendingDispatchQtySum:
-          "Sum over SO+FG groups of min(SO order remainder, accepted-not-yet-dispatched); does not exceed SO qty scope",
-        dispatchAllocation: METRIC_CONTEXT.WO_FIFO,
-        metricDefinitionsRef: METRIC_DEFINITIONS,
-      },
-    });
+    const { flow, includeClosed } = parseWorkOrderTrackingQuery(req.query);
+    const payload = await buildWorkOrderTrackingReport(prisma, { flow, includeClosed });
+    return res.json(payload);
   } catch (e) {
     return next(e);
   }

@@ -96,7 +96,7 @@ export function ProductionMaterialRequestsPage() {
 
   const [tab, setTab] = React.useState<"list" | "create">("list");
   const [rows, setRows] = React.useState<PmrRow[]>([]);
-  const [loading, setLoading] = React.useState(true);
+  const [, setLoading] = React.useState(true);
   const { firstLoadDone, initialLoading, refreshing, startLoad, finishLoad } = useStablePageLoad();
   const [workOrders, setWorkOrders] = React.useState<WoOption[]>([]);
   const [workOrderId, setWorkOrderId] = React.useState<number | "">("");

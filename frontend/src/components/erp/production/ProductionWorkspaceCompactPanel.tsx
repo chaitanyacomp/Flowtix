@@ -1,9 +1,5 @@
 import * as React from "react";
 
-import { cn } from "../../../lib/utils";
-
-import { OperatorMainSplit } from "../OperatorWorkbench";
-
 import { ProductionExecutionPanel } from "./ProductionExecutionPanel";
 
 import { ProductionReportPanel } from "./ProductionReportPanel";

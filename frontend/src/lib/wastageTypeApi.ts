@@ -23,10 +23,10 @@ export const WASTAGE_TYPE_CATEGORIES: WastageTypeCategory[] = [
 
 export type WastageTypeRow = {
   id: number;
-  code: string | null;
+  code?: string | null;
   name: string;
-  category: WastageTypeCategory;
-  description: string | null;
+  category?: WastageTypeCategory;
+  description?: string | null;
   sortOrder: number;
   isActive: boolean;
 };

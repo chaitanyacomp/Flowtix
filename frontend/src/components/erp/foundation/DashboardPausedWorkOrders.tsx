@@ -17,6 +17,7 @@ export type PausedWorkOrderRow = {
   salesOrderNo?: string | null;
   customerName?: string | null;
   itemName: string;
+  itemUnit?: string | null;
   plannedQty: number;
   producedQty: number;
   qcAcceptedQty: number;

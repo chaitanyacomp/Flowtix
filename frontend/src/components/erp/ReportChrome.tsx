@@ -3,27 +3,47 @@ import { cn } from "../../lib/utils";
 
 /**
  * Shared ERP report chrome primitives. Use across `/reports/*` and report-style
- * workspace pages (Customer Return, Customer Tracking, Sales Bills, etc.) so
- * every report screen shares the same design language: same toolbar density,
- * same KPI strip, same empty state, same table container behaviour.
+ * workspace pages so every Analysis report shares one layout language.
  *
+ * Presentation law: FT-PD-066 §17.7 Report Grid & Analytics UX Standard.
+ * Canonical reference implementation: Production Wastage — WO Analysis
+ * (`ProductionWastageWoReportPage`) — FT-UI-REPORT-018.
  * UI-only — no business logic, calculations, or permissions live here.
  *
  * Recommended page structure:
  *
- *   <PageContainer>
+ *   <ReportPageShell>
  *     <ReportPageHeader title="…" purpose="…" />
+ *     <ReportKpiStrip items={[…]} />
  *     <ReportFilterToolbar onApply={…} onReset={…}>
  *       <ReportFilterField label="Customer">…</ReportFilterField>
  *       …
  *     </ReportFilterToolbar>
- *     <ReportKpiStrip items={[…]} />
  *     <ReportTableShell>
  *       <table className="erp-table">…</table>
  *     </ReportTableShell>
  *     {empty ? <ReportEmptyState title="No results" body="Adjust filters and reapply." /> : null}
- *   </PageContainer>
+ *   </ReportPageShell>
  */
+
+/* ----------------------------- page shell -------------------------------- */
+
+/**
+ * Canonical Analysis report page container (FT-UI-REPORT-018).
+ * One max width, one gutter, one vertical rhythm for every report.
+ */
+export const REPORT_PAGE_SHELL_CLASS =
+  "erp-report-page mx-auto w-full max-w-[1400px] space-y-3 overflow-x-hidden p-4 pb-8";
+
+export function ReportPageShell({
+  children,
+  className,
+}: {
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return <div className={cn(REPORT_PAGE_SHELL_CLASS, className)}>{children}</div>;
+}
 
 /* --------------------------------- toolbar -------------------------------- */
 
@@ -172,8 +192,13 @@ export function ReportKpiStrip({
   className?: string;
 }) {
   if (!items.length) return null;
+  /** Default column rhythm; callers may override via `className` (FT-PD-066 §17.10: max 4–6). */
+  const defaultCols =
+    items.length >= 5
+      ? "grid-cols-2 sm:grid-cols-3 lg:grid-cols-5"
+      : "grid-cols-2 sm:grid-cols-2 lg:grid-cols-4";
   return (
-    <div className={cn("grid gap-2 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5", className)}>
+    <div className={cn("grid gap-2", defaultCols, className)}>
       {items.map((it) => (
         <div
           key={it.key}

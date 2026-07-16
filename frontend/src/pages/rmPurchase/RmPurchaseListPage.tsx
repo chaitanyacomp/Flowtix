@@ -3,6 +3,8 @@ import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { deleteUrlParamKeys } from "../../lib/urlSearchParamsPatch";
 import { DrillFocusBanner } from "../../components/DrillFocusBanner";
 import { useDebouncedUrlStringParam, useUrlQueryState } from "../../hooks/useUrlQueryState";
+import { useListScrollRestoration } from "../../hooks/useListScrollRestoration";
+import { buildListReturnTo, withListReturnContext } from "../../lib/listNavigationState";
 import { Card, CardContent, CardHeader, CardTitle } from "../../components/ui/card";
 import { ErpEmptyState, ErpKpiLabel, ErpKpiSegment, ErpKpiStrip, ErpKpiValue } from "../../components/erp/foundation";
 import { erpKpi, erpTable } from "../../lib/erpFoundationTokens";
@@ -15,6 +17,7 @@ import {
 } from "../../lib/drillFocusCopy";
 import { DRILL_DATA, DRILL_QUERY, withReportsReturnContextIfPresent } from "../../lib/drillDownRoutes";
 import { useDrillFocus } from "../../hooks/useDrillFocus";
+import { useUnsavedChangesGuard } from "../../hooks/useUnsavedChangesGuard";
 import { apiFetch } from "../../services/api";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
@@ -82,6 +85,7 @@ function poStatusBadgeClass(status: string): string {
 export function RmPurchaseListPage() {
   const navigate = useNavigate();
   const location = useLocation();
+  useListScrollRestoration();
   const { user } = useAuth();
   const canPrepareRmPo = hasErpRole(user?.role, PURCHASE_EXECUTION_ROLES);
   const [navSearchParams] = useSearchParams();
@@ -101,6 +105,10 @@ export function RmPurchaseListPage() {
   const poStatusFilter = read.enum("poStatus", ["ALL", "OPEN", "COMPLETED", "CANCELLED"] as const, "ALL");
   const qFromUrl = read.string("q");
   const [qDraft, setQDraft] = useDebouncedUrlStringParam({ urlValue: qFromUrl, patch, paramKey: "q" });
+  const listReturnTo = React.useMemo(
+    () => buildListReturnTo(location.pathname, location.search),
+    [location.pathname, location.search],
+  );
 
   const [suppliers, setSuppliers] = React.useState<Supplier[]>([]);
   const [items, setItems] = React.useState<Item[]>([]);
@@ -116,6 +124,23 @@ export function RmPurchaseListPage() {
   const [poLines, setPoLines] = React.useState<PoLineDraft[]>([]);
   const [purchaseMeta, setPurchaseMeta] = React.useState<PurchaseMeta | null>(null);
   const [creatingPo, setCreatingPo] = React.useState(false);
+
+  const { confirmLeave: confirmLeaveNewPo } = useUnsavedChangesGuard({
+    isDirty:
+      newPoOpen &&
+      (poRemarks.trim() !== "" ||
+        supplierPoNumber.trim() !== "" ||
+        poLines.some((l) => Number(l.qty) > 0 || Number(l.rate) > 0)),
+    message: "New purchase order has unsaved changes. Leave and discard them?",
+    enabled: !creatingPo,
+  });
+
+  function requestCloseNewPoModal() {
+    if (!confirmLeaveNewPo()) return;
+    setNewPoOpen(false);
+    setError(null);
+    setSupplierPoNumberError(null);
+  }
 
   const relaxedTax = Boolean(purchaseMeta?.testingModeRelaxedTaxFields);
 
@@ -135,7 +160,13 @@ export function RmPurchaseListPage() {
   React.useEffect(() => {
     const legacy = Number(navSearchParams.get(DRILL_QUERY.rmPoId)) || 0;
     if (!legacy) return;
-    navigate(withReportsReturnContextIfPresent(`/rm-po-grn/${legacy}`, location.search), { replace: true });
+    navigate(
+      withListReturnContext(
+        withReportsReturnContextIfPresent(`/rm-po-grn/${legacy}`, location.search),
+        listReturnTo,
+      ),
+      { replace: true },
+    );
   }, [navigate, navSearchParams, location.search]);
 
   async function refresh(): Promise<void> {
@@ -437,11 +468,14 @@ export function RmPurchaseListPage() {
       // detail page can render the shortage-cover banner.
       const sp = new URLSearchParams(location.search);
       const sourceParam = sp.get("source") ?? "";
-      let detailHref = withReportsReturnContextIfPresent(`/rm-po-grn/${created.id}`, location.search);
+      let detailHref = withListReturnContext(
+        withReportsReturnContextIfPresent(`/rm-po-grn/${created.id}`, location.search),
+        listReturnTo,
+      );
       if (sourceParam === "rm-shortage") {
         const carry = new URLSearchParams();
         carry.set("source", "rm-shortage");
-        const returnTo = sp.get("returnTo");
+        const returnTo = sp.get("returnTo") ?? listReturnTo;
         if (returnTo) carry.set("returnTo", returnTo);
         const itemId = sp.get("itemId");
         if (itemId) carry.set("itemId", itemId);
@@ -776,7 +810,10 @@ export function RmPurchaseListPage() {
               </thead>
               <tbody>
                 {visiblePoRows.map((r) => {
-                  const detailUrl = withReportsReturnContextIfPresent(`/rm-po-grn/${r.id}`, location.search);
+                  const detailUrl = withListReturnContext(
+                    withReportsReturnContextIfPresent(`/rm-po-grn/${r.id}`, location.search),
+                    listReturnTo,
+                  );
                   return (
                     <tr
                       key={r.id}
@@ -856,11 +893,7 @@ export function RmPurchaseListPage() {
 
       {newPoOpen ? (
         <ErpModal
-          onClose={() => {
-            setNewPoOpen(false);
-            setError(null);
-            setSupplierPoNumberError(null);
-          }}
+          onClose={requestCloseNewPoModal}
           aria-labelledby="rm-po-new-title"
         >
           <Card className="erp-modal-shell max-h-[90vh] overflow-y-auto rounded-xl border-slate-200/90 shadow-xl ring-1 ring-slate-200/50">
@@ -1106,10 +1139,7 @@ export function RmPurchaseListPage() {
                 <Button
                   type="button"
                   variant="outline"
-                  onClick={() => {
-                    setNewPoOpen(false);
-                    setError(null);
-                  }}
+                  onClick={requestCloseNewPoModal}
                   disabled={creatingPo}
                 >
                   Cancel

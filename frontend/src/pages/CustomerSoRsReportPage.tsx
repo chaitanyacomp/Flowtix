@@ -3,7 +3,8 @@ import { Link } from "react-router-dom";
 import { useCanOpenRequirementSheet } from "../hooks/useIsAdmin";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Input } from "../components/ui/input";
-import { PageContainer, ReportPageHeader } from "../components/PageHeader";
+import { ReportPageHeader } from "../components/PageHeader";
+import { ReportPageShell } from "../components/erp/ReportChrome";
 import {
   ReportPrintExportBar,
   ReportPrintMeta,
@@ -271,7 +272,7 @@ export function CustomerSoRsReportPage() {
   );
 
   return (
-    <PageContainer className="erp-report-page pb-8">
+    <ReportPageShell>
       <ReportPrintMeta title="Customer-wise SO & RS Report" filterSummary={filterSummary} />
       <ReportPageHeader
         title="Customer-wise SO & RS Report"
@@ -516,6 +517,6 @@ export function CustomerSoRsReportPage() {
           </tbody>
         </table>
       </div>
-    </PageContainer>
+    </ReportPageShell>
   );
 }

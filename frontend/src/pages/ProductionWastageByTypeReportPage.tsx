@@ -8,14 +8,18 @@ import { Card, CardContent } from "../components/ui/card";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { ReportPageHeader } from "../components/PageHeader";
+import { ReportPageShell } from "../components/erp/ReportChrome";
 import {
   ReportPrintExportBar,
   ReportPrintMeta,
   downloadReportExcel,
 } from "../components/erp/ReportPrintExport";
 import { useToast } from "../contexts/ToastContext";
+import { sanitizeReportUiError } from "../lib/reportUiError";
 import { useAuth } from "../hooks/useAuth";
 import { ERP_REPORT_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
+import { useStablePageData } from "../hooks/useStablePageData";
+import { ReportResultsLoadGate } from "../components/erp/foundation/ReportResultsLoadGate";
 import { useDebouncedUrlStringParam, useUrlQueryState } from "../hooks/useUrlQueryState";
 import { apiFetch } from "../services/api";
 import { formatQuantityWithUnit } from "../lib/quantityDisplay";
@@ -102,9 +106,6 @@ export function ProductionWastageByTypeReportPage() {
   const [page, setPage] = React.useState(1);
   const [sortField, setSortField] = React.useState("totalWastageQty");
   const [sortDir, setSortDir] = React.useState<"asc" | "desc">("desc");
-  const [data, setData] = React.useState<ProductionWastageAnalysisResponse<TypeSummaryRow> | null>(null);
-  const [loading, setLoading] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
   const [types, setTypes] = React.useState<WastageTypeRow[]>([]);
   const [fgItems, setFgItems] = React.useState<ItemOpt[]>([]);
   const [rmItems, setRmItems] = React.useState<ItemOpt[]>([]);
@@ -149,33 +150,18 @@ export function ProductionWastageByTypeReportPage() {
     [dateFrom, dateTo, woNumber, wastageTypeId, category, fgItemId, rmItemId, customerId, page, sortField, sortDir],
   );
 
-  React.useEffect(() => {
-    if (!allowed) return;
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    fetchProductionWastageTypeSummary(filterParams)
-      .then((res) => {
-        if (!cancelled) {
-          setData(res);
-          setError(null);
-        }
-      })
-      .catch((e) => {
-        if (!cancelled) {
-          setData(null);
-          const msg = e instanceof Error ? e.message : "Failed to load type analysis";
-          setError(msg);
-          toast.showError(msg);
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [allowed, liveTick, filterParams, toast]);
+  const {
+    data,
+    error: loadError,
+    firstLoadDone,
+    loading,
+  } = useStablePageData<ProductionWastageAnalysisResponse<TypeSummaryRow>>({
+    enabled: allowed,
+    scopes: ["reports", "production"],
+    pollIntervalMs: ERP_REPORT_POLL_MS,
+    deps: [dateFrom, dateTo, woNumber, wastageTypeId, category, fgItemId, rmItemId, customerId, page, sortField, sortDir],
+    fetcher: (signal) => fetchProductionWastageTypeSummary(filterParams, { signal }),
+  });
 
   function toggleSort(field: string) {
     if (sortField === field) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -271,7 +257,7 @@ export function ProductionWastageByTypeReportPage() {
   };
 
   return (
-    <div className="erp-report-page mx-auto max-w-6xl space-y-3 p-4">
+    <ReportPageShell>
       <ReportPrintMeta
         title="Production Wastage — Type Analysis"
         filterSummary={filterSummary}
@@ -384,10 +370,28 @@ export function ProductionWastageByTypeReportPage() {
         </CardContent>
       </Card>
 
-      {error ? <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{error}</div> : null}
+      {loadError ? (
+        <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800" role="alert">
+          {sanitizeReportUiError(loadError)}
+        </div>
+      ) : null}
 
       <div className="overflow-auto rounded-md border border-slate-200">
-        <table className="w-full min-w-[960px] border-collapse text-[12px]">
+        <ReportResultsLoadGate
+          firstLoadDone={firstLoadDone}
+          loading={loading}
+          hasDisplayData={data != null}
+          isEmpty={rows.length === 0}
+          error={
+            loadError && data == null ? (
+              <div className="px-3 py-6 text-center text-sm text-red-700">{sanitizeReportUiError(loadError)}</div>
+            ) : null
+          }
+          emptyState={
+            <div className="px-3 py-6 text-center text-sm text-slate-500">No classification totals for the selected filters.</div>
+          }
+        >
+          <table className="w-full min-w-[960px] border-collapse text-[12px]">
           <thead className="sticky top-0 z-10 bg-slate-50">
             <tr className="border-b border-slate-200 text-left text-[10px] font-semibold uppercase tracking-wide text-slate-600">
               {(
@@ -414,46 +418,33 @@ export function ProductionWastageByTypeReportPage() {
             </tr>
           </thead>
           <tbody>
-            {loading ? (
-              <tr>
-                <td colSpan={12} className="px-3 py-6 text-center text-slate-500">
-                  Loading…
+            {rows.map((r) => (
+              <tr key={r.wastageTypeId} className="border-b border-slate-100 hover:bg-slate-50/80">
+                <td className="px-2 py-1.5 font-medium">
+                  <Link
+                    className="text-sky-700 underline-offset-2 hover:underline"
+                    to={buildWoDrillHref(r, drillFilters)}
+                  >
+                    {r.wastageTypeName}
+                    {r.isActiveType === false ? " (inactive)" : ""}
+                  </Link>
                 </td>
+                <td className="px-2 py-1.5">{r.category || "—"}</td>
+                <td className="px-2 py-1.5 tabular-nums font-medium">{fmtQty(r.totalWastageQty)}</td>
+                <td className="px-2 py-1.5 tabular-nums">{fmtPct(r.shareOfTotalWastagePct)}</td>
+                <td className="px-2 py-1.5 tabular-nums">{r.workOrderCount}</td>
+                <td className="px-2 py-1.5 tabular-nums">{r.productionReportCount}</td>
+                <td className="px-2 py-1.5 tabular-nums">{fmtQty(r.averageWastagePerWo)}</td>
+                <td className="px-2 py-1.5 tabular-nums">{fmtPct(r.averageWastagePct)}</td>
+                <td className="px-2 py-1.5">{r.highestWastageWoNo || "—"}</td>
+                <td className="px-2 py-1.5 tabular-nums">{fmtQty(r.highestWastageQty)}</td>
+                <td className="px-2 py-1.5">{r.lowestNonZeroWastageWoNo || "—"}</td>
+                <td className="px-2 py-1.5 tabular-nums">{fmtQty(r.lowestNonZeroWastageQty)}</td>
               </tr>
-            ) : rows.length === 0 ? (
-              <tr>
-                <td colSpan={12} className="px-3 py-6 text-center text-slate-500">
-                  No classification totals for the selected filters.
-                </td>
-              </tr>
-            ) : (
-              rows.map((r) => (
-                <tr key={r.wastageTypeId} className="border-b border-slate-100 hover:bg-slate-50/80">
-                  <td className="px-2 py-1.5 font-medium">
-                    <Link
-                      className="text-sky-700 underline-offset-2 hover:underline"
-                      to={buildWoDrillHref(r, drillFilters)}
-                    >
-                      {r.wastageTypeName}
-                      {r.isActiveType === false ? " (inactive)" : ""}
-                    </Link>
-                  </td>
-                  <td className="px-2 py-1.5">{r.category || "—"}</td>
-                  <td className="px-2 py-1.5 tabular-nums font-medium">{fmtQty(r.totalWastageQty)}</td>
-                  <td className="px-2 py-1.5 tabular-nums">{fmtPct(r.shareOfTotalWastagePct)}</td>
-                  <td className="px-2 py-1.5 tabular-nums">{r.workOrderCount}</td>
-                  <td className="px-2 py-1.5 tabular-nums">{r.productionReportCount}</td>
-                  <td className="px-2 py-1.5 tabular-nums">{fmtQty(r.averageWastagePerWo)}</td>
-                  <td className="px-2 py-1.5 tabular-nums">{fmtPct(r.averageWastagePct)}</td>
-                  <td className="px-2 py-1.5">{r.highestWastageWoNo || "—"}</td>
-                  <td className="px-2 py-1.5 tabular-nums">{fmtQty(r.highestWastageQty)}</td>
-                  <td className="px-2 py-1.5">{r.lowestNonZeroWastageWoNo || "—"}</td>
-                  <td className="px-2 py-1.5 tabular-nums">{fmtQty(r.lowestNonZeroWastageQty)}</td>
-                </tr>
-              ))
-            )}
+            ))}
           </tbody>
         </table>
+        </ReportResultsLoadGate>
       </div>
 
       {pagination && pagination.totalPages > 1 ? (
@@ -477,6 +468,6 @@ export function ProductionWastageByTypeReportPage() {
           </div>
         </div>
       ) : null}
-    </div>
+    </ReportPageShell>
   );
 }

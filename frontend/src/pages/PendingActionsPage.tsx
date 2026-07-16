@@ -2,12 +2,14 @@ import * as React from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { ArrowUpDown, ClipboardList, ExternalLink } from "lucide-react";
 import { ERPBackNavigation, PageContainer, PageHeader, StickyWorkspaceHead } from "../components/PageHeader";
-import { Button } from "../components/ui/button";
+import { Button, buttonVariants } from "../components/ui/button";
 import { Card, CardContent } from "../components/ui/card";
 import { ErpKpiLabel, ErpKpiSegment, ErpKpiStrip, ErpKpiValue } from "../components/erp/foundation";
 import { ErpRefreshingBadge } from "../components/erp/foundation/ErpRefreshingBadge";
 import { PendingActionBucketSkeleton } from "../components/erp/pending/PendingActionBucketSkeleton";
 import { useAuth } from "../hooks/useAuth";
+import { useListScrollRestoration } from "../hooks/useListScrollRestoration";
+import { useUrlQueryState } from "../hooks/useUrlQueryState";
 import { usePendingActionsPageData } from "../hooks/usePendingActionsPageData";
 import { usePagePerf } from "../lib/performanceTiming";
 import {
@@ -65,10 +67,16 @@ function sortActions(rows: PendingAction[], mode: SortMode): PendingAction[] {
 
 export function PendingActionsPage() {
   const auth = useAuth();
+  useListScrollRestoration();
   const navigate = useNavigate();
   const role = String(auth.user?.role ?? "").trim().toUpperCase();
+  const { patch, read } = useUrlQueryState({ sort: "priority" });
+  const sortMode = read.enum("sort", ["priority", "age"] as const, "priority");
+  const setSortMode = React.useCallback(
+    (mode: SortMode) => patch({ sort: mode === "priority" ? null : mode }),
+    [patch],
+  );
   const { firstLoadDone, initialLoading, refreshing, error, count, actions } = usePendingActionsPageData();
-  const [sortMode, setSortMode] = React.useState<SortMode>("priority");
   usePagePerf("pending-actions", firstLoadDone, { role, count });
 
   const sorted = React.useMemo(() => sortActions(actions, sortMode), [actions, sortMode]);
@@ -148,9 +156,12 @@ export function PendingActionsPage() {
             <ClipboardList className="h-8 w-8 text-slate-400" aria-hidden />
             <p className="font-medium text-slate-900">No pending actions</p>
             <p>When work is assigned to {formatPendingActionOwner(role)}, it will appear here.</p>
-            <Button variant="outline" size="sm" className="mt-2" asChild>
-              <Link to="/dashboard">Return to Dashboard</Link>
-            </Button>
+            <Link
+              to="/dashboard"
+              className={cn(buttonVariants({ variant: "outline", size: "sm" }), "mt-2")}
+            >
+              Return to Dashboard
+            </Link>
           </CardContent>
         </Card>
       ) : null}

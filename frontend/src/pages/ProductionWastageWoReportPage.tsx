@@ -14,9 +14,20 @@ import {
   ReportPrintMeta,
   downloadReportExcel,
 } from "../components/erp/ReportPrintExport";
+import {
+  ReportFilterField,
+  ReportFilterToolbar,
+  ReportKpiStrip,
+  ReportPageShell,
+  ReportTableShell,
+  type ReportKpiItem,
+} from "../components/erp/ReportChrome";
 import { useToast } from "../contexts/ToastContext";
+import { sanitizeReportUiError } from "../lib/reportUiError";
 import { useAuth } from "../hooks/useAuth";
 import { ERP_REPORT_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
+import { useStablePageData } from "../hooks/useStablePageData";
+import { ReportResultsLoadGate } from "../components/erp/foundation/ReportResultsLoadGate";
 import { useDebouncedUrlStringParam, useUrlQueryState } from "../hooks/useUrlQueryState";
 import { apiFetch } from "../services/api";
 import { formatQuantityWithUnit } from "../lib/quantityDisplay";
@@ -105,9 +116,6 @@ export function ProductionWastageWoReportPage() {
   const [page, setPage] = React.useState(1);
   const [sortField, setSortField] = React.useState("reportDate");
   const [sortDir, setSortDir] = React.useState<"asc" | "desc">("desc");
-  const [data, setData] = React.useState<ProductionWastageAnalysisResponse<WoDetailRow> | null>(null);
-  const [loading, setLoading] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
   const [types, setTypes] = React.useState<WastageTypeRow[]>([]);
   const [fgItems, setFgItems] = React.useState<ItemOpt[]>([]);
   const [rmItems, setRmItems] = React.useState<ItemOpt[]>([]);
@@ -168,33 +176,32 @@ export function ProductionWastageWoReportPage() {
     ],
   );
 
-  React.useEffect(() => {
-    if (!allowed) return;
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    fetchProductionWastageWoDetail(filterParams)
-      .then((res) => {
-        if (!cancelled) {
-          setData(res);
-          setError(null);
-        }
-      })
-      .catch((e) => {
-        if (!cancelled) {
-          setData(null);
-          const msg = e instanceof Error ? e.message : "Failed to load WO wastage report";
-          setError(msg);
-          toast.showError(msg);
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [allowed, liveTick, filterParams, toast]);
+  const {
+    data,
+    error: loadError,
+    firstLoadDone,
+    loading,
+  } = useStablePageData<ProductionWastageAnalysisResponse<WoDetailRow>>({
+    enabled: allowed,
+    scopes: ["reports", "production"],
+    pollIntervalMs: ERP_REPORT_POLL_MS,
+    deps: [
+      dateFrom,
+      dateTo,
+      woNumber,
+      wastageTypeId,
+      category,
+      fgItemId,
+      rmItemId,
+      customerId,
+      salesOrderId,
+      workOrderId,
+      page,
+      sortField,
+      sortDir,
+    ],
+    fetcher: (signal) => fetchProductionWastageWoDetail(filterParams, { signal }),
+  });
 
   function toggleSort(field: string) {
     if (sortField === field) {
@@ -289,8 +296,22 @@ export function ProductionWastageWoReportPage() {
 
   const kpiSummary = `Reports ${kpis.reportCount ?? 0} · WO ${kpis.workOrderCount ?? 0} · Wastage ${kpis.totalWastageQty ?? 0}`;
 
+  const kpiItems: ReportKpiItem[] = [
+    { key: "reports", label: "Reports", value: String(kpis.reportCount ?? 0) },
+    { key: "wos", label: "Work Orders", value: String(kpis.workOrderCount ?? 0) },
+    { key: "issued", label: "Issued", value: fmtQty(Number(kpis.totalIssuedQty ?? 0)) },
+    { key: "returned", label: "Returned", value: fmtQty(Number(kpis.totalReturnedQty ?? 0)) },
+    {
+      key: "wastage",
+      label: "Wastage",
+      value: fmtQty(Number(kpis.totalWastageQty ?? 0)),
+      tone: Number(kpis.totalWastageQty ?? 0) > 0 ? "warning" : "default",
+    },
+    { key: "avgPct", label: "Avg Wastage %", value: fmtPct(kpis.averageWastagePct as number | null) },
+  ];
+
   return (
-    <div className="erp-report-page mx-auto max-w-[1400px] space-y-3 p-4">
+    <ReportPageShell>
       <ReportPrintMeta title="Production Wastage — WO Analysis" filterSummary={filterSummary} kpiSummary={kpiSummary} />
       <ReportPageHeader
         title="Production Wastage — WO Analysis"
@@ -306,118 +327,113 @@ export function ProductionWastageWoReportPage() {
         }
       />
 
-      <div className="erp-no-print grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
-        {[
-          { label: "Reports", value: String(kpis.reportCount ?? 0) },
-          { label: "Work Orders", value: String(kpis.workOrderCount ?? 0) },
-          { label: "Issued", value: fmtQty(Number(kpis.totalIssuedQty ?? 0)) },
-          { label: "Returned", value: fmtQty(Number(kpis.totalReturnedQty ?? 0)) },
-          { label: "Wastage", value: fmtQty(Number(kpis.totalWastageQty ?? 0)) },
-          { label: "Avg Wastage %", value: fmtPct(kpis.averageWastagePct as number | null) },
-        ].map((k) => (
-          <Card key={k.label} className="border-slate-200 shadow-none">
-            <CardContent className="px-3 py-2">
-              <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">{k.label}</div>
-              <div className="mt-0.5 text-sm font-semibold tabular-nums text-slate-900">{k.value}</div>
-            </CardContent>
-          </Card>
-        ))}
-      </div>
+      <ReportKpiStrip items={kpiItems} className="erp-no-print grid-cols-2 sm:grid-cols-3 lg:grid-cols-6" />
 
       <div className="erp-no-print rounded-md border border-amber-100 bg-amber-50/70 px-3 py-2 text-[11px] text-amber-900">
         Material Cost Loss: deferred (pending RM valuation policy). Lane boundaries preserved — MWN and FG Scrap are not included in these totals.
       </div>
 
-      <Card className="erp-no-print border-slate-200 shadow-sm">
-        <CardContent className="flex flex-wrap gap-2 p-3 text-[12px]">
-          <label className="grid gap-0.5">
-            <span className="font-medium text-slate-600">From</span>
-            <Input type="date" className="h-8 w-36" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
-          </label>
-          <label className="grid gap-0.5">
-            <span className="font-medium text-slate-600">To</span>
-            <Input type="date" className="h-8 w-36" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
-          </label>
-          <label className="grid gap-0.5">
-            <span className="font-medium text-slate-600">WO no.</span>
-            <Input className="h-8 w-32" value={woNumber} onChange={(e) => setWoNumber(e.target.value)} placeholder="WO-26-" />
-          </label>
-          <label className="grid gap-0.5">
-            <span className="font-medium text-slate-600">Customer</span>
-            <select className={`${selectClass} w-40`} value={customerId} onChange={(e) => patch({ customerId: e.target.value })}>
-              <option value="">All</option>
-              {customers.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="grid gap-0.5">
-            <span className="font-medium text-slate-600">FG item</span>
-            <select className={`${selectClass} w-40`} value={fgItemId} onChange={(e) => patch({ fgItemId: e.target.value })}>
-              <option value="">All</option>
-              {fgItems.map((i) => (
-                <option key={i.id} value={i.id}>
-                  {i.itemName}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="grid gap-0.5">
-            <span className="font-medium text-slate-600">RM item</span>
-            <select className={`${selectClass} w-40`} value={rmItemId} onChange={(e) => patch({ rmItemId: e.target.value })}>
-              <option value="">All</option>
-              {rmItems.map((i) => (
-                <option key={i.id} value={i.id}>
-                  {i.itemName}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="grid gap-0.5">
-            <span className="font-medium text-slate-600">Wastage type</span>
-            <select
-              className={`${selectClass} w-40`}
-              value={wastageTypeId}
-              onChange={(e) => patch({ wastageTypeId: e.target.value })}
-            >
-              <option value="">All</option>
-              {types.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.name}
-                  {!t.isActive ? " (inactive)" : ""}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="grid gap-0.5">
-            <span className="font-medium text-slate-600">Category</span>
-            <select className={`${selectClass} w-36`} value={category} onChange={(e) => patch({ category: e.target.value })}>
-              <option value="">All</option>
-              {WASTAGE_TYPE_CATEGORIES.map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="grid gap-0.5">
-            <span className="font-medium text-slate-600">SO id</span>
-            <Input
-              className="h-8 w-24"
-              value={salesOrderId}
-              onChange={(e) => patch({ salesOrderId: e.target.value })}
-              placeholder="id"
-            />
-          </label>
-        </CardContent>
-      </Card>
+      <ReportFilterToolbar className="erp-no-print">
+        <ReportFilterField label="From">
+          <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
+        </ReportFilterField>
+        <ReportFilterField label="To">
+          <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+        </ReportFilterField>
+        <ReportFilterField label="WO no.">
+          <Input className="h-8" value={woNumber} onChange={(e) => setWoNumber(e.target.value)} placeholder="WO-26-" />
+        </ReportFilterField>
+        <ReportFilterField label="Customer">
+          <select className={selectClass} value={customerId} onChange={(e) => patch({ customerId: e.target.value })}>
+            <option value="">All</option>
+            {customers.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </select>
+        </ReportFilterField>
+        <ReportFilterField label="FG item">
+          <select className={selectClass} value={fgItemId} onChange={(e) => patch({ fgItemId: e.target.value })}>
+            <option value="">All</option>
+            {fgItems.map((i) => (
+              <option key={i.id} value={i.id}>
+                {i.itemName}
+              </option>
+            ))}
+          </select>
+        </ReportFilterField>
+        <ReportFilterField label="RM item">
+          <select className={selectClass} value={rmItemId} onChange={(e) => patch({ rmItemId: e.target.value })}>
+            <option value="">All</option>
+            {rmItems.map((i) => (
+              <option key={i.id} value={i.id}>
+                {i.itemName}
+              </option>
+            ))}
+          </select>
+        </ReportFilterField>
+        <ReportFilterField label="Wastage type">
+          <select
+            className={selectClass}
+            value={wastageTypeId}
+            onChange={(e) => patch({ wastageTypeId: e.target.value })}
+          >
+            <option value="">All</option>
+            {types.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+                {!t.isActive ? " (inactive)" : ""}
+              </option>
+            ))}
+          </select>
+        </ReportFilterField>
+        <ReportFilterField label="Category">
+          <select className={selectClass} value={category} onChange={(e) => patch({ category: e.target.value })}>
+            <option value="">All</option>
+            {WASTAGE_TYPE_CATEGORIES.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+        </ReportFilterField>
+        <ReportFilterField label="SO id">
+          <Input
+            className="h-8"
+            value={salesOrderId}
+            onChange={(e) => patch({ salesOrderId: e.target.value })}
+            placeholder="id"
+          />
+        </ReportFilterField>
+      </ReportFilterToolbar>
 
-      {error ? <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{error}</div> : null}
+      {loadError ? (
+        <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800" role="alert">
+          {sanitizeReportUiError(loadError)}
+        </div>
+      ) : null}
 
-      <div className="overflow-auto rounded-md border border-slate-200">
-        <table className="w-full min-w-[1200px] border-collapse text-[12px]">
+      <Card className="border-slate-200 shadow-sm">
+        <CardContent className="p-0">
+        <ReportResultsLoadGate
+          firstLoadDone={firstLoadDone}
+          loading={loading}
+          hasDisplayData={data != null}
+          isEmpty={rows.length === 0}
+          error={
+            loadError && data == null ? (
+              <div className="px-3 py-6 text-center text-sm text-red-700">{sanitizeReportUiError(loadError)}</div>
+            ) : null
+          }
+          emptyState={
+            <div className="px-3 py-6 text-center text-sm text-slate-500">
+              No confirmed production wastage rows for the selected filters.
+            </div>
+          }
+        >
+          <ReportTableShell>
+          <table className="erp-table erp-table-dense w-full min-w-[1200px] border-collapse text-[12px]">
           <thead className="sticky top-0 z-10 bg-slate-50">
             <tr className="border-b border-slate-200 text-left text-[10px] font-semibold uppercase tracking-wide text-slate-600">
               {(
@@ -457,67 +473,56 @@ export function ProductionWastageWoReportPage() {
             </tr>
           </thead>
           <tbody>
-            {loading ? (
-              <tr>
-                <td colSpan={19} className="px-3 py-6 text-center text-slate-500">
-                  Loading…
+            {rows.map((r) => (
+              <tr key={`${r.reportId}-${r.rmItemId}`} className="border-b border-slate-100 hover:bg-slate-50/80">
+                <td className="sticky left-0 z-[1] bg-white px-2 py-1.5 whitespace-nowrap">{fmtDate(r.reportDate)}</td>
+                <td className="sticky left-[6.5rem] z-[1] bg-white px-2 py-1.5 font-medium">
+                  {r.drillDown.hrefWorkOrder ? (
+                    <Link className="text-sky-700 underline-offset-2 hover:underline" to={r.drillDown.hrefWorkOrder}>
+                      {r.workOrderNo}
+                    </Link>
+                  ) : (
+                    r.workOrderNo || "—"
+                  )}
                 </td>
-              </tr>
-            ) : rows.length === 0 ? (
-              <tr>
-                <td colSpan={19} className="px-3 py-6 text-center text-slate-500">
-                  No confirmed production wastage rows for the selected filters.
+                <td className="px-2 py-1.5">{r.salesOrderNo || "—"}</td>
+                <td className="px-2 py-1.5">{r.customerName || "—"}</td>
+                <td className="px-2 py-1.5">{r.fgItemName || "—"}</td>
+                <td className="px-2 py-1.5">{r.rmItemName}</td>
+                <td className="px-2 py-1.5 tabular-nums">{fmtQty(r.plannedConsumption, r.rmUnit)}</td>
+                <td className="px-2 py-1.5 tabular-nums">{fmtQty(r.issuedQty, r.rmUnit)}</td>
+                <td className="px-2 py-1.5 tabular-nums">{fmtQty(r.returnedQty, r.rmUnit)}</td>
+                <td className="px-2 py-1.5 tabular-nums">{fmtQty(r.actualConsumedQty, r.rmUnit)}</td>
+                <td className="px-2 py-1.5 tabular-nums">{fmtQty(r.fgProducedQty, r.fgUnit)}</td>
+                <td className="px-2 py-1.5 tabular-nums font-medium">{fmtQty(r.wastageQty, r.rmUnit)}</td>
+                <td className="px-2 py-1.5 tabular-nums">{fmtPct(r.wastagePct)}</td>
+                <td className="px-2 py-1.5 tabular-nums">{fmtPct(r.yieldPct)}</td>
+                <td className="px-2 py-1.5">{r.wastageTypeLabel || "—"}</td>
+                <td className="px-2 py-1.5">{r.categoryLabel || "—"}</td>
+                <td className="max-w-[10rem] truncate px-2 py-1.5" title={r.remarks || undefined}>
+                  {r.remarks || "—"}
                 </td>
+                <td className="px-2 py-1.5">
+                  {r.drillDown.hrefProductionReport ? (
+                    <Link
+                      className="text-sky-700 underline-offset-2 hover:underline"
+                      to={r.drillDown.hrefProductionReport}
+                    >
+                      {r.productionReportRef}
+                    </Link>
+                  ) : (
+                    r.productionReportRef
+                  )}
+                </td>
+                <td className="px-2 py-1.5">{r.status}</td>
               </tr>
-            ) : (
-              rows.map((r) => (
-                <tr key={`${r.reportId}-${r.rmItemId}`} className="border-b border-slate-100 hover:bg-slate-50/80">
-                  <td className="sticky left-0 z-[1] bg-white px-2 py-1.5 whitespace-nowrap">{fmtDate(r.reportDate)}</td>
-                  <td className="sticky left-[6.5rem] z-[1] bg-white px-2 py-1.5 font-medium">
-                    {r.drillDown.hrefWorkOrder ? (
-                      <Link className="text-sky-700 underline-offset-2 hover:underline" to={r.drillDown.hrefWorkOrder}>
-                        {r.workOrderNo}
-                      </Link>
-                    ) : (
-                      r.workOrderNo || "—"
-                    )}
-                  </td>
-                  <td className="px-2 py-1.5">{r.salesOrderNo || "—"}</td>
-                  <td className="px-2 py-1.5">{r.customerName || "—"}</td>
-                  <td className="px-2 py-1.5">{r.fgItemName || "—"}</td>
-                  <td className="px-2 py-1.5">{r.rmItemName}</td>
-                  <td className="px-2 py-1.5 tabular-nums">{fmtQty(r.plannedConsumption, r.rmUnit)}</td>
-                  <td className="px-2 py-1.5 tabular-nums">{fmtQty(r.issuedQty, r.rmUnit)}</td>
-                  <td className="px-2 py-1.5 tabular-nums">{fmtQty(r.returnedQty, r.rmUnit)}</td>
-                  <td className="px-2 py-1.5 tabular-nums">{fmtQty(r.actualConsumedQty, r.rmUnit)}</td>
-                  <td className="px-2 py-1.5 tabular-nums">{fmtQty(r.fgProducedQty, r.fgUnit)}</td>
-                  <td className="px-2 py-1.5 tabular-nums font-medium">{fmtQty(r.wastageQty, r.rmUnit)}</td>
-                  <td className="px-2 py-1.5 tabular-nums">{fmtPct(r.wastagePct)}</td>
-                  <td className="px-2 py-1.5 tabular-nums">{fmtPct(r.yieldPct)}</td>
-                  <td className="px-2 py-1.5">{r.wastageTypeLabel || "—"}</td>
-                  <td className="px-2 py-1.5">{r.categoryLabel || "—"}</td>
-                  <td className="max-w-[10rem] truncate px-2 py-1.5" title={r.remarks || undefined}>
-                    {r.remarks || "—"}
-                  </td>
-                  <td className="px-2 py-1.5">
-                    {r.drillDown.hrefProductionReport ? (
-                      <Link
-                        className="text-sky-700 underline-offset-2 hover:underline"
-                        to={r.drillDown.hrefProductionReport}
-                      >
-                        {r.productionReportRef}
-                      </Link>
-                    ) : (
-                      r.productionReportRef
-                    )}
-                  </td>
-                  <td className="px-2 py-1.5">{r.status}</td>
-                </tr>
-              ))
-            )}
+            ))}
           </tbody>
         </table>
-      </div>
+          </ReportTableShell>
+        </ReportResultsLoadGate>
+        </CardContent>
+      </Card>
 
       {pagination && pagination.totalPages > 1 ? (
         <div className="erp-no-print flex items-center justify-between text-sm text-slate-600">
@@ -540,6 +545,6 @@ export function ProductionWastageWoReportPage() {
           </div>
         </div>
       ) : null}
-    </div>
+    </ReportPageShell>
   );
 }

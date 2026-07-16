@@ -11,6 +11,7 @@ import { cn } from "../lib/utils";
 import { useToast } from "../contexts/ToastContext";
 import { useAuth } from "../hooks/useAuth";
 import { ReportPageHeader } from "../components/PageHeader";
+import { ReportPageShell } from "../components/erp/ReportChrome";
 import {
   ReportPrintExportBar,
   ReportPrintMeta,
@@ -348,7 +349,7 @@ export function ProductionRmVarianceReportPage() {
   }
 
   return (
-    <div className="erp-report-page flex min-h-0 flex-col gap-4">
+    <ReportPageShell>
       <ReportPrintMeta title="Production RM Variance Report" />
       <ReportPageHeader
         title="Production RM Variance Report"
@@ -659,6 +660,6 @@ export function ProductionRmVarianceReportPage() {
           </CardContent>
         </Card>
       )}
-    </div>
+    </ReportPageShell>
   );
 }

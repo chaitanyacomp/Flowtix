@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { ChevronRight } from "lucide-react";
 
 import { Button } from "../../ui/button";
@@ -71,6 +71,7 @@ export function StoreGreenLevelWoPlacementPanel({
   className?: string;
 }) {
   const toast = useToast();
+  const navigate = useNavigate();
   const liveTick = useErpRefreshTick(["production", "dashboard", "workorders"], { pollIntervalMs: 0 });
   const [placement, setPlacement] = React.useState<GreenLevelPlacement | null>(null);
   const [error, setError] = React.useState<string | null>(null);
@@ -133,7 +134,7 @@ export function StoreGreenLevelWoPlacementPanel({
           returnTo: RETURN_TO,
         });
         window.setTimeout(() => {
-          window.location.assign(issueHref);
+          navigate(issueHref);
         }, 400);
       }
     } catch (e) {

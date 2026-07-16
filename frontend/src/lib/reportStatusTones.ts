@@ -87,6 +87,7 @@ export function woTrackingStatusBadgeVariant(
     case "IN_PRODUCTION":
     case "PENDING_QC":
     case "PARTIAL_QC":
+    case "SHORTFALL_PENDING":
       return "info";
     case "READY_TO_DISPATCH":
     case "PARTIAL_DISPATCH":

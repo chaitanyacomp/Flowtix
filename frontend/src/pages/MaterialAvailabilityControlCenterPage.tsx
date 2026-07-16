@@ -145,6 +145,7 @@ type QueueRow = {
   grnReceivedPercent?: number;
   nextOwner?: string | null;
   nextAction?: string | null;
+  operationalKey?: string | null;
 };
 
 type RmLine = {
@@ -317,6 +318,7 @@ type SupplyPanel = {
   rmItemId: number | null;
   openMrLines: Array<{
     materialRequirementLineId: number;
+    materialRequirementId?: number | null;
     materialRequirementDocNo: string | null;
     sourceType: string | null;
     salesOrderNo: string | null;
@@ -532,7 +534,7 @@ export function MaterialAvailabilityControlCenterPage() {
   const rmccNavContext = useStoreExecutionNavContext("rm-control-center");
   const rmccSelfHref = `${location.pathname}${location.search}`;
   const materialIssueLinkState = React.useCallback(
-    (workOrderId: number) =>
+    (_workOrderId: number) =>
       navStateWithNavContext(navContextMaterialIssueFromRmcc(rmccNavContext, rmccSelfHref)),
     [rmccNavContext, rmccSelfHref],
   );
@@ -553,7 +555,7 @@ export function MaterialAvailabilityControlCenterPage() {
   const rmUnitByItemIdRef = React.useRef(new Map<number, string>());
   const [data, setData] = React.useState<WorkspacePayload | null>(null);
   const [loading, setLoading] = React.useState(true);
-  const { firstLoadDone, initialLoading, refreshing, startLoad, finishLoad } = useStablePageLoad();
+  const { initialLoading, refreshing, startLoad, finishLoad } = useStablePageLoad();
   const [error, setError] = React.useState<string | null>(null);
   const [selectedRmItemId, setSelectedRmItemId] = React.useState<number | null>(initialSelection?.rmItemId ?? null);
   const selectedRmItemIdRef = React.useRef<number | null>(initialSelection?.rmItemId ?? null);
@@ -1446,7 +1448,7 @@ export function MaterialAvailabilityControlCenterPage() {
           body: JSON.stringify({
             workOrderId,
             confirmReopenClosed: confirm,
-            remarks: `SO-linked case bulk add for ${displayWorkOrderNo(workOrderId, detail?.workOrder?.docNo)} (execution WO).`,
+            remarks: `SO-linked case bulk add for ${displayWorkOrderNo(workOrderId!, detail?.workOrder?.docNo)} (execution WO).`,
           }),
         });
       let out;

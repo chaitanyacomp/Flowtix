@@ -69,10 +69,11 @@ function detail({ wastageTypeId = 1, name = "Purging", category = "PROCESS", qty
   };
 }
 
-function makeDb(reports, peConsumptions = []) {
+function makeDb(reports, peConsumptions = [], capture = {}) {
   return {
     productionWorkOrderReport: {
       findMany: async ({ where } = {}) => {
+        capture.reportWhere = where;
         let rows = reports.filter((r) => {
           if (where?.status && r.status !== where.status) return false;
           if (where?.workOrderId && r.workOrderId !== where.workOrderId) return false;
@@ -90,7 +91,20 @@ function makeDb(reports, peConsumptions = []) {
       },
     },
     productionEntryRmConsumption: {
-      findMany: async () => peConsumptions,
+      findMany: async ({ where, select } = {}) => {
+        capture.peWhere = where;
+        capture.peSelect = select;
+        const status = where?.productionEntry?.workflowStatus;
+        return peConsumptions.filter((row) => {
+          if (status && row._workflowStatus && row._workflowStatus !== status) return false;
+          const woFilter = where?.productionEntry?.workOrderLine?.workOrderId?.in;
+          if (Array.isArray(woFilter)) {
+            const woId = row.productionEntry?.workOrderLine?.workOrderId;
+            if (!woFilter.includes(woId)) return false;
+          }
+          return true;
+        });
+      },
     },
   };
 }
@@ -252,5 +266,96 @@ describe("productionWastageAnalysisQueryService", () => {
     const result = await buildProductionWastageAnalysis({ mode: "wo-detail" }, db);
     assert.equal(result.kpis.materialCostLoss, null);
     assert.equal(result.kpis.materialCostLossStatus, "DEFERRED_PENDING_VALUATION_POLICY");
+  });
+
+  it("filters planned RM consumption via ProductionEntry.workflowStatus APPROVED (not status)", async () => {
+    const capture = {};
+    const peRows = [
+      {
+        itemId: 20,
+        standardQty: 7,
+        _workflowStatus: "APPROVED",
+        productionEntry: { workOrderLine: { workOrderId: 10 } },
+      },
+      {
+        itemId: 20,
+        standardQty: 99,
+        _workflowStatus: "DRAFT",
+        productionEntry: { workOrderLine: { workOrderId: 10 } },
+      },
+    ];
+    const db = makeDb(
+      [reportFixture({ lines: [line({ itemId: 20, scrap: 1 })], wastageDetails: [detail({ qty: 1 })] })],
+      peRows,
+      capture,
+    );
+    const wo = await buildProductionWastageAnalysis({ mode: "wo-detail", filters: { pageSize: 100 } }, db);
+    assert.equal(capture.reportWhere?.status, "CONFIRMED");
+    assert.equal(capture.peWhere?.productionEntry?.workflowStatus, "APPROVED");
+    assert.equal(capture.peSelect?.itemId, true);
+    assert.equal(capture.peSelect?.rmItemId, undefined);
+    const planned = wo.rows.find((r) => r.rmItemId === 20);
+    // planned consumption adjunct must ignore DRAFT PE rows
+    assert.ok(planned);
+    assert.equal(planned.plannedConsumption, 7);
+  });
+
+  it("maps RM consumption planned qty to the correct WO", async () => {
+    const peRows = [
+      {
+        itemId: 20,
+        standardQty: 3,
+        _workflowStatus: "APPROVED",
+        productionEntry: { workOrderLine: { workOrderId: 10 } },
+      },
+      {
+        itemId: 20,
+        standardQty: 8,
+        _workflowStatus: "APPROVED",
+        productionEntry: { workOrderLine: { workOrderId: 11 } },
+      },
+    ];
+    const db = makeDb(
+      [
+        reportFixture({
+          id: 1,
+          workOrderId: 10,
+          lines: [line({ itemId: 20, scrap: 1 })],
+          wastageDetails: [detail({ qty: 1 })],
+        }),
+        reportFixture({
+          id: 2,
+          workOrderId: 11,
+          workOrderNo: "WO-26-0002",
+          lines: [line({ itemId: 20, scrap: 1 })],
+          wastageDetails: [detail({ qty: 1 })],
+        }),
+      ],
+      peRows,
+    );
+    const wo = await buildProductionWastageAnalysis({ mode: "wo-detail", filters: { pageSize: 100 } }, db);
+    const r10 = wo.rows.find((r) => r.workOrderId === 10);
+    const r11 = wo.rows.find((r) => r.workOrderId === 11);
+    assert.equal(r10.plannedConsumption, 3);
+    assert.equal(r11.plannedConsumption, 8);
+  });
+
+  it("type-summary and wo-detail succeed for current fixture dataset", async () => {
+    const db = makeDb([
+      reportFixture({ lines: [line()], wastageDetails: [detail()] }),
+      reportFixture({
+        id: 2,
+        status: "DRAFT",
+        workOrderId: 11,
+        lines: [line({ scrap: 9 })],
+        wastageDetails: [detail({ qty: 9 })],
+      }),
+    ]);
+    const type = await buildProductionWastageAnalysis({ mode: "type-summary" }, db);
+    const wo = await buildProductionWastageAnalysis({ mode: "wo-detail" }, db);
+    assert.equal(type.kpis.reportCount, 1);
+    assert.equal(wo.kpis.reportCount, 1);
+    assert.ok(Array.isArray(type.rows));
+    assert.ok(Array.isArray(wo.rows));
   });
 });

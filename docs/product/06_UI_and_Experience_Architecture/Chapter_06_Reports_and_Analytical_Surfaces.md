@@ -180,7 +180,7 @@ Named Sales Ops reports **SHALL** follow single ownership to avoid duplicate lif
 
 **Navigation:** Reports catalog lists Customer Tracking and Dispatch Summary only for this lifecycle/analytics pair. Execution remains in Dispatch Workspace ([RPT-01](#11-business-rules), [RPT-04](#11-business-rules)).
 
-**UI standard:** Surfaces comply with [FT-PD-066](./Chapter_07_FT_ERP_UI_UX_Design_System.md) report chrome (read-only, filters, empty states, no duplicated KPIs).
+**UI standard:** Surfaces comply with [FT-PD-066](./Chapter_07_FT_ERP_UI_UX_Design_System.md) §17 report chrome **and** §17.7+ Report Grid & Analytics UX (categories, grid density, filter toolbar, KPIs, drill-down). Do not maintain a separate report design standard.
 
 ### 6.2 Analysis catalog — Keep / Merge / Move / Remove (UAT 2026-07-09)
 
@@ -222,7 +222,7 @@ Named Sales Ops reports **SHALL** follow single ownership to avoid duplicate lif
 | Purchase Matching / Purchase Register | Official report | Yes | Yes | Yes |
 | RM Procurement Connectivity | Official report | Yes | Yes | Yes |
 | RM Planning vs Actual Received | Official report | Yes | Yes (server) | Yes |
-| Work Order Tracking | Official report | Yes | Yes | Yes |
+| Work Order Tracking | Official report (flow-aware: Regular **or** NO_QTY; never mixed) | Yes | Yes | Yes |
 | Batch Traceability | Official report | Yes | Yes | — |
 | Production RM Variance | Official report | Yes | Yes | Yes |
 | RM Wastage | Official report | Yes | Yes | — |
@@ -255,6 +255,21 @@ Named Sales Ops reports **SHALL** follow single ownership to avoid duplicate lif
 | RPT-007 | Fixed | Single Back; Analysis → Reports |
 | RPT-008 | Fixed | Dispatch Summary analytics-only |
 | RPT-014 | Fixed | Supplier Master Back to Masters |
+| RPT-015 | Fixed | WO Tracking flow split (Regular vs NO_QTY); Active Only default; see [WORK_ORDER_TRACKING_REPORT_STANDARD.md](../../../WORK_ORDER_TRACKING_REPORT_STANDARD.md) |
+| RPT-016 | Fixed | WO Tracking UI workbench: compact filter toolbar, progress blocks, recovery badge+modal, row expand, no H-scroll @ 1366×768 |
+| RPT-017 | Fixed | FT-PD-066 §17.7–§17.14 Report Grid & Analytics UX Standard; Analysis catalog UX snapshot (redesign High-priority reports in follow-ups) |
+| RPT-018 | Fixed | **Report Layout Standardization complete** (FT-UI-REPORT-018) — shared `ReportPageShell` / ReportChrome; canonical = Production Wastage WO Analysis; Back to Reports; Scrap DD-MM-YYYY validation messages |
+
+### 6.3A Work Order Tracking (flow-aware)
+
+- **Presentation category:** Operational ([FT-PD-066](./Chapter_07_FT_ERP_UI_UX_Design_System.md) §17.7.1) — reference implementation for Report Grid UX.
+- **Required filter:** Flow dropdown = Regular **or** NO_QTY (never mixed).
+- **Status scope:** Open / Closed / All (replaces Active Only / Include Closed radios).
+- **Workbench layout:** Shared report KPI strip + filter toolbar; progress blocks; Status badge; Recovery badge → modal; row expand for secondary quantities.
+- **REGULAR columns (scan):** SO → WO → Item → Ordered Qty → Production → QC → Dispatch → Status.
+- **NO_QTY columns (scan):** SO → RS/Cycle → WO → Item → Customer Demand → Production → QC → Dispatch → Recovery → Status. Customer is subtitle under SO (not a second Demand column).
+- **No horizontal scroll** target: 1366×768 laptop during normal operation.
+- Authoritative detail: [`docs/WORK_ORDER_TRACKING_REPORT_STANDARD.md`](../../../WORK_ORDER_TRACKING_REPORT_STANDARD.md) §6. Catalog UX priorities for other reports: FT-PD-066 §17.13.
 
 ---
 

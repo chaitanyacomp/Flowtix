@@ -23,6 +23,7 @@ import { type NumberDraft, toNumberDraft } from "../lib/numberDraft";
 import { useFastEntryForm } from "../hooks/useFastEntryForm";
 import { useToast } from "../contexts/ToastContext";
 import { ErpModal } from "../components/erp/ErpModal";
+import { useUnsavedChangesGuard } from "../hooks/useUnsavedChangesGuard";
 type Item = { id: number; itemName: string; itemType: string; unit: string };
 type UnitRow = { id: number; unitName: string; unitCode?: string | null };
 type BomComponentType = "RM" | "SFG" | "CONSUMABLE";
@@ -1148,6 +1149,10 @@ export function BomsPage() {
   );
   const workspaceEditable = workspaceMode === "create" || workspaceMode === "edit";
   const isDirty = workspaceEditable && draftSnapshot(fgId, header, lines) !== dirtyBaseline;
+  useUnsavedChangesGuard({
+    isDirty,
+    message: "BOM draft has unsaved changes. Leave and discard them?",
+  });
   const canSaveDraft =
     workspaceEditable &&
     (workspaceMode === "create"

@@ -1,7 +1,7 @@
 import * as React from "react";
 import { useLocation } from "react-router-dom";
 import { cn } from "../lib/utils";
-import { ReportBackLink, ReportPageHeader, StickyPageHeader, StickyReportBackStrip } from "./ReportPageHeader";
+import { ReportBackLink, StickyPageHeader } from "./ReportPageHeader";
 import { apiFetch } from "../services/api";
 import { isReportsReturnContext } from "../lib/drillDownRoutes";
 import { displaySalesOrderNo } from "../lib/docNoDisplay";

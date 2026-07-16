@@ -8,6 +8,7 @@ import {
   validateGstinFormatMessage,
   type StateRow,
 } from "../../lib/gstinValidation";
+import { snapshotPartyMasterForm } from "../../lib/partyMasterDirtySnapshot";
 import {
   partyMasterFormClass,
   partyMasterGridClass,
@@ -55,9 +56,11 @@ type Props = {
   onCancel: () => void;
   onSaved: () => void;
   editingId?: number | null;
+  /** Field-level dirty via baseline — not merely that the modal is open. */
+  onDirtyChange?: (dirty: boolean) => void;
 };
 
-export function CustomerMasterForm({ states, onCancel, onSaved, editingId }: Props) {
+export function CustomerMasterForm({ states, onCancel, onSaved, editingId, onDirtyChange }: Props) {
   const [loading, setLoading] = React.useState(Boolean(editingId));
   const [name, setName] = React.useState("");
   const [contact, setContact] = React.useState("");
@@ -71,6 +74,49 @@ export function CustomerMasterForm({ states, onCancel, onSaved, editingId }: Pro
   const [submitting, setSubmitting] = React.useState(false);
   const [gstTouched, setGstTouched] = React.useState(false);
   const gstAutoStateRef = React.useRef(false);
+  const [baseline, setBaseline] = React.useState<string | null>(null);
+  const hydrateCapturedRef = React.useRef(false);
+
+  const formSnapshot = React.useMemo(
+    () =>
+      snapshotPartyMasterForm(
+        { name, contact, email, gstin, stateId, address, isActive },
+        deliveryAddresses,
+      ),
+    [name, contact, email, gstin, stateId, address, isActive, deliveryAddresses],
+  );
+
+  React.useEffect(() => {
+    if (editingId) return;
+    hydrateCapturedRef.current = true;
+    setBaseline(formSnapshot);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- capture create defaults once
+  }, [editingId]);
+
+  React.useEffect(() => {
+    if (!editingId) return;
+    if (loading) {
+      hydrateCapturedRef.current = false;
+      setBaseline(null);
+      return;
+    }
+    if (hydrateCapturedRef.current) return;
+    const t = window.setTimeout(() => {
+      hydrateCapturedRef.current = true;
+      setBaseline(formSnapshot);
+    }, 50);
+    return () => window.clearTimeout(t);
+  }, [editingId, loading, formSnapshot]);
+
+  const isDirty = baseline != null && formSnapshot !== baseline;
+
+  React.useEffect(() => {
+    onDirtyChange?.(isDirty);
+  }, [isDirty, onDirtyChange]);
+
+  React.useEffect(() => {
+    return () => onDirtyChange?.(false);
+  }, [onDirtyChange]);
 
   React.useEffect(() => {
     if (!editingId) return;
@@ -103,11 +149,15 @@ export function CustomerMasterForm({ states, onCancel, onSaved, editingId }: Pro
       }>;
     }>(`/api/customers/${editingId}`)
       .then((row) => {
+        const nextGstin = row.gstin ?? "";
+        let nextStateId: number | "" = row.stateId ?? "";
+        const autoId = resolveStateIdFromGstin(normalizeGstinInput(nextGstin), states);
+        if (autoId !== "") nextStateId = autoId;
         setName(row.name ?? "");
         setContact(row.contact ?? "");
         setEmail(row.email ?? "");
-        setGstin(row.gstin ?? "");
-        setStateId(row.stateId ?? "");
+        setGstin(nextGstin);
+        setStateId(nextStateId);
         setAddress(row.address ?? "");
         setIsActive(row.isActive !== false);
         setDeliveryAddresses(
@@ -136,7 +186,7 @@ export function CustomerMasterForm({ states, onCancel, onSaved, editingId }: Pro
       })
       .catch((e) => setError(e instanceof Error ? e.message : "Could not load customer."))
       .finally(() => setLoading(false));
-  }, [editingId]);
+  }, [editingId, states]);
 
   React.useEffect(() => {
     const g = normalizeGstinInput(gstin);
@@ -229,6 +279,8 @@ export function CustomerMasterForm({ states, onCancel, onSaved, editingId }: Pro
       } else {
         await apiFetch("/api/customers", { method: "POST", body: JSON.stringify(payload) });
       }
+      setBaseline(formSnapshot);
+      onDirtyChange?.(false);
       onSaved();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save customer.");

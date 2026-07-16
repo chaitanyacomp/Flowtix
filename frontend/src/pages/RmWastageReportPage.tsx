@@ -8,9 +8,12 @@ import { Input } from "../components/ui/input";
 import { apiFetch, getApiUrl } from "../services/api";
 import { useToast } from "../contexts/ToastContext";
 import { ReportPageHeader } from "../components/PageHeader";
+import { ReportPageShell } from "../components/erp/ReportChrome";
 import { ReportPrintExportBar, ReportPrintMeta } from "../components/erp/ReportPrintExport";
 import { ERP_REPORT_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
-import { useDebouncedUrlStringParam, useUrlQueryState } from "../hooks/useUrlQueryState";
+import { useStablePageData } from "../hooks/useStablePageData";
+import { ReportResultsLoadGate } from "../components/erp/foundation/ReportResultsLoadGate";
+import { useUrlQueryState } from "../hooks/useUrlQueryState";
 import { RM_WASTAGE_REASON_OPTIONS } from "../lib/rmWastageUx";
 
 type DetailRow = {
@@ -62,15 +65,12 @@ function fmtMoney(n: number): string {
 export function RmWastageReportPage() {
   const { showError } = useToast();
   const { read, patch } = useUrlQueryState(URL_OMIT);
-  const dateFrom = useDebouncedUrlStringParam("dateFrom", firstDayOfMonthYmd());
-  const dateTo = useDebouncedUrlStringParam("dateTo", todayYmd());
+  const dateFrom = read.string("dateFrom") || firstDayOfMonthYmd();
+  const dateTo = read.string("dateTo") || todayYmd();
   const woNumber = read.string("woNumber");
   const reason = read.string("reason") || "ALL";
   const rmItemId = read.string("rmItemId");
 
-  const [data, setData] = React.useState<ApiResp | null>(null);
-  const [loading, setLoading] = React.useState(true);
-  const [error, setError] = React.useState<string | null>(null);
   const [page, setPage] = React.useState(1);
   const liveTick = useErpRefreshTick(["reports", "production"], { pollIntervalMs: ERP_REPORT_POLL_MS });
 
@@ -78,41 +78,31 @@ export function RmWastageReportPage() {
     setPage(1);
   }, [dateFrom, dateTo, woNumber, reason, rmItemId, liveTick]);
 
-  React.useEffect(() => {
-    let mounted = true;
-    setLoading(true);
-    setError(null);
-    const qs = new URLSearchParams();
-    if (dateFrom) qs.set("dateFrom", dateFrom);
-    if (dateTo) qs.set("dateTo", dateTo);
-    if (woNumber.trim()) qs.set("woNumber", woNumber.trim());
-    if (reason && reason !== "ALL") qs.set("reason", reason);
-    if (rmItemId) qs.set("rmItemId", rmItemId);
-    qs.set("page", String(page));
-    qs.set("pageSize", "50");
+  const {
+    data,
+    error: loadError,
+    firstLoadDone,
+    loading,
+  } = useStablePageData<ApiResp>({
+    scopes: ["reports", "production"],
+    pollIntervalMs: ERP_REPORT_POLL_MS,
+    deps: [dateFrom, dateTo, woNumber, reason, rmItemId, page],
+    fetcher: (signal) => {
+      const qs = new URLSearchParams();
+      if (dateFrom) qs.set("dateFrom", dateFrom);
+      if (dateTo) qs.set("dateTo", dateTo);
+      if (woNumber.trim()) qs.set("woNumber", woNumber.trim());
+      if (reason && reason !== "ALL") qs.set("reason", reason);
+      if (rmItemId) qs.set("rmItemId", rmItemId);
+      qs.set("page", String(page));
+      qs.set("pageSize", "50");
+      return apiFetch<ApiResp>(`/api/reports/rm-wastage?${qs}`, { signal });
+    },
+  });
 
-    apiFetch<ApiResp>(`/api/reports/rm-wastage?${qs}`)
-      .then((resp) => {
-        if (mounted) {
-          setData(resp);
-          setError(null);
-        }
-      })
-      .catch((e) => {
-        if (mounted) {
-          setData(null);
-          const msg = e instanceof Error ? e.message : "Failed to load RM wastage report";
-          setError(msg);
-          showError(msg);
-        }
-      })
-      .finally(() => {
-        if (mounted) setLoading(false);
-      });
-    return () => {
-      mounted = false;
-    };
-  }, [dateFrom, dateTo, woNumber, reason, rmItemId, page, liveTick, showError]);
+  React.useEffect(() => {
+    if (loadError) showError(loadError);
+  }, [loadError, showError]);
 
   async function exportCsv() {
     const qs = new URLSearchParams();
@@ -148,7 +138,7 @@ export function RmWastageReportPage() {
     .join(" · ");
 
   return (
-    <div className="erp-report-page mx-auto max-w-6xl space-y-4 p-4">
+    <ReportPageShell>
       <ReportPrintMeta title="RM Wastage Report" filterSummary={filterSummary} />
       <ReportPageHeader
         title="RM Wastage Report"
@@ -221,9 +211,9 @@ export function RmWastageReportPage() {
         </CardContent>
       </Card>
 
-      {error ? (
+      {loadError ? (
         <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800" role="alert">
-          {error}
+          {loadError}
         </div>
       ) : null}
 
@@ -255,11 +245,14 @@ export function RmWastageReportPage() {
           <CardTitle className="text-sm">Detail</CardTitle>
         </CardHeader>
         <CardContent className="overflow-x-auto p-0">
-          {loading ? (
-            <p className="p-3 text-sm text-slate-600">Loading…</p>
-          ) : rows.length === 0 ? (
-            <p className="p-3 text-sm text-slate-500">No wastage entries for these filters.</p>
-          ) : (
+          <ReportResultsLoadGate
+            firstLoadDone={firstLoadDone}
+            loading={loading}
+            hasDisplayData={data != null}
+            isEmpty={rows.length === 0}
+            error={loadError ? <p className="p-3 text-sm text-red-700">{loadError}</p> : null}
+            emptyState={<p className="p-3 text-sm text-slate-500">No wastage entries for these filters.</p>}
+          >
             <table className="w-full text-[11px]">
               <thead className="bg-slate-50 text-left text-slate-600">
                 <tr>
@@ -294,7 +287,7 @@ export function RmWastageReportPage() {
                 ))}
               </tbody>
             </table>
-          )}
+          </ReportResultsLoadGate>
           {data && data.meta.totalPages > 1 ? (
             <div className="flex items-center justify-between border-t border-slate-100 p-2 text-[11px]">
               <span>
@@ -326,6 +319,6 @@ export function RmWastageReportPage() {
           ) : null}
         </CardContent>
       </Card>
-    </div>
+    </ReportPageShell>
   );
 }

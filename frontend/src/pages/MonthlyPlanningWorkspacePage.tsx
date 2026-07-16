@@ -4,6 +4,7 @@ import { apiFetch, ApiRequestError } from "../services/api";
 import { useToast } from "../contexts/ToastContext";
 import { useFeatureFlags } from "../hooks/useFeatureFlags";
 import { useAuth } from "../hooks/useAuth";
+import { useUnsavedChangesGuard } from "../hooks/useUnsavedChangesGuard";
 import {
   MONTHLY_PLANNING_PURCHASE_REVIEW_ROLES,
   MONTHLY_PLANNING_WRITE_ROLES,
@@ -740,7 +741,25 @@ export function MonthlyPlanningWorkspacePage() {
   );
   const periodIsPast = isPastPeriod(period);
   const canMutatePeriod = canWriteMonthlyPlan && (!periodIsPast || isAdmin);
-  const [activeTab, setActiveTab] = React.useState<TabKey>("production");
+  const activeTab = React.useMemo<TabKey>(() => {
+    const t = searchParams.get("tab");
+    if (t === "rm" || t === "purchase") return t;
+    return "production";
+  }, [searchParams]);
+  const setActiveTab = React.useCallback(
+    (tab: TabKey) => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          if (tab === "production") next.delete("tab");
+          else next.set("tab", tab);
+          return next;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
 
   const [loading, setLoading] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
@@ -1884,6 +1903,10 @@ export function MonthlyPlanningWorkspacePage() {
     () => detectUnsavedProductionChanges(rows, removedIds, savedProductionBaseline),
     [rows, removedIds, savedProductionBaseline],
   );
+  useUnsavedChangesGuard({
+    isDirty: hasUnsavedProductionChanges,
+    message: "Monthly plan has unsaved production changes. Leave and discard them?",
+  });
   const plannedSuggestedMismatch = hasPlannedSuggestedMismatch(totalFgPlanned, totalFgSuggested);
 
   const hasPlannedFgInUi = hasPlannedFgQtyInRows(rows);
@@ -2650,6 +2673,10 @@ export function MonthlyPlanningWorkspacePage() {
               )
             }
           />
+        ) : loading && !planExists ? (
+          <div className="flex h-full min-h-[220px] items-center justify-center rounded-lg border border-dashed border-slate-200 bg-slate-50/60 p-8 text-center text-sm text-slate-600">
+            Loading monthly plan…
+          </div>
         ) : !planExists ? (
           <NoPlanPreviewPanel
             period={period}

@@ -864,9 +864,9 @@ export function CustomerReturnPage() {
                             <div className="text-xs text-slate-600">{approvedDispatchHint(r)}</div>
                           ) : null}
                           {queueHint(r) ? (
-                            <a href={queueHint(r)!.href} className="text-xs text-sky-700 hover:underline">
+                            <Link to={queueHint(r)!.href} className="text-xs text-sky-700 hover:underline">
                               {queueHint(r)!.text}
-                            </a>
+                            </Link>
                           ) : null}
                         </div>
                       </td>
@@ -900,7 +900,7 @@ export function CustomerReturnPage() {
                                       `/api/customer-returns/${r.id}/replacement-order`,
                                       { method: "POST", body: JSON.stringify({}) },
                                     );
-                                    window.location.href = salesOrdersFocusHref(res.salesOrderId);
+                                    navigate(salesOrdersFocusHref(res.salesOrderId));
                                   } catch (e) {
                                     setError(e instanceof Error ? e.message : "Could not create replacement order.");
                                   } finally {

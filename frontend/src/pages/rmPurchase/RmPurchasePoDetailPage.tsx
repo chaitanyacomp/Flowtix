@@ -8,6 +8,7 @@ import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { useAuth } from "../../hooks/useAuth";
 import { useToast } from "../../contexts/ToastContext";
+import { useUnsavedChangesGuard } from "../../hooks/useUnsavedChangesGuard";
 import { GRN_WRITE_ROLES, hasErpRole, RM_PO_WRITE_ROLES } from "../../config/erpRoles";
 import { PROCUREMENT_TERMS } from "../../lib/procurementTerminology";
 import { useShortcutHints } from "../../hooks/useShortcutHints";
@@ -147,6 +148,18 @@ export function RmPurchasePoDetailPage() {
   const [grnLocationsLoading, setGrnLocationsLoading] = React.useState(false);
   const [grning, setGrning] = React.useState(false);
   const [grnSuccess, setGrnSuccess] = React.useState<string | null>(null);
+
+  const { confirmLeave: confirmLeaveGrn } = useUnsavedChangesGuard({
+    isDirty:
+      grnModalOpen &&
+      hasGrnModalUnsavedEntry(grnModalBaseline, {
+        grnDateInput,
+        grnSupplierInvoiceNo,
+        grnLines,
+      }),
+    message: GRN_MODAL_DISCARD_CONFIRM,
+    enabled: !grning,
+  });
 
   const [editOpen, setEditOpen] = React.useState(false);
   const [supplierId, setSupplierId] = React.useState(0);
@@ -340,17 +353,9 @@ export function RmPurchasePoDetailPage() {
 
   const requestCloseGrnModal = React.useCallback(() => {
     if (grning) return;
-    if (
-      hasGrnModalUnsavedEntry(grnModalBaseline, {
-        grnDateInput,
-        grnSupplierInvoiceNo,
-        grnLines,
-      })
-    ) {
-      if (!window.confirm(GRN_MODAL_DISCARD_CONFIRM)) return;
-    }
+    if (!confirmLeaveGrn()) return;
     closeGrnModal();
-  }, [grning, grnModalBaseline, grnDateInput, grnSupplierInvoiceNo, grnLines, closeGrnModal]);
+  }, [grning, confirmLeaveGrn, closeGrnModal]);
 
   function onReceiveFullGrn() {
     if (!po) return;

@@ -1,12 +1,12 @@
 import * as React from "react";
 import { apiFetch } from "../services/api";
 import { cn } from "../lib/utils";
-import { PageContainer, ReportPageHeader } from "../components/PageHeader";
+import { ReportPageHeader } from "../components/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Input } from "../components/ui/input";
 import { useUrlQueryState } from "../hooks/useUrlQueryState";
 import { ERP_REPORT_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
-import { ReportKpiStrip, type ReportKpiItem } from "../components/erp/ReportChrome";
+import { ReportKpiStrip, type ReportKpiItem, ReportPageShell } from "../components/erp/ReportChrome";
 import {
   ReportPrintExportBar,
   ReportPrintMeta,
@@ -187,7 +187,6 @@ export function DispatchSummaryReportPage() {
     };
   }, [fromDate, toDate, customerId, itemId, customers, liveTick]);
 
-  const pendingDispatchLines = pendingRows.length;
   const pendingDispatchQty = pendingRows.reduce((s, r) => s + safeNum(r.ready), 0);
   const pendingDispatchOrders = new Set(pendingRows.map((r) => r.soNo).filter(Boolean)).size;
 
@@ -262,7 +261,7 @@ export function DispatchSummaryReportPage() {
   );
 
   return (
-    <PageContainer className="erp-report-page pb-8">
+    <ReportPageShell>
       <ReportPrintMeta title="Dispatch Summary" filterSummary={filterSummary} />
       <ReportPageHeader
         className="mb-0"
@@ -426,6 +425,6 @@ export function DispatchSummaryReportPage() {
           </CardContent>
         </Card>
       )}
-    </PageContainer>
+    </ReportPageShell>
   );
 }

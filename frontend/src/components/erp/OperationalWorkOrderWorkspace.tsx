@@ -14,7 +14,7 @@ import {
 } from "../../lib/operationalWorkspaceLinks";
 import { NO_QTY_TERMS } from "../../lib/flowTerminology";
 import { useErpRefreshTick } from "../../hooks/useErpRefreshTick";
-import { displaySalesOrderNo, displayWorkOrderNo } from "../../lib/docNoDisplay";
+import { displayWorkOrderNo } from "../../lib/docNoDisplay";
 import {
   buildWorkOrderWorkspaceSections,
   formatCycleHistoryOutcomeLine,

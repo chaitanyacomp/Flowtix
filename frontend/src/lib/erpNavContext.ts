@@ -228,7 +228,6 @@ export function resolveStoreExecutionNavContext(
   const origin = queryOrigin(params) ?? "sidebar";
   const returnTo = params.get("returnTo");
   const from = params.get("from") ?? "";
-  const focus = params.get("focus");
 
   switch (pageKey) {
     case "no-qty-execution":

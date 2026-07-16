@@ -1,14 +1,16 @@
 import * as React from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
-import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
-import { PageContainer, ReportPageHeader } from "../components/PageHeader";
+import { ReportPageHeader } from "../components/PageHeader";
+import { ReportPageShell } from "../components/erp/ReportChrome";
 import { ReportPrintExportBar, ReportPrintMeta } from "../components/erp/ReportPrintExport";
 import { apiFetch } from "../services/api";
 import { useDebouncedUrlStringParam, useUrlQueryState } from "../hooks/useUrlQueryState";
 import { ERP_REPORT_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
+import { useStablePageData } from "../hooks/useStablePageData";
 import { cn } from "../lib/utils";
 import { ItemStockStatusBadge } from "../components/erp/ItemStockStatusBadge";
+import { ReportResultsLoadGate } from "../components/erp/foundation/ReportResultsLoadGate";
 import { itemStockStatusFromItemFields, itemStockStatusLabel } from "../lib/itemStockStatus";
 
 type ItemOpt = {
@@ -161,9 +163,6 @@ export function StockReconciliationReportPage() {
   const [q, setQ] = useDebouncedUrlStringParam({ urlValue: qFromUrl, patch, paramKey: "q" });
 
   const [items, setItems] = React.useState<ItemOpt[]>([]);
-  const [data, setData] = React.useState<ApiResp | null>(null);
-  const [loading, setLoading] = React.useState(true);
-  const [loadError, setLoadError] = React.useState<string | null>(null);
 
   const missingDates = !fromDate.trim() || !toDate.trim();
   const liveTick = useErpRefreshTick(["reports", "stock"], { pollIntervalMs: ERP_REPORT_POLL_MS });
@@ -183,10 +182,17 @@ export function StockReconciliationReportPage() {
       .slice(0, 200);
   }, [items, itemType, q]);
 
-  async function load() {
-    setLoading(true);
-    setLoadError(null);
-    try {
+  const {
+    data,
+    error: loadError,
+    firstLoadDone,
+    loading,
+  } = useStablePageData<ApiResp>({
+    enabled: !missingDates,
+    scopes: ["reports", "stock"],
+    pollIntervalMs: ERP_REPORT_POLL_MS,
+    deps: [fromDate, toDate, itemType, itemId, onlyAdjustments, onlyMovement],
+    fetcher: (signal) => {
       const qs = new URLSearchParams();
       qs.set("fromDate", fromDate);
       qs.set("toDate", toDate);
@@ -194,26 +200,9 @@ export function StockReconciliationReportPage() {
       if (itemId && itemId > 0) qs.set("itemId", String(itemId));
       if (onlyAdjustments) qs.set("onlyAdjustments", "true");
       if (onlyMovement) qs.set("onlyMovement", "true");
-      const res = await apiFetch<ApiResp>(`/api/reports/stock-reconciliation?${qs.toString()}`);
-      setData(res);
-    } catch (e) {
-      setData(null);
-      setLoadError(e instanceof Error ? e.message : "Could not load stock reconciliation report.");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  React.useEffect(() => {
-    if (missingDates) {
-      setLoading(false);
-      setData(null);
-      setLoadError(null);
-      return;
-    }
-    void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fromDate, toDate, itemType, itemId, onlyAdjustments, onlyMovement, liveTick]);
+      return apiFetch<ApiResp>(`/api/reports/stock-reconciliation?${qs.toString()}`, { signal });
+    },
+  });
 
   const rows = data?.rows ?? [];
 
@@ -239,7 +228,7 @@ export function StockReconciliationReportPage() {
   }
 
   return (
-    <PageContainer className="erp-report-page pb-8">
+    <ReportPageShell>
       <ReportPrintMeta
         title="Stock Reconciliation Report"
         filterSummary={[fromDate && `From ${fromDate}`, toDate && `To ${toDate}`].filter(Boolean).join(" · ")}
@@ -345,19 +334,31 @@ export function StockReconciliationReportPage() {
           <CardTitle className="text-sm font-semibold text-slate-800">Results</CardTitle>
         </CardHeader>
         <CardContent className="p-0">
-          {missingDates ? (
-            <div className="border-t border-slate-200 px-4 py-10 text-sm text-slate-600">
-              Results appear here after you choose a full date range in <span className="font-medium text-slate-800">Filters</span>.
-            </div>
-          ) : loading ? (
-            <div className="px-4 py-8 text-sm text-slate-500">Loading…</div>
-          ) : !rows.length ? (
-            <div className="border-t border-slate-200 px-4 py-10">
-              <p className="text-sm font-medium text-slate-800">
-                No stock movement found for the selected period. Try changing the date range or filters.
-              </p>
-            </div>
-          ) : (
+          <ReportResultsLoadGate
+            blocked={missingDates}
+            blockedState={
+              <div className="border-t border-slate-200 px-4 py-10 text-sm text-slate-600">
+                Results appear here after you choose a full date range in{" "}
+                <span className="font-medium text-slate-800">Filters</span>.
+              </div>
+            }
+            firstLoadDone={firstLoadDone}
+            loading={loading}
+            hasDisplayData={data != null}
+            isEmpty={rows.length === 0}
+            error={
+              loadError ? (
+                <div className="border-t border-slate-200 px-4 py-8 text-sm text-red-700">{loadError}</div>
+              ) : null
+            }
+            emptyState={
+              <div className="border-t border-slate-200 px-4 py-10">
+                <p className="text-sm font-medium text-slate-800">
+                  No stock movement found for the selected period. Try changing the date range or filters.
+                </p>
+              </div>
+            }
+          >
             <div className="erp-table-wrap mt-auto max-w-full overflow-x-auto border-t border-slate-200">
               <table className="erp-table min-w-[1200px] text-xs sm:text-sm">
                 <thead className="sticky top-0 z-[1] shadow-[0_1px_0_0_rgb(226_232_240)] [&_th]:bg-slate-50">
@@ -413,10 +414,10 @@ export function StockReconciliationReportPage() {
                 </tbody>
               </table>
             </div>
-          )}
+          </ReportResultsLoadGate>
         </CardContent>
       </Card>
-    </PageContainer>
+    </ReportPageShell>
   );
 }
 

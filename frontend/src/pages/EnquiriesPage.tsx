@@ -16,6 +16,8 @@ import {
 } from "../components/erp/CommercialWorkflowStrip";
 import { NO_QTY_TERMS } from "../lib/flowTerminology";
 import { ErpModal } from "../components/erp/ErpModal";
+import { useUnsavedChangesGuard } from "../hooks/useUnsavedChangesGuard";
+import { useListScrollRestoration } from "../hooks/useListScrollRestoration";
 
 /** Must match backend `enquiries.js` validation message. */
 const ENQUIRY_DUPLICATE_ITEM_MESSAGE =
@@ -266,6 +268,7 @@ function nextStepLabel(r: EnquiryRow): string {
 export function EnquiriesPage() {
   const toast = useToast();
   const isAdmin = useAuth().user?.role === "ADMIN";
+  useListScrollRestoration();
   const [customers, setCustomers] = React.useState<Customer[]>([]);
   const [items, setItems] = React.useState<Item[]>([]);
   const [rows, setRows] = React.useState<EnquiryRow[]>([]);
@@ -298,6 +301,10 @@ export function EnquiriesPage() {
 
   // Edit modal state
   const [editRow, setEditRow] = React.useState<EnquiryRow | null>(null);
+  useUnsavedChangesGuard({
+    isDirty: panelMode === "new" || editRow != null,
+    message: "Enquiry form has unsaved changes. Leave and discard them?",
+  });
   const [editCustomerId, setEditCustomerId] = React.useState(0);
   const [editFlowType, setEditFlowType] = React.useState<"REGULAR" | "NO_QTY">("REGULAR");
   const [editRemarks, setEditRemarks] = React.useState("");

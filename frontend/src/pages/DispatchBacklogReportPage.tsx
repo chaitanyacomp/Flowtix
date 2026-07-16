@@ -8,6 +8,8 @@ import { Badge } from "../components/ui/badge";
 import { apiFetch } from "../services/api";
 import { cn } from "../lib/utils";
 import { ERP_REPORT_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
+import { useStablePageData } from "../hooks/useStablePageData";
+import { ReportResultsLoadGate } from "../components/erp/foundation/ReportResultsLoadGate";
 import {
   type DispatchBacklogRow,
   daysSince,
@@ -20,6 +22,7 @@ import { getDrillRowProps, salesOrdersFocusHref, withReportsReturnContext } from
 import { useDrillActivable } from "../hooks/useDrillAccess";
 import { useDebouncedUrlStringParam, useUrlQueryState } from "../hooks/useUrlQueryState";
 import { ReportPageHeader } from "../components/PageHeader";
+import { ReportPageShell } from "../components/erp/ReportChrome";
 import {
   ReportPrintExportBar,
   ReportPrintMeta,
@@ -48,10 +51,7 @@ export function DispatchBacklogReportPage() {
   const canDrillSalesOrder = useDrillActivable("sales-order");
 
   const { patch, read } = useUrlQueryState(REPORT_URL_OMIT);
-  const [rows, setRows] = React.useState<DispatchBacklogRow[]>([]);
   const [customers, setCustomers] = React.useState<Customer[]>([]);
-  const [loading, setLoading] = React.useState(true);
-  const [error, setError] = React.useState<string | null>(null);
 
   const customerName = read.string("customer");
   const statusFilter = read.enum("status", ["ALL", "APPROVED", "IN_PROCESS"] as const, "ALL");
@@ -98,30 +98,22 @@ export function DispatchBacklogReportPage() {
     apiFetch<Customer[]>("/api/customers").then(setCustomers).catch(() => setCustomers([]));
   }, [liveTick]);
 
-  React.useEffect(() => {
-    let mounted = true;
-    setLoading(true);
-    setError(null);
-    apiFetch<DispatchBacklogRow[]>("/api/dashboard/dispatch-backlog")
-      .then((data) => {
-        if (mounted) {
-          setRows((Array.isArray(data) ? data : []).filter((r) => Number(r.pendingQty ?? 0) > PENDING_QTY_EPS));
-          setError(null);
-        }
-      })
-      .catch((e) => {
-        if (mounted) {
-          setRows([]);
-          setError(e instanceof Error ? e.message : "Failed to load dispatch backlog");
-        }
-      })
-      .finally(() => {
-        if (mounted) setLoading(false);
-      });
-    return () => {
-      mounted = false;
-    };
-  }, [liveTick]);
+  const {
+    data,
+    error: loadError,
+    firstLoadDone,
+    loading,
+  } = useStablePageData<DispatchBacklogRow[]>({
+    scopes: ["reports", "dispatch", "dashboard"],
+    pollIntervalMs: ERP_REPORT_POLL_MS,
+    deps: [],
+    fetcher: (signal) =>
+      apiFetch<DispatchBacklogRow[]>("/api/dashboard/dispatch-backlog", { signal }).then((raw) =>
+        (Array.isArray(raw) ? raw : []).filter((r) => Number(r.pendingQty ?? 0) > PENDING_QTY_EPS),
+      ),
+  });
+
+  const rows = data ?? [];
 
   const filtered = React.useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -201,7 +193,7 @@ export function DispatchBacklogReportPage() {
   }
 
   return (
-    <div className="erp-report-page grid gap-3">
+    <ReportPageShell>
       <ReportPrintMeta title="Dispatch Backlog" filterSummary={filterSummary} />
       <ReportPageHeader
         className="mb-0"
@@ -230,6 +222,10 @@ export function DispatchBacklogReportPage() {
           />
         }
       />
+
+      {loadError ? (
+        <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{loadError}</div>
+      ) : null}
 
       <Card className="border-slate-200 shadow-sm">
         <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2 space-y-0 pb-3">
@@ -315,30 +311,36 @@ export function DispatchBacklogReportPage() {
           </div>
         </CardHeader>
         <CardContent className="flex min-h-0 flex-1 flex-col p-0">
-          {error ? (
-            <div className="px-4 py-8 text-sm text-red-700">{error}</div>
-          ) : loading ? (
-            <div className="px-4 py-8 text-sm text-slate-500">Loading…</div>
-          ) : rows.length === 0 ? (
-            <div className="border-t border-slate-200 px-4 py-10">
-              <p className="text-sm font-medium text-slate-800">No pending dispatch found</p>
-              <p className="mt-1 max-w-md text-xs leading-relaxed text-slate-500">
-                All approved / in-process sales orders are fully dispatched.
-              </p>
-            </div>
-          ) : sorted.length === 0 ? (
-            <div className="border-t border-slate-200 px-4 py-10">
-              <p className="text-sm font-medium text-slate-800">No matching backlog rows</p>
-              <p className="mt-1 max-w-md text-xs leading-relaxed text-slate-500">
-                Nothing matches the current filters or search. Try clearing filters, widening the date range, or using a shorter search term.
-              </p>
-              <Button type="button" variant="outline" size="sm" className="mt-4 h-8" disabled={!canClear} onClick={clearFilters}>
-                Clear filters
-              </Button>
-            </div>
-          ) : (
-            <>
-              <div className="border-t border-slate-200 bg-slate-50/80 px-4 py-2.5">
+          <ReportResultsLoadGate
+            firstLoadDone={firstLoadDone}
+            loading={loading}
+            hasDisplayData={data != null}
+            isEmpty={rows.length === 0}
+            error={
+              loadError ? <div className="border-t border-slate-200 px-4 py-8 text-sm text-red-700">{loadError}</div> : null
+            }
+            emptyState={
+              <div className="border-t border-slate-200 px-4 py-10">
+                <p className="text-sm font-medium text-slate-800">No pending dispatch found</p>
+                <p className="mt-1 max-w-md text-xs leading-relaxed text-slate-500">
+                  All approved / in-process sales orders are fully dispatched.
+                </p>
+              </div>
+            }
+          >
+            {sorted.length === 0 ? (
+              <div className="border-t border-slate-200 px-4 py-10">
+                <p className="text-sm font-medium text-slate-800">No matching backlog rows</p>
+                <p className="mt-1 max-w-md text-xs leading-relaxed text-slate-500">
+                  Nothing matches the current filters or search. Try clearing filters, widening the date range, or using a shorter search term.
+                </p>
+                <Button type="button" variant="outline" size="sm" className="mt-4 h-8" disabled={!canClear} onClick={clearFilters}>
+                  Clear filters
+                </Button>
+              </div>
+            ) : (
+              <>
+                <div className="border-t border-slate-200 bg-slate-50/80 px-4 py-2.5">
                 <p className="text-sm text-slate-700">
                   {hasActiveFilters ? (
                     <>
@@ -451,9 +453,10 @@ export function DispatchBacklogReportPage() {
                 </div>
               </div>
             </>
-          )}
+            )}
+          </ReportResultsLoadGate>
         </CardContent>
       </Card>
-    </div>
+    </ReportPageShell>
   );
 }

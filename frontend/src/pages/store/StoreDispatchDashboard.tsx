@@ -250,7 +250,7 @@ export function StoreDispatchDashboard({
               tier="primary"
               className="gap-1.5"
               data-testid="store-quick-no-qty-execution"
-              onClick={() => navigate(executionRegisterHref, dashboardNav)}
+              onClick={() => navigate(executionRegisterHref, { state: dashboardNav })}
             >
               <ClipboardList className="h-3.5 w-3.5" aria-hidden />
               NO_QTY Execution
@@ -263,7 +263,7 @@ export function StoreDispatchDashboard({
               title={!rmccQuickActionAvailable ? STORE_RMCC_UNAVAILABLE_HINT : undefined}
               onClick={() => {
                 if (!rmccQuickActionAvailable) return;
-                navigate(rmccHref, dashboardRmccNav);
+                navigate(rmccHref, { state: dashboardRmccNav });
               }}
             >
               <PackageSearch className="h-3.5 w-3.5" aria-hidden />
@@ -273,7 +273,7 @@ export function StoreDispatchDashboard({
               tier="primary"
               className="gap-1.5"
               data-testid="store-quick-material-issue"
-              onClick={() => navigate(materialIssueHref, dashboardMaterialIssueNav)}
+              onClick={() => navigate(materialIssueHref, { state: dashboardMaterialIssueNav })}
             >
               <PackageMinus className="h-3.5 w-3.5" aria-hidden />
               Material Issue
@@ -282,7 +282,7 @@ export function StoreDispatchDashboard({
               tier="primary"
               className="gap-1.5"
               data-testid="store-quick-dispatch"
-              onClick={() => navigate("/dispatch?source=dashboard", dashboardDispatchNav)}
+              onClick={() => navigate("/dispatch?source=dashboard", { state: dashboardDispatchNav })}
             >
               <Truck className="h-3.5 w-3.5" aria-hidden />
               Dispatch

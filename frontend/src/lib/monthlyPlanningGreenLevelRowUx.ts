@@ -354,8 +354,6 @@ export function greenLevelQtyCellContent(
 }
 
 export function greenLevelPlanningSubtext(row: FgGreenPlanningRow, unit?: string | null): string | null {
-  if (row.loading) return null;
-
   const fmt = (value: number) =>
     formatPlanningQuantity(value, unit, { includeUnit: Boolean(unit?.trim()) });
   const manual = fmt(row.manualGreenLevelQty);

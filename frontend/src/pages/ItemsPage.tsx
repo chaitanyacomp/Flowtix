@@ -17,6 +17,10 @@ import { ItemStockStatusBadge } from "../components/erp/ItemStockStatusBadge";
 import { parseItemQtyStr } from "../lib/itemStockStatus";
 import { ErpModal } from "../components/erp/ErpModal";
 import { DependencyLifecycleModal, type DependencySummary } from "../components/masters/DependencyLifecycleModal";
+import { useUnsavedChangesGuard } from "../hooks/useUnsavedChangesGuard";
+import { confirmLeaveIfDirty } from "../lib/unsavedChangesPolicy";
+import { snapshotItemForm } from "../lib/itemMasterDirtySnapshot";
+import { useListScrollRestoration } from "../hooks/useListScrollRestoration";
 
 type Item = {
   id: number;
@@ -85,6 +89,7 @@ function parseQtyStr(raw: string): number | null {
 export function ItemsPage() {
   const toast = useToast();
   const isAdmin = useAuth().user?.role === "ADMIN";
+  useListScrollRestoration();
   const [rows, setRows] = React.useState<Item[]>([]);
   const [units, setUnits] = React.useState<UnitRow[]>([]);
   const [stockByItemId, setStockByItemId] = React.useState<Map<number, number>>(() => new Map());
@@ -99,6 +104,7 @@ export function ItemsPage() {
   const bulkSel = useBulkSelection(rowIds);
 
   const [showForm, setShowForm] = React.useState(false);
+  const [formBaseline, setFormBaseline] = React.useState<string | null>(null);
   const [editingId, setEditingId] = React.useState<number | null>(null);
   const [creatingType, setCreatingType] = React.useState<"RM" | "FG" | "SFG">("RM");
   const [saving, setSaving] = React.useState(false);
@@ -109,7 +115,7 @@ export function ItemsPage() {
   // Low Stock Level / Buffer % are no longer Store-facing (derived internally when needed).
   const [minimumStock, setMinimumStock] = React.useState("");
   const [lowStockAlert, setLowStockAlert] = React.useState("");
-  const [lowStockTouched, setLowStockTouched] = React.useState(false);
+  const [, setLowStockTouched] = React.useState(false);
   const [bufferPct, setBufferPct] = React.useState("");
   const [targetStock, setTargetStock] = React.useState("");
   const [targetStockOpen, setTargetStockOpen] = React.useState(false);
@@ -121,10 +127,55 @@ export function ItemsPage() {
   const [planningOpen, setPlanningOpen] = React.useState(false);
   const [fgManualGreenLevel, setFgManualGreenLevel] = React.useState("");
 
+  const itemFormSnap = React.useMemo(
+    () =>
+      snapshotItemForm({
+        creatingType,
+        name,
+        unitId,
+        legacyUnitText,
+        minimumStock,
+        lowStockAlert,
+        bufferPct,
+        targetStock,
+        criticalCoveragePct,
+        warningCoveragePct,
+        hsnCode,
+        gstRateStr,
+        fgManualGreenLevel,
+      }),
+    [
+      creatingType,
+      name,
+      unitId,
+      legacyUnitText,
+      minimumStock,
+      lowStockAlert,
+      bufferPct,
+      targetStock,
+      criticalCoveragePct,
+      warningCoveragePct,
+      hsnCode,
+      gstRateStr,
+      fgManualGreenLevel,
+    ],
+  );
+
+  const formDirty = showForm && formBaseline != null && itemFormSnap !== formBaseline;
+  useUnsavedChangesGuard({
+    isDirty: formDirty,
+    message: "Item form has unsaved changes. Leave and discard them?",
+    enabled: showForm && !saving,
+  });
+
   const itemFormRef = React.useRef<HTMLFormElement | null>(null);
   const itemFormScrollRef = React.useRef<HTMLDivElement | null>(null);
 
   const isRmStockForm = creatingType === "RM";
+
+  function captureItemBaseline(fields: Parameters<typeof snapshotItemForm>[0]) {
+    setFormBaseline(snapshotItemForm(fields));
+  }
 
   function quickFillDefaults() {
     // Only fill when empty; do not overwrite user-entered values.
@@ -208,43 +259,94 @@ export function ItemsPage() {
     // New item: keep tax fields visible by default.
     setTaxOpen(true);
     setPlanningOpen(false);
+    captureItemBaseline({
+      creatingType: type,
+      name: "",
+      unitId: "",
+      legacyUnitText: "",
+      minimumStock: "",
+      lowStockAlert: "",
+      bufferPct: "",
+      targetStock: "",
+      criticalCoveragePct: "50",
+      warningCoveragePct: "80",
+      hsnCode: "",
+      gstRateStr: "",
+      fgManualGreenLevel: "",
+    });
     setShowForm(true);
   }
 
   function openEdit(i: Item) {
     setError(null);
     setEditingId(i.id);
-    setCreatingType(i.itemType === "CONSUMABLE" ? "RM" : i.itemType);
+    const nextType = i.itemType === "CONSUMABLE" ? "RM" : i.itemType;
+    setCreatingType(nextType);
     setName(i.itemName);
-    setUnitId(i.unitId ?? "");
-    setLegacyUnitText(i.unit ?? "");
-    setLowStockAlert(
-      i.minStockLevel != null && String(i.minStockLevel).trim() !== "" && Number(i.minStockLevel) !== 0 ? String(i.minStockLevel) : "",
-    );
+    const nextUnitId = i.unitId ?? "";
+    setUnitId(nextUnitId);
+    const nextLegacy = i.unit ?? "";
+    setLegacyUnitText(nextLegacy);
+    const nextLow =
+      i.minStockLevel != null && String(i.minStockLevel).trim() !== "" && Number(i.minStockLevel) !== 0
+        ? String(i.minStockLevel)
+        : "";
+    setLowStockAlert(nextLow);
     setLowStockTouched(false);
     const isRm = i.itemType === "RM";
+    let nextBuffer = "";
     if (i.planningBufferPercent != null && String(i.planningBufferPercent).trim() !== "") {
-      setBufferPct(String(i.planningBufferPercent));
+      nextBuffer = String(i.planningBufferPercent);
     } else {
-      setBufferPct(isRm ? "0" : "");
+      nextBuffer = isRm ? "0" : "";
     }
-    setHsnCode(i.hsnCode?.trim() ?? "");
+    setBufferPct(nextBuffer);
+    const nextHsn = i.hsnCode?.trim() ?? "";
+    setHsnCode(nextHsn);
     const gr = i.gstRate;
-    setGstRateStr(gr != null && String(gr).trim() !== "" ? String(gr) : "");
-    setMinimumStock(i.minimumStockQty != null && String(i.minimumStockQty).trim() !== "" ? String(i.minimumStockQty) : "");
-    setTargetStock(i.reorderQty != null && String(i.reorderQty).trim() !== "" ? String(i.reorderQty) : "");
+    const nextGst = gr != null && String(gr).trim() !== "" ? String(gr) : "";
+    setGstRateStr(nextGst);
+    const nextMin =
+      i.minimumStockQty != null && String(i.minimumStockQty).trim() !== "" ? String(i.minimumStockQty) : "";
+    setMinimumStock(nextMin);
+    const nextTarget =
+      i.reorderQty != null && String(i.reorderQty).trim() !== "" ? String(i.reorderQty) : "";
+    setTargetStock(nextTarget);
     setTargetStockOpen(Boolean(i.reorderQty != null && String(i.reorderQty).trim() !== "" && Number(i.reorderQty) > 0));
-    setCriticalCoveragePct(i.redThresholdPercent != null && String(i.redThresholdPercent).trim() !== "" ? String(i.redThresholdPercent) : "50");
-    setWarningCoveragePct(i.yellowThresholdPercent != null && String(i.yellowThresholdPercent).trim() !== "" ? String(i.yellowThresholdPercent) : "80");
-    setFgManualGreenLevel(
+    const nextCrit =
+      i.redThresholdPercent != null && String(i.redThresholdPercent).trim() !== ""
+        ? String(i.redThresholdPercent)
+        : "50";
+    setCriticalCoveragePct(nextCrit);
+    const nextWarn =
+      i.yellowThresholdPercent != null && String(i.yellowThresholdPercent).trim() !== ""
+        ? String(i.yellowThresholdPercent)
+        : "80";
+    setWarningCoveragePct(nextWarn);
+    const nextFg =
       i.fgManualGreenLevelQty != null && String(i.fgManualGreenLevelQty).trim() !== ""
         ? String(i.fgManualGreenLevelQty)
-        : "",
-    );
+        : "";
+    setFgManualGreenLevel(nextFg);
     // Editing: collapse only when tax info already exists; otherwise keep it open so it’s discoverable.
     const hasTaxInfo = Boolean((i.hsnCode ?? "").trim()) && Boolean(String(i.gstRate ?? "").trim());
     setTaxOpen(!hasTaxInfo);
     setPlanningOpen(false);
+    captureItemBaseline({
+      creatingType: nextType,
+      name: i.itemName,
+      unitId: nextUnitId,
+      legacyUnitText: nextLegacy,
+      minimumStock: nextMin,
+      lowStockAlert: nextLow,
+      bufferPct: nextBuffer,
+      targetStock: nextTarget,
+      criticalCoveragePct: nextCrit,
+      warningCoveragePct: nextWarn,
+      hsnCode: nextHsn,
+      gstRateStr: nextGst,
+      fgManualGreenLevel: nextFg,
+    });
     setShowForm(true);
   }
 
@@ -252,6 +354,12 @@ export function ItemsPage() {
     setError(null);
     setShowForm(false);
     setEditingId(null);
+    setFormBaseline(null);
+  }
+
+  function requestCloseForm() {
+    if (!confirmLeaveIfDirty(formDirty, "Item form has unsaved changes. Leave and discard them?")) return;
+    closeForm();
   }
 
   async function onSubmit(e: React.FormEvent) {
@@ -619,7 +727,7 @@ export function ItemsPage() {
       />
 
       {showForm ? (
-        <ErpModal onClose={closeForm}>
+        <ErpModal onClose={requestCloseForm}>
           <Card className="erp-modal-shell flex w-[calc(100vw-2rem)] max-w-[900px] max-h-[85vh] flex-col overflow-hidden">
             <div className="sticky top-0 z-[2] flex items-center justify-between gap-2 border-b border-slate-200 bg-white px-4 py-3">
               <div className="min-w-0">
@@ -638,7 +746,7 @@ export function ItemsPage() {
                 <Button type="button" variant="outline" size="sm" className="h-9" onClick={quickFillDefaults}>
                   Quick Fill Defaults
                 </Button>
-                <Button type="button" variant="ghost" size="icon" className="h-9 w-9 shrink-0" aria-label="Close" onClick={closeForm}>
+                <Button type="button" variant="ghost" size="icon" className="h-9 w-9 shrink-0" aria-label="Close" onClick={requestCloseForm}>
                   <X className="h-5 w-5" />
                 </Button>
               </div>
@@ -964,7 +1072,7 @@ export function ItemsPage() {
 
                 <div className="sticky bottom-0 z-[2] border-t border-slate-200 bg-white px-4 py-3 shadow-[0_-8px_16px_-16px_rgba(0,0,0,0.55)]">
                   <div className="flex flex-wrap justify-end gap-2">
-                    <Button type="button" variant="outline" onClick={closeForm} disabled={saving}>
+                    <Button type="button" variant="outline" onClick={requestCloseForm} disabled={saving}>
                       Cancel
                     </Button>
                     <Button type="submit" disabled={saving}>

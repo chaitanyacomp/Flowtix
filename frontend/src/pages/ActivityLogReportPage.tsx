@@ -1,7 +1,8 @@
 import * as React from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Input } from "../components/ui/input";
-import { PageContainer, ReportPageHeader } from "../components/PageHeader";
+import { ReportPageHeader } from "../components/PageHeader";
+import { ReportPageShell } from "../components/erp/ReportChrome";
 import {
   ReportPrintExportBar,
   ReportPrintMeta,
@@ -10,6 +11,8 @@ import {
 import { apiFetch } from "../services/api";
 import { useUrlQueryState } from "../hooks/useUrlQueryState";
 import { ERP_REPORT_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
+import { useStablePageData } from "../hooks/useStablePageData";
+import { ReportResultsLoadGate } from "../components/erp/foundation/ReportResultsLoadGate";
 
 type Actor = { id: number; name: string; email: string };
 
@@ -105,9 +108,6 @@ export function ActivityLogReportPage() {
   const refType = read.string("refType", "");
 
   const [actors, setActors] = React.useState<Actor[]>([]);
-  const [data, setData] = React.useState<ApiResp | null>(null);
-  const [loading, setLoading] = React.useState(true);
-  const [loadError, setLoadError] = React.useState<string | null>(null);
 
   const missingDates = !fromDate.trim() || !toDate.trim();
   const liveTick = useErpRefreshTick(["reports", "all"], { pollIntervalMs: ERP_REPORT_POLL_MS });
@@ -116,10 +116,17 @@ export function ActivityLogReportPage() {
     apiFetch<Actor[]>("/api/activity/actors").then(setActors).catch(() => setActors([]));
   }, [liveTick]);
 
-  async function load() {
-    setLoading(true);
-    setLoadError(null);
-    try {
+  const {
+    data,
+    error: loadError,
+    firstLoadDone,
+    loading,
+  } = useStablePageData<ApiResp>({
+    enabled: !missingDates,
+    scopes: ["reports", "all"],
+    pollIntervalMs: ERP_REPORT_POLL_MS,
+    deps: [fromDate, toDate, actorUserId, module, action, refType],
+    fetcher: (signal) => {
       const qs = new URLSearchParams();
       qs.set("fromDate", fromDate);
       qs.set("toDate", toDate);
@@ -127,26 +134,9 @@ export function ActivityLogReportPage() {
       if (module) qs.set("module", module);
       if (action) qs.set("action", action);
       if (refType) qs.set("refType", refType);
-      const resp = await apiFetch<ApiResp>(`/api/reports/activity-log?${qs.toString()}`);
-      setData(resp);
-    } catch (e) {
-      setData(null);
-      setLoadError(e instanceof Error ? e.message : "Could not load activity log.");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  React.useEffect(() => {
-    if (missingDates) {
-      setLoading(false);
-      setData(null);
-      setLoadError(null);
-      return;
-    }
-    void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fromDate, toDate, actorUserId, module, action, refType, liveTick]);
+      return apiFetch<ApiResp>(`/api/reports/activity-log?${qs.toString()}`, { signal });
+    },
+  });
 
   const rows = data?.rows ?? [];
   const filterSummary = [
@@ -175,7 +165,7 @@ export function ActivityLogReportPage() {
   ]);
 
   return (
-    <PageContainer className="erp-report-page pb-8">
+    <ReportPageShell>
       <ReportPrintMeta title="User Activity Log" filterSummary={filterSummary} />
       <ReportPageHeader
         title="User Activity Log"
@@ -266,15 +256,20 @@ export function ActivityLogReportPage() {
           <CardTitle className="text-sm font-semibold text-slate-800">Results</CardTitle>
         </CardHeader>
         <CardContent className="overflow-auto">
-          {missingDates ? (
-            <div className="py-6 text-sm text-slate-600">
-              Choose <span className="font-medium text-slate-800">From date</span> and <span className="font-medium text-slate-800">To date</span> in Filters to load the activity log.
-            </div>
-          ) : loading ? (
-            <div className="py-6 text-sm text-slate-600">Loading…</div>
-          ) : !rows.length ? (
-            <div className="py-6 text-sm text-slate-600">No activity found for the selected filters.</div>
-          ) : (
+          <ReportResultsLoadGate
+            blocked={missingDates}
+            blockedState={
+              <div className="py-6 text-sm text-slate-600">
+                Choose <span className="font-medium text-slate-800">From date</span> and <span className="font-medium text-slate-800">To date</span> in Filters to load the activity log.
+              </div>
+            }
+            firstLoadDone={firstLoadDone}
+            loading={loading}
+            hasDisplayData={data != null}
+            isEmpty={rows.length === 0}
+            error={loadError ? <div className="py-6 text-sm text-red-700">{loadError}</div> : null}
+            emptyState={<div className="py-6 text-sm text-slate-600">No activity found for the selected filters.</div>}
+          >
             <table className="min-w-[1200px] border-collapse text-sm">
               <thead>
                 <tr className="text-left text-xs text-slate-600">
@@ -311,10 +306,10 @@ export function ActivityLogReportPage() {
                 ))}
               </tbody>
             </table>
-          )}
+          </ReportResultsLoadGate>
         </CardContent>
       </Card>
-    </PageContainer>
+    </ReportPageShell>
   );
 }
 

@@ -175,15 +175,18 @@ async function loadPlannedConsumptionByWoRm(db, workOrderIds) {
   const map = new Map(); // `${woId}:${rmItemId}` -> standardQty
   if (!ids.length || !db.productionEntryRmConsumption?.findMany) return map;
 
+  // ProductionEntry uses workflowStatus (DRAFT | APPROVED), not `status`.
+  // Snapshots on ProductionEntryRmConsumption are created at approval; still filter APPROVED
+  // so draft/unconfirmed batches never enter planned-consumption adjuncts.
   const rows = await db.productionEntryRmConsumption.findMany({
     where: {
       productionEntry: {
-        status: "APPROVED",
+        workflowStatus: "APPROVED",
         workOrderLine: { workOrderId: { in: ids } },
       },
     },
     select: {
-      rmItemId: true,
+      itemId: true,
       standardQty: true,
       productionEntry: {
         select: { workOrderLine: { select: { workOrderId: true } } },
@@ -194,7 +197,7 @@ async function loadPlannedConsumptionByWoRm(db, workOrderIds) {
   for (const row of rows) {
     const woId = row.productionEntry?.workOrderLine?.workOrderId;
     if (!woId) continue;
-    const key = `${woId}:${row.rmItemId}`;
+    const key = `${woId}:${row.itemId}`;
     map.set(key, round3(n(map.get(key) || 0) + n(row.standardQty)));
   }
   return map;

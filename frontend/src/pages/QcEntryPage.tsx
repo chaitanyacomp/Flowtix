@@ -18,11 +18,13 @@ import { Button, buttonVariants } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { isValidNumberDraft, type NumberDraft, toNumberDraft } from "../lib/numberDraft";
 import { useAuth } from "../hooks/useAuth";
-import { useCanCreateNextRs, useCanOpenRequirementSheet } from "../hooks/useIsAdmin";
+import { useCanOpenRequirementSheet } from "../hooks/useIsAdmin";
 import { useErpRoleUi } from "../hooks/useErpRoleUi";
 import { getRoleEmptyState } from "../lib/erpRoleEmptyStates";
 import { PlanningStatusChip } from "../components/erp/PlanningStatusChip";
 import { useFastEntryForm } from "../hooks/useFastEntryForm";
+import { useUnsavedChangesGuard } from "../hooks/useUnsavedChangesGuard";
+import { useListScrollRestoration } from "../hooks/useListScrollRestoration";
 import { useDependentFieldFocus } from "../hooks/useDependentFieldFocus";
 import { useMandatoryPositiveQtyDraft } from "../hooks/useMandatoryPositiveQtyDraft";
 import {
@@ -409,7 +411,7 @@ function qcStatusLabel(s: QcStatus): string {
 export function QcEntryPage() {
   const auth = useAuth();
   const roleUi = useErpRoleUi();
-  const canCreateNextRs = useCanCreateNextRs();
+  useListScrollRestoration();
   const canOpenRs = useCanOpenRequirementSheet();
   const navigate = useNavigate();
   const location = useLocation();
@@ -582,6 +584,14 @@ export function QcEntryPage() {
   const [reverseQcReasonDraft, setReverseQcReasonDraft] = React.useState("");
   const [reverseQcPasswordDraft, setReverseQcPasswordDraft] = React.useState("");
   const [reverseQcModalError, setReverseQcModalError] = React.useState<string | null>(null);
+  useUnsavedChangesGuard({
+    isDirty:
+      Boolean(String(checkedQtyStr).trim()) ||
+      Boolean(String(rejectedQty).trim()) ||
+      Boolean(reason.trim()) ||
+      reverseQcModal != null,
+    message: "QC entry has unsaved values. Leave and discard them?",
+  });
   const [custReturnApprovingId, setCustReturnApprovingId] = React.useState<number | null>(null);
   const [custReturnScrappingId, setCustReturnScrappingId] = React.useState<number | null>(null);
   const [custReturnApproveReworkId, setCustReturnApproveReworkId] = React.useState<number | null>(null);

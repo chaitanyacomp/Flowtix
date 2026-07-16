@@ -8,6 +8,7 @@ import { getApiUrl } from "../services/api";
 import { computeLineTaxSplit, sumBillLines } from "../lib/purchaseBillCalc";
 import { useAuth } from "../hooks/useAuth";
 import { useToast } from "../contexts/ToastContext";
+import { useUnsavedChangesGuard } from "../hooks/useUnsavedChangesGuard";
 import { PageContainer, PageSmartBackLink, StickyWorkspaceHead } from "../components/PageHeader";
 import { ActivityHistoryCard } from "../components/ActivityHistoryCard";
 import { BillExportStatusPanel } from "../components/BillExportStatusPanel";
@@ -229,6 +230,14 @@ export function PurchaseBillEditPage() {
   const [paySaving, setPaySaving] = React.useState(false);
   const [pvSaving, setPvSaving] = React.useState(false);
   const [lineTouched, setLineTouched] = React.useState<Record<number, { qty?: boolean; rate?: boolean }>>({});
+  const [headerBaseline, setHeaderBaseline] = React.useState({
+    billNo: "",
+    billDate: "",
+    dueDate: "",
+    remarks: "",
+  });
+  const [ratesBaseline, setRatesBaseline] = React.useState<Record<number, number>>({});
+  const [qtysBaseline, setQtysBaseline] = React.useState<Record<number, number>>({});
   const [adminCancelAuth, setAdminCancelAuth] = React.useState<{
     open: boolean;
     reason: string;
@@ -242,6 +251,20 @@ export function PurchaseBillEditPage() {
   const readOnly = bill?.status === "FINALIZED";
   const cancelled = bill?.status === "CANCELLED";
   const editLocked = Boolean(readOnly || cancelled);
+
+  useUnsavedChangesGuard({
+    isDirty:
+      bill?.status === "DRAFT" &&
+      !editLocked &&
+      (billNo !== headerBaseline.billNo ||
+        billDate !== headerBaseline.billDate ||
+        dueDate !== headerBaseline.dueDate ||
+        remarks !== headerBaseline.remarks ||
+        Object.keys(rates).some((id) => Number(rates[Number(id)]) !== Number(ratesBaseline[Number(id)])) ||
+        Object.keys(qtys).some((id) => Number(qtys[Number(id)]) !== Number(qtysBaseline[Number(id)]))),
+    message: "Purchase bill has unsaved changes. Leave and discard them?",
+    enabled: !saving,
+  });
   const incomingWarnings = ((location.state as { pbWarnings?: string[] } | null)?.pbWarnings ?? []).filter(Boolean);
 
   React.useEffect(() => {
@@ -269,6 +292,14 @@ export function PurchaseBillEditPage() {
         }
         setRates(next);
         setQtys(qNext);
+        setHeaderBaseline({
+          billNo: b.billNo?.trim() ?? "",
+          billDate: toDateInputValue(b.billDate),
+          dueDate: toDateInputValue(b.dueDate),
+          remarks: b.remarks?.trim() ?? "",
+        });
+        setRatesBaseline(next);
+        setQtysBaseline(qNext);
         didFocusRates.current = false;
       })
       .catch((e) => {
@@ -399,10 +430,21 @@ export function PurchaseBillEditPage() {
       setDueDate(toDateInputValue(updated.dueDate));
       setRemarks(updated.remarks?.trim() ?? "");
       const next: Record<number, number> = {};
+      const qNext: Record<number, number> = {};
       for (const ln of updated.lines) {
         next[ln.id] = Number(ln.rate);
+        qNext[ln.id] = Number(ln.qty);
       }
       setRates(next);
+      setQtys(qNext);
+      setHeaderBaseline({
+        billNo: updated.billNo?.trim() ?? "",
+        billDate: toDateInputValue(updated.billDate),
+        dueDate: toDateInputValue(updated.dueDate),
+        remarks: updated.remarks?.trim() ?? "",
+      });
+      setRatesBaseline(next);
+      setQtysBaseline(qNext);
       setFormInfo("Purchase Bill saved.");
     } catch (e) {
       const raw = e instanceof Error ? e.message : "Could not save.";
@@ -546,6 +588,14 @@ export function PurchaseBillEditPage() {
       }
       setRates(next);
       setQtys(qNext);
+      setHeaderBaseline({
+        billNo: finalized.billNo?.trim() ?? "",
+        billDate: toDateInputValue(finalized.billDate),
+        dueDate: toDateInputValue(finalized.dueDate),
+        remarks: finalized.remarks?.trim() ?? "",
+      });
+      setRatesBaseline(next);
+      setQtysBaseline(qNext);
       setFormInfo("Purchase Bill finalized.");
     } catch (e) {
       const raw = e instanceof Error ? String(e.message || "").trim() : "";

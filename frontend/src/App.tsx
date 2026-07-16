@@ -4,8 +4,13 @@ import { Button } from "./components/ui/button";
 import { Card, CardContent } from "./components/ui/card";
 import { Input } from "./components/ui/input";
 import { useAuth } from "./hooks/useAuth";
-import { consumeSessionExpiredMessage, describeApiOrigin, getApiUrl } from "./services/api";
+import { describeApiOrigin, getApiUrl } from "./services/api";
+import {
+  clearSessionExpiredMessage,
+  peekSessionExpiredMessage,
+} from "./lib/authSession";
 import { endPerfMark, startPerfMark } from "./lib/performanceTiming";
+import { loginPathWithReturn, resolvePostLoginDestination, ROLE_LANDING_PATH } from "./lib/authReturnPath";
 import { AppLayout } from "./components/AppLayout";
 import {
   BrandBanner,
@@ -143,6 +148,29 @@ function LegacyProductionRmReturnsRedirect() {
   return <Navigate to={`/production/rm-returns${search}`} replace />;
 }
 
+/** When unauthenticated, send to login with deep-link restore. */
+function RequireAuthLayout() {
+  const auth = useAuth();
+  const location = useLocation();
+  if (auth.authStatus === "loading") {
+    return <BrandSplash hint="Checking session…" className="min-h-[100dvh]" />;
+  }
+  if (!auth.isAuthed) {
+    const returnTo = `${location.pathname}${location.search}${location.hash}`;
+    return <Navigate to={loginPathWithReturn(returnTo)} replace />;
+  }
+  return <AppLayout />;
+}
+
+/** Unknown paths → dashboard (authed) or login — avoids empty shell flicker. */
+function CatchAllRedirect() {
+  const auth = useAuth();
+  if (auth.authStatus === "loading") {
+    return <BrandSplash hint="Checking session…" className="min-h-[100dvh]" />;
+  }
+  return <Navigate to={auth.isAuthed ? ROLE_LANDING_PATH : "/login"} replace />;
+}
+
 /** Legacy `/planning-dashboard/production` → single planning hub (preserve query string). */
 function PlanningProductionPathRedirect() {
   const { search } = useLocation();
@@ -166,18 +194,28 @@ function SalesOrdersNewRedirect() {
 
 function LoginPage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const auth = useAuth();
   const [email, setEmail] = useState("admin@test.com");
   const [password, setPassword] = useState("123456");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [ping, setPing] = useState<string | null>(null);
-  const [sessionMessage] = useState<string | null>(() => consumeSessionExpiredMessage());
+  // Peek (non-destructive): StrictMode remounts must still read the same banner text.
+  const [sessionMessage] = useState<string | null>(() => peekSessionExpiredMessage());
 
   useEffect(() => {
     startPerfMark("login-page");
     endPerfMark("login-page", "page-load");
   }, []);
+
+  // Clear storage after React state has captured the message so a Login refresh
+  // does not show the banner forever. Safe under StrictMode (idempotent clear).
+  useEffect(() => {
+    if (sessionMessage) {
+      clearSessionExpiredMessage();
+    }
+  }, [sessionMessage]);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -185,17 +223,28 @@ function LoginPage() {
     setPing(null);
     setLoading(true);
     try {
-      await auth.login(email.trim(), password);
+      const loggedIn = await auth.login(email.trim(), password);
+      clearSessionExpiredMessage();
+      const dest = resolvePostLoginDestination(searchParams.get("returnTo"), { role: loggedIn.role });
       if (import.meta.env.DEV) {
         // eslint-disable-next-line no-console
-        console.debug("[auth] navigate → /dashboard");
+        console.debug("[auth] navigate →", dest);
       }
-      navigate("/dashboard");
+      navigate(dest, { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed");
     } finally {
       setLoading(false);
     }
+  }
+
+  if (auth.authStatus === "loading") {
+    return <BrandSplash hint="Checking session…" className="min-h-[100dvh]" />;
+  }
+
+  if (auth.isAuthed) {
+    const dest = resolvePostLoginDestination(searchParams.get("returnTo"), { role: auth.user?.role });
+    return <Navigate to={dest} replace />;
   }
 
   async function onPing() {
@@ -391,7 +440,7 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
-      <Route element={auth.isAuthed ? <AppLayout /> : <Navigate to="/login" replace />}>
+      <Route element={<RequireAuthLayout />}>
         <Route
           path="/dashboard"
           element={
@@ -1136,7 +1185,17 @@ export default function App() {
           }
         />
       </Route>
-      <Route path="/" element={<Navigate to={auth.isAuthed ? "/dashboard" : "/login"} replace />} />
+      <Route
+        path="/"
+        element={
+          auth.authStatus === "loading" ? (
+            <BrandSplash hint="Checking session…" className="min-h-[100dvh]" />
+          ) : (
+            <Navigate to={auth.isAuthed ? ROLE_LANDING_PATH : "/login"} replace />
+          )
+        }
+      />
+      <Route path="*" element={<CatchAllRedirect />} />
     </Routes>
   );
 }

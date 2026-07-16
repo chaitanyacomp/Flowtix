@@ -7,7 +7,7 @@
 | **Volume** | 6 — UI & Experience Architecture |
 | **Chapter** | 7 — FT ERP UI/UX Design System |
 | **Title** | FT ERP UI/UX Design System |
-| **Version** | 1.0.6 |
+| **Version** | 1.0.8 |
 | **Status** | Draft — Final Architecture Review |
 | **Effective date** | 2026-07-03 |
 | **Author** | FT ERP Product Team |
@@ -40,6 +40,8 @@
 | 1.0.4 | 2026-07-12 | FT ERP Product Team | §10.8 — multi-WO planning layout; RM Detail = proposed qty; stay after create |
 | 1.0.5 | 2026-07-12 | FT ERP Product Team | §10.8 — workstation hierarchy: transaction above fold; reference below |
 | 1.0.6 | 2026-07-12 | FT ERP Product Team | §10.8 — single two-column workstation grid (left context / right action); RM integrated in action column; Planning Context duplication removed |
+| 1.0.7 | 2026-07-16 | FT ERP Product Team | §17.7–§17.14 — Report Grid & Analytics UX Standard (categories, grid, filters, KPIs, drill-down); Analysis catalog UX compliance snapshot |
+| 1.0.8 | 2026-07-16 | FT ERP Product Team | §17.15 — Report Layout Compliance (FT-UI-REPORT-018); Production Wastage WO Analysis = canonical ReportChrome / ReportPageShell reference |
 
 **Supersedes:** Ad hoc screen conventions; informal spacing and button patterns not recorded in product documentation.
 
@@ -81,7 +83,7 @@ This is an **architectural design standard**, not a frontend framework guide. It
 - Workbench and Dashboard standards (§10–11)
 - Table, form, navigation, and button standards (§12–15)
 - Visual language (§16)
-- Reports standard (§17)
+- Reports standard including Report Grid & Analytics UX (§17)
 - Accessibility and performance requirements (§18)
 - Compliance checklist (§19)
 - UI Compliance Review process (§20)
@@ -105,9 +107,11 @@ This is an **architectural design standard**, not a frontend framework guide. It
 | Control Tower | FT-PD-062 | Monitoring patterns in §6, §11 |
 | Workspace Architecture | FT-PD-063 | Workbench standard §10 implements WSP patterns |
 | Registers & Masters | FT-PD-064 | Page types Register, Master §8–§9 |
-| Reports | FT-PD-065 | Reports standard §17 |
+| Reports | FT-PD-065 | Reports standard §17 (architecture); Report Grid UX §17.7+ (presentation) |
 
 **Rule:** Where this document and a Volume 6 chapter conflict on **layout or interaction**, this document **SHALL** govern **visual and UX consistency**. Where they conflict on **workflow ownership or engine behavior**, the Workflow Engine and domain specifications **SHALL** govern.
+
+**Gap this revision closes:** Analysis reports were often laid out as **wide database extracts** (many columns, horizontal scroll, tall filter cards). §17.7+ standardizes **report presentation only** — it does **not** replace FT-PD-065 ownership, read-model, or print/export rules.
 
 ### 3.4 Normative language
 
@@ -784,6 +788,7 @@ Applies to Register, Workbench grids, Dashboard lists, Control Tower tables, and
 - Transitions **SHALL** preserve context (scroll position on Register return **MAY** be preserved).
 - Full-page flash reloads **SHOULD NOT** be used for in-app navigation.
 - Loading indicator **SHALL** use skeleton for main content region, not whole-app block except auth.
+- Browser recovery, dirty-form, Back/Forward, and flicker rules **SHALL** follow [`docs/ERP_BROWSER_NAVIGATION_AND_RECOVERY_STANDARD.md`](../../ERP_BROWSER_NAVIGATION_AND_RECOVERY_STANDARD.md).
 
 ---
 
@@ -911,7 +916,7 @@ Base unit **SHALL** be **4px**. Common steps: 4, 8, 12, 16, 24, 32.
 
 ## 17. Reports Standard
 
-*Extends [FT-PD-065](./Chapter_06_Reports_and_Analytical_Surfaces.md).*
+*Extends [FT-PD-065](./Chapter_06_Reports_and_Analytical_Surfaces.md). Presentation law for Analysis and report surfaces lives in this section — do **not** create a parallel report design standard outside FT-PD-066.*
 
 ### 17.1 Printable
 
@@ -932,7 +937,7 @@ Base unit **SHALL** be **4px**. Common steps: 4, 8, 12, 16, 24, 32.
 
 ### 17.4 Readable tables
 
-- Report tables **SHALL** use **Standard** density minimum (§10.8).
+- Report tables **SHALL** use **Standard** density minimum (§10.8) unless §17.8 permits Compact for operational report grids.
 - Subtotals and grand totals **SHALL** be bold; grouped reports **SHALL** indent hierarchy.
 
 ### 17.5 Landscape support
@@ -950,6 +955,192 @@ Base unit **SHALL** be **4px**. Common steps: 4, 8, 12, 16, 24, 32.
 **Sales Ops ownership:** Customer Tracking is the master lifecycle report; SO→Dispatch Trace is merged into its Production Journey; Dispatch Summary remains analytics + locked register only — see [FT-PD-065 §6.1](./Chapter_06_Reports_and_Analytical_Surfaces.md#61-sales-operations-report-ownership-product-register).
 
 ---
+
+### 17.7 Report Grid & Analytics UX Standard
+
+**Purpose:** Ensure Analysis / report surfaces read as **operational ERP reports**, not database extracts.
+
+**Authority:** This subsection is part of FT-PD-066. It extends §17.1–§17.6 and FT-PD-065 categories. It does **not** redefine ownership, APIs, calculations, or print/export contracts.
+
+**Reference implementation (presentation):** Work Order Tracking — see [WORK_ORDER_TRACKING_REPORT_STANDARD.md](../../../WORK_ORDER_TRACKING_REPORT_STANDARD.md) §6.
+
+#### 17.7.1 UX report categories (presentation)
+
+FT-PD-065 defines architectural report categories. For **grid UX**, surfaces **SHALL** declare one primary presentation category:
+
+| Category | Purpose (operator) | Examples | Grid bias |
+|----------|-------------------|----------|-----------|
+| **Operational** | Current status, pending work, exceptions, next action | Work Order Tracking, Dispatch Summary / Backlog, QC Report, Operations Exception | Compact; ≤ ~10 scan columns; no H-scroll @ 1366×768 |
+| **Analytical** | Variance, comparison, root cause | Production Wastage (WO / Type), RM Wastage, Production RM Variance, Scrap, RM Planning vs Received | Progress/variance focus; secondary cols in expand |
+| **Financial** | Purchase / sales matching, cost, margin | Sales Matching, Purchase Matching, Stock Reconciliation | Numeric alignment; KPI for imbalance; detail off-grid |
+| **Audit** | Activity, history, traceability | User Activity Log, Batch Traceability, NO_QTY Recovery Trace | Identity + outcome first; raw field dumps forbidden on main grid |
+
+A report **MAY** serve more than one business purpose; the **primary** category drives density and scroll rules.
+
+#### 17.7.2 Anti-patterns (report-specific)
+
+In addition to §7, report grids **SHALL NOT**:
+
+| ID | Anti-pattern |
+|----|----------------|
+| **RG-01** | Expose every source/database field as a main-grid column |
+| **RG-02** | Require horizontal scrolling for **Operational** reports at **1366×768** during normal filtered use |
+| **RG-03** | Use tall multi-section radio / checkbox filter blocks when a compact toolbar suffices |
+| **RG-04** | Show meaningless KPIs (raw row counts with no decision value) as the only summary |
+| **RG-05** | Duplicate the same entity twice (e.g. Customer column **and** Customer nested under Demand) |
+| **RG-06** | Stack multiline narrative (recovery, audit notes) in a scan column |
+
+---
+
+### 17.8 Report grid rules
+
+| Rule | Requirement |
+|------|-------------|
+| **Visible columns** | Main grid **SHOULD** show **≤ 10** columns for Operational; **≤ 12** for Analytical / Financial unless §21 exception. Beyond that → expand, drawer, or drill-down. |
+| **Primary vs secondary** | Main grid = identity + status + decision metrics only. Secondary quantities, history, and allocation detail **SHALL** leave the scan row. |
+| **Sticky header** | Column headers **SHALL** remain visible while the result body scrolls vertically. |
+| **Alignment** | Identifiers left; quantities and money right (tabular numerals); status/recovery as badges centered or left of status column. |
+| **Badges** | Status and outcome use §16.3 semantic Badge vocabulary — **one** badge per status cell (no multiline status). |
+| **Progress** | Stage quantities **SHOULD** use compact progress blocks (e.g. `done / total` + optional pending) instead of separate Required / Planned / Produced columns. |
+| **Exceptions** | Pending / shortfall / overdue values **SHALL** use warning tone (§16); do not rely on color alone (include text or badge). |
+| **Density** | Operational report grids **MAY** use Compact density (§10.8 / §12.6). Avoid oversized card padding between KPI, toolbar, and table. |
+| **Horizontal scroll** | Operational: **SHALL** target no H-scroll @ 1366×768. Analytical / Financial / Audit: **SHOULD** minimize; if H-scroll remains, freeze identity columns and show a scroll affordance. |
+| **Target viewports** | Layout **SHALL** be validated at **1366×768** and **1920×1080**. |
+
+---
+
+### 17.9 Filter toolbar standard
+
+| Rule | Requirement |
+|------|-------------|
+| **Chrome** | Filters **SHALL** use the shared report filter toolbar pattern (same density and rhythm as other Analysis reports). |
+| **Height** | Filter band **SHALL** occupy **at most two rows** at 1366×768 for typical parameter sets. |
+| **Order** | Frequently used controls first (flow / scope / customer / date), then search. |
+| **Search** | Search **SHALL** remain visible in the toolbar (not buried in an advanced panel) when the report supports text find. |
+| **Apply / Clear** | Clear / Reset placement **SHALL** be consistent (actions row). Live URL filters **MAY** omit Apply when every change refetching is intentional; when Apply exists, it **SHALL** sit with Clear. |
+| **Controls** | Prefer compact selects / segmented controls over large radio groups for flow and open/closed scope. |
+
+---
+
+### 17.10 KPI strip standard
+
+| Rule | Requirement |
+|------|-------------|
+| **Decision value** | Each KPI **SHALL** support a decision (what is open, pending, at risk, or imbalanced). |
+| **Count** | **4–6** cards maximum. |
+| **Category fit** | Operational KPIs emphasize open / pending / exception qty. Analytical KPIs emphasize variance, loss, or rate. Financial KPIs emphasize imbalance / matched vs unmatched. Audit KPIs emphasize volume / failure / open traces when useful. |
+| **Chrome** | KPI strip **SHALL** use the shared compact KPI pattern (not Dashboard-sized panels). |
+| **Filter scope** | KPI values **SHALL** reflect the **current filtered result set** (or clearly labeled global scope). |
+
+---
+
+### 17.11 Drill-down information architecture
+
+| Layer | Belongs here | Does not belong here |
+|-------|--------------|----------------------|
+| **Main grid** | Document/line identity, item, demand/ordered, progress blocks, recovery badge, status badge | Full recovery narrative, every qty variant, ledger lines |
+| **Expanded row** | Required / planned / accepted / rejected, short context, recovery summary text | Full document edit; workflow execute |
+| **Drawer / modal** | Recovery detail, QC detail, allocation breakdown | Permanent second grid of all columns |
+| **Separate report / workspace** | Deep trace, matching register, execution | Duplicating the same scan table |
+
+**Rule:** Never expose every database field in the main table. Drill-down is **navigation or read-only detail** only ([FT-PD-065](./Chapter_06_Reports_and_Analytical_Surfaces.md) RPT-01 / RPT-04).
+
+---
+
+### 17.12 Shared report chrome (product convention)
+
+All Analysis reports **SHOULD** compose:
+
+1. Report page header (title, purpose, print/export)
+2. Compact KPI strip (when KPIs apply)
+3. Compact filter toolbar
+4. Result shell with sticky header table
+5. Empty / error / loading states (§18)
+
+Implementation **SHALL** reuse existing ERP report chrome primitives already in the product — do **not** invent a second visual language per report.
+
+---
+
+### 17.13 Analysis catalog — UX compliance snapshot (2026-07-16)
+
+Presentation audit only. **No redesign required** by this snapshot unless Priority = High and a follow-up task is opened. Business logic / APIs unchanged.
+
+| Report | Category | Status | Issues (summary) | Recommended improvements | Priority |
+|--------|----------|--------|------------------|--------------------------|----------|
+| Work Order Tracking | Operational | **Pass** | Reference for progress blocks, recovery badge, compact toolbar | Keep aligned with §17.7–§17.11 | Low |
+| Dispatch Summary | Operational | **Pass** | Load-gate polish | Adopt shared load gate | Low |
+| Dispatch Backlog | Operational | **Pass** | No KPI strip | Add pending-qty KPIs | Low |
+| Operations Exception | Operational | **Pass** | Tall stacked sections | Compact section headers | Low |
+| Batch Traceability | Operational / Audit | **Pass** | `min-width` scroll risk | Freeze identity; secondary cols → expand | Low |
+| RM Wastage | Analytical | **Pass** | Borderline column count | Sticky header | Low |
+| QC Report | Operational / Audit | **Needs Improvement** | Very wide grid (~15–22 cols) | Progress/recovery to badge+modal; cut scan cols | **High** |
+| Production Wastage — WO | Analytical | **Needs Improvement** | ~19 cols + forced H-scroll | Group qty into variance blocks; expand detail | **High** |
+| Sales Matching | Financial | **Needs Improvement** | ~15 cols + min-width scroll | Move rare cols to expand/drawer | **High** |
+| Purchase Matching | Financial | **Needs Improvement** | ~14 cols + scroll | Same as Sales Matching | **High** |
+| Production Wastage — Type | Analytical | **Needs Improvement** | Dense 12-col summary | Compact toolbar; sticky header | Medium |
+| Scrap | Analytical | **Needs Improvement** | No KPI strip; taller filters | Compact toolbar + loss KPIs | Medium |
+| Stock Reconciliation | Financial | **Needs Improvement** | 12 numeric cols scroll | Imbalance-first columns; expand rest | Medium |
+| Production RM Variance | Analytical | **Needs Improvement** | Tall filter card; load UX | Shared toolbar + load gate | Medium |
+| Activity Log | Audit | **Needs Improvement** | Wide audit extract | Identity + action + outcome; detail expand | Medium |
+| NO_QTY Recovery Trace | Operational / Audit | **Needs Improvement** | No KPI; dense abbreviations | KPI + badge outcomes | Medium |
+| RM Planning vs Received | Analytical | **Pass** (scroll risk) | 12 cols + expand | Prefer no min-width when expand exists | Medium |
+| RM Procurement Connectivity | Operational | **Needs Improvement** | 14 trace cols; no KPI | Trace detail in expand only | Medium |
+| Customer-wise SO & RS | Operational | **Needs Improvement** | No KPI; column mode shift | Compact KPIs; stable scan set | Medium |
+
+---
+
+### 17.14 Work Order Tracking — compliance note
+
+Work Order Tracking is the **reference Operational report grid** for §17.7–§17.11 (progress blocks, recovery badge, density). It **SHALL** also use the shared ReportPageShell / ReportChrome layout (§17.15).
+
+Domain/API rules remain in [WORK_ORDER_TRACKING_REPORT_STANDARD.md](../../../WORK_ORDER_TRACKING_REPORT_STANDARD.md) and FT-PD-065 §6.3A.
+
+---
+
+### 17.15 Report Layout Compliance (FT-UI-REPORT-018)
+
+**Status:** Complete for Analysis catalog container standardization (presentation only).
+
+#### Canonical reference implementation
+
+| Role | Surface |
+|------|---------|
+| **Canonical ReportChrome / page shell** | **Production Wastage — WO Analysis** (`ProductionWastageWoReportPage`) |
+| **Canonical Operational grid patterns** | Work Order Tracking (§17.14) |
+
+Every Analysis / official report **SHALL** use:
+
+1. **`ReportPageShell`** — one max content width (`max-w-[1400px]`), one horizontal gutter (`p-4`), one vertical rhythm (`space-y-3`), `erp-report-page` print class
+2. **`ReportPageHeader`** + print/export actions (shared placement)
+3. **`ReportKpiStrip`** when KPIs apply (compact cards; §17.10)
+4. **`ReportFilterToolbar` / `ReportFilterField`** for filters (§17.9)
+5. **`ReportTableShell`** + sticky header for result tables
+6. **`ReportEmptyState`** for empty results
+
+**SHALL NOT** invent per-report max-widths (`max-w-6xl`, `1500px`, ad-hoc `PageContainer` paddings) that break the shared vertical/horizontal grid.
+
+#### Date validation (presentation)
+
+- Date pickers that display **DD-MM-YYYY** in the browser **SHALL** show validation messages in **DD-MM-YYYY**.
+- User-facing errors **SHALL NOT** expose backend/ISO `YYYY-MM-DD` wording.
+- Blank omit, invalid date, and From > To remain required checks (Scrap Report reference).
+
+#### Back navigation from Analysis
+
+- Reports opened from the Analysis catalog **SHALL** show **Back to Reports** (never **Back to Dashboard**).
+- Catalog tiles that open bill/list hubs **SHALL** append `from=reports` (or `source=reports`) via `withReportsReturnContext`.
+
+#### Compliance checklist (layout)
+
+- [ ] `ReportPageShell` wrapper
+- [ ] Shared header + export/print placement
+- [ ] KPI / filter / table alignment match WO Analysis
+- [ ] Empty state placement consistent
+- [ ] Back to Reports when entered from Analysis
+- [ ] Validated at 1366×768 and 1920×1080
+
+---
+
 
 ## 18. Accessibility & Performance
 
@@ -1037,6 +1228,12 @@ Every new or redesigned page **SHALL** pass this checklist before §20 sign-off.
 
 - [ ] Read-only; no execution controls (§17, [FT-PD-065](./Chapter_06_Reports_and_Analytical_Surfaces.md))
 - [ ] Print and export meet §17.1–17.6
+- [ ] Presentation category declared (Operational / Analytical / Financial / Audit) (§17.7.1)
+- [ ] Report Grid rules met — scan columns, sticky header, badges/progress, no RG-01…RG-06 (§17.8–§17.11)
+- [ ] Compact filter toolbar ≤ two rows; search visible; Clear placement consistent (§17.9)
+- [ ] KPIs 4–6 max and decision-oriented when present (§17.10)
+- [ ] Validated at 1366×768 and 1920×1080 (§17.8)
+- [ ] ReportPageShell / ReportChrome layout compliance (§17.15) when page type is Report/Analysis
 
 ### 19.7 Accessibility & performance
 

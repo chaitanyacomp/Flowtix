@@ -22,10 +22,14 @@ import {
   rmRiskStatusTone,
   workOrderStatusTone,
 } from "../lib/reportStatusTones";
+import { useDebouncedUrlStringParam, useUrlQueryState } from "../hooks/useUrlQueryState";
 import { ERP_REPORT_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
 import { useAuth } from "../hooks/useAuth";
 import { useDrillAccessMap } from "../hooks/useDrillAccess";
 import { ReportPageHeader } from "../components/PageHeader";
+import { ReportPageShell } from "../components/erp/ReportChrome";
+import { ErpRefreshingBadge } from "../components/erp/foundation/ErpRefreshingBadge";
+import { isPageRefreshing, shouldCommitAsyncFetchResult, shouldShowInitialPageSkeleton } from "../lib/pageLoadState";
 import {
   ReportPrintExportBar,
   ReportPrintMeta,
@@ -169,10 +173,24 @@ export function OperationsExceptionReportPage() {
   const [payload, setPayload] = React.useState<OpsExceptionPayload | null>(null);
   const [loadError, setLoadError] = React.useState<string | null>(null);
   const [loading, setLoading] = React.useState(true);
+  const [firstLoadDone, setFirstLoadDone] = React.useState(false);
 
-  const [sectionFilter, setSectionFilter] = React.useState<ExceptionSection>("ALL");
-  const [severityFilter, setSeverityFilter] = React.useState<"ALL" | Severity>("ALL");
-  const [search, setSearch] = React.useState("");
+  const hasDisplayData = payload != null;
+  const initialLoading = shouldShowInitialPageSkeleton({ firstLoadDone, loading, hasDisplayData });
+  const refreshing = isPageRefreshing({ firstLoadDone, loading, hasDisplayData });
+  const fetchGenRef = React.useRef(0);
+
+  const { patch, read } = useUrlQueryState({ section: "ALL", severity: "ALL", q: "" });
+  const sectionFilter = read.enum(
+    "section",
+    ["ALL", "DISPATCH", "PRODUCTION", "QC", "RM", "PURCHASE"] as const,
+    "ALL",
+  ) as ExceptionSection;
+  const severityFilter = read.enum("severity", ["ALL", "HIGH", "MEDIUM", "LOW"] as const, "ALL") as
+    | "ALL"
+    | Severity;
+  const qFromUrl = read.string("q");
+  const [search, setSearch] = useDebouncedUrlStringParam({ urlValue: qFromUrl, patch, paramKey: "q" });
   const liveTick = useErpRefreshTick(["reports", "dashboard"], { pollIntervalMs: ERP_REPORT_POLL_MS });
 
   React.useEffect(() => {
@@ -181,26 +199,28 @@ export function OperationsExceptionReportPage() {
       return;
     }
     let mounted = true;
+    const gen = ++fetchGenRef.current;
     setLoading(true);
     setLoadError(null);
     apiFetch<OpsExceptionPayload>("/api/reports/operations-exceptions")
       .then((d) => {
-        if (mounted) {
-          setPayload(d);
-          setLoadError(null);
-        }
+        if (!mounted || !shouldCommitAsyncFetchResult(gen, fetchGenRef.current)) return;
+        setPayload(d);
+        setLoadError(null);
       })
       .catch((e) => {
-        if (mounted) {
-          setPayload(null);
-          setLoadError(e instanceof Error ? e.message : "Failed to load");
-        }
+        if (!mounted || !shouldCommitAsyncFetchResult(gen, fetchGenRef.current)) return;
+        setPayload(null);
+        setLoadError(e instanceof Error ? e.message : "Failed to load");
       })
       .finally(() => {
-        if (mounted) setLoading(false);
+        if (!mounted || !shouldCommitAsyncFetchResult(gen, fetchGenRef.current)) return;
+        setLoading(false);
+        setFirstLoadDone(true);
       });
     return () => {
       mounted = false;
+      fetchGenRef.current += 1;
     };
   }, [allowed, liveTick]);
 
@@ -274,8 +294,7 @@ export function OperationsExceptionReportPage() {
   const canClear = hasActiveFilters;
 
   function clearFilters() {
-    setSectionFilter("ALL");
-    setSeverityFilter("ALL");
+    patch({ section: null, severity: null, q: null });
     setSearch("");
   }
 
@@ -402,7 +421,7 @@ export function OperationsExceptionReportPage() {
 
   if (!allowed) {
     return (
-      <div className="erp-report-page flex min-h-0 flex-col gap-3">
+      <ReportPageShell>
         <ReportPrintMeta title="Operations Exception Report" />
         <ReportPageHeader
           className="mb-0"
@@ -415,13 +434,13 @@ export function OperationsExceptionReportPage() {
             You don&apos;t have permission to view the Operations Exception report. If you need access, contact an administrator.
           </p>
         </div>
-      </div>
+      </ReportPageShell>
     );
   }
 
   if (loadError && !payload) {
     return (
-      <div className="erp-report-page flex min-h-0 flex-col gap-3">
+      <ReportPageShell>
         <ReportPrintMeta title="Operations Exception Report" filterSummary={filterSummary} />
         <ReportPageHeader
           className="mb-0"
@@ -430,12 +449,12 @@ export function OperationsExceptionReportPage() {
           actions={printExportActions}
         />
         <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">{loadError}</div>
-      </div>
+      </ReportPageShell>
     );
   }
 
   return (
-    <div className="erp-report-page flex min-h-0 flex-col gap-4">
+    <ReportPageShell>
       <ReportPrintMeta title="Operations Exception Report" filterSummary={filterSummary} />
       <ReportPageHeader
         className="mb-0"
@@ -493,7 +512,7 @@ export function OperationsExceptionReportPage() {
             <select
               className={selectClass}
               value={sectionFilter}
-              onChange={(e) => setSectionFilter(e.target.value as ExceptionSection)}
+              onChange={(e) => patch({ section: e.target.value === "ALL" ? null : e.target.value })}
             >
               <option value="ALL">All sections</option>
               <option value="DISPATCH">Dispatch</option>
@@ -508,7 +527,7 @@ export function OperationsExceptionReportPage() {
             <select
               className={selectClass}
               value={severityFilter}
-              onChange={(e) => setSeverityFilter(e.target.value as "ALL" | Severity)}
+              onChange={(e) => patch({ severity: e.target.value === "ALL" ? null : e.target.value })}
             >
               <option value="ALL">All</option>
               <option value="CRITICAL">Critical</option>
@@ -527,10 +546,15 @@ export function OperationsExceptionReportPage() {
         </CardContent>
       </Card>
 
-      {loading ? (
+      {initialLoading ? (
         <div className="rounded-md border border-slate-200 bg-white px-4 py-10 text-sm text-slate-500">Loading exception report…</div>
       ) : (
         <>
+          {refreshing ? (
+            <div className="mb-2 flex justify-end">
+              <ErpRefreshingBadge />
+            </div>
+          ) : null}
           {showDispatch ? (
             <Card className="border-slate-200 shadow-sm">
               <CardHeader className="pb-2">
@@ -914,7 +938,7 @@ export function OperationsExceptionReportPage() {
                           ))}
                         </tbody>
                       </table>
-                    </div>
+                      </div>
                   </div>
                 )}
               </CardContent>
@@ -922,6 +946,6 @@ export function OperationsExceptionReportPage() {
           ) : null}
         </>
       )}
-    </div>
+    </ReportPageShell>
   );
 }

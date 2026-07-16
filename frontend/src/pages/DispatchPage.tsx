@@ -17,6 +17,10 @@ import {
   DISPATCH_FINALIZED_READY_LABEL,
 } from "../lib/dispatchBillingStatus";
 import { useAuth } from "../hooks/useAuth";
+import { useUnsavedChangesGuard } from "../hooks/useUnsavedChangesGuard";
+import { useListScrollRestoration } from "../hooks/useListScrollRestoration";
+import { readListPageParam } from "../lib/listNavigationState";
+import { isDispatchSalesOrdersBootPending } from "../lib/pageLoadState";
 import { PlanningStatusChip } from "../components/erp/PlanningStatusChip";
 import { useShortcutHints } from "../hooks/useShortcutHints";
 import { FieldShortcutHint } from "../components/ui/FieldShortcutHint";
@@ -53,7 +57,7 @@ import {
   OpCtxSep,
   type OperationalFooterSection,
 } from "../components/erp/OperationalWorkspaceChrome";
-import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { displayDispatchNo, displaySalesOrderNo } from "../lib/docNoDisplay";
 import { ActivityHistoryCard } from "../components/ActivityHistoryCard";
 import { buildNoQtyGuidedHref, useNoQtyFlowState } from "../lib/noQtyFlowState";
@@ -1335,6 +1339,7 @@ export function DispatchPage() {
   const navigate = useNavigate();
   const toast = useToast();
   const demo = useDemoMode();
+  useListScrollRestoration();
   const finalizeDemoHl =
     demoHighlightKey(demo.enabled, demo.flow, demo.step, "regular", 5) ??
     demoHighlightKey(demo.enabled, demo.flow, demo.step, "no_qty", 6);
@@ -1343,7 +1348,6 @@ export function DispatchPage() {
     pollIntervalMs: 0,
   });
   const [sp, setSearchParams] = useSearchParams();
-  const location = useLocation();
   const source = sp.get("source") ?? "";
   const fromParam = sp.get("from") ?? "";
   const fromNoQtySo = source === "no_qty_so";
@@ -1372,14 +1376,54 @@ export function DispatchPage() {
   const canDispatchWrite = (DISPATCH_WRITE_ROLES as readonly string[]).includes(user?.role ?? "");
   const canOpenRs = useCanOpenRequirementSheet();
   const [rows, setRows] = React.useState<SoRow[]>([]);
+  /** False until the first sales-orders fetch settles — prevents false “Dispatch complete” flash. */
+  const [salesOrdersBootDone, setSalesOrdersBootDone] = React.useState(false);
   /** When GET /api/dispatch/sales-orders omits a focused NO_QTY SO, hydrate from GET /api/sales-orders/:id (FG lines, zeroed metrics). */
   const [fallbackSoRow, setFallbackSoRow] = React.useState<SoRow | null>(null);
   /** When reopening a draft from history, ensure its SO exists in the dropdown options. */
   const [reopenFallbackSoRow, setReopenFallbackSoRow] = React.useState<SoRow | null>(null);
   const [ledgerRows, setLedgerRows] = React.useState<DispatchLedgerRow[]>([]);
-  const [ledgerPage, setLedgerPage] = React.useState(1);
-  const [ledgerDateFrom, setLedgerDateFrom] = React.useState("");
-  const [ledgerDateTo, setLedgerDateTo] = React.useState("");
+  const ledgerPage = readListPageParam(sp, "ledgerPage", 1);
+  const ledgerDateFrom = sp.get("ledgerFrom") ?? "";
+  const ledgerDateTo = sp.get("ledgerTo") ?? "";
+  const patchLedgerQuery = React.useCallback(
+    (updates: Record<string, string | number | null | undefined>) => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          for (const [key, val] of Object.entries(updates)) {
+            if (val == null || val === "") {
+              next.delete(key);
+              continue;
+            }
+            if (key === "ledgerPage" && Number(val) <= 1) {
+              next.delete(key);
+              continue;
+            }
+            next.set(key, String(val));
+          }
+          return next;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
+  const setLedgerPage = React.useCallback(
+    (value: number | ((prev: number) => number)) => {
+      const next = typeof value === "function" ? value(ledgerPage) : value;
+      patchLedgerQuery({ ledgerPage: next });
+    },
+    [ledgerPage, patchLedgerQuery],
+  );
+  const setLedgerDateFrom = React.useCallback(
+    (value: string) => patchLedgerQuery({ ledgerFrom: value || null, ledgerPage: 1 }),
+    [patchLedgerQuery],
+  );
+  const setLedgerDateTo = React.useCallback(
+    (value: string) => patchLedgerQuery({ ledgerTo: value || null, ledgerPage: 1 }),
+    [patchLedgerQuery],
+  );
   const [ledgerTotal, setLedgerTotal] = React.useState(0);
   const [error, setError] = React.useState<string | null>(null);
   /** Non-error user feedback (e.g. idempotency “already processing”). */
@@ -1415,6 +1459,11 @@ export function DispatchPage() {
   const [deletingId, setDeletingId] = React.useState<number | null>(null);
   const [blockedOpen, setBlockedOpen] = React.useState(false);
   const dispatchSubmitLockRef = React.useRef(false);
+  /** Reuse the same Idempotency-Key for a dispatch id until finalize succeeds (retry-safe). */
+  const finalizeInFlightRef = React.useRef<Set<number>>(new Set());
+  const finalizeIdempotencyKeysRef = React.useRef<Map<number, string>>(new Map());
+  /** Reuse prepare Idempotency-Key for identical prepare payload until success. */
+  const prepareIdempotencyKeysRef = React.useRef<Map<string, string>>(new Map());
   const lastNoQtyDispatchPrefillKeyRef = React.useRef<string>("");
   /** Admin-only: raw JSON from GET /api/dispatch/no-qty-debug (same inputs as computeNoQtyDispatchHeadroom). */
   const [noQtyDebugJson, setNoQtyDebugJson] = React.useState<string | null>(null);
@@ -1434,6 +1483,10 @@ export function DispatchPage() {
   const [normalPartialDispatchAck, setNormalPartialDispatchAck] = React.useState(false);
   /** Partial qty UI only after explicit opt-in (avoids validating/showing qty when using Dispatch Full only). */
   const [isPartialMode, setIsPartialMode] = React.useState(false);
+  useUnsavedChangesGuard({
+    isDirty: isPartialMode && Boolean(String(dispatchQtyStr).trim()),
+    message: "Dispatch quantity entry is incomplete. Leave and discard it?",
+  });
   /** After finalize, prompt Create Sales Bill in the dispatch work area (cleared on new prepare / delete bill flow). */
   const [salesBillStepDispatchId, setSalesBillStepDispatchId] = React.useState<number | null>(null);
   /** When prepared-draft card is shown, open-lines queue starts collapsed. */
@@ -1682,23 +1735,27 @@ export function DispatchPage() {
     }
     const qs = params.toString();
     const url = `/api/dispatch/sales-orders${qs ? `?${qs}` : ""}`;
-    const list = await apiFetch<SoRow[]>(url);
-    const finalRows =
-      (fromScopedSo && focusSoIdValid)
-        ? (list || []).filter((r) => r.id === focusSoId)
-        : list || [];
-    console.debug("[DISPATCH_UI_TRACE][sales-orders-response]", {
-      url,
-      rawCount: Array.isArray(list) ? list.length : null,
-      finalCount: Array.isArray(finalRows) ? finalRows.length : null,
-      soIds: Array.isArray(finalRows) ? finalRows.map((r) => r.id).slice(0, 50) : null,
-      so26: Array.isArray(finalRows)
-        ? finalRows.find((r) => Number(r.id) === 26) ?? null
-        : null,
-    });
-    setRows(finalRows);
-    return finalRows;
-  }, [fromScopedSo, focusSoId, focusSoIdValid, soId, noQtySelectedCycleId]);
+    try {
+      const list = await apiFetch<SoRow[]>(url);
+      const finalRows =
+        fromScopedSo && focusSoIdValid
+          ? (list || []).filter((r) => r.id === focusSoId)
+          : list || [];
+      console.debug("[DISPATCH_UI_TRACE][sales-orders-response]", {
+        url,
+        rawCount: Array.isArray(list) ? list.length : null,
+        finalCount: Array.isArray(finalRows) ? finalRows.length : null,
+        soIds: Array.isArray(finalRows) ? finalRows.map((r) => r.id).slice(0, 50) : null,
+        so26: Array.isArray(finalRows)
+          ? finalRows.find((r) => Number(r.id) === 26) ?? null
+          : null,
+      });
+      setRows(finalRows);
+      return finalRows;
+    } finally {
+      setSalesOrdersBootDone(true);
+    }
+  }, [fromScopedSo, focusSoId, focusSoIdValid, soId, noQtySelectedCycleId, fromNoQtySo, fromDashboard, fromPendingActions]);
 
   const displayRows = React.useMemo(() => {
     if (fromScopedSo && focusSoIdValid) {
@@ -2100,12 +2157,19 @@ export function DispatchPage() {
     setSoId(focusSoId);
     setSalesOrderLineId(0);
     resetDispatchQty();
+    let cancelled = false;
     apiFetch<any>(`/api/sales-orders/${focusSoId}`)
       .then((so) => {
+        if (cancelled) return;
         const customerName = so?.customer?.name ?? so?.po?.customer?.name ?? "—";
         setFocusSo({ id: focusSoId, customerName, docNo: so?.docNo ?? null });
       })
-      .catch(() => setFocusSo({ id: focusSoId, customerName: "—", docNo: null }));
+      .catch(() => {
+        if (!cancelled) setFocusSo({ id: focusSoId, customerName: "—", docNo: null });
+      });
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fromScopedSo, focusSoId, focusSoIdValid]);
 
@@ -2932,7 +2996,19 @@ export function DispatchPage() {
     await finalizeDispatchOnce(dispatchId, { clearDraftMode: false });
   }
 
-  const finalizeInFlightRef = React.useRef<Set<number>>(new Set());
+  function allocateIdempotencyKey(prefix: string): string {
+    return typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  }
+
+  function getOrCreateFinalizeIdempotencyKey(dispatchId: number): string {
+    const existing = finalizeIdempotencyKeysRef.current.get(dispatchId);
+    if (existing) return existing;
+    const key = allocateIdempotencyKey(`finalize-${dispatchId}`);
+    finalizeIdempotencyKeysRef.current.set(dispatchId, key);
+    return key;
+  }
 
   async function finalizeDispatchOnce(
     dispatchId: number,
@@ -2942,10 +3018,7 @@ export function DispatchPage() {
     if (!(Number.isFinite(id) && id > 0)) return false;
     if (finalizeInFlightRef.current.has(id)) return false;
     finalizeInFlightRef.current.add(id);
-    const idempotencyKey =
-      typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
-        ? crypto.randomUUID()
-        : `finalize-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const idempotencyKey = getOrCreateFinalizeIdempotencyKey(id);
     setError(null);
     setLockingId(id);
     try {
@@ -2955,6 +3028,7 @@ export function DispatchPage() {
         headers: { "Idempotency-Key": idempotencyKey },
         body: JSON.stringify({}),
       });
+      finalizeIdempotencyKeysRef.current.delete(id);
       if (!opts.quietSuccess) {
         toast.showSuccess("Dispatch finalized — stock posted.");
         setDispatchInfo("Dispatch finalized — stock posted.");
@@ -3157,10 +3231,12 @@ export function DispatchPage() {
       }
     }
     setDispatching(true);
-    const idempotencyKey =
-      typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
-        ? crypto.randomUUID()
-        : `dispatch-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const prepareKeySeed = `${soId}:${currentLine.itemId}:${dispatchQtyParsed}:${selectedSo?.orderType ?? ""}:${deliveryLocationId ?? ""}`;
+    let idempotencyKey = prepareIdempotencyKeysRef.current.get(prepareKeySeed);
+    if (!idempotencyKey) {
+      idempotencyKey = allocateIdempotencyKey("dispatch-prepare");
+      prepareIdempotencyKeysRef.current.set(prepareKeySeed, idempotencyKey);
+    }
     try {
       const dispatchBody =
         selectedSo?.orderType === "NO_QTY"
@@ -3187,6 +3263,7 @@ export function DispatchPage() {
         headers: { "Idempotency-Key": idempotencyKey },
         body: JSON.stringify(dispatchBody),
       });
+      prepareIdempotencyKeysRef.current.delete(prepareKeySeed);
       if (dispatchCompactMode) {
         setError(null);
         const alloc = prepRes?.allocation;
@@ -4807,7 +4884,6 @@ export function DispatchPage() {
             const eps = 1e-9;
             const so = selectedSo;
             const isNoQty = so?.orderType === "NO_QTY";
-            const usable = so && currentLine ? lineAvailableStockTable(so, currentLine) : 0;
             const qcPending = safeNum(currentLine?.qcPendingQty ?? 0);
             const pending = Math.max(0, remainingSoLine);
             const dispatchable = headroomToPrepare;
@@ -5259,6 +5335,14 @@ export function DispatchPage() {
         ) : null}
 
       {!showMainDispatchUi ? (
+        isDispatchSalesOrdersBootPending(salesOrdersBootDone) ? (
+          <div
+            className="rounded border border-slate-200 bg-slate-50 px-3 py-3 text-[13px] text-slate-700"
+            data-testid="dispatch-sales-orders-loading"
+          >
+            Loading dispatch workspace…
+          </div>
+        ) : (
         <div className="rounded border border-emerald-200 bg-emerald-50 px-3 py-2 text-[13px] text-emerald-950">
           {hasPreparedDraftLedger ? (
             <>
@@ -5313,6 +5397,7 @@ export function DispatchPage() {
             </>
           )}
         </div>
+        )
       ) : (
         <div ref={dispatchFormRef} className="flex flex-col gap-2">
           <OperatorTopBar className="flex-col items-stretch gap-1.5 rounded border border-slate-200 bg-white p-1.5 shadow-sm">

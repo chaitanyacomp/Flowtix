@@ -1,4 +1,3 @@
-import * as React from "react";
 import { Link } from "react-router-dom";
 import { cn } from "../../lib/utils";
 import type { ProcurementRelatedDocumentEntry } from "../../lib/procurementRelatedDocuments";

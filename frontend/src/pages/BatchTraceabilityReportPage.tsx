@@ -2,11 +2,14 @@ import * as React from "react";
 import { Link } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Input } from "../components/ui/input";
-import { PageContainer, ReportPageHeader } from "../components/PageHeader";
+import { ReportPageHeader } from "../components/PageHeader";
+import { ReportPageShell } from "../components/erp/ReportChrome";
 import { ReportPrintExportBar, ReportPrintMeta } from "../components/erp/ReportPrintExport";
 import { apiFetch } from "../services/api";
 import { useUrlQueryState } from "../hooks/useUrlQueryState";
 import { ERP_REPORT_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
+import { useStablePageData } from "../hooks/useStablePageData";
+import { ReportResultsLoadGate } from "../components/erp/foundation/ReportResultsLoadGate";
 import { cn } from "../lib/utils";
 import { salesOrdersFocusHref, withReportsReturnContext } from "../lib/drillDownRoutes";
 
@@ -177,9 +180,6 @@ export function BatchTraceabilityReportPage() {
 
   const [fgItems, setFgItems] = React.useState<FgItem[]>([]);
   const [customers, setCustomers] = React.useState<Customer[]>([]);
-  const [data, setData] = React.useState<ApiResp | null>(null);
-  const [loading, setLoading] = React.useState(true);
-  const [loadError, setLoadError] = React.useState<string | null>(null);
 
   const missingDates = !fromDate.trim() || !toDate.trim();
   const liveTick = useErpRefreshTick(["reports", "production", "qc", "dispatch"], {
@@ -191,10 +191,17 @@ export function BatchTraceabilityReportPage() {
     apiFetch<Customer[]>("/api/customers").then(setCustomers).catch(() => setCustomers([]));
   }, [liveTick]);
 
-  async function load() {
-    setLoading(true);
-    setLoadError(null);
-    try {
+  const {
+    data,
+    error: loadError,
+    firstLoadDone,
+    loading,
+  } = useStablePageData<ApiResp>({
+    enabled: !missingDates,
+    scopes: ["reports", "production", "qc", "dispatch"],
+    pollIntervalMs: ERP_REPORT_POLL_MS,
+    deps: [fromDate, toDate, productionId, fgItemId, customerId, salesOrderId, dispatchId, qcStatus],
+    fetcher: (signal) => {
       const qs = new URLSearchParams();
       qs.set("fromDate", fromDate);
       qs.set("toDate", toDate);
@@ -204,26 +211,9 @@ export function BatchTraceabilityReportPage() {
       if (salesOrderId && salesOrderId > 0) qs.set("salesOrderId", String(salesOrderId));
       if (dispatchId && dispatchId > 0) qs.set("dispatchId", String(dispatchId));
       if (qcStatus && qcStatus !== "ALL") qs.set("qcStatus", qcStatus);
-      const resp = await apiFetch<ApiResp>(`/api/reports/batch-traceability?${qs.toString()}`);
-      setData(resp);
-    } catch (e) {
-      setData(null);
-      setLoadError(e instanceof Error ? e.message : "Could not load batch traceability report.");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  React.useEffect(() => {
-    if (missingDates) {
-      setLoading(false);
-      setData(null);
-      setLoadError(null);
-      return;
-    }
-    void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fromDate, toDate, productionId, fgItemId, customerId, salesOrderId, dispatchId, qcStatus, liveTick]);
+      return apiFetch<ApiResp>(`/api/reports/batch-traceability?${qs.toString()}`, { signal });
+    },
+  });
 
   const rows = data?.rows ?? [];
 
@@ -243,7 +233,7 @@ export function BatchTraceabilityReportPage() {
   const selectClass = "h-10 rounded-md border border-slate-200 bg-white px-3 text-sm";
 
   return (
-    <PageContainer className="erp-report-page pb-8">
+    <ReportPageShell>
       <ReportPrintMeta
         title="Batch Traceability Report"
         filterSummary={[fromDate && `From ${fromDate}`, toDate && `To ${toDate}`, fgItemId && `FG #${fgItemId}`, customerId && `Customer #${customerId}`]
@@ -393,16 +383,23 @@ export function BatchTraceabilityReportPage() {
           <CardTitle className="text-sm font-semibold text-slate-800">Results</CardTitle>
         </CardHeader>
         <CardContent className="overflow-auto">
-          {missingDates ? (
-            <div className="py-6 text-sm text-slate-600">
-              Choose both production <span className="font-medium text-slate-800">From date</span> and{" "}
-              <span className="font-medium text-slate-800">To date</span> in Filters to load traceability rows.
-            </div>
-          ) : loading ? (
-            <div className="py-6 text-sm text-slate-600">Loading…</div>
-          ) : !rows.length ? (
-            <div className="py-6 text-sm text-slate-600">No batches found for the selected filters.</div>
-          ) : (
+          <ReportResultsLoadGate
+            blocked={missingDates}
+            blockedState={
+              <div className="py-6 text-sm text-slate-600">
+                Choose both production <span className="font-medium text-slate-800">From date</span> and{" "}
+                <span className="font-medium text-slate-800">To date</span> in Filters to load traceability rows.
+              </div>
+            }
+            firstLoadDone={firstLoadDone}
+            loading={loading}
+            hasDisplayData={data != null}
+            isEmpty={rows.length === 0}
+            error={
+              loadError ? <div className="py-6 text-sm text-red-700">{loadError}</div> : null
+            }
+            emptyState={<div className="py-6 text-sm text-slate-600">No batches found for the selected filters.</div>}
+          >
             <table className="min-w-[1100px] border-collapse text-sm">
               <thead>
                 <tr className="text-left text-xs text-slate-600">
@@ -472,7 +469,7 @@ export function BatchTraceabilityReportPage() {
                 ))}
               </tbody>
             </table>
-          )}
+          </ReportResultsLoadGate>
 
           <div className="mt-3 text-xs text-slate-600">
             <div>
@@ -482,7 +479,7 @@ export function BatchTraceabilityReportPage() {
           </div>
         </CardContent>
       </Card>
-    </PageContainer>
+    </ReportPageShell>
   );
 }
 

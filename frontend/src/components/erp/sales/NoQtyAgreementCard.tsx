@@ -96,7 +96,7 @@ export function NoQtyAgreementCard({
           ·
         </span>
         <Badge
-          variant={agreementStatus === "CLOSED" ? "secondary" : "success"}
+          variant={agreementStatus === "CLOSED" ? "default" : "success"}
           className="px-1.5 py-0 text-[10px] font-bold uppercase tracking-wide"
         >
           {agreementStatus}

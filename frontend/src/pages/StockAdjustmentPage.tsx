@@ -13,6 +13,7 @@ import { Input } from "../components/ui/input";
 import { Badge } from "../components/ui/badge";
 import { ErpModal } from "../components/erp/ErpModal";
 import { type NumberDraft, toNumberDraft } from "../lib/numberDraft";
+import { useUnsavedChangesGuard } from "../hooks/useUnsavedChangesGuard";
 import {
   type StockAdjustmentPolicyDto,
   DEFAULT_STOCK_ADJUSTMENT_POLICY,
@@ -92,6 +93,10 @@ export function StockAdjustmentPage() {
   const [stockSummaryLoaded, setStockSummaryLoaded] = React.useState(false);
   const [stockSummaryError, setStockSummaryError] = React.useState<string | null>(null);
   const [stockQtyByItemId, setStockQtyByItemId] = React.useState<Record<number, number>>({});
+  useUnsavedChangesGuard({
+    isDirty: Boolean(String(qty).trim() || reason.trim() || confirmOpen || reverseTarget != null),
+    message: "Stock adjustment form has unsaved values. Leave and discard them?",
+  });
 
   const formRef = React.useRef<HTMLFormElement | null>(null);
   const itemSelectRef = React.useRef<HTMLSelectElement | null>(null);

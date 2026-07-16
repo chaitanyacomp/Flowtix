@@ -5,22 +5,30 @@ import App from "./App";
 import "./style.css";
 import { ToastProvider } from "./contexts/ToastContext";
 import { DemoModeProvider } from "./contexts/DemoModeContext";
+import { DirtyFormProvider } from "./contexts/DirtyFormContext";
+import { AuthProvider } from "./contexts/AuthContext";
 import { DemoSafeToastBridge } from "./components/demo/DemoSafeToastBridge";
 import { applyBrandIdentity } from "./components/branding/Branding";
 import { installErpModalEscapeListener } from "./lib/erpModalEscape";
+import { installAuthHistoryGuard } from "./lib/authSession";
 
 applyBrandIdentity();
 installErpModalEscapeListener();
+installAuthHistoryGuard();
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <BrowserRouter>
-      <ToastProvider>
-        <DemoModeProvider>
-          <DemoSafeToastBridge />
-          <App />
-        </DemoModeProvider>
-      </ToastProvider>
+      <AuthProvider>
+        <ToastProvider>
+          <DemoModeProvider>
+            <DirtyFormProvider>
+              <DemoSafeToastBridge />
+              <App />
+            </DirtyFormProvider>
+          </DemoModeProvider>
+        </ToastProvider>
+      </AuthProvider>
     </BrowserRouter>
   </React.StrictMode>,
 );

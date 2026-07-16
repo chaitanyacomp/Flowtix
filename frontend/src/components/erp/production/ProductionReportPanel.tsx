@@ -22,9 +22,11 @@ import {
 import {
   clearProductionReportDraft,
   getProductionReportDraft,
+  isProductionReportDraftDirty,
   saveProductionReportDraft,
   type ProductionReportLineInputDraft,
 } from "../../../lib/productionReportDraftCache";
+import { useUnsavedChangesGuard } from "../../../hooks/useUnsavedChangesGuard";
 
 function fmtQty(n: number | null | undefined): string {
   const v = Number(n);
@@ -104,17 +106,28 @@ export function ProductionReportPanel({
   const [loading, setLoading] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const [recoveredDraft, setRecoveredDraft] = React.useState(false);
+  const [localDirty, setLocalDirty] = React.useState(false);
   const skipDraftPersistRef = React.useRef(false);
+
+  useUnsavedChangesGuard({
+    isDirty: enableDraftCache && localDirty && !report?.confirmation?.confirmed,
+    message: "Production report has unsaved changes. Leave and discard them?",
+  });
 
   React.useEffect(() => {
     if (!workOrderId || workOrderId <= 0) {
       setReport(null);
+      setRecoveredDraft(false);
+      setLocalDirty(false);
       onStatusChange?.(initialProductionReportPanelStatus());
       return;
     }
     let cancelled = false;
     setLoading(true);
     setError(null);
+    setRecoveredDraft(false);
+    setLocalDirty(false);
     onStatusChange?.({ ...initialProductionReportPanelStatus(), loading: true });
     void fetchProductionWorkOrderReport(workOrderId)
       .then((data) => {
@@ -127,6 +140,10 @@ export function ProductionReportPanel({
         setRemarks(cached?.remarks ?? data.confirmation?.remarks ?? "");
         setLineInputs(cached?.lineInputs ?? defaultLines);
         setWastageRows(cached?.wastageRows ?? defaultWastage);
+        if (cached && isProductionReportDraftDirty(workOrderId)) {
+          setRecoveredDraft(true);
+          setLocalDirty(true);
+        }
         if (confirmed && enableDraftCache) {
           clearProductionReportDraft(workOrderId);
         }
@@ -160,11 +177,13 @@ export function ProductionReportPanel({
   React.useEffect(() => {
     if (!enableDraftCache || !(workOrderId > 0) || skipDraftPersistRef.current) return;
     if (loading || !report || Boolean(report.confirmation?.confirmed)) return;
+    if (!localDirty) return;
     saveProductionReportDraft(workOrderId, { lineInputs, wastageRows, remarks }, { dirty: true });
-  }, [enableDraftCache, workOrderId, loading, report, lineInputs, wastageRows, remarks]);
+  }, [enableDraftCache, workOrderId, loading, report, lineInputs, wastageRows, remarks, localDirty]);
 
   const updateLineInput = React.useCallback(
     (itemId: number, key: keyof LineInput, value: string) => {
+      setLocalDirty(true);
       setLineInputs((prev) => {
         const source = report?.rmLines.find((ln) => ln.itemId === itemId);
         const issued = Number(source?.issuedQty ?? 0);
@@ -263,6 +282,8 @@ export function ProductionReportPanel({
       });
       setReport(result.report);
       setWastageRows(buildDefaultWastageRows(result.report));
+      setLocalDirty(false);
+      setRecoveredDraft(false);
       if (enableDraftCache) {
         clearProductionReportDraft(workOrderId);
       }
@@ -427,7 +448,10 @@ export function ProductionReportPanel({
           compact ? "min-h-10 text-[11px]" : "min-h-16 text-[12px]",
         )}
         value={remarks}
-        onChange={(e) => setRemarks(e.target.value)}
+        onChange={(e) => {
+          setLocalDirty(true);
+          setRemarks(e.target.value);
+        }}
         disabled={confirmed}
         rows={compact ? 2 : undefined}
       />
@@ -438,7 +462,10 @@ export function ProductionReportPanel({
       <textarea
         className="mt-1 min-h-9 w-full rounded-md border border-slate-300 px-2.5 py-1.5 text-[13px] text-slate-900"
         value={remarks}
-        onChange={(e) => setRemarks(e.target.value)}
+        onChange={(e) => {
+          setLocalDirty(true);
+          setRemarks(e.target.value);
+        }}
         disabled={confirmed}
         placeholder="Optional"
         rows={2}
@@ -538,7 +565,10 @@ export function ProductionReportPanel({
                     hideInlineValidation={!confirmed}
                     scrollableRows={!confirmed}
                     fillAvailableHeight={!confirmed}
-                    onChange={setWastageRows}
+                    onChange={(rows) => {
+                      setLocalDirty(true);
+                      setWastageRows(rows);
+                    }}
                   />
                 </div>
               ) : (
@@ -608,6 +638,14 @@ export function ProductionReportPanel({
         </div>
       </div>
       <div className="space-y-3 px-3 py-2">
+        {recoveredDraft && !confirmed ? (
+          <p
+            className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-950"
+            data-testid="production-report-recovered-draft"
+          >
+            Recovered draft — unsaved edits from this browser tab were restored. Server confirmation remains authoritative.
+          </p>
+        ) : null}
         {loading ? (
           <p className="text-[12px] text-slate-600">Loading production report…</p>
         ) : error ? (
@@ -656,7 +694,10 @@ export function ProductionReportPanel({
                 totalWastageQty={totalWastageQty}
                 unit={wastageUnit}
                 readOnly={confirmed}
-                onChange={setWastageRows}
+                onChange={(rows) => {
+                  setLocalDirty(true);
+                  setWastageRows(rows);
+                }}
               />
             ) : null}
 

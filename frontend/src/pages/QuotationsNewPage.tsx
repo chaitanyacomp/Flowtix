@@ -13,6 +13,7 @@ import {
 import { NO_QTY_TERMS } from "../lib/flowTerminology";
 import { cn } from "../lib/utils";
 import { useToast } from "../contexts/ToastContext";
+import { useUnsavedChangesGuard } from "../hooks/useUnsavedChangesGuard";
 import {
   type QuoteLineDraft,
   defaultQuoteLineDraft,
@@ -40,7 +41,7 @@ function emptyNoQtyCommercial(): NoQtyCommercialDraft {
   };
 }
 
-/** Single `terms` field on quotation — grouped labels for NO_QTY commercial UX only. */
+/** Single `terms` field on quotation ï¿½ grouped labels for NO_QTY commercial UX only. */
 function buildNoQtyTermsPayload(c: NoQtyCommercialDraft): string | undefined {
   const blocks: string[] = [];
   const push = (heading: string, body: string) => {
@@ -64,7 +65,7 @@ const noQtyCommercialTextareaMedium =
 
 function contractStatusLabel(raw: string): string {
   const s = raw.trim();
-  if (!s) return "—";
+  if (!s) return "ï¿½";
   return s
     .split("_")
     .map((w) => w.charAt(0) + w.slice(1).toLowerCase())
@@ -125,6 +126,29 @@ export function QuotationsNewPage() {
   const [missingRateIdx, setMissingRateIdx] = React.useState<Record<number, boolean>>({});
   const [noQtyRcStatusByLine, setNoQtyRcStatusByLine] = React.useState<Record<number, string>>({});
   const [noQtyRatesLoading, setNoQtyRatesLoading] = React.useState(false);
+  const [createBaseline, setCreateBaseline] = React.useState<string | null>(null);
+
+  const captureCreateBaseline = React.useCallback(
+    (next: { terms: string; noQtyCommercial: NoQtyCommercialDraft; quoteLines: QuoteLineDraft[] }) => {
+      setCreateBaseline(
+        JSON.stringify({
+          terms: next.terms,
+          noQtyCommercial: next.noQtyCommercial,
+          quoteLines: next.quoteLines,
+        }),
+      );
+    },
+    [],
+  );
+
+  useUnsavedChangesGuard({
+    isDirty:
+      createEnquiryId > 0 &&
+      createBaseline != null &&
+      JSON.stringify({ terms, noQtyCommercial, quoteLines }) !== createBaseline,
+    message: "New quotation has unsaved changes. Leave and discard them?",
+    enabled: !creating,
+  });
 
   const selectedEnquiry = feasibleEnquiries.find((e) => e.id === createEnquiryId) ?? null;
   const flowTypeSnapshot = (selectedEnquiry?.flowType ?? "REGULAR") === "NO_QTY" ? "NO_QTY" : "REGULAR";
@@ -184,6 +208,25 @@ export function QuotationsNewPage() {
       setQuoteLines(next);
       setMissingRateIdx(missing);
       setNoQtyRcStatusByLine(statusMap);
+      setCreateBaseline((prev) => {
+        let parsed: {
+          terms: string;
+          noQtyCommercial: NoQtyCommercialDraft;
+          quoteLines: QuoteLineDraft[];
+        } = {
+          terms: "",
+          noQtyCommercial: emptyNoQtyCommercial(),
+          quoteLines: next,
+        };
+        if (prev) {
+          try {
+            parsed = { ...JSON.parse(prev), quoteLines: next };
+          } catch {
+            /* keep default */
+          }
+        }
+        return JSON.stringify(parsed);
+      });
     } finally {
       setNoQtyRatesLoading(false);
     }
@@ -215,15 +258,32 @@ export function QuotationsNewPage() {
             isFree: false,
           }));
           setQuoteLines(nextLines);
+          captureCreateBaseline({
+            terms: "",
+            noQtyCommercial: emptyNoQtyCommercial(),
+            quoteLines: nextLines,
+          });
           if ((sel.flowType ?? "REGULAR") === "NO_QTY") void ensureNoQtyRates(nextLines, sel.customer.id);
         } else if (i.length) {
-          setQuoteLines([defaultQuoteLineDraft(i[0].id)]);
+          const nextLines = [defaultQuoteLineDraft(i[0].id)];
+          setQuoteLines(nextLines);
+          captureCreateBaseline({
+            terms: "",
+            noQtyCommercial: emptyNoQtyCommercial(),
+            quoteLines: nextLines,
+          });
         }
         setSearchParams({}, { replace: true });
       } else if (feas.length) {
         setCreateEnquiryId(feas[0].id);
         if (i.length) {
-          setQuoteLines([defaultQuoteLineDraft(i[0].id)]);
+          const nextLines = [defaultQuoteLineDraft(i[0].id)];
+          setQuoteLines(nextLines);
+          captureCreateBaseline({
+            terms: "",
+            noQtyCommercial: emptyNoQtyCommercial(),
+            quoteLines: nextLines,
+          });
         }
       }
     } catch (err) {
@@ -251,9 +311,16 @@ export function QuotationsNewPage() {
         isFree: false,
       }));
       setQuoteLines(nextLines);
+      setTerms("");
+      setNoQtyCommercial(emptyNoQtyCommercial());
+      captureCreateBaseline({
+        terms: "",
+        noQtyCommercial: emptyNoQtyCommercial(),
+        quoteLines: nextLines,
+      });
       if ((sel.flowType ?? "REGULAR") === "NO_QTY") void ensureNoQtyRates(nextLines, sel.customer.id);
     }
-  }, [createEnquiryId, feasibleEnquiries]);
+  }, [createEnquiryId, feasibleEnquiries, captureCreateBaseline]);
 
   const gstSummary = React.useMemo(() => {
     const pcts = new Set<string>();
@@ -261,7 +328,7 @@ export function QuotationsNewPage() {
       const n = previewNum(l.gstPct);
       if (Number.isFinite(n)) pcts.add(String(n));
     }
-    if (pcts.size === 0) return "—";
+    if (pcts.size === 0) return "ï¿½";
     if (pcts.size === 1) return `${[...pcts][0]}%`;
     return "Mixed";
   }, [quoteLines]);
@@ -341,7 +408,7 @@ export function QuotationsNewPage() {
   if (loading) {
     return (
       <div className="flex flex-col gap-3 p-1 text-sm text-slate-600" aria-busy="true">
-        Loading…
+        Loadingï¿½
       </div>
     );
   }
@@ -376,11 +443,11 @@ export function QuotationsNewPage() {
   const validationMessage = error
     ? error
     : isNoQty && !noQtyHasEnquiryLines
-      ? "No enquiry lines — update the enquiry first."
+      ? "No enquiry lines ï¿½ update the enquiry first."
       : isNoQty && noQtyRatesIncomplete
         ? "Complete rate contracts for every item before saving."
         : isNoQty && noQtyRatesLoading
-          ? "Resolving rate contracts…"
+          ? "Resolving rate contractsï¿½"
           : null;
   const saveDisabled = creating || !createEnquiryId || noQtySaveBlocked;
 
@@ -412,14 +479,14 @@ export function QuotationsNewPage() {
           <span>
             <span className="text-slate-500">Customer </span>
             <span className="font-semibold text-slate-900">
-              {selectedEnquiry?.customer.name ?? "—"}
+              {selectedEnquiry?.customer.name ?? "ï¿½"}
             </span>
           </span>
           <span className="text-slate-300">|</span>
           <span>
             <span className="text-slate-500">Enquiry </span>
             <span className="font-mono font-semibold text-slate-800">
-              #{selectedEnquiry?.id ?? "—"}
+              #{selectedEnquiry?.id ?? "ï¿½"}
             </span>
           </span>
           <span className="text-slate-300">|</span>
@@ -432,7 +499,7 @@ export function QuotationsNewPage() {
               <span className="text-slate-300">|</span>
               {noQtyRatesLoading ? (
                 <span className="text-slate-500" aria-live="polite">
-                  Resolving rates…
+                  Resolving ratesï¿½
                 </span>
               ) : noQtyRatesIncomplete ? (
                 <Badge variant="warning" className="text-[10px]">
@@ -456,7 +523,7 @@ export function QuotationsNewPage() {
               >
                 {feasibleEnquiries.map((e) => (
                   <option key={e.id} value={e.id}>
-                    #{e.id} — {e.customer.name}
+                    #{e.id} ï¿½ {e.customer.name}
                   </option>
                 ))}
               </select>
@@ -472,7 +539,7 @@ export function QuotationsNewPage() {
             >
               {feasibleEnquiries.map((e) => (
                 <option key={e.id} value={e.id}>
-                  #{e.id} — {e.customer.name}
+                  #{e.id} ï¿½ {e.customer.name}
                 </option>
               ))}
             </select>
@@ -489,7 +556,7 @@ export function QuotationsNewPage() {
               Items &amp; rates
             </span>
             <span className="text-[11px] text-slate-500">
-              {isNoQty ? "From enquiry · contract-linked · read-only" : `${quoteLines.length} line${quoteLines.length === 1 ? "" : "s"}`}
+              {isNoQty ? "From enquiry ï¿½ contract-linked ï¿½ read-only" : `${quoteLines.length} line${quoteLines.length === 1 ? "" : "s"}`}
             </span>
           </div>
 
@@ -560,7 +627,7 @@ export function QuotationsNewPage() {
             </div>
             <div className="mt-0.5 text-[11px] text-slate-600">
               {isNoQty
-                ? "Rate contract-linked · qty managed later"
+                ? "Rate contract-linked ï¿½ qty managed later"
                 : "Set payment / delivery and review totals"}
             </div>
           </div>
@@ -670,7 +737,7 @@ export function QuotationsNewPage() {
                           commercialConditions: e.target.value,
                         }))
                       }
-                      placeholder="Incoterms, price basis, escalation…"
+                      placeholder="Incoterms, price basis, escalationï¿½"
                     />
                   </label>
                 </div>
@@ -736,7 +803,7 @@ export function QuotationsNewPage() {
             onClick={() => void onCreateQuotation()}
             disabled={saveDisabled}
           >
-            {creating ? "Saving…" : "Save quotation ?"}
+            {creating ? "Savingï¿½" : "Save quotation ?"}
           </Button>
         </div>
       </footer>
@@ -759,7 +826,7 @@ function NoQtyItemsView(props: {
   if (!lines.length) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-1.5 px-6 py-10 text-center">
-        <p className="text-[13px] text-amber-900">No enquiry lines — update the enquiry first.</p>
+        <p className="text-[13px] text-amber-900">No enquiry lines ï¿½ update the enquiry first.</p>
       </div>
     );
   }
@@ -783,21 +850,21 @@ function NoQtyItemsView(props: {
             ? null
             : loading && !rateOk
               ? null
-              : (statusByLine[i] ?? "—");
+              : (statusByLine[i] ?? "ï¿½");
           return (
             <tr key={`${ln.itemId}-${i}`}>
               <td className="max-w-[14rem] truncate font-medium">{ln.item.itemName}</td>
               <td className="text-right tabular-nums">
                 {missing ? (
-                  <span className="text-amber-800">—</span>
+                  <span className="text-amber-800">ï¿½</span>
                 ) : loading && !rateOk ? (
-                  <span className="text-slate-400">…</span>
+                  <span className="text-slate-400">ï¿½</span>
                 ) : (
                   <>?{formatInrAmount(previewNum(draft?.rate ?? "0"))}</>
                 )}
               </td>
               <td className="text-right tabular-nums">
-                {missing ? "—" : loading && gstTxt === "" ? "…" : `${previewNum(gstTxt || "0")}%`}
+                {missing ? "ï¿½" : loading && gstTxt === "" ? "ï¿½" : `${previewNum(gstTxt || "0")}%`}
               </td>
               <td className="text-right">
                 {missing ? (
@@ -805,7 +872,7 @@ function NoQtyItemsView(props: {
                     Missing
                   </span>
                 ) : loading && !rateOk ? (
-                  <span className="text-slate-400">…</span>
+                  <span className="text-slate-400">ï¿½</span>
                 ) : (
                   <span className="text-[11px] font-medium text-slate-800">{statusDisp}</span>
                 )}
@@ -831,7 +898,7 @@ function QuotationDraftSummaryCards(props: {
       <div className="erp-kpi-segment !border-0 !bg-transparent px-2.5 py-1.5">
         <span className="erp-kpi-label">Rate contract</span>
         <span className={cn("erp-kpi-value text-[12px]", rcLinked ? "text-emerald-800" : "text-amber-800")}>
-          {isNoQty ? (rcLoading ? "…" : rcLinked ? "Linked" : "Missing") : "N/A"}
+          {isNoQty ? (rcLoading ? "ï¿½" : rcLinked ? "Linked" : "Missing") : "N/A"}
         </span>
       </div>
       <div className="erp-kpi-segment !border-0 !bg-transparent px-2.5 py-1.5">

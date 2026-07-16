@@ -416,6 +416,19 @@ Engine-generated only (Constitution Art. 12). Representative **NO_QTY planning-p
 
 **SSOT rule:** Current Stage, Pending Actions (`NO_QTY SO blocked by unresolved downstream work`), and Close validator **must** derive from `assessNoQtySoClosure`. Ready to Close and close success/failure cannot disagree. When billing caption shows “Billing completed · Exported” but ACTIVE-cycle locked RS still has unmet dispatch cap, Current Stage is **Dispatch Pending**, not Ready to Close.
 
+### 11A.1 Work Order Tracking Report (NO_QTY flow)
+
+The Analysis **Work Order Tracking** report must **not** apply Regular SO quantity-pipeline pending (WO qty − produced, Accepted − WO FIFO) to NO_QTY history.
+
+When flow = **NO_QTY**:
+
+- **Customer Demand** = locked RS `baseDemandQty` (fallback `requirementQty`) — never recovery / carry-forward / WO qty.
+- **Active Production Pending** = 0 after SO/cycle/WO/execution closure or shortfall handoff (`getEffectiveProductionPendingQty`).
+- **Active Dispatch Pending** = cycle SO+FG remaining vs locked RS cap — 0 when SO/cycle closed; never WO FIFO.
+- Closed SO-242 / SO-243 style agreements must not appear as IN PRODUCTION under Active Only.
+
+See `docs/WORK_ORDER_TRACKING_REPORT_STANDARD.md`.
+
 ---
 
 ## 12. Control Tower Visibility

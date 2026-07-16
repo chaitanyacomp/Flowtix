@@ -9,6 +9,7 @@ import {
 } from "../../../lib/erpBackNavigation";
 import type { ErpNavContext } from "../../../lib/erpNavContext";
 import { useAuth } from "../../../hooks/useAuth";
+import { useConfirmLeaveDirty } from "../../../contexts/DirtyFormContext";
 
 export type ERPBackNavigationProps = {
   /** Explicit destination — bypasses context resolution. */
@@ -45,6 +46,7 @@ export function ERPBackNavigation({
 }: ERPBackNavigationProps) {
   const location = useLocation();
   const { user } = useAuth();
+  const confirmLeave = useConfirmLeaveDirty();
 
   const target = React.useMemo(() => {
     if (to) {
@@ -77,7 +79,14 @@ export function ERPBackNavigation({
   const displayLabel = label?.trim() || target.label;
 
   return (
-    <Link to={target.to} className={cn("erp-back-nav-primary", className)} data-testid={dataTestId}>
+    <Link
+      to={target.to}
+      className={cn("erp-back-nav-primary", className)}
+      data-testid={dataTestId}
+      onClick={(e) => {
+        if (!confirmLeave()) e.preventDefault();
+      }}
+    >
       <ArrowLeft className="h-4 w-4 shrink-0 opacity-90" aria-hidden />
       <span>{displayLabel}</span>
     </Link>

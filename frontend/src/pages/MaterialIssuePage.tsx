@@ -12,6 +12,7 @@ import { useToast } from "../contexts/ToastContext";
 import { PageContainer, StickyWorkspaceHead, ERPBackNavigation } from "../components/PageHeader";
 import { ErpWorkflowTrail, ErpPageLoader } from "../components/erp/foundation";
 import { useStablePageLoad } from "../hooks/useStablePageLoad";
+import { useUnsavedChangesGuard } from "../hooks/useUnsavedChangesGuard";
 import { useStoreExecutionNavContext } from "../hooks/useStoreExecutionNavContext";
 import {
   assessMaterialIssueQty,
@@ -347,7 +348,7 @@ export function MaterialIssuePage() {
   const [waiveRemarks, setWaiveRemarks] = React.useState("");
   const [showWaiveForm, setShowWaiveForm] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
-  const { firstLoadDone, initialLoading, refreshing, startLoad, finishLoad } = useStablePageLoad();
+  const { initialLoading, startLoad, finishLoad } = useStablePageLoad();
   const [submitting, setSubmitting] = React.useState(false);
   const [sessionComplete, setSessionComplete] = React.useState<MaterialIssueSessionComplete | null>(null);
   const [sessionBanner, setSessionBanner] = React.useState<string | null>(null);
@@ -368,6 +369,13 @@ export function MaterialIssuePage() {
   });
 
   const [lines, setLines] = React.useState<IssueLineDraft[]>([]);
+  useUnsavedChangesGuard({
+    isDirty:
+      lines.some((ln) => ln.issueQtyTouched || (String(ln.issueQty).trim() !== "" && Number(ln.issueQty) > 0)) ||
+      showWaiveForm ||
+      Boolean(waiveReason.trim() || waiveRemarks.trim()),
+    message: "Material issue has unsaved quantities. Leave and discard them?",
+  });
   const [issueMode, setIssueMode] = React.useState<IssueMode>("wo-pmr");
 
   async function refreshPendingPmrsList(): Promise<PendingPmr[]> {

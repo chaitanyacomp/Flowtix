@@ -1,18 +1,18 @@
 import * as React from "react";
 import { Link } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
-import { PageContainer, ReportPageHeader } from "../components/PageHeader";
+import { ReportPageHeader } from "../components/PageHeader";
 import { apiFetch } from "../services/api";
 import { useDebouncedUrlStringParam, useUrlQueryState } from "../hooks/useUrlQueryState";
 import { ERP_REPORT_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
+import { useStablePageData } from "../hooks/useStablePageData";
 import { cn } from "../lib/utils";
+import { ReportResultsLoadGate } from "../components/erp/foundation/ReportResultsLoadGate";
 import { dispatchLedgerFocusHref, salesOrdersFocusHref, withReportsReturnContext } from "../lib/drillDownRoutes";
-import {
-  ReportFilterToolbar,
+import { ReportFilterToolbar,
   ReportFilterField,
   ReportKpiStrip,
-  ReportEmptyState,
-} from "../components/erp/ReportChrome";
+  ReportEmptyState, ReportPageShell } from "../components/erp/ReportChrome";
 import {
   ReportPrintExportBar,
   ReportPrintMeta,
@@ -124,9 +124,6 @@ export function SalesMatchingReportPage() {
 
   const [customers, setCustomers] = React.useState<Customer[]>([]);
   const [items, setItems] = React.useState<Item[]>([]);
-  const [data, setData] = React.useState<ApiResp | null>(null);
-  const [loading, setLoading] = React.useState(true);
-  const [loadError, setLoadError] = React.useState<string | null>(null);
 
   const missingDates = !fromDate.trim() || !toDate.trim();
   const liveTick = useErpRefreshTick(["reports", "sales", "dispatch"], { pollIntervalMs: ERP_REPORT_POLL_MS });
@@ -142,10 +139,17 @@ export function SalesMatchingReportPage() {
     return items.filter((it) => it.itemName.toLowerCase().includes(query)).slice(0, 200);
   }, [items, q]);
 
-  async function load() {
-    setLoading(true);
-    setLoadError(null);
-    try {
+  const {
+    data,
+    error: loadError,
+    firstLoadDone,
+    loading,
+  } = useStablePageData<ApiResp>({
+    enabled: !missingDates,
+    scopes: ["reports", "sales", "dispatch"],
+    pollIntervalMs: ERP_REPORT_POLL_MS,
+    deps: [fromDate, toDate, customerId, itemId, soType, status, mismatchesOnly],
+    fetcher: (signal) => {
       const qs = new URLSearchParams();
       qs.set("fromDate", fromDate);
       qs.set("toDate", toDate);
@@ -154,26 +158,9 @@ export function SalesMatchingReportPage() {
       if (soType === "NORMAL" || soType === "NO_QTY") qs.set("soType", soType);
       if (status && status !== "ALL") qs.set("status", status);
       if (mismatchesOnly) qs.set("mismatchesOnly", "true");
-      const resp = await apiFetch<ApiResp>(`/api/reports/sales-matching?${qs.toString()}`);
-      setData(resp);
-    } catch (e) {
-      setData(null);
-      setLoadError(e instanceof Error ? e.message : "Could not load sales matching report.");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  React.useEffect(() => {
-    if (missingDates) {
-      setLoading(false);
-      setData(null);
-      setLoadError(null);
-      return;
-    }
-    void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fromDate, toDate, customerId, itemId, soType, status, mismatchesOnly, liveTick]);
+      return apiFetch<ApiResp>(`/api/reports/sales-matching?${qs.toString()}`, { signal });
+    },
+  });
 
   const rows = data?.rows ?? [];
   const filterSummary = [
@@ -215,7 +202,7 @@ export function SalesMatchingReportPage() {
   ]);
 
   return (
-    <PageContainer className="erp-report-page pb-8">
+    <ReportPageShell>
       <ReportPrintMeta title="Sales Matching Report" filterSummary={filterSummary} />
       <ReportPageHeader
         title="Sales Matching Report"
@@ -352,23 +339,31 @@ export function SalesMatchingReportPage() {
           <CardTitle className="text-sm font-semibold text-slate-800">Results</CardTitle>
         </CardHeader>
         <CardContent className="p-0">
-          {missingDates ? (
-            <div className="p-3">
-              <ReportEmptyState
-                title="Select a date range"
-                body="Choose both From and To dates above to load sales matching results."
-              />
-            </div>
-          ) : loading ? (
-            <div className="px-4 py-6 text-sm text-slate-500">Loading…</div>
-          ) : !rows.length ? (
-            <div className="p-3">
-              <ReportEmptyState
-                title="No rows match these filters"
-                body="Widen the date range, clear SO type / status, or untick “Mismatches only”."
-              />
-            </div>
-          ) : (
+          <ReportResultsLoadGate
+            blocked={missingDates}
+            blockedState={
+              <div className="p-3">
+                <ReportEmptyState
+                  title="Select a date range"
+                  body="Choose both From and To dates above to load sales matching results."
+                />
+              </div>
+            }
+            firstLoadDone={firstLoadDone}
+            loading={loading}
+            hasDisplayData={data != null}
+            isEmpty={rows.length === 0}
+            error={loadError ? <div className="px-4 py-6 text-sm text-red-700">{loadError}</div> : null}
+            initialLoader={<div className="px-4 py-6 text-sm text-slate-500">Loading…</div>}
+            emptyState={
+              <div className="p-3">
+                <ReportEmptyState
+                  title="No rows match these filters"
+                  body="Widen the date range, clear SO type / status, or untick “Mismatches only”."
+                />
+              </div>
+            }
+          >
             <div className="erp-table-wrap mt-auto max-w-full overflow-x-auto border-t border-slate-200">
               <table className="erp-table min-w-[1320px] text-xs sm:text-sm">
                 <thead className="sticky top-0 z-[1] shadow-[0_1px_0_0_rgb(226_232_240)] [&_th]:bg-slate-50">
@@ -450,7 +445,7 @@ export function SalesMatchingReportPage() {
                 </tbody>
               </table>
             </div>
-          )}
+          </ReportResultsLoadGate>
         </CardContent>
       </Card>
 
@@ -458,7 +453,7 @@ export function SalesMatchingReportPage() {
         Notes: For <span className="font-medium">NO_QTY</span> sales orders, “Operational Qty” is taken from the latest{" "}
         <span className="font-medium">locked Requirement Sheet</span> cap (if available). If no cap is locked yet, pending dispatch is shown as “—”.
       </div>
-    </PageContainer>
+    </ReportPageShell>
   );
 }
 

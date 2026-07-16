@@ -11,7 +11,6 @@ import {
 import { PROCUREMENT_TERMS } from "./procurementTerminology";
 import { isStockCommittedElsewhere, stockCommittedElsewhereSummary } from "./stockCommitmentVisibility";
 import { buildRmPoDetailHref } from "./rmPurchaseWoContinuity";
-import { productionWorkspaceHref } from "./materialWorkflowLinks";
 import { buildMaterialIssueDeepLink } from "./manufacturingNavigationContinuity";
 import {
   guidedTimelineIndexForStoreAction,
@@ -121,7 +120,6 @@ export function resolveGuidedWorkflow(input: GuidedWorkflowInput): GuidedWorkflo
   const summary = input.caseSupply?.summary ?? {};
   const pendingGrn = n(summary.pendingGrnQty);
   const pendingPo = sumPendingPo(input.caseSupply?.prLines);
-  const procurementInitiated = Boolean(esc?.procurementInitiated);
   const mrDoc = esc?.materialRequirementDocNo ?? null;
   const storeKey = normalizeStoreActionKey(input.storeActionKey);
   const storeLabel = input.storeActionLabel?.trim() || null;
@@ -156,11 +154,6 @@ export function resolveGuidedWorkflow(input: GuidedWorkflowInput): GuidedWorkflo
     workOrderId: input.workOrderId,
     returnTo: "rm-control-center",
     salesOrderId: input.salesOrderId ?? null,
-  });
-  const productionHref = productionWorkspaceHref(input.workOrderId, undefined, {
-    salesOrderId: input.salesOrderId ?? undefined,
-    orderType: input.orderType,
-    cycleId: input.cycleId ?? undefined,
   });
 
   const phase = mapStoreActionToGuidedPhase(storeKey);

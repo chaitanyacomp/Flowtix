@@ -3,7 +3,8 @@
  */
 import * as React from "react";
 import { Link } from "react-router-dom";
-import { PageContainer, ReportPageHeader } from "../components/PageHeader";
+import { ReportPageHeader } from "../components/PageHeader";
+import { ReportPageShell } from "../components/erp/ReportChrome";
 import {
   ReportPrintExportBar,
   ReportPrintMeta,
@@ -15,6 +16,9 @@ import { apiFetch } from "../services/api";
 import { salesOrdersFocusHref } from "../lib/drillDownRoutes";
 import { useDebouncedUrlStringParam, useUrlQueryState } from "../hooks/useUrlQueryState";
 import { ERP_REPORT_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
+
+const RECOVERY_TYPE_OPTIONS = ["ALL", "PRODUCTION_SHORTFALL", "QC_FINAL_REJECTION"] as const;
+type RecoveryTypeFilter = (typeof RECOVERY_TYPE_OPTIONS)[number];
 
 type TraceRow = {
   recoverySourceId: number;
@@ -54,9 +58,18 @@ function fmt(n: number | null | undefined): string {
 }
 
 export function NoQtyRecoveryTraceReportPage() {
-  const refreshTick = useErpRefreshTick(ERP_REPORT_POLL_MS);
-  const [soId, setSoId] = useDebouncedUrlStringParam("salesOrderId", "");
-  const [recoveryType, setRecoveryType] = useUrlQueryState("recoveryType", "ALL");
+  const { patch, read } = useUrlQueryState({
+    salesOrderId: "",
+    recoveryType: "ALL",
+  });
+  const soIdFromUrl = read.string("salesOrderId");
+  const [soId, setSoId] = useDebouncedUrlStringParam({
+    urlValue: soIdFromUrl,
+    patch,
+    paramKey: "salesOrderId",
+  });
+  const recoveryType = read.enum("recoveryType", RECOVERY_TYPE_OPTIONS, "ALL");
+  const refreshTick = useErpRefreshTick(["reports"], { pollIntervalMs: ERP_REPORT_POLL_MS });
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
   const [data, setData] = React.useState<ApiResp | null>(null);
@@ -119,10 +132,10 @@ export function NoQtyRecoveryTraceReportPage() {
   ]);
 
   return (
-    <PageContainer>
+    <ReportPageShell>
       <ReportPageHeader
         title="NO_QTY Recovery Trace"
-        description="Item-wise recovery lineage. Source = Allocated + Waived + Available."
+        purpose="Item-wise recovery lineage. Source = Allocated + Waived + Available."
       />
       <ReportPrintMeta title="NO_QTY Recovery Trace" />
       <div className="erp-no-print mb-3 flex flex-wrap items-end gap-2">
@@ -135,7 +148,11 @@ export function NoQtyRecoveryTraceReportPage() {
           <select
             className="rounded border border-slate-300 px-2 py-1.5 text-sm"
             value={recoveryType}
-            onChange={(e) => setRecoveryType(e.target.value)}
+            onChange={(e) =>
+              patch({
+                recoveryType: e.target.value as RecoveryTypeFilter,
+              })
+            }
           >
             <option value="ALL">All</option>
             <option value="PRODUCTION_SHORTFALL">Production shortfall</option>
@@ -144,7 +161,9 @@ export function NoQtyRecoveryTraceReportPage() {
         </label>
         <ReportPrintExportBar
           onExportCsv={() => downloadReportCsv("no-qty-recovery-trace.csv", csvHeaders, csvRows)}
-          onExportExcel={() => downloadReportExcel("no-qty-recovery-trace.xlsx", csvHeaders, csvRows)}
+          onExportExcel={() =>
+            downloadReportExcel("no-qty-recovery-trace.xlsx", "NO_QTY Recovery Trace", csvHeaders, csvRows)
+          }
         />
       </div>
       {data?.meta ? (
@@ -205,6 +224,6 @@ export function NoQtyRecoveryTraceReportPage() {
           </table>
         </div>
       ) : null}
-    </PageContainer>
+    </ReportPageShell>
   );
 }

@@ -589,6 +589,8 @@ export type ProductionQueueRow = {
   lastShortageQty?: number;
   qtyLabel?: string;
   actionHref?: string;
+  workOrderId?: number;
+  workOrderLineId?: number;
 };
 
 export type QcQueueRow = {

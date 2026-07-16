@@ -7,6 +7,7 @@ import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { cn } from "../lib/utils";
 import { ReportPageHeader } from "../components/PageHeader";
+import { ReportPageShell } from "../components/erp/ReportChrome";
 import {
   ReportPrintExportBar,
   ReportPrintMeta,
@@ -336,7 +337,7 @@ export function RmLedgerPage() {
   }
 
   return (
-    <div className="erp-report-page mx-auto flex w-full max-w-[1500px] flex-col gap-2 p-3">
+    <ReportPageShell>
       <ReportPrintMeta title="RM Movement" filterSummary={filterSummary} />
       <ReportPageHeader
         className="mb-0"
@@ -668,6 +669,6 @@ export function RmLedgerPage() {
           ) : null}
         </CardContent>
       </Card>
-    </div>
+    </ReportPageShell>
   );
 }

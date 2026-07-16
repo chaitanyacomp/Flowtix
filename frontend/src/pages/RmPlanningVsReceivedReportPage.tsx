@@ -4,8 +4,8 @@
 import * as React from "react";
 import { Link } from "react-router-dom";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { PageContainer, ReportPageHeader } from "../components/PageHeader";
-import { ReportFilterToolbar, ReportFilterField } from "../components/erp/ReportChrome";
+import { ReportPageHeader } from "../components/PageHeader";
+import { ReportFilterToolbar, ReportFilterField, ReportPageShell } from "../components/erp/ReportChrome";
 import {
   ReportPrintExportBar,
   ReportPrintMeta,
@@ -188,7 +188,7 @@ export function RmPlanningVsReceivedReportPage() {
   const [rmItems, setRmItems] = React.useState<RmItem[]>([]);
   const [expanded, setExpanded] = React.useState<Set<number>>(new Set());
   const [filterTick, setFilterTick] = React.useState(0);
-  const liveTick = useErpRefreshTick(["reports", "purchase", "monthly-planning"], {
+  const liveTick = useErpRefreshTick(["reports"], {
     pollIntervalMs: ERP_REPORT_POLL_MS,
   });
 
@@ -270,7 +270,7 @@ export function RmPlanningVsReceivedReportPage() {
   ]);
 
   return (
-    <PageContainer className="erp-report-page">
+    <ReportPageShell>
       <ReportPrintMeta title="RM Planning vs Actual Received" filterSummary={filterSummary} />
       <ReportPageHeader
         title="RM Planning vs Actual Received"
@@ -499,6 +499,6 @@ export function RmPlanningVsReceivedReportPage() {
           </CardContent>
         </Card>
       ) : null}
-    </PageContainer>
+    </ReportPageShell>
   );
 }

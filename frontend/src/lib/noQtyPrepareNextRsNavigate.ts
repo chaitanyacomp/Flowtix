@@ -8,7 +8,7 @@ type ToastApi = {
   showInfo: (message: string) => void;
 };
 
-function toastForPrepareReason(reason: string, blockingPmrDocNo?: string | null): string {
+function toastForPrepareReason(reason: string): string {
   if (reason === "NO_LOCKED_RS" || reason === "DRAFT_RS_ON_CYCLE") {
     return "Current cycle needs a locked requirement sheet.";
   }
@@ -67,7 +67,7 @@ export async function prepareNoQtyNextRequirementSheetAndNavigate(opts: {
     if (out?.advanced) {
       toast.showSuccess("Next cycle opened. Continuing to requirement sheet…");
     } else if (out?.reason && out.reason !== "OK") {
-      toast.showInfo(toastForPrepareReason(String(out.reason), out.blockingPmrDocNo));
+      toast.showInfo(toastForPrepareReason(String(out.reason)));
     }
   } catch (err) {
     toast.showError(err instanceof Error ? err.message : "Could not prepare the next cycle.");

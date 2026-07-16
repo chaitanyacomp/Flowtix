@@ -58,6 +58,41 @@ function aggregateSoOrderedQtyByItemId(lines) {
   return m;
 }
 
+/**
+ * Work Order Tracking "Ordered" column:
+ * - REGULAR / NORMAL: sum of SalesOrderLine.qty for the FG on the sales order.
+ * - NO_QTY: locked RS customer demand only (`baseDemandQty` / `requirementQty`).
+ *   Never uses totalRsQty, recovery, shortfall, suggestedWoQtySnapshot, WO qty, or Planned.
+ *   Returns null when no locked RS demand is available (UI shows N/A).
+ *
+ * @param {{
+ *   orderType: string | null | undefined,
+ *   soLines: { itemId: number, qty: unknown }[] | null | undefined,
+ *   fgItemId: number,
+ *   requirementSheet: { status?: string, lines?: { fgItemId: number, baseDemandQty?: unknown, requirementQty?: unknown, totalRsQty?: unknown, productionShortfallQty?: unknown, qcRejectionRecoveryQty?: unknown }[] } | null | undefined,
+ * }} args
+ * @returns {number | null}
+ */
+function resolveWoTrackingOrderedQty({ orderType, soLines, fgItemId, requirementSheet }) {
+  if (String(orderType || "") === "NO_QTY") {
+    if (!requirementSheet || String(requirementSheet.status || "") !== "LOCKED") {
+      return null;
+    }
+    let sum = 0;
+    let found = false;
+    for (const ln of requirementSheet.lines || []) {
+      // RequirementSheetLine uses itemId (FG); tolerate fgItemId alias if present.
+      const lineItemId = Number(ln.itemId ?? ln.fgItemId);
+      if (lineItemId !== Number(fgItemId)) continue;
+      found = true;
+      // Customer demand only — explicitly ignore recovery / total RS composition fields.
+      sum += Number(ln.baseDemandQty ?? ln.requirementQty ?? 0);
+    }
+    return found ? sum : null;
+  }
+  return aggregateSoOrderedQtyByItemId(soLines || []).get(Number(fgItemId)) ?? 0;
+}
+
 /** @alias netDispatchedByItemId — name matches reporting vocabulary */
 function getSoNetDispatchedByItemIdMap(dispatchRecords, mode = DISPATCH_ALLOC_MODE.OPERATIONAL) {
   return netDispatchedByItemId(dispatchRecords, mode);
@@ -596,6 +631,7 @@ module.exports = {
   METRIC_DEFINITIONS,
   METRIC_CONTEXT,
   aggregateSoOrderedQtyByItemId,
+  resolveWoTrackingOrderedQty,
   getSoNetDispatchedByItemIdMap,
   getSoItemOrderedMinusDispatched,
   buildSoLineDispatchAllocation,

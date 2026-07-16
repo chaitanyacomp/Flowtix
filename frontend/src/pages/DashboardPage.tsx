@@ -571,6 +571,7 @@ function isExcludedInternalStatusForOpenNoQtyDashboard(internalStatus: string): 
 
 
 export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODUCTION" }) {
+  const dashboardRole: string = role;
   const navigate = useNavigate();
   const toast = useToast();
   const isDashboardRoute = useRouteActive("/dashboard");
@@ -1304,20 +1305,20 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
       if (canViewRmRisk) links.push({ label: "RM Control Center", href: rmControlCenterHref({ returnTo: "dashboard" }) });
       return links;
     }
-    if (role === "QA") {
+    if (dashboardRole === "QA") {
       return [
         { label: PRODUCTION_QA_TERMS.WORKSPACE_NAV, href: "/qc-entry?source=dashboard" },
         { label: "QA report", href: "/qc-report?source=dashboard" },
       ];
     }
-    if (role === "PURCHASE") {
+    if (dashboardRole === "PURCHASE") {
       return [
         { label: "Procurement workspace", href: "/procurement-planning?demandPool=REGULAR_SO&source=dashboard" },
         { label: "RM purchase", href: "/rm-po-grn?source=dashboard" },
         { label: "Purchase bills", href: "/purchase-bills?source=dashboard" },
       ];
     }
-    if (role === "STORE") {
+    if (dashboardRole === "STORE") {
       return [
         { label: "Dispatch", href: "/dispatch?source=dashboard" },
         { label: "Material issue", href: "/material-issue?source=dashboard" },
@@ -1695,7 +1696,7 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
   if (
     prodWaitingForMaterial.workOrderCount > 0 &&
     !canViewWoPrepareQueues &&
-    (role === "PRODUCTION" || role === "STORE" || role === "ADMIN")
+    (role === "PRODUCTION" || dashboardRole === "STORE" || role === "ADMIN")
   ) {
     const woCount = prodWaitingForMaterial.waitingStoreIssueCount || prodWaitingForMaterial.workOrderCount;
     const woWord = woCount === 1 ? "work order" : "work orders";
@@ -1950,7 +1951,7 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
 
   if (showDispatchAttentionCard) {
     const prepLines = prepDispatchLines;
-    if (role === "STORE" && dispatchReadyTotal > 0) {
+    if (dashboardRole === "STORE" && dispatchReadyTotal > 0) {
       for (const d of actionRequiredGroups.dispatch) {
         const soLabel = displaySalesOrderNo(d.salesOrderId, d.salesOrderDocNo ?? null);
         const qtyLabel = formatDashDispatchMetricQty(d.metricQty);
@@ -2097,7 +2098,7 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
               truncated={noQtyContinuationTruncated}
               maxVisible={DASH_NO_QTY_CONTINUATION_CAP}
               viewAllHref={
-                role === "STORE"
+                dashboardRole === "STORE"
                   ? "/no-qty-agreements?source=dashboard"
                   : "/sales-orders?soType=NO_QTY&source=dashboard"
               }
@@ -2352,7 +2353,7 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
                       </ErpKpiSegment>
                     ) : null}
                   </>
-                ) : role === "QA" ? (
+                ) : dashboardRole === "QA" ? (
                   <>
                     <ErpKpiSegment type="button" {...clickTo("/qc-entry?source=dashboard")} aria-label={PRODUCTION_QA_TERMS.QA_BATCHES_KPI}>
                       <ErpKpiLabel>Batches</ErpKpiLabel>

@@ -8,6 +8,10 @@ import * as React from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import { deleteUrlParamKeys } from "../lib/urlSearchParamsPatch";
 import { useDebouncedUrlStringParam, useUrlQueryState } from "../hooks/useUrlQueryState";
+import { useListScrollRestoration } from "../hooks/useListScrollRestoration";
+import { buildListReturnTo, withListReturnContext } from "../lib/listNavigationState";
+import { useUnsavedChangesGuard } from "../hooks/useUnsavedChangesGuard";
+import { confirmLeaveIfDirty } from "../lib/unsavedChangesPolicy";
 import {
   DRILL_FOCUS_EMPTY_FILTERED_SUFFIX,
   DRILL_FOCUS_HINT_HIDDEN_BY_FILTERS,
@@ -43,7 +47,6 @@ import {
   QC_PAGE_ROLES,
   PRODUCTION_WRITE_ROLES,
 } from "../config/erpRoles";
-import { PlanningStatusChip } from "../components/erp/PlanningStatusChip";
 import { useToast } from "../contexts/ToastContext";
 import { Trash2, Pencil, CheckCircle2, ChevronDown, ChevronUp, X } from "lucide-react";
 import { useFastEntryForm } from "../hooks/useFastEntryForm";
@@ -67,13 +70,11 @@ import {
   PlanningStatusChip as NoQtyPlanningStatusChip,
 } from "../components/erp/sales/NoQtyAgreementCard";
 import {
-  createCycleRsButtonLabel,
   createNextRsButtonLabel,
   isNoQtyStoreOwnedRsCreatePrimaryAction,
   NO_QTY_RS_ADMIN_OVERRIDE_LINK_LABEL,
   NO_QTY_RS_STORE_HANDOFF_LABEL,
   noQtyBusinessWorkflowStage,
-  noQtyNextCycleLabel,
   openCurrentRsButtonLabel,
   openDraftRsButtonLabel,
   resolveCreateRsButtonLabel,
@@ -389,15 +390,6 @@ type NoQtyStage =
   | "BILLING COMPLETE"
   | "COMPLETED";
 
-type NoQtyNextStep =
-  | "Create Requirement"
-  | "Work Order"
-  | "Dispatch"
-  | "Sales Bill"
-  | "Billed"
-  | "Review & Close SO"
-  | null;
-
 type NoQtyStageContext = {
   isNoQtySo: boolean;
   isClosed: boolean;
@@ -626,6 +618,7 @@ type SalesOrdersListTab = "REGULAR" | "NO_QTY";
 export function SalesOrdersPage() {
   const navigate = useNavigate();
   const location = useLocation();
+  useListScrollRestoration();
   const toast = useToast();
   const demo = useDemoMode();
   const soDemoHlRegular = demoHighlightKey(demo.enabled, demo.flow, demo.step, "regular", 1);
@@ -638,6 +631,14 @@ export function SalesOrdersPage() {
   const canUseCommercialQuotations = hasErpRole(role, ENQUIRY_QUOTATION_WRITE_ROLES);
   const canCloseNoQtySo = hasErpRole(role, SO_WRITE_ROLES);
   const { searchParams, setSearchParams, patch, read } = useUrlQueryState(SO_LIST_URL_OMIT);
+  const listReturnTo = React.useMemo(
+    () => buildListReturnTo(location.pathname, location.search),
+    [location.pathname, location.search],
+  );
+  const withSoListReturn = React.useCallback(
+    (href: string) => withListReturnContext(href, listReturnTo),
+    [listReturnTo],
+  );
   const quotationFromUrl = read.int("quotationId");
   const copySourceRaw = read.string("copySource");
   const copyIdFromUrl = read.int("copyId");
@@ -728,11 +729,22 @@ export function SalesOrdersPage() {
   const [fgItems, setFgItems] = React.useState<FgItemOption[]>([]);
   const [savingNoQty, setSavingNoQty] = React.useState(false);
 
+  const [createBaseline, setCreateBaseline] = React.useState<{
+    poRef: string;
+    remarks: string;
+    lines: string;
+  } | null>(null);
   const [editSo, setEditSo] = React.useState<SoRow | null>(null);
   useModalFocusRestore(Boolean(editSo));
   const [editPoRef, setEditPoRef] = React.useState("");
   const [editRemarks, setEditRemarks] = React.useState("");
   const [editLines, setEditLines] = React.useState<DraftLineEdit[]>([]);
+  const [editBaseline, setEditBaseline] = React.useState<{
+    poRef: string;
+    remarks: string;
+    shipToId: string;
+    lines: string;
+  } | null>(null);
   const [savingEdit, setSavingEdit] = React.useState(false);
   const [editCustomerDetail, setEditCustomerDetail] = React.useState<CustomerDetail | null>(null);
   const [editShipToId, setEditShipToId] = React.useState<string>("");
@@ -745,6 +757,51 @@ export function SalesOrdersPage() {
   const [noQtyCloseDialog, setNoQtyCloseDialog] = React.useState<{ soId: number; docNo?: string | null } | null>(null);
   const [closeAssessmentLoading, setCloseAssessmentLoading] = React.useState(false);
   const [closeAssessmentError, setCloseAssessmentError] = React.useState<string | null>(null);
+
+  useUnsavedChangesGuard({
+    isDirty:
+      (editSo != null &&
+        editBaseline != null &&
+        (editPoRef !== editBaseline.poRef ||
+          editRemarks !== editBaseline.remarks ||
+          editShipToId !== editBaseline.shipToId ||
+          JSON.stringify(editLines) !== editBaseline.lines)) ||
+      (noQtyCreateOpen &&
+        (noQtyPoRef.trim() !== "" ||
+          noQtyRemarks.trim() !== "" ||
+          noQtyLines.some((l) => l.itemId > 0))) ||
+      ((quotationFromUrl > 0 || copyFromPreviousActive) &&
+        createBaseline != null &&
+        (createPoRef !== createBaseline.poRef ||
+          createRemarks !== createBaseline.remarks ||
+          JSON.stringify(quoteCreateLines) !== createBaseline.lines)),
+    message: "Sales order form has unsaved changes. Leave and discard them?",
+    enabled: !creating && !savingEdit && !savingNoQty,
+  });
+
+  const editSoDirty =
+    editSo != null &&
+    editBaseline != null &&
+    (editPoRef !== editBaseline.poRef ||
+      editRemarks !== editBaseline.remarks ||
+      editShipToId !== editBaseline.shipToId ||
+      JSON.stringify(editLines) !== editBaseline.lines);
+  const noQtyCreateDirty =
+    noQtyCreateOpen &&
+    (noQtyPoRef.trim() !== "" ||
+      noQtyRemarks.trim() !== "" ||
+      noQtyLines.some((l) => l.itemId > 0));
+
+  function requestCloseEditSoModal() {
+    if (!confirmLeaveIfDirty(editSoDirty, "Sales order form has unsaved changes. Leave and discard them?")) return;
+    setEditSo(null);
+    setEditBaseline(null);
+  }
+
+  function requestCloseNoQtyCreateModal() {
+    if (!confirmLeaveIfDirty(noQtyCreateDirty, "Sales order form has unsaved changes. Leave and discard them?")) return;
+    setNoQtyCreateOpen(false);
+  }
   const [closeAssessment, setCloseAssessment] = React.useState<{
     mode: "COMPLETE" | "WAIVER_REQUIRED" | "BLOCKED";
     blockers: { code: string; message: string }[];
@@ -1243,6 +1300,7 @@ export function SalesOrdersPage() {
     if (!quotationFromUrl) {
       setQDetail(null);
       setQuoteCreateLines([]);
+      setCreateBaseline(null);
       return;
     }
     setQLoading(true);
@@ -1253,16 +1311,17 @@ export function SalesOrdersPage() {
         setCreatePoRef("");
         setCreateRemarks("");
         setCreatePoTouched(false);
-        setQuoteCreateLines(
-          (q.lines || []).map((ln) => ({
-            itemId: ln.itemId,
-            customerPoQty: String(Math.max(0, Math.floor(Number(ln.qty) || 0))),
-          })),
-        );
+        const nextLines = (q.lines || []).map((ln) => ({
+          itemId: ln.itemId,
+          customerPoQty: String(Math.max(0, Math.floor(Number(ln.qty) || 0))),
+        }));
+        setQuoteCreateLines(nextLines);
+        setCreateBaseline({ poRef: "", remarks: "", lines: JSON.stringify(nextLines) });
       })
       .catch((e) => {
         setQDetail(null);
         setQuoteCreateLines([]);
+        setCreateBaseline(null);
         setError(e instanceof Error ? e.message : "Failed to load quotation");
       })
       .finally(() => setQLoading(false));
@@ -1271,6 +1330,7 @@ export function SalesOrdersPage() {
   React.useEffect(() => {
     if (!copyFromPreviousActive) {
       setCopyPreview(null);
+      setCreateBaseline(null);
       return;
     }
     setCopyLoading(true);
@@ -1281,22 +1341,23 @@ export function SalesOrdersPage() {
       .then((p) => {
         setCopyPreview(p);
         setCreatePoRef("");
-        setCreateRemarks(
+        const nextRemarks =
           p.sourceType === "SO" && p.remarksPreview != null && String(p.remarksPreview).trim() !== ""
             ? String(p.remarksPreview).trim()
-            : "",
-        );
+            : "";
+        setCreateRemarks(nextRemarks);
         setCreatePoTouched(false);
-        setQuoteCreateLines(
-          (p.lines || []).map((ln) => ({
-            itemId: ln.itemId,
-            customerPoQty: String(Math.max(0, Math.floor(Number(ln.qty) || 0))),
-          })),
-        );
+        const nextLines = (p.lines || []).map((ln) => ({
+          itemId: ln.itemId,
+          customerPoQty: String(Math.max(0, Math.floor(Number(ln.qty) || 0))),
+        }));
+        setQuoteCreateLines(nextLines);
+        setCreateBaseline({ poRef: "", remarks: nextRemarks, lines: JSON.stringify(nextLines) });
       })
       .catch((e) => {
         setCopyPreview(null);
         setQuoteCreateLines([]);
+        setCreateBaseline(null);
         setError(e instanceof Error ? e.message : "Failed to load template");
       })
       .finally(() => setCopyLoading(false));
@@ -1543,40 +1604,48 @@ export function SalesOrdersPage() {
 
   function openEdit(so: SoRow) {
     setEditSo(so);
-    setEditPoRef(so.customerPoReference ?? "");
-    setEditRemarks(so.remarks ?? "");
+    const nextPo = so.customerPoReference ?? "";
+    const nextRemarks = so.remarks ?? "";
+    const nextShip = so.shipToAddressId != null ? String(so.shipToAddressId) : "";
+    setEditPoRef(nextPo);
+    setEditRemarks(nextRemarks);
     setEditCustomerDetail(null);
-    setEditShipToId(so.shipToAddressId != null ? String(so.shipToAddressId) : "");
+    setEditShipToId(nextShip);
     setEditShowAddress(false);
-    setEditLines(
-      so.lines.map((l) => {
-        const qf = l.quotationLine?.isFree ?? l.isFree;
-        const rateLabel =
-          so.orderType === "NO_QTY"
-            ? Number(l.rate ?? 0).toFixed(2)
-            : l.quotationLine != null
-              ? qf
-                ? "0 (Free)"
-                : Number(l.quotationLine.rate).toFixed(2)
-              : "—";
-        if (so.orderType === "NORMAL") {
-          return {
-            lineId: l.id,
-            itemName: l.item.itemName,
-            isFree: Boolean(qf),
-            rateLabel,
-            customerPoQty: String(Number(l.customerPoQty ?? l.qty)),
-          };
-        }
+    const nextLines = so.lines.map((l) => {
+      const qf = l.quotationLine?.isFree ?? l.isFree;
+      const rateLabel =
+        so.orderType === "NO_QTY"
+          ? Number(l.rate ?? 0).toFixed(2)
+          : l.quotationLine != null
+            ? qf
+              ? "0 (Free)"
+              : Number(l.quotationLine.rate).toFixed(2)
+            : "—";
+      if (so.orderType === "NORMAL") {
         return {
           lineId: l.id,
           itemName: l.item.itemName,
           isFree: Boolean(qf),
           rateLabel,
-          qty: String(l.qty),
+          customerPoQty: String(Number(l.customerPoQty ?? l.qty)),
         };
-      }),
-    );
+      }
+      return {
+        lineId: l.id,
+        itemName: l.item.itemName,
+        isFree: Boolean(qf),
+        rateLabel,
+        qty: String(l.qty),
+      };
+    });
+    setEditLines(nextLines);
+    setEditBaseline({
+      poRef: nextPo,
+      remarks: nextRemarks,
+      shipToId: nextShip,
+      lines: JSON.stringify(nextLines),
+    });
   }
 
   React.useEffect(() => {
@@ -1720,6 +1789,7 @@ export function SalesOrdersPage() {
         }),
       });
       setEditSo(null);
+      setEditBaseline(null);
       load();
       toast.showSuccess("Sales order updated");
     } catch (err) {
@@ -2318,7 +2388,7 @@ export function SalesOrdersPage() {
       ) : null}
 
       {noQtyCreateOpen ? (
-        <ErpModal onClose={() => setNoQtyCreateOpen(false)}>
+        <ErpModal onClose={requestCloseNoQtyCreateModal}>
           <Card className="w-full max-w-lg rounded-lg border border-slate-200 bg-white shadow-lg">
             <CardHeader>
               <CardTitle className="text-base">Create No Qty SO</CardTitle>
@@ -2418,7 +2488,7 @@ export function SalesOrdersPage() {
                 </div>
 
                 <div className="flex gap-2 pt-2">
-                  <Button type="button" variant="outline" onClick={() => setNoQtyCreateOpen(false)} disabled={savingNoQty}>
+                  <Button type="button" variant="outline" onClick={requestCloseNoQtyCreateModal} disabled={savingNoQty}>
                     Cancel
                   </Button>
                   <Button
@@ -2656,12 +2726,14 @@ export function SalesOrdersPage() {
                           return {
                             nextStep: "Next RS Ready",
                             label: createNextRsButtonLabel(nextCycleNo),
-                            to: buildNoQtyGuidedHref({
-                              to: `/sales-orders/${so.id}/requirement-sheets?intent=add`,
-                              salesOrderId: so.id,
-                              cycleId: guidedCycleId,
-                              fromStep: "requirement",
-                            }),
+                            to: withSoListReturn(
+                              buildNoQtyGuidedHref({
+                                to: `/sales-orders/${so.id}/requirement-sheets?intent=add`,
+                                salesOrderId: so.id,
+                                cycleId: guidedCycleId,
+                                fromStep: "requirement",
+                              }),
+                            ),
                             isPlanningAction: true as const,
                             waitingLabel: "Next RS Ready",
                           };
@@ -2669,7 +2741,9 @@ export function SalesOrdersPage() {
                           return {
                             nextStep: "Cycle Completed",
                             label: isAdmin ? "Reopen Cycle" : "Cycle Completed",
-                            to: buildNoQtyGuidedHref({ to: `/sales-orders/${so.id}/requirement-sheets`, ...ctx }),
+                            to: withSoListReturn(
+                              buildNoQtyGuidedHref({ to: `/sales-orders/${so.id}/requirement-sheets`, ...ctx }),
+                            ),
                             // Reopen is admin-only and lives in the planning workspace.
                             isPlanningAction: true as const,
                             waitingLabel: "Cycle Completed",
@@ -2678,7 +2752,13 @@ export function SalesOrdersPage() {
                           return {
                             nextStep: "RS locked · Monthly Planning pending",
                             label: openRsLabel,
-                            to: buildNoQtyGuidedHref({ to: `/sales-orders/${so.id}/requirement-sheets`, ...ctx, fromStep: "requirement" }),
+                            to: withSoListReturn(
+                              buildNoQtyGuidedHref({
+                                to: `/sales-orders/${so.id}/requirement-sheets`,
+                                ...ctx,
+                                fromStep: "requirement",
+                              }),
+                            ),
                             isPlanningAction: true as const,
                             waitingLabel: "RS locked · With Planning",
                           };
@@ -2777,7 +2857,9 @@ export function SalesOrdersPage() {
                           return {
                             nextStep: rsStatusLabel === "No RS" ? "Requirement Sheet pending" : "Requirement Sheet",
                             label: rsStatusLabel === "No RS" ? createRsLabel : openRsLabel,
-                            to: buildNoQtyGuidedHref({ to: `/sales-orders/${so.id}/requirement-sheets`, ...ctx }),
+                            to: withSoListReturn(
+                              buildNoQtyGuidedHref({ to: `/sales-orders/${so.id}/requirement-sheets`, ...ctx }),
+                            ),
                             isPlanningAction: true as const,
                             waitingLabel: "Requirement Sheet · With Planning",
                           };
@@ -2787,21 +2869,25 @@ export function SalesOrdersPage() {
                     const noQtySurfaceChip = (noQtySoGuided as { surfaceChip?: string }).surfaceChip;
 
                     const noQtyLinkCtx = { salesOrderId: so.id, cycleId: guidedCycleId };
-                    const noQtyRsHref = buildNoQtyGuidedHref({
-                      to: `/sales-orders/${so.id}/requirement-sheets`,
-                      ...noQtyLinkCtx,
-                      fromStep: "requirement",
-                    });
+                    const noQtyRsHref = withSoListReturn(
+                      buildNoQtyGuidedHref({
+                        to: `/sales-orders/${so.id}/requirement-sheets`,
+                        ...noQtyLinkCtx,
+                        fromStep: "requirement",
+                      }),
+                    );
                     const noQtyProdHref = buildNoQtyGuidedHref({
                       to: `/production`,
                       ...noQtyLinkCtx,
                       fromStep: "requirement",
                     });
-                    const noQtyCreateNextHref = buildNoQtyGuidedHref({
-                      to: `/sales-orders/${so.id}/requirement-sheets?intent=add`,
-                      ...noQtyLinkCtx,
-                      fromStep: "requirement",
-                    });
+                    const noQtyCreateNextHref = withSoListReturn(
+                      buildNoQtyGuidedHref({
+                        to: `/sales-orders/${so.id}/requirement-sheets?intent=add`,
+                        ...noQtyLinkCtx,
+                        fromStep: "requirement",
+                      }),
+                    );
                     const openRsLabel = openCurrentRsButtonLabel();
                     const primaryActionLabel = noQtySoGuided.label;
                     const adminRsCreateHandoff =
@@ -3186,7 +3272,15 @@ export function SalesOrdersPage() {
               </div>
             ) : null}
           </div>
-          {!rows.length ? (
+          {!listLoaded ? (
+            <div
+              className="rounded border border-slate-200 bg-slate-50 px-3 py-2.5 text-[13px] text-slate-600"
+              data-testid="sales-orders-loading"
+            >
+              Loading sales orders…
+            </div>
+          ) : null}
+          {!rows.length && listLoaded ? (
             <div
               className="rounded border border-slate-200/90 bg-slate-50/80 px-3 py-2.5 text-[13px] leading-snug text-slate-600"
               data-testid="sales-orders-empty-state"
@@ -3249,7 +3343,7 @@ export function SalesOrdersPage() {
       ) : null}
 
       {editSo ? (
-        <ErpModal onClose={() => setEditSo(null)}>
+        <ErpModal onClose={requestCloseEditSoModal}>
           <Card className="w-full max-w-lg rounded-lg border border-slate-200 bg-white shadow-lg">
             <CardHeader>
               <CardTitle className="text-base">
@@ -3538,7 +3632,7 @@ export function SalesOrdersPage() {
                   })}
                 </div>
                 <div className="flex gap-2 pt-2">
-                  <Button type="button" variant="outline" onClick={() => setEditSo(null)} disabled={savingEdit}>
+                  <Button type="button" variant="outline" onClick={requestCloseEditSoModal} disabled={savingEdit}>
                     Cancel
                   </Button>
                   <FieldShortcutHint

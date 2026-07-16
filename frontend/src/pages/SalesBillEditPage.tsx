@@ -7,7 +7,6 @@ import { Input } from "../components/ui/input";
 import { apiFetch } from "../services/api";
 import { getApiUrl } from "../services/api";
 import { useAuth } from "../hooks/useAuth";
-import { useToast } from "../contexts/ToastContext";
 import { PageContainer, PageSmartBackLink } from "../components/PageHeader";
 import { displayDispatchNo, displaySalesBillNo, displaySalesOrderNo } from "../lib/docNoDisplay";
 import { withReportsReturnContextIfPresent } from "../lib/drillDownRoutes";
@@ -25,6 +24,7 @@ import {
 import { useWorkQueueContext } from "../hooks/useWorkQueueContext";
 import { navigateToWorkQueueIndex } from "../lib/workQueueContext";
 import { SalesBillExportQueuePrompt } from "../components/sales/SalesBillExportQueuePrompt";
+import { useUnsavedChangesGuard } from "../hooks/useUnsavedChangesGuard";
 import { SalesBillLinkedDocuments } from "../components/sales/SalesBillLinkedDocuments";
 import { SalesBillActivityTimeline } from "../components/sales/SalesBillActivityTimeline";
 import { SalesBillDraftActionPanel } from "../components/sales/SalesBillDraftActionPanel";
@@ -188,7 +188,6 @@ export function SalesBillEditPage() {
   const fromPendingActions =
     new URLSearchParams(location.search).get("from") === "pending-actions" || isPendingActionsQueue;
   const userRole = useAuth().user?.role;
-  const toast = useToast();
   const isAdmin = userRole === "ADMIN";
 
   const [bill, setBill] = React.useState<Bill | null>(null);
@@ -197,6 +196,7 @@ export function SalesBillEditPage() {
   const [billNo, setBillNo] = React.useState("");
   const [billDate, setBillDate] = React.useState("");
   const [remarks, setRemarks] = React.useState("");
+  const [headerBaseline, setHeaderBaseline] = React.useState({ billNo: "", billDate: "", remarks: "" });
   const [saving, setSaving] = React.useState(false);
   const [exporting, setExporting] = React.useState(false);
   const [deleting, setDeleting] = React.useState(false);
@@ -229,6 +229,20 @@ export function SalesBillEditPage() {
   const [invoicePreviewOpen, setInvoicePreviewOpen] = React.useState(false);
 
   const readOnly = bill?.status === "FINALIZED" || bill?.status === "CANCELLED";
+  useUnsavedChangesGuard({
+    isDirty:
+      !readOnly &&
+      bill != null &&
+      (billNo !== headerBaseline.billNo ||
+        billDate !== headerBaseline.billDate ||
+        remarks !== headerBaseline.remarks ||
+        Object.keys(localRates).some((id) => {
+          const ln = bill.lines.find((l) => l.id === Number(id));
+          if (!ln) return false;
+          return String(localRates[Number(id)] ?? "") !== String(Number(ln.rate));
+        })),
+    message: "Sales bill has unsaved changes. Leave and discard them?",
+  });
   const soId = bill?.dispatch.soId ?? 0;
 
   const loadSoHead = React.useCallback(async (salesOrderId: number) => {
@@ -296,6 +310,11 @@ export function SalesBillEditPage() {
         setBillNo(b.billNo?.trim() ?? "");
         setBillDate(toDateInputValue(b.billDate));
         setRemarks(b.remarks?.trim() ?? "");
+        setHeaderBaseline({
+          billNo: b.billNo?.trim() ?? "",
+          billDate: toDateInputValue(b.billDate),
+          remarks: b.remarks?.trim() ?? "",
+        });
         const nextRates: Record<number, string> = {};
         for (const ln of b.lines) {
           nextRates[ln.id] = String(Number(ln.rate));

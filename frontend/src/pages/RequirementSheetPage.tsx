@@ -38,6 +38,7 @@ import { ErpWorkflowBanner } from "../components/erp/foundation/ErpWorkflowBanne
 import { ErpPageLoader } from "../components/erp/foundation/ErpPageLoader";
 import { ErpWorkflowTrail } from "../components/erp/foundation/ErpWorkflowTrail";
 import { useStoreExecutionNavContext } from "../hooks/useStoreExecutionNavContext";
+import { useUnsavedChangesGuard } from "../hooks/useUnsavedChangesGuard";
 import { readNoQtySoCreatedBannerState, type NoQtySoCreatedBannerState } from "../lib/noQtySoCreatedNavState";
 import {
   OperationalContextBar,
@@ -519,14 +520,6 @@ export function RequirementSheetPage() {
     if (cycleNo != null && cycleNo > 0) return cycleNo + 1;
     return null;
   }, [sheetDisplayCycleNo, cycleNo]);
-  const cycleStatus: "Active Cycle" | "Closed Cycle" | "Next Cycle" =
-    addRequirementIntent && so?.currentCycle?.status !== "ACTIVE"
-      ? "Next Cycle"
-      : so?.currentCycle?.status === "ACTIVE" &&
-          !["COMPLETED", "CLOSED", "MANUALLY_CLOSED", "CLOSED_WITH_WAIVER"].includes(String(so?.internalStatus ?? "")) &&
-          String(so?.processStage?.key ?? "") !== "COMPLETED"
-        ? "Active Cycle"
-        : "Closed Cycle";
 
   const latestVersionForPeriod = React.useMemo(() => {
     if (!selectedPeriod) return 1;
@@ -1011,6 +1004,10 @@ export function RequirementSheetPage() {
 
   const locked = sheet?.status === "LOCKED";
   const cancelled = sheet?.status === "CANCELLED";
+  useUnsavedChangesGuard({
+    isDirty: Boolean(needsRecalc && !locked && !cancelled),
+    message: "Requirement Sheet has unsaved quantity changes. Leave and discard them?",
+  });
   // Editing is blocked for LOCKED/CANCELLED sheets, older versions, or a sheet row that belongs to a different cycle than SO current.
   const editingDisabled =
     Boolean(sheet) && (!isLatestForPeriod || locked || cancelled || (isNoQty && !sheetOnActiveCycle));
@@ -1427,8 +1424,8 @@ export function RequirementSheetPage() {
       isNoQty: true,
       sheetStatus: sheet?.status,
       lines: safeLines.map((l) => ({
-        newWoQty: l.newWoQty,
-        requirementQty: l.requirementQty,
+        newWoQty: l.newWoQty != null && l.newWoQty !== "" ? Number(l.newWoQty) : undefined,
+        requirementQty: l.requirementQty != null && l.requirementQty !== "" ? Number(l.requirementQty) : undefined,
         toProduceQty: computeDraftProductionRequired(l, true),
       })),
       recoveryDecisionItems: sheet?.recoveryDecisions?.items ?? [],

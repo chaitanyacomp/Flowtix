@@ -4,7 +4,6 @@ import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card"
 import { ApiRequestError, apiFetch } from "../services/api";
 import { Button, buttonVariants } from "../components/ui/button";
 import { Input } from "../components/ui/input";
-import { Badge } from "../components/ui/badge";
 import { useAuth } from "../hooks/useAuth";
 import { isValidNumberDraft, type NumberDraft, toNumberDraft } from "../lib/numberDraft";
 import { useFastEntryForm } from "../hooks/useFastEntryForm";
@@ -38,6 +37,7 @@ import { NoQtyCycleContextBar } from "../components/erp/foundation/NoQtyCycleCon
 import { ErpPageLoader } from "../components/erp/foundation/ErpPageLoader";
 import { OperationalContextBar, OperationalContextSticky, OpCtxSep } from "../components/erp/OperationalWorkspaceChrome";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { useListScrollRestoration } from "../hooks/useListScrollRestoration";
 import { buildNoQtyGuidedHref, buildQcEntryHref, useNoQtyFlowState } from "../lib/noQtyFlowState";
 import { useToast } from "../contexts/ToastContext";
 import { DemoFlowBanner } from "../components/demo/DemoFlowBanner";
@@ -142,7 +142,6 @@ import {
   resolvePostProductionReportConfirmAdvance,
   sortProductionLinesFifo,
 } from "../lib/productionWorkspaceQueue";
-import { scrollProductionWorkspaceToActiveEntry as scrollProductionWorkspaceToActiveEntryElement } from "../lib/productionWorkspaceScroll";
 import {
   pickFreshExecutableProductionLine,
   type ProductionReadinessFetchResult,
@@ -193,7 +192,7 @@ import {
 } from "../lib/productionOperatorUx";
 import { NoQtyMacroLifecycleStrip } from "../components/erp/production/NoQtyMacroLifecycleStrip";
 import { deriveProductionConciseRmLabel } from "../lib/productionRmConciseStatus";
-import { formatFgQuantity, formatRmQuantity, productionQtyInputPlaceholder } from "../lib/quantityDisplay";
+import { formatFgQuantity, formatRmQuantity } from "../lib/quantityDisplay";
 import { parseProductionWorkspaceBucket } from "../lib/productionWorkspaceBucketFilter";
 import {
   buildProductionQueueByLineId,
@@ -324,19 +323,6 @@ function prodEntryOrderTypeRaw(e: ProdEntryRow): string {
   const nestedSo = e.workOrderLine?.workOrder?.salesOrder?.orderType;
   const pick = [top, flatSo, nestedSo].find((v) => v != null && String(v).trim() !== "");
   return pick != null ? String(pick).trim() : "";
-}
-
-type ProductionSoTypeUi =
-  | { kind: "badge"; variant: "regular" | "no_qty" }
-  | { kind: "muted"; text: string };
-
-/** Maps NORMAL → REGULAR display; no default when missing or unrecognized. */
-function productionSoTypeUi(e: ProdEntryRow): ProductionSoTypeUi {
-  const raw = prodEntryOrderTypeRaw(e);
-  if (!raw) return { kind: "muted", text: "—" };
-  if (raw === "NO_QTY") return { kind: "badge", variant: "no_qty" };
-  if (raw === "NORMAL") return { kind: "badge", variant: "regular" };
-  return { kind: "muted", text: raw };
 }
 
 /** REGULAR (non–NO_QTY, non–GL) batches use RM consumption review before approve (Phase 3E). */
@@ -515,6 +501,7 @@ function sortFlatByPriority(lines: FlatLine[]): FlatLine[] {
 
 export function ProductionPage() {
   const auth = useAuth();
+  useListScrollRestoration();
   const roleUi = useErpRoleUi();
   const canCreateNextRs = useCanCreateNextRs();
   const canProd = auth.user?.role === "ADMIN" || auth.user?.role === "PRODUCTION";
@@ -1377,7 +1364,6 @@ export function ProductionPage() {
     [selected?.fgItem?.unit],
   );
 
-  const prodQtyPlaceholder = productionQtyInputPlaceholder(selected?.fgItem?.unit);
   const operatorProdQtyPlaceholder = productionOperatorQtyPlaceholder(selected?.fgItem?.unit);
 
   const noQtyCycleNoForDisplay = React.useMemo((): number | null => {
@@ -2016,10 +2002,6 @@ export function ProductionPage() {
     ],
   );
 
-  const scrollProductionWorkspaceToActiveEntry = React.useCallback(() => {
-    scrollProductionWorkspaceToActiveEntryElement(createFormRef.current, producedQtyRef.current);
-  }, []);
-
   const fetchFreshProductionRmReadiness = React.useCallback(
     async (workOrderLineId: number): Promise<ProductionReadinessFetchResult> => {
       if (!(workOrderLineId > 0)) return null;
@@ -2066,7 +2048,11 @@ export function ProductionPage() {
   );
 
   const handleProductionReportConfirmed = React.useCallback(
-    async (meta: { requiresShortfallDecision: boolean; remainderQty: number }) => {
+    async (meta: {
+      requiresShortfallDecision: boolean;
+      remainderQty: number;
+      executionCloseOutcome?: string | null;
+    }) => {
       const confirmedWoId = effectiveScopedWoId;
       if (confirmedWoId <= 0) return;
 
@@ -3535,20 +3521,9 @@ export function ProductionPage() {
     setConsumptionApproveId(id);
   }
 
-  function renderApproveButtonLabel(entryId: number, idleLabel: string, compact?: boolean) {
+  function renderApproveButtonLabel(entryId: number, idleLabel: string, _compact?: boolean): string {
     if (rowBusy !== entryId) return idleLabel;
-    return (
-      <span className="inline-flex items-center gap-1">
-        <span
-          className={cn(
-            "inline-block h-3 w-3 shrink-0 animate-spin rounded-full border-2",
-            compact ? "border-slate-300 border-t-slate-700" : "border-white/40 border-t-white",
-          )}
-          aria-hidden
-        />
-        Opening…
-      </span>
-    );
+    return "Opening…";
   }
 
   function openReverseModal(entry: ProdEntryRow) {
@@ -5082,9 +5057,22 @@ export function ProductionPage() {
                         {navigateNoQtyContext ? (
                           <>
                         <ProductionNoQtyWorkQueuePanel
-                          rows={noQtyWorkQueueRows}
+                          rows={noQtyWorkQueueRows.map((row) => ({
+                            id: row.id,
+                            workOrderId: row.workOrderId,
+                            workOrderDocNo: row.workOrderDocNo,
+                            cycleNo: row.cycleNo,
+                            balance: row.balance,
+                            queueStatus: row.queueStatus,
+                            qty: Number(row.qty),
+                            approvedProducedQty: row.approvedProducedQty,
+                            fgItem: row.fgItem,
+                          }))}
                           selectedLineId={wolId}
-                          onSelect={(row) => openExecutableProductionLine(row)}
+                          onSelect={(row) => {
+                            const line = noQtyWorkQueueRows.find((l) => l.id === row.id);
+                            if (line) openExecutableProductionLine(line);
+                          }}
                           fmtProdQty={fmtProdQty}
                         />
                         {noQtyWaitingRequirementRows.length > 0 ? (

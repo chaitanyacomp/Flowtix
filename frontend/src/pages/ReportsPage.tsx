@@ -369,7 +369,7 @@ const TILES: ReportTile[] = [
 
   /* -------------------------------- Commercial -------------------------------- */
   {
-    to: "/sales-bills?payment=pending",
+    to: withReportsReturnContext("/sales-bills?payment=pending"),
     title: "Receivables / Pending Receipts",
     description: "Finalized sales bills with outstanding customer balance",
     roles: ["ADMIN"],
@@ -378,7 +378,7 @@ const TILES: ReportTile[] = [
     priority: 10,
   },
   {
-    to: "/purchase-bills?payment=pending",
+    to: withReportsReturnContext("/purchase-bills?payment=pending"),
     title: "Payables / Pending Payments",
     description: "Finalized purchase bills with outstanding supplier balance",
     roles: ["ADMIN", "PURCHASE"],

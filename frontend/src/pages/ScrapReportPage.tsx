@@ -1,11 +1,23 @@
 import * as React from "react";
-import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
+import { Card, CardContent } from "../components/ui/card";
 import { apiFetch } from "../services/api";
-import { Button } from "../components/ui/button";
-import { PageContainer, ReportPageHeader } from "../components/PageHeader";
+import { ReportPageHeader } from "../components/PageHeader";
 import { Input } from "../components/ui/input";
-import { useErpReportLiveLoad } from "../hooks/useErpReportLiveLoad";
+import { useUrlQueryState } from "../hooks/useUrlQueryState";
+import { useStablePageData } from "../hooks/useStablePageData";
+import { ERP_REPORT_POLL_MS } from "../hooks/useErpRefreshTick";
 import { ReportPrintExportBar, ReportPrintMeta } from "../components/erp/ReportPrintExport";
+import { ReportResultsLoadGate } from "../components/erp/foundation/ReportResultsLoadGate";
+import {
+  ReportEmptyState,
+  ReportFilterField,
+  ReportFilterToolbar,
+  ReportKpiStrip,
+  ReportPageShell,
+  ReportTableShell,
+} from "../components/erp/ReportChrome";
+import { buildScrapReportDateQuery } from "../lib/scrapReportDateQuery";
+import { sanitizeReportUiError } from "../lib/reportUiError";
 
 type FgItem = { id: number; itemName: string };
 
@@ -20,15 +32,27 @@ type ScrapRow = {
 };
 
 export function ScrapReportPage() {
-  const [fgItems, setFgItems] = React.useState<FgItem[]>([]);
-  const [rows, setRows] = React.useState<ScrapRow[]>([]);
-  const [error, setError] = React.useState<string | null>(null);
-  const [loading, setLoading] = React.useState(false);
+  // dateFrom/dateTo — never reuse `from` (reserved for Analysis return context `from=reports`)
+  const { patch, read } = useUrlQueryState({
+    fgItemId: "",
+    workOrderId: "",
+    dateFrom: "",
+    dateTo: "",
+    from: "",
+    to: "",
+  });
+  const fgItemIdNum = read.int("fgItemId");
+  const fgItemId = fgItemIdNum > 0 ? fgItemIdNum : ("" as const);
+  const workOrderId = read.string("workOrderId");
+  // Prefer dateFrom/dateTo; migrate legacy from/to when they look like dates (not "reports")
+  const legacyFrom = read.string("from");
+  const legacyTo = read.string("to");
+  const dateFrom =
+    read.string("dateFrom") ||
+    (legacyFrom && legacyFrom !== "reports" && /^\d/.test(legacyFrom) ? legacyFrom : "");
+  const dateTo = read.string("dateTo") || (legacyTo && /^\d/.test(legacyTo) ? legacyTo : "");
 
-  const [fgItemId, setFgItemId] = React.useState<number | "">("");
-  const [workOrderId, setWorkOrderId] = React.useState("");
-  const [from, setFrom] = React.useState("");
-  const [to, setTo] = React.useState("");
+  const [fgItems, setFgItems] = React.useState<FgItem[]>([]);
 
   React.useEffect(() => {
     apiFetch<FgItem[]>("/api/items?type=FG")
@@ -36,28 +60,42 @@ export function ScrapReportPage() {
       .catch(() => {});
   }, []);
 
-  async function load() {
-    setError(null);
-    setLoading(true);
-    try {
+  const dateQuery = React.useMemo(() => buildScrapReportDateQuery(dateFrom, dateTo), [dateFrom, dateTo]);
+  const clientDateError = dateQuery.ok ? null : dateQuery.clientError;
+
+  const {
+    data,
+    error,
+    firstLoadDone,
+    loading,
+    reload,
+  } = useStablePageData<ScrapRow[]>({
+    enabled: clientDateError == null,
+    scopes: ["reports", "qc"],
+    pollIntervalMs: ERP_REPORT_POLL_MS,
+    deps: [fgItemId, workOrderId, dateFrom, dateTo],
+    fetcher: (signal) => {
+      const built = buildScrapReportDateQuery(dateFrom, dateTo);
+      if (!built.ok) {
+        return Promise.reject(new Error(built.clientError));
+      }
       const qs = new URLSearchParams();
       if (fgItemId !== "") qs.set("fgItemId", String(fgItemId));
       if (workOrderId.trim()) qs.set("workOrderId", workOrderId.trim());
-      if (from) qs.set("from", from);
-      if (to) qs.set("to", to);
-      const data = await apiFetch<ScrapRow[]>(`/api/scrap?${qs.toString()}`);
-      setRows(data);
-    } catch (e) {
-      setRows([]);
-      setError(e instanceof Error ? e.message : "Failed");
-    } finally {
-      setLoading(false);
-    }
-  }
+      if (built.from) qs.set("from", built.from);
+      if (built.to) qs.set("to", built.to);
+      return apiFetch<ScrapRow[]>(`/api/scrap?${qs.toString()}`, { signal });
+    },
+  });
 
-  useErpReportLiveLoad(() => load(), ["reports", "qc"], []);
-
+  const displayError = clientDateError ?? (error ? sanitizeReportUiError(error) : null);
+  const resultsReady = firstLoadDone || clientDateError != null;
+  const rows = data ?? [];
   const total = rows.reduce((s, r) => s + Number(r.rejectedQty || 0), 0);
+
+  function clearFilters() {
+    patch({ fgItemId: null, workOrderId: null, dateFrom: null, dateTo: null, from: null, to: null });
+  }
 
   function exportCsv() {
     const header = "Date,WO Id,FG Item,Rejected Qty,Reason";
@@ -72,14 +110,14 @@ export function ScrapReportPage() {
     const blob = new Blob([[header, ...lines].join("\n")], { type: "text/csv;charset=utf-8" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = `scrap-report_${from || "all"}_to_${to || "all"}.csv`;
+    a.download = `scrap-report_${dateFrom || "all"}_to_${dateTo || "all"}.csv`;
     a.click();
     URL.revokeObjectURL(a.href);
   }
 
   const filterSummary = [
-    from ? `From ${from}` : null,
-    to ? `To ${to}` : null,
+    dateFrom ? `From ${dateFrom}` : null,
+    dateTo ? `To ${dateTo}` : null,
     fgItemId !== "" ? `FG #${fgItemId}` : null,
     workOrderId.trim() ? `WO ${workOrderId.trim()}` : null,
   ]
@@ -87,99 +125,109 @@ export function ScrapReportPage() {
     .join(" · ");
 
   return (
-    <PageContainer className="erp-report-page pb-8">
+    <ReportPageShell>
       <ReportPrintMeta title="Scrap Report" filterSummary={filterSummary} />
       <ReportPageHeader
         title="Scrap Report"
         purpose="QC scrap and loss quantities by FG item and work order for the filters you choose."
         actions={<ReportPrintExportBar filterSummary={filterSummary} onExportCsv={exportCsv} />}
       />
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Filters &amp; run</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          {error ? <div className="text-sm text-red-700">{error}</div> : null}
-          <div className="grid gap-3 md:grid-cols-5">
-            <label className="grid gap-1 text-sm md:col-span-2">
-              <span className="text-slate-600">FG item</span>
-              <select
-                className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm"
-                value={fgItemId === "" ? "" : fgItemId}
-                onChange={(e) => setFgItemId(e.target.value === "" ? "" : Number(e.target.value))}
-              >
-                <option value="">All</option>
-                {fgItems.map((f) => (
-                  <option key={f.id} value={f.id}>
-                    {f.itemName}
-                  </option>
-                ))}
-              </select>
-            </label>
 
-            <label className="grid gap-1 text-sm">
-              <span className="text-slate-600">Work order id</span>
-              <Input value={workOrderId} onChange={(e) => setWorkOrderId(e.target.value)} placeholder="e.g. 12" />
-            </label>
+      <ReportKpiStrip
+        items={[
+          {
+            key: "total",
+            label: "Total Rejected Qty",
+            value: total.toFixed(2),
+            tone: total > 0 ? "warning" : "default",
+          },
+          { key: "rows", label: "Rows", value: rows.length },
+        ]}
+      />
 
-            <label className="grid gap-1 text-sm">
-              <span className="text-slate-600">From</span>
-              <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
-            </label>
+      <ReportFilterToolbar
+        onApply={() => void reload()}
+        onReset={clearFilters}
+        applyBusy={loading}
+        applyLabel="Apply"
+        resetLabel="Clear"
+      >
+        <ReportFilterField label="FG item">
+          <select
+            value={fgItemId === "" ? "" : fgItemId}
+            onChange={(e) => patch({ fgItemId: e.target.value ? Number(e.target.value) : null })}
+          >
+            <option value="">All</option>
+            {fgItems.map((f) => (
+              <option key={f.id} value={f.id}>
+                {f.itemName}
+              </option>
+            ))}
+          </select>
+        </ReportFilterField>
+        <ReportFilterField label="Work order id">
+          <Input value={workOrderId} onChange={(e) => patch({ workOrderId: e.target.value || null })} placeholder="e.g. 12" />
+        </ReportFilterField>
+        <ReportFilterField label="From">
+          <input
+            type="date"
+            value={dateFrom}
+            onChange={(e) => patch({ dateFrom: e.target.value || null, from: null })}
+          />
+        </ReportFilterField>
+        <ReportFilterField label="To">
+          <input type="date" value={dateTo} onChange={(e) => patch({ dateTo: e.target.value || null, to: null })} />
+        </ReportFilterField>
+      </ReportFilterToolbar>
 
-            <label className="grid gap-1 text-sm">
-              <span className="text-slate-600">To</span>
-              <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} />
-            </label>
-          </div>
+      {displayError ? (
+        <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800" role="alert">
+          {displayError}
+        </div>
+      ) : null}
 
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <Button type="button" onClick={load} disabled={loading}>
-              {loading ? "Loading…" : "Apply filters"}
-            </Button>
-            <div className="text-sm text-slate-600">
-              Total rejected qty: <span className="font-semibold text-slate-900">{total.toFixed(2)}</span>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Scrap entries</CardTitle>
-        </CardHeader>
-        <CardContent>
-          {!rows.length ? (
-            <div className="text-sm text-slate-600">No scrap records.</div>
-          ) : (
-            <div className="overflow-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b text-left text-slate-600">
-                    <th className="py-2 pr-2">Date</th>
-                    <th className="py-2 pr-2">WO</th>
-                    <th className="py-2 pr-2">FG</th>
-                    <th className="py-2 pr-2">Rejected qty</th>
-                    <th className="py-2 pr-2">Reason</th>
+      <Card className="border-slate-200 shadow-sm">
+        <CardContent className="p-0">
+          <ReportResultsLoadGate
+            firstLoadDone={resultsReady}
+            loading={loading && clientDateError == null}
+            hasDisplayData={data != null}
+            isEmpty={rows.length === 0 && clientDateError == null}
+            error={
+              displayError && data == null ? (
+                <div className="px-4 py-6 text-sm text-red-700">{displayError}</div>
+              ) : null
+            }
+            initialLoader={<div className="px-4 py-6 text-sm text-slate-600">Loading scrap report…</div>}
+            emptyState={<ReportEmptyState title="No scrap records" body="Adjust filters and apply again." />}
+          >
+            <ReportTableShell>
+              <table className="erp-table erp-table-dense w-full text-sm">
+                <thead className="sticky top-0 z-[1]">
+                  <tr className="border-b bg-slate-50 text-left text-slate-600">
+                    <th className="px-3 py-2">Date</th>
+                    <th className="px-3 py-2">WO</th>
+                    <th className="px-3 py-2">FG</th>
+                    <th className="px-3 py-2 text-right">Rejected qty</th>
+                    <th className="px-3 py-2">Reason</th>
                   </tr>
                 </thead>
                 <tbody>
                   {rows.map((r) => (
                     <tr key={r.id} className="border-b">
-                      <td className="py-2 pr-2 whitespace-nowrap">{new Date(r.date).toLocaleString()}</td>
-                      <td className="py-2 pr-2">#{r.workOrderId}</td>
-                      <td className="py-2 pr-2 font-medium">{r.fgItemName}</td>
-                      <td className="py-2 pr-2">{Number(r.rejectedQty).toFixed(2)}</td>
-                      <td className="py-2 pr-2 text-slate-700">{r.reason || "—"}</td>
+                      <td className="px-3 py-2 whitespace-nowrap">{new Date(r.date).toLocaleDateString()}</td>
+                      <td className="px-3 py-2">#{r.workOrderId}</td>
+                      <td className="px-3 py-2 font-medium">{r.fgItemName}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{Number(r.rejectedQty).toFixed(2)}</td>
+                      <td className="px-3 py-2 text-slate-700">{r.reason || "—"}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
-            </div>
-          )}
+            </ReportTableShell>
+          </ReportResultsLoadGate>
         </CardContent>
       </Card>
-    </PageContainer>
+    </ReportPageShell>
   );
 }
-

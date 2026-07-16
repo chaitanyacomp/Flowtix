@@ -28,7 +28,7 @@ export function coerceExecutionSummaryForWorkOrder(
   summary: ProductionExecutionSummary | null | undefined,
   workOrderId: number,
 ): ProductionExecutionSummary | null {
-  return executionSummaryMatchesWorkOrder(summary, workOrderId) ? summary : null;
+  return executionSummaryMatchesWorkOrder(summary, workOrderId) ? (summary ?? null) : null;
 }
 
 export function shouldShowScopedProductionReport(input: {

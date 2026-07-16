@@ -111,10 +111,11 @@ function mapPrismaClientError(err) {
     return mapPrismaKnownRequest(err);
   }
   if (err instanceof Prisma.PrismaClientValidationError) {
-    const isProd = process.env.NODE_ENV === "production";
+    // Never return Prisma internals / file paths / query text to the ERP UI (dev or prod).
+    // Full detail remains in server logs via errorHandler console.error.
     return {
       status: 400,
-      message: isProd ? "The request could not be processed." : err.message || "The request could not be processed.",
+      message: "The request could not be processed.",
       code: "VALIDATION",
     };
   }

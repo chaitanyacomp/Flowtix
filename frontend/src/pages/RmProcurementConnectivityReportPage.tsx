@@ -1,8 +1,8 @@
 import * as React from "react";
 import { Link } from "react-router-dom";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { PageContainer, ReportPageHeader } from "../components/PageHeader";
-import { ReportFilterToolbar, ReportFilterField } from "../components/erp/ReportChrome";
+import { ReportPageHeader } from "../components/PageHeader";
+import { ReportFilterToolbar, ReportFilterField, ReportPageShell } from "../components/erp/ReportChrome";
 import {
   ReportPrintExportBar,
   ReportPrintMeta,
@@ -14,6 +14,8 @@ import { Button } from "../components/ui/button";
 import { apiFetch } from "../services/api";
 import { useUrlQueryState } from "../hooks/useUrlQueryState";
 import { ERP_REPORT_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
+import { useStablePageData } from "../hooks/useStablePageData";
+import { ReportResultsLoadGate } from "../components/erp/foundation/ReportResultsLoadGate";
 import { cn } from "../lib/utils";
 import {
   buildConnectivityReportQuery,
@@ -309,15 +311,11 @@ export function RmProcurementConnectivityReportPage() {
     status: read.string("status"),
   };
 
-  const [rows, setRows] = React.useState<ConnectivityReportRow[]>([]);
-  const [total, setTotal] = React.useState(0);
-  const [loading, setLoading] = React.useState(true);
-  const [error, setError] = React.useState<string | null>(null);
   const [suppliers, setSuppliers] = React.useState<Supplier[]>([]);
   const [rmItems, setRmItems] = React.useState<RmItem[]>([]);
   const [expanded, setExpanded] = React.useState<Set<string>>(new Set());
   const [filterTick, setFilterTick] = React.useState(0);
-  const liveTick = useErpRefreshTick(["reports", "purchase"], { pollIntervalMs: ERP_REPORT_POLL_MS });
+  const liveTick = useErpRefreshTick(["reports"], { pollIntervalMs: ERP_REPORT_POLL_MS });
   const returnTo = "/reports/rm-procurement-connectivity";
 
   React.useEffect(() => {
@@ -325,28 +323,36 @@ export function RmProcurementConnectivityReportPage() {
     apiFetch<RmItem[]>("/api/items?type=RM").then(setRmItems).catch(() => setRmItems([]));
   }, [liveTick]);
 
-  const load = React.useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
+  const {
+    data,
+    error,
+    firstLoadDone,
+    loading,
+    reload,
+  } = useStablePageData<ApiResp>({
+    scopes: ["reports"],
+    pollIntervalMs: ERP_REPORT_POLL_MS,
+    deps: [
+      filters.sourceType,
+      filters.rmItemId,
+      filters.supplierId,
+      filters.rmPoId,
+      filters.mrId,
+      filters.prId,
+      filters.status,
+      filterTick,
+    ],
+    fetcher: (signal) => {
       const qs = buildConnectivityReportQuery(filters);
-      const data = await apiFetch<ApiResp>(
+      return apiFetch<ApiResp>(
         `/api/procurement-trace/connectivity-report${qs ? `?${qs}` : ""}`,
+        { signal },
       );
-      setRows(Array.isArray(data.rows) ? data.rows : []);
-      setTotal(Number(data.total) || 0);
-    } catch (e) {
-      setRows([]);
-      setTotal(0);
-      setError(e instanceof Error ? e.message : "Failed to load connectivity report");
-    } finally {
-      setLoading(false);
-    }
-  }, [filters.sourceType, filters.rmItemId, filters.supplierId, filters.rmPoId, filters.mrId, filters.prId, filters.status, filterTick, liveTick]);
+    },
+  });
 
-  React.useEffect(() => {
-    void load();
-  }, [load]);
+  const rows = Array.isArray(data?.rows) ? data.rows : [];
+  const total = Number(data?.total) || 0;
 
   const toggleRow = (key: string) => {
     setExpanded((prev) => {
@@ -400,7 +406,7 @@ export function RmProcurementConnectivityReportPage() {
   ]);
 
   return (
-    <PageContainer className="erp-report-page">
+    <ReportPageShell>
       <ReportPrintMeta title="RM Procurement Connectivity Report" filterSummary={filterSummary} />
       <ReportPageHeader
         title="RM Procurement Connectivity Report"
@@ -509,7 +515,15 @@ export function RmProcurementConnectivityReportPage() {
           />
         </ReportFilterField>
         <div className="flex items-end">
-          <Button type="button" variant="outline" size="sm" onClick={() => setFilterTick((t) => t + 1)}>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              setFilterTick((t) => t + 1);
+              void reload();
+            }}
+          >
             Refresh
           </Button>
         </div>
@@ -517,18 +531,22 @@ export function RmProcurementConnectivityReportPage() {
 
       <Card className="border-slate-200">
         <CardContent className="p-0">
-          {loading ? (
-            <p className="px-4 py-8 text-sm text-slate-500">Loading connectivity report…</p>
-          ) : error ? (
-            <p className="px-4 py-8 text-sm text-red-600">{error}</p>
-          ) : rows.length === 0 ? (
-            <div className="px-4 py-12 text-center" data-testid="connectivity-report-empty">
-              <p className="text-sm font-semibold text-slate-800">No procurement connectivity rows</p>
-              <p className="mt-1 text-sm text-slate-500">
-                Adjust filters or create RM demand through MR → PR → PO to see trace rows here.
-              </p>
-            </div>
-          ) : (
+          <ReportResultsLoadGate
+            firstLoadDone={firstLoadDone}
+            loading={loading}
+            hasDisplayData={data != null}
+            isEmpty={rows.length === 0}
+            error={error ? <p className="px-4 py-8 text-sm text-red-600">{error}</p> : null}
+            initialLoader={<p className="px-4 py-8 text-sm text-slate-500">Loading connectivity report…</p>}
+            emptyState={
+              <div className="px-4 py-12 text-center" data-testid="connectivity-report-empty">
+                <p className="text-sm font-semibold text-slate-800">No procurement connectivity rows</p>
+                <p className="mt-1 text-sm text-slate-500">
+                  Adjust filters or create RM demand through MR → PR → PO to see trace rows here.
+                </p>
+              </div>
+            }
+          >
             <>
               <p className="border-b border-slate-100 px-4 py-2 text-xs text-slate-500">
                 {total} row{total === 1 ? "" : "s"} · read-only trace
@@ -536,9 +554,9 @@ export function RmProcurementConnectivityReportPage() {
               <DesktopTable rows={rows} expanded={expanded} onToggle={toggleRow} returnTo={returnTo} />
               <MobileCards rows={rows} expanded={expanded} onToggle={toggleRow} returnTo={returnTo} />
             </>
-          )}
+          </ReportResultsLoadGate>
         </CardContent>
       </Card>
-    </PageContainer>
+    </ReportPageShell>
   );
 }

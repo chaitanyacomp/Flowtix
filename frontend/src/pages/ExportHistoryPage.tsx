@@ -4,6 +4,7 @@ import { Input } from "../components/ui/input";
 import { Button } from "../components/ui/button";
 import { apiFetch, getApiUrl } from "../services/api";
 import { ReportPageHeader } from "../components/PageHeader";
+import { ReportPageShell } from "../components/erp/ReportChrome";
 import {
   ReportPrintExportBar,
   ReportPrintMeta,
@@ -129,7 +130,7 @@ export function ExportHistoryPage() {
   ]);
 
   return (
-    <div className="erp-report-page flex min-h-0 flex-col gap-4">
+    <ReportPageShell>
       <ReportPrintMeta title="Export History" filterSummary={filterSummary} />
       <ReportPageHeader
         className="mb-0"
@@ -235,7 +236,7 @@ export function ExportHistoryPage() {
           </div>
         </CardContent>
       </Card>
-    </div>
+    </ReportPageShell>
   );
 }
 

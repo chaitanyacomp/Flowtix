@@ -112,14 +112,16 @@ function buildQs(mode: ProductionWastageMode, filters: ProductionWastageFilters)
 
 export function fetchProductionWastageWoDetail(
   filters: ProductionWastageFilters,
+  init?: { signal?: AbortSignal },
 ): Promise<ProductionWastageAnalysisResponse<WoDetailRow>> {
-  return apiFetch(`/api/reports/production-wastage-classification?${buildQs("wo-detail", filters)}`);
+  return apiFetch(`/api/reports/production-wastage-classification?${buildQs("wo-detail", filters)}`, init);
 }
 
 export function fetchProductionWastageTypeSummary(
   filters: ProductionWastageFilters,
+  init?: { signal?: AbortSignal },
 ): Promise<ProductionWastageAnalysisResponse<TypeSummaryRow>> {
-  return apiFetch(`/api/reports/production-wastage-classification?${buildQs("type-summary", filters)}`);
+  return apiFetch(`/api/reports/production-wastage-classification?${buildQs("type-summary", filters)}`, init);
 }
 
 export async function downloadProductionWastageCsv(

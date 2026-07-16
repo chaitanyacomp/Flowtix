@@ -43,7 +43,10 @@ export type GrnPostReceiptModalProps = {
   };
   showGrnQtyShortcut: boolean;
   grnQtyShortcutHint: string;
-  postGrnFocusBind: { onFocus: () => void; onBlur: () => void };
+  postGrnFocusBind: {
+    onFocus: React.FocusEventHandler<HTMLElement>;
+    onBlur: React.FocusEventHandler<HTMLElement>;
+  };
   showPostGrnShortcut: boolean;
   postGrnShortcutHint: string;
   onPostGrnShortcutUsed: () => void;
@@ -207,13 +210,13 @@ export function GrnPostReceiptModal({
                       </td>
                       <td className="whitespace-nowrap px-2 text-slate-600">{unit}</td>
                       <td className="px-2 text-right tabular-nums text-slate-800">
-                        {formatGrnWorkspaceQty(Number(ln.qty), ln.unit)}
+                        {formatGrnWorkspaceQty(Number(ln.qty), ln.unit ?? undefined)}
                       </td>
                       <td className="px-2 text-right tabular-nums text-slate-600">
-                        {formatGrnWorkspaceQty(got, ln.unit)}
+                        {formatGrnWorkspaceQty(got, ln.unit ?? undefined)}
                       </td>
                       <td className="px-2 text-right tabular-nums font-medium text-amber-950">
-                        {pending > 1e-9 ? formatGrnWorkspaceQty(pending, ln.unit) : "—"}
+                        {pending > 1e-9 ? formatGrnWorkspaceQty(pending, ln.unit ?? undefined) : "—"}
                       </td>
                       <td className="px-2">
                         <select
@@ -269,7 +272,7 @@ export function GrnPostReceiptModal({
                       </td>
                       <td className="px-2 text-right tabular-nums text-slate-700">
                         {Number.isFinite(receiveQty) && receiveQty > 0
-                          ? formatGrnWorkspaceQty(balanceAfter, ln.unit)
+                          ? formatGrnWorkspaceQty(balanceAfter, ln.unit ?? undefined)
                           : "—"}
                       </td>
                     </tr>

@@ -100,6 +100,8 @@ PMR freeze rules, issue gates, production readiness, QA disposition, dispatch el
 
 **Work Order** is the controlled manufacturing order that **permits** the execution chain to begin. It defines FG lines and quantities to produce. It does **not** by itself issue RM, start shop-floor production, or dispatch FG.
 
+**Reporting note:** The Analysis **Work Order Tracking** report separates **Regular** vs **NO_QTY** flows. Regular pending uses SO-qty pipeline math; NO_QTY pending uses execution/cycle/recovery-aware rules so closed shortfalls do not reopen as Production Pending. See `docs/WORK_ORDER_TRACKING_REPORT_STANDARD.md`.
+
 ### 5.2 PMR authorizes material issue
 
 **Production Material Request (PMR)** is the **frozen RM requirement** for a Work Order. Store issues material **only** against submitted PMR lines. PMR bridges planning intent (BOM basis at freeze) to physical issue.

@@ -8,6 +8,7 @@ import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Badge } from "../components/ui/badge";
 import { useToast } from "../contexts/ToastContext";
+import { useUnsavedChangesGuard } from "../hooks/useUnsavedChangesGuard";
 import { useAuth } from "../hooks/useAuth";
 import { Download, Pencil, Trash2, X } from "lucide-react";
 import {
@@ -182,6 +183,7 @@ export function QuotationsPage() {
   const [terms, setTerms] = React.useState("");
 
   const [editQ, setEditQ] = React.useState<QRow | null>(null);
+  const [editBaseline, setEditBaseline] = React.useState<{ terms: string; lines: string } | null>(null);
   const [saving, setSaving] = React.useState(false);
   const [statusUpdatingId, setStatusUpdatingId] = React.useState<number | null>(null);
   const [cancelApprovalOpen, setCancelApprovalOpen] = React.useState(false);
@@ -189,6 +191,21 @@ export function QuotationsPage() {
   const [cancelApprovalTarget, setCancelApprovalTarget] = React.useState<QRow | null>(null);
   const [listLoaded, setListLoaded] = React.useState(false);
   const [selectedId, setSelectedId] = React.useState<number | null>(null);
+
+  const { confirmLeave } = useUnsavedChangesGuard({
+    isDirty:
+      editQ != null &&
+      editBaseline != null &&
+      (terms !== editBaseline.terms || JSON.stringify(quoteLines) !== editBaseline.lines),
+    message: "Quotation has unsaved changes. Leave and discard them?",
+    enabled: !saving,
+  });
+
+  function requestCloseEditModal() {
+    if (!confirmLeave()) return;
+    setEditQ(null);
+    setEditBaseline(null);
+  }
 
   const selectedRow = React.useMemo(
     () => (selectedId == null ? null : rows.find((r) => r.id === selectedId) ?? null),
@@ -243,17 +260,18 @@ export function QuotationsPage() {
   function openEdit(q: QRow) {
     if (!canEditQuotation(q.workflowStatus)) return;
     setEditQ(q);
-    setQuoteLines(
-      q.lines.map((l) => ({
-        itemId: l.itemId,
-        qty: String(l.qty),
-        rate: String(l.rate),
-        discountPct: String(l.discountPct),
-        gstPct: String(l.gstPct),
-        isFree: Boolean(l.isFree),
-      })),
-    );
-    setTerms(q.terms ?? "");
+    const lines = q.lines.map((l) => ({
+      itemId: l.itemId,
+      qty: String(l.qty),
+      rate: String(l.rate),
+      discountPct: String(l.discountPct),
+      gstPct: String(l.gstPct),
+      isFree: Boolean(l.isFree),
+    }));
+    setQuoteLines(lines);
+    const nextTerms = q.terms ?? "";
+    setTerms(nextTerms);
+    setEditBaseline({ terms: nextTerms, lines: JSON.stringify(lines) });
   }
 
   async function saveEdit(e: React.FormEvent) {
@@ -311,6 +329,7 @@ export function QuotationsPage() {
         }),
       });
       setEditQ(null);
+      setEditBaseline(null);
       await refresh();
       toast.showSuccess("Saved successfully");
     } catch (err) {
@@ -637,7 +656,7 @@ export function QuotationsPage() {
       ) : null}
 
       {editQ ? (
-        <ErpModal onClose={() => setEditQ(null)}>
+        <ErpModal onClose={requestCloseEditModal}>
           <Card className="max-h-[90vh] w-full max-w-3xl overflow-hidden rounded-lg border border-slate-200 bg-white shadow-lg">
             <CardHeader className="shrink-0 pb-2">
               <CardTitle className="flex flex-wrap items-center gap-2 text-base">
@@ -764,7 +783,7 @@ export function QuotationsPage() {
                   <Input value={terms} onChange={(e) => setTerms(e.target.value)} />
                 </div>
                 <div className="flex gap-2">
-                  <Button type="button" variant="outline" onClick={() => setEditQ(null)} disabled={saving}>
+                  <Button type="button" variant="outline" onClick={requestCloseEditModal} disabled={saving}>
                     Cancel
                   </Button>
                   <Button type="submit" disabled={saving}>

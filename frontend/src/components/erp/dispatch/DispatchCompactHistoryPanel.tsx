@@ -1,6 +1,5 @@
-import * as React from "react";
 import { Link } from "react-router-dom";
-import { Button } from "../../ui/button";
+import { buttonVariants } from "../../ui/button";
 import { cn } from "../../../lib/utils";
 import {
   formatDispatchCompactQty,
@@ -95,9 +94,13 @@ export function DispatchCompactHistoryPanel({
           Total dispatched:{" "}
           <span className="font-semibold tabular-nums text-emerald-900">{formatDispatchCompactQty(totalDispatched)}</span>
         </div>
-        <Button variant="outline" size="sm" asChild data-testid="dispatch-compact-view-register">
-          <Link to={registerHref}>View Dispatch Register</Link>
-        </Button>
+        <Link
+          to={registerHref}
+          className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
+          data-testid="dispatch-compact-view-register"
+        >
+          View Dispatch Register
+        </Link>
       </div>
     </div>
   );

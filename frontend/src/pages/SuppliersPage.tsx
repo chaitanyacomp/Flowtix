@@ -11,6 +11,9 @@ import { SupplierMasterForm } from "../components/erp/SupplierMasterForm";
 import { PartyMasterModal } from "../components/erp/partyMasterUi";
 import type { StateRow } from "../lib/gstinValidation";
 import { isReportsReturnContext } from "../lib/drillDownRoutes";
+import { useUnsavedChangesGuard } from "../hooks/useUnsavedChangesGuard";
+import { confirmLeaveIfDirty } from "../lib/unsavedChangesPolicy";
+import { useListScrollRestoration } from "../hooks/useListScrollRestoration";
 
 type Supplier = {
   id: number;
@@ -27,9 +30,12 @@ type Supplier = {
   defaultLocationLabel?: string | null;
 };
 
+const SUPPLIER_LEAVE_MESSAGE = "Supplier form has unsaved changes. Leave and discard them?";
+
 export function SuppliersPage() {
   const toast = useToast();
   const location = useLocation();
+  useListScrollRestoration();
   const role = useAuth().user?.role;
   const fromAnalysis = isReportsReturnContext(location.search);
   const mastersBack = React.useMemo(() => ({ to: "/customers", label: "Back to Masters" }), []);
@@ -41,6 +47,28 @@ export function SuppliersPage() {
   const [error, setError] = React.useState<string | null>(null);
   const [showForm, setShowForm] = React.useState(false);
   const [editingId, setEditingId] = React.useState<number | null>(null);
+  const [formDirty, setFormDirty] = React.useState(false);
+
+  useUnsavedChangesGuard({
+    isDirty: formDirty,
+    message: SUPPLIER_LEAVE_MESSAGE,
+    enabled: showForm && canWrite,
+  });
+
+  const onFormDirtyChange = React.useCallback((dirty: boolean) => {
+    setFormDirty(dirty);
+  }, []);
+
+  function closeForm() {
+    setShowForm(false);
+    setEditingId(null);
+    setFormDirty(false);
+  }
+
+  function requestCloseForm() {
+    if (!confirmLeaveIfDirty(formDirty, SUPPLIER_LEAVE_MESSAGE)) return;
+    closeForm();
+  }
 
   function load() {
     return Promise.all([apiFetch<Supplier[]>("/api/suppliers"), apiFetch<StateRow[]>("/api/states")])
@@ -74,12 +102,14 @@ export function SuppliersPage() {
   function openAdd() {
     setError(null);
     setEditingId(null);
+    setFormDirty(false);
     setShowForm(true);
   }
 
   function openEdit(id: number) {
     setError(null);
     setEditingId(id);
+    setFormDirty(false);
     setShowForm(true);
   }
 
@@ -166,23 +196,14 @@ export function SuppliersPage() {
       </div>
 
       {showForm ? (
-        <PartyMasterModal
-          title={editingId != null ? "Edit supplier" : "Add supplier"}
-          onClose={() => {
-            setShowForm(false);
-            setEditingId(null);
-          }}
-        >
+        <PartyMasterModal title={editingId != null ? "Edit supplier" : "Add supplier"} onClose={requestCloseForm}>
           <SupplierMasterForm
             states={states}
             editingId={editingId}
-            onCancel={() => {
-              setShowForm(false);
-              setEditingId(null);
-            }}
+            onDirtyChange={onFormDirtyChange}
+            onCancel={requestCloseForm}
             onSaved={() => {
-              setShowForm(false);
-              setEditingId(null);
+              closeForm();
               void load();
               toast.showSuccess("Supplier saved");
             }}

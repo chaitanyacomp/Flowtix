@@ -341,7 +341,10 @@ d("Reporting + dispatch integration (seeded chain)", () => {
   });
 
   it("GET /api/reports/work-order-tracking — shape, quantities, summary vs rows, contexts", async () => {
-    const res = await request(app).get("/api/reports/work-order-tracking").set(adminAuth()).expect(200);
+    const res = await request(app)
+      .get("/api/reports/work-order-tracking?flow=REGULAR&includeClosed=true")
+      .set(adminAuth())
+      .expect(200);
     assert.ok(res.body.rows);
     assert.ok(res.body.summary);
     assert.ok(res.body.reportMetricHints);

@@ -27,7 +27,7 @@ Use this after changes to dispatch allocation, `reportMetrics`, dashboard queue 
 
 | Endpoint | Consumers |
 |----------|-----------|
-| `GET /api/reports/work-order-tracking` | `WorkOrderTrackingReportPage` (+ `normalizeWoTrackingApiResponse` for legacy array) |
+| `GET /api/reports/work-order-tracking?flow=REGULAR\|NO_QTY` (`includeClosed` optional) | `WorkOrderTrackingReportPage` (+ `normalizeWoTrackingApiResponse`); standard: `docs/WORK_ORDER_TRACKING_REPORT_STANDARD.md` |
 | `GET /api/reports/operations-exceptions` | `OperationsExceptionReportPage` |
 | `GET /api/dashboard` (+ queue subroutes) | `DashboardPage`, `ReportsPage`, `RMShortageReportPage` |
 | `GET /api/dispatch/sales-orders` | `DispatchPage` |
@@ -40,4 +40,4 @@ Use this after changes to dispatch allocation, `reportMetrics`, dashboard queue 
 
 ## Breaking changes to document
 
-- Work-order-tracking response is `{ rows, summary, ... }`. Older clients sending/receiving a bare array should use `normalizeWoTrackingApiResponse` (frontend) or migrate to the object shape. Backend contract is not weakened.
+- Work-order-tracking requires `flow=REGULAR|NO_QTY`. Response is `{ flow, includeClosed, rows, summary, emptyMessage, reportMetricHints }`. Regular and NO_QTY are never mixed. Older clients without `flow` receive 400.

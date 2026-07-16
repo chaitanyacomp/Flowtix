@@ -9,6 +9,9 @@ import { Pencil, Trash2 } from "lucide-react";
 import { CustomerMasterForm } from "../components/erp/CustomerMasterForm";
 import { PartyMasterModal } from "../components/erp/partyMasterUi";
 import type { StateRow } from "../lib/gstinValidation";
+import { useUnsavedChangesGuard } from "../hooks/useUnsavedChangesGuard";
+import { confirmLeaveIfDirty } from "../lib/unsavedChangesPolicy";
+import { useListScrollRestoration } from "../hooks/useListScrollRestoration";
 
 function messageForCustomerLoadError(err: unknown): string {
   if (err instanceof ApiRequestError) {
@@ -34,14 +37,39 @@ type Customer = {
   defaultDeliveryLabel?: string | null;
 };
 
+const CUSTOMER_LEAVE_MESSAGE = "Customer form has unsaved changes. Leave and discard them?";
+
 export function CustomersPage() {
   const toast = useToast();
   const isAdmin = useAuth().user?.role === "ADMIN";
+  useListScrollRestoration();
   const [rows, setRows] = React.useState<Customer[]>([]);
   const [states, setStates] = React.useState<StateRow[]>([]);
   const [error, setError] = React.useState<string | null>(null);
   const [showForm, setShowForm] = React.useState(false);
   const [editingId, setEditingId] = React.useState<number | null>(null);
+  const [formDirty, setFormDirty] = React.useState(false);
+
+  useUnsavedChangesGuard({
+    isDirty: formDirty,
+    message: CUSTOMER_LEAVE_MESSAGE,
+    enabled: showForm,
+  });
+
+  const onFormDirtyChange = React.useCallback((dirty: boolean) => {
+    setFormDirty(dirty);
+  }, []);
+
+  function closeForm() {
+    setShowForm(false);
+    setEditingId(null);
+    setFormDirty(false);
+  }
+
+  function requestCloseForm() {
+    if (!confirmLeaveIfDirty(formDirty, CUSTOMER_LEAVE_MESSAGE)) return;
+    closeForm();
+  }
 
   function load() {
     return Promise.all([apiFetch<Customer[]>("/api/customers"), apiFetch<StateRow[]>("/api/states")])
@@ -76,12 +104,14 @@ export function CustomersPage() {
   function openAdd() {
     setError(null);
     setEditingId(null);
+    setFormDirty(false);
     setShowForm(true);
   }
 
   function openEdit(id: number) {
     setError(null);
     setEditingId(id);
+    setFormDirty(false);
     setShowForm(true);
   }
 
@@ -149,23 +179,14 @@ export function CustomersPage() {
       </div>
 
       {showForm ? (
-        <PartyMasterModal
-          title={editingId != null ? "Edit customer" : "Add customer"}
-          onClose={() => {
-            setShowForm(false);
-            setEditingId(null);
-          }}
-        >
+        <PartyMasterModal title={editingId != null ? "Edit customer" : "Add customer"} onClose={requestCloseForm}>
           <CustomerMasterForm
             states={states}
             editingId={editingId}
-            onCancel={() => {
-              setShowForm(false);
-              setEditingId(null);
-            }}
+            onDirtyChange={onFormDirtyChange}
+            onCancel={requestCloseForm}
             onSaved={async () => {
-              setShowForm(false);
-              setEditingId(null);
+              closeForm();
               await load();
               toast.showSuccess("Customer saved");
             }}

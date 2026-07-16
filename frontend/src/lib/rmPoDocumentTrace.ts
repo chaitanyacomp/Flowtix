@@ -104,7 +104,7 @@ export function demandSourceDisplay(ds: RmPoTraceDemandSource): string {
 
 export { demandPoolKeyForSourceType, poTraceChainSummary };
 
-export function lineReceiptStatusLabel(ordered: number, received: number, pending: number): string {
+export function lineReceiptStatusLabel(_ordered: number, received: number, pending: number): string {
   if (received <= 1e-6) return "Pending receipt";
   if (pending > 1e-6) return "Partially received";
   return "Received";

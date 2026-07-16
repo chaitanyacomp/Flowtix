@@ -76,8 +76,6 @@ export function ProductionExecutionPanel({
   evaluateTick = 0,
   evaluateBatchQty = 0,
   layoutMode = "default",
-  productionReportConfirmed = false,
-  reportStatusResolved = false,
   executionResolved = false,
   workOrderLabel,
   itemName,

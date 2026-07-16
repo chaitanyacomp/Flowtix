@@ -1,6 +1,5 @@
 import { ApiRequestError, getApiUrl } from "./api";
-
-const SESSION_EXPIRED_MESSAGE = "Session expired. Please login again.";
+import { handleAuthFailureOnce, SESSION_EXPIRED_MESSAGE } from "../lib/authSession";
 
 function parseFilenameFromContentDisposition(cd: string | null, fallback: string): string {
   if (!cd) return fallback;
@@ -49,20 +48,7 @@ export async function apiDownloadAuthorized(path: string, fallbackFileName: stri
       // ignore
     }
     if (res.status === 401) {
-      try {
-        localStorage.removeItem("token");
-        localStorage.removeItem("user");
-      } catch {
-        // ignore
-      }
-      try {
-        sessionStorage.setItem("auth:sessionExpiredMessage", SESSION_EXPIRED_MESSAGE);
-      } catch {
-        // ignore
-      }
-      if (typeof window !== "undefined" && window.location?.pathname !== "/login") {
-        window.location.replace("/login");
-      }
+      handleAuthFailureOnce();
       throw new ApiRequestError(SESSION_EXPIRED_MESSAGE, 401);
     }
     throw new ApiRequestError(message, res.status);

@@ -8,6 +8,8 @@ import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Badge } from "../components/ui/badge";
 import { cn } from "../lib/utils";
+import { useUnsavedChangesGuard } from "../hooks/useUnsavedChangesGuard";
+import { useListScrollRestoration } from "../hooks/useListScrollRestoration";
 
 type LocationRow = {
   id: number;
@@ -57,13 +59,19 @@ const emptyForm = {
 
 export function LocationsPage() {
   const toast = useToast();
+  useListScrollRestoration();
   const [rows, setRows] = React.useState<LocationRow[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
   const [selectedId, setSelectedId] = React.useState<number | null>(null);
   const [form, setForm] = React.useState(emptyForm);
+  const [formBaseline, setFormBaseline] = React.useState(() => JSON.stringify(emptyForm));
   const [saving, setSaving] = React.useState(false);
   const [showInactive, setShowInactive] = React.useState(false);
+  useUnsavedChangesGuard({
+    isDirty: JSON.stringify(form) !== formBaseline,
+    message: "Location form has unsaved changes. Leave and discard them?",
+  });
 
   function load() {
     setLoading(true);
@@ -81,7 +89,7 @@ export function LocationsPage() {
 
   function selectRow(r: LocationRow) {
     setSelectedId(r.id);
-    setForm({
+    const next = {
       locationName: r.locationName,
       locationType: r.locationType as typeof emptyForm.locationType,
       departmentOwner: r.departmentOwner as typeof emptyForm.departmentOwner,
@@ -90,12 +98,15 @@ export function LocationsPage() {
       allowSfg: r.allowSfg,
       allowConsumable: r.allowConsumable,
       isActive: r.isActive,
-    });
+    };
+    setForm(next);
+    setFormBaseline(JSON.stringify(next));
   }
 
   function newLocation() {
     setSelectedId(null);
     setForm(emptyForm);
+    setFormBaseline(JSON.stringify(emptyForm));
   }
 
   async function onSave(e: React.FormEvent) {

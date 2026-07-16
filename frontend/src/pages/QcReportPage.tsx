@@ -1,5 +1,6 @@
 import * as React from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link } from "react-router-dom";
+import { useDebouncedUrlStringParam, useUrlQueryState } from "../hooks/useUrlQueryState";
 import { apiFetch } from "../services/api";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
@@ -9,7 +10,8 @@ import { PageBackLink, PageContainer, StickyWorkspaceHead, useAnalysisReportBack
 import { displaySalesOrderNo } from "../lib/docNoDisplay";
 import { salesOrdersFocusHref, workOrdersFocusHref } from "../lib/drillDownRoutes";
 import { cn } from "../lib/utils";
-import { useErpReportLiveLoad } from "../hooks/useErpReportLiveLoad";
+import { useStablePageData } from "../hooks/useStablePageData";
+import { ERP_REPORT_POLL_MS } from "../hooks/useErpRefreshTick";
 import { ErpModal } from "../components/erp/ErpModal";
 import { PRODUCTION_QA_TERMS } from "../lib/productionQaTerminology";
 import { formatQcQuantity } from "../lib/quantityDisplay";
@@ -207,11 +209,17 @@ function QcHistoryTableSection({
         {subtitle ? <p className="mt-0.5 text-[12px] leading-snug text-slate-600">{subtitle}</p> : null}
       </CardHeader>
       <CardContent className="px-0 py-0">
-        {loading ? (
+        {loading && rows.length === 0 ? (
           <p className="px-3 py-6 text-center text-[12px] text-slate-600">Loading…</p>
         ) : rows.length === 0 ? (
           <p className="px-3 py-6 text-center text-[12px] text-slate-600">No QC records found for selected filters.</p>
         ) : (
+          <div className="relative">
+            {loading ? (
+              <div className="flex justify-end px-3 pt-2">
+                <span className="text-[11px] font-medium text-slate-500">Refreshing…</span>
+              </div>
+            ) : null}
           <div className="overflow-x-auto">
             <table className="w-full min-w-[1480px] border-collapse text-[12px]">
               <thead>
@@ -308,6 +316,7 @@ function QcHistoryTableSection({
               </tbody>
             </table>
           </div>
+          </div>
         )}
       </CardContent>
     </Card>
@@ -315,26 +324,33 @@ function QcHistoryTableSection({
 }
 
 export function QcReportPage() {
-  const [searchParams] = useSearchParams();
-  const urlSource = searchParams.get("sourceType");
-  const initialSourceType: "ALL" | "PRODUCTION" | "CUSTOMER_RETURN" =
-    urlSource === "CUSTOMER_RETURN" || urlSource === "PRODUCTION" ? urlSource : "ALL";
-
   const { from: defaultFrom, to: defaultTo } = defaultDateRange();
-  const [dateFrom, setDateFrom] = React.useState(defaultFrom);
-  const [dateTo, setDateTo] = React.useState(defaultTo);
-  const [sourceType, setSourceType] = React.useState<"ALL" | "PRODUCTION" | "CUSTOMER_RETURN">(initialSourceType);
-  const [customerId, setCustomerId] = React.useState<number | "">("");
-  const [itemId, setItemId] = React.useState<number | "">("");
-  const [status, setStatus] = React.useState<"ALL" | "ACTIVE" | "REVERSED">("ALL");
-  const [search, setSearch] = React.useState("");
+  const { patch, read } = useUrlQueryState({
+    dateFrom: defaultFrom,
+    dateTo: defaultTo,
+    sourceType: "ALL",
+    status: "ALL",
+    customerId: "",
+    itemId: "",
+    search: "",
+  });
+  const dateFrom = read.string("dateFrom", defaultFrom);
+  const dateTo = read.string("dateTo", defaultTo);
+  const sourceType = read.enum("sourceType", ["ALL", "PRODUCTION", "CUSTOMER_RETURN"] as const, "ALL");
+  const customerIdNum = read.int("customerId");
+  const customerId = customerIdNum > 0 ? customerIdNum : ("" as const);
+  const itemIdNum = read.int("itemId");
+  const itemId = itemIdNum > 0 ? itemIdNum : ("" as const);
+  const status = read.enum("status", ["ALL", "ACTIVE", "REVERSED"] as const, "ALL");
+  const searchFromUrl = read.string("search");
+  const [search, setSearch] = useDebouncedUrlStringParam({
+    urlValue: searchFromUrl,
+    patch,
+    paramKey: "search",
+  });
 
   const [customers, setCustomers] = React.useState<CustomerOpt[]>([]);
   const [items, setItems] = React.useState<ItemOpt[]>([]);
-  const [rows, setRows] = React.useState<QcReportRow[]>([]);
-  const [summaries, setSummaries] = React.useState<QcReportSummaries | null>(null);
-  const [loading, setLoading] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
   const [detailRow, setDetailRow] = React.useState<QcReportRow | null>(null);
 
   React.useEffect(() => {
@@ -346,10 +362,16 @@ export function QcReportPage() {
       .catch(() => setItems([]));
   }, []);
 
-  async function load() {
-    setError(null);
-    setLoading(true);
-    try {
+  const {
+    data,
+    error,
+    loading,
+    reload,
+  } = useStablePageData<QcReportResponse>({
+    scopes: ["reports", "qc"],
+    pollIntervalMs: ERP_REPORT_POLL_MS,
+    deps: [dateFrom, dateTo, sourceType, customerId, itemId, status, search],
+    fetcher: (signal) => {
       const qs = new URLSearchParams();
       if (dateFrom) qs.set("dateFrom", dateFrom);
       if (dateTo) qs.set("dateTo", dateTo);
@@ -358,19 +380,12 @@ export function QcReportPage() {
       if (itemId !== "") qs.set("itemId", String(itemId));
       qs.set("status", status);
       if (search.trim()) qs.set("search", search.trim());
-      const data = await apiFetch<QcReportResponse>(`/api/qc/report?${qs.toString()}`);
-      setSummaries(data.summaries ?? null);
-      setRows(Array.isArray(data.rows) ? data.rows : []);
-    } catch (e) {
-      setRows([]);
-      setSummaries(null);
-      setError(e instanceof Error ? e.message : "Failed to load QC report.");
-    } finally {
-      setLoading(false);
-    }
-  }
+      return apiFetch<QcReportResponse>(`/api/qc/report?${qs.toString()}`, { signal });
+    },
+  });
 
-  useErpReportLiveLoad(() => load(), ["reports", "qc"], []);
+  const summaries = data?.summaries ?? null;
+  const rows = Array.isArray(data?.rows) ? data.rows : [];
 
   const productionRows = React.useMemo(() => rows.filter((r) => r.sourceType === "PRODUCTION"), [rows]);
   const customerReturnRows = React.useMemo(() => rows.filter((r) => r.sourceType === "CUSTOMER_RETURN"), [rows]);
@@ -436,7 +451,12 @@ export function QcReportPage() {
           <ReportPrintExportBar
             onExportCsv={() => downloadReportCsv(`qc-report_${new Date().toISOString().slice(0, 10)}.csv`, csvHeaders, csvRows)}
             onExportExcel={() =>
-              downloadReportExcel(`qc-report_${new Date().toISOString().slice(0, 10)}.xlsx`, csvHeaders, csvRows)
+              downloadReportExcel(
+                `qc-report_${new Date().toISOString().slice(0, 10)}.xlsx`,
+                "QC Report",
+                csvHeaders,
+                csvRows,
+              )
             }
           />
         </div>
@@ -476,18 +496,18 @@ export function QcReportPage() {
             <div className="grid gap-2.5 lg:grid-cols-4">
               <label className="grid gap-1 text-[12px]">
                 <span className="font-medium text-slate-600">Date From</span>
-                <Input className="h-8 text-sm tabular-nums" type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
+                <Input className="h-8 text-sm tabular-nums" type="date" value={dateFrom} onChange={(e) => patch({ dateFrom: e.target.value || null })} />
               </label>
               <label className="grid gap-1 text-[12px]">
                 <span className="font-medium text-slate-600">Date To</span>
-                <Input className="h-8 text-sm tabular-nums" type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+                <Input className="h-8 text-sm tabular-nums" type="date" value={dateTo} onChange={(e) => patch({ dateTo: e.target.value || null })} />
               </label>
               <label className="grid gap-1 text-[12px]">
                 <span className="font-medium text-slate-600">Source</span>
                 <select
                   className="h-8 rounded-md border border-slate-200 bg-white px-2 text-sm"
                   value={sourceType}
-                  onChange={(e) => setSourceType(e.target.value as typeof sourceType)}
+                  onChange={(e) => patch({ sourceType: e.target.value === "ALL" ? null : e.target.value })}
                 >
                   <option value="ALL">All</option>
                   <option value="PRODUCTION">Production</option>
@@ -499,7 +519,7 @@ export function QcReportPage() {
                 <select
                   className="h-8 rounded-md border border-slate-200 bg-white px-2 text-sm"
                   value={status}
-                  onChange={(e) => setStatus(e.target.value as typeof status)}
+                  onChange={(e) => patch({ status: e.target.value === "ALL" ? null : e.target.value })}
                 >
                   <option value="ALL">All</option>
                   <option value="ACTIVE">Active</option>
@@ -513,7 +533,7 @@ export function QcReportPage() {
                 <select
                   className="h-8 rounded-md border border-slate-200 bg-white px-2 text-sm"
                   value={customerId === "" ? "" : String(customerId)}
-                  onChange={(e) => setCustomerId(e.target.value === "" ? "" : Number(e.target.value))}
+                  onChange={(e) => patch({ customerId: e.target.value ? Number(e.target.value) : null })}
                 >
                   <option value="">All</option>
                   {customers.map((c) => (
@@ -528,7 +548,7 @@ export function QcReportPage() {
                 <select
                   className="h-8 rounded-md border border-slate-200 bg-white px-2 text-sm"
                   value={itemId === "" ? "" : String(itemId)}
-                  onChange={(e) => setItemId(e.target.value === "" ? "" : Number(e.target.value))}
+                  onChange={(e) => patch({ itemId: e.target.value ? Number(e.target.value) : null })}
                 >
                   <option value="">All</option>
                   {items.map((it) => (
@@ -548,7 +568,7 @@ export function QcReportPage() {
                 />
               </label>
               <div className="flex items-end">
-                <Button type="button" className="h-8" onClick={() => void load()} disabled={loading}>
+                <Button type="button" className="h-8" onClick={() => void reload()} disabled={loading}>
                   {loading ? "Loading…" : "Apply"}
                 </Button>
               </div>
@@ -558,14 +578,17 @@ export function QcReportPage() {
                   variant="outline"
                   className="h-8"
                   onClick={() => {
-                    setDateFrom(defaultFrom);
-                    setDateTo(defaultTo);
-                    setSourceType(initialSourceType);
-                    setStatus("ALL");
-                    setCustomerId("");
-                    setItemId("");
+                    patch({
+                      dateFrom: defaultFrom,
+                      dateTo: defaultTo,
+                      sourceType: null,
+                      status: null,
+                      customerId: null,
+                      itemId: null,
+                      search: null,
+                    });
                     setSearch("");
-                    void load();
+                    void reload();
                   }}
                   disabled={loading}
                 >

@@ -261,6 +261,15 @@ Every projection must be **rebuildable** from authoritative sources (events + do
 
 Formulas are centralized in `productionWastageAnalysisQueryService` (backend-only). Frontend renders API results only. Machine / Shift / Operator dimensions are not projected.
 
+### 8.4 Work Order Tracking report (flow-aware)
+
+| Flow | Route query | Primary facts | Pending model |
+|------|-------------|---------------|---------------|
+| Regular | `flow=REGULAR` | WO lines on non-NO_QTY SOs; SO line ordered qty | Required−Produced; Accepted−WO FIFO dispatch |
+| NO_QTY | `flow=NO_QTY` | WO lines + RS + cycle + execution + recovery | `getEffectiveProductionPendingQty`; SO+FG cycle dispatch cap remaining |
+
+Default `includeClosed=false` (Active Only). Implementation: `workOrderTrackingReportService.js`. Product standard: `docs/WORK_ORDER_TRACKING_REPORT_STANDARD.md`.
+
 ---
 
 ## 9. KPI Persistence

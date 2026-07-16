@@ -229,8 +229,6 @@ export function formatReleaseSuccessSummary(params: {
     totalDeltaQty,
     skippedLineCount,
     surplusLineCount,
-    executionWorkOrders,
-    executionPmrs,
   } = params;
   const planLabel =
     plan && usesPlanDocumentProcurementUx(plan)
@@ -243,8 +241,6 @@ export function formatReleaseSuccessSummary(params: {
     totalDeltaQty,
     skippedLineCount,
     surplusLineCount,
-    executionWorkOrderCount: executionWorkOrders?.length ?? 0,
-    executionPmrCount: executionPmrs?.filter((p) => p.pmrId != null).length ?? 0,
   });
 }
 
@@ -272,7 +268,11 @@ export function productionPlanReadOnlyMessage(
   plan: MonthlyPlanHeader | null | undefined,
   ctx?: ProductionPlanReadOnlyContext,
 ): string | null {
-  if (!plan || plan.status === "DRAFT") return null;
+  if (!plan) return null;
+  if (plan.status === "DRAFT" && isLegacyPlanDocument(plan)) {
+    return `${LEGACY_REVISION_WORKFLOW_LABEL}: editing draft for the next legacy lock snapshot. Use Cancel Reopen (legacy only) to restore the locked plan.`;
+  }
+  if (plan.status === "DRAFT") return null;
   if (plan.status === "AWAITING_PURCHASE_REVIEW") {
     return "This plan is awaiting Purchase review. FG lines are read-only until Purchase approves or rejects.";
   }
@@ -290,9 +290,6 @@ export function productionPlanReadOnlyMessage(
   }
   if (plan.status === "LOCKED" && isLegacyPlanDocument(plan)) {
     return `${LEGACY_PLAN_BADGE_LABEL}: this plan is locked under the legacy revision workflow. Reopen Plan (legacy only) prepares the next lock snapshot — use Create Additional Plan on modern plan documents instead.`;
-  }
-  if (plan.status === "DRAFT" && isLegacyPlanDocument(plan)) {
-    return `${LEGACY_REVISION_WORKFLOW_LABEL}: editing draft for the next legacy lock snapshot. Use Cancel Reopen (legacy only) to restore the locked plan.`;
   }
   return "This plan is read-only.";
 }

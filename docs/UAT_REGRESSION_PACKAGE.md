@@ -165,6 +165,18 @@ Use as a quick coverage map; detailed steps are in §2 and §3.
 | RP-001 | Reports | Dispatchable / shortage | Known SO+QC state | Open relevant report | Numbers match operational reality | Regression-sensitive |
 | RP-002 | Dashboard | Queue / exceptions | Staged defects | Open dashboard | Metrics match drill-down | Happy path |
 | RP-003 | Reports | After QC reversal | Reversal just done | Refresh reports | No stale QC-approved totals | Regression-sensitive |
+| RP-010 | Reports | WO Tracking Regular flow | Open Regular WOs | Flow = Regular; Status = Open | Ordered Qty from SO line; no NO_QTY rows; production-oriented KPIs | Regression-sensitive |
+| RP-011 | Reports | WO Tracking closed NO_QTY SO | Closed SO (e.g. 242/243) | Flow = NO_QTY; Status = Open | Not listed as IN PRODUCTION; Status = Closed/All → Active pending 0 | Regression-sensitive |
+| RP-012 | Reports | WO Tracking Customer Demand | Locked RS baseDemand ≠ WO qty | NO_QTY flow | Customer Demand column; no Ordered Qty; customer not duplicated | Regression-sensitive |
+| RP-013 | Reports | WO Tracking Active Dispatch | Multi-WO same FG | NO_QTY flow | Pending is SO+FG+cycle, not Accepted−WO FIFO | Regression-sensitive |
+| RP-014 | Reports | WO Tracking UI density | Laptop 1366×768 | Open WO Tracking both flows | No horizontal scroll on main table; compact toolbar; progress blocks | Regression-sensitive |
+| RP-015 | Reports | WO Tracking recovery UX | Row with recovery outcome | Click Recovery badge | Compact modal (shortfall/keep/waive/outcome); table stays compact | Regression-sensitive |
+| RP-016 | Reports | WO Tracking row expand | Any result row | Expand row | Secondary qty + recovery/context; scan columns unchanged | Happy path |
+| RP-017 | Reports | Report Grid standard (FT-PD-066 §17.7) | Analysis catalog | Spot-check WO Tracking + one High-priority gap report | Shared KPI/filter chrome; scan cols vs expand/drawer per §17.8–§17.11 | Regression-sensitive |
+| RP-018 | Reports | ReportPageShell consistency | Analysis catalog | Open WO Analysis, Type Analysis, Scrap, RM Wastage, RM Ledger | Same max width / margins / header·KPI·filter·table rhythm (FT-PD-066 §17.15) | Regression-sensitive |
+| RP-019 | Reports | Analysis Back to Reports | Receivables + Payables + Scrap tiles | Open from Reports catalog | Back label is **Back to Reports** (not Dashboard) | Regression-sensitive |
+| RP-020 | Reports | Scrap date validation UX | Scrap Report | Enter invalid / From>To dates | Errors say DD-MM-YYYY; never YYYY-MM-DD; blanks omit; partial ranges ok | Regression-sensitive |
+| RP-021 | Reports | ReportChrome compliance | Production Wastage WO Analysis | Visual check vs other Analysis reports | Uses ReportPageShell + ReportKpiStrip + ReportFilterToolbar + ReportTableShell | Happy path |
 
 ---
 
@@ -447,3 +459,27 @@ Use SO-26-0001: Cycle 1 demand 6,000; WOs planned 2,000 each; production 2,000 +
 8. Acceptance 6,300/rejection 200 gives 300 excess; acceptance 6,000 gives zero.
 9. Verify partial dispatch, multiple WOs, FG isolation, cancelled-version exclusion, existing-draft Recalculate, and lock-time stale recalculation.
 10. Smoke-test Regular SO and Green Level workflows.
+
+---
+
+## Browser recovery, navigation, and flicker (2026-07-16)
+
+**Reference:** [`docs/ERP_BROWSER_NAVIGATION_AND_RECOVERY_STANDARD.md`](./ERP_BROWSER_NAVIGATION_AND_RECOVERY_STANDARD.md)
+
+| ID | Scenario | Steps | Expected |
+|----|----------|-------|----------|
+| NAV-001 | Deep link after expiry | Open RS/WO URL → force 401 / clear token → login | Returns to original URL, not only Dashboard |
+| NAV-002 | Logout then Back | Logout → browser Back | Login (or redirect); no protected content from prior session |
+| NAV-003 | Dirty RS demand | Edit Customer Demand → refresh / sidebar leave | Browser or in-app leave warning; after Save Draft, no warning |
+| NAV-004 | Dirty BOM / Monthly Plan | Edit without save → Back / sidebar | Confirm leave; cancel keeps edits |
+| NAV-005 | Production recovered draft | Edit production report → refresh same tab | “Recovered draft” banner; confirm still posts to server |
+| NAV-006 | Double finalize | Rapid double-click Finalize / Confirm / Dispatch | Single server effect; button disabled while pending |
+| NAV-007 | Hard nav absence | Customer return → SO focus; Green Level WO → Material Issue | SPA `navigate` (no full white reload) |
+| NAV-008 | Unknown route | Visit `/this-route-does-not-exist` while authed | Redirect to Dashboard |
+| NAV-009 | Shell stability | Sidebar navigate Dashboard → Sales Orders → Dispatch | Shell stays; content-area loading only |
+| NAV-010 | Role / flow context | Pending Action for NO_QTY | Opens NO_QTY context (not Regular SO/Dispatch) |
+| NAV-011 | Chrome + Edge | Repeat NAV-001–010 | Same behaviour |
+| NAV-012 | Viewports | 1920×1080 and 1366×768 | Primary actions usable; no layout collapse on operational pages |
+| NAV-013 | List → Record → Back | Sales Orders / WO with filters | Filters and scroll restore; no restored action/modal |
+| NAV-014 | Dispatch boot | Open `/dispatch` with pending work | No false “Dispatch complete” before load |
+| NAV-015 | Dispatch finalize retry | Finalize with same key after network fail | No duplicate stock post; key reused until success |

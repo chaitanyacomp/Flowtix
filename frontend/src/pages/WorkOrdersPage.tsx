@@ -1,6 +1,8 @@
 import * as React from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useDebouncedUrlStringParam, useUrlQueryState } from "../hooks/useUrlQueryState";
+import { useListScrollRestoration } from "../hooks/useListScrollRestoration";
+import { useUnsavedChangesGuard } from "../hooks/useUnsavedChangesGuard";
 import { deleteUrlParamKeys } from "../lib/urlSearchParamsPatch";
 import { DrillFocusBanner } from "../components/DrillFocusBanner";
 import {
@@ -387,6 +389,7 @@ function flattenWoLines(list: WoRow[]): WoLineRow[] {
  */
 export function WorkOrdersPage() {
   const auth = useAuth();
+  useListScrollRestoration();
   const isAdmin = auth.user?.role === "ADMIN";
   const roleUi = useErpRoleUi();
   const canProd = isAdmin || auth.user?.role === "PRODUCTION";
@@ -514,6 +517,30 @@ export function WorkOrdersPage() {
     if (!(editingWoId > 0)) return null;
     return [...openWoRows, ...completedWoRows].find((w) => w.id === editingWoId) ?? null;
   }, [editingWoId, openWoRows, completedWoRows]);
+
+  const snapWoDraft = React.useCallback(
+    (lines: WoFormLine[], regular: Record<number, { sel: boolean; qtyStr: string }>) =>
+      JSON.stringify({
+        lines: lines.map((l) => ({ fgItemId: l.fgItemId, qtyStr: l.qtyStr })),
+        regular,
+      }),
+    [],
+  );
+  const [woDraftBaseline, setWoDraftBaseline] = React.useState(() =>
+    snapWoDraft([{ fgItemId: 0, qtyStr: "" }], {}),
+  );
+  const woBaselineSoRef = React.useRef<number | "">("");
+
+  useUnsavedChangesGuard({
+    isDirty:
+      (overrideOpen && overrideReason.trim() !== "") ||
+      (!isEditMode &&
+        salesOrderId !== "" &&
+        snapWoDraft(woLines, regularWoByItemId) !== woDraftBaseline),
+    message: "Work order form has unsaved changes. Leave and discard them?",
+    enabled: !creatingWo && !overrideSaving,
+  });
+
   const showRegularLifecyclePanel =
     isEditMode && editingWo != null && !noQtySelected && editingWo.requirementSheetId == null;
   /** Simplified multi-line FG table for new Regular SO work orders only. */
@@ -600,6 +627,22 @@ export function WorkOrdersPage() {
 
   const fgBalanceByItemId = React.useMemo(() => new Map(fgBalances.map((b) => [b.itemId, b])), [fgBalances]);
   const [fgBalancesLoading, setFgBalancesLoading] = React.useState(false);
+
+  React.useEffect(() => {
+    if (isEditMode) return;
+    if (salesOrderId === "") {
+      woBaselineSoRef.current = "";
+      setWoDraftBaseline(snapWoDraft([{ fgItemId: 0, qtyStr: "" }], {}));
+      return;
+    }
+    if (fgBalancesLoading) return;
+    if (woBaselineSoRef.current === salesOrderId) return;
+    const t = window.setTimeout(() => {
+      woBaselineSoRef.current = salesOrderId;
+      setWoDraftBaseline(snapWoDraft(woLines, regularWoByItemId));
+    }, 400);
+    return () => window.clearTimeout(t);
+  }, [isEditMode, salesOrderId, fgBalancesLoading, woLines, regularWoByItemId, snapWoDraft]);
 
   /** REGULAR (NORMAL) SO work-order planning only — not NO_QTY / REPLACEMENT. */
   const isRegularNormalOrderForWoPlanning =
@@ -3141,6 +3184,11 @@ export function WorkOrdersPage() {
           {(woStatusFilter === "COMPLETED" || woStatusFilter === "ALL") && listInfoCompleted ? (
             <p className="text-[11px] text-slate-500">{listInfoCompleted}</p>
           ) : null}
+          {!listLoaded ? (
+            <p className="text-[13px] text-slate-600" data-testid="work-orders-loading">
+              Loading work orders…
+            </p>
+          ) : null}
           <div className="space-y-2">
             {(woStatusFilter === "OPEN" || woStatusFilter === "ALL") && (
               <div className="space-y-1.5">
@@ -3295,7 +3343,7 @@ export function WorkOrdersPage() {
               </div>
             )}
           </div>
-          {listFilteredOut ? (
+          {listLoaded && listFilteredOut ? (
             <ErpEmptyState
               className="mt-1"
               variant="inline"
@@ -3307,7 +3355,7 @@ export function WorkOrdersPage() {
               }
             />
           ) : null}
-          {!listFilteredOut && woStatusFilter === "OPEN" && openWoRows.length === 0 ? (
+          {listLoaded && !listFilteredOut && woStatusFilter === "OPEN" && openWoRows.length === 0 ? (
             <ErpEmptyState
               className="mt-2"
               variant="inline"
@@ -3325,10 +3373,10 @@ export function WorkOrdersPage() {
               }
             />
           ) : null}
-          {!listFilteredOut && woStatusFilter === "COMPLETED" && completedTotal === 0 ? (
+          {listLoaded && !listFilteredOut && woStatusFilter === "COMPLETED" && completedTotal === 0 ? (
             <ErpEmptyState className="mt-1" variant="inline" title="No completed work orders yet" body="Completed work orders will appear here." />
           ) : null}
-          {!listFilteredOut && woStatusFilter === "ALL" && openWoRows.length === 0 && completedTotal === 0 ? (
+          {listLoaded && !listFilteredOut && woStatusFilter === "ALL" && openWoRows.length === 0 && completedTotal === 0 ? (
             <ErpEmptyState
               className="mt-2"
               variant="inline"

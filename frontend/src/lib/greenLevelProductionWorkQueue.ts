@@ -1,4 +1,4 @@
-import { GREEN_LEVEL_WO_SOURCE_TYPE } from "./productionFlowContract";
+import { GREEN_LEVEL_REPLENISHMENT_SOURCE_TYPE } from "./productionFlowContract";
 import { displayWorkOrderTraceNo } from "./docNoDisplay";
 import { greenLevelWorkOrderSelectLabel, isGreenLevelProductionWorkOrder } from "./greenLevelProductionExecution";
 
@@ -55,6 +55,7 @@ type WoLike = {
 type EntryLike = {
   workflowStatus?: string | null;
   qcPendingQty?: number;
+  producedQty?: number;
   workOrderLine?: { id?: number; workOrder?: { id?: number; sourceType?: string | null } };
 };
 
@@ -177,7 +178,7 @@ export function buildGreenLevelProductionWorkQueueRows(input: {
 
   for (const e of input.entries) {
     const sourceType = e.workOrderLine?.workOrder?.sourceType;
-    if (String(sourceType ?? "").toUpperCase() !== GREEN_LEVEL_WO_SOURCE_TYPE) continue;
+    if (String(sourceType ?? "").toUpperCase() !== GREEN_LEVEL_REPLENISHMENT_SOURCE_TYPE) continue;
     const lineId = Number(e.workOrderLine?.id ?? 0);
     const woId = Number(e.workOrderLine?.workOrder?.id ?? 0);
     if (!(lineId > 0) || seenLineIds.has(lineId)) continue;

@@ -44,6 +44,8 @@ type DraftLine = RmConsumptionPreviewLine & {
   consumptionType: string;
 };
 
+type ViewState = "loading" | "error" | "skipped" | "empty" | "ready";
+
 /** Max RM shortage allowed at approval due to WO vs batch rounding drift (must match backend). */
 const RM_ROUNDING_TOLERANCE_KG = 0.01;
 

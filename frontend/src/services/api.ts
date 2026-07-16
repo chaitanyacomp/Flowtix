@@ -5,6 +5,13 @@ import {
 } from "../lib/demoSafeMode";
 import { bumpErpRefresh, erpRefreshScopesForMutation } from "../lib/erpRefresh";
 import { recordApiPerf } from "../lib/performanceTiming";
+import {
+  handleAuthFailureOnce,
+  resetAuthFailureGate,
+  SESSION_EXPIRED_MESSAGE,
+} from "../lib/authSession";
+
+export { resetAuthFailureGate };
 
 export type ApiError = { message: string; code?: string };
 
@@ -33,42 +40,10 @@ export class ApiRequestError extends Error {
   }
 }
 
-const SESSION_EXPIRED_MESSAGE = "Session expired. Please login again.";
-const SESSION_EXPIRED_STORAGE_KEY = "auth:sessionExpiredMessage";
-let authFailureHandled = false;
-
 function isAuthFailure(status: number, message: string): boolean {
   if (status === 401) return true;
   const m = (message || "").toLowerCase();
   return m.includes("invalid token") || m.includes("missing bearer token") || m.includes("unauthorized");
-}
-
-function handleAuthFailureOnce() {
-  if (authFailureHandled) return;
-  authFailureHandled = true;
-
-  try {
-    localStorage.removeItem("token");
-    localStorage.removeItem("user");
-  } catch {
-    // ignore storage errors
-  }
-
-  try {
-    sessionStorage.setItem(SESSION_EXPIRED_STORAGE_KEY, SESSION_EXPIRED_MESSAGE);
-  } catch {
-    // ignore storage errors
-  }
-
-  try {
-    window.dispatchEvent(new Event("auth:logout"));
-  } catch {
-    // ignore
-  }
-
-  if (typeof window !== "undefined" && window.location?.pathname !== "/login") {
-    window.location.replace("/login");
-  }
 }
 
 /** Default backend for messages (must match vite.config.ts server.proxy target). */
@@ -121,16 +96,11 @@ export function getApiUrl(path: string): string {
   return base ? `${base}${path}` : path;
 }
 
-export function consumeSessionExpiredMessage(): string | null {
-  try {
-    const raw = sessionStorage.getItem(SESSION_EXPIRED_STORAGE_KEY);
-    if (!raw) return null;
-    sessionStorage.removeItem(SESSION_EXPIRED_STORAGE_KEY);
-    return raw;
-  } catch {
-    return null;
-  }
-}
+export {
+  peekSessionExpiredMessage,
+  clearSessionExpiredMessage,
+  consumeSessionExpiredMessage,
+} from "../lib/authSession";
 
 async function parseJsonSafe(res: Response) {
   const text = await res.text();

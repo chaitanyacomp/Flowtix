@@ -1,12 +1,13 @@
 @echo off
-REM FT-DEP-001 Batch 10 — post-install wrapper (Batch 9 setup; optional Batch 8 via setup flags).
-REM Args: %1=FT_ERP_HOME  %2=SOURCE_RELEASE_DIR  %3=skip-migrate(0|1)  %4=install-service(0|1)
+REM FT-DEP-001 Batch 10 / Milestone 2 — post-install wrapper.
+REM Args: %1=FT_ERP_HOME  %2=SOURCE_RELEASE_DIR  %3=skip-migrate(0|1)  %4=install-service(0|1)  %5=configure-firewall(0|1)
 setlocal EnableExtensions
 
 set "HOME=%~1"
 set "SOURCE=%~2"
 set "SKIP_MIGRATE=%~3"
 set "INSTALL_SERVICE=%~4"
+set "CONFIGURE_FIREWALL=%~5"
 
 if "%HOME%"=="" (
   echo [post-install] ERROR: FT_ERP_HOME not provided.
@@ -26,7 +27,7 @@ set "LOG=%HOME%\logs\installer-post.log"
 >>"%LOG%" echo ===== %DATE% %TIME% post-install =====
 >>"%LOG%" echo HOME=%HOME%
 >>"%LOG%" echo SOURCE=%SOURCE%
->>"%LOG%" echo SKIP_MIGRATE=%SKIP_MIGRATE% INSTALL_SERVICE=%INSTALL_SERVICE%
+>>"%LOG%" echo SKIP_MIGRATE=%SKIP_MIGRATE% INSTALL_SERVICE=%INSTALL_SERVICE% CONFIGURE_FIREWALL=%CONFIGURE_FIREWALL%
 
 REM Existing install: do not destructively re-bootstrap (Batch 9 / FT-DEP-001).
 if exist "%HOME%\shared\.env" if exist "%HOME%\app\server.js" if exist "%HOME%\web\index.html" (
@@ -42,6 +43,11 @@ if "%INSTALL_SERVICE%"=="1" (
   set "EXTRA=%EXTRA% --install-service"
 ) else (
   set "EXTRA=%EXTRA% --skip-service"
+)
+if "%CONFIGURE_FIREWALL%"=="1" (
+  set "EXTRA=%EXTRA% --configure-firewall"
+) else (
+  set "EXTRA=%EXTRA% --skip-firewall"
 )
 
 echo [post-install] Running Batch 9 setup-flowtix...

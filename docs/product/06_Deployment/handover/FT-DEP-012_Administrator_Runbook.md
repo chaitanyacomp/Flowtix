@@ -3,11 +3,11 @@
 | Field | Value |
 |-------|-------|
 | **Document ID** | FT-DEP-012 |
-| **Version** | 1.0.1 |
-| **Parent** | FT-DEP-001 v1.10.0 |
+| **Version** | 1.1.0 |
+| **Parent** | FT-DEP-001 v1.11.0 |
 | **Audience** | Customer System Administrator |
 
-Day-2 operations for LAN Flowtix ERP. Tools live under `{FT_ERP_HOME}\tools\` or `releases\Flowtix-v*\tools\`.
+Day-2 operations for LAN Flowtix ERP. Tools live under `{FT_ERP_HOME}\tools\` or `releases\Flowtix-v*\tools\` (copied from repo `deployment/` at packaging time).
 
 ## 1. Paths
 
@@ -18,7 +18,10 @@ Day-2 operations for LAN Flowtix ERP. Tools live under `{FT_ERP_HOME}\tools\` or
 | Backups | `backups\db\` |
 | Logs | `logs\` |
 | Active app | `app\server.js` |
-| UI | `http://<server-ip>:<PORT>/` (default PORT 4000) |
+| Packaged UI | `web\` (served by backend in production) |
+| Server URL | `http://127.0.0.1:<PORT>/` (this PC / shortcut) |
+| LAN client URL | `http://<hostname-or-LAN-IPv4>:<PORT>/` |
+| Port source | `shared\.env` → `PORT` (default **4000**) |
 
 ## 2. Start / stop
 
@@ -39,11 +42,28 @@ cd /d %FT_ERP_HOME%
 node app\server.js
 ```
 
-## 3. Health check
+## 3. Health and UI check
 
-- Browser: open LAN URL; login as Admin  
-- API: `GET http://127.0.0.1:<PORT>/health`  
-- Read-only helper: `tools\verify-install.bat --home C:\FT-ERP`
+- Browser (this server): `http://127.0.0.1:<PORT>/` — login page / Flowtix shell (HTML)  
+- Browser (LAN client): `http://<server-hostname-or-IPv4>:<PORT>/`  
+- API: `GET http://127.0.0.1:<PORT>/health` (JSON)  
+- Read-only helper (API + UI HTML, no auth):  
+
+```bat
+tools\verify-install.bat --home C:\FT-ERP
+```
+
+Exit codes: `0` PASS · `1` missing files · `2` backend unavailable · `3` API OK but frontend unavailable · `4` version mismatch
+
+## 3b. Firewall (LAN)
+
+```bat
+tools\firewall-flowtix.bat verify --home C:\FT-ERP
+tools\firewall-flowtix.bat add --home C:\FT-ERP
+tools\firewall-flowtix.bat remove
+```
+
+Idempotent rule name: `Flowtix ERP Backend`. Requires Administrator for add/remove. Manual fallback is printed by the helper.
 
 ## 4. Backup
 

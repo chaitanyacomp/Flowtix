@@ -13,9 +13,10 @@ Use as the **master gate** before declaring production ready. Complete linked ch
 
 ## A. Environment & prerequisites
 
-- [ ] Windows LAN server prepared (disk, IP, firewall for app port)
+- [ ] Windows LAN server prepared (disk, static IP recommended)
+- [ ] Firewall: `firewall-flowtix` rule **or** manual inbound TCP for `PORT` (default 4000)
 - [ ] Node.js installed (see `check-prereqs` / Batch 9)
-- [ ] MySQL installed and reachable (installer does **not** install MySQL)
+- [ ] MySQL installed and reachable (Flowtix installer does **not** install MySQL)
 - [ ] `mysqldump` available for Path A / backups (Batch 4)
 - [ ] `FT_ERP_HOME` chosen (e.g. `C:\FT-ERP`)
 
@@ -23,14 +24,16 @@ Use as the **master gate** before declaring production ready. Complete linked ch
 
 - [ ] Certified release package / installer for intended version (DEP-01)
 - [ ] `VERSION.txt` / build identity recorded (DEP-02)
+- [ ] Offline WinSW binary present in package (`tools\vendor\winsw\`) if service will be used
 - [ ] Compatibility matrix filled ([FT-DEP-013](./FT-DEP-013_Version_Compatibility_Matrix.md))
 
 ## C. Install / setup
 
 - [ ] Installation verification complete ([02](./checklists/02_Installation_Verification.md))
-- [ ] `shared\.env` present and validated (secrets **not** copied into this form)
+- [ ] `shared\.env` present and validated (secrets **not** copied into this form); **PORT** recorded
+- [ ] Root URL returns Flowtix HTML shell (backend static hosting); LAN URL documented
 - [ ] Optional Windows Service verified if used ([07](./checklists/07_Windows_Service_Verification.md))
-- [ ] `verify-install` run (optional) — result: Pass / Fail / Skipped
+- [ ] `verify-install` run — result: Pass / Fail / Skipped (exit 0 = API + UI OK)
 
 ## D. Data protection
 

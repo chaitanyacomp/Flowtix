@@ -25,13 +25,19 @@ Technical checks after Batch 9 setup or Batch 10 installer. Do **not** print sec
 - [ ] `tools\rollback-flowtix.bat` present
 - [ ] `tools\setup-flowtix.bat` present (or under `releases\…\tools\`)
 - [ ] `tools\service-status.bat` present (if service used)
+- [ ] `tools\firewall-flowtix.bat` present
+- [ ] `tools\vendor\winsw\WinSW-x64.exe` present (offline service)
 
 ## Runtime
 
 - [ ] Process running **or** service Running **or** start command documented
-- [ ] LAN URL reachable: `http://<host>:<port>/`
-- [ ] `GET /health` returns ok (or file-layout verify documented)
-- [ ] Optional: `verify-install.bat --home <FT_ERP_HOME>` exit 0
+- [ ] Server URL: `http://127.0.0.1:<port>/` returns **HTML** Flowtix shell (not API JSON)
+- [ ] LAN URL reachable: `http://<hostname-or-LAN-IPv4>:<port>/` (same SPA)
+- [ ] SPA refresh works (e.g. open `/dashboard` directly)
+- [ ] `GET /health` returns ok JSON
+- [ ] `/api/*` still JSON (not SPA HTML)
+- [ ] `verify-install.bat --home <FT_ERP_HOME>` exit **0** (checks health + UI HTML)
+- [ ] Firewall rule present **or** documented exception (`firewall-flowtix.bat verify`)
 
 ## Logs / manifests
 

@@ -1,0 +1,20 @@
+Flowtix ERP — Installation complete
+
+Server URL (this PC):
+  http://127.0.0.1:<PORT>/
+
+LAN browser clients (other PCs):
+  http://<server-hostname>:<PORT>/
+  http://<server-LAN-IPv4>:<PORT>/
+
+PORT comes from shared\.env (default 4000). See LAN-ACCESS.txt in the install folder.
+
+The backend serves the packaged React UI from web\ and APIs under /api/*.
+MySQL is not installed by this setup — provide MySQL separately.
+
+Day-2 tools (under releases\Flowtix-v*\tools\):
+  verify-install.bat
+  update-flowtix.bat
+  rollback-flowtix.bat
+  firewall-flowtix.bat
+  service-*.bat

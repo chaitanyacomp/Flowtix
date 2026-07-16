@@ -336,11 +336,11 @@ function downloadFile(url, dest) {
 
 function findBundledWinSW() {
   const candidates = [
+    // Repo: deployment/vendor/winsw  |  Release: tools/vendor/winsw
     path.join(__dirname, "vendor", "winsw", "WinSW-x64.exe"),
     path.join(__dirname, "vendor", "winsw", "winsw.exe"),
-    // Shipped under tools/vendor/winsw when present in release package
-    path.join(__dirname, "vendor", "winsw", "WinSW-x64.exe"),
     path.join(__dirname, "..", "vendor", "winsw", "WinSW-x64.exe"),
+    path.join(__dirname, "..", "deployment", "vendor", "winsw", "WinSW-x64.exe"),
     path.join(__dirname, "service", "WinSW-x64.exe"),
   ];
   for (const c of candidates) {
@@ -349,21 +349,79 @@ function findBundledWinSW() {
   return null;
 }
 
+function loadWinswManifest() {
+  const candidates = [
+    path.join(__dirname, "vendor", "winsw", "winsw-manifest.json"),
+    path.join(__dirname, "..", "vendor", "winsw", "winsw-manifest.json"),
+  ];
+  for (const c of candidates) {
+    if (!fs.existsSync(c)) continue;
+    try {
+      return JSON.parse(fs.readFileSync(c, "utf8"));
+    } catch {
+      // try next
+    }
+  }
+  return null;
+}
+
+function sha256FileSync(filePath) {
+  const crypto = require("crypto");
+  return crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
+}
+
+function assertWinswChecksum(filePath, manifest) {
+  if (!manifest || !manifest.sha256) {
+    return { ok: true, skipped: true, detail: "manifest sha256 unset — skip verify" };
+  }
+  const expected = String(manifest.sha256).trim().toLowerCase();
+  const actual = sha256FileSync(filePath);
+  if (actual !== expected) {
+    return {
+      ok: false,
+      detail: `WinSW checksum mismatch expected=${expected} actual=${actual}`,
+    };
+  }
+  return { ok: true, detail: `sha256=${actual}` };
+}
+
 async function ensureWinSWBinary(home) {
   fs.mkdirSync(serviceDir(home), { recursive: true });
   const dest = serviceExePath(home);
+  const manifest = loadWinswManifest();
+
   if (fs.existsSync(dest) && fs.statSync(dest).size > 100000) {
-    return { path: dest, source: "existing" };
+    const chk = assertWinswChecksum(dest, manifest);
+    if (!chk.ok) {
+      throw new Error(chk.detail);
+    }
+    return { path: dest, source: "existing", checksum: chk.detail };
   }
+
   const bundled = findBundledWinSW();
   if (bundled) {
+    const chk = assertWinswChecksum(bundled, manifest);
+    if (!chk.ok) {
+      throw new Error(`Bundled WinSW failed validation: ${chk.detail}`);
+    }
     fs.copyFileSync(bundled, dest);
-    return { path: dest, source: "vendor" };
+    return { path: dest, source: "vendor", checksum: chk.detail };
   }
+
+  // Last resort: download pinned URL, then verify checksum when manifest is present.
   const tmp = path.join(serviceDir(home), "_WinSW-x64.download.exe");
   await downloadFile(WINSW_URL, tmp);
+  const chk = assertWinswChecksum(tmp, manifest);
+  if (!chk.ok) {
+    try {
+      fs.unlinkSync(tmp);
+    } catch {
+      // ignore
+    }
+    throw new Error(`Downloaded WinSW failed validation: ${chk.detail}`);
+  }
   fs.renameSync(tmp, dest);
-  return { path: dest, source: "download", url: WINSW_URL };
+  return { path: dest, source: "download", url: WINSW_URL, checksum: chk.detail };
 }
 
 function writeServiceXml(home) {

@@ -89,8 +89,16 @@ if exist "%ROOT%\deployment\production.env.example" (
   echo This release package ships templates only. Do not place production secrets in git.
 )
 
-REM --- 6. tools\ (Batch 4–11: backup, migrate, update, rollback, service, setup, verify) ---
-echo [create-release] Copying tools\ scripts ^(Batches 4–11^)...
+REM --- 6. tools\ (Batch 4–11 + Milestone 2: firewall, WinSW validate) ---
+echo [create-release] Validating offline WinSW package...
+call node "%DEPLOY%\validate-winsw.js" --require
+if errorlevel 1 (
+  echo [create-release] ERROR: WinSW offline packaging failed validation.
+  echo [create-release] Place checksum-verified WinSW-x64.exe per deployment\vendor\winsw\README.txt
+  exit /b 1
+)
+
+echo [create-release] Copying tools\ scripts ^(Batches 4–11 / Milestone 2^)...
 copy /Y "%DEPLOY%\backup-db.bat" "%RELEASE_DIR%\tools\backup-db.bat" >nul
 copy /Y "%DEPLOY%\backup-db.js" "%RELEASE_DIR%\tools\backup-db.js" >nul
 copy /Y "%DEPLOY%\migrate-db.bat" "%RELEASE_DIR%\tools\migrate-db.bat" >nul
@@ -115,14 +123,22 @@ copy /Y "%DEPLOY%\init-folders.bat" "%RELEASE_DIR%\tools\init-folders.bat" >nul
 copy /Y "%DEPLOY%\init-folders.js" "%RELEASE_DIR%\tools\init-folders.js" >nul
 copy /Y "%DEPLOY%\verify-install.bat" "%RELEASE_DIR%\tools\verify-install.bat" >nul
 copy /Y "%DEPLOY%\verify-install.js" "%RELEASE_DIR%\tools\verify-install.js" >nul
+copy /Y "%DEPLOY%\firewall-flowtix.bat" "%RELEASE_DIR%\tools\firewall-flowtix.bat" >nul
+copy /Y "%DEPLOY%\firewall-flowtix.js" "%RELEASE_DIR%\tools\firewall-flowtix.js" >nul
+copy /Y "%DEPLOY%\validate-winsw.js" "%RELEASE_DIR%\tools\validate-winsw.js" >nul
 if exist "%DEPLOY%\production.env.example" (
   mkdir "%RELEASE_DIR%\shared" 2>nul
   copy /Y "%DEPLOY%\production.env.example" "%RELEASE_DIR%\shared\.env.example" >nul
 )
-if exist "%DEPLOY%\vendor\winsw\WinSW-x64.exe" (
-  mkdir "%RELEASE_DIR%\tools\vendor\winsw" 2>nul
-  copy /Y "%DEPLOY%\vendor\winsw\WinSW-x64.exe" "%RELEASE_DIR%\tools\vendor\winsw\WinSW-x64.exe" >nul
+REM Offline WinSW — validated above; always ship binary + manifest into release tools
+mkdir "%RELEASE_DIR%\tools\vendor\winsw" 2>nul
+copy /Y "%DEPLOY%\vendor\winsw\WinSW-x64.exe" "%RELEASE_DIR%\tools\vendor\winsw\WinSW-x64.exe" >nul
+if errorlevel 1 (
+  echo [create-release] ERROR: WinSW-x64.exe copy failed.
+  exit /b 1
 )
+copy /Y "%DEPLOY%\vendor\winsw\winsw-manifest.json" "%RELEASE_DIR%\tools\vendor\winsw\winsw-manifest.json" >nul
+copy /Y "%DEPLOY%\vendor\winsw\README.txt" "%RELEASE_DIR%\tools\vendor\winsw\README.txt" >nul
 
 REM --- 6b. docs\handover\ (Batch 11 — client handover pack) ---
 echo [create-release] Copying docs\handover\ ^(Batch 11^)...
@@ -161,13 +177,16 @@ if %RC% GEQ 8 (
   echo   setup-flowtix.bat / check-prereqs.bat / init-folders.bat — client setup bootstrap
   echo   ^(not MSI; does not overwrite shared\.env; Path A migrate or --skip-migrate^)
   echo.
-  echo Batch 11:
-  echo   verify-install.bat / verify-install.js — read-only install verification
+  echo Batch 11 / Milestone 2:
+  echo   verify-install.bat — API health + UI HTML shell checks
+  echo   firewall-flowtix.bat — optional inbound TCP rule for app PORT
+  echo   vendor\winsw\ — offline WinSW-x64.exe ^(checksum validated^)
   echo   docs\handover\ — production readiness, checklists, runbook, templates
   echo.
   echo Deferred:
   echo   - automated DB restore
   echo   - MSI / WiX ^(Inno Setup: deployment\installer\build-installer.bat^)
+  echo   - bundled MySQL installer
 )
 
 echo.
@@ -404,6 +423,27 @@ if not exist "%RELEASE_DIR%\tools\verify-install.js" (
   set "FAIL=1"
 ) else (
   echo   OK: tools\verify-install.js
+)
+
+if not exist "%RELEASE_DIR%\tools\firewall-flowtix.js" (
+  echo   FAIL: tools\firewall-flowtix.js missing
+  set "FAIL=1"
+) else (
+  echo   OK: tools\firewall-flowtix.js
+)
+
+if not exist "%RELEASE_DIR%\tools\vendor\winsw\WinSW-x64.exe" (
+  echo   FAIL: tools\vendor\winsw\WinSW-x64.exe missing ^(offline service blocker^)
+  set "FAIL=1"
+) else (
+  echo   OK: tools\vendor\winsw\WinSW-x64.exe
+)
+
+if not exist "%RELEASE_DIR%\tools\vendor\winsw\winsw-manifest.json" (
+  echo   FAIL: winsw-manifest.json missing
+  set "FAIL=1"
+) else (
+  echo   OK: winsw-manifest.json
 )
 
 if not exist "%RELEASE_DIR%\docs\handover\README.md" (

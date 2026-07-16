@@ -139,6 +139,25 @@ function resolveRuntimePaths(env = process.env) {
     }
   }
 
+  const webDirCandidates = [
+    path.join(homeDir, "web"),
+    path.join(homeDir, "current", "web"),
+  ];
+  if (releaseDir) webDirCandidates.push(path.join(releaseDir, "web"));
+  webDirCandidates.push(path.resolve(packageRoot, "..", "web"));
+
+  let webDir = null;
+  if (env.WEB_DIR && String(env.WEB_DIR).trim()) {
+    webDir = path.resolve(String(env.WEB_DIR).trim());
+  } else {
+    for (const c of webDirCandidates) {
+      if (fs.existsSync(path.join(c, "index.html"))) {
+        webDir = c;
+        break;
+      }
+    }
+  }
+
   return {
     packageRoot,
     releaseDir,
@@ -148,6 +167,7 @@ function resolveRuntimePaths(env = process.env) {
     uploadsDir,
     tempDir,
     versionFile,
+    webDir,
     layout,
   };
 }

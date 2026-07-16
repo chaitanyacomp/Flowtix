@@ -1,13 +1,18 @@
-Flowtix ERP — WinSW vendor placeholder (FT-DEP-001 Batch 8)
+Flowtix ERP — WinSW vendor package (FT-DEP-001 Batch 8 / Milestone 2)
 
-Place WinSW-x64.exe here to avoid download during service-install:
+Pinned version: v2.12.0
+Binary:         WinSW-x64.exe (required for offline service install)
+Manifest:       winsw-manifest.json (version, URL, SHA-256)
 
-  deployment/vendor/winsw/WinSW-x64.exe
+Validate:
+  node deployment\validate-winsw.js --require
 
-Official releases:
-  https://github.com/winsw/winsw/releases
+create-release.bat copies a checksum-validated binary into:
+  release\Flowtix-v*\tools\vendor\winsw\WinSW-x64.exe
 
-Recommended pin: v2.12.0 (WinSW-x64.exe)
+service-install prefers this bundled binary. Network download is a last-resort
+fallback only when the vendor file is missing and will still verify SHA-256
+against winsw-manifest.json when possible.
 
-If this file is missing, service-install.bat downloads WinSW-x64.exe
-(requires network + Administrator).
+Do not commit an unverified binary. Always update sha256 in the manifest when
+replacing the EXE (see winsw-manifest.json replacementProcedure).

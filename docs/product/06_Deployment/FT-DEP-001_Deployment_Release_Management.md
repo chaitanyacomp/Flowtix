@@ -4,8 +4,8 @@
 |-------|-------|
 | **Document ID** | FT-DEP-001 |
 | **Title** | Deployment & Release Management Standard |
-| **Version** | 1.10.0 |
-| **Status** | Draft — Architecture Review |
+| **Version** | 1.11.0 |
+| **Status** | Active — Operational Standard (Batches 1–11 + Milestone 2 gap closure) |
 | **Effective date** | 2026-07-09 |
 | **Author** | FT ERP Product Team |
 | **Owner** | FT ERP Product Architecture / Release Operations |
@@ -31,7 +31,7 @@
 |-------|------|
 | **Volume 9 (FT-PD-090+)** | Technology-neutral **architecture law** (DEP-*, INS-*, OPS-*, RES-*) |
 | **FT-DEP-001 (this document)** | **Operational standard** for the approved LAN client-server deployment model — folder layout, packaging, backup, migration, update/rollback SOPs |
-| **Future FT-DEP-00x / scripts** | Implementation of this standard (build tools, installers, service wrappers) — **not in scope of this revision** |
+| **Implementation (`deployment/`)** | Committed scripts for Batches 1–11 + Milestone 2 (create-release, setup, WinSW, Inno installer, verify-install, firewall helper, static SPA hosting). Source of tools lives under `deployment/`; release packages copy them to `tools/`. |
 
 **Rule:** This document **implements** Volume 9 for the local-server / LAN model. It **SHALL NOT** override workflow semantics (Volume 4), business pipelines (Volume 2), data integrity (Volume 5), or UI architecture (Volume 6 / FT-PD-066). Deployment **consumes** certification ([DEP-01](../09_Deployment_and_Operations_Architecture/Chapter_01_Deployment_and_Release_Architecture.md)) — it never replaces it.
 
@@ -52,22 +52,24 @@
 | 1.8.0 | 2026-07-09 | FT ERP Product Team | Batch 9 — client setup / bootstrap (`tools/setup-flowtix.*`) |
 | 1.9.0 | 2026-07-09 | FT ERP Product Team | Batch 10 — Inno Setup Windows installer wrapper (`deployment/installer/`) |
 | 1.10.0 | 2026-07-09 | FT ERP Product Team | Batch 11 — deployment validation & client handover pack (`handover/`, `verify-install`) |
+| 1.11.0 | 2026-07-16 | FT ERP Product Team | Milestone 2 — backend static SPA hosting; verify UI+API; offline WinSW checksum; firewall helper; installer LAN URL policy; frontend `npm run build` gate |
 
 **Supersedes:** Informal client install notes; ad-hoc “copy the repo to the server” practices.
 
 **Change authority:** Product Architecture + Release Operations. Material changes to packaging, backup, migration, or rollback rules require Architecture Review and alignment with Volume 9.
 
-**Out of scope for this revision (deferred implementation):**
+**Delivered in repository (do not treat as “future work”):**
 
-- Build / release scripts *(partially delivered in Batches 1–8)*
-- `package.json` script changes
-- esbuild bundling configuration *(Batch 3 delivered)*
-- Windows Installer (MSI / Inno / electron-builder)
-- CI/CD pipelines
-- Docker / Kubernetes
-- Automated DB restore
+- Batches 1–11 under `deployment/` (packaging, backup, migrate deploy, update, rollback, WinSW, setup, Inno wrapper, verify-install, handover)
+- Milestone 2: production static hosting (`backend/src/runtime/staticHosting.js`), offline WinSW (`deployment/vendor/winsw/` + checksum), `firewall-flowtix.*`, installer URL/LAN notes
 
-*(Windows Service wrappers delivered in Batch 8 — optional WinSW.)*
+**Still deferred:**
+
+- CI/CD pipelines for release media
+- Docker / Kubernetes production topology
+- Automated CLI DB restore (Admin UI restore exists separately)
+- MSI / WiX (Inno Setup wrapper is the supported installer)
+- Bundled MySQL product installer (MySQL remains operator-provided)
 
 ---
 
@@ -174,10 +176,10 @@ flowchart LR
 |-----------|-----------|-------|
 | **Server PC** | Factory office / IT room | Windows 10/11 or Windows Server; always-on preferred |
 | **MySQL** | Same server PC (default) | Localhost; not exposed to internet |
-| **FT ERP backend** | Same server PC | Listens on LAN IP + port (e.g. `0.0.0.0:3001`) |
-| **FT ERP frontend** | Served by backend static host **or** reverse proxy on same host | Production `dist/` only |
-| **Clients** | 2–10 PCs / tablets on LAN | Modern browser; no local app install required for Phase 1 |
-| **Internet** | Not required for core ERP | Optional for updates delivery / remote support |
+| **FT ERP backend** | Same server PC | Listens on all interfaces; **PORT from `shared\.env` (default `4000`)** |
+| **FT ERP frontend** | **Served by the Node/Express backend** from packaged `web/` (Vite production build) | SPA fallback for browser routes; `/api/*` unchanged. Reverse proxy optional later. |
+| **Clients** | 2–10 PCs / tablets on LAN | Modern browser; URL `http://<server-hostname-or-IPv4>:<PORT>/` |
+| **Internet** | Not required for core ERP | Optional for updates delivery / remote support; **not** required for WinSW when vendor binary is packaged |
 
 ### 5.2 Logical view
 
@@ -218,6 +220,8 @@ Exact contractual RPO/RTO remain tenant-specific ([FT-PD-093](../09_Deployment_a
 - ERP ports **SHOULD** be reachable only on LAN / VPN.
 - MySQL port **SHALL NOT** be exposed beyond localhost unless a documented exception exists.
 - HTTPS termination **MAY** be added later (IIS / nginx / Caddy); Phase 1 **MAY** use HTTP on trusted LAN with recorded risk acceptance.
+- **Firewall:** optional helper `tools\firewall-flowtix.bat` adds an idempotent inbound TCP rule named `Flowtix ERP Backend` for `PORT` from `shared\.env`. Manual `netsh` fallback remains documented. Setup/installer **MAY** invoke it via `--configure-firewall` / installer task.
+- **URLs:** server shortcut **MAY** use `http://127.0.0.1:<PORT>/`. LAN clients **SHALL** use hostname or LAN IPv4 — never assume `127.0.0.1` on other PCs.
 
 ---
 

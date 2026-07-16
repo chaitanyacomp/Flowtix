@@ -1,13 +1,13 @@
-# Flowtix ERP — Windows Installer (FT-DEP-001 Batch 10)
+# Flowtix ERP — Windows Installer (FT-DEP-001 Batch 10 / Milestone 2)
 
-Inno Setup **wrapper only**. It packages the certified release from Batch 1 and runs Batch 9 `setup-flowtix` (optional Batch 8 service). It does **not** replace update/rollback, install MySQL, or redesign deployment.
+Inno Setup **wrapper only**. It packages the certified release from Batch 1 and runs Batch 9 `setup-flowtix` (optional Batch 8 service, optional firewall rule). It does **not** replace update/rollback, install MySQL, or redesign deployment.
 
 ## Prerequisites
 
 - [Inno Setup 6](https://jrsoftware.org/isinfo.php) (`ISCC.exe`)
 - Node.js on PATH (for version read in `build-installer.bat`)
 - Release package: `release/Flowtix-vX.Y.Z/` from `deployment/create-release.bat`
-- Release must include `tools/setup-flowtix.bat` (Batch 9+)
+- Release must include `tools/setup-flowtix.bat` and offline `tools/vendor/winsw/WinSW-x64.exe`
 
 ## Build
 
@@ -26,10 +26,28 @@ deployment/installer/output/Flowtix-Setup-vX.Y.Z.exe
 
 1. Extracts certified package to `{app}\releases\Flowtix-vX.Y.Z\`
 2. Runs `tools\post-install.bat` → Batch 9 `setup-flowtix.bat`
-3. Optional task: Windows Service via setup `--install-service` (Batch 8)
-4. Optional task: `--skip-migrate` (Path B)
-5. Creates Start Menu / optional desktop URL shortcut
-6. Writes logs under `{app}\logs\` (`installer-post.log`, `setup.log`)
+3. Optional: Windows Service via setup `--install-service` (Batch 8 / offline WinSW)
+4. Optional: Windows Firewall inbound TCP rule for app PORT (`--configure-firewall`)
+5. Optional: `--skip-migrate` (Path B)
+6. Creates Start Menu shortcut to **server localhost** URL; optional desktop shortcut
+7. Writes `LAN-ACCESS.txt` with hostname/LAN URL guidance
+8. Writes logs under `{app}\logs\`
+
+## URLs and port
+
+| Audience | URL |
+|----------|-----|
+| This server (shortcut) | `http://127.0.0.1:<PORT>/` |
+| LAN clients | `http://<server-hostname>:<PORT>/` or `http://<LAN-IPv4>:<PORT>/` |
+
+**Port source (single):** `shared\.env` → `PORT` (default **4000**, same as `deployment/production.env.example`).  
+Do not introduce a second port configuration. The installer does **not** permanently embed a development URL.
+
+After install, the wizard shows both server and LAN URL patterns. See `{app}\LAN-ACCESS.txt`.
+
+## Static UI hosting
+
+In production, the Node/Express backend serves the packaged React SPA from `web\` (Milestone 2). Clients open the URLs above; `/api/*` remains the API; `GET /health` remains the ops probe.
 
 ## Safety rules
 
@@ -38,7 +56,8 @@ deployment/installer/output/Flowtix-Setup-vX.Y.Z.exe
 | No MySQL install | Operator provides MySQL separately |
 | No `.env` overwrite | Batch 9 never replaces existing `shared/.env` |
 | Existing install | Post-install **skips** setup; use `update-flowtix` for upgrades |
-| Uninstall default | Stops/removes service; removes app/web binaries; **keeps** `shared/`, `backups/`, `logs/`, DB, pre-update archives |
+| Offline WinSW | Release ships checksum-validated `WinSW-x64.exe` |
+| Uninstall default | Stops/removes service + firewall rule; removes app/web binaries; **keeps** `shared/`, `backups/`, `logs/`, DB, pre-update archives |
 
 ## Silent install
 
@@ -52,12 +71,13 @@ Tasks:
 |------|--------|
 | `skipmigrate` | Path B (`--skip-migrate`) |
 | `installservice` | Optional WinSW via Batch 8 |
-| `desktopicon` | Desktop shortcut |
+| `configurefirewall` | Inbound TCP rule for PORT |
+| `desktopicon` | Desktop shortcut (localhost URL) |
 
-Example Path B + service:
+Example Path B + service + firewall:
 
 ```bat
-Flowtix-Setup-v1.0.0.exe /VERYSILENT /DIR="C:\FT-ERP" /TASKS="skipmigrate,installservice"
+Flowtix-Setup-v1.0.0.exe /VERYSILENT /DIR="C:\FT-ERP" /TASKS="skipmigrate,installservice,configurefirewall"
 ```
 
 **Path A (migrate)** requires a valid `shared\.env` **before** setup can succeed. For first-time silent Path A:
@@ -67,28 +87,15 @@ Flowtix-Setup-v1.0.0.exe /VERYSILENT /DIR="C:\FT-ERP" /TASKS="skipmigrate,instal
 
 If `.env` is missing, Batch 9 exits non-zero — check `logs\setup.log`.
 
-## Digital signing (optional — not required for Batch 10)
-
-1. Obtain an Authenticode certificate.
-2. In `Flowtix.iss` `[Setup]`, uncomment / set:
-
-```text
-SignTool=signtool $f
-```
-
-3. Configure Inno **Tools → Configure Sign Tools** (or CI) with `signtool sign /fd SHA256 /a $f`.
-
-Unsigned builds may trigger SmartScreen until reputation or signing is established.
-
-## Day-2 operations (unchanged)
+## Day-2 operations (unchanged engines)
 
 | Action | Tool |
 |--------|------|
+| Verify | `tools\verify-install.bat` (health + UI HTML) |
 | Update | `tools\update-flowtix.bat` (Batch 6) |
 | Rollback | `tools\rollback-flowtix.bat` (Batch 7) |
 | Service | `tools\service-*.bat` (Batch 8) |
-
-Do **not** use this installer as a destructive re-bootstrap of a live site.
+| Firewall | `tools\firewall-flowtix.bat` add\|verify\|remove |
 
 ## Deferred
 

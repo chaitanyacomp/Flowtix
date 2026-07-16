@@ -33,10 +33,12 @@ if not exist "%FRONTEND_DIR%\package.json" (
 )
 
 pushd "%FRONTEND_DIR%"
-echo [build-frontend] Running Vite production build...
-call npx --yes vite build
+echo [build-frontend] Running commercial frontend build ^(tsc -b ^&^& vite build^)...
+REM Prefer npm run build so packaging cannot silently skip TypeScript (tsc -b).
+REM Single invocation — do not run vite build again afterwards.
+call npm run build
 if errorlevel 1 (
-  echo [build-frontend] ERROR: vite build failed.
+  echo [build-frontend] ERROR: npm run build failed ^(TypeScript or Vite^).
   popd
   exit /b 1
 )

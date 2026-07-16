@@ -43,6 +43,8 @@ function parseArgs(argv) {
     skipMigrate: false,
     installService: false,
     skipService: false,
+    configureFirewall: false,
+    skipFirewall: false,
     force: false,
   };
   for (let i = 0; i < argv.length; i++) {
@@ -53,6 +55,8 @@ function parseArgs(argv) {
     else if (a === "--skip-migrate") out.skipMigrate = true;
     else if (a === "--install-service") out.installService = true;
     else if (a === "--skip-service") out.skipService = true;
+    else if (a === "--configure-firewall") out.configureFirewall = true;
+    else if (a === "--skip-firewall") out.skipFirewall = true;
     else if (a === "--force") out.force = true;
   }
   if (process.env.SETUP_CONFIRM === "1" || process.env.UPDATE_CONFIRM === "1") out.yes = true;
@@ -63,6 +67,7 @@ function parseArgs(argv) {
     out.source = path.resolve(String(process.env.SETUP_SOURCE).trim());
   }
   if (process.env.SETUP_SKIP_MIGRATE === "1") out.skipMigrate = true;
+  if (process.env.SETUP_CONFIGURE_FIREWALL === "1") out.configureFirewall = true;
   return out;
 }
 
@@ -334,6 +339,38 @@ function placeRelease(sourceRelease, home) {
   return { version, archiveDir, meta };
 }
 
+/**
+ * Batch 3 ships app/ without node_modules (esbuild externals). Install runtime deps on the server.
+ * @returns {{ ok: boolean, detail: string }}
+ */
+function installAppDependencies(home) {
+  const appDir = path.join(home, "app");
+  const pkg = path.join(appDir, "package.json");
+  if (!fs.existsSync(pkg)) {
+    return { ok: false, detail: "app/package.json missing — cannot npm install" };
+  }
+  const r = spawnSync("npm", ["install", "--omit=dev", "--no-fund", "--no-audit"], {
+    cwd: appDir,
+    encoding: "utf8",
+    windowsHide: true,
+    shell: true,
+    timeout: 600000,
+    env: { ...process.env, npm_config_production: "true" },
+  });
+  const ok = r.status === 0;
+  const tail = String(r.stderr || r.stdout || "")
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .slice(-8)
+    .join(" | ");
+  return {
+    ok,
+    detail: ok
+      ? `npm install --omit=dev OK in app\\ (${tail || "done"})`
+      : `npm install failed (exit ${r.status}): ${tail || r.error || "unknown"}`,
+  };
+}
+
 function latestSuccessfulBackup(backupDir) {
   const manifestPath = path.join(backupDir, "BACKUP_MANIFEST.json");
   if (!fs.existsSync(manifestPath)) return null;
@@ -540,6 +577,15 @@ async function main() {
   const placed = placeRelease(sourceRelease, home);
   push(`placed version=${placed.version} archive=${placed.archiveDir}`);
 
+  push("STAGE=npm-install-app");
+  const npmInst = installAppDependencies(home);
+  push(npmInst.detail);
+  if (!npmInst.ok) {
+    console.error(`[setup-flowtix] ERROR: ${npmInst.detail}`);
+    appendSetupLog(setupLogPath, [...logLines, "RESULT=failed", "STAGE=npm-install-app", npmInst.detail]);
+    process.exit(9);
+  }
+
   let backupFilename = null;
   let migrationStatus = args.skipMigrate ? "skipped" : null;
   let baselineBackup = null;
@@ -654,7 +700,42 @@ async function main() {
     push("service install skipped (optional)");
   }
 
-  // --- 7. Health ---
+  // --- 7. Optional firewall (LAN inbound TCP for app PORT) ---
+  let firewallResult = { attempted: false, ok: true, detail: "skipped" };
+  push("STAGE=firewall");
+  let wantFirewall = args.configureFirewall;
+  if (!args.skipFirewall && !args.configureFirewall && !args.yes) {
+    wantFirewall = await askConfirm(
+      "Configure Windows Firewall inbound rule for Flowtix port (LAN clients)? [y/N]: ",
+    );
+  }
+  if (args.skipFirewall) wantFirewall = false;
+  if (wantFirewall) {
+    try {
+      const fw = require("./firewall-flowtix");
+      const report = fw.addRule(fw.resolvePort(null, home));
+      firewallResult = {
+        attempted: true,
+        ok: !!report.ok,
+        detail: report.detail + (report.manual ? ` Manual: ${report.manual}` : ""),
+      };
+      push(`firewall: ${firewallResult.detail}`);
+      if (!report.ok) {
+        console.error(`[setup-flowtix] WARN: firewall: ${firewallResult.detail}`);
+      }
+    } catch (e) {
+      firewallResult = {
+        attempted: true,
+        ok: false,
+        detail: `firewall helper error: ${e instanceof Error ? e.message : String(e)}`,
+      };
+      console.error(`[setup-flowtix] WARN: ${firewallResult.detail}`);
+    }
+  } else {
+    push("firewall skipped (optional; see tools\\firewall-flowtix.bat / Administrator Runbook)");
+  }
+
+  // --- 8. Health ---
   push("STAGE=verify");
   const health = await verifyHealth(home);
   push(`verify mode=${health.mode} ok=${health.ok} ${typeof health.detail === "string" ? health.detail : ""}`);
@@ -675,6 +756,9 @@ async function main() {
     serviceAttempted: serviceResult.attempted,
     serviceOk: serviceResult.ok,
     serviceDetail: serviceResult.detail,
+    firewallAttempted: firewallResult.attempted,
+    firewallOk: firewallResult.ok,
+    firewallDetail: firewallResult.detail,
     verifyMode: health.mode,
     status,
     durationMs,
@@ -698,6 +782,7 @@ async function main() {
     `BACKUP=${backupFilename || ""}`,
     `BASELINE_BACKUP=${baselineBackup || ""}`,
     `SERVICE=${serviceResult.detail}`,
+    `FIREWALL=${firewallResult.detail}`,
     `VERIFY=${health.mode}`,
     `ELAPSED_MS=${durationMs}`,
   ]);
@@ -713,10 +798,15 @@ async function main() {
   console.log(` Backup           : ${backupFilename || "(n/a)"}`);
   console.log(` Baseline backup  : ${baselineBackup || "(n/a)"}`);
   console.log(` Service          : ${serviceResult.detail}`);
+  console.log(` Firewall         : ${firewallResult.detail}`);
   console.log(` Verify           : ${health.mode} (${health.ok ? "ok" : "check manually"})`);
   console.log(` Setup log        : ${setupLogPath}`);
   console.log(` Manifest         : ${manifestPath}`);
   console.log("====================================================");
+  console.log("");
+  console.log(" Server URL (this PC):  http://127.0.0.1:<PORT>/   (PORT from shared\\.env, default 4000)");
+  console.log(" LAN clients:           http://<server-hostname-or-IPv4>:<PORT>/");
+  console.log(" Backend serves the packaged React UI from web\\ (static hosting).");
   console.log("");
   if (health.mode === "files") {
     console.log(" Start backend:  set FT_ERP_HOME=" + home);

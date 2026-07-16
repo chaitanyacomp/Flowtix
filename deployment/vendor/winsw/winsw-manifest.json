@@ -1,0 +1,18 @@
+{
+  "product": "WinSW",
+  "version": "v2.12.0",
+  "fileName": "WinSW-x64.exe",
+  "downloadUrl": "https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW-x64.exe",
+  "source": "https://github.com/winsw/winsw/releases/tag/v2.12.0",
+  "sha256": "05b82d46ad331cc16bdc00de5c6332c1ef818df8ceefcd49c726553209b3a0da",
+  "sizeBytes": 18243033,
+  "notes": "Official WinSW-x64.exe from the v2.12.0 GitHub release (self-contained). Validated PE (MZ). create-release copies this binary into release tools/vendor/winsw/ and validates SHA-256.",
+  "replacementProcedure": [
+    "1. Download WinSW-x64.exe from downloadUrl (keep version pin).",
+    "2. Compute SHA-256: PowerShell Get-FileHash -Algorithm SHA256 WinSW-x64.exe",
+    "3. Place binary at deployment/vendor/winsw/WinSW-x64.exe",
+    "4. Update sha256 (lowercase hex) and sizeBytes in this manifest",
+    "5. Run: node deployment/validate-winsw.js --require",
+    "6. Rebuild: deployment\\create-release.bat"
+  ]
+}

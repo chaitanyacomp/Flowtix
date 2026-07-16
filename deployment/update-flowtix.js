@@ -678,6 +678,23 @@ async function main() {
     console.log(`[update-flowtix] Replacing web/ from source → ${destWeb}`);
     replaceTree(srcWeb, destWeb);
 
+    // Batch 3 externals — refresh runtime node_modules after app/ replace
+    console.log(`[update-flowtix] npm install --omit=dev in ${destApp}`);
+    const npmRun = spawnSync("npm", ["install", "--omit=dev", "--no-fund", "--no-audit"], {
+      cwd: destApp,
+      encoding: "utf8",
+      windowsHide: true,
+      shell: true,
+      timeout: 600000,
+      env: { ...process.env, npm_config_production: "true" },
+    });
+    if (npmRun.status !== 0) {
+      throw new Error(
+        `npm install --omit=dev failed (exit ${npmRun.status}): ${String(npmRun.stderr || npmRun.stdout || "").slice(-400)}`,
+      );
+    }
+    push("npm install --omit=dev OK");
+
     // Refresh VERSION.txt at active root (metadata only; not shared/logs/backups)
     const verSrc = path.join(sourceRelease, "VERSION.txt");
     if (fs.existsSync(verSrc)) {

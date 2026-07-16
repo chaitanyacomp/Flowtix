@@ -34,7 +34,7 @@
 
 **Change authority:** Product Architecture + Release Operations Governance. Deployment policy changes require Volume 8 certification alignment.
 
-**Out of scope:** Docker, Kubernetes, cloud vendor specifics, shell scripts, CI/CD pipelines, source code, infrastructure runbooks.
+**Out of scope for this architecture chapter:** Docker, Kubernetes, cloud vendor specifics, CI/CD pipelines, source listings. **LAN operational scripts, installer, and static-hosting SOPs** are governed by [FT-DEP-001](../../06_Deployment/FT-DEP-001_Deployment_Release_Management.md) (committed under `deployment/`).
 
 ---
 

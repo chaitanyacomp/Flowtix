@@ -15,11 +15,11 @@ ERP_DATA/
 /deployment/node_modules/
 
 /_lab_ft_home/
+/_lab_m2_verify/
+/_lab_setup9/
 
 # FT-DEP-001 Batch 8 — optional WinSW install tree at FT home (dev/lab)
 /service/
-
-/_lab_setup9/
 
 # FT-DEP-001 Batch 10 — Inno Setup build output
 /deployment/installer/output/

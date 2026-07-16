@@ -56,13 +56,29 @@ const { monthlyPlanningRouter } = require("./routes/monthlyPlanning");
 const { procurementTraceRouter } = require("./routes/procurementTrace");
 const { isMonthlyPlanningEnabled, isPlanningDrivenProcurementEnabled } = require("./config/featureFlags");
 const { registerHealthRoutes } = require("./runtime/health");
+const {
+  resolveStaticHostingOptions,
+  registerStaticHosting,
+} = require("./runtime/staticHosting");
 
 /**
  * Express app with all API routes (shared by server.js and integration tests).
- * @param {{ getReleaseMeta?: () => object }} [options]
+ * @param {{
+ *   getReleaseMeta?: () => object,
+ *   staticHosting?: boolean,
+ *   webDir?: string,
+ *   env?: NodeJS.ProcessEnv,
+ * }} [options]
  */
 function createApp(options = {}) {
   const app = express();
+  const env = options.env || process.env;
+  const staticOpts = resolveStaticHostingOptions({
+    staticHosting: options.staticHosting,
+    webDir: options.webDir,
+    env,
+  });
+
   app.use(
     cors({
       origin: true,
@@ -72,9 +88,12 @@ function createApp(options = {}) {
   app.use(express.json());
   app.use(performanceLoggingMiddleware);
 
-  app.get("/", (req, res) => {
-    res.status(200).json({ message: "Mini ERP Backend Running" });
-  });
+  // Dev / API-only: JSON root. Production with packaged web/: SPA owns "/".
+  if (!staticOpts.enabled) {
+    app.get("/", (req, res) => {
+      res.status(200).json({ message: "Mini ERP Backend Running" });
+    });
+  }
 
   // FT-DEP-001 Batch 2 — lightweight ops health (version, uptime, DB status; no secrets).
   registerHealthRoutes(app, { prisma, getMeta: options.getReleaseMeta });
@@ -168,6 +187,11 @@ function createApp(options = {}) {
   app.use("/api/admin", adminSecurityRouter);
   app.use("/api/admin", tallyMasterImportRouter);
   app.use("/api", openingStockRouter);
+
+  // FT-DEP-001 Milestone 2 — packaged SPA (after /api + /health; before error handler).
+  if (staticOpts.enabled && staticOpts.webDir) {
+    registerStaticHosting(app, { webDir: staticOpts.webDir });
+  }
 
   app.use(errorHandler);
   return app;

@@ -4,7 +4,7 @@
 |-------|-------|
 | **Document ID** | FT-DEP-001 |
 | **Title** | Deployment & Release Management Standard |
-| **Version** | 1.13.0 |
+| **Version** | 1.14.1 |
 | **Status** | Active — Operational Standard (Batches 1–11 + Milestones 2–4 commercial delivery) |
 | **Effective date** | 2026-07-09 |
 | **Author** | FT ERP Product Team |
@@ -55,6 +55,8 @@
 | 1.11.0 | 2026-07-16 | FT ERP Product Team | Milestone 2 — backend static SPA hosting; verify UI+API; offline WinSW checksum; firewall helper; installer LAN URL policy; frontend `npm run build` gate |
 | 1.12.0 | 2026-07-16 | FT ERP Product Team | Milestone 3 — installation hardening: env validation, guided configure-env, db-safety gate, WinSW recovery policy, install-recovery, safe uninstall, diagnostics, certify-install |
 | 1.13.0 | 2026-07-17 | FT ERP Product Team | Milestone 4 — customer delivery media (`create-customer-media`), demo pack, customer guides + acceptance, checksums/manifest, branding About/support placeholders |
+| 1.14.0 | 2026-07-17 | FT ERP Product Team | Hotfix — installer place-release self-wipe: skip archive refresh when `--source` is `{home}\releases\…`; promote `app`/`web` only; certify-install regression |
+| 1.14.1 | 2026-07-18 | FT ERP Product Team | Hotfix — Inno `[Run]` invokes `post-install.bat` directly (cmd `/C` quoting dropped args); `existing_install` allows env-only first bootstrap; admin hard-fail only when service/firewall requested; full RCA + rebuild/certify docs synchronized |
 
 **Supersedes:** Informal client install notes; ad-hoc “copy the repo to the server” practices.
 
@@ -1555,6 +1557,83 @@ Automate **first-time LAN host preparation** per §18 without shipping an MSI/In
 | Service optional | `--install-service` / prompt / `--skip-service` |
 | Update unchanged | Upgrades remain `update-flowtix` (Batch 6) |
 
+### 34.3.1 Place-release — installer source layout (critical)
+
+#### Execution path (Batch 10 → Batch 9)
+
+```text
+Inno Setup [Files]
+  → extract certified package to {app}\releases\Flowtix-vX.Y.Z\
+Inno Setup [Run]
+  → {app}\tools\post-install.bat  {app}  {app}\releases\Flowtix-vX.Y.Z  …
+  → setup-flowtix.bat --home {app} --source {app}\releases\Flowtix-vX.Y.Z …
+  → placeRelease(source, home)
+  → promote live {app}\app + {app}\web
+  → (optional) service install / firewall / migrate
+```
+
+#### Root cause (pre-v1.14) — archive self-wipe
+
+Inno post-install always passes:
+
+```text
+--home {app}   --source {app}\releases\Flowtix-vX.Y.Z
+```
+
+In that **installer layout**, `--source` **is** the install archive under `releases\`. Older `placeRelease` still treated source as an *external* package and ran:
+
+```text
+replaceTree(source\app → home\releases\<name>\app)   // src === dest
+replaceTree(source\web → home\releases\<name>\web)
+```
+
+`replaceTree` cleared the destination first, then copied from source. When paths were identical, that **destroyed the release payload** (empty `app`/`web` inside the archive), then promoted empty trees to live `{home}\app` / `{home}\web`. Post-check failed with `app\server.js missing after place`.
+
+#### Cascade effects
+
+| Effect | Why |
+|--------|-----|
+| Live `{home}\app` / `{home}\web` missing | Promotion copied from a wiped source |
+| `install-recovery` abort removed partial live trees | Fresh-install abort policy removes incomplete runtime; DB / `.env` untouched |
+| Windows Service never installed | Service stage runs only after successful place + npm; setup exited earlier |
+| Inno wizard still showed success | `[Run]` non-zero exit does **not** fail the overall Inno install; extraction already succeeded |
+| Archive may be empty or incomplete | Self-wipe happened *inside* `releases\Flowtix-vX` |
+
+#### Minimal fix (v1.14+)
+
+`placeRelease` / `replaceTree` in `deployment/setup-flowtix.js` **SHALL**:
+
+1. Detect `path.resolve(source) === path.resolve(home\releases\<basename>)` (`sourceIsInstallArchive`).
+2. **Skip** refreshing the archive onto itself.
+3. **Promote** `app`/`web`/`prisma`/`VERSION.txt` from the intact archive into live `{home}`.
+4. Make `replaceTree` a **no-op** when source and destination resolve to the same path (`source-equals-dest`).
+
+#### Installer-layout vs external lab source
+
+| Layout | `--source` | Behavior |
+|--------|------------|----------|
+| **Installer** | `{home}\releases\Flowtix-vX` | Skip archive self-refresh; promote only |
+| **External / lab** | e.g. repo `release\Flowtix-vX` (≠ under home) | Copy/refresh into `home\releases\`, then promote (unchanged) |
+
+#### Why prior certification missed it
+
+Labs typically ran `setup-flowtix` with `--source` = repo `release\…` and `--home` = a different lab path (`source ≠ archive`). That path never self-wiped. Portability tests often failed earlier (e.g. missing `.env`) before `placeRelease`. **Future certification MUST** exercise the Inno-extracted layout or `certify-install` case `place_release_installer_layout`, and verify the archive remains intact **after** promotion:
+
+- `{home}\releases\Flowtix-vX\app\server.js` still present
+- `{home}\app\server.js` present (live)
+- `setup.log` contains `source=install-archive; skip self-refresh` when using installer layout
+
+#### Recovery — machine with already-wiped archive
+
+If `releases\Flowtix-vX\app\server.js` is missing/empty after a failed install:
+
+1. Do **not** re-run setup against the wiped archive.
+2. Uninstall (preserve customer data) **or** delete/rename the broken `{home}` tree (keep MySQL DB + known-good `shared\.env` backup).
+3. Reinstall using a **rebuilt** `Flowtix-Setup-vX.Y.Z.exe` that embeds the fixed `setup-flowtix.js` (copying only the fixed `.js` into an old install is insufficient for customer certification — rebuild release + installer).
+4. Confirm live runtime + intact archive + `SETUP_EXIT=0` (see §35.4.1 and clean-machine checklist).
+
+Regression harness: `certify-install` → `place_release_installer_layout`.
+
 ### 34.4 Logging
 
 | Artifact | Path |
@@ -1588,6 +1667,7 @@ MSI/WiX, automated DB restore, MySQL product installer bundling. *(Inno Setup wr
 - [ ] Service remains optional
 - [ ] `setup.log` + `SETUP_MANIFEST.json` written
 - [ ] Release package includes setup tools
+- [ ] Installer-layout place-release: archive intact after promote (`place_release_installer_layout`)
 - [ ] No schema / UI / business logic changes
 
 ---
@@ -1626,6 +1706,29 @@ Sources: `deployment/installer/Flowtix.iss`, `license.txt`, `post-install.bat`, 
 | Existing install | `post-install.bat` skips setup; use Batch 6 |
 | Uninstall default | Stop/remove service; remove app/web binaries; **keep** `shared/`, `backups/`, `logs/`, `releases/`, DB |
 | No secrets in EXE | Templates only |
+| Place-release | Post-install source is `{app}\releases\…` — Batch 9 must not self-wipe the archive ([§34.3.1](#3431-place-release--installer-source-layout-critical)) |
+
+### 35.4.1 Installer success vs bootstrap failure
+
+Inno Setup `[Run]` **SHALL** execute `{app}\tools\post-install.bat` directly with quoted home/source arguments. Wrapping as `cmd /C "post-install.bat" "home" "source"` is forbidden — Windows drops arguments and bootstrap exits before writing `logs\installer-post.log`.
+
+`[Run]` of `post-install.bat` may still return non-zero while the wizard reports the product as installed (files extracted). Operators **SHALL** confirm live runtime after install:
+
+- `{app}\app\server.js` and `{app}\web\index.html` exist
+- `logs\installer-post.log` shows `SETUP_EXIT=0` (not a place-release error)
+- Optional: `sc query FlowtixERP` when the install-service task was selected
+
+Do not treat wizard completion alone as Path A/B bootstrap success.
+
+### 35.4.2 Rebuild requirement (hotfixes)
+
+After any change to `setup-flowtix.js`, `install-validate.js`, `post-install.bat`, or `Flowtix.iss`:
+
+1. `deployment\create-release.bat` (embeds tools into `release\Flowtix-vX.Y.Z\`)
+2. `deployment\installer\build-installer.bat` (embeds that release into the setup EXE)
+3. Record installer SHA-256; run clean-machine checks in §35.8 / customer acceptance 10
+
+Manually copying a fixed script onto a customer machine is an emergency workaround only — it does **not** satisfy release certification. Customer media must ship a rebuilt EXE.
 
 ### 35.5 Silent install
 
@@ -1644,7 +1747,9 @@ MSI/WiX, auto-update agent (R5), bundled MySQL, automated DB restore.
 - [ ] `build-installer.bat` produces `Flowtix-Setup-v*.exe`
 - [ ] Installer embeds release with `tools/setup-flowtix.bat`
 - [ ] Post-install calls Batch 9 (or skips on existing install)
-- [ ] Service task optional
+- [ ] After fresh install: live `{app}\app` and `{app}\web` exist (not only under `releases\`)
+- [ ] `certify-install` includes `place_release_installer_layout` PASS
+- [ ] Service task optional; service install only after runtime placed
 - [ ] Uninstall preserves shared/backups/logs/releases/DB
 - [ ] Update/rollback tools unchanged
 - [ ] FT-DEP-001 §21 R4 / §35 documented
@@ -1768,8 +1873,9 @@ Inno Setup (`Flowtix.iss`) asks whether to preserve customer data. **Default: pr
 
 | Tool | `tools/certify-install.bat` / `certify-install.js` |
 |------|----------------------------------------------------|
-| Scope | Safe lab simulations (configure, validate, recovery, db-safety guard, WinSW XML, diagnostics, uninstall policy, syntax) |
+| Scope | Safe lab simulations (configure, validate, recovery, db-safety guard, WinSW XML, diagnostics, uninstall policy, **installer place-release layout**, syntax) |
 | Site acceptance | Reboot, LAN multi-browser, live service install remain FT-DEP-011 gates |
+| Required regression | `place_release_installer_layout` — `--source` under `home\releases\` must create live `app`/`web` without wiping the archive |
 
 ### 37.10 Validation checklist (Milestone 3)
 
@@ -1780,7 +1886,8 @@ Inno Setup (`Flowtix.iss`) asks whether to preserve customer data. **Default: pr
 - [ ] Failed setup aborts install transaction (files only; DB untouched)
 - [ ] Uninstaller default preserves customer data; never deletes MySQL
 - [ ] `collect-diagnostics` produces masked `summary.json`
-- [ ] `certify-install` exits 0 in lab
+- [ ] `certify-install` exits 0 in lab (includes `place_release_installer_layout`)
+- [ ] Fresh Inno install creates live `{app}\app` + `{app}\web` (not archive-only)
 - [ ] FT-DEP-011 / FT-DEP-012 / checklist 02 synchronized
 
 ---

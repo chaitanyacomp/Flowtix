@@ -55,14 +55,27 @@ function parseArgs(argv) {
   return out;
 }
 
-function checkAdmin() {
+function checkAdmin(requireAdmin) {
   const ok = isAdmin();
+  if (ok) {
+    return checkItem("administrator", true, "ok", "Running with Administrator privileges");
+  }
+  // Service/firewall install needs elevation; Path B / file-only bootstrap may run without it.
+  if (requireAdmin) {
+    return checkItem(
+      "administrator",
+      false,
+      "error",
+      "Administrator privileges required for service/firewall install",
+      "Re-run this command from an elevated (Administrator) Command Prompt or PowerShell",
+    );
+  }
   return checkItem(
     "administrator",
-    ok,
-    ok ? "ok" : "error",
-    ok ? "Running with Administrator privileges" : "Administrator privileges required for service/firewall install",
-    ok ? null : "Re-run this command from an elevated (Administrator) Command Prompt or PowerShell",
+    true,
+    "warn",
+    "Not elevated — OK for file-only setup; elevate before --install-service / --configure-firewall",
+    "Re-run elevated if installing Windows Service or firewall rule",
   );
 }
 
@@ -222,31 +235,47 @@ function checkExistingInstall(home, allowExisting) {
   if (!home || !fs.existsSync(home)) {
     return checkItem("existing_install", true, "ok", "No existing FT_ERP_HOME tree (fresh install)");
   }
-  const markers = [
-    path.join(home, "app", "server.js"),
-    path.join(home, "web", "index.html"),
-    path.join(home, "shared", ".env"),
-  ];
-  const present = markers.filter((p) => fs.existsSync(p));
-  if (!present.length) {
-    return checkItem("existing_install", true, "ok", "Home exists but no prior Flowtix install markers");
+  const hasApp = fs.existsSync(path.join(home, "app", "server.js"));
+  const hasWeb = fs.existsSync(path.join(home, "web", "index.html"));
+  const hasEnv = fs.existsSync(path.join(home, "shared", ".env"));
+  // Align with post-install.bat: complete install = env + live app + live web.
+  // shared\.env alone is normal for first-time Path A (configure-env before setup).
+  if (hasApp && hasWeb && hasEnv) {
+    if (allowExisting) {
+      return checkItem(
+        "existing_install",
+        true,
+        "warn",
+        "Existing install detected (env + app + web) — --allow-existing set",
+        "Use update-flowtix for upgrades; --force only for intentional re-bootstrap",
+      );
+    }
+    return checkItem(
+      "existing_install",
+      false,
+      "error",
+      "Existing Flowtix installation detected",
+      "Use tools\\update-flowtix.bat for upgrades, or pass --force / --allow-existing for intentional re-setup",
+    );
   }
-  if (allowExisting) {
+  if (hasApp || hasWeb) {
     return checkItem(
       "existing_install",
       true,
       "warn",
-      `Existing install detected (${present.length} markers) — --allow-existing set`,
-      "Use update-flowtix for upgrades; --force only for intentional re-bootstrap",
+      "Partial runtime present (app/web incomplete) — setup may repair/promote",
+      "If this is an upgrade of a complete install, use update-flowtix instead",
     );
   }
-  return checkItem(
-    "existing_install",
-    false,
-    "error",
-    "Existing Flowtix installation detected",
-    "Use tools\\update-flowtix.bat for upgrades, or pass --force / --allow-existing for intentional re-setup",
-  );
+  if (hasEnv) {
+    return checkItem(
+      "existing_install",
+      true,
+      "ok",
+      "shared\\.env present (first-time bootstrap OK; live app/web not yet placed)",
+    );
+  }
+  return checkItem("existing_install", true, "ok", "Home exists but no prior Flowtix install markers");
 }
 
 function checkServiceState() {
@@ -421,8 +450,9 @@ async function runInstallValidation(options = {}) {
   const base = await runPrerequisiteChecks({ home, port });
   // Remap base port check: we will add a stricter port check
   const checks = [];
+  const requireAdmin = options.requireAdmin === true;
   checks.push(checkWinVersion());
-  checks.push(checkAdmin());
+  checks.push(checkAdmin(requireAdmin));
   for (const c of base.checks) {
     if (c.id === "port") continue; // replaced below
     if (c.id === "platform") {

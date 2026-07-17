@@ -32,13 +32,32 @@ deployment/installer/output/Flowtix-Setup-vX.Y.Z.exe
 ## What the installer does
 
 1. Extracts embedded certified package to `{app}\releases\Flowtix-vX.Y.Z\`
-2. Runs `{app}\tools\post-install.bat` → Batch 9 `setup-flowtix.bat` with source=`{app}\releases\Flowtix-vX.Y.Z\`
-3. Optional: Windows Service via setup `--install-service` (Batch 8 / offline WinSW)
-4. Optional: Windows Firewall inbound TCP rule for app PORT (`--configure-firewall`)
-5. Optional: `--skip-migrate` (Path B)
-6. Creates Start Menu shortcut to **server localhost** URL; optional desktop shortcut
-7. Writes `LAN-ACCESS.txt` with hostname/LAN URL guidance
-8. Writes logs under `{app}\logs\`
+2. Runs `{app}\tools\post-install.bat` **directly** (not via `cmd /C "bat" "args"` — that drops arguments) → Batch 9 `setup-flowtix.bat` with source=`{app}\releases\Flowtix-vX.Y.Z\`
+3. Batch 9 **promotes** `app`/`web` from that archive into live `{app}\app` and `{app}\web` (it must **not** refresh the archive onto itself — see FT-DEP-001 §34.3.1). Pre-created `shared\.env` alone is not treated as an existing install.
+4. Optional: Windows Service via setup `--install-service` (Batch 8 / offline WinSW) — only after runtime place succeeds
+5. Optional: Windows Firewall inbound TCP rule for app PORT (`--configure-firewall`)
+6. Optional: `--skip-migrate` (Path B)
+7. Creates Start Menu shortcut to **server localhost** URL; optional desktop shortcut
+8. Writes `LAN-ACCESS.txt` with hostname/LAN URL guidance
+9. Writes logs under `{app}\logs\` (including `installer-post.log` / `setup.log`)
+
+### Place-release (installer layout) — fixed defect
+
+**Path:** `Inno → post-install → setup-flowtix → placeRelease → runtime promotion → service`.
+
+**Symptom (pre-fix):** After a “successful” wizard, live `{app}\app` / `{app}\web` were missing; Windows service absent (`sc query` 1060). Manual setup logged `app\server.js missing after place`. Archive under `releases\` may also have been emptied.
+
+**Cause:** `--source` equaled `{home}\releases\Flowtix-vX`. `placeRelease` ran `replaceTree(source\app → archive\app)` with `src === dest`, wiping the payload before promotion. Fresh-install `install-recovery` abort then removed partial live trees. Service stage never ran. Inno still showed success because `[Run]` failure does not fail the wizard after extraction.
+
+**Installer layout vs lab:** External `--source` (repo `release\…` ≠ under home) never hit the bug — that is why prior certification missed it.
+
+**Fix:** Same-path detection skips archive self-refresh; `replaceTree` no-ops when src≡dest; promote only. Regression: `certify-install` → `place_release_installer_layout`. After install, archive **and** live runtime must both have `app\server.js`.
+
+**Rebuild:** After tooling fixes, always `create-release.bat` + `build-installer.bat`. Hand-copying `setup-flowtix.js` is not a certified delivery.
+
+**Also fixed (v1.14.1):** `[Run]` invokes `post-install.bat` directly (not `cmd /C "bat" "args"`). `shared\.env` alone is not “existing install”.
+
+**Note:** Always verify live `app\server.js` + `web\index.html`, intact archive, and `SETUP_EXIT=0` in `logs\installer-post.log`.
 
 ## URLs and port
 
@@ -62,7 +81,8 @@ In production, the Node/Express backend serves the packaged React SPA from `web\
 |------|----------|
 | No MySQL install | Operator provides MySQL separately |
 | No `.env` overwrite | Batch 9 never replaces existing `shared/.env` |
-| Existing install | Post-install **skips** setup; use `update-flowtix` for upgrades |
+| Existing install | Post-install **skips** setup only when `shared\.env` **and** `app\server.js` **and** `web\index.html` all exist; use `update-flowtix` for upgrades |
+| Place-release | `--source` under `{app}\releases\` must promote without self-wipe (FT-DEP-001 §34.3.1) |
 | Offline WinSW | Release ships checksum-validated `WinSW-x64.exe` |
 | Uninstall default | Stops/removes service + firewall rule; removes `app`/`web`/`prisma` binaries; **asks** to preserve `shared/`, `backups/`, `logs/` (default Yes); **never deletes MySQL** |
 | Pre-setup config | Prefer `tools\configure-env.bat` before Path A; setup refuses placeholder secrets |

@@ -20,6 +20,14 @@ Customer-facing summary of LAN deployment. **Normative detail:** FT-DEP-001 (`re
 
 Complete FT-DEP-011 Production Readiness and customer acceptance forms under `acceptance/`.
 
+After Windows installer install, confirm **live** runtime (not archive-only):
+
+- `{FT_ERP_HOME}\app\server.js` and `{FT_ERP_HOME}\web\index.html`
+- `{FT_ERP_HOME}\releases\Flowtix-vX.Y.Z\app\server.js` still present (archive not wiped)
+- `logs\installer-post.log` → `SETUP_EXIT=0`
+
+Hotfix background: FT-DEP-001 §34.3.1 (installer place-release). Customer media must include a **rebuilt** setup EXE after tooling changes (§35.4.2).
+
 ## Out of scope (v1.0.0)
 
 - Cloud / SaaS deployment

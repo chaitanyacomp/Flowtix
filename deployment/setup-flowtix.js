@@ -159,10 +159,27 @@ function removeDirContents(dir) {
   }
 }
 
+function sameResolvedPath(a, b) {
+  const ra = path.resolve(a);
+  const rb = path.resolve(b);
+  return process.platform === "win32" ? ra.toLowerCase() === rb.toLowerCase() : ra === rb;
+}
+
+/**
+ * Replace dest with a copy of src. No-op when src and dest are the same path
+ * (installer layout: --source already is home\releases\Flowtix-vX — must not wipe).
+ */
 function replaceTree(srcDir, destDir) {
+  if (sameResolvedPath(srcDir, destDir)) {
+    return { skipped: true, reason: "source-equals-dest" };
+  }
+  if (!fs.existsSync(srcDir)) {
+    return { skipped: true, reason: "source-missing" };
+  }
   ensureDir(destDir);
   removeDirContents(destDir);
   copyDirRecursive(srcDir, destDir);
+  return { skipped: false };
 }
 
 function loadEnvFile(filePath, { override = false } = {}) {
@@ -350,24 +367,44 @@ function placeRelease(sourceRelease, home) {
   const version = meta.productVersion || "0.0.0";
   const releaseName = path.basename(sourceRelease) || `Flowtix-v${version}`;
   const archiveDir = path.join(home, "releases", releaseName);
-  ensureDir(archiveDir);
-  // Retain full package under releases\ (idempotent refresh of package copy)
-  for (const part of ["app", "web", "prisma", "tools"]) {
-    const src = path.join(sourceRelease, part);
-    if (fs.existsSync(src)) replaceTree(src, path.join(archiveDir, part));
+  // Inno post-install passes --source {app}\releases\Flowtix-vX — identical to archiveDir.
+  // Refreshing archive via replaceTree onto itself previously wiped app/web (CRITICAL).
+  const sourceIsInstallArchive = sameResolvedPath(sourceRelease, archiveDir);
+
+  if (!sourceIsInstallArchive) {
+    ensureDir(archiveDir);
+    // Retain full package under releases\ (idempotent refresh from an external source)
+    for (const part of ["app", "web", "prisma", "tools"]) {
+      const src = path.join(sourceRelease, part);
+      if (fs.existsSync(src)) replaceTree(src, path.join(archiveDir, part));
+    }
+    for (const f of ["VERSION.txt", "RELEASE_NOTES.md"]) {
+      const src = path.join(sourceRelease, f);
+      if (fs.existsSync(src)) fs.copyFileSync(src, path.join(archiveDir, f));
+    }
   }
-  for (const f of ["VERSION.txt", "RELEASE_NOTES.md"]) {
-    const src = path.join(sourceRelease, f);
-    if (fs.existsSync(src)) fs.copyFileSync(src, path.join(archiveDir, f));
+
+  const srcApp = path.join(sourceRelease, "app");
+  const srcWeb = path.join(sourceRelease, "web");
+  if (!fs.existsSync(path.join(srcApp, "server.js"))) {
+    throw new Error(
+      `placeRelease: source app\\server.js missing under ${sourceRelease} (package incomplete or previously self-wiped)`,
+    );
   }
-  // Active layout used by Batch 6/8
-  replaceTree(path.join(sourceRelease, "app"), path.join(home, "app"));
-  replaceTree(path.join(sourceRelease, "web"), path.join(home, "web"));
+  if (!fs.existsSync(path.join(srcWeb, "index.html"))) {
+    throw new Error(
+      `placeRelease: source web\\index.html missing under ${sourceRelease} (package incomplete or previously self-wiped)`,
+    );
+  }
+
+  // Promote to active runtime (Batch 6/8 layout)
+  replaceTree(srcApp, path.join(home, "app"));
+  replaceTree(srcWeb, path.join(home, "web"));
   if (fs.existsSync(path.join(sourceRelease, "prisma"))) {
     replaceTree(path.join(sourceRelease, "prisma"), path.join(home, "prisma"));
   }
   fs.copyFileSync(path.join(sourceRelease, "VERSION.txt"), path.join(home, "VERSION.txt"));
-  return { version, archiveDir, meta };
+  return { version, archiveDir, meta, sourceIsInstallArchive };
 }
 
 /**
@@ -559,6 +596,8 @@ async function main() {
       allowExisting: !!args.force,
       skipMysql: true, // DB deep-check runs after env exists (Path A)
       skipMigratePath: !!args.skipMigrate,
+      // Elevate only when this setup run will install service or firewall
+      requireAdmin: !!(args.installService || args.configureFirewall),
     });
     for (const c of validation.checks) {
       push(`validate [${c.level}] ${c.id}: ${c.detail}`);
@@ -650,8 +689,16 @@ async function main() {
   // --- 4. Place release ---
   push("STAGE=place-release");
   copyToolsIntoHome(sourceRelease, home);
-  const placed = placeRelease(sourceRelease, home);
-  push(`placed version=${placed.version} archive=${placed.archiveDir}`);
+  let placed;
+  try {
+    placed = placeRelease(sourceRelease, home);
+  } catch (e) {
+    failSetup(9, "place-release", e instanceof Error ? e.message : String(e));
+  }
+  push(
+    `placed version=${placed.version} archive=${placed.archiveDir}` +
+      (placed.sourceIsInstallArchive ? " (source=install-archive; skip self-refresh)" : ""),
+  );
   if (tx) recovery.markStage(home, "place-release", true, placed.version);
   if (!fs.existsSync(path.join(home, "app", "server.js"))) {
     failSetup(9, "place-release", "app\\server.js missing after place — package incomplete");
@@ -950,20 +997,28 @@ async function main() {
   process.exit(status === "success" ? 0 : 8);
 }
 
-main().catch((e) => {
-  console.error("[setup-flowtix] FATAL:", redactSecrets(e instanceof Error ? e.message : String(e)));
-  try {
-    const home = process.env.FT_ERP_HOME;
-    if (home) {
-      const recovery = require("./install-recovery");
-      const st = recovery.statusTransaction(home);
-      if (st && st.status === "in_progress") {
-        recovery.abortTransaction(home, e instanceof Error ? e.message : String(e));
-        console.error("[setup-flowtix] Install transaction aborted after fatal error (DB untouched).");
+if (require.main === module) {
+  main().catch((e) => {
+    console.error("[setup-flowtix] FATAL:", redactSecrets(e instanceof Error ? e.message : String(e)));
+    try {
+      const home = process.env.FT_ERP_HOME;
+      if (home) {
+        const recovery = require("./install-recovery");
+        const st = recovery.statusTransaction(home);
+        if (st && st.status === "in_progress") {
+          recovery.abortTransaction(home, e instanceof Error ? e.message : String(e));
+          console.error("[setup-flowtix] Install transaction aborted after fatal error (DB untouched).");
+        }
       }
+    } catch {
+      // ignore
     }
-  } catch {
-    // ignore
-  }
-  process.exit(1);
-});
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  placeRelease,
+  replaceTree,
+  sameResolvedPath,
+};

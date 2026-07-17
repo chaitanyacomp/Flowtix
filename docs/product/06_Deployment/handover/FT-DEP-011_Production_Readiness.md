@@ -3,8 +3,8 @@
 | Field | Value |
 |-------|-------|
 | **Document ID** | FT-DEP-011 |
-| **Version** | 1.2.0 |
-| **Parent** | FT-DEP-001 v1.13.0 §36–§38 |
+| **Version** | 1.2.1 |
+| **Parent** | FT-DEP-001 v1.14.0 §34–§38 |
 | **Site / Customer** | |
 | **Target product version** | |
 | **Date** | |
@@ -36,6 +36,8 @@ Use as the **master gate** before declaring production ready. Complete linked ch
 ## C. Install / setup
 
 - [ ] Installation verification complete ([02](./checklists/02_Installation_Verification.md))
+- [ ] Live runtime present: `{FT_ERP_HOME}\app\server.js` and `{FT_ERP_HOME}\web\index.html` (not only under `releases\`) — FT-DEP-001 §34.3.1 / §35.4.1
+- [ ] After Batch 10: `logs\installer-post.log` shows `SETUP_EXIT=0` or documented `EXISTING_INSTALL_SKIP_SETUP`
 - [ ] `shared\.env` present and validated (secrets **not** copied into this form); **PORT** recorded
 - [ ] Root URL returns Flowtix HTML shell (backend static hosting); LAN URL documented
 - [ ] Optional Windows Service verified if used ([07](./checklists/07_Windows_Service_Verification.md)) — restart policy / health after start

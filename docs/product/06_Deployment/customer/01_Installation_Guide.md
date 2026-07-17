@@ -24,7 +24,14 @@ tools\configure-env.bat --home C:\FT-ERP
 ```
 
 5. Complete setup prompts (optional Windows Service, optional firewall).
-6. Verify:
+6. Confirm live runtime (required — wizard completion alone is not enough):
+
+```bat
+dir C:\FT-ERP\app\server.js
+dir C:\FT-ERP\web\index.html
+```
+
+7. Verify:
 
 ```bat
 tools\verify-install.bat --home C:\FT-ERP

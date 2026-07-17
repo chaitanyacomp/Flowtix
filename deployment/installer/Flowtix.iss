@@ -81,7 +81,9 @@ Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
-Filename: "{cmd}"; Parameters: "/C ""{app}\tools\post-install.bat"" ""{app}"" ""{app}\releases\{#ReleaseFolder}"" {code:SkipMigrateFlag} {code:InstallServiceFlag} {code:ConfigureFirewallFlag}"; StatusMsg: "Running Flowtix setup (Batch 9)..."; Flags: runhidden waituntilterminated
+; Invoke the .bat directly (do NOT wrap with cmd /C "bat" "args" — that drops args / fails with
+; "filename syntax incorrect" and exits before logs\installer-post.log is written).
+Filename: "{app}\tools\post-install.bat"; Parameters: """{app}"" ""{app}\releases\{#ReleaseFolder}"" {code:SkipMigrateFlag} {code:InstallServiceFlag} {code:ConfigureFirewallFlag}"; StatusMsg: "Running Flowtix setup (Batch 9)..."; Flags: runhidden waituntilterminated
 Filename: "{app}\{#MyAppExeName}"; Description: "Open {#MyAppName} (this server)"; Flags: postinstall nowait skipifsilent shellexec
 Filename: "{app}\LAN-ACCESS.txt"; Description: "View LAN client access URLs"; Flags: postinstall nowait skipifsilent shellexec unchecked
 

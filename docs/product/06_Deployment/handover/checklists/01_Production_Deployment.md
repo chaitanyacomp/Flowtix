@@ -19,6 +19,7 @@ Follow FT-DEP-001 §18 / §19. Prefer Batch 9 setup or Batch 10 installer for fi
 
 - [ ] `check-prereqs.bat --home <FT_ERP_HOME>` Pass (or warnings accepted)
 - [ ] Installer **or** `setup-flowtix.bat --home … --source …` executed
+- [ ] Live `app\server.js` + `web\index.html` under `FT_ERP_HOME` (wizard OK alone is insufficient)
 - [ ] Path A (backup→migrate→baseline) **or** Path B (`--skip-migrate`) recorded
 - [ ] Optional service: installed / skipped (circle one)
 - [ ] Continue with [02 Installation Verification](./02_Installation_Verification.md)

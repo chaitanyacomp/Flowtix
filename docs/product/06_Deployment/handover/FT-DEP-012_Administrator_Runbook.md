@@ -111,9 +111,19 @@ tools\configure-env.bat --home C:\FT-ERP
 tools\setup-flowtix.bat --home C:\FT-ERP --source <package> --yes
 ```
 
+After Batch 10 install, `<package>` is normally `C:\FT-ERP\releases\Flowtix-vX.Y.Z` (same tree the installer extracted). Setup promotes `app`/`web` into `C:\FT-ERP\app` and `C:\FT-ERP\web` without refreshing that archive onto itself (FT-DEP-001 §34.3.1).
+
 Optional flags: `--create-db`, `--install-service`, `--configure-firewall`, `--skip-diagnostics`, `--allow-dev-db` (lab only).
 
 Requires existing `shared\.env` before setup. Database safety runs automatically before `prisma migrate deploy`.
+
+**If the wizard finished but `C:\FT-ERP\app` / `web` are missing:**
+
+1. Check `logs\installer-post.log` (`SETUP_EXIT`) and `logs\setup.log` (place-release).
+2. Check whether the archive survived: `dir C:\FT-ERP\releases\Flowtix-v1.0.0\app\server.js`.
+3. If the archive is **intact**, re-run setup with `--source` = that folder (fixed tools required).
+4. If the archive is **wiped**, uninstall/remove the broken home and install a **rebuilt** setup EXE — do not certify a hand-copied script alone (FT-DEP-001 §34.3.1 / §35.4.2).
+5. Confirm live `app\server.js` before installing the Windows service.
 
 ## 7b. Installation recovery
 
@@ -124,7 +134,7 @@ tools\install-recovery.bat status --home C:\FT-ERP
 tools\install-recovery.bat abort --home C:\FT-ERP --reason "operator abort"
 ```
 
-App/web rollback after a successful update still uses `rollback-flowtix` (Batch 7). Manual SQL restore is Mode B if schema must be reverted.
+On a **fresh** install abort, partial `app`/`web` trees are removed (expected). The release under `releases\` must remain intact so setup can be re-run. App/web rollback after a successful update still uses `rollback-flowtix` (Batch 7). Manual SQL restore is Mode B if schema must be reverted.
 
 ## 7c. Diagnostics bundle
 

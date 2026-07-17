@@ -4,7 +4,7 @@
 |------|--------------|------------|------|
 | | | | |
 
-Uses Batch 6 `update-flowtix`. Do **not** use installer as destructive re-bootstrap.
+Uses Batch 6 `update-flowtix`. Do **not** use installer as destructive re-bootstrap. Ensure the new package under `releases\` has intact `app\server.js` before update (never point `--source` at a wiped archive — FT-DEP-001 §34.3.1).
 
 ## Pre-update
 

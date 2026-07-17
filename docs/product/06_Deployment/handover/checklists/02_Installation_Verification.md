@@ -13,8 +13,11 @@ Technical checks after Batch 9 setup or Batch 10 installer. Do **not** print sec
 - [ ] `backups\db\` exists
 - [ ] `logs\` writable (`app`, `deploy`, `service` as applicable)
 - [ ] `releases\` contains package and/or pre-update archives
-- [ ] Active `app\server.js` present
-- [ ] Active `web\index.html` present
+- [ ] Active `app\server.js` present (**live** under `FT_ERP_HOME`, not only under `releases\…`)
+- [ ] Active `web\index.html` present (**live** under `FT_ERP_HOME`, not only under `releases\…`)
+- [ ] Release archive still intact: `releases\Flowtix-v*\app\server.js` (must survive place-release)
+- [ ] After Batch 10 installer: `logs\installer-post.log` has `SETUP_EXIT=0` (or `EXISTING_INSTALL_SKIP_SETUP`)
+- [ ] After Batch 10: `logs\setup.log` shows `source=install-archive; skip self-refresh` when source was the install archive
 - [ ] `VERSION.txt` present; productVersion = _______________
 
 ## Tools

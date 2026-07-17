@@ -84,9 +84,14 @@ Apply on the client server with Prisma migrate deploy against shared/.env DATABA
 
 - _None recorded for this build. Edit before customer delivery if applicable._
 
+## Fixed (installer)
+
+- **Place-release self-wipe (FT-DEP-001 v1.14):** When Batch 9 runs with \`--source\` equal to \`{home}\\releases\\Flowtix-vX\` (Inno post-install layout), setup no longer refreshes the archive onto itself. Live \`app/\` and \`web/\` are promoted correctly. Verify after install: \`{home}/app/server.js\` and \`{home}/web/index.html\` exist; \`certify-install\` case \`place_release_installer_layout\`.
+- **Post-install invocation (FT-DEP-001 v1.14.1):** Inno \`[Run]\` calls \`post-install.bat\` directly (not \`cmd /C "bat" "args"\`, which dropped arguments). \`existing_install\` allows \`shared/.env\`-only first bootstrap; Administrator is a hard fail only when service/firewall install is requested.
+
 ## Known Issues
 
-- _None recorded for this build. Edit before customer delivery if applicable._
+- Inno Setup may report the product as installed even if \`post-install\` / \`setup-flowtix\` exits non-zero. Always confirm live runtime + \`logs/installer-post.log\` \`SETUP_EXIT=0\` (FT-DEP-001 §35.4.1).
 
 ## Package Contents (Batch 1+3+4+5+6+7+8+9+10+11)
 

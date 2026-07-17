@@ -248,6 +248,65 @@ async function runCertification(options = {}) {
     fail("uninstall_preserve_policy", e instanceof Error ? e.message : String(e));
   }
 
+  // First-time Path A: shared\.env alone must NOT block as "existing install"
+  try {
+    const { runInstallValidation } = require("./install-validate");
+    const envOnly = path.join(lab, "env_only_home");
+    if (fs.existsSync(envOnly)) fs.rmSync(envOnly, { recursive: true, force: true });
+    fs.mkdirSync(path.join(envOnly, "shared"), { recursive: true });
+    fs.writeFileSync(
+      path.join(envOnly, "shared", ".env"),
+      'DATABASE_URL="mysql://u:p@127.0.0.1:3306/flowtix_erp"\nJWT_SECRET=certify-jwt-secret-16+\nPORT=4013\n',
+      "utf8",
+    );
+    const v = await runInstallValidation({
+      home: envOnly,
+      allowExisting: false,
+      skipMysql: true,
+      skipMigratePath: true,
+      requireAdmin: false,
+    });
+    const ex = v.checks.find((c) => c.id === "existing_install");
+    assert(ex && ex.ok, `env-only must allow bootstrap: ${ex && ex.detail}`);
+    pass("existing_install_env_only_ok", ex.detail);
+  } catch (e) {
+    fail("existing_install_env_only_ok", e instanceof Error ? e.message : String(e));
+  }
+
+  // Installer layout regression: --source == home\releases\<name> must promote, not self-wipe.
+  try {
+    const { placeRelease, sameResolvedPath } = require("./setup-flowtix");
+    const installLab = path.join(lab, "installer_place");
+    if (fs.existsSync(installLab)) fs.rmSync(installLab, { recursive: true, force: true });
+    const archive = path.join(installLab, "releases", "Flowtix-v1.0.0");
+    fs.mkdirSync(path.join(archive, "app"), { recursive: true });
+    fs.mkdirSync(path.join(archive, "web"), { recursive: true });
+    fs.mkdirSync(path.join(archive, "prisma"), { recursive: true });
+    fs.writeFileSync(path.join(archive, "app", "server.js"), "/* installer-place marker */\n");
+    fs.writeFileSync(path.join(archive, "web", "index.html"), "<html>installer-place</html>\n");
+    fs.writeFileSync(path.join(archive, "VERSION.txt"), "productVersion=1.0.0\ngitCommit=certify-place\n");
+    const placed = placeRelease(archive, installLab);
+    assert(placed.sourceIsInstallArchive === true, "expected sourceIsInstallArchive");
+    assert(sameResolvedPath(archive, placed.archiveDir), "archiveDir should equal source");
+    assert(
+      fs.existsSync(path.join(archive, "app", "server.js")),
+      "install archive app\\server.js must survive placeRelease",
+    );
+    assert(
+      fs.existsSync(path.join(installLab, "app", "server.js")),
+      "live app\\server.js must be created",
+    );
+    assert(
+      fs.existsSync(path.join(installLab, "web", "index.html")),
+      "live web\\index.html must be created",
+    );
+    const live = fs.readFileSync(path.join(installLab, "app", "server.js"), "utf8");
+    assert(live.includes("installer-place"), "live app content not promoted from archive");
+    pass("place_release_installer_layout", "source=install-archive promotes without self-wipe");
+  } catch (e) {
+    fail("place_release_installer_layout", e instanceof Error ? e.message : String(e));
+  }
+
   try {
     const tools = [
       "install-common.js",

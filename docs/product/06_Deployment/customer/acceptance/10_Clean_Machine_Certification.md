@@ -3,7 +3,7 @@
 | Field | Value |
 |-------|-------|
 | **Document** | Clean-Machine Certification Checklist |
-| **Parent** | FT-DEP-001 §36–§38 · FT-DEP-011 |
+| **Parent** | FT-DEP-001 v1.14.1 §34–§38 · FT-DEP-011 |
 | **Stable git** | `0a087ab` (Customer Delivery Package) |
 | **Site / Lab PC** | |
 | **Operator** | |
@@ -72,9 +72,27 @@ Choose dir (default `C:\FT-ERP`). Prefer tasks: install service + firewall when 
 | Expected | Evidence | Fail | Troubleshoot |
 |----------|----------|------|--------------|
 | Wizard completes; `{app}\releases\Flowtix-v1.0.0\` present | Dir listing | 🔴 | `logs\installer-*.log`; Inno log |
+| Live runtime created: `{app}\app\server.js` **and** `{app}\web\index.html` (not archive-only) | Dir listing | 🔴 | `logs\installer-post.log` / `setup.log` — place-release must not self-wipe; re-run §1.3 |
+| **Archive still intact after promote:** `{app}\releases\Flowtix-v1.0.0\app\server.js` | Dir listing | 🔴 | Self-wipe regression — rebuild installer from fixed `setup-flowtix.js` (FT-DEP-001 §34.3.1) |
+| `logs\installer-post.log` shows `SETUP_EXIT=0` (or documented skip) | Log line | 🔴 | Bootstrap failed even if wizard said OK — FT-DEP-001 §35.4.1 |
+| `logs\setup.log` contains `source=install-archive; skip self-refresh` (installer layout) | Log line | 🟠 | Confirm tools embed fixed placeRelease; rebuild release+EXE |
+| If service task selected: `sc query FlowtixERP` shows service | `sc query` | 🔴 | Runtime must exist first; then service-install |
 | If first install needs Path A: `shared\.env` must exist before migrate | See §2 | 🔴 | Run configure-env then re-run setup (§1.3) |
 
+**Mandatory post-install commands (target PC):**
+
+```bat
+dir C:\FT-ERP\app\server.js
+dir C:\FT-ERP\web\index.html
+dir C:\FT-ERP\releases\Flowtix-v1.0.0\app\server.js
+type C:\FT-ERP\logs\installer-post.log
+sc query FlowtixERP
+curl http://localhost:4000/api/health
+```
+
 **Note:** Installer post-install runs `setup-flowtix` only when `shared\.env` + `app\server.js` + `web\index.html` are **not** already a complete install. First-time Path A typically needs configure-env before/during setup (see §2–3).
+
+**Certification gap closed (v1.14):** Lab `setup-flowtix` with `--source` = repo `release\…` (external to home) never hit the installer self-wipe path. Always certify with the **real Inno installer** (or Inno-extracted layout `--source` = `{home}\releases\Flowtix-vX`) **and** `certify-install` case `place_release_installer_layout`. Hand-copying a fixed script onto a broken machine is not a substitute for rebuilding/certifying the setup EXE (FT-DEP-001 §35.4.2).
 
 ### 1.3 Manual Path A (authoritative if wizard skipped migrate)
 

@@ -23,8 +23,9 @@ Restores prior `app\` / `web\` from pre-update archive. **Does not** auto-restor
 
 ## Do not
 
-- Re-run the Windows installer as a wipe of a live site.
+- Re-run the Windows installer as a wipe of a live site (post-install skips when `shared\.env` + live `app` + `web` already exist).
 - Skip backup before migrate.
 - Apply uncertified builds.
+- Use a wiped `releases\Flowtix-vX` folder as `--source` for setup or update — if `releases\…\app\server.js` is missing, obtain a rebuilt package / installer first (FT-DEP-001 §34.3.1 recovery).
 
 Details: FT-DEP-001 Batches 6–7; FT-DEP-012; checklists 05–06.

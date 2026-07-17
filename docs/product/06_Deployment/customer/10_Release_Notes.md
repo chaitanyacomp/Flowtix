@@ -14,6 +14,15 @@
 - Customer documentation pack + acceptance checklists
 - Commercial demo seed for partner labs
 
+## Installer hotfixes (FT-DEP-001 v1.14 / v1.14.1)
+
+- **Place-release self-wipe:** When setup runs with `--source` equal to `{home}\releases\Flowtix-vX` (Inno post-install layout), setup no longer refreshes the archive onto itself. Live `app\` and `web\` are promoted from the intact package. Regression: `certify-install` → `place_release_installer_layout`.
+- **Post-install invocation:** Inno runs `post-install.bat` directly (not via broken `cmd /C "bat" "args"` quoting).
+- **First-time `.env`:** `shared\.env` alone is not treated as a complete existing install (allows configure-env → setup).
+- **Certification:** Always verify live runtime **and** that `releases\Flowtix-vX\app\server.js` remains after install. Rebuild the real setup EXE for customer delivery — do not certify by hand-copying scripts only.
+
+See package `RELEASE_NOTES.md` and FT-DEP-001 §34.3.1 / §35.4.
+
 ## Packaging
 
 - Setup: `Flowtix-ERP-Setup.exe`

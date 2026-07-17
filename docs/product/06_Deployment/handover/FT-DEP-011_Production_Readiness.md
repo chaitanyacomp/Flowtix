@@ -27,7 +27,8 @@ Use as the **master gate** before declaring production ready. Complete linked ch
 
 - [ ] Certified release package / installer for intended version (DEP-01)
 - [ ] Customer delivery media present (`Flowtix-ERP-v*` with Setup + Server ZIP + checksums) when shipping commercially
-- [ ] `VERSION.txt` / build identity recorded (DEP-02)
+- [ ] Clean-machine certification executed (or scheduled) per [customer acceptance 10](../customer/acceptance/10_Clean_Machine_Certification.md)
+- [ ] `VERSION.txt` / build identity recorded (DEP-02); `gitCommit` matches packaged release HEAD
 - [ ] Offline WinSW binary present in package (`tools\vendor\winsw\`) if service will be used
 - [ ] Compatibility matrix filled ([FT-DEP-013](./FT-DEP-013_Version_Compatibility_Matrix.md))
 

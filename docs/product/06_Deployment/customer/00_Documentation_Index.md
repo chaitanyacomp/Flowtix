@@ -26,6 +26,10 @@
 
 Customer verification forms: [acceptance/](./acceptance/)
 
+| Form | File |
+|------|------|
+| Clean-machine deployment certification (lab/site) | [acceptance/10_Clean_Machine_Certification.md](./acceptance/10_Clean_Machine_Certification.md) |
+
 ## Normative references (do not duplicate)
 
 | Document | Location in media |

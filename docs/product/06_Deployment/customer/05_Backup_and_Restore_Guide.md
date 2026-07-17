@@ -3,8 +3,11 @@
 ## Backup (supported)
 
 ```bat
-tools\backup-db.bat
+set FT_ERP_HOME=C:\FT-ERP
+"%FT_ERP_HOME%\tools\backup-db.bat"
 ```
+
+(If `tools\` lives under the active home, running from that folder also resolves `FT_ERP_HOME` automatically.)
 
 - Output: `backups\db\` + `BACKUP_MANIFEST.json`
 - Confirm file size &gt; 0 and manifest status success

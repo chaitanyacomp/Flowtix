@@ -3,8 +3,8 @@
 | Field | Value |
 |-------|-------|
 | **Document ID** | FT-DEP-011 |
-| **Version** | 1.1.0 |
-| **Parent** | FT-DEP-001 v1.12.0 §36–§37 |
+| **Version** | 1.2.0 |
+| **Parent** | FT-DEP-001 v1.13.0 §36–§38 |
 | **Site / Customer** | |
 | **Target product version** | |
 | **Date** | |
@@ -26,6 +26,7 @@ Use as the **master gate** before declaring production ready. Complete linked ch
 ## B. Package & identity
 
 - [ ] Certified release package / installer for intended version (DEP-01)
+- [ ] Customer delivery media present (`Flowtix-ERP-v*` with Setup + Server ZIP + checksums) when shipping commercially
 - [ ] `VERSION.txt` / build identity recorded (DEP-02)
 - [ ] Offline WinSW binary present in package (`tools\vendor\winsw\`) if service will be used
 - [ ] Compatibility matrix filled ([FT-DEP-013](./FT-DEP-013_Version_Compatibility_Matrix.md))

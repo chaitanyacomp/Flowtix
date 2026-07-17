@@ -16,6 +16,7 @@ import { PROCUREMENT_TERMS } from "../lib/procurementTerminology";
 import { GlobalSearch } from "./GlobalSearch";
 import { CommercialWorkflowOriginTrace } from "./PageHeader";
 import { BrandLogo, BrandMark, BRAND_NAME } from "./branding/Branding";
+import { AboutDialog } from "./branding/AboutDialog";
 import {
   LayoutDashboard,
   Package,
@@ -23,6 +24,7 @@ import {
   Users,
   Boxes,
   LogOut,
+  Info,
   ShoppingCart,
   Factory,
   ClipboardCheck,
@@ -445,6 +447,8 @@ export function AppLayout() {
               ? "Operations"
               : getPageTitle(pathname);
 
+  const [aboutOpen, setAboutOpen] = React.useState(false);
+  const [aboutVersion, setAboutVersion] = React.useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = React.useState(() => {
     if (typeof window === "undefined") return false;
     try {
@@ -611,12 +615,37 @@ export function AppLayout() {
               <div className="text-sm font-semibold text-slate-900">{auth.user?.name}</div>
               <div className="text-xs font-medium text-slate-600">{auth.user?.role}</div>
             </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="shrink-0"
+              title="About Flowtix ERP"
+              aria-label="About Flowtix ERP"
+              onClick={async () => {
+                setAboutOpen(true);
+                try {
+                  // Same-origin ops probe (includes product version).
+                  const res = await fetch("/health");
+                  if (res.ok) {
+                    const j = (await res.json()) as { version?: string };
+                    if (j?.version) setAboutVersion(String(j.version));
+                  }
+                } catch {
+                  /* keep prior / default version */
+                }
+              }}
+            >
+              <Info className="h-4 w-4 sm:mr-2" />
+              <span className="hidden sm:inline">About</span>
+            </Button>
             <Button variant="outline" size="sm" onClick={onLogout} className="shrink-0">
               <LogOut className="mr-2 h-4 w-4" />
               Logout
             </Button>
           </div>
         </header>
+
+        <AboutDialog open={aboutOpen} onClose={() => setAboutOpen(false)} productVersion={aboutVersion} />
 
         {demo.enabled ? (
           <div

@@ -4,8 +4,8 @@
 |-------|-------|
 | **Document ID** | FT-DEP-001 |
 | **Title** | Deployment & Release Management Standard |
-| **Version** | 1.12.0 |
-| **Status** | Active — Operational Standard (Batches 1–11 + Milestone 2 + Milestone 3 install hardening) |
+| **Version** | 1.13.0 |
+| **Status** | Active — Operational Standard (Batches 1–11 + Milestones 2–4 commercial delivery) |
 | **Effective date** | 2026-07-09 |
 | **Author** | FT ERP Product Team |
 | **Owner** | FT ERP Product Architecture / Release Operations |
@@ -54,6 +54,7 @@
 | 1.10.0 | 2026-07-09 | FT ERP Product Team | Batch 11 — deployment validation & client handover pack (`handover/`, `verify-install`) |
 | 1.11.0 | 2026-07-16 | FT ERP Product Team | Milestone 2 — backend static SPA hosting; verify UI+API; offline WinSW checksum; firewall helper; installer LAN URL policy; frontend `npm run build` gate |
 | 1.12.0 | 2026-07-16 | FT ERP Product Team | Milestone 3 — installation hardening: env validation, guided configure-env, db-safety gate, WinSW recovery policy, install-recovery, safe uninstall, diagnostics, certify-install |
+| 1.13.0 | 2026-07-17 | FT ERP Product Team | Milestone 4 — customer delivery media (`create-customer-media`), demo pack, customer guides + acceptance, checksums/manifest, branding About/support placeholders |
 
 **Supersedes:** Informal client install notes; ad-hoc “copy the repo to the server” practices.
 
@@ -64,6 +65,7 @@
 - Batches 1–11 under `deployment/` (packaging, backup, migrate deploy, update, rollback, WinSW, setup, Inno wrapper, verify-install, handover)
 - Milestone 2: production static hosting (`backend/src/runtime/staticHosting.js`), offline WinSW (`deployment/vendor/winsw/` + checksum), `firewall-flowtix.*`, installer URL/LAN notes
 - Milestone 3: `install-validate.*`, `configure-env.*`, `db-safety.*`, `install-recovery.*`, `collect-diagnostics.*`, `certify-install.*`; hardened WinSW XML; Inno safe uninstall (preserve customer data by default)
+- Milestone 4: `create-customer-media.*`, `certify-customer-media.*`, `deployment/demo/`, `docs/.../customer/` guides + acceptance, SHA256SUMS + RELEASE_MANIFEST
 
 **Still deferred:**
 
@@ -1780,3 +1782,30 @@ Inno Setup (`Flowtix.iss`) asks whether to preserve customer data. **Default: pr
 - [ ] `collect-diagnostics` produces masked `summary.json`
 - [ ] `certify-install` exits 0 in lab
 - [ ] FT-DEP-011 / FT-DEP-012 / checklist 02 synchronized
+
+---
+
+## 38. Customer Delivery Media (Milestone 4)
+
+### 38.1 Purpose
+
+Assemble a **commercial customer delivery package** from the certified release + Windows installer + customer documentation + demo lab pack — without duplicating Batches 1–11 engines.
+
+### 38.2 Tooling
+
+| Tool | Role |
+|------|------|
+| `deployment/create-customer-media.bat` | Builds `customer-media/Flowtix-ERP-vX.Y.Z/` |
+| `deployment/certify-customer-media.bat` | Validates media layout, checksums, manifest, branding markers |
+| `deployment/demo/` | Lab demo seed + users + walkthrough (**not** shipped inside `prisma/` of the server package) |
+
+### 38.3 Media layout
+
+Numbered folders: `01 Setup` … `10 Manifest` (installer EXE, docs, demo, server ZIP, utilities, support, release notes, SHA256SUMS, license, RELEASE_MANIFEST.json).
+
+### 38.4 Rules
+
+- Product version source of truth remains `backend/package.json`.
+- Checksums and manifest are generated automatically (no hand editing).
+- Customer guides cross-reference FT-DEP-001 / 011 / 012; they do not fork deployment law.
+- Demo seed requires `DEMO_SEED_CONFIRM=YES` and must not target production database names.

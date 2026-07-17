@@ -13,7 +13,7 @@
 
 #define MyAppName "Flowtix ERP"
 #define MyAppVersion "1.0.0"
-#define MyAppPublisher "Flowtix / DankelTek"
+#define MyAppPublisher "Chaitanya Computer Solutions"
 #define MyAppExeName "FlowtixERP.url"
 #define ReleaseFolder "Flowtix-v" + MyAppVersion
 #define DefaultPort "4000"

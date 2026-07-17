@@ -3,8 +3,8 @@
 | Field | Value |
 |-------|-------|
 | **Document ID** | FT-DEP-012 |
-| **Version** | 1.2.0 |
-| **Parent** | FT-DEP-001 v1.12.0 |
+| **Version** | 1.3.0 |
+| **Parent** | FT-DEP-001 v1.13.0 |
 | **Audience** | Customer System Administrator |
 
 Day-2 operations for LAN Flowtix ERP. Tools live under `{FT_ERP_HOME}\tools\` or `releases\Flowtix-v*\tools\` (copied from repo `deployment/` at packaging time).
@@ -44,10 +44,10 @@ node app\server.js
 
 ## 3. Health and UI check
 
-- Browser (this server): `http://127.0.0.1:<PORT>/` — login page / Flowtix shell (HTML)  
-- Browser (LAN client): `http://<server-hostname-or-IPv4>:<PORT>/`  
-- API: `GET http://127.0.0.1:<PORT>/health` (JSON)  
-- Read-only helper (API + UI HTML, no auth):  
+- Browser (this server): `http://127.0.0.1:<PORT>/` — login page / Flowtix shell (HTML)
+- Browser (LAN client): `http://<server-hostname-or-IPv4>:<PORT>/`
+- API: `GET http://127.0.0.1:<PORT>/health` (JSON)
+- Read-only helper (API + UI HTML, no auth):
 
 ```bat
 tools\verify-install.bat --home C:\FT-ERP
@@ -75,10 +75,10 @@ Confirm file size > 0 and `BACKUP_MANIFEST.json` success. Retain per site policy
 
 ## 5. Update (Batch 6)
 
-1. Place new package under `releases\Flowtix-vX.Y.Z\` (keep old folders).  
-2. Run `tools\update-flowtix.bat` from the **new** package (or `--source`).  
-3. Confirm backup → migrate → app/web replace.  
-4. Smoke ([checklist 03](./checklists/03_Post_Install_Smoke.md)).  
+1. Place new package under `releases\Flowtix-vX.Y.Z\` (keep old folders).
+2. Run `tools\update-flowtix.bat` from the **new** package (or `--source`).
+3. Confirm backup → migrate → app/web replace.
+4. Smoke ([checklist 03](./checklists/03_Post_Install_Smoke.md)).
 5. Do **not** re-run installer as a wipe of a live site.
 
 ## 6. Rollback (Batch 7)
@@ -154,7 +154,7 @@ Uninstaller removes application binaries by default and **asks** whether to pres
 
 Destructive Admin tools (Reset Transaction Data, Reset NO_QTY Data, MPRS Test Reset, Full Demo Reset) delete transactional rows only (masters preserved on transaction/NO_QTY paths).
 
-**Canonical SSOT:** `backend/src/services/cleanup/cleanupRegistry.js`  
+**Canonical SSOT:** `backend/src/services/cleanup/cleanupRegistry.js`
 NO_QTY recovery cleanup runs through `noQtyRecoveryCleanupService` using the registry recovery cluster (do not invent local delete sequences).
 
 Child-first recovery order (Phase 2B):
@@ -182,12 +182,25 @@ When a migration adds a transactional model or Restrict FK (especially `recovery
 
 CLI reset: `npm run reset:transactions` (same path as Settings → Reset Transaction Data).
 
+## 8b. Customer delivery media (Milestone 4)
+
+Commercial USB/ISO-style pack is built with:
+
+```bat
+deployment\create-customer-media.bat
+```
+
+Output: `customer-media\Flowtix-ERP-vX.Y.Z\` (numbered folders 01–10).
+Certify: `deployment\certify-customer-media.bat`.
+Customer guides live under `docs\product\06_Deployment\customer\` (copied into media `02 Documentation`).
+
 ## 9. Escalation
 
 Use [Support Escalation template](./templates/Support_Escalation.md). Never paste passwords.
+Support placeholders: `support@flowtix.example` · `https://www.flowtix.example` (replace per contract).
 
 ## 10. Forbidden
 
-- `prisma migrate reset` / `db push` on production  
-- Deleting `shared\`, `backups\`, or DB to “fix” deploy  
+- `prisma migrate reset` / `db push` on production
+- Deleting `shared\`, `backups\`, or DB to “fix” deploy
 - Running uncertified builds (DEP-08)

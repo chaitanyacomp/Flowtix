@@ -1,5 +1,8 @@
 Flowtix ERP — End User License / Use Terms (Installer)
 
+Copyright © 2026 Chaitanya Computer Solutions. Product: Flowtix ERP — Enquiry to Dispatch.
+Support (placeholder): support@flowtix.example · https://www.flowtix.example
+
 IMPORTANT: This is a deployment packaging license notice for the Windows installer.
 Replace with your commercial EULA before customer distribution if required.
 

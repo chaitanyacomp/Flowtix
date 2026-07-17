@@ -55,6 +55,17 @@ export const BRAND_TAGLINE = "Enquiry to Dispatch";
 /** Short vendor attribution line used in footers / about surfaces. */
 export const BRAND_COMPANY_ATTRIBUTION = `Software by ${BRAND_COMPANY_NAME}`;
 
+/** Copyright line for About / installer NOTICE (year follows product release). */
+export const BRAND_COPYRIGHT = `© 2026 ${BRAND_COMPANY_NAME}. All rights reserved.`;
+
+/**
+ * Support & web placeholders for commercial packaging.
+ * Replace per customer contract / OEM agreement before public distribution.
+ */
+export const BRAND_SUPPORT_EMAIL = "support@flowtix.example";
+export const BRAND_WEBSITE = "https://www.flowtix.example";
+export const BRAND_LICENSE_LABEL = "Licensed software — see installer EULA / site license agreement";
+
 /** Compact "Ft" identity asset (PNG, transparent). Operational surfaces only. */
 export const BRAND_COMPACT_LOGO_SRC = compactLogoSrc;
 

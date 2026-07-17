@@ -53,7 +53,7 @@ const versionTxt = [
   `buildDate=${built}`,
   `gitCommit=${commit}`,
   `prismaMigrationHead=${mig}`,
-  "packagingBatch=FT-DEP-001-Batch-11",
+  "packagingBatch=FT-DEP-001-Milestone-4",
   "",
 ].join("\n");
 

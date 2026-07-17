@@ -211,8 +211,9 @@ if %RC% GEQ 8 (
 )
 
 echo.
-echo [create-release] Optional next step ^(Batch 10^):
+echo [create-release] Optional next steps:
 echo   deployment\installer\build-installer.bat
+echo   deployment\create-customer-media.bat
 echo.
 
 REM --- 7. Git commit + build date ---

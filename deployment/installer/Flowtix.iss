@@ -26,6 +26,12 @@
   #define OutputDir "output"
 #endif
 
+; Build-time only: fail ISCC if the certified release is missing.
+; Do NOT probe ReleaseRoot at customer runtime (portability).
+#if !FileExists(AddBackslash(ReleaseRoot) + "VERSION.txt")
+  #error Release package VERSION.txt not found at ReleaseRoot. Run deployment\create-release.bat, then deployment\installer\build-installer.bat.
+#endif
+
 [Setup]
 AppId={{A7F3C2E1-9B4D-4E8A-B1C0-8D2E5F6A7B90}
 AppName={#MyAppName}
@@ -159,19 +165,12 @@ begin
 end;
 
 function InitializeSetup(): Boolean;
-var
-  ReleasePath: String;
 begin
+  { Release payload is embedded via [Files] Source:{#ReleaseRoot}\* at compile time.
+    build-installer.bat + ISPP #if FileExists validate the package before ISCC embeds it.
+    Never resolve ReleaseRoot (developer path) on the customer machine. }
   Result := True;
   ResolvedPort := '{#DefaultPort}';
-  ReleasePath := ExpandConstant('{#ReleaseRoot}');
-  if not FileExists(ReleasePath + '\VERSION.txt') then
-  begin
-    MsgBox('Release package not found:'#13#10 + ReleasePath + #13#10#13#10 +
-      'Run deployment\create-release.bat first, then build-installer.bat.',
-      mbError, MB_OK);
-    Result := False;
-  end;
 end;
 
 procedure WriteAccessFiles(Port: String);

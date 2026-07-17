@@ -22,10 +22,17 @@ Output:
 deployment/installer/output/Flowtix-Setup-vX.Y.Z.exe
 ```
 
+### Package embedding (portability)
+
+- `build-installer.bat` checks `release\Flowtix-vX.Y.Z\VERSION.txt` **before** ISCC.
+- Inno `[Files] Source: {#ReleaseRoot}\*` **embeds** the certified release into the setup EXE at compile time.
+- Customer runtime extracts to `{app}\releases\Flowtix-vX.Y.Z\` and runs `post-install.bat` with **`{app}`** paths only.
+- **Regression (critical):** the setup EXE must never probe a developer `ReleaseRoot` / repo path at runtime. `InitializeSetup` does not call `ExpandConstant('{#ReleaseRoot}')`. `build-installer.bat` fails if the compiled EXE still contains the packager `%ROOT%` string.
+
 ## What the installer does
 
-1. Extracts certified package to `{app}\releases\Flowtix-vX.Y.Z\`
-2. Runs `tools\post-install.bat` → Batch 9 `setup-flowtix.bat`
+1. Extracts embedded certified package to `{app}\releases\Flowtix-vX.Y.Z\`
+2. Runs `{app}\tools\post-install.bat` → Batch 9 `setup-flowtix.bat` with source=`{app}\releases\Flowtix-vX.Y.Z\`
 3. Optional: Windows Service via setup `--install-service` (Batch 8 / offline WinSW)
 4. Optional: Windows Firewall inbound TCP rule for app PORT (`--configure-firewall`)
 5. Optional: `--skip-migrate` (Path B)

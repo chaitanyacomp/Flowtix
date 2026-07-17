@@ -35,6 +35,18 @@ deployment\certify-customer-media.bat
 | `release\Flowtix-v1.0.0\VERSION.txt` `gitCommit=` matches `git rev-parse --short HEAD` | Copy VERSION.txt (no secrets) | 🟠 | Rebuild release |
 | `certify-customer-media` exit 0 | Console log | 🔴 | Fix missing media files |
 
+### 0.2 Installer portability regression (critical)
+
+**Defect (fixed):** compiled setup must not resolve a developer repo path such as  
+`…\deployment\installer\..\..\release\Flowtix-v1.0.0` at runtime (“Release package not found”).
+
+| Action | Expected | Evidence | Fail | Troubleshoot |
+|--------|----------|----------|------|--------------|
+| Search installer sources for packager machine path / `erp_cursor` runtime probe | No `InitializeSetup` check of `ReleaseRoot` | `Flowtix.iss` review | 🔴 | Keep release check build-time only |
+| Copy **only** `customer-media\Flowtix-ERP-v1.0.0` outside the repo | Folder copies | Dir listing | — | — |
+| Rename/move repo `release\Flowtix-v1.0.0` so it is unavailable | Path gone | — | — | — |
+| Run `01 Setup\Flowtix-ERP-Setup.exe` from the copied media | Wizard starts; **no** “Release package not found” with a `D:\…\erp_cursor\…` path | Screenshot / installer log | 🔴 | Rebuild installer from fixed `Flowtix.iss` |
+
 ---
 
 ## 1. Clean installation (installer path)

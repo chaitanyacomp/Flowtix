@@ -40,12 +40,24 @@ echo [build-installer] OUTPUT=%OUT%
 
 if not exist "%OUT%" mkdir "%OUT%" >nul 2>&1
 
-REM Pass ReleaseRoot as absolute path for ISCC
+REM Pass ReleaseRoot as absolute path for ISCC compile-time Source embedding ONLY.
+REM Flowtix.iss must not probe ReleaseRoot at customer runtime (portability).
+echo [build-installer] Embedding release into setup EXE ^(build-time path, not runtime^)...
 call "%ISCC%" "/DMyAppVersion=%PRODUCT_VERSION%" "/DReleaseRoot=%RELEASE_DIR%" "/DOutputDir=%OUT%" "%ISS%"
 if errorlevel 1 (
   echo [build-installer] ISCC failed.
   exit /b 1
 )
+
+REM Regression: compiled EXE must not contain this machine's repo path.
+findstr /I /C:"%ROOT%" "%OUT%\Flowtix-Setup-v%PRODUCT_VERSION%.exe" >nul 2>&1
+if not errorlevel 1 (
+  echo [build-installer] ERROR: compiled installer still contains developer repo path:
+  echo   %ROOT%
+  echo   Fix Flowtix.iss — ReleaseRoot must not be used at runtime.
+  exit /b 1
+)
+echo [build-installer] OK: no developer ROOT path string in setup EXE.
 
 echo.
 echo [build-installer] SUCCESS
